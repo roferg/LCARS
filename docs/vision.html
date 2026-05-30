@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LCARS — Vision</title>
+  <link rel="stylesheet" href="lcars.css" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body>
+
+<header>
+  <div class="header-block">
+    <div class="header-brand">
+      LCARS
+      <span>Library Computer Access &amp; Retrieval System</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="header-title">Agentic Harness — Vision</span>
+    <div class="header-stardate">
+      <span class="sd-label">Stardate</span>
+      <span id="stardate-value">——</span>
+    </div>
+    <div class="header-stripes">
+      <div class="stripe" style="width:52px;background:#ffaa00"></div>
+      <div class="stripe" style="width:8px;background:#cc8800"></div>
+      <div class="stripe" style="width:18px;background:#4499ff"></div>
+      <div class="stripe" style="width:8px;background:#2255bb"></div>
+      <div class="stripe" style="width:10px;background:#9977ff"></div>
+      <div class="stripe" style="width:5px;background:#00ccaa"></div>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+
+  <nav>
+    <div class="nav-section" data-color="amber">
+      <div class="nav-label">Overview</div>
+      <a href="#what"><div class="dot"></div>What Is LCARS?</a>
+      <a href="#mission"><div class="dot"></div>The Mission</a>
+      <a href="#pipeline"><div class="dot"></div>Pipeline Overview</a>
+    </div>
+    <div class="nav-section" data-color="peach">
+      <div class="nav-label">Stages</div>
+      <a href="#align"><div class="dot"></div>1 · Align</a>
+      <a href="#research"><div class="dot"></div>2 · Research</a>
+      <a href="#validate"><div class="dot"></div>3 · Validate</a>
+      <a href="#plan"><div class="dot"></div>4 · Plan</a>
+      <a href="#plan-review"><div class="dot"></div>5 · Plan Review</a>
+      <a href="#schedule"><div class="dot"></div>6 · Schedule</a>
+      <a href="#implement"><div class="dot"></div>7 · Implement</a>
+      <a href="#verify"><div class="dot"></div>8 · Verify</a>
+      <a href="#done"><div class="dot"></div>Done</a>
+    </div>
+    <div class="nav-section" data-color="blue">
+      <div class="nav-label">Control</div>
+      <a href="#human"><div class="dot"></div>Human Control</a>
+      <a href="#multi"><div class="dot"></div>Multi-Mission</a>
+      <a href="#cli"><div class="dot"></div>The CLI</a>
+    </div>
+    <div class="nav-section" data-color="violet">
+      <div class="nav-label">Examples</div>
+      <a href="#ex1"><div class="dot"></div>Simple Bug <span class="nav-badge">fast</span></a>
+      <a href="#ex2"><div class="dot"></div>Complex Feature</a>
+      <a href="#ex3"><div class="dot"></div>Bug on Open Mission</a>
+    </div>
+    <div class="nav-section" data-color="teal">
+      <div class="nav-label">Adoption</div>
+      <a href="#install"><div class="dot"></div>Installation</a>
+    </div>
+    <div class="nav-section" data-color="red">
+      <div class="nav-label">Roadmap</div>
+      <a href="#future"><div class="dot"></div>Kanban Interface</a>
+      <a href="#scope"><div class="dot"></div>Scope</a>
+    </div>
+  </nav>
+
+  <main>
+
+    <!-- HERO -->
+    <section id="what">
+      <h1>LCARS</h1>
+      <p class="hero-sub">Agentic Harness · Idea → Merged PR</p>
+      <hr class="divider" />
+      <h2>What Is LCARS?</h2>
+      <p>LCARS is a reusable AI harness that takes a human idea and drives it to a merged pull request. It is not a code generator, a chat interface, or a one-shot prompt. It is an <strong>orchestration system</strong> — a defined pipeline of LLM operations, automated checks, and human checkpoints — that turns intent into shipped software.</p>
+      <p>The human provides the idea and the final judgment. The Harness does everything in between.</p>
+    </section>
+
+    <!-- MISSION -->
+    <section id="mission">
+      <h2>The Core Unit: The Mission</h2>
+      <p>Every piece of work in LCARS is a <strong>Mission</strong> — a single human intent, whether a new feature, an improvement, or a bug fix. Missions are filed via a global CLI skill invokable from any repo. On entry, a free-form description is the only requirement.</p>
+      <div class="mission-card">
+        <strong>Each Mission:</strong>
+        <ul>
+          <li>Gets its own isolated branch</li>
+          <li>Is represented as a GitHub issue</li>
+          <li>Moves through defined Stages as a card on the Kanban Board</li>
+          <li>Can be paused and resumed at any point</li>
+        </ul>
+      </div>
+      <p>Missions can be active concurrently. Each is isolated on its own branch; merges happen sequentially when the human verifies and approves.</p>
+    </section>
+
+    <!-- PIPELINE OVERVIEW -->
+    <section id="pipeline">
+      <h2>Pipeline Overview</h2>
+      <div class="stages-flow">
+        <div class="stage-pill">Align</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">Research</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">Validate</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">Plan</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">Plan Review</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">Schedule</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">Implement</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">Verify</div><div class="stage-arrow">→</div>
+        <div class="stage-pill done">Done ✓</div>
+      </div>
+      <div class="diagram-wrap">
+        <div class="diagram-label">Full pipeline with feedback loops</div>
+        <div class="mermaid">
+flowchart LR
+    E([Entry Skill]) --> A[Align]
+    A --> R[Research]
+    R --> V[Validate]
+    V --> P[Plan]
+    P --> PR[Plan Review]
+    PR -. "revise" .-> P
+    PR --> S[Schedule]
+    S --> I[Implement]
+    I --> VR[Verify]
+    VR --> D([Done ✓])
+    R -. "&gt;20 questions" .-> A
+    V -. "scope change" .-> A
+    VR -. "feedback" .-> A
+        </div>
+      </div>
+      <p>Feedback loops exist at four points: Research can return to Align if ambiguity runs too deep; Validate can escalate a scope change back to Align; Plan Review loops back to Plan until issues pass quality checks; and Verify can send a completed Mission back if the human isn't satisfied.</p>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- STAGES -->
+    <section id="align">
+      <h2>The Pipeline</h2>
+      <h3><span class="stage-num">1</span>Align</h3>
+      <p>The human and an LLM get on the same page. This is a structured grilling session — not a chat — where ambiguity in the idea is surfaced and resolved. The output is a <strong>PRD</strong> (Product Requirements Document) that becomes the canonical spec for the Mission.</p>
+      <p>The Align stage adapts to complexity. A small bug produces a thin PRD in minutes. A complex feature takes longer. If downstream stages reveal that the PRD was underspecified, the Mission loops back to Align with that context baked in.</p>
+    </section>
+
+    <section id="research">
+      <h3><span class="stage-num">2</span>Research</h3>
+      <p>The Harness generates up to <strong>20 questions</strong> based on the PRD — design choices, product considerations, or engineering decisions that need clarity before work begins.</p>
+      <div class="diagram-wrap">
+        <div class="diagram-label">Parallel research agents + validator</div>
+        <div class="mermaid">
+flowchart TD
+    PRD[PRD] --> QG["Question Generator\n0–20 questions"]
+    QG --> RA1[Research Agent]
+    QG --> RA2[Research Agent]
+    QG --> RA3[Research Agent ...]
+    RA1 --> VAL[Validator]
+    RA2 --> VAL
+    RA3 --> VAL
+    VAL -- "scope change" --> H([Human])
+    H -- "answer" --> VAL
+    VAL -- "synthesis complete" --> PL[Plan]
+        </div>
+      </div>
+      <p>Each question goes to a <strong>Research Agent</strong> — a stateless LLM worker with access to the codebase and the web. Agents work in parallel with no access to the PRD or each other's findings. Their only job is to return a recommendation and 2–3 supporting points.</p>
+      <p>If more than 20 questions are needed, the Harness explains why and gives the human the choice to override or return to Align so the PRD can be sharpened.</p>
+    </section>
+
+    <section id="validate">
+      <h3><span class="stage-num">3</span>Validate</h3>
+      <p>A <strong>Validator</strong> LLM reviews all Research Agent responses against the PRD. It synthesizes recommendations into a plan, resolving conflicts and making implementation decisions where it can.</p>
+      <p>The Validator escalates to the human <em>only</em> when a finding implies a scope or direction change — something that would change <em>what</em> gets built, not <em>how</em>. Implementation decisions stay with the Validator. Strategic decisions come to the human.</p>
+    </section>
+
+    <section id="plan">
+      <h3><span class="stage-num">4</span>Plan</h3>
+      <p>The validated plan is decomposed into small, independently testable GitHub issues. Each issue is a vertical slice of full-stack functionality, targeting <strong>fewer than 300 lines of production code</strong>. The output feeds into Plan Review before any scheduling occurs.</p>
+    </section>
+
+    <section id="plan-review">
+      <h3><span class="stage-num">5</span>Plan Review</h3>
+      <p>A fresh LLM session — with no access to the planning conversation — audits every issue against a fixed set of quality criteria before anything is scheduled:</p>
+      <div class="mission-card">
+        <ul>
+          <li><strong>Vertical slice</strong> — does it touch multiple layers end-to-end, not just one horizontal layer?</li>
+          <li><strong>Size</strong> — is it under 300 lines of production code?</li>
+          <li><strong>Testability</strong> — is there a clear, observable acceptance criterion?</li>
+          <li><strong>Explicit dependencies</strong> — are all dependencies on other issues captured in the graph?</li>
+        </ul>
+      </div>
+      <p>If any issues fail, Plan Review returns the full set with specific objections — <em>"issue #3 is a horizontal slice of the data layer, split it"</em> — and the Plan stage must revise. This loop repeats until all issues pass. After <strong>three rounds</strong> without a clean plan, Plan Review escalates to the human with the unresolved issues flagged.</p>
+      <p>The reviewer's independence is deliberate: the same LLM that planned the work should not also grade it.</p>
+    </section>
+
+    <section id="schedule">
+      <h3><span class="stage-num">6</span>Schedule</h3>
+      <p>The Harness builds a dependency graph across all Plan issues and groups them into sequential <strong>Waves</strong>. Issues within a Wave are independent and run concurrently. The next Wave begins only when all issues in the current Wave are complete.</p>
+      <div class="diagram-wrap">
+        <div class="diagram-label">Wave dependency model</div>
+        <div class="mermaid">
+flowchart TB
+    subgraph W1["Wave 1 — parallel"]
+        T1[Ticket A]
+        T2[Ticket B]
+        T3[Ticket C]
+    end
+    subgraph W2["Wave 2 — parallel"]
+        T4[Ticket D]
+        T5[Ticket E]
+    end
+    subgraph W3["Wave 3 — parallel"]
+        T6[Ticket F]
+    end
+    W1 --> W2
+    W2 --> W3
+        </div>
+      </div>
+    </section>
+
+    <section id="implement">
+      <h3><span class="stage-num">7</span>Implement</h3>
+      <p>Each issue in a Wave is handled by <strong>two sequential LLM sessions</strong>:</p>
+      <div class="diagram-wrap">
+        <div class="diagram-label">Adversarial TDD per ticket</div>
+        <div class="mermaid">
+sequenceDiagram
+    participant H as Harness
+    participant TW as Test Writer LLM
+    participant IM as Implementer LLM
+    participant TS as Test Suite
+    H->>TW: Ticket + codebase context
+    TW->>TS: Write failing tests
+    Note over TW,TS: Behavioral only — public interface, no mocks
+    H->>IM: Ticket + failing tests (no Test Writer context)
+    IM->>TS: Implement until passing
+    TS-->>H: Green ✓ — ticket done
+        </div>
+      </div>
+      <p>The <strong>Test Writer</strong> reads the issue and writes failing behavioral tests against the public interface only. The <strong>Implementer</strong> reads the issue and the failing tests — with no access to the Test Writer's session — and implements until all tests pass.</p>
+      <p>The separation is adversarial by design. The Test Writer cannot sandbag because it doesn't know who is implementing. The Implementer cannot skip tests because they arrive as a hard constraint. A passing test suite means the ticket is done.</p>
+    </section>
+
+    <section id="verify">
+      <h3><span class="stage-num">8</span>Verify</h3>
+      <p>When all Waves are complete, the human reviews the Mission — reading the diff, running the app locally, testing the golden path. The human either approves (triggering PR creation and merge) or sends feedback that re-enters the loop.</p>
+    </section>
+
+    <section id="done">
+      <h3><span class="stage-num" style="background:var(--lcars-teal);color:var(--lcars-black)">✓</span>Done</h3>
+      <p>The human requests a PR. The Harness creates it, the human merges, and the Mission is complete. The branch is cleaned up. The card moves to Done on the Kanban Board.</p>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- HUMAN CONTROL -->
+    <section id="human">
+      <h2>Human Control</h2>
+      <p>LCARS is designed to run without constant supervision — but the human is never locked out.</p>
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-cmd">lcars pause</div>
+          <div class="control-desc">Serializes Mission state and stops all activity. Safe to walk away.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars resume</div>
+          <div class="control-desc">Restores state and continues from exactly where it left off.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars respond</div>
+          <div class="control-desc">Surfaces a pending human question and accepts your answer. Harness continues.</div>
+        </div>
+      </div>
+      <div class="diagram-wrap">
+        <div class="diagram-label">Mission state machine</div>
+        <div class="mermaid">
+stateDiagram-v2
+    [*] --> Align : lcars file
+    Align --> Research : PRD approved
+    Research --> Validate : agents complete
+    Validate --> Align : scope change
+    Validate --> Plan : synthesis done
+    Plan --> Schedule : issues created
+    Schedule --> Implement : waves defined
+    Implement --> Verify : all waves done
+    Verify --> Align : feedback
+    Verify --> Done : approved
+    Done --> [*]
+    Align --> Paused : lcars pause
+    Research --> Paused : lcars pause
+    Validate --> Paused : lcars pause
+    Plan --> Paused : lcars pause
+    Schedule --> Paused : lcars pause
+    Implement --> Paused : lcars pause
+    Verify --> Paused : lcars pause
+        </div>
+      </div>
+      <p>Every Mission's state is persisted. Walking away and coming back is a <strong>first-class interaction pattern</strong>, not an edge case.</p>
+    </section>
+
+    <!-- MULTI-MISSION -->
+    <section id="multi">
+      <h2>Multi-Mission Management</h2>
+      <p>Multiple Missions can be active simultaneously at different Stages. The Kanban Board provides a command-and-control view — all active Missions as cards, each showing its current Stage and any pending human actions. The human can start and stop individual Missions from the board.</p>
+    </section>
+
+    <!-- CLI -->
+    <section id="cli">
+      <h2>The CLI</h2>
+      <p>LCARS runs through two CLI tools today: <strong>Claude Code</strong> and <strong>GitHub Copilot</strong>. The Harness abstracts at the model level — you choose a model (e.g. <code>claude-sonnet</code>, <code>gpt-4o</code>), and the Harness routes to whichever CLI can run it. CLI is an implementation detail. Model choice is the meaningful decision.</p>
+      <div class="mission-card" style="margin-top:16px">
+        <strong>Three global skills:</strong>
+        <ul>
+          <li><strong>Setup Skill</strong> (<code>lcars init</code>) — one-time per-repo setup. <em>Locally:</em> creates <code>.git/lcars/</code>, writes repo-level config, scans for <code>CONTEXT.md</code>, verifies CLI auth. <em>On GitHub:</em> creates the full set of LCARS Labels on the repo. Run once before filing the first Mission.</li>
+          <li><strong>Entry Skill</strong> — file a new standalone Mission (feature or bug) from any repo</li>
+          <li><strong>Mission Log</strong> — log bugs against an active Mission in free-form natural language. A single session can describe multiple bugs; the Harness extracts each, creates a fast-tracked Mission per bug, and links all of them to the referenced open Mission. If no open Mission is named, the skill asks before proceeding.</li>
+        </ul>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- EXAMPLES -->
+    <section id="examples">
+      <h2>Worked Examples</h2>
+
+      <div id="ex1" class="example">
+        <div class="example-header">
+          <span class="example-tag tag-simple">Simple · Fast Track</span>
+          <span class="example-title">Fix a Broken Route</span>
+        </div>
+        <div class="idea-quote">"The /about link in the nav goes to a 404."</div>
+        <div class="diagram-wrap" style="margin-top:0">
+          <div class="mermaid">
+flowchart LR
+    E([Bug filed]) --> A["Align\n~2 min"]
+    A --> R["Research\n0 questions"]
+    R --> V["Validate\npass-through"]
+    V --> P["Plan\n1 issue"]
+    P --> S["Schedule\n1 wave"]
+    S --> I["Implement\n~5 min"]
+    I --> VR[Verify]
+    VR --> D([Done ✓])
+          </div>
+        </div>
+        <p>The Align session is quick — the PRD is one sentence: <em>The <code>/about</code> route returns 404. It should resolve to the About page.</em> Research generates zero questions. The Validator passes immediately. Plan produces a single issue: <em>Fix /about route handler.</em></p>
+        <p>The Test Writer produces one failing test:</p>
+        <pre>expect(GET('/about')).resolves.toMatchObject({ status: 200 })</pre>
+        <p style="margin-top:0">The Implementer adds the missing route. Test passes. Human confirms the link works. Total wall clock: <strong>~10 minutes</strong>.</p>
+      </div>
+
+      <div id="ex2" class="example">
+        <div class="example-header">
+          <span class="example-tag tag-complex">Complex · Multi-Wave</span>
+          <span class="example-title">Add Gamification to a Course Website</span>
+        </div>
+        <div class="idea-quote">"I want to add XP, badges, and a leaderboard to motivate learners on my course platform."</div>
+        <p><strong>Align</strong> produces a PRD with eight acceptance criteria: XP awarded per activity type, badge unlock on milestone thresholds, per-course leaderboard, XP on learner dashboard, badge showcase on profiles, admin badge management, no perf regression, mobile-responsive UI.</p>
+        <p><strong>Research</strong> generates <strong>14 questions</strong> — including: <em>Should XP decay over time? Global vs. per-course leaderboard? Which animation library fits the stack? How do we handle XP for partial video views?</em></p>
+        <p><strong>Validate</strong> synthesizes the 14 answers and escalates one: <em>"Research is split on global vs. per-course leaderboard — this changes the DB schema significantly. Which do you want?"</em> Human responds: <em>"Per-course for now."</em> Validator produces a complete plan.</p>
+        <p><strong>Plan</strong> generates <strong>11 issues</strong>. <strong>Schedule</strong> builds three waves:</p>
+        <div class="diagram-wrap">
+          <div class="diagram-label">Wave dependency graph — gamification mission</div>
+          <div class="mermaid">
+flowchart TB
+    subgraph W1["Wave 1 — 4 tickets (parallel)"]
+        T1[DB schema migration]
+        T2[XP service]
+        T3[Badge service]
+        T4[Leaderboard service]
+    end
+    subgraph W2["Wave 2 — 3 tickets (parallel)"]
+        T5[XP trigger hooks]
+        T6[Badge unlock logic]
+        T7[Leaderboard query optimisation]
+    end
+    subgraph W3["Wave 3 — 4 tickets (parallel)"]
+        T8[XP UI components]
+        T9[Badge UI + animations]
+        T10[Leaderboard UI]
+        T11[E2E integration tests]
+    end
+    W1 --> W2
+    W2 --> W3
+          </div>
+        </div>
+        <p>Each of the 11 tickets gets a Test Writer + Implementer pair. Tickets within a wave run concurrently. <strong>Verify</strong>: the human earns XP on a quiz, watches the badge unlock animation, checks their leaderboard position. Satisfied — PR created and merged.</p>
+      </div>
+
+      <div id="ex3" class="example">
+        <div class="example-header">
+          <span class="example-tag tag-bug">Bug · Mission Log</span>
+          <span class="example-title">Two Bugs Logged Against an Active Mission</span>
+        </div>
+        <div class="idea-quote">"Found two bugs. XP isn't being awarded when a video is marked complete — only quiz completions trigger it. Also, the leaderboard has a visible flicker on first page load before the data comes in. These are against the gamification mission."</div>
+        <p>One invocation of <strong>Mission Log</strong>. The Harness extracts two distinct bugs, creates a fast-tracked Mission for each, and links both to the open gamification Mission. No second step.</p>
+        <div class="diagram-wrap">
+          <div class="mermaid">
+flowchart LR
+    subgraph LOG["Mission Log — one invocation"]
+        ML([lcars log])
+    end
+    subgraph BUG1["Bug Mission 1 — XP video fix"]
+        direction LR
+        B1["Plan\n1 issue"] --> B2[Implement] --> B3[Verify] --> B4([Merged ✓])
+    end
+    subgraph BUG2["Bug Mission 2 — Leaderboard flicker"]
+        direction LR
+        C1["Plan\n1 issue"] --> C2[Implement] --> C3[Verify] --> C4([Merged ✓])
+    end
+    subgraph FEAT["Gamification Mission — Wave 2 active"]
+        direction LR
+        F1[...Wave 1] --> F2["Wave 2\nactive"] --> F3[Wave 3] --> F4[Verify]
+    end
+    ML -. "2 bugs extracted" .-> BUG1
+    ML -. "linked to open mission" .-> FEAT
+    ML -. "2 bugs extracted" .-> BUG2
+          </div>
+        </div>
+        <p>Both bug Missions fast-track in parallel: thin PRDs, zero research questions, one issue each. They run concurrently with each other and with the in-progress gamification Mission. The Kanban Board shows all three cards simultaneously. Bug Missions merge as soon as they're verified; the gamification Mission continues uninterrupted.</p>
+      </div>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- INSTALLATION -->
+    <section id="install">
+      <h2>Installation &amp; Adoption</h2>
+      <p>LCARS is designed to drop into any repo — new or existing — without disrupting what's already there.</p>
+
+      <div class="mission-card">
+        <strong>Skills live globally.</strong> Installed once at <code>~/.claude/</code> and available in every repo. No per-project setup step.
+      </div>
+
+      <div class="mission-card" style="border-left-color:var(--lcars-teal)">
+        <strong>Locally — <code>.git/lcars/</code></strong>
+        <ul>
+          <li>All mission state lives inside <code>.git/</code> — never tracked, never appears in <code>git status</code></li>
+          <li>No <code>.gitignore</code> entry needed. Zero working tree changes.</li>
+        </ul>
+      </div>
+
+      <div class="mission-card" style="border-left-color:var(--lcars-blue)">
+        <strong>On GitHub — LCARS Labels</strong>
+        <ul>
+          <li>One stage label per stage: <code>lcars:align</code> … <code>lcars:done</code> — the Mission's Kanban column</li>
+          <li>Type labels: <code>lcars:feature</code> / <code>lcars:bug</code></li>
+          <li>Additive status labels: <code>lcars:paused</code> / <code>lcars:awaiting-human</code></li>
+          <li>Relationship label: <code>lcars:linked</code> for bug Missions tied to a parent</li>
+        </ul>
+        <p style="margin-top:10px;font-size:13px;color:var(--lcars-text-dim)">Labels are the Kanban board's data model. The harness updates them; the board queries <code>GET /issues?labels=lcars:align</code> per column. Filter to <code>lcars:awaiting-human</code> to see every pending question at a glance — before the Kanban UI even exists.</p>
+      </div>
+
+      <div class="mission-card" style="margin-top:0;border-left-color:var(--lcars-red)">
+        <strong>The Harness never modifies:</strong>
+        <ul>
+          <li><code>CLAUDE.md</code> or any CLI config file — context is injected per-session via prompt</li>
+          <li><code>.gitignore</code> — zero working tree changes</li>
+          <li><code>CONTEXT.md</code> — reads for domain language, never writes</li>
+          <li><code>.claude/settings.json</code> — existing permissions and hooks are preserved</li>
+        </ul>
+      </div>
+
+      <p style="margin-top:16px">Because context is injected via prompt, the Harness works identically with <strong>Claude Code</strong> and <strong>GitHub Copilot</strong> — no CLI-specific setup required on either side.</p>
+    </section>
+
+    <hr class="divider" />
+
+    <!-- FUTURE -->
+    <section id="future">
+      <h2>Future: The Kanban Interface</h2>
+      <div class="future-banner">
+        <h3>Command &amp; Control</h3>
+        <p>In a future iteration, LCARS gains a dedicated visual interface. The Kanban Board becomes a full application — not a GitHub Projects board, but a custom interface purpose-built for the Harness.</p>
+        <p style="margin-top:12px">Each column corresponds to a Stage. Each Mission is a card. The human can see at a glance what is in flight, what is waiting for human input, and what is blocked. Questions from the Harness appear as badges on Mission cards. The human responds from the interface, and the Harness resumes.</p>
+        <p style="margin-top:12px">This is the command-and-control layer: one view of all Missions, all Stages, all pending decisions — with the ability to start, stop, and steer from a single screen.</p>
+      </div>
+    </section>
+
+    <!-- SCOPE -->
+    <section id="scope">
+      <h2>Scope</h2>
+      <div class="scope-bar">
+        <div class="scope-active">v1 · Idea → Merged PR</div>
+        <div class="scope-future">Future · Production Monitoring</div>
+      </div>
+      <p>LCARS v1 covers idea to merged PR. Monitoring in production — watching deployed behavior, surfacing regressions, closing the feedback loop from live traffic back to new Missions — is a planned extension.</p>
+      <p>The long-term vision is a full lifecycle: <strong>idea → code → production → signal → new idea</strong>.</p>
+    </section>
+
+  </main>
+</div>
+
+<script src="lcars.js"></script>
+</body>
+</html>

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DOCUMENT TITLE — LCARS</title>
+  <link rel="stylesheet" href="lcars.css" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     HEADER
+     - Change header-brand for the system name
+     - Change header-title for the document name
+     - Add/remove stripe colors as desired
+     ═══════════════════════════════════════════════════════════ -->
+<header>
+  <div class="header-block">
+    <div class="header-brand">
+      LCARS
+      <span>Library Computer Access &amp; Retrieval System</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="header-title">Document Title Here</span>
+    <div class="header-stardate">
+      <span class="sd-label">Stardate</span>
+      <span id="stardate-value">——</span>
+    </div>
+    <div class="header-stripes">
+      <div class="stripe" style="width:52px;background:#ffaa00"></div>
+      <div class="stripe" style="width:8px;background:#cc8800"></div>
+      <div class="stripe" style="width:18px;background:#4499ff"></div>
+      <div class="stripe" style="width:8px;background:#2255bb"></div>
+      <div class="stripe" style="width:10px;background:#9977ff"></div>
+      <div class="stripe" style="width:5px;background:#00ccaa"></div>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- ═══════════════════════════════════════════════════════
+       SIDEBAR NAV
+       - data-color on .nav-section sets the elbow color:
+         amber (default) | peach | blue | violet | teal | red
+       ═══════════════════════════════════════════════════════ -->
+  <nav>
+    <div class="nav-section" data-color="amber">
+      <div class="nav-label">Section One</div>
+      <a href="#intro"><div class="dot"></div>Introduction</a>
+      <a href="#overview"><div class="dot"></div>Overview</a>
+    </div>
+    <div class="nav-section" data-color="peach">
+      <div class="nav-label">Section Two</div>
+      <a href="#details"><div class="dot"></div>Details</a>
+      <a href="#examples"><div class="dot"></div>Examples <span class="nav-badge">new</span></a>
+    </div>
+    <div class="nav-section" data-color="blue">
+      <div class="nav-label">Reference</div>
+      <a href="#reference"><div class="dot"></div>Reference</a>
+    </div>
+  </nav>
+
+  <main>
+
+    <!-- ═══════════════════════════════════════════════════
+         HERO SECTION
+         ═══════════════════════════════════════════════════ -->
+    <section id="intro">
+      <h1>Document Title</h1>
+      <p class="hero-sub">Subtitle · Tagline here</p>
+      <hr class="divider" />
+
+      <h2>Introduction</h2>
+      <p>Opening paragraph. Use <strong>strong</strong> for key terms and <em>em</em> for emphasis.</p>
+      <p>Second paragraph continues the thought.</p>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         STANDARD SECTION
+         ═══════════════════════════════════════════════════ -->
+    <section id="overview">
+      <h2>Overview</h2>
+
+      <!-- Mission card — amber left bar, dark background -->
+      <div class="mission-card">
+        <strong>Key points:</strong>
+        <ul>
+          <li>First important point</li>
+          <li>Second important point</li>
+          <li>Third important point</li>
+        </ul>
+      </div>
+
+      <!-- Mission card — color variants via border-left-color -->
+      <div class="mission-card" style="border-left-color:var(--lcars-teal)">
+        <strong>Do this:</strong>
+        <ul>
+          <li>Positive action one</li>
+          <li>Positive action two</li>
+        </ul>
+      </div>
+
+      <div class="mission-card" style="border-left-color:var(--lcars-red)">
+        <strong>Never do this:</strong>
+        <ul>
+          <li>Bad action one</li>
+          <li>Bad action two</li>
+        </ul>
+      </div>
+    </section>
+
+
+    <hr class="divider" />
+
+
+    <!-- ═══════════════════════════════════════════════════
+         SECTION WITH DIAGRAMS
+         ═══════════════════════════════════════════════════ -->
+    <section id="details">
+      <h2>Details</h2>
+
+      <!-- Numbered stage headings -->
+      <h3><span class="stage-num">1</span>First Stage</h3>
+      <p>Description of this stage.</p>
+
+      <!-- Mermaid diagram -->
+      <div class="diagram-wrap">
+        <div class="diagram-label">Diagram title here</div>
+        <div class="mermaid">
+flowchart LR
+    A[Start] --> B[Process]
+    B --> C[End]
+        </div>
+      </div>
+
+      <h3><span class="stage-num">2</span>Second Stage</h3>
+      <p>Description of this stage. Inline <code>code</code> looks like this.</p>
+
+      <!-- Code block -->
+      <pre>// Code block example
+const result = await doSomething({ param: 'value' })
+expect(result).toMatchObject({ status: 'ok' })</pre>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         LCARS PANEL COMPONENT
+         Panel with colored top bar — great for system info
+         Variants: (default amber) | blue | violet | teal | red | peach
+         ═══════════════════════════════════════════════════ -->
+    <section id="examples">
+      <h2>Examples</h2>
+
+      <div class="lcars-panel">
+        <div class="lcars-panel-header">System Status</div>
+        <div class="lcars-panel-body">
+          <p>Content inside an LCARS panel.</p>
+          <div class="lcars-status-row">
+            <div class="lcars-status active">Online</div>
+            <div class="lcars-status warning">Pending</div>
+            <div class="lcars-status alert">Critical</div>
+            <div class="lcars-status">Idle</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lcars-panel blue">
+        <div class="lcars-panel-header">Research Log</div>
+        <div class="lcars-panel-body">
+          <p>Blue panel — good for informational content.</p>
+          <div class="lcars-readout">STARDATE 47634.4 — SCAN COMPLETE
+AGENTS: 14 deployed / 14 returned
+STATUS: synthesis ready</div>
+        </div>
+      </div>
+
+      <!-- Alert / callout boxes -->
+      <div class="lcars-alert amber">
+        <div>This is an <strong>amber alert</strong> — use for warnings or important notices.</div>
+      </div>
+      <div class="lcars-alert blue">
+        <div>This is a <strong>blue info</strong> callout — use for context or background.</div>
+      </div>
+      <div class="lcars-alert teal">
+        <div>This is a <strong>teal success</strong> callout — use for confirmations.</div>
+      </div>
+      <div class="lcars-alert red">
+        <div>This is a <strong>red critical</strong> callout — use for errors or blockers.</div>
+      </div>
+
+      <!-- Control grid (3-up) -->
+      <h4>Command Cards</h4>
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-cmd">lcars command-one</div>
+          <div class="control-desc">Short description of what this command does.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars command-two</div>
+          <div class="control-desc">Short description of what this command does.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars command-three</div>
+          <div class="control-desc">Short description of what this command does.</div>
+        </div>
+      </div>
+
+      <!-- Stage pill flow -->
+      <h4>Pipeline Stages</h4>
+      <div class="stages-flow">
+        <div class="stage-pill">Stage One</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">Stage Two</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">Stage Three</div><div class="stage-arrow">→</div>
+        <div class="stage-pill done">Done ✓</div>
+      </div>
+
+      <!-- Scope bar (2-segment status) -->
+      <h4>Scope / Status Bar</h4>
+      <div class="scope-bar">
+        <div class="scope-active">v1 · Active scope</div>
+        <div class="scope-future">Future · Planned scope</div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         FUTURE / ROADMAP SECTION
+         ═══════════════════════════════════════════════════ -->
+    <section id="reference">
+      <h2>Reference</h2>
+      <div class="future-banner">
+        <h3>Roadmap Item</h3>
+        <p>Use the future-banner component for planned/aspirational content. Blue border signals "not yet."</p>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="lcars.js"></script>
+</body>
+</html>

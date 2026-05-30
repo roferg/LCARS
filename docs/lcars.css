@@ -1,0 +1,908 @@
+/* ═══════════════════════════════════════════════════════════════
+   LCARS DESIGN SYSTEM
+   Library Computer Access & Retrieval System
+   Inspired by Star Trek: The Next Generation LCARS interface
+
+   Usage: <link rel="stylesheet" href="lcars.css">
+          <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+          <script src="lcars.js"></script>
+   ═══════════════════════════════════════════════════════════════ */
+
+
+/* ── 1. TOKENS ──────────────────────────────────────────────── */
+
+:root {
+  /* LCARS classic palette */
+  --lcars-black:    #030608;
+  --lcars-surface:  #070d1c;
+  --lcars-card:     #0b1224;
+  --lcars-card-alt: #0e1830;
+
+  /* Named accent colors — each panel in LCARS has a color identity */
+  --lcars-amber:    #ffaa00;   /* primary — the iconic LCARS gold */
+  --lcars-peach:    #ff9966;   /* warm secondary */
+  --lcars-blue:     #4499ff;   /* cool accent */
+  --lcars-violet:   #9977ff;   /* purple accent */
+  --lcars-teal:     #00ccaa;   /* success / go */
+  --lcars-red:      #ff3344;   /* alert / critical */
+  --lcars-gold:     #ffdd44;   /* highlight */
+
+  /* Semantic aliases */
+  --lcars-primary:  var(--lcars-amber);
+  --lcars-success:  var(--lcars-teal);
+  --lcars-danger:   var(--lcars-red);
+  --lcars-info:     var(--lcars-blue);
+
+  /* Text */
+  --lcars-text:        #c4d4ee;
+  --lcars-text-dim:    #50688a;
+  --lcars-text-bright: #e4eeff;
+  --lcars-text-on-color: #030608;
+
+  /* Borders */
+  --lcars-border:        rgba(255, 170, 0, 0.22);
+  --lcars-border-bright: rgba(255, 170, 0, 0.5);
+  --lcars-glow-amber:    rgba(255, 170, 0, 0.08);
+  --lcars-glow-blue:     rgba(68, 153, 255, 0.08);
+
+  /* Layout */
+  --lcars-nav-w:  240px;
+  --lcars-head-h: 72px;
+  --lcars-radius: 12px;
+  --lcars-elbow:  20px;   /* the rounded elbow corner */
+}
+
+
+/* ── 2. BASE ────────────────────────────────────────────────── */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--lcars-black);
+  color: var(--lcars-text);
+  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.75;
+  min-height: 100vh;
+}
+
+::-webkit-scrollbar             { width: 5px; height: 5px; }
+::-webkit-scrollbar-track       { background: var(--lcars-black); }
+::-webkit-scrollbar-thumb       { background: #332200; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--lcars-amber); }
+
+
+/* ── 3. PAGE LAYOUT ─────────────────────────────────────────── */
+
+.layout {
+  display: flex;
+  padding-top: var(--lcars-head-h);
+  min-height: 100vh;
+}
+
+main {
+  margin-left: var(--lcars-nav-w);
+  flex: 1;
+  padding: 52px 60px 100px;
+  max-width: 940px;
+}
+
+section {
+  margin-bottom: 68px;
+  scroll-margin-top: calc(var(--lcars-head-h) + 28px);
+}
+
+
+/* ── 4. HEADER ──────────────────────────────────────────────── */
+
+header {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--lcars-head-h);
+  background: var(--lcars-surface);
+  border-bottom: 2px solid var(--lcars-amber);
+  z-index: 200;
+  display: flex;
+  align-items: stretch;
+}
+
+/* The solid colored left block — signature LCARS element */
+.header-block {
+  width: var(--lcars-nav-w);
+  background: var(--lcars-amber);
+  display: flex;
+  align-items: center;
+  padding: 0 22px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* The angled cut at the right edge of the header block */
+.header-block::after {
+  content: '';
+  position: absolute;
+  right: -26px; top: 0;
+  border-top: var(--lcars-head-h) solid var(--lcars-amber);
+  border-right: 26px solid transparent;
+}
+
+.header-brand {
+  font-size: 24px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  color: var(--lcars-text-on-color);
+  text-transform: uppercase;
+}
+
+.header-brand span {
+  display: block;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: rgba(3, 6, 8, 0.55);
+  margin-top: 3px;
+  text-transform: uppercase;
+}
+
+.header-right {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding: 0 28px 0 52px;
+  gap: 16px;
+}
+
+.header-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--lcars-amber);
+  letter-spacing: 0.06em;
+}
+
+/* Stardate display — shows in the header */
+.header-stardate {
+  margin-left: auto;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  color: var(--lcars-text-dim);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.header-stardate .sd-label {
+  font-size: 8px;
+  color: var(--lcars-amber);
+  letter-spacing: 0.2em;
+}
+
+/* Color stripe bar in header — the classic LCARS multi-color block */
+.header-stripes {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  margin-left: 16px;
+}
+
+.header-stripes .stripe {
+  height: 34px;
+  border-radius: 3px;
+  opacity: 0.9;
+}
+
+
+/* ── 5. SIDEBAR / NAV ───────────────────────────────────────── */
+
+nav {
+  position: fixed;
+  top: var(--lcars-head-h);
+  left: 0;
+  width: var(--lcars-nav-w);
+  height: calc(100vh - var(--lcars-head-h));
+  background: var(--lcars-surface);
+  border-right: 1px solid var(--lcars-border);
+  overflow-y: auto;
+  padding: 20px 0 40px;
+}
+
+/* Nav section — each gets a colored LCARS elbow indicator */
+.nav-section { margin-bottom: 4px; }
+
+.nav-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 16px 8px;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.24em;
+  color: var(--lcars-text-dim);
+  text-transform: uppercase;
+}
+
+/* The LCARS elbow — half-rounded pill on the left of each section label */
+.nav-label::before {
+  content: '';
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 11px 0 0 11px;
+  background: var(--lcars-amber);
+  flex-shrink: 0;
+}
+
+/* Color-code each nav section — set on .nav-section with data-color */
+.nav-section[data-color="peach"]  .nav-label::before { background: var(--lcars-peach); }
+.nav-section[data-color="blue"]   .nav-label::before { background: var(--lcars-blue); }
+.nav-section[data-color="violet"] .nav-label::before { background: var(--lcars-violet); }
+.nav-section[data-color="teal"]   .nav-label::before { background: var(--lcars-teal); }
+.nav-section[data-color="red"]    .nav-label::before { background: var(--lcars-red); }
+
+nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px 7px 20px;
+  color: var(--lcars-text-dim);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  transition: color 0.12s, background 0.12s, border-left-color 0.12s;
+  border-left: 2px solid transparent;
+  position: relative;
+}
+
+nav a:hover,
+nav a.active {
+  color: var(--lcars-amber);
+  background: var(--lcars-glow-amber);
+  border-left-color: var(--lcars-amber);
+}
+
+nav a .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+  transition: transform 0.12s;
+}
+
+nav a:hover .dot,
+nav a.active .dot { transform: scale(1.6); }
+
+.nav-badge {
+  margin-left: auto;
+  font-size: 8px;
+  background: var(--lcars-glow-amber);
+  color: var(--lcars-amber);
+  border: 1px solid var(--lcars-border);
+  border-radius: 8px;
+  padding: 1px 6px;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+
+/* ── 6. TYPOGRAPHY ──────────────────────────────────────────── */
+
+h1 {
+  font-size: 36px;
+  font-weight: 900;
+  color: var(--lcars-amber);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  line-height: 1.1;
+  margin-bottom: 6px;
+}
+
+.hero-sub {
+  font-size: 13px;
+  color: var(--lcars-text-dim);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 36px;
+}
+
+/* LCARS section header — pill + title + extending rule */
+h2 {
+  display: flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--lcars-text-bright);
+  margin-bottom: 24px;
+  gap: 0;
+}
+
+h2::before {
+  content: '';
+  display: block;
+  width: 54px;
+  height: 26px;
+  background: var(--lcars-amber);
+  border-radius: 13px 0 0 13px;
+  margin-right: 14px;
+  flex-shrink: 0;
+}
+
+h2::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, var(--lcars-border-bright), transparent 80%);
+  margin-left: 14px;
+}
+
+/* Stage-numbered headings within the pipeline section */
+h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--lcars-text-bright);
+  margin: 32px 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.stage-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  background: var(--lcars-amber);
+  color: var(--lcars-text-on-color);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 900;
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+
+h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--lcars-amber);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 20px 0 8px;
+}
+
+p {
+  color: var(--lcars-text);
+  margin-bottom: 14px;
+}
+
+p:last-child { margin-bottom: 0; }
+
+strong { color: var(--lcars-text-bright); font-weight: 600; }
+em     { color: var(--lcars-peach); font-style: italic; }
+
+a { color: var(--lcars-blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+ul, ol {
+  padding-left: 0;
+  margin: 10px 0 14px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--lcars-text);
+  font-size: 14px;
+  padding-left: 2px;
+}
+
+li::before {
+  content: '▸';
+  color: var(--lcars-amber);
+  flex-shrink: 0;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+
+/* ── 7. DIVIDERS ────────────────────────────────────────────── */
+
+.divider {
+  border: none;
+  height: 0;
+  margin: 0 0 52px;
+  border-top: 1px solid transparent;
+  background: linear-gradient(to right, var(--lcars-border-bright) 20%, transparent);
+  border-image: linear-gradient(to right, var(--lcars-border-bright) 20%, transparent) 1;
+}
+
+/* LCARS multi-color divider — three colored segments */
+.divider-lcars {
+  display: flex;
+  height: 4px;
+  gap: 3px;
+  margin: 0 0 52px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.divider-lcars::before {
+  content: '';
+  flex: 2;
+  background: var(--lcars-amber);
+  border-radius: 2px;
+}
+
+.divider-lcars::after {
+  content: '';
+  flex: 1;
+  background: var(--lcars-peach);
+  border-radius: 2px;
+}
+
+
+/* ── 8. LCARS STRUCTURAL COMPONENTS ────────────────────────── */
+
+/* Panel — a card with a colored LCARS top bar */
+.lcars-panel {
+  background: var(--lcars-card);
+  border: 1px solid var(--lcars-border);
+  border-radius: 0 0 var(--lcars-radius) var(--lcars-radius);
+  margin: 20px 0;
+  overflow: hidden;
+}
+
+.lcars-panel-header {
+  background: var(--lcars-amber);
+  color: var(--lcars-text-on-color);
+  padding: 8px 18px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lcars-panel-header::before {
+  content: '';
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(3, 6, 8, 0.35);
+  flex-shrink: 0;
+}
+
+.lcars-panel-body { padding: 20px 20px; }
+
+/* Color variants for .lcars-panel */
+.lcars-panel.blue   .lcars-panel-header { background: var(--lcars-blue); }
+.lcars-panel.violet .lcars-panel-header { background: var(--lcars-violet); }
+.lcars-panel.teal   .lcars-panel-header { background: var(--lcars-teal); color: var(--lcars-black); }
+.lcars-panel.red    .lcars-panel-header { background: var(--lcars-red); }
+.lcars-panel.peach  .lcars-panel-header { background: var(--lcars-peach); color: var(--lcars-black); }
+
+/* Data readout — monospace block for system output / code context */
+.lcars-readout {
+  background: var(--lcars-black);
+  border: 1px solid rgba(68, 153, 255, 0.2);
+  border-left: 3px solid var(--lcars-blue);
+  border-radius: 3px;
+  padding: 14px 18px;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--lcars-blue);
+  overflow-x: auto;
+  margin: 14px 0;
+}
+
+.lcars-readout .dim   { color: var(--lcars-text-dim); }
+.lcars-readout .amber { color: var(--lcars-amber); }
+.lcars-readout .teal  { color: var(--lcars-teal); }
+
+/* Status row — a row of LCARS-style status indicators */
+.lcars-status-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+}
+
+.lcars-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--lcars-card);
+  border: 1px solid var(--lcars-border);
+  border-radius: 3px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--lcars-text-dim);
+}
+
+.lcars-status::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lcars-amber);
+  flex-shrink: 0;
+}
+
+.lcars-status.active  { color: var(--lcars-teal);  border-color: rgba(0,204,170,0.3); }
+.lcars-status.active::before  { background: var(--lcars-teal); box-shadow: 0 0 6px var(--lcars-teal); }
+.lcars-status.warning { color: var(--lcars-amber); border-color: var(--lcars-border-bright); }
+.lcars-status.warning::before { background: var(--lcars-amber); box-shadow: 0 0 6px var(--lcars-amber); }
+.lcars-status.alert   { color: var(--lcars-red);   border-color: rgba(255,51,68,0.3); }
+.lcars-status.alert::before   { background: var(--lcars-red);   box-shadow: 0 0 6px var(--lcars-red); }
+
+/* Alert / callout boxes */
+.lcars-alert {
+  border-radius: var(--lcars-radius);
+  padding: 18px 20px;
+  margin: 18px 0;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  font-size: 14px;
+}
+
+.lcars-alert::before {
+  content: '';
+  display: block;
+  width: 3px;
+  border-radius: 2px;
+  align-self: stretch;
+  flex-shrink: 0;
+  background: var(--lcars-amber);
+}
+
+.lcars-alert.amber { background: var(--lcars-glow-amber); border: 1px solid var(--lcars-border); }
+.lcars-alert.amber::before { background: var(--lcars-amber); }
+.lcars-alert.blue  { background: var(--lcars-glow-blue);  border: 1px solid rgba(68,153,255,0.2); }
+.lcars-alert.blue::before  { background: var(--lcars-blue); }
+.lcars-alert.teal  { background: rgba(0,204,170,0.06);    border: 1px solid rgba(0,204,170,0.2); }
+.lcars-alert.teal::before  { background: var(--lcars-teal); }
+.lcars-alert.red   { background: rgba(255,51,68,0.06);    border: 1px solid rgba(255,51,68,0.2); }
+.lcars-alert.red::before   { background: var(--lcars-red); }
+
+
+/* ── 9. MISSION CARD (generic info card) ────────────────────── */
+
+.mission-card {
+  background: var(--lcars-card);
+  border: 1px solid var(--lcars-border);
+  border-left: 3px solid var(--lcars-amber);
+  border-radius: 6px;
+  padding: 18px 22px;
+  margin-bottom: 14px;
+}
+
+.mission-card ul { margin: 10px 0 0; }
+
+
+/* ── 10. STAGE PILLS FLOW ───────────────────────────────────── */
+
+.stages-flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 22px 0;
+  align-items: center;
+}
+
+.stage-pill {
+  background: var(--lcars-card);
+  border: 1px solid var(--lcars-border);
+  color: var(--lcars-amber);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 8px 14px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.stage-pill.done {
+  background: var(--lcars-amber);
+  color: var(--lcars-text-on-color);
+  border-color: var(--lcars-amber);
+}
+
+.stage-arrow {
+  color: var(--lcars-border-bright);
+  font-size: 12px;
+  padding: 0 3px;
+}
+
+
+/* ── 11. DIAGRAM CONTAINERS ─────────────────────────────────── */
+
+.diagram-wrap {
+  background: var(--lcars-card);
+  border: 1px solid var(--lcars-border);
+  border-top: 2px solid var(--lcars-amber);
+  border-radius: 0 0 10px 10px;
+  padding: 24px 16px 20px;
+  margin: 20px 0;
+  overflow: auto;
+}
+
+.diagram-label {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  color: var(--lcars-text-dim);
+  text-transform: uppercase;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diagram-label::before {
+  content: '';
+  display: block;
+  width: 16px;
+  height: 3px;
+  background: var(--lcars-amber);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.mermaid { display: flex; justify-content: center; }
+
+
+/* ── 12. CODE ───────────────────────────────────────────────── */
+
+pre {
+  background: var(--lcars-black);
+  border: 1px solid rgba(68, 153, 255, 0.18);
+  border-left: 3px solid var(--lcars-blue);
+  border-radius: 4px;
+  padding: 14px 18px;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--lcars-blue);
+  overflow-x: auto;
+  margin: 14px 0;
+}
+
+code {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  background: rgba(68, 153, 255, 0.07);
+  color: var(--lcars-blue);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+
+/* ── 13. EXAMPLE CARDS ──────────────────────────────────────── */
+
+.example {
+  background: var(--lcars-card);
+  border: 1px solid var(--lcars-border);
+  border-radius: 10px;
+  padding: 26px 26px 22px;
+  margin-bottom: 28px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* LCARS corner accent — top-right decorative corner */
+.example::after {
+  content: '';
+  position: absolute;
+  top: 0; right: 0;
+  width: 40px;
+  height: 40px;
+  background: var(--lcars-amber);
+  clip-path: polygon(100% 0, 0 0, 100% 100%);
+  opacity: 0.12;
+}
+
+.example-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.example-tag {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.tag-simple {
+  background: rgba(0, 204, 170, 0.1);
+  color: var(--lcars-teal);
+  border: 1px solid rgba(0, 204, 170, 0.3);
+}
+
+.tag-complex {
+  background: var(--lcars-glow-amber);
+  color: var(--lcars-amber);
+  border: 1px solid var(--lcars-border);
+}
+
+.tag-bug {
+  background: rgba(255, 51, 68, 0.08);
+  color: var(--lcars-red);
+  border: 1px solid rgba(255, 51, 68, 0.28);
+}
+
+.example-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--lcars-text-bright);
+}
+
+.idea-quote {
+  background: var(--lcars-glow-blue);
+  border-left: 3px solid var(--lcars-blue);
+  border-radius: 0 6px 6px 0;
+  padding: 10px 16px;
+  font-style: italic;
+  color: var(--lcars-text);
+  margin-bottom: 18px;
+  font-size: 14px;
+}
+
+
+/* ── 14. HUMAN CONTROL GRID ─────────────────────────────────── */
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.control-card {
+  background: var(--lcars-card);
+  border: 1px solid var(--lcars-border);
+  border-top: 2px solid var(--lcars-amber);
+  border-radius: 0 0 8px 8px;
+  padding: 14px 16px;
+}
+
+.control-cmd {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  color: var(--lcars-amber);
+  font-weight: 700;
+  margin-bottom: 6px;
+  letter-spacing: 0.04em;
+}
+
+.control-desc {
+  font-size: 13px;
+  color: var(--lcars-text-dim);
+  line-height: 1.5;
+}
+
+
+/* ── 15. SCOPE BAR ──────────────────────────────────────────── */
+
+.scope-bar {
+  display: flex;
+  background: var(--lcars-card);
+  border: 1px solid var(--lcars-border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 18px 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.scope-active {
+  background: var(--lcars-amber);
+  color: var(--lcars-text-on-color);
+  padding: 12px 22px;
+  flex: 2;
+  text-align: center;
+}
+
+.scope-future {
+  color: var(--lcars-text-dim);
+  padding: 12px 22px;
+  flex: 1;
+  text-align: center;
+  border-left: 1px solid var(--lcars-border);
+}
+
+
+/* ── 16. FUTURE / KANBAN BANNER ─────────────────────────────── */
+
+.future-banner {
+  background: linear-gradient(135deg, var(--lcars-card) 0%, rgba(68,153,255,0.05) 100%);
+  border: 1px solid rgba(68, 153, 255, 0.22);
+  border-top: 2px solid var(--lcars-blue);
+  border-radius: 0 0 10px 10px;
+  padding: 26px;
+}
+
+.future-banner h3 {
+  color: var(--lcars-blue);
+  margin-top: 0;
+}
+
+
+/* ── 17. INSTALLATION SECTION ───────────────────────────────── */
+
+.install-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 18px 0;
+}
+
+@media (max-width: 700px) {
+  .install-grid { grid-template-columns: 1fr; }
+}
+
+
+/* ── 18. ANIMATIONS ─────────────────────────────────────────── */
+
+/* Subtle pulse on active status dots */
+@keyframes lcars-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+.lcars-status.active::before {
+  animation: lcars-pulse 2.4s ease-in-out infinite;
+}
+
+/* Fade-in for sections */
+@keyframes lcars-fadein {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+section {
+  animation: lcars-fadein 0.3s ease both;
+}
+
+
+/* ── 19. RESPONSIVE ─────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  nav  { display: none; }
+  main { margin-left: 0; padding: 28px 20px 60px; }
+  .control-grid { grid-template-columns: 1fr; }
+  .stages-flow  { gap: 4px; flex-direction: column; align-items: flex-start; }
+  .stage-arrow  { transform: rotate(90deg); }
+}
