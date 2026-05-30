@@ -58,7 +58,7 @@ Files left only in `~/.claude/` do not count — they don't ship.
 Skills are built in this sequence. Status:
 
 1. `lcars init`   — Setup: local config + GitHub labels.  ✅ built
-2. `lcars file`   — Entry: idea → Align → PRD on disk.
+2. `lcars file`   — Entry: idea → Align → PRD on disk.  ✅ built
 3. `lcars status` — Read/display active mission state.
 4–7. `lcars run`  — Research, Validate, Plan, Plan Review stages.
 8–10. `lcars run` — Schedule, Implement, Verify + PR.
