@@ -673,10 +673,229 @@ cmd_schedule() {
   exit 0
 }
 
+# === Implement stage =======================================================
+# Processes the waves from waves.json sequentially; tickets within a wave run in
+# parallel. Each ticket is built by two adversarially-separated LLM sessions
+# (Claude, per SKILL.md): a Test Writer (Phase 1) writes failing tests, then a
+# FRESH Implementer (Phase 2 — no Test Writer context) makes them pass, iterating
+# up to 5 attempts. This script owns the mechanical, testable handoffs:
+#
+#   impl-save-tests   --mission <id> --ticket <id> --tests <dir>
+#         Phase 1 output. Quarantine the Test Writer's files into
+#         tickets/<id>/tests/ — that dir is the ONLY channel to the Implementer,
+#         so the separation stays adversarial. Refuses an empty set.
+#
+#   impl-save-result  --mission <id> --ticket <id> --result <file>
+#         Phase 2 output. Validate { ticketId, passed, attempts, summary },
+#         cap attempts at 5, and persist tickets/<id>/result.json. A passed=false
+#         result means the Implementer exhausted its 5 attempts — flag the human.
+#
+#   impl-status       --mission <id>
+#         Read-only. Report the current wave (the lowest wave with an unfinished
+#         ticket) and its still-pending tickets. Never reveals a later wave while
+#         an earlier one is incomplete — that's the sequential-wave gate.
+#
+#   impl-advance      --mission <id>
+#         When every ticket in every wave has a passing result, advance the
+#         Mission to Verify (stage + label implement → verify). Refuses while any
+#         ticket is unfinished.
+
+MAX_ATTEMPTS=5
+
+# --- resolve a ticket's working dir under the mission -----------------------
+ticket_dir() { printf '%s/tickets/%s' "$MISSION_DIR" "$1"; }
+
+# --- parse waves.json into "<wave>\t<id>" lines, in wave then plan order ------
+# Canonical waves.json (emit_waves_json's shape) puts "wave": N and each ticket's
+# "id" on their own lines, so a line-oriented awk pass is enough — same jq-free
+# spirit as parse_plan_table. The wave number leads each ticket so callers can
+# group and sequence without re-reading the file.
+parse_waves_table() { # waves.json
+  awk '
+    /"wave"[[:space:]]*:/ { w=$0; gsub(/[^0-9]/,"",w); cur=w; next }
+    /"id"[[:space:]]*:/   { n=split($0,a,"\""); if (n>=4) printf "%s\t%s\n", cur, a[4] }
+  ' "$1"
+}
+
+# --- is a ticket green? (result.json exists with passed:true) ----------------
+ticket_green() { # ticketId
+  local rf; rf="$(ticket_dir "$1")/result.json"
+  [ -f "$rf" ] || return 1
+  [ "$(json_raw "$rf" passed)" = "true" ]
+}
+
+# --- subcommand: impl-save-tests -------------------------------------------
+cmd_impl_save_tests() {
+  locate_mission "$MISSION_ID"
+  require_stage implement
+  [ -n "$TICKET" ] || die "no ticket id — pass --ticket <id>."
+  [ -n "$TESTS" ] && [ -d "$TESTS" ] || die "no tests dir — pass --tests <dir>."
+
+  # The Test Writer MUST produce failing tests — an empty set is a no-op session,
+  # not a valid Phase 1. Refuse it so we never hand the Implementer nothing.
+  local count; count="$(find "$TESTS" -type f | wc -l | tr -d ' ')"
+  [ "$count" -gt 0 ] || die "the tests dir is empty — the Test Writer produced no tests."
+
+  # Quarantine the files to tickets/<id>/tests/. That dir is the sole handoff to
+  # the Implementer, so Phase 1 output never leaks into the working tree.
+  local tdir; tdir="$(ticket_dir "$TICKET")/tests"
+  rm -rf "$tdir"; mkdir -p "$tdir"
+  ( cd "$TESTS" && cp -R . "$tdir/" )
+
+  echo "IMPLEMENT: tests saved — $TICKET"
+  echo "  Saved $count Test Writer file(s) to tickets/$TICKET/tests/."
+  exit 0
+}
+
+# --- subcommand: impl-save-result ------------------------------------------
+cmd_impl_save_result() {
+  locate_mission "$MISSION_ID"
+  require_stage implement
+  [ -n "$TICKET" ] || die "no ticket id — pass --ticket <id>."
+  [ -n "$RESULT" ] && [ -f "$RESULT" ] || die "no result file — pass --result <file>."
+
+  # The Implementer runs only after the Test Writer: its sole handoff is the
+  # on-disk tests (no shared session), so a result with no saved tests is invalid.
+  local tdir; tdir="$(ticket_dir "$TICKET")/tests"
+  [ -d "$tdir" ] && [ -n "$(find "$tdir" -type f -print -quit)" ] \
+    || die "no tests on disk for $TICKET — run impl-save-tests first (the Implementer builds against them)."
+
+  # Shape contract — same spirit as the research/plan/verdict guards: every
+  # result carries all four fields, and a malformed reply stops the save.
+  grep -q '"ticketId"' "$RESULT" || die "result is missing \"ticketId\"."
+  grep -q '"passed"'   "$RESULT" || die "result is missing \"passed\"."
+  grep -q '"attempts"' "$RESULT" || die "result is missing \"attempts\"."
+  grep -q '"summary"'  "$RESULT" || die "result is missing \"summary\"."
+
+  local rid passed attempts
+  rid="$(json_str "$RESULT" ticketId)"
+  passed="$(json_raw "$RESULT" passed)"
+  attempts="$(json_raw "$RESULT" attempts)"
+
+  [ "$rid" = "$TICKET" ] || die "result ticketId \"$rid\" does not match --ticket \"$TICKET\"."
+  case "$passed" in true|false) : ;; *) die "result \"passed\" must be true or false." ;; esac
+  case "$attempts" in
+    ''|*[!0-9]*) die "result \"attempts\" must be a number." ;;
+  esac
+  [ "$attempts" -ge 1 ] || die "result \"attempts\" must be at least 1."
+  # The Implementer iterates AT MOST 5 times; more than that breaks the cap and
+  # means the loop ran away — refuse it rather than record an impossible result.
+  [ "$attempts" -le "$MAX_ATTEMPTS" ] \
+    || die "result \"attempts\" is $attempts — over the cap of $MAX_ATTEMPTS; a ticket flags the human at $MAX_ATTEMPTS."
+
+  cp "$RESULT" "$(ticket_dir "$TICKET")/result.json"
+
+  if [ "$passed" = "false" ]; then
+    # The Implementer exhausted its attempts. Flag the human — same awaiting-human
+    # gate shape as validate-pause / the plan-review escalation: persist the
+    # blocker, set the state fields, overlay the label, and stop.
+    local q; q="$(mktemp)"
+    printf 'Ticket %s could not be made green after %s attempt(s): %s\n' \
+      "$TICKET" "$attempts" "$(json_str "$RESULT" summary)" >"$q"
+    write_pending "$q" "implement"
+    state_set_raw awaitingHuman true
+    state_set_str pendingQuestion "Ticket $TICKET failed after $attempts attempt(s) — needs a human."
+    gh_relabel "lcars:awaiting-human" ""
+    rm -f "$q"
+
+    echo "IMPLEMENT: ticket flagged — $TICKET"
+    echo "  $TICKET still fails after $attempts attempt(s) (the $MAX_ATTEMPTS-attempt cap)."
+    echo "  Saved result.json and flagged the human. Stage: implement (awaiting-human)."
+    echo "  Resolve with \`lcars respond $MISSION_ID\`."
+    [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+    exit 0
+  fi
+
+  echo "IMPLEMENT: result saved — $TICKET"
+  echo "  $TICKET passed in $attempts attempt(s). Saved result.json."
+  exit 0
+}
+
+# --- subcommand: impl-status -----------------------------------------------
+# Read-only. The current wave is the lowest-numbered wave that still has an
+# unfinished (not-green) ticket — Claude builds exactly that wave's pending
+# tickets next. By never naming a later wave while an earlier one has open work,
+# this enforces the sequential-wave rule: wave N+1 stays hidden until wave N is
+# entirely green.
+cmd_impl_status() {
+  locate_mission "$MISSION_ID"
+  require_stage implement
+
+  local waves="$MISSION_DIR/waves.json"
+  [ -f "$waves" ] || die "no waves.json — Schedule has not grouped the tickets yet."
+
+  local table; table="$(parse_waves_table "$waves")"
+  [ -n "$table" ] || die "waves.json has no tickets — nothing to implement."
+
+  # Find the lowest wave with any not-green ticket, and collect that wave's
+  # still-pending ticket ids (in plan order).
+  local cur="" pending="" w id
+  while IFS=$'\t' read -r w id; do
+    [ -n "$id" ] || continue
+    if ! ticket_green "$id"; then
+      if [ -z "$cur" ] || [ "$w" -lt "$cur" ]; then cur="$w"; pending=""; fi
+      [ "$w" = "$cur" ] && pending="${pending:+$pending }$id"
+    fi
+  done <<EOF
+$table
+EOF
+
+  if [ -z "$cur" ]; then
+    echo "IMPLEMENT: complete"
+    echo "  Every ticket in every wave is green — ready to advance to Verify."
+    echo "  Run \`lcars run $MISSION_ID\` (or impl-advance) to move to Verify."
+    exit 0
+  fi
+
+  echo "IMPLEMENT: wave $cur active"
+  echo "  Pending ticket(s) in wave $cur: $pending"
+  echo "  Build these (Test Writer → Implementer) before wave $((cur + 1))."
+  exit 0
+}
+
+# --- subcommand: impl-advance ----------------------------------------------
+# The final gate: only when EVERY ticket in EVERY wave has a passing result does
+# the Mission move to Verify. While any ticket is unfinished it refuses and names
+# the first blocker — so a half-built Mission (or one with a flagged ticket) can
+# never slip into Verify.
+cmd_impl_advance() {
+  locate_mission "$MISSION_ID"
+  require_stage implement
+
+  local waves="$MISSION_DIR/waves.json"
+  [ -f "$waves" ] || die "no waves.json — Schedule has not grouped the tickets yet."
+
+  local table; table="$(parse_waves_table "$waves")"
+  [ -n "$table" ] || die "waves.json has no tickets — nothing to implement."
+
+  local w id
+  while IFS=$'\t' read -r w id; do
+    [ -n "$id" ] || continue
+    ticket_green "$id" \
+      || die "ticket $id (wave $w) is not green yet — every ticket must pass before Verify. Run \`lcars run $MISSION_ID\` to finish the open waves."
+  done <<EOF
+$table
+EOF
+
+  # All green — clear any awaiting-human gate (defensive, like validate-advance)
+  # and advance the Mission to Verify, keeping stage and label in step.
+  state_del awaitingHuman
+  state_del pendingQuestion
+  rm -f "$MISSION_DIR/pending.json"
+
+  set_stage "verify"
+  gh_relabel "lcars:verify" "lcars:implement lcars:awaiting-human"
+
+  echo "IMPLEMENT: advanced"
+  echo "  Every ticket passed across all waves. Stage:  verify"
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  exit 0
+}
+
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
-MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""
+MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --mission)     MISSION_ID="${2:-}"; shift 2 ;;
@@ -689,12 +908,18 @@ while [ $# -gt 0 ]; do
     --plan=*)      PLAN="${1#--plan=}"; shift ;;
     --verdict)     VERDICT="${2:-}"; shift 2 ;;
     --verdict=*)   VERDICT="${1#--verdict=}"; shift ;;
+    --ticket)      TICKET="${2:-}"; shift 2 ;;
+    --ticket=*)    TICKET="${1#--ticket=}"; shift ;;
+    --tests)       TESTS="${2:-}"; shift 2 ;;
+    --tests=*)     TESTS="${1#--tests=}"; shift ;;
+    --result)      RESULT="${2:-}"; shift 2 ;;
+    --result=*)    RESULT="${1#--result=}"; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -706,5 +931,9 @@ case "$SUB" in
   plan-save)        cmd_plan_save ;;
   review-save)      cmd_review_save ;;
   schedule)         cmd_schedule ;;
-  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save|review-save|schedule --mission <id> [--questions <f>|--responses <d>|--plan <f>|--verdict <f>]." ;;
+  impl-save-tests)  cmd_impl_save_tests ;;
+  impl-save-result) cmd_impl_save_result ;;
+  impl-status)      cmd_impl_status ;;
+  impl-advance)     cmd_impl_advance ;;
+  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance --mission <id> [--questions <f>|--responses <d>|--plan <f>|--verdict <f>|--ticket <id>|--tests <d>|--result <f>]." ;;
 esac

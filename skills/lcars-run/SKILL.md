@@ -1,6 +1,6 @@
 ---
 name: lcars-run
-description: Advance an LCARS Mission one Stage. This build runs the Research, Validate, Plan, Plan Review, and Schedule stages — Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue a mission, or to run the Research, Validate, Plan, Plan Review, or Schedule stage on a filed mission.
+description: Advance an LCARS Mission one Stage. This build runs the Research, Validate, Plan, Plan Review, Schedule, and Implement stages — Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement; Implement processes the waves sequentially, running each ticket through an adversarial Test Writer → Implementer pair (iterating up to 5 attempts, flagging the human on failure) and advancing to Verify when every ticket is green. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue a mission, or to run the Research, Validate, Plan, Plan Review, Schedule, or Implement stage on a filed mission.
 ---
 
 # lcars run
@@ -9,14 +9,15 @@ description: Advance an LCARS Mission one Stage. This build runs the Research, V
 Stage at a time**. You (Claude) drive the LLM work; the bundled `run.sh` does
 the mechanical, testable persistence so it stays under test.
 
-**This build implements the Research, Validate, Plan, Plan Review, and Schedule
-stages.** A Mission filed by `lcars file` sits at stage `align` (the Align
-grilling already happened during `lcars file`), so the next Stage to execute is
-**Research**; when Research finishes the Mission parks at `validate`, ready for
-**Validate**; when Validate finishes it parks at `plan`, ready for **Plan**;
-when Plan finishes it parks at `plan-review`, ready for **Plan Review**; when
-Plan Review passes it parks at `schedule`, ready for **Schedule**; when Schedule
-finishes it parks at `implement`. Later Stages (Implement, …) are added in
+**This build implements the Research, Validate, Plan, Plan Review, Schedule, and
+Implement stages.** A Mission filed by `lcars file` sits at stage `align` (the
+Align grilling already happened during `lcars file`), so the next Stage to
+execute is **Research**; when Research finishes the Mission parks at `validate`,
+ready for **Validate**; when Validate finishes it parks at `plan`, ready for
+**Plan**; when Plan finishes it parks at `plan-review`, ready for **Plan
+Review**; when Plan Review passes it parks at `schedule`, ready for **Schedule**;
+when Schedule finishes it parks at `implement`, ready for **Implement**; when
+Implement finishes it parks at `verify`. Later Stages (Verify, …) are added in
 subsequent builds.
 
 ## Dispatch on the current stage
@@ -41,6 +42,13 @@ subsequent builds.
      them (`lcars respond <id>` — to override and proceed, or redirect) and
      stop.
    - `schedule` → run the **Schedule stage** (below).
+   - `implement` → run the **Implement stage** (below). But first check
+     `awaitingHuman` exactly as Validate does: if it is `true`, a ticket
+     exhausted its 5 attempts and the Mission is parked at the human gate.
+     **Do not re-run the ticket.** Tell the captain the Mission is waiting on
+     them (`lcars respond <id>`) and stop. (Once the human resolves it and
+     `lcars respond` clears the gate, the next `lcars run` falls through and
+     resumes the open waves.)
    - anything else → not implemented in this build; report the current stage
      and stop. (`run.sh` also refuses to run a Stage on the wrong stage.)
 
@@ -467,6 +475,131 @@ Tell the captain how many waves the Mission was scheduled into, where the wave
 graph lives (`waves.json`), that one sub-issue was opened per ticket, and that
 the Mission is now at **Implement**.
 
+## The Implement stage
+
+Runs when `state.json.stage` is `implement` and `awaitingHuman` is not `true`
+(see Dispatch). The Mission's `waves.json` (from Schedule) is the work plan:
+**process the waves in order, and within a wave build the tickets in parallel.**
+Each ticket is built by two **adversarially-separated** LLM sessions (see
+vision.md → *Implement*): a **Test Writer** that writes failing tests, then a
+**fresh Implementer** — with *no* Test Writer context — that makes them pass.
+The script owns the mechanical, testable handoffs; you drive the two sessions.
+
+### STEP 1 — Find the current wave
+
+Ask the script which wave to build and which of its tickets still need work:
+
+```bash
+bash ~/.claude/skills/lcars-run/run.sh impl-status --mission <id>
+```
+
+`impl-status` prints the **lowest-numbered wave that still has an unfinished
+ticket** and lists that wave's pending ticket ids — it will **not** reveal a
+later wave while an earlier one has open work, which is exactly the
+sequential-wave rule. Two outcomes:
+
+| Output | Meaning | What you do next |
+|---|---|---|
+| `IMPLEMENT: wave N active` | Wave N is the current wave; the line lists its pending tickets. | Build **every** listed ticket (STEP 2), then loop back to STEP 1. |
+| `IMPLEMENT: complete` | Every ticket in every wave is green. | Go to STEP 4 — advance to Verify. |
+
+### STEP 2 — Build each pending ticket (two sessions, in parallel across the wave)
+
+For each pending ticket in the current wave, run the two phases **in order**.
+Different tickets in the same wave are independent, so run their pairs
+concurrently. Read the ticket's `title` / `description` / `acceptanceCriteria`
+from `approved-plan.json` to brief each session.
+
+#### PHASE 1 — Test Writer (a new session)
+
+Spawn a session whose **only** job is to write failing tests for this one
+ticket. Constraints (enforce them in the prompt):
+
+- Write **only failing tests** — no implementation code.
+- Test **behaviour through public interfaces only** — no internal mocks.
+- Tests must be **immediately runnable**.
+
+Give it read access to the repo and the ticket. Have it write its test files to
+a temp dir, then quarantine them under the ticket:
+
+```bash
+bash ~/.claude/skills/lcars-run/run.sh impl-save-tests \
+  --mission <id> --ticket <ticket-id> --tests /tmp/tw-out
+```
+
+`impl-save-tests` copies the files into
+`.git/lcars/missions/<id>/tickets/<ticket-id>/tests/` — **that dir is the only
+channel to the Implementer**, which is what keeps the separation adversarial. An
+**empty** Test Writer output is refused (Phase 1 must produce tests).
+
+#### PHASE 2 — Implementer (a new session — NO Test Writer context)
+
+Spawn a **fresh** session. It must **not** carry any of the Test Writer's
+session — its sole handoff is the tests now on disk. Give it the ticket and
+**read+write** access to the repo. Constraints:
+
+- Implement **only** what makes the tests pass.
+- **Do not modify the test files.**
+- Run the tests; iterate until green, **at most 5 attempts**. If still red after
+  the 5th, stop and report the failure (don't keep going).
+
+When it finishes, write the result to a temp file in this shape and hand it over:
+
+```json
+{
+  "ticketId": "t-001",
+  "passed": true,
+  "attempts": 3,
+  "summary": "Wired data-theme end-to-end; suite green on attempt 3."
+}
+```
+
+```bash
+bash ~/.claude/skills/lcars-run/run.sh impl-save-result \
+  --mission <id> --ticket <ticket-id> --result /tmp/result.json
+```
+
+`impl-save-result` requires the ticket's tests to already exist (Phase 1 first),
+validates the four fields, checks `ticketId` matches, and **caps `attempts` at
+5**. It saves `tickets/<ticket-id>/result.json`. Then it branches on `passed`:
+
+- **`passed: true`** → the ticket is green; nothing else to do.
+- **`passed: false`** → the Implementer exhausted its 5 attempts. The script
+  **flags the human**: it writes the blocker to `pending.json`, sets
+  `awaitingHuman: true` + `pendingQuestion`, adds the `lcars:awaiting-human`
+  label, and keeps the card in the Implement column. **Surface this to the
+  captain and stop** — the ticket needs a human (`lcars respond <id>`); do not
+  advance.
+
+Only once **all** of the current wave's tickets are green do you loop back to
+STEP 1, which will reveal the next wave.
+
+### STEP 3 — Finish the wave before the next
+
+`impl-status` enforces this for you: it never surfaces wave N+1 while wave N has
+a pending ticket. So the loop is simply: STEP 1 → build the wave (STEP 2) →
+STEP 1 again, until `impl-status` reports `complete`.
+
+### STEP 4 — Advance to Verify
+
+When `impl-status` reports `complete`, advance the Mission:
+
+```bash
+bash ~/.claude/skills/lcars-run/run.sh impl-advance --mission <id>
+```
+
+`impl-advance` re-checks that **every** ticket in **every** wave has a passing
+result, then sets the stage to `verify` and moves the label `lcars:implement` →
+`lcars:verify`. If any ticket is still unfinished (or flagged), it refuses and
+names the first blocker — a half-built Mission can never slip into Verify.
+
+### STEP 5 — Report
+
+Tell the captain that every ticket passed across all waves, where the per-ticket
+tests and results live (`tickets/<id>/tests/`, `tickets/<id>/result.json`), and
+that the Mission is now at **Verify** — or, if a ticket flagged the human, which
+ticket failed and how to resolve it (`lcars respond <id>`).
+
 ## One source of truth: stage and label always agree
 
 A Mission's position is stored in two places — `state.json.stage` on disk and
@@ -493,6 +626,12 @@ the Stage `lcars run` will execute next:
   in the Implement column. The per-ticket sub-issues Schedule opens are *new*
   GitHub issues, each created already at `lcars:implement`; the Mission's own
   issue label is what moves `lcars:schedule` → `lcars:implement`.
+- When Implement finishes (every ticket green across every wave), both move to
+  **`verify`** together — the card lands in the Verify column. While a ticket is
+  flagged for the human (it exhausted its 5 attempts), the stage stays
+  `implement` and the additive `lcars:awaiting-human` label overlays it — the
+  card stays in the Implement column, flagged as awaiting input, until the
+  captain resolves it.
 
 GitHub labels are the board's source of truth; `.git/lcars/` is the run-time
 store. Keeping them in lockstep is what lets you call `lcars run` repeatedly and
@@ -509,7 +648,11 @@ trust the board to show exactly where every Mission is.
   approved-plan.json    ← copy of plan.json once Plan Review passes (→ Schedule)
   plan-review-<n>.json  ← the reviewer's verdict for failed round n (Plan Review)
   waves.json            ← the wave graph: [ { wave, tickets:[ { id, issue } ] } ] (Schedule → Implement)
-  pending.json          ← scope/objection questions, while paused at the human gate only
+  tickets/
+    <ticket-id>/
+      tests/            ← the Test Writer's failing tests (Implement, Phase 1)
+      result.json       ← { ticketId, passed, attempts, summary } (Implement, Phase 2)
+  pending.json          ← scope/objection/flagged-ticket questions, while paused at the human gate only
   state.json            ← stage pointer; + planReviewRound, awaitingHuman/pendingQuestion while paused
 ```
 
@@ -520,7 +663,7 @@ Nothing else in the working tree changes; all state stays inside `.git/`.
 - **Wrong stage for the Stage** → `run.sh` exits non-zero and changes nothing.
   Research only runs on an `align` mission; Validate only on a `validate` one;
   Plan only on a `plan` one; Plan Review only on a `plan-review` one; Schedule
-  only on a `schedule` one.
+  only on a `schedule` one; Implement only on an `implement` one.
 - **No GitHub issue on file** (`githubIssue: null`) → the stage still advances;
   the relabel is skipped with a warning telling you to do it by hand.
 - **`gh` missing / edit fails** → same: the local stage advances; you get a
@@ -565,12 +708,27 @@ Nothing else in the working tree changes; all state stays inside `.git/`.
   fails, the waves are still grouped and `waves.json` is still written (with
   `"issue": null` for the un-opened tickets) and the stage still advances; you
   get a warning to open the sub-issues by hand.
+- **Implement keeps the Test Writer and Implementer adversarially separate.**
+  The Implementer's *only* handoff from the Test Writer is the tests on disk
+  (`tickets/<id>/tests/`) — never the Test Writer's session. `impl-save-result`
+  refuses a result for a ticket whose tests aren't saved yet, so Phase 1 always
+  precedes Phase 2. Don't let the Implementer modify the test files, and don't
+  pour implementation code into the Test Writer.
+- **Implement processes waves strictly in order.** `impl-status` never reveals a
+  later wave while an earlier one has an open ticket, and `impl-advance` refuses
+  to reach Verify until *every* ticket in *every* wave is green — so a half-built
+  Mission can't slip forward. Build all of the current wave before looping back.
+- **A ticket flags the human at the 5-attempt cap.** `impl-save-result` caps
+  `attempts` at 5 and, on `passed: false`, parks the Mission at the
+  awaiting-human gate (stage stays `implement`, `lcars:awaiting-human` overlays
+  the card). Don't keep re-running a flagged ticket — wait for `lcars respond`.
 
 ## Implementation
 
 The mechanical logic lives in `run.sh` next to this file (subcommands `gate`,
 `save`, `validate-pause`, `validate-advance`, `plan-save`, `review-save`,
-`schedule`) so it can be exercised directly.
+`schedule`, `impl-save-tests`, `impl-save-result`, `impl-status`, `impl-advance`)
+so it can be exercised directly.
 Its behaviour is covered by
 `tests/lcars-run.test.sh` in the LCARS repo (run with `bash tests/run.sh`). The
 skill source lives in `skills/lcars-run/` and is symlinked into

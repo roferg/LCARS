@@ -832,5 +832,290 @@ check "guard. schedule refuses a non-schedule mission" "[ '$rcSg' -ne 0 ]"
 
 # ==========================================================================
 echo
+echo "lcars run — Implement stage"
+
+# The Implement stage processes waves sequentially; tickets within a wave run in
+# parallel. Each ticket is built by two adversarially-separated LLM sessions
+# (Claude, per SKILL.md): a Test Writer (Phase 1) that writes failing tests, then
+# a fresh Implementer (Phase 2) that makes them pass. run.sh owns the mechanical,
+# testable parts via four subcommands:
+#
+#   impl-save-tests   — quarantine the Test Writer's files to tickets/<id>/tests/
+#   impl-save-result  — validate + save the Implementer's result.json, capping
+#                       attempts at 5 and flagging the human on a failure
+#   impl-status       — report the current wave and its still-pending tickets
+#   impl-advance      — when every ticket is green, advance to verify
+#
+# The seven behaviours from the build order, in order:
+#   1. Test Writer produces (syntactically valid) test files — saved to tests/
+#   2. Test Writer does not produce implementation code — output is quarantined
+#   3. Implementer does not receive Test Writer session context — handoff is the
+#      on-disk tests alone
+#   4. Implementer iterates until tests pass (up to 5 attempts) — recorded
+#   5. Flags the ticket for human if tests still fail after 5 attempts
+#   6. Processes the next wave only after the current wave is fully complete
+#   7. Updates the stage to verify when all waves are done
+
+# Write the canonical waves.json (the shape Schedule's emit_waves_json produces):
+# wave 1 holds t-001/t-002 (no deps), wave 2 holds t-003/t-004.
+write_waves_json() { # file
+  cat >"$1" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 101
+      },
+      {
+        "id": "t-002",
+        "issue": 102
+      }
+    ]
+  },
+  {
+    "wave": 2,
+    "tickets": [
+      {
+        "id": "t-003",
+        "issue": 103
+      },
+      {
+        "id": "t-004",
+        "issue": 104
+      }
+    ]
+  }
+]
+EOF
+}
+
+# Write a result.json for a ticket: id, passed, attempts, summary.
+write_result() { # file ticketId passed attempts
+  cat >"$1" <<EOF
+{
+  "ticketId": "$2",
+  "passed": $3,
+  "attempts": $4,
+  "summary": "Implemented the slice; suite is $([ "$3" = true ] && echo green || echo red)."
+}
+EOF
+}
+
+# Build a repo with a mission at stage "implement" — Schedule has run, so
+# waves.json and approved-plan.json exist; the next Stage to execute is Implement.
+new_repo_with_implement_mission() {
+  local repo; repo="$(new_repo_with_mission)"
+  local s; s="$(state_of "$repo")"
+  sed 's/"align"/"implement"/' "$s" >"$repo/s.tmp" && mv "$repo/s.tmp" "$s"
+  local m="$repo/.git/lcars/missions/$MID"
+  write_approved_plan_json "$m/approved-plan.json"
+  write_waves_json "$m/waves.json"
+  echo "$repo"
+}
+
+# Drive every ticket in a wave to a green result (tests saved + passing result),
+# the way the Test Writer / Implementer pair would. Used to set up later waves.
+finish_ticket_green() { # repo ticketId script gh
+  local repo="$1" tid="$2" script="$3" gh="$4"
+  local td; td="$(mktemp -d)"; printf 'test stub\n' >"$td/${tid}.test"
+  ( cd "$repo" && LCARS_GH_BIN="$gh" bash "$script" impl-save-tests \
+      --mission "$MID" --ticket "$tid" --tests "$td" >/dev/null 2>&1 )
+  local rf; rf="$(mktemp)"; write_result "$rf" "$tid" true 2
+  ( cd "$repo" && LCARS_GH_BIN="$gh" bash "$script" impl-save-result \
+      --mission "$MID" --ticket "$tid" --result "$rf" >/dev/null 2>&1 )
+}
+
+# --- I1/I2: Test Writer's files are saved, quarantined to tests/ -----------
+#   1. Test Writer produces test files — saved to tickets/<id>/tests/
+#   2. Test Writer does not produce implementation code — output is quarantined
+repoI="$(new_repo_with_implement_mission)"; make_gh_stub "$repoI/gh"
+export GH_LOG="$repoI/gh.log"; : >"$GH_LOG"
+testsI="$repoI/tw-out"; mkdir -p "$testsI"
+printf 'describe("t-001", () => { it("recolours", () => expect(false).toBe(true)) })\n' \
+  >"$testsI/theme.test.js"
+rcI=0
+( cd "$repoI" && LCARS_GH_BIN="$repoI/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$testsI" >out.txt 2>&1 ) || rcI=$?
+TDIR="$repoI/.git/lcars/missions/$MID/tickets/t-001/tests"
+check "I. impl-save-tests exits 0" "[ '$rcI' -eq 0 ]"
+check "I1. saves the Test Writer's file under tickets/t-001/tests/" \
+  "[ -f '$TDIR/theme.test.js' ]"
+check "I2. quarantines test output — nothing written outside tests/" \
+  "[ ! -e '$repoI/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+
+# an empty Test Writer output is refused — Phase 1 must produce failing tests
+repoIe="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIe/gh"
+export GH_LOG="$repoIe/gh.log"; : >"$GH_LOG"
+emptyI="$repoIe/empty"; mkdir -p "$emptyI"
+rcIe=0
+( cd "$repoIe" && LCARS_GH_BIN="$repoIe/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$emptyI" >out.txt 2>&1 ) || rcIe=$?
+check "I1. refuses an empty Test Writer output" "[ '$rcIe' -ne 0 ]"
+check "I1. writes no tests dir when the Test Writer produced nothing" \
+  "[ ! -d '$repoIe/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# --- I3/I4: Implementer's result is saved, recording the attempt count -----
+#   3. Implementer's only Phase-1 handoff is the on-disk tests (tests-first)
+#   4. Implementer iterates until tests pass — attempts (up to 5) is recorded
+repoIr="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIr/gh"
+export GH_LOG="$repoIr/gh.log"; : >"$GH_LOG"
+twIr="$repoIr/tw"; mkdir -p "$twIr"; printf 'failing test\n' >"$twIr/t.test.js"
+( cd "$repoIr" && LCARS_GH_BIN="$repoIr/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twIr" >/dev/null 2>&1 )
+resIr="$repoIr/result.json"; write_result "$resIr" t-001 true 3
+rcIr=0
+( cd "$repoIr" && LCARS_GH_BIN="$repoIr/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resIr" >out.txt 2>&1 ) || rcIr=$?
+RESOUT="$repoIr/.git/lcars/missions/$MID/tickets/t-001/result.json"
+check "I. impl-save-result exits 0 on a passing ticket" "[ '$rcIr' -eq 0 ]"
+check "I4. saves result.json under tickets/t-001/"  "[ -f '$RESOUT' ]"
+check "I4. records the passed flag"     "grep -q '\"passed\": *true' '$RESOUT'"
+check "I4. records the attempt count"   "grep -q '\"attempts\": *3' '$RESOUT'"
+
+# the result must arrive AFTER the tests — the Implementer's sole handoff from
+# the Test Writer is the on-disk tests, so a result with no saved tests is refused
+repoIo="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIo/gh"
+export GH_LOG="$repoIo/gh.log"; : >"$GH_LOG"
+resIo="$repoIo/result.json"; write_result "$resIo" t-001 true 2
+rcIo=0
+( cd "$repoIo" && LCARS_GH_BIN="$repoIo/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resIo" >out.txt 2>&1 ) || rcIo=$?
+check "I3. refuses a result before the Test Writer's tests exist" "[ '$rcIo' -ne 0 ]"
+
+# attempts over the 5-cap is impossible — the Implementer flags the human at 5,
+# so a result claiming 6 attempts is refused and nothing is saved
+repoIc="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIc/gh"
+export GH_LOG="$repoIc/gh.log"; : >"$GH_LOG"
+twIc="$repoIc/tw"; mkdir -p "$twIc"; printf 'failing test\n' >"$twIc/t.test.js"
+( cd "$repoIc" && LCARS_GH_BIN="$repoIc/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twIc" >/dev/null 2>&1 )
+resIc="$repoIc/result.json"; write_result "$resIc" t-001 true 6
+rcIc=0
+( cd "$repoIc" && LCARS_GH_BIN="$repoIc/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resIc" >out.txt 2>&1 ) || rcIc=$?
+check "I4. refuses an attempt count over the cap of 5" "[ '$rcIc' -ne 0 ]"
+check "I4. writes no result.json when over the cap" \
+  "[ ! -f '$repoIc/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+
+# a malformed result (missing summary) is refused; nothing saved
+repoIm="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIm/gh"
+export GH_LOG="$repoIm/gh.log"; : >"$GH_LOG"
+twIm="$repoIm/tw"; mkdir -p "$twIm"; printf 'failing test\n' >"$twIm/t.test.js"
+( cd "$repoIm" && LCARS_GH_BIN="$repoIm/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twIm" >/dev/null 2>&1 )
+printf '{ "ticketId": "t-001", "passed": true, "attempts": 2 }\n' >"$repoIm/bad.json"
+rcIm=0
+( cd "$repoIm" && LCARS_GH_BIN="$repoIm/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$repoIm/bad.json" >out.txt 2>&1 ) || rcIm=$?
+check "I4. refuses a malformed result (missing a field)" "[ '$rcIm' -ne 0 ]"
+
+# --- I5: a failing result after the cap flags the human --------------------
+#   5. Flags the ticket for human if tests still fail after 5 attempts
+repoIf="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIf/gh"
+export GH_LOG="$repoIf/gh.log"; : >"$GH_LOG"
+twIf="$repoIf/tw"; mkdir -p "$twIf"; printf 'failing test\n' >"$twIf/t.test.js"
+( cd "$repoIf" && LCARS_GH_BIN="$repoIf/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twIf" >/dev/null 2>&1 )
+resIf="$repoIf/result.json"; write_result "$resIf" t-001 false 5
+rcIf=0
+( cd "$repoIf" && LCARS_GH_BIN="$repoIf/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resIf" >out.txt 2>&1 ) || rcIf=$?
+sIf="$(state_of "$repoIf")"
+PENDIf="$repoIf/.git/lcars/missions/$MID/pending.json"
+check "I5. impl-save-result exits 0 on a flagged failure" "[ '$rcIf' -eq 0 ]"
+check "I5. still records the failing result.json" \
+  "[ -f '$repoIf/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+check "I5. sets awaitingHuman true" "grep -q '\"awaitingHuman\": *true' '$sIf'"
+check "I5. sets pendingQuestion naming the ticket" \
+  "grep -q '\"pendingQuestion\".*t-001' '$sIf'"
+check "I5. stays at the implement stage (does not advance)" \
+  "grep -q '\"stage\": *\"implement\"' '$sIf'"
+check "I5. writes the blocker to pending.json" \
+  "[ -f '$PENDIf' ] && grep -q 't-001' '$PENDIf'"
+check "I5. adds the lcars:awaiting-human label" \
+  "grep -q 'add-label lcars:awaiting-human' '$repoIf/gh.log'"
+check "I5. prompts the captain to resolve via lcars respond" \
+  "grep -qi 'lcars respond' '$repoIf/out.txt'"
+
+# --- I6: impl-status reports the current wave; later waves stay hidden ------
+#   6. Processes the next wave only after the current wave is fully complete
+repoIs="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIs/gh"
+export GH_LOG="$repoIs/gh.log"; : >"$GH_LOG"
+
+# fresh mission: nothing built yet → the current wave is wave 1, and wave 2's
+# tickets must NOT be surfaced (the sequential-wave gate).
+( cd "$repoIs" && LCARS_GH_BIN="$repoIs/gh" bash "$SCRIPT" impl-status \
+    --mission "$MID" >st1.txt 2>&1 )
+check "I6. current wave is wave 1 before anything is built" \
+  "grep -qi 'wave 1' '$repoIs/st1.txt'"
+check "I6. lists wave 1's pending tickets" \
+  "grep -q 't-001' '$repoIs/st1.txt' && grep -q 't-002' '$repoIs/st1.txt'"
+check "I6. does NOT reveal a later wave's tickets while wave 1 is open" \
+  "! grep -q 't-003' '$repoIs/st1.txt' && ! grep -q 't-004' '$repoIs/st1.txt'"
+
+# finish wave 1 (both tickets green) → the current wave advances to wave 2
+finish_ticket_green "$repoIs" t-001 "$SCRIPT" "$repoIs/gh"
+finish_ticket_green "$repoIs" t-002 "$SCRIPT" "$repoIs/gh"
+( cd "$repoIs" && LCARS_GH_BIN="$repoIs/gh" bash "$SCRIPT" impl-status \
+    --mission "$MID" >st2.txt 2>&1 )
+check "I6. current wave advances to wave 2 once wave 1 is all green" \
+  "grep -qi 'wave 2' '$repoIs/st2.txt'"
+check "I6. now lists wave 2's pending tickets" \
+  "grep -q 't-003' '$repoIs/st2.txt' && grep -q 't-004' '$repoIs/st2.txt'"
+
+# finish wave 2 too → status reports the Mission is complete (ready to advance)
+finish_ticket_green "$repoIs" t-003 "$SCRIPT" "$repoIs/gh"
+finish_ticket_green "$repoIs" t-004 "$SCRIPT" "$repoIs/gh"
+( cd "$repoIs" && LCARS_GH_BIN="$repoIs/gh" bash "$SCRIPT" impl-status \
+    --mission "$MID" >st3.txt 2>&1 )
+check "I6. reports complete when every wave is green" \
+  "grep -qi 'complete' '$repoIs/st3.txt'"
+
+# --- I7: impl-advance moves to verify only when every wave is green ---------
+#   7. Updates the stage to verify when all waves are done
+# refuses while work remains — a half-built mission must not advance
+repoIa="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIa/gh"
+export GH_LOG="$repoIa/gh.log"; : >"$GH_LOG"
+finish_ticket_green "$repoIa" t-001 "$SCRIPT" "$repoIa/gh"   # only 1 of 4 green
+rcIaEarly=0
+( cd "$repoIa" && LCARS_GH_BIN="$repoIa/gh" bash "$SCRIPT" impl-advance \
+    --mission "$MID" >early.txt 2>&1 ) || rcIaEarly=$?
+check "I7. refuses to advance while tickets are unfinished" "[ '$rcIaEarly' -ne 0 ]"
+check "I7. stays at implement when work remains" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoIa")'"
+
+# finish every ticket → advance to verify, relabel implement → verify
+finish_ticket_green "$repoIa" t-002 "$SCRIPT" "$repoIa/gh"
+finish_ticket_green "$repoIa" t-003 "$SCRIPT" "$repoIa/gh"
+finish_ticket_green "$repoIa" t-004 "$SCRIPT" "$repoIa/gh"
+: >"$repoIa/gh.log"
+rcIa=0
+( cd "$repoIa" && LCARS_GH_BIN="$repoIa/gh" bash "$SCRIPT" impl-advance \
+    --mission "$MID" >out.txt 2>&1 ) || rcIa=$?
+check "I7. impl-advance exits 0 when every wave is green" "[ '$rcIa' -eq 0 ]"
+check "I7. advances the stage to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoIa")'"
+check "I7. relabels implement → verify (adds lcars:verify)" \
+  "grep -q 'add-label lcars:verify' '$repoIa/gh.log'"
+check "I7. relabels implement → verify (removes lcars:implement)" \
+  "grep -q 'remove-label lcars:implement' '$repoIa/gh.log'"
+
+# --- Guard: Implement subcommands refuse a non-implement mission -----------
+repoIg="$(new_repo_with_mission)"; make_gh_stub "$repoIg/gh"   # still at align
+export GH_LOG="$repoIg/gh.log"; : >"$GH_LOG"
+twIg="$repoIg/tw"; mkdir -p "$twIg"; printf 'x\n' >"$twIg/t.test.js"
+rcIg=0
+( cd "$repoIg" && LCARS_GH_BIN="$repoIg/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twIg" >out.txt 2>&1 ) || rcIg=$?
+check "guard. impl-save-tests refuses a non-implement mission" "[ '$rcIg' -ne 0 ]"
+rcIag=0
+( cd "$repoIg" && LCARS_GH_BIN="$repoIg/gh" bash "$SCRIPT" impl-advance \
+    --mission "$MID" >out2.txt 2>&1 ) || rcIag=$?
+check "guard. impl-advance refuses a non-implement mission" "[ '$rcIag' -ne 0 ]"
+
+# ==========================================================================
+echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
