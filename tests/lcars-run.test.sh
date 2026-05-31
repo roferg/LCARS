@@ -94,6 +94,33 @@ EOF
 MID="lcars-20260530-001"
 state_of() { echo "$1/.git/lcars/missions/$MID/state.json"; }
 
+# Build a repo with a mission already at stage "validate" — i.e. Research has
+# run and saved findings, and the next Stage to execute is Validate.
+new_repo_with_validate_mission() {
+  local repo; repo="$(new_repo_with_mission)"
+  local s; s="$(state_of "$repo")"
+  sed 's/"align"/"validate"/' "$s" >"$repo/s.tmp" && mv "$repo/s.tmp" "$s"
+  local rdir="$repo/.git/lcars/missions/$MID/research"
+  mkdir -p "$rdir"
+  write_response "$rdir/1.json" "Which colour token drives the theme?"
+  write_response "$rdir/2.json" "Where is the toggle persisted?"
+  echo "$repo"
+}
+
+# Write a well-formed validated plan (the Validator's synthesis) to a path.
+write_plan() { # file
+  cat >"$1" <<'EOF'
+# Validated Plan: Add dark mode
+
+## Synthesis
+Research agrees a CSS-variable theme driven by a persisted toggle is the path.
+
+## Decisions
+- Use the existing `--color-*` tokens; flip a `data-theme` attribute on `<html>`.
+- Persist the learner's choice in `localStorage`.
+EOF
+}
+
 # ==========================================================================
 echo "lcars run"
 
@@ -190,6 +217,112 @@ rc6=0
 ( cd "$repo6" && LCARS_GH_BIN="$repo6/gh" bash "$SCRIPT" gate \
     --mission "$MID" --questions /dev/null >out.txt 2>&1 ) || rc6=$?
 check "guard. refuses to run Research on a non-align mission" "[ '$rc6' -ne 0 ]"
+
+# ==========================================================================
+echo
+echo "lcars run — Validate stage"
+
+# --- V1/V2: no scope questions → write the plan, advance to plan -----------
+# validate-advance synthesises the research into validated-plan.md and moves
+# the Mission on. The four Validate behaviours, in order:
+#   1. Produces validated-plan.md with the right structure
+#   2. Advances to the plan stage when there are no scope questions
+repoV="$(new_repo_with_validate_mission)"; make_gh_stub "$repoV/gh"
+export GH_LOG="$repoV/gh.log"; : >"$GH_LOG"
+planV="$repoV/plan.md"; write_plan "$planV"
+rcV=0
+( cd "$repoV" && LCARS_GH_BIN="$repoV/gh" bash "$SCRIPT" validate-advance \
+    --mission "$MID" --plan "$planV" >out.txt 2>&1 ) || rcV=$?
+PLAN_OUT="$repoV/.git/lcars/missions/$MID/validated-plan.md"
+check "V. validate-advance exits 0" "[ '$rcV' -eq 0 ]"
+check "V1. writes validated-plan.md"            "[ -f '$PLAN_OUT' ]"
+check "V1. plan keeps its Synthesis section"    "grep -q '## Synthesis' '$PLAN_OUT'"
+check "V1. plan keeps its Decisions section"    "grep -q '## Decisions' '$PLAN_OUT'"
+check "V2. advances the stage to plan" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoV")'"
+check "V2. relabels validate → plan (adds lcars:plan)" \
+  "grep -q 'add-label lcars:plan' '$repoV/gh.log'"
+check "V2. relabels validate → plan (removes lcars:validate)" \
+  "grep -q 'remove-label lcars:validate' '$repoV/gh.log'"
+
+# a malformed plan (missing the Decisions section) is rejected; nothing moves
+repoVb="$(new_repo_with_validate_mission)"; make_gh_stub "$repoVb/gh"
+export GH_LOG="$repoVb/gh.log"; : >"$GH_LOG"
+printf '# Validated Plan: x\n\n## Synthesis\nonly this\n' >"$repoVb/bad.md"
+rcVb=0
+( cd "$repoVb" && LCARS_GH_BIN="$repoVb/gh" bash "$SCRIPT" validate-advance \
+    --mission "$MID" --plan "$repoVb/bad.md" >outB.txt 2>&1 ) || rcVb=$?
+check "V1. rejects a plan missing a required section" "[ '$rcVb' -ne 0 ]"
+check "V1. does not advance on a malformed plan" \
+  "grep -q '\"stage\": *\"validate\"' '$(state_of "$repoVb")'"
+check "V1. writes no validated-plan.md on rejection" \
+  "[ ! -f '$repoVb/.git/lcars/missions/$MID/validated-plan.md' ]"
+
+# --- V3: scope questions → pause with awaiting-human state -----------------
+#   3. Pauses with awaiting-human state when scope questions exist
+repoP="$(new_repo_with_validate_mission)"; make_gh_stub "$repoP/gh"
+export GH_LOG="$repoP/gh.log"; : >"$GH_LOG"
+qP="$repoP/scope.txt"
+cat >"$qP" <<'EOF'
+Global or per-course leaderboard?
+Should XP decay when a learner is inactive?
+EOF
+rcP=0
+( cd "$repoP" && LCARS_GH_BIN="$repoP/gh" bash "$SCRIPT" validate-pause \
+    --mission "$MID" --questions "$qP" >out.txt 2>&1 ) || rcP=$?
+PEND="$repoP/.git/lcars/missions/$MID/pending.json"
+sP="$(state_of "$repoP")"
+check "V3. validate-pause exits 0" "[ '$rcP' -eq 0 ]"
+check "V3. writes pending.json"                    "[ -f '$PEND' ]"
+check "V3. pending.json carries the first question" \
+  "grep -q 'per-course leaderboard' '$PEND'"
+check "V3. pending.json carries the second question" \
+  "grep -q 'XP decay' '$PEND'"
+check "V3. sets awaitingHuman true in state.json" \
+  "grep -q '\"awaitingHuman\": *true' '$sP'"
+check "V3. sets pendingQuestion so the board shows it" \
+  "grep -q '\"pendingQuestion\"' '$sP'"
+check "V3. stays at the validate stage" \
+  "grep -q '\"stage\": *\"validate\"' '$sP'"
+check "V3. adds the lcars:awaiting-human label" \
+  "grep -q 'add-label lcars:awaiting-human' '$repoP/gh.log'"
+check "V3. leaves the lcars:validate label in place" \
+  "! grep -q 'remove-label lcars:validate' '$repoP/gh.log'"
+check "V3. prompts the captain to answer with lcars respond" \
+  "grep -qi 'lcars respond' '$repoP/out.txt'"
+
+# --- V4: resume after answers → advance, clearing the awaiting state -------
+#   4. Resumes correctly after `lcars respond` provides answers.
+# `lcars respond` (a later build) records answers and clears the gate; here we
+# stand in for it by re-running validate-advance on the still-paused mission.
+# It must resume cleanly: write the plan, drop the awaiting-human gate, advance.
+planP="$repoP/plan.md"; write_plan "$planP"
+: >"$repoP/gh.log"
+rcR=0
+( cd "$repoP" && LCARS_GH_BIN="$repoP/gh" bash "$SCRIPT" validate-advance \
+    --mission "$MID" --plan "$planP" >outR.txt 2>&1 ) || rcR=$?
+check "V4. resume exits 0" "[ '$rcR' -eq 0 ]"
+check "V4. writes validated-plan.md on resume" \
+  "[ -f '$repoP/.git/lcars/missions/$MID/validated-plan.md' ]"
+check "V4. advances to the plan stage"        "grep -q '\"stage\": *\"plan\"' '$sP'"
+check "V4. clears awaitingHuman"   "! grep -q '\"awaitingHuman\": *true' '$sP'"
+check "V4. clears pendingQuestion" "! grep -q '\"pendingQuestion\"' '$sP'"
+check "V4. removes pending.json"   "[ ! -f '$PEND' ]"
+check "V4. removes the lcars:awaiting-human label" \
+  "grep -q 'remove-label lcars:awaiting-human' '$repoP/gh.log'"
+
+# --- Guard: Validate refuses to run on a non-validate mission --------------
+repoVg="$(new_repo_with_mission)"; make_gh_stub "$repoVg/gh"   # still at align
+export GH_LOG="$repoVg/gh.log"; : >"$GH_LOG"
+write_plan "$repoVg/plan.md"
+rcVg=0
+( cd "$repoVg" && LCARS_GH_BIN="$repoVg/gh" bash "$SCRIPT" validate-advance \
+    --mission "$MID" --plan "$repoVg/plan.md" >out.txt 2>&1 ) || rcVg=$?
+check "guard. validate-advance refuses a non-validate mission" "[ '$rcVg' -ne 0 ]"
+rcVp=0
+( cd "$repoVg" && LCARS_GH_BIN="$repoVg/gh" bash "$SCRIPT" validate-pause \
+    --mission "$MID" --questions /dev/null >out2.txt 2>&1 ) || rcVp=$?
+check "guard. validate-pause refuses a non-validate mission" "[ '$rcVp' -ne 0 ]"
 
 # ==========================================================================
 echo

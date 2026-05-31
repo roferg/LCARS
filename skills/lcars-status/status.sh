@@ -54,9 +54,36 @@ fi
 # json_str  pulls a "key": "value" string; json_raw pulls a bare token
 # (number / true / false / null). Both take the first match.
 json_str() { # file key
-  # [^"]* (not .*) so a single-line state.json doesn't get its whole tail
-  # swallowed by a greedy match — stop at the closing quote of this value.
-  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
+  # Scan for the first  "key": "  then read the string body up to the closing
+  # quote, treating a backslash-escaped quote (\") as part of the value rather
+  # than its end — and decode the common JSON escapes on the way out, so a
+  # question like  Say \"Dark\"?  prints in full instead of truncating at the
+  # first inner quote. POSIX awk only (no jq, no GNU-isms) so it runs on BSD awk.
+  awk -v k="$2" '
+    done { next }
+    {
+      tok = "\"" k "\""
+      p = index($0, tok)
+      if (p == 0) next
+      rest = substr($0, p + length(tok))
+      if (match(rest, /^[ \t]*:[ \t]*"/) == 0) next   # not "key": "…", keep looking
+      rest = substr(rest, RLENGTH + 1)                # now at the value body
+      out = ""; i = 1; n = length(rest)
+      while (i <= n) {
+        c = substr(rest, i, 1)
+        if (c == "\\") {                              # an escape sequence
+          e = substr(rest, i + 1, 1)
+          if      (e == "n") out = out "\n"
+          else if (e == "t") out = out "\t"
+          else               out = out e              # \" \\ \/ … → the bare char
+          i += 2; continue
+        }
+        if (c == "\"") break                          # unescaped quote ends the value
+        out = out c; i += 1
+      }
+      print out; done = 1
+    }
+  ' "$1"
 }
 json_raw() { # file key
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1

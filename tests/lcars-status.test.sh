@@ -161,6 +161,30 @@ check "7. single-line title is not polluted by later json fields" \
 check "7. single-line stage parses to just the stage value" \
   "grep -qE 'lcars-20260530-001[^\\n]*[[:space:]]plan([[:space:]]|\$)' '$repo7/out.txt'"
 
+# --- Regression: a string value containing an escaped quote -----------------
+# A pending question can contain a literal double-quote, which valid JSON
+# escapes as \". The reader must decode it and print the FULL question, not
+# truncate at the first inner quote.
+repo8="$(new_init_repo)"
+d8="$repo8/.git/lcars/missions/lcars-20260530-001"; mkdir -p "$d8"
+{
+  printf '{\n'
+  printf '  "id": "lcars-20260530-001",\n'
+  printf '  "title": "Add dark mode",\n'
+  printf '  "stage": "validate",\n'
+  printf '  "created": "2026-05-30T10:00:00Z",\n'
+  printf '  "pendingQuestion": "Should the toggle say \\"Dark\\" or use an icon?",\n'
+  printf '  "githubIssue": 42\n'
+  printf '}\n'
+} >"$d8/state.json"
+( cd "$repo8" && bash "$SCRIPT" >out.txt 2>&1 )
+check "8. prints the whole question, decoding the escaped quotes" \
+  "grep -qF 'Should the toggle say \"Dark\" or use an icon?' '$repo8/out.txt'"
+check "8. does not truncate the question at the first inner quote" \
+  "! grep -qE 'Should the toggle say \\\\\$' '$repo8/out.txt'"
+check "8. an escaped quote in the title does not corrupt the row" \
+  "grep -q 'Add dark mode' '$repo8/out.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars status: %d passed, %d failed\n' "$pass" "$fail"
