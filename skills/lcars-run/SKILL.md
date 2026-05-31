@@ -1,6 +1,6 @@
 ---
 name: lcars-run
-description: Advance an LCARS Mission one Stage. This build runs the Research, Validate, Plan, and Plan Review stages — Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds). Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue a mission, or to run the Research, Validate, Plan, or Plan Review stage on a filed mission.
+description: Advance an LCARS Mission one Stage. This build runs the Research, Validate, Plan, Plan Review, and Schedule stages — Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue a mission, or to run the Research, Validate, Plan, Plan Review, or Schedule stage on a filed mission.
 ---
 
 # lcars run
@@ -9,14 +9,15 @@ description: Advance an LCARS Mission one Stage. This build runs the Research, V
 Stage at a time**. You (Claude) drive the LLM work; the bundled `run.sh` does
 the mechanical, testable persistence so it stays under test.
 
-**This build implements the Research, Validate, Plan, and Plan Review stages.**
-A Mission filed by `lcars file` sits at stage `align` (the Align grilling
-already happened during `lcars file`), so the next Stage to execute is
+**This build implements the Research, Validate, Plan, Plan Review, and Schedule
+stages.** A Mission filed by `lcars file` sits at stage `align` (the Align
+grilling already happened during `lcars file`), so the next Stage to execute is
 **Research**; when Research finishes the Mission parks at `validate`, ready for
 **Validate**; when Validate finishes it parks at `plan`, ready for **Plan**;
 when Plan finishes it parks at `plan-review`, ready for **Plan Review**; when
-Plan Review passes it parks at `schedule`. Later Stages (Schedule, …) are added
-in subsequent builds.
+Plan Review passes it parks at `schedule`, ready for **Schedule**; when Schedule
+finishes it parks at `implement`. Later Stages (Implement, …) are added in
+subsequent builds.
 
 ## Dispatch on the current stage
 
@@ -39,6 +40,7 @@ in subsequent builds.
      **Do not re-run the reviewer.** Tell the captain the Mission is waiting on
      them (`lcars respond <id>` — to override and proceed, or redirect) and
      stop.
+   - `schedule` → run the **Schedule stage** (below).
    - anything else → not implemented in this build; report the current stage
      and stop. (`run.sh` also refuses to run a Stage on the wrong stage.)
 
@@ -407,6 +409,64 @@ looped back, say which round it is and surface the objections so the Plan revise
 has them. If it escalated, surface the unresolved objections and tell the
 captain to override (proceed to Schedule) or redirect with `lcars respond <id>`.
 
+## The Schedule stage
+
+Runs when `state.json.stage` is `schedule`. **This Stage is purely mechanical —
+there is no LLM work to do.** The dependency graph, the wave grouping, and the
+GitHub sub-issue creation are all deterministic, so you do **not** spawn agents
+or reason over the plan: you just run the one subcommand and report what it did.
+
+### STEP 1 — Run the schedule subcommand
+
+```bash
+bash ~/.claude/skills/lcars-run/run.sh schedule --mission <id>
+```
+
+`schedule` reads `approved-plan.json` (the ticket list Plan Review approved) and:
+
+1. **Builds the dependency graph** from each ticket's `dependencies` array.
+2. **Groups the tickets into sequential waves** by topological order — wave 1 is
+   every ticket with no dependencies; wave *N* is every remaining ticket whose
+   dependencies all sit in earlier waves (see CONTEXT.md → *Wave*). Tickets in a
+   wave are mutually independent and so implementable in parallel.
+3. **Creates one GitHub sub-issue per ticket**, titled with the ticket title and
+   bodied with its description plus an **Acceptance Criteria** list, labelled
+   `lcars:implement,lcars:<type>` (the Mission's type — `feature`/`bug`).
+4. **Writes `waves.json`** — an array of `{ wave, tickets:[ { id, issue } ] }`,
+   each ticket carrying the number of the sub-issue just opened for it.
+5. **Advances** the stage to `implement` and moves the Mission's own issue label
+   `lcars:schedule` → `lcars:implement`.
+
+On success it prints:
+
+```
+SCHEDULE: advanced
+  Grouped 4 ticket(s) into 2 wave(s); opened 4 sub-issue(s).
+  Wrote waves.json.
+  Stage:  implement
+```
+
+### STEP 2 — Circular dependencies stop the Stage
+
+If the tickets form a dependency cycle, no wave can be built. `schedule` names
+the stuck tickets and **changes nothing** — no `waves.json`, no sub-issues, no
+stage move:
+
+```
+lcars run: circular dependency detected among the remaining tickets: t-002 t-003
+```
+
+The approved plan should never contain a cycle (`plan-save` already rejects
+dangling dependency refs, and a clean plan is acyclic), so treat this as a
+planning bug: surface the cycle to the captain. It cannot be resolved by
+re-running Schedule — the plan itself has to change.
+
+### STEP 3 — Report
+
+Tell the captain how many waves the Mission was scheduled into, where the wave
+graph lives (`waves.json`), that one sub-issue was opened per ticket, and that
+the Mission is now at **Implement**.
+
 ## One source of truth: stage and label always agree
 
 A Mission's position is stored in two places — `state.json.stage` on disk and
@@ -429,6 +489,10 @@ the Stage `lcars run` will execute next:
   for revision; after three failed rounds the stage stays `plan-review` and the
   additive `lcars:awaiting-human` label overlays it — the card stays in the Plan
   Review column, flagged as awaiting input, until the captain answers.
+- When Schedule finishes, both move to **`implement`** together — the card lands
+  in the Implement column. The per-ticket sub-issues Schedule opens are *new*
+  GitHub issues, each created already at `lcars:implement`; the Mission's own
+  issue label is what moves `lcars:schedule` → `lcars:implement`.
 
 GitHub labels are the board's source of truth; `.git/lcars/` is the run-time
 store. Keeping them in lockstep is what lets you call `lcars run` repeatedly and
@@ -444,6 +508,7 @@ trust the board to show exactly where every Mission is.
   plan.json             ← the Planner's ticket list (Plan → Plan Review)
   approved-plan.json    ← copy of plan.json once Plan Review passes (→ Schedule)
   plan-review-<n>.json  ← the reviewer's verdict for failed round n (Plan Review)
+  waves.json            ← the wave graph: [ { wave, tickets:[ { id, issue } ] } ] (Schedule → Implement)
   pending.json          ← scope/objection questions, while paused at the human gate only
   state.json            ← stage pointer; + planReviewRound, awaitingHuman/pendingQuestion while paused
 ```
@@ -454,7 +519,8 @@ Nothing else in the working tree changes; all state stays inside `.git/`.
 
 - **Wrong stage for the Stage** → `run.sh` exits non-zero and changes nothing.
   Research only runs on an `align` mission; Validate only on a `validate` one;
-  Plan only on a `plan` one; Plan Review only on a `plan-review` one.
+  Plan only on a `plan` one; Plan Review only on a `plan-review` one; Schedule
+  only on a `schedule` one.
 - **No GitHub issue on file** (`githubIssue: null`) → the stage still advances;
   the relabel is skipped with a warning telling you to do it by hand.
 - **`gh` missing / edit fails** → same: the local stage advances; you get a
@@ -490,12 +556,21 @@ Nothing else in the working tree changes; all state stays inside `.git/`.
   `planReviewRound` persists across the loop-back to Plan; the third failure
   parks the card at the awaiting-human gate (stage stays `plan-review`) for the
   captain to override or redirect, rather than bouncing Plan again.
+- **Schedule is mechanical — don't reason over it.** The wave grouping and
+  sub-issue creation are deterministic; never spawn an LLM to "decide" the
+  waves. Just run `schedule` and report. A canonical `approved-plan.json` is
+  acyclic (deps were validated at `plan-save`), so a reported cycle is a
+  planning bug to surface, not something Schedule can retry away.
+- **Schedule degrades gracefully without gh.** If `gh` is missing or a create
+  fails, the waves are still grouped and `waves.json` is still written (with
+  `"issue": null` for the un-opened tickets) and the stage still advances; you
+  get a warning to open the sub-issues by hand.
 
 ## Implementation
 
 The mechanical logic lives in `run.sh` next to this file (subcommands `gate`,
-`save`, `validate-pause`, `validate-advance`, `plan-save`, `review-save`) so it
-can be exercised directly.
+`save`, `validate-pause`, `validate-advance`, `plan-save`, `review-save`,
+`schedule`) so it can be exercised directly.
 Its behaviour is covered by
 `tests/lcars-run.test.sh` in the LCARS repo (run with `bash tests/run.sh`). The
 skill source lives in `skills/lcars-run/` and is symlinked into

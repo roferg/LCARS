@@ -192,6 +192,87 @@ write_verdict_fail() { # file
 EOF
 }
 
+# Write a well-formed approved-plan.json (Plan Review's approved ticket list).
+# Four tickets exercising the wave algorithm: t-001 and t-002 have no
+# dependencies (wave 1); t-003 depends on t-001 and t-004 on both t-001 and
+# t-002 (wave 2).
+write_approved_plan_json() { # file
+  cat >"$1" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Add the data-theme attribute and dark token set",
+    "description": "Flip data-theme on <html> and wire the dark --color-* tokens end-to-end.",
+    "acceptanceCriteria": ["Setting data-theme=dark recolours the page"],
+    "estimatedLoc": 120,
+    "dependencies": []
+  },
+  {
+    "id": "t-002",
+    "title": "Add the theme toggle control",
+    "description": "Render a toggle in the nav that emits a theme-change event.",
+    "acceptanceCriteria": ["Clicking the toggle flips the active theme"],
+    "estimatedLoc": 70,
+    "dependencies": []
+  },
+  {
+    "id": "t-003",
+    "title": "Persist the theme choice across reloads",
+    "description": "Write the chosen theme to localStorage and restore it on load.",
+    "acceptanceCriteria": ["Choice survives a reload", "Defaults to prefers-color-scheme"],
+    "estimatedLoc": 80,
+    "dependencies": ["t-001"]
+  },
+  {
+    "id": "t-004",
+    "title": "Show the active theme on the dashboard",
+    "description": "Surface the active theme name on the learner dashboard.",
+    "acceptanceCriteria": ["Dashboard shows the active theme"],
+    "estimatedLoc": 60,
+    "dependencies": ["t-001", "t-002"]
+  }
+]
+EOF
+}
+
+# Build a repo with a mission at stage "schedule" — Plan Review passed and
+# approved-plan.json exists; the next Stage to execute is Schedule.
+new_repo_with_schedule_mission() {
+  local repo; repo="$(new_repo_with_mission)"
+  local s; s="$(state_of "$repo")"
+  sed 's/"align"/"schedule"/' "$s" >"$repo/s.tmp" && mv "$repo/s.tmp" "$s"
+  write_approved_plan_json "$repo/.git/lcars/missions/$MID/approved-plan.json"
+  echo "$repo"
+}
+
+# A fake `gh` for the Schedule stage. Like make_gh_stub, but `gh issue create`
+# echoes a freshly-numbered issue URL (101, 102, …) to stdout so the script can
+# read the new issue number back, the way real gh prints the created issue URL.
+# Each invocation is logged to $GH_LOG as a single line (newlines in the issue
+# body are folded out so the log stays one-line-per-call).
+make_gh_stub_schedule() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
+  n=101
+  [ -f "$GH_SEQ" ] && n=$(( $(cat "$GH_SEQ") + 1 ))
+  echo "$n" >"$GH_SEQ"
+  echo "https://github.com/acme/repo/issues/$n"
+fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Extract the wave number a ticket id was placed into, by scanning waves.json.
+wave_of() { # waves.json  ticket-id
+  awk -v want="$2" '
+    /"wave":/ { w=$0; gsub(/[^0-9]/,"",w); cur=w; next }
+    $0 ~ ("\"id\": \"" want "\"") { print cur; exit }
+  ' "$1"
+}
+
 # ==========================================================================
 echo "lcars run"
 
@@ -647,6 +728,107 @@ rcPRg=0
 ( cd "$repoPRg" && LCARS_GH_BIN="$repoPRg/gh" bash "$SCRIPT" review-save \
     --mission "$MID" --verdict "$repoPRg/verdict.json" >out.txt 2>&1 ) || rcPRg=$?
 check "guard. review-save refuses a non-plan-review mission" "[ '$rcPRg' -ne 0 ]"
+
+# ==========================================================================
+echo
+echo "lcars run — Schedule stage"
+
+# The Schedule stage is purely mechanical (no LLM): build the dependency graph
+# from approved-plan.json, group tickets into sequential waves by topological
+# order, open one GitHub sub-issue per ticket, and advance to Implement. The
+# five behaviours from the build order, in order:
+#   1. Places tickets with no dependencies in wave 1
+#   2. Places tickets whose deps are all in wave N into wave N+1
+#   3. Detects circular dependencies and errors clearly
+#   4. Creates one GitHub issue per ticket with correct labels
+#   5. Saves GitHub issue numbers into waves.json
+
+repoS="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoS/gh"
+export GH_LOG="$repoS/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoS/gh.seq"; rm -f "$GH_SEQ"
+rcS=0
+( cd "$repoS" && LCARS_GH_BIN="$repoS/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >out.txt 2>&1 ) || rcS=$?
+WAVES="$repoS/.git/lcars/missions/$MID/waves.json"
+check "S. schedule exits 0 on a well-formed approved plan" "[ '$rcS' -eq 0 ]"
+check "S. writes waves.json" "[ -f '$WAVES' ]"
+
+# --- Behaviour 1: no-dependency tickets land in wave 1 ---------------------
+wS1a="$(wave_of "$WAVES" t-001)"
+wS1b="$(wave_of "$WAVES" t-002)"
+check "S1. t-001 (no deps) is in wave 1" "[ '$wS1a' = '1' ]"
+check "S1. t-002 (no deps) is in wave 1" "[ '$wS1b' = '1' ]"
+
+# --- Behaviour 2: a ticket whose deps are all in wave 1 lands in wave 2 -----
+wS2a="$(wave_of "$WAVES" t-003)"
+wS2b="$(wave_of "$WAVES" t-004)"
+check "S2. t-003 (dep t-001 in wave 1) is in wave 2" "[ '$wS2a' = '2' ]"
+check "S2. t-004 (deps t-001,t-002 in wave 1) is in wave 2" "[ '$wS2b' = '2' ]"
+
+# --- Behaviour 4: one GitHub issue per ticket, each labelled correctly ------
+ncreate="$(grep -c 'issue create' "$GH_LOG")"
+check "S4. creates one GitHub issue per ticket (4)" "[ '$ncreate' = '4' ]"
+check "S4. labels each sub-issue lcars:implement and the mission type" \
+  "grep -q 'label lcars:implement,lcars:feature' '$GH_LOG'"
+
+# --- Behaviour 5: the created issue numbers are saved into waves.json -------
+check "S5. saves issue number 101 into waves.json" "grep -q '\"issue\": *101' '$WAVES'"
+check "S5. saves issue number 104 into waves.json" "grep -q '\"issue\": *104' '$WAVES'"
+
+# advances to Implement; the parent issue is relabelled schedule → implement
+check "S. advances the stage to implement" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoS")'"
+check "S. relabels schedule → implement (adds lcars:implement)" \
+  "grep -q 'add-label lcars:implement' '$repoS/gh.log'"
+check "S. relabels schedule → implement (removes lcars:schedule)" \
+  "grep -q 'remove-label lcars:schedule' '$repoS/gh.log'"
+
+# --- Behaviour 3: a circular dependency is detected; nothing moves ----------
+repoSc="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSc/gh"
+export GH_LOG="$repoSc/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSc/gh.seq"; rm -f "$GH_SEQ"
+cat >"$repoSc/.git/lcars/missions/$MID/approved-plan.json" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Ticket one",
+    "description": "Depends on t-002.",
+    "acceptanceCriteria": ["does a thing"],
+    "estimatedLoc": 50,
+    "dependencies": ["t-002"]
+  },
+  {
+    "id": "t-002",
+    "title": "Ticket two",
+    "description": "Depends on t-001.",
+    "acceptanceCriteria": ["does another thing"],
+    "estimatedLoc": 50,
+    "dependencies": ["t-001"]
+  }
+]
+EOF
+rcSc=0
+( cd "$repoSc" && LCARS_GH_BIN="$repoSc/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >outC.txt 2>&1 ) || rcSc=$?
+check "S3. schedule exits non-zero on a circular dependency" "[ '$rcSc' -ne 0 ]"
+check "S3. reports the cycle clearly" \
+  "grep -qi 'circular\\|cycle' '$repoSc/outC.txt'"
+check "S3. names the tickets caught in the cycle" \
+  "grep -q 't-001' '$repoSc/outC.txt' && grep -q 't-002' '$repoSc/outC.txt'"
+check "S3. does not advance on a cycle (stays at schedule)" \
+  "grep -q '\"stage\": *\"schedule\"' '$(state_of "$repoSc")'"
+check "S3. writes no waves.json on a cycle" \
+  "[ ! -f '$repoSc/.git/lcars/missions/$MID/waves.json' ]"
+check "S3. creates no GitHub issues on a cycle" \
+  "! grep -q 'issue create' '$repoSc/gh.log'"
+
+# --- Guard: Schedule refuses to run on a non-schedule mission --------------
+repoSg="$(new_repo_with_mission)"; make_gh_stub_schedule "$repoSg/gh"   # at align
+export GH_LOG="$repoSg/gh.log"; : >"$GH_LOG"
+rcSg=0
+( cd "$repoSg" && LCARS_GH_BIN="$repoSg/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >out.txt 2>&1 ) || rcSg=$?
+check "guard. schedule refuses a non-schedule mission" "[ '$rcSg' -ne 0 ]"
 
 # ==========================================================================
 echo

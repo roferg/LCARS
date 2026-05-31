@@ -486,6 +486,193 @@ cmd_review_save() {
   esac
 }
 
+# === Schedule stage ========================================================
+# Purely mechanical — no LLM. Reads approved-plan.json, builds the dependency
+# graph, groups tickets into sequential waves (tickets within a wave are
+# mutually independent and so implementable in parallel), opens one GitHub
+# sub-issue per ticket, records the new issue numbers, and advances the Mission
+# to Implement:
+#
+#   schedule  --mission <id>
+#
+# A wave N holds every not-yet-placed ticket whose dependencies all sit in
+# waves < N (Kahn's algorithm, layered). If a round can place no ticket while
+# tickets remain, the graph has a cycle — the script names the stuck tickets and
+# changes nothing (no waves.json, no issues, no stage move). On success it writes
+# waves.json — [ { wave, tickets:[ { id, issue } ] } ] — and moves the stage +
+# label schedule → implement, keeping the on-disk stage and the board in step.
+
+# --- parse approved-plan.json into a tab-separated ticket table -------------
+# One line per ticket: id \t title \t description \t criteria \t deps
+# criteria items are joined with " | " and deps with spaces — both are inline
+# single-line arrays in the canonical shape, so no field ever spans lines. Same
+# jq-free, line-oriented parse as validate_plan_json.
+parse_plan_table() { # file
+  awk '
+    function flush() {
+      if (id=="") return
+      printf "%s\t%s\t%s\t%s\t%s\n", id, title, desc, crit, deps
+    }
+    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; desc=""; crit=""; deps=""; next }
+    /^[[:space:]]*\}[,]?[[:space:]]*$/ { if (inobj) flush(); inobj=0; next }
+    inobj {
+      n=split($0, a, "\"")             # inside-quote contents land at even indices
+      if (n < 2) next
+      key=a[2]
+      if (key=="id") id=a[4]
+      else if (key=="title") title=a[4]
+      else if (key=="description") desc=a[4]
+      else if (key=="acceptanceCriteria") { c=""; for (i=4;i<n;i+=2) if (a[i]!="") c=(c==""?a[i]:c" | "a[i]); crit=c }
+      else if (key=="dependencies")       { d=""; for (i=4;i<n;i+=2) if (a[i]!="") d=(d==""?a[i]:d" "a[i]); deps=d }
+    }
+  ' "$1"
+}
+
+# --- group tickets into waves; detect cycles --------------------------------
+# Reads the ticket table (id in field 1, deps in field 5) and prints one line
+# per wave: "<wave-number> <id> <id> …", tickets in plan order. On a cycle — a
+# round that can place no ticket while some remain — prints a clear error naming
+# the stuck tickets to stderr and exits non-zero, so the caller changes nothing.
+compute_waves() { # table-file
+  awk -F'\t' '
+    { order[++count]=$1; depstr[$1]=$5 }
+    END {
+      for (k=1;k<=count;k++) {
+        id=order[k]; nd=split(depstr[id], dd, " "); ndep[id]=0
+        for (j=1;j<=nd;j++) if (dd[j]!="") { ndep[id]++; dep[id, ndep[id]]=dd[j] }
+      }
+      placed=0; wave=0
+      while (placed < count) {
+        wave++; wc=0
+        for (k=1;k<=count;k++) {
+          id=order[k]
+          if (done[id]) continue
+          ready=1
+          for (i=1;i<=ndep[id];i++) if (!done[dep[id,i]]) { ready=0; break }
+          if (ready) ready_id[++wc]=id
+        }
+        if (wc==0) {
+          msg="lcars run: circular dependency detected among the remaining tickets:"
+          for (k=1;k<=count;k++) if (!done[order[k]]) msg=msg " " order[k]
+          print msg > "/dev/stderr"
+          exit 2
+        }
+        line=wave
+        for (i=1;i<=wc;i++) line=line " " ready_id[i]
+        print line
+        for (i=1;i<=wc;i++) { done[ready_id[i]]=1; placed++ }
+      }
+    }
+  ' "$1"
+}
+
+# --- create one GitHub sub-issue for a ticket; echo its new issue number -----
+# Best-effort, same spirit as gh_relabel: if gh is missing or the create fails,
+# leave a note and echo nothing (the wave entry records a null issue). gh prints
+# the new issue's URL on stdout, so we keep the trailing path segment (the
+# number). The body carries the description and the acceptance criteria as a
+# bulleted list.
+create_issue() { # id  type  table-file
+  local id="$1" type="$2" table="$3" line title desc crit critblock body url
+  line="$(awk -F'\t' -v want="$id" '$1==want{print; exit}' "$table")"
+  title="$(printf '%s' "$line" | cut -f2)"
+  desc="$(printf '%s' "$line" | cut -f3)"
+  crit="$(printf '%s' "$line" | cut -f4)"
+
+  critblock=""
+  [ -n "$crit" ] && critblock="$(printf '%s' "$crit" | awk -F' \\| ' '{ for (i=1;i<=NF;i++) printf "- %s\n", $i }')"
+  body="$(printf '%s\n\n**Acceptance Criteria:**\n%s' "$desc" "$critblock")"
+
+  if command -v "$GH_BIN" >/dev/null 2>&1; then
+    if url="$("$GH_BIN" issue create --title "$title" --body "$body" --label "lcars:implement,lcars:$type" 2>/dev/null)"; then
+      url="$(printf '%s' "$url" | tail -1)"
+      printf '%s' "${url##*/}"
+      return 0
+    fi
+  fi
+  RELABEL_NOTE="  ⚠ could not create sub-issues via gh — create them by hand and add lcars:implement."
+  return 0
+}
+
+# --- render waves.json from the wave/id/issue assignments --------------------
+# Input lines: "<wave>\t<id>\t<issue>" in wave then plan order. Emits the
+# canonical waves.json — an array of { wave, tickets:[ { id, issue } ] }.
+emit_waves_json() { # assignments-file
+  awk -F'\t' '
+    { w=$1; if (!(w in seen)) { seen[w]=1; worder[++nw]=w }
+      cnt[w]++; tid[w, cnt[w]]=$2; tiss[w, cnt[w]]=$3 }
+    END {
+      print "["
+      for (x=1;x<=nw;x++) {
+        w=worder[x]
+        print "  {"
+        printf "    \"wave\": %s,\n", w
+        print "    \"tickets\": ["
+        for (y=1;y<=cnt[w];y++) {
+          print "      {"
+          printf "        \"id\": \"%s\",\n", tid[w,y]
+          printf "        \"issue\": %s\n", (tiss[w,y]==""?"null":tiss[w,y])
+          printf "      }%s\n", (y<cnt[w]?",":"")
+        }
+        print "    ]"
+        printf "  }%s\n", (x<nw?",":"")
+      }
+      print "]"
+    }
+  ' "$1"
+}
+
+# --- subcommand: schedule ---------------------------------------------------
+cmd_schedule() {
+  locate_mission "$MISSION_ID"
+  require_stage schedule
+
+  local plan="$MISSION_DIR/approved-plan.json"
+  [ -f "$plan" ] || die "no approved-plan.json — Plan Review has not approved a plan yet."
+
+  local type; type="$(json_str "$STATE" type)"; type="${type:-feature}"
+
+  local table; table="$(mktemp)"
+  parse_plan_table "$plan" >"$table"
+  [ -s "$table" ] || { rm -f "$table"; die "approved-plan.json has no tickets — nothing to schedule."; }
+
+  # Build the waves first; a cycle stops us before any issue is created or any
+  # state changes (compute_waves has already named the stuck tickets).
+  local wavemap; wavemap="$(mktemp)"
+  if ! compute_waves "$table" >"$wavemap"; then
+    rm -f "$table" "$wavemap"
+    exit 1
+  fi
+
+  # One sub-issue per ticket, in wave then plan order; record wave/id/issue.
+  local assign; assign="$(mktemp)"
+  local nwaves=0 ntickets=0 nissues=0 wnum ids id num
+  while read -r wnum ids; do
+    [ -n "$wnum" ] || continue
+    nwaves=$((nwaves + 1))
+    for id in $ids; do
+      ntickets=$((ntickets + 1))
+      num="$(create_issue "$id" "$type" "$table")"
+      [ -n "$num" ] && nissues=$((nissues + 1))
+      printf '%s\t%s\t%s\n' "$wnum" "$id" "$num" >>"$assign"
+    done
+  done <"$wavemap"
+
+  emit_waves_json "$assign" >"$MISSION_DIR/waves.json"
+
+  set_stage "implement"
+  gh_relabel "lcars:implement" "lcars:schedule"
+
+  rm -f "$table" "$wavemap" "$assign"
+
+  echo "SCHEDULE: advanced"
+  echo "  Grouped $ntickets ticket(s) into $nwaves wave(s); opened $nissues sub-issue(s)."
+  echo "  Wrote waves.json."
+  echo "  Stage:  implement"
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  exit 0
+}
+
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
@@ -507,7 +694,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -518,5 +705,6 @@ case "$SUB" in
   validate-advance) cmd_validate_advance ;;
   plan-save)        cmd_plan_save ;;
   review-save)      cmd_review_save ;;
-  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save|review-save --mission <id> [--questions <f>|--responses <d>|--plan <f>|--verdict <f>]." ;;
+  schedule)         cmd_schedule ;;
+  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save|review-save|schedule --mission <id> [--questions <f>|--responses <d>|--plan <f>|--verdict <f>]." ;;
 esac
