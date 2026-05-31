@@ -63,7 +63,12 @@ Skills are built in this sequence. Status:
 4. `lcars run`   — Research stage: PRD → 0–20 questions → stateless agents.  ✅ built
 5–7. `lcars run`  — Validate, Plan, Plan Review stages.
 8–10. `lcars run` — Schedule, Implement, Verify + PR.
-11. `lcars log`   — Mission Log: bugs against an active mission.
+11. `lcars respond` — Async human gate: when a stage escalates (e.g. Research
+    >20, Validate scope change), persist the question + apply
+    `lcars:awaiting-human` so the board shows it; `lcars respond <id>` answers
+    it later. Makes escalations walk-away instead of synchronous.
+12. `lcars run`   — Auto-advance: drive stages by default; `--step` for one.
+13. `lcars log`   — Mission Log: bugs against an active mission.
 
 Detailed per-session prompts live in `.dev/bootstrap.md` (author-local, not
 shipped). When you finish a skill, tick it off here.
