@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# lcars run — advance a Mission one Stage. This build implements the Research
-# stage only (align → research → stage pointer set to validate).
+# lcars run — advance a Mission one Stage. This build implements the Research,
+# Validate, and Plan stages (align → validate → plan → plan-review).
 #
 # `lcars run <id>` dispatches on state.json.stage. A mission filed by
 # `lcars file` sits at stage "align" (Align already happened conversationally),
@@ -302,6 +302,85 @@ cmd_validate_advance() {
   exit 0
 }
 
+# === Plan stage ============================================================
+# The Planning LLM (Claude, per SKILL.md) reads prd.md + validated-plan.md and
+# decomposes the plan into a list of small, vertical-slice tickets. It writes
+# the whole list as plan.json (a JSON array) to a temp file and hands it here:
+#
+#   plan-save  --mission <id> --plan <file>
+#         Validate the ticket list, install it as plan.json, and advance the
+#         Mission to Plan Review (stage + label plan → plan-review).
+#
+# plan.json is a JSON array of ticket objects in a canonical one-field-per-line
+# shape (acceptanceCriteria / dependencies are inline single-line arrays), so
+# the validator below can stay line-oriented and jq-free — same spirit as the
+# other readers in this file.
+
+# --- validate the ticket list ----------------------------------------------
+# Enforces the plan.json contract so we never advance on a half-formed plan,
+# mirroring how `save` guards research responses and `validate-advance` guards
+# the synthesis. Pure awk over the canonical one-field-per-line shape (inline
+# acceptanceCriteria / dependencies arrays), so it stays jq-free. Each ticket
+# must carry every required field, at least one acceptance criterion, and only
+# depend on ticket ids that exist in this same plan. Prints the first failure
+# and returns non-zero; silent on success.
+validate_plan_json() { # file
+  awk '
+    function fail(msg) { printf "lcars run: %s\n", msg > "/dev/stderr"; exit 1 }
+    # object boundaries — canonical format puts { and } on their own lines, and
+    # the only braces in the file are object delimiters (arrays are inline).
+    /^[[:space:]]*\{[[:space:]]*$/ {
+      inobj=1; delete have; acok=0; id=""; ndep=0; next
+    }
+    /^[[:space:]]*\}[,]?[[:space:]]*$/ {
+      if (!inobj) next
+      tickets++
+      for (k=1; k<=6; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
+      if (!acok) fail("ticket " tickets " (" id ") needs at least one acceptance criterion.")
+      ids[id]=1
+      for (d=1; d<=ndep; d++) { depof[++drefs]=dep[d]; depticket[drefs]=id }
+      inobj=0; next
+    }
+    inobj {
+      n=split($0, a, "\"")          # inside-quote contents land at even indices
+      if (n < 2) next
+      key=a[2]; have[key]=1
+      if (key=="id") id=a[4]
+      else if (key=="acceptanceCriteria") { if (n >= 4) acok=1 }
+      else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
+    }
+    BEGIN { req[1]="id"; req[2]="title"; req[3]="description";
+            req[4]="acceptanceCriteria"; req[5]="estimatedLoc"; req[6]="dependencies" }
+    END {
+      if (tickets == 0) fail("no tickets in the plan — a plan needs at least one ticket.")
+      for (r=1; r<=drefs; r++)
+        if (!(depof[r] in ids))
+          fail("ticket " depticket[r] " depends on \"" depof[r] "\", which is not a ticket id in this plan.")
+    }
+  ' "$1"
+}
+
+# --- subcommand: plan-save -------------------------------------------------
+cmd_plan_save() {
+  locate_mission "$MISSION_ID"
+  require_stage plan
+
+  [ -n "$PLAN" ] && [ -f "$PLAN" ] || die "no plan file — pass --plan <file>."
+
+  validate_plan_json "$PLAN" || exit 1
+
+  cp "$PLAN" "$MISSION_DIR/plan.json"
+
+  set_stage "plan-review"
+  gh_relabel "lcars:plan-review" "lcars:plan"
+
+  echo "PLAN: advanced"
+  echo "  Wrote plan.json."
+  echo "  Stage:  plan-review"
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  exit 0
+}
+
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
@@ -321,7 +400,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance)
+  gate|save|validate-pause|validate-advance|plan-save)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -330,5 +409,6 @@ case "$SUB" in
   save)             cmd_save ;;
   validate-pause)   cmd_validate_pause ;;
   validate-advance) cmd_validate_advance ;;
-  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance --mission <id> [--questions <f>|--responses <d>|--plan <f>]." ;;
+  plan-save)        cmd_plan_save ;;
+  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save --mission <id> [--questions <f>|--responses <d>|--plan <f>]." ;;
 esac

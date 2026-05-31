@@ -62,7 +62,8 @@ Skills are built in this sequence. Status:
 3. `lcars status` — Read/display active mission state.  ✅ built
 4. `lcars run`   — Research stage: PRD → 0–20 questions → stateless agents.  ✅ built
 5. `lcars run`   — Validate stage: synthesise findings → plan, scope-change gate.  ✅ built
-6–7. `lcars run`  — Plan, Plan Review stages.
+6. `lcars run`   — Plan stage: validated-plan → vertical-slice tickets in plan.json.  ✅ built
+7. `lcars run`   — Plan Review stage.
 8–10. `lcars run` — Schedule, Implement, Verify + PR.
 11. `lcars respond` — Async human gate: when a stage escalates (e.g. Research
     >20, Validate scope change), persist the question + apply

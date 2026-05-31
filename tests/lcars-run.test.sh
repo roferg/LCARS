@@ -121,6 +121,43 @@ Research agrees a CSS-variable theme driven by a persisted toggle is the path.
 EOF
 }
 
+# Build a repo with a mission already at stage "plan" — i.e. Validate has run
+# (validated-plan.md exists) and the next Stage to execute is Plan.
+new_repo_with_plan_mission() {
+  local repo; repo="$(new_repo_with_mission)"
+  local s; s="$(state_of "$repo")"
+  sed 's/"align"/"plan"/' "$s" >"$repo/s.tmp" && mv "$repo/s.tmp" "$s"
+  write_plan "$repo/.git/lcars/missions/$MID/validated-plan.md"
+  echo "$repo"
+}
+
+# Write a well-formed plan.json (the Planning LLM's ticket list) to a path.
+# Canonical shape: a JSON array of ticket objects, one field per line, with
+# acceptanceCriteria and dependencies as inline single-line arrays. t-002
+# depends on t-001 to exercise the dependency cross-check.
+write_plan_json() { # file
+  cat >"$1" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Add data-theme attribute and CSS variable wiring",
+    "description": "Flip a data-theme attribute on <html> and define the dark token set end-to-end.",
+    "acceptanceCriteria": ["Setting data-theme=dark recolours the page via existing --color-* tokens"],
+    "estimatedLoc": 120,
+    "dependencies": []
+  },
+  {
+    "id": "t-002",
+    "title": "Add the theme toggle and persist the choice",
+    "description": "Render a toggle that writes the choice to localStorage and restores it on load.",
+    "acceptanceCriteria": ["Toggling persists across reload", "Default follows prefers-color-scheme"],
+    "estimatedLoc": 90,
+    "dependencies": ["t-001"]
+  }
+]
+EOF
+}
+
 # ==========================================================================
 echo "lcars run"
 
@@ -323,6 +360,128 @@ rcVp=0
 ( cd "$repoVg" && LCARS_GH_BIN="$repoVg/gh" bash "$SCRIPT" validate-pause \
     --mission "$MID" --questions /dev/null >out2.txt 2>&1 ) || rcVp=$?
 check "guard. validate-pause refuses a non-validate mission" "[ '$rcVp' -ne 0 ]"
+
+# ==========================================================================
+echo
+echo "lcars run — Plan stage"
+
+# --- P1/P4: well-formed plan.json → install it, advance to plan-review ------
+# plan-save takes the Planning LLM's ticket list, validates it, writes it to
+# plan.json, and advances the Mission. The four Plan behaviours, in order:
+#   1. Produces plan.json with the correct shape for each ticket
+#   2. Each ticket has at least one acceptance criterion
+#   3. All dependency references point to valid ticket ids in the same plan
+#   4. Advances to the plan-review stage
+repoPL="$(new_repo_with_plan_mission)"; make_gh_stub "$repoPL/gh"
+export GH_LOG="$repoPL/gh.log"; : >"$GH_LOG"
+planJSON="$repoPL/plan.json"; write_plan_json "$planJSON"
+rcPL=0
+( cd "$repoPL" && LCARS_GH_BIN="$repoPL/gh" bash "$SCRIPT" plan-save \
+    --mission "$MID" --plan "$planJSON" >out.txt 2>&1 ) || rcPL=$?
+PLANJSON_OUT="$repoPL/.git/lcars/missions/$MID/plan.json"
+check "P. plan-save exits 0 on a well-formed plan" "[ '$rcPL' -eq 0 ]"
+check "P1. writes plan.json"                 "[ -f '$PLANJSON_OUT' ]"
+check "P1. plan.json carries both tickets"   "grep -q 't-001' '$PLANJSON_OUT' && grep -q 't-002' '$PLANJSON_OUT'"
+check "P4. advances the stage to plan-review" \
+  "grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repoPL")'"
+check "P4. relabels plan → plan-review (adds lcars:plan-review)" \
+  "grep -q 'add-label lcars:plan-review' '$repoPL/gh.log'"
+check "P4. relabels plan → plan-review (removes lcars:plan)" \
+  "grep -q 'remove-label lcars:plan' '$repoPL/gh.log'"
+
+# --- P1: a ticket missing a required field is rejected; nothing moves -------
+# Shape contract: every ticket needs id, title, description, acceptanceCriteria,
+# estimatedLoc, dependencies. Here t-002 is missing its title.
+repoPLb="$(new_repo_with_plan_mission)"; make_gh_stub "$repoPLb/gh"
+export GH_LOG="$repoPLb/gh.log"; : >"$GH_LOG"
+cat >"$repoPLb/bad.json" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Wire the data-theme attribute",
+    "description": "End-to-end token wiring.",
+    "acceptanceCriteria": ["data-theme=dark recolours the page"],
+    "estimatedLoc": 120,
+    "dependencies": []
+  },
+  {
+    "id": "t-002",
+    "description": "A ticket with no title field.",
+    "acceptanceCriteria": ["something observable"],
+    "estimatedLoc": 90,
+    "dependencies": []
+  }
+]
+EOF
+rcPLb=0
+( cd "$repoPLb" && LCARS_GH_BIN="$repoPLb/gh" bash "$SCRIPT" plan-save \
+    --mission "$MID" --plan "$repoPLb/bad.json" >outB.txt 2>&1 ) || rcPLb=$?
+check "P1. rejects a ticket missing a required field" "[ '$rcPLb' -ne 0 ]"
+check "P1. does not advance on a malformed ticket" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoPLb")'"
+check "P1. writes no plan.json on rejection" \
+  "[ ! -f '$repoPLb/.git/lcars/missions/$MID/plan.json' ]"
+
+# --- P2: a ticket with no acceptance criterion is rejected -----------------
+# Testability contract: every ticket needs at least one observable acceptance
+# criterion. Here t-001's acceptanceCriteria array is empty.
+repoPLc="$(new_repo_with_plan_mission)"; make_gh_stub "$repoPLc/gh"
+export GH_LOG="$repoPLc/gh.log"; : >"$GH_LOG"
+cat >"$repoPLc/noac.json" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Wire the data-theme attribute",
+    "description": "End-to-end token wiring.",
+    "acceptanceCriteria": [],
+    "estimatedLoc": 120,
+    "dependencies": []
+  }
+]
+EOF
+rcPLc=0
+( cd "$repoPLc" && LCARS_GH_BIN="$repoPLc/gh" bash "$SCRIPT" plan-save \
+    --mission "$MID" --plan "$repoPLc/noac.json" >outC.txt 2>&1 ) || rcPLc=$?
+check "P2. rejects a ticket with no acceptance criterion" "[ '$rcPLc' -ne 0 ]"
+check "P2. does not advance when a ticket has no criterion" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoPLc")'"
+
+# --- P3: a dependency on an unknown ticket id is rejected ------------------
+# Dependency-graph contract: every dependency must reference a ticket id that
+# exists in this same plan. Here t-001 depends on t-099, which is not present.
+repoPLd="$(new_repo_with_plan_mission)"; make_gh_stub "$repoPLd/gh"
+export GH_LOG="$repoPLd/gh.log"; : >"$GH_LOG"
+cat >"$repoPLd/dangling.json" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Wire the data-theme attribute",
+    "description": "End-to-end token wiring.",
+    "acceptanceCriteria": ["data-theme=dark recolours the page"],
+    "estimatedLoc": 120,
+    "dependencies": ["t-099"]
+  }
+]
+EOF
+rcPLd=0
+( cd "$repoPLd" && LCARS_GH_BIN="$repoPLd/gh" bash "$SCRIPT" plan-save \
+    --mission "$MID" --plan "$repoPLd/dangling.json" >outD.txt 2>&1 ) || rcPLd=$?
+check "P3. rejects a dependency on an unknown ticket id" "[ '$rcPLd' -ne 0 ]"
+check "P3. names the offending dependency in the error" \
+  "grep -q 't-099' '$repoPLd/outD.txt'"
+check "P3. does not advance on a dangling dependency" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoPLd")'"
+# but a dependency that DOES resolve (t-002 → t-001) is accepted — proven by
+# the happy-path tracer (repoPL) above, whose t-002 depends on t-001.
+
+# --- Guard: Plan refuses to run on a non-plan mission ----------------------
+repoPLg="$(new_repo_with_mission)"; make_gh_stub "$repoPLg/gh"   # still at align
+export GH_LOG="$repoPLg/gh.log"; : >"$GH_LOG"
+write_plan_json "$repoPLg/plan.json"
+rcPLg=0
+( cd "$repoPLg" && LCARS_GH_BIN="$repoPLg/gh" bash "$SCRIPT" plan-save \
+    --mission "$MID" --plan "$repoPLg/plan.json" >out.txt 2>&1 ) || rcPLg=$?
+check "guard. plan-save refuses a non-plan mission" "[ '$rcPLg' -ne 0 ]"
 
 # ==========================================================================
 echo
