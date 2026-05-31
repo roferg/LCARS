@@ -60,9 +60,20 @@ Skills are built in this sequence. Status:
 1. `lcars init`   — Setup: local config + GitHub labels.  ✅ built
 2. `lcars file`   — Entry: idea → Align → PRD on disk.  ✅ built
 3. `lcars status` — Read/display active mission state.  ✅ built
-4–7. `lcars run`  — Research, Validate, Plan, Plan Review stages.
+4. `lcars run`   — Research stage: PRD → 0–20 questions → stateless agents.  ✅ built
+5–7. `lcars run`  — Validate, Plan, Plan Review stages.
 8–10. `lcars run` — Schedule, Implement, Verify + PR.
-11. `lcars log`   — Mission Log: bugs against an active mission.
+11. `lcars respond` — Async human gate: when a stage escalates (e.g. Research
+    >20, Validate scope change), persist the question + apply
+    `lcars:awaiting-human` so the board shows it; `lcars respond <id>` answers
+    it later. Makes escalations walk-away instead of synchronous. Also owns the
+    in-progress-stage label so a stuck card shows in the right column: today
+    `lcars run` jumps a mission align→validate and never applies `lcars:research`,
+    so the Research column is always empty. This stage must label the card with
+    the stage actually running (e.g. `lcars:research`) while it is in flight, so
+    an escalated mission reads as "in Research, awaiting me" rather than "Align".
+12. `lcars run`   — Auto-advance: drive stages by default; `--step` for one.
+13. `lcars log`   — Mission Log: bugs against an active mission.
 
 Detailed per-session prompts live in `.dev/bootstrap.md` (author-local, not
 shipped). When you finish a skill, tick it off here.
