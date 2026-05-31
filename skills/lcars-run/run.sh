@@ -36,6 +36,7 @@ set -uo pipefail
 
 GH_BIN="${LCARS_GH_BIN:-gh}"
 MAX_QUESTIONS=20
+MAX_REVIEW_ROUNDS=3
 RELABEL_NOTE=""
 
 die() { printf 'lcars run: %s\n' "$1" >&2; exit 1; }
@@ -226,11 +227,11 @@ cmd_save() {
 # --- write pending.json: the captain's scope-change questions ---------------
 # One JSON string per non-blank line of the questions file, escaped. This is
 # the queue `lcars respond` (a later build) reads to record the answers.
-write_pending() { # questions-file
+write_pending() { # questions-file  stage
   local pj="$MISSION_DIR/pending.json"
   {
     echo '{'
-    echo '  "stage": "validate",'
+    printf '  "stage": "%s",\n' "$2"
     echo '  "questions": ['
     awk 'NF{ gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); q[++n]=$0 }
          END{ for(i=1;i<=n;i++) printf "    \"%s\"%s\n", q[i], (i<n?",":"") }' "$1"
@@ -248,7 +249,7 @@ cmd_validate_pause() {
   local n; n="$(grep -cve '^[[:space:]]*$' "$QFILE")"
   [ "$n" -gt 0 ] || die "no scope questions in $QFILE — use validate-advance when there are none."
 
-  write_pending "$QFILE"
+  write_pending "$QFILE" "validate"
 
   # Mark the awaiting-human gate. pendingQuestion is what `lcars status` (the
   # board) prints, so surface the first question there; the full set lives in
@@ -381,10 +382,114 @@ cmd_plan_save() {
   exit 0
 }
 
+# === Plan Review stage =====================================================
+# A FRESH reviewer session (Claude, per SKILL.md) audits plan.json — and ONLY
+# plan.json, never prd.md or validated-plan.md — against the fixed quality bar
+# (vertical slice, <300 LoC, testable, deps in-plan) and emits a verdict:
+#
+#   { "passed": <bool>, "issues": [ { "ticketId": "...", "objection": "..." } ] }
+#
+# It hands that verdict to the one mechanical subcommand, which branches on it:
+#
+#   review-save  --mission <id> --verdict <file>
+#         passed=true  → write approved-plan.json, advance to Schedule.
+#         passed=false → log the round's objections to plan-review-<round>.json,
+#                        bump planReviewRound, and loop the Mission back to Plan
+#                        for revision — UNTIL the 3rd round, which escalates to
+#                        the human (awaiting-human gate, card stays in Plan
+#                        Review) instead of looping forever.
+#
+# The reviewer's independence from the planner is deliberate (see vision.md →
+# Plan Review): the session that planned the work must not also grade it, so it
+# is given the tickets alone, not the spec that produced them.
+
+# --- approve: copy plan.json → approved-plan.json, advance to schedule -------
+review_pass() {
+  [ -f "$MISSION_DIR/plan.json" ] || die "no plan.json to approve — has Plan run?"
+  cp "$MISSION_DIR/plan.json" "$MISSION_DIR/approved-plan.json"
+
+  set_stage "schedule"
+  gh_relabel "lcars:schedule" "lcars:plan-review"
+
+  echo "PLAN-REVIEW: passed"
+  echo "  Every ticket cleared review. Wrote approved-plan.json."
+  echo "  Stage:  schedule"
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  exit 0
+}
+
+# --- print the verdict's objections, one bulleted "<ticket> — <objection>" --
+# Canonical one-issue-per-line shape means splitting on " lands the ticketId at
+# field 4 and the objection text at field 8 (same jq-free spirit as the rest).
+print_objections() { # verdict-file  prefix
+  awk -F'"' -v p="$2" '/"objection"/ { printf "%s%s — %s\n", p, $4, $8 }' "$1"
+}
+
+# --- fail: log this round, then loop back to Plan or escalate at round 3 -----
+review_fail() {
+  grep -q '"objection"' "$VERDICT" \
+    || die "verdict says failed but lists no issues — a failing review must name its objections."
+
+  local round; round="$(json_raw "$STATE" planReviewRound)"; round="${round:-0}"
+  round=$((round + 1))
+
+  # Log the full verdict for this round so the planner (and the human, on
+  # escalation) can see exactly what was objected to.
+  cp "$VERDICT" "$MISSION_DIR/plan-review-$round.json"
+  state_set_raw planReviewRound "$round"
+
+  if [ "$round" -ge "$MAX_REVIEW_ROUNDS" ]; then
+    # Out of rounds — hand the unresolved issues to the human. The card stays in
+    # the Plan Review column with the awaiting-human overlay (same gate shape as
+    # validate-pause), so it reads as "in Plan Review, awaiting me".
+    local obj; obj="$(mktemp)"
+    print_objections "$VERDICT" "" >"$obj"
+    write_pending "$obj" "plan-review"
+
+    local first; first="$(head -1 "$obj")"
+    state_set_raw awaitingHuman true
+    state_set_str pendingQuestion "$first"
+    gh_relabel "lcars:awaiting-human" ""
+
+    echo "PLAN-REVIEW: escalated — $round rounds without a clean plan"
+    echo "  Plan Review could not reach a clean plan after $round rounds. Unresolved:"
+    print_objections "$VERDICT" "    • "
+    echo "  Stage:  plan-review (awaiting-human)"
+    echo "  Override (proceed to Schedule) or redirect — answer with \`lcars respond $MISSION_ID\`."
+    [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+    exit 0
+  fi
+
+  # Still have rounds left — bounce the Mission back to Plan to revise.
+  set_stage "plan"
+  gh_relabel "lcars:plan" "lcars:plan-review"
+
+  echo "PLAN-REVIEW: revise — round $round"
+  echo "  Tickets did not pass review. Logged objections to plan-review-$round.json:"
+  print_objections "$VERDICT" "    • "
+  echo "  Stage:  plan (revise the tickets and re-run)"
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  exit 0
+}
+
+# --- subcommand: review-save -----------------------------------------------
+cmd_review_save() {
+  locate_mission "$MISSION_ID"
+  require_stage plan-review
+
+  [ -n "$VERDICT" ] && [ -f "$VERDICT" ] || die "no verdict file — pass --verdict <file>."
+
+  case "$(json_raw "$VERDICT" passed)" in
+    true)  review_pass ;;
+    false) review_fail ;;
+    *)     die "verdict is missing a boolean \"passed\" field." ;;
+  esac
+}
+
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
-MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""
+MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --mission)     MISSION_ID="${2:-}"; shift 2 ;;
@@ -395,12 +500,14 @@ while [ $# -gt 0 ]; do
     --responses=*) RESPONSES="${1#--responses=}"; shift ;;
     --plan)        PLAN="${2:-}"; shift 2 ;;
     --plan=*)      PLAN="${1#--plan=}"; shift ;;
+    --verdict)     VERDICT="${2:-}"; shift 2 ;;
+    --verdict=*)   VERDICT="${1#--verdict=}"; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save)
+  gate|save|validate-pause|validate-advance|plan-save|review-save)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -410,5 +517,6 @@ case "$SUB" in
   validate-pause)   cmd_validate_pause ;;
   validate-advance) cmd_validate_advance ;;
   plan-save)        cmd_plan_save ;;
-  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save --mission <id> [--questions <f>|--responses <d>|--plan <f>]." ;;
+  review-save)      cmd_review_save ;;
+  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save|review-save --mission <id> [--questions <f>|--responses <d>|--plan <f>|--verdict <f>]." ;;
 esac

@@ -1,6 +1,6 @@
 ---
 name: lcars-run
-description: Advance an LCARS Mission one Stage. This build runs the Research, Validate, and Plan stages — Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue a mission, or to run the Research, Validate, or Plan stage on a filed mission.
+description: Advance an LCARS Mission one Stage. This build runs the Research, Validate, Plan, and Plan Review stages — Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds). Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue a mission, or to run the Research, Validate, Plan, or Plan Review stage on a filed mission.
 ---
 
 # lcars run
@@ -9,13 +9,14 @@ description: Advance an LCARS Mission one Stage. This build runs the Research, V
 Stage at a time**. You (Claude) drive the LLM work; the bundled `run.sh` does
 the mechanical, testable persistence so it stays under test.
 
-**This build implements the Research, Validate, and Plan stages.** A Mission
-filed by `lcars file` sits at stage `align` (the Align grilling already happened
-during `lcars file`), so the next Stage to execute is **Research**; when
-Research finishes the Mission parks at `validate`, ready for **Validate**; when
-Validate finishes it parks at `plan`, ready for **Plan**; when Plan finishes it
-parks at `plan-review`. Later Stages (Plan Review, …) are added in subsequent
-builds.
+**This build implements the Research, Validate, Plan, and Plan Review stages.**
+A Mission filed by `lcars file` sits at stage `align` (the Align grilling
+already happened during `lcars file`), so the next Stage to execute is
+**Research**; when Research finishes the Mission parks at `validate`, ready for
+**Validate**; when Validate finishes it parks at `plan`, ready for **Plan**;
+when Plan finishes it parks at `plan-review`, ready for **Plan Review**; when
+Plan Review passes it parks at `schedule`. Later Stages (Schedule, …) are added
+in subsequent builds.
 
 ## Dispatch on the current stage
 
@@ -32,6 +33,12 @@ builds.
      next `lcars run` falls through and resumes Validate with the answer in
      hand.)
    - `plan` → run the **Plan stage** (below).
+   - `plan-review` → run the **Plan Review stage** (below). But first check
+     `awaitingHuman` exactly as Validate does: if it is `true`, Plan Review has
+     already escalated three failed rounds and is parked at the human gate.
+     **Do not re-run the reviewer.** Tell the captain the Mission is waiting on
+     them (`lcars respond <id>` — to override and proceed, or redirect) and
+     stop.
    - anything else → not implemented in this build; report the current stage
      and stop. (`run.sh` also refuses to run a Stage on the wrong stage.)
 
@@ -322,6 +329,84 @@ first failure named; fix it and re-run.
 Tell the captain how many tickets the plan holds, where it lives (`plan.json`),
 and that the Mission is now at **Plan Review**.
 
+## The Plan Review stage
+
+Runs when `state.json.stage` is `plan-review` and `awaitingHuman` is not `true`
+(see Dispatch). A **fresh reviewer** session audits the tickets against a fixed
+quality bar — and the same LLM that planned the work must not also grade it, so
+the reviewer is independent by design (see vision.md → *Plan Review*).
+
+### STEP 1 — Run a FRESH reviewer over `plan.json` ONLY
+
+Read `.git/lcars/missions/<id>/plan.json` and review it in a session that gets
+**only** the tickets. **Do not read `prd.md` or `validated-plan.md`, and do not
+carry over any planning context** — the reviewer judges the tickets on their own
+terms. This independence is the whole point of the Stage; passing the spec in
+would defeat it (the same way a Research agent must stay stateless).
+
+Audit **every** ticket against the four criteria:
+
+- **Vertical slice** — does it touch multiple layers end-to-end (UI + logic +
+  data), not just one horizontal layer ("add all the migrations")?
+- **Size** — is `estimatedLoc` under 300 lines of production code?
+- **Testability** — is there at least one clear, observable acceptance
+  criterion?
+- **Dependencies** — does every id in `dependencies` reference another ticket
+  **in this same plan**?
+
+Produce a single verdict object:
+
+```json
+{
+  "passed": false,
+  "issues": [
+    { "ticketId": "t-001", "objection": "Oversized: ~450 LoC; split it." },
+    { "ticketId": "t-003", "objection": "Horizontal slice — only the data layer." }
+  ]
+}
+```
+
+`passed` is `true` only when **every** ticket clears all four criteria — then
+`issues` is empty. Otherwise `passed` is `false` and `issues` names each
+offending ticket with a specific, actionable objection. Keep it to the
+**canonical one-issue-per-line shape** above (the script parses objections
+line-oriented, like the rest of `run.sh`).
+
+### STEP 2 — Hand the verdict to the script
+
+Write the verdict to a temp file and pass it to the one subcommand. The script
+branches on `passed`:
+
+```bash
+bash ~/.claude/skills/lcars-run/run.sh review-save --mission <id> --verdict /tmp/verdict.json
+```
+
+| `passed` | What the script does |
+|---|---|
+| `true` | Writes `approved-plan.json` (a copy of `plan.json`), sets the stage to `schedule`, and moves the label `lcars:plan-review` → `lcars:schedule`. The Mission is ready for **Schedule**. |
+| `false` (rounds 1–2) | Logs the verdict to `plan-review-<round>.json`, increments `state.json.planReviewRound`, and loops the Mission back to `plan` (label `lcars:plan-review` → `lcars:plan`). Re-run `lcars run <id>` to **revise the tickets** against the objections, then Plan Review again. |
+| `false` (round 3) | Logs `plan-review-3.json`, then **escalates**: writes the unresolved objections to `pending.json`, sets `awaitingHuman: true` + `pendingQuestion`, adds `lcars:awaiting-human`, and keeps the card in the Plan Review column. **Stop** — the captain decides. |
+
+A failing verdict with an empty `issues` list is malformed — the script refuses
+it and nothing moves; name the objections and re-run.
+
+### STEP 3 — On a loop-back, revise then re-review
+
+When the script loops the Mission back to `plan`, the next `lcars run <id>`
+runs the **Plan stage** again. Read the latest `plan-review-<round>.json`
+objections alongside the PRD and validated plan, revise `plan.json` to resolve
+them, and `plan-save` advances back to `plan-review` — where the reviewer runs
+fresh once more. `planReviewRound` persists across the loop, so the third
+failure escalates rather than looping forever.
+
+### STEP 4 — Report
+
+If the plan passed, tell the captain it cleared review, where the approved plan
+lives (`approved-plan.json`), and that the Mission is now at **Schedule**. If it
+looped back, say which round it is and surface the objections so the Plan revise
+has them. If it escalated, surface the unresolved objections and tell the
+captain to override (proceed to Schedule) or redirect with `lcars respond <id>`.
+
 ## One source of truth: stage and label always agree
 
 A Mission's position is stored in two places — `state.json.stage` on disk and
@@ -338,7 +423,12 @@ the Stage `lcars run` will execute next:
   `lcars:awaiting-human` label overlays it — the card stays in the Validate
   column, flagged as awaiting input, until the captain answers.
 - When Plan finishes, both move to **`plan-review`** together — the card lands
-  in the Plan Review column, ready for the (future) Plan Review stage.
+  in the Plan Review column, ready for the Plan Review stage.
+- When Plan Review passes, both move to **`schedule`** together. When it fails,
+  both loop back to **`plan`** together so the card returns to the Plan column
+  for revision; after three failed rounds the stage stays `plan-review` and the
+  additive `lcars:awaiting-human` label overlays it — the card stays in the Plan
+  Review column, flagged as awaiting input, until the captain answers.
 
 GitHub labels are the board's source of truth; `.git/lcars/` is the run-time
 store. Keeping them in lockstep is what lets you call `lcars run` repeatedly and
@@ -352,8 +442,10 @@ trust the board to show exactly where every Mission is.
     1.json, 2.json, …   ← one stateless agent's findings per file (Research)
   validated-plan.md     ← the Validator's synthesis (Validate → Plan)
   plan.json             ← the Planner's ticket list (Plan → Plan Review)
-  pending.json          ← scope questions, while paused at the human gate only
-  state.json            ← stage pointer; + awaitingHuman/pendingQuestion while paused
+  approved-plan.json    ← copy of plan.json once Plan Review passes (→ Schedule)
+  plan-review-<n>.json  ← the reviewer's verdict for failed round n (Plan Review)
+  pending.json          ← scope/objection questions, while paused at the human gate only
+  state.json            ← stage pointer; + planReviewRound, awaitingHuman/pendingQuestion while paused
 ```
 
 Nothing else in the working tree changes; all state stays inside `.git/`.
@@ -362,7 +454,7 @@ Nothing else in the working tree changes; all state stays inside `.git/`.
 
 - **Wrong stage for the Stage** → `run.sh` exits non-zero and changes nothing.
   Research only runs on an `align` mission; Validate only on a `validate` one;
-  Plan only on a `plan` one.
+  Plan only on a `plan` one; Plan Review only on a `plan-review` one.
 - **No GitHub issue on file** (`githubIssue: null`) → the stage still advances;
   the relabel is skipped with a warning telling you to do it by hand.
 - **`gh` missing / edit fails** → same: the local stage advances; you get a
@@ -386,11 +478,24 @@ Nothing else in the working tree changes; all state stays inside `.git/`.
 - **Every Plan ticket is a vertical slice under 300 LoC.** That sizing keeps
   each ticket inside an implementer LLM's window — don't emit horizontal,
   layer-only tickets or ones that blow past the limit.
+- **The Plan Review reviewer must stay independent.** Never pass `prd.md`,
+  `validated-plan.md`, or any planning context into the reviewer session — it
+  judges `plan.json` alone, on its own terms. The same LLM that planned the
+  work must not also grade it (vision.md → *Plan Review*); leaking the spec
+  defeats the Stage, just as passing the PRD defeats a stateless Research agent.
+- **A failed verdict must name its objections.** `review-save` refuses a
+  `passed:false` verdict with an empty `issues` list and changes nothing — a
+  failing review has to say *what* failed so Plan can revise.
+- **Plan Review escalates after three rounds, it does not loop forever.**
+  `planReviewRound` persists across the loop-back to Plan; the third failure
+  parks the card at the awaiting-human gate (stage stays `plan-review`) for the
+  captain to override or redirect, rather than bouncing Plan again.
 
 ## Implementation
 
 The mechanical logic lives in `run.sh` next to this file (subcommands `gate`,
-`save`, `validate-pause`, `validate-advance`, `plan-save`) so it can be exercised directly.
+`save`, `validate-pause`, `validate-advance`, `plan-save`, `review-save`) so it
+can be exercised directly.
 Its behaviour is covered by
 `tests/lcars-run.test.sh` in the LCARS repo (run with `bash tests/run.sh`). The
 skill source lives in `skills/lcars-run/` and is symlinked into

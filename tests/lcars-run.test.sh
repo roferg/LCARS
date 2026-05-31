@@ -158,6 +158,40 @@ write_plan_json() { # file
 EOF
 }
 
+# Build a repo with a mission already at stage "plan-review" — i.e. Plan has run
+# (plan.json exists) and the next Stage to execute is Plan Review.
+new_repo_with_plan_review_mission() {
+  local repo; repo="$(new_repo_with_mission)"
+  local s; s="$(state_of "$repo")"
+  sed 's/"align"/"plan-review"/' "$s" >"$repo/s.tmp" && mv "$repo/s.tmp" "$s"
+  write_plan_json "$repo/.git/lcars/missions/$MID/plan.json"
+  echo "$repo"
+}
+
+# Write a passing reviewer verdict — all tickets cleared review, no issues.
+write_verdict_pass() { # file
+  cat >"$1" <<'EOF'
+{
+  "passed": true,
+  "issues": []
+}
+EOF
+}
+
+# Write a failing reviewer verdict — one oversized ticket and one horizontal
+# slice. Canonical one-issue-per-line shape so the objection text is parseable.
+write_verdict_fail() { # file
+  cat >"$1" <<'EOF'
+{
+  "passed": false,
+  "issues": [
+    { "ticketId": "t-001", "objection": "Oversized: estimated ~450 LoC; split into smaller slices." },
+    { "ticketId": "t-002", "objection": "Horizontal slice — only touches the data layer, no UI." }
+  ]
+}
+EOF
+}
+
 # ==========================================================================
 echo "lcars run"
 
@@ -482,6 +516,137 @@ rcPLg=0
 ( cd "$repoPLg" && LCARS_GH_BIN="$repoPLg/gh" bash "$SCRIPT" plan-save \
     --mission "$MID" --plan "$repoPLg/plan.json" >out.txt 2>&1 ) || rcPLg=$?
 check "guard. plan-save refuses a non-plan mission" "[ '$rcPLg' -ne 0 ]"
+
+# ==========================================================================
+echo
+echo "lcars run — Plan Review stage"
+
+# A fresh reviewer (Claude, per SKILL.md) audits plan.json — and ONLY plan.json,
+# no prd.md or validated-plan.md — and emits a verdict { passed, issues }.
+# review-save takes that verdict and does the mechanical branching. The six
+# behaviours from the build order, in order:
+#   1. Passes a plan where all tickets are valid vertical slices
+#   2. Returns objections for oversized tickets
+#   3. Returns objections for horizontal slice tickets
+#   4. Increments the round counter and loops back to plan on failure
+#   5. Escalates to the human after 3 failed rounds
+#   6. Reviewer session does not receive prd.md or validated-plan.md
+
+# --- PR1: a passing verdict → approve, advance to schedule -----------------
+repoPR="$(new_repo_with_plan_review_mission)"; make_gh_stub "$repoPR/gh"
+export GH_LOG="$repoPR/gh.log"; : >"$GH_LOG"
+vpass="$repoPR/verdict.json"; write_verdict_pass "$vpass"
+rcPR=0
+( cd "$repoPR" && LCARS_GH_BIN="$repoPR/gh" bash "$SCRIPT" review-save \
+    --mission "$MID" --verdict "$vpass" >out.txt 2>&1 ) || rcPR=$?
+APPROVED="$repoPR/.git/lcars/missions/$MID/approved-plan.json"
+check "PR1. review-save exits 0 on a passing plan" "[ '$rcPR' -eq 0 ]"
+check "PR1. writes approved-plan.json"             "[ -f '$APPROVED' ]"
+check "PR1. approved-plan.json copies the tickets"  "grep -q 't-001' '$APPROVED' && grep -q 't-002' '$APPROVED'"
+check "PR1. advances the stage to schedule" \
+  "grep -q '\"stage\": *\"schedule\"' '$(state_of "$repoPR")'"
+check "PR1. relabels plan-review → schedule (adds lcars:schedule)" \
+  "grep -q 'add-label lcars:schedule' '$repoPR/gh.log'"
+check "PR1. relabels plan-review → schedule (removes lcars:plan-review)" \
+  "grep -q 'remove-label lcars:plan-review' '$repoPR/gh.log'"
+
+# --- PR2/PR3/PR4: a failing verdict → log objections, loop back to plan -----
+repoPRf="$(new_repo_with_plan_review_mission)"; make_gh_stub "$repoPRf/gh"
+export GH_LOG="$repoPRf/gh.log"; : >"$GH_LOG"
+vfail="$repoPRf/verdict.json"; write_verdict_fail "$vfail"
+rcPRf=0
+( cd "$repoPRf" && LCARS_GH_BIN="$repoPRf/gh" bash "$SCRIPT" review-save \
+    --mission "$MID" --verdict "$vfail" >out.txt 2>&1 ) || rcPRf=$?
+sPRf="$(state_of "$repoPRf")"
+LOG1="$repoPRf/.git/lcars/missions/$MID/plan-review-1.json"
+check "PR. review-save exits 0 on a failing plan" "[ '$rcPRf' -eq 0 ]"
+check "PR. logs the round's objections to plan-review-1.json" "[ -f '$LOG1' ]"
+check "PR2. logs the oversized-ticket objection"      "grep -q 'Oversized' '$LOG1'"
+check "PR3. logs the horizontal-slice objection"      "grep -q 'Horizontal slice' '$LOG1'"
+check "PR4. increments planReviewRound to 1" \
+  "grep -q '\"planReviewRound\": *1' '$sPRf'"
+check "PR4. loops the stage back to plan" \
+  "grep -q '\"stage\": *\"plan\"' '$sPRf'"
+check "PR4. relabels plan-review → plan (adds lcars:plan)" \
+  "grep -q 'add-label lcars:plan ' '$repoPRf/gh.log' || grep -q 'add-label lcars:plan$' '$repoPRf/gh.log'"
+check "PR4. relabels plan-review → plan (removes lcars:plan-review)" \
+  "grep -q 'remove-label lcars:plan-review' '$repoPRf/gh.log'"
+check "PR4. does not escalate on the first failure" \
+  "! grep -q '\"awaitingHuman\": *true' '$sPRf'"
+
+# second failure: Plan re-ran and re-advanced to plan-review — simulate that by
+# resetting the stage — then fail again. The round counter must reach 2.
+sed 's/"plan"/"plan-review"/' "$sPRf" >"$repoPRf/s.tmp" && mv "$repoPRf/s.tmp" "$sPRf"
+: >"$repoPRf/gh.log"
+rcPRf2=0
+( cd "$repoPRf" && LCARS_GH_BIN="$repoPRf/gh" bash "$SCRIPT" review-save \
+    --mission "$MID" --verdict "$vfail" >out2.txt 2>&1 ) || rcPRf2=$?
+LOG2="$repoPRf/.git/lcars/missions/$MID/plan-review-2.json"
+check "PR4. a second failure increments planReviewRound to 2" \
+  "grep -q '\"planReviewRound\": *2' '$sPRf'"
+check "PR4. logs the second round to plan-review-2.json" "[ -f '$LOG2' ]"
+check "PR4. still loops back to plan on round 2" \
+  "grep -q '\"stage\": *\"plan\"' '$sPRf'"
+check "PR4. still does not escalate on round 2" \
+  "! grep -q '\"awaitingHuman\": *true' '$sPRf'"
+
+# --- PR5: the third failure escalates to the human -------------------------
+sed 's/"plan"/"plan-review"/' "$sPRf" >"$repoPRf/s.tmp" && mv "$repoPRf/s.tmp" "$sPRf"
+: >"$repoPRf/gh.log"
+rcPRf3=0
+( cd "$repoPRf" && LCARS_GH_BIN="$repoPRf/gh" bash "$SCRIPT" review-save \
+    --mission "$MID" --verdict "$vfail" >out3.txt 2>&1 ) || rcPRf3=$?
+PENDPR="$repoPRf/.git/lcars/missions/$MID/pending.json"
+check "PR5. review-save exits 0 on the escalating round" "[ '$rcPRf3' -eq 0 ]"
+check "PR5. increments planReviewRound to 3" \
+  "grep -q '\"planReviewRound\": *3' '$sPRf'"
+check "PR5. sets awaitingHuman true" \
+  "grep -q '\"awaitingHuman\": *true' '$sPRf'"
+check "PR5. sets pendingQuestion so the board shows it" \
+  "grep -q '\"pendingQuestion\"' '$sPRf'"
+check "PR5. stays in the plan-review stage (does not loop to plan)" \
+  "grep -q '\"stage\": *\"plan-review\"' '$sPRf'"
+check "PR5. writes the unresolved issues to pending.json" \
+  "[ -f '$PENDPR' ] && grep -q 'Oversized' '$PENDPR'"
+check "PR5. adds the lcars:awaiting-human label" \
+  "grep -q 'add-label lcars:awaiting-human' '$repoPRf/gh.log'"
+check "PR5. prompts the captain to override or redirect via lcars respond" \
+  "grep -qi 'lcars respond' '$repoPRf/out3.txt'"
+
+# --- PR6: the reviewer stage is independent of prd.md / validated-plan.md ---
+# Mechanically prove the contract: with both the PRD and the validated plan
+# removed, review-save still works — Plan Review never reads the spec, mirroring
+# the SKILL.md guarantee that the fresh reviewer session receives ONLY plan.json.
+repoPRi="$(new_repo_with_plan_review_mission)"; make_gh_stub "$repoPRi/gh"
+export GH_LOG="$repoPRi/gh.log"; : >"$GH_LOG"
+rm -f "$repoPRi/.git/lcars/missions/$MID/prd.md" \
+      "$repoPRi/.git/lcars/missions/$MID/validated-plan.md"
+write_verdict_pass "$repoPRi/verdict.json"
+rcPRi=0
+( cd "$repoPRi" && LCARS_GH_BIN="$repoPRi/gh" bash "$SCRIPT" review-save \
+    --mission "$MID" --verdict "$repoPRi/verdict.json" >out.txt 2>&1 ) || rcPRi=$?
+check "PR6. Plan Review never reads prd.md/validated-plan.md (works without them)" \
+  "[ '$rcPRi' -eq 0 ]"
+
+# a failed verdict that lists no issues is malformed — rejected, nothing moves
+repoPRm="$(new_repo_with_plan_review_mission)"; make_gh_stub "$repoPRm/gh"
+export GH_LOG="$repoPRm/gh.log"; : >"$GH_LOG"
+printf '{\n  "passed": false,\n  "issues": []\n}\n' >"$repoPRm/bad.json"
+rcPRm=0
+( cd "$repoPRm" && LCARS_GH_BIN="$repoPRm/gh" bash "$SCRIPT" review-save \
+    --mission "$MID" --verdict "$repoPRm/bad.json" >out.txt 2>&1 ) || rcPRm=$?
+check "PR. rejects a failed verdict that lists no issues" "[ '$rcPRm' -ne 0 ]"
+check "PR. does not advance on a malformed verdict" \
+  "grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repoPRm")'"
+
+# --- Guard: Plan Review refuses to run on a non-plan-review mission ---------
+repoPRg="$(new_repo_with_mission)"; make_gh_stub "$repoPRg/gh"   # still at align
+export GH_LOG="$repoPRg/gh.log"; : >"$GH_LOG"
+write_verdict_pass "$repoPRg/verdict.json"
+rcPRg=0
+( cd "$repoPRg" && LCARS_GH_BIN="$repoPRg/gh" bash "$SCRIPT" review-save \
+    --mission "$MID" --verdict "$repoPRg/verdict.json" >out.txt 2>&1 ) || rcPRg=$?
+check "guard. review-save refuses a non-plan-review mission" "[ '$rcPRg' -ne 0 ]"
 
 # ==========================================================================
 echo
