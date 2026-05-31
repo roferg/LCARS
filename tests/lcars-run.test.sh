@@ -145,17 +145,21 @@ check "2. does not advance on a malformed response" \
 check "3. save advanced the stage to validate" \
   "grep -q '\"stage\": *\"validate\"' '$(state_of "$repo2")'"
 
-# --- Behaviour 4: GitHub label moved align → research ----------------------
-# (asserted on the save path of behaviour 2)
+# --- Behaviour 4: GitHub label moved align → validate ----------------------
+# The on-disk stage and the GitHub label stay in agreement: both land on
+# "validate" (the Stage `lcars run` will execute next). Asserted on the save
+# path of behaviour 2.
 check "4. calls gh issue edit on the mission's issue" \
   "grep -q 'issue edit 42' '$repo2/gh.log'"
-check "4. adds the lcars:research label" \
-  "grep -q 'add-label lcars:research' '$repo2/gh.log'"
+check "4. adds the lcars:validate label" \
+  "grep -q 'add-label lcars:validate' '$repo2/gh.log'"
 check "4. removes the lcars:align label" \
   "grep -q 'remove-label lcars:align' '$repo2/gh.log'"
-# the skip path (behaviour 1) relabels too
-check "4. skip path also relabels align → research" \
-  "grep -q 'add-label lcars:research' '$repo1/gh.log' && grep -q 'remove-label lcars:align' '$repo1/gh.log'"
+check "4. label agrees with the on-disk stage (validate)" \
+  "grep -q '\"stage\": *\"validate\"' '$(state_of "$repo2")'"
+# the skip path (behaviour 1) relabels the same way
+check "4. skip path also relabels align → validate" \
+  "grep -q 'add-label lcars:validate' '$repo1/gh.log' && grep -q 'remove-label lcars:align' '$repo1/gh.log'"
 
 # --- Behaviour 5: > 20 questions triggers a human prompt ------------------
 repo5="$(new_repo_with_mission)"; make_gh_stub "$repo5/gh"

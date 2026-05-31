@@ -22,10 +22,12 @@
 #             Persist the agents' response JSON to research/<n>.json, then
 #             advance the mission.
 #
-# "Advance the mission" means: set state.json.stage to "validate" (the next
-# Stage `lcars run` will execute) and move the GitHub label from lcars:align to
-# lcars:research (the card's column is the Stage just processed). The one-stage
-# lag between the stage pointer and the label is intentional — see SKILL.md.
+# "Advance the mission" means: set state.json.stage to "validate" AND move the
+# GitHub label from lcars:align to lcars:validate, so the on-disk state and the
+# board's label always agree on one answer — the Stage `lcars run` will execute
+# next. A freshly filed mission sits at "align" (Align already happened in
+# `lcars file`), so `lcars run` treats "align" as the signal to run Research and
+# lands the card in the Validate column when it's done.
 #
 # Dependencies are taken via env so tests can stub them:
 #   LCARS_GH_BIN   the gh binary (default: gh)
@@ -88,12 +90,12 @@ advance() {
 
   if command -v "$GH_BIN" >/dev/null 2>&1; then
     if ! "$GH_BIN" issue edit "$issue" \
-           --add-label "lcars:research" \
+           --add-label "lcars:validate" \
            --remove-label "lcars:align" >/dev/null 2>&1; then
-      RELABEL_NOTE="  ⚠ gh issue edit failed — relabel #$issue by hand (-lcars:align +lcars:research)."
+      RELABEL_NOTE="  ⚠ gh issue edit failed — relabel #$issue by hand (-lcars:align +lcars:validate)."
     fi
   else
-    RELABEL_NOTE="  ⚠ gh not found — skipped relabel; do it by hand (#$issue: -lcars:align +lcars:research)."
+    RELABEL_NOTE="  ⚠ gh not found — skipped relabel; do it by hand (#$issue: -lcars:align +lcars:validate)."
   fi
 }
 

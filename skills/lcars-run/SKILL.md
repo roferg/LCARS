@@ -60,7 +60,7 @@ The gate prints one of three outcomes and sets its exit code accordingly:
 
 | Output | Meaning | What you do next |
 |---|---|---|
-| `GATE: skip` | 0 questions. The script has **already** advanced the mission (stage → `validate`, label → `lcars:research`). | Report it to the captain. **Done.** |
+| `GATE: skip` | 0 questions. The script has **already** advanced the mission (stage and label both → `validate`). | Report it to the captain. **Done.** |
 | `GATE: dispatch N` | 1–20 questions. Nothing changed yet. | Go to STEP 3 — spawn N agents. |
 | `GATE: too-many N` (exit 3) | More than 20. Nothing changed. | Go to the **>20 escalation** below. Do **not** spawn agents. |
 
@@ -118,8 +118,8 @@ out=$(mktemp -d)
 
 Hand the response dir to the script. It validates each response has
 `question` / `recommendation` / `supporting_points`, copies them to
-`research/<n>.json`, advances the stage pointer to `validate`, and moves the
-GitHub label from `lcars:align` to `lcars:research`:
+`research/<n>.json`, advances the stage to `validate`, and moves the GitHub
+label from `lcars:align` to `lcars:validate` (the two stay in agreement):
 
 ```bash
 bash ~/.claude/skills/lcars-run/run.sh save --mission <id> --responses "$out"
@@ -140,20 +140,21 @@ Tell the captain how many questions ran, where the findings live
 (`research/`), and that the mission is now ready for **Validate**:
 `lcars run <id>` again will pick up the Validate stage (next build).
 
-## Stage pointer vs. GitHub label — the intentional one-stage lag
+## One source of truth: stage and label always agree
 
-After Research, `state.json.stage` becomes **`validate`** but the GitHub label
-becomes **`lcars:research`**. This is not a bug:
+A Mission's position is stored in two places — `state.json.stage` on disk and
+the GitHub label (which is what the kanban board reads). **They always hold the
+same value**, so there is one unambiguous answer to "where is this Mission?" —
+the Stage `lcars run` will execute next:
 
-- **`state.json.stage`** points at the **next** Stage `lcars run` will execute.
-  Research is done, so the next run does Validate → `validate`.
-- **The GitHub label** marks the **column the card sits in** — the Stage just
-  processed. Research just ran, so the card is in the Research column →
-  `lcars:research`.
+- A freshly filed Mission sits at **`align`** (Align already happened during
+  `lcars file`). `lcars run` treats `align` as the signal to run **Research**.
+- When Research finishes, both move to **`validate`** together — the card lands
+  in the Validate column, and the next `lcars run` will run Validate.
 
-The Validate build will move both forward together (label `research` →
-`validate`, stage → `plan`). GitHub labels are the board's source of truth;
-`.git/lcars/` is the run-time store.
+GitHub labels are the board's source of truth; `.git/lcars/` is the run-time
+store. Keeping them in lockstep is what lets you call `lcars run` repeatedly and
+trust the board to show exactly where every Mission is.
 
 ## What gets written
 
