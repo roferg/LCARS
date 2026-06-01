@@ -15,12 +15,14 @@
 #
 # Dependencies are taken via env so they can be stubbed in tests:
 #   LCARS_GH_BIN   the gh binary       (default: gh)
+#   LCARS_GIT_BIN  the git binary      (default: git)
 #   LCARS_DATE     YYYYMMDD for the ID (default: today, UTC)
 #   LCARS_NOW      ISO created stamp   (default: now, UTC)
 #
 set -uo pipefail
 
 GH_BIN="${LCARS_GH_BIN:-gh}"
+GIT_BIN="${LCARS_GIT_BIN:-git}"
 DATE="${LCARS_DATE:-$(date -u +%Y%m%d)}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
@@ -86,6 +88,29 @@ ID="$(printf 'lcars-%s-%03d' "$DATE" "$SEQ")"
 MISSION_DIR="$MISSIONS_DIR/$ID"
 mkdir -p "$MISSION_DIR"
 
+# --- give the Mission its own branch --------------------------------------
+# The vision's rule: each Mission gets its own branch. Create it now, off the
+# branch we're currently on (the base the PR will eventually target), and record
+# both in state.json so Implement can commit to it and `lcars approve` can push
+# it + open the PR with --head/--base. We do NOT switch to it here — the working
+# tree of the captain's repo stays exactly as it was; Implement checks it out
+# when it's time to commit. Branch creation is best-effort: a repo with no
+# commits (nothing to branch from) just gets a warning, and Implement creates
+# the branch on first commit.
+BRANCH="lcars/$ID"
+BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+case "$BASE" in ''|HEAD) BASE="main" ;; esac
+BRANCH_NOTE=""
+if "$GIT_BIN" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+  if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    BRANCH_NOTE="  ⚠ branch $BRANCH already exists — reusing it."
+  elif ! "$GIT_BIN" branch "$BRANCH" >/dev/null 2>&1; then
+    BRANCH_NOTE="  ⚠ could not create branch $BRANCH — create it before Implement."
+  fi
+else
+  BRANCH_NOTE="  ⚠ repo has no commits yet — branch $BRANCH not created; Implement will create it on first commit."
+fi
+
 # --- write prd.md ---------------------------------------------------------
 cat "$PRD_SRC" >"$MISSION_DIR/prd.md"
 
@@ -128,7 +153,9 @@ cat >"$MISSION_DIR/state.json" <<EOF
   "stage": "align",
   "created": "$NOW",
   "model": "$MODEL",
-  "githubIssue": $issue_json
+  "githubIssue": $issue_json,
+  "branch": "$BRANCH",
+  "base": "$BASE"
 }
 EOF
 
@@ -140,7 +167,9 @@ else
 fi
 
 [ -n "$GH_NOTE" ] && echo "$GH_NOTE"
+[ -n "$BRANCH_NOTE" ] && echo "$BRANCH_NOTE"
 echo "  Mission filed: $ID"
 echo "  GitHub issue:  $issue_line"
+echo "  Branch:        $BRANCH (off $BASE)"
 echo "  Stage:         align"
 echo "  Next:          run \`lcars run $ID\` to continue"

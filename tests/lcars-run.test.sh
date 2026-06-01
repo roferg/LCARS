@@ -1115,6 +1115,103 @@ rcIag=0
     --mission "$MID" >out2.txt 2>&1 ) || rcIag=$?
 check "guard. impl-advance refuses a non-implement mission" "[ '$rcIag' -ne 0 ]"
 
+# --- IC: a green ticket's produced files are committed to the mission branch -
+# The Implementer writes real files into the working tree; impl-save-result must
+# commit them to the Mission's branch (recorded in state.json) so the eventual
+# PR has content. This needs a repo with a real commit + the recorded branch, so
+# it's built from scratch rather than via new_repo_with_mission.
+repoIC="$(mktemp -d "$TMPROOT/repo.XXXX")"
+( cd "$repoIC" && git init -q && git config user.email t@t && git config user.name t \
+    && git commit -q --allow-empty -m init && git branch "lcars/$MID" )
+BASEIC="$(cd "$repoIC" && git rev-parse --abbrev-ref HEAD)"
+mIC="$repoIC/.git/lcars/missions/$MID"; mkdir -p "$mIC"
+cat >"$mIC/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "implement",
+  "githubIssue": 42,
+  "branch": "lcars/$MID",
+  "base": "$BASEIC"
+}
+EOF
+write_approved_plan_json "$mIC/approved-plan.json"
+write_waves_json "$mIC/waves.json"
+make_gh_stub "$repoIC/gh"; export GH_LOG="$repoIC/gh.log"; : >"$GH_LOG"
+# Phase 1 — Test Writer's tests saved (the Implementer's only handoff).
+twIC="$repoIC/tw"; mkdir -p "$twIC"; printf 'failing test\n' >"$twIC/t.test.js"
+( cd "$repoIC" && LCARS_GH_BIN="$repoIC/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twIC" >/dev/null 2>&1 )
+# Phase 2 — the Implementer leaves a real file in the working tree, then we save
+# a passing result, which must commit that file to lcars/<id>.
+printf 'export const theme = "dark";\n' >"$repoIC/theme.js"
+resIC="$repoIC/result.json"; write_result "$resIC" t-001 true 2
+rcIC=0
+( cd "$repoIC" && LCARS_GH_BIN="$repoIC/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resIC" >"$repoIC/outIC.txt" 2>&1 ) || rcIC=$?
+check "IC. impl-save-result exits 0 and commits the green ticket" "[ '$rcIC' -eq 0 ]"
+check "IC. checks out the mission branch" \
+  "[ \"\$(cd '$repoIC' && git rev-parse --abbrev-ref HEAD)\" = 'lcars/$MID' ]"
+check "IC. commits the Implementer's file onto the branch" \
+  "( cd '$repoIC' && git ls-tree -r --name-only HEAD | grep -q '^theme.js$' )"
+check "IC. the commit is ahead of the base branch" \
+  "[ \"\$(cd '$repoIC' && git rev-list --count $BASEIC..lcars/$MID)\" -ge 1 ]"
+
+# ==========================================================================
+echo
+echo "lcars run — Verify stage"
+
+# When every wave is green, Implement parks the Mission at "verify". `lcars run`
+# then prints a summary the captain reads before deciding to ship or send back:
+# the mission title, every completed ticket, and the test results — plus the two
+# next moves (lcars approve / lcars feedback). verify-summary is read-only; the
+# decision is the captain's. The one behaviour from the build order:
+#   1. Prints the verify summary with all ticket results
+
+# Seed every ticket green (tests + passing result), the shape Implement leaves
+# behind, then park the mission at verify.
+seed_verify_results() { # repo
+  local repo="$1" m="$repo/.git/lcars/missions/$MID" tid
+  for tid in t-001 t-002 t-003 t-004; do
+    mkdir -p "$m/tickets/$tid/tests"; printf 'stub\n' >"$m/tickets/$tid/tests/$tid.test"
+    write_result "$m/tickets/$tid/result.json" "$tid" true 2
+  done
+}
+new_repo_with_verify_mission() {
+  local repo; repo="$(new_repo_with_mission)"
+  local s; s="$(state_of "$repo")"
+  sed 's/"align"/"verify"/' "$s" >"$repo/s.tmp" && mv "$repo/s.tmp" "$s"
+  local m="$repo/.git/lcars/missions/$MID"
+  write_approved_plan_json "$m/approved-plan.json"
+  write_waves_json "$m/waves.json"
+  seed_verify_results "$repo"
+  echo "$repo"
+}
+
+repoVR="$(new_repo_with_verify_mission)"; make_gh_stub "$repoVR/gh"
+export GH_LOG="$repoVR/gh.log"; : >"$GH_LOG"
+rcVR=0
+( cd "$repoVR" && LCARS_GH_BIN="$repoVR/gh" bash "$SCRIPT" verify-summary \
+    --mission "$MID" >out.txt 2>&1 ) || rcVR=$?
+check "VR1. verify-summary exits 0" "[ '$rcVR' -eq 0 ]"
+check "VR1. prints the mission title" "grep -q 'Add dark mode' '$repoVR/out.txt'"
+check "VR1. lists every completed ticket" \
+  "grep -q 't-001' '$repoVR/out.txt' && grep -q 't-002' '$repoVR/out.txt' && grep -q 't-003' '$repoVR/out.txt' && grep -q 't-004' '$repoVR/out.txt'"
+check "VR1. reports the test results (4/4 green)" "grep -q '4/4' '$repoVR/out.txt'"
+check "VR1. prompts the captain to approve" "grep -q 'lcars approve' '$repoVR/out.txt'"
+check "VR1. prompts the captain to send feedback" "grep -q 'lcars feedback' '$repoVR/out.txt'"
+check "VR1. is read-only — stays at the verify stage" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoVR")'"
+
+# --- Guard: verify-summary refuses a non-verify mission --------------------
+repoVRg="$(new_repo_with_mission)"; make_gh_stub "$repoVRg/gh"   # still at align
+export GH_LOG="$repoVRg/gh.log"; : >"$GH_LOG"
+rcVRg=0
+( cd "$repoVRg" && LCARS_GH_BIN="$repoVRg/gh" bash "$SCRIPT" verify-summary \
+    --mission "$MID" >out.txt 2>&1 ) || rcVRg=$?
+check "guard. verify-summary refuses a non-verify mission" "[ '$rcVRg' -ne 0 ]"
+
 # ==========================================================================
 echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"

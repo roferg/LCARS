@@ -66,7 +66,7 @@ Skills are built in this sequence. Status:
 7. `lcars run`   — Plan Review stage: fresh reviewer audits tickets → approve/loop/escalate.  ✅ built
 8. `lcars run`   — Schedule stage: dependency graph → waves, create sub-issues.  ✅ built
 9. `lcars run`   — Implement stage: waves → Test Writer + Implementer per ticket.  ✅ built
-10. `lcars run`  — Verify + PR.
+10. `lcars run`  — Verify stage + `lcars approve` / `lcars feedback`.  ✅ built
 11. `lcars respond` — Async human gate: when a stage escalates (e.g. Research
     >20, Validate scope change), persist the question + apply
     `lcars:awaiting-human` so the board shows it; `lcars respond <id>` answers

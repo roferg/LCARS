@@ -1,6 +1,6 @@
 ---
 name: lcars-run
-description: Advance an LCARS Mission one Stage. This build runs the Research, Validate, Plan, Plan Review, Schedule, and Implement stages — Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement; Implement processes the waves sequentially, running each ticket through an adversarial Test Writer → Implementer pair (iterating up to 5 attempts, flagging the human on failure) and advancing to Verify when every ticket is green. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue a mission, or to run the Research, Validate, Plan, Plan Review, Schedule, or Implement stage on a filed mission.
+description: Advance an LCARS Mission one Stage. This build runs the Research, Validate, Plan, Plan Review, Schedule, and Implement stages — Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement; Implement processes the waves sequentially, running each ticket through an adversarial Test Writer → Implementer pair (iterating up to 5 attempts, flagging the human on failure) and advancing to Verify when every ticket is green; and Verify prints the captain's pre-ship summary (mission title, every completed ticket, the test tally) and the two next moves, then stops at the human gate. It also handles the Align re-entry after `lcars feedback` bounces a Mission back from Verify — re-grilling against the PRD plus the accumulated feedback before Research. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue a mission, or to run the Research, Validate, Plan, Plan Review, Schedule, Implement, or Verify stage on a filed mission.
 ---
 
 # lcars run
@@ -9,16 +9,20 @@ description: Advance an LCARS Mission one Stage. This build runs the Research, V
 Stage at a time**. You (Claude) drive the LLM work; the bundled `run.sh` does
 the mechanical, testable persistence so it stays under test.
 
-**This build implements the Research, Validate, Plan, Plan Review, Schedule, and
-Implement stages.** A Mission filed by `lcars file` sits at stage `align` (the
-Align grilling already happened during `lcars file`), so the next Stage to
-execute is **Research**; when Research finishes the Mission parks at `validate`,
-ready for **Validate**; when Validate finishes it parks at `plan`, ready for
-**Plan**; when Plan finishes it parks at `plan-review`, ready for **Plan
-Review**; when Plan Review passes it parks at `schedule`, ready for **Schedule**;
-when Schedule finishes it parks at `implement`, ready for **Implement**; when
-Implement finishes it parks at `verify`. Later Stages (Verify, …) are added in
-subsequent builds.
+**This build implements the Research, Validate, Plan, Plan Review, Schedule,
+Implement, and Verify stages.** A Mission filed by `lcars file` sits at stage
+`align` (the Align grilling already happened during `lcars file`), so the next
+Stage to execute is **Research**; when Research finishes the Mission parks at
+`validate`, ready for **Validate**; when Validate finishes it parks at `plan`,
+ready for **Plan**; when Plan finishes it parks at `plan-review`, ready for
+**Plan Review**; when Plan Review passes it parks at `schedule`, ready for
+**Schedule**; when Schedule finishes it parks at `implement`, ready for
+**Implement**; when Implement finishes it parks at `verify`, ready for
+**Verify**. Verify is a human gate: `lcars run` prints the pre-ship summary and
+stops, and the captain ships with **`lcars approve`** or bounces it back with
+**`lcars feedback`** (each its own skill). A feedback bounce resets the Mission
+to `align` with `feedback.md` on disk, so the next `lcars run` re-enters Align
+rather than running Research cold.
 
 ## Dispatch on the current stage
 
@@ -26,7 +30,12 @@ subsequent builds.
    `state.json` is missing, tell the captain the id is wrong / the mission
    isn't filed, and stop.
 2. Look at `state.json.stage`:
-   - `align` → run the **Research stage** (below).
+   - `align` → **first check for `feedback.md`** in the mission dir. If it
+     exists, the Mission was bounced back from Verify (`lcars feedback`), so
+     run the **Align re-entry** (below) — re-grill against the existing PRD
+     *and* the accumulated feedback before Research. If there is no
+     `feedback.md`, this is a freshly filed Mission: run the **Research stage**
+     (below).
    - `validate` → run the **Validate stage** (below). But first check
      `awaitingHuman`: if it is `true`, the Mission is parked at a human gate —
      a scope question is unanswered. **Do not re-run the Validator.** Tell the
@@ -49,6 +58,11 @@ subsequent builds.
      them (`lcars respond <id>`) and stop. (Once the human resolves it and
      `lcars respond` clears the gate, the next `lcars run` falls through and
      resumes the open waves.)
+   - `verify` → run the **Verify stage** (below): print the summary and hand
+     the ship-or-send-back decision to the captain. Do **not** advance — Verify
+     is a human gate, resolved by `lcars approve` / `lcars feedback`.
+   - `done` → the Mission has shipped. Tell the captain it is complete (the PR
+     is open) and stop.
    - anything else → not implemented in this build; report the current stage
      and stop. (`run.sh` also refuses to run a Stage on the wrong stage.)
 
@@ -563,7 +577,16 @@ bash ~/.claude/skills/lcars-run/run.sh impl-save-result \
 validates the four fields, checks `ticketId` matches, and **caps `attempts` at
 5**. It saves `tickets/<ticket-id>/result.json`. Then it branches on `passed`:
 
-- **`passed: true`** → the ticket is green; nothing else to do.
+- **`passed: true`** → the ticket is green. The script **commits the
+  Implementer's produced files to the Mission's branch** (the `branch` recorded
+  in `state.json` by `lcars file`): on the first green ticket it checks that
+  branch out — Implement is the first Stage to touch git, so the working tree
+  the Implementer wrote into follows the checkout onto the branch — then
+  `git add -A` + `git commit`. This is what gives the eventual PR its content;
+  without it the Implementer's work would sit uncommitted on the base branch and
+  `lcars approve` would have nothing to open a PR from. A missing branch / no
+  changes / git failure is best-effort: the result is still saved and you get a
+  warning to commit by hand.
 - **`passed: false`** → the Implementer exhausted its 5 attempts. The script
   **flags the human**: it writes the blocker to `pending.json`, sets
   `awaitingHuman: true` + `pendingQuestion`, adds the `lcars:awaiting-human`
@@ -600,6 +623,67 @@ tests and results live (`tickets/<id>/tests/`, `tickets/<id>/result.json`), and
 that the Mission is now at **Verify** — or, if a ticket flagged the human, which
 ticket failed and how to resolve it (`lcars respond <id>`).
 
+## The Verify stage
+
+Runs when `state.json.stage` is `verify`. Implement parks the Mission here once
+every ticket is green across every wave. **This Stage is a human gate** — the
+captain reads the diff, runs the app, and decides whether to ship. You print the
+summary and stop; you do **not** advance the Mission yourself.
+
+### STEP 1 — Print the pre-ship summary
+
+```bash
+bash ~/.claude/skills/lcars-run/run.sh verify-summary --mission <id>
+```
+
+`verify-summary` is read-only. It prints the mission title, every completed
+ticket with its result (✓ + attempt count, read from each
+`tickets/<id>/result.json`), the overall test tally (e.g. `4/4 ticket(s) green
+across 2 wave(s)`), and the two next moves:
+
+```
+VERIFY: <title>
+  All tickets completed:
+    ✓ t-001 — passed in 2 attempt(s)
+    …
+  Test results: 4/4 ticket(s) green across 2 wave(s).
+  Review the changes and run the app if needed.
+    lcars approve <id>    — create the PR
+    lcars feedback <id>   — send back with feedback
+```
+
+### STEP 2 — Hand the decision to the captain
+
+Surface that summary and stop. The captain drives the outcome with a separate
+skill — neither is part of `lcars run`:
+
+- **`lcars approve <id>`** (the `lcars-approve` skill) — ship it: open the PR,
+  mark the Mission `done`.
+- **`lcars feedback <id> "<feedback>"`** (the `lcars-feedback` skill) — send it
+  back: append the note to `feedback.md` and reset the Mission to `align`.
+
+Do not call `verify-summary` again on a loop and do not try to advance the
+Mission — Verify only moves when the captain approves or sends feedback.
+
+## The Align re-entry (after feedback)
+
+When `lcars feedback` bounces a Mission back, it resets the stage to `align`,
+writes `feedback.md`, and **keeps every prior artifact** (PRD, research,
+validated/approved plans). So an `align` Mission falls into one of two cases,
+and the dispatch tells them apart by whether `feedback.md` exists:
+
+- **No `feedback.md`** → a freshly filed Mission. Run **Research** as usual.
+- **`feedback.md` present** → a re-entry from Verify. **Re-run Align, not
+  Research first:** read `prd.md` *and* the full `feedback.md` (every stamped
+  note, in order) plus any other artifacts you need, re-grill the same way
+  `lcars file` did, and **rewrite `prd.md`** to fold in the captain's feedback.
+  Once the PRD reflects the feedback, carry on into the **Research stage** in
+  the same run (generate questions from the updated PRD, run the gate, …). Leave
+  `feedback.md` in place as the durable history; it accumulates across rounds.
+
+This is what makes the Verify → Align loop pick up with the full context instead
+of starting cold.
+
 ## One source of truth: stage and label always agree
 
 A Mission's position is stored in two places — `state.json.stage` on disk and
@@ -632,6 +716,12 @@ the Stage `lcars run` will execute next:
   `implement` and the additive `lcars:awaiting-human` label overlays it — the
   card stays in the Implement column, flagged as awaiting input, until the
   captain resolves it.
+- At **`verify`** the Mission waits on the captain. `lcars run` only prints the
+  summary; the move out of Verify is the captain's: **`lcars approve`** advances
+  both stage and label to **`done`** (the card lands in the Done column once the
+  PR is open), while **`lcars feedback`** resets both back to **`align`** and
+  drops a `feedback.md` so the card returns to the Align column for a re-grill
+  with the full prior history.
 
 GitHub labels are the board's source of truth; `.git/lcars/` is the run-time
 store. Keeping them in lockstep is what lets you call `lcars run` repeatedly and
@@ -653,10 +743,14 @@ trust the board to show exactly where every Mission is.
       tests/            ← the Test Writer's failing tests (Implement, Phase 1)
       result.json       ← { ticketId, passed, attempts, summary } (Implement, Phase 2)
   pending.json          ← scope/objection/flagged-ticket questions, while paused at the human gate only
-  state.json            ← stage pointer; + planReviewRound, awaitingHuman/pendingQuestion while paused
+  feedback.md           ← the captain's Verify feedback, accumulated (written by `lcars feedback`; read by the Align re-entry)
+  state.json            ← stage pointer + branch/base; + planReviewRound, awaitingHuman/pendingQuestion while paused
 ```
 
-Nothing else in the working tree changes; all state stays inside `.git/`.
+All LCARS state stays inside `.git/`. The **one** thing Implement writes to the
+git history proper is the Mission's branch: each green ticket's produced files
+are committed to `lcars/<id>` (never to the base branch). Nothing else in the
+working tree changes.
 
 ## Notes & failure modes
 
@@ -722,13 +816,29 @@ Nothing else in the working tree changes; all state stays inside `.git/`.
   `attempts` at 5 and, on `passed: false`, parks the Mission at the
   awaiting-human gate (stage stays `implement`, `lcars:awaiting-human` overlays
   the card). Don't keep re-running a flagged ticket — wait for `lcars respond`.
+- **Implement commits each green ticket to the Mission's branch.** The files
+  the Test Writer / Implementer produce are committed to `lcars/<id>` (recorded
+  by `lcars file`) the moment a ticket goes green, so the eventual PR has
+  content. The commit is best-effort and jq-free: no branch on file, no file
+  changes, or a git failure just leaves a warning — the saved result still
+  stands. Don't hand-commit the Implementer's output elsewhere; let
+  `impl-save-result` do it onto the branch.
+- **Verify is a human gate — `lcars run` never advances it.** `verify-summary`
+  is read-only; the Mission only leaves Verify when the captain runs
+  `lcars approve` (→ `done`) or `lcars feedback` (→ `align`). Don't try to ship
+  or bounce a Mission from inside `lcars run`.
+- **An `align` Mission with a `feedback.md` is a re-entry, not a fresh file.**
+  Re-run Align (re-grill against the PRD + feedback and rewrite `prd.md`) before
+  Research; only a `feedback.md`-free `align` Mission goes straight to Research.
 
 ## Implementation
 
 The mechanical logic lives in `run.sh` next to this file (subcommands `gate`,
 `save`, `validate-pause`, `validate-advance`, `plan-save`, `review-save`,
-`schedule`, `impl-save-tests`, `impl-save-result`, `impl-status`, `impl-advance`)
-so it can be exercised directly.
+`schedule`, `impl-save-tests`, `impl-save-result`, `impl-status`, `impl-advance`,
+`verify-summary`) so it can be exercised directly. The Verify gate's two
+outcomes are separate skills — `lcars-approve` and `lcars-feedback` — each with
+its own script and test suite.
 Its behaviour is covered by
 `tests/lcars-run.test.sh` in the LCARS repo (run with `bash tests/run.sh`). The
 skill source lives in `skills/lcars-run/` and is symlinked into

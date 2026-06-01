@@ -89,9 +89,10 @@ PRD
 
 Hand the PRD to the bundled script. It mints the mission ID
 (`lcars-YYYYMMDD-NNN`, sequenced per day), creates
-`.git/lcars/missions/<id>/{prd.md,state.json}`, opens the GitHub issue with the
-`lcars:align,lcars:<type>` labels, records the issue number, and prints the
-summary:
+`.git/lcars/missions/<id>/{prd.md,state.json}`, **creates the Mission's own
+branch `lcars/<id>` off the current branch** (recording the branch and its base
+in `state.json`), opens the GitHub issue with the `lcars:align,lcars:<type>`
+labels, records the issue number, and prints the summary:
 
 ```bash
 bash ~/.claude/skills/lcars-file/file.sh --prd "$prd"
@@ -102,6 +103,7 @@ Show the captain its output verbatim:
 ```
   Mission filed: lcars-20260530-001
   GitHub issue:  #42
+  Branch:        lcars/lcars-20260530-001 (off main)
   Stage:         align
   Next:          run `lcars run lcars-20260530-001` to continue
 ```
@@ -111,8 +113,14 @@ Show the captain its output verbatim:
 ```
 .git/lcars/missions/<id>/
   prd.md        ← the PRD from Align (the GitHub issue body, too)
-  state.json    ← { id, type, title, stage: "align", created, model, githubIssue }
+  state.json    ← { id, type, title, stage: "align", created, model, githubIssue, branch, base }
 ```
+
+Plus, in git itself: the branch `lcars/<id>` is created off the current branch
+(the `base` the PR will later target). The working tree is **not** switched to
+it — `lcars file` leaves the captain's checkout exactly as it was. Implement
+checks the branch out when it commits the first green ticket; `lcars approve`
+pushes it and opens the PR with `--head lcars/<id> --base <base>`.
 
 ## Notes & failure modes
 
@@ -126,6 +134,10 @@ Show the captain its output verbatim:
   `LCARS_DATE=YYYYMMDD`.
 - **Model** is read from `.git/lcars/config.json` (written by `lcars init`),
   falling back to `LCARS_MODEL` then `claude-sonnet`.
+- **Branch creation is best-effort.** In a repo with no commits there is nothing
+  to branch from, so `lcars file` records the intended branch name but warns and
+  leaves creation to Implement's first commit. An already-existing `lcars/<id>`
+  branch is reused. Stub the git binary in tests with `LCARS_GIT_BIN`.
 
 ## Implementation
 

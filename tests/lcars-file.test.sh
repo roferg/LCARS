@@ -51,10 +51,13 @@ EOF
   chmod +x "$p"
 }
 
-# Build an isolated git repo with .git/lcars/ already scaffolded.
+# Build an isolated git repo with .git/lcars/ already scaffolded. An initial
+# commit exists so `lcars file` can branch off it (a Mission gets its own branch
+# at filing time) — matching how `lcars file` is run in a real, non-empty repo.
 new_repo() {
   local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
-  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions"
   cat >"$repo/.git/lcars/config.json" <<'EOF'
 { "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "created": "2026-05-30T00:00:00Z" }
@@ -167,6 +170,22 @@ check "6. summary: Mission filed line"  "grep -q 'Mission filed:.*lcars-20260530
 check "6. summary: GitHub issue line"   "grep -q 'GitHub issue:.*#42' '$repo/out.txt'"
 check "6. summary: Stage align line"    "grep -qi 'Stage:.*align' '$repo/out.txt'"
 check "6. summary: Next lcars run line" "grep -q 'lcars run lcars-20260530-001' '$repo/out.txt'"
+
+# --- Behaviour 7: the Mission gets its own branch -------------------------
+# vision.md: each Mission gets its own branch. `lcars file` creates lcars/<id>
+# off the current branch and records it (with the base) in state.json, so
+# Implement can commit to it and `lcars approve` can push it + open the PR.
+EXP_BASE="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+check "7. creates the branch lcars/<mission-id>" \
+  "( cd '$repo' && git show-ref --verify --quiet 'refs/heads/lcars/lcars-20260530-001' )"
+check "7. does not switch the working tree off the base branch" \
+  "[ \"\$(cd '$repo' && git rev-parse --abbrev-ref HEAD)\" = '$EXP_BASE' ]"
+check "7. records the branch in state.json" \
+  "grep -q '\"branch\": *\"lcars/lcars-20260530-001\"' '$M/state.json'"
+check "7. records the base in state.json" \
+  "grep -q '\"base\": *\"$EXP_BASE\"' '$M/state.json'"
+check "7. summary reports the branch" \
+  "grep -q 'Branch:.*lcars/lcars-20260530-001' '$repo/out.txt'"
 
 # ==========================================================================
 echo

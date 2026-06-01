@@ -30,11 +30,13 @@
 # lands the card in the Validate column when it's done.
 #
 # Dependencies are taken via env so tests can stub them:
-#   LCARS_GH_BIN   the gh binary (default: gh)
+#   LCARS_GH_BIN   the gh binary  (default: gh)
+#   LCARS_GIT_BIN  the git binary (default: git)
 #
 set -uo pipefail
 
 GH_BIN="${LCARS_GH_BIN:-gh}"
+GIT_BIN="${LCARS_GIT_BIN:-git}"
 MAX_QUESTIONS=20
 MAX_REVIEW_ROUNDS=3
 RELABEL_NOTE=""
@@ -701,9 +703,44 @@ cmd_schedule() {
 #         ticket is unfinished.
 
 MAX_ATTEMPTS=5
+COMMIT_NOTE=""
 
 # --- resolve a ticket's working dir under the mission -----------------------
 ticket_dir() { printf '%s/tickets/%s' "$MISSION_DIR" "$1"; }
+
+# --- commit a green ticket's produced files to the mission branch -----------
+# The Test Writer / Implementer write real files into the working tree; for the
+# PR to have content those files must be committed to the Mission's branch (the
+# one `lcars file` recorded in state.json). On the first green ticket this also
+# checks the branch out — Implement is the first stage that touches git, and the
+# captain's working tree was left untouched up to here, so any uncommitted work
+# follows the checkout onto the branch and is captured. Best-effort and jq-free,
+# in the same spirit as gh_relabel: a missing branch / no changes / git failure
+# leaves a note rather than blocking the (already-saved) result.
+commit_ticket() { # ticket  summary
+  COMMIT_NOTE=""
+  local branch; branch="$(json_str "$STATE" branch)"
+  [ -n "$branch" ] || { COMMIT_NOTE="  ⚠ no mission branch on file — skipped commit (re-file so the mission gets a branch)."; return 0; }
+
+  local cur; cur="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  if [ "$cur" != "$branch" ]; then
+    if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+      "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 \
+        || { COMMIT_NOTE="  ⚠ could not checkout $branch — commit ticket $1 by hand."; return 0; }
+    else
+      "$GIT_BIN" checkout -b "$branch" >/dev/null 2>&1 \
+        || { COMMIT_NOTE="  ⚠ could not create $branch — commit ticket $1 by hand."; return 0; }
+    fi
+  fi
+
+  "$GIT_BIN" add -A >/dev/null 2>&1
+  if "$GIT_BIN" diff --cached --quiet 2>/dev/null; then
+    COMMIT_NOTE="  ⚠ ticket $1 produced no file changes to commit."
+    return 0
+  fi
+  "$GIT_BIN" commit -q -m "lcars($MISSION_ID) $1: $2" >/dev/null 2>&1 \
+    || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+}
 
 # --- parse waves.json into "<wave>\t<id>" lines, in wave then plan order ------
 # Canonical waves.json (emit_waves_json's shape) puts "wave": N and each ticket's
@@ -806,8 +843,13 @@ cmd_impl_save_result() {
     exit 0
   fi
 
+  # Ticket is green — commit its produced files to the mission branch so the
+  # eventual PR has content (the working tree is otherwise left uncommitted).
+  commit_ticket "$TICKET" "$(json_str "$RESULT" summary)"
+
   echo "IMPLEMENT: result saved — $TICKET"
   echo "  $TICKET passed in $attempts attempt(s). Saved result.json."
+  [ -n "$COMMIT_NOTE" ] && echo "$COMMIT_NOTE"
   exit 0
 }
 
@@ -892,6 +934,51 @@ EOF
   exit 0
 }
 
+# === Verify stage ==========================================================
+# The last Stage `lcars run` drives. When Implement has every ticket green it
+# parks the Mission at "verify"; this prints the captain's pre-ship summary —
+# the mission title, every completed ticket with its result, the overall test
+# tally — and the two next moves (lcars approve / lcars feedback). It is
+# READ-ONLY: the ship-or-send-back decision is the captain's, made with
+# `lcars approve` / `lcars feedback` (their own skills), not here.
+#
+#   verify-summary  --mission <id>
+cmd_verify_summary() {
+  locate_mission "$MISSION_ID"
+  require_stage verify
+
+  local title; title="$(json_str "$STATE" title)"; title="${title:-$MISSION_ID}"
+
+  local waves="$MISSION_DIR/waves.json"
+  [ -f "$waves" ] || die "no waves.json — Implement has not run for this mission yet."
+  local table; table="$(parse_waves_table "$waves")"
+  [ -n "$table" ] || die "waves.json has no tickets — nothing to verify."
+
+  echo "VERIFY: $title"
+  echo "  All tickets completed:"
+  local total=0 green=0 nwaves=0 w id rf attempts
+  while IFS=$'\t' read -r w id; do
+    [ -n "$id" ] || continue
+    total=$((total + 1))
+    [ "$w" -gt "$nwaves" ] && nwaves="$w"
+    rf="$(ticket_dir "$id")/result.json"
+    if [ -f "$rf" ] && [ "$(json_raw "$rf" passed)" = "true" ]; then
+      green=$((green + 1)); attempts="$(json_raw "$rf" attempts)"
+      printf '    ✓ %s — passed in %s attempt(s)\n' "$id" "${attempts:-?}"
+    else
+      printf '    ✗ %s — no passing result on file\n' "$id"
+    fi
+  done <<EOF
+$table
+EOF
+
+  echo "  Test results: $green/$total ticket(s) green across $nwaves wave(s)."
+  echo "  Review the changes and run the app if needed."
+  echo "    lcars approve $MISSION_ID    — create the PR"
+  echo "    lcars feedback $MISSION_ID   — send back with feedback"
+  exit 0
+}
+
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
@@ -919,7 +1006,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -935,5 +1022,6 @@ case "$SUB" in
   impl-save-result) cmd_impl_save_result ;;
   impl-status)      cmd_impl_status ;;
   impl-advance)     cmd_impl_advance ;;
-  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance --mission <id> [--questions <f>|--responses <d>|--plan <f>|--verdict <f>|--ticket <id>|--tests <d>|--result <f>]." ;;
+  verify-summary)   cmd_verify_summary ;;
+  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary --mission <id> [--questions <f>|--responses <d>|--plan <f>|--verdict <f>|--ticket <id>|--tests <d>|--result <f>]." ;;
 esac
