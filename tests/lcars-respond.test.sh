@@ -173,6 +173,43 @@ check "1. empty state exits 0" "[ '$rc1b' -eq 0 ]"
 check "1. empty state says nothing is awaiting" \
   "grep -qi 'no.*awaiting\\|nothing.*awaiting\\|no missions' '$repo1b/out.txt'"
 
+# --- Behaviour 1 (in-flight stage): list shows the TRUE stage, not the pointer
+# A Mission paused at the Research >20 gate keeps state.json.stage="align" (the
+# resume pointer), but pending.json records stage="research" — the Stage the
+# card is actually stuck in, matching the board label. `respond list` must show
+# "research" so the CLI view agrees with the Kanban column.
+repo1c="$(mktemp -d "$TMPROOT/repo.XXXX")"
+( cd "$repo1c" && git init -q && git config user.email t@t && git config user.name t )
+mR="$repo1c/.git/lcars/missions/lcars-20260530-009"; mkdir -p "$mR"
+cat >"$mR/state.json" <<'EOF'
+{
+  "id": "lcars-20260530-009",
+  "type": "feature",
+  "title": "Gamification overhaul",
+  "stage": "align",
+  "created": "2026-05-30T10:00:00Z",
+  "model": "claude-sonnet",
+  "githubIssue": 9,
+  "awaitingHuman": true,
+  "pendingQuestion": "Research needs 21 questions — override or return-to-align?"
+}
+EOF
+cat >"$mR/pending.json" <<'EOF'
+{
+  "stage": "research",
+  "questions": [
+    "Research needs 21 questions — override or return-to-align?"
+  ]
+}
+EOF
+rc1c=0
+( cd "$repo1c" && bash "$SCRIPT" list >out.txt 2>&1 ) || rc1c=$?
+check "1. research-gate list exits 0" "[ '$rc1c' -eq 0 ]"
+check "1. list shows the in-flight stage (research) from pending.json" \
+  "grep -qi 'stage: *research' '$repo1c/out.txt'"
+check "1. list does not show the stale resume-pointer stage (align)" \
+  "! grep -qi 'stage: *align' '$repo1c/out.txt'"
+
 # --- Behaviour 2: `respond <id>` displays the pending question(s) -----------
 repo2="$(new_repo_with_paused_mission)"; make_gh_stub "$repo2/gh"
 export GH_LOG="$repo2/gh.log"; : >"$GH_LOG"

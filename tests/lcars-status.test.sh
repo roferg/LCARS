@@ -185,6 +185,49 @@ check "8. does not truncate the question at the first inner quote" \
 check "8. an escaped quote in the title does not corrupt the row" \
   "grep -q 'Add dark mode' '$repo8/out.txt'"
 
+# --- Behaviour 9: awaiting-human gate shows the TRUE in-flight stage --------
+# When Research escalates (>20 questions), the Mission parks behind the gate:
+# state.json.stage stays "align" (the resume pointer, so `lcars run` re-enters
+# Research), but pending.json records the real in-flight stage "research" — the
+# same value the board label carries. `lcars status` must display "research" so
+# the CLI view agrees with the Kanban column, not the stale "align".
+repo9="$(new_init_repo)"
+d9="$repo9/.git/lcars/missions/lcars-20260530-009"; mkdir -p "$d9"
+{
+  printf '{\n'
+  printf '  "id": "lcars-20260530-009",\n'
+  printf '  "title": "Gamification overhaul",\n'
+  printf '  "stage": "align",\n'
+  printf '  "created": "2026-05-30T10:00:00Z",\n'
+  printf '  "awaitingHuman": true,\n'
+  printf '  "pendingQuestion": "Research needs 21 questions — override or return-to-align?",\n'
+  printf '  "githubIssue": 9\n'
+  printf '}\n'
+} >"$d9/state.json"
+cat >"$d9/pending.json" <<'EOF'
+{
+  "stage": "research",
+  "questions": [
+    "Research needs 21 questions — override or return-to-align?"
+  ]
+}
+EOF
+( cd "$repo9" && bash "$SCRIPT" >out.txt 2>&1 )
+check "9. displays the in-flight stage (research) from pending.json" \
+  "grep -qE 'lcars-20260530-009[[:space:]]+#9[[:space:]]+research' '$repo9/out.txt'"
+check "9. does not display the stale resume-pointer stage (align)" \
+  "! grep -qE 'lcars-20260530-009[[:space:]]+#9[[:space:]]+align' '$repo9/out.txt'"
+
+# Fallback: awaiting-human with NO pending.json keeps state.json.stage. A gate
+# is normally backed by pending.json, but a corrupt/half-written one must still
+# render — falling back to the resume pointer rather than blanking the column.
+repo9b="$(new_init_repo)"
+write_mission "$repo9b" "lcars-20260530-010" "validate" "10" \
+  "2026-05-30T10:00:00Z" "No pending file" "" "Some pending question?"
+( cd "$repo9b" && bash "$SCRIPT" >out.txt 2>&1 )
+check "9. falls back to state.json.stage when there is no pending.json" \
+  "grep -qE 'lcars-20260530-010[[:space:]]+#10[[:space:]]+validate' '$repo9b/out.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars status: %d passed, %d failed\n' "$pass" "$fail"

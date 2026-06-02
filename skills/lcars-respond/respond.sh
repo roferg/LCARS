@@ -153,10 +153,18 @@ cmd_list() {
     issue="$(json_raw "$s" githubIssue)"
     case "$issue" in ''|null) issue="-" ;; *) issue="#$issue" ;; esac
 
+    # state.json.stage is the resume pointer (e.g. "align"); pending.json holds
+    # the true in-flight stage the card is stuck in (e.g. "research"), matching
+    # the board label. Show that so this view agrees with the Kanban column.
+    pend="$(dirname "$s")/pending.json"
+    if [ -f "$pend" ]; then
+      pstage="$(json_str "$pend" stage)"
+      [ -n "$pstage" ] && stage="$pstage"
+    fi
+
     [ "$found" -eq 1 ] && echo "LCARS — Missions awaiting your input"
     echo
     printf '  %s (%s) — stage: %s\n' "$id" "$issue" "${stage:-unknown}"
-    pend="$(dirname "$s")/pending.json"
     if [ -f "$pend" ]; then
       while IFS= read -r q; do
         [ -n "$q" ] && echo "    • $q"

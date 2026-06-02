@@ -108,6 +108,19 @@ for s in "${states[@]}"; do
   paused="$(json_raw "$s" paused)"
   question="$(json_str "$s" pendingQuestion)"
 
+  # When a Mission is parked behind the awaiting-human gate, state.json.stage is
+  # the *resume pointer* (e.g. "align", so `lcars run` re-enters Research), not
+  # the Stage the card is actually stuck in. pending.json carries the true
+  # in-flight stage (e.g. "research") — the same value the board label shows.
+  # Display that, so this view agrees with the Kanban column. No pending.json →
+  # fall back to state.json.stage.
+  awaiting="$(json_raw "$s" awaitingHuman)"
+  pend="$(dirname "$s")/pending.json"
+  if [ "$awaiting" = "true" ] && [ -f "$pend" ]; then
+    pstage="$(json_str "$pend" stage)"
+    [ -n "$pstage" ] && stage="$pstage"
+  fi
+
   # issue → "#42" or "-" when none has been opened yet (ASCII dash keeps the
   # column aligned — a multibyte em-dash would throw printf's width off)
   case "$issue" in
