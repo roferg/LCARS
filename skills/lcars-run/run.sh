@@ -161,13 +161,32 @@ cmd_gate() {
   fi
 
   if [ "$n" -gt "$MAX_QUESTIONS" ]; then
+    # Over the cap → escalate to the human, walk-away style (same awaiting-human
+    # gate shape as validate-pause). The Mission's STAGE pointer stays "align"
+    # (Research runs on align, so a resume re-enters Research), but the BOARD
+    # label flips align → research so the paused card sits in the Research column
+    # it is actually stuck in — not back in Align. Then overlay awaiting-human.
+    local q; q="$(mktemp)"
+    printf 'Research needs %s questions — over the cap of %s, which usually means the PRD is underspecified. Reply "override" to run all %s research agents anyway, or "return-to-align" to sharpen the PRD first.\n' \
+      "$n" "$MAX_QUESTIONS" "$n" >"$q"
+    write_pending "$q" "research"
+
+    local first; first="$(head -1 "$q")"
+    state_set_raw awaitingHuman true
+    state_set_str pendingQuestion "$first"
+    # In-flight stage label first (research), THEN the awaiting-human overlay.
+    gh_relabel "lcars:research lcars:awaiting-human" "lcars:align"
+    rm -f "$q"
+
     echo "GATE: too-many $n"
     echo "  Research wants $n questions — over the cap of $MAX_QUESTIONS. That"
     echo "  many open questions usually means the PRD is underspecified."
-    echo "  Nothing has changed. Choose how to proceed:"
+    echo "  Escalated to you (the card is now in Research, awaiting-human):"
     echo "    • override         — run all $n research agents anyway"
     echo "    • return-to-align  — re-run \`lcars file\` with this context appended"
     echo "                         so the PRD can be sharpened"
+    echo "  Answer with \`lcars respond $MISSION_ID\`."
+    [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
     exit 3
   fi
 
@@ -260,7 +279,10 @@ cmd_validate_pause() {
   state_set_raw awaitingHuman true
   state_set_str pendingQuestion "$first"
 
-  gh_relabel "lcars:awaiting-human" ""
+  # In-flight stage label first (validate — already applied on entry, re-asserted
+  # so the escalation is self-contained), THEN the awaiting-human overlay, so the
+  # paused card sits squarely in the Validate column.
+  gh_relabel "lcars:validate lcars:awaiting-human" ""
 
   echo "VALIDATE: paused — $n scope question(s)"
   echo "  A finding implies a scope change. The Mission is waiting on you:"
@@ -290,10 +312,13 @@ cmd_validate_advance() {
   cp "$PLAN" "$MISSION_DIR/validated-plan.md"
 
   # Resume cleanly whether or not we ever paused: clear the awaiting-human gate
-  # (state fields, pending.json) — no-ops on the straight-through path.
+  # (state fields, pending.json) and consume any answer `lcars respond` left —
+  # all no-ops on the straight-through path. Folding the answer into the
+  # synthesis is Claude's job (per SKILL.md); deleting answers.json here is what
+  # makes the resume one-shot, so the stage never re-asks.
   state_del awaitingHuman
   state_del pendingQuestion
-  rm -f "$MISSION_DIR/pending.json"
+  rm -f "$MISSION_DIR/pending.json" "$MISSION_DIR/answers.json"
 
   set_stage "plan"
   gh_relabel "lcars:plan" "lcars:validate lcars:awaiting-human"
@@ -923,7 +948,7 @@ EOF
   # and advance the Mission to Verify, keeping stage and label in step.
   state_del awaitingHuman
   state_del pendingQuestion
-  rm -f "$MISSION_DIR/pending.json"
+  rm -f "$MISSION_DIR/pending.json" "$MISSION_DIR/answers.json"
 
   set_stage "verify"
   gh_relabel "lcars:verify" "lcars:implement lcars:awaiting-human"

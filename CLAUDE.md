@@ -76,6 +76,7 @@ Skills are built in this sequence. Status:
     so the Research column is always empty. This stage must label the card with
     the stage actually running (e.g. `lcars:research`) while it is in flight, so
     an escalated mission reads as "in Research, awaiting me" rather than "Align".
+    ✅ built
 12. `lcars run`   — Auto-advance: drive stages by default; `--step` for one.
 13. `lcars log`   — Mission Log: bugs against an active mission.
 

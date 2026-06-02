@@ -15,8 +15,9 @@
 #   1. Skips research and advances to validate when 0 questions generated
 #   2. Saves each research response as correctly-shaped JSON
 #   3. Updates stage to "validate" after research completes
-#   4. Updates the GitHub label correctly (lcars:align → lcars:research)
+#   4. Updates the GitHub label correctly (lcars:align → lcars:validate)
 #   5. Triggers a human prompt when > 20 questions are needed
+#   6. A paused/escalated card shows its TRUE in-flight stage (lcars:research)
 #
 # The script takes its dependencies via env so we can stub them:
 #   LCARS_GH_BIN   - the `gh` binary (default: gh)
@@ -355,10 +356,31 @@ check "5. offers the override option" \
   "grep -qi 'override' '$repo5/out.txt'"
 check "5. offers the return-to-align option" \
   "grep -qi 'return-to-align\\|align' '$repo5/out.txt'"
-check "5. changes nothing — stage is still align" \
+# The escalation is a walk-away awaiting-human gate, NOT a synchronous prompt:
+# the stage POINTER stays at align (Research re-runs on align), but the gate is
+# persisted so `lcars respond` can answer it later.
+check "5. leaves the stage pointer at align (Research re-runs on align)" \
   "grep -q '\"stage\": *\"align\"' '$(state_of "$repo5")'"
-check "5. does not touch the GitHub label" \
-  "! grep -q 'issue edit' '$repo5/gh.log'"
+check "5. sets awaitingHuman so the gate is walk-away" \
+  "grep -q '\"awaitingHuman\": *true' '$(state_of "$repo5")'"
+check "5. persists the escalation to pending.json" \
+  "[ -f '$repo5/.git/lcars/missions/$MID/pending.json' ]"
+check "5. prompts the captain to answer with lcars respond" \
+  "grep -qi 'lcars respond' '$repo5/out.txt'"
+
+# --- Behaviour 6: the paused card shows its TRUE in-flight stage ------------
+# The bug this fixes: a Mission paused mid-Research used to keep the lcars:align
+# label, so the Research column read empty while the card actually sat there.
+# The escalation must flip the board label align → research and overlay
+# awaiting-human, so the paused card sits in the Research column it is stuck in.
+check "6. flips the board label to lcars:research (in-flight stage)" \
+  "grep -q 'add-label lcars:research' '$repo5/gh.log'"
+check "6. drops the stale lcars:align label" \
+  "grep -q 'remove-label lcars:align' '$repo5/gh.log'"
+check "6. overlays lcars:awaiting-human" \
+  "grep -q 'add-label lcars:awaiting-human' '$repo5/gh.log'"
+check "6. records the in-flight stage (research) in pending.json" \
+  "grep -q '\"stage\": *\"research\"' '$repo5/.git/lcars/missions/$MID/pending.json'"
 
 # --- Guard: Research refuses to run on a non-align mission ------------------
 repo6="$(new_repo_with_mission)"; make_gh_stub "$repo6/gh"
