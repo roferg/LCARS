@@ -56,6 +56,7 @@
     </div>
     <div class="nav-section" data-color="blue">
       <div class="nav-label">Control</div>
+      <a href="#isolation"><div class="dot"></div>Stage Isolation</a>
       <a href="#human"><div class="dot"></div>Human Control</a>
       <a href="#multi"><div class="dot"></div>Multi-Mission</a>
       <a href="#cli"><div class="dot"></div>The CLI</a>
@@ -246,6 +247,15 @@ sequenceDiagram
       </div>
       <p>The <strong>Test Writer</strong> reads the issue and writes failing behavioral tests against the public interface only. The <strong>Implementer</strong> reads the issue and the failing tests — with no access to the Test Writer's session — and implements until all tests pass.</p>
       <p>The separation is adversarial by design. The Test Writer cannot sandbag because it doesn't know who is implementing. The Implementer cannot skip tests because they arrive as a hard constraint. A passing test suite means the ticket is done.</p>
+      <div class="mission-card" style="border-left-color:var(--lcars-red)">
+        <strong>The Harness — not the LLMs — enforces the split:</strong>
+        <ul>
+          <li><strong>Red gate</strong> — the tests must actually <em>fail</em> before the Implementer runs, so "green" can't be reached with tests that assert nothing.</li>
+          <li><strong>Immutable tests</strong> — the Implementer cannot edit the test files; green is earned by implementing, never by weakening the contract.</li>
+          <li><strong>Test quality</strong> — a light check guards against a sandbagging Test Writer handing over a contract that proves nothing.</li>
+        </ul>
+        <p style="margin-top:10px;font-size:13px;color:var(--lcars-text-dim)">These live in the deterministic driver, because an LLM rewarded for a green suite will otherwise game the contract.</p>
+      </div>
     </section>
 
     <section id="verify">
@@ -260,22 +270,28 @@ sequenceDiagram
 
     <hr class="divider" />
 
+    <!-- ISOLATION -->
+    <section id="isolation">
+      <h2>Stage Isolation</h2>
+      <p>Every Stage runs as a fresh session that sees only what the previous Stage wrote to disk — never the previous Stage's conversation. The persisted artifact (the PRD, the research findings, the validated plan, <code>plan.json</code>) is the <em>entire</em> contract between Stages. This is what lets the loop run many Stages unattended without any of them inheriting another's reasoning, and it is enforced structurally: the loop spawns each worker cold and assembles its prompt from artifact paths alone, so there is no carryover to lean on even when the whole pipeline runs in one sitting.</p>
+      <p>Because the artifact is the only thing that crosses the boundary, each Stage records <strong>decisions and their rationale, not just output</strong> — the <em>why</em>, not only the <em>what</em>. A handoff that drops the implicit reasoning behind a choice is how the next Stage ends up building the wrong thing; capturing the rationale is what keeps the cold handoff sufficient.</p>
+    </section>
+
+    <hr class="divider" />
+
     <!-- HUMAN CONTROL -->
     <section id="human">
       <h2>Human Control</h2>
       <p>LCARS is designed to run without constant supervision — but the human is never locked out.</p>
+      <p>By default a Mission <strong>auto-advances</strong>: once filed, the Harness drives it Stage to Stage on its own and stops only at a human gate — an escalation, or the Verify review. At each gate it notifies you and waits, so being pinged when you're actually needed is the normal way to use it.</p>
       <div class="control-grid">
         <div class="control-card">
-          <div class="control-cmd">lcars pause</div>
-          <div class="control-desc">Serializes Mission state and stops all activity. Safe to walk away.</div>
+          <div class="control-cmd">lcars pause / resume</div>
+          <div class="control-desc">Serializes Mission state and stops; resumes from exactly where it left off. Safe to walk away.</div>
         </div>
         <div class="control-card">
-          <div class="control-cmd">lcars resume</div>
-          <div class="control-desc">Restores state and continues from exactly where it left off.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars respond</div>
-          <div class="control-desc">Surfaces a pending human question and accepts your answer. Harness continues.</div>
+          <div class="control-cmd">lcars answer</div>
+          <div class="control-desc">Surfaces every pending decision across all Missions and accepts your answer. The Harness resumes from there.</div>
         </div>
       </div>
       <div class="diagram-wrap">
@@ -308,21 +324,42 @@ stateDiagram-v2
     <!-- MULTI-MISSION -->
     <section id="multi">
       <h2>Multi-Mission Management</h2>
-      <p>Multiple Missions can be active simultaneously at different Stages. The Kanban Board provides a command-and-control view — all active Missions as cards, each showing its current Stage and any pending human actions. The human can start and stop individual Missions from the board.</p>
+      <p>Multiple Missions can be active simultaneously at different Stages. <code>lcars status</code> is the command-and-control view — all active Missions, each showing its current Stage and anything awaiting you. Pending decisions from every Mission collect in one inbox (<code>lcars answer</code>), so the union of "what needs me" is a single list to clear rather than something scattered across Missions. Notifications fire only at genuine gates, batched per Stage, so concurrent Missions running unattended don't become a stream of interruptions.</p>
     </section>
 
     <!-- CLI -->
     <section id="cli">
       <h2>The CLI</h2>
-      <p>LCARS runs through two CLI tools today: <strong>Claude Code</strong> and <strong>GitHub Copilot</strong>. The Harness abstracts at the model level — you choose a model (e.g. <code>claude-sonnet</code>, <code>gpt-4o</code>), and the Harness routes to whichever CLI can run it. CLI is an implementation detail. Model choice is the meaningful decision.</p>
-      <div class="mission-card" style="margin-top:16px">
-        <strong>Three global skills:</strong>
-        <ul>
-          <li><strong>Setup Skill</strong> (<code>lcars init</code>) — one-time per-repo setup. <em>Locally:</em> creates <code>.git/lcars/</code>, writes repo-level config, scans for <code>CONTEXT.md</code>, verifies CLI auth. <em>On GitHub:</em> creates the full set of LCARS Labels on the repo. Run once before filing the first Mission.</li>
-          <li><strong>Entry Skill</strong> — file a new standalone Mission (feature or bug) from any repo</li>
-          <li><strong>Mission Log</strong> — log bugs against an active Mission in free-form natural language. A single session can describe multiple bugs; the Harness extracts each, creates a fast-tracked Mission per bug, and links all of them to the referenced open Mission. If no open Mission is named, the skill asks before proceeding.</li>
-        </ul>
+      <h3>How it runs: a token-free driver, model-selected workers</h3>
+      <p>LCARS is driven by a <strong>deterministic loop</strong> — plain shell, no model, no tokens. The loop never reasons about your code; it reads each Mission's state, decides the next Stage mechanically, and spawns a fresh worker to do that Stage's thinking. All the <em>reasoning</em> happens in those workers; the loop only sequences them and records results.</p>
+      <p>Each headless Stage (Research, Validate, Plan, Plan Review, Implement) runs as a <strong>cold worker</strong> — a one-shot, non-interactive LLM invocation given only the Mission's on-disk artifacts, sharing no context with the loop or the previous Stage. Workers are spawned through a single, swappable binary that defaults to <strong>whichever CLI you launched from</strong>: run LCARS inside Claude Code and every worker is Claude; run it inside GitHub Copilot and every worker is Copilot. The interactive Stages — Align's grilling and the Verify gate — run on that same host CLI.</p>
+      <p>This is what makes CLI choice an implementation detail and <strong>model choice the meaningful one</strong>: the loop costs nothing, and every token LCARS spends is spent on the CLI you chose to run it under. The only piece that is ever CLI-specific is a thin adapter that normalizes a given CLI's one-shot invocation and output — never any Stage logic.</p>
+
+      <h3>The commands</h3>
+      <p>LCARS collapses to two things you do — <strong>hand it work</strong> and <strong>answer what it's waiting on</strong> — plus a board to look at:</p>
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-cmd">lcars</div>
+          <div class="control-desc">The one entry point. Nothing filed → takes an idea and files a Mission. Work in flight → drives it forward, auto-advancing until a human gate. Decision waiting → opens the inbox. No verb to remember, no id to paste.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars answer</div>
+          <div class="control-desc">The inbox of every pending decision across all Missions — scope escalations, plan-review stand-offs, blocked tickets, and the Verify gate. Approve and send-back are actions on a card, not separate commands.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars status</div>
+          <div class="control-desc">The read-only board: every active Mission, its Stage, and anything awaiting you.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars init</div>
+          <div class="control-desc">One-time per-repo setup: creates <code>.git/lcars/</code>, writes config, scans <code>CONTEXT.md</code>, verifies CLI auth, and creates the LCARS Labels. Run once before the first Mission.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars log</div>
+          <div class="control-desc">Log bugs against an active Mission in free-form language. One invocation can describe several bugs; the Harness fast-tracks a Mission per bug and links them to the parent.</div>
+        </div>
       </div>
+      <p style="margin-top:16px">When a Mission reaches a gate, the Harness fires a notification — a local banner by default, or a phone push if you've wired one — with a one-line, decision-ready summary, then stops. File a Mission, walk away, and come back when it pings.</p>
     </section>
 
     <hr class="divider" />

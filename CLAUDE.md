@@ -77,8 +77,24 @@ Skills are built in this sequence. Status:
     the stage actually running (e.g. `lcars:research`) while it is in flight, so
     an escalated mission reads as "in Research, awaiting me" rather than "Align".
     ✅ built
-12. `lcars run`   — Auto-advance: drive stages by default; `--step` for one.
-13. `lcars log`   — Mission Log: bugs against an active mission.
+12. `lcars run`   — Per-stage isolation: move every headless stage (Research,
+    Validate, Plan, Plan Review, Implement) into a cold subprocess worker spawned
+    via `$LCARS_WORKER_BIN` (defaults to the host CLI), prompt assembled by
+    `run.sh` from artifact paths alone; decision-rich artifacts. Closes BUG-004,
+    lays the CLI-agnostic groundwork for BUG-003.
+13. `lcars run`   — Implement guardrails: harness-enforced red gate (tests must
+    fail before the Implementer runs) + immutable test files + a test-quality
+    check.
+14. `lcars run`   — Auto-advance + notifications: token-free bash driver loops the
+    per-stage advances; `--step` for one; fires `$LCARS_NOTIFY` at every human
+    gate (local banner default, ntfy/Pushover opt-in). **Full unattended loop.**
+15. `lcars`       — Human surface: `lcars` (do-the-right-thing) + `lcars answer`
+    (one inbox absorbing respond/approve/feedback) + the read-only board; no
+    mission-id juggling. Old verbs stay as power aliases.
+16. `lcars log`   — Mission Log: bugs against an active mission.
+17. Copilot enablement — capability spike + per-CLI adapter behind
+    `$LCARS_WORKER_BIN` so workers run under Copilot. **DEFERRED** (closes
+    BUG-003); start with the spike.
 
 Detailed per-session prompts live in `.dev/bootstrap.md` (author-local, not
 shipped). When you finish a skill, tick it off here.

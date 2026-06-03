@@ -147,6 +147,14 @@ sequenceDiagram
 
 The separation is adversarial by design. The Test Writer cannot write easy tests it knows will pass, because it doesn't know who is implementing. The Implementer cannot skip or weaken tests, because they arrive as a constraint. A passing test suite means the ticket is done.
 
+The Harness — not the LLMs — enforces three guardrails that make the adversarial split hold:
+
+- **Red gate.** The Test Writer's tests must actually *fail* before the Implementer is allowed to run. A suite that passes against no implementation is rejected, so "green" can never be reached by writing tests that assert nothing.
+- **Immutable tests.** The Implementer cannot modify the test files; they are locked as the contract. Green is earned by implementing, never by editing the tests.
+- **Test quality.** A light check guards against a sandbagging Test Writer handing over a contract that proves nothing.
+
+These live in the deterministic driver, because an LLM rewarded for a green suite will otherwise game the contract.
+
 ### 8. Verify
 
 When all Waves are complete, the human reviews the Mission. This is a full inspection — reading the diff, running the app locally, testing the golden path. The human either approves or sends feedback that re-enters the loop.
@@ -154,6 +162,14 @@ When all Waves are complete, the human reviews the Mission. This is a full inspe
 ### 8. Done
 
 The human requests a PR. The Harness creates it, the human merges, and the Mission is complete. The branch is cleaned up. The card moves to Done on the Kanban.
+
+---
+
+## Stage Isolation
+
+Every Stage runs as a fresh session that sees only what the previous Stage wrote to disk — never the previous Stage's conversation. The persisted artifact (the PRD, the research findings, the validated plan, `plan.json`) is the *entire* contract between Stages. This is what lets the loop run many Stages unattended without any of them inheriting another's reasoning, and it is enforced structurally: the loop spawns each worker as a cold, one-shot invocation and assembles its prompt from artifact paths alone, so there is no carryover for a Stage to lean on even when the whole pipeline runs in one sitting.
+
+Because the artifact is the only thing that crosses the boundary, each Stage records **decisions and their rationale, not just output** — the *why*, not only the *what*. A handoff that drops the implicit reasoning behind a choice is how the next Stage ends up building the wrong thing; capturing the rationale in the artifact is what keeps the cold handoff sufficient.
 
 ---
 
@@ -191,10 +207,11 @@ stateDiagram-v2
     Paused --> Verify : lcars resume
 ```
 
+By default a Mission **auto-advances**: once filed, the Harness drives it Stage to Stage on its own and stops only at a human gate — an escalation, or the Verify review. At each gate it notifies you and waits, so being pinged when you're actually needed is the normal way to use it.
+
 At any point, the human can:
-- **Pause** a Mission — the Harness serializes its state and stops
-- **Resume** a Mission — the Harness picks up exactly where it left off
-- **Respond** to a pending question — `lcars respond` surfaces any question the Harness is waiting on and accepts the answer
+- **Pause / Resume** a Mission — the Harness serializes its state and stops, then picks up exactly where it left off.
+- **Answer** a pending decision — `lcars answer` surfaces everything the Harness is waiting on, across every Mission, and accepts the answer. The Harness resumes from there.
 
 Every Mission's state is persisted. Walking away and coming back is a first-class interaction pattern, not an edge case.
 
@@ -202,19 +219,31 @@ Every Mission's state is persisted. Walking away and coming back is a first-clas
 
 ## Multi-Mission Management
 
-Multiple Missions can be active simultaneously at different Stages. The Kanban Board provides a command-and-control view — all active Missions as cards, each showing its current Stage and any pending human actions. The human can start and stop individual Missions from the board.
+Multiple Missions can be active simultaneously at different Stages. `lcars status` is the command-and-control view — all active Missions, each showing its current Stage and anything awaiting you. Pending decisions from every Mission collect in one inbox (`lcars answer`), so the union of "what needs me" is a single list to clear rather than something scattered across Missions. Notifications fire only at genuine gates, batched per Stage, so concurrent Missions running unattended don't become a stream of interruptions.
 
 ---
 
 ## The CLI
 
-LCARS runs through two CLI tools today: Claude Code and GitHub Copilot. The Harness abstracts at the model level — you choose a model (e.g., `claude-sonnet`, `gpt-4o`), and the Harness routes to whichever CLI can run it. CLI is an implementation detail. Model choice is the meaningful decision.
+### How it runs: a token-free driver, model-selected workers
 
-Two global skills provide the human entry points:
+LCARS is driven by a **deterministic loop** — plain shell, no model, no tokens. The loop never reasons about your code; it reads each Mission's state, decides the next Stage mechanically, and spawns a fresh worker to do that Stage's thinking. All the *reasoning* happens in those workers; the loop only sequences them and records results.
 
-- **Setup Skill** (`lcars init`) — one-time per-repo setup. Locally: creates `.git/lcars/`, writes repo-level config, scans for `CONTEXT.md`, verifies CLI auth. On GitHub: creates the full set of LCARS Labels on the repo. Run once before filing the first Mission.
-- **Entry Skill** — file a new standalone Mission (feature or bug) from any repo
-- **Mission Log** — log bugs or feedback against an active Mission in free-form natural language. A single session can describe multiple bugs; the Harness extracts each, creates a fast-tracked Mission per bug, and links all of them to the referenced open Mission. If no open Mission is named, the skill asks before proceeding.
+Each headless Stage (Research, Validate, Plan, Plan Review, Implement) runs as a **cold worker** — a one-shot, non-interactive LLM invocation given only the Mission's on-disk artifacts. A worker shares no context with the loop or with the previous Stage; the persisted artifact is the entire contract between Stages (see *Stage Isolation*). Workers are spawned through a single, swappable binary that defaults to **whichever CLI you launched from**. Run LCARS inside Claude Code and every worker is Claude; run it inside GitHub Copilot and every worker is Copilot. The interactive Stages — Align's grilling and the Verify gate — run on that same host CLI.
+
+This is what makes CLI choice an implementation detail and **model choice the meaningful one**: the loop costs nothing, and every token LCARS spends is spent on the CLI you chose to run it under. The only piece that is ever CLI-specific is a thin adapter that normalizes a given CLI's one-shot invocation and output — never any Stage logic.
+
+### The commands
+
+LCARS collapses to two things you do — **hand it work** and **answer what it's waiting on** — plus a board to look at:
+
+- **`lcars`** — the one entry point. With nothing filed, it takes a free-form idea and files a Mission. With work in flight and nothing pending, it drives the active Mission forward, auto-advancing through Stages until a human gate. With a decision waiting, it drops you into the inbox. You never have to remember which verb to type or paste a Mission id.
+- **`lcars answer`** — the inbox of every pending decision across all Missions: scope escalations, plan-review stand-offs, blocked tickets, and the Verify ship-or-send-back gate. Clear them here; **approve** and **send back with feedback** are actions on a Verify card, not separate commands.
+- **`lcars status`** — the read-only board: every active Mission, its Stage, and anything awaiting you.
+- **`lcars init`** — one-time per-repo setup: creates `.git/lcars/`, writes repo config, scans for `CONTEXT.md`, verifies CLI auth, and creates the LCARS Labels on the repo. Run once before the first Mission.
+- **`lcars log`** — log bugs against an active Mission in free-form natural language. One invocation can describe several bugs; the Harness extracts each, fast-tracks a Mission per bug, and links them to the referenced open Mission. If none is named, it asks first.
+
+When a Mission reaches a gate, the Harness fires a notification — a local banner by default, or a phone push if you've wired one — with a one-line, decision-ready summary, then stops. File a Mission, walk away, and come back when it pings.
 
 ---
 
@@ -367,7 +396,7 @@ Filtering GitHub Issues to `lcars:awaiting-human` across all columns shows every
 - `.claude/settings.json` — existing permissions and hooks are preserved
 - Any source files, branches, or GitHub configuration
 
-Each LLM session spawned by the harness receives context via its prompt directly — the harness injects what it needs, rather than relying on any repo-level config file. This makes the harness CLI-agnostic: Claude Code and GitHub Copilot sessions are both orchestrated the same way, with no dependency on `CLAUDE.md` or any Copilot equivalent.
+Each LLM session spawned by the harness — every cold Stage worker — receives its context via its prompt directly, assembled by the loop from on-disk artifacts rather than from any repo-level config file. This is what makes the harness CLI-agnostic: workers are spawned through one swappable binary, so Claude Code and GitHub Copilot sessions are orchestrated identically, with no dependency on `CLAUDE.md` or any Copilot equivalent.
 
 ---
 
