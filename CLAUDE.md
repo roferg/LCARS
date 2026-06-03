@@ -81,7 +81,7 @@ Skills are built in this sequence. Status:
     Validate, Plan, Plan Review, Implement) into a cold subprocess worker spawned
     via `$LCARS_WORKER_BIN` (defaults to the host CLI), prompt assembled by
     `run.sh` from artifact paths alone; decision-rich artifacts. Closes BUG-004,
-    lays the CLI-agnostic groundwork for BUG-003.
+    lays the CLI-agnostic groundwork for BUG-003.  ✅ built
 13. `lcars run`   — Implement guardrails: harness-enforced red gate (tests must
     fail before the Implementer runs) + immutable test files + a test-quality
     check.

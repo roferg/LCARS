@@ -6,8 +6,47 @@ description: Advance an LCARS Mission one Stage. This build runs the Research, V
 # lcars run
 
 `lcars run <mission-id>` advances a Mission through the LCARS pipeline **one
-Stage at a time**. You (Claude) drive the LLM work; the bundled `run.sh` does
-the mechanical, testable persistence so it stays under test.
+Stage at a time**. Every **headless** Stage's LLM work runs in a **cold
+subprocess worker** — `run.sh` assembles the worker's prompt from a per-Stage
+template plus the artifact *paths* alone and spawns it through `$LCARS_WORKER_BIN`
+(the host CLI by default). You (Claude) do **no** Stage reasoning for those
+Stages: you invoke the one driver subcommand and report what it printed. The
+bundled `run.sh` does the spawning, validation, and mechanical persistence so it
+all stays under test.
+
+### Stage isolation: headless Stages are cold workers, not inline reasoning
+
+The reason the LLM work is a subprocess and not something you do inline is
+**isolation** (vision.md → *Stage Isolation*; closes BUG-004). A worker shares
+**no** context with you or with the previous Stage — its prompt is built by
+`run.sh` from the on-disk artifact **paths** only (the worker `Read`s them
+itself), so there is no channel for one Stage's reasoning to leak into the next,
+even when the whole pipeline runs in one sitting. Because the worker is one
+swappable binary, this is also the CLI-portability groundwork (BUG-003): run
+LCARS under Claude Code and every worker is Claude; under Copilot, every worker
+is Copilot.
+
+Each headless Stage is therefore a single driver subcommand you run and report:
+
+| Stage | Driver | What it spawns |
+|---|---|---|
+| Research | `run.sh research --mission <id>` | a question-generator worker, then **N parallel** stateless research workers (one per question) |
+| Validate | `run.sh validate --mission <id>` | one Validator worker (fed only `prd.md` + `research/*.json`) |
+| Plan | `run.sh plan --mission <id>` | one Planner worker (fed only `prd.md` + `validated-plan.md`) |
+| Plan Review | `run.sh plan-review --mission <id>` | one fresh reviewer worker (fed only `plan.json`) |
+| Implement | `run.sh implement-ticket --mission <id> --ticket <id>` | a Test Writer worker, then a separate Implementer worker |
+
+Each driver prints a **`⊘ isolated`** marker naming the worker it ran in. If no
+worker binary is available the driver refuses **loudly** (`⚠ NOT ISOLATED`) and
+changes nothing — an inline/uncovered run must never masquerade as isolated. A
+malformed worker output stops the Stage and is re-dispatched up to a few attempts
+before surfacing failure; the Stage never silently advances on bad output.
+
+**Schedule** is mechanical (no worker), and the two **interactive** Stages —
+Align's re-grill and the Verify gate — stay on the host CLI (your session), not a
+cold worker. The driver subcommands sit on top of the mechanical persistence
+subcommands (`gate` / `save` / `validate-*` / `plan-save` / `review-save` /
+`impl-*`), which they reuse to record results.
 
 **This build implements the Research, Validate, Plan, Plan Review, Schedule,
 Implement, and Verify stages.** A Mission filed by `lcars file` sits at stage
@@ -68,368 +107,109 @@ rather than running Research cold.
 
 ## The Research stage
 
-### STEP 1 — Read the PRD
-
-Read `.git/lcars/missions/<id>/prd.md`. This is the canonical spec produced by
-Align. It is your **only** input for generating questions.
-
-### STEP 2 — Generate 0–20 research questions
-
-From the PRD, write the set of questions that genuinely need an answer before
-implementation — each a design choice, product consideration, or engineering
-decision the PRD leaves open. Be honest about ambiguity:
-
-- **If the PRD is simple and unambiguous, generate 0 questions.** A one-line
-  bug ("/about 404s") needs no research. Don't manufacture questions to look
-  thorough.
-- **Aim for 0–20.** Most missions need a handful.
-- **If you genuinely need more than 20,** that's a signal the PRD is
-  underspecified — see the gate below.
-
-Write one question per line to a temp file, then run the **gate** so the count
-decision is mechanical and logged:
+**Do not read the PRD, generate questions, or spawn agents yourself.** Research
+is a headless Stage: run the one driver and report. It spawns a cold
+question-generator worker (fed only `prd.md`), gates on the count, and on
+dispatch fans out **N parallel** stateless research workers — each given only its
+single question, no PRD and no siblings (CONTEXT.md → *Research Agent*) — then
+saves the findings and advances to `validate`.
 
 ```bash
-qs=$(mktemp)
-cat > "$qs" <<'Q'
-Which colour token should drive the dark theme?
-Where is the user's theme choice persisted?
-Q
-bash ~/.claude/skills/lcars-run/run.sh gate --mission <id> --questions "$qs"
+bash ~/.claude/skills/lcars-run/run.sh research --mission <id>
 ```
 
-The gate prints one of three outcomes and sets its exit code accordingly:
+The driver prints the gate decision plus a `⊘ isolated` marker:
 
-| Output | Meaning | What you do next |
+| Driver output | Meaning | What you do |
 |---|---|---|
-| `GATE: skip` | 0 questions. The script has **already** advanced the mission (stage and label both → `validate`). | Report it to the captain. **Done.** |
-| `GATE: dispatch N` | 1–20 questions. Nothing changed yet. | Go to STEP 3 — spawn N agents. |
-| `GATE: too-many N` (exit 3) | More than 20. Nothing changed. | Go to the **>20 escalation** below. Do **not** spawn agents. |
+| `GATE: skip` then `⊘ isolated` | 0 questions — the PRD was unambiguous. The mission has **already** advanced (stage + label → `validate`). | Report it. **Done.** |
+| `GATE: dispatch N` … `SAVE: N responses` … `⊘ isolated` | N research workers ran in parallel and their findings were saved; the mission advanced to `validate`. | Report how many ran and that it is ready for **Validate**. |
+| `GATE: too-many N` (exit 3) | More than 20 questions — the driver escalated to the **awaiting-human** gate (card moved to the Research column, `lcars:awaiting-human` overlaid). | Surface the two options — **override** (re-run `research` to proceed) or **return-to-align** (re-run `lcars file` with the context to sharpen the PRD). The captain answers with `lcars respond <id>`. |
 
-> For an empty question set, pass an empty file (or `--questions /dev/null`);
-> the gate treats zero non-blank lines as "skip".
-
-#### >20 escalation
-
-The gate has already printed the explanation and the two options. Surface them
-to the captain and let them decide — do not proceed on your own:
-
-- **override** — re-run the gate is *not* needed; instead spawn all N agents
-  anyway (STEP 3), because the captain has accepted the larger set.
-- **return-to-align** — the PRD needs sharpening. Re-run `lcars file` for this
-  mission with the unresolved questions appended as context, so Align can
-  resolve them, then run Research again.
-
-### STEP 3 — Dispatch one stateless agent per question
-
-For each question, spawn a **parallel** subagent (use the Agent tool; send them
-together in one message so they run concurrently). Each agent is **stateless**:
-
-- It receives **only the question text** — **no PRD, no other context, no other
-  agents' findings.** This is deliberate (see CONTEXT.md → *Research Agent*).
-- It has **web search** and **read access to the repo**.
-- It returns exactly this shape:
-
-  ```json
-  {
-    "question": "<the question, verbatim>",
-    "recommendation": "<a single clear recommendation>",
-    "supporting_points": ["<point 1>", "<point 2>", "<point 3>"]
-  }
-  ```
-
-Give each agent a prompt like:
-
-> You are a stateless LCARS research agent. You have web search and read-only
-> access to this repository. Answer ONLY this question — you have no other
-> context, and that is intentional. Return a JSON object with keys `question`
-> (verbatim), `recommendation` (one clear recommendation), and
-> `supporting_points` (2–3 short strings). Output only the JSON.
->
-> Question: «<question text>»
-
-Collect each agent's JSON and write it to its own file in a temp dir, named in
-question order so the saved order is stable — zero-pad them:
-
-```bash
-out=$(mktemp -d)
-# write agent 1's JSON to $out/001.json, agent 2's to $out/002.json, …
-```
-
-### STEP 4 — Save the responses and advance
-
-Hand the response dir to the script. It validates each response has
-`question` / `recommendation` / `supporting_points`, copies them to
-`research/<n>.json`, advances the stage to `validate`, and moves the GitHub
-label from `lcars:align` to `lcars:validate` (the two stay in agreement):
-
-```bash
-bash ~/.claude/skills/lcars-run/run.sh save --mission <id> --responses "$out"
-```
-
-A malformed response stops the save without advancing — fix the agent output
-and re-run. On success it prints:
-
-```
-SAVE: 2 responses
-  Saved 2 research response(s) to research/.
-  Stage:  validate
-```
-
-### STEP 5 — Report
-
-Tell the captain how many questions ran, where the findings live
-(`research/`), and that the mission is now ready for **Validate**:
-`lcars run <id>` again will pick up the Validate stage.
+If the driver prints `⚠ NOT ISOLATED` and refuses, there is no worker binary —
+tell the captain to set `$LCARS_WORKER_BIN` (e.g. `claude`); do **not** try to do
+the Stage inline.
 
 ## The Validate stage
 
 Runs when `state.json.stage` is `validate` and `awaitingHuman` is not `true`
-(see Dispatch). A single **Validator** session reviews every Research Agent's
-finding *in the context of the PRD*, synthesises them into a plan, and decides
-each open point. The Validator owns **implementation** decisions; it escalates
-only **scope/direction** changes — things that change *what* gets built, not
-*how* — to the human (see CONTEXT.md → *Validate*).
-
-### STEP 1 — Read the PRD and every research finding
-
-Read `.git/lcars/missions/<id>/prd.md` and **all** of
-`.git/lcars/missions/<id>/research/*.json`. Unlike the stateless research
-agents, the Validator gets the full context: the spec plus every finding. If a
-`pending.json` exists with answers filled in (a resume after `lcars respond`),
-read those answers too and treat them as settled.
-
-### STEP 2 — Run the Validator: synthesise + surface scope questions
-
-Produce two things:
-
-1. **A synthesis** — a `validated-plan.md` that resolves the findings into a
-   coherent implementation plan. It **must** have these sections (the script
-   enforces them, mirroring how `lcars file` enforces the PRD's sections):
-
-   ```markdown
-   # Validated Plan: <mission title>
-
-   ## Synthesis
-   <prose: how the research findings combine into one plan, with conflicts
-   resolved and the reasoning for each implementation decision you made>
-
-   ## Decisions
-   - <concrete implementation decision 1>
-   - <concrete implementation decision 2>
-   ```
-
-2. **Scope-change questions** — zero or more. A point belongs here **only** if
-   answering it changes *what* gets built (e.g. "global vs. per-course
-   leaderboard — this changes the DB schema"). Anything you can decide as an
-   implementation detail, decide it yourself in `## Decisions`; do **not**
-   escalate it. Most missions raise **zero** scope questions.
-
-### STEP 3 — Branch on scope questions
-
-**If there are zero scope questions**, write your synthesis to a temp file and
-advance straight to Plan:
+(see Dispatch). **Do not synthesise the findings yourself.** Run the driver: it
+spawns one cold **Validator** worker fed only `prd.md` + `research/*.json`. The
+worker reviews every finding *in the context of the PRD*, writes a
+`validated-plan.md` synthesis (with `## Synthesis`, `## Decisions`, and a
+`## Rationale` section recording the *why*), and emits zero or more
+**scope-change** questions — a point counts only if it changes *what* gets built,
+not *how* (CONTEXT.md → *Validate*). The driver persists the outcome.
 
 ```bash
-bash ~/.claude/skills/lcars-run/run.sh validate-advance \
-  --mission <id> --plan /tmp/validated-plan.md
+bash ~/.claude/skills/lcars-run/run.sh validate --mission <id>
 ```
 
-This writes `validated-plan.md`, sets the stage to `plan`, and moves the label
-`lcars:validate` → `lcars:plan`.
+| Driver output | Meaning | What you do |
+|---|---|---|
+| `VALIDATE: advanced` … `⊘ isolated` | No scope question. The worker's `validated-plan.md` is saved and the mission advanced to `plan`. | Report that it is at **Plan**. |
+| `VALIDATE: paused` … | A scope question. The driver wrote `pending.json`, set the awaiting-human gate, and kept the card in Validate. | Surface the question(s); the captain answers with `lcars respond <id>`. **Stop.** |
 
-**If there are scope questions**, write one per line to a temp file and pause
-at the human gate — do **not** write the plan yet:
+A worker whose plan is malformed (e.g. it drops the `## Rationale`) is rejected
+and re-dispatched; if it never produces a valid plan the driver stops the Stage
+without advancing.
 
-```bash
-qs=$(mktemp)
-cat > "$qs" <<'Q'
-Global or per-course leaderboard? (changes the DB schema)
-Q
-bash ~/.claude/skills/lcars-run/run.sh validate-pause --mission <id> --questions "$qs"
-```
-
-`validate-pause` writes the questions to `pending.json`, sets
-`awaitingHuman: true` + `pendingQuestion` in `state.json` (so `lcars status`
-shows the card as ❓ awaiting input), adds the `lcars:awaiting-human` label, and
-keeps the card in the Validate column. Surface the printed questions to the
-captain and tell them to answer with `lcars respond <id>`. **Then STOP** — do
-not advance until the questions are answered.
-
-### STEP 4 — Resume after the human answers
-
-When the captain runs `lcars respond <id>` (a later build), it records their
-answers into `pending.json` and clears `awaitingHuman`. The next `lcars run
-<id>` falls through to Validate again: re-read the PRD, the findings, **and the
-recorded answers**, fold the answers into your synthesis, and — assuming no new
-scope question — call `validate-advance` as in STEP 3. That writes
-`validated-plan.md`, clears the awaiting-human gate (state fields,
-`pending.json`, the `lcars:awaiting-human` label), and advances to Plan.
-
-### STEP 5 — Report
-
-Tell the captain the Mission is synthesised, where the plan lives
-(`validated-plan.md`), and that it is now at **Plan** — or, if you paused, what
-you're waiting on and how to answer it.
+**Resume after the human answers:** once `lcars respond <id>` records the answers
+and clears `awaitingHuman`, the next `lcars run <id>` falls through to Validate
+again and re-runs the driver. The fresh Validator worker reads the recorded
+answers alongside the PRD and findings, folds them in, and — assuming no new
+scope question — advances to Plan, clearing the gate.
 
 ## The Plan stage
 
-Runs when `state.json.stage` is `plan`. A single **Planning** session decomposes
-the validated plan into a list of small, independently-buildable tickets — the
-unit each Implement pair will pick up later (see CONTEXT.md → *Plan*). You run
-the Planner and emit `plan.json`; the script validates and installs it.
-
-### STEP 1 — Read the PRD and the validated plan
-
-Read `.git/lcars/missions/<id>/prd.md` (the canonical spec) and
-`.git/lcars/missions/<id>/validated-plan.md` (the Validator's synthesis +
-decisions). Together they are your full input — the *what* (PRD) and the agreed
-*how* (validated plan).
-
-### STEP 2 — Run the Planner: decompose into tickets
-
-Produce a list of tickets. **Every ticket must be:**
-
-- **A vertical slice** — UI + logic + data end-to-end, not one horizontal layer
-  ("add all the migrations" is wrong; "add the XP trigger for video completions,
-  through to the dashboard" is right).
-- **Under 300 lines of production code** (tests excluded) — keep each ticket
-  inside an implementer LLM's effective window. Put your estimate in
-  `estimatedLoc`.
-- **Independently testable** — at least one clear, observable acceptance
-  criterion.
-- **Titled in the imperative** — "Add XP trigger for video completions", not
-  "XP trigger" or "Adds XP trigger".
-
-Capture dependencies between tickets explicitly: if ticket B can only be built
-after ticket A, list A's id in B's `dependencies`. A dependency may reference
-**only** ids that exist in this same plan — the script rejects dangling refs.
-
-### STEP 3 — Write plan.json and advance
-
-Write the whole list to a temp file as a JSON array, in this **canonical
-shape** — one field per line, with `acceptanceCriteria` and `dependencies` as
-inline single-line arrays (the validator is line-oriented, like the rest of
-`run.sh`):
-
-```json
-[
-  {
-    "id": "t-001",
-    "title": "Add the data-theme attribute and dark token set",
-    "description": "Flip data-theme on <html> and wire the dark --color-* tokens end-to-end.",
-    "acceptanceCriteria": ["Setting data-theme=dark recolours the page"],
-    "estimatedLoc": 120,
-    "dependencies": []
-  },
-  {
-    "id": "t-002",
-    "title": "Add the theme toggle and persist the choice",
-    "description": "Render a toggle that writes to localStorage and restores on load.",
-    "acceptanceCriteria": ["Toggling persists across reload", "Defaults to prefers-color-scheme"],
-    "estimatedLoc": 90,
-    "dependencies": ["t-001"]
-  }
-]
-```
-
-Ticket ids are `t-001`, `t-002`, … in plan order. Then hand the file to the
-script:
+Runs when `state.json.stage` is `plan`. **Do not decompose the plan yourself.**
+Run the driver: it spawns one cold **Planner** worker fed only `prd.md` +
+`validated-plan.md` — the *what* and the agreed *how* — which decomposes them
+into small, vertical-slice tickets and writes `plan.json`. The driver validates
+and installs it, advancing to `plan-review`.
 
 ```bash
-bash ~/.claude/skills/lcars-run/run.sh plan-save --mission <id> --plan /tmp/plan.json
+bash ~/.claude/skills/lcars-run/run.sh plan --mission <id>
 ```
 
-`plan-save` validates the list — every ticket carries all six fields
-(`id`, `title`, `description`, `acceptanceCriteria`, `estimatedLoc`,
-`dependencies`), has **at least one** acceptance criterion, and every
-dependency points to a real ticket id in the same plan — then writes
-`plan.json`, sets the stage to `plan-review`, and moves the label
-`lcars:plan` → `lcars:plan-review`. A malformed plan stops the advance with the
-first failure named; fix it and re-run.
+Each ticket the worker produces carries `id`, `title`, `description`,
+`acceptanceCriteria` (≥1), `estimatedLoc` (<300), `dependencies` (only ids in
+this plan), and a **`rationale`** — *why* this slice exists and why it is drawn
+where it is. `plan-save` (invoked by the driver) refuses a plan that drops any
+required field, including the rationale, so the Stage will re-dispatch the worker
+and ultimately stop rather than advance on a half-formed plan. On success the
+driver prints `PLAN: advanced` and a `⊘ isolated` marker.
 
-### STEP 4 — Report
-
-Tell the captain how many tickets the plan holds, where it lives (`plan.json`),
-and that the Mission is now at **Plan Review**.
+**Report:** how many tickets the plan holds (`plan.json`) and that the Mission is
+now at **Plan Review**. (On a Plan Review loop-back, this same driver re-runs; the
+fresh Planner worker reads the latest `plan-review-<round>.json` objections
+itself — see Plan Review below.)
 
 ## The Plan Review stage
 
 Runs when `state.json.stage` is `plan-review` and `awaitingHuman` is not `true`
-(see Dispatch). A **fresh reviewer** session audits the tickets against a fixed
-quality bar — and the same LLM that planned the work must not also grade it, so
-the reviewer is independent by design (see vision.md → *Plan Review*).
-
-### STEP 1 — Run a FRESH reviewer over `plan.json` ONLY
-
-Read `.git/lcars/missions/<id>/plan.json` and review it in a session that gets
-**only** the tickets. **Do not read `prd.md` or `validated-plan.md`, and do not
-carry over any planning context** — the reviewer judges the tickets on their own
-terms. This independence is the whole point of the Stage; passing the spec in
-would defeat it (the same way a Research agent must stay stateless).
-
-Audit **every** ticket against the four criteria:
-
-- **Vertical slice** — does it touch multiple layers end-to-end (UI + logic +
-  data), not just one horizontal layer ("add all the migrations")?
-- **Size** — is `estimatedLoc` under 300 lines of production code?
-- **Testability** — is there at least one clear, observable acceptance
-  criterion?
-- **Dependencies** — does every id in `dependencies` reference another ticket
-  **in this same plan**?
-
-Produce a single verdict object:
-
-```json
-{
-  "passed": false,
-  "issues": [
-    { "ticketId": "t-001", "objection": "Oversized: ~450 LoC; split it." },
-    { "ticketId": "t-003", "objection": "Horizontal slice — only the data layer." }
-  ]
-}
-```
-
-`passed` is `true` only when **every** ticket clears all four criteria — then
-`issues` is empty. Otherwise `passed` is `false` and `issues` names each
-offending ticket with a specific, actionable objection. Keep it to the
-**canonical one-issue-per-line shape** above (the script parses objections
-line-oriented, like the rest of `run.sh`).
-
-### STEP 2 — Hand the verdict to the script
-
-Write the verdict to a temp file and pass it to the one subcommand. The script
-branches on `passed`:
+(see Dispatch). **Do not review the tickets yourself.** Run the driver: it spawns
+one **fresh reviewer** worker fed **only** `plan.json` — never `prd.md` or
+`validated-plan.md`. That independence is the whole point (vision.md → *Plan
+Review*): the session that planned the work must not also grade it, so leaking
+the spec in is structurally prevented — the driver simply doesn't put it on the
+worker's path list. The worker audits every ticket (vertical slice, <300 LoC,
+testable, deps in-plan) and emits a verdict; the driver branches on it.
 
 ```bash
-bash ~/.claude/skills/lcars-run/run.sh review-save --mission <id> --verdict /tmp/verdict.json
+bash ~/.claude/skills/lcars-run/run.sh plan-review --mission <id>
 ```
 
-| `passed` | What the script does |
-|---|---|
-| `true` | Writes `approved-plan.json` (a copy of `plan.json`), sets the stage to `schedule`, and moves the label `lcars:plan-review` → `lcars:schedule`. The Mission is ready for **Schedule**. |
-| `false` (rounds 1–2) | Logs the verdict to `plan-review-<round>.json`, increments `state.json.planReviewRound`, and loops the Mission back to `plan` (label `lcars:plan-review` → `lcars:plan`). Re-run `lcars run <id>` to **revise the tickets** against the objections, then Plan Review again. |
-| `false` (round 3) | Logs `plan-review-3.json`, then **escalates**: writes the unresolved objections to `pending.json`, sets `awaitingHuman: true` + `pendingQuestion`, adds `lcars:awaiting-human`, and keeps the card in the Plan Review column. **Stop** — the captain decides. |
+| Driver output | Meaning | What you do |
+|---|---|---|
+| `PLAN-REVIEW: passed` … `⊘ isolated` | Every ticket cleared review. `approved-plan.json` written; advanced to `schedule`. | Report it is at **Schedule**. |
+| `PLAN-REVIEW: revise — round N` | The verdict failed (rounds 1–2). Objections logged to `plan-review-<round>.json`; looped back to `plan`. | Surface the objections; the next `lcars run <id>` re-runs **Plan**, whose worker reads the objections and revises. |
+| `PLAN-REVIEW: escalated` | The 3rd failed round. The driver wrote the unresolved objections to `pending.json`, set the awaiting-human gate, and kept the card in Plan Review. | Surface them; the captain overrides (proceed) or redirects via `lcars respond <id>`. **Stop.** |
 
-A failing verdict with an empty `issues` list is malformed — the script refuses
-it and nothing moves; name the objections and re-run.
-
-### STEP 3 — On a loop-back, revise then re-review
-
-When the script loops the Mission back to `plan`, the next `lcars run <id>`
-runs the **Plan stage** again. Read the latest `plan-review-<round>.json`
-objections alongside the PRD and validated plan, revise `plan.json` to resolve
-them, and `plan-save` advances back to `plan-review` — where the reviewer runs
-fresh once more. `planReviewRound` persists across the loop, so the third
-failure escalates rather than looping forever.
-
-### STEP 4 — Report
-
-If the plan passed, tell the captain it cleared review, where the approved plan
-lives (`approved-plan.json`), and that the Mission is now at **Schedule**. If it
-looped back, say which round it is and surface the objections so the Plan revise
-has them. If it escalated, surface the unresolved objections and tell the
-captain to override (proceed to Schedule) or redirect with `lcars respond <id>`.
+`planReviewRound` persists across the loop, so the third failure escalates rather
+than looping forever. A `passed:false` verdict with no issues is malformed — the
+driver re-dispatches the reviewer and ultimately stops rather than moving on a
+verdict that names nothing.
 
 ## The Schedule stage
 
@@ -517,85 +297,36 @@ sequential-wave rule. Two outcomes:
 | `IMPLEMENT: wave N active` | Wave N is the current wave; the line lists its pending tickets. | Build **every** listed ticket (STEP 2), then loop back to STEP 1. |
 | `IMPLEMENT: complete` | Every ticket in every wave is green. | Go to STEP 4 — advance to Verify. |
 
-### STEP 2 — Build each pending ticket (two sessions, in parallel across the wave)
+### STEP 2 — Build each pending ticket (the cold adversarial pair)
 
-For each pending ticket in the current wave, run the two phases **in order**.
-Different tickets in the same wave are independent, so run their pairs
-concurrently. Read the ticket's `title` / `description` / `acceptanceCriteria`
-from `approved-plan.json` to brief each session.
-
-#### PHASE 1 — Test Writer (a new session)
-
-Spawn a session whose **only** job is to write failing tests for this one
-ticket. Constraints (enforce them in the prompt):
-
-- Write **only failing tests** — no implementation code.
-- Test **behaviour through public interfaces only** — no internal mocks.
-- Tests must be **immediately runnable**.
-
-Give it read access to the repo and the ticket. Have it write its test files to
-a temp dir, then quarantine them under the ticket:
+For each pending ticket the current wave lists, run the **implement-ticket**
+driver. **Do not write tests or implement anything yourself** — the driver
+spawns the two cold, adversarially-separated workers for you: a **Test Writer**
+worker (fed only the ticket from `approved-plan.json`) writes failing tests,
+which are quarantined to `tickets/<id>/tests/`; then a **separate Implementer**
+worker (fed only the ticket + those on-disk tests — *never* the Test Writer's
+session) makes them pass, iterating up to 5 attempts.
 
 ```bash
-bash ~/.claude/skills/lcars-run/run.sh impl-save-tests \
-  --mission <id> --ticket <ticket-id> --tests /tmp/tw-out
+bash ~/.claude/skills/lcars-run/run.sh implement-ticket --mission <id> --ticket <ticket-id>
 ```
 
-`impl-save-tests` copies the files into
-`.git/lcars/missions/<id>/tickets/<ticket-id>/tests/` — **that dir is the only
-channel to the Implementer**, which is what keeps the separation adversarial. An
-**empty** Test Writer output is refused (Phase 1 must produce tests).
+The two workers never share a session: the on-disk `tests/` dir is the
+Implementer's *entire* handoff, which is what keeps the split adversarial. The
+driver persists each phase (`impl-save-tests`, then `impl-save-result`) and, on a
+green ticket, **commits the Implementer's produced files to the Mission's
+branch** (the `branch` from `state.json`) so the eventual PR has content — a
+missing branch / no changes / git failure is a best-effort warning, the result
+still stands. On success it prints `⊘ isolated — implement(<id>)`.
 
-#### PHASE 2 — Implementer (a new session — NO Test Writer context)
+If the Implementer exhausts its 5 attempts (`passed:false`), the driver **flags
+the human**: it writes the blocker to `pending.json`, sets the awaiting-human
+gate, and keeps the card in Implement. Surface that and **stop** — the ticket
+needs `lcars respond <id>`; do not re-run it.
 
-Spawn a **fresh** session. It must **not** carry any of the Test Writer's
-session — its sole handoff is the tests now on disk. Give it the ticket and
-**read+write** access to the repo. Constraints:
-
-- Implement **only** what makes the tests pass.
-- **Do not modify the test files.**
-- Run the tests; iterate until green, **at most 5 attempts**. If still red after
-  the 5th, stop and report the failure (don't keep going).
-
-When it finishes, write the result to a temp file in this shape and hand it over:
-
-```json
-{
-  "ticketId": "t-001",
-  "passed": true,
-  "attempts": 3,
-  "summary": "Wired data-theme end-to-end; suite green on attempt 3."
-}
-```
-
-```bash
-bash ~/.claude/skills/lcars-run/run.sh impl-save-result \
-  --mission <id> --ticket <ticket-id> --result /tmp/result.json
-```
-
-`impl-save-result` requires the ticket's tests to already exist (Phase 1 first),
-validates the four fields, checks `ticketId` matches, and **caps `attempts` at
-5**. It saves `tickets/<ticket-id>/result.json`. Then it branches on `passed`:
-
-- **`passed: true`** → the ticket is green. The script **commits the
-  Implementer's produced files to the Mission's branch** (the `branch` recorded
-  in `state.json` by `lcars file`): on the first green ticket it checks that
-  branch out — Implement is the first Stage to touch git, so the working tree
-  the Implementer wrote into follows the checkout onto the branch — then
-  `git add -A` + `git commit`. This is what gives the eventual PR its content;
-  without it the Implementer's work would sit uncommitted on the base branch and
-  `lcars approve` would have nothing to open a PR from. A missing branch / no
-  changes / git failure is best-effort: the result is still saved and you get a
-  warning to commit by hand.
-- **`passed: false`** → the Implementer exhausted its 5 attempts. The script
-  **flags the human**: it writes the blocker to `pending.json`, sets
-  `awaitingHuman: true` + `pendingQuestion`, adds the `lcars:awaiting-human`
-  label, and keeps the card in the Implement column. **Surface this to the
-  captain and stop** — the ticket needs a human (`lcars respond <id>`); do not
-  advance.
-
-Only once **all** of the current wave's tickets are green do you loop back to
-STEP 1, which will reveal the next wave.
+Run `implement-ticket` for **every** pending ticket the current wave lists (they
+are independent within the wave), then loop back to STEP 1, which reveals the
+next wave only once this one is fully green.
 
 ### STEP 3 — Finish the wave before the next
 
@@ -672,14 +403,17 @@ writes `feedback.md`, and **keeps every prior artifact** (PRD, research,
 validated/approved plans). So an `align` Mission falls into one of two cases,
 and the dispatch tells them apart by whether `feedback.md` exists:
 
-- **No `feedback.md`** → a freshly filed Mission. Run **Research** as usual.
-- **`feedback.md` present** → a re-entry from Verify. **Re-run Align, not
-  Research first:** read `prd.md` *and* the full `feedback.md` (every stamped
-  note, in order) plus any other artifacts you need, re-grill the same way
-  `lcars file` did, and **rewrite `prd.md`** to fold in the captain's feedback.
-  Once the PRD reflects the feedback, carry on into the **Research stage** in
-  the same run (generate questions from the updated PRD, run the gate, …). Leave
-  `feedback.md` in place as the durable history; it accumulates across rounds.
+- **No `feedback.md`** → a freshly filed Mission. Run **Research** as usual (the
+  `research` driver).
+- **`feedback.md` present** → a re-entry from Verify. The re-grill is
+  **interactive**, so it stays on the host CLI (your session), not a cold worker:
+  read `prd.md` *and* the full `feedback.md` (every stamped note, in order) plus
+  any other artifacts you need, re-grill the same way `lcars file` did, and
+  **rewrite `prd.md`** to fold in the captain's feedback. Once the PRD reflects
+  the feedback, carry on into the **Research stage** in the same run — run the
+  `research` driver, which reads the now-updated `prd.md`. Leave `feedback.md` in
+  place as the durable history; it accumulates across rounds, and the `research`
+  driver does not treat its presence as a blocker (the re-grill already ran).
 
 This is what makes the Verify → Align loop pick up with the full context instead
 of starting cold.
@@ -733,8 +467,8 @@ trust the board to show exactly where every Mission is.
 .git/lcars/missions/<id>/
   research/
     1.json, 2.json, …   ← one stateless agent's findings per file (Research)
-  validated-plan.md     ← the Validator's synthesis (Validate → Plan)
-  plan.json             ← the Planner's ticket list (Plan → Plan Review)
+  validated-plan.md     ← the Validator's synthesis: Synthesis + Decisions + Rationale (Validate → Plan)
+  plan.json             ← the Planner's ticket list, each ticket carrying its rationale (Plan → Plan Review)
   approved-plan.json    ← copy of plan.json once Plan Review passes (→ Schedule)
   plan-review-<n>.json  ← the reviewer's verdict for failed round n (Plan Review)
   waves.json            ← the wave graph: [ { wave, tickets:[ { id, issue } ] } ] (Schedule → Implement)
@@ -754,6 +488,12 @@ working tree changes.
 
 ## Notes & failure modes
 
+- **Headless Stages are cold workers — never do their reasoning inline.** For
+  Research / Validate / Plan / Plan Review / Implement you run the driver and
+  report; the LLM thinking happens in a subprocess worker whose prompt `run.sh`
+  builds from artifact *paths* alone. If a driver prints `⚠ NOT ISOLATED` it
+  found no worker binary — set `$LCARS_WORKER_BIN` (e.g. `claude`); do **not**
+  substitute your own session for the worker.
 - **Wrong stage for the Stage** → `run.sh` exits non-zero and changes nothing.
   Research only runs on an `align` mission; Validate only on a `validate` one;
   Plan only on a `plan` one; Plan Review only on a `plan-review` one; Schedule
@@ -762,30 +502,34 @@ working tree changes.
   the relabel is skipped with a warning telling you to do it by hand.
 - **`gh` missing / edit fails** → same: the local stage advances; you get a
   warning with the exact `gh` relabel to run later.
-- **Research agents must stay stateless.** Never pass the PRD or sibling
-  findings into a research agent — synthesis against the PRD is the Validator's
-  job, in the Validate Stage.
+- **Research workers stay stateless — by construction.** The driver hands each
+  research worker only its single question; it never puts `prd.md` or a sibling
+  finding on the worker's path list. Synthesis against the PRD is the Validate
+  worker's job.
 - **Validate escalates scope, not implementation.** Only a finding that changes
-  *what* gets built belongs in a scope question. Decide everything else
-  yourself and record it in the plan's `## Decisions` — over-escalating turns
-  the walk-away gate into a chat.
+  *what* gets built belongs in a scope question; the Validator worker decides
+  everything else and records it under `## Decisions` (with its `## Rationale`).
+  Over-escalating turns the walk-away gate into a chat.
 - **A paused Validate must not re-run on its own.** When `awaitingHuman` is
-  `true`, do not call the Validator again — wait for `lcars respond`. The
-  Validator only re-runs once the answer is recorded and the gate is cleared.
-- **Malformed plan** (missing a required section) → `validate-advance` refuses
-  and the Mission stays at `validate`; fix the synthesis and re-run.
-- **Malformed ticket list** → `plan-save` refuses and the Mission stays at
-  `plan` (no `plan.json` written) when any ticket is missing a required field,
-  has zero acceptance criteria, or depends on a ticket id not in the plan. The
-  error names the first failure; fix `plan.json` and re-run.
+  `true`, the `validate` driver refuses — wait for `lcars respond`. A fresh
+  Validator worker only runs once the answer is recorded and the gate is cleared.
+- **Decisions/rationale are required, not optional.** `validate-advance` refuses
+  a `validated-plan.md` with no `## Rationale`, and `plan-save` refuses any
+  ticket missing its `rationale` field — the artifact is the only thing crossing
+  the Stage boundary, so it must carry the *why* (vision.md → *Stage Isolation*).
+  The driver re-dispatches the worker and ultimately stops; it never advances on
+  an artifact that drops its reasoning.
+- **Malformed worker output stops the Stage, after retries.** Any worker artifact
+  that fails its persistence validator is re-dispatched up to a few attempts;
+  if it never validates the driver stops the Stage and changes nothing — no
+  silent advance.
 - **Every Plan ticket is a vertical slice under 300 LoC.** That sizing keeps
-  each ticket inside an implementer LLM's window — don't emit horizontal,
-  layer-only tickets or ones that blow past the limit.
-- **The Plan Review reviewer must stay independent.** Never pass `prd.md`,
-  `validated-plan.md`, or any planning context into the reviewer session — it
-  judges `plan.json` alone, on its own terms. The same LLM that planned the
-  work must not also grade it (vision.md → *Plan Review*); leaking the spec
-  defeats the Stage, just as passing the PRD defeats a stateless Research agent.
+  each ticket inside an implementer LLM's window — the Planner worker must not
+  emit horizontal, layer-only tickets or ones that blow past the limit.
+- **The Plan Review reviewer is independent by construction.** The driver puts
+  only `plan.json` on the reviewer worker's path list — never `prd.md` or
+  `validated-plan.md` — so the session that planned the work cannot also grade it
+  (vision.md → *Plan Review*), the same way a research worker never sees the PRD.
 - **A failed verdict must name its objections.** `review-save` refuses a
   `passed:false` verdict with an empty `issues` list and changes nothing — a
   failing review has to say *what* failed so Plan can revise.
@@ -803,11 +547,13 @@ working tree changes.
   `"issue": null` for the un-opened tickets) and the stage still advances; you
   get a warning to open the sub-issues by hand.
 - **Implement keeps the Test Writer and Implementer adversarially separate.**
-  The Implementer's *only* handoff from the Test Writer is the tests on disk
-  (`tickets/<id>/tests/`) — never the Test Writer's session. `impl-save-result`
-  refuses a result for a ticket whose tests aren't saved yet, so Phase 1 always
-  precedes Phase 2. Don't let the Implementer modify the test files, and don't
-  pour implementation code into the Test Writer.
+  They are two distinct cold workers: the Implementer's *only* handoff from the
+  Test Writer is the tests on disk (`tickets/<id>/tests/`) — the
+  `implement-ticket` driver never gives the Implementer the Test Writer's output
+  channel beyond that dir. `impl-save-result` refuses a result for a ticket whose
+  tests aren't saved yet, so Phase 1 always precedes Phase 2. The Implementer
+  must not modify the test files, and the Test Writer must not write
+  implementation code.
 - **Implement processes waves strictly in order.** `impl-status` never reveals a
   later wave while an earlier one has an open ticket, and `impl-advance` refuses
   to reach Verify until *every* ticket in *every* wave is green — so a half-built
@@ -833,14 +579,21 @@ working tree changes.
 
 ## Implementation
 
-The mechanical logic lives in `run.sh` next to this file (subcommands `gate`,
-`save`, `validate-pause`, `validate-advance`, `plan-save`, `review-save`,
+`run.sh` next to this file holds two layers. **Stage drivers** spawn the cold
+workers and persist their output: `research`, `validate`, `plan`, `plan-review`,
+`implement-ticket`. **Persistence subcommands** (which the drivers reuse, and
+which the test suite drives directly) do the mechanical, jq-free recording:
+`gate`, `save`, `validate-pause`, `validate-advance`, `plan-save`, `review-save`,
 `schedule`, `impl-save-tests`, `impl-save-result`, `impl-status`, `impl-advance`,
-`verify-summary`) so it can be exercised directly. The Verify gate's two
-outcomes are separate skills — `lcars-approve` and `lcars-feedback` — each with
-its own script and test suite.
-Its behaviour is covered by
-`tests/lcars-run.test.sh` in the LCARS repo (run with `bash tests/run.sh`). The
-skill source lives in `skills/lcars-run/` and is symlinked into
-`~/.claude/skills/` by `./install.sh`; edit the repo copy, not `~/.claude`. If
-you change `run.sh`, keep those tests green.
+`verify-summary`. Each headless Stage's worker prompt is a template under
+`skills/lcars-run/stages/<role>.md`; `run.sh` assembles the final prompt from the
+template plus the artifact *paths* and spawns it via `$LCARS_WORKER_BIN`
+(default `claude`) with the Stage's restricted tool set.
+
+The Verify gate's two outcomes are separate skills — `lcars-approve` and
+`lcars-feedback` — each with its own script and test suite. Behaviour is covered
+by `tests/lcars-run.test.sh` (run with `bash tests/run.sh`); its stage-isolation
+section stubs `$LCARS_WORKER_BIN` so the spawn/assemble/validate/persist plumbing
+runs token-free. The skill source lives in `skills/lcars-run/` and is symlinked
+into `~/.claude/skills/` by `./install.sh`; edit the repo copy, not `~/.claude`.
+If you change `run.sh` or a stage template, keep those tests green.

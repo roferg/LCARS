@@ -119,6 +119,10 @@ Research agrees a CSS-variable theme driven by a persisted toggle is the path.
 ## Decisions
 - Use the existing `--color-*` tokens; flip a `data-theme` attribute on `<html>`.
 - Persist the learner's choice in `localStorage`.
+
+## Rationale
+Reusing the token layer avoids a parallel colour system, and localStorage keeps
+the choice client-side without a schema change — the cheapest path to the PRD.
 EOF
 }
 
@@ -145,7 +149,8 @@ write_plan_json() { # file
     "description": "Flip a data-theme attribute on <html> and define the dark token set end-to-end.",
     "acceptanceCriteria": ["Setting data-theme=dark recolours the page via existing --color-* tokens"],
     "estimatedLoc": 120,
-    "dependencies": []
+    "dependencies": [],
+    "rationale": "The token plumbing is the foundation every later slice paints on."
   },
   {
     "id": "t-002",
@@ -153,7 +158,8 @@ write_plan_json() { # file
     "description": "Render a toggle that writes the choice to localStorage and restores it on load.",
     "acceptanceCriteria": ["Toggling persists across reload", "Default follows prefers-color-scheme"],
     "estimatedLoc": 90,
-    "dependencies": ["t-001"]
+    "dependencies": ["t-001"],
+    "rationale": "Persistence is meaningless without the tokens, so it builds on t-001."
   }
 ]
 EOF
@@ -206,7 +212,8 @@ write_approved_plan_json() { # file
     "description": "Flip data-theme on <html> and wire the dark --color-* tokens end-to-end.",
     "acceptanceCriteria": ["Setting data-theme=dark recolours the page"],
     "estimatedLoc": 120,
-    "dependencies": []
+    "dependencies": [],
+    "rationale": "Foundational token layer every later slice depends on."
   },
   {
     "id": "t-002",
@@ -214,7 +221,8 @@ write_approved_plan_json() { # file
     "description": "Render a toggle in the nav that emits a theme-change event.",
     "acceptanceCriteria": ["Clicking the toggle flips the active theme"],
     "estimatedLoc": 70,
-    "dependencies": []
+    "dependencies": [],
+    "rationale": "The control is independent of persistence, so it can build in parallel."
   },
   {
     "id": "t-003",
@@ -222,7 +230,8 @@ write_approved_plan_json() { # file
     "description": "Write the chosen theme to localStorage and restore it on load.",
     "acceptanceCriteria": ["Choice survives a reload", "Defaults to prefers-color-scheme"],
     "estimatedLoc": 80,
-    "dependencies": ["t-001"]
+    "dependencies": ["t-001"],
+    "rationale": "Persistence only matters once the tokens it restores exist."
   },
   {
     "id": "t-004",
@@ -230,7 +239,8 @@ write_approved_plan_json() { # file
     "description": "Surface the active theme name on the learner dashboard.",
     "acceptanceCriteria": ["Dashboard shows the active theme"],
     "estimatedLoc": 60,
-    "dependencies": ["t-001", "t-002"]
+    "dependencies": ["t-001", "t-002"],
+    "rationale": "The dashboard readout needs both the tokens and the toggle wired."
   }
 ]
 EOF
@@ -539,14 +549,16 @@ cat >"$repoPLb/bad.json" <<'EOF'
     "description": "End-to-end token wiring.",
     "acceptanceCriteria": ["data-theme=dark recolours the page"],
     "estimatedLoc": 120,
-    "dependencies": []
+    "dependencies": [],
+    "rationale": "Foundational token layer."
   },
   {
     "id": "t-002",
     "description": "A ticket with no title field.",
     "acceptanceCriteria": ["something observable"],
     "estimatedLoc": 90,
-    "dependencies": []
+    "dependencies": [],
+    "rationale": "Has every field but the title, to isolate the missing-title check."
   }
 ]
 EOF
@@ -572,7 +584,8 @@ cat >"$repoPLc/noac.json" <<'EOF'
     "description": "End-to-end token wiring.",
     "acceptanceCriteria": [],
     "estimatedLoc": 120,
-    "dependencies": []
+    "dependencies": [],
+    "rationale": "Has every field but an acceptance criterion, to isolate that check."
   }
 ]
 EOF
@@ -596,7 +609,8 @@ cat >"$repoPLd/dangling.json" <<'EOF'
     "description": "End-to-end token wiring.",
     "acceptanceCriteria": ["data-theme=dark recolours the page"],
     "estimatedLoc": 120,
-    "dependencies": ["t-099"]
+    "dependencies": ["t-099"],
+    "rationale": "Well-formed except for the dangling dependency under test."
   }
 ]
 EOF
@@ -817,7 +831,8 @@ cat >"$repoSc/.git/lcars/missions/$MID/approved-plan.json" <<'EOF'
     "description": "Depends on t-002.",
     "acceptanceCriteria": ["does a thing"],
     "estimatedLoc": 50,
-    "dependencies": ["t-002"]
+    "dependencies": ["t-002"],
+    "rationale": "Well-formed tickets; the cycle is the defect under test."
   },
   {
     "id": "t-002",
@@ -825,7 +840,8 @@ cat >"$repoSc/.git/lcars/missions/$MID/approved-plan.json" <<'EOF'
     "description": "Depends on t-001.",
     "acceptanceCriteria": ["does another thing"],
     "estimatedLoc": 50,
-    "dependencies": ["t-001"]
+    "dependencies": ["t-001"],
+    "rationale": "Well-formed tickets; the cycle is the defect under test."
   }
 ]
 EOF
@@ -1233,6 +1249,381 @@ rcVRg=0
 ( cd "$repoVRg" && LCARS_GH_BIN="$repoVRg/gh" bash "$SCRIPT" verify-summary \
     --mission "$MID" >out.txt 2>&1 ) || rcVRg=$?
 check "guard. verify-summary refuses a non-verify mission" "[ '$rcVRg' -ne 0 ]"
+
+# ==========================================================================
+echo
+echo "lcars run — Stage isolation (cold subprocess workers)"
+
+# This build moves every headless Stage's LLM work out of the orchestrator's own
+# session and into a COLD SUBPROCESS WORKER spawned via $LCARS_WORKER_BIN, whose
+# prompt run.sh assembles from a per-Stage template + the artifact PATHS alone.
+# These tests point $LCARS_WORKER_BIN at a stub that records each call and echoes
+# canned artifacts, so the spawn / assemble / validate / persist plumbing runs
+# with no real tokens. The eight behaviours from the build order, in order:
+#   1. The worker-spawn helper builds the prompt from template + artifact PATHS
+#      only (no inlined context) and restricts the tool set per Stage
+#   2. Research dispatches N stateless workers in parallel, each given the
+#      question text only — no PRD, no siblings
+#   3. Validate runs as one cold worker fed only prd.md + research/*.json
+#   4. Plan, Plan Review, Test Writer, Implementer each run as cold workers fed
+#      only their own artifacts
+#   5. A Stage artifact missing its decisions/rationale is REFUSED by run.sh
+#   6. The summary marks each Stage `⊘ isolated`; an inline fallback is flagged
+#   7. A malformed worker output stops the Stage (no advance) and retries first
+#   8. The whole flow runs against a stubbed worker with no real tokens
+
+# A canned LCARS worker. Records every call (role + tools to $WORKER_LOG, the
+# full prompt to $WORKER_CALLS/<role>.<pid>.txt) and writes role-appropriate
+# output into $LCARS_WORK_OUT — the exact channel a real worker would use. Knobs:
+#   STUB_NQUESTIONS  how many questions the question-gen worker emits (default 2)
+#   STUB_SCOPE=1     the Validator raises a scope question (→ pause)
+#   STUB_MALFORMED=1 the named role emits an artifact that fails validation
+make_worker_stub() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""; tools=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) prompt="${2:-}"; shift 2 ;;
+    --allowedTools) tools="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf 'role=%s tools=%s\n' "$LCARS_WORKER_ROLE" "$tools" >>"$WORKER_LOG"
+printf '%s' "$prompt" >"$WORKER_CALLS/$LCARS_WORKER_ROLE.$$.txt"
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  research-questions)
+    : >"$out/questions.txt"
+    k="${STUB_NQUESTIONS:-2}"; i=0
+    while [ "$i" -lt "$k" ]; do i=$((i+1)); echo "Stub question $i about the design?" >>"$out/questions.txt"; done
+    ;;
+  research-agent)
+    cat >"$out/response.json" <<JSON
+{
+  "question": "stub question",
+  "recommendation": "Do the sensible thing.",
+  "supporting_points": ["because A", "because B"]
+}
+JSON
+    ;;
+  validate)
+    [ "${STUB_SCOPE:-0}" = "1" ] && printf 'Global or per-course leaderboard?\n' >"$out/scope.txt"
+    cat >"$out/validated-plan.md" <<MD
+# Validated Plan: Add dark mode
+
+## Synthesis
+A CSS-variable theme driven by a persisted toggle.
+
+## Decisions
+- Flip data-theme on <html>.
+
+## Rationale
+Reusing the existing tokens is the cheapest path to the PRD.
+MD
+    ;;
+  plan)
+    if [ "${STUB_MALFORMED:-0}" = "1" ]; then
+      # A ticket missing its rationale — plan-save must refuse it.
+      cat >"$out/plan.json" <<JSON
+[
+  {
+    "id": "t-001",
+    "title": "Wire the data-theme attribute",
+    "description": "End-to-end token wiring.",
+    "acceptanceCriteria": ["data-theme=dark recolours the page"],
+    "estimatedLoc": 120,
+    "dependencies": []
+  }
+]
+JSON
+    else
+      cat >"$out/plan.json" <<JSON
+[
+  {
+    "id": "t-001",
+    "title": "Wire the data-theme attribute",
+    "description": "End-to-end token wiring.",
+    "acceptanceCriteria": ["data-theme=dark recolours the page"],
+    "estimatedLoc": 120,
+    "dependencies": [],
+    "rationale": "Foundational token layer every later slice paints on."
+  }
+]
+JSON
+    fi
+    ;;
+  plan-review)
+    cat >"$out/verdict.json" <<JSON
+{
+  "passed": true,
+  "issues": []
+}
+JSON
+    ;;
+  implement-test-writer)
+    mkdir -p "$out/tests"
+    printf 'describe("t", () => it("works", () => expect(false).toBe(true)))\n' >"$out/tests/stub.test.js"
+    ;;
+  implement-implementer)
+    printf 'export const ok = true;\n' > impl-output.js
+    tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+    cat >"$out/result.json" <<JSON
+{
+  "ticketId": "${tid:-t-001}",
+  "passed": true,
+  "attempts": 2,
+  "summary": "Implemented the slice; suite green."
+}
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Fetch the recorded tool set / prompt for a role (trailing space disambiguates
+# role=plan from role=plan-review).
+tools_for_role()  { grep "role=$2 " "$1" 2>/dev/null | head -1 | sed 's/.*tools=//'; }
+prompt_for_role() { cat "$1/$2".*.txt 2>/dev/null; }
+calls_of_role()   { grep -c "role=$2 " "$1" 2>/dev/null; }
+
+# Wire a repo for a worker-driven Stage: a worker stub + a gh stub + the call log.
+# Echoes nothing; exports WORKER_LOG / WORKER_CALLS for the caller's assertions.
+arm_worker() { # repo
+  make_worker_stub "$1/worker"; make_gh_stub "$1/gh"
+  export GH_LOG="$1/gh.log"; : >"$GH_LOG"
+  export WORKER_LOG="$1/worker.log"; : >"$WORKER_LOG"
+  export WORKER_CALLS="$1/calls"; rm -rf "$WORKER_CALLS"; mkdir -p "$WORKER_CALLS"
+}
+
+# --- Behaviour 1: the spawn helper passes template + PATHS only, restricted ---
+# Driven through Validate: the worker's prompt must name the artifact PATHS (so
+# it Reads them itself) and must NOT contain the inlined PRD body — that is what
+# makes the cold hand-off airtight (no orchestrator context can leak in). And the
+# tool set is restricted to the Stage's needs (read-only on the repo: Read yes,
+# Bash/WebSearch no).
+repoW1="$(new_repo_with_validate_mission)"; arm_worker "$repoW1"
+( cd "$repoW1" && LCARS_WORKER_BIN="$repoW1/worker" LCARS_GH_BIN="$repoW1/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
+VP1="$(prompt_for_role "$WORKER_CALLS" validate)"
+VT1="$(tools_for_role "$WORKER_LOG" validate)"
+MDIR1="$repoW1/.git/lcars/missions/$MID"
+check "1. worker prompt carries the template (the Validator brief)" \
+  "printf '%s' \"\$VP1\" | grep -q 'LCARS Validator'"
+check "1. worker prompt names the prd.md PATH it may read" \
+  "printf '%s' \"\$VP1\" | grep -qF '$MDIR1/prd.md'"
+check "1. worker prompt names the research finding PATHS" \
+  "printf '%s' \"\$VP1\" | grep -qF '$MDIR1/research/1.json'"
+check "1. worker prompt does NOT inline the PRD body (paths only, no leaked context)" \
+  "! printf '%s' \"\$VP1\" | grep -q 'Let users switch to a dark'"
+check "1. validate worker gets read access (Read)" \
+  "printf '%s' \"\$VT1\" | grep -q 'Read'"
+check "1. validate worker is denied shell (no Bash)" \
+  "! printf '%s' \"\$VT1\" | grep -q 'Bash'"
+check "1. validate worker is denied web (no WebSearch)" \
+  "! printf '%s' \"\$VT1\" | grep -q 'WebSearch'"
+
+# --- Behaviour 2: Research fans out N stateless workers, question text only ----
+repoW2="$(new_repo_with_mission)"; arm_worker "$repoW2"
+rcW2=0
+( cd "$repoW2" && STUB_NQUESTIONS=2 LCARS_WORKER_BIN="$repoW2/worker" LCARS_GH_BIN="$repoW2/gh" \
+    bash "$SCRIPT" research --mission "$MID" >out.txt 2>&1 ) || rcW2=$?
+check "2. research driver exits 0" "[ '$rcW2' -eq 0 ]"
+check "2. runs exactly one question-generator worker" \
+  "[ \"\$(calls_of_role "$WORKER_LOG" research-questions)\" = '1' ]"
+check "2. fans out one research worker per question (2)" \
+  "[ \"\$(calls_of_role "$WORKER_LOG" research-agent)\" = '2' ]"
+RAP2="$(prompt_for_role "$WORKER_CALLS" research-agent)"
+check "2. a research worker is given a question" \
+  "printf '%s' \"\$RAP2\" | grep -qi 'question'"
+check "2. a research worker is NOT given the PRD path (stateless)" \
+  "! printf '%s' \"\$RAP2\" | grep -q 'prd.md'"
+check "2. research worker gets web access (WebSearch)" \
+  "printf '%s' \"\$(tools_for_role "$WORKER_LOG" research-agent)\" | grep -q 'WebSearch'"
+check "2. research advanced the mission to validate via the stub" \
+  "grep -q '\"stage\": *\"validate\"' '$(state_of "$repoW2")'"
+
+# 0 questions → the question-gen worker yields an empty set and Research skips.
+repoW2b="$(new_repo_with_mission)"; arm_worker "$repoW2b"
+( cd "$repoW2b" && STUB_NQUESTIONS=0 LCARS_WORKER_BIN="$repoW2b/worker" LCARS_GH_BIN="$repoW2b/gh" \
+    bash "$SCRIPT" research --mission "$MID" >out.txt 2>&1 )
+check "2. zero questions → no research workers fan out" \
+  "[ \"\$(calls_of_role "$WORKER_LOG" research-agent)\" = '0' ]"
+check "2. zero questions still advances to validate (skip)" \
+  "grep -q '\"stage\": *\"validate\"' '$(state_of "$repoW2b")'"
+
+# --- Behaviour 3: Validate is one cold worker, fed only prd + research ---------
+repoW3="$(new_repo_with_validate_mission)"; arm_worker "$repoW3"
+rcW3=0
+( cd "$repoW3" && LCARS_WORKER_BIN="$repoW3/worker" LCARS_GH_BIN="$repoW3/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 ) || rcW3=$?
+check "3. validate driver exits 0" "[ '$rcW3' -eq 0 ]"
+check "3. runs exactly one Validator worker" \
+  "[ \"\$(calls_of_role "$WORKER_LOG" validate)\" = '1' ]"
+check "3. persists the worker's plan and advances to plan" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoW3")' && [ -f '$repoW3/.git/lcars/missions/$MID/validated-plan.md' ]"
+
+# a scope question from the worker → pause at the human gate (validate-pause)
+repoW3b="$(new_repo_with_validate_mission)"; arm_worker "$repoW3b"
+( cd "$repoW3b" && STUB_SCOPE=1 LCARS_WORKER_BIN="$repoW3b/worker" LCARS_GH_BIN="$repoW3b/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
+sW3b="$(state_of "$repoW3b")"
+check "3. a worker scope question pauses at the human gate" \
+  "grep -q '\"awaitingHuman\": *true' '$sW3b'"
+check "3. the paused mission stays at validate" \
+  "grep -q '\"stage\": *\"validate\"' '$sW3b'"
+
+# --- Behaviour 4: Plan / Plan Review / Test Writer / Implementer are cold ------
+# Plan: fed only prd.md + validated-plan.md
+repoW4p="$(new_repo_with_plan_mission)"; arm_worker "$repoW4p"
+( cd "$repoW4p" && LCARS_WORKER_BIN="$repoW4p/worker" LCARS_GH_BIN="$repoW4p/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out.txt 2>&1 )
+PP4="$(prompt_for_role "$WORKER_CALLS" plan)"
+MDIR4="$repoW4p/.git/lcars/missions/$MID"
+check "4. plan worker is fed the validated-plan path" \
+  "printf '%s' \"\$PP4\" | grep -qF '$MDIR4/validated-plan.md'"
+check "4. plan worker persists plan.json and advances to plan-review" \
+  "grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repoW4p")'"
+
+# Plan Review: fed ONLY plan.json — never prd.md / validated-plan.md
+repoW4r="$(new_repo_with_plan_review_mission)"; arm_worker "$repoW4r"
+( cd "$repoW4r" && LCARS_WORKER_BIN="$repoW4r/worker" LCARS_GH_BIN="$repoW4r/gh" \
+    bash "$SCRIPT" plan-review --mission "$MID" >out.txt 2>&1 )
+PR4="$(prompt_for_role "$WORKER_CALLS" plan-review)"
+MDIR4r="$repoW4r/.git/lcars/missions/$MID"
+check "4. reviewer worker is fed the plan.json path" \
+  "printf '%s' \"\$PR4\" | grep -qF '$MDIR4r/plan.json'"
+# Independence: the reviewer is never handed the spec PATHS (the template names
+# those filenames only to forbid them — the artifact-paths block lists plan.json
+# alone), so assert the mission-dir paths to the spec are absent.
+check "4. reviewer worker is NOT fed the prd.md path (independence)" \
+  "! printf '%s' \"\$PR4\" | grep -qF '$MDIR4r/prd.md'"
+check "4. reviewer worker is NOT fed the validated-plan.md path (independence)" \
+  "! printf '%s' \"\$PR4\" | grep -qF '$MDIR4r/validated-plan.md'"
+check "4. reviewer verdict advances to schedule" \
+  "grep -q '\"stage\": *\"schedule\"' '$(state_of "$repoW4r")'"
+
+# Test Writer + Implementer: a cold pair, fed only their artifacts
+repoW4i="$(new_repo_with_implement_mission)"; arm_worker "$repoW4i"
+rcW4i=0
+( cd "$repoW4i" && LCARS_WORKER_BIN="$repoW4i/worker" LCARS_GH_BIN="$repoW4i/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >out.txt 2>&1 ) || rcW4i=$?
+MDIR4i="$repoW4i/.git/lcars/missions/$MID"
+check "4. implement-ticket exits 0" "[ '$rcW4i' -eq 0 ]"
+check "4. runs a Test Writer worker then an Implementer worker" \
+  "[ \"\$(calls_of_role "$WORKER_LOG" implement-test-writer)\" = '1' ] && [ \"\$(calls_of_role "$WORKER_LOG" implement-implementer)\" = '1' ]"
+check "4. Test Writer's tests are quarantined under tickets/t-001/tests/" \
+  "[ -f '$MDIR4i/tickets/t-001/tests/stub.test.js' ]"
+check "4. Implementer's result.json is saved green" \
+  "[ -f '$MDIR4i/tickets/t-001/result.json' ] && grep -q '\"passed\": *true' '$MDIR4i/tickets/t-001/result.json'"
+check "4. Implementer is fed the on-disk tests path (its only handoff)" \
+  "printf '%s' \"\$(prompt_for_role "$WORKER_CALLS" implement-implementer)\" | grep -qF '$MDIR4i/tickets/t-001/tests'"
+check "4. Test Writer is denied shell (no Bash)" \
+  "! printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-test-writer)\" | grep -q 'Bash'"
+check "4. Implementer gets shell (Bash) to run the tests" \
+  "printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-implementer)\" | grep -q 'Bash'"
+
+# --- Behaviour 5: an artifact missing its decisions/rationale is REFUSED -------
+# validated-plan.md without a ## Rationale section
+repoW5a="$(new_repo_with_validate_mission)"; make_gh_stub "$repoW5a/gh"
+export GH_LOG="$repoW5a/gh.log"; : >"$GH_LOG"
+printf '# Validated Plan: x\n\n## Synthesis\ns\n\n## Decisions\n- d\n' >"$repoW5a/norat.md"
+rcW5a=0
+( cd "$repoW5a" && LCARS_GH_BIN="$repoW5a/gh" bash "$SCRIPT" validate-advance \
+    --mission "$MID" --plan "$repoW5a/norat.md" >out.txt 2>&1 ) || rcW5a=$?
+check "5. validate-advance refuses a plan with no ## Rationale" "[ '$rcW5a' -ne 0 ]"
+check "5. names the missing rationale in the error" \
+  "grep -qi 'rationale' '$repoW5a/out.txt'"
+check "5. does not advance a plan missing its rationale" \
+  "grep -q '\"stage\": *\"validate\"' '$(state_of "$repoW5a")'"
+
+# plan.json with a ticket missing its rationale
+repoW5b="$(new_repo_with_plan_mission)"; make_gh_stub "$repoW5b/gh"
+export GH_LOG="$repoW5b/gh.log"; : >"$GH_LOG"
+cat >"$repoW5b/norat.json" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Wire the data-theme attribute",
+    "description": "End-to-end token wiring.",
+    "acceptanceCriteria": ["data-theme=dark recolours the page"],
+    "estimatedLoc": 120,
+    "dependencies": []
+  }
+]
+EOF
+rcW5b=0
+( cd "$repoW5b" && LCARS_GH_BIN="$repoW5b/gh" bash "$SCRIPT" plan-save \
+    --mission "$MID" --plan "$repoW5b/norat.json" >out.txt 2>&1 ) || rcW5b=$?
+check "5. plan-save refuses a ticket with no rationale" "[ '$rcW5b' -ne 0 ]"
+check "5. names the missing rationale field in the error" \
+  "grep -q 'rationale' '$repoW5b/out.txt'"
+check "5. does not advance a plan whose ticket drops its rationale" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoW5b")'"
+
+# --- Behaviour 6: the `⊘ isolated` marker; an inline fallback is flagged -------
+repoW6="$(new_repo_with_plan_mission)"; arm_worker "$repoW6"
+( cd "$repoW6" && LCARS_WORKER_BIN="$repoW6/worker" LCARS_GH_BIN="$repoW6/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out.txt 2>&1 )
+check "6. the Stage summary is marked '⊘ isolated'" \
+  "grep -q 'isolated' '$repoW6/out.txt'"
+check "6. the isolated marker names the worker it ran in" \
+  "grep -q 'worker' '$repoW6/out.txt'"
+
+# No worker binary available → the Stage must refuse LOUDLY, never fake isolation
+repoW6b="$(new_repo_with_plan_mission)"; make_gh_stub "$repoW6b/gh"
+export GH_LOG="$repoW6b/gh.log"; : >"$GH_LOG"
+rcW6b=0
+( cd "$repoW6b" && LCARS_WORKER_BIN="/nonexistent/lcars-worker" LCARS_GH_BIN="$repoW6b/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out.txt 2>&1 ) || rcW6b=$?
+check "6. refuses to run a Stage with no cold worker available" "[ '$rcW6b' -ne 0 ]"
+check "6. flags the non-isolated condition LOUDLY (NOT ISOLATED)" \
+  "grep -q 'NOT ISOLATED' '$repoW6b/out.txt'"
+check "6. an un-isolatable Stage never advances" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoW6b")'"
+check "6. an un-isolatable Stage is never marked isolated" \
+  "! grep -q '⊘ isolated' '$repoW6b/out.txt'"
+
+# --- Behaviour 7: a malformed worker output stops the Stage, after retries -----
+repoW7="$(new_repo_with_plan_mission)"; arm_worker "$repoW7"
+rcW7=0
+( cd "$repoW7" && STUB_MALFORMED=1 LCARS_WORKER_TRIES=2 \
+    LCARS_WORKER_BIN="$repoW7/worker" LCARS_GH_BIN="$repoW7/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out.txt 2>&1 ) || rcW7=$?
+check "7. a malformed worker output stops the Stage (non-zero)" "[ '$rcW7' -ne 0 ]"
+check "7. the Stage does not advance on malformed output" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoW7")'"
+check "7. writes no plan.json on malformed output" \
+  "[ ! -f '$repoW7/.git/lcars/missions/$MID/plan.json' ]"
+check "7. re-dispatches the worker before surfacing failure (2 tries)" \
+  "[ \"\$(calls_of_role "$WORKER_LOG" plan)\" = '2' ]"
+
+# --- Behaviour 8: the whole flow runs against the stub, no real tokens ---------
+# align → research → validate → plan → plan-review → schedule → implement → verify
+repoW8="$(new_repo_with_mission)"
+make_worker_stub "$repoW8/worker"; make_gh_stub_schedule "$repoW8/gh"
+export GH_LOG="$repoW8/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoW8/gh.seq"; rm -f "$GH_SEQ"
+export WORKER_LOG="$repoW8/worker.log"; : >"$WORKER_LOG"
+export WORKER_CALLS="$repoW8/calls"; rm -rf "$WORKER_CALLS"; mkdir -p "$WORKER_CALLS"
+sW8="$(state_of "$repoW8")"
+run8() { ( cd "$repoW8" && STUB_NQUESTIONS=1 LCARS_WORKER_BIN="$repoW8/worker" \
+    LCARS_GH_BIN="$repoW8/gh" bash "$SCRIPT" "$@" >>"$repoW8/flow.txt" 2>&1 ); }
+flow_rc=0
+run8 research --mission "$MID"              || flow_rc=$?
+run8 validate --mission "$MID"              || flow_rc=$?
+run8 plan --mission "$MID"                  || flow_rc=$?
+run8 plan-review --mission "$MID"           || flow_rc=$?
+run8 schedule --mission "$MID"              || flow_rc=$?
+run8 implement-ticket --mission "$MID" --ticket t-001 || flow_rc=$?
+run8 impl-advance --mission "$MID"          || flow_rc=$?
+check "8. the full stubbed flow runs clean end-to-end" "[ '$flow_rc' -eq 0 ]"
+check "8. the mission reaches the verify gate" \
+  "grep -q '\"stage\": *\"verify\"' '$sW8'"
+check "8. every headless Stage ran in a cold worker (no inline reasoning)" \
+  "grep -q 'role=research-questions' '$WORKER_LOG' && grep -q 'role=validate' '$WORKER_LOG' && grep -q 'role=plan ' '$WORKER_LOG' && grep -q 'role=plan-review' '$WORKER_LOG' && grep -q 'role=implement-implementer' '$WORKER_LOG'"
 
 # ==========================================================================
 echo

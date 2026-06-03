@@ -139,6 +139,10 @@ Per-course leaderboards, XP that does not decay — per the captain's answer.
 
 ## Decisions
 - One leaderboard table keyed by course.
+
+## Rationale
+A per-course key matches the captain's scope answer and avoids a global-board
+schema we would have to migrate away from later.
 EOF
 }
 

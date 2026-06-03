@@ -37,6 +37,20 @@ set -uo pipefail
 
 GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
+# The cold-worker binary. Every headless Stage's LLM work runs as a one-shot
+# invocation of this CLI — defaulting to whichever CLI you launched LCARS under
+# (`claude`). Swapping it is the whole CLI-portability story (BUG-003); tests
+# point it at a stub that echoes canned artifacts so the plumbing runs token-free.
+WORKER_BIN="${LCARS_WORKER_BIN:-claude}"
+# Re-invocation of this very script, used by the Stage drivers to reuse the
+# already-tested persistence subcommands (gate/save/validate-*/plan-save/…)
+# rather than duplicate their logic.
+SELF="${BASH_SOURCE[0]}"
+# The per-Stage worker prompt templates live next to this script.
+STAGES_DIR="$(cd "$(dirname "$SELF")" && pwd)/stages"
+# A malformed worker output stops the Stage; the driver re-dispatches up to this
+# many attempts before surfacing failure (no silent advance).
+MAX_WORKER_TRIES="${LCARS_WORKER_TRIES:-3}"
 MAX_QUESTIONS=20
 MAX_REVIEW_ROUNDS=3
 RELABEL_NOTE=""
@@ -308,6 +322,11 @@ cmd_validate_advance() {
   grep -q '^# Validated Plan'  "$PLAN" || die "plan is missing its '# Validated Plan' title."
   grep -q '^## Synthesis'      "$PLAN" || die "plan is missing the '## Synthesis' section."
   grep -q '^## Decisions'      "$PLAN" || die "plan is missing the '## Decisions' section."
+  # The artifact is the only thing crossing the stage boundary, so it must carry
+  # the WHY, not just the WHAT — a decision without its rationale is how the next
+  # stage builds the wrong thing (vision.md → Stage Isolation). Refuse a plan
+  # that records decisions but drops their reasoning.
+  grep -q '^## Rationale'      "$PLAN" || die "plan is missing the '## Rationale' section — record the WHY behind the decisions, not just the decisions."
 
   cp "$PLAN" "$MISSION_DIR/validated-plan.md"
 
@@ -363,7 +382,7 @@ validate_plan_json() { # file
     /^[[:space:]]*\}[,]?[[:space:]]*$/ {
       if (!inobj) next
       tickets++
-      for (k=1; k<=6; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
+      for (k=1; k<=7; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
       if (!acok) fail("ticket " tickets " (" id ") needs at least one acceptance criterion.")
       ids[id]=1
       for (d=1; d<=ndep; d++) { depof[++drefs]=dep[d]; depticket[drefs]=id }
@@ -378,7 +397,8 @@ validate_plan_json() { # file
       else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
     }
     BEGIN { req[1]="id"; req[2]="title"; req[3]="description";
-            req[4]="acceptanceCriteria"; req[5]="estimatedLoc"; req[6]="dependencies" }
+            req[4]="acceptanceCriteria"; req[5]="estimatedLoc"; req[6]="dependencies";
+            req[7]="rationale" }
     END {
       if (tickets == 0) fail("no tickets in the plan — a plan needs at least one ticket.")
       for (r=1; r<=drefs; r++)
@@ -1004,6 +1024,349 @@ EOF
   exit 0
 }
 
+# === Cold-worker layer (per-Stage isolation) ===============================
+# Every headless Stage's LLM work runs as a COLD SUBPROCESS WORKER: a one-shot,
+# non-interactive invocation of $WORKER_BIN whose prompt is assembled HERE from a
+# per-Stage template plus the artifact PATHS it may read — never from any
+# accumulated orchestrator context. That is what makes the hand-off airtight:
+# there is no channel for a prior Stage's reasoning to leak in, even when the
+# whole pipeline runs in one sitting (closes BUG-004). Because the worker is the
+# host CLI behind one swappable binary, this also buys CLI portability (BUG-003):
+# the Agent tool gave only isolation, a subprocess worker gives both.
+#
+# The driver does NO Stage reasoning. For each headless Stage it: builds the
+# prompt, spawns the worker(s) (Research fans out N in parallel — a `-p` worker
+# can't spawn its own subagents, so fan-out is the driver's job), captures the
+# worker's on-disk output, and persists it through the existing, already-tested
+# subcommands (gate/save/validate-*/plan-save/review-save/impl-*). A malformed
+# output STOPS the Stage and re-dispatches up to MAX_WORKER_TRIES before
+# surfacing failure — never a silent advance.
+
+# --- restricted tool set per worker role ------------------------------------
+# Read-only-on-the-repo for Validate/Plan/Review/question-gen; +web for the
+# research agents; +write+shell for the Implementer. (All roles may write into
+# their own scratch output dir — that is their answer channel, not the repo.)
+worker_tools() { # role-keyword → comma-separated allowed-tools list
+  case "$1" in
+    repo-read)     echo "Read,Grep,Glob,Write" ;;
+    repo-read-web) echo "Read,Grep,Glob,Write,WebSearch,WebFetch" ;;
+    repo-write)    echo "Read,Grep,Glob,Write,Edit,Bash" ;;
+    *)             echo "Read" ;;
+  esac
+}
+
+# --- refuse to run a Stage without a real worker, LOUDLY --------------------
+# The point of this build is that headless Stages are isolated, never inline. If
+# no worker binary is available we must NOT silently pretend isolation — we stop
+# and say so, so an inline/uncovered run can never masquerade as `⊘ isolated`.
+require_worker() {
+  command -v "$WORKER_BIN" >/dev/null 2>&1 && return 0
+  [ -x "$WORKER_BIN" ] && return 0
+  printf '  ⚠ NOT ISOLATED — no cold-worker binary on PATH (LCARS_WORKER_BIN=%s).\n' "$WORKER_BIN" >&2
+  die "refusing to run this Stage inline — set \$LCARS_WORKER_BIN to your CLI (e.g. \`claude\`) so the Stage runs in a cold worker."
+}
+
+# --- the marker proving a Stage ran in a cold worker ------------------------
+isolated_line() { # stage  worker-count
+  printf '  ⊘ isolated — %s ran in %s cold worker(s) via %s\n' "$1" "$2" "$(basename "$WORKER_BIN")"
+}
+
+# --- spawn one cold worker --------------------------------------------------
+# Assembles the prompt from a template file + the driver-supplied `extra` block
+# (artifact PATHS and/or a question — NOTHING else) + where to write output, then
+# invokes $WORKER_BIN one-shot with the role's restricted tools. The worker
+# writes its answer into $outdir (a known filename per role); its stdout/stderr
+# are captured to scratch for debugging only. The scratch dir path is also handed
+# to the worker via $LCARS_WORK_OUT so a CLI adapter (or a test stub) can find it
+# without re-parsing the prompt.
+spawn_worker() { # role  template  toolset  outdir  extra
+  local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5"
+  mkdir -p "$outdir"
+  local prompt tools
+  prompt="$(cat "$template")
+
+$extra
+
+## Where to write your output
+Your scratch output directory is: $outdir
+Write your output file(s) there exactly as specified above — nowhere else."
+  tools="$(worker_tools "$toolset")"
+  LCARS_WORK_OUT="$outdir" LCARS_WORKER_ROLE="$role" \
+    "$WORKER_BIN" -p "$prompt" --allowedTools "$tools" --output-format text \
+    >"$outdir/.worker.out" 2>"$outdir/.worker.err" || true
+}
+
+# === Stage driver: Research ================================================
+# Fresh-file Research: a question-generator worker reads the PRD and emits 0–20
+# questions; the gate decides skip / dispatch / escalate; on dispatch the driver
+# fans out one stateless research worker PER question, in parallel, each given
+# only its question text; then `save` persists the findings and advances.
+cmd_research() {
+  locate_mission "$MISSION_ID"
+  require_stage align
+  require_worker
+  [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md — Align has not produced a PRD for '$MISSION_ID'."
+  # NOTE: a feedback re-entry (feedback.md present at align) is handled by the
+  # dispatch in SKILL.md — Claude re-grills against prd.md + feedback.md and
+  # rewrites prd.md on the host CLI FIRST, then runs this driver. So Research
+  # always reads the current prd.md; the presence of feedback.md is not a guard
+  # here (the re-grill leaves it in place as durable history).
+
+  # STEP 1 — question-generator worker → questions.txt
+  local qdir="" tries=0
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    qdir="$(mktemp -d)"
+    spawn_worker research-questions "$STAGES_DIR/research-questions.md" repo-read "$qdir" \
+"## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/prd.md"
+    [ -f "$qdir/questions.txt" ] && break
+    rm -rf "$qdir"; qdir=""
+  done
+  [ -n "$qdir" ] || die "the question-generator worker produced no questions.txt after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+
+  # STEP 2 — gate on the count (reuse the tested subcommand; it owns skip/escalate)
+  local gate_out gate_rc=0
+  gate_out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" gate \
+    --mission "$MISSION_ID" --questions "$qdir/questions.txt" 2>&1)" || gate_rc=$?
+  printf '%s\n' "$gate_out"
+  case "$gate_out" in
+    *"GATE: skip"*)      isolated_line research 1; rm -rf "$qdir"; exit 0 ;;
+    *"GATE: too-many"*)  isolated_line research 1; rm -rf "$qdir"; exit "$gate_rc" ;;
+  esac
+
+  # STEP 3 — fan out one stateless research worker per question, IN PARALLEL.
+  # Each is given ONLY its question text — no PRD, no siblings (CONTEXT.md →
+  # Research Agent). Shell job control is the fan-out: a `-p` worker can't spawn
+  # its own subagents.
+  local resp; resp="$(mktemp -d)"
+  local i=0 q
+  local pids=""
+  while IFS= read -r q; do
+    [ -n "$q" ] || continue
+    i=$((i + 1))
+    local adir; adir="$resp/$(printf '%03d' "$i")"
+    research_agent_worker "$adir" "$q" &
+    pids="$pids $!"
+  done < <(grep -ve '^[[:space:]]*$' "$qdir/questions.txt")
+  # shellcheck disable=SC2086
+  wait $pids 2>/dev/null
+
+  # STEP 4 — collect into a flat responses dir and save (reuse the tested
+  # subcommand; it validates each response and refuses to advance on bad data).
+  local flat; flat="$(mktemp -d)"
+  local n=0 d
+  for d in "$resp"/*/; do
+    [ -f "${d}response.json" ] || continue
+    n=$((n + 1)); cp "${d}response.json" "$flat/$(printf '%03d' "$n").json"
+  done
+
+  local save_rc=0
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" save \
+    --mission "$MISSION_ID" --responses "$flat" || save_rc=$?
+  if [ "$save_rc" -ne 0 ]; then
+    rm -rf "$qdir" "$resp" "$flat"
+    die "research workers produced malformed findings that failed validation after $MAX_WORKER_TRIES attempt(s) per agent — Stage stopped, no advance."
+  fi
+  isolated_line research "$((i + 1))"
+  rm -rf "$qdir" "$resp" "$flat"
+  exit 0
+}
+
+# One research agent, retried until it yields a well-shaped response (or the cap).
+# Runs in a background subshell (no `local`, no `exit` that escapes the parent).
+research_agent_worker() { # outdir  question
+  local adir="$1" q="$2" t=0
+  while [ "$t" -lt "$MAX_WORKER_TRIES" ]; do
+    t=$((t + 1))
+    rm -rf "$adir"
+    spawn_worker research-agent "$STAGES_DIR/research-agent.md" repo-read-web "$adir" \
+"## The one question you must answer (your ONLY context)
+«${q}»"
+    if [ -f "$adir/response.json" ] \
+      && grep -q '"recommendation"'    "$adir/response.json" \
+      && grep -q '"supporting_points"' "$adir/response.json"; then
+      return 0
+    fi
+  done
+  return 0   # leave the malformed/absent output; `save` will reject and the Stage stops
+}
+
+# === Stage driver: Validate ================================================
+# One cold worker fed ONLY prd.md + research/*.json. It writes validated-plan.md
+# and (optionally) scope.txt; the driver persists via validate-pause (scope
+# questions present) or validate-advance (none), retrying on a malformed plan.
+cmd_validate() {
+  locate_mission "$MISSION_ID"
+  require_stage validate
+  require_worker
+  [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
+    && die "mission is awaiting a human answer — run \`lcars respond $MISSION_ID\` first; the Validator does not re-run until the gate clears."
+  [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md."
+  [ -d "$MISSION_DIR/research" ] || die "no research/ findings — Research has not run."
+
+  local extra; extra="## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/prd.md"
+  local f
+  for f in "$MISSION_DIR"/research/*.json; do
+    [ -f "$f" ] && extra="$extra
+- $f"
+  done
+
+  local tries=0
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    local odir; odir="$(mktemp -d)"
+    spawn_worker validate "$STAGES_DIR/validate.md" repo-read "$odir" "$extra"
+
+    if [ -f "$odir/scope.txt" ] && grep -qve '^[[:space:]]*$' "$odir/scope.txt"; then
+      # A finding implies a scope change → pause at the human gate (a valid
+      # outcome, not a failure). validate-pause keeps the card in Validate.
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" validate-pause \
+        --mission "$MISSION_ID" --questions "$odir/scope.txt"
+      isolated_line validate 1; rm -rf "$odir"; exit 0
+    fi
+
+    if [ -f "$odir/validated-plan.md" ]; then
+      local rc=0
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" validate-advance \
+        --mission "$MISSION_ID" --plan "$odir/validated-plan.md" || rc=$?
+      if [ "$rc" -eq 0 ]; then isolated_line validate 1; rm -rf "$odir"; exit 0; fi
+    fi
+    rm -rf "$odir"
+  done
+  die "the Validate worker produced an artifact that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+}
+
+# === Stage driver: Plan ====================================================
+# One cold worker fed ONLY prd.md + validated-plan.md → plan.json, persisted via
+# plan-save (which validates every ticket, incl. its rationale).
+cmd_plan() {
+  locate_mission "$MISSION_ID"
+  require_stage plan
+  require_worker
+  [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md."
+  [ -f "$MISSION_DIR/validated-plan.md" ] || die "no validated-plan.md — Validate has not run."
+
+  local extra="## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/prd.md
+- $MISSION_DIR/validated-plan.md"
+  # On a Plan Review loop-back the Mission is back at `plan` with the reviewer's
+  # objections on disk. Feed them so the fresh Planner worker actually revises
+  # against them (otherwise it would re-emit the rejected plan and loop to the
+  # round-3 escalation). The objections are the only extra input on a revise.
+  local rv
+  for rv in "$MISSION_DIR"/plan-review-*.json; do
+    [ -f "$rv" ] && extra="$extra
+- $rv   (reviewer objections to resolve in this revision)"
+  done
+
+  local tries=0
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    local odir; odir="$(mktemp -d)"
+    spawn_worker plan "$STAGES_DIR/plan.md" repo-read "$odir" "$extra"
+    if [ -f "$odir/plan.json" ]; then
+      local rc=0
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" plan-save \
+        --mission "$MISSION_ID" --plan "$odir/plan.json" || rc=$?
+      if [ "$rc" -eq 0 ]; then isolated_line plan 1; rm -rf "$odir"; exit 0; fi
+    fi
+    rm -rf "$odir"
+  done
+  die "the Plan worker produced a plan.json that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+}
+
+# === Stage driver: Plan Review =============================================
+# A FRESH cold worker fed ONLY plan.json (never prd.md / validated-plan.md) →
+# verdict.json, persisted via review-save (pass→Schedule, fail→loop/escalate).
+cmd_plan_review() {
+  locate_mission "$MISSION_ID"
+  require_stage plan-review
+  require_worker
+  [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
+    && die "mission is awaiting a human answer — run \`lcars respond $MISSION_ID\` first; the reviewer does not re-run until the gate clears."
+  [ -f "$MISSION_DIR/plan.json" ] || die "no plan.json — Plan has not run."
+
+  # Independence is the whole point: the reviewer is handed the tickets ALONE.
+  local extra="## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/plan.json"
+
+  local tries=0
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    local odir; odir="$(mktemp -d)"
+    spawn_worker plan-review "$STAGES_DIR/plan-review.md" repo-read "$odir" "$extra"
+    if [ -f "$odir/verdict.json" ]; then
+      local rc=0
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" review-save \
+        --mission "$MISSION_ID" --verdict "$odir/verdict.json" || rc=$?
+      if [ "$rc" -eq 0 ]; then isolated_line plan-review 1; rm -rf "$odir"; exit 0; fi
+    fi
+    rm -rf "$odir"
+  done
+  die "the Plan Review worker produced a verdict that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+}
+
+# === Stage driver: Implement (one ticket) ==================================
+# The adversarial pair, both cold workers: a Test Writer fed only the approved
+# ticket writes failing tests (quarantined via impl-save-tests — its ONLY channel
+# to the Implementer), then a SEPARATE Implementer fed only the ticket + those
+# on-disk tests makes them pass (persisted via impl-save-result). The two never
+# share a session.
+cmd_implement_ticket() {
+  locate_mission "$MISSION_ID"
+  require_stage implement
+  require_worker
+  [ -n "$TICKET" ] || die "no ticket id — pass --ticket <id>."
+  [ -f "$MISSION_DIR/approved-plan.json" ] || die "no approved-plan.json — Schedule has not run."
+
+  # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
+  local tries=0 saved=0
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    local odir; odir="$(mktemp -d)"
+    spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
+"## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/approved-plan.json
+
+## Your ticket
+$TICKET"
+    if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
+      local rc=0
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
+        --mission "$MISSION_ID" --ticket "$TICKET" --tests "$odir/tests" || rc=$?
+      if [ "$rc" -eq 0 ]; then saved=1; rm -rf "$odir"; break; fi
+    fi
+    rm -rf "$odir"
+  done
+  [ "$saved" = 1 ] || die "the Test Writer worker produced no usable tests for $TICKET after $MAX_WORKER_TRIES attempt(s) — Stage stopped."
+
+  # PHASE 2 — Implementer worker (no Test Writer context) → result.json →
+  # impl-save-result. Its ONLY handoff is the tests now on disk.
+  local tdir; tdir="$(ticket_dir "$TICKET")/tests"
+  tries=0
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    local odir; odir="$(mktemp -d)"
+    spawn_worker implement-implementer "$STAGES_DIR/implement-implementer.md" repo-write "$odir" \
+"## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/approved-plan.json
+- $tdir   (the failing tests — your entire handoff from the Test Writer)
+
+## Your ticket
+$TICKET"
+    if [ -f "$odir/result.json" ]; then
+      local rc=0
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-result \
+        --mission "$MISSION_ID" --ticket "$TICKET" --result "$odir/result.json" || rc=$?
+      if [ "$rc" -eq 0 ]; then isolated_line "implement($TICKET)" 2; rm -rf "$odir"; exit 0; fi
+    fi
+    rm -rf "$odir"
+  done
+  die "the Implementer worker produced a result for $TICKET that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+}
+
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
@@ -1031,11 +1394,12 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|plan|plan-review|implement-ticket)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
 case "$SUB" in
+  # Persistence subcommands (mechanical; no LLM) — the Stage drivers reuse these.
   gate)             cmd_gate ;;
   save)             cmd_save ;;
   validate-pause)   cmd_validate_pause ;;
@@ -1048,5 +1412,11 @@ case "$SUB" in
   impl-status)      cmd_impl_status ;;
   impl-advance)     cmd_impl_advance ;;
   verify-summary)   cmd_verify_summary ;;
-  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary --mission <id> [--questions <f>|--responses <d>|--plan <f>|--verdict <f>|--ticket <id>|--tests <d>|--result <f>]." ;;
+  # Stage drivers (spawn cold workers, then persist via the subcommands above).
+  research)         cmd_research ;;
+  validate)         cmd_validate ;;
+  plan)             cmd_plan ;;
+  plan-review)      cmd_plan_review ;;
+  implement-ticket) cmd_implement_ticket ;;
+  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh <persistence|driver> --mission <id> [...]. Drivers: research|validate|plan|plan-review|implement-ticket. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac
