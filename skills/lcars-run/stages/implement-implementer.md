@@ -7,6 +7,11 @@ disk for it (their directory is listed under "Read these artifacts"). You have
 read + write + shell access to the repository. You did **not** see the Test
 Writer's session — the tests on disk are your *entire* handoff from them.
 
+**If an `answers.json` is listed in your inputs**, this is a *resume*: this
+ticket previously exhausted its attempts and was flagged to the captain, and that
+file holds their answer (the fix, the missing context, or a direction). Treat it
+as **DECIDED** — act on it, and do not simply re-flag the same blocker.
+
 ## Your job
 
 Implement the ticket in the repository until its tests pass:
@@ -20,7 +25,12 @@ Implement the ticket in the repository until its tests pass:
   weaken the tests to force a pass.
 
 Make your production changes in the repository working tree (the harness commits
-them to the Mission branch once the ticket is green).
+them to the Mission branch once the ticket is green). **Write only real source
+files.** Do not leave throwaway runner scripts or scratch in the repo root: run
+the suite from a temp directory, and if you must create a helper file in the
+tree, name it `.lcars-<something>` and delete it before you finish — the harness
+treats `.lcars-*` as scratch and refuses to commit it, so anything else you
+leave behind will land in the PR.
 
 ## Output
 

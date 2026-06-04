@@ -8,6 +8,13 @@ on their own terms. This independence is the whole point of the stage: the
 session that planned the work must not also grade it (see vision.md → *Plan
 Review*). Leaking the spec in would defeat it.
 
+**If an `answers.json` is listed in your inputs**, this is a *resume*: a prior
+review escalated to the captain after three rounds, and that file holds the
+captain's resolution (an override to proceed, or specific guidance). Treat it as
+**DECIDED** — honour it, and **do not re-raise the same objections**. If the
+captain overrode, the tickets pass; if they redirected, judge against their
+guidance. Re-escalating an answered standoff loops the gate forever.
+
 ## Your job
 
 Audit **every** ticket against the four criteria:

@@ -769,6 +769,15 @@ COMMIT_NOTE=""
 # --- resolve a ticket's working dir under the mission -----------------------
 ticket_dir() { printf '%s/tickets/%s' "$MISSION_DIR" "$1"; }
 
+# --- snapshot the working tree's untracked files ----------------------------
+# Records the captain's PRE-EXISTING untracked files (taken before any worker
+# runs for a ticket) so commit_ticket can tell the Implementer's NEW source from
+# files that were already lying around (bugs.md, lockfiles, …). Best-effort and
+# jq-free; an empty/failed snapshot just means "nothing was pre-existing".
+snapshot_untracked() { # out-file
+  ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others --exclude-standard ) >"$1" 2>/dev/null || : >"$1"
+}
+
 # --- commit a green ticket's produced files to the mission branch -----------
 # The Test Writer / Implementer write real files into the working tree; for the
 # PR to have content those files must be committed to the Mission's branch (the
@@ -794,7 +803,24 @@ commit_ticket() { # ticket  summary
     fi
   fi
 
-  "$GIT_BIN" add -A >/dev/null 2>&1
+  # Stage the Implementer's work, SCOPED — never the whole tree (no `git add -A`,
+  # which would sweep in the captain's unrelated untracked files and the worker's
+  # throwaway scratch). Edits to already-tracked files go in via `add -u`; a NEW
+  # file is staged only when it did NOT exist before the ticket built (the
+  # .untracked-before snapshot) and is not worker/LCARS scratch (a `.lcars-*`
+  # runner script). That keeps the mission branch / PR to the produced source.
+  "$GIT_BIN" add -u >/dev/null 2>&1
+  local before; before="$(ticket_dir "$1")/.untracked-before"
+  local now f; now="$(mktemp)"
+  ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others --exclude-standard ) >"$now" 2>/dev/null
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in .lcars-*|*/.lcars-*) continue ;; esac              # worker/LCARS scratch
+    [ -f "$before" ] && grep -qxF -- "$f" "$before" && continue     # pre-existing untracked
+    ( cd "$REPO_ROOT" && "$GIT_BIN" add -- "$f" >/dev/null 2>&1 )
+  done <"$now"
+  rm -f "$now"
+
   if "$GIT_BIN" diff --cached --quiet 2>/dev/null; then
     COMMIT_NOTE="  ⚠ ticket $1 produced no file changes to commit."
     return 0
@@ -1326,6 +1352,11 @@ cmd_validate() {
     [ -f "$f" ] && extra="$extra
 - $f"
   done
+  # RESUME after `lcars respond`: the captain's recorded answer resolves the
+  # prior scope question. Feed it so the fresh Validator FOLDS IT IN and does not
+  # re-raise the same question — otherwise the awaiting-human gate loops forever.
+  [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
+- $MISSION_DIR/answers.json   (the captain's answer resolving the prior scope question — treat it as DECIDED and fold it in; do not re-raise it)"
 
   local tries=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -1405,6 +1436,11 @@ cmd_plan_review() {
   # Independence is the whole point: the reviewer is handed the tickets ALONE.
   local extra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/plan.json"
+  # RESUME after a round-3 escalation: the captain's recorded answer (override /
+  # redirect) resolves the standoff. Feed it so the reviewer honours that
+  # decision instead of re-escalating the same objections forever.
+  [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
+- $MISSION_DIR/answers.json   (the captain's resolution of the prior escalation — treat it as DECIDED; do not re-raise it)"
 
   local tries=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -1435,6 +1471,12 @@ cmd_implement_ticket() {
   [ -n "$TICKET" ] || die "no ticket id — pass --ticket <id>."
   [ -f "$MISSION_DIR/approved-plan.json" ] || die "no approved-plan.json — Schedule has not run."
 
+  # Record the captain's pre-existing untracked files BEFORE any worker touches
+  # the tree, so commit_ticket stages only the Implementer's NEW source — never
+  # the captain's unrelated files or the worker's scratch (see commit_ticket).
+  mkdir -p "$(ticket_dir "$TICKET")"
+  snapshot_untracked "$(ticket_dir "$TICKET")/.untracked-before"
+
   # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
   local tries=0 saved=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -1459,17 +1501,23 @@ $TICKET"
   # PHASE 2 — Implementer worker (no Test Writer context) → result.json →
   # impl-save-result. Its ONLY handoff is the tests now on disk.
   local tdir; tdir="$(ticket_dir "$TICKET")/tests"
+  local iextra="## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/approved-plan.json
+- $tdir   (the failing tests — your entire handoff from the Test Writer)"
+  # RESUME after a 5-attempt flag was answered: the captain's recorded note is
+  # how to get this ticket unstuck. Feed it so the Implementer acts on it rather
+  # than re-flagging the same blocker.
+  [ -f "$MISSION_DIR/answers.json" ] && iextra="$iextra
+- $MISSION_DIR/answers.json   (the captain's answer resolving the prior block on this ticket — treat it as DECIDED)"
+  iextra="$iextra
+
+## Your ticket
+$TICKET"
   tries=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
-    spawn_worker implement-implementer "$STAGES_DIR/implement-implementer.md" repo-write "$odir" \
-"## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/approved-plan.json
-- $tdir   (the failing tests — your entire handoff from the Test Writer)
-
-## Your ticket
-$TICKET"
+    spawn_worker implement-implementer "$STAGES_DIR/implement-implementer.md" repo-write "$odir" "$iextra"
     if [ -f "$odir/result.json" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-result \

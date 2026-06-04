@@ -6,6 +6,12 @@ artifacts" below. You have read-only access to the repository and no other
 context. Review every finding **in the context of the PRD**, synthesise them
 into one coherent implementation plan, and decide each open point.
 
+**If an `answers.json` is listed in your inputs**, this is a *resume*: a prior
+Validator raised a scope question, the captain answered it, and that file holds
+their answer. Treat it as **DECIDED** — fold the answer into your synthesis and
+rationale, and **do not re-raise that question** in `scope.txt`. Re-asking an
+already-answered question loops the awaiting-human gate forever.
+
 ## What you own vs. what you escalate
 
 You own **implementation** decisions — *how* something gets built. Decide those

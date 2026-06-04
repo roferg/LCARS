@@ -1952,5 +1952,111 @@ check "11. the push targets the configured topic" "grep -q 'lcars-alerts' '$CURL
 
 # ==========================================================================
 echo
+echo "lcars run — resume defects (the captain's answer + a clean commit)"
+
+# --- FIX 1: the captain's answer reaches the cold worker on resume ----------
+# `lcars respond` writes answers.json and clears awaitingHuman. The re-run
+# Validator MUST be fed answers.json — otherwise it re-asks the same scope
+# question and the awaiting-human gate loops forever.
+repoF1="$(new_repo_with_validate_mission)"; arm_worker "$repoF1"
+mF1="$repoF1/.git/lcars/missions/$MID"
+cat >"$mF1/answers.json" <<'EOF'
+{
+  "answers": [
+    { "question": "Global or per-course leaderboard?", "answer": "Per-course for now." }
+  ]
+}
+EOF
+rcF1=0
+( cd "$repoF1" && LCARS_WORKER_BIN="$repoF1/worker" LCARS_GH_BIN="$repoF1/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 ) || rcF1=$?
+check "F1. validate exits 0 after consuming the answer" "[ '$rcF1' -eq 0 ]"
+check "F1. the Validator worker prompt was fed answers.json (the resolution)" \
+  "printf '%s' \"\$(prompt_for_role "$WORKER_CALLS" validate)\" | grep -qF '$mF1/answers.json'"
+check "F1. the resolved mission advances to plan (no re-escalation)" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoF1")'"
+check "F1. validate-advance cleared the consumed answers.json" \
+  "[ ! -f '$mF1/answers.json' ]"
+
+# Plan Review is fed answers.json too on a round-3 resume.
+repoF1b="$(new_repo_with_plan_review_mission)"; arm_worker "$repoF1b"
+mF1b="$repoF1b/.git/lcars/missions/$MID"
+printf '{ "answers": [ { "question": "split t-001?", "answer": "Override — proceed." } ] }\n' >"$mF1b/answers.json"
+( cd "$repoF1b" && LCARS_WORKER_BIN="$repoF1b/worker" LCARS_GH_BIN="$repoF1b/gh" \
+    bash "$SCRIPT" plan-review --mission "$MID" >out.txt 2>&1 ) || true
+check "F1. the Plan Review worker prompt was fed answers.json" \
+  "printf '%s' \"\$(prompt_for_role "$WORKER_CALLS" plan-review)\" | grep -qF '$mF1b/answers.json'"
+
+# --- FIX 2: commit_ticket stages ONLY the Implementer's source --------------
+# An unrelated untracked file (the captain's) and the worker's `.lcars-*` scratch
+# must NOT land on the mission branch — only the produced source.
+make_worker_stub_commit() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""; while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/t.test.js" ;;
+  implement-implementer)
+    mkdir -p src; printf 'export const feature = 1;\n' > src/feature.js   # produced source → commit
+    printf '#!/bin/sh\necho scratch\n' > .lcars-runner.sh                 # worker scratch → never commit
+    cat >"$out/result.json" <<JSON
+{
+  "ticketId": "t-001",
+  "passed": true,
+  "attempts": 1,
+  "summary": "built the feature; suite green."
+}
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+repoF2="$(mktemp -d "$TMPROOT/repo.XXXX")"
+( cd "$repoF2" && git init -q && git config user.email t@t && git config user.name t \
+    && printf '# seed\n' > seed.md && git add seed.md && git commit -qm seed )
+mF2="$repoF2/.git/lcars/missions/$MID"; mkdir -p "$mF2"
+write_approved_plan_json "$mF2/approved-plan.json"
+write_waves_json "$mF2/waves.json"
+cat >"$mF2/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+# All test infra lives OUTSIDE the repo tree so it never shows up as untracked.
+binF2="$TMPROOT/f2bin"; rm -rf "$binF2"; mkdir -p "$binF2"
+make_worker_stub_commit "$binF2/worker"; make_gh_stub "$binF2/gh"
+export GH_LOG="$binF2/gh.log"; : >"$GH_LOG"
+export WORKER_LOG="$binF2/worker.log"; : >"$WORKER_LOG"
+export WORKER_CALLS="$binF2/calls"; rm -rf "$WORKER_CALLS"; mkdir -p "$WORKER_CALLS"
+# the captain's unrelated untracked file, present BEFORE the ticket builds
+printf 'a bug note\n' > "$repoF2/bugs.md"
+rcF2=0
+( cd "$repoF2" && LCARS_WORKER_BIN="$binF2/worker" LCARS_GH_BIN="$binF2/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >"$binF2/out.txt" 2>&1 ) || rcF2=$?
+statF2="$( cd "$repoF2" && git show --stat --oneline HEAD 2>/dev/null )"
+check "F2. implement-ticket exits 0 (green ticket committed)" "[ '$rcF2' -eq 0 ]"
+check "F2. a commit landed on the mission branch" \
+  "[ \"\$( cd "$repoF2" && git rev-parse --abbrev-ref HEAD )\" = 'lcars/$MID' ]"
+check "F2. the commit includes the Implementer's produced source" \
+  "printf '%s' \"$statF2\" | grep -q 'src/feature.js'"
+check "F2. the commit EXCLUDES the captain's unrelated untracked file" \
+  "! printf '%s' \"$statF2\" | grep -q 'bugs.md'"
+check "F2. the commit EXCLUDES the worker's .lcars-* scratch" \
+  "! printf '%s' \"$statF2\" | grep -q 'lcars-runner.sh'"
+check "F2. the unrelated file is left untracked in the working tree" \
+  "[ -f '$repoF2/bugs.md' ] && [ -z \"\$( cd "$repoF2" && git ls-files bugs.md )\" ]"
+
+# ==========================================================================
+echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
