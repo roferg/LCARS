@@ -88,6 +88,7 @@ Skills are built in this sequence. Status:
 14. `lcars run`   — Auto-advance + notifications: token-free bash driver loops the
     per-stage advances; `--step` for one; fires `$LCARS_NOTIFY` at every human
     gate (local banner default, ntfy/Pushover opt-in). **Full unattended loop.**
+    ✅ built
 15. `lcars`       — Human surface: `lcars` (do-the-right-thing) + `lcars answer`
     (one inbox absorbing respond/approve/feedback) + the read-only board; no
     mission-id juggling. Old verbs stay as power aliases.

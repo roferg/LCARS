@@ -1,18 +1,24 @@
 ---
 name: lcars-run
-description: Advance an LCARS Mission one Stage. This build runs the Research, Validate, Plan, Plan Review, Schedule, and Implement stages — Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement; Implement processes the waves sequentially, running each ticket through an adversarial Test Writer → Implementer pair (iterating up to 5 attempts, flagging the human on failure) and advancing to Verify when every ticket is green; and Verify prints the captain's pre-ship summary (mission title, every completed ticket, the test tally) and the two next moves, then stops at the human gate. It also handles the Align re-entry after `lcars feedback` bounces a Mission back from Verify — re-grilling against the PRD plus the accumulated feedback before Research. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue a mission, or to run the Research, Validate, Plan, Plan Review, Schedule, Implement, or Verify stage on a filed mission.
+description: Advance an LCARS Mission through the pipeline. By default `lcars run <id>` AUTO-ADVANCES — a thin, token-free bash driver sequences the Stages back-to-back (Research → Validate → Plan → Plan Review → Schedule → Implement), each spawned as a cold isolated worker, and stops only at a human gate, firing a walk-away notification. It halts when a Stage escalates a question (awaiting-human), at the Verify review gate, at an `align` feedback re-entry (an interactive re-grill), or on an error; `lcars run <id> --step` advances exactly one Stage (the old one-at-a-time behaviour, for debugging). Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement; Implement processes the waves sequentially, running each ticket through an adversarial Test Writer → Implementer pair (iterating up to 5 attempts, flagging the human on failure) and advancing to Verify when every ticket is green; and Verify prints the captain's pre-ship summary and the two next moves, then stops at the human gate. It also handles the Align re-entry after `lcars feedback` bounces a Mission back from Verify — re-grilling against the PRD plus the accumulated feedback before Research. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue / auto-run a mission, or to run a single Research, Validate, Plan, Plan Review, Schedule, Implement, or Verify stage.
 ---
 
 # lcars run
 
-`lcars run <mission-id>` advances a Mission through the LCARS pipeline **one
-Stage at a time**. Every **headless** Stage's LLM work runs in a **cold
-subprocess worker** — `run.sh` assembles the worker's prompt from a per-Stage
-template plus the artifact *paths* alone and spawns it through `$LCARS_WORKER_BIN`
-(the host CLI by default). You (Claude) do **no** Stage reasoning for those
-Stages: you invoke the one driver subcommand and report what it printed. The
-bundled `run.sh` does the spawning, validation, and mechanical persistence so it
-all stays under test.
+`lcars run <mission-id>` **auto-advances** a Mission through the LCARS pipeline:
+a thin, **token-free** bash driver runs the Stages back-to-back until it hits a
+**human gate**, then stops and pings you. `lcars run <mission-id> --step`
+advances **exactly one Stage** and stops — the previous one-at-a-time behaviour,
+kept for debugging and inspection.
+
+Every **headless** Stage's LLM work runs in a **cold subprocess worker** —
+`run.sh` assembles the worker's prompt from a per-Stage template plus the
+artifact *paths* alone and spawns it through `$LCARS_WORKER_BIN` (the host CLI by
+default). You (Claude) do **no** Stage reasoning: you invoke the driver and
+report what it printed. The driver itself does no model reasoning — it only
+sequences the Stages; all the thinking happens in the cold workers each Stage
+spawns. The bundled `run.sh` does the spawning, validation, and mechanical
+persistence so it all stays under test.
 
 ### Stage isolation: headless Stages are cold workers, not inline reasoning
 
@@ -63,47 +69,61 @@ stops, and the captain ships with **`lcars approve`** or bounces it back with
 to `align` with `feedback.md` on disk, so the next `lcars run` re-enters Align
 rather than running Research cold.
 
-## Dispatch on the current stage
+## How you run it: the auto-advance driver
 
-1. Read `.git/lcars/missions/<id>/state.json`. If the mission dir or
-   `state.json` is missing, tell the captain the id is wrong / the mission
-   isn't filed, and stop.
-2. Look at `state.json.stage`:
-   - `align` → **first check for `feedback.md`** in the mission dir. If it
-     exists, the Mission was bounced back from Verify (`lcars feedback`), so
-     run the **Align re-entry** (below) — re-grill against the existing PRD
-     *and* the accumulated feedback before Research. If there is no
-     `feedback.md`, this is a freshly filed Mission: run the **Research stage**
-     (below).
-   - `validate` → run the **Validate stage** (below). But first check
-     `awaitingHuman`: if it is `true`, the Mission is parked at a human gate —
-     a scope question is unanswered. **Do not re-run the Validator.** Tell the
-     captain the Mission is waiting on them (`lcars respond <id>`) and stop.
-     (Once `lcars respond` records the answer it clears `awaitingHuman`, so the
-     next `lcars run` falls through and resumes Validate with the answer in
-     hand.)
-   - `plan` → run the **Plan stage** (below).
-   - `plan-review` → run the **Plan Review stage** (below). But first check
-     `awaitingHuman` exactly as Validate does: if it is `true`, Plan Review has
-     already escalated three failed rounds and is parked at the human gate.
-     **Do not re-run the reviewer.** Tell the captain the Mission is waiting on
-     them (`lcars respond <id>` — to override and proceed, or redirect) and
-     stop.
-   - `schedule` → run the **Schedule stage** (below).
-   - `implement` → run the **Implement stage** (below). But first check
-     `awaitingHuman` exactly as Validate does: if it is `true`, a ticket
-     exhausted its 5 attempts and the Mission is parked at the human gate.
-     **Do not re-run the ticket.** Tell the captain the Mission is waiting on
-     them (`lcars respond <id>`) and stop. (Once the human resolves it and
-     `lcars respond` clears the gate, the next `lcars run` falls through and
-     resumes the open waves.)
-   - `verify` → run the **Verify stage** (below): print the summary and hand
-     the ship-or-send-back decision to the captain. Do **not** advance — Verify
-     is a human gate, resolved by `lcars approve` / `lcars feedback`.
-   - `done` → the Mission has shipped. Tell the captain it is complete (the PR
-     is open) and stop.
-   - anything else → not implemented in this build; report the current stage
-     and stop. (`run.sh` also refuses to run a Stage on the wrong stage.)
+For almost every Mission you run **one command** and report what it printed:
+
+```bash
+bash ~/.claude/skills/lcars-run/run.sh drive --mission <id>          # auto-advance (default)
+bash ~/.claude/skills/lcars-run/run.sh drive --mission <id> --step   # one Stage, then stop
+```
+
+The `drive` loop reads `state.json`, sequences the per-Stage advances below
+(each a cold isolated worker), and **halts at a human gate**, printing a
+stage-by-stage summary and the reason it stopped. Auto mode and `--step` share
+the **exact same** per-Stage code path — the only difference is the loop.
+
+**Halt conditions** (the driver stops and returns to you):
+
+| Halt | Why | What the driver does |
+|---|---|---|
+| `awaitingHuman === true` | a Stage escalated (Research >20 Qs, Validate scope change, Plan Review round-3, Implement 5-attempt cap) | prints the pending question(s) + the `lcars respond <id>` hint, **fires the notification** |
+| `stage === "verify"` | the human review gate — never auto-passed | prints the ship-or-send-back next moves, **fires the notification** |
+| `stage === "align"` **with** `feedback.md` | a Verify feedback re-entry needs an interactive Align re-grill | stops and tells you to re-grill (see below) — **no notification** |
+| `stage === "done"` | terminal — the PR is open | reports it is shipped |
+| a Stage errors | malformed worker output, missing worker, etc. | stops, surfaces the error, does **not** continue — **no notification** |
+
+The summary marks each headless Stage `⊘ isolated` (the cold-worker handoff). If
+a Stage ever prints `⚠ NOT ISOLATED` the driver stops loudly — there is no
+worker binary; tell the captain to set `$LCARS_WORKER_BIN` (e.g. `claude`). Do
+**not** substitute your own session for a worker.
+
+### The one thing you do *before* the driver: the interactive Align re-entry
+
+The driver cannot run Align — it is a human grilling session, not automatable.
+So when you start a `lcars run` you must first check: is this an **`align`
+Mission with a `feedback.md`** (a bounce-back from Verify via `lcars feedback`)?
+
+- **No `feedback.md`** (a freshly filed `align` Mission, or any later stage) →
+  just run `drive`. It auto-advances from Research.
+- **`feedback.md` present** → do the **Align re-entry** in *your* session first
+  (read `prd.md` + the full `feedback.md`, re-grill, and **rewrite `prd.md`** —
+  see *The Align re-entry* below). Then run `run.sh research --mission <id>` once
+  to leave `align`, and finally `run.sh drive --mission <id>` to auto-advance the
+  rest. (Running `drive` straight on an un-regrilled feedback Mission just halts
+  at the align gate — that is the safety net, not the normal path.)
+
+If the mission dir or `state.json` is missing, tell the captain the id is wrong
+/ the mission isn't filed, and stop.
+
+### When you want one Stage at a time
+
+`--step` advances exactly one Stage and stops (no notification unless that single
+Stage lands on a gate). The per-Stage sections below document what each composed
+step does and remain the reference for `--step` and for debugging; the driver
+simply runs them in sequence. **A paused Stage never re-runs on its own:** when
+`awaitingHuman` is `true`, the underlying Stage driver refuses until
+`lcars respond <id>` clears the gate — auto mode and `--step` both inherit that.
 
 ## The Research stage
 
@@ -271,13 +291,21 @@ the Mission is now at **Implement**.
 
 ## The Implement stage
 
-Runs when `state.json.stage` is `implement` and `awaitingHuman` is not `true`
-(see Dispatch). The Mission's `waves.json` (from Schedule) is the work plan:
-**process the waves in order, and within a wave build the tickets in parallel.**
-Each ticket is built by two **adversarially-separated** LLM sessions (see
-vision.md → *Implement*): a **Test Writer** that writes failing tests, then a
-**fresh Implementer** — with *no* Test Writer context — that makes them pass.
-The script owns the mechanical, testable handoffs; you drive the two sessions.
+Runs when `state.json.stage` is `implement` and `awaitingHuman` is not `true`.
+The Mission's `waves.json` (from Schedule) is the work plan: **process the waves
+in order, and within a wave build the tickets in parallel.** Each ticket is built
+by two **adversarially-separated** LLM sessions (see vision.md → *Implement*): a
+**Test Writer** that writes failing tests, then a **fresh Implementer** — with
+*no* Test Writer context — that makes them pass.
+
+**The driver composes this whole loop for you.** Both auto mode and `--step` run
+the Implement Stage by spawning one subcommand —
+`run.sh implement --mission <id>` — which sequences STEPs 1–4 below (find the
+wave → build each pending ticket → advance to Verify, or stop at the
+awaiting-human gate if a ticket flags). The STEP-by-STEP breakdown that follows
+is the **reference** for what that subcommand composes; you do not normally run
+the `impl-*` subcommands by hand. The script owns every mechanical, testable
+handoff.
 
 ### STEP 1 — Find the current wave
 
@@ -417,6 +445,30 @@ skill — neither is part of `lcars run`:
 
 Do not call `verify-summary` again on a loop and do not try to advance the
 Mission — Verify only moves when the captain approves or sends feedback.
+
+## Notifications — the walk-away ping
+
+When the driver halts at a **human gate** — `awaitingHuman === true` **or**
+`stage === "verify"` — it fires the notify hook **once**, with the mission id,
+the gate type, and a **one-line, decision-ready summary** (what it's asking and
+what each answer does). A whole Stage's questions are batched into that single
+notification — never one ping per question. The hook fires **only** at those two
+gates; a clean Stage-to-Stage transition, an error, an `align` re-entry, and a
+`done` Mission never ping.
+
+Delivery is layered and local-first, handled by the bundled `notify.sh`:
+
+- **Always** — a terminal bell + a one-line banner (and, on macOS, a desktop
+  notification). Zero config.
+- **Opt-in phone push** — set an ntfy topic (`LCARS_NTFY_TOPIC`, or
+  `notifyNtfyTopic` in `.git/lcars/config.json`; optional `LCARS_NTFY_SERVER`)
+  or Pushover credentials (`LCARS_PUSHOVER_TOKEN` + `LCARS_PUSHOVER_USER`, or the
+  `notifyPushover{Token,User}` config keys).
+
+The hook is `$LCARS_NOTIFY` (defaults to the bundled `notify.sh`), env-injectable
+like `$LCARS_GH_BIN` so the test suite asserts the call without sending anything,
+and the push uses `$LCARS_CURL_BIN` so the network call is stubbable too. The
+driver fires it; you just relay the summary the driver printed.
 
 ## The Align re-entry (after feedback)
 
@@ -610,21 +662,30 @@ working tree changes.
 
 ## Implementation
 
-`run.sh` next to this file holds two layers. **Stage drivers** spawn the cold
-workers and persist their output: `research`, `validate`, `plan`, `plan-review`,
-`implement-ticket`. **Persistence subcommands** (which the drivers reuse, and
-which the test suite drives directly) do the mechanical, jq-free recording:
-`gate`, `save`, `validate-pause`, `validate-advance`, `plan-save`, `review-save`,
-`schedule`, `impl-save-tests`, `impl-save-result`, `impl-status`, `impl-advance`,
-`verify-summary`. Each headless Stage's worker prompt is a template under
-`skills/lcars-run/stages/<role>.md`; `run.sh` assembles the final prompt from the
-template plus the artifact *paths* and spawns it via `$LCARS_WORKER_BIN`
-(default `claude`) with the Stage's restricted tool set.
+`run.sh` next to this file holds three layers. The **auto-advance driver**
+(`drive`, with `--step`) is a thin, token-free loop: it reads `state.json`,
+sequences the Stage drivers below, halts at a human gate, prints the
+stage-by-stage summary, and fires the notify hook. It does **no** Stage
+reasoning and **no** model work — it never becomes the one session that thinks
+about every Stage. **Stage drivers** spawn the cold workers and persist their
+output: `research`, `validate`, `plan`, `plan-review`, `implement` (the whole
+wave loop), `implement-ticket` (one ticket). **Persistence subcommands** (which
+the drivers reuse, and which the test suite drives directly) do the mechanical,
+jq-free recording: `gate`, `save`, `validate-pause`, `validate-advance`,
+`plan-save`, `review-save`, `schedule`, `impl-save-tests`, `impl-save-result`,
+`impl-status`, `impl-advance`, `verify-summary`. Each headless Stage's worker
+prompt is a template under `skills/lcars-run/stages/<role>.md`; `run.sh`
+assembles the final prompt from the template plus the artifact *paths* and spawns
+it via `$LCARS_WORKER_BIN` (default `claude`) with the Stage's restricted tool
+set. The walk-away ping is the bundled `notify.sh` (`$LCARS_NOTIFY`), fired by
+the driver only at a human gate.
 
 The Verify gate's two outcomes are separate skills — `lcars-approve` and
 `lcars-feedback` — each with its own script and test suite. Behaviour is covered
 by `tests/lcars-run.test.sh` (run with `bash tests/run.sh`); its stage-isolation
-section stubs `$LCARS_WORKER_BIN` so the spawn/assemble/validate/persist plumbing
-runs token-free. The skill source lives in `skills/lcars-run/` and is symlinked
-into `~/.claude/skills/` by `./install.sh`; edit the repo copy, not `~/.claude`.
-If you change `run.sh` or a stage template, keep those tests green.
+section stubs `$LCARS_WORKER_BIN`, and its auto-advance section stubs both that
+and `$LCARS_NOTIFY`, so the spawn/assemble/validate/persist/notify plumbing runs
+token-free with no real pings. The skill source lives in `skills/lcars-run/` and
+is symlinked into `~/.claude/skills/` by `./install.sh`; edit the repo copy, not
+`~/.claude`. If you change `run.sh`, a stage template, or `notify.sh`, keep those
+tests green.

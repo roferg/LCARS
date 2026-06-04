@@ -51,14 +51,21 @@ TEST_CMD_ENV="${LCARS_TEST_CMD:-}"
 # already-tested persistence subcommands (gate/save/validate-*/plan-save/…)
 # rather than duplicate their logic.
 SELF="${BASH_SOURCE[0]}"
-# The per-Stage worker prompt templates live next to this script.
-STAGES_DIR="$(cd "$(dirname "$SELF")" && pwd)/stages"
+# The skill's own directory, and the per-Stage worker prompt templates under it.
+SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+STAGES_DIR="$SKILL_DIR/stages"
+# The walk-away notification hook. The driver calls this ONCE at a human gate
+# (awaiting-human or verify). Defaults to the bundled notify.sh; env-injectable
+# (like LCARS_GH_BIN) so tests assert the call without sending anything.
+NOTIFY_BIN="${LCARS_NOTIFY:-$SKILL_DIR/notify.sh}"
 # A malformed worker output stops the Stage; the driver re-dispatches up to this
 # many attempts before surfacing failure (no silent advance).
 MAX_WORKER_TRIES="${LCARS_WORKER_TRIES:-3}"
 MAX_QUESTIONS=20
 MAX_REVIEW_ROUNDS=3
 RELABEL_NOTE=""
+# The auto-advance summary rule.
+SEP="─────────────────────────────────────────────"
 
 die() { printf 'lcars run: %s\n' "$1" >&2; exit 1; }
 
@@ -1474,12 +1481,246 @@ $TICKET"
   die "the Implementer worker produced a result for $TICKET that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
 }
 
+# === Stage driver: Implement (the whole stage) =============================
+# The token-free wave loop. It processes the waves in order and, within a wave,
+# builds every pending ticket through `implement-ticket` (the cold adversarial
+# pair), then advances to Verify once every ticket is green. It composes the
+# already-tested impl-* subcommands and adds NO new Stage logic — it only
+# sequences them, the same way the auto-advance driver sequences whole Stages.
+# A ticket that flags the human (the 5-attempt cap → awaiting-human) stops the
+# loop at the gate; a hard worker failure stops the Stage non-zero.
+cmd_implement() {
+  locate_mission "$MISSION_ID"
+  require_stage implement
+  require_worker
+
+  local last_status=""
+  while :; do
+    local st rc=0
+    st="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-status --mission "$MISSION_ID" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf '%s\n' "$st" >&2
+      die "impl-status failed — Implement cannot sequence the waves."
+    fi
+
+    case "$st" in
+      *"IMPLEMENT: complete"*)
+        # Every ticket is green — advance to Verify (it re-checks all waves).
+        LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-advance --mission "$MISSION_ID"
+        exit $? ;;
+      *"IMPLEMENT: wave "*) : ;;   # a wave is active — build its pending tickets
+      *) printf '%s\n' "$st" >&2; die "unexpected impl-status output — Stage stopped." ;;
+    esac
+
+    # No-progress guard: if a full pass leaves impl-status reporting exactly the
+    # same wave + pending set, we'd loop forever — stop loudly instead.
+    [ "$st" != "$last_status" ] \
+      || die "Implement made no progress on the current wave — Stage stopped (a ticket neither went green nor flagged)."
+    last_status="$st"
+
+    local pending; pending="$(printf '%s\n' "$st" | sed -n 's/.*Pending ticket(s) in wave [0-9]*: //p')"
+    [ -n "$pending" ] || die "impl-status named an active wave but listed no pending tickets — Stage stopped."
+
+    local t
+    for t in $pending; do
+      local irc=0
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" implement-ticket \
+        --mission "$MISSION_ID" --ticket "$t" || irc=$?
+      [ "$irc" -eq 0 ] || die "implement-ticket $t failed — Stage stopped, no advance."
+      # A flagged ticket parks the Mission at the awaiting-human gate. Stop here;
+      # the auto-advance driver detects the gate and notifies.
+      [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] && exit 0
+    done
+  done
+}
+
+# === The auto-advance driver ===============================================
+# `lcars run <id>` defaults to AUTO mode: a thin, token-free loop that sequences
+# the per-Stage advances above — each spawned as a cold isolated worker — back to
+# back until a halt condition, then returns to the human. `--step` runs exactly
+# ONE Stage and stops (the previous one-stage-per-invocation behaviour, kept for
+# debugging). The driver does NO Stage reasoning: every advance is the same
+# subprocess `--step` would call, so auto mode inherits each Stage's behaviour —
+# and its cold-worker isolation — for free.
+#
+# HALT CONDITIONS (stop and return to the human):
+#   awaitingHuman === true        a Stage escalated a question → notify + print it
+#   stage === "verify"            the human review gate — never auto-passed → notify
+#   stage === "align" + feedback  a Verify feedback re-entry needs an interactive
+#                                 Align re-grill (a human grilling session)
+#   stage === "done"              terminal
+#   a Stage errors                stop, surface it, do not continue
+
+# --- the walk-away ping: fire the notify hook ONCE, only at a human gate -----
+notify_gate() { # gate-type  one-line-decision-ready-summary
+  LCARS_CFG="$LCARS_CFG" "$NOTIFY_BIN" "$MISSION_ID" "$1" "$2" || true
+}
+
+# --- print pending.json's questions, one bare string per line ----------------
+# The questions are the lone-quoted-string array items; key/value lines (which
+# carry a ": ") never match, so "stage" is skipped.
+drive_pending_questions() { # pending.json
+  grep -oE '^[[:space:]]*"[^"]*"[[:space:]]*,?[[:space:]]*$' "$1" 2>/dev/null \
+    | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*,?[[:space:]]*$//'
+}
+
+# --- one concise detail phrase per Stage, parsed from its output -------------
+drive_detail() { # stage  stage-output
+  case "$1" in
+    align|research)
+      case "$2" in
+        *"GATE: skip"*)     echo "0 questions (PRD unambiguous)" ;;
+        *"GATE: too-many"*) printf '%s' "$2" | sed -n 's/.*GATE: too-many \([0-9]*\).*/\1 questions — over the cap/p' | head -1 ;;
+        *"SAVE: "*)         printf '%s' "$2" | sed -n 's/.*SAVE: \([0-9]*\) responses.*/\1 research agent(s) complete/p' | head -1 ;;
+        *)                  echo "research complete" ;;
+      esac ;;
+    validate)    echo "no scope changes" ;;
+    plan)        local n; n="$(grep -c '"id"' "$MISSION_DIR/plan.json" 2>/dev/null)"; echo "${n:-?} ticket(s)" ;;
+    plan-review)
+      case "$2" in
+        *"passed"*) echo "passed review" ;;
+        *"revise"*) printf '%s' "$2" | sed -n 's/.*revise — round \([0-9]*\).*/revise (round \1) → plan/p' | head -1 ;;
+        *)          echo "reviewed" ;;
+      esac ;;
+    schedule)    printf '%s' "$2" | sed -n 's/.*into \([0-9]*\) wave(s).*/\1 wave(s)/p' | head -1 ;;
+    implement)
+      local total=0 g=0 w id
+      while IFS=$'\t' read -r w id; do
+        [ -n "$id" ] || continue; total=$((total + 1)); ticket_green "$id" && g=$((g + 1))
+      done < <(parse_waves_table "$MISSION_DIR/waves.json" 2>/dev/null)
+      echo "$g/$total ticket(s) green" ;;
+    *)           echo "done" ;;
+  esac
+}
+
+# --- one summary line for a Stage that just ran ------------------------------
+drive_line() { # stage  stage-output  ok|paused
+  if [ "$3" = paused ]; then
+    printf '%-12s ⏸  escalated — awaiting your answer' "$1"
+    return
+  fi
+  local detail iso=""
+  detail="$(drive_detail "$1" "$2")"
+  printf '%s' "$2" | grep -q 'isolated' && iso="   ⊘ isolated"
+  printf '%-12s ✓  %s%s' "$1" "${detail:-advanced}" "$iso"
+}
+
+drive_print_summary() { # accumulated-lines
+  [ -n "$1" ] && printf '%s\n' "$1"
+  printf '%s\n' "$SEP"
+}
+
+drive_halt_verify() {
+  printf '⏹ stopped at: verify  (human review required)\n'
+  printf 'Review the changes and run the app, then:\n'
+  printf '  lcars approve %s    — create the PR\n' "$MISSION_ID"
+  printf '  lcars feedback %s   — send back with feedback\n' "$MISSION_ID"
+  local title; title="$(json_str "$STATE" title)"; title="${title:-$MISSION_ID}"
+  notify_gate verify "$title is ready for review — \`lcars approve $MISSION_ID\` to ship, or \`lcars feedback $MISSION_ID\` to send it back."
+}
+
+drive_halt_awaiting() { # stage
+  printf '⏹ stopped at: %s  (awaiting your answer)\n' "$1"
+  local pj="$MISSION_DIR/pending.json" q
+  if [ -f "$pj" ]; then
+    printf 'Pending question(s):\n'
+    while IFS= read -r q; do
+      [ -n "$q" ] && printf '  • %s\n' "$q"
+    done < <(drive_pending_questions "$pj")
+  fi
+  printf 'Answer with `lcars respond %s`.\n' "$MISSION_ID"
+  local first; first="$(json_str "$STATE" pendingQuestion)"
+  notify_gate awaiting-human "Needs your answer — ${first:-see \`lcars respond $MISSION_ID\`}"
+}
+
+drive_halt_align() {
+  printf '⏹ stopped at: align  (interactive Align re-grill required)\n'
+  printf 'This Mission was sent back from Verify (feedback.md is present). Align is a\n'
+  printf 'human grilling session, not automatable: re-grill it in your session and\n'
+  printf 'rewrite the PRD, then it auto-advances from Research.\n'
+}
+
+cmd_drive() {
+  locate_mission "$MISSION_ID"
+  local mode="auto"; [ "$STEP" = 1 ] && mode="step"
+  printf '%s  %s-advance\n%s\n' "$MISSION_ID" "$mode" "$SEP"
+
+  local summary=""
+  while :; do
+    # Re-read the live state each pass (a Stage subprocess just rewrote it).
+    local stage awaiting
+    stage="$(json_str "$STATE" stage)"
+    awaiting="$(json_raw "$STATE" awaitingHuman)"
+
+    # Halt conditions, checked BEFORE running anything.
+    if [ "$awaiting" = "true" ]; then
+      drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
+    fi
+    case "$stage" in
+      verify) drive_print_summary "$summary"; drive_halt_verify; return 0 ;;
+      done)   drive_print_summary "$summary"
+              printf '⏹ stopped at: done  (Mission shipped — the PR is open)\n'; return 0 ;;
+      align)  if [ -f "$MISSION_DIR/feedback.md" ]; then
+                drive_print_summary "$summary"; drive_halt_align; return 0
+              fi ;;
+    esac
+
+    # Map the current stage to its single-Stage advance (the same subprocess
+    # `--step` calls). align with no feedback.md is a freshly-filed Mission → Research.
+    local action
+    case "$stage" in
+      align)       action="research" ;;
+      validate)    action="validate" ;;
+      plan)        action="plan" ;;
+      plan-review) action="plan-review" ;;
+      schedule)    action="schedule" ;;
+      implement)   action="implement" ;;
+      *) drive_print_summary "$summary"
+         printf '⏹ stopped: Mission is at an unsupported stage "%s".\n' "$stage"; return 1 ;;
+    esac
+
+    local out rc=0
+    out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" "$action" --mission "$MISSION_ID" 2>&1)" || rc=$?
+
+    local new_stage new_awaiting
+    new_stage="$(json_str "$STATE" stage)"
+    new_awaiting="$(json_raw "$STATE" awaitingHuman)"
+
+    # Label the line by the Stage that actually ran (a fresh `align` runs Research).
+    if [ "$new_awaiting" = "true" ]; then
+      summary="${summary:+$summary
+}$(drive_line "$action" "$out" paused)"
+      continue   # the halt check at the top of the next pass fires + notifies
+    fi
+    if [ "$new_stage" != "$stage" ]; then
+      summary="${summary:+$summary
+}$(drive_line "$action" "$out" ok)"
+      if [ "$mode" = "step" ]; then
+        drive_print_summary "$summary"
+        if [ "$new_stage" = "verify" ]; then drive_halt_verify
+        else printf '⏹ stepped one Stage → now at: %s\n' "$new_stage"
+             printf 'Run `lcars run %s` to continue (or add `--step` for one more).\n' "$MISSION_ID"
+        fi
+        return 0
+      fi
+      continue
+    fi
+
+    # Nothing advanced and no gate was raised → a hard Stage error.
+    drive_print_summary "$summary"
+    printf '⏹ stopped: %s failed\n' "$stage"
+    printf '%s\n' "$out"
+    return "${rc:-1}"
+  done
+}
+
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
-MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""
+MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --step)        STEP=1; shift ;;
     --mission)     MISSION_ID="${2:-}"; shift 2 ;;
     --mission=*)   MISSION_ID="${1#--mission=}"; shift ;;
     --questions)   QFILE="${2:-}"; shift 2 ;;
@@ -1501,7 +1742,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|plan|plan-review|implement-ticket)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|plan|plan-review|implement|implement-ticket|drive)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -1524,6 +1765,9 @@ case "$SUB" in
   validate)         cmd_validate ;;
   plan)             cmd_plan ;;
   plan-review)      cmd_plan_review ;;
+  implement)        cmd_implement ;;
   implement-ticket) cmd_implement_ticket ;;
-  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh <persistence|driver> --mission <id> [...]. Drivers: research|validate|plan|plan-review|implement-ticket. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
+  # Auto-advance driver — sequences the per-Stage advances above (token-free).
+  drive)            cmd_drive ;;
+  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

@@ -1763,5 +1763,194 @@ check "8. every headless Stage ran in a cold worker (no inline reasoning)" \
 
 # ==========================================================================
 echo
+echo "lcars run — auto-advance driver + walk-away notifications"
+#
+# `lcars run <id>` now auto-advances: a thin, token-free bash loop (the `drive`
+# subcommand) sequences the per-stage advances built in sessions 4–12, each a
+# cold isolated worker, until a halt condition. `--step` does exactly ONE stage
+# (the old behaviour). At a human gate the loop fires the notify hook once. These
+# tests stub the worker ($LCARS_WORKER_BIN), gh, and the notify hook
+# ($LCARS_NOTIFY) so the whole loop runs with no real tokens and no real pings.
+#   1.  --step advances exactly one stage and stops
+#   2.  auto mode advances through multiple stages in one invocation
+#   3.  auto mode halts at "verify" without running it
+#   4.  auto mode halts at an awaiting-human gate, printing the pending question
+#   5.  auto mode halts at "align" (a feedback re-entry needs a human)
+#   6.  auto mode stops and surfaces the error when a stage fails
+#   7.  the stage-by-stage summary is printed on halt
+#   8.  the summary still marks each headless stage `⊘ isolated`
+#   9.  the notify hook fires exactly once at an awaiting-human / verify halt
+#   10. no notification fires on a clean stage-to-stage transition
+#   11. notify delivery is configurable (banner default, ntfy on a topic) + stubbable
+
+# A notify recorder: one "<id>|<gate>|<summary>" line per call to $NOTIFY_LOG.
+make_notify_stub() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "${1:-}" "${2:-}" "${3:-}" >>"$NOTIFY_LOG"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Wire a repo for the driver: worker stub + schedule-capable gh + notify recorder.
+arm_drive() { # repo
+  make_worker_stub "$1/worker"; make_gh_stub_schedule "$1/gh"; make_notify_stub "$1/notify"
+  export GH_LOG="$1/gh.log"; : >"$GH_LOG"
+  export GH_SEQ="$1/gh.seq"; rm -f "$GH_SEQ"
+  export WORKER_LOG="$1/worker.log"; : >"$WORKER_LOG"
+  export WORKER_CALLS="$1/calls"; rm -rf "$WORKER_CALLS"; mkdir -p "$WORKER_CALLS"
+  export NOTIFY_LOG="$1/notify.log"; : >"$NOTIFY_LOG"
+}
+# Run the driver in a repo; stdout+stderr land in <repo>/drive.out; returns rc.
+drive() { # repo args...
+  local repo="$1"; shift
+  ( cd "$repo" && STUB_NQUESTIONS=1 \
+      LCARS_WORKER_BIN="$repo/worker" LCARS_GH_BIN="$repo/gh" LCARS_NOTIFY="$repo/notify" \
+      bash "$SCRIPT" "$@" >"$repo/drive.out" 2>&1 )
+}
+
+# --- Behaviour 1: --step advances exactly one stage and stops --------------
+repoA1="$(new_repo_with_validate_mission)"; arm_drive "$repoA1"
+rcA1=0; drive "$repoA1" drive --mission "$MID" --step || rcA1=$?
+check "1. --step exits 0" "[ '$rcA1' -eq 0 ]"
+check "1. --step advances exactly one stage (validate → plan)" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoA1")'"
+check "1. --step ran the validate worker once" \
+  "[ \"\$(calls_of_role "$repoA1/worker.log" validate)\" = '1' ]"
+check "1. --step did NOT continue into Plan / Plan Review" \
+  "[ \"\$(calls_of_role "$repoA1/worker.log" plan)\" = '0' ] && [ \"\$(calls_of_role "$repoA1/worker.log" plan-review)\" = '0' ]"
+
+# --- Behaviours 2/7/8/9: auto mode runs many stages → halts at verify -------
+# A fresh align mission (no feedback.md) auto-advances research → validate →
+# plan → plan-review → schedule → implement, then stops at the verify gate.
+repoA2="$(new_repo_with_mission)"; arm_drive "$repoA2"
+rcA2=0; drive "$repoA2" drive --mission "$MID" || rcA2=$?
+sA2="$(state_of "$repoA2")"
+check "2. auto mode exits 0 at the verify gate" "[ '$rcA2' -eq 0 ]"
+check "2. auto mode advanced all the way to verify in one invocation" \
+  "grep -q '\"stage\": *\"verify\"' '$sA2'"
+check "2. auto mode ran every headless stage's worker" \
+  "grep -q 'role=research-questions' '$repoA2/worker.log' && grep -q 'role=validate' '$repoA2/worker.log' && grep -q 'role=plan ' '$repoA2/worker.log' && grep -q 'role=plan-review' '$repoA2/worker.log' && grep -q 'role=implement-implementer' '$repoA2/worker.log'"
+check "7. the summary lists each stage that ran" \
+  "grep -q 'research' '$repoA2/drive.out' && grep -q 'validate' '$repoA2/drive.out' && grep -q 'plan-review' '$repoA2/drive.out' && grep -q 'schedule' '$repoA2/drive.out' && grep -q 'implement' '$repoA2/drive.out'"
+check "7. the summary names where it stopped (verify)" \
+  "grep -qi 'stopped' '$repoA2/drive.out' && grep -q 'verify' '$repoA2/drive.out'"
+check "8. the summary still marks the stages '⊘ isolated' (cold-worker regression)" \
+  "grep -q 'isolated' '$repoA2/drive.out'"
+check "9. the notify hook fires exactly once at the verify gate" \
+  "[ \"\$(grep -c . "$repoA2/notify.log")\" = '1' ]"
+check "9. the notification names the verify gate" \
+  "grep -q '|verify|' '$repoA2/notify.log'"
+check "9. the notification carries a non-empty decision-ready summary" \
+  "[ -n \"\$(awk -F'|' 'NR==1{print \$3}' "$repoA2/notify.log")\" ]"
+
+# --- Behaviour 3: auto mode halts AT verify without running it --------------
+# Seed a mission already parked at verify (Implement done): the driver must stop
+# without spawning any worker and without changing the stage.
+repoA3="$(new_repo_with_implement_mission)"; arm_drive "$repoA3"
+# advance it cleanly to verify first (its own implement run), then re-drive.
+drive "$repoA3" drive --mission "$MID" >/dev/null 2>&1 || true
+: >"$repoA3/worker.log"; : >"$repoA3/notify.log"   # reset the logs for the re-drive
+rcA3=0; drive "$repoA3" drive --mission "$MID" || rcA3=$?
+check "3. re-driving a verify mission exits 0" "[ '$rcA3' -eq 0 ]"
+check "3. it stays parked at verify (never auto-passed)" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoA3")'"
+check "3. it spawns NO worker at the verify gate" "[ ! -s '$repoA3/worker.log' ]"
+check "3. it reports the verify halt" \
+  "grep -qi 'stopped' '$repoA3/drive.out' && grep -q 'verify' '$repoA3/drive.out'"
+
+# --- Behaviours 4/9: auto mode halts at an awaiting-human gate --------------
+# A scope-change question (STUB_SCOPE=1) pauses Validate → awaiting-human.
+repoA4="$(new_repo_with_validate_mission)"; arm_drive "$repoA4"
+rcA4=0
+( cd "$repoA4" && STUB_SCOPE=1 STUB_NQUESTIONS=1 \
+    LCARS_WORKER_BIN="$repoA4/worker" LCARS_GH_BIN="$repoA4/gh" LCARS_NOTIFY="$repoA4/notify" \
+    bash "$SCRIPT" drive --mission "$MID" >"$repoA4/drive.out" 2>&1 ) || rcA4=$?
+sA4="$(state_of "$repoA4")"
+check "4. auto mode exits 0 at the awaiting-human gate" "[ '$rcA4' -eq 0 ]"
+check "4. the mission is parked awaiting-human" "grep -q '\"awaitingHuman\": *true' '$sA4'"
+check "4. the stage stays at validate (the escalating stage)" \
+  "grep -q '\"stage\": *\"validate\"' '$sA4'"
+check "4. the halt prints the pending question" \
+  "grep -qi 'leaderboard' '$repoA4/drive.out'"
+check "4. the halt hints at lcars respond" \
+  "grep -q 'lcars respond' '$repoA4/drive.out'"
+check "9. the notify hook fires exactly once at the awaiting-human gate" \
+  "[ \"\$(grep -c . "$repoA4/notify.log")\" = '1' ]"
+check "9. the notification names the awaiting-human gate" \
+  "grep -q '|awaiting-human|' '$repoA4/notify.log'"
+check "9. the notification summary carries the question (decision-ready)" \
+  "awk -F'|' 'NR==1{print \$3}' '$repoA4/notify.log' | grep -qi 'leaderboard'"
+
+# --- Behaviour 5: auto mode halts at align (feedback re-entry) --------------
+repoA5="$(new_repo_with_mission)"; arm_drive "$repoA5"
+printf '## Feedback 2026-06-04\nThe toggle should default to the OS theme.\n' \
+  >"$repoA5/.git/lcars/missions/$MID/feedback.md"
+rcA5=0; drive "$repoA5" drive --mission "$MID" || rcA5=$?
+check "5. a feedback re-entry halts cleanly (exit 0)" "[ '$rcA5' -eq 0 ]"
+check "5. it stays at align (an interactive re-grill is required)" \
+  "grep -q '\"stage\": *\"align\"' '$(state_of "$repoA5")'"
+check "5. it spawns NO worker (Align is not automatable)" "[ ! -s '$repoA5/worker.log' ]"
+check "5. it explains the interactive Align re-entry" \
+  "grep -qi 'align' '$repoA5/drive.out' && grep -qi 'feedback\|re-grill\|interactive' '$repoA5/drive.out'"
+check "5. no notification fires for an align halt" "[ ! -s '$repoA5/notify.log' ]"
+
+# --- Behaviour 6: a stage error stops auto mode and is surfaced -------------
+# A malformed Plan worker output (after retries) fails the plan stage.
+repoA6="$(new_repo_with_plan_mission)"; arm_drive "$repoA6"
+rcA6=0
+( cd "$repoA6" && STUB_MALFORMED=1 LCARS_WORKER_TRIES=2 \
+    LCARS_WORKER_BIN="$repoA6/worker" LCARS_GH_BIN="$repoA6/gh" LCARS_NOTIFY="$repoA6/notify" \
+    bash "$SCRIPT" drive --mission "$MID" >"$repoA6/drive.out" 2>&1 ) || rcA6=$?
+check "6. a failing stage stops auto mode with a non-zero exit" "[ '$rcA6' -ne 0 ]"
+check "6. the failing stage does not advance the mission" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoA6")'"
+check "6. the error is surfaced to the human" \
+  "grep -qi 'plan' '$repoA6/drive.out' && grep -qi 'stopped\|fail' '$repoA6/drive.out'"
+check "6. no notification fires on an error (only at a human gate)" \
+  "[ ! -s '$repoA6/notify.log' ]"
+
+# --- Behaviour 10: no notification on a clean stage-to-stage transition -----
+# A single --step over a non-gate transition (validate → plan) must NOT ping.
+repoA10="$(new_repo_with_validate_mission)"; arm_drive "$repoA10"
+drive "$repoA10" drive --mission "$MID" --step || true
+check "10. a clean stage-to-stage --step advances the stage" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoA10")'"
+check "10. a clean stage-to-stage transition fires NO notification" \
+  "[ ! -s '$repoA10/notify.log' ]"
+
+# --- Behaviour 11: notify delivery is configurable + stubbable --------------
+# Drive the bundled notify hook directly with a stubbed curl: banner always,
+# ntfy push only when a topic is configured.
+NOTIFY_SH="$REPO_ROOT/skills/lcars-run/notify.sh"
+check "11. the notify hook ships next to run.sh" "[ -f '$NOTIFY_SH' ]"
+curlstub="$TMPROOT/curl"
+cat >"$curlstub" <<'EOF'
+#!/usr/bin/env bash
+echo "curl $*" >>"$CURL_LOG"
+exit 0
+EOF
+chmod +x "$curlstub"
+
+# (a) no topic → local banner only, no push
+export CURL_LOG="$TMPROOT/curl.a.log"; : >"$CURL_LOG"
+outNa="$( LCARS_CURL_BIN="$curlstub" LCARS_NTFY_TOPIC="" LCARS_NOTIFY_NO_DESKTOP=1 \
+  bash "$NOTIFY_SH" "$MID" verify "Mission ready for review" 2>&1 )"
+check "11. the default delivery prints a local banner" \
+  "printf '%s' \"$outNa\" | grep -q '$MID'"
+check "11. the banner carries the decision-ready summary" \
+  "printf '%s' \"$outNa\" | grep -qi 'ready for review'"
+check "11. no phone push fires without a configured topic" "[ ! -s '$CURL_LOG' ]"
+
+# (b) ntfy topic set → push to ntfy on that topic
+export CURL_LOG="$TMPROOT/curl.b.log"; : >"$CURL_LOG"
+( LCARS_CURL_BIN="$curlstub" LCARS_NTFY_TOPIC="lcars-alerts" LCARS_NOTIFY_NO_DESKTOP=1 \
+  bash "$NOTIFY_SH" "$MID" awaiting-human "Scope question: per-course or global?" >/dev/null 2>&1 )
+check "11. an ntfy topic opts the mission into a phone push" "grep -q 'ntfy' '$CURL_LOG'"
+check "11. the push targets the configured topic" "grep -q 'lcars-alerts' '$CURL_LOG'"
+
+# ==========================================================================
+echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
