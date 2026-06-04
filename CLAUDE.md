@@ -92,7 +92,7 @@ Skills are built in this sequence. Status:
 15. `lcars`       — Human surface: `lcars` (do-the-right-thing) + `lcars answer`
     (one inbox absorbing respond/approve/feedback) + the read-only board; no
     mission-id juggling. Old verbs stay as power aliases.  ✅ built
-16. `lcars log`   — Mission Log: bugs against an active mission.
+16. `lcars log`   — Mission Log: bugs against an active mission.  ✅ built
 17. Copilot enablement — **RESEARCH session**: run the capability spike, then
     propose a phased plan of incremental Copilot build sessions (18+) behind
     `$LCARS_WORKER_BIN` rather than one big-bang. **DEFERRED** (closes BUG-003);
