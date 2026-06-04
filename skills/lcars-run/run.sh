@@ -1343,8 +1343,16 @@ cmd_validate() {
   [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
     && die "mission is awaiting a human answer — run \`lcars respond $MISSION_ID\` first; the Validator does not re-run until the gate clears."
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md."
-  [ -d "$MISSION_DIR/research" ] || die "no research/ findings — Research has not run."
 
+  # Zero findings is a VALID Validate input. A 0-question Research (unambiguous
+  # PRD) advances align→validate via the gate's "skip" path WITHOUT creating a
+  # research/ dir, so an absent or empty research/ means "the PRD was clear" —
+  # not "Research never ran". Synthesise from the PRD alone in that case; only
+  # list research/*.json when they actually exist (the loop below is already a
+  # no-op for a missing glob). Order is still enforced by require_stage validate
+  # above, and a malformed synthesis still dies in cmd_save before advancing —
+  # so dropping the old hard `-d research` guard cannot let a pre-Research
+  # validate slip through.
   local extra; extra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/prd.md"
   local f

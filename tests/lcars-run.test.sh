@@ -1611,6 +1611,41 @@ check "3. a worker scope question pauses at the human gate" \
 check "3. the paused mission stays at validate" \
   "grep -q '\"stage\": *\"validate\"' '$sW3b'"
 
+# --- Behaviour 3 (0-question fast path): Validate synthesises from the PRD alone
+# A 0-question Research (unambiguous PRD) leaves NO research/ dir. Validate must
+# treat zero findings as a valid input — synthesise from prd.md alone and advance
+# — not hard-die "no research/ findings". Reproduces the live wedge where a
+# 0-question Mission stuck at validate and every subsequent run re-failed.
+repoW3c="$(new_repo_with_validate_mission)"; arm_worker "$repoW3c"
+rm -rf "$repoW3c/.git/lcars/missions/$MID/research"   # 0-question Research → no findings dir
+rcW3c=0
+( cd "$repoW3c" && LCARS_WORKER_BIN="$repoW3c/worker" LCARS_GH_BIN="$repoW3c/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out3c.txt 2>&1 ) || rcW3c=$?
+check "3. validate with no research/ does NOT die (exit 0)" "[ '$rcW3c' -eq 0 ]"
+check "3. validate still runs exactly one Validator worker on the PRD alone" \
+  "[ \"\$(calls_of_role "$WORKER_LOG" validate)\" = '1' ]"
+check "3. validate (PRD-only) advances to plan" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoW3c")'"
+VP3c="$(prompt_for_role "$WORKER_CALLS" validate)"
+MDIR3c="$repoW3c/.git/lcars/missions/$MID"
+check "3. PRD-only validate still feeds the worker prd.md" \
+  "printf '%s' \"\$VP3c\" | grep -qF '$MDIR3c/prd.md'"
+check "3. PRD-only validate lists no research/*.json path" \
+  "! printf '%s' \"\$VP3c\" | grep -qF '$MDIR3c/research/'"
+
+# End-to-end: a 0-question Research then Validate must NOT wedge. Drive from align
+# with STUB_NQUESTIONS=0: Research skips → Validate runs PRD-only → reaches plan.
+repoW3d="$(new_repo_with_mission)"; arm_worker "$repoW3d"
+( cd "$repoW3d" && STUB_NQUESTIONS=0 LCARS_WORKER_BIN="$repoW3d/worker" LCARS_GH_BIN="$repoW3d/gh" \
+    bash "$SCRIPT" research --mission "$MID" >outr.txt 2>&1 )
+check "3. 0-question research left no research/ dir" \
+  "[ ! -d '$repoW3d/.git/lcars/missions/$MID/research' ]"
+rcW3d=0
+( cd "$repoW3d" && LCARS_WORKER_BIN="$repoW3d/worker" LCARS_GH_BIN="$repoW3d/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >outv.txt 2>&1 ) || rcW3d=$?
+check "3. the 0-question Mission does NOT wedge at validate (advances)" \
+  "[ '$rcW3d' -eq 0 ] && grep -q '\"stage\": *\"plan\"' '$(state_of "$repoW3d")'"
+
 # --- Behaviour 4: Plan / Plan Review / Test Writer / Implementer are cold ------
 # Plan: fed only prd.md + validated-plan.md
 repoW4p="$(new_repo_with_plan_mission)"; arm_worker "$repoW4p"

@@ -214,6 +214,60 @@ a6b="$(answers_of "$repo6b" "lcars-20260530-007")"
 check "6. with one escalation, respond needs no mission id" \
   "[ '$rc6b' -eq 0 ] && [ -f '$a6b' ]"
 
+# --- FIX 1: ambiguous resolve must abort at top level, not exec an empty id ---
+# With several pending decisions and no --mission, an action subcommand must:
+#   (a) print the candidate picker,
+#   (b) exit 2 (ambiguous), NOT 1,
+#   (c) NOT invoke the delegated script (no spurious --mission "" call).
+# Stubs drop a sentinel file when invoked; we assert it is absent.
+sentinel_stub() { # path  → records invocation by creating $path.fired
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+: >"$0.fired"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# respond, ambiguous
+repoA="$(new_repo)"
+add_escalation "$repoA" "lcars-20260530-001" "First escalation"
+add_escalation "$repoA" "lcars-20260530-002" "Second escalation"
+RESP_STUB="$repoA/respond-stub.sh"; sentinel_stub "$RESP_STUB"; rm -f "$RESP_STUB.fired"
+rcA=0
+( cd "$repoA" && LCARS_RESPOND_SCRIPT="$RESP_STUB" \
+    bash "$ANSWER" respond --answer "go" >out.txt 2>&1 ) || rcA=$?
+check "F1. respond (ambiguous) exits 2, not 1"        "[ '$rcA' -eq 2 ]"
+check "F1. respond (ambiguous) prints the picker"     \
+  "grep -qi 'pick one' '$repoA/out.txt'"
+check "F1. respond (ambiguous) names both candidates" \
+  "grep -q 'lcars-20260530-001' '$repoA/out.txt' && grep -q 'lcars-20260530-002' '$repoA/out.txt'"
+check "F1. respond (ambiguous) does NOT delegate"     "[ ! -f '$RESP_STUB.fired' ]"
+check "F1. respond (ambiguous) prints no 'no mission id' error" \
+  "! grep -qi 'no mission id' '$repoA/out.txt'"
+
+# approve, ambiguous (two verify gates)
+repoB="$(new_repo)"
+add_verify "$repoB" "lcars-20260531-001" "First ship"
+add_verify "$repoB" "lcars-20260531-002" "Second ship"
+APP_STUB2="$repoB/approve-stub.sh"; sentinel_stub "$APP_STUB2"; rm -f "$APP_STUB2.fired"
+rcB=0
+( cd "$repoB" && LCARS_APPROVE_SCRIPT="$APP_STUB2" \
+    bash "$ANSWER" approve >out.txt 2>&1 ) || rcB=$?
+check "F1. approve (ambiguous) exits 2"          "[ '$rcB' -eq 2 ]"
+check "F1. approve (ambiguous) does NOT delegate" "[ ! -f '$APP_STUB2.fired' ]"
+
+# send-back, ambiguous
+repoC="$(new_repo)"
+add_verify "$repoC" "lcars-20260531-001" "First ship"
+add_verify "$repoC" "lcars-20260531-002" "Second ship"
+FB_STUB2="$repoC/feedback-stub.sh"; sentinel_stub "$FB_STUB2"; rm -f "$FB_STUB2.fired"
+rcC=0
+( cd "$repoC" && LCARS_FEEDBACK_SCRIPT="$FB_STUB2" \
+    bash "$ANSWER" send-back --feedback "fix it" >out.txt 2>&1 ) || rcC=$?
+check "F1. send-back (ambiguous) exits 2"           "[ '$rcC' -eq 2 ]"
+check "F1. send-back (ambiguous) does NOT delegate" "[ ! -f '$FB_STUB2.fired' ]"
+
 # ==========================================================================
 echo
 printf 'lcars answer: %d passed, %d failed\n' "$pass" "$fail"

@@ -85,18 +85,26 @@ locate_missions_dir() {
 }
 
 # Resolve a target Mission from the pending set (escalations + verify gates).
-# 0 → echoes the id; 2 → prints the picker + exits; 3 → dies.
+# Sets RESOLVED_MID and returns the resolver's rc — it must NOT exit/die here,
+# because callers invoke it directly (not in $(...)), so a die/exit 2 inside a
+# command substitution would only kill the subshell and let the caller exec the
+# delegate with an empty --mission. The caller branches on the return code at the
+# top level (see cmd_respond/cmd_approve/cmd_send_back).
+#   0 → RESOLVED_MID set;  2 → picker printed to stderr;  3 → "none" printed.
+RESOLVED_MID=""
 resolve_pending() { # selector(optional)
   local out rc
   out="$(bash "$RESOLVE" --scope pending ${1:+--id "$1"})"; rc=$?
   case "$rc" in
-    0) printf '%s' "$out" ;;
+    0) RESOLVED_MID="$out"; return 0 ;;
     2) echo "Several decisions match — pick one with --mission <id>:" >&2
        printf '%s\n' "$out" | while IFS=$'\t' read -r id title stage note; do
          printf '  %s  %s  (%s)\n' "$id" "$title" "$stage" >&2
        done
-       exit 2 ;;
-    *) die "no pending decision${1:+ matches \"$1\"} — \`lcars answer\` to see the inbox." ;;
+       return 2 ;;
+    *) printf 'lcars answer: no pending decision%s — `lcars answer` to see the inbox.\n' \
+         "${1:+ matches \"$1\"}" >&2
+       return 3 ;;
   esac
 }
 
@@ -155,21 +163,21 @@ cmd_list() {
 # === subcommand: respond ====================================================
 cmd_respond() {
   [ -n "$ANSWER" ] || die "no answer — pass --answer \"<your answer>\"."
-  local mid; mid="$(resolve_pending "$MISSION_SEL")"
-  exec bash "$RESPOND_SCRIPT" answer --mission "$mid" --answer "$ANSWER"
+  resolve_pending "$MISSION_SEL" || exit $?
+  exec bash "$RESPOND_SCRIPT" answer --mission "$RESOLVED_MID" --answer "$ANSWER"
 }
 
 # === subcommand: approve ====================================================
 cmd_approve() {
-  local mid; mid="$(resolve_pending "$MISSION_SEL")"
-  exec bash "$APPROVE_SCRIPT" --mission "$mid"
+  resolve_pending "$MISSION_SEL" || exit $?
+  exec bash "$APPROVE_SCRIPT" --mission "$RESOLVED_MID"
 }
 
 # === subcommand: send-back ==================================================
 cmd_send_back() {
   [ -n "$FEEDBACK" ] || die "no feedback — pass --feedback \"<what to fix>\"."
-  local mid; mid="$(resolve_pending "$MISSION_SEL")"
-  exec bash "$FEEDBACK_SCRIPT" --mission "$mid" --feedback "$FEEDBACK"
+  resolve_pending "$MISSION_SEL" || exit $?
+  exec bash "$FEEDBACK_SCRIPT" --mission "$RESOLVED_MID" --feedback "$FEEDBACK"
 }
 
 # --- dispatch --------------------------------------------------------------

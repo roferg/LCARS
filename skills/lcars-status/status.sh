@@ -98,6 +98,7 @@ ASK_GLYPH="❓"
 
 rows=()
 questions=()  # "id\tissue\tquestion" for the awaiting-human footer
+any_glyph=0   # did any rendered row carry a status glyph? gates the legend
 for s in "${states[@]}"; do
   id="$(json_str "$s" id)"
   [ -n "$id" ] || id="$(basename "$(dirname "$s")")"
@@ -135,6 +136,7 @@ for s in "${states[@]}"; do
     glyph="${glyph:+$glyph}$ASK_GLYPH"
     questions+=("$id"$'\t'"$issue_disp"$'\t'"$question")
   fi
+  [ -n "$glyph" ] && any_glyph=1
 
   rows+=("$created"$'\t'"$id"$'\t'"$id"$'\t'"$issue_disp"$'\t'"$stage"$'\t'"$glyph"$'\t'"$title")
 done
@@ -153,7 +155,13 @@ while IFS=$'\t' read -r _created _sortid id issue stage glyph title; do
   printf '%-22s%-7s%-13s%-4s%s\n' "$id" "$issue" "$stage" "$glyph" "$title"
 done <<<"$sorted"
 echo "$RULE"
-printf '%s paused    %s awaiting your input\n' "$PAUSE_GLYPH" "$ASK_GLYPH"
+# Only show the glyph legend when a row actually carries a glyph — otherwise a
+# clean board (no paused / awaiting mission) prints a trailing "paused / awaiting"
+# line that reads as if a mission has that status. "Legend:" makes it unmistakably
+# a key, not state.
+if [ "$any_glyph" -eq 1 ]; then
+  printf 'Legend: %s paused    %s awaiting your input\n' "$PAUSE_GLYPH" "$ASK_GLYPH"
+fi
 
 # --- awaiting-human footer ------------------------------------------------
 # Spell out every pending question so the captain can respond without digging

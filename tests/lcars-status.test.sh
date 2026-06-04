@@ -116,6 +116,27 @@ write_mission "$repo4b" "lcars-20260530-001" "implement" "42" \
 check "4. unpaused mission row carries no pause glyph" \
   "! grep -q '⏸.*lcars\\|lcars-20260530-001.*⏸' '$repo4b/out.txt'"
 
+# --- FIX 3: the glyph legend only prints when a row actually has a glyph -----
+# A freshly-filed, non-paused, non-awaiting mission has no glyph. The trailing
+# "⏸ paused  ❓ awaiting your input" legend must NOT print then — otherwise it
+# reads as if that single clean mission is itself paused / awaiting.
+repo4c="$(new_init_repo)"
+write_mission "$repo4c" "lcars-20260530-001" "align" "42" \
+  "2026-05-30T10:00:00Z" "Fresh mission"
+( cd "$repo4c" && bash "$SCRIPT" >out.txt 2>&1 )
+check "4. no glyph legend on a clean board (no 'awaiting your input')" \
+  "! grep -qi 'awaiting your input' '$repo4c/out.txt'"
+check "4. no stray 'paused' legend on a clean board" \
+  "! grep -qi 'paused' '$repo4c/out.txt'"
+
+# With a glyph-bearing mission present (paused here), the legend IS shown.
+repo4d="$(new_init_repo)"
+write_mission "$repo4d" "lcars-20260530-001" "implement" "42" \
+  "2026-05-30T10:00:00Z" "Paused mission" "true"
+( cd "$repo4d" && bash "$SCRIPT" >out.txt 2>&1 )
+check "4. legend IS shown once a glyph is rendered" \
+  "grep -qi 'paused' '$repo4d/out.txt' && grep -qi 'awaiting your input' '$repo4d/out.txt'"
+
 # --- Behaviour 5: awaiting-human indicator + question ---------------------
 repo5="$(new_init_repo)"
 write_mission "$repo5" "lcars-20260530-002" "research" "43" \
