@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Getting Started — LCARS</title>
+  <link rel="stylesheet" href="lcars.css" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     HEADER
+     ═══════════════════════════════════════════════════════════ -->
+<header>
+  <div class="header-block">
+    <div class="header-brand">
+      LCARS
+      <span>Library Computer Access &amp; Retrieval System</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="header-title">Getting Started</span>
+    <div class="header-stardate">
+      <span class="sd-label">Stardate</span>
+      <span id="stardate-value">——</span>
+    </div>
+    <div class="header-stripes">
+      <div class="stripe" style="width:52px;background:#ffaa00"></div>
+      <div class="stripe" style="width:8px;background:#cc8800"></div>
+      <div class="stripe" style="width:18px;background:#4499ff"></div>
+      <div class="stripe" style="width:8px;background:#2255bb"></div>
+      <div class="stripe" style="width:10px;background:#9977ff"></div>
+      <div class="stripe" style="width:5px;background:#00ccaa"></div>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- ═══════════════════════════════════════════════════════
+       SIDEBAR NAV
+       ═══════════════════════════════════════════════════════ -->
+  <nav>
+    <div class="nav-section" data-color="amber">
+      <div class="nav-label">Orientation</div>
+      <a href="#intro"><div class="dot"></div>What it does</a>
+      <a href="#pipeline"><div class="dot"></div>The pipeline</a>
+    </div>
+    <div class="nav-section" data-color="peach">
+      <div class="nav-label">Operate</div>
+      <a href="#install"><div class="dot"></div>Install</a>
+      <a href="#quickstart"><div class="dot"></div>Quick start</a>
+      <a href="#commands"><div class="dot"></div>Commands</a>
+      <a href="#loop"><div class="dot"></div>Worked loop <span class="nav-badge">walk-away</span></a>
+      <a href="#expect"><div class="dot"></div>What to expect</a>
+    </div>
+    <div class="nav-section" data-color="blue">
+      <div class="nav-label">Under the hood</div>
+      <a href="#internals"><div class="dot"></div>How it runs</a>
+      <a href="#state"><div class="dot"></div>State &amp; labels</a>
+      <a href="#config"><div class="dot"></div>Configuration</a>
+    </div>
+    <div class="nav-section" data-color="violet">
+      <div class="nav-label">Build</div>
+      <a href="#develop"><div class="dot"></div>Develop</a>
+      <a href="#status"><div class="dot"></div>Status</a>
+    </div>
+  </nav>
+
+  <main>
+
+    <!-- ═══════════════════════════════════════════════════
+         HERO
+         ═══════════════════════════════════════════════════ -->
+    <section id="intro">
+      <h1>LCARS</h1>
+      <p class="hero-sub">Local mission control · idea → merged pull request</p>
+      <hr class="divider" />
+
+      <p>LCARS is a reusable harness that takes a free-form human idea and drives
+      it all the way to a merged pull request — through alignment, research,
+      planning, adversarial test-and-implement, and a human review gate — mostly
+      <strong>unattended</strong>. You file the idea and give the final yes; the
+      harness does everything in between.</p>
+
+      <p>It installs as a set of Claude Code skills (<code>lcars init</code>,
+      <code>lcars file</code>, …) that work in <strong>any</strong> repo, and
+      leaves <strong>zero</strong> files in your working tree.</p>
+
+      <div class="lcars-alert blue">
+        <div><strong>Read more:</strong> <a href="../vision.md">vision.md</a> is
+        the full design · <a href="../CONTEXT.md">CONTEXT.md</a> is the domain
+        glossary · <a href="vision.html">vision.html</a> is the vision in LCARS
+        livery. This page is the fast path to getting started.</div>
+      </div>
+
+      <h2>What it does</h2>
+      <p>LCARS is <strong>not</strong> a code generator, a chat box, or a one-shot
+      prompt. It is an <strong>orchestration system</strong> — a defined pipeline
+      of LLM operations, automated checks, and human checkpoints — that turns
+      intent into shipped software.</p>
+
+      <p>Every piece of work is a <strong>Mission</strong>: a single human intent
+      (a feature, an improvement, or a bug fix). Each Mission gets its own branch,
+      is mirrored as a GitHub issue, and moves through a fixed sequence of
+      <strong>Stages</strong> as a card on a kanban board. Missions are
+      branch-isolated, so many can run concurrently and merge sequentially when
+      you approve them.</p>
+
+      <div class="mission-card">
+        <strong>The key idea — set it in motion and walk away:</strong>
+        <ul>
+          <li>The harness auto-advances a Mission stage to stage on its own.</li>
+          <li>It stops only at a genuine human gate — a strategic decision it
+          can't make, or the final review.</li>
+          <li>When it stops, it pings you with a one-line, decision-ready
+          summary. Being notified only when you're actually needed is the normal
+          way to use it.</li>
+        </ul>
+      </div>
+
+      <div class="diagram-wrap">
+        <div class="diagram-label">The whole point</div>
+        <div class="mermaid">
+flowchart LR
+    H([You: an idea]) --> L[LCARS harness]
+    L --> PR([Merged PR])
+    L -. "pings you only at a real decision" .-> H
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         PIPELINE
+         ═══════════════════════════════════════════════════ -->
+    <section id="pipeline">
+      <h2>The pipeline</h2>
+      <p>A Mission moves through eight Stages in order. The harness manages every
+      transition; you appear at gates, not at every step.</p>
+
+      <div class="diagram-wrap">
+        <div class="diagram-label">Pipeline overview — with feedback loops</div>
+        <div class="mermaid">
+flowchart LR
+    E([lcars file]) --> A[Align]
+    A --> R[Research]
+    R --> V[Validate]
+    V --> P[Plan]
+    P --> PR[Plan Review]
+    PR -. "revise" .-> P
+    PR --> S[Schedule]
+    S --> I[Implement]
+    I --> VR[Verify]
+    VR --> D([Done ✓])
+
+    R -. "&gt;20 questions" .-> A
+    V -. "scope change" .-> A
+    VR -. "feedback" .-> A
+        </div>
+      </div>
+
+      <h3><span class="stage-num">1</span>Align <span class="lcars-status warning" style="margin-left:8px">you + LLM</span></h3>
+      <p>A structured grilling session — not a chat — that resolves ambiguity in
+      the idea and produces a <strong>PRD</strong> (the canonical spec). Adapts to
+      complexity: a one-line bug earns a thin PRD; a complex feature earns a
+      thorough grilling.</p>
+
+      <h3><span class="stage-num">2</span>Research <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
+      <p>Generates 0–20 questions from the PRD; each goes to a stateless parallel
+      Research Agent that returns a recommendation plus supporting points. The
+      agents are blind to the PRD and to each other.</p>
+
+      <h3><span class="stage-num">3</span>Validate <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
+      <p>A Validator synthesises all findings into a plan, resolving the
+      <em>how</em>. Escalates to you only when a finding changes <em>what</em>
+      gets built.</p>
+
+      <h3><span class="stage-num">4</span>Plan <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
+      <p>Decomposes the validated plan into small, independently testable tickets
+      — each a vertical slice under ~300 lines of production code.</p>
+
+      <h3><span class="stage-num">5</span>Plan Review <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
+      <p>A <em>fresh</em> reviewer with no planning context audits every ticket
+      for slice, size, testability, and dependencies. Loops back to Plan until
+      clean; escalates after 3 rounds.</p>
+
+      <h3><span class="stage-num">6</span>Schedule <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
+      <p>Builds the dependency graph into sequential <strong>Waves</strong> and
+      opens one GitHub sub-issue per ticket.</p>
+
+      <div class="diagram-wrap">
+        <div class="diagram-label">Schedule — tickets grouped into waves</div>
+        <div class="mermaid">
+flowchart TB
+    subgraph W1["Wave 1 — parallel"]
+        T1[Ticket A]
+        T2[Ticket B]
+        T3[Ticket C]
+    end
+    subgraph W2["Wave 2 — parallel"]
+        T4[Ticket D]
+        T5[Ticket E]
+    end
+    W1 --> W2
+        </div>
+      </div>
+
+      <h3><span class="stage-num">7</span>Implement <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
+      <p>Per ticket, an adversarial <strong>Test Writer → Implementer</strong>
+      pair. Tests are written first, must fail (the red gate), then are locked
+      while the Implementer makes them pass.</p>
+
+      <div class="diagram-wrap">
+        <div class="diagram-label">Implement — the adversarial split</div>
+        <div class="mermaid">
+sequenceDiagram
+    participant H as Harness
+    participant TW as Test Writer
+    participant IM as Implementer
+    participant TS as Test Suite
+
+    H->>TW: Ticket + codebase context
+    TW->>TS: Write failing tests
+    Note over TW,TS: Behavioral only — no mocks
+    H->>IM: Ticket + failing tests (no Test Writer context)
+    IM->>TS: Implement until passing
+    TS-->>H: Green — ticket done
+        </div>
+      </div>
+
+      <h3><span class="stage-num">8</span>Verify <span class="lcars-status warning" style="margin-left:8px">you</span></h3>
+      <p>You read the diff, run the app, test the golden path — then
+      <strong>approve</strong> (open the PR) or <strong>send back</strong> with
+      feedback. Auto-advance never passes this gate for you.</p>
+
+      <div class="lcars-alert amber">
+        <div>Four feedback loops keep it honest: Research → Align (too much
+        ambiguity), Validate → Align (scope change), Plan Review → Plan (bad
+        tickets), and Verify → Align (you weren't satisfied).</div>
+      </div>
+    </section>
+
+
+    <hr class="divider" />
+
+
+    <!-- ═══════════════════════════════════════════════════
+         INSTALL
+         ═══════════════════════════════════════════════════ -->
+    <section id="install">
+      <h2>Install</h2>
+      <p>LCARS lives in this repo and installs globally via symlinks, so a
+      <code>git pull</code> delivers updates with no re-install.</p>
+
+      <pre>git clone &lt;this-repo&gt; lcars
+cd lcars
+./install.sh          # symlinks skills/* into ~/.claude/skills/</pre>
+
+      <div class="lcars-panel">
+        <div class="lcars-panel-header">Requirements</div>
+        <div class="lcars-panel-body">
+          <ul>
+            <li><strong>Claude CLI</strong> — the host CLI and the default worker
+            binary.</li>
+            <li><strong>gh CLI</strong>, authenticated (<code>gh auth login</code>)
+            — used for issues, labels, sub-issues, and PRs.</li>
+          </ul>
+        </div>
+      </div>
+
+      <h4>Updating</h4>
+      <pre>git pull              # skill source updates in place — symlinks already point at it
+./install.sh          # only needed to pick up brand-new skills</pre>
+      <p><code>install.sh</code> is idempotent. If a real (non-symlink) skill of
+      the same name already exists in <code>~/.claude/skills/</code>, it is backed
+      up rather than clobbered.</p>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         QUICK START
+         ═══════════════════════════════════════════════════ -->
+    <section id="quickstart">
+      <h2>Quick start</h2>
+      <p>Run these inside <strong>any repo</strong> you want to ship work in:</p>
+
+      <pre>lcars init            # one-time per-repo setup: .git/lcars/ + GitHub labels
+lcars file            # file your first Mission — describe the idea, get grilled, get a PRD
+lcars                 # do the right thing: with the mission filed, it drives it forward</pre>
+
+      <p>That's the whole rhythm. <code>lcars init</code> once per repo; then it's
+      <code>lcars file</code> to hand it work and bare <code>lcars</code> to push
+      it along or answer what it's waiting on.</p>
+
+      <div class="diagram-wrap">
+        <div class="diagram-label">The everyday loop</div>
+        <div class="mermaid">
+flowchart LR
+    I[lcars init] --> F[lcars file]
+    F --> Lc["lcars (drives the mission)"]
+    Lc -->|"gate hit"| An["lcars answer (clear the decision)"]
+    An --> Lc
+    Lc -->|"verify"| Ap[lcars approve]
+    Ap --> Done([PR opened ✓])
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         COMMANDS
+         ═══════════════════════════════════════════════════ -->
+    <section id="commands">
+      <h2>The commands</h2>
+      <p>LCARS collapses to <strong>two things you do</strong> — hand it work, and
+      answer what it's waiting on — plus a board to look at. The older per-stage
+      verbs still work as power entry points.</p>
+
+      <h4>The everyday surface</h4>
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-cmd">lcars</div>
+          <div class="control-desc">The one entry point. Infers the right action
+          from state and announces it: nothing filed → file a Mission; work in
+          flight → drive it; a decision waiting → open the inbox. No verb to
+          remember, no id to paste.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars answer</div>
+          <div class="control-desc">The inbox — every pending decision across all
+          Missions in one list. <strong>approve</strong> and <strong>send
+          back</strong> are actions on a Verify card here, not separate
+          commands.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars status</div>
+          <div class="control-desc">The read-only board: every active Mission, its
+          Stage, and anything awaiting you.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars init</div>
+          <div class="control-desc">One-time per-repo setup — local config +
+          GitHub labels.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars file</div>
+          <div class="control-desc">File a new Mission from a free-form idea; runs
+          Align to a PRD.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars log</div>
+          <div class="control-desc">Log one or more bugs against an active
+          Mission; fast-tracks a Mission per bug straight to Plan and links
+          them.</div>
+        </div>
+      </div>
+
+      <h4>Power verbs (still supported)</h4>
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-cmd">lcars run &lt;id&gt;</div>
+          <div class="control-desc">Auto-advance a Mission stage-to-stage until a
+          human gate.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars run &lt;id&gt; --step</div>
+          <div class="control-desc">Advance exactly one Stage, then stop — for
+          debugging and inspection.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars respond [&lt;id&gt;]</div>
+          <div class="control-desc">Answer a Mission's awaiting-human gate. No id
+          lists everything waiting.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars approve &lt;id&gt;</div>
+          <div class="control-desc">Ship a verified Mission: push the branch, open
+          the PR, mark it Done.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars feedback &lt;id&gt; "…"</div>
+          <div class="control-desc">Send a Mission at Verify back to Align with a
+          note, kept in an accumulating history.</div>
+        </div>
+      </div>
+
+      <div class="lcars-alert teal">
+        <div><strong>No id juggling.</strong> A shared resolver picks the target
+        Mission: one candidate → no id needed; several → a fuzzy picker; an
+        explicit id / partial / title always works. <code>lcars</code> and
+        <code>lcars answer</code> both go through it.</div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         WORKED LOOP
+         ═══════════════════════════════════════════════════ -->
+    <section id="loop">
+      <h2>How a mission runs — a worked loop</h2>
+      <p>Here's the full walk-away rhythm for a real feature.</p>
+
+      <div class="stages-flow">
+        <div class="stage-pill">1 · file</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">2 · drive</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">3 · answer</div><div class="stage-arrow">→</div>
+        <div class="stage-pill">4 · drive</div><div class="stage-arrow">→</div>
+        <div class="stage-pill done">5 · ship ✓</div>
+      </div>
+
+      <h4>1 — File it</h4>
+      <p>You describe the idea; Align grills you until the spec is sharp.</p>
+      <pre>$ lcars file
+&gt; Idea: Add XP, badges, and a per-course leaderboard to motivate learners.
+  [Align asks a handful of clarifying questions; you answer in character.]
+
+Mission filed: lcars-20260604-001
+GitHub issue:  #42
+Stage:         align
+Next:          run `lcars` to continue</pre>
+
+      <h4>2 — Let it drive</h4>
+      <p>Bare <code>lcars</code> auto-advances through the headless stages and
+      stops at the first real decision.</p>
+      <pre>$ lcars
+Driving lcars-20260604-001 from research…
+
+lcars-20260604-001  auto-advance
+─────────────────────────────────────────────
+research    ✓ ⊘ isolated  14 questions, agents complete
+validate    ⏹ awaiting you
+─────────────────────────────────────────────
+⏹ stopped at: validate  (scope decision)
+   Research is split on global vs per-course leaderboard — this changes the
+   DB schema. Global, or per-course?
+   Answer with `lcars answer`
+                                            🔔 (notification fired)</pre>
+
+      <h4>3 — Answer the gate</h4>
+      <p>Clear the one decision from the inbox.</p>
+      <pre>$ lcars answer
+[1] lcars-20260604-001 · Validate · "Global or per-course leaderboard?"
+&gt; Per-course for now.
+✓ answered — next `lcars` resumes validate</pre>
+
+      <h4>4 — Walk away</h4>
+      <p>Bare <code>lcars</code> again resumes and runs the rest of the pipeline
+      unattended — Plan, Plan Review, Schedule, Implement — stopping only at
+      Verify.</p>
+      <pre>$ lcars
+Driving lcars-20260604-001 from validate…
+─────────────────────────────────────────────
+validate    ✓ ⊘ isolated  scope resolved (per-course)
+plan        ✓ ⊘ isolated  11 tickets
+plan-review ✓ ⊘ isolated  passed round 1
+schedule    ✓             3 waves, 11 sub-issues
+implement   ✓ ⊘ isolated  11/11 tickets green
+─────────────────────────────────────────────
+⏹ stopped at: verify  (human review required)
+   Next: review the changes, then `lcars approve lcars-20260604-001`
+                                            🔔 (notification fired)</pre>
+
+      <h4>5 — Verify and ship</h4>
+      <p>You read the diff and run the app. Happy → approve and the PR opens. Not
+      happy → send it back with feedback and it re-enters Align with the full
+      history intact.</p>
+      <pre>$ lcars approve lcars-20260604-001
+✓ branch pushed, PR opened: https://github.com/you/repo/pull/57
+✓ lcars:done — mission complete</pre>
+
+      <div class="lcars-panel violet">
+        <div class="lcars-panel-header">Bugs against work in flight</div>
+        <div class="lcars-panel-body">
+          <p>Found a bug while a Mission is still open? <code>lcars log</code>
+          takes free-form language describing one or many bugs, extracts each,
+          fast-tracks a Mission per bug straight to <strong>Plan</strong>
+          (skipping Align / Research / Validate), and links them to the parent
+          with <code>lcars:linked</code>. They run in parallel on their own
+          branches and merge as soon as they verify.</p>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         WHAT TO EXPECT
+         ═══════════════════════════════════════════════════ -->
+    <section id="expect">
+      <h2>What to expect at each stage</h2>
+      <div class="mission-card">
+        <ul>
+          <li><strong>Align is interactive and adaptive.</strong> A one-line bug
+          fix produces a thin PRD in a minute; a complex feature earns a thorough
+          grilling. This is the one stage that is always a conversation.</li>
+          <li><strong>Research scales to ambiguity.</strong> A crisp PRD yields
+          <em>zero</em> questions and skips through. A broad one fans out up to 20
+          parallel agents. More than 20 → it explains why and lets you override or
+          sharpen the PRD.</li>
+          <li><strong>Validate decides the <em>how</em>, escalates the
+          <em>what</em>.</strong> Implementation calls stay with the Validator;
+          only choices that change what gets built come to you.</li>
+          <li><strong>Plan / Plan Review enforce small vertical slices.</strong>
+          Tickets are full-stack slices under ~300 lines. An independent reviewer
+          rejects horizontal slices and oversized tickets, looping until clean (or
+          escalating after 3 rounds).</li>
+          <li><strong>Implement is adversarial and guarded by the harness, not the
+          prompt.</strong> See the guardrails below.</li>
+          <li><strong>Verify never auto-passes.</strong> Auto-advance always stops
+          here. Shipping is your call.</li>
+        </ul>
+      </div>
+
+      <h4>The three Implement guardrails</h4>
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-cmd">Red gate</div>
+          <div class="control-desc">The Test Writer's tests must actually fail
+          before the Implementer runs. A suite that passes against no
+          implementation is rejected.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">Immutable tests</div>
+          <div class="control-desc">The test files are locked as the contract.
+          Green is earned by implementing, never by editing the tests.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">Test quality</div>
+          <div class="control-desc">A light check rejects an empty / assertion-free
+          suite, so a sandbagging Test Writer can't hand over a contract that
+          proves nothing.</div>
+        </div>
+      </div>
+      <p>These live in the deterministic harness because an LLM rewarded for a
+      green suite will otherwise game the contract. Up to 5 attempts per ticket,
+      then it flags you.</p>
+    </section>
+
+
+    <hr class="divider" />
+
+
+    <!-- ═══════════════════════════════════════════════════
+         INTERNALS
+         ═══════════════════════════════════════════════════ -->
+    <section id="internals">
+      <h2>How it runs under the hood</h2>
+
+      <div class="diagram-wrap">
+        <div class="diagram-label">Token-free driver · model-selected workers</div>
+        <div class="mermaid">
+flowchart TB
+    subgraph DRIVER["Token-free bash driver (no model, no tokens)"]
+        D["reads state.json → picks next stage → spawns a worker → records result"]
+    end
+    subgraph WORKERS["Cold subprocess workers (all the thinking)"]
+        W1["Research xN (read + web)"]
+        W2["Validate (read-only)"]
+        W3["Plan (read-only)"]
+        W4["Plan Review (read-only)"]
+        W5["Test Writer (read)"]
+        W6["Implementer (read+write+shell)"]
+    end
+    D --> W1 & W2 & W3 & W4 & W5 & W6
+    W1 & W2 & W3 & W4 & W5 & W6 -. "structured output to disk" .-> D
+        </div>
+      </div>
+
+      <p>Two deliberate properties make this robust:</p>
+
+      <div class="lcars-panel blue">
+        <div class="lcars-panel-header">Token-free driver, model-selected workers</div>
+        <div class="lcars-panel-body">
+          <p>The loop is plain shell — it never reasons about your code. Every
+          token LCARS spends is spent in a worker, on <strong>whichever CLI you
+          launched from</strong>. Run LCARS inside Claude Code and every worker is
+          Claude. CLI choice is an implementation detail; <strong>model choice is
+          the meaningful one.</strong></p>
+        </div>
+      </div>
+
+      <div class="lcars-panel">
+        <div class="lcars-panel-header">Stage isolation — the cold handoff</div>
+        <div class="lcars-panel-body">
+          <p>Every headless Stage runs as a fresh subprocess that sees
+          <strong>only</strong> what the previous Stage wrote to disk — never its
+          conversation. The worker's prompt is assembled by <code>run.sh</code>
+          from artifact <em>paths</em> alone, so there is no channel for one
+          Stage's reasoning to leak into the next, even when the whole pipeline
+          runs in one sitting. Each Stage records <strong>decisions and their
+          rationale</strong> — the <em>why</em>, not just the <em>what</em> —
+          because the artifact is the entire contract.</p>
+          <div class="lcars-readout">STAGE MARKER: ⊘ isolated  (printed on every stage line)
+IF A STAGE CANNOT ISOLATE → the driver refuses LOUDLY, changes nothing.
+An inline run must never masquerade as isolated.</div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         STATE & LABELS
+         ═══════════════════════════════════════════════════ -->
+    <section id="state">
+      <h2>Where state lives</h2>
+      <p>All per-repo mission state lives under <code>.git/lcars/</code> — inside
+      <code>.git/</code>, so git never tracks it and the target repo's working
+      tree stays clean. Don't add it to <code>.gitignore</code> and don't commit
+      it.</p>
+
+      <pre>.git/lcars/
+  config.json                     repo config (model, context file, test command, notify)
+  missions/
+    lcars-20260604-001/
+      state.json                  id, type, stage, githubIssue, flags
+      prd.md                      Align output — the canonical spec
+      research/&lt;n&gt;.json           per-question findings
+      validated-plan.md           Validate synthesis (+ rationale)
+      plan.json                   Plan tickets (each with rationale)
+      approved-plan.json          Plan Review's approved copy
+      plan-review-&lt;round&gt;.json    objections per round
+      waves.json                  dependency graph → waves + sub-issue numbers
+      tickets/&lt;ticket&gt;/tests/      Test Writer's locked tests
+      tickets/&lt;ticket&gt;/result.json  pass/attempts/summary
+      pending.json / answers.json   escalated questions + your answers
+      feedback.md                 accumulating Verify feedback history</pre>
+
+      <h2>GitHub labels — the board's data model</h2>
+      <p><code>lcars init</code> creates the LCARS label set on the repo. The
+      harness applies them as Missions move; a future kanban reads them directly
+      via the Issues API.</p>
+
+      <div class="lcars-panel">
+        <div class="lcars-panel-header">LCARS Labels</div>
+        <div class="lcars-panel-body">
+          <ul>
+            <li><code>lcars:align</code> … <code>lcars:done</code> —
+            <strong>Stage</strong> (exclusive): the Mission's current column.</li>
+            <li><code>lcars:feature</code> / <code>lcars:bug</code> —
+            <strong>Type</strong>: the Mission kind.</li>
+            <li><code>lcars:paused</code> — <strong>Status</strong> (additive):
+            overlaid when a Mission is paused.</li>
+            <li><code>lcars:awaiting-human</code> — <strong>Status</strong>
+            (additive): overlaid when blocked on your answer.</li>
+            <li><code>lcars:linked</code> — <strong>Relationship</strong>: a bug
+            Mission linked to a parent via <code>lcars log</code>.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="lcars-alert blue">
+        <div>Filtering issues to <code>lcars:awaiting-human</code> shows every
+        pending decision at a glance — before the kanban UI even exists.</div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         CONFIG
+         ═══════════════════════════════════════════════════ -->
+    <section id="config">
+      <h2>Configuration &amp; environment</h2>
+      <p><code>lcars init</code> writes <code>.git/lcars/config.json</code>
+      (default model, detected <code>CONTEXT.md</code>, test command for the red
+      gate, optional notify target). The harness <strong>never</strong> modifies
+      <code>CLAUDE.md</code>, <code>.gitignore</code>, <code>CONTEXT.md</code>,
+      <code>.claude/settings.json</code>, or any source files.</p>
+
+      <p>External dependencies are injected via env vars so they're swappable (and
+      stubbable in tests):</p>
+
+      <div class="control-grid">
+        <div class="control-card">
+          <div class="control-cmd">LCARS_WORKER_BIN</div>
+          <div class="control-desc">The cold-worker CLI every headless Stage
+          spawns. Default: the host CLI (e.g. <code>claude</code>).</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">LCARS_GH_BIN</div>
+          <div class="control-desc">The GitHub CLI. Default: <code>gh</code>.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">LCARS_NOTIFY</div>
+          <div class="control-desc">The walk-away notification hook fired at human
+          gates. Default: local desktop banner + bell.</div>
+        </div>
+      </div>
+
+      <div class="lcars-alert teal">
+        <div>Notifications fire <strong>only</strong> at genuine gates (an
+        escalation or Verify), batched per Stage — never one-per-question, never
+        on a clean transition. A phone push (ntfy / Pushover) is opt-in via
+        config.</div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         DEVELOP
+         ═══════════════════════════════════════════════════ -->
+    <section id="develop">
+      <h2>Develop / contribute</h2>
+      <p>Skill source lives in <code>skills/&lt;name&gt;/</code> (one dir per
+      <code>lcars</code> command); tests in <code>tests/</code>.
+      <a href="../CLAUDE.md">CLAUDE.md</a> is the contributor contract — read it
+      first.</p>
+
+      <pre>skills/&lt;name&gt;/SKILL.md     frontmatter + instructions
+skills/&lt;name&gt;/&lt;name&gt;.sh    the executable logic (kept testable; deps via env vars)
+tests/&lt;name&gt;.test.sh       one suite per skill
+tests/run.sh               runs every *.test.sh
+install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
+
+      <div class="lcars-alert red">
+        <div><strong>The golden rule:</strong> skills are authored in this repo,
+        <strong>never</strong> directly under <code>~/.claude/skills/</code>.
+        <code>./install.sh</code> symlinks them so <code>git pull</code> delivers
+        updates.</div>
+      </div>
+
+      <p>The workflow for any change:</p>
+      <ol>
+        <li><strong>Author</strong> in <code>skills/&lt;name&gt;/</code>.</li>
+        <li><strong>TDD it</strong> — write the failing test in
+        <code>tests/&lt;name&gt;.test.sh</code> first, then make it pass. Keep
+        logic in a bundled shell script; take external deps via env vars so tests
+        can stub them.</li>
+        <li><strong>Install</strong> — <code>./install.sh</code>.</li>
+        <li><strong>Verify</strong> — <code>bash tests/run.sh</code> (all suites
+        green).</li>
+        <li><strong>Commit</strong> — source, test, and any doc updates are all
+        tracked.</li>
+      </ol>
+
+      <pre>bash tests/run.sh         # run the whole suite</pre>
+      <p>Open bugs against the harness are tracked in
+      <a href="../bugs.md">bugs.md</a> with stable <code>BUG-NNN</code> ids.</p>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         STATUS
+         ═══════════════════════════════════════════════════ -->
+    <section id="status">
+      <h2>Status</h2>
+      <p>The full pipeline is built and runs unattended (idea → PR). Sessions 1–16
+      of the build order are complete.</p>
+
+      <div class="lcars-panel">
+        <div class="lcars-panel-header">Build status</div>
+        <div class="lcars-panel-body">
+          <div class="lcars-status-row">
+            <div class="lcars-status active">init · file · status</div>
+            <div class="lcars-status active">Research → Plan Review</div>
+            <div class="lcars-status active">Schedule · Implement · Verify</div>
+          </div>
+          <div class="lcars-status-row">
+            <div class="lcars-status active">lcars respond</div>
+            <div class="lcars-status active">Per-stage isolation</div>
+            <div class="lcars-status active">Implement guardrails</div>
+          </div>
+          <div class="lcars-status-row">
+            <div class="lcars-status active">Auto-advance + notify</div>
+            <div class="lcars-status active">Human surface</div>
+            <div class="lcars-status active">Mission Log</div>
+            <div class="lcars-status warning">Copilot · deferred</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="scope-bar">
+        <div class="scope-active">v1 · idea → merged PR</div>
+        <div class="scope-future">Future · kanban UI · production monitoring</div>
+      </div>
+
+      <div class="future-banner">
+        <h3>Roadmap</h3>
+        <p><strong>Copilot enablement</strong> makes <code>$LCARS_WORKER_BIN</code>
+        resolve to <code>copilot</code> so the harness runs on whichever CLI you
+        launch from. Further out: a custom <strong>kanban interface</strong>
+        (cards, stages, pending-question badges, start/stop control) and
+        <strong>production monitoring</strong> to close the loop from live signal
+        back to new Missions.</p>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script src="lcars.js"></script>
+</body>
+</html>
