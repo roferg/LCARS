@@ -16,6 +16,13 @@ Write **failing** behavioural tests for this one ticket's acceptance criteria:
 - Write **only tests** — no implementation code.
 - Test **behaviour through public interfaces only** — no internal mocks.
 - Tests must be **immediately runnable** in this repo's test runner.
+- Every test must **actually assert something** — the harness rejects a suite
+  with no assertions (the test-quality guardrail).
+
+The harness enforces a **red gate**: after you hand off, it runs your suite
+against the (still un-built) repo and **requires it to FAIL**. A suite that
+passes before anything is implemented proves nothing and is rejected — so write
+tests that genuinely fail until the ticket is built.
 
 ## Output
 

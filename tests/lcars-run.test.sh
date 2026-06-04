@@ -957,7 +957,7 @@ new_repo_with_implement_mission() {
 # the way the Test Writer / Implementer pair would. Used to set up later waves.
 finish_ticket_green() { # repo ticketId script gh
   local repo="$1" tid="$2" script="$3" gh="$4"
-  local td; td="$(mktemp -d)"; printf 'test stub\n' >"$td/${tid}.test"
+  local td; td="$(mktemp -d)"; printf 'assert: %s does the thing\n' "$tid" >"$td/${tid}.test"
   ( cd "$repo" && LCARS_GH_BIN="$gh" bash "$script" impl-save-tests \
       --mission "$MID" --ticket "$tid" --tests "$td" >/dev/null 2>&1 )
   local rf; rf="$(mktemp)"; write_result "$rf" "$tid" true 2
@@ -999,7 +999,7 @@ check "I1. writes no tests dir when the Test Writer produced nothing" \
 #   4. Implementer iterates until tests pass — attempts (up to 5) is recorded
 repoIr="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIr/gh"
 export GH_LOG="$repoIr/gh.log"; : >"$GH_LOG"
-twIr="$repoIr/tw"; mkdir -p "$twIr"; printf 'failing test\n' >"$twIr/t.test.js"
+twIr="$repoIr/tw"; mkdir -p "$twIr"; printf 'assert: a failing test\n' >"$twIr/t.test.js"
 ( cd "$repoIr" && LCARS_GH_BIN="$repoIr/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$twIr" >/dev/null 2>&1 )
 resIr="$repoIr/result.json"; write_result "$resIr" t-001 true 3
@@ -1026,7 +1026,7 @@ check "I3. refuses a result before the Test Writer's tests exist" "[ '$rcIo' -ne
 # so a result claiming 6 attempts is refused and nothing is saved
 repoIc="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIc/gh"
 export GH_LOG="$repoIc/gh.log"; : >"$GH_LOG"
-twIc="$repoIc/tw"; mkdir -p "$twIc"; printf 'failing test\n' >"$twIc/t.test.js"
+twIc="$repoIc/tw"; mkdir -p "$twIc"; printf 'assert: a failing test\n' >"$twIc/t.test.js"
 ( cd "$repoIc" && LCARS_GH_BIN="$repoIc/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$twIc" >/dev/null 2>&1 )
 resIc="$repoIc/result.json"; write_result "$resIc" t-001 true 6
@@ -1040,7 +1040,7 @@ check "I4. writes no result.json when over the cap" \
 # a malformed result (missing summary) is refused; nothing saved
 repoIm="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIm/gh"
 export GH_LOG="$repoIm/gh.log"; : >"$GH_LOG"
-twIm="$repoIm/tw"; mkdir -p "$twIm"; printf 'failing test\n' >"$twIm/t.test.js"
+twIm="$repoIm/tw"; mkdir -p "$twIm"; printf 'assert: a failing test\n' >"$twIm/t.test.js"
 ( cd "$repoIm" && LCARS_GH_BIN="$repoIm/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$twIm" >/dev/null 2>&1 )
 printf '{ "ticketId": "t-001", "passed": true, "attempts": 2 }\n' >"$repoIm/bad.json"
@@ -1053,7 +1053,7 @@ check "I4. refuses a malformed result (missing a field)" "[ '$rcIm' -ne 0 ]"
 #   5. Flags the ticket for human if tests still fail after 5 attempts
 repoIf="$(new_repo_with_implement_mission)"; make_gh_stub "$repoIf/gh"
 export GH_LOG="$repoIf/gh.log"; : >"$GH_LOG"
-twIf="$repoIf/tw"; mkdir -p "$twIf"; printf 'failing test\n' >"$twIf/t.test.js"
+twIf="$repoIf/tw"; mkdir -p "$twIf"; printf 'assert: a failing test\n' >"$twIf/t.test.js"
 ( cd "$repoIf" && LCARS_GH_BIN="$repoIf/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$twIf" >/dev/null 2>&1 )
 resIf="$repoIf/result.json"; write_result "$resIf" t-001 false 5
@@ -1178,7 +1178,7 @@ write_approved_plan_json "$mIC/approved-plan.json"
 write_waves_json "$mIC/waves.json"
 make_gh_stub "$repoIC/gh"; export GH_LOG="$repoIC/gh.log"; : >"$GH_LOG"
 # Phase 1 — Test Writer's tests saved (the Implementer's only handoff).
-twIC="$repoIC/tw"; mkdir -p "$twIC"; printf 'failing test\n' >"$twIC/t.test.js"
+twIC="$repoIC/tw"; mkdir -p "$twIC"; printf 'assert: a failing test\n' >"$twIC/t.test.js"
 ( cd "$repoIC" && LCARS_GH_BIN="$repoIC/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$twIC" >/dev/null 2>&1 )
 # Phase 2 — the Implementer leaves a real file in the working tree, then we save
@@ -1195,6 +1195,142 @@ check "IC. commits the Implementer's file onto the branch" \
   "( cd '$repoIC' && git ls-tree -r --name-only HEAD | grep -q '^theme.js$' )"
 check "IC. the commit is ahead of the base branch" \
   "[ \"\$(cd '$repoIC' && git rev-list --count $BASEIC..lcars/$MID)\" -ge 1 ]"
+
+# ==========================================================================
+echo
+echo "lcars run — Implement guardrails (red gate, immutable tests, test quality)"
+
+# The adversarial Test Writer → Implementer split relies on prompt instructions
+# alone unless the HARNESS enforces it. An LLM rewarded for a green suite will
+# game the contract (trivially-passing tests, editing the tests to pass). These
+# three guardrails live in run.sh — the deterministic driver — so the workers
+# can't talk their way around them:
+#   G1 RED GATE      — the saved tests must FAIL (against no implementation)
+#                      before the Implementer is allowed to run
+#   G2 IMMUTABLE     — the Implementer must not modify the locked test files
+#   G3 TEST QUALITY  — a zero-assertion suite is rejected at impl-save-tests
+# The red gate's test runner is env-injectable (LCARS_TEST_CMD, like LCARS_GH_BIN)
+# so these unit tests drive a fake red→green transition with no real suite.
+
+# A tests dir holding one file that actually asserts something.
+make_tests_dir() { # dir
+  mkdir -p "$1"; printf 'it("works", () => expect(value).toBe(42))\n' >"$1/spec.test.js"
+}
+
+# --- G1 RED GATE: a suite that PASSES with no implementation is rejected -----
+repoG1="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG1/gh"
+export GH_LOG="$repoG1/gh.log"; : >"$GH_LOG"
+tG1="$repoG1/tw"; make_tests_dir "$tG1"
+rcG1=0
+( cd "$repoG1" && LCARS_TEST_CMD='exit 0' LCARS_GH_BIN="$repoG1/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tG1" >outG1.txt 2>&1 ) || rcG1=$?
+check "G1. red gate rejects a suite that passes with no implementation" "[ '$rcG1' -ne 0 ]"
+check "G1. names the red gate in the rejection" "grep -qi 'red gate' '$repoG1/outG1.txt'"
+check "G1. does not quarantine tests when the red gate fails" \
+  "[ ! -d '$repoG1/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# a suite that FAILS (red) is accepted — the Implementer may now run
+repoG1b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG1b/gh"
+export GH_LOG="$repoG1b/gh.log"; : >"$GH_LOG"
+tG1b="$repoG1b/tw"; make_tests_dir "$tG1b"
+rcG1b=0
+( cd "$repoG1b" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG1b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tG1b" >outG1b.txt 2>&1 ) || rcG1b=$?
+check "G1. red gate accepts a failing (red) suite" "[ '$rcG1b' -eq 0 ]"
+check "G1. quarantines the tests once the red gate passes" \
+  "[ -f '$repoG1b/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test.js' ]"
+
+# --- G3 TEST QUALITY: a zero-assertion suite is rejected at impl-save-tests ---
+repoG3="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG3/gh"
+export GH_LOG="$repoG3/gh.log"; : >"$GH_LOG"
+tG3="$repoG3/tw"; mkdir -p "$tG3"
+printf '// nothing of substance here\nconst x = 1;\n' >"$tG3/empty.test.js"
+rcG3=0
+( cd "$repoG3" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG3/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tG3" >outG3.txt 2>&1 ) || rcG3=$?
+check "G3. rejects a zero-assertion suite" "[ '$rcG3' -ne 0 ]"
+check "G3. names test quality / assertion in the rejection" \
+  "grep -qiE 'assert|quality' '$repoG3/outG3.txt'"
+check "G3. does not quarantine a zero-assertion suite" \
+  "[ ! -d '$repoG3/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# --- G2 IMMUTABLE TESTS: a result whose locked tests changed is rejected ------
+repoG2="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG2/gh"
+export GH_LOG="$repoG2/gh.log"; : >"$GH_LOG"
+tG2="$repoG2/tw"; make_tests_dir "$tG2"
+( cd "$repoG2" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG2/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tG2" >/dev/null 2>&1 )
+# the Implementer tampers with the locked contract to force a pass
+QTDIR="$repoG2/.git/lcars/missions/$MID/tickets/t-001/tests"
+printf 'it("works", () => expect(true).toBe(true))  // weakened\n' >"$QTDIR/spec.test.js"
+resG2="$repoG2/result.json"; write_result "$resG2" t-001 true 2
+rcG2=0
+( cd "$repoG2" && LCARS_GH_BIN="$repoG2/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resG2" >outG2.txt 2>&1 ) || rcG2=$?
+check "G2. rejects a result whose locked test files were modified" "[ '$rcG2' -ne 0 ]"
+check "G2. names the immutable-tests violation" \
+  "grep -qiE 'modif|immutable|locked|tamper' '$repoG2/outG2.txt'"
+check "G2. does not save result.json when the tests were tampered with" \
+  "[ ! -f '$repoG2/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+
+# an untouched contract still advances normally
+repoG2b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG2b/gh"
+export GH_LOG="$repoG2b/gh.log"; : >"$GH_LOG"
+tG2b="$repoG2b/tw"; make_tests_dir "$tG2b"
+( cd "$repoG2b" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG2b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tG2b" >/dev/null 2>&1 )
+resG2b="$repoG2b/result.json"; write_result "$resG2b" t-001 true 2
+rcG2b=0
+( cd "$repoG2b" && LCARS_GH_BIN="$repoG2b/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resG2b" >outG2b.txt 2>&1 ) || rcG2b=$?
+check "G2. accepts a result when the locked tests are untouched" "[ '$rcG2b' -eq 0 ]"
+check "G2. saves result.json for an untouched contract" \
+  "[ -f '$repoG2b/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+
+# --- G4 REGRESSION: a normal red→green ticket advances and commits ------------
+# Session 9 behaviour preserved with all three guardrails active: the red gate
+# stub is red (exit 1) until the Implementer leaves a marker, then green.
+repoG4="$(mktemp -d "$TMPROOT/repo.XXXX")"
+( cd "$repoG4" && git init -q && git config user.email t@t && git config user.name t \
+    && git commit -q --allow-empty -m init && git branch "lcars/$MID" )
+BASEG4="$(cd "$repoG4" && git rev-parse --abbrev-ref HEAD)"
+mG4="$repoG4/.git/lcars/missions/$MID"; mkdir -p "$mG4"
+cat >"$mG4/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "implement",
+  "githubIssue": 42,
+  "branch": "lcars/$MID",
+  "base": "$BASEG4"
+}
+EOF
+write_approved_plan_json "$mG4/approved-plan.json"
+write_waves_json "$mG4/waves.json"
+make_gh_stub "$repoG4/gh"; export GH_LOG="$repoG4/gh.log"; : >"$GH_LOG"
+tG4="$repoG4/tw"; make_tests_dir "$tG4"
+GATE4="$repoG4/gate.sh"
+cat >"$GATE4" <<'EOF'
+#!/usr/bin/env bash
+# red (1) until the implementation marker exists, then green (0)
+[ -f impl-done ] && exit 0 || exit 1
+EOF
+chmod +x "$GATE4"
+rcG4ts=0
+( cd "$repoG4" && LCARS_TEST_CMD="bash $GATE4" LCARS_GH_BIN="$repoG4/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tG4" >outG4a.txt 2>&1 ) || rcG4ts=$?
+check "G4. red gate passes while the suite is still red (no impl)" "[ '$rcG4ts' -eq 0 ]"
+# the Implementer implements: flip the suite green and leave a real file
+printf 'export const theme = "dark";\n' >"$repoG4/theme.js"
+: >"$repoG4/impl-done"
+resG4="$repoG4/result.json"; write_result "$resG4" t-001 true 3
+rcG4=0
+( cd "$repoG4" && LCARS_GH_BIN="$repoG4/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resG4" >outG4b.txt 2>&1 ) || rcG4=$?
+check "G4. a normal red→green ticket saves its result" "[ '$rcG4' -eq 0 ]"
+check "G4. commits the green ticket onto the mission branch" \
+  "( cd '$repoG4' && git ls-tree -r --name-only HEAD | grep -q '^theme.js$' )"
 
 # ==========================================================================
 echo

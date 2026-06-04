@@ -84,7 +84,7 @@ Skills are built in this sequence. Status:
     lays the CLI-agnostic groundwork for BUG-003.  ✅ built
 13. `lcars run`   — Implement guardrails: harness-enforced red gate (tests must
     fail before the Implementer runs) + immutable test files + a test-quality
-    check.
+    check.  ✅ built
 14. `lcars run`   — Auto-advance + notifications: token-free bash driver loops the
     per-stage advances; `--step` for one; fires `$LCARS_NOTIFY` at every human
     gate (local banner default, ntfy/Pushover opt-in). **Full unattended loop.**
@@ -92,9 +92,10 @@ Skills are built in this sequence. Status:
     (one inbox absorbing respond/approve/feedback) + the read-only board; no
     mission-id juggling. Old verbs stay as power aliases.
 16. `lcars log`   — Mission Log: bugs against an active mission.
-17. Copilot enablement — capability spike + per-CLI adapter behind
-    `$LCARS_WORKER_BIN` so workers run under Copilot. **DEFERRED** (closes
-    BUG-003); start with the spike.
+17. Copilot enablement — **RESEARCH session**: run the capability spike, then
+    propose a phased plan of incremental Copilot build sessions (18+) behind
+    `$LCARS_WORKER_BIN` rather than one big-bang. **DEFERRED** (closes BUG-003);
+    start with the spike.
 
 Detailed per-session prompts live in `.dev/bootstrap.md` (author-local, not
 shipped). When you finish a skill, tick it off here.

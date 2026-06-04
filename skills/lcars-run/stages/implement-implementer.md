@@ -12,7 +12,9 @@ Writer's session — the tests on disk are your *entire* handoff from them.
 Implement the ticket in the repository until its tests pass:
 
 - Implement **only** what makes the tests pass.
-- **Do not modify the test files** — they are the contract.
+- **Do not modify the test files** — they are the contract. The harness snapshots
+  them and **rejects your result if any test file changed** (the immutable-tests
+  guardrail), so editing them to go green cannot work — it only voids the ticket.
 - Run the tests; iterate until green, **at most 5 attempts**. If still red after
   the 5th, stop and report the failure honestly — do not keep going, and do not
   weaken the tests to force a pass.

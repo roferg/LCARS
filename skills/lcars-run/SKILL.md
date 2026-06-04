@@ -319,6 +319,28 @@ branch** (the `branch` from `state.json`) so the eventual PR has content — a
 missing branch / no changes / git failure is a best-effort warning, the result
 still stands. On success it prints `⊘ isolated — implement(<id>)`.
 
+**Three deterministic guardrails make the adversarial split hold** — the harness
+enforces them in `run.sh`, so a worker rewarded for a green suite cannot talk its
+way around them (see vision.md → *Implement*):
+
+- **Red gate** — at `impl-save-tests`, after quarantining the tests the harness
+  *runs* them and requires them to **FAIL** before the Implementer is allowed to
+  run. A suite that passes against no implementation is rejected and rolled back.
+  The test command comes from `testCommand` in `.git/lcars/config.json` (written
+  by `lcars init`) or `$LCARS_TEST_CMD`; if neither is set the gate **warns and
+  skips** rather than blocking.
+- **Immutable tests** — `impl-save-tests` snapshots the quarantined test files
+  (`tickets/<id>/tests.sha256`); `impl-save-result` re-hashes them and **rejects
+  the result if any test file changed**. Green is earned by implementing, never
+  by weakening the contract.
+- **Test quality** — `impl-save-tests` rejects a suite where no file asserts
+  anything, so a sandbagging Test Writer can't hand over a contract that proves
+  nothing.
+
+A rejection at either subcommand is the driver's cue to **re-dispatch the worker**
+(it retries up to `LCARS_WORKER_TRIES`); a persistent rejection stops the Stage
+with a non-zero exit rather than advancing.
+
 If the Implementer exhausts its 5 attempts (`passed:false`), the driver **flags
 the human**: it writes the blocker to `pending.json`, sets the awaiting-human
 gate, and keeps the card in Implement. Surface that and **stop** — the ticket
@@ -475,6 +497,7 @@ trust the board to show exactly where every Mission is.
   tickets/
     <ticket-id>/
       tests/            ← the Test Writer's failing tests (Implement, Phase 1)
+      tests.sha256      ← hash snapshot of tests/, the immutable-tests guardrail (Implement, Phase 1)
       result.json       ← { ticketId, passed, attempts, summary } (Implement, Phase 2)
   pending.json          ← scope/objection/flagged-ticket questions, while paused at the human gate only
   feedback.md           ← the captain's Verify feedback, accumulated (written by `lcars feedback`; read by the Align re-entry)
@@ -554,6 +577,14 @@ working tree changes.
   tests aren't saved yet, so Phase 1 always precedes Phase 2. The Implementer
   must not modify the test files, and the Test Writer must not write
   implementation code.
+- **The adversarial split is enforced by the harness, not by trust.** Three
+  deterministic guardrails in `run.sh` (see *The Implement stage* above): a
+  **red gate** (`impl-save-tests` runs the suite and requires it to FAIL first —
+  test command from `testCommand`/`$LCARS_TEST_CMD`, warn-and-skip if unset), an
+  **immutable-tests** snapshot (`tickets/<id>/tests.sha256`, re-verified at
+  `impl-save-result`), and a **test-quality** check (a zero-assertion suite is
+  refused). A worker that games the contract trips one of these and the Stage
+  re-dispatches or stops — it never silently advances.
 - **Implement processes waves strictly in order.** `impl-status` never reveals a
   later wave while an earlier one has an open ticket, and `impl-advance` refuses
   to reach Verify until *every* ticket in *every* wave is green — so a half-built

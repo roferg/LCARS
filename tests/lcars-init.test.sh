@@ -96,6 +96,29 @@ check "2. config has model key"           "grep -q '\"model\"' '$repo/.git/lcars
 check "2. config has projectName key"     "grep -q '\"projectName\"' '$repo/.git/lcars/config.json'"
 check "2. config has contextFile key"     "grep -q '\"contextFile\"' '$repo/.git/lcars/config.json'"
 check "2. config has created key"         "grep -q '\"created\"' '$repo/.git/lcars/config.json'"
+# the red gate's test command lives in config; null when nothing is detected
+check "2. config has testCommand key"     "grep -q '\"testCommand\"' '$repo/.git/lcars/config.json'"
+check "2. testCommand is null in a bare repo" \
+  "grep -q '\"testCommand\": *null' '$repo/.git/lcars/config.json'"
+
+# --- Behaviour 2b: detects a test command from the repo's ecosystem --------
+repoTC="$(new_repo)"
+printf '{\n  "scripts": { "test": "jest" }\n}\n' >"$repoTC/package.json"
+make_claude_stub "$repoTC/claude"; make_gh_stub "$repoTC/gh"
+export GH_LOG="$repoTC/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoTC/existing"; : >"$GH_EXISTING"
+( cd "$repoTC" && LCARS_CLAUDE_BIN="$repoTC/claude" LCARS_GH_BIN="$repoTC/gh" bash "$SCRIPT" >out.txt 2>&1 )
+check "2b. detects 'npm test' from a package.json test script" \
+  "grep -q '\"testCommand\": *\"npm test\"' '$repoTC/.git/lcars/config.json'"
+
+# an explicit LCARS_TEST_CMD overrides detection
+repoTCe="$(new_repo)"
+make_claude_stub "$repoTCe/claude"; make_gh_stub "$repoTCe/gh"
+export GH_LOG="$repoTCe/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoTCe/existing"; : >"$GH_EXISTING"
+( cd "$repoTCe" && LCARS_TEST_CMD='make check' LCARS_CLAUDE_BIN="$repoTCe/claude" LCARS_GH_BIN="$repoTCe/gh" bash "$SCRIPT" >out.txt 2>&1 )
+check "2b. an explicit LCARS_TEST_CMD is recorded in config" \
+  "grep -q '\"testCommand\": *\"make check\"' '$repoTCe/.git/lcars/config.json'"
 
 # --- Behaviour 3: detects CONTEXT.md --------------------------------------
 repo="$(new_repo)"

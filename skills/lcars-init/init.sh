@@ -55,6 +55,28 @@ fi
 
 PROJECT_NAME="$(basename "$TOPLEVEL")"
 
+# --- detect the repo's test command --------------------------------------
+# The Implement red gate runs this to prove the Test Writer's suite FAILS before
+# the Implementer runs. Detect a sensible default from the repo's ecosystem; the
+# captain can override it in config.json (or per-run via $LCARS_TEST_CMD). Null
+# when nothing is detected — the red gate then warns and skips rather than blocks.
+detect_test_cmd() {
+  if [ -f "$TOPLEVEL/package.json" ] && grep -q '"test"[[:space:]]*:' "$TOPLEVEL/package.json"; then
+    echo "npm test"; return; fi
+  if [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ]; then
+    echo "pytest"; return; fi
+  if [ -f "$TOPLEVEL/Cargo.toml" ]; then echo "cargo test"; return; fi
+  if [ -f "$TOPLEVEL/go.mod" ]; then echo "go test ./..."; return; fi
+  if [ -f "$TOPLEVEL/Makefile" ] && grep -q '^test:' "$TOPLEVEL/Makefile"; then echo "make test"; return; fi
+  echo ""
+}
+TEST_CMD="${LCARS_TEST_CMD:-$(detect_test_cmd)}"
+if [ -n "$TEST_CMD" ]; then
+  TESTCMD_VALUE="\"$TEST_CMD\""; TESTCMD_HUMAN="$TEST_CMD"
+else
+  TESTCMD_VALUE='null'; TESTCMD_HUMAN="none (set testCommand to enable the Implement red gate)"
+fi
+
 # Preserve the original creation time across re-runs (idempotent).
 if [ -f "$CONFIG" ] && grep -q '"created"' "$CONFIG"; then
   CREATED="$(sed -n 's/.*"created": *"\([^"]*\)".*/\1/p' "$CONFIG" | head -1)"
@@ -66,6 +88,7 @@ cat >"$CONFIG" <<EOF
   "model": "$DEFAULT_MODEL",
   "projectName": "$PROJECT_NAME",
   "contextFile": $CONTEXT_VALUE,
+  "testCommand": $TESTCMD_VALUE,
   "created": "$CREATED"
 }
 EOF
@@ -142,7 +165,7 @@ fi
 
 # --- OUTPUT: readiness summary --------------------------------------------
 echo "  ✓ .git/lcars/ created"
-echo "  ✓ config.json written  (model: $DEFAULT_MODEL, context: $CONTEXT_HUMAN)"
+echo "  ✓ config.json written  (model: $DEFAULT_MODEL, context: $CONTEXT_HUMAN, tests: $TESTCMD_HUMAN)"
 echo "  ✓ Claude CLI verified  ($CLAUDE_VERSION)"
 if [ "$GH_OK" -eq 1 ]; then
   total=$((LABELS_CREATED + LABELS_SKIPPED))

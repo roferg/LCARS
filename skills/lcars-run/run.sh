@@ -42,6 +42,11 @@ GIT_BIN="${LCARS_GIT_BIN:-git}"
 # (`claude`). Swapping it is the whole CLI-portability story (BUG-003); tests
 # point it at a stub that echoes canned artifacts so the plumbing runs token-free.
 WORKER_BIN="${LCARS_WORKER_BIN:-claude}"
+# The test runner the Implement red gate invokes to prove the Test Writer's
+# suite FAILS before the Implementer runs. Env-injectable (like LCARS_GH_BIN) so
+# unit tests can drive a fake red→green transition; otherwise sourced from the
+# repo's config.json (`testCommand`, written by `lcars init`). See red_gate_ok.
+TEST_CMD_ENV="${LCARS_TEST_CMD:-}"
 # Re-invocation of this very script, used by the Stage drivers to reuse the
 # already-tested persistence subcommands (gate/save/validate-*/plan-save/…)
 # rather than duplicate their logic.
@@ -103,6 +108,10 @@ locate_mission() {
   case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
   MISSION_DIR="$gitdir/lcars/missions/$id"
   STATE="$MISSION_DIR/state.json"
+  # Repo-level config (lcars init writes it) + the working-tree root the red gate
+  # runs the test suite from.
+  LCARS_CFG="$gitdir/lcars/config.json"
+  REPO_ROOT="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"; [ -n "$REPO_ROOT" ] || REPO_ROOT="$PWD"
   [ -d "$MISSION_DIR" ] || die "no mission '$id' under .git/lcars/missions/ — check the id (or run \`lcars file\` first)."
   [ -f "$STATE" ]       || die "mission '$id' has no state.json — its state is corrupt."
 }
@@ -806,6 +815,77 @@ ticket_green() { # ticketId
   [ "$(json_raw "$rf" passed)" = "true" ]
 }
 
+# === Implement guardrails (deterministic — enforced by the harness, not the LLM) ==
+# The adversarial Test Writer → Implementer split would otherwise rest on prompt
+# instructions alone, and an LLM rewarded for a green suite games that contract.
+# These three checks live HERE, in the driver, so a worker can't talk its way
+# around them: a red gate (the tests must fail first), an immutability snapshot
+# (the tests can't be edited to pass), and a quality check (the tests must assert
+# something). See vision.md → Implement.
+
+# --- resolve the test command (env wins, then repo config) ------------------
+resolve_test_cmd() {
+  if [ -n "$TEST_CMD_ENV" ]; then printf '%s' "$TEST_CMD_ENV"; return 0; fi
+  [ -f "$LCARS_CFG" ] || return 0
+  local c; c="$(json_str "$LCARS_CFG" testCommand)"
+  case "$c" in ''|null) return 0 ;; esac
+  printf '%s' "$c"
+}
+
+# --- GUARDRAIL 1: the red gate ----------------------------------------------
+# Run the configured test command against the just-written tests with NO
+# implementation present. Returns 0 when it is SAFE to hand the suite to the
+# Implementer (the suite FAILED — red — as it must, OR no runner is configured so
+# the gate cannot apply); returns non-zero when the suite PASSED green against
+# nothing, which means it proves nothing and must be rejected. The command runs
+# from the repo root with $LCARS_TESTS_DIR pointing at the quarantined tests, so
+# a real per-repo runner (or a test stub) can find them without re-parsing args.
+red_gate_ok() { # quarantined-tests-dir
+  local tdir="$1" cmd rc=0
+  cmd="$(resolve_test_cmd)"
+  if [ -z "$cmd" ]; then
+    printf '  ⚠ RED GATE SKIPPED — no test command (set `testCommand` in .git/lcars/config.json or $LCARS_TEST_CMD). The harness cannot prove the suite fails without an implementation.\n' >&2
+    return 0
+  fi
+  ( cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" ) >/dev/null 2>&1 || rc=$?
+  [ "$rc" -ne 0 ]   # non-zero = red = OK; zero = green-on-nothing = reject
+}
+
+# --- GUARDRAIL 2: immutable tests (hash snapshot + verify) ------------------
+sha_of() { # file → hex digest
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else die "no sha256 tool (shasum / sha256sum) available for the immutable-tests guardrail."; fi
+}
+# Write "<hash>  <relpath>" for every file under a tests dir, in stable order.
+snapshot_tests() { # tests-dir  out-file
+  local d="$1" out="$2" rel
+  : >"$out"
+  while IFS= read -r rel; do
+    rel="${rel#./}"
+    printf '%s  %s\n' "$(sha_of "$d/$rel")" "$rel" >>"$out"
+  done < <(cd "$d" && find . -type f | LC_ALL=C sort)
+}
+# 0 if the ticket's quarantined tests still match the snapshot taken at
+# impl-save-tests; non-zero if any test file was added, removed, or changed.
+tests_unchanged() { # ticketId
+  local tdir snap cur
+  tdir="$(ticket_dir "$1")/tests"; snap="$(ticket_dir "$1")/tests.sha256"
+  [ -f "$snap" ] || return 1   # no snapshot → cannot prove unchanged → treat as a violation
+  cur="$(mktemp)"; snapshot_tests "$tdir" "$cur"
+  if diff -q "$snap" "$cur" >/dev/null 2>&1; then rm -f "$cur"; return 0; fi
+  rm -f "$cur"; return 1
+}
+
+# --- GUARDRAIL 3: test quality (the suite must assert something) ------------
+# Light, language-agnostic: reject a suite where no file contains any common
+# assertion construct — an empty / zero-assertion / sandbagged contract proves
+# nothing. The red gate catches a trivially-PASSING suite; this catches one that
+# asserts nothing at all.
+suite_has_assertions() { # tests-dir
+  grep -rEiq 'assert|expect|should|\.to[A-Za-z]|require\(|t\.(is|deep|truthy|throws)|check\(|verify\(' "$1" 2>/dev/null
+}
+
 # --- subcommand: impl-save-tests -------------------------------------------
 cmd_impl_save_tests() {
   locate_mission "$MISSION_ID"
@@ -818,14 +898,34 @@ cmd_impl_save_tests() {
   local count; count="$(find "$TESTS" -type f | wc -l | tr -d ' ')"
   [ "$count" -gt 0 ] || die "the tests dir is empty — the Test Writer produced no tests."
 
+  # GUARDRAIL 3 (before quarantine, so a junk suite never lands): the tests must
+  # actually assert something, or a sandbagging Test Writer hands over a contract
+  # that proves nothing.
+  suite_has_assertions "$TESTS" \
+    || die "the Test Writer's suite asserts nothing — no assertion found in any test file. A zero-assertion contract proves nothing; rejected by the test-quality guardrail."
+
   # Quarantine the files to tickets/<id>/tests/. That dir is the sole handoff to
   # the Implementer, so Phase 1 output never leaks into the working tree.
   local tdir; tdir="$(ticket_dir "$TICKET")/tests"
+  local snap; snap="$(ticket_dir "$TICKET")/tests.sha256"
   rm -rf "$tdir"; mkdir -p "$tdir"
   ( cd "$TESTS" && cp -R . "$tdir/" )
 
+  # GUARDRAIL 2 setup: snapshot the quarantined files so impl-save-result can
+  # prove the Implementer never edited the locked contract.
+  snapshot_tests "$tdir" "$snap"
+
+  # GUARDRAIL 1 (the red gate): the suite must FAIL against no implementation
+  # before the Implementer is allowed to run. A green-on-nothing suite is
+  # rejected and the quarantine is rolled back, so nothing reaches the Implementer.
+  if ! red_gate_ok "$tdir"; then
+    rm -rf "$tdir" "$snap"
+    die "the Test Writer's suite PASSED with no implementation — a contract that is green before anything is built proves nothing. Rejected by the red gate (the tests must FAIL first)."
+  fi
+
   echo "IMPLEMENT: tests saved — $TICKET"
   echo "  Saved $count Test Writer file(s) to tickets/$TICKET/tests/."
+  echo "  Red gate: suite fails as required; the contract is locked (immutable)."
   exit 0
 }
 
@@ -841,6 +941,13 @@ cmd_impl_save_result() {
   local tdir; tdir="$(ticket_dir "$TICKET")/tests"
   [ -d "$tdir" ] && [ -n "$(find "$tdir" -type f -print -quit)" ] \
     || die "no tests on disk for $TICKET — run impl-save-tests first (the Implementer builds against them)."
+
+  # GUARDRAIL 2 (immutable tests): the locked contract must be byte-for-byte the
+  # snapshot taken at impl-save-tests. If the Implementer edited / added / removed
+  # any test file, "green" was reached by weakening the contract, not by building
+  # — reject the result before it is saved or committed.
+  tests_unchanged "$TICKET" \
+    || die "the Implementer modified the locked test files for $TICKET — green must be earned by implementing, never by weakening the contract. Result rejected by the immutable-tests guardrail."
 
   # Shape contract — same spirit as the research/plan/verdict guards: every
   # result carries all four fields, and a malformed reply stops the save.
