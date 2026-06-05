@@ -398,7 +398,7 @@ validate_plan_json() { # file
     /^[[:space:]]*\}[,]?[[:space:]]*$/ {
       if (!inobj) next
       tickets++
-      for (k=1; k<=7; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
+      for (k=1; k<=9; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
       if (!acok) fail("ticket " tickets " (" id ") needs at least one acceptance criterion.")
       ids[id]=1
       for (d=1; d<=ndep; d++) { depof[++drefs]=dep[d]; depticket[drefs]=id }
@@ -412,9 +412,18 @@ validate_plan_json() { # file
       else if (key=="acceptanceCriteria") { if (n >= 4) acok=1 }
       else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
     }
+    # DESIGN NOTE (Session 31): the three estimate fields are a SHAPE contract,
+    # not a SIZE policy. We require all three to be present, but we deliberately
+    # do NOT reject a ticket whose read+test+new exceeds comprehensionBudget —
+    # the budget is a PLANNING TARGET, not a deterministic reject. A single large
+    # existing file can force estimatedReadLoc alone over budget; that load is
+    # UNAVOIDABLE and must not deadlock planning. The size judgement ("over
+    # budget because it BUNDLES behaviors" vs "over budget because the file is
+    # just big") lives in the Plan prompt + Plan Review, never here.
     BEGIN { req[1]="id"; req[2]="title"; req[3]="description";
-            req[4]="acceptanceCriteria"; req[5]="estimatedLoc"; req[6]="dependencies";
-            req[7]="rationale" }
+            req[4]="acceptanceCriteria"; req[5]="estimatedReadLoc";
+            req[6]="estimatedTestLoc"; req[7]="estimatedNewLoc";
+            req[8]="dependencies"; req[9]="rationale" }
     END {
       if (tickets == 0) fail("no tickets in the plan — a plan needs at least one ticket.")
       for (r=1; r<=drefs; r++)
@@ -1401,9 +1410,21 @@ cmd_plan() {
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md."
   [ -f "$MISSION_DIR/validated-plan.md" ] || die "no validated-plan.md — Validate has not run."
 
+  # comprehensionBudget is a PLANNING TARGET (sum of read+test+new), not a hard
+  # cap — see validate_plan_json's design note. Read it from config, default 1200.
+  local budget; budget="$(json_raw "$LCARS_CFG" comprehensionBudget)"; budget="${budget:-1200}"
+
   local extra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/prd.md
-- $MISSION_DIR/validated-plan.md"
+- $MISSION_DIR/validated-plan.md
+
+## Your comprehension budget
+comprehensionBudget = $budget — the per-ticket target for total comprehension
+load (estimatedReadLoc + estimatedTestLoc + estimatedNewLoc). It is a PLANNING
+TARGET, not a hard cap: cohesion comes first (one user-observable behavior per
+ticket), size is the secondary guardrail. A ticket may run over budget when a
+large existing file makes estimatedReadLoc alone unavoidable — that is fine.
+What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # On a Plan Review loop-back the Mission is back at `plan` with the reviewer's
   # objections on disk. Feed them so the fresh Planner worker actually revises
   # against them (otherwise it would re-emit the rejected plan and loop to the
@@ -1441,9 +1462,21 @@ cmd_plan_review() {
     && die "mission is awaiting a human answer — run \`lcars respond $MISSION_ID\` first; the reviewer does not re-run until the gate clears."
   [ -f "$MISSION_DIR/plan.json" ] || die "no plan.json — Plan has not run."
 
+  # comprehensionBudget is the size yardstick the reviewer applies — a PLANNING
+  # TARGET, not a hard cap (see validate_plan_json's design note). Default 1200.
+  local budget; budget="$(json_raw "$LCARS_CFG" comprehensionBudget)"; budget="${budget:-1200}"
+
   # Independence is the whole point: the reviewer is handed the tickets ALONE.
   local extra="## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/plan.json"
+- $MISSION_DIR/plan.json
+
+## Your comprehension budget
+comprehensionBudget = $budget — apply it to each ticket's total comprehension
+load (estimatedReadLoc + estimatedTestLoc + estimatedNewLoc). It is a PLANNING
+TARGET, not a hard cap: an over-budget ticket is an objection ONLY when the
+overage is driven by BUNDLING (two behaviors that should be split). When the
+overage is unavoidable existing code (a big file the ticket must read), it is
+acceptable — do not raise it."
   # RESUME after a round-3 escalation: the captain's recorded answer (override /
   # redirect) resolves the standoff. Feed it so the reviewer honours that
   # decision instead of re-escalating the same objections forever.

@@ -123,7 +123,9 @@ EOF
     "title": "Add the data-theme attribute and dark token set",
     "description": "Flip data-theme on <html> and wire the dark tokens.",
     "acceptanceCriteria": ["Setting data-theme=dark recolours the page"],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": []
   },
   {
@@ -131,7 +133,9 @@ EOF
     "title": "Add the theme toggle control",
     "description": "Render a toggle in the nav.",
     "acceptanceCriteria": ["Clicking the toggle flips the active theme"],
-    "estimatedLoc": 70,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 70,
     "dependencies": []
   },
   {
@@ -139,7 +143,9 @@ EOF
     "title": "Persist the theme choice across reloads",
     "description": "Write to localStorage and restore on load.",
     "acceptanceCriteria": ["Choice survives a reload"],
-    "estimatedLoc": 80,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 80,
     "dependencies": ["t-001"]
   }
 ]

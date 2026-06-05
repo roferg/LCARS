@@ -21,7 +21,14 @@ Audit **every** ticket against the four criteria:
 
 - **Vertical slice** — does it touch multiple layers end-to-end (UI + logic +
   data), not just one horizontal layer ("add all the migrations")?
-- **Size** — is `estimatedLoc` under 300 lines of production code?
+- **Size** — is each ticket's total comprehension load
+  (`estimatedReadLoc + estimatedTestLoc + estimatedNewLoc`) within
+  `comprehensionBudget` (supplied above)? The budget is a PLANNING TARGET, not a
+  hard cap: an over-budget ticket is an objection ONLY when the overage is
+  driven by BUNDLING two behaviors that should be split. When the overage is
+  unavoidable existing code (a big file the ticket must read), it is acceptable
+  — do not raise it. Cohesion (one user-observable behavior per ticket) is the
+  real bar; size is the secondary guardrail.
 - **Testability** — at least one clear, observable acceptance criterion?
 - **Dependencies** — does every id in `dependencies` reference another ticket in
   this same plan?
@@ -35,7 +42,7 @@ directory:
 {
   "passed": false,
   "issues": [
-    { "ticketId": "t-001", "objection": "Oversized: ~450 LoC; split it." },
+    { "ticketId": "t-001", "objection": "Over budget by bundling two behaviors (theme tokens AND the toggle); split it." },
     { "ticketId": "t-003", "objection": "Horizontal slice — only the data layer." }
   ]
 }

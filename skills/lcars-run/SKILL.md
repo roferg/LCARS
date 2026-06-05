@@ -193,7 +193,10 @@ bash ~/.claude/skills/lcars-run/run.sh plan --mission <id>
 ```
 
 Each ticket the worker produces carries `id`, `title`, `description`,
-`acceptanceCriteria` (≥1), `estimatedLoc` (<300), `dependencies` (only ids in
+`acceptanceCriteria` (≥1), three comprehension-load estimates —
+`estimatedReadLoc` (existing code to read), `estimatedTestLoc` (the test suite),
+and `estimatedNewLoc` (net-new production code), whose sum targets
+`comprehensionBudget`, default 1200 — `dependencies` (only ids in
 this plan), and a **`rationale`** — *why* this slice exists and why it is drawn
 where it is. `plan-save` (invoked by the driver) refuses a plan that drops any
 required field, including the rationale, so the Stage will re-dispatch the worker
