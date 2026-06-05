@@ -167,7 +167,7 @@ power entry points.
 |---|---|
 | `lcars` | **The one entry point.** Infers the right action from state and announces it first: nothing filed → runs the `lcars file` flow; work in flight & nothing pending → drives the active Mission (auto-advance); a decision waiting → opens the inbox. Never makes you remember a verb or paste an id. |
 | `lcars answer` | **The inbox** — every pending decision across *all* Missions in one list: scope escalations, plan-review stand-offs, blocked tickets, and the Verify gate. **approve** and **send back** are actions on a Verify card here, not separate commands. |
-| `lcars status` | The read-only **board**: every active Mission, its Stage, and anything awaiting you. |
+| `lcars status` | The read-only **board**: every active Mission, its Stage, and anything awaiting you. Add `--watch` to follow a running Mission **live** — a streaming event view with a pace line (wave, ticket, attempt, avg/ticket, elapsed). |
 | `lcars init` | One-time per-repo setup (local config + GitHub labels). |
 | `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. |
 | `lcars log` | Log one or more bugs against an active Mission in free-form language; fast-tracks a Mission per bug straight to Plan and links them. |
@@ -178,6 +178,7 @@ power entry points.
 |---|---|
 | `lcars run <id>` | Auto-advance a Mission stage-to-stage until a human gate. |
 | `lcars run <id> --step` | Advance **exactly one** Stage, then stop (for debugging/inspection). |
+| `lcars status --watch [<id>]` | Follow a Mission's run **live**: tails its event stream and re-renders a pace/position line until the run reaches a gate. |
 | `lcars respond [<id>]` | Answer a Mission's awaiting-human gate. No id lists everything waiting. |
 | `lcars approve <id>` | Ship a verified Mission: push the branch, open the PR, mark it Done. |
 | `lcars feedback <id> "<note>"` | Send a Mission at Verify back to Align with a note (kept in an accumulating history). |
@@ -327,6 +328,16 @@ Two deliberate properties make this robust:
   artifact is the entire contract. A `⊘ isolated` marker on every stage line
   proves it; if a Stage ever can't isolate, the driver refuses **loudly** rather
   than running inline.
+- **Observable, not silent.** The driver keeps a per-Mission append-only **event
+  log** (`events.jsonl`) as it goes — every Stage start and finish, every gate,
+  and fine-grained Implement progress (each wave, each ticket, each attempt, and
+  every green/flag). It prints each Stage line the moment it happens instead of
+  only summarizing at halt, and `lcars status --watch` tails that same log into a
+  live view with a pace/position line —
+  `Wave 3/6 · ticket t-004 · attempt 1 · ~12s avg/ticket · elapsed 4m12s`. The
+  events are emitted by the bash harness *around* the worker calls — never by the
+  worker — so the stream and the live view behave identically whatever CLI runs
+  underneath.
 
 ---
 

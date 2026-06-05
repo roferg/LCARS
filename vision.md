@@ -236,13 +236,17 @@ Each headless Stage (Research, Validate, Plan, Plan Review, Implement) runs as a
 
 This is what makes CLI choice an implementation detail and **model choice the meaningful one**: the loop costs nothing, and every token LCARS spends is spent on the CLI you chose to run it under. The only piece that is ever CLI-specific is a thin adapter that normalizes a given CLI's one-shot invocation and output — never any Stage logic.
 
+### Watching a run
+
+A long Mission running unattended should not be a black box until its next gate. The loop keeps a per-Mission **append-only event log**: every Stage transition, every gate, and — inside Implement, where the time actually goes — every wave, every ticket, every attempt, and each pass or flag. The driver prints each Stage as it happens rather than only summarizing at the end, and **`lcars status --watch`** tails that log into a live view: human-readable progress lines plus a refreshing pace/position line — `Wave 3/6 · ticket t-004 · attempt 1 · ~12s avg/ticket · elapsed 4m12s` — that ends cleanly when the run reaches a gate. Because the log is written by the deterministic loop *around* each worker — never by the worker itself, and never parsed from its output — the stream and the live view are identical no matter which CLI runs underneath, exactly like every other Stage.
+
 ### The commands
 
 LCARS collapses to two things you do — **hand it work** and **answer what it's waiting on** — plus a board to look at:
 
 - **`lcars`** — the one entry point. With nothing filed, it takes a free-form idea and files a Mission. With work in flight and nothing pending, it drives the active Mission forward, auto-advancing through Stages until a human gate. With a decision waiting, it drops you into the inbox. You never have to remember which verb to type or paste a Mission id.
 - **`lcars answer`** — the inbox of every pending decision across all Missions: scope escalations, plan-review stand-offs, blocked tickets, and the Verify ship-or-send-back gate. Clear them here; **approve** and **send back with feedback** are actions on a Verify card, not separate commands.
-- **`lcars status`** — the read-only board: every active Mission, its Stage, and anything awaiting you.
+- **`lcars status`** — the read-only board: every active Mission, its Stage, and anything awaiting you. With `--watch` it follows a single running Mission live, tailing its event stream into a streaming view with a pace/position line — current wave, current ticket, attempt, average time per ticket, and elapsed — so a long unattended run is observable as it moves instead of a black box until the next gate.
 - **`lcars init`** — one-time per-repo setup: creates `.git/lcars/`, writes repo config, scans for `CONTEXT.md`, verifies CLI auth, and creates the LCARS Labels on the repo. Run once before the first Mission.
 - **`lcars log`** — log bugs against an active Mission in free-form natural language. One invocation can describe several bugs; the Harness extracts each, fast-tracks a Mission per bug, and links them to the referenced open Mission. If none is named, it asks first.
 
