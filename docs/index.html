@@ -185,7 +185,9 @@ flowchart LR
 
       <h3><span class="stage-num">5</span>Plan Review <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>A <em>fresh</em> reviewer with no planning context audits every ticket
-      for slice, size, testability, and dependencies. Loops back to Plan until
+      for slice, size, <strong>coupling</strong> (rejecting tickets whose criteria
+      force changing behavior another ticket's tests pin — the real meaning of
+      "too big"), testability, and dependencies. Loops back to Plan until
       clean; escalates after 3 rounds.</p>
 
       <h3><span class="stage-num">6</span>Schedule <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
@@ -509,8 +511,11 @@ implement   ✓ ⊘ isolated  11/11 tickets green
           read + tests + new code) against a tunable <code>comprehensionBudget</code>
           — not a flat line count, so greenfield tickets stay generous and later
           ones tighten as the codebase grows. An independent reviewer rejects
-          horizontal slices and tickets that are over budget by <em>bundling</em>
-          behaviors, looping until clean (or escalating after 3 rounds).</li>
+          horizontal slices, tickets that are over budget by <em>bundling</em>
+          behaviors, and <strong>coupled</strong> tickets — ones whose criteria
+          can only be met by changing behavior another ticket's tests already
+          pin — naming the seam to re-slice along; it loops until clean (or
+          escalating after 3 rounds).</li>
           <li><strong>Implement is adversarial and guarded by the harness, not the
           prompt.</strong> See the guardrails below.</li>
           <li><strong>Verify never auto-passes.</strong> Auto-advance always stops

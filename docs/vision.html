@@ -194,6 +194,7 @@ flowchart TD
         <ul>
           <li><strong>Vertical slice</strong> — does it touch multiple layers end-to-end, not just one horizontal layer?</li>
           <li><strong>Size</strong> — is the total comprehension load (read + test + new code) within <code>comprehensionBudget</code>? Over budget is an objection <em>only</em> when it comes from bundling two behaviors; load from an unavoidably large existing file is acceptable.</li>
+          <li><strong>Coupling</strong> — can each issue's acceptance criteria be satisfied <em>without</em> changing behavior another issue's tests already pin? If satisfying issue A requires modifying behavior issue B locks down, they are coupled — the reviewer objects and names the behavioral seam to re-slice along. This is the real meaning of "too big": a sub-100-line issue can still be dangerously coupled, so coupling is a first-class reject reason on equal footing with the others.</li>
           <li><strong>Testability</strong> — is there a clear, observable acceptance criterion?</li>
           <li><strong>Explicit dependencies</strong> — are all dependencies on other issues captured in the graph?</li>
         </ul>
