@@ -183,7 +183,8 @@ flowchart TD
 
     <section id="plan">
       <h3><span class="stage-num">4</span>Plan</h3>
-      <p>The validated plan is decomposed into small, independently testable GitHub issues. Each issue is a vertical slice of full-stack functionality, targeting <strong>fewer than 300 lines of production code</strong>. The output feeds into Plan Review before any scheduling occurs.</p>
+      <p>The validated plan is decomposed into small, independently testable GitHub issues. Each issue is a vertical slice of full-stack functionality that owns <strong>one cohesive, user-observable behavior</strong> — cohesion is the primary slicing rule, not a line count.</p>
+      <p>Size is the secondary guardrail, measured as <strong>total comprehension load</strong> rather than net-new lines: the existing code the implementer must read (<code>estimatedReadLoc</code>), the issue's test suite (<code>estimatedTestLoc</code>), and the net-new production code (<code>estimatedNewLoc</code>). Their sum targets a tunable <code>comprehensionBudget</code> (default 1200) — the real constraint is keeping each issue within the LLM's effective working window, and the same diff is trivial against a blank file but hard against a large one. So net-new floats while the total stays bounded: greenfield issues run generous and tighten as the codebase grows. The budget is a <strong>planning target, not a hard reject</strong> — an issue may exceed it when a large existing file makes the read load unavoidable; what is not allowed is exceeding it by <em>bundling</em> two behaviors. The output feeds into Plan Review before any scheduling occurs.</p>
     </section>
 
     <section id="plan-review">
@@ -192,7 +193,7 @@ flowchart TD
       <div class="mission-card">
         <ul>
           <li><strong>Vertical slice</strong> — does it touch multiple layers end-to-end, not just one horizontal layer?</li>
-          <li><strong>Size</strong> — is it under 300 lines of production code?</li>
+          <li><strong>Size</strong> — is the total comprehension load (read + test + new code) within <code>comprehensionBudget</code>? Over budget is an objection <em>only</em> when it comes from bundling two behaviors; load from an unavoidably large existing file is acceptable.</li>
           <li><strong>Testability</strong> — is there a clear, observable acceptance criterion?</li>
           <li><strong>Explicit dependencies</strong> — are all dependencies on other issues captured in the graph?</li>
         </ul>

@@ -86,14 +86,16 @@ The Validator escalates to the human only when a finding implies a scope or dire
 
 ### 4. Plan
 
-The validated plan is decomposed into small, independently testable GitHub issues. Each issue is a vertical slice of full-stack functionality, targeting fewer than 300 lines of production code. This constraint keeps each issue within the effective working window of the LLMs that will implement it.
+The validated plan is decomposed into small, independently testable GitHub issues. Each issue is a vertical slice of full-stack functionality that owns **one cohesive, user-observable behavior** — cohesion is the primary slicing rule, not a line count.
+
+Size is the secondary guardrail, and it is measured as **total comprehension load** rather than net-new lines: the existing code the implementer must read (`estimatedReadLoc`), the issue's test suite (`estimatedTestLoc`), and the net-new production code (`estimatedNewLoc`). Their sum targets a tunable `comprehensionBudget` (default 1200) — the real constraint is keeping each issue within the effective working window of the LLM that will implement it, and the same diff is trivial against a blank file but hard against a large one. So net-new floats while the total stays bounded: greenfield issues run generous (little to read) and tighten as the codebase grows. The budget is a **planning target, not a hard reject** — an issue may exceed it when a large existing file makes the read load unavoidable; what is not allowed is exceeding it by *bundling* two behaviors.
 
 ### 5. Plan Review
 
 A fresh LLM session — with no access to the planning conversation — audits every issue against a fixed set of quality criteria before anything is scheduled:
 
 - **Vertical slice** — does the issue touch multiple layers end-to-end (UI, logic, data), not just one horizontal layer like "add all the database migrations"?
-- **Size** — is it under 300 lines of production code?
+- **Size** — is the total comprehension load (read + test + new code) within `comprehensionBudget`? An over-budget issue is an objection *only* when the overage comes from bundling two behaviors that should be split; load driven by an unavoidably large existing file to read is acceptable.
 - **Testability** — is there a clear, observable acceptance criterion?
 - **Explicit dependencies** — are all dependencies on other issues captured in the graph?
 
