@@ -100,6 +100,11 @@ check "2. config has created key"         "grep -q '\"created\"' '$repo/.git/lca
 check "2. config has testCommand key"     "grep -q '\"testCommand\"' '$repo/.git/lcars/config.json'"
 check "2. testCommand is null in a bare repo" \
   "grep -q '\"testCommand\": *null' '$repo/.git/lcars/config.json'"
+# the Plan stage's comprehension-load target lives in config; default 1200
+check "2. config has comprehensionBudget key" \
+  "grep -q '\"comprehensionBudget\"' '$repo/.git/lcars/config.json'"
+check "2. comprehensionBudget defaults to 1200" \
+  "grep -q '\"comprehensionBudget\": *1200' '$repo/.git/lcars/config.json'"
 
 # --- Behaviour 2b: detects a test command from the repo's ecosystem --------
 repoTC="$(new_repo)"

@@ -179,11 +179,15 @@ flowchart LR
 
       <h3><span class="stage-num">4</span>Plan <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>Decomposes the validated plan into small, independently testable tickets
-      — each a vertical slice under ~300 lines of production code.</p>
+      — each a vertical slice owning <strong>one cohesive behavior</strong>, sized
+      by total <strong>comprehension load</strong> (code-to-read + tests + new
+      code) against a tunable budget, not a flat line count.</p>
 
       <h3><span class="stage-num">5</span>Plan Review <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>A <em>fresh</em> reviewer with no planning context audits every ticket
-      for slice, size, testability, and dependencies. Loops back to Plan until
+      for slice, size, <strong>coupling</strong> (rejecting tickets whose criteria
+      force changing behavior another ticket's tests pin — the real meaning of
+      "too big"), testability, and dependencies. Loops back to Plan until
       clean; escalates after 3 rounds.</p>
 
       <h3><span class="stage-num">6</span>Schedule <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
@@ -501,9 +505,16 @@ implement   ✓ ⊘ isolated  11/11 tickets green
           <li><strong>Validate decides the <em>how</em>, escalates the
           <em>what</em>.</strong> Implementation calls stay with the Validator;
           only choices that change what gets built come to you.</li>
-          <li><strong>Plan / Plan Review enforce small vertical slices.</strong>
-          Tickets are full-stack slices under ~300 lines. An independent reviewer
-          rejects horizontal slices and oversized tickets, looping until clean (or
+          <li><strong>Plan / Plan Review enforce cohesive vertical slices.</strong>
+          Each ticket is a full-stack slice owning <strong>one cohesive
+          behavior</strong>, sized by total comprehension load (existing code to
+          read + tests + new code) against a tunable <code>comprehensionBudget</code>
+          — not a flat line count, so greenfield tickets stay generous and later
+          ones tighten as the codebase grows. An independent reviewer rejects
+          horizontal slices, tickets that are over budget by <em>bundling</em>
+          behaviors, and <strong>coupled</strong> tickets — ones whose criteria
+          can only be met by changing behavior another ticket's tests already
+          pin — naming the seam to re-slice along; it loops until clean (or
           escalating after 3 rounds).</li>
           <li><strong>Implement is adversarial and guarded by the harness, not the
           prompt.</strong> See the guardrails below.</li>

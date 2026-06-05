@@ -88,8 +88,8 @@ flowchart LR
 | 1 | **Align** | 🧑 you + LLM | A structured grilling session — not a chat — that resolves ambiguity in the idea and produces a **PRD** (the canonical spec). |
 | 2 | **Research** | 🤖 auto | Generates 0–20 questions from the PRD; each goes to a stateless parallel Research Agent that returns a recommendation + supporting points. |
 | 3 | **Validate** | 🤖 auto | A Validator synthesises all findings into a plan, resolving the *how*. Escalates to you only when a finding changes *what* gets built. |
-| 4 | **Plan** | 🤖 auto | Decomposes the validated plan into small, independently testable tickets — each a vertical slice under ~300 lines of production code. |
-| 5 | **Plan Review** | 🤖 auto | A *fresh* reviewer (no planning context) audits every ticket for slice, size, testability, and dependencies. Loops back to Plan until clean; escalates after 3 rounds. |
+| 4 | **Plan** | 🤖 auto | Decomposes the validated plan into small, independently testable tickets — each a vertical slice owning **one cohesive behavior**, sized by total **comprehension load** (code-to-read + tests + new code) against a tunable budget, not a flat line count. |
+| 5 | **Plan Review** | 🤖 auto | A *fresh* reviewer (no planning context) audits every ticket for slice, size, **coupling** (rejecting tickets whose criteria force changing behavior another ticket's tests pin — the real meaning of "too big"), testability, and dependencies. Loops back to Plan until clean; escalates after 3 rounds. |
 | 6 | **Schedule** | 🤖 auto | Builds the dependency graph into sequential **Waves** and opens one GitHub sub-issue per ticket. |
 | 7 | **Implement** | 🤖 auto | Per ticket, an adversarial **Test Writer → Implementer** pair. Tests are written first, must fail (red gate), then are locked while the Implementer makes them pass. |
 | 8 | **Verify** | 🧑 you | You read the diff, run the app, test the golden path — then **approve** (open the PR) or **send back** with feedback. |
@@ -273,9 +273,15 @@ $ lcars approve lcars-20260604-001
   needed → it explains why and lets you override or sharpen the PRD.
 - **Validate decides the *how*, escalates the *what*.** Implementation calls stay
   with the Validator; only choices that change *what gets built* come to you.
-- **Plan / Plan Review enforce small vertical slices.** Tickets are full-stack
-  slices under ~300 lines. An independent reviewer rejects horizontal slices and
-  oversized tickets, looping back until clean (or escalating after 3 rounds).
+- **Plan / Plan Review enforce cohesive vertical slices.** Each ticket is a
+  full-stack slice owning **one cohesive behavior**, sized by total comprehension
+  load (existing code to read + tests + new code) against a tunable
+  `comprehensionBudget` — not a flat line count, so greenfield tickets stay
+  generous and later ones tighten as the codebase grows. An independent reviewer
+  rejects horizontal slices, tickets that are over budget by *bundling*
+  behaviors, and **coupled** tickets — ones whose criteria can only be met by
+  changing behavior another ticket's tests already pin — naming the seam to
+  re-slice along; it loops back until clean (or escalates after 3 rounds).
 - **Implement is adversarial and guarded by the harness, not the prompt.** The
   Test Writer's tests must actually **fail** before the Implementer runs (red
   gate), the test files are **locked** so green can't be reached by editing them,

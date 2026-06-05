@@ -89,6 +89,7 @@ cat >"$CONFIG" <<EOF
   "projectName": "$PROJECT_NAME",
   "contextFile": $CONTEXT_VALUE,
   "testCommand": $TESTCMD_VALUE,
+  "comprehensionBudget": 1200,
   "created": "$CREATED"
 }
 EOF

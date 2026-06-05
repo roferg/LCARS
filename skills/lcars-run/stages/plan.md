@@ -12,12 +12,48 @@ tickets. **Every ticket must be:**
 
 - **A vertical slice** — UI + logic + data end-to-end, not one horizontal layer
   ("add all the migrations" is wrong; "add the XP trigger for video completions,
-  through to the dashboard" is right).
-- **Under 300 lines of production code** (tests excluded). Put your estimate in
-  `estimatedLoc`.
+  through to the dashboard" is right). This is non-negotiable: never slice a
+  ticket as a horizontal layer of one tier.
+- **One cohesive, user-observable behavior** — see *Slicing* below. Cohesion is
+  the PRIMARY rule; size is only a guardrail.
 - **Independently testable** — at least one clear, observable acceptance
-  criterion.
+  criterion that an independent test suite can fully specify.
 - **Titled in the imperative** — "Add XP trigger for video completions".
+
+## Slicing: cohesion first, size second
+
+**Slice on behavioral seams, not on a line count.** The primary rule is
+COHESION: each ticket owns exactly one cohesive, user-observable vertical
+behavior — one that an independent test suite can fully specify. Prefer
+splitting where behaviors (or contracts) differ; do NOT split merely to hit a
+line threshold. **A small ticket that couples two behaviors is WORSE than a
+larger ticket that owns one.** And never merge two distinct behaviors just
+because each is individually small.
+
+Size is the SECONDARY guardrail. Estimate each ticket's **total comprehension
+load** — what the Implementer must hold in their head to build it:
+
+- `estimatedReadLoc` — existing code they must READ to make the change safely
+- `estimatedTestLoc` — the ticket's own test suite
+- `estimatedNewLoc` — net-new production code
+
+Aim for `estimatedReadLoc + estimatedTestLoc + estimatedNewLoc` under
+**`comprehensionBudget`** (supplied above; default 1200). Use size only to
+SPLIT a single cohesive behavior that is too heavy to build in one pass — never
+to merge two behaviors that are individually small.
+
+The total load stays BOUNDED by the budget; net-new LOC FLOATS. On a greenfield
+ticket (little existing code to read) net-new may run HIGHER than an old flat
+300-line rule allowed; as the codebase grows and `estimatedReadLoc` climbs, the
+net-new room TIGHTENS. Bounded total, floating net-new.
+
+**DESIGN NOTE — the budget is a planning TARGET, not a hard reject.** When a
+large existing file forces `estimatedReadLoc` alone over the budget, that load
+is UNAVOIDABLE: keep the behavior cohesive and let the ticket run over rather
+than fracturing one behavior across tickets. The harness does NOT
+deterministically reject an over-budget ticket — being over budget is only a
+problem when the overage comes from BUNDLING behaviors (splittable), not from a
+file that is simply big (acceptable).
 
 Capture dependencies explicitly: if ticket B can only be built after ticket A,
 list A's id in B's `dependencies`. A dependency may reference **only** ids that
@@ -46,7 +82,9 @@ JSON array in this **canonical shape** — one field per line, with
     "title": "Add the data-theme attribute and dark token set",
     "description": "Flip data-theme on <html> and wire the dark --color-* tokens end-to-end.",
     "acceptanceCriteria": ["Setting data-theme=dark recolours the page"],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": [],
     "rationale": "The token plumbing is the foundation every later slice paints on; isolating it keeps the toggle slice small."
   }

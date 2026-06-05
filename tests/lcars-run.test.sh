@@ -148,7 +148,9 @@ write_plan_json() { # file
     "title": "Add data-theme attribute and CSS variable wiring",
     "description": "Flip a data-theme attribute on <html> and define the dark token set end-to-end.",
     "acceptanceCriteria": ["Setting data-theme=dark recolours the page via existing --color-* tokens"],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": [],
     "rationale": "The token plumbing is the foundation every later slice paints on."
   },
@@ -157,7 +159,9 @@ write_plan_json() { # file
     "title": "Add the theme toggle and persist the choice",
     "description": "Render a toggle that writes the choice to localStorage and restores it on load.",
     "acceptanceCriteria": ["Toggling persists across reload", "Default follows prefers-color-scheme"],
-    "estimatedLoc": 90,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 90,
     "dependencies": ["t-001"],
     "rationale": "Persistence is meaningless without the tokens, so it builds on t-001."
   }
@@ -211,7 +215,9 @@ write_approved_plan_json() { # file
     "title": "Add the data-theme attribute and dark token set",
     "description": "Flip data-theme on <html> and wire the dark --color-* tokens end-to-end.",
     "acceptanceCriteria": ["Setting data-theme=dark recolours the page"],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": [],
     "rationale": "Foundational token layer every later slice depends on."
   },
@@ -220,7 +226,9 @@ write_approved_plan_json() { # file
     "title": "Add the theme toggle control",
     "description": "Render a toggle in the nav that emits a theme-change event.",
     "acceptanceCriteria": ["Clicking the toggle flips the active theme"],
-    "estimatedLoc": 70,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 70,
     "dependencies": [],
     "rationale": "The control is independent of persistence, so it can build in parallel."
   },
@@ -229,7 +237,9 @@ write_approved_plan_json() { # file
     "title": "Persist the theme choice across reloads",
     "description": "Write the chosen theme to localStorage and restore it on load.",
     "acceptanceCriteria": ["Choice survives a reload", "Defaults to prefers-color-scheme"],
-    "estimatedLoc": 80,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 80,
     "dependencies": ["t-001"],
     "rationale": "Persistence only matters once the tokens it restores exist."
   },
@@ -238,7 +248,9 @@ write_approved_plan_json() { # file
     "title": "Show the active theme on the dashboard",
     "description": "Surface the active theme name on the learner dashboard.",
     "acceptanceCriteria": ["Dashboard shows the active theme"],
-    "estimatedLoc": 60,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 60,
     "dependencies": ["t-001", "t-002"],
     "rationale": "The dashboard readout needs both the tokens and the toggle wired."
   }
@@ -538,7 +550,8 @@ check "P4. relabels plan → plan-review (removes lcars:plan)" \
 
 # --- P1: a ticket missing a required field is rejected; nothing moves -------
 # Shape contract: every ticket needs id, title, description, acceptanceCriteria,
-# estimatedLoc, dependencies. Here t-002 is missing its title.
+# estimatedReadLoc, estimatedTestLoc, estimatedNewLoc, dependencies, rationale.
+# Here t-002 is missing its title.
 repoPLb="$(new_repo_with_plan_mission)"; make_gh_stub "$repoPLb/gh"
 export GH_LOG="$repoPLb/gh.log"; : >"$GH_LOG"
 cat >"$repoPLb/bad.json" <<'EOF'
@@ -548,7 +561,9 @@ cat >"$repoPLb/bad.json" <<'EOF'
     "title": "Wire the data-theme attribute",
     "description": "End-to-end token wiring.",
     "acceptanceCriteria": ["data-theme=dark recolours the page"],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": [],
     "rationale": "Foundational token layer."
   },
@@ -556,7 +571,9 @@ cat >"$repoPLb/bad.json" <<'EOF'
     "id": "t-002",
     "description": "A ticket with no title field.",
     "acceptanceCriteria": ["something observable"],
-    "estimatedLoc": 90,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 90,
     "dependencies": [],
     "rationale": "Has every field but the title, to isolate the missing-title check."
   }
@@ -583,7 +600,9 @@ cat >"$repoPLc/noac.json" <<'EOF'
     "title": "Wire the data-theme attribute",
     "description": "End-to-end token wiring.",
     "acceptanceCriteria": [],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": [],
     "rationale": "Has every field but an acceptance criterion, to isolate that check."
   }
@@ -608,7 +627,9 @@ cat >"$repoPLd/dangling.json" <<'EOF'
     "title": "Wire the data-theme attribute",
     "description": "End-to-end token wiring.",
     "acceptanceCriteria": ["data-theme=dark recolours the page"],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": ["t-099"],
     "rationale": "Well-formed except for the dangling dependency under test."
   }
@@ -830,7 +851,9 @@ cat >"$repoSc/.git/lcars/missions/$MID/approved-plan.json" <<'EOF'
     "title": "Ticket one",
     "description": "Depends on t-002.",
     "acceptanceCriteria": ["does a thing"],
-    "estimatedLoc": 50,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 50,
     "dependencies": ["t-002"],
     "rationale": "Well-formed tickets; the cycle is the defect under test."
   },
@@ -839,7 +862,9 @@ cat >"$repoSc/.git/lcars/missions/$MID/approved-plan.json" <<'EOF'
     "title": "Ticket two",
     "description": "Depends on t-001.",
     "acceptanceCriteria": ["does another thing"],
-    "estimatedLoc": 50,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 50,
     "dependencies": ["t-001"],
     "rationale": "Well-formed tickets; the cycle is the defect under test."
   }
@@ -1468,7 +1493,9 @@ MD
     "title": "Wire the data-theme attribute",
     "description": "End-to-end token wiring.",
     "acceptanceCriteria": ["data-theme=dark recolours the page"],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": []
   }
 ]
@@ -1481,7 +1508,9 @@ JSON
     "title": "Wire the data-theme attribute",
     "description": "End-to-end token wiring.",
     "acceptanceCriteria": ["data-theme=dark recolours the page"],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": [],
     "rationale": "Foundational token layer every later slice paints on."
   }
@@ -1720,7 +1749,9 @@ cat >"$repoW5b/norat.json" <<'EOF'
     "title": "Wire the data-theme attribute",
     "description": "End-to-end token wiring.",
     "acceptanceCriteria": ["data-theme=dark recolours the page"],
-    "estimatedLoc": 120,
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
     "dependencies": []
   }
 ]
@@ -2090,6 +2121,245 @@ check "F2. the commit EXCLUDES the worker's .lcars-* scratch" \
   "! printf '%s' \"$statF2\" | grep -q 'lcars-runner.sh'"
 check "F2. the unrelated file is left untracked in the working tree" \
   "[ -f '$repoF2/bugs.md' ] && [ -z \"\$( cd "$repoF2" && git ls-files bugs.md )\" ]"
+
+# ==========================================================================
+echo
+echo "lcars run — comprehension-load sizing (Session 31)"
+
+# Session 31 replaces the flat net-new-LOC cap with a total comprehension-load
+# model. The plan.json schema carries THREE explicit estimates — existing code to
+# READ, the TEST suite, and net-NEW production code — and the validator's job
+# stays SHAPE (all three present), never SIZE policy. The size judgement lives in
+# the prompt + Plan Review, where "over budget because it BUNDLES behaviors"
+# (splittable) is told apart from "over budget because the file is just big"
+# (unavoidable — must not deadlock planning). The slicing target is a config knob
+# `comprehensionBudget` (default 1200), a PLANNING TARGET, not a reject threshold.
+#
+#   S31.1  validate_plan_json requires all three estimate fields
+#   S31.2  the canonical fixtures (all three fields) still validate
+#   S31.3  comprehensionBudget is read from config (default 1200 when absent)
+#   S31.4  the validator does NOT reject when read+test+new exceeds the budget
+#   S31.5  Schedule (parse_plan_table → waves) is unaffected by the rename
+
+# --- S31.1: each of the three estimate fields is required -------------------
+# A ticket missing ANY ONE of estimatedReadLoc / estimatedTestLoc /
+# estimatedNewLoc is rejected by plan-save; nothing advances.
+for field in estimatedReadLoc estimatedTestLoc estimatedNewLoc; do
+  repoS1="$(new_repo_with_plan_mission)"; make_gh_stub "$repoS1/gh"
+  export GH_LOG="$repoS1/gh.log"; : >"$GH_LOG"
+  # Emit a single well-formed ticket, then drop the field under test.
+  {
+    echo '['
+    echo '  {'
+    echo '    "id": "t-001",'
+    echo '    "title": "Wire the data-theme attribute",'
+    echo '    "description": "End-to-end token wiring.",'
+    echo '    "acceptanceCriteria": ["data-theme=dark recolours the page"],'
+    [ "$field" = estimatedReadLoc ] || echo '    "estimatedReadLoc": 200,'
+    [ "$field" = estimatedTestLoc ] || echo '    "estimatedTestLoc": 80,'
+    [ "$field" = estimatedNewLoc ] || echo '    "estimatedNewLoc": 120,'
+    echo '    "dependencies": [],'
+    echo '    "rationale": "Has every field but the one under test."'
+    echo '  }'
+    echo ']'
+  } >"$repoS1/missing.json"
+  rcS1=0
+  ( cd "$repoS1" && LCARS_GH_BIN="$repoS1/gh" bash "$SCRIPT" plan-save \
+      --mission "$MID" --plan "$repoS1/missing.json" >outS1.txt 2>&1 ) || rcS1=$?
+  check "S31.1 rejects a ticket missing $field" "[ '$rcS1' -ne 0 ]"
+  check "S31.1 does not advance when $field is missing" \
+    "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoS1")'"
+  check "S31.1 writes no plan.json when $field is missing" \
+    "[ ! -f '$repoS1/.git/lcars/missions/$MID/plan.json' ]"
+done
+
+# --- S31.2: a ticket carrying all three estimates validates and advances ----
+repoS2="$(new_repo_with_plan_mission)"; make_gh_stub "$repoS2/gh"
+export GH_LOG="$repoS2/gh.log"; : >"$GH_LOG"
+cat >"$repoS2/good.json" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Wire the data-theme attribute",
+    "description": "End-to-end token wiring.",
+    "acceptanceCriteria": ["data-theme=dark recolours the page"],
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
+    "dependencies": [],
+    "rationale": "Foundational token layer."
+  }
+]
+EOF
+rcS2=0
+( cd "$repoS2" && LCARS_GH_BIN="$repoS2/gh" bash "$SCRIPT" plan-save \
+    --mission "$MID" --plan "$repoS2/good.json" >outS2.txt 2>&1 ) || rcS2=$?
+check "S31.2 a ticket with all three estimates passes (exit 0)" "[ '$rcS2' -eq 0 ]"
+check "S31.2 advances to plan-review on a well-shaped plan" \
+  "grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repoS2")'"
+
+# --- S31.3: comprehensionBudget is read from config; default 1200 when absent
+# The budget is a PLANNING TARGET injected into the Plan worker's prompt. When
+# config.json carries no comprehensionBudget, the driver applies 1200; when it
+# carries one, that value is used. Asserted at the prompt surface (the stub
+# records the assembled prompt).
+repoS3="$(new_repo_with_plan_mission)"; arm_worker "$repoS3"
+# Bare config (no comprehensionBudget) — default must apply.
+( cd "$repoS3" && LCARS_WORKER_BIN="$repoS3/worker" LCARS_GH_BIN="$repoS3/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >outS3.txt 2>&1 )
+PS3="$(prompt_for_role "$WORKER_CALLS" plan)"
+check "S31.3 default comprehensionBudget (1200) reaches the plan prompt" \
+  "printf '%s' \"\$PS3\" | grep -q '1200'"
+
+repoS3b="$(new_repo_with_plan_mission)"; arm_worker "$repoS3b"
+cat >"$repoS3b/.git/lcars/config.json" <<'EOF'
+{
+  "model": "claude-sonnet",
+  "projectName": "demo",
+  "contextFile": null,
+  "testCommand": null,
+  "comprehensionBudget": 800,
+  "created": "2026-05-30T10:00:00Z"
+}
+EOF
+( cd "$repoS3b" && LCARS_WORKER_BIN="$repoS3b/worker" LCARS_GH_BIN="$repoS3b/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >outS3b.txt 2>&1 )
+PS3b="$(prompt_for_role "$WORKER_CALLS" plan)"
+check "S31.3 a configured comprehensionBudget overrides the default" \
+  "printf '%s' \"\$PS3b\" | grep -q '800'"
+# The injected budget line carries the configured value, not the default.
+check "S31.3 the configured budget is the injected target (not 1200)" \
+  "printf '%s' \"\$PS3b\" | grep -q 'comprehensionBudget = 800'"
+
+# --- S31.4: the validator does NOT hard-reject an over-budget ticket --------
+# DESIGN NOTE / no-deadlock guard: a ticket whose read+test+new vastly exceeds
+# the budget (a large existing file forces estimatedReadLoc alone over budget)
+# must still PASS shape validation. The validator's job is SHAPE, not SIZE — the
+# size judgement is the prompt's + Plan Review's, never a deterministic reject.
+repoS4="$(new_repo_with_plan_mission)"; make_gh_stub "$repoS4/gh"
+export GH_LOG="$repoS4/gh.log"; : >"$GH_LOG"
+cat >"$repoS4/heavy.json" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Refactor the giant legacy controller",
+    "description": "A cohesive change inside one very large existing file.",
+    "acceptanceCriteria": ["The legacy route still responds, now themed"],
+    "estimatedReadLoc": 5000,
+    "estimatedTestLoc": 200,
+    "estimatedNewLoc": 60,
+    "dependencies": [],
+    "rationale": "The read load is unavoidable: the file is just big. One behavior, not a bundle."
+  }
+]
+EOF
+rcS4=0
+( cd "$repoS4" && LCARS_GH_BIN="$repoS4/gh" bash "$SCRIPT" plan-save \
+    --mission "$MID" --plan "$repoS4/heavy.json" >outS4.txt 2>&1 ) || rcS4=$?
+check "S31.4 an over-budget (read-heavy) ticket is NOT hard-rejected (exit 0)" \
+  "[ '$rcS4' -eq 0 ]"
+check "S31.4 the over-budget ticket advances (no deterministic size deadlock)" \
+  "grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repoS4")'"
+
+# --- S31.5: Schedule (parse_plan_table → waves) is unaffected by the rename --
+# The renamed estimate fields are never read by the scheduler; a plan carrying
+# them still groups into the same waves.
+repoS5="$(new_repo_with_schedule_mission)"; make_gh_stub "$repoS5/gh"
+export GH_LOG="$repoS5/gh.log"; : >"$GH_LOG"
+rcS5=0
+( cd "$repoS5" && LCARS_GH_BIN="$repoS5/gh" bash "$SCRIPT" schedule --mission "$MID" \
+    >outS5.txt 2>&1 ) || rcS5=$?
+check "S31.5 schedule exits 0 with the new-field plan" "[ '$rcS5' -eq 0 ]"
+check "S31.5 schedule wrote waves.json (rename did not break the parser)" \
+  "[ -f '$repoS5/.git/lcars/missions/$MID/waves.json' ]"
+check "S31.5 schedule advanced to implement" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoS5")'"
+
+# ==========================================================================
+echo
+echo "lcars run — behavioral-coupling Plan Review criterion (Session 32)"
+
+# Session 32 adds COUPLING as a first-class Plan Review reject reason. The
+# reviewer already sees the WHOLE plan.json (tickets + acceptanceCriteria +
+# dependencies) and is independent of the spec — the right place to catch two
+# tickets that touch the SAME behavior from both sides before Schedule/Implement.
+# Coupling is the REAL meaning of "too big": a tiny, under-budget ticket can
+# still be dangerously coupled, so size alone never catches it. Nothing about the
+# verdict shape, parsing, loop-back, or 3-round escalation changes — coupling is
+# an ADDED criterion that flows through the SAME failing-verdict path.
+#
+#   S32.1  the prompt now lists a coupling criterion + frames it as real "too big"
+#   S32.2  the original four criteria are RETAINED (coupling is additive)
+#   S32.3  a coupling objection flows review-save → loops back to plan
+#   S32.4  the specific coupling objection text reaches the planner (not flattened)
+
+PRTPL="$REPO_ROOT/skills/lcars-run/stages/plan-review.md"
+
+# --- S32.1: coupling is a criterion, framed as the real meaning of "too big" -
+check "S32.1 plan-review prompt mentions coupling (case-insensitive)" \
+  "grep -qi 'coupl' '$PRTPL'"
+check "S32.1 frames coupling as the real 'too big' (size alone misses it)" \
+  "grep -qi 'too big' '$PRTPL'"
+check "S32.1 notes a small / under-budget ticket can still be coupled" \
+  "grep -Eqi 'under.?budget|small|<.?100|under the budget' '$PRTPL'"
+check "S32.1 gives a concrete two-ticket coupling example (same behavior)" \
+  "grep -qi 'behavior' '$PRTPL' && grep -Eqi 'same|both sides|seam' '$PRTPL'"
+check "S32.1 the verdict example demonstrates a coupling objection" \
+  "grep -i 'objection' '$PRTPL' | grep -qi 'coupl'"
+
+# --- S32.2: the existing four criteria are retained (regression guard) -------
+check "S32.2 retains the Vertical slice criterion" \
+  "grep -qi 'Vertical slice' '$PRTPL'"
+check "S32.2 retains the Size / comprehension-load criterion" \
+  "grep -qi 'comprehension' '$PRTPL'"
+check "S32.2 retains the Testability criterion" \
+  "grep -qi 'Testability' '$PRTPL'"
+check "S32.2 retains the Dependencies criterion" \
+  "grep -qi 'Dependencies' '$PRTPL'"
+check "S32.2 no longer hard-codes a stale 'four criteria' count" \
+  "! grep -qi 'four criteria' '$PRTPL'"
+
+# A coupling verdict: one failing issue naming the offending ticket AND the
+# behavioral seam to split on. Canonical one-issue-per-line {ticketId,objection}
+# shape — proves coupling is a valid first-class failing verdict.
+write_verdict_coupling() { # file
+  cat >"$1" <<'EOF'
+{
+  "passed": false,
+  "issues": [
+    { "ticketId": "t-002", "objection": "Coupled to t-001: satisfying t-002 requires changing the data-theme write path that t-001's tests already pin. Re-slice along the persistence seam so t-002 owns only the storage contract." }
+  ]
+}
+EOF
+}
+
+# --- S32.3: a coupling objection loops back to plan via review-save ----------
+repoC="$(new_repo_with_plan_review_mission)"; make_gh_stub "$repoC/gh"
+export GH_LOG="$repoC/gh.log"; : >"$GH_LOG"
+vC="$repoC/verdict.json"; write_verdict_coupling "$vC"
+rcC=0
+( cd "$repoC" && LCARS_GH_BIN="$repoC/gh" bash "$SCRIPT" review-save \
+    --mission "$MID" --verdict "$vC" >outC.txt 2>&1 ) || rcC=$?
+sC="$(state_of "$repoC")"
+LOGC="$repoC/.git/lcars/missions/$MID/plan-review-1.json"
+check "S32.3 review-save exits 0 on a coupling-objection verdict" "[ '$rcC' -eq 0 ]"
+check "S32.3 logs the round to plan-review-1.json" "[ -f '$LOGC' ]"
+check "S32.3 increments planReviewRound to 1" \
+  "grep -q '\"planReviewRound\": *1' '$sC'"
+check "S32.3 loops the stage back to plan" \
+  "grep -q '\"stage\": *\"plan\"' '$sC'"
+check "S32.3 adds lcars:plan" \
+  "grep -q 'add-label lcars:plan ' '$repoC/gh.log' || grep -q 'add-label lcars:plan$' '$repoC/gh.log'"
+check "S32.3 removes lcars:plan-review" \
+  "grep -q 'remove-label lcars:plan-review' '$repoC/gh.log'"
+check "S32.3 does not escalate on the first coupling failure" \
+  "! grep -q '\"awaitingHuman\": *true' '$sC'"
+
+# --- S32.4: the specific coupling objection (the seam) reaches the planner ---
+check "S32.4 carries the coupling objection text through to the log" \
+  "grep -qi 'Coupled to t-001' '$LOGC'"
+check "S32.4 preserves the re-slice seam detail (not flattened)" \
+  "grep -qi 'persistence seam' '$LOGC'"
 
 # ==========================================================================
 echo
