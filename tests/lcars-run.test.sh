@@ -2500,6 +2500,240 @@ check "EV6. the notify hook STILL fires exactly once at the gate (regression)" \
   "[ \"\$(grep -c . '$repoEV6/notify.log')\" = '1' ]"
 
 # ==========================================================================
+echo "lcars run — Session 26: fine-grained Implement + wave events"
+# Session 26 instruments the Implement stage with MACHINE-READABLE events:
+#   wave_start    {wave,ticketCount,totalWaves}   — once per wave, ascending
+#   ticket_start  {ticket,wave}                   — at implement-ticket entry
+#   ticket_attempt{ticket,phase,attempt}          — per worker re-dispatch
+#   ticket_flagged{ticket,attempts}               — a ticket that exhausts attempts
+#   ticket_green  {ticket,attempts}               — AFTER the guardrails + commit
+# The sink (emit_event) is extended with a structured "data":{...} payload, but
+# stays byte-identical to Session 25 when no data pairs are passed.
+
+# A helper like all_lines_wellformed but tolerant of an optional "data" object.
+all_lines_wellformed_data() { # file
+  local f="$1" bad=0 ln
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    case "$ln" in
+      '{'*'}') : ;;
+      *) bad=1 ;;
+    esac
+    printf '%s' "$ln" | grep -q '"ts":' || bad=1
+    printf '%s' "$ln" | grep -q '"mission":' || bad=1
+    printf '%s' "$ln" | grep -q '"stage":' || bad=1
+    printf '%s' "$ln" | grep -q '"type":' || bad=1
+    printf '%s' "$ln" | grep -q '"detail":' || bad=1
+  done <"$f"
+  [ "$bad" -eq 0 ]
+}
+
+# --- S26-1: a two-wave plan emits wave_start per wave, ascending, once each ---
+# Drive the whole Implement stage with the worker stub; the green-on-everything
+# stub finishes every ticket, so cmd_implement walks wave 1 then wave 2.
+repoS1="$(new_repo_with_implement_mission)"; arm_worker "$repoS1"
+evS1="$repoS1/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS1" && LCARS_NOW=1700001000 LCARS_WORKER_BIN="$repoS1/worker" LCARS_GH_BIN="$repoS1/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >outS1.txt 2>&1 ) || true
+check "S26-1. a wave_start event is emitted" \
+  "grep -q '\"type\":\"wave_start\"' '$evS1'"
+check "S26-1. wave_start fires for wave 1 AND wave 2" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":1' && grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":2'"
+check "S26-1. exactly ONE wave_start per wave (no dup from the re-running loop)" \
+  "[ \"\$(grep -c '\"type\":\"wave_start\"' '$evS1')\" = '2' ]"
+check "S26-1. wave_start carries ticketCount=2 (each wave has two tickets)" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"ticketCount\":2'"
+check "S26-1. wave_start carries totalWaves=2" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"totalWaves\":2'"
+check "S26-1. wave 1's wave_start precedes wave 2's (ascending order)" \
+  "[ \"\$(grep -n '\"type\":\"wave_start\".*\"wave\":1' '$evS1' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n '\"type\":\"wave_start\".*\"wave\":2' '$evS1' | head -1 | cut -d: -f1)\" ]"
+check "S26-1. the numeric data fields are UNQUOTED (machine-readable)" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":[0-9]' && ! grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":\"'"
+check "S26-1. every emitted Implement line is well-formed (with the data object)" \
+  "all_lines_wellformed_data '$evS1'"
+
+# --- S26-2: a ticket emits ticket_start → ticket_attempt(s) → ticket_green ----
+repoS2="$(new_repo_with_implement_mission)"; arm_worker "$repoS2"
+evS2="$repoS2/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS2" && LCARS_NOW=1700002000 LCARS_WORKER_BIN="$repoS2/worker" LCARS_GH_BIN="$repoS2/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >outS2.txt 2>&1 ) || true
+check "S26-2. ticket_start is emitted with the ticket id" \
+  "grep '\"type\":\"ticket_start\"' '$evS2' | grep -q '\"ticket\":\"t-001\"'"
+check "S26-2. ticket_start carries the ticket's wave (t-001 is wave 1)" \
+  "grep '\"type\":\"ticket_start\"' '$evS2' | grep -q '\"wave\":1'"
+check "S26-2. a test-writer ticket_attempt is emitted" \
+  "grep '\"type\":\"ticket_attempt\"' '$evS2' | grep -q '\"phase\":\"test-writer\"'"
+check "S26-2. an implementer ticket_attempt is emitted" \
+  "grep '\"type\":\"ticket_attempt\"' '$evS2' | grep -q '\"phase\":\"implementer\"'"
+check "S26-2. ticket_attempt carries a numeric attempt index" \
+  "grep '\"type\":\"ticket_attempt\"' '$evS2' | grep -q '\"attempt\":1'"
+check "S26-2. ticket_green is emitted" \
+  "grep '\"type\":\"ticket_green\"' '$evS2' | grep -q '\"ticket\":\"t-001\"'"
+# Relative ORDER: start < first attempt < green.
+posS2_start="$(grep -n '"type":"ticket_start"' "$evS2" | head -1 | cut -d: -f1)"
+posS2_att="$(grep -n '"type":"ticket_attempt"' "$evS2" | head -1 | cut -d: -f1)"
+posS2_green="$(grep -n '"type":"ticket_green"' "$evS2" | head -1 | cut -d: -f1)"
+check "S26-2. order: ticket_start precedes ticket_attempt precedes ticket_green" \
+  "[ -n \"$posS2_start\" ] && [ \"$posS2_start\" -lt \"$posS2_att\" ] && [ \"$posS2_att\" -lt \"$posS2_green\" ]"
+
+# --- S26-3: an exhausted ticket emits ticket_flagged, NOT ticket_green --------
+# Drive impl-save-result directly with a failing result (the flag branch).
+repoS3="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS3/gh"
+export GH_LOG="$repoS3/gh.log"; : >"$GH_LOG"
+twS3="$repoS3/tw"; mkdir -p "$twS3"; printf 'assert: a failing test\n' >"$twS3/t.test.js"
+( cd "$repoS3" && LCARS_GH_BIN="$repoS3/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twS3" >/dev/null 2>&1 )
+resS3="$repoS3/result.json"; write_result "$resS3" t-001 false 5
+evS3="$repoS3/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS3" && LCARS_NOW=1700003000 LCARS_GH_BIN="$repoS3/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resS3" >outS3.txt 2>&1 ) || true
+check "S26-3. a flagged ticket emits ticket_flagged with its attempts" \
+  "grep '\"type\":\"ticket_flagged\"' '$evS3' | grep -q '\"ticket\":\"t-001\"' && grep '\"type\":\"ticket_flagged\"' '$evS3' | grep -q '\"attempts\":5'"
+check "S26-3. a flagged ticket emits NO ticket_green" \
+  "! grep -q '\"type\":\"ticket_green\"' '$evS3'"
+
+# --- S26-4: ticket_green is emitted ONLY after the guardrails pass -------------
+# Drive a guardrail rejection: a result that claims 6 attempts (over the cap) is
+# die'd by impl-save-result BEFORE reaching the green emit. No ticket_green.
+repoS4="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS4/gh"
+export GH_LOG="$repoS4/gh.log"; : >"$GH_LOG"
+twS4="$repoS4/tw"; mkdir -p "$twS4"; printf 'assert: a failing test\n' >"$twS4/t.test.js"
+( cd "$repoS4" && LCARS_GH_BIN="$repoS4/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twS4" >/dev/null 2>&1 )
+resS4="$repoS4/result.json"; write_result "$resS4" t-001 true 6   # over the 5-cap → rejected
+evS4="$repoS4/.git/lcars/missions/$MID/events.jsonl"
+rcS4=0
+( cd "$repoS4" && LCARS_NOW=1700004000 LCARS_GH_BIN="$repoS4/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resS4" >outS4.txt 2>&1 ) || rcS4=$?
+check "S26-4. a guardrail-rejected save exits non-zero" "[ '$rcS4' -ne 0 ]"
+check "S26-4. a guardrail-rejected save emits NO ticket_green" \
+  "[ ! -f '$evS4' ] || ! grep -q '\"type\":\"ticket_green\"' '$evS4'"
+
+# Second guardrail: an immutable-tests violation (the locked tests were edited).
+repoS4b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS4b/gh"
+export GH_LOG="$repoS4b/gh.log"; : >"$GH_LOG"
+twS4b="$repoS4b/tw"; mkdir -p "$twS4b"; printf 'assert: a failing test\n' >"$twS4b/t.test.js"
+( cd "$repoS4b" && LCARS_GH_BIN="$repoS4b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twS4b" >/dev/null 2>&1 )
+# Tamper with the quarantined test AFTER the snapshot → tests_unchanged fails.
+printf 'assert: TAMPERED\n' >"$repoS4b/.git/lcars/missions/$MID/tickets/t-001/tests/t.test.js"
+resS4b="$repoS4b/result.json"; write_result "$resS4b" t-001 true 2
+evS4b="$repoS4b/.git/lcars/missions/$MID/events.jsonl"
+rcS4b=0
+( cd "$repoS4b" && LCARS_NOW=1700004500 LCARS_GH_BIN="$repoS4b/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resS4b" >outS4b.txt 2>&1 ) || rcS4b=$?
+check "S26-4. an immutable-tests violation is rejected (non-zero)" "[ '$rcS4b' -ne 0 ]"
+check "S26-4. an immutable-tests violation emits NO ticket_green" \
+  "[ ! -f '$evS4b' ] || ! grep -q '\"type\":\"ticket_green\"' '$evS4b'"
+
+# --- S26-5: events carry the wave/ticket ids to reconstruct "k of n" ----------
+# Reuse S26-1's two-wave drive: assert the fields a downstream renderer parses.
+check "S26-5. wave_start data carries wave + ticketCount + totalWaves" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"data\":{' && grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"wave\":' && grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"ticketCount\":' && grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"totalWaves\":'"
+check "S26-5. ticket_green data carries the ticket id (string) and attempts (number)" \
+  "grep '\"type\":\"ticket_green\"' '$evS2' | grep -q '\"ticket\":\"t-001\"' && grep '\"type\":\"ticket_green\"' '$evS2' | grep -q '\"attempts\":[0-9]'"
+
+# --- S26-6 (regression): the no-data line is byte-identical to Session 25 ------
+# emit-event with NO data pairs must produce a line with no "data" key at all.
+repoS6="$(new_repo_with_mission)"; make_gh_stub "$repoS6/gh"
+evS6="$repoS6/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS6" && LCARS_NOW=1700006000 LCARS_GH_BIN="$repoS6/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type stage_start --stage research --detail "starting" >/dev/null 2>&1 )
+expectedS6='{"ts":1700006000,"mission":"'"$MID"'","stage":"research","type":"stage_start","detail":"starting"}'
+check "S26-6. a no-data event line has NO data key (byte-identical to Session 25)" \
+  "[ \"\$(cat '$evS6')\" = '$expectedS6' ]"
+check "S26-6. a no-data line carries no data object at all" \
+  "! grep -q '\"data\"' '$evS6'"
+# And a data-bearing line is a single well-formed JSON line.
+check "S26-6. a data-bearing event line is single + well-formed" \
+  "all_lines_wellformed_data '$evS1' && [ \"\$(grep -c . '$evS1')\" -ge 2 ]"
+
+# --- S26-7 (regression): the Implement stage is RE-INVOKED on real runs --------
+# A real Mission re-enters cmd_implement / implement-ticket (manual `lcars run`
+# retries; the `lcars respond` → `lcars run` resume after a flagged ticket). The
+# Session-26 dedup/indexing must come from the durable events.jsonl, NOT a
+# process-local — else wave_start / ticket_start re-emit and ticket_attempt
+# restarts at 1 on every fresh process. These tests drive the SAME not-yet-green
+# state twice and assert against events.jsonl.
+
+# A worker stub whose implement-test-writer produces NO usable tests, so
+# implement-ticket dies inside Phase 1 after MAX_WORKER_TRIES — emitting
+# ticket_start + ticket_attempt(test-writer) 1..3 but never reaching green. The
+# Defect-3 die path (Test-Writer exhaustion) is PRE-EXISTING and untouched; we
+# only ride it to force a re-invocation cheaply.
+make_worker_stub_no_tests() { # path
+  make_worker_stub "$1"
+  # Neuter the implement-test-writer branch in place: it currently writes a stub
+  # test file; make it produce NOTHING usable so Phase 1 exhausts MAX_WORKER_TRIES.
+  # (Appending after the stub's trailing `exit 0` would be dead code, so edit the
+  # branch body directly.)
+  sed -i.bak '/tests\/stub.test.js/d' "$1"   # drop the only test file it wrote
+  rm -f "$1.bak"
+}
+
+# S26-7: re-invoke implement-ticket on the same still-red state. Across two
+# dying invocations there must be EXACTLY ONE ticket_start, and the
+# ticket_attempt indices for (t-001, test-writer) must continue 1,2,3 then
+# 4,5,6 — strictly monotonic and unique, never a repeated index.
+repoS7="$(new_repo_with_implement_mission)"
+make_worker_stub_no_tests "$repoS7/worker"; make_gh_stub "$repoS7/gh"
+export GH_LOG="$repoS7/gh.log"; : >"$GH_LOG"
+export WORKER_LOG="$repoS7/worker.log"; : >"$WORKER_LOG"
+export WORKER_CALLS="$repoS7/calls"; rm -rf "$WORKER_CALLS"; mkdir -p "$WORKER_CALLS"
+evS7="$repoS7/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS7" && LCARS_NOW=1700007000 LCARS_WORKER_BIN="$repoS7/worker" LCARS_GH_BIN="$repoS7/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >outS7a.txt 2>&1 ) || true
+export WORKER_LOG="$repoS7/worker.log"
+export WORKER_CALLS="$repoS7/calls"
+( cd "$repoS7" && LCARS_NOW=1700007100 LCARS_WORKER_BIN="$repoS7/worker" LCARS_GH_BIN="$repoS7/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >outS7b.txt 2>&1 ) || true
+check "S26-7. re-invoked implement-ticket emits EXACTLY ONE ticket_start for t-001" \
+  "[ \"\$(grep '\"type\":\"ticket_start\"' '$evS7' | grep -c '\"ticket\":\"t-001\"')\" = '1' ]"
+check "S26-7. test-writer ticket_attempt indices continue 1..6 across invocations (6 lines)" \
+  "[ \"\$(grep '\"type\":\"ticket_attempt\"' '$evS7' | grep '\"phase\":\"test-writer\"' | grep -c '\"ticket\":\"t-001\"')\" = '6' ]"
+check "S26-7. those attempt indices are unique (1,2,3,4,5,6 — no repeat)" \
+  "[ \"\$(grep '\"type\":\"ticket_attempt\"' '$evS7' | grep '\"phase\":\"test-writer\"' | sed -n 's/.*\"attempt\":\\([0-9]*\\).*/\\1/p' | sort -n | uniq | tr '\\n' ' ')\" = '1 2 3 4 5 6 ' ]"
+check "S26-7. attempt indices are strictly monotonic (sorted == as-emitted)" \
+  "[ \"\$(grep '\"type\":\"ticket_attempt\"' '$evS7' | grep '\"phase\":\"test-writer\"' | sed -n 's/.*\"attempt\":\\([0-9]*\\).*/\\1/p' | tr '\\n' ' ')\" = '1 2 3 4 5 6 ' ]"
+
+# S26-8: re-invoke cmd_implement (the whole stage) on a STILL-ACTIVE wave. The
+# green-on-everything stub finishes nothing if we make wave 1's first ticket
+# die, but to assert wave_start dedup we let the stage make progress then re-run.
+# Simplest faithful drive: a green stub, run the stage to completion (one
+# wave_start per wave), then re-invoke — the still-finished waves must NOT
+# re-emit wave_start, and re-running while wave 1 is active must not double it.
+repoS8="$(new_repo_with_implement_mission)"; arm_worker "$repoS8"
+evS8="$repoS8/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS8" && LCARS_NOW=1700008000 LCARS_WORKER_BIN="$repoS8/worker" LCARS_GH_BIN="$repoS8/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >outS8a.txt 2>&1 ) || true
+# Re-invoke the whole stage on the now-complete mission (idempotent advance path).
+( cd "$repoS8" && LCARS_NOW=1700008100 LCARS_WORKER_BIN="$repoS8/worker" LCARS_GH_BIN="$repoS8/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >outS8b.txt 2>&1 ) || true
+check "S26-8. across two cmd_implement invocations, exactly ONE wave_start per wave (2 total)" \
+  "[ \"\$(grep -c '\"type\":\"wave_start\"' '$evS8')\" = '2' ]"
+check "S26-8. exactly ONE ticket_start per ticket across re-invocations (4 total)" \
+  "[ \"\$(grep -c '\"type\":\"ticket_start\"' '$evS8')\" = '4' ]"
+check "S26-8. wave:1 dedup respects integer boundaries (one wave_start each for 1 and 2)" \
+  "[ \"\$(grep '\"type\":\"wave_start\"' '$evS8' | grep -c '\"wave\":1[,}]')\" = '1' ] && [ \"\$(grep '\"type\":\"wave_start\"' '$evS8' | grep -c '\"wave\":2[,}]')\" = '1' ]"
+
+# S26-9: the happy single-invocation green path still emits, in order, one
+# wave_start, one ticket_start, the attempt line(s), then ticket_green — the
+# exactly-once-within-one-call invariant the originals pinned still holds.
+repoS9="$(new_repo_with_implement_mission)"; arm_worker "$repoS9"
+evS9="$repoS9/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS9" && LCARS_NOW=1700009000 LCARS_WORKER_BIN="$repoS9/worker" LCARS_GH_BIN="$repoS9/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >outS9.txt 2>&1 ) || true
+check "S26-9. single invocation emits exactly one ticket_start for t-001" \
+  "[ \"\$(grep '\"type\":\"ticket_start\"' '$evS9' | grep -c '\"ticket\":\"t-001\"')\" = '1' ]"
+posS9_start="$(grep -n '"type":"ticket_start"' "$evS9" | head -1 | cut -d: -f1)"
+posS9_att="$(grep -n '"type":"ticket_attempt"' "$evS9" | head -1 | cut -d: -f1)"
+posS9_green="$(grep -n '"type":"ticket_green"' "$evS9" | head -1 | cut -d: -f1)"
+check "S26-9. order still holds: ticket_start < ticket_attempt < ticket_green" \
+  "[ -n \"$posS9_start\" ] && [ \"$posS9_start\" -lt \"$posS9_att\" ] && [ \"$posS9_att\" -lt \"$posS9_green\" ]"
+check "S26-9. first attempt index within a fresh ticket is 1" \
+  "grep '\"type\":\"ticket_attempt\"' '$evS9' | grep '\"phase\":\"test-writer\"' | grep -q '\"attempt\":1'"
+
+# ==========================================================================
 echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

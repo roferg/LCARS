@@ -106,8 +106,18 @@ json_escape() { # string → backslash/quote-escaped (printed)
 # in APPEND mode, so concurrent appends from nested stage subprocesses stay
 # atomic. NO-OP-SAFE: with no located mission ($MISSION_DIR unset/empty) it does
 # nothing and returns 0. The timestamp is overridable via $LCARS_NOW so tests
-# are deterministic. The "data" object is reserved for later sessions (26/27).
-emit_event() { # type stage detail
+# are deterministic.
+#
+#   emit_event <type> <stage> <detail> [key=value ...]
+#
+# The trailing key=value pairs (Session 26+) become a MACHINE-READABLE
+# "data":{...} object appended to the line in the order given (fixed key order),
+# jq-free. A value matching ^[0-9]+$ is rendered as an UNQUOTED number (e.g.
+# "wave":2); anything else is JSON-escaped and quoted (e.g. "phase":"test-writer")
+# — so Session 27 can parse "Wave x/y" / "k of n" / avg-per-ticket without jq.
+# CRITICAL REGRESSION: with NO data pairs the line is BYTE-IDENTICAL to Session
+# 25 — no "data" key at all (the EV1–EV6 tests pin this).
+emit_event() { # type stage detail [key=value ...]
   [ -n "${MISSION_DIR:-}" ] || return 0
   local ts type stage detail mid
   ts="${LCARS_NOW:-$(date +%s)}"
@@ -115,8 +125,53 @@ emit_event() { # type stage detail
   stage="$(json_escape "${2:-}")"
   detail="$(json_escape "${3:-}")"
   mid="$(json_escape "${MISSION_ID:-}")"
-  printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"}\n' \
-    "$ts" "$mid" "$stage" "$type" "$detail" >>"$MISSION_DIR/events.jsonl"
+  shift 3 2>/dev/null || shift $#   # the rest are key=value data pairs (may be none)
+
+  # Build the optional "data":{...} suffix from the trailing pairs. No pairs →
+  # empty string → the printf emits the Session-25 line unchanged.
+  local data="" sep="" pair k v
+  for pair in "$@"; do
+    k="${pair%%=*}"; v="${pair#*=}"
+    if [[ "$v" =~ ^[0-9]+$ ]]; then
+      data="$data$sep\"$(json_escape "$k")\":$v"          # unquoted number
+    else
+      data="$data$sep\"$(json_escape "$k")\":\"$(json_escape "$v")\""   # quoted string
+    fi
+    sep=","
+  done
+  [ -n "$data" ] && data=",\"data\":{$data}"
+
+  printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"%s}\n' \
+    "$ts" "$mid" "$stage" "$type" "$detail" "$data" >>"$MISSION_DIR/events.jsonl"
+}
+# --- durable dedup/indexing helpers (derive from events.jsonl, not a local) --
+# The Implement stage is RE-INVOKED on real runs (a manual `lcars run` retry, or
+# the `lcars respond` → `lcars run` resume after a flagged ticket). A fresh
+# process restarts any in-process guard, so wave_start / ticket_start would
+# re-emit and ticket_attempt would restart at 1. events.jsonl is the durable
+# per-Mission log, so dedup + indexing must read IT — never a process-local.
+#
+# event_seen <type> <data-fragment-regex> → 0 if events.jsonl already holds a
+# line of that type whose body matches the (extended-regex) fragment. No-op-safe
+# when the file doesn't exist yet (returns 1 = not seen). jq-free, same style as
+# the rest of run.sh. Tickets in a wave run SEQUENTIALLY, so reading the log just
+# before each emit is race-free.
+event_seen() { # type data-fragment-regex
+  [ -n "${MISSION_DIR:-}" ] || return 1
+  local f="$MISSION_DIR/events.jsonl"
+  [ -f "$f" ] || return 1
+  grep -E "\"type\":\"$1\"" "$f" 2>/dev/null | grep -Eq "$2"
+}
+# event_count <type> <data-fragment-regex> → how many lines of that type match the
+# fragment. 0 (and success) when the file is absent. Used to NUMBER ticket_attempt
+# cumulatively across invocations: the next index is 1 + this count.
+event_count() { # type data-fragment-regex
+  if [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/events.jsonl" ]; then
+    grep -E "\"type\":\"$1\"" "$MISSION_DIR/events.jsonl" 2>/dev/null \
+      | grep -Ec "$2"
+  else
+    echo 0
+  fi
 }
 state_del() { # key   — drop the field's line if present (no-op otherwise)
   local tmp; tmp="$(mktemp)"
@@ -1059,6 +1114,9 @@ cmd_impl_save_result() {
     gh_relabel "lcars:awaiting-human" ""
     rm -f "$q"
 
+    emit_event ticket_flagged implement "ticket $TICKET flagged after $attempts attempt(s)" \
+      "ticket=$TICKET" "attempts=$attempts"
+
     echo "IMPLEMENT: ticket flagged — $TICKET"
     echo "  $TICKET still fails after $attempts attempt(s) (the $MAX_ATTEMPTS-attempt cap)."
     echo "  Saved result.json and flagged the human. Stage: implement (awaiting-human)."
@@ -1070,6 +1128,13 @@ cmd_impl_save_result() {
   # Ticket is green — commit its produced files to the mission branch so the
   # eventual PR has content (the working tree is otherwise left uncommitted).
   commit_ticket "$TICKET" "$(json_str "$RESULT" summary)"
+
+  # ticket_green is emitted ONLY HERE — AFTER the immutable-tests check, the
+  # shape/attempts validation (both `die` earlier on rejection) AND commit_ticket.
+  # A guardrail-rejected save has already exited non-zero above, so it can never
+  # reach this line: a rejected ticket never emits green.
+  emit_event ticket_green implement "ticket $TICKET green in $attempts attempt(s)" \
+    "ticket=$TICKET" "attempts=$attempts"
 
   echo "IMPLEMENT: result saved — $TICKET"
   echo "  $TICKET passed in $attempts attempt(s). Saved result.json."
@@ -1548,10 +1613,29 @@ cmd_implement_ticket() {
   mkdir -p "$(ticket_dir "$TICKET")"
   snapshot_untracked "$(ticket_dir "$TICKET")/.untracked-before"
 
+  # ticket_start — look up this ticket's wave in waves.json (jq-free). IDEMPOTENT:
+  # implement-ticket is re-invoked on the same ticket (manual retry, or the
+  # respond→run resume of a flagged ticket), so emit at most once EVER per
+  # (mission, ticket) by checking events.jsonl first.
+  local tw; tw="$(parse_waves_table "$MISSION_DIR/waves.json" 2>/dev/null | awk -F'\t' -v t="$TICKET" '$2==t{print $1; exit}')"
+  event_seen ticket_start "\"ticket\":\"$TICKET\"" \
+    || emit_event ticket_start implement "ticket $TICKET starting" "ticket=$TICKET" "wave=${tw:-0}"
+
+  # NOTE: `attempt` in the ticket_attempt events below is the CUMULATIVE
+  # worker-DISPATCH count for this (ticket, phase) ACROSS invocations — one index
+  # per real spawn_worker dispatch, derived from events.jsonl so it never repeats
+  # or restarts when a fresh process re-enters. DISTINCT from the Implementer's
+  # own internal 1–5 attempts that land in result.json.attempts.attempts.
   # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
   local tries=0 saved=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
+    # attempt = 1 + (existing ticket_attempt lines for THIS ticket+phase). Within
+    # one invocation this is 1,2,3; a re-invocation continues 4,5,6 — one unique
+    # index per real spawn_worker dispatch below, never a repeat.
+    local awtry; awtry=$(( $(event_count ticket_attempt "\"ticket\":\"$TICKET\".*\"phase\":\"test-writer\"") + 1 ))
+    emit_event ticket_attempt implement "test-writer try $awtry for $TICKET" \
+      "ticket=$TICKET" "phase=test-writer" "attempt=$awtry"
     local odir; odir="$(mktemp -d)"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
@@ -1587,6 +1671,10 @@ $TICKET"
   tries=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
+    # Same cumulative-from-the-log numbering as Phase 1, for the implementer phase.
+    local aitry; aitry=$(( $(event_count ticket_attempt "\"ticket\":\"$TICKET\".*\"phase\":\"implementer\"") + 1 ))
+    emit_event ticket_attempt implement "implementer try $aitry for $TICKET" \
+      "ticket=$TICKET" "phase=implementer" "attempt=$aitry"
     local odir; odir="$(mktemp -d)"
     spawn_worker implement-implementer "$STAGES_DIR/implement-implementer.md" repo-write "$odir" "$iextra"
     if [ -f "$odir/result.json" ]; then
@@ -1613,7 +1701,12 @@ cmd_implement() {
   require_stage implement
   require_worker
 
-  local last_status=""
+  # For the wave_start instrumentation: totalWaves (distinct wave count) and a
+  # per-wave ticket count, both derived jq-free from waves.json via parse_waves_table.
+  local waves_file="$MISSION_DIR/waves.json"
+  local total_waves; total_waves="$(parse_waves_table "$waves_file" 2>/dev/null | cut -f1 | sort -un | grep -c .)"
+
+  local last_status="" last_wave=""
   while :; do
     local st rc=0
     st="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-status --mission "$MISSION_ID" 2>&1)" || rc=$?
@@ -1630,6 +1723,21 @@ cmd_implement() {
       *"IMPLEMENT: wave "*) : ;;   # a wave is active — build its pending tickets
       *) printf '%s\n' "$st" >&2; die "unexpected impl-status output — Stage stopped." ;;
     esac
+
+    # Emit wave_start ONCE per wave, in ascending order. impl-status re-runs every
+    # pass, AND cmd_implement itself is re-invoked on real runs (manual retry /
+    # respond→run resume), so the in-process last_wave guard is not enough —
+    # dedup durably against events.jsonl. Match "wave":N at an INTEGER boundary
+    # (followed by , or }) so "wave":1 never matches "wave":10. M = the wave's
+    # FULL ticket count from waves.json (on first sight all its tickets are pending).
+    local cur_wave; cur_wave="$(printf '%s\n' "$st" | sed -n 's/.*IMPLEMENT: wave \([0-9]*\) active.*/\1/p')"
+    if [ -n "$cur_wave" ] && [ "$cur_wave" != "$last_wave" ] \
+       && ! event_seen wave_start "\"wave\":$cur_wave[,}]"; then
+      local wcount; wcount="$(parse_waves_table "$waves_file" 2>/dev/null | awk -F'\t' -v w="$cur_wave" '$1==w{n++} END{print n+0}')"
+      emit_event wave_start implement "wave $cur_wave starting ($wcount ticket(s))" \
+        "wave=$cur_wave" "ticketCount=$wcount" "totalWaves=$total_waves"
+    fi
+    last_wave="$cur_wave"
 
     # No-progress guard: if a full pass leaves impl-status reporting exactly the
     # same wave + pending set, we'd loop forever — stop loudly instead.
