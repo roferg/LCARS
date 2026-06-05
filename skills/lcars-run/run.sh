@@ -88,6 +88,36 @@ json_escape() { # string → backslash/quote-escaped (printed)
   s="${s//\"/\\\"}"   # …then double-quotes
   printf '%s' "$s"
 }
+
+# --- the Mission event log (append-only JSONL) -----------------------------
+# A per-Mission, append-only event stream at $MISSION_DIR/events.jsonl. The
+# HARNESS (this script, around its cold-worker calls) emits one short JSON line
+# per stage transition / gate so a tail or scrollback shows progress AS IT
+# HAPPENS — not just an accumulated summary at halt. It is CLI/host-agnostic:
+# events are emitted by bash here, never by the worker and never parsed from
+# worker stdout.
+#
+#   emit_event <type> <stage> <detail>
+#
+# Line shape (fixed key order, jq-free):
+#   {"ts":<unix>,"mission":"<id>","stage":"<stage>","type":"<type>","detail":"<text>"}
+#
+# Each line is one short single line (well under PIPE_BUF, ~4096 bytes) written
+# in APPEND mode, so concurrent appends from nested stage subprocesses stay
+# atomic. NO-OP-SAFE: with no located mission ($MISSION_DIR unset/empty) it does
+# nothing and returns 0. The timestamp is overridable via $LCARS_NOW so tests
+# are deterministic. The "data" object is reserved for later sessions (26/27).
+emit_event() { # type stage detail
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  local ts type stage detail mid
+  ts="${LCARS_NOW:-$(date +%s)}"
+  type="$(json_escape "${1:-}")"
+  stage="$(json_escape "${2:-}")"
+  detail="$(json_escape "${3:-}")"
+  mid="$(json_escape "${MISSION_ID:-}")"
+  printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"}\n' \
+    "$ts" "$mid" "$stage" "$type" "$detail" >>"$MISSION_DIR/events.jsonl"
+}
 state_del() { # key   — drop the field's line if present (no-op otherwise)
   local tmp; tmp="$(mktemp)"
   grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"
@@ -1741,15 +1771,20 @@ cmd_drive() {
     stage="$(json_str "$STATE" stage)"
     awaiting="$(json_raw "$STATE" awaitingHuman)"
 
-    # Halt conditions, checked BEFORE running anything.
+    # Halt conditions, checked BEFORE running anything. Each emits a `gate` event
+    # to the Mission log (the halt block + notify hook below are unchanged).
     if [ "$awaiting" = "true" ]; then
+      emit_event gate "$stage" "awaiting your answer"
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
     fi
     case "$stage" in
-      verify) drive_print_summary "$summary"; drive_halt_verify; return 0 ;;
-      done)   drive_print_summary "$summary"
+      verify) emit_event gate verify "human review required"
+              drive_print_summary "$summary"; drive_halt_verify; return 0 ;;
+      done)   emit_event gate done "Mission shipped — the PR is open"
+              drive_print_summary "$summary"
               printf '⏹ stopped at: done  (Mission shipped — the PR is open)\n'; return 0 ;;
       align)  if [ -f "$MISSION_DIR/feedback.md" ]; then
+                emit_event gate align "interactive Align re-grill required"
                 drive_print_summary "$summary"; drive_halt_align; return 0
               fi ;;
     esac
@@ -1768,6 +1803,11 @@ cmd_drive() {
          printf '⏹ stopped: Mission is at an unsupported stage "%s".\n' "$stage"; return 1 ;;
     esac
 
+    # Live BEGIN: log + print before the (output-captured) stage subprocess runs,
+    # so a tail/scrollback shows the Stage starting in real time.
+    emit_event stage_start "$action" "starting"
+    printf '%-12s ▶  running…\n' "$action"
+
     local out rc=0
     out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" "$action" --mission "$MISSION_ID" 2>&1)" || rc=$?
 
@@ -1776,14 +1816,26 @@ cmd_drive() {
     new_awaiting="$(json_raw "$STATE" awaitingHuman)"
 
     # Label the line by the Stage that actually ran (a fresh `align` runs Research).
+    # The per-stage line is built ONCE, PRINTED LIVE immediately (so a tail shows
+    # each transition as it happens), AND accumulated into $summary (the final
+    # block at halt prints unchanged). The drive_line format — including the
+    # `⊘ isolated` marker — is byte-identical to before.
+    local line
     if [ "$new_awaiting" = "true" ]; then
+      line="$(drive_line "$action" "$out" paused)"
+      printf '%s\n' "$line"
+      # The `gate` event + notify fire from the halt check at the top of the
+      # next pass — emitting one here too would double-log the gate.
       summary="${summary:+$summary
-}$(drive_line "$action" "$out" paused)"
-      continue   # the halt check at the top of the next pass fires + notifies
+}$line"
+      continue
     fi
     if [ "$new_stage" != "$stage" ]; then
+      line="$(drive_line "$action" "$out" ok)"
+      printf '%s\n' "$line"
+      emit_event stage_done "$action" "$(drive_detail "$action" "$out")"
       summary="${summary:+$summary
-}$(drive_line "$action" "$out" ok)"
+}$line"
       if [ "$mode" = "step" ]; then
         drive_print_summary "$summary"
         if [ "$new_stage" = "verify" ]; then drive_halt_verify
@@ -1796,6 +1848,7 @@ cmd_drive() {
     fi
 
     # Nothing advanced and no gate was raised → a hard Stage error.
+    emit_event error "$stage" "$stage failed"
     drive_print_summary "$summary"
     printf '⏹ stopped: %s failed\n' "$stage"
     printf '%s\n' "$out"
@@ -1807,6 +1860,7 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --step)        STEP=1; shift ;;
@@ -1826,12 +1880,18 @@ while [ $# -gt 0 ]; do
     --tests=*)     TESTS="${1#--tests=}"; shift ;;
     --result)      RESULT="${2:-}"; shift 2 ;;
     --result=*)    RESULT="${1#--result=}"; shift ;;
+    --type)        EV_TYPE="${2:-}"; shift 2 ;;
+    --type=*)      EV_TYPE="${1#--type=}"; shift ;;
+    --stage)       EV_STAGE="${2:-}"; shift 2 ;;
+    --stage=*)     EV_STAGE="${1#--stage=}"; shift ;;
+    --detail)      EV_DETAIL="${2:-}"; shift 2 ;;
+    --detail=*)    EV_DETAIL="${1#--detail=}"; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|plan|plan-review|implement|implement-ticket|drive)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|plan|plan-review|implement|implement-ticket|drive|emit-event)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -1858,5 +1918,7 @@ case "$SUB" in
   implement-ticket) cmd_implement_ticket ;;
   # Auto-advance driver — sequences the per-Stage advances above (token-free).
   drive)            cmd_drive ;;
+  # Test hook: emit one event line to the Mission event log (jq-free helper).
+  emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

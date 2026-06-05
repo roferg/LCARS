@@ -2363,5 +2363,143 @@ check "S32.4 preserves the re-slice seam detail (not flattened)" \
 
 # ==========================================================================
 echo
+echo "lcars run — Mission event log + live driver transitions (session 25)"
+#
+# `lcars run` no longer runs silent: a per-Mission append-only EVENT LOG
+# (events.jsonl) records each stage transition + gate, and the auto-advance
+# driver PRINTS each transition AS IT HAPPENS (not only an accumulated summary
+# at halt). Events are emitted by the HARNESS (bash in run.sh), never by the
+# worker. These tests cover:
+#   EV1. emit_event appends a well-formed single JSON line; N calls → N lines;
+#        a pinned $LCARS_NOW shows up as ts; all required keys present.
+#   EV2. concurrent appends from two subshells produce no corrupted/interleaved
+#        lines (every line is well-formed; total count == calls).
+#   EV3. a multi-stage drive run writes stage_start + stage_done per stage IN ORDER.
+#   EV4. the driver prints each stage line LIVE (before the halt) + the final
+#        summary block is still printed (regression).
+#   EV5. the `⊘ isolated` marker still appears on each stage line.
+#   EV6. a gate halt (awaiting-human) emits a `gate` event AND fires notify once.
+
+# Helper: a tiny grep that every events.jsonl line is individually well-formed.
+all_lines_wellformed() { # file
+  local f="$1" bad=0 ln
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    case "$ln" in
+      '{'*'}') : ;;
+      *) bad=1 ;;
+    esac
+    printf '%s' "$ln" | grep -q '"ts":' || bad=1
+    printf '%s' "$ln" | grep -q '"mission":' || bad=1
+    printf '%s' "$ln" | grep -q '"stage":' || bad=1
+    printf '%s' "$ln" | grep -q '"type":' || bad=1
+    printf '%s' "$ln" | grep -q '"detail":' || bad=1
+  done <"$f"
+  [ "$bad" -eq 0 ]
+}
+
+# --- EV1: emit_event appends a well-formed single JSON line ------------------
+repoEV1="$(new_repo_with_mission)"; make_gh_stub "$repoEV1/gh"
+evlog1="$repoEV1/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoEV1" && LCARS_NOW=1700000001 LCARS_GH_BIN="$repoEV1/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type stage_start --stage research --detail "starting" >/dev/null 2>&1 )
+( cd "$repoEV1" && LCARS_NOW=1700000002 LCARS_GH_BIN="$repoEV1/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type stage_done --stage research --detail "3 agents" >/dev/null 2>&1 )
+( cd "$repoEV1" && LCARS_NOW=1700000003 LCARS_GH_BIN="$repoEV1/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type gate --stage verify --detail "human review" >/dev/null 2>&1 )
+check "EV1. emit_event creates events.jsonl" "[ -f '$evlog1' ]"
+check "EV1. N calls produce N lines" "[ \"\$(grep -c . '$evlog1')\" = '3' ]"
+check "EV1. every line is a well-formed event with all required keys" \
+  "all_lines_wellformed '$evlog1'"
+check "EV1. the pinned LCARS_NOW shows up as ts" \
+  "grep -q '\"ts\":1700000001' '$evlog1'"
+check "EV1. the line carries the mission id" \
+  "grep -q '\"mission\":\"$MID\"' '$evlog1'"
+check "EV1. the type/stage/detail round-trip" \
+  "grep -q '\"type\":\"stage_done\"' '$evlog1' && grep -q '\"stage\":\"research\"' '$evlog1' && grep -q '\"detail\":\"3 agents\"' '$evlog1'"
+# JSON-escaping: a detail with a quote must not corrupt the line.
+( cd "$repoEV1" && LCARS_NOW=1700000004 LCARS_GH_BIN="$repoEV1/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type note --stage plan --detail 'has a "quote" inside' >/dev/null 2>&1 )
+check "EV1. an embedded quote is JSON-escaped (line stays well-formed)" \
+  "all_lines_wellformed '$evlog1' && grep -q 'has a \\\\\"quote\\\\\" inside' '$evlog1'"
+
+# --- EV2: concurrent appends stay atomic (no interleaving) -------------------
+repoEV2="$(new_repo_with_mission)"; make_gh_stub "$repoEV2/gh"
+evlog2="$repoEV2/.git/lcars/missions/$MID/events.jsonl"
+burst() { # tag count
+  local i=0
+  while [ "$i" -lt "$2" ]; do i=$((i+1))
+    ( cd "$repoEV2" && LCARS_NOW="170000$2$i" LCARS_GH_BIN="$repoEV2/gh" \
+        bash "$SCRIPT" emit-event --mission "$MID" --type "burst-$1" --stage plan --detail "n$i" >/dev/null 2>&1 )
+  done
+}
+burst A 20 & burst B 20 & wait
+check "EV2. concurrent bursts produced 40 lines, none lost" \
+  "[ \"\$(grep -c . '$evlog2')\" = '40' ]"
+check "EV2. every concurrently-appended line is individually well-formed" \
+  "all_lines_wellformed '$evlog2'"
+
+# --- EV3: a multi-stage drive run logs stage_start+stage_done IN ORDER -------
+repoEV3="$(new_repo_with_validate_mission)"; arm_drive "$repoEV3"
+evlog3="$repoEV3/.git/lcars/missions/$MID/events.jsonl"
+drive "$repoEV3" drive --mission "$MID" --step || true   # one clean transition: validate → plan
+check "EV3. a stepped drive writes a stage_start for the stage it ran" \
+  "grep -q '\"type\":\"stage_start\".*\"stage\":\"validate\"\\|\"stage\":\"validate\".*\"type\":\"stage_start\"' '$evlog3' || grep -q '\"type\":\"stage_start\"' '$evlog3'"
+check "EV3. a stepped drive writes a stage_done for the stage it ran" \
+  "grep -q '\"type\":\"stage_done\"' '$evlog3'"
+# A full drive: assert order — stage_start precedes its stage_done across stages.
+repoEV3b="$(new_repo_with_mission)"; arm_drive "$repoEV3b"
+evlog3b="$repoEV3b/.git/lcars/missions/$MID/events.jsonl"
+drive "$repoEV3b" drive --mission "$MID" || true
+starts3b="$(grep -c '"type":"stage_start"' "$evlog3b" 2>/dev/null)"
+dones3b="$(grep -c '"type":"stage_done"' "$evlog3b" 2>/dev/null)"
+check "EV3. a full drive logs a stage_start per advanced stage (>=5)" \
+  "[ \"\${starts3b:-0}\" -ge 5 ]"
+check "EV3. a full drive logs a stage_done per advanced stage (>=5)" \
+  "[ \"\${dones3b:-0}\" -ge 5 ]"
+check "EV3. the FIRST event is a stage_start (a BEGIN logs before any DONE)" \
+  "[ \"\$(grep -m1 -o '\"type\":\"[a-z_]*\"' '$evlog3b' | head -1)\" = '\"type\":\"stage_start\"' ]"
+check "EV3. a gate event closes the run at the verify halt" \
+  "grep -q '\"type\":\"gate\".*verify\\|\"stage\":\"verify\".*\"type\":\"gate\"' '$evlog3b'"
+
+# --- EV4: the driver prints each stage line LIVE (before halt) ---------------
+# The live per-stage lines appear in stdout BEFORE the final summary separator;
+# the final summary block is still printed (regression).
+repoEV4="$(new_repo_with_mission)"; arm_drive "$repoEV4"
+drive "$repoEV4" drive --mission "$MID" || true
+out4="$repoEV4/drive.out"
+# The first separator is the header rule; the final summary block prints another.
+# A live stage line must appear before the LAST separator line. (run.sh's $SEP.)
+SEP="─────────────────────────────────────────────"
+last_sep_line="$(grep -n "$SEP" "$out4" | tail -1 | cut -d: -f1)"
+first_stage_line="$(grep -n 'running…\|✓' "$out4" | head -1 | cut -d: -f1)"
+check "EV4. a live stage line is printed before the final summary separator" \
+  "[ -n \"\$first_stage_line\" ] && [ -n \"\$last_sep_line\" ] && [ \"\$first_stage_line\" -lt \"\$last_sep_line\" ]"
+check "EV4. a live BEGIN line is printed (▶ running…) before a stage finishes" \
+  "grep -q 'running…' '$out4'"
+check "EV4. the final summary block is STILL printed (regression)" \
+  "grep -qi 'stopped' '$out4' && grep -q 'verify' '$out4'"
+check "EV4. the final summary still lists each stage that ran (regression)" \
+  "grep -q 'research' '$out4' && grep -q 'validate' '$out4' && grep -q 'plan-review' '$out4' && grep -q 'implement' '$out4'"
+
+# --- EV5: the `⊘ isolated` marker is unchanged on each stage line ------------
+check "EV5. the live/summary stage lines still carry the '⊘ isolated' marker" \
+  "grep -q '⊘ isolated' '$out4'"
+
+# --- EV6: a gate halt (awaiting-human) emits a gate event + notifies once ----
+repoEV6="$(new_repo_with_validate_mission)"; arm_drive "$repoEV6"
+evlog6="$repoEV6/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoEV6" && STUB_SCOPE=1 STUB_NQUESTIONS=1 \
+    LCARS_WORKER_BIN="$repoEV6/worker" LCARS_GH_BIN="$repoEV6/gh" LCARS_NOTIFY="$repoEV6/notify" \
+    bash "$SCRIPT" drive --mission "$MID" >"$repoEV6/drive.out" 2>&1 ) || true
+check "EV6. an awaiting-human halt emits a gate event to the log" \
+  "grep -q '\"type\":\"gate\"' '$evlog6'"
+check "EV6. the gate event records the validate stage that escalated" \
+  "grep -q '\"type\":\"gate\".*\"stage\":\"validate\"\\|\"stage\":\"validate\".*\"type\":\"gate\"' '$evlog6'"
+check "EV6. the notify hook STILL fires exactly once at the gate (regression)" \
+  "[ \"\$(grep -c . '$repoEV6/notify.log')\" = '1' ]"
+
+# ==========================================================================
+echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
