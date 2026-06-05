@@ -44,6 +44,55 @@ Respond with `lcars respond <id>`.
   below the table so the captain knows exactly what to respond to.
 - A Mission with no GitHub issue yet shows `-` in the ISSUE column.
 
+## Live view — `--watch` / `--once`
+
+Beyond the board snapshot, `status.sh` has a per-Mission **live event view** that
+follows one Mission through Implement:
+
+```bash
+bash ~/.claude/skills/lcars-status/status.sh --watch [<id-or-partial>]
+bash ~/.claude/skills/lcars-status/status.sh --once  [<id-or-partial>]
+```
+
+- **`--watch`** tails the Mission's `events.jsonl` and re-renders on a ~1s tick
+  so the **pace line** stays live (`elapsed` keeps moving). Every field — including
+  the `waves.json`-derived totals — is re-read each frame, so a `waves.json` that
+  Schedule writes *after* the watch starts is picked up live (the denominator
+  resolves the moment it appears). It stops cleanly at a terminal gate (a
+  `verify`/`done` gate or an `error`), and on `q` / Ctrl-C. The ~1s throttle holds
+  whether or not stdin is a terminal: with a real TTY it uses a timed key-read so
+  `q` stays responsive; backgrounded / no-TTY it `sleep`s, so a redirected-to-a-log
+  watch ticks once a second instead of busy-spinning. (SIGINT works from a
+  foreground terminal; an `&`-backgrounded watch inherits SIGINT as ignored — the
+  shell's doing — so tear those down with SIGTERM.)
+- **`--once`** is the deterministic, non-follow sibling: it reads the current
+  `events.jsonl` + `waves.json`, renders every event line, prints one final
+  progress line, and exits. Handy for a quick "where is it now?" and used by the
+  tests. `$LCARS_NOW` pins the clock for reproducible `elapsed`.
+
+With no id, both modes resolve the **sole active Mission** via the shared
+resolver (`skills/lcars/resolve.sh`); several candidates drop into its picker, and
+an explicit id / partial is always honoured.
+
+Each event renders to a concise human line (reusing the event's own `detail`),
+followed by the **pace line**:
+
+```
+Wave <cur>/<total> · ticket <id> (<k>/<n>) · attempt <a> · ~<avg>s avg/ticket · elapsed <Hh Mm Ss>
+```
+
+- `Wave cur/total` — current wave from the latest `wave_start`; total from
+  `waves.json` (count of wave objects), falling back to the max `wave_start.totalWaves`
+  seen when `waves.json` isn't on disk yet.
+- `ticket <id> (k/n)` — current ticket from the latest `ticket_start`; `k` = green
+  tickets so far, `n` = total tickets across all waves in `waves.json`, falling
+  back to the sum of `wave_start.ticketCount` over distinct waves before
+  `waves.json` exists (so the denominator degrades to a best-effort count, not `?`).
+- `attempt <a>` — the latest `ticket_attempt.attempt` for the current ticket.
+- `~<avg>s avg/ticket` — mean of completed durations (`ticket_green.ts` minus its
+  matching `ticket_start.ts`); shows an em-dash `—s` before any ticket is green.
+- `elapsed` — `now` (or `$LCARS_NOW`) minus the first event's timestamp.
+
 ## Empty states
 
 - **`.git/lcars/` doesn't exist** → `Not initialised. Run `lcars init`.`
