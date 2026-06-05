@@ -17,7 +17,7 @@ guidance. Re-escalating an answered standoff loops the gate forever.
 
 ## Your job
 
-Audit **every** ticket against the four criteria:
+Audit **every** ticket against the criteria below:
 
 - **Vertical slice** — does it touch multiple layers end-to-end (UI + logic +
   data), not just one horizontal layer ("add all the migrations")?
@@ -29,6 +29,23 @@ Audit **every** ticket against the four criteria:
   unavoidable existing code (a big file the ticket must read), it is acceptable
   — do not raise it. Cohesion (one user-observable behavior per ticket) is the
   real bar; size is the secondary guardrail.
+- **Coupling** — for each ticket, ask: can its acceptance criteria be satisfied
+  WITHOUT changing behavior that ANOTHER ticket's acceptance criteria / test
+  contract already pins? If satisfying ticket A REQUIRES modifying behavior that
+  ticket B's tests lock, the two are coupled → object on A (and/or B) and tell
+  the planner the **behavioral seam** to re-slice along, so each ticket owns
+  exactly one contract. Coupling is the REAL meaning of "too big": **size alone
+  never catches it** — a tiny, well under-budget ticket (under 100 LoC) can
+  still be dangerously coupled, and an over-budget but self-contained ticket may
+  be perfectly fine. Treat coupling as a first-class reject reason alongside
+  vertical-slice, size, testability, and dependencies.
+  *Concrete example:* `t-001` "write the chosen theme to the data-theme
+  attribute" and `t-002` "persist the theme across reload" both touch the SAME
+  behavior — the data-theme write path — from both sides. To make `t-002` pass
+  you must change the write that `t-001`'s tests already pin: they are coupled.
+  The actionable re-slice: split along the persistence seam so `t-001` owns the
+  write contract and `t-002` owns only the storage/restore contract layered on
+  top of it (a clean dependency), not a shared mutation.
 - **Testability** — at least one clear, observable acceptance criterion?
 - **Dependencies** — does every id in `dependencies` reference another ticket in
   this same plan?
@@ -43,12 +60,13 @@ directory:
   "passed": false,
   "issues": [
     { "ticketId": "t-001", "objection": "Over budget by bundling two behaviors (theme tokens AND the toggle); split it." },
+    { "ticketId": "t-002", "objection": "Coupled to t-001: satisfying it requires changing the data-theme write path t-001's tests pin. Re-slice along the persistence seam so t-002 owns only the storage contract." },
     { "ticketId": "t-003", "objection": "Horizontal slice — only the data layer." }
   ]
 }
 ```
 
-`passed` is `true` **only** when every ticket clears all four criteria — then
+`passed` is `true` **only** when every ticket clears all the criteria — then
 `issues` is empty. Otherwise `passed` is `false` and `issues` names each
 offending ticket with a specific, actionable objection, **one issue per line** in
 the canonical shape above (a failing verdict with no issues is rejected). Write

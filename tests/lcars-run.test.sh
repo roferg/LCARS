@@ -2277,5 +2277,91 @@ check "S31.5 schedule advanced to implement" \
 
 # ==========================================================================
 echo
+echo "lcars run — behavioral-coupling Plan Review criterion (Session 32)"
+
+# Session 32 adds COUPLING as a first-class Plan Review reject reason. The
+# reviewer already sees the WHOLE plan.json (tickets + acceptanceCriteria +
+# dependencies) and is independent of the spec — the right place to catch two
+# tickets that touch the SAME behavior from both sides before Schedule/Implement.
+# Coupling is the REAL meaning of "too big": a tiny, under-budget ticket can
+# still be dangerously coupled, so size alone never catches it. Nothing about the
+# verdict shape, parsing, loop-back, or 3-round escalation changes — coupling is
+# an ADDED criterion that flows through the SAME failing-verdict path.
+#
+#   S32.1  the prompt now lists a coupling criterion + frames it as real "too big"
+#   S32.2  the original four criteria are RETAINED (coupling is additive)
+#   S32.3  a coupling objection flows review-save → loops back to plan
+#   S32.4  the specific coupling objection text reaches the planner (not flattened)
+
+PRTPL="$REPO_ROOT/skills/lcars-run/stages/plan-review.md"
+
+# --- S32.1: coupling is a criterion, framed as the real meaning of "too big" -
+check "S32.1 plan-review prompt mentions coupling (case-insensitive)" \
+  "grep -qi 'coupl' '$PRTPL'"
+check "S32.1 frames coupling as the real 'too big' (size alone misses it)" \
+  "grep -qi 'too big' '$PRTPL'"
+check "S32.1 notes a small / under-budget ticket can still be coupled" \
+  "grep -Eqi 'under.?budget|small|<.?100|under the budget' '$PRTPL'"
+check "S32.1 gives a concrete two-ticket coupling example (same behavior)" \
+  "grep -qi 'behavior' '$PRTPL' && grep -Eqi 'same|both sides|seam' '$PRTPL'"
+check "S32.1 the verdict example demonstrates a coupling objection" \
+  "grep -i 'objection' '$PRTPL' | grep -qi 'coupl'"
+
+# --- S32.2: the existing four criteria are retained (regression guard) -------
+check "S32.2 retains the Vertical slice criterion" \
+  "grep -qi 'Vertical slice' '$PRTPL'"
+check "S32.2 retains the Size / comprehension-load criterion" \
+  "grep -qi 'comprehension' '$PRTPL'"
+check "S32.2 retains the Testability criterion" \
+  "grep -qi 'Testability' '$PRTPL'"
+check "S32.2 retains the Dependencies criterion" \
+  "grep -qi 'Dependencies' '$PRTPL'"
+check "S32.2 no longer hard-codes a stale 'four criteria' count" \
+  "! grep -qi 'four criteria' '$PRTPL'"
+
+# A coupling verdict: one failing issue naming the offending ticket AND the
+# behavioral seam to split on. Canonical one-issue-per-line {ticketId,objection}
+# shape — proves coupling is a valid first-class failing verdict.
+write_verdict_coupling() { # file
+  cat >"$1" <<'EOF'
+{
+  "passed": false,
+  "issues": [
+    { "ticketId": "t-002", "objection": "Coupled to t-001: satisfying t-002 requires changing the data-theme write path that t-001's tests already pin. Re-slice along the persistence seam so t-002 owns only the storage contract." }
+  ]
+}
+EOF
+}
+
+# --- S32.3: a coupling objection loops back to plan via review-save ----------
+repoC="$(new_repo_with_plan_review_mission)"; make_gh_stub "$repoC/gh"
+export GH_LOG="$repoC/gh.log"; : >"$GH_LOG"
+vC="$repoC/verdict.json"; write_verdict_coupling "$vC"
+rcC=0
+( cd "$repoC" && LCARS_GH_BIN="$repoC/gh" bash "$SCRIPT" review-save \
+    --mission "$MID" --verdict "$vC" >outC.txt 2>&1 ) || rcC=$?
+sC="$(state_of "$repoC")"
+LOGC="$repoC/.git/lcars/missions/$MID/plan-review-1.json"
+check "S32.3 review-save exits 0 on a coupling-objection verdict" "[ '$rcC' -eq 0 ]"
+check "S32.3 logs the round to plan-review-1.json" "[ -f '$LOGC' ]"
+check "S32.3 increments planReviewRound to 1" \
+  "grep -q '\"planReviewRound\": *1' '$sC'"
+check "S32.3 loops the stage back to plan" \
+  "grep -q '\"stage\": *\"plan\"' '$sC'"
+check "S32.3 adds lcars:plan" \
+  "grep -q 'add-label lcars:plan ' '$repoC/gh.log' || grep -q 'add-label lcars:plan$' '$repoC/gh.log'"
+check "S32.3 removes lcars:plan-review" \
+  "grep -q 'remove-label lcars:plan-review' '$repoC/gh.log'"
+check "S32.3 does not escalate on the first coupling failure" \
+  "! grep -q '\"awaitingHuman\": *true' '$sC'"
+
+# --- S32.4: the specific coupling objection (the seam) reaches the planner ---
+check "S32.4 carries the coupling objection text through to the log" \
+  "grep -qi 'Coupled to t-001' '$LOGC'"
+check "S32.4 preserves the re-slice seam detail (not flattened)" \
+  "grep -qi 'persistence seam' '$LOGC'"
+
+# ==========================================================================
+echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
