@@ -848,6 +848,10 @@ ncreate="$(grep -c 'issue create' "$GH_LOG")"
 check "S4. creates one GitHub issue per ticket (4)" "[ '$ncreate' = '4' ]"
 check "S4. labels each sub-issue lcars:implement and the mission type" \
   "grep -q 'label lcars:implement,lcars:feature' '$GH_LOG'"
+check "S4. tags each sub-issue lcars:ticket (role)" \
+  "grep -q 'label lcars:implement,lcars:feature,lcars:ticket' '$GH_LOG'"
+check "S4. never tags a sub-issue lcars:mission" \
+  "! grep -q 'lcars:mission' '$GH_LOG'"
 
 # --- Behaviour 5: the created issue numbers are saved into waves.json -------
 check "S5. saves issue number 101 into waves.json" "grep -q '\"issue\": *101' '$WAVES'"
@@ -3168,6 +3172,23 @@ check "S26-9. order still holds: ticket_start < ticket_attempt < ticket_green" \
   "[ -n \"$posS9_start\" ] && [ \"$posS9_start\" -lt \"$posS9_att\" ] && [ \"$posS9_att\" -lt \"$posS9_green\" ]"
 check "S26-9. first attempt index within a fresh ticket is 1" \
   "grep '\"type\":\"ticket_attempt\"' '$evS9' | grep '\"phase\":\"test-writer\"' | grep -q '\"attempt\":1'"
+
+# ==========================================================================
+echo
+echo "lcars run — role labels (lcars:mission/lcars:ticket) ride through stage walks (session 34)"
+#
+# BUG-005: a Mission and its tickets were indistinguishable on the board. The
+# fix adds disjoint ROLE labels: lcars:mission on a Mission, lcars:ticket on a
+# Schedule sub-issue. Role labels are ADDITIVE + PERMANENT — no stage transition
+# (gh_relabel) ever strips one. Across the full pipeline walk exercised above
+# (align→validate, validate→plan, plan→plan-review, plan-review→schedule,
+# schedule→implement, implement→verify) no relabel may name a role label in its
+# remove-list.
+S34_LOGS="$repo2/gh.log $repoV/gh.log $repoPL/gh.log $repoPR/gh.log $repoS/gh.log $repoIa/gh.log"
+check "S34. no stage transition ever removes lcars:mission" \
+  "! grep -hq 'remove-label lcars:mission' $S34_LOGS"
+check "S34. no stage transition ever removes lcars:ticket" \
+  "! grep -hq 'remove-label lcars:ticket' $S34_LOGS"
 
 # ==========================================================================
 echo

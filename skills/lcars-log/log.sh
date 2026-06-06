@@ -10,7 +10,7 @@
 #   1. mints a mission ID            lcars-YYYYMMDD-NNN (NNN per-day sequence)
 #   2. creates .git/lcars/missions/<id>/ with prd.md, validated-plan.md, state.json
 #   3. gives the Mission its own branch lcars/<id> (off the current branch)
-#   4. opens a GitHub issue labelled lcars:plan + lcars:bug + lcars:linked
+#   4. opens a GitHub issue labelled lcars:plan + lcars:bug + lcars:linked + lcars:mission
 #   5. links it to the parent (parentMission/parentIssue in state.json + label)
 # then prints one aggregate summary.
 #
@@ -203,7 +203,9 @@ file_one_bug() { # prd-path
       || "$GIT_BIN" branch "$branch" >/dev/null 2>&1 || true
   fi
 
-  # open the GitHub issue (labelled for the Plan column + bug + linked).
+  # open the GitHub issue (labelled for the Plan column + bug + linked + the
+  # mission role — a logged bug is a fast-tracked Mission, so it carries
+  # lcars:mission like any other Mission).
   local issue="" body
   if command -v "$GH_BIN" >/dev/null 2>&1; then
     body="$(mktemp)"
@@ -217,7 +219,7 @@ file_one_bug() { # prd-path
     url="$("$GH_BIN" issue create \
             --title "$title" \
             --body-file "$body" \
-            --label "lcars:plan,lcars:bug,lcars:linked" 2>/dev/null)"
+            --label "lcars:plan,lcars:bug,lcars:linked,lcars:mission" 2>/dev/null)"
     rm -f "$body"
     num="${url##*/}"
     case "$num" in ''|*[!0-9]*) issue="" ;; *) issue="$num" ;; esac

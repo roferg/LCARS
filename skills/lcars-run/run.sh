@@ -751,7 +751,7 @@ create_issue() { # id  type  table-file
   # nothing on failure / no gh). The caller still owns the label string — the
   # adapter just forwards the labels it is given.
   local num
-  num="$(host issue-create --title "$title" --body "$body" --label "lcars:implement,lcars:$type")"
+  num="$(host issue-create --title "$title" --body "$body" --label "lcars:implement,lcars:$type,lcars:ticket")"
   if [ -n "$num" ]; then
     printf '%s' "$num"
     return 0

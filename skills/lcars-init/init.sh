@@ -121,11 +121,13 @@ STAGE_COLOR="FF9900"
 TYPE_COLOR="4499FF"
 STATUS_COLOR="FF3344"
 REL_COLOR="9977FF"
+ROLE_COLOR="00B894"
 
 STAGE_LABELS="align research validate plan plan-review schedule implement verify done"
 TYPE_LABELS="feature bug"
 STATUS_LABELS="paused awaiting-human"
 REL_LABELS="linked"
+ROLE_LABELS="mission ticket"
 
 label_desc() {
   case "$1" in
@@ -143,6 +145,8 @@ label_desc() {
     lcars:paused)         echo "Status: mission paused" ;;
     lcars:awaiting-human) echo "Status: waiting on the captain's orders" ;;
     lcars:linked)         echo "Relationship: linked to another mission" ;;
+    lcars:mission)        echo "Role: a Mission's own command-and-control issue" ;;
+    lcars:ticket)         echo "Role: an implementation sub-issue spun up by Schedule" ;;
     *)                    echo "LCARS label" ;;
   esac
 }
@@ -183,6 +187,7 @@ if [ "$GH_OK" -eq 1 ]; then
   for n in $TYPE_LABELS;   do create_label "lcars:$n" "$TYPE_COLOR";   done
   for n in $STATUS_LABELS; do create_label "lcars:$n" "$STATUS_COLOR"; done
   for n in $REL_LABELS;    do create_label "lcars:$n" "$REL_COLOR";    done
+  for n in $ROLE_LABELS;   do create_label "lcars:$n" "$ROLE_COLOR";   done
 fi
 
 # --- OUTPUT: readiness summary --------------------------------------------

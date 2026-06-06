@@ -163,6 +163,10 @@ check "3. no research/ dir is created (Research is skipped)" \
 check "4. calls gh issue create" "grep -q 'issue create' '$repo/gh.log'"
 check "4. passes lcars:plan,lcars:bug,lcars:linked labels" \
   "grep -q 'lcars:plan,lcars:bug,lcars:linked' '$repo/gh.log'"
+check "4. tags each child bug Mission lcars:mission (role)" \
+  "grep -q 'lcars:plan,lcars:bug,lcars:linked,lcars:mission' '$repo/gh.log'"
+check "4. never tags a child bug Mission lcars:ticket" \
+  "! grep -q 'lcars:ticket' '$repo/gh.log'"
 check "4. creates two issues (one per bug)" \
   "[ \"\$(grep -c 'issue create' '$repo/gh.log')\" -eq 2 ]"
 check "4. saves an issue number into bug 1 state.json" \

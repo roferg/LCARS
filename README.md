@@ -380,9 +380,12 @@ Missions move; a future kanban reads them directly via the Issues API.
 | `lcars:paused` | Status (additive) | Overlaid when a Mission is paused |
 | `lcars:awaiting-human` | Status (additive) | Overlaid when blocked on your answer |
 | `lcars:linked` | Relationship | A bug Mission linked to a parent via `lcars log` |
+| `lcars:mission` / `lcars:ticket` | Role (additive, permanent) | A Mission's own issue (`lcars:mission`) vs an implementation sub-issue Schedule opens (`lcars:ticket`) — disjoint, never swapped by a stage transition |
 
 Filtering issues to `lcars:awaiting-human` shows every pending decision at a
-glance — before the kanban UI even exists.
+glance — before the kanban UI even exists. Filtering to `lcars:mission` is the
+command-and-control list (the Missions); `lcars:ticket` is the work (the
+per-ticket sub-issues).
 
 ---
 

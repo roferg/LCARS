@@ -148,6 +148,8 @@ check "4. state.json has model"       "grep -q '\"model\"' '$M/state.json'"
 # --- Behaviour 5: GitHub issue created and number saved -------------------
 check "5. calls gh issue create"              "grep -q 'issue create' '$repo/gh.log'"
 check "5. passes the align + type labels"     "grep -q 'lcars:align,lcars:bug' '$repo/gh.log'"
+check "5. tags the Mission issue lcars:mission (role)" "grep -q 'lcars:align,lcars:bug,lcars:mission' '$repo/gh.log'"
+check "5. never tags a Mission issue lcars:ticket"     "! grep -q 'lcars:ticket' '$repo/gh.log'"
 check "5. uses --body-file for the PRD"        "grep -q 'body-file' '$repo/gh.log'"
 check "5. saves the issue number to state"     "grep -q '\"githubIssue\": *42' '$M/state.json'"
 

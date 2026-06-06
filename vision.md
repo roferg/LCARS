@@ -393,8 +393,9 @@ LCARS is designed to drop into any repo — new or existing — leaving zero art
 | `lcars:paused` | Status (additive) | Overlaid on the stage label when `lcars pause` is called |
 | `lcars:awaiting-human` | Status (additive) | Overlaid when the harness is blocked on a human answer |
 | `lcars:linked` | Relationship | Bug Mission linked to an active parent Mission via Mission Log |
+| `lcars:mission` / `lcars:ticket` | Role (additive, permanent) | Distinguishes a Mission's own command-and-control issue (`lcars:mission`) from an implementation sub-issue Schedule opens (`lcars:ticket`). The two are disjoint and ride the issue for its whole life — no stage transition ever strips them |
 
-Filtering GitHub Issues to `lcars:awaiting-human` across all columns shows every pending human question at a glance — before the Kanban UI even exists.
+Filtering GitHub Issues to `lcars:awaiting-human` across all columns shows every pending human question at a glance — before the Kanban UI even exists. Filtering to `lcars:mission` is the command-and-control list (the Missions); `lcars:ticket` is the work (the per-ticket sub-issues), so during Implement a Mission and its tickets are no longer indistinguishable.
 
 **The harness never modifies:**
 - `CLAUDE.md` or any equivalent CLI config file
