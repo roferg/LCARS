@@ -176,15 +176,17 @@ printf 'lcars:align\nlcars:bug\n' >"$GH_EXISTING"
   LCARS_CLAUDE_BIN="$repo/claude" LCARS_GH_BIN="$repo/gh" bash "$SCRIPT" >out.txt 2>&1
 )
 created_count="$(grep -c 'label create' "$GH_LOG")"
-check "5. creates the 12 missing labels"        "[ '$created_count' -eq 12 ]"
+check "5. creates the 14 missing labels"        "[ '$created_count' -eq 14 ]"
 check "5. skips pre-existing lcars:align"        "! grep -q 'label create lcars:align' '$GH_LOG'"
 check "5. skips pre-existing lcars:bug"          "! grep -q 'label create lcars:bug' '$GH_LOG'"
 check "5. creates lcars:done with stage colour"  "grep -q 'label create lcars:done .*FF9900' '$GH_LOG'"
 check "5. creates lcars:feature with type colour" "grep -q 'label create lcars:feature .*4499FF' '$GH_LOG'"
 check "5. creates lcars:paused with status colour" "grep -q 'label create lcars:paused .*FF3344' '$GH_LOG'"
 check "5. creates lcars:linked with rel colour"  "grep -q 'label create lcars:linked .*9977FF' '$GH_LOG'"
+check "5. creates lcars:mission role label"      "grep -q 'label create lcars:mission .*[0-9A-Fa-f]' '$GH_LOG'"
+check "5. creates lcars:ticket role label"       "grep -q 'label create lcars:ticket .*[0-9A-Fa-f]' '$GH_LOG'"
 
-# all-missing repo creates all 14
+# all-missing repo creates all 16
 repo3="$(new_repo)"
 make_claude_stub "$repo3/claude"
 make_gh_stub "$repo3/gh"
@@ -195,15 +197,31 @@ export GH_EXISTING="$repo3/existing"; : >"$GH_EXISTING"
   LCARS_CLAUDE_BIN="$repo3/claude" LCARS_GH_BIN="$repo3/gh" bash "$SCRIPT" >out.txt 2>&1
 )
 all_count="$(grep -c 'label create' "$repo3/gh.log")"
-check "5. creates all 14 labels when none exist" "[ '$all_count' -eq 14 ]"
+check "5. creates all 16 labels when none exist" "[ '$all_count' -eq 16 ]"
 
 # --- Behaviour 6: readiness summary ---------------------------------------
 check "6. summary: .git/lcars created"   "grep -q '.git/lcars/ created' '$repo3/out.txt'"
 check "6. summary: config.json written"  "grep -q 'config.json written' '$repo3/out.txt'"
 check "6. summary: Claude CLI verified"   "grep -qi 'Claude CLI verified' '$repo3/out.txt'"
-check "6. summary: labels created line"    "grep -q '14 labels' '$repo3/out.txt'"
+check "6. summary: labels created line"    "grep -q '16 labels' '$repo3/out.txt'"
 check "6. summary: LCARS ready line"       "grep -q 'LCARS ready' '$repo3/out.txt'"
 check "6. summary: points to lcars file"   "grep -q 'lcars file' '$repo3/out.txt'"
+
+# --- Session 30: scratch globs land in .git/info/exclude, .gitignore intact -
+# init owns ignoring the harness's scratch via .git/info/exclude (inside .git/,
+# like .git/lcars/) — NEVER the target repo's tracked .gitignore (vision forbids
+# editing it). The append is idempotent and lists the CLI/host-agnostic set.
+printf '*.log\n' > "$repo3/.gitignore"   # captain's tracked .gitignore
+gi3_before="$( cat "$repo3/.gitignore" )"
+exclude3="$repo3/.git/info/exclude"
+check "S30 init: .git/info/exclude lists .lcars-* scratch glob" \
+  "[ -f '$exclude3' ] && grep -qxF '.lcars-*' '$exclude3'"
+check "S30 init: .git/info/exclude lists the .claude/ CLI scratch glob" \
+  "grep -qxF '.claude/' '$exclude3'"
+check "S30 init: .git/info/exclude lists the harness runner glob (.lcars-run-*)" \
+  "grep -qxF '.lcars-run-*' '$exclude3'"
+check "S30 init: the tracked .gitignore is UNTOUCHED" \
+  "[ \"\$( cat '$repo3/.gitignore' )\" = '$gi3_before' ]"
 
 # --- idempotency: second run preserves created timestamp ------------------
 first_created="$(grep '"created"' "$repo3/.git/lcars/config.json")"
@@ -214,6 +232,8 @@ sleep 1
 )
 second_created="$(grep '"created"' "$repo3/.git/lcars/config.json")"
 check "idempotent: created timestamp preserved" "[ '$first_created' = '$second_created' ]"
+check "S30 init: exclude append is idempotent (no duplicate .lcars-* lines)" \
+  "[ \"\$( grep -c '^\.lcars-\*\$' '$repo3/.git/info/exclude' )\" = '1' ]"
 
 # ==========================================================================
 echo

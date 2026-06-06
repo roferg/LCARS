@@ -54,6 +54,13 @@ SELF="${BASH_SOURCE[0]}"
 # The skill's own directory, and the per-Stage worker prompt templates under it.
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 STAGES_DIR="$SKILL_DIR/stages"
+# The host-integration adapter — the ONE place that speaks to a forge. Every
+# GitHub call funnels through it so the integration is swappable (BUG-003). It
+# sits beside this script; $LCARS_HOST_ADAPTER overrides the path so tests can
+# stub the whole adapter. The adapter selects its host via $LCARS_HOST_BIN
+# (default "github") and the github host shells out to ${LCARS_GH_BIN:-gh}.
+HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/host-adapter.sh}"
+host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 # The walk-away notification hook. The driver calls this ONCE at a human gate
 # (awaiting-human or verify). Defaults to the bundled notify.sh; env-injectable
 # (like LCARS_GH_BIN) so tests assert the call without sending anything.
@@ -87,6 +94,91 @@ json_escape() { # string → backslash/quote-escaped (printed)
   s="${s//\\/\\\\}"   # backslashes first…
   s="${s//\"/\\\"}"   # …then double-quotes
   printf '%s' "$s"
+}
+
+# --- the Mission event log (append-only JSONL) -----------------------------
+# A per-Mission, append-only event stream at $MISSION_DIR/events.jsonl. The
+# HARNESS (this script, around its cold-worker calls) emits one short JSON line
+# per stage transition / gate so a tail or scrollback shows progress AS IT
+# HAPPENS — not just an accumulated summary at halt. It is CLI/host-agnostic:
+# events are emitted by bash here, never by the worker and never parsed from
+# worker stdout.
+#
+#   emit_event <type> <stage> <detail>
+#
+# Line shape (fixed key order, jq-free):
+#   {"ts":<unix>,"mission":"<id>","stage":"<stage>","type":"<type>","detail":"<text>"}
+#
+# Each line is one short single line (well under PIPE_BUF, ~4096 bytes) written
+# in APPEND mode, so concurrent appends from nested stage subprocesses stay
+# atomic. NO-OP-SAFE: with no located mission ($MISSION_DIR unset/empty) it does
+# nothing and returns 0. The timestamp is overridable via $LCARS_NOW so tests
+# are deterministic.
+#
+#   emit_event <type> <stage> <detail> [key=value ...]
+#
+# The trailing key=value pairs (Session 26+) become a MACHINE-READABLE
+# "data":{...} object appended to the line in the order given (fixed key order),
+# jq-free. A value matching ^[0-9]+$ is rendered as an UNQUOTED number (e.g.
+# "wave":2); anything else is JSON-escaped and quoted (e.g. "phase":"test-writer")
+# — so Session 27 can parse "Wave x/y" / "k of n" / avg-per-ticket without jq.
+# CRITICAL REGRESSION: with NO data pairs the line is BYTE-IDENTICAL to Session
+# 25 — no "data" key at all (the EV1–EV6 tests pin this).
+emit_event() { # type stage detail [key=value ...]
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  local ts type stage detail mid
+  ts="${LCARS_NOW:-$(date +%s)}"
+  type="$(json_escape "${1:-}")"
+  stage="$(json_escape "${2:-}")"
+  detail="$(json_escape "${3:-}")"
+  mid="$(json_escape "${MISSION_ID:-}")"
+  shift 3 2>/dev/null || shift $#   # the rest are key=value data pairs (may be none)
+
+  # Build the optional "data":{...} suffix from the trailing pairs. No pairs →
+  # empty string → the printf emits the Session-25 line unchanged.
+  local data="" sep="" pair k v
+  for pair in "$@"; do
+    k="${pair%%=*}"; v="${pair#*=}"
+    if [[ "$v" =~ ^[0-9]+$ ]]; then
+      data="$data$sep\"$(json_escape "$k")\":$v"          # unquoted number
+    else
+      data="$data$sep\"$(json_escape "$k")\":\"$(json_escape "$v")\""   # quoted string
+    fi
+    sep=","
+  done
+  [ -n "$data" ] && data=",\"data\":{$data}"
+
+  printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"%s}\n' \
+    "$ts" "$mid" "$stage" "$type" "$detail" "$data" >>"$MISSION_DIR/events.jsonl"
+}
+# --- durable dedup/indexing helpers (derive from events.jsonl, not a local) --
+# The Implement stage is RE-INVOKED on real runs (a manual `lcars run` retry, or
+# the `lcars respond` → `lcars run` resume after a flagged ticket). A fresh
+# process restarts any in-process guard, so wave_start / ticket_start would
+# re-emit and ticket_attempt would restart at 1. events.jsonl is the durable
+# per-Mission log, so dedup + indexing must read IT — never a process-local.
+#
+# event_seen <type> <data-fragment-regex> → 0 if events.jsonl already holds a
+# line of that type whose body matches the (extended-regex) fragment. No-op-safe
+# when the file doesn't exist yet (returns 1 = not seen). jq-free, same style as
+# the rest of run.sh. Tickets in a wave run SEQUENTIALLY, so reading the log just
+# before each emit is race-free.
+event_seen() { # type data-fragment-regex
+  [ -n "${MISSION_DIR:-}" ] || return 1
+  local f="$MISSION_DIR/events.jsonl"
+  [ -f "$f" ] || return 1
+  grep -E "\"type\":\"$1\"" "$f" 2>/dev/null | grep -Eq "$2"
+}
+# event_count <type> <data-fragment-regex> → how many lines of that type match the
+# fragment. 0 (and success) when the file is absent. Used to NUMBER ticket_attempt
+# cumulatively across invocations: the next index is 1 + this count.
+event_count() { # type data-fragment-regex
+  if [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/events.jsonl" ]; then
+    grep -E "\"type\":\"$1\"" "$MISSION_DIR/events.jsonl" 2>/dev/null \
+      | grep -Ec "$2"
+  else
+    echo 0
+  fi
 }
 state_del() { # key   — drop the field's line if present (no-op otherwise)
   local tmp; tmp="$(mktemp)"
@@ -154,10 +246,10 @@ gh_relabel() { # "add labels…"  "remove labels…"
 
   local hand="+${add// /,} -${rem// /,}"
   if command -v "$GH_BIN" >/dev/null 2>&1; then
-    local args=()
-    for l in $add; do args+=(--add-label "$l"); done
-    for l in $rem; do args+=(--remove-label "$l"); done
-    if ! "$GH_BIN" issue edit "$issue" "${args[@]}" >/dev/null 2>&1; then
+    # The adapter performs the actual relabel (best-effort, never blocks); we
+    # only keep the local note when its forge call fails, so the captain knows
+    # what to fix by hand. The note path is preserved verbatim from before.
+    if ! host issue-relabel "$issue" --add "$add" --remove "$rem"; then
       RELABEL_NOTE="  ⚠ gh issue edit failed — relabel #$issue by hand ($hand)."
     fi
   else
@@ -655,12 +747,14 @@ create_issue() { # id  type  table-file
   [ -n "$crit" ] && critblock="$(printf '%s' "$crit" | awk -F' \\| ' '{ for (i=1;i<=NF;i++) printf "- %s\n", $i }')"
   body="$(printf '%s\n\n**Acceptance Criteria:**\n%s' "$desc" "$critblock")"
 
-  if command -v "$GH_BIN" >/dev/null 2>&1; then
-    if url="$("$GH_BIN" issue create --title "$title" --body "$body" --label "lcars:implement,lcars:$type" 2>/dev/null)"; then
-      url="$(printf '%s' "$url" | tail -1)"
-      printf '%s' "${url##*/}"
-      return 0
-    fi
+  # Delegate the forge call to the adapter; it echoes the new issue NUMBER (or
+  # nothing on failure / no gh). The caller still owns the label string — the
+  # adapter just forwards the labels it is given.
+  local num
+  num="$(host issue-create --title "$title" --body "$body" --label "lcars:implement,lcars:$type,lcars:ticket")"
+  if [ -n "$num" ]; then
+    printf '%s' "$num"
+    return 0
   fi
   RELABEL_NOTE="  ⚠ could not create sub-issues via gh — create them by hand and add lcars:implement."
   return 0
@@ -716,19 +810,68 @@ cmd_schedule() {
     exit 1
   fi
 
-  # One sub-issue per ticket, in wave then plan order; record wave/id/issue.
+  # SINGLE-TICKET FAST-PATH (BUG-005, Session 33). When Plan emits exactly ONE
+  # ticket, a per-ticket sub-issue would merely DUPLICATE the Mission's own
+  # issue — so don't open one. Reuse the Mission's githubIssue as the lone
+  # ticket's issue and emit a one-wave waves.json directly. The on-green close
+  # in cmd_impl_save_result has a matching guard so this reused parent issue is
+  # NOT closed on green (it closes on PR merge, in lcars-approve). Ticket count
+  # is the number of rows in $table (one row per ticket).
   local assign; assign="$(mktemp)"
   local nwaves=0 ntickets=0 nissues=0 wnum ids id num
-  while read -r wnum ids; do
-    [ -n "$wnum" ] || continue
-    nwaves=$((nwaves + 1))
-    for id in $ids; do
-      ntickets=$((ntickets + 1))
-      num="$(create_issue "$id" "$type" "$table")"
-      [ -n "$num" ] && nissues=$((nissues + 1))
-      printf '%s\t%s\t%s\n' "$wnum" "$id" "$num" >>"$assign"
-    done
-  done <"$wavemap"
+  local ticket_count; ticket_count="$(grep -c . "$table")"
+  if [ "$ticket_count" -le 1 ]; then
+    # The lone ticket id is the single row's first field; its wave is whatever
+    # compute_waves placed it in (always 1 with ≤1 ticket, but read it rather
+    # than assume).
+    local lone_id lone_wave parent
+    lone_id="$(awk -F'\t' 'NF{print $1; exit}' "$table")"
+    lone_wave="$(awk 'NF{print $1; exit}' "$wavemap")"; lone_wave="${lone_wave:-1}"
+    parent="$(json_raw "$STATE" githubIssue)"
+    nwaves=1; ntickets=1
+    case "$parent" in
+      ''|null)
+        # Degraded path: no issue on file. Keep TODAY's behaviour — issue: null
+        # plus the existing warning. NEVER fabricate an issue; the fast-path is
+        # about not creating a REDUNDANT one, never about inventing one.
+        printf '%s\t%s\t%s\n' "$lone_wave" "$lone_id" "" >>"$assign"
+        RELABEL_NOTE="  ⚠ no githubIssue on file — wrote issue: null for $lone_id (local-only mission)."
+        ;;
+      *)
+        # Reuse the Mission's own issue; open NO sub-issue (nissues stays 0).
+        printf '%s\t%s\t%s\n' "$lone_wave" "$lone_id" "$parent" >>"$assign"
+        ;;
+    esac
+  else
+    # ≥ 2 tickets. One sub-issue per ticket, in wave then plan order; record
+    # wave/id/issue. AND (Session 35) nest each fresh ticket issue under the
+    # Mission's own issue as a NATIVE GitHub sub-issue, so the board shows the
+    # ticket hierarchy. Read the Mission's parent issue once up front.
+    local parent link_failed=0
+    parent="$(json_raw "$STATE" githubIssue)"
+    while read -r wnum ids; do
+      [ -n "$wnum" ] || continue
+      nwaves=$((nwaves + 1))
+      for id in $ids; do
+        ntickets=$((ntickets + 1))
+        num="$(create_issue "$id" "$type" "$table")"
+        [ -n "$num" ] && nissues=$((nissues + 1))
+        printf '%s\t%s\t%s\n' "$wnum" "$id" "$num" >>"$assign"
+        # Nest the new child under the Mission — best-effort, ENTIRELY through
+        # the host adapter (no direct gh/REST here) so it stays host-agnostic.
+        # Guards: skip a child we failed to create (empty num); skip when there
+        # is no parent on file; and EXPLICITLY skip when child == parent (the
+        # single-ticket fast-path reuses the Mission issue as the lone ticket's
+        # issue, which would self-nest #parent under #parent). A link failure
+        # NEVER aborts Schedule — it only sets a "nest by hand" note.
+        case "$parent" in ''|null) parent="" ;; esac
+        if [ -n "$num" ] && [ -n "$parent" ] && [ "$num" != "$parent" ]; then
+          host link-subissue "$parent" "$num" || link_failed=1
+        fi
+      done
+    done <"$wavemap"
+    [ "$link_failed" -eq 1 ] && RELABEL_NOTE="  ⚠ could not nest sub-issue(s) under the Mission — link them by hand."
+  fi
 
   emit_waves_json "$assign" >"$MISSION_DIR/waves.json"
 
@@ -787,6 +930,89 @@ snapshot_untracked() { # out-file
   ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others --exclude-standard ) >"$1" 2>/dev/null || : >"$1"
 }
 
+# === Scratch hygiene (CLI/host-agnostic) ====================================
+# ONE place defines what counts as throwaway scratch the harness must never let
+# into a Mission's PR. It is NOT hardcoded to one agentic CLI: it covers LCARS's
+# own scratch, a harness-OWNED worker-runner prefix, and the scratch dirs each
+# common CLI drops in a repo (Claude's `.claude/`, Copilot's `.copilot/`). The
+# captain extends it without code via config.json `scratchGlobs` (a JSON string
+# array) — so a new CLI or a project-specific runner is one config line, never a
+# code change. These globs are matched with shell `case` against paths from
+# `git ls-files --others` AND written verbatim into `.git/info/exclude`.
+
+# --- the harness-owned worker-runner prefix ---------------------------------
+# A repo-write worker (the Implementer) may need a throwaway runner file in the
+# tree (e.g. to invoke the suite). The harness OWNS one neutral, CLI-agnostic
+# name for it — `.lcars-run-*` — so the driver can both refuse to commit it and
+# DELETE it afterwards without guessing per-CLI names. The implement-implementer
+# prompt steers workers to this name (and to LCARS_WORK_OUT for runners). The
+# `.lcars-*` family already covers it; this constant names it for cleanup.
+LCARS_RUNNER_GLOB='.lcars-run-*'
+
+# --- the full scratch glob set (base + config extensions) -------------------
+# Emits one glob per line. Base set is CLI/host-agnostic; config.json's
+# `scratchGlobs` array (read jq-free) appends to it. Dir globs are listed both as
+# `<dir>/` (the exclude-file form) and `<dir>/*` (so a `case` match catches every
+# path under them). Deduped, stable order, base first.
+scratch_globs() {
+  printf '%s\n' \
+    '.lcars-*' '*/.lcars-*' \
+    '.lcars-run-*' '*/.lcars-run-*' \
+    '.claude/' '.claude/*' '*/.claude/*' \
+    '.copilot/' '.copilot/*' '*/.copilot/*' \
+    '.*-run.cjs' '.*-run.mjs' '.*-run.js' '.*-run.sh' '.*-run.py' \
+    '*/.*-run.cjs' '*/.*-run.mjs' '*/.*-run.js' '*/.*-run.sh' '*/.*-run.py'
+  # config extensions: pull every quoted token out of the scratchGlobs array.
+  [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 0
+  awk '
+    /"scratchGlobs"[[:space:]]*:/ { ina=1 }
+    ina {
+      s=$0
+      while (match(s, /"[^"]*"/)) {
+        tok=substr(s, RSTART+1, RLENGTH-2)
+        if (tok != "scratchGlobs") print tok
+        s=substr(s, RSTART+RLENGTH)
+      }
+      if (index($0, "]")) ina=0
+    }
+  ' "$LCARS_CFG" 2>/dev/null
+}
+
+# --- does a path match the scratch set? -------------------------------------
+# jq-free, glob via `case`. Used by commit_ticket to skip scratch when staging.
+is_scratch() { # path
+  local p="$1" g
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    # shellcheck disable=SC2254
+    case "$p" in $g) return 0 ;; esac
+  done <<EOF
+$(scratch_globs)
+EOF
+  return 1
+}
+
+# --- ignore scratch via .git/info/exclude (NEVER the tracked .gitignore) ----
+# vision.md forbids editing a target repo's tracked .gitignore. .git/info/exclude
+# lives inside .git/ (like .git/lcars/) and git never tracks it, so the captain's
+# working tree and history stay clean while scratch is kept out of `git status`
+# and any future `git add`. IDEMPOTENT: a glob already present is never appended
+# again. Best-effort; a missing .git/info dir is created.
+ensure_scratch_excluded() {
+  local gitdir excl g
+  gitdir="$("$GIT_BIN" rev-parse --git-dir 2>/dev/null)" || return 0
+  case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+  mkdir -p "$gitdir/info" 2>/dev/null || return 0
+  excl="$gitdir/info/exclude"
+  [ -f "$excl" ] || : >"$excl"
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    grep -qxF -- "$g" "$excl" 2>/dev/null || printf '%s\n' "$g" >>"$excl"
+  done <<EOF
+$(scratch_globs)
+EOF
+}
+
 # --- commit a green ticket's produced files to the mission branch -----------
 # The Test Writer / Implementer write real files into the working tree; for the
 # PR to have content those files must be committed to the Mission's branch (the
@@ -812,19 +1038,27 @@ commit_ticket() { # ticket  summary
     fi
   fi
 
+  # Belt-and-braces: ensure the scratch globs are in .git/info/exclude before we
+  # stage, so even a future `git add`/`status` ignores them (idempotent; `lcars
+  # init` does this too, but a mission created without init — e.g. via `lcars log`
+  # — still gets the guard on its first commit). Never touches the .gitignore.
+  ensure_scratch_excluded
+
   # Stage the Implementer's work, SCOPED — never the whole tree (no `git add -A`,
   # which would sweep in the captain's unrelated untracked files and the worker's
   # throwaway scratch). Edits to already-tracked files go in via `add -u`; a NEW
   # file is staged only when it did NOT exist before the ticket built (the
-  # .untracked-before snapshot) and is not worker/LCARS scratch (a `.lcars-*`
-  # runner script). That keeps the mission branch / PR to the produced source.
+  # .untracked-before snapshot) and is not harness/CLI scratch (see is_scratch —
+  # the CLI/host-agnostic set: `.lcars-*`, the harness runner prefix, each CLI's
+  # scratch dir, plus config.json `scratchGlobs`). That keeps the mission branch
+  # / PR to the produced source.
   "$GIT_BIN" add -u >/dev/null 2>&1
   local before; before="$(ticket_dir "$1")/.untracked-before"
   local now f; now="$(mktemp)"
   ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others --exclude-standard ) >"$now" 2>/dev/null
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    case "$f" in .lcars-*|*/.lcars-*) continue ;; esac              # worker/LCARS scratch
+    is_scratch "$f" && continue                                     # harness/CLI scratch
     [ -f "$before" ] && grep -qxF -- "$f" "$before" && continue     # pre-existing untracked
     ( cd "$REPO_ROOT" && "$GIT_BIN" add -- "$f" >/dev/null 2>&1 )
   done <"$now"
@@ -832,10 +1066,37 @@ commit_ticket() { # ticket  summary
 
   if "$GIT_BIN" diff --cached --quiet 2>/dev/null; then
     COMMIT_NOTE="  ⚠ ticket $1 produced no file changes to commit."
+    cleanup_runner_scratch "$before"
     return 0
   fi
   "$GIT_BIN" commit -q -m "lcars($MISSION_ID) $1: $2" >/dev/null 2>&1 \
     || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+  # After the ticket commits, sweep the HARNESS-OWNED runner scratch from the
+  # tree so it never lingers into later tickets or the captain's `git status`.
+  # ONLY the harness's own `.lcars-run-*` files, and never a file the captain had
+  # before the ticket (the .untracked-before snapshot) or worker output under
+  # .git/lcars — so the captain's work is never destroyed.
+  cleanup_runner_scratch "$before"
+}
+
+# --- remove the harness-owned runner scratch from the working tree ----------
+# Deletes ONLY `.lcars-run-*` files the harness controls, and ONLY when they were
+# NOT pre-existing (absent from the .untracked-before snapshot). Uses `git
+# ls-files --others` WITHOUT --exclude-standard on purpose: once
+# ensure_scratch_excluded has hidden the runner via .git/info/exclude, the
+# excluded listing no longer shows it, but we still must delete it. The bare
+# --others listing skips .git/ for us, so worker output under .git/lcars is never
+# touched. jq-free, best-effort; the captain's files are spared by the snapshot.
+cleanup_runner_scratch() { # before-snapshot
+  local before="$1" f
+  ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others ) 2>/dev/null \
+  | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      # shellcheck disable=SC2254
+      case "$f" in $LCARS_RUNNER_GLOB|*/$LCARS_RUNNER_GLOB) : ;; *) continue ;; esac
+      [ -f "$before" ] && grep -qxF -- "$f" "$before" && continue   # captain's — keep
+      rm -f "$REPO_ROOT/$f" 2>/dev/null || :
+    done
 }
 
 # --- parse waves.json into "<wave>\t<id>" lines, in wave then plan order ------
@@ -847,6 +1108,21 @@ parse_waves_table() { # waves.json
   awk '
     /"wave"[[:space:]]*:/ { w=$0; gsub(/[^0-9]/,"",w); cur=w; next }
     /"id"[[:space:]]*:/   { n=split($0,a,"\""); if (n>=4) printf "%s\t%s\n", cur, a[4] }
+  ' "$1"
+}
+
+# --- a ticket's sub-issue number from waves.json ----------------------------
+# Canonical waves.json pairs each ticket's "id" line with its "issue" line right
+# below (emit_waves_json's shape). A line-oriented awk pass tracks the current id
+# and, on the matching ticket, echoes the issue token — a number, or "null" for a
+# local-only mission (no sub-issue was created). Empty output = id not found.
+# This is the ticket→sub-issue map Rule A reads to close the right issue.
+ticket_issue() { # waves.json  ticketId
+  awk -v want="$2" '
+    /"id"[[:space:]]*:/    { n=split($0,a,"\""); if (n>=4) cur=a[4]; next }
+    /"issue"[[:space:]]*:/ { if (cur==want) {
+        v=$0; sub(/.*"issue"[[:space:]]*:[[:space:]]*/,"",v); gsub(/[ ,}]/,"",v)
+        print v; exit } }
   ' "$1"
 }
 
@@ -1029,6 +1305,9 @@ cmd_impl_save_result() {
     gh_relabel "lcars:awaiting-human" ""
     rm -f "$q"
 
+    emit_event ticket_flagged implement "ticket $TICKET flagged after $attempts attempt(s)" \
+      "ticket=$TICKET" "attempts=$attempts"
+
     echo "IMPLEMENT: ticket flagged — $TICKET"
     echo "  $TICKET still fails after $attempts attempt(s) (the $MAX_ATTEMPTS-attempt cap)."
     echo "  Saved result.json and flagged the human. Stage: implement (awaiting-human)."
@@ -1041,9 +1320,60 @@ cmd_impl_save_result() {
   # eventual PR has content (the working tree is otherwise left uncommitted).
   commit_ticket "$TICKET" "$(json_str "$RESULT" summary)"
 
+  # ticket_green is emitted ONLY HERE — AFTER the immutable-tests check, the
+  # shape/attempts validation (both `die` earlier on rejection) AND commit_ticket.
+  # A guardrail-rejected save has already exited non-zero above, so it can never
+  # reach this line: a rejected ticket never emits green.
+  emit_event ticket_green implement "ticket $TICKET green in $attempts attempt(s)" \
+    "ticket=$TICKET" "attempts=$attempts"
+
+  # RULE A (issue-close lifecycle): the ticket is green AND committed, so close
+  # its per-ticket sub-issue — relabel lcars:implement → lcars:done, then close.
+  # This sits AFTER the guardrails (immutable tests / shape — both `die` above)
+  # AND after commit_ticket: a sub-issue close must never imply a pass that a
+  # guardrail rejected. The forge calls go through the host adapter (the ONE
+  # forge seam), and are best-effort like commit_ticket / gh_relabel — a failure
+  # leaves a note but NEVER fails the already-saved result. A null issue (a
+  # local-only mission whose Schedule created no sub-issue) makes no call at all.
+  local CLOSE_NOTE="" tissue parent_issue
+  tissue="$(ticket_issue "$MISSION_DIR/waves.json" "$TICKET")"
+  # Session-33 interplay guard: in the single-ticket Schedule fast-path the lone
+  # ticket's issue IS the Mission's OWN parent issue (Schedule reused it instead
+  # of opening a redundant sub-issue — BUG-005). Closing it here, on green, would
+  # close the parent BEFORE the PR merges. So when tissue == the Mission's
+  # githubIssue, SKIP the relabel+close entirely; the parent closes on MERGE
+  # (lcars-approve), not on a green ticket.
+  parent_issue="$(json_raw "$STATE" githubIssue)"
+  case "$tissue" in
+    ''|null)
+      # No sub-issue on file for this ticket — local-only path, nothing to close.
+      CLOSE_NOTE="  ⓘ no sub-issue on file for $TICKET — skipped issue close (local-only mission)."
+      ;;
+  esac
+  if [ -z "$CLOSE_NOTE" ] && [ -n "$parent_issue" ] && [ "$parent_issue" != "null" ] \
+     && [ "$tissue" = "$parent_issue" ]; then
+    # Reused-parent fast-path: leave it open; it closes on PR merge.
+    CLOSE_NOTE="  ⓘ ticket $TICKET reuses the Mission issue #$tissue — left open; it closes on PR merge."
+  fi
+  case "$tissue" in
+    ''|null) : ;;  # already handled above
+    "$parent_issue") : ;;  # reused-parent guard handled above
+    *)
+      if command -v "$GH_BIN" >/dev/null 2>&1; then
+        host issue-relabel "$tissue" --add "lcars:done" --remove "lcars:implement" \
+          || CLOSE_NOTE="  ⚠ could not relabel sub-issue #$tissue — relabel + close it by hand."
+        host issue-close "$tissue" \
+          || CLOSE_NOTE="  ⚠ could not close sub-issue #$tissue — close it by hand."
+      else
+        CLOSE_NOTE="  ⚠ gh not found — close sub-issue #$tissue by hand (add lcars:done, remove lcars:implement)."
+      fi
+      ;;
+  esac
+
   echo "IMPLEMENT: result saved — $TICKET"
   echo "  $TICKET passed in $attempts attempt(s). Saved result.json."
   [ -n "$COMMIT_NOTE" ] && echo "$COMMIT_NOTE"
+  [ -n "$CLOSE_NOTE" ] && echo "$CLOSE_NOTE"
   exit 0
 }
 
@@ -1518,10 +1848,29 @@ cmd_implement_ticket() {
   mkdir -p "$(ticket_dir "$TICKET")"
   snapshot_untracked "$(ticket_dir "$TICKET")/.untracked-before"
 
+  # ticket_start — look up this ticket's wave in waves.json (jq-free). IDEMPOTENT:
+  # implement-ticket is re-invoked on the same ticket (manual retry, or the
+  # respond→run resume of a flagged ticket), so emit at most once EVER per
+  # (mission, ticket) by checking events.jsonl first.
+  local tw; tw="$(parse_waves_table "$MISSION_DIR/waves.json" 2>/dev/null | awk -F'\t' -v t="$TICKET" '$2==t{print $1; exit}')"
+  event_seen ticket_start "\"ticket\":\"$TICKET\"" \
+    || emit_event ticket_start implement "ticket $TICKET starting" "ticket=$TICKET" "wave=${tw:-0}"
+
+  # NOTE: `attempt` in the ticket_attempt events below is the CUMULATIVE
+  # worker-DISPATCH count for this (ticket, phase) ACROSS invocations — one index
+  # per real spawn_worker dispatch, derived from events.jsonl so it never repeats
+  # or restarts when a fresh process re-enters. DISTINCT from the Implementer's
+  # own internal 1–5 attempts that land in result.json.attempts.attempts.
   # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
   local tries=0 saved=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
+    # attempt = 1 + (existing ticket_attempt lines for THIS ticket+phase). Within
+    # one invocation this is 1,2,3; a re-invocation continues 4,5,6 — one unique
+    # index per real spawn_worker dispatch below, never a repeat.
+    local awtry; awtry=$(( $(event_count ticket_attempt "\"ticket\":\"$TICKET\".*\"phase\":\"test-writer\"") + 1 ))
+    emit_event ticket_attempt implement "test-writer try $awtry for $TICKET" \
+      "ticket=$TICKET" "phase=test-writer" "attempt=$awtry"
     local odir; odir="$(mktemp -d)"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
@@ -1557,6 +1906,10 @@ $TICKET"
   tries=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
+    # Same cumulative-from-the-log numbering as Phase 1, for the implementer phase.
+    local aitry; aitry=$(( $(event_count ticket_attempt "\"ticket\":\"$TICKET\".*\"phase\":\"implementer\"") + 1 ))
+    emit_event ticket_attempt implement "implementer try $aitry for $TICKET" \
+      "ticket=$TICKET" "phase=implementer" "attempt=$aitry"
     local odir; odir="$(mktemp -d)"
     spawn_worker implement-implementer "$STAGES_DIR/implement-implementer.md" repo-write "$odir" "$iextra"
     if [ -f "$odir/result.json" ]; then
@@ -1583,7 +1936,12 @@ cmd_implement() {
   require_stage implement
   require_worker
 
-  local last_status=""
+  # For the wave_start instrumentation: totalWaves (distinct wave count) and a
+  # per-wave ticket count, both derived jq-free from waves.json via parse_waves_table.
+  local waves_file="$MISSION_DIR/waves.json"
+  local total_waves; total_waves="$(parse_waves_table "$waves_file" 2>/dev/null | cut -f1 | sort -un | grep -c .)"
+
+  local last_status="" last_wave=""
   while :; do
     local st rc=0
     st="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-status --mission "$MISSION_ID" 2>&1)" || rc=$?
@@ -1600,6 +1958,21 @@ cmd_implement() {
       *"IMPLEMENT: wave "*) : ;;   # a wave is active — build its pending tickets
       *) printf '%s\n' "$st" >&2; die "unexpected impl-status output — Stage stopped." ;;
     esac
+
+    # Emit wave_start ONCE per wave, in ascending order. impl-status re-runs every
+    # pass, AND cmd_implement itself is re-invoked on real runs (manual retry /
+    # respond→run resume), so the in-process last_wave guard is not enough —
+    # dedup durably against events.jsonl. Match "wave":N at an INTEGER boundary
+    # (followed by , or }) so "wave":1 never matches "wave":10. M = the wave's
+    # FULL ticket count from waves.json (on first sight all its tickets are pending).
+    local cur_wave; cur_wave="$(printf '%s\n' "$st" | sed -n 's/.*IMPLEMENT: wave \([0-9]*\) active.*/\1/p')"
+    if [ -n "$cur_wave" ] && [ "$cur_wave" != "$last_wave" ] \
+       && ! event_seen wave_start "\"wave\":$cur_wave[,}]"; then
+      local wcount; wcount="$(parse_waves_table "$waves_file" 2>/dev/null | awk -F'\t' -v w="$cur_wave" '$1==w{n++} END{print n+0}')"
+      emit_event wave_start implement "wave $cur_wave starting ($wcount ticket(s))" \
+        "wave=$cur_wave" "ticketCount=$wcount" "totalWaves=$total_waves"
+    fi
+    last_wave="$cur_wave"
 
     # No-progress guard: if a full pass leaves impl-status reporting exactly the
     # same wave + pending set, we'd loop forever — stop loudly instead.
@@ -1741,15 +2114,20 @@ cmd_drive() {
     stage="$(json_str "$STATE" stage)"
     awaiting="$(json_raw "$STATE" awaitingHuman)"
 
-    # Halt conditions, checked BEFORE running anything.
+    # Halt conditions, checked BEFORE running anything. Each emits a `gate` event
+    # to the Mission log (the halt block + notify hook below are unchanged).
     if [ "$awaiting" = "true" ]; then
+      emit_event gate "$stage" "awaiting your answer"
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
     fi
     case "$stage" in
-      verify) drive_print_summary "$summary"; drive_halt_verify; return 0 ;;
-      done)   drive_print_summary "$summary"
+      verify) emit_event gate verify "human review required"
+              drive_print_summary "$summary"; drive_halt_verify; return 0 ;;
+      done)   emit_event gate done "Mission shipped — the PR is open"
+              drive_print_summary "$summary"
               printf '⏹ stopped at: done  (Mission shipped — the PR is open)\n'; return 0 ;;
       align)  if [ -f "$MISSION_DIR/feedback.md" ]; then
+                emit_event gate align "interactive Align re-grill required"
                 drive_print_summary "$summary"; drive_halt_align; return 0
               fi ;;
     esac
@@ -1768,6 +2146,11 @@ cmd_drive() {
          printf '⏹ stopped: Mission is at an unsupported stage "%s".\n' "$stage"; return 1 ;;
     esac
 
+    # Live BEGIN: log + print before the (output-captured) stage subprocess runs,
+    # so a tail/scrollback shows the Stage starting in real time.
+    emit_event stage_start "$action" "starting"
+    printf '%-12s ▶  running…\n' "$action"
+
     local out rc=0
     out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" "$action" --mission "$MISSION_ID" 2>&1)" || rc=$?
 
@@ -1776,14 +2159,26 @@ cmd_drive() {
     new_awaiting="$(json_raw "$STATE" awaitingHuman)"
 
     # Label the line by the Stage that actually ran (a fresh `align` runs Research).
+    # The per-stage line is built ONCE, PRINTED LIVE immediately (so a tail shows
+    # each transition as it happens), AND accumulated into $summary (the final
+    # block at halt prints unchanged). The drive_line format — including the
+    # `⊘ isolated` marker — is byte-identical to before.
+    local line
     if [ "$new_awaiting" = "true" ]; then
+      line="$(drive_line "$action" "$out" paused)"
+      printf '%s\n' "$line"
+      # The `gate` event + notify fire from the halt check at the top of the
+      # next pass — emitting one here too would double-log the gate.
       summary="${summary:+$summary
-}$(drive_line "$action" "$out" paused)"
-      continue   # the halt check at the top of the next pass fires + notifies
+}$line"
+      continue
     fi
     if [ "$new_stage" != "$stage" ]; then
+      line="$(drive_line "$action" "$out" ok)"
+      printf '%s\n' "$line"
+      emit_event stage_done "$action" "$(drive_detail "$action" "$out")"
       summary="${summary:+$summary
-}$(drive_line "$action" "$out" ok)"
+}$line"
       if [ "$mode" = "step" ]; then
         drive_print_summary "$summary"
         if [ "$new_stage" = "verify" ]; then drive_halt_verify
@@ -1796,6 +2191,7 @@ cmd_drive() {
     fi
 
     # Nothing advanced and no gate was raised → a hard Stage error.
+    emit_event error "$stage" "$stage failed"
     drive_print_summary "$summary"
     printf '⏹ stopped: %s failed\n' "$stage"
     printf '%s\n' "$out"
@@ -1807,6 +2203,7 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --step)        STEP=1; shift ;;
@@ -1826,12 +2223,18 @@ while [ $# -gt 0 ]; do
     --tests=*)     TESTS="${1#--tests=}"; shift ;;
     --result)      RESULT="${2:-}"; shift 2 ;;
     --result=*)    RESULT="${1#--result=}"; shift ;;
+    --type)        EV_TYPE="${2:-}"; shift 2 ;;
+    --type=*)      EV_TYPE="${1#--type=}"; shift ;;
+    --stage)       EV_STAGE="${2:-}"; shift 2 ;;
+    --stage=*)     EV_STAGE="${1#--stage=}"; shift ;;
+    --detail)      EV_DETAIL="${2:-}"; shift 2 ;;
+    --detail=*)    EV_DETAIL="${1#--detail=}"; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|plan|plan-review|implement|implement-ticket|drive)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|plan|plan-review|implement|implement-ticket|drive|emit-event)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -1858,5 +2261,7 @@ case "$SUB" in
   implement-ticket) cmd_implement_ticket ;;
   # Auto-advance driver — sequences the per-Stage advances above (token-free).
   drive)            cmd_drive ;;
+  # Test hook: emit one event line to the Mission event log (jq-free helper).
+  emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

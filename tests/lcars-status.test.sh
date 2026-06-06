@@ -250,6 +250,297 @@ check "9. falls back to state.json.stage when there is no pending.json" \
   "grep -qE 'lcars-20260530-010[[:space:]]+#10[[:space:]]+validate' '$repo9b/out.txt'"
 
 # ==========================================================================
+# --watch / --once : the live Mission event view (Session 27)
+#
+# `--once` is the deterministic, non-follow sibling of `--watch`: it reads a
+# FIXED events.jsonl + waves.json, renders every human line, computes the final
+# progress line, and exits — so the math is assertable without a live tail.
+# `$LCARS_NOW` pins "now" for elapsed; the shared resolver picks the mission.
+# ==========================================================================
+echo
+echo "lcars status --watch / --once"
+
+# The real shared resolver lives one dir up from status.sh.
+RESOLVE="${LCARS_RESOLVE_SCRIPT:-$REPO_ROOT/skills/lcars/resolve.sh}"
+
+# write_events <repo> <id> <events.jsonl-body>  — drop a literal event stream.
+write_events() {
+  local repo="$1" id="$2" body="$3"
+  local dir="$repo/.git/lcars/missions/$id"
+  mkdir -p "$dir"
+  printf '%s\n' "$body" >"$dir/events.jsonl"
+}
+
+# write_waves <repo> <id> <waves.json-body> — drop a canonical waves.json.
+write_waves() {
+  local repo="$1" id="$2" body="$3"
+  local dir="$repo/.git/lcars/missions/$id"
+  mkdir -p "$dir"
+  printf '%s\n' "$body" >"$dir/waves.json"
+}
+
+WAVES_3='[
+  { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 }, { "id": "t-002", "issue": 12 } ] },
+  { "wave": 2, "tickets": [ { "id": "t-003", "issue": 13 }, { "id": "t-004", "issue": 14 } ] },
+  { "wave": 3, "tickets": [ { "id": "t-005", "issue": 15 }, { "id": "t-006", "issue": 16 } ] }
+]'
+
+# --- Behaviour W1: every event type renders to its expected human line --------
+repoW1="$(new_init_repo)"
+write_mission "$repoW1" "lcars-20260601-001" "implement" "21" \
+  "2026-06-01T10:00:00Z" "Watch me"
+write_events "$repoW1" "lcars-20260601-001" \
+'{"ts":1000,"mission":"lcars-20260601-001","stage":"research","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260601-001","stage":"research","type":"stage_done","detail":"asked 3 questions, all answered"}
+{"ts":1002,"mission":"lcars-20260601-001","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":3}}
+{"ts":1003,"mission":"lcars-20260601-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1004,"mission":"lcars-20260601-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 2 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":2}}
+{"ts":1010,"mission":"lcars-20260601-001","stage":"implement","type":"ticket_green","detail":"ticket t-001 green","data":{"ticket":"t-001","attempts":2}}
+{"ts":1011,"mission":"lcars-20260601-001","stage":"implement","type":"ticket_flagged","detail":"ticket t-002 flagged after 5 attempt(s)","data":{"ticket":"t-002","attempts":5}}
+{"ts":1012,"mission":"lcars-20260601-001","stage":"verify","type":"gate","detail":"human review required"}
+{"ts":1013,"mission":"lcars-20260601-001","stage":"error","type":"error","detail":"implement failed"}'
+write_waves "$repoW1" "lcars-20260601-001" "$WAVES_3"
+( cd "$repoW1" && LCARS_NOW=2000 bash "$SCRIPT" --once lcars-20260601-001 >out.txt 2>&1 )
+check "W1. renders stage_start line"    "grep -qi 'research' '$repoW1/out.txt' && grep -qi 'start' '$repoW1/out.txt'"
+check "W1. renders stage_done summary"  "grep -qF 'asked 3 questions, all answered' '$repoW1/out.txt'"
+check "W1. renders wave_start line"     "grep -qiE 'wave 1' '$repoW1/out.txt'"
+check "W1. renders ticket_start line"   "grep -qi 'ticket t-001' '$repoW1/out.txt'"
+check "W1. renders ticket_attempt line" "grep -qiE 'attempt|try' '$repoW1/out.txt' && grep -q 't-001' '$repoW1/out.txt'"
+check "W1. renders ticket_green line"   "grep -qi 'green' '$repoW1/out.txt' && grep -q 't-001' '$repoW1/out.txt'"
+check "W1. renders ticket_flagged line" "grep -qi 'flag' '$repoW1/out.txt' && grep -q 't-002' '$repoW1/out.txt'"
+check "W1. renders gate line"           "grep -qF 'human review required' '$repoW1/out.txt'"
+check "W1. renders error line"          "grep -qi 'implement failed' '$repoW1/out.txt'"
+
+# --- Behaviour W2: progress line Wave x/y and ticket k-of-n -------------------
+# Stream is partway through wave 2, on t-004; two tickets (t-001,t-002) green.
+repoW2="$(new_init_repo)"
+write_mission "$repoW2" "lcars-20260601-002" "implement" "22" \
+  "2026-06-01T10:00:00Z" "Progress math"
+write_events "$repoW2" "lcars-20260601-002" \
+'{"ts":1000,"mission":"lcars-20260601-002","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260601-002","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":3}}
+{"ts":1002,"mission":"lcars-20260601-002","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}
+{"ts":1010,"mission":"lcars-20260601-002","stage":"implement","type":"ticket_green","detail":"ticket t-001 green","data":{"ticket":"t-001","attempts":1}}
+{"ts":1011,"mission":"lcars-20260601-002","stage":"implement","type":"ticket_start","detail":"ticket t-002","data":{"ticket":"t-002","wave":1}}
+{"ts":1025,"mission":"lcars-20260601-002","stage":"implement","type":"ticket_green","detail":"ticket t-002 green","data":{"ticket":"t-002","attempts":1}}
+{"ts":1026,"mission":"lcars-20260601-002","stage":"implement","type":"wave_start","detail":"wave 2 starting","data":{"wave":2,"ticketCount":2,"totalWaves":3}}
+{"ts":1027,"mission":"lcars-20260601-002","stage":"implement","type":"ticket_start","detail":"ticket t-003","data":{"ticket":"t-003","wave":2}}
+{"ts":1030,"mission":"lcars-20260601-002","stage":"implement","type":"ticket_start","detail":"ticket t-004","data":{"ticket":"t-004","wave":2}}
+{"ts":1031,"mission":"lcars-20260601-002","stage":"implement","type":"ticket_attempt","detail":"implementer try 1 for t-004","data":{"ticket":"t-004","phase":"implementer","attempt":1}}'
+write_waves "$repoW2" "lcars-20260601-002" "$WAVES_3"
+( cd "$repoW2" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-002 >out.txt 2>&1 )
+PROG2="$(grep -i 'avg/ticket' "$repoW2/out.txt" | tail -1)"
+check "W2. progress line shows Wave 2/3"          "printf '%s' '$PROG2' | grep -qF 'Wave 2/3'"
+check "W2. progress line names current ticket t-004" "printf '%s' '$PROG2' | grep -q 't-004'"
+check "W2. progress line shows 2 of 6 green"        "printf '%s' '$PROG2' | grep -qF '2/6'"
+
+# --- Behaviour W3: avg/ticket math + em dash before any green ----------------
+# In W2's stream: t-001 took 1010-1002=8s, t-002 took 1025-1011=14s → avg 11s.
+check "W3. avg/ticket is the mean of completed durations (~11s)" \
+  "printf '%s' '$PROG2' | grep -qE '~11s avg/ticket'"
+# A stream with NO ticket_green yet must show the em dash, not a number.
+repoW3="$(new_init_repo)"
+write_mission "$repoW3" "lcars-20260601-003" "implement" "23" \
+  "2026-06-01T10:00:00Z" "No green yet"
+write_events "$repoW3" "lcars-20260601-003" \
+'{"ts":1000,"mission":"lcars-20260601-003","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":3}}
+{"ts":1001,"mission":"lcars-20260601-003","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}'
+write_waves "$repoW3" "lcars-20260601-003" "$WAVES_3"
+( cd "$repoW3" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-003 >out.txt 2>&1 )
+PROG3="$(grep -i 'avg/ticket' "$repoW3/out.txt" | tail -1)"
+check "W3. shows the em dash for avg before any ticket is green" \
+  "printf '%s' '$PROG3' | grep -qF '—s avg/ticket' || printf '%s' '$PROG3' | grep -qF '— avg/ticket'"
+check "W3. no spurious avg number before any green" \
+  "! printf '%s' '$PROG3' | grep -qE '~[0-9]+s avg/ticket'"
+
+# --- Behaviour W4: elapsed from first-event ts, $LCARS_NOW pinned ------------
+# first event ts=1000; LCARS_NOW=1100 → 100s elapsed → 1m40s.
+check "W4. elapsed computed from first-event ts with LCARS_NOW pinned" \
+  "printf '%s' '$PROG2' | grep -qE 'elapsed .*1m40s'"
+
+# --- Behaviour W5: a terminal gate ends the watch with a final snapshot ------
+# Last line is a verify gate; --once renders it AND prints a final progress line.
+repoW5="$(new_init_repo)"
+write_mission "$repoW5" "lcars-20260601-005" "verify" "25" \
+  "2026-06-01T10:00:00Z" "Terminal gate"
+write_events "$repoW5" "lcars-20260601-005" \
+'{"ts":1000,"mission":"lcars-20260601-005","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":1,"totalWaves":1}}
+{"ts":1001,"mission":"lcars-20260601-005","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}
+{"ts":1009,"mission":"lcars-20260601-005","stage":"implement","type":"ticket_green","detail":"ticket t-001 green","data":{"ticket":"t-001","attempts":1}}
+{"ts":1010,"mission":"lcars-20260601-005","stage":"verify","type":"gate","detail":"human review required"}'
+write_waves "$repoW5" "lcars-20260601-005" \
+'[ { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 } ] } ]'
+( cd "$repoW5" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-005 >out.txt 2>&1 )
+check "W5. renders the terminal gate line" \
+  "grep -qF 'human review required' '$repoW5/out.txt'"
+check "W5. prints a final progress snapshot after the gate" \
+  "grep -qi 'avg/ticket' '$repoW5/out.txt'"
+check "W5. final snapshot reflects the single completed wave (1/1, 1/1)" \
+  "grep -i 'avg/ticket' '$repoW5/out.txt' | grep -qF 'Wave 1/1' && grep -i 'avg/ticket' '$repoW5/out.txt' | grep -qF '1/1'"
+# --once must exit 0 cleanly on a terminal stream.
+( cd "$repoW5" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-005 >/dev/null 2>&1 )
+check "W5. --once exits 0 on a terminal stream" "[ $? -eq 0 ]"
+
+# --- Behaviour W6: --watch resolves the active mission via the shared resolver -
+# Exactly one active mission → no prompt, the resolver returns it. We exercise
+# the REAL resolve.sh against a temp repo (true integration). Use --once so the
+# test is deterministic, but force resolution by passing NO id.
+repoW6="$(new_init_repo)"
+write_mission "$repoW6" "lcars-20260601-006" "implement" "26" \
+  "2026-06-01T10:00:00Z" "Sole active mission"
+write_events "$repoW6" "lcars-20260601-006" \
+'{"ts":1000,"mission":"lcars-20260601-006","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":1,"totalWaves":1}}
+{"ts":1001,"mission":"lcars-20260601-006","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}
+{"ts":1009,"mission":"lcars-20260601-006","stage":"implement","type":"ticket_green","detail":"ticket t-001 green","data":{"ticket":"t-001","attempts":1}}'
+write_waves "$repoW6" "lcars-20260601-006" \
+'[ { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 } ] } ]'
+( cd "$repoW6" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" bash "$SCRIPT" --once >out.txt 2>&1 )
+check "W6. --once with no id resolves the sole active mission" \
+  "grep -q 'ticket t-001' '$repoW6/out.txt' && grep -qi 'avg/ticket' '$repoW6/out.txt'"
+# An explicit partial id is honoured by the resolver.
+( cd "$repoW6" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" bash "$SCRIPT" --once 006 >out2.txt 2>&1 )
+check "W6. an explicit partial id is honoured" \
+  "grep -qi 'avg/ticket' '$repoW6/out2.txt'"
+
+# ==========================================================================
+# DEFECT #2 (Session 27): the live watch's waves.json totals must be re-read
+# every frame, not captured once before the follow loop. Before the fix the
+# denominator (ticket total N / wave total) froze at startup, so a watch begun
+# BEFORE Schedule wrote waves.json stayed stuck at `(0/?)` forever even after
+# waves.json appeared. The deterministic guard is at the compute level:
+#   (a) with NO waves.json, the denominator falls back to the events-derived
+#       ticketCount sum (best-effort), NOT a bare `?`.
+#   (b) once waves.json IS present it wins (its counts override the events).
+# Both run through --once, which shares compute_progress with --watch.
+echo
+echo "lcars status --watch totals freshness (DEFECT #2)"
+
+# (a) No waves.json yet — wave_start events carry totalWaves + ticketCount.
+# Two distinct waves with ticketCount 2 + 1 → events-derived total tickets = 3,
+# total waves = 2. The denominator must be 3 (not `?`), and the wave total 2.
+repoW7="$(new_init_repo)"
+write_mission "$repoW7" "lcars-20260601-007" "implement" "27" \
+  "2026-06-01T10:00:00Z" "No waves.json yet"
+write_events "$repoW7" "lcars-20260601-007" \
+'{"ts":1000,"mission":"lcars-20260601-007","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":2}}
+{"ts":1001,"mission":"lcars-20260601-007","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}
+{"ts":1009,"mission":"lcars-20260601-007","stage":"implement","type":"ticket_green","detail":"ticket t-001 green","data":{"ticket":"t-001","attempts":1}}
+{"ts":1010,"mission":"lcars-20260601-007","stage":"implement","type":"ticket_start","detail":"ticket t-002","data":{"ticket":"t-002","wave":1}}
+{"ts":1018,"mission":"lcars-20260601-007","stage":"implement","type":"ticket_green","detail":"ticket t-002 green","data":{"ticket":"t-002","attempts":1}}
+{"ts":1019,"mission":"lcars-20260601-007","stage":"implement","type":"wave_start","detail":"wave 2 starting","data":{"wave":2,"ticketCount":1,"totalWaves":2}}
+{"ts":1020,"mission":"lcars-20260601-007","stage":"implement","type":"ticket_start","detail":"ticket t-003","data":{"ticket":"t-003","wave":2}}'
+# NB: deliberately NO write_waves — waves.json is absent.
+( cd "$repoW7" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-007 >out.txt 2>&1 )
+PROG7="$(grep -i 'avg/ticket' "$repoW7/out.txt" | tail -1)"
+check "D2(a). ticket total falls back to events ticketCount sum (2/3), not ?" \
+  "printf '%s' '$PROG7' | grep -qF '2/3'"
+check "D2(a). wave total falls back to events totalWaves (Wave 2/2), not ?" \
+  "printf '%s' '$PROG7' | grep -qF 'Wave 2/2'"
+check "D2(a). denominator is never a bare ? once events carry totals" \
+  "! printf '%s' '$PROG7' | grep -qE '/\\?'"
+
+# (b) Same stream, but now waves.json IS present and disagrees with the events
+# (it lists 5 tickets across 2 waves). waves.json must win: the denominator is
+# its count (5), not the events-derived 3 — proving compute reads it FRESH.
+repoW8="$(new_init_repo)"
+write_mission "$repoW8" "lcars-20260601-008" "implement" "28" \
+  "2026-06-01T10:00:00Z" "waves.json wins"
+write_events "$repoW8" "lcars-20260601-008" \
+'{"ts":1000,"mission":"lcars-20260601-008","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":2}}
+{"ts":1001,"mission":"lcars-20260601-008","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}'
+write_waves "$repoW8" "lcars-20260601-008" \
+'[
+  { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 }, { "id": "t-002", "issue": 12 }, { "id": "t-003", "issue": 13 } ] },
+  { "wave": 2, "tickets": [ { "id": "t-004", "issue": 14 }, { "id": "t-005", "issue": 15 } ] }
+]'
+( cd "$repoW8" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-008 >out.txt 2>&1 )
+PROG8="$(grep -i 'avg/ticket' "$repoW8/out.txt" | tail -1)"
+check "D2(b). waves.json ticket total wins over events (0/5)" \
+  "printf '%s' '$PROG8' | grep -qF '0/5'"
+check "D2(b). waves.json wave total wins (Wave 1/2)" \
+  "printf '%s' '$PROG8' | grep -qF 'Wave 1/2'"
+check "D2(b). events-derived count (3) does NOT leak through when waves.json present" \
+  "! printf '%s' '$PROG8' | grep -qF '/3'"
+
+# (c) Live-watch freshness: start --watch with NO waves.json, write it after a
+# beat, assert a later frame shows the real totals (not the stale `?`/events
+# count). Bounded + always-cleaned-up so it stays non-flaky; LCARS_NOW pins time.
+repoW9="$(new_init_repo)"
+write_mission "$repoW9" "lcars-20260601-009" "implement" "29" \
+  "2026-06-01T10:00:00Z" "Live waves.json appears"
+write_events "$repoW9" "lcars-20260601-009" \
+'{"ts":1000,"mission":"lcars-20260601-009","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":1,"totalWaves":1}}
+{"ts":1001,"mission":"lcars-20260601-009","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}'
+WATCHLOG9="$repoW9/watch.log"
+(
+  cd "$repoW9" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
+    bash "$SCRIPT" --watch lcars-20260601-009 </dev/null >"$WATCHLOG9" 2>&1 &
+  echo $! >"$repoW9/watch.pid"
+)
+wpid9="$(cat "$repoW9/watch.pid")"
+sleep 2
+# waves.json appears mid-watch, listing 4 tickets across 1 wave.
+write_waves "$repoW9" "lcars-20260601-009" \
+'[ { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 }, { "id": "t-002", "issue": 12 }, { "id": "t-003", "issue": 13 }, { "id": "t-004", "issue": 14 } ] } ]'
+sleep 2
+# Tear down with SIGTERM (the reliable signal for an `&`-backgrounded process;
+# SIGINT is inherited-ignored — see DEFECT #1 note below) so no orphan leaks.
+kill -TERM "$wpid9" 2>/dev/null
+wait "$wpid9" 2>/dev/null
+kill -KILL "$wpid9" 2>/dev/null || true
+check "D2(c). a waves.json that appears mid-watch is picked up (0/4)" \
+  "grep -qF '0/4' '$WATCHLOG9'"
+
+# ==========================================================================
+# DEFECT #1 (Session 27): a no-TTY / backgrounded --watch must NOT busy-spin and
+# must honour SIGINT. With stdin redirected from /dev/null, `read -t 1` used to
+# return immediately at EOF → thousands of frames in seconds. The fix sleeps 1s
+# per tick when stdin isn't a terminal, and the trap sets a stop flag the loop
+# checks so SIGINT terminates a backgrounded watch. We drive a NON-terminal
+# stream (no gate → it would loop forever) with stdin </dev/null, let it run
+# ~2s, then SIGINT it. Assert: (a) the output is small (single-digit frames),
+# proving the ~1s throttle; (b) the process is gone (SIGINT honoured).
+echo
+echo "lcars status --watch no-TTY throttle + signal teardown (DEFECT #1)"
+
+repoW10="$(new_init_repo)"
+write_mission "$repoW10" "lcars-20260601-010" "implement" "30" \
+  "2026-06-01T10:00:00Z" "No-TTY throttle"
+# Non-terminal stream: a wave + ticket_start, NO gate/error → watch keeps looping.
+write_events "$repoW10" "lcars-20260601-010" \
+'{"ts":1000,"mission":"lcars-20260601-010","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":2,"totalWaves":1}}
+{"ts":1001,"mission":"lcars-20260601-010","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}'
+write_waves "$repoW10" "lcars-20260601-010" \
+'[ { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 }, { "id": "t-002", "issue": 12 } ] } ]'
+WATCHLOG="$repoW10/watch.log"
+(
+  cd "$repoW10" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
+    bash "$SCRIPT" --watch lcars-20260601-010 </dev/null >"$WATCHLOG" 2>&1 &
+  echo $! >"$repoW10/watch.pid"
+)
+wpid="$(cat "$repoW10/watch.pid")"
+sleep 2
+# Count the per-frame header lines: one per render. A 1s throttle over ~2s gives
+# a handful (≤6, generous for scheduling jitter); a busy-spin gives thousands.
+# This is the CORE regression for DEFECT #1 (no-busy-spin).
+frames="$(grep -c 'watching lcars-20260601-010' "$WATCHLOG" 2>/dev/null || echo 0)"
+check "D1. no-TTY watch throttles to ~1 frame/sec (not a busy-spin)" \
+  "[ '$frames' -ge 1 ] && [ '$frames' -le 6 ]"
+# Termination: assert with SIGTERM, the reliable signal for a backgrounded
+# process. NOTE: a script started with `&` inherits SIGINT as IGNORED (standard
+# shell job-control — so Ctrl-C in the launching terminal doesn't kill bg jobs),
+# and bash can't re-trap an inherited-ignored SIGINT. So SIGINT can't be asserted
+# against an `&`-backgrounded watch here; in a REAL foreground terminal SIGINT is
+# NOT ignored and the trap fires (Ctrl-C works — confirmed manually). The trap
+# also handles TERM, which we CAN assert: a hung/busy-spinning watch wouldn't
+# honour it promptly.
+kill -TERM "$wpid" 2>/dev/null
+sleep 1
+check "D1. SIGTERM terminates the backgrounded no-TTY watch (no orphan)" \
+  "! kill -0 '$wpid' 2>/dev/null"
+kill -KILL "$wpid" 2>/dev/null || true   # belt-and-braces cleanup
+
+# ==========================================================================
 echo
 printf 'lcars status: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -7,7 +7,7 @@
 # disk; this script takes that PRD and:
 #   1. mints a mission ID            lcars-YYYYMMDD-NNN (NNN per-day sequence)
 #   2. creates .git/lcars/missions/<id>/ with prd.md + state.json
-#   3. opens a GitHub issue labelled lcars:align + lcars:<type>
+#   3. opens a GitHub issue labelled lcars:align + lcars:<type> + lcars:mission
 #   4. prints a confirmation summary
 #
 # Type and title are read from the PRD itself (the `**Type:**` and
@@ -128,7 +128,7 @@ if command -v "$GH_BIN" >/dev/null 2>&1; then
   url="$("$GH_BIN" issue create \
           --title "$TITLE" \
           --body-file "$MISSION_DIR/prd.md" \
-          --label "lcars:align,lcars:$TYPE" 2>/dev/null)"
+          --label "lcars:align,lcars:$TYPE,lcars:mission" 2>/dev/null)"
   # gh prints the new issue's URL; the trailing path segment is its number.
   num="${url##*/}"
   case "$num" in

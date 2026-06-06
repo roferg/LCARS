@@ -258,6 +258,27 @@ write_approved_plan_json() { # file
 EOF
 }
 
+# A SINGLE-ticket approved plan — the Schedule fast-path case (BUG-005). One
+# vertical slice, no dependencies. Schedule must NOT open a redundant sub-issue
+# for this; it reuses the Mission's own issue instead.
+write_single_ticket_plan_json() { # file
+  cat >"$1" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Add the data-theme attribute and dark token set",
+    "description": "Flip data-theme on <html> and wire the dark --color-* tokens end-to-end.",
+    "acceptanceCriteria": ["Setting data-theme=dark recolours the page"],
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
+    "dependencies": [],
+    "rationale": "The whole change is one cohesive slice — no decomposition needed."
+  }
+]
+EOF
+}
+
 # Build a repo with a mission at stage "schedule" — Plan Review passed and
 # approved-plan.json exists; the next Stage to execute is Schedule.
 new_repo_with_schedule_mission() {
@@ -283,6 +304,56 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
   echo "$n" >"$GH_SEQ"
   echo "https://github.com/acme/repo/issues/$n"
 fi
+# Native sub-issue nesting (Session 35): `gh api .../issues/<n> --jq .id`
+# resolves a child's db id; the POST to .../sub_issues links it. Echo a db id
+# distinct from the issue number so a test could tell them apart.
+if [ "${1:-}" = "api" ] && printf '%s' "${2:-}" | grep -q '/sub_issues$' ; then
+  echo '{"sub_issues_summary":{"total":1}}'
+elif [ "${1:-}" = "api" ]; then
+  child="$(printf '%s' "${2:-}" | sed 's#.*/issues/##')"
+  echo $((9000 + child))
+fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A schedule gh stub whose sub-issue calls (gh api) FAIL — id resolution and the
+# POST both exit non-zero — so cmd_schedule's "could not nest" note must fire
+# while waves.json is still written and the stage still advances. issue create
+# still succeeds (only the linking is broken).
+make_gh_stub_schedule_linkfail() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
+  n=101
+  [ -f "$GH_SEQ" ] && n=$(( $(cat "$GH_SEQ") + 1 ))
+  echo "$n" >"$GH_SEQ"
+  echo "https://github.com/acme/repo/issues/$n"
+  exit 0
+fi
+if [ "${1:-}" = "api" ]; then exit 1; fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A stub for the WHOLE host-adapter (LCARS_HOST_ADAPTER). It records each op to
+# $ADAPTER_LOG and mimics the real adapter's stdout contract: issue-create echoes
+# a fresh number; link-subissue echoes nothing. Proves the link goes THROUGH the
+# host seam (op recorded), not via a direct gh/REST call in cmd_schedule.
+make_adapter_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$ADAPTER_LOG"
+case "${1:-}" in
+  issue-create)
+    n=101; [ -f "$ADAPTER_SEQ" ] && n=$(( $(cat "$ADAPTER_SEQ") + 1 ))
+    echo "$n" >"$ADAPTER_SEQ"; echo "$n" ;;
+  link-subissue) : ;;
+  *) : ;;
+esac
 exit 0
 EOF
   chmod +x "$1"
@@ -827,6 +898,10 @@ ncreate="$(grep -c 'issue create' "$GH_LOG")"
 check "S4. creates one GitHub issue per ticket (4)" "[ '$ncreate' = '4' ]"
 check "S4. labels each sub-issue lcars:implement and the mission type" \
   "grep -q 'label lcars:implement,lcars:feature' '$GH_LOG'"
+check "S4. tags each sub-issue lcars:ticket (role)" \
+  "grep -q 'label lcars:implement,lcars:feature,lcars:ticket' '$GH_LOG'"
+check "S4. never tags a sub-issue lcars:mission" \
+  "! grep -q 'lcars:mission' '$GH_LOG'"
 
 # --- Behaviour 5: the created issue numbers are saved into waves.json -------
 check "S5. saves issue number 101 into waves.json" "grep -q '\"issue\": *101' '$WAVES'"
@@ -839,6 +914,19 @@ check "S. relabels schedule → implement (adds lcars:implement)" \
   "grep -q 'add-label lcars:implement' '$repoS/gh.log'"
 check "S. relabels schedule → implement (removes lcars:schedule)" \
   "grep -q 'remove-label lcars:schedule' '$repoS/gh.log'"
+
+# --- Behaviour 6 (Session 35): each ticket sub-issue is NESTED under the Mission
+# as a native GitHub sub-issue. With 4 tickets (issues 101-104) and Mission #42,
+# Schedule must link all four under #42 via the host adapter — the POST to
+# .../issues/42/sub_issues with a TYPED integer sub_issue_id (gh api -F).
+check "S6. nests each ticket under the Mission (POST to issues/42/sub_issues)" \
+  "[ \"\$(grep -c 'api --method POST repos/{owner}/{repo}/issues/42/sub_issues' '$repoS/gh.log')\" = '4' ]"
+check "S6. resolves each child's db id before linking (gh api issues/101 --jq .id)" \
+  "grep -q 'api repos/{owner}/{repo}/issues/101 --jq .id' '$repoS/gh.log'"
+check "S6. sends sub_issue_id as a TYPED integer (-F, the resolved db id 9101)" \
+  "grep -q 'sub_issues -F sub_issue_id=9101' '$repoS/gh.log'"
+check "S6. never self-nests the Mission under itself (no POST issues/42/.../42)" \
+  "! grep -q 'sub_issues -F sub_issue_id=9042' '$repoS/gh.log'"
 
 # --- Behaviour 3: a circular dependency is detected; nothing moves ----------
 repoSc="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSc/gh"
@@ -892,6 +980,143 @@ rcSg=0
 ( cd "$repoSg" && LCARS_GH_BIN="$repoSg/gh" bash "$SCRIPT" schedule \
     --mission "$MID" >out.txt 2>&1 ) || rcSg=$?
 check "guard. schedule refuses a non-schedule mission" "[ '$rcSg' -ne 0 ]"
+
+# ==========================================================================
+echo
+echo "lcars run — Schedule single-ticket fast-path (BUG-005, Session 33)"
+
+# When Plan emits exactly ONE ticket, Schedule must STOP opening a redundant
+# sub-issue that merely duplicates the Mission's own issue. It still emits a
+# one-wave waves.json — the lone ticket pointed at the Mission's OWN issue —
+# and advances to Implement. Pipeline + Implement's input contract unchanged.
+
+# --- SF: a 1-ticket plan opens NO sub-issue; reuses the Mission issue --------
+repoSF="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSF/gh"
+write_single_ticket_plan_json "$repoSF/.git/lcars/missions/$MID/approved-plan.json"
+export GH_LOG="$repoSF/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSF/gh.seq"; rm -f "$GH_SEQ"
+rcSF=0
+( cd "$repoSF" && LCARS_GH_BIN="$repoSF/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSF.txt 2>&1 ) || rcSF=$?
+WAVESSF="$repoSF/.git/lcars/missions/$MID/waves.json"
+check "SF. schedule exits 0 on a single-ticket plan" "[ '$rcSF' -eq 0 ]"
+check "SF. writes waves.json" "[ -f '$WAVESSF' ]"
+check "SF. opens NO GitHub sub-issue (fast-path)" \
+  "! grep -q 'issue create' '$repoSF/gh.log'"
+check "SF. the lone ticket is in wave 1" "[ \"\$(wave_of '$WAVESSF' t-001)\" = '1' ]"
+check "SF. the lone ticket's issue == the Mission's own issue (#42)" \
+  "grep -q '\"issue\": *42' '$WAVESSF'"
+check "SF. waves.json has exactly one ticket (no second ticket)" \
+  "[ \"\$(grep -c '\"id\":' '$WAVESSF')\" = '1' ]"
+check "SF. advances the stage to implement" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoSF")'"
+check "SF. relabels schedule → implement (adds lcars:implement)" \
+  "grep -q 'add-label lcars:implement' '$repoSF/gh.log'"
+check "SF. relabels schedule → implement (removes lcars:schedule)" \
+  "grep -q 'remove-label lcars:schedule' '$repoSF/gh.log'"
+check "SF. reports it opened 0 sub-issue(s)" \
+  "grep -q 'opened 0 sub-issue' '$repoSF/outSF.txt'"
+# Session 35: the fast-path creates no sub-issue, so there is nothing to nest —
+# and the lone ticket reuses the Mission's OWN issue (#42), so a link would
+# self-nest #42 under #42. NO link-subissue POST may fire on the fast path.
+check "SF. makes NO sub-issue link on the fast path (no self-nest of #42)" \
+  "! grep -q 'sub_issues' '$repoSF/gh.log'"
+
+# --- SF-multi: a 2+-ticket plan is UNCHANGED (regression lock) --------------
+# The existing graph → one-sub-issue-per-ticket → waves loop must still fire.
+repoSFm="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSFm/gh"
+export GH_LOG="$repoSFm/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSFm/gh.seq"; rm -f "$GH_SEQ"
+rcSFm=0
+( cd "$repoSFm" && LCARS_GH_BIN="$repoSFm/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSFm.txt 2>&1 ) || rcSFm=$?
+WAVESSFm="$repoSFm/.git/lcars/missions/$MID/waves.json"
+check "SF-multi. 2+-ticket plan exits 0" "[ '$rcSFm' -eq 0 ]"
+check "SF-multi. still opens one sub-issue per ticket (4)" \
+  "[ \"\$(grep -c 'issue create' '$repoSFm/gh.log')\" = '4' ]"
+check "SF-multi. saves the created issue numbers into waves.json (101)" \
+  "grep -q '\"issue\": *101' '$WAVESSFm'"
+check "SF-multi. does NOT reuse the Mission issue #42 for any ticket" \
+  "! grep -q '\"issue\": *42' '$WAVESSFm'"
+
+# --- SF-null: a 1-ticket plan with githubIssue=null → null issue, still moves -
+# Degraded path: no issue on file. Keep TODAY's behaviour — issue: null + the
+# existing warning. Never fabricate an issue.
+repoSFn="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSFn/gh"
+write_single_ticket_plan_json "$repoSFn/.git/lcars/missions/$MID/approved-plan.json"
+sSFn="$(state_of "$repoSFn")"
+sed 's/"githubIssue": 42/"githubIssue": null/' "$sSFn" >"$repoSFn/s.tmp" && mv "$repoSFn/s.tmp" "$sSFn"
+export GH_LOG="$repoSFn/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSFn/gh.seq"; rm -f "$GH_SEQ"
+rcSFn=0
+( cd "$repoSFn" && LCARS_GH_BIN="$repoSFn/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSFn.txt 2>&1 ) || rcSFn=$?
+WAVESSFn="$repoSFn/.git/lcars/missions/$MID/waves.json"
+check "SF-null. exits 0 with a null Mission issue" "[ '$rcSFn' -eq 0 ]"
+check "SF-null. opens NO sub-issue (does not fabricate one)" \
+  "! grep -q 'issue create' '$repoSFn/gh.log'"
+check "SF-null. records issue: null for the lone ticket" \
+  "grep -q '\"issue\": *null' '$WAVESSFn'"
+check "SF-null. still advances to implement" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoSFn")'"
+check "SF-null. warns about the missing issue" \
+  "grep -qi 'warn\\|⚠\\|no.*issue\\|by hand' '$repoSFn/outSFn.txt'"
+
+# --- SF-impl: Implement consumes the fast-path waves.json with NO special-case
+# impl-status reads the reused-issue waves.json exactly the same way.
+repoSFi="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSFi/gh"
+write_single_ticket_plan_json "$repoSFi/.git/lcars/missions/$MID/approved-plan.json"
+export GH_LOG="$repoSFi/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSFi/gh.seq"; rm -f "$GH_SEQ"
+( cd "$repoSFi" && LCARS_GH_BIN="$repoSFi/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >/dev/null 2>&1 )
+rcSFi=0
+( cd "$repoSFi" && LCARS_GH_BIN="$repoSFi/gh" bash "$SCRIPT" impl-status \
+    --mission "$MID" >outSFi.txt 2>&1 ) || rcSFi=$?
+check "SF-impl. impl-status reads the fast-path waves.json (exits 0)" "[ '$rcSFi' -eq 0 ]"
+check "SF-impl. impl-status names the lone ticket t-001 as pending" \
+  "grep -q 't-001' '$repoSFi/outSFi.txt'"
+
+# ==========================================================================
+echo
+echo "lcars run — Schedule sub-issue nesting (Session 35)"
+
+# --- SN-fail: a FAILING link degrades gracefully ----------------------------
+# When sub-issue linking fails (gh api non-zero), Schedule must: surface a
+# warning, STILL write waves.json, and STILL advance to implement (exit 0). A
+# link failure must NEVER abort the Schedule stage.
+repoSN="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule_linkfail "$repoSN/gh"
+export GH_LOG="$repoSN/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSN/gh.seq"; rm -f "$GH_SEQ"
+rcSN=0
+( cd "$repoSN" && LCARS_GH_BIN="$repoSN/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSN.txt 2>&1 ) || rcSN=$?
+WAVESSN="$repoSN/.git/lcars/missions/$MID/waves.json"
+check "SN-fail. schedule still exits 0 when sub-issue linking fails" "[ '$rcSN' -eq 0 ]"
+check "SN-fail. still writes waves.json despite the link failure" "[ -f '$WAVESSN' ]"
+check "SN-fail. still advances to implement despite the link failure" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoSN")'"
+check "SN-fail. surfaces a 'could not nest / by hand' warning" \
+  "grep -qi 'nest\\|by hand\\|⚠' '$repoSN/outSN.txt'"
+
+# --- SN-route: nesting goes THROUGH the host adapter, not direct gh/REST -----
+# Stub the WHOLE adapter and assert it received the link-subissue op with the
+# Mission as parent for each ticket — proving cmd_schedule routes nesting via
+# `host link-subissue`, keeping the path host/CLI-agnostic.
+repoSR="$(new_repo_with_schedule_mission)"
+ADAPTER="$repoSR/adapter.sh"; make_adapter_stub "$ADAPTER"
+export ADAPTER_LOG="$repoSR/adapter.log"; : >"$ADAPTER_LOG"
+export ADAPTER_SEQ="$repoSR/adapter.seq"; rm -f "$ADAPTER_SEQ"
+rcSR=0
+( cd "$repoSR" && LCARS_HOST_ADAPTER="$ADAPTER" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSR.txt 2>&1 ) || rcSR=$?
+check "SN-route. schedule exits 0 with a stubbed host adapter" "[ '$rcSR' -eq 0 ]"
+check "SN-route. routes nesting through the adapter's link-subissue op" \
+  "grep -q '^link-subissue ' '$ADAPTER_LOG'"
+check "SN-route. links each of the 4 tickets under the Mission issue 42" \
+  "[ \"\$(grep -c '^link-subissue 42 ' '$ADAPTER_LOG')\" = '4' ]"
+check "SN-route. never self-nests the Mission under itself (no link-subissue 42 42)" \
+  "! grep -q '^link-subissue 42 42' '$ADAPTER_LOG'"
 
 # ==========================================================================
 echo
@@ -1220,6 +1445,138 @@ check "IC. commits the Implementer's file onto the branch" \
   "( cd '$repoIC' && git ls-tree -r --name-only HEAD | grep -q '^theme.js$' )"
 check "IC. the commit is ahead of the base branch" \
   "[ \"\$(cd '$repoIC' && git rev-list --count $BASEIC..lcars/$MID)\" -ge 1 ]"
+
+# ==========================================================================
+echo
+echo "lcars run — Implement issue-close lifecycle (Session 29, Rule A)"
+
+# RULE A: when a ticket goes GREEN, impl-save-result closes that ticket's
+# per-ticket sub-issue — relabel lcars:implement → lcars:done, then close it.
+# This runs ONLY in the GREEN path, AFTER the guardrails and the commit, so an
+# issue-close can never imply a pass a guardrail rejected. It is best-effort:
+# a forge failure leaves a note but never fails the saved result. A ticket whose
+# waves.json issue is null is a local-only mission — no forge call at all.
+#
+# The fake `gh` already logs `issue edit … --add-label …` and `issue close …`
+# to GH_LOG, so the adapter's relabel/close calls land there per sub-issue.
+
+# A1: a green ticket closes ITS sub-issue (t-001 → #101) with the done relabel.
+repoL1="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL1/gh"
+export GH_LOG="$repoL1/gh.log"; : >"$GH_LOG"
+twL1="$repoL1/tw"; mkdir -p "$twL1"; printf 'assert: a failing test\n' >"$twL1/t.test.js"
+( cd "$repoL1" && LCARS_GH_BIN="$repoL1/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL1" >/dev/null 2>&1 )
+resL1="$repoL1/result.json"; write_result "$resL1" t-001 true 2
+rcL1=0
+( cd "$repoL1" && LCARS_GH_BIN="$repoL1/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL1" >outL1.txt 2>&1 ) || rcL1=$?
+check "A1. impl-save-result exits 0 on the green ticket" "[ '$rcL1' -eq 0 ]"
+check "A1. relabels the sub-issue #101 to add lcars:done" \
+  "grep -q 'issue edit 101 .*add-label lcars:done' '$GH_LOG'"
+check "A1. relabels the sub-issue #101 to remove lcars:implement" \
+  "grep -q 'issue edit 101 .*remove-label lcars:implement' '$GH_LOG'"
+check "A1. closes the sub-issue #101" \
+  "grep -q 'issue close 101' '$GH_LOG'"
+check "A1. closes ONLY this ticket's sub-issue (not another ticket's #102)" \
+  "! grep -q 'issue close 102' '$GH_LOG'"
+
+# A2: a FLAGGED (failed) ticket closes NOTHING — its sub-issue stays open and
+# keeps lcars:implement. (The flagged path relabels the PARENT #42 to
+# awaiting-human, but never touches the ticket's own sub-issue.)
+repoL2="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL2/gh"
+export GH_LOG="$repoL2/gh.log"; : >"$GH_LOG"
+twL2="$repoL2/tw"; mkdir -p "$twL2"; printf 'assert: a failing test\n' >"$twL2/t.test.js"
+( cd "$repoL2" && LCARS_GH_BIN="$repoL2/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL2" >/dev/null 2>&1 )
+resL2="$repoL2/result.json"; write_result "$resL2" t-001 false 5
+( cd "$repoL2" && LCARS_GH_BIN="$repoL2/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL2" >outL2.txt 2>&1 ) || true
+check "A2. a flagged ticket issues NO close against its sub-issue #101" \
+  "! grep -q 'issue close 101' '$GH_LOG'"
+check "A2. a flagged ticket does NOT relabel its sub-issue #101 to done" \
+  "! grep -q 'issue edit 101 .*add-label lcars:done' '$GH_LOG'"
+
+# A3: a ticket whose waves.json issue is null → NO forge call for it, just a
+# note. (Local-only mission path stays clean.) We rewrite waves.json so t-001's
+# issue is null, then drive it green and assert no close fires for it.
+repoL3="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL3/gh"
+export GH_LOG="$repoL3/gh.log"; : >"$GH_LOG"
+wL3="$repoL3/.git/lcars/missions/$MID/waves.json"
+cat >"$wL3" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": null
+      }
+    ]
+  }
+]
+EOF
+twL3="$repoL3/tw"; mkdir -p "$twL3"; printf 'assert: a failing test\n' >"$twL3/t.test.js"
+( cd "$repoL3" && LCARS_GH_BIN="$repoL3/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL3" >/dev/null 2>&1 )
+resL3="$repoL3/result.json"; write_result "$resL3" t-001 true 2
+rcL3=0
+( cd "$repoL3" && LCARS_GH_BIN="$repoL3/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL3" >outL3.txt 2>&1 ) || rcL3=$?
+check "A3. impl-save-result still exits 0 with a null sub-issue" "[ '$rcL3' -eq 0 ]"
+check "A3. a null-issue ticket makes NO issue close call" \
+  "! grep -q 'issue close' '$GH_LOG'"
+check "A3. a null-issue ticket makes NO done-relabel call" \
+  "! grep -q 'add-label lcars:done' '$GH_LOG'"
+
+# A4 (Session 33 interplay guard): when the ticket's issue IS the Mission's OWN
+# parent issue (#42 — the single-ticket fast-path reuse), the on-green close
+# must SKIP entirely. Closing it on green would close the parent BEFORE the PR
+# merges; the parent closes on MERGE (lcars-approve), not here.
+repoL4="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL4/gh"
+export GH_LOG="$repoL4/gh.log"; : >"$GH_LOG"
+wL4="$repoL4/.git/lcars/missions/$MID/waves.json"
+cat >"$wL4" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 42
+      }
+    ]
+  }
+]
+EOF
+twL4="$repoL4/tw"; mkdir -p "$twL4"; printf 'assert: a failing test\n' >"$twL4/t.test.js"
+( cd "$repoL4" && LCARS_GH_BIN="$repoL4/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL4" >/dev/null 2>&1 )
+resL4="$repoL4/result.json"; write_result "$resL4" t-001 true 2
+rcL4=0
+( cd "$repoL4" && LCARS_GH_BIN="$repoL4/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL4" >outL4.txt 2>&1 ) || rcL4=$?
+check "A4. impl-save-result exits 0 when the ticket reuses the Mission issue" "[ '$rcL4' -eq 0 ]"
+check "A4. does NOT close the reused parent issue #42 on green" \
+  "! grep -q 'issue close 42' '$GH_LOG'"
+check "A4. does NOT relabel the reused parent issue #42 to done on green" \
+  "! grep -q 'issue edit 42 .*add-label lcars:done' '$GH_LOG'"
+check "A4. notes the parent issue is left open (closes on PR merge)" \
+  "grep -qi 'mission issue\\|left open\\|on.*merge' '$repoL4/outL4.txt'"
+
+# A4b: a NORMAL sub-issue (issue != parent #42) STILL closes on green
+# (regression on Session 29 — the guard must not over-fire).
+repoL4b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL4b/gh"
+export GH_LOG="$repoL4b/gh.log"; : >"$GH_LOG"
+twL4b="$repoL4b/tw"; mkdir -p "$twL4b"; printf 'assert: a failing test\n' >"$twL4b/t.test.js"
+( cd "$repoL4b" && LCARS_GH_BIN="$repoL4b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL4b" >/dev/null 2>&1 )
+resL4b="$repoL4b/result.json"; write_result "$resL4b" t-001 true 2
+( cd "$repoL4b" && LCARS_GH_BIN="$repoL4b/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL4b" >outL4b.txt 2>&1 ) || true
+check "A4b. a normal sub-issue #101 (!= parent #42) STILL closes on green" \
+  "grep -q 'issue close 101' '$GH_LOG'"
+check "A4b. a normal sub-issue #101 STILL gets the done relabel" \
+  "grep -q 'issue edit 101 .*add-label lcars:done' '$GH_LOG'"
 
 # ==========================================================================
 echo
@@ -2124,6 +2481,198 @@ check "F2. the unrelated file is left untracked in the working tree" \
 
 # ==========================================================================
 echo
+echo "lcars run — scoped commits + scratch hygiene (Session 30)"
+
+# Session 30 HARDENS commit_ticket's existing scoped-commit filter. The scratch
+# set was too narrow (only `.lcars-*`), so a non-LCARS worker runner
+# (`.t003-run.cjs`) and a CLI lock that appeared MID-run (`.claude/x.lock`, not in
+# the pre-run snapshot) both slipped into a ticket commit. The fix is a single
+# CLI/host-agnostic scratch glob set (extensible from config.json `scratchGlobs`),
+# a widened filter, a `.git/info/exclude` append (NEVER the tracked .gitignore),
+# and post-commit cleanup of the harness-owned runner scratch (`.lcars-run-*`).
+#
+#   S30.1  a ticket producing real source + a worker runner + a CLI lock commits
+#          ONLY the source; both scratch files are excluded
+#   S30.2  a pre-existing untracked file (in the snapshot) is still never committed
+#   S30.3  .git/info/exclude gains the scratch globs idempotently; .gitignore is
+#          UNTOUCHED
+#   S30.4  config.json `scratchGlobs` extend the excluded set
+#   S30.5  harness runner scratch (.lcars-run-*) is gone from the tree after the
+#          ticket; the per-ticket commit summary is unchanged
+
+# A worker stub that drops the FULL spread of scratch a real run leaves behind:
+# real source (commit), a non-LCARS worker runner, a mid-run CLI lock under
+# .claude/, a CLI scratch dir under .copilot/, and a harness-owned runner the
+# driver must clean up afterwards.
+make_worker_stub_s30() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""; while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/t.test.js" ;;
+  implement-implementer)
+    mkdir -p src; printf 'export const feature = 1;\n' > src/feature.js     # produced source → commit
+    printf '#!/usr/bin/env node\n' > .t003-run.cjs                          # non-LCARS worker runner → scratch
+    mkdir -p .claude; printf 'lock\n' > .claude/scheduled_tasks.lock        # CLI lock, appears mid-run → scratch
+    mkdir -p .copilot; printf 'x\n' > .copilot/session.json                 # other-CLI scratch dir → scratch
+    printf 'runner\n' > .lcars-run-abc.cjs                                  # harness-owned runner → scratch + cleanup
+    cat >"$out/result.json" <<JSON
+{
+  "ticketId": "t-001",
+  "passed": true,
+  "attempts": 1,
+  "summary": "built the feature; suite green."
+}
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Drive one green ticket through implement-ticket in an isolated repo. Echoes the
+# repo path; the worker stub is $extra-armed by make_worker_stub_s30.
+new_repo_s30() { # [config-scratchGlobs-json-fragment]
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && printf '# seed\n' > seed.md && git add seed.md && git commit -qm seed )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_approved_plan_json "$m/approved-plan.json"
+  write_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  # config.json with optional extra scratchGlobs (Session 30 extensibility).
+  cat >"$repo/.git/lcars/config.json" <<EOF
+{
+  "model": "claude-sonnet",
+  "testCommand": null,
+  "comprehensionBudget": 1200${1:+,
+  "scratchGlobs": $1}
+}
+EOF
+  echo "$repo"
+}
+
+run_ticket_s30() { # repo
+  local repo="$1"
+  local bin="$repo/.bin"; mkdir -p "$bin"
+  make_worker_stub_s30 "$bin/worker"; make_gh_stub "$bin/gh"
+  ( cd "$repo" && GH_LOG="$bin/gh.log" LCARS_WORKER_BIN="$bin/worker" LCARS_GH_BIN="$bin/gh" \
+      bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >"$bin/out.txt" 2>&1 )
+}
+
+# --- S30.1: only the produced source is committed ---------------------------
+repoS30="$(new_repo_s30)"
+run_ticket_s30 "$repoS30"; rcS30=$?
+statS30="$( cd "$repoS30" && git show --stat --oneline HEAD 2>/dev/null )"
+check "S30.1 implement-ticket exits 0 (green ticket committed)" "[ '$rcS30' -eq 0 ]"
+check "S30.1 the commit INCLUDES the produced source" \
+  "printf '%s' \"$statS30\" | grep -q 'src/feature.js'"
+check "S30.1 the commit EXCLUDES the non-LCARS worker runner (.t003-run.cjs)" \
+  "! printf '%s' \"$statS30\" | grep -q 't003-run.cjs'"
+check "S30.1 the commit EXCLUDES the mid-run CLI lock (.claude/...)" \
+  "! printf '%s' \"$statS30\" | grep -q 'scheduled_tasks.lock'"
+check "S30.1 the commit EXCLUDES the other-CLI scratch dir (.copilot/...)" \
+  "! printf '%s' \"$statS30\" | grep -q 'copilot'"
+
+# --- S30.2: a pre-existing untracked file is still never committed -----------
+repoS30b="$(new_repo_s30)"
+printf 'a bug note\n' > "$repoS30b/bugs.md"   # captain's file, present BEFORE the ticket builds
+run_ticket_s30 "$repoS30b" || true
+statS30b="$( cd "$repoS30b" && git show --stat --oneline HEAD 2>/dev/null )"
+check "S30.2 the commit EXCLUDES the captain's pre-existing untracked file" \
+  "! printf '%s' \"$statS30b\" | grep -q 'bugs.md'"
+check "S30.2 the captain's file is left untracked in the working tree" \
+  "[ -f '$repoS30b/bugs.md' ] && [ -z \"\$( cd "$repoS30b" && git ls-files bugs.md )\" ]"
+
+# --- S30.3: .git/info/exclude gains the globs idempotently; .gitignore intact -
+repoS30c="$(new_repo_s30)"
+printf '*.log\n' > "$repoS30c/.gitignore"   # captain's tracked .gitignore — MUST NOT be touched
+gi_before="$( cat "$repoS30c/.gitignore" )"
+run_ticket_s30 "$repoS30c" || true
+excl="$repoS30c/.git/info/exclude"
+check "S30.3 .git/info/exclude lists the .lcars-* scratch glob" \
+  "[ -f '$excl' ] && grep -qxF '.lcars-*' '$excl'"
+check "S30.3 .git/info/exclude lists the .claude/ scratch glob" \
+  "grep -qxF '.claude/' '$excl'"
+check "S30.3 .git/info/exclude lists the harness runner glob (.lcars-run-*)" \
+  "grep -qxF '.lcars-run-*' '$excl'"
+# re-run the ticket: the exclude file must not grow duplicate lines.
+n1="$( grep -c '^\.lcars-\*$' "$excl" )"
+( cd "$repoS30c" && git checkout -q lcars/$MID 2>/dev/null; rm -f src/feature.js )
+run_ticket_s30 "$repoS30c" || true
+n2="$( grep -c '^\.lcars-\*$' "$excl" )"
+check "S30.3 the exclude append is idempotent (no duplicate lines on re-run)" \
+  "[ \"$n1\" = '1' ] && [ \"$n2\" = '1' ]"
+check "S30.3 the tracked .gitignore is UNTOUCHED" \
+  "[ \"\$( cat '$repoS30c/.gitignore' )\" = '$gi_before' ]"
+
+# --- S30.4: config.json scratchGlobs extend the excluded set ----------------
+# A worker drops a `.myscratch/` file that is NOT in the base set; config opts it
+# into the scratch set, so it must be excluded from the commit.
+make_worker_stub_s30_extra() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""; while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/t.test.js" ;;
+  implement-implementer)
+    mkdir -p src; printf 'export const feature = 1;\n' > src/feature.js
+    printf 'junk\n' > .myscratch-file.tmp
+    cat >"$out/result.json" <<JSON
+{ "ticketId": "t-001", "passed": true, "attempts": 1, "summary": "built it." }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+repoS30d="$(new_repo_s30)"
+cat >"$repoS30d/.git/lcars/config.json" <<'EOF'
+{
+  "model": "claude-sonnet",
+  "testCommand": null,
+  "comprehensionBudget": 1200,
+  "scratchGlobs": [".myscratch-*"]
+}
+EOF
+binS30d="$repoS30d/.bin"; mkdir -p "$binS30d"
+make_worker_stub_s30_extra "$binS30d/worker"; make_gh_stub "$binS30d/gh"
+( cd "$repoS30d" && GH_LOG="$binS30d/gh.log" LCARS_WORKER_BIN="$binS30d/worker" LCARS_GH_BIN="$binS30d/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >"$binS30d/out.txt" 2>&1 ) || true
+statS30d="$( cd "$repoS30d" && git show --stat --oneline HEAD 2>/dev/null )"
+check "S30.4 config scratchGlobs: produced source still committed" \
+  "printf '%s' \"$statS30d\" | grep -q 'src/feature.js'"
+check "S30.4 config scratchGlobs: the config-declared scratch is EXCLUDED" \
+  "! printf '%s' \"$statS30d\" | grep -q 'myscratch'"
+check "S30.4 config scratchGlobs: the glob is appended to .git/info/exclude" \
+  "grep -qxF '.myscratch-*' '$repoS30d/.git/info/exclude'"
+
+# --- S30.5: harness runner scratch is cleaned up; commit summary unchanged ---
+repoS30e="$(new_repo_s30)"
+run_ticket_s30 "$repoS30e" || true
+check "S30.5 the harness-owned runner (.lcars-run-*) is gone from the tree" \
+  "[ ! -e '$repoS30e/.lcars-run-abc.cjs' ]"
+msgS30e="$( cd "$repoS30e" && git log -1 --pretty=%s 2>/dev/null )"
+check "S30.5 the per-ticket commit summary is unchanged" \
+  "[ \"$msgS30e\" = 'lcars($MID) t-001: built the feature; suite green.' ]"
+
+# ==========================================================================
+echo
 echo "lcars run — comprehension-load sizing (Session 31)"
 
 # Session 31 replaces the flat net-new-LOC cap with a total comprehension-load
@@ -2360,6 +2909,395 @@ check "S32.4 carries the coupling objection text through to the log" \
   "grep -qi 'Coupled to t-001' '$LOGC'"
 check "S32.4 preserves the re-slice seam detail (not flattened)" \
   "grep -qi 'persistence seam' '$LOGC'"
+
+# ==========================================================================
+echo
+echo "lcars run — Mission event log + live driver transitions (session 25)"
+#
+# `lcars run` no longer runs silent: a per-Mission append-only EVENT LOG
+# (events.jsonl) records each stage transition + gate, and the auto-advance
+# driver PRINTS each transition AS IT HAPPENS (not only an accumulated summary
+# at halt). Events are emitted by the HARNESS (bash in run.sh), never by the
+# worker. These tests cover:
+#   EV1. emit_event appends a well-formed single JSON line; N calls → N lines;
+#        a pinned $LCARS_NOW shows up as ts; all required keys present.
+#   EV2. concurrent appends from two subshells produce no corrupted/interleaved
+#        lines (every line is well-formed; total count == calls).
+#   EV3. a multi-stage drive run writes stage_start + stage_done per stage IN ORDER.
+#   EV4. the driver prints each stage line LIVE (before the halt) + the final
+#        summary block is still printed (regression).
+#   EV5. the `⊘ isolated` marker still appears on each stage line.
+#   EV6. a gate halt (awaiting-human) emits a `gate` event AND fires notify once.
+
+# Helper: a tiny grep that every events.jsonl line is individually well-formed.
+all_lines_wellformed() { # file
+  local f="$1" bad=0 ln
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    case "$ln" in
+      '{'*'}') : ;;
+      *) bad=1 ;;
+    esac
+    printf '%s' "$ln" | grep -q '"ts":' || bad=1
+    printf '%s' "$ln" | grep -q '"mission":' || bad=1
+    printf '%s' "$ln" | grep -q '"stage":' || bad=1
+    printf '%s' "$ln" | grep -q '"type":' || bad=1
+    printf '%s' "$ln" | grep -q '"detail":' || bad=1
+  done <"$f"
+  [ "$bad" -eq 0 ]
+}
+
+# --- EV1: emit_event appends a well-formed single JSON line ------------------
+repoEV1="$(new_repo_with_mission)"; make_gh_stub "$repoEV1/gh"
+evlog1="$repoEV1/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoEV1" && LCARS_NOW=1700000001 LCARS_GH_BIN="$repoEV1/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type stage_start --stage research --detail "starting" >/dev/null 2>&1 )
+( cd "$repoEV1" && LCARS_NOW=1700000002 LCARS_GH_BIN="$repoEV1/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type stage_done --stage research --detail "3 agents" >/dev/null 2>&1 )
+( cd "$repoEV1" && LCARS_NOW=1700000003 LCARS_GH_BIN="$repoEV1/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type gate --stage verify --detail "human review" >/dev/null 2>&1 )
+check "EV1. emit_event creates events.jsonl" "[ -f '$evlog1' ]"
+check "EV1. N calls produce N lines" "[ \"\$(grep -c . '$evlog1')\" = '3' ]"
+check "EV1. every line is a well-formed event with all required keys" \
+  "all_lines_wellformed '$evlog1'"
+check "EV1. the pinned LCARS_NOW shows up as ts" \
+  "grep -q '\"ts\":1700000001' '$evlog1'"
+check "EV1. the line carries the mission id" \
+  "grep -q '\"mission\":\"$MID\"' '$evlog1'"
+check "EV1. the type/stage/detail round-trip" \
+  "grep -q '\"type\":\"stage_done\"' '$evlog1' && grep -q '\"stage\":\"research\"' '$evlog1' && grep -q '\"detail\":\"3 agents\"' '$evlog1'"
+# JSON-escaping: a detail with a quote must not corrupt the line.
+( cd "$repoEV1" && LCARS_NOW=1700000004 LCARS_GH_BIN="$repoEV1/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type note --stage plan --detail 'has a "quote" inside' >/dev/null 2>&1 )
+check "EV1. an embedded quote is JSON-escaped (line stays well-formed)" \
+  "all_lines_wellformed '$evlog1' && grep -q 'has a \\\\\"quote\\\\\" inside' '$evlog1'"
+
+# --- EV2: concurrent appends stay atomic (no interleaving) -------------------
+repoEV2="$(new_repo_with_mission)"; make_gh_stub "$repoEV2/gh"
+evlog2="$repoEV2/.git/lcars/missions/$MID/events.jsonl"
+burst() { # tag count
+  local i=0
+  while [ "$i" -lt "$2" ]; do i=$((i+1))
+    ( cd "$repoEV2" && LCARS_NOW="170000$2$i" LCARS_GH_BIN="$repoEV2/gh" \
+        bash "$SCRIPT" emit-event --mission "$MID" --type "burst-$1" --stage plan --detail "n$i" >/dev/null 2>&1 )
+  done
+}
+burst A 20 & burst B 20 & wait
+check "EV2. concurrent bursts produced 40 lines, none lost" \
+  "[ \"\$(grep -c . '$evlog2')\" = '40' ]"
+check "EV2. every concurrently-appended line is individually well-formed" \
+  "all_lines_wellformed '$evlog2'"
+
+# --- EV3: a multi-stage drive run logs stage_start+stage_done IN ORDER -------
+repoEV3="$(new_repo_with_validate_mission)"; arm_drive "$repoEV3"
+evlog3="$repoEV3/.git/lcars/missions/$MID/events.jsonl"
+drive "$repoEV3" drive --mission "$MID" --step || true   # one clean transition: validate → plan
+check "EV3. a stepped drive writes a stage_start for the stage it ran" \
+  "grep -q '\"type\":\"stage_start\".*\"stage\":\"validate\"\\|\"stage\":\"validate\".*\"type\":\"stage_start\"' '$evlog3' || grep -q '\"type\":\"stage_start\"' '$evlog3'"
+check "EV3. a stepped drive writes a stage_done for the stage it ran" \
+  "grep -q '\"type\":\"stage_done\"' '$evlog3'"
+# A full drive: assert order — stage_start precedes its stage_done across stages.
+repoEV3b="$(new_repo_with_mission)"; arm_drive "$repoEV3b"
+evlog3b="$repoEV3b/.git/lcars/missions/$MID/events.jsonl"
+drive "$repoEV3b" drive --mission "$MID" || true
+starts3b="$(grep -c '"type":"stage_start"' "$evlog3b" 2>/dev/null)"
+dones3b="$(grep -c '"type":"stage_done"' "$evlog3b" 2>/dev/null)"
+check "EV3. a full drive logs a stage_start per advanced stage (>=5)" \
+  "[ \"\${starts3b:-0}\" -ge 5 ]"
+check "EV3. a full drive logs a stage_done per advanced stage (>=5)" \
+  "[ \"\${dones3b:-0}\" -ge 5 ]"
+check "EV3. the FIRST event is a stage_start (a BEGIN logs before any DONE)" \
+  "[ \"\$(grep -m1 -o '\"type\":\"[a-z_]*\"' '$evlog3b' | head -1)\" = '\"type\":\"stage_start\"' ]"
+check "EV3. a gate event closes the run at the verify halt" \
+  "grep -q '\"type\":\"gate\".*verify\\|\"stage\":\"verify\".*\"type\":\"gate\"' '$evlog3b'"
+
+# --- EV4: the driver prints each stage line LIVE (before halt) ---------------
+# The live per-stage lines appear in stdout BEFORE the final summary separator;
+# the final summary block is still printed (regression).
+repoEV4="$(new_repo_with_mission)"; arm_drive "$repoEV4"
+drive "$repoEV4" drive --mission "$MID" || true
+out4="$repoEV4/drive.out"
+# The first separator is the header rule; the final summary block prints another.
+# A live stage line must appear before the LAST separator line. (run.sh's $SEP.)
+SEP="─────────────────────────────────────────────"
+last_sep_line="$(grep -n "$SEP" "$out4" | tail -1 | cut -d: -f1)"
+first_stage_line="$(grep -n 'running…\|✓' "$out4" | head -1 | cut -d: -f1)"
+check "EV4. a live stage line is printed before the final summary separator" \
+  "[ -n \"\$first_stage_line\" ] && [ -n \"\$last_sep_line\" ] && [ \"\$first_stage_line\" -lt \"\$last_sep_line\" ]"
+check "EV4. a live BEGIN line is printed (▶ running…) before a stage finishes" \
+  "grep -q 'running…' '$out4'"
+check "EV4. the final summary block is STILL printed (regression)" \
+  "grep -qi 'stopped' '$out4' && grep -q 'verify' '$out4'"
+check "EV4. the final summary still lists each stage that ran (regression)" \
+  "grep -q 'research' '$out4' && grep -q 'validate' '$out4' && grep -q 'plan-review' '$out4' && grep -q 'implement' '$out4'"
+
+# --- EV5: the `⊘ isolated` marker is unchanged on each stage line ------------
+check "EV5. the live/summary stage lines still carry the '⊘ isolated' marker" \
+  "grep -q '⊘ isolated' '$out4'"
+
+# --- EV6: a gate halt (awaiting-human) emits a gate event + notifies once ----
+repoEV6="$(new_repo_with_validate_mission)"; arm_drive "$repoEV6"
+evlog6="$repoEV6/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoEV6" && STUB_SCOPE=1 STUB_NQUESTIONS=1 \
+    LCARS_WORKER_BIN="$repoEV6/worker" LCARS_GH_BIN="$repoEV6/gh" LCARS_NOTIFY="$repoEV6/notify" \
+    bash "$SCRIPT" drive --mission "$MID" >"$repoEV6/drive.out" 2>&1 ) || true
+check "EV6. an awaiting-human halt emits a gate event to the log" \
+  "grep -q '\"type\":\"gate\"' '$evlog6'"
+check "EV6. the gate event records the validate stage that escalated" \
+  "grep -q '\"type\":\"gate\".*\"stage\":\"validate\"\\|\"stage\":\"validate\".*\"type\":\"gate\"' '$evlog6'"
+check "EV6. the notify hook STILL fires exactly once at the gate (regression)" \
+  "[ \"\$(grep -c . '$repoEV6/notify.log')\" = '1' ]"
+
+# ==========================================================================
+echo "lcars run — Session 26: fine-grained Implement + wave events"
+# Session 26 instruments the Implement stage with MACHINE-READABLE events:
+#   wave_start    {wave,ticketCount,totalWaves}   — once per wave, ascending
+#   ticket_start  {ticket,wave}                   — at implement-ticket entry
+#   ticket_attempt{ticket,phase,attempt}          — per worker re-dispatch
+#   ticket_flagged{ticket,attempts}               — a ticket that exhausts attempts
+#   ticket_green  {ticket,attempts}               — AFTER the guardrails + commit
+# The sink (emit_event) is extended with a structured "data":{...} payload, but
+# stays byte-identical to Session 25 when no data pairs are passed.
+
+# A helper like all_lines_wellformed but tolerant of an optional "data" object.
+all_lines_wellformed_data() { # file
+  local f="$1" bad=0 ln
+  while IFS= read -r ln; do
+    [ -n "$ln" ] || continue
+    case "$ln" in
+      '{'*'}') : ;;
+      *) bad=1 ;;
+    esac
+    printf '%s' "$ln" | grep -q '"ts":' || bad=1
+    printf '%s' "$ln" | grep -q '"mission":' || bad=1
+    printf '%s' "$ln" | grep -q '"stage":' || bad=1
+    printf '%s' "$ln" | grep -q '"type":' || bad=1
+    printf '%s' "$ln" | grep -q '"detail":' || bad=1
+  done <"$f"
+  [ "$bad" -eq 0 ]
+}
+
+# --- S26-1: a two-wave plan emits wave_start per wave, ascending, once each ---
+# Drive the whole Implement stage with the worker stub; the green-on-everything
+# stub finishes every ticket, so cmd_implement walks wave 1 then wave 2.
+repoS1="$(new_repo_with_implement_mission)"; arm_worker "$repoS1"
+evS1="$repoS1/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS1" && LCARS_NOW=1700001000 LCARS_WORKER_BIN="$repoS1/worker" LCARS_GH_BIN="$repoS1/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >outS1.txt 2>&1 ) || true
+check "S26-1. a wave_start event is emitted" \
+  "grep -q '\"type\":\"wave_start\"' '$evS1'"
+check "S26-1. wave_start fires for wave 1 AND wave 2" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":1' && grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":2'"
+check "S26-1. exactly ONE wave_start per wave (no dup from the re-running loop)" \
+  "[ \"\$(grep -c '\"type\":\"wave_start\"' '$evS1')\" = '2' ]"
+check "S26-1. wave_start carries ticketCount=2 (each wave has two tickets)" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"ticketCount\":2'"
+check "S26-1. wave_start carries totalWaves=2" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"totalWaves\":2'"
+check "S26-1. wave 1's wave_start precedes wave 2's (ascending order)" \
+  "[ \"\$(grep -n '\"type\":\"wave_start\".*\"wave\":1' '$evS1' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n '\"type\":\"wave_start\".*\"wave\":2' '$evS1' | head -1 | cut -d: -f1)\" ]"
+check "S26-1. the numeric data fields are UNQUOTED (machine-readable)" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":[0-9]' && ! grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":\"'"
+check "S26-1. every emitted Implement line is well-formed (with the data object)" \
+  "all_lines_wellformed_data '$evS1'"
+
+# --- S26-2: a ticket emits ticket_start → ticket_attempt(s) → ticket_green ----
+repoS2="$(new_repo_with_implement_mission)"; arm_worker "$repoS2"
+evS2="$repoS2/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS2" && LCARS_NOW=1700002000 LCARS_WORKER_BIN="$repoS2/worker" LCARS_GH_BIN="$repoS2/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >outS2.txt 2>&1 ) || true
+check "S26-2. ticket_start is emitted with the ticket id" \
+  "grep '\"type\":\"ticket_start\"' '$evS2' | grep -q '\"ticket\":\"t-001\"'"
+check "S26-2. ticket_start carries the ticket's wave (t-001 is wave 1)" \
+  "grep '\"type\":\"ticket_start\"' '$evS2' | grep -q '\"wave\":1'"
+check "S26-2. a test-writer ticket_attempt is emitted" \
+  "grep '\"type\":\"ticket_attempt\"' '$evS2' | grep -q '\"phase\":\"test-writer\"'"
+check "S26-2. an implementer ticket_attempt is emitted" \
+  "grep '\"type\":\"ticket_attempt\"' '$evS2' | grep -q '\"phase\":\"implementer\"'"
+check "S26-2. ticket_attempt carries a numeric attempt index" \
+  "grep '\"type\":\"ticket_attempt\"' '$evS2' | grep -q '\"attempt\":1'"
+check "S26-2. ticket_green is emitted" \
+  "grep '\"type\":\"ticket_green\"' '$evS2' | grep -q '\"ticket\":\"t-001\"'"
+# Relative ORDER: start < first attempt < green.
+posS2_start="$(grep -n '"type":"ticket_start"' "$evS2" | head -1 | cut -d: -f1)"
+posS2_att="$(grep -n '"type":"ticket_attempt"' "$evS2" | head -1 | cut -d: -f1)"
+posS2_green="$(grep -n '"type":"ticket_green"' "$evS2" | head -1 | cut -d: -f1)"
+check "S26-2. order: ticket_start precedes ticket_attempt precedes ticket_green" \
+  "[ -n \"$posS2_start\" ] && [ \"$posS2_start\" -lt \"$posS2_att\" ] && [ \"$posS2_att\" -lt \"$posS2_green\" ]"
+
+# --- S26-3: an exhausted ticket emits ticket_flagged, NOT ticket_green --------
+# Drive impl-save-result directly with a failing result (the flag branch).
+repoS3="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS3/gh"
+export GH_LOG="$repoS3/gh.log"; : >"$GH_LOG"
+twS3="$repoS3/tw"; mkdir -p "$twS3"; printf 'assert: a failing test\n' >"$twS3/t.test.js"
+( cd "$repoS3" && LCARS_GH_BIN="$repoS3/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twS3" >/dev/null 2>&1 )
+resS3="$repoS3/result.json"; write_result "$resS3" t-001 false 5
+evS3="$repoS3/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS3" && LCARS_NOW=1700003000 LCARS_GH_BIN="$repoS3/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resS3" >outS3.txt 2>&1 ) || true
+check "S26-3. a flagged ticket emits ticket_flagged with its attempts" \
+  "grep '\"type\":\"ticket_flagged\"' '$evS3' | grep -q '\"ticket\":\"t-001\"' && grep '\"type\":\"ticket_flagged\"' '$evS3' | grep -q '\"attempts\":5'"
+check "S26-3. a flagged ticket emits NO ticket_green" \
+  "! grep -q '\"type\":\"ticket_green\"' '$evS3'"
+
+# --- S26-4: ticket_green is emitted ONLY after the guardrails pass -------------
+# Drive a guardrail rejection: a result that claims 6 attempts (over the cap) is
+# die'd by impl-save-result BEFORE reaching the green emit. No ticket_green.
+repoS4="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS4/gh"
+export GH_LOG="$repoS4/gh.log"; : >"$GH_LOG"
+twS4="$repoS4/tw"; mkdir -p "$twS4"; printf 'assert: a failing test\n' >"$twS4/t.test.js"
+( cd "$repoS4" && LCARS_GH_BIN="$repoS4/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twS4" >/dev/null 2>&1 )
+resS4="$repoS4/result.json"; write_result "$resS4" t-001 true 6   # over the 5-cap → rejected
+evS4="$repoS4/.git/lcars/missions/$MID/events.jsonl"
+rcS4=0
+( cd "$repoS4" && LCARS_NOW=1700004000 LCARS_GH_BIN="$repoS4/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resS4" >outS4.txt 2>&1 ) || rcS4=$?
+check "S26-4. a guardrail-rejected save exits non-zero" "[ '$rcS4' -ne 0 ]"
+check "S26-4. a guardrail-rejected save emits NO ticket_green" \
+  "[ ! -f '$evS4' ] || ! grep -q '\"type\":\"ticket_green\"' '$evS4'"
+
+# Second guardrail: an immutable-tests violation (the locked tests were edited).
+repoS4b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS4b/gh"
+export GH_LOG="$repoS4b/gh.log"; : >"$GH_LOG"
+twS4b="$repoS4b/tw"; mkdir -p "$twS4b"; printf 'assert: a failing test\n' >"$twS4b/t.test.js"
+( cd "$repoS4b" && LCARS_GH_BIN="$repoS4b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twS4b" >/dev/null 2>&1 )
+# Tamper with the quarantined test AFTER the snapshot → tests_unchanged fails.
+printf 'assert: TAMPERED\n' >"$repoS4b/.git/lcars/missions/$MID/tickets/t-001/tests/t.test.js"
+resS4b="$repoS4b/result.json"; write_result "$resS4b" t-001 true 2
+evS4b="$repoS4b/.git/lcars/missions/$MID/events.jsonl"
+rcS4b=0
+( cd "$repoS4b" && LCARS_NOW=1700004500 LCARS_GH_BIN="$repoS4b/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resS4b" >outS4b.txt 2>&1 ) || rcS4b=$?
+check "S26-4. an immutable-tests violation is rejected (non-zero)" "[ '$rcS4b' -ne 0 ]"
+check "S26-4. an immutable-tests violation emits NO ticket_green" \
+  "[ ! -f '$evS4b' ] || ! grep -q '\"type\":\"ticket_green\"' '$evS4b'"
+
+# --- S26-5: events carry the wave/ticket ids to reconstruct "k of n" ----------
+# Reuse S26-1's two-wave drive: assert the fields a downstream renderer parses.
+check "S26-5. wave_start data carries wave + ticketCount + totalWaves" \
+  "grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"data\":{' && grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"wave\":' && grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"ticketCount\":' && grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"totalWaves\":'"
+check "S26-5. ticket_green data carries the ticket id (string) and attempts (number)" \
+  "grep '\"type\":\"ticket_green\"' '$evS2' | grep -q '\"ticket\":\"t-001\"' && grep '\"type\":\"ticket_green\"' '$evS2' | grep -q '\"attempts\":[0-9]'"
+
+# --- S26-6 (regression): the no-data line is byte-identical to Session 25 ------
+# emit-event with NO data pairs must produce a line with no "data" key at all.
+repoS6="$(new_repo_with_mission)"; make_gh_stub "$repoS6/gh"
+evS6="$repoS6/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS6" && LCARS_NOW=1700006000 LCARS_GH_BIN="$repoS6/gh" \
+    bash "$SCRIPT" emit-event --mission "$MID" --type stage_start --stage research --detail "starting" >/dev/null 2>&1 )
+expectedS6='{"ts":1700006000,"mission":"'"$MID"'","stage":"research","type":"stage_start","detail":"starting"}'
+check "S26-6. a no-data event line has NO data key (byte-identical to Session 25)" \
+  "[ \"\$(cat '$evS6')\" = '$expectedS6' ]"
+check "S26-6. a no-data line carries no data object at all" \
+  "! grep -q '\"data\"' '$evS6'"
+# And a data-bearing line is a single well-formed JSON line.
+check "S26-6. a data-bearing event line is single + well-formed" \
+  "all_lines_wellformed_data '$evS1' && [ \"\$(grep -c . '$evS1')\" -ge 2 ]"
+
+# --- S26-7 (regression): the Implement stage is RE-INVOKED on real runs --------
+# A real Mission re-enters cmd_implement / implement-ticket (manual `lcars run`
+# retries; the `lcars respond` → `lcars run` resume after a flagged ticket). The
+# Session-26 dedup/indexing must come from the durable events.jsonl, NOT a
+# process-local — else wave_start / ticket_start re-emit and ticket_attempt
+# restarts at 1 on every fresh process. These tests drive the SAME not-yet-green
+# state twice and assert against events.jsonl.
+
+# A worker stub whose implement-test-writer produces NO usable tests, so
+# implement-ticket dies inside Phase 1 after MAX_WORKER_TRIES — emitting
+# ticket_start + ticket_attempt(test-writer) 1..3 but never reaching green. The
+# Defect-3 die path (Test-Writer exhaustion) is PRE-EXISTING and untouched; we
+# only ride it to force a re-invocation cheaply.
+make_worker_stub_no_tests() { # path
+  make_worker_stub "$1"
+  # Neuter the implement-test-writer branch in place: it currently writes a stub
+  # test file; make it produce NOTHING usable so Phase 1 exhausts MAX_WORKER_TRIES.
+  # (Appending after the stub's trailing `exit 0` would be dead code, so edit the
+  # branch body directly.)
+  sed -i.bak '/tests\/stub.test.js/d' "$1"   # drop the only test file it wrote
+  rm -f "$1.bak"
+}
+
+# S26-7: re-invoke implement-ticket on the same still-red state. Across two
+# dying invocations there must be EXACTLY ONE ticket_start, and the
+# ticket_attempt indices for (t-001, test-writer) must continue 1,2,3 then
+# 4,5,6 — strictly monotonic and unique, never a repeated index.
+repoS7="$(new_repo_with_implement_mission)"
+make_worker_stub_no_tests "$repoS7/worker"; make_gh_stub "$repoS7/gh"
+export GH_LOG="$repoS7/gh.log"; : >"$GH_LOG"
+export WORKER_LOG="$repoS7/worker.log"; : >"$WORKER_LOG"
+export WORKER_CALLS="$repoS7/calls"; rm -rf "$WORKER_CALLS"; mkdir -p "$WORKER_CALLS"
+evS7="$repoS7/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS7" && LCARS_NOW=1700007000 LCARS_WORKER_BIN="$repoS7/worker" LCARS_GH_BIN="$repoS7/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >outS7a.txt 2>&1 ) || true
+export WORKER_LOG="$repoS7/worker.log"
+export WORKER_CALLS="$repoS7/calls"
+( cd "$repoS7" && LCARS_NOW=1700007100 LCARS_WORKER_BIN="$repoS7/worker" LCARS_GH_BIN="$repoS7/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >outS7b.txt 2>&1 ) || true
+check "S26-7. re-invoked implement-ticket emits EXACTLY ONE ticket_start for t-001" \
+  "[ \"\$(grep '\"type\":\"ticket_start\"' '$evS7' | grep -c '\"ticket\":\"t-001\"')\" = '1' ]"
+check "S26-7. test-writer ticket_attempt indices continue 1..6 across invocations (6 lines)" \
+  "[ \"\$(grep '\"type\":\"ticket_attempt\"' '$evS7' | grep '\"phase\":\"test-writer\"' | grep -c '\"ticket\":\"t-001\"')\" = '6' ]"
+check "S26-7. those attempt indices are unique (1,2,3,4,5,6 — no repeat)" \
+  "[ \"\$(grep '\"type\":\"ticket_attempt\"' '$evS7' | grep '\"phase\":\"test-writer\"' | sed -n 's/.*\"attempt\":\\([0-9]*\\).*/\\1/p' | sort -n | uniq | tr '\\n' ' ')\" = '1 2 3 4 5 6 ' ]"
+check "S26-7. attempt indices are strictly monotonic (sorted == as-emitted)" \
+  "[ \"\$(grep '\"type\":\"ticket_attempt\"' '$evS7' | grep '\"phase\":\"test-writer\"' | sed -n 's/.*\"attempt\":\\([0-9]*\\).*/\\1/p' | tr '\\n' ' ')\" = '1 2 3 4 5 6 ' ]"
+
+# S26-8: re-invoke cmd_implement (the whole stage) on a STILL-ACTIVE wave. The
+# green-on-everything stub finishes nothing if we make wave 1's first ticket
+# die, but to assert wave_start dedup we let the stage make progress then re-run.
+# Simplest faithful drive: a green stub, run the stage to completion (one
+# wave_start per wave), then re-invoke — the still-finished waves must NOT
+# re-emit wave_start, and re-running while wave 1 is active must not double it.
+repoS8="$(new_repo_with_implement_mission)"; arm_worker "$repoS8"
+evS8="$repoS8/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS8" && LCARS_NOW=1700008000 LCARS_WORKER_BIN="$repoS8/worker" LCARS_GH_BIN="$repoS8/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >outS8a.txt 2>&1 ) || true
+# Re-invoke the whole stage on the now-complete mission (idempotent advance path).
+( cd "$repoS8" && LCARS_NOW=1700008100 LCARS_WORKER_BIN="$repoS8/worker" LCARS_GH_BIN="$repoS8/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >outS8b.txt 2>&1 ) || true
+check "S26-8. across two cmd_implement invocations, exactly ONE wave_start per wave (2 total)" \
+  "[ \"\$(grep -c '\"type\":\"wave_start\"' '$evS8')\" = '2' ]"
+check "S26-8. exactly ONE ticket_start per ticket across re-invocations (4 total)" \
+  "[ \"\$(grep -c '\"type\":\"ticket_start\"' '$evS8')\" = '4' ]"
+check "S26-8. wave:1 dedup respects integer boundaries (one wave_start each for 1 and 2)" \
+  "[ \"\$(grep '\"type\":\"wave_start\"' '$evS8' | grep -c '\"wave\":1[,}]')\" = '1' ] && [ \"\$(grep '\"type\":\"wave_start\"' '$evS8' | grep -c '\"wave\":2[,}]')\" = '1' ]"
+
+# S26-9: the happy single-invocation green path still emits, in order, one
+# wave_start, one ticket_start, the attempt line(s), then ticket_green — the
+# exactly-once-within-one-call invariant the originals pinned still holds.
+repoS9="$(new_repo_with_implement_mission)"; arm_worker "$repoS9"
+evS9="$repoS9/.git/lcars/missions/$MID/events.jsonl"
+( cd "$repoS9" && LCARS_NOW=1700009000 LCARS_WORKER_BIN="$repoS9/worker" LCARS_GH_BIN="$repoS9/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >outS9.txt 2>&1 ) || true
+check "S26-9. single invocation emits exactly one ticket_start for t-001" \
+  "[ \"\$(grep '\"type\":\"ticket_start\"' '$evS9' | grep -c '\"ticket\":\"t-001\"')\" = '1' ]"
+posS9_start="$(grep -n '"type":"ticket_start"' "$evS9" | head -1 | cut -d: -f1)"
+posS9_att="$(grep -n '"type":"ticket_attempt"' "$evS9" | head -1 | cut -d: -f1)"
+posS9_green="$(grep -n '"type":"ticket_green"' "$evS9" | head -1 | cut -d: -f1)"
+check "S26-9. order still holds: ticket_start < ticket_attempt < ticket_green" \
+  "[ -n \"$posS9_start\" ] && [ \"$posS9_start\" -lt \"$posS9_att\" ] && [ \"$posS9_att\" -lt \"$posS9_green\" ]"
+check "S26-9. first attempt index within a fresh ticket is 1" \
+  "grep '\"type\":\"ticket_attempt\"' '$evS9' | grep '\"phase\":\"test-writer\"' | grep -q '\"attempt\":1'"
+
+# ==========================================================================
+echo
+echo "lcars run — role labels (lcars:mission/lcars:ticket) ride through stage walks (session 34)"
+#
+# BUG-005: a Mission and its tickets were indistinguishable on the board. The
+# fix adds disjoint ROLE labels: lcars:mission on a Mission, lcars:ticket on a
+# Schedule sub-issue. Role labels are ADDITIVE + PERMANENT — no stage transition
+# (gh_relabel) ever strips one. Across the full pipeline walk exercised above
+# (align→validate, validate→plan, plan→plan-review, plan-review→schedule,
+# schedule→implement, implement→verify) no relabel may name a role label in its
+# remove-list.
+S34_LOGS="$repo2/gh.log $repoV/gh.log $repoPL/gh.log $repoPR/gh.log $repoS/gh.log $repoIa/gh.log"
+check "S34. no stage transition ever removes lcars:mission" \
+  "! grep -hq 'remove-label lcars:mission' $S34_LOGS"
+check "S34. no stage transition ever removes lcars:ticket" \
+  "! grep -hq 'remove-label lcars:ticket' $S34_LOGS"
 
 # ==========================================================================
 echo

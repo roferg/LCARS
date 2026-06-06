@@ -249,6 +249,35 @@ check "guard. creates no PR on a non-verify mission" \
 check "guard. does not advance a non-verify mission" \
   "! grep -q '\"stage\": *\"done\"' '$(state_of "$repoAg")'"
 
+# --- Behaviour 5 (Session 29, Rule B): the PR closes the parent on MERGE ------
+# The PR body carries `Closes #<parent>` (+ any still-open sub-issue) via the
+# adapter's --closes op, so GitHub/GitLab auto-close the parent issue when the
+# human MERGES — NOT at approve. approve must never issue a close call against
+# the parent itself; the issue stays OPEN until merge. The board-move to
+# lcars:done at approve (stage label = column) is unchanged and is independent
+# of the issue's open/closed lifecycle (tied to merge).
+repoR="$(new_repo_with_verify_mission)"; make_gh_stub "$repoR/gh"
+export GH_LOG="$repoR/gh.log"; : >"$GH_LOG"
+rcR=0
+( cd "$repoR" && LCARS_GH_BIN="$repoR/gh" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>&1 ) || rcR=$?
+check "5. approve exits 0" "[ '$rcR' -eq 0 ]"
+check "5. the PR body carries Closes #42 for the parent mission issue" \
+  "grep -q 'Closes #42' '$repoR/gh.log'"
+check "5. the PR reconciles a still-open sub-issue (Closes #101)" \
+  "grep -q 'Closes #101' '$repoR/gh.log'"
+check "5. approve issues NO close call against the parent #42" \
+  "! grep -q 'issue close 42' '$repoR/gh.log'"
+check "5. approve issues NO issue close at all (close is tied to merge)" \
+  "! grep -q 'issue close' '$repoR/gh.log'"
+# The board move to done is UNCHANGED — the stage label still flips to done.
+check "5. still adds lcars:done at approve (board column, unchanged)" \
+  "grep -q 'add-label lcars:done' '$repoR/gh.log'"
+check "5. still removes lcars:verify at approve (board column, unchanged)" \
+  "grep -q 'remove-label lcars:verify' '$repoR/gh.log'"
+check "5. still advances state.json to done" \
+  "grep -q '\"stage\": *\"done\"' '$(state_of "$repoR")'"
+
 # --- Guard: a bad mission id is rejected ------------------------------------
 repoAb="$(new_repo_with_verify_mission)"; make_gh_stub "$repoAb/gh"
 export GH_LOG="$repoAb/gh.log"; : >"$GH_LOG"

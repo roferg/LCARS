@@ -24,6 +24,17 @@ GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
 RELABEL_NOTE=""
 
+# The host-integration adapter — the ONE place that speaks to a forge. It lives
+# in the sibling lcars-run skill dir; after ./install.sh both skills are
+# symlinked siblings under ~/.claude/skills/, so a path off this script's own
+# location → ../lcars-run/host-adapter.sh resolves it. $LCARS_HOST_ADAPTER
+# overrides that path (tests stub the whole adapter regardless of layout). The
+# adapter picks its host via $LCARS_HOST_BIN (default "github"); the github host
+# shells out to ${LCARS_GH_BIN:-gh}.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
+host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
+
 die() { printf 'lcars approve: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same style as run.sh / file.sh) -------------
@@ -62,10 +73,9 @@ gh_relabel() { # "add labels…"  "remove labels…"
   esac
   local hand="+${add// /,} -${rem// /,}"
   if command -v "$GH_BIN" >/dev/null 2>&1; then
-    local args=()
-    for l in $add; do args+=(--add-label "$l"); done
-    for l in $rem; do args+=(--remove-label "$l"); done
-    "$GH_BIN" issue edit "$issue" "${args[@]}" >/dev/null 2>&1 \
+    # The adapter performs the relabel (best-effort, never blocks); keep the
+    # local note only if its forge call signals failure.
+    host issue-relabel "$issue" --add "$add" --remove "$rem" \
       || RELABEL_NOTE="  ⚠ gh issue edit failed — relabel #$issue by hand ($hand)."
   else
     RELABEL_NOTE="  ⚠ gh not found — skipped relabel; do it by hand (#$issue: $hand)."
@@ -102,6 +112,23 @@ pr_body() {
     }
     /"wave"[[:space:]]*:/ { w=$0; gsub(/[^0-9]/,"",w); printf "\n### Wave %s\n", w; next }
     /"id"[[:space:]]*:/   { n=split($0,a,"\""); if (n>=4) { id=a[4]; printf "- `%s` — %s\n", id, (id in title ? title[id] : "") } }
+  ' "$waves"
+}
+
+# --- the sub-issue numbers Schedule opened, one per line --------------------
+# Reads waves.json and echoes every non-null ticket "issue" number. These are the
+# per-ticket sub-issues; Rule A closes each on GREEN during Implement, but that
+# is best-effort, so approve re-includes them in the PR's Closes directives to
+# RECONCILE any Rule A missed (closing an already-closed issue via Closes is a
+# harmless no-op). Line-oriented and jq-free, like pr_body.
+sub_issues() {
+  local waves="$MISSION_DIR/waves.json"
+  [ -f "$waves" ] || return 0
+  awk '
+    /"issue"[[:space:]]*:/ {
+      v=$0; sub(/.*"issue"[[:space:]]*:[[:space:]]*/,"",v); gsub(/[ ,}]/,"",v)
+      if (v != "" && v != "null") print v
+    }
   ' "$waves"
 }
 
@@ -159,7 +186,23 @@ TITLE="$(pr_title)"
 BODY="$(pr_body)"
 command -v "$GH_BIN" >/dev/null 2>&1 \
   || die "gh not found — cannot open the PR for '$BRANCH'. Mission stays at verify."
-PR_URL="$("$GH_BIN" pr create --title "$TITLE" --body "$BODY" --head "$BRANCH" --base "$BASE" 2>/dev/null | tail -1)"
+
+# RULE B (issue-close lifecycle): the PR — not approve — closes the issues, on
+# MERGE. The adapter renders host-portable `Closes #<n>` directives into the PR
+# body (GitHub & GitLab both honour them), so the merge auto-closes the PARENT
+# Mission issue plus any still-open per-ticket sub-issue (Rule A's reconciliation
+# — see sub_issues). approve itself issues NO close call against the parent: the
+# stage LABEL flipping to lcars:done below is the board COLUMN; the issue's
+# open/closed LIFECYCLE is decoupled from it and stays OPEN until the human
+# merges. A local-only mission (no parent issue) simply passes no parent --closes.
+CLOSES=()
+PARENT="$(json_raw "$STATE" githubIssue)"
+case "$PARENT" in ''|null) : ;; *) CLOSES+=(--closes "$PARENT") ;; esac
+while IFS= read -r sub; do
+  [ -n "$sub" ] && CLOSES+=(--closes "$sub")
+done < <(sub_issues)
+
+PR_URL="$(host pr-create --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$BODY" "${CLOSES[@]}")"
 case "$PR_URL" in
   http*|*/pull/*) : ;;
   *) die "gh pr create did not return a PR URL for '$BRANCH' — open the PR by hand, then re-run. Mission stays at verify." ;;

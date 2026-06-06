@@ -94,17 +94,40 @@ cat >"$CONFIG" <<EOF
 }
 EOF
 
+# --- LOCAL: keep the harness's scratch out of the target repo -------------
+# LCARS workers leave throwaway scratch in the tree (LCARS runners, and each
+# agentic CLI's own scratch dir — Claude's .claude/, Copilot's .copilot/).
+# vision.md FORBIDS editing the target repo's tracked .gitignore, so we ignore
+# scratch via .git/info/exclude instead — it lives inside .git/ (like
+# .git/lcars/), is never tracked, and keeps scratch out of `git status` and any
+# future `git add`. CLI/host-agnostic and idempotent (a glob already present is
+# never re-appended). config.json `scratchGlobs` can extend this at runtime; this
+# seeds the base set so the guard exists from the very first mission. Keep this
+# list in step with scratch_globs() in skills/lcars-run/run.sh.
+EXCLUDE_FILE="$GIT_DIR/info/exclude"
+mkdir -p "$GIT_DIR/info" 2>/dev/null || true
+[ -f "$EXCLUDE_FILE" ] || : >"$EXCLUDE_FILE"
+for g in '.lcars-*' '*/.lcars-*' '.lcars-run-*' '*/.lcars-run-*' \
+         '.claude/' '.claude/*' '*/.claude/*' \
+         '.copilot/' '.copilot/*' '*/.copilot/*' \
+         '.*-run.cjs' '.*-run.mjs' '.*-run.js' '.*-run.sh' '.*-run.py' \
+         '*/.*-run.cjs' '*/.*-run.mjs' '*/.*-run.js' '*/.*-run.sh' '*/.*-run.py'; do
+  grep -qxF -- "$g" "$EXCLUDE_FILE" 2>/dev/null || printf '%s\n' "$g" >>"$EXCLUDE_FILE"
+done
+
 # --- GITHUB: create the LCARS label set -----------------------------------
 # name|color groups, matching the spec.
 STAGE_COLOR="FF9900"
 TYPE_COLOR="4499FF"
 STATUS_COLOR="FF3344"
 REL_COLOR="9977FF"
+ROLE_COLOR="00B894"
 
 STAGE_LABELS="align research validate plan plan-review schedule implement verify done"
 TYPE_LABELS="feature bug"
 STATUS_LABELS="paused awaiting-human"
 REL_LABELS="linked"
+ROLE_LABELS="mission ticket"
 
 label_desc() {
   case "$1" in
@@ -122,6 +145,8 @@ label_desc() {
     lcars:paused)         echo "Status: mission paused" ;;
     lcars:awaiting-human) echo "Status: waiting on the captain's orders" ;;
     lcars:linked)         echo "Relationship: linked to another mission" ;;
+    lcars:mission)        echo "Role: a Mission's own command-and-control issue" ;;
+    lcars:ticket)         echo "Role: an implementation sub-issue spun up by Schedule" ;;
     *)                    echo "LCARS label" ;;
   esac
 }
@@ -162,6 +187,7 @@ if [ "$GH_OK" -eq 1 ]; then
   for n in $TYPE_LABELS;   do create_label "lcars:$n" "$TYPE_COLOR";   done
   for n in $STATUS_LABELS; do create_label "lcars:$n" "$STATUS_COLOR"; done
   for n in $REL_LABELS;    do create_label "lcars:$n" "$REL_COLOR";    done
+  for n in $ROLE_LABELS;   do create_label "lcars:$n" "$ROLE_COLOR";   done
 fi
 
 # --- OUTPUT: readiness summary --------------------------------------------

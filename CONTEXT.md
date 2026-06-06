@@ -70,6 +70,8 @@ A standard set of GitHub issue labels created by the Setup Skill. They are the s
 
 **Relationship label**: `lcars:linked` — applied to bug Missions created via Mission Log that are linked to an active parent Mission.
 
+**Role labels** (additive and permanent — they ride the issue for its whole life and are never swapped by a stage transition): `lcars:mission`, `lcars:ticket`. `lcars:mission` marks a Mission's own command-and-control issue (every Mission, including a logged bug); `lcars:ticket` marks an implementation sub-issue Schedule opens. The two are disjoint — a Mission never carries `lcars:ticket`, a sub-issue never carries `lcars:mission`. Filtering to `lcars:mission` is the command-and-control list (the Missions); `lcars:ticket` is the work (the per-ticket sub-issues), so during Implement a Mission and its tickets are distinguishable on the board.
+
 ## Entry Skill
 A global CLI skill invokable from any repo. Accepts a free-form description of a new Mission (feature or bug) and launches the Harness pipeline from the Align stage. Used for standalone Missions with no relationship to other active work.
 

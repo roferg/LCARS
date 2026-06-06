@@ -192,7 +192,9 @@ flowchart LR
 
       <h3><span class="stage-num">6</span>Schedule <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>Builds the dependency graph into sequential <strong>Waves</strong> and
-      opens one GitHub sub-issue per ticket.</p>
+      opens one GitHub sub-issue per ticket, each nested under the Mission's own
+      issue. A single-ticket Mission reuses its own issue instead of opening a
+      redundant one.</p>
 
       <div class="diagram-wrap">
         <div class="diagram-label">Schedule — tickets grouped into waves</div>
@@ -341,7 +343,9 @@ flowchart LR
         <div class="control-card">
           <div class="control-cmd">lcars status</div>
           <div class="control-desc">The read-only board: every active Mission, its
-          Stage, and anything awaiting you.</div>
+          Stage, and anything awaiting you. Add <code>--watch</code> to follow a
+          running Mission <strong>live</strong> — a streaming event view with a
+          pace line (wave, ticket, attempt, avg/ticket, elapsed).</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars init</div>
@@ -372,6 +376,12 @@ flowchart LR
           <div class="control-cmd">lcars run &lt;id&gt; --step</div>
           <div class="control-desc">Advance exactly one Stage, then stop — for
           debugging and inspection.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars status --watch [&lt;id&gt;]</div>
+          <div class="control-desc">Follow a Mission's run live: tails its event
+          stream and re-renders a pace/position line until the run reaches a
+          gate.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars respond [&lt;id&gt;]</div>
@@ -578,7 +588,7 @@ flowchart TB
         </div>
       </div>
 
-      <p>Two deliberate properties make this robust:</p>
+      <p>Three deliberate properties make this robust:</p>
 
       <div class="lcars-panel blue">
         <div class="lcars-panel-header">Token-free driver, model-selected workers</div>
@@ -605,6 +615,22 @@ flowchart TB
           <div class="lcars-readout">STAGE MARKER: ⊘ isolated  (printed on every stage line)
 IF A STAGE CANNOT ISOLATE → the driver refuses LOUDLY, changes nothing.
 An inline run must never masquerade as isolated.</div>
+        </div>
+      </div>
+
+      <div class="lcars-panel peach">
+        <div class="lcars-panel-header">Observable, not silent</div>
+        <div class="lcars-panel-body">
+          <p>The driver keeps a per-Mission append-only <strong>event log</strong>
+          (<code>events.jsonl</code>) as it goes — every Stage start and finish,
+          every gate, and fine-grained Implement progress: each wave, each ticket,
+          each attempt, and every green or flag. It prints each Stage line the
+          moment it happens instead of only summarizing at halt, and
+          <code>lcars status --watch</code> tails that same log into a live view
+          with a pace/position line. The events are emitted by the bash harness
+          <em>around</em> the worker calls — never by the worker — so the stream
+          and the live view behave identically whatever CLI runs underneath.</p>
+          <div class="lcars-readout">Wave 3/6 · ticket t-004 · attempt 1 · ~12s avg/ticket · elapsed 4m12s</div>
         </div>
       </div>
     </section>
@@ -656,12 +682,27 @@ An inline run must never masquerade as isolated.</div>
             (additive): overlaid when blocked on your answer.</li>
             <li><code>lcars:linked</code> — <strong>Relationship</strong>: a bug
             Mission linked to a parent via <code>lcars log</code>.</li>
+            <li><code>lcars:mission</code> / <code>lcars:ticket</code> —
+            <strong>Role</strong> (additive, permanent): a Mission's own issue
+            (<code>lcars:mission</code>) vs an implementation sub-issue Schedule
+            opens (<code>lcars:ticket</code>) — disjoint, never swapped by a
+            stage transition.</li>
           </ul>
         </div>
       </div>
       <div class="lcars-alert blue">
         <div>Filtering issues to <code>lcars:awaiting-human</code> shows every
-        pending decision at a glance — before the kanban UI even exists.</div>
+        pending decision at a glance — before the kanban UI even exists. Filter
+        to <code>lcars:mission</code> for the command-and-control list,
+        <code>lcars:ticket</code> for the work.</div>
+      </div>
+      <div class="lcars-alert teal">
+        <div><strong>Issue lifecycle.</strong> A ticket's sub-issue is closed
+        (and labelled <code>lcars:done</code>) the moment it goes green, so the
+        board tracks real per-ticket progress. The Mission's own issue closes
+        only when the PR is <strong>merged</strong> — <code>lcars approve</code>
+        opens the PR with a <code>Closes #&lt;mission&gt;</code> directive, tying
+        the close to the merge rather than to approval.</div>
       </div>
     </section>
 
