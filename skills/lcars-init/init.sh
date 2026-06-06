@@ -94,6 +94,27 @@ cat >"$CONFIG" <<EOF
 }
 EOF
 
+# --- LOCAL: keep the harness's scratch out of the target repo -------------
+# LCARS workers leave throwaway scratch in the tree (LCARS runners, and each
+# agentic CLI's own scratch dir — Claude's .claude/, Copilot's .copilot/).
+# vision.md FORBIDS editing the target repo's tracked .gitignore, so we ignore
+# scratch via .git/info/exclude instead — it lives inside .git/ (like
+# .git/lcars/), is never tracked, and keeps scratch out of `git status` and any
+# future `git add`. CLI/host-agnostic and idempotent (a glob already present is
+# never re-appended). config.json `scratchGlobs` can extend this at runtime; this
+# seeds the base set so the guard exists from the very first mission. Keep this
+# list in step with scratch_globs() in skills/lcars-run/run.sh.
+EXCLUDE_FILE="$GIT_DIR/info/exclude"
+mkdir -p "$GIT_DIR/info" 2>/dev/null || true
+[ -f "$EXCLUDE_FILE" ] || : >"$EXCLUDE_FILE"
+for g in '.lcars-*' '*/.lcars-*' '.lcars-run-*' '*/.lcars-run-*' \
+         '.claude/' '.claude/*' '*/.claude/*' \
+         '.copilot/' '.copilot/*' '*/.copilot/*' \
+         '.*-run.cjs' '.*-run.mjs' '.*-run.js' '.*-run.sh' '.*-run.py' \
+         '*/.*-run.cjs' '*/.*-run.mjs' '*/.*-run.js' '*/.*-run.sh' '*/.*-run.py'; do
+  grep -qxF -- "$g" "$EXCLUDE_FILE" 2>/dev/null || printf '%s\n' "$g" >>"$EXCLUDE_FILE"
+done
+
 # --- GITHUB: create the LCARS label set -----------------------------------
 # name|color groups, matching the spec.
 STAGE_COLOR="FF9900"

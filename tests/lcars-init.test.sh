@@ -205,6 +205,22 @@ check "6. summary: labels created line"    "grep -q '14 labels' '$repo3/out.txt'
 check "6. summary: LCARS ready line"       "grep -q 'LCARS ready' '$repo3/out.txt'"
 check "6. summary: points to lcars file"   "grep -q 'lcars file' '$repo3/out.txt'"
 
+# --- Session 30: scratch globs land in .git/info/exclude, .gitignore intact -
+# init owns ignoring the harness's scratch via .git/info/exclude (inside .git/,
+# like .git/lcars/) — NEVER the target repo's tracked .gitignore (vision forbids
+# editing it). The append is idempotent and lists the CLI/host-agnostic set.
+printf '*.log\n' > "$repo3/.gitignore"   # captain's tracked .gitignore
+gi3_before="$( cat "$repo3/.gitignore" )"
+exclude3="$repo3/.git/info/exclude"
+check "S30 init: .git/info/exclude lists .lcars-* scratch glob" \
+  "[ -f '$exclude3' ] && grep -qxF '.lcars-*' '$exclude3'"
+check "S30 init: .git/info/exclude lists the .claude/ CLI scratch glob" \
+  "grep -qxF '.claude/' '$exclude3'"
+check "S30 init: .git/info/exclude lists the harness runner glob (.lcars-run-*)" \
+  "grep -qxF '.lcars-run-*' '$exclude3'"
+check "S30 init: the tracked .gitignore is UNTOUCHED" \
+  "[ \"\$( cat '$repo3/.gitignore' )\" = '$gi3_before' ]"
+
 # --- idempotency: second run preserves created timestamp ------------------
 first_created="$(grep '"created"' "$repo3/.git/lcars/config.json")"
 sleep 1
@@ -214,6 +230,8 @@ sleep 1
 )
 second_created="$(grep '"created"' "$repo3/.git/lcars/config.json")"
 check "idempotent: created timestamp preserved" "[ '$first_created' = '$second_created' ]"
+check "S30 init: exclude append is idempotent (no duplicate .lcars-* lines)" \
+  "[ \"\$( grep -c '^\.lcars-\*\$' '$repo3/.git/info/exclude' )\" = '1' ]"
 
 # ==========================================================================
 echo

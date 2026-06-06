@@ -2206,6 +2206,198 @@ check "F2. the unrelated file is left untracked in the working tree" \
 
 # ==========================================================================
 echo
+echo "lcars run — scoped commits + scratch hygiene (Session 30)"
+
+# Session 30 HARDENS commit_ticket's existing scoped-commit filter. The scratch
+# set was too narrow (only `.lcars-*`), so a non-LCARS worker runner
+# (`.t003-run.cjs`) and a CLI lock that appeared MID-run (`.claude/x.lock`, not in
+# the pre-run snapshot) both slipped into a ticket commit. The fix is a single
+# CLI/host-agnostic scratch glob set (extensible from config.json `scratchGlobs`),
+# a widened filter, a `.git/info/exclude` append (NEVER the tracked .gitignore),
+# and post-commit cleanup of the harness-owned runner scratch (`.lcars-run-*`).
+#
+#   S30.1  a ticket producing real source + a worker runner + a CLI lock commits
+#          ONLY the source; both scratch files are excluded
+#   S30.2  a pre-existing untracked file (in the snapshot) is still never committed
+#   S30.3  .git/info/exclude gains the scratch globs idempotently; .gitignore is
+#          UNTOUCHED
+#   S30.4  config.json `scratchGlobs` extend the excluded set
+#   S30.5  harness runner scratch (.lcars-run-*) is gone from the tree after the
+#          ticket; the per-ticket commit summary is unchanged
+
+# A worker stub that drops the FULL spread of scratch a real run leaves behind:
+# real source (commit), a non-LCARS worker runner, a mid-run CLI lock under
+# .claude/, a CLI scratch dir under .copilot/, and a harness-owned runner the
+# driver must clean up afterwards.
+make_worker_stub_s30() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""; while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/t.test.js" ;;
+  implement-implementer)
+    mkdir -p src; printf 'export const feature = 1;\n' > src/feature.js     # produced source → commit
+    printf '#!/usr/bin/env node\n' > .t003-run.cjs                          # non-LCARS worker runner → scratch
+    mkdir -p .claude; printf 'lock\n' > .claude/scheduled_tasks.lock        # CLI lock, appears mid-run → scratch
+    mkdir -p .copilot; printf 'x\n' > .copilot/session.json                 # other-CLI scratch dir → scratch
+    printf 'runner\n' > .lcars-run-abc.cjs                                  # harness-owned runner → scratch + cleanup
+    cat >"$out/result.json" <<JSON
+{
+  "ticketId": "t-001",
+  "passed": true,
+  "attempts": 1,
+  "summary": "built the feature; suite green."
+}
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Drive one green ticket through implement-ticket in an isolated repo. Echoes the
+# repo path; the worker stub is $extra-armed by make_worker_stub_s30.
+new_repo_s30() { # [config-scratchGlobs-json-fragment]
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && printf '# seed\n' > seed.md && git add seed.md && git commit -qm seed )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_approved_plan_json "$m/approved-plan.json"
+  write_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  # config.json with optional extra scratchGlobs (Session 30 extensibility).
+  cat >"$repo/.git/lcars/config.json" <<EOF
+{
+  "model": "claude-sonnet",
+  "testCommand": null,
+  "comprehensionBudget": 1200${1:+,
+  "scratchGlobs": $1}
+}
+EOF
+  echo "$repo"
+}
+
+run_ticket_s30() { # repo
+  local repo="$1"
+  local bin="$repo/.bin"; mkdir -p "$bin"
+  make_worker_stub_s30 "$bin/worker"; make_gh_stub "$bin/gh"
+  ( cd "$repo" && GH_LOG="$bin/gh.log" LCARS_WORKER_BIN="$bin/worker" LCARS_GH_BIN="$bin/gh" \
+      bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >"$bin/out.txt" 2>&1 )
+}
+
+# --- S30.1: only the produced source is committed ---------------------------
+repoS30="$(new_repo_s30)"
+run_ticket_s30 "$repoS30"; rcS30=$?
+statS30="$( cd "$repoS30" && git show --stat --oneline HEAD 2>/dev/null )"
+check "S30.1 implement-ticket exits 0 (green ticket committed)" "[ '$rcS30' -eq 0 ]"
+check "S30.1 the commit INCLUDES the produced source" \
+  "printf '%s' \"$statS30\" | grep -q 'src/feature.js'"
+check "S30.1 the commit EXCLUDES the non-LCARS worker runner (.t003-run.cjs)" \
+  "! printf '%s' \"$statS30\" | grep -q 't003-run.cjs'"
+check "S30.1 the commit EXCLUDES the mid-run CLI lock (.claude/...)" \
+  "! printf '%s' \"$statS30\" | grep -q 'scheduled_tasks.lock'"
+check "S30.1 the commit EXCLUDES the other-CLI scratch dir (.copilot/...)" \
+  "! printf '%s' \"$statS30\" | grep -q 'copilot'"
+
+# --- S30.2: a pre-existing untracked file is still never committed -----------
+repoS30b="$(new_repo_s30)"
+printf 'a bug note\n' > "$repoS30b/bugs.md"   # captain's file, present BEFORE the ticket builds
+run_ticket_s30 "$repoS30b" || true
+statS30b="$( cd "$repoS30b" && git show --stat --oneline HEAD 2>/dev/null )"
+check "S30.2 the commit EXCLUDES the captain's pre-existing untracked file" \
+  "! printf '%s' \"$statS30b\" | grep -q 'bugs.md'"
+check "S30.2 the captain's file is left untracked in the working tree" \
+  "[ -f '$repoS30b/bugs.md' ] && [ -z \"\$( cd "$repoS30b" && git ls-files bugs.md )\" ]"
+
+# --- S30.3: .git/info/exclude gains the globs idempotently; .gitignore intact -
+repoS30c="$(new_repo_s30)"
+printf '*.log\n' > "$repoS30c/.gitignore"   # captain's tracked .gitignore — MUST NOT be touched
+gi_before="$( cat "$repoS30c/.gitignore" )"
+run_ticket_s30 "$repoS30c" || true
+excl="$repoS30c/.git/info/exclude"
+check "S30.3 .git/info/exclude lists the .lcars-* scratch glob" \
+  "[ -f '$excl' ] && grep -qxF '.lcars-*' '$excl'"
+check "S30.3 .git/info/exclude lists the .claude/ scratch glob" \
+  "grep -qxF '.claude/' '$excl'"
+check "S30.3 .git/info/exclude lists the harness runner glob (.lcars-run-*)" \
+  "grep -qxF '.lcars-run-*' '$excl'"
+# re-run the ticket: the exclude file must not grow duplicate lines.
+n1="$( grep -c '^\.lcars-\*$' "$excl" )"
+( cd "$repoS30c" && git checkout -q lcars/$MID 2>/dev/null; rm -f src/feature.js )
+run_ticket_s30 "$repoS30c" || true
+n2="$( grep -c '^\.lcars-\*$' "$excl" )"
+check "S30.3 the exclude append is idempotent (no duplicate lines on re-run)" \
+  "[ \"$n1\" = '1' ] && [ \"$n2\" = '1' ]"
+check "S30.3 the tracked .gitignore is UNTOUCHED" \
+  "[ \"\$( cat '$repoS30c/.gitignore' )\" = '$gi_before' ]"
+
+# --- S30.4: config.json scratchGlobs extend the excluded set ----------------
+# A worker drops a `.myscratch/` file that is NOT in the base set; config opts it
+# into the scratch set, so it must be excluded from the commit.
+make_worker_stub_s30_extra() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""; while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/t.test.js" ;;
+  implement-implementer)
+    mkdir -p src; printf 'export const feature = 1;\n' > src/feature.js
+    printf 'junk\n' > .myscratch-file.tmp
+    cat >"$out/result.json" <<JSON
+{ "ticketId": "t-001", "passed": true, "attempts": 1, "summary": "built it." }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+repoS30d="$(new_repo_s30)"
+cat >"$repoS30d/.git/lcars/config.json" <<'EOF'
+{
+  "model": "claude-sonnet",
+  "testCommand": null,
+  "comprehensionBudget": 1200,
+  "scratchGlobs": [".myscratch-*"]
+}
+EOF
+binS30d="$repoS30d/.bin"; mkdir -p "$binS30d"
+make_worker_stub_s30_extra "$binS30d/worker"; make_gh_stub "$binS30d/gh"
+( cd "$repoS30d" && GH_LOG="$binS30d/gh.log" LCARS_WORKER_BIN="$binS30d/worker" LCARS_GH_BIN="$binS30d/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >"$binS30d/out.txt" 2>&1 ) || true
+statS30d="$( cd "$repoS30d" && git show --stat --oneline HEAD 2>/dev/null )"
+check "S30.4 config scratchGlobs: produced source still committed" \
+  "printf '%s' \"$statS30d\" | grep -q 'src/feature.js'"
+check "S30.4 config scratchGlobs: the config-declared scratch is EXCLUDED" \
+  "! printf '%s' \"$statS30d\" | grep -q 'myscratch'"
+check "S30.4 config scratchGlobs: the glob is appended to .git/info/exclude" \
+  "grep -qxF '.myscratch-*' '$repoS30d/.git/info/exclude'"
+
+# --- S30.5: harness runner scratch is cleaned up; commit summary unchanged ---
+repoS30e="$(new_repo_s30)"
+run_ticket_s30 "$repoS30e" || true
+check "S30.5 the harness-owned runner (.lcars-run-*) is gone from the tree" \
+  "[ ! -e '$repoS30e/.lcars-run-abc.cjs' ]"
+msgS30e="$( cd "$repoS30e" && git log -1 --pretty=%s 2>/dev/null )"
+check "S30.5 the per-ticket commit summary is unchanged" \
+  "[ \"$msgS30e\" = 'lcars($MID) t-001: built the feature; suite green.' ]"
+
+# ==========================================================================
+echo
 echo "lcars run — comprehension-load sizing (Session 31)"
 
 # Session 31 replaces the flat net-new-LOC cap with a total comprehension-load

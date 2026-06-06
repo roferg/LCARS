@@ -881,6 +881,89 @@ snapshot_untracked() { # out-file
   ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others --exclude-standard ) >"$1" 2>/dev/null || : >"$1"
 }
 
+# === Scratch hygiene (CLI/host-agnostic) ====================================
+# ONE place defines what counts as throwaway scratch the harness must never let
+# into a Mission's PR. It is NOT hardcoded to one agentic CLI: it covers LCARS's
+# own scratch, a harness-OWNED worker-runner prefix, and the scratch dirs each
+# common CLI drops in a repo (Claude's `.claude/`, Copilot's `.copilot/`). The
+# captain extends it without code via config.json `scratchGlobs` (a JSON string
+# array) — so a new CLI or a project-specific runner is one config line, never a
+# code change. These globs are matched with shell `case` against paths from
+# `git ls-files --others` AND written verbatim into `.git/info/exclude`.
+
+# --- the harness-owned worker-runner prefix ---------------------------------
+# A repo-write worker (the Implementer) may need a throwaway runner file in the
+# tree (e.g. to invoke the suite). The harness OWNS one neutral, CLI-agnostic
+# name for it — `.lcars-run-*` — so the driver can both refuse to commit it and
+# DELETE it afterwards without guessing per-CLI names. The implement-implementer
+# prompt steers workers to this name (and to LCARS_WORK_OUT for runners). The
+# `.lcars-*` family already covers it; this constant names it for cleanup.
+LCARS_RUNNER_GLOB='.lcars-run-*'
+
+# --- the full scratch glob set (base + config extensions) -------------------
+# Emits one glob per line. Base set is CLI/host-agnostic; config.json's
+# `scratchGlobs` array (read jq-free) appends to it. Dir globs are listed both as
+# `<dir>/` (the exclude-file form) and `<dir>/*` (so a `case` match catches every
+# path under them). Deduped, stable order, base first.
+scratch_globs() {
+  printf '%s\n' \
+    '.lcars-*' '*/.lcars-*' \
+    '.lcars-run-*' '*/.lcars-run-*' \
+    '.claude/' '.claude/*' '*/.claude/*' \
+    '.copilot/' '.copilot/*' '*/.copilot/*' \
+    '.*-run.cjs' '.*-run.mjs' '.*-run.js' '.*-run.sh' '.*-run.py' \
+    '*/.*-run.cjs' '*/.*-run.mjs' '*/.*-run.js' '*/.*-run.sh' '*/.*-run.py'
+  # config extensions: pull every quoted token out of the scratchGlobs array.
+  [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 0
+  awk '
+    /"scratchGlobs"[[:space:]]*:/ { ina=1 }
+    ina {
+      s=$0
+      while (match(s, /"[^"]*"/)) {
+        tok=substr(s, RSTART+1, RLENGTH-2)
+        if (tok != "scratchGlobs") print tok
+        s=substr(s, RSTART+RLENGTH)
+      }
+      if (index($0, "]")) ina=0
+    }
+  ' "$LCARS_CFG" 2>/dev/null
+}
+
+# --- does a path match the scratch set? -------------------------------------
+# jq-free, glob via `case`. Used by commit_ticket to skip scratch when staging.
+is_scratch() { # path
+  local p="$1" g
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    # shellcheck disable=SC2254
+    case "$p" in $g) return 0 ;; esac
+  done <<EOF
+$(scratch_globs)
+EOF
+  return 1
+}
+
+# --- ignore scratch via .git/info/exclude (NEVER the tracked .gitignore) ----
+# vision.md forbids editing a target repo's tracked .gitignore. .git/info/exclude
+# lives inside .git/ (like .git/lcars/) and git never tracks it, so the captain's
+# working tree and history stay clean while scratch is kept out of `git status`
+# and any future `git add`. IDEMPOTENT: a glob already present is never appended
+# again. Best-effort; a missing .git/info dir is created.
+ensure_scratch_excluded() {
+  local gitdir excl g
+  gitdir="$("$GIT_BIN" rev-parse --git-dir 2>/dev/null)" || return 0
+  case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+  mkdir -p "$gitdir/info" 2>/dev/null || return 0
+  excl="$gitdir/info/exclude"
+  [ -f "$excl" ] || : >"$excl"
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    grep -qxF -- "$g" "$excl" 2>/dev/null || printf '%s\n' "$g" >>"$excl"
+  done <<EOF
+$(scratch_globs)
+EOF
+}
+
 # --- commit a green ticket's produced files to the mission branch -----------
 # The Test Writer / Implementer write real files into the working tree; for the
 # PR to have content those files must be committed to the Mission's branch (the
@@ -906,19 +989,27 @@ commit_ticket() { # ticket  summary
     fi
   fi
 
+  # Belt-and-braces: ensure the scratch globs are in .git/info/exclude before we
+  # stage, so even a future `git add`/`status` ignores them (idempotent; `lcars
+  # init` does this too, but a mission created without init — e.g. via `lcars log`
+  # — still gets the guard on its first commit). Never touches the .gitignore.
+  ensure_scratch_excluded
+
   # Stage the Implementer's work, SCOPED — never the whole tree (no `git add -A`,
   # which would sweep in the captain's unrelated untracked files and the worker's
   # throwaway scratch). Edits to already-tracked files go in via `add -u`; a NEW
   # file is staged only when it did NOT exist before the ticket built (the
-  # .untracked-before snapshot) and is not worker/LCARS scratch (a `.lcars-*`
-  # runner script). That keeps the mission branch / PR to the produced source.
+  # .untracked-before snapshot) and is not harness/CLI scratch (see is_scratch —
+  # the CLI/host-agnostic set: `.lcars-*`, the harness runner prefix, each CLI's
+  # scratch dir, plus config.json `scratchGlobs`). That keeps the mission branch
+  # / PR to the produced source.
   "$GIT_BIN" add -u >/dev/null 2>&1
   local before; before="$(ticket_dir "$1")/.untracked-before"
   local now f; now="$(mktemp)"
   ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others --exclude-standard ) >"$now" 2>/dev/null
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    case "$f" in .lcars-*|*/.lcars-*) continue ;; esac              # worker/LCARS scratch
+    is_scratch "$f" && continue                                     # harness/CLI scratch
     [ -f "$before" ] && grep -qxF -- "$f" "$before" && continue     # pre-existing untracked
     ( cd "$REPO_ROOT" && "$GIT_BIN" add -- "$f" >/dev/null 2>&1 )
   done <"$now"
@@ -926,10 +1017,37 @@ commit_ticket() { # ticket  summary
 
   if "$GIT_BIN" diff --cached --quiet 2>/dev/null; then
     COMMIT_NOTE="  ⚠ ticket $1 produced no file changes to commit."
+    cleanup_runner_scratch "$before"
     return 0
   fi
   "$GIT_BIN" commit -q -m "lcars($MISSION_ID) $1: $2" >/dev/null 2>&1 \
     || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+  # After the ticket commits, sweep the HARNESS-OWNED runner scratch from the
+  # tree so it never lingers into later tickets or the captain's `git status`.
+  # ONLY the harness's own `.lcars-run-*` files, and never a file the captain had
+  # before the ticket (the .untracked-before snapshot) or worker output under
+  # .git/lcars — so the captain's work is never destroyed.
+  cleanup_runner_scratch "$before"
+}
+
+# --- remove the harness-owned runner scratch from the working tree ----------
+# Deletes ONLY `.lcars-run-*` files the harness controls, and ONLY when they were
+# NOT pre-existing (absent from the .untracked-before snapshot). Uses `git
+# ls-files --others` WITHOUT --exclude-standard on purpose: once
+# ensure_scratch_excluded has hidden the runner via .git/info/exclude, the
+# excluded listing no longer shows it, but we still must delete it. The bare
+# --others listing skips .git/ for us, so worker output under .git/lcars is never
+# touched. jq-free, best-effort; the captain's files are spared by the snapshot.
+cleanup_runner_scratch() { # before-snapshot
+  local before="$1" f
+  ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others ) 2>/dev/null \
+  | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      # shellcheck disable=SC2254
+      case "$f" in $LCARS_RUNNER_GLOB|*/$LCARS_RUNNER_GLOB) : ;; *) continue ;; esac
+      [ -f "$before" ] && grep -qxF -- "$f" "$before" && continue   # captain's — keep
+      rm -f "$REPO_ROOT/$f" 2>/dev/null || :
+    done
 }
 
 # --- parse waves.json into "<wave>\t<id>" lines, in wave then plan order ------

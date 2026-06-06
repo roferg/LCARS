@@ -26,11 +26,19 @@ Implement the ticket in the repository until its tests pass:
 
 Make your production changes in the repository working tree (the harness commits
 them to the Mission branch once the ticket is green). **Write only real source
-files.** Do not leave throwaway runner scripts or scratch in the repo root: run
-the suite from a temp directory, and if you must create a helper file in the
-tree, name it `.lcars-<something>` and delete it before you finish — the harness
-treats `.lcars-*` as scratch and refuses to commit it, so anything else you
-leave behind will land in the PR.
+files.** Do not leave throwaway runner scripts or scratch in the repo root:
+
+- Prefer writing any throwaway runner/helper into your **scratch output
+  directory** (`$LCARS_WORK_OUT`, shown below), not the repo tree, and run the
+  suite from there.
+- If you genuinely must drop a helper *in the tree*, name it `.lcars-run-<x>`
+  (a runner) or `.lcars-<x>` (other scratch). The harness OWNS the `.lcars-run-*`
+  prefix: it refuses to commit it and **deletes it after the ticket**, so it
+  never lands in the PR — but a name outside the `.lcars-*` family will be
+  committed, so do not invent your own.
+
+The harness also keeps each agentic CLI's own scratch dir out of the commit, so
+you never need to clean up after the tool itself.
 
 ## Output
 
