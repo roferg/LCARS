@@ -398,19 +398,18 @@ ul, ol {
 }
 
 li {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  position: relative;
   color: var(--lcars-text);
   font-size: 14px;
-  padding-left: 2px;
+  padding-left: 20px;
 }
 
 li::before {
   content: '▸';
+  position: absolute;
+  left: 2px;
+  top: 2px;
   color: var(--lcars-amber);
-  flex-shrink: 0;
-  margin-top: 2px;
   font-size: 11px;
 }
 

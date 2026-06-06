@@ -572,19 +572,18 @@ implement   ✓ ⊘ isolated  11/11 tickets green
         <div class="diagram-label">Token-free driver · model-selected workers</div>
         <div class="mermaid">
 flowchart TB
-    subgraph DRIVER["Token-free bash driver (no model, no tokens)"]
-        D["reads state.json → picks next stage → spawns a worker → records result"]
+    D["Token-free bash driver (no model, no tokens)<br/>reads state.json, picks next stage, spawns a worker, records result"]
+    subgraph WORKERS["Cold subprocess workers — all the thinking"]
+      direction TB
+      W1["Research xN — read + web"]
+      W2["Validate — read-only"]
+      W3["Plan — read-only"]
+      W4["Plan Review — read-only"]
+      W5["Test Writer — read"]
+      W6["Implementer — read + write + shell"]
     end
-    subgraph WORKERS["Cold subprocess workers (all the thinking)"]
-        W1["Research xN (read + web)"]
-        W2["Validate (read-only)"]
-        W3["Plan (read-only)"]
-        W4["Plan Review (read-only)"]
-        W5["Test Writer (read)"]
-        W6["Implementer (read+write+shell)"]
-    end
-    D --> W1 & W2 & W3 & W4 & W5 & W6
-    W1 & W2 & W3 & W4 & W5 & W6 -. "structured output to disk" .-> D
+    D ==>|"spawns each Stage cold"| WORKERS
+    WORKERS -.->|"structured output to disk"| D
         </div>
       </div>
 
