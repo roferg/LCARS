@@ -1223,6 +1223,88 @@ check "IC. the commit is ahead of the base branch" \
 
 # ==========================================================================
 echo
+echo "lcars run — Implement issue-close lifecycle (Session 29, Rule A)"
+
+# RULE A: when a ticket goes GREEN, impl-save-result closes that ticket's
+# per-ticket sub-issue — relabel lcars:implement → lcars:done, then close it.
+# This runs ONLY in the GREEN path, AFTER the guardrails and the commit, so an
+# issue-close can never imply a pass a guardrail rejected. It is best-effort:
+# a forge failure leaves a note but never fails the saved result. A ticket whose
+# waves.json issue is null is a local-only mission — no forge call at all.
+#
+# The fake `gh` already logs `issue edit … --add-label …` and `issue close …`
+# to GH_LOG, so the adapter's relabel/close calls land there per sub-issue.
+
+# A1: a green ticket closes ITS sub-issue (t-001 → #101) with the done relabel.
+repoL1="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL1/gh"
+export GH_LOG="$repoL1/gh.log"; : >"$GH_LOG"
+twL1="$repoL1/tw"; mkdir -p "$twL1"; printf 'assert: a failing test\n' >"$twL1/t.test.js"
+( cd "$repoL1" && LCARS_GH_BIN="$repoL1/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL1" >/dev/null 2>&1 )
+resL1="$repoL1/result.json"; write_result "$resL1" t-001 true 2
+rcL1=0
+( cd "$repoL1" && LCARS_GH_BIN="$repoL1/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL1" >outL1.txt 2>&1 ) || rcL1=$?
+check "A1. impl-save-result exits 0 on the green ticket" "[ '$rcL1' -eq 0 ]"
+check "A1. relabels the sub-issue #101 to add lcars:done" \
+  "grep -q 'issue edit 101 .*add-label lcars:done' '$GH_LOG'"
+check "A1. relabels the sub-issue #101 to remove lcars:implement" \
+  "grep -q 'issue edit 101 .*remove-label lcars:implement' '$GH_LOG'"
+check "A1. closes the sub-issue #101" \
+  "grep -q 'issue close 101' '$GH_LOG'"
+check "A1. closes ONLY this ticket's sub-issue (not another ticket's #102)" \
+  "! grep -q 'issue close 102' '$GH_LOG'"
+
+# A2: a FLAGGED (failed) ticket closes NOTHING — its sub-issue stays open and
+# keeps lcars:implement. (The flagged path relabels the PARENT #42 to
+# awaiting-human, but never touches the ticket's own sub-issue.)
+repoL2="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL2/gh"
+export GH_LOG="$repoL2/gh.log"; : >"$GH_LOG"
+twL2="$repoL2/tw"; mkdir -p "$twL2"; printf 'assert: a failing test\n' >"$twL2/t.test.js"
+( cd "$repoL2" && LCARS_GH_BIN="$repoL2/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL2" >/dev/null 2>&1 )
+resL2="$repoL2/result.json"; write_result "$resL2" t-001 false 5
+( cd "$repoL2" && LCARS_GH_BIN="$repoL2/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL2" >outL2.txt 2>&1 ) || true
+check "A2. a flagged ticket issues NO close against its sub-issue #101" \
+  "! grep -q 'issue close 101' '$GH_LOG'"
+check "A2. a flagged ticket does NOT relabel its sub-issue #101 to done" \
+  "! grep -q 'issue edit 101 .*add-label lcars:done' '$GH_LOG'"
+
+# A3: a ticket whose waves.json issue is null → NO forge call for it, just a
+# note. (Local-only mission path stays clean.) We rewrite waves.json so t-001's
+# issue is null, then drive it green and assert no close fires for it.
+repoL3="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL3/gh"
+export GH_LOG="$repoL3/gh.log"; : >"$GH_LOG"
+wL3="$repoL3/.git/lcars/missions/$MID/waves.json"
+cat >"$wL3" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": null
+      }
+    ]
+  }
+]
+EOF
+twL3="$repoL3/tw"; mkdir -p "$twL3"; printf 'assert: a failing test\n' >"$twL3/t.test.js"
+( cd "$repoL3" && LCARS_GH_BIN="$repoL3/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL3" >/dev/null 2>&1 )
+resL3="$repoL3/result.json"; write_result "$resL3" t-001 true 2
+rcL3=0
+( cd "$repoL3" && LCARS_GH_BIN="$repoL3/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL3" >outL3.txt 2>&1 ) || rcL3=$?
+check "A3. impl-save-result still exits 0 with a null sub-issue" "[ '$rcL3' -eq 0 ]"
+check "A3. a null-issue ticket makes NO issue close call" \
+  "! grep -q 'issue close' '$GH_LOG'"
+check "A3. a null-issue ticket makes NO done-relabel call" \
+  "! grep -q 'add-label lcars:done' '$GH_LOG'"
+
+# ==========================================================================
+echo
 echo "lcars run — Implement guardrails (red gate, immutable tests, test quality)"
 
 # The adversarial Test Writer → Implementer split relies on prompt instructions

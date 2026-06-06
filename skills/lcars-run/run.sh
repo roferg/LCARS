@@ -944,6 +944,21 @@ parse_waves_table() { # waves.json
   ' "$1"
 }
 
+# --- a ticket's sub-issue number from waves.json ----------------------------
+# Canonical waves.json pairs each ticket's "id" line with its "issue" line right
+# below (emit_waves_json's shape). A line-oriented awk pass tracks the current id
+# and, on the matching ticket, echoes the issue token — a number, or "null" for a
+# local-only mission (no sub-issue was created). Empty output = id not found.
+# This is the ticket→sub-issue map Rule A reads to close the right issue.
+ticket_issue() { # waves.json  ticketId
+  awk -v want="$2" '
+    /"id"[[:space:]]*:/    { n=split($0,a,"\""); if (n>=4) cur=a[4]; next }
+    /"issue"[[:space:]]*:/ { if (cur==want) {
+        v=$0; sub(/.*"issue"[[:space:]]*:[[:space:]]*/,"",v); gsub(/[ ,}]/,"",v)
+        print v; exit } }
+  ' "$1"
+}
+
 # --- is a ticket green? (result.json exists with passed:true) ----------------
 ticket_green() { # ticketId
   local rf; rf="$(ticket_dir "$1")/result.json"
@@ -1145,9 +1160,37 @@ cmd_impl_save_result() {
   emit_event ticket_green implement "ticket $TICKET green in $attempts attempt(s)" \
     "ticket=$TICKET" "attempts=$attempts"
 
+  # RULE A (issue-close lifecycle): the ticket is green AND committed, so close
+  # its per-ticket sub-issue — relabel lcars:implement → lcars:done, then close.
+  # This sits AFTER the guardrails (immutable tests / shape — both `die` above)
+  # AND after commit_ticket: a sub-issue close must never imply a pass that a
+  # guardrail rejected. The forge calls go through the host adapter (the ONE
+  # forge seam), and are best-effort like commit_ticket / gh_relabel — a failure
+  # leaves a note but NEVER fails the already-saved result. A null issue (a
+  # local-only mission whose Schedule created no sub-issue) makes no call at all.
+  local CLOSE_NOTE="" tissue
+  tissue="$(ticket_issue "$MISSION_DIR/waves.json" "$TICKET")"
+  case "$tissue" in
+    ''|null)
+      # No sub-issue on file for this ticket — local-only path, nothing to close.
+      CLOSE_NOTE="  ⓘ no sub-issue on file for $TICKET — skipped issue close (local-only mission)."
+      ;;
+    *)
+      if command -v "$GH_BIN" >/dev/null 2>&1; then
+        host issue-relabel "$tissue" --add "lcars:done" --remove "lcars:implement" \
+          || CLOSE_NOTE="  ⚠ could not relabel sub-issue #$tissue — relabel + close it by hand."
+        host issue-close "$tissue" \
+          || CLOSE_NOTE="  ⚠ could not close sub-issue #$tissue — close it by hand."
+      else
+        CLOSE_NOTE="  ⚠ gh not found — close sub-issue #$tissue by hand (add lcars:done, remove lcars:implement)."
+      fi
+      ;;
+  esac
+
   echo "IMPLEMENT: result saved — $TICKET"
   echo "  $TICKET passed in $attempts attempt(s). Saved result.json."
   [ -n "$COMMIT_NOTE" ] && echo "$COMMIT_NOTE"
+  [ -n "$CLOSE_NOTE" ] && echo "$CLOSE_NOTE"
   exit 0
 }
 

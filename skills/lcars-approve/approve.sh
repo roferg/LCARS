@@ -115,6 +115,23 @@ pr_body() {
   ' "$waves"
 }
 
+# --- the sub-issue numbers Schedule opened, one per line --------------------
+# Reads waves.json and echoes every non-null ticket "issue" number. These are the
+# per-ticket sub-issues; Rule A closes each on GREEN during Implement, but that
+# is best-effort, so approve re-includes them in the PR's Closes directives to
+# RECONCILE any Rule A missed (closing an already-closed issue via Closes is a
+# harmless no-op). Line-oriented and jq-free, like pr_body.
+sub_issues() {
+  local waves="$MISSION_DIR/waves.json"
+  [ -f "$waves" ] || return 0
+  awk '
+    /"issue"[[:space:]]*:/ {
+      v=$0; sub(/.*"issue"[[:space:]]*:[[:space:]]*/,"",v); gsub(/[ ,}]/,"",v)
+      if (v != "" && v != "null") print v
+    }
+  ' "$waves"
+}
+
 # --- args ------------------------------------------------------------------
 MISSION_ID=""
 while [ $# -gt 0 ]; do
@@ -169,7 +186,23 @@ TITLE="$(pr_title)"
 BODY="$(pr_body)"
 command -v "$GH_BIN" >/dev/null 2>&1 \
   || die "gh not found — cannot open the PR for '$BRANCH'. Mission stays at verify."
-PR_URL="$(host pr-create --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$BODY")"
+
+# RULE B (issue-close lifecycle): the PR — not approve — closes the issues, on
+# MERGE. The adapter renders host-portable `Closes #<n>` directives into the PR
+# body (GitHub & GitLab both honour them), so the merge auto-closes the PARENT
+# Mission issue plus any still-open per-ticket sub-issue (Rule A's reconciliation
+# — see sub_issues). approve itself issues NO close call against the parent: the
+# stage LABEL flipping to lcars:done below is the board COLUMN; the issue's
+# open/closed LIFECYCLE is decoupled from it and stays OPEN until the human
+# merges. A local-only mission (no parent issue) simply passes no parent --closes.
+CLOSES=()
+PARENT="$(json_raw "$STATE" githubIssue)"
+case "$PARENT" in ''|null) : ;; *) CLOSES+=(--closes "$PARENT") ;; esac
+while IFS= read -r sub; do
+  [ -n "$sub" ] && CLOSES+=(--closes "$sub")
+done < <(sub_issues)
+
+PR_URL="$(host pr-create --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$BODY" "${CLOSES[@]}")"
 case "$PR_URL" in
   http*|*/pull/*) : ;;
   *) die "gh pr create did not return a PR URL for '$BRANCH' — open the PR by hand, then re-run. Mission stays at verify." ;;
