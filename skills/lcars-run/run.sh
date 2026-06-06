@@ -810,19 +810,52 @@ cmd_schedule() {
     exit 1
   fi
 
-  # One sub-issue per ticket, in wave then plan order; record wave/id/issue.
+  # SINGLE-TICKET FAST-PATH (BUG-005, Session 33). When Plan emits exactly ONE
+  # ticket, a per-ticket sub-issue would merely DUPLICATE the Mission's own
+  # issue — so don't open one. Reuse the Mission's githubIssue as the lone
+  # ticket's issue and emit a one-wave waves.json directly. The on-green close
+  # in cmd_impl_save_result has a matching guard so this reused parent issue is
+  # NOT closed on green (it closes on PR merge, in lcars-approve). Ticket count
+  # is the number of rows in $table (one row per ticket).
   local assign; assign="$(mktemp)"
   local nwaves=0 ntickets=0 nissues=0 wnum ids id num
-  while read -r wnum ids; do
-    [ -n "$wnum" ] || continue
-    nwaves=$((nwaves + 1))
-    for id in $ids; do
-      ntickets=$((ntickets + 1))
-      num="$(create_issue "$id" "$type" "$table")"
-      [ -n "$num" ] && nissues=$((nissues + 1))
-      printf '%s\t%s\t%s\n' "$wnum" "$id" "$num" >>"$assign"
-    done
-  done <"$wavemap"
+  local ticket_count; ticket_count="$(grep -c . "$table")"
+  if [ "$ticket_count" -le 1 ]; then
+    # The lone ticket id is the single row's first field; its wave is whatever
+    # compute_waves placed it in (always 1 with ≤1 ticket, but read it rather
+    # than assume).
+    local lone_id lone_wave parent
+    lone_id="$(awk -F'\t' 'NF{print $1; exit}' "$table")"
+    lone_wave="$(awk 'NF{print $1; exit}' "$wavemap")"; lone_wave="${lone_wave:-1}"
+    parent="$(json_raw "$STATE" githubIssue)"
+    nwaves=1; ntickets=1
+    case "$parent" in
+      ''|null)
+        # Degraded path: no issue on file. Keep TODAY's behaviour — issue: null
+        # plus the existing warning. NEVER fabricate an issue; the fast-path is
+        # about not creating a REDUNDANT one, never about inventing one.
+        printf '%s\t%s\t%s\n' "$lone_wave" "$lone_id" "" >>"$assign"
+        RELABEL_NOTE="  ⚠ no githubIssue on file — wrote issue: null for $lone_id (local-only mission)."
+        ;;
+      *)
+        # Reuse the Mission's own issue; open NO sub-issue (nissues stays 0).
+        printf '%s\t%s\t%s\n' "$lone_wave" "$lone_id" "$parent" >>"$assign"
+        ;;
+    esac
+  else
+    # ≥ 2 tickets — UNCHANGED. One sub-issue per ticket, in wave then plan
+    # order; record wave/id/issue.
+    while read -r wnum ids; do
+      [ -n "$wnum" ] || continue
+      nwaves=$((nwaves + 1))
+      for id in $ids; do
+        ntickets=$((ntickets + 1))
+        num="$(create_issue "$id" "$type" "$table")"
+        [ -n "$num" ] && nissues=$((nissues + 1))
+        printf '%s\t%s\t%s\n' "$wnum" "$id" "$num" >>"$assign"
+      done
+    done <"$wavemap"
+  fi
 
   emit_waves_json "$assign" >"$MISSION_DIR/waves.json"
 
@@ -1286,13 +1319,29 @@ cmd_impl_save_result() {
   # forge seam), and are best-effort like commit_ticket / gh_relabel — a failure
   # leaves a note but NEVER fails the already-saved result. A null issue (a
   # local-only mission whose Schedule created no sub-issue) makes no call at all.
-  local CLOSE_NOTE="" tissue
+  local CLOSE_NOTE="" tissue parent_issue
   tissue="$(ticket_issue "$MISSION_DIR/waves.json" "$TICKET")"
+  # Session-33 interplay guard: in the single-ticket Schedule fast-path the lone
+  # ticket's issue IS the Mission's OWN parent issue (Schedule reused it instead
+  # of opening a redundant sub-issue — BUG-005). Closing it here, on green, would
+  # close the parent BEFORE the PR merges. So when tissue == the Mission's
+  # githubIssue, SKIP the relabel+close entirely; the parent closes on MERGE
+  # (lcars-approve), not on a green ticket.
+  parent_issue="$(json_raw "$STATE" githubIssue)"
   case "$tissue" in
     ''|null)
       # No sub-issue on file for this ticket — local-only path, nothing to close.
       CLOSE_NOTE="  ⓘ no sub-issue on file for $TICKET — skipped issue close (local-only mission)."
       ;;
+  esac
+  if [ -z "$CLOSE_NOTE" ] && [ -n "$parent_issue" ] && [ "$parent_issue" != "null" ] \
+     && [ "$tissue" = "$parent_issue" ]; then
+    # Reused-parent fast-path: leave it open; it closes on PR merge.
+    CLOSE_NOTE="  ⓘ ticket $TICKET reuses the Mission issue #$tissue — left open; it closes on PR merge."
+  fi
+  case "$tissue" in
+    ''|null) : ;;  # already handled above
+    "$parent_issue") : ;;  # reused-parent guard handled above
     *)
       if command -v "$GH_BIN" >/dev/null 2>&1; then
         host issue-relabel "$tissue" --add "lcars:done" --remove "lcars:implement" \

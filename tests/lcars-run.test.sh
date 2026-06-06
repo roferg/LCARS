@@ -258,6 +258,27 @@ write_approved_plan_json() { # file
 EOF
 }
 
+# A SINGLE-ticket approved plan — the Schedule fast-path case (BUG-005). One
+# vertical slice, no dependencies. Schedule must NOT open a redundant sub-issue
+# for this; it reuses the Mission's own issue instead.
+write_single_ticket_plan_json() { # file
+  cat >"$1" <<'EOF'
+[
+  {
+    "id": "t-001",
+    "title": "Add the data-theme attribute and dark token set",
+    "description": "Flip data-theme on <html> and wire the dark --color-* tokens end-to-end.",
+    "acceptanceCriteria": ["Setting data-theme=dark recolours the page"],
+    "estimatedReadLoc": 200,
+    "estimatedTestLoc": 80,
+    "estimatedNewLoc": 120,
+    "dependencies": [],
+    "rationale": "The whole change is one cohesive slice — no decomposition needed."
+  }
+]
+EOF
+}
+
 # Build a repo with a mission at stage "schedule" — Plan Review passed and
 # approved-plan.json exists; the next Stage to execute is Schedule.
 new_repo_with_schedule_mission() {
@@ -895,6 +916,97 @@ check "guard. schedule refuses a non-schedule mission" "[ '$rcSg' -ne 0 ]"
 
 # ==========================================================================
 echo
+echo "lcars run — Schedule single-ticket fast-path (BUG-005, Session 33)"
+
+# When Plan emits exactly ONE ticket, Schedule must STOP opening a redundant
+# sub-issue that merely duplicates the Mission's own issue. It still emits a
+# one-wave waves.json — the lone ticket pointed at the Mission's OWN issue —
+# and advances to Implement. Pipeline + Implement's input contract unchanged.
+
+# --- SF: a 1-ticket plan opens NO sub-issue; reuses the Mission issue --------
+repoSF="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSF/gh"
+write_single_ticket_plan_json "$repoSF/.git/lcars/missions/$MID/approved-plan.json"
+export GH_LOG="$repoSF/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSF/gh.seq"; rm -f "$GH_SEQ"
+rcSF=0
+( cd "$repoSF" && LCARS_GH_BIN="$repoSF/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSF.txt 2>&1 ) || rcSF=$?
+WAVESSF="$repoSF/.git/lcars/missions/$MID/waves.json"
+check "SF. schedule exits 0 on a single-ticket plan" "[ '$rcSF' -eq 0 ]"
+check "SF. writes waves.json" "[ -f '$WAVESSF' ]"
+check "SF. opens NO GitHub sub-issue (fast-path)" \
+  "! grep -q 'issue create' '$repoSF/gh.log'"
+check "SF. the lone ticket is in wave 1" "[ \"\$(wave_of '$WAVESSF' t-001)\" = '1' ]"
+check "SF. the lone ticket's issue == the Mission's own issue (#42)" \
+  "grep -q '\"issue\": *42' '$WAVESSF'"
+check "SF. waves.json has exactly one ticket (no second ticket)" \
+  "[ \"\$(grep -c '\"id\":' '$WAVESSF')\" = '1' ]"
+check "SF. advances the stage to implement" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoSF")'"
+check "SF. relabels schedule → implement (adds lcars:implement)" \
+  "grep -q 'add-label lcars:implement' '$repoSF/gh.log'"
+check "SF. relabels schedule → implement (removes lcars:schedule)" \
+  "grep -q 'remove-label lcars:schedule' '$repoSF/gh.log'"
+check "SF. reports it opened 0 sub-issue(s)" \
+  "grep -q 'opened 0 sub-issue' '$repoSF/outSF.txt'"
+
+# --- SF-multi: a 2+-ticket plan is UNCHANGED (regression lock) --------------
+# The existing graph → one-sub-issue-per-ticket → waves loop must still fire.
+repoSFm="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSFm/gh"
+export GH_LOG="$repoSFm/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSFm/gh.seq"; rm -f "$GH_SEQ"
+rcSFm=0
+( cd "$repoSFm" && LCARS_GH_BIN="$repoSFm/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSFm.txt 2>&1 ) || rcSFm=$?
+WAVESSFm="$repoSFm/.git/lcars/missions/$MID/waves.json"
+check "SF-multi. 2+-ticket plan exits 0" "[ '$rcSFm' -eq 0 ]"
+check "SF-multi. still opens one sub-issue per ticket (4)" \
+  "[ \"\$(grep -c 'issue create' '$repoSFm/gh.log')\" = '4' ]"
+check "SF-multi. saves the created issue numbers into waves.json (101)" \
+  "grep -q '\"issue\": *101' '$WAVESSFm'"
+check "SF-multi. does NOT reuse the Mission issue #42 for any ticket" \
+  "! grep -q '\"issue\": *42' '$WAVESSFm'"
+
+# --- SF-null: a 1-ticket plan with githubIssue=null → null issue, still moves -
+# Degraded path: no issue on file. Keep TODAY's behaviour — issue: null + the
+# existing warning. Never fabricate an issue.
+repoSFn="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSFn/gh"
+write_single_ticket_plan_json "$repoSFn/.git/lcars/missions/$MID/approved-plan.json"
+sSFn="$(state_of "$repoSFn")"
+sed 's/"githubIssue": 42/"githubIssue": null/' "$sSFn" >"$repoSFn/s.tmp" && mv "$repoSFn/s.tmp" "$sSFn"
+export GH_LOG="$repoSFn/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSFn/gh.seq"; rm -f "$GH_SEQ"
+rcSFn=0
+( cd "$repoSFn" && LCARS_GH_BIN="$repoSFn/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSFn.txt 2>&1 ) || rcSFn=$?
+WAVESSFn="$repoSFn/.git/lcars/missions/$MID/waves.json"
+check "SF-null. exits 0 with a null Mission issue" "[ '$rcSFn' -eq 0 ]"
+check "SF-null. opens NO sub-issue (does not fabricate one)" \
+  "! grep -q 'issue create' '$repoSFn/gh.log'"
+check "SF-null. records issue: null for the lone ticket" \
+  "grep -q '\"issue\": *null' '$WAVESSFn'"
+check "SF-null. still advances to implement" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoSFn")'"
+check "SF-null. warns about the missing issue" \
+  "grep -qi 'warn\\|⚠\\|no.*issue\\|by hand' '$repoSFn/outSFn.txt'"
+
+# --- SF-impl: Implement consumes the fast-path waves.json with NO special-case
+# impl-status reads the reused-issue waves.json exactly the same way.
+repoSFi="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSFi/gh"
+write_single_ticket_plan_json "$repoSFi/.git/lcars/missions/$MID/approved-plan.json"
+export GH_LOG="$repoSFi/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSFi/gh.seq"; rm -f "$GH_SEQ"
+( cd "$repoSFi" && LCARS_GH_BIN="$repoSFi/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >/dev/null 2>&1 )
+rcSFi=0
+( cd "$repoSFi" && LCARS_GH_BIN="$repoSFi/gh" bash "$SCRIPT" impl-status \
+    --mission "$MID" >outSFi.txt 2>&1 ) || rcSFi=$?
+check "SF-impl. impl-status reads the fast-path waves.json (exits 0)" "[ '$rcSFi' -eq 0 ]"
+check "SF-impl. impl-status names the lone ticket t-001 as pending" \
+  "grep -q 't-001' '$repoSFi/outSFi.txt'"
+
+# ==========================================================================
+echo
 echo "lcars run — Implement stage"
 
 # The Implement stage processes waves sequentially; tickets within a wave run in
@@ -1302,6 +1414,56 @@ check "A3. a null-issue ticket makes NO issue close call" \
   "! grep -q 'issue close' '$GH_LOG'"
 check "A3. a null-issue ticket makes NO done-relabel call" \
   "! grep -q 'add-label lcars:done' '$GH_LOG'"
+
+# A4 (Session 33 interplay guard): when the ticket's issue IS the Mission's OWN
+# parent issue (#42 — the single-ticket fast-path reuse), the on-green close
+# must SKIP entirely. Closing it on green would close the parent BEFORE the PR
+# merges; the parent closes on MERGE (lcars-approve), not here.
+repoL4="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL4/gh"
+export GH_LOG="$repoL4/gh.log"; : >"$GH_LOG"
+wL4="$repoL4/.git/lcars/missions/$MID/waves.json"
+cat >"$wL4" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 42
+      }
+    ]
+  }
+]
+EOF
+twL4="$repoL4/tw"; mkdir -p "$twL4"; printf 'assert: a failing test\n' >"$twL4/t.test.js"
+( cd "$repoL4" && LCARS_GH_BIN="$repoL4/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL4" >/dev/null 2>&1 )
+resL4="$repoL4/result.json"; write_result "$resL4" t-001 true 2
+rcL4=0
+( cd "$repoL4" && LCARS_GH_BIN="$repoL4/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL4" >outL4.txt 2>&1 ) || rcL4=$?
+check "A4. impl-save-result exits 0 when the ticket reuses the Mission issue" "[ '$rcL4' -eq 0 ]"
+check "A4. does NOT close the reused parent issue #42 on green" \
+  "! grep -q 'issue close 42' '$GH_LOG'"
+check "A4. does NOT relabel the reused parent issue #42 to done on green" \
+  "! grep -q 'issue edit 42 .*add-label lcars:done' '$GH_LOG'"
+check "A4. notes the parent issue is left open (closes on PR merge)" \
+  "grep -qi 'mission issue\\|left open\\|on.*merge' '$repoL4/outL4.txt'"
+
+# A4b: a NORMAL sub-issue (issue != parent #42) STILL closes on green
+# (regression on Session 29 — the guard must not over-fire).
+repoL4b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoL4b/gh"
+export GH_LOG="$repoL4b/gh.log"; : >"$GH_LOG"
+twL4b="$repoL4b/tw"; mkdir -p "$twL4b"; printf 'assert: a failing test\n' >"$twL4b/t.test.js"
+( cd "$repoL4b" && LCARS_GH_BIN="$repoL4b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twL4b" >/dev/null 2>&1 )
+resL4b="$repoL4b/result.json"; write_result "$resL4b" t-001 true 2
+( cd "$repoL4b" && LCARS_GH_BIN="$repoL4b/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resL4b" >outL4b.txt 2>&1 ) || true
+check "A4b. a normal sub-issue #101 (!= parent #42) STILL closes on green" \
+  "grep -q 'issue close 101' '$GH_LOG'"
+check "A4b. a normal sub-issue #101 STILL gets the done relabel" \
+  "grep -q 'issue edit 101 .*add-label lcars:done' '$GH_LOG'"
 
 # ==========================================================================
 echo
