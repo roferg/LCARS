@@ -215,6 +215,101 @@ locate_mission() {
   [ -f "$STATE" ]       || die "mission '$id' has no state.json — its state is corrupt."
 }
 
+# --- the durable repo context source (the one-time static BASE) -------------
+# Every Align / Validate / Plan / Plan-Review / Implement worker reads the SAME
+# declarative repo facts instead of re-deriving them each run. We resolve that
+# source ONCE and reuse it. Resolution order (the spec):
+#   1. CONTEXT.md at the repo root            → use it; generate NO pack.
+#   2. .git/lcars/context-pack.md (generated) → use it.
+#   3. neither                                → generate the pack via ONE cold
+#      worker, then use it.
+# Generation is LAZY: it happens on the first Stage / Align that needs the
+# source, never at `lcars init`. The pack lives ONLY inside .git/ — the target
+# repo's working tree and tracked files are NEVER touched (no CONTEXT.md is ever
+# created). Research agents must NEVER see this source: it is shared repo facts,
+# safe for the declarative Stages but off-limits to the single-question agents.
+#
+# Sets CONTEXT_GITDIR / CONTEXT_REPO_ROOT / CONTEXT_PACK_PATH (the canonical
+# pack location) for the caller.
+context_paths() {
+  local gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-dir 2>/dev/null)" \
+    || die "not inside a git repository — run this from a repo root."
+  case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+  CONTEXT_GITDIR="$gitdir"
+  CONTEXT_REPO_ROOT="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
+  [ -n "$CONTEXT_REPO_ROOT" ] || CONTEXT_REPO_ROOT="$PWD"
+  CONTEXT_PACK_PATH="$gitdir/lcars/context-pack.md"
+}
+
+# Generate the pack via ONE cold worker. Mirrors spawn_worker exactly: the
+# worker writes to a `mktemp -d` SCRATCH file (its expanded absolute path baked
+# into the prompt as literal text — no $VAR for the headless worker to expand),
+# then BASH copies that scratch file into the durable pack path. The worker never
+# touches `.git/` (the Write tool auto-denies any `.git/` path in headless `-p`
+# mode) and never needs to resolve an env token. cwd stays at the repo root so
+# the worker's read-only repo access works. Stays CLI-agnostic.
+generate_context_pack() { # pack-path
+  local pack="$1" scratch out prompt tools
+  mkdir -p "$(dirname "$pack")"
+  scratch="$(mktemp -d)"
+  out="$scratch/context-pack.md"
+  prompt="$(cat "$STAGES_DIR/context-pack.md")
+
+Write your context pack to EXACTLY: $out"
+  tools="$(worker_tools repo-read)"
+  LCARS_WORK_OUT="$scratch" LCARS_WORKER_ROLE="context-pack" \
+    "$WORKER_BIN" -p "$prompt" --allowedTools "$tools" --output-format text \
+    >"$scratch/.worker.out" 2>"$scratch/.worker.err" || true
+  # BASH (which CAN write into `.git/`) lands the durable pack from scratch.
+  [ -f "$out" ] && cp "$out" "$pack"
+  rm -rf "$scratch"
+}
+
+# The SINGLE resolver. Resolves the durable context source and PRINTS its path
+# (one line), generating the pack lazily-once via a cold worker if neither a
+# repo-root CONTEXT.md nor a prior pack exists. In-process (no subprocess) so it
+# is reused identically by the `context-source` subcommand (Align flow, via
+# lcars-file) AND the cold Stage drivers below — one implementation, no
+# duplication.
+resolve_context_source() {
+  context_paths
+  # 1. CONTEXT.md wins — even if added after `lcars init`. Filesystem check, not
+  #    config, so a CONTEXT.md dropped in later is honoured immediately.
+  if [ -f "$CONTEXT_REPO_ROOT/CONTEXT.md" ]; then
+    printf '%s\n' "$CONTEXT_REPO_ROOT/CONTEXT.md"
+    return 0
+  fi
+  # 2. Already-generated pack — reuse, never regenerate.
+  if [ -f "$CONTEXT_PACK_PATH" ]; then
+    printf '%s\n' "$CONTEXT_PACK_PATH"
+    return 0
+  fi
+  # 3. Generate it once, via a single cold worker, then use it.
+  require_worker
+  generate_context_pack "$CONTEXT_PACK_PATH"
+  [ -f "$CONTEXT_PACK_PATH" ] \
+    || die "the context-pack worker produced no $CONTEXT_PACK_PATH — context source unresolved, Stage stopped."
+  printf '%s\n' "$CONTEXT_PACK_PATH"
+  return 0
+}
+
+# `run.sh context-source` — the public subcommand lcars-file's Align flow calls.
+cmd_context_source() { resolve_context_source; }
+
+# Resolve the context source for a Stage driver and echo a block to append to
+# its `extra` (the artifact PATHS the cold worker reads). This is how the shared
+# repo facts reach Validate / Plan / Plan-Review / Implement — by PATH only,
+# consistent with cold-worker isolation. NEVER call this from Research.
+context_extra_block() {
+  local src
+  src="$(resolve_context_source 2>/dev/null)" || return 0
+  [ -n "$src" ] || return 0
+  printf '
+## Repo context (declarative repo facts — read for grounding)
+- %s' "$src"
+}
+
 # Each Stage runs only when the Mission is parked at the stage that feeds it,
 # so we never relabel or overwrite a mission mid-flight. Research runs on
 # `align`; Validate runs on `validate`.
@@ -1704,6 +1799,9 @@ cmd_validate() {
   # re-raise the same question — otherwise the awaiting-human gate loops forever.
   [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
 - $MISSION_DIR/answers.json   (the captain's answer resolving the prior scope question — treat it as DECIDED and fold it in; do not re-raise it)"
+  # The durable repo context source (CONTEXT.md or the generated pack) — shared
+  # declarative facts, by PATH only. Safe for this declarative Stage.
+  extra="$extra$(context_extra_block)"
 
   local tries=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -1764,6 +1862,8 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
     [ -f "$rv" ] && extra="$extra
 - $rv   (reviewer objections to resolve in this revision)"
   done
+  # Shared declarative repo facts, by PATH only.
+  extra="$extra$(context_extra_block)"
 
   local tries=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -1812,6 +1912,9 @@ acceptable — do not raise it."
   # decision instead of re-escalating the same objections forever.
   [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
 - $MISSION_DIR/answers.json   (the captain's resolution of the prior escalation — treat it as DECIDED; do not re-raise it)"
+  # The reviewer still sees ONLY the tickets (never prd.md / validated-plan.md) —
+  # we add nothing but the declarative repo-facts context source, by PATH only.
+  extra="$extra$(context_extra_block)"
 
   local tries=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -1861,6 +1964,10 @@ cmd_implement_ticket() {
   # per real spawn_worker dispatch, derived from events.jsonl so it never repeats
   # or restarts when a fresh process re-enters. DISTINCT from the Implementer's
   # own internal 1–5 attempts that land in result.json.attempts.attempts.
+  # The durable repo context source (shared declarative facts, by PATH only) —
+  # resolved once for both halves of the adversarial pair.
+  local cblock; cblock="$(context_extra_block)"
+
   # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
   local tries=0 saved=0
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -1874,7 +1981,7 @@ cmd_implement_ticket() {
     local odir; odir="$(mktemp -d)"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/approved-plan.json
+- $MISSION_DIR/approved-plan.json$cblock
 
 ## Your ticket
 $TICKET"
@@ -1893,7 +2000,7 @@ $TICKET"
   local tdir; tdir="$(ticket_dir "$TICKET")/tests"
   local iextra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json
-- $tdir   (the failing tests — your entire handoff from the Test Writer)"
+- $tdir   (the failing tests — your entire handoff from the Test Writer)$cblock"
   # RESUME after a 5-attempt flag was answered: the captain's recorded note is
   # how to get this ticket unstuck. Feed it so the Implementer acts on it rather
   # than re-flagging the same blocker.
@@ -2261,6 +2368,9 @@ case "$SUB" in
   implement-ticket) cmd_implement_ticket ;;
   # Auto-advance driver — sequences the per-Stage advances above (token-free).
   drive)            cmd_drive ;;
+  # Repo-level context resolver (no mission) — prints the durable context source
+  # path, generating the one-time pack lazily. Reused by lcars-file's Align flow.
+  context-source)   cmd_context_source ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
   emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;

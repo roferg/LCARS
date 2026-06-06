@@ -26,6 +26,26 @@ sharpening happens in Align.
 
 ## STEP 2 — Align
 
+**First, resolve the repo context source — once.** Before grilling, run the
+shared resolver so Align reads the same durable repo facts every later Stage
+will (architecture, conventions, how tests run, key interfaces / domain terms),
+instead of re-deriving them from the tree each session:
+
+```bash
+ctx=$(bash ~/.claude/skills/lcars-run/run.sh context-source)
+```
+
+It prints ONE path and you read it:
+
+- If a `CONTEXT.md` exists at the repo root, that is the source (no pack is
+  generated).
+- Otherwise it returns `.git/lcars/context-pack.md`, generating it lazily on
+  first use via a single cold worker (and reusing it thereafter). The pack lives
+  inside `.git/` — it never touches the working tree and is never committed.
+
+Read `$ctx` and treat it as the ground truth for repo facts during Align. Where
+this guide below says "the codebase or `CONTEXT.md`", it means `$ctx`.
+
 Align is a **relentless, one-question-at-a-time interview** in the style of the
 `grill-me` / `grill-with-docs` skills — not a fixed questionnaire, and **never a
 batch of questions fired off at once**. Run it like this:
