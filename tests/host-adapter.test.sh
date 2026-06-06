@@ -48,6 +48,15 @@ fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
   echo "https://github.com/acme/repo/pull/77"
 fi
+# `gh api .../issues/<n> --jq .id` → resolve the child's DATABASE id. Echo a
+# synthetic db id (9000 + child number) that is distinctly NOT the issue number,
+# so link-subissue tests can prove the adapter resolved the db id, not the number.
+if [ "${1:-}" = "api" ] && printf '%s' "${2:-}" | grep -q '/sub_issues$' ; then
+  echo '{"sub_issues_summary":{"total":1}}'
+elif [ "${1:-}" = "api" ]; then
+  child="$(printf '%s' "${2:-}" | sed 's#.*/issues/##')"
+  echo $((9000 + child))
+fi
 exit 0
 EOF
   chmod +x "$1"
@@ -135,6 +144,24 @@ check "2. pr-create --closes appends Closes #102 into the PR body" \
 check "2. pr-create --closes keeps the original body too" \
   "grep -q '## Summary' '$GH_LOG'"
 
+# --- Behaviour 2b: link-subissue → resolve child db id, POST a TYPED integer --
+# Native GitHub sub-issue nesting (Session 35). The op takes <parent> <child>
+# ISSUE NUMBERS, resolves the child's DATABASE id via `gh api .../issues/<child>
+# --jq .id`, then POSTs to `.../issues/<parent>/sub_issues` with the db id as a
+# TYPED integer field. The typed integer is the crux: `gh api -F` sends a number
+# (the API requires it), `-f` would send a string and the API 422s. This suite
+# locks: --method POST, the sub_issues path, AND `-F` (never `-f`).
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" link-subissue 42 314 >/dev/null 2>&1
+check "2b. link-subissue resolves the child db id via gh api issues/<child> --jq .id" \
+  "grep -q 'gh api repos/{owner}/{repo}/issues/314 --jq .id' '$GH_LOG'"
+check "2b. link-subissue POSTs to the parent's sub_issues endpoint (--method POST)" \
+  "grep -q 'gh api --method POST repos/{owner}/{repo}/issues/42/sub_issues' '$GH_LOG'"
+check "2b. link-subissue sends sub_issue_id as a TYPED integer (-F, the resolved db id 9314)" \
+  "grep -q 'sub_issues -F sub_issue_id=9314' '$GH_LOG'"
+check "2b. link-subissue NEVER uses -f (string) for sub_issue_id (would 422)" \
+  "! grep -q -- '-f sub_issue_id' '$GH_LOG'"
+
 # --- Behaviour 3: an unknown host id exits NON-ZERO (no silent no-op) ---------
 : >"$GH_LOG"
 rc=0
@@ -173,6 +200,17 @@ LCARS_GH_BIN="$GHF" bash "$SCRIPT" issue-close 103 >/dev/null 2>"$ERR" || rc=$?
 check "4. issue-close returns NON-ZERO when gh fails (propagates the forge rc)" \
   "[ '$rc' -ne 0 ]"
 check "4. issue-close forge failure does NOT die (no host-adapter: message)" \
+  "! grep -q 'host-adapter:' '$ERR'"
+
+# link-subissue is best-effort like relabel/close: a forge failure (id resolution
+# or the POST) returns NON-ZERO so cmd_schedule can set its "nest by hand" note,
+# but it never `die`s — distinct from the hard error of an unknown op.
+: >"$GH_LOG"
+rc=0
+LCARS_GH_BIN="$GHF" bash "$SCRIPT" link-subissue 42 314 >/dev/null 2>"$ERR" || rc=$?
+check "4. link-subissue returns NON-ZERO when gh fails (so cmd_schedule's note fires)" \
+  "[ '$rc' -ne 0 ]"
+check "4. link-subissue forge failure does NOT die (no host-adapter: message)" \
   "! grep -q 'host-adapter:' '$ERR'"
 
 # Contrast: the HARD non-zero of an unknown op DOES die with a message — proving

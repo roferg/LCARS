@@ -843,8 +843,12 @@ cmd_schedule() {
         ;;
     esac
   else
-    # ≥ 2 tickets — UNCHANGED. One sub-issue per ticket, in wave then plan
-    # order; record wave/id/issue.
+    # ≥ 2 tickets. One sub-issue per ticket, in wave then plan order; record
+    # wave/id/issue. AND (Session 35) nest each fresh ticket issue under the
+    # Mission's own issue as a NATIVE GitHub sub-issue, so the board shows the
+    # ticket hierarchy. Read the Mission's parent issue once up front.
+    local parent link_failed=0
+    parent="$(json_raw "$STATE" githubIssue)"
     while read -r wnum ids; do
       [ -n "$wnum" ] || continue
       nwaves=$((nwaves + 1))
@@ -853,8 +857,20 @@ cmd_schedule() {
         num="$(create_issue "$id" "$type" "$table")"
         [ -n "$num" ] && nissues=$((nissues + 1))
         printf '%s\t%s\t%s\n' "$wnum" "$id" "$num" >>"$assign"
+        # Nest the new child under the Mission — best-effort, ENTIRELY through
+        # the host adapter (no direct gh/REST here) so it stays host-agnostic.
+        # Guards: skip a child we failed to create (empty num); skip when there
+        # is no parent on file; and EXPLICITLY skip when child == parent (the
+        # single-ticket fast-path reuses the Mission issue as the lone ticket's
+        # issue, which would self-nest #parent under #parent). A link failure
+        # NEVER aborts Schedule — it only sets a "nest by hand" note.
+        case "$parent" in ''|null) parent="" ;; esac
+        if [ -n "$num" ] && [ -n "$parent" ] && [ "$num" != "$parent" ]; then
+          host link-subissue "$parent" "$num" || link_failed=1
+        fi
       done
     done <"$wavemap"
+    [ "$link_failed" -eq 1 ] && RELABEL_NOTE="  ⚠ could not nest sub-issue(s) under the Mission — link them by hand."
   fi
 
   emit_waves_json "$assign" >"$MISSION_DIR/waves.json"

@@ -20,6 +20,9 @@
 #     issue-create  --title <t> --body <b> --label <l>…   → echoes new issue NUMBER
 #     issue-relabel <n> --add <labels> --remove <labels>  → relabels an issue
 #     issue-close   <n> [--comment <c>]                   → closes an issue
+#     link-subissue <parent> <child>                      → nests child under
+#                                                            parent as a native
+#                                                            GitHub sub-issue
 #     pr-create     --head <h> --base <b> --title <t> --body <b2> [--closes <n>…]
 #                                                          → echoes the PR URL
 #
@@ -129,6 +132,27 @@ github_issue_close() { # <n> [--comment <c>]
   return 1
 }
 
+github_link_subissue() { # <parent_number> <child_number>
+  local parent="${1:-}" child="${2:-}" id rc
+  [ -n "$parent" ] || die "link-subissue: missing parent issue number"
+  [ -n "$child" ]  || die "link-subissue: missing child issue number"
+  # Best-effort like relabel/close: never `die` on a forge error, but PROPAGATE
+  # a non-zero rc so cmd_schedule can set its "nest by hand" note. gh absent →
+  # soft non-zero (callers already guard this themselves too).
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 1
+  # Native GitHub sub-issue linking takes the child's DATABASE id, NOT its issue
+  # number. Resolve it; {owner}/{repo} are substituted by gh from the cwd repo.
+  id="$("$GH_BIN" api "repos/{owner}/{repo}/issues/$child" --jq .id 2>/dev/null)"
+  [ -n "$id" ] || return 1
+  # POST the link. CRITICAL: sub_issue_id MUST be a TYPED integer — use `-F`
+  # (capital F = typed). `-f` would send a STRING and the API returns HTTP 422
+  # ("not of type integer"). Never regress this to `-f`.
+  "$GH_BIN" api --method POST "repos/{owner}/{repo}/issues/$parent/sub_issues" \
+    -F sub_issue_id="$id" >/dev/null 2>&1
+  rc=$?
+  return $rc
+}
+
 github_pr_create() { # --head <h> --base <b> --title <t> --body <b2> [--closes <n>…]
   local head="" base="" title="" body="" closes=() url
   while [ $# -gt 0 ]; do
@@ -164,6 +188,7 @@ case "$OP" in
   issue-create)  github_issue_create  "$@" ;;
   issue-relabel) github_issue_relabel "$@" ;;
   issue-close)   github_issue_close   "$@" ;;
+  link-subissue) github_link_subissue "$@" ;;
   pr-create)     github_pr_create     "$@" ;;
   *) die "unknown op '$OP'." ;;
 esac

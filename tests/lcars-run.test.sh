@@ -304,6 +304,56 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
   echo "$n" >"$GH_SEQ"
   echo "https://github.com/acme/repo/issues/$n"
 fi
+# Native sub-issue nesting (Session 35): `gh api .../issues/<n> --jq .id`
+# resolves a child's db id; the POST to .../sub_issues links it. Echo a db id
+# distinct from the issue number so a test could tell them apart.
+if [ "${1:-}" = "api" ] && printf '%s' "${2:-}" | grep -q '/sub_issues$' ; then
+  echo '{"sub_issues_summary":{"total":1}}'
+elif [ "${1:-}" = "api" ]; then
+  child="$(printf '%s' "${2:-}" | sed 's#.*/issues/##')"
+  echo $((9000 + child))
+fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A schedule gh stub whose sub-issue calls (gh api) FAIL — id resolution and the
+# POST both exit non-zero — so cmd_schedule's "could not nest" note must fire
+# while waves.json is still written and the stage still advances. issue create
+# still succeeds (only the linking is broken).
+make_gh_stub_schedule_linkfail() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
+  n=101
+  [ -f "$GH_SEQ" ] && n=$(( $(cat "$GH_SEQ") + 1 ))
+  echo "$n" >"$GH_SEQ"
+  echo "https://github.com/acme/repo/issues/$n"
+  exit 0
+fi
+if [ "${1:-}" = "api" ]; then exit 1; fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A stub for the WHOLE host-adapter (LCARS_HOST_ADAPTER). It records each op to
+# $ADAPTER_LOG and mimics the real adapter's stdout contract: issue-create echoes
+# a fresh number; link-subissue echoes nothing. Proves the link goes THROUGH the
+# host seam (op recorded), not via a direct gh/REST call in cmd_schedule.
+make_adapter_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$ADAPTER_LOG"
+case "${1:-}" in
+  issue-create)
+    n=101; [ -f "$ADAPTER_SEQ" ] && n=$(( $(cat "$ADAPTER_SEQ") + 1 ))
+    echo "$n" >"$ADAPTER_SEQ"; echo "$n" ;;
+  link-subissue) : ;;
+  *) : ;;
+esac
 exit 0
 EOF
   chmod +x "$1"
@@ -865,6 +915,19 @@ check "S. relabels schedule → implement (adds lcars:implement)" \
 check "S. relabels schedule → implement (removes lcars:schedule)" \
   "grep -q 'remove-label lcars:schedule' '$repoS/gh.log'"
 
+# --- Behaviour 6 (Session 35): each ticket sub-issue is NESTED under the Mission
+# as a native GitHub sub-issue. With 4 tickets (issues 101-104) and Mission #42,
+# Schedule must link all four under #42 via the host adapter — the POST to
+# .../issues/42/sub_issues with a TYPED integer sub_issue_id (gh api -F).
+check "S6. nests each ticket under the Mission (POST to issues/42/sub_issues)" \
+  "[ \"\$(grep -c 'api --method POST repos/{owner}/{repo}/issues/42/sub_issues' '$repoS/gh.log')\" = '4' ]"
+check "S6. resolves each child's db id before linking (gh api issues/101 --jq .id)" \
+  "grep -q 'api repos/{owner}/{repo}/issues/101 --jq .id' '$repoS/gh.log'"
+check "S6. sends sub_issue_id as a TYPED integer (-F, the resolved db id 9101)" \
+  "grep -q 'sub_issues -F sub_issue_id=9101' '$repoS/gh.log'"
+check "S6. never self-nests the Mission under itself (no POST issues/42/.../42)" \
+  "! grep -q 'sub_issues -F sub_issue_id=9042' '$repoS/gh.log'"
+
 # --- Behaviour 3: a circular dependency is detected; nothing moves ----------
 repoSc="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule "$repoSc/gh"
 export GH_LOG="$repoSc/gh.log"; : >"$GH_LOG"
@@ -953,6 +1016,11 @@ check "SF. relabels schedule → implement (removes lcars:schedule)" \
   "grep -q 'remove-label lcars:schedule' '$repoSF/gh.log'"
 check "SF. reports it opened 0 sub-issue(s)" \
   "grep -q 'opened 0 sub-issue' '$repoSF/outSF.txt'"
+# Session 35: the fast-path creates no sub-issue, so there is nothing to nest —
+# and the lone ticket reuses the Mission's OWN issue (#42), so a link would
+# self-nest #42 under #42. NO link-subissue POST may fire on the fast path.
+check "SF. makes NO sub-issue link on the fast path (no self-nest of #42)" \
+  "! grep -q 'sub_issues' '$repoSF/gh.log'"
 
 # --- SF-multi: a 2+-ticket plan is UNCHANGED (regression lock) --------------
 # The existing graph → one-sub-issue-per-ticket → waves loop must still fire.
@@ -1008,6 +1076,47 @@ rcSFi=0
 check "SF-impl. impl-status reads the fast-path waves.json (exits 0)" "[ '$rcSFi' -eq 0 ]"
 check "SF-impl. impl-status names the lone ticket t-001 as pending" \
   "grep -q 't-001' '$repoSFi/outSFi.txt'"
+
+# ==========================================================================
+echo
+echo "lcars run — Schedule sub-issue nesting (Session 35)"
+
+# --- SN-fail: a FAILING link degrades gracefully ----------------------------
+# When sub-issue linking fails (gh api non-zero), Schedule must: surface a
+# warning, STILL write waves.json, and STILL advance to implement (exit 0). A
+# link failure must NEVER abort the Schedule stage.
+repoSN="$(new_repo_with_schedule_mission)"; make_gh_stub_schedule_linkfail "$repoSN/gh"
+export GH_LOG="$repoSN/gh.log"; : >"$GH_LOG"
+export GH_SEQ="$repoSN/gh.seq"; rm -f "$GH_SEQ"
+rcSN=0
+( cd "$repoSN" && LCARS_GH_BIN="$repoSN/gh" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSN.txt 2>&1 ) || rcSN=$?
+WAVESSN="$repoSN/.git/lcars/missions/$MID/waves.json"
+check "SN-fail. schedule still exits 0 when sub-issue linking fails" "[ '$rcSN' -eq 0 ]"
+check "SN-fail. still writes waves.json despite the link failure" "[ -f '$WAVESSN' ]"
+check "SN-fail. still advances to implement despite the link failure" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoSN")'"
+check "SN-fail. surfaces a 'could not nest / by hand' warning" \
+  "grep -qi 'nest\\|by hand\\|⚠' '$repoSN/outSN.txt'"
+
+# --- SN-route: nesting goes THROUGH the host adapter, not direct gh/REST -----
+# Stub the WHOLE adapter and assert it received the link-subissue op with the
+# Mission as parent for each ticket — proving cmd_schedule routes nesting via
+# `host link-subissue`, keeping the path host/CLI-agnostic.
+repoSR="$(new_repo_with_schedule_mission)"
+ADAPTER="$repoSR/adapter.sh"; make_adapter_stub "$ADAPTER"
+export ADAPTER_LOG="$repoSR/adapter.log"; : >"$ADAPTER_LOG"
+export ADAPTER_SEQ="$repoSR/adapter.seq"; rm -f "$ADAPTER_SEQ"
+rcSR=0
+( cd "$repoSR" && LCARS_HOST_ADAPTER="$ADAPTER" bash "$SCRIPT" schedule \
+    --mission "$MID" >outSR.txt 2>&1 ) || rcSR=$?
+check "SN-route. schedule exits 0 with a stubbed host adapter" "[ '$rcSR' -eq 0 ]"
+check "SN-route. routes nesting through the adapter's link-subissue op" \
+  "grep -q '^link-subissue ' '$ADAPTER_LOG'"
+check "SN-route. links each of the 4 tickets under the Mission issue 42" \
+  "[ \"\$(grep -c '^link-subissue 42 ' '$ADAPTER_LOG')\" = '4' ]"
+check "SN-route. never self-nests the Mission under itself (no link-subissue 42 42)" \
+  "! grep -q '^link-subissue 42 42' '$ADAPTER_LOG'"
 
 # ==========================================================================
 echo
