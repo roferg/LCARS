@@ -24,6 +24,17 @@ GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
 RELABEL_NOTE=""
 
+# The host-integration adapter — the ONE place that speaks to a forge. It lives
+# in the sibling lcars-run skill dir; after ./install.sh both skills are
+# symlinked siblings under ~/.claude/skills/, so a path off this script's own
+# location → ../lcars-run/host-adapter.sh resolves it. $LCARS_HOST_ADAPTER
+# overrides that path (tests stub the whole adapter regardless of layout). The
+# adapter picks its host via $LCARS_HOST_BIN (default "github"); the github host
+# shells out to ${LCARS_GH_BIN:-gh}.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
+host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
+
 die() { printf 'lcars approve: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same style as run.sh / file.sh) -------------
@@ -62,10 +73,9 @@ gh_relabel() { # "add labels…"  "remove labels…"
   esac
   local hand="+${add// /,} -${rem// /,}"
   if command -v "$GH_BIN" >/dev/null 2>&1; then
-    local args=()
-    for l in $add; do args+=(--add-label "$l"); done
-    for l in $rem; do args+=(--remove-label "$l"); done
-    "$GH_BIN" issue edit "$issue" "${args[@]}" >/dev/null 2>&1 \
+    # The adapter performs the relabel (best-effort, never blocks); keep the
+    # local note only if its forge call signals failure.
+    host issue-relabel "$issue" --add "$add" --remove "$rem" \
       || RELABEL_NOTE="  ⚠ gh issue edit failed — relabel #$issue by hand ($hand)."
   else
     RELABEL_NOTE="  ⚠ gh not found — skipped relabel; do it by hand (#$issue: $hand)."
@@ -159,7 +169,7 @@ TITLE="$(pr_title)"
 BODY="$(pr_body)"
 command -v "$GH_BIN" >/dev/null 2>&1 \
   || die "gh not found — cannot open the PR for '$BRANCH'. Mission stays at verify."
-PR_URL="$("$GH_BIN" pr create --title "$TITLE" --body "$BODY" --head "$BRANCH" --base "$BASE" 2>/dev/null | tail -1)"
+PR_URL="$(host pr-create --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$BODY")"
 case "$PR_URL" in
   http*|*/pull/*) : ;;
   *) die "gh pr create did not return a PR URL for '$BRANCH' — open the PR by hand, then re-run. Mission stays at verify." ;;

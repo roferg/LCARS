@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+#
+# Tests for the host-integration adapter — the ONE place LCARS speaks to a forge
+# (skill source: skills/lcars-run/host-adapter.sh).
+#
+# The adapter is a thin, swappable seam. Today its only host is `github`, which
+# maps each op to the EXACT `gh` invocation LCARS used before the adapter existed
+# — so this suite is a regression lock on those argv shapes. A second host can be
+# added later without touching any caller.
+#
+#   host-adapter.sh <op> [args…]
+#     issue-create  --title <t> --body <b> --label <l>…   → echoes new issue number
+#     issue-relabel <n> --add <labels> --remove <labels>  → relabels an issue
+#     issue-close   <n> [--comment <c>]                   → closes an issue
+#     pr-create     --head <h> --base <b> --title <t> --body <b2> [--closes <n>…]
+#                                                          → echoes the PR URL
+#
+# Host selection and binaries are env-injectable so tests can stub them:
+#   LCARS_HOST_BIN  - the host id (default: github)
+#   LCARS_GH_BIN    - the github host's `gh` binary (default: gh)
+#
+# Usage: bash tests/host-adapter.test.sh
+
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT="${LCARS_HOST_ADAPTER:-$REPO_ROOT/skills/lcars-run/host-adapter.sh}"
+
+pass=0
+fail=0
+TMPROOT="$(mktemp -d)"
+trap 'rm -rf "$TMPROOT"' EXIT
+
+ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
+bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
+check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
+
+# A fake `gh` that records every call to $GH_LOG (one call per line, newlines in
+# args folded to spaces) and, for the create ops, echoes a URL the way real gh
+# does (issue create → an issue URL; pr create → a PR URL).
+make_gh_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "create" ]; then
+  echo "https://github.com/acme/repo/issues/314"
+fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
+  echo "https://github.com/acme/repo/pull/77"
+fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Like make_gh_stub, but every gh call FAILS (exit 1, no URL) — stands in for a
+# real forge failure (auth, no remote, API error, …).
+make_gh_stub_fail() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+exit 1
+EOF
+  chmod +x "$1"
+}
+
+# ==========================================================================
+echo "host-adapter"
+
+[ -f "$SCRIPT" ] || { echo "script under test not found at $SCRIPT"; exit 1; }
+
+GH="$TMPROOT/gh"; make_gh_stub "$GH"
+export GH_LOG="$TMPROOT/gh.log"
+
+# --- Behaviour 1: issue-create → today's exact gh argv, echoes the number -----
+: >"$GH_LOG"
+out="$(LCARS_GH_BIN="$GH" bash "$SCRIPT" issue-create \
+  --title "Add the toggle" --body "Wire it up" --label "lcars:implement,lcars:feature" 2>/dev/null)"
+check "1. issue-create calls gh issue create with --title/--body/--label" \
+  "grep -qx 'gh issue create --title Add the toggle --body Wire it up --label lcars:implement,lcars:feature ' '$GH_LOG'"
+check "1. issue-create echoes the new issue NUMBER (url trailing segment)" \
+  "[ '$out' = '314' ]"
+
+# --- Behaviour 1: issue-relabel → today's exact gh issue edit argv ------------
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" issue-relabel 42 \
+  --add "lcars:validate lcars:awaiting-human" --remove "lcars:align" >/dev/null 2>&1
+check "1. issue-relabel calls gh issue edit with add/remove labels in order" \
+  "grep -qx 'gh issue edit 42 --add-label lcars:validate --add-label lcars:awaiting-human --remove-label lcars:align ' '$GH_LOG'"
+
+# add-only and remove-only render cleanly (no stray empty flags)
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" issue-relabel 42 --add "lcars:done" --remove "" >/dev/null 2>&1
+check "1. issue-relabel with empty --remove emits no --remove-label flag" \
+  "grep -qx 'gh issue edit 42 --add-label lcars:done ' '$GH_LOG'"
+
+# --- Behaviour 1: pr-create → today's exact gh pr create argv, echoes URL ------
+: >"$GH_LOG"
+out="$(LCARS_GH_BIN="$GH" bash "$SCRIPT" pr-create \
+  --head "lcars/m-1" --base "main" --title "Add dark mode" --body "## Summary" 2>/dev/null)"
+check "1. pr-create calls gh pr create --title/--body/--head/--base (today's order)" \
+  "grep -qx 'gh pr create --title Add dark mode --body ## Summary --head lcars/m-1 --base main ' '$GH_LOG'"
+check "1. pr-create echoes the PR URL" \
+  "[ '$out' = 'https://github.com/acme/repo/pull/77' ]"
+
+# --- Behaviour 2: issue-close → gh issue close <n> [--comment …] --------------
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" issue-close 103 >/dev/null 2>&1
+check "2. issue-close calls gh issue close <n>" \
+  "grep -qx 'gh issue close 103 ' '$GH_LOG'"
+
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" issue-close 103 --comment "Shipped in #77" >/dev/null 2>&1
+check "2. issue-close with --comment passes it through" \
+  "grep -qx 'gh issue close 103 --comment Shipped in #77 ' '$GH_LOG'"
+
+# --- Behaviour 2: pr-create --closes appends host-portable Closes lines --------
+# Without --closes the body is byte-for-byte unchanged (today's regression).
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" pr-create \
+  --head "lcars/m-1" --base "main" --title "T" --body "## Summary" >/dev/null 2>&1
+check "2. pr-create with NO --closes leaves the body unchanged" \
+  "grep -qx 'gh pr create --title T --body ## Summary --head lcars/m-1 --base main ' '$GH_LOG'"
+
+# With --closes the body gains a `Closes #<n>` line per issue (GitHub/GitLab both
+# honour this), so merge→close is host-portable, not gh-only.
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" pr-create \
+  --head "lcars/m-1" --base "main" --title "T" --body "## Summary" \
+  --closes 101 --closes 102 >/dev/null 2>&1
+check "2. pr-create --closes appends Closes #101 into the PR body" \
+  "grep -q 'Closes #101' '$GH_LOG'"
+check "2. pr-create --closes appends Closes #102 into the PR body" \
+  "grep -q 'Closes #102' '$GH_LOG'"
+check "2. pr-create --closes keeps the original body too" \
+  "grep -q '## Summary' '$GH_LOG'"
+
+# --- Behaviour 3: an unknown host id exits NON-ZERO (no silent no-op) ---------
+: >"$GH_LOG"
+rc=0
+LCARS_HOST_BIN="bitbucket" LCARS_GH_BIN="$GH" bash "$SCRIPT" issue-relabel 42 --add "x" --remove "" >/dev/null 2>&1 || rc=$?
+check "3. unknown host id exits non-zero" "[ '$rc' -ne 0 ]"
+check "3. unknown host id makes no gh call" "! grep -q 'gh ' '$GH_LOG' 2>/dev/null"
+
+# unknown OP also exits non-zero (defensive — not a silent success)
+rc=0
+LCARS_GH_BIN="$GH" bash "$SCRIPT" not-an-op >/dev/null 2>&1 || rc=$?
+check "3. unknown op exits non-zero" "[ '$rc' -ne 0 ]"
+
+# --- Behaviour 4: a forge failure is SOFT — never aborts the caller, but the rc
+# PROPAGATES so the caller can set its "do it by hand" note ---------------------
+# "Best-effort" means the adapter must never `die`/`exit`/abort the CALLER's
+# process — NOT that it masks failure. The callers invoke relabel/close inside
+# `if ! host …` / `host … ||`, so a NON-ZERO return is caught (never fatal) and is
+# exactly how the caller learns to set its note. So a forge failure must:
+#   (a) make the adapter return NON-ZERO, and
+#   (b) NOT `die` — print no "host-adapter:" message (distinct from the HARD
+#       non-zero of an unknown host/op in behaviour 3, which DOES die).
+GHF="$TMPROOT/ghfail"; make_gh_stub_fail "$GHF"
+ERR="$TMPROOT/err"
+
+: >"$GH_LOG"
+rc=0
+LCARS_GH_BIN="$GHF" bash "$SCRIPT" issue-relabel 42 --add "lcars:done" --remove "lcars:verify" >/dev/null 2>"$ERR" || rc=$?
+check "4. issue-relabel returns NON-ZERO when gh fails (so the caller's note fires)" \
+  "[ '$rc' -ne 0 ]"
+check "4. issue-relabel forge failure does NOT die (no host-adapter: message)" \
+  "! grep -q 'host-adapter:' '$ERR'"
+
+: >"$GH_LOG"
+rc=0
+LCARS_GH_BIN="$GHF" bash "$SCRIPT" issue-close 103 >/dev/null 2>"$ERR" || rc=$?
+check "4. issue-close returns NON-ZERO when gh fails (propagates the forge rc)" \
+  "[ '$rc' -ne 0 ]"
+check "4. issue-close forge failure does NOT die (no host-adapter: message)" \
+  "! grep -q 'host-adapter:' '$ERR'"
+
+# Contrast: the HARD non-zero of an unknown op DOES die with a message — proving
+# the suite distinguishes a soft forge failure from a hard contract violation.
+rc=0
+LCARS_GH_BIN="$GHF" bash "$SCRIPT" not-an-op >/dev/null 2>"$ERR" || rc=$?
+check "4. unknown op (hard error) returns non-zero AND prints a host-adapter: die" \
+  "[ '$rc' -ne 0 ] && grep -q 'host-adapter:' '$ERR'"
+
+# issue-create on failure echoes nothing and does not abort (today's create_issue
+# spirit: leave the issue null, never block the schedule — its caller keys the
+# "could not create sub-issues" note off EMPTY OUTPUT, not the exit code).
+: >"$GH_LOG"
+rc=0
+out="$(LCARS_GH_BIN="$GHF" bash "$SCRIPT" issue-create --title T --body B --label L 2>/dev/null)" || rc=$?
+check "4. issue-create returns 0 and echoes nothing when gh fails" \
+  "[ '$rc' -eq 0 ] && [ -z '$out' ]"
+
+# --- Behaviour 4 (end-to-end): the real run.sh gh_relabel still sets its note --
+# Lock the note fidelity against regression: with a failing gh stub, drive run.sh's
+# ACTUAL gh_relabel and assert RELABEL_NOTE picks up "gh issue edit failed". This
+# proves the adapter's propagated non-zero reaches the live caller's note branch.
+RUN_SH="$REPO_ROOT/skills/lcars-run/run.sh"
+if [ -f "$RUN_SH" ]; then
+  STATE_DIR="$TMPROOT/e2e"; mkdir -p "$STATE_DIR"
+  printf '{ "githubIssue": 42 }\n' >"$STATE_DIR/state.json"
+  note="$(
+    GH_BIN="$GHF" \
+    LCARS_GH_BIN="$GHF" \
+    STATE="$STATE_DIR/state.json" \
+    bash -c '
+      set -uo pipefail
+      RUN_SH="'"$RUN_SH"'"
+      # Faithfully reuse run.sh’s OWN host() seam + json_raw, then eval its real
+      # gh_relabel body — so this drives the live caller path, not a copy.
+      HOST_ADAPTER="$(dirname "$RUN_SH")/host-adapter.sh"
+      host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
+      eval "$(awk "/^json_raw\\(\\) \\{/{f=1} f{print} f&&/^\\}/{exit}" "$RUN_SH")"
+      RELABEL_NOTE=""
+      eval "$(awk "/^gh_relabel\\(\\) \\{/{f=1} f{print} f&&/^\\}/{exit}" "$RUN_SH")"
+      gh_relabel "lcars:done" "lcars:verify"
+      printf "%s" "$RELABEL_NOTE"
+    '
+  )"
+  check "4. e2e: run.sh gh_relabel sets RELABEL_NOTE on a gh failure (note fidelity)" \
+    "printf '%s' \"$note\" | grep -q 'gh issue edit failed'"
+fi
+
+# ==========================================================================
+echo
+printf 'host-adapter: %d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

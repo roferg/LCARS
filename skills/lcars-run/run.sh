@@ -54,6 +54,13 @@ SELF="${BASH_SOURCE[0]}"
 # The skill's own directory, and the per-Stage worker prompt templates under it.
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 STAGES_DIR="$SKILL_DIR/stages"
+# The host-integration adapter — the ONE place that speaks to a forge. Every
+# GitHub call funnels through it so the integration is swappable (BUG-003). It
+# sits beside this script; $LCARS_HOST_ADAPTER overrides the path so tests can
+# stub the whole adapter. The adapter selects its host via $LCARS_HOST_BIN
+# (default "github") and the github host shells out to ${LCARS_GH_BIN:-gh}.
+HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/host-adapter.sh}"
+host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 # The walk-away notification hook. The driver calls this ONCE at a human gate
 # (awaiting-human or verify). Defaults to the bundled notify.sh; env-injectable
 # (like LCARS_GH_BIN) so tests assert the call without sending anything.
@@ -239,10 +246,10 @@ gh_relabel() { # "add labels…"  "remove labels…"
 
   local hand="+${add// /,} -${rem// /,}"
   if command -v "$GH_BIN" >/dev/null 2>&1; then
-    local args=()
-    for l in $add; do args+=(--add-label "$l"); done
-    for l in $rem; do args+=(--remove-label "$l"); done
-    if ! "$GH_BIN" issue edit "$issue" "${args[@]}" >/dev/null 2>&1; then
+    # The adapter performs the actual relabel (best-effort, never blocks); we
+    # only keep the local note when its forge call fails, so the captain knows
+    # what to fix by hand. The note path is preserved verbatim from before.
+    if ! host issue-relabel "$issue" --add "$add" --remove "$rem"; then
       RELABEL_NOTE="  ⚠ gh issue edit failed — relabel #$issue by hand ($hand)."
     fi
   else
@@ -740,12 +747,14 @@ create_issue() { # id  type  table-file
   [ -n "$crit" ] && critblock="$(printf '%s' "$crit" | awk -F' \\| ' '{ for (i=1;i<=NF;i++) printf "- %s\n", $i }')"
   body="$(printf '%s\n\n**Acceptance Criteria:**\n%s' "$desc" "$critblock")"
 
-  if command -v "$GH_BIN" >/dev/null 2>&1; then
-    if url="$("$GH_BIN" issue create --title "$title" --body "$body" --label "lcars:implement,lcars:$type" 2>/dev/null)"; then
-      url="$(printf '%s' "$url" | tail -1)"
-      printf '%s' "${url##*/}"
-      return 0
-    fi
+  # Delegate the forge call to the adapter; it echoes the new issue NUMBER (or
+  # nothing on failure / no gh). The caller still owns the label string — the
+  # adapter just forwards the labels it is given.
+  local num
+  num="$(host issue-create --title "$title" --body "$body" --label "lcars:implement,lcars:$type")"
+  if [ -n "$num" ]; then
+    printf '%s' "$num"
+    return 0
   fi
   RELABEL_NOTE="  ⚠ could not create sub-issues via gh — create them by hand and add lcars:implement."
   return 0
