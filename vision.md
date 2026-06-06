@@ -108,6 +108,8 @@ The reviewer's independence is deliberate: the same LLM that planned the work sh
 
 The Harness builds a dependency graph across all Plan issues and groups them into sequential **Waves**. Issues within a Wave are independent of each other and can be implemented concurrently. The next Wave begins only when all issues in the current Wave are complete.
 
+Each ticket is opened as a GitHub sub-issue **nested under the Mission's own issue**, so the board renders the Mission with its tickets beneath it rather than a flat pile of look-alike cards. A Mission that plans to a single ticket skips the redundant sub-issue entirely and reuses its own issue — with one ticket there is nothing to schedule and nothing to duplicate.
+
 ```mermaid
 flowchart TB
     subgraph W1["Wave 1 — parallel"]
@@ -150,6 +152,8 @@ sequenceDiagram
 
 The separation is adversarial by design. The Test Writer cannot write easy tests it knows will pass, because it doesn't know who is implementing. The Implementer cannot skip or weaken tests, because they arrive as a constraint. A passing test suite means the ticket is done.
 
+As each ticket goes green and commits, its sub-issue is relabelled `lcars:done` and **closed** — so the board reflects real per-ticket progress while a Wave is still running, instead of a pile of open issues that only clears at the end.
+
 The Harness — not the LLMs — enforces three guardrails that make the adversarial split hold:
 
 - **Red gate.** The Test Writer's tests must actually *fail* before the Implementer is allowed to run. A suite that passes against no implementation is rejected, so "green" can never be reached by writing tests that assert nothing.
@@ -164,7 +168,7 @@ When all Waves are complete, the human reviews the Mission. This is a full inspe
 
 ### 8. Done
 
-The human requests a PR. The Harness creates it, the human merges, and the Mission is complete. The branch is cleaned up. The card moves to Done on the Kanban.
+The human requests a PR. The Harness opens it with a `Closes #` directive for the Mission's own issue, so that issue closes when the PR is **merged** — the close is tied to the merge event, not to approval. (The stage label moves to `lcars:done` at approval; the issue itself stays open until the merge.) The human merges, the branch is cleaned up, and the card moves to Done on the Kanban.
 
 ---
 

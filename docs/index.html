@@ -192,7 +192,9 @@ flowchart LR
 
       <h3><span class="stage-num">6</span>Schedule <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>Builds the dependency graph into sequential <strong>Waves</strong> and
-      opens one GitHub sub-issue per ticket.</p>
+      opens one GitHub sub-issue per ticket, each nested under the Mission's own
+      issue. A single-ticket Mission reuses its own issue instead of opening a
+      redundant one.</p>
 
       <div class="diagram-wrap">
         <div class="diagram-label">Schedule — tickets grouped into waves</div>
@@ -680,12 +682,27 @@ An inline run must never masquerade as isolated.</div>
             (additive): overlaid when blocked on your answer.</li>
             <li><code>lcars:linked</code> — <strong>Relationship</strong>: a bug
             Mission linked to a parent via <code>lcars log</code>.</li>
+            <li><code>lcars:mission</code> / <code>lcars:ticket</code> —
+            <strong>Role</strong> (additive, permanent): a Mission's own issue
+            (<code>lcars:mission</code>) vs an implementation sub-issue Schedule
+            opens (<code>lcars:ticket</code>) — disjoint, never swapped by a
+            stage transition.</li>
           </ul>
         </div>
       </div>
       <div class="lcars-alert blue">
         <div>Filtering issues to <code>lcars:awaiting-human</code> shows every
-        pending decision at a glance — before the kanban UI even exists.</div>
+        pending decision at a glance — before the kanban UI even exists. Filter
+        to <code>lcars:mission</code> for the command-and-control list,
+        <code>lcars:ticket</code> for the work.</div>
+      </div>
+      <div class="lcars-alert teal">
+        <div><strong>Issue lifecycle.</strong> A ticket's sub-issue is closed
+        (and labelled <code>lcars:done</code>) the moment it goes green, so the
+        board tracks real per-ticket progress. The Mission's own issue closes
+        only when the PR is <strong>merged</strong> — <code>lcars approve</code>
+        opens the PR with a <code>Closes #&lt;mission&gt;</code> directive, tying
+        the close to the merge rather than to approval.</div>
       </div>
     </section>
 

@@ -90,7 +90,7 @@ flowchart LR
 | 3 | **Validate** | 🤖 auto | A Validator synthesises all findings into a plan, resolving the *how*. Escalates to you only when a finding changes *what* gets built. |
 | 4 | **Plan** | 🤖 auto | Decomposes the validated plan into small, independently testable tickets — each a vertical slice owning **one cohesive behavior**, sized by total **comprehension load** (code-to-read + tests + new code) against a tunable budget, not a flat line count. |
 | 5 | **Plan Review** | 🤖 auto | A *fresh* reviewer (no planning context) audits every ticket for slice, size, **coupling** (rejecting tickets whose criteria force changing behavior another ticket's tests pin — the real meaning of "too big"), testability, and dependencies. Loops back to Plan until clean; escalates after 3 rounds. |
-| 6 | **Schedule** | 🤖 auto | Builds the dependency graph into sequential **Waves** and opens one GitHub sub-issue per ticket. |
+| 6 | **Schedule** | 🤖 auto | Builds the dependency graph into sequential **Waves** and opens one GitHub sub-issue per ticket, each **nested under the Mission's issue** (a single-ticket Mission reuses its own issue instead of opening a redundant one). |
 | 7 | **Implement** | 🤖 auto | Per ticket, an adversarial **Test Writer → Implementer** pair. Tests are written first, must fail (red gate), then are locked while the Implementer makes them pass. |
 | 8 | **Verify** | 🧑 you | You read the diff, run the app, test the golden path — then **approve** (open the PR) or **send back** with feedback. |
 
@@ -386,6 +386,12 @@ Filtering issues to `lcars:awaiting-human` shows every pending decision at a
 glance — before the kanban UI even exists. Filtering to `lcars:mission` is the
 command-and-control list (the Missions); `lcars:ticket` is the work (the
 per-ticket sub-issues).
+
+**Issue lifecycle.** Each ticket's sub-issue is relabelled `lcars:done` and
+**closed** the moment the ticket goes green, so the board tracks real per-ticket
+progress as a run proceeds. The Mission's own issue closes only when the PR is
+**merged**: `lcars approve` opens the PR with a `Closes #<mission>` directive, so
+the close is tied to the merge — never to approval or to reaching Verify.
 
 ---
 
