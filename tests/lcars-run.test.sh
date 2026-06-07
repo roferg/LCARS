@@ -1599,6 +1599,23 @@ make_tests_dir() { # dir
   mkdir -p "$1"; printf 'it("works", () => expect(value).toBe(42))\n' >"$1/spec.test.js"
 }
 
+# A runner that HONORS $LCARS_TESTS_DIR: red (exit 1) when the quarantine dir has
+# tests, vacuously green (exit 0) when it is empty/missing. Different rc for the
+# two cases, so the red gate's empty-dir probe proves the command reacted to the
+# var → a non-zero quarantine exit is a GENUINE red of the new tests, accepted.
+# (A bare `exit 1` ignores the var and is now BLOCKED — see TRIPWIRE 9 — so the
+# guardrail regression tests that need an ACCEPTED red use this honoring shape.)
+EARLY_HONOR_RED="$TMPROOT/early-honor-red.sh"
+cat >"$EARLY_HONOR_RED" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests collected (vacuous green)" >&2; exit 0; }
+echo "quarantined tests are RED (no implementation)" >&2
+exit 1
+EOF
+chmod +x "$EARLY_HONOR_RED"
+
 # --- G1 RED GATE: a suite that PASSES with no implementation is rejected -----
 repoG1="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG1/gh"
 export GH_LOG="$repoG1/gh.log"; : >"$GH_LOG"
@@ -1616,7 +1633,7 @@ repoG1b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG1b/gh"
 export GH_LOG="$repoG1b/gh.log"; : >"$GH_LOG"
 tG1b="$repoG1b/tw"; make_tests_dir "$tG1b"
 rcG1b=0
-( cd "$repoG1b" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG1b/gh" bash "$SCRIPT" impl-save-tests \
+( cd "$repoG1b" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoG1b/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$tG1b" >outG1b.txt 2>&1 ) || rcG1b=$?
 check "G1. red gate accepts a failing (red) suite" "[ '$rcG1b' -eq 0 ]"
 check "G1. quarantines the tests once the red gate passes" \
@@ -1640,7 +1657,7 @@ check "G3. does not quarantine a zero-assertion suite" \
 repoG2="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG2/gh"
 export GH_LOG="$repoG2/gh.log"; : >"$GH_LOG"
 tG2="$repoG2/tw"; make_tests_dir "$tG2"
-( cd "$repoG2" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG2/gh" bash "$SCRIPT" impl-save-tests \
+( cd "$repoG2" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoG2/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$tG2" >/dev/null 2>&1 )
 # the Implementer tampers with the locked contract to force a pass
 QTDIR="$repoG2/.git/lcars/missions/$MID/tickets/t-001/tests"
@@ -1659,7 +1676,7 @@ check "G2. does not save result.json when the tests were tampered with" \
 repoG2b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG2b/gh"
 export GH_LOG="$repoG2b/gh.log"; : >"$GH_LOG"
 tG2b="$repoG2b/tw"; make_tests_dir "$tG2b"
-( cd "$repoG2b" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG2b/gh" bash "$SCRIPT" impl-save-tests \
+( cd "$repoG2b" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoG2b/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$tG2b" >/dev/null 2>&1 )
 resG2b="$repoG2b/result.json"; write_result "$resG2b" t-001 true 2
 rcG2b=0
@@ -1695,7 +1712,12 @@ tG4="$repoG4/tw"; make_tests_dir "$tG4"
 GATE4="$repoG4/gate.sh"
 cat >"$GATE4" <<'EOF'
 #!/usr/bin/env bash
-# red (1) until the implementation marker exists, then green (0)
+# HONORS $LCARS_TESTS_DIR: vacuously green on an empty/missing dir (so the red
+# gate's probe proves it reacted to the var), otherwise red (1) until the
+# implementation marker exists, then green (0).
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests, vacuous green" >&2; exit 0; }
 [ -f impl-done ] && exit 0 || exit 1
 EOF
 chmod +x "$GATE4"
@@ -1902,6 +1924,96 @@ rcT8b=0
     --mission "$MID" --ticket t-001 --result "$resT8" >outT8b.txt 2>&1 ) || rcT8b=$?
 check "TRIPWIRE 8. G2 still rejects a result whose locked tests were edited" \
   "[ '$rcT8b' -ne 0 ]"
+
+# TRIPWIRE 9 — DO NOT DELETE: the RED-branch dir-ignoring hole.
+# A non-zero exit is only "red = safe" when it proves the QUARANTINED tests
+# failed. A command that IGNORES $LCARS_TESTS_DIR and is itself red on the
+# repo's own suite exits non-zero IDENTICALLY whether the quarantine dir holds
+# the new tests or nothing — its non-zero exit proves NOTHING about the
+# quarantined suite. That UNPROVEN suite must now be BLOCKED loud, never
+# accepted. (Closes the symmetric counterpart of TRIPWIRE 7 on the RED branch.)
+# Model: a runner that prints byte-identical output and exits 1 regardless of
+# the dir (the repo's own failing suite).
+IGNORE_RED_RUNNER="$TMPROOT/ignore-red-runner.sh"
+cat >"$IGNORE_RED_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+# Ignores $LCARS_TESTS_DIR entirely: always the same red repo suite.
+echo "repo suite: 3 of 7 tests FAILED" >&2
+exit 1
+EOF
+chmod +x "$IGNORE_RED_RUNNER"
+repoT9="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT9/gh"
+export GH_LOG="$repoT9/gh.log"; : >"$GH_LOG"
+tT9="$repoT9/tw"; mk_red_quarantine "$tT9"
+rcT9=0
+( cd "$repoT9" && LCARS_TEST_CMD="bash $IGNORE_RED_RUNNER" LCARS_GH_BIN="$repoT9/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT9" \
+    >outT9.txt 2>&1 ) || rcT9=$?
+check "TRIPWIRE 9. a non-zero runner that IGNORES \$LCARS_TESTS_DIR is BLOCKED, not accepted as red" \
+  "[ '$rcT9' -ne 0 ]"
+check "TRIPWIRE 9. the block is LOUD and names the ignored-var cause" \
+  "grep -qiE 'red gate|ignore|prove|\\\$LCARS_TESTS_DIR' '$repoT9/outT9.txt'"
+check "TRIPWIRE 9. nothing quarantined on the dir-ignoring red path" \
+  "[ ! -d '$repoT9/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+check "TRIPWIRE 9. the captured signal carries the new block reason for the grounded retry" \
+  "grep -qiE 'red gate|ignore|prove' '$repoT9/outT9.txt'"
+
+# TRIPWIRE 9b — DO NOT DELETE: THE CRITICAL REGRESSION GUARD (no false-block).
+# A HONORing runner can legitimately exit with the SAME non-zero rc on an empty
+# quarantine dir as on a real failing quarantined test — but with DIFFERENT
+# output. rc-equality alone would FALSE-BLOCK it and re-break Implement (the
+# BUG-007 stall). The discriminator must compare OUTPUT too: any difference
+# ⟹ the command reacted ⟹ ACCEPT the red verdict. This MUST stay green.
+# Model: empty dir → exit 1 + "no tests collected"; a real red test → exit 1 +
+# "FAIL: <assertion>". Same rc (1), different output.
+HONOR_SAME_RC_RUNNER="$TMPROOT/honor-same-rc-runner.sh"
+cat >"$HONOR_SAME_RC_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+if [ "$n" -eq 0 ]; then echo "no tests collected" >&2; exit 1; fi
+echo "FAIL: behaviour X exists (assertion failed)" >&2
+exit 1
+EOF
+chmod +x "$HONOR_SAME_RC_RUNNER"
+repoT9b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT9b/gh"
+export GH_LOG="$repoT9b/gh.log"; : >"$GH_LOG"
+tT9b="$repoT9b/tw"; mk_red_quarantine "$tT9b"
+rcT9b=0
+( cd "$repoT9b" && LCARS_TEST_CMD="bash $HONOR_SAME_RC_RUNNER" LCARS_GH_BIN="$repoT9b/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT9b" \
+    >outT9b.txt 2>&1 ) || rcT9b=$?
+check "TRIPWIRE 9b. a HONORing runner with same-rc-but-different-output is ACCEPTED (no false-block)" \
+  "[ '$rcT9b' -eq 0 ]"
+check "TRIPWIRE 9b. the honoring red suite IS quarantined (Implementer proceeds)" \
+  "[ -d '$repoT9b/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# TRIPWIRE 9c — DO NOT DELETE: the COMMON honoring case still works. A honoring
+# runner whose empty-dir run is a VACUOUS PASS (exit 0 — no tests) vs a real
+# failing quarantine test (exit 1) → different rc → ACCEPT. This is the normal
+# red→green mission path; it must be unaffected. (HONOR_RUNNER is exactly this:
+# empty/missing dir → exit 1 actually — so model the exit-0-on-empty variant.)
+HONOR_VACUOUS_RUNNER="$TMPROOT/honor-vacuous-runner.sh"
+cat >"$HONOR_VACUOUS_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests, vacuously green" >&2; exit 0; }
+if grep -rq EXPECT_GREEN "$d"; then exit 0; fi
+echo "quarantined tests RED" >&2; exit 1
+EOF
+chmod +x "$HONOR_VACUOUS_RUNNER"
+repoT9c="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT9c/gh"
+export GH_LOG="$repoT9c/gh.log"; : >"$GH_LOG"
+tT9c="$repoT9c/tw"; mk_red_quarantine "$tT9c"
+rcT9c=0
+( cd "$repoT9c" && LCARS_TEST_CMD="bash $HONOR_VACUOUS_RUNNER" LCARS_GH_BIN="$repoT9c/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT9c" \
+    >outT9c.txt 2>&1 ) || rcT9c=$?
+check "TRIPWIRE 9c. a honoring runner (real fail vs vacuous-pass-on-empty) is ACCEPTED (red = safe)" \
+  "[ '$rcT9c' -eq 0 ]"
+check "TRIPWIRE 9c. the normal red→green path quarantines the suite" \
+  "[ -d '$repoT9c/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
 
 # --- BUG-007 #2: GROUNDED RETRY — on rejection, the NEXT Test-Writer prompt
 # carries the captured red-gate SIGNAL (rc + bounded runner output), and NEVER

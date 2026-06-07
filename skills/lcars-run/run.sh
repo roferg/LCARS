@@ -1427,26 +1427,59 @@ red_gate_ok() { # quarantined-tests-dir
 
   out="$(cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" 2>&1)" || rc=$?
 
+  # PROBE: re-run the SAME command with an EMPTY quarantine dir. This is the only
+  # way to prove the command reacts to $LCARS_TESTS_DIR (i.e. it scoped itself to
+  # the quarantined tests) versus running a fixed target (the repo's own suite).
+  # We use it on BOTH verdicts:
+  #   • GREEN branch — to tell a green-on-nothing from a dir-ignoring green.
+  #   • RED branch  — to tell a genuine red of the quarantined tests from a
+  #     dir-ignoring red on the repo's own (already failing) suite.
+  # A command "did NOT react" only when emptying the dir changed NOTHING — i.e.
+  # the empty-dir run is IDENTICAL: same rc AND byte-identical output. Any
+  # difference (different output OR different rc) ⟹ the command reacted ⟹ the
+  # verdict is about the quarantined tests. rc-equality alone is INSUFFICIENT: a
+  # honouring runner can exit the same non-zero rc on an empty dir as on a real
+  # failing test, with DIFFERENT output — so we MUST compare output too, and err
+  # toward ACCEPT on any difference (a false-BLOCK would re-introduce BUG-007).
+  local empty; empty="$(mktemp -d)"
+  probe_out="$(cd "$REPO_ROOT" && LCARS_TESTS_DIR="$empty" bash -c "$cmd" 2>&1)" || prc=$?
+  rm -rf "$empty"
+  local ignored_var=no
+  if [ "$prc" -eq "$rc" ] && [ "$probe_out" = "$out" ]; then ignored_var=yes; fi
+
   if [ "$rc" -ne 0 ]; then
-    # RED: the quarantined tests fail as required. (A real runner failed them; a
-    # dir-ignoring runner that is red on the repo's own suite is also safe — it
-    # green-lights nothing.) Safe to hand off.
+    # RED: the quarantined tests appear to fail as required. But a non-zero exit is
+    # only "red = safe" when it is ABOUT the quarantined tests. If emptying the dir
+    # changed NOTHING (identical rc AND output), the command IGNORED $LCARS_TESTS_DIR
+    # — it ran a fixed target (e.g. the repo's own red suite), so this non-zero exit
+    # proves NOTHING about the quarantined tests. BLOCK loud — never accept an
+    # UNPROVEN suite. Otherwise the command reacted → genuine red → accept (as before).
+    if [ "$ignored_var" = yes ]; then
+      reason="RED GATE — the configured test command exited non-zero (red) but exits IDENTICALLY (same rc AND output) with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran a FIXED target (the repo's own suite), not the quarantined tests. A red on the repo's own already-failing suite proves NOTHING about the new tests, so the harness refuses to hand them on. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
+      printf '  ✗ %s\n' "$reason" >&2
+      if [ -n "$RED_GATE_SIGNAL" ]; then
+        {
+          printf 'rc=%s (the quarantined-tests run exited non-zero, but the command IGNORES $LCARS_TESTS_DIR so the red is unproven)\n' "$rc"
+          printf '%s\n' "$reason"
+        } >"$RED_GATE_SIGNAL"
+      fi
+      return 1
+    fi
+    # The command reacted to the var → the non-zero exit is a genuine red of the
+    # quarantined tests. Safe to hand off.
     return 0
   fi
 
   # GREEN against nothing. Before rejecting we diagnose WHY, so the signal tells
   # the next attempt whether the suite truly passed-on-nothing or the runner
-  # simply ignored the quarantine. Probe with an EMPTY quarantine dir.
-  local empty; empty="$(mktemp -d)"
-  probe_out="$(cd "$REPO_ROOT" && LCARS_TESTS_DIR="$empty" bash -c "$cmd" 2>&1)" || prc=$?
-  rm -rf "$empty"
-  if [ "$prc" -eq 0 ]; then
+  # simply ignored the quarantine. The probe above already ran.
+  if [ "$ignored_var" = yes ]; then
     # Identical GREEN with NO quarantined tests present → the command did not react
     # to $LCARS_TESTS_DIR. It ran a fixed target (the repo's existing suite), so we
     # CANNOT prove the quarantined tests are what passed. BLOCK loud — never pass.
     reason="RED GATE — the configured test command exited 0 (green) but ALSO exits 0 with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran the repo's EXISTING suite, not the quarantined tests. The harness cannot prove the new tests fail-first, so it refuses to hand them on. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
   else
-    # The runner reacted to the var (empty dir → non-zero) yet the quarantined
+    # The runner reacted to the var (empty dir → different result) yet the quarantined
     # tests passed → a genuine green-on-nothing contract. Reject as proving nothing.
     reason="RED GATE — the quarantined suite PASSED with no implementation (exit 0). A contract that is green before anything is built proves nothing; the tests must FAIL first. Runner output (quarantined run):
 $(printf '%s' "$out" | tail -20)"
