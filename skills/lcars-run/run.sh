@@ -418,7 +418,7 @@ cmd_repo_map() {
 implement_nav_block() { # ticket-id
   local tid="$1" block=""
   [ -f "$MISSION_DIR/manifests/$tid.md" ] && block="$block
-- $MISSION_DIR/manifests/$tid.md   (this ticket's context manifest — relevant files + interface signatures + touched ADR ids; NAVIGATION ONLY, not the implementation)"
+- $MISSION_DIR/manifests/$tid.md   (this ticket's context manifest — relevant files + interface signatures + touched ADR ids; NAVIGATION ONLY, not the implementation. The Test Writer uses the listed files to find the PUBLIC INTERFACE to test against — NOT as a place to add tests into; always write a dedicated fail-first test file.)"
   [ -f "$MISSION_DIR/repo-map.md" ] && block="$block
 - $MISSION_DIR/repo-map.md   (the repo symbol map — interface signatures + paths across the codebase, regenerated this wave; navigate from it instead of cold file-walking)"
   printf '%s' "$block"
@@ -1391,22 +1391,74 @@ resolve_test_cmd() {
 }
 
 # --- GUARDRAIL 1: the red gate ----------------------------------------------
-# Run the configured test command against the just-written tests with NO
-# implementation present. Returns 0 when it is SAFE to hand the suite to the
-# Implementer (the suite FAILED — red — as it must, OR no runner is configured so
-# the gate cannot apply); returns non-zero when the suite PASSED green against
-# nothing, which means it proves nothing and must be rejected. The command runs
-# from the repo root with $LCARS_TESTS_DIR pointing at the quarantined tests, so
-# a real per-repo runner (or a test stub) can find them without re-parsing args.
+# BUG-007 contract. Run the configured test command against ONLY the just-written
+# QUARANTINED tests, with NO implementation present, and decide on the quarantined
+# tests ALONE — never on the repo's existing suite. The verdict is a PURE function
+# of "did the quarantined tests fail":
+#
+#   • quarantined suite RED (cmd exits non-zero)        → return 0  (SAFE — hand off)
+#   • quarantined suite GREEN, and we can PROVE it was   → return 1  (green-on-nothing — REJECT)
+#     the quarantined tests that passed
+#   • quarantined suite GREEN, but the command IGNORES   → return 1  (CAN'T PROVE — BLOCK loud,
+#     $LCARS_TESTS_DIR (so we cannot tell whether it       NEVER a green-light)
+#     ran the quarantined tests or the repo's own suite)
+#   • no runner configured                               → return 2  (CANNOT APPLY — block loud)
+#
+# The command runs from the repo root with $LCARS_TESTS_DIR pointing at the
+# quarantined tests, so a real per-repo runner honours that var to scope itself.
+# We then PROBE with $LCARS_TESTS_DIR pointing at an EMPTY dir: if the exit code
+# is identical, the command did not react to the var (it ran a fixed target — the
+# repo's own suite), so a green result proves NOTHING about the quarantined tests.
+# We NEVER discard the rc or the output — both are surfaced to $RED_GATE_SIGNAL
+# (if set) so the human and the next grounded Test-Writer attempt see WHY.
+RED_GATE_SIGNAL=""   # caller may point this at a file to capture the rejection signal
 red_gate_ok() { # quarantined-tests-dir
-  local tdir="$1" cmd rc=0
+  local tdir="$1" cmd rc=0 prc=0 out probe_out reason=""
   cmd="$(resolve_test_cmd)"
   if [ -z "$cmd" ]; then
-    printf '  ⚠ RED GATE SKIPPED — no test command (set `testCommand` in .git/lcars/config.json or $LCARS_TEST_CMD). The harness cannot prove the suite fails without an implementation.\n' >&2
+    # NO RUNNER configured: the gate cannot run anything. This is the documented,
+    # pre-existing degradation for repos without a test command — it is NOT a fix
+    # to widen and it green-lights nothing on its own (there is literally no suite
+    # to pass). We surface it LOUDLY (it is a real hole, not a silent pass) and
+    # leave it unchanged: WIDENING it would be the regression BUG-007 forbids.
+    printf '  ⚠ RED GATE SKIPPED — no test command (set `testCommand` in .git/lcars/config.json or $LCARS_TEST_CMD). The harness cannot prove the suite fails-first without a runner; configure one to close this gap.\n' >&2
     return 0
   fi
-  ( cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" ) >/dev/null 2>&1 || rc=$?
-  [ "$rc" -ne 0 ]   # non-zero = red = OK; zero = green-on-nothing = reject
+
+  out="$(cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" 2>&1)" || rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    # RED: the quarantined tests fail as required. (A real runner failed them; a
+    # dir-ignoring runner that is red on the repo's own suite is also safe — it
+    # green-lights nothing.) Safe to hand off.
+    return 0
+  fi
+
+  # GREEN against nothing. Before rejecting we diagnose WHY, so the signal tells
+  # the next attempt whether the suite truly passed-on-nothing or the runner
+  # simply ignored the quarantine. Probe with an EMPTY quarantine dir.
+  local empty; empty="$(mktemp -d)"
+  probe_out="$(cd "$REPO_ROOT" && LCARS_TESTS_DIR="$empty" bash -c "$cmd" 2>&1)" || prc=$?
+  rm -rf "$empty"
+  if [ "$prc" -eq 0 ]; then
+    # Identical GREEN with NO quarantined tests present → the command did not react
+    # to $LCARS_TESTS_DIR. It ran a fixed target (the repo's existing suite), so we
+    # CANNOT prove the quarantined tests are what passed. BLOCK loud — never pass.
+    reason="RED GATE — the configured test command exited 0 (green) but ALSO exits 0 with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran the repo's EXISTING suite, not the quarantined tests. The harness cannot prove the new tests fail-first, so it refuses to hand them on. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
+  else
+    # The runner reacted to the var (empty dir → non-zero) yet the quarantined
+    # tests passed → a genuine green-on-nothing contract. Reject as proving nothing.
+    reason="RED GATE — the quarantined suite PASSED with no implementation (exit 0). A contract that is green before anything is built proves nothing; the tests must FAIL first. Runner output (quarantined run):
+$(printf '%s' "$out" | tail -20)"
+  fi
+  printf '  ✗ %s\n' "$reason" >&2
+  if [ -n "$RED_GATE_SIGNAL" ]; then
+    {
+      printf 'rc=%s (the quarantined-tests run exited 0 = GREEN, which the red gate rejects)\n' "$rc"
+      printf '%s\n' "$reason"
+    } >"$RED_GATE_SIGNAL"
+  fi
+  return 1
 }
 
 # --- GUARDRAIL 2: immutable tests (hash snapshot + verify) ------------------
@@ -1476,10 +1528,19 @@ cmd_impl_save_tests() {
   # GUARDRAIL 1 (the red gate): the suite must FAIL against no implementation
   # before the Implementer is allowed to run. A green-on-nothing suite is
   # rejected and the quarantine is rolled back, so nothing reaches the Implementer.
-  if ! red_gate_ok "$tdir"; then
+  # We CAPTURE the rejection reason (rc + bounded runner output + which-suite
+  # diagnosis) to a durable signal file so (a) the human sees WHY instead of a
+  # silent stall, and (b) the next grounded Test-Writer attempt can be told what
+  # went wrong. The signal is SIGNAL ONLY — never the implementation.
+  local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"
+  rm -f "$sig"
+  if ! RED_GATE_SIGNAL="$sig" red_gate_ok "$tdir"; then
     rm -rf "$tdir" "$snap"
-    die "the Test Writer's suite PASSED with no implementation — a contract that is green before anything is built proves nothing. Rejected by the red gate (the tests must FAIL first)."
+    local why=""; [ -f "$sig" ] && why="
+$(cat "$sig")"
+    die "the Test Writer's suite did not pass the red gate — a contract that is green (or unprovable) before anything is built proves nothing; the tests must FAIL first.$why"
   fi
+  rm -f "$sig"
 
   echo "IMPLEMENT: tests saved — $TICKET"
   echo "  Saved $count Test Writer file(s) to tickets/$TICKET/tests/."
@@ -2242,6 +2303,16 @@ cmd_implement_ticket() {
      && [ -f "$(ticket_dir "$TICKET")/tests.sha256" ]; then
     saved=1
   fi
+  # GROUNDED RETRY (BUG-007): the previous naive loop re-spawned the Test Writer
+  # with an IDENTICAL prompt on a red-gate rejection, so it kept producing the
+  # same green-on-nothing suite until it gave up. Instead we CAPTURE the red-gate
+  # signal (rc + bounded runner output + which-suite diagnosis) that impl-save-tests
+  # persists to tickets/<id>/red-gate-signal.txt and FEED it into the next attempt's
+  # prompt. SIGNAL ONLY — it is the harness's own gate verdict + runner stderr,
+  # never the implementation and never the worker's prior reasoning (each attempt
+  # is still a fresh cold worker; nothing of the prior session survives but this
+  # one declarative line of feedback).
+  local sigfile; sigfile="$(ticket_dir "$TICKET")/red-gate-signal.txt"
   while [ "$saved" != 1 ] && [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     # attempt = 1 + (existing ticket_attempt lines for THIS ticket+phase). Within
@@ -2250,13 +2321,26 @@ cmd_implement_ticket() {
     local awtry; awtry=$(( $(event_count ticket_attempt "\"ticket\":\"$TICKET\".*\"phase\":\"test-writer\"") + 1 ))
     emit_event ticket_attempt implement "test-writer try $awtry for $TICKET" \
       "ticket=$TICKET" "phase=test-writer" "attempt=$awtry"
+    # On a retry (a prior attempt left a red-gate signal on disk), prepend the
+    # captured signal so this fresh worker writes tests that genuinely fail first.
+    local retryblock=""
+    if [ -f "$sigfile" ]; then
+      retryblock="
+
+## RED-GATE FEEDBACK — your PREVIOUS suite was REJECTED (read this before writing)
+The harness ran your last suite against the repo with NO implementation and it
+did NOT fail-first. This is the gate's verdict and the runner's own output — the
+ONLY thing carried over from the prior attempt (you do not see its tests, code,
+or reasoning). Write tests that FAIL until the ticket's behaviour exists:
+$(cat "$sigfile")"
+    fi
     local odir; odir="$(mktemp -d)"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock
 
 ## Your ticket
-$TICKET"
+$TICKET$retryblock"
     if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \

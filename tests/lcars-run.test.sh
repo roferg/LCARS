@@ -1716,6 +1716,253 @@ check "G4. commits the green ticket onto the mission branch" \
 
 # ==========================================================================
 echo
+echo "lcars run — BUG-007: red gate evaluates the QUARANTINED tests, not the repo suite"
+
+# Ground truth of BUG-007: red_gate_ok ran the repo's CONFIGURED testCommand and,
+# when that command ignores $LCARS_TESTS_DIR (e.g. `bash tests/run.sh`), it ran
+# the repo's EXISTING (passing) suite — returned 0 — and REJECTED every
+# quarantined suite, silently. The fix must make the verdict a pure function of
+# "did the QUARANTINED tests fail" and must FAIL LOUD (never green-light) when it
+# cannot tell which suite ran. It must NOT weaken G1/G2/G3 or the adversarial
+# split.
+
+# A realistic per-repo runner that HONORS $LCARS_TESTS_DIR: it runs only the
+# quarantined tests. A quarantined file tagged EXPECT_GREEN "passes"; anything
+# else (or an empty dir / missing dir) "fails". This is the runner-appropriate
+# shape `lcars init` documents — the gate's verdict must depend on it.
+HONOR_RUNNER="$TMPROOT/honor-runner.sh"
+cat >"$HONOR_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+# Honors $LCARS_TESTS_DIR: green iff at least one quarantined file says EXPECT_GREEN.
+d="${LCARS_TESTS_DIR:-}"
+[ -n "$d" ] && [ -d "$d" ] || { echo "no quarantined tests dir" >&2; exit 1; }
+n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -gt 0 ] || { echo "quarantined tests dir empty" >&2; exit 1; }
+if grep -rq EXPECT_GREEN "$d"; then exit 0; fi
+echo "quarantined tests are RED (behaviour not built)" >&2
+exit 1
+EOF
+chmod +x "$HONOR_RUNNER"
+
+# Helper: write a repo that ALSO has an existing, ALWAYS-GREEN repo suite at a
+# fixed path (tests/run.sh), exactly the green suite the buggy gate used to run.
+# The configured testCommand is the HONORing runner, so the gate must judge the
+# QUARANTINED tests — the existing green suite must not change the verdict.
+add_green_repo_suite() { # repo
+  mkdir -p "$1/tests"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$1/tests/run.sh"
+  chmod +x "$1/tests/run.sh"
+}
+
+# --- BUG-007 #1: a quarantined FAILING test is RED even with a passing repo suite
+repoB1="$(new_repo_with_implement_mission)"; make_gh_stub "$repoB1/gh"
+export GH_LOG="$repoB1/gh.log"; : >"$GH_LOG"
+add_green_repo_suite "$repoB1"
+tB1="$repoB1/tw"; mkdir -p "$tB1"
+# A genuinely red quarantined test (no EXPECT_GREEN tag) that asserts something.
+printf 'assert: dark mode recolours the header (NOT YET BUILT)\n' >"$tB1/spec.test"
+rcB1=0
+( cd "$repoB1" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoB1/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tB1" \
+    >outB1.txt 2>&1 ) || rcB1=$?
+check "B1. quarantined FAILING test is judged RED even when the repo suite passes" \
+  "[ '$rcB1' -eq 0 ]"
+check "B1. quarantines the tests once the red gate passes" \
+  "[ -f '$repoB1/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test' ]"
+
+# --- BUG-007 #5/#6 GATE PURITY: the SAME quarantined PASSING test is REJECTED
+# whether or not the repo has a passing suite — green-on-nothing always loses, and
+# the rejection now REPORTS WHY (rc + which suite ran), not a silent stall.
+# (5a) asserts an already-true fact / (passes trivially): tagged EXPECT_GREEN.
+mk_green_quarantine() { # dir
+  mkdir -p "$1"
+  printf 'assert: 1 == 1 // EXPECT_GREEN — already true, proves nothing\n' >"$1/trivial.test"
+}
+# TRIPWIRE 5a — DO NOT DELETE: a suite that asserts an already-true fact is rejected.
+repoT5a="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT5a/gh"
+export GH_LOG="$repoT5a/gh.log"; : >"$GH_LOG"
+add_green_repo_suite "$repoT5a"
+tT5a="$repoT5a/tw"; mk_green_quarantine "$tT5a"
+rcT5a=0
+( cd "$repoT5a" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT5a/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT5a" \
+    >outT5a.txt 2>&1 ) || rcT5a=$?
+check "TRIPWIRE 5a. green-on-nothing (already-true assertion) is rejected" \
+  "[ '$rcT5a' -ne 0 ]"
+check "TRIPWIRE 5a. the red-gate rejection REPORTS WHY (rc / suite / passed visible)" \
+  "grep -qiE 'red gate|passed|rc=|exit' '$repoT5a/outT5a.txt'"
+check "TRIPWIRE 5a. does NOT quarantine the green-on-nothing suite" \
+  "[ ! -d '$repoT5a/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# TRIPWIRE 5b — DO NOT DELETE: a suite testing pre-existing repo behaviour
+# (the runner passes it on nothing) is rejected just the same.
+repoT5b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT5b/gh"
+export GH_LOG="$repoT5b/gh.log"; : >"$GH_LOG"
+tT5b="$repoT5b/tw"; mkdir -p "$tT5b"
+printf 'assert: git is installed // EXPECT_GREEN — pre-existing, no new behaviour\n' >"$tT5b/preexisting.test"
+rcT5b=0
+( cd "$repoT5b" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT5b/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT5b" \
+    >outT5b.txt 2>&1 ) || rcT5b=$?
+check "TRIPWIRE 5b. a suite for pre-existing (already-green) behaviour is rejected" \
+  "[ '$rcT5b' -ne 0 ]"
+
+# TRIPWIRE 5c — DO NOT DELETE: a suite that passes trivially (with a real repo
+# suite ALSO green) is still rejected — the repo suite cannot rescue it.
+repoT5c="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT5c/gh"
+export GH_LOG="$repoT5c/gh.log"; : >"$GH_LOG"
+add_green_repo_suite "$repoT5c"
+tT5c="$repoT5c/tw"; mkdir -p "$tT5c"
+printf 'assert: noop // EXPECT_GREEN — trivially passes\n' >"$tT5c/trivial.test"
+rcT5c=0
+( cd "$repoT5c" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT5c/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT5c" \
+    >outT5c.txt 2>&1 ) || rcT5c=$?
+check "TRIPWIRE 5c. a trivially-passing suite is rejected (repo suite cannot rescue)" \
+  "[ '$rcT5c' -ne 0 ]"
+
+# TRIPWIRE 6 — DO NOT DELETE: GATE PURITY. The verdict is a pure function of the
+# QUARANTINED tests. SAME quarantined FAILING test → RED with OR without a passing
+# repo suite; SAME quarantined PASSING test → REJECTED with OR without one. Four
+# combinations, the repo suite never flips the verdict.
+mk_red_quarantine() { # dir
+  mkdir -p "$1"; printf 'assert: behaviour X exists (NOT BUILT)\n' >"$1/x.test"
+}
+purity_verdict() { # tag(with|without)-repo-suite  quarantine-builder → echoes rc
+  local tag="$1" builder="$2"
+  local r; r="$(new_repo_with_implement_mission)"; make_gh_stub "$r/gh"
+  export GH_LOG="$r/gh.log"; : >"$GH_LOG"
+  [ "$tag" = with ] && add_green_repo_suite "$r"
+  local t="$r/tw"; "$builder" "$t"
+  local rc=0
+  ( cd "$r" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$r/gh" \
+      bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$t" \
+      >/dev/null 2>&1 ) || rc=$?
+  printf '%s' "$rc"
+}
+p6_red_with="$(purity_verdict with mk_red_quarantine)"
+p6_red_without="$(purity_verdict without mk_red_quarantine)"
+p6_grn_with="$(purity_verdict with mk_green_quarantine)"
+p6_grn_without="$(purity_verdict without mk_green_quarantine)"
+check "TRIPWIRE 6. RED quarantine → accepted regardless of the repo suite" \
+  "[ '$p6_red_with' -eq 0 ] && [ '$p6_red_without' -eq 0 ]"
+check "TRIPWIRE 6. PASSING quarantine → rejected regardless of the repo suite" \
+  "[ '$p6_grn_with' -ne 0 ] && [ '$p6_grn_without' -ne 0 ]"
+
+# TRIPWIRE 7 — DO NOT DELETE: the "can't tell which suite ran" path NEVER
+# green-lights an unproven suite. A configured command that IGNORES
+# $LCARS_TESTS_DIR (so the gate cannot prove the QUARANTINED tests were what ran)
+# and is GREEN must be BLOCKED loudly, not passed through. `exit 0` is exactly
+# such a command (constant green, ignores the dir): it must REJECT, naming why.
+repoT7="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT7/gh"
+export GH_LOG="$repoT7/gh.log"; : >"$GH_LOG"
+tT7="$repoT7/tw"; make_tests_dir "$tT7"
+rcT7=0
+( cd "$repoT7" && LCARS_TEST_CMD='exit 0' LCARS_GH_BIN="$repoT7/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT7" \
+    >outT7.txt 2>&1 ) || rcT7=$?
+check "TRIPWIRE 7. green command that ignores \$LCARS_TESTS_DIR is BLOCKED, not green-lit" \
+  "[ '$rcT7' -ne 0 ]"
+check "TRIPWIRE 7. the block is LOUD (red gate / passed / ignored surfaced)" \
+  "grep -qiE 'red gate|passed|ignore|prove' '$repoT7/outT7.txt'"
+check "TRIPWIRE 7. nothing quarantined on the can't-tell-which-suite path" \
+  "[ ! -d '$repoT7/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# TRIPWIRE 8 — DO NOT DELETE: G2 (immutable hash), G3 (assertions), and the
+# adversarial split are UNCHANGED. (G1/G2/G3 regression blocks above already
+# assert these; this restates the invariant against the HONORing runner so a
+# future gate edit can't quietly drop them.)
+# G3 against the honoring runner: a zero-assertion suite is still rejected
+# BEFORE the runner is even consulted.
+repoT8="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT8/gh"
+export GH_LOG="$repoT8/gh.log"; : >"$GH_LOG"
+tT8="$repoT8/tw"; mkdir -p "$tT8"
+# No assertion construct at all (and nothing the assertion detector matches).
+printf '// nothing of substance here\nconst x = 1;\n' >"$tT8/noassert.test"
+rcT8=0
+( cd "$repoT8" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT8/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT8" \
+    >outT8.txt 2>&1 ) || rcT8=$?
+check "TRIPWIRE 8. G3 still rejects a zero-assertion suite under the honoring runner" \
+  "[ '$rcT8' -ne 0 ]"
+check "TRIPWIRE 8. G3 rejection names assertion / quality" \
+  "grep -qiE 'assert|quality' '$repoT8/outT8.txt'"
+# G2 against the honoring runner: the Implementer still cannot edit the locked
+# tests. Save a RED quarantine (accepted), then tamper + try to save a result.
+repoT8b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT8b/gh"
+export GH_LOG="$repoT8b/gh.log"; : >"$GH_LOG"
+tT8b="$repoT8b/tw"; mk_red_quarantine "$tT8b"
+( cd "$repoT8b" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT8b/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT8b" >/dev/null 2>&1 )
+QT8="$repoT8b/.git/lcars/missions/$MID/tickets/t-001/tests"
+printf 'assert: noop // EXPECT_GREEN — weakened by the Implementer\n' >"$QT8/x.test"
+resT8="$repoT8b/result.json"; write_result "$resT8" t-001 true 2
+rcT8b=0
+( cd "$repoT8b" && LCARS_GH_BIN="$repoT8b/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resT8" >outT8b.txt 2>&1 ) || rcT8b=$?
+check "TRIPWIRE 8. G2 still rejects a result whose locked tests were edited" \
+  "[ '$rcT8b' -ne 0 ]"
+
+# --- BUG-007 #2: GROUNDED RETRY — on rejection, the NEXT Test-Writer prompt
+# carries the captured red-gate SIGNAL (rc + bounded runner output), and NEVER
+# the implementation / prior reasoning. Driven through cmd_implement with a worker
+# stub that, on its FIRST dispatch, writes a green-on-nothing suite (rejected),
+# and on its SECOND dispatch writes a genuinely-red suite. The 2nd prompt must
+# show the captured signal.
+binGR="$TMPROOT/grbin"; rm -rf "$binGR"; mkdir -p "$binGR"
+cat >"$binGR/worker" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+# Record every test-writer prompt so the test can inspect what attempt 2 saw.
+if [ "$LCARS_WORKER_ROLE" = implement-test-writer ]; then
+  pf="$GR_PROMPTS_DIR/tw.$(ls "$GR_PROMPTS_DIR" | grep -c '^tw\.').prompt"
+  printf '%s' "$prompt" >"$pf"
+  mkdir -p "$out/tests"
+  if [ ! -f "$GR_STATE/first-done" ]; then
+    : >"$GR_STATE/first-done"
+    # green-on-nothing: tagged EXPECT_GREEN so the honoring runner passes it → rejected.
+    printf 'assert: noop // EXPECT_GREEN — green on nothing\n' >"$out/tests/spec.test"
+  else
+    # genuinely red now: no EXPECT_GREEN → honoring runner fails → red gate accepts.
+    printf 'assert: behaviour Y exists (NOT BUILT)\n' >"$out/tests/spec.test"
+  fi
+elif [ "$LCARS_WORKER_ROLE" = implement-implementer ]; then
+  printf '{ "ticketId": "t-001", "passed": true, "attempts": 1, "summary": "done" }\n' >"$out/result.json"
+fi
+exit 0
+EOF
+chmod +x "$binGR/worker"; make_gh_stub "$binGR/gh"
+# Single-ticket repo at implement, with the HONORing runner configured.
+repoGR="$(new_repo_with_implement_mission)"; add_green_repo_suite "$repoGR"
+mkdir -p "$repoGR/.git/lcars"; printf '{ "testCommand": "bash %s" }\n' "$HONOR_RUNNER" >"$repoGR/.git/lcars/config.json"
+GR_PROMPTS_DIR="$TMPROOT/gr-prompts"; rm -rf "$GR_PROMPTS_DIR"; mkdir -p "$GR_PROMPTS_DIR"
+GR_STATE="$TMPROOT/gr-state"; rm -rf "$GR_STATE"; mkdir -p "$GR_STATE"
+rcGR=0
+( cd "$repoGR" && GR_PROMPTS_DIR="$GR_PROMPTS_DIR" GR_STATE="$GR_STATE" \
+    LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_WORKER_BIN="$binGR/worker" \
+    LCARS_GH_BIN="$binGR/gh" bash "$SCRIPT" implement-ticket \
+    --mission "$MID" --ticket t-001 >outGR.txt 2>&1 ) || rcGR=$?
+# The second test-writer prompt (tw.1.prompt) must carry the captured red-gate signal.
+TW2="$GR_PROMPTS_DIR/tw.1.prompt"
+check "GR. a second Test-Writer attempt occurred after the rejection" "[ -f '$TW2' ]"
+check "GR. the retry prompt carries the captured red-gate SIGNAL (passed-on-nothing / runner output)" \
+  "grep -qiE 'passed with no implementation|red gate|runner output|green on nothing|rc=' '$TW2'"
+check "GR. the retry prompt does NOT leak the implementation / result" \
+  "[ -f '$TW2' ] && ! grep -qiE 'result.json|theme.js|\"passed\": true|prior reasoning' '$TW2'"
+
+# --- BUG-007 #3: the stage prompt carries a RED-FIRST recipe; a stubbed worker
+# following it (a dedicated failing test file) clears the gate.
+check "P3. implement-test-writer.md carries a RED-FIRST recipe" \
+  "grep -qiE 'red.first|RED FIRST' '$REPO_ROOT/skills/lcars-run/stages/implement-test-writer.md'"
+check "P3. the recipe tells the writer to invoke the not-yet-built entrypoint / assert observable output" \
+  "grep -qiE 'public entrypoint|not[- ]yet|does not exist|ERROR|FAIL' '$REPO_ROOT/skills/lcars-run/stages/implement-test-writer.md'"
+check "P3. the recipe forbids appending to an existing passing suite (dedicated file)" \
+  "grep -qiE 'dedicated|do not append|never append|existing passing suite' '$REPO_ROOT/skills/lcars-run/stages/implement-test-writer.md'"
+
+# ==========================================================================
+echo
 echo "lcars run — Verify stage"
 
 # When every wave is green, Implement parks the Mission at "verify". `lcars run`
