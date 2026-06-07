@@ -85,13 +85,13 @@ flowchart LR
 
 | # | Stage | Who | What happens |
 |---|-------|-----|--------------|
-| 1 | **Align** | 🧑 you + LLM | A structured grilling session — not a chat — that resolves ambiguity in the idea and produces a **PRD** (the canonical spec). |
+| 1 | **Align** | 🧑 you + LLM | A structured grilling session — not a chat — that resolves ambiguity in the idea and produces a **PRD** (the canonical spec). A complex Mission also gets high-level **engineering ADRs** (architecture/data-shape decisions + rationale), seeded here and refined at Validate. |
 | 2 | **Research** | 🤖 auto | Generates 0–20 questions from the PRD; each goes to a stateless parallel Research Agent that returns a recommendation + supporting points. |
 | 3 | **Validate** | 🤖 auto | A Validator synthesises all findings into a plan, resolving the *how*. Escalates to you only when a finding changes *what* gets built. |
 | 4 | **Plan** | 🤖 auto | Decomposes the validated plan into small, independently testable tickets — each a vertical slice owning **one cohesive behavior**, sized by total **comprehension load** (code-to-read + tests + new code) against a tunable budget, not a flat line count. |
 | 5 | **Plan Review** | 🤖 auto | A *fresh* reviewer (no planning context) audits every ticket for slice, size, **coupling** (rejecting tickets whose criteria force changing behavior another ticket's tests pin — the real meaning of "too big"), testability, and dependencies. Loops back to Plan until clean; escalates after 3 rounds. |
 | 6 | **Schedule** | 🤖 auto | Builds the dependency graph into sequential **Waves** and opens one GitHub sub-issue per ticket, each **nested under the Mission's issue** (a single-ticket Mission reuses its own issue instead of opening a redundant one). |
-| 7 | **Implement** | 🤖 auto | Per ticket, an adversarial **Test Writer → Implementer** pair. Tests are written first, must fail (red gate), then are locked while the Implementer makes them pass. |
+| 7 | **Implement** | 🤖 auto | Per ticket, an adversarial **Test Writer → Implementer** pair. Tests are written first, must fail (red gate), then are locked while the Implementer makes them pass. Independent tickets in a Wave build **concurrently** in isolated worktrees, committing serially in plan order. |
 | 8 | **Verify** | 🧑 you | You read the diff, run the app, test the golden path — then **approve** (open the PR) or **send back** with feedback. |
 
 Four feedback loops keep it honest: Research → Align (too much ambiguity),
@@ -268,7 +268,10 @@ $ lcars approve lcars-20260604-001
 
 - **Align is interactive and adaptive.** A one-line bug fix produces a thin PRD
   in a minute or two; a complex feature earns a thorough grilling. This is the
-  one stage that is always a conversation.
+  one stage that is always a conversation. A complex Mission also comes out with
+  high-level **engineering ADRs** — the framework/architecture/data-shape calls
+  and their rationale — that downstream workers read instead of re-deriving
+  (Validate refines them if research overturns a decision).
 - **Research scales to ambiguity.** A crisp PRD yields *zero* questions and skips
   straight through. A broad one fans out up to 20 parallel agents. More than 20
   needed → it explains why and lets you override or sharpen the PRD.
@@ -284,10 +287,16 @@ $ lcars approve lcars-20260604-001
   changing behavior another ticket's tests already pin — naming the seam to
   re-slice along; it loops back until clean (or escalates after 3 rounds).
 - **Implement is adversarial and guarded by the harness, not the prompt.** The
-  Test Writer's tests must actually **fail** before the Implementer runs (red
-  gate), the test files are **locked** so green can't be reached by editing them,
-  and a quality check rejects assertion-free suites. Up to 5 attempts per ticket,
-  then it flags you.
+  Test Writer's tests must actually **fail** before the Implementer runs — and the
+  gate judges that **quarantined suite alone**, never the repo's existing passing
+  tests, so a green-on-nothing contract can't slip through even in a repo whose own
+  suite is green (a rejection says *why* and grounds the next attempt). The test
+  files are **locked** so green can't be reached by editing them, and a quality
+  check rejects assertion-free suites. Independent tickets in a Wave build
+  **concurrently** in isolated per-ticket worktrees (capped by `LCARS_MAX_PARALLEL`)
+  and commit serially in plan order, and each worker reads a per-ticket **context
+  manifest + repo pack** instead of cold-exploring the tree. Up to 5 attempts per
+  ticket, then it flags you.
 - **Verify never auto-passes.** Auto-advance always stops here. Shipping is your
   call.
 
@@ -327,7 +336,11 @@ Two deliberate properties make this robust:
   **decisions and their rationale** (the *why*, not just the *what*), because the
   artifact is the entire contract. A `⊘ isolated` marker on every stage line
   proves it; if a Stage ever can't isolate, the driver refuses **loudly** rather
-  than running inline.
+  than running inline. What may cross the boundary is always a **declarative
+  fact** — the PRD, the engineering ADRs, a ticket's context manifest, the repo
+  pack — never another worker's generated reasoning, and never anything at all to
+  a Research Agent: sharing facts lets a worker read instead of re-derive (cutting
+  cost) without the conversational carryover cold isolation exists to prevent.
 - **Observable, not silent.** The driver keeps a per-Mission append-only **event
   log** (`events.jsonl`) as it goes — every Stage start and finish, every gate,
   and fine-grained Implement progress (each wave, each ticket, each attempt, and
@@ -354,18 +367,22 @@ never tracks it and the target repo's working tree stays clean. Don't add it to
 ```text
 .git/lcars/
   config.json                     repo config (model, context file, test command, notify)
+  context-pack.md                 durable repo pack (run-tests, conventions, architecture)
   missions/
     lcars-20260604-001/
       state.json                  id, type, stage, githubIssue, flags
       prd.md                      Align output — the canonical spec
+      adr.md                      engineering ADRs (complex Missions; refined at Validate)
       research/<n>.json           per-question findings
       validated-plan.md           Validate synthesis (+ rationale)
       plan.json                   Plan tickets (each with rationale)
       approved-plan.json          Plan Review's approved copy
       plan-review-<round>.json    objections per round
+      manifests/<ticket>.md       per-ticket context manifest (files + signatures + ADRs)
       waves.json                  dependency graph → waves + sub-issue numbers
       tickets/<ticket>/tests/     Test Writer's locked tests
       tickets/<ticket>/result.json  pass/attempts/summary
+      tickets/<ticket>/red-gate-signal.txt  why a rejected suite failed the red gate (grounds the retry)
       pending.json / answers.json   escalated questions + your answers
       feedback.md                 accumulating Verify feedback history
 ```
@@ -413,6 +430,7 @@ stubbable in tests):
 |---|---|---|
 | `LCARS_WORKER_BIN` | The cold-worker CLI every headless Stage spawns | the host CLI (e.g. `claude`) |
 | `LCARS_GH_BIN` | The GitHub CLI | `gh` |
+| `LCARS_MAX_PARALLEL` | Concurrency cap for a Wave's tickets and the Research fan-out | `4` |
 | `LCARS_NOTIFY` | The walk-away notification hook fired at human gates | local desktop banner + bell |
 
 Notifications fire **only** at genuine gates (an escalation or Verify), batched

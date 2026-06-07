@@ -150,6 +150,7 @@ flowchart LR
       <h3><span class="stage-num">1</span>Align</h3>
       <p>The human and an LLM get on the same page. This is a structured grilling session — not a chat — where ambiguity in the idea is surfaced and resolved. The output is a <strong>PRD</strong> (Product Requirements Document) that becomes the canonical spec for the Mission.</p>
       <p>The Align stage adapts to complexity. A small bug produces a thin PRD in minutes. A complex feature takes longer. If downstream stages reveal that the PRD was underspecified, the Mission loops back to Align with that context baked in.</p>
+      <p>For a complex Mission, Align also records high-level <strong>engineering ADRs</strong> (Architecture Decision Records) alongside the PRD — the framework, architecture, and data-shape decisions, each with its rationale and the alternatives weighed. A trivial bug gets none. The ADRs exist so the downstream cold workers inherit the architectural frame instead of silently re-deriving it and taking wrong turns. Align seeds them; Validate refines them when research changes a decision. They are declarative facts every later Stage may read — except the Research Agents, who stay deliberately context-free.</p>
     </section>
 
     <section id="research">
@@ -178,7 +179,7 @@ flowchart TD
     <section id="validate">
       <h3><span class="stage-num">3</span>Validate</h3>
       <p>A <strong>Validator</strong> LLM reviews all Research Agent responses against the PRD. It synthesizes recommendations into a plan, resolving conflicts and making implementation decisions where it can.</p>
-      <p>The Validator escalates to the human <em>only</em> when a finding implies a scope or direction change — something that would change <em>what</em> gets built, not <em>how</em>. Implementation decisions stay with the Validator. Strategic decisions come to the human.</p>
+      <p>The Validator escalates to the human <em>only</em> when a finding implies a scope or direction change — something that would change <em>what</em> gets built, not <em>how</em>. Implementation decisions stay with the Validator. Strategic decisions come to the human. When a finding overturns an architectural decision, the Validator updates the engineering ADRs Align seeded, so the recorded frame stays current rather than going stale.</p>
     </section>
 
     <section id="plan">
@@ -250,11 +251,13 @@ sequenceDiagram
       </div>
       <p>The <strong>Test Writer</strong> reads the issue and writes failing behavioral tests against the public interface only. The <strong>Implementer</strong> reads the issue and the failing tests — with no access to the Test Writer's session — and implements until all tests pass.</p>
       <p>The separation is adversarial by design. The Test Writer cannot sandbag because it doesn't know who is implementing. The Implementer cannot skip tests because they arrive as a hard constraint. A passing test suite means the ticket is done.</p>
+      <p>Within a Wave, independent tickets build <strong>concurrently</strong> — each Test Writer → Implementer pair runs in its own isolated git worktree off the Mission branch, so parallel file writes and test runs never collide. As a ticket goes green its commit is replayed serially onto the Mission branch in plan order, so the observable history is unchanged: exactly one commit per ticket, with its summary, in order. A bounded concurrency cap (<code>LCARS_MAX_PARALLEL</code>) keeps a wide Wave — and the Research fan-out — from spawning unboundedly.</p>
+      <p>To keep each cold worker from re-exploring the repo from scratch, Plan and Schedule attach a per-ticket <strong>context manifest</strong> — the relevant files, their interface <em>signatures</em> (skeletons, not bodies), and the ADRs the ticket touches — and the Harness maintains a durable <strong>repo pack</strong> (how to run the tests, the conventions, an architecture summary) refreshed each Wave. The Test Writer and Implementer read these instead of cold-walking the tree; neither ever carries the implementation to write, and neither reaches a Research Agent.</p>
       <p>As each ticket goes green and commits, its sub-issue is relabelled <code>lcars:done</code> and <strong>closed</strong> — so the board reflects real per-ticket progress while a Wave is still running, instead of a pile of open issues that only clears at the end.</p>
       <div class="mission-card" style="border-left-color:var(--lcars-red)">
         <strong>The Harness — not the LLMs — enforces the split:</strong>
         <ul>
-          <li><strong>Red gate</strong> — the tests must actually <em>fail</em> before the Implementer runs, so "green" can't be reached with tests that assert nothing.</li>
+          <li><strong>Red gate</strong> — the tests must actually <em>fail</em> before the Implementer runs. The gate evaluates the Test Writer's tests <strong>in isolation</strong> — only that quarantined suite, never the repo's existing passing tests — so a contract that is green before anything is built is always caught, even in a repo whose own suite is green. A rejection is never a silent stall: the Harness reports <em>why</em> and feeds that signal into the next Test-Writer attempt, so it writes a genuinely failing test instead of blindly retrying.</li>
           <li><strong>Immutable tests</strong> — the Implementer cannot edit the test files; green is earned by implementing, never by weakening the contract.</li>
           <li><strong>Test quality</strong> — a light check guards against a sandbagging Test Writer handing over a contract that proves nothing.</li>
         </ul>
@@ -279,6 +282,7 @@ sequenceDiagram
       <h2>Stage Isolation</h2>
       <p>Every Stage runs as a fresh session that sees only what the previous Stage wrote to disk — never the previous Stage's conversation. The persisted artifact (the PRD, the research findings, the validated plan, <code>plan.json</code>) is the <em>entire</em> contract between Stages. This is what lets the loop run many Stages unattended without any of them inheriting another's reasoning, and it is enforced structurally: the loop spawns each worker cold and assembles its prompt from artifact paths alone, so there is no carryover to lean on even when the whole pipeline runs in one sitting.</p>
       <p>Because the artifact is the only thing that crosses the boundary, each Stage records <strong>decisions and their rationale, not just output</strong> — the <em>why</em>, not only the <em>what</em>. A handoff that drops the implicit reasoning behind a choice is how the next Stage ends up building the wrong thing; capturing the rationale is what keeps the cold handoff sufficient.</p>
+      <p>What crosses that boundary is always a <strong>declarative fact</strong> — the PRD, the engineering ADRs, a ticket's context manifest, the repo pack — never another worker's generated reasoning, and never anything at all to a Research Agent. Sharing facts is what lets a worker read instead of re-derive (cutting cost and wrong turns) without ever creating the conversational carryover cold isolation exists to prevent.</p>
     </section>
 
     <hr class="divider" />
