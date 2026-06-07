@@ -168,7 +168,8 @@ power entry points.
 | `lcars` | **The one entry point.** Infers the right action from state and announces it first: nothing filed → runs the `lcars file` flow; work in flight & nothing pending → drives the active Mission (auto-advance); a decision waiting → opens the inbox. Never makes you remember a verb or paste an id. |
 | `lcars answer` | **The inbox** — every pending decision across *all* Missions in one list: scope escalations, plan-review stand-offs, blocked tickets, and the Verify gate. **approve** and **send back** are actions on a Verify card here, not separate commands. |
 | `lcars status` | The read-only **board**: every active Mission, its Stage, and anything awaiting you. Add `--watch` to follow a running Mission **live** — a streaming event view with a pace line (wave, ticket, attempt, avg/ticket, elapsed). |
-| `lcars init` | One-time per-repo setup (local config + GitHub labels). |
+| `lcars init` | One-time per-repo setup (local config + GitHub labels). Safe to re-run — it **preserves** your config customizations, only filling in anything missing. |
+| `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`. A clean no-op when nothing's changed. |
 | `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. |
 | `lcars log` | Log one or more bugs against an active Mission in free-form language; fast-tracks a Mission per bug straight to Plan and links them. |
 
@@ -391,7 +392,8 @@ never tracks it and the target repo's working tree stays clean. Don't add it to
 
 ## GitHub labels (the board's data model)
 
-`lcars init` creates the LCARS label set on the repo. The harness applies them as
+`lcars init` creates the LCARS label set on the repo (and `lcars update`
+backfills any that a later LCARS version adds). The harness applies them as
 Missions move; a future kanban reads them directly via the Issues API.
 
 | Label | Type | Purpose |
@@ -422,6 +424,15 @@ the close is tied to the merge — never to approval or to reaching Verify.
 `CONTEXT.md`, test command for the red gate, optional notify target). The harness
 **never** modifies `CLAUDE.md`, `.gitignore`, `CONTEXT.md`, `.claude/settings.json`,
 or any source files.
+
+Writing config is **merge-preserving**: re-running `lcars init` keeps every value
+already in `config.json` (your customized `testCommand` / `model` /
+`comprehensionBudget`) and only fills in keys that are missing — so re-init is
+fully idempotent and never resets a customization. When LCARS itself gains new
+labels or config keys, `lcars update` absorbs them into an already-initialized
+repo the same way: missing labels and keys are added at their defaults, existing
+values and `missions/` are left untouched, and it reports what it added (or says
+there's nothing to update).
 
 External dependencies are injected via env vars so they're swappable (and
 stubbable in tests):
