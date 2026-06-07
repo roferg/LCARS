@@ -3672,5 +3672,523 @@ check "S41-6. plan.md routes manifests to a SEPARATE manifests/ dir (not plan.js
 
 # ==========================================================================
 echo
+echo "lcars run — intra-wave parallelism via per-ticket worktrees (Session 37)"
+
+# Session 37 builds a wave's INDEPENDENT tickets CONCURRENTLY, each in its OWN
+# `git worktree` checked out (detached) from the mission branch, with a bounded
+# concurrency cap from $LCARS_MAX_PARALLEL. The observable end state is UNCHANGED:
+# exactly one commit per ticket, with its summary, on the mission branch, in
+# wave/plan order (NOT finish order). The adversarial Test-Writer→Implementer
+# split, the red gate, and the immutable-test hash run per ticket inside its
+# worktree, untouched.
+#
+#   P37-1  a 2-ticket wave spawns workers CONCURRENTLY (overlap observed),
+#          and the cap (LCARS_MAX_PARALLEL) bounds the overlap
+#   P37-2  commits land serially on the mission branch in PLAN order — one commit
+#          per ticket with its summary — even when finish order ≠ plan order
+#   P37-3  a flagged ticket among green siblings still parks the Mission
+#          (no green sibling masks the flag)
+#   P37-4  the research fan-out now honours LCARS_MAX_PARALLEL (purity intact)
+#   P37-5  the red gate + immutable-test hash are still enforced per ticket
+
+# A two-wave plan whose WAVE 1 holds two INDEPENDENT tickets (t-001, t-002) so
+# they can build concurrently. (write_waves_json already does this.) We drive the
+# whole `implement` stage with a worker stub that records concurrency.
+
+# A worker stub that: (a) on the implementer phase records a live concurrency
+# counter (peak) by bumping a counter file, sleeping, then decrementing; and
+# (b) writes per-ticket source named after the ticket id parsed from its prompt,
+# so each ticket's commit is distinguishable. STUB_FINISH_DELAY lets a chosen
+# ticket finish LAST regardless of spawn order (to prove plan-order commits).
+make_worker_stub_par() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"
+    printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    # --- live-concurrency probe (flock-free; macOS has no flock). Each live
+    # implementer drops a unique marker; the peak is the max marker count, updated
+    # under a portable mkdir-based lock (atomic everywhere).
+    if [ -n "${CONC_DIR:-}" ]; then
+      mkdir -p "$CONC_DIR/active"; : >"$CONC_DIR/active/$$"
+      while ! mkdir "$CONC_DIR/L" 2>/dev/null; do :; done
+      n=$(ls "$CONC_DIR/active" | wc -l | tr -d ' ')
+      peak=$(cat "$CONC_DIR/peak" 2>/dev/null || echo 0); [ "$n" -gt "$peak" ] && echo "$n" >"$CONC_DIR/peak"
+      rmdir "$CONC_DIR/L"
+    fi
+    # Make t-001 sleep LONGER so t-002 (plan-later) finishes FIRST — proves the
+    # commit order follows PLAN order, not finish order. Also gives the two
+    # implementers a window to overlap for the concurrency probe.
+    case "$tid" in
+      t-001) sleep "${STUB_SLOW_DELAY:-0.4}" ;;
+      *)     sleep "${STUB_FAST_DELAY:-0.05}" ;;
+    esac
+    [ -n "${CONC_DIR:-}" ] && rm -f "$CONC_DIR/active/$$"
+    mkdir -p src
+    printf 'export const %s = 1;\n' "$(printf '%s' "$tid" | tr -dc 'a-zA-Z0-9')" > "src/${tid}.js"
+    cat >"$out/result.json" <<JSON
+{
+  "ticketId": "${tid}",
+  "passed": true,
+  "attempts": 1,
+  "summary": "built ${tid}; suite green."
+}
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Build an isolated repo at stage implement with a committed seed + mission branch.
+new_repo_par() { # echoes repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && printf '# seed\n' > seed.md && git add seed.md && git commit -qm seed \
+      && git checkout -q -b "lcars/$MID" )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_approved_plan_json "$m/approved-plan.json"
+  write_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  echo "$repo"
+}
+
+# --- P37-1: concurrent spawn, bounded by LCARS_MAX_PARALLEL -------------------
+# Wave 1 has two independent tickets. With the cap >= 2 their implementers must
+# OVERLAP (peak concurrency > 1); with the cap = 1 they must NOT (peak == 1).
+binP1="$TMPROOT/p37-1bin"; rm -rf "$binP1"; mkdir -p "$binP1"
+make_worker_stub_par "$binP1/worker"; make_gh_stub "$binP1/gh"
+
+repoP1="$(new_repo_par)"
+concP1="$binP1/conc"; rm -rf "$concP1"; mkdir -p "$concP1"; echo 0 >"$concP1/cur"; echo 0 >"$concP1/peak"
+( cd "$repoP1" && CONC_DIR="$concP1" LCARS_MAX_PARALLEL=4 \
+    LCARS_WORKER_BIN="$binP1/worker" LCARS_GH_BIN="$binP1/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP1/out.txt" 2>&1 ) || true
+peakP1="$(cat "$concP1/peak" 2>/dev/null || echo 0)"
+check "P37-1. with cap=4, the two wave-1 implementers OVERLAP (peak>1)" \
+  "[ \"${peakP1:-0}\" -gt 1 ]"
+
+repoP1s="$(new_repo_par)"
+concP1s="$binP1/conc1"; rm -rf "$concP1s"; mkdir -p "$concP1s"; echo 0 >"$concP1s/cur"; echo 0 >"$concP1s/peak"
+( cd "$repoP1s" && CONC_DIR="$concP1s" LCARS_MAX_PARALLEL=1 \
+    LCARS_WORKER_BIN="$binP1/worker" LCARS_GH_BIN="$binP1/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP1/out1.txt" 2>&1 ) || true
+peakP1s="$(cat "$concP1s/peak" 2>/dev/null || echo 0)"
+check "P37-1. with cap=1, the implementers do NOT overlap (peak==1)" \
+  "[ \"${peakP1s:-0}\" = '1' ]"
+
+# --- P37-2: serial commits in PLAN order, one per ticket, summary preserved ---
+# t-001 sleeps longer than t-002, so t-002 FINISHES first; the commit for t-001
+# must STILL land before t-002 (plan order). Each commit carries its own summary.
+binP2="$TMPROOT/p37-2bin"; rm -rf "$binP2"; mkdir -p "$binP2"
+make_worker_stub_par "$binP2/worker"; make_gh_stub "$binP2/gh"
+repoP2="$(new_repo_par)"
+( cd "$repoP2" && LCARS_MAX_PARALLEL=4 STUB_SLOW_DELAY=0.4 STUB_FAST_DELAY=0.02 \
+    LCARS_WORKER_BIN="$binP2/worker" LCARS_GH_BIN="$binP2/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP2/out.txt" 2>&1 ) || true
+# The mission branch log (newest first). Filter to ticket commits.
+logP2="$( cd "$repoP2" && git log --format='%s' "lcars/$MID" )"
+# Wave 1 commits t-001 then t-002; in `git log` newest-first that is t-002 above t-001.
+pos1="$(printf '%s\n' "$logP2" | grep -n 'lcars(.*) t-001:' | head -1 | cut -d: -f1)"
+pos2="$(printf '%s\n' "$logP2" | grep -n 'lcars(.*) t-002:' | head -1 | cut -d: -f1)"
+check "P37-2. exactly one commit for t-001 on the mission branch" \
+  "[ \"\$(printf '%s\n' \"$logP2\" | grep -c 'lcars(.*) t-001:')\" = '1' ]"
+check "P37-2. exactly one commit for t-002 on the mission branch" \
+  "[ \"\$(printf '%s\n' \"$logP2\" | grep -c 'lcars(.*) t-002:')\" = '1' ]"
+check "P37-2. t-001 commits BEFORE t-002 (plan order, despite t-002 finishing first)" \
+  "[ -n \"$pos1\" ] && [ -n \"$pos2\" ] && [ \"$pos1\" -gt \"$pos2\" ]"
+check "P37-2. each commit carries the ticket's OWN summary" \
+  "printf '%s\n' \"$logP2\" | grep -q 't-001: built t-001' && printf '%s\n' \"$logP2\" | grep -q 't-002: built t-002'"
+check "P37-2. the commit message format is lcars(<mission>) <ticket>: <summary>" \
+  "printf '%s\n' \"$logP2\" | grep -qE 'lcars\\($MID\\) t-001: '"
+check "P37-2. each ticket's produced source is in the tree" \
+  "[ -f '$repoP2/src/t-001.js' ] && [ -f '$repoP2/src/t-002.js' ]"
+check "P37-2. wave 2 also completes and the stage advanced to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoP2")'"
+# No leftover worktrees in the working tree / git metadata after the stage.
+check "P37-2. no stray git worktrees remain after the stage" \
+  "[ -z \"\$( cd '$repoP2' && git worktree list --porcelain | grep -i 't-001' )\" ]"
+
+# --- P37-3: a flagged ticket among green siblings still parks the Mission ------
+# A stub where t-002 FAILS (passed:false, attempts:5 → the human gate) while
+# t-001 goes green. A fast green sibling must NOT mask t-002's flag.
+make_worker_stub_par_flag() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    mkdir -p src; printf 'export const x = 1;\n' > "src/${tid}.js"
+    if [ "$tid" = "t-002" ]; then
+      cat >"$out/result.json" <<JSON
+{ "ticketId": "t-002", "passed": false, "attempts": 5, "summary": "could not get t-002 green." }
+JSON
+    else
+      cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "built ${tid}; suite green." }
+JSON
+    fi
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+binP3="$TMPROOT/p37-3bin"; rm -rf "$binP3"; mkdir -p "$binP3"
+make_worker_stub_par_flag "$binP3/worker"; make_gh_stub "$binP3/gh"
+repoP3="$(new_repo_par)"
+rcP3=0
+( cd "$repoP3" && LCARS_MAX_PARALLEL=4 \
+    LCARS_WORKER_BIN="$binP3/worker" LCARS_GH_BIN="$binP3/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP3/out.txt" 2>&1 ) || rcP3=$?
+sP3="$(state_of "$repoP3")"
+check "P37-3. a flagged sibling parks the Mission at awaiting-human" \
+  "grep -q '\"awaitingHuman\": *true' '$sP3'"
+check "P37-3. the Mission stays at the implement stage (not advanced to verify)" \
+  "grep -q '\"stage\": *\"implement\"' '$sP3'"
+check "P37-3. the pending question names the flagged ticket t-002" \
+  "grep -q 't-002' '$repoP3/.git/lcars/missions/$MID/pending.json'"
+check "P37-3. the green sibling t-001 still committed (no rollback of good work)" \
+  "[ \"\$( cd '$repoP3' && git log --format='%s' 'lcars/$MID' | grep -c 't-001:' )\" = '1' ]"
+
+# --- P37-4: a hard worker failure (no result) stops the Stage non-zero --------
+# A stub that produces NO result.json for t-002 → implement-ticket dies; the
+# concurrent sibling must not mask it: the whole stage exits non-zero.
+make_worker_stub_par_hardfail() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    if [ "$tid" = "t-002" ]; then exit 0; fi   # NO result.json → hard failure
+    mkdir -p src; printf 'export const x = 1;\n' > "src/${tid}.js"
+    cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "built ${tid}." }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+binP4="$TMPROOT/p37-4bin"; rm -rf "$binP4"; mkdir -p "$binP4"
+make_worker_stub_par_hardfail "$binP4/worker"; make_gh_stub "$binP4/gh"
+repoP4="$(new_repo_par)"
+rcP4=0
+( cd "$repoP4" && LCARS_MAX_PARALLEL=4 \
+    LCARS_WORKER_BIN="$binP4/worker" LCARS_GH_BIN="$binP4/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP4/out.txt" 2>&1 ) || rcP4=$?
+check "P37-4. a hard worker failure stops the Stage non-zero" "[ '$rcP4' -ne 0 ]"
+check "P37-4. the Stage did NOT advance to verify on a hard failure" \
+  "! grep -q '\"stage\": *\"verify\"' '$(state_of "$repoP4")'"
+
+# --- P37-5: the research fan-out now honours LCARS_MAX_PARALLEL (purity intact) -
+# Research dispatches one worker per question. With many questions and cap=2 the
+# research agents must NOT exceed the cap; and EACH still gets ONLY its question.
+make_worker_stub_research_conc() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  research-questions)
+    : >"$out/questions.txt"
+    k="${STUB_NQUESTIONS:-6}"; i=0
+    while [ "$i" -lt "$k" ]; do i=$((i+1)); echo "Stub question $i?" >>"$out/questions.txt"; done ;;
+  research-agent)
+    if [ -n "${CONC_DIR:-}" ]; then
+      mkdir -p "$CONC_DIR/active"; : >"$CONC_DIR/active/$$"
+      while ! mkdir "$CONC_DIR/L" 2>/dev/null; do :; done
+      n=$(ls "$CONC_DIR/active" | wc -l | tr -d ' ')
+      peak=$(cat "$CONC_DIR/peak" 2>/dev/null || echo 0); [ "$n" -gt "$peak" ] && echo "$n" >"$CONC_DIR/peak"
+      rmdir "$CONC_DIR/L"
+    fi
+    sleep 0.15
+    [ -n "${CONC_DIR:-}" ] && rm -f "$CONC_DIR/active/$$"
+    # Record the prompt so purity can be asserted.
+    printf '%s' "$prompt" > "$CONC_DIR/agentprompt.$$.txt"
+    cat >"$out/response.json" <<JSON
+{ "question": "stub", "recommendation": "Do the sensible thing.", "supporting_points": ["a", "b"] }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+binP5="$TMPROOT/p37-5bin"; rm -rf "$binP5"; mkdir -p "$binP5"
+make_worker_stub_research_conc "$binP5/worker"; make_gh_stub "$binP5/gh"
+repoP5="$(new_repo_with_mission)"
+concP5="$binP5/conc"; rm -rf "$concP5"; mkdir -p "$concP5"; echo 0 >"$concP5/cur"; echo 0 >"$concP5/peak"
+export GH_LOG="$binP5/gh.log"; : >"$GH_LOG"
+( cd "$repoP5" && CONC_DIR="$concP5" STUB_NQUESTIONS=6 LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binP5/worker" LCARS_GH_BIN="$binP5/gh" \
+    bash "$SCRIPT" research --mission "$MID" >"$binP5/out.txt" 2>&1 ) || true
+peakP5="$(cat "$concP5/peak" 2>/dev/null || echo 0)"
+check "P37-4/research. research fan-out never exceeds LCARS_MAX_PARALLEL=2" \
+  "[ \"${peakP5:-0}\" -le 2 ] && [ \"${peakP5:-0}\" -ge 1 ]"
+check "P37-4/research. with 6 questions and cap 2, more than one agent ran at once" \
+  "[ \"${peakP5:-0}\" -gt 1 ]"
+check "P37-4/research. PURITY: a research agent prompt carries ONLY its question (no PRD body)" \
+  "! grep -rqi 'Let users switch to a dark' $concP5/agentprompt.*.txt"
+check "P37-4/research. PURITY: a research agent prompt names no artifact paths" \
+  "! grep -rq '/prd.md\\|/state.json\\|approved-plan' $concP5/agentprompt.*.txt"
+check "P37-4/research. research still advanced the stage to validate" \
+  "grep -q '\"stage\": *\"validate\"' '$(state_of "$repoP5")'"
+
+# --- P37-5b: the red gate + immutable-test hash are enforced per ticket --------
+# Per-ticket-in-worktree, the red gate must still reject a suite that passes with
+# no implementation, and the immutable hash must still reject edited tests. Both
+# already run inside implement-ticket; re-assert through the parallel path with a
+# test command set. A stub whose tests PASS on nothing (no red) must be rejected.
+binP5b="$TMPROOT/p37-5bbin"; rm -rf "$binP5b"; mkdir -p "$binP5b"
+cat >"$binP5b/worker" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer) mkdir -p "$out/tests"; printf 'assert true\n' >"$out/tests/${tid:-t}.test" ;;
+esac
+exit 0
+EOF
+chmod +x "$binP5b/worker"; make_gh_stub "$binP5b/gh"
+repoP5b="$(new_repo_par)"
+rcP5b=0
+# A test command that ALWAYS succeeds → the red gate sees green-on-nothing → reject.
+( cd "$repoP5b" && LCARS_TEST_CMD='true' LCARS_MAX_PARALLEL=4 \
+    LCARS_WORKER_BIN="$binP5b/worker" LCARS_GH_BIN="$binP5b/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP5b/out.txt" 2>&1 ) || rcP5b=$?
+check "P37-5. the red gate still fires per ticket inside the worktree (stage stops)" \
+  "[ '$rcP5b' -ne 0 ]"
+check "P37-5. the red-gate rejection is surfaced (mentions red gate / failed)" \
+  "grep -qi 'red gate\\|failed\\|stopped' '$binP5b/out.txt'"
+
+# --- P37-6: SAME-FILE wave composes (Session 37 defect fix) --------------------
+# The reported regression: a single wave of independent tickets that each ADD a
+# case branch + handler to the SAME dispatcher file at the SAME anchor. Built
+# blind off the frozen wave base, the serial cherry-pick of the 2nd/3rd ticket
+# CONFLICTS textually (two independent insertions at the same line). The fix must
+# still finish: exactly one commit per ticket on the mission branch in PLAN order,
+# ALL tickets' additions present (none lost), and NO stray worktrees.
+#
+# A worker stub that appends each ticket's case branch right before the SAME
+# `DISPATCH-ANCHOR` line in the shared dispatcher file. Each build runs off the
+# frozen base, so all three insert at the same spot → cherry-pick conflict.
+make_worker_stub_samefile() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    # Insert this ticket's case branch right before the shared dispatch anchor in
+    # the SAME file. additively. Reads the CURRENT dispatcher (in this worktree),
+    # so a serial rebuild off the updated tip composes on top of prior tickets.
+    f="src/dispatch.js"
+    line="  case '${tid}': return handle_${tid}();  // ADDED-${tid}"
+    awk -v ins="$line" '/DISPATCH-ANCHOR/{print ins} {print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    cat >"$out/result.json" <<JSON
+{
+  "ticketId": "${tid}",
+  "passed": true,
+  "attempts": 1,
+  "summary": "added ${tid} case to dispatcher."
+}
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A 3-ticket single-wave plan + waves, all independent, sharing only the file.
+write_samefile_plan_json() { # file
+  cat >"$1" <<'EOF'
+[
+  { "id": "t-001", "title": "case a", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file — no logic in common" },
+  { "id": "t-002", "title": "case b", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file — no logic in common" },
+  { "id": "t-003", "title": "case c", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file — no logic in common" }
+]
+EOF
+}
+write_samefile_waves_json() { # file
+  cat >"$1" <<'EOF'
+[
+  { "wave": 1, "tickets": [
+      { "id": "t-001", "issue": 101 },
+      { "id": "t-002", "issue": 102 },
+      { "id": "t-003", "issue": 103 }
+  ] }
+]
+EOF
+}
+# A repo at stage implement, mission branch, with the shared dispatcher committed.
+new_repo_samefile() { # echoes repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && mkdir -p src \
+      && printf 'function dispatch(x){\n  switch(x){\n  // DISPATCH-ANCHOR\n  default: return null;\n  }\n}\n' > src/dispatch.js \
+      && git add src/dispatch.js && git commit -qm seed \
+      && git checkout -q -b "lcars/$MID" )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_samefile_plan_json "$m/approved-plan.json"
+  write_samefile_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dispatch cases",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  echo "$repo"
+}
+
+binP6="$TMPROOT/p37-6bin"; rm -rf "$binP6"; mkdir -p "$binP6"
+make_worker_stub_samefile "$binP6/worker"; make_gh_stub "$binP6/gh"
+repoP6="$(new_repo_samefile)"
+rcP6=0
+( cd "$repoP6" && LCARS_MAX_PARALLEL=3 \
+    LCARS_WORKER_BIN="$binP6/worker" LCARS_GH_BIN="$binP6/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP6/out.txt" 2>&1 ) || rcP6=$?
+sP6="$(state_of "$repoP6")"
+check "P37-6. the same-file wave Stage completes (no hard stop)" \
+  "[ '$rcP6' -eq 0 ]"
+check "P37-6. the Stage advanced to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$sP6'"
+logP6="$( cd "$repoP6" && git log --format='%s' "lcars/$MID" )"
+check "P37-6. exactly one commit per ticket on the mission branch" \
+  "[ \"\$(printf '%s\n' \"$logP6\" | grep -c 'lcars(.*) t-001:')\" = '1' ] \
+   && [ \"\$(printf '%s\n' \"$logP6\" | grep -c 'lcars(.*) t-002:')\" = '1' ] \
+   && [ \"\$(printf '%s\n' \"$logP6\" | grep -c 'lcars(.*) t-003:')\" = '1' ]"
+# Plan order: newest-first in git log → t-003 above t-002 above t-001.
+p6a="$(printf '%s\n' "$logP6" | grep -n 't-001:' | head -1 | cut -d: -f1)"
+p6b="$(printf '%s\n' "$logP6" | grep -n 't-002:' | head -1 | cut -d: -f1)"
+p6c="$(printf '%s\n' "$logP6" | grep -n 't-003:' | head -1 | cut -d: -f1)"
+check "P37-6. commits land in PLAN order (t-001, then t-002, then t-003)" \
+  "[ -n \"$p6a\" ] && [ -n \"$p6b\" ] && [ -n \"$p6c\" ] && [ \"$p6a\" -gt \"$p6b\" ] && [ \"$p6b\" -gt \"$p6c\" ]"
+check "P37-6. each commit carries the ticket's OWN summary" \
+  "printf '%s\n' \"$logP6\" | grep -q 't-001: added t-001' \
+   && printf '%s\n' \"$logP6\" | grep -q 't-002: added t-002' \
+   && printf '%s\n' \"$logP6\" | grep -q 't-003: added t-003'"
+# ALL three additions are present in the final dispatcher — none lost / overwritten.
+check "P37-6. the shared file contains ALL THREE tickets' additions (none lost)" \
+  "grep -q 'ADDED-t-001' '$repoP6/src/dispatch.js' \
+   && grep -q 'ADDED-t-002' '$repoP6/src/dispatch.js' \
+   && grep -q 'ADDED-t-003' '$repoP6/src/dispatch.js'"
+check "P37-6. no stray git worktrees remain after the same-file wave" \
+  "[ -z \"\$( cd '$repoP6' && git worktree list --porcelain | grep -iE 't-00[123]' )\" ] \
+   && [ ! -d '$repoP6/.git/lcars/missions/$MID/worktrees' ]"
+check "P37-6. the working tree is clean afterwards" \
+  "[ -z \"\$( cd '$repoP6' && git status --porcelain )\" ]"
+
+# --- P37-7: an UNRECOVERABLE same-file failure parks at awaiting-human ----------
+# When a conflicting ticket cannot be made green even on the serial rebuild (its
+# Implementer flags the human), the Stage must NOT bare-die: it must clean up ALL
+# worktrees AND route through the awaiting-human gate (label + pending question),
+# the same recourse a normal exhausted ticket gets — and leave no partial,
+# recourse-less commit set stranded.
+make_worker_stub_samefile_flag() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    f="src/dispatch.js"
+    line="  case '${tid}': return handle_${tid}();  // ADDED-${tid}"
+    awk -v ins="$line" '/DISPATCH-ANCHOR/{print ins} {print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    if [ "$tid" = "t-002" ]; then
+      # t-002 conflicts on replay AND cannot be made green on rebuild → unrecoverable.
+      cat >"$out/result.json" <<JSON
+{ "ticketId": "t-002", "passed": false, "attempts": 5, "summary": "could not get t-002 green." }
+JSON
+    else
+      cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "added ${tid} case to dispatcher." }
+JSON
+    fi
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+binP7="$TMPROOT/p37-7bin"; rm -rf "$binP7"; mkdir -p "$binP7"
+make_worker_stub_samefile_flag "$binP7/worker"; make_gh_stub "$binP7/gh"
+export GH_LOG="$binP7/gh.log"; : >"$GH_LOG"
+repoP7="$(new_repo_samefile)"
+rcP7=0
+( cd "$repoP7" && LCARS_MAX_PARALLEL=3 \
+    LCARS_WORKER_BIN="$binP7/worker" LCARS_GH_BIN="$binP7/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP7/out.txt" 2>&1 ) || rcP7=$?
+sP7="$(state_of "$repoP7")"
+check "P37-7. an unrecoverable conflicting ticket parks at awaiting-human (state)" \
+  "grep -q '\"awaitingHuman\": *true' '$sP7'"
+check "P37-7. it stays at the implement stage (not advanced to verify)" \
+  "grep -q '\"stage\": *\"implement\"' '$sP7'"
+check "P37-7. the awaiting-human label is applied (the human gate, not a bare die)" \
+  "grep -q 'add-label lcars:awaiting-human' '$binP7/gh.log'"
+check "P37-7. a pending question naming t-002 is recorded" \
+  "[ -f '$repoP7/.git/lcars/missions/$MID/pending.json' ] && grep -q 't-002' '$repoP7/.git/lcars/missions/$MID/pending.json'"
+check "P37-7. NO stray git worktrees remain after the escalation" \
+  "[ -z \"\$( cd '$repoP7' && git worktree list --porcelain | grep -iE 't-00[123]' )\" ] \
+   && [ ! -d '$repoP7/.git/lcars/missions/$MID/worktrees' ]"
+check "P37-7. the working tree is clean after the escalation (no stranded conflict)" \
+  "[ -z \"\$( cd '$repoP7' && git status --porcelain )\" ]"
+
+# ==========================================================================
+echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
