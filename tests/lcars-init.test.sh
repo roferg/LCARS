@@ -107,23 +107,51 @@ check "2. comprehensionBudget defaults to 1200" \
   "grep -q '\"comprehensionBudget\": *1200' '$repo/.git/lcars/config.json'"
 
 # --- Behaviour 2b: detects a test command from the repo's ecosystem --------
+# BUG-007: the detected testCommand MUST honour $LCARS_TESTS_DIR so the red gate
+# can scope it to the QUARANTINED tests (not the repo's existing suite). The
+# detected default therefore references $LCARS_TESTS_DIR.
 repoTC="$(new_repo)"
 printf '{\n  "scripts": { "test": "jest" }\n}\n' >"$repoTC/package.json"
 make_claude_stub "$repoTC/claude"; make_gh_stub "$repoTC/gh"
 export GH_LOG="$repoTC/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoTC/existing"; : >"$GH_EXISTING"
 ( cd "$repoTC" && LCARS_CLAUDE_BIN="$repoTC/claude" LCARS_GH_BIN="$repoTC/gh" bash "$SCRIPT" >out.txt 2>&1 )
-check "2b. detects 'npm test' from a package.json test script" \
-  "grep -q '\"testCommand\": *\"npm test\"' '$repoTC/.git/lcars/config.json'"
+check "2b. detects an npm test command from a package.json test script" \
+  "grep -q '\"testCommand\":.*npm test' '$repoTC/.git/lcars/config.json'"
+check "2b. the detected testCommand HONOURS \$LCARS_TESTS_DIR (red-gate-scopable)" \
+  "grep -q 'LCARS_TESTS_DIR' '$repoTC/.git/lcars/config.json'"
 
-# an explicit LCARS_TEST_CMD overrides detection
+# pytest default also honours $LCARS_TESTS_DIR
+repoTCp="$(new_repo)"
+printf '[tool.pytest]\n' >"$repoTCp/pyproject.toml"
+make_claude_stub "$repoTCp/claude"; make_gh_stub "$repoTCp/gh"
+export GH_LOG="$repoTCp/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoTCp/existing"; : >"$GH_EXISTING"
+( cd "$repoTCp" && LCARS_CLAUDE_BIN="$repoTCp/claude" LCARS_GH_BIN="$repoTCp/gh" bash "$SCRIPT" >out.txt 2>&1 )
+check "2b. the pytest default honours \$LCARS_TESTS_DIR" \
+  "grep -q '\"testCommand\":.*pytest' '$repoTCp/.git/lcars/config.json' && grep -q 'LCARS_TESTS_DIR' '$repoTCp/.git/lcars/config.json'"
+
+# an explicit LCARS_TEST_CMD overrides detection. If it does NOT mention
+# $LCARS_TESTS_DIR, init records it (the captain chose it) but FLAGS it LOUD so a
+# dir-ignoring command never silently becomes a green-on-nothing red gate.
 repoTCe="$(new_repo)"
 make_claude_stub "$repoTCe/claude"; make_gh_stub "$repoTCe/gh"
 export GH_LOG="$repoTCe/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoTCe/existing"; : >"$GH_EXISTING"
-( cd "$repoTCe" && LCARS_TEST_CMD='make check' LCARS_CLAUDE_BIN="$repoTCe/claude" LCARS_GH_BIN="$repoTCe/gh" bash "$SCRIPT" >out.txt 2>&1 )
+( cd "$repoTCe" && LCARS_TEST_CMD='make check' LCARS_CLAUDE_BIN="$repoTCe/claude" LCARS_GH_BIN="$repoTCe/gh" bash "$SCRIPT" >outTCe.txt 2>&1 )
 check "2b. an explicit LCARS_TEST_CMD is recorded in config" \
   "grep -q '\"testCommand\": *\"make check\"' '$repoTCe/.git/lcars/config.json'"
+check "2b. a testCommand that IGNORES \$LCARS_TESTS_DIR is FLAGGED LOUD (not silent)" \
+  "grep -qiE 'LCARS_TESTS_DIR|red gate|quarantin' '$repoTCe/outTCe.txt'"
+
+# an explicit LCARS_TEST_CMD that DOES honour $LCARS_TESTS_DIR is NOT flagged
+repoTCh="$(new_repo)"
+make_claude_stub "$repoTCh/claude"; make_gh_stub "$repoTCh/gh"
+export GH_LOG="$repoTCh/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoTCh/existing"; : >"$GH_EXISTING"
+( cd "$repoTCh" && LCARS_TEST_CMD='pytest ${LCARS_TESTS_DIR:-.}' LCARS_CLAUDE_BIN="$repoTCh/claude" LCARS_GH_BIN="$repoTCh/gh" bash "$SCRIPT" >outTCh.txt 2>&1 )
+check "2b. a \$LCARS_TESTS_DIR-honouring explicit command is NOT flagged" \
+  "! grep -qiE 'does not.*honour|ignores .LCARS_TESTS_DIR|will run the repo' '$repoTCh/outTCh.txt'"
 
 # --- Behaviour 3: detects CONTEXT.md --------------------------------------
 repo="$(new_repo)"

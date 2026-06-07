@@ -189,6 +189,77 @@ check "7. records the base in state.json" \
 check "7. summary reports the branch" \
   "grep -q 'Branch:.*lcars/lcars-20260530-001' '$repo/out.txt'"
 
+# --- Behaviour 8: adaptive-depth ADR artifact (Session 36) ----------------
+# Align scales depth to complexity. A TRIVIAL Mission is filed with --prd only
+# and NO --adr: no adr.md must be written (never burden small work). A COMPLEX
+# Mission passes --adr <path>: file.sh copies it to $MISSION_DIR/adr.md after
+# shape-checking it. The ADR shape is Context / Decision / Alternatives /
+# Consequences — file.sh rejects a malformed adr.md (writing nothing), exactly
+# the way it rejects a malformed PRD. An ABSENT adr.md is always fine.
+
+# Write a well-formed ADR file with every required section.
+write_adr() {
+  cat >"$1" <<'EOF'
+# Architecture Decision Records: Add dark mode
+
+## ADR-001: Theme delivery via a data-theme attribute
+
+**Context:** The app already ships a `--color-*` CSS variable layer.
+**Decision:** Drive theming by flipping a `data-theme` attribute on `<html>`.
+**Alternatives considered:** A parallel dark stylesheet; a CSS-in-JS theme provider.
+**Consequences:** Reuses the token layer; no parallel colour system to maintain.
+EOF
+}
+
+# 8a. Trivial Mission: --prd only, no --adr → succeeds, writes NO adr.md.
+repoT="$(new_repo)"; make_gh_stub "$repoT/gh"
+export GH_LOG="$repoT/gh.log"; : >"$GH_LOG"
+prdT="$repoT/prd.md"; write_prd "$prdT"
+rcT=0
+(
+  cd "$repoT"
+  LCARS_GH_BIN="$repoT/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdT" >outT.txt 2>&1
+) || rcT=$?
+MT="$repoT/.git/lcars/missions/lcars-20260530-001"
+check "8a. trivial Mission (no --adr) files successfully" "[ '$rcT' -eq 0 ]"
+check "8a. no adr.md is written for a trivial Mission" "[ ! -f '$MT/adr.md' ]"
+
+# 8b. Complex Mission: --adr <well-formed> → adr.md persisted with its sections.
+repoC="$(new_repo)"; make_gh_stub "$repoC/gh"
+export GH_LOG="$repoC/gh.log"; : >"$GH_LOG"
+prdC="$repoC/prd.md"; write_prd "$prdC"
+adrC="$repoC/adr.md"; write_adr "$adrC"
+rcC=0
+(
+  cd "$repoC"
+  LCARS_GH_BIN="$repoC/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdC" --adr "$adrC" >outC.txt 2>&1
+) || rcC=$?
+MC="$repoC/.git/lcars/missions/lcars-20260530-001"
+check "8b. complex Mission with --adr files successfully" "[ '$rcC' -eq 0 ]"
+check "8b. adr.md is persisted into the mission dir" "[ -f '$MC/adr.md' ]"
+check "8b. adr.md carries its Context section"      "grep -q '\\*\\*Context:\\*\\*' '$MC/adr.md'"
+check "8b. adr.md carries its Decision section"     "grep -q '\\*\\*Decision:\\*\\*' '$MC/adr.md'"
+check "8b. adr.md carries its Alternatives section" "grep -q '\\*\\*Alternatives considered:\\*\\*' '$MC/adr.md'"
+check "8b. adr.md carries its Consequences section" "grep -q '\\*\\*Consequences:\\*\\*' '$MC/adr.md'"
+
+# 8c. A malformed adr.md (missing a required ADR section) is REJECTED: non-zero
+# exit and NOTHING written (no mission dir created), mirroring a bad PRD.
+repoB="$(new_repo)"; make_gh_stub "$repoB/gh"
+export GH_LOG="$repoB/gh.log"; : >"$GH_LOG"
+prdB="$repoB/prd.md"; write_prd "$prdB"
+badadr="$repoB/bad-adr.md"
+printf '# ADRs\n\n## ADR-001\n\n**Context:** x\n**Decision:** y\n' >"$badadr"
+rcB=0
+(
+  cd "$repoB"
+  LCARS_GH_BIN="$repoB/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdB" --adr "$badadr" >outB.txt 2>&1
+) || rcB=$?
+check "8c. rejects an adr.md missing required ADR sections" "[ '$rcB' -ne 0 ]"
+check "8c. no mission created from a bad adr.md" \
+  "[ -z \"\$(ls -A '$repoB/.git/lcars/missions')\" ]"
+check "8c. error names the missing ADR section" \
+  "grep -qi 'alternatives\\|adr' '$repoB/outB.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars file: %d passed, %d failed\n' "$pass" "$fail"

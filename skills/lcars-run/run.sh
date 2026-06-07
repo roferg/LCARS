@@ -202,7 +202,12 @@ state_set_raw() { # key token   — add or replace a bare field (true/false/numb
 # resolution. Dies if the mission or its state.json is absent.
 locate_mission() {
   local id="$1" gitdir
-  gitdir="$(git rev-parse --git-dir 2>/dev/null)" \
+  # --git-common-dir (NOT --git-dir): from inside a `git worktree` the plain
+  # --git-dir is the per-worktree `.git/worktrees/<wt>` dir, but the Mission's
+  # artifacts (state, tickets, events) live in the SHARED `.git/lcars`. The
+  # common dir is that shared `.git` in both a normal checkout AND a worktree, so
+  # a per-ticket worktree (Session 37) resolves the SAME mission dir as $REPO_ROOT.
+  gitdir="$(git rev-parse --git-common-dir 2>/dev/null)" \
     || die "not inside a git repository — run this from a repo root."
   case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
   MISSION_DIR="$gitdir/lcars/missions/$id"
@@ -308,6 +313,115 @@ context_extra_block() {
   printf '
 ## Repo context (declarative repo facts — read for grounding)
 - %s' "$src"
+}
+
+# === Per-wave repo map (pure bash, token-free, CLI-neutral) =================
+# A SYMBOL SKELETON of the repo's source: top-level interface SIGNATURES
+# (function / method / class / def / type / interface / export / shell-func
+# declarations) keyed off each file's extension, plus the bare path of any file
+# whose type we don't recognise. SKELETONS ONLY — signature lines + paths, NEVER
+# a function body or a statement from inside one. It is a navigation aid, not a
+# compiler: simple grep/sed heuristics, deterministic, fast, robust to many
+# languages, degrading gracefully (path alone) for unknown types.
+#
+# Written to $MISSION_DIR/repo-map.md — inside .git/, never the working tree. It
+# is REGENERATED at the start of each Implement wave (so wave N sees wave N-1's
+# committed symbols), carrying the wave label in its header so a fresh
+# regeneration is observable. The static context-pack.md remains the
+# architecture/conventions layer; this is the fresh symbol layer on top.
+#
+# Args: <repo-root> <out-file> [<wave-label>]
+generate_repo_map() {
+  local root="$1" out="$2" wave="${3:-}"
+  mkdir -p "$(dirname "$out")"
+  {
+    printf '# Repo map'
+    [ -n "$wave" ] && printf ' (%s)' "$wave"
+    printf '\n\n'
+    printf 'A symbol skeleton of the repo source — interface SIGNATURES and file\n'
+    printf 'PATHS only, NO bodies. A navigation aid: read the file itself for detail.\n\n'
+  } >"$out"
+
+  # Enumerate tracked + untracked source files (git ls-files keeps us inside the
+  # repo and honours .gitignore), falling back to find when git is unavailable.
+  local files
+  files="$("$GIT_BIN" -C "$root" ls-files --cached --others --exclude-standard 2>/dev/null)"
+  [ -n "$files" ] || files="$(cd "$root" && find . -type f 2>/dev/null | sed 's|^\./||')"
+
+  local f ext
+  # Sort for deterministic output.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # Never descend into VCS / dependency / build noise — and never the mission
+    # state itself (it lives under .git, already excluded, but be explicit).
+    case "$f" in
+      .git/*|*/.git/*|node_modules/*|*/node_modules/*|.git|vendor/*|*/vendor/*|dist/*|build/*) continue ;;
+    esac
+    [ -f "$root/$f" ] || continue
+    ext="${f##*.}"
+    case "$ext" in
+      sh|bash|zsh)
+        # POSIX shell function declarations: `name()` or `function name`.
+        printf '## %s\n' "$f" >>"$out"
+        grep -nE '^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_:-]*[[:space:]]*\(\)|function[[:space:]]+[a-zA-Z_])' "$root/$f" 2>/dev/null \
+          | sed -E 's/[[:space:]]*\{[[:space:]]*$//' \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      js|jsx|ts|tsx|mjs|cjs)
+        printf '## %s\n' "$f" >>"$out"
+        # function / class / interface / type / const-arrow / export declarations
+        # — the DECLARATION line only, with any trailing `{` body-opener stripped.
+        grep -nE '^[[:space:]]*(export[[:space:]]+)?(default[[:space:]]+)?(async[[:space:]]+)?(function[*]?[[:space:]]|class[[:space:]]|interface[[:space:]]|type[[:space:]]|enum[[:space:]]|const[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\()' "$root/$f" 2>/dev/null \
+          | sed -E 's/[[:space:]]*\{[[:space:]]*$//' \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      py)
+        printf '## %s\n' "$f" >>"$out"
+        # top-level + nested def / class declarations — the signature line up to
+        # the `:` that opens the body (the body itself is on following lines).
+        grep -nE '^[[:space:]]*(async[[:space:]]+)?(def|class)[[:space:]]' "$root/$f" 2>/dev/null \
+          | sed -E 's/:[[:space:]]*$//' \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      go)
+        printf '## %s\n' "$f" >>"$out"
+        grep -nE '^[[:space:]]*(func|type)[[:space:]]' "$root/$f" 2>/dev/null \
+          | sed -E 's/[[:space:]]*\{[[:space:]]*$//' \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      rb)
+        printf '## %s\n' "$f" >>"$out"
+        grep -nE '^[[:space:]]*(def|class|module)[[:space:]]' "$root/$f" 2>/dev/null \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      *)
+        # Unknown type → degrade gracefully: list the path alone, no signatures
+        # (we never dump unrecognised file contents — that could leak a body).
+        printf '## %s\n\n' "$f" >>"$out" ;;
+    esac
+  done < <(printf '%s\n' "$files" | LC_ALL=C sort)
+}
+
+# `run.sh repo-map --mission <id>` — the thin, token-free driver over
+# generate_repo_map: resolve the mission + repo root, regenerate the map. Public
+# so it is independently testable; cmd_implement calls generate_repo_map directly
+# at each wave_start (with a wave label).
+cmd_repo_map() {
+  locate_mission "$MISSION_ID"
+  generate_repo_map "$REPO_ROOT" "$MISSION_DIR/repo-map.md"
+  echo "REPO-MAP: wrote $MISSION_DIR/repo-map.md"
+}
+
+# A block listing the per-ticket manifest + per-wave repo map for the Implement
+# pair — by PATH only, guarded on existence. NEVER called from Research. Args:
+# <ticket-id>. Echoes nothing when neither artifact exists.
+implement_nav_block() { # ticket-id
+  local tid="$1" block=""
+  [ -f "$MISSION_DIR/manifests/$tid.md" ] && block="$block
+- $MISSION_DIR/manifests/$tid.md   (this ticket's context manifest — relevant files + interface signatures + touched ADR ids; NAVIGATION ONLY, not the implementation. The Test Writer uses the listed files to find the PUBLIC INTERFACE to test against — NOT as a place to add tests into; always write a dedicated fail-first test file.)"
+  [ -f "$MISSION_DIR/repo-map.md" ] && block="$block
+- $MISSION_DIR/repo-map.md   (the repo symbol map — interface signatures + paths across the codebase, regenerated this wave; navigate from it instead of cold file-walking)"
+  printf '%s' "$block"
 }
 
 # Each Stage runs only when the Mission is parked at the stage that feeds it,
@@ -630,6 +744,21 @@ cmd_plan_save() {
   validate_plan_json "$PLAN" || exit 1
 
   cp "$PLAN" "$MISSION_DIR/plan.json"
+
+  # Session 41: the Plan worker ALSO emits one context manifest per ticket into a
+  # `manifests/` dir alongside plan.json in its scratch output. Persist them into
+  # the mission dir (SEPARATE files — never embedded in plan.json, whose awk
+  # parser would break on a nested object). BEST-EFFORT: a missing manifest must
+  # NOT hard-fail the plan (single-ticket fast-path, thin greenfield slices) — the
+  # template requires one per ticket, but persistence only copies what exists.
+  if [ -n "$MANIFESTS" ] && [ -d "$MANIFESTS" ]; then
+    rm -rf "$MISSION_DIR/manifests"
+    mkdir -p "$MISSION_DIR/manifests"
+    local mf
+    for mf in "$MANIFESTS"/*.md; do
+      [ -f "$mf" ] && cp "$mf" "$MISSION_DIR/manifests/"
+    done
+  fi
 
   set_stage "plan-review"
   gh_relabel "lcars:plan-review" "lcars:plan"
@@ -1122,14 +1251,24 @@ commit_ticket() { # ticket  summary
   local branch; branch="$(json_str "$STATE" branch)"
   [ -n "$branch" ] || { COMMIT_NOTE="  ⚠ no mission branch on file — skipped commit (re-file so the mission gets a branch)."; return 0; }
 
-  local cur; cur="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  if [ "$cur" != "$branch" ]; then
-    if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
-      "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 \
-        || { COMMIT_NOTE="  ⚠ could not checkout $branch — commit ticket $1 by hand."; return 0; }
-    else
-      "$GIT_BIN" checkout -b "$branch" >/dev/null 2>&1 \
-        || { COMMIT_NOTE="  ⚠ could not create $branch — commit ticket $1 by hand."; return 0; }
+  # WORKTREE MODE (Session 37 — intra-wave parallelism): when the ticket built in
+  # its OWN per-ticket `git worktree` ($LCARS_TICKET_WORKTREE set), HEAD is a
+  # DETACHED head at the mission-branch tip — the branch itself is checked out in
+  # the main tree and git forbids a second checkout of it. So we skip the branch
+  # checkout entirely and commit the scoped diff on the detached HEAD; the
+  # resulting commit OBJECT is recorded to .commit-sha, and cmd_implement
+  # cherry-picks it onto the real mission branch SERIALLY in plan order. The
+  # scoped-staging discipline and the commit MESSAGE format below are unchanged.
+  if [ -z "${LCARS_TICKET_WORKTREE:-}" ]; then
+    local cur; cur="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    if [ "$cur" != "$branch" ]; then
+      if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+        "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 \
+          || { COMMIT_NOTE="  ⚠ could not checkout $branch — commit ticket $1 by hand."; return 0; }
+      else
+        "$GIT_BIN" checkout -b "$branch" >/dev/null 2>&1 \
+          || { COMMIT_NOTE="  ⚠ could not create $branch — commit ticket $1 by hand."; return 0; }
+      fi
     fi
   fi
 
@@ -1166,6 +1305,12 @@ commit_ticket() { # ticket  summary
   fi
   "$GIT_BIN" commit -q -m "lcars($MISSION_ID) $1: $2" >/dev/null 2>&1 \
     || COMMIT_NOTE="  ⚠ git commit failed for ticket $1 — commit it by hand."
+  # Worktree mode: stash the new commit OBJECT id so cmd_implement can cherry-pick
+  # it onto the real mission branch in plan order. (Shared mission dir → visible
+  # to the parent.) In the normal path this file is never written/read.
+  if [ -n "${LCARS_TICKET_WORKTREE:-}" ]; then
+    "$GIT_BIN" rev-parse HEAD >"$(ticket_dir "$1")/.commit-sha" 2>/dev/null || :
+  fi
   # After the ticket commits, sweep the HARNESS-OWNED runner scratch from the
   # tree so it never lingers into later tickets or the captain's `git status`.
   # ONLY the harness's own `.lcars-run-*` files, and never a file the captain had
@@ -1246,22 +1391,107 @@ resolve_test_cmd() {
 }
 
 # --- GUARDRAIL 1: the red gate ----------------------------------------------
-# Run the configured test command against the just-written tests with NO
-# implementation present. Returns 0 when it is SAFE to hand the suite to the
-# Implementer (the suite FAILED — red — as it must, OR no runner is configured so
-# the gate cannot apply); returns non-zero when the suite PASSED green against
-# nothing, which means it proves nothing and must be rejected. The command runs
-# from the repo root with $LCARS_TESTS_DIR pointing at the quarantined tests, so
-# a real per-repo runner (or a test stub) can find them without re-parsing args.
+# BUG-007 contract. Run the configured test command against ONLY the just-written
+# QUARANTINED tests, with NO implementation present, and decide on the quarantined
+# tests ALONE — never on the repo's existing suite. The verdict is a PURE function
+# of "did the quarantined tests fail":
+#
+#   • quarantined suite RED (cmd exits non-zero)        → return 0  (SAFE — hand off)
+#   • quarantined suite GREEN, and we can PROVE it was   → return 1  (green-on-nothing — REJECT)
+#     the quarantined tests that passed
+#   • quarantined suite GREEN, but the command IGNORES   → return 1  (CAN'T PROVE — BLOCK loud,
+#     $LCARS_TESTS_DIR (so we cannot tell whether it       NEVER a green-light)
+#     ran the quarantined tests or the repo's own suite)
+#   • no runner configured                               → return 2  (CANNOT APPLY — block loud)
+#
+# The command runs from the repo root with $LCARS_TESTS_DIR pointing at the
+# quarantined tests, so a real per-repo runner honours that var to scope itself.
+# We then PROBE with $LCARS_TESTS_DIR pointing at an EMPTY dir: if the exit code
+# is identical, the command did not react to the var (it ran a fixed target — the
+# repo's own suite), so a green result proves NOTHING about the quarantined tests.
+# We NEVER discard the rc or the output — both are surfaced to $RED_GATE_SIGNAL
+# (if set) so the human and the next grounded Test-Writer attempt see WHY.
+RED_GATE_SIGNAL=""   # caller may point this at a file to capture the rejection signal
 red_gate_ok() { # quarantined-tests-dir
-  local tdir="$1" cmd rc=0
+  local tdir="$1" cmd rc=0 prc=0 out probe_out reason=""
   cmd="$(resolve_test_cmd)"
   if [ -z "$cmd" ]; then
-    printf '  ⚠ RED GATE SKIPPED — no test command (set `testCommand` in .git/lcars/config.json or $LCARS_TEST_CMD). The harness cannot prove the suite fails without an implementation.\n' >&2
+    # NO RUNNER configured: the gate cannot run anything. This is the documented,
+    # pre-existing degradation for repos without a test command — it is NOT a fix
+    # to widen and it green-lights nothing on its own (there is literally no suite
+    # to pass). We surface it LOUDLY (it is a real hole, not a silent pass) and
+    # leave it unchanged: WIDENING it would be the regression BUG-007 forbids.
+    printf '  ⚠ RED GATE SKIPPED — no test command (set `testCommand` in .git/lcars/config.json or $LCARS_TEST_CMD). The harness cannot prove the suite fails-first without a runner; configure one to close this gap.\n' >&2
     return 0
   fi
-  ( cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" ) >/dev/null 2>&1 || rc=$?
-  [ "$rc" -ne 0 ]   # non-zero = red = OK; zero = green-on-nothing = reject
+
+  out="$(cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" 2>&1)" || rc=$?
+
+  # PROBE: re-run the SAME command with an EMPTY quarantine dir. This is the only
+  # way to prove the command reacts to $LCARS_TESTS_DIR (i.e. it scoped itself to
+  # the quarantined tests) versus running a fixed target (the repo's own suite).
+  # We use it on BOTH verdicts:
+  #   • GREEN branch — to tell a green-on-nothing from a dir-ignoring green.
+  #   • RED branch  — to tell a genuine red of the quarantined tests from a
+  #     dir-ignoring red on the repo's own (already failing) suite.
+  # A command "did NOT react" only when emptying the dir changed NOTHING — i.e.
+  # the empty-dir run is IDENTICAL: same rc AND byte-identical output. Any
+  # difference (different output OR different rc) ⟹ the command reacted ⟹ the
+  # verdict is about the quarantined tests. rc-equality alone is INSUFFICIENT: a
+  # honouring runner can exit the same non-zero rc on an empty dir as on a real
+  # failing test, with DIFFERENT output — so we MUST compare output too, and err
+  # toward ACCEPT on any difference (a false-BLOCK would re-introduce BUG-007).
+  local empty; empty="$(mktemp -d)"
+  probe_out="$(cd "$REPO_ROOT" && LCARS_TESTS_DIR="$empty" bash -c "$cmd" 2>&1)" || prc=$?
+  rm -rf "$empty"
+  local ignored_var=no
+  if [ "$prc" -eq "$rc" ] && [ "$probe_out" = "$out" ]; then ignored_var=yes; fi
+
+  if [ "$rc" -ne 0 ]; then
+    # RED: the quarantined tests appear to fail as required. But a non-zero exit is
+    # only "red = safe" when it is ABOUT the quarantined tests. If emptying the dir
+    # changed NOTHING (identical rc AND output), the command IGNORED $LCARS_TESTS_DIR
+    # — it ran a fixed target (e.g. the repo's own red suite), so this non-zero exit
+    # proves NOTHING about the quarantined tests. BLOCK loud — never accept an
+    # UNPROVEN suite. Otherwise the command reacted → genuine red → accept (as before).
+    if [ "$ignored_var" = yes ]; then
+      reason="RED GATE — the configured test command exited non-zero (red) but exits IDENTICALLY (same rc AND output) with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran a FIXED target (the repo's own suite), not the quarantined tests. A red on the repo's own already-failing suite proves NOTHING about the new tests, so the harness refuses to hand them on. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
+      printf '  ✗ %s\n' "$reason" >&2
+      if [ -n "$RED_GATE_SIGNAL" ]; then
+        {
+          printf 'rc=%s (the quarantined-tests run exited non-zero, but the command IGNORES $LCARS_TESTS_DIR so the red is unproven)\n' "$rc"
+          printf '%s\n' "$reason"
+        } >"$RED_GATE_SIGNAL"
+      fi
+      return 1
+    fi
+    # The command reacted to the var → the non-zero exit is a genuine red of the
+    # quarantined tests. Safe to hand off.
+    return 0
+  fi
+
+  # GREEN against nothing. Before rejecting we diagnose WHY, so the signal tells
+  # the next attempt whether the suite truly passed-on-nothing or the runner
+  # simply ignored the quarantine. The probe above already ran.
+  if [ "$ignored_var" = yes ]; then
+    # Identical GREEN with NO quarantined tests present → the command did not react
+    # to $LCARS_TESTS_DIR. It ran a fixed target (the repo's existing suite), so we
+    # CANNOT prove the quarantined tests are what passed. BLOCK loud — never pass.
+    reason="RED GATE — the configured test command exited 0 (green) but ALSO exits 0 with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran the repo's EXISTING suite, not the quarantined tests. The harness cannot prove the new tests fail-first, so it refuses to hand them on. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
+  else
+    # The runner reacted to the var (empty dir → different result) yet the quarantined
+    # tests passed → a genuine green-on-nothing contract. Reject as proving nothing.
+    reason="RED GATE — the quarantined suite PASSED with no implementation (exit 0). A contract that is green before anything is built proves nothing; the tests must FAIL first. Runner output (quarantined run):
+$(printf '%s' "$out" | tail -20)"
+  fi
+  printf '  ✗ %s\n' "$reason" >&2
+  if [ -n "$RED_GATE_SIGNAL" ]; then
+    {
+      printf 'rc=%s (the quarantined-tests run exited 0 = GREEN, which the red gate rejects)\n' "$rc"
+      printf '%s\n' "$reason"
+    } >"$RED_GATE_SIGNAL"
+  fi
+  return 1
 }
 
 # --- GUARDRAIL 2: immutable tests (hash snapshot + verify) ------------------
@@ -1331,10 +1561,19 @@ cmd_impl_save_tests() {
   # GUARDRAIL 1 (the red gate): the suite must FAIL against no implementation
   # before the Implementer is allowed to run. A green-on-nothing suite is
   # rejected and the quarantine is rolled back, so nothing reaches the Implementer.
-  if ! red_gate_ok "$tdir"; then
+  # We CAPTURE the rejection reason (rc + bounded runner output + which-suite
+  # diagnosis) to a durable signal file so (a) the human sees WHY instead of a
+  # silent stall, and (b) the next grounded Test-Writer attempt can be told what
+  # went wrong. The signal is SIGNAL ONLY — never the implementation.
+  local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"
+  rm -f "$sig"
+  if ! RED_GATE_SIGNAL="$sig" red_gate_ok "$tdir"; then
     rm -rf "$tdir" "$snap"
-    die "the Test Writer's suite PASSED with no implementation — a contract that is green before anything is built proves nothing. Rejected by the red gate (the tests must FAIL first)."
+    local why=""; [ -f "$sig" ] && why="
+$(cat "$sig")"
+    die "the Test Writer's suite did not pass the red gate — a contract that is green (or unprovable) before anything is built proves nothing; the tests must FAIL first.$why"
   fi
+  rm -f "$sig"
 
   echo "IMPLEMENT: tests saved — $TICKET"
   echo "  Saved $count Test Writer file(s) to tickets/$TICKET/tests/."
@@ -1670,6 +1909,58 @@ Write your output file(s) there exactly as specified above — nowhere else."
     >"$outdir/.worker.out" 2>"$outdir/.worker.err" || true
 }
 
+# === Bounded fan-out (the ONE shared concurrency helper) ====================
+# Runs a list of jobs CONCURRENTLY with a hard cap so a wide wave (or a many-
+# question Research) never spawns an unbounded swarm. Pure POSIX job control —
+# no GNU `xargs -P`, no `wait -n` (absent on the bash the harness targets). The
+# cap is $LCARS_MAX_PARALLEL (default 4, floored at 1); a non-numeric value
+# falls back to the default so a stray env var can never disable the cap.
+#
+#   run_capped <<EOF
+#   <shell command line 1>
+#   <shell command line 2>
+#   ...
+#   EOF
+#
+# Each NON-EMPTY stdin line is one job: it is run via `bash -c` in the background,
+# and the helper blocks until a slot frees before launching the next. It returns
+# 0 iff EVERY job exited 0 (so a single failure surfaces to the caller); the jobs
+# all run regardless. Output ordering is finish-order — callers that need a
+# deterministic RECORD order must re-read their results in their own order
+# afterwards (cmd_implement does this in plan order).
+max_parallel() {
+  local n="${LCARS_MAX_PARALLEL:-4}"
+  case "$n" in ''|*[!0-9]*) n=4 ;; esac
+  [ "$n" -ge 1 ] 2>/dev/null || n=4
+  printf '%s' "$n"
+}
+run_capped() { # jobs on stdin, one shell command per line
+  local cap; cap="$(max_parallel)"
+  local pids="" rc=0 line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    # Block until a slot is free: while the number of live children >= cap, reap.
+    while [ "$(printf '%s\n' $pids | grep -c .)" -ge "$cap" ]; do
+      local alive="" p
+      for p in $pids; do
+        if kill -0 "$p" 2>/dev/null; then
+          alive="$alive $p"
+        else
+          wait "$p" 2>/dev/null || rc=1
+        fi
+      done
+      pids="$alive"
+      [ "$(printf '%s\n' $pids | grep -c .)" -ge "$cap" ] && sleep 0.02
+    done
+    bash -c "$line" &
+    pids="$pids $!"
+  done
+  # Drain the rest.
+  local p
+  for p in $pids; do wait "$p" 2>/dev/null || rc=1; done
+  return "$rc"
+}
+
 # === Stage driver: Research ================================================
 # Fresh-file Research: a question-generator worker reads the PRD and emits 0–20
 # questions; the gate decides skip / dispatch / escalate; on dispatch the driver
@@ -1713,18 +2004,24 @@ cmd_research() {
   # Each is given ONLY its question text — no PRD, no siblings (CONTEXT.md →
   # Research Agent). Shell job control is the fan-out: a `-p` worker can't spawn
   # its own subagents.
+  # Fan out via the SHARED bounded-cap helper (run_capped) so a many-question
+  # Research never spawns an unbounded swarm — same cap ($LCARS_MAX_PARALLEL) the
+  # wave's tickets use. Each job re-enters THIS script's research-agent path with
+  # ONLY its question + outdir (purity intact — the agent prompt is question-only;
+  # run_capped adds nothing). Args ride the environment, %q-quoted, so a question
+  # with any shell metacharacter can never break the job line `bash -c` evaluates.
   local resp; resp="$(mktemp -d)"
   local i=0 q
-  local pids=""
+  local jobs; jobs="$(mktemp)"
   while IFS= read -r q; do
     [ -n "$q" ] || continue
     i=$((i + 1))
     local adir; adir="$resp/$(printf '%03d' "$i")"
-    research_agent_worker "$adir" "$q" &
-    pids="$pids $!"
+    printf 'LCARS_RA_DIR=%q LCARS_RA_Q=%q bash %q research-agent-job\n' \
+      "$adir" "$q" "$SELF" >>"$jobs"
   done < <(grep -ve '^[[:space:]]*$' "$qdir/questions.txt")
-  # shellcheck disable=SC2086
-  wait $pids 2>/dev/null
+  run_capped <"$jobs" || true
+  rm -f "$jobs"
 
   # STEP 4 — collect into a flat responses dir and save (reuse the tested
   # subcommand; it validates each response and refuses to advance on bad data).
@@ -1799,6 +2096,12 @@ cmd_validate() {
   # re-raise the same question — otherwise the awaiting-human gate loops forever.
   [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
 - $MISSION_DIR/answers.json   (the captain's answer resolving the prior scope question — treat it as DECIDED and fold it in; do not re-raise it)"
+  # The engineering ADRs Align seeded for a complex Mission (Context / Decision /
+  # Alternatives / Consequences). Align SEEDS them; Validate may REFINE them when
+  # a research finding changes a decision (option B) — so feed the path when it
+  # exists. A trivial Mission has no adr.md and this is simply skipped.
+  [ -f "$MISSION_DIR/adr.md" ] && extra="$extra
+- $MISSION_DIR/adr.md   (the engineering ADRs Align seeded; REVISE or APPEND when a finding changes a decision — emit a refined adr.md)"
   # The durable repo context source (CONTEXT.md or the generated pack) — shared
   # declarative facts, by PATH only. Safe for this declarative Stage.
   extra="$extra$(context_extra_block)"
@@ -1821,7 +2124,14 @@ cmd_validate() {
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" validate-advance \
         --mission "$MISSION_ID" --plan "$odir/validated-plan.md" || rc=$?
-      if [ "$rc" -eq 0 ]; then isolated_line validate 1; rm -rf "$odir"; exit 0; fi
+      if [ "$rc" -eq 0 ]; then
+        # Option B: Align SEEDS the ADRs, Validate REFINES them. If the worker
+        # emitted a refined adr.md (a finding changed a decision), persist it back
+        # into the mission dir — mirroring the validated-plan.md copy — so every
+        # downstream worker reads the up-to-date frame, not the stale Align seed.
+        [ -f "$odir/adr.md" ] && cp "$odir/adr.md" "$MISSION_DIR/adr.md"
+        isolated_line validate 1; rm -rf "$odir"; exit 0
+      fi
     fi
     rm -rf "$odir"
   done
@@ -1862,6 +2172,11 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
     [ -f "$rv" ] && extra="$extra
 - $rv   (reviewer objections to resolve in this revision)"
   done
+  # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
+  # architectural facts this Stage may read, by PATH only. Absent on a trivial
+  # Mission, in which case this is skipped.
+  [ -f "$MISSION_DIR/adr.md" ] && extra="$extra
+- $MISSION_DIR/adr.md   (the engineering ADRs — architectural decisions + rationale; plan within them)"
   # Shared declarative repo facts, by PATH only.
   extra="$extra$(context_extra_block)"
 
@@ -1873,7 +2188,7 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
     if [ -f "$odir/plan.json" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" plan-save \
-        --mission "$MISSION_ID" --plan "$odir/plan.json" || rc=$?
+        --mission "$MISSION_ID" --plan "$odir/plan.json" --manifests "$odir/manifests" || rc=$?
       if [ "$rc" -eq 0 ]; then isolated_line plan 1; rm -rf "$odir"; exit 0; fi
     fi
     rm -rf "$odir"
@@ -1945,6 +2260,30 @@ cmd_implement_ticket() {
   [ -n "$TICKET" ] || die "no ticket id — pass --ticket <id>."
   [ -f "$MISSION_DIR/approved-plan.json" ] || die "no approved-plan.json — Schedule has not run."
 
+  # --- PER-TICKET WORKTREE ISOLATION (Session 37) ------------------------------
+  # When cmd_implement dispatches this ticket as one of a wave's CONCURRENT builds
+  # it sets $LCARS_TICKET_WT_BASE (+ $LCARS_TICKET_BRANCH). We then create a
+  # detached `git worktree` at the mission-branch tip and run THIS ticket's whole
+  # build inside it — so the Test-Writer/Implementer file writes + the red-gate
+  # test run never collide with a sibling ticket on the shared working tree. The
+  # mission dir ($MISSION_DIR) stays SHARED (locate_mission uses --git-common-dir),
+  # so result.json / events.jsonl / .commit-sha are visible to the parent. The
+  # parent reads our exit code from .build-rc (written by the EXIT trap) and
+  # applies the stop/flag rules deterministically in plan order. Direct
+  # invocation (no $LCARS_TICKET_WT_BASE) keeps the original in-tree behaviour.
+  if [ -n "${LCARS_TICKET_WT_BASE:-}" ]; then
+    # Record this build's exit code for the parent, on EVERY exit path (incl. die).
+    trap '__brc=$?; printf "%s" "$__brc" >"$(ticket_dir "$TICKET")/.build-rc" 2>/dev/null || :' EXIT
+    local __wt
+    __wt="$(make_ticket_worktree "$LCARS_TICKET_WT_BASE" "${LCARS_TICKET_BRANCH:-}" "$TICKET")" || \
+      die "could not create a worktree for $TICKET — Stage stopped."
+    if [ -n "$__wt" ]; then
+      cd "$__wt" || die "could not enter the worktree for $TICKET."
+      REPO_ROOT="$__wt"
+      export LCARS_TICKET_WORKTREE="$__wt"
+    fi
+  fi
+
   # Record the captain's pre-existing untracked files BEFORE any worker touches
   # the tree, so commit_ticket stages only the Implementer's NEW source — never
   # the captain's unrelated files or the worker's scratch (see commit_ticket).
@@ -1967,10 +2306,47 @@ cmd_implement_ticket() {
   # The durable repo context source (shared declarative facts, by PATH only) —
   # resolved once for both halves of the adversarial pair.
   local cblock; cblock="$(context_extra_block)"
+  # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
+  # architectural facts BOTH halves of the pair may read, by PATH only. Absent on
+  # a trivial Mission, in which case this stays empty. Prepended to $cblock so it
+  # rides the same artifact-paths list for both workers.
+  local adrblock=""
+  [ -f "$MISSION_DIR/adr.md" ] && adrblock="
+- $MISSION_DIR/adr.md   (the engineering ADRs — architectural decisions this ticket must respect)"
+  # Session 41: the per-ticket context manifest + the per-wave repo symbol map —
+  # DECLARATIVE navigation aids (relevant files, interface signatures, touched ADR
+  # ids), by PATH only, guarded on existence. Both halves of the pair read them
+  # instead of cold file-walking. NEVER reaches a research worker. Empty when
+  # neither artifact exists (thin greenfield / pre-wave).
+  local navblock; navblock="$(implement_nav_block "$TICKET")"
 
   # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
   local tries=0 saved=0
-  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+  # REUSE PATH (Session 37 conflict rebuild): when the parent re-runs this ticket
+  # to recompose a same-file edit on the UPDATED mission tip (its concurrent
+  # commit could not cherry-pick), the Test Writer already ran and its immutable
+  # contract is on disk (tickets/<id>/tests + tests.sha256). Re-running it would
+  # re-snapshot a fresh contract and re-red-gate against the new tree — wasteful
+  # and risks a different suite. So when $LCARS_REUSE_TESTS is set AND the locked
+  # tests already exist, SKIP Phase 1 entirely: only the Implementer re-runs,
+  # against the updated tree, exactly as the old serial in-tree path composed.
+  if [ -n "${LCARS_REUSE_TESTS:-}" ] \
+     && [ -d "$(ticket_dir "$TICKET")/tests" ] \
+     && [ -n "$(find "$(ticket_dir "$TICKET")/tests" -type f -print -quit 2>/dev/null)" ] \
+     && [ -f "$(ticket_dir "$TICKET")/tests.sha256" ]; then
+    saved=1
+  fi
+  # GROUNDED RETRY (BUG-007): the previous naive loop re-spawned the Test Writer
+  # with an IDENTICAL prompt on a red-gate rejection, so it kept producing the
+  # same green-on-nothing suite until it gave up. Instead we CAPTURE the red-gate
+  # signal (rc + bounded runner output + which-suite diagnosis) that impl-save-tests
+  # persists to tickets/<id>/red-gate-signal.txt and FEED it into the next attempt's
+  # prompt. SIGNAL ONLY — it is the harness's own gate verdict + runner stderr,
+  # never the implementation and never the worker's prior reasoning (each attempt
+  # is still a fresh cold worker; nothing of the prior session survives but this
+  # one declarative line of feedback).
+  local sigfile; sigfile="$(ticket_dir "$TICKET")/red-gate-signal.txt"
+  while [ "$saved" != 1 ] && [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     # attempt = 1 + (existing ticket_attempt lines for THIS ticket+phase). Within
     # one invocation this is 1,2,3; a re-invocation continues 4,5,6 — one unique
@@ -1978,13 +2354,26 @@ cmd_implement_ticket() {
     local awtry; awtry=$(( $(event_count ticket_attempt "\"ticket\":\"$TICKET\".*\"phase\":\"test-writer\"") + 1 ))
     emit_event ticket_attempt implement "test-writer try $awtry for $TICKET" \
       "ticket=$TICKET" "phase=test-writer" "attempt=$awtry"
+    # On a retry (a prior attempt left a red-gate signal on disk), prepend the
+    # captured signal so this fresh worker writes tests that genuinely fail first.
+    local retryblock=""
+    if [ -f "$sigfile" ]; then
+      retryblock="
+
+## RED-GATE FEEDBACK — your PREVIOUS suite was REJECTED (read this before writing)
+The harness ran your last suite against the repo with NO implementation and it
+did NOT fail-first. This is the gate's verdict and the runner's own output — the
+ONLY thing carried over from the prior attempt (you do not see its tests, code,
+or reasoning). Write tests that FAIL until the ticket's behaviour exists:
+$(cat "$sigfile")"
+    fi
     local odir; odir="$(mktemp -d)"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/approved-plan.json$cblock
+- $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock
 
 ## Your ticket
-$TICKET"
+$TICKET$retryblock"
     if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
@@ -2000,7 +2389,7 @@ $TICKET"
   local tdir; tdir="$(ticket_dir "$TICKET")/tests"
   local iextra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json
-- $tdir   (the failing tests — your entire handoff from the Test Writer)$cblock"
+- $tdir   (the failing tests — your entire handoff from the Test Writer)$adrblock$navblock$cblock"
   # RESUME after a 5-attempt flag was answered: the captain's recorded note is
   # how to get this ticket unstuck. Feed it so the Implementer acts on it rather
   # than re-flagging the same blocker.
@@ -2079,6 +2468,16 @@ cmd_implement() {
       emit_event wave_start implement "wave $cur_wave starting ($wcount ticket(s))" \
         "wave=$cur_wave" "ticketCount=$wcount" "totalWaves=$total_waves"
     fi
+    # Session 41: regenerate the per-wave repo symbol map whenever the active wave
+    # advances (including the first sight of wave 1). Fresh each wave so wave N's
+    # implementers navigate wave N-1's committed symbols instead of cold-walking
+    # the tree. Pure bash, token-free; the map carries the wave label so the
+    # regeneration is observable. Keyed on cur_wave changing — the same boundary
+    # the wave_start event fires on — but NOT gated on the dedup, so a re-entered
+    # process still refreshes the map for the wave it resumes.
+    if [ -n "$cur_wave" ] && [ "$cur_wave" != "$last_wave" ]; then
+      generate_repo_map "$REPO_ROOT" "$MISSION_DIR/repo-map.md" "wave $cur_wave"
+    fi
     last_wave="$cur_wave"
 
     # No-progress guard: if a full pass leaves impl-status reporting exactly the
@@ -2090,17 +2489,180 @@ cmd_implement() {
     local pending; pending="$(printf '%s\n' "$st" | sed -n 's/.*Pending ticket(s) in wave [0-9]*: //p')"
     [ -n "$pending" ] || die "impl-status named an active wave but listed no pending tickets — Stage stopped."
 
-    local t
-    for t in $pending; do
-      local irc=0
-      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" implement-ticket \
-        --mission "$MISSION_ID" --ticket "$t" || irc=$?
-      [ "$irc" -eq 0 ] || die "implement-ticket $t failed — Stage stopped, no advance."
-      # A flagged ticket parks the Mission at the awaiting-human gate. Stop here;
-      # the auto-advance driver detects the gate and notifies.
-      [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] && exit 0
-    done
+    local branch; branch="$(json_str "$STATE" branch)"
+
+    # --- INTRA-WAVE PARALLELISM (Session 37) -------------------------------
+    # When a real mission branch exists we build this wave's pending tickets
+    # CONCURRENTLY, each in its OWN per-ticket `git worktree` (detached at the
+    # branch tip) so their file writes + test runs never collide on the shared
+    # working tree. The adversarial Test-Writer→Implementer pair, the red gate,
+    # and the immutable-test hash all run per ticket INSIDE its worktree,
+    # unchanged. The fan-out is capped by $LCARS_MAX_PARALLEL via the ONE shared
+    # run_capped helper. Without a branch (a branch-less / local-only mission)
+    # there is no safe worktree, so we fall back to the ORIGINAL serial in-tree
+    # loop — the only difference a concurrent wave makes is timing + isolation,
+    # never the observable record.
+    if [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+      # Each ticket records its build exit code to .build-rc (shared mission dir)
+      # so the parent applies the SAME stop/flag rules deterministically AFTER the
+      # wave — a fast green sibling can never mask a slow sibling's flag or
+      # failure. A green ticket commits on its worktree's detached HEAD
+      # (commit_ticket's worktree mode) and stashes the commit OBJECT in
+      # .commit-sha; the parent cherry-picks those in plan order.
+      local wt_base; wt_base="$MISSION_DIR/worktrees"
+      local jobs; jobs="$(mktemp)"; : >"$jobs"
+      for t in $pending; do
+        rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" 2>/dev/null
+        printf 'LCARS_TICKET_WT_BASE=%q LCARS_TICKET_BRANCH=%q bash %q implement-ticket --mission %q --ticket %q\n' \
+          "$wt_base" "$branch" "$SELF" "$MISSION_ID" "$t" >>"$jobs"
+      done
+      # run_capped returns non-zero if any job exited non-zero; we IGNORE that and
+      # read each ticket's recorded outcome below, in PLAN order, so the record is
+      # deterministic regardless of finish order.
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" run_capped <"$jobs" || true
+      rm -f "$jobs"
+
+      # Apply the stop/flag rules in PLAN order ($pending is plan order). Serialize
+      # every green ticket's commit onto the REAL mission branch by cherry-picking
+      # its worktree commit — so the observable history is one commit per ticket,
+      # with its summary, in plan order (NOT finish order).
+      # CONFLICT-TRIGGERED SERIAL FALLBACK (Session 37 defect fix). Each ticket was
+      # built BLIND off the FROZEN wave base, so two independent same-anchor edits
+      # to a shared file cannot both cherry-pick — git can't auto-merge two
+      # insertions at the same line, and the 2nd/3rd replay CONFLICTS. The old
+      # serial in-tree path never hit this because each ticket built on the prior
+      # ticket's already-applied tree. To restore that guarantee WITHOUT losing the
+      # concurrency win for the common (disjoint-file) case, we replay every green
+      # ticket's worktree commit in plan order; on a cherry-pick CONFLICT we REBUILD
+      # just that ticket SERIALLY off the CURRENT mission tip (which now carries the
+      # prior tickets' commits), reusing its locked tests — so its edits compose
+      # exactly like the old serial path. Disjoint waves never conflict → stay fully
+      # concurrent; a fully-overlapping wave degrades gracefully toward serial.
+      #
+      # hard_fail = a worker hard failure (no result); a flagged ticket (5-attempt
+      # cap) instead set awaitingHuman in shared state and wrote NO .commit-sha, so
+      # it simply has nothing to replay — escalate is decided from that flag AFTER
+      # the loop, so a green sibling EARLIER in plan order still commits first (its
+      # good work is never rolled back). Cleanup is UNCONDITIONAL below.
+      local hard_fail=""
+      for t in $pending; do
+        local brc; brc="$(cat "$(ticket_dir "$t")/.build-rc" 2>/dev/null || echo 1)"
+        if [ "$brc" != "0" ]; then hard_fail="$t"; break; fi
+        local sha; sha="$(cat "$(ticket_dir "$t")/.commit-sha" 2>/dev/null || true)"
+        # No commit (a flagged ticket, or a green ticket with no file changes) →
+        # nothing to replay.
+        [ -n "$sha" ] || continue
+        if replay_ticket_commit "$branch" "$sha" "$t"; then continue; fi
+        # Cherry-pick CONFLICT — the same-anchor same-file case the frozen-base
+        # build cannot compose. Rebuild THIS ticket serially on the CURRENT tip
+        # (now carrying the prior tickets' commits), reusing its locked tests, so
+        # its edits compose exactly like the old serial path.
+        emit_event ticket_replay_conflict implement \
+          "ticket $t conflicted on replay; rebuilding serially on the current tip" "ticket=$t"
+        if rebuild_ticket_on_tip "$wt_base" "$branch" "$t"; then continue; fi
+        # The rebuild did not cleanly replay. If it flagged the human (its
+        # Implementer exhausted the cap even against the updated tree), the
+        # awaitingHuman gate is set and the post-loop check routes it there — the
+        # SAME recourse a normally-exhausted ticket gets, never a bare die. If it
+        # instead hard-failed (no result, no flag), record a hard failure.
+        if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then break; fi
+        hard_fail="$t"; break
+      done
+      local escalate=""
+      [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] && escalate=1
+      cleanup_ticket_worktrees "$wt_base"
+      [ -z "$hard_fail" ] || die "implement-ticket $hard_fail failed — Stage stopped, no advance."
+      [ -z "$escalate" ] || exit 0
+    else
+      # SERIAL FALLBACK (no mission branch): the original one-at-a-time in-tree
+      # loop, byte-for-byte unchanged — a flagged ticket parks at the gate, a hard
+      # failure stops the Stage non-zero.
+      for t in $pending; do
+        local irc=0
+        LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" implement-ticket \
+          --mission "$MISSION_ID" --ticket "$t" || irc=$?
+        [ "$irc" -eq 0 ] || die "implement-ticket $t failed — Stage stopped, no advance."
+        [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] && exit 0
+      done
+    fi
   done
+}
+
+# --- per-ticket worktree lifecycle (Session 37) -----------------------------
+# Create a detached worktree at the mission-branch tip for ONE ticket's build, so
+# concurrent tickets never collide on the shared working tree. The branch itself
+# stays checked out in the main tree; the worktree is DETACHED at its tip.
+make_ticket_worktree() { # base-dir  branch  ticket → echoes the worktree path (empty ⇒ fall back to in-tree)
+  local base="$1" branch="$2" t="$3"
+  # No branch ref (a branch-less / local-only mission, or an unborn HEAD) ⇒ no
+  # worktree; the caller falls back to the original in-tree path. Echo nothing.
+  [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch" || return 0
+  local wt="$base/$t"
+  mkdir -p "$base"
+  "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || :
+  rm -rf "$wt"
+  "$GIT_BIN" worktree add -q --detach "$wt" "$branch" >/dev/null 2>&1 || { rm -rf "$wt"; return 0; }
+  printf '%s' "$wt"
+}
+
+# Cherry-pick a green ticket's worktree commit onto the real mission branch in the
+# main working tree, SERIALLY (called in plan order). Preserves the exact commit
+# message (cherry-pick keeps it) → one commit per ticket, summary intact, in order.
+replay_ticket_commit() { # branch  sha  ticket
+  local branch="$1" sha="$2" t="$3"
+  # Ensure the main tree is on the mission branch (it is, during Implement).
+  local cur; cur="$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )"
+  if [ "$cur" != "$branch" ]; then
+    if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+      ( cd "$REPO_ROOT" && "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 ) || return 1
+    fi
+  fi
+  ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --allow-empty "$sha" >/dev/null 2>&1 ) || {
+    ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --abort >/dev/null 2>&1 ) || :
+    return 1
+  }
+  return 0
+}
+
+# Rebuild ONE ticket serially when its concurrent (frozen-base) commit could not
+# cherry-pick — the same-file conflict fix. The ticket's locked tests are already
+# on disk (tickets/<id>/tests + .sha256), so only the Implementer re-runs, and it
+# re-runs inside a FRESH worktree that make_ticket_worktree cuts off the CURRENT
+# mission-branch tip (which now carries the prior tickets' commits) — so its edits
+# compose on top of them exactly like the old serial in-tree path, with no merge.
+# On green it writes a NEW .commit-sha (a commit whose parent IS the current tip),
+# which we cherry-pick cleanly. Returns 0 on a clean replay; non-zero if the
+# rebuild flagged the human (awaitingHuman set) or hard-failed (caller routes the
+# escalation / hard-fail after the unconditional worktree cleanup).
+rebuild_ticket_on_tip() { # base-dir  branch  ticket
+  local base="$1" branch="$2" t="$3"
+  # Drop the stale concurrent outcome so we read the rebuild's fresh result.
+  rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" 2>/dev/null
+  local irc=0
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+  LCARS_TICKET_WT_BASE="$base" LCARS_TICKET_BRANCH="$branch" LCARS_REUSE_TESTS=1 \
+    bash "$SELF" implement-ticket --mission "$MISSION_ID" --ticket "$t" || irc=$?
+  # A flag (5-attempt cap) set awaitingHuman in shared state — let the caller route
+  # it to the gate. A hard failure (no result) returns non-zero with no .commit-sha.
+  [ "$irc" -eq 0 ] || return 1
+  local sha; sha="$(cat "$(ticket_dir "$t")/.commit-sha" 2>/dev/null || true)"
+  # No commit (e.g. the rebuild produced no file changes) → nothing to replay; the
+  # ticket is still green on record, so this is a clean (empty) outcome.
+  [ -n "$sha" ] || return 0
+  replay_ticket_commit "$branch" "$sha" "$t"
+}
+
+# Remove every per-ticket worktree for this wave and prune git's bookkeeping, so
+# nothing leaks into the captain's `git worktree list` or working tree.
+cleanup_ticket_worktrees() { # base-dir
+  local base="$1" d
+  [ -d "$base" ] || return 0
+  for d in "$base"/*/; do
+    [ -d "$d" ] || continue
+    "$GIT_BIN" worktree remove --force "${d%/}" >/dev/null 2>&1 || rm -rf "${d%/}"
+  done
+  "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+  rm -rf "$base" 2>/dev/null || :
 }
 
 # === The auto-advance driver ===============================================
@@ -2310,7 +2872,7 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
-EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --step)        STEP=1; shift ;;
@@ -2322,6 +2884,8 @@ while [ $# -gt 0 ]; do
     --responses=*) RESPONSES="${1#--responses=}"; shift ;;
     --plan)        PLAN="${2:-}"; shift 2 ;;
     --plan=*)      PLAN="${1#--plan=}"; shift ;;
+    --manifests)   MANIFESTS="${2:-}"; shift 2 ;;
+    --manifests=*) MANIFESTS="${1#--manifests=}"; shift ;;
     --verdict)     VERDICT="${2:-}"; shift 2 ;;
     --verdict=*)   VERDICT="${1#--verdict=}"; shift ;;
     --ticket)      TICKET="${2:-}"; shift 2 ;;
@@ -2366,11 +2930,18 @@ case "$SUB" in
   plan-review)      cmd_plan_review ;;
   implement)        cmd_implement ;;
   implement-ticket) cmd_implement_ticket ;;
+  # One research agent, spawned as a capped fan-out job (run_capped). Stateless:
+  # its ONLY inputs are $LCARS_RA_DIR (where to write) and $LCARS_RA_Q (the one
+  # question). No --mission — research_agent_worker reaches no mission artifacts.
+  research-agent-job) research_agent_worker "${LCARS_RA_DIR:-}" "${LCARS_RA_Q:-}" ;;
   # Auto-advance driver — sequences the per-Stage advances above (token-free).
   drive)            cmd_drive ;;
   # Repo-level context resolver (no mission) — prints the durable context source
   # path, generating the one-time pack lazily. Reused by lcars-file's Align flow.
   context-source)   cmd_context_source ;;
+  # Per-wave repo symbol map (no LLM — pure bash). Regenerated by cmd_implement at
+  # each wave; exposed here so it is independently driveable + testable.
+  repo-map)         cmd_repo_map ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
   emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;

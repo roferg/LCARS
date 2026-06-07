@@ -29,17 +29,26 @@ NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 die() { printf 'lcars file: %s\n' "$1" >&2; exit 1; }
 
 # --- args -----------------------------------------------------------------
+# --prd is REQUIRED. --adr is OPTIONAL: Align passes it ONLY for a complex
+# Mission (an engineering ADR set); a trivial Mission ships no adr.md at all.
 PRD_SRC=""
+ADR_SRC=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --prd)   PRD_SRC="${2:-}"; shift 2 ;;
     --prd=*) PRD_SRC="${1#--prd=}"; shift ;;
+    --adr)   ADR_SRC="${2:-}"; shift 2 ;;
+    --adr=*) ADR_SRC="${1#--adr=}"; shift ;;
     *)       die "unknown argument: $1" ;;
   esac
 done
 
 [ -n "$PRD_SRC" ] || die "no PRD given — pass --prd <path> to a PRD file."
 [ -f "$PRD_SRC" ] || die "PRD file not found: $PRD_SRC"
+# --adr is optional, but if given it must point at a real file.
+if [ -n "$ADR_SRC" ]; then
+  [ -f "$ADR_SRC" ] || die "ADR file not found: $ADR_SRC"
+fi
 
 # --- locate the repo + state dir ------------------------------------------
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" \
@@ -62,6 +71,22 @@ require_section "Goal"               '\*\*Goal:\*\*'
 require_section "Acceptance Criteria" '\*\*Acceptance Criteria:\*\*'
 require_section "Out of Scope"       '\*\*Out of Scope:\*\*'
 require_section "Constraints"        '\*\*Constraints:\*\*'
+
+# --- when an ADR set is provided, shape-check it ---------------------------
+# SHAPE validation only — NOT depth policy. Whether a Mission is complex enough
+# to warrant ADRs is Align's judgment (the prompt), not the script's. But IF
+# Align hands us an adr.md, each ADR's required sections must be present:
+# Context / Decision / Alternatives considered / Consequences. A malformed ADR
+# stops the filing the same way a malformed PRD does (nothing is written).
+if [ -n "$ADR_SRC" ]; then
+  require_adr_section() {
+    grep -q "$2" "$ADR_SRC" || die "ADR is missing the '$1' section — each ADR needs Context / Decision / Alternatives considered / Consequences."
+  }
+  require_adr_section "Context"      '\*\*Context:\*\*'
+  require_adr_section "Decision"     '\*\*Decision:\*\*'
+  require_adr_section "Alternatives" '\*\*Alternatives considered:\*\*'
+  require_adr_section "Consequences" '\*\*Consequences:\*\*'
+fi
 
 # --- derive title + type from the PRD -------------------------------------
 TITLE="$(sed -n 's/^# Mission:[[:space:]]*//p' "$PRD_SRC" | head -1)"
@@ -113,6 +138,14 @@ fi
 
 # --- write prd.md ---------------------------------------------------------
 cat "$PRD_SRC" >"$MISSION_DIR/prd.md"
+
+# --- write adr.md (complex Missions only) ---------------------------------
+# Mirrors how --prd is persisted: copy the (already shape-checked) ADR set into
+# the mission dir as the durable adr.md every downstream worker (EXCEPT research
+# agents) may read. A trivial Mission passes no --adr, so no adr.md is written.
+if [ -n "$ADR_SRC" ]; then
+  cat "$ADR_SRC" >"$MISSION_DIR/adr.md"
+fi
 
 # --- resolve the model (config.json wins, else env, else default) ---------
 MODEL=""

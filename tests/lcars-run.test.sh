@@ -1599,6 +1599,23 @@ make_tests_dir() { # dir
   mkdir -p "$1"; printf 'it("works", () => expect(value).toBe(42))\n' >"$1/spec.test.js"
 }
 
+# A runner that HONORS $LCARS_TESTS_DIR: red (exit 1) when the quarantine dir has
+# tests, vacuously green (exit 0) when it is empty/missing. Different rc for the
+# two cases, so the red gate's empty-dir probe proves the command reacted to the
+# var → a non-zero quarantine exit is a GENUINE red of the new tests, accepted.
+# (A bare `exit 1` ignores the var and is now BLOCKED — see TRIPWIRE 9 — so the
+# guardrail regression tests that need an ACCEPTED red use this honoring shape.)
+EARLY_HONOR_RED="$TMPROOT/early-honor-red.sh"
+cat >"$EARLY_HONOR_RED" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests collected (vacuous green)" >&2; exit 0; }
+echo "quarantined tests are RED (no implementation)" >&2
+exit 1
+EOF
+chmod +x "$EARLY_HONOR_RED"
+
 # --- G1 RED GATE: a suite that PASSES with no implementation is rejected -----
 repoG1="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG1/gh"
 export GH_LOG="$repoG1/gh.log"; : >"$GH_LOG"
@@ -1616,7 +1633,7 @@ repoG1b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG1b/gh"
 export GH_LOG="$repoG1b/gh.log"; : >"$GH_LOG"
 tG1b="$repoG1b/tw"; make_tests_dir "$tG1b"
 rcG1b=0
-( cd "$repoG1b" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG1b/gh" bash "$SCRIPT" impl-save-tests \
+( cd "$repoG1b" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoG1b/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$tG1b" >outG1b.txt 2>&1 ) || rcG1b=$?
 check "G1. red gate accepts a failing (red) suite" "[ '$rcG1b' -eq 0 ]"
 check "G1. quarantines the tests once the red gate passes" \
@@ -1640,7 +1657,7 @@ check "G3. does not quarantine a zero-assertion suite" \
 repoG2="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG2/gh"
 export GH_LOG="$repoG2/gh.log"; : >"$GH_LOG"
 tG2="$repoG2/tw"; make_tests_dir "$tG2"
-( cd "$repoG2" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG2/gh" bash "$SCRIPT" impl-save-tests \
+( cd "$repoG2" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoG2/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$tG2" >/dev/null 2>&1 )
 # the Implementer tampers with the locked contract to force a pass
 QTDIR="$repoG2/.git/lcars/missions/$MID/tickets/t-001/tests"
@@ -1659,7 +1676,7 @@ check "G2. does not save result.json when the tests were tampered with" \
 repoG2b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoG2b/gh"
 export GH_LOG="$repoG2b/gh.log"; : >"$GH_LOG"
 tG2b="$repoG2b/tw"; make_tests_dir "$tG2b"
-( cd "$repoG2b" && LCARS_TEST_CMD='exit 1' LCARS_GH_BIN="$repoG2b/gh" bash "$SCRIPT" impl-save-tests \
+( cd "$repoG2b" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoG2b/gh" bash "$SCRIPT" impl-save-tests \
     --mission "$MID" --ticket t-001 --tests "$tG2b" >/dev/null 2>&1 )
 resG2b="$repoG2b/result.json"; write_result "$resG2b" t-001 true 2
 rcG2b=0
@@ -1695,7 +1712,12 @@ tG4="$repoG4/tw"; make_tests_dir "$tG4"
 GATE4="$repoG4/gate.sh"
 cat >"$GATE4" <<'EOF'
 #!/usr/bin/env bash
-# red (1) until the implementation marker exists, then green (0)
+# HONORS $LCARS_TESTS_DIR: vacuously green on an empty/missing dir (so the red
+# gate's probe proves it reacted to the var), otherwise red (1) until the
+# implementation marker exists, then green (0).
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests, vacuous green" >&2; exit 0; }
 [ -f impl-done ] && exit 0 || exit 1
 EOF
 chmod +x "$GATE4"
@@ -1713,6 +1735,343 @@ rcG4=0
 check "G4. a normal red→green ticket saves its result" "[ '$rcG4' -eq 0 ]"
 check "G4. commits the green ticket onto the mission branch" \
   "( cd '$repoG4' && git ls-tree -r --name-only HEAD | grep -q '^theme.js$' )"
+
+# ==========================================================================
+echo
+echo "lcars run — BUG-007: red gate evaluates the QUARANTINED tests, not the repo suite"
+
+# Ground truth of BUG-007: red_gate_ok ran the repo's CONFIGURED testCommand and,
+# when that command ignores $LCARS_TESTS_DIR (e.g. `bash tests/run.sh`), it ran
+# the repo's EXISTING (passing) suite — returned 0 — and REJECTED every
+# quarantined suite, silently. The fix must make the verdict a pure function of
+# "did the QUARANTINED tests fail" and must FAIL LOUD (never green-light) when it
+# cannot tell which suite ran. It must NOT weaken G1/G2/G3 or the adversarial
+# split.
+
+# A realistic per-repo runner that HONORS $LCARS_TESTS_DIR: it runs only the
+# quarantined tests. A quarantined file tagged EXPECT_GREEN "passes"; anything
+# else (or an empty dir / missing dir) "fails". This is the runner-appropriate
+# shape `lcars init` documents — the gate's verdict must depend on it.
+HONOR_RUNNER="$TMPROOT/honor-runner.sh"
+cat >"$HONOR_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+# Honors $LCARS_TESTS_DIR: green iff at least one quarantined file says EXPECT_GREEN.
+d="${LCARS_TESTS_DIR:-}"
+[ -n "$d" ] && [ -d "$d" ] || { echo "no quarantined tests dir" >&2; exit 1; }
+n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -gt 0 ] || { echo "quarantined tests dir empty" >&2; exit 1; }
+if grep -rq EXPECT_GREEN "$d"; then exit 0; fi
+echo "quarantined tests are RED (behaviour not built)" >&2
+exit 1
+EOF
+chmod +x "$HONOR_RUNNER"
+
+# Helper: write a repo that ALSO has an existing, ALWAYS-GREEN repo suite at a
+# fixed path (tests/run.sh), exactly the green suite the buggy gate used to run.
+# The configured testCommand is the HONORing runner, so the gate must judge the
+# QUARANTINED tests — the existing green suite must not change the verdict.
+add_green_repo_suite() { # repo
+  mkdir -p "$1/tests"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$1/tests/run.sh"
+  chmod +x "$1/tests/run.sh"
+}
+
+# --- BUG-007 #1: a quarantined FAILING test is RED even with a passing repo suite
+repoB1="$(new_repo_with_implement_mission)"; make_gh_stub "$repoB1/gh"
+export GH_LOG="$repoB1/gh.log"; : >"$GH_LOG"
+add_green_repo_suite "$repoB1"
+tB1="$repoB1/tw"; mkdir -p "$tB1"
+# A genuinely red quarantined test (no EXPECT_GREEN tag) that asserts something.
+printf 'assert: dark mode recolours the header (NOT YET BUILT)\n' >"$tB1/spec.test"
+rcB1=0
+( cd "$repoB1" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoB1/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tB1" \
+    >outB1.txt 2>&1 ) || rcB1=$?
+check "B1. quarantined FAILING test is judged RED even when the repo suite passes" \
+  "[ '$rcB1' -eq 0 ]"
+check "B1. quarantines the tests once the red gate passes" \
+  "[ -f '$repoB1/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test' ]"
+
+# --- BUG-007 #5/#6 GATE PURITY: the SAME quarantined PASSING test is REJECTED
+# whether or not the repo has a passing suite — green-on-nothing always loses, and
+# the rejection now REPORTS WHY (rc + which suite ran), not a silent stall.
+# (5a) asserts an already-true fact / (passes trivially): tagged EXPECT_GREEN.
+mk_green_quarantine() { # dir
+  mkdir -p "$1"
+  printf 'assert: 1 == 1 // EXPECT_GREEN — already true, proves nothing\n' >"$1/trivial.test"
+}
+# TRIPWIRE 5a — DO NOT DELETE: a suite that asserts an already-true fact is rejected.
+repoT5a="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT5a/gh"
+export GH_LOG="$repoT5a/gh.log"; : >"$GH_LOG"
+add_green_repo_suite "$repoT5a"
+tT5a="$repoT5a/tw"; mk_green_quarantine "$tT5a"
+rcT5a=0
+( cd "$repoT5a" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT5a/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT5a" \
+    >outT5a.txt 2>&1 ) || rcT5a=$?
+check "TRIPWIRE 5a. green-on-nothing (already-true assertion) is rejected" \
+  "[ '$rcT5a' -ne 0 ]"
+check "TRIPWIRE 5a. the red-gate rejection REPORTS WHY (rc / suite / passed visible)" \
+  "grep -qiE 'red gate|passed|rc=|exit' '$repoT5a/outT5a.txt'"
+check "TRIPWIRE 5a. does NOT quarantine the green-on-nothing suite" \
+  "[ ! -d '$repoT5a/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# TRIPWIRE 5b — DO NOT DELETE: a suite testing pre-existing repo behaviour
+# (the runner passes it on nothing) is rejected just the same.
+repoT5b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT5b/gh"
+export GH_LOG="$repoT5b/gh.log"; : >"$GH_LOG"
+tT5b="$repoT5b/tw"; mkdir -p "$tT5b"
+printf 'assert: git is installed // EXPECT_GREEN — pre-existing, no new behaviour\n' >"$tT5b/preexisting.test"
+rcT5b=0
+( cd "$repoT5b" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT5b/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT5b" \
+    >outT5b.txt 2>&1 ) || rcT5b=$?
+check "TRIPWIRE 5b. a suite for pre-existing (already-green) behaviour is rejected" \
+  "[ '$rcT5b' -ne 0 ]"
+
+# TRIPWIRE 5c — DO NOT DELETE: a suite that passes trivially (with a real repo
+# suite ALSO green) is still rejected — the repo suite cannot rescue it.
+repoT5c="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT5c/gh"
+export GH_LOG="$repoT5c/gh.log"; : >"$GH_LOG"
+add_green_repo_suite "$repoT5c"
+tT5c="$repoT5c/tw"; mkdir -p "$tT5c"
+printf 'assert: noop // EXPECT_GREEN — trivially passes\n' >"$tT5c/trivial.test"
+rcT5c=0
+( cd "$repoT5c" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT5c/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT5c" \
+    >outT5c.txt 2>&1 ) || rcT5c=$?
+check "TRIPWIRE 5c. a trivially-passing suite is rejected (repo suite cannot rescue)" \
+  "[ '$rcT5c' -ne 0 ]"
+
+# TRIPWIRE 6 — DO NOT DELETE: GATE PURITY. The verdict is a pure function of the
+# QUARANTINED tests. SAME quarantined FAILING test → RED with OR without a passing
+# repo suite; SAME quarantined PASSING test → REJECTED with OR without one. Four
+# combinations, the repo suite never flips the verdict.
+mk_red_quarantine() { # dir
+  mkdir -p "$1"; printf 'assert: behaviour X exists (NOT BUILT)\n' >"$1/x.test"
+}
+purity_verdict() { # tag(with|without)-repo-suite  quarantine-builder → echoes rc
+  local tag="$1" builder="$2"
+  local r; r="$(new_repo_with_implement_mission)"; make_gh_stub "$r/gh"
+  export GH_LOG="$r/gh.log"; : >"$GH_LOG"
+  [ "$tag" = with ] && add_green_repo_suite "$r"
+  local t="$r/tw"; "$builder" "$t"
+  local rc=0
+  ( cd "$r" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$r/gh" \
+      bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$t" \
+      >/dev/null 2>&1 ) || rc=$?
+  printf '%s' "$rc"
+}
+p6_red_with="$(purity_verdict with mk_red_quarantine)"
+p6_red_without="$(purity_verdict without mk_red_quarantine)"
+p6_grn_with="$(purity_verdict with mk_green_quarantine)"
+p6_grn_without="$(purity_verdict without mk_green_quarantine)"
+check "TRIPWIRE 6. RED quarantine → accepted regardless of the repo suite" \
+  "[ '$p6_red_with' -eq 0 ] && [ '$p6_red_without' -eq 0 ]"
+check "TRIPWIRE 6. PASSING quarantine → rejected regardless of the repo suite" \
+  "[ '$p6_grn_with' -ne 0 ] && [ '$p6_grn_without' -ne 0 ]"
+
+# TRIPWIRE 7 — DO NOT DELETE: the "can't tell which suite ran" path NEVER
+# green-lights an unproven suite. A configured command that IGNORES
+# $LCARS_TESTS_DIR (so the gate cannot prove the QUARANTINED tests were what ran)
+# and is GREEN must be BLOCKED loudly, not passed through. `exit 0` is exactly
+# such a command (constant green, ignores the dir): it must REJECT, naming why.
+repoT7="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT7/gh"
+export GH_LOG="$repoT7/gh.log"; : >"$GH_LOG"
+tT7="$repoT7/tw"; make_tests_dir "$tT7"
+rcT7=0
+( cd "$repoT7" && LCARS_TEST_CMD='exit 0' LCARS_GH_BIN="$repoT7/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT7" \
+    >outT7.txt 2>&1 ) || rcT7=$?
+check "TRIPWIRE 7. green command that ignores \$LCARS_TESTS_DIR is BLOCKED, not green-lit" \
+  "[ '$rcT7' -ne 0 ]"
+check "TRIPWIRE 7. the block is LOUD (red gate / passed / ignored surfaced)" \
+  "grep -qiE 'red gate|passed|ignore|prove' '$repoT7/outT7.txt'"
+check "TRIPWIRE 7. nothing quarantined on the can't-tell-which-suite path" \
+  "[ ! -d '$repoT7/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# TRIPWIRE 8 — DO NOT DELETE: G2 (immutable hash), G3 (assertions), and the
+# adversarial split are UNCHANGED. (G1/G2/G3 regression blocks above already
+# assert these; this restates the invariant against the HONORing runner so a
+# future gate edit can't quietly drop them.)
+# G3 against the honoring runner: a zero-assertion suite is still rejected
+# BEFORE the runner is even consulted.
+repoT8="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT8/gh"
+export GH_LOG="$repoT8/gh.log"; : >"$GH_LOG"
+tT8="$repoT8/tw"; mkdir -p "$tT8"
+# No assertion construct at all (and nothing the assertion detector matches).
+printf '// nothing of substance here\nconst x = 1;\n' >"$tT8/noassert.test"
+rcT8=0
+( cd "$repoT8" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT8/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT8" \
+    >outT8.txt 2>&1 ) || rcT8=$?
+check "TRIPWIRE 8. G3 still rejects a zero-assertion suite under the honoring runner" \
+  "[ '$rcT8' -ne 0 ]"
+check "TRIPWIRE 8. G3 rejection names assertion / quality" \
+  "grep -qiE 'assert|quality' '$repoT8/outT8.txt'"
+# G2 against the honoring runner: the Implementer still cannot edit the locked
+# tests. Save a RED quarantine (accepted), then tamper + try to save a result.
+repoT8b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT8b/gh"
+export GH_LOG="$repoT8b/gh.log"; : >"$GH_LOG"
+tT8b="$repoT8b/tw"; mk_red_quarantine "$tT8b"
+( cd "$repoT8b" && LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_GH_BIN="$repoT8b/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT8b" >/dev/null 2>&1 )
+QT8="$repoT8b/.git/lcars/missions/$MID/tickets/t-001/tests"
+printf 'assert: noop // EXPECT_GREEN — weakened by the Implementer\n' >"$QT8/x.test"
+resT8="$repoT8b/result.json"; write_result "$resT8" t-001 true 2
+rcT8b=0
+( cd "$repoT8b" && LCARS_GH_BIN="$repoT8b/gh" bash "$SCRIPT" impl-save-result \
+    --mission "$MID" --ticket t-001 --result "$resT8" >outT8b.txt 2>&1 ) || rcT8b=$?
+check "TRIPWIRE 8. G2 still rejects a result whose locked tests were edited" \
+  "[ '$rcT8b' -ne 0 ]"
+
+# TRIPWIRE 9 — DO NOT DELETE: the RED-branch dir-ignoring hole.
+# A non-zero exit is only "red = safe" when it proves the QUARANTINED tests
+# failed. A command that IGNORES $LCARS_TESTS_DIR and is itself red on the
+# repo's own suite exits non-zero IDENTICALLY whether the quarantine dir holds
+# the new tests or nothing — its non-zero exit proves NOTHING about the
+# quarantined suite. That UNPROVEN suite must now be BLOCKED loud, never
+# accepted. (Closes the symmetric counterpart of TRIPWIRE 7 on the RED branch.)
+# Model: a runner that prints byte-identical output and exits 1 regardless of
+# the dir (the repo's own failing suite).
+IGNORE_RED_RUNNER="$TMPROOT/ignore-red-runner.sh"
+cat >"$IGNORE_RED_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+# Ignores $LCARS_TESTS_DIR entirely: always the same red repo suite.
+echo "repo suite: 3 of 7 tests FAILED" >&2
+exit 1
+EOF
+chmod +x "$IGNORE_RED_RUNNER"
+repoT9="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT9/gh"
+export GH_LOG="$repoT9/gh.log"; : >"$GH_LOG"
+tT9="$repoT9/tw"; mk_red_quarantine "$tT9"
+rcT9=0
+( cd "$repoT9" && LCARS_TEST_CMD="bash $IGNORE_RED_RUNNER" LCARS_GH_BIN="$repoT9/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT9" \
+    >outT9.txt 2>&1 ) || rcT9=$?
+check "TRIPWIRE 9. a non-zero runner that IGNORES \$LCARS_TESTS_DIR is BLOCKED, not accepted as red" \
+  "[ '$rcT9' -ne 0 ]"
+check "TRIPWIRE 9. the block is LOUD and names the ignored-var cause" \
+  "grep -qiE 'red gate|ignore|prove|\\\$LCARS_TESTS_DIR' '$repoT9/outT9.txt'"
+check "TRIPWIRE 9. nothing quarantined on the dir-ignoring red path" \
+  "[ ! -d '$repoT9/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+check "TRIPWIRE 9. the captured signal carries the new block reason for the grounded retry" \
+  "grep -qiE 'red gate|ignore|prove' '$repoT9/outT9.txt'"
+
+# TRIPWIRE 9b — DO NOT DELETE: THE CRITICAL REGRESSION GUARD (no false-block).
+# A HONORing runner can legitimately exit with the SAME non-zero rc on an empty
+# quarantine dir as on a real failing quarantined test — but with DIFFERENT
+# output. rc-equality alone would FALSE-BLOCK it and re-break Implement (the
+# BUG-007 stall). The discriminator must compare OUTPUT too: any difference
+# ⟹ the command reacted ⟹ ACCEPT the red verdict. This MUST stay green.
+# Model: empty dir → exit 1 + "no tests collected"; a real red test → exit 1 +
+# "FAIL: <assertion>". Same rc (1), different output.
+HONOR_SAME_RC_RUNNER="$TMPROOT/honor-same-rc-runner.sh"
+cat >"$HONOR_SAME_RC_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+if [ "$n" -eq 0 ]; then echo "no tests collected" >&2; exit 1; fi
+echo "FAIL: behaviour X exists (assertion failed)" >&2
+exit 1
+EOF
+chmod +x "$HONOR_SAME_RC_RUNNER"
+repoT9b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT9b/gh"
+export GH_LOG="$repoT9b/gh.log"; : >"$GH_LOG"
+tT9b="$repoT9b/tw"; mk_red_quarantine "$tT9b"
+rcT9b=0
+( cd "$repoT9b" && LCARS_TEST_CMD="bash $HONOR_SAME_RC_RUNNER" LCARS_GH_BIN="$repoT9b/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT9b" \
+    >outT9b.txt 2>&1 ) || rcT9b=$?
+check "TRIPWIRE 9b. a HONORing runner with same-rc-but-different-output is ACCEPTED (no false-block)" \
+  "[ '$rcT9b' -eq 0 ]"
+check "TRIPWIRE 9b. the honoring red suite IS quarantined (Implementer proceeds)" \
+  "[ -d '$repoT9b/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# TRIPWIRE 9c — DO NOT DELETE: the COMMON honoring case still works. A honoring
+# runner whose empty-dir run is a VACUOUS PASS (exit 0 — no tests) vs a real
+# failing quarantine test (exit 1) → different rc → ACCEPT. This is the normal
+# red→green mission path; it must be unaffected. (HONOR_RUNNER is exactly this:
+# empty/missing dir → exit 1 actually — so model the exit-0-on-empty variant.)
+HONOR_VACUOUS_RUNNER="$TMPROOT/honor-vacuous-runner.sh"
+cat >"$HONOR_VACUOUS_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests, vacuously green" >&2; exit 0; }
+if grep -rq EXPECT_GREEN "$d"; then exit 0; fi
+echo "quarantined tests RED" >&2; exit 1
+EOF
+chmod +x "$HONOR_VACUOUS_RUNNER"
+repoT9c="$(new_repo_with_implement_mission)"; make_gh_stub "$repoT9c/gh"
+export GH_LOG="$repoT9c/gh.log"; : >"$GH_LOG"
+tT9c="$repoT9c/tw"; mk_red_quarantine "$tT9c"
+rcT9c=0
+( cd "$repoT9c" && LCARS_TEST_CMD="bash $HONOR_VACUOUS_RUNNER" LCARS_GH_BIN="$repoT9c/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tT9c" \
+    >outT9c.txt 2>&1 ) || rcT9c=$?
+check "TRIPWIRE 9c. a honoring runner (real fail vs vacuous-pass-on-empty) is ACCEPTED (red = safe)" \
+  "[ '$rcT9c' -eq 0 ]"
+check "TRIPWIRE 9c. the normal red→green path quarantines the suite" \
+  "[ -d '$repoT9c/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# --- BUG-007 #2: GROUNDED RETRY — on rejection, the NEXT Test-Writer prompt
+# carries the captured red-gate SIGNAL (rc + bounded runner output), and NEVER
+# the implementation / prior reasoning. Driven through cmd_implement with a worker
+# stub that, on its FIRST dispatch, writes a green-on-nothing suite (rejected),
+# and on its SECOND dispatch writes a genuinely-red suite. The 2nd prompt must
+# show the captured signal.
+binGR="$TMPROOT/grbin"; rm -rf "$binGR"; mkdir -p "$binGR"
+cat >"$binGR/worker" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+# Record every test-writer prompt so the test can inspect what attempt 2 saw.
+if [ "$LCARS_WORKER_ROLE" = implement-test-writer ]; then
+  pf="$GR_PROMPTS_DIR/tw.$(ls "$GR_PROMPTS_DIR" | grep -c '^tw\.').prompt"
+  printf '%s' "$prompt" >"$pf"
+  mkdir -p "$out/tests"
+  if [ ! -f "$GR_STATE/first-done" ]; then
+    : >"$GR_STATE/first-done"
+    # green-on-nothing: tagged EXPECT_GREEN so the honoring runner passes it → rejected.
+    printf 'assert: noop // EXPECT_GREEN — green on nothing\n' >"$out/tests/spec.test"
+  else
+    # genuinely red now: no EXPECT_GREEN → honoring runner fails → red gate accepts.
+    printf 'assert: behaviour Y exists (NOT BUILT)\n' >"$out/tests/spec.test"
+  fi
+elif [ "$LCARS_WORKER_ROLE" = implement-implementer ]; then
+  printf '{ "ticketId": "t-001", "passed": true, "attempts": 1, "summary": "done" }\n' >"$out/result.json"
+fi
+exit 0
+EOF
+chmod +x "$binGR/worker"; make_gh_stub "$binGR/gh"
+# Single-ticket repo at implement, with the HONORing runner configured.
+repoGR="$(new_repo_with_implement_mission)"; add_green_repo_suite "$repoGR"
+mkdir -p "$repoGR/.git/lcars"; printf '{ "testCommand": "bash %s" }\n' "$HONOR_RUNNER" >"$repoGR/.git/lcars/config.json"
+GR_PROMPTS_DIR="$TMPROOT/gr-prompts"; rm -rf "$GR_PROMPTS_DIR"; mkdir -p "$GR_PROMPTS_DIR"
+GR_STATE="$TMPROOT/gr-state"; rm -rf "$GR_STATE"; mkdir -p "$GR_STATE"
+rcGR=0
+( cd "$repoGR" && GR_PROMPTS_DIR="$GR_PROMPTS_DIR" GR_STATE="$GR_STATE" \
+    LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_WORKER_BIN="$binGR/worker" \
+    LCARS_GH_BIN="$binGR/gh" bash "$SCRIPT" implement-ticket \
+    --mission "$MID" --ticket t-001 >outGR.txt 2>&1 ) || rcGR=$?
+# The second test-writer prompt (tw.1.prompt) must carry the captured red-gate signal.
+TW2="$GR_PROMPTS_DIR/tw.1.prompt"
+check "GR. a second Test-Writer attempt occurred after the rejection" "[ -f '$TW2' ]"
+check "GR. the retry prompt carries the captured red-gate SIGNAL (passed-on-nothing / runner output)" \
+  "grep -qiE 'passed with no implementation|red gate|runner output|green on nothing|rc=' '$TW2'"
+check "GR. the retry prompt does NOT leak the implementation / result" \
+  "[ -f '$TW2' ] && ! grep -qiE 'result.json|theme.js|\"passed\": true|prior reasoning' '$TW2'"
+
+# --- BUG-007 #3: the stage prompt carries a RED-FIRST recipe; a stubbed worker
+# following it (a dedicated failing test file) clears the gate.
+check "P3. implement-test-writer.md carries a RED-FIRST recipe" \
+  "grep -qiE 'red.first|RED FIRST' '$REPO_ROOT/skills/lcars-run/stages/implement-test-writer.md'"
+check "P3. the recipe tells the writer to invoke the not-yet-built entrypoint / assert observable output" \
+  "grep -qiE 'public entrypoint|not[- ]yet|does not exist|ERROR|FAIL' '$REPO_ROOT/skills/lcars-run/stages/implement-test-writer.md'"
+check "P3. the recipe forbids appending to an existing passing suite (dedicated file)" \
+  "grep -qiE 'dedicated|do not append|never append|existing passing suite' '$REPO_ROOT/skills/lcars-run/stages/implement-test-writer.md'"
 
 # ==========================================================================
 echo
@@ -1827,6 +2186,19 @@ JSON
     ;;
   validate)
     [ "${STUB_SCOPE:-0}" = "1" ] && printf 'Global or per-course leaderboard?\n' >"$out/scope.txt"
+    # Option B: a refined ADR when research changed a decision (STUB_ADR=1).
+    if [ "${STUB_ADR:-0}" = "1" ]; then
+      cat >"$out/adr.md" <<ADR
+# Architecture Decision Records: Add dark mode (REFINED BY VALIDATE)
+
+## ADR-001: Theme delivery via data-theme
+
+**Context:** Research confirmed the token layer.
+**Decision:** Flip a data-theme attribute on <html>.
+**Alternatives considered:** A parallel dark stylesheet.
+**Consequences:** Reuses the token layer.
+ADR
+    fi
     cat >"$out/validated-plan.md" <<MD
 # Validated Plan: Add dark mode
 
@@ -1873,6 +2245,28 @@ JSON
   }
 ]
 JSON
+    fi
+    # Session 41: the Planner ALSO emits one manifest per ticket (separate files,
+    # never embedded in plan.json). Signatures + paths + touched ADR ids ONLY —
+    # the fixture is deliberately bodies-free so persistence can assert no leak.
+    # STUB_NO_MANIFEST=1 simulates a worker that skipped a manifest (best-effort
+    # persistence must not hard-fail the plan).
+    if [ "${STUB_NO_MANIFEST:-0}" != "1" ]; then
+      mkdir -p "$out/manifests"
+      cat >"$out/manifests/t-001.md" <<MAN
+# Context manifest: t-001 — Wire the data-theme attribute
+
+## Relevant files
+- src/theme.js
+- src/index.html
+
+## Interface signatures (locations only — NOT the implementation)
+- src/theme.js: \`export function setTheme(name)\`
+- src/theme.js: \`export function currentTheme()\`
+
+## ADRs this ticket touches
+- ADR-001
+MAN
     fi
     ;;
   plan-review)
@@ -2081,6 +2475,110 @@ check "4. Test Writer is denied shell (no Bash)" \
   "! printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-test-writer)\" | grep -q 'Bash'"
 check "4. Implementer gets shell (Bash) to run the tests" \
   "printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-implementer)\" | grep -q 'Bash'"
+
+# --- Behaviour 9: the engineering ADR is a downstream-readable artifact --------
+# Session 36: Align seeds adr.md for complex Missions; Validate may refine it.
+# Every downstream worker EXCEPT the research agents may read it. These tests
+# assert the assembled worker prompt LISTS the adr.md PATH when the file exists,
+# for Validate / Plan / Test Writer / Implementer — and that the RESEARCH workers
+# and Plan Review NEVER see it (purity + independence invariants).
+
+# Drop a well-formed adr.md into a mission dir.
+seed_adr() { # mission-dir
+  cat >"$1/adr.md" <<'EOF'
+# Architecture Decision Records: Add dark mode
+
+## ADR-001: Theme delivery via data-theme
+
+**Context:** The app ships a --color-* token layer.
+**Decision:** Flip a data-theme attribute on <html>.
+**Alternatives considered:** A parallel dark stylesheet.
+**Consequences:** Reuses the token layer; no parallel colour system.
+EOF
+}
+
+# 9a. Validate lists adr.md when it exists (Align-seeds / Validate-refines).
+repoW9v="$(new_repo_with_validate_mission)"; arm_worker "$repoW9v"
+MDIR9v="$repoW9v/.git/lcars/missions/$MID"
+seed_adr "$MDIR9v"
+( cd "$repoW9v" && LCARS_WORKER_BIN="$repoW9v/worker" LCARS_GH_BIN="$repoW9v/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
+VP9v="$(prompt_for_role "$WORKER_CALLS" validate)"
+check "9a. validate worker is fed the adr.md path when it exists" \
+  "printf '%s' \"\$VP9v\" | grep -qF '$MDIR9v/adr.md'"
+
+# Option B persistence: cmd_validate must copy a worker-refined adr.md back into
+# the mission dir. The worker stub (STUB_ADR=1) emits a refined adr.md; assert it
+# overwrites the seeded one in the mission dir.
+repoW9vr="$(new_repo_with_validate_mission)"; arm_worker "$repoW9vr"
+MDIR9vr="$repoW9vr/.git/lcars/missions/$MID"
+seed_adr "$MDIR9vr"
+( cd "$repoW9vr" && STUB_ADR=1 LCARS_WORKER_BIN="$repoW9vr/worker" LCARS_GH_BIN="$repoW9vr/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
+check "9a. a worker-refined adr.md persists into the mission dir (option B)" \
+  "[ -f '$MDIR9vr/adr.md' ] && grep -q 'REFINED BY VALIDATE' '$MDIR9vr/adr.md'"
+
+# 9b. Validate does NOT list adr.md when the Mission has none (trivial Mission).
+repoW9vn="$(new_repo_with_validate_mission)"; arm_worker "$repoW9vn"
+MDIR9vn="$repoW9vn/.git/lcars/missions/$MID"
+( cd "$repoW9vn" && LCARS_WORKER_BIN="$repoW9vn/worker" LCARS_GH_BIN="$repoW9vn/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
+VP9vn="$(prompt_for_role "$WORKER_CALLS" validate)"
+check "9b. validate worker is NOT fed an adr.md path when none exists" \
+  "! printf '%s' \"\$VP9vn\" | grep -qF '$MDIR9vn/adr.md'"
+
+# 9c. Plan lists adr.md when it exists.
+repoW9p="$(new_repo_with_plan_mission)"; arm_worker "$repoW9p"
+MDIR9p="$repoW9p/.git/lcars/missions/$MID"
+seed_adr "$MDIR9p"
+( cd "$repoW9p" && LCARS_WORKER_BIN="$repoW9p/worker" LCARS_GH_BIN="$repoW9p/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out.txt 2>&1 )
+PP9p="$(prompt_for_role "$WORKER_CALLS" plan)"
+check "9c. plan worker is fed the adr.md path when it exists" \
+  "printf '%s' \"\$PP9p\" | grep -qF '$MDIR9p/adr.md'"
+
+# 9d. Test Writer AND Implementer list adr.md when it exists.
+repoW9i="$(new_repo_with_implement_mission)"; arm_worker "$repoW9i"
+MDIR9i="$repoW9i/.git/lcars/missions/$MID"
+seed_adr "$MDIR9i"
+( cd "$repoW9i" && LCARS_WORKER_BIN="$repoW9i/worker" LCARS_GH_BIN="$repoW9i/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >out.txt 2>&1 )
+TWP9i="$(prompt_for_role "$WORKER_CALLS" implement-test-writer)"
+IMP9i="$(prompt_for_role "$WORKER_CALLS" implement-implementer)"
+check "9d. Test Writer worker is fed the adr.md path when it exists" \
+  "printf '%s' \"\$TWP9i\" | grep -qF '$MDIR9i/adr.md'"
+check "9d. Implementer worker is fed the adr.md path when it exists" \
+  "printf '%s' \"\$IMP9i\" | grep -qF '$MDIR9i/adr.md'"
+
+# 9e. PURITY: the RESEARCH workers NEVER see adr.md, even when it exists. Drive
+# Research from align with an adr.md already on disk; assert neither the
+# question-generator nor any research agent prompt names the adr path.
+repoW9r="$(new_repo_with_mission)"; arm_worker "$repoW9r"
+MDIR9r="$repoW9r/.git/lcars/missions/$MID"
+seed_adr "$MDIR9r"
+( cd "$repoW9r" && STUB_NQUESTIONS=2 LCARS_WORKER_BIN="$repoW9r/worker" LCARS_GH_BIN="$repoW9r/gh" \
+    bash "$SCRIPT" research --mission "$MID" >out.txt 2>&1 )
+RQP9r="$(prompt_for_role "$WORKER_CALLS" research-questions)"
+RAP9r="$(prompt_for_role "$WORKER_CALLS" research-agent)"
+check "9e. PURITY: research-questions worker is NEVER fed adr.md" \
+  "! printf '%s' \"\$RQP9r\" | grep -qF '$MDIR9r/adr.md'"
+check "9e. PURITY: research-questions worker mentions no adr at all" \
+  "! printf '%s' \"\$RQP9r\" | grep -qi 'adr'"
+check "9e. PURITY: a research agent worker is NEVER fed adr.md" \
+  "! printf '%s' \"\$RAP9r\" | grep -qF '$MDIR9r/adr.md'"
+check "9e. PURITY: a research agent worker mentions no adr at all" \
+  "! printf '%s' \"\$RAP9r\" | grep -qi 'adr'"
+
+# 9f. INDEPENDENCE: Plan Review NEVER sees adr.md (it judges tickets alone; the
+# ADR is seeded planning context that would leak the spec in).
+repoW9pr="$(new_repo_with_plan_review_mission)"; arm_worker "$repoW9pr"
+MDIR9pr="$repoW9pr/.git/lcars/missions/$MID"
+seed_adr "$MDIR9pr"
+( cd "$repoW9pr" && LCARS_WORKER_BIN="$repoW9pr/worker" LCARS_GH_BIN="$repoW9pr/gh" \
+    bash "$SCRIPT" plan-review --mission "$MID" >out.txt 2>&1 )
+PRP9pr="$(prompt_for_role "$WORKER_CALLS" plan-review)"
+check "9f. INDEPENDENCE: Plan Review worker is NOT fed the adr.md path" \
+  "! printf '%s' \"\$PRP9pr\" | grep -qF '$MDIR9pr/adr.md'"
 
 # --- Behaviour 5: an artifact missing its decisions/rationale is REFUSED -------
 # validated-plan.md without a ## Rationale section
@@ -3323,6 +3821,731 @@ check "S42. SKILL.md keeps the final summary + isolation markers byte-for-byte" 
   "grep -qF '⊘ isolated' '$RUN_SKILL' && grep -qiE 'byte-for-byte|byte-compatible' '$RUN_SKILL'"
 check "S42. SKILL.md exempts --step from the relay (returns immediately)" \
   "grep -qiE '\\-\\-step.*(no relay|needs.*no.*relay|returns immediately|blocking)' '$RUN_SKILL'"
+
+# ==========================================================================
+echo
+echo "lcars run — Session 41: per-ticket context manifest + per-wave repo map"
+# Session 41 stops every Implement worker from re-walking the repo cold. Two
+# DECLARATIVE, token-cheap artifacts are produced and read by PATH:
+#   (a) per-ticket manifests/<id>.md — authored by the Plan worker (signatures +
+#       file paths + touched ADR ids ONLY), persisted by plan-save into the
+#       mission dir as SEPARATE files (never embedded in plan.json).
+#   (b) a per-wave repo-map.md — a pure-bash symbol skeleton regenerated at the
+#       start of each Implement wave (signature lines + paths, NEVER bodies).
+# Both ride the Test Writer + Implementer extra blocks by PATH. Research workers
+# get NEITHER (purity). The repo-map is bash-extracted, so it is clean by
+# construction. None of this touches plan.json's schema or Plan Review.
+
+# --- S41-1: plan-save persists per-ticket manifests from the worker scratch ----
+# Drive Plan with the worker stub (it emits plan.json + manifests/t-001.md). After
+# the stage, the manifest must live at $MISSION_DIR/manifests/t-001.md and carry
+# signatures + paths + ADR ids — and NO implementation body (the fixture is clean).
+repo41p="$(new_repo_with_plan_mission)"; arm_worker "$repo41p"
+( cd "$repo41p" && LCARS_WORKER_BIN="$repo41p/worker" LCARS_GH_BIN="$repo41p/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out41p.txt 2>&1 )
+MAN41="$repo41p/.git/lcars/missions/$MID/manifests/t-001.md"
+check "S41-1. plan-save persists manifests/t-001.md into the mission dir" \
+  "[ -f '$MAN41' ]"
+check "S41-1. the manifest lists the relevant file paths" \
+  "grep -q 'src/theme.js' '$MAN41'"
+check "S41-1. the manifest carries interface signatures (skeletons)" \
+  "grep -q 'export function setTheme' '$MAN41'"
+check "S41-1. the manifest names the touched ADR ids" \
+  "grep -q 'ADR-001' '$MAN41'"
+check "S41-1. the persisted manifest equals what the worker wrote (no rewrite/leak)" \
+  "! grep -qiE 'return |const |if \\(|=>|\\{\\{' '$MAN41'"
+check "S41-1. plan.json is UNCHANGED in shape (manifest is a SEPARATE file, not embedded)" \
+  "! grep -qi 'manifest' '$repo41p/.git/lcars/missions/$MID/plan.json'"
+check "S41-1. Plan still advanced to plan-review (manifest persistence is additive)" \
+  "grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repo41p")'"
+
+# --- S41-1b: a missing manifest is best-effort — the plan still advances --------
+# STUB_NO_MANIFEST=1: the worker emits NO manifests/ dir. plan-save must NOT
+# hard-fail (single-ticket fast-path / thin greenfield) — it advances anyway.
+repo41pm="$(new_repo_with_plan_mission)"; arm_worker "$repo41pm"
+rc41pm=0
+( cd "$repo41pm" && STUB_NO_MANIFEST=1 LCARS_WORKER_BIN="$repo41pm/worker" LCARS_GH_BIN="$repo41pm/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out41pm.txt 2>&1 ) || rc41pm=$?
+check "S41-1b. a plan with no manifests still advances (best-effort, no hard-fail)" \
+  "[ '$rc41pm' -eq 0 ] && grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repo41pm")'"
+
+# --- S41-2: the repo-map generator (pure bash, token-free) ----------------------
+# Build a fixture repo with one source file per supported language, run the
+# `repo-map` subcommand (the thin driver over generate_repo_map), and assert the
+# map captures top-level SIGNATURES across languages while excluding file BODIES.
+repo41map="$(new_repo_with_implement_mission)"
+SRC41="$repo41map/src"; mkdir -p "$SRC41"
+cat >"$SRC41/util.sh" <<'EOF'
+#!/usr/bin/env bash
+foo() {
+  local secret_body_marker=1
+  echo "$secret_body_marker"
+}
+EOF
+cat >"$SRC41/widget.js" <<'EOF'
+export function bar(a, b) {
+  const inside_js_body = a + b;
+  return inside_js_body;
+}
+class Baz {
+  hidden_method_body() { return 42; }
+}
+EOF
+cat >"$SRC41/calc.py" <<'EOF'
+class Calc:
+    def qux(self, n):
+        inside_py_body = n * 2
+        return inside_py_body
+EOF
+cat >"$SRC41/types.ts" <<'EOF'
+export type ThemeName = "light" | "dark";
+export interface Toggle {
+  flip(): void;
+}
+EOF
+# An unknown extension: degrade gracefully — list the path alone, no signatures.
+printf 'binary-ish content with { braces } that must not leak as a body\n' >"$SRC41/data.xyz"
+rc41map=0
+( cd "$repo41map" && LCARS_WORKER_BIN="$repo41map/worker" \
+    bash "$SCRIPT" repo-map --mission "$MID" >out41map.txt 2>&1 ) || rc41map=$?
+MAP41="$repo41map/.git/lcars/missions/$MID/repo-map.md"
+check "S41-2. repo-map subcommand exits 0 (pure bash, no worker needed)" "[ '$rc41map' -eq 0 ]"
+check "S41-2. repo-map.md is written under .git/ (never the working tree)" \
+  "[ -f '$MAP41' ] && [ ! -e '$repo41map/repo-map.md' ]"
+check "S41-2. captures the shell function signature foo()" \
+  "grep -q 'foo()' '$MAP41'"
+check "S41-2. captures the JS function signature bar(" \
+  "grep -q 'function bar(' '$MAP41'"
+check "S41-2. captures the JS class signature Baz" \
+  "grep -q 'class Baz' '$MAP41'"
+check "S41-2. captures the Python def signature qux(" \
+  "grep -q 'def qux(' '$MAP41'"
+check "S41-2. captures the Python class signature Calc" \
+  "grep -q 'class Calc' '$MAP41'"
+check "S41-2. captures the TS interface/type signatures" \
+  "grep -q 'interface Toggle' '$MAP41' && grep -q 'type ThemeName' '$MAP41'"
+check "S41-2. degrades gracefully — an unknown file is listed by PATH alone" \
+  "grep -q 'data.xyz' '$MAP41'"
+# DECLARATIVE GUARD — no FUNCTION BODIES leak. The body markers planted inside
+# each function must NOT appear in the skeleton map.
+check "S41-2. NO shell body leaks (secret_body_marker absent)" \
+  "! grep -q 'secret_body_marker' '$MAP41'"
+check "S41-2. NO JS body leaks (inside_js_body absent)" \
+  "! grep -q 'inside_js_body' '$MAP41'"
+check "S41-2. NO JS method body leaks (hidden_method_body line is not a statement dump)" \
+  "! grep -q 'return 42' '$MAP41'"
+check "S41-2. NO Python body leaks (inside_py_body absent)" \
+  "! grep -q 'inside_py_body' '$MAP41'"
+check "S41-2. NO unknown-file body leaks (the { braces } content is not dumped)" \
+  "! grep -q 'must not leak as a body' '$MAP41'"
+
+# --- S41-3: the repo-map REGENERATES at each Implement wave_start ----------------
+# Drive the whole Implement stage with the green-on-everything stub. The map must
+# exist after the run (regenerated at the first wave_start) and carry a wave
+# marker for each wave it regenerated at, proving the per-wave hook fired.
+repo41w="$(new_repo_with_implement_mission)"; arm_worker "$repo41w"
+SRC41w="$repo41w/src"; mkdir -p "$SRC41w"
+printf 'export function alpha() { return 1; }\n' >"$SRC41w/alpha.js"
+( cd "$repo41w" && LCARS_NOW=1700041000 LCARS_WORKER_BIN="$repo41w/worker" LCARS_GH_BIN="$repo41w/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >out41w.txt 2>&1 ) || true
+MAP41w="$repo41w/.git/lcars/missions/$MID/repo-map.md"
+check "S41-3. repo-map.md exists after the Implement stage (regenerated at a wave)" \
+  "[ -f '$MAP41w' ]"
+check "S41-3. the regenerated map carries a wave marker in its header (per-wave regeneration)" \
+  "grep -qE 'wave [0-9]' '$MAP41w'"
+check "S41-3. the wave-regenerated map carries the freshly committed symbols (alpha)" \
+  "grep -q 'function alpha(' '$MAP41w'"
+
+# --- S41-4: the Implementer AND Test Writer extra-blocks LIST both artifacts -----
+# Seed the manifest + repo-map on disk, then run implement-ticket. Both halves'
+# prompts must name the ticket manifest path and the repo-map path (by PATH only).
+repo41r="$(new_repo_with_implement_mission)"; arm_worker "$repo41r"
+MDIR41r="$repo41r/.git/lcars/missions/$MID"
+mkdir -p "$MDIR41r/manifests"
+cat >"$MDIR41r/manifests/t-001.md" <<'EOF'
+# Context manifest: t-001
+## Relevant files
+- src/theme.js
+## Interface signatures
+- src/theme.js: `export function setTheme(name)`
+EOF
+printf '# Repo map (wave 1)\n- src/theme.js: `export function setTheme(name)`\n' >"$MDIR41r/repo-map.md"
+( cd "$repo41r" && LCARS_WORKER_BIN="$repo41r/worker" LCARS_GH_BIN="$repo41r/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >out41r.txt 2>&1 )
+TWP41="$(prompt_for_role "$WORKER_CALLS" implement-test-writer)"
+IMP41="$(prompt_for_role "$WORKER_CALLS" implement-implementer)"
+check "S41-4. Test Writer prompt lists the ticket manifest path" \
+  "printf '%s' \"\$TWP41\" | grep -qF '$MDIR41r/manifests/t-001.md'"
+check "S41-4. Test Writer prompt lists the repo-map path" \
+  "printf '%s' \"\$TWP41\" | grep -qF '$MDIR41r/repo-map.md'"
+check "S41-4. Implementer prompt lists the ticket manifest path" \
+  "printf '%s' \"\$IMP41\" | grep -qF '$MDIR41r/manifests/t-001.md'"
+check "S41-4. Implementer prompt lists the repo-map path" \
+  "printf '%s' \"\$IMP41\" | grep -qF '$MDIR41r/repo-map.md'"
+
+# --- S41-4b: the manifest/repo-map are guarded on existence (absent → not listed)
+repo41rn="$(new_repo_with_implement_mission)"; arm_worker "$repo41rn"
+MDIR41rn="$repo41rn/.git/lcars/missions/$MID"
+( cd "$repo41rn" && LCARS_WORKER_BIN="$repo41rn/worker" LCARS_GH_BIN="$repo41rn/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >out41rn.txt 2>&1 )
+IMP41n="$(prompt_for_role "$WORKER_CALLS" implement-implementer)"
+check "S41-4b. with no manifest on disk the Implementer prompt names no manifests/ path" \
+  "! printf '%s' \"\$IMP41n\" | grep -qF '$MDIR41rn/manifests/'"
+
+# --- S41-5: PURITY — research workers see NEITHER manifest NOR repo-map ----------
+# Seed both artifacts on disk, drive Research from align, and assert that neither
+# the question-generator nor any research agent prompt names — or even mentions —
+# the manifest or the repo-map. This is the absolute invariant of the perf round.
+repo41pur="$(new_repo_with_mission)"; arm_worker "$repo41pur"
+MDIR41pur="$repo41pur/.git/lcars/missions/$MID"
+mkdir -p "$MDIR41pur/manifests"
+printf '# manifest t-001\n- src/x.js: `export function y()`\n' >"$MDIR41pur/manifests/t-001.md"
+printf '# Repo map (wave 1)\n- src/x.js: `export function y()`\n' >"$MDIR41pur/repo-map.md"
+( cd "$repo41pur" && STUB_NQUESTIONS=2 LCARS_WORKER_BIN="$repo41pur/worker" LCARS_GH_BIN="$repo41pur/gh" \
+    bash "$SCRIPT" research --mission "$MID" >out41pur.txt 2>&1 )
+RQP41="$(prompt_for_role "$WORKER_CALLS" research-questions)"
+RAP41="$(prompt_for_role "$WORKER_CALLS" research-agent)"
+check "S41-5. PURITY: research-questions worker is NEVER fed the manifest path" \
+  "! printf '%s' \"\$RQP41\" | grep -qF '$MDIR41pur/manifests/'"
+check "S41-5. PURITY: research-questions worker is NEVER fed the repo-map path" \
+  "! printf '%s' \"\$RQP41\" | grep -qF '$MDIR41pur/repo-map.md'"
+check "S41-5. PURITY: research-questions worker mentions no repo-map/manifest at all" \
+  "! printf '%s' \"\$RQP41\" | grep -qiE 'repo-map|manifest'"
+check "S41-5. PURITY: a research agent worker is NEVER fed the manifest path" \
+  "! printf '%s' \"\$RAP41\" | grep -qF '$MDIR41pur/manifests/'"
+check "S41-5. PURITY: a research agent worker is NEVER fed the repo-map path" \
+  "! printf '%s' \"\$RAP41\" | grep -qF '$MDIR41pur/repo-map.md'"
+check "S41-5. PURITY: a research agent worker mentions no repo-map/manifest at all" \
+  "! printf '%s' \"\$RAP41\" | grep -qiE 'repo-map|manifest'"
+
+# --- S41-6: DECLARATIVE — the plan.md template forbids bodies/solutions ----------
+# The template MUST instruct the Planner to author manifests with signatures /
+# paths / ADR ids ONLY — never the implementation, test internals, or reasoning.
+PLAN_TMPL="$REPO_ROOT/skills/lcars-run/stages/plan.md"
+check "S41-6. plan.md instructs the Planner to emit per-ticket manifests" \
+  "grep -qiE 'manifest' '$PLAN_TMPL'"
+check "S41-6. plan.md forbids implementation bodies / the edits to make in a manifest" \
+  "grep -qiE 'NEVER the (implementation|edits|solution)|signatures?[^.]*only|locations?[^.]*only' '$PLAN_TMPL'"
+check "S41-6. plan.md routes manifests to a SEPARATE manifests/ dir (not plan.json)" \
+  "grep -qiE 'manifests/' '$PLAN_TMPL'"
+
+# ==========================================================================
+echo
+echo "lcars run — intra-wave parallelism via per-ticket worktrees (Session 37)"
+
+# Session 37 builds a wave's INDEPENDENT tickets CONCURRENTLY, each in its OWN
+# `git worktree` checked out (detached) from the mission branch, with a bounded
+# concurrency cap from $LCARS_MAX_PARALLEL. The observable end state is UNCHANGED:
+# exactly one commit per ticket, with its summary, on the mission branch, in
+# wave/plan order (NOT finish order). The adversarial Test-Writer→Implementer
+# split, the red gate, and the immutable-test hash run per ticket inside its
+# worktree, untouched.
+#
+#   P37-1  a 2-ticket wave spawns workers CONCURRENTLY (overlap observed),
+#          and the cap (LCARS_MAX_PARALLEL) bounds the overlap
+#   P37-2  commits land serially on the mission branch in PLAN order — one commit
+#          per ticket with its summary — even when finish order ≠ plan order
+#   P37-3  a flagged ticket among green siblings still parks the Mission
+#          (no green sibling masks the flag)
+#   P37-4  the research fan-out now honours LCARS_MAX_PARALLEL (purity intact)
+#   P37-5  the red gate + immutable-test hash are still enforced per ticket
+
+# A two-wave plan whose WAVE 1 holds two INDEPENDENT tickets (t-001, t-002) so
+# they can build concurrently. (write_waves_json already does this.) We drive the
+# whole `implement` stage with a worker stub that records concurrency.
+
+# A worker stub that: (a) on the implementer phase records a live concurrency
+# counter (peak) by bumping a counter file, sleeping, then decrementing; and
+# (b) writes per-ticket source named after the ticket id parsed from its prompt,
+# so each ticket's commit is distinguishable. STUB_FINISH_DELAY lets a chosen
+# ticket finish LAST regardless of spawn order (to prove plan-order commits).
+make_worker_stub_par() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"
+    printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    # --- live-concurrency probe (flock-free; macOS has no flock). Each live
+    # implementer drops a unique marker; the peak is the max marker count, updated
+    # under a portable mkdir-based lock (atomic everywhere).
+    if [ -n "${CONC_DIR:-}" ]; then
+      mkdir -p "$CONC_DIR/active"; : >"$CONC_DIR/active/$$"
+      while ! mkdir "$CONC_DIR/L" 2>/dev/null; do :; done
+      n=$(ls "$CONC_DIR/active" | wc -l | tr -d ' ')
+      peak=$(cat "$CONC_DIR/peak" 2>/dev/null || echo 0); [ "$n" -gt "$peak" ] && echo "$n" >"$CONC_DIR/peak"
+      rmdir "$CONC_DIR/L"
+    fi
+    # Make t-001 sleep LONGER so t-002 (plan-later) finishes FIRST — proves the
+    # commit order follows PLAN order, not finish order. Also gives the two
+    # implementers a window to overlap for the concurrency probe.
+    case "$tid" in
+      t-001) sleep "${STUB_SLOW_DELAY:-0.4}" ;;
+      *)     sleep "${STUB_FAST_DELAY:-0.05}" ;;
+    esac
+    [ -n "${CONC_DIR:-}" ] && rm -f "$CONC_DIR/active/$$"
+    mkdir -p src
+    printf 'export const %s = 1;\n' "$(printf '%s' "$tid" | tr -dc 'a-zA-Z0-9')" > "src/${tid}.js"
+    cat >"$out/result.json" <<JSON
+{
+  "ticketId": "${tid}",
+  "passed": true,
+  "attempts": 1,
+  "summary": "built ${tid}; suite green."
+}
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Build an isolated repo at stage implement with a committed seed + mission branch.
+new_repo_par() { # echoes repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && printf '# seed\n' > seed.md && git add seed.md && git commit -qm seed \
+      && git checkout -q -b "lcars/$MID" )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_approved_plan_json "$m/approved-plan.json"
+  write_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  echo "$repo"
+}
+
+# --- P37-1: concurrent spawn, bounded by LCARS_MAX_PARALLEL -------------------
+# Wave 1 has two independent tickets. With the cap >= 2 their implementers must
+# OVERLAP (peak concurrency > 1); with the cap = 1 they must NOT (peak == 1).
+binP1="$TMPROOT/p37-1bin"; rm -rf "$binP1"; mkdir -p "$binP1"
+make_worker_stub_par "$binP1/worker"; make_gh_stub "$binP1/gh"
+
+repoP1="$(new_repo_par)"
+concP1="$binP1/conc"; rm -rf "$concP1"; mkdir -p "$concP1"; echo 0 >"$concP1/cur"; echo 0 >"$concP1/peak"
+( cd "$repoP1" && CONC_DIR="$concP1" LCARS_MAX_PARALLEL=4 \
+    LCARS_WORKER_BIN="$binP1/worker" LCARS_GH_BIN="$binP1/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP1/out.txt" 2>&1 ) || true
+peakP1="$(cat "$concP1/peak" 2>/dev/null || echo 0)"
+check "P37-1. with cap=4, the two wave-1 implementers OVERLAP (peak>1)" \
+  "[ \"${peakP1:-0}\" -gt 1 ]"
+
+repoP1s="$(new_repo_par)"
+concP1s="$binP1/conc1"; rm -rf "$concP1s"; mkdir -p "$concP1s"; echo 0 >"$concP1s/cur"; echo 0 >"$concP1s/peak"
+( cd "$repoP1s" && CONC_DIR="$concP1s" LCARS_MAX_PARALLEL=1 \
+    LCARS_WORKER_BIN="$binP1/worker" LCARS_GH_BIN="$binP1/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP1/out1.txt" 2>&1 ) || true
+peakP1s="$(cat "$concP1s/peak" 2>/dev/null || echo 0)"
+check "P37-1. with cap=1, the implementers do NOT overlap (peak==1)" \
+  "[ \"${peakP1s:-0}\" = '1' ]"
+
+# --- P37-2: serial commits in PLAN order, one per ticket, summary preserved ---
+# t-001 sleeps longer than t-002, so t-002 FINISHES first; the commit for t-001
+# must STILL land before t-002 (plan order). Each commit carries its own summary.
+binP2="$TMPROOT/p37-2bin"; rm -rf "$binP2"; mkdir -p "$binP2"
+make_worker_stub_par "$binP2/worker"; make_gh_stub "$binP2/gh"
+repoP2="$(new_repo_par)"
+( cd "$repoP2" && LCARS_MAX_PARALLEL=4 STUB_SLOW_DELAY=0.4 STUB_FAST_DELAY=0.02 \
+    LCARS_WORKER_BIN="$binP2/worker" LCARS_GH_BIN="$binP2/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP2/out.txt" 2>&1 ) || true
+# The mission branch log (newest first). Filter to ticket commits.
+logP2="$( cd "$repoP2" && git log --format='%s' "lcars/$MID" )"
+# Wave 1 commits t-001 then t-002; in `git log` newest-first that is t-002 above t-001.
+pos1="$(printf '%s\n' "$logP2" | grep -n 'lcars(.*) t-001:' | head -1 | cut -d: -f1)"
+pos2="$(printf '%s\n' "$logP2" | grep -n 'lcars(.*) t-002:' | head -1 | cut -d: -f1)"
+check "P37-2. exactly one commit for t-001 on the mission branch" \
+  "[ \"\$(printf '%s\n' \"$logP2\" | grep -c 'lcars(.*) t-001:')\" = '1' ]"
+check "P37-2. exactly one commit for t-002 on the mission branch" \
+  "[ \"\$(printf '%s\n' \"$logP2\" | grep -c 'lcars(.*) t-002:')\" = '1' ]"
+check "P37-2. t-001 commits BEFORE t-002 (plan order, despite t-002 finishing first)" \
+  "[ -n \"$pos1\" ] && [ -n \"$pos2\" ] && [ \"$pos1\" -gt \"$pos2\" ]"
+check "P37-2. each commit carries the ticket's OWN summary" \
+  "printf '%s\n' \"$logP2\" | grep -q 't-001: built t-001' && printf '%s\n' \"$logP2\" | grep -q 't-002: built t-002'"
+check "P37-2. the commit message format is lcars(<mission>) <ticket>: <summary>" \
+  "printf '%s\n' \"$logP2\" | grep -qE 'lcars\\($MID\\) t-001: '"
+check "P37-2. each ticket's produced source is in the tree" \
+  "[ -f '$repoP2/src/t-001.js' ] && [ -f '$repoP2/src/t-002.js' ]"
+check "P37-2. wave 2 also completes and the stage advanced to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoP2")'"
+# No leftover worktrees in the working tree / git metadata after the stage.
+check "P37-2. no stray git worktrees remain after the stage" \
+  "[ -z \"\$( cd '$repoP2' && git worktree list --porcelain | grep -i 't-001' )\" ]"
+
+# --- P37-3: a flagged ticket among green siblings still parks the Mission ------
+# A stub where t-002 FAILS (passed:false, attempts:5 → the human gate) while
+# t-001 goes green. A fast green sibling must NOT mask t-002's flag.
+make_worker_stub_par_flag() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    mkdir -p src; printf 'export const x = 1;\n' > "src/${tid}.js"
+    if [ "$tid" = "t-002" ]; then
+      cat >"$out/result.json" <<JSON
+{ "ticketId": "t-002", "passed": false, "attempts": 5, "summary": "could not get t-002 green." }
+JSON
+    else
+      cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "built ${tid}; suite green." }
+JSON
+    fi
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+binP3="$TMPROOT/p37-3bin"; rm -rf "$binP3"; mkdir -p "$binP3"
+make_worker_stub_par_flag "$binP3/worker"; make_gh_stub "$binP3/gh"
+repoP3="$(new_repo_par)"
+rcP3=0
+( cd "$repoP3" && LCARS_MAX_PARALLEL=4 \
+    LCARS_WORKER_BIN="$binP3/worker" LCARS_GH_BIN="$binP3/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP3/out.txt" 2>&1 ) || rcP3=$?
+sP3="$(state_of "$repoP3")"
+check "P37-3. a flagged sibling parks the Mission at awaiting-human" \
+  "grep -q '\"awaitingHuman\": *true' '$sP3'"
+check "P37-3. the Mission stays at the implement stage (not advanced to verify)" \
+  "grep -q '\"stage\": *\"implement\"' '$sP3'"
+check "P37-3. the pending question names the flagged ticket t-002" \
+  "grep -q 't-002' '$repoP3/.git/lcars/missions/$MID/pending.json'"
+check "P37-3. the green sibling t-001 still committed (no rollback of good work)" \
+  "[ \"\$( cd '$repoP3' && git log --format='%s' 'lcars/$MID' | grep -c 't-001:' )\" = '1' ]"
+
+# --- P37-4: a hard worker failure (no result) stops the Stage non-zero --------
+# A stub that produces NO result.json for t-002 → implement-ticket dies; the
+# concurrent sibling must not mask it: the whole stage exits non-zero.
+make_worker_stub_par_hardfail() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    if [ "$tid" = "t-002" ]; then exit 0; fi   # NO result.json → hard failure
+    mkdir -p src; printf 'export const x = 1;\n' > "src/${tid}.js"
+    cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "built ${tid}." }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+binP4="$TMPROOT/p37-4bin"; rm -rf "$binP4"; mkdir -p "$binP4"
+make_worker_stub_par_hardfail "$binP4/worker"; make_gh_stub "$binP4/gh"
+repoP4="$(new_repo_par)"
+rcP4=0
+( cd "$repoP4" && LCARS_MAX_PARALLEL=4 \
+    LCARS_WORKER_BIN="$binP4/worker" LCARS_GH_BIN="$binP4/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP4/out.txt" 2>&1 ) || rcP4=$?
+check "P37-4. a hard worker failure stops the Stage non-zero" "[ '$rcP4' -ne 0 ]"
+check "P37-4. the Stage did NOT advance to verify on a hard failure" \
+  "! grep -q '\"stage\": *\"verify\"' '$(state_of "$repoP4")'"
+
+# --- P37-5: the research fan-out now honours LCARS_MAX_PARALLEL (purity intact) -
+# Research dispatches one worker per question. With many questions and cap=2 the
+# research agents must NOT exceed the cap; and EACH still gets ONLY its question.
+make_worker_stub_research_conc() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  research-questions)
+    : >"$out/questions.txt"
+    k="${STUB_NQUESTIONS:-6}"; i=0
+    while [ "$i" -lt "$k" ]; do i=$((i+1)); echo "Stub question $i?" >>"$out/questions.txt"; done ;;
+  research-agent)
+    if [ -n "${CONC_DIR:-}" ]; then
+      mkdir -p "$CONC_DIR/active"; : >"$CONC_DIR/active/$$"
+      while ! mkdir "$CONC_DIR/L" 2>/dev/null; do :; done
+      n=$(ls "$CONC_DIR/active" | wc -l | tr -d ' ')
+      peak=$(cat "$CONC_DIR/peak" 2>/dev/null || echo 0); [ "$n" -gt "$peak" ] && echo "$n" >"$CONC_DIR/peak"
+      rmdir "$CONC_DIR/L"
+    fi
+    sleep 0.15
+    [ -n "${CONC_DIR:-}" ] && rm -f "$CONC_DIR/active/$$"
+    # Record the prompt so purity can be asserted.
+    printf '%s' "$prompt" > "$CONC_DIR/agentprompt.$$.txt"
+    cat >"$out/response.json" <<JSON
+{ "question": "stub", "recommendation": "Do the sensible thing.", "supporting_points": ["a", "b"] }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+binP5="$TMPROOT/p37-5bin"; rm -rf "$binP5"; mkdir -p "$binP5"
+make_worker_stub_research_conc "$binP5/worker"; make_gh_stub "$binP5/gh"
+repoP5="$(new_repo_with_mission)"
+concP5="$binP5/conc"; rm -rf "$concP5"; mkdir -p "$concP5"; echo 0 >"$concP5/cur"; echo 0 >"$concP5/peak"
+export GH_LOG="$binP5/gh.log"; : >"$GH_LOG"
+( cd "$repoP5" && CONC_DIR="$concP5" STUB_NQUESTIONS=6 LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binP5/worker" LCARS_GH_BIN="$binP5/gh" \
+    bash "$SCRIPT" research --mission "$MID" >"$binP5/out.txt" 2>&1 ) || true
+peakP5="$(cat "$concP5/peak" 2>/dev/null || echo 0)"
+check "P37-4/research. research fan-out never exceeds LCARS_MAX_PARALLEL=2" \
+  "[ \"${peakP5:-0}\" -le 2 ] && [ \"${peakP5:-0}\" -ge 1 ]"
+check "P37-4/research. with 6 questions and cap 2, more than one agent ran at once" \
+  "[ \"${peakP5:-0}\" -gt 1 ]"
+check "P37-4/research. PURITY: a research agent prompt carries ONLY its question (no PRD body)" \
+  "! grep -rqi 'Let users switch to a dark' $concP5/agentprompt.*.txt"
+check "P37-4/research. PURITY: a research agent prompt names no artifact paths" \
+  "! grep -rq '/prd.md\\|/state.json\\|approved-plan' $concP5/agentprompt.*.txt"
+check "P37-4/research. research still advanced the stage to validate" \
+  "grep -q '\"stage\": *\"validate\"' '$(state_of "$repoP5")'"
+
+# --- P37-5b: the red gate + immutable-test hash are enforced per ticket --------
+# Per-ticket-in-worktree, the red gate must still reject a suite that passes with
+# no implementation, and the immutable hash must still reject edited tests. Both
+# already run inside implement-ticket; re-assert through the parallel path with a
+# test command set. A stub whose tests PASS on nothing (no red) must be rejected.
+binP5b="$TMPROOT/p37-5bbin"; rm -rf "$binP5b"; mkdir -p "$binP5b"
+cat >"$binP5b/worker" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer) mkdir -p "$out/tests"; printf 'assert true\n' >"$out/tests/${tid:-t}.test" ;;
+esac
+exit 0
+EOF
+chmod +x "$binP5b/worker"; make_gh_stub "$binP5b/gh"
+repoP5b="$(new_repo_par)"
+rcP5b=0
+# A test command that ALWAYS succeeds → the red gate sees green-on-nothing → reject.
+( cd "$repoP5b" && LCARS_TEST_CMD='true' LCARS_MAX_PARALLEL=4 \
+    LCARS_WORKER_BIN="$binP5b/worker" LCARS_GH_BIN="$binP5b/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP5b/out.txt" 2>&1 ) || rcP5b=$?
+check "P37-5. the red gate still fires per ticket inside the worktree (stage stops)" \
+  "[ '$rcP5b' -ne 0 ]"
+check "P37-5. the red-gate rejection is surfaced (mentions red gate / failed)" \
+  "grep -qi 'red gate\\|failed\\|stopped' '$binP5b/out.txt'"
+
+# --- P37-6: SAME-FILE wave composes (Session 37 defect fix) --------------------
+# The reported regression: a single wave of independent tickets that each ADD a
+# case branch + handler to the SAME dispatcher file at the SAME anchor. Built
+# blind off the frozen wave base, the serial cherry-pick of the 2nd/3rd ticket
+# CONFLICTS textually (two independent insertions at the same line). The fix must
+# still finish: exactly one commit per ticket on the mission branch in PLAN order,
+# ALL tickets' additions present (none lost), and NO stray worktrees.
+#
+# A worker stub that appends each ticket's case branch right before the SAME
+# `DISPATCH-ANCHOR` line in the shared dispatcher file. Each build runs off the
+# frozen base, so all three insert at the same spot → cherry-pick conflict.
+make_worker_stub_samefile() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    # Insert this ticket's case branch right before the shared dispatch anchor in
+    # the SAME file. additively. Reads the CURRENT dispatcher (in this worktree),
+    # so a serial rebuild off the updated tip composes on top of prior tickets.
+    f="src/dispatch.js"
+    line="  case '${tid}': return handle_${tid}();  // ADDED-${tid}"
+    awk -v ins="$line" '/DISPATCH-ANCHOR/{print ins} {print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    cat >"$out/result.json" <<JSON
+{
+  "ticketId": "${tid}",
+  "passed": true,
+  "attempts": 1,
+  "summary": "added ${tid} case to dispatcher."
+}
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A 3-ticket single-wave plan + waves, all independent, sharing only the file.
+write_samefile_plan_json() { # file
+  cat >"$1" <<'EOF'
+[
+  { "id": "t-001", "title": "case a", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file — no logic in common" },
+  { "id": "t-002", "title": "case b", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file — no logic in common" },
+  { "id": "t-003", "title": "case c", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file — no logic in common" }
+]
+EOF
+}
+write_samefile_waves_json() { # file
+  cat >"$1" <<'EOF'
+[
+  { "wave": 1, "tickets": [
+      { "id": "t-001", "issue": 101 },
+      { "id": "t-002", "issue": 102 },
+      { "id": "t-003", "issue": 103 }
+  ] }
+]
+EOF
+}
+# A repo at stage implement, mission branch, with the shared dispatcher committed.
+new_repo_samefile() { # echoes repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && mkdir -p src \
+      && printf 'function dispatch(x){\n  switch(x){\n  // DISPATCH-ANCHOR\n  default: return null;\n  }\n}\n' > src/dispatch.js \
+      && git add src/dispatch.js && git commit -qm seed \
+      && git checkout -q -b "lcars/$MID" )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_samefile_plan_json "$m/approved-plan.json"
+  write_samefile_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dispatch cases",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  echo "$repo"
+}
+
+binP6="$TMPROOT/p37-6bin"; rm -rf "$binP6"; mkdir -p "$binP6"
+make_worker_stub_samefile "$binP6/worker"; make_gh_stub "$binP6/gh"
+repoP6="$(new_repo_samefile)"
+rcP6=0
+( cd "$repoP6" && LCARS_MAX_PARALLEL=3 \
+    LCARS_WORKER_BIN="$binP6/worker" LCARS_GH_BIN="$binP6/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP6/out.txt" 2>&1 ) || rcP6=$?
+sP6="$(state_of "$repoP6")"
+check "P37-6. the same-file wave Stage completes (no hard stop)" \
+  "[ '$rcP6' -eq 0 ]"
+check "P37-6. the Stage advanced to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$sP6'"
+logP6="$( cd "$repoP6" && git log --format='%s' "lcars/$MID" )"
+check "P37-6. exactly one commit per ticket on the mission branch" \
+  "[ \"\$(printf '%s\n' \"$logP6\" | grep -c 'lcars(.*) t-001:')\" = '1' ] \
+   && [ \"\$(printf '%s\n' \"$logP6\" | grep -c 'lcars(.*) t-002:')\" = '1' ] \
+   && [ \"\$(printf '%s\n' \"$logP6\" | grep -c 'lcars(.*) t-003:')\" = '1' ]"
+# Plan order: newest-first in git log → t-003 above t-002 above t-001.
+p6a="$(printf '%s\n' "$logP6" | grep -n 't-001:' | head -1 | cut -d: -f1)"
+p6b="$(printf '%s\n' "$logP6" | grep -n 't-002:' | head -1 | cut -d: -f1)"
+p6c="$(printf '%s\n' "$logP6" | grep -n 't-003:' | head -1 | cut -d: -f1)"
+check "P37-6. commits land in PLAN order (t-001, then t-002, then t-003)" \
+  "[ -n \"$p6a\" ] && [ -n \"$p6b\" ] && [ -n \"$p6c\" ] && [ \"$p6a\" -gt \"$p6b\" ] && [ \"$p6b\" -gt \"$p6c\" ]"
+check "P37-6. each commit carries the ticket's OWN summary" \
+  "printf '%s\n' \"$logP6\" | grep -q 't-001: added t-001' \
+   && printf '%s\n' \"$logP6\" | grep -q 't-002: added t-002' \
+   && printf '%s\n' \"$logP6\" | grep -q 't-003: added t-003'"
+# ALL three additions are present in the final dispatcher — none lost / overwritten.
+check "P37-6. the shared file contains ALL THREE tickets' additions (none lost)" \
+  "grep -q 'ADDED-t-001' '$repoP6/src/dispatch.js' \
+   && grep -q 'ADDED-t-002' '$repoP6/src/dispatch.js' \
+   && grep -q 'ADDED-t-003' '$repoP6/src/dispatch.js'"
+check "P37-6. no stray git worktrees remain after the same-file wave" \
+  "[ -z \"\$( cd '$repoP6' && git worktree list --porcelain | grep -iE 't-00[123]' )\" ] \
+   && [ ! -d '$repoP6/.git/lcars/missions/$MID/worktrees' ]"
+check "P37-6. the working tree is clean afterwards" \
+  "[ -z \"\$( cd '$repoP6' && git status --porcelain )\" ]"
+
+# --- P37-7: an UNRECOVERABLE same-file failure parks at awaiting-human ----------
+# When a conflicting ticket cannot be made green even on the serial rebuild (its
+# Implementer flags the human), the Stage must NOT bare-die: it must clean up ALL
+# worktrees AND route through the awaiting-human gate (label + pending question),
+# the same recourse a normal exhausted ticket gets — and leave no partial,
+# recourse-less commit set stranded.
+make_worker_stub_samefile_flag() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    f="src/dispatch.js"
+    line="  case '${tid}': return handle_${tid}();  // ADDED-${tid}"
+    awk -v ins="$line" '/DISPATCH-ANCHOR/{print ins} {print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    if [ "$tid" = "t-002" ]; then
+      # t-002 conflicts on replay AND cannot be made green on rebuild → unrecoverable.
+      cat >"$out/result.json" <<JSON
+{ "ticketId": "t-002", "passed": false, "attempts": 5, "summary": "could not get t-002 green." }
+JSON
+    else
+      cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "added ${tid} case to dispatcher." }
+JSON
+    fi
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+binP7="$TMPROOT/p37-7bin"; rm -rf "$binP7"; mkdir -p "$binP7"
+make_worker_stub_samefile_flag "$binP7/worker"; make_gh_stub "$binP7/gh"
+export GH_LOG="$binP7/gh.log"; : >"$GH_LOG"
+repoP7="$(new_repo_samefile)"
+rcP7=0
+( cd "$repoP7" && LCARS_MAX_PARALLEL=3 \
+    LCARS_WORKER_BIN="$binP7/worker" LCARS_GH_BIN="$binP7/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binP7/out.txt" 2>&1 ) || rcP7=$?
+sP7="$(state_of "$repoP7")"
+check "P37-7. an unrecoverable conflicting ticket parks at awaiting-human (state)" \
+  "grep -q '\"awaitingHuman\": *true' '$sP7'"
+check "P37-7. it stays at the implement stage (not advanced to verify)" \
+  "grep -q '\"stage\": *\"implement\"' '$sP7'"
+check "P37-7. the awaiting-human label is applied (the human gate, not a bare die)" \
+  "grep -q 'add-label lcars:awaiting-human' '$binP7/gh.log'"
+check "P37-7. a pending question naming t-002 is recorded" \
+  "[ -f '$repoP7/.git/lcars/missions/$MID/pending.json' ] && grep -q 't-002' '$repoP7/.git/lcars/missions/$MID/pending.json'"
+check "P37-7. NO stray git worktrees remain after the escalation" \
+  "[ -z \"\$( cd '$repoP7' && git worktree list --porcelain | grep -iE 't-00[123]' )\" ] \
+   && [ ! -d '$repoP7/.git/lcars/missions/$MID/worktrees' ]"
+check "P37-7. the working tree is clean after the escalation (no stranded conflict)" \
+  "[ -z \"\$( cd '$repoP7' && git status --porcelain )\" ]"
 
 # ==========================================================================
 echo

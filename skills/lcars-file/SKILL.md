@@ -74,6 +74,75 @@ a clear picture of what's being built *and what isn't*, then stop. Don't
 manufacture ambiguity to pad the session, and don't cut it short while real
 branches are still unresolved.
 
+### Scale the PRD's depth to the Mission's complexity
+
+The *same judgment* that sets the interview length sets the PRD's depth — it is
+a JUDGMENT, not a rigid threshold. The required sections below are always
+present, but **how much each carries scales with complexity**:
+
+- **Trivial Mission** (a one-line bug, a copy tweak, a single obvious fix): keep
+  the PRD THIN. A one-sentence Goal, one or two crisp acceptance criteria, a
+  terse Out of Scope / Constraints. Do **not** over-specify small work — and
+  write **no `adr.md`** (see below). Padding a trivial Mission wastes downstream
+  comprehension budget.
+- **Complex Mission** (a broad feature, a cross-cutting change, anything with
+  real architectural choices): go DEEP. Spell out the acceptance criteria
+  exhaustively, name every out-of-scope boundary, and enumerate the real
+  Constraints — and additionally write an **engineering ADR set** (`adr.md`,
+  below) capturing the high-level architectural decisions the engine has no
+  out-of-the-box context for.
+
+Match the depth to the work in front of you: a thin PRD for thin work, a deep
+PRD for deep work. Use the same "don't pad / don't cut short" discipline you use
+for the interview length.
+
+### Engineering ADRs (complex Missions only)
+
+For a **complex** Mission, also write an **`adr.md`** — the high-level
+**Architecture Decision Records** the downstream stages have no out-of-the-box
+context for. ADRs are **declarative facts** every later worker may read (with one
+hard exception: **research agents never see them** — Research is
+context-free by design). They capture **engineering** decisions only:
+
+- **In scope for an ADR:** framework / library choice, the overall architecture
+  or module boundaries, key data shapes / schemas, and the load-bearing
+  constraints those impose.
+- **NOT in an ADR:** implementation detail or ticket-level decisions — those stay
+  with Plan and Implement. Keep the role separation; an ADR is the *frame*, not
+  the *build*.
+
+Each ADR **must** carry these four sections, in this exact shape — `file.sh`
+rejects an `adr.md` missing any of them:
+
+```markdown
+# Architecture Decision Records: <mission title>
+
+## ADR-001: <short decision title>
+
+**Context:** <the forces / situation that make a decision necessary>
+**Decision:** <the decision taken>
+**Alternatives considered:** <the options weighed and why they lost>
+**Consequences:** <the rationale + what this commits us to / rules out>
+```
+
+Add one `## ADR-NNN:` block per decision. For a **trivial** Mission, write **no
+`adr.md` at all** (at most a single one-liner ADR if there is genuinely one
+architectural fact worth pinning) — never burden small work with ceremony.
+
+When (and only when) the Mission is complex, write the ADRs to a temp file too:
+
+```bash
+adr=$(mktemp); cat > "$adr" <<'ADR'
+# Architecture Decision Records: ...
+...
+ADR
+```
+
+…and pass it with `--adr "$adr"` alongside `--prd` in the next step. For a
+trivial Mission, omit `--adr` entirely. **Align only SEEDS the ADRs** — the
+Validate stage may later REFINE them when research findings change a decision, so
+keep them high-level and revisable, not exhaustive.
+
 When alignment is reached, write the PRD. It **must** contain all of these
 sections, in this exact shape — `file.sh` rejects a PRD that is missing any of
 them:
@@ -118,6 +187,16 @@ labels, records the issue number, and prints the summary:
 bash ~/.claude/skills/lcars-file/file.sh --prd "$prd"
 ```
 
+For a **complex** Mission, also hand over the ADR set you wrote (the script
+shape-checks it the same way it checks the PRD, then persists it as `adr.md`):
+
+```bash
+bash ~/.claude/skills/lcars-file/file.sh --prd "$prd" --adr "$adr"
+```
+
+For a **trivial** Mission, pass `--prd` only — no `--adr`, and no `adr.md` is
+written.
+
 Show the captain its output verbatim:
 
 ```
@@ -133,6 +212,7 @@ Show the captain its output verbatim:
 ```
 .git/lcars/missions/<id>/
   prd.md        ← the PRD from Align (the GitHub issue body, too)
+  adr.md        ← the engineering ADRs (COMPLEX Missions only; absent for trivial work)
   state.json    ← { id, type, title, stage: "align", created, model, githubIssue, branch, base }
 ```
 
@@ -146,6 +226,11 @@ pushes it and opens the PR with `--head lcars/<id> --base <base>`.
 
 - **PRD missing a required section** → the script exits non-zero and writes
   nothing. Finish Align — produce the missing section — and re-run.
+- **`--adr` given but an ADR is missing a required section** (Context / Decision
+  / Alternatives considered / Consequences) → the script exits non-zero and
+  writes nothing, same as a bad PRD. Fix the ADR shape and re-run. (`--adr` is
+  optional: omit it entirely for a trivial Mission — an absent `adr.md` is never
+  an error.)
 - **`gh` missing or issue creation fails** → the mission is still filed
   locally; `githubIssue` is recorded as `null` and the summary says so. Re-run
   after fixing `gh`, or open the issue by hand and record the number.

@@ -165,7 +165,9 @@ flowchart LR
       <p>A structured grilling session — not a chat — that resolves ambiguity in
       the idea and produces a <strong>PRD</strong> (the canonical spec). Adapts to
       complexity: a one-line bug earns a thin PRD; a complex feature earns a
-      thorough grilling.</p>
+      thorough grilling. A complex Mission also gets high-level <strong>engineering
+      ADRs</strong> (architecture/data-shape decisions + rationale), seeded here
+      and refined at Validate.</p>
 
       <h3><span class="stage-num">2</span>Research <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>Generates 0–20 questions from the PRD; each goes to a stateless parallel
@@ -216,7 +218,9 @@ flowchart TB
       <h3><span class="stage-num">7</span>Implement <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>Per ticket, an adversarial <strong>Test Writer → Implementer</strong>
       pair. Tests are written first, must fail (the red gate), then are locked
-      while the Implementer makes them pass.</p>
+      while the Implementer makes them pass. Independent tickets in a Wave build
+      <strong>concurrently</strong> in isolated worktrees, committing serially in
+      plan order.</p>
 
       <div class="diagram-wrap">
         <div class="diagram-label">Implement — the adversarial split</div>
@@ -510,7 +514,11 @@ implement   ✓ ⊘ isolated  11/11 tickets green
         <ul>
           <li><strong>Align is interactive and adaptive.</strong> A one-line bug
           fix produces a thin PRD in a minute; a complex feature earns a thorough
-          grilling. This is the one stage that is always a conversation.</li>
+          grilling. This is the one stage that is always a conversation. A complex
+          Mission also comes out with high-level <strong>engineering ADRs</strong>
+          — the framework/architecture/data-shape calls and their rationale — that
+          downstream workers read instead of re-deriving (Validate refines them if
+          research overturns a decision).</li>
           <li><strong>Research scales to ambiguity.</strong> A crisp PRD yields
           <em>zero</em> questions and skips through. A broad one fans out up to 20
           parallel agents. More than 20 → it explains why and lets you override or
@@ -530,7 +538,18 @@ implement   ✓ ⊘ isolated  11/11 tickets green
           pin — naming the seam to re-slice along; it loops until clean (or
           escalating after 3 rounds).</li>
           <li><strong>Implement is adversarial and guarded by the harness, not the
-          prompt.</strong> See the guardrails below.</li>
+          prompt.</strong> The Test Writer's tests must actually <strong>fail</strong>
+          before the Implementer runs — and the gate judges that <strong>quarantined
+          suite alone</strong>, never the repo's existing passing tests, so a
+          green-on-nothing contract can't slip through even in a repo whose own suite
+          is green (a rejection says <em>why</em> and grounds the next attempt). The
+          test files are <strong>locked</strong> so green can't be reached by editing
+          them, and a quality check rejects assertion-free suites. Independent tickets
+          in a Wave build <strong>concurrently</strong> in isolated per-ticket
+          worktrees (capped by <code>LCARS_MAX_PARALLEL</code>) and commit serially in
+          plan order, and each worker reads a per-ticket <strong>context manifest +
+          repo pack</strong> instead of cold-exploring the tree. Up to 5 attempts per
+          ticket, then it flags you.</li>
           <li><strong>Verify never auto-passes.</strong> Auto-advance always stops
           here. Shipping is your call.</li>
         </ul>
@@ -541,8 +560,10 @@ implement   ✓ ⊘ isolated  11/11 tickets green
         <div class="control-card">
           <div class="control-cmd">Red gate</div>
           <div class="control-desc">The Test Writer's tests must actually fail
-          before the Implementer runs. A suite that passes against no
-          implementation is rejected.</div>
+          before the Implementer runs — judged on that <strong>quarantined suite
+          alone</strong>, never the repo's existing passing tests, so a
+          green-on-nothing contract is caught even when the repo's own suite is
+          green. A rejection reports <em>why</em> and grounds the next attempt.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">Immutable tests</div>
@@ -613,7 +634,12 @@ flowchart TB
           Stage's reasoning to leak into the next, even when the whole pipeline
           runs in one sitting. Each Stage records <strong>decisions and their
           rationale</strong> — the <em>why</em>, not just the <em>what</em> —
-          because the artifact is the entire contract.</p>
+          because the artifact is the entire contract. What may cross the boundary
+          is always a <strong>declarative fact</strong> — the PRD, the engineering
+          ADRs, a ticket's context manifest, the repo pack — never another worker's
+          generated reasoning, and never anything at all to a Research Agent:
+          sharing facts lets a worker read instead of re-derive (cutting cost)
+          without the conversational carryover cold isolation exists to prevent.</p>
           <div class="lcars-readout">STAGE MARKER: ⊘ isolated  (printed on every stage line)
 IF A STAGE CANNOT ISOLATE → the driver refuses LOUDLY, changes nothing.
 An inline run must never masquerade as isolated.</div>
@@ -654,18 +680,22 @@ An inline run must never masquerade as isolated.</div>
 
       <pre>.git/lcars/
   config.json                     repo config (model, context file, test command, notify)
+  context-pack.md                 durable repo pack (run-tests, conventions, architecture)
   missions/
     lcars-20260604-001/
       state.json                  id, type, stage, githubIssue, flags
       prd.md                      Align output — the canonical spec
+      adr.md                      engineering ADRs (complex Missions; refined at Validate)
       research/&lt;n&gt;.json           per-question findings
       validated-plan.md           Validate synthesis (+ rationale)
       plan.json                   Plan tickets (each with rationale)
       approved-plan.json          Plan Review's approved copy
       plan-review-&lt;round&gt;.json    objections per round
+      manifests/&lt;ticket&gt;.md       per-ticket context manifest (files + signatures + ADRs)
       waves.json                  dependency graph → waves + sub-issue numbers
       tickets/&lt;ticket&gt;/tests/      Test Writer's locked tests
       tickets/&lt;ticket&gt;/result.json  pass/attempts/summary
+      tickets/&lt;ticket&gt;/red-gate-signal.txt  why a rejected suite failed the red gate (grounds the retry)
       pending.json / answers.json   escalated questions + your answers
       feedback.md                 accumulating Verify feedback history</pre>
 
@@ -736,6 +766,11 @@ An inline run must never masquerade as isolated.</div>
         <div class="control-card">
           <div class="control-cmd">LCARS_GH_BIN</div>
           <div class="control-desc">The GitHub CLI. Default: <code>gh</code>.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">LCARS_MAX_PARALLEL</div>
+          <div class="control-desc">Concurrency cap for a Wave's tickets and the
+          Research fan-out. Default: <code>4</code>.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">LCARS_NOTIFY</div>

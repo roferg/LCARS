@@ -56,15 +56,21 @@ fi
 PROJECT_NAME="$(basename "$TOPLEVEL")"
 
 # --- detect the repo's test command --------------------------------------
-# The Implement red gate runs this to prove the Test Writer's suite FAILS before
-# the Implementer runs. Detect a sensible default from the repo's ecosystem; the
-# captain can override it in config.json (or per-run via $LCARS_TEST_CMD). Null
-# when nothing is detected — the red gate then warns and skips rather than blocks.
+# The Implement red gate (BUG-007) runs this to prove the Test Writer's suite
+# FAILS before the Implementer runs — but it must evaluate the QUARANTINED tests,
+# not the repo's existing suite. So the gate exports $LCARS_TESTS_DIR pointing at
+# the quarantined dir and the testCommand MUST honour it (scope itself to that
+# dir). We therefore emit a $LCARS_TESTS_DIR-honouring default per ecosystem:
+# when the var is set the runner runs ONLY that dir; unset (a human running it by
+# hand) it falls back to the whole suite. The captain can override it in
+# config.json or per-run via $LCARS_TEST_CMD. Null when nothing is detected — the
+# red gate then warns and skips (the pre-existing degradation), it does not block.
 detect_test_cmd() {
   if [ -f "$TOPLEVEL/package.json" ] && grep -q '"test"[[:space:]]*:' "$TOPLEVEL/package.json"; then
-    echo "npm test"; return; fi
+    # jest/mocha/vitest take a path positional after `--`; empty runs the suite.
+    echo 'npm test -- ${LCARS_TESTS_DIR:-}'; return; fi
   if [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ]; then
-    echo "pytest"; return; fi
+    echo 'pytest ${LCARS_TESTS_DIR:-.}'; return; fi
   if [ -f "$TOPLEVEL/Cargo.toml" ]; then echo "cargo test"; return; fi
   if [ -f "$TOPLEVEL/go.mod" ]; then echo "go test ./..."; return; fi
   if [ -f "$TOPLEVEL/Makefile" ] && grep -q '^test:' "$TOPLEVEL/Makefile"; then echo "make test"; return; fi
@@ -73,6 +79,23 @@ detect_test_cmd() {
 TEST_CMD="${LCARS_TEST_CMD:-$(detect_test_cmd)}"
 if [ -n "$TEST_CMD" ]; then
   TESTCMD_VALUE="\"$TEST_CMD\""; TESTCMD_HUMAN="$TEST_CMD"
+  # LOUD flag (BUG-007 invariant): the red gate can only judge the QUARANTINED
+  # tests if the command honours $LCARS_TESTS_DIR. A command that ignores it runs
+  # the repo's EXISTING suite, so a green result proves nothing and the gate must
+  # reject it. Warn the captain at init time rather than letting it silently stall
+  # Implement later. (cargo/go/make defaults can't be auto-scoped to a dir.)
+  case "$TEST_CMD" in
+    *LCARS_TESTS_DIR*) : ;;  # honours it — nothing to flag
+    *)
+      printf '  ⚠ testCommand "%s" does not reference $LCARS_TESTS_DIR.\n' "$TEST_CMD" >&2
+      printf '    The Implement red gate runs it with $LCARS_TESTS_DIR pointing at the\n' >&2
+      printf '    quarantined fail-first tests; if the command ignores that var it will run\n' >&2
+      printf '    the repo'"'"'s EXISTING suite instead, and the red gate will reject every\n' >&2
+      printf '    quarantined suite (a green-on-nothing result proves nothing). Edit\n' >&2
+      printf '    testCommand in .git/lcars/config.json to run ONLY "$LCARS_TESTS_DIR" when\n' >&2
+      printf '    it is set (e.g. pytest "${LCARS_TESTS_DIR:-.}").\n' >&2
+      ;;
+  esac
 else
   TESTCMD_VALUE='null'; TESTCMD_HUMAN="none (set testCommand to enable the Implement red gate)"
 fi
