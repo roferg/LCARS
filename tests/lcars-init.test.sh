@@ -263,6 +263,100 @@ check "idempotent: created timestamp preserved" "[ '$first_created' = '$second_c
 check "S30 init: exclude append is idempotent (no duplicate .lcars-* lines)" \
   "[ \"\$( grep -c '^\.lcars-\*\$' '$repo3/.git/info/exclude' )\" = '1' ]"
 
+# --- Session 43: config write MERGES (no clobber of captain's customizations) -
+# Re-running init must PRESERVE keys the captain customized in config.json and
+# only fill in MISSING keys. This fixes the clobber where init rewrote the whole
+# file from detected defaults on every run.
+repoM="$(new_repo)"
+make_claude_stub "$repoM/claude"; make_gh_stub "$repoM/gh"
+export GH_LOG="$repoM/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoM/existing"; : >"$GH_EXISTING"
+# First init creates a default config.
+( cd "$repoM" && LCARS_CLAUDE_BIN="$repoM/claude" LCARS_GH_BIN="$repoM/gh" bash "$SCRIPT" >/dev/null 2>&1 )
+# Captain hand-edits config: a custom test command, model, and budget.
+cfgM="$repoM/.git/lcars/config.json"
+cat >"$cfgM" <<'JSON'
+{
+  "model": "claude-opus-custom",
+  "projectName": "myproj",
+  "contextFile": null,
+  "testCommand": "my-bespoke-runner ${LCARS_TESTS_DIR:-.}",
+  "comprehensionBudget": 4242,
+  "created": "2020-01-01T00:00:00Z"
+}
+JSON
+# Re-run init.
+( cd "$repoM" && LCARS_CLAUDE_BIN="$repoM/claude" LCARS_GH_BIN="$repoM/gh" bash "$SCRIPT" >/dev/null 2>&1 )
+check "S43 init: custom testCommand survives re-run (no clobber)" \
+  "grep -q 'my-bespoke-runner' '$cfgM'"
+check "S43 init: custom model survives re-run" \
+  "grep -q '\"model\": *\"claude-opus-custom\"' '$cfgM'"
+check "S43 init: custom comprehensionBudget survives re-run" \
+  "grep -q '\"comprehensionBudget\": *4242' '$cfgM'"
+check "S43 init: custom created survives re-run" \
+  "grep -q '\"created\": *\"2020-01-01T00:00:00Z\"' '$cfgM'"
+
+# A config MISSING a key gets it filled in on re-run, existing values untouched.
+repoF="$(new_repo)"
+make_claude_stub "$repoF/claude"; make_gh_stub "$repoF/gh"
+export GH_LOG="$repoF/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoF/existing"; : >"$GH_EXISTING"
+( cd "$repoF" && LCARS_CLAUDE_BIN="$repoF/claude" LCARS_GH_BIN="$repoF/gh" bash "$SCRIPT" >/dev/null 2>&1 )
+cfgF="$repoF/.git/lcars/config.json"
+# Captain's config has a custom model but is MISSING comprehensionBudget.
+cat >"$cfgF" <<'JSON'
+{
+  "model": "captain-model",
+  "projectName": "p",
+  "contextFile": null,
+  "testCommand": null,
+  "created": "2021-05-05T00:00:00Z"
+}
+JSON
+( cd "$repoF" && LCARS_CLAUDE_BIN="$repoF/claude" LCARS_GH_BIN="$repoF/gh" bash "$SCRIPT" >/dev/null 2>&1 )
+check "S43 init: a MISSING key (comprehensionBudget) is filled with its default" \
+  "grep -q '\"comprehensionBudget\": *1200' '$cfgF'"
+check "S43 init: the present custom model is preserved while filling a missing key" \
+  "grep -q '\"model\": *\"captain-model\"' '$cfgF'"
+
+# --- Session 43 follow-up: the readiness banner reflects the PERSISTED config -
+# Because init is now config-PRESERVING, the summary line on a re-run must report
+# the values that ACTUALLY survived in config.json (the captain's customizations),
+# not the freshly-detected defaults. Otherwise the banner misleads the captain
+# into thinking their customization was reset when it actually survived.
+repoB="$(new_repo)"
+make_claude_stub "$repoB/claude"; make_gh_stub "$repoB/gh"
+export GH_LOG="$repoB/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoB/existing"; : >"$GH_EXISTING"
+( cd "$repoB" && LCARS_CLAUDE_BIN="$repoB/claude" LCARS_GH_BIN="$repoB/gh" bash "$SCRIPT" >/dev/null 2>&1 )
+cfgB="$repoB/.git/lcars/config.json"
+cat >"$cfgB" <<'JSON'
+{
+  "model": "claude-opus-custom",
+  "projectName": "myproj",
+  "contextFile": null,
+  "testCommand": "my-custom-test-cmd ${LCARS_TESTS_DIR:-.}",
+  "comprehensionBudget": 1200,
+  "created": "2020-01-01T00:00:00Z"
+}
+JSON
+( cd "$repoB" && LCARS_CLAUDE_BIN="$repoB/claude" LCARS_GH_BIN="$repoB/gh" bash "$SCRIPT" >outB.txt 2>&1 )
+check "S43 init: summary banner reflects the PERSISTED custom model" \
+  "grep -q 'config.json written' '$repoB/outB.txt' && grep -q 'model: claude-opus-custom' '$repoB/outB.txt'"
+check "S43 init: summary banner reflects the PERSISTED custom testCommand" \
+  "grep -q 'my-custom-test-cmd' '$repoB/outB.txt'"
+check "S43 init: summary banner does NOT show the detected default model on a re-run" \
+  "! grep -q 'model: claude-sonnet' '$repoB/outB.txt'"
+
+# When the persisted testCommand is genuinely null, the banner still shows 'none'.
+repoBn="$(new_repo)"
+make_claude_stub "$repoBn/claude"; make_gh_stub "$repoBn/gh"
+export GH_LOG="$repoBn/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoBn/existing"; : >"$GH_EXISTING"
+( cd "$repoBn" && LCARS_CLAUDE_BIN="$repoBn/claude" LCARS_GH_BIN="$repoBn/gh" bash "$SCRIPT" >outBn.txt 2>&1 )
+check "S43 init: a null persisted testCommand renders as 'none' in the banner" \
+  "grep -q 'tests: none' '$repoBn/outBn.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars init: %d passed, %d failed\n' "$pass" "$fail"

@@ -19,6 +19,10 @@ CLAUDE_BIN="${LCARS_CLAUDE_BIN:-claude}"
 GH_BIN="${LCARS_GH_BIN:-gh}"
 DEFAULT_MODEL="${LCARS_MODEL:-claude-sonnet}"
 
+# Shared label set + merge-preserving config writer (also used by `lcars update`).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/lcars-common.sh"
+
 die() { printf 'lcars init: %s\n' "$1" >&2; exit 1; }
 
 # --- locate the repo ------------------------------------------------------
@@ -106,16 +110,29 @@ if [ -f "$CONFIG" ] && grep -q '"created"' "$CONFIG"; then
 fi
 [ -n "${CREATED:-}" ] || CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-cat >"$CONFIG" <<EOF
-{
-  "model": "$DEFAULT_MODEL",
-  "projectName": "$PROJECT_NAME",
-  "contextFile": $CONTEXT_VALUE,
-  "testCommand": $TESTCMD_VALUE,
-  "comprehensionBudget": 1200,
-  "created": "$CREATED"
-}
-EOF
+# Write config.json by MERGE, never clobber: any key already present (a captain's
+# customized testCommand / model / comprehensionBudget) is preserved; only
+# missing keys are filled from the detected defaults below. The desired list is
+# the canonical schema, in key order.
+DESIRED_CONFIG="model=\"$DEFAULT_MODEL\"
+projectName=\"$PROJECT_NAME\"
+contextFile=$CONTEXT_VALUE
+testCommand=$TESTCMD_VALUE
+comprehensionBudget=1200
+created=\"$CREATED\""
+lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
+
+# The readiness banner must report what ACTUALLY landed in config.json after the
+# merge — not the freshly-detected defaults. On a fresh repo the persisted values
+# equal the defaults; on a re-run over a captain's hand-edited config the merge
+# PRESERVES their customizations, so we read them back and render those instead.
+# Keep the human-friendly rendering: an absent/null value shows as "none".
+PERSISTED_MODEL="$(lcars_config_get "$CONFIG" model)"
+[ -n "$PERSISTED_MODEL" ] || PERSISTED_MODEL="$DEFAULT_MODEL"
+PERSISTED_CONTEXT="$(lcars_config_get "$CONFIG" contextFile)"
+[ -n "$PERSISTED_CONTEXT" ] || PERSISTED_CONTEXT="none"
+PERSISTED_TESTCMD="$(lcars_config_get "$CONFIG" testCommand)"
+[ -n "$PERSISTED_TESTCMD" ] || PERSISTED_TESTCMD="none"
 
 # --- LOCAL: keep the harness's scratch out of the target repo -------------
 # LCARS workers leave throwaway scratch in the tree (LCARS runners, and each
@@ -139,41 +156,8 @@ for g in '.lcars-*' '*/.lcars-*' '.lcars-run-*' '*/.lcars-run-*' \
 done
 
 # --- GITHUB: create the LCARS label set -----------------------------------
-# name|color groups, matching the spec.
-STAGE_COLOR="FF9900"
-TYPE_COLOR="4499FF"
-STATUS_COLOR="FF3344"
-REL_COLOR="9977FF"
-ROLE_COLOR="00B894"
-
-STAGE_LABELS="align research validate plan plan-review schedule implement verify done"
-TYPE_LABELS="feature bug"
-STATUS_LABELS="paused awaiting-human"
-REL_LABELS="linked"
-ROLE_LABELS="mission ticket"
-
-label_desc() {
-  case "$1" in
-    lcars:align)          echo "Stage: aligning on the mission goal with the captain" ;;
-    lcars:research)       echo "Stage: exploring the codebase and constraints" ;;
-    lcars:validate)       echo "Stage: confirming research with the captain" ;;
-    lcars:plan)           echo "Stage: drafting the implementation plan" ;;
-    lcars:plan-review)    echo "Stage: captain reviewing the plan" ;;
-    lcars:schedule)       echo "Stage: breaking the plan into tasks" ;;
-    lcars:implement)      echo "Stage: executing the tasks" ;;
-    lcars:verify)         echo "Stage: confirming the work meets the goal" ;;
-    lcars:done)           echo "Stage: mission complete" ;;
-    lcars:feature)        echo "Type: a feature mission" ;;
-    lcars:bug)            echo "Type: a bug mission" ;;
-    lcars:paused)         echo "Status: mission paused" ;;
-    lcars:awaiting-human) echo "Status: waiting on the captain's orders" ;;
-    lcars:linked)         echo "Relationship: linked to another mission" ;;
-    lcars:mission)        echo "Role: a Mission's own command-and-control issue" ;;
-    lcars:ticket)         echo "Role: an implementation sub-issue spun up by Schedule" ;;
-    *)                    echo "LCARS label" ;;
-  esac
-}
-
+# The canonical label set and the create-if-missing logic are shared with
+# `lcars update` via lcars-common.sh, so the two skills can never drift.
 GH_REPO=""
 EXISTING_LABELS=""
 LABELS_CREATED=0
@@ -184,38 +168,14 @@ if command -v "$GH_BIN" >/dev/null 2>&1; then
   GH_OK=1
   GH_REPO="$("$GH_BIN" repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)"
   EXISTING_LABELS="$("$GH_BIN" label list --limit 200 --json name -q '.[].name' 2>/dev/null)"
-fi
-
-# Returns 0 if the label name is already present on the repo.
-label_exists() {
-  printf '%s\n' "$EXISTING_LABELS" | grep -Fxq "$1"
-}
-
-create_label() {
-  local name="$1" color="$2"
-  if label_exists "$name"; then
-    LABELS_SKIPPED=$((LABELS_SKIPPED + 1))
-    return 0
-  fi
-  if "$GH_BIN" label create "$name" --color "$color" --description "$(label_desc "$name")" >/dev/null 2>&1; then
-    LABELS_CREATED=$((LABELS_CREATED + 1))
-  else
-    # Treat "already exists" races and other soft failures as skips.
-    LABELS_SKIPPED=$((LABELS_SKIPPED + 1))
-  fi
-}
-
-if [ "$GH_OK" -eq 1 ]; then
-  for n in $STAGE_LABELS;  do create_label "lcars:$n" "$STAGE_COLOR";  done
-  for n in $TYPE_LABELS;   do create_label "lcars:$n" "$TYPE_COLOR";   done
-  for n in $STATUS_LABELS; do create_label "lcars:$n" "$STATUS_COLOR"; done
-  for n in $REL_LABELS;    do create_label "lcars:$n" "$REL_COLOR";    done
-  for n in $ROLE_LABELS;   do create_label "lcars:$n" "$ROLE_COLOR";   done
+  lcars_create_labels "$GH_BIN" "$EXISTING_LABELS"
+  LABELS_CREATED="$LCARS_LABELS_CREATED"
+  LABELS_SKIPPED="$LCARS_LABELS_SKIPPED"
 fi
 
 # --- OUTPUT: readiness summary --------------------------------------------
 echo "  ✓ .git/lcars/ created"
-echo "  ✓ config.json written  (model: $DEFAULT_MODEL, context: $CONTEXT_HUMAN, tests: $TESTCMD_HUMAN)"
+echo "  ✓ config.json written  (model: $PERSISTED_MODEL, context: $PERSISTED_CONTEXT, tests: $PERSISTED_TESTCMD)"
 echo "  ✓ Claude CLI verified  ($CLAUDE_VERSION)"
 if [ "$GH_OK" -eq 1 ]; then
   total=$((LABELS_CREATED + LABELS_SKIPPED))
