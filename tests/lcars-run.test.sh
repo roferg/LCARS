@@ -1827,6 +1827,19 @@ JSON
     ;;
   validate)
     [ "${STUB_SCOPE:-0}" = "1" ] && printf 'Global or per-course leaderboard?\n' >"$out/scope.txt"
+    # Option B: a refined ADR when research changed a decision (STUB_ADR=1).
+    if [ "${STUB_ADR:-0}" = "1" ]; then
+      cat >"$out/adr.md" <<ADR
+# Architecture Decision Records: Add dark mode (REFINED BY VALIDATE)
+
+## ADR-001: Theme delivery via data-theme
+
+**Context:** Research confirmed the token layer.
+**Decision:** Flip a data-theme attribute on <html>.
+**Alternatives considered:** A parallel dark stylesheet.
+**Consequences:** Reuses the token layer.
+ADR
+    fi
     cat >"$out/validated-plan.md" <<MD
 # Validated Plan: Add dark mode
 
@@ -2081,6 +2094,110 @@ check "4. Test Writer is denied shell (no Bash)" \
   "! printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-test-writer)\" | grep -q 'Bash'"
 check "4. Implementer gets shell (Bash) to run the tests" \
   "printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-implementer)\" | grep -q 'Bash'"
+
+# --- Behaviour 9: the engineering ADR is a downstream-readable artifact --------
+# Session 36: Align seeds adr.md for complex Missions; Validate may refine it.
+# Every downstream worker EXCEPT the research agents may read it. These tests
+# assert the assembled worker prompt LISTS the adr.md PATH when the file exists,
+# for Validate / Plan / Test Writer / Implementer — and that the RESEARCH workers
+# and Plan Review NEVER see it (purity + independence invariants).
+
+# Drop a well-formed adr.md into a mission dir.
+seed_adr() { # mission-dir
+  cat >"$1/adr.md" <<'EOF'
+# Architecture Decision Records: Add dark mode
+
+## ADR-001: Theme delivery via data-theme
+
+**Context:** The app ships a --color-* token layer.
+**Decision:** Flip a data-theme attribute on <html>.
+**Alternatives considered:** A parallel dark stylesheet.
+**Consequences:** Reuses the token layer; no parallel colour system.
+EOF
+}
+
+# 9a. Validate lists adr.md when it exists (Align-seeds / Validate-refines).
+repoW9v="$(new_repo_with_validate_mission)"; arm_worker "$repoW9v"
+MDIR9v="$repoW9v/.git/lcars/missions/$MID"
+seed_adr "$MDIR9v"
+( cd "$repoW9v" && LCARS_WORKER_BIN="$repoW9v/worker" LCARS_GH_BIN="$repoW9v/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
+VP9v="$(prompt_for_role "$WORKER_CALLS" validate)"
+check "9a. validate worker is fed the adr.md path when it exists" \
+  "printf '%s' \"\$VP9v\" | grep -qF '$MDIR9v/adr.md'"
+
+# Option B persistence: cmd_validate must copy a worker-refined adr.md back into
+# the mission dir. The worker stub (STUB_ADR=1) emits a refined adr.md; assert it
+# overwrites the seeded one in the mission dir.
+repoW9vr="$(new_repo_with_validate_mission)"; arm_worker "$repoW9vr"
+MDIR9vr="$repoW9vr/.git/lcars/missions/$MID"
+seed_adr "$MDIR9vr"
+( cd "$repoW9vr" && STUB_ADR=1 LCARS_WORKER_BIN="$repoW9vr/worker" LCARS_GH_BIN="$repoW9vr/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
+check "9a. a worker-refined adr.md persists into the mission dir (option B)" \
+  "[ -f '$MDIR9vr/adr.md' ] && grep -q 'REFINED BY VALIDATE' '$MDIR9vr/adr.md'"
+
+# 9b. Validate does NOT list adr.md when the Mission has none (trivial Mission).
+repoW9vn="$(new_repo_with_validate_mission)"; arm_worker "$repoW9vn"
+MDIR9vn="$repoW9vn/.git/lcars/missions/$MID"
+( cd "$repoW9vn" && LCARS_WORKER_BIN="$repoW9vn/worker" LCARS_GH_BIN="$repoW9vn/gh" \
+    bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
+VP9vn="$(prompt_for_role "$WORKER_CALLS" validate)"
+check "9b. validate worker is NOT fed an adr.md path when none exists" \
+  "! printf '%s' \"\$VP9vn\" | grep -qF '$MDIR9vn/adr.md'"
+
+# 9c. Plan lists adr.md when it exists.
+repoW9p="$(new_repo_with_plan_mission)"; arm_worker "$repoW9p"
+MDIR9p="$repoW9p/.git/lcars/missions/$MID"
+seed_adr "$MDIR9p"
+( cd "$repoW9p" && LCARS_WORKER_BIN="$repoW9p/worker" LCARS_GH_BIN="$repoW9p/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out.txt 2>&1 )
+PP9p="$(prompt_for_role "$WORKER_CALLS" plan)"
+check "9c. plan worker is fed the adr.md path when it exists" \
+  "printf '%s' \"\$PP9p\" | grep -qF '$MDIR9p/adr.md'"
+
+# 9d. Test Writer AND Implementer list adr.md when it exists.
+repoW9i="$(new_repo_with_implement_mission)"; arm_worker "$repoW9i"
+MDIR9i="$repoW9i/.git/lcars/missions/$MID"
+seed_adr "$MDIR9i"
+( cd "$repoW9i" && LCARS_WORKER_BIN="$repoW9i/worker" LCARS_GH_BIN="$repoW9i/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >out.txt 2>&1 )
+TWP9i="$(prompt_for_role "$WORKER_CALLS" implement-test-writer)"
+IMP9i="$(prompt_for_role "$WORKER_CALLS" implement-implementer)"
+check "9d. Test Writer worker is fed the adr.md path when it exists" \
+  "printf '%s' \"\$TWP9i\" | grep -qF '$MDIR9i/adr.md'"
+check "9d. Implementer worker is fed the adr.md path when it exists" \
+  "printf '%s' \"\$IMP9i\" | grep -qF '$MDIR9i/adr.md'"
+
+# 9e. PURITY: the RESEARCH workers NEVER see adr.md, even when it exists. Drive
+# Research from align with an adr.md already on disk; assert neither the
+# question-generator nor any research agent prompt names the adr path.
+repoW9r="$(new_repo_with_mission)"; arm_worker "$repoW9r"
+MDIR9r="$repoW9r/.git/lcars/missions/$MID"
+seed_adr "$MDIR9r"
+( cd "$repoW9r" && STUB_NQUESTIONS=2 LCARS_WORKER_BIN="$repoW9r/worker" LCARS_GH_BIN="$repoW9r/gh" \
+    bash "$SCRIPT" research --mission "$MID" >out.txt 2>&1 )
+RQP9r="$(prompt_for_role "$WORKER_CALLS" research-questions)"
+RAP9r="$(prompt_for_role "$WORKER_CALLS" research-agent)"
+check "9e. PURITY: research-questions worker is NEVER fed adr.md" \
+  "! printf '%s' \"\$RQP9r\" | grep -qF '$MDIR9r/adr.md'"
+check "9e. PURITY: research-questions worker mentions no adr at all" \
+  "! printf '%s' \"\$RQP9r\" | grep -qi 'adr'"
+check "9e. PURITY: a research agent worker is NEVER fed adr.md" \
+  "! printf '%s' \"\$RAP9r\" | grep -qF '$MDIR9r/adr.md'"
+check "9e. PURITY: a research agent worker mentions no adr at all" \
+  "! printf '%s' \"\$RAP9r\" | grep -qi 'adr'"
+
+# 9f. INDEPENDENCE: Plan Review NEVER sees adr.md (it judges tickets alone; the
+# ADR is seeded planning context that would leak the spec in).
+repoW9pr="$(new_repo_with_plan_review_mission)"; arm_worker "$repoW9pr"
+MDIR9pr="$repoW9pr/.git/lcars/missions/$MID"
+seed_adr "$MDIR9pr"
+( cd "$repoW9pr" && LCARS_WORKER_BIN="$repoW9pr/worker" LCARS_GH_BIN="$repoW9pr/gh" \
+    bash "$SCRIPT" plan-review --mission "$MID" >out.txt 2>&1 )
+PRP9pr="$(prompt_for_role "$WORKER_CALLS" plan-review)"
+check "9f. INDEPENDENCE: Plan Review worker is NOT fed the adr.md path" \
+  "! printf '%s' \"\$PRP9pr\" | grep -qF '$MDIR9pr/adr.md'"
 
 # --- Behaviour 5: an artifact missing its decisions/rationale is REFUSED -------
 # validated-plan.md without a ## Rationale section

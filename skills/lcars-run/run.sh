@@ -1799,6 +1799,12 @@ cmd_validate() {
   # re-raise the same question — otherwise the awaiting-human gate loops forever.
   [ -f "$MISSION_DIR/answers.json" ] && extra="$extra
 - $MISSION_DIR/answers.json   (the captain's answer resolving the prior scope question — treat it as DECIDED and fold it in; do not re-raise it)"
+  # The engineering ADRs Align seeded for a complex Mission (Context / Decision /
+  # Alternatives / Consequences). Align SEEDS them; Validate may REFINE them when
+  # a research finding changes a decision (option B) — so feed the path when it
+  # exists. A trivial Mission has no adr.md and this is simply skipped.
+  [ -f "$MISSION_DIR/adr.md" ] && extra="$extra
+- $MISSION_DIR/adr.md   (the engineering ADRs Align seeded; REVISE or APPEND when a finding changes a decision — emit a refined adr.md)"
   # The durable repo context source (CONTEXT.md or the generated pack) — shared
   # declarative facts, by PATH only. Safe for this declarative Stage.
   extra="$extra$(context_extra_block)"
@@ -1821,7 +1827,14 @@ cmd_validate() {
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" validate-advance \
         --mission "$MISSION_ID" --plan "$odir/validated-plan.md" || rc=$?
-      if [ "$rc" -eq 0 ]; then isolated_line validate 1; rm -rf "$odir"; exit 0; fi
+      if [ "$rc" -eq 0 ]; then
+        # Option B: Align SEEDS the ADRs, Validate REFINES them. If the worker
+        # emitted a refined adr.md (a finding changed a decision), persist it back
+        # into the mission dir — mirroring the validated-plan.md copy — so every
+        # downstream worker reads the up-to-date frame, not the stale Align seed.
+        [ -f "$odir/adr.md" ] && cp "$odir/adr.md" "$MISSION_DIR/adr.md"
+        isolated_line validate 1; rm -rf "$odir"; exit 0
+      fi
     fi
     rm -rf "$odir"
   done
@@ -1862,6 +1875,11 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
     [ -f "$rv" ] && extra="$extra
 - $rv   (reviewer objections to resolve in this revision)"
   done
+  # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
+  # architectural facts this Stage may read, by PATH only. Absent on a trivial
+  # Mission, in which case this is skipped.
+  [ -f "$MISSION_DIR/adr.md" ] && extra="$extra
+- $MISSION_DIR/adr.md   (the engineering ADRs — architectural decisions + rationale; plan within them)"
   # Shared declarative repo facts, by PATH only.
   extra="$extra$(context_extra_block)"
 
@@ -1967,6 +1985,13 @@ cmd_implement_ticket() {
   # The durable repo context source (shared declarative facts, by PATH only) —
   # resolved once for both halves of the adversarial pair.
   local cblock; cblock="$(context_extra_block)"
+  # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
+  # architectural facts BOTH halves of the pair may read, by PATH only. Absent on
+  # a trivial Mission, in which case this stays empty. Prepended to $cblock so it
+  # rides the same artifact-paths list for both workers.
+  local adrblock=""
+  [ -f "$MISSION_DIR/adr.md" ] && adrblock="
+- $MISSION_DIR/adr.md   (the engineering ADRs — architectural decisions this ticket must respect)"
 
   # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
   local tries=0 saved=0
@@ -1981,7 +2006,7 @@ cmd_implement_ticket() {
     local odir; odir="$(mktemp -d)"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/approved-plan.json$cblock
+- $MISSION_DIR/approved-plan.json$adrblock$cblock
 
 ## Your ticket
 $TICKET"
@@ -2000,7 +2025,7 @@ $TICKET"
   local tdir; tdir="$(ticket_dir "$TICKET")/tests"
   local iextra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json
-- $tdir   (the failing tests — your entire handoff from the Test Writer)$cblock"
+- $tdir   (the failing tests — your entire handoff from the Test Writer)$adrblock$cblock"
   # RESUME after a 5-attempt flag was answered: the captain's recorded note is
   # how to get this ticket unstuck. Feed it so the Implementer acts on it rather
   # than re-flagging the same blocker.
