@@ -310,6 +310,115 @@ context_extra_block() {
 - %s' "$src"
 }
 
+# === Per-wave repo map (pure bash, token-free, CLI-neutral) =================
+# A SYMBOL SKELETON of the repo's source: top-level interface SIGNATURES
+# (function / method / class / def / type / interface / export / shell-func
+# declarations) keyed off each file's extension, plus the bare path of any file
+# whose type we don't recognise. SKELETONS ONLY — signature lines + paths, NEVER
+# a function body or a statement from inside one. It is a navigation aid, not a
+# compiler: simple grep/sed heuristics, deterministic, fast, robust to many
+# languages, degrading gracefully (path alone) for unknown types.
+#
+# Written to $MISSION_DIR/repo-map.md — inside .git/, never the working tree. It
+# is REGENERATED at the start of each Implement wave (so wave N sees wave N-1's
+# committed symbols), carrying the wave label in its header so a fresh
+# regeneration is observable. The static context-pack.md remains the
+# architecture/conventions layer; this is the fresh symbol layer on top.
+#
+# Args: <repo-root> <out-file> [<wave-label>]
+generate_repo_map() {
+  local root="$1" out="$2" wave="${3:-}"
+  mkdir -p "$(dirname "$out")"
+  {
+    printf '# Repo map'
+    [ -n "$wave" ] && printf ' (%s)' "$wave"
+    printf '\n\n'
+    printf 'A symbol skeleton of the repo source — interface SIGNATURES and file\n'
+    printf 'PATHS only, NO bodies. A navigation aid: read the file itself for detail.\n\n'
+  } >"$out"
+
+  # Enumerate tracked + untracked source files (git ls-files keeps us inside the
+  # repo and honours .gitignore), falling back to find when git is unavailable.
+  local files
+  files="$("$GIT_BIN" -C "$root" ls-files --cached --others --exclude-standard 2>/dev/null)"
+  [ -n "$files" ] || files="$(cd "$root" && find . -type f 2>/dev/null | sed 's|^\./||')"
+
+  local f ext
+  # Sort for deterministic output.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    # Never descend into VCS / dependency / build noise — and never the mission
+    # state itself (it lives under .git, already excluded, but be explicit).
+    case "$f" in
+      .git/*|*/.git/*|node_modules/*|*/node_modules/*|.git|vendor/*|*/vendor/*|dist/*|build/*) continue ;;
+    esac
+    [ -f "$root/$f" ] || continue
+    ext="${f##*.}"
+    case "$ext" in
+      sh|bash|zsh)
+        # POSIX shell function declarations: `name()` or `function name`.
+        printf '## %s\n' "$f" >>"$out"
+        grep -nE '^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_:-]*[[:space:]]*\(\)|function[[:space:]]+[a-zA-Z_])' "$root/$f" 2>/dev/null \
+          | sed -E 's/[[:space:]]*\{[[:space:]]*$//' \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      js|jsx|ts|tsx|mjs|cjs)
+        printf '## %s\n' "$f" >>"$out"
+        # function / class / interface / type / const-arrow / export declarations
+        # — the DECLARATION line only, with any trailing `{` body-opener stripped.
+        grep -nE '^[[:space:]]*(export[[:space:]]+)?(default[[:space:]]+)?(async[[:space:]]+)?(function[*]?[[:space:]]|class[[:space:]]|interface[[:space:]]|type[[:space:]]|enum[[:space:]]|const[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\()' "$root/$f" 2>/dev/null \
+          | sed -E 's/[[:space:]]*\{[[:space:]]*$//' \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      py)
+        printf '## %s\n' "$f" >>"$out"
+        # top-level + nested def / class declarations — the signature line up to
+        # the `:` that opens the body (the body itself is on following lines).
+        grep -nE '^[[:space:]]*(async[[:space:]]+)?(def|class)[[:space:]]' "$root/$f" 2>/dev/null \
+          | sed -E 's/:[[:space:]]*$//' \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      go)
+        printf '## %s\n' "$f" >>"$out"
+        grep -nE '^[[:space:]]*(func|type)[[:space:]]' "$root/$f" 2>/dev/null \
+          | sed -E 's/[[:space:]]*\{[[:space:]]*$//' \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      rb)
+        printf '## %s\n' "$f" >>"$out"
+        grep -nE '^[[:space:]]*(def|class|module)[[:space:]]' "$root/$f" 2>/dev/null \
+          | sed -E 's/^([0-9]+):[[:space:]]*/- L\1: /' >>"$out" || true
+        printf '\n' >>"$out" ;;
+      *)
+        # Unknown type → degrade gracefully: list the path alone, no signatures
+        # (we never dump unrecognised file contents — that could leak a body).
+        printf '## %s\n\n' "$f" >>"$out" ;;
+    esac
+  done < <(printf '%s\n' "$files" | LC_ALL=C sort)
+}
+
+# `run.sh repo-map --mission <id>` — the thin, token-free driver over
+# generate_repo_map: resolve the mission + repo root, regenerate the map. Public
+# so it is independently testable; cmd_implement calls generate_repo_map directly
+# at each wave_start (with a wave label).
+cmd_repo_map() {
+  locate_mission "$MISSION_ID"
+  generate_repo_map "$REPO_ROOT" "$MISSION_DIR/repo-map.md"
+  echo "REPO-MAP: wrote $MISSION_DIR/repo-map.md"
+}
+
+# A block listing the per-ticket manifest + per-wave repo map for the Implement
+# pair — by PATH only, guarded on existence. NEVER called from Research. Args:
+# <ticket-id>. Echoes nothing when neither artifact exists.
+implement_nav_block() { # ticket-id
+  local tid="$1" block=""
+  [ -f "$MISSION_DIR/manifests/$tid.md" ] && block="$block
+- $MISSION_DIR/manifests/$tid.md   (this ticket's context manifest — relevant files + interface signatures + touched ADR ids; NAVIGATION ONLY, not the implementation)"
+  [ -f "$MISSION_DIR/repo-map.md" ] && block="$block
+- $MISSION_DIR/repo-map.md   (the repo symbol map — interface signatures + paths across the codebase, regenerated this wave; navigate from it instead of cold file-walking)"
+  printf '%s' "$block"
+}
+
 # Each Stage runs only when the Mission is parked at the stage that feeds it,
 # so we never relabel or overwrite a mission mid-flight. Research runs on
 # `align`; Validate runs on `validate`.
@@ -630,6 +739,21 @@ cmd_plan_save() {
   validate_plan_json "$PLAN" || exit 1
 
   cp "$PLAN" "$MISSION_DIR/plan.json"
+
+  # Session 41: the Plan worker ALSO emits one context manifest per ticket into a
+  # `manifests/` dir alongside plan.json in its scratch output. Persist them into
+  # the mission dir (SEPARATE files — never embedded in plan.json, whose awk
+  # parser would break on a nested object). BEST-EFFORT: a missing manifest must
+  # NOT hard-fail the plan (single-ticket fast-path, thin greenfield slices) — the
+  # template requires one per ticket, but persistence only copies what exists.
+  if [ -n "$MANIFESTS" ] && [ -d "$MANIFESTS" ]; then
+    rm -rf "$MISSION_DIR/manifests"
+    mkdir -p "$MISSION_DIR/manifests"
+    local mf
+    for mf in "$MANIFESTS"/*.md; do
+      [ -f "$mf" ] && cp "$mf" "$MISSION_DIR/manifests/"
+    done
+  fi
 
   set_stage "plan-review"
   gh_relabel "lcars:plan-review" "lcars:plan"
@@ -1891,7 +2015,7 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
     if [ -f "$odir/plan.json" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" plan-save \
-        --mission "$MISSION_ID" --plan "$odir/plan.json" || rc=$?
+        --mission "$MISSION_ID" --plan "$odir/plan.json" --manifests "$odir/manifests" || rc=$?
       if [ "$rc" -eq 0 ]; then isolated_line plan 1; rm -rf "$odir"; exit 0; fi
     fi
     rm -rf "$odir"
@@ -1992,6 +2116,12 @@ cmd_implement_ticket() {
   local adrblock=""
   [ -f "$MISSION_DIR/adr.md" ] && adrblock="
 - $MISSION_DIR/adr.md   (the engineering ADRs — architectural decisions this ticket must respect)"
+  # Session 41: the per-ticket context manifest + the per-wave repo symbol map —
+  # DECLARATIVE navigation aids (relevant files, interface signatures, touched ADR
+  # ids), by PATH only, guarded on existence. Both halves of the pair read them
+  # instead of cold file-walking. NEVER reaches a research worker. Empty when
+  # neither artifact exists (thin greenfield / pre-wave).
+  local navblock; navblock="$(implement_nav_block "$TICKET")"
 
   # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
   local tries=0 saved=0
@@ -2006,7 +2136,7 @@ cmd_implement_ticket() {
     local odir; odir="$(mktemp -d)"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/approved-plan.json$adrblock$cblock
+- $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock
 
 ## Your ticket
 $TICKET"
@@ -2025,7 +2155,7 @@ $TICKET"
   local tdir; tdir="$(ticket_dir "$TICKET")/tests"
   local iextra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json
-- $tdir   (the failing tests — your entire handoff from the Test Writer)$adrblock$cblock"
+- $tdir   (the failing tests — your entire handoff from the Test Writer)$adrblock$navblock$cblock"
   # RESUME after a 5-attempt flag was answered: the captain's recorded note is
   # how to get this ticket unstuck. Feed it so the Implementer acts on it rather
   # than re-flagging the same blocker.
@@ -2103,6 +2233,16 @@ cmd_implement() {
       local wcount; wcount="$(parse_waves_table "$waves_file" 2>/dev/null | awk -F'\t' -v w="$cur_wave" '$1==w{n++} END{print n+0}')"
       emit_event wave_start implement "wave $cur_wave starting ($wcount ticket(s))" \
         "wave=$cur_wave" "ticketCount=$wcount" "totalWaves=$total_waves"
+    fi
+    # Session 41: regenerate the per-wave repo symbol map whenever the active wave
+    # advances (including the first sight of wave 1). Fresh each wave so wave N's
+    # implementers navigate wave N-1's committed symbols instead of cold-walking
+    # the tree. Pure bash, token-free; the map carries the wave label so the
+    # regeneration is observable. Keyed on cur_wave changing — the same boundary
+    # the wave_start event fires on — but NOT gated on the dedup, so a re-entered
+    # process still refreshes the map for the wave it resumes.
+    if [ -n "$cur_wave" ] && [ "$cur_wave" != "$last_wave" ]; then
+      generate_repo_map "$REPO_ROOT" "$MISSION_DIR/repo-map.md" "wave $cur_wave"
     fi
     last_wave="$cur_wave"
 
@@ -2335,7 +2475,7 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
-EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --step)        STEP=1; shift ;;
@@ -2347,6 +2487,8 @@ while [ $# -gt 0 ]; do
     --responses=*) RESPONSES="${1#--responses=}"; shift ;;
     --plan)        PLAN="${2:-}"; shift 2 ;;
     --plan=*)      PLAN="${1#--plan=}"; shift ;;
+    --manifests)   MANIFESTS="${2:-}"; shift 2 ;;
+    --manifests=*) MANIFESTS="${1#--manifests=}"; shift ;;
     --verdict)     VERDICT="${2:-}"; shift 2 ;;
     --verdict=*)   VERDICT="${1#--verdict=}"; shift ;;
     --ticket)      TICKET="${2:-}"; shift 2 ;;
@@ -2396,6 +2538,9 @@ case "$SUB" in
   # Repo-level context resolver (no mission) — prints the durable context source
   # path, generating the one-time pack lazily. Reused by lcars-file's Align flow.
   context-source)   cmd_context_source ;;
+  # Per-wave repo symbol map (no LLM — pure bash). Regenerated by cmd_implement at
+  # each wave; exposed here so it is independently driveable + testable.
+  repo-map)         cmd_repo_map ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
   emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;

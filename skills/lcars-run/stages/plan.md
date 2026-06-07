@@ -72,6 +72,34 @@ Review loop-back), **revise** the plan to resolve every objection — re-slice
 oversized or horizontal tickets, fix dependency edges — rather than re-emitting
 the rejected shape.
 
+## Per-ticket context manifest (one file per ticket)
+
+In ADDITION to `plan.json`, emit one **context manifest** per ticket so the
+Implement stage navigates the codebase instead of re-walking it cold. Write each
+to **`manifests/<ticket-id>.md`** in your scratch output directory (e.g.
+`manifests/t-001.md`) — a SEPARATE file per ticket. Do NOT put manifests inside
+`plan.json`.
+
+Each manifest contains EXACTLY three sections, all DECLARATIVE:
+
+1. **Relevant files** — the paths the ticket will read or touch.
+2. **Interface signatures** — the SKELETON signature lines of the functions /
+   methods / classes / types the ticket interacts with (e.g.
+   `export function setTheme(name)`), each with its file path. Signatures and
+   LOCATIONS only.
+3. **ADRs this ticket touches** — the ADR ids (e.g. `ADR-001`) from `adr.md`
+   that constrain this ticket, when an `adr.md` is listed above. Ids only.
+
+**HARD ANTI-LAZINESS RULE — signatures / locations / ADR ids ONLY.** A manifest
+is a MAP, not a solution. It MUST NOT contain the implementation to write, the
+edits to make, function BODIES, test internals, or any prior reasoning. NEVER
+the implementation, NEVER the solution, NEVER the diff — listing the work would
+invite the Implementer to copy rather than think. Point at WHERE the code lives
+and WHAT its interface is; the Implementer reads the file itself for the rest.
+
+A thin greenfield ticket with little existing code may have a near-empty
+"Relevant files" section — that is fine; still emit the file.
+
 ## Output
 
 Write the whole list to **`plan.json`** in your scratch output directory, as a

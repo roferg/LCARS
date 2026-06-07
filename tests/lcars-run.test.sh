@@ -1887,6 +1887,28 @@ JSON
 ]
 JSON
     fi
+    # Session 41: the Planner ALSO emits one manifest per ticket (separate files,
+    # never embedded in plan.json). Signatures + paths + touched ADR ids ONLY —
+    # the fixture is deliberately bodies-free so persistence can assert no leak.
+    # STUB_NO_MANIFEST=1 simulates a worker that skipped a manifest (best-effort
+    # persistence must not hard-fail the plan).
+    if [ "${STUB_NO_MANIFEST:-0}" != "1" ]; then
+      mkdir -p "$out/manifests"
+      cat >"$out/manifests/t-001.md" <<MAN
+# Context manifest: t-001 — Wire the data-theme attribute
+
+## Relevant files
+- src/theme.js
+- src/index.html
+
+## Interface signatures (locations only — NOT the implementation)
+- src/theme.js: \`export function setTheme(name)\`
+- src/theme.js: \`export function currentTheme()\`
+
+## ADRs this ticket touches
+- ADR-001
+MAN
+    fi
     ;;
   plan-review)
     cat >"$out/verdict.json" <<JSON
@@ -3440,6 +3462,213 @@ check "S42. SKILL.md keeps the final summary + isolation markers byte-for-byte" 
   "grep -qF '⊘ isolated' '$RUN_SKILL' && grep -qiE 'byte-for-byte|byte-compatible' '$RUN_SKILL'"
 check "S42. SKILL.md exempts --step from the relay (returns immediately)" \
   "grep -qiE '\\-\\-step.*(no relay|needs.*no.*relay|returns immediately|blocking)' '$RUN_SKILL'"
+
+# ==========================================================================
+echo
+echo "lcars run — Session 41: per-ticket context manifest + per-wave repo map"
+# Session 41 stops every Implement worker from re-walking the repo cold. Two
+# DECLARATIVE, token-cheap artifacts are produced and read by PATH:
+#   (a) per-ticket manifests/<id>.md — authored by the Plan worker (signatures +
+#       file paths + touched ADR ids ONLY), persisted by plan-save into the
+#       mission dir as SEPARATE files (never embedded in plan.json).
+#   (b) a per-wave repo-map.md — a pure-bash symbol skeleton regenerated at the
+#       start of each Implement wave (signature lines + paths, NEVER bodies).
+# Both ride the Test Writer + Implementer extra blocks by PATH. Research workers
+# get NEITHER (purity). The repo-map is bash-extracted, so it is clean by
+# construction. None of this touches plan.json's schema or Plan Review.
+
+# --- S41-1: plan-save persists per-ticket manifests from the worker scratch ----
+# Drive Plan with the worker stub (it emits plan.json + manifests/t-001.md). After
+# the stage, the manifest must live at $MISSION_DIR/manifests/t-001.md and carry
+# signatures + paths + ADR ids — and NO implementation body (the fixture is clean).
+repo41p="$(new_repo_with_plan_mission)"; arm_worker "$repo41p"
+( cd "$repo41p" && LCARS_WORKER_BIN="$repo41p/worker" LCARS_GH_BIN="$repo41p/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out41p.txt 2>&1 )
+MAN41="$repo41p/.git/lcars/missions/$MID/manifests/t-001.md"
+check "S41-1. plan-save persists manifests/t-001.md into the mission dir" \
+  "[ -f '$MAN41' ]"
+check "S41-1. the manifest lists the relevant file paths" \
+  "grep -q 'src/theme.js' '$MAN41'"
+check "S41-1. the manifest carries interface signatures (skeletons)" \
+  "grep -q 'export function setTheme' '$MAN41'"
+check "S41-1. the manifest names the touched ADR ids" \
+  "grep -q 'ADR-001' '$MAN41'"
+check "S41-1. the persisted manifest equals what the worker wrote (no rewrite/leak)" \
+  "! grep -qiE 'return |const |if \\(|=>|\\{\\{' '$MAN41'"
+check "S41-1. plan.json is UNCHANGED in shape (manifest is a SEPARATE file, not embedded)" \
+  "! grep -qi 'manifest' '$repo41p/.git/lcars/missions/$MID/plan.json'"
+check "S41-1. Plan still advanced to plan-review (manifest persistence is additive)" \
+  "grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repo41p")'"
+
+# --- S41-1b: a missing manifest is best-effort — the plan still advances --------
+# STUB_NO_MANIFEST=1: the worker emits NO manifests/ dir. plan-save must NOT
+# hard-fail (single-ticket fast-path / thin greenfield) — it advances anyway.
+repo41pm="$(new_repo_with_plan_mission)"; arm_worker "$repo41pm"
+rc41pm=0
+( cd "$repo41pm" && STUB_NO_MANIFEST=1 LCARS_WORKER_BIN="$repo41pm/worker" LCARS_GH_BIN="$repo41pm/gh" \
+    bash "$SCRIPT" plan --mission "$MID" >out41pm.txt 2>&1 ) || rc41pm=$?
+check "S41-1b. a plan with no manifests still advances (best-effort, no hard-fail)" \
+  "[ '$rc41pm' -eq 0 ] && grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repo41pm")'"
+
+# --- S41-2: the repo-map generator (pure bash, token-free) ----------------------
+# Build a fixture repo with one source file per supported language, run the
+# `repo-map` subcommand (the thin driver over generate_repo_map), and assert the
+# map captures top-level SIGNATURES across languages while excluding file BODIES.
+repo41map="$(new_repo_with_implement_mission)"
+SRC41="$repo41map/src"; mkdir -p "$SRC41"
+cat >"$SRC41/util.sh" <<'EOF'
+#!/usr/bin/env bash
+foo() {
+  local secret_body_marker=1
+  echo "$secret_body_marker"
+}
+EOF
+cat >"$SRC41/widget.js" <<'EOF'
+export function bar(a, b) {
+  const inside_js_body = a + b;
+  return inside_js_body;
+}
+class Baz {
+  hidden_method_body() { return 42; }
+}
+EOF
+cat >"$SRC41/calc.py" <<'EOF'
+class Calc:
+    def qux(self, n):
+        inside_py_body = n * 2
+        return inside_py_body
+EOF
+cat >"$SRC41/types.ts" <<'EOF'
+export type ThemeName = "light" | "dark";
+export interface Toggle {
+  flip(): void;
+}
+EOF
+# An unknown extension: degrade gracefully — list the path alone, no signatures.
+printf 'binary-ish content with { braces } that must not leak as a body\n' >"$SRC41/data.xyz"
+rc41map=0
+( cd "$repo41map" && LCARS_WORKER_BIN="$repo41map/worker" \
+    bash "$SCRIPT" repo-map --mission "$MID" >out41map.txt 2>&1 ) || rc41map=$?
+MAP41="$repo41map/.git/lcars/missions/$MID/repo-map.md"
+check "S41-2. repo-map subcommand exits 0 (pure bash, no worker needed)" "[ '$rc41map' -eq 0 ]"
+check "S41-2. repo-map.md is written under .git/ (never the working tree)" \
+  "[ -f '$MAP41' ] && [ ! -e '$repo41map/repo-map.md' ]"
+check "S41-2. captures the shell function signature foo()" \
+  "grep -q 'foo()' '$MAP41'"
+check "S41-2. captures the JS function signature bar(" \
+  "grep -q 'function bar(' '$MAP41'"
+check "S41-2. captures the JS class signature Baz" \
+  "grep -q 'class Baz' '$MAP41'"
+check "S41-2. captures the Python def signature qux(" \
+  "grep -q 'def qux(' '$MAP41'"
+check "S41-2. captures the Python class signature Calc" \
+  "grep -q 'class Calc' '$MAP41'"
+check "S41-2. captures the TS interface/type signatures" \
+  "grep -q 'interface Toggle' '$MAP41' && grep -q 'type ThemeName' '$MAP41'"
+check "S41-2. degrades gracefully — an unknown file is listed by PATH alone" \
+  "grep -q 'data.xyz' '$MAP41'"
+# DECLARATIVE GUARD — no FUNCTION BODIES leak. The body markers planted inside
+# each function must NOT appear in the skeleton map.
+check "S41-2. NO shell body leaks (secret_body_marker absent)" \
+  "! grep -q 'secret_body_marker' '$MAP41'"
+check "S41-2. NO JS body leaks (inside_js_body absent)" \
+  "! grep -q 'inside_js_body' '$MAP41'"
+check "S41-2. NO JS method body leaks (hidden_method_body line is not a statement dump)" \
+  "! grep -q 'return 42' '$MAP41'"
+check "S41-2. NO Python body leaks (inside_py_body absent)" \
+  "! grep -q 'inside_py_body' '$MAP41'"
+check "S41-2. NO unknown-file body leaks (the { braces } content is not dumped)" \
+  "! grep -q 'must not leak as a body' '$MAP41'"
+
+# --- S41-3: the repo-map REGENERATES at each Implement wave_start ----------------
+# Drive the whole Implement stage with the green-on-everything stub. The map must
+# exist after the run (regenerated at the first wave_start) and carry a wave
+# marker for each wave it regenerated at, proving the per-wave hook fired.
+repo41w="$(new_repo_with_implement_mission)"; arm_worker "$repo41w"
+SRC41w="$repo41w/src"; mkdir -p "$SRC41w"
+printf 'export function alpha() { return 1; }\n' >"$SRC41w/alpha.js"
+( cd "$repo41w" && LCARS_NOW=1700041000 LCARS_WORKER_BIN="$repo41w/worker" LCARS_GH_BIN="$repo41w/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >out41w.txt 2>&1 ) || true
+MAP41w="$repo41w/.git/lcars/missions/$MID/repo-map.md"
+check "S41-3. repo-map.md exists after the Implement stage (regenerated at a wave)" \
+  "[ -f '$MAP41w' ]"
+check "S41-3. the regenerated map carries a wave marker in its header (per-wave regeneration)" \
+  "grep -qE 'wave [0-9]' '$MAP41w'"
+check "S41-3. the wave-regenerated map carries the freshly committed symbols (alpha)" \
+  "grep -q 'function alpha(' '$MAP41w'"
+
+# --- S41-4: the Implementer AND Test Writer extra-blocks LIST both artifacts -----
+# Seed the manifest + repo-map on disk, then run implement-ticket. Both halves'
+# prompts must name the ticket manifest path and the repo-map path (by PATH only).
+repo41r="$(new_repo_with_implement_mission)"; arm_worker "$repo41r"
+MDIR41r="$repo41r/.git/lcars/missions/$MID"
+mkdir -p "$MDIR41r/manifests"
+cat >"$MDIR41r/manifests/t-001.md" <<'EOF'
+# Context manifest: t-001
+## Relevant files
+- src/theme.js
+## Interface signatures
+- src/theme.js: `export function setTheme(name)`
+EOF
+printf '# Repo map (wave 1)\n- src/theme.js: `export function setTheme(name)`\n' >"$MDIR41r/repo-map.md"
+( cd "$repo41r" && LCARS_WORKER_BIN="$repo41r/worker" LCARS_GH_BIN="$repo41r/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >out41r.txt 2>&1 )
+TWP41="$(prompt_for_role "$WORKER_CALLS" implement-test-writer)"
+IMP41="$(prompt_for_role "$WORKER_CALLS" implement-implementer)"
+check "S41-4. Test Writer prompt lists the ticket manifest path" \
+  "printf '%s' \"\$TWP41\" | grep -qF '$MDIR41r/manifests/t-001.md'"
+check "S41-4. Test Writer prompt lists the repo-map path" \
+  "printf '%s' \"\$TWP41\" | grep -qF '$MDIR41r/repo-map.md'"
+check "S41-4. Implementer prompt lists the ticket manifest path" \
+  "printf '%s' \"\$IMP41\" | grep -qF '$MDIR41r/manifests/t-001.md'"
+check "S41-4. Implementer prompt lists the repo-map path" \
+  "printf '%s' \"\$IMP41\" | grep -qF '$MDIR41r/repo-map.md'"
+
+# --- S41-4b: the manifest/repo-map are guarded on existence (absent → not listed)
+repo41rn="$(new_repo_with_implement_mission)"; arm_worker "$repo41rn"
+MDIR41rn="$repo41rn/.git/lcars/missions/$MID"
+( cd "$repo41rn" && LCARS_WORKER_BIN="$repo41rn/worker" LCARS_GH_BIN="$repo41rn/gh" \
+    bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >out41rn.txt 2>&1 )
+IMP41n="$(prompt_for_role "$WORKER_CALLS" implement-implementer)"
+check "S41-4b. with no manifest on disk the Implementer prompt names no manifests/ path" \
+  "! printf '%s' \"\$IMP41n\" | grep -qF '$MDIR41rn/manifests/'"
+
+# --- S41-5: PURITY — research workers see NEITHER manifest NOR repo-map ----------
+# Seed both artifacts on disk, drive Research from align, and assert that neither
+# the question-generator nor any research agent prompt names — or even mentions —
+# the manifest or the repo-map. This is the absolute invariant of the perf round.
+repo41pur="$(new_repo_with_mission)"; arm_worker "$repo41pur"
+MDIR41pur="$repo41pur/.git/lcars/missions/$MID"
+mkdir -p "$MDIR41pur/manifests"
+printf '# manifest t-001\n- src/x.js: `export function y()`\n' >"$MDIR41pur/manifests/t-001.md"
+printf '# Repo map (wave 1)\n- src/x.js: `export function y()`\n' >"$MDIR41pur/repo-map.md"
+( cd "$repo41pur" && STUB_NQUESTIONS=2 LCARS_WORKER_BIN="$repo41pur/worker" LCARS_GH_BIN="$repo41pur/gh" \
+    bash "$SCRIPT" research --mission "$MID" >out41pur.txt 2>&1 )
+RQP41="$(prompt_for_role "$WORKER_CALLS" research-questions)"
+RAP41="$(prompt_for_role "$WORKER_CALLS" research-agent)"
+check "S41-5. PURITY: research-questions worker is NEVER fed the manifest path" \
+  "! printf '%s' \"\$RQP41\" | grep -qF '$MDIR41pur/manifests/'"
+check "S41-5. PURITY: research-questions worker is NEVER fed the repo-map path" \
+  "! printf '%s' \"\$RQP41\" | grep -qF '$MDIR41pur/repo-map.md'"
+check "S41-5. PURITY: research-questions worker mentions no repo-map/manifest at all" \
+  "! printf '%s' \"\$RQP41\" | grep -qiE 'repo-map|manifest'"
+check "S41-5. PURITY: a research agent worker is NEVER fed the manifest path" \
+  "! printf '%s' \"\$RAP41\" | grep -qF '$MDIR41pur/manifests/'"
+check "S41-5. PURITY: a research agent worker is NEVER fed the repo-map path" \
+  "! printf '%s' \"\$RAP41\" | grep -qF '$MDIR41pur/repo-map.md'"
+check "S41-5. PURITY: a research agent worker mentions no repo-map/manifest at all" \
+  "! printf '%s' \"\$RAP41\" | grep -qiE 'repo-map|manifest'"
+
+# --- S41-6: DECLARATIVE — the plan.md template forbids bodies/solutions ----------
+# The template MUST instruct the Planner to author manifests with signatures /
+# paths / ADR ids ONLY — never the implementation, test internals, or reasoning.
+PLAN_TMPL="$REPO_ROOT/skills/lcars-run/stages/plan.md"
+check "S41-6. plan.md instructs the Planner to emit per-ticket manifests" \
+  "grep -qiE 'manifest' '$PLAN_TMPL'"
+check "S41-6. plan.md forbids implementation bodies / the edits to make in a manifest" \
+  "grep -qiE 'NEVER the (implementation|edits|solution)|signatures?[^.]*only|locations?[^.]*only' '$PLAN_TMPL'"
+check "S41-6. plan.md routes manifests to a SEPARATE manifests/ dir (not plan.json)" \
+  "grep -qiE 'manifests/' '$PLAN_TMPL'"
 
 # ==========================================================================
 echo
