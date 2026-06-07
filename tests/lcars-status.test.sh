@@ -403,6 +403,104 @@ check "W6. an explicit partial id is honoured" \
   "grep -qi 'avg/ticket' '$repoW6/out2.txt'"
 
 # ==========================================================================
+# Behaviour WI (Session 42): the --watch re-render cadence is configurable.
+# Default 60s; overridable by $LCARS_WATCH_INTERVAL and by a --interval <secs>
+# flag (flag > env > default). status.sh exposes the RESOLVED value under the
+# $LCARS_WATCH_DEBUG hook so we can assert resolution deterministically without
+# timing a real 60s tail. The hook prints `WATCH_INTERVAL=<n>` and exits before
+# the follow loop; it never fires on the user-facing path.
+echo
+echo "lcars status --watch configurable interval (Session 42)"
+
+repoWI="$(new_init_repo)"
+write_mission "$repoWI" "lcars-20260606-001" "implement" "31" \
+  "2026-06-06T10:00:00Z" "Interval mission"
+write_events "$repoWI" "lcars-20260606-001" \
+'{"ts":1000,"mission":"lcars-20260606-001","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":1,"totalWaves":1}}'
+
+# Default: no flag, no env → 60.
+( cd "$repoWI" && LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_DEBUG=1 \
+    bash "$SCRIPT" --watch lcars-20260606-001 </dev/null >outWI.txt 2>&1 )
+check "WI. default re-render interval is 60s" \
+  "grep -qx 'WATCH_INTERVAL=60' '$repoWI/outWI.txt'"
+
+# Env override.
+( cd "$repoWI" && LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_DEBUG=1 LCARS_WATCH_INTERVAL=5 \
+    bash "$SCRIPT" --watch lcars-20260606-001 </dev/null >outWIe.txt 2>&1 )
+check "WI. \$LCARS_WATCH_INTERVAL overrides the default" \
+  "grep -qx 'WATCH_INTERVAL=5' '$repoWI/outWIe.txt'"
+
+# Flag override.
+( cd "$repoWI" && LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_DEBUG=1 \
+    bash "$SCRIPT" --watch --interval 7 lcars-20260606-001 </dev/null >outWIf.txt 2>&1 )
+check "WI. --interval <secs> overrides the default" \
+  "grep -qx 'WATCH_INTERVAL=7' '$repoWI/outWIf.txt'"
+
+# Flag wins over env when both are set.
+( cd "$repoWI" && LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_DEBUG=1 LCARS_WATCH_INTERVAL=5 \
+    bash "$SCRIPT" --watch lcars-20260606-001 --interval 9 </dev/null >outWIfe.txt 2>&1 )
+check "WI. --interval flag wins over \$LCARS_WATCH_INTERVAL env" \
+  "grep -qx 'WATCH_INTERVAL=9' '$repoWI/outWIfe.txt'"
+
+# Garbage / non-positive values fall back to the default rather than wedging.
+( cd "$repoWI" && LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_DEBUG=1 LCARS_WATCH_INTERVAL=0 \
+    bash "$SCRIPT" --watch lcars-20260606-001 </dev/null >outWI0.txt 2>&1 )
+check "WI. a zero/garbage interval falls back to the 60s default" \
+  "grep -qx 'WATCH_INTERVAL=60' '$repoWI/outWI0.txt'"
+
+# Observable cadence: a small interval yields MULTIPLE frames in a short window,
+# a large one yields just the initial frame in that same window — proving the
+# resolved interval actually governs re-render, not just the debug echo.
+mk_cadence_repo() {
+  local r; r="$(new_init_repo)"
+  write_mission "$r" "lcars-20260606-002" "implement" "32" \
+    "2026-06-06T10:00:00Z" "Cadence mission"
+  write_events "$r" "lcars-20260606-002" \
+'{"ts":1000,"mission":"lcars-20260606-002","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":1,"totalWaves":1}}
+{"ts":1001,"mission":"lcars-20260606-002","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}'
+  write_waves "$r" "lcars-20260606-002" \
+'[ { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 } ] } ]'
+  printf '%s' "$r"
+}
+
+# Fast interval=1 over ~3s → several frames (initial + re-renders).
+repoWIc1="$(mk_cadence_repo)"
+LOGc1="$repoWIc1/watch.log"
+( cd "$repoWIc1" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
+    bash "$SCRIPT" --watch lcars-20260606-002 --interval 1 </dev/null >"$LOGc1" 2>&1 &
+  echo $! >"$repoWIc1/watch.pid" )
+wpidc1="$(cat "$repoWIc1/watch.pid")"
+sleep 3
+kill -TERM "$wpidc1" 2>/dev/null; wait "$wpidc1" 2>/dev/null; kill -KILL "$wpidc1" 2>/dev/null || true
+framesc1="$(grep -c 'watching lcars-20260606-002' "$LOGc1" 2>/dev/null || echo 0)"
+check "WI. interval=1 re-renders multiple frames over ~3s (cadence honoured)" \
+  "[ '$framesc1' -ge 2 ]"
+
+# Large interval=30 over the same ~3s → only the INITIAL frame (no re-render
+# yet), proving the interval throttles the visible cadence.
+repoWIc2="$(mk_cadence_repo)"
+LOGc2="$repoWIc2/watch.log"
+( cd "$repoWIc2" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
+    bash "$SCRIPT" --watch lcars-20260606-002 --interval 30 </dev/null >"$LOGc2" 2>&1 &
+  echo $! >"$repoWIc2/watch.pid" )
+wpidc2="$(cat "$repoWIc2/watch.pid")"
+sleep 3
+kill -TERM "$wpidc2" 2>/dev/null; wait "$wpidc2" 2>/dev/null; kill -KILL "$wpidc2" 2>/dev/null || true
+framesc2="$(grep -c 'watching lcars-20260606-002' "$LOGc2" 2>/dev/null || echo 0)"
+check "WI. interval=30 shows only the initial frame over ~3s (throttled)" \
+  "[ '$framesc2' -eq 1 ]"
+
+# Regression guard for the relay: --once renders current progress and exits 0.
+# The in-session progress relay (SKILL.md) depends on this deterministic prim.
+repoWIo="$(mk_cadence_repo)"
+( cd "$repoWIo" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
+    bash "$SCRIPT" --once lcars-20260606-002 >outWIo.txt 2>&1 )
+rcWIo=$?
+check "WI. --once renders current progress (relay primitive)" \
+  "grep -qi 'avg/ticket' '$repoWIo/outWIo.txt' && grep -q 'ticket t-001' '$repoWIo/outWIo.txt'"
+check "WI. --once exits 0 (relay primitive)" "[ '$rcWIo' -eq 0 ]"
+
+# ==========================================================================
 # DEFECT #2 (Session 27): the live watch's waves.json totals must be re-read
 # every frame, not captured once before the follow loop. Before the fix the
 # denominator (ticket total N / wave total) froze at startup, so a watch begun
@@ -472,8 +570,11 @@ write_events "$repoW9" "lcars-20260601-009" \
 '{"ts":1000,"mission":"lcars-20260601-009","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":1,"totalWaves":1}}
 {"ts":1001,"mission":"lcars-20260601-009","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}'
 WATCHLOG9="$repoW9/watch.log"
+# Pin the fast 1s tick (the default is now 60s — a 2s window would otherwise
+# only ever show the initial frame). This still exercises the per-second
+# poll/sleep path; the interval only governs WHEN a frame re-renders.
 (
-  cd "$repoW9" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
+  cd "$repoW9" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_INTERVAL=1 \
     bash "$SCRIPT" --watch lcars-20260601-009 </dev/null >"$WATCHLOG9" 2>&1 &
   echo $! >"$repoW9/watch.pid"
 )
@@ -513,8 +614,11 @@ write_events "$repoW10" "lcars-20260601-010" \
 write_waves "$repoW10" "lcars-20260601-010" \
 '[ { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 }, { "id": "t-002", "issue": 12 } ] } ]'
 WATCHLOG="$repoW10/watch.log"
+# Pin the fast 1s tick: the no-busy-spin assertion below counts frames over a 2s
+# window and expects ~1 frame/sec. The new 60s default would show only the
+# initial frame; interval=1 reproduces the original cadence this regression pins.
 (
-  cd "$repoW10" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" \
+  cd "$repoW10" && LCARS_NOW=1100 LCARS_RESOLVE_SCRIPT="$RESOLVE" LCARS_WATCH_INTERVAL=1 \
     bash "$SCRIPT" --watch lcars-20260601-010 </dev/null >"$WATCHLOG" 2>&1 &
   echo $! >"$repoW10/watch.pid"
 )

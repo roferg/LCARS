@@ -380,8 +380,11 @@ flowchart LR
         <div class="control-card">
           <div class="control-cmd">lcars status --watch [&lt;id&gt;]</div>
           <div class="control-desc">Follow a Mission's run live: tails its event
-          stream and re-renders a pace/position line until the run reaches a
-          gate.</div>
+          stream and re-renders a pace/position line on a configurable tick
+          (default ~60s; override with <code>LCARS_WATCH_INTERVAL</code> or
+          <code>--interval &lt;secs&gt;</code>) until the run reaches a gate.
+          Rarely needed now that a run relays progress in the launching
+          session.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars respond [&lt;id&gt;]</div>
@@ -624,9 +627,13 @@ An inline run must never masquerade as isolated.</div>
           (<code>events.jsonl</code>) as it goes — every Stage start and finish,
           every gate, and fine-grained Implement progress: each wave, each ticket,
           each attempt, and every green or flag. It prints each Stage line the
-          moment it happens instead of only summarizing at halt, and
-          <code>lcars status --watch</code> tails that same log into a live view
-          with a pace/position line. The events are emitted by the bash harness
+          moment it happens instead of only summarizing at halt. When you launch
+          a run from <code>lcars</code> / <code>lcars run</code>, that same
+          session relays a compact progress digest every ~60s (configurable via
+          <code>LCARS_WATCH_INTERVAL</code> or <code>--interval</code>) until it
+          halts — so you watch the run where you started it, without a second
+          window. <code>lcars status --watch</code> tails the same log into a
+          live view with a pace/position line on that same interval. The events are emitted by the bash harness
           <em>around</em> the worker calls — never by the worker — so the stream
           and the live view behave identically whatever CLI runs underneath.</p>
           <div class="lcars-readout">Wave 3/6 · ticket t-004 · attempt 1 · ~12s avg/ticket · elapsed 4m12s</div>
