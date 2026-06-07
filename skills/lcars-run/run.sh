@@ -37,11 +37,20 @@ set -uo pipefail
 
 GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
-# The cold-worker binary. Every headless Stage's LLM work runs as a one-shot
-# invocation of this CLI — defaulting to whichever CLI you launched LCARS under
-# (`claude`). Swapping it is the whole CLI-portability story (BUG-003); tests
-# point it at a stub that echoes canned artifacts so the plumbing runs token-free.
-WORKER_BIN="${LCARS_WORKER_BIN:-claude}"
+# The cold-worker binary + model. Every headless Stage's LLM work runs as a
+# one-shot invocation of this CLI. Both are RESOLVED AT RUN TIME (see
+# resolve_worker, below) — not at load time — because resolution may consult the
+# per-repo config.json, whose path is only known after locate_mission. The
+# resolved values land in WORKER_BIN / WORKER_MODEL (+ their *_SRC sources for the
+# self-explaining log line). Swapping the binary is the whole CLI-portability
+# story (BUG-003): default it to whichever CLI you launched LCARS under, with an
+# explicit override. Tests point WORKER_BIN at a stub that echoes canned artifacts
+# so the plumbing runs token-free.
+WORKER_BIN=""
+WORKER_MODEL=""
+WORKER_BIN_SRC=""
+WORKER_MODEL_SRC=""
+WORKER_RESOLVED=0   # guard so the resolution log line prints ONCE per process.
 # The test runner the Implement red gate invokes to prove the Test Writer's
 # suite FAILS before the Implementer runs. Env-injectable (like LCARS_GH_BIN) so
 # unit tests can drive a fake red→green transition; otherwise sourced from the
@@ -1870,6 +1879,100 @@ EOF
 # (All roles may write into their own scratch output dir — that is their answer
 # channel, not the repo.) The adapter `spawn` is reached via worker_spawn() below.
 
+# --- resolve WHICH cli to run as the cold worker, and with which model -------
+# Resolution is CLI-AGNOSTIC and so lives HERE, not in the adapter: the adapter
+# owns cli-SPECIFIC flag emission, run.sh owns host detection + precedence.
+#
+#   bin precedence  : $LCARS_WORKER_BIN  >  config.json workerBin
+#                     >  host-CLI auto-detect (env marker) >  claude (default)
+#   model precedence: $LCARS_WORKER_MODEL > config.json workerModel > unset
+#
+# Host detection keys off the per-process env var a spawned shell inherits from
+# the launching CLI — the SPIKE finding: CLAUDECODE=1 ⇒ claude, COPILOT_CLI=1 ⇒
+# copilot. `~/.copilot` existing is NOT a launch signal and is never consulted.
+# If no marker is present we do NOT guess: we fall back to claude (the historical
+# default) and note it via the `default` source.
+#
+# config.json's workerBin/workerModel are OPTIONAL sibling string fields (absent
+# = unset); read with the same jq-free json_str the rest of the script uses, only
+# when $LCARS_CFG points at an existing file.
+
+# Detect the host CLI from its per-process env marker. Prints the cli id, or
+# nothing if no reliable marker is set (caller then falls back, never guesses).
+detect_host_cli() {
+  if [ "${CLAUDECODE:-}" = "1" ]; then printf 'claude'; return 0; fi
+  if [ "${COPILOT_CLI:-}" = "1" ]; then printf 'copilot'; return 0; fi
+  return 0   # no marker — caller degrades to the claude default + LOGs it.
+}
+
+# Resolve WORKER_BIN + WORKER_BIN_SRC by the precedence above.
+resolve_worker_bin() {
+  if [ -n "${LCARS_WORKER_BIN:-}" ]; then
+    WORKER_BIN="$LCARS_WORKER_BIN"; WORKER_BIN_SRC="env"; return 0
+  fi
+  local cfgbin=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgbin="$(json_str "$LCARS_CFG" workerBin)"
+  if [ -n "$cfgbin" ]; then
+    WORKER_BIN="$cfgbin"; WORKER_BIN_SRC="config"; return 0
+  fi
+  local detected; detected="$(detect_host_cli)"
+  if [ -n "$detected" ]; then
+    WORKER_BIN="$detected"; WORKER_BIN_SRC="detected"; return 0
+  fi
+  # No env, no config, no host marker — never guess the CLI.
+  printf 'lcars run: no host-CLI marker — defaulting to claude\n' >&2
+  WORKER_BIN="claude"; WORKER_BIN_SRC="default"
+}
+
+# Resolve WORKER_MODEL + WORKER_MODEL_SRC by the precedence above. Unset model
+# (empty WORKER_MODEL) ⇒ the adapter emits NO --model flag (session-18 argv).
+resolve_worker_model() {
+  if [ -n "${LCARS_WORKER_MODEL:-}" ]; then
+    WORKER_MODEL="$LCARS_WORKER_MODEL"; WORKER_MODEL_SRC="env"; return 0
+  fi
+  local cfgmodel=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgmodel="$(json_str "$LCARS_CFG" workerModel)"
+  if [ -n "$cfgmodel" ]; then
+    WORKER_MODEL="$cfgmodel"; WORKER_MODEL_SRC="config"; return 0
+  fi
+  WORKER_MODEL=""; WORKER_MODEL_SRC="unset"
+}
+
+# Resolve both ONCE per process, then print the self-explaining log line naming
+# the resolved cli + model + the SOURCE that won (env/config/detected/default for
+# the bin; env/config/unset for the model). Idempotent: the guard means repeated
+# calls (one per Stage advance) re-resolve but print the line only once.
+resolve_worker() {
+  resolve_worker_bin
+  resolve_worker_model
+  [ "$WORKER_RESOLVED" = "1" ] && return 0
+  WORKER_RESOLVED=1
+  # The self-explaining line goes to STDERR: the worker-using Stage drivers print
+  # their machine-readable artifacts (e.g. context-source's pack PATH) to STDOUT,
+  # and this human line must not pollute those surfaces. It still shows in a normal
+  # `lcars run` (stderr is on the captain's terminal).
+  printf '  worker: %s (bin: %s) model=%s (model: %s)\n' \
+    "$(basename "$WORKER_BIN")" "$WORKER_BIN_SRC" \
+    "${WORKER_MODEL:--}" "$WORKER_MODEL_SRC" >&2
+}
+
+# The `resolve-worker` subcommand: a thin, mission-free test surface over the
+# resolver. It resolves $LCARS_CFG from the repo's shared git dir (so config.json
+# participates), runs resolve_worker (which prints the human log line), then
+# prints a machine-readable summary line the tests assert on. No LLM, no mission.
+cmd_resolve_worker() {
+  local gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+  fi
+  resolve_worker
+  printf 'WORKER-RESOLVED bin=%s binsrc=%s model=%s modelsrc=%s\n' \
+    "$(basename "$WORKER_BIN")" "$WORKER_BIN_SRC" \
+    "${WORKER_MODEL:--}" "$WORKER_MODEL_SRC"
+}
+
 # --- delegate one cold-worker invocation to the CLI adapter -----------------
 # The driver passes a role keyword + outdir + prompt; the adapter (selected by the
 # cli id = basename WORKER_BIN) knows the flags and tool names. The worker binary
@@ -1885,7 +1988,11 @@ worker_spawn() { # role outdir prompt
   # overrides it (same spirit as LCARS_GH_BIN) so tests can point a generically
   # named stub at the claude adapter without renaming the binary.
   local cli; cli="${LCARS_WORKER_CLI:-$(basename "$WORKER_BIN")}"
-  LCARS_WORKER_BIN="$WORKER_BIN" \
+  # Thread the resolved MODEL to the adapter via the env var it reads. When empty
+  # the adapter emits NO --model flag (session-18 argv byte-for-byte). The model
+  # flag NAME is cli-specific and stays in the adapter; run.sh only resolves the
+  # value (CLI-agnostic) and hands it over here.
+  LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="${WORKER_MODEL:-}" \
     bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt"
 }
 
@@ -1894,6 +2001,11 @@ worker_spawn() { # role outdir prompt
 # no worker binary is available we must NOT silently pretend isolation — we stop
 # and say so, so an inline/uncovered run can never masquerade as `⊘ isolated`.
 require_worker() {
+  # Resolve WHICH cli (+ model) to run as the worker FIRST — at run time, after
+  # locate_mission has set $LCARS_CFG so config.json can participate. This is the
+  # single chokepoint every worker-using Stage (and the context-pack path) hits,
+  # so the self-explaining resolution line prints exactly once per process.
+  resolve_worker
   command -v "$WORKER_BIN" >/dev/null 2>&1 && return 0
   [ -x "$WORKER_BIN" ] && return 0
   printf '  ⚠ NOT ISOLATED — no cold-worker binary on PATH (LCARS_WORKER_BIN=%s).\n' "$WORKER_BIN" >&2
@@ -2039,8 +2151,12 @@ cmd_research() {
     [ -n "$q" ] || continue
     i=$((i + 1))
     local adir; adir="$resp/$(printf '%03d' "$i")"
-    printf 'LCARS_RA_DIR=%q LCARS_RA_Q=%q bash %q research-agent-job\n' \
-      "$adir" "$q" "$SELF" >>"$jobs"
+    # Pass the PARENT's already-resolved worker bin/model into each agent job so
+    # the agent subprocess runs the SAME cold-worker CLI without re-detecting the
+    # host (it inherits them as $LCARS_WORKER_BIN/$LCARS_WORKER_MODEL — env
+    # precedence — and resolves silently, no per-agent log line).
+    printf 'LCARS_RA_DIR=%q LCARS_RA_Q=%q LCARS_WORKER_BIN=%q LCARS_WORKER_MODEL=%q bash %q research-agent-job\n' \
+      "$adir" "$q" "$WORKER_BIN" "$WORKER_MODEL" "$SELF" >>"$jobs"
   done < <(grep -ve '^[[:space:]]*$' "$qdir/questions.txt")
   run_capped <"$jobs" || true
   rm -f "$jobs"
@@ -2955,7 +3071,11 @@ case "$SUB" in
   # One research agent, spawned as a capped fan-out job (run_capped). Stateless:
   # its ONLY inputs are $LCARS_RA_DIR (where to write) and $LCARS_RA_Q (the one
   # question). No --mission — research_agent_worker reaches no mission artifacts.
-  research-agent-job) research_agent_worker "${LCARS_RA_DIR:-}" "${LCARS_RA_Q:-}" ;;
+  # The cold-worker bin/model arrive via the inherited $LCARS_WORKER_BIN/_MODEL
+  # env (set by the parent cmd_research); resolve them SILENTLY here (no log line —
+  # the parent already printed it once) so spawn_worker sees a real binary.
+  research-agent-job) resolve_worker_bin; resolve_worker_model
+                      research_agent_worker "${LCARS_RA_DIR:-}" "${LCARS_RA_Q:-}" ;;
   # Auto-advance driver — sequences the per-Stage advances above (token-free).
   drive)            cmd_drive ;;
   # Repo-level context resolver (no mission) — prints the durable context source
@@ -2964,6 +3084,9 @@ case "$SUB" in
   # Per-wave repo symbol map (no LLM — pure bash). Regenerated by cmd_implement at
   # each wave; exposed here so it is independently driveable + testable.
   repo-map)         cmd_repo_map ;;
+  # Cold-worker bin/model resolution (no LLM, no mission) — prints the resolution
+  # log line + a machine-readable summary. The test surface for resolve_worker.
+  resolve-worker)   cmd_resolve_worker ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
   emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;

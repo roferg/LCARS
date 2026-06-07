@@ -65,12 +65,19 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
 
 # Print the argv FLAGS (one per line) for <cli> <role>. Leading `-p` is the
 # prompt-position placeholder (see header). The prompt itself is NOT emitted.
+#
+# Model selection is CLI-SPECIFIC, so it lives HERE, not in run.sh. The resolved
+# model arrives via the env var $LCARS_WORKER_MODEL (run.sh's resolve_worker_model
+# sets it). When it is EMPTY/UNSET the argv is byte-for-byte the session-18 lines
+# — no `--model` flag at all — so an unmodelled run is unchanged. When non-empty
+# the cli's model flag is APPENDED (claude: `--model <m>`), never reordered.
 adapter_argv() { # cli role outdir
-  local cli="$1" role="$2" tools
+  local cli="$1" role="$2" tools model="${LCARS_WORKER_MODEL:-}"
   tools="$(adapter_tools "$cli" "$role")" || exit 1
   case "$cli" in
     claude)
       printf '%s\n' '-p' '--allowedTools' "$tools" '--output-format' 'text'
+      [ -n "$model" ] && printf '%s\n' '--model' "$model"
       ;;
     *) die "unknown worker cli '$cli' — no adapter for this CLI" ;;
   esac
