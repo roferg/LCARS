@@ -354,7 +354,15 @@ flowchart LR
         <div class="control-card">
           <div class="control-cmd">lcars init</div>
           <div class="control-desc">One-time per-repo setup — local config +
-          GitHub labels.</div>
+          GitHub labels. Safe to re-run: it <strong>preserves</strong> your config
+          customizations, only filling in anything missing.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars update</div>
+          <div class="control-desc">Bring an already-initialized repo up to date
+          after a <code>git pull</code>: adds any new LCARS labels and config keys,
+          <strong>never</strong> clobbering your customizations or touching
+          <code>missions/</code>. A clean no-op when nothing's changed.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars file</div>
@@ -700,7 +708,8 @@ An inline run must never masquerade as isolated.</div>
       feedback.md                 accumulating Verify feedback history</pre>
 
       <h2>GitHub labels — the board's data model</h2>
-      <p><code>lcars init</code> creates the LCARS label set on the repo. The
+      <p><code>lcars init</code> creates the LCARS label set on the repo (and
+      <code>lcars update</code> backfills any that a later LCARS version adds). The
       harness applies them as Missions move; a future kanban reads them directly
       via the Issues API.</p>
 
@@ -753,6 +762,17 @@ An inline run must never masquerade as isolated.</div>
       gate, optional notify target). The harness <strong>never</strong> modifies
       <code>CLAUDE.md</code>, <code>.gitignore</code>, <code>CONTEXT.md</code>,
       <code>.claude/settings.json</code>, or any source files.</p>
+
+      <p>Writing config is <strong>merge-preserving</strong>: re-running
+      <code>lcars init</code> keeps every value already in <code>config.json</code>
+      (your customized <code>testCommand</code> / <code>model</code> /
+      <code>comprehensionBudget</code>) and only fills in keys that are missing — so
+      re-init is fully idempotent and never resets a customization. When LCARS
+      itself gains new labels or config keys, <code>lcars update</code> absorbs them
+      into an already-initialized repo the same way: missing labels and keys are
+      added at their defaults, existing values and <code>missions/</code> are left
+      untouched, and it reports what it added (or says there's nothing to
+      update).</p>
 
       <p>External dependencies are injected via env vars so they're swappable (and
       stubbable in tests):</p>

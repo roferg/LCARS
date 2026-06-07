@@ -363,7 +363,11 @@ stateDiagram-v2
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars init</div>
-          <div class="control-desc">One-time per-repo setup: creates <code>.git/lcars/</code>, writes config, scans <code>CONTEXT.md</code>, verifies CLI auth, and creates the LCARS Labels. Run once before the first Mission.</div>
+          <div class="control-desc">One-time per-repo setup: creates <code>.git/lcars/</code>, writes config, scans <code>CONTEXT.md</code>, verifies CLI auth, and creates the LCARS Labels. Run once before the first Mission. Safe to re-run: config writing is merge-preserving, so it keeps every value you've customized (<code>testCommand</code>, <code>model</code>, <code>comprehensionBudget</code>) and only fills in what's missing.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars update</div>
+          <div class="control-desc">Bring an already-initialized repo up to date after pulling a newer LCARS: backfills any Labels and <code>config.json</code> keys the new version added, at their defaults, while preserving existing values and leaving <code>missions/</code> untouched. Reports what it added; a clean no-op when already current. The discoverable "absorb new LCARS labels and keys" command, distinct from first-time <code>lcars init</code>.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars log</div>
@@ -506,6 +510,14 @@ flowchart LR
         </ul>
         <p style="margin-top:10px;font-size:13px;color:var(--lcars-text-dim)">Labels are the Kanban board's data model. The harness updates them; the board queries <code>GET /issues?labels=lcars:align</code> per column. Filter to <code>lcars:awaiting-human</code> to see every pending question at a glance — before the Kanban UI even exists; filter to <code>lcars:mission</code> for the command-and-control list, <code>lcars:ticket</code> for the work.</p>
         <p style="margin-top:10px;font-size:13px;color:var(--lcars-text-dim)"><strong>Issue lifecycle:</strong> a ticket's sub-issue is closed (and labelled <code>lcars:done</code>) the moment it goes green; the Mission's own issue closes only on PR <strong>merge</strong>, via a <code>Closes #</code> directive in the PR body — tied to the merge, never to approval.</p>
+      </div>
+
+      <div class="mission-card" style="border-left-color:var(--lcars-teal)">
+        <strong>Idempotent — and safe to keep current</strong>
+        <ul>
+          <li>Config writing is <strong>merge-preserving</strong>: re-running <code>lcars init</code> keeps every value you've customized (<code>testCommand</code>, <code>model</code>, <code>comprehensionBudget</code>) and only fills in missing keys — it never resets a customization.</li>
+          <li>After pulling a newer LCARS, <code>lcars update</code> absorbs what the new version added — backfilling missing Labels and config keys at their defaults, preserving existing values, leaving <code>missions/</code> untouched, and reporting what it added (a clean no-op when already current).</li>
+        </ul>
       </div>
 
       <div class="mission-card" style="margin-top:0;border-left-color:var(--lcars-red)">
