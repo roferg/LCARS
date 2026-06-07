@@ -221,5 +221,22 @@ check "7. a done mission is not an active candidate (exit 3)" "[ '$rc7g' -eq 3 ]
 
 # ==========================================================================
 echo
+echo "lcars — SKILL.md drive route relays progress in-session (session 42)"
+#
+# When the route is `drive`, the dispatcher's SKILL.md must instruct the same
+# background-run + periodic `status.sh --once` relay as lcars-run, so the captain
+# sees the Mission move without a second window. Doc-level guard only.
+LCARS_SKILL="$REPO_ROOT/skills/lcars/SKILL.md"
+check "8. drive route SKILL.md says to background-run the driver" \
+  "grep -qiE 'background|detached' '$LCARS_SKILL' && grep -qE 'drive --mission <id>.*&|2>&1 &' '$LCARS_SKILL'"
+check "8. drive route SKILL.md relays via status.sh --once" \
+  "grep -qE 'status.sh --once' '$LCARS_SKILL'"
+check "8. drive route SKILL.md honours the watch interval" \
+  "grep -q 'LCARS_WATCH_INTERVAL' '$LCARS_SKILL'"
+check "8. drive route SKILL.md keeps the isolation markers byte-for-byte" \
+  "grep -qF '⊘ isolated' '$LCARS_SKILL' && grep -qiE 'byte-for-byte|byte-compatible' '$LCARS_SKILL'"
+
+# ==========================================================================
+echo
 printf 'lcars: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -3301,5 +3301,30 @@ check "S34. no stage transition ever removes lcars:ticket" \
 
 # ==========================================================================
 echo
+echo "lcars run — SKILL.md instructs background-run + periodic status relay (session 42)"
+#
+# Doc-level guard for the in-session progress relay (Session 42): SKILL.md must
+# tell the agent to run `run.sh drive` in the BACKGROUND and relay progress in
+# the same session via a periodic `status.sh --once <id>` digest until the driver
+# halts — so the captain never needs a second window. The live behaviour is
+# proven by the functional tester; here we pin the instruction text.
+RUN_SKILL="$REPO_ROOT/skills/lcars-run/SKILL.md"
+check "S42. SKILL.md says to run the driver in the background" \
+  "grep -qiE 'background|detached' '$RUN_SKILL' && grep -qE 'drive --mission <id>.*&|2>&1 &' '$RUN_SKILL'"
+check "S42. SKILL.md captures the driver PID for the relay loop" \
+  "grep -qE 'DRIVE_PID=\\\$!|kill -0' '$RUN_SKILL'"
+check "S42. SKILL.md relays progress via status.sh --once (not the worker)" \
+  "grep -qE 'status.sh --once' '$RUN_SKILL'"
+check "S42. SKILL.md honours the watch interval (default ~60s / LCARS_WATCH_INTERVAL)" \
+  "grep -q 'LCARS_WATCH_INTERVAL' '$RUN_SKILL'"
+check "S42. SKILL.md loops until the driver halts / reaches a gate" \
+  "grep -qiE 'until the driver (exits|halts)|until.*halt' '$RUN_SKILL'"
+check "S42. SKILL.md keeps the final summary + isolation markers byte-for-byte" \
+  "grep -qF '⊘ isolated' '$RUN_SKILL' && grep -qiE 'byte-for-byte|byte-compatible' '$RUN_SKILL'"
+check "S42. SKILL.md exempts --step from the relay (returns immediately)" \
+  "grep -qiE '\\-\\-step.*(no relay|needs.*no.*relay|returns immediately|blocking)' '$RUN_SKILL'"
+
+# ==========================================================================
+echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

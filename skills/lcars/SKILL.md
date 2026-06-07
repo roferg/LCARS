@@ -65,11 +65,30 @@ Relay the inbox to the captain and help them clear a card — see the
 
 ## When the route is `drive`
 
-The router delegated to `run.sh drive`, which auto-advances the Mission Stage to
-Stage until a human gate, then stops and pings. Relay its summary and the reason
-it stopped (a pending question, the Verify gate, an Align re-grill, or an error).
-If it halted at an **Align re-grill** (a Mission sent back from Verify), run the
-re-grill in your session per the `lcars-run` skill, then `lcars <id>` again.
+The router resolved a drivable Mission. Don't call `run.sh drive` as a single
+blocking step — that shows the captain **nothing** until the whole pipeline
+returns, forcing them into a second window to watch. Instead **run the driver in
+the background and relay its progress in THIS session**, exactly as the
+`lcars-run` skill prescribes:
+
+1. Launch `run.sh drive --mission <id>` **detached**, capturing its PID and a log
+   file (`run.sh drive --mission <id> > <logfile> 2>&1 &`).
+2. **Loop:** every interval (default ~60s, honouring `$LCARS_WATCH_INTERVAL`) run
+   `bash ~/.claude/skills/lcars-status/status.sh --once <id>` — the deterministic
+   snapshot primitive — and relay a **compact** digest (latest stage + the
+   progress line) to the captain, until the driver exits or the Mission reaches a
+   halt (a pending question, the Verify gate, `done`, or an error).
+3. **On halt:** print the driver's final summary and **fire/echo the
+   notification exactly as today** — the end-of-run summary and the
+   `⊘ isolated … via <cli>` / `⚠ NOT ISOLATED` markers stay byte-for-byte. The
+   relay reads `events.jsonl` via `status.sh --once`, **never** through the
+   worker, so it stays CLI-agnostic.
+
+`run.sh drive` auto-advances the Mission Stage to Stage until a human gate, then
+stops and pings. Relay its summary and the reason it stopped (a pending question,
+the Verify gate, an Align re-grill, or an error). If it halted at an **Align
+re-grill** (a Mission sent back from Verify), run the re-grill in your session per
+the `lcars-run` skill, then `lcars <id>` again.
 
 ## The old verbs still work
 

@@ -24,10 +24,30 @@ set -uo pipefail
 # line, exit) — used by tests and for a quick "where is it now?" without a tail.
 MODE="snapshot"
 WATCH_SEL=""
+# Watch re-render cadence (seconds). The live `--watch` view re-renders the
+# frame every WATCH_INTERVAL seconds so `elapsed` advances; it does NOT control
+# how often we poll for `q` / honour the SIGINT trap (that stays a ~1s step —
+# see the follow loop). Resolution: --interval flag > $LCARS_WATCH_INTERVAL env
+# > the 60s default. The captain almost never wants a 1s busy-render; 60s keeps
+# a backgrounded watch quiet while still moving the clock.
+WATCH_INTERVAL_FLAG=""
+# --watch / --once take an optional positional selector; --watch additionally
+# accepts `--interval <secs>` anywhere after it. Parse flags in a small loop so
+# order doesn't matter (`--watch --interval 5 <id>` and `--watch <id> --interval
+# 5` are both fine).
 case "${1:-}" in
-  --watch) MODE="watch"; shift; WATCH_SEL="${1:-}" ;;
-  --once)  MODE="once";  shift; WATCH_SEL="${1:-}" ;;
+  --watch) MODE="watch"; shift ;;
+  --once)  MODE="once";  shift ;;
 esac
+if [ "$MODE" = "watch" ] || [ "$MODE" = "once" ]; then
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --interval) shift; WATCH_INTERVAL_FLAG="${1:-}"; shift ;;
+      --interval=*) WATCH_INTERVAL_FLAG="${1#--interval=}"; shift ;;
+      *) [ -z "$WATCH_SEL" ] && WATCH_SEL="$1"; shift ;;
+    esac
+  done
+fi
 
 # --- locate the repo + state dir ------------------------------------------
 # Mirror file.sh: resolve .git, then .git/lcars/. Anything short of a fully
@@ -447,6 +467,34 @@ if [ "$MODE" = "once" ]; then
   exit 0
 fi
 
+# --- resolve the re-render interval -----------------------------------------
+# flag > env > 60s default. A non-numeric / non-positive value falls back to the
+# default rather than wedging the loop on a zero/garbage tick.
+resolve_interval() {
+  local v=""
+  if [ -n "$WATCH_INTERVAL_FLAG" ]; then
+    v="$WATCH_INTERVAL_FLAG"
+  elif [ -n "${LCARS_WATCH_INTERVAL:-}" ]; then
+    v="$LCARS_WATCH_INTERVAL"
+  fi
+  case "$v" in
+    ''|*[!0-9]*) v=60 ;;            # empty or non-digits → default
+  esac
+  [ "$v" -ge 1 ] 2>/dev/null || v=60   # zero / negative → default
+  printf '%s' "$v"
+}
+WATCH_INTERVAL="$(resolve_interval)"
+
+# Test/debug hook: with $LCARS_WATCH_DEBUG set, print the resolved interval and
+# exit before entering the (blocking) follow loop, so a test can assert the
+# flag>env>default resolution deterministically without timing a real tail. This
+# never fires on the user-facing path (the env var is unset in normal use), so
+# the live `--watch` output is unchanged.
+if [ -n "${LCARS_WATCH_DEBUG:-}" ]; then
+  printf 'WATCH_INTERVAL=%s\n' "$WATCH_INTERVAL"
+  exit 0
+fi
+
 # --- MODE = watch : live follow ---------------------------------------------
 # Clean exit on Ctrl-C / SIGTERM and on `q`. The trap sets a stop flag rather
 # than exiting inline so the loop breaks promptly at its next check even from a
@@ -480,13 +528,20 @@ render_watch_frame
 stdin_is_tty=0
 [ -t 0 ] && stdin_is_tty=1
 
-# Follow loop: re-render on the ~1s tick (so elapsed moves), and stop at a
-# terminal gate, on `q`, or on the trap's stop flag. Pure bash, jq-free.
+# Follow loop: poll/sleep in SMALL ~1s steps so `q` stays responsive on a TTY
+# and the SIGINT/SIGTERM trap can interrupt a no-TTY tick — but only RE-RENDER
+# the frame once a full WATCH_INTERVAL has elapsed (accumulate seconds, render
+# when the count rolls over). This keeps signal teardown / busy-spin behaviour
+# identical to the old 1s loop while letting the captain dial the visible cadence
+# up to the 60s default. We do NOT use one long blocking `sleep $N` — that would
+# regress the SIGINT responsiveness the DEFECT #1 test guards. Pure bash, jq-free.
+elapsed_ticks=0
 while :; do
   [ "$watch_stop" -eq 1 ] && break
 
   if [ "$stdin_is_tty" -eq 1 ]; then
-    # `q` quits; read times out after ~1s so the frame re-renders for elapsed.
+    # `q` quits; read times out after ~1s so we accumulate a tick toward the
+    # next re-render.
     if IFS= read -r -t 1 -n 1 key 2>/dev/null; then
       case "$key" in q|Q) watch_stop=1 ;; esac
     fi
@@ -500,7 +555,12 @@ while :; do
   fi
   [ "$watch_stop" -eq 1 ] && break
 
-  # Re-render every tick (elapsed advances) — cheap for our stream sizes.
+  # Accumulate elapsed seconds; only re-render once a full interval has passed.
+  elapsed_ticks=$(( elapsed_ticks + 1 ))
+  [ "$elapsed_ticks" -lt "$WATCH_INTERVAL" ] && continue
+  elapsed_ticks=0
+
+  # Re-render once per interval (elapsed advances) — cheap for our stream sizes.
   render_watch_frame
 
   # Stop following once the stream's last event is terminal.

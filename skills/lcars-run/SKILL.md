@@ -83,6 +83,54 @@ The `drive` loop reads `state.json`, sequences the per-Stage advances below
 stage-by-stage summary and the reason it stopped. Auto mode and `--step` share
 the **exact same** per-Stage code path — the only difference is the loop.
 
+### Run the driver in the background and relay progress in THIS session
+
+A full `drive` can run for many minutes (Research → … → Implement), and a plain
+blocking call shows the captain **nothing** until it returns — forcing them into
+a second window to watch. **Don't do that.** For the auto-advance (non-`--step`)
+path, run the driver in the **background** and relay its progress in the same
+session, so the captain sees the Mission move without opening a watch:
+
+1. **Launch the driver detached, capturing its PID and a log file:**
+
+   ```bash
+   bash ~/.claude/skills/lcars-run/run.sh drive --mission <id> > /tmp/lcars-drive-<id>.log 2>&1 &
+   DRIVE_PID=$!
+   ```
+
+2. **Loop a periodic digest until the driver exits.** Every interval — default
+   ~60s, honouring `$LCARS_WATCH_INTERVAL` if the captain set it — render the
+   current state with the deterministic primitive and relay a **compact** digest
+   (the latest stage line + the `Wave x/y · ticket … · elapsed …` progress line)
+   to the captain:
+
+   ```bash
+   while kill -0 "$DRIVE_PID" 2>/dev/null; do
+     bash ~/.claude/skills/lcars-status/status.sh --once <id>   # current snapshot
+     sleep "${LCARS_WATCH_INTERVAL:-60}"
+   done
+   ```
+
+   Relay only the *new* progress each pass — a one-or-two-line digest, not the
+   whole frame — so the session reads like a live ticker, not a wall of repeats.
+   Use `status.sh --once` (the deterministic snapshot), **never** the worker, to
+   read progress: it reads `events.jsonl` directly and stays CLI-agnostic.
+
+3. **On halt** (the driver process exits, or the snapshot shows a terminal gate
+   — `verify` / `done` / `error` / an awaiting-human question), stop the loop,
+   print the driver's **final summary** from its log, and **fire/echo the
+   notification exactly as today.** The end-of-run summary and the
+   `⊘ isolated … via <cli>` / `⚠ NOT ISOLATED` markers are produced by the driver
+   and relayed **byte-for-byte** — the relay changes only *when* progress is
+   shown, never its shape.
+
+This is "the agent runs the watch for you": background-run the driver + a
+periodic `status.sh --once` digest. It is pure orchestration — it does **not**
+change the driver's stage logic or the event format.
+
+The `--step` path needs **no** relay — it returns immediately after one Stage:
+run `--step` blocking and report what it printed, exactly as before.
+
 **Halt conditions** (the driver stops and returns to you):
 
 | Halt | Why | What the driver does |
