@@ -178,7 +178,7 @@ power entry points.
 |---|---|
 | `lcars run <id>` | Auto-advance a Mission stage-to-stage until a human gate. |
 | `lcars run <id> --step` | Advance **exactly one** Stage, then stop (for debugging/inspection). |
-| `lcars status --watch [<id>]` | Follow a Mission's run **live**: tails its event stream and re-renders a pace/position line until the run reaches a gate. |
+| `lcars status --watch [<id>]` | Follow a Mission's run **live**: tails its event stream and re-renders a pace/position line on a configurable tick (default ~60s; override with `LCARS_WATCH_INTERVAL` or `--interval <secs>`) until the run reaches a gate. Rarely needed now that a run relays progress in the launching session. |
 | `lcars respond [<id>]` | Answer a Mission's awaiting-human gate. No id lists everything waiting. |
 | `lcars approve <id>` | Ship a verified Mission: push the branch, open the PR, mark it Done. |
 | `lcars feedback <id> "<note>"` | Send a Mission at Verify back to Align with a note (kept in an accumulating history). |
@@ -332,9 +332,13 @@ Two deliberate properties make this robust:
   log** (`events.jsonl`) as it goes — every Stage start and finish, every gate,
   and fine-grained Implement progress (each wave, each ticket, each attempt, and
   every green/flag). It prints each Stage line the moment it happens instead of
-  only summarizing at halt, and `lcars status --watch` tails that same log into a
-  live view with a pace/position line —
-  `Wave 3/6 · ticket t-004 · attempt 1 · ~12s avg/ticket · elapsed 4m12s`. The
+  only summarizing at halt. When you launch a run from `lcars` / `lcars run`,
+  that same session relays a compact progress digest every ~60s (configurable
+  via `LCARS_WATCH_INTERVAL` or `--interval`) until it halts — so you watch the
+  run where you started it, without a second window. `lcars status --watch`
+  tails the same log into a live view with a pace/position line —
+  `Wave 3/6 · ticket t-004 · attempt 1 · ~12s avg/ticket · elapsed 4m12s` — on
+  that same interval. The
   events are emitted by the bash harness *around* the worker calls — never by the
   worker — so the stream and the live view behave identically whatever CLI runs
   underneath.
