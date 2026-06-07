@@ -61,6 +61,12 @@ STAGES_DIR="$SKILL_DIR/stages"
 # (default "github") and the github host shells out to ${LCARS_GH_BIN:-gh}.
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/host-adapter.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
+# The cold-worker CLI adapter — the ONE place that knows a CLI's spawn flags and
+# tool NAMES. This script (the stage driver) stays CLI-agnostic: it speaks a role
+# keyword + a cli id (basename of WORKER_BIN) and delegates the actual one-shot to
+# the adapter's `spawn`. $LCARS_WORKER_ADAPTER overrides the path so tests can stub
+# it (same spirit as LCARS_GH_BIN / LCARS_HOST_ADAPTER). It sits beside this script.
+WORKER_ADAPTER="${LCARS_WORKER_ADAPTER:-$SKILL_DIR/worker-adapter.sh}"
 # The walk-away notification hook. The driver calls this ONCE at a human gate
 # (awaiting-human or verify). Defaults to the bundled notify.sh; env-injectable
 # (like LCARS_GH_BIN) so tests assert the call without sending anything.
@@ -255,17 +261,18 @@ context_paths() {
 # mode) and never needs to resolve an env token. cwd stays at the repo root so
 # the worker's read-only repo access works. Stays CLI-agnostic.
 generate_context_pack() { # pack-path
-  local pack="$1" scratch out prompt tools
+  local pack="$1" scratch out prompt
   mkdir -p "$(dirname "$pack")"
   scratch="$(mktemp -d)"
   out="$scratch/context-pack.md"
   prompt="$(cat "$STAGES_DIR/context-pack.md")
 
 Write your context pack to EXACTLY: $out"
-  tools="$(worker_tools repo-read)"
-  LCARS_WORK_OUT="$scratch" LCARS_WORKER_ROLE="context-pack" \
-    "$WORKER_BIN" -p "$prompt" --allowedTools "$tools" --output-format text \
-    >"$scratch/.worker.out" 2>"$scratch/.worker.err" || true
+  # Same toolset as a repo-read Stage, but the worker must see
+  # LCARS_WORKER_ROLE=context-pack (toolset-role and env-role differ here). Pre-
+  # export the env-role; pass repo-read as the adapter's TOOLSET role — the adapter
+  # does not overwrite an already-set LCARS_WORKER_ROLE, preserving both exactly.
+  LCARS_WORKER_ROLE="context-pack" worker_spawn repo-read "$scratch" "$prompt"
   # BASH (which CAN write into `.git/`) lands the durable pack from scratch.
   [ -f "$out" ] && cp "$out" "$pack"
   rm -rf "$scratch"
@@ -1856,16 +1863,30 @@ EOF
 # surfacing failure — never a silent advance.
 
 # --- restricted tool set per worker role ------------------------------------
-# Read-only-on-the-repo for Validate/Plan/Review/question-gen; +web for the
-# research agents; +write+shell for the Implementer. (All roles may write into
-# their own scratch output dir — that is their answer channel, not the repo.)
-worker_tools() { # role-keyword → comma-separated allowed-tools list
-  case "$1" in
-    repo-read)     echo "Read,Grep,Glob,Write" ;;
-    repo-read-web) echo "Read,Grep,Glob,Write,WebSearch,WebFetch" ;;
-    repo-write)    echo "Read,Grep,Glob,Write,Edit,Bash" ;;
-    *)             echo "Read" ;;
-  esac
+# The role→toolset table (and the CLI flag names) now live in the cold-worker
+# CLI adapter (worker-adapter.sh), keyed by cli id, so this driver knows neither
+# the flags nor the tool NAMES. Read-only-on-the-repo for Validate/Plan/Review/
+# question-gen; +web for the research agents; +write+shell for the Implementer.
+# (All roles may write into their own scratch output dir — that is their answer
+# channel, not the repo.) The adapter `spawn` is reached via worker_spawn() below.
+
+# --- delegate one cold-worker invocation to the CLI adapter -----------------
+# The driver passes a role keyword + outdir + prompt; the adapter (selected by the
+# cli id = basename WORKER_BIN) knows the flags and tool names. The worker binary
+# itself is handed to the adapter via LCARS_WORKER_BIN (the adapter defaults it to
+# the cli id otherwise). Callers may pre-export LCARS_WORKER_ROLE to override the
+# env role the worker sees while still selecting the toolset by <role> (the
+# context-pack case): the adapter never overwrites an already-set LCARS_WORKER_ROLE.
+worker_spawn() { # role outdir prompt
+  local role="$1" outdir="$2" prompt="$3"
+  # The cli id selects the adapter. It is the basename of the worker binary
+  # (`claude` in production) — this indirection is the whole point: a future
+  # `copilot` binary routes to a copilot adapter case automatically. $LCARS_WORKER_CLI
+  # overrides it (same spirit as LCARS_GH_BIN) so tests can point a generically
+  # named stub at the claude adapter without renaming the binary.
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "$WORKER_BIN")}"
+  LCARS_WORKER_BIN="$WORKER_BIN" \
+    bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt"
 }
 
 # --- refuse to run a Stage without a real worker, LOUDLY --------------------
@@ -1895,7 +1916,7 @@ isolated_line() { # stage  worker-count
 spawn_worker() { # role  template  toolset  outdir  extra
   local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5"
   mkdir -p "$outdir"
-  local prompt tools
+  local prompt
   prompt="$(cat "$template")
 
 $extra
@@ -1903,10 +1924,11 @@ $extra
 ## Where to write your output
 Your scratch output directory is: $outdir
 Write your output file(s) there exactly as specified above — nowhere else."
-  tools="$(worker_tools "$toolset")"
-  LCARS_WORK_OUT="$outdir" LCARS_WORKER_ROLE="$role" \
-    "$WORKER_BIN" -p "$prompt" --allowedTools "$tools" --output-format text \
-    >"$outdir/.worker.out" 2>"$outdir/.worker.err" || true
+  # The env role the worker sees IS this Stage's role; the toolset is selected by
+  # $toolset. They coincide for every Stage spawn (only the context-pack path
+  # differs, and that goes through generate_context_pack, not here), so pre-export
+  # LCARS_WORKER_ROLE=$role and pass $toolset as the adapter's toolset-role.
+  LCARS_WORKER_ROLE="$role" worker_spawn "$toolset" "$outdir" "$prompt"
 }
 
 # === Bounded fan-out (the ONE shared concurrency helper) ====================

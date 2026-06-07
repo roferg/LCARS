@@ -28,6 +28,12 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
 
+# The cold-worker CLI flags/tool names now live in worker-adapter.sh, keyed by a
+# cli id run.sh derives from the worker binary's basename (`claude` in production).
+# These suites stub the worker under the generic name `worker`, so point the cli
+# id at the claude adapter for the whole suite (like LCARS_GH_BIN selects gh).
+export LCARS_WORKER_CLI="${LCARS_WORKER_CLI:-claude}"
+
 pass=0
 fail=0
 TMPROOT="$(mktemp -d)"
