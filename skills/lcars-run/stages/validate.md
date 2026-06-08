@@ -28,7 +28,19 @@ finding that changes *what* gets built (e.g. "global vs. per-course leaderboard
 — this changes the DB schema"). Most Missions raise **zero** scope questions; do
 not over-escalate, or the walk-away gate becomes a chat.
 
-## Output — two files in your scratch output directory
+## Output — files you CREATE in your scratch output directory
+
+You MAY first read your input artifacts (read tools are allowed), but you MUST
+then create the primary output file (`validated-plan.md`) on disk with your
+file-creation / file-writing tool. Create it ONCE, with its COMPLETE final
+content, in a single write — do NOT create an empty or placeholder file intending
+to fill it in later, because your file-creation tool may not support overwriting a
+file that already exists. You MUST create the file(s) — with their full final
+content — BEFORE you end your turn. Do NOT end your turn by announcing what you
+will do; describing the task is NOT doing it. Your turn is NOT complete until the
+file(s) exist on disk in the scratch output directory. The harness reads ONLY the
+files you create — never your reply — so do NOT answer in chat; a reply without the
+file counts as no output and FAILS the stage.
 
 1. **`validated-plan.md`** — your synthesis. It MUST contain these sections (the
    harness refuses a plan missing any of them):
@@ -50,7 +62,7 @@ not over-escalate, or the walk-away gate becomes a chat.
    the wrong thing.>
    ```
 
-2. **`scope.txt`** — zero or more scope-change questions, **one per line**. Write
+2. **`scope.txt`** — zero or more scope-change questions, **one per line**. Create
    it empty (or omit it) when there are none. A line belongs here **only** if
    answering it changes *what* gets built.
 

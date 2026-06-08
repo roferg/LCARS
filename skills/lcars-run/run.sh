@@ -276,6 +276,16 @@ generate_context_pack() { # pack-path
   out="$scratch/context-pack.md"
   prompt="$(cat "$STAGES_DIR/context-pack.md")
 
+You MAY first read whatever you need, but you MUST then create your context pack
+file on disk with your file-creation / file-writing tool (that tool IS available
+to you here). Create it ONCE, with its COMPLETE final content, in a single write —
+do NOT create an empty or placeholder file intending to fill it in later, because
+your file-creation tool may not support overwriting a file that already exists.
+You MUST create the file — with its full final content — BEFORE you end your turn.
+Do NOT end your turn by announcing what you will do; describing the task is NOT
+doing it. Your turn is NOT complete until the file exists on disk. The harness
+reads ONLY that file, never your reply; a reply-only answer counts as no output
+and FAILS. Create that one file and nowhere else, at the path on the next line:
 Write your context pack to EXACTLY: $out"
   # Same toolset as a repo-read Stage, but the worker must see
   # LCARS_WORKER_ROLE=context-pack (toolset-role and env-role differ here). Pre-
@@ -2025,17 +2035,51 @@ isolated_line() { # stage  worker-count
 # are captured to scratch for debugging only. The scratch dir path is also handed
 # to the worker via $LCARS_WORK_OUT so a CLI adapter (or a test stub) can find it
 # without re-parsing the prompt.
-spawn_worker() { # role  template  toolset  outdir  extra
-  local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5"
+spawn_worker() { # role  template  toolset  outdir  extra  [prior_no_file]
+  local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5" prior_no_file="${6:-}"
   mkdir -p "$outdir"
+  # Lever 2 — behaviour-keyed retry escalation. When a PRIOR attempt of THIS
+  # single-worker stage produced NO file (the procrastination failure mode), the
+  # caller passes a non-empty $prior_no_file; only then do we append an escalation
+  # block, keyed purely on the observed behaviour (no CLI name). The FIRST attempt
+  # passes nothing, so its prompt stays byte-for-byte unchanged.
+  local prior_fail_block=""
+  if [ -n "$prior_no_file" ]; then
+    prior_fail_block="
+
+## YOUR PREVIOUS ATTEMPT FAILED — read this FIRST
+A prior attempt at this exact task ended its turn WITHOUT creating the required
+output file: it described the task but never called its file-creation / file-
+writing tool, so no file reached the scratch output directory and the attempt
+counted as no output. Do NOT repeat that. This time, your FIRST action — before
+any analysis, explanation, or prose — MUST be to call your file-creation tool to
+create the required output file in the scratch output directory — in a single
+write, with its COMPLETE final content (do NOT create an empty or placeholder file
+intending to fill it in later; your file-creation tool may not support overwriting
+an existing file). Describing the task is NOT doing it."
+  fi
   local prompt
   prompt="$(cat "$template")
 
 $extra
 
-## Where to write your output
+## Where to write your output — READ THIS, IT IS NOT OPTIONAL
 Your scratch output directory is: $outdir
-Write your output file(s) there exactly as specified above — nowhere else."
+You MAY first read your input files (read tools are allowed), but you MUST then
+CREATE each output file specified above with your file-creation / file-writing
+tool. Create each output file ONCE, with its COMPLETE final content, in a single
+write — do NOT create an empty or placeholder file intending to edit or fill it
+in later, because your file-creation tool may not support overwriting a file that
+already exists. That tool IS available to you in this session, so do NOT claim you
+lack one or that this session is read-only.
+You MUST create the output file(s) — with their full final content — BEFORE you
+end your turn. Do NOT end your turn by merely announcing or describing what you
+will do — describing the task is NOT doing it. Your turn is NOT complete until the
+file(s) exist on disk in the scratch output directory.
+The harness reads ONLY the files you create in that scratch output directory; it
+NEVER reads your reply. Do NOT put your answer in your reply / chat — a
+reply-only answer counts as no output and FAILS the stage. Create the file(s)
+exactly as specified above, in the scratch output directory, and nowhere else.$prior_fail_block"
   # The env role the worker sees IS this Stage's role; the toolset is selected by
   # $toolset. They coincide for every Stage spawn (only the context-pack path
   # differs, and that goes through generate_context_pack, not here), so pre-export
@@ -2118,7 +2162,7 @@ cmd_research() {
     qdir="$(mktemp -d)"
     spawn_worker research-questions "$STAGES_DIR/research-questions.md" repo-read "$qdir" \
 "## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/prd.md"
+- $MISSION_DIR/prd.md" "$( [ "$tries" -gt 1 ] && printf no-file )"
     [ -f "$qdir/questions.txt" ] && break
     rm -rf "$qdir"; qdir=""
   done
@@ -2244,11 +2288,18 @@ cmd_validate() {
   # declarative facts, by PATH only. Safe for this declarative Stage.
   extra="$extra$(context_extra_block)"
 
-  local tries=0
+  local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
-    spawn_worker validate "$STAGES_DIR/validate.md" repo-read "$odir" "$extra"
+    spawn_worker validate "$STAGES_DIR/validate.md" repo-read "$odir" "$extra" "$prior_no_file"
+    # Lever 2: if this attempt produced NEITHER expected file, the next retry gets
+    # the procrastination escalation; a produced-but-malformed file does not.
+    if [ ! -f "$odir/scope.txt" ] && [ ! -f "$odir/validated-plan.md" ]; then
+      prior_no_file=no-file
+    else
+      prior_no_file=""
+    fi
 
     if [ -f "$odir/scope.txt" ] && grep -qve '^[[:space:]]*$' "$odir/scope.txt"; then
       # A finding implies a scope change → pause at the human gate (a valid
@@ -2318,11 +2369,17 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # Shared declarative repo facts, by PATH only.
   extra="$extra$(context_extra_block)"
 
-  local tries=0
+  local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
-    spawn_worker plan "$STAGES_DIR/plan.md" repo-read "$odir" "$extra"
+    # Cold workers only CREATE FILES; the harness owns DIRECTORY scaffolding.
+    # Pre-create the manifests/ subdir so the worker's `create manifests/<id>.md`
+    # writes into an existing dir (some file-creation tools cannot mkdir). CLI-
+    # neutral: Claude is unaffected. plan-save reads from "$odir/manifests".
+    mkdir -p "$odir/manifests"
+    spawn_worker plan "$STAGES_DIR/plan.md" repo-read "$odir" "$extra" "$prior_no_file"
+    if [ -f "$odir/plan.json" ]; then prior_no_file=""; else prior_no_file=no-file; fi
     if [ -f "$odir/plan.json" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" plan-save \
@@ -2369,11 +2426,12 @@ acceptable — do not raise it."
   # we add nothing but the declarative repo-facts context source, by PATH only.
   extra="$extra$(context_extra_block)"
 
-  local tries=0
+  local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
-    spawn_worker plan-review "$STAGES_DIR/plan-review.md" repo-read "$odir" "$extra"
+    spawn_worker plan-review "$STAGES_DIR/plan-review.md" repo-read "$odir" "$extra" "$prior_no_file"
+    if [ -f "$odir/verdict.json" ]; then prior_no_file=""; else prior_no_file=no-file; fi
     if [ -f "$odir/verdict.json" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" review-save \
@@ -2506,6 +2564,10 @@ or reasoning). Write tests that FAIL until the ticket's behaviour exists:
 $(cat "$sigfile")"
     fi
     local odir; odir="$(mktemp -d)"
+    # Harness owns directory scaffolding (workers only create files): pre-create
+    # the tests/ scratch subdir so the worker's `create tests/<file>` lands without
+    # needing to mkdir. CLI-neutral; Claude is unaffected.
+    mkdir -p "$odir/tests"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock

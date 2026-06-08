@@ -2080,6 +2080,83 @@ check "P3. the recipe tells the writer to invoke the not-yet-built entrypoint / 
 check "P3. the recipe forbids appending to an existing passing suite (dedicated file)" \
   "grep -qiE 'dedicated|do not append|never append|existing passing suite' '$REPO_ROOT/skills/lcars-run/stages/implement-test-writer.md'"
 
+# --- Copilot enablement: the output-file instruction is CLI-NEUTRAL and
+# directive (nudges Claude's Write AND Copilot's create), and never names a CLI.
+# The shared epilogue in spawn_worker is the primary lever; it must tell the
+# worker to USE its file-creation tool and that a reply-only answer fails.
+check "CN. the shared worker epilogue says to USE a file-creation/write tool" \
+  "grep -qiE 'file-creation|file-writing|creation / file' '$REPO_ROOT/skills/lcars-run/run.sh'"
+check "CN. the epilogue forbids a reply-only answer (harness reads files only)" \
+  "grep -qiE 'not put your answer in your reply|reply.only answer|reads ONLY the files' '$REPO_ROOT/skills/lcars-run/run.sh'"
+check "CN. no stage prompt names a CLI (the prompts stay CLI-NEUTRAL)" \
+  "! grep -riqE 'copilot|claude|anthropic|opus|sonnet|haiku' '$REPO_ROOT/skills/lcars-run/stages/'"
+check "CN. a single-worker stage (research-questions) tells it to CREATE the file" \
+  "grep -qiE 'file-creation|file-writing|Create the file' '$REPO_ROOT/skills/lcars-run/stages/research-questions.md'"
+
+# --- Anti-procrastination (Lever 1, Copilot-safe reframing): the prompts must
+# require the file to be created BEFORE the turn ends and say that describing the
+# task is not doing it — the CLI-neutral defeat for a model that announces-and-
+# yields. It MUST NOT tell the worker to create an empty/placeholder file first
+# and fill it in later: Copilot's `create` tool cannot overwrite an existing
+# file, so an empty-first instruction bricks the worker. One create, complete.
+check "CN. the shared epilogue requires the file BEFORE the turn ends" \
+  "grep -qiE 'BEFORE you end your turn|before your? turn' '$REPO_ROOT/skills/lcars-run/run.sh'"
+check "CN. the shared epilogue says describing the task is NOT doing it" \
+  "grep -qiE 'describing the task is NOT doing it|announcing or describing' '$REPO_ROOT/skills/lcars-run/run.sh'"
+check "CN. the shared epilogue says create the file ONCE with COMPLETE content" \
+  "grep -qiE 'COMPLETE final content|single write' '$REPO_ROOT/skills/lcars-run/run.sh'"
+check "CN. the question-generator requires creating the file before the turn ends" \
+  "grep -qiE 'BEFORE you end your turn|create the file .*ONCE|single write' '$REPO_ROOT/skills/lcars-run/stages/research-questions.md'"
+
+# --- Copilot file-tool hard limit: NO prompt may instruct creating an empty /
+# placeholder file THEN filling/editing it later (Copilot `create` cannot
+# overwrite). Assert the bricking phrasing is gone from run.sh AND every stage.
+check "CN. run.sh never instructs create-empty-then-fill" \
+  "! grep -qiE 'create (it|the file) empty (first)?.*then fill|empty first if you must|create a placeholder' '$REPO_ROOT/skills/lcars-run/run.sh'"
+check "CN. no stage prompt instructs create-empty-then-fill" \
+  "! grep -riqE 'create (it|the file) empty (first)?.*then fill|empty first if you must|create a placeholder' '$REPO_ROOT/skills/lcars-run/stages/'"
+check "CN. the prompts warn the file tool may not overwrite an existing file" \
+  "grep -qiE 'may not support overwriting' '$REPO_ROOT/skills/lcars-run/run.sh'"
+
+# --- Anti-procrastination (Lever 2): a behaviour-keyed retry escalation. On a
+# retry AFTER a prior attempt produced NO file, spawn_worker appends an
+# escalation block; the FIRST attempt's prompt is unchanged. Keyed on observed
+# behaviour only — never a CLI name.
+# Stub spawn_worker's collaborators and drive it directly, capturing the prompt.
+cn_l2_dir="$(mktemp -d "$TMPROOT/cnl2.XXXX")"
+cat >"$cn_l2_dir/tmpl.md" <<'EOF'
+# Template body (substantive content)
+EOF
+# A tiny worker that records the prompt it was handed and writes nothing.
+cn_l2_capture="$cn_l2_dir/prompt.txt"
+(
+  set -uo pipefail
+  STAGES_DIR="$cn_l2_dir"
+  worker_spawn() { printf '%s' "$3" >"$cn_l2_capture"; }   # role-toolset outdir prompt
+  # Pull the real spawn_worker definition out of run.sh and eval it.
+  eval "$(sed -n '/^spawn_worker() {/,/^}/p' "$REPO_ROOT/skills/lcars-run/run.sh")"
+  # Same outdir both times so the ONLY difference is the appended escalation (the
+  # real loop uses a fresh mktemp each retry, but we hold it constant to assert
+  # the byte-for-byte prefix invariant cleanly).
+  # Attempt 1 — no prior failure: prompt must NOT carry the escalation.
+  spawn_worker some-role "$cn_l2_dir/tmpl.md" repo-read "$cn_l2_dir/o" "extra" ""
+  cp "$cn_l2_capture" "$cn_l2_dir/a1.txt"
+  # Attempt 2 — prior attempt produced no file: escalation MUST be appended.
+  spawn_worker some-role "$cn_l2_dir/tmpl.md" repo-read "$cn_l2_dir/o" "extra" "no-file"
+  cp "$cn_l2_capture" "$cn_l2_dir/a2.txt"
+)
+check "CN-L2. attempt 1 (no prior failure) carries NO escalation block" \
+  "! grep -qiE 'PREVIOUS ATTEMPT FAILED' '$cn_l2_dir/a1.txt'"
+check "CN-L2. attempt 2 (prior no-file) carries the escalation block" \
+  "grep -qiE 'PREVIOUS ATTEMPT FAILED' '$cn_l2_dir/a2.txt'"
+check "CN-L2. the escalation is behaviour-keyed, naming NO CLI" \
+  "! grep -riqE 'copilot|claude|anthropic|opus|sonnet|haiku|gpt-' '$cn_l2_dir/a2.txt'"
+# Slice the first N bytes of a2 (N = len(a1)) and assert it equals a1 verbatim —
+# proving the escalation is strictly APPENDED, leaving attempt 1's text untouched.
+head -c "$(wc -c <"$cn_l2_dir/a1.txt")" "$cn_l2_dir/a2.txt" >"$cn_l2_dir/a2-prefix.txt"
+check "CN-L2. attempt 1's prompt is a byte-for-byte PREFIX of attempt 2 (escalation only appended)" \
+  "cmp -s '$cn_l2_dir/a1.txt' '$cn_l2_dir/a2-prefix.txt'"
+
 # ==========================================================================
 echo
 echo "lcars run — Verify stage"
@@ -4035,6 +4112,19 @@ check "S41-6. plan.md forbids implementation bodies / the edits to make in a man
   "grep -qiE 'NEVER the (implementation|edits|solution)|signatures?[^.]*only|locations?[^.]*only' '$PLAN_TMPL'"
 check "S41-6. plan.md routes manifests to a SEPARATE manifests/ dir (not plan.json)" \
   "grep -qiE 'manifests/' '$PLAN_TMPL'"
+
+# --- Copilot-safe directory scaffolding: cold workers only CREATE FILES; the
+# harness owns the manifests/ directory. cmd_plan MUST pre-create the worker's
+# scratch manifests/ subdir before spawning (Copilot `create` cannot mkdir a
+# missing parent). The plan.md template tells the worker the dir already exists.
+check "CN-DIR. cmd_plan pre-creates the worker scratch manifests/ subdir" \
+  "grep -qE 'mkdir -p \"\\\$odir/manifests\"' '$REPO_ROOT/skills/lcars-run/run.sh'"
+check "CN-DIR. plan.md tells the worker the manifests/ dir ALREADY EXISTS" \
+  "grep -qiE 'manifests/ (directory )?ALREADY EXISTS|ALREADY EXISTS' '$PLAN_TMPL'"
+check "CN-DIR. the test-writer scratch tests/ subdir is pre-created by the harness" \
+  "grep -qE 'mkdir -p \"\\\$odir/tests\"' '$REPO_ROOT/skills/lcars-run/run.sh'"
+check "CN-DIR. implement-test-writer.md tells the worker tests/ ALREADY EXISTS" \
+  "grep -qiE 'ALREADY EXISTS' '$REPO_ROOT/skills/lcars-run/stages/implement-test-writer.md'"
 
 # ==========================================================================
 echo

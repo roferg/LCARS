@@ -45,7 +45,8 @@ you never need to clean up after the tool itself.
 
 ## Output
 
-Write your result as JSON to **`result.json`** in your scratch output directory:
+Create the file **`result.json`** in your scratch output directory (using your
+file-creation / file-writing tool) containing your result as JSON:
 
 ```json
 {
@@ -57,4 +58,11 @@ Write your result as JSON to **`result.json`** in your scratch output directory:
 ```
 
 `passed` is `true` only if the ticket's tests actually pass; `attempts` is the
-number of iterations you took (1–5). Write only that JSON object to the file.
+number of iterations you took (1–5). Put only that JSON object in the file.
+
+Writing `result.json` to disk with your file-creation / file-writing tool is how
+the stage completes — do it as a concrete action once the implementation is done,
+not something you announce and then yield on. Describing your result is NOT
+emitting it; your turn is NOT complete until `result.json` exists on disk in the
+scratch output directory. The harness reads ONLY that file, never your reply: a
+reply without the file counts as no output and FAILS the stage.

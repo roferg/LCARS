@@ -36,10 +36,12 @@ line of the form:
 
     Write your context pack to EXACTLY: <absolute path>
 
-Write your context pack to EXACTLY that path and nowhere else. It is a scratch
-file the harness owns; the harness copies it into place afterwards.
+Create the file at EXACTLY that path (using your file-creation / file-writing
+tool — that tool IS available to you here) and nowhere else. It is a scratch
+file the harness owns; the harness copies it into place afterwards. The harness
+reads ONLY that file, never your reply.
 
-Write ONLY that one file. Do NOT create any other file anywhere — no helper
+Create ONLY that one file. Do NOT create any other file anywhere — no helper
 scripts, no temp files, no notes in the current working directory. Do NOT create
 or modify a tracked `CONTEXT.md`, and do NOT touch any file in the repository's
 working tree. You read the repo; you write exactly one file at the given path.

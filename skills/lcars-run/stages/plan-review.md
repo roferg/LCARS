@@ -50,10 +50,21 @@ Audit **every** ticket against the criteria below:
 - **Dependencies** — does every id in `dependencies` reference another ticket in
   this same plan?
 
-## Output
+## Output — file FIRST
 
-Write a single verdict object to **`verdict.json`** in your scratch output
-directory:
+You MAY first read the tickets and your input artifacts (read tools are allowed),
+but you MUST then create the file **`verdict.json`** in your scratch output
+directory with your file-creation / file-writing tool. Create it ONCE, with its
+COMPLETE final content, in a single write — do NOT create an empty or placeholder
+file intending to fill it in later, because your file-creation tool may not support
+overwriting a file that already exists. You MUST create the file — with its full
+final content — BEFORE you end your turn. Do NOT end your turn by announcing what
+you will do; describing the task is NOT doing it. Your turn is NOT complete until
+`verdict.json` exists on disk in the scratch output directory. The harness reads
+ONLY the file you create, never your reply: a reply without the file counts as no
+output and FAILS the stage.
+
+`verdict.json` must contain a single verdict object:
 
 ```json
 {
@@ -69,5 +80,6 @@ directory:
 `passed` is `true` **only** when every ticket clears all the criteria — then
 `issues` is empty. Otherwise `passed` is `false` and `issues` names each
 offending ticket with a specific, actionable objection, **one issue per line** in
-the canonical shape above (a failing verdict with no issues is rejected). Write
-only that JSON object to the file.
+the canonical shape above (a failing verdict with no issues is rejected). Put
+only that JSON object in the file, and do NOT answer in your reply — only the
+file you create is read.

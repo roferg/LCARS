@@ -55,9 +55,19 @@ appended to your inputs with the gate's verdict and the runner's output. Read it
 it tells you whether your last suite passed-on-nothing or simply did not exercise
 the new behaviour. Use it to write tests that fail until the behaviour exists.
 
-## Output
+## Output — files FIRST
 
-Write your test file(s) into the **`tests/`** subdirectory of your scratch output
-directory. That directory is the *only* channel to the Implementer — it never
-sees this session — so everything the Implementer needs to satisfy the contract
-must be expressed in the tests themselves. Write nothing outside `tests/`.
+Creating the test file(s) on disk with your file-creation / file-writing tool is
+the task — do it as your concrete action, not something you announce and yield on.
+Create each test file ONCE, with its COMPLETE final content, in a single write — do
+NOT create an empty or placeholder file intending to fill it in later, because your
+file-creation tool may not support overwriting a file that already exists.
+Describing the tests you would write is NOT doing it; your turn is NOT complete
+until the file(s) exist on disk. Create your test file(s) inside the **`tests/`**
+subdirectory of your scratch output directory. The **`tests/` directory ALREADY
+EXISTS** — the harness created it for you, so do NOT try to create the directory;
+just create each test FILE inside it. That directory is the *only* channel to the
+Implementer — it never sees this session, and your reply is never read — so
+everything the Implementer needs to satisfy the contract must be expressed in the
+test files you create. A reply without the files counts as no output and FAILS the
+stage. Create nothing outside `tests/`.
