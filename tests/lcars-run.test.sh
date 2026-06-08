@@ -3923,28 +3923,34 @@ check "S34. no stage transition ever removes lcars:ticket" \
 
 # ==========================================================================
 echo
-echo "lcars run — SKILL.md instructs background-run + periodic status relay (session 42)"
+echo "lcars run — SKILL.md mandates the portable foreground per-Stage loop (session 42 / Copilot)"
 #
-# Doc-level guard for the in-session progress relay (Session 42): SKILL.md must
-# tell the agent to run `run.sh drive` in the BACKGROUND and relay progress in
-# the same session via a periodic `status.sh --once <id>` digest until the driver
-# halts — so the captain never needs a second window. The live behaviour is
-# proven by the functional tester; here we pin the instruction text.
+# Doc-level guard for the in-session progress relay (Session 42, revised for
+# CLI-agnostic dispatch under headless Copilot): the REQUIRED, default way to
+# auto-advance must be the foreground per-Stage loop — repeatedly drive ONE Stage
+# at a time in the FOREGROUND with `--step`, relay each Stage's output, and loop
+# until the driver reports a halt. NO backgrounding (`&`) and NO piping (`| tee`)
+# as the default, because headless GitHub Copilot CLI DENIES both even with
+# --allow-all-tools. Any detached/background pattern that remains must be marked
+# OPTIONAL and job-control-only. The live behaviour is proven by the functional
+# tester; here we pin the instruction text.
 RUN_SKILL="$REPO_ROOT/skills/lcars-run/SKILL.md"
-check "S42. SKILL.md says to run the driver in the background" \
-  "grep -qiE 'background|detached' '$RUN_SKILL' && grep -qE 'drive --mission <id>.*&|2>&1 &' '$RUN_SKILL'"
-check "S42. SKILL.md captures the driver PID for the relay loop" \
-  "grep -qE 'DRIVE_PID=\\\$!|kill -0' '$RUN_SKILL'"
-check "S42. SKILL.md relays progress via status.sh --once (not the worker)" \
-  "grep -qE 'status.sh --once' '$RUN_SKILL'"
-check "S42. SKILL.md honours the watch interval (default ~60s / LCARS_WATCH_INTERVAL)" \
-  "grep -q 'LCARS_WATCH_INTERVAL' '$RUN_SKILL'"
-check "S42. SKILL.md loops until the driver halts / reaches a gate" \
-  "grep -qiE 'until the driver (exits|halts)|until.*halt' '$RUN_SKILL'"
+check "S42. SKILL.md mandates a foreground per-Stage loop as the portable default" \
+  "grep -qiE 'foreground per-stage loop' '$RUN_SKILL'"
+check "S42. SKILL.md drives one Stage at a time in the foreground with --step" \
+  "grep -qE 'drive --mission <id> --step' '$RUN_SKILL'"
+check "S42. SKILL.md says headless Copilot denies backgrounding / pipes" \
+  "grep -qi 'copilot' '$RUN_SKILL' && grep -qiE 'den(y|ies|ied)' '$RUN_SKILL'"
+check "S42. SKILL.md names the denied shapes (& and | tee/pipe)" \
+  "grep -qE 'tee|pipe' '$RUN_SKILL'"
+check "S42. SKILL.md loops the per-Stage advance until the driver halts" \
+  "grep -qiE 'loop until.*halt|until the driver reports a halt|until it.*halt' '$RUN_SKILL'"
 check "S42. SKILL.md keeps the final summary + isolation markers byte-for-byte" \
   "grep -qF '⊘ isolated' '$RUN_SKILL' && grep -qiE 'byte-for-byte|byte-compatible' '$RUN_SKILL'"
-check "S42. SKILL.md exempts --step from the relay (returns immediately)" \
-  "grep -qiE '\\-\\-step.*(no relay|needs.*no.*relay|returns immediately|blocking)' '$RUN_SKILL'"
+# Any background/detached mention that survives MUST be flagged OPTIONAL, never
+# the required/default path.
+check "S42. any detached/background mention is marked optional, not the default" \
+  "! grep -qiE 'background|detached' '$RUN_SKILL' || grep -qiE 'optional' '$RUN_SKILL'"
 
 # ==========================================================================
 echo

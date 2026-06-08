@@ -1,0 +1,16 @@
+{
+  "name": "lcars",
+  "skills": [
+    "./skills/lcars",
+    "./skills/lcars-answer",
+    "./skills/lcars-approve",
+    "./skills/lcars-feedback",
+    "./skills/lcars-file",
+    "./skills/lcars-init",
+    "./skills/lcars-log",
+    "./skills/lcars-respond",
+    "./skills/lcars-run",
+    "./skills/lcars-status",
+    "./skills/lcars-update"
+  ]
+}
