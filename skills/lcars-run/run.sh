@@ -942,6 +942,39 @@ parse_plan_table() { # file
   ' "$1"
 }
 
+# --- inline a single ticket's spec for the Test Writer's cold handoff --------
+# Session 22 (BUG-003 fallout): a cold worker handed ONLY a PATH to
+# approved-plan.json + the ticket id can ground on the wrong artifact (CONTEXT.md)
+# and fabricate a plausible-but-wrong feature. Strengthen the handoff by inlining
+# THIS ticket's title + description + acceptanceCriteria TEXT into the prompt — in
+# ADDITION to the path, never instead of it. CLI-AGNOSTIC: lives in the shared
+# stage-prompt assembly, identical for every worker CLI; no per-CLI branch.
+# Reuses parse_plan_table (the same jq-free parse the rest of run.sh uses) so no
+# new JSON dependency. Degrades gracefully: a missing title/description/criteria
+# line is simply omitted; a ticket absent from the plan yields an empty block, so
+# the existing "$TICKET" id line still carries the handoff and the stage never
+# breaks. Echoes a block to be appended under "## Your ticket".
+ticket_spec_block() { # plan-file ticket-id
+  local plan="$1" id="$2" line title desc crit block=""
+  [ -f "$plan" ] || return 0
+  line="$(parse_plan_table "$plan" 2>/dev/null | awk -F'\t' -v want="$id" '$1==want{print; exit}')"
+  [ -n "$line" ] || return 0
+  title="$(printf '%s' "$line" | cut -f2)"
+  desc="$(printf '%s' "$line" | cut -f3)"
+  crit="$(printf '%s' "$line" | cut -f4)"
+  # Header: "<id> — <title>" when a title exists, else just the id.
+  if [ -n "$title" ]; then block="$id — $title"; else block="$id"; fi
+  [ -n "$desc" ] && block="$block
+$desc"
+  if [ -n "$crit" ]; then
+    block="$block
+
+Acceptance criteria (write failing tests for EXACTLY this behaviour):
+$(printf '%s' "$crit" | awk -F' \\| ' '{ for (i=1;i<=NF;i++) printf "- %s\n", $i }')"
+  fi
+  printf '%s' "$block"
+}
+
 # --- group tickets into waves; detect cycles --------------------------------
 # Reads the ticket table (id in field 1, deps in field 5) and prints one line
 # per wave: "<wave-number> <id> <id> …", tickets in plan order. On a cycle — a
@@ -2516,6 +2549,19 @@ cmd_implement_ticket() {
   # neither artifact exists (thin greenfield / pre-wave).
   local navblock; navblock="$(implement_nav_block "$TICKET")"
 
+  # Session 22: the Test Writer's inlined ticket spec — THIS ticket's title +
+  # description + acceptanceCriteria TEXT, extracted from approved-plan.json so the
+  # cold worker SEES what to test instead of having to find it in the plan (the
+  # path-only handoff let a worker ground on the wrong artifact and build the wrong
+  # feature). Resolved ONCE; appended under "## Your ticket" in the Phase-1 prompt
+  # only — the Implementer (Phase 2) is deliberately NOT given this (its sole
+  # behavioural handoff stays the failing tests, preserving the adversarial split).
+  # CLI-AGNOSTIC: shared assembly, no per-CLI branch. Empty on a ticket missing
+  # from the plan, so the bare id line below still carries the handoff.
+  local tspecblock; tspecblock="$(ticket_spec_block "$MISSION_DIR/approved-plan.json" "$TICKET")"
+  [ -n "$tspecblock" ] && tspecblock="
+$tspecblock"
+
   # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
   local tries=0 saved=0
   # REUSE PATH (Session 37 conflict rebuild): when the parent re-runs this ticket
@@ -2573,7 +2619,7 @@ $(cat "$sigfile")"
 - $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock
 
 ## Your ticket
-$TICKET$retryblock"
+$TICKET$tspecblock$retryblock"
     if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \

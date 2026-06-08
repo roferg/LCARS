@@ -2071,6 +2071,46 @@ check "GR. the retry prompt carries the captured red-gate SIGNAL (passed-on-noth
 check "GR. the retry prompt does NOT leak the implementation / result" \
   "[ -f '$TW2' ] && ! grep -qiE 'result.json|theme.js|\"passed\": true|prior reasoning' '$TW2'"
 
+# --- TW-GROUND: the Test Writer prompt INLINES the ticket spec (Session 22) ---
+# Defect: a Copilot/opus Test Writer handed only a PATH to approved-plan.json +
+# the ticket id grounded on CONTEXT.md and wrote tests for the wrong feature.
+# Fix (CLI-AGNOSTIC, in the shared stage-prompt assembly): the worker must SEE
+# the specific ticket's title + acceptanceCriteria TEXT in its prompt — not just
+# an id and a file to go find. Capture the FIRST test-writer prompt and assert it
+# carries the title and at least one acceptance-criterion string inline. This is a
+# regression lock against the path-only handoff.
+binTWG="$TMPROOT/twgbin"; rm -rf "$binTWG"; mkdir -p "$binTWG"
+cat >"$binTWG/worker" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+if [ "$LCARS_WORKER_ROLE" = implement-test-writer ]; then
+  printf '%s' "$prompt" >"$TWG_PROMPT"
+  mkdir -p "$out/tests"
+  printf 'assert: behaviour Y exists (NOT BUILT)\n' >"$out/tests/spec.test"
+elif [ "$LCARS_WORKER_ROLE" = implement-implementer ]; then
+  printf '{ "ticketId": "t-001", "passed": true, "attempts": 1, "summary": "done" }\n' >"$out/result.json"
+fi
+exit 0
+EOF
+chmod +x "$binTWG/worker"; make_gh_stub "$binTWG/gh"
+repoTWG="$(new_repo_with_implement_mission)"; add_green_repo_suite "$repoTWG"
+mkdir -p "$repoTWG/.git/lcars"; printf '{ "testCommand": "bash %s" }\n' "$HONOR_RUNNER" >"$repoTWG/.git/lcars/config.json"
+TWG_PROMPT="$TMPROOT/twg.prompt"; rm -f "$TWG_PROMPT"
+rcTWG=0
+( cd "$repoTWG" && TWG_PROMPT="$TWG_PROMPT" \
+    LCARS_TEST_CMD="bash $HONOR_RUNNER" LCARS_WORKER_BIN="$binTWG/worker" \
+    LCARS_GH_BIN="$binTWG/gh" bash "$SCRIPT" implement-ticket \
+    --mission "$MID" --ticket t-001 >outTWG.txt 2>&1 ) || rcTWG=$?
+check "TWG. the Test Writer was dispatched (prompt captured)" "[ -f '$TWG_PROMPT' ]"
+check "TWG. the Test Writer prompt INLINES the ticket title (not just the id)" \
+  "grep -qF 'Add the data-theme attribute and dark token set' '$TWG_PROMPT'"
+check "TWG. the Test Writer prompt INLINES an acceptance-criterion string" \
+  "grep -qF 'Setting data-theme=dark recolours the page' '$TWG_PROMPT'"
+check "TWG. the Test Writer prompt still references approved-plan.json (path preserved)" \
+  "grep -qF 'approved-plan.json' '$TWG_PROMPT'"
+
 # --- BUG-007 #3: the stage prompt carries a RED-FIRST recipe; a stubbed worker
 # following it (a dedicated failing test file) clears the gate.
 check "P3. implement-test-writer.md carries a RED-FIRST recipe" \
