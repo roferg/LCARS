@@ -59,6 +59,23 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
       ;;
+    copilot)
+      # Copilot's registered tool names (verified live against copilot v1.0.60).
+      # Role semantics mirror the claude column above:
+      #   read   → view (read a file) + grep,glob (search) + create (NEW files only)
+      #   web    → + web_fetch, web_search
+      #   write  → + edit (mutate existing files) + bash (shell)
+      # NB: a read role gets `create` but NOT `edit`/`bash`, so it can write its
+      # answer artifact yet cannot overwrite/edit existing repo files — the repo
+      # tree stays protected in read roles, mirroring claude's read fence.
+      case "$role" in
+        repo-read)     printf 'view,grep,glob,create' ;;
+        repo-read-web) printf 'view,grep,glob,create,web_fetch,web_search' ;;
+        repo-write)    printf 'view,grep,glob,create,edit,bash' ;;
+        default)       printf 'view' ;;
+        *) die "unknown worker role '$role' for cli '$cli'" ;;
+      esac
+      ;;
     *) die "unknown worker cli '$cli' — no adapter for this CLI" ;;
   esac
 }
@@ -72,11 +89,33 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
 # — no `--model` flag at all — so an unmodelled run is unchanged. When non-empty
 # the cli's model flag is APPENDED (claude: `--model <m>`), never reordered.
 adapter_argv() { # cli role outdir
-  local cli="$1" role="$2" tools model="${LCARS_WORKER_MODEL:-}"
+  local cli="$1" role="$2" outdir="${3:-}" tools model="${LCARS_WORKER_MODEL:-}"
   tools="$(adapter_tools "$cli" "$role")" || exit 1
   case "$cli" in
     claude)
       printf '%s\n' '-p' '--allowedTools' "$tools" '--output-format' 'text'
+      [ -n "$model" ] && printf '%s\n' '--model' "$model"
+      ;;
+    copilot)
+      # Copilot cold-worker call (verified live against copilot v1.0.60):
+      #   -p                       prompt-position placeholder (spawn injects it)
+      #   -s                       silent; stdout is debug-only, not parsed
+      #   --available-tools <list> the fenced surface (separate token, like claude)
+      #   --allow-all-tools        run headless — SAFE: the surface is already fenced
+      #   --no-ask-user            never block on an interactive prompt
+      #   --disable-builtin-mcps   no ambient MCP servers in a cold worker
+      #   --no-custom-instructions ignore user-global instruction files
+      #   --add-dir <outdir>       the answer channel — worker writes its artifact here
+      #   --model <m>              ONLY when LCARS_WORKER_MODEL is non-empty
+      printf '%s\n' \
+        '-p' \
+        '-s' \
+        '--available-tools' "$tools" \
+        '--allow-all-tools' \
+        '--no-ask-user' \
+        '--disable-builtin-mcps' \
+        '--no-custom-instructions' \
+        '--add-dir' "$outdir"
       [ -n "$model" ] && printf '%s\n' '--model' "$model"
       ;;
     *) die "unknown worker cli '$cli' — no adapter for this CLI" ;;
@@ -90,7 +129,7 @@ adapter_spawn() { # cli role outdir prompt
   local bin="${LCARS_WORKER_BIN:-$cli}"
   # Read argv flags into an array.
   local flags=() line
-  while IFS= read -r line; do flags+=("$line"); done < <(adapter_argv "$cli" "$role")
+  while IFS= read -r line; do flags+=("$line"); done < <(adapter_argv "$cli" "$role" "$outdir")
   # adapter_argv died (unknown cli/role) → no flags produced → refuse, non-zero.
   [ "${#flags[@]}" -gt 0 ] || die "no argv produced for cli '$cli' role '$role'"
   # The first flag MUST be the `-p` placeholder; inject the prompt right after it.
