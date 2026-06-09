@@ -48,12 +48,35 @@ this guide below says "the codebase or `CONTEXT.md`", it means `$ctx`.
 
 Align is a **relentless, one-question-at-a-time interview** in the style of the
 `grill-me` / `grill-with-docs` skills — not a fixed questionnaire, and **never a
-batch of questions fired off at once**. Run it like this:
+batch of questions fired off at once**.
+
+**The gate (non-skippable):** Align MUST conduct **at least one real
+question→answer exchange with the captain before the PRD is written.** Producing
+a PRD straight from the captured idea with **zero captain exchanges is a defect,
+not an efficiency** — no matter how fully specified the idea looks or how
+inferable the answers seem. The load-bearing decisions (defaults, limits, naming,
+tie-breaks, rendering/UX behaviour, qualification rules, scope boundaries) must
+be **surfaced to the captain for explicit confirmation** — lead-with-your-
+recommendation, one at a time. The captain confirming or redirecting your
+recommended decisions **IS** the alignment; it cannot be assumed on their behalf
+or silently resolved into the PRD. Run it like this:
 
 - **One question at a time.** Ask, then *wait* for the captain's answer before
   asking the next. Do **not** present a multi-question form or pick-list to be
   answered in one go — that short-circuits the whole point, which is to let each
   answer steer the next question.
+- **A human gate is a HARD STOP with NO TIMEOUT. You must never assume on the
+  human's behalf here, and you must wait for them to respond.** After you ask the
+  captain a question, you **end your turn and wait for the captain's actual reply.** You do
+  not continue, you do not proceed to the next step, and you do not answer the
+  question yourself. **Silence, a pause, a delay, or the captain appearing to be
+  away is NEVER an answer** — it is not delegation, not approval, not "go ahead,"
+  and not permission to decide on their behalf. There is **no timeout**: wait as
+  long as it takes, indefinitely. If you are uncertain whether the captain has
+  actually answered, then they have **not** — keep waiting; only an explicit
+  reply from the captain advances the gate. This applies to **every** question in
+  the interview *and* to the final "is the PRD right?" confirmation: none of them
+  may be self-resolved by assuming the captain delegated.
 - **Walk the decision tree.** Every answer opens new branches and creates
   dependencies between decisions; resolve them one by one. *How sleep gets
   captured* changes *what the summary can show* — follow that thread rather than
@@ -61,8 +84,14 @@ batch of questions fired off at once**. Run it like this:
 - **Always lead with your recommended answer.** Don't just interrogate —
   propose the answer you'd pick and why, so the captain can confirm or push
   back. This is what keeps a simple idea moving fast instead of stalling.
-- **Explore instead of asking when you can.** If a question is answerable from
-  the codebase or `CONTEXT.md`, go look — don't make the captain tell you.
+- **Explore instead of asking — but only for *factual* questions.** Exploring
+  the codebase or `CONTEXT.md` substitutes ONLY for **factual** questions —
+  things the repo can answer (how tests run, what an interface is, an existing
+  convention). It **never** substitutes for a **decision** question: anything
+  that turns on the captain's preference, product judgment, scope boundary,
+  default value, limit, naming, or UX behaviour. Those must be put to the captain
+  with your recommendation — they may **not** be silently resolved into the PRD
+  or an ADR.
 - **Sharpen fuzzy language.** When the captain uses a vague or overloaded term,
   propose a precise one. If `CONTEXT.md` defines it differently, surface the
   conflict immediately.
@@ -111,6 +140,10 @@ context-free by design). They capture **engineering** decisions only:
   with Plan and Implement. Keep the role separation; an ADR is the *frame*, not
   the *build*.
 
+An ADR captures a decision the captain has been **walked through and confirmed**
+during the interview — never a unilateral architectural choice the model made and
+recorded on the captain's behalf.
+
 Each ADR **must** carry these four sections, in this exact shape — `file.sh`
 rejects an `adr.md` missing any of them:
 
@@ -143,9 +176,12 @@ trivial Mission, omit `--adr` entirely. **Align only SEEDS the ADRs** — the
 Validate stage may later REFINE them when research findings change a decision, so
 keep them high-level and revisable, not exhaustive.
 
-When alignment is reached, write the PRD. It **must** contain all of these
-sections, in this exact shape — `file.sh` rejects a PRD that is missing any of
-them:
+When alignment is reached, write the PRD. **"Alignment reached" REQUIRES that the
+captain has confirmed the load-bearing decisions through the interview** — not
+the model deciding them on the captain's behalf. If a real decision went into the
+PRD without a captain exchange, alignment is **not** reached. It **must** contain
+all of these sections, in this exact shape — `file.sh` rejects a PRD that is
+missing any of them:
 
 ```markdown
 # Mission: <title>

@@ -83,53 +83,64 @@ The `drive` loop reads `state.json`, sequences the per-Stage advances below
 stage-by-stage summary and the reason it stopped. Auto mode and `--step` share
 the **exact same** per-Stage code path — the only difference is the loop.
 
-### Run the driver in the background and relay progress in THIS session
+### Auto-advance with the foreground per-Stage loop (the portable default)
 
-A full `drive` can run for many minutes (Research → … → Implement), and a plain
-blocking call shows the captain **nothing** until it returns — forcing them into
-a second window to watch. **Don't do that.** For the auto-advance (non-`--step`)
-path, run the driver in the **background** and relay its progress in the same
-session, so the captain sees the Mission move without opening a watch:
+A full `drive` can run for many minutes (Research → … → Implement), so two naive
+shapes both break:
 
-1. **Launch the driver detached, capturing its PID and a log file:**
+- **One blocking `drive`** shows the captain nothing until it returns *and* can
+  exceed a host's per-call time cap (Claude Code's Bash tool tops out around ten
+  minutes), so a long Implement Stage gets **killed mid-Stage** — a regression.
+- **Backgrounding (`&`) + piping (`| tee`)** is **denied under headless GitHub
+  Copilot CLI** even with `--allow-all-tools` ("Permission denied and could not
+  request permission from user"). A SKILL that mandates `&` reliably fails there.
 
-   ```bash
-   bash ~/.claude/skills/lcars-run/run.sh drive --mission <id> > /tmp/lcars-drive-<id>.log 2>&1 &
-   DRIVE_PID=$!
-   ```
+So the **required, CLI-agnostic** way to auto-advance is the **foreground
+per-Stage loop**: drive **one Stage at a time in the foreground** with `--step`,
+relay each Stage's printed output, and loop until the driver reports a halt. No
+`&`, no `| tee`, no pipe — every call is a plain foreground invocation, and each
+`--step` advance is a single (short) Stage, so no one call risks the time cap and
+nothing needs job control:
 
-2. **Loop a periodic digest until the driver exits.** Every interval — default
-   ~60s, honouring `$LCARS_WATCH_INTERVAL` if the captain set it — render the
-   current state with the deterministic primitive and relay a **compact** digest
-   (the latest stage line + the `Wave x/y · ticket … · elapsed …` progress line)
-   to the captain:
+```bash
+# Loop, one foreground Stage per pass, until the driver reports a halt.
+bash ~/.claude/skills/lcars-run/run.sh drive --mission <id> --step
+```
 
-   ```bash
-   while kill -0 "$DRIVE_PID" 2>/dev/null; do
-     bash ~/.claude/skills/lcars-status/status.sh --once <id>   # current snapshot
-     sleep "${LCARS_WATCH_INTERVAL:-60}"
-   done
-   ```
+Each pass:
 
-   Relay only the *new* progress each pass — a one-or-two-line digest, not the
-   whole frame — so the session reads like a live ticker, not a wall of repeats.
-   Use `status.sh --once` (the deterministic snapshot), **never** the worker, to
-   read progress: it reads `events.jsonl` directly and stays CLI-agnostic.
+1. **Run exactly one foreground `--step`** and **relay what it printed** — the
+   per-Stage line and its `⊘ isolated … via <cli>` marker — to the captain, so
+   the session reads as a Stage-by-Stage ticker, not a wall of repeats.
+2. **Read the printed halt line** the driver returns after the Stage. `--step`
+   ends each pass with either `⏹ stepped one Stage → now at: <stage>` (keep
+   looping) **or** a terminal halt (stop — see *Halt conditions* below).
+3. **If it stepped to a new non-terminal stage, loop** — run the next foreground
+   `--step`. **If it reported a halt** (an awaiting-human gate, `verify`, an
+   `align` feedback re-entry, `done`, or `⚠ NOT ISOLATED`/error), **stop the
+   loop**, relay the driver's **final summary byte-for-byte**, and **fire/echo
+   the notification exactly as today** at the two human gates.
 
-3. **On halt** (the driver process exits, or the snapshot shows a terminal gate
-   — `verify` / `done` / `error` / an awaiting-human question), stop the loop,
-   print the driver's **final summary** from its log, and **fire/echo the
-   notification exactly as today.** The end-of-run summary and the
-   `⊘ isolated … via <cli>` / `⚠ NOT ISOLATED` markers are produced by the driver
-   and relayed **byte-for-byte** — the relay changes only *when* progress is
-   shown, never its shape.
+The driver does all the Stage work; you do **no** Stage reasoning — you sequence
+the foreground `--step` calls and relay output. The end-of-run summary and the
+`⊘ isolated … via <cli>` / `⚠ NOT ISOLATED` markers are the driver's, relayed
+**byte-for-byte** — the loop changes only *when* progress is shown, never its
+shape. It does **not** change the driver's stage logic or the event format.
 
-This is "the agent runs the watch for you": background-run the driver + a
-periodic `status.sh --once` digest. It is pure orchestration — it does **not**
-change the driver's stage logic or the event format.
+> **Optional, job-control-only:** in a shell that *permits* backgrounding (e.g.
+> an interactive Claude Code session — **never** headless Copilot, which denies
+> `&`/pipes), you may instead run `drive` (no `--step`) **detached** —
+> `bash …/run.sh drive --mission <id> > /tmp/lcars-drive-<id>.log 2>&1 &`,
+> capturing `DRIVE_PID=$!` — and relay a periodic digest while it runs, looping
+> `kill -0 "$DRIVE_PID"` until the driver exits and rendering each pass with
+> `bash …/status.sh --once <id>` (the deterministic snapshot, **never** the
+> worker) every `${LCARS_WATCH_INTERVAL:-60}` seconds. This is a convenience for
+> shells with job control only — **not** the default path. The portable
+> foreground per-Stage loop above is what you use unless you know the shell
+> permits `&`.
 
-The `--step` path needs **no** relay — it returns immediately after one Stage:
-run `--step` blocking and report what it printed, exactly as before.
+A single `--step` for debugging needs no loop at all: it returns immediately
+after one Stage — run it blocking and report what it printed.
 
 **Halt conditions** (the driver stops and returns to you):
 
@@ -153,12 +164,12 @@ So when you start a `lcars run` you must first check: is this an **`align`
 Mission with a `feedback.md`** (a bounce-back from Verify via `lcars feedback`)?
 
 - **No `feedback.md`** (a freshly filed `align` Mission, or any later stage) →
-  just run `drive`. It auto-advances from Research.
+  just run the **foreground per-Stage loop** above. It auto-advances from Research.
 - **`feedback.md` present** → do the **Align re-entry** in *your* session first
   (read `prd.md` + the full `feedback.md`, re-grill, and **rewrite `prd.md`** —
   see *The Align re-entry* below). Then run `run.sh research --mission <id>` once
-  to leave `align`, and finally `run.sh drive --mission <id>` to auto-advance the
-  rest. (Running `drive` straight on an un-regrilled feedback Mission just halts
+  to leave `align`, and finally auto-advance the rest with the foreground
+  per-Stage loop. (Driving straight on an un-regrilled feedback Mission just halts
   at the align gate — that is the safety net, not the normal path.)
 
 If the mission dir or `state.json` is missing, tell the captain the id is wrong

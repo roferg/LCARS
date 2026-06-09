@@ -51,6 +51,7 @@
       <div class="nav-label">Operate</div>
       <a href="#install"><div class="dot"></div>Install</a>
       <a href="#quickstart"><div class="dot"></div>Quick start</a>
+      <a href="#copilot"><div class="dot"></div>GitHub Copilot</a>
       <a href="#commands"><div class="dot"></div>Commands</a>
       <a href="#loop"><div class="dot"></div>Worked loop <span class="nav-badge">walk-away</span></a>
       <a href="#expect"><div class="dot"></div>What to expect</a>
@@ -272,8 +273,11 @@ cd lcars
         <div class="lcars-panel-header">Requirements</div>
         <div class="lcars-panel-body">
           <ul>
-            <li><strong>Claude CLI</strong> — the host CLI and the default worker
-            binary.</li>
+            <li><strong>A host CLI</strong> — <strong>Claude CLI</strong> or
+            <strong>GitHub Copilot CLI</strong>. LCARS auto-detects whichever you
+            launch from as the worker binary (see
+            <a href="#copilot">Running under GitHub Copilot</a> for the Copilot
+            setup).</li>
             <li><strong>gh CLI</strong>, authenticated (<code>gh auth login</code>)
             — used for issues, labels, sub-issues, and PRs.</li>
           </ul>
@@ -315,6 +319,61 @@ flowchart LR
     Lc -->|"verify"| Ap[lcars approve]
     Ap --> Done([PR opened ✓])
         </div>
+      </div>
+
+      <h3 id="copilot">Running under GitHub Copilot</h3>
+      <p>LCARS runs on <strong>either Claude Code or GitHub Copilot CLI</strong>.
+      The worker CLI is <strong>auto-detected from whichever CLI you launched
+      from</strong> — launch from Claude Code and workers run on <code>claude</code>;
+      launch from Copilot and they run on <code>copilot</code>. No config needed.
+      (You can override it with <code>LCARS_WORKER_BIN</code> or <code>workerBin</code>
+      in <code>.git/lcars/config.json</code> if you ever need to pin it explicitly.)</p>
+
+      <p><strong>Maturity — the Claude path is stable; the Copilot path is new.</strong>
+      The worker refactor that enabled multi-CLI support was a <em>no-behavior-change</em>
+      extraction (regression-locked by tests), so the <strong>Claude Code experience is
+      unchanged and stable</strong>. The <strong>Copilot path is new</strong>: driven
+      idea→PR end-to-end and working, but with fewer miles — treat it as new and mind the
+      two caveats below. It is <strong>not "beta" in the sense of unstable</strong> — it
+      works when used as documented. <strong>One honest expectation:</strong> Copilot
+      support does <strong>not</strong> yet run on Copilot's <em>included</em> tokens — it
+      currently requires the <strong>premium</strong> <code>claude-opus-4.8</code> (below).
+      So "LCARS runs on Copilot" is true today; "LCARS runs on Copilot for free" is not yet.</p>
+
+      <p>Two Copilot-specific gotchas matter — both are real footguns:</p>
+
+      <div class="lcars-alert amber">
+        <div><strong>⚠ Use a premium model — set <code>workerModel</code> to
+        <code>claude-opus-4.8</code>.</strong> On Copilot, set the worker model to
+        the premium <code>claude-opus-4.8</code> in <code>.git/lcars/config.json</code>
+        (or <code>$LCARS_WORKER_MODEL</code>):
+        <pre style="margin-top:10px">{ "workerModel": "claude-opus-4.8" }</pre>
+        This isn't a preference — it's required. Copilot's lighter default models
+        (e.g. GPT-5.5) could <strong>not</strong> reliably perform the file
+        operations LCARS workers depend on: the file-creation tool couldn't
+        overwrite or create files in the worker's fenced scratch directory, which
+        <strong>blocked the pipeline</strong> (every worker must write its output
+        file — <code>questions.txt</code>, <code>plan.json</code>, etc.). Switching
+        to the premium <code>claude-opus-4.8</code> resolves it. A lighter Copilot
+        model is not currently sufficient. Note the cost: this consumes Copilot
+        <strong>premium</strong> requests, not the included tier.</div>
+      </div>
+
+      <div class="lcars-alert amber">
+        <div><strong>⚠ Launch with <code>--allow-all-tools</code>, NOT
+        <code>--autopilot</code>.</strong> The recommended invocation is:
+        <pre style="margin-top:10px">copilot --model claude-opus-4.8 --allow-all-tools</pre>
+        <code>--allow-all-tools</code> auto-approves tool actions so LCARS isn't
+        blocked waiting for per-command approval — <strong>while keeping the human
+        gates intact</strong>: when LCARS asks you something (the Align grill, an
+        escalation, the Verify gate) it still stops and waits for your answer.
+        <code>--autopilot</code> is different — it makes the agent continue
+        <em>autonomously without asking questions</em>, which <strong>bypasses
+        LCARS's human gates</strong> (it blows straight through the Align grill
+        without letting you answer). Do <strong>not</strong> use
+        <code>--autopilot</code> (or <code>--no-ask-user</code>) for interactive
+        LCARS work. This is the Copilot analog of Claude Code's <code>auto</code>
+        permission mode: auto-approve tools, still stop at real decisions.</div>
       </div>
     </section>
 
@@ -781,7 +840,14 @@ An inline run must never masquerade as isolated.</div>
         <div class="control-card">
           <div class="control-cmd">LCARS_WORKER_BIN</div>
           <div class="control-desc">The cold-worker CLI every headless Stage
-          spawns. Default: the host CLI (e.g. <code>claude</code>).</div>
+          spawns. Default: auto-detected from the host CLI (<code>claude</code> or
+          <code>copilot</code>).</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">LCARS_WORKER_MODEL</div>
+          <div class="control-desc">The model the cold workers run on (config key:
+          <code>workerModel</code>). Default: the CLI's default —
+          <strong>set to <code>claude-opus-4.8</code> under Copilot</strong>.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">LCARS_GH_BIN</div>
@@ -876,7 +942,7 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
             <div class="lcars-status active">Auto-advance + notify</div>
             <div class="lcars-status active">Human surface</div>
             <div class="lcars-status active">Mission Log</div>
-            <div class="lcars-status warning">Copilot · deferred</div>
+            <div class="lcars-status active">Copilot enablement · new</div>
           </div>
         </div>
       </div>
@@ -888,9 +954,15 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
 
       <div class="future-banner">
         <h3>Roadmap</h3>
-        <p><strong>Copilot enablement</strong> makes <code>$LCARS_WORKER_BIN</code>
-        resolve to <code>copilot</code> so the harness runs on whichever CLI you
-        launch from. Further out: a custom <strong>kanban interface</strong>
+        <p><strong>Copilot enablement is in:</strong> <code>$LCARS_WORKER_BIN</code>
+        auto-resolves to <code>copilot</code> when you launch from Copilot, so the
+        harness runs on whichever CLI you launch from (see
+        <a href="#copilot">Running under GitHub Copilot</a>). The Claude path is stable;
+        the Copilot path is <strong>new</strong> — it works idea→PR but needs two
+        documented setup caveats (premium <code>claude-opus-4.8</code> +
+        <code>--allow-all-tools</code>) and does not yet run on Copilot's <em>included</em>
+        tokens. Further out: a custom
+        <strong>kanban interface</strong>
         (cards, stages, pending-question badges, start/stop control) and
         <strong>production monitoring</strong> to close the loop from live signal
         back to new Missions.</p>

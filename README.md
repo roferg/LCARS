@@ -21,6 +21,7 @@ work in **any** repo, and leaves **zero** files in your working tree.
 - [The pipeline](#the-pipeline)
 - [Install](#install)
 - [Quick start](#quick-start)
+- [Running under GitHub Copilot](#running-under-github-copilot)
 - [The commands](#the-commands)
 - [How a mission runs (worked loop)](#how-a-mission-runs-worked-loop)
 - [What to expect at each stage](#what-to-expect-at-each-stage)
@@ -113,8 +114,11 @@ cd lcars
 
 **Requirements**
 
-- [Claude CLI](https://claude.com/claude-code) — the host CLI and the default
-  worker binary.
+- A host CLI — [Claude CLI](https://claude.com/claude-code) **or** the
+  [GitHub Copilot CLI](https://github.com/features/copilot/cli). LCARS
+  auto-detects whichever you launch from as the worker binary (see
+  [Running under GitHub Copilot](#running-under-github-copilot) for the Copilot
+  setup).
 - [`gh` CLI](https://cli.github.com), authenticated (`gh auth login`) — used for
   issues, labels, sub-issues, and PRs.
 
@@ -142,6 +146,61 @@ lcars                 # do the right thing: with the mission filed, it drives it
 
 That's the whole rhythm. `lcars init` once per repo; then it's `lcars file` to
 hand it work and bare `lcars` to push it along or answer what it's waiting on.
+
+### Running under GitHub Copilot
+
+LCARS runs on **either Claude Code or GitHub Copilot CLI**. The worker CLI is
+**auto-detected from whichever CLI you launched from** — launch from Claude Code
+and workers run on `claude`; launch from Copilot and they run on `copilot`. No
+config needed. (You can override it with `LCARS_WORKER_BIN` or `workerBin` in
+`.git/lcars/config.json` if you ever need to pin it explicitly.)
+
+**Maturity — the Claude path is stable; the Copilot path is new.** The worker
+refactor that enabled multi-CLI support was a *no-behavior-change* extraction
+(regression-locked by tests), so the **Claude Code experience is unchanged and
+stable**. The **Copilot path is new**: it's been driven idea→PR end-to-end and
+works, but it has fewer miles, so treat it as new and mind the two caveats below.
+It is **not "beta" in the sense of unstable** — it works when used as documented.
+**One honest expectation:** Copilot support does **not** yet run on Copilot's
+*included* tokens — it currently requires the **premium** `claude-opus-4.8`
+(below). So "LCARS runs on Copilot" is true today; "LCARS runs on Copilot for
+free" is not yet (that needs an included model that can do the workers' file ops).
+
+Two Copilot-specific gotchas matter — both are real footguns:
+
+**⚠ Use a premium model — set `workerModel` to `claude-opus-4.8`.** On Copilot,
+set the worker model to the premium `claude-opus-4.8` in
+`.git/lcars/config.json` (or `$LCARS_WORKER_MODEL`):
+
+```json
+{ "workerModel": "claude-opus-4.8" }
+```
+
+This isn't a preference — it's required. Copilot's lighter default models (e.g.
+GPT-5.5) could **not** reliably perform the file operations LCARS workers depend
+on: the file-creation tool couldn't overwrite or create files in the worker's
+fenced scratch directory, which **blocked the pipeline** (every worker must write
+its output file — `questions.txt`, `plan.json`, etc.). Switching to the premium
+`claude-opus-4.8` resolves it. A lighter Copilot model is not currently
+sufficient. Note the cost: this consumes Copilot **premium** requests, not the
+included tier.
+
+**⚠ Launch with `--allow-all-tools`, NOT `--autopilot`.** The recommended
+invocation is:
+
+```bash
+copilot --model claude-opus-4.8 --allow-all-tools
+```
+
+`--allow-all-tools` auto-approves tool actions so LCARS isn't blocked waiting for
+per-command approval — **while keeping the human gates intact**: when LCARS asks
+you something (the Align grill, an escalation, the Verify gate) it still stops and
+waits for your answer. `--autopilot` is different — it makes the agent continue
+*autonomously without asking questions*, which **bypasses LCARS's human gates**
+(it blows straight through the Align grill without letting you answer). Do **not**
+use `--autopilot` (or `--no-ask-user`) for interactive LCARS work. This is the
+Copilot analog of Claude Code's `auto` permission mode: auto-approve tools, still
+stop at real decisions.
 
 ```mermaid
 flowchart LR
@@ -439,7 +498,8 @@ stubbable in tests):
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `LCARS_WORKER_BIN` | The cold-worker CLI every headless Stage spawns | the host CLI (e.g. `claude`) |
+| `LCARS_WORKER_BIN` | The cold-worker CLI every headless Stage spawns | auto-detected from the host CLI (`claude` or `copilot`) |
+| `LCARS_WORKER_MODEL` | The model the cold workers run on (config key: `workerModel`) | the CLI's default — **set to `claude-opus-4.8` under Copilot** |
 | `LCARS_GH_BIN` | The GitHub CLI | `gh` |
 | `LCARS_MAX_PARALLEL` | Concurrency cap for a Wave's tickets and the Research fan-out | `4` |
 | `LCARS_NOTIFY` | The walk-away notification hook fired at human gates | local desktop banner + bell |
@@ -500,10 +560,14 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Auto-advance + notifications (the unattended loop) | ✅ |
 | Human surface (`lcars` + `lcars answer`) | ✅ |
 | Mission Log (`lcars log`) | ✅ |
-| **Copilot enablement** (run LCARS under GitHub Copilot) | 🔬 deferred — research spike |
+| **Copilot enablement** (run LCARS under GitHub Copilot — *new; premium model required*) | ✅ |
 
-**Roadmap.** Copilot enablement makes `$LCARS_WORKER_BIN` resolve to `copilot`
-so the harness runs on whichever CLI you launch from. Further out: a custom
+**Roadmap.** Copilot enablement is in: `$LCARS_WORKER_BIN` auto-resolves to
+`copilot` when you launch from Copilot, so the harness runs on whichever CLI you
+launch from (see [Running under GitHub Copilot](#running-under-github-copilot)).
+The Claude path is stable; the Copilot path is **new** — it works idea→PR but
+needs two documented setup caveats (premium `claude-opus-4.8` + `--allow-all-tools`)
+and does not yet run on Copilot's *included* tokens. Further out: a custom
 **kanban interface** (cards, stages, pending-question badges, start/stop control)
 and **production monitoring** to close the loop from live signal back to new
 Missions. LCARS v1 covers idea → merged PR.

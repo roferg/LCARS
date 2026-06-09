@@ -37,11 +37,20 @@ set -uo pipefail
 
 GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
-# The cold-worker binary. Every headless Stage's LLM work runs as a one-shot
-# invocation of this CLI — defaulting to whichever CLI you launched LCARS under
-# (`claude`). Swapping it is the whole CLI-portability story (BUG-003); tests
-# point it at a stub that echoes canned artifacts so the plumbing runs token-free.
-WORKER_BIN="${LCARS_WORKER_BIN:-claude}"
+# The cold-worker binary + model. Every headless Stage's LLM work runs as a
+# one-shot invocation of this CLI. Both are RESOLVED AT RUN TIME (see
+# resolve_worker, below) — not at load time — because resolution may consult the
+# per-repo config.json, whose path is only known after locate_mission. The
+# resolved values land in WORKER_BIN / WORKER_MODEL (+ their *_SRC sources for the
+# self-explaining log line). Swapping the binary is the whole CLI-portability
+# story (BUG-003): default it to whichever CLI you launched LCARS under, with an
+# explicit override. Tests point WORKER_BIN at a stub that echoes canned artifacts
+# so the plumbing runs token-free.
+WORKER_BIN=""
+WORKER_MODEL=""
+WORKER_BIN_SRC=""
+WORKER_MODEL_SRC=""
+WORKER_RESOLVED=0   # guard so the resolution log line prints ONCE per process.
 # The test runner the Implement red gate invokes to prove the Test Writer's
 # suite FAILS before the Implementer runs. Env-injectable (like LCARS_GH_BIN) so
 # unit tests can drive a fake red→green transition; otherwise sourced from the
@@ -61,6 +70,12 @@ STAGES_DIR="$SKILL_DIR/stages"
 # (default "github") and the github host shells out to ${LCARS_GH_BIN:-gh}.
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/host-adapter.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
+# The cold-worker CLI adapter — the ONE place that knows a CLI's spawn flags and
+# tool NAMES. This script (the stage driver) stays CLI-agnostic: it speaks a role
+# keyword + a cli id (basename of WORKER_BIN) and delegates the actual one-shot to
+# the adapter's `spawn`. $LCARS_WORKER_ADAPTER overrides the path so tests can stub
+# it (same spirit as LCARS_GH_BIN / LCARS_HOST_ADAPTER). It sits beside this script.
+WORKER_ADAPTER="${LCARS_WORKER_ADAPTER:-$SKILL_DIR/worker-adapter.sh}"
 # The walk-away notification hook. The driver calls this ONCE at a human gate
 # (awaiting-human or verify). Defaults to the bundled notify.sh; env-injectable
 # (like LCARS_GH_BIN) so tests assert the call without sending anything.
@@ -255,17 +270,28 @@ context_paths() {
 # mode) and never needs to resolve an env token. cwd stays at the repo root so
 # the worker's read-only repo access works. Stays CLI-agnostic.
 generate_context_pack() { # pack-path
-  local pack="$1" scratch out prompt tools
+  local pack="$1" scratch out prompt
   mkdir -p "$(dirname "$pack")"
   scratch="$(mktemp -d)"
   out="$scratch/context-pack.md"
   prompt="$(cat "$STAGES_DIR/context-pack.md")
 
+You MAY first read whatever you need, but you MUST then create your context pack
+file on disk with your file-creation / file-writing tool (that tool IS available
+to you here). Create it ONCE, with its COMPLETE final content, in a single write —
+do NOT create an empty or placeholder file intending to fill it in later, because
+your file-creation tool may not support overwriting a file that already exists.
+You MUST create the file — with its full final content — BEFORE you end your turn.
+Do NOT end your turn by announcing what you will do; describing the task is NOT
+doing it. Your turn is NOT complete until the file exists on disk. The harness
+reads ONLY that file, never your reply; a reply-only answer counts as no output
+and FAILS. Create that one file and nowhere else, at the path on the next line:
 Write your context pack to EXACTLY: $out"
-  tools="$(worker_tools repo-read)"
-  LCARS_WORK_OUT="$scratch" LCARS_WORKER_ROLE="context-pack" \
-    "$WORKER_BIN" -p "$prompt" --allowedTools "$tools" --output-format text \
-    >"$scratch/.worker.out" 2>"$scratch/.worker.err" || true
+  # Same toolset as a repo-read Stage, but the worker must see
+  # LCARS_WORKER_ROLE=context-pack (toolset-role and env-role differ here). Pre-
+  # export the env-role; pass repo-read as the adapter's TOOLSET role — the adapter
+  # does not overwrite an already-set LCARS_WORKER_ROLE, preserving both exactly.
+  LCARS_WORKER_ROLE="context-pack" worker_spawn repo-read "$scratch" "$prompt"
   # BASH (which CAN write into `.git/`) lands the durable pack from scratch.
   [ -f "$out" ] && cp "$out" "$pack"
   rm -rf "$scratch"
@@ -914,6 +940,39 @@ parse_plan_table() { # file
       else if (key=="dependencies")       { d=""; for (i=4;i<n;i+=2) if (a[i]!="") d=(d==""?a[i]:d" "a[i]); deps=d }
     }
   ' "$1"
+}
+
+# --- inline a single ticket's spec for the Test Writer's cold handoff --------
+# Session 22 (BUG-003 fallout): a cold worker handed ONLY a PATH to
+# approved-plan.json + the ticket id can ground on the wrong artifact (CONTEXT.md)
+# and fabricate a plausible-but-wrong feature. Strengthen the handoff by inlining
+# THIS ticket's title + description + acceptanceCriteria TEXT into the prompt — in
+# ADDITION to the path, never instead of it. CLI-AGNOSTIC: lives in the shared
+# stage-prompt assembly, identical for every worker CLI; no per-CLI branch.
+# Reuses parse_plan_table (the same jq-free parse the rest of run.sh uses) so no
+# new JSON dependency. Degrades gracefully: a missing title/description/criteria
+# line is simply omitted; a ticket absent from the plan yields an empty block, so
+# the existing "$TICKET" id line still carries the handoff and the stage never
+# breaks. Echoes a block to be appended under "## Your ticket".
+ticket_spec_block() { # plan-file ticket-id
+  local plan="$1" id="$2" line title desc crit block=""
+  [ -f "$plan" ] || return 0
+  line="$(parse_plan_table "$plan" 2>/dev/null | awk -F'\t' -v want="$id" '$1==want{print; exit}')"
+  [ -n "$line" ] || return 0
+  title="$(printf '%s' "$line" | cut -f2)"
+  desc="$(printf '%s' "$line" | cut -f3)"
+  crit="$(printf '%s' "$line" | cut -f4)"
+  # Header: "<id> — <title>" when a title exists, else just the id.
+  if [ -n "$title" ]; then block="$id — $title"; else block="$id"; fi
+  [ -n "$desc" ] && block="$block
+$desc"
+  if [ -n "$crit" ]; then
+    block="$block
+
+Acceptance criteria (write failing tests for EXACTLY this behaviour):
+$(printf '%s' "$crit" | awk -F' \\| ' '{ for (i=1;i<=NF;i++) printf "- %s\n", $i }')"
+  fi
+  printf '%s' "$block"
 }
 
 # --- group tickets into waves; detect cycles --------------------------------
@@ -1856,16 +1915,134 @@ EOF
 # surfacing failure — never a silent advance.
 
 # --- restricted tool set per worker role ------------------------------------
-# Read-only-on-the-repo for Validate/Plan/Review/question-gen; +web for the
-# research agents; +write+shell for the Implementer. (All roles may write into
-# their own scratch output dir — that is their answer channel, not the repo.)
-worker_tools() { # role-keyword → comma-separated allowed-tools list
-  case "$1" in
-    repo-read)     echo "Read,Grep,Glob,Write" ;;
-    repo-read-web) echo "Read,Grep,Glob,Write,WebSearch,WebFetch" ;;
-    repo-write)    echo "Read,Grep,Glob,Write,Edit,Bash" ;;
-    *)             echo "Read" ;;
-  esac
+# The role→toolset table (and the CLI flag names) now live in the cold-worker
+# CLI adapter (worker-adapter.sh), keyed by cli id, so this driver knows neither
+# the flags nor the tool NAMES. Read-only-on-the-repo for Validate/Plan/Review/
+# question-gen; +web for the research agents; +write+shell for the Implementer.
+# (All roles may write into their own scratch output dir — that is their answer
+# channel, not the repo.) The adapter `spawn` is reached via worker_spawn() below.
+
+# --- resolve WHICH cli to run as the cold worker, and with which model -------
+# Resolution is CLI-AGNOSTIC and so lives HERE, not in the adapter: the adapter
+# owns cli-SPECIFIC flag emission, run.sh owns host detection + precedence.
+#
+#   bin precedence  : $LCARS_WORKER_BIN  >  config.json workerBin
+#                     >  host-CLI auto-detect (env marker) >  claude (default)
+#   model precedence: $LCARS_WORKER_MODEL > config.json workerModel > unset
+#
+# Host detection keys off the per-process env var a spawned shell inherits from
+# the launching CLI: CLAUDECODE=1 ⇒ claude. The real GitHub Copilot CLI (v1.0.60)
+# sets COPILOT_RUN_APP=1 + COPILOT_CLI_BINARY_VERSION (+ COPILOT_LOADER_PID) and
+# does NOT set COPILOT_CLI, so we treat COPILOT_RUN_APP=1 OR a non-empty
+# COPILOT_CLI_BINARY_VERSION as the copilot marker (resilient to either var
+# changing across versions). `~/.copilot` existing is NOT a launch signal and is
+# never consulted.
+# If no marker is present we do NOT guess: we fall back to claude (the historical
+# default) and note it via the `default` source.
+#
+# config.json's workerBin/workerModel are OPTIONAL sibling string fields (absent
+# = unset); read with the same jq-free json_str the rest of the script uses, only
+# when $LCARS_CFG points at an existing file.
+
+# Detect the host CLI from its per-process env marker. Prints the cli id, or
+# nothing if no reliable marker is set (caller then falls back, never guesses).
+detect_host_cli() {
+  if [ "${CLAUDECODE:-}" = "1" ]; then printf 'claude'; return 0; fi
+  if [ "${COPILOT_RUN_APP:-}" = "1" ] || [ -n "${COPILOT_CLI_BINARY_VERSION:-}" ]; then
+    printf 'copilot'; return 0
+  fi
+  return 0   # no marker — caller degrades to the claude default + LOGs it.
+}
+
+# Resolve WORKER_BIN + WORKER_BIN_SRC by the precedence above.
+resolve_worker_bin() {
+  if [ -n "${LCARS_WORKER_BIN:-}" ]; then
+    WORKER_BIN="$LCARS_WORKER_BIN"; WORKER_BIN_SRC="env"; return 0
+  fi
+  local cfgbin=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgbin="$(json_str "$LCARS_CFG" workerBin)"
+  if [ -n "$cfgbin" ]; then
+    WORKER_BIN="$cfgbin"; WORKER_BIN_SRC="config"; return 0
+  fi
+  local detected; detected="$(detect_host_cli)"
+  if [ -n "$detected" ]; then
+    WORKER_BIN="$detected"; WORKER_BIN_SRC="detected"; return 0
+  fi
+  # No env, no config, no host marker — never guess the CLI.
+  printf 'lcars run: no host-CLI marker — defaulting to claude\n' >&2
+  WORKER_BIN="claude"; WORKER_BIN_SRC="default"
+}
+
+# Resolve WORKER_MODEL + WORKER_MODEL_SRC by the precedence above. Unset model
+# (empty WORKER_MODEL) ⇒ the adapter emits NO --model flag (session-18 argv).
+resolve_worker_model() {
+  if [ -n "${LCARS_WORKER_MODEL:-}" ]; then
+    WORKER_MODEL="$LCARS_WORKER_MODEL"; WORKER_MODEL_SRC="env"; return 0
+  fi
+  local cfgmodel=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgmodel="$(json_str "$LCARS_CFG" workerModel)"
+  if [ -n "$cfgmodel" ]; then
+    WORKER_MODEL="$cfgmodel"; WORKER_MODEL_SRC="config"; return 0
+  fi
+  WORKER_MODEL=""; WORKER_MODEL_SRC="unset"
+}
+
+# Resolve both ONCE per process, then print the self-explaining log line naming
+# the resolved cli + model + the SOURCE that won (env/config/detected/default for
+# the bin; env/config/unset for the model). Idempotent: the guard means repeated
+# calls (one per Stage advance) re-resolve but print the line only once.
+resolve_worker() {
+  resolve_worker_bin
+  resolve_worker_model
+  [ "$WORKER_RESOLVED" = "1" ] && return 0
+  WORKER_RESOLVED=1
+  # The self-explaining line goes to STDERR: the worker-using Stage drivers print
+  # their machine-readable artifacts (e.g. context-source's pack PATH) to STDOUT,
+  # and this human line must not pollute those surfaces. It still shows in a normal
+  # `lcars run` (stderr is on the captain's terminal).
+  printf '  worker: %s (bin: %s) model=%s (model: %s)\n' \
+    "$(basename "$WORKER_BIN")" "$WORKER_BIN_SRC" \
+    "${WORKER_MODEL:--}" "$WORKER_MODEL_SRC" >&2
+}
+
+# The `resolve-worker` subcommand: a thin, mission-free test surface over the
+# resolver. It resolves $LCARS_CFG from the repo's shared git dir (so config.json
+# participates), runs resolve_worker (which prints the human log line), then
+# prints a machine-readable summary line the tests assert on. No LLM, no mission.
+cmd_resolve_worker() {
+  local gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+  fi
+  resolve_worker
+  printf 'WORKER-RESOLVED bin=%s binsrc=%s model=%s modelsrc=%s\n' \
+    "$(basename "$WORKER_BIN")" "$WORKER_BIN_SRC" \
+    "${WORKER_MODEL:--}" "$WORKER_MODEL_SRC"
+}
+
+# --- delegate one cold-worker invocation to the CLI adapter -----------------
+# The driver passes a role keyword + outdir + prompt; the adapter (selected by the
+# cli id = basename WORKER_BIN) knows the flags and tool names. The worker binary
+# itself is handed to the adapter via LCARS_WORKER_BIN (the adapter defaults it to
+# the cli id otherwise). Callers may pre-export LCARS_WORKER_ROLE to override the
+# env role the worker sees while still selecting the toolset by <role> (the
+# context-pack case): the adapter never overwrites an already-set LCARS_WORKER_ROLE.
+worker_spawn() { # role outdir prompt
+  local role="$1" outdir="$2" prompt="$3"
+  # The cli id selects the adapter. It is the basename of the worker binary
+  # (`claude` in production) — this indirection is the whole point: a future
+  # `copilot` binary routes to a copilot adapter case automatically. $LCARS_WORKER_CLI
+  # overrides it (same spirit as LCARS_GH_BIN) so tests can point a generically
+  # named stub at the claude adapter without renaming the binary.
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "$WORKER_BIN")}"
+  # Thread the resolved MODEL to the adapter via the env var it reads. When empty
+  # the adapter emits NO --model flag (session-18 argv byte-for-byte). The model
+  # flag NAME is cli-specific and stays in the adapter; run.sh only resolves the
+  # value (CLI-agnostic) and hands it over here.
+  LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="${WORKER_MODEL:-}" \
+    bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt"
 }
 
 # --- refuse to run a Stage without a real worker, LOUDLY --------------------
@@ -1873,6 +2050,11 @@ worker_tools() { # role-keyword → comma-separated allowed-tools list
 # no worker binary is available we must NOT silently pretend isolation — we stop
 # and say so, so an inline/uncovered run can never masquerade as `⊘ isolated`.
 require_worker() {
+  # Resolve WHICH cli (+ model) to run as the worker FIRST — at run time, after
+  # locate_mission has set $LCARS_CFG so config.json can participate. This is the
+  # single chokepoint every worker-using Stage (and the context-pack path) hits,
+  # so the self-explaining resolution line prints exactly once per process.
+  resolve_worker
   command -v "$WORKER_BIN" >/dev/null 2>&1 && return 0
   [ -x "$WORKER_BIN" ] && return 0
   printf '  ⚠ NOT ISOLATED — no cold-worker binary on PATH (LCARS_WORKER_BIN=%s).\n' "$WORKER_BIN" >&2
@@ -1892,21 +2074,56 @@ isolated_line() { # stage  worker-count
 # are captured to scratch for debugging only. The scratch dir path is also handed
 # to the worker via $LCARS_WORK_OUT so a CLI adapter (or a test stub) can find it
 # without re-parsing the prompt.
-spawn_worker() { # role  template  toolset  outdir  extra
-  local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5"
+spawn_worker() { # role  template  toolset  outdir  extra  [prior_no_file]
+  local role="$1" template="$2" toolset="$3" outdir="$4" extra="$5" prior_no_file="${6:-}"
   mkdir -p "$outdir"
-  local prompt tools
+  # Lever 2 — behaviour-keyed retry escalation. When a PRIOR attempt of THIS
+  # single-worker stage produced NO file (the procrastination failure mode), the
+  # caller passes a non-empty $prior_no_file; only then do we append an escalation
+  # block, keyed purely on the observed behaviour (no CLI name). The FIRST attempt
+  # passes nothing, so its prompt stays byte-for-byte unchanged.
+  local prior_fail_block=""
+  if [ -n "$prior_no_file" ]; then
+    prior_fail_block="
+
+## YOUR PREVIOUS ATTEMPT FAILED — read this FIRST
+A prior attempt at this exact task ended its turn WITHOUT creating the required
+output file: it described the task but never called its file-creation / file-
+writing tool, so no file reached the scratch output directory and the attempt
+counted as no output. Do NOT repeat that. This time, your FIRST action — before
+any analysis, explanation, or prose — MUST be to call your file-creation tool to
+create the required output file in the scratch output directory — in a single
+write, with its COMPLETE final content (do NOT create an empty or placeholder file
+intending to fill it in later; your file-creation tool may not support overwriting
+an existing file). Describing the task is NOT doing it."
+  fi
+  local prompt
   prompt="$(cat "$template")
 
 $extra
 
-## Where to write your output
+## Where to write your output — READ THIS, IT IS NOT OPTIONAL
 Your scratch output directory is: $outdir
-Write your output file(s) there exactly as specified above — nowhere else."
-  tools="$(worker_tools "$toolset")"
-  LCARS_WORK_OUT="$outdir" LCARS_WORKER_ROLE="$role" \
-    "$WORKER_BIN" -p "$prompt" --allowedTools "$tools" --output-format text \
-    >"$outdir/.worker.out" 2>"$outdir/.worker.err" || true
+You MAY first read your input files (read tools are allowed), but you MUST then
+CREATE each output file specified above with your file-creation / file-writing
+tool. Create each output file ONCE, with its COMPLETE final content, in a single
+write — do NOT create an empty or placeholder file intending to edit or fill it
+in later, because your file-creation tool may not support overwriting a file that
+already exists. That tool IS available to you in this session, so do NOT claim you
+lack one or that this session is read-only.
+You MUST create the output file(s) — with their full final content — BEFORE you
+end your turn. Do NOT end your turn by merely announcing or describing what you
+will do — describing the task is NOT doing it. Your turn is NOT complete until the
+file(s) exist on disk in the scratch output directory.
+The harness reads ONLY the files you create in that scratch output directory; it
+NEVER reads your reply. Do NOT put your answer in your reply / chat — a
+reply-only answer counts as no output and FAILS the stage. Create the file(s)
+exactly as specified above, in the scratch output directory, and nowhere else.$prior_fail_block"
+  # The env role the worker sees IS this Stage's role; the toolset is selected by
+  # $toolset. They coincide for every Stage spawn (only the context-pack path
+  # differs, and that goes through generate_context_pack, not here), so pre-export
+  # LCARS_WORKER_ROLE=$role and pass $toolset as the adapter's toolset-role.
+  LCARS_WORKER_ROLE="$role" worker_spawn "$toolset" "$outdir" "$prompt"
 }
 
 # === Bounded fan-out (the ONE shared concurrency helper) ====================
@@ -1984,7 +2201,7 @@ cmd_research() {
     qdir="$(mktemp -d)"
     spawn_worker research-questions "$STAGES_DIR/research-questions.md" repo-read "$qdir" \
 "## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/prd.md"
+- $MISSION_DIR/prd.md" "$( [ "$tries" -gt 1 ] && printf no-file )"
     [ -f "$qdir/questions.txt" ] && break
     rm -rf "$qdir"; qdir=""
   done
@@ -2017,8 +2234,12 @@ cmd_research() {
     [ -n "$q" ] || continue
     i=$((i + 1))
     local adir; adir="$resp/$(printf '%03d' "$i")"
-    printf 'LCARS_RA_DIR=%q LCARS_RA_Q=%q bash %q research-agent-job\n' \
-      "$adir" "$q" "$SELF" >>"$jobs"
+    # Pass the PARENT's already-resolved worker bin/model into each agent job so
+    # the agent subprocess runs the SAME cold-worker CLI without re-detecting the
+    # host (it inherits them as $LCARS_WORKER_BIN/$LCARS_WORKER_MODEL — env
+    # precedence — and resolves silently, no per-agent log line).
+    printf 'LCARS_RA_DIR=%q LCARS_RA_Q=%q LCARS_WORKER_BIN=%q LCARS_WORKER_MODEL=%q bash %q research-agent-job\n' \
+      "$adir" "$q" "$WORKER_BIN" "$WORKER_MODEL" "$SELF" >>"$jobs"
   done < <(grep -ve '^[[:space:]]*$' "$qdir/questions.txt")
   run_capped <"$jobs" || true
   rm -f "$jobs"
@@ -2106,11 +2327,18 @@ cmd_validate() {
   # declarative facts, by PATH only. Safe for this declarative Stage.
   extra="$extra$(context_extra_block)"
 
-  local tries=0
+  local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
-    spawn_worker validate "$STAGES_DIR/validate.md" repo-read "$odir" "$extra"
+    spawn_worker validate "$STAGES_DIR/validate.md" repo-read "$odir" "$extra" "$prior_no_file"
+    # Lever 2: if this attempt produced NEITHER expected file, the next retry gets
+    # the procrastination escalation; a produced-but-malformed file does not.
+    if [ ! -f "$odir/scope.txt" ] && [ ! -f "$odir/validated-plan.md" ]; then
+      prior_no_file=no-file
+    else
+      prior_no_file=""
+    fi
 
     if [ -f "$odir/scope.txt" ] && grep -qve '^[[:space:]]*$' "$odir/scope.txt"; then
       # A finding implies a scope change → pause at the human gate (a valid
@@ -2180,11 +2408,17 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # Shared declarative repo facts, by PATH only.
   extra="$extra$(context_extra_block)"
 
-  local tries=0
+  local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
-    spawn_worker plan "$STAGES_DIR/plan.md" repo-read "$odir" "$extra"
+    # Cold workers only CREATE FILES; the harness owns DIRECTORY scaffolding.
+    # Pre-create the manifests/ subdir so the worker's `create manifests/<id>.md`
+    # writes into an existing dir (some file-creation tools cannot mkdir). CLI-
+    # neutral: Claude is unaffected. plan-save reads from "$odir/manifests".
+    mkdir -p "$odir/manifests"
+    spawn_worker plan "$STAGES_DIR/plan.md" repo-read "$odir" "$extra" "$prior_no_file"
+    if [ -f "$odir/plan.json" ]; then prior_no_file=""; else prior_no_file=no-file; fi
     if [ -f "$odir/plan.json" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" plan-save \
@@ -2231,11 +2465,12 @@ acceptable — do not raise it."
   # we add nothing but the declarative repo-facts context source, by PATH only.
   extra="$extra$(context_extra_block)"
 
-  local tries=0
+  local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     local odir; odir="$(mktemp -d)"
-    spawn_worker plan-review "$STAGES_DIR/plan-review.md" repo-read "$odir" "$extra"
+    spawn_worker plan-review "$STAGES_DIR/plan-review.md" repo-read "$odir" "$extra" "$prior_no_file"
+    if [ -f "$odir/verdict.json" ]; then prior_no_file=""; else prior_no_file=no-file; fi
     if [ -f "$odir/verdict.json" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" review-save \
@@ -2320,6 +2555,19 @@ cmd_implement_ticket() {
   # neither artifact exists (thin greenfield / pre-wave).
   local navblock; navblock="$(implement_nav_block "$TICKET")"
 
+  # Session 22: the Test Writer's inlined ticket spec — THIS ticket's title +
+  # description + acceptanceCriteria TEXT, extracted from approved-plan.json so the
+  # cold worker SEES what to test instead of having to find it in the plan (the
+  # path-only handoff let a worker ground on the wrong artifact and build the wrong
+  # feature). Resolved ONCE; appended under "## Your ticket" in the Phase-1 prompt
+  # only — the Implementer (Phase 2) is deliberately NOT given this (its sole
+  # behavioural handoff stays the failing tests, preserving the adversarial split).
+  # CLI-AGNOSTIC: shared assembly, no per-CLI branch. Empty on a ticket missing
+  # from the plan, so the bare id line below still carries the handoff.
+  local tspecblock; tspecblock="$(ticket_spec_block "$MISSION_DIR/approved-plan.json" "$TICKET")"
+  [ -n "$tspecblock" ] && tspecblock="
+$tspecblock"
+
   # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
   local tries=0 saved=0
   # REUSE PATH (Session 37 conflict rebuild): when the parent re-runs this ticket
@@ -2368,12 +2616,16 @@ or reasoning). Write tests that FAIL until the ticket's behaviour exists:
 $(cat "$sigfile")"
     fi
     local odir; odir="$(mktemp -d)"
+    # Harness owns directory scaffolding (workers only create files): pre-create
+    # the tests/ scratch subdir so the worker's `create tests/<file>` lands without
+    # needing to mkdir. CLI-neutral; Claude is unaffected.
+    mkdir -p "$odir/tests"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock
 
 ## Your ticket
-$TICKET$retryblock"
+$TICKET$tspecblock$retryblock"
     if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
@@ -2933,7 +3185,11 @@ case "$SUB" in
   # One research agent, spawned as a capped fan-out job (run_capped). Stateless:
   # its ONLY inputs are $LCARS_RA_DIR (where to write) and $LCARS_RA_Q (the one
   # question). No --mission — research_agent_worker reaches no mission artifacts.
-  research-agent-job) research_agent_worker "${LCARS_RA_DIR:-}" "${LCARS_RA_Q:-}" ;;
+  # The cold-worker bin/model arrive via the inherited $LCARS_WORKER_BIN/_MODEL
+  # env (set by the parent cmd_research); resolve them SILENTLY here (no log line —
+  # the parent already printed it once) so spawn_worker sees a real binary.
+  research-agent-job) resolve_worker_bin; resolve_worker_model
+                      research_agent_worker "${LCARS_RA_DIR:-}" "${LCARS_RA_Q:-}" ;;
   # Auto-advance driver — sequences the per-Stage advances above (token-free).
   drive)            cmd_drive ;;
   # Repo-level context resolver (no mission) — prints the durable context source
@@ -2942,6 +3198,9 @@ case "$SUB" in
   # Per-wave repo symbol map (no LLM — pure bash). Regenerated by cmd_implement at
   # each wave; exposed here so it is independently driveable + testable.
   repo-map)         cmd_repo_map ;;
+  # Cold-worker bin/model resolution (no LLM, no mission) — prints the resolution
+  # log line + a machine-readable summary. The test surface for resolve_worker.
+  resolve-worker)   cmd_resolve_worker ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
   emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;

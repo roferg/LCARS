@@ -221,20 +221,32 @@ check "7. a done mission is not an active candidate (exit 3)" "[ '$rc7g' -eq 3 ]
 
 # ==========================================================================
 echo
-echo "lcars — SKILL.md drive route relays progress in-session (session 42)"
+echo "lcars — drive route mandates the portable foreground per-Stage loop (session 42 / Copilot)"
 #
 # When the route is `drive`, the dispatcher's SKILL.md must instruct the same
-# background-run + periodic `status.sh --once` relay as lcars-run, so the captain
-# sees the Mission move without a second window. Doc-level guard only.
+# CLI-agnostic auto-advance as lcars-run: a FOREGROUND per-Stage loop — drive ONE
+# Stage at a time in the foreground with `--step`, relay each Stage's output, and
+# loop until the driver reports a halt. NO backgrounding (`&`) and NO piping
+# (`| tee`) as the default, because headless GitHub Copilot CLI DENIES both even
+# with --allow-all-tools. Any detached/background pattern that survives must be
+# marked OPTIONAL and job-control-only. Doc-level guard only.
 LCARS_SKILL="$REPO_ROOT/skills/lcars/SKILL.md"
-check "8. drive route SKILL.md says to background-run the driver" \
-  "grep -qiE 'background|detached' '$LCARS_SKILL' && grep -qE 'drive --mission <id>.*&|2>&1 &' '$LCARS_SKILL'"
-check "8. drive route SKILL.md relays via status.sh --once" \
-  "grep -qE 'status.sh --once' '$LCARS_SKILL'"
-check "8. drive route SKILL.md honours the watch interval" \
-  "grep -q 'LCARS_WATCH_INTERVAL' '$LCARS_SKILL'"
-check "8. drive route SKILL.md keeps the isolation markers byte-for-byte" \
+check "8. drive route SKILL.md mandates a foreground per-Stage loop as the portable default" \
+  "grep -qiE 'foreground per-stage loop' '$LCARS_SKILL'"
+check "8. drive route SKILL.md drives one Stage at a time in the foreground with --step" \
+  "grep -qE 'drive --mission <id> --step' '$LCARS_SKILL'"
+check "8. drive route SKILL.md says headless Copilot denies backgrounding / pipes" \
+  "grep -qi 'copilot' '$LCARS_SKILL' && grep -qiE 'den(y|ies|ied)' '$LCARS_SKILL'"
+check "8. drive route SKILL.md names the denied shapes (& and | tee/pipe)" \
+  "grep -qE 'tee|pipe' '$LCARS_SKILL'"
+check "8. drive route SKILL.md loops the per-Stage advance until the driver halts" \
+  "grep -qiE 'loop until.*halt|until the driver reports a halt|until it.*halt' '$LCARS_SKILL'"
+check "8. drive route SKILL.md keeps the final summary + isolation markers byte-for-byte" \
   "grep -qF '⊘ isolated' '$LCARS_SKILL' && grep -qiE 'byte-for-byte|byte-compatible' '$LCARS_SKILL'"
+# Any background/detached mention that survives MUST be flagged OPTIONAL, never
+# the required/default path.
+check "8. drive route SKILL.md marks any detached/background mention optional, not the default" \
+  "! grep -qiE 'background|detached' '$LCARS_SKILL' || grep -qiE 'optional' '$LCARS_SKILL'"
 
 # ==========================================================================
 echo

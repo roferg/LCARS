@@ -67,22 +67,49 @@ Relay the inbox to the captain and help them clear a card — see the
 
 The router resolved a drivable Mission. Don't call `run.sh drive` as a single
 blocking step — that shows the captain **nothing** until the whole pipeline
-returns, forcing them into a second window to watch. Instead **run the driver in
-the background and relay its progress in THIS session**, exactly as the
-`lcars-run` skill prescribes:
+returns, forcing them into a second window to watch. Drive it with the same
+**portable, CLI-agnostic** mechanism the `lcars-run` skill prescribes: a
+**foreground per-Stage loop**. Two naive shapes both break — one blocking `drive`
+can exceed a host's per-call time cap and get killed mid-Stage, and backgrounding
+(`&`) + piping (`| tee`) is **denied under headless GitHub Copilot CLI** even with
+`--allow-all-tools`, so a route that mandates `&` reliably fails there. So the
+**required** way is to drive **one Stage at a time in the foreground** with
+`--step`, relay each Stage's output, and **loop until the driver reports a halt**.
+No `&`, no `| tee`, no pipe — every call is a plain foreground invocation:
 
-1. Launch `run.sh drive --mission <id>` **detached**, capturing its PID and a log
-   file (`run.sh drive --mission <id> > <logfile> 2>&1 &`).
-2. **Loop:** every interval (default ~60s, honouring `$LCARS_WATCH_INTERVAL`) run
-   `bash ~/.claude/skills/lcars-status/status.sh --once <id>` — the deterministic
-   snapshot primitive — and relay a **compact** digest (latest stage + the
-   progress line) to the captain, until the driver exits or the Mission reaches a
-   halt (a pending question, the Verify gate, `done`, or an error).
-3. **On halt:** print the driver's final summary and **fire/echo the
-   notification exactly as today** — the end-of-run summary and the
-   `⊘ isolated … via <cli>` / `⚠ NOT ISOLATED` markers stay byte-for-byte. The
-   relay reads `events.jsonl` via `status.sh --once`, **never** through the
-   worker, so it stays CLI-agnostic.
+```bash
+# Loop, one foreground Stage per pass, until the driver reports a halt.
+bash ~/.claude/skills/lcars-run/run.sh drive --mission <id> --step
+```
+
+Each pass:
+
+1. **Run exactly one foreground `--step`** and **relay what it printed** — the
+   per-Stage line and its `⊘ isolated … via <cli>` marker — so the session reads
+   as a Stage-by-Stage ticker, not a wall of repeats.
+2. **Read the printed halt line** the driver returns after the Stage: either
+   `⏹ stepped one Stage → now at: <stage>` (keep looping) **or** a terminal halt.
+3. **If it stepped to a new non-terminal stage, loop** — run the next foreground
+   `--step`. **If it reported a halt** (a pending question / awaiting-human gate,
+   the Verify gate, an `align` feedback re-entry, `done`, or `⚠ NOT ISOLATED` /
+   error), **stop the loop**, print the driver's **final summary byte-for-byte**,
+   and **fire/echo the notification exactly as today** at the two human gates.
+
+The dispatcher does **no** Stage reasoning — it sequences the foreground `--step`
+calls and relays output. The end-of-run summary and the
+`⊘ isolated … via <cli>` / `⚠ NOT ISOLATED` markers are the driver's, relayed
+**byte-for-byte** — the loop changes only *when* progress is shown, never its
+shape.
+
+> **Optional, job-control-only:** in a shell that *permits* backgrounding (e.g.
+> an interactive Claude Code session — **never** headless Copilot, which denies
+> `&`/pipes), you may instead run `drive` (no `--step`) **detached** —
+> `bash …/run.sh drive --mission <id> > <logfile> 2>&1 &` — and relay a periodic
+> digest while it runs, rendering each pass every `${LCARS_WATCH_INTERVAL:-60}`
+> seconds with `bash ~/.claude/skills/lcars-status/status.sh --once <id>` (the
+> deterministic snapshot, which reads `events.jsonl` directly, **never** through
+> the worker). This is a convenience for shells with job control only — **not**
+> the default path.
 
 `run.sh drive` auto-advances the Mission Stage to Stage until a human gate, then
 stops and pings. Relay its summary and the reason it stopped (a pending question,

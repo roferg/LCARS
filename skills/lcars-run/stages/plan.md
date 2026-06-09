@@ -75,8 +75,10 @@ the rejected shape.
 ## Per-ticket context manifest (one file per ticket)
 
 In ADDITION to `plan.json`, emit one **context manifest** per ticket so the
-Implement stage navigates the codebase instead of re-walking it cold. Write each
-to **`manifests/<ticket-id>.md`** in your scratch output directory (e.g.
+Implement stage navigates the codebase instead of re-walking it cold. The
+**`manifests/` directory ALREADY EXISTS** in your scratch output directory — the
+harness created it for you, so do NOT try to create the directory; just create each
+manifest FILE inside it. Write each to **`manifests/<ticket-id>.md`** (e.g.
 `manifests/t-001.md`) — a SEPARATE file per ticket. Do NOT put manifests inside
 `plan.json`.
 
@@ -100,11 +102,23 @@ and WHAT its interface is; the Implementer reads the file itself for the rest.
 A thin greenfield ticket with little existing code may have a near-empty
 "Relevant files" section — that is fine; still emit the file.
 
-## Output
+## Output — file FIRST
 
-Write the whole list to **`plan.json`** in your scratch output directory, as a
-JSON array in this **canonical shape** — one field per line, with
-`acceptanceCriteria` and `dependencies` as inline single-line arrays:
+You MAY first read your input artifacts (read tools are allowed), but you MUST
+then create the file **`plan.json`** in your scratch output directory with your
+file-creation / file-writing tool. Create it ONCE, with its COMPLETE final
+content, in a single write — do NOT create an empty or placeholder file intending
+to fill it in later, because your file-creation tool may not support overwriting a
+file that already exists (this applies to every manifest file too). You MUST create
+the output file(s) — with their full final content — BEFORE you end your turn. Do
+NOT end your turn by announcing what you will do; describing the task is NOT doing
+it. Your turn is NOT complete until `plan.json` exists on disk in the scratch
+output directory. The harness reads ONLY the file you create, never your reply: a
+reply without the file counts as no output and FAILS the stage.
+
+`plan.json` must contain the whole list as a JSON array in this **canonical
+shape** — one field per line, with `acceptanceCriteria` and `dependencies` as
+inline single-line arrays:
 
 ```json
 [
@@ -122,5 +136,5 @@ JSON array in this **canonical shape** — one field per line, with
 ]
 ```
 
-Ticket ids are `t-001`, `t-002`, … in plan order. Write only that JSON array to
-the file.
+Ticket ids are `t-001`, `t-002`, … in plan order. Put only that JSON array in the
+file, and do NOT answer in your reply — only the file you create is read.
