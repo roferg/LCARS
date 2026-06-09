@@ -155,6 +155,17 @@ and workers run on `claude`; launch from Copilot and they run on `copilot`. No
 config needed. (You can override it with `LCARS_WORKER_BIN` or `workerBin` in
 `.git/lcars/config.json` if you ever need to pin it explicitly.)
 
+**Maturity — the Claude path is stable; the Copilot path is new.** The worker
+refactor that enabled multi-CLI support was a *no-behavior-change* extraction
+(regression-locked by tests), so the **Claude Code experience is unchanged and
+stable**. The **Copilot path is new**: it's been driven idea→PR end-to-end and
+works, but it has fewer miles, so treat it as new and mind the two caveats below.
+It is **not "beta" in the sense of unstable** — it works when used as documented.
+**One honest expectation:** Copilot support does **not** yet run on Copilot's
+*included* tokens — it currently requires the **premium** `claude-opus-4.8`
+(below). So "LCARS runs on Copilot" is true today; "LCARS runs on Copilot for
+free" is not yet (that needs an included model that can do the workers' file ops).
+
 Two Copilot-specific gotchas matter — both are real footguns:
 
 **⚠ Use a premium model — set `workerModel` to `claude-opus-4.8`.** On Copilot,
@@ -549,12 +560,14 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Auto-advance + notifications (the unattended loop) | ✅ |
 | Human surface (`lcars` + `lcars answer`) | ✅ |
 | Mission Log (`lcars log`) | ✅ |
-| **Copilot enablement** (run LCARS under GitHub Copilot) | ✅ |
+| **Copilot enablement** (run LCARS under GitHub Copilot — *new; premium model required*) | ✅ |
 
 **Roadmap.** Copilot enablement is in: `$LCARS_WORKER_BIN` auto-resolves to
 `copilot` when you launch from Copilot, so the harness runs on whichever CLI you
 launch from (see [Running under GitHub Copilot](#running-under-github-copilot)).
-Further out: a custom
+The Claude path is stable; the Copilot path is **new** — it works idea→PR but
+needs two documented setup caveats (premium `claude-opus-4.8` + `--allow-all-tools`)
+and does not yet run on Copilot's *included* tokens. Further out: a custom
 **kanban interface** (cards, stages, pending-question badges, start/stop control)
 and **production monitoring** to close the loop from live signal back to new
 Missions. LCARS v1 covers idea → merged PR.

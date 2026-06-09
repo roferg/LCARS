@@ -329,6 +329,17 @@ flowchart LR
       (You can override it with <code>LCARS_WORKER_BIN</code> or <code>workerBin</code>
       in <code>.git/lcars/config.json</code> if you ever need to pin it explicitly.)</p>
 
+      <p><strong>Maturity — the Claude path is stable; the Copilot path is new.</strong>
+      The worker refactor that enabled multi-CLI support was a <em>no-behavior-change</em>
+      extraction (regression-locked by tests), so the <strong>Claude Code experience is
+      unchanged and stable</strong>. The <strong>Copilot path is new</strong>: driven
+      idea→PR end-to-end and working, but with fewer miles — treat it as new and mind the
+      two caveats below. It is <strong>not "beta" in the sense of unstable</strong> — it
+      works when used as documented. <strong>One honest expectation:</strong> Copilot
+      support does <strong>not</strong> yet run on Copilot's <em>included</em> tokens — it
+      currently requires the <strong>premium</strong> <code>claude-opus-4.8</code> (below).
+      So "LCARS runs on Copilot" is true today; "LCARS runs on Copilot for free" is not yet.</p>
+
       <p>Two Copilot-specific gotchas matter — both are real footguns:</p>
 
       <div class="lcars-alert amber">
@@ -931,7 +942,7 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
             <div class="lcars-status active">Auto-advance + notify</div>
             <div class="lcars-status active">Human surface</div>
             <div class="lcars-status active">Mission Log</div>
-            <div class="lcars-status active">Copilot enablement</div>
+            <div class="lcars-status active">Copilot enablement · new</div>
           </div>
         </div>
       </div>
@@ -946,7 +957,11 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
         <p><strong>Copilot enablement is in:</strong> <code>$LCARS_WORKER_BIN</code>
         auto-resolves to <code>copilot</code> when you launch from Copilot, so the
         harness runs on whichever CLI you launch from (see
-        <a href="#copilot">Running under GitHub Copilot</a>). Further out: a custom
+        <a href="#copilot">Running under GitHub Copilot</a>). The Claude path is stable;
+        the Copilot path is <strong>new</strong> — it works idea→PR but needs two
+        documented setup caveats (premium <code>claude-opus-4.8</code> +
+        <code>--allow-all-tools</code>) and does not yet run on Copilot's <em>included</em>
+        tokens. Further out: a custom
         <strong>kanban interface</strong>
         (cards, stages, pending-question badges, start/stop control) and
         <strong>production monitoring</strong> to close the loop from live signal
