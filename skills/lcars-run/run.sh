@@ -93,7 +93,9 @@ die() { printf 'lcars run: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same style as file.sh / status.sh) ----------
 json_str() { # file key  → first matching "key": "value"
-  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
+  sed -En "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" "$1" \
+    | head -1 \
+    | sed 's/\\"/"/g; s/\\\\/\\/g'
 }
 json_raw() { # file key  → first matching bare token (number/null/bool)
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1
@@ -1514,7 +1516,7 @@ red_gate_ok() { # quarantined-tests-dir
     # proves NOTHING about the quarantined tests. BLOCK loud — never accept an
     # UNPROVEN suite. Otherwise the command reacted → genuine red → accept (as before).
     if [ "$ignored_var" = yes ]; then
-      reason="RED GATE — the configured test command exited non-zero (red) but exits IDENTICALLY (same rc AND output) with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran a FIXED target (the repo's own suite), not the quarantined tests. A red on the repo's own already-failing suite proves NOTHING about the new tests, so the harness refuses to hand them on. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
+      reason="RED GATE — the configured test command exited non-zero (red) but exits IDENTICALLY (same rc AND output) with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran a FIXED target (the repo's own suite), not the quarantined tests. A red on the repo's own already-failing suite proves NOTHING about the new tests, so the harness refuses to hand them on. Command run: $cmd. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
       printf '  ✗ %s\n' "$reason" >&2
       if [ -n "$RED_GATE_SIGNAL" ]; then
         {
@@ -1536,11 +1538,11 @@ red_gate_ok() { # quarantined-tests-dir
     # Identical GREEN with NO quarantined tests present → the command did not react
     # to $LCARS_TESTS_DIR. It ran a fixed target (the repo's existing suite), so we
     # CANNOT prove the quarantined tests are what passed. BLOCK loud — never pass.
-    reason="RED GATE — the configured test command exited 0 (green) but ALSO exits 0 with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran the repo's EXISTING suite, not the quarantined tests. The harness cannot prove the new tests fail-first, so it refuses to hand them on. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
+    reason="RED GATE — the configured test command exited 0 (green) but ALSO exits 0 with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran the repo's EXISTING suite, not the quarantined tests. The harness cannot prove the new tests fail-first, so it refuses to hand them on. Command run: $cmd. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
   else
     # The runner reacted to the var (empty dir → different result) yet the quarantined
     # tests passed → a genuine green-on-nothing contract. Reject as proving nothing.
-    reason="RED GATE — the quarantined suite PASSED with no implementation (exit 0). A contract that is green before anything is built proves nothing; the tests must FAIL first. Runner output (quarantined run):
+    reason="RED GATE — the quarantined suite PASSED with no implementation (exit 0). A contract that is green before anything is built proves nothing; the tests must FAIL first. Command run: $cmd. Runner output (quarantined run):
 $(printf '%s' "$out" | tail -20)"
   fi
   printf '  ✗ %s\n' "$reason" >&2

@@ -56,6 +56,25 @@ EOF
   chmod +x "$1"
 }
 
+# Mirror run.sh's json_escape (writer) so fixtures exercise true on-disk shape.
+json_escape_like_run() { # raw-string -> JSON-escaped string body
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+set_state_title_json_escaped() { # repo raw-title
+  local s esc tmp
+  s="$(state_of "$1")"
+  esc="$(json_escape_like_run "$2")"
+  tmp="$1/s.tmp"
+  TITLE_ESC="$esc" awk '
+    /"title"[[:space:]]*:/ { print "  \"title\": \"" ENVIRON["TITLE_ESC"] "\","; next }
+    { print }
+  ' "$s" >"$tmp" && mv "$tmp" "$s"
+}
+
 # Build an isolated git repo with one mission already filed at stage "align".
 # Echoes the repo path. Mission id is fixed: lcars-20260530-001, issue #42.
 new_repo_with_mission() {
@@ -1897,6 +1916,28 @@ check "TRIPWIRE 7. the block is LOUD (red gate / passed / ignored surfaced)" \
 check "TRIPWIRE 7. nothing quarantined on the can't-tell-which-suite path" \
   "[ ! -d '$repoT7/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
 
+# BUG-008 pair-fix: when red-gate rejects, include the ACTUAL command string run.
+CMD_VIS_RUNNER="$TMPROOT/cmd-visible-runner.sh"
+cat >"$CMD_VIS_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$CMD_VIS_RUNNER"
+repoB8cmd="$(new_repo_with_implement_mission)"; make_gh_stub "$repoB8cmd/gh"
+export GH_LOG="$repoB8cmd/gh.log"; : >"$GH_LOG"
+tB8cmd="$repoB8cmd/tw"; make_tests_dir "$tB8cmd"
+mkdir -p "$repoB8cmd/.git/lcars"
+printf '{ "testCommand": "bash %s \\"$LCARS_TESTS_DIR\\"" }\n' "$CMD_VIS_RUNNER" >"$repoB8cmd/.git/lcars/config.json"
+expectedB8cmd="bash $CMD_VIS_RUNNER \"\$LCARS_TESTS_DIR\""
+rcB8cmd=0
+( cd "$repoB8cmd" && LCARS_GH_BIN="$repoB8cmd/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tB8cmd" \
+    >outB8cmd.txt 2>&1 ) || rcB8cmd=$?
+check "B8.4 escaped-quote testCommand is read fully (exact command text survives json_str)" \
+  "grep -qF '$expectedB8cmd' '$repoB8cmd/outB8cmd.txt'"
+check "B8.5 red-gate rejection includes the actual command string it ran" \
+  "grep -qF '$expectedB8cmd' '$repoB8cmd/outB8cmd.txt'"
+
 # TRIPWIRE 8 — DO NOT DELETE: G2 (immutable hash), G3 (assertions), and the
 # adversarial split are UNCHANGED. (G1/G2/G3 regression blocks above already
 # assert these; this restates the invariant against the HONORing runner so a
@@ -2242,6 +2283,35 @@ check "VR1. prompts the captain to approve" "grep -q 'lcars approve' '$repoVR/ou
 check "VR1. prompts the captain to send feedback" "grep -q 'lcars feedback' '$repoVR/out.txt'"
 check "VR1. is read-only — stays at the verify stage" \
   "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoVR")'"
+
+# --- BUG-008: json_str reads escaped string content fully (no truncation) ----
+repoB8q="$(new_repo_with_verify_mission)"; make_gh_stub "$repoB8q/gh"
+export GH_LOG="$repoB8q/gh.log"; : >"$GH_LOG"
+set_state_title_json_escaped "$repoB8q" 'Add a "version" flag'
+rcB8q=0
+( cd "$repoB8q" && LCARS_GH_BIN="$repoB8q/gh" bash "$SCRIPT" verify-summary \
+    --mission "$MID" >outB8q.txt 2>&1 ) || rcB8q=$?
+check "B8.1 json_str round-trips a json_escape-written quote in title" "[ '$rcB8q' -eq 0 ]"
+check "B8.1 verify-summary prints the full quoted title (no truncation at \\\" )" \
+  "grep -qF 'VERIFY: Add a \"version\" flag' '$repoB8q/outB8q.txt'"
+
+repoB8bs="$(new_repo_with_verify_mission)"; make_gh_stub "$repoB8bs/gh"
+export GH_LOG="$repoB8bs/gh.log"; : >"$GH_LOG"
+set_state_title_json_escaped "$repoB8bs" 'Use C:\LCARS\tests'
+rcB8bs=0
+( cd "$repoB8bs" && LCARS_GH_BIN="$repoB8bs/gh" bash "$SCRIPT" verify-summary \
+    --mission "$MID" >outB8bs.txt 2>&1 ) || rcB8bs=$?
+check "B8.2 json_str decodes \\\\ to a single backslash" \
+  "grep -qF 'VERIFY: Use C:\\LCARS\\tests' '$repoB8bs/outB8bs.txt'"
+
+repoB8plain="$(new_repo_with_verify_mission)"; make_gh_stub "$repoB8plain/gh"
+export GH_LOG="$repoB8plain/gh.log"; : >"$GH_LOG"
+set_state_title_json_escaped "$repoB8plain" 'Plain title'
+rcB8plain=0
+( cd "$repoB8plain" && LCARS_GH_BIN="$repoB8plain/gh" bash "$SCRIPT" verify-summary \
+    --mission "$MID" >outB8plain.txt 2>&1 ) || rcB8plain=$?
+check "B8.3 json_str leaves quote-free strings unchanged" \
+  "grep -qF 'VERIFY: Plain title' '$repoB8plain/outB8plain.txt'"
 
 # --- Guard: verify-summary refuses a non-verify mission --------------------
 repoVRg="$(new_repo_with_mission)"; make_gh_stub "$repoVRg/gh"   # still at align
