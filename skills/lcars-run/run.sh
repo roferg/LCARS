@@ -1931,8 +1931,12 @@ EOF
 #   model precedence: $LCARS_WORKER_MODEL > config.json workerModel > unset
 #
 # Host detection keys off the per-process env var a spawned shell inherits from
-# the launching CLI — the SPIKE finding: CLAUDECODE=1 ⇒ claude, COPILOT_CLI=1 ⇒
-# copilot. `~/.copilot` existing is NOT a launch signal and is never consulted.
+# the launching CLI: CLAUDECODE=1 ⇒ claude. The real GitHub Copilot CLI (v1.0.60)
+# sets COPILOT_RUN_APP=1 + COPILOT_CLI_BINARY_VERSION (+ COPILOT_LOADER_PID) and
+# does NOT set COPILOT_CLI, so we treat COPILOT_RUN_APP=1 OR a non-empty
+# COPILOT_CLI_BINARY_VERSION as the copilot marker (resilient to either var
+# changing across versions). `~/.copilot` existing is NOT a launch signal and is
+# never consulted.
 # If no marker is present we do NOT guess: we fall back to claude (the historical
 # default) and note it via the `default` source.
 #
@@ -1944,7 +1948,9 @@ EOF
 # nothing if no reliable marker is set (caller then falls back, never guesses).
 detect_host_cli() {
   if [ "${CLAUDECODE:-}" = "1" ]; then printf 'claude'; return 0; fi
-  if [ "${COPILOT_CLI:-}" = "1" ]; then printf 'copilot'; return 0; fi
+  if [ "${COPILOT_RUN_APP:-}" = "1" ] || [ -n "${COPILOT_CLI_BINARY_VERSION:-}" ]; then
+    printf 'copilot'; return 0
+  fi
   return 0   # no marker — caller degrades to the claude default + LOGs it.
 }
 

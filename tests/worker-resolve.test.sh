@@ -10,7 +10,10 @@
 #   worker model : $LCARS_WORKER_MODEL >  config.json workerModel  >  unset
 #
 # Host markers (the env var a process LCARS spawns inherits from its host CLI):
-#   CLAUDECODE=1  ⇒ claude     COPILOT_CLI=1 ⇒ copilot
+#   CLAUDECODE=1  ⇒ claude
+#   COPILOT_RUN_APP=1 OR COPILOT_CLI_BINARY_VERSION=<non-empty>  ⇒ copilot
+#   (the real GitHub Copilot CLI v1.0.60 sets COPILOT_RUN_APP=1 +
+#    COPILOT_CLI_BINARY_VERSION + COPILOT_LOADER_PID; it does NOT set COPILOT_CLI)
 #
 # The resolver is exercised through the `resolve-worker` subcommand, which prints
 # ONE self-explaining line naming the resolved cli + model + the winning SOURCE
@@ -51,12 +54,13 @@ make_repo() { # [config-json]
 }
 
 # Run `resolve-worker` from inside a repo with FULL control of the host markers.
-# Both CLAUDECODE and COPILOT_CLI are scrubbed first; the caller re-sets via
-# leading VAR=val tokens. Returns the WORKER-RESOLVED summary (stdout) AND the
+# CLAUDECODE and ALL the copilot markers are scrubbed first; the caller re-sets
+# via leading VAR=val tokens. Returns the WORKER-RESOLVED summary (stdout) AND the
 # human resolution log line (stderr, merged in) so both surfaces are assertable.
 resolve_in() { # repo  [extra env assignments...]
   local repo="$1"; shift
-  ( cd "$repo" && env -u CLAUDECODE -u COPILOT_CLI \
+  ( cd "$repo" && env -u CLAUDECODE \
+      -u COPILOT_CLI -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
       -u LCARS_WORKER_BIN -u LCARS_WORKER_MODEL -u LCARS_WORKER_CLI \
       "$@" bash "$RUN" resolve-worker 2>&1 )
 }
@@ -86,11 +90,18 @@ check "3a. CLAUDECODE marker ⇒ claude" \
   "printf '%s' \"\$out3c\" | grep -q 'bin=claude'"
 check "3b. claude marker source = detected" \
   "printf '%s' \"\$out3c\" | grep -q 'binsrc=detected'"
-out3p="$(resolve_in "$r3" COPILOT_CLI=1)"
-check "3c. COPILOT_CLI marker ⇒ copilot" \
+# Real Copilot CLI (v1.0.60) sets COPILOT_RUN_APP=1 — NOT COPILOT_CLI.
+out3p="$(resolve_in "$r3" COPILOT_RUN_APP=1)"
+check "3c. COPILOT_RUN_APP marker ⇒ copilot" \
   "printf '%s' \"\$out3p\" | grep -q 'bin=copilot'"
 check "3d. copilot marker source = detected" \
   "printf '%s' \"\$out3p\" | grep -q 'binsrc=detected'"
+# Fallback marker: COPILOT_CLI_BINARY_VERSION non-empty (RUN_APP unset) ⇒ copilot.
+out3v="$(resolve_in "$r3" COPILOT_CLI_BINARY_VERSION=1.0.60)"
+check "3e. COPILOT_CLI_BINARY_VERSION marker ⇒ copilot" \
+  "printf '%s' \"\$out3v\" | grep -q 'bin=copilot'"
+check "3f. copilot version-marker source = detected" \
+  "printf '%s' \"\$out3v\" | grep -q 'binsrc=detected'"
 
 # --- 4. nothing at all → claude default (NO marker set) -----------------------
 r4="$(make_repo)"
