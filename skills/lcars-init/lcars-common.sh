@@ -113,6 +113,16 @@ EOF
 # idempotent — a captain's customized testCommand / model / comprehensionBudget
 # survives. Both init and update call this so the behaviour cannot drift.
 
+# lcars_json_escape — escape a string for embedding inside a JSON string literal.
+# Backslashes are escaped FIRST, then double-quotes (the standard order — mirrors
+# json_escape in skills/lcars-run/run.sh). The result is safe to wrap in quotes.
+lcars_json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"   # backslashes first…
+  s="${s//\"/\\\"}"   # …then double-quotes
+  printf '%s' "$s"
+}
+
 # lcars_config_has_key — 0 if the config file has a top-level "key": present.
 lcars_config_has_key() {
   local config="$1" key="$2"
@@ -120,13 +130,17 @@ lcars_config_has_key() {
   grep -q "\"$key\"[[:space:]]*:" "$config"
 }
 
-# lcars_config_get — print the raw JSON value of a top-level key (no surrounding
-# quotes stripped for strings beyond the obvious; used for string values like
-# "created"). Empty if absent.
+# lcars_config_get — print the JSON value of a top-level string key, with the
+# standard JSON escapes un-escaped (\" → ", \\ → \). Mirrors json_str in
+# skills/lcars-run/run.sh so both jq-free readers agree on a value written with
+# embedded quotes (e.g. a testCommand referencing "${LCARS_TESTS_DIR:-tests}").
+# Empty if absent.
 lcars_config_get() {
   local config="$1" key="$2"
   [ -f "$config" ] || return 0
-  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$config" | head -1
+  sed -En "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" "$config" \
+    | head -1 \
+    | sed 's/\\"/"/g; s/\\\\/\\/g'
 }
 
 # lcars_config_merge — write config.json preserving existing keys.
