@@ -1814,6 +1814,93 @@ EOF
   exit 0
 }
 
+# --- GUARDRAIL 4: the full-suite regression gate (BUG-013) ------------------
+# Every per-ticket gate (ticket_green, the wave loop, the impl-advance precheck)
+# only ever checks each ticket's OWN quarantined suite. Nothing re-runs ALL the
+# accumulated ticket suites TOGETHER against the fully-built repo, so a LATER
+# ticket can satisfy its own suite (green) while REGRESSING an EARLIER ticket's
+# locked contract on the same input — and because no gate re-runs the earlier
+# suite, the wave completes "green" with the regression invisible.
+#
+# This gate closes that hole. Run at the Verify precheck AFTER every ticket is
+# individually green, it re-runs EVERY completed ticket's quarantined suite
+# against the current (fully-built) repo, reusing the red gate's runner contract:
+# the configured testCommand run from $REPO_ROOT with $LCARS_TESTS_DIR pointing at
+# the ticket's quarantined tests (the runner honours that var as of BUG-009). A
+# ticket's suite is "still green" iff its run exits 0; any earlier suite that is
+# no longer green is a regression a LATER ticket introduced. It is purely ADDITIVE
+# — it does not weaken the per-ticket red/green gate, the immutable-test snapshot,
+# or the test-quality check. With NO runner configured it SKIPS LOUD (never a
+# false pass and never a false fail), matching the red gate's no-runner stance.
+FULL_SUITE_SIGNAL=""   # caller may point this at a file to capture the regression detail
+full_suite_gate() { # ordered ticketId...
+  local cmd; cmd="$(resolve_test_cmd)"
+  if [ -z "$cmd" ]; then
+    # NO RUNNER: the same documented degradation as the red gate. We cannot
+    # re-check earlier tickets for regressions, so we SKIP LOUD — never a false
+    # pass, and (critically) never a false FAIL of a runner-less repo.
+    printf '  ⚠ FULL-SUITE GATE SKIPPED — no test command (set `testCommand` in .git/lcars/config.json or $LCARS_TEST_CMD). The harness cannot re-run earlier tickets to catch a cross-ticket regression without a runner; configure one to close this gap.\n' >&2
+    return 0
+  fi
+  # BUG-013 (the false-regression defect): a ticket's quarantined suite was
+  # green-validated against a tree where the built code sits at the repo root and
+  # the test file sits at a DEPTH-1 dir (`tests/`), so a portable test that
+  # resolves its target relative to its OWN location — e.g.
+  # `bash "$(dirname "${BASH_SOURCE[0]}")/../skills/foo.sh"` — finds it at
+  # `<root>/skills/foo.sh`. Re-running that same test from the DETACHED quarantine
+  # dir `tickets/<id>/tests/` makes `$here/..` resolve to `tickets/<id>/`, NOT the
+  # repo root, so the target is "not found" and the test exits non-zero — a FALSE
+  # regression. To re-run each suite in the SAME condition it was locked under, we
+  # cut ONE clean detached worktree at the mission-branch tip (all tickets' code
+  # present) and stage each ticket's tests at a DEPTH-1 dir under that worktree
+  # root, so their relative target-resolution works exactly as when they were green.
+  local branch; branch="$(json_str "$STATE" branch)"
+  local wt_base="$MISSION_DIR/fullsuite-wt" wt=""
+  wt="$(make_ticket_worktree "$wt_base" "$branch" "all")"
+  local id tdir rc regressed=""
+  if [ -n "$wt" ]; then
+    # WORKTREE MODE: a real mission branch exists. Re-run each suite from the clean
+    # tip with the tests at a depth-1 dir, so relative-to-self target resolution
+    # behaves as it did at green-time.
+    local stage_dir="$wt/.lcars-fullsuite"
+    for id in "$@"; do
+      [ -n "$id" ] || continue
+      tdir="$(ticket_dir "$id")/tests"
+      # Defensive: a green ticket should always have a quarantined suite. If one is
+      # missing we skip it rather than crash — we never INVENT a regression.
+      [ -d "$tdir" ] || continue
+      # Recreate the staging dir empty per ticket so suites never bleed together.
+      rm -rf "$stage_dir"; mkdir -p "$stage_dir"
+      ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
+      rc=0
+      ( cd "$wt" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
+      [ "$rc" -ne 0 ] && regressed="${regressed:+$regressed }$id"
+    done
+    rm -rf "$stage_dir" 2>/dev/null || :
+    # Clean up the worktree on EVERY exit path — never leak into the captain's
+    # `git worktree list` or working tree. Mirrors cleanup_ticket_worktrees.
+    "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+    rm -rf "$wt_base" 2>/dev/null || :
+  else
+    # FALLBACK (no mission branch — a branch-less / local-only mission): keep the
+    # original in-tree behaviour, running each suite from $REPO_ROOT.
+    for id in "$@"; do
+      [ -n "$id" ] || continue
+      tdir="$(ticket_dir "$id")/tests"
+      [ -d "$tdir" ] || continue
+      rc=0
+      ( cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
+      [ "$rc" -ne 0 ] && regressed="${regressed:+$regressed }$id"
+    done
+  fi
+  [ -z "$regressed" ] && return 0
+  local detail="FULL-SUITE GATE — these earlier ticket suite(s) no longer pass against the fully-built repo: ${regressed}. Each was green when built, so a LATER ticket's produced code REGRESSED its locked contract. The Mission is NOT shippable until the regression is resolved (fix the later ticket or re-open the regressed ticket). Command run: $cmd."
+  printf '  ✗ %s\n' "$detail" >&2
+  [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$detail" >"$FULL_SUITE_SIGNAL"
+  return 1
+}
+
 # --- subcommand: impl-advance ----------------------------------------------
 # The final gate: only when EVERY ticket in EVERY wave has a passing result does
 # the Mission move to Verify. While any ticket is unfinished it refuses and names
@@ -1829,14 +1916,29 @@ cmd_impl_advance() {
   local table; table="$(parse_waves_table "$waves")"
   [ -n "$table" ] || die "waves.json has no tickets — nothing to implement."
 
-  local w id
+  local w id ordered=""
   while IFS=$'\t' read -r w id; do
     [ -n "$id" ] || continue
     ticket_green "$id" \
       || die "ticket $id (wave $w) is not green yet — every ticket must pass before Verify. Run \`lcars run $MISSION_ID\` to finish the open waves."
+    ordered="${ordered:+$ordered }$id"
   done <<EOF
 $table
 EOF
+
+  # GUARDRAIL 4 (BUG-013): every ticket is individually green, but that only
+  # proves each ticket's OWN suite passes. Re-run EVERY completed ticket's
+  # quarantined suite together against the fully-built repo to catch a later
+  # ticket that regressed an earlier ticket's locked contract. Refuse Verify on
+  # any regression, naming the regressed earlier ticket.
+  local fssig; fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
+  if ! FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
+    local why=""; [ -f "$fssig" ] && why="
+$(cat "$fssig")"
+    rm -f "$fssig"
+    die "the Mission cannot advance to Verify — a cross-ticket regression was detected by the full-suite gate.$why"
+  fi
+  rm -f "$fssig"
 
   # All green — clear any awaiting-human gate (defensive, like validate-advance)
   # and advance the Mission to Verify, keeping stage and label in step.

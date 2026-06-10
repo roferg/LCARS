@@ -4762,5 +4762,221 @@ check "P37-7. the working tree is clean after the escalation (no stranded confli
 
 # ==========================================================================
 echo
+echo "lcars run — BUG-013: the full-suite regression gate (impl-advance)"
+#
+# Ground truth of BUG-013: every Implement gate (ticket_green, the wave loop, the
+# Verify precheck in impl-advance) only ever checks each ticket's OWN quarantined
+# suite. Nothing re-runs ALL accumulated ticket suites together against the
+# fully-built repo. So a later ticket (t-002) can satisfy its OWN suite (green)
+# while REGRESSING an earlier ticket's (t-001) locked test, and the wave completes
+# "green" with the regression invisible. The fix adds a full-suite gate at the
+# Verify precheck: AFTER every ticket is individually green, re-run EVERY completed
+# ticket's quarantined suite and FAIL LOUD if any earlier suite is no longer green,
+# naming the regressed ticket. It must NOT weaken the per-ticket red/green or
+# immutable-test guardrails, and must NOT false-fail a repo with no runner.
+
+# A runner that HONORS $LCARS_TESTS_DIR and judges a ticket's quarantined suite
+# against the CURRENT built repo. Each quarantined test file carries an EXPECT=<v>
+# token; the runner reads the repo's current value from $REPO_ROOT/built-state.txt
+# and is GREEN iff every quarantined file's EXPECT matches the built value. This
+# lets a test simulate a later ticket regressing an earlier ticket's contract by
+# changing built-state.txt.
+FS_RUNNER="$TMPROOT/full-suite-runner.sh"
+cat >"$FS_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+[ -n "$d" ] && [ -d "$d" ] || { echo "no quarantined tests dir" >&2; exit 1; }
+n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -gt 0 ] || { echo "quarantined tests dir empty" >&2; exit 1; }
+built="$(cat built-state.txt 2>/dev/null)"
+rc=0
+while IFS= read -r f; do
+  want="$(sed -n 's/.*EXPECT=\([A-Za-z0-9_]*\).*/\1/p' "$f" | head -1)"
+  [ -n "$want" ] || continue
+  [ "$want" = "$built" ] || { echo "FAIL: $f expected $want, built is $built" >&2; rc=1; }
+done < <(find "$d" -type f)
+exit $rc
+EOF
+chmod +x "$FS_RUNNER"
+
+# Build an implement-stage mission whose wave-1 tickets (t-001, t-002) are both
+# individually green (result.json passed:true) with quarantined suites that both
+# expect the SAME built value v2 (so against built-state v2 BOTH are green).
+new_repo_fullsuite() { # builtValue
+  local repo; repo="$(new_repo_with_implement_mission)"
+  printf '%s' "$1" >"$repo/built-state.txt"
+  local m="$repo/.git/lcars/missions/$MID"
+  local id
+  for id in t-001 t-002 t-003 t-004; do
+    mkdir -p "$m/tickets/$id/tests"
+    printf 'assert: %s contract // EXPECT=v2\n' "$id" >"$m/tickets/$id/tests/${id}.test"
+    write_result "$m/tickets/$id/result.json" "$id" true 2
+  done
+  echo "$repo"
+}
+
+# --- FS1: happy path — every accumulated suite still GREEN → advance to verify
+repoFS1="$(new_repo_fullsuite v2)"; make_gh_stub "$repoFS1/gh"
+export GH_LOG="$repoFS1/gh.log"; : >"$GH_LOG"
+rcFS1=0
+( cd "$repoFS1" && LCARS_TEST_CMD="bash $FS_RUNNER" LCARS_GH_BIN="$repoFS1/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS1.txt 2>&1 ) || rcFS1=$?
+check "FS1. impl-advance exits 0 when every accumulated suite is still green" \
+  "[ '$rcFS1' -eq 0 ]"
+check "FS1. advances the stage to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoFS1")'"
+
+# --- FS2: regression — a later ticket regressed t-001's locked suite ---------
+# built-state v3 means t-001 (and the others) expecting v2 now FAIL against the
+# fully-built repo, even though each result.json still says passed:true. The
+# gate must FAIL LOUD, name the regressed earlier ticket, and NOT advance.
+repoFS2="$(new_repo_fullsuite v3)"; make_gh_stub "$repoFS2/gh"
+export GH_LOG="$repoFS2/gh.log"; : >"$GH_LOG"
+rcFS2=0
+( cd "$repoFS2" && LCARS_TEST_CMD="bash $FS_RUNNER" LCARS_GH_BIN="$repoFS2/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS2.txt 2>&1 ) || rcFS2=$?
+check "FS2. impl-advance FAILS when a later ticket regressed an earlier suite" \
+  "[ '$rcFS2' -ne 0 ]"
+check "FS2. does NOT advance to verify on a regression (stays at implement)" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoFS2")'"
+check "FS2. names the regressed earlier ticket (t-001) in the failure" \
+  "grep -q 't-001' '$repoFS2/outFS2.txt'"
+check "FS2. surfaces that a LATER ticket caused the regression" \
+  "grep -qiE 'later|regress' '$repoFS2/outFS2.txt'"
+
+# --- FS3: no runner configured — loud skip, never a false fail ---------------
+# Same all-green mission but with NO testCommand (and no $LCARS_TEST_CMD). The
+# gate cannot re-run anything, so it must SKIP LOUD and still advance (matching
+# the red gate's no-runner stance) — it must never false-fail a runner-less repo.
+repoFS3="$(new_repo_fullsuite v2)"; make_gh_stub "$repoFS3/gh"
+export GH_LOG="$repoFS3/gh.log"; : >"$GH_LOG"
+rcFS3=0
+( cd "$repoFS3" && LCARS_GH_BIN="$repoFS3/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS3.txt 2>&1 ) || rcFS3=$?
+check "FS3. no-runner: impl-advance still exits 0 (no false fail)" \
+  "[ '$rcFS3' -eq 0 ]"
+check "FS3. no-runner: advances to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoFS3")'"
+check "FS3. no-runner: the skip is LOUD (warns the gate could not run)" \
+  "grep -qiE 'full-suite|skip' '$repoFS3/outFS3.txt'"
+
+# --- FS4: the per-ticket gate still fires — a not-green ticket blocks first ---
+# The full-suite gate is ADDITIVE: the existing per-ticket ticket_green check must
+# still refuse an unfinished mission BEFORE the full-suite gate runs.
+repoFS4="$(new_repo_fullsuite v2)"; make_gh_stub "$repoFS4/gh"
+export GH_LOG="$repoFS4/gh.log"; : >"$GH_LOG"
+write_result "$repoFS4/.git/lcars/missions/$MID/tickets/t-003/result.json" t-003 false 5
+rcFS4=0
+( cd "$repoFS4" && LCARS_TEST_CMD="bash $FS_RUNNER" LCARS_GH_BIN="$repoFS4/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS4.txt 2>&1 ) || rcFS4=$?
+check "FS4. per-ticket gate still blocks an unfinished mission" "[ '$rcFS4' -ne 0 ]"
+check "FS4. names the unfinished ticket (t-003), not a regression" \
+  "grep -q 't-003' '$repoFS4/outFS4.txt'"
+check "FS4. stays at implement when a ticket is unfinished" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoFS4")'"
+
+# --- BUG-013 false-regression: depth-1 relative target resolution ------------
+# The defect: the gate re-ran each ticket's quarantined suite from the DETACHED
+# quarantine dir tickets/<id>/tests/. A PORTABLE test that resolves its code-
+# under-test relative to its OWN location — `bash "$here/../skills/foo.sh"` —
+# then looks under tickets/<id>/ instead of the repo root, "can't find" the
+# target, and exits non-zero: a FALSE regression that blocked a clean Mission.
+# The fix re-runs each suite from a clean detached worktree at the mission-branch
+# tip with the tests staged at a DEPTH-1 dir, so `$here/..` is the repo root.
+
+# A runner that honours $LCARS_TESTS_DIR and executes each quarantined *.test.sh,
+# letting the test itself assert against the code at its own ../ location.
+BRANCH_RUNNER="$TMPROOT/branch-runner.sh"
+cat >"$BRANCH_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+[ -n "$d" ] && [ -d "$d" ] || { echo "no quarantined tests dir" >&2; exit 1; }
+rc=0
+while IFS= read -r f; do
+  bash "$f" || rc=1
+done < <(find "$d" -type f -name '*.test.sh')
+exit $rc
+EOF
+chmod +x "$BRANCH_RUNNER"
+
+# Add a "branch" field to a mission's state.json (so the gate cuts a worktree).
+set_state_branch() { # repo branchname
+  local s; s="$(state_of "$1")"
+  awk -v b="$2" '
+    /"stage"/ && !d { print; print "  \"branch\": \"" b "\","; d=1; next }
+    { print }
+  ' "$s" >"$1/sb.tmp" && mv "$1/sb.tmp" "$s"
+}
+
+# Build a REAL git mission branch whose built code lives at skills/foo.sh and is
+# committed at the branch tip. Every ticket's quarantined suite resolves that
+# target RELATIVE TO ITS OWN location (the depth-1 assumption) and asserts an
+# expected value. t-001 asserts $t001Expect; the rest assert $builtValue — so
+# passing builtValue != t001Expect simulates a later ticket regressing ONLY the
+# earlier ticket t-001's locked contract at the tip.
+new_repo_fullsuite_branch() { # builtValue  t001Expect
+  local builtValue="$1" t001Expect="$2"
+  local repo; repo="$(new_repo_with_implement_mission)"
+  local m="$repo/.git/lcars/missions/$MID"
+  ( cd "$repo"
+    git checkout -q -b feat/fs >/dev/null 2>&1 || git checkout -q feat/fs
+    mkdir -p skills
+    printf '#!/usr/bin/env bash\necho %s\n' "$builtValue" >skills/foo.sh
+    git add -A && git commit -q -m "build foo.sh at $builtValue"
+  )
+  set_state_branch "$repo" feat/fs
+  local id want
+  for id in t-001 t-002 t-003 t-004; do
+    want="$builtValue"; [ "$id" = t-001 ] && want="$t001Expect"
+    mkdir -p "$m/tickets/$id/tests"
+    cat >"$m/tickets/$id/tests/${id}.test.sh" <<EOF
+#!/usr/bin/env bash
+here="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+out="\$(bash "\$here/../skills/foo.sh")"
+[ "\$out" = "$want" ]
+EOF
+    write_result "$m/tickets/$id/result.json" "$id" true 2
+  done
+  echo "$repo"
+}
+
+# --- FS5: clean mission, portable depth-1-relative tests → advance to verify --
+# The defect repro: every ticket is genuinely green at the branch tip, but each
+# test resolves its target via `$here/../skills/foo.sh`. The gate must NOT false-
+# flag a regression — it must re-run the suites where ../ is the repo root.
+repoFS5="$(new_repo_fullsuite_branch v2 v2)"; make_gh_stub "$repoFS5/gh"
+export GH_LOG="$repoFS5/gh.log"; : >"$GH_LOG"
+rcFS5=0
+( cd "$repoFS5" && LCARS_TEST_CMD="bash $BRANCH_RUNNER" LCARS_GH_BIN="$repoFS5/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS5.txt 2>&1 ) || rcFS5=$?
+check "FS5. clean mission with depth-1-relative tests advances (no false regression)" \
+  "[ '$rcFS5' -eq 0 ]"
+check "FS5. advances the stage to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoFS5")'"
+check "FS5. leaks no worktree dir under the mission state" \
+  "[ ! -d '$repoFS5/.git/lcars/missions/$MID/fullsuite-wt' ]"
+
+# --- FS6: genuine regression at the tip → fail, naming the regressed ticket ---
+# Built code at the branch tip outputs v3; only t-001's locked suite still
+# expects v2 (a later ticket regressed it). Run from the clean tip the suite
+# genuinely fails — the gate must FAIL LOUD and name t-001.
+repoFS6="$(new_repo_fullsuite_branch v3 v2)"; make_gh_stub "$repoFS6/gh"
+export GH_LOG="$repoFS6/gh.log"; : >"$GH_LOG"
+rcFS6=0
+( cd "$repoFS6" && LCARS_TEST_CMD="bash $BRANCH_RUNNER" LCARS_GH_BIN="$repoFS6/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS6.txt 2>&1 ) || rcFS6=$?
+check "FS6. a genuine cross-ticket regression at the tip still FAILS" \
+  "[ '$rcFS6' -ne 0 ]"
+check "FS6. names the regressed earlier ticket (t-001)" \
+  "grep -q 't-001' '$repoFS6/outFS6.txt'"
+check "FS6. surfaces that a LATER ticket caused the regression" \
+  "grep -qiE 'later|regress' '$repoFS6/outFS6.txt'"
+check "FS6. stays at implement on a real regression" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoFS6")'"
+check "FS6. cleans up its worktree (no leak under mission state)" \
+  "[ ! -d '$repoFS6/.git/lcars/missions/$MID/fullsuite-wt' ]"
+
+# ==========================================================================
+echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
