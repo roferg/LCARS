@@ -42,6 +42,15 @@ make_gh_stub() {
   cat >"$p" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >>"$GH_LOG"
+# When a --body-file is passed and GH_BODY is set, capture its contents so a
+# test can assert what file.sh actually handed gh as the issue body.
+if [ -n "${GH_BODY:-}" ]; then
+  prev=""
+  for a in "$@"; do
+    if [ "$prev" = "--body-file" ]; then cat "$a" >"$GH_BODY"; fi
+    prev="$a"
+  done
+fi
 if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
   echo "https://github.com/owner/repo/issues/42"
   exit 0
@@ -260,7 +269,55 @@ check "8c. no mission created from a bad adr.md" \
 check "8c. error names the missing ADR section" \
   "grep -qi 'alternatives\\|adr' '$repoB/outB.txt'"
 
+# --- Behaviour 9: issue body combines PRD + ADR set (BUG-012) -------------
+# For a COMPLEX Mission, Align produces both a PRD and an ADR set; both are
+# persisted to disk as separate artifacts. The GitHub issue body must show the
+# architectural decisions too, so the body handed to gh is prd.md + a
+# `\n\n---\n\n` separator + adr.md, PRD FIRST. A TRIVIAL Mission (no adr.md)
+# keeps a PRD-only body, exactly as before. The on-disk prd.md and adr.md stay
+# separate, untouched files.
+
+# 9a. Complex Mission: body contains BOTH PRD and ADR content, PRD first.
+repoBody="$(new_repo)"; make_gh_stub "$repoBody/gh"
+export GH_LOG="$repoBody/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoBody/gh-body.txt"; : >"$GH_BODY"
+prdBody="$repoBody/prd.md"; write_prd "$prdBody"
+adrBody="$repoBody/adr.md"; write_adr "$adrBody"
+(
+  cd "$repoBody"
+  LCARS_GH_BIN="$repoBody/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdBody" --adr "$adrBody" >outBody.txt 2>&1
+)
+MBody="$repoBody/.git/lcars/missions/lcars-20260530-001"
+check "9a. issue body contains the PRD content" \
+  "grep -q 'Fix the broken /about route' '$GH_BODY'"
+check "9a. issue body contains the ADR content" \
+  "grep -q 'Theme delivery via a data-theme attribute' '$GH_BODY'"
+check "9a. issue body has the --- separator" \
+  "grep -qx -- '---' '$GH_BODY'"
+check "9a. PRD content appears before the ADR content in the body" \
+  "[ \"\$(grep -n 'Fix the broken /about route' '$GH_BODY' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n 'Theme delivery via a data-theme attribute' '$GH_BODY' | head -1 | cut -d: -f1)\" ]"
+check "9a. on-disk prd.md is unchanged (no ADR content leaked in)" \
+  "! grep -q 'Theme delivery via a data-theme attribute' '$MBody/prd.md'"
+check "9a. on-disk adr.md is unchanged (no PRD content leaked in)" \
+  "! grep -q 'Fix the broken /about route' '$MBody/adr.md'"
+unset GH_BODY
+
+# 9b. Trivial Mission (no --adr): body is PRD-only, no ADR content.
+repoBody2="$(new_repo)"; make_gh_stub "$repoBody2/gh"
+export GH_LOG="$repoBody2/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoBody2/gh-body.txt"; : >"$GH_BODY"
+prdBody2="$repoBody2/prd.md"; write_prd "$prdBody2"
+(
+  cd "$repoBody2"
+  LCARS_GH_BIN="$repoBody2/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdBody2" >outBody2.txt 2>&1
+)
+check "9b. PRD-only body contains the PRD content" \
+  "grep -q 'Fix the broken /about route' '$GH_BODY'"
+check "9b. PRD-only body has no ADR content" \
+  "! grep -q 'Theme delivery via a data-theme attribute' '$GH_BODY'"
+check "9b. PRD-only body has no --- separator" \
+  "! grep -qx -- '---' '$GH_BODY'"
+unset GH_BODY
+
 # ==========================================================================
-echo
-printf 'lcars file: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
