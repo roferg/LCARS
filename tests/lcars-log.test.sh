@@ -342,6 +342,53 @@ check "10. exits zero when the parent has no issue number" "[ '$rc11' -eq 0 ]"
 check "10. skips link-subissue when the parent issue is unknown" \
   "[ ! -s '$repo11/adapter.log' ]"
 
+# --- Behaviour 11: pre-merge parent -> commit onto the parent's branch ------
+# BUG-011: when the parent Mission is still pre-merge (its lcars/<parent> branch
+# ref still exists locally), a logged bug must NOT mint its own lcars/<bug>
+# branch. It records the PARENT's branch as its working branch so Implement
+# accumulates the fix as commits on that one branch (no stacked bug->parent PRs).
+repo12="$(new_repo_with_parent)"
+make_gh_stub "$repo12/gh"
+export GH_LOG="$repo12/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+# the parent is pre-merge: its branch ref exists locally.
+( cd "$repo12" && git branch "lcars/lcars-20260530-001" >/dev/null 2>&1 )
+bug12="$repo12/bug.md"; write_bug_prd "$bug12" "Pre-merge bug" "Fix accumulates on the parent branch."
+rc12=0
+(
+  cd "$repo12"
+  LCARS_GH_BIN="$repo12/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug12" >out12.txt 2>&1
+) || rc12=$?
+B12="$repo12/.git/lcars/missions/lcars-20260530-002"
+check "11. exits zero logging against a pre-merge parent" "[ '$rc12' -eq 0 ]"
+check "11. bug records the PARENT's branch as its working branch" \
+  "grep -q '\"branch\": *\"lcars/lcars-20260530-001\"' '$B12/state.json'"
+check "11. bug does NOT record its own lcars/<bug-id> branch" \
+  "! grep -q '\"branch\": *\"lcars/lcars-20260530-002\"' '$B12/state.json'"
+check "11. no lcars/<bug-id> branch ref is created (no stacked branch)" \
+  "( cd '$repo12' && ! git show-ref --verify --quiet refs/heads/lcars/lcars-20260530-002 )"
+
+# --- Behaviour 12: merged parent -> bug keeps its own branch (regression) ---
+# When the parent has NO live branch (already merged/squashed away), the bug
+# still gets and records its own lcars/<bug-id> branch, exactly as before.
+repo13="$(new_repo_with_parent)"
+make_gh_stub "$repo13/gh"
+export GH_LOG="$repo13/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+# NB: new_repo_with_parent does NOT create the parent branch ref -> "merged".
+bug13="$repo13/bug.md"; write_bug_prd "$bug13" "Post-merge bug" "Parent already merged away."
+rc13=0
+(
+  cd "$repo13"
+  LCARS_GH_BIN="$repo13/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug13" >out13.txt 2>&1
+) || rc13=$?
+B13="$repo13/.git/lcars/missions/lcars-20260530-002"
+check "12. exits zero logging against a merged parent" "[ '$rc13' -eq 0 ]"
+check "12. bug records its OWN lcars/<bug-id> branch when parent is merged" \
+  "grep -q '\"branch\": *\"lcars/lcars-20260530-002\"' '$B13/state.json'"
+check "12. its own lcars/<bug-id> branch ref is created" \
+  "( cd '$repo13' && git show-ref --verify --quiet refs/heads/lcars/lcars-20260530-002 )"
+
 # ==========================================================================
 echo
 printf 'lcars log: %d passed, %d failed\n' "$pass" "$fail"

@@ -207,9 +207,26 @@ file_one_bug() { # prd-path
     cat "$prd"
   } >"$mdir/validated-plan.md"
 
-  # the Mission's own branch (best-effort, mirrors `lcars file`).
+  # the Mission's working branch. When the parent Mission is still PRE-MERGE —
+  # its branch ref still exists locally — accumulate this fix as commits ONTO
+  # the parent's branch instead of minting a per-bug branch (BUG-011): that
+  # avoids a stack of bug->parent PRs and the fragile bottom-up merge order, and
+  # survives the parent being squashed/rebased on merge. Only when the parent
+  # has no live branch (already merged away) does the bug get its own
+  # lcars/<id> branch, exactly as `lcars file` does (best-effort).
   local branch="lcars/$id"
-  if [ "$HAS_COMMITS" -eq 1 ]; then
+  local parent_branch=""
+  if [ -n "$PARENT_ID" ]; then
+    local pstate="$MISSIONS_DIR/$PARENT_ID/state.json"
+    [ -f "$pstate" ] && parent_branch="$(json_str "$pstate" branch)"
+    [ -n "$parent_branch" ] || parent_branch="lcars/$PARENT_ID"
+  fi
+  if [ -n "$parent_branch" ] \
+     && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$parent_branch"; then
+    # parent is pre-merge: commit the fix straight onto its branch.
+    branch="$parent_branch"
+  elif [ "$HAS_COMMITS" -eq 1 ]; then
+    # parent merged (or unknown): the bug gets its own branch as before.
     "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch" \
       || "$GIT_BIN" branch "$branch" >/dev/null 2>&1 || true
   fi
