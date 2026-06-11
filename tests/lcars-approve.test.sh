@@ -372,5 +372,36 @@ check "9. degraded body still emits the wave list" \
 check "9. degraded body still carries Closes #42" \
   "grep -q 'Closes #42' '$PR_BODY_FILE'"
 
+# --- Behaviour 10 (BUG-014 follow-up): Closes directives are de-duplicated ----
+# A single-ticket Mission reuses the parent Mission issue as its only sub-issue,
+# so the parent number and a sub-issue number coincide. approve must emit
+# `Closes #<n>` only ONCE per distinct issue, not once for the parent and again
+# for the colliding sub-issue.
+repoD="$(new_repo_with_verify_mission)"; make_gh_stub_capture "$repoD/gh"
+# Collapse to one wave/ticket whose sub-issue IS the parent issue (#42).
+cat >"$repoD/.git/lcars/missions/$MID/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 42
+      }
+    ]
+  }
+]
+EOF
+export GH_LOG="$repoD/gh.log"; : >"$GH_LOG"
+export PR_BODY_FILE="$repoD/pr_body.txt"; : >"$PR_BODY_FILE"
+rcD=0
+( cd "$repoD" && LCARS_GH_BIN="$repoD/gh" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>&1 ) || rcD=$?
+check "10. approve exits 0 when a sub-issue equals the parent issue" "[ '$rcD' -eq 0 ]"
+check "10. the parent issue is still closed (Closes #42 present)" \
+  "grep -q 'Closes #42' '$PR_BODY_FILE'"
+check "10. Closes #42 appears exactly once (no duplicate)" \
+  "[ \"\$(grep -c 'Closes #42' '$PR_BODY_FILE')\" -eq 1 ]"
+
 # ==========================================================================
 [ "$fail" -eq 0 ]

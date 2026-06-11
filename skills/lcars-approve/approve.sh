@@ -264,10 +264,18 @@ command -v "$GH_BIN" >/dev/null 2>&1 \
 # open/closed LIFECYCLE is decoupled from it and stays OPEN until the human
 # merges. A local-only mission (no parent issue) simply passes no parent --closes.
 CLOSES=()
+seen_closes=" "
+add_close() { # n  — append `--closes <n>` once per distinct issue number
+  local n="$1"
+  case "$n" in ''|null) return 0 ;; esac
+  case "$seen_closes" in *" $n "*) return 0 ;; esac
+  seen_closes="$seen_closes$n "
+  CLOSES+=(--closes "$n")
+}
 PARENT="$(json_raw "$STATE" githubIssue)"
-case "$PARENT" in ''|null) : ;; *) CLOSES+=(--closes "$PARENT") ;; esac
+add_close "$PARENT"
 while IFS= read -r sub; do
-  [ -n "$sub" ] && CLOSES+=(--closes "$sub")
+  add_close "$sub"
 done < <(sub_issues)
 
 PR_URL="$(host pr-create --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$BODY" "${CLOSES[@]}")"
