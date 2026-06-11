@@ -51,6 +51,26 @@ EOF
   chmod +x "$1"
 }
 
+# Like make_gh_stub, but ALSO captures the multi-line PR body verbatim to
+# $PR_BODY_FILE (the shared GH_LOG folds newlines, so it can't show ordering).
+# Walks argv for the value following --body and writes it out unfolded.
+make_gh_stub_capture() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
+  prev=""
+  for a in "$@"; do
+    [ "$prev" = "--body" ] && printf '%s' "$a" >"$PR_BODY_FILE"
+    prev="$a"
+  done
+  echo "https://github.com/acme/repo/pull/77"
+fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
 # Like make_gh_stub, but `gh pr create` FAILS (exit 1, no URL) — stands in for a
 # real PR-creation failure (auth, no remote on the forge, API error, …).
 make_gh_stub_fail() {
@@ -286,7 +306,71 @@ rcAb=0
     --mission "no-such-mission" >out.txt 2>&1 ) || rcAb=$?
 check "guard. rejects an unknown mission id" "[ '$rcAb' -ne 0 ]"
 
+# --- Behaviour 6 (Session 52, BUG-014): PR body LEADS with summaries ---------
+# The PR body must no longer be a bare task manifest. It prepends a user-facing
+# summary (from prd.md Goal + Acceptance Criteria) and a technical summary (from
+# adr.md / commit bodies) ABOVE the per-wave ticket list + Closes directives.
+helper_line() { grep -n -- "$1" "$2" | head -1 | cut -d: -f1; }
+
+repoS="$(new_repo_with_verify_mission)"; make_gh_stub_capture "$repoS/gh"
+# Add an ADR so the technical summary has a primary source to draw from.
+cat >"$repoS/.git/lcars/missions/$MID/adr.md" <<'EOF'
+# Architecture Decision Records: Add dark mode
+
+## ADR-001: Drive theming from a single data-theme attribute
+
+**Context:** Components needed a coordinated way to recolour.
+**Decision:** Toggle a data-theme attribute on <html> and key all tokens off it.
+**Alternatives considered:** Per-component theme props.
+**Consequences:** One switch repaints the whole page.
+EOF
+export GH_LOG="$repoS/gh.log"; : >"$GH_LOG"
+export PR_BODY_FILE="$repoS/pr_body.txt"; : >"$PR_BODY_FILE"
+rcS=0
+( cd "$repoS" && LCARS_GH_BIN="$repoS/gh" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>&1 ) || rcS=$?
+check "6. approve exits 0 with prd + adr present" "[ '$rcS' -eq 0 ]"
+check "6. PR body includes the user-facing summary (PRD Goal text)" \
+  "grep -qi 'switch to a dark colour scheme' '$PR_BODY_FILE'"
+check "6. PR body includes the Acceptance Criteria bullet" \
+  "grep -q 'A toggle persists the choice' '$PR_BODY_FILE'"
+check "6. the user summary appears BEFORE the wave list" \
+  "[ \"\$(helper_line 'dark colour scheme' '$PR_BODY_FILE')\" -lt \"\$(helper_line '### Wave' '$PR_BODY_FILE')\" ]"
+
+# --- Behaviour 7: technical summary drawn from adr.md ------------------------
+check "7. PR body includes a technical summary section" \
+  "grep -qi 'technical summary' '$PR_BODY_FILE'"
+check "7. technical summary surfaces the ADR title" \
+  "grep -q 'ADR-001: Drive theming from a single data-theme attribute' '$PR_BODY_FILE'"
+check "7. technical summary surfaces the ADR decision" \
+  "grep -q 'Toggle a data-theme attribute' '$PR_BODY_FILE'"
+check "7. the technical summary appears BEFORE the wave list" \
+  "[ \"\$(helper_line 'data-theme attribute' '$PR_BODY_FILE')\" -lt \"\$(helper_line '### Wave' '$PR_BODY_FILE')\" ]"
+
+# --- Behaviour 8: the per-wave list + Closes still trail the summaries -------
+check "8. the per-wave ticket list still appears (regression)" \
+  "grep -q 't-001' '$PR_BODY_FILE' && grep -q 't-003' '$PR_BODY_FILE'"
+check "8. the wave headers still appear (regression)" \
+  "grep -q '### Wave 1' '$PR_BODY_FILE' && grep -q '### Wave 2' '$PR_BODY_FILE'"
+check "8. the Closes directive still trails the body (regression)" \
+  "grep -q 'Closes #42' '$PR_BODY_FILE'"
+check "8. the wave list comes AFTER the summaries (Closes after Goal)" \
+  "[ \"\$(helper_line 'dark colour scheme' '$PR_BODY_FILE')\" -lt \"\$(helper_line 'Closes #42' '$PR_BODY_FILE')\" ]"
+
+# --- Behaviour 9: prd.md + adr.md absent → degrade to today's thin body -------
+# No PRD/ADR to summarise → fall back to the existing manifest WITHOUT erroring.
+repoN="$(new_repo_with_verify_mission)"; make_gh_stub_capture "$repoN/gh"
+rm -f "$repoN/.git/lcars/missions/$MID/prd.md"
+export GH_LOG="$repoN/gh.log"; : >"$GH_LOG"
+export PR_BODY_FILE="$repoN/pr_body.txt"; : >"$PR_BODY_FILE"
+rcN=0
+( cd "$repoN" && LCARS_GH_BIN="$repoN/gh" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>&1 ) || rcN=$?
+check "9. approve exits 0 with no prd/adr (degrades, no crash)" "[ '$rcN' -eq 0 ]"
+check "9. degraded body still emits the wave list" \
+  "grep -q '### Wave 1' '$PR_BODY_FILE' && grep -q 't-001' '$PR_BODY_FILE'"
+check "9. degraded body still carries Closes #42" \
+  "grep -q 'Closes #42' '$PR_BODY_FILE'"
+
 # ==========================================================================
-echo
-printf 'lcars approve: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
