@@ -32,6 +32,17 @@ GIT_BIN="${LCARS_GIT_BIN:-git}"
 DATE="${LCARS_DATE:-$(date -u +%Y%m%d)}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
+# The host-integration adapter — the ONE place that speaks to a forge. We reuse
+# the SAME adapter Schedule uses to NATIVELY nest sub-issues, so a logged bug
+# nests under its parent the way a ticket nests under its Mission. It lives in
+# skills/lcars-run/ (not here), so default to it relative to this script's own
+# dir (computed the way run.sh computes SKILL_DIR); $LCARS_HOST_ADAPTER overrides
+# it so tests can stub the whole adapter.
+SELF="${BASH_SOURCE[0]}"
+SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/../lcars-run/host-adapter.sh}"
+host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
+
 die() { printf 'lcars log: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same decoding as resolve.sh / status.sh) -----
@@ -224,6 +235,21 @@ file_one_bug() { # prd-path
     num="${url##*/}"
     case "$num" in ''|*[!0-9]*) issue="" ;; *) issue="$num" ;; esac
   fi
+
+  # NATIVELY nest the bug issue under the parent's issue — the SAME host-adapter
+  # op Schedule uses for ticket sub-issues — so a logged bug reads as a child of
+  # its Mission, not a standalone labelled card. Best-effort: this NEVER hard-
+  # fails `lcars log` (the lcars:linked label + parentIssue/parentMission below
+  # are the belt-and-braces record). Skip it when there is no parent issue
+  # number or no child number, and never self-nest.
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *)
+      if [ -n "$issue" ] && [ "$issue" != "$PARENT_ISSUE" ]; then
+        host link-subissue "$PARENT_ISSUE" "$issue" >/dev/null 2>&1 || true
+      fi
+      ;;
+  esac
 
   # state.json — type bug, stage plan, linked to the parent.
   local title_json="${title//\\/\\\\}"; title_json="${title_json//\"/\\\"}"

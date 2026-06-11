@@ -231,6 +231,117 @@ rc7=0
 ) || rc7=$?
 check "6. refuses to link to a done (merged) mission" "[ '$rc7' -ne 0 ]"
 
+# --- Behaviour 7: native sub-issue nesting under the parent ----------------
+# A logged bug Mission must be nested as a NATIVE GitHub sub-issue of its
+# parent's issue (the same way Schedule nests ticket sub-issues), routed
+# through the SAME host adapter Schedule uses (`link-subissue <parent> <child>`),
+# in addition to the lcars:linked label. Stub the adapter to record its argv.
+make_adapter_stub() { # path log [exit_code]
+  local p="$1" log="$2" code="${3:-0}"
+  cat >"$p" <<EOF
+#!/usr/bin/env bash
+echo "adapter \$*" >>"$log"
+exit $code
+EOF
+  chmod +x "$p"
+}
+
+repo8="$(new_repo_with_parent)"
+make_gh_stub "$repo8/gh"
+make_adapter_stub "$repo8/adapter" "$repo8/adapter.log"
+export GH_LOG="$repo8/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"; : >"$repo8/adapter.log"
+bug8a="$repo8/bug1.md"; write_bug_prd "$bug8a" "Nested bug one" "First nested bug."
+bug8b="$repo8/bug2.md"; write_bug_prd "$bug8b" "Nested bug two" "Second nested bug."
+rc8=0
+(
+  cd "$repo8"
+  LCARS_GH_BIN="$repo8/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_HOST_ADAPTER="$repo8/adapter" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug8a" --prd "$bug8b" >out8.txt 2>&1
+) || rc8=$?
+check "7. exits zero when nesting via the host adapter" "[ '$rc8' -eq 0 ]"
+check "7. invokes the host adapter's link-subissue op" \
+  "grep -q 'adapter link-subissue' '$repo8/adapter.log'"
+check "7. nests bug 1 (#1) under the parent issue #42" \
+  "grep -q 'adapter link-subissue 42 1' '$repo8/adapter.log'"
+check "7. nests bug 2 (#2) under the parent issue #42" \
+  "grep -q 'adapter link-subissue 42 2' '$repo8/adapter.log'"
+check "7. one link-subissue call per bug issue created" \
+  "[ \"\$(grep -c 'link-subissue' '$repo8/adapter.log')\" -eq 2 ]"
+
+# --- Behaviour 8: linkage by label + state.json is NOT lost (regression) ---
+# Belt and braces: even with native nesting, the lcars:linked label and the
+# parentIssue/parentMission state.json records must still be written.
+B8="$repo8/.git/lcars/missions/lcars-20260530-002"
+check "8. still applies the lcars:linked label" \
+  "grep -q 'lcars:plan,lcars:bug,lcars:linked' '$repo8/gh.log'"
+check "8. still records parentMission in state.json" \
+  "grep -q '\"parentMission\": *\"lcars-20260530-001\"' '$B8/state.json'"
+check "8. still records parentIssue (#42) in state.json" \
+  "grep -q '\"parentIssue\": *42' '$B8/state.json'"
+
+# --- Behaviour 9: nesting is best-effort — never hard-fails lcars log -------
+# If the host adapter (or gh) is unavailable or the link call returns non-zero,
+# the Mission is STILL filed locally (state.json + prd.md) and lcars log exits 0.
+repo9="$(new_repo_with_parent)"
+make_gh_stub "$repo9/gh"
+make_adapter_stub "$repo9/adapter" "$repo9/adapter.log" 1   # adapter fails
+export GH_LOG="$repo9/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"; : >"$repo9/adapter.log"
+bug9="$repo9/bug.md"; write_bug_prd "$bug9" "Best-effort bug" "Link fails but mission files."
+rc9=0
+(
+  cd "$repo9"
+  LCARS_GH_BIN="$repo9/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_HOST_ADAPTER="$repo9/adapter" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug9" >out9.txt 2>&1
+) || rc9=$?
+B9="$repo9/.git/lcars/missions/lcars-20260530-002"
+check "9. exits zero even when the link call fails" "[ '$rc9' -eq 0 ]"
+check "9. still attempted the link-subissue call" \
+  "grep -q 'adapter link-subissue 42' '$repo9/adapter.log'"
+check "9. still files the Mission's state.json" "[ -f '$B9/state.json' ]"
+check "9. still files the Mission's prd.md" "[ -f '$B9/prd.md' ]"
+
+# adapter entirely absent (path does not exist) -> still files + exits 0
+repo10="$(new_repo_with_parent)"
+make_gh_stub "$repo10/gh"
+export GH_LOG="$repo10/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug10="$repo10/bug.md"; write_bug_prd "$bug10" "No adapter bug" "Adapter missing entirely."
+rc10=0
+(
+  cd "$repo10"
+  LCARS_GH_BIN="$repo10/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_HOST_ADAPTER="$repo10/does-not-exist-adapter" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug10" >out10.txt 2>&1
+) || rc10=$?
+check "9. exits zero when the host adapter is missing entirely" "[ '$rc10' -eq 0 ]"
+check "9. still files the Mission when the adapter is missing" \
+  "[ -f '$repo10/.git/lcars/missions/lcars-20260530-002/state.json' ]"
+
+# --- Behaviour 10: no native nesting when the parent has no issue number ----
+# A parent resolvable only locally (githubIssue null) cannot be nested; the
+# link call must be skipped (no self-nest / no bogus call) and lcars log still
+# files the bug and exits 0.
+repo11="$(new_repo_with_parent)"
+make_gh_stub "$repo11/gh"
+make_adapter_stub "$repo11/adapter" "$repo11/adapter.log"
+export GH_LOG="$repo11/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"; : >"$repo11/adapter.log"
+# strip the parent's githubIssue (make it local-only)
+sed 's/"githubIssue": 42,/"githubIssue": null,/' \
+  "$repo11/.git/lcars/missions/lcars-20260530-001/state.json" >"$repo11/tmp.json"
+mv "$repo11/tmp.json" "$repo11/.git/lcars/missions/lcars-20260530-001/state.json"
+bug11="$repo11/bug.md"; write_bug_prd "$bug11" "Local parent bug" "Parent has no issue."
+rc11=0
+(
+  cd "$repo11"
+  LCARS_GH_BIN="$repo11/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_HOST_ADAPTER="$repo11/adapter" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug11" >out11.txt 2>&1
+) || rc11=$?
+check "10. exits zero when the parent has no issue number" "[ '$rc11' -eq 0 ]"
+check "10. skips link-subissue when the parent issue is unknown" \
+  "[ ! -s '$repo11/adapter.log' ]"
+
 # ==========================================================================
 echo
 printf 'lcars log: %d passed, %d failed\n' "$pass" "$fail"
