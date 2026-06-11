@@ -2975,6 +2975,21 @@ replay_ticket_commit() { # branch  sha  ticket
   fi
   ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --allow-empty "$sha" >/dev/null 2>&1 ) || {
     ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --abort >/dev/null 2>&1 ) || :
+    # `cherry-pick --abort` restores only TRACKED state. Any UNTRACKED residue the
+    # just-failed pick left at one of THIS commit's paths — a NEW file the pick
+    # staged then could not fully apply, or a path it refused to overwrite ("would
+    # be overwritten by merge", so --abort is a no-op) — survives. The serial
+    # rebuild then produces a clean commit ADDING that same path, whose re-apply
+    # git refuses ("untracked working tree files would be overwritten") → the wave
+    # hard-fails instead of degrading to serial. Clear ONLY this commit's own paths
+    # that are now untracked, so the rebuilt commit re-applies — never the captain's
+    # unrelated untracked files (we touch nothing outside $sha's changed paths).
+    ( cd "$REPO_ROOT" && "$GIT_BIN" diff-tree --no-commit-id --name-only -r "$sha" 2>/dev/null \
+        | while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            [ -n "$("$GIT_BIN" ls-files --others --exclude-standard -- "$p" 2>/dev/null)" ] \
+              && rm -f -- "$p"
+          done ) || :
     return 1
   }
   return 0

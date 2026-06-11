@@ -4762,6 +4762,187 @@ check "P37-7. the working tree is clean after the escalation (no stranded confli
 
 # ==========================================================================
 echo
+echo "lcars run — BUG-015: conflict-replay clears its own untracked residue"
+#
+# Ground truth of BUG-015: the intra-wave conflict→serial-rebuild fallback can be
+# KILLED by an untracked file. When the 2nd ticket's frozen-base commit cannot be
+# replayed (it both CONFLICTS on a shared file AND adds a NEW file whose path is
+# already occupied by an UNTRACKED file in the working tree), `git cherry-pick`
+# refuses ("untracked working tree files would be overwritten") and
+# `cherry-pick --abort` — which restores only TRACKED state — leaves that residue
+# behind. The serial rebuild then produces a clean commit ADDING the same path,
+# whose re-apply git ALSO refuses → replay_ticket_commit returns 1 → the wave
+# hard-fails ("implement-ticket <t> failed — Stage stopped"). A single concurrent
+# same-file wave that touches a new path thus KILLS the Mission instead of
+# degrading to serial.
+#
+# The fix: after the aborted pick, clear ONLY that commit's own paths that are now
+# untracked, so the rebuilt commit re-applies — never the captain's unrelated
+# untracked files.
+#
+#   B15-1  the residue wave COMPLETES (no hard stop) and advances to verify
+#   B15-2  BOTH tickets land — one commit each, in PLAN order — and the new file is
+#          committed (the rebuild composed on the current tip)
+#   B15-3  the captain's UNRELATED untracked file SURVIVES the scoped cleanup
+#   B15-4  a DISJOINT wave still replays directly — no conflict, no rebuild (guard)
+#   B15-5  a flagged ticket in a concurrent same-file wave still PARKS at the human
+#          gate (never a bare die) and an earlier green sibling's commit survives
+
+# A worker whose implementer edits the SAME dispatch line in every ticket (forces a
+# cherry-pick CONFLICT on replay), and where t-002 ALSO adds a NEW file. The repo
+# fixture pre-seeds an UNTRACKED file at that new path — exactly the residue the
+# aborted conflicted pick leaves — so t-002 cannot replay until it is cleared.
+make_worker_stub_bug15() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    f="src/dispatch.js"
+    # Replace the SAME placeholder line in every ticket -> a real content conflict
+    # when the 2nd ticket's frozen-base commit is cherry-picked over the 1st.
+    sed -i.bak "s/PLACEHOLDER/handle_${tid}(x)/" "$f" && rm -f "$f.bak"
+    # t-002 ALSO introduces a NEW file -> the conflicted pick's untracked residue.
+    if [ "$tid" = "t-002" ]; then mkdir -p src; printf 'export const f = 1; // ADDED-t-002\n' > src/feature.js; fi
+    cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "added ${tid}." }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A 2-ticket single-wave plan + waves; both tickets share only the dispatch file.
+write_bug15_plan_json() { # file
+  cat >"$1" <<'EOF'
+[
+  { "id": "t-001", "title": "case a", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file" },
+  { "id": "t-002", "title": "case b", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file" }
+]
+EOF
+}
+write_bug15_waves_json() { # file
+  cat >"$1" <<'EOF'
+[
+  { "wave": 1, "tickets": [
+      { "id": "t-001", "issue": 101 },
+      { "id": "t-002", "issue": 102 }
+  ] }
+]
+EOF
+}
+# A repo at implement, mission branch, with the shared dispatcher committed, PLUS
+# an untracked residue file at the path t-002 will add (the leftover an aborted
+# conflicted pick leaves) AND the captain's unrelated untracked file.
+new_repo_bug15() { # echoes repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && mkdir -p src \
+      && printf 'export function route(x){\n  return PLACEHOLDER;\n}\n' > src/dispatch.js \
+      && git add src/dispatch.js && git commit -qm seed \
+      && git checkout -q -b "lcars/$MID" )
+  # Residue: an untracked file occupying the exact path t-002's commit adds.
+  printf 'stale residue\n' > "$repo/src/feature.js"
+  # The captain's UNRELATED untracked file — must survive the scoped cleanup.
+  printf 'captain notes\n' > "$repo/CAPTAIN.txt"
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_bug15_plan_json "$m/approved-plan.json"
+  write_bug15_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dispatch cases",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  echo "$repo"
+}
+
+binB15="$TMPROOT/bug15bin"; rm -rf "$binB15"; mkdir -p "$binB15"
+make_worker_stub_bug15 "$binB15/worker"; make_gh_stub "$binB15/gh"
+export GH_LOG="$binB15/gh.log"; : >"$GH_LOG"
+repoB15="$(new_repo_bug15)"
+rcB15=0
+( cd "$repoB15" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB15/worker" LCARS_GH_BIN="$binB15/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB15/out.txt" 2>&1 ) || rcB15=$?
+sB15="$(state_of "$repoB15")"
+check "B15-1. the residue same-file wave completes (no hard stop — degrades to serial)" \
+  "[ '$rcB15' -eq 0 ]"
+check "B15-1. the Stage advanced to verify (the rebuilt commit re-applied cleanly)" \
+  "grep -q '\"stage\": *\"verify\"' '$sB15'"
+logB15="$( cd "$repoB15" && git log --format='%s' "lcars/$MID" )"
+check "B15-2. exactly one commit per ticket on the mission branch" \
+  "[ \"\$(printf '%s\n' \"$logB15\" | grep -c 'lcars(.*) t-001:')\" = '1' ] \
+   && [ \"\$(printf '%s\n' \"$logB15\" | grep -c 'lcars(.*) t-002:')\" = '1' ]"
+b15a="$(printf '%s\n' "$logB15" | grep -n 't-001:' | head -1 | cut -d: -f1)"
+b15b="$(printf '%s\n' "$logB15" | grep -n 't-002:' | head -1 | cut -d: -f1)"
+check "B15-2. commits land in PLAN order (t-001 before t-002; newest-first log)" \
+  "[ -n \"$b15a\" ] && [ -n \"$b15b\" ] && [ \"$b15a\" -gt \"$b15b\" ]"
+check "B15-2. t-002's NEW file is committed (the rebuild composed it onto the tip)" \
+  "( cd '$repoB15' && git ls-files --error-unmatch src/feature.js >/dev/null 2>&1 )"
+check "B15-3. the captain's UNRELATED untracked file SURVIVES the scoped cleanup" \
+  "[ -f '$repoB15/CAPTAIN.txt' ] && grep -q 'captain notes' '$repoB15/CAPTAIN.txt'"
+check "B15-3. the residue cleanup leaves ONLY the captain's file untracked (nothing else stranded)" \
+  "[ \"\$( cd '$repoB15' && git status --porcelain )\" = '?? CAPTAIN.txt' ]"
+check "B15-3. no stray git worktrees remain after the residue wave" \
+  "[ -z \"\$( cd '$repoB15' && git worktree list --porcelain | grep -iE 't-00[12]' )\" ] \
+   && [ ! -d '$repoB15/.git/lcars/missions/$MID/worktrees' ]"
+
+# --- B15-4: a DISJOINT wave still replays directly — no conflict, no rebuild -----
+# Regression guard: the success path is byte-for-byte unchanged for disjoint files.
+# A two-ticket wave whose tickets touch DIFFERENT files must replay both commits
+# with NO cherry-pick conflict and therefore NO ticket_replay_conflict event.
+binB15d="$TMPROOT/bug15dbin"; rm -rf "$binB15d"; mkdir -p "$binB15d"
+make_worker_stub_par "$binB15d/worker"; make_gh_stub "$binB15d/gh"
+repoB15d="$(new_repo_par)"
+rcB15d=0
+( cd "$repoB15d" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB15d/worker" LCARS_GH_BIN="$binB15d/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB15d/out.txt" 2>&1 ) || rcB15d=$?
+sB15d="$(state_of "$repoB15d")"
+evB15d="$repoB15d/.git/lcars/missions/$MID/events.jsonl"
+check "B15-4. a disjoint wave completes and advances (success path intact)" \
+  "[ '$rcB15d' -eq 0 ] && grep -q '\"stage\": *\"verify\"' '$sB15d'"
+check "B15-4. a disjoint wave triggers NO conflict-rebuild (replays both directly)" \
+  "[ ! -f '$evB15d' ] || ! grep -q 'ticket_replay_conflict' '$evB15d'"
+
+# --- B15-5: a flagged ticket in a concurrent same-file wave still PARKS ----------
+# Regression guard: the residue fix must not turn an unrecoverable/flagged ticket
+# into a bare die — it must still route through the awaiting-human gate, and an
+# earlier green sibling's commit must survive (its good work is never rolled back).
+binB15f="$TMPROOT/bug15fbin"; rm -rf "$binB15f"; mkdir -p "$binB15f"
+make_worker_stub_samefile_flag "$binB15f/worker"; make_gh_stub "$binB15f/gh"
+export GH_LOG="$binB15f/gh.log"; : >"$GH_LOG"
+repoB15f="$(new_repo_samefile)"
+rcB15f=0
+( cd "$repoB15f" && LCARS_MAX_PARALLEL=3 \
+    LCARS_WORKER_BIN="$binB15f/worker" LCARS_GH_BIN="$binB15f/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB15f/out.txt" 2>&1 ) || rcB15f=$?
+sB15f="$(state_of "$repoB15f")"
+logB15f="$( cd "$repoB15f" && git log --format='%s' "lcars/$MID" )"
+check "B15-5. a flagged ticket still parks at awaiting-human (never a bare die)" \
+  "grep -q '\"awaitingHuman\": *true' '$sB15f' && grep -q '\"stage\": *\"implement\"' '$sB15f'"
+check "B15-5. the earlier green sibling t-001's commit survives the escalation" \
+  "printf '%s\n' \"$logB15f\" | grep -q 'lcars(.*) t-001:'"
+
+# ==========================================================================
+echo
 echo "lcars run — BUG-013: the full-suite regression gate (impl-advance)"
 #
 # Ground truth of BUG-013: every Implement gate (ticket_green, the wave loop, the
