@@ -25,6 +25,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
 
@@ -196,7 +204,7 @@ check "1. NO CONTEXT.md was created in the working tree" \
 check "1. working tree stays CLEAN (git status --porcelain unchanged)" \
   "[ -z \"$clean_before\" ] && [ -z \"\$(cd '$r1' && git status --porcelain)\" ]"
 check "1. the context worker runs read-only (no Bash/Edit)" \
-  "! grep 'role=context-pack ' '$WORKER_LOG' | grep -qE 'Bash|Edit'"
+  "! grep 'role=context-pack ' '$WORKER_LOG' | qgrep -qE 'Bash|Edit'"
 
 # ==========================================================================
 # Behaviour 2 — pack already present → REUSED, NOT regenerated (worker stub is
@@ -304,7 +312,7 @@ state_at "$rV/.git/lcars/missions/lcars-20260530-001" validate
 ( cd "$rV" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
     bash "$SCRIPT" validate --mission lcars-20260530-001 >/dev/null 2>&1 )
 check "4. Validate worker prompt names the context source path" \
-  "prompt_of '$WORKER_CALLS' validate | grep -qF '$(pack_path "$rV")'"
+  "prompt_of '$WORKER_CALLS' validate | qgrep -qF '$(pack_path "$rV")'"
 
 # Plan
 rP="$(new_full_mission)"; arm "$rP"
@@ -312,7 +320,7 @@ state_at "$rP/.git/lcars/missions/lcars-20260530-001" plan
 ( cd "$rP" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
     bash "$SCRIPT" plan --mission lcars-20260530-001 >/dev/null 2>&1 )
 check "4. Plan worker prompt names the context source path" \
-  "prompt_of '$WORKER_CALLS' plan | grep -qF '$(pack_path "$rP")'"
+  "prompt_of '$WORKER_CALLS' plan | qgrep -qF '$(pack_path "$rP")'"
 
 # Plan Review — gets the context source, but STILL not prd.md / validated-plan.md
 # as readable artifact PATHS (independence preserved).
@@ -322,11 +330,11 @@ state_at "$mrR" plan-review
 ( cd "$rR" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
     bash "$SCRIPT" plan-review --mission lcars-20260530-001 >/dev/null 2>&1 )
 check "4. Plan-Review worker prompt names the context source path" \
-  "prompt_of '$WORKER_CALLS' plan-review | grep -qF '$(pack_path "$rR")'"
+  "prompt_of '$WORKER_CALLS' plan-review | qgrep -qF '$(pack_path "$rR")'"
 check "4. Plan-Review prompt is NOT fed the prd.md PATH (independence preserved)" \
-  "! prompt_of '$WORKER_CALLS' plan-review | grep -qF '$mrR/prd.md'"
+  "! prompt_of '$WORKER_CALLS' plan-review | qgrep -qF '$mrR/prd.md'"
 check "4. Plan-Review prompt is NOT fed the validated-plan.md PATH" \
-  "! prompt_of '$WORKER_CALLS' plan-review | grep -qF '$mrR/validated-plan.md'"
+  "! prompt_of '$WORKER_CALLS' plan-review | qgrep -qF '$mrR/validated-plan.md'"
 
 # Implement (Test Writer + Implementer)
 rI="$(new_full_mission)"; arm "$rI"
@@ -338,9 +346,9 @@ JSON
 ( cd "$rI" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
     bash "$SCRIPT" implement-ticket --mission lcars-20260530-001 --ticket t-001 >/dev/null 2>&1 )
 check "4. Test-Writer worker prompt names the context source path" \
-  "prompt_of '$WORKER_CALLS' implement-test-writer | grep -qF '$(pack_path "$rI")'"
+  "prompt_of '$WORKER_CALLS' implement-test-writer | qgrep -qF '$(pack_path "$rI")'"
 check "4. Implementer worker prompt names the context source path" \
-  "prompt_of '$WORKER_CALLS' implement-implementer | grep -qF '$(pack_path "$rI")'"
+  "prompt_of '$WORKER_CALLS' implement-implementer | qgrep -qF '$(pack_path "$rI")'"
 
 # PURITY — Research must NEVER receive the context source. The pack EXISTS on
 # disk (pre-generated), so if Research leaked it the path would be available;
@@ -357,13 +365,13 @@ printf '# pack\n' > "$rRes/.git/lcars/context-pack.md"
 # pointer — that is fixed template text, NOT an injected context source, so we
 # assert on the pack path + the injected block, which are the real leak vectors.)
 check "4. PURITY: research-questions prompt does NOT name the pack path" \
-  "! prompt_of '$WORKER_CALLS' research-questions | grep -qF '.git/lcars/context-pack.md'"
+  "! prompt_of '$WORKER_CALLS' research-questions | qgrep -qF '.git/lcars/context-pack.md'"
 check "4. PURITY: research-agent prompt does NOT name the pack path" \
-  "! prompt_of '$WORKER_CALLS' research-agent | grep -qF '.git/lcars/context-pack.md'"
+  "! prompt_of '$WORKER_CALLS' research-agent | qgrep -qF '.git/lcars/context-pack.md'"
 check "4. PURITY: research-questions prompt has NO injected '## Repo context' block" \
-  "! prompt_of '$WORKER_CALLS' research-questions | grep -qF '## Repo context'"
+  "! prompt_of '$WORKER_CALLS' research-questions | qgrep -qF '## Repo context'"
 check "4. PURITY: research-agent prompt has NO injected '## Repo context' block" \
-  "! prompt_of '$WORKER_CALLS' research-agent | grep -qF '## Repo context'"
+  "! prompt_of '$WORKER_CALLS' research-agent | qgrep -qF '## Repo context'"
 
 # ==========================================================================
 echo

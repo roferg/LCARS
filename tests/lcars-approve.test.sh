@@ -22,6 +22,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_APPROVE_SCRIPT:-$REPO_ROOT/skills/lcars-approve/approve.sh}"
 
@@ -220,7 +228,7 @@ check "A. approve exits 0 on a verified mission" "[ '$rcA' -eq 0 ]"
 # --- Behaviour 2: opens a PR with the correct title and a wave/ticket body ---
 check "2. calls gh pr create" "grep -q 'pr create' '$GH_LOG'"
 check "2. titles the PR from the PRD (Add dark mode)" \
-  "grep -q -- '--title Add dark mode' '$GH_LOG' || grep -q 'Add dark mode' '$GH_LOG'"
+  "grep -q -- '--title Add dark mode' '$GH_LOG' || qgrep -q 'Add dark mode' '$GH_LOG'"
 check "2. PR body summarises the tickets" \
   "grep -q 't-001' '$GH_LOG' && grep -q 't-003' '$GH_LOG'"
 check "2. PR body summarises the waves" "grep -qi 'wave' '$GH_LOG'"
@@ -228,7 +236,7 @@ check "2. opens the PR from the recorded mission branch (--head)" \
   "grep -q -- '--head lcars/lcars-20260530-001' '$GH_LOG'"
 check "2. targets the base branch (--base)" "grep -q -- '--base ' '$GH_LOG'"
 check "2. pushes the mission branch to origin" \
-  "( cd '$repoA' && git ls-remote --heads origin 'lcars/$MID' | grep -q 'lcars/$MID' )"
+  "( cd '$repoA' && git ls-remote --heads origin 'lcars/$MID' | qgrep -q 'lcars/$MID' )"
 check "2. prints the new PR URL" "grep -q 'pull/77' '$repoA/out.txt'"
 
 # --- Behaviour 3: clears the stage labels, marks done, advances the stage ----

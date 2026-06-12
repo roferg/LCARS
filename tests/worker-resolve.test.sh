@@ -29,6 +29,14 @@
 # Usage: bash tests/worker-resolve.test.sh
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN="$REPO_ROOT/skills/lcars-run/run.sh"
 ADAPTER="$REPO_ROOT/skills/lcars-run/worker-adapter.sh"
@@ -71,65 +79,65 @@ echo "worker-resolve — host-default cold-worker bin + model (session 19)"
 r1="$(make_repo '{"workerBin": "from-config-bin"}')"
 out1="$(resolve_in "$r1" CLAUDECODE=1 LCARS_WORKER_BIN=/usr/bin/explicit-bin)"
 check "1a. explicit env bin wins over config + detection" \
-  "printf '%s' \"\$out1\" | grep -q 'bin=explicit-bin'"
+  "printf '%s' \"\$out1\" | qgrep -q 'bin=explicit-bin'"
 check "1b. explicit env bin source = env" \
-  "printf '%s' \"\$out1\" | grep -q 'binsrc=env'"
+  "printf '%s' \"\$out1\" | qgrep -q 'binsrc=env'"
 
 # --- 2. no env → config.json workerBin is used --------------------------------
 r2="$(make_repo '{"workerBin": "config-bin"}')"
 out2="$(resolve_in "$r2" CLAUDECODE=1)"
 check "2a. config workerBin used when no env" \
-  "printf '%s' \"\$out2\" | grep -q 'bin=config-bin'"
+  "printf '%s' \"\$out2\" | qgrep -q 'bin=config-bin'"
 check "2b. config bin source = config" \
-  "printf '%s' \"\$out2\" | grep -q 'binsrc=config'"
+  "printf '%s' \"\$out2\" | qgrep -q 'binsrc=config'"
 
 # --- 3. no env, no config → host marker resolves the cli ----------------------
 r3="$(make_repo)"
 out3c="$(resolve_in "$r3" CLAUDECODE=1)"
 check "3a. CLAUDECODE marker ⇒ claude" \
-  "printf '%s' \"\$out3c\" | grep -q 'bin=claude'"
+  "printf '%s' \"\$out3c\" | qgrep -q 'bin=claude'"
 check "3b. claude marker source = detected" \
-  "printf '%s' \"\$out3c\" | grep -q 'binsrc=detected'"
+  "printf '%s' \"\$out3c\" | qgrep -q 'binsrc=detected'"
 # Real Copilot CLI (v1.0.60) sets COPILOT_RUN_APP=1 — NOT COPILOT_CLI.
 out3p="$(resolve_in "$r3" COPILOT_RUN_APP=1)"
 check "3c. COPILOT_RUN_APP marker ⇒ copilot" \
-  "printf '%s' \"\$out3p\" | grep -q 'bin=copilot'"
+  "printf '%s' \"\$out3p\" | qgrep -q 'bin=copilot'"
 check "3d. copilot marker source = detected" \
-  "printf '%s' \"\$out3p\" | grep -q 'binsrc=detected'"
+  "printf '%s' \"\$out3p\" | qgrep -q 'binsrc=detected'"
 # Fallback marker: COPILOT_CLI_BINARY_VERSION non-empty (RUN_APP unset) ⇒ copilot.
 out3v="$(resolve_in "$r3" COPILOT_CLI_BINARY_VERSION=1.0.60)"
 check "3e. COPILOT_CLI_BINARY_VERSION marker ⇒ copilot" \
-  "printf '%s' \"\$out3v\" | grep -q 'bin=copilot'"
+  "printf '%s' \"\$out3v\" | qgrep -q 'bin=copilot'"
 check "3f. copilot version-marker source = detected" \
-  "printf '%s' \"\$out3v\" | grep -q 'binsrc=detected'"
+  "printf '%s' \"\$out3v\" | qgrep -q 'binsrc=detected'"
 
 # --- 4. nothing at all → claude default (NO marker set) -----------------------
 r4="$(make_repo)"
 out4="$(resolve_in "$r4")"   # CLAUDECODE/COPILOT_CLI scrubbed by resolve_in
 check "4a. no env, no config, no marker ⇒ claude" \
-  "printf '%s' \"\$out4\" | grep -q 'bin=claude'"
+  "printf '%s' \"\$out4\" | qgrep -q 'bin=claude'"
 check "4b. fallback source = default" \
-  "printf '%s' \"\$out4\" | grep -q 'binsrc=default'"
+  "printf '%s' \"\$out4\" | qgrep -q 'binsrc=default'"
 
 # --- 5. workerModel: env > config > unset; unset ⇒ adapter emits NO --model ----
 r5e="$(make_repo '{"workerModel": "config-model"}')"
 out5e="$(resolve_in "$r5e" CLAUDECODE=1 LCARS_WORKER_MODEL=env-model)"
 check "5a. env model wins over config" \
-  "printf '%s' \"\$out5e\" | grep -q 'model=env-model'"
+  "printf '%s' \"\$out5e\" | qgrep -q 'model=env-model'"
 check "5b. env model source = env" \
-  "printf '%s' \"\$out5e\" | grep -q 'modelsrc=env'"
+  "printf '%s' \"\$out5e\" | qgrep -q 'modelsrc=env'"
 
 r5c="$(make_repo '{"workerModel": "config-model"}')"
 out5c="$(resolve_in "$r5c" CLAUDECODE=1)"
 check "5c. config model used when no env" \
-  "printf '%s' \"\$out5c\" | grep -q 'model=config-model'"
+  "printf '%s' \"\$out5c\" | qgrep -q 'model=config-model'"
 check "5d. config model source = config" \
-  "printf '%s' \"\$out5c\" | grep -q 'modelsrc=config'"
+  "printf '%s' \"\$out5c\" | qgrep -q 'modelsrc=config'"
 
 r5u="$(make_repo)"
 out5u="$(resolve_in "$r5u" CLAUDECODE=1)"
 check "5e. no model anywhere ⇒ model unset (printed as -)" \
-  "printf '%s' \"\$out5u\" | grep -q 'model=- '"
+  "printf '%s' \"\$out5u\" | qgrep -q 'model=- '"
 
 # Adapter regression lock: with NO model env, claude argv is byte-for-byte the
 # session-18 five lines (no --model).
@@ -145,21 +153,21 @@ check "5f. adapter: unset model ⇒ exactly the session-18 5 lines (no --model)"
 # With a model env set, the adapter appends --model <m> for claude.
 A_MODEL="$(LCARS_WORKER_MODEL=opus-x bash "$ADAPTER" argv claude repo-read "$TMPROOT")"
 check "5g. adapter: set model ⇒ argv appends '--model'" \
-  "printf '%s' \"\$A_MODEL\" | grep -qx -- '--model'"
+  "printf '%s' \"\$A_MODEL\" | qgrep -qx -- '--model'"
 check "5h. adapter: set model ⇒ argv appends the model value" \
-  "printf '%s' \"\$A_MODEL\" | grep -qx 'opus-x'"
+  "printf '%s' \"\$A_MODEL\" | qgrep -qx 'opus-x'"
 check "5i. adapter: --model is the LAST flag pair (appended, not reordered)" \
   "[ \"\$(printf '%s' \"\$A_MODEL\" | sed -n '6p')\" = '--model' ] && [ \"\$(printf '%s' \"\$A_MODEL\" | sed -n '7p')\" = 'opus-x' ]"
 
 # --- 6. the resolution log line names the winning SOURCE for a human ----------
 check "6a. log line names env source" \
-  "printf '%s' \"\$out1\" | grep -qi 'env'"
+  "printf '%s' \"\$out1\" | qgrep -qi 'env'"
 check "6b. log line names config source" \
-  "printf '%s' \"\$out2\" | grep -qi 'config'"
+  "printf '%s' \"\$out2\" | qgrep -qi 'config'"
 check "6c. log line names detected source" \
-  "printf '%s' \"\$out3c\" | grep -qi 'detect'"
+  "printf '%s' \"\$out3c\" | qgrep -qi 'detect'"
 check "6d. log line names default source" \
-  "printf '%s' \"\$out4\" | grep -qi 'default'"
+  "printf '%s' \"\$out4\" | qgrep -qi 'default'"
 
 echo "worker-resolve: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

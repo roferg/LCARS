@@ -17,6 +17,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_STATUS_SCRIPT:-$REPO_ROOT/skills/lcars-status/status.sh}"
 
@@ -330,14 +338,14 @@ write_events "$repoW2" "lcars-20260601-002" \
 write_waves "$repoW2" "lcars-20260601-002" "$WAVES_3"
 ( cd "$repoW2" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-002 >out.txt 2>&1 )
 PROG2="$(grep -i 'avg/ticket' "$repoW2/out.txt" | tail -1)"
-check "W2. progress line shows Wave 2/3"          "printf '%s' '$PROG2' | grep -qF 'Wave 2/3'"
-check "W2. progress line names current ticket t-004" "printf '%s' '$PROG2' | grep -q 't-004'"
-check "W2. progress line shows 2 of 6 green"        "printf '%s' '$PROG2' | grep -qF '2/6'"
+check "W2. progress line shows Wave 2/3"          "printf '%s' '$PROG2' | qgrep -qF 'Wave 2/3'"
+check "W2. progress line names current ticket t-004" "printf '%s' '$PROG2' | qgrep -q 't-004'"
+check "W2. progress line shows 2 of 6 green"        "printf '%s' '$PROG2' | qgrep -qF '2/6'"
 
 # --- Behaviour W3: avg/ticket math + em dash before any green ----------------
 # In W2's stream: t-001 took 1010-1002=8s, t-002 took 1025-1011=14s → avg 11s.
 check "W3. avg/ticket is the mean of completed durations (~11s)" \
-  "printf '%s' '$PROG2' | grep -qE '~11s avg/ticket'"
+  "printf '%s' '$PROG2' | qgrep -qE '~11s avg/ticket'"
 # A stream with NO ticket_green yet must show the em dash, not a number.
 repoW3="$(new_init_repo)"
 write_mission "$repoW3" "lcars-20260601-003" "implement" "23" \
@@ -349,14 +357,14 @@ write_waves "$repoW3" "lcars-20260601-003" "$WAVES_3"
 ( cd "$repoW3" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-003 >out.txt 2>&1 )
 PROG3="$(grep -i 'avg/ticket' "$repoW3/out.txt" | tail -1)"
 check "W3. shows the em dash for avg before any ticket is green" \
-  "printf '%s' '$PROG3' | grep -qF '—s avg/ticket' || printf '%s' '$PROG3' | grep -qF '— avg/ticket'"
+  "printf '%s' '$PROG3' | qgrep -qF '—s avg/ticket' || printf '%s' '$PROG3' | qgrep -qF '— avg/ticket'"
 check "W3. no spurious avg number before any green" \
-  "! printf '%s' '$PROG3' | grep -qE '~[0-9]+s avg/ticket'"
+  "! printf '%s' '$PROG3' | qgrep -qE '~[0-9]+s avg/ticket'"
 
 # --- Behaviour W4: elapsed from first-event ts, $LCARS_NOW pinned ------------
 # first event ts=1000; LCARS_NOW=1100 → 100s elapsed → 1m40s.
 check "W4. elapsed computed from first-event ts with LCARS_NOW pinned" \
-  "printf '%s' '$PROG2' | grep -qE 'elapsed .*1m40s'"
+  "printf '%s' '$PROG2' | qgrep -qE 'elapsed .*1m40s'"
 
 # --- Behaviour W5: a terminal gate ends the watch with a final snapshot ------
 # Last line is a verify gate; --once renders it AND prints a final progress line.
@@ -376,7 +384,7 @@ check "W5. renders the terminal gate line" \
 check "W5. prints a final progress snapshot after the gate" \
   "grep -qi 'avg/ticket' '$repoW5/out.txt'"
 check "W5. final snapshot reflects the single completed wave (1/1, 1/1)" \
-  "grep -i 'avg/ticket' '$repoW5/out.txt' | grep -qF 'Wave 1/1' && grep -i 'avg/ticket' '$repoW5/out.txt' | grep -qF '1/1'"
+  "grep -i 'avg/ticket' '$repoW5/out.txt' | qgrep -qF 'Wave 1/1' && grep -i 'avg/ticket' '$repoW5/out.txt' | qgrep -qF '1/1'"
 # --once must exit 0 cleanly on a terminal stream.
 ( cd "$repoW5" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-005 >/dev/null 2>&1 )
 check "W5. --once exits 0 on a terminal stream" "[ $? -eq 0 ]"
@@ -531,11 +539,11 @@ write_events "$repoW7" "lcars-20260601-007" \
 ( cd "$repoW7" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-007 >out.txt 2>&1 )
 PROG7="$(grep -i 'avg/ticket' "$repoW7/out.txt" | tail -1)"
 check "D2(a). ticket total falls back to events ticketCount sum (2/3), not ?" \
-  "printf '%s' '$PROG7' | grep -qF '2/3'"
+  "printf '%s' '$PROG7' | qgrep -qF '2/3'"
 check "D2(a). wave total falls back to events totalWaves (Wave 2/2), not ?" \
-  "printf '%s' '$PROG7' | grep -qF 'Wave 2/2'"
+  "printf '%s' '$PROG7' | qgrep -qF 'Wave 2/2'"
 check "D2(a). denominator is never a bare ? once events carry totals" \
-  "! printf '%s' '$PROG7' | grep -qE '/\\?'"
+  "! printf '%s' '$PROG7' | qgrep -qE '/\\?'"
 
 # (b) Same stream, but now waves.json IS present and disagrees with the events
 # (it lists 5 tickets across 2 waves). waves.json must win: the denominator is
@@ -554,11 +562,11 @@ write_waves "$repoW8" "lcars-20260601-008" \
 ( cd "$repoW8" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-008 >out.txt 2>&1 )
 PROG8="$(grep -i 'avg/ticket' "$repoW8/out.txt" | tail -1)"
 check "D2(b). waves.json ticket total wins over events (0/5)" \
-  "printf '%s' '$PROG8' | grep -qF '0/5'"
+  "printf '%s' '$PROG8' | qgrep -qF '0/5'"
 check "D2(b). waves.json wave total wins (Wave 1/2)" \
-  "printf '%s' '$PROG8' | grep -qF 'Wave 1/2'"
+  "printf '%s' '$PROG8' | qgrep -qF 'Wave 1/2'"
 check "D2(b). events-derived count (3) does NOT leak through when waves.json present" \
-  "! printf '%s' '$PROG8' | grep -qF '/3'"
+  "! printf '%s' '$PROG8' | qgrep -qF '/3'"
 
 # (c) Live-watch freshness: start --watch with NO waves.json, write it after a
 # beat, assert a later frame shows the real totals (not the stale `?`/events
@@ -579,11 +587,20 @@ WATCHLOG9="$repoW9/watch.log"
   echo $! >"$repoW9/watch.pid"
 )
 wpid9="$(cat "$repoW9/watch.pid")"
-sleep 2
+sleep 1
 # waves.json appears mid-watch, listing 4 tickets across 1 wave.
 write_waves "$repoW9" "lcars-20260601-009" \
 '[ { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 }, { "id": "t-002", "issue": 12 }, { "id": "t-003", "issue": 13 }, { "id": "t-004", "issue": 14 } ] } ]'
-sleep 2
+# Bounded poll instead of a blind `sleep 2`: under heavy/back-to-back full-suite
+# load the watched process may not get scheduled to render the post-waves.json
+# frame within a fixed window, so a one-shot check raced the async render and
+# flaked. Poll the live watch.log (still exercising the real poll/render path)
+# for up to ~30s, then tear down. The assertion stays meaningful: if the frame
+# genuinely never appears, the loop exhausts its bound and the check still FAILs.
+for _ in $(seq 1 150); do
+  grep -qF '0/4' "$WATCHLOG9" && break
+  sleep 0.2
+done
 # Tear down with SIGTERM (the reliable signal for an `&`-backgrounded process;
 # SIGINT is inherited-ignored — see DEFECT #1 note below) so no orphan leaks.
 kill -TERM "$wpid9" 2>/dev/null
@@ -639,7 +656,13 @@ check "D1. no-TTY watch throttles to ~1 frame/sec (not a busy-spin)" \
 # also handles TERM, which we CAN assert: a hung/busy-spinning watch wouldn't
 # honour it promptly.
 kill -TERM "$wpid" 2>/dev/null
-sleep 1
+# Bounded poll for termination instead of a blind `sleep 1`: under heavy load
+# the process may take more than a fixed second to reap. Poll up to ~10s; the
+# assertion still FAILs if a hung/busy-spinning watch never honours SIGTERM.
+for _ in $(seq 1 50); do
+  kill -0 "$wpid" 2>/dev/null || break
+  sleep 0.2
+done
 check "D1. SIGTERM terminates the backgrounded no-TTY watch (no orphan)" \
   "! kill -0 '$wpid' 2>/dev/null"
 kill -KILL "$wpid" 2>/dev/null || true   # belt-and-braces cleanup

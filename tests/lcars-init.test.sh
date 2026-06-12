@@ -21,6 +21,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_INIT_SCRIPT:-$REPO_ROOT/skills/lcars-init/init.sh}"
 
@@ -183,7 +191,7 @@ check "2c. config.json is VALID JSON after a bash-runner init" \
 check "2c. testCommand reads back as the FULL bash-runner command (incl. inner quotes)" \
   "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$repoTCb/.git/lcars/config.json' testCommand )\" = 'bash tests/run.sh \"\${LCARS_TESTS_DIR:-tests}\"' ]"
 check "2c. the read-back testCommand is gate-scopable (references \$LCARS_TESTS_DIR)" \
-  "printf '%s' \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$repoTCb/.git/lcars/config.json' testCommand )\" | grep -q 'LCARS_TESTS_DIR'"
+  "printf '%s' \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$repoTCb/.git/lcars/config.json' testCommand )\" | qgrep -q 'LCARS_TESTS_DIR'"
 
 # --- Behaviour 3: detects CONTEXT.md --------------------------------------
 repo="$(new_repo)"

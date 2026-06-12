@@ -16,6 +16,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER="${LCARS_RUN_SH:-$REPO_ROOT/tests/run.sh}"
 
@@ -60,38 +68,38 @@ empty="$(mktemp -d "$TMPROOT/empty.XXXX")"
 # --- 1. $LCARS_TESTS_DIR scopes the run to THAT dir, not the runner's own ----
 out1="$(LCARS_TESTS_DIR="$qdir" bash "$home/run.sh" 2>&1)"; rc1=$?
 check "1. LCARS_TESTS_DIR runs the quarantine fixtures" \
-  "printf '%s' \"\$out1\" | grep -q 'MARKER:q_pass' && printf '%s' \"\$out1\" | grep -q 'MARKER:q_fail'"
+  "printf '%s' \"\$out1\" | qgrep -q 'MARKER:q_pass' && printf '%s' \"\$out1\" | qgrep -q 'MARKER:q_fail'"
 check "1. LCARS_TESTS_DIR does NOT run the runner's own suite" \
-  "! printf '%s' \"\$out1\" | grep -q 'MARKER:home_'"
+  "! printf '%s' \"\$out1\" | qgrep -q 'MARKER:home_'"
 check "1. exit reflects ONLY the quarantine fixtures (a failure -> rc 1)" \
   "[ '$rc1' -eq 1 ]"
 check "1. final line is SOME SUITES FAILED" \
-  "printf '%s' \"\$out1\" | grep -q 'SOME SUITES FAILED'"
+  "printf '%s' \"\$out1\" | qgrep -q 'SOME SUITES FAILED'"
 
 # --- 2. No var: full default run over the runner's own dir (regression) ------
 out2="$(bash "$home/run.sh" 2>&1)"; rc2=$?
 check "2. no var runs the runner's own suite (default dir)" \
-  "printf '%s' \"\$out2\" | grep -q 'MARKER:home_one' && printf '%s' \"\$out2\" | grep -q 'MARKER:home_two'"
+  "printf '%s' \"\$out2\" | qgrep -q 'MARKER:home_one' && printf '%s' \"\$out2\" | qgrep -q 'MARKER:home_two'"
 check "2. no var does NOT run the quarantine dir" \
-  "! printf '%s' \"\$out2\" | grep -q 'MARKER:q_'"
+  "! printf '%s' \"\$out2\" | qgrep -q 'MARKER:q_'"
 check "2. clean default suite exits 0 / ALL SUITES PASSED" \
-  "[ '$rc2' -eq 0 ] && printf '%s' \"\$out2\" | grep -q 'ALL SUITES PASSED'"
+  "[ '$rc2' -eq 0 ] && printf '%s' \"\$out2\" | qgrep -q 'ALL SUITES PASSED'"
 
 # --- 3. Empty dir differs from the full run (the red-gate probe property) ----
 out3="$(LCARS_TESTS_DIR="$empty" bash "$home/run.sh" 2>&1)"; rc3=$?
 check "3. an empty quarantine dir runs NO suites (no markers)" \
-  "! printf '%s' \"\$out3\" | grep -q 'MARKER:'"
+  "! printf '%s' \"\$out3\" | qgrep -q 'MARKER:'"
 check "3. empty-dir run DIFFERS from the default full run (probe can react)" \
   "[ \"\$out3\" != \"\$out2\" ]"
 check "3. empty-dir run exits 0 / ALL SUITES PASSED" \
-  "[ '$rc3' -eq 0 ] && printf '%s' \"\$out3\" | grep -q 'ALL SUITES PASSED'"
+  "[ '$rc3' -eq 0 ] && printf '%s' \"\$out3\" | qgrep -q 'ALL SUITES PASSED'"
 
 # --- 4. Positional arg behaves like the env-var form -------------------------
 out4="$(bash "$home/run.sh" "$qdir" 2>&1)"; rc4=$?
 check "4. positional dir runs the quarantine fixtures" \
-  "printf '%s' \"\$out4\" | grep -q 'MARKER:q_pass' && printf '%s' \"\$out4\" | grep -q 'MARKER:q_fail'"
+  "printf '%s' \"\$out4\" | qgrep -q 'MARKER:q_pass' && printf '%s' \"\$out4\" | qgrep -q 'MARKER:q_fail'"
 check "4. positional dir does NOT run the runner's own suite" \
-  "! printf '%s' \"\$out4\" | grep -q 'MARKER:home_'"
+  "! printf '%s' \"\$out4\" | qgrep -q 'MARKER:home_'"
 check "4. positional dir exit matches the env-var form" \
   "[ '$rc4' -eq 1 ]"
 

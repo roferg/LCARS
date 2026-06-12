@@ -23,6 +23,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_HOST_ADAPTER:-$REPO_ROOT/skills/lcars-run/host-adapter.sh}"
 
@@ -256,7 +264,7 @@ if [ -f "$RUN_SH" ]; then
     '
   )"
   check "4. e2e: run.sh gh_relabel sets RELABEL_NOTE on a gh failure (note fidelity)" \
-    "printf '%s' \"$note\" | grep -q 'gh issue edit failed'"
+    "printf '%s' \"$note\" | qgrep -q 'gh issue edit failed'"
 fi
 
 # ==========================================================================
