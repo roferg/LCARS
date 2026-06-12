@@ -158,10 +158,27 @@ fi
 ISSUE=""
 GH_NOTE=""
 if command -v "$GH_BIN" >/dev/null 2>&1; then
+  # Build the issue body. PRD always comes first. For a complex Mission an
+  # adr.md exists; append the ADR set after a `\n\n---\n\n` separator so the
+  # board reader sees the architectural decisions too. The on-disk prd.md and
+  # adr.md stay separate artifacts — only the issue BODY combines them.
+  BODY_FILE="$MISSION_DIR/prd.md"
+  BODY_TMP=""
+  if [ -f "$MISSION_DIR/adr.md" ]; then
+    BODY_TMP="$(mktemp "$MISSION_DIR/.issue-body.XXXXXX")"
+    {
+      cat "$MISSION_DIR/prd.md"
+      printf '\n\n---\n\n'
+      cat "$MISSION_DIR/adr.md"
+    } >"$BODY_TMP"
+    BODY_FILE="$BODY_TMP"
+  fi
+  [ -n "$BODY_TMP" ] && trap 'rm -f "$BODY_TMP"' EXIT
   url="$("$GH_BIN" issue create \
           --title "$TITLE" \
-          --body-file "$MISSION_DIR/prd.md" \
+          --body-file "$BODY_FILE" \
           --label "lcars:align,lcars:$TYPE,lcars:mission" 2>/dev/null)"
+  if [ -n "$BODY_TMP" ]; then rm -f "$BODY_TMP"; trap - EXIT; fi
   # gh prints the new issue's URL; the trailing path segment is its number.
   num="${url##*/}"
   case "$num" in

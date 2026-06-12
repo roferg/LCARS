@@ -78,11 +78,17 @@ detect_test_cmd() {
   if [ -f "$TOPLEVEL/Cargo.toml" ]; then echo "cargo test"; return; fi
   if [ -f "$TOPLEVEL/go.mod" ]; then echo "go test ./..."; return; fi
   if [ -f "$TOPLEVEL/Makefile" ] && grep -q '^test:' "$TOPLEVEL/Makefile"; then echo "make test"; return; fi
+  # A bash test runner (LCARS dogfoods its own tests/run.sh). It already resolves
+  # a positional dir / $LCARS_TESTS_DIR (BUG-009), so scope it to the quarantined
+  # tests when the var is set, else the whole `tests` dir for a human. Checked LAST
+  # so a real ecosystem (npm/pytest/…) always wins when both are present.
+  if [ -f "$TOPLEVEL/tests/run.sh" ]; then
+    echo 'bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'; return; fi
   echo ""
 }
 TEST_CMD="${LCARS_TEST_CMD:-$(detect_test_cmd)}"
 if [ -n "$TEST_CMD" ]; then
-  TESTCMD_VALUE="\"$TEST_CMD\""; TESTCMD_HUMAN="$TEST_CMD"
+  TESTCMD_VALUE="\"$(lcars_json_escape "$TEST_CMD")\""; TESTCMD_HUMAN="$TEST_CMD"
   # LOUD flag (BUG-007 invariant): the red gate can only judge the QUARANTINED
   # tests if the command honours $LCARS_TESTS_DIR. A command that ignores it runs
   # the repo's EXISTING suite, so a green result proves nothing and the gate must

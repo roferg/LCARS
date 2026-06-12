@@ -17,6 +17,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL="$REPO_ROOT/install.sh"
 GEN="$REPO_ROOT/gen-copilot-plugin.sh"
@@ -123,7 +131,7 @@ check "1. the lcars entry is enabled" \
 
 # the JSONC header + unrelated keys/entries survive
 check "1. preserves the JSONC '// managed automatically' header" \
-  "head -2 '$e1/copilot/config.json' | grep -q '// '"
+  "head -2 '$e1/copilot/config.json' | qgrep -q '// '"
 check "1. preserves the unrelated other-plugin entry" \
   "cjq '$e1/copilot/config.json' -e '.installedPlugins[] | select(.name==\"other-plugin\")' >/dev/null"
 check "1. preserves the unrelated top-level someOtherKey" \

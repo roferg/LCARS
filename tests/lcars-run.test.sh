@@ -26,6 +26,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
 
@@ -54,6 +62,25 @@ echo "gh $*" >>"$GH_LOG"
 exit 0
 EOF
   chmod +x "$1"
+}
+
+# Mirror run.sh's json_escape (writer) so fixtures exercise true on-disk shape.
+json_escape_like_run() { # raw-string -> JSON-escaped string body
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
+set_state_title_json_escaped() { # repo raw-title
+  local s esc tmp
+  s="$(state_of "$1")"
+  esc="$(json_escape_like_run "$2")"
+  tmp="$1/s.tmp"
+  TITLE_ESC="$esc" awk '
+    /"title"[[:space:]]*:/ { print "  \"title\": \"" ENVIRON["TITLE_ESC"] "\","; next }
+    { print }
+  ' "$s" >"$tmp" && mv "$tmp" "$s"
 }
 
 # Build an isolated git repo with one mission already filed at stage "align".
@@ -784,7 +811,7 @@ check "PR4. increments planReviewRound to 1" \
 check "PR4. loops the stage back to plan" \
   "grep -q '\"stage\": *\"plan\"' '$sPRf'"
 check "PR4. relabels plan-review → plan (adds lcars:plan)" \
-  "grep -q 'add-label lcars:plan ' '$repoPRf/gh.log' || grep -q 'add-label lcars:plan$' '$repoPRf/gh.log'"
+  "grep -q 'add-label lcars:plan ' '$repoPRf/gh.log' || qgrep -q 'add-label lcars:plan$' '$repoPRf/gh.log'"
 check "PR4. relabels plan-review → plan (removes lcars:plan-review)" \
   "grep -q 'remove-label lcars:plan-review' '$repoPRf/gh.log'"
 check "PR4. does not escalate on the first failure" \
@@ -1449,7 +1476,7 @@ check "IC. impl-save-result exits 0 and commits the green ticket" "[ '$rcIC' -eq
 check "IC. checks out the mission branch" \
   "[ \"\$(cd '$repoIC' && git rev-parse --abbrev-ref HEAD)\" = 'lcars/$MID' ]"
 check "IC. commits the Implementer's file onto the branch" \
-  "( cd '$repoIC' && git ls-tree -r --name-only HEAD | grep -q '^theme.js$' )"
+  "( cd '$repoIC' && git ls-tree -r --name-only HEAD | qgrep -q '^theme.js$' )"
 check "IC. the commit is ahead of the base branch" \
   "[ \"\$(cd '$repoIC' && git rev-list --count $BASEIC..lcars/$MID)\" -ge 1 ]"
 
@@ -1741,7 +1768,7 @@ rcG4=0
     --mission "$MID" --ticket t-001 --result "$resG4" >outG4b.txt 2>&1 ) || rcG4=$?
 check "G4. a normal red→green ticket saves its result" "[ '$rcG4' -eq 0 ]"
 check "G4. commits the green ticket onto the mission branch" \
-  "( cd '$repoG4' && git ls-tree -r --name-only HEAD | grep -q '^theme.js$' )"
+  "( cd '$repoG4' && git ls-tree -r --name-only HEAD | qgrep -q '^theme.js$' )"
 
 # ==========================================================================
 echo
@@ -1896,6 +1923,28 @@ check "TRIPWIRE 7. the block is LOUD (red gate / passed / ignored surfaced)" \
   "grep -qiE 'red gate|passed|ignore|prove' '$repoT7/outT7.txt'"
 check "TRIPWIRE 7. nothing quarantined on the can't-tell-which-suite path" \
   "[ ! -d '$repoT7/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# BUG-008 pair-fix: when red-gate rejects, include the ACTUAL command string run.
+CMD_VIS_RUNNER="$TMPROOT/cmd-visible-runner.sh"
+cat >"$CMD_VIS_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$CMD_VIS_RUNNER"
+repoB8cmd="$(new_repo_with_implement_mission)"; make_gh_stub "$repoB8cmd/gh"
+export GH_LOG="$repoB8cmd/gh.log"; : >"$GH_LOG"
+tB8cmd="$repoB8cmd/tw"; make_tests_dir "$tB8cmd"
+mkdir -p "$repoB8cmd/.git/lcars"
+printf '{ "testCommand": "bash %s \\"$LCARS_TESTS_DIR\\"" }\n' "$CMD_VIS_RUNNER" >"$repoB8cmd/.git/lcars/config.json"
+expectedB8cmd="bash $CMD_VIS_RUNNER \"\$LCARS_TESTS_DIR\""
+rcB8cmd=0
+( cd "$repoB8cmd" && LCARS_GH_BIN="$repoB8cmd/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tB8cmd" \
+    >outB8cmd.txt 2>&1 ) || rcB8cmd=$?
+check "B8.4 escaped-quote testCommand is read fully (exact command text survives json_str)" \
+  "grep -qF '$expectedB8cmd' '$repoB8cmd/outB8cmd.txt'"
+check "B8.5 red-gate rejection includes the actual command string it ran" \
+  "grep -qF '$expectedB8cmd' '$repoB8cmd/outB8cmd.txt'"
 
 # TRIPWIRE 8 — DO NOT DELETE: G2 (immutable hash), G3 (assertions), and the
 # adversarial split are UNCHANGED. (G1/G2/G3 regression blocks above already
@@ -2243,6 +2292,35 @@ check "VR1. prompts the captain to send feedback" "grep -q 'lcars feedback' '$re
 check "VR1. is read-only — stays at the verify stage" \
   "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoVR")'"
 
+# --- BUG-008: json_str reads escaped string content fully (no truncation) ----
+repoB8q="$(new_repo_with_verify_mission)"; make_gh_stub "$repoB8q/gh"
+export GH_LOG="$repoB8q/gh.log"; : >"$GH_LOG"
+set_state_title_json_escaped "$repoB8q" 'Add a "version" flag'
+rcB8q=0
+( cd "$repoB8q" && LCARS_GH_BIN="$repoB8q/gh" bash "$SCRIPT" verify-summary \
+    --mission "$MID" >outB8q.txt 2>&1 ) || rcB8q=$?
+check "B8.1 json_str round-trips a json_escape-written quote in title" "[ '$rcB8q' -eq 0 ]"
+check "B8.1 verify-summary prints the full quoted title (no truncation at \\\" )" \
+  "grep -qF 'VERIFY: Add a \"version\" flag' '$repoB8q/outB8q.txt'"
+
+repoB8bs="$(new_repo_with_verify_mission)"; make_gh_stub "$repoB8bs/gh"
+export GH_LOG="$repoB8bs/gh.log"; : >"$GH_LOG"
+set_state_title_json_escaped "$repoB8bs" 'Use C:\LCARS\tests'
+rcB8bs=0
+( cd "$repoB8bs" && LCARS_GH_BIN="$repoB8bs/gh" bash "$SCRIPT" verify-summary \
+    --mission "$MID" >outB8bs.txt 2>&1 ) || rcB8bs=$?
+check "B8.2 json_str decodes \\\\ to a single backslash" \
+  "grep -qF 'VERIFY: Use C:\\LCARS\\tests' '$repoB8bs/outB8bs.txt'"
+
+repoB8plain="$(new_repo_with_verify_mission)"; make_gh_stub "$repoB8plain/gh"
+export GH_LOG="$repoB8plain/gh.log"; : >"$GH_LOG"
+set_state_title_json_escaped "$repoB8plain" 'Plain title'
+rcB8plain=0
+( cd "$repoB8plain" && LCARS_GH_BIN="$repoB8plain/gh" bash "$SCRIPT" verify-summary \
+    --mission "$MID" >outB8plain.txt 2>&1 ) || rcB8plain=$?
+check "B8.3 json_str leaves quote-free strings unchanged" \
+  "grep -qF 'VERIFY: Plain title' '$repoB8plain/outB8plain.txt'"
+
 # --- Guard: verify-summary refuses a non-verify mission --------------------
 repoVRg="$(new_repo_with_mission)"; make_gh_stub "$repoVRg/gh"   # still at align
 export GH_LOG="$repoVRg/gh.log"; : >"$GH_LOG"
@@ -2451,19 +2529,19 @@ VP1="$(prompt_for_role "$WORKER_CALLS" validate)"
 VT1="$(tools_for_role "$WORKER_LOG" validate)"
 MDIR1="$repoW1/.git/lcars/missions/$MID"
 check "1. worker prompt carries the template (the Validator brief)" \
-  "printf '%s' \"\$VP1\" | grep -q 'LCARS Validator'"
+  "printf '%s' \"\$VP1\" | qgrep -q 'LCARS Validator'"
 check "1. worker prompt names the prd.md PATH it may read" \
-  "printf '%s' \"\$VP1\" | grep -qF '$MDIR1/prd.md'"
+  "printf '%s' \"\$VP1\" | qgrep -qF '$MDIR1/prd.md'"
 check "1. worker prompt names the research finding PATHS" \
-  "printf '%s' \"\$VP1\" | grep -qF '$MDIR1/research/1.json'"
+  "printf '%s' \"\$VP1\" | qgrep -qF '$MDIR1/research/1.json'"
 check "1. worker prompt does NOT inline the PRD body (paths only, no leaked context)" \
-  "! printf '%s' \"\$VP1\" | grep -q 'Let users switch to a dark'"
+  "! printf '%s' \"\$VP1\" | qgrep -q 'Let users switch to a dark'"
 check "1. validate worker gets read access (Read)" \
-  "printf '%s' \"\$VT1\" | grep -q 'Read'"
+  "printf '%s' \"\$VT1\" | qgrep -q 'Read'"
 check "1. validate worker is denied shell (no Bash)" \
-  "! printf '%s' \"\$VT1\" | grep -q 'Bash'"
+  "! printf '%s' \"\$VT1\" | qgrep -q 'Bash'"
 check "1. validate worker is denied web (no WebSearch)" \
-  "! printf '%s' \"\$VT1\" | grep -q 'WebSearch'"
+  "! printf '%s' \"\$VT1\" | qgrep -q 'WebSearch'"
 
 # --- Behaviour 2: Research fans out N stateless workers, question text only ----
 repoW2="$(new_repo_with_mission)"; arm_worker "$repoW2"
@@ -2477,11 +2555,11 @@ check "2. fans out one research worker per question (2)" \
   "[ \"\$(calls_of_role "$WORKER_LOG" research-agent)\" = '2' ]"
 RAP2="$(prompt_for_role "$WORKER_CALLS" research-agent)"
 check "2. a research worker is given a question" \
-  "printf '%s' \"\$RAP2\" | grep -qi 'question'"
+  "printf '%s' \"\$RAP2\" | qgrep -qi 'question'"
 check "2. a research worker is NOT given the PRD path (stateless)" \
-  "! printf '%s' \"\$RAP2\" | grep -q 'prd.md'"
+  "! printf '%s' \"\$RAP2\" | qgrep -q 'prd.md'"
 check "2. research worker gets web access (WebSearch)" \
-  "printf '%s' \"\$(tools_for_role "$WORKER_LOG" research-agent)\" | grep -q 'WebSearch'"
+  "printf '%s' \"\$(tools_for_role "$WORKER_LOG" research-agent)\" | qgrep -q 'WebSearch'"
 check "2. research advanced the mission to validate via the stub" \
   "grep -q '\"stage\": *\"validate\"' '$(state_of "$repoW2")'"
 
@@ -2533,9 +2611,9 @@ check "3. validate (PRD-only) advances to plan" \
 VP3c="$(prompt_for_role "$WORKER_CALLS" validate)"
 MDIR3c="$repoW3c/.git/lcars/missions/$MID"
 check "3. PRD-only validate still feeds the worker prd.md" \
-  "printf '%s' \"\$VP3c\" | grep -qF '$MDIR3c/prd.md'"
+  "printf '%s' \"\$VP3c\" | qgrep -qF '$MDIR3c/prd.md'"
 check "3. PRD-only validate lists no research/*.json path" \
-  "! printf '%s' \"\$VP3c\" | grep -qF '$MDIR3c/research/'"
+  "! printf '%s' \"\$VP3c\" | qgrep -qF '$MDIR3c/research/'"
 
 # End-to-end: a 0-question Research then Validate must NOT wedge. Drive from align
 # with STUB_NQUESTIONS=0: Research skips → Validate runs PRD-only → reaches plan.
@@ -2558,7 +2636,7 @@ repoW4p="$(new_repo_with_plan_mission)"; arm_worker "$repoW4p"
 PP4="$(prompt_for_role "$WORKER_CALLS" plan)"
 MDIR4="$repoW4p/.git/lcars/missions/$MID"
 check "4. plan worker is fed the validated-plan path" \
-  "printf '%s' \"\$PP4\" | grep -qF '$MDIR4/validated-plan.md'"
+  "printf '%s' \"\$PP4\" | qgrep -qF '$MDIR4/validated-plan.md'"
 check "4. plan worker persists plan.json and advances to plan-review" \
   "grep -q '\"stage\": *\"plan-review\"' '$(state_of "$repoW4p")'"
 
@@ -2569,14 +2647,14 @@ repoW4r="$(new_repo_with_plan_review_mission)"; arm_worker "$repoW4r"
 PR4="$(prompt_for_role "$WORKER_CALLS" plan-review)"
 MDIR4r="$repoW4r/.git/lcars/missions/$MID"
 check "4. reviewer worker is fed the plan.json path" \
-  "printf '%s' \"\$PR4\" | grep -qF '$MDIR4r/plan.json'"
+  "printf '%s' \"\$PR4\" | qgrep -qF '$MDIR4r/plan.json'"
 # Independence: the reviewer is never handed the spec PATHS (the template names
 # those filenames only to forbid them — the artifact-paths block lists plan.json
 # alone), so assert the mission-dir paths to the spec are absent.
 check "4. reviewer worker is NOT fed the prd.md path (independence)" \
-  "! printf '%s' \"\$PR4\" | grep -qF '$MDIR4r/prd.md'"
+  "! printf '%s' \"\$PR4\" | qgrep -qF '$MDIR4r/prd.md'"
 check "4. reviewer worker is NOT fed the validated-plan.md path (independence)" \
-  "! printf '%s' \"\$PR4\" | grep -qF '$MDIR4r/validated-plan.md'"
+  "! printf '%s' \"\$PR4\" | qgrep -qF '$MDIR4r/validated-plan.md'"
 check "4. reviewer verdict advances to schedule" \
   "grep -q '\"stage\": *\"schedule\"' '$(state_of "$repoW4r")'"
 
@@ -2594,11 +2672,11 @@ check "4. Test Writer's tests are quarantined under tickets/t-001/tests/" \
 check "4. Implementer's result.json is saved green" \
   "[ -f '$MDIR4i/tickets/t-001/result.json' ] && grep -q '\"passed\": *true' '$MDIR4i/tickets/t-001/result.json'"
 check "4. Implementer is fed the on-disk tests path (its only handoff)" \
-  "printf '%s' \"\$(prompt_for_role "$WORKER_CALLS" implement-implementer)\" | grep -qF '$MDIR4i/tickets/t-001/tests'"
+  "printf '%s' \"\$(prompt_for_role "$WORKER_CALLS" implement-implementer)\" | qgrep -qF '$MDIR4i/tickets/t-001/tests'"
 check "4. Test Writer is denied shell (no Bash)" \
-  "! printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-test-writer)\" | grep -q 'Bash'"
+  "! printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-test-writer)\" | qgrep -q 'Bash'"
 check "4. Implementer gets shell (Bash) to run the tests" \
-  "printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-implementer)\" | grep -q 'Bash'"
+  "printf '%s' \"\$(tools_for_role "$WORKER_LOG" implement-implementer)\" | qgrep -q 'Bash'"
 
 # --- Behaviour 9: the engineering ADR is a downstream-readable artifact --------
 # Session 36: Align seeds adr.md for complex Missions; Validate may refine it.
@@ -2629,7 +2707,7 @@ seed_adr "$MDIR9v"
     bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
 VP9v="$(prompt_for_role "$WORKER_CALLS" validate)"
 check "9a. validate worker is fed the adr.md path when it exists" \
-  "printf '%s' \"\$VP9v\" | grep -qF '$MDIR9v/adr.md'"
+  "printf '%s' \"\$VP9v\" | qgrep -qF '$MDIR9v/adr.md'"
 
 # Option B persistence: cmd_validate must copy a worker-refined adr.md back into
 # the mission dir. The worker stub (STUB_ADR=1) emits a refined adr.md; assert it
@@ -2649,7 +2727,7 @@ MDIR9vn="$repoW9vn/.git/lcars/missions/$MID"
     bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 )
 VP9vn="$(prompt_for_role "$WORKER_CALLS" validate)"
 check "9b. validate worker is NOT fed an adr.md path when none exists" \
-  "! printf '%s' \"\$VP9vn\" | grep -qF '$MDIR9vn/adr.md'"
+  "! printf '%s' \"\$VP9vn\" | qgrep -qF '$MDIR9vn/adr.md'"
 
 # 9c. Plan lists adr.md when it exists.
 repoW9p="$(new_repo_with_plan_mission)"; arm_worker "$repoW9p"
@@ -2659,7 +2737,7 @@ seed_adr "$MDIR9p"
     bash "$SCRIPT" plan --mission "$MID" >out.txt 2>&1 )
 PP9p="$(prompt_for_role "$WORKER_CALLS" plan)"
 check "9c. plan worker is fed the adr.md path when it exists" \
-  "printf '%s' \"\$PP9p\" | grep -qF '$MDIR9p/adr.md'"
+  "printf '%s' \"\$PP9p\" | qgrep -qF '$MDIR9p/adr.md'"
 
 # 9d. Test Writer AND Implementer list adr.md when it exists.
 repoW9i="$(new_repo_with_implement_mission)"; arm_worker "$repoW9i"
@@ -2670,9 +2748,9 @@ seed_adr "$MDIR9i"
 TWP9i="$(prompt_for_role "$WORKER_CALLS" implement-test-writer)"
 IMP9i="$(prompt_for_role "$WORKER_CALLS" implement-implementer)"
 check "9d. Test Writer worker is fed the adr.md path when it exists" \
-  "printf '%s' \"\$TWP9i\" | grep -qF '$MDIR9i/adr.md'"
+  "printf '%s' \"\$TWP9i\" | qgrep -qF '$MDIR9i/adr.md'"
 check "9d. Implementer worker is fed the adr.md path when it exists" \
-  "printf '%s' \"\$IMP9i\" | grep -qF '$MDIR9i/adr.md'"
+  "printf '%s' \"\$IMP9i\" | qgrep -qF '$MDIR9i/adr.md'"
 
 # 9e. PURITY: the RESEARCH workers NEVER see adr.md, even when it exists. Drive
 # Research from align with an adr.md already on disk; assert neither the
@@ -2685,13 +2763,13 @@ seed_adr "$MDIR9r"
 RQP9r="$(prompt_for_role "$WORKER_CALLS" research-questions)"
 RAP9r="$(prompt_for_role "$WORKER_CALLS" research-agent)"
 check "9e. PURITY: research-questions worker is NEVER fed adr.md" \
-  "! printf '%s' \"\$RQP9r\" | grep -qF '$MDIR9r/adr.md'"
+  "! printf '%s' \"\$RQP9r\" | qgrep -qF '$MDIR9r/adr.md'"
 check "9e. PURITY: research-questions worker mentions no adr at all" \
-  "! printf '%s' \"\$RQP9r\" | grep -qi 'adr'"
+  "! printf '%s' \"\$RQP9r\" | qgrep -qi 'adr'"
 check "9e. PURITY: a research agent worker is NEVER fed adr.md" \
-  "! printf '%s' \"\$RAP9r\" | grep -qF '$MDIR9r/adr.md'"
+  "! printf '%s' \"\$RAP9r\" | qgrep -qF '$MDIR9r/adr.md'"
 check "9e. PURITY: a research agent worker mentions no adr at all" \
-  "! printf '%s' \"\$RAP9r\" | grep -qi 'adr'"
+  "! printf '%s' \"\$RAP9r\" | qgrep -qi 'adr'"
 
 # 9f. INDEPENDENCE: Plan Review NEVER sees adr.md (it judges tickets alone; the
 # ADR is seeded planning context that would leak the spec in).
@@ -2702,7 +2780,7 @@ seed_adr "$MDIR9pr"
     bash "$SCRIPT" plan-review --mission "$MID" >out.txt 2>&1 )
 PRP9pr="$(prompt_for_role "$WORKER_CALLS" plan-review)"
 check "9f. INDEPENDENCE: Plan Review worker is NOT fed the adr.md path" \
-  "! printf '%s' \"\$PRP9pr\" | grep -qF '$MDIR9pr/adr.md'"
+  "! printf '%s' \"\$PRP9pr\" | qgrep -qF '$MDIR9pr/adr.md'"
 
 # --- Behaviour 5: an artifact missing its decisions/rationale is REFUSED -------
 # validated-plan.md without a ## Rationale section
@@ -2926,7 +3004,7 @@ check "9. the notify hook fires exactly once at the awaiting-human gate" \
 check "9. the notification names the awaiting-human gate" \
   "grep -q '|awaiting-human|' '$repoA4/notify.log'"
 check "9. the notification summary carries the question (decision-ready)" \
-  "awk -F'|' 'NR==1{print \$3}' '$repoA4/notify.log' | grep -qi 'leaderboard'"
+  "awk -F'|' 'NR==1{print \$3}' '$repoA4/notify.log' | qgrep -qi 'leaderboard'"
 
 # --- Behaviour 5: auto mode halts at align (feedback re-entry) --------------
 repoA5="$(new_repo_with_mission)"; arm_drive "$repoA5"
@@ -2983,9 +3061,9 @@ export CURL_LOG="$TMPROOT/curl.a.log"; : >"$CURL_LOG"
 outNa="$( LCARS_CURL_BIN="$curlstub" LCARS_NTFY_TOPIC="" LCARS_NOTIFY_NO_DESKTOP=1 \
   bash "$NOTIFY_SH" "$MID" verify "Mission ready for review" 2>&1 )"
 check "11. the default delivery prints a local banner" \
-  "printf '%s' \"$outNa\" | grep -q '$MID'"
+  "printf '%s' \"$outNa\" | qgrep -q '$MID'"
 check "11. the banner carries the decision-ready summary" \
-  "printf '%s' \"$outNa\" | grep -qi 'ready for review'"
+  "printf '%s' \"$outNa\" | qgrep -qi 'ready for review'"
 check "11. no phone push fires without a configured topic" "[ ! -s '$CURL_LOG' ]"
 
 # (b) ntfy topic set → push to ntfy on that topic
@@ -3017,7 +3095,7 @@ rcF1=0
     bash "$SCRIPT" validate --mission "$MID" >out.txt 2>&1 ) || rcF1=$?
 check "F1. validate exits 0 after consuming the answer" "[ '$rcF1' -eq 0 ]"
 check "F1. the Validator worker prompt was fed answers.json (the resolution)" \
-  "printf '%s' \"\$(prompt_for_role "$WORKER_CALLS" validate)\" | grep -qF '$mF1/answers.json'"
+  "printf '%s' \"\$(prompt_for_role "$WORKER_CALLS" validate)\" | qgrep -qF '$mF1/answers.json'"
 check "F1. the resolved mission advances to plan (no re-escalation)" \
   "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoF1")'"
 check "F1. validate-advance cleared the consumed answers.json" \
@@ -3030,7 +3108,7 @@ printf '{ "answers": [ { "question": "split t-001?", "answer": "Override — pro
 ( cd "$repoF1b" && LCARS_WORKER_BIN="$repoF1b/worker" LCARS_GH_BIN="$repoF1b/gh" \
     bash "$SCRIPT" plan-review --mission "$MID" >out.txt 2>&1 ) || true
 check "F1. the Plan Review worker prompt was fed answers.json" \
-  "printf '%s' \"\$(prompt_for_role "$WORKER_CALLS" plan-review)\" | grep -qF '$mF1b/answers.json'"
+  "printf '%s' \"\$(prompt_for_role "$WORKER_CALLS" plan-review)\" | qgrep -qF '$mF1b/answers.json'"
 
 # --- FIX 2: commit_ticket stages ONLY the Implementer's source --------------
 # An unrelated untracked file (the captain's) and the worker's `.lcars-*` scratch
@@ -3093,11 +3171,11 @@ check "F2. implement-ticket exits 0 (green ticket committed)" "[ '$rcF2' -eq 0 ]
 check "F2. a commit landed on the mission branch" \
   "[ \"\$( cd "$repoF2" && git rev-parse --abbrev-ref HEAD )\" = 'lcars/$MID' ]"
 check "F2. the commit includes the Implementer's produced source" \
-  "printf '%s' \"$statF2\" | grep -q 'src/feature.js'"
+  "printf '%s' \"$statF2\" | qgrep -q 'src/feature.js'"
 check "F2. the commit EXCLUDES the captain's unrelated untracked file" \
-  "! printf '%s' \"$statF2\" | grep -q 'bugs.md'"
+  "! printf '%s' \"$statF2\" | qgrep -q 'bugs.md'"
 check "F2. the commit EXCLUDES the worker's .lcars-* scratch" \
-  "! printf '%s' \"$statF2\" | grep -q 'lcars-runner.sh'"
+  "! printf '%s' \"$statF2\" | qgrep -q 'lcars-runner.sh'"
 check "F2. the unrelated file is left untracked in the working tree" \
   "[ -f '$repoF2/bugs.md' ] && [ -z \"\$( cd "$repoF2" && git ls-files bugs.md )\" ]"
 
@@ -3200,13 +3278,13 @@ run_ticket_s30 "$repoS30"; rcS30=$?
 statS30="$( cd "$repoS30" && git show --stat --oneline HEAD 2>/dev/null )"
 check "S30.1 implement-ticket exits 0 (green ticket committed)" "[ '$rcS30' -eq 0 ]"
 check "S30.1 the commit INCLUDES the produced source" \
-  "printf '%s' \"$statS30\" | grep -q 'src/feature.js'"
+  "printf '%s' \"$statS30\" | qgrep -q 'src/feature.js'"
 check "S30.1 the commit EXCLUDES the non-LCARS worker runner (.t003-run.cjs)" \
-  "! printf '%s' \"$statS30\" | grep -q 't003-run.cjs'"
+  "! printf '%s' \"$statS30\" | qgrep -q 't003-run.cjs'"
 check "S30.1 the commit EXCLUDES the mid-run CLI lock (.claude/...)" \
-  "! printf '%s' \"$statS30\" | grep -q 'scheduled_tasks.lock'"
+  "! printf '%s' \"$statS30\" | qgrep -q 'scheduled_tasks.lock'"
 check "S30.1 the commit EXCLUDES the other-CLI scratch dir (.copilot/...)" \
-  "! printf '%s' \"$statS30\" | grep -q 'copilot'"
+  "! printf '%s' \"$statS30\" | qgrep -q 'copilot'"
 
 # --- S30.2: a pre-existing untracked file is still never committed -----------
 repoS30b="$(new_repo_s30)"
@@ -3214,7 +3292,7 @@ printf 'a bug note\n' > "$repoS30b/bugs.md"   # captain's file, present BEFORE t
 run_ticket_s30 "$repoS30b" || true
 statS30b="$( cd "$repoS30b" && git show --stat --oneline HEAD 2>/dev/null )"
 check "S30.2 the commit EXCLUDES the captain's pre-existing untracked file" \
-  "! printf '%s' \"$statS30b\" | grep -q 'bugs.md'"
+  "! printf '%s' \"$statS30b\" | qgrep -q 'bugs.md'"
 check "S30.2 the captain's file is left untracked in the working tree" \
   "[ -f '$repoS30b/bugs.md' ] && [ -z \"\$( cd "$repoS30b" && git ls-files bugs.md )\" ]"
 
@@ -3278,9 +3356,9 @@ make_worker_stub_s30_extra "$binS30d/worker"; make_gh_stub "$binS30d/gh"
     bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >"$binS30d/out.txt" 2>&1 ) || true
 statS30d="$( cd "$repoS30d" && git show --stat --oneline HEAD 2>/dev/null )"
 check "S30.4 config scratchGlobs: produced source still committed" \
-  "printf '%s' \"$statS30d\" | grep -q 'src/feature.js'"
+  "printf '%s' \"$statS30d\" | qgrep -q 'src/feature.js'"
 check "S30.4 config scratchGlobs: the config-declared scratch is EXCLUDED" \
-  "! printf '%s' \"$statS30d\" | grep -q 'myscratch'"
+  "! printf '%s' \"$statS30d\" | qgrep -q 'myscratch'"
 check "S30.4 config scratchGlobs: the glob is appended to .git/info/exclude" \
   "grep -qxF '.myscratch-*' '$repoS30d/.git/info/exclude'"
 
@@ -3380,7 +3458,7 @@ repoS3="$(new_repo_with_plan_mission)"; arm_worker "$repoS3"
     bash "$SCRIPT" plan --mission "$MID" >outS3.txt 2>&1 )
 PS3="$(prompt_for_role "$WORKER_CALLS" plan)"
 check "S31.3 default comprehensionBudget (1200) reaches the plan prompt" \
-  "printf '%s' \"\$PS3\" | grep -q '1200'"
+  "printf '%s' \"\$PS3\" | qgrep -q '1200'"
 
 repoS3b="$(new_repo_with_plan_mission)"; arm_worker "$repoS3b"
 cat >"$repoS3b/.git/lcars/config.json" <<'EOF'
@@ -3397,10 +3475,10 @@ EOF
     bash "$SCRIPT" plan --mission "$MID" >outS3b.txt 2>&1 )
 PS3b="$(prompt_for_role "$WORKER_CALLS" plan)"
 check "S31.3 a configured comprehensionBudget overrides the default" \
-  "printf '%s' \"\$PS3b\" | grep -q '800'"
+  "printf '%s' \"\$PS3b\" | qgrep -q '800'"
 # The injected budget line carries the configured value, not the default.
 check "S31.3 the configured budget is the injected target (not 1200)" \
-  "printf '%s' \"\$PS3b\" | grep -q 'comprehensionBudget = 800'"
+  "printf '%s' \"\$PS3b\" | qgrep -q 'comprehensionBudget = 800'"
 
 # --- S31.4: the validator does NOT hard-reject an over-budget ticket --------
 # DESIGN NOTE / no-deadlock guard: a ticket whose read+test+new vastly exceeds
@@ -3476,7 +3554,7 @@ check "S32.1 notes a small / under-budget ticket can still be coupled" \
 check "S32.1 gives a concrete two-ticket coupling example (same behavior)" \
   "grep -qi 'behavior' '$PRTPL' && grep -Eqi 'same|both sides|seam' '$PRTPL'"
 check "S32.1 the verdict example demonstrates a coupling objection" \
-  "grep -i 'objection' '$PRTPL' | grep -qi 'coupl'"
+  "grep -i 'objection' '$PRTPL' | qgrep -qi 'coupl'"
 
 # --- S32.2: the existing four criteria are retained (regression guard) -------
 check "S32.2 retains the Vertical slice criterion" \
@@ -3520,7 +3598,7 @@ check "S32.3 increments planReviewRound to 1" \
 check "S32.3 loops the stage back to plan" \
   "grep -q '\"stage\": *\"plan\"' '$sC'"
 check "S32.3 adds lcars:plan" \
-  "grep -q 'add-label lcars:plan ' '$repoC/gh.log' || grep -q 'add-label lcars:plan$' '$repoC/gh.log'"
+  "grep -q 'add-label lcars:plan ' '$repoC/gh.log' || qgrep -q 'add-label lcars:plan$' '$repoC/gh.log'"
 check "S32.3 removes lcars:plan-review" \
   "grep -q 'remove-label lcars:plan-review' '$repoC/gh.log'"
 check "S32.3 does not escalate on the first coupling failure" \
@@ -3560,11 +3638,11 @@ all_lines_wellformed() { # file
       '{'*'}') : ;;
       *) bad=1 ;;
     esac
-    printf '%s' "$ln" | grep -q '"ts":' || bad=1
-    printf '%s' "$ln" | grep -q '"mission":' || bad=1
-    printf '%s' "$ln" | grep -q '"stage":' || bad=1
-    printf '%s' "$ln" | grep -q '"type":' || bad=1
-    printf '%s' "$ln" | grep -q '"detail":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"ts":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"mission":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"stage":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"type":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"detail":' || bad=1
   done <"$f"
   [ "$bad" -eq 0 ]
 }
@@ -3615,7 +3693,7 @@ repoEV3="$(new_repo_with_validate_mission)"; arm_drive "$repoEV3"
 evlog3="$repoEV3/.git/lcars/missions/$MID/events.jsonl"
 drive "$repoEV3" drive --mission "$MID" --step || true   # one clean transition: validate → plan
 check "EV3. a stepped drive writes a stage_start for the stage it ran" \
-  "grep -q '\"type\":\"stage_start\".*\"stage\":\"validate\"\\|\"stage\":\"validate\".*\"type\":\"stage_start\"' '$evlog3' || grep -q '\"type\":\"stage_start\"' '$evlog3'"
+  "grep -q '\"type\":\"stage_start\".*\"stage\":\"validate\"\\|\"stage\":\"validate\".*\"type\":\"stage_start\"' '$evlog3' || qgrep -q '\"type\":\"stage_start\"' '$evlog3'"
 check "EV3. a stepped drive writes a stage_done for the stage it ran" \
   "grep -q '\"type\":\"stage_done\"' '$evlog3'"
 # A full drive: assert order — stage_start precedes its stage_done across stages.
@@ -3690,11 +3768,11 @@ all_lines_wellformed_data() { # file
       '{'*'}') : ;;
       *) bad=1 ;;
     esac
-    printf '%s' "$ln" | grep -q '"ts":' || bad=1
-    printf '%s' "$ln" | grep -q '"mission":' || bad=1
-    printf '%s' "$ln" | grep -q '"stage":' || bad=1
-    printf '%s' "$ln" | grep -q '"type":' || bad=1
-    printf '%s' "$ln" | grep -q '"detail":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"ts":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"mission":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"stage":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"type":' || bad=1
+    printf '%s' "$ln" | qgrep -q '"detail":' || bad=1
   done <"$f"
   [ "$bad" -eq 0 ]
 }
@@ -3709,17 +3787,17 @@ evS1="$repoS1/.git/lcars/missions/$MID/events.jsonl"
 check "S26-1. a wave_start event is emitted" \
   "grep -q '\"type\":\"wave_start\"' '$evS1'"
 check "S26-1. wave_start fires for wave 1 AND wave 2" \
-  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":1' && grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":2'"
+  "grep '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"wave\":1' && grep '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"wave\":2'"
 check "S26-1. exactly ONE wave_start per wave (no dup from the re-running loop)" \
   "[ \"\$(grep -c '\"type\":\"wave_start\"' '$evS1')\" = '2' ]"
 check "S26-1. wave_start carries ticketCount=2 (each wave has two tickets)" \
-  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"ticketCount\":2'"
+  "grep '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"ticketCount\":2'"
 check "S26-1. wave_start carries totalWaves=2" \
-  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"totalWaves\":2'"
+  "grep '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"totalWaves\":2'"
 check "S26-1. wave 1's wave_start precedes wave 2's (ascending order)" \
   "[ \"\$(grep -n '\"type\":\"wave_start\".*\"wave\":1' '$evS1' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n '\"type\":\"wave_start\".*\"wave\":2' '$evS1' | head -1 | cut -d: -f1)\" ]"
 check "S26-1. the numeric data fields are UNQUOTED (machine-readable)" \
-  "grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":[0-9]' && ! grep '\"type\":\"wave_start\"' '$evS1' | grep -q '\"wave\":\"'"
+  "grep '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"wave\":[0-9]' && ! grep '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"wave\":\"'"
 check "S26-1. every emitted Implement line is well-formed (with the data object)" \
   "all_lines_wellformed_data '$evS1'"
 
@@ -3729,17 +3807,17 @@ evS2="$repoS2/.git/lcars/missions/$MID/events.jsonl"
 ( cd "$repoS2" && LCARS_NOW=1700002000 LCARS_WORKER_BIN="$repoS2/worker" LCARS_GH_BIN="$repoS2/gh" \
     bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >outS2.txt 2>&1 ) || true
 check "S26-2. ticket_start is emitted with the ticket id" \
-  "grep '\"type\":\"ticket_start\"' '$evS2' | grep -q '\"ticket\":\"t-001\"'"
+  "grep '\"type\":\"ticket_start\"' '$evS2' | qgrep -q '\"ticket\":\"t-001\"'"
 check "S26-2. ticket_start carries the ticket's wave (t-001 is wave 1)" \
-  "grep '\"type\":\"ticket_start\"' '$evS2' | grep -q '\"wave\":1'"
+  "grep '\"type\":\"ticket_start\"' '$evS2' | qgrep -q '\"wave\":1'"
 check "S26-2. a test-writer ticket_attempt is emitted" \
-  "grep '\"type\":\"ticket_attempt\"' '$evS2' | grep -q '\"phase\":\"test-writer\"'"
+  "grep '\"type\":\"ticket_attempt\"' '$evS2' | qgrep -q '\"phase\":\"test-writer\"'"
 check "S26-2. an implementer ticket_attempt is emitted" \
-  "grep '\"type\":\"ticket_attempt\"' '$evS2' | grep -q '\"phase\":\"implementer\"'"
+  "grep '\"type\":\"ticket_attempt\"' '$evS2' | qgrep -q '\"phase\":\"implementer\"'"
 check "S26-2. ticket_attempt carries a numeric attempt index" \
-  "grep '\"type\":\"ticket_attempt\"' '$evS2' | grep -q '\"attempt\":1'"
+  "grep '\"type\":\"ticket_attempt\"' '$evS2' | qgrep -q '\"attempt\":1'"
 check "S26-2. ticket_green is emitted" \
-  "grep '\"type\":\"ticket_green\"' '$evS2' | grep -q '\"ticket\":\"t-001\"'"
+  "grep '\"type\":\"ticket_green\"' '$evS2' | qgrep -q '\"ticket\":\"t-001\"'"
 # Relative ORDER: start < first attempt < green.
 posS2_start="$(grep -n '"type":"ticket_start"' "$evS2" | head -1 | cut -d: -f1)"
 posS2_att="$(grep -n '"type":"ticket_attempt"' "$evS2" | head -1 | cut -d: -f1)"
@@ -3759,7 +3837,7 @@ evS3="$repoS3/.git/lcars/missions/$MID/events.jsonl"
 ( cd "$repoS3" && LCARS_NOW=1700003000 LCARS_GH_BIN="$repoS3/gh" bash "$SCRIPT" impl-save-result \
     --mission "$MID" --ticket t-001 --result "$resS3" >outS3.txt 2>&1 ) || true
 check "S26-3. a flagged ticket emits ticket_flagged with its attempts" \
-  "grep '\"type\":\"ticket_flagged\"' '$evS3' | grep -q '\"ticket\":\"t-001\"' && grep '\"type\":\"ticket_flagged\"' '$evS3' | grep -q '\"attempts\":5'"
+  "grep '\"type\":\"ticket_flagged\"' '$evS3' | qgrep -q '\"ticket\":\"t-001\"' && grep '\"type\":\"ticket_flagged\"' '$evS3' | qgrep -q '\"attempts\":5'"
 check "S26-3. a flagged ticket emits NO ticket_green" \
   "! grep -q '\"type\":\"ticket_green\"' '$evS3'"
 
@@ -3800,9 +3878,9 @@ check "S26-4. an immutable-tests violation emits NO ticket_green" \
 # --- S26-5: events carry the wave/ticket ids to reconstruct "k of n" ----------
 # Reuse S26-1's two-wave drive: assert the fields a downstream renderer parses.
 check "S26-5. wave_start data carries wave + ticketCount + totalWaves" \
-  "grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"data\":{' && grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"wave\":' && grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"ticketCount\":' && grep '\"type\":\"wave_start\"' '$evS1' | head -1 | grep -q '\"totalWaves\":'"
+  "grep -m1 '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"data\":{' && grep -m1 '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"wave\":' && grep -m1 '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"ticketCount\":' && grep -m1 '\"type\":\"wave_start\"' '$evS1' | qgrep -q '\"totalWaves\":'"
 check "S26-5. ticket_green data carries the ticket id (string) and attempts (number)" \
-  "grep '\"type\":\"ticket_green\"' '$evS2' | grep -q '\"ticket\":\"t-001\"' && grep '\"type\":\"ticket_green\"' '$evS2' | grep -q '\"attempts\":[0-9]'"
+  "grep '\"type\":\"ticket_green\"' '$evS2' | qgrep -q '\"ticket\":\"t-001\"' && grep '\"type\":\"ticket_green\"' '$evS2' | qgrep -q '\"attempts\":[0-9]'"
 
 # --- S26-6 (regression): the no-data line is byte-identical to Session 25 ------
 # emit-event with NO data pairs must produce a line with no "data" key at all.
@@ -3902,7 +3980,7 @@ posS9_green="$(grep -n '"type":"ticket_green"' "$evS9" | head -1 | cut -d: -f1)"
 check "S26-9. order still holds: ticket_start < ticket_attempt < ticket_green" \
   "[ -n \"$posS9_start\" ] && [ \"$posS9_start\" -lt \"$posS9_att\" ] && [ \"$posS9_att\" -lt \"$posS9_green\" ]"
 check "S26-9. first attempt index within a fresh ticket is 1" \
-  "grep '\"type\":\"ticket_attempt\"' '$evS9' | grep '\"phase\":\"test-writer\"' | grep -q '\"attempt\":1'"
+  "grep '\"type\":\"ticket_attempt\"' '$evS9' | grep '\"phase\":\"test-writer\"' | qgrep -q '\"attempt\":1'"
 
 # ==========================================================================
 echo
@@ -3950,7 +4028,7 @@ check "S42. SKILL.md keeps the final summary + isolation markers byte-for-byte" 
 # Any background/detached mention that survives MUST be flagged OPTIONAL, never
 # the required/default path.
 check "S42. any detached/background mention is marked optional, not the default" \
-  "! grep -qiE 'background|detached' '$RUN_SKILL' || grep -qiE 'optional' '$RUN_SKILL'"
+  "! grep -qiE 'background|detached' '$RUN_SKILL' || qgrep -qiE 'optional' '$RUN_SKILL'"
 
 # ==========================================================================
 echo
@@ -4105,13 +4183,13 @@ printf '# Repo map (wave 1)\n- src/theme.js: `export function setTheme(name)`\n'
 TWP41="$(prompt_for_role "$WORKER_CALLS" implement-test-writer)"
 IMP41="$(prompt_for_role "$WORKER_CALLS" implement-implementer)"
 check "S41-4. Test Writer prompt lists the ticket manifest path" \
-  "printf '%s' \"\$TWP41\" | grep -qF '$MDIR41r/manifests/t-001.md'"
+  "printf '%s' \"\$TWP41\" | qgrep -qF '$MDIR41r/manifests/t-001.md'"
 check "S41-4. Test Writer prompt lists the repo-map path" \
-  "printf '%s' \"\$TWP41\" | grep -qF '$MDIR41r/repo-map.md'"
+  "printf '%s' \"\$TWP41\" | qgrep -qF '$MDIR41r/repo-map.md'"
 check "S41-4. Implementer prompt lists the ticket manifest path" \
-  "printf '%s' \"\$IMP41\" | grep -qF '$MDIR41r/manifests/t-001.md'"
+  "printf '%s' \"\$IMP41\" | qgrep -qF '$MDIR41r/manifests/t-001.md'"
 check "S41-4. Implementer prompt lists the repo-map path" \
-  "printf '%s' \"\$IMP41\" | grep -qF '$MDIR41r/repo-map.md'"
+  "printf '%s' \"\$IMP41\" | qgrep -qF '$MDIR41r/repo-map.md'"
 
 # --- S41-4b: the manifest/repo-map are guarded on existence (absent → not listed)
 repo41rn="$(new_repo_with_implement_mission)"; arm_worker "$repo41rn"
@@ -4120,7 +4198,7 @@ MDIR41rn="$repo41rn/.git/lcars/missions/$MID"
     bash "$SCRIPT" implement-ticket --mission "$MID" --ticket t-001 >out41rn.txt 2>&1 )
 IMP41n="$(prompt_for_role "$WORKER_CALLS" implement-implementer)"
 check "S41-4b. with no manifest on disk the Implementer prompt names no manifests/ path" \
-  "! printf '%s' \"\$IMP41n\" | grep -qF '$MDIR41rn/manifests/'"
+  "! printf '%s' \"\$IMP41n\" | qgrep -qF '$MDIR41rn/manifests/'"
 
 # --- S41-5: PURITY — research workers see NEITHER manifest NOR repo-map ----------
 # Seed both artifacts on disk, drive Research from align, and assert that neither
@@ -4136,17 +4214,17 @@ printf '# Repo map (wave 1)\n- src/x.js: `export function y()`\n' >"$MDIR41pur/r
 RQP41="$(prompt_for_role "$WORKER_CALLS" research-questions)"
 RAP41="$(prompt_for_role "$WORKER_CALLS" research-agent)"
 check "S41-5. PURITY: research-questions worker is NEVER fed the manifest path" \
-  "! printf '%s' \"\$RQP41\" | grep -qF '$MDIR41pur/manifests/'"
+  "! printf '%s' \"\$RQP41\" | qgrep -qF '$MDIR41pur/manifests/'"
 check "S41-5. PURITY: research-questions worker is NEVER fed the repo-map path" \
-  "! printf '%s' \"\$RQP41\" | grep -qF '$MDIR41pur/repo-map.md'"
+  "! printf '%s' \"\$RQP41\" | qgrep -qF '$MDIR41pur/repo-map.md'"
 check "S41-5. PURITY: research-questions worker mentions no repo-map/manifest at all" \
-  "! printf '%s' \"\$RQP41\" | grep -qiE 'repo-map|manifest'"
+  "! printf '%s' \"\$RQP41\" | qgrep -qiE 'repo-map|manifest'"
 check "S41-5. PURITY: a research agent worker is NEVER fed the manifest path" \
-  "! printf '%s' \"\$RAP41\" | grep -qF '$MDIR41pur/manifests/'"
+  "! printf '%s' \"\$RAP41\" | qgrep -qF '$MDIR41pur/manifests/'"
 check "S41-5. PURITY: a research agent worker is NEVER fed the repo-map path" \
-  "! printf '%s' \"\$RAP41\" | grep -qF '$MDIR41pur/repo-map.md'"
+  "! printf '%s' \"\$RAP41\" | qgrep -qF '$MDIR41pur/repo-map.md'"
 check "S41-5. PURITY: a research agent worker mentions no repo-map/manifest at all" \
-  "! printf '%s' \"\$RAP41\" | grep -qiE 'repo-map|manifest'"
+  "! printf '%s' \"\$RAP41\" | qgrep -qiE 'repo-map|manifest'"
 
 # --- S41-6: DECLARATIVE — the plan.md template forbids bodies/solutions ----------
 # The template MUST instruct the Planner to author manifests with signatures /
@@ -4317,9 +4395,9 @@ check "P37-2. exactly one commit for t-002 on the mission branch" \
 check "P37-2. t-001 commits BEFORE t-002 (plan order, despite t-002 finishing first)" \
   "[ -n \"$pos1\" ] && [ -n \"$pos2\" ] && [ \"$pos1\" -gt \"$pos2\" ]"
 check "P37-2. each commit carries the ticket's OWN summary" \
-  "printf '%s\n' \"$logP2\" | grep -q 't-001: built t-001' && printf '%s\n' \"$logP2\" | grep -q 't-002: built t-002'"
+  "printf '%s\n' \"$logP2\" | qgrep -q 't-001: built t-001' && printf '%s\n' \"$logP2\" | qgrep -q 't-002: built t-002'"
 check "P37-2. the commit message format is lcars(<mission>) <ticket>: <summary>" \
-  "printf '%s\n' \"$logP2\" | grep -qE 'lcars\\($MID\\) t-001: '"
+  "printf '%s\n' \"$logP2\" | qgrep -qE 'lcars\\($MID\\) t-001: '"
 check "P37-2. each ticket's produced source is in the tree" \
   "[ -f '$repoP2/src/t-001.js' ] && [ -f '$repoP2/src/t-002.js' ]"
 check "P37-2. wave 2 also completes and the stage advanced to verify" \
@@ -4616,9 +4694,9 @@ p6c="$(printf '%s\n' "$logP6" | grep -n 't-003:' | head -1 | cut -d: -f1)"
 check "P37-6. commits land in PLAN order (t-001, then t-002, then t-003)" \
   "[ -n \"$p6a\" ] && [ -n \"$p6b\" ] && [ -n \"$p6c\" ] && [ \"$p6a\" -gt \"$p6b\" ] && [ \"$p6b\" -gt \"$p6c\" ]"
 check "P37-6. each commit carries the ticket's OWN summary" \
-  "printf '%s\n' \"$logP6\" | grep -q 't-001: added t-001' \
-   && printf '%s\n' \"$logP6\" | grep -q 't-002: added t-002' \
-   && printf '%s\n' \"$logP6\" | grep -q 't-003: added t-003'"
+  "printf '%s\n' \"$logP6\" | qgrep -q 't-001: added t-001' \
+   && printf '%s\n' \"$logP6\" | qgrep -q 't-002: added t-002' \
+   && printf '%s\n' \"$logP6\" | qgrep -q 't-003: added t-003'"
 # ALL three additions are present in the final dispatcher — none lost / overwritten.
 check "P37-6. the shared file contains ALL THREE tickets' additions (none lost)" \
   "grep -q 'ADDED-t-001' '$repoP6/src/dispatch.js' \
@@ -4689,6 +4767,570 @@ check "P37-7. NO stray git worktrees remain after the escalation" \
    && [ ! -d '$repoP7/.git/lcars/missions/$MID/worktrees' ]"
 check "P37-7. the working tree is clean after the escalation (no stranded conflict)" \
   "[ -z \"\$( cd '$repoP7' && git status --porcelain )\" ]"
+
+# ==========================================================================
+echo
+echo "lcars run — BUG-015: conflict-replay clears its own untracked residue"
+#
+# Ground truth of BUG-015: the intra-wave conflict→serial-rebuild fallback can be
+# KILLED by an untracked file. When the 2nd ticket's frozen-base commit cannot be
+# replayed (it both CONFLICTS on a shared file AND adds a NEW file whose path is
+# already occupied by an UNTRACKED file in the working tree), `git cherry-pick`
+# refuses ("untracked working tree files would be overwritten") and
+# `cherry-pick --abort` — which restores only TRACKED state — leaves that residue
+# behind. The serial rebuild then produces a clean commit ADDING the same path,
+# whose re-apply git ALSO refuses → replay_ticket_commit returns 1 → the wave
+# hard-fails ("implement-ticket <t> failed — Stage stopped"). A single concurrent
+# same-file wave that touches a new path thus KILLS the Mission instead of
+# degrading to serial.
+#
+# The fix: after the aborted pick, clear ONLY that commit's own paths that are now
+# untracked, so the rebuilt commit re-applies — never the captain's unrelated
+# untracked files.
+#
+#   B15-1  the residue wave COMPLETES (no hard stop) and advances to verify
+#   B15-2  BOTH tickets land — one commit each, in PLAN order — and the new file is
+#          committed (the rebuild composed on the current tip)
+#   B15-3  the captain's UNRELATED untracked file SURVIVES the scoped cleanup
+#   B15-4  a DISJOINT wave still replays directly — no conflict, no rebuild (guard)
+#   B15-5  a flagged ticket in a concurrent same-file wave still PARKS at the human
+#          gate (never a bare die) and an earlier green sibling's commit survives
+
+# A worker whose implementer edits the SAME dispatch line in every ticket (forces a
+# cherry-pick CONFLICT on replay), and where t-002 ALSO adds a NEW file. The repo
+# fixture pre-seeds an UNTRACKED file at that new path — exactly the residue the
+# aborted conflicted pick leaves — so t-002 cannot replay until it is cleared.
+make_worker_stub_bug15() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    f="src/dispatch.js"
+    # Replace the SAME placeholder line in every ticket -> a real content conflict
+    # when the 2nd ticket's frozen-base commit is cherry-picked over the 1st.
+    sed -i.bak "s/PLACEHOLDER/handle_${tid}(x)/" "$f" && rm -f "$f.bak"
+    # t-002 ALSO introduces a NEW file -> the conflicted pick's untracked residue.
+    if [ "$tid" = "t-002" ]; then mkdir -p src; printf 'export const f = 1; // ADDED-t-002\n' > src/feature.js; fi
+    cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "added ${tid}." }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A 2-ticket single-wave plan + waves; both tickets share only the dispatch file.
+write_bug15_plan_json() { # file
+  cat >"$1" <<'EOF'
+[
+  { "id": "t-001", "title": "case a", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file" },
+  { "id": "t-002", "title": "case b", "description": "d", "acceptanceCriteria": ["a"],
+    "estimatedReadLoc": 10, "estimatedTestLoc": 5, "estimatedNewLoc": 5,
+    "dependencies": [], "rationale": "shares only the dispatch file" }
+]
+EOF
+}
+write_bug15_waves_json() { # file
+  cat >"$1" <<'EOF'
+[
+  { "wave": 1, "tickets": [
+      { "id": "t-001", "issue": 101 },
+      { "id": "t-002", "issue": 102 }
+  ] }
+]
+EOF
+}
+# A repo at implement, mission branch, with the shared dispatcher committed, PLUS
+# an untracked residue file at the path t-002 will add (the leftover an aborted
+# conflicted pick leaves) AND the captain's unrelated untracked file.
+new_repo_bug15() { # echoes repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && mkdir -p src \
+      && printf 'export function route(x){\n  return PLACEHOLDER;\n}\n' > src/dispatch.js \
+      && git add src/dispatch.js && git commit -qm seed \
+      && git checkout -q -b "lcars/$MID" )
+  # Residue: an untracked file occupying the exact path t-002's commit adds.
+  printf 'stale residue\n' > "$repo/src/feature.js"
+  # The captain's UNRELATED untracked file — must survive the scoped cleanup.
+  printf 'captain notes\n' > "$repo/CAPTAIN.txt"
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_bug15_plan_json "$m/approved-plan.json"
+  write_bug15_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dispatch cases",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  echo "$repo"
+}
+
+binB15="$TMPROOT/bug15bin"; rm -rf "$binB15"; mkdir -p "$binB15"
+make_worker_stub_bug15 "$binB15/worker"; make_gh_stub "$binB15/gh"
+export GH_LOG="$binB15/gh.log"; : >"$GH_LOG"
+repoB15="$(new_repo_bug15)"
+rcB15=0
+( cd "$repoB15" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB15/worker" LCARS_GH_BIN="$binB15/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB15/out.txt" 2>&1 ) || rcB15=$?
+sB15="$(state_of "$repoB15")"
+check "B15-1. the residue same-file wave completes (no hard stop — degrades to serial)" \
+  "[ '$rcB15' -eq 0 ]"
+check "B15-1. the Stage advanced to verify (the rebuilt commit re-applied cleanly)" \
+  "grep -q '\"stage\": *\"verify\"' '$sB15'"
+logB15="$( cd "$repoB15" && git log --format='%s' "lcars/$MID" )"
+check "B15-2. exactly one commit per ticket on the mission branch" \
+  "[ \"\$(printf '%s\n' \"$logB15\" | grep -c 'lcars(.*) t-001:')\" = '1' ] \
+   && [ \"\$(printf '%s\n' \"$logB15\" | grep -c 'lcars(.*) t-002:')\" = '1' ]"
+b15a="$(printf '%s\n' "$logB15" | grep -n 't-001:' | head -1 | cut -d: -f1)"
+b15b="$(printf '%s\n' "$logB15" | grep -n 't-002:' | head -1 | cut -d: -f1)"
+check "B15-2. commits land in PLAN order (t-001 before t-002; newest-first log)" \
+  "[ -n \"$b15a\" ] && [ -n \"$b15b\" ] && [ \"$b15a\" -gt \"$b15b\" ]"
+check "B15-2. t-002's NEW file is committed (the rebuild composed it onto the tip)" \
+  "( cd '$repoB15' && git ls-files --error-unmatch src/feature.js >/dev/null 2>&1 )"
+check "B15-3. the captain's UNRELATED untracked file SURVIVES the scoped cleanup" \
+  "[ -f '$repoB15/CAPTAIN.txt' ] && grep -q 'captain notes' '$repoB15/CAPTAIN.txt'"
+check "B15-3. the residue cleanup leaves ONLY the captain's file untracked (nothing else stranded)" \
+  "[ \"\$( cd '$repoB15' && git status --porcelain )\" = '?? CAPTAIN.txt' ]"
+check "B15-3. no stray git worktrees remain after the residue wave" \
+  "[ -z \"\$( cd '$repoB15' && git worktree list --porcelain | grep -iE 't-00[12]' )\" ] \
+   && [ ! -d '$repoB15/.git/lcars/missions/$MID/worktrees' ]"
+
+# --- B15-4: a DISJOINT wave still replays directly — no conflict, no rebuild -----
+# Regression guard: the success path is byte-for-byte unchanged for disjoint files.
+# A two-ticket wave whose tickets touch DIFFERENT files must replay both commits
+# with NO cherry-pick conflict and therefore NO ticket_replay_conflict event.
+binB15d="$TMPROOT/bug15dbin"; rm -rf "$binB15d"; mkdir -p "$binB15d"
+make_worker_stub_par "$binB15d/worker"; make_gh_stub "$binB15d/gh"
+repoB15d="$(new_repo_par)"
+rcB15d=0
+( cd "$repoB15d" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB15d/worker" LCARS_GH_BIN="$binB15d/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB15d/out.txt" 2>&1 ) || rcB15d=$?
+sB15d="$(state_of "$repoB15d")"
+evB15d="$repoB15d/.git/lcars/missions/$MID/events.jsonl"
+check "B15-4. a disjoint wave completes and advances (success path intact)" \
+  "[ '$rcB15d' -eq 0 ] && grep -q '\"stage\": *\"verify\"' '$sB15d'"
+check "B15-4. a disjoint wave triggers NO conflict-rebuild (replays both directly)" \
+  "[ ! -f '$evB15d' ] || ! grep -q 'ticket_replay_conflict' '$evB15d'"
+
+# --- B15-5: a flagged ticket in a concurrent same-file wave still PARKS ----------
+# Regression guard: the residue fix must not turn an unrecoverable/flagged ticket
+# into a bare die — it must still route through the awaiting-human gate, and an
+# earlier green sibling's commit must survive (its good work is never rolled back).
+binB15f="$TMPROOT/bug15fbin"; rm -rf "$binB15f"; mkdir -p "$binB15f"
+make_worker_stub_samefile_flag "$binB15f/worker"; make_gh_stub "$binB15f/gh"
+export GH_LOG="$binB15f/gh.log"; : >"$GH_LOG"
+repoB15f="$(new_repo_samefile)"
+rcB15f=0
+( cd "$repoB15f" && LCARS_MAX_PARALLEL=3 \
+    LCARS_WORKER_BIN="$binB15f/worker" LCARS_GH_BIN="$binB15f/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB15f/out.txt" 2>&1 ) || rcB15f=$?
+sB15f="$(state_of "$repoB15f")"
+logB15f="$( cd "$repoB15f" && git log --format='%s' "lcars/$MID" )"
+check "B15-5. a flagged ticket still parks at awaiting-human (never a bare die)" \
+  "grep -q '\"awaitingHuman\": *true' '$sB15f' && grep -q '\"stage\": *\"implement\"' '$sB15f'"
+check "B15-5. the earlier green sibling t-001's commit survives the escalation" \
+  "printf '%s\n' \"$logB15f\" | qgrep -q 'lcars(.*) t-001:'"
+
+# ==========================================================================
+echo
+echo "lcars run — BUG-016: an empty-diff serial rebuild is never silently dropped"
+#
+# Ground truth of BUG-016: the intra-wave conflict→serial-rebuild fallback builds
+# each pending ticket of a wave CONCURRENTLY off the FROZEN wave base, then replays
+# each green ticket's commit onto the mission branch in plan order. Two tickets
+# editing the SAME line of a shared file cannot both cherry-pick — the 2nd CONFLICTS
+# — so the harness REBUILDS that ticket serially on the CURRENT tip (which now
+# carries the prior ticket's edit), reusing its locked tests, and cherry-picks the
+# fresh commit. We only ever reach that rebuild AFTER the concurrent build produced
+# a REAL commit (a non-empty change) that conflicted — so the ticket's change is
+# genuinely non-empty.
+#
+# THE BUG: when the serial rebuild's Implementer produces NO file changes (it failed
+# to reproduce the change on the updated tip), commit_ticket writes no .commit-sha
+# and rebuild_ticket_on_tip used to `return 0` on the missing sha — which the wave
+# loop treats as a successful `continue`. So a ticket whose locked tests REQUIRE new
+# code is SILENTLY DROPPED: its change never lands and the Mission either dead-ends
+# at the BUG-013 full-suite gate or (with no runner) advances to verify missing the
+# ticket's work — with NO recourse path.
+#
+# THE FIX: an empty-diff rebuild AFTER a replay conflict is a failure to reproduce,
+# never a clean outcome. Route it to the SAME awaiting-human gate a cap-exhausted
+# ticket gets (label + pending question), so the captain can unstick it via `lcars
+# respond` — never a silent drop, never a bare die. Earlier green siblings keep
+# their commits; success paths (disjoint replay, residue rebuild, flagged park) are
+# unchanged.
+#
+#   B16-1  a same-file wave whose 2nd ticket conflicts on replay AND rebuilds EMPTY
+#          escalates to awaiting-human (NOT a silent drop, NOT advanced to verify);
+#          the earlier green sibling survives and the tree/worktrees are clean.
+#   B16-2  guard — a DISJOINT wave still replays both directly (no rebuild).
+#   B16-3  guard — the BUG-015 residue wave still rebuilds serially and lands both.
+#   B16-4  guard — a genuinely flagged ticket still PARKS at awaiting-human.
+
+# A worker whose implementer replaces the SAME PLACEHOLDER token in the shared file
+# for every ticket. Both t-001 and t-002 edit the SAME line off the FROZEN base, so
+# t-002's frozen-base commit CONFLICTS on cherry-pick. Crucially the serial rebuild
+# runs on the TIP, where PLACEHOLDER is already gone (t-001 replaced it) — the sed
+# matches NOTHING → the rebuild produces NO file change → an EMPTY rebuild commit.
+# t-002 adds no other file, so the empty diff is total (the BUG-016 trigger).
+make_worker_stub_bug16() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    f="src/dispatch.js"
+    # Replace the SAME placeholder line -> a real content conflict on replay. On the
+    # serial rebuild the tip no longer has PLACEHOLDER, so this is a no-op (empty diff).
+    sed -i.bak "s/PLACEHOLDER/handle_${tid}(x)/" "$f" && rm -f "$f.bak"
+    cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "added ${tid}." }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A repo at implement, mission branch, with the shared PLACEHOLDER dispatcher
+# committed and NOTHING else untracked (so the clean-tree assertion is meaningful).
+new_repo_bug16() { # echoes repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && mkdir -p src \
+      && printf 'export function route(x){\n  return PLACEHOLDER;\n}\n' > src/dispatch.js \
+      && git add src/dispatch.js && git commit -qm seed \
+      && git checkout -q -b "lcars/$MID" )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_bug15_plan_json "$m/approved-plan.json"
+  write_bug15_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dispatch cases",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  echo "$repo"
+}
+
+# --- B16-1: an empty-diff serial rebuild escalates (never silently drops) --------
+binB16="$TMPROOT/bug16bin"; rm -rf "$binB16"; mkdir -p "$binB16"
+make_worker_stub_bug16 "$binB16/worker"; make_gh_stub "$binB16/gh"
+export GH_LOG="$binB16/gh.log"; : >"$GH_LOG"
+repoB16="$(new_repo_bug16)"
+rcB16=0
+( cd "$repoB16" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB16/worker" LCARS_GH_BIN="$binB16/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB16/out.txt" 2>&1 ) || rcB16=$?
+sB16="$(state_of "$repoB16")"
+logB16="$( cd "$repoB16" && git log --format='%s' "lcars/$MID" )"
+check "B16-1. the empty-rebuild ticket is NOT silently dropped — it parks at awaiting-human" \
+  "grep -q '\"awaitingHuman\": *true' '$sB16'"
+check "B16-1. it stays at the implement stage (NOT advanced to verify with a lost ticket)" \
+  "grep -q '\"stage\": *\"implement\"' '$sB16'"
+check "B16-1. the awaiting-human label is applied (the human gate, not a bare die)" \
+  "grep -q 'add-label lcars:awaiting-human' '$binB16/gh.log'"
+check "B16-1. a pending question naming t-002 is recorded" \
+  "[ -f '$repoB16/.git/lcars/missions/$MID/pending.json' ] && grep -q 't-002' '$repoB16/.git/lcars/missions/$MID/pending.json'"
+check "B16-1. the earlier green sibling t-001's commit survives (never rolled back)" \
+  "printf '%s\n' \"$logB16\" | qgrep -q 'lcars(.*) t-001:'"
+check "B16-1. NO stray git worktrees remain after the escalation" \
+  "[ -z \"\$( cd '$repoB16' && git worktree list --porcelain | grep -iE 't-00[12]' )\" ] \
+   && [ ! -d '$repoB16/.git/lcars/missions/$MID/worktrees' ]"
+check "B16-1. the working tree is clean after the escalation (no stranded conflict)" \
+  "[ -z \"\$( cd '$repoB16' && git status --porcelain )\" ]"
+
+# --- B16-2: a DISJOINT wave still replays both directly — no rebuild (guard) ------
+binB16d="$TMPROOT/bug16dbin"; rm -rf "$binB16d"; mkdir -p "$binB16d"
+make_worker_stub_par "$binB16d/worker"; make_gh_stub "$binB16d/gh"
+repoB16d="$(new_repo_par)"
+rcB16d=0
+( cd "$repoB16d" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB16d/worker" LCARS_GH_BIN="$binB16d/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB16d/out.txt" 2>&1 ) || rcB16d=$?
+sB16d="$(state_of "$repoB16d")"
+evB16d="$repoB16d/.git/lcars/missions/$MID/events.jsonl"
+check "B16-2. a disjoint wave completes and advances (success path intact)" \
+  "[ '$rcB16d' -eq 0 ] && grep -q '\"stage\": *\"verify\"' '$sB16d'"
+check "B16-2. a disjoint wave triggers NO conflict-rebuild (replays both directly)" \
+  "[ ! -f '$evB16d' ] || ! grep -q 'ticket_replay_conflict' '$evB16d'"
+
+# --- B16-3: the BUG-015 residue wave still rebuilds serially and lands BOTH -------
+binB16r="$TMPROOT/bug16rbin"; rm -rf "$binB16r"; mkdir -p "$binB16r"
+make_worker_stub_bug15 "$binB16r/worker"; make_gh_stub "$binB16r/gh"
+export GH_LOG="$binB16r/gh.log"; : >"$GH_LOG"
+repoB16r="$(new_repo_bug15)"
+rcB16r=0
+( cd "$repoB16r" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB16r/worker" LCARS_GH_BIN="$binB16r/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB16r/out.txt" 2>&1 ) || rcB16r=$?
+sB16r="$(state_of "$repoB16r")"
+logB16r="$( cd "$repoB16r" && git log --format='%s' "lcars/$MID" )"
+check "B16-3. the residue rebuild still lands BOTH tickets and advances to verify" \
+  "[ '$rcB16r' -eq 0 ] && grep -q '\"stage\": *\"verify\"' '$sB16r' \
+   && printf '%s\n' \"$logB16r\" | qgrep -q 'lcars(.*) t-001:' \
+   && printf '%s\n' \"$logB16r\" | qgrep -q 'lcars(.*) t-002:'"
+
+# --- B16-4: a genuinely flagged ticket still PARKS at awaiting-human (guard) ------
+binB16f="$TMPROOT/bug16fbin"; rm -rf "$binB16f"; mkdir -p "$binB16f"
+make_worker_stub_samefile_flag "$binB16f/worker"; make_gh_stub "$binB16f/gh"
+export GH_LOG="$binB16f/gh.log"; : >"$GH_LOG"
+repoB16f="$(new_repo_samefile)"
+rcB16f=0
+( cd "$repoB16f" && LCARS_MAX_PARALLEL=3 \
+    LCARS_WORKER_BIN="$binB16f/worker" LCARS_GH_BIN="$binB16f/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB16f/out.txt" 2>&1 ) || rcB16f=$?
+sB16f="$(state_of "$repoB16f")"
+logB16f="$( cd "$repoB16f" && git log --format='%s' "lcars/$MID" )"
+check "B16-4. a genuinely flagged ticket still parks at awaiting-human (never a bare die)" \
+  "grep -q '\"awaitingHuman\": *true' '$sB16f' && grep -q '\"stage\": *\"implement\"' '$sB16f'"
+check "B16-4. the earlier green sibling t-001's commit survives the flag escalation" \
+  "printf '%s\n' \"$logB16f\" | qgrep -q 'lcars(.*) t-001:'"
+
+# ==========================================================================
+echo
+echo "lcars run — BUG-013: the full-suite regression gate (impl-advance)"
+#
+# Ground truth of BUG-013: every Implement gate (ticket_green, the wave loop, the
+# Verify precheck in impl-advance) only ever checks each ticket's OWN quarantined
+# suite. Nothing re-runs ALL accumulated ticket suites together against the
+# fully-built repo. So a later ticket (t-002) can satisfy its OWN suite (green)
+# while REGRESSING an earlier ticket's (t-001) locked test, and the wave completes
+# "green" with the regression invisible. The fix adds a full-suite gate at the
+# Verify precheck: AFTER every ticket is individually green, re-run EVERY completed
+# ticket's quarantined suite and FAIL LOUD if any earlier suite is no longer green,
+# naming the regressed ticket. It must NOT weaken the per-ticket red/green or
+# immutable-test guardrails, and must NOT false-fail a repo with no runner.
+
+# A runner that HONORS $LCARS_TESTS_DIR and judges a ticket's quarantined suite
+# against the CURRENT built repo. Each quarantined test file carries an EXPECT=<v>
+# token; the runner reads the repo's current value from $REPO_ROOT/built-state.txt
+# and is GREEN iff every quarantined file's EXPECT matches the built value. This
+# lets a test simulate a later ticket regressing an earlier ticket's contract by
+# changing built-state.txt.
+FS_RUNNER="$TMPROOT/full-suite-runner.sh"
+cat >"$FS_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+[ -n "$d" ] && [ -d "$d" ] || { echo "no quarantined tests dir" >&2; exit 1; }
+n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -gt 0 ] || { echo "quarantined tests dir empty" >&2; exit 1; }
+built="$(cat built-state.txt 2>/dev/null)"
+rc=0
+while IFS= read -r f; do
+  want="$(sed -n 's/.*EXPECT=\([A-Za-z0-9_]*\).*/\1/p' "$f" | head -1)"
+  [ -n "$want" ] || continue
+  [ "$want" = "$built" ] || { echo "FAIL: $f expected $want, built is $built" >&2; rc=1; }
+done < <(find "$d" -type f)
+exit $rc
+EOF
+chmod +x "$FS_RUNNER"
+
+# Build an implement-stage mission whose wave-1 tickets (t-001, t-002) are both
+# individually green (result.json passed:true) with quarantined suites that both
+# expect the SAME built value v2 (so against built-state v2 BOTH are green).
+new_repo_fullsuite() { # builtValue
+  local repo; repo="$(new_repo_with_implement_mission)"
+  printf '%s' "$1" >"$repo/built-state.txt"
+  local m="$repo/.git/lcars/missions/$MID"
+  local id
+  for id in t-001 t-002 t-003 t-004; do
+    mkdir -p "$m/tickets/$id/tests"
+    printf 'assert: %s contract // EXPECT=v2\n' "$id" >"$m/tickets/$id/tests/${id}.test"
+    write_result "$m/tickets/$id/result.json" "$id" true 2
+  done
+  echo "$repo"
+}
+
+# --- FS1: happy path — every accumulated suite still GREEN → advance to verify
+repoFS1="$(new_repo_fullsuite v2)"; make_gh_stub "$repoFS1/gh"
+export GH_LOG="$repoFS1/gh.log"; : >"$GH_LOG"
+rcFS1=0
+( cd "$repoFS1" && LCARS_TEST_CMD="bash $FS_RUNNER" LCARS_GH_BIN="$repoFS1/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS1.txt 2>&1 ) || rcFS1=$?
+check "FS1. impl-advance exits 0 when every accumulated suite is still green" \
+  "[ '$rcFS1' -eq 0 ]"
+check "FS1. advances the stage to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoFS1")'"
+
+# --- FS2: regression — a later ticket regressed t-001's locked suite ---------
+# built-state v3 means t-001 (and the others) expecting v2 now FAIL against the
+# fully-built repo, even though each result.json still says passed:true. The
+# gate must FAIL LOUD, name the regressed earlier ticket, and NOT advance.
+repoFS2="$(new_repo_fullsuite v3)"; make_gh_stub "$repoFS2/gh"
+export GH_LOG="$repoFS2/gh.log"; : >"$GH_LOG"
+rcFS2=0
+( cd "$repoFS2" && LCARS_TEST_CMD="bash $FS_RUNNER" LCARS_GH_BIN="$repoFS2/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS2.txt 2>&1 ) || rcFS2=$?
+check "FS2. impl-advance FAILS when a later ticket regressed an earlier suite" \
+  "[ '$rcFS2' -ne 0 ]"
+check "FS2. does NOT advance to verify on a regression (stays at implement)" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoFS2")'"
+check "FS2. names the regressed earlier ticket (t-001) in the failure" \
+  "grep -q 't-001' '$repoFS2/outFS2.txt'"
+check "FS2. surfaces that a LATER ticket caused the regression" \
+  "grep -qiE 'later|regress' '$repoFS2/outFS2.txt'"
+
+# --- FS3: no runner configured — loud skip, never a false fail ---------------
+# Same all-green mission but with NO testCommand (and no $LCARS_TEST_CMD). The
+# gate cannot re-run anything, so it must SKIP LOUD and still advance (matching
+# the red gate's no-runner stance) — it must never false-fail a runner-less repo.
+repoFS3="$(new_repo_fullsuite v2)"; make_gh_stub "$repoFS3/gh"
+export GH_LOG="$repoFS3/gh.log"; : >"$GH_LOG"
+rcFS3=0
+( cd "$repoFS3" && LCARS_GH_BIN="$repoFS3/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS3.txt 2>&1 ) || rcFS3=$?
+check "FS3. no-runner: impl-advance still exits 0 (no false fail)" \
+  "[ '$rcFS3' -eq 0 ]"
+check "FS3. no-runner: advances to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoFS3")'"
+check "FS3. no-runner: the skip is LOUD (warns the gate could not run)" \
+  "grep -qiE 'full-suite|skip' '$repoFS3/outFS3.txt'"
+
+# --- FS4: the per-ticket gate still fires — a not-green ticket blocks first ---
+# The full-suite gate is ADDITIVE: the existing per-ticket ticket_green check must
+# still refuse an unfinished mission BEFORE the full-suite gate runs.
+repoFS4="$(new_repo_fullsuite v2)"; make_gh_stub "$repoFS4/gh"
+export GH_LOG="$repoFS4/gh.log"; : >"$GH_LOG"
+write_result "$repoFS4/.git/lcars/missions/$MID/tickets/t-003/result.json" t-003 false 5
+rcFS4=0
+( cd "$repoFS4" && LCARS_TEST_CMD="bash $FS_RUNNER" LCARS_GH_BIN="$repoFS4/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS4.txt 2>&1 ) || rcFS4=$?
+check "FS4. per-ticket gate still blocks an unfinished mission" "[ '$rcFS4' -ne 0 ]"
+check "FS4. names the unfinished ticket (t-003), not a regression" \
+  "grep -q 't-003' '$repoFS4/outFS4.txt'"
+check "FS4. stays at implement when a ticket is unfinished" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoFS4")'"
+
+# --- BUG-013 false-regression: depth-1 relative target resolution ------------
+# The defect: the gate re-ran each ticket's quarantined suite from the DETACHED
+# quarantine dir tickets/<id>/tests/. A PORTABLE test that resolves its code-
+# under-test relative to its OWN location — `bash "$here/../skills/foo.sh"` —
+# then looks under tickets/<id>/ instead of the repo root, "can't find" the
+# target, and exits non-zero: a FALSE regression that blocked a clean Mission.
+# The fix re-runs each suite from a clean detached worktree at the mission-branch
+# tip with the tests staged at a DEPTH-1 dir, so `$here/..` is the repo root.
+
+# A runner that honours $LCARS_TESTS_DIR and executes each quarantined *.test.sh,
+# letting the test itself assert against the code at its own ../ location.
+BRANCH_RUNNER="$TMPROOT/branch-runner.sh"
+cat >"$BRANCH_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+[ -n "$d" ] && [ -d "$d" ] || { echo "no quarantined tests dir" >&2; exit 1; }
+rc=0
+while IFS= read -r f; do
+  bash "$f" || rc=1
+done < <(find "$d" -type f -name '*.test.sh')
+exit $rc
+EOF
+chmod +x "$BRANCH_RUNNER"
+
+# Add a "branch" field to a mission's state.json (so the gate cuts a worktree).
+set_state_branch() { # repo branchname
+  local s; s="$(state_of "$1")"
+  awk -v b="$2" '
+    /"stage"/ && !d { print; print "  \"branch\": \"" b "\","; d=1; next }
+    { print }
+  ' "$s" >"$1/sb.tmp" && mv "$1/sb.tmp" "$s"
+}
+
+# Build a REAL git mission branch whose built code lives at skills/foo.sh and is
+# committed at the branch tip. Every ticket's quarantined suite resolves that
+# target RELATIVE TO ITS OWN location (the depth-1 assumption) and asserts an
+# expected value. t-001 asserts $t001Expect; the rest assert $builtValue — so
+# passing builtValue != t001Expect simulates a later ticket regressing ONLY the
+# earlier ticket t-001's locked contract at the tip.
+new_repo_fullsuite_branch() { # builtValue  t001Expect
+  local builtValue="$1" t001Expect="$2"
+  local repo; repo="$(new_repo_with_implement_mission)"
+  local m="$repo/.git/lcars/missions/$MID"
+  ( cd "$repo"
+    git checkout -q -b feat/fs >/dev/null 2>&1 || git checkout -q feat/fs
+    mkdir -p skills
+    printf '#!/usr/bin/env bash\necho %s\n' "$builtValue" >skills/foo.sh
+    git add -A && git commit -q -m "build foo.sh at $builtValue"
+  )
+  set_state_branch "$repo" feat/fs
+  local id want
+  for id in t-001 t-002 t-003 t-004; do
+    want="$builtValue"; [ "$id" = t-001 ] && want="$t001Expect"
+    mkdir -p "$m/tickets/$id/tests"
+    cat >"$m/tickets/$id/tests/${id}.test.sh" <<EOF
+#!/usr/bin/env bash
+here="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+out="\$(bash "\$here/../skills/foo.sh")"
+[ "\$out" = "$want" ]
+EOF
+    write_result "$m/tickets/$id/result.json" "$id" true 2
+  done
+  echo "$repo"
+}
+
+# --- FS5: clean mission, portable depth-1-relative tests → advance to verify --
+# The defect repro: every ticket is genuinely green at the branch tip, but each
+# test resolves its target via `$here/../skills/foo.sh`. The gate must NOT false-
+# flag a regression — it must re-run the suites where ../ is the repo root.
+repoFS5="$(new_repo_fullsuite_branch v2 v2)"; make_gh_stub "$repoFS5/gh"
+export GH_LOG="$repoFS5/gh.log"; : >"$GH_LOG"
+rcFS5=0
+( cd "$repoFS5" && LCARS_TEST_CMD="bash $BRANCH_RUNNER" LCARS_GH_BIN="$repoFS5/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS5.txt 2>&1 ) || rcFS5=$?
+check "FS5. clean mission with depth-1-relative tests advances (no false regression)" \
+  "[ '$rcFS5' -eq 0 ]"
+check "FS5. advances the stage to verify" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoFS5")'"
+check "FS5. leaks no worktree dir under the mission state" \
+  "[ ! -d '$repoFS5/.git/lcars/missions/$MID/fullsuite-wt' ]"
+
+# --- FS6: genuine regression at the tip → fail, naming the regressed ticket ---
+# Built code at the branch tip outputs v3; only t-001's locked suite still
+# expects v2 (a later ticket regressed it). Run from the clean tip the suite
+# genuinely fails — the gate must FAIL LOUD and name t-001.
+repoFS6="$(new_repo_fullsuite_branch v3 v2)"; make_gh_stub "$repoFS6/gh"
+export GH_LOG="$repoFS6/gh.log"; : >"$GH_LOG"
+rcFS6=0
+( cd "$repoFS6" && LCARS_TEST_CMD="bash $BRANCH_RUNNER" LCARS_GH_BIN="$repoFS6/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outFS6.txt 2>&1 ) || rcFS6=$?
+check "FS6. a genuine cross-ticket regression at the tip still FAILS" \
+  "[ '$rcFS6' -ne 0 ]"
+check "FS6. names the regressed earlier ticket (t-001)" \
+  "grep -q 't-001' '$repoFS6/outFS6.txt'"
+check "FS6. surfaces that a LATER ticket caused the regression" \
+  "grep -qiE 'later|regress' '$repoFS6/outFS6.txt'"
+check "FS6. stays at implement on a real regression" \
+  "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoFS6")'"
+check "FS6. cleans up its worktree (no leak under mission state)" \
+  "[ ! -d '$repoFS6/.git/lcars/missions/$MID/fullsuite-wt' ]"
 
 # ==========================================================================
 echo

@@ -21,6 +21,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_INIT_SCRIPT:-$REPO_ROOT/skills/lcars-init/init.sh}"
 
@@ -152,6 +160,38 @@ export GH_EXISTING="$repoTCh/existing"; : >"$GH_EXISTING"
 ( cd "$repoTCh" && LCARS_TEST_CMD='pytest ${LCARS_TESTS_DIR:-.}' LCARS_CLAUDE_BIN="$repoTCh/claude" LCARS_GH_BIN="$repoTCh/gh" bash "$SCRIPT" >outTCh.txt 2>&1 )
 check "2b. a \$LCARS_TESTS_DIR-honouring explicit command is NOT flagged" \
   "! grep -qiE 'does not.*honour|ignores .LCARS_TESTS_DIR|will run the repo' '$repoTCh/outTCh.txt'"
+
+# --- Behaviour 2c: a bash tests/run.sh runner is detected (BUG-009) ---------
+# A copy of LCARS has no npm/pytest/cargo/go/Makefile-test, only an executable
+# bash test runner at tests/run.sh. init must recommend a testCommand that ALREADY
+# honours $LCARS_TESTS_DIR so the red gate is satisfied with no hand-edit.
+repoTCb="$(new_repo)"
+mkdir -p "$repoTCb/tests"
+printf '#!/usr/bin/env bash\necho runner\n' >"$repoTCb/tests/run.sh"
+make_claude_stub "$repoTCb/claude"; make_gh_stub "$repoTCb/gh"
+export GH_LOG="$repoTCb/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoTCb/existing"; : >"$GH_EXISTING"
+( cd "$repoTCb" && LCARS_CLAUDE_BIN="$repoTCb/claude" LCARS_GH_BIN="$repoTCb/gh" bash "$SCRIPT" >outTCb.txt 2>&1 )
+check "2c. detects a bash tests/run.sh runner as the testCommand" \
+  "grep -q '\"testCommand\":.*tests/run.sh' '$repoTCb/.git/lcars/config.json'"
+check "2c. the bash-runner default HONOURS \$LCARS_TESTS_DIR (red-gate-scopable)" \
+  "grep -q 'LCARS_TESTS_DIR' '$repoTCb/.git/lcars/config.json'"
+check "2c. the bash-runner default is NOT flagged as dir-ignoring" \
+  "! grep -qiE 'does not.*honour|ignores .LCARS_TESTS_DIR|will run the repo' '$repoTCb/outTCb.txt'"
+
+# BUG (S47 regression): init must write VALID JSON. The bash-runner default
+# embeds inner double-quotes (`"${LCARS_TESTS_DIR:-tests}"`); if init does not
+# JSON-escape them, config.json becomes invalid and the jq-free reader truncates
+# the value to `bash tests/run.sh `, killing the red-gate command on arrival.
+check "2c. config.json is VALID JSON after a bash-runner init" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$repoTCb/.git/lcars/config.json'"
+# The REAL regression guard: read the value back through lcars_config_get (same
+# jq-free reader the Implement red gate uses) — it must return the FULL command
+# INCLUDING the inner quotes, not a truncated `bash tests/run.sh `.
+check "2c. testCommand reads back as the FULL bash-runner command (incl. inner quotes)" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$repoTCb/.git/lcars/config.json' testCommand )\" = 'bash tests/run.sh \"\${LCARS_TESTS_DIR:-tests}\"' ]"
+check "2c. the read-back testCommand is gate-scopable (references \$LCARS_TESTS_DIR)" \
+  "printf '%s' \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$repoTCb/.git/lcars/config.json' testCommand )\" | qgrep -q 'LCARS_TESTS_DIR'"
 
 # --- Behaviour 3: detects CONTEXT.md --------------------------------------
 repo="$(new_repo)"

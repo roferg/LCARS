@@ -29,6 +29,14 @@
 
 set -uo pipefail
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# its first match and closes the pipe; a still-writing upstream producer then
+# takes SIGPIPE and exits non-zero, and under `set -o pipefail` that flips a
+# genuine match into a phantom assertion failure (timing/load-sensitive — it bit
+# the worker-prompt assertions only under the full back-to-back suite). Draining
+# first removes the race; exit status and output are otherwise identical to grep.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LCARS="${LCARS_SCRIPT:-$REPO_ROOT/skills/lcars/lcars.sh}"
 RESOLVE="${LCARS_RESOLVE_BIN:-$REPO_ROOT/skills/lcars/resolve.sh}"
@@ -246,7 +254,7 @@ check "8. drive route SKILL.md keeps the final summary + isolation markers byte-
 # Any background/detached mention that survives MUST be flagged OPTIONAL, never
 # the required/default path.
 check "8. drive route SKILL.md marks any detached/background mention optional, not the default" \
-  "! grep -qiE 'background|detached' '$LCARS_SKILL' || grep -qiE 'optional' '$LCARS_SKILL'"
+  "! grep -qiE 'background|detached' '$LCARS_SKILL' || qgrep -qiE 'optional' '$LCARS_SKILL'"
 
 # ==========================================================================
 echo

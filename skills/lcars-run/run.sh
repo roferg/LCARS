@@ -93,7 +93,9 @@ die() { printf 'lcars run: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same style as file.sh / status.sh) ----------
 json_str() { # file key  → first matching "key": "value"
-  sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
+  sed -En "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" "$1" \
+    | head -1 \
+    | sed 's/\\"/"/g; s/\\\\/\\/g'
 }
 json_raw() { # file key  → first matching bare token (number/null/bool)
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1
@@ -1514,7 +1516,7 @@ red_gate_ok() { # quarantined-tests-dir
     # proves NOTHING about the quarantined tests. BLOCK loud — never accept an
     # UNPROVEN suite. Otherwise the command reacted → genuine red → accept (as before).
     if [ "$ignored_var" = yes ]; then
-      reason="RED GATE — the configured test command exited non-zero (red) but exits IDENTICALLY (same rc AND output) with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran a FIXED target (the repo's own suite), not the quarantined tests. A red on the repo's own already-failing suite proves NOTHING about the new tests, so the harness refuses to hand them on. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
+      reason="RED GATE — the configured test command exited non-zero (red) but exits IDENTICALLY (same rc AND output) with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran a FIXED target (the repo's own suite), not the quarantined tests. A red on the repo's own already-failing suite proves NOTHING about the new tests, so the harness refuses to hand them on. Command run: $cmd. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
       printf '  ✗ %s\n' "$reason" >&2
       if [ -n "$RED_GATE_SIGNAL" ]; then
         {
@@ -1536,11 +1538,11 @@ red_gate_ok() { # quarantined-tests-dir
     # Identical GREEN with NO quarantined tests present → the command did not react
     # to $LCARS_TESTS_DIR. It ran a fixed target (the repo's existing suite), so we
     # CANNOT prove the quarantined tests are what passed. BLOCK loud — never pass.
-    reason="RED GATE — the configured test command exited 0 (green) but ALSO exits 0 with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran the repo's EXISTING suite, not the quarantined tests. The harness cannot prove the new tests fail-first, so it refuses to hand them on. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
+    reason="RED GATE — the configured test command exited 0 (green) but ALSO exits 0 with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran the repo's EXISTING suite, not the quarantined tests. The harness cannot prove the new tests fail-first, so it refuses to hand them on. Command run: $cmd. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
   else
     # The runner reacted to the var (empty dir → different result) yet the quarantined
     # tests passed → a genuine green-on-nothing contract. Reject as proving nothing.
-    reason="RED GATE — the quarantined suite PASSED with no implementation (exit 0). A contract that is green before anything is built proves nothing; the tests must FAIL first. Runner output (quarantined run):
+    reason="RED GATE — the quarantined suite PASSED with no implementation (exit 0). A contract that is green before anything is built proves nothing; the tests must FAIL first. Command run: $cmd. Runner output (quarantined run):
 $(printf '%s' "$out" | tail -20)"
   fi
   printf '  ✗ %s\n' "$reason" >&2
@@ -1812,6 +1814,93 @@ EOF
   exit 0
 }
 
+# --- GUARDRAIL 4: the full-suite regression gate (BUG-013) ------------------
+# Every per-ticket gate (ticket_green, the wave loop, the impl-advance precheck)
+# only ever checks each ticket's OWN quarantined suite. Nothing re-runs ALL the
+# accumulated ticket suites TOGETHER against the fully-built repo, so a LATER
+# ticket can satisfy its own suite (green) while REGRESSING an EARLIER ticket's
+# locked contract on the same input — and because no gate re-runs the earlier
+# suite, the wave completes "green" with the regression invisible.
+#
+# This gate closes that hole. Run at the Verify precheck AFTER every ticket is
+# individually green, it re-runs EVERY completed ticket's quarantined suite
+# against the current (fully-built) repo, reusing the red gate's runner contract:
+# the configured testCommand run from $REPO_ROOT with $LCARS_TESTS_DIR pointing at
+# the ticket's quarantined tests (the runner honours that var as of BUG-009). A
+# ticket's suite is "still green" iff its run exits 0; any earlier suite that is
+# no longer green is a regression a LATER ticket introduced. It is purely ADDITIVE
+# — it does not weaken the per-ticket red/green gate, the immutable-test snapshot,
+# or the test-quality check. With NO runner configured it SKIPS LOUD (never a
+# false pass and never a false fail), matching the red gate's no-runner stance.
+FULL_SUITE_SIGNAL=""   # caller may point this at a file to capture the regression detail
+full_suite_gate() { # ordered ticketId...
+  local cmd; cmd="$(resolve_test_cmd)"
+  if [ -z "$cmd" ]; then
+    # NO RUNNER: the same documented degradation as the red gate. We cannot
+    # re-check earlier tickets for regressions, so we SKIP LOUD — never a false
+    # pass, and (critically) never a false FAIL of a runner-less repo.
+    printf '  ⚠ FULL-SUITE GATE SKIPPED — no test command (set `testCommand` in .git/lcars/config.json or $LCARS_TEST_CMD). The harness cannot re-run earlier tickets to catch a cross-ticket regression without a runner; configure one to close this gap.\n' >&2
+    return 0
+  fi
+  # BUG-013 (the false-regression defect): a ticket's quarantined suite was
+  # green-validated against a tree where the built code sits at the repo root and
+  # the test file sits at a DEPTH-1 dir (`tests/`), so a portable test that
+  # resolves its target relative to its OWN location — e.g.
+  # `bash "$(dirname "${BASH_SOURCE[0]}")/../skills/foo.sh"` — finds it at
+  # `<root>/skills/foo.sh`. Re-running that same test from the DETACHED quarantine
+  # dir `tickets/<id>/tests/` makes `$here/..` resolve to `tickets/<id>/`, NOT the
+  # repo root, so the target is "not found" and the test exits non-zero — a FALSE
+  # regression. To re-run each suite in the SAME condition it was locked under, we
+  # cut ONE clean detached worktree at the mission-branch tip (all tickets' code
+  # present) and stage each ticket's tests at a DEPTH-1 dir under that worktree
+  # root, so their relative target-resolution works exactly as when they were green.
+  local branch; branch="$(json_str "$STATE" branch)"
+  local wt_base="$MISSION_DIR/fullsuite-wt" wt=""
+  wt="$(make_ticket_worktree "$wt_base" "$branch" "all")"
+  local id tdir rc regressed=""
+  if [ -n "$wt" ]; then
+    # WORKTREE MODE: a real mission branch exists. Re-run each suite from the clean
+    # tip with the tests at a depth-1 dir, so relative-to-self target resolution
+    # behaves as it did at green-time.
+    local stage_dir="$wt/.lcars-fullsuite"
+    for id in "$@"; do
+      [ -n "$id" ] || continue
+      tdir="$(ticket_dir "$id")/tests"
+      # Defensive: a green ticket should always have a quarantined suite. If one is
+      # missing we skip it rather than crash — we never INVENT a regression.
+      [ -d "$tdir" ] || continue
+      # Recreate the staging dir empty per ticket so suites never bleed together.
+      rm -rf "$stage_dir"; mkdir -p "$stage_dir"
+      ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
+      rc=0
+      ( cd "$wt" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
+      [ "$rc" -ne 0 ] && regressed="${regressed:+$regressed }$id"
+    done
+    rm -rf "$stage_dir" 2>/dev/null || :
+    # Clean up the worktree on EVERY exit path — never leak into the captain's
+    # `git worktree list` or working tree. Mirrors cleanup_ticket_worktrees.
+    "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+    rm -rf "$wt_base" 2>/dev/null || :
+  else
+    # FALLBACK (no mission branch — a branch-less / local-only mission): keep the
+    # original in-tree behaviour, running each suite from $REPO_ROOT.
+    for id in "$@"; do
+      [ -n "$id" ] || continue
+      tdir="$(ticket_dir "$id")/tests"
+      [ -d "$tdir" ] || continue
+      rc=0
+      ( cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
+      [ "$rc" -ne 0 ] && regressed="${regressed:+$regressed }$id"
+    done
+  fi
+  [ -z "$regressed" ] && return 0
+  local detail="FULL-SUITE GATE — these earlier ticket suite(s) no longer pass against the fully-built repo: ${regressed}. Each was green when built, so a LATER ticket's produced code REGRESSED its locked contract. The Mission is NOT shippable until the regression is resolved (fix the later ticket or re-open the regressed ticket). Command run: $cmd."
+  printf '  ✗ %s\n' "$detail" >&2
+  [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$detail" >"$FULL_SUITE_SIGNAL"
+  return 1
+}
+
 # --- subcommand: impl-advance ----------------------------------------------
 # The final gate: only when EVERY ticket in EVERY wave has a passing result does
 # the Mission move to Verify. While any ticket is unfinished it refuses and names
@@ -1827,14 +1916,29 @@ cmd_impl_advance() {
   local table; table="$(parse_waves_table "$waves")"
   [ -n "$table" ] || die "waves.json has no tickets — nothing to implement."
 
-  local w id
+  local w id ordered=""
   while IFS=$'\t' read -r w id; do
     [ -n "$id" ] || continue
     ticket_green "$id" \
       || die "ticket $id (wave $w) is not green yet — every ticket must pass before Verify. Run \`lcars run $MISSION_ID\` to finish the open waves."
+    ordered="${ordered:+$ordered }$id"
   done <<EOF
 $table
 EOF
+
+  # GUARDRAIL 4 (BUG-013): every ticket is individually green, but that only
+  # proves each ticket's OWN suite passes. Re-run EVERY completed ticket's
+  # quarantined suite together against the fully-built repo to catch a later
+  # ticket that regressed an earlier ticket's locked contract. Refuse Verify on
+  # any regression, naming the regressed earlier ticket.
+  local fssig; fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
+  if ! FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
+    local why=""; [ -f "$fssig" ] && why="
+$(cat "$fssig")"
+    rm -f "$fssig"
+    die "the Mission cannot advance to Verify — a cross-ticket regression was detected by the full-suite gate.$why"
+  fi
+  rm -f "$fssig"
 
   # All green — clear any awaiting-human gate (defensive, like validate-advance)
   # and advance the Mission to Verify, keeping stage and label in step.
@@ -2871,6 +2975,21 @@ replay_ticket_commit() { # branch  sha  ticket
   fi
   ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --allow-empty "$sha" >/dev/null 2>&1 ) || {
     ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --abort >/dev/null 2>&1 ) || :
+    # `cherry-pick --abort` restores only TRACKED state. Any UNTRACKED residue the
+    # just-failed pick left at one of THIS commit's paths — a NEW file the pick
+    # staged then could not fully apply, or a path it refused to overwrite ("would
+    # be overwritten by merge", so --abort is a no-op) — survives. The serial
+    # rebuild then produces a clean commit ADDING that same path, whose re-apply
+    # git refuses ("untracked working tree files would be overwritten") → the wave
+    # hard-fails instead of degrading to serial. Clear ONLY this commit's own paths
+    # that are now untracked, so the rebuilt commit re-applies — never the captain's
+    # unrelated untracked files (we touch nothing outside $sha's changed paths).
+    ( cd "$REPO_ROOT" && "$GIT_BIN" diff-tree --no-commit-id --name-only -r "$sha" 2>/dev/null \
+        | while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            [ -n "$("$GIT_BIN" ls-files --others --exclude-standard -- "$p" 2>/dev/null)" ] \
+              && rm -f -- "$p"
+          done ) || :
     return 1
   }
   return 0
@@ -2884,8 +3003,10 @@ replay_ticket_commit() { # branch  sha  ticket
 # compose on top of them exactly like the old serial in-tree path, with no merge.
 # On green it writes a NEW .commit-sha (a commit whose parent IS the current tip),
 # which we cherry-pick cleanly. Returns 0 on a clean replay; non-zero if the
-# rebuild flagged the human (awaitingHuman set) or hard-failed (caller routes the
-# escalation / hard-fail after the unconditional worktree cleanup).
+# rebuild flagged the human (awaitingHuman set), produced an EMPTY diff (BUG-016 —
+# it failed to reproduce a change we KNOW was non-empty, so it escalates to the
+# same awaiting-human gate rather than silently dropping the ticket), or hard-failed
+# (caller routes the escalation / hard-fail after the unconditional worktree cleanup).
 rebuild_ticket_on_tip() { # base-dir  branch  ticket
   local base="$1" branch="$2" t="$3"
   # Drop the stale concurrent outcome so we read the rebuild's fresh result.
@@ -2898,9 +3019,31 @@ rebuild_ticket_on_tip() { # base-dir  branch  ticket
   # it to the gate. A hard failure (no result) returns non-zero with no .commit-sha.
   [ "$irc" -eq 0 ] || return 1
   local sha; sha="$(cat "$(ticket_dir "$t")/.commit-sha" 2>/dev/null || true)"
-  # No commit (e.g. the rebuild produced no file changes) → nothing to replay; the
-  # ticket is still green on record, so this is a clean (empty) outcome.
-  [ -n "$sha" ] || return 0
+  # No commit from the rebuild (BUG-016). We ONLY reach a rebuild AFTER the
+  # concurrent (frozen-base) build produced a REAL commit that CONFLICTED on replay
+  # — so the ticket's change is genuinely non-empty (a truly empty ticket had no
+  # .commit-sha to cherry-pick and never entered this path). An empty-diff rebuild
+  # therefore means the Implementer did NOT reproduce that change on the updated tip
+  # — its locked tests still demand code that did not land. Silently `return 0`-ing
+  # here DROPS the ticket: its work never reaches the branch and the Mission either
+  # dead-ends at the BUG-013 full-suite gate or advances missing the ticket, with no
+  # recourse. Route it to the SAME awaiting-human gate a cap-exhausted ticket gets
+  # (pending question + label), so the caller's post-loop check parks it for `lcars
+  # respond` — never a silent drop, never a bare die. Return non-zero so the caller
+  # routes via the awaitingHuman flag (the prior green siblings already committed).
+  if [ -z "$sha" ]; then
+    local q; q="$(mktemp)"
+    printf 'Ticket %s could not be recomposed on the current tip: after a same-file replay conflict its serial rebuild produced NO file changes, so the change it made in the concurrent build never landed. Its locked tests still require that code — the ticket needs a human.\n' \
+      "$t" >"$q"
+    write_pending "$q" "implement"
+    state_set_raw awaitingHuman true
+    state_set_str pendingQuestion "Ticket $t could not be recomposed after a same-file replay conflict (empty rebuild) — needs a human."
+    gh_relabel "lcars:awaiting-human" ""
+    rm -f "$q"
+    emit_event ticket_rebuild_empty implement \
+      "ticket $t rebuilt empty on the tip after a replay conflict; escalating to awaiting-human" "ticket=$t"
+    return 1
+  fi
   replay_ticket_commit "$branch" "$sha" "$t"
 }
 

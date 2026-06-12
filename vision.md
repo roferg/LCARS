@@ -154,17 +154,18 @@ sequenceDiagram
 
 The separation is adversarial by design. The Test Writer cannot write easy tests it knows will pass, because it doesn't know who is implementing. The Implementer cannot skip or weaken tests, because they arrive as a constraint. A passing test suite means the ticket is done.
 
-Within a Wave, independent tickets build **concurrently** — each Test Writer → Implementer pair runs in its own isolated git worktree off the Mission branch, so parallel file writes and test runs never collide. As a ticket goes green its commit is replayed serially onto the Mission branch in plan order, so the observable history is unchanged: exactly one commit per ticket, with its summary, in order. A bounded concurrency cap (`LCARS_MAX_PARALLEL`) keeps a wide Wave — and the Research fan-out — from spawning unboundedly.
+Within a Wave, independent tickets build **concurrently** — each Test Writer → Implementer pair runs in its own isolated git worktree off the Mission branch, so parallel file writes and test runs never collide. As a ticket goes green its commit is replayed serially onto the Mission branch in plan order, so the observable history is unchanged: exactly one commit per ticket, with its summary, in order. When two tickets in the same Wave touch the **same file**, the second can't replay cleanly onto the first, so the Harness rebuilds it serially on the current tip with its locked tests — a fully-overlapping Wave degrades gracefully toward serial and every ticket's change still lands, never silently dropped. A bounded concurrency cap (`LCARS_MAX_PARALLEL`) keeps a wide Wave — and the Research fan-out — from spawning unboundedly.
 
 To keep each cold worker from re-exploring the repo from scratch, Plan and Schedule attach a per-ticket **context manifest** — the relevant files, their interface *signatures* (skeletons, not bodies), and the ADRs the ticket touches — and the Harness maintains a durable **repo pack** (how to run the tests, the conventions, an architecture summary) refreshed each Wave. The Test Writer and Implementer read these instead of cold-walking the tree; neither ever carries the implementation to write, and neither reaches a Research Agent.
 
 As each ticket goes green and commits, its sub-issue is relabelled `lcars:done` and **closed** — so the board reflects real per-ticket progress while a Wave is still running, instead of a pile of open issues that only clears at the end.
 
-The Harness — not the LLMs — enforces three guardrails that make the adversarial split hold:
+The Harness — not the LLMs — enforces four guardrails that make the adversarial split hold:
 
 - **Red gate.** The Test Writer's tests must actually *fail* before the Implementer is allowed to run. The gate evaluates the Test Writer's tests **in isolation** — only that quarantined suite, never the repo's existing passing tests — so a contract that is green before anything is built is always caught, even in a repo whose own suite is green. A rejection is never a silent stall: the Harness reports *why* and feeds that signal into the next Test-Writer attempt, so it writes a genuinely failing test instead of blindly retrying.
 - **Immutable tests.** The Implementer cannot modify the test files; they are locked as the contract. Green is earned by implementing, never by editing the tests.
 - **Test quality.** A light check guards against a sandbagging Test Writer handing over a contract that proves nothing.
+- **Full-suite green gate.** Passing a ticket's own locked tests is not enough — its commit must also leave the **entire** repo suite green, so a later ticket can't silently regress an earlier one's behaviour. A cross-ticket regression fails the Wave loudly instead of slipping through to Verify.
 
 These live in the deterministic driver, because an LLM rewarded for a green suite will otherwise game the contract.
 
@@ -174,7 +175,7 @@ When all Waves are complete, the human reviews the Mission. This is a full inspe
 
 ### 8. Done
 
-The human requests a PR. The Harness opens it with a `Closes #` directive for the Mission's own issue, so that issue closes when the PR is **merged** — the close is tied to the merge event, not to approval. (The stage label moves to `lcars:done` at approval; the issue itself stays open until the merge.) The human merges, the branch is cleaned up, and the card moves to Done on the Kanban.
+The human requests a PR. The Harness opens it with a body that summarises the Mission for a reviewer — a user-facing summary above the technical detail and a per-Wave manifest of the tickets — and a `Closes #` directive for the Mission's own issue, so that issue closes when the PR is **merged** — the close is tied to the merge event, not to approval. (The stage label moves to `lcars:done` at approval; the issue itself stays open until the merge.) The human merges, the branch is cleaned up, and the card moves to Done on the Kanban.
 
 ---
 
@@ -363,7 +364,7 @@ Each of the 11 tickets gets a Test Writer + Implementer pair. Tickets within a w
 
 > *"Found two bugs. XP isn't being awarded when a video is marked complete — only quiz completions trigger it. Also, the leaderboard has a visible flicker on first page load before the data comes in. These are against the gamification mission."*
 
-The Harness extracts two distinct bugs, creates a fast-tracked Mission for each, and links both to the open gamification Mission. No second step required.
+The Harness extracts two distinct bugs, creates a fast-tracked Mission for each, and links both to the open gamification Mission as native GitHub sub-issues. No second step required.
 
 The two bug Missions and the original gamification Mission now run in parallel on separate branches:
 
@@ -389,7 +390,7 @@ flowchart LR
     ML -. "2 bugs extracted" .-> BUG2
 ```
 
-Both bug Missions fast-track in parallel: thin PRDs, zero research questions, one issue each. They run concurrently with each other and with the in-progress gamification Mission. The Kanban Board shows all three cards simultaneously. Bug Missions merge as soon as they're verified; the gamification Mission continues uninterrupted.
+Both bug Missions fast-track in parallel: thin PRDs, zero research questions, one issue each. They run concurrently with each other and with the in-progress gamification Mission. The Kanban Board shows all three cards simultaneously. A bug logged against a Mission that has **already merged** rides its own branch and merges as soon as it's verified; a bug logged against a Mission still **in flight** lands its fix on that Mission's branch, so the fix ships with the parent rather than stranding on a branch whose base never merges. Either way the gamification Mission continues uninterrupted.
 
 ---
 

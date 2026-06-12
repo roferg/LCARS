@@ -91,13 +91,81 @@ pr_title() {
   printf '%s' "${t:-$MISSION_ID}"
 }
 
-# --- PR body: a per-wave summary of the tickets the Mission shipped ----------
-# Reads waves.json (wave/id, in order) and looks each ticket's title up in
-# approved-plan.json. Line-oriented and jq-free, like the rest of LCARS.
+# --- user-facing summary: PRD Goal + Acceptance Criteria --------------------
+# Reads prd.md and renders what changed from the user's point of view: the one
+# `**Goal:**` sentence plus the `- ` bullets under `**Acceptance Criteria:**`
+# (up to the next `**…:**` header). jq-free, line-oriented. Emits nothing when
+# prd.md is absent or yields neither a goal nor criteria, so callers can detect
+# "no summary" and fall back to the thin body.
+user_summary() {
+  local prd="$MISSION_DIR/prd.md"
+  [ -f "$prd" ] || return 0
+  local goal crit
+  goal="$(sed -n 's/^\*\*Goal:\*\*[[:space:]]*//p' "$prd" | head -1)"
+  crit="$(awk '
+    /^\*\*Acceptance Criteria:\*\*/ { grab=1; next }
+    grab && /^\*\*[^*]*:\*\*/       { grab=0 }
+    grab && /^-[[:space:]]/         { print }
+  ' "$prd")"
+  [ -n "$goal" ] || [ -n "$crit" ] || return 0
+  printf '## User-facing summary\n\n'
+  [ -n "$goal" ] && printf '%s\n' "$goal"
+  [ -n "$crit" ] && printf '\nAcceptance criteria:\n\n%s\n' "$crit"
+}
+
+# --- technical summary: ADRs (preferred) or commit subjects (fallback) ------
+# Primary source is adr.md — each `## ADR-NNN: <title>` paired with its
+# `**Decision:**` line. With no adr.md it degrades to the mission branch's
+# commit subjects (`$BASE..$BRANCH`, via $GIT_BIN so tests can stub it). Emits
+# nothing when neither source yields content. jq-free, line-oriented.
+tech_summary() {
+  local adr="$MISSION_DIR/adr.md" body=""
+  if [ -f "$adr" ]; then
+    body="$(awk '
+      /^## ADR-/ { sub(/^##[[:space:]]*/,""); titles[++n]=$0; next }
+      /^\*\*Decision:\*\*/ {
+        d=$0; sub(/^\*\*Decision:\*\*[[:space:]]*/,"",d)
+        if (n>0 && decisions[n]=="") decisions[n]=d
+        next
+      }
+      END {
+        for (i=1;i<=n;i++)
+          if (decisions[i] != "") printf "- **%s** — %s\n", titles[i], decisions[i]
+          else                    printf "- **%s**\n", titles[i]
+      }
+    ' "$adr")"
+  fi
+  if [ -z "$body" ] && [ -n "${BRANCH:-}" ]; then
+    local range="$BRANCH"
+    [ -n "${BASE:-}" ] && range="$BASE..$BRANCH"
+    body="$("$GIT_BIN" log --no-merges --format='- %s' "$range" 2>/dev/null)"
+  fi
+  [ -n "$body" ] || return 0
+  printf '## Technical summary\n\n'
+  printf '%s\n' "$body"
+}
+
+# --- PR body: user + technical summaries, then a per-wave ticket manifest ----
+# Leads with what changed for the user (PRD-derived) and the notable
+# implementation approach (ADR-/commit-derived), then keeps the existing
+# per-wave ticket list as the detail tail. Reads waves.json (wave/id, in order)
+# and looks each ticket's title up in approved-plan.json. Line-oriented and
+# jq-free, like the rest of LCARS. With no PRD to summarise it falls back to the
+# thin one-line summary the body used before BUG-014.
 pr_body() {
   local waves="$MISSION_DIR/waves.json" plan="$MISSION_DIR/approved-plan.json"
-  printf '## Summary\n\n'
-  printf 'Mission **%s** — implemented across its scheduled waves.\n' "$(pr_title)"
+  local us ts
+  us="$(user_summary)"
+  ts="$(tech_summary)"
+
+  if [ -n "$us" ]; then
+    printf '%s\n' "$us"
+  else
+    printf '## Summary\n\n'
+    printf 'Mission **%s** — implemented across its scheduled waves.\n' "$(pr_title)"
+  fi
+  [ -n "$ts" ] && printf '\n%s' "$ts"
+
   [ -f "$waves" ] || return 0
 
   awk -v plan="$plan" '
@@ -196,10 +264,18 @@ command -v "$GH_BIN" >/dev/null 2>&1 \
 # open/closed LIFECYCLE is decoupled from it and stays OPEN until the human
 # merges. A local-only mission (no parent issue) simply passes no parent --closes.
 CLOSES=()
+seen_closes=" "
+add_close() { # n  — append `--closes <n>` once per distinct issue number
+  local n="$1"
+  case "$n" in ''|null) return 0 ;; esac
+  case "$seen_closes" in *" $n "*) return 0 ;; esac
+  seen_closes="$seen_closes$n "
+  CLOSES+=(--closes "$n")
+}
 PARENT="$(json_raw "$STATE" githubIssue)"
-case "$PARENT" in ''|null) : ;; *) CLOSES+=(--closes "$PARENT") ;; esac
+add_close "$PARENT"
 while IFS= read -r sub; do
-  [ -n "$sub" ] && CLOSES+=(--closes "$sub")
+  add_close "$sub"
 done < <(sub_issues)
 
 PR_URL="$(host pr-create --head "$BRANCH" --base "$BASE" --title "$TITLE" --body "$BODY" "${CLOSES[@]}")"
