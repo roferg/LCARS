@@ -4951,6 +4951,173 @@ check "B15-5. the earlier green sibling t-001's commit survives the escalation" 
 
 # ==========================================================================
 echo
+echo "lcars run — BUG-016: an empty-diff serial rebuild is never silently dropped"
+#
+# Ground truth of BUG-016: the intra-wave conflict→serial-rebuild fallback builds
+# each pending ticket of a wave CONCURRENTLY off the FROZEN wave base, then replays
+# each green ticket's commit onto the mission branch in plan order. Two tickets
+# editing the SAME line of a shared file cannot both cherry-pick — the 2nd CONFLICTS
+# — so the harness REBUILDS that ticket serially on the CURRENT tip (which now
+# carries the prior ticket's edit), reusing its locked tests, and cherry-picks the
+# fresh commit. We only ever reach that rebuild AFTER the concurrent build produced
+# a REAL commit (a non-empty change) that conflicted — so the ticket's change is
+# genuinely non-empty.
+#
+# THE BUG: when the serial rebuild's Implementer produces NO file changes (it failed
+# to reproduce the change on the updated tip), commit_ticket writes no .commit-sha
+# and rebuild_ticket_on_tip used to `return 0` on the missing sha — which the wave
+# loop treats as a successful `continue`. So a ticket whose locked tests REQUIRE new
+# code is SILENTLY DROPPED: its change never lands and the Mission either dead-ends
+# at the BUG-013 full-suite gate or (with no runner) advances to verify missing the
+# ticket's work — with NO recourse path.
+#
+# THE FIX: an empty-diff rebuild AFTER a replay conflict is a failure to reproduce,
+# never a clean outcome. Route it to the SAME awaiting-human gate a cap-exhausted
+# ticket gets (label + pending question), so the captain can unstick it via `lcars
+# respond` — never a silent drop, never a bare die. Earlier green siblings keep
+# their commits; success paths (disjoint replay, residue rebuild, flagged park) are
+# unchanged.
+#
+#   B16-1  a same-file wave whose 2nd ticket conflicts on replay AND rebuilds EMPTY
+#          escalates to awaiting-human (NOT a silent drop, NOT advanced to verify);
+#          the earlier green sibling survives and the tree/worktrees are clean.
+#   B16-2  guard — a DISJOINT wave still replays both directly (no rebuild).
+#   B16-3  guard — the BUG-015 residue wave still rebuilds serially and lands both.
+#   B16-4  guard — a genuinely flagged ticket still PARKS at awaiting-human.
+
+# A worker whose implementer replaces the SAME PLACEHOLDER token in the shared file
+# for every ticket. Both t-001 and t-002 edit the SAME line off the FROZEN base, so
+# t-002's frozen-base commit CONFLICTS on cherry-pick. Crucially the serial rebuild
+# runs on the TIP, where PLACEHOLDER is already gone (t-001 replaced it) — the sed
+# matches NOTHING → the rebuild produces NO file change → an EMPTY rebuild commit.
+# t-002 adds no other file, so the empty diff is total (the BUG-016 trigger).
+make_worker_stub_bug16() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="$2"; shift 2;; --allowedTools) shift 2;; *) shift;; esac; done
+out="$LCARS_WORK_OUT"
+tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+tid="${tid:-t-001}"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("works", () => expect(true).toBe(true))\n' >"$out/tests/${tid}.test.js" ;;
+  implement-implementer)
+    f="src/dispatch.js"
+    # Replace the SAME placeholder line -> a real content conflict on replay. On the
+    # serial rebuild the tip no longer has PLACEHOLDER, so this is a no-op (empty diff).
+    sed -i.bak "s/PLACEHOLDER/handle_${tid}(x)/" "$f" && rm -f "$f.bak"
+    cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid}", "passed": true, "attempts": 1, "summary": "added ${tid}." }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A repo at implement, mission branch, with the shared PLACEHOLDER dispatcher
+# committed and NOTHING else untracked (so the clean-tree assertion is meaningful).
+new_repo_bug16() { # echoes repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && mkdir -p src \
+      && printf 'export function route(x){\n  return PLACEHOLDER;\n}\n' > src/dispatch.js \
+      && git add src/dispatch.js && git commit -qm seed \
+      && git checkout -q -b "lcars/$MID" )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  write_bug15_plan_json "$m/approved-plan.json"
+  write_bug15_waves_json "$m/waves.json"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dispatch cases",
+  "stage": "implement",
+  "branch": "lcars/$MID",
+  "githubIssue": 42
+}
+EOF
+  echo "$repo"
+}
+
+# --- B16-1: an empty-diff serial rebuild escalates (never silently drops) --------
+binB16="$TMPROOT/bug16bin"; rm -rf "$binB16"; mkdir -p "$binB16"
+make_worker_stub_bug16 "$binB16/worker"; make_gh_stub "$binB16/gh"
+export GH_LOG="$binB16/gh.log"; : >"$GH_LOG"
+repoB16="$(new_repo_bug16)"
+rcB16=0
+( cd "$repoB16" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB16/worker" LCARS_GH_BIN="$binB16/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB16/out.txt" 2>&1 ) || rcB16=$?
+sB16="$(state_of "$repoB16")"
+logB16="$( cd "$repoB16" && git log --format='%s' "lcars/$MID" )"
+check "B16-1. the empty-rebuild ticket is NOT silently dropped — it parks at awaiting-human" \
+  "grep -q '\"awaitingHuman\": *true' '$sB16'"
+check "B16-1. it stays at the implement stage (NOT advanced to verify with a lost ticket)" \
+  "grep -q '\"stage\": *\"implement\"' '$sB16'"
+check "B16-1. the awaiting-human label is applied (the human gate, not a bare die)" \
+  "grep -q 'add-label lcars:awaiting-human' '$binB16/gh.log'"
+check "B16-1. a pending question naming t-002 is recorded" \
+  "[ -f '$repoB16/.git/lcars/missions/$MID/pending.json' ] && grep -q 't-002' '$repoB16/.git/lcars/missions/$MID/pending.json'"
+check "B16-1. the earlier green sibling t-001's commit survives (never rolled back)" \
+  "printf '%s\n' \"$logB16\" | qgrep -q 'lcars(.*) t-001:'"
+check "B16-1. NO stray git worktrees remain after the escalation" \
+  "[ -z \"\$( cd '$repoB16' && git worktree list --porcelain | grep -iE 't-00[12]' )\" ] \
+   && [ ! -d '$repoB16/.git/lcars/missions/$MID/worktrees' ]"
+check "B16-1. the working tree is clean after the escalation (no stranded conflict)" \
+  "[ -z \"\$( cd '$repoB16' && git status --porcelain )\" ]"
+
+# --- B16-2: a DISJOINT wave still replays both directly — no rebuild (guard) ------
+binB16d="$TMPROOT/bug16dbin"; rm -rf "$binB16d"; mkdir -p "$binB16d"
+make_worker_stub_par "$binB16d/worker"; make_gh_stub "$binB16d/gh"
+repoB16d="$(new_repo_par)"
+rcB16d=0
+( cd "$repoB16d" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB16d/worker" LCARS_GH_BIN="$binB16d/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB16d/out.txt" 2>&1 ) || rcB16d=$?
+sB16d="$(state_of "$repoB16d")"
+evB16d="$repoB16d/.git/lcars/missions/$MID/events.jsonl"
+check "B16-2. a disjoint wave completes and advances (success path intact)" \
+  "[ '$rcB16d' -eq 0 ] && grep -q '\"stage\": *\"verify\"' '$sB16d'"
+check "B16-2. a disjoint wave triggers NO conflict-rebuild (replays both directly)" \
+  "[ ! -f '$evB16d' ] || ! grep -q 'ticket_replay_conflict' '$evB16d'"
+
+# --- B16-3: the BUG-015 residue wave still rebuilds serially and lands BOTH -------
+binB16r="$TMPROOT/bug16rbin"; rm -rf "$binB16r"; mkdir -p "$binB16r"
+make_worker_stub_bug15 "$binB16r/worker"; make_gh_stub "$binB16r/gh"
+export GH_LOG="$binB16r/gh.log"; : >"$GH_LOG"
+repoB16r="$(new_repo_bug15)"
+rcB16r=0
+( cd "$repoB16r" && LCARS_MAX_PARALLEL=2 \
+    LCARS_WORKER_BIN="$binB16r/worker" LCARS_GH_BIN="$binB16r/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB16r/out.txt" 2>&1 ) || rcB16r=$?
+sB16r="$(state_of "$repoB16r")"
+logB16r="$( cd "$repoB16r" && git log --format='%s' "lcars/$MID" )"
+check "B16-3. the residue rebuild still lands BOTH tickets and advances to verify" \
+  "[ '$rcB16r' -eq 0 ] && grep -q '\"stage\": *\"verify\"' '$sB16r' \
+   && printf '%s\n' \"$logB16r\" | qgrep -q 'lcars(.*) t-001:' \
+   && printf '%s\n' \"$logB16r\" | qgrep -q 'lcars(.*) t-002:'"
+
+# --- B16-4: a genuinely flagged ticket still PARKS at awaiting-human (guard) ------
+binB16f="$TMPROOT/bug16fbin"; rm -rf "$binB16f"; mkdir -p "$binB16f"
+make_worker_stub_samefile_flag "$binB16f/worker"; make_gh_stub "$binB16f/gh"
+export GH_LOG="$binB16f/gh.log"; : >"$GH_LOG"
+repoB16f="$(new_repo_samefile)"
+rcB16f=0
+( cd "$repoB16f" && LCARS_MAX_PARALLEL=3 \
+    LCARS_WORKER_BIN="$binB16f/worker" LCARS_GH_BIN="$binB16f/gh" \
+    bash "$SCRIPT" implement --mission "$MID" >"$binB16f/out.txt" 2>&1 ) || rcB16f=$?
+sB16f="$(state_of "$repoB16f")"
+logB16f="$( cd "$repoB16f" && git log --format='%s' "lcars/$MID" )"
+check "B16-4. a genuinely flagged ticket still parks at awaiting-human (never a bare die)" \
+  "grep -q '\"awaitingHuman\": *true' '$sB16f' && grep -q '\"stage\": *\"implement\"' '$sB16f'"
+check "B16-4. the earlier green sibling t-001's commit survives the flag escalation" \
+  "printf '%s\n' \"$logB16f\" | qgrep -q 'lcars(.*) t-001:'"
+
+# ==========================================================================
+echo
 echo "lcars run — BUG-013: the full-suite regression gate (impl-advance)"
 #
 # Ground truth of BUG-013: every Implement gate (ticket_green, the wave loop, the

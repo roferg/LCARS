@@ -3003,8 +3003,10 @@ replay_ticket_commit() { # branch  sha  ticket
 # compose on top of them exactly like the old serial in-tree path, with no merge.
 # On green it writes a NEW .commit-sha (a commit whose parent IS the current tip),
 # which we cherry-pick cleanly. Returns 0 on a clean replay; non-zero if the
-# rebuild flagged the human (awaitingHuman set) or hard-failed (caller routes the
-# escalation / hard-fail after the unconditional worktree cleanup).
+# rebuild flagged the human (awaitingHuman set), produced an EMPTY diff (BUG-016 —
+# it failed to reproduce a change we KNOW was non-empty, so it escalates to the
+# same awaiting-human gate rather than silently dropping the ticket), or hard-failed
+# (caller routes the escalation / hard-fail after the unconditional worktree cleanup).
 rebuild_ticket_on_tip() { # base-dir  branch  ticket
   local base="$1" branch="$2" t="$3"
   # Drop the stale concurrent outcome so we read the rebuild's fresh result.
@@ -3017,9 +3019,31 @@ rebuild_ticket_on_tip() { # base-dir  branch  ticket
   # it to the gate. A hard failure (no result) returns non-zero with no .commit-sha.
   [ "$irc" -eq 0 ] || return 1
   local sha; sha="$(cat "$(ticket_dir "$t")/.commit-sha" 2>/dev/null || true)"
-  # No commit (e.g. the rebuild produced no file changes) → nothing to replay; the
-  # ticket is still green on record, so this is a clean (empty) outcome.
-  [ -n "$sha" ] || return 0
+  # No commit from the rebuild (BUG-016). We ONLY reach a rebuild AFTER the
+  # concurrent (frozen-base) build produced a REAL commit that CONFLICTED on replay
+  # — so the ticket's change is genuinely non-empty (a truly empty ticket had no
+  # .commit-sha to cherry-pick and never entered this path). An empty-diff rebuild
+  # therefore means the Implementer did NOT reproduce that change on the updated tip
+  # — its locked tests still demand code that did not land. Silently `return 0`-ing
+  # here DROPS the ticket: its work never reaches the branch and the Mission either
+  # dead-ends at the BUG-013 full-suite gate or advances missing the ticket, with no
+  # recourse. Route it to the SAME awaiting-human gate a cap-exhausted ticket gets
+  # (pending question + label), so the caller's post-loop check parks it for `lcars
+  # respond` — never a silent drop, never a bare die. Return non-zero so the caller
+  # routes via the awaitingHuman flag (the prior green siblings already committed).
+  if [ -z "$sha" ]; then
+    local q; q="$(mktemp)"
+    printf 'Ticket %s could not be recomposed on the current tip: after a same-file replay conflict its serial rebuild produced NO file changes, so the change it made in the concurrent build never landed. Its locked tests still require that code — the ticket needs a human.\n' \
+      "$t" >"$q"
+    write_pending "$q" "implement"
+    state_set_raw awaitingHuman true
+    state_set_str pendingQuestion "Ticket $t could not be recomposed after a same-file replay conflict (empty rebuild) — needs a human."
+    gh_relabel "lcars:awaiting-human" ""
+    rm -f "$q"
+    emit_event ticket_rebuild_empty implement \
+      "ticket $t rebuilt empty on the tip after a replay conflict; escalating to awaiting-human" "ticket=$t"
+    return 1
+  fi
   replay_ticket_commit "$branch" "$sha" "$t"
 }
 
