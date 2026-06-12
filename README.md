@@ -92,7 +92,7 @@ flowchart LR
 | 4 | **Plan** | 🤖 auto | Decomposes the validated plan into small, independently testable tickets — each a vertical slice owning **one cohesive behavior**, sized by total **comprehension load** (code-to-read + tests + new code) against a tunable budget, not a flat line count. |
 | 5 | **Plan Review** | 🤖 auto | A *fresh* reviewer (no planning context) audits every ticket for slice, size, **coupling** (rejecting tickets whose criteria force changing behavior another ticket's tests pin — the real meaning of "too big"), testability, and dependencies. Loops back to Plan until clean; escalates after 3 rounds. |
 | 6 | **Schedule** | 🤖 auto | Builds the dependency graph into sequential **Waves** and opens one GitHub sub-issue per ticket, each **nested under the Mission's issue** (a single-ticket Mission reuses its own issue instead of opening a redundant one). |
-| 7 | **Implement** | 🤖 auto | Per ticket, an adversarial **Test Writer → Implementer** pair. Tests are written first, must fail (red gate), then are locked while the Implementer makes them pass. Independent tickets in a Wave build **concurrently** in isolated worktrees, committing serially in plan order. |
+| 7 | **Implement** | 🤖 auto | Per ticket, an adversarial **Test Writer → Implementer** pair. Tests are written first, must fail (red gate), then are locked while the Implementer makes them pass, and each commit must keep the **whole** repo suite green (no silent cross-ticket regression). Independent tickets in a Wave build **concurrently** in isolated worktrees, committing serially in plan order; same-file tickets rebuild serially so every change lands. |
 | 8 | **Verify** | 🧑 you | You read the diff, run the app, test the golden path — then **approve** (open the PR) or **send back** with feedback. |
 
 Four feedback loops keep it honest: Research → Align (too much ambiguity),
@@ -352,9 +352,14 @@ $ lcars approve lcars-20260604-001
   tests, so a green-on-nothing contract can't slip through even in a repo whose own
   suite is green (a rejection says *why* and grounds the next attempt). The test
   files are **locked** so green can't be reached by editing them, and a quality
-  check rejects assertion-free suites. Independent tickets in a Wave build
+  check rejects assertion-free suites, and every ticket commit must leave the
+  **whole** repo suite green — a later ticket that silently regresses an earlier
+  one's locked tests fails the Wave loudly instead of slipping through to Verify.
+  Independent tickets in a Wave build
   **concurrently** in isolated per-ticket worktrees (capped by `LCARS_MAX_PARALLEL`)
-  and commit serially in plan order, and each worker reads a per-ticket **context
+  and commit serially in plan order; when two tickets touch the **same file** the
+  second is rebuilt serially on the current tip so a fully-overlapping Wave still
+  lands every ticket's change instead of dropping one. Each worker reads a per-ticket **context
   manifest + repo pack** instead of cold-exploring the tree. Up to 5 attempts per
   ticket, then it flags you.
 - **Verify never auto-passes.** Auto-advance always stops here. Shipping is your
@@ -556,7 +561,7 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Schedule · Implement · Verify + PR (build & ship) | ✅ |
 | `lcars respond` (async human gate) | ✅ |
 | Per-stage isolation (cold subprocess workers) | ✅ |
-| Implement guardrails (red gate · immutable tests · quality) | ✅ |
+| Implement guardrails (red gate · immutable tests · quality · full-suite green gate) | ✅ |
 | Auto-advance + notifications (the unattended loop) | ✅ |
 | Human surface (`lcars` + `lcars answer`) | ✅ |
 | Mission Log (`lcars log`) | ✅ |

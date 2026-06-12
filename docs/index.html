@@ -219,9 +219,11 @@ flowchart TB
       <h3><span class="stage-num">7</span>Implement <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
       <p>Per ticket, an adversarial <strong>Test Writer → Implementer</strong>
       pair. Tests are written first, must fail (the red gate), then are locked
-      while the Implementer makes them pass. Independent tickets in a Wave build
+      while the Implementer makes them pass, and each commit must keep the
+      <strong>whole</strong> repo suite green so a later ticket can't silently
+      regress an earlier one. Independent tickets in a Wave build
       <strong>concurrently</strong> in isolated worktrees, committing serially in
-      plan order.</p>
+      plan order; same-file tickets rebuild serially so every change lands.</p>
 
       <div class="diagram-wrap">
         <div class="diagram-label">Implement — the adversarial split</div>
