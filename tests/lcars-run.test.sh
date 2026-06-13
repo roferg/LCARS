@@ -2177,8 +2177,18 @@ check "CN. the shared worker epilogue says to USE a file-creation/write tool" \
   "grep -qiE 'file-creation|file-writing|creation / file' '$REPO_ROOT/skills/lcars-run/run.sh'"
 check "CN. the epilogue forbids a reply-only answer (harness reads files only)" \
   "grep -qiE 'not put your answer in your reply|reply.only answer|reads ONLY the files' '$REPO_ROOT/skills/lcars-run/run.sh'"
+# No stage prompt may name a CLI or a concrete model. The logical TIER names
+# `sonnet`/`opus` are the one principled exception, and ONLY in estimate.md (S59):
+# the estimator's whole job is to EMIT a per-stage map of those logical tiers, so
+# its prompt must name them — they are LCARS's own vocabulary, not a CLI/model id
+# (estimate.md is independently asserted CLI-name-free just below). Every OTHER
+# stage prompt stays free of CLI names AND tier names.
 check "CN. no stage prompt names a CLI (the prompts stay CLI-NEUTRAL)" \
-  "! grep -riqE 'copilot|claude|anthropic|opus|sonnet|haiku' '$REPO_ROOT/skills/lcars-run/stages/'"
+  "! grep -riqE 'copilot|claude|anthropic|haiku' '$REPO_ROOT/skills/lcars-run/stages/'"
+check "CN. only estimate.md may name a logical tier (sonnet/opus); no other stage prompt does" \
+  "[ -z \"\$(grep -rilE 'opus|sonnet' '$REPO_ROOT/skills/lcars-run/stages/' | grep -v '/estimate.md\$')\" ]"
+check "CN. the estimator prompt itself names NO CLI or concrete model (only logical tiers)" \
+  "! grep -iqE 'copilot|claude|anthropic|haiku' '$REPO_ROOT/skills/lcars-run/stages/estimate.md'"
 check "CN. a single-worker stage (research-questions) tells it to CREATE the file" \
   "grep -qiE 'file-creation|file-writing|Create the file' '$REPO_ROOT/skills/lcars-run/stages/research-questions.md'"
 

@@ -2320,8 +2320,10 @@ alias_for_tier() { # cli tier → flag string (stdout; may be empty)
     claude)
       case "$tier" in sonnet) printf 'sonnet' ;; opus) printf 'opus' ;; esac ;;
     copilot)
-      # sonnet placeholder is finalized by S59's spike — empty default for now.
-      case "$tier" in sonnet) printf '' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
+      # Finalized by S59's spike against Copilot CLI v1.0.62: the Sonnet tier maps
+      # to `claude-sonnet-4.6`, the Opus tier to `claude-opus-4.8`. Both stay
+      # config-overridable via modelAliases.copilot.<tier> (handled above).
+      case "$tier" in sonnet) printf 'claude-sonnet-4.6' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
   esac
 }
 
@@ -2792,6 +2794,136 @@ cmd_validate() {
     rm -rf "$odir"
   done
   die "the Validate worker produced an artifact that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+}
+
+# === Estimator (session 59) ================================================
+# Runs at the END of Align (driven by lcars-file once prd.md/adr.md + state.json
+# exist). One cold REPO-READ worker reads prd.md + adr.md + the repo context and
+# inspects relevant code, then writes estimate.json: two criticality scores + a
+# per-stage model map (logical tiers) that S58's resolve_stage_model CONSUMES.
+#
+# CRITICAL CONTRACTS:
+#  - The estimator must NEVER block filing. cmd_estimate degrades exactly like the
+#    gh-missing path in file.sh: on no/invalid output after the retries it leaves
+#    NO estimate.json and exits non-zero with a note, and lcars-file files the
+#    mission anyway (every downstream stage then falls back to its legacy model).
+#  - The estimator runs on ITS OWN model (default tier "opus", config
+#    `estimatorModel`), NOT a per-stage map. We pin it for this one spawn by
+#    exporting LCARS_WORKER_MODEL (env pin wins in resolve_stage_model), so the
+#    estimator never escalates other stages and its own spawn uses the right model.
+
+# Validate the worker's estimate.json into a clean, canonical estimate.json at
+# $MISSION_DIR/estimate.json. Returns 0 on success (file written), non-zero on a
+# malformed payload (nothing written). Pure bash + the jq-free readers — no LLM.
+estimate_validate_and_write() { # src-json
+  local src="$1"
+  [ -f "$src" ] || return 1
+  local enum='^(low|medium|high)$' tierre='^(sonnet|opus)$'
+  local rc ic; rc="$(json_scoped_str "$src" reasoningCriticality)"; ic="$(json_scoped_str "$src" implCriticality)"
+  printf '%s' "$rc" | grep -Eq "$enum" || return 1
+  printf '%s' "$ic" | grep -Eq "$enum" || return 1
+  # All six model keys must be present and each a valid tier.
+  local k v
+  for k in research validate plan planReview implement verify; do
+    v="$(json_scoped_str "$src" "models.$k")"
+    printf '%s' "$v" | grep -Eq "$tierre" || return 1
+    eval "TIER_$k=\$v"
+  done
+  local em; em="$(json_scoped_str "$src" estimatorModel)"; [ -n "$em" ] || em="opus"
+  # Re-emit a CANONICAL estimate.json (we trust only the validated fields; the
+  # deviations array is copied through verbatim-ish as recorded strings). This
+  # repairs cosmetic worker malformations (extra keys, ordering) into a clean
+  # schemaVersion-1 file the downstream resolver reads.
+  local devs; devs="$(estimate_extract_deviations "$src")"
+  {
+    printf '{\n'
+    printf '  "schemaVersion": 1,\n'
+    printf '  "reasoningCriticality": "%s",\n' "$rc"
+    printf '  "implCriticality": "%s",\n' "$ic"
+    printf '  "models": {\n'
+    printf '    "research": "%s",\n'   "$TIER_research"
+    printf '    "validate": "%s",\n'   "$TIER_validate"
+    printf '    "plan": "%s",\n'       "$TIER_plan"
+    printf '    "planReview": "%s",\n' "$TIER_planReview"
+    printf '    "implement": "%s",\n'  "$TIER_implement"
+    printf '    "verify": "%s"\n'      "$TIER_verify"
+    printf '  },\n'
+    printf '  "deviations": [%s],\n' "$devs"
+    printf '  "estimatorModel": "%s"\n' "$em"
+    printf '}\n'
+  } >"$MISSION_DIR/estimate.json"
+  return 0
+}
+
+# Extract the deviations[] string entries from the worker's estimate.json and
+# re-emit them as a comma-joined list of JSON strings (for the canonical file's
+# `"deviations": [ … ]`). jq-free: pull the bracketed array body, then each
+# "double-quoted" string inside it. Empty array → empty output.
+estimate_extract_deviations() { # src-json → ` "a", "b" ` or empty
+  local src="$1" body
+  body="$(tr -d '\n' <"$src" | sed -En 's/.*"deviations"[[:space:]]*:[[:space:]]*\[([^]]*)\].*/\1/p')"
+  [ -n "$body" ] || { printf ''; return 0; }
+  # Emit each quoted string verbatim, comma-separated. grep -o pulls the quoted
+  # tokens (incl. their quotes); paste joins them with ", ".
+  printf '%s' "$body" | grep -oE '"([^"\\]|\\.)*"' | paste -sd, - \
+    | sed 's/,/, /g; s/^/ /; s/$/ /'
+}
+
+cmd_estimate() {
+  locate_mission "$MISSION_ID"
+  require_worker
+  [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md — Align has not produced a PRD yet."
+
+  # Pin the estimator's own model. Tier "opus" by default, config-overridable via
+  # config.json estimatorModel; translate the tier through the active CLI's alias
+  # map so copilot gets claude-opus-4.8, claude gets opus. An empty translation
+  # (a tier the alias map doesn't know) means NO --model flag — never a failure.
+  local est_tier="opus"
+  local cfg_tier=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfg_tier="$(json_str "$LCARS_CFG" estimatorModel)"
+  [ -n "$cfg_tier" ] && est_tier="$cfg_tier"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local est_model; est_model="$(alias_for_tier "$cli" "$est_tier")"
+
+  local extra="## Read these artifacts (your inputs)
+- $MISSION_DIR/prd.md"
+  [ -f "$MISSION_DIR/adr.md" ] && extra="$extra
+- $MISSION_DIR/adr.md   (the engineering ADRs Align seeded — read for the architectural frame)"
+  # Shared declarative repo facts, by PATH only (same as every repo-read Stage).
+  extra="$extra$(context_extra_block)"
+  # Tell the worker which tier it ran on so it can echo it into estimatorModel.
+  extra="$extra
+
+## Your model tier
+estimatorModel = \"$est_tier\" — echo this verbatim into the estimate.json field."
+
+  local tries=0 prior_no_file=""
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    local odir; odir="$(mktemp -d)"
+    # Pin the estimator's OWN model for just this spawn via the env pin (it wins
+    # in resolve_stage_model for every key, but this is a one-shot estimator spawn
+    # with no stage role, so it only affects this call). When $est_model is empty
+    # the env stays unset and the adapter emits NO --model — legacy-safe.
+    if [ -n "$est_model" ]; then
+      LCARS_WORKER_MODEL="$est_model" spawn_worker estimate "$STAGES_DIR/estimate.md" repo-read "$odir" "$extra" "$prior_no_file"
+    else
+      spawn_worker estimate "$STAGES_DIR/estimate.md" repo-read "$odir" "$extra" "$prior_no_file"
+    fi
+    if [ ! -f "$odir/estimate.json" ]; then
+      prior_no_file=no-file; rm -rf "$odir"; continue
+    fi
+    prior_no_file=""
+    if estimate_validate_and_write "$odir/estimate.json"; then
+      isolated_line estimate 1; rm -rf "$odir"; exit 0
+    fi
+    rm -rf "$odir"
+  done
+  # Degradation parity with gh-missing: no estimate.json, but do NOT crash the
+  # caller's filing. lcars-file treats a non-zero exit as "no estimate" and files
+  # the mission anyway; every stage then falls back to its legacy model.
+  printf '  ⚠ estimator produced no valid estimate.json after %s attempt(s) — mission keeps default models.\n' "$MAX_WORKER_TRIES" >&2
+  exit 1
 }
 
 # === Stage driver: Plan ====================================================
@@ -3627,7 +3759,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|plan|plan-review|implement|implement-ticket|drive|emit-event)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|estimate|plan|plan-review|implement|implement-ticket|drive|emit-event)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -3648,6 +3780,10 @@ case "$SUB" in
   # Stage drivers (spawn cold workers, then persist via the subcommands above).
   research)         cmd_research ;;
   validate)         cmd_validate ;;
+  # End-of-Align estimator (session 59): writes estimate.json (two criticality
+  # scores + per-stage model map) that S58's resolve_stage_model consumes. Driven
+  # by lcars-file at the end of Align; OPTIONAL — a failure never blocks filing.
+  estimate)         cmd_estimate ;;
   plan)             cmd_plan ;;
   plan-review)      cmd_plan_review ;;
   implement)        cmd_implement ;;

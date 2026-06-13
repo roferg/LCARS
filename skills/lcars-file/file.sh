@@ -25,6 +25,10 @@ GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
 DATE="${LCARS_DATE:-$(date -u +%Y%m%d)}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+# The lcars-run driver that owns the end-of-Align estimator (session 59). Default
+# matches how SKILL.md invokes the other run.sh subcommands; overridable so tests
+# can point it at a stub estimator driver. The estimator is OPTIONAL — see below.
+RUN_BIN="${LCARS_RUN_BIN:-$HOME/.claude/skills/lcars-run/run.sh}"
 
 die() { printf 'lcars file: %s\n' "$1" >&2; exit 1; }
 
@@ -209,6 +213,26 @@ cat >"$MISSION_DIR/state.json" <<EOF
 }
 EOF
 
+# --- run the end-of-Align estimator (session 59) --------------------------
+# Now that prd.md / adr.md and state.json exist, ask the lcars-run driver to
+# produce estimate.json (two criticality scores + a per-stage model map that the
+# downstream stages' resolver consumes). The estimator is STRICTLY OPTIONAL and
+# must NEVER block filing: it mirrors the gh-missing degradation above. If the
+# run.sh driver is missing, or it produces no estimate.json (worker unavailable,
+# malformed output), we print a note and STILL file the mission — every stage
+# then falls back to its legacy model exactly as before this feature existed.
+EST_NOTE=""
+if [ -f "$RUN_BIN" ]; then
+  if bash "$RUN_BIN" estimate --mission "$ID" >/dev/null 2>&1 \
+       && [ -f "$MISSION_DIR/estimate.json" ]; then
+    : # estimate produced — nothing to note.
+  else
+    EST_NOTE="  ⚠ estimator unavailable — mission filed with default per-stage models."
+  fi
+else
+  EST_NOTE="  ⚠ estimator driver not found ($RUN_BIN) — mission filed with default per-stage models."
+fi
+
 # --- confirmation summary -------------------------------------------------
 if [ -n "$ISSUE" ]; then
   issue_line="#$ISSUE"
@@ -217,6 +241,7 @@ else
 fi
 
 [ -n "$GH_NOTE" ] && echo "$GH_NOTE"
+[ -n "$EST_NOTE" ] && echo "$EST_NOTE"
 [ -n "$BRANCH_NOTE" ] && echo "$BRANCH_NOTE"
 echo "  Mission filed: $ID"
 echo "  GitHub issue:  $issue_line"

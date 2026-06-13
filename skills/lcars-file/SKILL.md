@@ -249,8 +249,17 @@ Show the captain its output verbatim:
 .git/lcars/missions/<id>/
   prd.md        ← the PRD from Align (the GitHub issue body, too)
   adr.md        ← the engineering ADRs (COMPLEX Missions only; absent for trivial work)
+  estimate.json ← the end-of-Align estimate (per-stage model map; OPTIONAL, see below)
   state.json    ← { id, type, title, stage: "align", created, model, githubIssue, branch, base }
 ```
+
+At the end of filing, `file.sh` runs the lcars-run estimator
+(`run.sh estimate`) once, which reasons over the finalized PRD + ADRs + repo and
+writes `estimate.json` — two criticality scores and a per-stage model assignment
+the downstream stages consume to spend Opus where the work warrants it. The
+estimator is **strictly optional**: if it is unavailable or produces nothing, the
+mission still files (a note is printed) and every stage falls back to its default
+model — exactly like the `gh`-missing degradation.
 
 Plus, in git itself: the branch `lcars/<id>` is created off the current branch
 (the `base` the PR will later target). The working tree is **not** switched to

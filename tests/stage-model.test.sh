@@ -161,6 +161,10 @@ check "4.argv global workerModel reaches spawned plan argv" \
 r5="$(make_repo '{}' "$EST")"
 check "5a. copilot opus tier → claude-opus-4.8 (resolve-stage-model)" \
   "[ \"\$(rsm \"$r5\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+# S59 spike: the copilot Sonnet tier now resolves to claude-sonnet-4.6 (was an
+# empty placeholder). validate is tier 'sonnet' in $EST, so it must map to that.
+check "5b. copilot sonnet tier → claude-sonnet-4.6 (resolve-stage-model)" \
+  "[ \"\$(rsm \"$r5\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-sonnet-4.6' ]"
 
 # === Bonus: config stages.<key>.model (precedence c) translates per tier =======
 r6="$(make_repo '{"stages":{"plan":{"model":"opus"}}}')"   # no estimate.json

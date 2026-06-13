@@ -35,6 +35,41 @@ bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
 # --- stubs ----------------------------------------------------------------
+# A stub for the lcars-run estimator driver (session 59). file.sh runs
+# `run.sh estimate` at the end of Align; pointing LCARS_RUN_BIN at this stub keeps
+# that call fast and deterministic (no real model spawn) while exercising the
+# success path: it writes a minimal valid estimate.json into the mission dir. The
+# mission id is the last positional arg following --mission. These tests do not
+# assert on estimate.json — they only need filing to complete cleanly.
+ESTIMATOR_STUB="$TMPROOT/estimate-run.sh"
+cat >"$ESTIMATOR_STUB" <<'EOF'
+#!/usr/bin/env bash
+# usage (as called by file.sh): estimate --mission <id>
+mid=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mission) mid="${2:-}"; shift 2 ;;
+    --mission=*) mid="${1#--mission=}"; shift ;;
+    *) shift ;;
+  esac
+done
+gitdir="$(git rev-parse --git-common-dir 2>/dev/null)" || exit 1
+case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+mdir="$gitdir/lcars/missions/$mid"
+[ -d "$mdir" ] || exit 1
+cat >"$mdir/estimate.json" <<JSON
+{ "schemaVersion": 1, "reasoningCriticality": "low", "implCriticality": "low",
+  "models": { "research": "sonnet", "validate": "sonnet", "plan": "sonnet",
+  "planReview": "sonnet", "implement": "sonnet", "verify": "sonnet" },
+  "deviations": [], "estimatorModel": "opus" }
+JSON
+exit 0
+EOF
+chmod +x "$ESTIMATOR_STUB"
+# Every file.sh invocation in this suite uses the stub estimator (NEVER a real
+# model). Exported once so the existing test bodies need no per-call change.
+export LCARS_RUN_BIN="$ESTIMATOR_STUB"
+
 # A fake `gh` that records every invocation and, on `issue create`, prints
 # the URL of the new issue (number 42) the way real gh does.
 make_gh_stub() {
