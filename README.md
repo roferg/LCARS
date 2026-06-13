@@ -208,6 +208,9 @@ flowchart LR
     F --> Lc["lcars\n(drives the mission)"]
     Lc -->|"gate hit"| An["lcars answer\n(clear the decision)"]
     An --> Lc
+    Lc -->|"bug found at verify"| Lg["lcars log\n(file bugs vs mission)"]
+    Lg --> Rl["lcars resolve-logs\n(drive every bug → one re-verify)"]
+    Rl --> An
     Lc -->|"verify"| Ap[lcars approve]
     Ap --> Done([PR opened ✓])
 ```
@@ -231,6 +234,7 @@ power entry points.
 | `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`. A clean no-op when nothing's changed. |
 | `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. |
 | `lcars log` | Log one or more bugs against an active Mission in free-form language; fast-tracks a Mission per bug straight to Plan and links them. |
+| `lcars resolve-logs <parent>` | Drive **every** bug logged against a Mission to its Verify gate in a sensible, worker-chosen order, then raise **one** consolidated re-verify gate on the parent instead of one per bug. |
 
 ### Power verbs (still supported)
 
@@ -321,6 +325,44 @@ $ lcars approve lcars-20260604-001
 ✓ branch pushed, PR opened: https://github.com/you/repo/pull/57
 ✓ lcars:done — mission complete
 ```
+
+---
+
+## Resolving bugs you logged during Verify
+
+When you're reviewing a Mission at Verify and spot several bugs, `lcars log`
+them as you go — each becomes a fast-tracked bug Mission linked to the parent.
+Then hand the whole batch to **`lcars resolve-logs`** and walk away. It drives
+every logged bug to its own Verify gate in a sensible order the worker chooses
+(root-cause and dependency bugs first, cosmetic ones last), and collapses what
+would be *N* separate "review me" interruptions into **one** consolidated
+re-verify gate on the parent.
+
+```text
+$ lcars log
+> Two bugs against the gamification mission: XP isn't awarded for video
+  completions, and the leaderboard flickers on first load.
+✓ filed lcars-20260604-002 (XP video) — linked to lcars-20260604-001
+✓ filed lcars-20260604-003 (leaderboard flicker) — linked to lcars-20260604-001
+
+$ lcars resolve-logs lcars-20260604-001
+Resolving 2 logged bugs against lcars-20260604-001…
+order: 002 (root cause) → 003 (cosmetic)   [worker-chosen]
+─────────────────────────────────────────────
+lcars-20260604-002  ✓ ⊘ isolated  fix on branch, at verify
+lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
+─────────────────────────────────────────────
+⏹ stopped at: verify  (1 consolidated re-verify gate)
+   2 logged bugs resolved [002, 003] — ready for you to re-verify.
+   Re-inspect, then `lcars approve` / `lcars feedback` each.
+                                            🔔 (one notification fired)
+```
+
+It never auto-approves and opens no PRs — re-verifying and shipping each bug
+stays your call. If a bug escalates mid-batch (a cap-exhausted ticket, a scope
+change), the batch **pauses** at that bug and drops its question into
+`lcars answer`; the bugs already resolved are untouched, and a resumed
+`lcars resolve-logs` picks up the rest after you answer.
 
 ---
 
@@ -560,6 +602,7 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Auto-advance + notifications (the unattended loop) | ✅ |
 | Human surface (`lcars` + `lcars answer`) | ✅ |
 | Mission Log (`lcars log`) | ✅ |
+| Mission Log batch resolve (`lcars resolve-logs`) | ✅ |
 | **Copilot enablement** (run LCARS under GitHub Copilot — *new; premium model required*) | ✅ |
 
 **Roadmap.** Copilot enablement is in: `$LCARS_WORKER_BIN` auto-resolves to
