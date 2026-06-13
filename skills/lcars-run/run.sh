@@ -100,6 +100,66 @@ json_str() { # file key  → first matching "key": "value"
 json_raw() { # file key  → first matching bare token (number/null/bool)
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1
 }
+# --- a tiny NESTED/SCOPED reader (still jq-free, same sed/awk spirit) --------
+# json_str/json_raw above are FLAT — they grab the FIRST matching key ANYWHERE in
+# the file, so they cannot read `models.research` or `modelAliases.claude.opus`
+# without risking a same-named key elsewhere. json_scoped_str narrows the search
+# to a dotted PATH of object keys: each leading segment scopes into that object's
+# `{ … }` body (brace-depth tracked so a nested object can't end the scope early),
+# then the LAST segment is read as a string value within that final scope.
+#   json_scoped_str FILE models.research        → the string at models.research
+#   json_scoped_str FILE modelAliases.claude.opus
+# Whitespace-insensitive (works for compact OR pretty JSON). Empty if any segment
+# is absent. Reads strings only (the model tiers/aliases are all string values).
+json_scoped_str() { # file dotted.path  → string value (or empty)
+  local file="$1" path="$2"
+  [ -f "$file" ] || return 0
+  # Collapse the whole file to a single line so awk's char scan is brace-accurate
+  # across pretty-printed (multi-line) JSON without newline bookkeeping.
+  local blob; blob="$(tr -d '\n' <"$file")"
+  # All but the last path segment scope IN; the last is the value key.
+  local key="${path##*.}" parents="${path%.*}"
+  if [ "$parents" != "$path" ]; then
+    local seg
+    local IFS='.'
+    for seg in $parents; do
+      blob="$(_json_scope_into "$blob" "$seg")"
+      [ -n "$blob" ] || return 0
+    done
+  fi
+  # Now read "key": "value" from the (possibly narrowed) blob, same decode as json_str.
+  printf '%s' "$blob" \
+    | sed -En "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" \
+    | head -1 \
+    | sed 's/\\"/"/g; s/\\\\/\\/g'
+}
+# Return the BODY (incl. braces) of the object value of "<key>": { … } within a
+# single-line blob, matching braces so a nested object can't terminate it early.
+_json_scope_into() { # blob key → "{ … }" body of that key's object value
+  printf '%s' "$1" | awk -v key="$2" '
+    {
+      s = $0
+      # locate the key token
+      pat = "\"" key "\""
+      idx = index(s, pat)
+      if (idx == 0) { exit }
+      rest = substr(s, idx + length(pat))
+      # skip to the opening brace of its object value
+      ob = index(rest, "{")
+      if (ob == 0) { exit }
+      rest = substr(rest, ob)
+      depth = 0
+      out = ""
+      n = length(rest)
+      for (i = 1; i <= n; i++) {
+        c = substr(rest, i, 1)
+        out = out c
+        if (c == "{") depth++
+        else if (c == "}") { depth--; if (depth == 0) break }
+      }
+      print out
+    }'
+}
 
 # --- tiny JSON writers (pretty, one-field-per-line state.json) --------------
 # state.json is written one field per line (see file.sh), so we edit it by the
@@ -2225,6 +2285,121 @@ resolve_worker_model() {
   WORKER_MODEL=""; WORKER_MODEL_SRC="unset"
 }
 
+# === Per-stage model selection (session 58) =================================
+# Today resolve_worker_model picks ONE global model for every headless stage.
+# This seam lets a declarative source assign a DIFFERENT model per stage, while
+# emitting BYTE-IDENTICAL argv to the legacy path whenever no per-stage source is
+# present. It is a SELECTION change only — gate mechanics, prompts, the driver's
+# stage logic, event format and the adapter's argv ORDER are untouched.
+
+# Map a spawn ROLE (the env-role the worker sees) → its STAGE KEY. One place.
+# A role with no stage key (none today) falls through to the global/unset path.
+# `context-pack` maps to `infra` but is NEVER escalated (see resolve_stage_model).
+stage_key_for_role() { # role → stage key (stdout; empty if none)
+  case "$1" in
+    research-questions|research-agent)            printf 'research' ;;
+    validate)                                     printf 'validate' ;;
+    plan)                                         printf 'plan' ;;
+    plan-review)                                  printf 'planReview' ;;
+    implement-test-writer|implement-implementer)  printf 'implement' ;;
+    context-pack)                                 printf 'infra' ;;
+  esac
+}
+
+# Translate a logical TIER ("sonnet"/"opus") → the ACTIVE worker CLI's flag string.
+# Defaults below; config.json `modelAliases.<cli>.<tier>` overrides per (cli,tier).
+# A tier with no mapping (and no override) yields empty — caller treats empty as
+# "no flag", i.e. the legacy no-`--model` argv. The active CLI is the same id
+# worker_spawn computes (LCARS_WORKER_CLI or basename WORKER_BIN).
+alias_for_tier() { # cli tier → flag string (stdout; may be empty)
+  local cli="$1" tier="$2" override=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+    && override="$(json_scoped_str "$LCARS_CFG" "modelAliases.$cli.$tier")"
+  if [ -n "$override" ]; then printf '%s' "$override"; return 0; fi
+  case "$cli" in
+    claude)
+      case "$tier" in sonnet) printf 'sonnet' ;; opus) printf 'opus' ;; esac ;;
+    copilot)
+      # sonnet placeholder is finalized by S59's spike — empty default for now.
+      case "$tier" in sonnet) printf '' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
+  esac
+}
+
+# Resolve the CLI flag string (or empty) for one STAGE KEY. Precedence, high→low:
+#   a. $LCARS_WORKER_MODEL env  — global pin, wins for ALL stages. VERBATIM (it is
+#      already a CLI flag string, NOT a tier — do not re-translate it).
+#   b. estimate.json models.<key> — logical tier → alias-mapped per active CLI.
+#   c. config.json stages.<key>.model — logical tier → alias-mapped.
+#   d. config.json workerModel — global, VERBATIM flag (legacy back-compat).
+#   e. nothing ⇒ empty string (caller emits NO --model flag — byte-identical).
+# `infra` (context-pack) is a cheap repo-fact pass and is NEVER escalated by the
+# estimate/stage map: it short-circuits to the global/legacy value (env pin > the
+# global config workerModel > unset) so its argv stays exactly as today.
+resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
+  local key="$1"
+  # (a) global env pin — wins for every stage, verbatim.
+  if [ -n "${LCARS_WORKER_MODEL:-}" ]; then printf '%s' "$LCARS_WORKER_MODEL"; return 0; fi
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  if [ "$key" != "infra" ] && [ -n "$key" ]; then
+    # (b) estimate.json models.<key>
+    local est_tier=""
+    [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/estimate.json" ] \
+      && est_tier="$(json_scoped_str "$MISSION_DIR/estimate.json" "models.$key")"
+    if [ -n "$est_tier" ]; then alias_for_tier "$cli" "$est_tier"; return 0; fi
+    # (c) config.json stages.<key>.model
+    local cfg_tier=""
+    [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+      && cfg_tier="$(json_scoped_str "$LCARS_CFG" "stages.$key.model")"
+    if [ -n "$cfg_tier" ]; then alias_for_tier "$cli" "$cfg_tier"; return 0; fi
+  fi
+  # (d) config.json workerModel — global, VERBATIM (it is a raw flag today, not a
+  # tier — keep it verbatim for back-compat). Applies to infra too.
+  local cfg_global=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+    && cfg_global="$(json_str "$LCARS_CFG" workerModel)"
+  if [ -n "$cfg_global" ]; then printf '%s' "$cfg_global"; return 0; fi
+  # (e) nothing.
+  printf ''
+}
+
+# The `resolve-stage-model <key>` subcommand: a mission-free test surface over
+# resolve_stage_model, mirroring cmd_resolve_worker. Resolves the worker bin (to
+# fix the active CLI) + $LCARS_CFG; reads estimate.json from --mission's dir when
+# given; prints `STAGE-MODEL key=<k> model=<flag|->` so tests assert the resolved
+# flag without an LLM or a real spawn. No mission state is required beyond the dir.
+cmd_resolve_stage_model() { # key (positional, in $1)
+  local key="$1" gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  fi
+  resolve_worker_bin
+  local m; m="$(resolve_stage_model "$key")"
+  printf 'STAGE-MODEL key=%s model=%s\n' "$key" "${m:--}"
+}
+
+# The `spawn-stage <role>` subcommand: drive the REAL worker_spawn chokepoint for
+# an env ROLE through whatever worker bin is set (a stub in tests), so the spawned
+# argv — including any per-stage --model — is observable end-to-end. Mission-aware
+# (estimate.json lives under --mission's dir). Not used in production flows; it is
+# the spawn-path test surface paralleling resolve-stage-model.
+cmd_spawn_stage() { # role (positional, in $1)
+  local role="$1" gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  fi
+  resolve_worker_bin
+  resolve_worker_model
+  local outdir; outdir="$(mktemp -d)"
+  LCARS_WORKER_ROLE="$role" worker_spawn "repo-read" "$outdir" "test prompt"
+  rm -rf "$outdir"
+}
+
 # Resolve both ONCE per process, then print the self-explaining log line naming
 # the resolved cli + model + the SOURCE that won (env/config/detected/default for
 # the bin; env/config/unset for the model). Idempotent: the guard means repeated
@@ -2275,11 +2450,17 @@ worker_spawn() { # role outdir prompt
   # overrides it (same spirit as LCARS_GH_BIN) so tests can point a generically
   # named stub at the claude adapter without renaming the binary.
   local cli; cli="${LCARS_WORKER_CLI:-$(basename "$WORKER_BIN")}"
-  # Thread the resolved MODEL to the adapter via the env var it reads. When empty
-  # the adapter emits NO --model flag (session-18 argv byte-for-byte). The model
-  # flag NAME is cli-specific and stays in the adapter; run.sh only resolves the
-  # value (CLI-agnostic) and hands it over here.
-  LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="${WORKER_MODEL:-}" \
+  # PER-STAGE model selection (session 58): map this spawn's env-role → its stage
+  # key → the resolved CLI flag, and thread THAT to the adapter (not the single
+  # global $WORKER_MODEL). When the resolver yields empty the adapter emits NO
+  # --model flag (session-18 argv byte-for-byte) — the legacy no-source path. The
+  # model flag NAME stays cli-specific in the adapter; run.sh resolves only the
+  # value here. `infra` (context-pack) is never escalated — resolve_stage_model
+  # short-circuits it to the global/legacy value, so it stays exactly as today.
+  local stage_key stage_model
+  stage_key="$(stage_key_for_role "${LCARS_WORKER_ROLE:-$role}")"
+  stage_model="$(resolve_stage_model "$stage_key")"
+  LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="$stage_model" \
     bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt"
 }
 
@@ -2468,16 +2649,25 @@ cmd_research() {
   local resp; resp="$(mktemp -d)"
   local i=0 q
   local jobs; jobs="$(mktemp)"
+  # Resolve the RESEARCH-stage model flag ONCE (per-stage seam, session 58) and
+  # thread it into every fan-out agent's env below — see the CRITICAL note there.
+  local ra_model; ra_model="$(resolve_stage_model research)"
   while IFS= read -r q; do
     [ -n "$q" ] || continue
     i=$((i + 1))
     local adir; adir="$resp/$(printf '%03d' "$i")"
-    # Pass the PARENT's already-resolved worker bin/model into each agent job so
-    # the agent subprocess runs the SAME cold-worker CLI without re-detecting the
-    # host (it inherits them as $LCARS_WORKER_BIN/$LCARS_WORKER_MODEL — env
-    # precedence — and resolves silently, no per-agent log line).
+    # Pass the PARENT's already-resolved worker bin into each agent job so the
+    # agent subprocess runs the SAME cold-worker CLI without re-detecting the host.
+    # CRITICAL (session 58): pass the RESOLVED RESEARCH-STAGE model flag — NOT the
+    # raw global $WORKER_MODEL. Each agent re-enters this script as a fresh process
+    # where env precedence (LCARS_WORKER_MODEL) PINS the model; if we passed the
+    # global value the per-stage research selection (e.g. research→opus from
+    # estimate.json) would be silently lost for every fan-out agent. The child sees
+    # this as a verbatim env pin (resolve_stage_model returns it unchanged), which
+    # is exactly the research-stage flag we resolved here. Empty ⇒ unset ⇒ the
+    # child emits NO --model flag (legacy byte-identical path).
     printf 'LCARS_RA_DIR=%q LCARS_RA_Q=%q LCARS_WORKER_BIN=%q LCARS_WORKER_MODEL=%q bash %q research-agent-job\n' \
-      "$adir" "$q" "$WORKER_BIN" "$WORKER_MODEL" "$SELF" >>"$jobs"
+      "$adir" "$q" "$WORKER_BIN" "$ra_model" "$SELF" >>"$jobs"
   done < <(grep -ve '^[[:space:]]*$' "$qdir/questions.txt")
   run_capped <"$jobs" || true
   rm -f "$jobs"
@@ -3401,7 +3591,7 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
-EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --step)        STEP=1; shift ;;
@@ -3429,7 +3619,10 @@ while [ $# -gt 0 ]; do
     --stage=*)     EV_STAGE="${1#--stage=}"; shift ;;
     --detail)      EV_DETAIL="${2:-}"; shift 2 ;;
     --detail=*)    EV_DETAIL="${1#--detail=}"; shift ;;
-    *) die "unknown argument: $1" ;;
+    # A single bare positional (the stage key / role for resolve-stage-model /
+    # spawn-stage). Only these subcommands consume it; others still reject extras.
+    -*)            die "unknown argument: $1" ;;
+    *)             if [ -z "$POSARG" ]; then POSARG="$1"; shift; else die "unexpected argument: $1"; fi ;;
   esac
 done
 
@@ -3478,6 +3671,15 @@ case "$SUB" in
   # Cold-worker bin/model resolution (no LLM, no mission) — prints the resolution
   # log line + a machine-readable summary. The test surface for resolve_worker.
   resolve-worker)   cmd_resolve_worker ;;
+  # Per-stage model resolution (no LLM, no real mission state) — prints
+  # `STAGE-MODEL key=<k> model=<flag|->`. The test surface for resolve_stage_model.
+  resolve-stage-model) [ -n "$POSARG" ] || die "usage: run.sh resolve-stage-model [--mission <id>] <stage-key>"
+                       cmd_resolve_stage_model "$POSARG" ;;
+  # Drive the real worker_spawn chokepoint for one env-role through the resolved
+  # worker bin (a stub in tests) so the spawned argv (incl. per-stage --model) is
+  # observable end-to-end. The spawn-path test surface.
+  spawn-stage)         [ -n "$POSARG" ] || die "usage: run.sh spawn-stage [--mission <id>] <role>"
+                       cmd_spawn_stage "$POSARG" ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
   emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
