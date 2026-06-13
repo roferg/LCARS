@@ -63,6 +63,11 @@ SELF="${BASH_SOURCE[0]}"
 # The skill's own directory, and the per-Stage worker prompt templates under it.
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 STAGES_DIR="$SKILL_DIR/stages"
+# The SINGLE source of truth for billing data (Claude $/MTok per tier; Copilot
+# premium-request multipliers + overage). NO prices/multipliers are hardcoded in
+# this script's cost logic — they all live in pricing.json. $LCARS_PRICING lets
+# tests point at a fixture pricing file (e.g. one with null Copilot multipliers).
+PRICING_FILE="${LCARS_PRICING:-$SKILL_DIR/pricing.json}"
 # The host-integration adapter — the ONE place that speaks to a forge. Every
 # GitHub call funnels through it so the integration is swappable (BUG-003). It
 # sits beside this script; $LCARS_HOST_ADAPTER overrides the path so tests can
@@ -159,6 +164,29 @@ _json_scope_into() { # blob key → "{ … }" body of that key's object value
       }
       print out
     }'
+}
+# json_scoped_num — like json_scoped_str, but reads a NESTED NUMBER (or null) at a
+# dotted path, e.g. tokenEstimates.research.low or copilot.opus.premiumRequestMultiplier.
+# Scopes into each parent object's `{ … }` body (brace-accurate), then reads the
+# last segment as a bare numeric token. Empty output if the path is absent OR the
+# value is `null` (so callers can treat "" as "unavailable"). jq-free.
+json_scoped_num() { # file dotted.path → number (or empty for absent/null)
+  local file="$1" path="$2"
+  [ -f "$file" ] || return 0
+  local blob; blob="$(tr -d '\n' <"$file")"
+  local key="${path##*.}" parents="${path%.*}"
+  if [ "$parents" != "$path" ]; then
+    local seg
+    local IFS='.'
+    for seg in $parents; do
+      blob="$(_json_scope_into "$blob" "$seg")"
+      [ -n "$blob" ] || return 0
+    done
+  fi
+  local v
+  v="$(printf '%s' "$blob" | sed -En "s/.*\"$key\"[[:space:]]*:[[:space:]]*([^,}[:space:]]+).*/\1/p" | head -1)"
+  [ "$v" = "null" ] && v=""
+  printf '%s' "$v"
 }
 
 # --- tiny JSON writers (pretty, one-field-per-line state.json) --------------
@@ -2830,14 +2858,32 @@ estimate_validate_and_write() { # src-json
     eval "TIER_$k=\$v"
   done
   local em; em="$(json_scoped_str "$src" estimatorModel)"; [ -n "$em" ] || em="opus"
-  # Re-emit a CANONICAL estimate.json (we trust only the validated fields; the
-  # deviations array is copied through verbatim-ish as recorded strings). This
-  # repairs cosmetic worker malformations (extra keys, ordering) into a clean
-  # schemaVersion-1 file the downstream resolver reads.
+  # --- schemaVersion-2 fields (session 60) ---------------------------------
+  # Per-stage TOKEN + REQUEST estimates. Repair malformed/absent worker output:
+  # a non-negative integer survives; anything else (missing key, junk, negative)
+  # canonicalizes to 0 so the file is always well-formed and the cost is defined.
+  local n
+  for k in research validate plan planReview implement verify; do
+    n="$(json_scoped_num "$src" "tokenEstimates.$k.low")";   eval "TOKLO_$k=\$(canon_nonneg_int \"\$n\")"
+    n="$(json_scoped_num "$src" "tokenEstimates.$k.high")";  eval "TOKHI_$k=\$(canon_nonneg_int \"\$n\")"
+    n="$(json_scoped_num "$src" "requestEstimates.$k.low")"; eval "REQLO_$k=\$(canon_nonneg_int \"\$n\")"
+    n="$(json_scoped_num "$src" "requestEstimates.$k.high")";eval "REQHI_$k=\$(canon_nonneg_int \"\$n\")"
+  done
+  # rationale: a single JSON string, repaired to AT MOST 2 paragraphs (blank-line
+  # separated). The escaped string content is preserved as-is.
+  local rationale; rationale="$(json_scoped_str "$src" rationale)"
+  rationale="$(rationale_clamp "$rationale")"
+  # Re-emit a CANONICAL estimate.json. The `cost` block is COMPUTED BY CODE from
+  # the token/request estimates + pricing.json + the active CLI — NEVER trusted
+  # from the worker. We write the file once WITHOUT cost, compute against it, then
+  # write the final file with the computed cost block embedded.
   local devs; devs="$(estimate_extract_deviations "$src")"
-  {
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local out="$MISSION_DIR/estimate.json"
+  _estimate_emit() { # cost-block-or-empty
+    local cost="$1"
     printf '{\n'
-    printf '  "schemaVersion": 1,\n'
+    printf '  "schemaVersion": 2,\n'
     printf '  "reasoningCriticality": "%s",\n' "$rc"
     printf '  "implCriticality": "%s",\n' "$ic"
     printf '  "models": {\n'
@@ -2848,11 +2894,60 @@ estimate_validate_and_write() { # src-json
     printf '    "implement": "%s",\n'  "$TIER_implement"
     printf '    "verify": "%s"\n'      "$TIER_verify"
     printf '  },\n'
+    printf '  "tokenEstimates": {\n'
+    printf '    "research": { "low": %s, "high": %s },\n'   "$TOKLO_research" "$TOKHI_research"
+    printf '    "validate": { "low": %s, "high": %s },\n'   "$TOKLO_validate" "$TOKHI_validate"
+    printf '    "plan": { "low": %s, "high": %s },\n'       "$TOKLO_plan" "$TOKHI_plan"
+    printf '    "planReview": { "low": %s, "high": %s },\n' "$TOKLO_planReview" "$TOKHI_planReview"
+    printf '    "implement": { "low": %s, "high": %s },\n'  "$TOKLO_implement" "$TOKHI_implement"
+    printf '    "verify": { "low": %s, "high": %s }\n'      "$TOKLO_verify" "$TOKHI_verify"
+    printf '  },\n'
+    printf '  "requestEstimates": {\n'
+    printf '    "research": { "low": %s, "high": %s },\n'   "$REQLO_research" "$REQHI_research"
+    printf '    "validate": { "low": %s, "high": %s },\n'   "$REQLO_validate" "$REQHI_validate"
+    printf '    "plan": { "low": %s, "high": %s },\n'       "$REQLO_plan" "$REQHI_plan"
+    printf '    "planReview": { "low": %s, "high": %s },\n' "$REQLO_planReview" "$REQHI_planReview"
+    printf '    "implement": { "low": %s, "high": %s },\n'  "$REQLO_implement" "$REQHI_implement"
+    printf '    "verify": { "low": %s, "high": %s }\n'      "$REQLO_verify" "$REQHI_verify"
+    printf '  },\n'
     printf '  "deviations": [%s],\n' "$devs"
+    printf '  "rationale": "%s",\n' "$rationale"
+    if [ -n "$cost" ]; then
+      printf '  "cost": %s,\n' "$cost"
+    fi
     printf '  "estimatorModel": "%s"\n' "$em"
     printf '}\n'
-  } >"$MISSION_DIR/estimate.json"
+  }
+  _estimate_emit "" >"$out"
+  local cost; cost="$(cost_compute "$out" "$cli")"
+  _estimate_emit "$cost" >"$out"
+  unset -f _estimate_emit
   return 0
+}
+
+# Canonicalize a value to a NON-NEGATIVE INTEGER: a clean non-negative integer
+# survives; anything else (empty, junk, float, negative) becomes 0.
+canon_nonneg_int() { # value → integer
+  local v="$1"
+  case "$v" in
+    ''|*[!0-9]*) printf '0' ;;
+    *)           printf '%s' "$v" ;;
+  esac
+}
+
+# Clamp a rationale string to AT MOST 2 paragraphs. Paragraphs are separated by
+# a literal "\n\n" (the JSON-escaped blank line) in the stored string. Keeps the
+# first two; drops the rest. (The string is already JSON-escaped on input.)
+rationale_clamp() { # escaped-string → escaped-string (<= 2 paragraphs)
+  local s="$1"
+  # Split on the escaped paragraph break "\n\n"; keep the first two segments.
+  printf '%s' "$s" | awk '
+    {
+      n = split($0, parts, /\\n\\n/)
+      out = parts[1]
+      if (n >= 2) out = out "\\n\\n" parts[2]
+      printf "%s", out
+    }'
 }
 
 # Extract the deviations[] string entries from the worker's estimate.json and
@@ -2924,6 +3019,121 @@ estimatorModel = \"$est_tier\" — echo this verbatim into the estimate.json fie
   # the mission anyway; every stage then falls back to its legacy model.
   printf '  ⚠ estimator produced no valid estimate.json after %s attempt(s) — mission keeps default models.\n' "$MAX_WORKER_TRIES" >&2
   exit 1
+}
+
+# === CLI-aware mission cost (session 60) ===================================
+# The estimator emits a per-stage TOKEN estimate (Claude billing) and a per-stage
+# REQUEST-COUNT estimate (Copilot billing). The CODE — never the model — turns
+# those into a reproducible cost figure in the ACTIVE CLI's native unit, reading
+# every price/multiplier from pricing.json (PRICING_FILE). Pure: no LLM, no spawn.
+#
+# CLAUDE billing model (unit "usd"): each stage's tokens are billed against THAT
+# stage's tier ($/MTok from pricing.json), split 80% input / 20% output (a fixed,
+# documented split so the figure is deterministic and reproducible — agentic coding
+# is input-heavy). Per stage, per bound b∈{low,high}:
+#   stage_usd(b) = tokens(b) * (0.8*inputPerMTok[tier] + 0.2*outputPerMTok[tier]) / 1e6
+# cost.usd.{low,high} = Σ over the six stages.
+#
+# COPILOT billing model (unit "premiumRequests"): each stage invocation is a
+# premium request weighted by its tier multiplier (pricing.json). Per bound:
+#   premiumRequests(b) = Σ requests(b) * premiumRequestMultiplier[tier]
+# usdOverage(b) = premiumRequests(b) * overagePerRequest (or null if rate unset).
+# If any active-tier multiplier (or the overage rate) is unset/null in pricing.json
+# the figure is "unavailable" — we print a marker, NEVER a wrong number.
+COST_INPUT_SPLIT="0.8"   # share of tokens billed at the input rate (doc'd above)
+COST_OUTPUT_SPLIT="0.2"  # …the remainder at the output rate. Sum MUST be 1.
+
+# Compute and print the canonical "cost" JSON block (the value of the estimate's
+# `cost` key, indented two spaces, no trailing comma) for one estimate.json under
+# the active CLI. $1 = estimate.json path; $2 = active cli (claude|copilot).
+cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
+  local est="$1" cli="$2"
+  local pricing="$PRICING_FILE"
+  local stages="research validate plan planReview implement verify"
+  if [ "$cli" = "copilot" ]; then
+    # Gather per-stage tier multipliers; if any used tier (or the overage) is
+    # unset/null → unavailable.
+    local unavailable="" pr_low=0 pr_high=0 k tier mult rlo rhi
+    local overage; overage="$(json_scoped_num "$pricing" "copilot.overagePerRequest")"
+    for k in $stages; do
+      tier="$(json_scoped_str "$est" "models.$k")"
+      mult="$(json_scoped_num "$pricing" "copilot.$tier.premiumRequestMultiplier")"
+      [ -n "$mult" ] || { unavailable=1; break; }
+      rlo="$(json_scoped_num "$est" "requestEstimates.$k.low")";  [ -n "$rlo" ] || rlo=0
+      rhi="$(json_scoped_num "$est" "requestEstimates.$k.high")"; [ -n "$rhi" ] || rhi=0
+      pr_low="$(awk -v a="$pr_low" -v r="$rlo" -v m="$mult" 'BEGIN{printf "%d", a + r*m}')"
+      pr_high="$(awk -v a="$pr_high" -v r="$rhi" -v m="$mult" 'BEGIN{printf "%d", a + r*m}')"
+    done
+    if [ -n "$unavailable" ]; then
+      printf '{\n'
+      printf '    "cli": "copilot",\n'
+      printf '    "unit": "premiumRequests",\n'
+      printf '    "status": "unavailable"\n'
+      printf '  }'
+      return 0
+    fi
+    local ov_block='null'
+    if [ -n "$overage" ]; then
+      local ov_lo ov_hi
+      ov_lo="$(awk -v p="$pr_low" -v o="$overage" 'BEGIN{printf "%g", p*o}')"
+      ov_hi="$(awk -v p="$pr_high" -v o="$overage" 'BEGIN{printf "%g", p*o}')"
+      ov_block="$(printf '{ "low": %s, "high": %s }' "$ov_lo" "$ov_hi")"
+    fi
+    printf '{\n'
+    printf '    "cli": "copilot",\n'
+    printf '    "unit": "premiumRequests",\n'
+    printf '    "premiumRequests": { "low": %s, "high": %s },\n' "$pr_low" "$pr_high"
+    printf '    "usdOverage": %s\n' "$ov_block"
+    printf '  }'
+    return 0
+  fi
+  # Claude (default / unit "usd").
+  local usd_low=0 usd_high=0 k tier inr outr tlo thi
+  for k in $stages; do
+    tier="$(json_scoped_str "$est" "models.$k")"
+    inr="$(json_scoped_num "$pricing" "claude.$tier.inputPerMTok")"
+    outr="$(json_scoped_num "$pricing" "claude.$tier.outputPerMTok")"
+    [ -n "$inr" ] && [ -n "$outr" ] || continue
+    tlo="$(json_scoped_num "$est" "tokenEstimates.$k.low")";  [ -n "$tlo" ] || tlo=0
+    thi="$(json_scoped_num "$est" "tokenEstimates.$k.high")"; [ -n "$thi" ] || thi=0
+    usd_low="$(awk -v a="$usd_low" -v t="$tlo" -v ir="$inr" -v or="$outr" \
+      -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+      'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+    usd_high="$(awk -v a="$usd_high" -v t="$thi" -v ir="$inr" -v or="$outr" \
+      -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+      'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+  done
+  # Trim to a tidy 4-dp figure.
+  usd_low="$(awk -v v="$usd_low" 'BEGIN{printf "%g", v}')"
+  usd_high="$(awk -v v="$usd_high" 'BEGIN{printf "%g", v}')"
+  printf '{\n'
+  printf '    "cli": "claude",\n'
+  printf '    "unit": "usd",\n'
+  printf '    "currency": "USD",\n'
+  printf '    "usd": { "low": %s, "high": %s }\n' "$usd_low" "$usd_high"
+  printf '  }'
+}
+
+# The `cost --mission <id>` subcommand: a mission-free test surface over
+# cost_compute, mirroring resolve-stage-model. Resolves the active CLI the same
+# way (LCARS_WORKER_CLI or basename WORKER_BIN), reads the mission's estimate.json
+# + pricing.json, and prints the canonical cost JSON block (plus a one-line
+# `COST cli=… unit=…` header) so tests can drive it deterministically.
+cmd_cost() {
+  local gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  fi
+  resolve_worker_bin
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local est="$MISSION_DIR/estimate.json"
+  [ -f "$est" ] || die "no estimate.json for mission ${MISSION_ID:-?}."
+  local block; block="$(cost_compute "$est" "$cli")"
+  printf 'COST cli=%s\n' "$cli"
+  printf '%s\n' "$block"
 }
 
 # === Stage driver: Plan ====================================================
@@ -3811,6 +4021,11 @@ case "$SUB" in
   # `STAGE-MODEL key=<k> model=<flag|->`. The test surface for resolve_stage_model.
   resolve-stage-model) [ -n "$POSARG" ] || die "usage: run.sh resolve-stage-model [--mission <id>] <stage-key>"
                        cmd_resolve_stage_model "$POSARG" ;;
+  # CLI-aware mission cost (session 60) — reads --mission's estimate.json +
+  # pricing.json + the active CLI, prints the canonical cost JSON block. Pure (no
+  # LLM); the test surface for cost_compute.
+  cost)             [ -n "$MISSION_ID" ] || die "usage: run.sh cost --mission <id>"
+                    cmd_cost ;;
   # Drive the real worker_spawn chokepoint for one env-role through the resolved
   # worker bin (a stub in tests) so the spawned argv (incl. per-stage --model) is
   # observable end-to-end. The spawn-path test surface.

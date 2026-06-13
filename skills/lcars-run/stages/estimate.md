@@ -82,6 +82,50 @@ differs from what the ramp above would give for the scores you chose, add one
 entry to the `deviations` array, formatted `"<stage>: <one-line reason>"`. If you
 follow the ramp exactly, `deviations` is an empty array `[]`.
 
+## The per-stage workload estimates (two billing models)
+
+LCARS can run on either of two worker CLIs that meter differently — one bills per
+token, the other per *premium request* (per worker invocation). So you estimate
+the **workload** in BOTH units and the harness — not you — turns it into a cost
+in whichever unit the active CLI uses:
+
+- **`tokenEstimates`** — for the per-token billing model. For EACH of the six
+  stages emit a rough `{low, high}` **total token** band (input + output
+  combined) you expect that stage to consume.
+- **`requestEstimates`** — for the per-premium-request billing model (one premium
+  request per worker invocation). For EACH of the six stages emit a rough
+  `{low, high}` **request count** band — how many cold-worker invocations that
+  stage will make.
+
+**Ground these in the observable LCARS structure, NOT blind constants:**
+
+- **research** fans out one stateless agent per generated question (0–20). A
+  routine mission asks few or no questions (1–3 requests); a fraught one asks
+  many. Token volume scales with the fan-out and how much code each agent reads.
+- **validate / plan / planReview** are each a single cold worker (≈1 request
+  each, more if a round repeats — Plan Review can loop up to 3 rounds). Token
+  volume scales with the plan size and the breadth of context each reads.
+- **implement** runs, per ticket, an adversarial **Test-Writer + Implementer**
+  pair, each able to retry up to the attempt cap (5). So requests ≈ ticket-count
+  × 2 pairs × attempts-actually-used. Estimate the **ticket-count band** from the
+  plan's likely vertical-slice decomposition, and the attempts from how
+  error-prone the code is. This is usually the dominant stage in BOTH units.
+- **verify** is a single cheap check (≈1 request, modest tokens).
+
+Be honest about the range: `low` is the smooth path, `high` allows for fan-out,
+re-plans, and implementation retries. The harness multiplies these by the
+per-stage tier price/multiplier from `pricing.json`, so your job is the *workload*,
+not the dollars.
+
+## The rationale
+
+Emit a `rationale` string explaining, in plain engineering terms, WHY you scored
+and sized the mission the way you did — the drivers of the criticality and of the
+token/request bands. **Keep it AS SHORT AS THE WORK WARRANTS:** one or two
+sentences for a routine mission; **at most two short paragraphs**, and only when
+the mission is genuinely complex. Never pad. Separate two paragraphs with a blank
+line.
+
 ## Output — DO THIS IN ORDER, file FIRST
 
 You MUST create the file **`estimate.json`** in your scratch output directory with
@@ -93,7 +137,7 @@ The file MUST be a single JSON object with EXACTLY this shape:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "reasoningCriticality": "low|medium|high",
   "implCriticality": "low|medium|high",
   "models": {
@@ -104,15 +148,38 @@ The file MUST be a single JSON object with EXACTLY this shape:
     "implement": "sonnet|opus",
     "verify": "sonnet|opus"
   },
+  "tokenEstimates": {
+    "research":   { "low": 0, "high": 0 },
+    "validate":   { "low": 0, "high": 0 },
+    "plan":       { "low": 0, "high": 0 },
+    "planReview": { "low": 0, "high": 0 },
+    "implement":  { "low": 0, "high": 0 },
+    "verify":     { "low": 0, "high": 0 }
+  },
+  "requestEstimates": {
+    "research":   { "low": 0, "high": 0 },
+    "validate":   { "low": 0, "high": 0 },
+    "plan":       { "low": 0, "high": 0 },
+    "planReview": { "low": 0, "high": 0 },
+    "implement":  { "low": 0, "high": 0 },
+    "verify":     { "low": 0, "high": 0 }
+  },
   "deviations": [ "<stage>: <why you departed from the ramp>" ],
+  "rationale": "<= 2 paragraphs; shorter for simple work",
   "estimatorModel": "opus"
 }
 ```
 
 All six `models` keys MUST be present; each value MUST be `"sonnet"` or `"opus"`.
-Both scores MUST be one of `low` / `medium` / `high`. Set `schemaVersion` to `1`.
-Set `estimatorModel` to the tier you ran on (the harness pins this; just echo the
-tier you were given, default `"opus"`).
+Both scores MUST be one of `low` / `medium` / `high`. Set `schemaVersion` to `2`.
+`tokenEstimates` and `requestEstimates` MUST each have all six stage keys, each
+with non-negative integer `low`/`high`. `rationale` is a single string of at most
+two paragraphs. Set `estimatorModel` to the tier you ran on (the harness pins
+this; just echo the tier you were given, default `"opus"`).
+
+You do **NOT** compute a dollar cost — the harness derives it from your
+`tokenEstimates` / `requestEstimates` and `pricing.json`, in the active CLI's
+unit. Do not invent prices or a `cost` field; if you emit one it is ignored.
 
 - **Step 1 — reason FIRST.** Read the PRD, the ADR set (if present), the repo
   context, and the relevant code. Decide the two scores and the per-stage tiers.
