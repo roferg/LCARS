@@ -5334,5 +5334,247 @@ check "FS6. cleans up its worktree (no leak under mission state)" \
 
 # ==========================================================================
 echo
+echo "lcars run — BUG-017: the post-commit verification gate (impl-save-result)"
+#
+# Ground truth of BUG-017: the Implementer often builds in its OWN ephemeral
+# scratch worktree, then self-reports passed:true. impl-save-result trusted that
+# pass — it committed the scoped diff and emitted ticket_green WITHOUT re-checking
+# that the change actually landed GREEN on the COMMITTED mission branch. A worker
+# could pass in its scratch tree while the commit held only an out-of-scope edit
+# (or nothing), and the Mission still advanced to Verify on that worktree-only
+# green (the dual-CLI defect: version.sh present under one CLI, absent under
+# another, same Mission). The fix adds a post-commit gate: AFTER commit_ticket,
+# re-run the ticket's quarantined suite against a CLEAN checkout of the COMMITTED
+# branch state; a RED there FAILS the attempt (same retry/flag path), and the
+# ticket never counts green. It must NOT weaken the red / immutable / full-suite
+# gates, and must NOT false-fail a runner-less or branch-less mission.
+
+# A runner that HONORS $LCARS_TESTS_DIR and runs each quarantined *.test.sh, so
+# the test itself asserts against the code at its own ../ location (the committed
+# tree). Vacuously green on an empty/missing dir (so the red gate's probe proves
+# it reacted to the var).
+PC_RUNNER="$TMPROOT/postcommit-runner.sh"
+cat >"$PC_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f -name '*.test.sh' | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && exit 0
+rc=0
+while IFS= read -r f; do bash "$f" || rc=1; done < <(find "$d" -type f -name '*.test.sh')
+exit $rc
+EOF
+chmod +x "$PC_RUNNER"
+
+# Build an implement-stage mission on a REAL branch (feat/pc) carrying one tracked
+# file (other.txt). t-001's quarantined suite requires version.sh at the repo root
+# to exist and output "v2" — resolved relative to its own location (the depth-1
+# committed-tree assumption). The suite is RED until version.sh lands, so the red
+# gate at impl-save-tests accepts it and snapshots the immutable contract.
+new_repo_postcommit() {
+  local repo; repo="$(new_repo_with_implement_mission)"
+  ( cd "$repo"
+    git checkout -q -b feat/pc >/dev/null 2>&1 || git checkout -q feat/pc
+    printf 'original\n' >other.txt
+    git add -A && git commit -q -m "base (other.txt)"
+  )
+  set_state_branch "$repo" feat/pc
+  echo "$repo"
+}
+
+# Quarantine t-001's tests (impl-save-tests: red gate + immutable snapshot) so a
+# later impl-save-result is a faithful end-to-end exercise of the gate.
+pc_save_tests() { # repo
+  local repo="$1" td; td="$(mktemp -d)"
+  cat >"$td/t-001.test.sh" <<'EOF'
+#!/usr/bin/env bash
+# assert: version.sh exists on the committed tree and outputs v2
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$here/../version.sh" ] || exit 1
+[ "$(bash "$here/../version.sh")" = "v2" ]
+EOF
+  ( cd "$repo" && LCARS_TEST_CMD="bash $PC_RUNNER" LCARS_GH_BIN="$repo/gh" \
+      bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$td" \
+      >/dev/null 2>&1 )
+  rm -rf "$td"
+}
+
+# --- PC1: worker green in scratch, change NOT on the committed branch ---------
+# The Implementer reported green but left NO change in the working tree (it built
+# only in its scratch worktree). commit_ticket commits nothing; the post-commit
+# gate re-runs the suite at the branch tip (version.sh absent) → RED → the attempt
+# FAILS, the result is NOT saved, and the ticket never counts green.
+repoPC1="$(new_repo_postcommit)"; make_gh_stub "$repoPC1/gh"
+export GH_LOG="$repoPC1/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoPC1"
+resPC1="$repoPC1/result.json"; write_result "$resPC1" t-001 true 2
+rcPC1=0
+( cd "$repoPC1" && LCARS_NOW=1700017001 LCARS_TEST_CMD="bash $PC_RUNNER" LCARS_GH_BIN="$repoPC1/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resPC1" \
+    >outPC1.txt 2>&1 ) || rcPC1=$?
+check "PC1. impl-save-result FAILS when the change is absent on the committed branch" \
+  "[ '$rcPC1' -ne 0 ]"
+check "PC1. does NOT save result.json (ticket never counts green)" \
+  "[ ! -f '$repoPC1/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+check "PC1. names the post-commit / not-present grounded reason" \
+  "grep -qiE 'post-commit|not present on the committed branch|committed branch' '$repoPC1/outPC1.txt'"
+check "PC1. emits a ticket_postcommit_red event (observable in the stream)" \
+  "grep -q '\"type\":\"ticket_postcommit_red\"' '$repoPC1/.git/lcars/missions/$MID/events.jsonl'"
+check "PC1. never emits ticket_green for the worktree-only pass" \
+  "! grep -q '\"type\":\"ticket_green\"' '$repoPC1/.git/lcars/missions/$MID/events.jsonl'"
+check "PC1. leaks no post-commit worktree under the mission state" \
+  "[ ! -d '$repoPC1/.git/lcars/missions/$MID/postcommit-wt' ]"
+
+# --- PC2: worker committed an OUT-OF-SCOPE change only ------------------------
+# The Implementer modified a tracked, unrelated file (other.txt) but never built
+# version.sh. commit_ticket commits the out-of-scope edit; the post-commit gate
+# still finds the ticket's suite RED on the committed branch → FAILS the attempt
+# with the grounded "not present on the committed branch" reason.
+repoPC2="$(new_repo_postcommit)"; make_gh_stub "$repoPC2/gh"
+export GH_LOG="$repoPC2/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoPC2"
+printf 'tampered out-of-scope\n' >"$repoPC2/other.txt"   # the only thing the worker changed
+resPC2="$repoPC2/result.json"; write_result "$resPC2" t-001 true 2
+rcPC2=0
+( cd "$repoPC2" && LCARS_TEST_CMD="bash $PC_RUNNER" LCARS_GH_BIN="$repoPC2/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resPC2" \
+    >outPC2.txt 2>&1 ) || rcPC2=$?
+check "PC2. impl-save-result FAILS on an out-of-scope-only commit" \
+  "[ '$rcPC2' -ne 0 ]"
+check "PC2. names the not-present-on-committed-branch reason" \
+  "grep -qiE 'not present on the committed branch|out-of-scope|committed branch' '$repoPC2/outPC2.txt'"
+check "PC2. does NOT save result.json" \
+  "[ ! -f '$repoPC2/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+
+# --- PC3: honest green — change committed on the branch, suite green ----------
+# The Implementer built version.sh (outputs v2) into the working tree. commit_ticket
+# commits it; the post-commit gate re-runs the suite at the branch tip (version.sh
+# present, v2) → GREEN → the ticket passes exactly as today (no regression).
+repoPC3="$(new_repo_postcommit)"; make_gh_stub "$repoPC3/gh"
+export GH_LOG="$repoPC3/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoPC3"
+printf '#!/usr/bin/env bash\necho v2\n' >"$repoPC3/version.sh"
+resPC3="$repoPC3/result.json"; write_result "$resPC3" t-001 true 2
+rcPC3=0
+( cd "$repoPC3" && LCARS_NOW=1700017003 LCARS_TEST_CMD="bash $PC_RUNNER" LCARS_GH_BIN="$repoPC3/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resPC3" \
+    >outPC3.txt 2>&1 ) || rcPC3=$?
+check "PC3. honest green (change committed) still exits 0" "[ '$rcPC3' -eq 0 ]"
+check "PC3. saves result.json (ticket counts green)" \
+  "[ -f '$repoPC3/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+check "PC3. commits version.sh onto the mission branch" \
+  "( cd '$repoPC3' && git ls-tree -r --name-only feat/pc | qgrep -q '^version.sh$' )"
+check "PC3. emits ticket_postcommit_ok (the verified-on-branch event)" \
+  "grep -q '\"type\":\"ticket_postcommit_ok\"' '$repoPC3/.git/lcars/missions/$MID/events.jsonl'"
+check "PC3. still emits ticket_green (no regression to the green path)" \
+  "grep -q '\"type\":\"ticket_green\"' '$repoPC3/.git/lcars/missions/$MID/events.jsonl'"
+check "PC3. leaks no post-commit worktree under the mission state" \
+  "[ ! -d '$repoPC3/.git/lcars/missions/$MID/postcommit-wt' ]"
+
+# --- PC4: the check runs on the CLEAN branch state, NOT the scratch worktree --
+# version.sh exists in the WORKING TREE but is a captain-pre-existing untracked
+# file (in .untracked-before), so commit_ticket never stages it → it is NOT on the
+# committed branch. If the gate ran in the dirty working tree it would SEE version.sh
+# and pass; running on the clean committed checkout it does NOT → RED → FAILS. This
+# proves the gate ignores uncommitted scratch-only files.
+repoPC4="$(new_repo_postcommit)"; make_gh_stub "$repoPC4/gh"
+export GH_LOG="$repoPC4/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoPC4"
+printf '#!/usr/bin/env bash\necho v2\n' >"$repoPC4/version.sh"   # present in the WORKING TREE only
+printf 'version.sh\n' >"$repoPC4/.git/lcars/missions/$MID/tickets/t-001/.untracked-before"
+resPC4="$repoPC4/result.json"; write_result "$resPC4" t-001 true 2
+rcPC4=0
+( cd "$repoPC4" && LCARS_TEST_CMD="bash $PC_RUNNER" LCARS_GH_BIN="$repoPC4/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resPC4" \
+    >outPC4.txt 2>&1 ) || rcPC4=$?
+check "PC4. FAILS even though version.sh is in the working tree (clean-state check)" \
+  "[ '$rcPC4' -ne 0 ]"
+check "PC4. version.sh is NOT on the committed branch" \
+  "( cd '$repoPC4' && ! git ls-tree -r --name-only feat/pc | qgrep -q '^version.sh$' )"
+check "PC4. the working-tree version.sh is left intact (never destroyed)" \
+  "[ -f '$repoPC4/version.sh' ]"
+check "PC4. does NOT save result.json" \
+  "[ ! -f '$repoPC4/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+
+# --- PC5: no runner configured — SKIP LOUD, never a false fail ---------------
+# The honest-green setup but with NO testCommand (and no $LCARS_TEST_CMD) at
+# save-result time. The gate cannot re-verify, so it SKIPS LOUD and the ticket
+# still saves green — it must never false-fail a runner-less repo (matching the
+# red / full-suite gates' no-runner stance).
+repoPC5="$(new_repo_postcommit)"; make_gh_stub "$repoPC5/gh"
+export GH_LOG="$repoPC5/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoPC5"
+printf '#!/usr/bin/env bash\necho v2\n' >"$repoPC5/version.sh"
+resPC5="$repoPC5/result.json"; write_result "$resPC5" t-001 true 2
+rcPC5=0
+( cd "$repoPC5" && LCARS_GH_BIN="$repoPC5/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resPC5" \
+    >outPC5.txt 2>&1 ) || rcPC5=$?
+check "PC5. no-runner: impl-save-result still exits 0 (no false fail)" \
+  "[ '$rcPC5' -eq 0 ]"
+check "PC5. no-runner: saves result.json (ticket counts green)" \
+  "[ -f '$repoPC5/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+check "PC5. no-runner: the skip is LOUD (warns the gate could not run)" \
+  "grep -qiE 'post-commit|skip' '$repoPC5/outPC5.txt'"
+
+# --- PC6: no existing gate weakened — red-first + immutable still fire --------
+# Regression-lock: with the post-commit gate present, impl-save-tests STILL rejects
+# a green-on-nothing suite (red gate), and impl-save-result STILL rejects a tampered
+# immutable contract BEFORE ever reaching commit/post-commit.
+repoPC6="$(new_repo_postcommit)"; make_gh_stub "$repoPC6/gh"
+export GH_LOG="$repoPC6/gh.log"; : >"$GH_LOG"
+tdPC6="$(mktemp -d)"; printf '#!/usr/bin/env bash\nexit 0  # assert: green-on-nothing\n' >"$tdPC6/x.test.sh"
+rcPC6red=0
+( cd "$repoPC6" && LCARS_TEST_CMD='exit 0' LCARS_GH_BIN="$repoPC6/gh" \
+    bash "$SCRIPT" impl-save-tests --mission "$MID" --ticket t-001 --tests "$tdPC6" \
+    >outPC6red.txt 2>&1 ) || rcPC6red=$?
+rm -rf "$tdPC6"
+check "PC6. red gate still rejects a green-on-nothing suite (unweakened)" \
+  "[ '$rcPC6red' -ne 0 ]"
+# now a valid red quarantine, then tamper the locked tests and try to save a result
+pc_save_tests "$repoPC6"
+printf 'assert: weakened by the Implementer\n' \
+  >"$repoPC6/.git/lcars/missions/$MID/tickets/t-001/tests/t-001.test.sh"
+resPC6="$repoPC6/result.json"; write_result "$resPC6" t-001 true 2
+rcPC6im=0
+( cd "$repoPC6" && LCARS_TEST_CMD="bash $PC_RUNNER" LCARS_GH_BIN="$repoPC6/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resPC6" \
+    >outPC6im.txt 2>&1 ) || rcPC6im=$?
+check "PC6. immutable-tests gate still rejects a tampered contract (unweakened)" \
+  "[ '$rcPC6im' -ne 0 ]"
+check "PC6. the immutable violation is named (fires before post-commit)" \
+  "grep -qiE 'modif|immutable|locked' '$repoPC6/outPC6im.txt'"
+
+# --- PC7: concurrency — one ticket's gate must NOT clobber a SIBLING's worktree
+# An Implement wave builds its tickets in PARALLEL; every sibling runs its own
+# post_commit_gate against the SAME shared MISSION_DIR. The original gate cleanup
+# did `rm -rf "$MISSION_DIR/postcommit-wt"` + a global `git worktree prune`, so a
+# finishing ticket would delete a sibling's in-use checkout (and unregister it) →
+# the sibling false-REDs. This locks the fix: ticket t-001's honest-green gate must
+# leave a concurrently-present sibling worktree/staging dir untouched.
+repoPC7="$(new_repo_postcommit)"; make_gh_stub "$repoPC7/gh"
+export GH_LOG="$repoPC7/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoPC7"
+printf '#!/usr/bin/env bash\necho v2\n' >"$repoPC7/version.sh"
+# Simulate a SIBLING ticket (t-002) mid-run: a checkout + staging dir under both the
+# old shared base path AND a unique per-ticket path, each carrying a marker file the
+# t-001 gate must never touch.
+MDIR7="$repoPC7/.git/lcars/missions/$MID"
+mkdir -p "$MDIR7/postcommit-wt/t-002"; printf 'sibling-busy\n' >"$MDIR7/postcommit-wt/t-002/marker"
+sibWT7="$(mktemp -d "$MDIR7/postcommit-t-002.XXXXXX")"; printf 'sibling-busy\n' >"$sibWT7/marker"
+resPC7="$repoPC7/result.json"; write_result "$resPC7" t-001 true 2
+rcPC7=0
+( cd "$repoPC7" && LCARS_NOW=1700017007 LCARS_TEST_CMD="bash $PC_RUNNER" LCARS_GH_BIN="$repoPC7/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resPC7" \
+    >outPC7.txt 2>&1 ) || rcPC7=$?
+check "PC7. honest green still exits 0 (gate unchanged)" "[ '$rcPC7' -eq 0 ]"
+check "PC7. does NOT remove the sibling's shared-base checkout (no rm -rf of a shared dir)" \
+  "[ -f '$MDIR7/postcommit-wt/t-002/marker' ]"
+check "PC7. does NOT remove the sibling's unique per-ticket worktree dir" \
+  "[ -f '$sibWT7/marker' ]"
+check "PC7. leaves no t-001 post-commit worktree behind (own worktree cleaned up)" \
+  "[ -z \"\$(ls -d '$MDIR7'/postcommit-t-001.* 2>/dev/null)\" ]"
+
+# ==========================================================================
+echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
