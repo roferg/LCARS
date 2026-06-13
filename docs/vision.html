@@ -379,6 +379,10 @@ stateDiagram-v2
           <div class="control-cmd">lcars log</div>
           <div class="control-desc">Log bugs against an active Mission in free-form language. One invocation can describe several bugs; the Harness fast-tracks a Mission per bug and links them to the parent.</div>
         </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars resolve-logs &lt;parent&gt;</div>
+          <div class="control-desc">Hand the Harness every bug you logged against a Mission. It picks a sensible order (root-cause and dependency bugs first, cosmetic last), drives each linked bug to its Verify gate, and raises a <strong>single</strong> consolidated re-verify gate on the parent — one notification — instead of one per bug. Never auto-approves; a mid-batch escalation pauses the run into <code>lcars answer</code> and resumes with the rest.</div>
+        </div>
       </div>
       <p style="margin-top:16px">When a Mission reaches a gate, the Harness fires a notification — a local banner by default, or a phone push if you've wired one — with a one-line, decision-ready summary, then stops. File a Mission, walk away, and come back when it pings.</p>
     </section>
@@ -483,6 +487,24 @@ flowchart LR
           </div>
         </div>
         <p>Both bug Missions fast-track in parallel: thin PRDs, zero research questions, one issue each. They run concurrently with each other and with the in-progress gamification Mission. The Kanban Board shows all three cards simultaneously. A bug logged against a Mission that has <strong>already merged</strong> rides its own branch and merges as soon as it's verified; a bug logged against a Mission still <strong>in flight</strong> lands its fix on that Mission's branch, so the fix ships with the parent rather than stranding on a branch whose base never merges. Either way the gamification Mission continues uninterrupted.</p>
+        <p style="margin-top:16px"><strong>Resolving a batch with one re-verify.</strong> When the bugs are found during the parent's <em>own</em> Verify — you're reviewing the finished Mission and file several in a row — driving each to its own Verify gate would mean one "review me" interruption per bug. <code>lcars resolve-logs &lt;parent&gt;</code> collapses them: it asks the worker for a sensible order (root-cause and dependency bugs first, cosmetic last), drives every linked bug Mission to its Verify gate one-by-one, and raises a <strong>single</strong> consolidated re-verify gate — one notification — on the parent.</p>
+        <div class="diagram-wrap">
+          <div class="mermaid">
+flowchart LR
+    RL([lcars resolve-logs])
+    subgraph ORDER["worker-chosen order"]
+        direction TB
+        O1["1 · XP video\nroot cause"] --> O2["2 · Leaderboard\ncosmetic"]
+    end
+    RL --> ORDER
+    O1 --> V1["Verify gate\nfix on branch"]
+    O2 --> V2["Verify gate\nfix on branch"]
+    V1 --> G{{"One consolidated\nre-verify gate\n🔔 one notification"}}
+    V2 --> G
+    G --> H(["You re-inspect →\napprove / feedback each"])
+          </div>
+        </div>
+        <p>It never auto-approves and opens no PRs. If a bug escalates mid-batch (a cap-exhausted ticket, a scope change), the run <strong>pauses</strong> at that bug and routes its question into <code>lcars answer</code>; the bugs already resolved are untouched, and a resumed <code>lcars resolve-logs</code> continues with the rest once you've answered.</p>
       </div>
     </section>
 

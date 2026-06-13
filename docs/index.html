@@ -318,6 +318,9 @@ flowchart LR
     F --> Lc["lcars (drives the mission)"]
     Lc -->|"gate hit"| An["lcars answer (clear the decision)"]
     An --> Lc
+    Lc -->|"bug found at verify"| Lg["lcars log (file bugs vs mission)"]
+    Lg --> Rl["lcars resolve-logs (drive every bug → one re-verify)"]
+    Rl --> An
     Lc -->|"verify"| Ap[lcars approve]
     Ap --> Done([PR opened ✓])
         </div>
@@ -435,6 +438,13 @@ flowchart LR
           <div class="control-desc">Log one or more bugs against an active
           Mission; fast-tracks a Mission per bug straight to Plan and links
           them.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars resolve-logs &lt;parent&gt;</div>
+          <div class="control-desc">Drive <strong>every</strong> bug logged
+          against a Mission to its Verify gate in a worker-chosen order, then
+          raise <strong>one</strong> consolidated re-verify gate on the parent
+          instead of one per bug. Never auto-approves.</div>
         </div>
       </div>
 
@@ -569,6 +579,23 @@ implement   ✓ ⊘ isolated  11/11 tickets green
           (skipping Align / Research / Validate), and links them to the parent
           with <code>lcars:linked</code>. They run in parallel on their own
           branches and merge as soon as they verify.</p>
+          <p>Logged several bugs while reviewing a Mission at Verify?
+          <code>lcars resolve-logs &lt;parent&gt;</code> hands the whole batch to
+          the Harness. It picks a sensible order (root-cause and dependency bugs
+          first, cosmetic last), drives each linked bug to its Verify gate, and
+          collapses what would be one interruption per bug into a
+          <strong>single consolidated re-verify gate</strong> — one notification —
+          on the parent. It never auto-approves; re-inspecting and shipping each
+          fix stays yours. A bug that escalates mid-batch pauses the run (its
+          question lands in <code>lcars answer</code>) without rolling back the
+          bugs already resolved, and a resumed run continues with the rest.</p>
+          <pre style="margin-top:10px">$ lcars resolve-logs lcars-20260604-001
+order: 002 (root cause) → 003 (cosmetic)   [worker-chosen]
+lcars-20260604-002  ✓ ⊘ isolated  fix on branch, at verify
+lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
+⏹ stopped at: verify  (1 consolidated re-verify gate)
+   2 logged bugs resolved [002, 003] — ready for you to re-verify.
+                                            🔔 (one notification fired)</pre>
         </div>
       </div>
     </section>
@@ -944,6 +971,7 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
             <div class="lcars-status active">Auto-advance + notify</div>
             <div class="lcars-status active">Human surface</div>
             <div class="lcars-status active">Mission Log</div>
+            <div class="lcars-status active">Batch resolve-logs</div>
             <div class="lcars-status active">Copilot enablement · new</div>
           </div>
         </div>
