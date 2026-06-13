@@ -29,8 +29,19 @@ SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 RESOLVE="${LCARS_RESOLVE_SCRIPT:-$SKILL_DIR/resolve.sh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 ANSWER_SCRIPT="${LCARS_ANSWER_SCRIPT:-$SKILL_DIR/../lcars-answer/answer.sh}"
+RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 
 die() { printf 'lcars: %s\n' "$1" >&2; exit 1; }
+
+# --- explicit verbs: thin delegators to a script already built -------------
+# These come BEFORE the smart-default routing so a verb is never mistaken for a
+# mission selector. Each one owns its own arg parsing.
+case "${1:-}" in
+  resolve-logs)
+    shift
+    exec bash "$RESOLVE_LOGS_SCRIPT" "$@" ;;
+esac
+
 
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 

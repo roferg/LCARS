@@ -1642,6 +1642,114 @@ $(cat "$sig")"
   exit 0
 }
 
+# --- GUARDRAIL 5: the post-commit verification (BUG-017) --------------------
+# The adversarial Implementer often builds in its OWN ephemeral per-ticket git
+# worktree ($LCARS_TICKET_WORKTREE) or a scratch tree, then self-reports
+# passed:true. commit_ticket assembles the ticket's scoped diff onto the mission
+# branch (normal mode) or a detached commit at the branch tip (worktree mode,
+# cherry-picked later). NOTHING re-checked that the change actually LANDED on the
+# committed branch state: a worker can pass green in its scratch tree while the
+# commit holds only an out-of-scope edit (or no change at all), and the harness
+# would still emit ticket_green and advance to Verify on that worktree-only green.
+# That is the literal BUG-017 dual-CLI defect (version.sh present under one CLI,
+# absent under another, same Mission).
+#
+# This gate closes the hole. Run IMMEDIATELY AFTER commit_ticket, it re-runs the
+# ticket's OWN quarantined suite against a CLEAN checkout of the COMMITTED state —
+# never the Implementer's scratch worktree:
+#   • worktree mode  → the commit object commit_ticket recorded to .commit-sha
+#                      (or, if it committed nothing, the worktree's unchanged tip
+#                      → the change is NOT present → the suite must go red).
+#   • normal mode    → the mission branch HEAD.
+# A clean detached worktree is cut at that commit-ish and the suite is staged at a
+# DEPTH-1 dir there (mirroring full_suite_gate), so relative-to-self target
+# resolution behaves exactly as at green-time. The ticket PASSES only when the
+# suite is GREEN on the committed state; a RED there means the implementation
+# never landed (or only an out-of-scope change was committed) and the attempt
+# FAILS — routed into the SAME retry/flag path as any other failed attempt.
+# Purely ADDITIVE: it weakens neither the red gate, the immutable-test snapshot,
+# the test-quality check, nor the full-suite gate. With NO runner configured it
+# SKIPS LOUD (never a false pass, never a false fail), matching the other gates;
+# a branch-less / local-only mission has no committed branch to check, so it keeps
+# the current behaviour rather than crash.
+POST_COMMIT_SIGNAL=""   # caller may point this at a file to capture the failure detail
+post_commit_gate() { # ticket
+  local t="$1" cmd; cmd="$(resolve_test_cmd)"
+  if [ -z "$cmd" ]; then
+    # NO RUNNER: the same documented degradation as the red / full-suite gates.
+    # We cannot re-run the suite against the committed branch, so we SKIP LOUD —
+    # never a false pass, and never a false FAIL of a runner-less repo.
+    printf '  ⚠ POST-COMMIT GATE SKIPPED — no test command (set `testCommand` in .git/lcars/config.json or $LCARS_TEST_CMD). The harness cannot re-verify the ticket landed GREEN on the committed branch without a runner; configure one to close this gap.\n' >&2
+    return 0
+  fi
+
+  # Resolve the commit-ish that represents the COMMITTED state for this ticket.
+  local ref=""
+  if [ -n "${LCARS_TICKET_WORKTREE:-}" ]; then
+    # Worktree mode: commit_ticket committed onto the detached HEAD and recorded
+    # the commit object to .commit-sha. If it committed nothing (no file changes),
+    # .commit-sha is absent and the worktree HEAD is the UNCHANGED branch tip — the
+    # change is not present, so verifying there correctly goes red.
+    ref="$(cat "$(ticket_dir "$t")/.commit-sha" 2>/dev/null || true)"
+    [ -n "$ref" ] || ref="$("$GIT_BIN" -C "$LCARS_TICKET_WORKTREE" rev-parse HEAD 2>/dev/null || true)"
+  else
+    local branch; branch="$(json_str "$STATE" branch)"
+    # Branch-less / local-only mission → no committed branch to check. Keep the
+    # current behaviour (the gate does not apply) rather than crash.
+    [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch" || return 0
+    ref="$("$GIT_BIN" rev-parse "refs/heads/$branch" 2>/dev/null || true)"
+  fi
+  # Defensive: nothing resolvable to check (e.g. an unborn ref) — do not crash and
+  # do not invent a failure. Keep current behaviour.
+  [ -n "$ref" ] || return 0
+
+  # Cut a CLEAN detached worktree at the committed commit-ish — NEVER the
+  # Implementer's scratch worktree (so uncommitted scratch-only files are invisible).
+  #
+  # CONCURRENCY (BUG-017): an Implement wave builds its tickets in PARALLEL, every
+  # sibling running its own post_commit_gate against the SAME shared MISSION_DIR.
+  # Each ticket MUST therefore own a PRIVATE, UNIQUE worktree path and only ever
+  # create / remove THAT path — never a shared parent dir, and never a global
+  # `git worktree prune` (which would unregister a sibling's in-use worktree). A
+  # unique mktemp -d name guarantees no two concurrent gates collide.
+  local wt; wt="$(mktemp -d "$MISSION_DIR/postcommit-${t}.XXXXXX" 2>/dev/null || true)"
+  [ -n "$wt" ] || wt="$MISSION_DIR/postcommit-${t}.$$"
+  rm -rf "$wt"
+  if ! "$GIT_BIN" worktree add -q --detach "$wt" "$ref" >/dev/null 2>&1; then
+    # Could not cut a worktree (defensive) — never false-fail; keep current behaviour.
+    # Remove ONLY this ticket's own worktree; never touch siblings.
+    "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt" 2>/dev/null || :
+    return 0
+  fi
+
+  # Stage the ticket's quarantined tests at a DEPTH-1 dir under the clean worktree
+  # root, so a portable test that resolves its target relative to its own location
+  # (`$here/../...`) finds the committed code exactly as it did at green-time.
+  local stage_dir="$wt/.lcars-postcommit" tdir rc=0
+  tdir="$(ticket_dir "$t")/tests"
+  if [ -d "$tdir" ]; then
+    rm -rf "$stage_dir"; mkdir -p "$stage_dir"
+    ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
+    # If tar failed to populate the staging dir, NEVER run against an empty suite
+    # and false-GREEN — mirror the harness refusing an empty quarantined suite.
+    if [ -n "$(find "$stage_dir" -type f -print -quit 2>/dev/null)" ]; then
+      ( cd "$wt" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
+    fi
+    rm -rf "$stage_dir" 2>/dev/null || :
+  fi
+
+  # Clean up ONLY this ticket's own worktree on EVERY exit path — never leak into
+  # the captain's `git worktree list`, and never remove a shared dir or prune
+  # globally (a sibling ticket may be mid-run in the same MISSION_DIR).
+  "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt" 2>/dev/null || :
+
+  [ "$rc" -eq 0 ] && return 0
+  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this attempt — it must land its change on the committed branch to pass. Command run: $cmd."
+  printf '  ✗ %s\n' "$detail" >&2
+  [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$detail" >"$POST_COMMIT_SIGNAL"
+  return 1
+}
+
 # --- subcommand: impl-save-result ------------------------------------------
 cmd_impl_save_result() {
   locate_mission "$MISSION_ID"
@@ -1714,6 +1822,32 @@ cmd_impl_save_result() {
   # Ticket is green — commit its produced files to the mission branch so the
   # eventual PR has content (the working tree is otherwise left uncommitted).
   commit_ticket "$TICKET" "$(json_str "$RESULT" summary)"
+
+  # GUARDRAIL 5 (BUG-017): the worker self-reported passed:true, possibly from its
+  # OWN ephemeral scratch worktree. Re-verify the ticket's suite against the CLEAN
+  # COMMITTED branch state — a worktree-only green (or an out-of-scope-only commit)
+  # must NEVER advance to Verify. A RED on the committed branch FAILS this attempt:
+  # drop the just-saved (not-actually-green) result so the ticket never counts as
+  # green, emit the harness's own event, and `die` so the Implementer loop retries
+  # exactly as for any other failed attempt (the same retry/flag path).
+  local pcsig; pcsig="$(ticket_dir "$TICKET")/post-commit-signal.txt"; rm -f "$pcsig"
+  if ! POST_COMMIT_SIGNAL="$pcsig" post_commit_gate "$TICKET"; then
+    local why=""; [ -f "$pcsig" ] && why="
+$(cat "$pcsig")"
+    rm -f "$pcsig"
+    rm -f "$(ticket_dir "$TICKET")/result.json"   # not green on the branch — never let it count
+    emit_event ticket_postcommit_red implement \
+      "ticket $TICKET failed the post-commit check — implementation not present on the committed branch" \
+      "ticket=$TICKET" "attempts=$attempts"
+    die "ticket $TICKET reported green but its suite is RED against the COMMITTED branch state — the implementation is not present on the committed branch (worktree-only green or out-of-scope commit). Result rejected by the post-commit guardrail.$why"
+  fi
+  rm -f "$pcsig"
+
+  # The change is confirmed present and GREEN on the committed branch — record the
+  # successful post-commit verification so the stream / `--watch` view show it.
+  emit_event ticket_postcommit_ok implement \
+    "ticket $TICKET verified green on the committed branch" \
+    "ticket=$TICKET" "attempts=$attempts"
 
   # ticket_green is emitted ONLY HERE — AFTER the immutable-tests check, the
   # shape/attempts validation (both `die` earlier on rejection) AND commit_ticket.
