@@ -188,15 +188,17 @@ model for every Stage with the legacy global if you want to:
 { "workerModel": "claude-opus-4.8" }
 ```
 
-**A note on the Copilot cost figure.** Both Copilot tiers consume billable usage,
-not Copilot's *included* tier, and LCARS shows a per-Mission cost estimate at
-Align. That figure is currently computed on Copilot's **legacy premium-request**
-model (Sonnet 9× / Opus 27× × $0.04 overage, from `pricing.json`). GitHub moved
-Copilot to **usage-based "AI Credits" (token) billing on 2026-06-01**, which now
-applies to everyone except grandfathered annual subscribers — so for most users
-the premium-request number is a proxy, not your exact bill. Bringing the Copilot
-estimate onto the usage-based model is a tracked follow-up; the Claude `$` figure
-and the per-Stage model selection are unaffected.
+**The Copilot cost figure.** Both Copilot tiers consume billable usage, not
+Copilot's *included* tier, and LCARS shows a per-Mission cost estimate at Align.
+By default it is computed on GitHub's **usage-based "AI Credits" (token) billing** —
+the model GitHub moved to on **2026-06-01** — rendered as a dollar range with your
+plan's monthly included credit noted, e.g. `$0.48–$3.59 (GitHub AI Credits; first
+$19/mo included on business)`. Set `copilotPlan` (`pro` / `proPlus` / `business` /
+`enterprise`) in `config.json` so the included-credit line matches your plan.
+Grandfathered **annual** subscribers still on the old premium-request scheme can
+switch the estimate back with `copilotBilling: "legacy"` (the Sonnet 9× / Opus 27×
+× $0.04 figure). Every rate lives in `pricing.json`, and the Claude `$` figure and
+the per-Stage model selection are unaffected by the billing mode.
 
 **⚠ Launch with `--allow-all-tools`, NOT `--autopilot`.** The recommended
 invocation is:
@@ -594,9 +596,12 @@ optional): `stages.<key>.model` pins one Stage to a tier (`sonnet`/`opus`);
 `modelAliases.<cli>.<tier>` overrides how a logical tier maps to a CLI flag (the
 defaults are claude `sonnet`/`opus` and copilot `claude-sonnet-4.6` /
 `claude-opus-4.8`); `estimatorModel` sets the tier the estimator itself runs on
-(default `opus`). The price/multiplier data the cost figure is computed from lives
-in `skills/lcars-run/pricing.json` — the single source of truth, so a billing
-change is a data edit, not a code change.
+(default `opus`). For the Copilot cost figure, `copilotBilling` (`usage` *(default)*
+/ `legacy`) selects usage-based AI-Credit billing vs. the legacy premium-request
+model, and `copilotPlan` (`pro` / `proPlus` / `business` / `enterprise`) sets the
+included-credit allotment netted against the estimate. The price/rate/allotment
+data the cost figure is computed from lives in `skills/lcars-run/pricing.json` — the
+single source of truth, so a billing change is a data edit, not a code change.
 
 Notifications fire **only** at genuine gates (an escalation or Verify), batched
 per Stage — never one-per-question, never on a clean transition. A phone push
@@ -664,8 +669,9 @@ launch from (see [Running under GitHub Copilot](#running-under-github-copilot)).
 The Claude path is stable; the Copilot path is **new** — it works idea→PR but
 needs two documented setup caveats (premium **Claude** tiers, assigned per Stage
 and alias-mapped + `--allow-all-tools`) and does not yet run on Copilot's
-*included* tokens. The Copilot cost figure still uses the legacy premium-request
-model and is being moved to GitHub's new usage-based billing. Further out: a custom
+*included* tokens. The Copilot cost figure tracks GitHub's usage-based AI-Credit
+billing by default (with the legacy premium-request model available for
+grandfathered annual plans). Further out: a custom
 **kanban interface** (cards, stages, pending-question badges, start/stop control)
 and **production monitoring** to close the loop from live signal back to new
 Missions. LCARS v1 covers idea → merged PR.

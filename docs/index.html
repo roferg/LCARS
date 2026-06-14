@@ -374,16 +374,21 @@ flowchart LR
       </div>
 
       <div class="lcars-alert amber">
-        <div><strong>A note on the Copilot cost figure.</strong> Both Copilot tiers
-        consume billable usage, not Copilot's <em>included</em> tier, and LCARS shows
-        a per-Mission cost estimate at Align. That figure is currently computed on
-        Copilot's <strong>legacy premium-request</strong> model (Sonnet 9× / Opus 27× ×
-        $0.04 overage, from <code>pricing.json</code>). GitHub moved Copilot to
-        <strong>usage-based "AI Credits" (token) billing on 2026-06-01</strong>, which
-        now applies to everyone except grandfathered annual subscribers — so for most
-        users the premium-request number is a proxy, not your exact bill. Bringing the
-        Copilot estimate onto the usage-based model is a tracked follow-up; the Claude
-        <code>$</code> figure and the per-Stage model selection are unaffected.</div>
+        <div><strong>The Copilot cost figure.</strong> Both Copilot tiers consume
+        billable usage, not Copilot's <em>included</em> tier, and LCARS shows a
+        per-Mission cost estimate at Align. By default it is computed on GitHub's
+        <strong>usage-based "AI Credits" (token) billing</strong> — the model GitHub
+        moved to on <strong>2026-06-01</strong> — rendered as a dollar range with your
+        plan's monthly included credit noted, e.g.
+        <code>$0.48–$3.59 (GitHub AI Credits; first $19/mo included on business)</code>.
+        Set <code>copilotPlan</code> (<code>pro</code> / <code>proPlus</code> /
+        <code>business</code> / <code>enterprise</code>) in <code>config.json</code> so
+        the included-credit line matches your plan. Grandfathered <strong>annual</strong>
+        subscribers still on the old premium-request scheme can switch the estimate back
+        with <code>copilotBilling: "legacy"</code> (the Sonnet 9× / Opus 27× × $0.04
+        figure). Every rate lives in <code>pricing.json</code>, and the Claude
+        <code>$</code> figure and the per-Stage model selection are unaffected by the
+        billing mode.</div>
       </div>
 
       <div class="lcars-alert amber">
@@ -960,9 +965,14 @@ An inline run must never masquerade as isolated.</div>
       maps to a CLI flag (the defaults are claude <code>sonnet</code>/<code>opus</code>
       and copilot <code>claude-sonnet-4.6</code> / <code>claude-opus-4.8</code>);
       <code>estimatorModel</code> sets the tier the estimator itself runs on (default
-      <code>opus</code>). The price/multiplier data the cost figure is computed from
-      lives in <code>skills/lcars-run/pricing.json</code> — the single source of
-      truth, so a billing change is a data edit, not a code change.</p>
+      <code>opus</code>). For the Copilot cost figure, <code>copilotBilling</code>
+      (<code>usage</code> <em>(default)</em> / <code>legacy</code>) selects usage-based
+      AI-Credit billing vs. the legacy premium-request model, and
+      <code>copilotPlan</code> (<code>pro</code> / <code>proPlus</code> /
+      <code>business</code> / <code>enterprise</code>) sets the included-credit
+      allotment netted against the estimate. The price/rate/allotment data the cost
+      figure is computed from lives in <code>skills/lcars-run/pricing.json</code> — the
+      single source of truth, so a billing change is a data edit, not a code change.</p>
 
       <div class="lcars-alert teal">
         <div>Notifications fire <strong>only</strong> at genuine gates (an
@@ -1064,9 +1074,9 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
         the Copilot path is <strong>new</strong> — it works idea→PR but needs two
         documented setup caveats (premium <strong>Claude</strong> tiers, assigned per
         Stage and alias-mapped + <code>--allow-all-tools</code>) and does not yet run on
-        Copilot's <em>included</em> tokens. The Copilot cost figure still uses the legacy
-        premium-request model and is being moved to GitHub's new usage-based billing.
-        Further out: a custom
+        Copilot's <em>included</em> tokens. The Copilot cost figure tracks GitHub's
+        usage-based AI-Credit billing by default (with the legacy premium-request model
+        available for grandfathered annual plans). Further out: a custom
         <strong>kanban interface</strong>
         (cards, stages, pending-question badges, start/stop control) and
         <strong>production monitoring</strong> to close the loop from live signal
