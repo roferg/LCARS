@@ -3136,6 +3136,178 @@ cmd_cost() {
   printf '%s\n' "$block"
 }
 
+# === Captain-facing estimate rendering (session 61) ========================
+# Turn a mission's estimate.json into a captain-readable block in the ACTIVE
+# CLI's native cost unit, for one of two SURFACES that lcars-file owns:
+#   issue → a markdown "## Estimate" section (scores, a per-stage model table,
+#           the cost line, the rationale) appended to the GitHub issue body.
+#   cli   → a compact, two-space-indented readout (a one-line Estimate summary
+#           with the scores + cost, a model-mix line, a one-line rationale).
+# The cost unit tracks the active CLI: claude → "$X–$Y"; copilot → "~N premium
+# requests" (+ a "$X–$Y overage" band when available, else "unavailable"). All
+# of the cost-shape + active-CLI logic is reused from cost_compute — this only
+# FORMATS the already-computed numbers, so the two surfaces never disagree with
+# `run.sh cost`. Pure: no LLM, no spawn.
+
+# Pretty a logical tier ("sonnet"/"opus") for display ("Sonnet"/"Opus").
+tier_display() { # tier → Tier
+  case "$1" in
+    opus)   printf 'Opus' ;;
+    sonnet) printf 'Sonnet' ;;
+    *)      printf '%s' "$1" ;;
+  esac
+}
+
+# Pretty a criticality ("low"/"medium"/"high") in UPPER case for the readout.
+crit_display() { printf '%s' "$1" | tr 'a-z' 'A-Z'; }
+
+# Unescape a JSON string's paragraph breaks (\n\n) and newlines so the rationale
+# reads as prose in the rendered surfaces. $2 = join string for blank lines.
+rationale_unescape() { # escaped-string join → prose
+  local s="$1" join="$2"
+  s="${s//\\n\\n/$join}"
+  s="${s//\\n/ }"
+  s="${s//\\\"/\"}"
+  s="${s//\\\\/\\}"
+  printf '%s' "$s"
+}
+
+# Cost phrase for the COMPACT (cli-readout) summary, in the active CLI's unit.
+# Reads the computed cost block (cost_compute output) fields via json helpers off
+# the estimate.json the validator already embedded the cost into.
+render_cost_compact() { # cost-json cli → e.g. "$3.6–$7.2" | "~198–396 premium reqs, ~$7.92–$15.84 overage" | "unavailable"
+  local est="$1" cli="$2"
+  if [ "$cli" = "copilot" ]; then
+    local status; status="$(json_scoped_str "$est" "cost.status")"
+    if [ "$status" = "unavailable" ]; then printf 'unavailable'; return 0; fi
+    local plo phi; plo="$(json_scoped_num "$est" "cost.premiumRequests.low")"
+    phi="$(json_scoped_num "$est" "cost.premiumRequests.high")"
+    [ -n "$plo" ] || plo=0; [ -n "$phi" ] || phi=0
+    local ovlo ovhi; ovlo="$(json_scoped_num "$est" "cost.usdOverage.low")"
+    ovhi="$(json_scoped_num "$est" "cost.usdOverage.high")"
+    if [ -n "$ovlo" ] && [ -n "$ovhi" ]; then
+      printf '~%s–%s premium reqs, ~$%s–$%s overage' "$plo" "$phi" "$ovlo" "$ovhi"
+    else
+      printf '~%s–%s premium reqs' "$plo" "$phi"
+    fi
+    return 0
+  fi
+  # claude (usd)
+  local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
+  [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
+  printf '$%s–$%s' "$lo" "$hi"
+}
+
+# Cost LINE for the ISSUE surface ("- **Cost:** …"), in the active CLI's unit.
+render_cost_issue() { # cost-json cli → markdown bullet text
+  local est="$1" cli="$2"
+  if [ "$cli" = "copilot" ]; then
+    local status; status="$(json_scoped_str "$est" "cost.status")"
+    if [ "$status" = "unavailable" ]; then printf 'Copilot cost: unavailable'; return 0; fi
+    local plo phi; plo="$(json_scoped_num "$est" "cost.premiumRequests.low")"
+    phi="$(json_scoped_num "$est" "cost.premiumRequests.high")"
+    [ -n "$plo" ] || plo=0; [ -n "$phi" ] || phi=0
+    local ovlo ovhi; ovlo="$(json_scoped_num "$est" "cost.usdOverage.low")"
+    ovhi="$(json_scoped_num "$est" "cost.usdOverage.high")"
+    if [ -n "$ovlo" ] && [ -n "$ovhi" ]; then
+      printf '~%s–%s premium requests ($%s–$%s overage)' "$plo" "$phi" "$ovlo" "$ovhi"
+    else
+      printf '~%s–%s premium requests' "$plo" "$phi"
+    fi
+    return 0
+  fi
+  local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
+  [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
+  printf '$%s–$%s' "$lo" "$hi"
+}
+
+# Render the "## Estimate" markdown section for the issue body.
+render_estimate_issue() { # estimate-json cli cost-json → markdown
+  local est="$1" cli="$2" costfile="$3"
+  local rc ic
+  rc="$(json_scoped_str "$est" reasoningCriticality)"; [ -n "$rc" ] || rc="?"
+  ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
+  printf '## Estimate\n\n'
+  printf '**Criticality:** reasoning = %s · implementation = %s\n\n' \
+    "$(crit_display "$rc")" "$(crit_display "$ic")"
+  printf '**Per-stage model mix:**\n\n'
+  printf '| Stage | Model |\n'
+  printf '| --- | --- |\n'
+  local k label
+  for k in research validate plan planReview implement verify; do
+    case "$k" in
+      research)   label="Research" ;;
+      validate)   label="Validate" ;;
+      plan)       label="Plan" ;;
+      planReview) label="Plan Review" ;;
+      implement)  label="Implement" ;;
+      verify)     label="Verify" ;;
+      *)          label="$k" ;;
+    esac
+    printf '| %s | %s |\n' "$label" "$(tier_display "$(json_scoped_str "$est" "models.$k")")"
+  done
+  printf '\n**Estimated cost:** %s\n\n' "$(render_cost_issue "$costfile" "$cli")"
+  local rationale; rationale="$(json_scoped_str "$est" rationale)"
+  if [ -n "$rationale" ]; then
+    printf '%s\n' "$(rationale_unescape "$rationale" '
+
+')"
+  fi
+}
+
+# Render the compact, two-space-indented readout block for the CLI stdout.
+render_estimate_cli() { # estimate-json cli cost-json → indented text
+  local est="$1" cli="$2" costfile="$3"
+  local rc ic
+  rc="$(json_scoped_str "$est" reasoningCriticality)"; [ -n "$rc" ] || rc="?"
+  ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
+  printf '  Estimate: reasoning=%s implementation=%s  (cost %s)\n' \
+    "$(crit_display "$rc")" "$(crit_display "$ic")" "$(render_cost_compact "$costfile" "$cli")"
+  # One-line model mix.
+  printf '  Models:   research/validate=%s · plan/plan-review=%s · implement=%s · verify=%s\n' \
+    "$(tier_display "$(json_scoped_str "$est" models.research)")/$(tier_display "$(json_scoped_str "$est" models.validate)")" \
+    "$(tier_display "$(json_scoped_str "$est" models.plan)")/$(tier_display "$(json_scoped_str "$est" models.planReview)")" \
+    "$(tier_display "$(json_scoped_str "$est" models.implement)")" \
+    "$(tier_display "$(json_scoped_str "$est" models.verify)")"
+  local rationale; rationale="$(json_scoped_str "$est" rationale)"
+  if [ -n "$rationale" ]; then
+    # First paragraph only on the readout, kept to one line.
+    local first; first="$(rationale_unescape "$rationale" ' ' | tr '\n' ' ')"
+    printf '  Why:      %s\n' "$first"
+  fi
+}
+
+# render-estimate subcommand: read --mission's estimate.json, resolve the active
+# CLI the standard way, and print the requested --surface block. If estimate.json
+# is absent, print NOTHING and exit non-zero — lcars-file treats that exactly like
+# an absent adr.md (no Estimate section, no crash), the load-bearing degradation.
+cmd_render_estimate() { # --surface in $SURFACE
+  local gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  fi
+  resolve_worker_bin
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local est="$MISSION_DIR/estimate.json"
+  [ -f "$est" ] || exit 1   # absent ⇒ no output, non-zero (file.sh degradation)
+  # COMPUTE the cost fresh from cost_compute (never trust a possibly-stale `cost`
+  # block in estimate.json, and tolerate a fixture that omits it). Write the
+  # canonical cost block to a temp JSON so the render_cost_* helpers can read its
+  # nested fields with the same json_scoped_* helpers the rest of run.sh uses.
+  local costblock; costblock="$(cost_compute "$est" "$cli")"
+  local costfile; costfile="$(mktemp)"
+  printf '{ "cost": %s }\n' "$costblock" >"$costfile"
+  case "${SURFACE:-cli}" in
+    issue) render_estimate_issue "$est" "$cli" "$costfile" ;;
+    cli)   render_estimate_cli "$est" "$cli" "$costfile" ;;
+    *)     rm -f "$costfile"; die "render-estimate: --surface must be 'issue' or 'cli' (got '${SURFACE:-}')." ;;
+  esac
+  rm -f "$costfile"
+}
+
 # === Stage driver: Plan ====================================================
 # One cold worker fed ONLY prd.md + validated-plan.md → plan.json, persisted via
 # plan-save (which validates every ticket, incl. its rationale).
@@ -3933,10 +4105,12 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
-EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --step)        STEP=1; shift ;;
+    --surface)     SURFACE="${2:-}"; shift 2 ;;
+    --surface=*)   SURFACE="${1#--surface=}"; shift ;;
     --mission)     MISSION_ID="${2:-}"; shift 2 ;;
     --mission=*)   MISSION_ID="${1#--mission=}"; shift ;;
     --questions)   QFILE="${2:-}"; shift 2 ;;
@@ -4026,6 +4200,11 @@ case "$SUB" in
   # LLM); the test surface for cost_compute.
   cost)             [ -n "$MISSION_ID" ] || die "usage: run.sh cost --mission <id>"
                     cmd_cost ;;
+  # Captain-facing estimate rendering (session 61) — reads --mission's
+  # estimate.json + the active CLI, prints the requested --surface (issue|cli)
+  # block. Absent estimate.json ⇒ no output + non-zero (lcars-file degradation).
+  render-estimate)  [ -n "$MISSION_ID" ] || die "usage: run.sh render-estimate --mission <id> --surface issue|cli"
+                    cmd_render_estimate ;;
   # Drive the real worker_spawn chokepoint for one env-role through the resolved
   # worker bin (a stub in tests) so the spawned argv (incl. per-stage --model) is
   # observable end-to-end. The spawn-path test surface.

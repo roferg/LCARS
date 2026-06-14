@@ -158,22 +158,89 @@ if [ -f "$CONFIG" ]; then
 fi
 [ -n "$MODEL" ] || MODEL="${LCARS_MODEL:-claude-sonnet}"
 
+# --- write state.json (session 61: BEFORE the estimator + issue) -----------
+# The estimator (run.sh `estimate`) resolves the mission via locate_mission, which
+# REQUIRES state.json to exist. To render the estimate INTO the issue body we must
+# run the estimator before the issue is created — so state.json has to be written
+# first too. We write it now with githubIssue=null, then patch in the real issue
+# number after gh creates the issue (state_set_issue, below). Every other field is
+# final here. `write_state <issue-or-null>` emits the file.
+title_json="${TITLE//\\/\\\\}"
+title_json="${title_json//\"/\\\"}"
+write_state() { # issue-json (a number or the literal `null`)
+  cat >"$MISSION_DIR/state.json" <<EOF
+{
+  "id": "$ID",
+  "type": "$TYPE",
+  "title": "$title_json",
+  "stage": "align",
+  "created": "$NOW",
+  "model": "$MODEL",
+  "githubIssue": ${1:-null},
+  "branch": "$BRANCH",
+  "base": "$BASE"
+}
+EOF
+}
+write_state null
+
+# --- run the end-of-Align estimator (session 59) --------------------------
+# REORDERED in session 61 to run BEFORE the issue is created, so estimate.json
+# exists when the issue body is composed and the estimate can be rendered into
+# BOTH captain surfaces (the issue body + the CLI readout). cmd_estimate resolves
+# the mission via locate_mission (needs state.json — written just above) and reads
+# prd.md (already written). The estimator is STRICTLY OPTIONAL and must NEVER block
+# filing: it mirrors the gh-missing degradation below. If run.sh is missing, or it
+# produces no estimate.json (worker unavailable, malformed output), we print a note
+# and STILL file the mission — every stage then falls back to its legacy model
+# exactly as before this feature existed, and no "## Estimate" section is rendered
+# (an absent estimate.json is treated exactly like an absent adr.md).
+EST_NOTE=""
+if [ -f "$RUN_BIN" ]; then
+  if bash "$RUN_BIN" estimate --mission "$ID" >/dev/null 2>&1 \
+       && [ -f "$MISSION_DIR/estimate.json" ]; then
+    : # estimate produced — nothing to note.
+  else
+    EST_NOTE="  ⚠ estimator unavailable — mission filed with default per-stage models."
+  fi
+else
+  EST_NOTE="  ⚠ estimator driver not found ($RUN_BIN) — mission filed with default per-stage models."
+fi
+
+# --- render the estimate's "## Estimate" section for the issue body (S61) --
+# Ask the lcars-run driver to format estimate.json into the issue-surface markdown
+# block, in the ACTIVE CLI's native cost unit. render-estimate prints NOTHING and
+# exits non-zero when estimate.json is absent, so EST_ISSUE stays empty and the
+# body is prd[+adr] only — same degradation pattern as an absent adr.md.
+EST_ISSUE=""
+if [ -f "$RUN_BIN" ] && [ -f "$MISSION_DIR/estimate.json" ]; then
+  EST_ISSUE="$(bash "$RUN_BIN" render-estimate --mission "$ID" --surface issue 2>/dev/null)"
+fi
+
 # --- open the GitHub issue ------------------------------------------------
 ISSUE=""
 GH_NOTE=""
 if command -v "$GH_BIN" >/dev/null 2>&1; then
   # Build the issue body. PRD always comes first. For a complex Mission an
   # adr.md exists; append the ADR set after a `\n\n---\n\n` separator so the
-  # board reader sees the architectural decisions too. The on-disk prd.md and
-  # adr.md stay separate artifacts — only the issue BODY combines them.
+  # board reader sees the architectural decisions too. When an estimate exists,
+  # append its "## Estimate" section last, after another `\n\n---\n\n` rule. The
+  # on-disk prd.md and adr.md stay separate artifacts — only the issue BODY
+  # combines them. Order is always prd → adr → Estimate.
   BODY_FILE="$MISSION_DIR/prd.md"
   BODY_TMP=""
-  if [ -f "$MISSION_DIR/adr.md" ]; then
+  if [ -f "$MISSION_DIR/adr.md" ] || [ -n "$EST_ISSUE" ]; then
     BODY_TMP="$(mktemp "$MISSION_DIR/.issue-body.XXXXXX")"
     {
       cat "$MISSION_DIR/prd.md"
-      printf '\n\n---\n\n'
-      cat "$MISSION_DIR/adr.md"
+      if [ -f "$MISSION_DIR/adr.md" ]; then
+        printf '\n\n---\n\n'
+        cat "$MISSION_DIR/adr.md"
+      fi
+      if [ -n "$EST_ISSUE" ]; then
+        printf '\n\n---\n\n'
+        printf '%s\n' "$EST_ISSUE"
+      fi
     } >"$BODY_TMP"
     BODY_FILE="$BODY_TMP"
   fi
@@ -193,44 +260,20 @@ else
   GH_NOTE="  ⚠ gh CLI not found — mission filed locally without a GitHub issue."
 fi
 
-# --- write state.json -----------------------------------------------------
-# Escape backslashes and quotes in the title for JSON.
-title_json="${TITLE//\\/\\\\}"
-title_json="${title_json//\"/\\\"}"
-issue_json="${ISSUE:-null}"
+# --- record the issue number in state.json --------------------------------
+# state.json was written with githubIssue=null before the estimator (so
+# locate_mission could resolve the mission). Now that gh has (maybe) created the
+# issue, rewrite it with the real number — or leave null when gh was missing/failed.
+write_state "${ISSUE:-null}"
 
-cat >"$MISSION_DIR/state.json" <<EOF
-{
-  "id": "$ID",
-  "type": "$TYPE",
-  "title": "$title_json",
-  "stage": "align",
-  "created": "$NOW",
-  "model": "$MODEL",
-  "githubIssue": $issue_json,
-  "branch": "$BRANCH",
-  "base": "$BASE"
-}
-EOF
-
-# --- run the end-of-Align estimator (session 59) --------------------------
-# Now that prd.md / adr.md and state.json exist, ask the lcars-run driver to
-# produce estimate.json (two criticality scores + a per-stage model map that the
-# downstream stages' resolver consumes). The estimator is STRICTLY OPTIONAL and
-# must NEVER block filing: it mirrors the gh-missing degradation above. If the
-# run.sh driver is missing, or it produces no estimate.json (worker unavailable,
-# malformed output), we print a note and STILL file the mission — every stage
-# then falls back to its legacy model exactly as before this feature existed.
-EST_NOTE=""
-if [ -f "$RUN_BIN" ]; then
-  if bash "$RUN_BIN" estimate --mission "$ID" >/dev/null 2>&1 \
-       && [ -f "$MISSION_DIR/estimate.json" ]; then
-    : # estimate produced — nothing to note.
-  else
-    EST_NOTE="  ⚠ estimator unavailable — mission filed with default per-stage models."
-  fi
-else
-  EST_NOTE="  ⚠ estimator driver not found ($RUN_BIN) — mission filed with default per-stage models."
+# --- render the estimate's compact summary for the CLI readout (S61) -------
+# Same render-estimate driver, the cli surface this time: a compact, two-space-
+# indented block (Estimate summary + model mix + one-line rationale) in the active
+# CLI's native cost unit. Absent estimate.json ⇒ empty (no readout block), exactly
+# the degradation parity the EST_NOTE already covers.
+EST_CLI=""
+if [ -f "$RUN_BIN" ] && [ -f "$MISSION_DIR/estimate.json" ]; then
+  EST_CLI="$(bash "$RUN_BIN" render-estimate --mission "$ID" --surface cli 2>/dev/null)"
 fi
 
 # --- confirmation summary -------------------------------------------------
@@ -247,4 +290,7 @@ echo "  Mission filed: $ID"
 echo "  GitHub issue:  $issue_line"
 echo "  Branch:        $BRANCH (off $BASE)"
 echo "  Stage:         align"
+# The estimate readout (S61): the compact Estimate summary + model mix + rationale,
+# in the active CLI's native cost unit. Empty when no estimate.json was produced.
+[ -n "$EST_CLI" ] && printf '%s\n' "$EST_CLI"
 echo "  Next:          run \`lcars run $ID\` to continue"
