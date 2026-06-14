@@ -180,5 +180,120 @@ r7="$(make_repo '{}' "$EST")"
 check "7a. context-pack (infra) argv carries NO --model despite estimate.json" \
   "[ -z \"\$(spawn_argv \"$r7\" context-pack CLAUDECODE=1 | grep -x -- --model)\" ]"
 
+# === Session 62: captain model override (state.json modelOverride / env) ======
+# Precedence (highest first):
+#   a.  $LCARS_WORKER_MODEL env        — global pin, verbatim, wins everywhere
+#   a2. $LCARS_MODEL_OVERRIDE env      — scope:tier; env path wins over persisted
+#   a3. state.json modelOverride       — { scope, tier }; same precedence band
+#   b.  estimate.json models.<key>     — for stages OUTSIDE the override scope
+#   c.  config stages.<key>.model …
+# Axes: reasoning = research,validate,plan,planReview ; implementation = implement,verify.
+# The override stores a LOGICAL TIER, translated through the SAME alias map.
+
+# Set state.json modelOverride = { scope, tier } on a repo's M58 mission.
+set_override() { # repo scope tier
+  printf '{\n  "id": "M58",\n  "modelOverride": { "scope": "%s", "tier": "%s" }\n}\n' \
+    "$2" "$3" >"$1/.git/lcars/missions/M58/state.json"
+}
+
+# --- Behavior 8: state.json modelOverride scope=all pins EVERY stage ----------
+# Even when the estimate.json is sonnet-heavy, all/opus forces opus everywhere.
+r8="$(make_repo '{}' "$EST")"; set_override "$r8" all opus
+for k in research validate plan planReview implement verify; do
+  check "8.$k all:opus override beats estimate ⇒ opus" \
+    "[ \"\$(rsm \"$r8\" $k CLAUDECODE=1 | sm_model)\" = 'opus' ]"
+done
+check "8.argv spawn research-questions carries --model opus (all override)" \
+  "[ \"\$(spawn_argv \"$r8\" research-questions CLAUDECODE=1 | model_of)\" = 'opus' ]"
+check "8.argv spawn implement-implementer carries --model opus (all override)" \
+  "[ \"\$(spawn_argv \"$r8\" implement-implementer CLAUDECODE=1 | model_of)\" = 'opus' ]"
+
+# --- Behavior 9: scope=implementation pins implement+verify only -------------
+# implement/verify → opus; the reasoning axis still follows estimate.json.
+r9="$(make_repo '{}' "$EST")"; set_override "$r9" implementation opus
+check "9a. implement (in scope) ⇒ opus override" \
+  "[ \"\$(rsm \"$r9\" implement CLAUDECODE=1 | sm_model)\" = 'opus' ]"
+check "9b. verify (in scope) ⇒ opus override" \
+  "[ \"\$(rsm \"$r9\" verify CLAUDECODE=1 | sm_model)\" = 'opus' ]"
+# Out of scope ⇒ estimate.json values (validate=sonnet, planReview=opus in \$EST).
+check "9c. validate (out of scope) still follows estimate ⇒ sonnet" \
+  "[ \"\$(rsm \"$r9\" validate CLAUDECODE=1 | sm_model)\" = 'sonnet' ]"
+check "9d. research (out of scope) still follows estimate ⇒ opus" \
+  "[ \"\$(rsm \"$r9\" research CLAUDECODE=1 | sm_model)\" = 'opus' ]"
+check "9e. argv spawn validate (out of scope) still --model sonnet" \
+  "[ \"\$(spawn_argv \"$r9\" validate CLAUDECODE=1 | model_of)\" = 'sonnet' ]"
+
+# --- Behavior 10: scope=reasoning pins the reasoning axis only ---------------
+# research,validate,plan,planReview → sonnet; implement still follows estimate (opus).
+r10="$(make_repo '{}' "$EST")"; set_override "$r10" reasoning sonnet
+for k in research validate plan planReview; do
+  check "10.$k reasoning:sonnet override ⇒ sonnet" \
+    "[ \"\$(rsm \"$r10\" $k CLAUDECODE=1 | sm_model)\" = 'sonnet' ]"
+done
+check "10.implement (out of scope) still follows estimate ⇒ opus" \
+  "[ \"\$(rsm \"$r10\" implement CLAUDECODE=1 | sm_model)\" = 'opus' ]"
+
+# --- Behavior 11: LCARS_WORKER_MODEL env STILL beats a persisted override -----
+r11="$(make_repo '{}' "$EST")"; set_override "$r11" all sonnet
+check "11. env LCARS_WORKER_MODEL=opus beats persisted all:sonnet override" \
+  "[ \"\$(rsm \"$r11\" implement CLAUDECODE=1 LCARS_WORKER_MODEL=opus | sm_model)\" = 'opus' ]"
+
+# --- Behavior 12: LCARS_MODEL_OVERRIDE env, NO state.json override -----------
+r12="$(make_repo '{}' "$EST")"   # state.json is just { id } — no modelOverride
+for k in research validate plan planReview implement verify; do
+  check "12.$k LCARS_MODEL_OVERRIDE=all:opus pins every stage" \
+    "[ \"\$(rsm \"$r12\" $k CLAUDECODE=1 LCARS_MODEL_OVERRIDE=all:opus | sm_model)\" = 'opus' ]"
+done
+check "12.argv spawn plan carries --model opus (env override)" \
+  "[ \"\$(spawn_argv \"$r12\" plan CLAUDECODE=1 LCARS_MODEL_OVERRIDE=all:opus | model_of)\" = 'opus' ]"
+
+# --- Behavior 13: env LCARS_MODEL_OVERRIDE wins over persisted modelOverride --
+r13="$(make_repo '{}' "$EST")"; set_override "$r13" all sonnet
+check "13. env override implementation:opus beats persisted all:sonnet (implement)" \
+  "[ \"\$(rsm \"$r13\" implement CLAUDECODE=1 LCARS_MODEL_OVERRIDE=implementation:opus | sm_model)\" = 'opus' ]"
+# A stage outside the ENV override scope falls to the estimate (env override
+# REPLACES the persisted one entirely — same env-over-persisted rule as the model).
+check "13. reasoning stage under env implementation override falls to estimate (validate=sonnet)" \
+  "[ \"\$(rsm \"$r13\" validate CLAUDECODE=1 LCARS_MODEL_OVERRIDE=implementation:opus | sm_model)\" = 'sonnet' ]"
+
+# --- Behavior 14: copilot adapter emits the right --model under an override ---
+# opus → claude-opus-4.8 ; sonnet → claude-sonnet-4.6 (the S59 alias-map default).
+r14="$(make_repo '{}' "$EST")"; set_override "$r14" all opus
+check "14a. copilot all:opus override ⇒ claude-opus-4.8 (resolve-stage-model)" \
+  "[ \"\$(rsm \"$r14\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+# Spawn the REAL chokepoint as copilot (a dedicated invocation — the shared
+# spawn_argv helper force-pins claude, so we drive worker_spawn directly here with
+# LCARS_WORKER_CLI=copilot so the copilot adapter's --model lands in the argv).
+spawn_argv_copilot() { # repo role override
+  local repo="$1" role="$2" ov="$3"
+  local stub="$repo/stub-cli2"; make_stub "$stub"
+  local argv="$repo/stub2.argv"
+  ( cd "$repo" && env -u CLAUDECODE -u COPILOT_CLI \
+      COPILOT_RUN_APP=1 STUB_ARGV="$argv" \
+      LCARS_MODEL_OVERRIDE="$ov" \
+      LCARS_WORKER_BIN="$stub" LCARS_WORKER_CLI=copilot \
+      bash "$RUN" spawn-stage --mission M58 "$role" >/dev/null 2>&1 )
+  cat "$argv" 2>/dev/null
+}
+check "14b. copilot all:opus override reaches spawned argv as claude-opus-4.8" \
+  "[ \"\$(spawn_argv_copilot \"$r14\" implement-implementer all:opus | model_of)\" = 'claude-opus-4.8' ]"
+r14b="$(make_repo '{}' "$EST")"
+check "14c. copilot env reasoning:sonnet override ⇒ claude-sonnet-4.6" \
+  "[ \"\$(rsm \"$r14b\" plan COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=reasoning:sonnet | sm_model)\" = 'claude-sonnet-4.6' ]"
+
+# --- Behavior 15: infra (context-pack) is NEVER touched by an override --------
+# It short-circuits to the global/legacy value, exactly like the estimate path.
+r15="$(make_repo '{}' "$EST")"; set_override "$r15" all opus
+check "15. context-pack (infra) argv carries NO --model despite all:opus override" \
+  "[ -z \"\$(spawn_argv \"$r15\" context-pack CLAUDECODE=1 | grep -x -- --model)\" ]"
+
+# --- Behavior 16: override never leaks onto the LEGACY path -------------------
+# No override + no estimate + no env ⇒ still NO --model anywhere (S58 parity).
+r16="$(make_repo '{}')"   # no estimate, state.json = { id }
+for k in research validate plan planReview implement verify; do
+  check "16.$k no override / no estimate ⇒ still NO --model (legacy parity)" \
+    "[ -z \"\$(rsm \"$r16\" $k CLAUDECODE=1 | sm_model)\" ]"
+done
+
 echo "stage-model: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

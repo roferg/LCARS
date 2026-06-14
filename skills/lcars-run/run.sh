@@ -2355,22 +2355,72 @@ alias_for_tier() { # cli tier → flag string (stdout; may be empty)
   esac
 }
 
+# Is STAGE KEY inside the captain override's SCOPE? The two axes:
+#   reasoning      = research, validate, plan, planReview
+#   implementation = implement, verify
+#   all            = every one of the above (whole-way override)
+# `infra` (context-pack) is never in any scope — it is never escalated.
+stage_in_override_scope() { # key scope → 0 if in scope, 1 otherwise
+  local key="$1" scope="$2"
+  case "$scope" in
+    all)
+      case "$key" in
+        research|validate|plan|planReview|implement|verify) return 0 ;;
+      esac ;;
+    reasoning)
+      case "$key" in research|validate|plan|planReview) return 0 ;; esac ;;
+    implementation)
+      case "$key" in implement|verify) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
+# The ACTIVE captain override, as "<scope>:<tier>", or empty when none. The env
+# path ($LCARS_MODEL_OVERRIDE) WINS over the persisted state.json modelOverride —
+# mirroring the env-over-config rule everywhere else in the resolver. Both store a
+# scope + a LOGICAL TIER (sonnet/opus); the caller alias-maps the tier per CLI.
+active_model_override() { # → "<scope>:<tier>" or empty
+  if [ -n "${LCARS_MODEL_OVERRIDE:-}" ]; then
+    printf '%s' "$LCARS_MODEL_OVERRIDE"; return 0
+  fi
+  # state.json modelOverride: { "scope": "...", "tier": "..." }
+  if [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/state.json" ]; then
+    local scope tier
+    scope="$(json_scoped_str "$MISSION_DIR/state.json" "modelOverride.scope")"
+    tier="$(json_scoped_str "$MISSION_DIR/state.json" "modelOverride.tier")"
+    if [ -n "$scope" ] && [ -n "$tier" ]; then printf '%s:%s' "$scope" "$tier"; fi
+  fi
+}
+
 # Resolve the CLI flag string (or empty) for one STAGE KEY. Precedence, high→low:
-#   a. $LCARS_WORKER_MODEL env  — global pin, wins for ALL stages. VERBATIM (it is
-#      already a CLI flag string, NOT a tier — do not re-translate it).
-#   b. estimate.json models.<key> — logical tier → alias-mapped per active CLI.
-#   c. config.json stages.<key>.model — logical tier → alias-mapped.
-#   d. config.json workerModel — global, VERBATIM flag (legacy back-compat).
-#   e. nothing ⇒ empty string (caller emits NO --model flag — byte-identical).
+#   a.  $LCARS_WORKER_MODEL env  — global pin, wins for ALL stages. VERBATIM (it is
+#       already a CLI flag string, NOT a tier — do not re-translate it).
+#   a2. captain model override — $LCARS_MODEL_OVERRIDE env (wins) OR state.json
+#       modelOverride; "<scope>:<tier>". For a stage WITHIN the override's scope,
+#       use the override tier (alias-mapped). Stages OUTSIDE the scope fall through
+#       to the estimate below. (Session 62.)
+#   b.  estimate.json models.<key> — logical tier → alias-mapped per active CLI.
+#   c.  config.json stages.<key>.model — logical tier → alias-mapped.
+#   d.  config.json workerModel — global, VERBATIM flag (legacy back-compat).
+#   e.  nothing ⇒ empty string (caller emits NO --model flag — byte-identical).
 # `infra` (context-pack) is a cheap repo-fact pass and is NEVER escalated by the
-# estimate/stage map: it short-circuits to the global/legacy value (env pin > the
-# global config workerModel > unset) so its argv stays exactly as today.
+# estimate/stage map OR the captain override: it short-circuits to the global/
+# legacy value (env pin > the global config workerModel > unset) so its argv stays
+# exactly as today.
 resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
   local key="$1"
   # (a) global env pin — wins for every stage, verbatim.
   if [ -n "${LCARS_WORKER_MODEL:-}" ]; then printf '%s' "$LCARS_WORKER_MODEL"; return 0; fi
   local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
   if [ "$key" != "infra" ] && [ -n "$key" ]; then
+    # (a2) captain model override — only for stages within its scope.
+    local ov; ov="$(active_model_override)"
+    if [ -n "$ov" ]; then
+      local ov_scope="${ov%%:*}" ov_tier="${ov#*:}"
+      if stage_in_override_scope "$key" "$ov_scope"; then
+        alias_for_tier "$cli" "$ov_tier"; return 0
+      fi
+    fi
     # (b) estimate.json models.<key>
     local est_tier=""
     [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/estimate.json" ] \
@@ -3221,6 +3271,25 @@ render_cost_issue() { # cost-json cli → markdown bullet text
   printf '$%s–$%s' "$lo" "$hi"
 }
 
+# A captain-facing phrase for the active model override, or empty when none. The
+# override stores a LOGICAL TIER + a SCOPE; this is the human form the captain sees
+# on the estimate surfaces so they know the estimate's model mix was overridden.
+#   all            → "(override: Opus, whole run)"
+#   reasoning      → "(override: Sonnet, reasoning)"
+#   implementation → "(override: Opus, implementation)"
+override_note() { # → "(override: …)" or empty
+  local ov; ov="$(active_model_override)"
+  [ -n "$ov" ] || return 0
+  local scope="${ov%%:*}" tier="${ov#*:}" where
+  case "$scope" in
+    all)            where="whole run" ;;
+    reasoning)      where="reasoning" ;;
+    implementation) where="implementation" ;;
+    *)              where="$scope" ;;
+  esac
+  printf '(override: %s, %s)' "$(tier_display "$tier")" "$where"
+}
+
 # Render the "## Estimate" markdown section for the issue body.
 render_estimate_issue() { # estimate-json cli cost-json → markdown
   local est="$1" cli="$2" costfile="$3"
@@ -3228,6 +3297,8 @@ render_estimate_issue() { # estimate-json cli cost-json → markdown
   rc="$(json_scoped_str "$est" reasoningCriticality)"; [ -n "$rc" ] || rc="?"
   ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
   printf '## Estimate\n\n'
+  local ovn; ovn="$(override_note)"
+  [ -n "$ovn" ] && printf '**Model override:** %s — the captain pinned the model mix; the per-stage table below shows the estimator'\''s original choice.\n\n' "$ovn"
   printf '**Criticality:** reasoning = %s · implementation = %s\n\n' \
     "$(crit_display "$rc")" "$(crit_display "$ic")"
   printf '**Per-stage model mix:**\n\n'
@@ -3263,6 +3334,8 @@ render_estimate_cli() { # estimate-json cli cost-json → indented text
   ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
   printf '  Estimate: reasoning=%s implementation=%s  (cost %s)\n' \
     "$(crit_display "$rc")" "$(crit_display "$ic")" "$(render_cost_compact "$costfile" "$cli")"
+  local ovn; ovn="$(override_note)"
+  [ -n "$ovn" ] && printf '  Override: %s — model mix pinned by the captain (table below = estimator default)\n' "$ovn"
   # One-line model mix.
   printf '  Models:   research/validate=%s · plan/plan-review=%s · implement=%s · verify=%s\n' \
     "$(tier_display "$(json_scoped_str "$est" models.research)")/$(tier_display "$(json_scoped_str "$est" models.validate)")" \

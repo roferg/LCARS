@@ -37,18 +37,47 @@ die() { printf 'lcars file: %s\n' "$1" >&2; exit 1; }
 # Mission (an engineering ADR set); a trivial Mission ships no adr.md at all.
 PRD_SRC=""
 ADR_SRC=""
+# Captain model override (session 62). A natural-language override the Align
+# session normalized to a structured "<scope>:<tier>" string. scope ∈
+# {all,reasoning,implementation}; tier ∈ {sonnet,opus}. Empty = no override.
+MODEL_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --prd)   PRD_SRC="${2:-}"; shift 2 ;;
     --prd=*) PRD_SRC="${1#--prd=}"; shift ;;
     --adr)   ADR_SRC="${2:-}"; shift 2 ;;
     --adr=*) ADR_SRC="${1#--adr=}"; shift ;;
+    --model-override)   MODEL_OVERRIDE="${2:-}"; shift 2 ;;
+    --model-override=*) MODEL_OVERRIDE="${1#--model-override=}"; shift ;;
     *)       die "unknown argument: $1" ;;
   esac
 done
 
 [ -n "$PRD_SRC" ] || die "no PRD given — pass --prd <path> to a PRD file."
 [ -f "$PRD_SRC" ] || die "PRD file not found: $PRD_SRC"
+
+# --- validate the model override (session 62) ------------------------------
+# Format is "<scope>:<tier>" with scope ∈ {all,reasoning,implementation} and
+# tier ∈ {sonnet,opus}. A malformed value stops filing BEFORE anything is
+# written (nothing partial), the same way a malformed PRD does.
+OV_SCOPE=""
+OV_TIER=""
+if [ -n "$MODEL_OVERRIDE" ]; then
+  OV_SCOPE="${MODEL_OVERRIDE%%:*}"
+  OV_TIER="${MODEL_OVERRIDE#*:}"
+  case "$MODEL_OVERRIDE" in
+    *:*) : ;;
+    *) die "malformed --model-override '$MODEL_OVERRIDE' — expected <scope>:<tier> (e.g. all:opus)." ;;
+  esac
+  case "$OV_SCOPE" in
+    all|reasoning|implementation) : ;;
+    *) die "invalid --model-override scope '$OV_SCOPE' — must be one of: all, reasoning, implementation." ;;
+  esac
+  case "$OV_TIER" in
+    sonnet|opus) : ;;
+    *) die "invalid --model-override tier '$OV_TIER' — must be one of: sonnet, opus." ;;
+  esac
+fi
 # --adr is optional, but if given it must point at a real file.
 if [ -n "$ADR_SRC" ]; then
   [ -f "$ADR_SRC" ] || die "ADR file not found: $ADR_SRC"
@@ -167,20 +196,28 @@ fi
 # final here. `write_state <issue-or-null>` emits the file.
 title_json="${TITLE//\\/\\\\}"
 title_json="${title_json//\"/\\\"}"
+# The captain model override object (session 62), emitted only when set. The
+# downstream S58 resolver reads modelOverride.scope / modelOverride.tier and pins
+# the in-scope stages to that tier (above the estimate, below the env pin).
+OVERRIDE_LINE=""
+if [ -n "$OV_SCOPE" ]; then
+  OVERRIDE_LINE="  \"modelOverride\": { \"scope\": \"$OV_SCOPE\", \"tier\": \"$OV_TIER\" },"
+fi
 write_state() { # issue-json (a number or the literal `null`)
-  cat >"$MISSION_DIR/state.json" <<EOF
-{
-  "id": "$ID",
-  "type": "$TYPE",
-  "title": "$title_json",
-  "stage": "align",
-  "created": "$NOW",
-  "model": "$MODEL",
-  "githubIssue": ${1:-null},
-  "branch": "$BRANCH",
-  "base": "$BASE"
-}
-EOF
+  {
+    printf '{\n'
+    printf '  "id": "%s",\n' "$ID"
+    printf '  "type": "%s",\n' "$TYPE"
+    printf '  "title": "%s",\n' "$title_json"
+    printf '  "stage": "align",\n'
+    printf '  "created": "%s",\n' "$NOW"
+    printf '  "model": "%s",\n' "$MODEL"
+    [ -n "$OVERRIDE_LINE" ] && printf '%s\n' "$OVERRIDE_LINE"
+    printf '  "githubIssue": %s,\n' "${1:-null}"
+    printf '  "branch": "%s",\n' "$BRANCH"
+    printf '  "base": "%s"\n' "$BASE"
+    printf '}\n'
+  } >"$MISSION_DIR/state.json"
 }
 write_state null
 

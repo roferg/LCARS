@@ -504,5 +504,97 @@ check "10e. body has two '---' rules (prd|adr and adr|Estimate)" \
   "[ \"\$(grep -cx -- '---' '$GH_BODY')\" -ge 2 ]"
 unset GH_BODY
 
+# --- Behaviour 11: captain model override (--model-override) (S62) ----------
+# `lcars file --model-override '<scope>:<tier>'` persists a structured
+# modelOverride object into state.json. scope ∈ {all,reasoning,implementation};
+# tier ∈ {sonnet,opus}. Malformed values are rejected (nothing written). When an
+# override is set AND an estimate is rendered, both captain surfaces (issue body +
+# CLI readout) carry an "(override: …)" note so the captain sees the estimate was
+# overridden.
+
+# 11a. all:opus ⇒ state.json.modelOverride = { scope:"all", tier:"opus" }.
+repoMO="$(new_repo)"; make_gh_stub "$repoMO/gh"
+export GH_LOG="$repoMO/gh.log"; : >"$GH_LOG"
+prdMO="$repoMO/prd.md"; write_prd "$prdMO"
+(
+  cd "$repoMO"
+  LCARS_GH_BIN="$repoMO/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO" --model-override 'all:opus' >outMO.txt 2>&1
+)
+MMO="$repoMO/.git/lcars/missions/lcars-20260530-001/state.json"
+check "11a. state.json records modelOverride scope=all" \
+  "grep -q '\"scope\": *\"all\"' '$MMO'"
+check "11a. state.json records modelOverride tier=opus" \
+  "grep -q '\"tier\": *\"opus\"' '$MMO'"
+
+# 11b. implementation:sonnet ⇒ scope=implementation tier=sonnet.
+repoMO2="$(new_repo)"; make_gh_stub "$repoMO2/gh"
+export GH_LOG="$repoMO2/gh.log"; : >"$GH_LOG"
+prdMO2="$repoMO2/prd.md"; write_prd "$prdMO2"
+(
+  cd "$repoMO2"
+  LCARS_GH_BIN="$repoMO2/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO2" --model-override 'implementation:sonnet' >outMO2.txt 2>&1
+)
+MMO2="$repoMO2/.git/lcars/missions/lcars-20260530-001/state.json"
+check "11b. state.json records scope=implementation tier=sonnet" \
+  "grep -q '\"scope\": *\"implementation\"' '$MMO2' && grep -q '\"tier\": *\"sonnet\"' '$MMO2'"
+
+# 11c. NO --model-override ⇒ NO modelOverride key in state.json (degradation).
+repoMO3="$(new_repo)"; make_gh_stub "$repoMO3/gh"
+export GH_LOG="$repoMO3/gh.log"; : >"$GH_LOG"
+prdMO3="$repoMO3/prd.md"; write_prd "$prdMO3"
+(
+  cd "$repoMO3"
+  LCARS_GH_BIN="$repoMO3/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdMO3" >outMO3.txt 2>&1
+)
+MMO3="$repoMO3/.git/lcars/missions/lcars-20260530-001/state.json"
+check "11c. no override ⇒ state.json has no modelOverride key" \
+  "! grep -q 'modelOverride' '$MMO3'"
+
+# 11d. malformed override rejected (bad scope) ⇒ exits non-zero, nothing written.
+repoMO4="$(new_repo)"; make_gh_stub "$repoMO4/gh"
+export GH_LOG="$repoMO4/gh.log"; : >"$GH_LOG"
+prdMO4="$repoMO4/prd.md"; write_prd "$prdMO4"
+rcMO4=0
+(
+  cd "$repoMO4"
+  LCARS_GH_BIN="$repoMO4/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO4" --model-override 'bogus:opus' >outMO4.txt 2>&1
+) || rcMO4=$?
+check "11d. bad scope ⇒ non-zero exit" "[ '$rcMO4' -ne 0 ]"
+check "11d. bad scope ⇒ no mission written" \
+  "[ ! -d '$repoMO4/.git/lcars/missions/lcars-20260530-001' ]"
+
+# 11e. malformed override rejected (bad tier).
+repoMO5="$(new_repo)"; make_gh_stub "$repoMO5/gh"
+export GH_LOG="$repoMO5/gh.log"; : >"$GH_LOG"
+prdMO5="$repoMO5/prd.md"; write_prd "$prdMO5"
+rcMO5=0
+(
+  cd "$repoMO5"
+  LCARS_GH_BIN="$repoMO5/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO5" --model-override 'all:haiku' >outMO5.txt 2>&1
+) || rcMO5=$?
+check "11e. bad tier ⇒ non-zero exit" "[ '$rcMO5' -ne 0 ]"
+
+# 11f. override + estimate ⇒ BOTH surfaces show the "(override: …)" note. Uses the
+# RICH_STUB (real run.sh render-estimate), claude active.
+repoMO6="$(new_repo)"; make_gh_stub "$repoMO6/gh"
+export GH_LOG="$repoMO6/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoMO6/gh-body.txt"; : >"$GH_BODY"
+prdMO6="$repoMO6/prd.md"; write_prd "$prdMO6"
+(
+  cd "$repoMO6"
+  CLAUDECODE=1 LCARS_RUN_BIN="$RICH_STUB" \
+    LCARS_GH_BIN="$repoMO6/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO6" --model-override 'all:opus' >outMO6.txt 2>&1
+)
+check "11f. issue body shows the override note" \
+  "grep -qi 'override' '$GH_BODY' && grep -qi 'Opus' '$GH_BODY'"
+check "11f. CLI readout shows the override note" \
+  "grep -qi 'override' '$repoMO6/outMO6.txt'"
+unset GH_BODY
+
 # ==========================================================================
 [ "$fail" -eq 0 ]

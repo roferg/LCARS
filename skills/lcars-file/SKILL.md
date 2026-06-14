@@ -176,6 +176,51 @@ trivial Mission, omit `--adr` entirely. **Align only SEEDS the ADRs** — the
 Validate stage may later REFINE them when research findings change a decision, so
 keep them high-level and revisable, not exhaustive.
 
+### Capturing a model override (optional)
+
+During Align the captain may, in free-form language, ask to **override the model
+choice** the estimator would otherwise make — usually to push quality up ("use
+Opus the whole way") or cost down ("keep it cheap"). Detect that intent and
+normalize it to a single structured **`modelOverride`** you pass to `file.sh` via
+`--model-override '<scope>:<tier>'`. Do **not** invent an override the captain did
+not ask for; the absence of any such request means **no** `--model-override` flag.
+
+The override has two axes and two tiers:
+
+- **scope** — `all` (every stage, whole run), `reasoning` (the Research, Validate,
+  Plan and Plan Review stages) or `implementation` (the Implement and Verify
+  stages).
+- **tier** — `opus` or `sonnet` (logical tiers; the harness translates them to the
+  active CLI's model string).
+
+Map the captain's natural language like so (lead with your reading and let them
+confirm — this is still a decision, so do not silently bake it in):
+
+| Captain says (examples)                              | `--model-override` value     |
+| --------------------------------------------------- | ---------------------------- |
+| "use Opus the whole way through" / "all Opus"        | `all:opus`                   |
+| "keep it cheap" / "all Sonnet" / "Sonnet everywhere" | `all:sonnet`                 |
+| "use Opus for implementation" / "Opus for the build" | `implementation:opus`        |
+| "keep implementation cheap" / "Sonnet for the build" | `implementation:sonnet`      |
+| "use Opus for the thinking/reasoning stages"         | `reasoning:opus`             |
+| "keep reasoning cheap" / "Sonnet for reasoning"      | `reasoning:sonnet`           |
+
+Then pass it alongside `--prd` (and `--adr` when complex):
+
+```bash
+bash ~/.claude/skills/lcars-file/file.sh --prd "$prd" --model-override 'all:opus'
+```
+
+`file.sh` validates the value (scope ∈ {all,reasoning,implementation}, tier ∈
+{sonnet,opus}) and rejects anything malformed, then records it in `state.json` as
+`"modelOverride": { "scope": …, "tier": … }`. The downstream stages honour it
+**above** the estimate's per-stage choice but **below** any `LCARS_WORKER_MODEL`
+global pin, and the rendered estimate (issue body + CLI readout) shows an
+`(override: …)` note so the captain can see the estimate's mix was overridden.
+A mid-flight override is also possible without re-filing via the
+`LCARS_MODEL_OVERRIDE='<scope>:<tier>'` env var on `lcars run` (the env path wins
+over the persisted one).
+
 When alignment is reached, write the PRD. **"Alignment reached" REQUIRES that the
 captain has confirmed the load-bearing decisions through the interview** — not
 the model deciding them on the captain's behalf. If a real decision went into the
@@ -250,7 +295,7 @@ Show the captain its output verbatim:
   prd.md        ← the PRD from Align (the GitHub issue body, too)
   adr.md        ← the engineering ADRs (COMPLEX Missions only; absent for trivial work)
   estimate.json ← the end-of-Align estimate (per-stage model map; OPTIONAL, see below)
-  state.json    ← { id, type, title, stage: "align", created, model, githubIssue, branch, base }
+  state.json    ← { id, type, title, stage: "align", created, model, githubIssue, branch, base[, modelOverride] }
 ```
 
 At the end of filing, `file.sh` runs the lcars-run estimator

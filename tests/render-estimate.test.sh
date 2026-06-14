@@ -172,5 +172,44 @@ out5="$(render "$r5" issue CLAUDECODE=1)" || rc5=$?
 check "5a. absent estimate.json ⇒ non-zero exit" "[ '$rc5' -ne 0 ]"
 check "5b. absent estimate.json ⇒ no output" "[ -z \"\$out5\" ]"
 
+# === Behavior 6: captain model override is surfaced (S62) ====================
+# When a mission carries a modelOverride (state.json) — or LCARS_MODEL_OVERRIDE is
+# set — render-estimate annotates BOTH surfaces with an "(override: …)" note so the
+# captain sees the estimate WAS overridden. No override ⇒ no extra line (degradation).
+set_state_override() { # repo scope tier
+  printf '{\n  "id": "%s",\n  "modelOverride": { "scope": "%s", "tier": "%s" }\n}\n' \
+    "$MID" "$2" "$3" >"$1/.git/lcars/missions/$MID/state.json"
+}
+
+# 6a. persisted all:opus override ⇒ both surfaces mention override + Opus + whole run.
+r6="$(new_repo_with_estimate "$EST")"; set_state_override "$r6" all opus
+iss6="$(render "$r6" issue CLAUDECODE=1)"
+cli6="$(render "$r6" cli CLAUDECODE=1)"
+check "6a. issue surface shows the override note (Opus, whole run)" \
+  "printf '%s' \"\$iss6\" | grep -qi 'override' && printf '%s' \"\$iss6\" | grep -qi 'Opus' && printf '%s' \"\$iss6\" | grep -qi 'whole'"
+check "6a. cli surface shows the override note (Opus, whole run)" \
+  "printf '%s' \"\$cli6\" | grep -qi 'override' && printf '%s' \"\$cli6\" | grep -qi 'Opus'"
+
+# 6b. implementation override ⇒ note names the implementation axis.
+r6b="$(new_repo_with_estimate "$EST")"; set_state_override "$r6b" implementation opus
+iss6b="$(render "$r6b" issue CLAUDECODE=1)"
+check "6b. issue surface override note names implementation" \
+  "printf '%s' \"\$iss6b\" | grep -qi 'override' && printf '%s' \"\$iss6b\" | grep -qi 'implementation'"
+
+# 6c. env LCARS_MODEL_OVERRIDE (no state.json override) also surfaces.
+r6c="$(new_repo_with_estimate "$EST")"
+cli6c="$(render "$r6c" cli CLAUDECODE=1 LCARS_MODEL_OVERRIDE=reasoning:sonnet)"
+check "6c. env override surfaces on cli readout (reasoning, Sonnet)" \
+  "printf '%s' \"\$cli6c\" | grep -qi 'override' && printf '%s' \"\$cli6c\" | grep -qi 'Sonnet'"
+
+# 6d. NO override ⇒ NO override note (degradation: surfaces unchanged).
+r6d="$(new_repo_with_estimate "$EST")"
+iss6d="$(render "$r6d" issue CLAUDECODE=1)"
+cli6d="$(render "$r6d" cli CLAUDECODE=1)"
+check "6d. no override ⇒ issue surface has no override note" \
+  "! printf '%s' \"\$iss6d\" | grep -qi 'override'"
+check "6d. no override ⇒ cli surface has no override note" \
+  "! printf '%s' \"\$cli6d\" | grep -qi 'override'"
+
 echo "render-estimate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
