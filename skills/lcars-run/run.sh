@@ -63,6 +63,11 @@ SELF="${BASH_SOURCE[0]}"
 # The skill's own directory, and the per-Stage worker prompt templates under it.
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 STAGES_DIR="$SKILL_DIR/stages"
+# The SINGLE source of truth for billing data (Claude $/MTok per tier; Copilot
+# premium-request multipliers + overage). NO prices/multipliers are hardcoded in
+# this script's cost logic — they all live in pricing.json. $LCARS_PRICING lets
+# tests point at a fixture pricing file (e.g. one with null Copilot multipliers).
+PRICING_FILE="${LCARS_PRICING:-$SKILL_DIR/pricing.json}"
 # The host-integration adapter — the ONE place that speaks to a forge. Every
 # GitHub call funnels through it so the integration is swappable (BUG-003). It
 # sits beside this script; $LCARS_HOST_ADAPTER overrides the path so tests can
@@ -99,6 +104,89 @@ json_str() { # file key  → first matching "key": "value"
 }
 json_raw() { # file key  → first matching bare token (number/null/bool)
   sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1
+}
+# --- a tiny NESTED/SCOPED reader (still jq-free, same sed/awk spirit) --------
+# json_str/json_raw above are FLAT — they grab the FIRST matching key ANYWHERE in
+# the file, so they cannot read `models.research` or `modelAliases.claude.opus`
+# without risking a same-named key elsewhere. json_scoped_str narrows the search
+# to a dotted PATH of object keys: each leading segment scopes into that object's
+# `{ … }` body (brace-depth tracked so a nested object can't end the scope early),
+# then the LAST segment is read as a string value within that final scope.
+#   json_scoped_str FILE models.research        → the string at models.research
+#   json_scoped_str FILE modelAliases.claude.opus
+# Whitespace-insensitive (works for compact OR pretty JSON). Empty if any segment
+# is absent. Reads strings only (the model tiers/aliases are all string values).
+json_scoped_str() { # file dotted.path  → string value (or empty)
+  local file="$1" path="$2"
+  [ -f "$file" ] || return 0
+  # Collapse the whole file to a single line so awk's char scan is brace-accurate
+  # across pretty-printed (multi-line) JSON without newline bookkeeping.
+  local blob; blob="$(tr -d '\n' <"$file")"
+  # All but the last path segment scope IN; the last is the value key.
+  local key="${path##*.}" parents="${path%.*}"
+  if [ "$parents" != "$path" ]; then
+    local seg
+    local IFS='.'
+    for seg in $parents; do
+      blob="$(_json_scope_into "$blob" "$seg")"
+      [ -n "$blob" ] || return 0
+    done
+  fi
+  # Now read "key": "value" from the (possibly narrowed) blob, same decode as json_str.
+  printf '%s' "$blob" \
+    | sed -En "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" \
+    | head -1 \
+    | sed 's/\\"/"/g; s/\\\\/\\/g'
+}
+# Return the BODY (incl. braces) of the object value of "<key>": { … } within a
+# single-line blob, matching braces so a nested object can't terminate it early.
+_json_scope_into() { # blob key → "{ … }" body of that key's object value
+  printf '%s' "$1" | awk -v key="$2" '
+    {
+      s = $0
+      # locate the key token
+      pat = "\"" key "\""
+      idx = index(s, pat)
+      if (idx == 0) { exit }
+      rest = substr(s, idx + length(pat))
+      # skip to the opening brace of its object value
+      ob = index(rest, "{")
+      if (ob == 0) { exit }
+      rest = substr(rest, ob)
+      depth = 0
+      out = ""
+      n = length(rest)
+      for (i = 1; i <= n; i++) {
+        c = substr(rest, i, 1)
+        out = out c
+        if (c == "{") depth++
+        else if (c == "}") { depth--; if (depth == 0) break }
+      }
+      print out
+    }'
+}
+# json_scoped_num — like json_scoped_str, but reads a NESTED NUMBER (or null) at a
+# dotted path, e.g. tokenEstimates.research.low or copilot.opus.premiumRequestMultiplier.
+# Scopes into each parent object's `{ … }` body (brace-accurate), then reads the
+# last segment as a bare numeric token. Empty output if the path is absent OR the
+# value is `null` (so callers can treat "" as "unavailable"). jq-free.
+json_scoped_num() { # file dotted.path → number (or empty for absent/null)
+  local file="$1" path="$2"
+  [ -f "$file" ] || return 0
+  local blob; blob="$(tr -d '\n' <"$file")"
+  local key="${path##*.}" parents="${path%.*}"
+  if [ "$parents" != "$path" ]; then
+    local seg
+    local IFS='.'
+    for seg in $parents; do
+      blob="$(_json_scope_into "$blob" "$seg")"
+      [ -n "$blob" ] || return 0
+    done
+  fi
+  local v
+  v="$(printf '%s' "$blob" | sed -En "s/.*\"$key\"[[:space:]]*:[[:space:]]*([^,}[:space:]]+).*/\1/p" | head -1)"
+  [ "$v" = "null" ] && v=""
+  printf '%s' "$v"
 }
 
 # --- tiny JSON writers (pretty, one-field-per-line state.json) --------------
@@ -2225,6 +2313,173 @@ resolve_worker_model() {
   WORKER_MODEL=""; WORKER_MODEL_SRC="unset"
 }
 
+# === Per-stage model selection (session 58) =================================
+# Today resolve_worker_model picks ONE global model for every headless stage.
+# This seam lets a declarative source assign a DIFFERENT model per stage, while
+# emitting BYTE-IDENTICAL argv to the legacy path whenever no per-stage source is
+# present. It is a SELECTION change only — gate mechanics, prompts, the driver's
+# stage logic, event format and the adapter's argv ORDER are untouched.
+
+# Map a spawn ROLE (the env-role the worker sees) → its STAGE KEY. One place.
+# A role with no stage key (none today) falls through to the global/unset path.
+# `context-pack` maps to `infra` but is NEVER escalated (see resolve_stage_model).
+stage_key_for_role() { # role → stage key (stdout; empty if none)
+  case "$1" in
+    research-questions|research-agent)            printf 'research' ;;
+    validate)                                     printf 'validate' ;;
+    plan)                                         printf 'plan' ;;
+    plan-review)                                  printf 'planReview' ;;
+    implement-test-writer|implement-implementer)  printf 'implement' ;;
+    context-pack)                                 printf 'infra' ;;
+  esac
+}
+
+# Translate a logical TIER ("sonnet"/"opus") → the ACTIVE worker CLI's flag string.
+# Defaults below; config.json `modelAliases.<cli>.<tier>` overrides per (cli,tier).
+# A tier with no mapping (and no override) yields empty — caller treats empty as
+# "no flag", i.e. the legacy no-`--model` argv. The active CLI is the same id
+# worker_spawn computes (LCARS_WORKER_CLI or basename WORKER_BIN).
+alias_for_tier() { # cli tier → flag string (stdout; may be empty)
+  local cli="$1" tier="$2" override=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+    && override="$(json_scoped_str "$LCARS_CFG" "modelAliases.$cli.$tier")"
+  if [ -n "$override" ]; then printf '%s' "$override"; return 0; fi
+  case "$cli" in
+    claude)
+      case "$tier" in sonnet) printf 'sonnet' ;; opus) printf 'opus' ;; esac ;;
+    copilot)
+      # Finalized by S59's spike against Copilot CLI v1.0.62: the Sonnet tier maps
+      # to `claude-sonnet-4.6`, the Opus tier to `claude-opus-4.8`. Both stay
+      # config-overridable via modelAliases.copilot.<tier> (handled above).
+      case "$tier" in sonnet) printf 'claude-sonnet-4.6' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
+  esac
+}
+
+# Is STAGE KEY inside the captain override's SCOPE? The two axes:
+#   reasoning      = research, validate, plan, planReview
+#   implementation = implement, verify
+#   all            = every one of the above (whole-way override)
+# `infra` (context-pack) is never in any scope — it is never escalated.
+stage_in_override_scope() { # key scope → 0 if in scope, 1 otherwise
+  local key="$1" scope="$2"
+  case "$scope" in
+    all)
+      case "$key" in
+        research|validate|plan|planReview|implement|verify) return 0 ;;
+      esac ;;
+    reasoning)
+      case "$key" in research|validate|plan|planReview) return 0 ;; esac ;;
+    implementation)
+      case "$key" in implement|verify) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
+# The ACTIVE captain override, as "<scope>:<tier>", or empty when none. The env
+# path ($LCARS_MODEL_OVERRIDE) WINS over the persisted state.json modelOverride —
+# mirroring the env-over-config rule everywhere else in the resolver. Both store a
+# scope + a LOGICAL TIER (sonnet/opus); the caller alias-maps the tier per CLI.
+active_model_override() { # → "<scope>:<tier>" or empty
+  if [ -n "${LCARS_MODEL_OVERRIDE:-}" ]; then
+    printf '%s' "$LCARS_MODEL_OVERRIDE"; return 0
+  fi
+  # state.json modelOverride: { "scope": "...", "tier": "..." }
+  if [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/state.json" ]; then
+    local scope tier
+    scope="$(json_scoped_str "$MISSION_DIR/state.json" "modelOverride.scope")"
+    tier="$(json_scoped_str "$MISSION_DIR/state.json" "modelOverride.tier")"
+    if [ -n "$scope" ] && [ -n "$tier" ]; then printf '%s:%s' "$scope" "$tier"; fi
+  fi
+}
+
+# Resolve the CLI flag string (or empty) for one STAGE KEY. Precedence, high→low:
+#   a.  $LCARS_WORKER_MODEL env  — global pin, wins for ALL stages. VERBATIM (it is
+#       already a CLI flag string, NOT a tier — do not re-translate it).
+#   a2. captain model override — $LCARS_MODEL_OVERRIDE env (wins) OR state.json
+#       modelOverride; "<scope>:<tier>". For a stage WITHIN the override's scope,
+#       use the override tier (alias-mapped). Stages OUTSIDE the scope fall through
+#       to the estimate below. (Session 62.)
+#   b.  estimate.json models.<key> — logical tier → alias-mapped per active CLI.
+#   c.  config.json stages.<key>.model — logical tier → alias-mapped.
+#   d.  config.json workerModel — global, VERBATIM flag (legacy back-compat).
+#   e.  nothing ⇒ empty string (caller emits NO --model flag — byte-identical).
+# `infra` (context-pack) is a cheap repo-fact pass and is NEVER escalated by the
+# estimate/stage map OR the captain override: it short-circuits to the global/
+# legacy value (env pin > the global config workerModel > unset) so its argv stays
+# exactly as today.
+resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
+  local key="$1"
+  # (a) global env pin — wins for every stage, verbatim.
+  if [ -n "${LCARS_WORKER_MODEL:-}" ]; then printf '%s' "$LCARS_WORKER_MODEL"; return 0; fi
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  if [ "$key" != "infra" ] && [ -n "$key" ]; then
+    # (a2) captain model override — only for stages within its scope.
+    local ov; ov="$(active_model_override)"
+    if [ -n "$ov" ]; then
+      local ov_scope="${ov%%:*}" ov_tier="${ov#*:}"
+      if stage_in_override_scope "$key" "$ov_scope"; then
+        alias_for_tier "$cli" "$ov_tier"; return 0
+      fi
+    fi
+    # (b) estimate.json models.<key>
+    local est_tier=""
+    [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/estimate.json" ] \
+      && est_tier="$(json_scoped_str "$MISSION_DIR/estimate.json" "models.$key")"
+    if [ -n "$est_tier" ]; then alias_for_tier "$cli" "$est_tier"; return 0; fi
+    # (c) config.json stages.<key>.model
+    local cfg_tier=""
+    [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+      && cfg_tier="$(json_scoped_str "$LCARS_CFG" "stages.$key.model")"
+    if [ -n "$cfg_tier" ]; then alias_for_tier "$cli" "$cfg_tier"; return 0; fi
+  fi
+  # (d) config.json workerModel — global, VERBATIM (it is a raw flag today, not a
+  # tier — keep it verbatim for back-compat). Applies to infra too.
+  local cfg_global=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+    && cfg_global="$(json_str "$LCARS_CFG" workerModel)"
+  if [ -n "$cfg_global" ]; then printf '%s' "$cfg_global"; return 0; fi
+  # (e) nothing.
+  printf ''
+}
+
+# The `resolve-stage-model <key>` subcommand: a mission-free test surface over
+# resolve_stage_model, mirroring cmd_resolve_worker. Resolves the worker bin (to
+# fix the active CLI) + $LCARS_CFG; reads estimate.json from --mission's dir when
+# given; prints `STAGE-MODEL key=<k> model=<flag|->` so tests assert the resolved
+# flag without an LLM or a real spawn. No mission state is required beyond the dir.
+cmd_resolve_stage_model() { # key (positional, in $1)
+  local key="$1" gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  fi
+  resolve_worker_bin
+  local m; m="$(resolve_stage_model "$key")"
+  printf 'STAGE-MODEL key=%s model=%s\n' "$key" "${m:--}"
+}
+
+# The `spawn-stage <role>` subcommand: drive the REAL worker_spawn chokepoint for
+# an env ROLE through whatever worker bin is set (a stub in tests), so the spawned
+# argv — including any per-stage --model — is observable end-to-end. Mission-aware
+# (estimate.json lives under --mission's dir). Not used in production flows; it is
+# the spawn-path test surface paralleling resolve-stage-model.
+cmd_spawn_stage() { # role (positional, in $1)
+  local role="$1" gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  fi
+  resolve_worker_bin
+  resolve_worker_model
+  local outdir; outdir="$(mktemp -d)"
+  LCARS_WORKER_ROLE="$role" worker_spawn "repo-read" "$outdir" "test prompt"
+  rm -rf "$outdir"
+}
+
 # Resolve both ONCE per process, then print the self-explaining log line naming
 # the resolved cli + model + the SOURCE that won (env/config/detected/default for
 # the bin; env/config/unset for the model). Idempotent: the guard means repeated
@@ -2275,11 +2530,17 @@ worker_spawn() { # role outdir prompt
   # overrides it (same spirit as LCARS_GH_BIN) so tests can point a generically
   # named stub at the claude adapter without renaming the binary.
   local cli; cli="${LCARS_WORKER_CLI:-$(basename "$WORKER_BIN")}"
-  # Thread the resolved MODEL to the adapter via the env var it reads. When empty
-  # the adapter emits NO --model flag (session-18 argv byte-for-byte). The model
-  # flag NAME is cli-specific and stays in the adapter; run.sh only resolves the
-  # value (CLI-agnostic) and hands it over here.
-  LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="${WORKER_MODEL:-}" \
+  # PER-STAGE model selection (session 58): map this spawn's env-role → its stage
+  # key → the resolved CLI flag, and thread THAT to the adapter (not the single
+  # global $WORKER_MODEL). When the resolver yields empty the adapter emits NO
+  # --model flag (session-18 argv byte-for-byte) — the legacy no-source path. The
+  # model flag NAME stays cli-specific in the adapter; run.sh resolves only the
+  # value here. `infra` (context-pack) is never escalated — resolve_stage_model
+  # short-circuits it to the global/legacy value, so it stays exactly as today.
+  local stage_key stage_model
+  stage_key="$(stage_key_for_role "${LCARS_WORKER_ROLE:-$role}")"
+  stage_model="$(resolve_stage_model "$stage_key")"
+  LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="$stage_model" \
     bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt"
 }
 
@@ -2468,16 +2729,25 @@ cmd_research() {
   local resp; resp="$(mktemp -d)"
   local i=0 q
   local jobs; jobs="$(mktemp)"
+  # Resolve the RESEARCH-stage model flag ONCE (per-stage seam, session 58) and
+  # thread it into every fan-out agent's env below — see the CRITICAL note there.
+  local ra_model; ra_model="$(resolve_stage_model research)"
   while IFS= read -r q; do
     [ -n "$q" ] || continue
     i=$((i + 1))
     local adir; adir="$resp/$(printf '%03d' "$i")"
-    # Pass the PARENT's already-resolved worker bin/model into each agent job so
-    # the agent subprocess runs the SAME cold-worker CLI without re-detecting the
-    # host (it inherits them as $LCARS_WORKER_BIN/$LCARS_WORKER_MODEL — env
-    # precedence — and resolves silently, no per-agent log line).
+    # Pass the PARENT's already-resolved worker bin into each agent job so the
+    # agent subprocess runs the SAME cold-worker CLI without re-detecting the host.
+    # CRITICAL (session 58): pass the RESOLVED RESEARCH-STAGE model flag — NOT the
+    # raw global $WORKER_MODEL. Each agent re-enters this script as a fresh process
+    # where env precedence (LCARS_WORKER_MODEL) PINS the model; if we passed the
+    # global value the per-stage research selection (e.g. research→opus from
+    # estimate.json) would be silently lost for every fan-out agent. The child sees
+    # this as a verbatim env pin (resolve_stage_model returns it unchanged), which
+    # is exactly the research-stage flag we resolved here. Empty ⇒ unset ⇒ the
+    # child emits NO --model flag (legacy byte-identical path).
     printf 'LCARS_RA_DIR=%q LCARS_RA_Q=%q LCARS_WORKER_BIN=%q LCARS_WORKER_MODEL=%q bash %q research-agent-job\n' \
-      "$adir" "$q" "$WORKER_BIN" "$WORKER_MODEL" "$SELF" >>"$jobs"
+      "$adir" "$q" "$WORKER_BIN" "$ra_model" "$SELF" >>"$jobs"
   done < <(grep -ve '^[[:space:]]*$' "$qdir/questions.txt")
   run_capped <"$jobs" || true
   rm -f "$jobs"
@@ -2602,6 +2872,631 @@ cmd_validate() {
     rm -rf "$odir"
   done
   die "the Validate worker produced an artifact that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+}
+
+# === Estimator (session 59) ================================================
+# Runs at the END of Align (driven by lcars-file once prd.md/adr.md + state.json
+# exist). One cold REPO-READ worker reads prd.md + adr.md + the repo context and
+# inspects relevant code, then writes estimate.json: two criticality scores + a
+# per-stage model map (logical tiers) that S58's resolve_stage_model CONSUMES.
+#
+# CRITICAL CONTRACTS:
+#  - The estimator must NEVER block filing. cmd_estimate degrades exactly like the
+#    gh-missing path in file.sh: on no/invalid output after the retries it leaves
+#    NO estimate.json and exits non-zero with a note, and lcars-file files the
+#    mission anyway (every downstream stage then falls back to its legacy model).
+#  - The estimator runs on ITS OWN model (default tier "opus", config
+#    `estimatorModel`), NOT a per-stage map. We pin it for this one spawn by
+#    exporting LCARS_WORKER_MODEL (env pin wins in resolve_stage_model), so the
+#    estimator never escalates other stages and its own spawn uses the right model.
+
+# Validate the worker's estimate.json into a clean, canonical estimate.json at
+# $MISSION_DIR/estimate.json. Returns 0 on success (file written), non-zero on a
+# malformed payload (nothing written). Pure bash + the jq-free readers — no LLM.
+estimate_validate_and_write() { # src-json
+  local src="$1"
+  [ -f "$src" ] || return 1
+  local enum='^(low|medium|high)$' tierre='^(sonnet|opus)$'
+  local rc ic; rc="$(json_scoped_str "$src" reasoningCriticality)"; ic="$(json_scoped_str "$src" implCriticality)"
+  printf '%s' "$rc" | grep -Eq "$enum" || return 1
+  printf '%s' "$ic" | grep -Eq "$enum" || return 1
+  # All six model keys must be present and each a valid tier.
+  local k v
+  for k in research validate plan planReview implement verify; do
+    v="$(json_scoped_str "$src" "models.$k")"
+    printf '%s' "$v" | grep -Eq "$tierre" || return 1
+    eval "TIER_$k=\$v"
+  done
+  local em; em="$(json_scoped_str "$src" estimatorModel)"; [ -n "$em" ] || em="opus"
+  # --- schemaVersion-2 fields (session 60) ---------------------------------
+  # Per-stage TOKEN + REQUEST estimates. Repair malformed/absent worker output:
+  # a non-negative integer survives; anything else (missing key, junk, negative)
+  # canonicalizes to 0 so the file is always well-formed and the cost is defined.
+  local n
+  for k in research validate plan planReview implement verify; do
+    n="$(json_scoped_num "$src" "tokenEstimates.$k.low")";   eval "TOKLO_$k=\$(canon_nonneg_int \"\$n\")"
+    n="$(json_scoped_num "$src" "tokenEstimates.$k.high")";  eval "TOKHI_$k=\$(canon_nonneg_int \"\$n\")"
+    n="$(json_scoped_num "$src" "requestEstimates.$k.low")"; eval "REQLO_$k=\$(canon_nonneg_int \"\$n\")"
+    n="$(json_scoped_num "$src" "requestEstimates.$k.high")";eval "REQHI_$k=\$(canon_nonneg_int \"\$n\")"
+  done
+  # rationale: a single JSON string, repaired to AT MOST 2 paragraphs (blank-line
+  # separated). The escaped string content is preserved as-is.
+  local rationale; rationale="$(json_scoped_str "$src" rationale)"
+  rationale="$(rationale_clamp "$rationale")"
+  # Re-emit a CANONICAL estimate.json. The `cost` block is COMPUTED BY CODE from
+  # the token/request estimates + pricing.json + the active CLI — NEVER trusted
+  # from the worker. We write the file once WITHOUT cost, compute against it, then
+  # write the final file with the computed cost block embedded.
+  local devs; devs="$(estimate_extract_deviations "$src")"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local out="$MISSION_DIR/estimate.json"
+  _estimate_emit() { # cost-block-or-empty
+    local cost="$1"
+    printf '{\n'
+    printf '  "schemaVersion": 3,\n'
+    printf '  "reasoningCriticality": "%s",\n' "$rc"
+    printf '  "implCriticality": "%s",\n' "$ic"
+    printf '  "models": {\n'
+    printf '    "research": "%s",\n'   "$TIER_research"
+    printf '    "validate": "%s",\n'   "$TIER_validate"
+    printf '    "plan": "%s",\n'       "$TIER_plan"
+    printf '    "planReview": "%s",\n' "$TIER_planReview"
+    printf '    "implement": "%s",\n'  "$TIER_implement"
+    printf '    "verify": "%s"\n'      "$TIER_verify"
+    printf '  },\n'
+    printf '  "tokenEstimates": {\n'
+    printf '    "research": { "low": %s, "high": %s },\n'   "$TOKLO_research" "$TOKHI_research"
+    printf '    "validate": { "low": %s, "high": %s },\n'   "$TOKLO_validate" "$TOKHI_validate"
+    printf '    "plan": { "low": %s, "high": %s },\n'       "$TOKLO_plan" "$TOKHI_plan"
+    printf '    "planReview": { "low": %s, "high": %s },\n' "$TOKLO_planReview" "$TOKHI_planReview"
+    printf '    "implement": { "low": %s, "high": %s },\n'  "$TOKLO_implement" "$TOKHI_implement"
+    printf '    "verify": { "low": %s, "high": %s }\n'      "$TOKLO_verify" "$TOKHI_verify"
+    printf '  },\n'
+    printf '  "requestEstimates": {\n'
+    printf '    "research": { "low": %s, "high": %s },\n'   "$REQLO_research" "$REQHI_research"
+    printf '    "validate": { "low": %s, "high": %s },\n'   "$REQLO_validate" "$REQHI_validate"
+    printf '    "plan": { "low": %s, "high": %s },\n'       "$REQLO_plan" "$REQHI_plan"
+    printf '    "planReview": { "low": %s, "high": %s },\n' "$REQLO_planReview" "$REQHI_planReview"
+    printf '    "implement": { "low": %s, "high": %s },\n'  "$REQLO_implement" "$REQHI_implement"
+    printf '    "verify": { "low": %s, "high": %s }\n'      "$REQLO_verify" "$REQHI_verify"
+    printf '  },\n'
+    printf '  "deviations": [%s],\n' "$devs"
+    printf '  "rationale": "%s",\n' "$rationale"
+    if [ -n "$cost" ]; then
+      printf '  "cost": %s,\n' "$cost"
+    fi
+    printf '  "estimatorModel": "%s"\n' "$em"
+    printf '}\n'
+  }
+  _estimate_emit "" >"$out"
+  local cost; cost="$(cost_compute "$out" "$cli")"
+  _estimate_emit "$cost" >"$out"
+  unset -f _estimate_emit
+  return 0
+}
+
+# Canonicalize a value to a NON-NEGATIVE INTEGER: a clean non-negative integer
+# survives; anything else (empty, junk, float, negative) becomes 0.
+canon_nonneg_int() { # value → integer
+  local v="$1"
+  case "$v" in
+    ''|*[!0-9]*) printf '0' ;;
+    *)           printf '%s' "$v" ;;
+  esac
+}
+
+# Clamp a rationale string to AT MOST 2 paragraphs. Paragraphs are separated by
+# a literal "\n\n" (the JSON-escaped blank line) in the stored string. Keeps the
+# first two; drops the rest. (The string is already JSON-escaped on input.)
+rationale_clamp() { # escaped-string → escaped-string (<= 2 paragraphs)
+  local s="$1"
+  # Split on the escaped paragraph break "\n\n"; keep the first two segments.
+  printf '%s' "$s" | awk '
+    {
+      n = split($0, parts, /\\n\\n/)
+      out = parts[1]
+      if (n >= 2) out = out "\\n\\n" parts[2]
+      printf "%s", out
+    }'
+}
+
+# Extract the deviations[] string entries from the worker's estimate.json and
+# re-emit them as a comma-joined list of JSON strings (for the canonical file's
+# `"deviations": [ … ]`). jq-free: pull the bracketed array body, then each
+# "double-quoted" string inside it. Empty array → empty output.
+estimate_extract_deviations() { # src-json → ` "a", "b" ` or empty
+  local src="$1" body
+  body="$(tr -d '\n' <"$src" | sed -En 's/.*"deviations"[[:space:]]*:[[:space:]]*\[([^]]*)\].*/\1/p')"
+  [ -n "$body" ] || { printf ''; return 0; }
+  # Emit each quoted string verbatim, comma-separated. grep -o pulls the quoted
+  # tokens (incl. their quotes); paste joins them with ", ".
+  printf '%s' "$body" | grep -oE '"([^"\\]|\\.)*"' | paste -sd, - \
+    | sed 's/,/, /g; s/^/ /; s/$/ /'
+}
+
+cmd_estimate() {
+  locate_mission "$MISSION_ID"
+  require_worker
+  [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md — Align has not produced a PRD yet."
+
+  # Pin the estimator's own model. Tier "opus" by default, config-overridable via
+  # config.json estimatorModel; translate the tier through the active CLI's alias
+  # map so copilot gets claude-opus-4.8, claude gets opus. An empty translation
+  # (a tier the alias map doesn't know) means NO --model flag — never a failure.
+  local est_tier="opus"
+  local cfg_tier=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfg_tier="$(json_str "$LCARS_CFG" estimatorModel)"
+  [ -n "$cfg_tier" ] && est_tier="$cfg_tier"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local est_model; est_model="$(alias_for_tier "$cli" "$est_tier")"
+
+  local extra="## Read these artifacts (your inputs)
+- $MISSION_DIR/prd.md"
+  [ -f "$MISSION_DIR/adr.md" ] && extra="$extra
+- $MISSION_DIR/adr.md   (the engineering ADRs Align seeded — read for the architectural frame)"
+  # Shared declarative repo facts, by PATH only (same as every repo-read Stage).
+  extra="$extra$(context_extra_block)"
+  # Tell the worker which tier it ran on so it can echo it into estimatorModel.
+  extra="$extra
+
+## Your model tier
+estimatorModel = \"$est_tier\" — echo this verbatim into the estimate.json field."
+
+  local tries=0 prior_no_file=""
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    local odir; odir="$(mktemp -d)"
+    # Pin the estimator's OWN model for just this spawn via the env pin (it wins
+    # in resolve_stage_model for every key, but this is a one-shot estimator spawn
+    # with no stage role, so it only affects this call). When $est_model is empty
+    # the env stays unset and the adapter emits NO --model — legacy-safe.
+    if [ -n "$est_model" ]; then
+      LCARS_WORKER_MODEL="$est_model" spawn_worker estimate "$STAGES_DIR/estimate.md" repo-read "$odir" "$extra" "$prior_no_file"
+    else
+      spawn_worker estimate "$STAGES_DIR/estimate.md" repo-read "$odir" "$extra" "$prior_no_file"
+    fi
+    if [ ! -f "$odir/estimate.json" ]; then
+      prior_no_file=no-file; rm -rf "$odir"; continue
+    fi
+    prior_no_file=""
+    if estimate_validate_and_write "$odir/estimate.json"; then
+      isolated_line estimate 1; rm -rf "$odir"; exit 0
+    fi
+    rm -rf "$odir"
+  done
+  # Degradation parity with gh-missing: no estimate.json, but do NOT crash the
+  # caller's filing. lcars-file treats a non-zero exit as "no estimate" and files
+  # the mission anyway; every stage then falls back to its legacy model.
+  printf '  ⚠ estimator produced no valid estimate.json after %s attempt(s) — mission keeps default models.\n' "$MAX_WORKER_TRIES" >&2
+  exit 1
+}
+
+# === CLI-aware mission cost (session 60) ===================================
+# The estimator emits a per-stage TOKEN estimate (Claude billing) and a per-stage
+# REQUEST-COUNT estimate (Copilot billing). The CODE — never the model — turns
+# those into a reproducible cost figure in the ACTIVE CLI's native unit, reading
+# every price/multiplier from pricing.json (PRICING_FILE). Pure: no LLM, no spawn.
+#
+# CLAUDE billing model (unit "usd"): each stage's tokens are billed against THAT
+# stage's tier ($/MTok from pricing.json), split 80% input / 20% output (a fixed,
+# documented split so the figure is deterministic and reproducible — agentic coding
+# is input-heavy). Per stage, per bound b∈{low,high}:
+#   stage_usd(b) = tokens(b) * (0.8*inputPerMTok[tier] + 0.2*outputPerMTok[tier]) / 1e6
+# cost.usd.{low,high} = Σ over the six stages.
+#
+# COPILOT billing model (unit "premiumRequests"): each stage invocation is a
+# premium request weighted by its tier multiplier (pricing.json). Per bound:
+#   premiumRequests(b) = Σ requests(b) * premiumRequestMultiplier[tier]
+# usdOverage(b) = premiumRequests(b) * overagePerRequest (or null if rate unset).
+# If any active-tier multiplier (or the overage rate) is unset/null in pricing.json
+# the figure is "unavailable" — we print a marker, NEVER a wrong number.
+COST_INPUT_SPLIT="0.8"   # share of tokens billed at the input rate (doc'd above)
+COST_OUTPUT_SPLIT="0.2"  # …the remainder at the output rate. Sum MUST be 1.
+
+# === Copilot billing-model selector (session 64) ===========================
+# GitHub moved Copilot to USAGE-BASED (token / GitHub AI Credits) billing on
+# 2026-06-01; the legacy PREMIUM-REQUEST scheme persists only for grandfathered
+# annual subscribers. The active billing model is selected per-repo:
+#   config.json `copilotBilling` ∈ {"usage","legacy"}  (highest precedence)
+#   → falls back to pricing.json `copilot.billingModel`
+#   → final default "usage" (the new GitHub default).
+copilot_billing_model() { # → "usage" | "legacy"
+  local b=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+    && b="$(json_scoped_str "$LCARS_CFG" "copilotBilling")"
+  if [ -z "$b" ]; then b="$(json_scoped_str "$PRICING_FILE" "copilot.billingModel")"; fi
+  case "$b" in usage|legacy) printf '%s' "$b" ;; *) printf 'usage' ;; esac
+}
+
+# The captain's Copilot plan, for netting the monthly included AI-credit
+# allotment: config.json `copilotPlan` ∈ {pro,proPlus,business,enterprise}.
+# DEFAULT "pro" (the smallest paid tier — never over-credit a mission). The
+# allotment for the plan lives in pricing.json `copilot.usage.creditAllotmentByPlan`.
+copilot_plan() { # → plan key
+  local p=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+    && p="$(json_scoped_str "$LCARS_CFG" "copilotPlan")"
+  case "$p" in pro|proPlus|business|enterprise) printf '%s' "$p" ;; *) printf 'pro' ;; esac
+}
+
+# Sum, per bound b∈{low,high}, of each stage's token cost in USD against a tier
+# rate block in pricing.json ($2 = pricing scope prefix, e.g. "claude" or
+# "copilot.usage"). Reuses the documented 0.8/0.2 input/output split and the
+# per-stage tier from the estimate's models map. Prints "<low> <high>" (6dp), or
+# empty if ANY used tier's rates are unset/null (caller ⇒ "unavailable").
+cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
+  local est="$1" scope="$2"
+  local stages="research validate plan planReview implement verify"
+  local usd_low=0 usd_high=0 k tier inr outr tlo thi
+  for k in $stages; do
+    tier="$(json_scoped_str "$est" "models.$k")"
+    inr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.inputPerMTok")"
+    outr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.outputPerMTok")"
+    [ -n "$inr" ] && [ -n "$outr" ] || return 1
+    tlo="$(json_scoped_num "$est" "tokenEstimates.$k.low")";  [ -n "$tlo" ] || tlo=0
+    thi="$(json_scoped_num "$est" "tokenEstimates.$k.high")"; [ -n "$thi" ] || thi=0
+    usd_low="$(awk -v a="$usd_low" -v t="$tlo" -v ir="$inr" -v or="$outr" \
+      -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+      'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+    usd_high="$(awk -v a="$usd_high" -v t="$thi" -v ir="$inr" -v or="$outr" \
+      -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+      'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+  done
+  printf '%s %s' "$usd_low" "$usd_high"
+}
+
+# Compute and print the canonical "cost" JSON block (the value of the estimate's
+# `cost` key, indented two spaces, no trailing comma) for one estimate.json under
+# the active CLI. $1 = estimate.json path; $2 = active cli (claude|copilot).
+cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
+  local est="$1" cli="$2"
+  local pricing="$PRICING_FILE"
+  local stages="research validate plan planReview implement verify"
+  if [ "$cli" = "copilot" ] && [ "$(copilot_billing_model)" = "usage" ]; then
+    # --- USAGE-BASED (token / GitHub AI Credits) billing (session 64) --------
+    # Bill tokens EXACTLY like the Claude branch against copilot.usage rates,
+    # then net the plan's monthly included AI-credit allotment (credits ×
+    # creditUsd = USD). Unset rates ⇒ unavailable (never a wrong number).
+    local pair; pair="$(cost_token_usd "$est" "copilot.usage")" || {
+      printf '{\n'
+      printf '    "cli": "copilot",\n'
+      printf '    "unit": "usd",\n'
+      printf '    "billing": "usage",\n'
+      printf '    "status": "unavailable"\n'
+      printf '  }'
+      return 0
+    }
+    local usd_low="${pair%% *}" usd_high="${pair##* }"
+    local plan; plan="$(copilot_plan)"
+    local credits; credits="$(json_scoped_num "$pricing" "copilot.usage.creditAllotmentByPlan.$plan")"
+    [ -n "$credits" ] || credits=0
+    local creditusd; creditusd="$(json_scoped_num "$pricing" "copilot.usage.creditUsd")"
+    [ -n "$creditusd" ] || creditusd=0
+    local included; included="$(awk -v c="$credits" -v u="$creditusd" 'BEGIN{printf "%g", c*u}')"
+    local net_low net_high
+    net_low="$(awk -v v="$usd_low" -v n="$included" 'BEGIN{x=v-n; if(x<0)x=0; printf "%g", x}')"
+    net_high="$(awk -v v="$usd_high" -v n="$included" 'BEGIN{x=v-n; if(x<0)x=0; printf "%g", x}')"
+    usd_low="$(awk -v v="$usd_low" 'BEGIN{printf "%g", v}')"
+    usd_high="$(awk -v v="$usd_high" 'BEGIN{printf "%g", v}')"
+    printf '{\n'
+    printf '    "cli": "copilot",\n'
+    printf '    "unit": "usd",\n'
+    printf '    "billing": "usage",\n'
+    printf '    "usd": { "low": %s, "high": %s },\n' "$usd_low" "$usd_high"
+    printf '    "includedCreditsUsd": %s,\n' "$included"
+    printf '    "netUsd": { "low": %s, "high": %s }\n' "$net_low" "$net_high"
+    printf '  }'
+    return 0
+  fi
+  if [ "$cli" = "copilot" ]; then
+    # --- LEGACY PREMIUM-REQUEST billing (grandfathered annual subscribers) ---
+    # Σ(stage requests × tier multiplier) + optional $0.04/request overage. The
+    # multipliers/overage moved verbatim under copilot.legacy in session 64 — the
+    # numbers and the math are byte-for-byte the S60 figure.
+    # Gather per-stage tier multipliers; if any used tier (or the overage) is
+    # unset/null → unavailable.
+    local unavailable="" pr_low=0 pr_high=0 k tier mult rlo rhi
+    local overage; overage="$(json_scoped_num "$pricing" "copilot.legacy.overagePerRequest")"
+    for k in $stages; do
+      tier="$(json_scoped_str "$est" "models.$k")"
+      mult="$(json_scoped_num "$pricing" "copilot.legacy.$tier.premiumRequestMultiplier")"
+      [ -n "$mult" ] || { unavailable=1; break; }
+      rlo="$(json_scoped_num "$est" "requestEstimates.$k.low")";  [ -n "$rlo" ] || rlo=0
+      rhi="$(json_scoped_num "$est" "requestEstimates.$k.high")"; [ -n "$rhi" ] || rhi=0
+      pr_low="$(awk -v a="$pr_low" -v r="$rlo" -v m="$mult" 'BEGIN{printf "%d", a + r*m}')"
+      pr_high="$(awk -v a="$pr_high" -v r="$rhi" -v m="$mult" 'BEGIN{printf "%d", a + r*m}')"
+    done
+    if [ -n "$unavailable" ]; then
+      printf '{\n'
+      printf '    "cli": "copilot",\n'
+      printf '    "unit": "premiumRequests",\n'
+      printf '    "billing": "legacy",\n'
+      printf '    "status": "unavailable"\n'
+      printf '  }'
+      return 0
+    fi
+    local ov_block='null'
+    if [ -n "$overage" ]; then
+      local ov_lo ov_hi
+      ov_lo="$(awk -v p="$pr_low" -v o="$overage" 'BEGIN{printf "%g", p*o}')"
+      ov_hi="$(awk -v p="$pr_high" -v o="$overage" 'BEGIN{printf "%g", p*o}')"
+      ov_block="$(printf '{ "low": %s, "high": %s }' "$ov_lo" "$ov_hi")"
+    fi
+    printf '{\n'
+    printf '    "cli": "copilot",\n'
+    printf '    "unit": "premiumRequests",\n'
+    printf '    "billing": "legacy",\n'
+    printf '    "premiumRequests": { "low": %s, "high": %s },\n' "$pr_low" "$pr_high"
+    printf '    "usdOverage": %s\n' "$ov_block"
+    printf '  }'
+    return 0
+  fi
+  # Claude (default / unit "usd").
+  local usd_low=0 usd_high=0 k tier inr outr tlo thi
+  for k in $stages; do
+    tier="$(json_scoped_str "$est" "models.$k")"
+    inr="$(json_scoped_num "$pricing" "claude.$tier.inputPerMTok")"
+    outr="$(json_scoped_num "$pricing" "claude.$tier.outputPerMTok")"
+    [ -n "$inr" ] && [ -n "$outr" ] || continue
+    tlo="$(json_scoped_num "$est" "tokenEstimates.$k.low")";  [ -n "$tlo" ] || tlo=0
+    thi="$(json_scoped_num "$est" "tokenEstimates.$k.high")"; [ -n "$thi" ] || thi=0
+    usd_low="$(awk -v a="$usd_low" -v t="$tlo" -v ir="$inr" -v or="$outr" \
+      -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+      'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+    usd_high="$(awk -v a="$usd_high" -v t="$thi" -v ir="$inr" -v or="$outr" \
+      -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+      'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+  done
+  # Trim to a tidy 4-dp figure.
+  usd_low="$(awk -v v="$usd_low" 'BEGIN{printf "%g", v}')"
+  usd_high="$(awk -v v="$usd_high" 'BEGIN{printf "%g", v}')"
+  printf '{\n'
+  printf '    "cli": "claude",\n'
+  printf '    "unit": "usd",\n'
+  printf '    "currency": "USD",\n'
+  printf '    "usd": { "low": %s, "high": %s }\n' "$usd_low" "$usd_high"
+  printf '  }'
+}
+
+# The `cost --mission <id>` subcommand: a mission-free test surface over
+# cost_compute, mirroring resolve-stage-model. Resolves the active CLI the same
+# way (LCARS_WORKER_CLI or basename WORKER_BIN), reads the mission's estimate.json
+# + pricing.json, and prints the canonical cost JSON block (plus a one-line
+# `COST cli=… unit=…` header) so tests can drive it deterministically.
+cmd_cost() {
+  local gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  fi
+  resolve_worker_bin
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local est="$MISSION_DIR/estimate.json"
+  [ -f "$est" ] || die "no estimate.json for mission ${MISSION_ID:-?}."
+  local block; block="$(cost_compute "$est" "$cli")"
+  printf 'COST cli=%s\n' "$cli"
+  printf '%s\n' "$block"
+}
+
+# === Captain-facing estimate rendering (session 61) ========================
+# Turn a mission's estimate.json into a captain-readable block in the ACTIVE
+# CLI's native cost unit, for one of two SURFACES that lcars-file owns:
+#   issue → a markdown "## Estimate" section (scores, a per-stage model table,
+#           the cost line, the rationale) appended to the GitHub issue body.
+#   cli   → a compact, two-space-indented readout (a one-line Estimate summary
+#           with the scores + cost, a model-mix line, a one-line rationale).
+# The cost unit tracks the active CLI: claude → "$X–$Y"; copilot → "~N premium
+# requests" (+ a "$X–$Y overage" band when available, else "unavailable"). All
+# of the cost-shape + active-CLI logic is reused from cost_compute — this only
+# FORMATS the already-computed numbers, so the two surfaces never disagree with
+# `run.sh cost`. Pure: no LLM, no spawn.
+
+# Format a USD amount to EXACTLY two decimal places for display to the captain
+# (session 64 deliverable 2). The precise value stays in estimate.json's cost
+# block; this is a render-time formatting only, used by every $ figure on the
+# captain surfaces (Claude band, Copilot usage band, Copilot legacy overage band).
+usd2() { awk -v v="${1:-0}" 'BEGIN{printf "%.2f", v}'; }
+
+# Pretty a logical tier ("sonnet"/"opus") for display ("Sonnet"/"Opus").
+tier_display() { # tier → Tier
+  case "$1" in
+    opus)   printf 'Opus' ;;
+    sonnet) printf 'Sonnet' ;;
+    *)      printf '%s' "$1" ;;
+  esac
+}
+
+# Pretty a criticality ("low"/"medium"/"high") in UPPER case for the readout.
+crit_display() { printf '%s' "$1" | tr 'a-z' 'A-Z'; }
+
+# Unescape a JSON string's paragraph breaks (\n\n) and newlines so the rationale
+# reads as prose in the rendered surfaces. $2 = join string for blank lines.
+rationale_unescape() { # escaped-string join → prose
+  local s="$1" join="$2"
+  s="${s//\\n\\n/$join}"
+  s="${s//\\n/ }"
+  s="${s//\\\"/\"}"
+  s="${s//\\\\/\\}"
+  printf '%s' "$s"
+}
+
+# Cost phrase for the COMPACT (cli-readout) summary, in the active CLI's unit.
+# Reads the computed cost block (cost_compute output) fields via json helpers off
+# the estimate.json the validator already embedded the cost into.
+render_cost_compact() { # cost-json cli → e.g. "$3.62–$7.24" | "~198–396 premium reqs, ~$7.92–$15.84 overage" | "$3.62–$7.24 (AI credits)" | "unavailable"
+  local est="$1" cli="$2"
+  if [ "$cli" = "copilot" ]; then
+    local status; status="$(json_scoped_str "$est" "cost.status")"
+    if [ "$status" = "unavailable" ]; then printf 'unavailable'; return 0; fi
+    local billing; billing="$(json_scoped_str "$est" "cost.billing")"
+    if [ "$billing" = "usage" ]; then
+      local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
+      [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
+      printf '$%s–$%s (AI credits)' "$(usd2 "$lo")" "$(usd2 "$hi")"
+      return 0
+    fi
+    # legacy premium-request
+    local plo phi; plo="$(json_scoped_num "$est" "cost.premiumRequests.low")"
+    phi="$(json_scoped_num "$est" "cost.premiumRequests.high")"
+    [ -n "$plo" ] || plo=0; [ -n "$phi" ] || phi=0
+    local ovlo ovhi; ovlo="$(json_scoped_num "$est" "cost.usdOverage.low")"
+    ovhi="$(json_scoped_num "$est" "cost.usdOverage.high")"
+    if [ -n "$ovlo" ] && [ -n "$ovhi" ]; then
+      printf '~%s–%s premium reqs, ~$%s–$%s overage' "$plo" "$phi" "$(usd2 "$ovlo")" "$(usd2 "$ovhi")"
+    else
+      printf '~%s–%s premium reqs' "$plo" "$phi"
+    fi
+    return 0
+  fi
+  # claude (usd)
+  local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
+  [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
+  printf '$%s–$%s' "$(usd2 "$lo")" "$(usd2 "$hi")"
+}
+
+# Cost LINE for the ISSUE surface ("- **Cost:** …"), in the active CLI's unit.
+render_cost_issue() { # cost-json cli → markdown bullet text
+  local est="$1" cli="$2"
+  if [ "$cli" = "copilot" ]; then
+    local status; status="$(json_scoped_str "$est" "cost.status")"
+    if [ "$status" = "unavailable" ]; then printf 'Copilot cost: unavailable'; return 0; fi
+    local billing; billing="$(json_scoped_str "$est" "cost.billing")"
+    if [ "$billing" = "usage" ]; then
+      local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
+      [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
+      local inc; inc="$(json_scoped_num "$est" "cost.includedCreditsUsd")"; [ -n "$inc" ] || inc=0
+      printf '$%s–$%s (GitHub AI Credits; first $%s/mo included on %s)' \
+        "$(usd2 "$lo")" "$(usd2 "$hi")" "$(usd2 "$inc")" "$(copilot_plan)"
+      return 0
+    fi
+    # legacy premium-request
+    local plo phi; plo="$(json_scoped_num "$est" "cost.premiumRequests.low")"
+    phi="$(json_scoped_num "$est" "cost.premiumRequests.high")"
+    [ -n "$plo" ] || plo=0; [ -n "$phi" ] || phi=0
+    local ovlo ovhi; ovlo="$(json_scoped_num "$est" "cost.usdOverage.low")"
+    ovhi="$(json_scoped_num "$est" "cost.usdOverage.high")"
+    if [ -n "$ovlo" ] && [ -n "$ovhi" ]; then
+      printf '~%s–%s premium requests ($%s–$%s overage)' "$plo" "$phi" "$(usd2 "$ovlo")" "$(usd2 "$ovhi")"
+    else
+      printf '~%s–%s premium requests' "$plo" "$phi"
+    fi
+    return 0
+  fi
+  local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
+  [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
+  printf '$%s–$%s' "$(usd2 "$lo")" "$(usd2 "$hi")"
+}
+
+# A captain-facing phrase for the active model override, or empty when none. The
+# override stores a LOGICAL TIER + a SCOPE; this is the human form the captain sees
+# on the estimate surfaces so they know the estimate's model mix was overridden.
+#   all            → "(override: Opus, whole run)"
+#   reasoning      → "(override: Sonnet, reasoning)"
+#   implementation → "(override: Opus, implementation)"
+override_note() { # → "(override: …)" or empty
+  local ov; ov="$(active_model_override)"
+  [ -n "$ov" ] || return 0
+  local scope="${ov%%:*}" tier="${ov#*:}" where
+  case "$scope" in
+    all)            where="whole run" ;;
+    reasoning)      where="reasoning" ;;
+    implementation) where="implementation" ;;
+    *)              where="$scope" ;;
+  esac
+  printf '(override: %s, %s)' "$(tier_display "$tier")" "$where"
+}
+
+# Render the "## Estimate" markdown section for the issue body.
+render_estimate_issue() { # estimate-json cli cost-json → markdown
+  local est="$1" cli="$2" costfile="$3"
+  local rc ic
+  rc="$(json_scoped_str "$est" reasoningCriticality)"; [ -n "$rc" ] || rc="?"
+  ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
+  printf '## Estimate\n\n'
+  local ovn; ovn="$(override_note)"
+  [ -n "$ovn" ] && printf '**Model override:** %s — the captain pinned the model mix; the per-stage table below shows the estimator'\''s original choice.\n\n' "$ovn"
+  printf '**Criticality:** reasoning = %s · implementation = %s\n\n' \
+    "$(crit_display "$rc")" "$(crit_display "$ic")"
+  printf '**Per-stage model mix:**\n\n'
+  printf '| Stage | Model |\n'
+  printf '| --- | --- |\n'
+  local k label
+  for k in research validate plan planReview implement verify; do
+    case "$k" in
+      research)   label="Research" ;;
+      validate)   label="Validate" ;;
+      plan)       label="Plan" ;;
+      planReview) label="Plan Review" ;;
+      implement)  label="Implement" ;;
+      verify)     label="Verify" ;;
+      *)          label="$k" ;;
+    esac
+    printf '| %s | %s |\n' "$label" "$(tier_display "$(json_scoped_str "$est" "models.$k")")"
+  done
+  printf '\n**Estimated cost:** %s\n\n' "$(render_cost_issue "$costfile" "$cli")"
+  local rationale; rationale="$(json_scoped_str "$est" rationale)"
+  if [ -n "$rationale" ]; then
+    printf '%s\n' "$(rationale_unescape "$rationale" '
+
+')"
+  fi
+}
+
+# Render the compact, two-space-indented readout block for the CLI stdout.
+render_estimate_cli() { # estimate-json cli cost-json → indented text
+  local est="$1" cli="$2" costfile="$3"
+  local rc ic
+  rc="$(json_scoped_str "$est" reasoningCriticality)"; [ -n "$rc" ] || rc="?"
+  ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
+  printf '  Estimate: reasoning=%s implementation=%s  (cost %s)\n' \
+    "$(crit_display "$rc")" "$(crit_display "$ic")" "$(render_cost_compact "$costfile" "$cli")"
+  local ovn; ovn="$(override_note)"
+  [ -n "$ovn" ] && printf '  Override: %s — model mix pinned by the captain (table below = estimator default)\n' "$ovn"
+  # One-line model mix.
+  printf '  Models:   research/validate=%s · plan/plan-review=%s · implement=%s · verify=%s\n' \
+    "$(tier_display "$(json_scoped_str "$est" models.research)")/$(tier_display "$(json_scoped_str "$est" models.validate)")" \
+    "$(tier_display "$(json_scoped_str "$est" models.plan)")/$(tier_display "$(json_scoped_str "$est" models.planReview)")" \
+    "$(tier_display "$(json_scoped_str "$est" models.implement)")" \
+    "$(tier_display "$(json_scoped_str "$est" models.verify)")"
+  local rationale; rationale="$(json_scoped_str "$est" rationale)"
+  if [ -n "$rationale" ]; then
+    # First paragraph only on the readout, kept to one line.
+    local first; first="$(rationale_unescape "$rationale" ' ' | tr '\n' ' ')"
+    printf '  Why:      %s\n' "$first"
+  fi
+}
+
+# render-estimate subcommand: read --mission's estimate.json, resolve the active
+# CLI the standard way, and print the requested --surface block. If estimate.json
+# is absent, print NOTHING and exit non-zero — lcars-file treats that exactly like
+# an absent adr.md (no Estimate section, no crash), the load-bearing degradation.
+cmd_render_estimate() { # --surface in $SURFACE
+  local gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  fi
+  resolve_worker_bin
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local est="$MISSION_DIR/estimate.json"
+  [ -f "$est" ] || exit 1   # absent ⇒ no output, non-zero (file.sh degradation)
+  # COMPUTE the cost fresh from cost_compute (never trust a possibly-stale `cost`
+  # block in estimate.json, and tolerate a fixture that omits it). Write the
+  # canonical cost block to a temp JSON so the render_cost_* helpers can read its
+  # nested fields with the same json_scoped_* helpers the rest of run.sh uses.
+  local costblock; costblock="$(cost_compute "$est" "$cli")"
+  local costfile; costfile="$(mktemp)"
+  printf '{ "cost": %s }\n' "$costblock" >"$costfile"
+  case "${SURFACE:-cli}" in
+    issue) render_estimate_issue "$est" "$cli" "$costfile" ;;
+    cli)   render_estimate_cli "$est" "$cli" "$costfile" ;;
+    *)     rm -f "$costfile"; die "render-estimate: --surface must be 'issue' or 'cli' (got '${SURFACE:-}')." ;;
+  esac
+  rm -f "$costfile"
 }
 
 # === Stage driver: Plan ====================================================
@@ -3401,10 +4296,12 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
-EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --step)        STEP=1; shift ;;
+    --surface)     SURFACE="${2:-}"; shift 2 ;;
+    --surface=*)   SURFACE="${1#--surface=}"; shift ;;
     --mission)     MISSION_ID="${2:-}"; shift 2 ;;
     --mission=*)   MISSION_ID="${1#--mission=}"; shift ;;
     --questions)   QFILE="${2:-}"; shift 2 ;;
@@ -3429,12 +4326,15 @@ while [ $# -gt 0 ]; do
     --stage=*)     EV_STAGE="${1#--stage=}"; shift ;;
     --detail)      EV_DETAIL="${2:-}"; shift 2 ;;
     --detail=*)    EV_DETAIL="${1#--detail=}"; shift ;;
-    *) die "unknown argument: $1" ;;
+    # A single bare positional (the stage key / role for resolve-stage-model /
+    # spawn-stage). Only these subcommands consume it; others still reject extras.
+    -*)            die "unknown argument: $1" ;;
+    *)             if [ -z "$POSARG" ]; then POSARG="$1"; shift; else die "unexpected argument: $1"; fi ;;
   esac
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|plan|plan-review|implement|implement-ticket|drive|emit-event)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|estimate|plan|plan-review|implement|implement-ticket|drive|emit-event)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -3455,6 +4355,10 @@ case "$SUB" in
   # Stage drivers (spawn cold workers, then persist via the subcommands above).
   research)         cmd_research ;;
   validate)         cmd_validate ;;
+  # End-of-Align estimator (session 59): writes estimate.json (two criticality
+  # scores + per-stage model map) that S58's resolve_stage_model consumes. Driven
+  # by lcars-file at the end of Align; OPTIONAL — a failure never blocks filing.
+  estimate)         cmd_estimate ;;
   plan)             cmd_plan ;;
   plan-review)      cmd_plan_review ;;
   implement)        cmd_implement ;;
@@ -3478,6 +4382,25 @@ case "$SUB" in
   # Cold-worker bin/model resolution (no LLM, no mission) — prints the resolution
   # log line + a machine-readable summary. The test surface for resolve_worker.
   resolve-worker)   cmd_resolve_worker ;;
+  # Per-stage model resolution (no LLM, no real mission state) — prints
+  # `STAGE-MODEL key=<k> model=<flag|->`. The test surface for resolve_stage_model.
+  resolve-stage-model) [ -n "$POSARG" ] || die "usage: run.sh resolve-stage-model [--mission <id>] <stage-key>"
+                       cmd_resolve_stage_model "$POSARG" ;;
+  # CLI-aware mission cost (session 60) — reads --mission's estimate.json +
+  # pricing.json + the active CLI, prints the canonical cost JSON block. Pure (no
+  # LLM); the test surface for cost_compute.
+  cost)             [ -n "$MISSION_ID" ] || die "usage: run.sh cost --mission <id>"
+                    cmd_cost ;;
+  # Captain-facing estimate rendering (session 61) — reads --mission's
+  # estimate.json + the active CLI, prints the requested --surface (issue|cli)
+  # block. Absent estimate.json ⇒ no output + non-zero (lcars-file degradation).
+  render-estimate)  [ -n "$MISSION_ID" ] || die "usage: run.sh render-estimate --mission <id> --surface issue|cli"
+                    cmd_render_estimate ;;
+  # Drive the real worker_spawn chokepoint for one env-role through the resolved
+  # worker bin (a stub in tests) so the spawned argv (incl. per-stage --model) is
+  # observable end-to-end. The spawn-path test surface.
+  spawn-stage)         [ -n "$POSARG" ] || die "usage: run.sh spawn-stage [--mission <id>] <role>"
+                       cmd_spawn_stage "$POSARG" ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
   emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;

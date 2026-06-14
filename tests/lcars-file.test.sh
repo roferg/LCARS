@@ -35,6 +35,41 @@ bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
 # --- stubs ----------------------------------------------------------------
+# A stub for the lcars-run estimator driver (session 59). file.sh runs
+# `run.sh estimate` at the end of Align; pointing LCARS_RUN_BIN at this stub keeps
+# that call fast and deterministic (no real model spawn) while exercising the
+# success path: it writes a minimal valid estimate.json into the mission dir. The
+# mission id is the last positional arg following --mission. These tests do not
+# assert on estimate.json — they only need filing to complete cleanly.
+ESTIMATOR_STUB="$TMPROOT/estimate-run.sh"
+cat >"$ESTIMATOR_STUB" <<'EOF'
+#!/usr/bin/env bash
+# usage (as called by file.sh): estimate --mission <id>
+mid=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mission) mid="${2:-}"; shift 2 ;;
+    --mission=*) mid="${1#--mission=}"; shift ;;
+    *) shift ;;
+  esac
+done
+gitdir="$(git rev-parse --git-common-dir 2>/dev/null)" || exit 1
+case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+mdir="$gitdir/lcars/missions/$mid"
+[ -d "$mdir" ] || exit 1
+cat >"$mdir/estimate.json" <<JSON
+{ "schemaVersion": 1, "reasoningCriticality": "low", "implCriticality": "low",
+  "models": { "research": "sonnet", "validate": "sonnet", "plan": "sonnet",
+  "planReview": "sonnet", "implement": "sonnet", "verify": "sonnet" },
+  "deviations": [], "estimatorModel": "opus" }
+JSON
+exit 0
+EOF
+chmod +x "$ESTIMATOR_STUB"
+# Every file.sh invocation in this suite uses the stub estimator (NEVER a real
+# model). Exported once so the existing test bodies need no per-call change.
+export LCARS_RUN_BIN="$ESTIMATOR_STUB"
+
 # A fake `gh` that records every invocation and, on `issue create`, prints
 # the URL of the new issue (number 42) the way real gh does.
 make_gh_stub() {
@@ -317,6 +352,272 @@ check "9b. PRD-only body has no ADR content" \
   "! grep -q 'Theme delivery via a data-theme attribute' '$GH_BODY'"
 check "9b. PRD-only body has no --- separator" \
   "! grep -qx -- '---' '$GH_BODY'"
+unset GH_BODY
+
+# --- Behaviour 10: estimate rendered into BOTH captain surfaces (S61) ------
+# After Align, lcars-file runs the estimator (estimate.json) and renders it into
+#   (A) the GitHub issue BODY — an "## Estimate" section (both criticality
+#       scores, the per-stage model table, the cost line), AND
+#   (B) the CLI readout (stdout) — a compact Estimate summary with the scores +
+#       cost in the ACTIVE CLI's native unit.
+# The estimator MUST run BEFORE the issue is created (so estimate.json exists when
+# the body is composed). The cost renders in the active CLI's unit: claude → "$"
+# range; copilot → premium requests. An ABSENT estimate.json ⇒ body = prd[+adr]
+# only (no "## Estimate"), readout prints normally, no crash — degradation parity.
+#
+# These tests use a RICHER estimator stub that drops a schema-2 estimate.json with
+# token/request estimates, AND delegates `render-estimate` to the REAL run.sh so
+# the cost is computed for real. The active CLI is forced via env.
+REAL_RUN="$REPO_ROOT/skills/lcars-run/run.sh"
+RICH_STUB="$TMPROOT/estimate-rich.sh"
+cat >"$RICH_STUB" <<EOF
+#!/usr/bin/env bash
+# Dispatch on the subcommand: 'estimate' plants a rich estimate.json; everything
+# else (render-estimate) is delegated to the REAL run.sh so cost is computed.
+sub="\${1:-}"
+if [ "\$sub" != "estimate" ]; then exec bash "$REAL_RUN" "\$@"; fi
+shift
+mid=""
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --mission) mid="\${2:-}"; shift 2 ;;
+    --mission=*) mid="\${1#--mission=}"; shift ;;
+    *) shift ;;
+  esac
+done
+gitdir="\$(git rev-parse --git-common-dir 2>/dev/null)" || exit 1
+case "\$gitdir" in /*) : ;; *) gitdir="\$PWD/\$gitdir" ;; esac
+mdir="\$gitdir/lcars/missions/\$mid"
+[ -d "\$mdir" ] || exit 1
+cat >"\$mdir/estimate.json" <<JSON
+{ "schemaVersion": 2, "reasoningCriticality": "high", "implCriticality": "medium",
+  "models": { "research":"opus","validate":"sonnet","plan":"sonnet","planReview":"sonnet","implement":"opus","verify":"sonnet" },
+  "tokenEstimates": { "research":{"low":100000,"high":200000},"validate":{"low":50000,"high":100000},"plan":{"low":50000,"high":100000},"planReview":{"low":50000,"high":100000},"implement":{"low":200000,"high":400000},"verify":{"low":20000,"high":40000} },
+  "requestEstimates": { "research":{"low":2,"high":4},"validate":{"low":1,"high":2},"plan":{"low":1,"high":2},"planReview":{"low":1,"high":2},"implement":{"low":4,"high":8},"verify":{"low":1,"high":2} },
+  "deviations": [], "rationale": "High-criticality feature touching core contracts.", "estimatorModel": "opus" }
+JSON
+exit 0
+EOF
+chmod +x "$RICH_STUB"
+
+# 10a. Claude active: issue body carries an "## Estimate" section with BOTH scores,
+# the per-stage model table (Opus + Sonnet), and the "$X–$Y" cost range.
+repoE="$(new_repo)"; make_gh_stub "$repoE/gh"
+export GH_LOG="$repoE/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoE/gh-body.txt"; : >"$GH_BODY"
+prdE="$repoE/prd.md"; write_prd "$prdE"
+(
+  cd "$repoE"
+  CLAUDECODE=1 LCARS_RUN_BIN="$RICH_STUB" \
+    LCARS_GH_BIN="$repoE/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdE" >outE.txt 2>&1
+)
+check "10a. issue body has an '## Estimate' section" \
+  "grep -q '## Estimate' '$GH_BODY'"
+check "10a. issue Estimate shows reasoning criticality (high)" \
+  "grep -qi 'reasoning' '$GH_BODY' && grep -qi 'HIGH' '$GH_BODY'"
+check "10a. issue Estimate shows implementation criticality (medium)" \
+  "grep -qi 'implementation' '$GH_BODY' && grep -qi 'MEDIUM' '$GH_BODY'"
+check "10a. issue Estimate has a per-stage model table (Opus + Sonnet)" \
+  "grep -q 'Opus' '$GH_BODY' && grep -q 'Sonnet' '$GH_BODY'"
+check "10a. issue Estimate names each stage (Implement)" \
+  "grep -qi 'Implement' '$GH_BODY'"
+check "10a. issue Estimate shows the \$ cost range" \
+  "grep -q '3.6' '$GH_BODY' && grep -q '7.2' '$GH_BODY'"
+check "10a. issue Estimate section comes AFTER the PRD content" \
+  "[ \"\$(grep -n 'Fix the broken /about route' '$GH_BODY' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n '## Estimate' '$GH_BODY' | head -1 | cut -d: -f1)\" ]"
+unset GH_BODY
+
+# 10b. Claude active: the CLI readout (stdout) shows the compact Estimate summary
+# with the scores + the "$" cost range.
+check "10b. CLI readout has the Estimate summary line" \
+  "grep -qi 'Estimate:' '$repoE/outE.txt'"
+check "10b. CLI readout shows both criticalities" \
+  "grep -qi 'reasoning' '$repoE/outE.txt' && grep -qi 'implementation' '$repoE/outE.txt'"
+check "10b. CLI readout shows the \$ cost range" \
+  "grep -q '3.6' '$repoE/outE.txt' && grep -q '7.2' '$repoE/outE.txt'"
+
+# 10c. estimate.json ABSENT (estimator produces nothing) ⇒ body is prd-only with
+# NO "## Estimate" section; readout still prints; no crash (degradation parity).
+# The estimator stub emits nothing (NONE) so no estimate.json is written.
+NONE_STUB="$TMPROOT/estimate-none.sh"
+cat >"$NONE_STUB" <<EOF
+#!/usr/bin/env bash
+# 'estimate' writes nothing (failure); 'render-estimate' delegates to real run.sh
+# (which exits non-zero because estimate.json is absent).
+[ "\${1:-}" = "estimate" ] && exit 1
+exec bash "$REAL_RUN" "\$@"
+EOF
+chmod +x "$NONE_STUB"
+repoN="$(new_repo)"; make_gh_stub "$repoN/gh"
+export GH_LOG="$repoN/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoN/gh-body.txt"; : >"$GH_BODY"
+prdN="$repoN/prd.md"; write_prd "$prdN"
+rcN=0
+(
+  cd "$repoN"
+  CLAUDECODE=1 LCARS_RUN_BIN="$NONE_STUB" \
+    LCARS_GH_BIN="$repoN/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdN" >outN.txt 2>&1
+) || rcN=$?
+check "10c. mission still files when estimate.json is absent" "[ '$rcN' -eq 0 ]"
+check "10c. absent estimate ⇒ body has NO '## Estimate' section" \
+  "! grep -q '## Estimate' '$GH_BODY'"
+check "10c. absent estimate ⇒ body still has the PRD content" \
+  "grep -q 'Fix the broken /about route' '$GH_BODY'"
+check "10c. absent estimate ⇒ readout still prints the Mission filed line" \
+  "grep -q 'Mission filed:' '$repoN/outN.txt'"
+unset GH_BODY
+
+# 10d. Copilot active, DEFAULT billing (usage / GitHub AI Credits, session 64):
+# cost renders as a USD band (token-metered) with the included-allotment line,
+# NOT premium requests, in BOTH surfaces. Force copilot via LCARS_WORKER_CLI.
+repoP="$(new_repo)"; make_gh_stub "$repoP/gh"
+export GH_LOG="$repoP/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoP/gh-body.txt"; : >"$GH_BODY"
+prdP="$repoP/prd.md"; write_prd "$prdP"
+(
+  cd "$repoP"
+  LCARS_WORKER_CLI=copilot LCARS_RUN_BIN="$RICH_STUB" \
+    LCARS_GH_BIN="$repoP/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdP" >outP.txt 2>&1
+)
+check "10d. copilot DEFAULT issue body shows usage \$ band (3.6/7.2)" \
+  "grep -q '3.6' '$GH_BODY' && grep -q '7.2' '$GH_BODY'"
+check "10d. copilot DEFAULT issue body mentions GitHub AI Credits" \
+  "grep -qi 'AI Credits' '$GH_BODY'"
+check "10d. copilot DEFAULT issue body is NOT premium requests" \
+  "! grep -qi 'premium' '$GH_BODY'"
+check "10d. copilot DEFAULT CLI readout shows usage \$ band" \
+  "grep -q '3.6' '$repoP/outP.txt'"
+unset GH_BODY
+
+# 10f. Copilot active, LEGACY billing (config copilotBilling=legacy): the old
+# premium-request rendering returns UNCHANGED for grandfathered annual subscribers.
+repoL="$(new_repo)"; make_gh_stub "$repoL/gh"
+printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "copilotBilling": "legacy" }\n' \
+  >"$repoL/.git/lcars/config.json"
+export GH_LOG="$repoL/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoL/gh-body.txt"; : >"$GH_BODY"
+prdL="$repoL/prd.md"; write_prd "$prdL"
+(
+  cd "$repoL"
+  LCARS_WORKER_CLI=copilot LCARS_RUN_BIN="$RICH_STUB" \
+    LCARS_GH_BIN="$repoL/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdL" >outL.txt 2>&1
+)
+check "10f. copilot LEGACY issue body shows premium requests (198/396)" \
+  "grep -q '198' '$GH_BODY' && grep -q '396' '$GH_BODY'"
+check "10f. copilot LEGACY issue body mentions premium requests" \
+  "grep -qi 'premium' '$GH_BODY'"
+check "10f. copilot LEGACY CLI readout shows premium requests" \
+  "grep -qi 'premium' '$repoL/outL.txt' && grep -q '198' '$repoL/outL.txt'"
+unset GH_BODY
+
+# 10e. complex Mission (adr present) + estimate present ⇒ body order is
+# prd → adr → Estimate, each separated by the '---' rule.
+repoEA="$(new_repo)"; make_gh_stub "$repoEA/gh"
+export GH_LOG="$repoEA/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoEA/gh-body.txt"; : >"$GH_BODY"
+prdEA="$repoEA/prd.md"; write_prd "$prdEA"
+adrEA="$repoEA/adr.md"; write_adr "$adrEA"
+(
+  cd "$repoEA"
+  CLAUDECODE=1 LCARS_RUN_BIN="$RICH_STUB" \
+    LCARS_GH_BIN="$repoEA/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdEA" --adr "$adrEA" >outEA.txt 2>&1
+)
+check "10e. body order prd < adr < Estimate" \
+  "[ \"\$(grep -n 'Fix the broken /about route' '$GH_BODY' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n 'Theme delivery via a data-theme attribute' '$GH_BODY' | head -1 | cut -d: -f1)\" ] && [ \"\$(grep -n 'Theme delivery via a data-theme attribute' '$GH_BODY' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n '## Estimate' '$GH_BODY' | head -1 | cut -d: -f1)\" ]"
+check "10e. body has two '---' rules (prd|adr and adr|Estimate)" \
+  "[ \"\$(grep -cx -- '---' '$GH_BODY')\" -ge 2 ]"
+unset GH_BODY
+
+# --- Behaviour 11: captain model override (--model-override) (S62) ----------
+# `lcars file --model-override '<scope>:<tier>'` persists a structured
+# modelOverride object into state.json. scope ∈ {all,reasoning,implementation};
+# tier ∈ {sonnet,opus}. Malformed values are rejected (nothing written). When an
+# override is set AND an estimate is rendered, both captain surfaces (issue body +
+# CLI readout) carry an "(override: …)" note so the captain sees the estimate was
+# overridden.
+
+# 11a. all:opus ⇒ state.json.modelOverride = { scope:"all", tier:"opus" }.
+repoMO="$(new_repo)"; make_gh_stub "$repoMO/gh"
+export GH_LOG="$repoMO/gh.log"; : >"$GH_LOG"
+prdMO="$repoMO/prd.md"; write_prd "$prdMO"
+(
+  cd "$repoMO"
+  LCARS_GH_BIN="$repoMO/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO" --model-override 'all:opus' >outMO.txt 2>&1
+)
+MMO="$repoMO/.git/lcars/missions/lcars-20260530-001/state.json"
+check "11a. state.json records modelOverride scope=all" \
+  "grep -q '\"scope\": *\"all\"' '$MMO'"
+check "11a. state.json records modelOverride tier=opus" \
+  "grep -q '\"tier\": *\"opus\"' '$MMO'"
+
+# 11b. implementation:sonnet ⇒ scope=implementation tier=sonnet.
+repoMO2="$(new_repo)"; make_gh_stub "$repoMO2/gh"
+export GH_LOG="$repoMO2/gh.log"; : >"$GH_LOG"
+prdMO2="$repoMO2/prd.md"; write_prd "$prdMO2"
+(
+  cd "$repoMO2"
+  LCARS_GH_BIN="$repoMO2/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO2" --model-override 'implementation:sonnet' >outMO2.txt 2>&1
+)
+MMO2="$repoMO2/.git/lcars/missions/lcars-20260530-001/state.json"
+check "11b. state.json records scope=implementation tier=sonnet" \
+  "grep -q '\"scope\": *\"implementation\"' '$MMO2' && grep -q '\"tier\": *\"sonnet\"' '$MMO2'"
+
+# 11c. NO --model-override ⇒ NO modelOverride key in state.json (degradation).
+repoMO3="$(new_repo)"; make_gh_stub "$repoMO3/gh"
+export GH_LOG="$repoMO3/gh.log"; : >"$GH_LOG"
+prdMO3="$repoMO3/prd.md"; write_prd "$prdMO3"
+(
+  cd "$repoMO3"
+  LCARS_GH_BIN="$repoMO3/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdMO3" >outMO3.txt 2>&1
+)
+MMO3="$repoMO3/.git/lcars/missions/lcars-20260530-001/state.json"
+check "11c. no override ⇒ state.json has no modelOverride key" \
+  "! grep -q 'modelOverride' '$MMO3'"
+
+# 11d. malformed override rejected (bad scope) ⇒ exits non-zero, nothing written.
+repoMO4="$(new_repo)"; make_gh_stub "$repoMO4/gh"
+export GH_LOG="$repoMO4/gh.log"; : >"$GH_LOG"
+prdMO4="$repoMO4/prd.md"; write_prd "$prdMO4"
+rcMO4=0
+(
+  cd "$repoMO4"
+  LCARS_GH_BIN="$repoMO4/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO4" --model-override 'bogus:opus' >outMO4.txt 2>&1
+) || rcMO4=$?
+check "11d. bad scope ⇒ non-zero exit" "[ '$rcMO4' -ne 0 ]"
+check "11d. bad scope ⇒ no mission written" \
+  "[ ! -d '$repoMO4/.git/lcars/missions/lcars-20260530-001' ]"
+
+# 11e. malformed override rejected (bad tier).
+repoMO5="$(new_repo)"; make_gh_stub "$repoMO5/gh"
+export GH_LOG="$repoMO5/gh.log"; : >"$GH_LOG"
+prdMO5="$repoMO5/prd.md"; write_prd "$prdMO5"
+rcMO5=0
+(
+  cd "$repoMO5"
+  LCARS_GH_BIN="$repoMO5/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO5" --model-override 'all:haiku' >outMO5.txt 2>&1
+) || rcMO5=$?
+check "11e. bad tier ⇒ non-zero exit" "[ '$rcMO5' -ne 0 ]"
+
+# 11f. override + estimate ⇒ BOTH surfaces show the "(override: …)" note. Uses the
+# RICH_STUB (real run.sh render-estimate), claude active.
+repoMO6="$(new_repo)"; make_gh_stub "$repoMO6/gh"
+export GH_LOG="$repoMO6/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoMO6/gh-body.txt"; : >"$GH_BODY"
+prdMO6="$repoMO6/prd.md"; write_prd "$prdMO6"
+(
+  cd "$repoMO6"
+  CLAUDECODE=1 LCARS_RUN_BIN="$RICH_STUB" \
+    LCARS_GH_BIN="$repoMO6/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMO6" --model-override 'all:opus' >outMO6.txt 2>&1
+)
+check "11f. issue body shows the override note" \
+  "grep -qi 'override' '$GH_BODY' && grep -qi 'Opus' '$GH_BODY'"
+check "11f. CLI readout shows the override note" \
+  "grep -qi 'override' '$repoMO6/outMO6.txt'"
 unset GH_BODY
 
 # ==========================================================================

@@ -86,7 +86,7 @@ flowchart LR
 
 | # | Stage | Who | What happens |
 |---|-------|-----|--------------|
-| 1 | **Align** | 🧑 you + LLM | A structured grilling session — not a chat — that resolves ambiguity in the idea and produces a **PRD** (the canonical spec). A complex Mission also gets high-level **engineering ADRs** (architecture/data-shape decisions + rationale), seeded here and refined at Validate. |
+| 1 | **Align** | 🧑 you + LLM | A structured grilling session — not a chat — that resolves ambiguity in the idea and produces a **PRD** (the canonical spec). A complex Mission also gets high-level **engineering ADRs** (architecture/data-shape decisions + rationale), seeded here and refined at Validate. When the PRD is finalized an **estimator** reads it against the real repo and assigns each downstream Stage a model tier (Sonnet or Opus) plus a token-grounded **cost estimate** — shown on the issue and the CLI readout, and overridable in plain language. |
 | 2 | **Research** | 🤖 auto | Generates 0–20 questions from the PRD; each goes to a stateless parallel Research Agent that returns a recommendation + supporting points. |
 | 3 | **Validate** | 🤖 auto | A Validator synthesises all findings into a plan, resolving the *how*. Escalates to you only when a finding changes *what* gets built. |
 | 4 | **Plan** | 🤖 auto | Decomposes the validated plan into small, independently testable tickets — each a vertical slice owning **one cohesive behavior**, sized by total **comprehension load** (code-to-read + tests + new code) against a tunable budget, not a flat line count. |
@@ -162,28 +162,43 @@ stable**. The **Copilot path is new**: it's been driven idea→PR end-to-end and
 works, but it has fewer miles, so treat it as new and mind the two caveats below.
 It is **not "beta" in the sense of unstable** — it works when used as documented.
 **One honest expectation:** Copilot support does **not** yet run on Copilot's
-*included* tokens — it currently requires the **premium** `claude-opus-4.8`
-(below). So "LCARS runs on Copilot" is true today; "LCARS runs on Copilot for
-free" is not yet (that needs an included model that can do the workers' file ops).
+*included* tokens — its workers run on premium **Claude** tiers (Sonnet or Opus,
+assigned per Stage by the estimator and mapped to `claude-sonnet-4.6` /
+`claude-opus-4.8`). So "LCARS runs on Copilot" is true today; "LCARS runs on
+Copilot for free" is not yet (that needs an included model that can do the
+workers' file ops).
 
 Two Copilot-specific gotchas matter — both are real footguns:
 
-**⚠ Use a premium model — set `workerModel` to `claude-opus-4.8`.** On Copilot,
-set the worker model to the premium `claude-opus-4.8` in
-`.git/lcars/config.json` (or `$LCARS_WORKER_MODEL`):
+**⚠ Workers must run on a Claude tier (Sonnet/Opus), never Copilot's non-Claude
+defaults.** Since the cost estimator landed you no longer hand-pin a model: the
+Align estimator assigns each Stage a Sonnet or Opus tier, and the per-CLI alias
+map maps those to Copilot's `claude-sonnet-4.6` / `claude-opus-4.8` automatically —
+both are Claude models that reliably perform the file operations LCARS workers
+depend on. So filing a Mission and running it under Copilot just works. What you
+must avoid is letting workers fall back to Copilot's lighter **non-Claude**
+defaults (e.g. GPT-5.5): those could **not** reliably create/overwrite files in
+the worker's fenced scratch directory, which **blocked the pipeline** (every worker
+must write its output file — `questions.txt`, `plan.json`, etc.). The alias map
+keeps workers on Claude tiers for you; if you ever override
+`modelAliases.copilot.*`, keep both tiers on a Claude model. You can still pin one
+model for every Stage with the legacy global if you want to:
 
 ```json
 { "workerModel": "claude-opus-4.8" }
 ```
 
-This isn't a preference — it's required. Copilot's lighter default models (e.g.
-GPT-5.5) could **not** reliably perform the file operations LCARS workers depend
-on: the file-creation tool couldn't overwrite or create files in the worker's
-fenced scratch directory, which **blocked the pipeline** (every worker must write
-its output file — `questions.txt`, `plan.json`, etc.). Switching to the premium
-`claude-opus-4.8` resolves it. A lighter Copilot model is not currently
-sufficient. Note the cost: this consumes Copilot **premium** requests, not the
-included tier.
+**The Copilot cost figure.** Both Copilot tiers consume billable usage, not
+Copilot's *included* tier, and LCARS shows a per-Mission cost estimate at Align.
+By default it is computed on GitHub's **usage-based "AI Credits" (token) billing** —
+the model GitHub moved to on **2026-06-01** — rendered as a dollar range with your
+plan's monthly included credit noted, e.g. `$0.48–$3.59 (GitHub AI Credits; first
+$19/mo included on business)`. Set `copilotPlan` (`pro` / `proPlus` / `business` /
+`enterprise`) in `config.json` so the included-credit line matches your plan.
+Grandfathered **annual** subscribers still on the old premium-request scheme can
+switch the estimate back with `copilotBilling: "legacy"` (the Sonnet 9× / Opus 27×
+× $0.04 figure). Every rate lives in `pricing.json`, and the Claude `$` figure and
+the per-Stage model selection are unaffected by the billing mode.
 
 **⚠ Launch with `--allow-all-tools`, NOT `--autopilot`.** The recommended
 invocation is:
@@ -374,6 +389,18 @@ change), the batch **pauses** at that bug and drops its question into
   high-level **engineering ADRs** — the framework/architecture/data-shape calls
   and their rationale — that downstream workers read instead of re-deriving
   (Validate refines them if research overturns a decision).
+- **Cost is estimated up front; the model tier is chosen per Stage.** When Align
+  finishes, an estimator scores the Mission on two axes — *reasoning/planning*
+  criticality and *implementation* criticality — and from those assigns each Stage
+  Sonnet or Opus, concentrating the expensive tier where mistakes are costliest
+  (reasoning and implementation) and keeping routine work cheap. It reasons about
+  the **whole problem** (problem type, blast radius, what it sets up for the
+  future), not the line count. It also emits a token-grounded **cost range** in the
+  active CLI's native unit. You see all of it on the GitHub issue and the
+  `lcars file` readout, and can **override it in natural language** at kickoff —
+  *"use Opus the whole way through"*, *"use Opus for implementation"*, *"keep
+  reasoning cheap"*. A trivial fix no longer pays Opus prices end-to-end, and a
+  genuinely hard feature isn't under-thought on Sonnet.
 - **Research scales to ambiguity.** A crisp PRD yields *zero* questions and skips
   straight through. A broad one fans out up to 20 parallel agents. More than 20
   needed → it explains why and lets you override or sharpen the PRD.
@@ -434,7 +461,16 @@ Two deliberate properties make this robust:
   never reasons about your code. Every token LCARS spends is spent in a worker,
   on **whichever CLI you launched from**. Run LCARS inside Claude Code and every
   worker is Claude. CLI choice is an implementation detail; **model choice is the
-  meaningful one.**
+  meaningful one** — and model choice is made **per Stage, not once per run**. The
+  Align estimator assigns each Stage a tier (Sonnet/Opus) sized to that Stage's
+  criticality; the tiers are **logical**, and a per-CLI **alias map** translates
+  them to each CLI's flag string (on Copilot, `claude-opus-4.8` /
+  `claude-sonnet-4.6`), so the estimate stays CLI-agnostic and Copilot only ever
+  runs Sonnet/Opus. Precedence is explicit: a global pin (`LCARS_WORKER_MODEL`)
+  beats a captain's natural-language override, which beats the estimate, which beats
+  a manual per-stage config, which beats the legacy global `workerModel`. With **no
+  estimate and no override the legacy single-model path is byte-for-byte
+  unchanged** — no `--model` flag when nothing is set.
 - **Stage isolation (cold handoff).** Every headless Stage runs as a fresh
   subprocess that sees **only** what the previous Stage wrote to disk — never its
   conversation. The worker's prompt is assembled by `run.sh` from artifact
@@ -480,6 +516,7 @@ never tracks it and the target repo's working tree stays clean. Don't add it to
       state.json                  id, type, stage, githubIssue, flags
       prd.md                      Align output — the canonical spec
       adr.md                      engineering ADRs (complex Missions; refined at Validate)
+      estimate.json               criticality scores + per-stage model tiers + cost range
       research/<n>.json           per-question findings
       validated-plan.md           Validate synthesis (+ rationale)
       plan.json                   Plan tickets (each with rationale)
@@ -546,10 +583,25 @@ stubbable in tests):
 | Variable | Purpose | Default |
 |---|---|---|
 | `LCARS_WORKER_BIN` | The cold-worker CLI every headless Stage spawns | auto-detected from the host CLI (`claude` or `copilot`) |
-| `LCARS_WORKER_MODEL` | The model the cold workers run on (config key: `workerModel`) | the CLI's default — **set to `claude-opus-4.8` under Copilot** |
+| `LCARS_WORKER_MODEL` | **Global model pin** — overrides per-Stage selection for *every* Stage (config key: `workerModel`, the legacy global) | unset — the estimate's per-Stage tiers apply |
+| `LCARS_MODEL_OVERRIDE` | Pin a tier for an axis on a re-run without re-filing — `all:opus`, `implementation:opus`, `reasoning:sonnet` | unset |
 | `LCARS_GH_BIN` | The GitHub CLI | `gh` |
 | `LCARS_MAX_PARALLEL` | Concurrency cap for a Wave's tickets and the Research fan-out | `4` |
 | `LCARS_NOTIFY` | The walk-away notification hook fired at human gates | local desktop banner + bell |
+
+**Per-Stage model selection (config keys).** The Align estimator writes the
+per-Stage tiers into the Mission's `estimate.json`; you rarely touch the model
+config by hand. When you want to, these `config.json` keys participate (all
+optional): `stages.<key>.model` pins one Stage to a tier (`sonnet`/`opus`);
+`modelAliases.<cli>.<tier>` overrides how a logical tier maps to a CLI flag (the
+defaults are claude `sonnet`/`opus` and copilot `claude-sonnet-4.6` /
+`claude-opus-4.8`); `estimatorModel` sets the tier the estimator itself runs on
+(default `opus`). For the Copilot cost figure, `copilotBilling` (`usage` *(default)*
+/ `legacy`) selects usage-based AI-Credit billing vs. the legacy premium-request
+model, and `copilotPlan` (`pro` / `proPlus` / `business` / `enterprise`) sets the
+included-credit allotment netted against the estimate. The price/rate/allotment
+data the cost figure is computed from lives in `skills/lcars-run/pricing.json` — the
+single source of truth, so a billing change is a data edit, not a code change.
 
 Notifications fire **only** at genuine gates (an escalation or Verify), batched
 per Stage — never one-per-question, never on a clean transition. A phone push
@@ -609,13 +661,17 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Mission Log (`lcars log`) | ✅ |
 | Mission Log batch resolve (`lcars resolve-logs`) | ✅ |
 | **Copilot enablement** (run LCARS under GitHub Copilot — *new; premium model required*) | ✅ |
+| **Cost estimator + per-stage model selection** (estimate at Align · Sonnet/Opus per Stage · NL override · per-CLI cost) | ✅ |
 
 **Roadmap.** Copilot enablement is in: `$LCARS_WORKER_BIN` auto-resolves to
 `copilot` when you launch from Copilot, so the harness runs on whichever CLI you
 launch from (see [Running under GitHub Copilot](#running-under-github-copilot)).
 The Claude path is stable; the Copilot path is **new** — it works idea→PR but
-needs two documented setup caveats (premium `claude-opus-4.8` + `--allow-all-tools`)
-and does not yet run on Copilot's *included* tokens. Further out: a custom
+needs two documented setup caveats (premium **Claude** tiers, assigned per Stage
+and alias-mapped + `--allow-all-tools`) and does not yet run on Copilot's
+*included* tokens. The Copilot cost figure tracks GitHub's usage-based AI-Credit
+billing by default (with the legacy premium-request model available for
+grandfathered annual plans). Further out: a custom
 **kanban interface** (cards, stages, pending-question badges, start/stop control)
 and **production monitoring** to close the loop from live signal back to new
 Missions. LCARS v1 covers idea → merged PR.
