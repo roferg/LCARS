@@ -130,7 +130,7 @@ file_with_estimate "$r1" "$EST_TRIVIAL"
 m1="$(MDIR "$r1")"
 check "1a. file.sh exits 0"                 "[ -f '$m1/state.json' ]"
 check "1b. estimate.json exists"            "[ -f '$m1/estimate.json' ]"
-check "1c. estimate.json has schemaVersion 2" "grep -q '\"schemaVersion\": *2' '$m1/estimate.json'"
+check "1c. estimate.json has schemaVersion 3" "grep -q '\"schemaVersion\": *3' '$m1/estimate.json'"
 check "1d. reasoningCriticality present (enum)" \
   "grep -Eq '\"reasoningCriticality\": *\"(low|medium|high)\"' '$m1/estimate.json'"
 check "1e. implCriticality present (enum)" \

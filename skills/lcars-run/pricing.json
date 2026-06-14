@@ -6,9 +6,19 @@
     "cacheWriteMult": 1.25
   },
   "copilot": {
-    "opus":   { "premiumRequestMultiplier": 27 },
-    "sonnet": { "premiumRequestMultiplier": 9 },
-    "overagePerRequest": 0.04,
-    "asOf": "2026-06-13"
+    "billingModel": "usage",
+    "usage": {
+      "opus":   { "inputPerMTok": 5, "outputPerMTok": 25 },
+      "sonnet": { "inputPerMTok": 3, "outputPerMTok": 15 },
+      "creditUsd": 0.01,
+      "creditAllotmentByPlan": { "pro": 1000, "proPlus": 3900, "business": 1900, "enterprise": 3900 },
+      "asOf": "2026-06-14"
+    },
+    "legacy": {
+      "opus":   { "premiumRequestMultiplier": 27 },
+      "sonnet": { "premiumRequestMultiplier": 9 },
+      "overagePerRequest": 0.04,
+      "asOf": "2026-06-13"
+    }
   }
 }

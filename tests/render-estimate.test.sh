@@ -43,14 +43,14 @@ bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
 MID="lcars-20260613-001"
-new_repo_with_estimate() { # estimate-body|NONE → repo path
-  local est="$1"
+new_repo_with_estimate() { # estimate-body|NONE  [config-extra] → repo path
+  local est="$1" cfgextra="${2:-}"
   local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
       && git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions/$MID"
-  printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null }\n' \
-    >"$repo/.git/lcars/config.json"
+  printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null%s }\n' \
+    "$cfgextra" >"$repo/.git/lcars/config.json"
   [ "$est" = "NONE" ] || printf '%s\n' "$est" >"$repo/.git/lcars/missions/$MID/estimate.json"
   printf '%s' "$repo"
 }
@@ -70,7 +70,7 @@ echo "render-estimate (session 61)"
 # hand-calc applies (claude low≈3.618 high≈7.236; copilot low=198 high=396,
 # overage low=7.92 high=15.84).
 EST='{
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "reasoningCriticality": "high",
   "implCriticality": "medium",
   "models": { "research":"opus","validate":"sonnet","plan":"sonnet","planReview":"sonnet","implement":"opus","verify":"sonnet" },
@@ -128,8 +128,10 @@ check "2d. cli surface has a model-mix line (research)" \
 check "2e. cli surface is two-space indented" \
   "printf '%s' \"\$cli2\" | grep -q '^  '"
 
-# === Behavior 3: copilot active ⇒ premium requests on BOTH surfaces ==========
-r3="$(new_repo_with_estimate "$EST")"
+# === Behavior 3: copilot LEGACY billing ⇒ premium requests on BOTH surfaces ===
+# Default copilot billing is now usage (session 64; covered in copilot-usage.test.sh);
+# the legacy premium-request rendering is gated behind config copilotBilling=legacy.
+r3="$(new_repo_with_estimate "$EST" ', "copilotBilling": "legacy"')"
 iss3="$(render "$r3" issue COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
 cli3="$(render "$r3" cli COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
 check "3a. issue surface shows premium requests (198/396)" \

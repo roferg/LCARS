@@ -137,7 +137,7 @@ The file MUST be a single JSON object with EXACTLY this shape:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "reasoningCriticality": "low|medium|high",
   "implCriticality": "low|medium|high",
   "models": {
@@ -171,7 +171,7 @@ The file MUST be a single JSON object with EXACTLY this shape:
 ```
 
 All six `models` keys MUST be present; each value MUST be `"sonnet"` or `"opus"`.
-Both scores MUST be one of `low` / `medium` / `high`. Set `schemaVersion` to `2`.
+Both scores MUST be one of `low` / `medium` / `high`. Set `schemaVersion` to `3`.
 `tokenEstimates` and `requestEstimates` MUST each have all six stage keys, each
 with non-negative integer `low`/`high`. `rationale` is a single string of at most
 two paragraphs. Set `estimatorModel` to the tier you ran on (the harness pins

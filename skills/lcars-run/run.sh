@@ -2933,7 +2933,7 @@ estimate_validate_and_write() { # src-json
   _estimate_emit() { # cost-block-or-empty
     local cost="$1"
     printf '{\n'
-    printf '  "schemaVersion": 2,\n'
+    printf '  "schemaVersion": 3,\n'
     printf '  "reasoningCriticality": "%s",\n' "$rc"
     printf '  "implCriticality": "%s",\n' "$ic"
     printf '  "models": {\n'
@@ -3093,6 +3093,58 @@ estimatorModel = \"$est_tier\" — echo this verbatim into the estimate.json fie
 COST_INPUT_SPLIT="0.8"   # share of tokens billed at the input rate (doc'd above)
 COST_OUTPUT_SPLIT="0.2"  # …the remainder at the output rate. Sum MUST be 1.
 
+# === Copilot billing-model selector (session 64) ===========================
+# GitHub moved Copilot to USAGE-BASED (token / GitHub AI Credits) billing on
+# 2026-06-01; the legacy PREMIUM-REQUEST scheme persists only for grandfathered
+# annual subscribers. The active billing model is selected per-repo:
+#   config.json `copilotBilling` ∈ {"usage","legacy"}  (highest precedence)
+#   → falls back to pricing.json `copilot.billingModel`
+#   → final default "usage" (the new GitHub default).
+copilot_billing_model() { # → "usage" | "legacy"
+  local b=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+    && b="$(json_scoped_str "$LCARS_CFG" "copilotBilling")"
+  if [ -z "$b" ]; then b="$(json_scoped_str "$PRICING_FILE" "copilot.billingModel")"; fi
+  case "$b" in usage|legacy) printf '%s' "$b" ;; *) printf 'usage' ;; esac
+}
+
+# The captain's Copilot plan, for netting the monthly included AI-credit
+# allotment: config.json `copilotPlan` ∈ {pro,proPlus,business,enterprise}.
+# DEFAULT "pro" (the smallest paid tier — never over-credit a mission). The
+# allotment for the plan lives in pricing.json `copilot.usage.creditAllotmentByPlan`.
+copilot_plan() { # → plan key
+  local p=""
+  [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] \
+    && p="$(json_scoped_str "$LCARS_CFG" "copilotPlan")"
+  case "$p" in pro|proPlus|business|enterprise) printf '%s' "$p" ;; *) printf 'pro' ;; esac
+}
+
+# Sum, per bound b∈{low,high}, of each stage's token cost in USD against a tier
+# rate block in pricing.json ($2 = pricing scope prefix, e.g. "claude" or
+# "copilot.usage"). Reuses the documented 0.8/0.2 input/output split and the
+# per-stage tier from the estimate's models map. Prints "<low> <high>" (6dp), or
+# empty if ANY used tier's rates are unset/null (caller ⇒ "unavailable").
+cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
+  local est="$1" scope="$2"
+  local stages="research validate plan planReview implement verify"
+  local usd_low=0 usd_high=0 k tier inr outr tlo thi
+  for k in $stages; do
+    tier="$(json_scoped_str "$est" "models.$k")"
+    inr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.inputPerMTok")"
+    outr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.outputPerMTok")"
+    [ -n "$inr" ] && [ -n "$outr" ] || return 1
+    tlo="$(json_scoped_num "$est" "tokenEstimates.$k.low")";  [ -n "$tlo" ] || tlo=0
+    thi="$(json_scoped_num "$est" "tokenEstimates.$k.high")"; [ -n "$thi" ] || thi=0
+    usd_low="$(awk -v a="$usd_low" -v t="$tlo" -v ir="$inr" -v or="$outr" \
+      -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+      'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+    usd_high="$(awk -v a="$usd_high" -v t="$thi" -v ir="$inr" -v or="$outr" \
+      -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+      'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+  done
+  printf '%s %s' "$usd_low" "$usd_high"
+}
+
 # Compute and print the canonical "cost" JSON block (the value of the estimate's
 # `cost` key, indented two spaces, no trailing comma) for one estimate.json under
 # the active CLI. $1 = estimate.json path; $2 = active cli (claude|copilot).
@@ -3100,14 +3152,54 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
   local est="$1" cli="$2"
   local pricing="$PRICING_FILE"
   local stages="research validate plan planReview implement verify"
+  if [ "$cli" = "copilot" ] && [ "$(copilot_billing_model)" = "usage" ]; then
+    # --- USAGE-BASED (token / GitHub AI Credits) billing (session 64) --------
+    # Bill tokens EXACTLY like the Claude branch against copilot.usage rates,
+    # then net the plan's monthly included AI-credit allotment (credits ×
+    # creditUsd = USD). Unset rates ⇒ unavailable (never a wrong number).
+    local pair; pair="$(cost_token_usd "$est" "copilot.usage")" || {
+      printf '{\n'
+      printf '    "cli": "copilot",\n'
+      printf '    "unit": "usd",\n'
+      printf '    "billing": "usage",\n'
+      printf '    "status": "unavailable"\n'
+      printf '  }'
+      return 0
+    }
+    local usd_low="${pair%% *}" usd_high="${pair##* }"
+    local plan; plan="$(copilot_plan)"
+    local credits; credits="$(json_scoped_num "$pricing" "copilot.usage.creditAllotmentByPlan.$plan")"
+    [ -n "$credits" ] || credits=0
+    local creditusd; creditusd="$(json_scoped_num "$pricing" "copilot.usage.creditUsd")"
+    [ -n "$creditusd" ] || creditusd=0
+    local included; included="$(awk -v c="$credits" -v u="$creditusd" 'BEGIN{printf "%g", c*u}')"
+    local net_low net_high
+    net_low="$(awk -v v="$usd_low" -v n="$included" 'BEGIN{x=v-n; if(x<0)x=0; printf "%g", x}')"
+    net_high="$(awk -v v="$usd_high" -v n="$included" 'BEGIN{x=v-n; if(x<0)x=0; printf "%g", x}')"
+    usd_low="$(awk -v v="$usd_low" 'BEGIN{printf "%g", v}')"
+    usd_high="$(awk -v v="$usd_high" 'BEGIN{printf "%g", v}')"
+    printf '{\n'
+    printf '    "cli": "copilot",\n'
+    printf '    "unit": "usd",\n'
+    printf '    "billing": "usage",\n'
+    printf '    "usd": { "low": %s, "high": %s },\n' "$usd_low" "$usd_high"
+    printf '    "includedCreditsUsd": %s,\n' "$included"
+    printf '    "netUsd": { "low": %s, "high": %s }\n' "$net_low" "$net_high"
+    printf '  }'
+    return 0
+  fi
   if [ "$cli" = "copilot" ]; then
+    # --- LEGACY PREMIUM-REQUEST billing (grandfathered annual subscribers) ---
+    # Σ(stage requests × tier multiplier) + optional $0.04/request overage. The
+    # multipliers/overage moved verbatim under copilot.legacy in session 64 — the
+    # numbers and the math are byte-for-byte the S60 figure.
     # Gather per-stage tier multipliers; if any used tier (or the overage) is
     # unset/null → unavailable.
     local unavailable="" pr_low=0 pr_high=0 k tier mult rlo rhi
-    local overage; overage="$(json_scoped_num "$pricing" "copilot.overagePerRequest")"
+    local overage; overage="$(json_scoped_num "$pricing" "copilot.legacy.overagePerRequest")"
     for k in $stages; do
       tier="$(json_scoped_str "$est" "models.$k")"
-      mult="$(json_scoped_num "$pricing" "copilot.$tier.premiumRequestMultiplier")"
+      mult="$(json_scoped_num "$pricing" "copilot.legacy.$tier.premiumRequestMultiplier")"
       [ -n "$mult" ] || { unavailable=1; break; }
       rlo="$(json_scoped_num "$est" "requestEstimates.$k.low")";  [ -n "$rlo" ] || rlo=0
       rhi="$(json_scoped_num "$est" "requestEstimates.$k.high")"; [ -n "$rhi" ] || rhi=0
@@ -3118,6 +3210,7 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
       printf '{\n'
       printf '    "cli": "copilot",\n'
       printf '    "unit": "premiumRequests",\n'
+      printf '    "billing": "legacy",\n'
       printf '    "status": "unavailable"\n'
       printf '  }'
       return 0
@@ -3132,6 +3225,7 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
     printf '{\n'
     printf '    "cli": "copilot",\n'
     printf '    "unit": "premiumRequests",\n'
+    printf '    "billing": "legacy",\n'
     printf '    "premiumRequests": { "low": %s, "high": %s },\n' "$pr_low" "$pr_high"
     printf '    "usdOverage": %s\n' "$ov_block"
     printf '  }'
@@ -3199,6 +3293,12 @@ cmd_cost() {
 # FORMATS the already-computed numbers, so the two surfaces never disagree with
 # `run.sh cost`. Pure: no LLM, no spawn.
 
+# Format a USD amount to EXACTLY two decimal places for display to the captain
+# (session 64 deliverable 2). The precise value stays in estimate.json's cost
+# block; this is a render-time formatting only, used by every $ figure on the
+# captain surfaces (Claude band, Copilot usage band, Copilot legacy overage band).
+usd2() { awk -v v="${1:-0}" 'BEGIN{printf "%.2f", v}'; }
+
 # Pretty a logical tier ("sonnet"/"opus") for display ("Sonnet"/"Opus").
 tier_display() { # tier → Tier
   case "$1" in
@@ -3225,18 +3325,26 @@ rationale_unescape() { # escaped-string join → prose
 # Cost phrase for the COMPACT (cli-readout) summary, in the active CLI's unit.
 # Reads the computed cost block (cost_compute output) fields via json helpers off
 # the estimate.json the validator already embedded the cost into.
-render_cost_compact() { # cost-json cli → e.g. "$3.6–$7.2" | "~198–396 premium reqs, ~$7.92–$15.84 overage" | "unavailable"
+render_cost_compact() { # cost-json cli → e.g. "$3.62–$7.24" | "~198–396 premium reqs, ~$7.92–$15.84 overage" | "$3.62–$7.24 (AI credits)" | "unavailable"
   local est="$1" cli="$2"
   if [ "$cli" = "copilot" ]; then
     local status; status="$(json_scoped_str "$est" "cost.status")"
     if [ "$status" = "unavailable" ]; then printf 'unavailable'; return 0; fi
+    local billing; billing="$(json_scoped_str "$est" "cost.billing")"
+    if [ "$billing" = "usage" ]; then
+      local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
+      [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
+      printf '$%s–$%s (AI credits)' "$(usd2 "$lo")" "$(usd2 "$hi")"
+      return 0
+    fi
+    # legacy premium-request
     local plo phi; plo="$(json_scoped_num "$est" "cost.premiumRequests.low")"
     phi="$(json_scoped_num "$est" "cost.premiumRequests.high")"
     [ -n "$plo" ] || plo=0; [ -n "$phi" ] || phi=0
     local ovlo ovhi; ovlo="$(json_scoped_num "$est" "cost.usdOverage.low")"
     ovhi="$(json_scoped_num "$est" "cost.usdOverage.high")"
     if [ -n "$ovlo" ] && [ -n "$ovhi" ]; then
-      printf '~%s–%s premium reqs, ~$%s–$%s overage' "$plo" "$phi" "$ovlo" "$ovhi"
+      printf '~%s–%s premium reqs, ~$%s–$%s overage' "$plo" "$phi" "$(usd2 "$ovlo")" "$(usd2 "$ovhi")"
     else
       printf '~%s–%s premium reqs' "$plo" "$phi"
     fi
@@ -3245,7 +3353,7 @@ render_cost_compact() { # cost-json cli → e.g. "$3.6–$7.2" | "~198–396 pre
   # claude (usd)
   local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
   [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
-  printf '$%s–$%s' "$lo" "$hi"
+  printf '$%s–$%s' "$(usd2 "$lo")" "$(usd2 "$hi")"
 }
 
 # Cost LINE for the ISSUE surface ("- **Cost:** …"), in the active CLI's unit.
@@ -3254,13 +3362,23 @@ render_cost_issue() { # cost-json cli → markdown bullet text
   if [ "$cli" = "copilot" ]; then
     local status; status="$(json_scoped_str "$est" "cost.status")"
     if [ "$status" = "unavailable" ]; then printf 'Copilot cost: unavailable'; return 0; fi
+    local billing; billing="$(json_scoped_str "$est" "cost.billing")"
+    if [ "$billing" = "usage" ]; then
+      local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
+      [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
+      local inc; inc="$(json_scoped_num "$est" "cost.includedCreditsUsd")"; [ -n "$inc" ] || inc=0
+      printf '$%s–$%s (GitHub AI Credits; first $%s/mo included on %s)' \
+        "$(usd2 "$lo")" "$(usd2 "$hi")" "$(usd2 "$inc")" "$(copilot_plan)"
+      return 0
+    fi
+    # legacy premium-request
     local plo phi; plo="$(json_scoped_num "$est" "cost.premiumRequests.low")"
     phi="$(json_scoped_num "$est" "cost.premiumRequests.high")"
     [ -n "$plo" ] || plo=0; [ -n "$phi" ] || phi=0
     local ovlo ovhi; ovlo="$(json_scoped_num "$est" "cost.usdOverage.low")"
     ovhi="$(json_scoped_num "$est" "cost.usdOverage.high")"
     if [ -n "$ovlo" ] && [ -n "$ovhi" ]; then
-      printf '~%s–%s premium requests ($%s–$%s overage)' "$plo" "$phi" "$ovlo" "$ovhi"
+      printf '~%s–%s premium requests ($%s–$%s overage)' "$plo" "$phi" "$(usd2 "$ovlo")" "$(usd2 "$ovhi")"
     else
       printf '~%s–%s premium requests' "$plo" "$phi"
     fi
@@ -3268,7 +3386,7 @@ render_cost_issue() { # cost-json cli → markdown bullet text
   fi
   local lo hi; lo="$(json_scoped_num "$est" "cost.usd.low")"; hi="$(json_scoped_num "$est" "cost.usd.high")"
   [ -n "$lo" ] || lo=0; [ -n "$hi" ] || hi=0
-  printf '$%s–$%s' "$lo" "$hi"
+  printf '$%s–$%s' "$(usd2 "$lo")" "$(usd2 "$hi")"
 }
 
 # A captain-facing phrase for the active model override, or empty when none. The

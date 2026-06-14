@@ -35,17 +35,21 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 # A git repo with .git/lcars + config.json + a mission dir holding a fixture
 # estimate.json. $2 is the estimate.json body to plant.
 MID="lcars-20260613-001"
-new_repo_with_estimate() { # estimate-body  → repo path
-  local est="$1"
+new_repo_with_estimate() { # estimate-body  [config-extra]  → repo path
+  local est="$1" cfgextra="${2:-}"
   local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
       && git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions/$MID"
-  printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null }\n' \
-    >"$repo/.git/lcars/config.json"
+  printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null%s }\n' \
+    "$cfgextra" >"$repo/.git/lcars/config.json"
   printf '%s\n' "$est" >"$repo/.git/lcars/missions/$MID/estimate.json"
   printf '%s' "$repo"
 }
+# Copilot's default billing is now USAGE (session 64). This suite's copilot
+# hand-calcs are the LEGACY premium-request math, so the copilot fixtures here pin
+# copilotBilling=legacy (the usage path is covered by copilot-usage.test.sh).
+LEGACY_CFG=', "copilotBilling": "legacy"'
 
 # Run `run.sh cost --mission` in a repo, with the active CLI selected by env.
 cost_run() { # repo  [extra env...]
@@ -86,7 +90,7 @@ echo "cost — CLI-aware mission cost (session 60)"
 #   high (2x): opus=(4+8)*27=324 ; sonnet=(2+2+2+2)*9=72 ; total high = 396
 #   usdOverage low = 198*0.04 = 7.92 ; high = 396*0.04 = 15.84
 EST='{
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "reasoningCriticality": "high",
   "implCriticality": "high",
   "models": { "research":"opus","validate":"sonnet","plan":"sonnet","planReview":"sonnet","implement":"opus","verify":"sonnet" },
@@ -125,7 +129,7 @@ check "1d. claude cost.high ≈ 7.236" \
   "awk -v v='$hi1' 'BEGIN{exit !(v>7.2 && v<7.27)}'"
 
 # === Behavior 2: Copilot active ⇒ premiumRequests + usdOverage = hand-calc ====
-r2="$(new_repo_with_estimate "$EST")"
+r2="$(new_repo_with_estimate "$EST" "$LEGACY_CFG")"
 out2="$(cost_run "$r2" COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
 check "2a. copilot cli field" "printf '%s' \"\$out2\" | grep -q '\"cli\": *\"copilot\"'"
 check "2b. copilot unit=premiumRequests" "printf '%s' \"\$out2\" | grep -q '\"unit\": *\"premiumRequests\"'"
@@ -142,7 +146,7 @@ check "2f. copilot usdOverage.high=15.84" \
 # === Behavior 3: switching a stage sonnet→opus raises BOTH figures ============
 # Same as EST but plan flipped to opus (was sonnet).
 EST_PLAN_OPUS="$(printf '%s' "$EST" | sed 's/"plan":"sonnet"/"plan":"opus"/')"
-r3="$(new_repo_with_estimate "$EST_PLAN_OPUS")"
+r3="$(new_repo_with_estimate "$EST_PLAN_OPUS" "$LEGACY_CFG")"
 out3c="$(cost_run "$r3" CLAUDECODE=1)"
 lo3="$(printf '%s' "$out3c" | sed -En 's/.*"low"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p' | head -1)"
 check "3a. claude $ rises when plan→opus" \
@@ -164,10 +168,13 @@ PRICING_NULL="$TMPROOT/pricing-null.json"
 cat >"$PRICING_NULL" <<'EOF'
 {
   "claude": { "opus": {"inputPerMTok":5,"outputPerMTok":25}, "sonnet":{"inputPerMTok":3,"outputPerMTok":15}, "cacheReadMult":0.1, "cacheWriteMult":1.25 },
-  "copilot": { "opus": {"premiumRequestMultiplier":null}, "sonnet":{"premiumRequestMultiplier":null}, "overagePerRequest":null, "asOf":"unset" }
+  "copilot": {
+    "billingModel": "legacy",
+    "legacy": { "opus": {"premiumRequestMultiplier":null}, "sonnet":{"premiumRequestMultiplier":null}, "overagePerRequest":null, "asOf":"unset" }
+  }
 }
 EOF
-r5="$(new_repo_with_estimate "$EST")"
+r5="$(new_repo_with_estimate "$EST" "$LEGACY_CFG")"
 out5="$(cost_run "$r5" COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_PRICING="$PRICING_NULL")"
 check "5a. copilot null multipliers ⇒ unavailable" \
   "printf '%s' \"\$out5\" | grep -qi 'unavailable'"
@@ -176,7 +183,7 @@ check "5b. copilot null ⇒ no bogus request count printed" \
 
 # === Behavior 6: rationale present and ≤ 2 paragraphs (short for trivial) ======
 EST_TRIVIAL='{
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "reasoningCriticality": "low",
   "implCriticality": "low",
   "models": { "research":"sonnet","validate":"sonnet","plan":"sonnet","planReview":"sonnet","implement":"sonnet","verify":"sonnet" },
@@ -224,8 +231,8 @@ check "7f. pricing.json carries the overage rate" \
 # assert the canonical estimate.json the validator writes carries the new fields
 # and a code-COMPUTED cost block (not the worker's). We reuse the cost subcommand
 # output above as the proof that the fields are read back nested-correctly.
-check "8a. estimate.json schemaVersion bumped to 2 (fixture)" \
-  "grep -q '\"schemaVersion\": *2' '$r1/.git/lcars/missions/$MID/estimate.json'"
+check "8a. estimate.json schemaVersion bumped to 3 (fixture)" \
+  "grep -q '\"schemaVersion\": *3' '$r1/.git/lcars/missions/$MID/estimate.json'"
 
 echo "cost: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

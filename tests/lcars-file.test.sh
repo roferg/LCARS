@@ -467,8 +467,9 @@ check "10c. absent estimate ⇒ readout still prints the Mission filed line" \
   "grep -q 'Mission filed:' '$repoN/outN.txt'"
 unset GH_BODY
 
-# 10d. Copilot active: cost renders as premium requests (NOT a '$' primary unit)
-# in BOTH surfaces. Force copilot via LCARS_WORKER_CLI.
+# 10d. Copilot active, DEFAULT billing (usage / GitHub AI Credits, session 64):
+# cost renders as a USD band (token-metered) with the included-allotment line,
+# NOT premium requests, in BOTH surfaces. Force copilot via LCARS_WORKER_CLI.
 repoP="$(new_repo)"; make_gh_stub "$repoP/gh"
 export GH_LOG="$repoP/gh.log"; : >"$GH_LOG"
 export GH_BODY="$repoP/gh-body.txt"; : >"$GH_BODY"
@@ -478,12 +479,35 @@ prdP="$repoP/prd.md"; write_prd "$prdP"
   LCARS_WORKER_CLI=copilot LCARS_RUN_BIN="$RICH_STUB" \
     LCARS_GH_BIN="$repoP/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdP" >outP.txt 2>&1
 )
-check "10d. copilot issue body shows premium requests (198/396)" \
+check "10d. copilot DEFAULT issue body shows usage \$ band (3.6/7.2)" \
+  "grep -q '3.6' '$GH_BODY' && grep -q '7.2' '$GH_BODY'"
+check "10d. copilot DEFAULT issue body mentions GitHub AI Credits" \
+  "grep -qi 'AI Credits' '$GH_BODY'"
+check "10d. copilot DEFAULT issue body is NOT premium requests" \
+  "! grep -qi 'premium' '$GH_BODY'"
+check "10d. copilot DEFAULT CLI readout shows usage \$ band" \
+  "grep -q '3.6' '$repoP/outP.txt'"
+unset GH_BODY
+
+# 10f. Copilot active, LEGACY billing (config copilotBilling=legacy): the old
+# premium-request rendering returns UNCHANGED for grandfathered annual subscribers.
+repoL="$(new_repo)"; make_gh_stub "$repoL/gh"
+printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "copilotBilling": "legacy" }\n' \
+  >"$repoL/.git/lcars/config.json"
+export GH_LOG="$repoL/gh.log"; : >"$GH_LOG"
+export GH_BODY="$repoL/gh-body.txt"; : >"$GH_BODY"
+prdL="$repoL/prd.md"; write_prd "$prdL"
+(
+  cd "$repoL"
+  LCARS_WORKER_CLI=copilot LCARS_RUN_BIN="$RICH_STUB" \
+    LCARS_GH_BIN="$repoL/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdL" >outL.txt 2>&1
+)
+check "10f. copilot LEGACY issue body shows premium requests (198/396)" \
   "grep -q '198' '$GH_BODY' && grep -q '396' '$GH_BODY'"
-check "10d. copilot issue body mentions premium requests" \
+check "10f. copilot LEGACY issue body mentions premium requests" \
   "grep -qi 'premium' '$GH_BODY'"
-check "10d. copilot CLI readout shows premium requests" \
-  "grep -qi 'premium' '$repoP/outP.txt' && grep -q '198' '$repoP/outP.txt'"
+check "10f. copilot LEGACY CLI readout shows premium requests" \
+  "grep -qi 'premium' '$repoL/outL.txt' && grep -q '198' '$repoL/outL.txt'"
 unset GH_BODY
 
 # 10e. complex Mission (adr present) + estimate present ⇒ body order is
