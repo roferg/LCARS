@@ -18,6 +18,14 @@
 #
 #   Ops:
 #     issue-create  --title <t> --body <b> --label <l>…   → echoes new issue NUMBER
+#     issue-comment <n> --body <b>                        → posts a comment on an
+#                                                            issue (ADR-004 run
+#                                                            progress mirror).
+#                                                            Best-effort: gh
+#                                                            absent OR failing →
+#                                                            soft non-zero, never
+#                                                            a die (mirroring is
+#                                                            like notify.sh).
 #     issue-relabel <n> --add <labels> --remove <labels>  → relabels an issue
 #     issue-close   <n> [--comment <c>]                   → closes an issue
 #     link-subissue <parent> <child>                      → nests child under
@@ -81,6 +89,26 @@ github_issue_create() { # --title <t> --body <b> --label <l>…
   fi
   # Best-effort: gh missing or create failed → echo nothing, never block.
   return 0
+}
+
+github_issue_comment() { # <n> --body <b>
+  local issue="" body=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --body) body="${2:-}"; shift 2 ;;
+      -*) die "issue-comment: unknown flag: $1" ;;
+      *)  issue="$1"; shift ;;
+    esac
+  done
+  [ -n "$issue" ] || die "issue-comment: missing issue number"
+  # Best-effort like notify.sh: a forge failure NEVER aborts the caller's run.
+  # gh absent → soft non-zero (the mirror swallows it); gh present → PROPAGATE
+  # gh's rc so the mirror can decide whether the post landed (it only writes the
+  # comment_mirrored marker on success, so a transient failure is retried next
+  # pass). The `gh issue comment <n> --body <b>` argv is the canonical form.
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 1
+  "$GH_BIN" issue comment "$issue" --body "$body" >/dev/null 2>&1
+  return $?
 }
 
 github_issue_relabel() { # <n> --add <labels> --remove <labels>
@@ -186,6 +214,7 @@ esac
 
 case "$OP" in
   issue-create)  github_issue_create  "$@" ;;
+  issue-comment) github_issue_comment "$@" ;;
   issue-relabel) github_issue_relabel "$@" ;;
   issue-close)   github_issue_close   "$@" ;;
   link-subissue) github_link_subissue "$@" ;;
