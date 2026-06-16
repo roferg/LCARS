@@ -1,0 +1,95 @@
+/* ════════════════════════════════════════════════════════════════════════
+   LCARS Kanban board layout. The PALETTE/tokens come from the SHARED
+   docs/lcars.css (--lcars-* vars); this sheet only adds the board / card /
+   pill geometry, vendored from kanban-vision.html (the visual contract). It
+   does NOT redefine any --lcars-* token (ADR-007: one shared token source).
+   ════════════════════════════════════════════════════════════════════════ */
+:root{
+  --font-display:'Antonio','Oxanium',-apple-system,'Segoe UI',sans-serif;
+  --font-body:'Oxanium',-apple-system,'Segoe UI',system-ui,sans-serif;
+  --font-mono:'SF Mono','Fira Code','Consolas',monospace;
+}
+body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c4d4ee);
+  font-family:var(--font-body);font-size:15px;line-height:1.6;margin:0;min-height:100vh}
+
+.topbar{position:sticky;top:0;z-index:50;background:var(--lcars-black,#030608);
+  padding:14px 28px;display:flex;align-items:center;gap:18px;
+  border-bottom:1px solid var(--lcars-border,rgba(255,170,0,.22))}
+.topbar .brand{font-family:var(--font-display);font-size:22px;letter-spacing:.3em;
+  color:var(--lcars-amber);text-transform:uppercase}
+.topbar .brand b{color:var(--lcars-text-bright);font-weight:700}
+.topbar .conn{margin-left:auto;font-family:var(--font-display);font-size:11px;
+  letter-spacing:.14em;color:var(--lcars-teal)}
+.topbar .conn.stale{color:var(--lcars-red)}
+
+/* ── pills ── */
+.pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.1em;font-size:11px;padding:3px 10px;
+  border-radius:12px;background:var(--lcars-card-alt);color:var(--lcars-text-bright);
+  border:1px solid var(--lcars-border);white-space:nowrap}
+.pill.cost{background:rgba(255,221,68,.14);border-color:var(--lcars-gold,#ffdd44);color:var(--lcars-gold,#ffdd44)}
+.pill.low{background:rgba(0,204,170,.14);border-color:var(--lcars-teal);color:var(--lcars-teal)}
+.pill.med{background:rgba(255,170,0,.16);border-color:var(--lcars-amber);color:var(--lcars-amber)}
+.pill.high{background:rgba(255,51,68,.16);border-color:var(--lcars-red);color:#ff8a96}
+.pill.await{background:var(--lcars-red);border-color:var(--lcars-red);color:#fff;animation:awaitpulse 1.4s infinite}
+.pill.stage{background:var(--lcars-violet,#9977ff);border-color:var(--lcars-violet,#9977ff);color:#fff}
+@keyframes awaitpulse{0%,100%{box-shadow:0 0 0 0 rgba(255,51,68,.5)}50%{box-shadow:0 0 0 6px rgba(255,51,68,0)}}
+
+/* ── kanban board ── */
+.board-wrap{overflow-x:auto;padding:16px 28px;background:var(--lcars-black,#030608)}
+.board{display:flex;gap:12px;min-width:max-content}
+.col{width:220px;flex:0 0 220px;background:var(--lcars-surface,#070d1c);border-radius:10px;
+  border:1px solid rgba(80,104,138,.16);display:flex;flex-direction:column}
+.col-head{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.12em;
+  font-size:11px;padding:8px 12px;border-radius:10px 10px 0 0;
+  color:var(--lcars-text-on-color);display:flex;justify-content:space-between;align-items:center}
+.col-head .ct{background:rgba(0,0,0,.25);border-radius:10px;padding:0 7px;font-size:10px}
+.col-body{padding:9px;display:flex;flex-direction:column;gap:9px;min-height:100px}
+.c-amber{background:var(--lcars-amber)} .c-peach{background:var(--lcars-peach,#ff9966)}
+.c-violet{background:var(--lcars-violet,#9977ff)} .c-blue{background:var(--lcars-blue,#4499ff)}
+.c-gold{background:var(--lcars-gold,#ffdd44)} .c-pink{background:var(--lcars-pink,#ff66aa)}
+.c-teal{background:var(--lcars-teal)} .c-red{background:var(--lcars-red)} .c-green{background:#33cc66}
+
+/* ── mission card ── */
+.card{background:var(--lcars-card,#0b1224);border:1px solid var(--lcars-border);
+  border-left:4px solid var(--lcars-amber);border-radius:8px;padding:10px;cursor:pointer;
+  transition:transform .25s,box-shadow .25s}
+.card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.5)}
+.card.awaiting{border-left-color:var(--lcars-red);box-shadow:0 0 0 1px rgba(255,51,68,.4)}
+.card.paused{opacity:.7;border-left-color:var(--lcars-blue,#4499ff)}
+.card.child{border-left-color:var(--lcars-pink,#ff66aa);margin-left:14px;background:var(--lcars-card-alt)}
+.card .no{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);letter-spacing:.08em}
+.card .ttl{font-family:var(--font-display);font-size:14px;letter-spacing:.04em;
+  color:var(--lcars-text-bright);margin:2px 0 8px;line-height:1.2}
+.card .pills{display:flex;flex-wrap:wrap;gap:5px}
+.card .pills .pill{font-size:9.5px;padding:2px 7px}
+.progress{margin-top:9px}
+.progress .bar{height:6px;background:var(--lcars-card-alt);border-radius:4px;overflow:hidden}
+.progress .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--lcars-teal),var(--lcars-blue,#4499ff))}
+.progress .lab{font-family:var(--font-mono);font-size:9.5px;color:var(--lcars-text-dim);margin-top:3px;letter-spacing:.06em}
+.tickets{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.tk{display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim)}
+.tk .dot{width:8px;height:8px;border-radius:50%;background:var(--lcars-text-dim);flex:0 0 8px}
+.tk.done .dot{background:var(--lcars-teal)} .tk.done{color:var(--lcars-teal)}
+.tk.in-progress .dot{background:var(--lcars-amber);animation:awaitpulse 1.2s infinite} .tk.in-progress{color:var(--lcars-amber)}
+.tk.flagged .dot{background:var(--lcars-red)} .tk.flagged{color:#ff8a96}
+
+.legend{display:flex;flex-wrap:wrap;gap:14px;padding:10px 28px;font-size:12px;color:var(--lcars-text-dim)}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.dim{color:var(--lcars-text-dim)}
+
+.btn{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;font-size:10px;
+  padding:4px 10px;border-radius:12px;border:1px solid var(--lcars-border);
+  background:var(--lcars-card-alt);color:var(--lcars-text-bright);cursor:pointer}
+.btn:hover{border-color:var(--lcars-amber)}
+
+/* ── detail drawer ── */
+.drawer{position:fixed;inset:0;background:rgba(3,6,8,.7);z-index:100;display:flex;justify-content:flex-end}
+.drawer-inner{width:min(560px,92vw);height:100%;overflow:auto;background:var(--lcars-surface,#070d1c);
+  border-left:2px solid var(--lcars-amber);padding:20px}
+.drawer .close{float:right}
+.evt{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(80,104,138,.14)}
+.evt .when{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim)}
+.evt .txt{font-size:13px;color:var(--lcars-text)}
+.drawer h3{font-family:var(--font-display);color:var(--lcars-amber);letter-spacing:.1em;margin:8px 0}

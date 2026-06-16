@@ -1,0 +1,139 @@
+"""Shared fixture builders for the LCARS serve adapter tests.
+
+These plant a `.git/lcars/missions/<id>/` tree on disk the way `lcars file`,
+`lcars run`, and the estimator do, so the LOCAL adapter can be exercised against
+real artifact shapes (state.json / pending.json / plan.json / waves.json /
+estimate.json / events.jsonl) with NO running model, gh, or git.
+"""
+import json
+import os
+
+
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(text)
+
+
+def write_json(path, obj):
+    write(path, json.dumps(obj, indent=2) + "\n")
+
+
+def write_jsonl(path, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+
+
+# A canonical estimator output (schemaVersion 3) — Claude cost block.
+ESTIMATE_CLAUDE = {
+    "schemaVersion": 3,
+    "reasoningCriticality": "medium",
+    "implCriticality": "high",
+    "models": {
+        "research": "opus", "validate": "opus", "plan": "opus",
+        "planReview": "sonnet", "implement": "opus", "verify": "sonnet",
+    },
+    "rationale": "Touches a sensitive boundary.",
+    "cost": {"cli": "claude", "unit": "usd", "currency": "USD",
+             "usd": {"low": 4.2, "high": 6.4}},
+    "estimatorModel": "opus",
+}
+
+ESTIMATE_COPILOT_LEGACY = {
+    "schemaVersion": 3,
+    "reasoningCriticality": "low",
+    "implCriticality": "medium",
+    "models": {"research": "sonnet", "validate": "sonnet", "plan": "sonnet",
+               "planReview": "sonnet", "implement": "opus", "verify": "sonnet"},
+    "rationale": "Routine.",
+    "cost": {"cli": "copilot", "unit": "premiumRequests", "billing": "legacy",
+             "premiumRequests": {"low": 10, "high": 14}, "usdOverage": None},
+    "estimatorModel": "sonnet",
+}
+
+
+def mission_dir(root, mid):
+    return os.path.join(root, ".git", "lcars", "missions", mid)
+
+
+def plant_simple(root, mid, *, stage="align", issue=142,
+                 title="Add Gamification to Course Site", estimate=ESTIMATE_CLAUDE,
+                 created="2026-06-13T10:00:00Z"):
+    """A plain mission sitting in `stage`, no gate, no tickets."""
+    d = mission_dir(root, mid)
+    write_json(os.path.join(d, "state.json"), {
+        "id": mid, "type": "feature", "title": title, "stage": stage,
+        "created": created, "model": "claude", "githubIssue": issue,
+        "branch": "lcars/%s" % mid, "base": "main",
+    })
+    if estimate is not None:
+        write_json(os.path.join(d, "estimate.json"), estimate)
+    return d
+
+
+def plant_gated(root, mid, *, resume_stage="align", inflight_stage="research",
+                issue=143, title="Gated mission",
+                question="Global vs per-course leaderboard?"):
+    """A mission parked behind a human gate: state.json.stage is the resume
+    pointer; pending.json.stage is the TRUE in-flight column (status.sh rule)."""
+    d = mission_dir(root, mid)
+    write_json(os.path.join(d, "state.json"), {
+        "id": mid, "type": "feature", "title": title, "stage": resume_stage,
+        "created": "2026-06-13T11:00:00Z", "githubIssue": issue,
+        "awaitingHuman": True, "pendingQuestion": question,
+        "branch": "lcars/%s" % mid, "base": "main",
+    })
+    write_json(os.path.join(d, "pending.json"),
+               {"stage": inflight_stage, "question": question})
+    write_json(os.path.join(d, "estimate.json"), ESTIMATE_CLAUDE)
+    return d
+
+
+def plant_paused(root, mid, *, stage="implement", issue=144, title="Paused mission"):
+    d = mission_dir(root, mid)
+    write_json(os.path.join(d, "state.json"), {
+        "id": mid, "type": "feature", "title": title, "stage": stage,
+        "created": "2026-06-13T12:00:00Z", "githubIssue": issue, "paused": True,
+        "branch": "lcars/%s" % mid, "base": "main",
+    })
+    write_json(os.path.join(d, "estimate.json"), ESTIMATE_CLAUDE)
+    return d
+
+
+def plant_implementing(root, mid, *, issue=145, title="Implement mission"):
+    """A mission in Implement with a plan, waves and ticket_* events."""
+    d = mission_dir(root, mid)
+    write_json(os.path.join(d, "state.json"), {
+        "id": mid, "type": "feature", "title": title, "stage": "implement",
+        "created": "2026-06-13T13:00:00Z", "githubIssue": issue,
+        "branch": "lcars/%s" % mid, "base": "main",
+    })
+    write_json(os.path.join(d, "estimate.json"), ESTIMATE_CLAUDE)
+    write_json(os.path.join(d, "plan.json"), [
+        {"id": "t-001", "title": "XP model", "acceptanceCriteria": ["xp"],
+         "dependencies": []},
+        {"id": "t-002", "title": "Badge model", "acceptanceCriteria": ["badge"],
+         "dependencies": []},
+        {"id": "t-003", "title": "Leaderboard service", "acceptanceCriteria": ["lb"],
+         "dependencies": ["t-001"]},
+    ])
+    write_json(os.path.join(d, "waves.json"), [
+        {"wave": 1, "tickets": [{"id": "t-001", "issue": 201},
+                                {"id": "t-002", "issue": 202}]},
+        {"wave": 2, "tickets": [{"id": "t-003", "issue": 203}]},
+    ])
+    write_jsonl(os.path.join(d, "events.jsonl"), [
+        {"ts": 1000, "mission": mid, "stage": "implement", "type": "stage_start",
+         "detail": "implement starting"},
+        {"ts": 1001, "mission": mid, "stage": "implement", "type": "wave_start",
+         "detail": "wave 1", "data": {"wave": 1, "totalWaves": 2, "ticketCount": 2}},
+        {"ts": 1002, "mission": mid, "stage": "implement", "type": "ticket_start",
+         "detail": "t-001 XP model", "data": {"ticket": "t-001"}},
+        {"ts": 1060, "mission": mid, "stage": "implement", "type": "ticket_green",
+         "detail": "t-001 green", "data": {"ticket": "t-001"}},
+        {"ts": 1061, "mission": mid, "stage": "implement", "type": "ticket_start",
+         "detail": "t-002 Badge model", "data": {"ticket": "t-002"}},
+    ])
+    return d

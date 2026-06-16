@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LCARS — Kanban Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&family=Oxanium:wght@400;600;700&display=swap" rel="stylesheet">
+<!-- Shared LCARS token set (served from docs/lcars.css — ADR-007, never forked) -->
+<link rel="stylesheet" href="/lcars.css">
+<!-- Board layout, vendored from kanban-vision.html's board/card/pill markup -->
+<link rel="stylesheet" href="/board.css">
+</head>
+<body class="lcars-serve">
+
+<div class="topbar">
+  <div class="brand">LCARS · <b>KANBAN</b></div>
+  <div class="conn" id="conn" title="live channel">● LIVE</div>
+</div>
+
+<div class="board-wrap">
+  <div class="board" id="board"><!-- columns + cards injected by board.js --></div>
+</div>
+
+<div class="legend">
+  <span><i style="background:var(--lcars-red)"></i> Awaiting you</span>
+  <span><i style="background:var(--lcars-pink)"></i> Child bug mission</span>
+  <span><i style="background:var(--lcars-teal)"></i> Ticket green</span>
+  <span class="dim" id="status">loading…</span>
+</div>
+
+<!-- mission detail drawer (read-only) -->
+<div class="drawer" id="drawer" hidden>
+  <div class="drawer-inner">
+    <button class="btn close" id="drawerClose">✕ Close</button>
+    <div id="drawerBody"></div>
+  </div>
+</div>
+
+<script src="/board.js"></script>
+</body>
+</html>
