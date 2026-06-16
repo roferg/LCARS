@@ -85,6 +85,13 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .btn:hover{border-color:var(--lcars-amber)}
 
 /* ── detail drawer ── */
+/* The drawer ships `hidden` and board.js toggles it. An author `display:flex`
+   on `.drawer` would beat the UA `[hidden]{display:none}` rule, so the drawer
+   would render even while hidden and could never be dismissed (S67 fix-loop r2,
+   DEFECT 1). Restate the hide here as an author rule so `hidden` actually hides
+   it; the explicit display keeps it ahead of `.drawer`'s flex regardless of
+   source order. */
+[hidden]{display:none !important}
 .drawer{position:fixed;inset:0;background:rgba(3,6,8,.7);z-index:100;display:flex;justify-content:flex-end}
 .drawer-inner{width:min(560px,92vw);height:100%;overflow:auto;background:var(--lcars-surface,#070d1c);
   border-left:2px solid var(--lcars-amber);padding:20px}

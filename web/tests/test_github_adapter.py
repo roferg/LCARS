@@ -167,13 +167,49 @@ class GitHubAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "142")
         self.assertIn(201, [t["issue"] for t in m["tickets"]])
 
-    def test_done_excluded(self):
+    def test_done_in_done_column_but_not_active(self):
+        """S67 fix-loop r2, DEFECT 2: a `lcars:done` mission belongs in the Done
+        COLUMN with its normal card fields, but stays OUT of the active
+        `missions` list so the active count is unaffected. Mirrors the local
+        adapter's behaviour for adapter parity."""
         payload = [{"number": 9, "title": "Shipped", "state": "OPEN",
                     "labels": [{"name": "lcars:mission"}, {"name": "lcars:done"}],
                     "body": ""}]
         _write_stub(self.stub, payload)
         board = self._board()
+        # done mission renders as a card in the Done column…
+        done_col = board["columns"]["done"]
+        self.assertEqual([m["issue"] for m in done_col], [9])
+        self.assertEqual(done_col[0]["stage"], "done")
+        self.assertEqual(done_col[0]["title"], "Shipped")
+        self.assertIn("pills", done_col[0])
+        # …but is not part of the active mission count.
         self.assertEqual(board["missions"], [])
+
+    def test_done_card_parity_with_local(self):
+        """ADR-003: the github and local adapters must produce the SAME done
+        card shape for the SAME done mission (issue, title, stage, card keys)."""
+        import tempfile
+        from lcars_serve.local_adapter import LocalAdapter
+        # github side
+        payload = [{"number": 9, "title": "Shipped", "state": "OPEN",
+                    "labels": [{"name": "lcars:mission"}, {"name": "lcars:done"}],
+                    "body": ""}]
+        _write_stub(self.stub, payload)
+        gh_done = self._board()["columns"]["done"][0]
+        # local side: an equivalent done mission on disk
+        from tests import _fixtures as fx
+        tmp = tempfile.mkdtemp()
+        fx.plant_simple(tmp, "m-done", stage="done", issue=9, title="Shipped",
+                        estimate=None)
+        local_done = LocalAdapter(tmp).board()["columns"]["done"][0]
+        for k in ("issue", "title", "stage"):
+            self.assertEqual(gh_done[k], local_done[k],
+                             "done card field %r differs across adapters" % k)
+        self.assertEqual(set(gh_done) & {"id", "issue", "title", "stage",
+                                         "awaiting", "paused", "pills", "tickets"},
+                         set(local_done) & {"id", "issue", "title", "stage",
+                                            "awaiting", "paused", "pills", "tickets"})
 
 
 if __name__ == "__main__":

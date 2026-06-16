@@ -37,8 +37,9 @@ missionCard:
 """
 
 # Pipeline order — the column order. Mirrors LCARS_STAGE_LABELS in
-# skills/lcars-init/lcars-common.sh ("done" is rendered as a terminal column but
-# done missions are excluded from the active board).
+# skills/lcars-init/lcars-common.sh. "done" is the terminal column: done
+# missions DO render there (PRD §5.1, one column per Stage label), but are kept
+# out of the active `missions` count (see assemble()).
 STAGES = (
     "align", "research", "validate", "plan", "plan-review",
     "schedule", "implement", "verify", "done",
@@ -152,16 +153,22 @@ def empty_board():
 def assemble(cards):
     """Place a flat list of mission cards into columns by their `stage`.
 
-    Cards whose column is 'done' are dropped from the ACTIVE board (the board
-    observes work in flight; merged missions leave the fleet). Cards keep their
-    input order within a column (callers sort newest-first beforehand).
+    Every card lands in its Stage column — INCLUDING 'done' (PRD §5.1: nine
+    columns, one per Stage label, and Done is the `lcars:done` Stage). But done
+    missions stay OUT of the `missions` list: that list backs the front end's "N
+    active missions" count, which must mean work still in flight, so adding the
+    Done column must not inflate it. Cards keep their input order within a column
+    (callers sort newest-first beforehand).
+
+    NOTE (future enhancement): done missions are included unbounded here. If the
+    Done column ever grows uncomfortably large, cap/paginate it at this seam —
+    deliberately not built now (simple + PRD-faithful for this round).
     """
     board = empty_board()
     for c in cards:
         stage = normalise_stage(c.get("stage"))
         c["stage"] = stage
-        if stage == "done":
-            continue
         board["columns"][stage].append(c)
-        board["missions"].append(c)
+        if stage != "done":
+            board["missions"].append(c)
     return board

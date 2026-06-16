@@ -94,10 +94,21 @@ class LocalAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "m-solo")
         self.assertEqual(m["tickets"], [])
 
-    def test_done_missions_excluded_from_active_board(self):
+    def test_done_missions_in_done_column_but_not_active(self):
+        """S67 fix-loop r2, DEFECT 2: a done mission (state.stage == "done")
+        belongs in the Done COLUMN (PRD §5.1 — done is a Stage label), with its
+        normal card fields, but must stay OUT of the active `missions` list so
+        the "N active missions" count doesn't inflate."""
         fx.plant_simple(self.tmp, "m-done", stage="done", issue=9)
         fx.plant_simple(self.tmp, "m-live", stage="plan", issue=10)
         board = self._board()
+        # done mission lands in the Done column with its normal card fields
+        done_col = board["columns"]["done"]
+        self.assertEqual([m["id"] for m in done_col], ["m-done"])
+        self.assertEqual(done_col[0]["issue"], 9)
+        self.assertEqual(done_col[0]["stage"], "done")
+        self.assertIn("pills", done_col[0])
+        # but it is NOT counted as active
         ids = [m["id"] for m in board["missions"]]
         self.assertIn("m-live", ids)
         self.assertNotIn("m-done", ids)

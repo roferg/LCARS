@@ -81,6 +81,23 @@ class ServerTest(unittest.TestCase):
         # shares the docs/lcars.css token set — the LCARS amber must be present.
         self.assertIn(b"--lcars", body)
 
+    def test_board_css_hides_drawer_when_hidden(self):
+        """Regression (S67 fix-loop r2, DEFECT 1): the served board.css MUST
+        carry a rule that hides an element with the `hidden` attribute, so the
+        author `.drawer{display:flex}` can't override the UA `[hidden]` rule and
+        leave the detail drawer stuck open on load. board.js toggles `hidden`,
+        so the only browser-side guard is this CSS — assert it's present."""
+        status, ctype, body = self._get("/board.css")
+        self.assertEqual(status, 200)
+        self.assertIn("text/css", ctype)
+        css = body.decode("utf-8").replace(" ", "").lower()
+        # a `[hidden]{display:none...}` rule (global or `.drawer[hidden]`) so the
+        # hidden drawer is genuinely display:none, beating `.drawer`'s flex.
+        self.assertIn("[hidden]", css,
+                      "board.css must hide elements with the hidden attribute")
+        self.assertRegex(css, r"\[hidden\][^{]*\{[^}]*display:none",
+                         "the [hidden] rule must set display:none")
+
     def test_writes_are_rejected_read_only(self):
         url = "http://127.0.0.1:%d/api/board" % self.port
         req = urllib.request.Request(url, data=b"{}", method="POST")

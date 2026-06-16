@@ -148,8 +148,17 @@ function openDrawer(id) {
     });
 }
 
-document.getElementById("drawerClose").addEventListener("click", function () {
+function closeDrawer() {
   document.getElementById("drawer").hidden = true;
+}
+
+document.getElementById("drawerClose").addEventListener("click", closeDrawer);
+
+// Clicking the dimmed backdrop (the .drawer itself, outside .drawer-inner) also
+// dismisses the drawer; clicks that bubble up from inside .drawer-inner have a
+// different target and are ignored.
+document.getElementById("drawer").addEventListener("click", function (e) {
+  if (e.target === this) closeDrawer();
 });
 
 /* --- live channel --- */
