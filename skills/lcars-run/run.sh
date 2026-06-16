@@ -75,6 +75,22 @@ PRICING_FILE="${LCARS_PRICING:-$SKILL_DIR/pricing.json}"
 # (default "github") and the github host shells out to ${LCARS_GH_BIN:-gh}.
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/host-adapter.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
+# The ADR-004 issue-comment mirror. Bundled beside this script; SOURCED (not
+# shelled) so it reuses MISSION_DIR / json_raw / event_seen / emit_event / host.
+# It defines render_comment (the ONE rendering, reused by S68) + mirror_comments
+# (the best-effort, idempotent driver step that posts run progress to the issue).
+# Sourcing only DEFINES functions — they are called later, after every helper
+# they lean on is defined. $LCARS_COMMENT_MIRROR overrides the path for tests.
+COMMENT_MIRROR="${LCARS_COMMENT_MIRROR:-$SKILL_DIR/comment-mirror.sh}"
+# The SHARED renderer (ADR-004 "ONE rendering") — factored out of status.sh so
+# the kanban card, `lcars status --watch`, AND the issue-comment mirror render
+# the progress line / ticket data from the SAME primitives (compute_progress,
+# ev_str, read_waves_totals, fmt_elapsed). The mirror leans on these, so source
+# the shared lib BEFORE the mirror. render.sh provides a $LCARS_NOW-honouring
+# now() (its guard skips if a now() already exists). $LCARS_RENDER_LIB overrides.
+RENDER_LIB="${LCARS_RENDER_LIB:-$SKILL_DIR/../lcars-status/render.sh}"
+[ -f "$RENDER_LIB" ] && . "$RENDER_LIB"
+[ -f "$COMMENT_MIRROR" ] && . "$COMMENT_MIRROR"
 # The cold-worker CLI adapter — the ONE place that knows a CLI's spawn flags and
 # tool NAMES. This script (the stage driver) stays CLI-agnostic: it speaks a role
 # keyword + a cli id (basename of WORKER_BIN) and delegates the actual one-shot to
@@ -3817,6 +3833,15 @@ cmd_implement() {
   require_stage implement
   require_worker
 
+  # --- S65: the live Implement-dashboard heartbeat ----------------------------
+  # Start a bounded, best-effort ~60s ticker that re-renders + PATCHes the
+  # Implement issue comment so elapsed/pace advance even during a long single
+  # worker attempt. A trap on EXIT (any path: the impl-advance exit, a die, a
+  # signal) KILLS the ticker cleanly so no orphan ticker ever outlives the run.
+  # Entirely best-effort — a missing/failing gh never breaks or slows Implement.
+  declare -F cm_heartbeat_start >/dev/null 2>&1 && cm_heartbeat_start
+  trap 'declare -F cm_heartbeat_stop >/dev/null 2>&1 && cm_heartbeat_stop' EXIT INT TERM
+
   # For the wave_start instrumentation: totalWaves (distinct wave count) and a
   # per-wave ticket count, both derived jq-free from waves.json via parse_waves_table.
   local waves_file="$MISSION_DIR/waves.json"
@@ -4207,20 +4232,33 @@ cmd_drive() {
     stage="$(json_str "$STATE" stage)"
     awaiting="$(json_raw "$STATE" awaitingHuman)"
 
+    # ADR-004 issue-comment mirror (S65 living per-stage model) — harness-driven,
+    # best-effort. Re-renders each STAGE's living comment (create-then-edit, keyed
+    # by stage in comments.json) from the on-disk truth the prior pass produced,
+    # and pings any newly-raised human gate as a NEW comment. mirror_comments is
+    # idempotent (the comment-id map is the dedup truth) and NEVER fails the run
+    # (gh missing/unauthed/failing → no-op). The gate emits just below get their
+    # own mirror on the halt paths so the gate ping lands before we stop.
+    mirror_comments || true
+
     # Halt conditions, checked BEFORE running anything. Each emits a `gate` event
     # to the Mission log (the halt block + notify hook below are unchanged).
     if [ "$awaiting" = "true" ]; then
       emit_event gate "$stage" "awaiting your answer"
+      mirror_comments || true
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
     fi
     case "$stage" in
       verify) emit_event gate verify "human review required"
+              mirror_comments || true
               drive_print_summary "$summary"; drive_halt_verify; return 0 ;;
       done)   emit_event gate done "Mission shipped — the PR is open"
+              mirror_comments || true
               drive_print_summary "$summary"
               printf '⏹ stopped at: done  (Mission shipped — the PR is open)\n'; return 0 ;;
       align)  if [ -f "$MISSION_DIR/feedback.md" ]; then
                 emit_event gate align "interactive Align re-grill required"
+                mirror_comments || true
                 drive_print_summary "$summary"; drive_halt_align; return 0
               fi ;;
     esac
@@ -4403,5 +4441,22 @@ case "$SUB" in
                        cmd_spawn_stage "$POSARG" ;;
   # Test hook: emit one event line to the Mission event log (jq-free helper).
   emit-event)       locate_mission "$MISSION_ID"; emit_event "$EV_TYPE" "$EV_STAGE" "$EV_DETAIL" ;;
+  # ADR-004: mirror not-yet-posted surfaced events from events.jsonl onto the
+  # Mission's issue as ordered comments, idempotently. The driver calls this at
+  # each loop pass; it is also the standalone test/maintenance entry point.
+  # Best-effort: mirror_comments never fails the caller, so force exit 0.
+  mirror-comments)  locate_mission "$MISSION_ID"; mirror_comments || true ;;
+  # Session 65 test/maintenance hook: start the Implement comment heartbeat,
+  # report its ticker pid, let it run its bounded ticks ($LCARS_COMMENT_HEARTBEAT_TICKS),
+  # then stop it cleanly (no orphan). Exercises the heartbeat lifecycle (start /
+  # tick / kill) deterministically. Best-effort: always exits 0.
+  comment-heartbeat-test)
+    locate_mission "$MISSION_ID"
+    cm_heartbeat_start
+    printf 'TICK_PID=%s\n' "${CM_HEARTBEAT_PID:-}"
+    # Wait for the bounded ticker to finish on its own, then ensure it's reaped.
+    [ -n "${CM_HEARTBEAT_PID:-}" ] && wait "$CM_HEARTBEAT_PID" 2>/dev/null
+    cm_heartbeat_stop
+    exit 0 ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

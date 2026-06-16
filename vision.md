@@ -466,6 +466,8 @@ Each column corresponds to a Stage. Each Mission is a card. The human can see at
 
 This is the command-and-control layer: one view of all Missions, all Stages, all pending decisions — with the ability to start, stop, and steer from a single screen.
 
+A first piece of this is already live. The Harness mirrors run progress onto each Mission's **GitHub issue as living, per-Stage comments** — one per Stage, created once then edited in place as it advances — with collapsed research Q&A, `#`-links to the sub-issues, and an Implement **wave dashboard** (a pace/position line plus a done / flagged / in-progress / pending ticket checklist) that refreshes on a ~60s heartbeat. It reuses the same renderer as `lcars status --watch`, so the issue, the live CLI view, and the future board never drift. That gives the board — and an eventual hosted, view-only reader — a rich remote event source without anyone leaving the issue.
+
 ---
 
 ## Scope

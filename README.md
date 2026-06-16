@@ -497,7 +497,16 @@ Two deliberate properties make this robust:
   that same interval. The
   events are emitted by the bash harness *around* the worker calls — never by the
   worker — so the stream and the live view behave identically whatever CLI runs
-  underneath.
+  underneath. The **same shared renderer** also publishes progress to each
+  Mission's **GitHub issue** as a small set of **living, per-Stage comments** —
+  one per Stage (Research, Plan, Schedule, Implement, Verify), created once then
+  *edited in place* as the Stage advances — so a run is observable off the laptop
+  too. The bodies are rich: collapsed research Q&A, per-ticket rationale, `#`-links
+  to the sub-issues, and an Implement **wave dashboard** (the same pace/position
+  line plus a done / flagged / in-progress / pending ticket checklist) that
+  refreshes on the same ~60s heartbeat (`LCARS_COMMENT_HEARTBEAT`). Mirroring is
+  idempotent (a stored comment-id map means a re-run edits, never double-posts)
+  and best-effort — a missing or failing `gh` never breaks or slows the run.
 
 ---
 

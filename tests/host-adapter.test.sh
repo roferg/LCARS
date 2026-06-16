@@ -268,6 +268,104 @@ if [ -f "$RUN_SH" ]; then
 fi
 
 # ==========================================================================
+# Session 65: the living per-stage comment ops — issue-comment-create (POST,
+# echoes the new id) + issue-comment-edit (PATCH). Bodies come via STDIN.
+# ==========================================================================
+# A gh stub that records the api argv AND the body that REALLY reaches gh, and
+# echoes {"id":<n>} for a POST and {"id":<id>} for a PATCH (so create can parse
+# the new id). It models REAL `gh api` field semantics so a literal-`@-` defect
+# can't sneak through (S65 fix-loop):
+#   -F/--field  key=@-   → reads the value from STDIN  (the real stdin path)
+#   -f/--raw-field key=@- → LITERAL string "@-" (gh does NOT read stdin here)
+# So if the adapter passes `-f body=@-`, the recorded body is the literal "@-"
+# (the production defect), and the rich-body assertions below FAIL.
+GHC="$TMPROOT/ghc"
+cat >"$GHC" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+allargs="$*"   # preserve argv for the endpoint match below (the loop shifts it)
+# Resolve the `body` payload exactly as real gh would, by walking the flags.
+body=""; have_body=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -F|--field)
+      case "$2" in
+        body=@-) body="$(cat)"; have_body=1 ;;          # field @- → stdin
+        body=@*) body="$(cat "${2#body=@}")"; have_body=1 ;;  # field @file
+        body=*)  body="${2#body=}"; have_body=1 ;;       # typed literal
+      esac
+      shift 2; continue ;;
+    -f|--raw-field)
+      case "$2" in
+        body=*) body="${2#body=}"; have_body=1 ;;        # ALWAYS literal (incl. "@-")
+      esac
+      shift 2; continue ;;
+    --body-file)
+      case "$2" in
+        -) body="$(cat)"; have_body=1 ;;
+        *) body="$(cat "$2")"; have_body=1 ;;
+      esac
+      shift 2; continue ;;
+    --body) body="$2"; have_body=1; shift 2; continue ;;
+  esac
+  shift
+done
+[ "$have_body" -eq 1 ] && printf '%s' "$body" >>"$GH_BODY"
+case "$allargs" in
+  # Mirror real gh: the comment's own id comes FIRST, a nested user.id LATER on
+  # the same line. The adapter must echo 555 (the comment), NOT 40493721 (user).
+  *POST*comments*)  echo '{"url":"u","id":555,"node_id":"n","user":{"login":"x","id":40493721},"body":"x"}' ;;
+  *PATCH*comments*) echo '{"url":"u","id":777,"node_id":"n","user":{"login":"x","id":40493721},"body":"x"}' ;;
+esac
+exit 0
+EOF
+chmod +x "$GHC"
+export GH_LOG="$TMPROOT/ghc.log"; : >"$GH_LOG"
+export GH_BODY="$TMPROOT/ghc.body"; : >"$GH_BODY"
+
+# create: POSTs to the issue's comments endpoint and ECHOES the new id.
+: >"$GH_LOG"; : >"$GH_BODY"
+NEWID="$(printf 'a rich\nmultiline body' | LCARS_GH_BIN="$GHC" bash "$SCRIPT" issue-comment-create 42)"
+check "C1. issue-comment-create POSTs to the issue comments endpoint" \
+  "qgrep -q 'api --method POST repos/{owner}/{repo}/issues/42/comments' <'$GH_LOG'"
+check "C1. issue-comment-create passes the body via the stdin FIELD (-F body=@-)" \
+  "qgrep -q -- '-F body=@-' <'$GH_LOG'"
+check "C1. issue-comment-create echoes the new comment id" "[ '$NEWID' = '555' ]"
+check "C1. the multiline body reached gh over stdin" \
+  "qgrep -q 'multiline body' <'$GH_BODY'"
+# The defect guard: the body that reached gh must be the REAL markdown, not the
+# literal sentinel "@-". If the adapter used `-f body=@-`, gh stores "@-" and
+# this fails — reproducing roferg/lcars-sandbox#188.
+check "C1. the body that reached gh is NOT the literal sentinel @-" \
+  "[ \"\$(cat '$GH_BODY')\" != '@-' ]"
+
+# edit: PATCHes the comment-id endpoint with the body via stdin.
+: >"$GH_LOG"; : >"$GH_BODY"
+printf 'edited body' | LCARS_GH_BIN="$GHC" bash "$SCRIPT" issue-comment-edit 555
+check "C2. issue-comment-edit PATCHes the comments/<id> endpoint" \
+  "qgrep -q 'api --method PATCH repos/{owner}/{repo}/issues/comments/555' <'$GH_LOG'"
+check "C2. issue-comment-edit passes the body via stdin" \
+  "qgrep -q 'edited body' <'$GH_BODY'"
+check "C2. issue-comment-edit uses the stdin FIELD (-F body=@-), not raw -f" \
+  "qgrep -q -- '-F body=@-' <'$GH_LOG'"
+check "C2. the edit body that reached gh is NOT the literal sentinel @-" \
+  "[ \"\$(cat '$GH_BODY')\" != '@-' ]"
+
+# best-effort: gh ABSENT → create echoes nothing (no id), exits 0; edit soft-fails.
+rc_c=0
+NEWID2="$(printf 'b' | LCARS_GH_BIN="$TMPROOT/not-a-real-gh" bash "$SCRIPT" issue-comment-create 42)" || rc_c=$?
+check "C3. create with gh ABSENT echoes nothing, never dies" \
+  "[ -z '$NEWID2' ] && [ '$rc_c' -eq 0 ]"
+printf 'b' | LCARS_GH_BIN="$TMPROOT/not-a-real-gh" bash "$SCRIPT" issue-comment-edit 555 >/dev/null 2>&1
+check "C3. edit with gh ABSENT soft-fails (non-zero), never dies" "[ $? -ne 0 ]"
+
+# missing args are HARD errors (a die), distinct from a soft forge failure.
+LCARS_GH_BIN="$GHC" bash "$SCRIPT" issue-comment-create >/dev/null 2>&1
+check "C4. create with no issue number dies" "[ $? -ne 0 ]"
+LCARS_GH_BIN="$GHC" bash "$SCRIPT" issue-comment-edit >/dev/null 2>&1
+check "C4. edit with no comment id dies" "[ $? -ne 0 ]"
+
+# ==========================================================================
 echo
 printf 'host-adapter: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

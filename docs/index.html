@@ -810,7 +810,18 @@ An inline run must never masquerade as isolated.</div>
           window. <code>lcars status --watch</code> tails the same log into a
           live view with a pace/position line on that same interval. The events are emitted by the bash harness
           <em>around</em> the worker calls — never by the worker — so the stream
-          and the live view behave identically whatever CLI runs underneath.</p>
+          and the live view behave identically whatever CLI runs underneath. The
+          <strong>same shared renderer</strong> also publishes progress to each
+          Mission's <strong>GitHub issue</strong> as a small set of
+          <strong>living, per-Stage comments</strong> — one per Stage, created
+          once then <em>edited in place</em> as it advances — so a run is
+          observable off the laptop too: collapsed research Q&amp;A, per-ticket
+          rationale, <code>#</code>-links to the sub-issues, and an Implement
+          <strong>wave dashboard</strong> (the pace line plus a done / flagged /
+          in-progress / pending ticket checklist) refreshed on the same ~60s
+          heartbeat. Idempotent (a stored comment-id map → a re-run edits, never
+          double-posts) and best-effort — a missing or failing <code>gh</code>
+          never breaks the run.</p>
           <div class="lcars-readout">Wave 3/6 · ticket t-004 · attempt 1 · ~12s avg/ticket · elapsed 4m12s</div>
         </div>
       </div>
