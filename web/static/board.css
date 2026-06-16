@@ -13,24 +13,81 @@
 body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c4d4ee);
   font-family:var(--font-body);font-size:15px;line-height:1.6;margin:0;min-height:100vh}
 
-.topbar{position:sticky;top:0;z-index:50;background:var(--lcars-black,#030608);
-  padding:14px 28px;display:flex;align-items:center;gap:18px;
-  border-bottom:1px solid var(--lcars-border,rgba(255,170,0,.22))}
+/* ════════════════════════════════════════════════════════════════════════
+   LCARS ELBOW FRAME (S67-kanban). The console is wrapped in the iconic LCARS
+   chrome — a segmented top band that sweeps via a fat rounded ELBOW into a
+   segmented LEFT RAIL, with the board nested inside. Pure CSS grid; uses ONLY
+   shared --lcars-* tokens (never redefines one). All classes below are NON-token
+   layout classes added by this sheet (ADR-007).
+
+   Grid:  [elbow ][ top band        ]   row 1 (band height)
+          [ rail ][ content (board) ]   row 2 (fills viewport)
+   The elbow cell carries the fat inner-corner radius that visually joins the
+   top band and the rail into one continuous LCARS sweep. ────────────────── */
+.lcars-frame{
+  --frame-top-h:64px;            /* top band height (local, NOT an --lcars-* token) */
+  --frame-rail-w:84px;           /* left rail width */
+  --frame-elbow-r:38px;          /* the fat inner-corner sweep — > --lcars-elbow */
+  display:grid;
+  grid-template-columns:var(--frame-rail-w) 1fr;
+  grid-template-rows:var(--frame-top-h) 1fr;
+  min-height:100vh;
+  background:var(--lcars-black,#030608);
+  gap:0;
+}
+/* the fat rounded elbow joining the top band to the rail (row1/col1) */
+.frame-elbow{
+  grid-column:1;grid-row:1;
+  background:var(--lcars-amber);
+  border-bottom-left-radius:var(--frame-elbow-r);
+  /* the inner sweep: a black quarter-round punched out of the elbow's
+     bottom-right so the top band and rail read as one continuous curve. */
+  position:relative;overflow:hidden;
+}
+.frame-elbow::after{
+  content:'';position:absolute;right:0;bottom:0;
+  width:var(--frame-elbow-r);height:var(--frame-elbow-r);
+  background:var(--lcars-black,#030608);
+  border-top-left-radius:var(--frame-elbow-r);
+}
+/* TOP BAND (row1/col2): segmented LCARS bar — folds the old topbar content in */
+.frame-top{grid-column:2;grid-row:1}
+/* LEFT RAIL (row2/col1): stacked LCARS palette blocks */
+.frame-rail{grid-column:1;grid-row:2;
+  display:flex;flex-direction:column;gap:6px;padding:6px 0 0;
+  background:var(--lcars-black,#030608);overflow:hidden}
+.frame-rail .ricon{flex:0 0 46px;border-bottom-right-radius:var(--lcars-radius,12px);
+  border-top-right-radius:var(--lcars-radius,12px);margin-right:14px}
+.frame-rail .ricon.rail-fill{flex:1 1 auto}
+/* CONTENT (row2/col2): the existing board + legend; this is the scroll viewport */
+.frame-content{grid-column:2;grid-row:2;
+  display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+
+/* TOP BAND inner layout: the brand + repo meta + conn live here now. The band
+   is a horizontal flex row of solid LCARS colour blocks + the title text. */
+.topbar{background:var(--lcars-amber);
+  padding:0 24px 0 18px;display:flex;align-items:center;gap:16px;
+  color:var(--lcars-text-on-color)}
+.topbar .band-block{align-self:stretch;width:30px;background:var(--lcars-peach,#ff9966)}
+.topbar .band-block.c-amber{width:18px}
+.topbar .band-block.band-grow{flex:1 1 auto;width:auto;min-width:24px;opacity:.85}
 .topbar .brand{font-family:var(--font-display);font-size:22px;letter-spacing:.3em;
-  color:var(--lcars-amber);text-transform:uppercase}
-.topbar .brand b{color:var(--lcars-text-bright);font-weight:700}
-/* which repo the board is attached to — sits next to the brand (S70-A) */
+  color:var(--lcars-text-on-color);text-transform:uppercase}
+.topbar .brand b{color:var(--lcars-black,#030608);font-weight:700}
+/* which repo the board is attached to — sits next to the brand (S70-A).
+   On the amber band, text reads dark for contrast. */
 .topbar .repo-meta{font-family:var(--font-display);text-transform:uppercase;
-  letter-spacing:.12em;font-size:12px;color:var(--lcars-text-dim);
+  letter-spacing:.12em;font-size:12px;color:var(--lcars-text-on-color);
   display:flex;align-items:center;gap:8px}
-.topbar .repo-meta .sep{color:var(--lcars-border-bright,var(--lcars-amber));opacity:.6}
-.topbar .repo-meta .repo{color:var(--lcars-text-bright)}
+.topbar .repo-meta .sep{opacity:.5}
+.topbar .repo-meta .repo{color:var(--lcars-black,#030608);font-weight:700}
 .topbar .repo-meta .hint{font-size:10px;letter-spacing:.1em;padding:1px 7px;border-radius:9px;
-  border:1px solid var(--lcars-border);color:var(--lcars-text-dim)}
-.topbar .repo-meta .hint.ro{color:var(--lcars-amber);border-color:var(--lcars-amber)}
-.topbar .conn{margin-left:auto;font-family:var(--font-display);font-size:11px;
-  letter-spacing:.14em;color:var(--lcars-teal)}
-.topbar .conn.stale{color:var(--lcars-red)}
+  border:1px solid rgba(3,6,8,.4);color:rgba(3,6,8,.7)}
+.topbar .repo-meta .hint.ro{color:var(--lcars-red);border-color:var(--lcars-red)}
+.topbar .conn{font-family:var(--font-display);font-size:11px;
+  letter-spacing:.14em;color:var(--lcars-text-on-color);
+  background:var(--lcars-teal);padding:4px 10px;border-radius:11px}
+.topbar .conn.stale{background:var(--lcars-red);color:#fff}
 
 /* ── pills ── */
 .pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-display);
@@ -47,7 +104,10 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 @keyframes awaitpulse{0%,100%{box-shadow:0 0 0 0 rgba(255,51,68,.5)}50%{box-shadow:0 0 0 6px rgba(255,51,68,0)}}
 
 /* ── kanban board ── */
-.board-wrap{overflow-x:auto;padding:16px 28px;background:var(--lcars-black,#030608)}
+/* the board's horizontal scroll lives INSIDE .frame-content (min-width:0), so
+   the nine columns scroll here and never push the left rail off-screen. */
+.board-wrap{overflow-x:auto;padding:16px 28px;background:var(--lcars-black,#030608);
+  flex:1 1 auto;min-width:0}
 .board{display:flex;gap:12px;min-width:max-content}
 .col{width:220px;flex:0 0 220px;background:var(--lcars-surface,#070d1c);border-radius:10px;
   border:1px solid rgba(80,104,138,.16);display:flex;flex-direction:column}
@@ -239,4 +299,17 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 @media (max-width:880px){
   .det-body{grid-template-columns:1fr}
   .feed{border-right:none;border-bottom:1px solid var(--lcars-border)}
+}
+
+/* ── frame responsive: on narrow viewports the rail thins and the band
+   compacts; the board columns keep their own horizontal scroll, never clipped
+   unusably and never hidden. ── */
+@media (max-width:640px){
+  .lcars-frame{--frame-rail-w:20px;--frame-top-h:52px;--frame-elbow-r:22px}
+  .frame-rail .ricon{margin-right:4px;flex-basis:30px}
+  .topbar{padding:0 12px 0 10px;gap:8px}
+  .topbar .brand{font-size:16px;letter-spacing:.14em}
+  .topbar .band-block{width:12px}
+  .topbar .band-block.band-grow{min-width:8px}
+  .board-wrap{padding:12px 14px}
 }

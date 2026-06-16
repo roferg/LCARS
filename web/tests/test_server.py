@@ -245,6 +245,32 @@ class FrontEndAssetsTest(unittest.TestCase):
         html = self._text("/")
         self.assertIn('id="repoMeta"', html)
 
+    def test_index_has_lcars_elbow_frame(self):
+        """S67-kanban: the board is wrapped in the iconic LCARS elbow frame — a
+        segmented top band sweeping via a rounded elbow into a left rail, with
+        the board nested inside. Assert the frame containers are SERVED in the
+        markup and that the folded-in topbar nodes (repoMeta/conn/fileBtn/board)
+        survive inside the frame."""
+        html = self._text("/")
+        # the frame shell + its three structural regions.
+        for cls in ('class="lcars-frame"', 'class="frame-elbow"',
+                    'frame-top', 'class="frame-rail"', 'class="frame-content"'):
+            self.assertIn(cls, html, "index.html must carry %s" % cls)
+        # the old topbar nodes are folded INTO the top band (ids preserved).
+        self.assertIn('id="repoMeta"', html)
+        self.assertIn('id="conn"', html)
+        self.assertIn('id="fileBtn"', html)
+        # the board + legend still live in the content area.
+        self.assertIn('id="board"', html)
+
+    def test_board_css_styles_the_elbow_frame(self):
+        """S67-kanban: board.css must style the frame regions (grid shell, the
+        fat elbow corner, the rail, the content scroll viewport)."""
+        css = self._text("/board.css")
+        for sel in (".lcars-frame", ".frame-elbow", ".frame-top",
+                    ".frame-rail", ".frame-content"):
+            self.assertIn(sel, css, "board.css must style %s" % sel)
+
     def test_board_js_renders_meta_repo(self):
         """S70-A: board.js must read board.meta and render meta.repo into the
         topbar host on the live render path."""
