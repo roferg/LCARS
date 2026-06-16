@@ -118,10 +118,29 @@ cm_stage_started() { # stage
   grep -Eq "\"stage\":\"$1\".*\"type\":\"stage_start\"" "$f"
 }
 
+# cm_blockquote <text> — render <text> as a GFM blockquote: EVERY line prefixed
+# with "> ". The input may contain literal "\n" escapes (json_str leaves those
+# un-decoded) and/or real newlines; both are normalised to real line breaks first
+# so a multi-line answer prefixes EACH continuation line — otherwise the lazy
+# blockquote breaks and the tail renders as a plain paragraph.
+cm_blockquote() { # text
+  printf '%s' "$1" \
+    | sed 's/\\n/\
+/g' \
+    | sed 's/^/> /'
+}
+
 # cm_render_research → the Research comment body.
 # Summary line + a <details> Q&A block listing each question and its answer/
 # finding (captured from research/*.json while they exist; pending.json as a
 # fallback). Degrades to the "unambiguous — 0 questions" message when absent.
+#
+# GFM-rendering discipline (BUG A): a `>` blockquote LAZILY CONTINUES onto the
+# next non-blank line, so without a BLANK LINE between Q/A blocks **Q2.** and its
+# answer get sucked into Q1's quote. Each question therefore stands on its own
+# line, its answer is a blockquote directly beneath, and a BLANK LINE separates
+# every Q/A block so the blockquote terminates. Multi-line answers have EVERY
+# line `>`-prefixed (cm_blockquote) so continuation lines stay inside the quote.
 cm_render_research() {
   local rdir="$MISSION_DIR/research" pj="$MISSION_DIR/pending.json"
   local qa="" nq=0
@@ -134,9 +153,17 @@ cm_render_research() {
       rec="$(json_str "$f" recommendation)"
       [ -n "$q" ] || continue
       nq=$((nq + 1))
+      # A blank line BEFORE each block (after the first) terminates the previous
+      # block's blockquote; the question stands alone; the answer is a blockquote
+      # directly beneath with EVERY line `>`-prefixed.
       qa="$qa
 **Q$nq.** $q
-$( [ -n "$rec" ] && printf '> %s\n' "$rec" )"
+"
+      if [ -n "$rec" ]; then
+        qa="$qa
+$(cm_blockquote "$rec")
+"
+      fi
     done
   fi
   # Fall back to pending.json's questions if no findings were captured yet.
@@ -145,8 +172,10 @@ $( [ -n "$rec" ] && printf '> %s\n' "$rec" )"
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       nq=$((nq + 1))
+      # Same blank-line discipline so a future answer never lazily continues.
       qa="$qa
-**Q$nq.** $line"
+**Q$nq.** $line
+"
     done < <(cm_pending_questions "$pj")
   fi
 
@@ -255,6 +284,12 @@ cm_render_implement() {
   progress="$(EVENTS="$ev" WAVES="$waves" compute_progress 2>/dev/null)"
   [ -n "$progress" ] && printf '%s\n\n' "$progress"
 
+  # The single CURRENT ticket — the LAST ticket_start that is neither green nor
+  # flagged. This is the SAME signal compute_progress uses for `ticket <id>`, so
+  # the checklist's in-progress ticket AGREES with the progress line. Computed
+  # ONCE here and threaded into the per-wave checklists.
+  local cur_ticket; cur_ticket="$(cm_current_ticket "$ev")"
+
   # Build the per-wave ticket checklists from waves.json + ticket events.
   if [ -f "$waves" ]; then
     # For each wave, render a checklist. Completed waves (all green) fold into
@@ -263,7 +298,7 @@ cm_render_implement() {
       | grep -oE '[0-9]+')"
     local wnum
     for wnum in $wlist; do
-      cm_render_wave_checklist "$wnum" "$waves" "$ev" "$cur_wave"
+      cm_render_wave_checklist "$wnum" "$waves" "$ev" "$cur_wave" "$cur_ticket"
     done
   fi
 
@@ -272,11 +307,13 @@ cm_render_implement() {
   printf '\n_updated %s · auto-refreshes ~1m_\n' "$hhmm"
 }
 
-# cm_render_wave_checklist <wave> <waves.json> <events.jsonl> <cur_wave>
+# cm_render_wave_checklist <wave> <waves.json> <events.jsonl> <cur_wave> <cur_ticket>
 # One wave's ticket checklist. A fully-green wave that is NOT the current wave is
-# folded into <details>; otherwise shown inline.
-cm_render_wave_checklist() { # wave waves events cur_wave
-  local wave="$1" waves="$2" ev="$3" cur="$4"
+# folded into <details>; otherwise shown inline. <cur_ticket> is the single
+# in-progress ticket (the last non-green/non-flagged ticket_start) — only IT
+# renders "(in progress, attempt N)".
+cm_render_wave_checklist() { # wave waves events cur_wave cur_ticket
+  local wave="$1" waves="$2" ev="$3" cur="$4" cur_ticket="$5"
   # Gather this wave's tickets as "id<TAB>issue" pairs.
   local pairs; pairs="$(awk -v want="$wave" '
     /"wave"[[:space:]]*:/ { w=$0; gsub(/[^0-9]/,"",w); cur=w; next }
@@ -290,20 +327,31 @@ cm_render_wave_checklist() { # wave waves events cur_wave
   [ -n "$pairs" ] || return 0
 
   # Render each ticket's checklist line + decide if the wave is fully green.
+  # FOUR states (BUG B): done | flagged | in-progress (the single cur_ticket
+  # only) | pending. A flagged ticket is DISTINCT from in-progress; only the
+  # current ticket ever shows "(in progress, …)".
   local body="" all_green=1 id issue mark link state
   while IFS=$'\t' read -r id issue; do
     [ -n "$id" ] || continue
-    state="$(cm_ticket_state "$id" "$ev")"
+    state="$(cm_ticket_state "$id" "$ev" "$cur_ticket")"
     case "$state" in
-      green) mark="x" ;;
+      done)  mark="x" ;;
       *)     mark=" "; all_green=0 ;;
     esac
     if [ "$issue" = "null" ] || [ -z "$issue" ]; then link="$id"; else link="#$issue · $id"; fi
     local suffix=""
-    if [ "$state" = "active" ]; then
-      local a; a="$(cm_ticket_attempts "$id" "$ev")"
-      [ "$a" -gt 0 ] && suffix=" _(in progress, attempt $a)_" || suffix=" _(in progress)_"
-    fi
+    case "$state" in
+      done) ;;
+      in-progress)
+        local a; a="$(cm_ticket_attempts "$id" "$ev")"
+        [ "$a" -gt 0 ] && suffix=" _(in progress, attempt $a)_" || suffix=" _(in progress)_"
+        ;;
+      flagged)
+        local a; a="$(cm_ticket_attempts "$id" "$ev")"
+        [ "$a" -gt 0 ] && suffix=" _(flagged after $a attempts)_" || suffix=" _(flagged)_"
+        ;;
+      pending) ;;
+    esac
     body="$body- [$mark] $link$suffix
 "
   done <<EOF
@@ -317,17 +365,60 @@ EOF
   fi
 }
 
-# cm_ticket_state <id> <events.jsonl> → green | active | pending
-cm_ticket_state() { # id events
+# cm_current_ticket <events.jsonl> → the single in-progress ticket id, or empty.
+# The ticket of the LAST ticket_start that has neither a ticket_green nor a
+# ticket_flagged event. This is the SAME "last ticket_start wins" signal that the
+# shared compute_progress uses, so the checklist's in-progress ticket AGREES with
+# the progress line's `ticket <id>`. (Tickets in a wave run SEQUENTIALLY, so at
+# most one is truly in progress — an earlier started-but-superseded ticket that
+# never greened/flagged is NOT current and renders as pending.)
+cm_current_ticket() { # events
+  local ev="$1"
+  [ -f "$ev" ] || { printf ''; return 0; }
+  local id
+  # Walk ticket_start ids in REVERSE order; the first that is neither green nor
+  # flagged is the current ticket.
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if cm_ticket_terminal "$id" "$ev"; then continue; fi
+    printf '%s' "$id"; return 0
+  done < <(grep '"type":"ticket_start"' "$ev" 2>/dev/null \
+             | sed -n 's/.*"ticket":"\([^"]*\)".*/\1/p' | sed '1!G;h;$!d')
+  printf ''
+}
+
+# cm_ticket_terminal <id> <events.jsonl> → 0 if the ticket has greened OR flagged.
+cm_ticket_terminal() { # id events
   local id="$1" ev="$2"
+  grep -Eq "\"type\":\"ticket_green\".*\"ticket\":\"$id\"|\"ticket\":\"$id\".*\"type\":\"ticket_green\"" "$ev" 2>/dev/null && return 0
+  grep -Eq "\"type\":\"ticket_flagged\".*\"ticket\":\"$id\"|\"ticket\":\"$id\".*\"type\":\"ticket_flagged\"" "$ev" 2>/dev/null && return 0
+  return 1
+}
+
+# cm_ticket_state <id> <events.jsonl> [cur_ticket] → done | flagged | in-progress | pending
+#   done        — a ticket_green event exists for the id.
+#   flagged     — a ticket_flagged event exists (and no green).
+#   in-progress — ONLY the single CURRENT ticket (the last non-terminal
+#                 ticket_start, passed in as cur_ticket so every line in a render
+#                 agrees on the same current ticket).
+#   pending     — everything else: no ticket_start yet, OR a started-but-
+#                 superseded ticket that is neither green/flagged NOR current.
+cm_ticket_state() { # id events [cur_ticket]
+  local id="$1" ev="$2" cur="${3:-}"
   [ -f "$ev" ] || { printf 'pending'; return 0; }
   if grep -Eq "\"type\":\"ticket_green\".*\"ticket\":\"$id\"" "$ev" \
      || grep -Eq "\"ticket\":\"$id\".*\"type\":\"ticket_green\"" "$ev"; then
-    printf 'green'; return 0
+    printf 'done'; return 0
   fi
-  if grep -Eq "\"type\":\"ticket_start\".*\"ticket\":\"$id\"" "$ev" \
-     || grep -Eq "\"ticket\":\"$id\".*\"type\":\"ticket_start\"" "$ev"; then
-    printf 'active'; return 0
+  if grep -Eq "\"type\":\"ticket_flagged\".*\"ticket\":\"$id\"" "$ev" \
+     || grep -Eq "\"ticket\":\"$id\".*\"type\":\"ticket_flagged\"" "$ev"; then
+    printf 'flagged'; return 0
+  fi
+  # If the caller did not pre-compute the current ticket, derive it now so the
+  # function is correct when called standalone (e.g. the Verify build summary).
+  [ -n "$cur" ] || cur="$(cm_current_ticket "$ev")"
+  if [ -n "$cur" ] && [ "$id" = "$cur" ]; then
+    printf 'in-progress'; return 0
   fi
   printf 'pending'
 }
@@ -376,7 +467,7 @@ cm_render_verify() {
       ' "$waves")"
       for id in $pairs; do
         t=$((t + 1))
-        [ "$(cm_ticket_state "$id" "$ev")" = "green" ] && g=$((g + 1))
+        [ "$(cm_ticket_state "$id" "$ev")" = "done" ] && g=$((g + 1))
       done
       printf -- '- Wave %s — %s/%s ticket(s) green\n' "$wnum" "$g" "$t"
     done

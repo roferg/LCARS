@@ -449,6 +449,195 @@ rc10=0; run_mirror "$r10" 1010 || rc10=$?
 check "guard. no events.jsonl yet → exit 0, no comments" \
   "[ '$rc10' -eq 0 ] && [ \"\$(count_ops CREATE)\" -eq 0 ]"
 
+# --- T9 (BUG A): Research Q&A blocks are separated by a BLANK LINE so a `>`
+# blockquote can't lazily continue onto the next question, and a MULTI-LINE
+# answer has EVERY line `>`-prefixed. -----------------------------------------
+r11="$(new_repo plan)"; make_gh_stub "$r11/gh"; gh_env "$r11"
+m11="$(mdir "$r11")"
+mkdir -p "$m11/research"
+# Two questions; the SECOND has a multi-line recommendation (json_str leaves the
+# \n escapes literal, the renderer normalises + prefixes each line with "> ").
+cat >"$m11/research/1.json" <<'EOF'
+{"question":"Which theme tokens?","recommendation":"Reuse the existing CSS vars."}
+EOF
+cat >"$m11/research/2.json" <<'EOF'
+{"question":"How to persist?","recommendation":"Store in localStorage.\nFall back to a cookie.\nDefault to system preference."}
+EOF
+cat >"$m11/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"research","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"research","type":"stage_done","detail":"2 question(s)"}
+EOF
+run_mirror "$r11" 1100
+RBODY11="$(research_body "$m11")"
+# Both questions render.
+check "T9. Q&A renders Q1" "printf '%s' \"\$RBODY11\" | qgrep -q '\\*\\*Q1\\.\\*\\*'"
+check "T9. Q&A renders Q2" "printf '%s' \"\$RBODY11\" | qgrep -q '\\*\\*Q2\\.\\*\\*'"
+# A BLANK LINE separates Q1's answer block from **Q2.** — assert that the line
+# IMMEDIATELY preceding the **Q2.** line is empty (the blockquote terminator).
+q2line="$(printf '%s\n' "$RBODY11" | grep -n '\*\*Q2\.\*\*' | head -1 | cut -d: -f1)"
+prevline="$(printf '%s\n' "$RBODY11" | sed -n "$((q2line-1))p")"
+check "T9. a BLANK LINE precedes **Q2.** (blockquote terminates)" \
+  "[ -z \"\$prevline\" ]"
+# The first answer is a blockquote.
+check "T9. Q1's answer is a blockquote" \
+  "printf '%s' \"\$RBODY11\" | qgrep -q '^> Reuse the existing CSS vars\\.'"
+# EVERY line of the multi-line answer is `>`-prefixed (all three lines).
+check "T9. multi-line answer line 1 is >-prefixed" \
+  "printf '%s' \"\$RBODY11\" | qgrep -q '^> Store in localStorage\\.'"
+check "T9. multi-line answer line 2 is >-prefixed (continuation)" \
+  "printf '%s' \"\$RBODY11\" | qgrep -q '^> Fall back to a cookie\\.'"
+check "T9. multi-line answer line 3 is >-prefixed (continuation)" \
+  "printf '%s' \"\$RBODY11\" | qgrep -q '^> Default to system preference\\.'"
+# No line of the multi-line answer leaks OUT of the blockquote (no bare line).
+check "T9. no continuation line escapes the blockquote (no bare 'Fall back')" \
+  "! printf '%s' \"\$RBODY11\" | qgrep -qE '^Fall back to a cookie'"
+# A single-question case still reads right (one Q, one >-answer).
+r12="$(new_repo plan)"; make_gh_stub "$r12/gh"; gh_env "$r12"
+m12="$(mdir "$r12")"
+mkdir -p "$m12/research"
+cat >"$m12/research/1.json" <<'EOF'
+{"question":"Only one?","recommendation":"Yes, single answer."}
+EOF
+cat >"$m12/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"research","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"research","type":"stage_done","detail":"1 question(s)"}
+EOF
+run_mirror "$r12" 1100
+RBODY12="$(research_body "$m12")"
+check "T9. single-question case renders the question" \
+  "printf '%s' \"\$RBODY12\" | qgrep -q 'Only one?'"
+check "T9. single-question case renders a >-prefixed answer" \
+  "printf '%s' \"\$RBODY12\" | qgrep -q '^> Yes, single answer\\.'"
+
+# --- T10 (BUG B): sequential checklist states — exactly ONE in-progress -------
+# t-001 green, t-002 started (current, attempt 2), t-003 never started.
+r13="$(new_repo implement)"; make_gh_stub "$r13/gh"; gh_env "$r13"
+m13="$(mdir "$r13")"
+cat >"$m13/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 201
+      },
+      {
+        "id": "t-002",
+        "issue": 202
+      },
+      {
+        "id": "t-003",
+        "issue": 203
+      }
+    ]
+  }
+]
+EOF
+cat >"$m13/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (3 ticket(s))","data":{"wave":1,"ticketCount":3,"totalWaves":1}}
+{"ts":1002,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-001 green in 1 attempt(s)","data":{"ticket":"t-001","attempts":1}}
+{"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-002 starting","data":{"ticket":"t-002","wave":1}}
+{"ts":1005,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 2 for t-002","data":{"ticket":"t-002","phase":"implementer","attempt":2}}
+EOF
+run_mirror "$r13" 1100
+IBODY13="$(stage_body "$m13" implement)"
+check "T10. t-001 is DONE (checked)" \
+  "printf '%s' \"\$IBODY13\" | qgrep -q '\\- \\[x\\].*t-001'"
+check "T10. t-002 is in progress, attempt 2" \
+  "printf '%s' \"\$IBODY13\" | qgrep -qE '\\- \\[ \\].*t-002.*in progress, attempt 2'"
+check "T10. t-003 is pending (unchecked, no in-progress)" \
+  "printf '%s' \"\$IBODY13\" | qgrep -qE '\\- \\[ \\].*t-003' && ! printf '%s' \"\$IBODY13\" | qgrep -qE 't-003.*in progress'"
+NIP13="$(printf '%s\n' "$IBODY13" | grep -c 'in progress')"
+check "T10. EXACTLY ONE line says 'in progress'" "[ \"\$NIP13\" -eq 1 ]"
+
+# --- T11 (BUG B): flagged is DISTINCT from in-progress ------------------------
+# t-001 started, attempts up to 5, then flagged; no green.
+r14="$(new_repo implement)"; make_gh_stub "$r14/gh"; gh_env "$r14"
+m14="$(mdir "$r14")"
+cat >"$m14/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 301
+      },
+      {
+        "id": "t-002",
+        "issue": 302
+      }
+    ]
+  }
+]
+EOF
+cat >"$m14/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (2 ticket(s))","data":{"wave":1,"ticketCount":2,"totalWaves":1}}
+{"ts":1002,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"implementer try 5 for t-001","data":{"ticket":"t-001","phase":"implementer","attempt":5}}
+{"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_flagged","detail":"ticket t-001 flagged after 5 attempt(s)","data":{"ticket":"t-001","attempts":5}}
+EOF
+run_mirror "$r14" 1100
+IBODY14="$(stage_body "$m14" implement)"
+check "T11. flagged ticket renders '(flagged after 5 attempts)'" \
+  "printf '%s' \"\$IBODY14\" | qgrep -qE '\\- \\[ \\].*t-001.*flagged after 5 attempts'"
+check "T11. flagged ticket is NOT marked 'in progress'" \
+  "! printf '%s' \"\$IBODY14\" | qgrep -qE 't-001.*in progress'"
+NIP14="$(printf '%s\n' "$IBODY14" | grep -c 'in progress')"
+check "T11. a flagged-only wave shows ZERO in-progress lines" "[ \"\$NIP14\" -eq 0 ]"
+
+# --- T12 (BUG B): the checklist in-progress ticket AGREES with the progress
+# line's `ticket <id>` (single source of truth). ------------------------------
+# Reuse r13 (t-002 is current). The shared progress line must name ticket t-002
+# AND the checklist's sole in-progress line must be t-002.
+PROGLINE13="$(printf '%s\n' "$IBODY13" | grep '^Wave ' | head -1)"
+check "T12. progress line names ticket t-002" \
+  "printf '%s' \"\$PROGLINE13\" | qgrep -q 'ticket t-002'"
+IPLINE13="$(printf '%s\n' "$IBODY13" | grep 'in progress' | head -1)"
+check "T12. the checklist in-progress line is t-002 (agrees with progress line)" \
+  "printf '%s' \"\$IPLINE13\" | qgrep -q 't-002'"
+
+# --- T13 (BUG B): a started-but-SUPERSEDED non-current ticket is pending, not
+# in-progress (edge case: two starts, neither green, last wins). --------------
+r15="$(new_repo implement)"; make_gh_stub "$r15/gh"; gh_env "$r15"
+m15="$(mdir "$r15")"
+cat >"$m15/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 401
+      },
+      {
+        "id": "t-002",
+        "issue": 402
+      }
+    ]
+  }
+]
+EOF
+cat >"$m15/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (2 ticket(s))","data":{"wave":1,"ticketCount":2,"totalWaves":1}}
+{"ts":1002,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-002 starting","data":{"ticket":"t-002","wave":1}}
+EOF
+run_mirror "$r15" 1100
+IBODY15="$(stage_body "$m15" implement)"
+NIP15="$(printf '%s\n' "$IBODY15" | grep -c 'in progress')"
+check "T13. only ONE in-progress despite two ticket_starts (last wins)" \
+  "[ \"\$NIP15\" -eq 1 ]"
+check "T13. the superseded earlier start (t-001) is NOT in progress" \
+  "! printf '%s' \"\$IBODY15\" | qgrep -qE 't-001.*in progress'"
+check "T13. the current (t-002) IS the in-progress ticket" \
+  "printf '%s' \"\$IBODY15\" | qgrep -qE 't-002.*in progress'"
+
 # ==========================================================================
 echo
 printf 'lcars comment-mirror: %d passed, %d failed\n' "$pass" "$fail"
