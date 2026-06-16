@@ -15,38 +15,36 @@
 <body class="lcars-serve">
 
 <!-- ════ LCARS ELBOW FRAME (S67-kanban) ════════════════════════════════════
-     The whole console is wrapped in the iconic LCARS chrome: a segmented TOP
-     BAND that sweeps, via a fat rounded ELBOW at the top-left, into a segmented
-     LEFT RAIL. The board content (columns + legend) nests INSIDE the frame —
-     to the right of the rail, below the top band. The rail/top band are fixed
+     The whole console is wrapped in the iconic LCARS chrome: a single solid
+     yellow TOP BAND that sweeps, via one fat rounded ELBOW at the top-left, into
+     a single solid yellow LEFT RAIL — band + elbow + rail are ONE continuous
+     colour L. The board content (columns + legend) nests INSIDE the frame — to
+     the right of the rail, below the top band. The rail/top band are fixed
      frame; the columns scroll horizontally WITHIN .frame-content, so the rail
      never scrolls off-screen.
      Brand / #repoMeta / #fileBtn / #conn (the old .topbar nodes) are folded
      into the top band; their ids/classes are preserved for board.js + tests. -->
 <div class="lcars-frame">
 
-  <!-- the fat rounded corner joining top band ↔ left rail -->
+  <!-- the fat rounded corner joining top band ↔ left rail (one continuous L) -->
   <div class="frame-elbow" aria-hidden="true"></div>
 
-  <!-- TOP BAND: segmented LCARS bar carrying the brand + repo meta + conn -->
+  <!-- TOP BAND: one solid yellow bar carrying the brand + repo meta + conn -->
   <div class="frame-top topbar">
-    <span class="band-block c-amber" aria-hidden="true"></span>
+    <span class="band-block" aria-hidden="true"></span>
     <div class="brand">LCARS · <b>KANBAN</b></div>
-    <span class="band-block c-peach band-grow" aria-hidden="true"></span>
+    <span class="band-block band-grow" aria-hidden="true"></span>
     <!-- which repo is this board attached to? Filled from board.meta (S70-A). -->
     <div class="repo-meta" id="repoMeta" title="attached repository"></div>
     <button class="btn go" id="fileBtn" type="button">▦ File Mission</button>
     <div class="conn" id="conn" title="live channel">● LIVE</div>
   </div>
 
-  <!-- LEFT RAIL: decorative stacked LCARS palette blocks (.rail/.ricon idiom) -->
+  <!-- LEFT RAIL: one solid yellow bar (thin black dividers for LCARS flavour) -->
   <div class="frame-rail" aria-hidden="true">
-    <div class="ricon c-amber"></div>
-    <div class="ricon c-peach"></div>
-    <div class="ricon c-violet"></div>
-    <div class="ricon c-blue"></div>
-    <div class="ricon c-teal"></div>
-    <div class="ricon c-gold rail-fill"></div>
+    <div class="rail-div"></div>
+    <div class="rail-div"></div>
+    <div class="rail-fill"></div>
   </div>
 
   <!-- CONTENT AREA: the existing board + legend, behavior unchanged -->

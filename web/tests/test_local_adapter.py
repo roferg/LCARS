@@ -152,6 +152,35 @@ class LocalAdapterTest(unittest.TestCase):
                      '\turl = git@github.com:roferg/lcars-sandbox.git\n')
         self.assertEqual(self._board()["meta"]["repo"], "roferg/lcars-sandbox")
 
+    def test_board_meta_repo_worktree_safe_when_git_is_a_file(self):
+        # Simulate a git WORKTREE: <root>/.git is a FILE (a gitdir: pointer),
+        # so the direct .git/config read CANNOT find a remote. The worktree-safe
+        # path shells `git` (stubbed here) and resolves the origin url → it must
+        # NOT fall back to the dir basename when a remote is resolvable.
+        with open(os.path.join(self.tmp, ".git"), "w") as fh:
+            fh.write("gitdir: /elsewhere/.git/worktrees/wt\n")
+        reader = lambda root: "https://github.com/roferg/LCARS.git"
+        board = LocalAdapter(self.tmp, git_url_reader=reader).board()
+        self.assertEqual(board["meta"]["repo"], "roferg/LCARS")
+        self.assertNotEqual(board["meta"]["repo"], os.path.basename(self.tmp))
+
+    def test_board_meta_repo_git_reader_takes_precedence_over_config(self):
+        # When git resolves a remote it wins over a (stale) .git/config parse.
+        gitdir = os.path.join(self.tmp, ".git")
+        os.makedirs(gitdir, exist_ok=True)
+        with open(os.path.join(gitdir, "config"), "w") as fh:
+            fh.write('[remote "origin"]\n\turl = git@github.com:old/stale.git\n')
+        reader = lambda root: "git@github.com:roferg/LCARS.git"
+        board = LocalAdapter(self.tmp, git_url_reader=reader).board()
+        self.assertEqual(board["meta"]["repo"], "roferg/LCARS")
+
+    def test_board_meta_repo_degrades_when_reader_returns_none(self):
+        # A missing/unauthed git (reader → None) must never crash; with no
+        # .git/config either, it degrades to the basename.
+        reader = lambda root: None
+        board = LocalAdapter(self.tmp, git_url_reader=reader).board()
+        self.assertEqual(board["meta"]["repo"], os.path.basename(self.tmp))
+
     def test_board_meta_mode_read_only_when_flagged(self):
         board = LocalAdapter(self.tmp, read_only=True).board()
         self.assertEqual(board["meta"]["mode"], "read-only")

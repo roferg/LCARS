@@ -15,19 +15,25 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 
 /* ════════════════════════════════════════════════════════════════════════
    LCARS ELBOW FRAME (S67-kanban). The console is wrapped in the iconic LCARS
-   chrome — a segmented top band that sweeps via a fat rounded ELBOW into a
-   segmented LEFT RAIL, with the board nested inside. Pure CSS grid; uses ONLY
-   shared --lcars-* tokens (never redefines one). All classes below are NON-token
-   layout classes added by this sheet (ADR-007).
+   chrome — a SINGLE solid-colour L: the top band sweeps via one fat rounded
+   ELBOW into the left rail, both the SAME yellow, with the board nested inside.
+   Pure CSS grid; uses ONLY shared --lcars-* tokens (never redefines one). All
+   classes/props below are NON-token layout additions by this sheet (ADR-007).
 
    Grid:  [elbow ][ top band        ]   row 1 (band height)
           [ rail ][ content (board) ]   row 2 (fills viewport)
-   The elbow cell carries the fat inner-corner radius that visually joins the
-   top band and the rail into one continuous LCARS sweep. ────────────────── */
+   The elbow, the top band and the rail all carry --frame-color and butt flush,
+   so they read as ONE continuous L. The whole frame's OUTER top-left corner is
+   a big convex round; a black pseudo-element at the elbow's inner corner carves
+   the smooth CONCAVE sweep where the L meets the content. ────────────────── */
 .lcars-frame{
-  --frame-top-h:64px;            /* top band height (local, NOT an --lcars-* token) */
-  --frame-rail-w:84px;           /* left rail width */
-  --frame-elbow-r:38px;          /* the fat inner-corner sweep — > --lcars-elbow */
+  /* The single LCARS frame colour — a muted golden yellow the captain chose.
+     Local prop, NOT an --lcars-* token (ADR-007: shared tokens are not forked). */
+  --frame-color:#f2cf33;
+  --frame-top-h:64px;            /* top band height == elbow height */
+  --frame-rail-w:84px;           /* left rail width == elbow width */
+  --frame-outer-r:52px;          /* big CONVEX round on the frame's outer TL corner */
+  --frame-inner-r:34px;          /* smaller CONCAVE bite where the L meets content */
   display:grid;
   grid-template-columns:var(--frame-rail-w) 1fr;
   grid-template-rows:var(--frame-top-h) 1fr;
@@ -35,42 +41,49 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
   background:var(--lcars-black,#030608);
   gap:0;
 }
-/* the fat rounded elbow joining the top band to the rail (row1/col1) */
+/* ELBOW (row1/col1): the solid corner block joining band ↔ rail. It is the SAME
+   --frame-color as both, so the three cells read as one shape. Its OUTER (top-
+   left) corner carries the big convex round; a black quarter-round pseudo carves
+   the concave inner sweep at its bottom-right, curving the inside of the L into
+   the content area. */
 .frame-elbow{
   grid-column:1;grid-row:1;
-  background:var(--lcars-amber);
-  border-bottom-left-radius:var(--frame-elbow-r);
-  /* the inner sweep: a black quarter-round punched out of the elbow's
-     bottom-right so the top band and rail read as one continuous curve. */
+  background:var(--frame-color);
+  border-top-left-radius:var(--frame-outer-r);
   position:relative;overflow:hidden;
 }
 .frame-elbow::after{
   content:'';position:absolute;right:0;bottom:0;
-  width:var(--frame-elbow-r);height:var(--frame-elbow-r);
+  width:var(--frame-inner-r);height:var(--frame-inner-r);
   background:var(--lcars-black,#030608);
-  border-top-left-radius:var(--frame-elbow-r);
+  border-top-left-radius:var(--frame-inner-r);
 }
-/* TOP BAND (row1/col2): segmented LCARS bar — folds the old topbar content in */
+/* TOP BAND (row1/col2): the solid yellow bar — folds the old topbar content in.
+   Same --frame-color and height as the elbow; butts flush against it. */
 .frame-top{grid-column:2;grid-row:1}
-/* LEFT RAIL (row2/col1): stacked LCARS palette blocks */
+/* LEFT RAIL (row2/col1): one solid yellow bar (NOT multi-colour blocks). Same
+   --frame-color and width as the elbow; butts flush below it. A thin black
+   divider segment or two is fine for LCARS flavour, but it is ONE colour. */
 .frame-rail{grid-column:1;grid-row:2;
-  display:flex;flex-direction:column;gap:6px;padding:6px 0 0;
-  background:var(--lcars-black,#030608);overflow:hidden}
-.frame-rail .ricon{flex:0 0 46px;border-bottom-right-radius:var(--lcars-radius,12px);
-  border-top-right-radius:var(--lcars-radius,12px);margin-right:14px}
-.frame-rail .ricon.rail-fill{flex:1 1 auto}
+  background:var(--frame-color);overflow:hidden;
+  display:flex;flex-direction:column}
+/* thin black divider notches for LCARS flavour — same single yellow bar either side */
+.frame-rail .rail-div{flex:0 0 4px;background:var(--lcars-black,#030608);margin:18px 0}
+.frame-rail .rail-fill{flex:1 1 auto}
 /* CONTENT (row2/col2): the existing board + legend; this is the scroll viewport */
 .frame-content{grid-column:2;grid-row:2;
   display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
 
 /* TOP BAND inner layout: the brand + repo meta + conn live here now. The band
-   is a horizontal flex row of solid LCARS colour blocks + the title text. */
-.topbar{background:var(--lcars-amber);
+   is ONE solid yellow bar (same --frame-color as the elbow + rail) carrying the
+   title text + meta; dark text/icons for contrast on the yellow. */
+.topbar{background:var(--frame-color);
   padding:0 24px 0 18px;display:flex;align-items:center;gap:16px;
   color:var(--lcars-text-on-color)}
-.topbar .band-block{align-self:stretch;width:30px;background:var(--lcars-peach,#ff9966)}
-.topbar .band-block.c-amber{width:18px}
-.topbar .band-block.band-grow{flex:1 1 auto;width:auto;min-width:24px;opacity:.85}
+/* a couple of thin black divider notches for LCARS flavour — the band stays one
+   colour either side of them (NOT multi-colour blocks). */
+.topbar .band-block{align-self:stretch;width:4px;background:var(--lcars-black,#030608)}
+.topbar .band-block.band-grow{flex:1 1 auto;width:auto;min-width:8px;background:transparent}
 .topbar .brand{font-family:var(--font-display);font-size:22px;letter-spacing:.3em;
   color:var(--lcars-text-on-color);text-transform:uppercase}
 .topbar .brand b{color:var(--lcars-black,#030608);font-weight:700}
@@ -305,8 +318,7 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
    compacts; the board columns keep their own horizontal scroll, never clipped
    unusably and never hidden. ── */
 @media (max-width:640px){
-  .lcars-frame{--frame-rail-w:20px;--frame-top-h:52px;--frame-elbow-r:22px}
-  .frame-rail .ricon{margin-right:4px;flex-basis:30px}
+  .lcars-frame{--frame-rail-w:22px;--frame-top-h:52px;--frame-outer-r:30px;--frame-inner-r:18px}
   .topbar{padding:0 12px 0 10px;gap:8px}
   .topbar .brand{font-size:16px;letter-spacing:.14em}
   .topbar .band-block{width:12px}

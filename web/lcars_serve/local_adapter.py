@@ -15,6 +15,7 @@ stdlib only; no model/gh/git invoked.
 import json
 import os
 import re
+import subprocess
 
 from . import board
 
@@ -22,13 +23,17 @@ from . import board
 class LocalAdapter(object):
     name = "local"
 
-    def __init__(self, repo_root, read_only=False):
+    def __init__(self, repo_root, read_only=False, git_url_reader=None):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
         # The write layer is a local-bridge concern (server decides); the
         # adapter is told whether writes are active so meta.mode is truthful.
         self.read_only = read_only
+        # Worktree-safe repo identity asks `git` for the origin url. The reader
+        # is injectable so tests stub it (no real git / network); None → the
+        # default shell-git reader.
+        self._git_url_reader = git_url_reader
 
     # -- the public surface ---------------------------------------------------
     def board(self):
@@ -42,7 +47,7 @@ class LocalAdapter(object):
 
     def _meta(self):
         return {
-            "repo": _repo_identity(self.repo_root),
+            "repo": _repo_identity(self.repo_root, self._git_url_reader),
             "adapter": "local",
             "mode": "read-only" if self.read_only else "read-write",
         }
@@ -298,21 +303,67 @@ def _truthy(v):
 
 
 # --- S70-A: repo identity (which working tree am I attached to) --------------
-# Prefer owner/name from the git origin remote; fall back to the directory
-# basename. stdlib-only and crash-proof: a missing/garbled .git/config or repo
-# root just degrades to the basename — the board never breaks on it.
+# Derive owner/name from the git ORIGIN remote, WORKTREE-SAFE. In a git worktree
+# `<repo_root>/.git` is a FILE (a `gitdir:` pointer), not a dir, so a direct
+# `.git/config` read fails and would wrongly fall back to the dir basename. So
+# the resolution chain is:
+#   1. shell `git -C <root> config --get remote.origin.url` — understands
+#      worktrees (resolves the real gitdir), the primary source of truth.
+#   2. parse `.git/config` directly — non-worktree, git-less fallback.
+#   3. the directory basename — last resort.
+# stdlib-only and crash-proof: a missing/unauthed git, no remote, garbled config
+# or no repo root all degrade gracefully — this NEVER raises.
 _REMOTE_HDR = re.compile(r'^\[remote "([^"]+)"\]')
 _URL_LINE = re.compile(r'^\s*url\s*=\s*(.+?)\s*$')
 # owner/name from either git@host:owner/name(.git) or https://host/owner/name(.git)
 _OWNER_NAME = re.compile(r'[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$')
 
 
-def _repo_identity(repo_root):
+def _repo_identity(repo_root, git_url_reader=None):
+    # 1. worktree-safe: ask git for the origin url (resolves the real gitdir).
+    url = (git_url_reader or _git_origin_url)(repo_root)
+    name = _owner_name_from_url(url)
+    if name:
+        return name
+    # 2. fallback: parse .git/config directly (non-worktree, no git on PATH).
     name = _repo_from_git_config(repo_root)
     if name:
         return name
+    # 3. last resort: the working-tree directory basename.
     base = os.path.basename(os.path.normpath(repo_root or "")) or repo_root or ""
     return base
+
+
+def _git_origin_url(repo_root):
+    """The origin remote URL via `git`, worktree-safe. None on any failure.
+
+    Injectable: tests stub the reader arg to _repo_identity so they never depend
+    on a real git/network. Here we shell `git` but swallow every error class —
+    missing binary, non-zero exit (no remote / not a repo), timeout — so the
+    board never crashes on repo identity.
+    """
+    if not repo_root:
+        return None
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", repo_root, "config", "--get", "remote.origin.url"],
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        url = out.decode("utf-8", "replace").strip()
+    except Exception:
+        return None
+    return url or None
+
+
+def _owner_name_from_url(url):
+    if not url:
+        return None
+    on = _OWNER_NAME.search(url)
+    return on.group(1) if on else None
 
 
 def _repo_from_git_config(repo_root):
@@ -339,10 +390,7 @@ def _repo_from_git_config(repo_root):
             if um:
                 urls[cur] = um.group(1)
     url = urls.get("origin") or (next(iter(urls.values())) if urls else None)
-    if not url:
-        return None
-    on = _OWNER_NAME.search(url)
-    return on.group(1) if on else None
+    return _owner_name_from_url(url)
 
 
 # --- S70-B2: ADRs (parse adr.md into [{title, body}]) ------------------------

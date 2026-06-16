@@ -190,8 +190,11 @@ function renderMeta(meta) {
   if (!host) return;
   host.innerHTML = "";
   if (!meta || !meta.repo) return;
+  // meta.repo may carry "owner/name" (GitHub-adapter parity); the topbar shows
+  // just the repo-NAME segment (strip any "owner/" prefix) — e.g. "LCARS".
+  var name = String(meta.repo).split("/").pop() || meta.repo;
   host.appendChild(el("span", "sep", "—"));
-  host.appendChild(el("span", "repo", meta.repo));
+  host.appendChild(el("span", "repo", name));
   var adapter = meta.adapter || "local";
   var ro = meta.mode === "read-only";
   var hint = el("span", "hint" + (ro ? " ro" : ""),
