@@ -574,6 +574,7 @@ flowchart LR
         <p>In a future iteration, LCARS gains a dedicated visual interface. The Kanban Board becomes a full application — not a GitHub Projects board, but a custom interface purpose-built for the Harness.</p>
         <p style="margin-top:12px">Each column corresponds to a Stage. Each Mission is a card. The human can see at a glance what is in flight, what is waiting for human input, and what is blocked. Questions from the Harness appear as badges on Mission cards. The human responds from the interface, and the Harness resumes.</p>
         <p style="margin-top:12px">This is the command-and-control layer: one view of all Missions, all Stages, all pending decisions — with the ability to start, stop, and steer from a single screen.</p>
+        <p style="margin-top:12px">A first piece of this is already live. The Harness mirrors run progress onto each Mission's <strong>GitHub issue as living, per-Stage comments</strong> — one per Stage, created once then edited in place as it advances — with collapsed research Q&amp;A, <code>#</code>-links to the sub-issues, and an Implement <strong>wave dashboard</strong> (a pace/position line plus a done / flagged / in-progress / pending ticket checklist) that refreshes on a ~60s heartbeat. It reuses the same renderer as <code>lcars status --watch</code>, so the issue, the live CLI view, and the future board never drift — giving the board (and an eventual hosted, view-only reader) a rich remote event source without anyone leaving the issue.</p>
       </div>
     </section>
 
