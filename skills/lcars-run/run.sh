@@ -3849,6 +3849,20 @@ cmd_implement() {
 
   local last_status="" last_wave=""
   while :; do
+    # User-initiated pause (ADR-005). This is the BETWEEN-WAVE/TICKET safe
+    # boundary: re-read paused at the TOP of the loop, before impl-status decides
+    # the next wave. A paused Mission stops cleanly here — it does NOT advance to
+    # Verify or start the next wave's tickets, and no worker is killed mid-step
+    # (the prior wave's workers have already returned). It stays at `implement`
+    # until `lcars resume` clears the flag.
+    if [ "$(json_raw "$STATE" paused)" = "true" ]; then
+      emit_event paused implement "paused by the captain — halted between waves"
+      printf '⏸ paused at: implement  (paused by the captain — halted between waves)\n'
+      printf 'The Mission is paused; no further tickets will run until you resume it.\n'
+      printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
+      exit 0
+    fi
+
     local st rc=0
     st="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-status --mission "$MISSION_ID" 2>&1)" || rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -4213,6 +4227,12 @@ drive_halt_awaiting() { # stage
   notify_gate awaiting-human "Needs your answer — ${first:-see \`lcars respond $MISSION_ID\`}"
 }
 
+drive_halt_paused() { # stage
+  printf '⏸ paused at: %s  (paused by the captain — halted at a safe boundary)\n' "$1"
+  printf 'The Mission is paused; no Stage will advance until you resume it.\n'
+  printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
+}
+
 drive_halt_align() {
   printf '⏹ stopped at: align  (interactive Align re-grill required)\n'
   printf 'This Mission was sent back from Verify (feedback.md is present). Align is a\n'
@@ -4228,9 +4248,21 @@ cmd_drive() {
   local summary=""
   while :; do
     # Re-read the live state each pass (a Stage subprocess just rewrote it).
-    local stage awaiting
+    local stage awaiting paused
     stage="$(json_str "$STATE" stage)"
     awaiting="$(json_raw "$STATE" awaitingHuman)"
+    paused="$(json_raw "$STATE" paused)"
+
+    # User-initiated pause (ADR-005). This is the BETWEEN-STAGES safe boundary:
+    # checked BEFORE running anything, structured like the halt blocks below. A
+    # paused Mission stops cleanly here and does NOT advance — no Stage subprocess
+    # is spawned, no worker is killed mid-step (none is running). It stays put
+    # until `lcars resume` clears the flag.
+    if [ "$paused" = "true" ]; then
+      emit_event paused "$stage" "paused by the captain — halted at the $stage boundary"
+      mirror_comments || true
+      drive_print_summary "$summary"; drive_halt_paused "$stage"; return 0
+    fi
 
     # ADR-004 issue-comment mirror (S65 living per-stage model) — harness-driven,
     # best-effort. Re-renders each STAGE's living comment (create-then-edit, keyed
