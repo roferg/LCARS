@@ -16,6 +16,7 @@
 
 <div class="topbar">
   <div class="brand">LCARS · <b>KANBAN</b></div>
+  <button class="btn go" id="fileBtn" type="button">▦ File Mission</button>
   <div class="conn" id="conn" title="live channel">● LIVE</div>
 </div>
 
@@ -28,14 +29,14 @@
   <span><i style="background:var(--lcars-pink)"></i> Child bug mission</span>
   <span><i style="background:var(--lcars-teal)"></i> Ticket green</span>
   <span class="dim" id="status">loading…</span>
+  <span class="dim viewonly" id="viewonly" hidden>● VIEW-ONLY — writes disabled</span>
 </div>
 
-<!-- mission detail drawer (read-only) -->
-<div class="drawer" id="drawer" hidden>
-  <div class="drawer-inner">
-    <button class="btn close" id="drawerClose">✕ Close</button>
-    <div id="drawerBody"></div>
-  </div>
+<!-- ════ Overlay host: every screen (detail + operator modals) renders here. ════
+     A single centered overlay (NOT the old side drawer). board.js fills #overlayBody
+     with the active screen and toggles `hidden`. -->
+<div class="overlay" id="overlay" hidden>
+  <div class="overlay-stage" id="overlayBody"><!-- screen injected by board.js --></div>
 </div>
 
 <script src="/board.js"></script>

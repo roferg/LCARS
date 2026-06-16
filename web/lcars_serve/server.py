@@ -1,16 +1,30 @@
 """The LCARS serve daemon — Python 3 stdlib only (http.server), no build step.
 
-Serves:
-  GET /                     the static read-only Kanban board (static/index.html)
+Serves (READ — always available, adapter-neutral; ADR-003):
+  GET /                     the static Kanban board (static/index.html)
   GET /<asset>              static front-end assets (board.js, lcars.css, …)
   GET /api/board            the full adapter-neutral board JSON (board.py shape)
   GET /api/mission/<id>     mission detail incl. the activity feed
   GET /api/events           a live channel (Server-Sent Events) that pushes ONE
                             update whenever mission state changes on disk
 
-Read-only — there are NO write endpoints this session; any non-GET is rejected.
-The renderer/front end depends only on the board shape, never on which adapter
-served it (ADR-003) — the adapter is injected here.
+Serves (WRITE — LOCAL-BRIDGE only; ADR-006). The write endpoints are registered
+ONLY when an `actions` (Actions) is injected — the local-adapter daemon. A
+github/view-only daemon is built with `actions=None`, so the GET read/render
+path keeps working with the GitHub adapter ALONE and every write is declined
+with 403. Each write shells out to the matching `lcars` skill (ADR-002):
+  POST /api/mission                      file an idea            → file.sh
+  POST /api/mission/<id>/start           drive the run (+override)→ run.sh drive
+  POST /api/mission/<id>/pause           pause                   → pause.sh
+  POST /api/mission/<id>/resume          resume                  → pause.sh
+  POST /api/mission/<id>/respond         answer a gate           → respond.sh
+  POST /api/mission/<id>/verify          approve | send-back     → approve|feedback.sh
+  POST /api/mission/<id>/log             preview child bugs      → (read)
+  POST /api/mission/<id>/log/run         drive the logged bugs   → resolve-logs.sh
+
+A write that changes `.git/lcars` moves the LocalAdapter fingerprint, so the
+existing /api/events SSE poll loop emits ONE coalesced `update` the board
+consumes — no second push path is needed.
 """
 import json
 import os
@@ -18,6 +32,8 @@ import posixpath
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from .actions import ActionError as _ActionError
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "static")
 STATIC_DIR = os.path.normpath(STATIC_DIR)
@@ -38,9 +54,15 @@ _CONTENT_TYPES = {
 }
 
 
-def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0):
-    """Build (do not start) the daemon bound to `adapter`. Caller serves it."""
-    handler = _build_handler(adapter, poll_interval)
+def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0,
+                actions=None):
+    """Build (do not start) the daemon bound to `adapter`. Caller serves it.
+
+    `actions` is the optional LOCAL-BRIDGE write layer (an actions.Actions). When
+    None the daemon is READ-ONLY — every write returns 403 (the github/view-only
+    shape). When present, the POST endpoints dispatch to the `lcars` skills.
+    """
+    handler = _build_handler(adapter, poll_interval, actions)
 
     class _Server(ThreadingHTTPServer):
         daemon_threads = True
@@ -57,7 +79,7 @@ def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0):
     return httpd
 
 
-def _build_handler(adapter, poll_interval):
+def _build_handler(adapter, poll_interval, actions=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -79,10 +101,85 @@ def _build_handler(adapter, poll_interval):
                 return self._sse()
             return self._static(path)
 
-        def _reject(self):
-            self._error(405, "read-only: only GET is supported")
+        # -- writes (LOCAL-BRIDGE only) --------------------------------------
+        def do_POST(self):
+            if actions is None:
+                # read-only / view-only build: the write layer is not active.
+                return self._write_error(403, "read-only: write actions are "
+                                         "disabled (this is a view-only board)")
+            path = self.path.split("?", 1)[0]
+            try:
+                body = self._read_json_body()
+                result = self._dispatch_write(path, body)
+            except _ActionError as exc:
+                return self._write_error(exc.status, exc.message)
+            except Exception as exc:  # never leak a stack to the client
+                return self._write_error(500, "write failed: %s" % exc)
+            return self._json({"ok": True, "state": result})
 
-        do_POST = _reject
+        def _write_error(self, code, msg):
+            # write responses carry {ok:false,error} (the frontend's contract).
+            body = json.dumps({"ok": False, "error": msg}).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _dispatch_write(self, path, body):
+            # POST /api/mission  — file a new mission
+            if path == "/api/mission":
+                return actions.file_mission(
+                    idea=body.get("idea"),
+                    engine=body.get("engine"),
+                    mission_type=body.get("type", "feature"))
+            # POST /api/mission/<id>/<verb>[/<sub>]
+            if path.startswith("/api/mission/"):
+                rest = path[len("/api/mission/"):]
+                parts = [p for p in rest.split("/") if p != ""]
+                if len(parts) >= 2:
+                    mid = parts[0]
+                    verb = "/".join(parts[1:])
+                    return self._dispatch_verb(mid, verb, body)
+            raise _ActionError(404, "no such write endpoint: %s" % path)
+
+        def _dispatch_verb(self, mid, verb, body):
+            if verb == "start":
+                return actions.start(mid, override=body.get("override"))
+            if verb == "pause":
+                return actions.pause(mid)
+            if verb == "resume":
+                return actions.resume(mid)
+            if verb == "respond":
+                return actions.respond(mid, answer=body.get("answer"))
+            if verb == "verify":
+                return actions.verify(mid, decision=body.get("decision"),
+                                      feedback=body.get("feedback"))
+            if verb == "log":
+                return actions.log_preview(mid)
+            if verb == "log/run":
+                return actions.log_run(mid)
+            raise _ActionError(404, "no such action: %s" % verb)
+
+        def _read_json_body(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0:
+                return {}
+            raw = self.rfile.read(length)
+            if not raw:
+                return {}
+            try:
+                obj = json.loads(raw.decode("utf-8"))
+            except ValueError:
+                raise _ActionError(400, "request body is not valid JSON")
+            if not isinstance(obj, dict):
+                raise _ActionError(400, "request body must be a JSON object")
+            return obj
+
+        def _reject(self):
+            self._error(405, "method not supported")
+
         do_PUT = _reject
         do_DELETE = _reject
         do_PATCH = _reject

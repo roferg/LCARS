@@ -99,11 +99,14 @@ class ServerTest(unittest.TestCase):
                          "the [hidden] rule must set display:none")
 
     def test_writes_are_rejected_read_only(self):
-        url = "http://127.0.0.1:%d/api/board" % self.port
+        # This daemon is built with no Actions (the read-only / view-only shape),
+        # so a POST is declined — 403 (write layer inactive). The S68 write layer
+        # is only active when an Actions is injected (see test_write_endpoints).
+        url = "http://127.0.0.1:%d/api/mission/m-001/start" % self.port
         req = urllib.request.Request(url, data=b"{}", method="POST")
         with self.assertRaises(urllib.error.HTTPError) as cm:
             urllib.request.urlopen(req, timeout=5)
-        self.assertIn(cm.exception.code, (405, 501))
+        self.assertIn(cm.exception.code, (403, 405, 501))
 
     def test_live_channel_emits_exactly_one_update_on_state_change(self):
         url = "http://127.0.0.1:%d/api/events" % self.port
@@ -196,6 +199,90 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(len(new), 1,
                          "burst of writes must coalesce to ONE update, got %d: %r"
                          % (len(new), new))
+
+
+class FrontEndAssetsTest(unittest.TestCase):
+    """S68 front end: the daemon must SERVE assets carrying the operator-screen
+    structures the downstream browser tester drives. We can't run a browser (no
+    node/jsdom — ADR-007), so we assert the served HTML/JS/CSS contain the stable
+    selectors/ids/classes for the eight screens + the detail two-pane. This is a
+    static-content check, mirroring the static-serving idiom above."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        fx.plant_simple(self.tmp, "m-001", stage="implement", issue=142)
+        self.adapter = LocalAdapter(self.tmp)
+        self.httpd = make_server(self.adapter, host="127.0.0.1", port=0,
+                                 poll_interval=0.05)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def _text(self, path):
+        url = "http://127.0.0.1:%d%s" % (self.port, path)
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return r.read().decode("utf-8")
+
+    def test_index_has_overlay_host_and_file_entry(self):
+        html = self._text("/")
+        # the centered overlay host replaces the old right-side drawer.
+        self.assertIn('id="overlay"', html)
+        self.assertIn('id="overlayBody"', html)
+        # the File-a-mission entry control.
+        self.assertIn('id="fileBtn"', html)
+        # the view-only affordance host.
+        self.assertIn('id="viewonly"', html)
+        # the old drawer markup is gone (replaced by the modal overlay).
+        self.assertNotIn('id="drawer"', html)
+
+    def test_board_js_has_all_eight_screens(self):
+        js = self._text("/board.js")
+        for fn in ("openFile", "openLaunch", "openRespond", "openVerify",
+                   "openLog", "openDetail"):
+            self.assertIn(fn, js, "board.js must define %s" % fn)
+        # every write endpoint the contract lists must be POSTed from the JS.
+        for ep in ("/api/mission", "/start", "/pause", "/resume", "/respond",
+                   "/verify", "/log", "/log/run"):
+            self.assertIn(ep, js, "board.js must call %s" % ep)
+        # approve vs send-back are the two distinct verify decisions.
+        self.assertIn('"approve"', js)
+        self.assertIn('"send-back"', js)
+
+    def test_board_js_handles_view_only_403(self):
+        js = self._text("/board.js")
+        # a 403 must flip the board to view-only, not break the read path.
+        self.assertIn("403", js)
+        self.assertIn("markViewOnly", js)
+        self.assertIn("writesActive", js)
+
+    def test_board_css_has_detail_twopane_and_screen_classes(self):
+        css = self._text("/board.css")
+        # detail two-pane (mock .detail-grid / .det-head / .det-body / .feed)
+        for sel in (".detail-grid", ".det-head", ".det-body", ".feed", ".evt",
+                    ".marker", ".tabbar", ".tabpane", ".check", ".mix",
+                    ".modal", ".modal-head", ".twopane", ".card-ctrl"):
+            self.assertIn(sel, css, "board.css must style %s" % sel)
+        # stage-coloured markers for the feed.
+        self.assertIn(".evt.s-research", css)
+        self.assertIn(".evt.s-gate", css)
+        # the overlay host (centered modal, not a side drawer).
+        self.assertIn(".overlay", css)
+
+    def test_board_css_does_not_redefine_lcars_tokens(self):
+        """ADR-007: board.css must NOT redefine any --lcars-* token (the shared
+        docs/lcars.css owns them). It may REFERENCE var(--lcars-*) freely."""
+        css = self._text("/board.css")
+        import re
+        # a token DEFINITION looks like `--lcars-foo:` NOT inside a var(...).
+        # strip every var(--lcars-...) reference first, then any remaining
+        # `--lcars-...:` is an illegal redefinition.
+        stripped = re.sub(r"var\(\s*--lcars-[^)]*\)", "", css)
+        self.assertNotRegex(stripped, r"--lcars-[a-z-]+\s*:",
+                            "board.css must not DEFINE any --lcars-* token")
 
 
 if __name__ == "__main__":

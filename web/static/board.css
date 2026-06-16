@@ -1,8 +1,9 @@
 /* ════════════════════════════════════════════════════════════════════════
-   LCARS Kanban board layout. The PALETTE/tokens come from the SHARED
-   docs/lcars.css (--lcars-* vars); this sheet only adds the board / card /
-   pill geometry, vendored from kanban-vision.html (the visual contract). It
-   does NOT redefine any --lcars-* token (ADR-007: one shared token source).
+   LCARS Kanban board + operator-screen layout. The PALETTE/tokens come from
+   the SHARED docs/lcars.css (--lcars-* vars); this sheet only adds the board /
+   card / pill / modal / detail geometry, vendored from kanban-vision.html (the
+   visual contract). It does NOT redefine any --lcars-* token (ADR-007: one
+   shared token source).
    ════════════════════════════════════════════════════════════════════════ */
 :root{
   --font-display:'Antonio','Oxanium',-apple-system,'Segoe UI',sans-serif;
@@ -33,6 +34,7 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .pill.high{background:rgba(255,51,68,.16);border-color:var(--lcars-red);color:#ff8a96}
 .pill.await{background:var(--lcars-red);border-color:var(--lcars-red);color:#fff;animation:awaitpulse 1.4s infinite}
 .pill.stage{background:var(--lcars-violet,#9977ff);border-color:var(--lcars-violet,#9977ff);color:#fff}
+.pill.go{background:var(--lcars-teal);border-color:var(--lcars-teal);color:var(--lcars-text-on-color)}
 @keyframes awaitpulse{0%,100%{box-shadow:0 0 0 0 rgba(255,51,68,.5)}50%{box-shadow:0 0 0 6px rgba(255,51,68,0)}}
 
 /* ── kanban board ── */
@@ -71,32 +73,152 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .tk{display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim)}
 .tk .dot{width:8px;height:8px;border-radius:50%;background:var(--lcars-text-dim);flex:0 0 8px}
 .tk.done .dot{background:var(--lcars-teal)} .tk.done{color:var(--lcars-teal)}
-.tk.in-progress .dot{background:var(--lcars-amber);animation:awaitpulse 1.2s infinite} .tk.in-progress{color:var(--lcars-amber)}
+.tk.in-progress .dot,.tk.run .dot{background:var(--lcars-amber);animation:awaitpulse 1.2s infinite}
+.tk.in-progress,.tk.run{color:var(--lcars-amber)}
 .tk.flagged .dot{background:var(--lcars-red)} .tk.flagged{color:#ff8a96}
+/* inline card controls (mock #card .card-ctrl) */
+.card-ctrl{display:flex;gap:6px;margin-top:9px}
 
 .legend{display:flex;flex-wrap:wrap;gap:14px;padding:10px 28px;font-size:12px;color:var(--lcars-text-dim)}
 .legend span{display:flex;align-items:center;gap:6px}
 .legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.legend .viewonly{color:var(--lcars-amber)}
 .dim{color:var(--lcars-text-dim)}
 
+/* ── buttons (mock .btn / .go / .warn / .danger / .big) ── */
 .btn{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;font-size:10px;
   padding:4px 10px;border-radius:12px;border:1px solid var(--lcars-border);
   background:var(--lcars-card-alt);color:var(--lcars-text-bright);cursor:pointer}
 .btn:hover{border-color:var(--lcars-amber)}
+.btn.go{background:var(--lcars-teal);color:var(--lcars-text-on-color);border-color:var(--lcars-teal)}
+.btn.warn{background:var(--lcars-amber);color:var(--lcars-text-on-color);border-color:var(--lcars-amber)}
+.btn.danger{background:transparent;color:#ff8a96;border-color:var(--lcars-red)}
+.btn.big{font-size:13px;padding:9px 20px}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.btn[disabled]:hover{border-color:var(--lcars-border)}
 
-/* ── detail drawer ── */
-/* The drawer ships `hidden` and board.js toggles it. An author `display:flex`
-   on `.drawer` would beat the UA `[hidden]{display:none}` rule, so the drawer
-   would render even while hidden and could never be dismissed (S67 fix-loop r2,
-   DEFECT 1). Restate the hide here as an author rule so `hidden` actually hides
-   it; the explicit display keeps it ahead of `.drawer`'s flex regardless of
-   source order. */
+/* ── overlay host: a single centered modal stage ── */
 [hidden]{display:none !important}
-.drawer{position:fixed;inset:0;background:rgba(3,6,8,.7);z-index:100;display:flex;justify-content:flex-end}
-.drawer-inner{width:min(560px,92vw);height:100%;overflow:auto;background:var(--lcars-surface,#070d1c);
-  border-left:2px solid var(--lcars-amber);padding:20px}
-.drawer .close{float:right}
-.evt{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid rgba(80,104,138,.14)}
-.evt .when{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim)}
-.evt .txt{font-size:13px;color:var(--lcars-text)}
-.drawer h3{font-family:var(--font-display);color:var(--lcars-amber);letter-spacing:.1em;margin:8px 0}
+.overlay{position:fixed;inset:0;background:rgba(3,6,8,.78);z-index:100;
+  display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 20px}
+.overlay-stage{width:100%;display:flex;justify-content:center}
+
+/* ── modal (mock .modal / .modal-head / .modal-body / .modal-foot) ── */
+.modal{background:var(--lcars-surface,#070d1c);border:1px solid var(--lcars-border-bright);
+  border-radius:14px;max-width:620px;width:100%;margin:0 auto;overflow:hidden}
+.modal.wide{max-width:680px}
+.modal.detail{max-width:1080px}
+.modal-head{background:var(--lcars-amber);color:var(--lcars-text-on-color);font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.18em;font-size:15px;padding:11px 18px;
+  display:flex;align-items:center;gap:10px}
+.modal-head.red{background:var(--lcars-red);color:#fff}
+.modal-head.teal{background:var(--lcars-teal);color:var(--lcars-text-on-color)}
+.modal-head.pink{background:var(--lcars-pink,#ff66aa);color:var(--lcars-text-on-color)}
+.modal-head .close{margin-left:auto;background:transparent;border:none;color:inherit;
+  font-family:var(--font-display);font-size:16px;cursor:pointer;letter-spacing:.1em}
+.modal-body{padding:20px}
+.modal-foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 18px;
+  border-top:1px solid var(--lcars-border);background:var(--lcars-card)}
+
+/* ── form fields (mock .field) ── */
+.field{margin-bottom:16px}
+.field label{display:block;font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.12em;font-size:11px;color:var(--lcars-peach);margin-bottom:6px}
+.field textarea,.field input{width:100%;background:var(--lcars-black);border:1px solid var(--lcars-border);
+  border-radius:8px;color:var(--lcars-text-bright);font-family:var(--font-body);font-size:14px;
+  padding:10px 12px;resize:vertical}
+.field textarea:focus,.field input:focus{outline:none;border-color:var(--lcars-amber)}
+
+/* ── choice opts (mock .choice .opt .rec) ── */
+.choice{display:flex;gap:8px;flex-wrap:wrap}
+.choice .opt{font-family:var(--font-body);font-size:13px;padding:8px 14px;border-radius:18px;
+  border:1px solid var(--lcars-border);background:var(--lcars-card);color:var(--lcars-text);cursor:pointer}
+.choice .opt.rec{border-color:var(--lcars-teal);background:rgba(0,204,170,.1);color:var(--lcars-teal)}
+.choice .opt.sel{border-color:var(--lcars-amber);background:rgba(255,170,0,.16);color:var(--lcars-amber)}
+
+/* ── two-pane (align console — rendered-to-fidelity) ── */
+.twopane{display:grid;grid-template-columns:1.3fr 1fr;gap:0;min-height:380px}
+.console-l{padding:22px;border-right:1px solid var(--lcars-border);display:flex;flex-direction:column}
+.console-r{padding:18px;background:var(--lcars-black)}
+.qcount{font-family:var(--font-mono);font-size:11px;color:var(--lcars-text-dim);letter-spacing:.1em;margin-bottom:8px}
+.qtext{font-family:var(--font-display);font-size:20px;letter-spacing:.04em;color:var(--lcars-text-bright);
+  line-height:1.25;margin-bottom:16px}
+.prd-doc{font-family:var(--font-mono);font-size:12px;line-height:1.7;color:var(--lcars-text)}
+
+/* ── mission detail (mock .detail-grid / .det-head / .det-body / .feed) ── */
+.detail-grid{display:grid;grid-template-columns:1fr;gap:0;background:var(--lcars-surface);
+  border:1px solid var(--lcars-border-bright);border-radius:14px;overflow:hidden;width:100%}
+.det-head{padding:16px 20px;border-bottom:1px solid var(--lcars-border);background:var(--lcars-surface)}
+.det-head .row1{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.det-head h3{margin:0;color:var(--lcars-text-bright);font-family:var(--font-display);
+  letter-spacing:.06em;font-size:20px}
+.det-actions{margin-left:auto;display:flex;gap:8px}
+.det-body{display:grid;grid-template-columns:1.4fr 1fr;gap:0;min-height:400px}
+.feed{padding:18px 20px;border-right:1px solid var(--lcars-border);overflow:auto;max-height:62vh}
+.feed h4{margin:0 0 14px;font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.18em;color:var(--lcars-peach);font-size:14px}
+.evt{display:flex;gap:12px;padding-bottom:16px;position:relative}
+.evt::before{content:'';position:absolute;left:7px;top:18px;bottom:-2px;width:2px;background:var(--lcars-border)}
+.evt:last-child::before{display:none}
+.evt .marker{width:16px;height:16px;border-radius:50%;flex:0 0 16px;margin-top:2px;border:3px solid var(--lcars-black)}
+.evt .marker{background:var(--lcars-text-dim)}
+.evt.s-align .marker{background:var(--lcars-amber)}
+.evt.s-research .marker{background:var(--lcars-peach)}
+.evt.s-validate .marker{background:var(--lcars-blue,#4499ff)}
+.evt.s-plan .marker{background:var(--lcars-gold,#ffdd44)}
+.evt.s-plan-review .marker{background:var(--lcars-violet,#9977ff)}
+.evt.s-schedule .marker{background:var(--lcars-pink,#ff66aa)}
+.evt.s-implement .marker{background:var(--lcars-amber)}
+.evt.s-gate .marker{background:var(--lcars-red)}
+.evt.s-verify .marker{background:var(--lcars-red)}
+.evt.s-done .marker{background:var(--lcars-teal)}
+.evt .ec .when{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);letter-spacing:.06em}
+.evt .ec .head{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;
+  font-size:12px;color:var(--lcars-text-bright)}
+.evt .ec .txt{font-size:13px;color:var(--lcars-text)}
+.evt .ec .bot{font-family:var(--font-display);font-size:9px;letter-spacing:.1em;
+  color:var(--lcars-violet,#9977ff);text-transform:uppercase}
+.feed .empty{color:var(--lcars-text-dim);font-size:13px}
+
+/* ── tabs (mock .tabs / .tabbar .tab .on / .tabpane .on) ── */
+.tabs{padding:18px 20px;background:var(--lcars-black);overflow:auto;max-height:62vh}
+.tabbar{display:flex;gap:6px;margin-bottom:14px}
+.tabbar .tab{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;font-size:11px;
+  padding:5px 12px;border-radius:12px;background:var(--lcars-card-alt);color:var(--lcars-text);
+  border:1px solid var(--lcars-border);cursor:pointer}
+.tabbar .tab.on{background:var(--lcars-amber);color:var(--lcars-text-on-color)}
+.tabpane{display:none;font-size:13px} .tabpane.on{display:block}
+.crit{display:flex;gap:7px;align-items:center;margin:4px 0;font-size:12px}
+.adr{border-left:3px solid var(--lcars-violet,#9977ff);padding:6px 12px;margin-bottom:10px;
+  background:rgba(153,119,255,.06);border-radius:0 6px 6px 0}
+.adr b{color:var(--lcars-violet,#9977ff);font-family:var(--font-display);letter-spacing:.06em;font-size:12px}
+
+/* ── human-clickable acceptance-criteria checklist (mock .check / .pending / .mk) ── */
+.check{display:flex;align-items:flex-start;gap:10px;padding:7px 0;
+  border-bottom:1px solid rgba(80,104,138,.14);cursor:pointer}
+.check .mk{width:20px;height:20px;border-radius:5px;background:var(--lcars-teal);
+  color:var(--lcars-text-on-color);display:flex;align-items:center;justify-content:center;
+  font-size:12px;flex:0 0 20px}
+.check.pending .mk{background:var(--lcars-card-alt);color:var(--lcars-text-dim)}
+
+/* ── per-stage model mix table (mock .mix / .tier .opus .sonnet) ── */
+.mix{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}
+.mix th,.mix td{text-align:left;padding:5px 8px;border-bottom:1px solid rgba(80,104,138,.16)}
+.mix th{font-family:var(--font-display);letter-spacing:.1em;text-transform:uppercase;color:var(--lcars-peach);font-size:10px}
+.mix td .tier{font-family:var(--font-display);font-size:10px;letter-spacing:.08em;padding:1px 8px;border-radius:10px}
+.mix td .tier.opus{background:rgba(255,51,68,.16);color:#ff8a96}
+.mix td .tier.sonnet{background:rgba(0,204,170,.14);color:var(--lcars-teal)}
+
+.tag{font-family:var(--font-display);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--lcars-text-on-color);background:var(--lcars-peach,#ff9966);padding:2px 9px;border-radius:10px}
+.note{border-left:3px solid var(--lcars-blue,#4499ff);background:rgba(68,153,255,.06);
+  padding:10px 16px;border-radius:0 8px 8px 0;margin:14px 0;color:var(--lcars-text);font-size:14px}
+.note.amber{border-color:var(--lcars-amber);background:rgba(255,170,0,.06)}
+.busy{font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
+  font-size:11px;color:var(--lcars-amber)}
+.errline{color:#ff8a96;font-size:13px;margin-top:10px}
+
+@media (max-width:880px){
+  .det-body{grid-template-columns:1fr}
+  .feed{border-right:none;border-bottom:1px solid var(--lcars-border)}
+}

@@ -107,10 +107,30 @@ if [ "$ADAPTER" = "github" ] && [ -z "${LCARS_SERVE_GH_REPO:-}" ]; then
   fi
 fi
 
+# --- ENTER-the-interface: --open boots on a FREE port + opens the browser -----
+# When the captain passes --open (the one-command "enter the interface" path) we
+# pick a FREE port by default (bind 0, the daemon reads back the OS-assigned port
+# and prints the resolved URL) instead of the fixed 8765, so two boards never
+# clash. An explicit --port / LCARS_SERVE_PORT still wins. Auto-open itself is
+# guarded inside the daemon by LCARS_SERVE_NO_OPEN so tests never spawn a browser;
+# `lcars serve` with NO --open stays headless.
+WANT_OPEN=0
+HAVE_PORT_FLAG=0
+for a in "${EXTRA_ARGS[@]:-}"; do
+  case "$a" in
+    --open) WANT_OPEN=1 ;;
+    --port|--port=*) HAVE_PORT_FLAG=1 ;;
+  esac
+done
+DEFAULT_PORT="8765"
+if [ "$WANT_OPEN" -eq 1 ] && [ "$HAVE_PORT_FLAG" -eq 0 ] && [ -z "${LCARS_SERVE_PORT:-}" ]; then
+  DEFAULT_PORT="0"   # let the OS assign a free port; the daemon prints the URL.
+fi
+
 # Export the env the daemon reads (it also accepts these as flags; the flags in
 # EXTRA_ARGS take precedence over these defaults inside argparse).
 export LCARS_SERVE_HOST="${LCARS_SERVE_HOST:-127.0.0.1}"
-export LCARS_SERVE_PORT="${LCARS_SERVE_PORT:-8765}"
+export LCARS_SERVE_PORT="${LCARS_SERVE_PORT:-$DEFAULT_PORT}"
 export LCARS_SERVE_ADAPTER="$ADAPTER"
 export LCARS_SERVE_REPO_ROOT="$REPO_ROOT"
 export LCARS_GH_BIN="${LCARS_GH_BIN:-gh}"
