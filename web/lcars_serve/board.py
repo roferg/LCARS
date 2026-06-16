@@ -144,13 +144,68 @@ def pills_from_estimate(estimate):
     }
 
 
+# --- S70-B: per-stage model mix (Launch panel) ------------------------------
+# The estimator persists a per-stage model map in estimate.json under `models`,
+# keyed by the stage camelCase key, with a logical tier value ("opus"/"sonnet").
+# `rationale` is a SINGLE top-level field (one "why" for the whole mix), so the
+# same rationale text rides every row's `why`. Display labels mirror the issue
+# body's table (render_estimate_issue() in run.sh — the source of truth).
+_MODEL_STAGE_ORDER = ("research", "validate", "plan", "planReview",
+                      "implement", "verify")
+_MODEL_STAGE_LABELS = {
+    "research": "Research", "validate": "Validate", "plan": "Plan",
+    "planReview": "Plan Review", "implement": "Implement", "verify": "Verify",
+}
+
+
+def model_mix_from_estimate(estimate):
+    """Build `[{stage, tier, why}]` from estimate.json. None when absent.
+
+    Returns None (not []) when there is no `models` map, so the front end shows
+    its graceful note rather than an empty table.
+    """
+    est = estimate or {}
+    models = est.get("models")
+    if not isinstance(models, dict) or not models:
+        return None
+    why = est.get("rationale") or None
+    rows = []
+    # Keep the canonical stage order; tolerate extra/missing keys gracefully.
+    seen = set()
+    for key in _MODEL_STAGE_ORDER:
+        if key in models and models[key]:
+            rows.append({"stage": _MODEL_STAGE_LABELS.get(key, key),
+                         "tier": str(models[key]).strip().lower(),
+                         "why": why})
+            seen.add(key)
+    for key, val in models.items():
+        if key not in seen and val:
+            rows.append({"stage": _MODEL_STAGE_LABELS.get(key, key),
+                         "tier": str(val).strip().lower(), "why": why})
+    return rows or None
+
+
+def empty_meta():
+    """The board-level identity block (S70-A). Always present in the shape so the
+    front end can render "which repo am I attached to" unconditionally.
+
+    meta = {
+      "repo":    "<owner/name> or directory basename",  # never None
+      "adapter": "local" | "github",
+      "mode":    "read-write" | "read-only",            # write layer active?
+    }
+    """
+    return {"repo": "", "adapter": "local", "mode": "read-only"}
+
+
 def empty_board():
     return {"stages": list(STAGES),
             "columns": {s: [] for s in STAGES},
-            "missions": []}
+            "missions": [],
+            "meta": empty_meta()}
 
 
-def assemble(cards):
+def assemble(cards, meta=None):
     """Place a flat list of mission cards into columns by their `stage`.
 
     Every card lands in its Stage column — INCLUDING 'done' (PRD §5.1: nine
@@ -165,6 +220,8 @@ def assemble(cards):
     deliberately not built now (simple + PRD-faithful for this round).
     """
     board = empty_board()
+    if isinstance(meta, dict):
+        board["meta"].update({k: v for k, v in meta.items() if v is not None})
     for c in cards:
         stage = normalise_stage(c.get("stage"))
         c["stage"] = stage

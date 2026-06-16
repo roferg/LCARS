@@ -31,10 +31,13 @@ from .server import make_server
 from .actions import build_actions
 
 
-def build_adapter(kind, repo_root, gh_bin, repo):
+def build_adapter(kind, repo_root, gh_bin, repo, read_only=False):
     if kind == "github":
+        # the github adapter is always view-only (meta.mode = read-only).
         return GitHubAdapter(gh_bin=gh_bin, repo=repo)
-    return LocalAdapter(repo_root)
+    # the local adapter is told whether the write layer is active so meta.mode
+    # reflects the daemon's true read/write posture (S70-A).
+    return LocalAdapter(repo_root, read_only=read_only)
 
 
 def should_open(open_flag, env=None):
@@ -81,14 +84,17 @@ def main(argv=None):
                     help="serve the read/render path only — no write endpoints")
     args = ap.parse_args(argv)
 
-    adapter = build_adapter(args.adapter, args.repo_root, args.gh_bin, args.gh_repo)
-
     # The write layer is a LOCAL-BRIDGE concern (ADR-006). It is active ONLY for
     # the local adapter and only when --read-only is not set; the github /
     # view-only daemon (and an explicit --read-only) runs with no Actions, so
     # every POST is declined and the GET path is untouched.
+    writes_active = (args.adapter == "local" and not args.read_only)
+
+    adapter = build_adapter(args.adapter, args.repo_root, args.gh_bin,
+                            args.gh_repo, read_only=not writes_active)
+
     actions = None
-    if args.adapter == "local" and not args.read_only:
+    if writes_active:
         actions = build_actions(
             repo_root=args.repo_root,
             worker_bin=os.environ.get("LCARS_WORKER_BIN"),

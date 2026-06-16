@@ -14,6 +14,7 @@ stdlib only; no model/gh/git invoked.
 """
 import json
 import os
+import re
 
 from . import board
 
@@ -21,10 +22,13 @@ from . import board
 class LocalAdapter(object):
     name = "local"
 
-    def __init__(self, repo_root):
+    def __init__(self, repo_root, read_only=False):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
+        # The write layer is a local-bridge concern (server decides); the
+        # adapter is told whether writes are active so meta.mode is truthful.
+        self.read_only = read_only
 
     # -- the public surface ---------------------------------------------------
     def board(self):
@@ -34,7 +38,14 @@ class LocalAdapter(object):
         cards.sort(key=lambda c: (c.get("_created") or "", c["id"]), reverse=True)
         for c in cards:
             c.pop("_created", None)
-        return board.assemble(cards)
+        return board.assemble(cards, meta=self._meta())
+
+    def _meta(self):
+        return {
+            "repo": _repo_identity(self.repo_root),
+            "adapter": "local",
+            "mode": "read-only" if self.read_only else "read-write",
+        }
 
     def mission(self, mid):
         d = os.path.join(self.missions_dir, mid)
@@ -45,6 +56,9 @@ class LocalAdapter(object):
             return None
         card.pop("_created", None)
         card["activity"] = self._activity(d)
+        # detail-only shape fields (S70-B): ADRs + verbatim acceptance criteria.
+        card["adrs"] = _adrs_from_file(os.path.join(d, "adr.md"))
+        card["criteria"] = _criteria_from_prd(os.path.join(d, "prd.md"))
         return card
 
     def fingerprint(self):
@@ -97,7 +111,9 @@ class LocalAdapter(object):
                 question = pending.get("question")
 
         estimate = _load_json(os.path.join(d, "estimate.json"))
-        pills = board.pills_from_estimate(estimate if isinstance(estimate, dict) else {})
+        est = estimate if isinstance(estimate, dict) else {}
+        pills = board.pills_from_estimate(est)
+        model_mix = board.model_mix_from_estimate(est)
 
         plan = _load_json(os.path.join(d, "plan.json"))
         waves = _load_json(os.path.join(d, "waves.json"))
@@ -124,6 +140,7 @@ class LocalAdapter(object):
             "question": question if awaiting else None,
             "linked": _truthy(state.get("linked")),
             "pills": pills,
+            "modelMix": model_mix,
             "progress": progress,
             "tickets": tickets,
             "_created": state.get("created") or "",
@@ -278,3 +295,123 @@ def _load_jsonl(path):
 
 def _truthy(v):
     return v is True or (isinstance(v, str) and v.strip().lower() == "true")
+
+
+# --- S70-A: repo identity (which working tree am I attached to) --------------
+# Prefer owner/name from the git origin remote; fall back to the directory
+# basename. stdlib-only and crash-proof: a missing/garbled .git/config or repo
+# root just degrades to the basename — the board never breaks on it.
+_REMOTE_HDR = re.compile(r'^\[remote "([^"]+)"\]')
+_URL_LINE = re.compile(r'^\s*url\s*=\s*(.+?)\s*$')
+# owner/name from either git@host:owner/name(.git) or https://host/owner/name(.git)
+_OWNER_NAME = re.compile(r'[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$')
+
+
+def _repo_identity(repo_root):
+    name = _repo_from_git_config(repo_root)
+    if name:
+        return name
+    base = os.path.basename(os.path.normpath(repo_root or "")) or repo_root or ""
+    return base
+
+
+def _repo_from_git_config(repo_root):
+    if not repo_root:
+        return None
+    cfg = os.path.join(repo_root, ".git", "config")
+    try:
+        with open(cfg) as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    # collect every remote's url, then prefer origin.
+    urls = {}
+    cur = None
+    for line in lines:
+        m = _REMOTE_HDR.match(line.strip())
+        if m:
+            cur = m.group(1)
+            continue
+        if cur is not None and line.strip().startswith("["):
+            cur = None
+        if cur is not None:
+            um = _URL_LINE.match(line)
+            if um:
+                urls[cur] = um.group(1)
+    url = urls.get("origin") or (next(iter(urls.values())) if urls else None)
+    if not url:
+        return None
+    on = _OWNER_NAME.search(url)
+    return on.group(1) if on else None
+
+
+# --- S70-B2: ADRs (parse adr.md into [{title, body}]) ------------------------
+# adr.md is COMPLEX-mission-only (file.sh writes it from Align). Structure:
+#   # Architecture Decision Records: <title>
+#   ## ADR-001: <short decision title>
+#   **Context:** ...  **Decision:** ...  (etc.)
+# Each `## ADR-NNN:` (or any `## ` heading after the doc title) opens one record;
+# its body is everything up to the next `## ` heading. Absent file → None.
+def _adrs_from_file(path):
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    rows = []
+    title = None
+    body_lines = []
+
+    def flush():
+        if title is not None:
+            rows.append({"title": title, "body": "\n".join(body_lines).strip()})
+
+    for line in text.splitlines():
+        if line.startswith("## "):
+            flush()
+            title = line[3:].strip()
+            body_lines = []
+        elif title is not None:
+            body_lines.append(line)
+        # lines before the first `## ` (the `# …` doc title) are ignored.
+    flush()
+    return rows or None
+
+
+# --- S70-B3: verbatim acceptance criteria (parse prd.md) ---------------------
+# prd.md carries a `**Acceptance Criteria:**` section (file.sh requires it),
+# followed by `- ` bullets, ending at the next `**…:**` section header. Bullets
+# are plain (`- text`); markdown checkboxes (`- [x]`/`- [ ]`) are tolerated and
+# map to the `done` flag. Absent file / missing section → None.
+_AC_HEADER = re.compile(r'^\s*\*\*Acceptance Criteria:\*\*\s*$', re.I)
+_SECTION_HEADER = re.compile(r'^\s*\*\*[^*]+:\*\*\s*$')
+_BULLET = re.compile(r'^\s*[-*]\s+(.*\S)\s*$')
+_CHECKBOX = re.compile(r'^\[( |x|X)\]\s*(.*)$')
+
+
+def _criteria_from_prd(path):
+    try:
+        with open(path) as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    rows = []
+    in_ac = False
+    for line in lines:
+        if _AC_HEADER.match(line):
+            in_ac = True
+            continue
+        if in_ac and _SECTION_HEADER.match(line):
+            break  # next section ends the criteria block
+        if in_ac:
+            mb = _BULLET.match(line)
+            if mb:
+                text = mb.group(1).strip()
+                done = False
+                cb = _CHECKBOX.match(text)
+                if cb:
+                    done = cb.group(1).lower() == "x"
+                    text = cb.group(2).strip()
+                if text:
+                    rows.append({"text": text, "done": done})
+    return rows or None

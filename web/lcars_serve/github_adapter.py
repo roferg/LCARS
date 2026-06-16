@@ -43,7 +43,17 @@ class GitHubAdapter(object):
         cards.sort(key=lambda c: (c.get("_n") or 0), reverse=True)
         for c in cards:
             c.pop("_n", None)
-        return board.assemble(cards)
+        return board.assemble(cards, meta=self._meta())
+
+    def _meta(self):
+        # The github adapter is the hosted view-only seam: always read-only, and
+        # its repo identity is exactly the owner/name it was constructed with
+        # (None → empty string; the front end then shows just the adapter hint).
+        return {
+            "repo": self.repo or "",
+            "adapter": "github",
+            "mode": "read-only",
+        }
 
     def mission(self, mid):
         issues = self._fetch_issues()
@@ -56,6 +66,12 @@ class GitHubAdapter(object):
             return None
         card.pop("_n", None)
         card["activity"] = self._activity(issue)
+        # detail-only shape fields (S70-B): the github body does not reliably
+        # carry the mission's ADRs or the verbatim PRD acceptance criteria, so
+        # both are null here (the front end shows its graceful note). modelMix is
+        # already on the card from the body's Estimate table.
+        card["adrs"] = None
+        card["criteria"] = None
         return card
 
     def fingerprint(self):
@@ -98,6 +114,7 @@ class GitHubAdapter(object):
         paused = _PAUSED_LABEL in labels
         body = issue.get("body") or ""
         pills = _pills_from_body(body)
+        model_mix = _model_mix_from_body(body)
         question = _gate_question(issue) if awaiting else None
         tickets = _tickets_for(issue, issues)
         progress = None  # GitHub progress lives in the mirrored Implement comment
@@ -113,6 +130,7 @@ class GitHubAdapter(object):
             "question": question,
             "linked": _LINKED_LABEL in labels,
             "pills": pills,
+            "modelMix": model_mix,
             "progress": progress,
             "tickets": tickets,
             "_n": issue.get("number") or 0,
@@ -206,6 +224,56 @@ def _pills_from_body(body):
         "reasoning": board.difficulty_pill("reasoning", reasoning) if reasoning else None,
         "implementation": board.difficulty_pill("implementation", impl) if impl else None,
     }
+
+
+# S70-B1: parse the issue body's "**Per-stage model mix:**" markdown table that
+# render_estimate_issue() (run.sh, the source of truth) emits:
+#
+#     **Per-stage model mix:**
+#
+#     | Stage | Model |
+#     | --- | --- |
+#     | Research | Opus |
+#     | Implement | Opus |
+#
+# into the SAME [{stage, tier, why}] shape the local adapter derives from
+# estimate.json. Stage cells are already the display labels ("Plan Review"); tier
+# cells are Capitalised ("Opus"/"Sonnet") → lowered. `why` is None (the github
+# body keeps the rationale as free prose, not a per-row field). No table → None.
+_MIX_HEADER_RE = re.compile(r"\*\*Per-stage model mix:\*\*", re.I)
+_MIX_ROW_RE = re.compile(r"^\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*$")
+
+
+def _model_mix_from_body(body):
+    if not body:
+        return None
+    m = _MIX_HEADER_RE.search(body)
+    if not m:
+        return None
+    rows = []
+    after = body[m.end():].splitlines()
+    started = False
+    for line in after:
+        cell = _MIX_ROW_RE.match(line)
+        if not cell:
+            # a blank line before the table is fine; a non-table line after the
+            # table body ends the section.
+            if started:
+                break
+            if line.strip() == "":
+                continue
+            break
+        a, b = cell.group(1).strip(), cell.group(2).strip()
+        # skip the header row ("Stage | Model") and the divider ("--- | ---").
+        if a.lower() == "stage" and b.lower() == "model":
+            started = True
+            continue
+        if set(a) <= set("-: ") and set(b) <= set("-: "):
+            started = True
+            continue
+        started = True
+        rows.append({"stage": a, "tier": b.lower(), "why": None})
+    return rows or None
 
 
 def _level_search(rx, body):

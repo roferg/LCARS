@@ -13,14 +13,23 @@ ONLY when an `actions` (Actions) is injected — the local-adapter daemon. A
 github/view-only daemon is built with `actions=None`, so the GET read/render
 path keeps working with the GitHub adapter ALONE and every write is declined
 with 403. Each write shells out to the matching `lcars` skill (ADR-002):
+  POST /api/align/start                  open an Align grilling   → worker turn
+  POST /api/align/<sid>/answer           next interview turn      → worker turn
+                                         (on done → file.sh)
   POST /api/mission                      file an idea            → file.sh
   POST /api/mission/<id>/start           drive the run (+override)→ run.sh drive
   POST /api/mission/<id>/pause           pause                   → pause.sh
   POST /api/mission/<id>/resume          resume                  → pause.sh
   POST /api/mission/<id>/respond         answer a gate           → respond.sh
   POST /api/mission/<id>/verify          approve | send-back     → approve|feedback.sh
-  POST /api/mission/<id>/log             preview child bugs      → (read)
-  POST /api/mission/<id>/log/run         drive the logged bugs   → resolve-logs.sh
+  POST /api/mission/<id>/log             preview/author child bugs→ worker | (read)
+  POST /api/mission/<id>/log/run         file + drive logged bugs → log.sh+resolve-logs.sh
+
+The Align console is multi-turn: each POST spawns ONE cold worker turn (engine
+$LCARS_WORKER_BIN) driving the EXISTING lcars-file grilling instructions with the
+accumulated transcript; the daemon owns the loop + in-memory session (ADR-002 —
+it DRIVES the align prompt, never reimplements it). The HTTP request/response
+cycle IS the human gate (no server-side timeout).
 
 A write that changes `.git/lcars` moves the LocalAdapter fingerprint, so the
 existing /api/events SSE poll loop emits ONE coalesced `update` the board
@@ -128,6 +137,18 @@ def _build_handler(adapter, poll_interval, actions=None):
             self.wfile.write(body)
 
         def _dispatch_write(self, path, body):
+            # POST /api/align/start            — open an Align grilling session
+            # POST /api/align/<sid>/answer     — answer + run the next turn
+            if path == "/api/align/start":
+                return actions.align_start(idea=body.get("idea"),
+                                           engine=body.get("engine"))
+            if path.startswith("/api/align/"):
+                rest = path[len("/api/align/"):]
+                parts = [p for p in rest.split("/") if p != ""]
+                if len(parts) == 2 and parts[1] == "answer":
+                    return actions.align_answer(parts[0],
+                                                answer=body.get("answer"))
+                raise _ActionError(404, "no such align endpoint: %s" % path)
             # POST /api/mission  — file a new mission
             if path == "/api/mission":
                 return actions.file_mission(
@@ -157,9 +178,9 @@ def _build_handler(adapter, poll_interval, actions=None):
                 return actions.verify(mid, decision=body.get("decision"),
                                       feedback=body.get("feedback"))
             if verb == "log":
-                return actions.log_preview(mid)
+                return actions.log_preview(mid, text=body.get("text"))
             if verb == "log/run":
-                return actions.log_run(mid)
+                return actions.log_run(mid, prds=body.get("prds"))
             raise _ActionError(404, "no such action: %s" % verb)
 
         def _read_json_body(self):

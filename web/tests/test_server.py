@@ -239,6 +239,28 @@ class FrontEndAssetsTest(unittest.TestCase):
         # the old drawer markup is gone (replaced by the modal overlay).
         self.assertNotIn('id="drawer"', html)
 
+    def test_index_has_topbar_repo_host(self):
+        """S70-A: the topbar carries a host the renderer fills with meta.repo
+        (which repo the board is attached to) next to the LCARS · KANBAN brand."""
+        html = self._text("/")
+        self.assertIn('id="repoMeta"', html)
+
+    def test_board_js_renders_meta_repo(self):
+        """S70-A: board.js must read board.meta and render meta.repo into the
+        topbar host on the live render path."""
+        js = self._text("/board.js")
+        self.assertIn("repoMeta", js)
+        self.assertIn(".meta", js)
+
+    def test_board_js_renders_model_mix_and_adrs_and_criteria(self):
+        """S70-B: board.js must render the new shape fields — modelMix as the
+        Launch .mix table, adrs in the detail .adr style, and the verbatim
+        criteria as .check rows."""
+        js = self._text("/board.js")
+        self.assertIn("modelMix", js)
+        self.assertIn("adrs", js)
+        self.assertIn("criteria", js)
+
     def test_board_js_has_all_eight_screens(self):
         js = self._text("/board.js")
         for fn in ("openFile", "openLaunch", "openRespond", "openVerify",

@@ -167,6 +167,41 @@ class GitHubAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "142")
         self.assertIn(201, [t["issue"] for t in m["tickets"]])
 
+    # ── S70-A: board-level meta on the github adapter ──
+    def test_board_meta_repo_and_adapter(self):
+        board = GitHubAdapter(gh_bin=self.stub, repo="roferg/lcars-sandbox").board()
+        self.assertIn("meta", board)
+        self.assertEqual(board["meta"]["repo"], "roferg/lcars-sandbox")
+        self.assertEqual(board["meta"]["adapter"], "github")
+        # the github adapter is always view-only (no write layer)
+        self.assertEqual(board["meta"]["mode"], "read-only")
+
+    # ── S70-B1: model mix parsed from the issue body's table (else None) ──
+    def test_model_mix_from_estimate_section_table(self):
+        m = self._by_id(self._board(), "142")
+        self.assertIsNotNone(m["modelMix"])
+        rows = {r["stage"]: r for r in m["modelMix"]}
+        self.assertEqual(rows["Research"]["tier"], "opus")
+        self.assertEqual(rows["Implement"]["tier"], "opus")
+
+    def test_model_mix_none_when_no_table(self):
+        # mission 143's body has an Estimate section but NO model-mix table.
+        m = self._by_id(self._board(), "143")
+        self.assertIsNone(m["modelMix"])
+
+    # ── S70-B2/B3: ADRs + criteria are null on the github adapter (not in body) ──
+    def test_detail_adrs_and_criteria_null_safe(self):
+        detail = GitHubAdapter(gh_bin=self.stub).mission("142")
+        self.assertIn("adrs", detail)
+        self.assertIn("criteria", detail)
+        self.assertIsNone(detail["adrs"])
+        self.assertIsNone(detail["criteria"])
+
+    def test_card_carries_modelmix_key(self):
+        # parity: every card must carry the modelMix key (value may be None).
+        m = self._by_id(self._board(), "143")
+        self.assertIn("modelMix", m)
+
     def test_done_in_done_column_but_not_active(self):
         """S67 fix-loop r2, DEFECT 2: a `lcars:done` mission belongs in the Done
         COLUMN with its normal card fields, but stays OUT of the active

@@ -180,6 +180,23 @@ function render(board) {
   });
   var n = (board.missions || []).length;
   setStatus(n + " active mission" + (n === 1 ? "" : "s"));
+  renderMeta(board.meta);
+}
+
+/* S70-A: render "which repo am I attached to" + adapter/mode hint in the topbar.
+   Depends only on the board shape (board.meta), updated on every live render. */
+function renderMeta(meta) {
+  var host = document.getElementById("repoMeta");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!meta || !meta.repo) return;
+  host.appendChild(el("span", "sep", "—"));
+  host.appendChild(el("span", "repo", meta.repo));
+  var adapter = meta.adapter || "local";
+  var ro = meta.mode === "read-only";
+  var hint = el("span", "hint" + (ro ? " ro" : ""),
+    adapter + (ro ? " · view-only" : ""));
+  host.appendChild(hint);
 }
 
 function setStatus(t) {
@@ -331,18 +348,179 @@ function openFile() {
   m.body.appendChild(err);
 
   m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  // "File & Begin Alignment" opens the interactive Align grilling console
+  // (S70-B) — the structured one-question-at-a-time interview, not a
+  // straight-to-skeleton create. The mission lands in Align when the console
+  // completes and file.sh runs.
   var go = applyWriteState(btn("File & Begin Alignment ▸", "go big", function () {
     var text = idea.value.trim();
     if (!text) { showErr(err, "Describe the idea first."); return; }
-    go.disabled = true; go.textContent = "Filing…";
-    postWrite("/api/mission",
-      { idea: text, engine: chosen.engine, type: "feature" },
-      function () { closeOverlay(); },
-      function (msg) { go.disabled = false; go.textContent = "File & Begin Alignment ▸"; showErr(err, msg); });
+    go.disabled = true; go.textContent = "Opening Align…";
+    openAlignConsole(text, chosen.engine, function (msg) {
+      go.disabled = false; go.textContent = "File & Begin Alignment ▸";
+      showErr(err, msg);
+    });
   }));
   m.foot.appendChild(go);
   showOverlay(m.wrap);
   idea.focus();
+}
+
+/* ════════════════ SCREEN: ALIGN GRILLING CONSOLE (#align) ════════════════ */
+/* A stateful, multi-turn interview rendered to the mockup's .twopane: one
+   question at a time on the LEFT (.qtext + .choice .opt[.rec] + free-form input
+   + .progress-line), the PRD assembling LIVE on the RIGHT (.prd-doc). Each
+   answer POSTs to /api/align/<sid>/answer; the server spawns the next worker
+   turn. On `done` file.sh has already run server-side and the board refreshes. */
+function openAlignConsole(idea, engine, onStartError) {
+  postWrite("/api/align/start", { idea: idea, engine: engine },
+    function (state) { renderAlignConsole(state); },
+    function (msg) { if (onStartError) onStartError(msg); });
+}
+
+function renderAlignConsole(state) {
+  // a session that resolved in one shot (trivial mission) → straight to done.
+  if (state.status === "done") { renderAlignDone(state); return; }
+
+  var m = modal("⊹ Alignment Console", { wide: true, headClass: "teal" });
+  var pane = el("div", "twopane");
+
+  var left = el("div", "console-l");
+  var count = el("div", "qcount");
+  var qtext = el("div", "qtext");
+  var choices = el("div", "choice");
+  var freeWrap = el("div", "field");
+  var free = el("textarea"); free.rows = 2;
+  free.placeholder = "…or answer in your own words";
+  freeWrap.appendChild(label("Your answer")); freeWrap.appendChild(free);
+  var err = el("div", "errline"); err.hidden = true;
+  var prog = el("div", "progress-line");
+  left.appendChild(count); left.appendChild(qtext); left.appendChild(choices);
+  left.appendChild(freeWrap); left.appendChild(err); left.appendChild(prog);
+
+  var right = el("div", "console-r");
+  right.appendChild(el("div", "mock-cap", "PRD · building live"));
+  var prd = el("div", "prd-doc");
+  right.appendChild(prd);
+
+  pane.appendChild(left); pane.appendChild(right);
+  m.body.appendChild(pane);
+  m.body.style.padding = "0";  // the twopane owns its own padding
+
+  var submit = applyWriteState(btn("Submit & Continue ▸", "go big", null));
+  m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  m.foot.appendChild(submit);
+
+  var sid = state.sessionId;
+  var picked = { val: null };
+  var asked = 0;
+
+  function paintPRD(md) { renderPrdDoc(prd, md || ""); }
+
+  function paintQuestion(st) {
+    asked += 1;
+    var q = st.question || {};
+    count.textContent = "Question " + asked;
+    qtext.textContent = q.text || "What would you like to refine?";
+    choices.innerHTML = ""; picked.val = null; free.value = ""; err.hidden = true;
+    (q.choices || []).forEach(function (c) {
+      var isRec = (q.recommended != null && c === q.recommended);
+      var opt = el("span", "opt" + (isRec ? " rec" : ""), c);
+      opt.addEventListener("click", function () {
+        Array.prototype.forEach.call(choices.children, function (o) {
+          o.classList.remove("sel"); });
+        opt.classList.add("sel"); picked.val = c; free.value = "";
+      });
+      choices.appendChild(opt);
+      if (isRec) { opt.classList.add("sel"); picked.val = c; }
+    });
+    // a free-form answer overrides any picked choice.
+    free.addEventListener("input", function () {
+      if (free.value.trim()) {
+        Array.prototype.forEach.call(choices.children, function (o) {
+          o.classList.remove("sel"); });
+        picked.val = null;
+      }
+    });
+    paintPRD(st.prd);
+    paintProgress(prog, asked, false);
+    submit.disabled = false; submit.textContent = "Submit & Continue ▸";
+    free.focus();
+  }
+
+  submit.onclick = function () {
+    var answer = free.value.trim() || picked.val || "";
+    if (!answer) { showErr(err, "Pick the recommendation or type an answer."); return; }
+    submit.disabled = true; submit.textContent = "Thinking…";
+    postWrite("/api/align/" + enc(sid) + "/answer", { answer: answer },
+      function (st) {
+        if (st.status === "done") { renderAlignDone(st); return; }
+        paintQuestion(st);
+      },
+      function (msg) {
+        submit.disabled = false; submit.textContent = "Submit & Continue ▸";
+        showErr(err, msg);
+      });
+  };
+
+  showOverlay(m.wrap);
+  paintQuestion(state);
+}
+
+/* Alignment reached: file.sh has already run server-side and the board has
+   refreshed (the new card sits in Align). Show a brief confirmation. */
+function renderAlignDone(state) {
+  var m = modal("⊹ Alignment Reached", { headClass: "teal" });
+  m.body.appendChild(noteEl(
+    "Alignment reached — the mission is filed and now sits in the " +
+    "Align column. The estimator runs against the codebase to set the cost " +
+    "and difficulty pills.", "amber"));
+  if (state.prd) {
+    m.body.appendChild(el("div", "mock-cap", "Final PRD"));
+    var prd = el("div", "prd-doc");
+    renderPrdDoc(prd, state.prd);
+    var box = el("div"); box.style.cssText =
+      "background:var(--lcars-black);padding:14px 16px;border-radius:8px;max-height:42vh;overflow:auto";
+    box.appendChild(prd);
+    m.body.appendChild(box);
+  }
+  m.foot.appendChild(btn("Done", "go big", closeOverlay));
+  showOverlay(m.wrap);
+  refresh();
+}
+
+/* Render PRD markdown into the .prd-doc panel: section headers (**Foo:** /
+   # / ##) become amber .h spans; bullet lines are teal .add additions. Plain
+   text passes through. Mirrors the mockup's live-PRD styling. */
+function renderPrdDoc(host, md) {
+  host.innerHTML = "";
+  (md || "").split("\n").forEach(function (line) {
+    var hdr = line.match(/^\s*\*\*(.+?):\*\*(.*)$/);
+    var heading = line.match(/^\s*#{1,3}\s+(.*)$/);
+    if (heading) {
+      host.appendChild(el("span", "h", heading[1]));
+    } else if (hdr) {
+      host.appendChild(el("span", "h", hdr[1]));
+      if (hdr[2].trim()) host.appendChild(document.createTextNode(hdr[2].trim() + "\n"));
+    } else if (/^\s*[-*]\s+/.test(line)) {
+      host.appendChild(el("div", "add", line));
+    } else {
+      host.appendChild(document.createTextNode(line + "\n"));
+    }
+  });
+}
+
+function paintProgress(host, asked, done) {
+  host.innerHTML = "";
+  // we don't know the total ahead of time; show one filled bar per answered
+  // question plus a current marker. A fixed track of 6 reads like the mockup.
+  var total = Math.max(6, asked + 1);
+  for (var i = 0; i < total; i++) {
+    var seg = el("i");
+    if (i < asked - 1) seg.classList.add("on");
+    else if (i === asked - 1) seg.classList.add(done ? "on" : "cur");
+    host.appendChild(seg);
+  }
 }
 
 /* ════════════════ SCREEN: LAUNCH / START (#launch) ════════════════ */
@@ -354,14 +532,19 @@ function openLaunch(id) {
     addPills(pills, mi.pills);
     m.body.appendChild(pills);
 
-    // per-stage model mix — not in the board shape; render a graceful note.
+    // per-stage model mix (S70-B1): render the estimator's table when present,
+    // else keep the graceful note.
     var mix = el("h4"); mix.textContent = "Per-stage model mix";
     mix.style.marginBottom = "6px";
     m.body.appendChild(mix);
-    m.body.appendChild(noteEl(
-      "The per-stage model mix is not exposed in the board shape — the cost and " +
-      "difficulty pills above are the estimator readout. The override below is " +
-      "applied in plain language at start.", "amber"));
+    if (mi.modelMix && mi.modelMix.length) {
+      m.body.appendChild(modelMixTable(mi.modelMix));
+    } else {
+      m.body.appendChild(noteEl(
+        "The per-stage model mix is not exposed for this mission — the cost and " +
+        "difficulty pills above are the estimator readout. The override below is " +
+        "applied in plain language at start.", "amber"));
+    }
 
     var ov = el("input");
     ov.placeholder = "e.g. “use Opus the whole way through” · “keep reasoning cheap”";
@@ -482,46 +665,64 @@ function openLog(id) {
 
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
+    // holds the AUTHORED bug PRDs from the last preview, passed to File & Run.
+    var authored = { prds: null };
+
     m.foot.appendChild(btn("Cancel", null, closeOverlay));
     var prev = applyWriteState(btn("Preview", null, function () {
-      prev.disabled = true; prev.textContent = "Previewing…";
-      postWrite("/api/mission/" + enc(id) + "/log", {},
+      prev.disabled = true; prev.textContent = "Splitting…";
+      // free-form text → AUTHORING preview; empty → read-only linked children.
+      postWrite("/api/mission/" + enc(id) + "/log", { text: report.value.trim() },
         function (state) {
           prev.disabled = false; prev.textContent = "Preview";
-          renderLogPreview(preview, state);
+          authored.prds = state && state.authored
+            ? (state.children || []).map(function (c) { return c.prd; })
+            : null;
+          renderLogPreview(preview, state, idLabel(mi));
         },
         function (msg) { prev.disabled = false; prev.textContent = "Preview"; showErr(err, msg); });
     }));
     var run = applyWriteState(btn("File & Run Fixes ▸", "warn big", function () {
-      run.disabled = true; run.textContent = "Running…";
-      postWrite("/api/mission/" + enc(id) + "/log/run", {},
+      run.disabled = true; run.textContent = "Filing…";
+      // pass the authored PRDs so log.sh files one bug mission per PRD, then
+      // resolve-logs drives them to the single re-verify gate.
+      postWrite("/api/mission/" + enc(id) + "/log/run", { prds: authored.prds || [] },
         function () { closeOverlay(); },
         function (msg) { run.disabled = false; run.textContent = "File & Run Fixes ▸"; showErr(err, msg); });
     }));
     m.foot.appendChild(prev);
     m.foot.appendChild(run);
     showOverlay(m.wrap);
+    report.focus();
   });
 }
 
-function renderLogPreview(host, state) {
+function renderLogPreview(host, state, parentLabel) {
   host.innerHTML = "";
   var children = (state && state.children) || [];
+  var authoredNew = state && state.authored;
   var h = el("h4"); h.style.margin = "4px 0 8px";
   h.textContent = "Preview — " + ((state && state.count) || children.length) +
-    " linked bug mission" + (children.length === 1 ? "" : "s");
+    " bug mission" + (children.length === 1 ? "" : "s") +
+    (authoredNew ? " detected" : " linked");
   host.appendChild(h);
   if (!children.length) {
-    host.appendChild(noteEl("No bug missions are linked to this parent yet. " +
-      "Authoring new bugs from a free-form report is the interactive half of " +
-      "Mission Log (deferred); run fixes drives whatever is already linked."));
+    host.appendChild(noteEl(
+      authoredNew
+        ? "The report didn't split into any distinct bugs — refine it and " +
+          "preview again."
+        : "No bug missions are linked to this parent yet. Describe the bug(s) " +
+          "above and Preview to split them into child missions."));
     return;
   }
   children.forEach(function (c) {
     var card = el("div", "card child"); card.style.cursor = "default";
-    card.appendChild(el("div", "no", "↳ child of " + (state.parent || "parent")));
-    card.appendChild(el("div", "ttl", c.title || c.id));
+    card.appendChild(el("div", "no", "↳ child of " +
+      (parentLabel || state.parent || "parent")));
+    card.appendChild(el("div", "ttl", "Bug · " + (c.title || c.id)));
     var pills = el("div", "pills");
+    // authored-but-not-yet-filed bugs show their planned stage; linked ones
+    // show their live stage label.
     pills.appendChild(el("span", "pill", "lcars:" + (c.stage || "plan")));
     card.appendChild(pills);
     host.appendChild(card);
@@ -661,10 +862,25 @@ function prdPane(mi) {
 
 function adrPane(mi) {
   var pane = el("div");
-  // ADR detail is not in the board shape; show what we have gracefully.
-  pane.appendChild(noteEl("Engineering ADRs are recorded in the mission's " +
-    "validated plan — not exposed in the board shape. They appear on the GitHub " +
-    "issue comments rendered in the activity feed."));
+  // S70-B2: render the mission's engineering ADRs when present (.adr style).
+  var adrs = mi.adrs || [];
+  if (!adrs.length) {
+    pane.appendChild(noteEl("No engineering ADRs are recorded for this mission " +
+      "— trivial work carries none. On a hosted (GitHub) board the ADRs are not " +
+      "exposed in the issue body; open the local board to read them."));
+    return pane;
+  }
+  adrs.forEach(function (a) {
+    var adr = el("div", "adr");
+    if (a.title) adr.appendChild(el("b", null, a.title));
+    if (a.body) {
+      var body = el("div");
+      body.style.cssText = "white-space:pre-wrap;margin-top:4px;font-size:12px";
+      body.textContent = a.body;
+      adr.appendChild(body);
+    }
+    pane.appendChild(adr);
+  });
   return pane;
 }
 
@@ -687,9 +903,17 @@ function ticketsPane(mi) {
 function criteriaChecklist(mi) {
   var host = el("div");
   var rows = [];
-  (mi.tickets || []).forEach(function (t) {
-    rows.push({ text: t.title || t.id, done: t.state === "done" });
-  });
+  // S70-B3: prefer the verbatim acceptance criteria parsed from prd.md; fall
+  // back to the ticket-derived rows (then a single placeholder) when absent.
+  if (mi.criteria && mi.criteria.length) {
+    mi.criteria.forEach(function (c) {
+      rows.push({ text: c.text, done: !!c.done });
+    });
+  } else {
+    (mi.tickets || []).forEach(function (t) {
+      rows.push({ text: t.title || t.id, done: t.state === "done" });
+    });
+  }
   if (!rows.length) {
     rows.push({ text: "The behaviour described in the PRD works end to end", done: false });
   }
@@ -721,6 +945,41 @@ function buildSummary(mi) {
     host.appendChild(row);
   });
   return host;
+}
+
+/* S70-B1: the per-stage model-mix table (mock .mix / .tier.opus / .tier.sonnet).
+   modelMix = [{stage, tier, why}]; `why` (the estimator rationale) is shown once
+   below the table when present. */
+function modelMixTable(mix) {
+  var wrap = el("div");
+  var table = el("table", "mix");
+  var thead = el("thead");
+  var hrow = el("tr");
+  hrow.appendChild(el("th", null, "Stage"));
+  hrow.appendChild(el("th", null, "Model"));
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+  var tbody = el("tbody");
+  var why = null;
+  mix.forEach(function (r) {
+    var tr = el("tr");
+    tr.appendChild(el("td", null, r.stage || ""));
+    var td = el("td");
+    var tierCls = (r.tier === "opus") ? "opus" : (r.tier === "sonnet") ? "sonnet" : "";
+    td.appendChild(el("span", "tier" + (tierCls ? " " + tierCls : ""),
+      (r.tier || "").toUpperCase()));
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+    if (!why && r.why) why = r.why;
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  if (why) {
+    var note = noteEl(why, "amber");
+    note.style.fontSize = "13px";
+    wrap.appendChild(note);
+  }
+  return wrap;
 }
 
 /* ════════════════ small helpers ════════════════ */

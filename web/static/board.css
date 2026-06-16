@@ -19,6 +19,15 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .topbar .brand{font-family:var(--font-display);font-size:22px;letter-spacing:.3em;
   color:var(--lcars-amber);text-transform:uppercase}
 .topbar .brand b{color:var(--lcars-text-bright);font-weight:700}
+/* which repo the board is attached to — sits next to the brand (S70-A) */
+.topbar .repo-meta{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.12em;font-size:12px;color:var(--lcars-text-dim);
+  display:flex;align-items:center;gap:8px}
+.topbar .repo-meta .sep{color:var(--lcars-border-bright,var(--lcars-amber));opacity:.6}
+.topbar .repo-meta .repo{color:var(--lcars-text-bright)}
+.topbar .repo-meta .hint{font-size:10px;letter-spacing:.1em;padding:1px 7px;border-radius:9px;
+  border:1px solid var(--lcars-border);color:var(--lcars-text-dim)}
+.topbar .repo-meta .hint.ro{color:var(--lcars-amber);border-color:var(--lcars-amber)}
 .topbar .conn{margin-left:auto;font-family:var(--font-display);font-size:11px;
   letter-spacing:.14em;color:var(--lcars-teal)}
 .topbar .conn.stale{color:var(--lcars-red)}
@@ -143,7 +152,16 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .qcount{font-family:var(--font-mono);font-size:11px;color:var(--lcars-text-dim);letter-spacing:.1em;margin-bottom:8px}
 .qtext{font-family:var(--font-display);font-size:20px;letter-spacing:.04em;color:var(--lcars-text-bright);
   line-height:1.25;margin-bottom:16px}
-.prd-doc{font-family:var(--font-mono);font-size:12px;line-height:1.7;color:var(--lcars-text)}
+.prd-doc{font-family:var(--font-mono);font-size:12px;line-height:1.7;color:var(--lcars-text);white-space:pre-wrap}
+.prd-doc .h{color:var(--lcars-amber);text-transform:uppercase;letter-spacing:.1em;display:block;margin:12px 0 4px}
+.prd-doc .add{color:var(--lcars-teal)}
+.prd-doc .pending{color:var(--lcars-text-dim);opacity:.55}
+.mock-cap{font-family:var(--font-display);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--lcars-text-dim);margin-bottom:10px}
+.progress-line{display:flex;gap:4px;margin-top:auto;padding-top:16px}
+.progress-line i{height:5px;flex:1;border-radius:3px;background:var(--lcars-card-alt)}
+.progress-line i.on{background:var(--lcars-teal)}
+.progress-line i.cur{background:var(--lcars-amber)}
 
 /* ── mission detail (mock .detail-grid / .det-head / .det-body / .feed) ── */
 .detail-grid{display:grid;grid-template-columns:1fr;gap:0;background:var(--lcars-surface);
