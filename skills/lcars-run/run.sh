@@ -82,6 +82,14 @@ host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 # Sourcing only DEFINES functions — they are called later, after every helper
 # they lean on is defined. $LCARS_COMMENT_MIRROR overrides the path for tests.
 COMMENT_MIRROR="${LCARS_COMMENT_MIRROR:-$SKILL_DIR/comment-mirror.sh}"
+# The SHARED renderer (ADR-004 "ONE rendering") — factored out of status.sh so
+# the kanban card, `lcars status --watch`, AND the issue-comment mirror render
+# the progress line / ticket data from the SAME primitives (compute_progress,
+# ev_str, read_waves_totals, fmt_elapsed). The mirror leans on these, so source
+# the shared lib BEFORE the mirror. render.sh provides a $LCARS_NOW-honouring
+# now() (its guard skips if a now() already exists). $LCARS_RENDER_LIB overrides.
+RENDER_LIB="${LCARS_RENDER_LIB:-$SKILL_DIR/../lcars-status/render.sh}"
+[ -f "$RENDER_LIB" ] && . "$RENDER_LIB"
 [ -f "$COMMENT_MIRROR" ] && . "$COMMENT_MIRROR"
 # The cold-worker CLI adapter — the ONE place that knows a CLI's spawn flags and
 # tool NAMES. This script (the stage driver) stays CLI-agnostic: it speaks a role
@@ -3825,6 +3833,15 @@ cmd_implement() {
   require_stage implement
   require_worker
 
+  # --- S65: the live Implement-dashboard heartbeat ----------------------------
+  # Start a bounded, best-effort ~60s ticker that re-renders + PATCHes the
+  # Implement issue comment so elapsed/pace advance even during a long single
+  # worker attempt. A trap on EXIT (any path: the impl-advance exit, a die, a
+  # signal) KILLS the ticker cleanly so no orphan ticker ever outlives the run.
+  # Entirely best-effort — a missing/failing gh never breaks or slows Implement.
+  declare -F cm_heartbeat_start >/dev/null 2>&1 && cm_heartbeat_start
+  trap 'declare -F cm_heartbeat_stop >/dev/null 2>&1 && cm_heartbeat_stop' EXIT INT TERM
+
   # For the wave_start instrumentation: totalWaves (distinct wave count) and a
   # per-wave ticket count, both derived jq-free from waves.json via parse_waves_table.
   local waves_file="$MISSION_DIR/waves.json"
@@ -4215,12 +4232,13 @@ cmd_drive() {
     stage="$(json_str "$STATE" stage)"
     awaiting="$(json_raw "$STATE" awaitingHuman)"
 
-    # ADR-004 issue-comment mirror — harness-driven, best-effort. Catch up any
-    # surfaced events emitted in the PRIOR pass (the stage subprocess's
-    # stage_done + every wave/ticket event it wrote) onto the Mission's issue,
-    # idempotently. mirror_comments derives "not-yet-posted" from events.jsonl
-    # itself and NEVER fails the run (gh missing/unauthed/failing → no-op). The
-    # gate emits just below get their own mirror on the halt paths.
+    # ADR-004 issue-comment mirror (S65 living per-stage model) — harness-driven,
+    # best-effort. Re-renders each STAGE's living comment (create-then-edit, keyed
+    # by stage in comments.json) from the on-disk truth the prior pass produced,
+    # and pings any newly-raised human gate as a NEW comment. mirror_comments is
+    # idempotent (the comment-id map is the dedup truth) and NEVER fails the run
+    # (gh missing/unauthed/failing → no-op). The gate emits just below get their
+    # own mirror on the halt paths so the gate ping lands before we stop.
     mirror_comments || true
 
     # Halt conditions, checked BEFORE running anything. Each emits a `gate` event
@@ -4428,5 +4446,17 @@ case "$SUB" in
   # each loop pass; it is also the standalone test/maintenance entry point.
   # Best-effort: mirror_comments never fails the caller, so force exit 0.
   mirror-comments)  locate_mission "$MISSION_ID"; mirror_comments || true ;;
+  # Session 65 test/maintenance hook: start the Implement comment heartbeat,
+  # report its ticker pid, let it run its bounded ticks ($LCARS_COMMENT_HEARTBEAT_TICKS),
+  # then stop it cleanly (no orphan). Exercises the heartbeat lifecycle (start /
+  # tick / kill) deterministically. Best-effort: always exits 0.
+  comment-heartbeat-test)
+    locate_mission "$MISSION_ID"
+    cm_heartbeat_start
+    printf 'TICK_PID=%s\n' "${CM_HEARTBEAT_PID:-}"
+    # Wait for the bounded ticker to finish on its own, then ensure it's reaped.
+    [ -n "${CM_HEARTBEAT_PID:-}" ] && wait "$CM_HEARTBEAT_PID" 2>/dev/null
+    cm_heartbeat_stop
+    exit 0 ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

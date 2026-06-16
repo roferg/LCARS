@@ -1,31 +1,30 @@
 #!/usr/bin/env bash
 #
-# Tests for the issue-comment mirror (ADR-004) — the harness publishes run
-# progress onto each Mission's GitHub issue as ordered, human-readable comments
-# derived from the EXISTING append-only events.jsonl, idempotently.
+# Tests for the REDESIGNED issue-comment mirror (Session 65) — the RICH, LIVING
+# (edit-in-place) per-stage comment model that REPLACES the thin one-comment-per-
+# event stream the captain rejected.
 #
-# The mirror is bundled beside run.sh as skills/lcars-run/comment-mirror.sh and
-# is reached through `lcars run mirror-comments --mission <id>`, which:
-#   1. reads $MISSION_DIR/events.jsonl line by line, in order,
-#   2. for each SURFACED event type, renders ONE human-readable comment body,
-#   3. posts it to the Mission's issue via the host adapter's `issue-comment`
-#      op (which shells out to $LCARS_GH_BIN issue comment),
-#   4. records a `comment_mirrored` marker BACK INTO events.jsonl so a re-run
-#      never double-posts. events.jsonl stays the single dedup truth; emit_event
-#      and the existing event schema are untouched.
-#
-# Behaviours under test (each written failing-first against the helper):
-#   1. ordered rendering — the gh stub records argv; comments come out IN EVENT
-#      ORDER with correctly rendered bodies.
-#   2. idempotency — re-running over the SAME events.jsonl posts NO new comments.
-#   3. incremental — a newly appended surfaced event posts EXACTLY ONE comment.
-#   4. graceful degradation — with $LCARS_GH_BIN failing OR absent, the mirror
-#      (and a run that calls it) STILL exits 0.
+# The new model:
+#   * ONE GitHub issue comment per STAGE (Research, Plan, Schedule, Implement,
+#     Verify), CREATED once when the stage first needs a comment (that creation
+#     is the per-stage notification ping), then EDITED IN PLACE as the stage
+#     progresses. A whole mission produces ~5-6 comments total, NOT dozens.
+#   * The Implement comment is a LIVE WAVE DASHBOARD that refreshes on every
+#     ticket event AND on a ~60s heartbeat while a wave runs.
+#   * Rich content: collapsed <details> blocks, #-links to sub-issues, ticket
+#     checklists — all rendered from the SHARED renderer (status.sh's
+#     compute_progress) so the card / watch / comment never drift.
+#   * The dedup/idempotency truth is a stage→comment-id map in comments.json:
+#     first render CREATES (POST → record id), every later render EDITS (PATCH
+#     that id). A re-run reuses the stored ids and never double-creates.
+#   * A human-gate raise posts a NEW (ping) comment, because editing does not
+#     notify on GitHub.
 #
 # Dependencies are env-injected so we stub them and assert the call without
 # sending anything:
-#   LCARS_GH_BIN   the gh binary (default gh) — stubbed to record its argv.
-#   LCARS_NOW      unix stamp for the comment_mirrored markers (deterministic).
+#   LCARS_GH_BIN              the gh binary (default gh) — stubbed below.
+#   LCARS_NOW                 unix stamp (deterministic).
+#   LCARS_COMMENT_HEARTBEAT   the Implement heartbeat interval (tiny in tests).
 #
 # Usage: bash tests/lcars-comment.test.sh
 
@@ -42,33 +41,78 @@ trap 'rm -rf "$TMPROOT"' EXIT
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
-# Drain stdin then grep — safe under set -o pipefail (never SIGPIPE the producer).
 qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
-# Count matching lines in a file (0 when the file is empty/absent, single token).
-countlines() { grep -c "$1" "$2" 2>/dev/null; true; }
 
 MID="lcars-20260615-001"
 
-# A fake `gh` that records every call (one line per invocation) to $GH_LOG, and
-# captures `issue comment` bodies (its --body arg) one per line to $GH_BODIES.
+# A fake `gh` that records every call to $GH_LOG and, for the comment API calls,
+# captures the body (read from stdin via `-f body=@-`, or from a `--body`/--body-file
+# argv) into a per-comment-id file under $GH_BODYDIR. It mints a fresh comment id
+# for each CREATE and echoes the JSON the adapter parses ({"id":<n>}).
+#
+# Supported shapes (matching host-adapter's create/edit ops):
+#   gh api --method POST   /repos/{owner}/{repo}/issues/<n>/comments  -F body=@-
+#   gh api --method PATCH  /repos/{owner}/{repo}/issues/comments/<id> -F body=@-
+#
+# This stub models REAL `gh api` field semantics so the literal-`@-` defect
+# (roferg/lcars-sandbox#188) CANNOT pass: only `-F/--field body=@-` reads stdin;
+# `-f/--raw-field body=@-` stores the LITERAL string "@-" (gh never reads stdin
+# there). So if the adapter regresses to `-f body=@-`, the captured body is the
+# 2-char sentinel "@-" and the rich-body assertions fail.
 make_gh_stub() { # path
   cat >"$1" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >>"$GH_LOG"
-# Capture the body of an `issue comment … --body <text>` call, one per line.
-if [ "${1:-}" = "issue" ] && [ "${2:-}" = "comment" ]; then
-  while [ $# -gt 0 ]; do
-    if [ "$1" = "--body" ]; then printf '%s\n' "${2:-}" >>"$GH_BODIES"; fi
-    if [ "$1" = "--body-file" ]; then cat "${2:-}" >>"$GH_BODIES"; printf '\n' >>"$GH_BODIES"; fi
-    shift
-  done
-fi
+mode=""; path=""; body=""; have_body=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    POST) mode="POST" ;;
+    PATCH) mode="PATCH" ;;
+    repos/*|/repos/*) path="$1" ;;
+    -F|--field)
+      case "$2" in
+        body=@-) body="$(cat)"; have_body=1 ;;      # field @- → STDIN
+        body=*)  body="${2#body=}"; have_body=1 ;;
+      esac
+      shift ;;
+    -f|--raw-field)
+      case "$2" in
+        body=*) body="${2#body=}"; have_body=1 ;;    # raw → ALWAYS literal (incl "@-")
+      esac
+      shift ;;
+    --body-file)
+      case "$2" in -) body="$(cat)"; have_body=1 ;; *) body="$(cat "$2")"; have_body=1 ;; esac
+      shift ;;
+    --body) body="$2"; have_body=1; shift ;;
+  esac
+  shift
+done
+# Only the comment API calls carry a body we capture.
+case "$path" in
+  */issues/*/comments|*/issues/comments/*)
+    [ "$have_body" -eq 0 ] && body=""
+    if [ "$mode" = "POST" ]; then
+      # mint a new id, persist the body under it, echo {"id":<n>}
+      n=$(( $(cat "$GH_IDSEQ" 2>/dev/null || echo 100) + 1 ))
+      echo "$n" >"$GH_IDSEQ"
+      printf '%s' "$body" >"$GH_BODYDIR/$n"
+      echo "CREATE $n" >>"$GH_OPS"
+      printf '{"id":%s}\n' "$n"
+    else
+      # PATCH: path tail is the comment id; overwrite its stored body
+      cid="${path##*/}"
+      printf '%s' "$body" >"$GH_BODYDIR/$cid"
+      echo "EDIT $cid" >>"$GH_OPS"
+      printf '{"id":%s}\n' "$cid"
+    fi
+    ;;
+esac
 exit 0
 EOF
   chmod +x "$1"
 }
 
-# A fake `gh` that FAILS every call (to prove graceful degradation).
+# A fake `gh` that FAILS every call (graceful-degradation proof).
 make_gh_failstub() { # path
   cat >"$1" <<'EOF'
 #!/usr/bin/env bash
@@ -78,9 +122,8 @@ EOF
   chmod +x "$1"
 }
 
-# Build an isolated git repo with a mission at "implement" carrying a synthetic
-# events.jsonl covering the surfaced set. Returns the repo path on stdout.
-new_repo_with_events() { # path-to-events-fixture
+# Build an isolated git repo with a mission. $2 = stage. Returns repo path.
+new_repo() { # stage
   local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
   local m="$repo/.git/lcars/missions/$MID"
@@ -90,230 +133,321 @@ new_repo_with_events() { # path-to-events-fixture
   "id": "$MID",
   "type": "feature",
   "title": "Add dark mode",
-  "stage": "implement",
+  "stage": "${1:-implement}",
   "githubIssue": 42
 }
 EOF
-  cp "$1" "$m/events.jsonl"
   echo "$repo"
 }
 
-events_file() { echo "$1/.git/lcars/missions/$MID/events.jsonl"; }
+mdir() { echo "$1/.git/lcars/missions/$MID"; }
 
-# A synthetic events.jsonl spanning the surfaced types + a couple of noisy
-# internal ones the mirror MUST skip (postcommit_ok, ticket_attempt).
-write_fixture() { # path
-  cat >"$1" <<'EOF'
-{"ts":1000,"mission":"lcars-20260615-001","stage":"research","type":"stage_start","detail":"starting"}
-{"ts":1001,"mission":"lcars-20260615-001","stage":"research","type":"stage_done","detail":"3 question(s) → findings saved"}
-{"ts":1002,"mission":"lcars-20260615-001","stage":"validate","type":"gate","detail":"awaiting your answer"}
-{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (2 ticket(s))","data":{"wave":1,"count":2}}
-{"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
-{"ts":1005,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_attempt","detail":"test-writer try 1 for t-001","data":{"ticket":"t-001"}}
-{"ts":1006,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_postcommit_ok","detail":"t-001 postcommit ok"}
-{"ts":1007,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-001 green in 2 attempt(s)","data":{"ticket":"t-001"}}
-{"ts":1008,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_flagged","detail":"ticket t-002 flagged after 5 attempt(s)","data":{"ticket":"t-002"}}
-EOF
+# Set the gh-logging env for a repo and zero the logs.
+gh_env() { # repo
+  export GH_LOG="$1/gh.log";       : >"$GH_LOG"
+  export GH_OPS="$1/gh.ops";       : >"$GH_OPS"
+  export GH_IDSEQ="$1/gh.idseq";   echo 100 >"$GH_IDSEQ"
+  export GH_BODYDIR="$1/gh.bodies"; rm -rf "$GH_BODYDIR"; mkdir -p "$GH_BODYDIR"
 }
 
-mirror() { # repo  [extra env assignments as a prefix string]
-  local repo="$1"; shift
-  ( cd "$repo" && LCARS_GH_BIN="$repo/gh" LCARS_NOW=2000 "$@" \
-      bash "$RUN" mirror-comments --mission "$MID" )
+# Run the mirror once for a repo at $NOW (extra env in $3...).
+run_mirror() { # repo now [env...]
+  local repo="$1" nowv="$2"; shift 2
+  ( cd "$repo" && LCARS_GH_BIN="$repo/gh" LCARS_NOW="$nowv" "$@" \
+      bash "$RUN" mirror-comments --mission "$MID" >/dev/null 2>&1 )
 }
+
+count_ops() { grep -c "^$1 " "$GH_OPS" 2>/dev/null; true; }
 
 # ==========================================================================
-echo "lcars comment-mirror"
+echo "lcars comment-mirror (living per-stage, S65)"
 
 [ -f "$RUN" ] || { echo "run.sh not found at $RUN"; exit 1; }
 
-FIX="$TMPROOT/events.fixture.jsonl"; write_fixture "$FIX"
-
-# --- Behaviour 1: ordered rendering, correct bodies, surfaced set only ------
-repo1="$(new_repo_with_events "$FIX")"; make_gh_stub "$repo1/gh"
-export GH_LOG="$repo1/gh.log"; : >"$GH_LOG"
-export GH_BODIES="$repo1/gh.bodies"; : >"$GH_BODIES"
-rc1=0
-( cd "$repo1" && LCARS_GH_BIN="$repo1/gh" LCARS_NOW=2000 \
-    bash "$RUN" mirror-comments --mission "$MID" >out.txt 2>&1 ) || rc1=$?
-check "1. mirror exits 0" "[ '$rc1' -eq 0 ]"
-
-# It targets the right issue (#42) on every comment call.
-check "1. comments are posted to issue #42" \
-  "qgrep -q 'issue comment 42' <'$GH_LOG'"
-# Exactly the surfaced events become comments — count the issue comment calls.
-NCALLS="$(grep -c "issue comment" "$GH_LOG" 2>/dev/null; true)"
-# Surfaced: stage_start, stage_done, gate, wave_start, ticket_start,
-# ticket_green, ticket_flagged = 7. Skipped: ticket_attempt, postcommit_ok.
-check "1. one comment per surfaced event (7), noisy ones skipped" "[ '$NCALLS' -eq 7 ]"
-
-# The noisy internal events never produce a comment body.
-check "1. ticket_attempt is NOT surfaced" "! qgrep -qi 'test-writer try' <'$GH_BODIES'"
-check "1. postcommit_ok is NOT surfaced"  "! qgrep -qi 'postcommit' <'$GH_BODIES'"
-
-# Bodies are human-readable and carry each event's meaning.
-check "1. renders stage start"   "qgrep -qi 'Research' <'$GH_BODIES'"
-check "1. renders a raised gate" "qgrep -qi 'awaiting\|needs your\|gate\|answer' <'$GH_BODIES'"
-check "1. renders wave progress" "qgrep -qi 'Wave 1' <'$GH_BODIES'"
-check "1. renders ticket green"  "qgrep -qi 't-001' <'$GH_BODIES' && qgrep -qi 'green\|passed' <'$GH_BODIES'"
-check "1. renders ticket flagged" "qgrep -qi 't-002' <'$GH_BODIES' && qgrep -qi 'flag\|attention\|failed' <'$GH_BODIES'"
-
-# Ordering: the first comment body must correspond to the FIRST surfaced event
-# (the research stage_start), not a later one.
-FIRST_BODY="$(head -1 "$GH_BODIES")"
-check "1. first comment is the first surfaced event (research start)" \
-  "printf '%s' \"$FIRST_BODY\" | qgrep -qi 'Research'"
-
-# --- Behaviour 2: idempotency — a second pass posts NOTHING new -------------
-: >"$GH_LOG"; : >"$GH_BODIES"
-rc2=0
-( cd "$repo1" && LCARS_GH_BIN="$repo1/gh" LCARS_NOW=2001 \
-    bash "$RUN" mirror-comments --mission "$MID" >out2.txt 2>&1 ) || rc2=$?
-check "2. re-run exits 0" "[ '$rc2' -eq 0 ]"
-N2="$(grep -c "issue comment" "$GH_LOG" 2>/dev/null; true)"
-check "2. re-run over the SAME events posts NO new comments" "[ '$N2' -eq 0 ]"
-# The marker type lives in events.jsonl (the single dedup truth), not elsewhere.
-check "2. comment_mirrored markers were appended to events.jsonl" \
-  "grep -q '\"type\":\"comment_mirrored\"' '$(events_file "$repo1")'"
-
-# --- Behaviour 3: incremental — one new event → exactly one new comment ------
-: >"$GH_LOG"; : >"$GH_BODIES"
-cat >>"$(events_file "$repo1")" <<'EOF'
-{"ts":1009,"mission":"lcars-20260615-001","stage":"implement","type":"stage_done","detail":"all tickets green → verify"}
+# --- T1: first render of a stage CREATES one comment + records its id -------
+r1="$(new_repo implement)"; make_gh_stub "$r1/gh"; gh_env "$r1"
+m1="$(mdir "$r1")"
+cat >"$m1/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1003,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (2 ticket(s))","data":{"wave":1,"ticketCount":2,"totalWaves":1}}
+{"ts":1004,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
 EOF
-rc3=0
-( cd "$repo1" && LCARS_GH_BIN="$repo1/gh" LCARS_NOW=2002 \
-    bash "$RUN" mirror-comments --mission "$MID" >out3.txt 2>&1 ) || rc3=$?
-check "3. incremental run exits 0" "[ '$rc3' -eq 0 ]"
-N3="$(grep -c "issue comment" "$GH_LOG" 2>/dev/null; true)"
-check "3. a newly appended event posts EXACTLY ONE new comment" "[ '$N3' -eq 1 ]"
+cat >"$m1/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 143
+      },
+      {
+        "id": "t-002",
+        "issue": 144
+      }
+    ]
+  }
+]
+EOF
+rc1=0; run_mirror "$r1" 1010 || rc1=$?
+check "T1. mirror exits 0" "[ '$rc1' -eq 0 ]"
+check "T1. first render CREATES exactly one comment (POST)" "[ \"\$(count_ops CREATE)\" -eq 1 ]"
+check "T1. no EDIT on first render" "[ \"\$(count_ops EDIT)\" -eq 0 ]"
+check "T1. a comments.json comment-id map was written" "[ -f '$m1/comments.json' ]"
+check "T1. comments.json records the implement stage's comment id" \
+  "grep -q '\"implement\"' '$m1/comments.json'"
+CID1="$(ls "$GH_BODYDIR" | head -1)"
+check "T1. the created comment id was recorded in comments.json" \
+  "grep -q '$CID1' '$m1/comments.json'"
 
-# --- Behaviour 4a: gh FAILING → mirror still exits 0 ------------------------
-repo4="$(new_repo_with_events "$FIX")"; make_gh_failstub "$repo4/gh"
-export GH_LOG="$repo4/gh.log"; : >"$GH_LOG"
-rc4=0
-( cd "$repo4" && LCARS_GH_BIN="$repo4/gh" LCARS_NOW=2000 \
-    bash "$RUN" mirror-comments --mission "$MID" >out.txt 2>&1 ) || rc4=$?
-check "4a. mirror exits 0 even when gh FAILS every call" "[ '$rc4' -eq 0 ]"
+# --- T2: a later render of the SAME stage EDITS that comment (PATCH) ---------
+: >"$GH_OPS"
+cat >>"$m1/events.jsonl" <<'EOF'
+{"ts":1020,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-001 green in 2 attempt(s)","data":{"ticket":"t-001"}}
+EOF
+rc2=0; run_mirror "$r1" 1030 || rc2=$?
+check "T2. re-render exits 0" "[ '$rc2' -eq 0 ]"
+check "T2. re-render of the SAME stage posts NO new comment (no CREATE)" \
+  "[ \"\$(count_ops CREATE)\" -eq 0 ]"
+check "T2. re-render EDITS the existing comment (PATCH)" \
+  "[ \"\$(count_ops EDIT)\" -ge 1 ]"
+check "T2. the edit targets the SAME comment id" "[ -f '$GH_BODYDIR/$CID1' ]"
 
-# --- Behaviour 4b: gh ABSENT → mirror still exits 0 -------------------------
-repo4b="$(new_repo_with_events "$FIX")"
-export GH_LOG="$repo4b/gh.log"; : >"$GH_LOG"
-rc4b=0
-( cd "$repo4b" && LCARS_GH_BIN="$repo4b/definitely-not-a-real-binary" LCARS_NOW=2000 \
-    bash "$RUN" mirror-comments --mission "$MID" >out.txt 2>&1 ) || rc4b=$?
-check "4b. mirror exits 0 even when gh is ABSENT" "[ '$rc4b' -eq 0 ]"
+# --- T4: the Implement dashboard body ---------------------------------------
+BODY1="$(cat "$GH_BODYDIR/$CID1")"
+# Defect guard (roferg/lcars-sandbox#188): the CREATEd and EDITed bodies that
+# reached gh must be the rendered markdown, NEVER the literal 2-char sentinel
+# "@-". With `-f body=@-` the stub captures "@-" and this fails.
+check "T4. the CREATEd body is NOT the literal sentinel @-" \
+  "[ \"\$BODY1\" != '@-' ] && [ -n \"\$BODY1\" ]"
+check "T4. the EDITed body (after the PATCH) is NOT the literal sentinel @-" \
+  "[ \"\$(cat \"\$GH_BODYDIR/\$CID1\")\" != '@-' ]"
+check "T4. dashboard has the Implement heading" \
+  "printf '%s' \"\$BODY1\" | qgrep -qi 'Implement'"
+check "T4. dashboard carries the shared progress line (Wave x/y)" \
+  "printf '%s' \"\$BODY1\" | qgrep -q 'Wave 1/1'"
+check "T4. dashboard shows the per-ticket progress (k/n)" \
+  "printf '%s' \"\$BODY1\" | qgrep -qE '\(1/2\)'"
+check "T4. dashboard checklist #-links the sub-issues from waves.json" \
+  "printf '%s' \"\$BODY1\" | qgrep -q '#143' && printf '%s' \"\$BODY1\" | qgrep -q '#144'"
+check "T4. dashboard marks the green ticket DONE (checked)" \
+  "printf '%s' \"\$BODY1\" | qgrep -q '\\- \\[x\\].*t-001'"
+check "T4. dashboard footer says it auto-refreshes" \
+  "printf '%s' \"\$BODY1\" | qgrep -qi 'auto-refresh'"
 
-# --- Guard: a mission with no events.jsonl yet is a clean no-op -------------
-repo5="$(new_repo_with_events "$FIX")"; make_gh_stub "$repo5/gh"
-rm -f "$(events_file "$repo5")"
-export GH_LOG="$repo5/gh.log"; : >"$GH_LOG"
-rc5=0
-( cd "$repo5" && LCARS_GH_BIN="$repo5/gh" LCARS_NOW=2000 \
-    bash "$RUN" mirror-comments --mission "$MID" >out.txt 2>&1 ) || rc5=$?
-check "guard. no events.jsonl yet → exit 0, no comments" \
-  "[ '$rc5' -eq 0 ] && [ ! -s '$GH_LOG' ]"
+# Re-render after t-002 also greens → it flips to done too.
+: >"$GH_OPS"
+cat >>"$m1/events.jsonl" <<'EOF'
+{"ts":1040,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-002 starting","data":{"ticket":"t-002","wave":1}}
+{"ts":1050,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-002 green in 1 attempt(s)","data":{"ticket":"t-002"}}
+EOF
+run_mirror "$r1" 1060
+BODY2="$(cat "$GH_BODYDIR/$CID1")"
+check "T4. a new ticket_green flips that ticket to done on re-render" \
+  "printf '%s' \"\$BODY2\" | qgrep -q '\\- \\[x\\].*t-002'"
 
-# --- Guard: a mission with no githubIssue → no-op (nothing to comment on) ----
-repo6="$(new_repo_with_events "$FIX")"; make_gh_stub "$repo6/gh"
-# Null the issue number.
-sed 's/"githubIssue": 42/"githubIssue": null/' \
-  "$repo6/.git/lcars/missions/$MID/state.json" >"$repo6/state.tmp" \
-  && mv "$repo6/state.tmp" "$repo6/.git/lcars/missions/$MID/state.json"
-export GH_LOG="$repo6/gh.log"; : >"$GH_LOG"
-rc6=0
-( cd "$repo6" && LCARS_GH_BIN="$repo6/gh" LCARS_NOW=2000 \
-    bash "$RUN" mirror-comments --mission "$MID" >out.txt 2>&1 ) || rc6=$?
+# --- T3: a whole synthetic mission yields ~one comment per stage ------------
+r3="$(new_repo implement)"; make_gh_stub "$r3/gh"; gh_env "$r3"
+m3="$(mdir "$r3")"
+mkdir -p "$m3/research"
+cat >"$m3/research/1.json" <<'EOF'
+{"question":"Which theme tokens?","recommendation":"Reuse CSS vars","supporting_points":["x"]}
+EOF
+cat >"$m3/plan.json" <<'EOF'
+[
+  { "id": "t-001", "title": "Token layer", "description": "d", "rationale": "r", "acceptanceCriteria": ["c1"], "dependencies": [] },
+  { "id": "t-002", "title": "Toggle UI", "description": "d", "rationale": "r", "acceptanceCriteria": ["c2"], "dependencies": ["t-001"] }
+]
+EOF
+cat >"$m3/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 143
+      }
+    ]
+  },
+  {
+    "wave": 2,
+    "tickets": [
+      {
+        "id": "t-002",
+        "issue": 144
+      }
+    ]
+  }
+]
+EOF
+cat >"$m3/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"research","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"research","type":"stage_done","detail":"1 question(s) → findings saved"}
+{"ts":1002,"mission":"lcars-20260615-001","stage":"plan","type":"stage_start","detail":"starting"}
+{"ts":1003,"mission":"lcars-20260615-001","stage":"plan","type":"stage_done","detail":"2 ticket(s)"}
+{"ts":1004,"mission":"lcars-20260615-001","stage":"schedule","type":"stage_start","detail":"starting"}
+{"ts":1005,"mission":"lcars-20260615-001","stage":"schedule","type":"stage_done","detail":"2 wave(s)"}
+{"ts":1006,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1007,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (1 ticket(s))","data":{"wave":1,"ticketCount":1,"totalWaves":2}}
+{"ts":1008,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+{"ts":1009,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-001 green in 1 attempt(s)","data":{"ticket":"t-001"}}
+EOF
+run_mirror "$r3" 2000
+NTOTAL="$(count_ops CREATE)"
+# research + plan + schedule + implement = 4 distinct comments, NOT one per event.
+check "T3. a whole mission yields ~one comment per stage (4 creates, not per-event)" \
+  "[ \"\$NTOTAL\" -ge 3 ] && [ \"\$NTOTAL\" -le 5 ]"
+check "T3. comments.json holds the research stage id" "grep -q '\"research\"' '$m3/comments.json'"
+check "T3. comments.json holds the plan stage id"     "grep -q '\"plan\"' '$m3/comments.json'"
+check "T3. comments.json holds the schedule stage id" "grep -q '\"schedule\"' '$m3/comments.json'"
+check "T3. comments.json holds the implement stage id" "grep -q '\"implement\"' '$m3/comments.json'"
+# Re-run over the same log → NO new creates (idempotent across the whole mission).
+: >"$GH_OPS"
+run_mirror "$r3" 2100
+check "T3. re-running the whole mission creates NO new comments" \
+  "[ \"\$(count_ops CREATE)\" -eq 0 ]"
+
+# --- T5: Research comment Q&A in a <details> block --------------------------
+# Find the research comment id from comments.json and read its captured body.
+# The stub body dir for a given mission dir (repo/.git/lcars/... → repo/gh.bodies).
+bodydir_for() { local md="$1"; printf '%s/gh.bodies' "${md%%/.git/*}"; }
+stage_body() { # mdir stage
+  local bd cid; bd="$(bodydir_for "$1")"
+  cid="$(sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$1/comments.json" | head -1)"
+  [ -n "$cid" ] && cat "$bd/$cid"
+}
+research_body() { stage_body "$1" research; }
+RBODY="$(research_body "$m3")"
+check "T5. research comment has a <details> Q&A block" \
+  "printf '%s' \"\$RBODY\" | qgrep -qi '<details>'"
+check "T5. research comment surfaces the question text" \
+  "printf '%s' \"\$RBODY\" | qgrep -qi 'theme tokens'"
+check "T5. research comment surfaces the finding/recommendation" \
+  "printf '%s' \"\$RBODY\" | qgrep -qi 'Reuse CSS vars'"
+
+# Degradation: a 0-question research (no research/*.json, no pending.json) →
+# the "unambiguous — 0 questions" message, no fabricated Q&A.
+r5="$(new_repo plan)"; make_gh_stub "$r5/gh"; gh_env "$r5"
+m5="$(mdir "$r5")"
+cat >"$m5/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"research","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"research","type":"stage_done","detail":"0 questions (PRD unambiguous)"}
+EOF
+run_mirror "$r5" 1100
+RBODY5="$(research_body "$m5")"
+check "T5. 0-question research degrades to the unambiguous message" \
+  "printf '%s' \"\$RBODY5\" | qgrep -qi 'unambiguous\\|0 question'"
+
+# --- T6: Schedule comment #-links the per-ticket sub-issues -----------------
+sched_body() { stage_body "$1" schedule; }
+SBODY="$(sched_body "$m3")"
+check "T6. schedule comment names Wave 1" "printf '%s' \"\$SBODY\" | qgrep -qi 'Wave 1'"
+check "T6. schedule comment #-links sub-issue #143" "printf '%s' \"\$SBODY\" | qgrep -q '#143'"
+check "T6. schedule comment #-links sub-issue #144" "printf '%s' \"\$SBODY\" | qgrep -q '#144'"
+check "T6. schedule comment lists the ticket ids" \
+  "printf '%s' \"\$SBODY\" | qgrep -q 't-001' && printf '%s' \"\$SBODY\" | qgrep -q 't-002'"
+
+# --- T7: heartbeat re-PATCHes the Implement comment + no orphan -------------
+# Drive the Implement stage's heartbeat directly: with a tiny interval and a
+# bounded lifetime, the Implement comment must be PATCHed at least once MORE than
+# the initial render (elapsed advances with no new event), and the ticker process
+# must be gone afterward (no orphan).
+r7="$(new_repo implement)"; make_gh_stub "$r7/gh"; gh_env "$r7"
+m7="$(mdir "$r7")"
+cat >"$m7/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 143
+      }
+    ]
+  }
+]
+EOF
+cat >"$m7/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"implement","type":"wave_start","detail":"wave 1 starting (1 ticket(s))","data":{"wave":1,"ticketCount":1,"totalWaves":1}}
+{"ts":1002,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_start","detail":"ticket t-001 starting","data":{"ticket":"t-001","wave":1}}
+EOF
+# Create the initial comment.
+run_mirror "$r7" 1010
+: >"$GH_OPS"
+# Run the heartbeat for a bounded number of ticks with a tiny interval. The
+# subcommand starts the ticker, lets it tick, then stops it cleanly.
+HB_LOG="$r7/hb.pids"
+rc7=0
+( cd "$r7" && LCARS_GH_BIN="$r7/gh" LCARS_COMMENT_HEARTBEAT=1 LCARS_COMMENT_HEARTBEAT_TICKS=2 \
+    bash "$RUN" comment-heartbeat-test --mission "$MID" >"$HB_LOG" 2>&1 ) || rc7=$?
+check "T7. heartbeat-test exits 0" "[ '$rc7' -eq 0 ]"
+check "T7. heartbeat PATCHes the Implement comment with no new event" \
+  "[ \"\$(count_ops EDIT)\" -ge 1 ]"
+# The ticker pid the heartbeat reported must no longer be alive (no orphan).
+HB_PID="$(sed -n 's/^TICK_PID=//p' "$HB_LOG" | head -1)"
+check "T7. heartbeat reported a ticker pid" "[ -n '$HB_PID' ]"
+check "T7. the heartbeat ticker is killed cleanly (no orphan)" \
+  "! kill -0 '$HB_PID' 2>/dev/null"
+
+# --- T8: gh absent/failing → exit 0; human gate posts a NEW ping comment ----
+r8="$(new_repo implement)"; make_gh_failstub "$r8/gh"; gh_env "$r8"
+m8="$(mdir "$r8")"
+cat >"$m8/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+EOF
+rc8=0; run_mirror "$r8" 1010 || rc8=$?
+check "T8a. gh FAILING → mirror still exits 0" "[ '$rc8' -eq 0 ]"
+
+r8b="$(new_repo implement)"; gh_env "$r8b"
+m8b="$(mdir "$r8b")"
+cat >"$m8b/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+EOF
+rc8b=0
+( cd "$r8b" && LCARS_GH_BIN="$r8b/definitely-not-real" LCARS_NOW=1010 \
+    bash "$RUN" mirror-comments --mission "$MID" >/dev/null 2>&1 ) || rc8b=$?
+check "T8b. gh ABSENT → mirror still exits 0" "[ '$rc8b' -eq 0 ]"
+
+# Human gate: a NEW (ping) comment is posted in ADDITION to whatever else.
+r8c="$(new_repo implement)"; make_gh_stub "$r8c/gh"; gh_env "$r8c"
+m8c="$(mdir "$r8c")"
+cat >"$m8c/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+{"ts":1001,"mission":"lcars-20260615-001","stage":"implement","type":"gate","detail":"ticket t-002 needs your answer after 5 attempt(s)"}
+EOF
+rc8c=0; run_mirror "$r8c" 1010 || rc8c=$?
+check "T8c. a human gate posts a NEW ping comment (a CREATE for the gate)" \
+  "[ \"\$(count_ops CREATE)\" -ge 1 ]"
+# The gate ping body carries the pending question text.
+GATE_HIT=0
+for f in "$GH_BODYDIR"/*; do grep -qi 'needs your answer' "$f" 2>/dev/null && GATE_HIT=1; done
+check "T8c. the gate ping body carries the pending question" "[ '$GATE_HIT' -eq 1 ]"
+
+# Re-running over the same gate event does NOT re-ping (idempotent gate).
+: >"$GH_OPS"
+run_mirror "$r8c" 1020
+GATE_RECREATES="$(count_ops CREATE)"
+check "T8c. re-running does NOT re-ping the same gate (idempotent)" \
+  "[ '$GATE_RECREATES' -eq 0 ]"
+
+# --- Guard: no githubIssue → clean no-op ------------------------------------
+r9="$(new_repo implement)"; make_gh_stub "$r9/gh"; gh_env "$r9"
+m9="$(mdir "$r9")"
+sed 's/"githubIssue": 42/"githubIssue": null/' "$m9/state.json" >"$m9/state.tmp" && mv "$m9/state.tmp" "$m9/state.json"
+cat >"$m9/events.jsonl" <<'EOF'
+{"ts":1000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
+EOF
+rc9=0; run_mirror "$r9" 1010 || rc9=$?
 check "guard. no githubIssue → exit 0, posts nothing" \
-  "[ '$rc6' -eq 0 ] && ! grep -q 'issue comment' '$GH_LOG'"
+  "[ '$rc9' -eq 0 ] && [ \"\$(count_ops CREATE)\" -eq 0 ]"
 
-# --- Behaviour 5: Stage RE-ENTRY (BUG #185/#186) ----------------------------
-# The REAL defect: on a Stage re-entry (mission halts mid-Implement, operator
-# re-runs `lcars run <id>`), the harness appends a FRESH stage_start line for
-# the SAME stage to events.jsonl — a NEW physical line number, a NEW ts. A
-# line-number-keyed dedup treats that new line as never-seen and double-posts a
-# BYTE-IDENTICAL "▶️ Implement started". Mirroring MUST be idempotent across
-# re-entry (ADR-004, PRD §4): a re-emitted milestone must NEVER double-post,
-# while genuinely-distinct events must STILL each post exactly once.
-re_repo="$(new_repo_with_events "$FIX")"; make_gh_stub "$re_repo/gh"
-export GH_LOG="$re_repo/gh.log"; : >"$GH_LOG"
-export GH_BODIES="$re_repo/gh.bodies"; : >"$GH_BODIES"
-re_ev="$(events_file "$re_repo")"
-# Start the mission's log fresh with a single Implement stage_start (run 1).
-cat >"$re_ev" <<'EOF'
-{"ts":2000,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
-EOF
-rcA=0
-( cd "$re_repo" && LCARS_GH_BIN="$re_repo/gh" LCARS_NOW=3000 \
-    bash "$RUN" mirror-comments --mission "$MID" >outA.txt 2>&1 ) || rcA=$?
-check "5. first pass exits 0" "[ '$rcA' -eq 0 ]"
-NA="$(grep -c 'issue comment' "$GH_LOG" 2>/dev/null; true)"
-check "5. Implement stage_start posts once on first pass" "[ '$NA' -eq 1 ]"
-
-# RE-ENTRY: append a SECOND implement/stage_start for the SAME stage — a NEW
-# line number AND a NEW ts, exactly what the harness writes on a re-run. The
-# rendered body ('▶️ Implement started') is byte-identical to the first.
-: >"$GH_LOG"; : >"$GH_BODIES"
-cat >>"$re_ev" <<'EOF'
-{"ts":2050,"mission":"lcars-20260615-001","stage":"implement","type":"stage_start","detail":"starting"}
-EOF
-rcB=0
-( cd "$re_repo" && LCARS_GH_BIN="$re_repo/gh" LCARS_NOW=3001 \
-    bash "$RUN" mirror-comments --mission "$MID" >outB.txt 2>&1 ) || rcB=$?
-check "5. re-entry pass exits 0" "[ '$rcB' -eq 0 ]"
-NB="$(grep -c 'issue comment' "$GH_LOG" 2>/dev/null; true)"
-check "5. RE-EMITTED identical Implement stage_start does NOT double-post" \
-  "[ '$NB' -eq 0 ]"
-
-# stage_done / gate can ALSO re-emit on re-entry (the tester saw a verify/gate
-# re-emit). Append a stage_done then RE-EMIT it identically; only ONE comment.
-: >"$GH_LOG"; : >"$GH_BODIES"
-cat >>"$re_ev" <<'EOF'
-{"ts":2100,"mission":"lcars-20260615-001","stage":"verify","type":"stage_done","detail":"all tickets green → verify"}
-EOF
-rcC=0
-( cd "$re_repo" && LCARS_GH_BIN="$re_repo/gh" LCARS_NOW=3002 \
-    bash "$RUN" mirror-comments --mission "$MID" >outC.txt 2>&1 ) || rcC=$?
-NC="$(grep -c 'issue comment' "$GH_LOG" 2>/dev/null; true)"
-check "5. a genuinely-new stage_done posts exactly one comment" "[ '$NC' -eq 1 ]"
-: >"$GH_LOG"; : >"$GH_BODIES"
-cat >>"$re_ev" <<'EOF'
-{"ts":2150,"mission":"lcars-20260615-001","stage":"verify","type":"stage_done","detail":"all tickets green → verify"}
-EOF
-rcD=0
-( cd "$re_repo" && LCARS_GH_BIN="$re_repo/gh" LCARS_NOW=3003 \
-    bash "$RUN" mirror-comments --mission "$MID" >outD.txt 2>&1 ) || rcD=$?
-ND="$(grep -c 'issue comment' "$GH_LOG" 2>/dev/null; true)"
-check "5. RE-EMITTED identical stage_done does NOT double-post" "[ '$ND' -eq 0 ]"
-
-# NOT over-dedup: a genuinely DISTINCT stage_start (a DIFFERENT stage) appended
-# after the re-entry collapse must STILL post exactly one new comment.
-: >"$GH_LOG"; : >"$GH_BODIES"
-cat >>"$re_ev" <<'EOF'
-{"ts":2200,"mission":"lcars-20260615-001","stage":"validate","type":"stage_start","detail":"starting"}
-EOF
-rcE=0
-( cd "$re_repo" && LCARS_GH_BIN="$re_repo/gh" LCARS_NOW=3004 \
-    bash "$RUN" mirror-comments --mission "$MID" >outE.txt 2>&1 ) || rcE=$?
-NE="$(grep -c 'issue comment' "$GH_LOG" 2>/dev/null; true)"
-check "5. a DISTINCT stage's stage_start still posts exactly one comment" \
-  "[ '$NE' -eq 1 ]"
-check "5. the distinct comment is Validate (not over-deduped against Implement)" \
-  "qgrep -qi 'Validate' <'$GH_BODIES'"
-
-# NOT over-dedup: two DIFFERENT tickets' ticket_green must each post (their
-# bodies differ by ticket id), even though they share a type.
-: >"$GH_LOG"; : >"$GH_BODIES"
-cat >>"$re_ev" <<'EOF'
-{"ts":2300,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-010 green in 1 attempt(s)","data":{"ticket":"t-010"}}
-{"ts":2301,"mission":"lcars-20260615-001","stage":"implement","type":"ticket_green","detail":"ticket t-011 green in 1 attempt(s)","data":{"ticket":"t-011"}}
-EOF
-rcF=0
-( cd "$re_repo" && LCARS_GH_BIN="$re_repo/gh" LCARS_NOW=3005 \
-    bash "$RUN" mirror-comments --mission "$MID" >outF.txt 2>&1 ) || rcF=$?
-NF="$(grep -c 'issue comment' "$GH_LOG" 2>/dev/null; true)"
-check "5. two DISTINCT tickets' ticket_green each post (no over-dedup)" \
-  "[ '$NF' -eq 2 ]"
+# --- Guard: no events.jsonl yet → clean no-op -------------------------------
+r10="$(new_repo implement)"; make_gh_stub "$r10/gh"; gh_env "$r10"
+rc10=0; run_mirror "$r10" 1010 || rc10=$?
+check "guard. no events.jsonl yet → exit 0, no comments" \
+  "[ '$rc10' -eq 0 ] && [ \"\$(count_ops CREATE)\" -eq 0 ]"
 
 # ==========================================================================
 echo

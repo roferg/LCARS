@@ -26,6 +26,13 @@
 #                                                            soft non-zero, never
 #                                                            a die (mirroring is
 #                                                            like notify.sh).
+#     issue-comment-create <n>      (body on STDIN)       → CREATEs a comment and
+#                                                            ECHOES its new id
+#                                                            (S65 living per-stage
+#                                                            comments). Body via
+#                                                            stdin → no argv limit.
+#     issue-comment-edit <comment-id> (body on STDIN)     → PATCHes (edits in
+#                                                            place) that comment.
 #     issue-relabel <n> --add <labels> --remove <labels>  → relabels an issue
 #     issue-close   <n> [--comment <c>]                   → closes an issue
 #     link-subissue <parent> <child>                      → nests child under
@@ -108,6 +115,45 @@ github_issue_comment() { # <n> --body <b>
   # pass). The `gh issue comment <n> --body <b>` argv is the canonical form.
   command -v "$GH_BIN" >/dev/null 2>&1 || return 1
   "$GH_BIN" issue comment "$issue" --body "$body" >/dev/null 2>&1
+  return $?
+}
+
+# github_issue_comment_create <n>  — body on STDIN — echoes the NEW comment id.
+# Session 65 (living per-stage comments): the create op must RETURN the created
+# comment's id so the mirror can EDIT it in place later. Bodies are large/
+# multiline (rich <details> dashboards) so they come via STDIN and are POSTed
+# with `-F body=@-` (the `-F/--field` form READS stdin; `-f/--raw-field` would
+# store the literal string "@-" — that was the S65 #188 defect). Parse `.id` jq-free
+# from the returned JSON. Best-effort like notify.sh: gh absent/failing → echo
+# NOTHING (the mirror keys off empty output), never a die, never abort the run.
+github_issue_comment_create() { # <n>   (body on stdin)
+  local issue="${1:-}"
+  [ -n "$issue" ] || die "issue-comment-create: missing issue number"
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 0
+  local out id
+  out="$("$GH_BIN" api --method POST \
+        "repos/{owner}/{repo}/issues/$issue/comments" -F body=@- 2>/dev/null)" || return 0
+  # Parse the comment's own "id":<n> from the response, jq-free. The real gh
+  # response is a SINGLE line carrying several "id" fields (the comment id FIRST,
+  # then a nested user.id, etc.); a greedy `.*"id"` match would grab the LAST id
+  # (the user's) and corrupt the create→edit map. Split on object/array
+  # punctuation so each "id" lands on its own line, then take the FIRST one.
+  id="$(printf '%s' "$out" | tr ',{}[]' '\n\n\n\n\n' \
+        | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+  [ -n "$id" ] && printf '%s' "$id"
+  return 0
+}
+
+# github_issue_comment_edit <comment-id>  — body on STDIN — PATCH that comment.
+# The in-place edit of a living per-stage comment. Best-effort: gh absent →
+# soft non-zero (the mirror swallows it); a PATCH failure propagates gh's rc so
+# the mirror can leave its on-disk truth and retry next pass. Body via stdin.
+github_issue_comment_edit() { # <comment-id>   (body on stdin)
+  local cid="${1:-}"
+  [ -n "$cid" ] || die "issue-comment-edit: missing comment id"
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 1
+  "$GH_BIN" api --method PATCH \
+    "repos/{owner}/{repo}/issues/comments/$cid" -F body=@- >/dev/null 2>&1
   return $?
 }
 
@@ -213,8 +259,10 @@ case "$HOST" in
 esac
 
 case "$OP" in
-  issue-create)  github_issue_create  "$@" ;;
-  issue-comment) github_issue_comment "$@" ;;
+  issue-create)         github_issue_create  "$@" ;;
+  issue-comment)        github_issue_comment "$@" ;;
+  issue-comment-create) github_issue_comment_create "$@" ;;
+  issue-comment-edit)   github_issue_comment_edit "$@" ;;
   issue-relabel) github_issue_relabel "$@" ;;
   issue-close)   github_issue_close   "$@" ;;
   link-subissue) github_link_subissue "$@" ;;
