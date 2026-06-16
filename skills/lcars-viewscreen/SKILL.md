@@ -1,24 +1,30 @@
 ---
-name: lcars-serve
-description: Start the read-only LCARS Kanban web board — a local, browser-based command-and-control view of every active Mission (PRD §5.1–5.2, §6; ADR-001/002/003/007). `lcars serve` launches a Python-3-stdlib-only daemon (NO pip/npm/build step) that serves a vanilla LCARS-themed static front end rendering the Kanban board: all active Missions as cards in their correct Stage columns, each with one cost pill + two difficulty pills (reasoning + implementation, low=teal/med=amber/high=red), awaiting-you and paused card states, nested ticket rows, and Implement wave/ticket progress. It exposes a small read API (`GET /api/board`, `GET /api/mission/<id>`) plus a live channel (SSE) that pushes on state change, and — on the LOCAL adapter — operator write endpoints (file / start / pause / resume / respond / verify / log) that dispatch to the `lcars` skills; the GitHub adapter and `--read-only` keep it view-only. ONE adapter-neutral board shape backs two interchangeable read adapters (ADR-003): a LOCAL adapter parsing `.git/lcars/missions/*` (default) and a GITHUB adapter reading issues + `lcars:*` labels via `$LCARS_GH_BIN`; the front end depends only on the shape, so a hosted view-only build is a configuration away. Use when the captain runs `lcars serve`, asks to open / start / launch the LCARS board / web UI / Kanban / dashboard in a browser, or wants a live visual view of the mission fleet.
+name: lcars-viewscreen
+description: Start the LCARS Kanban web board — the bridge **viewscreen**, a local, browser-based command-and-control view of every active Mission (PRD §5.1–5.2, §6; ADR-001/002/003/007). `lcars viewscreen` (alias `lcars serve`, the older power verb that still works) launches a Python-3-stdlib-only daemon (NO pip/npm/build step) that serves a vanilla LCARS-themed static front end rendering the Kanban board: all active Missions as cards in their correct Stage columns, each with one cost pill + two difficulty pills (reasoning + implementation, low=teal/med=amber/high=red), awaiting-you and paused card states, nested ticket rows, and Implement wave/ticket progress. `lcars viewscreen --open` is the one-command launcher — it boots on a free port and opens the board in your browser. It exposes a small read API (`GET /api/board`, `GET /api/mission/<id>`) plus a live channel (SSE) that pushes on state change, and — on the LOCAL adapter — operator write endpoints (file / start / pause / resume / respond / verify / log) that dispatch to the `lcars` skills; the GitHub adapter and `--read-only` keep it view-only. ONE adapter-neutral board shape backs two interchangeable read adapters (ADR-003): a LOCAL adapter parsing `.git/lcars/missions/*` (default) and a GITHUB adapter reading issues + `lcars:*` labels via `$LCARS_GH_BIN`; the front end depends only on the shape, so a hosted view-only build is a configuration away. Use when the captain runs `lcars viewscreen` or `lcars serve`, asks to open / start / launch the LCARS viewscreen / board / web UI / Kanban / dashboard in a browser, or wants a live visual view of the mission fleet.
 ---
 
-# lcars serve
+# lcars viewscreen
 
-`lcars serve` starts the **LCARS Kanban interface** — the browser-based
-command-and-control board promised in `vision.md` → *Future: The Kanban
-Interface*, specified in the Kanban PRD §5.1–5.2 and §6. It removes the terminal
-from the daily glance: every active Mission shows as a card in its Stage column,
-with its estimator pills, gate/paused state, nested tickets, and live Implement
-progress, refreshing as the harness advances.
+`lcars viewscreen` starts the **LCARS Kanban interface** — the bridge
+viewscreen, the browser-based command-and-control board promised in `vision.md`
+→ *Future: The Kanban Interface*, specified in the Kanban PRD §5.1–5.2 and §6. It
+removes the terminal from the daily glance: every active Mission shows as a card
+in its Stage column, with its estimator pills, gate/paused state, nested tickets,
+and live Implement progress, refreshing as the harness advances.
 
-The bundled `serve.sh` launches the daemon so the skill stays testable; you
+> **Power alias:** `lcars serve` is the older verb and **still works** (the LCARS
+> "old verbs stay as power aliases" pattern). It execs the exact same launcher
+> via a thin `serve.sh` shim next to `viewscreen.sh`, so any script or
+> muscle-memory keeps working; the documented verb is now `lcars viewscreen`.
+
+The bundled `viewscreen.sh` launches the daemon so the skill stays testable; you
 (Claude) just announce the action, print the URL, and report.
 
 ## Start the board
 
 ```bash
-bash ~/.claude/skills/lcars-serve/serve.sh
+bash ~/.claude/skills/lcars-viewscreen/viewscreen.sh
+# the power alias is identical: …/lcars-viewscreen/serve.sh
 ```
 
 This launches a **Python-3-stdlib-only** `http.server` daemon (no pip, no npm, no
@@ -71,13 +77,14 @@ Each skill path is **env-injected** (so tests stub it): `LCARS_FILE_SCRIPT`,
 ### Enter the interface
 
 ```bash
-bash ~/.claude/skills/lcars-serve/serve.sh --open
+bash ~/.claude/skills/lcars-viewscreen/viewscreen.sh --open
 ```
 
 `--open` boots the daemon on a **free port** (the OS assigns one; the daemon
 reads it back), prints the resolved URL, and opens it in the system browser.
 Auto-open is guarded by **`LCARS_SERVE_NO_OPEN`** so scripts/tests never spawn a
-browser; `lcars serve` with no `--open` stays **headless** on the fixed port.
+browser; `lcars viewscreen` with no `--open` stays **headless** on the fixed
+port.
 
 Open the printed URL (default `http://127.0.0.1:8765/`) in a browser. Stop with
 Ctrl-C.
@@ -101,9 +108,9 @@ Select the adapter via flag or env (flag wins, then `LCARS_SERVE_ADAPTER`, then 
 `serveAdapter` key in `.git/lcars/config.json`, else `local`):
 
 ```bash
-bash ~/.claude/skills/lcars-serve/serve.sh --adapter github
+bash ~/.claude/skills/lcars-viewscreen/viewscreen.sh --adapter github
 # or
-LCARS_SERVE_ADAPTER=github bash ~/.claude/skills/lcars-serve/serve.sh
+LCARS_SERVE_ADAPTER=github bash ~/.claude/skills/lcars-viewscreen/viewscreen.sh
 ```
 
 ## Options (all via flag or env)
@@ -112,7 +119,7 @@ LCARS_SERVE_ADAPTER=github bash ~/.claude/skills/lcars-serve/serve.sh
 - `--port` / `LCARS_SERVE_PORT` (default `8765`)
 - `--adapter` / `LCARS_SERVE_ADAPTER` — `local` | `github`
 - `--repo-root` / `LCARS_SERVE_REPO_ROOT` — the working tree whose `.git/lcars`
-  the local adapter reads (defaults to the repo `lcars serve` is run in)
+  the local adapter reads (defaults to the repo `lcars viewscreen` is run in)
 - `--gh-bin` / `LCARS_GH_BIN` — the `gh` binary for the GitHub adapter
 - `--gh-repo` / `LCARS_SERVE_GH_REPO` — `owner/name` for the GitHub adapter
 
@@ -125,10 +132,13 @@ the harness advances. Stop with Ctrl-C.
 
 ## Implementation
 
-The launcher is `serve.sh` next to this file; the daemon + static front end live
-in the repo's `web/` directory (Python package `lcars_serve` + `web/static/`).
-Its behaviour is covered by `web/tests/` (run with `cd web && python3 -m unittest
-discover`) and a smoke test in `tests/lcars-serve.test.sh` (run with `bash
+The launcher is `viewscreen.sh` next to this file (with a thin `serve.sh` shim
+preserving the `lcars serve` power alias — it just execs `viewscreen.sh`); the
+daemon + static front end live in the repo's `web/` directory (Python package
+`lcars_serve` + `web/static/` — the package name and the `LCARS_SERVE_*` env
+names are intentionally unchanged; only the user-facing verb was renamed). Its
+behaviour is covered by `web/tests/` (run with `cd web && python3 -m unittest
+discover`) and a smoke test in `tests/lcars-viewscreen.test.sh` (run with `bash
 tests/run.sh`). `LCARS_PYTHON_BIN`, `LCARS_WEB_DIR`, and `LCARS_GH_BIN` are taken
 via env so tests can stub them. Edit the repo copy, not `~/.claude` —
 `./install.sh` symlinks it in.

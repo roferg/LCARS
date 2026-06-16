@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 #
-# Smoke test for the lcars-serve skill launcher (skills/lcars-serve/serve.sh)
-# and the read-only Kanban daemon it starts.
+# Smoke test for the lcars-viewscreen skill launcher
+# (skills/lcars-viewscreen/viewscreen.sh) and the Kanban daemon it starts.
+#
+# The board verb was renamed `lcars serve` → `lcars viewscreen`; `lcars serve`
+# stays as a documented power alias via a thin serve.sh shim that execs
+# viewscreen.sh. This suite locks BOTH entry paths and the new banner.
 #
 # The Python adapter/API logic has its own thorough suite under web/ (run with
 # `cd web && python3 -m unittest discover`). THIS bash suite is the integration
-# lock for the launcher: it proves serve.sh boots the stdlib daemon against a
-# fixture .git/lcars tree and that /api/board + / answer over HTTP — no model,
+# lock for the launcher: it proves viewscreen.sh boots the stdlib daemon against
+# a fixture .git/lcars tree and that /api/board + / answer over HTTP — no model,
 # no gh, no network. Dependencies are stubbed via env (LCARS_PYTHON_BIN,
-# LCARS_WEB_DIR, LCARS_SERVE_PORT).
+# LCARS_WEB_DIR, LCARS_SERVE_PORT — the env names are intentionally unchanged).
 #
-# Usage: bash tests/lcars-serve.test.sh
+# Usage: bash tests/lcars-viewscreen.test.sh
 set -uo pipefail
 
 # qgrep: drain stdin fully before grepping (see host-adapter.test.sh) so a piped
@@ -19,7 +23,9 @@ set -uo pipefail
 qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERVE="${LCARS_SERVE_SCRIPT:-$REPO_ROOT/skills/lcars-serve/serve.sh}"
+SERVE="${LCARS_VIEWSCREEN_SCRIPT:-$REPO_ROOT/skills/lcars-viewscreen/viewscreen.sh}"
+# The `lcars serve` power-alias shim — must launch the SAME daemon as viewscreen.sh.
+SERVE_ALIAS="$REPO_ROOT/skills/lcars-viewscreen/serve.sh"
 WEB_DIR="$REPO_ROOT/web"
 
 pass=0
@@ -39,18 +45,26 @@ ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
-echo "lcars-serve: launcher + read-only daemon smoke"
+echo "lcars-viewscreen: launcher + Kanban daemon smoke (+ serve alias)"
+
+# --- the serve.sh power alias exists and execs viewscreen.sh ------------------
+check "serve.sh power-alias shim exists"          "[ -f \"$SERVE_ALIAS\" ]"
+check "serve.sh shim execs viewscreen.sh"         "qgrep -q 'exec .*viewscreen.sh' < \"$SERVE_ALIAS\""
 
 # --- preflight: python3 present? (the daemon is python-stdlib-only) ----------
 PY_BIN="${LCARS_PYTHON_BIN:-python3}"
 if ! command -v "$PY_BIN" >/dev/null 2>&1; then
   echo "  (skip) python3 not on PATH — daemon smoke needs it; launcher dies cleanly."
-  # Even without python, serve.sh must die with a clear message, not hang.
+  # Even without python, viewscreen.sh must die with a clear message, not hang.
   out="$(LCARS_PYTHON_BIN=definitely-not-python bash "$SERVE" 2>&1)"; rc=$?
   check "missing python3 → non-zero exit"        "[ $rc -ne 0 ]"
   check "missing python3 → clear message"        "printf '%s' \"\$out\" | qgrep -q 'python3 not found'"
+  # the alias must die identically (proving it routes to the same launcher).
+  outa="$(LCARS_PYTHON_BIN=definitely-not-python bash "$SERVE_ALIAS" 2>&1)"; rca=$?
+  check "serve alias: missing python3 → non-zero exit"   "[ $rca -ne 0 ]"
+  check "serve alias: missing python3 → clear message"   "printf '%s' \"\$outa\" | qgrep -q 'python3 not found'"
   echo
-  [ "$fail" -eq 0 ] && echo "lcars-serve: ALL PASS ($pass)" || echo "lcars-serve: $fail FAILED"
+  [ "$fail" -eq 0 ] && echo "lcars-viewscreen: ALL PASS ($pass)" || echo "lcars-viewscreen: $fail FAILED"
   exit "$fail"
 fi
 
@@ -115,6 +129,10 @@ for _ in $(seq 1 50); do
 done
 check "daemon comes up and answers /api/board"   "[ $up -eq 1 ]"
 
+# the startup banner now reads "LCARS viewscreen" (the renamed verb), not "serve".
+check "startup banner reads 'LCARS viewscreen'"  "qgrep -q 'LCARS viewscreen' < \"$TMPROOT/serve.log\""
+check "startup banner no longer says 'LCARS serve'" "! qgrep -q 'LCARS serve' < \"$TMPROOT/serve.log\""
+
 if [ "$up" -eq 1 ]; then
   board="$(curl -fsS "http://127.0.0.1:$PORT/api/board" 2>/dev/null)"
   check "/api/board is the board shape (has columns)" "printf '%s' \"\$board\" | qgrep -q '\"columns\"'"
@@ -138,11 +156,35 @@ fi
 
 kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; SERVER_PID=""
 
+# --- S67 RENAME: the `lcars serve` POWER ALIAS still launches the same daemon --
+# Boot via serve.sh (the shim) instead of viewscreen.sh and assert the identical
+# daemon answers /api/board and prints the SAME "LCARS viewscreen" banner — i.e.
+# the old entry path resolves to the renamed launcher with zero divergence.
+APORT="$("$PY_BIN" - <<'PY'
+import socket
+s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()
+PY
+)"
+LCARS_WEB_DIR="$WEB_DIR" \
+LCARS_SERVE_PORT="$APORT" \
+LCARS_SERVE_HOST="127.0.0.1" \
+  bash "$SERVE_ALIAS" --repo-root "$REPO" --read-only --poll-interval 0.1 >"$TMPROOT/serve-alias.log" 2>&1 &
+APID=$!
+aup=0
+for _ in $(seq 1 50); do
+  if curl -fsS "http://127.0.0.1:$APORT/api/board" >/dev/null 2>&1; then aup=1; break; fi
+  sleep 0.1
+done
+check "serve alias: launches the same daemon (answers /api/board)" "[ $aup -eq 1 ]"
+check "serve alias: same 'LCARS viewscreen' banner" \
+  "qgrep -q 'LCARS viewscreen' < \"$TMPROOT/serve-alias.log\""
+kill "$APID" 2>/dev/null; wait "$APID" 2>/dev/null
+
 # --- DEFECT 2 (S67 fix-loop r1): --adapter github derives --gh-repo from the ---
 # launch repo's remote, so the github adapter targets THIS repo (not gh's
-# cwd-resolved default — serve.sh cd's into web/ before exec). We stub both the
-# python bin (echo argv + exit, so the daemon never really boots) and gh (echo a
-# known nameWithOwner), then assert serve.sh injected `--gh-repo owner/name`.
+# cwd-resolved default — viewscreen.sh cd's into web/ before exec). We stub both
+# the python bin (echo argv + exit, so the daemon never really boots) and gh (echo
+# a known nameWithOwner), then assert viewscreen.sh injected `--gh-repo owner/name`.
 GHREPO_DIR="$TMPROOT/ghrepo"
 mkdir -p "$GHREPO_DIR/.git/lcars"
 ( cd "$GHREPO_DIR" && git init -q 2>/dev/null )
@@ -170,7 +212,7 @@ chmod +x "$GHSTUB"
 
 ghout="$(LCARS_WEB_DIR="$WEB_DIR" LCARS_PYTHON_BIN="$PYSTUB" LCARS_GH_BIN="$GHSTUB" \
   bash "$SERVE" --repo-root "$GHREPO_DIR" --adapter github 2>&1)"
-check "github adapter: serve.sh derives --gh-repo from remote" \
+check "github adapter: viewscreen.sh derives --gh-repo from remote" \
   "printf '%s' \"\$ghout\" | qgrep -q -- '--gh-repo octo/widgets'"
 
 # explicit --gh-repo / env override still wins (no clobber).
@@ -237,7 +279,7 @@ fi
 
 # --- S68 launcher: --open is guarded so a test NEVER spawns a browser ----------
 # With LCARS_SERVE_NO_OPEN=1 and a stubbed python that echoes argv (no real
-# server), assert serve.sh forwards --open AND that the guard env is exported, so
+# server), assert viewscreen.sh forwards --open AND that the guard env is exported, so
 # the daemon would suppress the open. `lcars serve` (no --open) stays headless.
 OPENOUT="$(LCARS_WEB_DIR="$WEB_DIR" LCARS_PYTHON_BIN="$PYSTUB" LCARS_GH_BIN="$GHSTUB" \
   LCARS_SERVE_NO_OPEN=1 \
@@ -246,5 +288,5 @@ check "launcher forwards --open to the daemon" \
   "printf '%s' \"\$OPENOUT\" | qgrep -q -- '--open'"
 
 echo
-[ "$fail" -eq 0 ] && echo "lcars-serve: ALL PASS ($pass)" || echo "lcars-serve: $fail FAILED"
+[ "$fail" -eq 0 ] && echo "lcars-viewscreen: ALL PASS ($pass)" || echo "lcars-viewscreen: $fail FAILED"
 exit "$fail"

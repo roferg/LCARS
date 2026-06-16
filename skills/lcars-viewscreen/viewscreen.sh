@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# lcars serve — start the read-only LCARS Kanban web daemon (PRD §5.1–5.2, §6;
-# ADR-001/002/003/007).
+# lcars viewscreen — start the LCARS Kanban web daemon, the bridge viewscreen
+# (PRD §5.1–5.2, §6; ADR-001/002/003/007). `lcars serve` is a documented power
+# alias that execs this same script via the serve.sh shim next to this file.
 #
 # A Python-3-stdlib-only http.server daemon (NO pip/npm/build step) that serves a
 # vanilla static Kanban front end and a small read API:
@@ -36,10 +37,10 @@ SELF="${BASH_SOURCE[0]}"
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 PY_BIN="${LCARS_PYTHON_BIN:-python3}"
-# The web app lives at the repo's web/. From skills/lcars-serve/ that is ../../web.
+# The web app lives at the repo's web/. From skills/lcars-viewscreen/ that is ../../web.
 WEB_DIR="${LCARS_WEB_DIR:-$(cd "$SKILL_DIR/../../web" 2>/dev/null && pwd)}"
 
-die() { printf 'lcars serve: %s\n' "$1" >&2; exit 1; }
+die() { printf 'lcars viewscreen: %s\n' "$1" >&2; exit 1; }
 
 command -v "$PY_BIN" >/dev/null 2>&1 \
   || die "python3 not found ($PY_BIN). The daemon is Python-3-stdlib-only."
@@ -69,7 +70,7 @@ fi
 [ -n "$ADAPTER" ] || ADAPTER="local"
 
 # Pass through any extra args verbatim (e.g. --adapter github, --port 9000) so
-# `lcars serve --adapter github` overrides everything resolved above. Build the
+# `lcars viewscreen --adapter github` overrides everything resolved above. Build the
 # array bash-3.2-safely: `("$@")` on an empty `$@` trips `set -u` on bash 3.2.
 EXTRA_ARGS=()
 [ "$#" -gt 0 ] && EXTRA_ARGS=("$@")
@@ -84,7 +85,7 @@ for i in "${!EXTRA_ARGS[@]}"; do
 done
 
 # --- github adapter: derive the target repo from THIS repo's remote ----------
-# serve.sh cd's into web/ before exec, so the github adapter would otherwise let
+# viewscreen.sh cd's into web/ before exec, so the github adapter would otherwise let
 # gh resolve the repo from web/'s cwd — the wrong repo. When the github adapter
 # is selected and the operator gave neither an explicit --gh-repo flag nor
 # LCARS_SERVE_GH_REPO, derive owner/name from $REPO_ROOT's remote (env-injected
@@ -113,7 +114,7 @@ fi
 # and prints the resolved URL) instead of the fixed 8765, so two boards never
 # clash. An explicit --port / LCARS_SERVE_PORT still wins. Auto-open itself is
 # guarded inside the daemon by LCARS_SERVE_NO_OPEN so tests never spawn a browser;
-# `lcars serve` with NO --open stays headless.
+# `lcars viewscreen` with NO --open stays headless.
 WANT_OPEN=0
 HAVE_PORT_FLAG=0
 for a in "${EXTRA_ARGS[@]:-}"; do

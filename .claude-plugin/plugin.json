@@ -12,8 +12,8 @@
     "./skills/lcars-resolve-logs",
     "./skills/lcars-respond",
     "./skills/lcars-run",
-    "./skills/lcars-serve",
     "./skills/lcars-status",
-    "./skills/lcars-update"
+    "./skills/lcars-update",
+    "./skills/lcars-viewscreen"
   ]
 }

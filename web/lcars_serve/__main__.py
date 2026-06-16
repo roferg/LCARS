@@ -11,10 +11,11 @@ dispatch to the `lcars` skill scripts. The GitHub / view-only daemon is built
 with NO write layer (and `--read-only` forces it off for the local adapter too),
 so the read/render path keeps working with the GitHub adapter alone.
 
-The ENTER-the-interface launcher: `--open` boots the daemon on a free port (use
-`--port 0`), prints the URL, and opens the system browser. Auto-open is guarded
-by `LCARS_SERVE_NO_OPEN` so scripts/tests never spawn a browser; plain
-`lcars serve` stays headless.
+The ENTER-the-interface launcher: `--open` (`lcars viewscreen --open`) boots the
+daemon on a free port (use `--port 0`), prints the URL, and opens the system
+browser. Auto-open is guarded by `LCARS_SERVE_NO_OPEN` so scripts/tests never
+spawn a browser; plain `lcars viewscreen` stays headless. (`lcars serve` is a
+power alias for the same launcher; the `LCARS_SERVE_*` env names are unchanged.)
 
 Stdlib only; no pip/npm/build step.
 """
@@ -40,8 +41,8 @@ def should_open(open_flag, env=None):
     """Auto-open the browser ONLY when --open was passed AND not suppressed.
 
     LCARS_SERVE_NO_OPEN (any non-empty value) hard-suppresses the open so tests
-    and headless scripts never spawn a browser. Plain `lcars serve` (no --open)
-    stays headless regardless.
+    and headless scripts never spawn a browser. Plain `lcars viewscreen` (no
+    --open) stays headless regardless.
     """
     env = env if env is not None else os.environ
     if not open_flag:
@@ -53,8 +54,9 @@ def should_open(open_flag, env=None):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    ap = argparse.ArgumentParser(prog="lcars serve",
-                                 description="LCARS Kanban board daemon.")
+    ap = argparse.ArgumentParser(prog="lcars viewscreen",
+                                 description="LCARS Kanban board daemon "
+                                             "(the bridge viewscreen).")
     ap.add_argument("--host", default=os.environ.get("LCARS_SERVE_HOST", "127.0.0.1"))
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("LCARS_SERVE_PORT", "8765")))
@@ -98,7 +100,7 @@ def main(argv=None):
     url = "http://%s:%d/" % (bound[0], bound[1])
     mode = "read-only" if actions is None else "read+write"
     sys.stderr.write(
-        "LCARS serve — %s adapter (%s) — %s  (Ctrl-C to stop)\n"
+        "LCARS viewscreen — %s adapter (%s) — %s  (Ctrl-C to stop)\n"
         % (adapter.name, mode, url))
     sys.stderr.flush()
 
@@ -116,7 +118,7 @@ def main(argv=None):
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        sys.stderr.write("\nLCARS serve stopped.\n")
+        sys.stderr.write("\nLCARS viewscreen stopped.\n")
     finally:
         httpd.shutdown()
         httpd.server_close()
