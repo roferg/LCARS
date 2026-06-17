@@ -36,6 +36,54 @@ var writesActive = null;
 // even when the per-mission payload doesn't echo the repo. May stay null.
 var detailRepo = null;
 
+/* UX-17: optimistic "starting" set. After a captain clicks Start the driver
+   takes ~2s to spawn → lock → flip mission.running true, during which a naive
+   render would still show a clickable Start. We mark the mission id "starting"
+   on click and treat it as running across every board refresh until the real
+   mission.running becomes true (then clear) OR a safety timeout fires (~30s) so
+   a failed start never wedges the card. Keyed by mission id → timeout handle. */
+var STARTING = Object.create(null);
+var STARTING_TIMEOUT_MS = 30000;
+
+function markStarting(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (STARTING[key]) clearTimeout(STARTING[key]);
+  STARTING[key] = setTimeout(function () { clearStarting(key); refresh(); },
+    STARTING_TIMEOUT_MS);
+}
+function clearStarting(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (STARTING[key]) { clearTimeout(STARTING[key]); delete STARTING[key]; }
+}
+function isStarting(id) {
+  return id != null && !!STARTING[String(id)];
+}
+
+/* UX-17/UX-20/UX-21: the single source of truth for a mission's run/pause
+   lifecycle, derived purely client-side from the adapter-neutral shape (running,
+   paused) plus the optimistic STARTING set. Every running-pulse / in-flight /
+   paused render gates through these so the four states never overlap.
+     starting : optimistic post-click, before running flips true (UX-17)
+     pausing  : pause requested but a driver is still live  (paused && running)
+     paused   : settled, no live driver                     (paused && !running)
+     running  : live driver advancing, not paused           (running && !paused)
+   When the real running flag finally arrives we drop the optimistic flag. */
+function runState(m) {
+  var running = !!(m && m.running);
+  var paused = !!(m && m.paused);
+  if (running && isStarting(m.id)) clearStarting(m.id);
+  var starting = isStarting(m && m.id) && !paused;
+  if (paused && running) return "pausing";
+  if (paused) return "paused";
+  if (running || starting) return "running";
+  return "idle";
+}
+// UX-20: the running pulse / "IN FLIGHT" copy may show ONLY when truly running
+// and not paused (suppressed while pausing/paused). Optimistic-start counts.
+function isInFlight(m) { return runState(m) === "running"; }
+
 function el(tag, cls, text) {
   var n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -76,13 +124,17 @@ function applyWriteState(button) {
 
 /* ════════════════ CARD RENDER ════════════════ */
 function cardNode(m) {
+  var rs = runState(m); // UX-17/20/21: derived run/pause lifecycle (one source).
   var card = el("div", "card");
   if (m.awaiting) card.className += " awaiting";
-  if (m.paused) card.className += " paused";
+  // UX-21/UX-22: paused AND pausing both carry the .paused chrome (dimmed body),
+  // but the status label + action button are kept high-contrast (see below).
+  if (rs === "paused" || rs === "pausing") card.className += " paused";
   if (m.linked) card.className += " child";
-  // UX-13: a live drive is advancing this mission — flag the card so it carries
-  // the running tint (client-side; no new events arrive mid-stage).
-  if (m.running) card.className += " running";
+  // UX-13/UX-20: a live drive is advancing this mission — flag the card so it
+  // carries the running tint. Gated on isInFlight so a paused/pausing card never
+  // shows the running animation (UX-20). Optimistic-start counts (UX-17).
+  if (isInFlight(m)) card.className += " running";
   // UX-10/UX-16: id handle so a closed modal (Start) can stamp a transient busy
   // animation onto this card (showCardBusy).
   if (m.id != null) card.setAttribute("data-mid", String(m.id));
@@ -102,7 +154,16 @@ function cardNode(m) {
   }
   card.appendChild(pills);
 
-  if (m.paused) card.appendChild(el("div", "no", "⏸ paused"));
+  // UX-21/UX-22: a high-contrast status label for paused/pausing. It carries the
+  // .pause-status class so the .paused dim overlay can EXCLUDE it (stays bright).
+  // pausing = pause requested but a driver is still live (will stop at the next
+  // safe boundary); paused = settled.
+  if (rs === "pausing") {
+    card.appendChild(el("div", "no pause-status pausing",
+      "◐ PAUSING — stopping at next safe boundary"));
+  } else if (rs === "paused") {
+    card.appendChild(el("div", "no pause-status", "⏸ paused"));
+  }
 
   if (m.progress) {
     var prog = el("div", "progress");
@@ -119,6 +180,9 @@ function cardNode(m) {
   if (m.tickets && m.tickets.length) {
     var tk = el("div", "tickets");
     m.tickets.forEach(function (t) {
+      // UX-23: default/inactive ticket-row text is WHITE (readable); the ACTIVE
+      // ticket keeps its orange (the .run/.in-progress states), done/failed keep
+      // their state colours. The state class drives the colour entirely in CSS.
       var row = el("div", "tk " + (t.state || "pending"));
       row.appendChild(el("span", "dot"));
       var label = (t.id || "") + (t.title ? " · " + t.title : "");
@@ -128,10 +192,10 @@ function cardNode(m) {
     card.appendChild(tk);
   }
 
-  // UX-13: live "running" pulse — a small themed widget shown whenever a drive
-  // is actively advancing this mission, so a long silent stage doesn't look
-  // stuck. Client-side animation only; reuses the shared working-bars styling.
-  if (m.running) card.appendChild(runningPulse(stageLabel(m.stage)));
+  // UX-13/UX-20: live "running" pulse — shown ONLY when truly in flight (running
+  // && !paused; optimistic-start counts). Suppressed while pausing/paused so a
+  // halting card never shows motion. Client-side animation only.
+  if (isInFlight(m)) card.appendChild(runningPulse(stageLabel(m.stage)));
 
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
   card.appendChild(cardControls(m));
@@ -157,18 +221,45 @@ function cardControls(m) {
   if (m.stage === "done") {
     return ctrl; // terminal — whole-card click opens detail; no inline control.
   }
+  var rs = runState(m);
   if (m.stage === "verify") {
     ctrl.appendChild(applyWriteState(btn("✓ Verify ▸", "go", function () {
       openVerify(m.id);
     })));
-  } else if (m.paused) {
-    ctrl.appendChild(applyWriteState(btn("▶ Resume", "go", function () {
+  } else if (rs === "paused") {
+    // UX-22: RESUME stays at FULL prominence on a dimmed card — the .pause-action
+    // class excludes it from the .paused dim overlay.
+    var resume = applyWriteState(btn("▶ Resume", "go", function () {
       dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/resume", {},
         ctrl, "Re-engaging warp core…");
-    })));
-  } else if (m.running || isRunningStage(m.stage)) {
-    // UX-13: a live drive (or an in-flight headless stage) is advancing this
-    // mission — offer Pause, never Start (so Start can't be double-fired).
+    }));
+    resume.className += " pause-action";
+    ctrl.appendChild(resume);
+  } else if (rs === "pausing") {
+    // UX-21: pause requested but a driver is still live — it will stop at the
+    // next safe boundary. No Pause (already requested) and no Resume yet (still
+    // running); show a disabled, full-contrast "Pausing…" affordance.
+    var pausing = btn("◐ Pausing…", "warn pause-action", null);
+    pausing.disabled = true;
+    pausing.title = "Pause requested — stopping at the next safe boundary.";
+    ctrl.appendChild(pausing);
+  } else if (rs === "running") {
+    // UX-13: a live drive is advancing this mission — offer Pause, never Start.
+    // UX-17: while OPTIMISTICALLY starting (clicked Start, running not yet true)
+    // the Pause button stays disabled so the captain can't pause a half-spawned
+    // driver; it enables once the real running flag arrives.
+    var pause = applyWriteState(btn("⏸ Pause", "warn", function () {
+      dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/pause", {},
+        ctrl, "Holding station…");
+    }));
+    if (!m.running && isStarting(m.id)) {
+      pause.disabled = true;
+      pause.title = "Engaging the driver…";
+    }
+    ctrl.appendChild(pause);
+  } else if (isRunningStage(m.stage)) {
+    // an in-flight headless stage with no running flag yet — offer Pause, never
+    // Start (so Start can't be double-fired).
     ctrl.appendChild(applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/pause", {},
         ctrl, "Holding station…");
@@ -626,11 +717,19 @@ function openLaunch(id) {
       // UX-10/UX-16: surface the themed working animation on the card briefly via
       // showCardBusy so Start gives feedback while the request is in flight.
       var override = ov.value.trim() || undefined;
+      // UX-17: set the OPTIMISTIC starting flag BEFORE closing the modal so the
+      // card immediately renders as running (Pause/spinner, never a clickable
+      // Start) and stays that way across refreshes until mission.running flips
+      // true (cleared in runState) or the safety timeout fires.
+      markStarting(id);
       closeOverlay();
       showCardBusy(id, "Engaging…");
       postWrite("/api/mission/" + enc(id) + "/start", { override: override },
         function () { /* board/SSE refresh shows the running state */ },
-        function (msg) { setStatus(msg); refresh(); });
+        function (msg) {
+          // a failed start: drop the optimistic flag so Start returns.
+          clearStarting(id); setStatus(msg); refresh();
+        });
     }));
     m.foot.appendChild(go);
     showOverlay(m.wrap);
@@ -832,22 +931,34 @@ function renderDetail(mi) {
     gh.addEventListener("click", function (e) { e.stopPropagation(); });
     actions.appendChild(gh);
   }
+  var mrs = runState(mi); // mirror the card's derived lifecycle (UX-17/20/21).
   if (mi.awaiting) {
     actions.appendChild(applyWriteState(btn("Answer ▸", "danger", function () { openRespond(mi.id); })));
   } else if (mi.stage === "verify") {
     actions.appendChild(applyWriteState(btn("✓ Verify", "go", function () { openVerify(mi.id); })));
   } else if (mi.stage === "done") {
     /* terminal — no primary action */
-  } else if (mi.paused) {
+  } else if (mrs === "paused") {
     actions.appendChild(applyWriteState(btn("▶ Resume", "go", function () {
       dispatchCard("/api/mission/" + enc(mi.id) + "/resume", {}); closeOverlay();
     })));
-  } else if (mi.running || isRunningStage(mi.stage)) {
+  } else if (mrs === "pausing") {
+    // UX-21: pause requested, driver still settling — disabled "Pausing…".
+    var dpausing = btn("◐ Pausing…", "warn", null);
+    dpausing.disabled = true;
+    dpausing.title = "Pause requested — stopping at the next safe boundary.";
+    actions.appendChild(dpausing);
+  } else if (mrs === "running" || isRunningStage(mi.stage)) {
     // UX-13: mirror the card — a live drive overrides Start → Pause so Start
-    // can't be double-fired from the detail header either.
-    actions.appendChild(applyWriteState(btn("⏸ Pause", "warn", function () {
+    // can't be double-fired from the detail header either. UX-17: while
+    // optimistically starting the Pause stays disabled until running flips true.
+    var dpause = applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCard("/api/mission/" + enc(mi.id) + "/pause", {}); closeOverlay();
-    })));
+    }));
+    if (!mi.running && isStarting(mi.id)) {
+      dpause.disabled = true; dpause.title = "Engaging the driver…";
+    }
+    actions.appendChild(dpause);
   } else {
     // align (and any pre-run stage): Start launches the run via the Launch panel.
     actions.appendChild(applyWriteState(btn("▶ Start", "go", function () { openLaunch(mi.id); })));
@@ -879,25 +990,59 @@ function renderDetail(mi) {
 
 function activityFeed(mi) {
   var feed = el("div", "feed");
-  var h = el("h4", null, "Live Activity — Harness ▸ Issue Comments");
-  feed.appendChild(h);
-  // UX-13: when a drive is actively advancing this mission, lead the feed with a
-  // themed running pulse on the active stage so a long silent stage (no new
-  // events mid-stage) doesn't look stuck. Client-side animation only.
-  if (mi.running) {
-    var live = el("div", "evt s-" + normStage(mi.stage) + " evt-live");
+  var acts = mi.activity || [];
+  var inFlight = isInFlight(mi); // UX-20: only when running && !paused.
+  var rs = runState(mi);
+
+  // UX-18: the CURRENT stage is the latest stage_start with no matching
+  // stage_done in the feed (not the first/Align entry). Fall back to mi.stage.
+  var activeStage = currentStage(acts) || mi.stage;
+
+  // ── UX-19: a dedicated CURRENT / IN-FLIGHT block, visually separated from the
+  // chronological history below. Shows the current stage + live pulse (UX-13)
+  // + activeSeconds (UX-24) when in flight; a quiet "paused at <stage>" header
+  // when paused/pausing (UX-20: no motion). ──
+  if (inFlight) {
+    var cur = el("div", "feed-current");
+    cur.appendChild(el("h4", null, "Current — In Flight"));
+    var live = el("div", "evt s-" + normStage(activeStage) + " evt-live");
     live.appendChild(el("div", "marker"));
     var lec = el("div", "ec");
-    lec.appendChild(el("div", "when", (mi.stage || "").toUpperCase() + " · IN FLIGHT"));
-    lec.appendChild(runningPulse(stageLabel(mi.stage)));
+    lec.appendChild(el("div", "when",
+      (activeStage || "").toUpperCase() + " · IN FLIGHT"));
+    lec.appendChild(runningPulse(stageLabel(activeStage)));
+    var rt = activeRuntimeNode(mi); // UX-24
+    if (rt) lec.appendChild(rt);
     live.appendChild(lec);
-    feed.appendChild(live);
+    cur.appendChild(live);
+    feed.appendChild(cur);
+  } else if (rs === "pausing" || rs === "paused") {
+    // UX-20: paused/pausing shows the paused state ONLY — no running pulse, no
+    // "in flight" copy.
+    var pc = el("div", "feed-current");
+    pc.appendChild(el("h4", null, "Current"));
+    var pe = el("div", "evt s-" + normStage(activeStage) + " evt-paused");
+    pe.appendChild(el("div", "marker"));
+    var pec = el("div", "ec");
+    var label = rs === "pausing"
+      ? "PAUSING — stopping at the next safe boundary"
+      : "PAUSED at " + (activeStage || "").toUpperCase();
+    pec.appendChild(el("div", "when", label));
+    var rtp = activeRuntimeNode(mi); // UX-24: keep the active-time readout.
+    if (rtp) pec.appendChild(rtp);
+    pe.appendChild(pec);
+    pc.appendChild(pe);
+    feed.appendChild(pc);
   }
-  var acts = mi.activity || [];
+
+  // ── history timeline ──
+  var hist = el("div", "feed-history");
+  hist.appendChild(el("h4", null, "Live Activity — Harness ▸ Issue Comments"));
   if (!acts.length) {
-    if (!mi.running) {
-      feed.appendChild(el("div", "empty", "No activity yet — the harness posts here as the mission advances."));
+    if (!inFlight && rs !== "pausing" && rs !== "paused") {
+      hist.appendChild(el("div", "empty", "No activity yet — the harness posts here as the mission advances."));
     }
+    feed.appendChild(hist);
     return feed;
   }
   acts.forEach(function (ev) {
@@ -912,9 +1057,55 @@ function activityFeed(mi) {
     if (ev.detail || ev.text) ec.appendChild(el("div", "txt", ev.text || ev.detail));
     ec.appendChild(el("div", "bot", "⬡ posted by lcars-bot"));
     e.appendChild(ec);
-    feed.appendChild(e);
+    hist.appendChild(e);
   });
+  feed.appendChild(hist);
   return feed;
+}
+
+/* UX-18: the current/active stage = the latest stage_start event with no later
+   matching stage_done for the same stage. Walks the feed (chronological order
+   per the shape) and tracks which stages have completed. Returns null when no
+   open stage_start exists (then the caller falls back to mi.stage). */
+function currentStage(acts) {
+  if (!acts || !acts.length) return null;
+  var openStart = null;
+  acts.forEach(function (ev) {
+    var stage = normStage(ev.stage);
+    if (ev.type === "stage_start") {
+      openStart = stage; // a newer start supersedes an earlier open one.
+    } else if (ev.type === "stage_done") {
+      if (openStart === stage) openStart = null; // closed.
+    }
+  });
+  return openStart;
+}
+
+/* UX-24: a human-readable active-runtime readout — mission.activeSeconds is the
+   run time EXCLUDING human-wait/paused. Hidden when absent/0 (pre-run). The
+   label makes the exclusion explicit; live-updates as the board refreshes (this
+   node is rebuilt on every render). */
+function activeRuntimeNode(mi) {
+  var secs = mi && typeof mi.activeSeconds === "number" ? mi.activeSeconds : 0;
+  if (!secs || secs <= 0) return null;
+  var node = el("div", "active-runtime");
+  node.title = "active runtime — excludes time awaiting you";
+  node.appendChild(el("span", "ar-val", "Active " + fmtDuration(secs)));
+  node.appendChild(el("span", "ar-hint", "excludes time awaiting you"));
+  return node;
+}
+
+/* Human-readable seconds → "Xh Ym Zs" / "Ym Zs" / "Zs" (drops leading zeros). */
+function fmtDuration(secs) {
+  secs = Math.max(0, Math.floor(secs));
+  var h = Math.floor(secs / 3600);
+  var m = Math.floor((secs % 3600) / 60);
+  var s = secs % 60;
+  var out = [];
+  if (h) out.push(h + "h");
+  if (h || m) out.push(m + "m");
+  out.push(s + "s");
+  return out.join(" ");
 }
 
 var EVENT_HEADS = {

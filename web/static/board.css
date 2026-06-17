@@ -163,7 +163,21 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.5);
   border-color:var(--lcars-border-bright)}
 .card.awaiting{border-left-color:var(--lcars-red);box-shadow:0 0 0 1px rgba(255,51,68,.4)}
-.card.paused{opacity:.7;border-left-color:var(--lcars-blue,#4499ff)}
+/* UX-22: a paused/pausing card dims its BODY to signal the hold, but the status
+   label (.pause-status) and the action button (.pause-action — RESUME) stay at
+   FULL contrast/prominence so they never read as disabled. We dim the card's
+   direct children, then opt those two back to full opacity. The card border uses
+   the paused blue (kept; pausing reuses the same chrome). */
+.card.paused{border-left-color:var(--lcars-blue,#4499ff)}
+.card.paused > *{opacity:.55}
+.card.paused > .pause-status,
+.card.paused .pause-action{opacity:1}
+/* UX-21/UX-22: the paused/pausing status label is HIGH-contrast (not dim text). */
+.card .pause-status{color:var(--lcars-text-bright);font-family:var(--font-display);
+  letter-spacing:.08em;margin-top:7px;font-size:10px}
+.card .pause-status.pausing{color:var(--lcars-amber)}
+/* the RESUME / Pausing button on a paused card keeps full prominence (UX-22). */
+.card.paused .card-ctrl{opacity:1}
 .card.child{border-left-color:var(--lcars-pink,#ff66aa);margin-left:14px;background:var(--lcars-card-alt)}
 /* UX-13: a live `run drive` is advancing this mission — a teal running tint on
    the left bar + a soft breathing glow so the card reads as in motion even
@@ -179,9 +193,14 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .progress{margin-top:9px}
 .progress .bar{height:6px;background:var(--lcars-card-alt);border-radius:4px;overflow:hidden}
 .progress .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--lcars-teal),var(--lcars-blue,#4499ff))}
-.progress .lab{font-family:var(--font-mono);font-size:9.5px;color:var(--lcars-text-dim);margin-top:3px;letter-spacing:.06em}
+/* UX-23: brighten the WAVE x/y · TICKET n/m progress line (was too dark). */
+.progress .lab{font-family:var(--font-mono);font-size:9.5px;color:var(--lcars-text-bright);margin-top:3px;letter-spacing:.06em}
 .tickets{margin-top:8px;display:flex;flex-direction:column;gap:4px}
-.tk{display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim)}
+/* UX-23: default/inactive ticket-row text is WHITE (readable). State variants
+   below override: active=orange (kept — captain likes it), done=teal,
+   flagged=red. The dot keeps the dim grey for inactive so the row still reads as
+   pending without darkening the label. */
+.tk{display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-bright)}
 .tk .dot{width:8px;height:8px;border-radius:50%;background:var(--lcars-text-dim);flex:0 0 8px}
 .tk.done .dot{background:var(--lcars-teal)} .tk.done{color:var(--lcars-teal)}
 .tk.in-progress .dot,.tk.run .dot{background:var(--lcars-amber);animation:awaitpulse 1.2s infinite}
@@ -400,6 +419,29 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .lcars-working.lcars-running .lcars-bars > i{height:14px;width:5px}
 /* the in-flight event leading the detail activity feed (UX-13). */
 .evt.evt-live .ec .when{color:var(--lcars-teal)}
+
+/* ── UX-19: a dedicated CURRENT / IN-FLIGHT block, separated from the history
+   timeline below by a divider + heading so the live pulse no longer floats atop
+   an undivided feed. The current block sits first; the history follows under a
+   ruled gap. ── */
+.feed-current{padding-bottom:14px;margin-bottom:14px;
+  border-bottom:1px solid var(--lcars-border)}
+.feed-current h4{margin:0 0 12px;font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.18em;color:var(--lcars-teal);font-size:14px}
+/* the current block's lone event has no trailing timeline rail (it's standalone). */
+.feed-current .evt::before{display:none}
+/* UX-20: the paused/pausing current event reads as held — no motion, blue rail
+   accent, the label carries the state (PAUSED / PAUSING). */
+.feed-current .evt-paused .ec .when{color:var(--lcars-blue,#4499ff)}
+.feed-current .evt-paused .marker{background:var(--lcars-blue,#4499ff)}
+
+/* UX-24: active-runtime readout — the run time EXCLUDING human-wait/paused. The
+   value is bright; the hint spells out the exclusion (tooltip duplicates it). */
+.active-runtime{margin-top:8px;display:flex;flex-direction:column;gap:1px}
+.active-runtime .ar-val{font-family:var(--font-display);letter-spacing:.1em;
+  text-transform:uppercase;font-size:12px;color:var(--lcars-text-bright)}
+.active-runtime .ar-hint{font-family:var(--font-body);font-size:10px;
+  letter-spacing:.04em;color:var(--lcars-text-dim);text-transform:none}
 
 @media (max-width:880px){
   .det-body{grid-template-columns:1fr}
