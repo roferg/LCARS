@@ -31,6 +31,11 @@ var STAGE_META = [
 // or the capability probe said so). When false, write controls are disabled.
 var writesActive = null;
 
+// UX-14: the repo the board is attached to (board.meta.repo), captured on every
+// render so the detail modal's "View on GitHub" link can build the issue URL
+// even when the per-mission payload doesn't echo the repo. May stay null.
+var detailRepo = null;
+
 function el(tag, cls, text) {
   var n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -75,6 +80,12 @@ function cardNode(m) {
   if (m.awaiting) card.className += " awaiting";
   if (m.paused) card.className += " paused";
   if (m.linked) card.className += " child";
+  // UX-13: a live drive is advancing this mission — flag the card so it carries
+  // the running tint (client-side; no new events arrive mid-stage).
+  if (m.running) card.className += " running";
+  // UX-10/UX-16: id handle so a closed modal (Start) can stamp a transient busy
+  // animation onto this card (showCardBusy).
+  if (m.id != null) card.setAttribute("data-mid", String(m.id));
 
   var issue = m.issue ? "#" + m.issue : "—";
   card.appendChild(el("div", "no", issue + " · lcars:" + m.stage));
@@ -117,6 +128,11 @@ function cardNode(m) {
     card.appendChild(tk);
   }
 
+  // UX-13: live "running" pulse — a small themed widget shown whenever a drive
+  // is actively advancing this mission, so a long silent stage doesn't look
+  // stuck. Client-side animation only; reuses the shared working-bars styling.
+  if (m.running) card.appendChild(runningPulse(stageLabel(m.stage)));
+
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
   card.appendChild(cardControls(m));
 
@@ -124,6 +140,12 @@ function cardNode(m) {
   return card;
 }
 
+/* Stage-appropriate write controls. UX-12: the whole card is click-to-open
+   (openDetail), so the explicit "Open ▸" button is gone everywhere; inline
+   controls stopPropagation so they don't also open the detail.
+   UX-13: `m.running` (a live `run drive` is advancing this mission) overrides the
+   pre-run Start → Pause so Start can't be double-triggered, and the running card
+   gets a themed client-side pulse so a long silent stage never reads as stuck. */
 function cardControls(m) {
   var ctrl = el("div", "card-ctrl");
   if (m.awaiting) {
@@ -132,20 +154,24 @@ function cardControls(m) {
     })));
     return ctrl;
   }
+  if (m.stage === "done") {
+    return ctrl; // terminal — whole-card click opens detail; no inline control.
+  }
   if (m.stage === "verify") {
     ctrl.appendChild(applyWriteState(btn("✓ Verify ▸", "go", function () {
       openVerify(m.id);
     })));
-  } else if (m.stage === "done") {
-    ctrl.appendChild(btn("Open ▸", null, function () { openDetail(m.id); }));
-    return ctrl;
   } else if (m.paused) {
     ctrl.appendChild(applyWriteState(btn("▶ Resume", "go", function () {
-      dispatchCard("/api/mission/" + enc(m.id) + "/resume", {});
+      dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/resume", {},
+        ctrl, "Re-engaging warp core…");
     })));
-  } else if (isRunningStage(m.stage)) {
+  } else if (m.running || isRunningStage(m.stage)) {
+    // UX-13: a live drive (or an in-flight headless stage) is advancing this
+    // mission — offer Pause, never Start (so Start can't be double-fired).
     ctrl.appendChild(applyWriteState(btn("⏸ Pause", "warn", function () {
-      dispatchCard("/api/mission/" + enc(m.id) + "/pause", {});
+      dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/pause", {},
+        ctrl, "Holding station…");
     })));
   } else {
     // align (and any pre-run stage): Start launches the run via the Launch panel
@@ -153,7 +179,6 @@ function cardControls(m) {
       openLaunch(m.id);
     })));
   }
-  ctrl.appendChild(btn("Open ▸", null, function () { openDetail(m.id); }));
   return ctrl;
 }
 
@@ -186,6 +211,8 @@ function render(board) {
 /* S70-A: render "which repo am I attached to" + adapter/mode hint in the topbar.
    Depends only on the board shape (board.meta), updated on every live render. */
 function renderMeta(meta) {
+  // capture the attached repo for the detail "View on GitHub" link (UX-14).
+  detailRepo = (meta && meta.repo) || null;
   var host = document.getElementById("repoMeta");
   if (!host) return;
   host.innerHTML = "";
@@ -359,13 +386,15 @@ function openFile() {
   // UX-2: opening the Align console spawns a worker turn (several seconds) — show
   // the themed working indicator inline while it is in flight; it clears on both
   // success (console replaces the modal) and error.
-  var fileBusy = workingNode("Opening alignment console…"); fileBusy.hidden = true;
+  // UX-7: Trek-themed loading copy for the Align-open worker turn (POST
+  // /api/align/start) — "Scanning the codebase…".
+  var fileBusy = workingNode("Scanning the codebase…"); fileBusy.hidden = true;
   m.body.appendChild(fileBusy);
 
   var go = applyWriteState(btn("File & Begin Alignment ▸", "go big", function () {
     var text = idea.value.trim();
     if (!text) { showErr(err, "Describe the idea first."); return; }
-    go.disabled = true; go.textContent = "Opening Align…";
+    go.disabled = true; go.textContent = "Scanning…";
     err.hidden = true; fileBusy.hidden = false;
     openAlignConsole(text, chosen.engine, function (msg) {
       go.disabled = false; go.textContent = "File & Begin Alignment ▸";
@@ -408,7 +437,8 @@ function renderAlignConsole(state) {
   var err = el("div", "errline"); err.hidden = true;
   // UX-2: themed working indicator for each answer's worker turn (and the final
   // hand-off). Lives in the left console pane; label is re-set per phase.
-  var busy = workingNode("Thinking…"); busy.hidden = true;
+  // UX-7: themed copy for each Align-answer worker turn + the final hand-off.
+  var busy = workingNode("Formulating the next inquiry…"); busy.hidden = true;
   var prog = el("div", "progress-line");
   left.appendChild(count); left.appendChild(qtext); left.appendChild(choices);
   left.appendChild(freeWrap); left.appendChild(err); left.appendChild(busy);
@@ -475,15 +505,17 @@ function renderAlignConsole(state) {
     // runs server-side within this POST. Show the themed working indicator the
     // whole time; it clears on the next question, on done, or on error.
     busy.querySelector(".lcars-working-label").textContent =
-      "Thinking… (the harness may also be generating the mission)";
+      "Formulating the next inquiry…";
     busy.hidden = false;
     postWrite("/api/align/" + enc(sid) + "/answer", { answer: answer },
       function (st) {
         busy.hidden = true;
         if (st.status === "done") {
           // explicit, labelled hand-off state before the board refresh swaps in
-          // the new Align card and the confirmation modal.
-          busy.querySelector(".lcars-working-label").textContent = "Generating mission…";
+          // the new Align card and the confirmation modal. UX-7: the captain's
+          // subspace/transmission metaphor for the Align→file hand-off.
+          busy.querySelector(".lcars-working-label").textContent =
+            "Transmitting mission over subspace…";
           busy.hidden = false;
           renderAlignDone(st);
           return;
@@ -588,12 +620,17 @@ function openLaunch(id) {
 
     m.foot.appendChild(btn("Cancel", null, closeOverlay));
     var go = applyWriteState(btn("▶ Start Run", "go big", function () {
-      go.disabled = true; go.textContent = "Starting…";
-      // start is synchronous to the run driver's next halt — show a working state.
-      postWrite("/api/mission/" + enc(id) + "/start",
-        { override: ov.value.trim() || undefined },
-        function () { closeOverlay(); },
-        function (msg) { go.disabled = false; go.textContent = "▶ Start Run"; showErr(err, msg); });
+      // UX-11: the backend returns /start promptly — close the Launch modal
+      // immediately (optimistic) and rely on the board/SSE to reflect progress.
+      // Don't wait on a long blocking response.
+      // UX-10/UX-16: surface the themed working animation on the card briefly via
+      // showCardBusy so Start gives feedback while the request is in flight.
+      var override = ov.value.trim() || undefined;
+      closeOverlay();
+      showCardBusy(id, "Engaging…");
+      postWrite("/api/mission/" + enc(id) + "/start", { override: override },
+        function () { /* board/SSE refresh shows the running state */ },
+        function (msg) { setStatus(msg); refresh(); });
     }));
     m.foot.appendChild(go);
     showOverlay(m.wrap);
@@ -785,6 +822,16 @@ function renderDetail(mi) {
   // shown ONLY at the verify stage (hidden, not disabled, elsewhere). Mission Log
   // stays available throughout. Done missions carry no primary action.
   var actions = el("div", "det-actions");
+  // UX-14: "View on GitHub" link — opens the mission issue in a new tab. Needs
+  // both meta.repo and mission.issue; hides gracefully if either is missing.
+  var ghRepo = mi.repo || (mi.meta && mi.meta.repo) || detailRepo;
+  if (ghRepo && mi.issue) {
+    var gh = el("a", "btn", "↗ View on GitHub");
+    gh.href = "https://github.com/" + ghRepo + "/issues/" + mi.issue;
+    gh.target = "_blank"; gh.rel = "noopener";
+    gh.addEventListener("click", function (e) { e.stopPropagation(); });
+    actions.appendChild(gh);
+  }
   if (mi.awaiting) {
     actions.appendChild(applyWriteState(btn("Answer ▸", "danger", function () { openRespond(mi.id); })));
   } else if (mi.stage === "verify") {
@@ -795,7 +842,9 @@ function renderDetail(mi) {
     actions.appendChild(applyWriteState(btn("▶ Resume", "go", function () {
       dispatchCard("/api/mission/" + enc(mi.id) + "/resume", {}); closeOverlay();
     })));
-  } else if (isRunningStage(mi.stage)) {
+  } else if (mi.running || isRunningStage(mi.stage)) {
+    // UX-13: mirror the card — a live drive overrides Start → Pause so Start
+    // can't be double-fired from the detail header either.
     actions.appendChild(applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCard("/api/mission/" + enc(mi.id) + "/pause", {}); closeOverlay();
     })));
@@ -832,9 +881,23 @@ function activityFeed(mi) {
   var feed = el("div", "feed");
   var h = el("h4", null, "Live Activity — Harness ▸ Issue Comments");
   feed.appendChild(h);
+  // UX-13: when a drive is actively advancing this mission, lead the feed with a
+  // themed running pulse on the active stage so a long silent stage (no new
+  // events mid-stage) doesn't look stuck. Client-side animation only.
+  if (mi.running) {
+    var live = el("div", "evt s-" + normStage(mi.stage) + " evt-live");
+    live.appendChild(el("div", "marker"));
+    var lec = el("div", "ec");
+    lec.appendChild(el("div", "when", (mi.stage || "").toUpperCase() + " · IN FLIGHT"));
+    lec.appendChild(runningPulse(stageLabel(mi.stage)));
+    live.appendChild(lec);
+    feed.appendChild(live);
+  }
   var acts = mi.activity || [];
   if (!acts.length) {
-    feed.appendChild(el("div", "empty", "No activity yet — the harness posts here as the mission advances."));
+    if (!mi.running) {
+      feed.appendChild(el("div", "empty", "No activity yet — the harness posts here as the mission advances."));
+    }
     return feed;
   }
   acts.forEach(function (ev) {
@@ -910,9 +973,12 @@ function adrPane(mi) {
   // S70-B2: render the mission's engineering ADRs when present (.adr style).
   var adrs = mi.adrs || [];
   if (!adrs.length) {
+    // UX-8: keep the first sentence; the old hosted-vs-local claim was
+    // misleading (ADRs DO appear in the issue when present), so replace it with
+    // the actual reason an ADR is or isn't recorded.
     pane.appendChild(noteEl("No engineering ADRs are recorded for this mission " +
-      "— trivial work carries none. On a hosted (GitHub) board the ADRs are not " +
-      "exposed in the issue body; open the local board to read them."));
+      "— trivial work carries none. ADRs are only recorded for complex work " +
+      "involving a real design decision."));
     return pane;
   }
   adrs.forEach(function (a) {
@@ -1054,6 +1120,74 @@ function workingNode(labelText) {
   w.appendChild(bars);
   w.appendChild(el("span", "lcars-working-label", labelText || "Working…"));
   return w;
+}
+
+/* UX-13: a compact "live drive" pulse for a running mission. It reuses the
+   shared working-bars styling (.lcars-working / .lcars-bars) via workingNode,
+   adding the .lcars-running modifier for the running tint, plus a stage-aware
+   themed label so a silent stage still reads as in motion. role=status / aria-
+   live carry the state to assistive tech (not colour alone). */
+function runningPulse(label) {
+  var w = workingNode(RUNNING_COPY[label] || ("Underway · " + (label || "running") + "…"));
+  w.className += " lcars-running";
+  return w;
+}
+
+/* Friendly Stage names for the running pulse copy lookup + fallback. */
+function stageLabel(stage) {
+  var s = normStage(stage);
+  var map = {
+    align: "Align", research: "Research", validate: "Validate", plan: "Plan",
+    "plan-review": "Plan Review", schedule: "Schedule",
+    implement: "Implement", verify: "Verify", done: "Done",
+  };
+  return map[s] || (stage || "running");
+}
+
+/* UX-7 / UX-13 — curated Star-Trek/LCARS-flavoured running copy per Stage. Each
+   line hints at WHAT the harness is doing (headless turns don't stream sub-
+   progress, so the copy is curated, not live). The visible label carries the
+   state — colour is decoration only (accessible). */
+var RUNNING_COPY = {
+  "Research": "Sensors sweeping the codebase…",
+  "Validate": "Cross-checking the away team's findings…",
+  "Plan": "Plotting the course to engineering…",
+  "Plan Review": "Bridge officers reviewing the flight plan…",
+  "Schedule": "Sequencing the work into waves…",
+  "Implement": "Engineering crew on the hull — building…",
+  "Verify": "Running final diagnostics…",
+  "Align": "Calibrating mission parameters…",
+};
+
+/* UX-10/UX-16: stamp the themed working animation onto a mission's board card by
+   id (used when the originating modal has already closed — e.g. Start). The next
+   board refresh re-renders the card (and, if running, its own pulse) so this is a
+   transient affordance. No-op if the card isn't currently on screen. */
+function showCardBusy(id, label) {
+  var card = document.querySelector('.board .card[data-mid="' + cssEsc(id) + '"]');
+  if (!card) return;
+  var ctrl = card.querySelector(".card-ctrl");
+  var busy = workingNode(label || "Engaging…");
+  busy.className += " lcars-running";
+  if (ctrl) { ctrl.innerHTML = ""; ctrl.appendChild(busy); }
+  else card.appendChild(busy);
+}
+
+/* CSS attribute-selector escape for arbitrary mission ids (vanilla, no deps). */
+function cssEsc(s) {
+  if (window.CSS && CSS.escape) return CSS.escape(s);
+  return String(s).replace(/["\\]/g, "\\$&");
+}
+
+/* A card-level dispatch that shows the LCARS working animation in `host` while
+   the request is in flight (UX-10/UX-16), themed via `label`. Clears on the
+   board refresh (success) or on error. Pause/resume return promptly. */
+function dispatchCardBusy(id, path, payload, host, label) {
+  var busy = workingNode(label || "Engaging…");
+  busy.className += " lcars-running";
+  if (host) { host.innerHTML = ""; host.appendChild(busy); }
+  postWrite(path, payload, function () { /* board refresh re-renders the card */ },
+    function (msg) { setStatus(msg); refresh(); });
 }
 
 function addPills(host, pills) {

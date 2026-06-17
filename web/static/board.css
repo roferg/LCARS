@@ -118,6 +118,11 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .topbar .conn.stale{background:var(--lcars-red);color:#fff}
 
 /* ── pills ── */
+/* UX-9: any pills container (board card, Launch panel, detail header — they all
+   render via the shared `.pills` markup) lays its pills out with a horizontal
+   gap so the cost + two difficulty pills never render flush. flex-wrap keeps
+   them readable when the row is narrow. */
+.pills{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-display);
   text-transform:uppercase;letter-spacing:.1em;font-size:11px;padding:3px 10px;
   border-radius:12px;background:var(--lcars-card-alt);color:var(--lcars-text-bright);
@@ -153,10 +158,19 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .card{background:var(--lcars-card,#0b1224);border:1px solid var(--lcars-border);
   border-left:4px solid var(--lcars-amber);border-radius:8px;padding:10px;cursor:pointer;
   transition:transform .25s,box-shadow .25s}
-.card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.5)}
+/* UX-12: the whole card is click-to-open (no explicit Open button) — cursor +
+   a subtle lift/glow on hover so it still reads as clickable. */
+.card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.5);
+  border-color:var(--lcars-border-bright)}
 .card.awaiting{border-left-color:var(--lcars-red);box-shadow:0 0 0 1px rgba(255,51,68,.4)}
 .card.paused{opacity:.7;border-left-color:var(--lcars-blue,#4499ff)}
 .card.child{border-left-color:var(--lcars-pink,#ff66aa);margin-left:14px;background:var(--lcars-card-alt)}
+/* UX-13: a live `run drive` is advancing this mission — a teal running tint on
+   the left bar + a soft breathing glow so the card reads as in motion even
+   during a long silent stage. The card carries a runningPulse() widget too. */
+.card.running{border-left-color:var(--lcars-teal);animation:card-running 2.4s ease-in-out infinite}
+@keyframes card-running{0%,100%{box-shadow:0 0 0 0 rgba(0,204,170,0)}50%{box-shadow:0 0 0 2px rgba(0,204,170,.28)}}
+@media (prefers-reduced-motion:reduce){.card.running{animation:none;box-shadow:0 0 0 1px rgba(0,204,170,.3)}}
 .card .no{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);letter-spacing:.08em}
 .card .ttl{font-family:var(--font-display);font-size:14px;letter-spacing:.04em;
   color:var(--lcars-text-bright);margin:2px 0 8px;line-height:1.2}
@@ -377,6 +391,15 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 @media (prefers-reduced-motion:reduce){
   .lcars-bars > i{animation:none;transform:scaleY(.7);opacity:.8}
 }
+/* UX-13: the .lcars-running modifier reuses the working bars+label as a compact
+   "live drive" pulse on a running card / detail feed. Tighter margins so it sits
+   inside a card; teal label to read as "in motion", not "blocked". */
+.lcars-working.lcars-running{margin:8px 0 0;gap:10px}
+.lcars-working.lcars-running .lcars-working-label{color:var(--lcars-teal);font-size:10px}
+.lcars-working.lcars-running .lcars-bars{height:14px}
+.lcars-working.lcars-running .lcars-bars > i{height:14px;width:5px}
+/* the in-flight event leading the detail activity feed (UX-13). */
+.evt.evt-live .ec .when{color:var(--lcars-teal)}
 
 @media (max-width:880px){
   .det-body{grid-template-columns:1fr}
