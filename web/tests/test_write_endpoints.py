@@ -369,6 +369,68 @@ class LogTest(WriteEndpointBase):
         rec = self._record("resolve")
         self.assertIn("m-001", rec)
 
+    # ── BUG-C: the Log worker inherits the PARENT mission's persisted engine ──
+    def test_log_author_uses_parent_persisted_engine(self):
+        """`_log_author` must drive its worker turn on the PARENT's persisted
+        engine (state.json.workerBin) — the Log dialog has no engine picker, and
+        the daemon has no default engine, so without inheritance Preview errors
+        'no worker engine configured'."""
+        # parent filed with copilot; the daemon itself carries NO default engine.
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="copilot")
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # worker_bin=None
+        seen = {}
+
+        def _fake_turn(prompt, engine=None, outdir=None):
+            seen["engine"] = engine
+            # a minimal valid worker JSON so _log_author parses one bug.
+            return '{"bugs": ["# Bug: thing\\n\\nbody"]}'
+
+        actions._worker_turn = _fake_turn
+        out = actions.log_preview("m-001", text="the save button is broken")
+        self.assertEqual(seen.get("engine"), "copilot")
+        self.assertTrue(out["authored"])
+        self.assertEqual(out["count"], 1)
+
+    def test_log_author_no_parent_engine_falls_back(self):
+        """No persisted parent engine ⇒ fall back to the existing behaviour
+        (engine=None → _worker_turn uses the daemon default, or errors if none).
+        Assert we pass engine=None, not crash before the worker turn."""
+        # m-001 from setUp has NO workerBin.
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        seen = {}
+
+        def _fake_turn(prompt, engine=None, outdir=None):
+            seen["engine"] = engine
+            return '{"bugs": ["# Bug: x\\n\\nb"]}'
+
+        actions._worker_turn = _fake_turn
+        actions.log_preview("m-001", text="broken thing")
+        self.assertIsNone(seen.get("engine"))
+
+    def test_log_run_threads_parent_engine_to_log_and_resolve(self):
+        """`log_run` must set LCARS_WORKER_BIN=<parent engine> for BOTH the
+        log.sh dispatch (so each child bug mission persists workerBin=parent) AND
+        the resolve-logs dispatch (so the children run on the parent engine)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="copilot")
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # no default
+        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"])
+        log_rec = self._record("log")
+        res_rec = self._record("resolve")
+        self.assertIn("ENV_WORKER_BIN: copilot", log_rec)
+        self.assertIn("--parent m-001", log_rec)
+        self.assertIn("ENV_WORKER_BIN: copilot", res_rec)
+        self.assertIn("m-001", res_rec)
+
+    def test_log_run_no_parent_engine_does_not_force_engine(self):
+        """No persisted parent engine ⇒ log_run must not invent one (the dispatch
+        env's LCARS_WORKER_BIN stays whatever the daemon default is — empty here)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # no default
+        actions.log_run("m-001", prds=["# Bug: x\n\nb"])
+        log_rec = self._record("log")
+        self.assertIn("ENV_WORKER_BIN: \n", log_rec)
+
 
 class LiveChannelTest(WriteEndpointBase):
     """Behavior 5: a state-changing dispatch moves the LocalAdapter fingerprint,

@@ -66,6 +66,94 @@ def normalise_stage(stage):
     return s if s in STAGES else "align"
 
 
+# --- active run time (UX-24) -------------------------------------------------
+# Event types that OPEN a human-wait / paused interval (time the captain owns,
+# not the run) and the types that CLOSE it. A `gate` raises an awaiting-human
+# wait (research>20, validate scope, plan-review standoff, implement flagged,
+# AND the verify review gate); `paused` halts the run. Both are reopened/closed
+# by the run resuming: respond/resume don't emit their own event, so the close
+# is the NEXT `stage_start` (the resumed run) — or `resumed` for an explicit
+# resume. An interval still open at the end (currently parked / paused) is
+# excluded up to `now`.
+_WAIT_OPEN = ("gate", "paused")
+_WAIT_CLOSE = ("stage_start", "resumed", "stage_done")
+
+
+def active_seconds(events, now=None):
+    """Seconds of ACTIVE (non-human-wait, non-paused) run time for a mission.
+
+    Wall-clock from the first `stage_start` to the last event (or `now` if an
+    interval is still open at the end), MINUS every awaiting-human / paused
+    interval. Returns an int; 0 before any stage_start. `now` is injected by the
+    caller (and the tests) so the result is deterministic and never reads the
+    real clock here.
+
+    Adapter-neutral: the github adapter, lacking event timing, passes no events
+    and gets 0 (ADR-006 — non-crashing, not necessarily exact).
+    """
+    rows = []
+    for ev in (events or []):
+        if not isinstance(ev, dict):
+            continue
+        ts = ev.get("ts")
+        typ = ev.get("type")
+        if not isinstance(ts, (int, float)) or not typ:
+            continue
+        rows.append((ts, typ))
+    if not rows:
+        return 0
+    rows.sort(key=lambda r: r[0])
+
+    start = None
+    for ts, typ in rows:
+        if typ == "stage_start":
+            start = ts
+            break
+    if start is None:
+        return 0
+
+    last_ts = rows[-1][0]
+
+    # Pass 1: build the human-wait / paused intervals. A wait OPENS at the first
+    # _WAIT_OPEN seen while not already waiting, and CLOSES at the next
+    # _WAIT_CLOSE. Consecutive gate events (the driver re-emits `gate` each pass
+    # while still awaiting) collapse into the one open interval. `open_at` left
+    # set after the pass means the mission is STILL parked / paused at the end.
+    intervals = []
+    open_at = None
+    for ts, typ in rows:
+        if open_at is None:
+            if typ in _WAIT_OPEN:
+                open_at = ts
+        else:
+            if typ in _WAIT_CLOSE:
+                intervals.append((open_at, ts))
+                open_at = None
+
+    # The wall-clock end of the span. A CLOSED run (no open interval) ends at the
+    # last event. An OPEN interval (currently parked at a gate / paused) runs to
+    # `now` — that open human-wait is then excluded up to now, so it never counts.
+    if open_at is not None and now is not None and now > last_ts:
+        end = now
+        intervals.append((open_at, end))
+    else:
+        end = last_ts
+        if open_at is not None:
+            intervals.append((open_at, end))
+
+    excluded = 0
+    for lo, hi in intervals:
+        lo = max(lo, start)
+        hi = min(hi, end)
+        if hi > lo:
+            excluded += hi - lo
+
+    active = (end - start) - excluded
+    if active < 0:
+        active = 0
+    return int(active)
+
+
 # --- difficulty levels: low / med / high ------------------------------------
 _LEVELS = {"low": "low", "medium": "medium", "med": "medium", "high": "high"}
 # dot glyphs mirror the mockup's "●●○" / "●●●" idiom (low/med/high).

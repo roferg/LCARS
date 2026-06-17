@@ -16,6 +16,7 @@ import json
 import os
 import re
 import subprocess
+import time
 
 from . import board
 
@@ -134,6 +135,13 @@ class LocalAdapter(object):
         tickets = _tickets(plan, waves, events)
         progress = _progress(waves, events) if board.normalise_stage(stage) == "implement" else None
 
+        # UX-24: active run time (wall-clock since the first stage_start, minus
+        # every awaiting-human / paused interval). Cheap (one pass over events we
+        # already loaded) so it rides on the card as well as the detail. `now` is
+        # real wall-clock here; the computation lives in board.active_seconds,
+        # which the tests drive with an injected `now`.
+        active_seconds = board.active_seconds(events, now=time.time())
+
         # GitHub issue number may be the literal null / absent.
         issue = state.get("githubIssue")
         if isinstance(issue, str) and issue.isdigit():
@@ -164,6 +172,7 @@ class LocalAdapter(object):
             "modelMix": model_mix,
             "progress": progress,
             "tickets": tickets,
+            "activeSeconds": active_seconds,
             "_created": state.get("created") or "",
         }
 

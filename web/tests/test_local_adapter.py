@@ -13,7 +13,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests import _fixtures as fx  # noqa: E402
-from lcars_serve.board import STAGES  # noqa: E402
+from lcars_serve.board import STAGES, active_seconds  # noqa: E402
 from lcars_serve.local_adapter import LocalAdapter  # noqa: E402
 
 
@@ -337,6 +337,127 @@ class LocalAdapterTest(unittest.TestCase):
         fx.plant_simple(self.tmp, "m-noprd", stage="plan")
         detail = LocalAdapter(self.tmp).mission("m-noprd")
         self.assertIsNone(detail["criteria"])
+
+
+class ActiveSecondsTest(unittest.TestCase):
+    """UX-24: active run time = wall-clock from first stage_start to the last
+    event (or `now` if an interval is still open) MINUS every human-wait and
+    paused interval. `now` is injected so the assertion path never touches the
+    real clock."""
+
+    def _ev(self, ts, type_, stage="research"):
+        return {"ts": ts, "mission": "m", "stage": stage, "type": type_,
+                "detail": ""}
+
+    def test_no_stage_start_is_zero(self):
+        evs = [self._ev(50, "gate"), self._ev(60, "error")]
+        self.assertEqual(active_seconds(evs, now=100), 0)
+
+    def test_empty_is_zero(self):
+        self.assertEqual(active_seconds([], now=100), 0)
+
+    def test_gate_interval_excluded(self):
+        # stage_start@100 … gate@130 (awaiting) … stage_start@200 (resumed) …
+        # stage_done@260. span = 260-100 = 160; gate interval 130→200 = 70 wait.
+        evs = [
+            self._ev(100, "stage_start"),
+            self._ev(130, "gate"),
+            self._ev(200, "stage_start", stage="validate"),
+            self._ev(260, "stage_done", stage="validate"),
+        ]
+        self.assertEqual(active_seconds(evs, now=300), 160 - 70)
+
+    def test_paused_resumed_interval_excluded(self):
+        # stage_start@0 … paused@40 … resumed@100 … stage_done@140.
+        # span=140; paused interval 40→100 = 60 excluded.
+        evs = [
+            self._ev(0, "stage_start"),
+            self._ev(40, "paused"),
+            self._ev(100, "resumed"),
+            self._ev(140, "stage_done"),
+        ]
+        self.assertEqual(active_seconds(evs, now=200), 140 - 60)
+
+    def test_both_gate_and_paused_excluded(self):
+        evs = [
+            self._ev(0, "stage_start"),
+            self._ev(30, "gate"),
+            self._ev(50, "stage_start", stage="validate"),  # gate answered (20)
+            self._ev(80, "paused"),
+            self._ev(120, "resumed"),                        # paused (40)
+            self._ev(150, "stage_done"),
+        ]
+        # span 0→150 = 150; excluded 20+40 = 60.
+        self.assertEqual(active_seconds(evs, now=200), 150 - 60)
+
+    def test_open_gate_at_now_is_excluded(self):
+        # currently parked at a gate: gate@120 with no resume; now=300.
+        # span runs to now (300); active = 120 (start→gate); 120→300 excluded.
+        evs = [
+            self._ev(100, "stage_start"),
+            self._ev(110, "stage_done"),
+            self._ev(120, "gate", stage="validate"),
+        ]
+        self.assertEqual(active_seconds(evs, now=300), 20)
+
+    def test_open_paused_at_now_is_excluded(self):
+        evs = [
+            self._ev(100, "stage_start"),
+            self._ev(160, "paused"),
+        ]
+        self.assertEqual(active_seconds(evs, now=500), 60)
+
+    def test_closed_run_ends_at_last_event_not_now(self):
+        # no open gate/paused: a run whose last event is before `now` is treated
+        # as closed — the span ends at the last event, NOT at now (we don't infer
+        # "still running" without an open interval).
+        evs = [
+            self._ev(100, "stage_start"),
+            self._ev(140, "stage_done"),
+            self._ev(141, "stage_start", stage="validate"),
+        ]
+        self.assertEqual(active_seconds(evs, now=200), 41)
+
+    def test_verify_gate_is_a_human_wait(self):
+        # the verify review gate (emit_event gate verify …) is awaiting-human too.
+        evs = [
+            self._ev(0, "stage_start"),
+            self._ev(50, "gate", stage="verify"),
+            self._ev(120, "stage_start", stage="verify"),  # captain answered
+            self._ev(140, "stage_done", stage="verify"),
+        ]
+        # span 140; gate 50→120 = 70 excluded.
+        self.assertEqual(active_seconds(evs, now=200), 140 - 70)
+
+
+class ActiveSecondsOnMissionTest(unittest.TestCase):
+    """The CONTRACT: an integer `activeSeconds` on the mission detail shape."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_active_seconds_on_detail(self):
+        d = fx.plant_simple(self.tmp, "m-act", stage="validate")
+        fx.write_jsonl(os.path.join(d, "events.jsonl"), [
+            {"ts": 100, "mission": "m-act", "stage": "research",
+             "type": "stage_start", "detail": "starting"},
+            {"ts": 130, "mission": "m-act", "stage": "research",
+             "type": "gate", "detail": "awaiting"},
+            {"ts": 200, "mission": "m-act", "stage": "validate",
+             "type": "stage_start", "detail": "starting"},
+            {"ts": 260, "mission": "m-act", "stage": "validate",
+             "type": "stage_done", "detail": "done"},
+        ])
+        detail = LocalAdapter(self.tmp).mission("m-act")
+        self.assertIn("activeSeconds", detail)
+        self.assertIsInstance(detail["activeSeconds"], int)
+        # 260-100=160 minus the 130→200 gate (70) = 90 (now after last event).
+        self.assertEqual(detail["activeSeconds"], 90)
+
+    def test_active_seconds_absent_events_is_zero(self):
+        fx.plant_simple(self.tmp, "m-none", stage="align")
+        detail = LocalAdapter(self.tmp).mission("m-none")
+        self.assertEqual(detail.get("activeSeconds", 0), 0)
 
 
 if __name__ == "__main__":

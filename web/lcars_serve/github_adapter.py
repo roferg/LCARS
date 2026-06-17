@@ -137,6 +137,10 @@ class GitHubAdapter(object):
             "modelMix": model_mix,
             "progress": progress,
             "tickets": tickets,
+            # UX-24: active run time is derived from events.jsonl, a LOCAL
+            # artifact the github adapter cannot see. Present-but-0 keeps the
+            # shape adapter-neutral and non-crashing (ADR-006).
+            "activeSeconds": 0,
             "_n": issue.get("number") or 0,
         }
 

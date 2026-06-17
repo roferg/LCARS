@@ -557,7 +557,12 @@ class Actions(object):
                           "\n=== the captain's bug report ===\n", text,
                           "\n\nSplit it and author the bug PRDs now, as a single "
                           "JSON object."])
-        out = self._worker_turn(prompt)
+        # BUG-C: the Log dialog has no engine picker and the daemon has no default
+        # engine (engine is per-mission), so the Log worker must INHERIT the
+        # PARENT mission's persisted engine (state.json.workerBin). Falls back to
+        # _worker_turn's default (None) when the parent has none.
+        engine = self._persisted_worker_bin(parent)
+        out = self._worker_turn(prompt, engine=engine)
         turn = _extract_json(out)
         bugs = (turn or {}).get("bugs") if isinstance(turn, dict) else None
         if not isinstance(bugs, list) or not bugs:
@@ -582,6 +587,12 @@ class Actions(object):
         already linked (the S68 read-only batch).
         """
         self._require_mission(mid)
+        # BUG-C: the child bug missions inherit the PARENT's persisted engine.
+        # Setting LCARS_WORKER_BIN on the log.sh dispatch makes file/log.sh persist
+        # workerBin=<parent engine> on each child; setting it on resolve-logs drives
+        # those children on the parent's engine. Absent ⇒ leave unset (no force).
+        engine = self._persisted_worker_bin(mid)
+        env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
         prds = [p for p in (prds or []) if isinstance(p, str) and p.strip()]
         if prds:
             tmp = []
@@ -591,14 +602,14 @@ class Actions(object):
                     p = self._tmp_prd(prd.rstrip() + "\n")
                     tmp.append(p)
                     args += ["--prd", p]
-                self._run("log", args)
+                self._run("log", args, env_extra=env_extra)
             finally:
                 for p in tmp:
                     try:
                         os.unlink(p)
                     except OSError:
                         pass
-        self._run("resolve", ["--parent", mid])
+        self._run("resolve", ["--parent", mid], env_extra=env_extra)
         return self._mission_state(mid)
 
     # -- internals --------------------------------------------------------------
