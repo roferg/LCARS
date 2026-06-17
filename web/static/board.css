@@ -201,21 +201,30 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .overlay-stage{width:100%;display:flex;justify-content:center}
 
 /* ── modal (mock .modal / .modal-head / .modal-body / .modal-foot) ── */
+/* UX-3 / UX-4: the centered modal is wider and squarer (matching the mock's
+   landscape two-pane proportions, not a cramped portrait column), and it is
+   height-capped at ~90vh. The header and footer stay fixed; the BODY scrolls
+   internally so a long PRD never pushes the footer/Start row off-screen. */
 .modal{background:var(--lcars-surface,#070d1c);border:1px solid var(--lcars-border-bright);
-  border-radius:14px;max-width:620px;width:100%;margin:0 auto;overflow:hidden}
-.modal.wide{max-width:680px}
+  border-radius:14px;max-width:660px;width:100%;margin:0 auto;overflow:hidden;
+  max-height:90vh;display:flex;flex-direction:column}
+.modal.wide{max-width:960px}
 .modal.detail{max-width:1080px}
 .modal-head{background:var(--lcars-amber);color:var(--lcars-text-on-color);font-family:var(--font-display);
   text-transform:uppercase;letter-spacing:.18em;font-size:15px;padding:11px 18px;
-  display:flex;align-items:center;gap:10px}
+  display:flex;align-items:center;gap:10px;flex:0 0 auto}
 .modal-head.red{background:var(--lcars-red);color:#fff}
 .modal-head.teal{background:var(--lcars-teal);color:var(--lcars-text-on-color)}
 .modal-head.pink{background:var(--lcars-pink,#ff66aa);color:var(--lcars-text-on-color)}
 .modal-head .close{margin-left:auto;background:transparent;border:none;color:inherit;
   font-family:var(--font-display);font-size:16px;cursor:pointer;letter-spacing:.1em}
-.modal-body{padding:20px}
+/* the body is the scrolling region between the fixed head + foot. */
+.modal-body{padding:20px;overflow-y:auto;flex:1 1 auto;min-height:0}
+/* when the body hosts the two-pane console it owns its own padding/scroll —
+   keep the body flush so the panes can scroll internally (see .twopane). */
+.modal-body.flush{padding:0;overflow:hidden;display:flex;flex-direction:column}
 .modal-foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 18px;
-  border-top:1px solid var(--lcars-border);background:var(--lcars-card)}
+  border-top:1px solid var(--lcars-border);background:var(--lcars-card);flex:0 0 auto}
 
 /* ── form fields (mock .field) ── */
 .field{margin-bottom:16px}
@@ -233,10 +242,17 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .choice .opt.rec{border-color:var(--lcars-teal);background:rgba(0,204,170,.1);color:var(--lcars-teal)}
 .choice .opt.sel{border-color:var(--lcars-amber);background:rgba(255,170,0,.16);color:var(--lcars-amber)}
 
-/* ── two-pane (align console — rendered-to-fidelity) ── */
-.twopane{display:grid;grid-template-columns:1.3fr 1fr;gap:0;min-height:380px}
-.console-l{padding:22px;border-right:1px solid var(--lcars-border);display:flex;flex-direction:column}
-.console-r{padding:18px;background:var(--lcars-black)}
+/* ── two-pane (align console — rendered-to-fidelity) ──
+   UX-3: a balanced, squarer column ratio (≈ mock 1.3fr : 1fr) in a landscape
+   frame. UX-4: the pane fills the height-capped modal body and each column
+   scrolls INTERNALLY (overflow-y:auto) — a long live PRD scrolls in place
+   rather than stretching the modal and shoving the footer off-screen. */
+.twopane{display:grid;grid-template-columns:1.25fr 1fr;gap:0;
+  flex:1 1 auto;min-height:0;align-items:stretch}
+.console-l{padding:24px 26px;border-right:1px solid var(--lcars-border);
+  display:flex;flex-direction:column;overflow-y:auto;min-height:0}
+.console-r{padding:20px 22px;background:var(--lcars-black);overflow-y:auto;min-height:0;
+  display:flex;flex-direction:column}
 .qcount{font-family:var(--font-mono);font-size:11px;color:var(--lcars-text-dim);letter-spacing:.1em;margin-bottom:8px}
 .qtext{font-family:var(--font-display);font-size:20px;letter-spacing:.04em;color:var(--lcars-text-bright);
   line-height:1.25;margin-bottom:16px}
@@ -251,16 +267,32 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .progress-line i.on{background:var(--lcars-teal)}
 .progress-line i.cur{background:var(--lcars-amber)}
 
-/* ── mission detail (mock .detail-grid / .det-head / .det-body / .feed) ── */
-.detail-grid{display:grid;grid-template-columns:1fr;gap:0;background:var(--lcars-surface);
-  border:1px solid var(--lcars-border-bright);border-radius:14px;overflow:hidden;width:100%}
-.det-head{padding:16px 20px;border-bottom:1px solid var(--lcars-border);background:var(--lcars-surface)}
+/* ── mission detail (mock .detail-grid / .det-head / .det-body / .feed) ──
+   UX-3/UX-4: wider landscape frame, height-capped at ~90vh with a FIXED header
+   row; the body's two panes scroll internally so a long PRD/feed never pushes
+   the modal (or its header actions) off-screen. */
+.detail-grid{display:flex;flex-direction:column;gap:0;background:var(--lcars-surface);
+  border:1px solid var(--lcars-border-bright);border-radius:14px;overflow:hidden;width:100%;
+  max-width:1080px;max-height:90vh}
+/* the header stays fixed; its content can wrap but never scrolls away. UX-6: a
+   right-side gutter reserves room for the .detail-close ✕ so it never overlaps
+   the action buttons at any width. */
+.det-head{padding:16px 20px;padding-right:52px;border-bottom:1px solid var(--lcars-border);
+  background:var(--lcars-surface);position:relative;flex:0 0 auto}
 .det-head .row1{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .det-head h3{margin:0;color:var(--lcars-text-bright);font-family:var(--font-display);
   letter-spacing:.06em;font-size:20px}
-.det-actions{margin-left:auto;display:flex;gap:8px}
-.det-body{display:grid;grid-template-columns:1.4fr 1fr;gap:0;min-height:400px}
-.feed{padding:18px 20px;border-right:1px solid var(--lcars-border);overflow:auto;max-height:62vh}
+.det-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+/* UX-6: the close ✕ is pinned to the header's top-right in its OWN gutter (the
+   padding-right above), so it sits clear of the action buttons regardless of how
+   many actions render or how the row wraps. */
+.detail-close{position:absolute;top:12px;right:14px;background:transparent;border:none;
+  color:var(--lcars-text-dim);font-family:var(--font-display);font-size:16px;
+  line-height:1;padding:4px 6px;cursor:pointer;letter-spacing:.1em}
+.detail-close:hover{color:var(--lcars-amber)}
+.det-body{display:grid;grid-template-columns:1.4fr 1fr;gap:0;min-height:0;
+  flex:1 1 auto;overflow:hidden}
+.feed{padding:18px 20px;border-right:1px solid var(--lcars-border);overflow:auto;min-height:0}
 .feed h4{margin:0 0 14px;font-family:var(--font-display);text-transform:uppercase;
   letter-spacing:.18em;color:var(--lcars-peach);font-size:14px}
 .evt{display:flex;gap:12px;padding-bottom:16px;position:relative}
@@ -287,7 +319,7 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .feed .empty{color:var(--lcars-text-dim);font-size:13px}
 
 /* ── tabs (mock .tabs / .tabbar .tab .on / .tabpane .on) ── */
-.tabs{padding:18px 20px;background:var(--lcars-black);overflow:auto;max-height:62vh}
+.tabs{padding:18px 20px;background:var(--lcars-black);overflow:auto;min-height:0}
 .tabbar{display:flex;gap:6px;margin-bottom:14px}
 .tabbar .tab{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;font-size:11px;
   padding:5px 12px;border-radius:12px;background:var(--lcars-card-alt);color:var(--lcars-text);
@@ -323,6 +355,28 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .busy{font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
   font-size:11px;color:var(--lcars-amber)}
 .errline{color:#ff8a96;font-size:13px;margin-top:10px}
+
+/* ── UX-2/UX-5: LCARS "working" indicator for worker-backed waits ──
+   An animated row of LCARS elbow bars (amber↔teal pulse, staggered) plus a
+   visible state label. The label (not colour) carries the state, so it stays
+   accessible; the node is role=status/aria-live in the markup. Vanilla CSS only,
+   no libs (ADR-007). Caller shows/hides it; it clears on success AND error. */
+.lcars-working{display:flex;align-items:center;gap:12px;margin:12px 0;
+  font-family:var(--font-display);text-transform:uppercase;letter-spacing:.14em}
+.lcars-working-label{font-size:11px;color:var(--lcars-amber)}
+.lcars-bars{display:inline-flex;gap:4px;align-items:flex-end;height:18px}
+.lcars-bars > i{display:block;width:6px;height:18px;border-radius:3px;
+  background:var(--lcars-amber);transform-origin:bottom;
+  animation:lcars-bar 1s ease-in-out infinite}
+.lcars-bars > i:nth-child(1){animation-delay:0s;background:var(--lcars-amber)}
+.lcars-bars > i:nth-child(2){animation-delay:.12s;background:var(--lcars-peach,#ff9966)}
+.lcars-bars > i:nth-child(3){animation-delay:.24s;background:var(--lcars-teal)}
+.lcars-bars > i:nth-child(4){animation-delay:.36s;background:var(--lcars-peach,#ff9966)}
+.lcars-bars > i:nth-child(5){animation-delay:.48s;background:var(--lcars-amber)}
+@keyframes lcars-bar{0%,100%{transform:scaleY(.35);opacity:.55}50%{transform:scaleY(1);opacity:1}}
+@media (prefers-reduced-motion:reduce){
+  .lcars-bars > i{animation:none;transform:scaleY(.7);opacity:.8}
+}
 
 @media (max-width:880px){
   .det-body{grid-template-columns:1fr}

@@ -326,8 +326,9 @@ function openFile() {
   idea.placeholder = "What do you want to build, improve, or fix?";
   m.body.appendChild(field("The idea — what do you want to build, improve, or fix?", idea));
 
-  var repo = el("input"); repo.placeholder = "owner/repo (optional)";
-  m.body.appendChild(field("Repository", repo));
+  // UX-1: the Repository field is removed from the File modal — the viewscreen
+  // is per-repo this iteration, so a chooseable repo is useless. The server
+  // infers the attached repo; nothing here renders a repo input.
 
   var engineWrap = el("div", "field");
   engineWrap.appendChild(label("Engine — which CLI drives this mission?"));
@@ -355,12 +356,20 @@ function openFile() {
   // (S70-B) — the structured one-question-at-a-time interview, not a
   // straight-to-skeleton create. The mission lands in Align when the console
   // completes and file.sh runs.
+  // UX-2: opening the Align console spawns a worker turn (several seconds) — show
+  // the themed working indicator inline while it is in flight; it clears on both
+  // success (console replaces the modal) and error.
+  var fileBusy = workingNode("Opening alignment console…"); fileBusy.hidden = true;
+  m.body.appendChild(fileBusy);
+
   var go = applyWriteState(btn("File & Begin Alignment ▸", "go big", function () {
     var text = idea.value.trim();
     if (!text) { showErr(err, "Describe the idea first."); return; }
     go.disabled = true; go.textContent = "Opening Align…";
+    err.hidden = true; fileBusy.hidden = false;
     openAlignConsole(text, chosen.engine, function (msg) {
       go.disabled = false; go.textContent = "File & Begin Alignment ▸";
+      fileBusy.hidden = true;
       showErr(err, msg);
     });
   }));
@@ -397,9 +406,13 @@ function renderAlignConsole(state) {
   free.placeholder = "…or answer in your own words";
   freeWrap.appendChild(label("Your answer")); freeWrap.appendChild(free);
   var err = el("div", "errline"); err.hidden = true;
+  // UX-2: themed working indicator for each answer's worker turn (and the final
+  // hand-off). Lives in the left console pane; label is re-set per phase.
+  var busy = workingNode("Thinking…"); busy.hidden = true;
   var prog = el("div", "progress-line");
   left.appendChild(count); left.appendChild(qtext); left.appendChild(choices);
-  left.appendChild(freeWrap); left.appendChild(err); left.appendChild(prog);
+  left.appendChild(freeWrap); left.appendChild(err); left.appendChild(busy);
+  left.appendChild(prog);
 
   var right = el("div", "console-r");
   right.appendChild(el("div", "mock-cap", "PRD · building live"));
@@ -408,7 +421,9 @@ function renderAlignConsole(state) {
 
   pane.appendChild(left); pane.appendChild(right);
   m.body.appendChild(pane);
-  m.body.style.padding = "0";  // the twopane owns its own padding
+  // the twopane owns its own padding + internal scroll (UX-4/UX-5); .flush makes
+  // the body a flush flex container so the panes fill the capped modal height.
+  m.body.className = "modal-body flush";
 
   var submit = applyWriteState(btn("Submit & Continue ▸", "go big", null));
   m.foot.appendChild(btn("Cancel", null, closeOverlay));
@@ -454,13 +469,29 @@ function renderAlignConsole(state) {
   submit.onclick = function () {
     var answer = free.value.trim() || picked.val || "";
     if (!answer) { showErr(err, "Pick the recommendation or type an answer."); return; }
-    submit.disabled = true; submit.textContent = "Thinking…";
+    submit.disabled = true; submit.textContent = "Working…";
+    err.hidden = true;
+    // UX-2: the worker turn (and, on the final answer, the file.sh hand-off)
+    // runs server-side within this POST. Show the themed working indicator the
+    // whole time; it clears on the next question, on done, or on error.
+    busy.querySelector(".lcars-working-label").textContent =
+      "Thinking… (the harness may also be generating the mission)";
+    busy.hidden = false;
     postWrite("/api/align/" + enc(sid) + "/answer", { answer: answer },
       function (st) {
-        if (st.status === "done") { renderAlignDone(st); return; }
+        busy.hidden = true;
+        if (st.status === "done") {
+          // explicit, labelled hand-off state before the board refresh swaps in
+          // the new Align card and the confirmation modal.
+          busy.querySelector(".lcars-working-label").textContent = "Generating mission…";
+          busy.hidden = false;
+          renderAlignDone(st);
+          return;
+        }
         paintQuestion(st);
       },
       function (msg) {
+        busy.hidden = true;
         submit.disabled = false; submit.textContent = "Submit & Continue ▸";
         showErr(err, msg);
       });
@@ -748,9 +779,18 @@ function renderDetail(mi) {
   addPills(row1, mi.pills);
   row1.appendChild(el("span", "pill stage", (mi.stage || "").toUpperCase()));
 
+  // Header actions MIRROR the board card's stage logic (cardControls) — the card
+  // is the source of truth (item 1). The primary action (Answer / Pause / Resume
+  // / Start / Verify) is gated by stage exactly as the card gates it; Verify is
+  // shown ONLY at the verify stage (hidden, not disabled, elsewhere). Mission Log
+  // stays available throughout. Done missions carry no primary action.
   var actions = el("div", "det-actions");
   if (mi.awaiting) {
     actions.appendChild(applyWriteState(btn("Answer ▸", "danger", function () { openRespond(mi.id); })));
+  } else if (mi.stage === "verify") {
+    actions.appendChild(applyWriteState(btn("✓ Verify", "go", function () { openVerify(mi.id); })));
+  } else if (mi.stage === "done") {
+    /* terminal — no primary action */
   } else if (mi.paused) {
     actions.appendChild(applyWriteState(btn("▶ Resume", "go", function () {
       dispatchCard("/api/mission/" + enc(mi.id) + "/resume", {}); closeOverlay();
@@ -759,11 +799,14 @@ function renderDetail(mi) {
     actions.appendChild(applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCard("/api/mission/" + enc(mi.id) + "/pause", {}); closeOverlay();
     })));
-  } else if (mi.stage === "align") {
+  } else {
+    // align (and any pre-run stage): Start launches the run via the Launch panel.
     actions.appendChild(applyWriteState(btn("▶ Start", "go", function () { openLaunch(mi.id); })));
   }
-  actions.appendChild(applyWriteState(btn("Mission Log", null, function () { openLog(mi.id); })));
-  actions.appendChild(applyWriteState(btn("✓ Verify", "go", function () { openVerify(mi.id); })));
+  // Mission Log is available at every stage (not on terminal Done missions).
+  if (mi.stage !== "done") {
+    actions.appendChild(applyWriteState(btn("Mission Log", null, function () { openLog(mi.id); })));
+  }
   row1.appendChild(actions);
   head.appendChild(row1);
   grid.appendChild(head);
@@ -774,13 +817,12 @@ function renderDetail(mi) {
   body.appendChild(detailTabs(mi));
   grid.appendChild(body);
 
-  // a close affordance: wrap with a thin header bar? The overlay backdrop + Esc
-  // close it; add an explicit close button overlaid on the header for clarity.
-  var close = btn("✕", "close", closeOverlay);
-  close.className = "close";
-  close.style.cssText = "position:absolute;top:14px;right:18px;background:transparent;" +
-    "border:none;color:var(--lcars-text-dim);font-size:16px;cursor:pointer";
-  head.style.position = "relative";
+  // Explicit close affordance. It lives in its OWN flow slot at the very end of
+  // the header row (after the actions) so it can never overlap the action
+  // buttons at any width (item 6); .detail-close styling pins it to the header's
+  // top-right with reserved gutter so the title/pills don't run under it.
+  var close = btn("✕", "detail-close", closeOverlay);
+  close.className = "detail-close";
   head.appendChild(close);
 
   showOverlay(grid);
@@ -995,6 +1037,24 @@ function field(labelText, control) {
 function label(t) { return el("label", null, t); }
 function noteEl(text, cls) { return el("div", "note" + (cls ? " " + cls : ""), text); }
 function showErr(node, msg) { node.hidden = false; node.textContent = msg; }
+
+/* UX-2 / UX-5: a self-contained, on-theme LCARS "working" indicator for the
+   several-second worker-backed waits (Align open, each Align answer, the
+   Align→file hand-off). Vanilla CSS animation only (.lcars-working / .lcars-bars
+   in board.css) — an animated row of amber/teal elbow bars plus a label.
+   Accessible: the visible label carries the state (not colour alone) and the
+   node is role=status / aria-live so assistive tech announces it. Caller owns
+   show/hide — it clears on BOTH success and error by removing the node. */
+function workingNode(labelText) {
+  var w = el("div", "lcars-working");
+  w.setAttribute("role", "status");
+  w.setAttribute("aria-live", "polite");
+  var bars = el("div", "lcars-bars");
+  for (var i = 0; i < 5; i++) bars.appendChild(el("i"));
+  w.appendChild(bars);
+  w.appendChild(el("span", "lcars-working-label", labelText || "Working…"));
+  return w;
+}
 
 function addPills(host, pills) {
   if (!pills) return;
