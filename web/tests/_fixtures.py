@@ -54,6 +54,24 @@ ESTIMATE_COPILOT_LEGACY = {
 }
 
 
+# Copilot USAGE billing (S64): the estimate carries GROSS `usd` AND `netUsd`
+# (after includedCreditsUsd). Here the credits fully cover the run, so net is $0
+# — the UX-15 trap the pill must NOT show (it must show the gross range).
+ESTIMATE_COPILOT_USAGE = {
+    "schemaVersion": 3,
+    "reasoningCriticality": "medium",
+    "implCriticality": "medium",
+    "models": {"research": "sonnet", "validate": "sonnet", "plan": "sonnet",
+               "planReview": "sonnet", "implement": "sonnet", "verify": "sonnet"},
+    "rationale": "Routine usage-billed run.",
+    "cost": {"cli": "copilot", "unit": "usd", "currency": "USD",
+             "billing": "usage", "includedCreditsUsd": 10.0,
+             "usd": {"low": 3.5, "high": 7.0},
+             "netUsd": {"low": 0.0, "high": 0.0}},
+    "estimatorModel": "sonnet",
+}
+
+
 def mission_dir(root, mid):
     return os.path.join(root, ".git", "lcars", "missions", mid)
 

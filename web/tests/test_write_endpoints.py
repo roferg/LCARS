@@ -13,6 +13,7 @@ stdlib only; the daemon runs on an ephemeral localhost port inside the test.
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -109,6 +110,51 @@ class WriteEndpointBase(unittest.TestCase):
         # means it never ran.
         return self._record(key) == ""
 
+    def _record_when(self, key, needle="", timeout=5.0):
+        """Poll the record file until `needle` appears (or timeout).
+
+        `start` is now FIRE-AND-FORGET (Popen, not waited on), so the run-skill's
+        record file is written asynchronously after the HTTP response returns.
+        Tests that assert on the dispatched argv wait for it here.
+        """
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            rec = self._record(key)
+            if needle in rec and rec:
+                return rec
+            time.sleep(0.02)
+        return self._record(key)
+
+
+def _lock_stub(record_path, sleep_secs):
+    """A run-skill stub that records its argv/env, holds a LIVE driver lock for
+    `sleep_secs`, then exits 0.
+
+    It mimics run.sh's lock: it mkdirs $MISSION_DIR/driver.lock and writes its own
+    PID, so while it sleeps the LocalAdapter sees the mission as `running` (and a
+    second start() must no-op). The mission dir is derived from --mission in argv.
+    """
+    fd, path = tempfile.mkstemp(suffix=".sh")
+    os.close(fd)
+    script = (
+        '#!/usr/bin/env bash\n'
+        '{ printf "ARGV: %s\\n" "$*"; } >> "' + record_path + '"\n'
+        '# find --mission <id>\n'
+        'mid=""; prev=""\n'
+        'for a in "$@"; do [ "$prev" = "--mission" ] && mid="$a"; prev="$a"; done\n'
+        'lock=".git/lcars/missions/$mid/driver.lock"\n'
+        'mkdir -p "$lock" 2>/dev/null\n'
+        'printf "%s" "$$" > "$lock/pid"\n'
+        'sleep ' + str(sleep_secs) + '\n'
+        'rm -rf "$lock"\n'
+        'exit 0\n'
+    )
+    with open(path, "w") as fh:
+        fh.write(script)
+    os.chmod(path, 0o755)
+    return path
+
 
 class StartEndpointTest(WriteEndpointBase):
     def test_start_dispatches_run_drive(self):
@@ -116,7 +162,7 @@ class StartEndpointTest(WriteEndpointBase):
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
         self.assertIn("state", body)
-        rec = self._record("run")
+        rec = self._record_when("run", "drive")
         self.assertIn("drive", rec)
         self.assertIn("--mission m-001", rec)
 
@@ -125,7 +171,7 @@ class StartEndpointTest(WriteEndpointBase):
                                   {"override": "all:opus"})
         self.assertEqual(status, 200)
         # the override must reach the run dispatch (argv or env file)
-        rec = self._record("run")
+        rec = self._record_when("run", "all:opus")
         self.assertIn("all:opus", rec)
 
     def test_start_feeds_persisted_engine_to_run(self):
@@ -137,7 +183,7 @@ class StartEndpointTest(WriteEndpointBase):
                         worker_bin="copilot")
         status, body = self._post("/api/mission/m-001/start")
         self.assertEqual(status, 200)
-        rec = self._record("run")
+        rec = self._record_when("run", "ENV_WORKER_BIN: copilot")
         # the stub records ENV_WORKER_BIN: <value>
         self.assertIn("ENV_WORKER_BIN: copilot", rec)
 
@@ -148,8 +194,68 @@ class StartEndpointTest(WriteEndpointBase):
         # m-001 from setUp has no workerBin (fx.plant_simple, worker_bin=None).
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
         actions.start("m-001")
-        rec = self._record("run")
+        rec = self._record_when("run", "ENV_WORKER_BIN")
         self.assertIn("ENV_WORKER_BIN: \n", rec)
+
+    def test_start_returns_promptly_without_blocking_on_the_run(self):
+        """start() is FIRE-AND-FORGET: the run driver is a long process, so start()
+        must NOT block on it. Point the run skill at a stub that holds a driver lock
+        for ~3s; start() must return well before that."""
+        import time
+        rec = os.path.join(self.tmp, "rec-runslow.txt")
+        scripts = dict(self.scripts)
+        scripts["run"] = _lock_stub(rec, sleep_secs=3)
+        actions = Actions(repo_root=self.tmp, scripts=scripts)
+        t0 = time.time()
+        actions.start("m-001")
+        elapsed = time.time() - t0
+        # blocking would take >=3s; fire-and-forget returns near-instantly.
+        self.assertLess(elapsed, 1.5,
+                        "start() blocked on the long run driver (%.2fs)" % elapsed)
+
+    def test_start_uses_a_nonblocking_spawn(self):
+        """The fire-and-forget seam is Popen (no wait). Assert start() calls
+        subprocess.Popen and never subprocess.run for the run dispatch."""
+        import unittest.mock as mock
+
+        class _FakePopen(object):
+            def __init__(self, *a, **k):
+                pass
+        with mock.patch.object(subprocess, "Popen", _FakePopen) as _, \
+                mock.patch.object(subprocess, "run") as run_mock:
+            actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+            actions.start("m-001")
+            self.assertFalse(run_mock.called,
+                             "start() used the BLOCKING subprocess.run")
+
+    def test_start_on_an_already_running_mission_does_not_spawn_a_second(self):
+        """Defense-in-depth: if a live driver already holds the lock, start() must
+        be a clean no-op (no second driver)."""
+        import time
+        rec = os.path.join(self.tmp, "rec-run2.txt")
+        scripts = dict(self.scripts)
+        scripts["run"] = _lock_stub(rec, sleep_secs=3)
+        actions = Actions(repo_root=self.tmp, scripts=scripts)
+        # first start: spawns the live driver (which holds the lock while sleeping)
+        actions.start("m-001")
+        # wait until the lock is actually held (running flag flips true)
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            if actions._reader.mission("m-001").get("running"):
+                break
+            time.sleep(0.02)
+        self.assertTrue(actions._reader.mission("m-001").get("running"),
+                        "the first driver never took the lock")
+        # second start while running: must NOT dispatch again.
+        with open(rec) as fh:
+            first = fh.read()
+        actions.start("m-001")
+        time.sleep(0.3)
+        with open(rec) as fh:
+            after = fh.read()
+        self.assertEqual(first, after,
+                         "start() spawned a SECOND driver on an already-running "
+                         "mission")
 
 
 class PauseResumeTest(WriteEndpointBase):

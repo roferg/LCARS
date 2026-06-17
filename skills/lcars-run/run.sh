@@ -4240,8 +4240,83 @@ drive_halt_align() {
   printf 'rewrite the PRD, then it auto-advances from Research.\n'
 }
 
+# === Per-mission driver lock (BUG-A: single-instance `drive`) ===============
+# The viewscreen Start button (and pause→resume) could fire `run drive` for the
+# SAME mission more than once. Without a guard, N drivers raced the stage advance
+# and EACH spawned cold workers — state corruption + real credit waste. So the
+# driver is single-instance PER MISSION: only one live `cmd_drive` may advance a
+# given mission at a time.
+#
+# The lock is a DIRECTORY ($MISSION_DIR/driver.lock) — `mkdir` is atomic on every
+# POSIX fs, so two near-simultaneous drivers can't both win. The winner writes
+# its PID into driver.lock/pid; the loser checks whether that PID is alive:
+#   • alive   → a real driver is already advancing this mission → no-op exit 0.
+#   • dead    → a STALE lock from a crashed driver → reclaim it and proceed
+#               (never deadlock after a crash).
+# A trap releases the lock on EXIT/INT/TERM, but ONLY if we still own it (our PID
+# in the pid file) — so a process that found a live lock and bailed never deletes
+# the real owner's lock. The single `--step` path and the auto loop both go
+# through cmd_drive, so both respect the lock. `resume` re-execs `drive`, so it is
+# idempotent for free: a resume while a driver is live is a clean no-op.
+DRIVER_LOCK_DIR=""        # set once we hold the lock; "" = we hold none.
+
+# Is PID $1 a live process? Portable (kill -0). Empty/non-numeric → not alive.
+pid_alive() { # pid
+  local p="$1"
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$p" 2>/dev/null
+}
+
+# Try to take the per-mission driver lock. Prints nothing; returns:
+#   0  → lock acquired (DRIVER_LOCK_DIR set, trap armed, our pid written)
+#   1  → a LIVE driver already holds it (caller must no-op exit 0)
+acquire_driver_lock() {
+  local lock="$MISSION_DIR/driver.lock" pidf
+  pidf="$lock/pid"
+  # Two tries: the second covers reclaiming a stale lock between the failed mkdir
+  # and the alive-check (the only window another driver could clear it in).
+  local try
+  for try in 1 2; do
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s' "$$" >"$pidf"
+      DRIVER_LOCK_DIR="$lock"
+      trap 'release_driver_lock' EXIT INT TERM
+      return 0
+    fi
+    # Lock dir exists — is its owner alive?
+    local owner=""; [ -f "$pidf" ] && owner="$(cat "$pidf" 2>/dev/null)"
+    if pid_alive "$owner"; then
+      return 1                    # a real driver holds it → caller no-ops.
+    fi
+    # Stale (dead/empty owner): reclaim and retry the atomic mkdir.
+    rm -rf "$lock" 2>/dev/null
+  done
+  return 1
+}
+
+# Release the lock IFF we still own it (our pid in the pid file). Idempotent;
+# safe in a trap. A driver that found a live lock and bailed never deletes it.
+release_driver_lock() {
+  [ -n "$DRIVER_LOCK_DIR" ] || return 0
+  local owner=""; [ -f "$DRIVER_LOCK_DIR/pid" ] && owner="$(cat "$DRIVER_LOCK_DIR/pid" 2>/dev/null)"
+  if [ "$owner" = "$$" ]; then
+    rm -rf "$DRIVER_LOCK_DIR" 2>/dev/null
+  fi
+  DRIVER_LOCK_DIR=""
+}
+
 cmd_drive() {
   locate_mission "$MISSION_ID"
+
+  # Single-instance guard (BUG-A). If a live driver already holds this mission's
+  # lock, this invocation is a clean no-op — never a second concurrent driver.
+  if ! acquire_driver_lock; then
+    printf '%s  already running\n%s\n' "$MISSION_ID" "$SEP"
+    printf '⏹ a driver is already advancing this Mission (single-instance) — nothing to do.\n'
+    printf '  Watch it on the board, or `lcars pause %s` to halt it at the next boundary.\n' "$MISSION_ID"
+    return 0
+  fi
+
   local mode="auto"; [ "$STEP" = 1 ] && mode="step"
   printf '%s  %s-advance\n%s\n' "$MISSION_ID" "$mode" "$SEP"
 

@@ -22,6 +22,9 @@ missionCard:
       "stage":    "research",         # the COLUMN it belongs to (gate rule applied)
       "awaiting": bool,               # lcars:awaiting-human → AWAITING YOU state
       "paused":   bool,               # lcars:paused
+      "running":  bool,               # a LIVE `run drive` driver holds the mission
+                                      #   lock (S67 BUG-A). LOCAL adapter only;
+                                      #   github adapter omits/false (can't see it).
       "question": "..." | None,       # pending gate question when awaiting
       "linked":   bool,               # child bug mission (lcars:linked) → pink card
       "pills": {
@@ -89,7 +92,13 @@ def cost_pill(cost):
     """Map an estimate.json `cost` block to a cost pill (engine-unit aware).
 
     Claude → usd {low,high}; legacy Copilot → premiumRequests {low,high};
-    usage Copilot → usd via netUsd. Returns None for absent/unavailable cost.
+    usage Copilot → usd. Returns None for absent/unavailable cost.
+
+    UX-15: for Copilot usage billing the estimate carries BOTH `usd` (GROSS) and
+    `netUsd` (after includedCreditsUsd, often $0). The pill must show the GROSS
+    range — matching the Claude pill, which is gross — so a real, non-zero
+    estimate never renders as a misleading bare $0 "after credits". We therefore
+    prefer `usd` (gross) and only fall back to `netUsd` when gross is absent.
     """
     if not isinstance(cost, dict):
         return None
@@ -98,12 +107,19 @@ def cost_pill(cost):
                 "label": "EST. UNAVAILABLE"}
     unit = cost.get("unit")
     if unit == "usd":
-        band = cost.get("netUsd") or cost.get("usd") or {}
+        # GROSS first (cost.usd); netUsd only as a fallback when gross is absent.
+        band = cost.get("usd") or cost.get("netUsd") or {}
         low, high = band.get("low"), band.get("high")
         if low is None and high is None:
             return None
-        return {"unit": "usd", "low": low, "high": high,
+        pill = {"unit": "usd", "low": low, "high": high,
                 "label": _usd_label(low, high)}
+        # Keep net available to the front end (not shown on the pill) so a later
+        # "after credits" affordance needs no schema change.
+        net = cost.get("netUsd")
+        if isinstance(net, dict):
+            pill["netLow"], pill["netHigh"] = net.get("low"), net.get("high")
+        return pill
     if unit == "premiumRequests":
         band = cost.get("premiumRequests") or {}
         low, high = band.get("low"), band.get("high")

@@ -104,6 +104,13 @@ class LocalAdapter(object):
         awaiting = _truthy(state.get("awaitingHuman"))
         paused = _truthy(state.get("paused"))
         question = state.get("pendingQuestion")
+        # `running` (S67 BUG-A): true iff a LIVE `run drive` driver currently
+        # holds this mission's lock (run.sh's $MISSION_DIR/driver.lock, a dir with
+        # a pid file). Derived from the live lock so the board can flip a card to a
+        # "running" state the instant Start fires — and false for idle/gated/paused/
+        # done missions and a STALE lock (crashed driver). The front end depends on
+        # this EXACT field name.
+        running = _driver_running(d)
 
         # status.sh's gate rule: when awaiting-human and a pending.json exists,
         # the in-flight column comes from pending.json.stage, not state.stage.
@@ -150,6 +157,7 @@ class LocalAdapter(object):
             "stage": stage,
             "awaiting": awaiting,
             "paused": paused,
+            "running": running,
             "question": question if awaiting else None,
             "linked": _truthy(state.get("linked")),
             "pills": pills,
@@ -308,6 +316,41 @@ def _load_jsonl(path):
 
 def _truthy(v):
     return v is True or (isinstance(v, str) and v.strip().lower() == "true")
+
+
+# --- S67 BUG-A: live driver detection (the `running` flag) -------------------
+# run.sh acquires a per-mission driver lock at $MISSION_DIR/driver.lock (a DIR
+# whose `pid` file holds the live driver's PID; see acquire_driver_lock in
+# run.sh). A mission is `running` iff that lock is held by a LIVE process. We read
+# the pid and probe it with os.kill(pid, 0): no signal is sent, but a dead/own-
+# unreachable pid raises, which we treat as not-running. A STALE lock (the driver
+# crashed without releasing) thus reads as running == False, matching run.sh's own
+# reclaim rule. Crash-proof: any read/parse/probe error → False (never raises).
+def _driver_running(mission_dir):
+    pidf = os.path.join(mission_dir, "driver.lock", "pid")
+    try:
+        with open(pidf) as fh:
+            raw = fh.read().strip()
+    except OSError:
+        return False
+    try:
+        pid = int(raw)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        # ESRCH — no such process → stale lock → not running.
+        return False
+    except PermissionError:
+        # EPERM — the process EXISTS but is owned by another user; it is alive,
+        # so the mission is running.
+        return True
+    except OSError:
+        return False
+    return True
 
 
 # --- S70-A: repo identity (which working tree am I attached to) --------------

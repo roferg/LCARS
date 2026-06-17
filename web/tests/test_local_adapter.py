@@ -17,6 +17,19 @@ from lcars_serve.board import STAGES  # noqa: E402
 from lcars_serve.local_adapter import LocalAdapter  # noqa: E402
 
 
+def _dead_pid():
+    """A pid that is not alive: fork+reap a child, reuse its (now-freed) pid.
+
+    Race-tiny (the kernel may recycle it) but adequate for a unit test; the
+    adapter treats ESRCH as not-running, which is what we assert.
+    """
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    os.waitpid(pid, 0)
+    return pid
+
+
 class LocalAdapterTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -140,6 +153,60 @@ class LocalAdapterTest(unittest.TestCase):
                         estimate=fx.ESTIMATE_COPILOT_LEGACY)
         m = self._by_id(self._board(), "m-cop")
         self.assertEqual(m["pills"]["cost"]["unit"], "premiumRequests")
+
+    # ── UX-15: Copilot usage cost pill shows GROSS, not net-$0 ──
+    def test_copilot_usage_cost_pill_shows_gross_not_net_zero(self):
+        fx.plant_simple(self.tmp, "m-usage", stage="plan",
+                        estimate=fx.ESTIMATE_COPILOT_USAGE)
+        m = self._by_id(self._board(), "m-usage")
+        cost = m["pills"]["cost"]
+        # the pill must carry the GROSS band (3.5–7.0), not the net (0.0) band.
+        self.assertEqual(cost["low"], 3.5)
+        self.assertEqual(cost["high"], 7.0)
+        # and its label must not read as a bare $0 when gross is non-zero.
+        self.assertNotIn("$0.00", cost["label"])
+        self.assertIn("3.50", cost["label"])
+
+    # ── S67 BUG-A: the `running` flag (live driver lock) ──
+    def _lock(self, mid, pid):
+        """Plant a driver.lock/pid for mission `mid` holding `pid`."""
+        d = fx.mission_dir(self.tmp, mid)
+        ld = os.path.join(d, "driver.lock")
+        os.makedirs(ld, exist_ok=True)
+        with open(os.path.join(ld, "pid"), "w") as fh:
+            fh.write(str(pid))
+
+    def test_running_false_for_idle_mission_with_no_lock(self):
+        fx.plant_simple(self.tmp, "m-001", stage="plan")
+        m = self._by_id(self._board(), "m-001")
+        self.assertIn("running", m)
+        self.assertFalse(m["running"])
+
+    def test_running_true_when_a_live_driver_holds_the_lock(self):
+        fx.plant_simple(self.tmp, "m-001", stage="plan")
+        # our own pid is, by definition, alive.
+        self._lock("m-001", os.getpid())
+        m = self._by_id(self._board(), "m-001")
+        self.assertTrue(m["running"])
+
+    def test_running_false_for_a_stale_lock_dead_pid(self):
+        fx.plant_simple(self.tmp, "m-001", stage="plan")
+        # a pid that is (almost certainly) not alive.
+        self._lock("m-001", _dead_pid())
+        m = self._by_id(self._board(), "m-001")
+        self.assertFalse(m["running"])
+
+    def test_running_false_for_garbled_lock_pid(self):
+        fx.plant_simple(self.tmp, "m-001", stage="plan")
+        self._lock("m-001", "not-a-pid")
+        m = self._by_id(self._board(), "m-001")
+        self.assertFalse(m["running"])
+
+    def test_running_surfaced_on_mission_detail_too(self):
+        fx.plant_simple(self.tmp, "m-001", stage="plan")
+        self._lock("m-001", os.getpid())
+        detail = LocalAdapter(self.tmp).mission("m-001")
+        self.assertTrue(detail["running"])
 
     # ── S70-A: board-level meta (which repo am I attached to) ──
     def test_board_meta_present_with_repo_and_mode(self):

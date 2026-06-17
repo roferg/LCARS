@@ -427,8 +427,25 @@ class Actions(object):
         return (proc.stdout or b"").decode("utf-8", "replace")
 
     def start(self, mid, override=None):
-        """POST /api/mission/<id>/start — drive the run, optional override."""
+        """POST /api/mission/<id>/start — drive the run, FIRE-AND-FORGET.
+
+        The run driver is a LONG, multi-stage process. If start() blocked on it
+        (the S68 behaviour), the HTTP request hung for the whole run, the board
+        never reflected "running", and the captain re-clicked Start — which spun
+        up a SECOND driver racing the first (BUG-A: three concurrent drivers, real
+        credit waste). So start() now SPAWNS the driver in the background and
+        returns promptly; the board/SSE reflects progress + the `running` flag.
+
+        Defense-in-depth with run.sh's per-mission driver lock: if a live driver
+        already holds this mission, start() is a clean no-op (returns current
+        state) rather than spawning another.
+        """
         self._require_mission(mid)
+        # Guard: already running ⇒ do not spawn a second driver. (run.sh's lock is
+        # the authoritative single-instance guard; this avoids even the spawn.)
+        if self._is_running(mid):
+            return self._mission_state(mid)
+
         env_extra = {}
         ov = (override or "").strip()
         if ov:
@@ -445,8 +462,16 @@ class Actions(object):
         engine = self._persisted_worker_bin(mid)
         if engine and "LCARS_WORKER_BIN" not in env_extra:
             env_extra["LCARS_WORKER_BIN"] = engine
-        self._run("run", ["drive", "--mission", mid], env_extra=env_extra)
+        self._spawn("run", ["drive", "--mission", mid], env_extra=env_extra)
         return self._mission_state(mid)
+
+    def _is_running(self, mid):
+        """True iff a live driver lock is held for this mission (LocalAdapter)."""
+        try:
+            detail = self._reader.mission(mid)
+        except Exception:
+            return False
+        return bool(detail and detail.get("running"))
 
     def _persisted_worker_bin(self, mid):
         """The engine the captain chose at file time (state.json.workerBin)."""
@@ -577,7 +602,13 @@ class Actions(object):
         return self._mission_state(mid)
 
     # -- internals --------------------------------------------------------------
-    def _run(self, key, args, env_extra=None):
+    def _resolve_run(self, key, args, env_extra):
+        """Shared dispatch prep: resolve the script path + build the env.
+
+        Returns (cmd, env). The env wiring (gh bin, default worker bin, then
+        env_extra overrides) is identical for the blocking _run and the
+        fire-and-forget _spawn so they never drift.
+        """
         script = self.scripts.get(key)
         if not script:
             raise ActionError(500, "no script wired for action '%s'" % key)
@@ -588,7 +619,12 @@ class Actions(object):
             env["LCARS_WORKER_BIN"] = self.worker_bin
         if env_extra:
             env.update(env_extra)
-        cmd = ["bash", script] + list(args)
+        return ["bash", script] + list(args), env
+
+    def _run(self, key, args, env_extra=None):
+        """Blocking dispatch — for the SHORT commands (file/pause/resume/respond/
+        verify/log). Waits for the skill and surfaces a non-zero exit."""
+        cmd, env = self._resolve_run(key, args, env_extra)
         proc = subprocess.run(cmd, cwd=self.repo_root, env=env,
                               stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -597,6 +633,26 @@ class Actions(object):
             raise ActionError(
                 502, "skill '%s' exited %d: %s" % (key, proc.returncode, out))
         return proc
+
+    def _spawn(self, key, args, env_extra=None):
+        """Fire-and-forget dispatch — for the LONG `run drive` driver. Launches
+        the skill DETACHED (Popen, never waited on) so the HTTP request returns
+        promptly; the board/SSE then reflects progress and the `running` flag.
+
+        Output is discarded (the run's truth is its on-disk state + events.jsonl,
+        which the SSE already carries) so a full pipe can never wedge the daemon.
+        start_new_session detaches the child from the daemon's process group, so
+        a daemon restart / Ctrl-C doesn't take a running mission down with it.
+        Returns the Popen handle (the caller does NOT wait)."""
+        cmd, env = self._resolve_run(key, args, env_extra)
+        try:
+            return subprocess.Popen(
+                cmd, cwd=self.repo_root, env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True)
+        except OSError as exc:
+            raise ActionError(502, "failed to launch skill '%s': %s" % (key, exc))
 
     def _require_mission(self, mid):
         d = os.path.join(self.repo_root, ".git", "lcars", "missions", mid)

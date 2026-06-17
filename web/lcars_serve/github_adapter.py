@@ -127,6 +127,10 @@ class GitHubAdapter(object):
             "stage": stage,
             "awaiting": awaiting,
             "paused": paused,
+            # S67 BUG-A: the driver lock is a LOCAL filesystem artifact the github
+            # adapter cannot see, so `running` is always False here (adapter-
+            # neutral shape, ADR-006 — the field is present, never crashing).
+            "running": False,
             "question": question,
             "linked": _LINKED_LABEL in labels,
             "pills": pills,
