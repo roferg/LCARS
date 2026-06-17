@@ -271,6 +271,23 @@ class FrontEndAssetsTest(unittest.TestCase):
                     ".frame-rail", ".frame-content"):
             self.assertIn(sel, css, "board.css must style %s" % sel)
 
+    def test_frame_is_one_solid_piece_with_rounded_concave(self):
+        """S67 captain fix: the band+elbow+rail must read as ONE solid yellow L
+        with a smooth ROUNDED inner concave — and NO stray black geometry in the
+        yellow. So the old black 'pie piece' (.frame-elbow::after) must be gone,
+        and the inner concave must instead be formed by rounding the content's
+        top-left corner backed by frame yellow on the grid."""
+        css = self._text("/board.css")
+        # the stray black quarter-square pseudo at the elbow must be removed.
+        self.assertNotIn(".frame-elbow::after", css,
+                         "the black 'pie piece' must be removed")
+        # inner concave now = rounded top-left corner of the black content...
+        self.assertIn("border-top-left-radius:var(--frame-inner-r)", css)
+        # ...backed by a frame-yellow fillet on the grid, behind the content.
+        self.assertIn(".lcars-frame::before", css,
+                      "yellow concave backing must sit on the frame, not the "
+                      "overflow-clipped content")
+
     def test_board_js_renders_meta_repo(self):
         """S70-A: board.js must read board.meta and render meta.repo into the
         topbar host on the live render path."""
