@@ -60,14 +60,21 @@ def mission_dir(root, mid):
 
 def plant_simple(root, mid, *, stage="align", issue=142,
                  title="Add Gamification to Course Site", estimate=ESTIMATE_CLAUDE,
-                 created="2026-06-13T10:00:00Z"):
-    """A plain mission sitting in `stage`, no gate, no tickets."""
+                 created="2026-06-13T10:00:00Z", worker_bin=None):
+    """A plain mission sitting in `stage`, no gate, no tickets.
+
+    `worker_bin` plants the persisted engine field (state.json.workerBin) the
+    way `lcars file` does when an engine was chosen; None omits it.
+    """
     d = mission_dir(root, mid)
-    write_json(os.path.join(d, "state.json"), {
+    state = {
         "id": mid, "type": "feature", "title": title, "stage": stage,
         "created": created, "model": "claude", "githubIssue": issue,
         "branch": "lcars/%s" % mid, "base": "main",
-    })
+    }
+    if worker_bin is not None:
+        state["workerBin"] = worker_bin
+    write_json(os.path.join(d, "state.json"), state)
     if estimate is not None:
         write_json(os.path.join(d, "estimate.json"), estimate)
     return d

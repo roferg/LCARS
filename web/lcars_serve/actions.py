@@ -320,7 +320,7 @@ class Actions(object):
             sess.prd = turn["prd"]
         if status == "done":
             sess.done = True
-            board = self._file_from_align(turn)
+            board = self._file_from_align(turn, engine=sess.engine)
             with self._align_lock:
                 self._align.pop(sid, None)
             resp = {"sessionId": sid, "status": "done",
@@ -337,8 +337,14 @@ class Actions(object):
         return {"sessionId": sid, "status": "question",
                 "question": q, "prd": sess.prd}
 
-    def _file_from_align(self, turn):
-        """Persist a finished Align turn via file.sh (ADR-002 dispatch)."""
+    def _file_from_align(self, turn, engine=None):
+        """Persist a finished Align turn via file.sh (ADR-002 dispatch).
+
+        `engine` is the per-session chosen engine: it is threaded to file.sh as
+        $LCARS_WORKER_BIN so file.sh persists it as state.json.workerBin (S67),
+        making the engine survive the real browser Align console flow — not just
+        the direct /api/mission endpoint. Empty/None leaves the daemon default
+        (self.worker_bin, injected by _run) in charge."""
         prd = (turn.get("prd") or "").strip()
         if not prd:
             raise ActionError(502, "the Align worker returned done with no PRD")
@@ -354,8 +360,12 @@ class Actions(object):
         ov = (turn.get("modelOverride") or "").strip()
         if ov and ov.lower() != "null":
             args += ["--model-override", ov]
+        env_extra = {}
+        eng = (engine or "").strip()
+        if eng:
+            env_extra["LCARS_WORKER_BIN"] = eng
         try:
-            self._run("file", args)
+            self._run("file", args, env_extra=env_extra)
         finally:
             for p in (prd_path, adr_path):
                 if p:
@@ -425,8 +435,27 @@ class Actions(object):
             # the plain-language override is passed through to the run driver via
             # $LCARS_MODEL_OVERRIDE (run.sh's active_model_override reads it).
             env_extra["LCARS_MODEL_OVERRIDE"] = ov
+        # The chosen engine (S67): read the engine the captain picked at file time
+        # (persisted by file.sh as state.json.workerBin) and feed it to the run
+        # driver as $LCARS_WORKER_BIN, so the WHOLE pipeline runs on that engine
+        # instead of host-detecting claude. env wins over run.sh's host-detect
+        # (its resolution is env > config > host-detect > claude — we don't touch
+        # that precedence, just feed it the env). Config-dispatch, not Stage logic
+        # (ADR-002). Empty/absent ⇒ leave it unset (host-detect stays in charge).
+        engine = self._persisted_worker_bin(mid)
+        if engine and "LCARS_WORKER_BIN" not in env_extra:
+            env_extra["LCARS_WORKER_BIN"] = engine
         self._run("run", ["drive", "--mission", mid], env_extra=env_extra)
         return self._mission_state(mid)
+
+    def _persisted_worker_bin(self, mid):
+        """The engine the captain chose at file time (state.json.workerBin)."""
+        sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "state.json")
+        wb = _read_json_key(sp, "workerBin")
+        if isinstance(wb, str) and wb.strip():
+            return wb.strip()
+        return None
 
     def pause(self, mid):
         """POST /api/mission/<id>/pause."""

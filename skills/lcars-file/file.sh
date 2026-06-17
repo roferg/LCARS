@@ -203,6 +203,18 @@ OVERRIDE_LINE=""
 if [ -n "$OV_SCOPE" ]; then
   OVERRIDE_LINE="  \"modelOverride\": { \"scope\": \"$OV_SCOPE\", \"tier\": \"$OV_TIER\" },"
 fi
+# The chosen engine (S67). When the captain picks an engine in the File modal the
+# daemon threads it to file.sh as $LCARS_WORKER_BIN. Persist it as state.json's
+# `workerBin` so the board can show it and `lcars run` can be fed it on Start —
+# the engine survives file→persist→start→run. Empty/unset ⇒ no field (no
+# regression / host-detect stays in charge). JSON-escape the value so an odd
+# engine string can never break the JSON.
+WORKER_BIN_LINE=""
+if [ -n "${LCARS_WORKER_BIN:-}" ]; then
+  wb_json="${LCARS_WORKER_BIN//\\/\\\\}"
+  wb_json="${wb_json//\"/\\\"}"
+  WORKER_BIN_LINE="  \"workerBin\": \"$wb_json\","
+fi
 write_state() { # issue-json (a number or the literal `null`)
   {
     printf '{\n'
@@ -213,6 +225,7 @@ write_state() { # issue-json (a number or the literal `null`)
     printf '  "created": "%s",\n' "$NOW"
     printf '  "model": "%s",\n' "$MODEL"
     [ -n "$OVERRIDE_LINE" ] && printf '%s\n' "$OVERRIDE_LINE"
+    [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
     printf '  "githubIssue": %s,\n' "${1:-null}"
     printf '  "branch": "%s",\n' "$BRANCH"
     printf '  "base": "%s"\n' "$BASE"

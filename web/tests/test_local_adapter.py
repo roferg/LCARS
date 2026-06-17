@@ -113,6 +113,22 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertIn("m-live", ids)
         self.assertNotIn("m-done", ids)
 
+    # ── S67: chosen engine survives onto the card (state.json.workerBin) ──
+    def test_engine_populated_from_worker_bin(self):
+        """A mission filed with a chosen engine persists it as state.json's
+        `workerBin`; the board card must surface it as `engine` so the card/detail
+        shows "copilot"/"claude" instead of None."""
+        fx.plant_simple(self.tmp, "m-eng", stage="plan", worker_bin="copilot")
+        m = self._by_id(self._board(), "m-eng")
+        self.assertEqual(m["engine"], "copilot")
+
+    def test_engine_absent_is_none_no_crash(self):
+        """No persisted workerBin ⇒ engine is None (absent), and the board still
+        assembles cleanly (no regression / crash)."""
+        fx.plant_simple(self.tmp, "m-noeng", stage="plan")
+        m = self._by_id(self._board(), "m-noeng")
+        self.assertIsNone(m["engine"])
+
     def test_empty_tree_is_empty_board(self):
         board = self._board()
         self.assertEqual(board["missions"], [])

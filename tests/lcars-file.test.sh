@@ -34,6 +34,11 @@ ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
+# qgrep: drain stdin FULLY before grepping. A piped `grep -q` short-circuits on
+# first match and SIGPIPEs the producer, which under `set -o pipefail` fails the
+# pipeline. Buffer stdin, then grep the buffer (never `… | grep -q`).
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
 # --- stubs ----------------------------------------------------------------
 # A stub for the lcars-run estimator driver (session 59). file.sh runs
 # `run.sh estimate` at the end of Align; pointing LCARS_RUN_BIN at this stub keeps
@@ -619,6 +624,45 @@ check "11f. issue body shows the override note" \
 check "11f. CLI readout shows the override note" \
   "grep -qi 'override' '$repoMO6/outMO6.txt'"
 unset GH_BODY
+
+# --- Behaviour 12: persist the chosen engine (S67) -------------------------
+# When the captain picks an engine in the browser File modal, the daemon threads
+# it to file.sh as $LCARS_WORKER_BIN. file.sh must persist it into state.json as
+# the `workerBin` string field so the board can show it AND `lcars run` can be
+# fed it on Start (the engine survives file→persist→start→run end to end). When
+# $LCARS_WORKER_BIN is empty/unset, NO workerBin field is written (no regression),
+# and state.json stays valid JSON in both cases.
+
+# 12a. LCARS_WORKER_BIN=copilot ⇒ state.json carries "workerBin":"copilot".
+repoWB="$(new_repo)"; make_gh_stub "$repoWB/gh"
+export GH_LOG="$repoWB/gh.log"; : >"$GH_LOG"
+prdWB="$repoWB/prd.md"; write_prd "$prdWB"
+(
+  cd "$repoWB"
+  LCARS_WORKER_BIN=copilot LCARS_GH_BIN="$repoWB/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdWB" >outWB.txt 2>&1
+)
+MWB="$repoWB/.git/lcars/missions/lcars-20260530-001/state.json"
+check "12a. state.json persists workerBin=copilot" \
+  "[ -f '$MWB' ] && cat '$MWB' | qgrep -q '\"workerBin\": *\"copilot\"'"
+check "12a. state.json is valid JSON (engine set)" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$MWB'"
+
+# 12b. LCARS_WORKER_BIN unset ⇒ NO workerBin field; state.json still valid JSON.
+repoWN="$(new_repo)"; make_gh_stub "$repoWN/gh"
+export GH_LOG="$repoWN/gh.log"; : >"$GH_LOG"
+prdWN="$repoWN/prd.md"; write_prd "$prdWN"
+(
+  cd "$repoWN"
+  unset LCARS_WORKER_BIN
+  LCARS_GH_BIN="$repoWN/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdWN" >outWN.txt 2>&1
+)
+MWN="$repoWN/.git/lcars/missions/lcars-20260530-001/state.json"
+check "12b. no engine ⇒ state.json has no workerBin field" \
+  "[ -f '$MWN' ] && ! cat '$MWN' | qgrep -q 'workerBin'"
+check "12b. state.json is valid JSON (engine unset)" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$MWN'"
 
 # ==========================================================================
 [ "$fail" -eq 0 ]

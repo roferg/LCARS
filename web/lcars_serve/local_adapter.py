@@ -134,11 +134,19 @@ class LocalAdapter(object):
         if not isinstance(issue, int):
             issue = None
 
+        # The chosen engine (S67): file.sh persists state.json.workerBin when the
+        # captain picked one. Surface it as `engine` so the card/detail shows
+        # "claude"/"copilot" rather than None. Absent ⇒ None (no field on disk).
+        engine = state.get("workerBin")
+        if not (isinstance(engine, str) and engine.strip()):
+            engine = None
+
         return {
             "id": mid,
             "issue": issue,
             "title": state.get("title") or mid,
             "type": state.get("type") or "feature",
+            "engine": engine,
             "stage": stage,
             "awaiting": awaiting,
             "paused": paused,

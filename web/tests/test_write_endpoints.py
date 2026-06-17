@@ -128,6 +128,29 @@ class StartEndpointTest(WriteEndpointBase):
         rec = self._record("run")
         self.assertIn("all:opus", rec)
 
+    def test_start_feeds_persisted_engine_to_run(self):
+        """S67: a mission filed with a chosen engine persists state.json.workerBin;
+        Start must read it and set $LCARS_WORKER_BIN for the run drive, so the whole
+        pipeline runs on the picked engine instead of host-detecting claude."""
+        # re-plant m-001 carrying a persisted engine.
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="copilot")
+        status, body = self._post("/api/mission/m-001/start")
+        self.assertEqual(status, 200)
+        rec = self._record("run")
+        # the stub records ENV_WORKER_BIN: <value>
+        self.assertIn("ENV_WORKER_BIN: copilot", rec)
+
+    def test_start_engine_absent_does_not_force_engine(self):
+        """No persisted workerBin ⇒ Start must not invent one (run.sh then host-
+        detects as before — no regression). Drive Actions directly with NO default
+        worker_bin so nothing else injects it."""
+        # m-001 from setUp has no workerBin (fx.plant_simple, worker_bin=None).
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.start("m-001")
+        rec = self._record("run")
+        self.assertIn("ENV_WORKER_BIN: \n", rec)
+
 
 class PauseResumeTest(WriteEndpointBase):
     def test_pause_dispatches_pause(self):
@@ -208,6 +231,18 @@ class MissionFileTest(WriteEndpointBase):
         rec = self._record("file")
         # file.sh consumes a --prd <path>; the daemon must materialise one.
         self.assertIn("--prd", rec)
+
+    def test_file_threads_chosen_engine_to_file_script(self):
+        """S67: the engine picked in the File modal must reach file.sh as
+        $LCARS_WORKER_BIN so file.sh can persist it as state.json.workerBin (the
+        bash test proves the on-disk persistence; here we assert the env reaches
+        the dispatch)."""
+        status, body = self._post("/api/mission",
+                                  {"idea": "Add a dark mode toggle",
+                                   "engine": "copilot"})
+        self.assertEqual(status, 200)
+        rec = self._record("file")
+        self.assertIn("ENV_WORKER_BIN: copilot", rec)
 
 
 class LogTest(WriteEndpointBase):
