@@ -324,8 +324,9 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    engine picker AND the Align answer options). The OLD scheme lit BOTH selected
    (amber outline) and unselected (teal outline) up, so the selection was too
    subtle. New scheme:
-     • UNSELECTED → MUTED / low-emphasis (dim text, faint border, no fill).
-     • SELECTED (.sel) → UNMISTAKABLE: filled amber bg + dark text + a ✓ glyph.
+     • UNSELECTED → a real enabled choice: normal text, faint border, no fill.
+     • SELECTED (.sel) → UNMISTAKABLE: filled amber bg + dark text (the
+       highlight alone signals selection — no ✓ glyph, UX-41).
      • RECOMMENDED (.rec) → a small, low-key "REC" tag ONLY; an unselected-but-
        recommended option still looks UNSELECTED (the tag is the only signal).
        When a recommended option is ALSO selected, .sel wins the chrome and the
@@ -333,7 +334,7 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .choice{display:flex;gap:8px;flex-wrap:wrap}
 .choice .opt{position:relative;font-family:var(--font-body);font-size:13px;
   padding:8px 14px;border-radius:18px;border:1px solid var(--lcars-border);
-  background:transparent;color:var(--lcars-text-dim);cursor:pointer;
+  background:transparent;color:var(--lcars-text);cursor:pointer;
   transition:background .15s,color .15s,border-color .15s}
 .choice .opt:hover{border-color:var(--lcars-border-bright);color:var(--lcars-text)}
 /* recommended: a small low-key inline tag, distinct from selection. Renders on
@@ -342,10 +343,10 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   font-size:8px;letter-spacing:.12em;padding:1px 6px;border-radius:8px;
   background:rgba(0,204,170,.14);border:1px solid var(--lcars-teal);
   color:var(--lcars-teal);vertical-align:middle}
-/* SELECTED: unmistakable filled amber + dark text + a leading ✓. */
+/* SELECTED: unmistakable filled amber + dark text. The fill alone signals
+   selection — no checkmark (UX-41). */
 .choice .opt.sel{background:var(--lcars-amber);border-color:var(--lcars-amber);
   color:var(--lcars-text-on-color);font-weight:600}
-.choice .opt.sel::before{content:'✓ ';font-weight:700}
 /* a recommended AND selected option: keep the amber fill; the REC tag goes quiet
    dark-on-amber so it doesn't fight the selection. */
 .choice .opt.rec.sel::after{background:rgba(3,6,8,.18);border-color:rgba(3,6,8,.4);

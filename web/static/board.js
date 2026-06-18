@@ -572,7 +572,7 @@ function openFile() {
   engineWrap.appendChild(label("Engine — which CLI drives this mission?"));
   var choice = el("div", "choice");
   var chosen = { engine: "claude" };
-  var optClaude = el("span", "opt rec", "⬡ Claude");
+  var optClaude = el("span", "opt", "⬡ Claude");
   var optCopilot = el("span", "opt", "⬡ Copilot");
   function pick(engine, node) {
     chosen.engine = engine;
