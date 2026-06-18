@@ -156,6 +156,29 @@ def _lock_stub(record_path, sleep_secs):
     return path
 
 
+def _sleep_stub(record_path, sleep_secs):
+    """A stub that records its argv/env, sleeps `sleep_secs`, then exits 0.
+
+    Used to prove a dispatch is FIRE-AND-FORGET: if the caller blocked on it the
+    call would take >= sleep_secs; if it spawns detached the caller returns at once.
+    """
+    fd, path = tempfile.mkstemp(suffix=".sh")
+    os.close(fd)
+    script = (
+        '#!/usr/bin/env bash\n'
+        '{\n'
+        '  printf "ARGV: %s\\n" "$*"\n'
+        '  printf "ENV_WORKER_BIN: %s\\n" "${LCARS_WORKER_BIN:-}"\n'
+        '} >> "' + record_path + '"\n'
+        'sleep ' + str(sleep_secs) + '\n'
+        'exit 0\n'
+    )
+    with open(path, "w") as fh:
+        fh.write(script)
+    os.chmod(path, 0o755)
+    return path
+
+
 class StartEndpointTest(WriteEndpointBase):
     def test_start_dispatches_run_drive(self):
         status, body = self._post("/api/mission/m-001/start")
@@ -366,7 +389,9 @@ class LogTest(WriteEndpointBase):
     def test_log_run_dispatches_resolve(self):
         status, body = self._post("/api/mission/m-001/log/run", {})
         self.assertEqual(status, 200)
-        rec = self._record("resolve")
+        # BUG-G: resolve is now FIRE-AND-FORGET (_spawn), so its record is written
+        # asynchronously after the POST returns — poll for it like the start tests.
+        rec = self._record_when("resolve", "m-001")
         self.assertIn("m-001", rec)
 
     # ── BUG-C: the Log worker inherits the PARENT mission's persisted engine ──
@@ -416,10 +441,12 @@ class LogTest(WriteEndpointBase):
                         worker_bin="copilot")
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # no default
         actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"])
+        # log.sh filing stays BLOCKING → its record is present synchronously.
         log_rec = self._record("log")
-        res_rec = self._record("resolve")
         self.assertIn("ENV_WORKER_BIN: copilot", log_rec)
         self.assertIn("--parent m-001", log_rec)
+        # resolve is FIRE-AND-FORGET (BUG-G) → poll for its async record.
+        res_rec = self._record_when("resolve", "ENV_WORKER_BIN: copilot")
         self.assertIn("ENV_WORKER_BIN: copilot", res_rec)
         self.assertIn("m-001", res_rec)
 
@@ -430,6 +457,84 @@ class LogTest(WriteEndpointBase):
         actions.log_run("m-001", prds=["# Bug: x\n\nb"])
         log_rec = self._record("log")
         self.assertIn("ENV_WORKER_BIN: \n", log_rec)
+
+    # ── BUG-G (backend): the resolve-logs dispatch is FIRE-AND-FORGET ──────────
+    def test_log_run_returns_promptly_without_blocking_on_resolve(self):
+        """log_run() must NOT block on resolve-logs (which drives the WHOLE batch —
+        minutes). Point the resolve skill at a stub that sleeps ~3s; log_run must
+        return well before that (the children are filed blocking, the resolve drive
+        is detached)."""
+        import time
+        rec = os.path.join(self.tmp, "rec-resolveslow.txt")
+        scripts = dict(self.scripts)
+        scripts["resolve"] = _sleep_stub(rec, sleep_secs=3)
+        actions = Actions(repo_root=self.tmp, scripts=scripts)
+        t0 = time.time()
+        actions.log_run("m-001", prds=["# Bug: x\n\nb"])
+        elapsed = time.time() - t0
+        # blocking would take >=3s; fire-and-forget returns near-instantly.
+        self.assertLess(elapsed, 1.5,
+                        "log_run blocked on the long resolve drive (%.2fs)"
+                        % elapsed)
+
+    def test_log_run_resolve_uses_a_nonblocking_spawn(self):
+        """The resolve dispatch must go through Popen (no wait), while the log.sh
+        filing of children stays BLOCKING (subprocess.run). Assert the resolve
+        dispatch is the ONLY thing on Popen and log.sh stays on subprocess.run."""
+        import unittest.mock as mock
+
+        run_calls = []
+        popen_calls = []
+
+        class _FakeCompleted(object):
+            returncode = 0
+            stdout = b""
+
+        def _rec_run(cmd, *a, **k):
+            run_calls.append(cmd)
+            return _FakeCompleted()
+
+        class _FakePopen(object):
+            def __init__(self, cmd, *a, **k):
+                popen_calls.append(cmd)
+
+        with mock.patch.object(subprocess, "Popen", _FakePopen), \
+                mock.patch.object(subprocess, "run", _rec_run):
+            actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+            actions.log_run("m-001", prds=["# Bug: x\n\nb"])
+
+        def _is(key, cmds):
+            script = self.scripts[key]
+            return any(script in cmd for cmd in cmds)
+
+        # log.sh filing stays BLOCKING (children must exist on return).
+        self.assertTrue(_is("log", run_calls),
+                        "log.sh filing must stay blocking (subprocess.run)")
+        self.assertFalse(_is("log", popen_calls),
+                         "log.sh filing must NOT be fire-and-forget")
+        # resolve-logs is FIRE-AND-FORGET (Popen, not run).
+        self.assertTrue(_is("resolve", popen_calls),
+                        "resolve-logs must be dispatched via Popen (_spawn)")
+        self.assertFalse(_is("resolve", run_calls),
+                         "resolve-logs must NOT block (subprocess.run)")
+
+    def test_log_run_files_children_blocking_then_spawns_resolve(self):
+        """The children must exist (filed via log.sh, blocking) by the time log_run
+        returns, even though resolve is detached. Use the real recording stubs:
+        the log record is present synchronously; resolve is spawned with the engine
+        env preserved (BUG-D)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="copilot")
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"])
+        # log.sh ran synchronously (blocking) → its record is present immediately.
+        log_rec = self._record("log")
+        self.assertIn("--parent m-001", log_rec)
+        self.assertIn("ENV_WORKER_BIN: copilot", log_rec)
+        # resolve is fire-and-forget → poll for its async record, engine preserved.
+        res_rec = self._record_when("resolve", "ENV_WORKER_BIN: copilot")
+        self.assertIn("ENV_WORKER_BIN: copilot", res_rec)
+        self.assertIn("m-001", res_rec)
 
 
 class LiveChannelTest(WriteEndpointBase):

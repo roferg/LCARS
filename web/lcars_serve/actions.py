@@ -609,7 +609,14 @@ class Actions(object):
                         os.unlink(p)
                     except OSError:
                         pass
-        self._run("resolve", ["--parent", mid], env_extra=env_extra)
+        # BUG-G: resolve-logs drives the ENTIRE batch (every logged bug → Verify +
+        # the consolidated re-verify gate) — minutes. Blocking on it (the old _run)
+        # hung the POST until the whole batch finished, so the dialog spun and the
+        # browser reset the connection. Fire-and-forget it like start()'s `run drive`
+        # (_spawn = detached Popen) so the POST returns PROMPTLY after the children
+        # are filed; the board/SSE then carries the wave progress. The engine env
+        # (BUG-D) is preserved — _spawn carries env_extra exactly as _run did.
+        self._spawn("resolve", ["--parent", mid], env_extra=env_extra)
         return self._mission_state(mid)
 
     # -- internals --------------------------------------------------------------
