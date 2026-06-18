@@ -193,12 +193,23 @@ def _prd_title(prd):
 class _AlignSession(object):
     """In-memory state for one Align grilling, keyed by sessionId.
 
-    Holds the idea, the running transcript (the Q/A pairs already exchanged) and
-    the latest partial PRD. Stdlib only; lives in the daemon process, dies with
-    it (the HTTP request/response cycle IS the human gate — no persistence).
+    Holds the idea, the running transcript (the Q/A pairs already exchanged), the
+    latest partial PRD, and — the BUG-B fix — the WARM worker session UUID. The
+    UI Align is ONE warm, resumable worker session (UI Align == CLI Align): turn
+    1 OPENS the worker session (`--session-id <worker_sid>`) with the full grill
+    (envelope + SKILL.md + idea); every later turn RESUMES that same UUID
+    (`--resume <worker_sid>`) and feeds JUST the captain's latest answer — NO
+    transcript re-feed, NO re-sent SKILL.md/envelope (the session already holds
+    them). `started` tracks whether the worker session has been opened yet.
+
+    Stdlib only; lives in the daemon process, dies with it (the HTTP
+    request/response cycle IS the human gate — no persistence). With
+    resume-by-id there is no long-lived child process to leak: "reaping" a
+    session is just dropping its sid→session mapping.
     """
 
-    __slots__ = ("idea", "engine", "transcript", "prd", "done")
+    __slots__ = ("idea", "engine", "transcript", "prd", "done",
+                 "worker_sid", "started")
 
     def __init__(self, idea, engine):
         self.idea = idea
@@ -206,6 +217,11 @@ class _AlignSession(object):
         self.transcript = []   # list of {"question":..., "answer":...}
         self.prd = ""
         self.done = False
+        # the WARM worker conversation UUID (canonical lowercase, valid for both
+        # claude and copilot). Generated up front; the session is OPENED on the
+        # first turn and RESUMED on every later turn.
+        self.worker_sid = str(uuid.uuid4())
+        self.started = False
 
 
 class Actions(object):
@@ -266,10 +282,13 @@ class Actions(object):
     def align_start(self, idea, engine=None):
         """POST /api/align/start — open a multi-turn Align session.
 
-        Spawns ONE cold worker turn driving the existing lcars-file Align
-        grilling (envelope + SKILL.md prose) over the captain's idea, and returns
-        the first question (or, for a trivial mission the worker resolves in one
-        shot, status:"done" with the assembled PRD already filed).
+        OPENS ONE warm, resumable worker session (BUG-B) driving the existing
+        lcars-file Align grilling (envelope + SKILL.md prose) over the captain's
+        idea, and returns the first question (or, for a trivial mission the worker
+        resolves in one shot, status:"done" with the assembled PRD already filed).
+        The session's worker UUID is minted on the _AlignSession and reused on
+        every /answer (no per-question cold respawn, no transcript re-feed) so the
+        UI Align is the SAME warm interview the CLI runs.
         """
         idea = (idea or "").strip()
         if not idea:
@@ -283,8 +302,10 @@ class Actions(object):
     def align_answer(self, sid, answer):
         """POST /api/align/<sid>/answer — record the answer, run the next turn.
 
-        Carries the ACCUMULATED transcript into the next worker turn so the
-        interview steers off prior answers. On done, dispatches file.sh.
+        RESUMES the same warm worker session (by its UUID) and feeds JUST the
+        captain's latest answer — the prior context lives IN the session, so the
+        daemon re-feeds NO transcript and NO SKILL.md/envelope (BUG-B). On done,
+        dispatches file.sh.
         """
         with self._align_lock:
             sess = self._align.get(sid)
@@ -308,8 +329,12 @@ class Actions(object):
         Returns {sessionId, status:"question", question, prd} or, on done,
         files the mission and returns {sessionId, status:"done", prd, adr?, board}.
         """
-        prompt = self._build_align_prompt(sess)
-        out = self._worker_turn(prompt, engine=sess.engine)
+        opening = not sess.started
+        prompt = self._build_align_prompt(sess, opening=opening)
+        out = self._worker_turn(prompt, engine=sess.engine,
+                                session_id=sess.worker_sid, opening=opening)
+        # the warm session is now open; every later turn resumes this UUID.
+        sess.started = True
         turn = _extract_json(out)
         if not isinstance(turn, dict):
             raise ActionError(
@@ -375,29 +400,71 @@ class Actions(object):
                         pass
         return self._reader.board()
 
-    def _build_align_prompt(self, sess):
+    def align_cancel(self, sid):
+        """POST /api/align/<sid>/cancel — reap a live Align console.
+
+        With resume-by-id there is NO subprocess to kill — reaping is dropping
+        the sid→session mapping so the warm worker UUID is never resumed again
+        (the CLI's stored session ages out on its own). Caps one live session per
+        console; a subsequent answer to the reaped sid 404s. Idempotent.
+        """
+        with self._align_lock:
+            self._align.pop(sid, None)
+        return {"sessionId": sid, "status": "cancelled"}
+
+    def _build_align_prompt(self, sess, opening=True):
+        """Assemble the worker prompt for ONE turn.
+
+        OPENING turn (opening=True): the FULL grill — envelope + the SKILL.md
+        prose (the single source of truth) + the captain's idea. This OPENS the
+        warm worker session.
+
+        CONTINUATION turn (opening=False): the warm worker session already HOLDS
+        the envelope, SKILL.md and the prior exchanges, so we send JUST the
+        captain's latest answer plus a SHORT reminder of the output contract. We
+        do NOT re-feed the accumulated transcript and do NOT resend the
+        envelope/SKILL.md — that re-feed removal is the whole point of BUG-B (the
+        cost win) and keeps UI Align == CLI Align (the warm CLI session carries
+        context, it never re-reads it).
+        """
+        if not opening:
+            answer = ""
+            if sess.transcript:
+                last = sess.transcript[-1]
+                answer = last.get("answer") or ""
+            return ("The captain's answer: %s\n\n"
+                    "Produce the next turn now, as a single JSON object "
+                    "(the same output contract as before)." % answer)
         skill = _load_skill(_FILE_SKILL)
         parts = [_ALIGN_ENVELOPE, skill,
                  "\n=== the captain's idea ===\n", sess.idea,
-                 "\n\n=== the interview so far (transcript) ===\n"]
-        if not sess.transcript:
-            parts.append("(no questions asked yet — ask the FIRST one)\n")
-        else:
-            for t in sess.transcript:
-                parts.append("Q: %s\n" % (t.get("question") or ""))
-                if t.get("answer") is not None:
-                    parts.append("A (captain): %s\n" % t["answer"])
-        parts.append("\nProduce the next turn now, as a single JSON object.")
+                 "\n\nAsk the FIRST question now, as a single JSON object."]
         return "".join(parts)
 
-    def _worker_turn(self, prompt, engine=None, outdir=None):
-        """The ONE injectable worker seam: run a cold one-shot turn and return
-        its stdout. The engine is $LCARS_WORKER_BIN (overridable per-session);
-        tests point it at a recording stub so a turn costs ZERO tokens.
+    def _worker_turn(self, prompt, engine=None, outdir=None,
+                     session_id=None, opening=True):
+        """The ONE injectable worker seam: run a one-shot turn and return its
+        stdout. The engine is $LCARS_WORKER_BIN (overridable per-session); tests
+        point it at a recording stub so a turn costs ZERO tokens.
+
+        WARM continuation (BUG-B): when `session_id` is given, the turn is part of
+        a resumable conversation. The OPENING turn (opening=True) starts it with
+        `--session-id <uuid>`; every CONTINUATION turn (opening=False) RESUMES it
+        with `--resume <uuid>`, so turn 2+ carry the prior context IN THE SESSION
+        — the daemon re-feeds nothing. Each turn is still a short-lived `<bin> -p`
+        invocation (no persistent child to leak); only the conversation is warm.
+
+        The session-flag SYNTAX is engine-aware (per the S72 spike):
+          • claude : space-form  `--session-id <uuid>` / `--resume <uuid>`
+          • copilot: equals-form `--session-id=<uuid>` / `--resume=<uuid>`,
+            plus `--available-tools=` (deny ALL tools — the pure-reasoning grill
+            emits its JSON turn directly instead of via the bash tool; S72 fix).
+        When `session_id` is None the turn is a plain cold one-shot (the Log
+        worker path) — no session flags, unchanged.
 
         Mirrors worker-adapter.sh's `"$bin" -p "$prompt"` shape (ADR-002 — the
         same cold-worker invocation every other Stage uses); the multi-turn loop
-        and transcript live here in the daemon, NOT in the worker prompt logic.
+        lives here in the daemon, NOT in the worker prompt logic.
         """
         bin_ = engine or self.worker_bin
         if not bin_:
@@ -411,9 +478,11 @@ class Actions(object):
         if self.gh_bin:
             env["LCARS_GH_BIN"] = self.gh_bin
         env["LCARS_WORK_OUT"] = outdir
+        cmd = [bin_, "-p", prompt] + self._session_args(
+            bin_, session_id, opening)
         try:
             proc = subprocess.run(
-                [bin_, "-p", prompt], cwd=self.repo_root, env=env,
+                cmd, cwd=self.repo_root, env=env,
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT)
         except OSError as exc:
@@ -425,6 +494,38 @@ class Actions(object):
                 except OSError:
                     pass
         return (proc.stdout or b"").decode("utf-8", "replace")
+
+    @staticmethod
+    def _session_args(bin_, session_id, opening):
+        """The engine-aware warm-session CLI flags (BUG-B / S72 spike).
+
+        Returns [] for a plain cold one-shot (session_id None). Otherwise opens
+        (`--session-id`) or resumes (`--resume`) the conversation by UUID, in the
+        syntax the engine's basename selects.
+        """
+        if not session_id:
+            return []
+        base = os.path.basename(bin_ or "").lower()
+        is_copilot = "copilot" in base
+        if is_copilot:
+            flag = ("--session-id=%s" if opening else "--resume=%s") % session_id
+            # The Align grill is a PURE REASONING task (idea + SKILL.md envelope
+            # → JSON turn); it needs NO repo tools. Granting tools
+            # (`--allow-all-tools`) made copilot EMIT the JSON turn via its `bash`
+            # tool, so its final stdout message was prose-only ("Next question
+            # emitted...") — the daemon found no parseable JSON and 502'd ("the
+            # Align worker returned no parseable turn", S72 BUG-fix). DENY tools
+            # with `--available-tools=` (ONE argv token, empty value ⇒ no tools
+            # available): copilot then prints the raw JSON directly. We ALSO keep
+            # the MCP-discipline flags the cold Stage workers pass
+            # (skills/lcars-run/worker-adapter.sh): without them copilot re-boots
+            # its builtin MCP servers + custom instructions on EVERY warm-Align
+            # turn (26.3s → 13.1s/turn measured, S72). The grill needs neither.
+            return [flag, "--available-tools=", "--no-ask-user",
+                    "--disable-builtin-mcps", "--no-custom-instructions"]
+        # claude (and the default): space-form args.
+        return (["--session-id", session_id] if opening
+                else ["--resume", session_id])
 
     def start(self, mid, override=None):
         """POST /api/mission/<id>/start — drive the run, FIRE-AND-FORGET.

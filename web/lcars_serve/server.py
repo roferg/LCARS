@@ -15,6 +15,7 @@ path keeps working with the GitHub adapter ALONE and every write is declined
 with 403. Each write shells out to the matching `lcars` skill (ADR-002):
   POST /api/align/start                  open an Align grilling   → worker turn
   POST /api/align/<sid>/answer           next interview turn      → worker turn
+  POST /api/align/<sid>/cancel           reap the Align session   → no spend
                                          (on done → file.sh)
   POST /api/mission                      file an idea            → file.sh
   POST /api/mission/<id>/start           drive the run (+override)→ run.sh drive
@@ -148,6 +149,8 @@ def _build_handler(adapter, poll_interval, actions=None):
                 if len(parts) == 2 and parts[1] == "answer":
                     return actions.align_answer(parts[0],
                                                 answer=body.get("answer"))
+                if len(parts) == 2 and parts[1] == "cancel":
+                    return actions.align_cancel(parts[0])
                 raise _ActionError(404, "no such align endpoint: %s" % path)
             # POST /api/mission  — file a new mission
             if path == "/api/mission":
