@@ -314,6 +314,103 @@ check "guard. rejects an empty answer" "[ '$rcGe' -ne 0 ]"
 check "guard. leaves the gate intact on an empty answer" \
   "grep -q '\"awaitingHuman\": *true' '$(state_of "$repoGe")'"
 
+# --- Behaviour 8: accepting a re-verify gate folds children to Done (BUG-E) --
+# Model A: when the captain accepts the consolidated re-verify gate raised by
+# `lcars resolve-logs` on a PARENT, respond must fold the parent's verified child
+# bug Missions to Done WITHOUT a per-bug PR — by invoking `resolve-logs complete
+# --parent <id>` after clearing the gate. We point respond at the REAL
+# resolve-logs script via $LCARS_RESOLVE_LOGS_SCRIPT and build a parent parked at
+# the consolidated gate with two children at Verify.
+RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$REPO_ROOT/skills/lcars-resolve-logs/resolve-logs.sh}"
+
+new_repo_with_reverify_gate() { # -> repo path; parent MID with 2 verified kids
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  cat >"$m/state.json" <<'EOF'
+{
+  "id": "lcars-20260530-001",
+  "type": "feature",
+  "title": "Add gamification",
+  "stage": "verify",
+  "created": "2026-05-30T10:00:00Z",
+  "model": "claude-sonnet",
+  "githubIssue": 42,
+  "branch": "lcars/lcars-20260530-001",
+  "base": "main",
+  "awaitingHuman": true,
+  "pendingQuestion": "2 logged bugs resolved and waiting on their Verify gates — ready for you to re-verify."
+}
+EOF
+  cat >"$m/pending.json" <<'EOF'
+{
+  "stage": "verify",
+  "questions": [
+    "2 logged bugs resolved and waiting on their Verify gates — ready for you to re-verify."
+  ]
+}
+EOF
+  local seq d
+  for seq in 002 003; do
+    d="$repo/.git/lcars/missions/lcars-20260530-$seq"; mkdir -p "$d"
+    cat >"$d/state.json" <<EOF
+{
+  "id": "lcars-20260530-$seq",
+  "type": "bug",
+  "title": "Logged bug $seq",
+  "stage": "verify",
+  "githubIssue": $((50 + 10#$seq)),
+  "parentMission": "$MID",
+  "parentIssue": 42,
+  "branch": "lcars/lcars-20260530-001",
+  "base": "main"
+}
+EOF
+  done
+  echo "$repo"
+}
+
+repo8="$(new_repo_with_reverify_gate)"; make_gh_stub "$repo8/gh"
+export GH_LOG="$repo8/gh.log"; : >"$GH_LOG"
+rc8=0
+(
+  cd "$repo8"
+  LCARS_GH_BIN="$repo8/gh" LCARS_GIT_BIN="$(command -v git)" \
+  LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_LOGS_SCRIPT" \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Looks good, ship it." >out8.txt 2>&1
+) || rc8=$?
+check "8. accepting the re-verify gate exits 0" "[ '$rc8' -eq 0 ]"
+check "8. the parent's gate is cleared (awaitingHuman gone)" \
+  "! grep -q '\"awaitingHuman\": *true' '$repo8/.git/lcars/missions/$MID/state.json'"
+check "8. child 002 is folded to Done" \
+  "grep -q '\"stage\": *\"done\"' '$repo8/.git/lcars/missions/lcars-20260530-002/state.json'"
+check "8. child 003 is folded to Done" \
+  "grep -q '\"stage\": *\"done\"' '$repo8/.git/lcars/missions/lcars-20260530-003/state.json'"
+check "8. children are relabelled lcars:done" \
+  "[ \"\$(grep -c 'add-label.*lcars:done' '$repo8/gh.log')\" -ge 2 ]"
+check "8. NO per-bug PR is opened for any child" \
+  "! grep -q 'pr create' '$repo8/gh.log'"
+check "8. children's commits target the PARENT branch (folded onto parent)" \
+  "grep -q '\"branch\": *\"lcars/lcars-20260530-001\"' '$repo8/.git/lcars/missions/lcars-20260530-002/state.json'"
+check "8. no child is left orphaned at Verify after acceptance" \
+  "! grep -q '\"stage\": *\"verify\"' '$repo8/.git/lcars/missions/lcars-20260530-002/state.json' && ! grep -q '\"stage\": *\"verify\"' '$repo8/.git/lcars/missions/lcars-20260530-003/state.json'"
+
+# --- Behaviour 8b: a plain escalation answer does NOT fold anything ----------
+# Answering an ordinary escalation (a Mission with no verified linked children)
+# must be unaffected by the completion hook — it stays a clean no-op.
+repo8b="$(new_repo_with_paused_mission)"; make_gh_stub "$repo8b/gh"
+export GH_LOG="$repo8b/gh.log"; : >"$GH_LOG"
+rc8b=0
+(
+  cd "$repo8b"
+  LCARS_GH_BIN="$repo8b/gh" LCARS_GIT_BIN="$(command -v git)" \
+  LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_LOGS_SCRIPT" \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Per-course." >out8b.txt 2>&1
+) || rc8b=$?
+check "8b. a plain escalation answer still exits 0 with the hook present" "[ '$rc8b' -eq 0 ]"
+check "8b. no PR is opened on a plain escalation answer" \
+  "! grep -q 'pr create' '$repo8b/gh.log'"
+
 # ==========================================================================
 echo
 printf 'lcars respond: %d passed, %d failed\n' "$pass" "$fail"

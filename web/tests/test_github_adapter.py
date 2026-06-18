@@ -107,6 +107,13 @@ class GitHubAdapterTest(unittest.TestCase):
         for k in ("id", "issue", "title", "stage", "awaiting", "paused",
                   "question", "pills", "progress", "tickets"):
             self.assertIn(k, m)
+        # S73: queued is adapter-neutral — present and False on github (ADR-006).
+        self.assertIn("queued", m)
+        self.assertFalse(m["queued"])
+        # UX-28: parentMission is adapter-neutral — present and None on github
+        # (read from the child's local state.json the github adapter can't see).
+        self.assertIn("parentMission", m)
+        self.assertIsNone(m["parentMission"])
 
     def test_mission_placed_by_stage_label(self):
         board = self._board()

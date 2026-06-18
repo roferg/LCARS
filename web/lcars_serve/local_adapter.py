@@ -156,6 +156,15 @@ class LocalAdapter(object):
         if not (isinstance(engine, str) and engine.strip()):
             engine = None
 
+        # UX-28: a logged-bug child mission records its parent's id in
+        # state.json.parentMission (lcars log links a bug to the parent it was
+        # found against). Surface it as `parentMission` (string id) so the front
+        # end can render "log bug · child of #<parent>"; a normal mission has no
+        # such field on disk ⇒ None. Read-only — state.json is never rewritten.
+        parent_mission = state.get("parentMission")
+        if not (isinstance(parent_mission, str) and parent_mission.strip()):
+            parent_mission = None
+
         return {
             "id": mid,
             "issue": issue,
@@ -166,8 +175,19 @@ class LocalAdapter(object):
             "awaiting": awaiting,
             "paused": paused,
             "running": running,
+            # `queued` (S73): true iff this mission is SCHEDULED in an active
+            # resolve-logs batch but has not started driving its wave yet —
+            # resolve-logs.sh stamps state.json.queued:true while a child waits
+            # and clears it when the child begins (or finishes). Derived straight
+            # from the persisted flag so the board can render the "waiting to go"
+            # pill (UX-29). Absent ⇒ False (never None), so the front end can rely
+            # on the boolean. The github adapter forces False (ADR-006).
+            "queued": _truthy(state.get("queued")),
             "question": question if awaiting else None,
             "linked": _truthy(state.get("linked")),
+            # UX-28: parent mission id for a logged-bug child (None when not a
+            # logged-bug child). The github adapter forces None (ADR-006).
+            "parentMission": parent_mission,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,

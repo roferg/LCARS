@@ -78,11 +78,16 @@ def mission_dir(root, mid):
 
 def plant_simple(root, mid, *, stage="align", issue=142,
                  title="Add Gamification to Course Site", estimate=ESTIMATE_CLAUDE,
-                 created="2026-06-13T10:00:00Z", worker_bin=None):
+                 created="2026-06-13T10:00:00Z", worker_bin=None, queued=None,
+                 parent_mission=None):
     """A plain mission sitting in `stage`, no gate, no tickets.
 
     `worker_bin` plants the persisted engine field (state.json.workerBin) the
     way `lcars file` does when an engine was chosen; None omits it.
+    `queued` plants the S73 resolve-logs scheduled-but-not-started flag
+    (state.json.queued); None omits it.
+    `parent_mission` plants the UX-28 logged-bug child's parent id
+    (state.json.parentMission) the way `lcars log` does; None omits it.
     """
     d = mission_dir(root, mid)
     state = {
@@ -92,6 +97,10 @@ def plant_simple(root, mid, *, stage="align", issue=142,
     }
     if worker_bin is not None:
         state["workerBin"] = worker_bin
+    if queued is not None:
+        state["queued"] = queued
+    if parent_mission is not None:
+        state["parentMission"] = parent_mission
     write_json(os.path.join(d, "state.json"), state)
     if estimate is not None:
         write_json(os.path.join(d, "estimate.json"), estimate)

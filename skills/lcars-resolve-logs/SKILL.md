@@ -39,14 +39,29 @@ You (Claude) do not need to do a natural-language half here — the mechanical
    `resolve-logs.md` on the parent. Absent a worker choice it falls back to
    **filed order**. The ordering decision stays out of the shell.
 
-3. **DRIVE.** For each bug in order, it delegates to **`lcars run drive`** and
-   drives the bug **only up to its Verify gate** — it never approves and never
-   opens a PR. If a bug **escalates** to awaiting-human (a cap-exhausted ticket,
-   a scope change, an empty rebuild, …), the batch **pauses at that bug**: its
-   question is left in the normal awaiting-human gate / `lcars answer` inbox, no
-   consolidated gate fires, and **already-resolved earlier bugs are not rolled
-   back**. Answer it (`lcars answer`), then re-run `lcars resolve-logs <parent>`
-   to continue with the rest.
+3. **SCHEDULE (S73).** It folds the ordered work set into dependency-aware
+   **waves**, reusing the per-Mission Schedule stage's wave concept. The
+   independence signal is **conservative**: two sibling bugs share a wave (and so
+   may drive concurrently) **only** when their `plan.json` target file paths are
+   clearly **disjoint** *and* they do **not** share a working branch — otherwise
+   they serialise into ordered waves. A bug with no plan paths is treated as
+   touching-everything and serialises. The schedule is recorded as
+   `resolve-waves.json` (and appended to `resolve-logs.md`) on the parent.
+
+4. **DRIVE.** It runs the waves **in sequence**; same-wave bugs are eligible to
+   drive **concurrently** (bounded by `$LCARS_RESOLVE_CONCURRENCY`, default 2),
+   each delegated to **`lcars run drive`** up to its Verify gate only — never
+   approving, never opening a PR. Concurrency is **safe** because the per-Mission
+   driver lock isolates distinct child Missions and same-wave bugs have **distinct
+   branches** (so no same-branch / shared-working-tree commit collision);
+   same-branch fold cases are placed in separate waves and stay serial. A bug that
+   is **scheduled but not yet driving** carries a `queued: true` flag in its
+   `state.json` (the board's "waiting to go" pill, UX-29), cleared when it starts.
+   If a bug **escalates** to awaiting-human, the batch **pauses**: remaining waves
+   do **not** run, its question is left in the `lcars answer` inbox, no
+   consolidated gate fires, and **already-resolved bugs are not rolled back**.
+   Answer it (`lcars answer`), then re-run `lcars resolve-logs <parent>` to
+   complete the remaining waves.
 
 ## The single re-verify ask
 
@@ -55,15 +70,26 @@ guardrails green), `resolve-logs` raises **exactly one** consolidated
 awaiting-human card on the **parent** — *"N logged bugs resolved [list], ready
 for you to re-verify"* — and fires **exactly one** `$LCARS_NOTIFY`. Not N.
 
-**What "re-verify" means:** the bugs are fixed and parked at Verify, but nothing
-has been shipped. The captain re-inspects each fix (re-run the app, read the
-diff), then for each bug either:
+**What "re-verify" means (Model A — logged-bug fixes fold into the parent):**
+the bug fixes are committed onto the **parent's** branch, so they ride the
+**parent's** existing PR — there is **no per-bug PR** and no stack of
+bug→parent PRs. The captain re-inspects the fixes (re-run the app, read the
+diff) once, then for the **whole batch**:
 
-- **`lcars approve <bug-id>`** — ship it (open its PR, mark it Done), or
-- **`lcars feedback <bug-id>`** — send it back to Align with a note.
+- **accept** — answer the consolidated gate
+  (`lcars answer respond --mission <parent> --answer "…"`). On acceptance,
+  `respond` folds every resolved child bug to **Done** (clears its stage label,
+  applies `lcars:done`, moves it to the Done column) **without opening a per-bug
+  PR** — the parent's PR carries the merged fixes. No child is left orphaned at
+  Verify.
+- **send back** — `lcars feedback <parent>` returns the Mission (and its folded
+  fixes) to Align with a note.
 
-`resolve-logs` **never auto-approves** anything and never opens a PR — the
-re-verify decision is always the captain's.
+The completion fold is owned by `resolve-logs` itself
+(`resolve-logs complete --parent <id>`) and invoked by `respond` when the gate
+is cleared; it is a clean no-op for an ordinary escalation. `resolve-logs`
+**never auto-accepts** anything and never opens a PR — the re-verify decision is
+always the captain's.
 
 ## Usage
 
@@ -81,4 +107,5 @@ The mechanical logic lives in the bundled `resolve-logs.sh` (pure bash, jq-free)
 so it stays testable; `lcars resolve-logs` is wired through `skills/lcars/lcars.sh`
 as a thin delegator. All external dependencies are env-injected so tests can stub
 them: `$LCARS_WORKER_BIN`, `$LCARS_GH_BIN`, `$LCARS_GIT_BIN`, `$LCARS_NOTIFY`, and
-`$LCARS_RUN_SCRIPT` (the path to the `lcars run` driver).
+`$LCARS_RUN_SCRIPT` (the path to the `lcars run` driver). `$LCARS_RESOLVE_CONCURRENCY`
+(default 2) caps how many same-wave bug drivers run at once.

@@ -131,8 +131,18 @@ class GitHubAdapter(object):
             # adapter cannot see, so `running` is always False here (adapter-
             # neutral shape, ADR-006 — the field is present, never crashing).
             "running": False,
+            # S73: `queued` (resolve-logs scheduled-but-not-started) is derived
+            # from a LOCAL state.json flag the github adapter cannot see, so it is
+            # always False here (adapter-neutral shape, ADR-006 — present, non-
+            # crashing).
+            "queued": False,
             "question": question,
             "linked": _LINKED_LABEL in labels,
+            # UX-28: `parentMission` (a logged-bug child's parent id) is read from
+            # the child's LOCAL state.json, which the github adapter cannot see, so
+            # it is always None here (adapter-neutral shape, ADR-006 — present,
+            # non-crashing).
+            "parentMission": None,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,

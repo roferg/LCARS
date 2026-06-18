@@ -389,6 +389,51 @@ check "12. bug records its OWN lcars/<bug-id> branch when parent is merged" \
 check "12. its own lcars/<bug-id> branch ref is created" \
   "( cd '$repo13' && git show-ref --verify --quiet refs/heads/lcars/lcars-20260530-002 )"
 
+# --- Behaviour 13: child bug inherits the PARENT's engine (BUG-D) -----------
+# When the parent ran on a chosen engine, the daemon threads it to `lcars log`
+# as $LCARS_WORKER_BIN. Each child bug Mission must PERSIST that engine into its
+# own state.json `workerBin` (mirroring file.sh), so the board shows it and the
+# child `lcars run` runs on the parent engine instead of host-detecting claude.
+repo14="$(new_repo_with_parent)"
+make_gh_stub "$repo14/gh"
+export GH_LOG="$repo14/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug14="$repo14/bug.md"; write_bug_prd "$bug14" "Engine-inheriting bug" "Child must run on the parent engine."
+rc14=0
+(
+  cd "$repo14"
+  LCARS_GH_BIN="$repo14/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_WORKER_BIN="copilot" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug14" >out14.txt 2>&1
+) || rc14=$?
+B14="$repo14/.git/lcars/missions/lcars-20260530-002"
+check "13. exits zero logging with a parent engine set" "[ '$rc14' -eq 0 ]"
+check "13. child state.json persists workerBin = the parent engine" \
+  "grep -q '\"workerBin\": *\"copilot\"' '$B14/state.json'"
+# state.json must remain valid JSON with the new field — python parses it.
+check "13. child state.json stays valid JSON with workerBin" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B14/state.json'"
+
+# --- Behaviour 14: no engine set -> NO workerBin field (no regression) ------
+# Absent $LCARS_WORKER_BIN, the child omits the field entirely so host-detect
+# stays in charge — exactly as before this change.
+repo15="$(new_repo_with_parent)"
+make_gh_stub "$repo15/gh"
+export GH_LOG="$repo15/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug15="$repo15/bug.md"; write_bug_prd "$bug15" "No-engine bug" "No engine set; field omitted."
+rc15=0
+(
+  cd "$repo15"
+  unset LCARS_WORKER_BIN
+  LCARS_GH_BIN="$repo15/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug15" >out15.txt 2>&1
+) || rc15=$?
+B15="$repo15/.git/lcars/missions/lcars-20260530-002"
+check "14. exits zero logging with no engine set" "[ '$rc15' -eq 0 ]"
+check "14. child state.json OMITS workerBin when no engine is set" \
+  "! grep -q 'workerBin' '$B15/state.json'"
+check "14. child state.json (no workerBin) stays valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B15/state.json'"
+
 # ==========================================================================
 echo
 printf 'lcars log: %d passed, %d failed\n' "$pass" "$fail"

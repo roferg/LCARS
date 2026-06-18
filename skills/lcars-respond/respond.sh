@@ -34,6 +34,14 @@ GH_BIN="${LCARS_GH_BIN:-gh}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 RELABEL_NOTE=""
 
+# The Mission-Log resolver — its `complete` op folds a parent's verified child
+# bug Missions to Done (no per-bug PR) once the consolidated re-verify gate is
+# accepted (BUG-E, Model A). respond owns the generic gate clear; it delegates
+# the logged-bug fold to resolve-logs so that lifecycle logic stays in one place
+# (ADR-002). Env-injected so tests can point at the real script / stub it.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SELF_DIR/../lcars-resolve-logs/resolve-logs.sh}"
+
 die() { printf 'lcars respond: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same style as run.sh / status.sh) -----------
@@ -242,6 +250,20 @@ cmd_answer() {
   state_del pendingQuestion
 
   gh_remove_awaiting
+
+  # If this Mission is a logged-bug PARENT whose consolidated re-verify gate we
+  # just cleared, fold its verified child bug Missions to Done (Model A, BUG-E):
+  # the children ride the parent's PR, so they reach Done WITHOUT a per-bug PR.
+  # Delegated to resolve-logs (it owns the fold) and STRICTLY best-effort — it is
+  # a clean no-op for an ordinary escalation (no verified linked children), so it
+  # never affects a non-logged-bug answer. Never blocks clearing the gate.
+  FOLD_NOTE=""
+  if [ -f "$RESOLVE_LOGS_SCRIPT" ]; then
+    if LCARS_GH_BIN="$GH_BIN" bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" \
+         >/dev/null 2>&1; then
+      FOLD_NOTE="  Folded any resolved logged bugs into this Mission's Done (they ride its PR)."
+    fi
+  fi
 
   echo "RESPOND: answered $MISSION_ID"
   echo "  Recorded your answer in answers.json (stage unchanged)."

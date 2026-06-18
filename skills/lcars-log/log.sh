@@ -154,6 +154,21 @@ if [ -f "$CONFIG" ]; then
 fi
 [ -n "$MODEL" ] || MODEL="${LCARS_MODEL:-claude-sonnet}"
 
+# --- the chosen engine (S67, BUG-D) ----------------------------------------
+# A logged bug must RUN on the SAME engine as the parent it folds into — a
+# copilot parent's fixes must not silently host-detect claude. The daemon (or
+# the captain) threads the parent's engine to `lcars log` as $LCARS_WORKER_BIN;
+# persist it as state.json's `workerBin` on each child, exactly the way file.sh
+# does for a top-level Mission, so the board shows it and the child `lcars run`
+# is fed the parent engine. Empty/unset ⇒ no field (host-detect stays in
+# charge). JSON-escape the value so an odd engine string can't break the JSON.
+WORKER_BIN_LINE=""
+if [ -n "${LCARS_WORKER_BIN:-}" ]; then
+  wb_json="${LCARS_WORKER_BIN//\\/\\\\}"
+  wb_json="${wb_json//\"/\\\"}"
+  WORKER_BIN_LINE="  \"workerBin\": \"$wb_json\","
+fi
+
 # --- the base branch every bug Mission branches off ------------------------
 BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 case "$BASE" in ''|HEAD) BASE="main" ;; esac
@@ -268,24 +283,27 @@ file_one_bug() { # prd-path
       ;;
   esac
 
-  # state.json — type bug, stage plan, linked to the parent.
+  # state.json — type bug, stage plan, linked to the parent. The optional
+  # workerBin line is emitted only when an engine was threaded in (BUG-D), so a
+  # no-engine log keeps the exact prior shape (host-detect stays in charge).
   local title_json="${title//\\/\\\\}"; title_json="${title_json//\"/\\\"}"
   local issue_json="${issue:-null}"
-  cat >"$mdir/state.json" <<EOF
-{
-  "id": "$id",
-  "type": "bug",
-  "title": "$title_json",
-  "stage": "plan",
-  "created": "$NOW",
-  "model": "$MODEL",
-  "githubIssue": $issue_json,
-  "parentMission": "$PARENT_ID",
-  "parentIssue": ${PARENT_ISSUE:-null},
-  "branch": "$branch",
-  "base": "$BASE"
-}
-EOF
+  {
+    printf '{\n'
+    printf '  "id": "%s",\n' "$id"
+    printf '  "type": "bug",\n'
+    printf '  "title": "%s",\n' "$title_json"
+    printf '  "stage": "plan",\n'
+    printf '  "created": "%s",\n' "$NOW"
+    printf '  "model": "%s",\n' "$MODEL"
+    [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
+    printf '  "githubIssue": %s,\n' "$issue_json"
+    printf '  "parentMission": "%s",\n' "$PARENT_ID"
+    printf '  "parentIssue": %s,\n' "${PARENT_ISSUE:-null}"
+    printf '  "branch": "%s",\n' "$branch"
+    printf '  "base": "%s"\n' "$BASE"
+    printf '}\n'
+  } >"$mdir/state.json"
 
   printf '%s\t%s\t%s\n' "$id" "$issue" "$title"
 }

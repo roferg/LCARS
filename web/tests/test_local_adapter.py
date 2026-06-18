@@ -142,6 +142,44 @@ class LocalAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "m-noeng")
         self.assertIsNone(m["engine"])
 
+    # ── S73: the `queued` flag (resolve-logs scheduled-but-not-started) ──
+    def test_queued_true_when_scheduled_not_started(self):
+        """A logged-bug child scheduled in a resolve-logs batch but not yet
+        driving carries state.json.queued:true; the board card surfaces it as the
+        boolean `queued`."""
+        fx.plant_simple(self.tmp, "m-q", stage="plan", queued=True)
+        m = self._by_id(self._board(), "m-q")
+        self.assertIn("queued", m)
+        self.assertTrue(m["queued"])
+
+    def test_queued_false_by_default(self):
+        """No queued field on disk ⇒ the card exposes queued:false (never None /
+        absent), so the front end can rely on the boolean."""
+        fx.plant_simple(self.tmp, "m-nq", stage="plan")
+        m = self._by_id(self._board(), "m-nq")
+        self.assertIn("queued", m)
+        self.assertFalse(m["queued"])
+
+    # ── UX-28: parentMission (logged-bug child's parent id) ──
+    def test_parent_mission_surfaced_for_logged_bug_child(self):
+        """A logged-bug child records state.json.parentMission; the board card
+        (and the detail) must surface it as `parentMission` == that id so the
+        front end can render "log bug · child of #<parent>"."""
+        fx.plant_simple(self.tmp, "m-bug", stage="plan", parent_mission="m-001")
+        m = self._by_id(self._board(), "m-bug")
+        self.assertEqual(m["parentMission"], "m-001")
+        # surfaced on the mission detail shape too
+        detail = LocalAdapter(self.tmp).mission("m-bug")
+        self.assertEqual(detail["parentMission"], "m-001")
+
+    def test_parent_mission_none_for_normal_mission(self):
+        """A normal mission has no parentMission on disk ⇒ the card exposes
+        parentMission None, no crash."""
+        fx.plant_simple(self.tmp, "m-norm", stage="plan")
+        m = self._by_id(self._board(), "m-norm")
+        self.assertIn("parentMission", m)
+        self.assertIsNone(m["parentMission"])
+
     def test_empty_tree_is_empty_board(self):
         board = self._board()
         self.assertEqual(board["missions"], [])
