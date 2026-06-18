@@ -36,6 +36,40 @@ var writesActive = null;
 // even when the per-mission payload doesn't echo the repo. May stay null.
 var detailRepo = null;
 
+/* UX-28: a board-wide index of mission-id → its GitHub issue number, captured on
+   every render. A logged bug carries `parentMission` (a mission id); to render
+   the "child of #<parentIssue>" badge + GitHub link we resolve that id to its
+   issue here. Falls back to the parent id when the issue isn't on the board. */
+var ISSUE_BY_ID = Object.create(null);
+function indexIssues(board) {
+  ISSUE_BY_ID = Object.create(null);
+  (board.missions || []).forEach(function (m) {
+    if (m && m.id != null) ISSUE_BY_ID[String(m.id)] = m.issue || null;
+  });
+}
+
+/* UX-28: is this mission a logged bug (filed via the Mission Log against a
+   parent)? The authoritative signal is `type=="bug" && parentMission set`; the
+   board shape may not yet echo parentMission (read off disk server-side), so we
+   ALSO accept the always-present `linked` flag combined with a bug type. Read
+   defensively — every field absent ⇒ not a log bug. */
+function isLogBug(m) {
+  if (!m) return false;
+  var isBug = m.type === "bug";
+  var hasParent = m.parentMission != null && String(m.parentMission) !== "";
+  return (isBug && hasParent) || (isBug && !!m.linked) || (hasParent && !!m.linked);
+}
+
+/* UX-28: resolve the parent's display label for a logged bug. Prefers the
+   parent issue number (→ "#142"), resolved from the board index; falls back to
+   the raw parent mission id. Returns { text, issue } (issue null when unknown). */
+function parentRef(m) {
+  var pid = m && m.parentMission != null ? String(m.parentMission) : null;
+  if (!pid) return { text: null, issue: null };
+  var issue = ISSUE_BY_ID[pid] || null;
+  return { text: issue ? "#" + issue : pid, issue: issue };
+}
+
 /* UX-17: optimistic "starting" set. After a captain clicks Start the driver
    takes ~2s to spawn → lock → flip mission.running true, during which a naive
    render would still show a clickable Start. We mark the mission id "starting"
@@ -73,15 +107,22 @@ function isStarting(id) {
 function runState(m) {
   var running = !!(m && m.running);
   var paused = !!(m && m.paused);
+  var queued = !!(m && m.queued);
   if (running && isStarting(m.id)) clearStarting(m.id);
   var starting = isStarting(m && m.id) && !paused;
   if (paused && running) return "pausing";
   if (paused) return "paused";
+  // UX-29: a mission SCHEDULED in a resolve-logs batch but not yet started reads
+  // as "queued / waiting to go" — it is NOT yet running, so it must not show the
+  // running pulse. paused/pausing win (a paused queued card reads as paused).
+  // A live driver (running) also wins: once it actually starts, it's running.
+  if (queued && !running && !starting) return "queued";
   if (running || starting) return "running";
   return "idle";
 }
-// UX-20: the running pulse / "IN FLIGHT" copy may show ONLY when truly running
-// and not paused (suppressed while pausing/paused). Optimistic-start counts.
+// UX-20/UX-29: the running pulse / "IN FLIGHT" copy may show ONLY when truly
+// running and not paused/queued (suppressed while pausing/paused/queued).
+// Optimistic-start counts.
 function isInFlight(m) { return runState(m) === "running"; }
 
 function el(tag, cls, text) {
@@ -130,7 +171,12 @@ function cardNode(m) {
   // UX-21/UX-22: paused AND pausing both carry the .paused chrome (dimmed body),
   // but the status label + action button are kept high-contrast (see below).
   if (rs === "paused" || rs === "pausing") card.className += " paused";
-  if (m.linked) card.className += " child";
+  // UX-28: a logged bug (child of a parent mission) gets the PINK child chrome.
+  // The existing `.child` styling is pink-accented; isLogBug folds in the
+  // type=="bug"+parentMission signal so a bug child reads pink even before the
+  // backend echoes `linked` for it.
+  if (m.linked || isLogBug(m)) card.className += " child";
+  if (isLogBug(m)) card.className += " logbug";
   // UX-13/UX-20: a live drive is advancing this mission — flag the card so it
   // carries the running tint. Gated on isInFlight so a paused/pausing card never
   // shows the running animation (UX-20). Optimistic-start counts (UX-17).
@@ -143,7 +189,18 @@ function cardNode(m) {
   card.appendChild(el("div", "no", issue + " · lcars:" + m.stage));
   card.appendChild(el("div", "ttl", m.title || m.id));
 
+  // UX-28: a small "log bug · child of #<parentIssue>" badge on a logged bug,
+  // linking to the parent issue when the repo + parent issue resolve. Rendered
+  // just under the title so the relationship reads at a glance on the pink card.
+  if (isLogBug(m)) card.appendChild(logBugBadge(m));
+
   var pills = el("div", "pills");
+  // UX-29: a "QUEUED · WAITING" pill when scheduled-but-not-started in a
+  // resolve-logs batch — distinct from running/paused/awaiting, no running
+  // pulse. awaiting still wins (a gate outranks the queue).
+  if (rs === "queued" && !m.awaiting) {
+    pills.appendChild(el("span", "pill queued", "◷ QUEUED · WAITING"));
+  }
   if (m.awaiting) {
     pills.appendChild(el("span", "pill await", "● AWAITING YOU"));
     if (m.pills && m.pills.cost) pills.appendChild(pillNode(m.pills.cost, "cost"));
@@ -273,12 +330,33 @@ function cardControls(m) {
   return ctrl;
 }
 
+/* UX-28: the "log bug · child of #<parent>" badge for a logged bug. When the
+   parent issue + repo resolve it renders as a link to the parent issue;
+   otherwise a plain badge (parent mission id). Defensive on every field. */
+function logBugBadge(m) {
+  var ref = parentRef(m);
+  var txt = "log bug" + (ref.text ? " · child of " + ref.text : "");
+  // a link only when we can build a GitHub url (repo + numeric parent issue).
+  if (detailRepo && ref.issue) {
+    var a = el("a", "logbug-badge", txt);
+    a.href = "https://github.com/" + detailRepo + "/issues/" + ref.issue;
+    a.target = "_blank"; a.rel = "noopener";
+    a.title = "logged bug — open the parent mission issue";
+    a.addEventListener("click", function (e) { e.stopPropagation(); });
+    return a;
+  }
+  var b = el("span", "logbug-badge", txt);
+  b.title = "logged bug — child of a parent mission";
+  return b;
+}
+
 function isRunningStage(stage) {
   return ["research", "validate", "plan", "plan-review", "schedule", "implement"]
     .indexOf(stage) !== -1;
 }
 
 function render(board) {
+  indexIssues(board); // UX-28: refresh the id→issue index for parent resolution.
   var root = document.getElementById("board");
   root.innerHTML = "";
   STAGE_META.forEach(function (meta) {
@@ -345,6 +423,7 @@ function showOverlay(node) {
 function closeOverlay() {
   overlay().hidden = true;
   overlayBody().innerHTML = "";
+  clearDetailTimers(); // UX-32: never leak the live active-time tick interval.
 }
 
 // click on the dimmed backdrop (outside the modal stage content) dismisses.
@@ -736,14 +815,62 @@ function openLaunch(id) {
   });
 }
 
+/* UX-33: strip CLI command syntax from any gate question rendered in the GUI.
+   The harness writes captain-facing gate prose that sometimes parrots terminal
+   commands — backtick-wrapped `lcars <verb> <id> …` snippets and the bare
+   `lcars <verb> …` form. The GUI offers buttons for these, so the raw command
+   must never be shown. We drop backtick-wrapped CLI spans entirely, neutralise
+   any remaining bare `lcars <verb>` mentions to a friendly phrase, and tidy the
+   dangling punctuation/whitespace the removal leaves behind. Defensive: a
+   non-string / empty input returns "". */
+function sanitizeGateText(text) {
+  var s = String(text == null ? "" : text);
+  // 1) backtick-wrapped CLI commands → removed wholesale (e.g. `lcars feedback X`).
+  s = s.replace(/`[^`]*\blcars\b[^`]*`/gi, "");
+  // 2) any other backtick span that is a bare command-ish token → unwrap to text.
+  s = s.replace(/`([^`]*)`/g, "$1");
+  // 3) bare "lcars <verb> …" up to sentence/clause end → friendly phrase, so a
+  //    stray "send the Mission back with lcars feedback PARENT" reads cleanly.
+  s = s.replace(/\bwith\s+lcars\s+\w[\w-]*[^.,;]*/gi, "using the send-back action");
+  s = s.replace(/\blcars\s+\w[\w-]*\b/gi, "the harness");
+  // 4) tidy doubled spaces + dangling " — ." / orphaned punctuation left behind.
+  s = s.replace(/\s{2,}/g, " ").replace(/\(\s*\)/g, "")
+       .replace(/\s+([.,;])/g, "$1").trim();
+  return s;
+}
+
+/* UX-33: detect the consolidated re-verify gate. resolve-logs raises ONE
+   awaiting-human gate on a PARENT mission once its logged bug children are
+   resolved; there is no dedicated `gateKind` field, so we key off the gate
+   question's signature phrasing ("re-verify" / "logged bug(s) resolved") on an
+   awaiting mission. parentMission being ABSENT (a parent gate) reinforces it,
+   but we don't require it (the field may not be on the shape). Defensive: false
+   for any non-awaiting / non-matching mission. */
+function isReverifyGate(mi) {
+  if (!mi || !mi.awaiting) return false;
+  var q = String(mi.question || "").toLowerCase();
+  if (!q) return false;
+  var reverify = q.indexOf("re-verify") !== -1 || q.indexOf("reverify") !== -1;
+  var loggedBug = /logged bugs?\b/.test(q) ||
+    (q.indexOf("logged bug") !== -1) || q.indexOf("ride this mission's pr") !== -1;
+  return reverify && loggedBug;
+}
+
 /* ════════════════ SCREEN: RESPOND GATE (#respond) ════════════════ */
 function openRespond(id) {
   fetchMission(id, function (mi) {
+    // UX-33: a consolidated re-verify gate gets a dedicated, CLI-free screen with
+    // accept / send-back action buttons mapped to the existing endpoints.
+    if (isReverifyGate(mi)) { openReverifyGate(mi); return; }
+
     var m = modal("● Awaiting You — Mission " + idLabel(mi) +
       " · " + (mi.stage || "").toUpperCase(), { wide: true, headClass: "red" });
 
     var q = el("div", "qtext"); q.style.fontSize = "18px";
-    q.textContent = mi.question || "The harness needs your decision to proceed.";
+    // UX-33: never parrot raw `lcars <verb>` CLI syntax in the GUI — sanitize the
+    // gate question before display.
+    q.textContent = sanitizeGateText(mi.question) ||
+      "The harness needs your decision to proceed.";
     m.body.appendChild(q);
     m.body.appendChild(noteEl(
       "Why you’re seeing this — a stage escalated a strategic/scope call. " +
@@ -767,6 +894,77 @@ function openRespond(id) {
     showOverlay(m.wrap);
     ans.focus();
   });
+}
+
+/* ════════════════ SCREEN: RE-VERIFY GATE (UX-33) ════════════════ */
+/* The consolidated re-verify gate on a parent whose logged bugs are resolved.
+   UI-appropriate copy + action BUTTONS (no CLI syntax, no raw mission ids):
+     Accept the fixes → /respond (answers the gate; folds each logged bug to Done)
+     Send back…       → /verify {decision:"send-back", feedback} (parent feedback)
+   The friendly title comes from idLabel (issue # + title), never the raw id. */
+function openReverifyGate(mi) {
+  var m = modal("✓ Re-verify — " + idLabel(mi),
+    { wide: true, headClass: "teal" });
+
+  var lead = el("div", "qtext"); lead.style.fontSize = "18px";
+  lead.textContent = "The logged bugs raised against this mission have been " +
+    "fixed and folded onto its branch. Re-inspect the fixes, then accept them " +
+    "or send the mission back with feedback.";
+  m.body.appendChild(lead);
+  m.body.appendChild(noteEl(
+    "The fixes ride this mission’s pull request — there is no separate PR per " +
+    "bug. Accepting folds each logged bug to Done; sending back loops the " +
+    "mission to Align with your note.", "amber"));
+
+  // the linked bug children, when the detail shape carries them, listed by
+  // friendly title (no raw mission ids). Defensive: omitted when absent.
+  var kids = (mi.children || mi.linkedChildren || []);
+  if (kids.length) {
+    m.body.appendChild(el("h4", null, "Logged bugs resolved"));
+    var list = el("div", "log-preview-list");
+    kids.forEach(function (c) {
+      var row = el("div", "crit");
+      row.appendChild(el("span", "pill go", "✓"));
+      row.appendChild(document.createTextNode(" " + (c.title || c.id || "Bug")));
+      list.appendChild(row);
+    });
+    m.body.appendChild(list);
+  }
+
+  var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
+
+  // Send-back reveals a feedback field, then dispatches the feedback decision.
+  var fbWrap = el("div"); fbWrap.hidden = true;
+  var fb = el("textarea"); fb.rows = 2;
+  fb.placeholder = "What still needs to change? This loops the mission back to Align.";
+  fbWrap.appendChild(field("Feedback for send-back", fb));
+  m.body.appendChild(fbWrap);
+
+  var sendBack = applyWriteState(btn("↩ Send Back…", "danger", function () {
+    if (fbWrap.hidden) { fbWrap.hidden = false; fb.focus(); return; }
+    var note = fb.value.trim();
+    if (!note) { showErr(err, "Send-back needs a feedback note."); return; }
+    sendBack.disabled = true;
+    postWrite("/api/mission/" + enc(mi.id) + "/verify",
+      { decision: "send-back", feedback: note },
+      function () { closeOverlay(); },
+      function (msg) { sendBack.disabled = false; showErr(err, msg); });
+  }));
+  var accept = applyWriteState(btn("✓ Accept the Fixes", "go big", function () {
+    accept.disabled = true; accept.textContent = "Accepting…";
+    // the re-verify gate is answered via /respond; an explicit accept note is
+    // recorded against the gate. Friendly, never CLI.
+    postWrite("/api/mission/" + enc(mi.id) + "/respond",
+      { answer: "Accepted — the logged-bug fixes look good; fold them to Done." },
+      function () { closeOverlay(); },
+      function (msg) {
+        accept.disabled = false; accept.textContent = "✓ Accept the Fixes";
+        showErr(err, msg);
+      });
+  }));
+  m.foot.appendChild(sendBack);
+  m.foot.appendChild(accept);
+  showOverlay(m.wrap);
 }
 
 /* ════════════════ SCREEN: VERIFY (#verify) ════════════════ */
@@ -835,30 +1033,57 @@ function openLog(id) {
 
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
+    // UX-25: both the Preview and the File & Run Fixes actions dispatch a worker
+    // turn (~25s on copilot) with no feedback. Show the shared LCARS working
+    // animation inline while each POST is in flight; it clears on response AND
+    // error. One node, label re-set per action.
+    var busy = workingNode("Working…"); busy.hidden = true;
+    m.body.appendChild(busy);
+
     // holds the AUTHORED bug PRDs from the last preview, passed to File & Run.
     var authored = { prds: null };
 
     m.foot.appendChild(btn("Cancel", null, closeOverlay));
     var prev = applyWriteState(btn("Preview", null, function () {
       prev.disabled = true; prev.textContent = "Splitting…";
+      err.hidden = true;
+      // UX-25: themed working copy for the split worker turn.
+      busy.querySelector(".lcars-working-label").textContent =
+        "Splitting the report into bugs…";
+      busy.hidden = false;
       // free-form text → AUTHORING preview; empty → read-only linked children.
       postWrite("/api/mission/" + enc(id) + "/log", { text: report.value.trim() },
         function (state) {
+          busy.hidden = true;
           prev.disabled = false; prev.textContent = "Preview";
           authored.prds = state && state.authored
             ? (state.children || []).map(function (c) { return c.prd; })
             : null;
           renderLogPreview(preview, state, idLabel(mi));
         },
-        function (msg) { prev.disabled = false; prev.textContent = "Preview"; showErr(err, msg); });
+        function (msg) {
+          busy.hidden = true;
+          prev.disabled = false; prev.textContent = "Preview"; showErr(err, msg);
+        });
     }));
     var run = applyWriteState(btn("File & Run Fixes ▸", "warn big", function () {
       run.disabled = true; run.textContent = "Filing…";
+      err.hidden = true;
+      // UX-25: themed working copy for the file + dispatch worker turn.
+      busy.querySelector(".lcars-working-label").textContent =
+        "Filing & dispatching fixes…";
+      busy.hidden = false;
       // pass the authored PRDs so log.sh files one bug mission per PRD, then
       // resolve-logs drives them to the single re-verify gate.
+      // UX-27: close the dialog on success (optimistic — the board/SSE shows the
+      // new child cards); clears the working state with it.
       postWrite("/api/mission/" + enc(id) + "/log/run", { prds: authored.prds || [] },
-        function () { closeOverlay(); },
-        function (msg) { run.disabled = false; run.textContent = "File & Run Fixes ▸"; showErr(err, msg); });
+        function () { busy.hidden = true; closeOverlay(); },
+        function (msg) {
+          busy.hidden = true;
+          run.disabled = false; run.textContent = "File & Run Fixes ▸";
+          showErr(err, msg);
+        });
     }));
     m.foot.appendChild(prev);
     m.foot.appendChild(run);
@@ -885,6 +1110,11 @@ function renderLogPreview(host, state, parentLabel) {
           "above and Preview to split them into child missions."));
     return;
   }
+  // UX-26: the previewed child-bug cards rendered flush (zero gap) and would
+  // overflow with many bugs. Render them into a dedicated list that gaps the
+  // items vertically and caps its height with overflow-y:auto so a long split
+  // scrolls in place rather than pushing the modal footer off-screen.
+  var list = el("div", "log-preview-list");
   children.forEach(function (c) {
     var card = el("div", "card child"); card.style.cursor = "default";
     card.appendChild(el("div", "no", "↳ child of " +
@@ -895,8 +1125,9 @@ function renderLogPreview(host, state, parentLabel) {
     // show their live stage label.
     pills.appendChild(el("span", "pill", "lcars:" + (c.stage || "plan")));
     card.appendChild(pills);
-    host.appendChild(card);
+    list.appendChild(card);
   });
+  host.appendChild(list);
 }
 
 /* ════════════════ SCREEN: MISSION DETAIL (#detail) — two-pane ════════════════ */
@@ -905,6 +1136,9 @@ function openDetail(id) {
 }
 
 function renderDetail(mi) {
+  // UX-32: clear any prior live-tick timers before rebuilding the detail so a
+  // re-render (or re-open) never stacks intervals.
+  clearDetailTimers();
   var grid = el("div", "detail-grid");
 
   // ── header: tag, title, pills, stage pill, header actions ──
@@ -912,6 +1146,9 @@ function renderDetail(mi) {
   var row1 = el("div", "row1");
   if (mi.issue) row1.appendChild(el("span", "tag", "#" + mi.issue));
   row1.appendChild(el("h3", null, mi.title || mi.id));
+  // UX-28: mirror the board card's logged-bug indication in the detail header —
+  // the "log bug · child of #<parent>" badge (links to the parent when known).
+  if (isLogBug(mi)) row1.appendChild(logBugBadge(mi));
   addPills(row1, mi.pills);
   row1.appendChild(el("span", "pill stage", (mi.stage || "").toUpperCase()));
 
@@ -969,6 +1206,16 @@ function renderDetail(mi) {
   }
   row1.appendChild(actions);
   head.appendChild(row1);
+
+  // UX-31: a STAGE-INDEPENDENT active-time readout in the detail header, so the
+  // total stays visible at Verify and Done (where there is no in-flight block).
+  // It live-ticks while running (UX-32) and freezes otherwise. Hidden pre-run
+  // (activeRuntimeNode returns null for 0s when not running).
+  var headRuntime = activeRuntimeNode(mi);
+  if (headRuntime) {
+    headRuntime.className += " det-runtime";
+    head.appendChild(headRuntime);
+  }
   grid.appendChild(head);
 
   // ── body: LEFT feed, RIGHT tabs ──
@@ -1054,7 +1301,11 @@ function activityFeed(mi) {
     var when = ev.ts != null ? fmtTs(ev.ts) + " · " : "";
     ec.appendChild(el("div", "when", when + (ev.stage || "").toUpperCase()));
     ec.appendChild(el("div", "head", headlineFor(ev)));
-    if (ev.detail || ev.text) ec.appendChild(el("div", "txt", ev.text || ev.detail));
+    // UX-33: sanitize gate/feed prose so a backtick `lcars …` CLI command is
+    // never shown verbatim in the GUI feed.
+    if (ev.detail || ev.text) {
+      ec.appendChild(el("div", "txt", sanitizeGateText(ev.text || ev.detail)));
+    }
     ec.appendChild(el("div", "bot", "⬡ posted by lcars-bot"));
     e.appendChild(ec);
     hist.appendChild(e);
@@ -1081,17 +1332,52 @@ function currentStage(acts) {
   return openStart;
 }
 
-/* UX-24: a human-readable active-runtime readout — mission.activeSeconds is the
-   run time EXCLUDING human-wait/paused. Hidden when absent/0 (pre-run). The
-   label makes the exclusion explicit; live-updates as the board refreshes (this
-   node is rebuilt on every render). */
-function activeRuntimeNode(mi) {
-  var secs = mi && typeof mi.activeSeconds === "number" ? mi.activeSeconds : 0;
-  if (!secs || secs <= 0) return null;
+/* UX-24/UX-32: a human-readable active-runtime readout — mission.activeSeconds
+   is the run time EXCLUDING human-wait/paused. Hidden when absent/0 (pre-run).
+   The label makes the exclusion explicit.
+
+   UX-32 (captain-approved live tick): when the mission is RUNNING the displayed
+   value ticks every 1s from `activeSeconds` + a client anchor, so it no longer
+   "jumps" only on a board event; each board refresh re-creates this node and so
+   SNAPS/reconciles to the authoritative server value (the snap is EXPECTED). The
+   tick is FROZEN when not running (paused/awaiting/queued/verify/done) — it shows
+   the frozen total. The interval is registered in DETAIL_TIMERS and cleared when
+   the detail closes (no leaked timers). `opts.compact` renders the inline
+   feed-block variant (no hint sub-line). */
+var DETAIL_TIMERS = [];
+function clearDetailTimers() {
+  DETAIL_TIMERS.forEach(function (t) { clearInterval(t); });
+  DETAIL_TIMERS = [];
+}
+function activeRuntimeNode(mi, opts) {
+  opts = opts || {};
+  var base = mi && typeof mi.activeSeconds === "number" ? mi.activeSeconds : 0;
+  if (!base || base <= 0) {
+    // UX-32: a running mission that has just started may report 0 server-side
+    // for a beat — still show a live-ticking "Active 0s" so the readout never
+    // disappears mid-run. Non-running with 0 stays hidden (pre-run).
+    if (!isInFlight(mi)) return null;
+    base = 0;
+  }
   var node = el("div", "active-runtime");
   node.title = "active runtime — excludes time awaiting you";
-  node.appendChild(el("span", "ar-val", "Active " + fmtDuration(secs)));
-  node.appendChild(el("span", "ar-hint", "excludes time awaiting you"));
+  var val = el("span", "ar-val", "Active " + fmtDuration(base));
+  node.appendChild(val);
+  if (!opts.compact) {
+    node.appendChild(el("span", "ar-hint", "excludes time awaiting you"));
+  }
+  // UX-32: live tick only while running. Anchor to the wall clock at render time
+  // so each second adds to the authoritative server base; the next board refresh
+  // rebuilds this node (snap to server). Frozen (no interval) when not running.
+  if (isInFlight(mi)) {
+    var anchor = Date.now();
+    var timer = setInterval(function () {
+      if (!document.body.contains(val)) { clearInterval(timer); return; }
+      var elapsed = Math.floor((Date.now() - anchor) / 1000);
+      val.textContent = "Active " + fmtDuration(base + elapsed);
+    }, 1000);
+    DETAIL_TIMERS.push(timer);
+  }
   return node;
 }
 
@@ -1436,8 +1722,37 @@ function connect() {
   }
 }
 
+/* UX-30: PADD rebrand. The header band reads "LCARS · KANBAN" in index.html;
+   per the file constraint (board.js/board.css only) we rewrite the brand node
+   here at boot to "PADD" with a smaller acronym sub-line below it —
+   "Project Alignment & Deployment Display" with the FIRST LETTER of each word
+   bolded so it spells out P·A·D·D. Keeps the LCARS "LCARS ·" prefix + tokens.
+   Defensive: no-ops if the brand node is missing. */
+function brandPADD() {
+  var brand = document.querySelector(".topbar .brand");
+  if (!brand) return;
+  brand.innerHTML = "";
+  brand.classList.add("brand-padd");
+  // top line: keep the LCARS prefix, swap KANBAN → PADD (the bolded title).
+  var line = el("div", "brand-line");
+  line.appendChild(document.createTextNode("LCARS · "));
+  line.appendChild(el("b", null, "PADD"));
+  brand.appendChild(line);
+  // sub-line: the expansion, each word's FIRST letter bolded → reads the acronym.
+  var sub = el("div", "brand-sub");
+  // [word, restOfWord] pairs; the leading letter is bolded.
+  [["P", "roject"], ["A", "lignment"], ["D", "eployment"], ["D", "isplay"]]
+    .forEach(function (w, idx) {
+      if (idx === 2) sub.appendChild(document.createTextNode("& "));
+      sub.appendChild(el("b", "acr", w[0]));
+      sub.appendChild(document.createTextNode(w[1] + " "));
+    });
+  brand.appendChild(sub);
+}
+
 /* ════════════════ boot ════════════════ */
 document.getElementById("fileBtn").addEventListener("click", openFile);
+brandPADD();
 refresh();
 connect();
 probeWrites();
