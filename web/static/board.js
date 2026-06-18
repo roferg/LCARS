@@ -235,18 +235,7 @@ function cardNode(m) {
   }
 
   if (m.tickets && m.tickets.length) {
-    var tk = el("div", "tickets");
-    m.tickets.forEach(function (t) {
-      // UX-23: default/inactive ticket-row text is WHITE (readable); the ACTIVE
-      // ticket keeps its orange (the .run/.in-progress states), done/failed keep
-      // their state colours. The state class drives the colour entirely in CSS.
-      var row = el("div", "tk " + (t.state || "pending"));
-      row.appendChild(el("span", "dot"));
-      var label = (t.id || "") + (t.title ? " · " + t.title : "");
-      row.appendChild(document.createTextNode(label));
-      tk.appendChild(row);
-    });
-    card.appendChild(tk);
+    card.appendChild(cardTickets(m.tickets));
   }
 
   // UX-13/UX-20: live "running" pulse — shown ONLY when truly in flight (running
@@ -330,12 +319,64 @@ function cardControls(m) {
   return ctrl;
 }
 
+/* UX-39: a COMPACT ticket strip for the board card. Rendering EVERY ticket let a
+   big mission's card grow unbounded; the full list already lives in the detail
+   TICKETS·WAVES tab. Here we show only the salient few — the ACTIVE/current
+   ticket plus a small window of neighbours — and collapse the rest into an
+   "and N more…" affordance. A capped, scrollable area is the belt-and-braces
+   guard so the card never grows unbounded regardless of ticket count. */
+var CARD_TICKET_CAP = 3; // how many ticket rows to show before "and N more…".
+function cardTickets(tickets) {
+  var tk = el("div", "tickets");
+  // pick the active ticket (run/in-progress), else the first not-done, else 0.
+  var activeIdx = -1;
+  for (var a = 0; a < tickets.length; a++) {
+    var st = tickets[a].state;
+    if (st === "run" || st === "in-progress") { activeIdx = a; break; }
+  }
+  if (activeIdx === -1) {
+    for (var b = 0; b < tickets.length; b++) {
+      if (tickets[b].state !== "done") { activeIdx = b; break; }
+    }
+  }
+  if (activeIdx === -1) activeIdx = 0;
+  // a window of CARD_TICKET_CAP centred-ish on the active ticket, clamped to ends.
+  var start = Math.max(0, Math.min(activeIdx, tickets.length - CARD_TICKET_CAP));
+  var end = Math.min(tickets.length, start + CARD_TICKET_CAP);
+  var hiddenBefore = start;
+  var hiddenAfter = tickets.length - end;
+  if (hiddenBefore > 0) {
+    tk.appendChild(ticketMore(hiddenBefore + " earlier…"));
+  }
+  for (var i = start; i < end; i++) {
+    var t = tickets[i];
+    // UX-23: default/inactive ticket-row text is WHITE; active=orange, done=teal,
+    // flagged=red — the state class drives the colour entirely in CSS.
+    var row = el("div", "tk " + (t.state || "pending"));
+    row.appendChild(el("span", "dot"));
+    var labelText = (t.id || "") + (t.title ? " · " + t.title : "");
+    row.appendChild(document.createTextNode(labelText));
+    tk.appendChild(row);
+  }
+  if (hiddenAfter > 0) {
+    tk.appendChild(ticketMore("and " + hiddenAfter + " more…"));
+  }
+  return tk;
+}
+function ticketMore(text) {
+  var row = el("div", "tk-more");
+  row.textContent = text;
+  return row;
+}
+
 /* UX-28: the "log bug · child of #<parent>" badge for a logged bug. When the
    parent issue + repo resolve it renders as a link to the parent issue;
    otherwise a plain badge (parent mission id). Defensive on every field. */
 function logBugBadge(m) {
   var ref = parentRef(m);
-  var txt = "log bug" + (ref.text ? " · child of " + ref.text : "");
+  // UX-40: a READABLE label (not a tiny chip) — a bug glyph + "BUG · child of
+  // #<parent>" at bumped size/contrast. Styling lives in .logbug-badge (CSS).
+  var txt = "⊗ BUG" + (ref.text ? " · child of " + ref.text : "");
   // a link only when we can build a GitHub url (repo + numeric parent issue).
   if (detailRepo && ref.issue) {
     var a = el("a", "logbug-badge", txt);
@@ -748,15 +789,29 @@ function renderPrdDoc(host, md) {
 
 function paintProgress(host, asked, done) {
   host.innerHTML = "";
-  // we don't know the total ahead of time; show one filled bar per answered
-  // question plus a current marker. A fixed track of 6 reads like the mockup.
-  var total = Math.max(6, asked + 1);
-  for (var i = 0; i < total; i++) {
-    var seg = el("i");
-    if (i < asked - 1) seg.classList.add("on");
-    else if (i === asked - 1) seg.classList.add(done ? "on" : "cur");
-    host.appendChild(seg);
+  // UX-36: the grill length is genuinely variable — the harness does NOT commit
+  // to a fixed count. Don't fake a ~6-segment track (that implied "of 6"). Show
+  // ONLY a growing track: one filled segment per ANSWERED question, plus a
+  // single active "grilling…" marker for the current open question. No fixed
+  // total, no "of N", so the bar reads as honestly open-ended.
+  var answered = done ? asked : Math.max(0, asked - 1);
+  for (var i = 0; i < answered; i++) {
+    host.appendChild(el("i", "on"));
   }
+  // the current question is still open (not yet answered) → an indeterminate
+  // "grilling…" marker that pulses, sitting after the answered segments.
+  if (!done) {
+    var cur = el("i", "cur grilling");
+    cur.title = "grilling…";
+    host.appendChild(cur);
+  }
+  // a small honest caption so the growing track reads as a count of answered
+  // questions, never an "x of fixed-total" bar.
+  var cap = el("span", "prog-count",
+    answered === 0
+      ? "Grilling…"
+      : answered + " answered" + (done ? "" : " · grilling…"));
+  host.appendChild(cap);
 }
 
 /* ════════════════ SCREEN: LAUNCH / START (#launch) ════════════════ */
@@ -1067,22 +1122,26 @@ function openLog(id) {
         });
     }));
     var run = applyWriteState(btn("File & Run Fixes ▸", "warn big", function () {
-      run.disabled = true; run.textContent = "Filing…";
+      // BUG-G (front-end half): the backend now files + dispatches the fixes
+      // fire-and-forget and returns promptly, so close the dialog IMMEDIATELY on
+      // dispatch (optimistic — the same close-on-dispatch pattern as the Start
+      // modal, UX-11). We DON'T wait on the resolve batch; the board/SSE shows
+      // the new child cards as they land. A brief "fixes dispatched" toast is
+      // surfaced via setStatus; any spinner is cleared by the close.
       err.hidden = true;
-      // UX-25: themed working copy for the file + dispatch worker turn.
-      busy.querySelector(".lcars-working-label").textContent =
-        "Filing & dispatching fixes…";
-      busy.hidden = false;
       // pass the authored PRDs so log.sh files one bug mission per PRD, then
       // resolve-logs drives them to the single re-verify gate.
-      // UX-27: close the dialog on success (optimistic — the board/SSE shows the
-      // new child cards); clears the working state with it.
-      postWrite("/api/mission/" + enc(id) + "/log/run", { prds: authored.prds || [] },
-        function () { busy.hidden = true; closeOverlay(); },
+      var payload = { prds: authored.prds || [] };
+      // optimistic close BEFORE the response resolves — clears the spinner with
+      // the overlay and drops a transient confirmation in the status line.
+      closeOverlay();
+      setStatus("Fixes dispatched — child bug missions are being filed…");
+      postWrite("/api/mission/" + enc(id) + "/log/run", payload,
+        function () { /* board/SSE refresh shows the new child cards */ },
         function (msg) {
-          busy.hidden = true;
-          run.disabled = false; run.textContent = "File & Run Fixes ▸";
-          showErr(err, msg);
+          // a failed dispatch: surface it in the status line (the modal is gone)
+          // and refresh so the board reconciles. The spinner already cleared.
+          setStatus(msg); refresh();
         });
     }));
     m.foot.appendChild(prev);
@@ -1303,8 +1362,12 @@ function activityFeed(mi) {
     ec.appendChild(el("div", "head", headlineFor(ev)));
     // UX-33: sanitize gate/feed prose so a backtick `lcars …` CLI command is
     // never shown verbatim in the GUI feed.
+    // UX-37: the remaining prose is worker-authored Markdown — render it XSS-safe
+    // (sanitizeGateText runs FIRST, mdToHtml escapes before emitting any tag).
     if (ev.detail || ev.text) {
-      ec.appendChild(el("div", "txt", sanitizeGateText(ev.text || ev.detail)));
+      var txt = el("div", "txt");
+      setMd(txt, sanitizeGateText(ev.text || ev.detail));
+      ec.appendChild(txt);
     }
     ec.appendChild(el("div", "bot", "⬡ posted by lcars-bot"));
     e.appendChild(ec);
@@ -1462,9 +1525,10 @@ function adrPane(mi) {
     var adr = el("div", "adr");
     if (a.title) adr.appendChild(el("b", null, a.title));
     if (a.body) {
-      var body = el("div");
-      body.style.cssText = "white-space:pre-wrap;margin-top:4px;font-size:12px";
-      body.textContent = a.body;
+      // UX-37: ADR bodies are worker-authored Markdown — render it (XSS-safe).
+      var body = el("div", "adr-body");
+      body.style.cssText = "margin-top:4px;font-size:12px";
+      setMd(body, a.body);
       adr.appendChild(body);
     }
     pane.appendChild(adr);
@@ -1472,14 +1536,42 @@ function adrPane(mi) {
   return pane;
 }
 
+/* UX-38: the stages BEFORE the Plan stage, where decomposition into tickets/
+   waves simply hasn't happened yet (so an "empty" tickets pane is expected, not
+   a single-ticket mission). */
+function isPrePlanStage(stage) {
+  return ["align", "research", "validate"].indexOf(normStage(stage)) !== -1;
+}
+
 function ticketsPane(mi) {
   var pane = el("div");
   var tickets = mi.tickets || [];
+  // UX-38: the empty-state is STAGE-AWARE — pre-Plan it would be wrong to claim a
+  // single-ticket mission "reuses the issue" (decomposition hasn't run yet).
   if (!tickets.length) {
-    pane.appendChild(noteEl("No nested tickets — a single-ticket mission reuses " +
-      "the mission's own issue, so no sub-issue rows are shown."));
+    if (isPrePlanStage(mi.stage)) {
+      // pre-Plan: decomposition is still ahead — say so clearly (Trek-flavored).
+      pane.appendChild(noteEl(
+        "Standing by for the Plan stage. This mission has not been broken down " +
+        "into tickets and waves yet — the harness decomposes the validated plan " +
+        "into vertical-slice tickets at the Plan stage, and the work crew is " +
+        "assigned into waves from there. Check back once the mission reaches Plan.",
+        "amber"));
+    } else {
+      // at/after Plan with no tickets → a genuine single-ticket mission.
+      pane.appendChild(noteEl("No nested tickets — a single-ticket mission reuses " +
+        "the mission's own issue, so no sub-issue rows are shown."));
+    }
     return pane;
   }
+  // exactly one ticket at/after Plan → keep the single-ticket message (a lone
+  // slice reuses the issue; a one-row "wave" reads as noise).
+  if (tickets.length === 1 && !isPrePlanStage(mi.stage)) {
+    pane.appendChild(noteEl("Single-ticket mission — the one slice rides the " +
+      "mission's own issue, so no separate sub-issue rows are shown."));
+    return pane;
+  }
+  // multiple tickets → the existing ticket/wave rows.
   pane.appendChild(buildSummary(mi));
   return pane;
 }
@@ -1509,7 +1601,13 @@ function criteriaChecklist(mi) {
     var row = el("div", "check" + (r.done ? "" : " pending"));
     var mk = el("span", "mk", r.done ? "✓" : "○");
     row.appendChild(mk);
-    row.appendChild(el("span", null, r.text));
+    // UX-37: acceptance-criteria text is worker-authored Markdown — render it
+    // inline (XSS-safe). The .md-inline node trims block margins so a criterion
+    // still sits on one row.
+    var ctext = el("span", "md md-inline");
+    setMd(ctext, r.text);
+    ctext.classList.add("md-inline");
+    row.appendChild(ctext);
     row.addEventListener("click", function () {
       var pending = row.classList.toggle("pending");
       mk.textContent = pending ? "○" : "✓";
@@ -1529,7 +1627,10 @@ function buildSummary(mi) {
     var pill = el("span", "pill " + cls, t.state === "done" ? "✓" : (t.id || ""));
     pill.style.fontSize = "10px";
     row.appendChild(pill);
-    row.appendChild(document.createTextNode(" " + (t.title || t.id)));
+    // UX-37: ticket title/rationale is worker-authored Markdown — render inline.
+    var ttext = el("span", "md md-inline");
+    setMd(ttext, " " + (t.title || t.id || ""));
+    row.appendChild(ttext);
     host.appendChild(row);
   });
   return host;
@@ -1580,6 +1681,125 @@ function field(labelText, control) {
 function label(t) { return el("label", null, t); }
 function noteEl(text, cls) { return el("div", "note" + (cls ? " " + cls : ""), text); }
 function showErr(node, msg) { node.hidden = false; node.textContent = msg; }
+
+/* ════════════════ UX-37: XSS-SAFE MARKDOWN → HTML ════════════════
+   Worker-authored prose (ADR bodies, the PRD tab, ticket rationale/acceptance
+   criteria, activity-feed descriptions) arrives as Markdown and was rendering
+   LITERALLY ("**Context:**", backtick `code`). This helper renders a SMALL,
+   dependency-free (ADR-007) subset of Markdown.
+
+   SECURITY (content is worker-authored ⇒ UNTRUSTED): we ESCAPE every HTML
+   metacharacter FIRST (so no raw tag the author wrote can ever reach the DOM as
+   markup), THEN we splice in our OWN small, fixed set of tags from the escaped
+   text. Because escaping happens before any tag insertion, a payload like
+   `<img onerror=…>` or `<script>` becomes inert text. Links are restricted to
+   http(s)/mailto schemes and the href is itself the already-escaped capture, so
+   a `javascript:` URL can't slip through. We never use the raw input again after
+   escaping — only the escaped string is transformed.
+
+   Supported: headings (#, ##, ###), unordered lists (-, *, +), ordered lists,
+   **bold**, *italic* / _italic_, `inline code`, [text](url) links, and blank-
+   line-separated paragraphs with <br> for single newlines.
+
+   Returns an HTML STRING; callers set it via `setMd(node, md)` which assigns it
+   to innerHTML (safe — every tag in the string is one we emitted). */
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/* Apply inline markup to an ALREADY-ESCAPED line. Order matters: code spans
+   first (their contents are taken verbatim, no further inline parsing), then
+   links, then bold, then italic. */
+function mdInline(escaped) {
+  var s = escaped;
+  // `inline code` → <code> (escaped already; just wrap).
+  s = s.replace(/`([^`]+?)`/g, function (_, code) {
+    return "<code>" + code + "</code>";
+  });
+  // [text](url) — url already escaped; allow only safe schemes (http/https/
+  // mailto) or root-relative paths. Anything else renders as plain text.
+  s = s.replace(/\[([^\]]+?)\]\(([^)\s]+?)\)/g, function (whole, text, url) {
+    if (/^(https?:|mailto:)/i.test(url) || /^\/[^/]/.test(url)) {
+      return '<a href="' + url + '" target="_blank" rel="noopener">' + text + "</a>";
+    }
+    return whole; // unsafe/unknown scheme → leave as the literal (escaped) text.
+  });
+  // **bold** / __bold__
+  s = s.replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/__([^_]+?)__/g, "<strong>$1</strong>");
+  // *italic* / _italic_ (avoid eating the ** already consumed above).
+  s = s.replace(/(^|[^*])\*([^*]+?)\*($|[^*])/g, "$1<em>$2</em>$3");
+  s = s.replace(/(^|[^_])_([^_]+?)_($|[^_])/g, "$1<em>$2</em>$3");
+  return s;
+}
+
+function mdToHtml(md) {
+  var lines = String(md == null ? "" : md).split(/\r?\n/);
+  var out = [];
+  var i = 0;
+  while (i < lines.length) {
+    var raw = lines[i];
+    var esc = escapeHtml(raw);
+    var trimmed = raw.replace(/^\s+/, "");
+    // blank line → paragraph break (handled by paragraph grouping below).
+    if (!trimmed) { i++; continue; }
+    // heading
+    var h = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    if (h) {
+      var lvl = h[1].length + 2; // # → h3, ## → h4, ### → h5 (keep within page scale)
+      out.push("<h" + lvl + ">" + mdInline(escapeHtml(h[2])) + "</h" + lvl + ">");
+      i++;
+      continue;
+    }
+    // unordered list block
+    if (/^[-*+]\s+/.test(trimmed)) {
+      out.push("<ul>");
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        var item = lines[i].replace(/^\s*[-*+]\s+/, "");
+        out.push("<li>" + mdInline(escapeHtml(item)) + "</li>");
+        i++;
+      }
+      out.push("</ul>");
+      continue;
+    }
+    // ordered list block
+    if (/^\d+\.\s+/.test(trimmed)) {
+      out.push("<ol>");
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        var oitem = lines[i].replace(/^\s*\d+\.\s+/, "");
+        out.push("<li>" + mdInline(escapeHtml(oitem)) + "</li>");
+        i++;
+      }
+      out.push("</ol>");
+      continue;
+    }
+    // paragraph: gather consecutive non-blank, non-block lines, join with <br>.
+    var para = [];
+    while (i < lines.length) {
+      var l = lines[i];
+      var t = l.replace(/^\s+/, "");
+      if (!t || /^(#{1,3})\s+/.test(t) || /^[-*+]\s+/.test(t) || /^\d+\.\s+/.test(t)) break;
+      para.push(mdInline(escapeHtml(l)));
+      i++;
+    }
+    out.push("<p>" + para.join("<br>") + "</p>");
+  }
+  return out.join("");
+}
+
+/* Render Markdown into a node's innerHTML. The string comes solely from
+   mdToHtml(), every tag of which we emitted ourselves over escaped text — so
+   this is safe despite using innerHTML (UX-37). */
+function setMd(node, md) {
+  node.innerHTML = mdToHtml(md);
+  node.classList.add("md");
+  return node;
+}
 
 /* UX-2 / UX-5: a self-contained, on-theme LCARS "working" indicator for the
    several-second worker-backed waits (Align open, each Align answer, the

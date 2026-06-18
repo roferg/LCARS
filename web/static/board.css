@@ -108,8 +108,10 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
    spacing for the readable sub-line. */
 .topbar .brand.brand-padd{display:flex;flex-direction:column;justify-content:center;
   gap:1px;letter-spacing:.18em;line-height:1.05}
-.topbar .brand-padd .brand-line{font-size:22px;letter-spacing:.22em}
-.topbar .brand-padd .brand-sub{font-family:var(--font-display);font-size:9.5px;
+/* UX-34: bump both the PADD title and its acronym sub-line a notch (keep the
+   proportion + the first-letter-bold treatment). */
+.topbar .brand-padd .brand-line{font-size:26px;letter-spacing:.22em}
+.topbar .brand-padd .brand-sub{font-family:var(--font-display);font-size:11px;
   letter-spacing:.1em;font-weight:400;color:rgba(3,6,8,.7);text-transform:uppercase}
 .topbar .brand-padd .brand-sub .acr{color:var(--lcars-black,#030608);font-weight:700}
 /* which repo the board is attached to — sits next to the brand (S70-A).
@@ -200,14 +202,23 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
    (the mock spec'd pink for children) + a small "log bug · child of #<parent>"
    badge. The pink left bar is reinforced and a faint pink ring sets it apart
    from a plain child. The badge links to the parent issue when resolvable. */
-.card.logbug{border-left-color:var(--lcars-pink,#ff66aa);
-  box-shadow:inset 2px 0 0 rgba(255,102,170,.35)}
-.logbug-badge{display:inline-block;font-family:var(--font-display);
-  text-transform:uppercase;letter-spacing:.08em;font-size:9px;line-height:1.3;
-  padding:2px 8px;border-radius:9px;margin:2px 0 6px;
-  background:rgba(255,102,170,.14);border:1px solid var(--lcars-pink,#ff66aa);
-  color:var(--lcars-pink,#ff66aa);text-decoration:none;white-space:nowrap}
-a.logbug-badge:hover{background:rgba(255,102,170,.24)}
+/* UX-40: a deliberate, readable logged-bug treatment. A FATTER pink/red edge bar
+   (a ribbon, not a hairline) reads as a bug at a glance; a faint pink wash sets
+   the body apart. The card carries a min-height matching the mission cards so a
+   bug card (which lacks the estimator pills — that's S74's job) never reads as a
+   broken/tiny card. On-theme: pink LCARS token throughout. */
+.card.logbug{border-left:6px solid var(--lcars-pink,#ff66aa);
+  background:linear-gradient(90deg,rgba(255,102,170,.07),var(--lcars-card-alt) 60%);
+  box-shadow:inset 3px 0 0 rgba(255,51,68,.45);
+  min-height:104px;display:flex;flex-direction:column}
+/* the readable "⊗ BUG · child of #<parent>" label — bumped size + contrast, a
+   real label not a tiny chip. Pink fill, dark text for legibility on the card. */
+.logbug-badge{display:inline-flex;align-items:center;gap:4px;
+  font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;
+  font-size:11px;line-height:1.25;padding:3px 10px;border-radius:10px;margin:1px 0 7px;
+  background:var(--lcars-pink,#ff66aa);border:1px solid var(--lcars-pink,#ff66aa);
+  color:var(--lcars-text-on-color);font-weight:600;text-decoration:none;white-space:nowrap}
+a.logbug-badge:hover{filter:brightness(1.08)}
 /* in the detail header row the badge sits inline with the title/pills. */
 .det-head .row1 .logbug-badge{margin:0}
 /* UX-13: a live `run drive` is advancing this mission — a teal running tint on
@@ -226,7 +237,16 @@ a.logbug-badge:hover{background:rgba(255,102,170,.24)}
 .progress .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--lcars-teal),var(--lcars-blue,#4499ff))}
 /* UX-23: brighten the WAVE x/y · TICKET n/m progress line (was too dark). */
 .progress .lab{font-family:var(--font-mono);font-size:9.5px;color:var(--lcars-text-bright);margin-top:3px;letter-spacing:.06em}
-.tickets{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+/* UX-39: the card ticket strip is COMPACT — JS shows only the active ticket + a
+   small window and an "and N more…" affordance. As a belt-and-braces guard the
+   area is also height-capped with overflow so the card can never grow unbounded
+   regardless of ticket count. */
+.tickets{margin-top:8px;display:flex;flex-direction:column;gap:4px;
+  max-height:84px;overflow-y:auto}
+/* the "and N more…" / "N earlier…" collapsed affordance — quiet, distinct from a
+   real ticket row, points the captain to the detail tab for the full list. */
+.tk-more{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.06em;
+  color:var(--lcars-text-dim);font-style:italic;padding-left:14px}
 /* UX-23: default/inactive ticket-row text is WHITE (readable). State variants
    below override: active=orange (kept — captain likes it), done=teal,
    flagged=red. The dot keeps the dim grey for inactive so the row still reads as
@@ -299,12 +319,37 @@ a.logbug-badge:hover{background:rgba(255,102,170,.24)}
   padding:10px 12px;resize:vertical}
 .field textarea:focus,.field input:focus{outline:none;border-color:var(--lcars-amber)}
 
-/* ── choice opts (mock .choice .opt .rec) ── */
+/* ── choice opts (mock .choice .opt .rec) ──
+   UX-35: selected-state clarity. Applies everywhere .opt renders (the File-modal
+   engine picker AND the Align answer options). The OLD scheme lit BOTH selected
+   (amber outline) and unselected (teal outline) up, so the selection was too
+   subtle. New scheme:
+     • UNSELECTED → MUTED / low-emphasis (dim text, faint border, no fill).
+     • SELECTED (.sel) → UNMISTAKABLE: filled amber bg + dark text + a ✓ glyph.
+     • RECOMMENDED (.rec) → a small, low-key "REC" tag ONLY; an unselected-but-
+       recommended option still looks UNSELECTED (the tag is the only signal).
+       When a recommended option is ALSO selected, .sel wins the chrome and the
+       REC tag stays as a quiet dark badge on the amber fill. */
 .choice{display:flex;gap:8px;flex-wrap:wrap}
-.choice .opt{font-family:var(--font-body);font-size:13px;padding:8px 14px;border-radius:18px;
-  border:1px solid var(--lcars-border);background:var(--lcars-card);color:var(--lcars-text);cursor:pointer}
-.choice .opt.rec{border-color:var(--lcars-teal);background:rgba(0,204,170,.1);color:var(--lcars-teal)}
-.choice .opt.sel{border-color:var(--lcars-amber);background:rgba(255,170,0,.16);color:var(--lcars-amber)}
+.choice .opt{position:relative;font-family:var(--font-body);font-size:13px;
+  padding:8px 14px;border-radius:18px;border:1px solid var(--lcars-border);
+  background:transparent;color:var(--lcars-text-dim);cursor:pointer;
+  transition:background .15s,color .15s,border-color .15s}
+.choice .opt:hover{border-color:var(--lcars-border-bright);color:var(--lcars-text)}
+/* recommended: a small low-key inline tag, distinct from selection. Renders on
+   an UNSELECTED option without changing its muted chrome. */
+.choice .opt.rec::after{content:'REC';margin-left:8px;font-family:var(--font-display);
+  font-size:8px;letter-spacing:.12em;padding:1px 6px;border-radius:8px;
+  background:rgba(0,204,170,.14);border:1px solid var(--lcars-teal);
+  color:var(--lcars-teal);vertical-align:middle}
+/* SELECTED: unmistakable filled amber + dark text + a leading ✓. */
+.choice .opt.sel{background:var(--lcars-amber);border-color:var(--lcars-amber);
+  color:var(--lcars-text-on-color);font-weight:600}
+.choice .opt.sel::before{content:'✓ ';font-weight:700}
+/* a recommended AND selected option: keep the amber fill; the REC tag goes quiet
+   dark-on-amber so it doesn't fight the selection. */
+.choice .opt.rec.sel::after{background:rgba(3,6,8,.18);border-color:rgba(3,6,8,.4);
+  color:var(--lcars-text-on-color)}
 
 /* ── two-pane (align console — rendered-to-fidelity) ──
    UX-3: a balanced, squarer column ratio (≈ mock 1.3fr : 1fr) in a landscape
@@ -326,10 +371,20 @@ a.logbug-badge:hover{background:rgba(255,102,170,.24)}
 .prd-doc .pending{color:var(--lcars-text-dim);opacity:.55}
 .mock-cap{font-family:var(--font-display);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
   color:var(--lcars-text-dim);margin-bottom:10px}
-.progress-line{display:flex;gap:4px;margin-top:auto;padding-top:16px}
-.progress-line i{height:5px;flex:1;border-radius:3px;background:var(--lcars-card-alt)}
+/* UX-36: a growing, honest grill track — fixed-width segments (NOT flex:1, which
+   stretched a few segments full-width and implied a fixed total). One teal
+   segment per answered question; a pulsing amber "grilling…" marker for the open
+   question; a small caption counts answered questions without any "of N". */
+.progress-line{display:flex;gap:4px;margin-top:auto;padding-top:16px;
+  align-items:center;flex-wrap:wrap}
+.progress-line i{height:5px;width:22px;flex:0 0 22px;border-radius:3px;background:var(--lcars-card-alt)}
 .progress-line i.on{background:var(--lcars-teal)}
 .progress-line i.cur{background:var(--lcars-amber)}
+.progress-line i.grilling{animation:grillpulse 1.2s ease-in-out infinite}
+@keyframes grillpulse{0%,100%{opacity:.45}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.progress-line i.grilling{animation:none;opacity:.85}}
+.progress-line .prog-count{margin-left:8px;font-family:var(--font-mono);font-size:10px;
+  letter-spacing:.08em;color:var(--lcars-text-dim);text-transform:uppercase}
 
 /* ── mission detail (mock .detail-grid / .det-head / .det-body / .feed) ──
    UX-3/UX-4: wider landscape frame, height-capped at ~90vh with a FIXED header
@@ -394,6 +449,30 @@ a.logbug-badge:hover{background:rgba(255,102,170,.24)}
 .adr{border-left:3px solid var(--lcars-violet,#9977ff);padding:6px 12px;margin-bottom:10px;
   background:rgba(153,119,255,.06);border-radius:0 6px 6px 0}
 .adr b{color:var(--lcars-violet,#9977ff);font-family:var(--font-display);letter-spacing:.06em;font-size:12px}
+
+/* ── UX-37: rendered Markdown (mdToHtml) in detail text panels ──
+   Worker-authored prose rendered into a small, fixed tag set. On-theme: headings
+   peach, code in the gold mono chip, links blue, lists indented. .md-inline is
+   the single-line variant (criteria / ticket rows) — collapses block margins so
+   the text sits on one line beside its mark/pill. */
+.md > :first-child{margin-top:0}
+.md > :last-child{margin-bottom:0}
+.md p{margin:0 0 8px;max-width:none}
+.md h3,.md h4,.md h5{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.1em;color:var(--lcars-peach);margin:10px 0 4px}
+.md h3{font-size:13px} .md h4{font-size:12px} .md h5{font-size:11px}
+.md ul,.md ol{margin:4px 0 8px;padding-left:20px}
+.md li{margin:2px 0}
+.md code{font-family:var(--font-mono);font-size:.85em;color:var(--lcars-gold,#ffdd44);
+  background:rgba(255,221,68,.08);padding:1px 6px;border-radius:4px}
+.md strong{color:var(--lcars-text-bright);font-weight:700}
+.md em{font-style:italic;color:var(--lcars-text-bright)}
+.md a{color:var(--lcars-blue,#4499ff)}
+.md.md-inline,.md.md-inline p{display:inline;margin:0}
+.md.md-inline ul,.md.md-inline ol{display:inline;padding-left:0;margin:0}
+.md.md-inline li{display:inline}
+.md.md-inline h3,.md.md-inline h4,.md.md-inline h5{display:inline;margin:0;font-size:inherit}
+.md.md-inline br{display:none}
 
 /* ── human-clickable acceptance-criteria checklist (mock .check / .pending / .mk) ── */
 .check{display:flex;align-items:flex-start;gap:10px;padding:7px 0;
