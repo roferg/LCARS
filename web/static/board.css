@@ -351,6 +351,9 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    dark-on-amber so it doesn't fight the selection. */
 .choice .opt.rec.sel::after{background:rgba(3,6,8,.18);border-color:rgba(3,6,8,.4);
   color:var(--lcars-text-on-color)}
+/* S67 dedupe: when the option label text already contains "(recommended)" the
+   text is the indicator, so suppress the REC pill (the .rec highlight stays). */
+.choice .opt.rec.no-pill::after{display:none}
 
 /* ── two-pane (align console — rendered-to-fidelity) ──
    UX-3: a balanced, squarer column ratio (≈ mock 1.3fr : 1fr) in a landscape
@@ -499,6 +502,16 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .busy{font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
   font-size:11px;color:var(--lcars-amber)}
 .errline{color:#ff8a96;font-size:13px;margin-top:10px}
+
+/* S74 follow-up: the per-bug model-steer confirmation line under the Mission-Log
+   override input. Echoes the RESOLVED steer ("Opus 4.8 → Opus · all stages"),
+   shows a pending hint for tier-less plain language (resolved server-side at
+   File), and surfaces a normalization error inline (never a silent drop). */
+.steer-echo{font-family:var(--font-display);letter-spacing:.06em;font-size:11px;
+  margin:4px 0 2px;text-transform:uppercase}
+.steer-echo.ok{color:var(--lcars-teal,#55ccdd)}
+.steer-echo.pending{color:var(--lcars-amber)}
+.steer-echo.err{color:#ff8a96;text-transform:none;letter-spacing:0;font-size:12px}
 
 /* ── UX-2/UX-5: LCARS "working" indicator for worker-backed waits ──
    An animated row of LCARS elbow bars (amber↔teal pulse, staggered) plus a

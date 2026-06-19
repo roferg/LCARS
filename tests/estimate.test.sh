@@ -240,5 +240,150 @@ check "5e. spawn research-questions argv carries --model opus" \
 check "5f. spawn implement-implementer argv carries --model sonnet" \
   "[ \"\$(spawn5 \"$r2\" implement-implementer CLAUDECODE=1 | model_of)\" = 'sonnet' ]"
 
+# === Behavior 6: a quote/newline-bearing rationale round-trips to valid JSON ==
+# The worker's rationale may carry embedded double-quotes (quoting code or the
+# captain) and escaped newlines. json_scoped_str DECODES the value, so the
+# canonical re-emit MUST re-escape bare quotes — else estimate.json is invalid
+# JSON (the S69 escaping discipline; S74 added the logged-bug path that hits it).
+EST_QUOTED='{"schemaVersion":1,"reasoningCriticality":"medium","implCriticality":"high","models":{"research":"opus","validate":"opus","plan":"opus","planReview":"sonnet","implement":"opus","verify":"sonnet"},"rationale":"He said \"fix it\" — paragraph one.\n\nParagraph two: a tab\there and a closing quote: \".","deviations":[],"estimatorModel":"opus"}'
+r6="$(new_repo)"
+file_with_estimate "$r6" "$EST_QUOTED"
+m6="$(MDIR "$r6")"
+check "6a. quoted-rationale estimate.json exists" "[ -f '$m6/estimate.json' ]"
+check "6b. quoted-rationale estimate.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$m6/estimate.json'"
+check "6c. the rationale text survives (its words are present)" \
+  "grep -q 'paragraph one' '$m6/estimate.json' && grep -q 'Paragraph two' '$m6/estimate.json'"
+
+# === Behavior 7: BUG-AWARE estimator (S74 follow-up) =========================
+# A LOGGED BUG fast-tracks straight to Plan — it NEVER runs Research or Validate
+# (see skills/lcars-log/log.sh: child state.json stage="plan", type="bug"). The
+# estimator's worker prompt still scores all six stages, but the HARNESS must
+# canonicalize a bug's estimate.json down to ONLY the stages it runs:
+#   plan, planReview, implement, verify   (research + validate excluded)
+# from models / tokenEstimates / requestEstimates AND from the computed cost.
+# A NON-bug (feature) mission keeps all six stages — byte-identical to today.
+#
+# qgrep: a pipe-friendly grep so a check can read a captured blob without a temp.
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
+# Plant a mission dir directly (prd.md + a chosen-type state.json), then drive
+# the REAL `run.sh estimate` with the canned-estimate stub as the cold worker.
+# $1=repo  $2=mission-type ("bug"|"feature")  $3=estimate-body  [extra env...]
+estimate_typed_mission() { # repo type est-body [env...]
+  local repo="$1" mtype="$2" est="$3"; shift 3
+  local stub="$repo/estimator-stub"; make_estimator_stub "$stub"
+  local mid="lcars-typed-001"
+  local mdir="$repo/.git/lcars/missions/$mid"
+  mkdir -p "$mdir"
+  write_prd "$mdir/prd.md"
+  printf '{ "id": "%s", "stage": "plan", "type": "%s" }\n' "$mid" "$mtype" >"$mdir/state.json"
+  ( cd "$repo" && env -u CLAUDECODE \
+      -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
+      CLAUDECODE=1 \
+      STUB_ESTIMATE="$est" \
+      LCARS_WORKER_BIN="$stub" LCARS_WORKER_CLI=claude \
+      LCARS_GH_BIN="$repo/definitely-no-gh" \
+      "$@" \
+      bash "$RUN" estimate --mission "$mid" >"$repo/est.out" 2>&1 )
+  printf '%s' "$mdir/estimate.json"
+}
+
+# A six-stage fixture with deterministic per-stage TOKEN + REQUEST estimates so
+# the 4-stage-vs-6-stage cost arithmetic is hand-checkable. Every stage = opus.
+#   claude usd per stage: tokens * (0.8*5 + 0.2*25) / 1e6 = tokens * 9 / 1e6
+#     low tokens 1,000,000 ⇒ $9/stage ; high 2,000,000 ⇒ $18/stage
+#     six stages: low=54  high=108 ; four stages: low=36  high=72
+#   copilot legacy premiumRequests per stage: requests * 27 (opus mult)
+#     low 1 req ⇒ 27/stage ; high 2 req ⇒ 54/stage
+#     six stages: low=162 high=324 ; four stages: low=108 high=216
+EST_COSTED='{"schemaVersion":1,"reasoningCriticality":"high","implCriticality":"high","models":{"research":"opus","validate":"opus","plan":"opus","planReview":"opus","implement":"opus","verify":"opus"},"tokenEstimates":{"research":{"low":1000000,"high":2000000},"validate":{"low":1000000,"high":2000000},"plan":{"low":1000000,"high":2000000},"planReview":{"low":1000000,"high":2000000},"implement":{"low":1000000,"high":2000000},"verify":{"low":1000000,"high":2000000}},"requestEstimates":{"research":{"low":1,"high":2},"validate":{"low":1,"high":2},"plan":{"low":1,"high":2},"planReview":{"low":1,"high":2},"implement":{"low":1,"high":2},"verify":{"low":1,"high":2}},"deviations":[],"rationale":"costed fixture","estimatorModel":"opus"}'
+
+# 7. BUG mission ⇒ research + validate are EXCLUDED from the canonical file.
+r7="$(new_repo)"
+e7="$(estimate_typed_mission "$r7" bug "$EST_COSTED")"
+check "7a. bug estimate.json exists"      "[ -f '$e7' ]"
+check "7b. bug estimate.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$e7'"
+# models: plan/planReview/implement/verify present; research/validate gone.
+check "7c. bug models has plan/planReview/implement/verify" \
+  "python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))[\"models\"]; sys.exit(0 if set(m)=={\"plan\",\"planReview\",\"implement\",\"verify\"} else 1)' '$e7'"
+check "7d. bug tokenEstimates excludes research+validate" \
+  "python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))[\"tokenEstimates\"]; sys.exit(0 if set(t)=={\"plan\",\"planReview\",\"implement\",\"verify\"} else 1)' '$e7'"
+check "7e. bug requestEstimates excludes research+validate" \
+  "python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))[\"requestEstimates\"]; sys.exit(0 if set(t)=={\"plan\",\"planReview\",\"implement\",\"verify\"} else 1)' '$e7'"
+# cost (claude usd): 4-stage sum = low 36, high 72 (NOT the six-stage 54/108).
+check "7f. bug claude cost.usd.low == 36 (4-stage sum)" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"cost\"][\"usd\"]; sys.exit(0 if float(c[\"low\"])==36 else 1)' '$e7'"
+check "7g. bug claude cost.usd.high == 72 (4-stage sum)" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"cost\"][\"usd\"]; sys.exit(0 if float(c[\"high\"])==72 else 1)' '$e7'"
+check "7h. bug cost is LESS than the six-stage sum (54/108)" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"cost\"][\"usd\"]; sys.exit(0 if float(c[\"low\"])<54 and float(c[\"high\"])<108 else 1)' '$e7'"
+
+# 8. FEATURE mission ⇒ all six stages, full six-stage cost (regression guard).
+r8="$(new_repo)"
+e8="$(estimate_typed_mission "$r8" feature "$EST_COSTED")"
+check "8a. feature estimate.json exists"  "[ -f '$e8' ]"
+check "8b. feature models keeps all six stages" \
+  "python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))[\"models\"]; sys.exit(0 if set(m)=={\"research\",\"validate\",\"plan\",\"planReview\",\"implement\",\"verify\"} else 1)' '$e8'"
+check "8c. feature tokenEstimates keeps all six stages" \
+  "python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))[\"tokenEstimates\"]; sys.exit(0 if len(t)==6 else 1)' '$e8'"
+check "8d. feature claude cost.usd == 54/108 (full six-stage sum)" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"cost\"][\"usd\"]; sys.exit(0 if float(c[\"low\"])==54 and float(c[\"high\"])==108 else 1)' '$e8'"
+
+# 8f. A type="bug" mission STILL AT stage="align" (a regular `lcars file` bug,
+#     NOT a logged fast-tracked one) runs the FULL pipeline — research+validate
+#     are NOT skipped. The skip is keyed on the logged-bug signal (type==bug AND
+#     stage==plan), so a filed bug at align must keep all six stages.
+r8c="$(new_repo)"
+mid8c="lcars-typed-001"; mdir8c="$r8c/.git/lcars/missions/$mid8c"
+mkdir -p "$mdir8c"; write_prd "$mdir8c/prd.md"
+printf '{ "id": "%s", "stage": "align", "type": "bug" }\n' "$mid8c" >"$mdir8c/state.json"
+stub8c="$r8c/estimator-stub"; make_estimator_stub "$stub8c"
+( cd "$r8c" && env -u CLAUDECODE -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
+    CLAUDECODE=1 STUB_ESTIMATE="$EST_COSTED" \
+    LCARS_WORKER_BIN="$stub8c" LCARS_WORKER_CLI=claude \
+    LCARS_GH_BIN="$r8c/definitely-no-gh" \
+    bash "$RUN" estimate --mission "$mid8c" >"$r8c/est.out" 2>&1 )
+check "8f. filed bug at stage=align keeps all six stages (NOT fast-tracked)" \
+  "python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))[\"models\"]; sys.exit(0 if len(m)==6 else 1)' '$mdir8c/estimate.json'"
+
+# 8e. A mission with NO type key behaves exactly like a feature (full six).
+r8b="$(new_repo)"
+mid8b="lcars-typed-001"; mdir8b="$r8b/.git/lcars/missions/$mid8b"
+mkdir -p "$mdir8b"; write_prd "$mdir8b/prd.md"
+printf '{ "id": "%s", "stage": "plan" }\n' "$mid8b" >"$mdir8b/state.json"
+stub8b="$r8b/estimator-stub"; make_estimator_stub "$stub8b"
+( cd "$r8b" && env -u CLAUDECODE -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
+    CLAUDECODE=1 STUB_ESTIMATE="$EST_COSTED" \
+    LCARS_WORKER_BIN="$stub8b" LCARS_WORKER_CLI=claude \
+    LCARS_GH_BIN="$r8b/definitely-no-gh" \
+    bash "$RUN" estimate --mission "$mid8b" >"$r8b/est.out" 2>&1 )
+check "8e. typeless mission keeps all six stages (default = full pipeline)" \
+  "python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))[\"models\"]; sys.exit(0 if len(m)==6 else 1)' '$mdir8b/estimate.json'"
+
+# 9. COPILOT legacy billing: a bug sums premiumRequests over ONLY the 4 stages.
+r9="$(new_repo)"
+# Pin legacy billing on this repo so the deterministic multiplier math applies.
+printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
+  >"$r9/.git/lcars/config.json"
+e9="$(estimate_typed_mission "$r9" bug "$EST_COSTED" LCARS_WORKER_CLI=copilot COPILOT_RUN_APP=1)"
+check "9a. copilot bug estimate.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$e9'"
+check "9b. copilot bug premiumRequests.low == 108 (4-stage sum)" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"cost\"][\"premiumRequests\"]; sys.exit(0 if float(c[\"low\"])==108 else 1)' '$e9'"
+check "9c. copilot bug premiumRequests.high == 216 (4-stage sum)" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"cost\"][\"premiumRequests\"]; sys.exit(0 if float(c[\"high\"])==216 else 1)' '$e9'"
+check "9d. copilot bug premiumRequests LESS than six-stage (162/324)" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"cost\"][\"premiumRequests\"]; sys.exit(0 if float(c[\"low\"])<162 and float(c[\"high\"])<324 else 1)' '$e9'"
+
+# 9e. COPILOT legacy FEATURE keeps the full six-stage premiumRequests (162/324).
+r9b="$(new_repo)"
+printf '{ "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "copilotBilling": "legacy", "created": "2026-01-01T00:00:00Z" }\n' \
+  >"$r9b/.git/lcars/config.json"
+e9b="$(estimate_typed_mission "$r9b" feature "$EST_COSTED" LCARS_WORKER_CLI=copilot COPILOT_RUN_APP=1)"
+check "9e. copilot feature premiumRequests == 162/324 (full six-stage)" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"cost\"][\"premiumRequests\"]; sys.exit(0 if float(c[\"low\"])==162 and float(c[\"high\"])==324 else 1)' '$e9b'"
+
 echo "estimate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

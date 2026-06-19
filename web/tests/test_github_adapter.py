@@ -196,6 +196,29 @@ class GitHubAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "143")
         self.assertIsNone(m["modelMix"])
 
+    # ── S74 follow-up CHANGE 3 (adapter parity): a logged BUG (lcars:bug /
+    # lcars:linked) skips Research+Validate, so those rows are dropped from its
+    # model-mix table even when the issue body's table still lists all six. ──
+    def test_bug_mission_mix_omits_research_and_validate(self):
+        payload = [{
+            "number": 150, "title": "Bug: leaderboard off-by-one", "state": "OPEN",
+            "labels": [{"name": "lcars:mission"}, {"name": "lcars:plan"},
+                       {"name": "lcars:bug"}, {"name": "lcars:linked"}],
+            "body": ("Bug PRD…\n\n## Estimate\n\n"
+                     "**Per-stage model mix:**\n\n"
+                     "| Stage | Model |\n| --- | --- |\n"
+                     "| Research | Opus |\n| Validate | Opus |\n| Plan | Opus |\n"
+                     "| Plan Review | Sonnet |\n| Implement | Opus |\n"
+                     "| Verify | Sonnet |\n\n"
+                     "**Estimated cost:** $1.00–$2.00\n"),
+        }]
+        _write_stub(self.stub, payload)
+        m = self._by_id(self._board(), "150")
+        stages = [r["stage"] for r in m["modelMix"]]
+        self.assertEqual(stages, ["Plan", "Plan Review", "Implement", "Verify"])
+        self.assertNotIn("Research", stages)
+        self.assertNotIn("Validate", stages)
+
     # ── S70-B2/B3: ADRs + criteria are null on the github adapter (not in body) ──
     def test_detail_adrs_and_criteria_null_safe(self):
         detail = GitHubAdapter(gh_bin=self.stub).mission("142")

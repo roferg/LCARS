@@ -2916,9 +2916,35 @@ estimate_validate_and_write() { # src-json
   local rc ic; rc="$(json_scoped_str "$src" reasoningCriticality)"; ic="$(json_scoped_str "$src" implCriticality)"
   printf '%s' "$rc" | grep -Eq "$enum" || return 1
   printf '%s' "$ic" | grep -Eq "$enum" || return 1
-  # All six model keys must be present and each a valid tier.
+  # --- SINGLE-SOURCE active stage list (S74 bug-awareness) -------------------
+  # The estimator worker scores all six stages, but a LOGGED BUG fast-tracks
+  # straight to Plan (lcars-log: child state.json stage="plan", type="bug") and
+  # NEVER runs Research or Validate. So when the mission being estimated is a bug
+  # we canonicalize the estimate.json down to ONLY the stages it actually runs —
+  # plan, planReview, implement, verify — dropping research+validate from the
+  # models / tokenEstimates / requestEstimates maps. The cost is then computed
+  # over exactly the stages present in the file (cost_compute reads the file's
+  # stage set), so it sums the 4 real stages for a bug and all 6 otherwise. One
+  # list drives the validation loops, the emit, AND the cost — no second model.
+  local STAGE_KEYS="research validate plan planReview implement verify"
+  local mtype="" mstage=""
+  if [ -f "$MISSION_DIR/state.json" ]; then
+    mtype="$(json_scoped_str "$MISSION_DIR/state.json" type)"
+    mstage="$(json_scoped_str "$MISSION_DIR/state.json" stage)"
+  fi
+  # The fast-tracked LOGGED bug — and ONLY that — skips Research + Validate. Its
+  # signal is BOTH type=="bug" AND stage=="plan" at estimate time (lcars-log seeds
+  # the child straight at Plan; see log.sh). A regular `lcars file` bug also has
+  # type=="bug" but is estimated at stage=="align" and runs the FULL pipeline — so
+  # type alone is NOT enough; the stage is what proves Research/Validate were skipped.
+  if [ "$mtype" = "bug" ] && [ "$mstage" = "plan" ]; then
+    STAGE_KEYS="plan planReview implement verify"
+  fi
+  # The active stage keys' model values must be present and each a valid tier.
+  # (For a bug we only require/keep the 4 it runs; the worker may still have
+  # scored six — we simply ignore research/validate.)
   local k v
-  for k in research validate plan planReview implement verify; do
+  for k in $STAGE_KEYS; do
     v="$(json_scoped_str "$src" "models.$k")"
     printf '%s' "$v" | grep -Eq "$tierre" || return 1
     eval "TIER_$k=\$v"
@@ -2929,16 +2955,22 @@ estimate_validate_and_write() { # src-json
   # a non-negative integer survives; anything else (missing key, junk, negative)
   # canonicalizes to 0 so the file is always well-formed and the cost is defined.
   local n
-  for k in research validate plan planReview implement verify; do
+  for k in $STAGE_KEYS; do
     n="$(json_scoped_num "$src" "tokenEstimates.$k.low")";   eval "TOKLO_$k=\$(canon_nonneg_int \"\$n\")"
     n="$(json_scoped_num "$src" "tokenEstimates.$k.high")";  eval "TOKHI_$k=\$(canon_nonneg_int \"\$n\")"
     n="$(json_scoped_num "$src" "requestEstimates.$k.low")"; eval "REQLO_$k=\$(canon_nonneg_int \"\$n\")"
     n="$(json_scoped_num "$src" "requestEstimates.$k.high")";eval "REQHI_$k=\$(canon_nonneg_int \"\$n\")"
   done
   # rationale: a single JSON string, repaired to AT MOST 2 paragraphs (blank-line
-  # separated). The escaped string content is preserved as-is.
+  # separated). json_scoped_str DECODES the value (collapsing \" → " and \\ → \),
+  # so after the clamp we must RE-ESCAPE bare quotes before re-emitting it into the
+  # canonical JSON — otherwise a rationale carrying an embedded quote (e.g. the
+  # worker quoting code or the captain) would emit INVALID JSON. (S69 + S74: the
+  # logged-bug path exercises this, so the fix must hold here too.) Backslashes
+  # surviving the decode are valid JSON escape introducers (\n, \t, …) — left as is.
   local rationale; rationale="$(json_scoped_str "$src" rationale)"
   rationale="$(rationale_clamp "$rationale")"
+  rationale="$(rationale_reescape_quotes "$rationale")"
   # Re-emit a CANONICAL estimate.json. The `cost` block is COMPUTED BY CODE from
   # the token/request estimates + pricing.json + the active CLI — NEVER trusted
   # from the worker. We write the file once WITHOUT cost, compute against it, then
@@ -2952,30 +2984,31 @@ estimate_validate_and_write() { # src-json
     printf '  "schemaVersion": 3,\n'
     printf '  "reasoningCriticality": "%s",\n' "$rc"
     printf '  "implCriticality": "%s",\n' "$ic"
+    # models / tokenEstimates / requestEstimates are emitted over EXACTLY the
+    # active stage keys ($STAGE_KEYS — 4 for a bug, 6 otherwise), comma-joined
+    # so the JSON stays valid for either set.
+    local _ek _sep _tv _tklo _tkhi _rqlo _rqhi
     printf '  "models": {\n'
-    printf '    "research": "%s",\n'   "$TIER_research"
-    printf '    "validate": "%s",\n'   "$TIER_validate"
-    printf '    "plan": "%s",\n'       "$TIER_plan"
-    printf '    "planReview": "%s",\n' "$TIER_planReview"
-    printf '    "implement": "%s",\n'  "$TIER_implement"
-    printf '    "verify": "%s"\n'      "$TIER_verify"
-    printf '  },\n'
+    _sep=""
+    for _ek in $STAGE_KEYS; do
+      eval "_tv=\$TIER_$_ek"
+      printf '%s    "%s": "%s"' "$_sep" "$_ek" "$_tv"; _sep=$',\n'
+    done
+    printf '\n  },\n'
     printf '  "tokenEstimates": {\n'
-    printf '    "research": { "low": %s, "high": %s },\n'   "$TOKLO_research" "$TOKHI_research"
-    printf '    "validate": { "low": %s, "high": %s },\n'   "$TOKLO_validate" "$TOKHI_validate"
-    printf '    "plan": { "low": %s, "high": %s },\n'       "$TOKLO_plan" "$TOKHI_plan"
-    printf '    "planReview": { "low": %s, "high": %s },\n' "$TOKLO_planReview" "$TOKHI_planReview"
-    printf '    "implement": { "low": %s, "high": %s },\n'  "$TOKLO_implement" "$TOKHI_implement"
-    printf '    "verify": { "low": %s, "high": %s }\n'      "$TOKLO_verify" "$TOKHI_verify"
-    printf '  },\n'
+    _sep=""
+    for _ek in $STAGE_KEYS; do
+      eval "_tklo=\$TOKLO_$_ek"; eval "_tkhi=\$TOKHI_$_ek"
+      printf '%s    "%s": { "low": %s, "high": %s }' "$_sep" "$_ek" "$_tklo" "$_tkhi"; _sep=$',\n'
+    done
+    printf '\n  },\n'
     printf '  "requestEstimates": {\n'
-    printf '    "research": { "low": %s, "high": %s },\n'   "$REQLO_research" "$REQHI_research"
-    printf '    "validate": { "low": %s, "high": %s },\n'   "$REQLO_validate" "$REQHI_validate"
-    printf '    "plan": { "low": %s, "high": %s },\n'       "$REQLO_plan" "$REQHI_plan"
-    printf '    "planReview": { "low": %s, "high": %s },\n' "$REQLO_planReview" "$REQHI_planReview"
-    printf '    "implement": { "low": %s, "high": %s },\n'  "$REQLO_implement" "$REQHI_implement"
-    printf '    "verify": { "low": %s, "high": %s }\n'      "$REQLO_verify" "$REQHI_verify"
-    printf '  },\n'
+    _sep=""
+    for _ek in $STAGE_KEYS; do
+      eval "_rqlo=\$REQLO_$_ek"; eval "_rqhi=\$REQHI_$_ek"
+      printf '%s    "%s": { "low": %s, "high": %s }' "$_sep" "$_ek" "$_rqlo" "$_rqhi"; _sep=$',\n'
+    done
+    printf '\n  },\n'
     printf '  "deviations": [%s],\n' "$devs"
     printf '  "rationale": "%s",\n' "$rationale"
     if [ -n "$cost" ]; then
@@ -2999,6 +3032,14 @@ canon_nonneg_int() { # value → integer
     ''|*[!0-9]*) printf '0' ;;
     *)           printf '%s' "$v" ;;
   esac
+}
+
+# Re-escape BARE double-quotes in a JSON string value that has already been DECODED
+# by json_scoped_str (which collapses \" → " and \\ → \). Every remaining backslash
+# is therefore a valid escape introducer (\n, \t, \uXXXX, …) and is left untouched;
+# every " is a bare quote that must become \" so the re-emitted JSON stays valid.
+rationale_reescape_quotes() { # decoded-string → string with bare quotes escaped
+  printf '%s' "$1" | sed 's/"/\\"/g'
 }
 
 # Clamp a rationale string to AT MOST 2 paragraphs. Paragraphs are separated by
@@ -3140,9 +3181,22 @@ copilot_plan() { # → plan key
 # "copilot.usage"). Reuses the documented 0.8/0.2 input/output split and the
 # per-stage tier from the estimate's models map. Prints "<low> <high>" (6dp), or
 # empty if ANY used tier's rates are unset/null (caller ⇒ "unavailable").
+# The canonical-ordered subset of the six pipeline stages that an estimate.json
+# ACTUALLY carries in its `models` block. A logged bug's canonical estimate.json
+# omits research+validate (S74), so this returns its 4 real stages; a feature's
+# returns all six. The cost math iterates THIS set, so it auto-sums the right
+# stages for either mission type — one source (the file's stage set), no fork.
+estimate_active_stages() { # estimate-json → space-separated stage keys (in order)
+  local est="$1" k out=""
+  for k in research validate plan planReview implement verify; do
+    [ -n "$(json_scoped_str "$est" "models.$k")" ] && out="$out $k"
+  done
+  printf '%s' "${out# }"
+}
+
 cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
   local est="$1" scope="$2"
-  local stages="research validate plan planReview implement verify"
+  local stages; stages="$(estimate_active_stages "$est")"
   local usd_low=0 usd_high=0 k tier inr outr tlo thi
   for k in $stages; do
     tier="$(json_scoped_str "$est" "models.$k")"
@@ -3167,7 +3221,10 @@ cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
 cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
   local est="$1" cli="$2"
   local pricing="$PRICING_FILE"
-  local stages="research validate plan planReview implement verify"
+  # Sum over EXACTLY the stages the estimate.json carries (4 for a logged bug,
+  # 6 otherwise) — the same set cost_token_usd uses, so every billing branch
+  # agrees on the bug's real pipeline. (S74 bug-awareness.)
+  local stages; stages="$(estimate_active_stages "$est")"
   if [ "$cli" = "copilot" ] && [ "$(copilot_billing_model)" = "usage" ]; then
     # --- USAGE-BASED (token / GitHub AI Credits) billing (session 64) --------
     # Bill tokens EXACTLY like the Claude branch against copilot.usage rates,

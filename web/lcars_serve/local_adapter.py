@@ -126,7 +126,16 @@ class LocalAdapter(object):
         estimate = _load_json(os.path.join(d, "estimate.json"))
         est = estimate if isinstance(estimate, dict) else {}
         pills = board.pills_from_estimate(est)
-        model_mix = board.model_mix_from_estimate(est)
+        # S74 follow-up CHANGE 3: a logged bug fast-tracks past Research+Validate
+        # (lcars-log stamps state.json.stage="plan"), so its model-mix table must
+        # omit those two rows. Identify a bug the way the rest of the codebase
+        # does: state.json.type == "bug", OR a linked/parented logged-bug child
+        # (`linked` flag / `parentMission` id). Threaded into the shared shape
+        # layer so the github adapter applies the same skip (board.filter_bug_*).
+        is_bug = ((state.get("type") or "feature") == "bug"
+                  or _truthy(state.get("linked"))
+                  or bool(state.get("parentMission")))
+        model_mix = board.model_mix_from_estimate(est, is_bug=is_bug)
 
         plan = _load_json(os.path.join(d, "plan.json"))
         waves = _load_json(os.path.join(d, "waves.json"))

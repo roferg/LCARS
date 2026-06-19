@@ -79,7 +79,7 @@ def mission_dir(root, mid):
 def plant_simple(root, mid, *, stage="align", issue=142,
                  title="Add Gamification to Course Site", estimate=ESTIMATE_CLAUDE,
                  created="2026-06-13T10:00:00Z", worker_bin=None, queued=None,
-                 parent_mission=None):
+                 parent_mission=None, mtype="feature"):
     """A plain mission sitting in `stage`, no gate, no tickets.
 
     `worker_bin` plants the persisted engine field (state.json.workerBin) the
@@ -88,10 +88,12 @@ def plant_simple(root, mid, *, stage="align", issue=142,
     (state.json.queued); None omits it.
     `parent_mission` plants the UX-28 logged-bug child's parent id
     (state.json.parentMission) the way `lcars log` does; None omits it.
+    `mtype` plants state.json.type ("feature" default; "bug" for a logged bug
+    that fast-tracks past Research/Validate straight to Plan).
     """
     d = mission_dir(root, mid)
     state = {
-        "id": mid, "type": "feature", "title": title, "stage": stage,
+        "id": mid, "type": mtype, "title": title, "stage": stage,
         "created": created, "model": "claude", "githubIssue": issue,
         "branch": "lcars/%s" % mid, "base": "main",
     }

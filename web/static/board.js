@@ -684,7 +684,14 @@ function renderAlignConsole(state) {
     choices.innerHTML = ""; picked.val = null; free.value = ""; err.hidden = true;
     (q.choices || []).forEach(function (c) {
       var isRec = (q.recommended != null && c === q.recommended);
-      var opt = el("span", "opt" + (isRec ? " rec" : ""), c);
+      // Dedupe the "recommended" indicator (S67): some workers (Copilot) bake
+      // "(recommended)" into the option label text, others (claude) don't. When
+      // the label text already carries it, the text IS the indicator — suppress
+      // the REC pill via .no-pill (keep .rec/.sel highlight). When it doesn't,
+      // the pill is the sole indicator and stays. Net: exactly one per option.
+      var textHasRec = /\(\s*recommended\s*\)/i.test(c);
+      var cls = "opt" + (isRec ? " rec" + (textHasRec ? " no-pill" : "") : "");
+      var opt = el("span", cls, c);
       opt.addEventListener("click", function () {
         Array.prototype.forEach.call(choices.children, function (o) {
           o.classList.remove("sel"); });
@@ -1095,8 +1102,10 @@ function openLog(id) {
     var busy = workingNode("Working…"); busy.hidden = true;
     m.body.appendChild(busy);
 
-    // holds the AUTHORED bug PRDs from the last preview, passed to File & Run.
-    var authored = { prds: null };
+    // holds the AUTHORED bug PRDs from the last preview + the captain's per-bug
+    // override inputs (S74) so they survive Preview → File → Run. `filed` flips
+    // true once /log/file has persisted the bugs (then "Run Fixes" only resolves).
+    var authored = { prds: null, overrides: [], filed: false };
 
     m.foot.appendChild(btn("Cancel", null, closeOverlay));
     var prev = applyWriteState(btn("Preview", null, function () {
@@ -1114,28 +1123,65 @@ function openLog(id) {
           authored.prds = state && state.authored
             ? (state.children || []).map(function (c) { return c.prd; })
             : null;
-          renderLogPreview(preview, state, idLabel(mi));
+          authored.overrides = (state && state.children || [])
+            .map(function (c) { return c.override || ""; });
+          authored.filed = !!(state && (state.filed || !state.authored));
+          renderLogPreview(preview, state, idLabel(mi), authored);
+          // Reveal File only when this preview AUTHORED ≥1 bug to file. Stays
+          // hidden for the read-only linked-children view and for a 0-bug split.
+          file.hidden = !(state && state.authored && (state.children || []).length);
         },
         function (msg) {
           busy.hidden = true;
           prev.disabled = false; prev.textContent = "Preview"; showErr(err, msg);
         });
     }));
-    var run = applyWriteState(btn("File & Run Fixes ▸", "warn big", function () {
-      // BUG-G (front-end half): the backend now files + dispatches the fixes
-      // fire-and-forget and returns promptly, so close the dialog IMMEDIATELY on
-      // dispatch (optimistic — the same close-on-dispatch pattern as the Start
-      // modal, UX-11). We DON'T wait on the resolve batch; the board/SSE shows
-      // the new child cards as they land. A brief "fixes dispatched" toast is
-      // surfaced via setStatus; any spinner is cleared by the close.
+    // S74: the captain reviews each bug's ESTIMATE (cost + difficulty pills +
+    // suggested model) and can STEER the model before running fixes. We FILE the
+    // authored bugs first (so log.sh runs the estimator + persists each estimate),
+    // re-render the panel with the per-bug estimate + the now-applied override,
+    // then "Run Fixes" resolves the already-filed batch.
+    var file = applyWriteState(btn("File", null, function () {
       err.hidden = true;
-      // pass the authored PRDs so log.sh files one bug mission per PRD, then
-      // resolve-logs drives them to the single re-verify gate.
-      var payload = { prds: authored.prds || [] };
-      // optimistic close BEFORE the response resolves — clears the spinner with
-      // the overlay and drops a transient confirmation in the status line.
+      busy.querySelector(".lcars-working-label").textContent =
+        "Filing bugs and estimating each fix…";
+      busy.hidden = false;
+      file.disabled = true;
+      postWrite("/api/mission/" + enc(id) + "/log/file",
+        { prds: authored.prds || [], overrides: authored.overrides || [] },
+        function (state) {
+          busy.hidden = true; file.disabled = false;
+          authored.prds = null;        // bugs are filed now — Run only resolves
+          authored.filed = true;
+          file.hidden = true;          // filing is done
+          run.hidden = false;          // reveal Run Fixes
+          // S74 follow-up: keep the server's per-bug override verdicts (resolved
+          // label / normalization error) keyed by child id so the panel echoes
+          // them — a steer that couldn't be normalized shows its error, not a
+          // silent drop onto the default model.
+          authored.resolved = indexOverrides(state && state.overrides);
+          renderLogPreview(preview, state, idLabel(mi), authored);
+        },
+        function (msg) {
+          busy.hidden = true; file.disabled = false; showErr(err, msg);
+        });
+    }));
+    var run = applyWriteState(btn("Run Fixes ▸", "warn big", function () {
+      // BUG-G (front-end half): the backend dispatches the fixes fire-and-forget
+      // and returns promptly, so close the dialog IMMEDIATELY on dispatch
+      // (optimistic — the same close-on-dispatch pattern as the Start modal). The
+      // bugs are already filed (File for Review), so this only resolves them.
+      err.hidden = true;
+      // S74 follow-up CHANGE 4: the per-bug override box lives in the post-File
+      // breakdown, so even on the resolve-already-filed path we send the edited
+      // overrides — the backend (_apply_child_overrides) persists each onto its
+      // already-filed child's state.json before dispatching the batch.
+      var payload = authored.filed
+        ? { overrides: authored.overrides || [] }       // resolve already-filed
+        : { prds: authored.prds || [],                  // file + resolve in one go
+            overrides: authored.overrides || [] };
       closeOverlay();
-      setStatus("Fixes dispatched — child bug missions are being filed…");
+      setStatus("Fixes dispatched — child bug missions are being driven…");
       postWrite("/api/mission/" + enc(id) + "/log/run", payload,
         function () { /* board/SSE refresh shows the new child cards */ },
         function (msg) {
@@ -1144,21 +1190,26 @@ function openLog(id) {
           setStatus(msg); refresh();
         });
     }));
+    file.hidden = true;    // revealed only after a Preview that splits ≥1 bug
+    run.hidden = true;     // revealed once the bugs are filed for review
     m.foot.appendChild(prev);
+    m.foot.appendChild(file);
     m.foot.appendChild(run);
     showOverlay(m.wrap);
     report.focus();
   });
 }
 
-function renderLogPreview(host, state, parentLabel) {
+function renderLogPreview(host, state, parentLabel, authored) {
   host.innerHTML = "";
   var children = (state && state.children) || [];
   var authoredNew = state && state.authored;
+  var filed = state && (state.filed || (!authoredNew && children.length));
   var h = el("h4"); h.style.margin = "4px 0 8px";
-  h.textContent = "Preview — " + ((state && state.count) || children.length) +
+  h.textContent = (filed ? "Review — " : "Preview — ") +
+    ((state && state.count) || children.length) +
     " bug mission" + (children.length === 1 ? "" : "s") +
-    (authoredNew ? " detected" : " linked");
+    (authoredNew ? " detected" : filed ? " filed" : " linked");
   host.appendChild(h);
   if (!children.length) {
     host.appendChild(noteEl(
@@ -1169,21 +1220,90 @@ function renderLogPreview(host, state, parentLabel) {
           "above and Preview to split them into child missions."));
     return;
   }
-  // UX-26: the previewed child-bug cards rendered flush (zero gap) and would
-  // overflow with many bugs. Render them into a dedicated list that gaps the
-  // items vertically and caps its height with overflow-y:auto so a long split
-  // scrolls in place rather than pushing the modal footer off-screen.
+  // UX-26: render the child-bug cards into a list that gaps the items and caps
+  // its height with overflow-y:auto so a long split scrolls in place.
   var list = el("div", "log-preview-list");
-  children.forEach(function (c) {
+  children.forEach(function (c, i) {
     var card = el("div", "card child"); card.style.cursor = "default";
     card.appendChild(el("div", "no", "↳ child of " +
       (parentLabel || state.parent || "parent")));
     card.appendChild(el("div", "ttl", "Bug · " + (c.title || c.id)));
     var pills = el("div", "pills");
-    // authored-but-not-yet-filed bugs show their planned stage; linked ones
-    // show their live stage label.
     pills.appendChild(el("span", "pill", "lcars:" + (c.stage || "plan")));
-    card.appendChild(pills);
+    // S74 follow-up CHANGE 1: the PREVIEW (pre-file) stage shows the SPLITS ONLY
+    // — the "↳ child of …" breadcrumb, the "Bug · <title>" line, and the
+    // lcars:plan pill. The estimate-driven pills, the model mix, and the override
+    // box are POST-file only (CHANGE 3/4), since the estimate is computed at File.
+    if (filed) {
+      // S74: REUSE the Mission-card / Launch pill set — ONE cost pill + TWO
+      // difficulty pills — off this bug's estimate. addPills no-ops on a child
+      // with no estimate yet (graceful degradation).
+      if (c.pills) addPills(pills, c.pills);
+      card.appendChild(pills);
+      // S74: the suggested per-stage model mix — the SAME modelMixTable the
+      // Launch panel renders. The shape already excludes Research+Validate for a
+      // logged bug (board.model_mix_from_estimate), so no filtering is needed
+      // here. Only when the estimate exposes it.
+      if (c.modelMix && c.modelMix.length) {
+        card.appendChild(modelMixTable(c.modelMix));
+      }
+      // S74 follow-up CHANGE 4: the per-bug OVERRIDE box lives in the post-File
+      // breakdown (not at preview). The captain edits these, then clicks Run
+      // Fixes; each value is collected into authored.overrides[i] and threaded to
+      // its child via the /log/run payload (→ _file_children persists
+      // state.json.modelOverride). Pre-fill with any already-persisted override.
+      var ov = el("input");
+      ov.placeholder =
+        "Override (optional) — e.g. \"use Opus\" · \"keep it cheap\" · all:opus";
+      ov.value = (authored && authored.overrides && authored.overrides[i]) ||
+        c.override || "";
+      if (authored) {
+        if (!authored.overrides) authored.overrides = [];
+        authored.overrides[i] = ov.value.trim();
+      }
+      card.appendChild(field("Model override (optional)", ov));
+      // S74 follow-up: an LCARS-styled confirmation line that echoes the RESOLVED
+      // steer ("Opus 4.8 → Opus · all stages") live as the captain types, and the
+      // normalization error inline if the steer couldn't be understood (the
+      // server is the source of truth — it surfaces resolved+error in the
+      // /log/file & /log/run response; here we also echo the common deterministic
+      // cases instantly so plain language is never silently dropped on-screen).
+      var steer = el("div", "steer-echo"); steer.hidden = true;
+      card.appendChild(steer);
+      var srvOv = (authored && authored.resolved && authored.resolved[c.id]) || null;
+      var echoSteer = function (rawVal) {
+        var raw = (rawVal || "").trim();
+        if (!raw) {
+          // no steer typed — fall back to any server verdict (e.g. an error left
+          // from a prior File/Run), else hide.
+          if (srvOv && srvOv.error) {
+            steer.hidden = false; steer.className = "steer-echo err";
+            steer.textContent = "⚠ " + srvOv.error;
+          } else { steer.hidden = true; }
+          return;
+        }
+        var r = previewOverride(raw);
+        if (r) {
+          steer.hidden = false; steer.className = "steer-echo ok";
+          steer.textContent = raw + " → " + overrideLabel(r);
+        } else if (srvOv && srvOv.error) {
+          steer.hidden = false; steer.className = "steer-echo err";
+          steer.textContent = "⚠ " + srvOv.error;
+        } else {
+          // tier-less plain language: the bounded worker resolves it at File/Run.
+          steer.hidden = false; steer.className = "steer-echo pending";
+          steer.textContent = "“" + raw + "” — model intent resolved when filed.";
+        }
+      };
+      ov.addEventListener("input", function () {
+        if (!authored.overrides) authored.overrides = [];
+        authored.overrides[i] = ov.value.trim();
+        echoSteer(ov.value);
+      });
+      echoSteer(ov.value);   // initial echo (pre-filled / server-resolved value)
+    } else {
+      card.appendChild(pills);
+    }
     list.appendChild(card);
   });
   host.appendChild(list);
@@ -1682,6 +1802,44 @@ function label(t) { return el("label", null, t); }
 function noteEl(text, cls) { return el("div", "note" + (cls ? " " + cls : ""), text); }
 function showErr(node, msg) { node.hidden = false; node.textContent = msg; }
 
+/* S74 follow-up: the per-bug model steer is NORMALIZED server-side (passthrough
+   <scope>:<tier> → deterministic parse → bounded worker fallback → never silent-
+   drop). This is the SAME deterministic map, mirrored client-side so the panel
+   echoes the resolved steer LIVE as the captain types (the long-tail worker
+   fallback only runs server-side at File/Run). Returns {scope,tier} or null. */
+function previewOverride(raw) {
+  if (!raw) return null;
+  var s = String(raw).trim();
+  if (!s) return null;
+  var m = /^(all|reasoning|implementation):(sonnet|opus)$/i.exec(s);
+  if (m) return { scope: m[1].toLowerCase(), tier: m[2].toLowerCase() };
+  var low = s.toLowerCase();
+  var tier = null;
+  if (/\bopus\b/.test(low) || /4[._-]?8\b/.test(low)) tier = "opus";
+  else if (/\bsonnet\b/.test(low) || /4[._-]?6\b/.test(low) ||
+           /\b(cheap|cheaper|budget|inexpensive|save|saving)\b/.test(low))
+    tier = "sonnet";
+  if (!tier) return null;        // inconclusive → resolved server-side at File/Run
+  var scope = "all";
+  if (/\b(reason|reasoning|think|thinking|plan|planning)\b/.test(low))
+    scope = "reasoning";
+  else if (/\b(implement|implementation|impl|coding|code|build|building)\b/.test(low))
+    scope = "implementation";
+  return { scope: scope, tier: tier };
+}
+function indexOverrides(list) {
+  var by = {};
+  (list || []).forEach(function (o) { if (o && o.id) by[o.id] = o; });
+  return by;
+}
+function overrideLabel(r) {
+  if (!r) return null;
+  var tier = r.tier === "opus" ? "Opus" : "Sonnet";
+  var scope = r.scope === "reasoning" ? "reasoning stages"
+    : r.scope === "implementation" ? "implementation stages" : "all stages";
+  return tier + " · " + scope;
+}
+
 /* ════════════════ UX-37: XSS-SAFE MARKDOWN → HTML ════════════════
    Worker-authored prose (ADR bodies, the PRD tab, ticket rationale/acceptance
    criteria, activity-feed descriptions) arrives as Markdown and was rendering
@@ -1945,7 +2103,7 @@ function connect() {
 /* UX-30: PADD rebrand. The header band reads "LCARS · KANBAN" in index.html;
    per the file constraint (board.js/board.css only) we rewrite the brand node
    here at boot to "PADD" with a smaller acronym sub-line below it —
-   "Project Alignment & Deployment Display" with the FIRST LETTER of each word
+   "Project Alignment & Development Display" with the FIRST LETTER of each word
    bolded so it spells out P·A·D·D. Keeps the LCARS "LCARS ·" prefix + tokens.
    Defensive: no-ops if the brand node is missing. */
 function brandPADD() {
@@ -1961,7 +2119,7 @@ function brandPADD() {
   // sub-line: the expansion, each word's FIRST letter bolded → reads the acronym.
   var sub = el("div", "brand-sub");
   // [word, restOfWord] pairs; the leading letter is bolded.
-  [["P", "roject"], ["A", "lignment"], ["D", "eployment"], ["D", "isplay"]]
+  [["P", "roject"], ["A", "lignment"], ["D", "evelopment"], ["D", "isplay"]]
     .forEach(function (w, idx) {
       if (idx === 2) sub.appendChild(document.createTextNode("& "));
       sub.appendChild(el("b", "acr", w[0]));

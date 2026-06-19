@@ -190,6 +190,148 @@ def _prd_title(prd):
     return m.group(1).strip() if m else None
 
 
+# ── the per-bug model-override NORMALIZER (S74 follow-up) ─────────────────────
+# A MISSION's override is normalized by the Align worker — the captain says "use
+# Opus the whole way" and the worker emits a structured `<scope>:<tier>` (see
+# skills/lcars-file/SKILL.md:183-186). A LOGGED bug skips Align, so the web
+# Mission-Log per-bug override had NO normalizer and silently dropped anything
+# that wasn't already `<scope>:<tier>` — the child then ran on the wrong (default
+# Sonnet) model. This gives the bug override the SAME normalization, HYBRID:
+#   1. passthrough an already-structured value,
+#   2. a deterministic plain-language parse (the common cases, zero tokens),
+#   3. one bounded worker call applying the Align instruction (the long tail),
+#   4. NEVER silent-drop — an unparseable value returns None so the caller can
+#      surface an error instead of running on a wrong/default model.
+_VALID_SCOPES = ("all", "reasoning", "implementation")
+_VALID_TIERS = ("sonnet", "opus")
+_STRUCTURED_OVERRIDE = re.compile(
+    r"^(all|reasoning|implementation):(sonnet|opus)$", re.IGNORECASE)
+
+# The SAME instruction the Align worker uses (skills/lcars-file/SKILL.md:183-186),
+# narrowed to the single normalization task: plain language → `<scope>:<tier>`.
+_OVERRIDE_FALLBACK_PROMPT = """You normalize a captain's free-form model steer \
+for one LCARS mission into a single structured model override, EXACTLY as the \
+Align stage does (lcars-file skill: "Detect that intent ('use Opus the whole \
+way', 'keep it cheap') and normalize it to a single structured modelOverride").
+
+The override has two axes:
+  • scope — `all` (every stage), `reasoning` (Research/Validate/Plan/Plan Review)
+    or `implementation` (Implement/Verify). Default to `all` if unstated.
+  • tier  — `opus` (higher quality) or `sonnet` (cheaper).
+
+Output ONLY the string `<scope>:<tier>` (e.g. `all:opus`) on a line by itself,
+or the bare word `null` if the steer expresses no model intent. No prose.
+
+The captain's steer:
+"""
+
+
+def _parse_scope_tier(text):
+    """Pull a `<scope>:<tier>` out of arbitrary worker/text output (lenient).
+
+    Returns {"scope","tier"} or None. Accepts a bare `scope:tier` token, a
+    quoted/fenced one, or a JSON blob whose value is `scope:tier`.
+    """
+    if not text:
+        return None
+    t = text.strip()
+    if t.lower() in ("null", '"null"', "none", ""):
+        return None
+    # a JSON object/string the worker may have emitted (e.g. {"modelOverride": "..."}).
+    obj = _extract_json(t)
+    if isinstance(obj, dict):
+        for v in obj.values():
+            got = _parse_scope_tier(v) if isinstance(v, str) else None
+            if got:
+                return got
+    elif isinstance(obj, str):
+        got = _parse_scope_tier(obj)
+        if got:
+            return got
+    m = re.search(r"\b(all|reasoning|implementation)\s*:\s*(sonnet|opus)\b",
+                  t, re.IGNORECASE)
+    if m:
+        return {"scope": m.group(1).lower(), "tier": m.group(2).lower()}
+    return None
+
+
+def _deterministic_override(raw):
+    """Step 2: map common plain language to {scope,tier} with no worker spend.
+
+    Detects a TIER first (opus / 4.8 / sonnet / 4.6 / cheap-family); without a
+    tier the steer is inconclusive (return None → caller falls back to the LLM).
+    Scope defaults to `all` unless reasoning/implementation language is present.
+    """
+    low = raw.lower()
+    # tier
+    tier = None
+    if re.search(r"\bopus\b", low) or re.search(r"4[._-]?8\b", low):
+        tier = "opus"
+    elif (re.search(r"\bsonnet\b", low) or re.search(r"4[._-]?6\b", low)
+          or re.search(r"\b(cheap|cheaper|budget|inexpensive|save|saving)\b", low)):
+        tier = "sonnet"
+    if tier is None:
+        return None  # inconclusive → LLM fallback
+    # scope (default all)
+    if re.search(r"\b(reason|reasoning|think|thinking|plan|planning)\b", low):
+        scope = "reasoning"
+    elif re.search(r"\b(implement|implementation|impl|coding|code|build|building)\b",
+                   low):
+        scope = "implementation"
+    else:
+        scope = "all"
+    return {"scope": scope, "tier": tier}
+
+
+def normalize_override(raw, worker=None):
+    """Normalize a captain's free-form per-bug model steer → {scope,tier}|None.
+
+    HYBRID (S74 follow-up):
+      1. blank → None (no steer, NOT an error);
+      2. already `<scope>:<tier>` → passthrough (case/space-insensitive);
+      3. deterministic plain-language parse (zero tokens);
+      4. if inconclusive AND a `worker(raw)->str` callable is supplied, ONE
+         bounded worker call applying the Align instruction; its reply is parsed.
+    Returns None when nothing resolves — the caller MUST surface an error rather
+    than run the child on a wrong/default model (never silent-drop).
+    """
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    m = _STRUCTURED_OVERRIDE.match(s)
+    if m:
+        return {"scope": m.group(1).lower(), "tier": m.group(2).lower()}
+    got = _deterministic_override(s)
+    if got:
+        return got
+    if worker is None:
+        return None
+    try:
+        reply = worker(s)
+    except Exception:
+        return None
+    return _parse_scope_tier(reply)
+
+
+def _override_error(raw):
+    """The human-facing message when a steer can't be normalized (never drop)."""
+    return ("couldn't understand the model steer %r — try e.g. \"use Opus\" "
+            "or \"keep it cheap\"" % (raw or "").strip())
+
+
+def _override_label(resolved):
+    """A human steer label for the UI echo, e.g. 'Opus · all stages'."""
+    if not resolved:
+        return None
+    tier = "Opus" if resolved.get("tier") == "opus" else "Sonnet"
+    scope = {"all": "all stages", "reasoning": "reasoning stages",
+             "implementation": "implementation stages"}.get(
+                 resolved.get("scope"), resolved.get("scope"))
+    return "%s · %s" % (tier, scope)
+
+
 class _AlignSession(object):
     """In-memory state for one Align grilling, keyed by sessionId.
 
@@ -678,14 +820,96 @@ class Actions(object):
         return {"children": children, "count": len(children),
                 "parent": parent, "authored": True}
 
-    def log_run(self, mid, prds=None):
+    def _file_children(self, mid, prds, overrides, env_extra):
+        """Persist one linked bug Mission per PRD via log.sh (blocking).
+
+        Each PRD is paired POSITIONALLY with its captain override (S74). The
+        free-form steer is NORMALIZED to `<scope>:<tier>` FIRST (S74 follow-up —
+        log.sh `die`s on a bad value, so plain language must be resolved before it
+        rides the flag), then threaded to log.sh through the SAME lever `lcars
+        file` uses: --model-override "<scope>:<tier>" right after the --prd it
+        applies to. log.sh persists it as state.json.modelOverride and runs the
+        estimator on each child — so the children EXIST (with estimates) when this
+        returns. A blank steer threads no flag; an UNPARSEABLE steer threads no
+        flag and is reported with an error (never silent-drop). No-op for no prds.
+
+        Returns a per-PRD override report [{index, raw, resolved, label, error}].
+        """
+        prds = list(prds or [])
+        overrides = list(overrides or [])
+        report = []
+        if not prds:
+            return report
+        tmp = []
+        args = ["--parent", mid]
+        try:
+            for i, prd in enumerate(prds):
+                p = self._tmp_prd(prd.rstrip() + "\n")
+                tmp.append(p)
+                args += ["--prd", p]
+                ov = overrides[i] if i < len(overrides) else None
+                if not (isinstance(ov, str) and ov.strip()):
+                    continue
+                resolved = self._normalize_override(ov, mid)
+                if resolved is None:
+                    report.append({"index": i, "raw": ov.strip(),
+                                   "resolved": None, "label": None,
+                                   "error": _override_error(ov)})
+                    continue
+                args += ["--model-override",
+                         "%s:%s" % (resolved["scope"], resolved["tier"])]
+                report.append({"index": i, "raw": ov.strip(),
+                               "resolved": resolved,
+                               "label": _override_label(resolved),
+                               "error": None})
+            self._run("log", args, env_extra=env_extra)
+        finally:
+            for p in tmp:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        return report
+
+    def log_file(self, mid, prds=None, overrides=None):
+        """POST /api/mission/<id>/log/file — file authored bugs, return enriched.
+
+        The file-then-review-then-run flow (S74): the captain's confirm step FILES
+        the authored bugs (log.sh runs the estimator + persists each child's
+        estimate.json + override), and this returns the freshly-filed children with
+        their cost/difficulty pills + suggested model mix so the review panel can
+        show each bug's estimate and the captain can re-steer before Run Fixes. It
+        does NOT dispatch resolve-logs — "Run Fixes" (log_run) does that.
+        """
+        self._require_mission(mid)
+        engine = self._persisted_worker_bin(mid)
+        env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+        prds = [p for p in (prds or []) if isinstance(p, str) and p.strip()]
+        report = self._file_children(mid, prds, overrides, env_extra)
+        children = self._linked_children(mid)
+        # map the per-PRD override report onto the freshly-filed child ids (same
+        # positional order) so the review panel can echo each resolved steer /
+        # surface a normalization error (S74 follow-up; never silent-drop).
+        resolved = []
+        for r in report:
+            idx = r.get("index")
+            cid = children[idx]["id"] if (idx is not None
+                                          and idx < len(children)) else None
+            resolved.append({"id": cid, "raw": r.get("raw"),
+                             "resolved": r.get("resolved"),
+                             "label": r.get("label"), "error": r.get("error")})
+        return {"children": children, "count": len(children),
+                "parent": mid, "filed": True, "overrides": resolved}
+
+    def log_run(self, mid, prds=None, overrides=None):
         """POST /api/mission/<id>/log/run — file authored bugs, then resolve.
 
         If `prds` (the authored bug PRDs from the preview) are supplied, FIRST
-        dispatch log.sh --parent <id> --prd <each> to persist one linked bug
-        mission per PRD (ADR-002), THEN kick resolve-logs to drive them to the one
-        consolidated re-verify gate. With no prds it just resolves whatever is
-        already linked (the S68 read-only batch).
+        dispatch log.sh --parent <id> --prd <each> (+ paired --model-override) to
+        persist one linked bug mission per PRD (ADR-002), THEN kick resolve-logs to
+        drive them to the one consolidated re-verify gate. With no prds it just
+        resolves whatever is already linked (the S68 read-only batch). The captain
+        overrides (S74) pair positionally with the prds and are persisted by log.sh.
         """
         self._require_mission(mid)
         # BUG-C: the child bug missions inherit the PARENT's persisted engine.
@@ -695,21 +919,29 @@ class Actions(object):
         engine = self._persisted_worker_bin(mid)
         env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
         prds = [p for p in (prds or []) if isinstance(p, str) and p.strip()]
-        if prds:
-            tmp = []
-            args = ["--parent", mid]
-            try:
-                for prd in prds:
-                    p = self._tmp_prd(prd.rstrip() + "\n")
-                    tmp.append(p)
-                    args += ["--prd", p]
-                self._run("log", args, env_extra=env_extra)
-            finally:
-                for p in tmp:
-                    try:
-                        os.unlink(p)
-                    except OSError:
-                        pass
+        file_report = self._file_children(mid, prds, overrides, env_extra)
+        # S74 follow-up CHANGE 4: when there are NO prds the bugs are ALREADY
+        # filed (the captain edited the steers in the post-File breakdown, then
+        # clicked Run Fixes). _file_children no-ops on no prds, so apply the
+        # post-File overrides directly to the existing linked children here —
+        # persisting state.json.modelOverride, the same lever resolve-logs/run.sh
+        # (active_model_override) reads. With prds present the steers already rode
+        # log.sh, so this is skipped to avoid double-applying.
+        if not prds:
+            apply_report = self._apply_child_overrides(mid, overrides)
+        else:
+            # map the per-PRD file-time report onto the now-filed child ids so the
+            # response shape matches the no-prds (apply) path.
+            children = self._linked_children(mid)
+            apply_report = []
+            for r in file_report:
+                idx = r.get("index")
+                cid = children[idx]["id"] if (idx is not None
+                                              and idx < len(children)) else None
+                apply_report.append(
+                    {"id": cid, "raw": r.get("raw"),
+                     "resolved": r.get("resolved"),
+                     "label": r.get("label"), "error": r.get("error")})
         # BUG-G: resolve-logs drives the ENTIRE batch (every logged bug → Verify +
         # the consolidated re-verify gate) — minutes. Blocking on it (the old _run)
         # hung the POST until the whole batch finished, so the dialog spun and the
@@ -718,7 +950,12 @@ class Actions(object):
         # are filed; the board/SSE then carries the wave progress. The engine env
         # (BUG-D) is preserved — _spawn carries env_extra exactly as _run did.
         self._spawn("resolve", ["--parent", mid], env_extra=env_extra)
-        return self._mission_state(mid)
+        state = self._mission_state(mid)
+        # carry the resolved/erroring per-bug steers so the UI can echo them
+        # (S74 follow-up: a steer that couldn't be normalized rides as an error
+        # rather than being silently dropped onto the default model).
+        state["overrides"] = apply_report
+        return state
 
     # -- internals --------------------------------------------------------------
     def _resolve_run(self, key, args, env_extra):
@@ -801,10 +1038,96 @@ class Actions(object):
             # read parentMission straight off disk (not part of the card shape).
             pm = _read_json_key(sp, "parentMission")
             if pm == parent:
-                out.append({"id": card["id"], "issue": card.get("issue"),
-                            "title": card.get("title"), "stage": card.get("stage"),
-                            "type": card.get("type")})
+                # S74: a logged bug is a Mission whose estimate is computed from
+                # its bug PRD — surface the SAME estimator readout the board card
+                # and Launch panel show (ONE cost pill, TWO difficulty pills, the
+                # per-stage model mix) so the Mission-Log review panel can render
+                # each bug with its suggested model + cost/difficulty, REUSING the
+                # card shape (card already carries `pills`/`modelMix` off the
+                # child's estimate.json via the LocalAdapter). Plus the persisted
+                # captain override so the panel can pre-fill its steer field.
+                child = {"id": card["id"], "issue": card.get("issue"),
+                         "title": card.get("title"), "stage": card.get("stage"),
+                         "type": card.get("type"),
+                         "pills": card.get("pills"),
+                         "modelMix": card.get("modelMix")}
+                ov = _read_json_key(sp, "modelOverride")
+                if isinstance(ov, dict) and ov.get("scope") and ov.get("tier"):
+                    child["override"] = "%s:%s" % (ov["scope"], ov["tier"])
+                out.append(child)
         return out
+
+    def _normalize_override(self, raw, parent):
+        """Normalize one free-form per-bug steer, reusing the daemon worker seam.
+
+        Deterministic-first; for the inconclusive long tail it falls back to ONE
+        bounded `_worker_turn` (the SAME cold-worker seam tests stub) on the
+        PARENT mission's persisted engine (BUG-C inheritance), applying the Align
+        normalization instruction. Returns {scope,tier} or None.
+        """
+        engine = self._persisted_worker_bin(parent)
+
+        def _worker(text):
+            prompt = _OVERRIDE_FALLBACK_PROMPT + text + "\n"
+            return self._worker_turn(prompt, engine=engine)
+
+        return normalize_override(raw, worker=_worker)
+
+    def _apply_child_overrides(self, parent, overrides):
+        """Persist the post-File per-bug overrides onto ALREADY-FILED children.
+
+        Pairs each override POSITIONALLY with the linked children in the SAME
+        order the review panel renders them (_linked_children → sorted by mission
+        dir name). Each non-blank steer is NORMALIZED to {scope,tier} (passthrough
+        structured → deterministic parse → bounded worker fallback; S74 follow-up)
+        and written to the child's state.json.modelOverride — the lever run.sh's
+        active_model_override reads, so resolve-logs drives that child on the
+        chosen model with zero skill changes.
+
+        Returns a per-child report [{id, raw, resolved, label, error}] so the
+        caller can echo the resolved steer / surface a normalization error.
+        Blank entries are SKIPPED (no clobber of an earlier File-time steer);
+        an UNPARSEABLE entry is reported with an `error` and NOT persisted — never
+        a silent drop onto the default model.
+        """
+        overrides = list(overrides or [])
+        report = []
+        if not overrides:
+            return report
+        children = self._linked_children(parent)
+        for i, child in enumerate(children):
+            if i >= len(overrides):
+                break
+            ov = overrides[i]
+            if not (isinstance(ov, str) and ov.strip()):
+                continue
+            resolved = self._normalize_override(ov, parent)
+            if resolved is None:
+                report.append({"id": child["id"], "raw": ov.strip(),
+                               "resolved": None, "label": None,
+                               "error": _override_error(ov)})
+                continue
+            self._write_child_override(
+                child["id"], resolved["scope"], resolved["tier"])
+            report.append({"id": child["id"], "raw": ov.strip(),
+                           "resolved": resolved,
+                           "label": _override_label(resolved), "error": None})
+        return report
+
+    def _write_child_override(self, mid, scope, tier):
+        sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "state.json")
+        try:
+            with open(sp) as fh:
+                state = json.load(fh)
+        except (OSError, ValueError):
+            return
+        if not isinstance(state, dict):
+            return
+        state["modelOverride"] = {"scope": scope, "tier": tier}
+        with open(sp, "w") as fh:
+            json.dump(state, fh, indent=2)
+            fh.write("\n")
 
     @staticmethod
     def _title_from_idea(idea):

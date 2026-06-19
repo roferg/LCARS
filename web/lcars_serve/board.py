@@ -260,13 +260,26 @@ _MODEL_STAGE_LABELS = {
     "research": "Research", "validate": "Validate", "plan": "Plan",
     "planReview": "Plan Review", "implement": "Implement", "verify": "Verify",
 }
+# S74 follow-up CHANGE 3: a logged bug fast-tracks straight to Plan (lcars-log
+# stamps the child's state.json.stage = "plan"), so it NEVER runs Research or
+# Validate. The display labels of the stages a bug skips — used to drop those
+# rows from the model-mix table even though estimate.json still carries all six.
+_BUG_SKIPPED_STAGE_LABELS = (_MODEL_STAGE_LABELS["research"],
+                             _MODEL_STAGE_LABELS["validate"])
 
 
-def model_mix_from_estimate(estimate):
+def model_mix_from_estimate(estimate, is_bug=False):
     """Build `[{stage, tier, why}]` from estimate.json. None when absent.
 
     Returns None (not []) when there is no `models` map, so the front end shows
     its graceful note rather than an empty table.
+
+    `is_bug` (S74 follow-up CHANGE 3): when True the mission is a logged bug,
+    which skips Research + Validate (fast-track to Plan). Those rows are dropped
+    from the table so the breakdown shows only the stages the bug actually runs
+    (Plan, Plan Review, Implement, Verify) — adapter-neutral, at the shape layer,
+    so already-filed children (whose estimate.json still has all six stages)
+    render correctly too. Cost is untouched (a separate follow-up owns that).
     """
     est = estimate or {}
     models = est.get("models")
@@ -286,7 +299,23 @@ def model_mix_from_estimate(estimate):
         if key not in seen and val:
             rows.append({"stage": _MODEL_STAGE_LABELS.get(key, key),
                          "tier": str(val).strip().lower(), "why": why})
+    if is_bug:
+        rows = filter_bug_mix_rows(rows)
     return rows or None
+
+
+def filter_bug_mix_rows(rows):
+    """Drop the Research + Validate rows from a model-mix list for a logged bug.
+
+    Shared so BOTH read adapters apply the same skip: the local adapter derives
+    rows from estimate.json (via model_mix_from_estimate), the github adapter
+    parses them from the issue body — both feed their rows through here when the
+    mission is a bug. Stage cells are the display labels by this point. None-safe.
+    """
+    if not rows:
+        return rows
+    return [r for r in rows
+            if r.get("stage") not in _BUG_SKIPPED_STAGE_LABELS]
 
 
 def empty_meta():

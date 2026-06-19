@@ -110,6 +110,13 @@ echo "lcars log"
 
 [ -f "$SCRIPT" ] || { echo "script under test not found at $SCRIPT"; exit 1; }
 
+# S74: log.sh now runs the dynamic estimator on each child (best-effort, via
+# $LCARS_RUN_BIN). The behaviours that aren't ABOUT the estimate must NOT spend a
+# real worker — default $LCARS_RUN_BIN to a path that does NOT exist so the
+# estimator step is skipped (log.sh guards on [ -f "$RUN_BIN" ]). The estimator
+# behaviours below set their OWN LCARS_RUN_BIN at the real run.sh with a stub.
+export LCARS_RUN_BIN="$TMPROOT/no-such-run.sh"
+
 # --- Behaviour 1: two bug PRDs in one invocation -> two linked Missions -----
 repo="$(new_repo_with_parent)"
 make_gh_stub "$repo/gh"
@@ -433,6 +440,186 @@ check "14. child state.json OMITS workerBin when no engine is set" \
   "! grep -q 'workerBin' '$B15/state.json'"
 check "14. child state.json (no workerBin) stays valid JSON" \
   "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B15/state.json'"
+
+# --- Behaviour 15: each logged bug gets a dynamic ESTIMATE (S74) -------------
+# A logged bug is just a Mission whose estimate is computed from its bug PRD. It
+# must get the SAME dynamic estimator scoring a top-level Mission gets (cost +
+# reasoning/impl criticality + per-stage model map), persisted as a canonical,
+# always-valid estimate.json on the child — exactly the way file.sh runs the
+# estimator at the end of Align. We REUSE the real run.sh `estimate` entry point,
+# with its cold worker swapped for a canned-estimate stub (same harness as
+# tests/estimate.test.sh). log.sh must locate run.sh via $LCARS_RUN_BIN and run
+# it best-effort (never block the log).
+RUN_BIN_REAL="$REPO_ROOT/skills/lcars-run/run.sh"
+
+# A canned-estimate stub CLI: ignores its prompt, writes $STUB_ESTIMATE (an
+# estimate.json body) into its scratch output dir (LCARS_WORK_OUT). "NONE" ⇒ no
+# file (emulates a worker that produced nothing).
+make_estimator_stub() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+if [ "${STUB_ESTIMATE:-}" = "NONE" ]; then exit 0; fi
+printf '%s\n' "${STUB_ESTIMATE:-}" >"$LCARS_WORK_OUT/estimate.json"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+EST_TRIVIAL='{"schemaVersion":1,"reasoningCriticality":"low","implCriticality":"low","models":{"research":"sonnet","validate":"sonnet","plan":"sonnet","planReview":"sonnet","implement":"sonnet","verify":"sonnet"},"deviations":[],"estimatorModel":"opus"}'
+
+repo16="$(new_repo_with_parent)"
+make_gh_stub "$repo16/gh"
+make_estimator_stub "$repo16/estimator-stub"
+# a repo-root CONTEXT.md so the estimator's context block never spawns a pack
+printf '# Context\nTest repo.\n' >"$repo16/CONTEXT.md"
+export GH_LOG="$repo16/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug16="$repo16/bug.md"; write_bug_prd "$bug16" "Estimated bug" "This bug must carry a dynamic estimate."
+rc16=0
+(
+  cd "$repo16"
+  env -u CLAUDECODE CLAUDECODE=1 \
+    LCARS_GH_BIN="$repo16/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_RUN_BIN="$RUN_BIN_REAL" \
+    LCARS_WORKER_BIN="$repo16/estimator-stub" LCARS_WORKER_CLI=claude \
+    STUB_ESTIMATE="$EST_TRIVIAL" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug16" >out16.txt 2>&1
+) || rc16=$?
+B16="$repo16/.git/lcars/missions/lcars-20260530-002"
+check "15. exits zero filing a bug with the estimator wired" "[ '$rc16' -eq 0 ]"
+check "15. the child bug carries an estimate.json" "[ -f '$B16/estimate.json' ]"
+check "15. child estimate.json is canonical (schemaVersion 3)" \
+  "grep -q '\"schemaVersion\": *3' '$B16/estimate.json'"
+check "15. child estimate.json is valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B16/estimate.json'"
+check "15. child estimate carries reasoningCriticality (enum)" \
+  "grep -Eq '\"reasoningCriticality\": *\"(low|medium|high)\"' '$B16/estimate.json'"
+check "15. child estimate carries implCriticality (enum)" \
+  "grep -Eq '\"implCriticality\": *\"(low|medium|high)\"' '$B16/estimate.json'"
+check "15. child estimate carries a per-stage models map" \
+  "grep -q '\"models\"' '$B16/estimate.json' && grep -Eq '\"implement\": *\"(sonnet|opus)\"' '$B16/estimate.json'"
+check "15. child estimate carries a computed cost block" \
+  "grep -q '\"cost\"' '$B16/estimate.json'"
+
+# --- Behaviour 16: a quote/newline rationale round-trips to valid JSON (S69) -
+# The S69 escaping fix lives inside estimate_validate_and_write; it must still
+# hold through the logged-bug path. A rationale bearing quotes + escaped newlines
+# must produce a still-valid estimate.json on the child.
+EST_QUOTED='{"schemaVersion":1,"reasoningCriticality":"medium","implCriticality":"high","models":{"research":"opus","validate":"opus","plan":"opus","planReview":"sonnet","implement":"opus","verify":"sonnet"},"rationale":"He said \"fix it\" — line one.\n\nLine two with a tab\tand a quote: \".","deviations":[],"estimatorModel":"opus"}'
+repo17="$(new_repo_with_parent)"
+make_gh_stub "$repo17/gh"
+make_estimator_stub "$repo17/estimator-stub"
+printf '# Context\nTest repo.\n' >"$repo17/CONTEXT.md"
+export GH_LOG="$repo17/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug17="$repo17/bug.md"; write_bug_prd "$bug17" "Quoted rationale bug" "Rationale has quotes and newlines."
+rc17=0
+(
+  cd "$repo17"
+  env -u CLAUDECODE CLAUDECODE=1 \
+    LCARS_GH_BIN="$repo17/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_RUN_BIN="$RUN_BIN_REAL" \
+    LCARS_WORKER_BIN="$repo17/estimator-stub" LCARS_WORKER_CLI=claude \
+    STUB_ESTIMATE="$EST_QUOTED" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug17" >out17.txt 2>&1
+) || rc17=$?
+B17="$repo17/.git/lcars/missions/lcars-20260530-002"
+check "16. exits zero with a quote/newline rationale" "[ '$rc17' -eq 0 ]"
+check "16. child estimate.json (quoted rationale) stays valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B17/estimate.json'"
+
+# --- Behaviour 17: estimator best-effort — a missing/empty estimate never blocks
+# When the worker produces NOTHING, the bug must STILL file (state.json + prd.md)
+# and lcars log must exit 0 — mirroring file.sh's never-block degradation.
+repo18="$(new_repo_with_parent)"
+make_gh_stub "$repo18/gh"
+make_estimator_stub "$repo18/estimator-stub"
+printf '# Context\nTest repo.\n' >"$repo18/CONTEXT.md"
+export GH_LOG="$repo18/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug18="$repo18/bug.md"; write_bug_prd "$bug18" "No-estimate bug" "Estimator produces nothing."
+rc18=0
+(
+  cd "$repo18"
+  env -u CLAUDECODE CLAUDECODE=1 \
+    LCARS_GH_BIN="$repo18/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_RUN_BIN="$RUN_BIN_REAL" \
+    LCARS_WORKER_BIN="$repo18/estimator-stub" LCARS_WORKER_CLI=claude \
+    STUB_ESTIMATE="NONE" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug18" >out18.txt 2>&1
+) || rc18=$?
+B18="$repo18/.git/lcars/missions/lcars-20260530-002"
+check "17. exits zero when the estimator produces nothing" "[ '$rc18' -eq 0 ]"
+check "17. bug still filed (state.json) without an estimate" "[ -f '$B18/state.json' ]"
+check "17. bug still filed (prd.md) without an estimate" "[ -f '$B18/prd.md' ]"
+check "17. no estimate.json when the worker produced nothing" "[ ! -f '$B18/estimate.json' ]"
+
+# --- Behaviour 18: a captain per-bug override persists into state.json (S74) --
+# The captain steers the model in the Mission-Log review panel. We reuse the
+# EXACT lever file.sh uses: --model-override "<scope>:<tier>" persisted into the
+# child's state.json.modelOverride = { "scope": "...", "tier": "..." }, which
+# run.sh's active_model_override picks up natively (no resolve-logs change).
+repo19="$(new_repo_with_parent)"
+make_gh_stub "$repo19/gh"
+export GH_LOG="$repo19/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug19="$repo19/bug.md"; write_bug_prd "$bug19" "Overridden bug" "Captain steers the model to opus."
+rc19=0
+(
+  cd "$repo19"
+  LCARS_GH_BIN="$repo19/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_RUN_BIN="$repo19/no-run.sh" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug19" --model-override "all:opus" >out19.txt 2>&1
+) || rc19=$?
+B19="$repo19/.git/lcars/missions/lcars-20260530-002"
+check "18. exits zero with a per-bug model override" "[ '$rc19' -eq 0 ]"
+check "18. child state.json persists modelOverride.scope" \
+  "grep -q '\"modelOverride\".*\"scope\": *\"all\"' '$B19/state.json'"
+check "18. child state.json persists modelOverride.tier" \
+  "grep -q '\"tier\": *\"opus\"' '$B19/state.json'"
+check "18. child state.json (with override) stays valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B19/state.json'"
+
+# --- Behaviour 19: per-PRD override pairing (S74) ---------------------------
+# When multiple bugs are filed in one invocation, --model-override values pair
+# positionally with --prd values, so each bug carries its OWN override (the
+# Launch panel's per-card override). A bug with no paired override gets none.
+repo20="$(new_repo_with_parent)"
+make_gh_stub "$repo20/gh"
+export GH_LOG="$repo20/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug20a="$repo20/b1.md"; write_bug_prd "$bug20a" "First override bug" "Opus me."
+bug20b="$repo20/b2.md"; write_bug_prd "$bug20b" "Second default bug" "Leave me default."
+rc20=0
+(
+  cd "$repo20"
+  LCARS_GH_BIN="$repo20/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    LCARS_RUN_BIN="$repo20/no-run.sh" \
+    bash "$SCRIPT" --parent lcars-20260530-001 \
+      --prd "$bug20a" --model-override "all:opus" \
+      --prd "$bug20b" --model-override "" >out20.txt 2>&1
+) || rc20=$?
+B20A="$repo20/.git/lcars/missions/lcars-20260530-002"
+B20B="$repo20/.git/lcars/missions/lcars-20260530-003"
+check "19. exits zero with per-PRD overrides" "[ '$rc20' -eq 0 ]"
+check "19. first bug carries its own override (all:opus)" \
+  "grep -q '\"modelOverride\"' '$B20A/state.json' && grep -q '\"scope\": *\"all\"' '$B20A/state.json'"
+check "19. second bug carries NO override" \
+  "! grep -q 'modelOverride' '$B20B/state.json'"
+check "19. both children stay valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B20A/state.json' && python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B20B/state.json'"
+
+# --- Behaviour 20: a malformed override is rejected BEFORE filing (S74) ------
+# Mirrors file.sh: a bad --model-override stops the log with a non-zero exit and
+# files nothing partial.
+repo21="$(new_repo_with_parent)"
+make_gh_stub "$repo21/gh"
+export GH_LOG="$repo21/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug21="$repo21/bug.md"; write_bug_prd "$bug21" "Bad override bug" "Override is malformed."
+rc21=0
+(
+  cd "$repo21"
+  LCARS_GH_BIN="$repo21/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug21" --model-override "banana:opus" >out21.txt 2>&1
+) || rc21=$?
+check "20. refuses (non-zero) on a malformed override scope" "[ '$rc21' -ne 0 ]"
+check "20. files no bug mission on a malformed override" \
+  "[ ! -d '$repo21/.git/lcars/missions/lcars-20260530-002' ]"
 
 # ==========================================================================
 echo

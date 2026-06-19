@@ -322,6 +322,27 @@ class LocalAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "m-noest")
         self.assertIsNone(m["modelMix"])
 
+    # ── S74 follow-up CHANGE 3: a logged BUG fast-tracks past Research+Validate,
+    # so its model-mix table must omit those rows even though estimate.json still
+    # carries all six stages. Adapter-neutral: the filter lives in the shared
+    # shape layer (board.model_mix_from_estimate), keyed off mission type. ──
+    def test_bug_mission_mix_omits_research_and_validate(self):
+        fx.plant_simple(self.tmp, "m-bugmix", stage="plan", mtype="bug",
+                        parent_mission="m-001")
+        m = self._by_id(self._board(), "m-bugmix")
+        self.assertIsNotNone(m["modelMix"])
+        stages = [r["stage"] for r in m["modelMix"]]
+        self.assertEqual(stages, ["Plan", "Plan Review", "Implement", "Verify"])
+        self.assertNotIn("Research", stages)
+        self.assertNotIn("Validate", stages)
+
+    def test_feature_mission_mix_keeps_all_six_stages(self):
+        fx.plant_simple(self.tmp, "m-featmix", stage="plan")
+        m = self._by_id(self._board(), "m-featmix")
+        stages = [r["stage"] for r in m["modelMix"]]
+        self.assertEqual(stages, ["Research", "Validate", "Plan",
+                                  "Plan Review", "Implement", "Verify"])
+
     # ── S70-B2: ADRs (from adr.md) ──
     def test_adrs_parsed_from_adr_md(self):
         d = fx.plant_simple(self.tmp, "m-adr", stage="plan")

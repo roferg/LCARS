@@ -394,6 +394,225 @@ class LogTest(WriteEndpointBase):
         rec = self._record_when("resolve", "m-001")
         self.assertIn("m-001", rec)
 
+    # ── S74: the review panel carries the estimate per logged bug ─────────────
+    def test_log_preview_children_carry_estimate_pills_and_model(self):
+        """The Mission-Log review response must surface, PER bug, the cost pill +
+        two difficulty pills + the suggested per-stage model mix — REUSING the
+        same board.py components a Mission card/Launch panel uses. The estimate
+        is read off each filed child's estimate.json (file-then-review flow)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE)
+        status, body = self._post("/api/mission/m-001/log", {})
+        self.assertEqual(status, 200)
+        kids = {c["id"]: c for c in body["state"]["children"]}
+        c = kids["m-bug1"]
+        # ONE cost pill
+        self.assertIn("pills", c)
+        self.assertIsNotNone(c["pills"].get("cost"))
+        # TWO difficulty pills (reasoning + implementation)
+        self.assertIsNotNone(c["pills"].get("reasoning"))
+        self.assertIsNotNone(c["pills"].get("implementation"))
+        self.assertEqual(c["pills"]["reasoning"]["level"], "medium")
+        self.assertEqual(c["pills"]["implementation"]["level"], "high")
+        # the suggested per-stage model map (the same shape Launch renders).
+        # S74 follow-up CHANGE 3: a logged bug skips Research+Validate, so the
+        # review-panel mix omits those rows and starts at Plan.
+        self.assertTrue(c.get("modelMix"))
+        stage_order = [row["stage"] for row in c["modelMix"]]
+        self.assertEqual(stage_order,
+                         ["Plan", "Plan Review", "Implement", "Verify"])
+        stages = {row["stage"]: row["tier"] for row in c["modelMix"]}
+        self.assertNotIn("Research", stages)
+        self.assertNotIn("Validate", stages)
+        self.assertEqual(stages.get("Plan Review"), "sonnet")
+
+    def test_log_preview_child_without_estimate_degrades_gracefully(self):
+        """A child with no estimate.json yet must still list — with a null/absent
+        cost pill — never crash the panel (estimator-unavailable parity)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan")
+        status, body = self._post("/api/mission/m-001/log", {})
+        self.assertEqual(status, 200)
+        c = {x["id"]: x for x in body["state"]["children"]}["m-bug1"]
+        self.assertIn("pills", c)
+        self.assertIsNone(c["pills"].get("cost"))
+        self.assertIsNone(c.get("modelMix"))
+
+    def test_log_preview_child_surfaces_persisted_override(self):
+        """When the captain steered a bug's model, the persisted override must
+        ride the review-panel child so the panel can pre-fill its field."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE, override="all:opus")
+        status, body = self._post("/api/mission/m-001/log", {})
+        c = {x["id"]: x for x in body["state"]["children"]}["m-bug1"]
+        self.assertEqual(c.get("override"), "all:opus")
+
+    # ── S74: a dedicated FILE step (file-then-review-then-run) ────────────────
+    def test_log_file_files_children_with_per_bug_overrides(self):
+        """`log_file` files the authored bugs via log.sh (blocking, so the
+        estimator runs + the children exist on return) and threads each captain
+        override to log.sh via the EXACT file.sh lever (--model-override paired
+        positionally with --prd). It returns the enriched filed children for the
+        review panel; it does NOT resolve (Run Fixes does that)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001",
+                         prds=["# Bug: a\n\nbody a", "# Bug: b\n\nbody b"],
+                         overrides=["all:opus", ""])
+        log_rec = self._record("log")
+        self.assertIn("--parent m-001", log_rec)
+        # the file.sh override lever, paired per PRD
+        self.assertIn("--model-override all:opus", log_rec)
+        # log_file must NOT dispatch resolve (review happens first)
+        self.assertTrue(self._not_invoked("resolve"))
+
+    def test_log_run_threads_per_bug_overrides_to_log(self):
+        """The File & Run path must also carry per-bug overrides into log.sh so a
+        captain who steers then runs in one click still persists each steer."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_run("m-001", prds=["# Bug: a\n\nb"], overrides=["reasoning:opus"])
+        log_rec = self._record("log")
+        self.assertIn("--model-override reasoning:opus", log_rec)
+
+    # ── S74 follow-up CHANGE 4: with the override box living in the POST-File
+    # breakdown, the captain edits the steers AFTER the bugs are filed, then
+    # clicks Run Fixes with NO prds (the bugs already exist). Those override
+    # values must still thread to each ALREADY-FILED child — persisted as
+    # state.json.modelOverride, the EXACT lever run.sh's active_model_override
+    # reads — so resolve-logs drives each child on the captain's chosen model. ──
+    def test_log_run_applies_post_file_overrides_to_filed_children(self):
+        import json
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE)
+        _plant_bug(self.tmp, "m-bug2", parent="m-001", issue=202, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        # no prds (already filed); overrides pair positionally with the children
+        # in the same order the review panel renders them (_linked_children order).
+        actions.log_run("m-001", prds=[], overrides=["all:opus", "reasoning:sonnet"])
+        # each child's state.json now carries the persisted modelOverride.
+        def _ov(mid):
+            p = os.path.join(fx.mission_dir(self.tmp, mid), "state.json")
+            with open(p) as fh:
+                return json.load(fh).get("modelOverride")
+        self.assertEqual(_ov("m-bug1"), {"scope": "all", "tier": "opus"})
+        self.assertEqual(_ov("m-bug2"), {"scope": "reasoning", "tier": "sonnet"})
+        # and resolve was still dispatched for the batch.
+        self.assertFalse(self._not_invoked("resolve"))
+
+    def test_log_run_blank_post_file_override_leaves_child_unsteered(self):
+        """A blank override at Run Fixes must not stamp a steer (no-op), and must
+        not clobber an override the captain set at File time."""
+        import json
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE, override="all:opus")
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_run("m-001", prds=[], overrides=[""])
+        p = os.path.join(fx.mission_dir(self.tmp, "m-bug1"), "state.json")
+        with open(p) as fh:
+            ov = json.load(fh).get("modelOverride")
+        self.assertEqual(ov, {"scope": "all", "tier": "opus"})
+
+    # ── S74 FOLLOW-UP: plain-language per-bug overrides are NORMALIZED (not
+    # silently dropped). A logged bug skips Align, so the daemon gives the
+    # override the SAME normalization Align's worker gives a Mission: passthrough
+    # structured → deterministic parse → bounded worker fallback → never drop. ──
+    def test_log_run_normalizes_plain_language_override_end_to_end(self):
+        """A plain-language steer on a logged bug must end up as the correct
+        {scope,tier} in the child's state.json (so run.sh active_model_override
+        would resolve Opus). 'Opus 4.8' is deterministic → no worker needed."""
+        import json
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        # poison the worker turn: a deterministic value must NOT call out.
+        actions._worker_turn = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("deterministic override must not hit the worker"))
+        result = actions.log_run("m-001", prds=[], overrides=["Opus 4.8"])
+        p = os.path.join(fx.mission_dir(self.tmp, "m-bug1"), "state.json")
+        with open(p) as fh:
+            self.assertEqual(json.load(fh).get("modelOverride"),
+                             {"scope": "all", "tier": "opus"})
+        # the response carries the RESOLVED steer per child (so the UI can echo it)
+        resolved = result.get("overrides")
+        self.assertTrue(resolved, "log_run must report the resolved overrides")
+        r0 = resolved[0]
+        self.assertEqual(r0.get("id"), "m-bug1")
+        self.assertEqual(r0.get("resolved"), {"scope": "all", "tier": "opus"})
+        self.assertIn("opus", (r0.get("label") or "").lower())
+        self.assertIsNone(r0.get("error"))
+
+    def test_log_run_uses_worker_fallback_for_tierless_phrasing(self):
+        """A tier-less phrasing the deterministic parser can't map goes to ONE
+        bounded worker call (the reused daemon worker seam); its reply is parsed
+        and persisted to the child's modelOverride."""
+        import json
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="copilot")
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        seen = {}
+
+        def _fake_turn(prompt, engine=None, **k):
+            seen["engine"] = engine
+            seen["prompt"] = prompt
+            return "reasoning:opus"
+
+        actions._worker_turn = _fake_turn
+        result = actions.log_run("m-001", prds=[],
+                                 overrides=["make the thinking smarter"])
+        # the fallback reused the daemon worker seam, on the PARENT's engine.
+        self.assertEqual(seen.get("engine"), "copilot")
+        p = os.path.join(fx.mission_dir(self.tmp, "m-bug1"), "state.json")
+        with open(p) as fh:
+            self.assertEqual(json.load(fh).get("modelOverride"),
+                             {"scope": "reasoning", "tier": "opus"})
+        self.assertEqual(result["overrides"][0].get("resolved"),
+                         {"scope": "reasoning", "tier": "opus"})
+
+    def test_log_run_unparseable_override_surfaces_error_no_silent_drop(self):
+        """Unparseable input + worker returns 'null' ⇒ the response carries a
+        normalization ERROR and the child's modelOverride is NOT set to a wrong
+        value (never silent-drop onto the default model)."""
+        import json
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions._worker_turn = lambda *a, **k: "null"
+        result = actions.log_run("m-001", prds=[], overrides=["asdf qwer zzz"])
+        # NO modelOverride was written (no wrong/default value stamped).
+        p = os.path.join(fx.mission_dir(self.tmp, "m-bug1"), "state.json")
+        with open(p) as fh:
+            self.assertNotIn("modelOverride", json.load(fh))
+        # the error is surfaced per child so the panel can show it.
+        r0 = result["overrides"][0]
+        self.assertEqual(r0.get("id"), "m-bug1")
+        self.assertIsNone(r0.get("resolved"))
+        self.assertTrue(r0.get("error"),
+                        "an unparseable override must carry a normalization error")
+        self.assertIn("asdf qwer zzz", r0["error"])
+
+    def test_log_file_normalizes_plain_language_before_log_sh(self):
+        """File-time path: a plain-language override must be NORMALIZED to
+        <scope>:<tier> BEFORE it threads to log.sh (which dies on a bad value).
+        log.sh therefore receives the structured form."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions._worker_turn = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("deterministic override must not hit the worker"))
+        actions.log_file("m-001",
+                         prds=["# Bug: a\n\nbody a"],
+                         overrides=["use Opus the whole way"])
+        log_rec = self._record("log")
+        # the structured form reached log.sh, NOT the raw plain language.
+        self.assertIn("--model-override all:opus", log_rec)
+        self.assertNotIn("Opus the whole way", log_rec)
+
     # ── BUG-C: the Log worker inherits the PARENT mission's persisted engine ──
     def test_log_author_uses_parent_persisted_engine(self):
         """`_log_author` must drive its worker turn on the PARENT's persisted
@@ -616,14 +835,21 @@ class ReadOnlyGatingTest(unittest.TestCase):
         self.assertEqual(GitHubAdapter.name, "github")
 
 
-def _plant_bug(root, mid, *, parent, issue, stage="plan"):
+def _plant_bug(root, mid, *, parent, issue, stage="plan", estimate=None,
+               override=None):
     d = fx.mission_dir(root, mid)
-    fx.write_json(os.path.join(d, "state.json"), {
+    state = {
         "id": mid, "type": "bug", "title": "Bug " + mid, "stage": stage,
         "created": "2026-06-14T10:00:00Z", "githubIssue": issue,
         "parentMission": parent, "linked": True,
         "branch": "lcars/%s" % mid, "base": "main",
-    })
+    }
+    if override is not None:
+        scope, _, tier = override.partition(":")
+        state["modelOverride"] = {"scope": scope, "tier": tier}
+    fx.write_json(os.path.join(d, "state.json"), state)
+    if estimate is not None:
+        fx.write_json(os.path.join(d, "estimate.json"), estimate)
 
 
 if __name__ == "__main__":

@@ -115,6 +115,13 @@ class GitHubAdapter(object):
         body = issue.get("body") or ""
         pills = _pills_from_body(body)
         model_mix = _model_mix_from_body(body)
+        # S74 follow-up CHANGE 3: a logged bug skips Research+Validate, so drop
+        # those rows from its model-mix table for adapter parity with the local
+        # adapter. The github adapter knows a bug by its labels (lcars:bug /
+        # lcars:linked). Shared filter (board.filter_bug_mix_rows) keeps the skip
+        # identical across both adapters.
+        if model_mix and ("lcars:bug" in labels or _LINKED_LABEL in labels):
+            model_mix = board.filter_bug_mix_rows(model_mix) or None
         question = _gate_question(issue) if awaiting else None
         tickets = _tickets_for(issue, issues)
         progress = None  # GitHub progress lives in the mirrored Implement comment
