@@ -385,5 +385,98 @@ e9b="$(estimate_typed_mission "$r9b" feature "$EST_COSTED" LCARS_WORKER_CLI=copi
 check "9e. copilot feature premiumRequests == 162/324 (full six-stage)" \
   "python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))[\"cost\"][\"premiumRequests\"]; sys.exit(0 if float(c[\"low\"])==162 and float(c[\"high\"])==324 else 1)' '$e9b'"
 
+# === Behavior 10: robust JSON-string escaping for ALL worker string fields ===
+# (S69) The harness hand-builds estimate.json with printf and only partially
+# escaped one field. A stray char in rationale / a deviations[] entry /
+# estimatorModel could emit INVALID JSON on disk (the S67 local board adapter
+# then loses that Mission's pills). Every worker-derived STRING field must
+# round-trip through a REAL JSON encoder so the on-disk file is always valid.
+#
+# A python json-value extractor for asserting a string field's decoded value.
+jval() { # file dotted.path → decoded value to stdout
+  python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."):
+    if k.isdigit() and isinstance(d,list): d=d[int(k)]
+    else: d=d[k]
+sys.stdout.write(d if isinstance(d,str) else json.dumps(d))
+' "$1" "$2"
+}
+
+# 10a/b/c — rationale with an embedded quote AND a literal newline.
+# In JSON source the newline is the escape \n; json_scoped_str leaves it as the
+# two chars backslash-n, and rationale must re-encode to a valid \n token.
+EST_RNL='{"schemaVersion":1,"reasoningCriticality":"medium","implCriticality":"high","models":{"research":"opus","validate":"opus","plan":"opus","planReview":"sonnet","implement":"opus","verify":"sonnet"},"rationale":"Quote: \"alpha\".\n\nLine two here.","deviations":[],"estimatorModel":"opus"}'
+r10="$(new_repo)"
+e10="$(estimate_typed_mission "$r10" feature "$EST_RNL")"
+check "10a. quote+newline rationale ⇒ estimate.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$e10'"
+check "10b. quote+newline rationale ⇒ the quote text survives" \
+  "[ \"\$(jval '$e10' rationale | head -1)\" = 'Quote: \"alpha\".' ]"
+check "10c. quote+newline rationale ⇒ a real newline is present in the value" \
+  "python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))[\"rationale\"]; sys.exit(0 if \"\n\" in r and \"alpha\" in r and \"Line two\" in r else 1)' '$e10'"
+
+# 10d/e — a BACKSLASH (and JSON-hostile chars) in rationale AND a deviations[]
+# entry. In JSON source a backslash is \\; json_scoped_str decodes it to one \,
+# which must be re-encoded back to \\ (else invalid JSON).
+EST_BSLASH='{"schemaVersion":1,"reasoningCriticality":"low","implCriticality":"low","models":{"research":"sonnet","validate":"sonnet","plan":"sonnet","planReview":"sonnet","implement":"sonnet","verify":"sonnet"},"rationale":"path C:\\\\temp\\\\x and a tab\\there","deviations":["regex \\\\d+ matched","quoted \"thing\" inside"],"estimatorModel":"opus"}'
+r11="$(new_repo)"
+e11="$(estimate_typed_mission "$r11" feature "$EST_BSLASH")"
+check "10d. backslash-in-rationale ⇒ estimate.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$e11'"
+check "10e. backslash rationale value preserved (a literal backslash survives)" \
+  "python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))[\"rationale\"]; sys.exit(0 if \"C:\\\\\\\\temp\" in r else 1)' '$e11'"
+check "10f. backslash-bearing deviations[] entry preserved" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))[\"deviations\"]; sys.exit(0 if any(\"d+\" in x and \"regex\" in x for x in d) else 1)' '$e11'"
+check "10g. quote-bearing deviations[] entry preserved" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))[\"deviations\"]; sys.exit(0 if any(\"thing\" in x for x in d) else 1)' '$e11'"
+
+# 10h/i — a deviations[] entry carrying a quote and a newline → valid JSON, kept.
+EST_DEVNL='{"schemaVersion":1,"reasoningCriticality":"low","implCriticality":"low","models":{"research":"sonnet","validate":"sonnet","plan":"sonnet","planReview":"sonnet","implement":"sonnet","verify":"sonnet"},"deviations":["implement: said \"race\"\nplus a second line"],"estimatorModel":"opus"}'
+r12="$(new_repo)"
+e12="$(estimate_typed_mission "$r12" feature "$EST_DEVNL")"
+check "10h. quote+newline deviations[] entry ⇒ VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$e12'"
+check "10i. quote+newline deviations[] entry preserved" \
+  "python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))[\"deviations\"]; sys.exit(0 if any(\"race\" in x and \"second line\" in x for x in d) else 1)' '$e12'"
+
+# 10j — a JSON-hostile estimatorModel string → valid JSON, value preserved.
+EST_EM='{"schemaVersion":1,"reasoningCriticality":"low","implCriticality":"low","models":{"research":"sonnet","validate":"sonnet","plan":"sonnet","planReview":"sonnet","implement":"sonnet","verify":"sonnet"},"deviations":[],"rationale":"ok","estimatorModel":"weird\"model\\name"}'
+r13="$(new_repo)"
+e13="$(estimate_typed_mission "$r13" feature "$EST_EM")"
+check "10j. hostile estimatorModel ⇒ VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$e13'"
+check "10k. hostile estimatorModel value preserved" \
+  "python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))[\"estimatorModel\"]; sys.exit(0 if \"weird\" in m and \"model\" in m else 1)' '$e13'"
+
+# 10l — REGRESSION: a clean estimate stays byte-for-byte equivalent to before.
+# We compare a clean fixture rendered today against a captured golden so a future
+# encoder change can't silently alter the on-disk bytes for normal input.
+# (EST_COSTED is a clean six-stage feature fixture with a plain rationale.)
+r14="$(new_repo)"
+e14="$(estimate_typed_mission "$r14" feature "$EST_COSTED")"
+check "10l. clean estimate ⇒ VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$e14'"
+check "10m. clean estimate ⇒ plain rationale is the simple printf form (no over-escaping)" \
+  "grep -q '\"rationale\": \"costed fixture\",' '$e14'"
+check "10n. clean estimate ⇒ estimatorModel is the simple printf form" \
+  "grep -q '\"estimatorModel\": \"opus\"' '$e14'"
+# A clean single deviation must render exactly as the old printf would.
+EST_CLEANDEV='{"schemaVersion":1,"reasoningCriticality":"low","implCriticality":"low","models":{"research":"sonnet","validate":"sonnet","plan":"sonnet","planReview":"sonnet","implement":"sonnet","verify":"sonnet"},"deviations":["implement: subtle concurrency"],"rationale":"plain text","estimatorModel":"opus"}'
+r15="$(new_repo)"
+e15="$(estimate_typed_mission "$r15" feature "$EST_CLEANDEV")"
+check "10o. clean deviation ⇒ rendered as a plain quoted token" \
+  "grep -q '\"deviations\": \\[ \"implement: subtle concurrency\" \\],' '$e15'"
+
+# 10p — truly unrecoverable model output ⇒ NO malformed estimate.json written
+# (degrades the documented way: bad enum → rejected → no file).
+EST_JUNK='{"schemaVersion":1,"reasoningCriticality":"nope","models":{}}'
+r16="$(new_repo)"
+file_with_estimate "$r16" "$EST_JUNK" || true
+m16="$(MDIR "$r16")"
+check "10p. unrecoverable output ⇒ no estimate.json (clean degrade)" \
+  "[ ! -f '$m16/estimate.json' ]"
+
 echo "estimate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

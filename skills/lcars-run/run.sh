@@ -205,6 +205,55 @@ json_scoped_num() { # file dotted.path → number (or empty for absent/null)
   printf '%s' "$v"
 }
 
+# json_encode_string — emit a properly-escaped JSON STRING TOKEN (INCLUDING the
+# surrounding double-quotes) for an arbitrary raw value. This is the SINGLE source
+# of string escaping for the canonical estimate.json: every worker-derived string
+# (rationale, each deviations[] entry, estimatorModel) is decoded by json_scoped_str
+# then re-encoded through here, so quotes, newlines, tabs, backslashes and other
+# control chars all round-trip as valid JSON instead of corrupting the file (S69).
+#
+# It delegates to a REAL encoder (python3, already a harness dependency) — never a
+# hand-rolled printf — so the escaping is correct by construction. For a CLEAN
+# string with no special chars, json.dumps produces EXACTLY `"<s>"`, byte-identical
+# to the old `printf '"%s"'`, so a normal estimate stays byte-for-byte equivalent
+# (no regression). The value arrives on STDIN so no argv quoting can mangle it; the
+# trailing newline python emits is stripped so the token embeds inline cleanly.
+json_encode_string() { # raw-string (via $1) → "escaped json string token"
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c \
+    'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'
+}
+
+# json_scoped_raw — like json_scoped_str but returns the string token's RAW
+# (still-JSON-ESCAPED) body, WITHOUT any decoding. The caller can then FULLY and
+# unambiguously decode it (json_decode_string) — important for fields like
+# rationale where \n vs a literal backslash must not be conflated (the half-decode
+# in json_scoped_str loses that distinction). jq-free; same brace-accurate scope.
+json_scoped_raw() { # file dotted.path → raw escaped string body (or empty)
+  local file="$1" path="$2"
+  [ -f "$file" ] || return 0
+  local blob; blob="$(tr -d '\n' <"$file")"
+  local key="${path##*.}" parents="${path%.*}"
+  if [ "$parents" != "$path" ]; then
+    local seg
+    local IFS='.'
+    for seg in $parents; do
+      blob="$(_json_scope_into "$blob" "$seg")"
+      [ -n "$blob" ] || return 0
+    done
+  fi
+  printf '%s' "$blob" \
+    | sed -En "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" \
+    | head -1
+}
+
+# json_decode_string — fully decode a RAW JSON string body (the chars BETWEEN the
+# quotes, e.g. from json_scoped_raw) into its literal value: \n→newline, \t→tab,
+# \\→\, \"→", \uXXXX→char. Uses the real JSON parser so the decode is exact.
+json_decode_string() { # raw-escaped-body (via $1) → literal string
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c \
+    'import json,sys; sys.stdout.write(json.loads("\"" + sys.stdin.read() + "\""))' 2>/dev/null
+}
+
 # --- tiny JSON writers (pretty, one-field-per-line state.json) --------------
 # state.json is written one field per line (see file.sh), so we edit it by the
 # line. New fields are inserted right after the opening brace — always valid
@@ -2949,7 +2998,10 @@ estimate_validate_and_write() { # src-json
     printf '%s' "$v" | grep -Eq "$tierre" || return 1
     eval "TIER_$k=\$v"
   done
-  local em; em="$(json_scoped_str "$src" estimatorModel)"; [ -n "$em" ] || em="opus"
+  # estimatorModel: a free-form model-name string. Read RAW + fully decode so any
+  # JSON-hostile char in it round-trips, then it is re-encoded on emit via the
+  # single JSON encoder (S69 — was previously emitted bare → could break the file).
+  local em; em="$(json_decode_string "$(json_scoped_raw "$src" estimatorModel)")"; [ -n "$em" ] || em="opus"
   # --- schemaVersion-2 fields (session 60) ---------------------------------
   # Per-stage TOKEN + REQUEST estimates. Repair malformed/absent worker output:
   # a non-negative integer survives; anything else (missing key, junk, negative)
@@ -2962,15 +3014,22 @@ estimate_validate_and_write() { # src-json
     n="$(json_scoped_num "$src" "requestEstimates.$k.high")";eval "REQHI_$k=\$(canon_nonneg_int \"\$n\")"
   done
   # rationale: a single JSON string, repaired to AT MOST 2 paragraphs (blank-line
-  # separated). json_scoped_str DECODES the value (collapsing \" → " and \\ → \),
-  # so after the clamp we must RE-ESCAPE bare quotes before re-emitting it into the
-  # canonical JSON — otherwise a rationale carrying an embedded quote (e.g. the
-  # worker quoting code or the captain) would emit INVALID JSON. (S69 + S74: the
-  # logged-bug path exercises this, so the fix must hold here too.) Backslashes
-  # surviving the decode are valid JSON escape introducers (\n, \t, …) — left as is.
-  local rationale; rationale="$(json_scoped_str "$src" rationale)"
+  # separated). We read the RAW token and FULLY decode it (json_scoped_raw +
+  # json_decode_string) so \n / \t / \\ / \" all become their literal characters
+  # UNAMBIGUOUSLY — the old half-decode (json_scoped_str) conflated a literal
+  # backslash with a \n escape introducer, which is the S69 corruption bug. The
+  # clamp then splits on a REAL blank line, and the FINAL escaping is done once,
+  # robustly, through the single JSON encoder (see _estimate_emit). This makes a
+  # rationale carrying an embedded quote, newline OR backslash round-trip as VALID
+  # JSON (S74's logged-bug path exercises the same code so the fix holds there too).
+  local rationale; rationale="$(json_decode_string "$(json_scoped_raw "$src" rationale)")"
   rationale="$(rationale_clamp "$rationale")"
-  rationale="$(rationale_reescape_quotes "$rationale")"
+  # Encode every worker-derived STRING field through the SINGLE JSON encoder so the
+  # canonical file is always valid JSON, whatever chars the worker emitted (S69).
+  # Each token below ALREADY INCLUDES its surrounding quotes. For clean input the
+  # encoder produces exactly `"<s>"` — byte-identical to the old printf '"%s"'.
+  local rationale_tok; rationale_tok="$(json_encode_string "$rationale")"
+  local em_tok; em_tok="$(json_encode_string "$em")"
   # Re-emit a CANONICAL estimate.json. The `cost` block is COMPUTED BY CODE from
   # the token/request estimates + pricing.json + the active CLI — NEVER trusted
   # from the worker. We write the file once WITHOUT cost, compute against it, then
@@ -3010,11 +3069,11 @@ estimate_validate_and_write() { # src-json
     done
     printf '\n  },\n'
     printf '  "deviations": [%s],\n' "$devs"
-    printf '  "rationale": "%s",\n' "$rationale"
+    printf '  "rationale": %s,\n' "$rationale_tok"
     if [ -n "$cost" ]; then
       printf '  "cost": %s,\n' "$cost"
     fi
-    printf '  "estimatorModel": "%s"\n' "$em"
+    printf '  "estimatorModel": %s\n' "$em_tok"
     printf '}\n'
   }
   _estimate_emit "" >"$out"
@@ -3034,41 +3093,48 @@ canon_nonneg_int() { # value → integer
   esac
 }
 
-# Re-escape BARE double-quotes in a JSON string value that has already been DECODED
-# by json_scoped_str (which collapses \" → " and \\ → \). Every remaining backslash
-# is therefore a valid escape introducer (\n, \t, \uXXXX, …) and is left untouched;
-# every " is a bare quote that must become \" so the re-emitted JSON stays valid.
-rationale_reescape_quotes() { # decoded-string → string with bare quotes escaped
-  printf '%s' "$1" | sed 's/"/\\"/g'
-}
-
-# Clamp a rationale string to AT MOST 2 paragraphs. Paragraphs are separated by
-# a literal "\n\n" (the JSON-escaped blank line) in the stored string. Keeps the
-# first two; drops the rest. (The string is already JSON-escaped on input.)
-rationale_clamp() { # escaped-string → escaped-string (<= 2 paragraphs)
-  local s="$1"
-  # Split on the escaped paragraph break "\n\n"; keep the first two segments.
-  printf '%s' "$s" | awk '
-    {
-      n = split($0, parts, /\\n\\n/)
-      out = parts[1]
-      if (n >= 2) out = out "\\n\\n" parts[2]
-      printf "%s", out
-    }'
+# Clamp a rationale string to AT MOST 2 paragraphs. The input is the FULLY-DECODED
+# value (real newlines), so paragraphs are separated by a REAL blank line ("\n\n").
+# Keeps the first two; drops the rest. The result is still a literal string — the
+# single JSON encoder (json_encode_string) re-escapes it on emit, so the real
+# newline survives as a proper \n token. awk's RS="" paragraph mode does the split.
+rationale_clamp() { # decoded-string → decoded-string (<= 2 paragraphs)
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re,sys
+s = sys.stdin.read()
+paras = re.split(r"\n[ \t]*\n", s)
+sys.stdout.write("\n\n".join(paras[:2]))
+'
 }
 
 # Extract the deviations[] string entries from the worker's estimate.json and
 # re-emit them as a comma-joined list of JSON strings (for the canonical file's
-# `"deviations": [ … ]`). jq-free: pull the bracketed array body, then each
-# "double-quoted" string inside it. Empty array → empty output.
+# `"deviations": [ … ]`). Each entry is DECODED then RE-ENCODED through the single
+# JSON encoder, so an entry carrying a quote, newline or backslash round-trips as
+# VALID JSON (S69 — they were previously copied verbatim with no re-escaping). The
+# output matches the old `, `-joined, space-padded form, so a CLEAN array renders
+# byte-identically. Empty/absent array → empty output. jq-free (stdlib python).
 estimate_extract_deviations() { # src-json → ` "a", "b" ` or empty
   local src="$1" body
   body="$(tr -d '\n' <"$src" | sed -En 's/.*"deviations"[[:space:]]*:[[:space:]]*\[([^]]*)\].*/\1/p')"
   [ -n "$body" ] || { printf ''; return 0; }
-  # Emit each quoted string verbatim, comma-separated. grep -o pulls the quoted
-  # tokens (incl. their quotes); paste joins them with ", ".
-  printf '%s' "$body" | grep -oE '"([^"\\]|\\.)*"' | paste -sd, - \
-    | sed 's/,/, /g; s/^/ /; s/$/ /'
+  # Pull each raw "double-quoted" token (incl. embedded escapes), then decode +
+  # re-encode each so the canonical entry is correctly escaped exactly once.
+  printf '%s' "$body" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import json,re,sys
+body = sys.stdin.read()
+# Match JSON string tokens, honouring backslash escapes, in array order.
+toks = re.findall(r"\"(?:[^\"\\]|\\.)*\"", body)
+out = []
+for t in toks:
+    try:
+        val = json.loads(t)            # decode the raw token to its literal value
+    except Exception:
+        continue
+    out.append(json.dumps(val))        # re-encode → correctly-escaped token
+if out:
+    sys.stdout.write(" " + ", ".join(out) + " ")
+'
 }
 
 cmd_estimate() {
