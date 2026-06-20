@@ -443,6 +443,18 @@ flowchart LR
           pace line (wave, ticket, attempt, avg/ticket, elapsed).</div>
         </div>
         <div class="control-card">
+          <div class="control-cmd">lcars viewscreen</div>
+          <div class="control-desc">The Kanban web board (alias <code>lcars
+          serve</code>). A Python-3-stdlib-only daemon — no pip/npm/build —
+          serving every active Mission as a card in its Stage column, with a cost
+          pill + reasoning/implementation difficulty pills, awaiting-you / paused
+          states, nested ticket rows, and live Implement progress over SSE. Drive
+          the whole idea→PR loop from the browser (File, the live Align console,
+          Start with a model override, Respond, Verify, Mission Log).
+          <code>lcars viewscreen --open</code> boots on a free port and opens it
+          in your browser.</div>
+        </div>
+        <div class="control-card">
           <div class="control-cmd">lcars init</div>
           <div class="control-desc">One-time per-repo setup — local config +
           GitHub labels. Safe to re-run: it <strong>preserves</strong> your config
@@ -464,7 +476,10 @@ flowchart LR
           <div class="control-cmd">lcars log</div>
           <div class="control-desc">Log one or more bugs against an active
           Mission; fast-tracks a Mission per bug straight to Plan and links
-          them.</div>
+          them. Each logged bug gets its own dynamic estimate (cost +
+          reasoning/implementation difficulty + per-stage model recommendation,
+          excluding the skipped Research/Validate Stages) in a Launch-style
+          review panel, with a plain-language per-bug model override.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars resolve-logs &lt;parent&gt;</div>
@@ -510,6 +525,17 @@ flowchart LR
           <div class="control-cmd">lcars feedback &lt;id&gt; "…"</div>
           <div class="control-desc">Send a Mission at Verify back to Align with a
           note, kept in an accumulating history.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars pause &lt;id&gt;</div>
+          <div class="control-desc">Halt a Mission at the next safe boundary
+          (between Stages, or between waves/tickets in Implement) — applies
+          <code>lcars:paused</code>; never hard-kills a worker mid-step.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars resume &lt;id&gt;</div>
+          <div class="control-desc">Clear the pause and re-enter the driver from
+          the recorded Stage. Both verbs are idempotent.</div>
         </div>
       </div>
 

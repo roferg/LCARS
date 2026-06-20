@@ -245,10 +245,11 @@ power entry points.
 | `lcars` | **The one entry point.** Infers the right action from state and announces it first: nothing filed → runs the `lcars file` flow; work in flight & nothing pending → drives the active Mission (auto-advance); a decision waiting → opens the inbox. Never makes you remember a verb or paste an id. |
 | `lcars answer` | **The inbox** — every pending decision across *all* Missions in one list: scope escalations, plan-review stand-offs, blocked tickets, and the Verify gate. **approve** and **send back** are actions on a Verify card here, not separate commands. |
 | `lcars status` | The read-only **board**: every active Mission, its Stage, and anything awaiting you. Add `--watch` to follow a running Mission **live** — a streaming event view with a pace line (wave, ticket, attempt, avg/ticket, elapsed). |
+| `lcars viewscreen` | The **Kanban web board** (alias `lcars serve`). A Python-3-stdlib-only daemon — no pip/npm/build — serving every active Mission as a card in its Stage column, with a cost pill + reasoning/implementation difficulty pills, awaiting-you / paused states, nested ticket rows, and live Implement progress over SSE. Drive the whole idea→PR loop from the browser (File, the live Align console, Start with a plain-language model override, Respond, Verify, Mission Log). `lcars viewscreen --open` boots on a free port and opens it in your browser. |
 | `lcars init` | One-time per-repo setup (local config + GitHub labels). Safe to re-run — it **preserves** your config customizations, only filling in anything missing. |
 | `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`. A clean no-op when nothing's changed. |
 | `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. |
-| `lcars log` | Log one or more bugs against an active Mission in free-form language; fast-tracks a Mission per bug straight to Plan and links them. |
+| `lcars log` | Log one or more bugs against an active Mission in free-form language; fast-tracks a Mission per bug straight to Plan and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, excluding the skipped Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
 | `lcars resolve-logs <parent>` | Drive **every** bug logged against a Mission to its Verify gate in a sensible, worker-chosen order, then raise **one** consolidated re-verify gate on the parent instead of one per bug. |
 
 ### Power verbs (still supported)
@@ -261,6 +262,8 @@ power entry points.
 | `lcars respond [<id>]` | Answer a Mission's awaiting-human gate. No id lists everything waiting. |
 | `lcars approve <id>` | Ship a verified Mission: push the branch, open the PR, mark it Done. |
 | `lcars feedback <id> "<note>"` | Send a Mission at Verify back to Align with a note (kept in an accumulating history). |
+| `lcars pause <id>` | Halt a Mission at the next safe boundary (between Stages, or between waves/tickets in Implement) — applies `lcars:paused`; never hard-kills a worker mid-step. |
+| `lcars resume <id>` | Clear the pause and re-enter the driver from the recorded Stage. Both verbs are idempotent. |
 
 > **No id juggling.** A shared resolver picks the target Mission: one candidate →
 > no id needed; several → a fuzzy picker; an explicit id / partial / title always
