@@ -65,6 +65,12 @@ class LocalAdapter(object):
         # detail-only shape fields (S70-B): ADRs + verbatim acceptance criteria.
         card["adrs"] = _adrs_from_file(os.path.join(d, "adr.md"))
         card["criteria"] = _criteria_from_prd(os.path.join(d, "prd.md"))
+        # S76: the verbatim PRD body, so the detail modal can render the full,
+        # human-followable text. For a self-authored reconcile bug child this is the
+        # detailed bug PRD (Conflict/failure summary, Root cause, Intended fix, …) —
+        # the captain audits the self-heal straight from this. Empty string when
+        # absent (non-crashing). The github adapter omits it (no local files).
+        card["prd"] = _read_text(os.path.join(d, "prd.md"))
         return card
 
     def fingerprint(self):
@@ -191,6 +197,17 @@ class LocalAdapter(object):
         if not (isinstance(review, str) and review.strip()):
             review = None
 
+        # S76: the main-ahead reconcile sub-state. While a verify-stage mission with
+        # no PR yet is reconciling with the updated base (merging / re-testing the
+        # merged branch / self-healing via Mission Log children / escalated), run.sh
+        # records reconcileStatus in {"merging","retesting","healing","escalated"}.
+        # Surface it so the card can show a "reconciling with main / re-verifying"
+        # note. Absent ⇒ None (a mission not reconciling). The github adapter forces
+        # None (ADR-006: a read-only forge view cannot see this private sub-state).
+        reconcile_status = state.get("reconcileStatus")
+        if not (isinstance(reconcile_status, str) and reconcile_status.strip()):
+            reconcile_status = None
+
         return {
             "id": mid,
             "issue": issue,
@@ -218,6 +235,8 @@ class LocalAdapter(object):
             "prUrl": pr_url,
             "prNumber": pr_number,
             "review": review,
+            # S76: the main-ahead reconcile sub-state (None when not reconciling).
+            "reconcileStatus": reconcile_status,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,
@@ -545,6 +564,15 @@ _AC_HEADER = re.compile(r'^\s*\*\*Acceptance Criteria:\*\*\s*$', re.I)
 _SECTION_HEADER = re.compile(r'^\s*\*\*[^*]+:\*\*\s*$')
 _BULLET = re.compile(r'^\s*[-*]\s+(.*\S)\s*$')
 _CHECKBOX = re.compile(r'^\[( |x|X)\]\s*(.*)$')
+
+
+def _read_text(path):
+    """The verbatim contents of a text file, or "" when it is absent/unreadable."""
+    try:
+        with open(path) as fh:
+            return fh.read()
+    except OSError:
+        return ""
 
 
 def _criteria_from_prd(path):

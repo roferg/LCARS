@@ -114,6 +114,11 @@ class GitHubAdapterTest(unittest.TestCase):
         # (read from the child's local state.json the github adapter can't see).
         self.assertIn("parentMission", m)
         self.assertIsNone(m["parentMission"])
+        # S76: reconcileStatus is adapter-neutral — present and None on github
+        # (the main-ahead reconcile sub-state lives in the child's local
+        # state.json the github read-path can't see; ADR-006).
+        self.assertIn("reconcileStatus", m)
+        self.assertIsNone(m["reconcileStatus"])
 
     def test_mission_placed_by_stage_label(self):
         board = self._board()

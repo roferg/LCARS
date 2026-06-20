@@ -195,6 +195,9 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .card .pause-status{color:var(--lcars-text-bright);font-family:var(--font-display);
   letter-spacing:.08em;margin-top:7px;font-size:10px}
 .card .pause-status.pausing{color:var(--lcars-amber)}
+/* S76 — the main-ahead reconcile note on a verify card (no PR yet). */
+.card .reconcile-status{color:var(--lcars-amber);font-family:var(--font-display);
+  letter-spacing:.08em;margin-top:7px;font-size:10px}
 /* the RESUME / Pausing button on a paused card keeps full prominence (UX-22). */
 .card.paused .card-ctrl{opacity:1}
 .card.child{border-left-color:var(--lcars-pink,#ff66aa);margin-left:14px;background:var(--lcars-card-alt)}

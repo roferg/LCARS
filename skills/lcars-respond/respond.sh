@@ -79,7 +79,19 @@ json_raw() { # file key
 }
 
 # --- escape a string for embedding in JSON (printed) -----------------------
-json_escape() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"; }
+# Escape a string into JSON-string-safe text (no surrounding quotes). Backslash
+# and quote first via fast bash substitution; then awk escapes EVERY control
+# char (0x01–0x1F) — newline/tab/CR get \n \t \r, the rest \u00XX — so a
+# multi-line captain answer yields VALID JSON. jq-free. Order: backslash first.
+json_escape() {
+  local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  printf '%s' "$s" | awk '
+    BEGIN { RS="\034"; ORS=""; MAP=""; for (k=1;k<32;k++) MAP=MAP sprintf("%c",k) }
+    { n=length($0); for (i=1;i<=n;i++){ c=substr($0,i,1)
+        if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
+        else if (c=="\r") printf "\\r"
+        else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
+}
 
 # --- read pending.json's questions, one per line (decoded) -----------------
 # The canonical pending.json (run.sh's write_pending) puts one "question" per

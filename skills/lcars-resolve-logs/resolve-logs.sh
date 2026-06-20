@@ -52,7 +52,18 @@ die() { printf 'lcars resolve-logs: %s\n' "$1" >&2; exit 1; }
 # --- tiny JSON readers (no jq; same decoding as log.sh / run.sh) -----------
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
-json_escape() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"; }
+# JSON-string-safe escape (no surrounding quotes): backslash/quote via bash,
+# then awk escapes every control char (newline/tab/CR → \n \t \r, rest \u00XX)
+# so any multi-line value yields VALID JSON. jq-free. Order: backslash first.
+json_escape() {
+  local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  printf '%s' "$s" | awk '
+    BEGIN { RS="\034"; ORS=""; MAP=""; for (k=1;k<32;k++) MAP=MAP sprintf("%c",k) }
+    { n=length($0); for (i=1;i<=n;i++){ c=substr($0,i,1)
+        if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
+        else if (c=="\r") printf "\\r"
+        else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
+}
 
 # --- state mutators (jq-free; same shape as run.sh) ------------------------
 state_del() { # file key

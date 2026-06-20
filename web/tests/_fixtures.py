@@ -80,7 +80,9 @@ def plant_simple(root, mid, *, stage="align", issue=142,
                  title="Add Gamification to Course Site", estimate=ESTIMATE_CLAUDE,
                  created="2026-06-13T10:00:00Z", worker_bin=None, queued=None,
                  parent_mission=None, mtype="feature",
-                 pr_url=None, pr_number=None, review=None):
+                 pr_url=None, pr_number=None, review=None,
+                 reconcile_status=None, reconcile_diagnosis=None,
+                 awaiting_human=None, pending_question=None):
     """A plain mission sitting in `stage`, no gate, no tickets.
 
     `worker_bin` plants the persisted engine field (state.json.workerBin) the
@@ -111,6 +113,18 @@ def plant_simple(root, mid, *, stage="align", issue=142,
         state["prNumber"] = pr_number
     if review is not None:
         state["review"] = review
+    # S76 main-ahead reconcile sub-state (merging/retesting/healing/escalated).
+    if reconcile_status is not None:
+        state["reconcileStatus"] = reconcile_status
+    # S76 BUG: reconcile_gate persists a MULTI-LINE failure summary here. The
+    # value can carry newlines/tabs/quotes — run.sh's json_escape must keep
+    # state.json valid JSON so the adapter does not drop the mission.
+    if reconcile_diagnosis is not None:
+        state["reconcileDiagnosis"] = reconcile_diagnosis
+    if awaiting_human is not None:
+        state["awaitingHuman"] = awaiting_human
+    if pending_question is not None:
+        state["pendingQuestion"] = pending_question
     write_json(os.path.join(d, "state.json"), state)
     if estimate is not None:
         write_json(os.path.join(d, "estimate.json"), estimate)

@@ -60,7 +60,18 @@ set_stage() {
 
 # add or replace a string field (used by pr-lib's open_pr to record prUrl).
 state_del() { local tmp; tmp="$(mktemp)"; grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"; }
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+# JSON-string-safe escape (no surrounding quotes): backslash/quote, then awk
+# escapes every control char (newline/tab/CR → \n \t \r, rest \u00XX) so any
+# multi-line value yields VALID JSON. jq-free. Order: backslash first.
+json_escape() {
+  local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  printf '%s' "$s" | awk '
+    BEGIN { RS="\034"; ORS=""; MAP=""; for (k=1;k<32;k++) MAP=MAP sprintf("%c",k) }
+    { n=length($0); for (i=1;i<=n;i++){ c=substr($0,i,1)
+        if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
+        else if (c=="\r") printf "\\r"
+        else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
+}
 state_set_str() {
   state_del "$1"
   local esc tmp; esc="$(json_escape "$2")"; tmp="$(mktemp)"

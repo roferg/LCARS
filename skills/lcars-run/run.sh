@@ -101,6 +101,11 @@ WORKER_ADAPTER="${LCARS_WORKER_ADAPTER:-$SKILL_DIR/worker-adapter.sh}"
 # (awaiting-human or verify). Defaults to the bundled notify.sh; env-injectable
 # (like LCARS_GH_BIN) so tests assert the call without sending anything.
 NOTIFY_BIN="${LCARS_NOTIFY:-$SKILL_DIR/notify.sh}"
+# S76 reconcile: the Mission Log scripts the self-heal routes through. Both are
+# sibling skills after ./install.sh; env-injectable (like LCARS_PR_LIB) so tests
+# can point a stub at them without touching the symlinks.
+LOG_SCRIPT="${LCARS_LOG_SCRIPT:-$SKILL_DIR/../lcars-log/log.sh}"
+RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 # A malformed worker output stops the Stage; the driver re-dispatches up to this
 # many attempts before surfacing failure (no silent advance).
 MAX_WORKER_TRIES="${LCARS_WORKER_TRIES:-3}"
@@ -259,11 +264,39 @@ json_decode_string() { # raw-escaped-body (via $1) → literal string
 # line. New fields are inserted right after the opening brace — always valid
 # because `id` always follows. Untrusted text (question text) is JSON-escaped
 # and handed to awk via the environment so awk never reinterprets its escapes.
-json_escape() { # string → backslash/quote-escaped (printed)
+json_escape() { # string → JSON-string-safe (printed, no surrounding quotes)
+  # Backslash and double-quote first via fast bash substitution; then hand the
+  # result to awk to escape EVERY control character (0x00–0x1F) — newline, tab,
+  # carriage-return get their short forms (\n \t \r), the rest become \u00XX —
+  # so ANY worker-derived text (e.g. a multi-line reconcileDiagnosis) yields
+  # VALID JSON. jq-free, in the house style. Order matters: backslash first so
+  # the escapes we add below are not themselves re-escaped.
   local s="$1"
   s="${s//\\/\\\\}"   # backslashes first…
   s="${s//\"/\\\"}"   # …then double-quotes
-  printf '%s' "$s"
+  # awk does the control-character pass. RS="" + reading the whole record keeps
+  # embedded newlines; we walk byte by byte so we never depend on locale.
+  printf '%s' "$s" | awk '
+    BEGIN {
+      RS="\034"; ORS=""              # record sep that cannot appear in our text
+      # MAP holds the bytes with codes 1..31; index() is 1-based so the position
+      # of a byte in MAP IS its character code. NUL (0x00) cannot reach us
+      # through a bash variable, so it need not be mapped.
+      MAP = ""
+      for (k = 1; k < 32; k++) MAP = MAP sprintf("%c", k)
+    }
+    {
+      n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if      (c == "\n") printf "\\n"
+        else if (c == "\t") printf "\\t"
+        else if (c == "\r") printf "\\r"
+        else { b = index(MAP, c)      # other 0x01–0x1F → \u00XX, else verbatim
+               if (b > 0) printf "\\u%04x", b; else printf "%s", c }
+      }
+    }
+  '
 }
 
 # --- the Mission event log (append-only JSONL) -----------------------------
@@ -2119,6 +2152,45 @@ EOF
 # — it does not weaken the per-ticket red/green gate, the immutable-test snapshot,
 # or the test-quality check. With NO runner configured it SKIPS LOUD (never a
 # false pass and never a false fail), matching the red gate's no-runner stance.
+# --- SHARED: re-run every named ticket's quarantined suite against a given tree -
+# Extracted from full_suite_gate (BUG-013) so BOTH the full-suite gate AND the
+# S76 reconcile gate re-test ticket suites the SAME way: stage each ticket's
+# `tests/` at a DEPTH-1 dir under the run tree (so a test that resolves its target
+# relative to its own location finds it at the repo root, exactly as at green-time),
+# then run the configured testCommand from that tree with $LCARS_TESTS_DIR pointing
+# at the staged dir. $run_dir is the tree to run against (a worktree at the branch
+# tip for the gate, the reconcile merge worktree for the reconcile). On any per-
+# ticket non-zero exit the ticket id is appended to the global $RETEST_FAILED list,
+# and (when $RETEST_CAPTURE is set) its combined stdout/stderr is captured to
+# $RETEST_CAPTURE/<id>.log so the reconcile author can quote the failure. Returns 0
+# iff every suite passed. $RETEST_FAILED / $RETEST_FAILED is reset by the caller.
+RETEST_FAILED=""     # space-separated ticket ids that failed the last retest
+RETEST_CAPTURE=""    # caller may point this at a dir to capture per-ticket output
+retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
+  local run_dir="$1" cmd="$2"; shift 2
+  RETEST_FAILED=""
+  local stage_dir="$run_dir/.lcars-retest"
+  local id tdir rc out
+  for id in "$@"; do
+    [ -n "$id" ] || continue
+    tdir="$(ticket_dir "$id")/tests"
+    # Defensive: a green ticket should always have a quarantined suite. If one is
+    # missing we skip it rather than crash — we never INVENT a failure.
+    [ -d "$tdir" ] || continue
+    # Recreate the staging dir empty per ticket so suites never bleed together.
+    rm -rf "$stage_dir"; mkdir -p "$stage_dir"
+    ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
+    rc=0
+    out="$( cd "$run_dir" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" 2>&1 )" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      RETEST_FAILED="${RETEST_FAILED:+$RETEST_FAILED }$id"
+      [ -n "$RETEST_CAPTURE" ] && { mkdir -p "$RETEST_CAPTURE"; printf '%s\n' "$out" >"$RETEST_CAPTURE/$id.log"; }
+    fi
+  done
+  rm -rf "$stage_dir" 2>/dev/null || :
+  [ -z "$RETEST_FAILED" ]
+}
+
 FULL_SUITE_SIGNAL=""   # caller may point this at a file to capture the regression detail
 full_suite_gate() { # ordered ticketId...
   local cmd; cmd="$(resolve_test_cmd)"
@@ -2140,30 +2212,16 @@ full_suite_gate() { # ordered ticketId...
   # regression. To re-run each suite in the SAME condition it was locked under, we
   # cut ONE clean detached worktree at the mission-branch tip (all tickets' code
   # present) and stage each ticket's tests at a DEPTH-1 dir under that worktree
-  # root, so their relative target-resolution works exactly as when they were green.
+  # root via the shared retest_ticket_suites helper (also used by the reconcile).
   local branch; branch="$(json_str "$STATE" branch)"
   local wt_base="$MISSION_DIR/fullsuite-wt" wt=""
   wt="$(make_ticket_worktree "$wt_base" "$branch" "all")"
-  local id tdir rc regressed=""
+  local regressed=""
   if [ -n "$wt" ]; then
     # WORKTREE MODE: a real mission branch exists. Re-run each suite from the clean
-    # tip with the tests at a depth-1 dir, so relative-to-self target resolution
-    # behaves as it did at green-time.
-    local stage_dir="$wt/.lcars-fullsuite"
-    for id in "$@"; do
-      [ -n "$id" ] || continue
-      tdir="$(ticket_dir "$id")/tests"
-      # Defensive: a green ticket should always have a quarantined suite. If one is
-      # missing we skip it rather than crash — we never INVENT a regression.
-      [ -d "$tdir" ] || continue
-      # Recreate the staging dir empty per ticket so suites never bleed together.
-      rm -rf "$stage_dir"; mkdir -p "$stage_dir"
-      ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
-      rc=0
-      ( cd "$wt" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
-      [ "$rc" -ne 0 ] && regressed="${regressed:+$regressed }$id"
-    done
-    rm -rf "$stage_dir" 2>/dev/null || :
+    # tip via the shared helper, so relative-to-self target resolution behaves as
+    # it did at green-time.
+    RETEST_CAPTURE="" retest_ticket_suites "$wt" "$cmd" "$@" || regressed="$RETEST_FAILED"
     # Clean up the worktree on EVERY exit path — never leak into the captain's
     # `git worktree list` or working tree. Mirrors cleanup_ticket_worktrees.
     "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
@@ -2172,14 +2230,7 @@ full_suite_gate() { # ordered ticketId...
   else
     # FALLBACK (no mission branch — a branch-less / local-only mission): keep the
     # original in-tree behaviour, running each suite from $REPO_ROOT.
-    for id in "$@"; do
-      [ -n "$id" ] || continue
-      tdir="$(ticket_dir "$id")/tests"
-      [ -d "$tdir" ] || continue
-      rc=0
-      ( cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
-      [ "$rc" -ne 0 ] && regressed="${regressed:+$regressed }$id"
-    done
+    RETEST_CAPTURE="" retest_ticket_suites "$REPO_ROOT" "$cmd" "$@" || regressed="$RETEST_FAILED"
   fi
   [ -z "$regressed" ] && return 0
   local detail="FULL-SUITE GATE — these earlier ticket suite(s) no longer pass against the fully-built repo: ${regressed}. Each was green when built, so a LATER ticket's produced code REGRESSED its locked contract. The Mission is NOT shippable until the regression is resolved (fix the later ticket or re-open the regressed ticket). Command run: $cmd."
@@ -2329,6 +2380,323 @@ cmd_open_pr() {
   echo "OPEN-PR: opened — $PR_URL"
   echo "  Stage:  verify (in review — PR open)"
   exit 0
+}
+
+# === S76: main-ahead reconcile + self-heal =================================
+# Before Verify opens the PR, integrate like a real engineer: if the mission
+# branch's base (main) has MOVED AHEAD since the branch was cut, MERGE the updated
+# base into the branch in an ISOLATED worktree, re-run the mission's OWN ticket
+# suites against the combined state, and — if anything breaks (textual conflict OR
+# a silent logical conflict the re-test catches) — self-dispatch detailed Mission
+# Log(s) authored from the failure and drive the fixes onto the branch through the
+# EXISTING lcars log → resolve-logs → complete machinery, iterating to green. Only
+# once green-against-updated-main does Verify proceed to open the PR. After K rounds
+# still red → escalate (awaiting-human). NEVER opens a PR on a stale-and-broken
+# branch. Reuse, don't fork.
+RECONCILE_MAX="${LCARS_RECONCILE_MAX:-3}"
+case "$RECONCILE_MAX" in ''|*[!0-9]*) RECONCILE_MAX=3 ;; esac
+
+# Resolve the base ref to merge from, preferring the remote-tracking ref (best-
+# effort fetched first). Echoes the ref (empty = unresolvable).
+reconcile_base_ref() { # BASE BRANCH (in caller scope)
+  "$GIT_BIN" fetch origin "$BASE" --quiet 2>/dev/null || true
+  if "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$BASE"; then
+    printf 'refs/remotes/origin/%s' "$BASE"
+  elif "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BASE"; then
+    printf 'refs/heads/%s' "$BASE"
+  fi
+}
+
+# The ordered green tickets whose suites we re-test (waves order = plan order).
+reconcile_ordered_tickets() {
+  local waves="$MISSION_DIR/waves.json" table w id ordered=""
+  [ -f "$waves" ] || return 0
+  table="$(parse_waves_table "$waves")"
+  while IFS=$'\t' read -r w id; do
+    [ -n "$id" ] && ordered="${ordered:+$ordered }$id"
+  done <<EOF
+$table
+EOF
+  printf '%s' "$ordered"
+}
+
+# Author detailed bug PRD(s) from the failure summary via a cold worker on the
+# mission's OWN engine, then route them through log.sh → resolve-logs drive →
+# resolve-logs complete. $1 = the failure-summary text. Echoes nothing; returns 0.
+reconcile_author_and_dispatch() { # failure-summary  affected-block
+  local summary="$1" affected="$2"
+  state_set_str reconcileStatus "healing"
+  emit_event reconcile_heal verify "authoring self-heal bug PRD(s) from the merge failure"
+
+  # The mission's own engine (BUG-D): a copilot mission self-heals on copilot. Feed
+  # it to the author worker AND to log.sh so each child inherits it.
+  local engine; engine="$(json_str "$STATE" workerBin)"
+  [ -n "$engine" ] || engine="$WORKER_BIN"
+
+  # Cold-worker authoring: feed ONLY the failure summary + the two intents (this
+  # mission's PRD goal + what changed on main), assembled from PATHS like the other
+  # stages. The worker writes bug-NNN.md files into the scratch dir.
+  local sumfile; sumfile="$MISSION_DIR/reconcile-failure.txt"
+  printf '%s\n' "$summary" >"$sumfile"
+  local extra="## The merge-failure summary (your ONLY inputs)
+$affected
+
+The deterministic failure summary is at:
+- $sumfile
+
+## The two intents to reconcile
+- This mission's goal/PRD: $MISSION_DIR/prd.md
+- What changed on the base branch since this branch was cut is quoted in the summary above."
+
+  local odir tries=0 prior_no_file=""
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    odir="$(mktemp -d)"
+    LCARS_WORKER_BIN="$engine" \
+      spawn_worker reconcile-author "$STAGES_DIR/reconcile-author.md" repo-read "$odir" "$extra" "$prior_no_file"
+    # collect the authored PRDs
+    local prds=() f
+    for f in "$odir"/bug-*.md; do
+      [ -f "$f" ] || continue
+      grep -q '^# Mission:' "$f" || continue
+      grep -q '\*\*Type:\*\*' "$f" || continue
+      # copy to a stable path under the mission dir so log.sh reads a durable file
+      local dst; dst="$MISSION_DIR/reconcile-bug-$(basename "$f")"
+      cp "$f" "$dst"
+      prds+=("$dst")
+    done
+    if [ "${#prds[@]}" -gt 0 ]; then
+      prior_no_file=""
+      # Route through the Mission Log: one --prd per bug. BUG-D stamps each child's
+      # workerBin from $LCARS_WORKER_BIN; log.sh fast-tracks to Plan, links the
+      # parent, and (BUG-011) commits the fixes onto the parent's pre-merge branch.
+      local prd_args=() p
+      for p in "${prds[@]}"; do prd_args+=(--prd "$p"); done
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="$engine" \
+        bash "$LOG_SCRIPT" --parent "$MISSION_ID" "${prd_args[@]}" >/dev/null 2>&1 || true
+      # Drive the bugs to their Verify gates (resolve-logs inherits the parent
+      # engine via PARENT_ENGINE), then FOLD them onto the parent branch WITHOUT
+      # raising resolve-logs' consolidated gate — the S75 verify gate is the single
+      # human gate.
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+        bash "$RESOLVE_LOGS_SCRIPT" --parent "$MISSION_ID" >/dev/null 2>&1 || true
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+        bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" >/dev/null 2>&1 || true
+      rm -rf "$odir"
+      return 0
+    fi
+    prior_no_file=no-file
+    rm -rf "$odir"
+  done
+  # The author produced nothing across all tries — leave a placeholder PRD so the
+  # self-heal still has SOMETHING auditable, then dispatch it (never silently drop).
+  local fb; fb="$MISSION_DIR/reconcile-bug-fallback.md"
+  {
+    printf '# Mission: reconcile failure merging %s into the branch\n' "$BASE"
+    printf '**Type:** bug\n'
+    printf '**Conflict/failure summary:** %s\n' "$summary"
+    printf '**Affected files / tests:** see the summary above.\n'
+    printf '**Root cause:** the base moved ahead and the merged state is not green; the author worker could not characterise it.\n'
+    printf '**Intended fix:** inspect the conflict/failing suite above and reconcile this branch with the updated base.\n'
+  } >"$fb"
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="$engine" \
+    bash "$LOG_SCRIPT" --parent "$MISSION_ID" --prd "$fb" >/dev/null 2>&1 || true
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    bash "$RESOLVE_LOGS_SCRIPT" --parent "$MISSION_ID" >/dev/null 2>&1 || true
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" >/dev/null 2>&1 || true
+  return 0
+}
+
+# Escalate to the human after K rounds still red. Never opens a PR.
+reconcile_escalate() { # diagnosis-text
+  local diag="$1"
+  state_set_str reconcileStatus "escalated"
+  local qf; qf="$(mktemp)"
+  printf 'Reconcile with %s failed after %s round(s). Diagnosis:\n%s\n' \
+    "$BASE" "$RECONCILE_MAX" "$diag" >"$qf"
+  write_pending "$qf" "verify"
+  local first; first="$(grep -ve '^[[:space:]]*$' "$qf" | head -1)"
+  state_set_raw awaitingHuman true
+  state_set_str pendingQuestion "$first"
+  rm -f "$qf"
+  gh_relabel "lcars:verify lcars:awaiting-human" ""
+  emit_event reconcile_escalated verify "reconcile exhausted ${RECONCILE_MAX} round(s) — escalated to the human"
+  notify_gate awaiting-human "Reconcile with $BASE failed after $RECONCILE_MAX rounds — needs your call"
+  printf 'RECONCILE: escalated — %s rounds exhausted; awaiting human.\n' "$RECONCILE_MAX"
+}
+
+# The reconcile gate. Echoes a RECONCILE: line and returns:
+#   0  ("RECONCILE: ok")          → not ahead, or clean+green → caller proceeds to
+#                                    open the PR. The merge (if any) is already on
+#                                    the live branch.
+#   10 ("RECONCILE: reconciling") → red → self-heal dispatched, halt this pass.
+#   20 ("RECONCILE: escalated")   → K rounds exhausted → awaiting-human, no PR.
+reconcile_gate() {
+  local BASE BRANCH
+  BRANCH="$(json_str "$STATE" branch)"
+  BASE="$(json_str "$STATE" base)"; BASE="${BASE:-main}"
+  # No branch → nothing to reconcile; let the open-PR path handle the no-branch die.
+  [ -n "$BRANCH" ] || { echo "RECONCILE: ok — no branch on file"; return 0; }
+  "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH" \
+    || { echo "RECONCILE: ok — branch not present locally"; return 0; }
+
+  # (a) main-ahead check. Best-effort; any unresolvable/non-numeric → not-ahead.
+  local base_ref ahead
+  base_ref="$(reconcile_base_ref)"
+  if [ -z "$base_ref" ]; then
+    echo "RECONCILE: ok — base '$BASE' unresolvable; proceeding (not ahead)"
+    return 0
+  fi
+  ahead="$("$GIT_BIN" rev-list --count "$BRANCH..$base_ref" 2>/dev/null)"
+  case "$ahead" in
+    ''|*[!0-9]*) echo "RECONCILE: ok — ahead count indeterminate; proceeding (not ahead)"; return 0 ;;
+    0)           echo "RECONCILE: ok — base '$BASE' not ahead of '$BRANCH'; proceeding"; return 0 ;;
+  esac
+
+  # Base is ahead → reconcile. Bump the round counter (persists across passes).
+  local round; round="$(json_raw "$STATE" reconcileRound)"
+  case "$round" in ''|*[!0-9]*) round=0 ;; esac
+  round=$((round + 1))
+  state_set_raw reconcileRound "$round"
+  state_set_str reconcileStatus "merging"
+  emit_event reconcile_start verify "base '$BASE' is $ahead commit(s) ahead — reconciling (round $round)" \
+    "round=$round" "ahead=$ahead"
+
+  # K exhausted? If this pass would be round > K, escalate instead of re-attempting.
+  if [ "$round" -gt "$RECONCILE_MAX" ]; then
+    local prev; prev="$(json_str "$STATE" reconcileDiagnosis)"
+    [ -n "$prev" ] || prev="the merged state was not green against '$BASE'."
+    reconcile_escalate "$prev"
+    return 20
+  fi
+
+  # (b) MERGE (not rebase) in an isolated worktree ATTACHED to the mission branch.
+  local wt; wt="$(mktemp -d "$MISSION_DIR/reconcile.XXXXXX")"; rm -rf "$wt"
+  if ! "$GIT_BIN" worktree add -q "$wt" "$BRANCH" >/dev/null 2>&1; then
+    rm -rf "$wt"
+    echo "RECONCILE: ok — could not cut an isolated worktree; proceeding (will retry later)"
+    state_del reconcileRound
+    return 0
+  fi
+  # Record the branch's PRE-MERGE tip so a RED reconcile can UNDO the merge: the
+  # merge commits onto the live branch ref, and we must NOT leave a broken merge on
+  # the branch (it would read as "not ahead" next pass and ship a stale-and-broken
+  # tree). Only a GREEN reconcile keeps the merge. The bug-children's fixes land on
+  # the branch via the Mission Log machinery (from $REPO_ROOT), so on the next pass
+  # the still-behind branch re-merges WITH the fixes present.
+  local pre_merge; pre_merge="$( cd "$wt" && "$GIT_BIN" rev-parse HEAD 2>/dev/null )"
+  # Clean up this gate's OWN worktree path on every exit (never a global prune).
+  # On a RED outcome the caller resets the branch to $pre_merge BEFORE cleanup.
+  reconcile_cleanup() { "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"; }
+  reconcile_undo_merge() {
+    [ -n "$pre_merge" ] || return 0
+    ( cd "$wt" && "$GIT_BIN" merge --abort >/dev/null 2>&1; "$GIT_BIN" reset -q --hard "$pre_merge" >/dev/null 2>&1 ) || :
+  }
+
+  local merge_rc=0 conflicted=""
+  ( cd "$wt" && "$GIT_BIN" merge --no-edit "$base_ref" ) >/dev/null 2>&1 || merge_rc=$?
+  if [ "$merge_rc" -ne 0 ]; then
+    conflicted="$( cd "$wt" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null )"
+    emit_event reconcile_conflict verify "textual merge conflict in: $(printf '%s' "$conflicted" | tr '\n' ' ')"
+  fi
+
+  # The base-change intent — what moved on main since this branch was cut.
+  local base_log; base_log="$("$GIT_BIN" log --oneline "$BRANCH..$base_ref" 2>/dev/null | head -40)"
+
+  # (c) Decide: textual conflict = red WITHOUT running tests. Otherwise scoped
+  # re-test (ALWAYS, even on a clean merge — S73, to catch silent logical conflicts).
+  local cmd; cmd="$(resolve_test_cmd)"
+  local ordered; ordered="$(reconcile_ordered_tickets)"
+  local failure_summary="" red=0
+
+  if [ -n "$conflicted" ]; then
+    red=1
+    failure_summary="MERGING $BASE into the mission branch produced a TEXTUAL conflict.
+
+Conflicted file(s):
+$conflicted
+
+Conflict hunk(s):"
+    local cf
+    while IFS= read -r cf; do
+      [ -n "$cf" ] || continue
+      failure_summary="$failure_summary
+
+--- $cf ---
+$(sed -n '/^<<<<<<< /,/^>>>>>>> /p' "$wt/$cf" 2>/dev/null | head -60)"
+    done <<EOF
+$conflicted
+EOF
+  else
+    state_set_str reconcileStatus "retesting"
+    emit_event reconcile_retest verify "clean merge — re-testing $ordered against the merged state"
+    if [ -n "$cmd" ] && [ -n "$ordered" ]; then
+      local cap; cap="$(mktemp -d)"
+      if ! RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" $ordered; then
+        red=1
+        failure_summary="MERGING $BASE into the mission branch merged CLEANLY, but re-running the mission's own ticket suite(s) against the combined state went RED (a silent logical conflict).
+
+Failing ticket suite(s): $RETEST_FAILED
+
+Captured output:"
+        local fid
+        for fid in $RETEST_FAILED; do
+          failure_summary="$failure_summary
+
+--- $fid ---
+$(head -80 "$cap/$fid.log" 2>/dev/null)"
+        done
+      fi
+      rm -rf "$cap"
+    fi
+  fi
+
+  # Append the two intents to every summary.
+  local goal=""; [ -f "$MISSION_DIR/prd.md" ] && goal="$(sed -n 's/^\*\*Goal:\*\*[[:space:]]*//p' "$MISSION_DIR/prd.md" | head -1)"
+  failure_summary="$failure_summary
+
+THIS MISSION'S GOAL: ${goal:-$(json_str "$STATE" title)}
+WHAT CHANGED ON $BASE (oldest→newest):
+${base_log:-(no log available)}"
+
+  if [ "$red" -eq 0 ]; then
+    # Clean (or conflict-free) AND green: the worktree committed the merge ON the
+    # branch, so the live branch ref already advanced — just remove the worktree.
+    reconcile_cleanup
+    state_del reconcileRound
+    state_del reconcileStatus
+    state_del reconcileDiagnosis
+    emit_event reconcile_green verify "merged $BASE and re-test is green — proceeding to open the PR"
+    echo "RECONCILE: ok — merged $BASE; re-test green; proceeding"
+    return 0
+  fi
+
+  # RED. UNDO the broken merge on the branch (never leave a stale-and-broken merge
+  # that reads as "not ahead" next pass), persist the diagnosis for a later
+  # escalation, author + dispatch the self-heal, clean up the worktree, and halt
+  # "reconciling" for THIS pass. The next pass re-merges the (still-behind) branch
+  # with the just-landed bug fixes present.
+  reconcile_undo_merge
+  state_set_str reconcileDiagnosis "$failure_summary"
+  emit_event reconcile_red verify "merged $BASE but the combined state is not green — self-healing (round $round)"
+  local affected="Conflicted/affected: ${conflicted:-$RETEST_FAILED}"
+  reconcile_author_and_dispatch "$failure_summary" "$affected"
+  reconcile_cleanup
+  state_set_str reconcileStatus "healing"
+  echo "RECONCILE: reconciling — merged $BASE; combined state not green; self-heal dispatched (round $round/$RECONCILE_MAX)"
+  return 10
+}
+
+# The `reconcile` subcommand: drive the gate once (used directly by drive_verify
+# in-process AND exposed for tests). Mirrors cmd_open_pr's locate/require.
+cmd_reconcile() {
+  locate_mission "$MISSION_ID"
+  require_stage verify
+  resolve_worker
+  local rc=0
+  reconcile_gate || rc=$?
+  exit "$rc"
 }
 
 # === Cold-worker layer (per-Stage isolation) ===============================
@@ -4412,6 +4780,37 @@ drive_verify() { # accumulated-summary
   local summary="$1"
   local pr; pr="$(json_str "$STATE" prUrl)"
 
+  # S76 reconcile gate: ONLY when no PR is open yet (once a PR is open, the human/
+  # GitHub owns conflicts — never re-reconcile). Before opening the PR, check
+  # whether the base moved ahead; if so, merge it in an isolated worktree and
+  # re-test the combined state, self-healing to green via Mission Log(s). The gate
+  # runs as a subprocess (same pattern as open-pr) so it shares one code path and
+  # its worker/log/resolve spawns are scoped. Exit codes: 0 = proceed (not ahead
+  # or clean+green), 10 = reconciling (halt this pass), 20 = escalated (halt, no PR).
+  case "$pr" in
+    http*|*/pull/*) : ;;   # a PR exists — skip the reconcile gate entirely.
+    *)
+      local rcout rrc=0
+      rcout="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" reconcile --mission "$MISSION_ID" 2>&1)" || rrc=$?
+      case "$rrc" in
+        10) # reconciling — self-heal dispatched; halt this pass, resume next pass.
+            mirror_comments || true
+            drive_print_summary "$summary"
+            printf 'verify       ◐  reconciling with %s — re-verifying the merged branch\n' "$(json_str "$STATE" base)"
+            printf '%s\n' "$rcout"
+            printf '⏹ stopped at: verify  (reconciling with the updated base — self-heal in flight)\n'
+            printf 'It will re-merge & re-verify on the next `lcars run %s` pass.\n' "$MISSION_ID"
+            return 0 ;;
+        20) # escalated — awaiting-human; reconcile_escalate already fired the gate.
+            mirror_comments || true
+            drive_print_summary "$summary"
+            printf '%s\n' "$rcout"
+            drive_halt_awaiting verify
+            return 0 ;;
+        *)  : ;;   # 0 (or any other) → proceed to today's open-PR path below.
+      esac ;;
+  esac
+
   case "$pr" in
     http*|*/pull/*)
       # A PR exists — has it merged (here or on GitHub)?
@@ -4772,6 +5171,7 @@ case "$SUB" in
   impl-advance)     cmd_impl_advance ;;
   verify-summary)   cmd_verify_summary ;;
   open-pr)          cmd_open_pr ;;
+  reconcile)        cmd_reconcile ;;
   # Stage drivers (spawn cold workers, then persist via the subcommands above).
   research)         cmd_research ;;
   validate)         cmd_validate ;;

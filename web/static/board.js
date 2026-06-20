@@ -222,6 +222,14 @@ function cardNode(m) {
     card.appendChild(el("div", "no pause-status", "⏸ paused"));
   }
 
+  // S76: a verify-stage mission with no PR yet may be RECONCILING with the updated
+  // base — merging main in, re-verifying the merged branch, or self-healing via its
+  // linked bug children. Surface the state + the iterate-to-green progress as a
+  // note so the captain sees the card isn't stuck. No `lcars …` CLI text (UX-33).
+  if (m.stage === "verify" && !m.prUrl && m.reconcileStatus) {
+    card.appendChild(el("div", "no reconcile-status", reconcileNote(m.reconcileStatus)));
+  }
+
   if (m.progress) {
     var prog = el("div", "progress");
     var bar = el("div", "bar");
@@ -1657,6 +1665,22 @@ function prdPane(mi) {
   label.appendChild(b);
   pane.appendChild(label);
   pane.appendChild(criteriaChecklist(mi));
+  // S76: a logged-bug child (incl. a self-authored reconcile bug) carries no
+  // Acceptance-Criteria section — its detailed PRD (Conflict/failure summary,
+  // Root cause, Intended fix, …) IS the auditable record, so render the full PRD
+  // body for a bug child when the detail shape carries it. The captain audits the
+  // self-heal straight from here.
+  if (isLogBug(mi) && mi.prd) {
+    var cap = el("div", "mock-cap", "Bug report (PRD)");
+    cap.style.marginTop = "12px";
+    pane.appendChild(cap);
+    var doc = el("div", "prd-doc");
+    renderPrdDoc(doc, mi.prd);
+    var box = el("div");
+    box.style.cssText = "background:var(--lcars-black);padding:12px 14px;border-radius:8px;max-height:40vh;overflow:auto";
+    box.appendChild(doc);
+    pane.appendChild(box);
+  }
   return pane;
 }
 
@@ -2029,6 +2053,18 @@ function stageLabel(stage) {
     implement: "Implement", verify: "Verify", done: "Done",
   };
   return map[s] || (stage || "running");
+}
+
+/* S76 — a human-readable note for the main-ahead reconcile sub-state. No `lcars …`
+   CLI text leaks (UX-33); the copy carries the state + iterate-to-green hint. */
+function reconcileNote(status) {
+  switch (status) {
+    case "merging":   return "◐ reconciling with main — merging the updated base in";
+    case "retesting": return "◐ re-verifying the merged branch against main";
+    case "healing":   return "◐ reconciling — self-healing the merge to green";
+    case "escalated": return "● reconcile needs you — couldn't auto-heal against main";
+    default:          return "◐ reconciling with main";
+  }
 }
 
 /* UX-7 / UX-13 — curated Star-Trek/LCARS-flavoured running copy per Stage. Each

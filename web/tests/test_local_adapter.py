@@ -205,6 +205,118 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertIsNone(m["prNumber"])
         self.assertIsNone(m["review"])
 
+    def test_reconcile_status_surfaced_on_verify_card(self):
+        """S76: a verify-stage mission with no PR yet that is reconciling with the
+        updated base surfaces its reconcileStatus so the board can show the
+        'reconciling with main / re-verifying' note."""
+        for st in ("merging", "retesting", "healing", "escalated"):
+            fx.plant_simple(self.tmp, "m-rec-%s" % st, stage="verify",
+                            reconcile_status=st)
+            m = self._by_id(self._board(), "m-rec-%s" % st)
+            self.assertEqual(m["reconcileStatus"], st)
+            # still at verify with no PR open while reconciling.
+            self.assertEqual(m["stage"], "verify")
+            self.assertIsNone(m["prUrl"])
+
+    def test_reconcile_status_none_when_not_reconciling(self):
+        """The field is always present (non-crashing) and None for a normal
+        mission that is not reconciling."""
+        fx.plant_simple(self.tmp, "m-norec", stage="implement")
+        m = self._by_id(self._board(), "m-norec")
+        self.assertIn("reconcileStatus", m)
+        self.assertIsNone(m["reconcileStatus"])
+
+    def test_reconciling_mission_with_multiline_diagnosis_not_dropped(self):
+        """S76 DEFECT regression: reconcile_gate writes a MULTI-LINE failure
+        summary into reconcileDiagnosis. With the FIXED json_escape this stays
+        VALID JSON, so the reconciling/escalated parent MUST still appear on the
+        board (carrying its reconcile state) and be readable via the detail
+        endpoint — instead of silently vanishing (the old behaviour: invalid JSON
+        ⇒ _load_json None ⇒ card dropped ⇒ 404) at the worst moment (escalated +
+        awaiting the captain)."""
+        diagnosis = (
+            "MERGING main into the mission branch produced a TEXTUAL conflict.\n"
+            "Conflicted/affected: shared.txt\n"
+            "\tsuite t-001 went red\tafter merging \"main\".\n"
+            "Root cause: main renamed fooBar to foo_bar."
+        )
+        # healing state (mid-self-heal)
+        fx.plant_simple(self.tmp, "m-heal", stage="verify",
+                        reconcile_status="healing", reconcile_diagnosis=diagnosis)
+        # escalated + awaiting-human (the worst-case the defect hit)
+        fx.plant_simple(self.tmp, "m-esc", stage="verify",
+                        reconcile_status="escalated", reconcile_diagnosis=diagnosis,
+                        awaiting_human=True,
+                        pending_question="Reconcile still red after K rounds.")
+
+        board = self._board()
+        # BOTH cards must be present (not dropped by a JSON parse error).
+        heal = self._by_id(board, "m-heal")
+        esc = self._by_id(board, "m-esc")
+        self.assertEqual(heal["reconcileStatus"], "healing")
+        self.assertEqual(esc["reconcileStatus"], "escalated")
+        self.assertTrue(esc["awaiting"])
+
+        # the detail endpoint must serve them (previously 404 "no such mission").
+        adapter = LocalAdapter(self.tmp)
+        self.assertIsNotNone(adapter.mission("m-heal"))
+        esc_detail = adapter.mission("m-esc")
+        self.assertIsNotNone(esc_detail)
+        self.assertEqual(esc_detail["reconcileStatus"], "escalated")
+
+    def test_malformed_state_json_is_dropped_documenting_the_defect(self):
+        """The root cause: an INVALID state.json (a raw newline inside a JSON
+        string, exactly what the OLD json_escape emitted for a multi-line
+        reconcileDiagnosis) is unparseable, so the adapter drops the mission and
+        the detail endpoint 404s. This is why the escaper fix is load-bearing."""
+        d = fx.mission_dir(self.tmp, "m-bad")
+        os.makedirs(d, exist_ok=True)
+        # a literal newline inside the "reconcileDiagnosis" string value → the
+        # json.JSONDecodeError "Invalid control character" the defect produced.
+        bad = (
+            '{\n'
+            '  "id": "m-bad",\n'
+            '  "stage": "verify",\n'
+            '  "reconcileStatus": "escalated",\n'
+            '  "reconcileDiagnosis": "line1\nline2",\n'
+            '  "awaitingHuman": true\n'
+            '}\n'
+        )
+        with open(os.path.join(d, "state.json"), "w") as fh:
+            fh.write(bad)
+        # dropped from the board, and 404 on detail — the exact symptom reported.
+        board = self._board()
+        self.assertNotIn("m-bad", [m["id"] for m in board["missions"]])
+        self.assertIsNone(LocalAdapter(self.tmp).mission("m-bad"))
+
+    def test_detail_serves_child_bug_prd_body(self):
+        """S76 behaviour 6: a self-authored reconcile bug child's DETAILED PRD
+        (Conflict/failure summary, Root cause, Intended fix) must be readable in
+        the detail modal — so the detail endpoint serves the verbatim prd body."""
+        d = fx.plant_simple(self.tmp, "m-recbug", stage="plan",
+                            parent_mission="m-001", mtype="bug")
+        prd = (
+            "# Mission: reconcile break when main merged in\n"
+            "**Type:** bug\n"
+            "**Conflict/failure summary:** suite t-001 went red after merging main.\n"
+            "**Affected files / tests:** src/foo.js\n"
+            "**Root cause:** main renamed fooBar to foo_bar.\n"
+            "**Intended fix:** rename the call site, keeping the toggle behaviour.\n"
+        )
+        with open(os.path.join(d, "prd.md"), "w") as fh:
+            fh.write(prd)
+        detail = LocalAdapter(self.tmp).mission("m-recbug")
+        self.assertIn("prd", detail)
+        self.assertIn("Conflict/failure summary", detail["prd"])
+        self.assertIn("Root cause", detail["prd"])
+        self.assertIn("Intended fix", detail["prd"])
+
+    def test_detail_prd_empty_when_absent(self):
+        """No prd.md ⇒ the detail's prd is "" (present, non-crashing)."""
+        fx.plant_simple(self.tmp, "m-noprd", stage="implement")
+        detail = LocalAdapter(self.tmp).mission("m-noprd")
+        self.assertEqual(detail.get("prd"), "")
+
     def test_empty_tree_is_empty_board(self):
         board = self._board()
         self.assertEqual(board["missions"], [])

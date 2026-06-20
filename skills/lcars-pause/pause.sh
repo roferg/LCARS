@@ -65,7 +65,18 @@ emit_event() { # type stage detail
   [ -n "${MISSION_DIR:-}" ] || return 0
   local ts type stage detail mid
   ts="${LCARS_NOW:-$(date +%s)}"
-  json_escape() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"; }
+  # JSON-string-safe escape: backslash/quote via bash, then awk escapes every
+  # control char (newline/tab/CR → \n \t \r, rest \u00XX) so any multi-line
+  # value yields VALID JSON. jq-free. Order: backslash first.
+  json_escape() {
+    local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+    printf '%s' "$s" | awk '
+      BEGIN { RS="\034"; ORS=""; MAP=""; for (k=1;k<32;k++) MAP=MAP sprintf("%c",k) }
+      { n=length($0); for (i=1;i<=n;i++){ c=substr($0,i,1)
+          if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
+          else if (c=="\r") printf "\\r"
+          else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
+  }
   type="$(json_escape "${1:-}")"; stage="$(json_escape "${2:-}")"
   detail="$(json_escape "${3:-}")"; mid="$(json_escape "${MISSION_ID:-}")"
   printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"}\n' \

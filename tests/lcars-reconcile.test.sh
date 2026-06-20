@@ -1,0 +1,442 @@
+#!/usr/bin/env bash
+#
+# Tests for S76 — main-ahead reconcile + self-heal (skill source:
+# skills/lcars-run/run.sh `reconcile` + the drive_verify gate; bug-PRD authoring
+# template skills/lcars-run/stages/reconcile-author.md; routed through
+# skills/lcars-log/log.sh + skills/lcars-resolve-logs/resolve-logs.sh).
+#
+# Before Verify opens the PR, the harness checks whether the mission branch's base
+# (main) has moved ahead. If so it MERGES main into the branch in an ISOLATED
+# worktree, re-runs the mission's own ticket suites against the combined state, and:
+#   • not ahead              → no reconcile, falls through to today's open-PR path
+#   • ahead + clean + green  → branch updated, round cleared, proceed to open PR
+#   • ahead + conflict/red   → author DETAILED bug PRD(s) from the failure, route
+#                              them through log.sh → resolve-logs → complete, halt
+#                              "reconciling"; next pass re-enters
+#   • still red after K      → escalate awaiting-human with the diagnosis, no PR
+#
+# Everything is stubbed — NO real network, gh, worker, or tokens. Only real `git`
+# (local repos) is used to build the ahead/conflict conditions deterministically.
+#
+# Usage: bash tests/lcars-reconcile.test.sh
+
+set -uo pipefail
+qgrep() { local _qg_in; _qg_in="$(cat)"; grep "$@" <<<"$_qg_in"; }
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUN_SH="$REPO_ROOT/skills/lcars-run/run.sh"
+HOST_ADAPTER="$REPO_ROOT/skills/lcars-run/host-adapter.sh"
+
+pass=0; fail=0
+TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
+ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
+bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
+check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
+
+MID="lcars-20260619-001"
+state_of() { echo "$1/.git/lcars/missions/$MID/state.json"; }
+mdir_of()  { echo "$1/.git/lcars/missions/$MID"; }
+# Stubs + logs live in a SIBLING dir, never inside the repo working tree (an
+# untracked stub there would dirty `git status --porcelain` and fail the
+# clean-tree assertions).
+aux_of()   { echo "$1.aux"; }
+
+# --- stubs -----------------------------------------------------------------
+
+# notify stub: records each ping.
+make_notify_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "NOTIFY $1 $2 $3" >>"$NOTIFY_LOG"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# gh stub: accepts everything, records calls. NEVER opens a real PR.
+make_gh_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
+  echo "https://github.com/acme/repo/pull/99"
+fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# log.sh stub: records each invocation + its --prd args, and copies each PRD it
+# was handed into a known dir so the test can assert on PRD content. Also records
+# whether LCARS_WORKER_BIN (the engine, BUG-D) was threaded.
+make_log_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "LOG $* | WB=${LCARS_WORKER_BIN:-}" >>"$LOG_LOG"
+i=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prd) i=$((i+1)); cp "$2" "$PRD_CAPTURE/prd-$i.md" 2>/dev/null || true; shift 2 ;;
+    --prd=*) i=$((i+1)); cp "${1#--prd=}" "$PRD_CAPTURE/prd-$i.md" 2>/dev/null || true; shift ;;
+    *) shift ;;
+  esac
+done
+echo "$i" >"$PRD_CAPTURE/count"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# resolve-logs.sh stub: records drive + complete invocations.
+make_resolve_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "RESOLVE $*" >>"$RESOLVE_LOG"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A worker stub standing in for the cold bug-PRD author. It is invoked through the
+# worker-adapter `spawn` path; the LAST argument is the scratch output dir is NOT
+# how this stub finds it — the adapter passes the outdir, but to keep the stub
+# CLI-agnostic we read $LCARS_WORK_OUT if set, else scan argv for an existing dir.
+# It writes N bug PRDs (default 1, or $RECONCILE_BUGS) each in the required shape.
+make_worker_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+# Find the scratch output dir: it is one of the argv that is an existing directory
+# created by the harness (mkdir -p outdir happens before spawn). Prefer the last.
+out=""
+for a in "$@"; do [ -d "$a" ] && out="$a"; done
+[ -n "$out" ] || out="${LCARS_WORK_OUT:-}"
+[ -n "$out" ] || exit 0
+n="${RECONCILE_BUGS:-1}"
+i=1
+while [ "$i" -le "$n" ]; do
+  printf '# Mission: reconcile break %s when main merged in\n' "$i" >"$out/bug-00$i.md"
+  {
+    printf '**Type:** bug\n'
+    printf '**Conflict/failure summary:** suite t-001 went red after merging main; assertion X failed.\n'
+    printf '**Affected files / tests:** src/foo.js, tickets/t-001/tests/t.sh\n'
+    printf '**Root cause:** main renamed fooBar to foo_bar; our call site still uses fooBar.\n'
+    printf '**Intended fix:** rename the call site in src/foo.js to foo_bar, keeping our toggle behavior.\n'
+  } >>"$out/bug-00$i.md"
+  i=$((i+1))
+done
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Build a mission parked at verify with a real branch ahead of base + a green
+# ticket suite on disk. $1 = repo dir. Sets up an origin to push/fetch against.
+new_repo_verify() { # repo  [base-content]
+  local repo="$1"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && printf 'orig\n' >shared.txt && git add -A && git commit -q -m init )
+  local base; base="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+  # mission branch: adds a file + a commit ahead of base
+  ( cd "$repo" && git checkout -q -b "lcars/$MID" \
+      && printf 'feature\n' >feature.txt && git add -A && git commit -q -m "lcars($MID) t-001" \
+      && git checkout -q "$base" )
+  # bare origin so push/fetch resolve locally
+  git init -q --bare "$repo.remote.git"
+  ( cd "$repo" && git remote add origin "$repo.remote.git" \
+      && git push -q origin "$base" "lcars/$MID" )
+  local m; m="$(mdir_of "$repo")"; mkdir -p "$m/tickets/t-001/tests"
+  cat >"$m/prd.md" <<'EOF'
+# Mission: Add dark mode
+**Goal:** Let users switch to a dark colour scheme.
+**Acceptance Criteria:**
+- A toggle persists the choice
+EOF
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "verify",
+  "created": "2026-06-19T10:00:00Z",
+  "githubIssue": 42,
+  "workerBin": "$(aux_of "$repo")/worker",
+  "branch": "lcars/$MID",
+  "base": "$base"
+}
+EOF
+  cat >"$m/approved-plan.json" <<'EOF'
+[ { "id": "t-001", "title": "Add the dark token set" } ]
+EOF
+  # canonical multi-line waves.json shape (parse_waves_table reads "wave"/"id" as
+  # separate lines, exactly as Schedule emits them).
+  cat >"$m/waves.json" <<'EOF'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      { "id": "t-001", "issue": 101 }
+    ]
+  }
+]
+EOF
+  # a green result for the ticket
+  cat >"$m/tickets/t-001/result.json" <<'EOF'
+{ "passed": true, "attempts": 1 }
+EOF
+  # config with a test command that honours LCARS_TESTS_DIR and runs the staged suite
+  cat >"$repo/.git/lcars/config.json" <<'EOF'
+{ "testCommand": "for f in \"$LCARS_TESTS_DIR\"/*.sh; do [ -f \"$f\" ] && bash \"$f\" || exit 1; done" }
+EOF
+  echo "$base"
+}
+
+# Stage ticket t-001's test suite. $2 controls whether the suite is "green" (exits
+# 0 against the merged tree) or "red". For green we test for the merged base file.
+stage_ticket_suite() { # repo  green|red
+  local m; m="$(mdir_of "$1")"
+  if [ "$2" = green ]; then
+    cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  else
+    cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
+#!/usr/bin/env bash
+# fails against the merged state (silent logical conflict)
+exit 1
+EOF
+  fi
+  chmod +x "$m/tickets/t-001/tests/t.sh"
+}
+
+# Move base AHEAD: add a new commit to base on origin (and locally), so the mission
+# branch is behind. $2 = "clean" (new file, merges cleanly) or "conflict" (touch
+# the same line the branch touched → textual conflict on merge).
+advance_base() { # repo  clean|conflict
+  local repo="$1" base
+  base="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+  ( cd "$repo" && git checkout -q "$base" )
+  if [ "$2" = conflict ]; then
+    # make the branch and base both edit shared.txt's only line → real conflict
+    ( cd "$repo" && git checkout -q "lcars/$MID" \
+        && printf 'branch-edit\n' >shared.txt && git add -A && git commit -q -m "branch edits shared" \
+        && git checkout -q "$base" \
+        && printf 'main-edit\n' >shared.txt && git add -A && git commit -q -m "main edits shared" )
+  else
+    ( cd "$repo" && printf 'newbase\n' >base-only.txt && git add -A && git commit -q -m "main moves ahead" )
+  fi
+  ( cd "$repo" && git push -q origin "$base" 2>/dev/null || true )
+}
+
+# Drive a run.sh subcommand inside a repo with all stub bins injected (from the
+# sibling aux dir, never inside the repo working tree).
+run_in() { # repo  subcommand-and-args…
+  local repo="$1"; shift
+  local a; a="$(aux_of "$repo")"
+  ( cd "$repo" \
+      && PRD_CAPTURE="$a/prdcap" RECONCILE_BUGS="${RECONCILE_BUGS:-1}" \
+         LCARS_GH_BIN="$a/gh" LCARS_GIT_BIN="git" \
+         LCARS_HOST_ADAPTER="$HOST_ADAPTER" \
+         LCARS_LOG_SCRIPT="$a/log.sh" \
+         LCARS_RESOLVE_LOGS_SCRIPT="$a/resolve-logs.sh" \
+         LCARS_WORKER_BIN="$a/worker" LCARS_WORKER_CLI="${MISSION_ENGINE:-claude}" \
+         LCARS_WORKER_ADAPTER="$REPO_ROOT/skills/lcars-run/worker-adapter.sh" \
+         LCARS_NOTIFY="$a/notify" NOTIFY_LOG="$a/notify.log" \
+         GH_LOG="$a/gh.log" LOG_LOG="$a/log.log" RESOLVE_LOG="$a/resolve.log" \
+         LCARS_NOTIFY_NO_DESKTOP=1 \
+         bash "$RUN_SH" "$@" )
+}
+
+setup_stubs() { # repo
+  local repo="$1" a; a="$(aux_of "$repo")"; mkdir -p "$a/prdcap"
+  make_notify_stub "$a/notify"
+  make_gh_stub "$a/gh"
+  make_log_stub "$a/log.sh"
+  make_resolve_stub "$a/resolve-logs.sh"
+  make_worker_stub "$a/worker"
+  : >"$a/gh.log"; : >"$a/notify.log"; : >"$a/log.log"; : >"$a/resolve.log"
+}
+
+# ==========================================================================
+echo "lcars reconcile (S76)"
+
+[ -f "$RUN_SH" ] || { echo "run.sh not found at $RUN_SH"; exit 1; }
+
+# --- Unit: json_escape makes multi-line / control-char text JSON-string-safe --
+# Extract run.sh's own json_escape() (the canonical escaper that writes
+# reconcileDiagnosis) and drive it directly, then assert the output wrapped as a
+# JSON string PARSES and ROUND-TRIPS. Before the fix this escaped only \ and ",
+# so a newline/tab produced an Invalid-control-character JSON parse error.
+JE_LIB="$TMPROOT/json_escape.lib.sh"
+sed -n '/^json_escape() {/,/^}/p' "$RUN_SH" >"$JE_LIB"
+( set +u
+  # shellcheck source=/dev/null
+  . "$JE_LIB"
+  in="$(printf 'l1\nl2\twith \"quote\" and \\back\rcr ctrl\x01end')"
+  esc="$(json_escape "$in")"
+  IN="$in" python3 - "$esc" <<'PY'
+import json, os, sys
+esc = sys.argv[1]
+val = json.loads('"' + esc + '"')   # raises if not JSON-string-safe
+assert val == os.environ["IN"], "round-trip mismatch: %r != %r" % (val, os.environ["IN"])
+PY
+) && ok "U. json_escape: multi-line+tab+quote+backslash+control char → valid JSON that round-trips" \
+   || bad "U. json_escape: multi-line+tab+quote+backslash+control char → valid JSON that round-trips"
+
+# --- Behaviour 1: base NOT ahead → no reconcile, proceeds to open-PR path -----
+r1="$(mktemp -d "$TMPROOT/r1.XXXX")"; new_repo_verify "$r1" >/dev/null; setup_stubs "$r1"
+stage_ticket_suite "$r1" green
+rc1=0; run_in "$r1" reconcile --mission "$MID" >"$r1.aux/out.txt" 2>&1 || rc1=$?
+s1="$(state_of "$r1")"
+check "1. reconcile exits 0 when base is not ahead" "[ '$rc1' -eq 0 ]"
+check "1. no reconcileRound set (never reconciled)" "! grep -q 'reconcileRound' '$s1'"
+check "1. no Mission Log dispatched" "! grep -q LOG '$r1.aux/log.log'"
+check "1. reports proceed/not-ahead" "grep -qi 'not ahead\|proceed\|up to date\|up-to-date' '$r1.aux/out.txt'"
+check "1. live tree stays clean" "[ -z \"\$(cd '$r1' && git status --porcelain)\" ]"
+check "1. no reconcile worktree leaks" "! (cd '$r1' && git worktree list | grep -q reconcile)"
+
+# --- Behaviour 2: ahead + clean merge + green → branch updated, no log --------
+r2="$(mktemp -d "$TMPROOT/r2.XXXX")"; base2="$(new_repo_verify "$r2")"; setup_stubs "$r2"
+stage_ticket_suite "$r2" green
+advance_base "$r2" clean
+rc2=0; run_in "$r2" reconcile --mission "$MID" >"$r2.aux/out.txt" 2>&1 || rc2=$?
+s2="$(state_of "$r2")"
+check "2. reconcile exits 0 on clean+green" "[ '$rc2' -eq 0 ]"
+check "2. mission branch now contains base's new commit (merge happened)" \
+  "(cd '$r2' && git log --oneline lcars/$MID) | qgrep -q 'main moves ahead'"
+check "2. reconcileRound cleared on green" "! grep -q '\"reconcileRound\"' '$s2'"
+check "2. NO Mission Log dispatched on clean+green" "! grep -q LOG '$r2.aux/log.log'"
+check "2. scoped re-test ran even on clean merge (output mentions re-test/green)" \
+  "grep -qi 'green\|re-test\|reconcil' '$r2.aux/out.txt'"
+check "2. live tree stays clean" "[ -z \"\$(cd '$r2' && git status --porcelain)\" ]"
+check "2. no reconcile worktree leaks" "! (cd '$r2' && git worktree list | grep -q reconcile)"
+
+# --- Behaviour 3a: ahead + RED re-test (logical) → DETAILED log dispatched ----
+r3="$(mktemp -d "$TMPROOT/r3.XXXX")"; new_repo_verify "$r3" >/dev/null; setup_stubs "$r3"
+stage_ticket_suite "$r3" red
+advance_base "$r3" clean
+rc3=0; run_in "$r3" reconcile --mission "$MID" >"$r3.aux/out.txt" 2>&1 || rc3=$?
+s3="$(state_of "$r3")"
+check "3a. reconcile signals 'reconciling' (exit 10 = halt this pass)" "[ '$rc3' -eq 10 ]"
+check "3a. log.sh invoked" "grep -q '^LOG' '$r3.aux/log.log'"
+check "3a. log.sh invoked with at least one --prd" "grep -q -- '--prd' '$r3.aux/log.log'"
+check "3a. log.sh invoked with --parent for this mission" \
+  "grep -q -- \"--parent\" '$r3.aux/log.log' && grep -q '$MID' '$r3.aux/log.log'"
+check "3a. each authored PRD carries '# Mission:'" \
+  "grep -q '^# Mission:' '$r3.aux/prdcap/prd-1.md'"
+check "3a. each authored PRD carries '**Type:** bug'" \
+  "grep -q '\*\*Type:\*\* bug' '$r3.aux/prdcap/prd-1.md'"
+check "3a. PRD carries Conflict/failure summary section" \
+  "grep -q 'Conflict/failure summary' '$r3.aux/prdcap/prd-1.md'"
+check "3a. PRD carries Root cause section" "grep -q 'Root cause' '$r3.aux/prdcap/prd-1.md'"
+check "3a. PRD carries Intended fix section" "grep -q 'Intended fix' '$r3.aux/prdcap/prd-1.md'"
+check "3a. mission engine (workerBin) threaded to log.sh (BUG-D)" \
+  "grep -q "WB=$r3.aux/worker" '$r3.aux/log.log'"
+check "3a. resolve-logs drive invoked" "grep -q '^RESOLVE' '$r3.aux/resolve.log' && ! grep -q 'complete' <(head -1 '$r3.aux/resolve.log')"
+check "3a. resolve-logs complete invoked" "grep -q 'complete' '$r3.aux/resolve.log'"
+check "3a. reconcileRound recorded (round 1)" "grep -q '\"reconcileRound\"' '$s3'"
+check "3a. driver halts reconciling (no PR opened)" "! grep -q 'pr create' '$r3.aux/gh.log'"
+check "3a. reconcileStatus persisted" "grep -q '\"reconcileStatus\"' '$s3'"
+check "3a. live tree clean even after a red reconcile" \
+  "[ -z \"\$(cd '$r3' && git status --porcelain)\" ]"
+check "3a. no reconcile worktree leaks" "! (cd '$r3' && git worktree list | grep -q reconcile)"
+
+# --- Behaviour 3b: TEXTUAL conflict → log dispatched, multiple PRDs supported -
+r3b="$(mktemp -d "$TMPROOT/r3b.XXXX")"; new_repo_verify "$r3b" >/dev/null; setup_stubs "$r3b"
+stage_ticket_suite "$r3b" green
+advance_base "$r3b" conflict
+RECONCILE_BUGS=2 rc=0; RECONCILE_BUGS=2 run_in "$r3b" reconcile --mission "$MID" >"$r3b.aux/out.txt" 2>&1 || rc=$?
+check "3b. textual conflict dispatches a Mission Log" "grep -q '^LOG' '$r3b.aux/log.log'"
+check "3b. two clusters → two --prd args" \
+  "[ \"\$(grep -o -- '--prd' '$r3b.aux/log.log' | wc -l | tr -d ' ')\" -ge 2 ]"
+check "3b. no PR opened on a textual conflict" "! grep -q 'pr create' '$r3b.aux/gh.log'"
+check "3b. live tree clean after a conflicting merge" \
+  "[ -z \"\$(cd '$r3b' && git status --porcelain)\" ]"
+check "3b. no reconcile worktree leaks after conflict" \
+  "! (cd '$r3b' && git worktree list | grep -q reconcile)"
+
+# --- Behaviour 3c: authoring runs on the COPILOT engine too (BUG-D) -----------
+r3c="$(mktemp -d "$TMPROOT/r3c.XXXX")"; MISSION_ENGINE=copilot new_repo_verify "$r3c" >/dev/null
+setup_stubs "$r3c"; stage_ticket_suite "$r3c" red; advance_base "$r3c" clean
+MISSION_ENGINE=copilot run_in "$r3c" reconcile --mission "$MID" >"$r3c.aux/out.txt" 2>&1 || true
+check "3c. copilot mission threads copilot engine to log.sh" \
+  "grep -q "WB=$r3c.aux/worker" '$r3c.aux/log.log'"
+check "3c. copilot mission still authored a valid bug PRD" \
+  "grep -q '^# Mission:' '$r3c.aux/prdcap/prd-1.md' && grep -q '\*\*Type:\*\* bug' '$r3c.aux/prdcap/prd-1.md'"
+
+# --- Behaviour 4: still red after K rounds → escalate awaiting-human ----------
+r4="$(mktemp -d "$TMPROOT/r4.XXXX")"; new_repo_verify "$r4" >/dev/null; setup_stubs "$r4"
+stage_ticket_suite "$r4" red
+advance_base "$r4" clean
+# K=2: pass 1 (round 1), pass 2 (round 2), pass 3 (round > K) → escalate
+s4="$(state_of "$r4")"
+LCARS_RECONCILE_MAX=2 run_in "$r4" reconcile --mission "$MID" >"$r4.aux/p1.txt" 2>&1 || true
+check "4. round 1 recorded after pass 1" "grep -q 'reconcileRound' '$s4'"
+check "4. pass 1 does not escalate" "! grep -q '\"awaitingHuman\": *true' '$s4'"
+LCARS_RECONCILE_MAX=2 run_in "$r4" reconcile --mission "$MID" >"$r4.aux/p2.txt" 2>&1 || true
+LCARS_RECONCILE_MAX=2 run_in "$r4" reconcile --mission "$MID" >"$r4.aux/p3.txt" 2>&1 || true
+check "4. escalates awaiting-human after K rounds" "grep -q '\"awaitingHuman\": *true' '$s4'"
+check "4. records a pendingQuestion (the diagnosis)" "grep -q 'pendingQuestion' '$s4'"
+check "4. writes pending.json on escalation" "[ -f '$(mdir_of "$r4")/pending.json' ]"
+check "4. applies lcars:awaiting-human label" "grep -q 'awaiting-human' '$r4.aux/gh.log'"
+check "4. NEVER opens a PR on escalation" "! grep -q 'pr create' '$r4.aux/gh.log'"
+check "4. stays at verify on escalation" "grep -q '\"stage\": *\"verify\"' '$s4'"
+check "4. fires a gate notification" "grep -q NOTIFY '$r4.aux/notify.log'"
+# REGRESSION (the defect): reconcile_gate writes a MULTI-LINE failure summary into
+# reconcileDiagnosis. With the old json_escape (only \ and ") that produced
+# INVALID JSON (Invalid control character), so the viewscreen dropped the
+# escalated, awaiting-human parent entirely. state.json must be VALID JSON now.
+check "4. a multi-line reconcileDiagnosis was persisted" "grep -q 'reconcileDiagnosis' '$s4'"
+check "4. state.json is VALID JSON after the multi-line escalation diagnosis" \
+  "python3 -c \"import json,sys; json.load(open('$s4'))\""
+
+# --- Behaviour 5: isolation — live tree stays clean on a conflicting merge -----
+# (covered above by the clean-tree checks; re-assert no worktree dir survives.)
+r5="$(mktemp -d "$TMPROOT/r5.XXXX")"; new_repo_verify "$r5" >/dev/null; setup_stubs "$r5"
+stage_ticket_suite "$r5" green; advance_base "$r5" conflict
+run_in "$r5" reconcile --mission "$MID" >"$r5.aux/out.txt" 2>&1 || true
+check "5. no reconcile.* worktree directory leaks under the mission dir" \
+  "! ls -d '$(mdir_of "$r5")'/reconcile.* 2>/dev/null | grep -q reconcile"
+check "5. git worktree list has no reconcile entry" \
+  "! (cd '$r5' && git worktree list | grep -q reconcile)"
+check "5. the captain's working tree is unmodified" \
+  "[ -z \"\$(cd '$r5' && git status --porcelain)\" ]"
+
+# --- Behaviour 7: guard — no false ready-to-merge on a non-green outcome -------
+# Re-use r3 (red): open_pr / cmd_open_pr must never have been reached.
+check "7. red outcome never called gh pr create" "! grep -q 'pr create' '$r3.aux/gh.log'"
+check "7. red outcome left no prUrl in state" "! grep -q 'prUrl' '$s3'"
+check "7. red outcome left the mission at verify" "grep -q '\"stage\": *\"verify\"' '$s3'"
+
+# Guard: a NOT-AHEAD reconcile must report 'proceed' so drive_verify falls through
+# to today's open-PR path (the open itself is exercised by lcars-verify-pr.test.sh).
+check "7. not-ahead reconcile signals proceed-to-open-PR" \
+  "grep -qi 'proceed\|not ahead\|RECONCILE: ok' '$r1.aux/out.txt'"
+
+# --- DRIVE integration: the gate is wired into drive_verify (not just reconcile) --
+# A full `drive` pass on a clean+green ahead repo reconciles (merges main in) THEN
+# opens the PR (gate raised). A full `drive` on a red repo self-heals + HALTS
+# "reconciling" without opening a PR.
+rd="$(mktemp -d "$TMPROOT/rd.XXXX")"; new_repo_verify "$rd" >/dev/null; setup_stubs "$rd"
+stage_ticket_suite "$rd" green; advance_base "$rd" clean
+run_in "$rd" drive --mission "$MID" >"$rd.aux/out.txt" 2>&1 || true
+sd="$(state_of "$rd")"
+check "D. drive reconciles clean+green then OPENS the PR (gate raised)" \
+  "grep -q 'pr create' '$rd.aux/gh.log'"
+check "D. drive recorded the merge on the branch" \
+  "(cd '$rd' && git log --oneline lcars/$MID) | qgrep -q 'main moves ahead'"
+
+rdr="$(mktemp -d "$TMPROOT/rdr.XXXX")"; new_repo_verify "$rdr" >/dev/null; setup_stubs "$rdr"
+stage_ticket_suite "$rdr" red; advance_base "$rdr" clean
+run_in "$rdr" drive --mission "$MID" >"$rdr.aux/out.txt" 2>&1 || true
+check "D. drive on a red reconcile NEVER opens a PR" \
+  "! grep -q 'pr create' '$rdr.aux/gh.log'"
+check "D. drive on a red reconcile prints the reconciling halt" \
+  "grep -qi 'reconcil' '$rdr.aux/out.txt'"
+check "D. drive on a red reconcile dispatched a Mission Log" \
+  "grep -q '^LOG' '$rdr.aux/log.log'"
+
+# ==========================================================================
+echo
+printf 'lcars reconcile: %d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]

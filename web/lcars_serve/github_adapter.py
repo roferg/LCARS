@@ -159,6 +159,10 @@ class GitHubAdapter(object):
             "prUrl": None,
             "prNumber": None,
             "review": "open" if stage == "verify" else None,
+            # S76: the main-ahead reconcile sub-state lives in the mission's LOCAL
+            # state.json (reconcileStatus), which the github adapter cannot see —
+            # adapter-neutral read-path: None here (ADR-006).
+            "reconcileStatus": None,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,
