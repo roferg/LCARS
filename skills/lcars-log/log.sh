@@ -31,6 +31,14 @@ GH_BIN="${LCARS_GH_BIN:-gh}"
 GIT_BIN="${LCARS_GIT_BIN:-git}"
 DATE="${LCARS_DATE:-$(date -u +%Y%m%d)}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+# The lcars-run driver that owns the dynamic estimator (sessions 58–64). A logged
+# bug is just a Mission whose estimate is computed from its bug PRD, so it must
+# get the SAME estimator scoring a top-level Mission gets — we REUSE run.sh's
+# `estimate` entry point exactly the way file.sh does at the end of Align. Default
+# matches how SKILL.md invokes the other run.sh subcommands; overridable so tests
+# can point it at the real run.sh with a stubbed cold worker. STRICTLY OPTIONAL:
+# the estimator NEVER blocks the log (see run_child_estimate below).
+RUN_BIN="${LCARS_RUN_BIN:-$HOME/.claude/skills/lcars-run/run.sh}"
 
 # The host-integration adapter — the ONE place that speaks to a forge. We reuse
 # the SAME adapter Schedule uses to NATIVELY nest sub-issues, so a logged bug
@@ -54,14 +62,29 @@ json_raw() { # file key -> first bare token (number/bool/null)
 }
 
 # --- args -----------------------------------------------------------------
+# PRDS[i] is the i-th bug's PRD path; OVERRIDES[i] is its OPTIONAL captain model
+# override ("<scope>:<tier>", same format as `lcars file --model-override` and the
+# Launch panel). A `--model-override` applies to the MOST RECENT `--prd` so the
+# Mission-Log review panel can steer each bug independently (positional pairing).
 PARENT_SEL=""
 PRDS=()
+OVERRIDES=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --parent)   PARENT_SEL="${2:-}"; shift 2 ;;
     --parent=*) PARENT_SEL="${1#--parent=}"; shift ;;
-    --prd)      PRDS+=("${2:-}"); shift 2 ;;
-    --prd=*)    PRDS+=("${1#--prd=}"); shift ;;
+    --prd)      PRDS+=("${2:-}"); OVERRIDES+=(""); shift 2 ;;
+    --prd=*)    PRDS+=("${1#--prd=}"); OVERRIDES+=(""); shift ;;
+    --model-override|--model-override=*)
+      mo=""
+      case "$1" in
+        --model-override) mo="${2:-}"; shift 2 ;;
+        *)                mo="${1#--model-override=}"; shift ;;
+      esac
+      [ "${#PRDS[@]}" -gt 0 ] \
+        || die "--model-override must follow a --prd it applies to."
+      OVERRIDES[$(( ${#PRDS[@]} - 1 ))]="$mo"
+      ;;
     *)          die "unknown argument: $1" ;;
   esac
 done
@@ -70,6 +93,28 @@ done
 for p in "${PRDS[@]}"; do
   [ -f "$p" ] || die "bug PRD file not found: $p"
 done
+
+# Validate every per-bug override BEFORE anything is filed (nothing partial on a
+# bad value), the same way `lcars file` does. Format is "<scope>:<tier>" with
+# scope ∈ {all,reasoning,implementation} and tier ∈ {sonnet,opus}. Empty = none.
+validate_override() { # value (may be empty)
+  local mo="$1" scope tier
+  [ -n "$mo" ] || return 0
+  case "$mo" in
+    *:*) : ;;
+    *) die "malformed --model-override '$mo' — expected <scope>:<tier> (e.g. all:opus)." ;;
+  esac
+  scope="${mo%%:*}"; tier="${mo#*:}"
+  case "$scope" in
+    all|reasoning|implementation) : ;;
+    *) die "invalid --model-override scope '$scope' — must be one of: all, reasoning, implementation." ;;
+  esac
+  case "$tier" in
+    sonnet|opus) : ;;
+    *) die "invalid --model-override tier '$tier' — must be one of: sonnet, opus." ;;
+  esac
+}
+for mo in "${OVERRIDES[@]}"; do validate_override "$mo"; done
 
 # --- locate the repo + state dir ------------------------------------------
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" \
@@ -154,6 +199,21 @@ if [ -f "$CONFIG" ]; then
 fi
 [ -n "$MODEL" ] || MODEL="${LCARS_MODEL:-claude-sonnet}"
 
+# --- the chosen engine (S67, BUG-D) ----------------------------------------
+# A logged bug must RUN on the SAME engine as the parent it folds into — a
+# copilot parent's fixes must not silently host-detect claude. The daemon (or
+# the captain) threads the parent's engine to `lcars log` as $LCARS_WORKER_BIN;
+# persist it as state.json's `workerBin` on each child, exactly the way file.sh
+# does for a top-level Mission, so the board shows it and the child `lcars run`
+# is fed the parent engine. Empty/unset ⇒ no field (host-detect stays in
+# charge). JSON-escape the value so an odd engine string can't break the JSON.
+WORKER_BIN_LINE=""
+if [ -n "${LCARS_WORKER_BIN:-}" ]; then
+  wb_json="${LCARS_WORKER_BIN//\\/\\\\}"
+  wb_json="${wb_json//\"/\\\"}"
+  WORKER_BIN_LINE="  \"workerBin\": \"$wb_json\","
+fi
+
 # --- the base branch every bug Mission branches off ------------------------
 BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 case "$BASE" in ''|HEAD) BASE="main" ;; esac
@@ -173,8 +233,9 @@ next_id() {
 }
 
 # --- file one bug; echoes "id<TAB>issue<TAB>title" for the summary ----------
-file_one_bug() { # prd-path
+file_one_bug() { # prd-path [model-override]
   local prd="$1"
+  local override="${2:-}"
 
   # The bug PRD must be well-formed enough for Plan to consume it. Title + type
   # are the source of truth, exactly like `lcars file`.
@@ -268,32 +329,59 @@ file_one_bug() { # prd-path
       ;;
   esac
 
-  # state.json — type bug, stage plan, linked to the parent.
+  # state.json — type bug, stage plan, linked to the parent. The optional
+  # workerBin line is emitted only when an engine was threaded in (BUG-D), so a
+  # no-engine log keeps the exact prior shape (host-detect stays in charge). The
+  # optional modelOverride line carries the captain's per-bug steer (S74) in the
+  # EXACT shape file.sh persists — { "scope": "...", "tier": "..." } — so run.sh's
+  # active_model_override picks it up natively with zero resolve-logs changes.
+  local override_line=""
+  if [ -n "$override" ]; then
+    local ov_scope="${override%%:*}" ov_tier="${override#*:}"
+    override_line="  \"modelOverride\": { \"scope\": \"$ov_scope\", \"tier\": \"$ov_tier\" },"
+  fi
   local title_json="${title//\\/\\\\}"; title_json="${title_json//\"/\\\"}"
   local issue_json="${issue:-null}"
-  cat >"$mdir/state.json" <<EOF
-{
-  "id": "$id",
-  "type": "bug",
-  "title": "$title_json",
-  "stage": "plan",
-  "created": "$NOW",
-  "model": "$MODEL",
-  "githubIssue": $issue_json,
-  "parentMission": "$PARENT_ID",
-  "parentIssue": ${PARENT_ISSUE:-null},
-  "branch": "$branch",
-  "base": "$BASE"
-}
-EOF
+  {
+    printf '{\n'
+    printf '  "id": "%s",\n' "$id"
+    printf '  "type": "bug",\n'
+    printf '  "title": "%s",\n' "$title_json"
+    printf '  "stage": "plan",\n'
+    printf '  "created": "%s",\n' "$NOW"
+    printf '  "model": "%s",\n' "$MODEL"
+    [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
+    [ -n "$override_line" ] && printf '%s\n' "$override_line"
+    printf '  "githubIssue": %s,\n' "$issue_json"
+    printf '  "parentMission": "%s",\n' "$PARENT_ID"
+    printf '  "parentIssue": %s,\n' "${PARENT_ISSUE:-null}"
+    printf '  "branch": "%s",\n' "$branch"
+    printf '  "base": "%s"\n' "$BASE"
+    printf '}\n'
+  } >"$mdir/state.json"
+
+  # --- run the dynamic estimator on the child (S74) ------------------------
+  # Now that prd.md + state.json exist, give this bug Mission the SAME dynamic
+  # estimate a top-level Mission gets: invoke run.sh `estimate` exactly the way
+  # file.sh does at the end of Align (best-effort, NEVER block the log). On
+  # success it writes a canonical, always-valid estimate.json on the child (cost
+  # + reasoning/impl criticality + per-stage model map). The estimator inherits
+  # the child's engine the same way the rest of the pipeline does (the threaded
+  # $LCARS_WORKER_BIN). On failure it leaves NO estimate.json and the bug still
+  # files — every stage then falls back to its legacy model, exactly as before.
+  if [ -f "$RUN_BIN" ]; then
+    bash "$RUN_BIN" estimate --mission "$id" >/dev/null 2>&1 || true
+  fi
 
   printf '%s\t%s\t%s\n' "$id" "$issue" "$title"
 }
 
 # --- file every bug, collecting rows for the summary -----------------------
 ROWS=()
+i=0
 for prd in "${PRDS[@]}"; do
-  ROWS+=("$(file_one_bug "$prd")")
+  ROWS+=("$(file_one_bug "$prd" "${OVERRIDES[$i]:-}")")
+  i=$((i + 1))
 done
 
 # --- aggregate summary -----------------------------------------------------

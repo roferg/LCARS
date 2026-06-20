@@ -205,6 +205,55 @@ json_scoped_num() { # file dotted.path → number (or empty for absent/null)
   printf '%s' "$v"
 }
 
+# json_encode_string — emit a properly-escaped JSON STRING TOKEN (INCLUDING the
+# surrounding double-quotes) for an arbitrary raw value. This is the SINGLE source
+# of string escaping for the canonical estimate.json: every worker-derived string
+# (rationale, each deviations[] entry, estimatorModel) is decoded by json_scoped_str
+# then re-encoded through here, so quotes, newlines, tabs, backslashes and other
+# control chars all round-trip as valid JSON instead of corrupting the file (S69).
+#
+# It delegates to a REAL encoder (python3, already a harness dependency) — never a
+# hand-rolled printf — so the escaping is correct by construction. For a CLEAN
+# string with no special chars, json.dumps produces EXACTLY `"<s>"`, byte-identical
+# to the old `printf '"%s"'`, so a normal estimate stays byte-for-byte equivalent
+# (no regression). The value arrives on STDIN so no argv quoting can mangle it; the
+# trailing newline python emits is stripped so the token embeds inline cleanly.
+json_encode_string() { # raw-string (via $1) → "escaped json string token"
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c \
+    'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'
+}
+
+# json_scoped_raw — like json_scoped_str but returns the string token's RAW
+# (still-JSON-ESCAPED) body, WITHOUT any decoding. The caller can then FULLY and
+# unambiguously decode it (json_decode_string) — important for fields like
+# rationale where \n vs a literal backslash must not be conflated (the half-decode
+# in json_scoped_str loses that distinction). jq-free; same brace-accurate scope.
+json_scoped_raw() { # file dotted.path → raw escaped string body (or empty)
+  local file="$1" path="$2"
+  [ -f "$file" ] || return 0
+  local blob; blob="$(tr -d '\n' <"$file")"
+  local key="${path##*.}" parents="${path%.*}"
+  if [ "$parents" != "$path" ]; then
+    local seg
+    local IFS='.'
+    for seg in $parents; do
+      blob="$(_json_scope_into "$blob" "$seg")"
+      [ -n "$blob" ] || return 0
+    done
+  fi
+  printf '%s' "$blob" \
+    | sed -En "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" \
+    | head -1
+}
+
+# json_decode_string — fully decode a RAW JSON string body (the chars BETWEEN the
+# quotes, e.g. from json_scoped_raw) into its literal value: \n→newline, \t→tab,
+# \\→\, \"→", \uXXXX→char. Uses the real JSON parser so the decode is exact.
+json_decode_string() { # raw-escaped-body (via $1) → literal string
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c \
+    'import json,sys; sys.stdout.write(json.loads("\"" + sys.stdin.read() + "\""))' 2>/dev/null
+}
+
 # --- tiny JSON writers (pretty, one-field-per-line state.json) --------------
 # state.json is written one field per line (see file.sh), so we edit it by the
 # line. New fields are inserted right after the opening brace — always valid
@@ -2916,29 +2965,71 @@ estimate_validate_and_write() { # src-json
   local rc ic; rc="$(json_scoped_str "$src" reasoningCriticality)"; ic="$(json_scoped_str "$src" implCriticality)"
   printf '%s' "$rc" | grep -Eq "$enum" || return 1
   printf '%s' "$ic" | grep -Eq "$enum" || return 1
-  # All six model keys must be present and each a valid tier.
+  # --- SINGLE-SOURCE active stage list (S74 bug-awareness) -------------------
+  # The estimator worker scores all six stages, but a LOGGED BUG fast-tracks
+  # straight to Plan (lcars-log: child state.json stage="plan", type="bug") and
+  # NEVER runs Research or Validate. So when the mission being estimated is a bug
+  # we canonicalize the estimate.json down to ONLY the stages it actually runs —
+  # plan, planReview, implement, verify — dropping research+validate from the
+  # models / tokenEstimates / requestEstimates maps. The cost is then computed
+  # over exactly the stages present in the file (cost_compute reads the file's
+  # stage set), so it sums the 4 real stages for a bug and all 6 otherwise. One
+  # list drives the validation loops, the emit, AND the cost — no second model.
+  local STAGE_KEYS="research validate plan planReview implement verify"
+  local mtype="" mstage=""
+  if [ -f "$MISSION_DIR/state.json" ]; then
+    mtype="$(json_scoped_str "$MISSION_DIR/state.json" type)"
+    mstage="$(json_scoped_str "$MISSION_DIR/state.json" stage)"
+  fi
+  # The fast-tracked LOGGED bug — and ONLY that — skips Research + Validate. Its
+  # signal is BOTH type=="bug" AND stage=="plan" at estimate time (lcars-log seeds
+  # the child straight at Plan; see log.sh). A regular `lcars file` bug also has
+  # type=="bug" but is estimated at stage=="align" and runs the FULL pipeline — so
+  # type alone is NOT enough; the stage is what proves Research/Validate were skipped.
+  if [ "$mtype" = "bug" ] && [ "$mstage" = "plan" ]; then
+    STAGE_KEYS="plan planReview implement verify"
+  fi
+  # The active stage keys' model values must be present and each a valid tier.
+  # (For a bug we only require/keep the 4 it runs; the worker may still have
+  # scored six — we simply ignore research/validate.)
   local k v
-  for k in research validate plan planReview implement verify; do
+  for k in $STAGE_KEYS; do
     v="$(json_scoped_str "$src" "models.$k")"
     printf '%s' "$v" | grep -Eq "$tierre" || return 1
     eval "TIER_$k=\$v"
   done
-  local em; em="$(json_scoped_str "$src" estimatorModel)"; [ -n "$em" ] || em="opus"
+  # estimatorModel: a free-form model-name string. Read RAW + fully decode so any
+  # JSON-hostile char in it round-trips, then it is re-encoded on emit via the
+  # single JSON encoder (S69 — was previously emitted bare → could break the file).
+  local em; em="$(json_decode_string "$(json_scoped_raw "$src" estimatorModel)")"; [ -n "$em" ] || em="opus"
   # --- schemaVersion-2 fields (session 60) ---------------------------------
   # Per-stage TOKEN + REQUEST estimates. Repair malformed/absent worker output:
   # a non-negative integer survives; anything else (missing key, junk, negative)
   # canonicalizes to 0 so the file is always well-formed and the cost is defined.
   local n
-  for k in research validate plan planReview implement verify; do
+  for k in $STAGE_KEYS; do
     n="$(json_scoped_num "$src" "tokenEstimates.$k.low")";   eval "TOKLO_$k=\$(canon_nonneg_int \"\$n\")"
     n="$(json_scoped_num "$src" "tokenEstimates.$k.high")";  eval "TOKHI_$k=\$(canon_nonneg_int \"\$n\")"
     n="$(json_scoped_num "$src" "requestEstimates.$k.low")"; eval "REQLO_$k=\$(canon_nonneg_int \"\$n\")"
     n="$(json_scoped_num "$src" "requestEstimates.$k.high")";eval "REQHI_$k=\$(canon_nonneg_int \"\$n\")"
   done
   # rationale: a single JSON string, repaired to AT MOST 2 paragraphs (blank-line
-  # separated). The escaped string content is preserved as-is.
-  local rationale; rationale="$(json_scoped_str "$src" rationale)"
+  # separated). We read the RAW token and FULLY decode it (json_scoped_raw +
+  # json_decode_string) so \n / \t / \\ / \" all become their literal characters
+  # UNAMBIGUOUSLY — the old half-decode (json_scoped_str) conflated a literal
+  # backslash with a \n escape introducer, which is the S69 corruption bug. The
+  # clamp then splits on a REAL blank line, and the FINAL escaping is done once,
+  # robustly, through the single JSON encoder (see _estimate_emit). This makes a
+  # rationale carrying an embedded quote, newline OR backslash round-trip as VALID
+  # JSON (S74's logged-bug path exercises the same code so the fix holds there too).
+  local rationale; rationale="$(json_decode_string "$(json_scoped_raw "$src" rationale)")"
   rationale="$(rationale_clamp "$rationale")"
+  # Encode every worker-derived STRING field through the SINGLE JSON encoder so the
+  # canonical file is always valid JSON, whatever chars the worker emitted (S69).
+  # Each token below ALREADY INCLUDES its surrounding quotes. For clean input the
+  # encoder produces exactly `"<s>"` — byte-identical to the old printf '"%s"'.
+  local rationale_tok; rationale_tok="$(json_encode_string "$rationale")"
+  local em_tok; em_tok="$(json_encode_string "$em")"
   # Re-emit a CANONICAL estimate.json. The `cost` block is COMPUTED BY CODE from
   # the token/request estimates + pricing.json + the active CLI — NEVER trusted
   # from the worker. We write the file once WITHOUT cost, compute against it, then
@@ -2952,36 +3043,37 @@ estimate_validate_and_write() { # src-json
     printf '  "schemaVersion": 3,\n'
     printf '  "reasoningCriticality": "%s",\n' "$rc"
     printf '  "implCriticality": "%s",\n' "$ic"
+    # models / tokenEstimates / requestEstimates are emitted over EXACTLY the
+    # active stage keys ($STAGE_KEYS — 4 for a bug, 6 otherwise), comma-joined
+    # so the JSON stays valid for either set.
+    local _ek _sep _tv _tklo _tkhi _rqlo _rqhi
     printf '  "models": {\n'
-    printf '    "research": "%s",\n'   "$TIER_research"
-    printf '    "validate": "%s",\n'   "$TIER_validate"
-    printf '    "plan": "%s",\n'       "$TIER_plan"
-    printf '    "planReview": "%s",\n' "$TIER_planReview"
-    printf '    "implement": "%s",\n'  "$TIER_implement"
-    printf '    "verify": "%s"\n'      "$TIER_verify"
-    printf '  },\n'
+    _sep=""
+    for _ek in $STAGE_KEYS; do
+      eval "_tv=\$TIER_$_ek"
+      printf '%s    "%s": "%s"' "$_sep" "$_ek" "$_tv"; _sep=$',\n'
+    done
+    printf '\n  },\n'
     printf '  "tokenEstimates": {\n'
-    printf '    "research": { "low": %s, "high": %s },\n'   "$TOKLO_research" "$TOKHI_research"
-    printf '    "validate": { "low": %s, "high": %s },\n'   "$TOKLO_validate" "$TOKHI_validate"
-    printf '    "plan": { "low": %s, "high": %s },\n'       "$TOKLO_plan" "$TOKHI_plan"
-    printf '    "planReview": { "low": %s, "high": %s },\n' "$TOKLO_planReview" "$TOKHI_planReview"
-    printf '    "implement": { "low": %s, "high": %s },\n'  "$TOKLO_implement" "$TOKHI_implement"
-    printf '    "verify": { "low": %s, "high": %s }\n'      "$TOKLO_verify" "$TOKHI_verify"
-    printf '  },\n'
+    _sep=""
+    for _ek in $STAGE_KEYS; do
+      eval "_tklo=\$TOKLO_$_ek"; eval "_tkhi=\$TOKHI_$_ek"
+      printf '%s    "%s": { "low": %s, "high": %s }' "$_sep" "$_ek" "$_tklo" "$_tkhi"; _sep=$',\n'
+    done
+    printf '\n  },\n'
     printf '  "requestEstimates": {\n'
-    printf '    "research": { "low": %s, "high": %s },\n'   "$REQLO_research" "$REQHI_research"
-    printf '    "validate": { "low": %s, "high": %s },\n'   "$REQLO_validate" "$REQHI_validate"
-    printf '    "plan": { "low": %s, "high": %s },\n'       "$REQLO_plan" "$REQHI_plan"
-    printf '    "planReview": { "low": %s, "high": %s },\n' "$REQLO_planReview" "$REQHI_planReview"
-    printf '    "implement": { "low": %s, "high": %s },\n'  "$REQLO_implement" "$REQHI_implement"
-    printf '    "verify": { "low": %s, "high": %s }\n'      "$REQLO_verify" "$REQHI_verify"
-    printf '  },\n'
+    _sep=""
+    for _ek in $STAGE_KEYS; do
+      eval "_rqlo=\$REQLO_$_ek"; eval "_rqhi=\$REQHI_$_ek"
+      printf '%s    "%s": { "low": %s, "high": %s }' "$_sep" "$_ek" "$_rqlo" "$_rqhi"; _sep=$',\n'
+    done
+    printf '\n  },\n'
     printf '  "deviations": [%s],\n' "$devs"
-    printf '  "rationale": "%s",\n' "$rationale"
+    printf '  "rationale": %s,\n' "$rationale_tok"
     if [ -n "$cost" ]; then
       printf '  "cost": %s,\n' "$cost"
     fi
-    printf '  "estimatorModel": "%s"\n' "$em"
+    printf '  "estimatorModel": %s\n' "$em_tok"
     printf '}\n'
   }
   _estimate_emit "" >"$out"
@@ -3001,33 +3093,48 @@ canon_nonneg_int() { # value → integer
   esac
 }
 
-# Clamp a rationale string to AT MOST 2 paragraphs. Paragraphs are separated by
-# a literal "\n\n" (the JSON-escaped blank line) in the stored string. Keeps the
-# first two; drops the rest. (The string is already JSON-escaped on input.)
-rationale_clamp() { # escaped-string → escaped-string (<= 2 paragraphs)
-  local s="$1"
-  # Split on the escaped paragraph break "\n\n"; keep the first two segments.
-  printf '%s' "$s" | awk '
-    {
-      n = split($0, parts, /\\n\\n/)
-      out = parts[1]
-      if (n >= 2) out = out "\\n\\n" parts[2]
-      printf "%s", out
-    }'
+# Clamp a rationale string to AT MOST 2 paragraphs. The input is the FULLY-DECODED
+# value (real newlines), so paragraphs are separated by a REAL blank line ("\n\n").
+# Keeps the first two; drops the rest. The result is still a literal string — the
+# single JSON encoder (json_encode_string) re-escapes it on emit, so the real
+# newline survives as a proper \n token. awk's RS="" paragraph mode does the split.
+rationale_clamp() { # decoded-string → decoded-string (<= 2 paragraphs)
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re,sys
+s = sys.stdin.read()
+paras = re.split(r"\n[ \t]*\n", s)
+sys.stdout.write("\n\n".join(paras[:2]))
+'
 }
 
 # Extract the deviations[] string entries from the worker's estimate.json and
 # re-emit them as a comma-joined list of JSON strings (for the canonical file's
-# `"deviations": [ … ]`). jq-free: pull the bracketed array body, then each
-# "double-quoted" string inside it. Empty array → empty output.
+# `"deviations": [ … ]`). Each entry is DECODED then RE-ENCODED through the single
+# JSON encoder, so an entry carrying a quote, newline or backslash round-trips as
+# VALID JSON (S69 — they were previously copied verbatim with no re-escaping). The
+# output matches the old `, `-joined, space-padded form, so a CLEAN array renders
+# byte-identically. Empty/absent array → empty output. jq-free (stdlib python).
 estimate_extract_deviations() { # src-json → ` "a", "b" ` or empty
   local src="$1" body
   body="$(tr -d '\n' <"$src" | sed -En 's/.*"deviations"[[:space:]]*:[[:space:]]*\[([^]]*)\].*/\1/p')"
   [ -n "$body" ] || { printf ''; return 0; }
-  # Emit each quoted string verbatim, comma-separated. grep -o pulls the quoted
-  # tokens (incl. their quotes); paste joins them with ", ".
-  printf '%s' "$body" | grep -oE '"([^"\\]|\\.)*"' | paste -sd, - \
-    | sed 's/,/, /g; s/^/ /; s/$/ /'
+  # Pull each raw "double-quoted" token (incl. embedded escapes), then decode +
+  # re-encode each so the canonical entry is correctly escaped exactly once.
+  printf '%s' "$body" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import json,re,sys
+body = sys.stdin.read()
+# Match JSON string tokens, honouring backslash escapes, in array order.
+toks = re.findall(r"\"(?:[^\"\\]|\\.)*\"", body)
+out = []
+for t in toks:
+    try:
+        val = json.loads(t)            # decode the raw token to its literal value
+    except Exception:
+        continue
+    out.append(json.dumps(val))        # re-encode → correctly-escaped token
+if out:
+    sys.stdout.write(" " + ", ".join(out) + " ")
+'
 }
 
 cmd_estimate() {
@@ -3140,9 +3247,22 @@ copilot_plan() { # → plan key
 # "copilot.usage"). Reuses the documented 0.8/0.2 input/output split and the
 # per-stage tier from the estimate's models map. Prints "<low> <high>" (6dp), or
 # empty if ANY used tier's rates are unset/null (caller ⇒ "unavailable").
+# The canonical-ordered subset of the six pipeline stages that an estimate.json
+# ACTUALLY carries in its `models` block. A logged bug's canonical estimate.json
+# omits research+validate (S74), so this returns its 4 real stages; a feature's
+# returns all six. The cost math iterates THIS set, so it auto-sums the right
+# stages for either mission type — one source (the file's stage set), no fork.
+estimate_active_stages() { # estimate-json → space-separated stage keys (in order)
+  local est="$1" k out=""
+  for k in research validate plan planReview implement verify; do
+    [ -n "$(json_scoped_str "$est" "models.$k")" ] && out="$out $k"
+  done
+  printf '%s' "${out# }"
+}
+
 cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
   local est="$1" scope="$2"
-  local stages="research validate plan planReview implement verify"
+  local stages; stages="$(estimate_active_stages "$est")"
   local usd_low=0 usd_high=0 k tier inr outr tlo thi
   for k in $stages; do
     tier="$(json_scoped_str "$est" "models.$k")"
@@ -3167,7 +3287,10 @@ cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
 cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
   local est="$1" cli="$2"
   local pricing="$PRICING_FILE"
-  local stages="research validate plan planReview implement verify"
+  # Sum over EXACTLY the stages the estimate.json carries (4 for a logged bug,
+  # 6 otherwise) — the same set cost_token_usd uses, so every billing branch
+  # agrees on the bug's real pipeline. (S74 bug-awareness.)
+  local stages; stages="$(estimate_active_stages "$est")"
   if [ "$cli" = "copilot" ] && [ "$(copilot_billing_model)" = "usage" ]; then
     # --- USAGE-BASED (token / GitHub AI Credits) billing (session 64) --------
     # Bill tokens EXACTLY like the Claude branch against copilot.usage rates,
@@ -3849,6 +3972,20 @@ cmd_implement() {
 
   local last_status="" last_wave=""
   while :; do
+    # User-initiated pause (ADR-005). This is the BETWEEN-WAVE/TICKET safe
+    # boundary: re-read paused at the TOP of the loop, before impl-status decides
+    # the next wave. A paused Mission stops cleanly here — it does NOT advance to
+    # Verify or start the next wave's tickets, and no worker is killed mid-step
+    # (the prior wave's workers have already returned). It stays at `implement`
+    # until `lcars resume` clears the flag.
+    if [ "$(json_raw "$STATE" paused)" = "true" ]; then
+      emit_event paused implement "paused by the captain — halted between waves"
+      printf '⏸ paused at: implement  (paused by the captain — halted between waves)\n'
+      printf 'The Mission is paused; no further tickets will run until you resume it.\n'
+      printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
+      exit 0
+    fi
+
     local st rc=0
     st="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-status --mission "$MISSION_ID" 2>&1)" || rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -4213,6 +4350,12 @@ drive_halt_awaiting() { # stage
   notify_gate awaiting-human "Needs your answer — ${first:-see \`lcars respond $MISSION_ID\`}"
 }
 
+drive_halt_paused() { # stage
+  printf '⏸ paused at: %s  (paused by the captain — halted at a safe boundary)\n' "$1"
+  printf 'The Mission is paused; no Stage will advance until you resume it.\n'
+  printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
+}
+
 drive_halt_align() {
   printf '⏹ stopped at: align  (interactive Align re-grill required)\n'
   printf 'This Mission was sent back from Verify (feedback.md is present). Align is a\n'
@@ -4220,17 +4363,104 @@ drive_halt_align() {
   printf 'rewrite the PRD, then it auto-advances from Research.\n'
 }
 
+# === Per-mission driver lock (BUG-A: single-instance `drive`) ===============
+# The viewscreen Start button (and pause→resume) could fire `run drive` for the
+# SAME mission more than once. Without a guard, N drivers raced the stage advance
+# and EACH spawned cold workers — state corruption + real credit waste. So the
+# driver is single-instance PER MISSION: only one live `cmd_drive` may advance a
+# given mission at a time.
+#
+# The lock is a DIRECTORY ($MISSION_DIR/driver.lock) — `mkdir` is atomic on every
+# POSIX fs, so two near-simultaneous drivers can't both win. The winner writes
+# its PID into driver.lock/pid; the loser checks whether that PID is alive:
+#   • alive   → a real driver is already advancing this mission → no-op exit 0.
+#   • dead    → a STALE lock from a crashed driver → reclaim it and proceed
+#               (never deadlock after a crash).
+# A trap releases the lock on EXIT/INT/TERM, but ONLY if we still own it (our PID
+# in the pid file) — so a process that found a live lock and bailed never deletes
+# the real owner's lock. The single `--step` path and the auto loop both go
+# through cmd_drive, so both respect the lock. `resume` re-execs `drive`, so it is
+# idempotent for free: a resume while a driver is live is a clean no-op.
+DRIVER_LOCK_DIR=""        # set once we hold the lock; "" = we hold none.
+
+# Is PID $1 a live process? Portable (kill -0). Empty/non-numeric → not alive.
+pid_alive() { # pid
+  local p="$1"
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$p" 2>/dev/null
+}
+
+# Try to take the per-mission driver lock. Prints nothing; returns:
+#   0  → lock acquired (DRIVER_LOCK_DIR set, trap armed, our pid written)
+#   1  → a LIVE driver already holds it (caller must no-op exit 0)
+acquire_driver_lock() {
+  local lock="$MISSION_DIR/driver.lock" pidf
+  pidf="$lock/pid"
+  # Two tries: the second covers reclaiming a stale lock between the failed mkdir
+  # and the alive-check (the only window another driver could clear it in).
+  local try
+  for try in 1 2; do
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s' "$$" >"$pidf"
+      DRIVER_LOCK_DIR="$lock"
+      trap 'release_driver_lock' EXIT INT TERM
+      return 0
+    fi
+    # Lock dir exists — is its owner alive?
+    local owner=""; [ -f "$pidf" ] && owner="$(cat "$pidf" 2>/dev/null)"
+    if pid_alive "$owner"; then
+      return 1                    # a real driver holds it → caller no-ops.
+    fi
+    # Stale (dead/empty owner): reclaim and retry the atomic mkdir.
+    rm -rf "$lock" 2>/dev/null
+  done
+  return 1
+}
+
+# Release the lock IFF we still own it (our pid in the pid file). Idempotent;
+# safe in a trap. A driver that found a live lock and bailed never deletes it.
+release_driver_lock() {
+  [ -n "$DRIVER_LOCK_DIR" ] || return 0
+  local owner=""; [ -f "$DRIVER_LOCK_DIR/pid" ] && owner="$(cat "$DRIVER_LOCK_DIR/pid" 2>/dev/null)"
+  if [ "$owner" = "$$" ]; then
+    rm -rf "$DRIVER_LOCK_DIR" 2>/dev/null
+  fi
+  DRIVER_LOCK_DIR=""
+}
+
 cmd_drive() {
   locate_mission "$MISSION_ID"
+
+  # Single-instance guard (BUG-A). If a live driver already holds this mission's
+  # lock, this invocation is a clean no-op — never a second concurrent driver.
+  if ! acquire_driver_lock; then
+    printf '%s  already running\n%s\n' "$MISSION_ID" "$SEP"
+    printf '⏹ a driver is already advancing this Mission (single-instance) — nothing to do.\n'
+    printf '  Watch it on the board, or `lcars pause %s` to halt it at the next boundary.\n' "$MISSION_ID"
+    return 0
+  fi
+
   local mode="auto"; [ "$STEP" = 1 ] && mode="step"
   printf '%s  %s-advance\n%s\n' "$MISSION_ID" "$mode" "$SEP"
 
   local summary=""
   while :; do
     # Re-read the live state each pass (a Stage subprocess just rewrote it).
-    local stage awaiting
+    local stage awaiting paused
     stage="$(json_str "$STATE" stage)"
     awaiting="$(json_raw "$STATE" awaitingHuman)"
+    paused="$(json_raw "$STATE" paused)"
+
+    # User-initiated pause (ADR-005). This is the BETWEEN-STAGES safe boundary:
+    # checked BEFORE running anything, structured like the halt blocks below. A
+    # paused Mission stops cleanly here and does NOT advance — no Stage subprocess
+    # is spawned, no worker is killed mid-step (none is running). It stays put
+    # until `lcars resume` clears the flag.
+    if [ "$paused" = "true" ]; then
+      emit_event paused "$stage" "paused by the captain — halted at the $stage boundary"
+      mirror_comments || true
+      drive_print_summary "$summary"; drive_halt_paused "$stage"; return 0
+    fi
 
     # ADR-004 issue-comment mirror (S65 living per-stage model) — harness-driven,
     # best-effort. Re-renders each STAGE's living comment (create-then-edit, keyed

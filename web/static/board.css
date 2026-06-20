@@ -1,0 +1,599 @@
+/* ════════════════════════════════════════════════════════════════════════
+   LCARS Kanban board + operator-screen layout. The PALETTE/tokens come from
+   the SHARED docs/lcars.css (--lcars-* vars); this sheet only adds the board /
+   card / pill / modal / detail geometry, vendored from kanban-vision.html (the
+   visual contract). It does NOT redefine any --lcars-* token (ADR-007: one
+   shared token source).
+   ════════════════════════════════════════════════════════════════════════ */
+:root{
+  --font-display:'Antonio','Oxanium',-apple-system,'Segoe UI',sans-serif;
+  --font-body:'Oxanium',-apple-system,'Segoe UI',system-ui,sans-serif;
+  --font-mono:'SF Mono','Fira Code','Consolas',monospace;
+}
+body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c4d4ee);
+  font-family:var(--font-body);font-size:15px;line-height:1.6;margin:0;min-height:100vh}
+
+/* ════════════════════════════════════════════════════════════════════════
+   LCARS ELBOW FRAME (S67-kanban). The console is wrapped in the iconic LCARS
+   chrome — a SINGLE solid-colour L: the top band sweeps via one fat rounded
+   ELBOW into the left rail, both the SAME yellow, with the board nested inside.
+   Pure CSS grid; uses ONLY shared --lcars-* tokens (never redefines one). All
+   classes/props below are NON-token layout additions by this sheet (ADR-007).
+
+   Grid:  [elbow ][ top band        ]   row 1 (band height)
+          [ rail ][ content (board) ]   row 2 (fills viewport)
+   The elbow, the top band and the rail all carry --frame-color and butt flush,
+   so they read as ONE continuous solid-yellow L. The whole frame's OUTER top-
+   left corner is a big convex round; the INNER concave (where the L meets the
+   board) is formed by ROUNDING the top-left corner of the black .frame-content
+   and backing that rounded notch with frame yellow — a clean quarter-round
+   fillet of yellow curving into the black, with NO stray black geometry in the
+   yellow. ──────────────────────────────────────────────────────────────── */
+.lcars-frame{
+  /* The single LCARS frame colour — a muted golden yellow the captain chose.
+     Local prop, NOT an --lcars-* token (ADR-007: shared tokens are not forked). */
+  --frame-color:#f2cf33;
+  --frame-top-h:64px;            /* top band height == elbow height */
+  --frame-rail-w:84px;           /* left rail width == elbow width */
+  --frame-outer-r:52px;          /* big CONVEX round on the frame's outer TL corner */
+  --frame-inner-r:40px;          /* CONCAVE fillet where the L meets the content */
+  display:grid;
+  grid-template-columns:var(--frame-rail-w) 1fr;
+  grid-template-rows:var(--frame-top-h) 1fr;
+  min-height:100vh;
+  background:var(--lcars-black,#030608);
+  gap:0;
+  position:relative;
+}
+/* INNER-CONCAVE YELLOW BACKING: a frame-yellow square pinned to the grid's inner
+   corner (right of the rail, below the band), sitting BEHIND the black content.
+   The content's rounded top-left corner carves a quarter-circle of black away,
+   revealing this yellow as a smooth concave fillet — the inside of the solid L.
+   It must live on the frame (not inside .frame-content) because the content's
+   overflow:hidden would otherwise clip the backing out of the carved notch. */
+.lcars-frame::before{content:'';position:absolute;z-index:0;
+  top:var(--frame-top-h);left:var(--frame-rail-w);
+  width:var(--frame-inner-r);height:var(--frame-inner-r);
+  background:var(--frame-color)}
+/* ELBOW (row1/col1): the solid corner block joining band ↔ rail. It is the SAME
+   --frame-color as both, so the three cells read as one continuous solid shape.
+   Its OUTER (top-left) corner carries the big convex round; the INNER concave is
+   formed downstream by the rounded .frame-content corner (no black pie piece
+   here — that stray wedge is gone). */
+.frame-elbow{
+  grid-column:1;grid-row:1;
+  background:var(--frame-color);
+  border-top-left-radius:var(--frame-outer-r);
+}
+/* TOP BAND (row1/col2): the solid yellow bar — folds the old topbar content in.
+   Same --frame-color and height as the elbow; butts flush against it. */
+.frame-top{grid-column:2;grid-row:1}
+/* LEFT RAIL (row2/col1): ONE unbroken solid yellow bar — no black divider
+   notches (the captain wants band+elbow+rail as one solid piece). Same
+   --frame-color and width as the elbow; butts flush below it. */
+.frame-rail{grid-column:1;grid-row:2;
+  background:var(--frame-color);
+  display:flex;flex-direction:column}
+/* transparent layout spacer only — kept so the markup is stable, paints nothing */
+.frame-rail .rail-div{flex:0 0 0;background:transparent;margin:0}
+.frame-rail .rail-fill{flex:1 1 auto}
+/* CONTENT (row2/col2): the existing board + legend; this is the scroll viewport.
+   Its top-left corner is ROUNDED (--frame-inner-r) so the black board carves a
+   quarter-circle out of the inner corner of the L; ::before lays frame yellow
+   BEHIND that curve so the concave reads as yellow→black, not page background.
+   overflow stays hidden so the rounding clips cleanly — the board's OWN
+   horizontal scroll lives in the inner .board-wrap, so it is unaffected. */
+.frame-content{grid-column:2;grid-row:2;position:relative;z-index:1;
+  display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;
+  background:var(--lcars-black,#030608);
+  border-top-left-radius:var(--frame-inner-r)}
+
+/* TOP BAND inner layout: the brand + repo meta + conn live here now. The band
+   is ONE solid yellow bar (same --frame-color as the elbow + rail) carrying the
+   title text + meta; dark text/icons for contrast on the yellow. */
+.topbar{background:var(--frame-color);
+  padding:0 24px 0 18px;display:flex;align-items:center;gap:16px;
+  color:var(--lcars-text-on-color)}
+/* layout spacers only — NO black divider strips (the band is one solid yellow
+   piece). The plain band-block paints nothing and takes no width; the .band-grow
+   is the transparent flexible spacer that pushes repoMeta/fileBtn/conn right. */
+.topbar .band-block{align-self:stretch;width:0;background:transparent}
+.topbar .band-block.band-grow{flex:1 1 auto;width:auto;min-width:8px;background:transparent}
+.topbar .brand{font-family:var(--font-display);font-size:22px;letter-spacing:.3em;
+  color:var(--lcars-text-on-color);text-transform:uppercase}
+.topbar .brand b{color:var(--lcars-black,#030608);font-weight:700}
+/* UX-30: PADD rebrand — "LCARS · PADD" on top, the acronym expansion below in
+   smaller text with each word's FIRST letter bolded (reads P·A·D·D). Stacked,
+   dark-on-amber to match the band; the brand cell collapses its big letter-
+   spacing for the readable sub-line. */
+.topbar .brand.brand-padd{display:flex;flex-direction:column;justify-content:center;
+  gap:1px;letter-spacing:.18em;line-height:1.05}
+/* UX-34: bump both the PADD title and its acronym sub-line a notch (keep the
+   proportion + the first-letter-bold treatment). */
+.topbar .brand-padd .brand-line{font-size:26px;letter-spacing:.22em}
+.topbar .brand-padd .brand-sub{font-family:var(--font-display);font-size:11px;
+  letter-spacing:.1em;font-weight:400;color:rgba(3,6,8,.7);text-transform:uppercase}
+.topbar .brand-padd .brand-sub .acr{color:var(--lcars-black,#030608);font-weight:700}
+/* which repo the board is attached to — sits next to the brand (S70-A).
+   On the amber band, text reads dark for contrast. */
+.topbar .repo-meta{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.12em;font-size:12px;color:var(--lcars-text-on-color);
+  display:flex;align-items:center;gap:8px}
+.topbar .repo-meta .sep{opacity:.5}
+.topbar .repo-meta .repo{color:var(--lcars-black,#030608);font-weight:700}
+.topbar .repo-meta .hint{font-size:10px;letter-spacing:.1em;padding:1px 7px;border-radius:9px;
+  border:1px solid rgba(3,6,8,.4);color:rgba(3,6,8,.7)}
+.topbar .repo-meta .hint.ro{color:var(--lcars-red);border-color:var(--lcars-red)}
+.topbar .conn{font-family:var(--font-display);font-size:11px;
+  letter-spacing:.14em;color:var(--lcars-text-on-color);
+  background:var(--lcars-teal);padding:4px 10px;border-radius:11px}
+.topbar .conn.stale{background:var(--lcars-red);color:#fff}
+
+/* ── pills ── */
+/* UX-9: any pills container (board card, Launch panel, detail header — they all
+   render via the shared `.pills` markup) lays its pills out with a horizontal
+   gap so the cost + two difficulty pills never render flush. flex-wrap keeps
+   them readable when the row is narrow. */
+.pills{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.1em;font-size:11px;padding:3px 10px;
+  border-radius:12px;background:var(--lcars-card-alt);color:var(--lcars-text-bright);
+  border:1px solid var(--lcars-border);white-space:nowrap}
+.pill.cost{background:rgba(255,221,68,.14);border-color:var(--lcars-gold,#ffdd44);color:var(--lcars-gold,#ffdd44)}
+.pill.low{background:rgba(0,204,170,.14);border-color:var(--lcars-teal);color:var(--lcars-teal)}
+.pill.med{background:rgba(255,170,0,.16);border-color:var(--lcars-amber);color:var(--lcars-amber)}
+.pill.high{background:rgba(255,51,68,.16);border-color:var(--lcars-red);color:#ff8a96}
+.pill.await{background:var(--lcars-red);border-color:var(--lcars-red);color:#fff;animation:awaitpulse 1.4s infinite}
+/* UX-29: a "QUEUED · WAITING" pill — scheduled in a resolve-logs batch but not
+   yet started. Distinct from running/paused/awaiting: a calm violet "in the
+   queue" tone, a slow breathing pulse (NOT the running motion), no red urgency. */
+.pill.queued{background:rgba(153,119,255,.14);border-color:var(--lcars-violet,#9977ff);
+  color:var(--lcars-violet,#9977ff);animation:queuedpulse 2.6s ease-in-out infinite}
+@keyframes queuedpulse{0%,100%{opacity:.7}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.pill.queued{animation:none;opacity:.9}}
+.pill.stage{background:var(--lcars-violet,#9977ff);border-color:var(--lcars-violet,#9977ff);color:#fff}
+.pill.go{background:var(--lcars-teal);border-color:var(--lcars-teal);color:var(--lcars-text-on-color)}
+@keyframes awaitpulse{0%,100%{box-shadow:0 0 0 0 rgba(255,51,68,.5)}50%{box-shadow:0 0 0 6px rgba(255,51,68,0)}}
+
+/* ── kanban board ── */
+/* the board's horizontal scroll lives INSIDE .frame-content (min-width:0), so
+   the nine columns scroll here and never push the left rail off-screen. */
+.board-wrap{overflow-x:auto;padding:16px 28px;background:var(--lcars-black,#030608);
+  flex:1 1 auto;min-width:0}
+.board{display:flex;gap:12px;min-width:max-content}
+.col{width:220px;flex:0 0 220px;background:var(--lcars-surface,#070d1c);border-radius:10px;
+  border:1px solid rgba(80,104,138,.16);display:flex;flex-direction:column}
+.col-head{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.12em;
+  font-size:11px;padding:8px 12px;border-radius:10px 10px 0 0;
+  color:var(--lcars-text-on-color);display:flex;justify-content:space-between;align-items:center}
+.col-head .ct{background:rgba(0,0,0,.25);border-radius:10px;padding:0 7px;font-size:10px}
+.col-body{padding:9px;display:flex;flex-direction:column;gap:9px;min-height:100px}
+.c-amber{background:var(--lcars-amber)} .c-peach{background:var(--lcars-peach,#ff9966)}
+.c-violet{background:var(--lcars-violet,#9977ff)} .c-blue{background:var(--lcars-blue,#4499ff)}
+.c-gold{background:var(--lcars-gold,#ffdd44)} .c-pink{background:var(--lcars-pink,#ff66aa)}
+.c-teal{background:var(--lcars-teal)} .c-red{background:var(--lcars-red)} .c-green{background:#33cc66}
+
+/* ── mission card ── */
+.card{background:var(--lcars-card,#0b1224);border:1px solid var(--lcars-border);
+  border-left:4px solid var(--lcars-amber);border-radius:8px;padding:10px;cursor:pointer;
+  transition:transform .25s,box-shadow .25s}
+/* UX-12: the whole card is click-to-open (no explicit Open button) — cursor +
+   a subtle lift/glow on hover so it still reads as clickable. */
+.card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.5);
+  border-color:var(--lcars-border-bright)}
+.card.awaiting{border-left-color:var(--lcars-red);box-shadow:0 0 0 1px rgba(255,51,68,.4)}
+/* UX-22: a paused/pausing card dims its BODY to signal the hold, but the status
+   label (.pause-status) and the action button (.pause-action — RESUME) stay at
+   FULL contrast/prominence so they never read as disabled. We dim the card's
+   direct children, then opt those two back to full opacity. The card border uses
+   the paused blue (kept; pausing reuses the same chrome). */
+.card.paused{border-left-color:var(--lcars-blue,#4499ff)}
+.card.paused > *{opacity:.55}
+.card.paused > .pause-status,
+.card.paused .pause-action{opacity:1}
+/* UX-21/UX-22: the paused/pausing status label is HIGH-contrast (not dim text). */
+.card .pause-status{color:var(--lcars-text-bright);font-family:var(--font-display);
+  letter-spacing:.08em;margin-top:7px;font-size:10px}
+.card .pause-status.pausing{color:var(--lcars-amber)}
+/* the RESUME / Pausing button on a paused card keeps full prominence (UX-22). */
+.card.paused .card-ctrl{opacity:1}
+.card.child{border-left-color:var(--lcars-pink,#ff66aa);margin-left:14px;background:var(--lcars-card-alt)}
+/* UX-28: a logged bug (child of a parent mission) is a PINK accent child card
+   (the mock spec'd pink for children) + a small "log bug · child of #<parent>"
+   badge. The pink left bar is reinforced and a faint pink ring sets it apart
+   from a plain child. The badge links to the parent issue when resolvable. */
+/* UX-40: a deliberate, readable logged-bug treatment. A FATTER pink/red edge bar
+   (a ribbon, not a hairline) reads as a bug at a glance; a faint pink wash sets
+   the body apart. The card carries a min-height matching the mission cards so a
+   bug card (which lacks the estimator pills — that's S74's job) never reads as a
+   broken/tiny card. On-theme: pink LCARS token throughout. */
+.card.logbug{border-left:6px solid var(--lcars-pink,#ff66aa);
+  background:linear-gradient(90deg,rgba(255,102,170,.07),var(--lcars-card-alt) 60%);
+  box-shadow:inset 3px 0 0 rgba(255,51,68,.45);
+  min-height:104px;display:flex;flex-direction:column}
+/* the readable "⊗ BUG · child of #<parent>" label — bumped size + contrast, a
+   real label not a tiny chip. Pink fill, dark text for legibility on the card. */
+.logbug-badge{display:inline-flex;align-items:center;gap:4px;
+  font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;
+  font-size:11px;line-height:1.25;padding:3px 10px;border-radius:10px;margin:1px 0 7px;
+  background:var(--lcars-pink,#ff66aa);border:1px solid var(--lcars-pink,#ff66aa);
+  color:var(--lcars-text-on-color);font-weight:600;text-decoration:none;white-space:nowrap}
+a.logbug-badge:hover{filter:brightness(1.08)}
+/* in the detail header row the badge sits inline with the title/pills. */
+.det-head .row1 .logbug-badge{margin:0}
+/* UX-13: a live `run drive` is advancing this mission — a teal running tint on
+   the left bar + a soft breathing glow so the card reads as in motion even
+   during a long silent stage. The card carries a runningPulse() widget too. */
+.card.running{border-left-color:var(--lcars-teal);animation:card-running 2.4s ease-in-out infinite}
+@keyframes card-running{0%,100%{box-shadow:0 0 0 0 rgba(0,204,170,0)}50%{box-shadow:0 0 0 2px rgba(0,204,170,.28)}}
+@media (prefers-reduced-motion:reduce){.card.running{animation:none;box-shadow:0 0 0 1px rgba(0,204,170,.3)}}
+.card .no{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);letter-spacing:.08em}
+.card .ttl{font-family:var(--font-display);font-size:14px;letter-spacing:.04em;
+  color:var(--lcars-text-bright);margin:2px 0 8px;line-height:1.2}
+.card .pills{display:flex;flex-wrap:wrap;gap:5px}
+.card .pills .pill{font-size:9.5px;padding:2px 7px}
+.progress{margin-top:9px}
+.progress .bar{height:6px;background:var(--lcars-card-alt);border-radius:4px;overflow:hidden}
+.progress .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--lcars-teal),var(--lcars-blue,#4499ff))}
+/* UX-23: brighten the WAVE x/y · TICKET n/m progress line (was too dark). */
+.progress .lab{font-family:var(--font-mono);font-size:9.5px;color:var(--lcars-text-bright);margin-top:3px;letter-spacing:.06em}
+/* UX-39: the card ticket strip is COMPACT — JS shows only the active ticket + a
+   small window and an "and N more…" affordance. As a belt-and-braces guard the
+   area is also height-capped with overflow so the card can never grow unbounded
+   regardless of ticket count. */
+.tickets{margin-top:8px;display:flex;flex-direction:column;gap:4px;
+  max-height:84px;overflow-y:auto}
+/* the "and N more…" / "N earlier…" collapsed affordance — quiet, distinct from a
+   real ticket row, points the captain to the detail tab for the full list. */
+.tk-more{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.06em;
+  color:var(--lcars-text-dim);font-style:italic;padding-left:14px}
+/* UX-23: default/inactive ticket-row text is WHITE (readable). State variants
+   below override: active=orange (kept — captain likes it), done=teal,
+   flagged=red. The dot keeps the dim grey for inactive so the row still reads as
+   pending without darkening the label. */
+.tk{display:flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-bright)}
+.tk .dot{width:8px;height:8px;border-radius:50%;background:var(--lcars-text-dim);flex:0 0 8px}
+.tk.done .dot{background:var(--lcars-teal)} .tk.done{color:var(--lcars-teal)}
+.tk.in-progress .dot,.tk.run .dot{background:var(--lcars-amber);animation:awaitpulse 1.2s infinite}
+.tk.in-progress,.tk.run{color:var(--lcars-amber)}
+.tk.flagged .dot{background:var(--lcars-red)} .tk.flagged{color:#ff8a96}
+/* inline card controls (mock #card .card-ctrl) */
+.card-ctrl{display:flex;gap:6px;margin-top:9px}
+
+.legend{display:flex;flex-wrap:wrap;gap:14px;padding:10px 28px;font-size:12px;color:var(--lcars-text-dim)}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.legend .viewonly{color:var(--lcars-amber)}
+.dim{color:var(--lcars-text-dim)}
+
+/* ── buttons (mock .btn / .go / .warn / .danger / .big) ── */
+.btn{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;font-size:10px;
+  padding:4px 10px;border-radius:12px;border:1px solid var(--lcars-border);
+  background:var(--lcars-card-alt);color:var(--lcars-text-bright);cursor:pointer}
+.btn:hover{border-color:var(--lcars-amber)}
+.btn.go{background:var(--lcars-teal);color:var(--lcars-text-on-color);border-color:var(--lcars-teal)}
+.btn.warn{background:var(--lcars-amber);color:var(--lcars-text-on-color);border-color:var(--lcars-amber)}
+.btn.danger{background:transparent;color:#ff8a96;border-color:var(--lcars-red)}
+.btn.big{font-size:13px;padding:9px 20px}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.btn[disabled]:hover{border-color:var(--lcars-border)}
+
+/* ── overlay host: a single centered modal stage ── */
+[hidden]{display:none !important}
+.overlay{position:fixed;inset:0;background:rgba(3,6,8,.78);z-index:100;
+  display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:40px 20px}
+.overlay-stage{width:100%;display:flex;justify-content:center}
+
+/* ── modal (mock .modal / .modal-head / .modal-body / .modal-foot) ── */
+/* UX-3 / UX-4: the centered modal is wider and squarer (matching the mock's
+   landscape two-pane proportions, not a cramped portrait column), and it is
+   height-capped at ~90vh. The header and footer stay fixed; the BODY scrolls
+   internally so a long PRD never pushes the footer/Start row off-screen. */
+.modal{background:var(--lcars-surface,#070d1c);border:1px solid var(--lcars-border-bright);
+  border-radius:14px;max-width:660px;width:100%;margin:0 auto;overflow:hidden;
+  max-height:90vh;display:flex;flex-direction:column}
+.modal.wide{max-width:960px}
+.modal.detail{max-width:1080px}
+.modal-head{background:var(--lcars-amber);color:var(--lcars-text-on-color);font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.18em;font-size:15px;padding:11px 18px;
+  display:flex;align-items:center;gap:10px;flex:0 0 auto}
+.modal-head.red{background:var(--lcars-red);color:#fff}
+.modal-head.teal{background:var(--lcars-teal);color:var(--lcars-text-on-color)}
+.modal-head.pink{background:var(--lcars-pink,#ff66aa);color:var(--lcars-text-on-color)}
+.modal-head .close{margin-left:auto;background:transparent;border:none;color:inherit;
+  font-family:var(--font-display);font-size:16px;cursor:pointer;letter-spacing:.1em}
+/* the body is the scrolling region between the fixed head + foot. */
+.modal-body{padding:20px;overflow-y:auto;flex:1 1 auto;min-height:0}
+/* when the body hosts the two-pane console it owns its own padding/scroll —
+   keep the body flush so the panes can scroll internally (see .twopane). */
+.modal-body.flush{padding:0;overflow:hidden;display:flex;flex-direction:column}
+.modal-foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 18px;
+  border-top:1px solid var(--lcars-border);background:var(--lcars-card);flex:0 0 auto}
+
+/* ── form fields (mock .field) ── */
+.field{margin-bottom:16px}
+.field label{display:block;font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.12em;font-size:11px;color:var(--lcars-peach);margin-bottom:6px}
+.field textarea,.field input{width:100%;background:var(--lcars-black);border:1px solid var(--lcars-border);
+  border-radius:8px;color:var(--lcars-text-bright);font-family:var(--font-body);font-size:14px;
+  padding:10px 12px;resize:vertical}
+.field textarea:focus,.field input:focus{outline:none;border-color:var(--lcars-amber)}
+
+/* ── choice opts (mock .choice .opt .rec) ──
+   UX-35: selected-state clarity. Applies everywhere .opt renders (the File-modal
+   engine picker AND the Align answer options). The OLD scheme lit BOTH selected
+   (amber outline) and unselected (teal outline) up, so the selection was too
+   subtle. New scheme:
+     • UNSELECTED → a real enabled choice: normal text, faint border, no fill.
+     • SELECTED (.sel) → UNMISTAKABLE: filled amber bg + dark text (the
+       highlight alone signals selection — no ✓ glyph, UX-41).
+     • RECOMMENDED (.rec) → a small, low-key "REC" tag ONLY; an unselected-but-
+       recommended option still looks UNSELECTED (the tag is the only signal).
+       When a recommended option is ALSO selected, .sel wins the chrome and the
+       REC tag stays as a quiet dark badge on the amber fill. */
+.choice{display:flex;gap:8px;flex-wrap:wrap}
+.choice .opt{position:relative;font-family:var(--font-body);font-size:13px;
+  padding:8px 14px;border-radius:18px;border:1px solid var(--lcars-border);
+  background:transparent;color:var(--lcars-text);cursor:pointer;
+  transition:background .15s,color .15s,border-color .15s}
+.choice .opt:hover{border-color:var(--lcars-border-bright);color:var(--lcars-text)}
+/* recommended: a small low-key inline tag, distinct from selection. Renders on
+   an UNSELECTED option without changing its muted chrome. */
+.choice .opt.rec::after{content:'REC';margin-left:8px;font-family:var(--font-display);
+  font-size:8px;letter-spacing:.12em;padding:1px 6px;border-radius:8px;
+  background:rgba(0,204,170,.14);border:1px solid var(--lcars-teal);
+  color:var(--lcars-teal);vertical-align:middle}
+/* SELECTED: unmistakable filled amber + dark text. The fill alone signals
+   selection — no checkmark (UX-41). */
+.choice .opt.sel{background:var(--lcars-amber);border-color:var(--lcars-amber);
+  color:var(--lcars-text-on-color);font-weight:600}
+/* a recommended AND selected option: keep the amber fill; the REC tag goes quiet
+   dark-on-amber so it doesn't fight the selection. */
+.choice .opt.rec.sel::after{background:rgba(3,6,8,.18);border-color:rgba(3,6,8,.4);
+  color:var(--lcars-text-on-color)}
+/* S67 dedupe: when the option label text already contains "(recommended)" the
+   text is the indicator, so suppress the REC pill (the .rec highlight stays). */
+.choice .opt.rec.no-pill::after{display:none}
+
+/* ── two-pane (align console — rendered-to-fidelity) ──
+   UX-3: a balanced, squarer column ratio (≈ mock 1.3fr : 1fr) in a landscape
+   frame. UX-4: the pane fills the height-capped modal body and each column
+   scrolls INTERNALLY (overflow-y:auto) — a long live PRD scrolls in place
+   rather than stretching the modal and shoving the footer off-screen. */
+.twopane{display:grid;grid-template-columns:1.25fr 1fr;gap:0;
+  flex:1 1 auto;min-height:0;align-items:stretch}
+.console-l{padding:24px 26px;border-right:1px solid var(--lcars-border);
+  display:flex;flex-direction:column;overflow-y:auto;min-height:0}
+.console-r{padding:20px 22px;background:var(--lcars-black);overflow-y:auto;min-height:0;
+  display:flex;flex-direction:column}
+.qcount{font-family:var(--font-mono);font-size:11px;color:var(--lcars-text-dim);letter-spacing:.1em;margin-bottom:8px}
+.qtext{font-family:var(--font-display);font-size:20px;letter-spacing:.04em;color:var(--lcars-text-bright);
+  line-height:1.25;margin-bottom:16px}
+.prd-doc{font-family:var(--font-mono);font-size:12px;line-height:1.7;color:var(--lcars-text);white-space:pre-wrap}
+.prd-doc .h{color:var(--lcars-amber);text-transform:uppercase;letter-spacing:.1em;display:block;margin:12px 0 4px}
+.prd-doc .add{color:var(--lcars-teal)}
+.prd-doc .pending{color:var(--lcars-text-dim);opacity:.55}
+.mock-cap{font-family:var(--font-display);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--lcars-text-dim);margin-bottom:10px}
+/* UX-36: a growing, honest grill track — fixed-width segments (NOT flex:1, which
+   stretched a few segments full-width and implied a fixed total). One teal
+   segment per answered question; a pulsing amber "grilling…" marker for the open
+   question; a small caption counts answered questions without any "of N". */
+.progress-line{display:flex;gap:4px;margin-top:auto;padding-top:16px;
+  align-items:center;flex-wrap:wrap}
+.progress-line i{height:5px;width:22px;flex:0 0 22px;border-radius:3px;background:var(--lcars-card-alt)}
+.progress-line i.on{background:var(--lcars-teal)}
+.progress-line i.cur{background:var(--lcars-amber)}
+.progress-line i.grilling{animation:grillpulse 1.2s ease-in-out infinite}
+@keyframes grillpulse{0%,100%{opacity:.45}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.progress-line i.grilling{animation:none;opacity:.85}}
+.progress-line .prog-count{margin-left:8px;font-family:var(--font-mono);font-size:10px;
+  letter-spacing:.08em;color:var(--lcars-text-dim);text-transform:uppercase}
+
+/* ── mission detail (mock .detail-grid / .det-head / .det-body / .feed) ──
+   UX-3/UX-4: wider landscape frame, height-capped at ~90vh with a FIXED header
+   row; the body's two panes scroll internally so a long PRD/feed never pushes
+   the modal (or its header actions) off-screen. */
+.detail-grid{display:flex;flex-direction:column;gap:0;background:var(--lcars-surface);
+  border:1px solid var(--lcars-border-bright);border-radius:14px;overflow:hidden;width:100%;
+  max-width:1080px;max-height:90vh}
+/* the header stays fixed; its content can wrap but never scrolls away. UX-6: a
+   right-side gutter reserves room for the .detail-close ✕ so it never overlaps
+   the action buttons at any width. */
+.det-head{padding:16px 20px;padding-right:52px;border-bottom:1px solid var(--lcars-border);
+  background:var(--lcars-surface);position:relative;flex:0 0 auto}
+.det-head .row1{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.det-head h3{margin:0;color:var(--lcars-text-bright);font-family:var(--font-display);
+  letter-spacing:.06em;font-size:20px}
+.det-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+/* UX-6: the close ✕ is pinned to the header's top-right in its OWN gutter (the
+   padding-right above), so it sits clear of the action buttons regardless of how
+   many actions render or how the row wraps. */
+.detail-close{position:absolute;top:12px;right:14px;background:transparent;border:none;
+  color:var(--lcars-text-dim);font-family:var(--font-display);font-size:16px;
+  line-height:1;padding:4px 6px;cursor:pointer;letter-spacing:.1em}
+.detail-close:hover{color:var(--lcars-amber)}
+.det-body{display:grid;grid-template-columns:1.4fr 1fr;gap:0;min-height:0;
+  flex:1 1 auto;overflow:hidden}
+.feed{padding:18px 20px;border-right:1px solid var(--lcars-border);overflow:auto;min-height:0}
+.feed h4{margin:0 0 14px;font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.18em;color:var(--lcars-peach);font-size:14px}
+.evt{display:flex;gap:12px;padding-bottom:16px;position:relative}
+.evt::before{content:'';position:absolute;left:7px;top:18px;bottom:-2px;width:2px;background:var(--lcars-border)}
+.evt:last-child::before{display:none}
+.evt .marker{width:16px;height:16px;border-radius:50%;flex:0 0 16px;margin-top:2px;border:3px solid var(--lcars-black)}
+.evt .marker{background:var(--lcars-text-dim)}
+.evt.s-align .marker{background:var(--lcars-amber)}
+.evt.s-research .marker{background:var(--lcars-peach)}
+.evt.s-validate .marker{background:var(--lcars-blue,#4499ff)}
+.evt.s-plan .marker{background:var(--lcars-gold,#ffdd44)}
+.evt.s-plan-review .marker{background:var(--lcars-violet,#9977ff)}
+.evt.s-schedule .marker{background:var(--lcars-pink,#ff66aa)}
+.evt.s-implement .marker{background:var(--lcars-amber)}
+.evt.s-gate .marker{background:var(--lcars-red)}
+.evt.s-verify .marker{background:var(--lcars-red)}
+.evt.s-done .marker{background:var(--lcars-teal)}
+.evt .ec .when{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);letter-spacing:.06em}
+.evt .ec .head{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;
+  font-size:12px;color:var(--lcars-text-bright)}
+.evt .ec .txt{font-size:13px;color:var(--lcars-text)}
+.evt .ec .bot{font-family:var(--font-display);font-size:9px;letter-spacing:.1em;
+  color:var(--lcars-violet,#9977ff);text-transform:uppercase}
+.feed .empty{color:var(--lcars-text-dim);font-size:13px}
+
+/* ── tabs (mock .tabs / .tabbar .tab .on / .tabpane .on) ── */
+.tabs{padding:18px 20px;background:var(--lcars-black);overflow:auto;min-height:0}
+.tabbar{display:flex;gap:6px;margin-bottom:14px}
+.tabbar .tab{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;font-size:11px;
+  padding:5px 12px;border-radius:12px;background:var(--lcars-card-alt);color:var(--lcars-text);
+  border:1px solid var(--lcars-border);cursor:pointer}
+.tabbar .tab.on{background:var(--lcars-amber);color:var(--lcars-text-on-color)}
+.tabpane{display:none;font-size:13px} .tabpane.on{display:block}
+.crit{display:flex;gap:7px;align-items:center;margin:4px 0;font-size:12px}
+.adr{border-left:3px solid var(--lcars-violet,#9977ff);padding:6px 12px;margin-bottom:10px;
+  background:rgba(153,119,255,.06);border-radius:0 6px 6px 0}
+.adr b{color:var(--lcars-violet,#9977ff);font-family:var(--font-display);letter-spacing:.06em;font-size:12px}
+
+/* ── UX-37: rendered Markdown (mdToHtml) in detail text panels ──
+   Worker-authored prose rendered into a small, fixed tag set. On-theme: headings
+   peach, code in the gold mono chip, links blue, lists indented. .md-inline is
+   the single-line variant (criteria / ticket rows) — collapses block margins so
+   the text sits on one line beside its mark/pill. */
+.md > :first-child{margin-top:0}
+.md > :last-child{margin-bottom:0}
+.md p{margin:0 0 8px;max-width:none}
+.md h3,.md h4,.md h5{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.1em;color:var(--lcars-peach);margin:10px 0 4px}
+.md h3{font-size:13px} .md h4{font-size:12px} .md h5{font-size:11px}
+.md ul,.md ol{margin:4px 0 8px;padding-left:20px}
+.md li{margin:2px 0}
+.md code{font-family:var(--font-mono);font-size:.85em;color:var(--lcars-gold,#ffdd44);
+  background:rgba(255,221,68,.08);padding:1px 6px;border-radius:4px}
+.md strong{color:var(--lcars-text-bright);font-weight:700}
+.md em{font-style:italic;color:var(--lcars-text-bright)}
+.md a{color:var(--lcars-blue,#4499ff)}
+.md.md-inline,.md.md-inline p{display:inline;margin:0}
+.md.md-inline ul,.md.md-inline ol{display:inline;padding-left:0;margin:0}
+.md.md-inline li{display:inline}
+.md.md-inline h3,.md.md-inline h4,.md.md-inline h5{display:inline;margin:0;font-size:inherit}
+.md.md-inline br{display:none}
+
+/* ── human-clickable acceptance-criteria checklist (mock .check / .pending / .mk) ── */
+.check{display:flex;align-items:flex-start;gap:10px;padding:7px 0;
+  border-bottom:1px solid rgba(80,104,138,.14);cursor:pointer}
+.check .mk{width:20px;height:20px;border-radius:5px;background:var(--lcars-teal);
+  color:var(--lcars-text-on-color);display:flex;align-items:center;justify-content:center;
+  font-size:12px;flex:0 0 20px}
+.check.pending .mk{background:var(--lcars-card-alt);color:var(--lcars-text-dim)}
+
+/* ── per-stage model mix table (mock .mix / .tier .opus .sonnet) ── */
+.mix{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}
+.mix th,.mix td{text-align:left;padding:5px 8px;border-bottom:1px solid rgba(80,104,138,.16)}
+.mix th{font-family:var(--font-display);letter-spacing:.1em;text-transform:uppercase;color:var(--lcars-peach);font-size:10px}
+.mix td .tier{font-family:var(--font-display);font-size:10px;letter-spacing:.08em;padding:1px 8px;border-radius:10px}
+.mix td .tier.opus{background:rgba(255,51,68,.16);color:#ff8a96}
+.mix td .tier.sonnet{background:rgba(0,204,170,.14);color:var(--lcars-teal)}
+
+.tag{font-family:var(--font-display);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--lcars-text-on-color);background:var(--lcars-peach,#ff9966);padding:2px 9px;border-radius:10px}
+.note{border-left:3px solid var(--lcars-blue,#4499ff);background:rgba(68,153,255,.06);
+  padding:10px 16px;border-radius:0 8px 8px 0;margin:14px 0;color:var(--lcars-text);font-size:14px}
+.note.amber{border-color:var(--lcars-amber);background:rgba(255,170,0,.06)}
+.busy{font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
+  font-size:11px;color:var(--lcars-amber)}
+.errline{color:#ff8a96;font-size:13px;margin-top:10px}
+
+/* S74 follow-up: the per-bug model-steer confirmation line under the Mission-Log
+   override input. Echoes the RESOLVED steer ("Opus 4.8 → Opus · all stages"),
+   shows a pending hint for tier-less plain language (resolved server-side at
+   File), and surfaces a normalization error inline (never a silent drop). */
+.steer-echo{font-family:var(--font-display);letter-spacing:.06em;font-size:11px;
+  margin:4px 0 2px;text-transform:uppercase}
+.steer-echo.ok{color:var(--lcars-teal,#55ccdd)}
+.steer-echo.pending{color:var(--lcars-amber)}
+.steer-echo.err{color:#ff8a96;text-transform:none;letter-spacing:0;font-size:12px}
+
+/* ── UX-2/UX-5: LCARS "working" indicator for worker-backed waits ──
+   An animated row of LCARS elbow bars (amber↔teal pulse, staggered) plus a
+   visible state label. The label (not colour) carries the state, so it stays
+   accessible; the node is role=status/aria-live in the markup. Vanilla CSS only,
+   no libs (ADR-007). Caller shows/hides it; it clears on success AND error. */
+.lcars-working{display:flex;align-items:center;gap:12px;margin:12px 0;
+  font-family:var(--font-display);text-transform:uppercase;letter-spacing:.14em}
+.lcars-working-label{font-size:11px;color:var(--lcars-amber)}
+.lcars-bars{display:inline-flex;gap:4px;align-items:flex-end;height:18px}
+.lcars-bars > i{display:block;width:6px;height:18px;border-radius:3px;
+  background:var(--lcars-amber);transform-origin:bottom;
+  animation:lcars-bar 1s ease-in-out infinite}
+.lcars-bars > i:nth-child(1){animation-delay:0s;background:var(--lcars-amber)}
+.lcars-bars > i:nth-child(2){animation-delay:.12s;background:var(--lcars-peach,#ff9966)}
+.lcars-bars > i:nth-child(3){animation-delay:.24s;background:var(--lcars-teal)}
+.lcars-bars > i:nth-child(4){animation-delay:.36s;background:var(--lcars-peach,#ff9966)}
+.lcars-bars > i:nth-child(5){animation-delay:.48s;background:var(--lcars-amber)}
+@keyframes lcars-bar{0%,100%{transform:scaleY(.35);opacity:.55}50%{transform:scaleY(1);opacity:1}}
+@media (prefers-reduced-motion:reduce){
+  .lcars-bars > i{animation:none;transform:scaleY(.7);opacity:.8}
+}
+/* UX-13: the .lcars-running modifier reuses the working bars+label as a compact
+   "live drive" pulse on a running card / detail feed. Tighter margins so it sits
+   inside a card; teal label to read as "in motion", not "blocked". */
+.lcars-working.lcars-running{margin:8px 0 0;gap:10px}
+.lcars-working.lcars-running .lcars-working-label{color:var(--lcars-teal);font-size:10px}
+.lcars-working.lcars-running .lcars-bars{height:14px}
+.lcars-working.lcars-running .lcars-bars > i{height:14px;width:5px}
+/* the in-flight event leading the detail activity feed (UX-13). */
+.evt.evt-live .ec .when{color:var(--lcars-teal)}
+
+/* ── UX-19: a dedicated CURRENT / IN-FLIGHT block, separated from the history
+   timeline below by a divider + heading so the live pulse no longer floats atop
+   an undivided feed. The current block sits first; the history follows under a
+   ruled gap. ── */
+.feed-current{padding-bottom:14px;margin-bottom:14px;
+  border-bottom:1px solid var(--lcars-border)}
+.feed-current h4{margin:0 0 12px;font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.18em;color:var(--lcars-teal);font-size:14px}
+/* the current block's lone event has no trailing timeline rail (it's standalone). */
+.feed-current .evt::before{display:none}
+/* UX-20: the paused/pausing current event reads as held — no motion, blue rail
+   accent, the label carries the state (PAUSED / PAUSING). */
+.feed-current .evt-paused .ec .when{color:var(--lcars-blue,#4499ff)}
+.feed-current .evt-paused .marker{background:var(--lcars-blue,#4499ff)}
+
+/* UX-24: active-runtime readout — the run time EXCLUDING human-wait/paused. The
+   value is bright; the hint spells out the exclusion (tooltip duplicates it). */
+.active-runtime{margin-top:8px;display:flex;flex-direction:column;gap:1px}
+.active-runtime .ar-val{font-family:var(--font-display);letter-spacing:.1em;
+  text-transform:uppercase;font-size:12px;color:var(--lcars-text-bright)}
+.active-runtime .ar-hint{font-family:var(--font-body);font-size:10px;
+  letter-spacing:.04em;color:var(--lcars-text-dim);text-transform:none}
+/* UX-31: the STAGE-INDEPENDENT active-time readout pinned in the detail header,
+   so the total stays visible at Verify and Done (where there's no in-flight
+   block). It live-ticks while running (UX-32) and freezes otherwise. A teal
+   accent + own row under the title; it never overlaps the close gutter. */
+.active-runtime.det-runtime{margin:10px 0 0;flex-direction:row;align-items:baseline;
+  gap:10px}
+.active-runtime.det-runtime .ar-val{color:var(--lcars-teal);font-size:13px}
+.active-runtime.det-runtime .ar-hint{font-size:10px}
+
+/* UX-26: the Mission-Log preview list — child-bug cards rendered flush with no
+   gap and would overflow on a big split. Gap the items and cap the height so a
+   long split scrolls in place inside the modal body. */
+.log-preview-list{display:flex;flex-direction:column;gap:9px;margin-top:6px;
+  max-height:46vh;overflow-y:auto;padding-right:2px}
+.log-preview-list .card{margin:0}
+
+@media (max-width:880px){
+  .det-body{grid-template-columns:1fr}
+  .feed{border-right:none;border-bottom:1px solid var(--lcars-border)}
+}
+
+/* ── frame responsive: on narrow viewports the rail thins and the band
+   compacts; the board columns keep their own horizontal scroll, never clipped
+   unusably and never hidden. ── */
+@media (max-width:640px){
+  .lcars-frame{--frame-rail-w:22px;--frame-top-h:52px;--frame-outer-r:30px;--frame-inner-r:18px}
+  .topbar{padding:0 12px 0 10px;gap:8px}
+  .topbar .brand{font-size:16px;letter-spacing:.14em}
+  .topbar .band-block.band-grow{min-width:8px}
+  .board-wrap{padding:12px 14px}
+}

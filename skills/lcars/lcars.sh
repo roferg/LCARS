@@ -30,6 +30,7 @@ RESOLVE="${LCARS_RESOLVE_SCRIPT:-$SKILL_DIR/resolve.sh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 ANSWER_SCRIPT="${LCARS_ANSWER_SCRIPT:-$SKILL_DIR/../lcars-answer/answer.sh}"
 RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}"
+PAUSE_SCRIPT="${LCARS_PAUSE_SCRIPT:-$SKILL_DIR/../lcars-pause/pause.sh}"
 
 die() { printf 'lcars: %s\n' "$1" >&2; exit 1; }
 
@@ -40,6 +41,12 @@ case "${1:-}" in
   resolve-logs)
     shift
     exec bash "$RESOLVE_LOGS_SCRIPT" "$@" ;;
+  pause)
+    shift
+    exec bash "$PAUSE_SCRIPT" pause "$@" ;;
+  resume)
+    shift
+    exec bash "$PAUSE_SCRIPT" resume "$@" ;;
 esac
 
 
@@ -62,7 +69,12 @@ if [ -n "$MISSIONS_DIR" ] && [ -d "$MISSIONS_DIR" ]; then
   for s in "$MISSIONS_DIR"/*/state.json; do
     stage="$(json_str "$s" stage)"
     awaiting="$(sed -n 's/.*"awaitingHuman"[[:space:]]*:[[:space:]]*\([a-z]*\).*/\1/p' "$s" | head -1)"
-    if [ "$awaiting" = "true" ] || [ "$stage" = "verify" ]; then
+    paused="$(sed -n 's/.*"paused"[[:space:]]*:[[:space:]]*\([a-z]*\).*/\1/p' "$s" | head -1)"
+    # A paused Mission (ADR-005) is neither pending nor drivable: the driver
+    # would just halt at the next boundary, so bare `lcars` must not auto-pick it.
+    if [ "$paused" = "true" ]; then
+      :
+    elif [ "$awaiting" = "true" ] || [ "$stage" = "verify" ]; then
       pending=$((pending + 1))
     elif [ "$stage" != "done" ]; then
       drivable=$((drivable + 1))

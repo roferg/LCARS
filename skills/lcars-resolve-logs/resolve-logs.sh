@@ -73,6 +73,15 @@ state_set_raw() { # file key token
 }
 
 # --- args ------------------------------------------------------------------
+# Default verb (no subcommand) is the GATHER → ORDER → DRIVE → consolidated-gate
+# flow. The `complete` subcommand (BUG-E) folds the parent's already-verified
+# child bug Missions to Done — it is invoked when the consolidated re-verify gate
+# on the parent is ACCEPTED (respond.sh calls it after clearing the gate).
+SUBCOMMAND=""
+case "${1:-}" in
+  complete) SUBCOMMAND="complete"; shift ;;
+esac
+
 PARENT_SEL=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -156,6 +165,203 @@ fi
 
 PARENT_DIR="$MISSIONS_DIR/$PARENT_ID"
 PARENT_STATE="$PARENT_DIR/state.json"
+
+# --- the PARENT's engine (BUG-D) -------------------------------------------
+# A logged bug folds into the parent and must RUN on the SAME engine the parent
+# ran on — a copilot parent's fixes must not silently host-detect claude. The
+# child `lcars run drive` is fed this as $LCARS_WORKER_BIN below. We resolve it
+# from the PARENT mission's state.json `workerBin` (written by `lcars log` /
+# `lcars file`). This is deliberately SEPARATE from $WORKER_BIN above, which is
+# the ORDERING worker the resolver consults — they are different concerns.
+# Empty ⇒ no engine pinned, the child host-detects exactly as before.
+PARENT_ENGINE="$(json_str "$PARENT_STATE" workerBin)"
+
+# --- the linked child bug Missions, by current stage -----------------------
+# Reused by both the default drive flow (GATHER, below) and `complete`. Echoes
+# one "<bug-id>\t<stage>" line per linked, non-done child (type bug, parentMission
+# == PARENT_ID), in id order.
+linked_children() { # -> id<TAB>stage
+  local s bid type parent stage
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    bid="$(json_str "$s" id)"; [ -n "$bid" ] || bid="$(basename "$(dirname "$s")")"
+    type="$(json_str "$s" type)"
+    parent="$(json_str "$s" parentMission)"
+    stage="$(json_str "$s" stage)"
+    [ "$type" = "bug" ] || continue
+    [ "$parent" = "$PARENT_ID" ] || continue
+    [ "$stage" = "done" ] && continue
+    printf '%s\t%s\n' "$bid" "$stage"
+  done < <(ls -1 "$MISSIONS_DIR"/*/state.json 2>/dev/null | sort)
+}
+
+# === S73: dependency-aware PARALLEL wave scheduling ========================
+#
+# SPIKE DECISION (recorded here so the rule lives next to the code):
+#
+#   INDEPENDENCE SIGNAL — CONSERVATIVE. Two sibling bug Missions are treated as
+#   INDEPENDENT (eligible to share a wave) ONLY when BOTH:
+#     (a) their plan.json target FILE PATHS are CLEARLY DISJOINT, and
+#     (b) they do NOT share a working branch (state.json.branch).
+#   Anything else SERIALISES. A bug with NO plan.json yet, or a plan from which
+#   no path token can be extracted, is treated as touching-everything → it is
+#   never independent of anything → it serialises. Paths are read from each
+#   child's plan.json (the same artifact the per-Mission Schedule reads), pulling
+#   path-shaped tokens out of every ticket's description + acceptanceCriteria
+#   (plan tickets carry no dedicated files field — this is the available signal).
+#
+#   PARALLEL-SAFETY — the hard part. BUG-E folds a pre-merge child's commits onto
+#   the PARENT's branch, in the SINGLE shared working tree. Two children that
+#   share a branch therefore CANNOT commit concurrently (Implement checks out and
+#   commits on that branch). So:
+#     • Same-wave children with DISTINCT branches + disjoint paths drive
+#       CONCURRENTLY (bounded by $LCARS_RESOLVE_CONCURRENCY) — the per-Mission
+#       driver lock already isolates distinct Missions, and distinct branches mean
+#       no same-branch / same-working-tree collision for these.
+#     • Children that share a branch (the common pre-merge fold case) are pushed
+#       into SEPARATE waves so they run ONE AT A TIME — we never ship unsafe
+#       same-branch concurrent commits (option (c) for that case).
+#   This ships REAL concurrency for the distinct-branch case and a correct
+#   schedule for every case; same-branch folds stay safely serial.
+
+# Extract path-shaped tokens from a child's plan.json. Echoes one path per line.
+# A "path token" looks like a file path: contains a "/" or ends in a dotted
+# extension (e.g. src/foo.py, board.js, web/x). Pulled from the ticket
+# description + acceptanceCriteria text (parse_plan_table-style, jq-free).
+child_paths() { # child-id
+  local plan="$MISSIONS_DIR/$1/plan.json"
+  [ -f "$plan" ] || return 0
+  # Strip JSON structure to words, keep path-looking tokens, dedupe.
+  tr -c 'A-Za-z0-9_./-' ' ' <"$plan" \
+    | tr ' ' '\n' \
+    | grep -E '(/[A-Za-z0-9_.-]+)|(^[A-Za-z0-9_-]+\.[A-Za-z0-9]+$)' \
+    | grep -vE '^(plan\.json|state\.json)$' \
+    | sort -u
+}
+
+child_branch() { json_str "$MISSIONS_DIR/$1/state.json" branch; }
+
+# Are two children INDEPENDENT (safe to co-schedule / run concurrently)?
+# Returns 0 = independent, 1 = dependent (must serialise). Conservative: empty
+# path set on either side ⇒ NOT independent; shared branch ⇒ NOT independent.
+bugs_independent() { # idA idB
+  local a="$1" b="$2" pa pb ba bb
+  ba="$(child_branch "$a")"; bb="$(child_branch "$b")"
+  [ -n "$ba" ] && [ "$ba" = "$bb" ] && return 1   # shared branch → serialise
+  pa="$(child_paths "$a")"; pb="$(child_paths "$b")"
+  [ -n "$pa" ] || return 1                         # no signal → serialise
+  [ -n "$pb" ] || return 1
+  # Disjoint? Any common path → dependent.
+  if printf '%s\n' "$pa" | grep -qxF -f <(printf '%s\n' "$pb"); then
+    return 1
+  fi
+  return 0
+}
+
+# Group the ordered work list into waves. A bug joins the FIRST existing wave in
+# which it is independent of EVERY member already placed there; otherwise it
+# opens a new wave. Same-wave members are eligible to drive concurrently.
+# Echoes "<wave-number> <id>" lines, in wave then placement order.
+compute_bug_waves() { # ids... (passed as args, in resolution order)
+  local ids=("$@") nwaves=0
+  local -a wave_members   # wave_members[w] = space-joined ids in wave w
+  local id w placed m indep
+  for id in "${ids[@]}"; do
+    placed=0
+    for ((w=1; w<=nwaves; w++)); do
+      indep=1
+      for m in ${wave_members[w]:-}; do
+        if ! bugs_independent "$id" "$m"; then indep=0; break; fi
+      done
+      if [ "$indep" -eq 1 ]; then
+        wave_members[w]="${wave_members[w]} $id"
+        placed=1; break
+      fi
+    done
+    if [ "$placed" -eq 0 ]; then
+      nwaves=$((nwaves + 1))
+      wave_members[nwaves]="$id"
+    fi
+  done
+  for ((w=1; w<=nwaves; w++)); do
+    for m in ${wave_members[w]}; do printf '%s %s\n' "$w" "$m"; done
+  done
+}
+
+# Render the wave schedule to resolve-waves.json on the parent (machine form,
+# mirrors the per-Mission waves.json idea: [ { wave, bugs:[ id... ] } ]).
+emit_resolve_waves_json() { # "<wave> <id>" lines on stdin
+  awk '
+    { w=$1; if (!(w in seen)) { seen[w]=1; worder[++nw]=w } cnt[w]++; bid[w,cnt[w]]=$2 }
+    END {
+      print "["
+      for (x=1;x<=nw;x++) {
+        w=worder[x]
+        print "  {"
+        printf "    \"wave\": %s,\n", w
+        print "    \"bugs\": ["
+        for (y=1;y<=cnt[w];y++) printf "      \"%s\"%s\n", bid[w,y], (y<cnt[w]?",":"")
+        print "    ]"
+        printf "  }%s\n", (x<nw?",":"")
+      }
+      print "]"
+    }
+  '
+}
+
+# The queued flag (UX-29): stamp/clear state.json.queued for a child.
+mark_queued()   { state_set_raw "$MISSIONS_DIR/$1/state.json" queued true; }
+clear_queued()  { state_del     "$MISSIONS_DIR/$1/state.json" queued; }
+
+# --- complete: fold the verified children to Done, no per-bug PR (BUG-E) ----
+# Model A — logged-bug fixes ride the PARENT's PR. When the consolidated
+# re-verify gate is accepted, every linked child still parked at Verify is moved
+# to Done WITHOUT opening its own PR: its fix already lives on the parent branch
+# (log.sh records the parent branch for a pre-merge child), so the parent's PR
+# carries it. We only flip the stage + board label here. A child must never be
+# left orphaned at Verify after acceptance. NEVER calls `gh pr create`.
+cmd_complete() {
+  local folded=0 line bid stage cstate cissue cbranch
+  while IFS=$'\t' read -r bid stage; do
+    [ -n "$bid" ] || continue
+    # Only fold children that reached their Verify gate. A child still mid-flight
+    # (escalated / earlier stage) is left untouched — it is not "resolved" yet.
+    [ "$stage" = "verify" ] || continue
+    cstate="$MISSIONS_DIR/$bid/state.json"
+    cbranch="$(json_str "$cstate" branch)"
+
+    # Move the child to Done on disk — stage flips to done, branch is preserved
+    # (the fix stays folded onto the parent branch; we never rewrite it here).
+    state_set_str "$cstate" stage done
+
+    # Board: clear the stage labels, apply lcars:done — same column move approve
+    # makes, but WITHOUT a PR (the parent's PR carries the fix). Best-effort.
+    cissue="$(json_raw "$cstate" githubIssue)"
+    case "$cissue" in
+      ''|null) : ;;
+      *) if command -v "$GH_BIN" >/dev/null 2>&1; then
+           "$GH_BIN" issue edit "$cissue" \
+             --add-label "lcars:done" \
+             --remove-label "lcars:verify" \
+             --remove-label "lcars:awaiting-human" >/dev/null 2>&1 || true
+         fi ;;
+    esac
+    folded=$((folded + 1))
+  done < <(linked_children)
+
+  if [ "$folded" -eq 0 ]; then
+    echo "lcars resolve-logs: no child bug at Verify to fold into $PARENT_ID — nothing to complete."
+    exit 0
+  fi
+  noun="logged bugs"; [ "$folded" -eq 1 ] && noun="logged bug"
+  printf 'Folded %d %s into %s (%s) — moved to Done; no per-bug PR (the parent PR carries the fixes).\n' \
+    "$folded" "$noun" "$PARENT_ID" "$PARENT_TITLE"
+  exit 0
+}
+
+if [ "$SUBCOMMAND" = "complete" ]; then
+  cmd_complete
+fi
 
 # --- GATHER the linked bug Missions ----------------------------------------
 # A linked bug: type==bug, parentMission==PARENT_ID. "open" = stage != done.
@@ -252,12 +458,28 @@ if [ "${#work[@]}" -gt 0 ]; then
   } >"$ORDER_FILE"
 fi
 
-# --- DRIVE each bug to its Verify gate, in order ---------------------------
-drive_bug() { # id  -> 0 reached verify | 1 paused (awaiting-human) | 2 error
-  local id="$1" sfile="$MISSIONS_DIR/$1/state.json" stage awaiting
-  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="${WORKER_BIN:-}" \
-  LCARS_NOTIFY="$NOTIFY_BIN" \
-    bash "$RUN_SCRIPT" drive --mission "$id" >/dev/null 2>&1 || true
+# --- DRIVE each bug to its Verify gate, wave by wave -----------------------
+# run_child_driver just delegates to `lcars run drive` (BUG-D engine inheritance
+# preserved); it does NOT inspect the result — that is done after, by
+# child_outcome, so the same runner is usable both synchronously and as a
+# background job for concurrent waves. It clears the child's queued flag first
+# (it is now starting its wave).
+run_child_driver() { # id
+  local id="$1"
+  clear_queued "$id"
+  if [ -n "$PARENT_ENGINE" ]; then
+    LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="$PARENT_ENGINE" \
+    LCARS_NOTIFY="$NOTIFY_BIN" \
+      bash "$RUN_SCRIPT" drive --mission "$id" >/dev/null 2>&1 || true
+  else
+    LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    LCARS_NOTIFY="$NOTIFY_BIN" \
+      env -u LCARS_WORKER_BIN bash "$RUN_SCRIPT" drive --mission "$id" >/dev/null 2>&1 || true
+  fi
+}
+
+child_outcome() { # id -> 0 reached verify | 1 paused (awaiting-human) | 2 error
+  local sfile="$MISSIONS_DIR/$1/state.json" stage awaiting
   stage="$(json_str "$sfile" stage)"
   awaiting="$(json_raw "$sfile" awaitingHuman)"
   [ "$awaiting" = "true" ] && return 1
@@ -281,15 +503,110 @@ if [ -n "$paused_existing" ]; then
   exit 0
 fi
 
-for id in "${ORDERED[@]:-}"; do
+# --- build the wave schedule over the ordered work set ----------------------
+# CONCURRENCY cap: same-wave children drive concurrently up to this many at once.
+# 1 ⇒ scheduled-but-serial (still produces the schedule + queued signal).
+CONCURRENCY="${LCARS_RESOLVE_CONCURRENCY:-2}"
+case "$CONCURRENCY" in ''|*[!0-9]*) CONCURRENCY=2 ;; esac
+[ "$CONCURRENCY" -ge 1 ] || CONCURRENCY=1
+
+WAVE_LINES=""
+if [ "${#ORDERED[@]:-0}" -gt 0 ]; then
+  WAVE_LINES="$(compute_bug_waves "${ORDERED[@]}")"
+  emit_resolve_waves_json <<<"$WAVE_LINES" >"$PARENT_DIR/resolve-waves.json"
+  # Append the wave grouping to the human-readable order record (best-effort).
+  if [ -f "$ORDER_FILE" ]; then
+    {
+      echo
+      echo "## Wave schedule (independent bugs share a wave; waves run in sequence)"
+      cur=""
+      while read -r w id; do
+        [ -n "$id" ] || continue
+        [ "$w" != "$cur" ] && { printf 'Wave %s:\n' "$w"; cur="$w"; }
+        printf '  - %s\n' "$id"
+      done <<<"$WAVE_LINES"
+    } >>"$ORDER_FILE"
+  fi
+fi
+
+# QUEUED signal (UX-29): every scheduled work bug is queued up front; each clears
+# its own flag when run_child_driver starts it. So a child waiting its wave reads
+# queued:true; one in-flight or done reads no flag.
+for id in "${work[@]:-}"; do
   [ -n "$id" ] || continue
-  drive_bug "$id"; rc=$?
-  case "$rc" in
-    0) resolved+=("$id") ;;
-    1) pause_at "$id"; exit 0 ;;
-    2) die "driving $id did not reach its Verify gate (stage is now '$(json_str "$MISSIONS_DIR/$id/state.json" stage)') — resolve it manually with \`lcars run $id\`, then re-run." ;;
-  esac
+  mark_queued "$id"
 done
+
+# --- execute the waves in sequence; same-wave bugs run concurrently ---------
+# We walk WAVE_LINES grouped by wave. Within a wave we launch up to CONCURRENCY
+# background drivers, then `wait` for them all before inspecting outcomes. If ANY
+# child in the completed wave escalated, we PAUSE the batch (remaining waves do
+# NOT run) and surface that child's question — leaving the queued flags on the
+# not-yet-started bugs so the board still shows them waiting.
+run_one_wave() { # wave-id  ids...
+  local _wave="$1"; shift
+  local ids=("$@") chunk=() id rc
+  local paused_id="" errored_id=""
+  # Launch in CONCURRENCY-sized chunks.
+  while [ "${#ids[@]}" -gt 0 ]; do
+    chunk=("${ids[@]:0:$CONCURRENCY}")
+    ids=("${ids[@]:$CONCURRENCY}")
+    if [ "${#chunk[@]}" -eq 1 ]; then
+      run_child_driver "${chunk[0]}"            # lone child: run inline.
+    else
+      local pids=()
+      for id in "${chunk[@]}"; do
+        run_child_driver "$id" &
+        pids+=("$!")
+      done
+      for p in "${pids[@]}"; do wait "$p" 2>/dev/null || true; done
+    fi
+  done
+  # Inspect outcomes for this whole wave.
+  for id in "$@"; do
+    child_outcome "$id"; rc=$?
+    case "$rc" in
+      0) resolved+=("$id") ;;
+      1) [ -z "$paused_id" ] && paused_id="$id" ;;
+      2) [ -z "$errored_id" ] && errored_id="$id" ;;
+    esac
+  done
+  [ -n "$paused_id" ]  && { WAVE_PAUSED="$paused_id"; return 1; }
+  [ -n "$errored_id" ] && { WAVE_ERRORED="$errored_id"; return 2; }
+  return 0
+}
+
+WAVE_PAUSED=""; WAVE_ERRORED=""
+if [ -n "$WAVE_LINES" ]; then
+  cur_wave=""; wave_ids=()
+  flush_wave() {
+    [ "${#wave_ids[@]}" -gt 0 ] || return 0
+    run_one_wave "$cur_wave" "${wave_ids[@]}"; return $?
+  }
+  while read -r w id; do
+    [ -n "$id" ] || continue
+    if [ "$w" != "$cur_wave" ]; then
+      if [ -n "$cur_wave" ]; then
+        flush_wave; frc=$?
+        [ "$frc" -ne 0 ] && break
+      fi
+      cur_wave="$w"; wave_ids=()
+    fi
+    wave_ids+=("$id")
+  done <<<"$WAVE_LINES"
+  # Final wave (only if we did not already break out on a pause/error).
+  if [ -z "$WAVE_PAUSED" ] && [ -z "$WAVE_ERRORED" ]; then
+    flush_wave || true
+  fi
+fi
+
+if [ -n "$WAVE_PAUSED" ]; then
+  pause_at "$WAVE_PAUSED"
+  exit 0
+fi
+if [ -n "$WAVE_ERRORED" ]; then
+  die "driving $WAVE_ERRORED did not reach its Verify gate (stage is now '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)') — resolve it manually with \`lcars run $WAVE_ERRORED\`, then re-run."
+fi
 
 # --- THE SINGLE RE-VERIFY ASK ----------------------------------------------
 n="${#resolved[@]}"
@@ -303,7 +620,11 @@ for id in "${resolved[@]}"; do
 done
 
 noun="logged bugs"; [ "$n" -eq 1 ] && noun="logged bug"
-ASK="$n $noun resolved and waiting on their Verify gates — ready for you to re-verify against $PARENT_ID ($PARENT_TITLE). Re-inspect each fix, then \`lcars approve <bug-id>\` to ship it (open its PR) or \`lcars feedback <bug-id>\` to send it back."
+# Model A (BUG-E): the fixes are folded onto the PARENT's branch and ride its PR
+# — there is NO per-bug PR. The captain re-verifies the parent ONCE; ACCEPTING
+# this gate (answer it in the inbox) folds the children to Done. Sending the
+# parent back uses the parent's own feedback loop.
+ASK="$n $noun resolved on $PARENT_ID ($PARENT_TITLE)'s branch — ready for your single re-verify. Re-inspect the fixes (they ride this Mission's PR — no per-bug PR), then ANSWER this gate to accept them (each logged bug is folded to Done) or send the Mission back with \`lcars feedback $PARENT_ID\`."
 
 # pending.json on the PARENT (the answer inbox reads this).
 {
@@ -332,12 +653,11 @@ LCARS_CFG="$CONFIG" "$NOTIFY_BIN" "$PARENT_ID" "awaiting-human" "$ASK" >/dev/nul
 
 # --- summary ---------------------------------------------------------------
 case "$PARENT_ISSUE" in ''|null) plabel="$PARENT_ID" ;; *) plabel="#$PARENT_ISSUE" ;; esac
-printf '%d %s resolved to Verify and linked to %s (%s):%s\n' "$n" "$noun" "$plabel" "$PARENT_TITLE" "$list_txt"
+printf '%d %s resolved to Verify and folded onto %s (%s):%s\n' "$n" "$noun" "$plabel" "$PARENT_TITLE" "$list_txt"
 echo
 echo "Raised ONE consolidated re-verify gate on $PARENT_ID and pinged you once."
-echo "Re-inspect each fix, then approve or send back:"
-for id in "${resolved[@]}"; do
-  echo "  lcars approve $id    — ship it (open the PR)"
-done
+echo "The fixes ride this Mission's PR — there is NO per-bug PR. Re-inspect them, then:"
+echo "  lcars answer respond --mission $PARENT_ID --answer \"…\"   — accept (folds each logged bug to Done)"
+echo "  lcars feedback $PARENT_ID \"…\"                            — send the Mission back"
 echo "Open the inbox with \`lcars answer\` to act on the consolidated card."
 exit 0

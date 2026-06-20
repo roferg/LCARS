@@ -403,6 +403,297 @@ rc5d=0
 ) || rc5d=$?
 check "5. refuses when no active mission matches the selector" "[ '$rc5d' -ne 0 ]"
 
+# --- Behaviour 7: complete folds children to Done, no per-bug PR (BUG-E) -----
+# Model A: logged-bug fixes fold INTO the parent. Once the consolidated re-verify
+# gate is ACCEPTED, every linked child bug at Verify transitions to Done WITHOUT
+# its own PR (the parent's PR carries the merged fixes). `resolve-logs complete
+# --parent <id>` performs that fold: clear stage labels, apply lcars:done, move
+# to the done column, and NEVER call `gh pr create` for a child.
+repo7c="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo7c/gh"; make_notify_stub "$repo7c/notify"; make_run_stub "$repo7c/run"; make_worker_stub "$repo7c/worker"
+export GH_LOG="$repo7c/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo7c/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo7c/run.log"; : >"$RUN_LOG"
+# put both children at verify (as if resolve-logs already drove them).
+for seq in 002 003; do
+  s="$repo7c/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+rc7c=0
+(
+  cd "$repo7c"
+  LCARS_GH_BIN="$repo7c/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo7c/notify" \
+  LCARS_RUN_SCRIPT="$repo7c/run" LCARS_WORKER_BIN="$repo7c/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out7c.txt 2>&1
+) || rc7c=$?
+check "7. complete exits zero" "[ '$rc7c' -eq 0 ]"
+check "7. child 002 transitions to stage done" \
+  "qgrep '\"stage\": *\"done\"' '$repo7c/.git/lcars/missions/lcars-20260601-002/state.json'"
+check "7. child 003 transitions to stage done" \
+  "qgrep '\"stage\": *\"done\"' '$repo7c/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "7. each child issue is relabelled lcars:done" \
+  "[ \"\$(grep -c 'add-label.*lcars:done' '$repo7c/gh.log')\" -ge 2 ]"
+check "7. each child's stage label (lcars:verify) is removed" \
+  "qgrep 'remove-label.*lcars:verify' '$repo7c/gh.log'"
+check "7. NO per-bug PR is opened (no gh pr create for children)" \
+  "! qgrep 'pr create' '$repo7c/gh.log'"
+check "7. complete reports how many children it folded to Done" \
+  "qgrep -i 'done|folded|2' '$repo7c/out7c.txt'"
+
+# children's commits target the PARENT branch (branch-folding) — log.sh already
+# records the parent branch on a pre-merge child; complete must NOT rewrite it.
+check "7. children keep the parent branch as their working branch (folded)" \
+  "qgrep '\"branch\":' '$repo7c/.git/lcars/missions/lcars-20260601-002/state.json'"
+
+# idempotent / no-op safety: a parent with no children-at-verify is a clean no-op.
+repo7d="$(new_repo_with_linked_bugs 0)"
+make_gh_stub "$repo7d/gh"
+export GH_LOG="$repo7d/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+rc7d=0
+(
+  cd "$repo7d"
+  LCARS_GH_BIN="$repo7d/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out7d.txt 2>&1
+) || rc7d=$?
+check "7. complete is a clean no-op when no child is at verify" \
+  "[ '$rc7d' -eq 0 ] && ! qgrep 'pr create' '$repo7d/gh.log'"
+
+# --- Behaviour 6: children RUN on the PARENT's engine (BUG-D) ---------------
+# resolve-logs delegates each child to `lcars run drive`. That child driver must
+# run with LCARS_WORKER_BIN = the PARENT mission's engine (its state.json
+# workerBin) so a copilot parent's bug fixes do not host-detect claude. We make
+# the run stub RECORD the LCARS_WORKER_BIN it was invoked with, and assert it is
+# the parent's engine — NOT the ordering worker path.
+make_engine_recording_run_stub() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+mid=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mission) mid="$2"; shift 2 ;;
+    --mission=*) mid="${1#--mission=}"; shift ;;
+    *) shift ;;
+  esac
+done
+echo "run drive $mid worker=${LCARS_WORKER_BIN:-UNSET}" >>"$RUN_LOG"
+gitdir="$(git rev-parse --git-common-dir 2>/dev/null)"
+case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+state="$gitdir/lcars/missions/$mid/state.json"
+tmp="$(mktemp)"
+awk 'NR==1{print; print "  \"stage\": \"verify\","; next} /"stage"/{next} {print}' "$state" >"$tmp" && mv "$tmp" "$state"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+repo6e="$(new_repo_with_linked_bugs 2)"
+# Give the PARENT a copilot engine. The ORDERING worker stub is a DIFFERENT path,
+# so a child driven on the worker path (the pre-fix bug) would record that path
+# instead of "copilot".
+ps="$repo6e/.git/lcars/missions/lcars-20260601-001/state.json"
+awk 'NR==1{print; print "  \"workerBin\": \"copilot\","; next} {print}' "$ps" >"$ps.t" && mv "$ps.t" "$ps"
+make_gh_stub "$repo6e/gh"; make_notify_stub "$repo6e/notify"; make_engine_recording_run_stub "$repo6e/run"; make_worker_stub "$repo6e/worker"
+export GH_LOG="$repo6e/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo6e/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo6e/run.log"; : >"$RUN_LOG"
+rc6e=0
+(
+  cd "$repo6e"
+  ESCALATE_IDS="" WORKER_ORDER="lcars-20260601-002 lcars-20260601-003" \
+  LCARS_GH_BIN="$repo6e/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo6e/notify" \
+  LCARS_RUN_SCRIPT="$repo6e/run" LCARS_WORKER_BIN="$repo6e/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out6e.txt 2>&1
+) || rc6e=$?
+check "6. exits zero driving children on the parent engine" "[ '$rc6e' -eq 0 ]"
+check "6. each child driver runs with LCARS_WORKER_BIN = the parent engine (copilot)" \
+  "[ \"\$(grep -c 'worker=copilot' '$repo6e/run.log')\" -eq 2 ]"
+check "6. no child is driven with the ordering-worker path as its engine" \
+  "! grep -q \"worker=$repo6e/worker\" '$repo6e/run.log'"
+
+# parent with NO engine set -> children driven with no engine (host-detect),
+# never the ordering-worker path (regression guard).
+repo6f="$(new_repo_with_linked_bugs 1)"
+make_gh_stub "$repo6f/gh"; make_notify_stub "$repo6f/notify"; make_engine_recording_run_stub "$repo6f/run"; make_worker_stub "$repo6f/worker"
+export GH_LOG="$repo6f/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo6f/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo6f/run.log"; : >"$RUN_LOG"
+(
+  cd "$repo6f"
+  ESCALATE_IDS="" WORKER_ORDER="lcars-20260601-002" \
+  LCARS_GH_BIN="$repo6f/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo6f/notify" \
+  LCARS_RUN_SCRIPT="$repo6f/run" LCARS_WORKER_BIN="$repo6f/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out6f.txt 2>&1
+)
+check "6. parent without an engine drives children with no engine (UNSET, not the worker path)" \
+  "grep -q 'worker=UNSET' '$repo6f/run.log' && ! grep -q \"worker=$repo6f/worker\" '$repo6f/run.log'"
+
+# --- Behaviour 8: dependency-aware PARALLEL waves (S73) ----------------------
+# resolve-logs computes a WAVE SCHEDULE over the linked children using a
+# CONSERVATIVE independence signal: two bugs are independent (eligible for the
+# SAME wave) ONLY when their plan.json target paths are CLEARLY disjoint AND they
+# do not share a working branch. Otherwise they SERIALIZE into ordered waves.
+# The schedule is recorded in resolve-logs.md (wave grouping) and a machine
+# `resolve-waves.json` on the parent.
+
+# Helper: give a child a plan.json whose tickets name $2.. target paths (recorded
+# in the description so the path-extraction signal can read them).
+plant_child_plan() { # child-state-dir  path1 [path2 ...]
+  local d="$1"; shift
+  {
+    echo '['
+    echo '  {'
+    echo '    "id": "t-001",'
+    echo '    "title": "fix it",'
+    printf '    "description": "Edit'
+    for p in "$@"; do printf ' %s' "$p"; done
+    echo ' to fix the bug.",'
+    echo '    "acceptanceCriteria": ["works"],'
+    echo '    "dependencies": []'
+    echo '  }'
+    echo ']'
+  } >"$d/plan.json"
+}
+
+# A run stub that records concurrency: writes "<id> start" immediately, sleeps so
+# overlapping drivers are observable, then drives the mission to verify and writes
+# "<id> end". A serial executor produces start/end/start/end; a concurrent one
+# produces start/start/.../end.
+make_concurrency_run_stub() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+mid=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mission) mid="$2"; shift 2 ;;
+    --mission=*) mid="${1#--mission=}"; shift ;;
+    *) shift ;;
+  esac
+done
+# Atomic append of the start marker (so two concurrent drivers interleave safely).
+echo "$mid start" >>"$RUN_LOG"
+sleep 0.5
+gitdir="$(git rev-parse --git-common-dir 2>/dev/null)"
+case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+state="$gitdir/lcars/missions/$mid/state.json"
+tmp="$(mktemp)"
+awk 'NR==1{print; print "  \"stage\": \"verify\","; next} /"stage"/{next} {print}' "$state" >"$tmp" && mv "$tmp" "$state"
+echo "$mid end" >>"$RUN_LOG"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# 8a: two INDEPENDENT bugs (disjoint plan paths) land in the SAME wave and are
+# eligible to drive concurrently. With distinct branches + disjoint paths the
+# executor runs them at once (two starts before any end).
+repo8="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo8/gh"; make_notify_stub "$repo8/notify"; make_concurrency_run_stub "$repo8/run"; make_silent_worker_stub "$repo8/worker"
+export GH_LOG="$repo8/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo8/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo8/run.log"; : >"$RUN_LOG"
+# Disjoint targets → independent → same wave, distinct branches → concurrent.
+plant_child_plan "$repo8/.git/lcars/missions/lcars-20260601-002" "src/alpha.py"
+plant_child_plan "$repo8/.git/lcars/missions/lcars-20260601-003" "src/beta.py"
+rc8=0
+(
+  cd "$repo8"
+  ESCALATE_IDS="" LCARS_RESOLVE_CONCURRENCY=2 \
+  LCARS_GH_BIN="$repo8/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo8/notify" \
+  LCARS_RUN_SCRIPT="$repo8/run" LCARS_WORKER_BIN="$repo8/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out8.txt 2>&1
+) || rc8=$?
+check "8. exits zero scheduling 2 independent bugs into one wave" "[ '$rc8' -eq 0 ]"
+check "8. schedule groups the two independent bugs in ONE wave" \
+  "qgrep 'lcars-20260601-002' '$repo8/.git/lcars/missions/lcars-20260601-001/resolve-waves.json' && [ \"\$(grep -c '\"wave\"' '$repo8/.git/lcars/missions/lcars-20260601-001/resolve-waves.json')\" -eq 1 ]"
+check "8. both independent bugs reach verify" \
+  "qgrep '\"stage\": *\"verify\"' '$repo8/.git/lcars/missions/lcars-20260601-002/state.json' && qgrep '\"stage\": *\"verify\"' '$repo8/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "8. two child drivers were live AT ONCE (two starts before any end)" \
+  "[ \"\$(head -2 '$RUN_LOG' | grep -c start)\" -eq 2 ]"
+check "8. still exactly ONE consolidated gate + ONE notify" \
+  "qgrep '\"awaitingHuman\": *true' '$repo8/.git/lcars/missions/lcars-20260601-001/state.json' && [ \"\$(wc -l <'$NOTIFY_LOG' | tr -d ' ')\" -eq 1 ]"
+
+# 8b: two bugs sharing a target PATH are SERIALIZED into ordered waves (NOT same
+# wave, NOT concurrent). With a shared path they go in separate waves and the
+# executor runs them one at a time (start/end/start/end).
+repo8b="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo8b/gh"; make_notify_stub "$repo8b/notify"; make_concurrency_run_stub "$repo8b/run"; make_silent_worker_stub "$repo8b/worker"
+export GH_LOG="$repo8b/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo8b/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo8b/run.log"; : >"$RUN_LOG"
+plant_child_plan "$repo8b/.git/lcars/missions/lcars-20260601-002" "src/shared.py"
+plant_child_plan "$repo8b/.git/lcars/missions/lcars-20260601-003" "src/shared.py"
+rc8b=0
+(
+  cd "$repo8b"
+  ESCALATE_IDS="" LCARS_RESOLVE_CONCURRENCY=2 \
+  LCARS_GH_BIN="$repo8b/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo8b/notify" \
+  LCARS_RUN_SCRIPT="$repo8b/run" LCARS_WORKER_BIN="$repo8b/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out8b.txt 2>&1
+) || rc8b=$?
+check "8. shared-path bugs land in SEPARATE waves (two wave entries)" \
+  "[ \"\$(grep -c '\"wave\"' '$repo8b/.git/lcars/missions/lcars-20260601-001/resolve-waves.json')\" -eq 2 ]"
+check "8. shared-path bugs run SERIALLY (start,end,start,end — no overlap)" \
+  "[ \"\$(head -2 '$RUN_LOG' | grep -c start)\" -eq 1 ]"
+check "8. both shared-path bugs still reach verify" \
+  "qgrep '\"stage\": *\"verify\"' '$repo8b/.git/lcars/missions/lcars-20260601-002/state.json' && qgrep '\"stage\": *\"verify\"' '$repo8b/.git/lcars/missions/lcars-20260601-003/state.json'"
+
+# 8c: a child SCHEDULED-but-not-started carries a `queued` signal in state.json
+# while it waits its wave; cleared once it starts/finishes. We drive a 2-bug batch
+# where bug 003 is in a LATER serialized wave; a run stub that PAUSES on a fifo
+# lets us inspect 003's state.json while 002 is still driving — 003 must read
+# queued:true. (We then release and let the batch finish.)
+repo8c="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo8c/gh"; make_notify_stub "$repo8c/notify"; make_silent_worker_stub "$repo8c/worker"
+export GH_LOG="$repo8c/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo8c/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo8c/run.log"; : >"$RUN_LOG"
+# Shared path → serialized waves → 003 is queued while 002 drives.
+plant_child_plan "$repo8c/.git/lcars/missions/lcars-20260601-002" "src/shared.py"
+plant_child_plan "$repo8c/.git/lcars/missions/lcars-20260601-003" "src/shared.py"
+FIFO="$repo8c/gate.fifo"; mkfifo "$FIFO"
+# Run stub for 002 blocks on the fifo so we can inspect 003 mid-batch.
+cat >"$repo8c/run" <<EOF
+#!/usr/bin/env bash
+mid=""
+while [ \$# -gt 0 ]; do case "\$1" in --mission) mid="\$2"; shift 2;; --mission=*) mid="\${1#--mission=}"; shift;; *) shift;; esac; done
+echo "run drive \$mid" >>"\$RUN_LOG"
+if [ "\$mid" = "lcars-20260601-002" ]; then cat "$FIFO" >/dev/null; fi
+gitdir="\$(git rev-parse --git-common-dir 2>/dev/null)"
+case "\$gitdir" in /*) : ;; *) gitdir="\$PWD/\$gitdir";; esac
+state="\$gitdir/lcars/missions/\$mid/state.json"
+tmp="\$(mktemp)"
+awk 'NR==1{print; print "  \"stage\": \"verify\","; next} /"stage"/{next} {print}' "\$state" >"\$tmp" && mv "\$tmp" "\$state"
+exit 0
+EOF
+chmod +x "$repo8c/run"
+(
+  cd "$repo8c"
+  ESCALATE_IDS="" LCARS_RESOLVE_CONCURRENCY=1 \
+  LCARS_GH_BIN="$repo8c/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo8c/notify" \
+  LCARS_RUN_SCRIPT="$repo8c/run" LCARS_WORKER_BIN="$repo8c/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out8c.txt 2>&1
+) &
+RESOLVE_PID=$!
+# Wait for 002 to enter the fifo block (it has driven), then inspect 003.
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  qgrep 'run drive lcars-20260601-002' "$RUN_LOG" && break
+  sleep 0.2
+done
+sleep 0.3
+queued_seen=0
+qgrep '"queued": *true' "$repo8c/.git/lcars/missions/lcars-20260601-003/state.json" && queued_seen=1
+not_queued_002=1
+qgrep '"queued": *true' "$repo8c/.git/lcars/missions/lcars-20260601-002/state.json" && not_queued_002=0
+# Release 002 and let the batch complete.
+echo go >"$FIFO"
+wait "$RESOLVE_PID" 2>/dev/null || true
+check "8. a scheduled-but-not-started child carries queued:true while it waits" \
+  "[ '$queued_seen' -eq 1 ]"
+check "8. the currently-driving child is NOT marked queued" \
+  "[ '$not_queued_002' -eq 1 ]"
+check "8. queued is cleared once the child has been driven (003 not queued at end)" \
+  "! qgrep '\"queued\": *true' '$repo8c/.git/lcars/missions/lcars-20260601-003/state.json'"
+
 # ==========================================================================
 echo
 printf 'lcars resolve-logs: %d passed, %d failed\n' "$pass" "$fail"

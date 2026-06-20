@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LCARS — Kanban Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&family=Oxanium:wght@400;600;700&display=swap" rel="stylesheet">
+<!-- Shared LCARS token set (served from docs/lcars.css — ADR-007, never forked) -->
+<link rel="stylesheet" href="/lcars.css">
+<!-- Board layout, vendored from kanban-vision.html's board/card/pill markup -->
+<link rel="stylesheet" href="/board.css">
+</head>
+<body class="lcars-serve">
+
+<!-- ════ LCARS ELBOW FRAME (S67-kanban) ════════════════════════════════════
+     The whole console is wrapped in the iconic LCARS chrome: a single solid
+     yellow TOP BAND that sweeps, via one fat rounded ELBOW at the top-left, into
+     a single solid yellow LEFT RAIL — band + elbow + rail are ONE continuous
+     colour L. The board content (columns + legend) nests INSIDE the frame — to
+     the right of the rail, below the top band. The rail/top band are fixed
+     frame; the columns scroll horizontally WITHIN .frame-content, so the rail
+     never scrolls off-screen.
+     Brand / #repoMeta / #fileBtn / #conn (the old .topbar nodes) are folded
+     into the top band; their ids/classes are preserved for board.js + tests. -->
+<div class="lcars-frame">
+
+  <!-- the fat rounded corner joining top band ↔ left rail (one continuous L) -->
+  <div class="frame-elbow" aria-hidden="true"></div>
+
+  <!-- TOP BAND: one solid yellow bar carrying the brand + repo meta + conn -->
+  <div class="frame-top topbar">
+    <span class="band-block" aria-hidden="true"></span>
+    <div class="brand">LCARS · <b>KANBAN</b></div>
+    <span class="band-block band-grow" aria-hidden="true"></span>
+    <!-- which repo is this board attached to? Filled from board.meta (S70-A). -->
+    <div class="repo-meta" id="repoMeta" title="attached repository"></div>
+    <button class="btn go" id="fileBtn" type="button">▦ File Mission</button>
+    <div class="conn" id="conn" title="live channel">● LIVE</div>
+  </div>
+
+  <!-- LEFT RAIL: one solid yellow bar (thin black dividers for LCARS flavour) -->
+  <div class="frame-rail" aria-hidden="true">
+    <div class="rail-div"></div>
+    <div class="rail-div"></div>
+    <div class="rail-fill"></div>
+  </div>
+
+  <!-- CONTENT AREA: the existing board + legend, behavior unchanged -->
+  <div class="frame-content">
+    <div class="board-wrap">
+      <div class="board" id="board"><!-- columns + cards injected by board.js --></div>
+    </div>
+
+    <div class="legend">
+      <span><i style="background:var(--lcars-red)"></i> Awaiting you</span>
+      <span><i style="background:var(--lcars-pink)"></i> Child bug mission</span>
+      <span><i style="background:var(--lcars-teal)"></i> Ticket green</span>
+      <span class="dim" id="status">loading…</span>
+      <span class="dim viewonly" id="viewonly" hidden>● VIEW-ONLY — writes disabled</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ════ Overlay host: every screen (detail + operator modals) renders here. ════
+     A single centered overlay (NOT the old side drawer). board.js fills #overlayBody
+     with the active screen and toggles `hidden`. -->
+<div class="overlay" id="overlay" hidden>
+  <div class="overlay-stage" id="overlayBody"><!-- screen injected by board.js --></div>
+</div>
+
+<script src="/board.js"></script>
+</body>
+</html>

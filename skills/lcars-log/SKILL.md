@@ -89,8 +89,9 @@ For each bug the script mints a mission id (`lcars-YYYYMMDD-NNN`, sequenced per
 day), creates `.git/lcars/missions/<id>/` with `prd.md`, `validated-plan.md`,
 and `state.json` (type `bug`, stage `plan`, `parentMission` set), creates the
 Mission's branch `lcars/<id>` off the current branch, opens a GitHub issue
-labelled `lcars:plan,lcars:bug,lcars:linked`, and prints the summary. Show its
-output to the captain verbatim:
+labelled `lcars:plan,lcars:bug,lcars:linked`, **runs the dynamic estimator on
+each child** (writing `estimate.json` — see below), and prints the summary. Show
+its output to the captain verbatim:
 
 ```
 2 bug missions filed and linked to #42 (Add gamification):
@@ -109,11 +110,52 @@ its own branch — `lcars run <id>` picks it up at Plan.
   prd.md             ← the bug report (the GitHub issue body, too)
   validated-plan.md  ← thin synthesis so Plan is runnable (bugs skip Validate)
   state.json         ← { id, type: "bug", title, stage: "plan", created, model,
-                         githubIssue, parentMission, parentIssue, branch, base }
+                         [modelOverride], githubIssue, parentMission,
+                         parentIssue, branch, base }
+  estimate.json      ← the dynamic estimate (best-effort — see below)
 ```
 
 Plus the branch `lcars/<id>` off the current branch (the PR base), exactly like
 `lcars file`. The working tree is not switched.
+
+## The dynamic estimate (same as a Mission)
+
+A logged bug is just a Mission whose estimate is computed from its bug PRD, so
+each child gets the **same dynamic estimator** scoring a top-level Mission gets —
+cost + reasoning/impl criticality + a per-stage model map. `log.sh` invokes the
+**existing** estimator (`lcars-run`'s `estimate`) on each child once its `prd.md`
++ `state.json` exist, exactly the way `lcars file` does at the end of Align. It
+is **strictly best-effort and never blocks the log**: if the estimator is
+unavailable or produces nothing, the bug still files and every stage falls back
+to its legacy model (no `estimate.json` is written) — identical to `lcars file`'s
+degradation. The estimator inherits the child's engine (`workerBin`) like the
+rest of the pipeline. The web Mission-Log review panel reads each filed child's
+`estimate.json` to show its one cost pill + two difficulty pills + suggested
+per-stage model, so CLI and viewscreen stay at parity.
+
+`$LCARS_RUN_BIN` locates the estimator driver (default
+`~/.claude/skills/lcars-run/run.sh`); tests point it at a stub.
+
+## Steering the model per bug — `--model-override`
+
+The captain can steer the model for a bug, reusing the **exact** lever
+`lcars file` uses. Pass `--model-override "<scope>:<tier>"` **right after** the
+`--prd` it applies to (it pairs positionally), with scope ∈
+`{all, reasoning, implementation}` and tier ∈ `{sonnet, opus}`:
+
+```bash
+bash ~/.claude/skills/lcars-log/log.sh \
+  --parent lcars-20260530-001 \
+  --prd "$prd1" --model-override "all:opus" \
+  --prd "$prd2"
+```
+
+A bug with no paired override gets none. A malformed value is rejected **before**
+anything is filed (nothing partial). The override is persisted into the child's
+`state.json.modelOverride = { scope, tier }`, which `lcars run`'s
+`active_model_override` picks up natively — no resolve-logs change needed. This is
+the same format the Launch panel's override sends, so the Mission-Log review panel
+and Mission Start stay consistent.
 
 ## Why `validated-plan.md`?
 
@@ -137,7 +179,7 @@ fast-tracked bug Mission immediately runnable.
   Missions (feature and bug). Override the date in tests with `LCARS_DATE`.
 - **Model** is read from `.git/lcars/config.json`, falling back to `LCARS_MODEL`
   then `claude-sonnet`. **`gh`/`git`** are stubbable via `LCARS_GH_BIN` /
-  `LCARS_GIT_BIN`.
+  `LCARS_GIT_BIN`; the **estimator driver** via `LCARS_RUN_BIN`.
 
 ## Implementation
 

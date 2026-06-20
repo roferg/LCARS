@@ -458,15 +458,17 @@ Each LLM session spawned by the harness — every cold Stage worker — receives
 
 ---
 
-## Future: The Kanban Interface
+## The Kanban Interface
 
-In a future iteration, LCARS gains a dedicated visual interface. The Kanban Board becomes a full application — not a GitHub Projects board, but a custom interface purpose-built for the Harness.
+LCARS now ships a dedicated visual interface. The Kanban Board is a full application — not a GitHub Projects board, but a custom interface purpose-built for the Harness. Launch it with `lcars viewscreen` (alias `lcars serve`); `lcars viewscreen --open` boots on a free port and opens the board in your browser. It is a Python-3-stdlib-only daemon — no pip, npm, or build step — serving a vanilla LCARS-themed front end.
 
-Each column corresponds to a Stage. Each Mission is a card. The human can see at a glance what is in flight, what is waiting for human input, and what is blocked. Questions from the Harness appear as badges on Mission cards. The human responds from the interface, and the Harness resumes.
+Each column corresponds to a Stage. Each Mission is a card carrying one **cost pill** and two **difficulty pills** (reasoning + implementation), with awaiting-you and paused card states, nested ticket rows, and live Implement wave/ticket progress. The human can see at a glance what is in flight, what is waiting for human input, and what is blocked. Questions from the Harness appear on Mission cards; the human responds from the interface and the Harness resumes.
 
-This is the command-and-control layer: one view of all Missions, all Stages, all pending decisions — with the ability to start, stop, and steer from a single screen.
+This is the command-and-control layer: one view of all Missions, all Stages, all pending decisions — with the ability to start, stop, and steer from a single screen. You can drive the whole idea→PR loop from the browser: File a Mission, watch the live Align grilling console, Start a run (with a plain-language model override), answer a Respond gate, work the centered two-pane mission-detail modal, Verify (approve / send-back), and use the Mission Log. **Pause** and **Resume** halt and continue a Mission at a safe boundary right from the board, and the Mission Log gives each logged bug its own estimate (cost + reasoning/implementation difficulty + per-stage model recommendation) with a plain-language per-bug model override.
 
-A first piece of this is already live. The Harness mirrors run progress onto each Mission's **GitHub issue as living, per-Stage comments** — one per Stage, created once then edited in place as it advances — with collapsed research Q&A, `#`-links to the sub-issues, and an Implement **wave dashboard** (a pace/position line plus a done / flagged / in-progress / pending ticket checklist) that refreshes on a ~60s heartbeat. It reuses the same renderer as `lcars status --watch`, so the issue, the live CLI view, and the future board never drift. That gives the board — and an eventual hosted, view-only reader — a rich remote event source without anyone leaving the issue.
+One adapter-neutral board shape backs two interchangeable read adapters: a **local** adapter parsing `.git/lcars/missions/*` (the default) and a **GitHub** adapter reading issues + `lcars:*` labels. A live SSE channel pushes updates on every state change; the local adapter also exposes operator write endpoints, while the GitHub adapter (and `--read-only`) stay view-only — so a hosted, view-only reader is a configuration away.
+
+Run progress is also mirrored onto each Mission's **GitHub issue as living, per-Stage comments** — one per Stage, created once then edited in place as it advances — with collapsed research Q&A, `#`-links to the sub-issues, and an Implement **wave dashboard** (a pace/position line plus a done / flagged / in-progress / pending ticket checklist) that refreshes on a ~60s heartbeat. It reuses the same renderer as `lcars status --watch`, so the issue, the live CLI view, and the board never drift.
 
 ---
 

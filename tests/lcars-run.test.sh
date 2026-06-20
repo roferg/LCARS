@@ -5585,6 +5585,53 @@ check "PC7. leaves no t-001 post-commit worktree behind (own worktree cleaned up
   "[ -z \"\$(ls -d '$MDIR7'/postcommit-t-001.* 2>/dev/null)\" ]"
 
 # ==========================================================================
+# --- Behaviour LOCK: single-instance `drive` per mission (BUG-A) ------------
+# The viewscreen Start button could fire `run drive` for the SAME mission more
+# than once (no feedback + a blocking POST), so THREE drivers raced one mission,
+# each spawning workers → state corruption + real credit waste. The fix is a
+# per-mission driver lock: only ONE live `cmd_drive` may advance a mission at a
+# time. A second invocation while a live driver holds the lock must EXIT 0 as a
+# clean no-op (no stage advance, no worker spawned). A STALE lock (dead pid) must
+# be reclaimable so a crashed driver never deadlocks the mission.
+lock_dir_of() { echo "$1/.git/lcars/missions/$MID/driver.lock"; }
+
+# LOCK1: a 2nd drive while a LIVE driver holds the lock no-ops (no second advance).
+repoL1="$(new_repo_with_validate_mission)"; arm_drive "$repoL1"
+# Simulate a live driver: a long-lived background process owns the lock.
+sleep 60 & LIVE_PID=$!
+lk1="$(lock_dir_of "$repoL1")"; mkdir -p "$lk1"; printf '%s' "$LIVE_PID" >"$lk1/pid"
+rcL1=0; drive "$repoL1" drive --mission "$MID" || rcL1=$?
+kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+check "LOCK1. a 2nd drive while one is live exits 0 (clean no-op)" "[ '$rcL1' -eq 0 ]"
+check "LOCK1. the 2nd drive did NOT advance the stage (still validate)" \
+  "grep -q '\"stage\": *\"validate\"' '$(state_of "$repoL1")'"
+check "LOCK1. the 2nd drive spawned NO cold worker" "[ ! -s '$repoL1/worker.log' ]"
+check "LOCK1. the 2nd drive says a driver is already running" \
+  "qgrep -qi 'already' '$repoL1/drive.out'"
+check "LOCK1. the 2nd drive did NOT clobber the live owner's lock pid" \
+  "[ \"\$(cat '$lk1/pid')\" = '$LIVE_PID' ]"
+
+# LOCK2: a STALE lock (dead pid) is reclaimable — drive proceeds and advances.
+repoL2="$(new_repo_with_validate_mission)"; arm_drive "$repoL2"
+# A pid that is (almost certainly) not alive: spawn+reap a process, reuse its pid.
+( exit 0 ) & DEAD_PID=$!; wait "$DEAD_PID" 2>/dev/null
+lk2="$(lock_dir_of "$repoL2")"; mkdir -p "$lk2"; printf '%s' "$DEAD_PID" >"$lk2/pid"
+rcL2=0; drive "$repoL2" drive --mission "$MID" --step || rcL2=$?
+check "LOCK2. drive over a stale lock exits 0 (reclaimed, not deadlocked)" "[ '$rcL2' -eq 0 ]"
+check "LOCK2. drive over a stale lock DID advance (validate → plan)" \
+  "grep -q '\"stage\": *\"plan\"' '$(state_of "$repoL2")'"
+check "LOCK2. drive over a stale lock ran the validate worker" \
+  "[ \"\$(calls_of_role "$repoL2/worker.log" validate)\" = '1' ]"
+check "LOCK2. drive releases its own lock on exit (no leftover lock dir)" \
+  "[ ! -d '$lk2' ]"
+
+# LOCK3: a plain (no pre-existing lock) drive leaves no lock behind on a clean halt.
+repoL3="$(new_repo_with_implement_mission)"; arm_drive "$repoL3"
+drive "$repoL3" drive --mission "$MID" >/dev/null 2>&1 || true
+check "LOCK3. a completed drive leaves no driver.lock behind" \
+  "[ ! -d '$(lock_dir_of "$repoL3")' ]"
+
+# ==========================================================================
 echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -8,10 +8,12 @@
     "./skills/lcars-file",
     "./skills/lcars-init",
     "./skills/lcars-log",
+    "./skills/lcars-pause",
     "./skills/lcars-resolve-logs",
     "./skills/lcars-respond",
     "./skills/lcars-run",
     "./skills/lcars-status",
-    "./skills/lcars-update"
+    "./skills/lcars-update",
+    "./skills/lcars-viewscreen"
   ]
 }
