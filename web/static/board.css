@@ -176,7 +176,16 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 /* ── mission card ── */
 .card{background:var(--lcars-card,#0b1224);border:1px solid var(--lcars-border);
   border-left:4px solid var(--lcars-amber);border-radius:8px;padding:10px;cursor:pointer;
-  transition:transform .25s,box-shadow .25s}
+  position:relative;transition:transform .25s,box-shadow .25s}
+/* Engine watermark — a small, semi-transparent Copilot/Claude mark pinned to the
+   card's top-right. Decorative: pointer-events:none so it never blocks the card
+   click. Copilot reads in the bright UI ink, Claude in the LCARS amber. */
+.engine-badge{position:absolute;top:7px;right:8px;width:16px;height:16px;
+  opacity:.22;pointer-events:none;z-index:2;line-height:0}
+.engine-badge svg{display:block;width:16px;height:16px}
+.engine-badge svg path{fill:currentColor}
+.engine-copilot{color:var(--lcars-text-bright,#eaf2ff)}
+.engine-claude{color:#d97757} /* Claude clay */
 /* UX-12: the whole card is click-to-open (no explicit Open button) — cursor +
    a subtle lift/glow on hover so it still reads as clickable. */
 .card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.5);
