@@ -180,6 +180,31 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertIn("parentMission", m)
         self.assertIsNone(m["parentMission"])
 
+    # ── S75: the Verify PR lifecycle on the card shape ──────────────────────
+    def test_in_review_mission_surfaces_pr_and_review_state(self):
+        """A Mission Verify auto-opened a PR for records prUrl/prNumber + a
+        review="open" sub-state; the card must surface all three so the Verify
+        modal can show the PR link + the in-review state and offer Merge PR."""
+        fx.plant_simple(self.tmp, "m-rev", stage="verify",
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        m = self._by_id(self._board(), "m-rev")
+        self.assertEqual(m["prUrl"], "https://github.com/acme/repo/pull/77")
+        self.assertEqual(m["prNumber"], 77)
+        self.assertEqual(m["review"], "open")
+        # the card stays in the verify column (NOT done) while in review.
+        self.assertEqual(m["stage"], "verify")
+
+    def test_mission_without_pr_has_null_pr_fields(self):
+        """A mission not yet in review exposes prUrl/prNumber/review None — the
+        fields are present (non-crashing) but empty."""
+        fx.plant_simple(self.tmp, "m-nopr", stage="implement")
+        m = self._by_id(self._board(), "m-nopr")
+        self.assertIn("prUrl", m)
+        self.assertIsNone(m["prUrl"])
+        self.assertIsNone(m["prNumber"])
+        self.assertIsNone(m["review"])
+
     def test_empty_tree_is_empty_board(self):
         board = self._board()
         self.assertEqual(board["missions"], [])

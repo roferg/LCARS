@@ -79,7 +79,8 @@ def mission_dir(root, mid):
 def plant_simple(root, mid, *, stage="align", issue=142,
                  title="Add Gamification to Course Site", estimate=ESTIMATE_CLAUDE,
                  created="2026-06-13T10:00:00Z", worker_bin=None, queued=None,
-                 parent_mission=None, mtype="feature"):
+                 parent_mission=None, mtype="feature",
+                 pr_url=None, pr_number=None, review=None):
     """A plain mission sitting in `stage`, no gate, no tickets.
 
     `worker_bin` plants the persisted engine field (state.json.workerBin) the
@@ -103,6 +104,13 @@ def plant_simple(root, mid, *, stage="align", issue=142,
         state["queued"] = queued
     if parent_mission is not None:
         state["parentMission"] = parent_mission
+    # S75 Verify PR lifecycle: an in-review mission records its open PR.
+    if pr_url is not None:
+        state["prUrl"] = pr_url
+    if pr_number is not None:
+        state["prNumber"] = pr_number
+    if review is not None:
+        state["review"] = review
     write_json(os.path.join(d, "state.json"), state)
     if estimate is not None:
         write_json(os.path.join(d, "estimate.json"), estimate)

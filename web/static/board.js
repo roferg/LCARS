@@ -269,7 +269,9 @@ function cardControls(m) {
   }
   var rs = runState(m);
   if (m.stage === "verify") {
-    ctrl.appendChild(applyWriteState(btn("✓ Verify ▸", "go", function () {
+    // S75: a verify card is "in review — PR open" once Verify auto-opened the PR.
+    var vlabel = m.prUrl ? "✓ Review PR ▸" : "✓ Verify ▸";
+    ctrl.appendChild(applyWriteState(btn(vlabel, "go", function () {
       openVerify(m.id);
     })));
   } else if (rs === "paused") {
@@ -1050,12 +1052,35 @@ function openVerify(id) {
       m.body.appendChild(buildSummary(mi));
     }
 
+    // S75: Verify auto-opens the PR, so a verify card is normally "in review"
+    // with a recorded prUrl. Show the PR link + the in-review state, and make the
+    // primary action MERGE the PR (not "open" it — that already happened). Before
+    // a PR exists (shouldn't normally happen) degrade to a plain note.
+    var inReview = !!(mi.prUrl && (mi.review === "open" || mi.review == null));
+    if (mi.prUrl) {
+      var prRow = el("div", "pr-review-row");
+      prRow.style.cssText = "margin:14px 0;padding:10px;border-radius:6px;background:rgba(255,153,0,.08)";
+      var st = el("span", "dim");
+      st.textContent = "In review — PR open · ";
+      var link = el("a"); link.href = mi.prUrl; link.target = "_blank";
+      link.rel = "noopener"; link.textContent = "PR #" + (mi.prNumber || "");
+      prRow.appendChild(st); prRow.appendChild(link);
+      m.body.appendChild(prRow);
+    } else {
+      var noPr = el("div", "dim");
+      noPr.style.margin = "14px 0";
+      noPr.textContent = "No PR open yet — re-run the mission so Verify opens it.";
+      m.body.appendChild(noPr);
+    }
+
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
     // Send-back reveals a feedback field, then dispatches the OTHER decision.
+    // S75: send-back now also closes the open PR (handled by feedback.sh).
     var fbWrap = el("div"); fbWrap.hidden = true;
     var fb = el("textarea"); fb.rows = 2;
-    fb.placeholder = "What needs to change? This loops the mission back to Align.";
+    fb.placeholder = "What needs to change? This loops the mission back to Align"
+      + (mi.prUrl ? " and closes the PR." : ".");
     fbWrap.appendChild(field("Feedback for send-back", fb));
     m.body.appendChild(fbWrap);
 
@@ -1069,14 +1094,21 @@ function openVerify(id) {
         function () { closeOverlay(); },
         function (msg) { sendBack.disabled = false; showErr(err, msg); });
     }));
-    var approve = applyWriteState(btn("✓ Approve & Open PR", "go big", function () {
-      approve.disabled = true; approve.textContent = "Opening PR…";
+    // The primary action: MERGE the open PR (the new "ship it"). The label never
+    // leaks a CLI verb (UX-33). Disabled gracefully when no PR is open yet.
+    var mergeLabel = "✓ Merge PR";
+    var merge = applyWriteState(btn(mergeLabel, "go big", function () {
+      merge.disabled = true; merge.textContent = "Merging PR…";
       postWrite("/api/mission/" + enc(id) + "/verify", { decision: "approve" },
         function () { closeOverlay(); },
-        function (msg) { approve.disabled = false; approve.textContent = "✓ Approve & Open PR"; showErr(err, msg); });
+        function (msg) { merge.disabled = false; merge.textContent = mergeLabel; showErr(err, msg); });
     }));
+    if (!inReview) {
+      merge.disabled = true;
+      merge.title = "No open PR to merge yet — re-run the mission so Verify opens one.";
+    }
     m.foot.appendChild(sendBack);
-    m.foot.appendChild(approve);
+    m.foot.appendChild(merge);
     showOverlay(m.wrap);
   });
 }

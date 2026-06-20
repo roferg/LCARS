@@ -2282,8 +2282,52 @@ EOF
 
   echo "  Test results: $green/$total ticket(s) green across $nwaves wave(s)."
   echo "  Review the changes and run the app if needed."
-  echo "    lcars approve $MISSION_ID    — create the PR"
+  echo "    lcars approve $MISSION_ID    — merge the PR (ship it)"
   echo "    lcars feedback $MISSION_ID   — send back with feedback"
+  exit 0
+}
+
+# === open-pr (S75): Verify AUTO-OPENS the PR =================================
+# When the driver reaches Verify with no PR yet, it opens the PR by REUSING the
+# shared pr-lib.sh open_pr (the same title/body/manifest builders approve used
+# to carry), records prUrl/prNumber + a `review:"open"` sub-state into state.json,
+# and stays at the verify stage — the Mission is "in review — PR open", NOT Done.
+# Idempotent: a recorded prUrl means open_pr returns the existing URL and opens
+# no second PR. Degrades gracefully: any precondition failure `die`s (non-zero,
+# no review marker) so a card never reads "in review" with no PR behind it.
+#
+#   open-pr  --mission <id>
+cmd_open_pr() {
+  locate_mission "$MISSION_ID"
+  require_stage verify
+
+  # The PR-open library lives with approve (its other consumer). After
+  # ./install.sh both skills are symlinked siblings; $LCARS_PR_LIB overrides the
+  # path so tests can point at the source tree.
+  local pr_lib="${LCARS_PR_LIB:-$SKILL_DIR/../lcars-approve/pr-lib.sh}"
+  [ -f "$pr_lib" ] || die "pr-lib.sh not found at $pr_lib — cannot open the PR."
+  # shellcheck source=skills/lcars-approve/pr-lib.sh
+  . "$pr_lib"
+
+  BRANCH="$(json_str "$STATE" branch)"
+  BASE="$(json_str "$STATE" base)"; BASE="${BASE:-main}"
+
+  # Already recorded? Idempotent — open_pr returns the existing URL, opens none.
+  local existing; existing="$(json_str "$STATE" prUrl)"
+  case "$existing" in
+    http*|*/pull/*)
+      echo "OPEN-PR: already open — $existing"
+      exit 0 ;;
+  esac
+
+  open_pr   # sets PR_URL, records prUrl/prNumber; dies on any precondition fail.
+
+  # Record the in-review sub-state so the board shows "in review — PR open".
+  state_set_str review "open"
+  emit_event pr_opened verify "PR opened — $PR_URL"
+
+  echo "OPEN-PR: opened — $PR_URL"
+  echo "  Stage:  verify (in review — PR open)"
   exit 0
 }
 
@@ -4327,13 +4371,109 @@ drive_print_summary() { # accumulated-lines
   printf '%s\n' "$SEP"
 }
 
-drive_halt_verify() {
-  printf '⏹ stopped at: verify  (human review required)\n'
-  printf 'Review the changes and run the app, then:\n'
-  printf '  lcars approve %s    — create the PR\n' "$MISSION_ID"
-  printf '  lcars feedback %s   — send back with feedback\n' "$MISSION_ID"
+# --- the PR merge-state poll: "merged" iff the host says state MERGED OR
+# mergedAt is a non-null value. gh absent/failing → echoes nothing → not merged
+# (best-effort: a transient failure just keeps the Mission in review, never a
+# false Done). Identify the PR by the recorded number, else the branch.
+drive_pr_merged() { # → 0 if merged, 1 otherwise
+  local num branch sel_args=() out st merged
+  num="$(json_raw "$STATE" prNumber)"
+  branch="$(json_str "$STATE" branch)"
+  case "$num" in
+    ''|null) sel_args=(--head "$branch") ;;
+    *)       sel_args=(--number "$num") ;;
+  esac
+  out="$(host pr-view "${sel_args[@]}" 2>/dev/null)" || return 1
+  st="$(printf '%s\n' "$out" | sed -n 's/^state	//p' | head -1)"
+  merged="$(printf '%s\n' "$out" | sed -n 's/^mergedAt	//p' | head -1)"
+  [ "$st" = "MERGED" ] && return 0
+  case "$merged" in ''|null|'""') return 1 ;; *) return 0 ;; esac
+}
+
+# --- mark a Mission Done after a merge detected on the board's side (the driver
+# saw the PR merged on GitHub, or directly). Mirrors approve's done transition.
+drive_mark_done() {
+  gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
+  set_stage "done"
+  state_set_str review "merged"
+  emit_event stage_done verify "PR merged — Mission shipped"
+}
+
+# --- S75 Verify: auto-open the PR, then poll for a merge ----------------------
+# Three paths:
+#   • no PR yet      → open it (cmd_open_pr subprocess), record prUrl, fire ONE
+#                      notification, halt "in review". Sets nothing in
+#                      $DRIVE_VERIFY_DONE → the driver STOPS.
+#   • PR open, merged (here or on GitHub) → mark Done. Sets $DRIVE_VERIFY_DONE=1
+#                      so the driver continues (next pass: stage=done → terminal).
+#   • PR open, unmerged → halt "in review" WITHOUT re-notifying (the ping fires
+#                      ONCE, when the PR is first opened). Driver STOPS.
+drive_verify() { # accumulated-summary
+  local summary="$1"
+  local pr; pr="$(json_str "$STATE" prUrl)"
+
+  case "$pr" in
+    http*|*/pull/*)
+      # A PR exists — has it merged (here or on GitHub)?
+      if drive_pr_merged; then
+        drive_mark_done
+        drive_line_done_inline="$(printf 'verify       ✓  PR merged — Mission shipped')"
+        printf '%s\n' "$drive_line_done_inline"
+        DRIVE_VERIFY_DONE=1
+        return 0
+      fi
+      # Still open — in review. Halt, but do NOT re-ping (one ping at open time).
+      emit_event gate verify "in review — PR open"
+      mirror_comments || true
+      drive_print_summary "$summary"
+      drive_halt_in_review "$pr"
+      return 0 ;;
+  esac
+
+  # No PR yet — open it (reusing the cmd_open_pr subprocess so the open path is
+  # one code path). On a hard open failure, surface it and STOP at verify.
+  printf '%-12s ▶  opening PR…\n' "verify"
+  local out rc=0
+  out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" open-pr --mission "$MISSION_ID" 2>&1)" || rc=$?
+  local pr2; pr2="$(json_str "$STATE" prUrl)"
+  case "$pr2" in
+    http*|*/pull/*) : ;;
+    *) # PR-open degraded (no gh / unauthed / create failed). This is STILL a
+       # human gate — the Mission is parked at verify needing attention — so we
+       # must fire EXACTLY ONE walk-away notification (never a false Done), and
+       # only once: a guard flag makes a later retry not re-ping. The driver
+       # STOPS here.
+       emit_event gate verify "parked at verify — PR open degraded; needs attention"
+       drive_print_summary "$summary"
+       printf '⏹ stopped at: verify  (could not open the PR)\n'
+       printf '%s\n' "$out"
+       printf 'Fix the cause (push/auth/gh), then `lcars run %s` to retry the open.\n' "$MISSION_ID"
+       if [ "$(json_str "$STATE" verifyDegradedNotified)" != "1" ]; then
+         notify_gate verify "Mission parked at verify — review needed (PR could not be opened automatically)"
+         state_set_str verifyDegradedNotified "1"
+       fi
+       return 0 ;;
+  esac
+
+  # PR opened — fire the ONE notification and halt "in review".
+  emit_event gate verify "PR opened — review & merge"
+  mirror_comments || true
+  drive_print_summary "$summary"
+  printf 'verify       ✓  PR opened — %s\n' "$pr2"
   local title; title="$(json_str "$STATE" title)"; title="${title:-$MISSION_ID}"
-  notify_gate verify "$title is ready for review — \`lcars approve $MISSION_ID\` to ship, or \`lcars feedback $MISSION_ID\` to send it back."
+  notify_gate verify "PR open — review & merge: $pr2"
+  drive_halt_in_review "$pr2"
+  return 0
+}
+
+# --- the in-review halt banner (no notification here; the ping fired once at
+# open time). Shows the PR link + the two moves: merge (approve) / send-back.
+drive_halt_in_review() { # pr-url
+  printf '⏹ stopped at: verify  (in review — PR open)\n'
+  printf 'PR is open for review: %s\n' "$1"
+  printf 'Review & merge, then:\n'
+  printf '  lcars approve %s    — merge the PR (ship it)\n' "$MISSION_ID"
+  printf '  lcars feedback %s   — send back with feedback (closes the PR)\n' "$MISSION_ID"
 }
 
 drive_halt_awaiting() { # stage
@@ -4479,13 +4619,19 @@ cmd_drive() {
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
     fi
     case "$stage" in
-      verify) emit_event gate verify "human review required"
-              mirror_comments || true
-              drive_print_summary "$summary"; drive_halt_verify; return 0 ;;
-      done)   emit_event gate done "Mission shipped — the PR is open"
+      verify) # S75: Verify auto-opens the PR, then parks "in review — PR open"
+              # and polls for a merge (here or on GitHub) → Done. drive_verify
+              # owns the open/poll/halt; it returns 0 to STOP the driver (in
+              # review or a hard open failure) or non-empty $DRIVE_VERIFY_DONE to
+              # signal "merged → continue the loop" (the next pass sees stage=done).
+              DRIVE_VERIFY_DONE=""
+              drive_verify "$summary"
+              [ -n "$DRIVE_VERIFY_DONE" ] && continue
+              return 0 ;;
+      done)   emit_event gate done "Mission shipped — the PR is merged"
               mirror_comments || true
               drive_print_summary "$summary"
-              printf '⏹ stopped at: done  (Mission shipped — the PR is open)\n'; return 0 ;;
+              printf '⏹ stopped at: done  (Mission shipped — the PR is merged)\n'; return 0 ;;
       align)  if [ -f "$MISSION_DIR/feedback.md" ]; then
                 emit_event gate align "interactive Align re-grill required"
                 mirror_comments || true
@@ -4541,10 +4687,15 @@ cmd_drive() {
       summary="${summary:+$summary
 }$line"
       if [ "$mode" = "step" ]; then
-        drive_print_summary "$summary"
-        if [ "$new_stage" = "verify" ]; then drive_halt_verify
-        else printf '⏹ stepped one Stage → now at: %s\n' "$new_stage"
-             printf 'Run `lcars run %s` to continue (or add `--step` for one more).\n' "$MISSION_ID"
+        if [ "$new_stage" = "verify" ]; then
+          # Stepping INTO verify auto-opens the PR (same path as auto mode), then
+          # parks in review. drive_verify prints its own summary + banner.
+          DRIVE_VERIFY_DONE=""
+          drive_verify "$summary"
+        else
+          drive_print_summary "$summary"
+          printf '⏹ stepped one Stage → now at: %s\n' "$new_stage"
+          printf 'Run `lcars run %s` to continue (or add `--step` for one more).\n' "$MISSION_ID"
         fi
         return 0
       fi
@@ -4602,7 +4753,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|estimate|plan|plan-review|implement|implement-ticket|drive|emit-event)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|open-pr|research|validate|estimate|plan|plan-review|implement|implement-ticket|drive|emit-event)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -4620,6 +4771,7 @@ case "$SUB" in
   impl-status)      cmd_impl_status ;;
   impl-advance)     cmd_impl_advance ;;
   verify-summary)   cmd_verify_summary ;;
+  open-pr)          cmd_open_pr ;;
   # Stage drivers (spawn cold workers, then persist via the subcommands above).
   research)         cmd_research ;;
   validate)         cmd_validate ;;

@@ -150,6 +150,15 @@ class GitHubAdapter(object):
             # it is always None here (adapter-neutral shape, ADR-006 — present,
             # non-crashing).
             "parentMission": None,
+            # S75 Verify PR lifecycle (ADR-006 adapter-neutral). The PR URL +
+            # number live in the mission's LOCAL state.json, which the github
+            # adapter cannot see, so they are None here. `review` is DERIVED from
+            # the stage label so a github card still reads "in review" while at
+            # verify (Verify auto-opens the PR, so a verify card always has an open
+            # PR under review) — present, non-crashing, no extra forge calls.
+            "prUrl": None,
+            "prNumber": None,
+            "review": "open" if stage == "verify" else None,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,

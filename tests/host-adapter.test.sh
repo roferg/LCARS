@@ -170,6 +170,91 @@ check "2b. link-subissue sends sub_issue_id as a TYPED integer (-F, the resolved
 check "2b. link-subissue NEVER uses -f (string) for sub_issue_id (would 422)" \
   "! grep -q -- '-f sub_issue_id' '$GH_LOG'"
 
+# --- S75: pr-merge / pr-view / pr-close — the PR lifecycle ops ----------------
+# pr-merge identifies the PR by --number or --head and shells `gh pr merge`.
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" pr-merge --number 77 >/dev/null 2>&1
+check "S75. pr-merge calls gh pr merge <number> --merge (by --number)" \
+  "grep -qx 'gh pr merge 77 --merge ' '$GH_LOG'"
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" pr-merge --head "lcars/m-1" >/dev/null 2>&1
+check "S75. pr-merge can identify the PR by --head (branch selector)" \
+  "grep -qx 'gh pr merge lcars/m-1 --merge ' '$GH_LOG'"
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" pr-merge --number 77 --method squash >/dev/null 2>&1
+check "S75. pr-merge honours --method squash" \
+  "grep -qx 'gh pr merge 77 --squash ' '$GH_LOG'"
+
+# pr-view reads the merge state via gh pr view --json state,mergedAt and echoes
+# the parsed `state` / `mergedAt` lines. Use a stub that returns a MERGED PR.
+GHM="$TMPROOT/ghmerged"
+cat >"$GHM" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  echo '{"state":"MERGED","mergedAt":"2026-06-19T10:00:00Z"}'
+fi
+exit 0
+EOF
+chmod +x "$GHM"
+: >"$GH_LOG"
+mout="$(LCARS_GH_BIN="$GHM" bash "$SCRIPT" pr-view --number 77 2>/dev/null)"
+check "S75. pr-view calls gh pr view <n> --json state,mergedAt" \
+  "grep -q 'pr view 77 --json state,mergedAt' '$GH_LOG'"
+check "S75. pr-view echoes the parsed MERGED state" \
+  "printf '%s' \"$mout\" | qgrep -q 'state	MERGED'"
+check "S75. pr-view echoes the mergedAt timestamp" \
+  "printf '%s' \"$mout\" | qgrep -q 'mergedAt	'"
+
+# An OPEN PR (no mergedAt) — state OPEN, mergedAt null.
+GHO="$TMPROOT/ghopen"
+cat >"$GHO" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  echo '{"state":"OPEN","mergedAt":null}'
+fi
+exit 0
+EOF
+chmod +x "$GHO"
+: >"$GH_LOG"
+oout="$(LCARS_GH_BIN="$GHO" bash "$SCRIPT" pr-view --number 77 2>/dev/null)"
+check "S75. pr-view echoes OPEN state for an open PR" \
+  "printf '%s' \"$oout\" | qgrep -q 'state	OPEN'"
+check "S75. pr-view echoes mergedAt null for an open PR" \
+  "printf '%s' \"$oout\" | qgrep -q 'mergedAt	null'"
+
+# pr-close closes (without merging).
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" pr-close --number 77 >/dev/null 2>&1
+check "S75. pr-close calls gh pr close <number>" \
+  "grep -qx 'gh pr close 77 ' '$GH_LOG'"
+: >"$GH_LOG"
+LCARS_GH_BIN="$GH" bash "$SCRIPT" pr-close --head "lcars/m-1" >/dev/null 2>&1
+check "S75. pr-close can identify the PR by --head" \
+  "grep -qx 'gh pr close lcars/m-1 ' '$GH_LOG'"
+
+# Best-effort: a forge failure on merge/close PROPAGATES non-zero (so approve /
+# feedback can note it) but never dies. pr-view echoes nothing on failure.
+GHF75="$TMPROOT/ghfail75"; make_gh_stub_fail "$GHF75"
+ERR75="$TMPROOT/err75"
+: >"$GH_LOG"; rc=0
+LCARS_GH_BIN="$GHF75" bash "$SCRIPT" pr-merge --number 77 >/dev/null 2>"$ERR75" || rc=$?
+check "S75. pr-merge returns NON-ZERO when gh fails (so approve stays at verify)" \
+  "[ '$rc' -ne 0 ]"
+check "S75. pr-merge forge failure does NOT die" "! grep -q 'host-adapter:' '$ERR75'"
+rc=0
+LCARS_GH_BIN="$GHF75" bash "$SCRIPT" pr-close --number 77 >/dev/null 2>"$ERR75" || rc=$?
+check "S75. pr-close returns NON-ZERO when gh fails" "[ '$rc' -ne 0 ]"
+rc=0
+vout="$(LCARS_GH_BIN="$GHF75" bash "$SCRIPT" pr-view --number 77 2>/dev/null)" || rc=$?
+check "S75. pr-view returns 0 and echoes the empty/blank state when gh fails" \
+  "[ '$rc' -eq 0 ]"
+
+# missing selector is a HARD error (a die), distinct from a soft forge failure.
+LCARS_GH_BIN="$GH" bash "$SCRIPT" pr-merge >/dev/null 2>&1
+check "S75. pr-merge with no selector dies" "[ $? -ne 0 ]"
+
 # --- Behaviour 3: an unknown host id exits NON-ZERO (no silent no-op) ---------
 : >"$GH_LOG"
 rc=0

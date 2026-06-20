@@ -344,6 +344,34 @@ class VerifyRoutingTest(WriteEndpointBase):
             self._post("/api/mission/m-001/verify", {"decision": "maybe"})
         self.assertEqual(cm.exception.code, 400)
 
+    def test_verify_approve_dispatches_the_merge_skill(self):
+        """S75: the `approve` decision now dispatches approve.sh whose job is the
+        MERGE (open PR → merged → Done). The endpoint contract is unchanged
+        (routes to approve.sh); we lock that an in-review mission's approve still
+        reaches approve.sh — the merge signal — and not feedback.sh."""
+        # an in-review mission: stage verify, an open PR recorded.
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        status, body = self._post("/api/mission/m-001/verify",
+                                  {"decision": "approve"})
+        self.assertEqual(status, 200)
+        self.assertIn("--mission m-001", self._record("approve"))
+        self.assertTrue(self._not_invoked("feedback"))
+
+    def test_verify_card_carries_pr_and_review_state(self):
+        """The board card the verify endpoint returns (mission state) must carry
+        the open PR + the in-review state so the front end can show the PR link
+        and the Merge PR action."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        # the board read surfaces the in-review fields on the card.
+        board = self.adapter.board()
+        card = next(c for c in board["missions"] if c["id"] == "m-001")
+        self.assertEqual(card["prUrl"], "https://github.com/acme/repo/pull/77")
+        self.assertEqual(card["review"], "open")
+
 
 class MissionFileTest(WriteEndpointBase):
     def test_file_requires_idea(self):

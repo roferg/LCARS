@@ -38,11 +38,12 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 MID="lcars-20260530-001"
 state_of() { echo "$1/.git/lcars/missions/$MID/state.json"; }
 
-# A fake `gh` that records every call to $GH_LOG and otherwise succeeds.
+# A fake `gh` that records every call to $GH_LOG and otherwise succeeds. Folds
+# newlines so each call is one line (the host adapter shells `gh pr close …`).
 make_gh_stub() {
   cat >"$1" <<'EOF'
 #!/usr/bin/env bash
-echo "gh $*" >>"$GH_LOG"
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
 exit 0
 EOF
   chmod +x "$1"
@@ -123,6 +124,49 @@ check "5. leaves the approved plan intact" \
     bash "$SCRIPT" --mission "$MID" --feedback "Also the icon is wrong." >out2.txt 2>&1 )
 check "5. a second feedback note is appended, not overwritten" \
   "grep -q 'does not persist on Safari' '$FBMD' && grep -q 'icon is wrong' '$FBMD'"
+
+# --- S75: send-back CLOSES the open PR and clears the recorded PR -------------
+# When a Mission bounced back from Verify has an open PR, feedback must close it
+# (so it doesn't linger) and clear prUrl/prNumber/review, so a re-entry to Verify
+# opens a FRESH PR. The note still lands and the stage still resets to align.
+new_repo_with_open_pr() {
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  local m="$repo/.git/lcars/missions/$MID"
+  mkdir -p "$m"
+  cat >"$m/prd.md" <<'EOF'
+# Mission: Add dark mode
+EOF
+  cat >"$m/state.json" <<'EOF'
+{
+  "id": "lcars-20260530-001",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "verify",
+  "review": "open",
+  "prUrl": "https://github.com/acme/repo/pull/77",
+  "prNumber": 77,
+  "created": "2026-05-30T10:00:00Z",
+  "githubIssue": 42,
+  "branch": "lcars/lcars-20260530-001",
+  "base": "main"
+}
+EOF
+  echo "$repo"
+}
+repoP="$(new_repo_with_open_pr)"; make_gh_stub "$repoP/gh"
+export GH_LOG="$repoP/gh.log"; : >"$GH_LOG"
+rcP=0
+( cd "$repoP" && LCARS_GH_BIN="$repoP/gh" LCARS_NOW="2026-06-03T09:00:00Z" \
+    bash "$SCRIPT" --mission "$MID" --feedback "Regressed on Safari." >out.txt 2>&1 ) || rcP=$?
+sP="$(state_of "$repoP")"
+check "S75. feedback exits 0 with an open PR" "[ '$rcP' -eq 0 ]"
+check "S75. closes the open PR (gh pr close 77)" "grep -q 'pr close 77' '$repoP/gh.log'"
+check "S75. clears the recorded prUrl" "! grep -q 'prUrl' '$sP'"
+check "S75. clears the recorded prNumber" "! grep -q 'prNumber' '$sP'"
+check "S75. clears the review marker" "! grep -q '\"review\"' '$sP'"
+check "S75. still resets the stage to align" "grep -q '\"stage\": *\"align\"' '$sP'"
+check "S75. still appends the feedback note" "grep -q 'Regressed on Safari' '$repoP/.git/lcars/missions/$MID/feedback.md'"
 
 # --- Guard: a bad mission id is rejected ------------------------------------
 repoFg="$(new_repo_with_verify_mission)"; make_gh_stub "$repoFg/gh"

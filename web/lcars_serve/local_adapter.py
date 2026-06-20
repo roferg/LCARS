@@ -174,6 +174,23 @@ class LocalAdapter(object):
         if not (isinstance(parent_mission, str) and parent_mission.strip()):
             parent_mission = None
 
+        # S75: the Verify PR lifecycle. Verify auto-opens the PR and records
+        # prUrl/prNumber + a `review` sub-state ("open" while in review, "merged"
+        # once approve/GitHub merges). Surface them so the card/Verify modal can
+        # show the PR link and the in-review state, and the primary action can be
+        # "Merge PR". Absent ⇒ None/None/None (a mission not yet in review).
+        pr_url = state.get("prUrl")
+        if not (isinstance(pr_url, str) and pr_url.strip()):
+            pr_url = None
+        pr_number = state.get("prNumber")
+        if isinstance(pr_number, str) and pr_number.isdigit():
+            pr_number = int(pr_number)
+        if not isinstance(pr_number, int):
+            pr_number = None
+        review = state.get("review")
+        if not (isinstance(review, str) and review.strip()):
+            review = None
+
         return {
             "id": mid,
             "issue": issue,
@@ -197,6 +214,10 @@ class LocalAdapter(object):
             # UX-28: parent mission id for a logged-bug child (None when not a
             # logged-bug child). The github adapter forces None (ADR-006).
             "parentMission": parent_mission,
+            # S75 Verify PR lifecycle: the open PR + the in-review/merged state.
+            "prUrl": pr_url,
+            "prNumber": pr_number,
+            "review": review,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,

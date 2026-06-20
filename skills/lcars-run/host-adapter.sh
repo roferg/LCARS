@@ -40,6 +40,10 @@
 #                                                            GitHub sub-issue
 #     pr-create     --head <h> --base <b> --title <t> --body <b2> [--closes <n>…]
 #                                                          → echoes the PR URL
+#     pr-merge      [--number <n>|--head <branch>] [--method <m>] → merges the PR
+#     pr-view       [--number <n>|--head <branch>]        → echoes `state\t<S>` +
+#     (pr-status)                                            `mergedAt\t<v>` lines
+#     pr-close      [--number <n>|--head <branch>]        → closes (no merge)
 #
 # Best-effort, jq-free, pure where possible. "Best-effort" means a forge failure
 # NEVER aborts the CALLER's process — the adapter does not `die`/`exit` on a forge
@@ -227,6 +231,87 @@ github_link_subissue() { # <parent_number> <child_number>
   return $rc
 }
 
+# github_pr_merge — merge an open PR. Identify it by --number (the PR number) OR
+# --head (the branch); gh accepts either as the [<number> | <url> | <branch>]
+# selector. Best-effort like relabel/close: never `die` on a forge error, but
+# PROPAGATE gh's rc so the caller (approve) learns the merge did not happen and
+# stays at verify (no false Done). `--method` (merge|squash|rebase) is optional;
+# we default to a plain merge commit. gh absent → soft non-zero.
+github_pr_merge() { # [--number <n>] [--head <branch>] [--method <m>]
+  local number="" head="" method="" sel=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --number) number="${2:-}"; shift 2 ;;
+      --head)   head="${2:-}";   shift 2 ;;
+      --method) method="${2:-}"; shift 2 ;;
+      -*) die "pr-merge: unknown flag: $1" ;;
+      *)  sel="$1"; shift ;;
+    esac
+  done
+  # Prefer an explicit --number, then the bare positional, then the branch.
+  [ -n "$number" ] && sel="$number"
+  [ -n "$sel" ] || sel="$head"
+  [ -n "$sel" ] || die "pr-merge: need --number or --head to identify the PR."
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 1
+  local margs=(--"${method:-merge}")
+  "$GH_BIN" pr merge "$sel" "${margs[@]}" >/dev/null 2>&1
+  return $?
+}
+
+# github_pr_view — read a PR's merge state. Identify it by --number or --head.
+# Echoes two lines: `state\t<STATE>` and `mergedAt\t<value>` parsed jq-free from
+# `gh pr view <sel> --json state,mergedAt`, so the caller can decide "merged" =
+# state == MERGED or mergedAt non-null. Best-effort: gh absent/failing → echo
+# nothing (the caller keys off empty output, like create), never a die.
+github_pr_view() { # [--number <n>] [--head <branch>]
+  local number="" head="" sel="" out st merged
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --number) number="${2:-}"; shift 2 ;;
+      --head)   head="${2:-}";   shift 2 ;;
+      -*) die "pr-view: unknown flag: $1" ;;
+      *)  sel="$1"; shift ;;
+    esac
+  done
+  [ -n "$number" ] && sel="$number"
+  [ -n "$sel" ] || sel="$head"
+  [ -n "$sel" ] || die "pr-view: need --number or --head to identify the PR."
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 0
+  out="$("$GH_BIN" pr view "$sel" --json state,mergedAt 2>/dev/null)" || return 0
+  # jq-free: split the single-line JSON so each field lands alone, then pluck.
+  st="$(printf '%s' "$out" | tr ',{}' '\n\n\n' \
+        | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  # mergedAt is either a quoted ISO stamp or the bare token `null`; pluck the raw
+  # value after the colon, strip quotes/trailing space (portable BRE — no `\?`).
+  merged="$(printf '%s' "$out" | tr ',{}' '\n\n\n' \
+        | sed -n 's/.*"mergedAt"[[:space:]]*:[[:space:]]*//p' \
+        | sed 's/"//g; s/[[:space:]]*$//' | head -1)"
+  printf 'state\t%s\n' "$st"
+  printf 'mergedAt\t%s\n' "$merged"
+  return 0
+}
+
+# github_pr_close — close (without merging) an open PR. Identify it by --number
+# or --head. Best-effort like issue-close: never `die`, PROPAGATE gh's rc so the
+# caller (feedback's send-back) can note a close-by-hand. gh absent → non-zero.
+github_pr_close() { # [--number <n>] [--head <branch>]
+  local number="" head="" sel=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --number) number="${2:-}"; shift 2 ;;
+      --head)   head="${2:-}";   shift 2 ;;
+      -*) die "pr-close: unknown flag: $1" ;;
+      *)  sel="$1"; shift ;;
+    esac
+  done
+  [ -n "$number" ] && sel="$number"
+  [ -n "$sel" ] || sel="$head"
+  [ -n "$sel" ] || die "pr-close: need --number or --head to identify the PR."
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 1
+  "$GH_BIN" pr close "$sel" >/dev/null 2>&1
+  return $?
+}
+
 github_pr_create() { # --head <h> --base <b> --title <t> --body <b2> [--closes <n>…]
   local head="" base="" title="" body="" closes=() url
   while [ $# -gt 0 ]; do
@@ -267,5 +352,8 @@ case "$OP" in
   issue-close)   github_issue_close   "$@" ;;
   link-subissue) github_link_subissue "$@" ;;
   pr-create)     github_pr_create     "$@" ;;
+  pr-merge)      github_pr_merge      "$@" ;;
+  pr-view|pr-status) github_pr_view   "$@" ;;
+  pr-close)      github_pr_close      "$@" ;;
   *) die "unknown op '$OP'." ;;
 esac
