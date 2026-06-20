@@ -2825,10 +2825,15 @@ alias_for_tier() { # cli tier → flag string (stdout; may be empty)
     claude)
       case "$tier" in sonnet) printf 'sonnet' ;; opus) printf 'opus' ;; esac ;;
     copilot)
-      # Finalized by S59's spike against Copilot CLI v1.0.62: the Sonnet tier maps
-      # to `claude-sonnet-4.6`, the Opus tier to `claude-opus-4.8`. Both stay
-      # config-overridable via modelAliases.copilot.<tier> (handled above).
-      case "$tier" in sonnet) printf 'claude-sonnet-4.6' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
+      # S78 — copilot is OPUS-SAFE BY DEFAULT: BOTH the sonnet AND the opus tier
+      # resolve to `claude-opus-4.8`, so a Copilot mission runs opus on EVERY
+      # stage regardless of the estimator's tier. WHY: Copilot's `create` tool
+      # cannot overwrite an existing file (or mkdir) on a non-opus tier, so a
+      # sonnet-tier Implement stage breaks the run. Pinning opus everywhere keeps
+      # Copilot end-to-end-safe. This is the ONE home for the policy. Both tiers
+      # stay config-overridable via modelAliases.copilot.<tier> (handled above):
+      # a repo that sets modelAliases.copilot.sonnet still wins over this default.
+      case "$tier" in sonnet) printf 'claude-opus-4.8' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
   esac
 }
 

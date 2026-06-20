@@ -141,7 +141,15 @@ class LocalAdapter(object):
         is_bug = ((state.get("type") or "feature") == "bug"
                   or _truthy(state.get("linked"))
                   or bool(state.get("parentMission")))
-        model_mix = board.model_mix_from_estimate(est, is_bug=is_bug)
+        # The chosen engine (S67): file.sh persists state.json.workerBin. S78
+        # CHANGE 4 needs it BEFORE model_mix so the displayed mix reflects the
+        # per-engine resolution (a copilot mission is opus-safe ⇒ every row opus).
+        # Read it here (the card field below reuses this value).
+        engine = state.get("workerBin")
+        if not (isinstance(engine, str) and engine.strip()):
+            engine = None
+        model_mix = board.model_mix_from_estimate(est, is_bug=is_bug,
+                                                  engine=engine)
 
         plan = _load_json(os.path.join(d, "plan.json"))
         waves = _load_json(os.path.join(d, "waves.json"))
@@ -164,12 +172,9 @@ class LocalAdapter(object):
         if not isinstance(issue, int):
             issue = None
 
-        # The chosen engine (S67): file.sh persists state.json.workerBin when the
-        # captain picked one. Surface it as `engine` so the card/detail shows
-        # "claude"/"copilot" rather than None. Absent ⇒ None (no field on disk).
-        engine = state.get("workerBin")
-        if not (isinstance(engine, str) and engine.strip()):
-            engine = None
+        # The chosen engine (S67): `engine` was read above (it is also required by
+        # S78 CHANGE 4's per-engine model mix). It surfaces on the card/detail as
+        # "claude"/"copilot" rather than None; absent ⇒ None (no field on disk).
 
         # UX-28: a logged-bug child mission records its parent's id in
         # state.json.parentMission (lcars log links a bug to the parent it was

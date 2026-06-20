@@ -574,6 +574,61 @@ class AlignCopilotFlagsTest(AlignBase):
             self.assertIn(kind, ("open", "resume"))
 
 
+class AlignModelParityTest(AlignBase):
+    """S78 CHANGE 3 — the Align grill must pass `--model <m>` resolved from the
+    mission ENGINE, mirroring alias_for_tier's per-engine DEFAULT (copilot is
+    opus-safe → claude-opus-4.8; claude → its sonnet default). Previously the
+    grill ran each CLI's BARE default (no --model), so the grill was not at CLI
+    parity with the pipeline. The flag is ADDITIVE (space-form for both engines);
+    the S72 tools-denied / session flags stay intact.
+    """
+
+    def _three_question_done(self):
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "Q1?", "recommended": "Per-course"},
+             "prd": "# Mission: G\n\n**Type:** feature\n"},
+            {"status": "done",
+             "prd": ("# Mission: G\n\n**Type:** feature\n**Goal:** g\n"
+                     "**Acceptance Criteria:**\n- a\n**Out of Scope:**\n- n\n"
+                     "**Constraints:**\n- c\n")},
+        )
+
+    @staticmethod
+    def _model_of(argv):
+        toks = argv.split()
+        for i, t in enumerate(toks):
+            if t == "--model" and i + 1 < len(toks):
+                return toks[i + 1]
+        return None
+
+    def test_copilot_align_turn_carries_opus_safe_model(self):
+        self._three_question_done()
+        copilot_bin = _copilot_worker_stub(
+            self.turns_path, self.prompt_log, self.argv_log)
+        self._post("/api/align/start",
+                   {"idea": "Gamify", "engine": copilot_bin})
+        opening = self._argvs()[0]
+        toks = opening.split()
+        self.assertEqual(self._model_of(opening), "claude-opus-4.8",
+                         "copilot Align grill must run opus-safe (--model "
+                         "claude-opus-4.8), mirroring alias_for_tier")
+        # the S72 tools-denied flags must still be present (additive --model).
+        self.assertIn("--available-tools=", toks)
+        self.assertIn("--no-ask-user", toks)
+        self.assertIn("--disable-builtin-mcps", toks)
+        self.assertIn("--no-custom-instructions", toks)
+
+    def test_claude_align_turn_carries_sonnet_model(self):
+        self._three_question_done()
+        # default worker_bin is a claude-named stub.
+        self._post("/api/align/start", {"idea": "Gamify"})
+        opening = self._argvs()[0]
+        self.assertEqual(self._model_of(opening), "sonnet",
+                         "claude Align grill must run its sonnet default "
+                         "(--model sonnet)")
+
+
 class LogAuthoringTest(AlignBase):
     def test_log_with_text_authors_children_via_worker(self):
         # the worker authors TWO bug PRDs to its outdir; the daemon parses them

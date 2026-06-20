@@ -45,6 +45,8 @@ def _record_stub(record_path):
         '  printf "ARGV: %s\\n" "$*"\n'
         '  printf "ENV_MODEL_OVERRIDE: %s\\n" "${LCARS_MODEL_OVERRIDE:-}"\n'
         '  printf "ENV_WORKER_BIN: %s\\n" "${LCARS_WORKER_BIN:-}"\n'
+        '  printf "ENV_WORKER_MODEL_SET: %s\\n" "${LCARS_WORKER_MODEL+yes}"\n'
+        '  printf "ENV_WORKER_MODEL: %s\\n" "${LCARS_WORKER_MODEL:-}"\n'
         '  printf "STDIN_START\\n"\n'
         '  cat\n'
         '  printf "\\nSTDIN_END\\n"\n'
@@ -219,6 +221,55 @@ class StartEndpointTest(WriteEndpointBase):
         actions.start("m-001")
         rec = self._record_when("run", "ENV_WORKER_BIN")
         self.assertIn("ENV_WORKER_BIN: \n", rec)
+
+    def test_start_strips_inherited_daemon_wide_model_pin(self):
+        """S78: a daemon launched with LCARS_WORKER_MODEL set must NOT leak that
+        pin into a mission's run — Start strips it so the mission SELF-RESOLVES
+        from engine + estimate.json + overrides (no global clobber across all
+        stages of all missions). m-001 has no persisted workerModel."""
+        import unittest.mock as mock
+        with mock.patch.dict(os.environ, {"LCARS_WORKER_MODEL": "somepin"}):
+            actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+            actions.start("m-001")
+        rec = self._record_when("run", "ENV_WORKER_MODEL_SET")
+        # the inherited pin must be ABSENT from the child env (stripped, not "").
+        self.assertIn("ENV_WORKER_MODEL_SET: \n", rec,
+                      "daemon-wide LCARS_WORKER_MODEL leaked into the run "
+                      "(it must be stripped so the mission self-resolves)")
+
+    def test_start_feeds_persisted_per_mission_model_no_global_clobber(self):
+        """S78: a mission with state.json.workerModel spawns its run WITH that
+        per-mission LCARS_WORKER_MODEL, while a DIFFERENT mission (no workerModel)
+        in the SAME daemon spawns WITHOUT it — proving per-mission resolution and
+        no shared global state, even if the daemon inherited a pin."""
+        import unittest.mock as mock
+        fx.plant_simple(self.tmp, "m-pinned", stage="verify", issue=143,
+                        worker_model="opus")
+        fx.plant_simple(self.tmp, "m-free", stage="verify", issue=144)
+        rec_pinned = os.path.join(self.tmp, "rec-pinned.txt")
+        rec_free = os.path.join(self.tmp, "rec-free.txt")
+        scripts_pinned = dict(self.scripts)
+        scripts_pinned["run"] = _record_stub(rec_pinned)
+        scripts_free = dict(self.scripts)
+        scripts_free["run"] = _record_stub(rec_free)
+        with mock.patch.dict(os.environ, {"LCARS_WORKER_MODEL": "daemonpin"}):
+            Actions(repo_root=self.tmp, scripts=scripts_pinned).start("m-pinned")
+            Actions(repo_root=self.tmp, scripts=scripts_free).start("m-free")
+        import time
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if (os.path.exists(rec_pinned) and os.path.exists(rec_free)):
+                break
+            time.sleep(0.02)
+        with open(rec_pinned) as fh:
+            pinned = fh.read()
+        with open(rec_free) as fh:
+            free = fh.read()
+        # the pinned mission carries ITS OWN model (not the daemon pin).
+        self.assertIn("ENV_WORKER_MODEL: opus\n", pinned)
+        # the free mission carries NO model — the daemon pin did not leak.
+        self.assertIn("ENV_WORKER_MODEL_SET: \n", free,
+                      "the free mission inherited a global pin (clobber)")
 
     def test_start_returns_promptly_without_blocking_on_the_run(self):
         """start() is FIRE-AND-FORGET: the run driver is a long process, so start()

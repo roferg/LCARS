@@ -620,8 +620,14 @@ class Actions(object):
         if self.gh_bin:
             env["LCARS_GH_BIN"] = self.gh_bin
         env["LCARS_WORK_OUT"] = outdir
-        cmd = [bin_, "-p", prompt] + self._session_args(
-            bin_, session_id, opening)
+        # S78 CHANGE 3 — Align-grill model parity. The grill used to run each
+        # CLI's BARE default (no --model), so it was not at CLI parity with the
+        # pipeline. Resolve the model from the mission ENGINE and pass it
+        # space-form (BOTH engines use `--model <m>`, mirroring worker-adapter.sh).
+        # The flag is ADDITIVE — the S72 tools-denied / session flags are untouched.
+        cmd = ([bin_, "-p", prompt]
+               + self._session_args(bin_, session_id, opening)
+               + ["--model", _grill_model(bin_)])
         try:
             proc = subprocess.run(
                 cmd, cwd=self.repo_root, env=env,
@@ -705,6 +711,21 @@ class Actions(object):
         engine = self._persisted_worker_bin(mid)
         if engine and "LCARS_WORKER_BIN" not in env_extra:
             env_extra["LCARS_WORKER_BIN"] = engine
+        # S78 — NO daemon-wide model pin. The daemon must NOT depend on a
+        # process-wide $LCARS_WORKER_MODEL: if it was launched with one set, it
+        # would leak into EVERY mission's run (resolve_stage_model precedence (a)
+        # clobbers ALL stages of ALL missions). Each run must self-resolve its OWN
+        # model (engine + estimate.json + overrides), so N missions run
+        # concurrently — each independently Copilot or Claude — with no shared pin.
+        #   * If the mission has a persisted FROZEN model (state.json.workerModel),
+        #     feed it as a PER-RUN LCARS_WORKER_MODEL (this run only).
+        #   * Otherwise set it to None so _resolve_run STRIPS any inherited
+        #     daemon-wide pin for this run and the mission self-resolves.
+        worker_model = self._persisted_worker_model(mid)
+        if worker_model:
+            env_extra["LCARS_WORKER_MODEL"] = worker_model
+        else:
+            env_extra["LCARS_WORKER_MODEL"] = None
         self._spawn("run", ["drive", "--mission", mid], env_extra=env_extra)
         return self._mission_state(mid)
 
@@ -723,6 +744,20 @@ class Actions(object):
         wb = _read_json_key(sp, "workerBin")
         if isinstance(wb, str) and wb.strip():
             return wb.strip()
+        return None
+
+    def _persisted_worker_model(self, mid):
+        """S78: the OPTIONAL per-mission frozen model (state.json.workerModel).
+
+        When present, Start feeds it as a PER-RUN $LCARS_WORKER_MODEL so the
+        mission runs that exact model regardless of the daemon's launch env.
+        Absent ⇒ None (the mission self-resolves from engine + estimate.json +
+        overrides, and Start strips any inherited daemon-wide pin)."""
+        sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "state.json")
+        wm = _read_json_key(sp, "workerModel")
+        if isinstance(wm, str) and wm.strip():
+            return wm.strip()
         return None
 
     def pause(self, mid):
@@ -974,7 +1009,15 @@ class Actions(object):
         if self.worker_bin and "LCARS_WORKER_BIN" not in (env_extra or {}):
             env["LCARS_WORKER_BIN"] = self.worker_bin
         if env_extra:
-            env.update(env_extra)
+            # S78: an env_extra value of None means "STRIP this key from the child
+            # env" — so a caller can explicitly remove an inherited daemon-wide
+            # var (e.g. a leaked LCARS_WORKER_MODEL pin) for THIS run. Non-None
+            # values set/override as before.
+            for k, v in env_extra.items():
+                if v is None:
+                    env.pop(k, None)
+                else:
+                    env[k] = v
         return ["bash", script] + list(args), env
 
     def _run(self, key, args, env_extra=None):
@@ -1142,6 +1185,24 @@ class Actions(object):
         with os.fdopen(fd, "w") as fh:
             fh.write(content)
         return path
+
+
+def _grill_model(engine):
+    """S78 CHANGE 3 — the Align-grill model, resolved from the mission ENGINE.
+
+    Mirrors alias_for_tier's per-engine DEFAULT (skills/lcars-run/run.sh) so the
+    grill is NOT a bare CLI default and stays at CLI parity with the pipeline:
+      * copilot → "claude-opus-4.8" (OPUS-SAFE — copilot's create-tool can't
+        overwrite on a non-opus tier, so the whole engine runs opus by default).
+      * claude  → "sonnet" (its default reasoning tier).
+    Engine is the worker bin path; selection is by basename (same idiom as
+    _session_args). Stdlib only — no second resolver, no estimate read here (the
+    grill predates an estimate; it follows the engine's DEFAULT tier).
+    """
+    base = os.path.basename(engine or "").lower()
+    if "copilot" in base:
+        return "claude-opus-4.8"
+    return "sonnet"
 
 
 def _read_json_key(path, key):

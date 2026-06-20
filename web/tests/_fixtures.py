@@ -78,7 +78,8 @@ def mission_dir(root, mid):
 
 def plant_simple(root, mid, *, stage="align", issue=142,
                  title="Add Gamification to Course Site", estimate=ESTIMATE_CLAUDE,
-                 created="2026-06-13T10:00:00Z", worker_bin=None, queued=None,
+                 created="2026-06-13T10:00:00Z", worker_bin=None,
+                 worker_model=None, queued=None,
                  parent_mission=None, mtype="feature",
                  pr_url=None, pr_number=None, review=None,
                  reconcile_status=None, reconcile_diagnosis=None,
@@ -102,6 +103,11 @@ def plant_simple(root, mid, *, stage="align", issue=142,
     }
     if worker_bin is not None:
         state["workerBin"] = worker_bin
+    # S78: an OPTIONAL per-mission frozen model (state.json.workerModel). When
+    # present, Start feeds it as a PER-RUN $LCARS_WORKER_MODEL; when absent the
+    # mission self-resolves (and Start strips any inherited daemon-wide pin).
+    if worker_model is not None:
+        state["workerModel"] = worker_model
     if queued is not None:
         state["queued"] = queued
     if parent_mission is not None:

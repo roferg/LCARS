@@ -480,6 +480,36 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertEqual(stages, ["Research", "Validate", "Plan",
                                   "Plan Review", "Implement", "Verify"])
 
+    # ── S78 CHANGE 4: per-engine model mix. A COPILOT mission is opus-safe, so
+    # the DISPLAYED mix must reflect that resolution — every row shows `opus`
+    # (mirroring alias_for_tier's copilot default). A CLAUDE mission keeps the
+    # estimate's per-stage tiers. ONE estimate, two engines, shape layer. ──
+    def test_copilot_mission_mix_is_opus_safe_every_row(self):
+        # ESTIMATE_COPILOT_USAGE has sonnet-tier stages; a copilot mission must
+        # display opus on EVERY row (opus-safe), and engine == "copilot".
+        fx.plant_simple(self.tmp, "m-cop", stage="plan",
+                        worker_bin="copilot",
+                        estimate=fx.ESTIMATE_COPILOT_USAGE)
+        m = self._by_id(self._board(), "m-cop")
+        self.assertEqual(m["engine"], "copilot")
+        self.assertIsNotNone(m["modelMix"])
+        tiers = {r["tier"] for r in m["modelMix"]}
+        self.assertEqual(tiers, {"opus"},
+                         "a copilot mission's displayed mix must be opus-safe "
+                         "on EVERY row, got %r" % tiers)
+
+    def test_claude_mission_mix_keeps_estimate_tiers(self):
+        # the SAME sonnet-heavy estimate on a claude engine keeps its tiers.
+        fx.plant_simple(self.tmp, "m-cla", stage="plan",
+                        worker_bin="claude",
+                        estimate=fx.ESTIMATE_COPILOT_USAGE)
+        m = self._by_id(self._board(), "m-cla")
+        self.assertEqual(m["engine"], "claude")
+        rows = {r["stage"]: r["tier"] for r in m["modelMix"]}
+        # ESTIMATE_COPILOT_USAGE is all-sonnet → claude keeps sonnet everywhere.
+        self.assertEqual(set(rows.values()), {"sonnet"},
+                         "claude must keep the estimate's tiers, got %r" % rows)
+
     # ── S70-B2: ADRs (from adr.md) ──
     def test_adrs_parsed_from_adr_md(self):
         d = fx.plant_simple(self.tmp, "m-adr", stage="plan")

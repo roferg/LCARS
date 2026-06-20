@@ -16,8 +16,11 @@
 #
 # Per-CLI alias map (logical tier → that CLI's flag string), config-overridable
 # via config.json modelAliases.<cli>.<tier>:
-#   claude  → { sonnet: "sonnet",  opus: "opus" }
-#   copilot → { sonnet: "",        opus: "claude-opus-4.8" }
+#   claude  → { sonnet: "sonnet",            opus: "opus" }
+#   copilot → { sonnet: "claude-opus-4.8",   opus: "claude-opus-4.8" }
+# S78: copilot is OPUS-SAFE by default — BOTH tiers map to claude-opus-4.8
+# (its create-tool can't overwrite on a non-opus tier → Implement breaks). Still
+# config-overridable via modelAliases.copilot.<tier>.
 #
 # Two seams are exercised:
 #   * the mission-free `resolve-stage-model <key>` subcommand, which prints
@@ -157,14 +160,17 @@ done
 check "4.argv global workerModel reaches spawned plan argv" \
   "[ \"\$(spawn_argv \"$r4\" plan CLAUDECODE=1 | model_of)\" = 'sonnet' ]"
 
-# === Behavior 5: copilot active ⇒ tier 'opus' translates to claude-opus-4.8 ====
+# === Behavior 5: copilot active ⇒ OPUS-SAFE — every tier resolves to opus ======
+# S78: copilot is opus-safe BY DEFAULT (copilot's create-tool can't overwrite on
+# a non-opus tier → Implement breaks), so BOTH the opus AND the sonnet tier map
+# to claude-opus-4.8. Claude keeps its dynamic per-stage mix (sonnet→sonnet).
 r5="$(make_repo '{}' "$EST")"
 check "5a. copilot opus tier → claude-opus-4.8 (resolve-stage-model)" \
   "[ \"\$(rsm \"$r5\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
-# S59 spike: the copilot Sonnet tier now resolves to claude-sonnet-4.6 (was an
-# empty placeholder). validate is tier 'sonnet' in $EST, so it must map to that.
-check "5b. copilot sonnet tier → claude-sonnet-4.6 (resolve-stage-model)" \
-  "[ \"\$(rsm \"$r5\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-sonnet-4.6' ]"
+# S78 opus-safe default: the copilot Sonnet tier now ALSO resolves to
+# claude-opus-4.8. validate is tier 'sonnet' in $EST, so it maps to opus.
+check "5b. copilot sonnet tier → claude-opus-4.8 (opus-safe default)" \
+  "[ \"\$(rsm \"$r5\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
 
 # === Bonus: config stages.<key>.model (precedence c) translates per tier =======
 r6="$(make_repo '{"stages":{"plan":{"model":"opus"}}}')"   # no estimate.json
@@ -257,7 +263,7 @@ check "13. reasoning stage under env implementation override falls to estimate (
   "[ \"\$(rsm \"$r13\" validate CLAUDECODE=1 LCARS_MODEL_OVERRIDE=implementation:opus | sm_model)\" = 'sonnet' ]"
 
 # --- Behavior 14: copilot adapter emits the right --model under an override ---
-# opus → claude-opus-4.8 ; sonnet → claude-sonnet-4.6 (the S59 alias-map default).
+# S78 opus-safe: opus → claude-opus-4.8 ; sonnet → claude-opus-4.8 (both tiers).
 r14="$(make_repo '{}' "$EST")"; set_override "$r14" all opus
 check "14a. copilot all:opus override ⇒ claude-opus-4.8 (resolve-stage-model)" \
   "[ \"\$(rsm \"$r14\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
@@ -278,8 +284,10 @@ spawn_argv_copilot() { # repo role override
 check "14b. copilot all:opus override reaches spawned argv as claude-opus-4.8" \
   "[ \"\$(spawn_argv_copilot \"$r14\" implement-implementer all:opus | model_of)\" = 'claude-opus-4.8' ]"
 r14b="$(make_repo '{}' "$EST")"
-check "14c. copilot env reasoning:sonnet override ⇒ claude-sonnet-4.6" \
-  "[ \"\$(rsm \"$r14b\" plan COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=reasoning:sonnet | sm_model)\" = 'claude-sonnet-4.6' ]"
+# S78 opus-safe default: the sonnet tier of an override maps to claude-opus-4.8
+# under copilot too (per-engine alias mapping of the override tier).
+check "14c. copilot env reasoning:sonnet override ⇒ claude-opus-4.8 (opus-safe)" \
+  "[ \"\$(rsm \"$r14b\" plan COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=reasoning:sonnet | sm_model)\" = 'claude-opus-4.8' ]"
 
 # --- Behavior 15: infra (context-pack) is NEVER touched by an override --------
 # It short-circuits to the global/legacy value, exactly like the estimate path.
@@ -294,6 +302,41 @@ for k in research validate plan planReview implement verify; do
   check "16.$k no override / no estimate ⇒ still NO --model (legacy parity)" \
     "[ -z \"\$(rsm \"$r16\" $k CLAUDECODE=1 | sm_model)\" ]"
 done
+
+# === Behavior 17 (S78): per-mission engine resolves its OWN complete model set =
+# ONE estimate, two engines: copilot is opus-safe on EVERY stage (its create-tool
+# can't overwrite on a non-opus tier → Implement breaks), while claude keeps the
+# estimate's per-stage tiers. The policy has ONE home (alias_for_tier's copilot
+# default); it stays modelAliases.copilot.*-overridable. No daemon-wide pin.
+
+# A sonnet-heavy estimate: validate/plan/implement/verify are sonnet tier.
+EST_SONNET='{"models":{"research":"opus","validate":"sonnet","plan":"sonnet","planReview":"opus","implement":"sonnet","verify":"sonnet"}}'
+
+# 17.1 — same estimate, both engines: copilot opus-safe, claude keeps tiers.
+r17="$(make_repo '{}' "$EST_SONNET")"
+check "17.1a copilot sonnet-tier stage → claude-opus-4.8 (opus-safe off one estimate)" \
+  "[ \"\$(rsm \"$r17\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "17.1b SAME estimate on claude → sonnet (dynamic per-stage mix preserved)" \
+  "[ \"\$(rsm \"$r17\" implement CLAUDECODE=1 | sm_model)\" = 'sonnet' ]"
+check "17.1c copilot opus-tier stage → claude-opus-4.8 (research)" \
+  "[ \"\$(rsm \"$r17\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+
+# 17.2 — opus-safe is the DEFAULT: a freshly-inited config ({}, NO modelAliases).
+r17b="$(make_repo '{}' "$EST_SONNET")"   # config is bare {}
+check "17.2 copilot opus-safe with NO modelAliases configured (the default)" \
+  "[ \"\$(rsm \"$r17b\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+
+# 17.3 — config override STILL wins: modelAliases.copilot.sonnet beats the default.
+r17c="$(make_repo '{"modelAliases":{"copilot":{"sonnet":"claude-sonnet-4.6"}}}' "$EST_SONNET")"
+check "17.3 modelAliases.copilot.sonnet override wins over opus-safe default" \
+  "[ \"\$(rsm \"$r17c\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-sonnet-4.6' ]"
+
+# 17.4 — captain override all:sonnet: copilot still opus-safe, claude → sonnet.
+r17d="$(make_repo '{}' "$EST_SONNET")"; set_override "$r17d" all sonnet
+check "17.4a copilot all:sonnet override ⇒ claude-opus-4.8 (opus-safe of the tier)" \
+  "[ \"\$(rsm \"$r17d\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "17.4b claude all:sonnet override ⇒ sonnet (per-engine alias of the tier)" \
+  "[ \"\$(rsm \"$r17d\" implement CLAUDECODE=1 | sm_model)\" = 'sonnet' ]"
 
 echo "stage-model: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
