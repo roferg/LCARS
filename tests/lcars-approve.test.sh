@@ -63,6 +63,19 @@ EOF
   chmod +x "$1"
 }
 
+# A fake reconcile (sibling run.sh) injected via LCARS_RUN_SCRIPT: it records its
+# args to $RECON_LOG and exits with a chosen code. It NEVER touches the real
+# run.sh, so no real model worker is ever spawned. The recorded line also
+# captures LCARS_WORKER_BIN so a test can assert the mission engine was pinned.
+make_reconcile_stub() { # <path> <exit_code>
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+echo "reconcile [WORKER_BIN=\${LCARS_WORKER_BIN:-}] \$*" >>"\$RECON_LOG"
+exit $2
+EOF
+  chmod +x "$1"
+}
+
 # Build an isolated git repo with one mission parked at "verify" WITH an open PR
 # recorded (prUrl/prNumber) — the shape the new Verify auto-open leaves behind.
 new_repo_with_open_pr_mission() {
@@ -109,9 +122,12 @@ echo "lcars approve"
 
 # --- Behaviour 1: approve MERGES the recorded open PR -----------------------
 repoA="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoA/gh"
+make_reconcile_stub "$repoA/recon.sh" 0
 export GH_LOG="$repoA/gh.log"; : >"$GH_LOG"
+export RECON_LOG="$repoA/recon.log"; : >"$RECON_LOG"
 rcA=0
-( cd "$repoA" && LCARS_GH_BIN="$repoA/gh" bash "$SCRIPT" \
+( cd "$repoA" && LCARS_GH_BIN="$repoA/gh" LCARS_RUN_SCRIPT="$repoA/recon.sh" \
+    RECON_LOG="$repoA/recon.log" bash "$SCRIPT" \
     --mission "$MID" >out.txt 2>&1 ) || rcA=$?
 sA="$(state_of "$repoA")"
 check "1. approve exits 0 on a verify mission with an open PR" "[ '$rcA' -eq 0 ]"
@@ -131,9 +147,11 @@ check "2. removes the lcars:verify stage label" \
 # No false Done: when `gh pr merge` fails, approve stays at verify, applies no
 # lcars:done, and exits non-zero with an actionable message.
 repoF="$(new_repo_with_open_pr_mission)"; make_gh_stub_merge_fail "$repoF/gh"
+make_reconcile_stub "$repoF/recon.sh" 0
 export GH_LOG="$repoF/gh.log"; : >"$GH_LOG"
 rcF=0
-( cd "$repoF" && LCARS_GH_BIN="$repoF/gh" bash "$SCRIPT" \
+( cd "$repoF" && LCARS_GH_BIN="$repoF/gh" LCARS_RUN_SCRIPT="$repoF/recon.sh" \
+    RECON_LOG="$repoF/recon.log" bash "$SCRIPT" \
     --mission "$MID" >out.txt 2>&1 ) || rcF=$?
 check "3. exits non-zero when gh pr merge fails" "[ '$rcF' -ne 0 ]"
 check "3. stays at verify (does NOT advance to done) on a failed merge" \
@@ -150,9 +168,11 @@ repoN="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoN/gh"
 # strip the prUrl/prNumber/review lines to simulate "no PR yet".
 grep -v 'prUrl\|prNumber\|"review"' "$(state_of "$repoN")" >"$repoN/s.tmp" \
   && mv "$repoN/s.tmp" "$(state_of "$repoN")"
+make_reconcile_stub "$repoN/recon.sh" 0
 export GH_LOG="$repoN/gh.log"; : >"$GH_LOG"
 rcN=0
-( cd "$repoN" && LCARS_GH_BIN="$repoN/gh" bash "$SCRIPT" \
+( cd "$repoN" && LCARS_GH_BIN="$repoN/gh" LCARS_RUN_SCRIPT="$repoN/recon.sh" \
+    RECON_LOG="$repoN/recon.log" bash "$SCRIPT" \
     --mission "$MID" >out.txt 2>&1 ) || rcN=$?
 check "4. exits non-zero with no open PR recorded" "[ '$rcN' -ne 0 ]"
 check "4. makes NO merge call with no open PR" "! grep -q 'pr merge' '$repoN/gh.log'"
@@ -161,11 +181,13 @@ check "4. does NOT advance to done with no open PR" \
 
 # --- Guard: approve refuses a mission that is not at verify ------------------
 repoG="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoG/gh"
+make_reconcile_stub "$repoG/recon.sh" 0
 export GH_LOG="$repoG/gh.log"; : >"$GH_LOG"
 sed 's/"verify"/"implement"/' "$(state_of "$repoG")" >"$repoG/s.tmp" \
   && mv "$repoG/s.tmp" "$(state_of "$repoG")"
 rcG=0
-( cd "$repoG" && LCARS_GH_BIN="$repoG/gh" bash "$SCRIPT" \
+( cd "$repoG" && LCARS_GH_BIN="$repoG/gh" LCARS_RUN_SCRIPT="$repoG/recon.sh" \
+    RECON_LOG="$repoG/recon.log" bash "$SCRIPT" \
     --mission "$MID" >out.txt 2>&1 ) || rcG=$?
 check "guard. approve refuses a non-verify mission" "[ '$rcG' -ne 0 ]"
 check "guard. merges nothing on a non-verify mission" \
@@ -173,11 +195,79 @@ check "guard. merges nothing on a non-verify mission" \
 
 # --- Guard: a bad mission id is rejected ------------------------------------
 repoB="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoB/gh"
+make_reconcile_stub "$repoB/recon.sh" 0
 export GH_LOG="$repoB/gh.log"; : >"$GH_LOG"
 rcB=0
-( cd "$repoB" && LCARS_GH_BIN="$repoB/gh" bash "$SCRIPT" \
+( cd "$repoB" && LCARS_GH_BIN="$repoB/gh" LCARS_RUN_SCRIPT="$repoB/recon.sh" \
+    RECON_LOG="$repoB/recon.log" bash "$SCRIPT" \
     --mission "no-such-mission" >out.txt 2>&1 ) || rcB=$?
 check "guard. rejects an unknown mission id" "[ '$rcB' -ne 0 ]"
+
+# --- BUG-037: approve self-heals (reconciles) BEFORE merging ----------------
+# The merge gate must reconcile a possibly-behind-base PR first. The reconcile
+# engine lives in the sibling run.sh `reconcile` subcommand, injected here via
+# LCARS_RUN_SCRIPT. We branch on its exit code; only exit 0 proceeds to merge.
+
+# Reconcile 10 (self-heal in flight): approve must NOT merge, stay at verify,
+# exit 0, and say it is reconciling.
+repoR10="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoR10/gh"
+make_reconcile_stub "$repoR10/recon.sh" 10
+export GH_LOG="$repoR10/gh.log"; : >"$GH_LOG"
+rcR10=0
+( cd "$repoR10" && LCARS_GH_BIN="$repoR10/gh" LCARS_RUN_SCRIPT="$repoR10/recon.sh" \
+    RECON_LOG="$repoR10/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>&1 ) || rcR10=$?
+check "r10. exits 0 (soft halt — self-heal took over, not an error)" "[ '$rcR10' -eq 0 ]"
+check "r10. ran the reconcile gate" "grep -q 'reconcile' '$repoR10/recon.log'"
+check "r10. does NOT call gh pr merge while reconciling" "! grep -q 'pr merge' '$repoR10/gh.log'"
+check "r10. stays at verify (does NOT advance to done)" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoR10")'"
+check "r10. applies NO lcars:done label" "! grep -q 'add-label lcars:done' '$repoR10/gh.log'"
+check "r10. message mentions reconciling" "grep -qi 'reconcil' '$repoR10/out.txt'"
+
+# Reconcile 20 (escalated): approve must NOT merge, stay at verify, exit 0.
+repoR20="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoR20/gh"
+make_reconcile_stub "$repoR20/recon.sh" 20
+export GH_LOG="$repoR20/gh.log"; : >"$GH_LOG"
+rcR20=0
+( cd "$repoR20" && LCARS_GH_BIN="$repoR20/gh" LCARS_RUN_SCRIPT="$repoR20/recon.sh" \
+    RECON_LOG="$repoR20/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>&1 ) || rcR20=$?
+check "r20. exits 0 (soft halt — escalation took over, not an error)" "[ '$rcR20' -eq 0 ]"
+check "r20. does NOT call gh pr merge after an escalation" "! grep -q 'pr merge' '$repoR20/gh.log'"
+check "r20. stays at verify (does NOT advance to done)" \
+  "grep -q '\"stage\": *\"verify\"' '$(state_of "$repoR20")'"
+check "r20. applies NO lcars:done label" "! grep -q 'add-label lcars:done' '$repoR20/gh.log'"
+
+# Reconcile 0 (up to date / healed green): approve PROCEEDS and merges.
+repoR0="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoR0/gh"
+make_reconcile_stub "$repoR0/recon.sh" 0
+export GH_LOG="$repoR0/gh.log"; : >"$GH_LOG"
+rcR0=0
+( cd "$repoR0" && LCARS_GH_BIN="$repoR0/gh" LCARS_RUN_SCRIPT="$repoR0/recon.sh" \
+    RECON_LOG="$repoR0/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>&1 ) || rcR0=$?
+check "r0. exits 0 (proceeds)" "[ '$rcR0' -eq 0 ]"
+check "r0. ran the reconcile gate BEFORE merging" "grep -q 'reconcile' '$repoR0/recon.log'"
+check "r0. proceeds to gh pr merge on a green/up-to-date reconcile" \
+  "grep -q 'pr merge' '$repoR0/gh.log'"
+check "r0. advances the stage to done" "grep -q '\"stage\": *\"done\"' '$(state_of "$repoR0")'"
+
+# Engine pinning: a copilot mission must heal on copilot — approve passes the
+# recorded workerBin to the reconcile via LCARS_WORKER_BIN.
+repoEng="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoEng/gh"
+make_reconcile_stub "$repoEng/recon.sh" 0
+# plant workerBin:"copilot" in state.json.
+sed 's/\("base": "[^"]*"\)/\1,\n  "workerBin": "copilot"/' "$(state_of "$repoEng")" \
+  >"$repoEng/s.tmp" && mv "$repoEng/s.tmp" "$(state_of "$repoEng")"
+export GH_LOG="$repoEng/gh.log"; : >"$GH_LOG"
+rcEng=0
+( cd "$repoEng" && LCARS_GH_BIN="$repoEng/gh" LCARS_RUN_SCRIPT="$repoEng/recon.sh" \
+    RECON_LOG="$repoEng/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>&1 ) || rcEng=$?
+check "eng. ran the reconcile gate before merge" "grep -q 'reconcile' '$repoEng/recon.log'"
+check "eng. pinned the mission engine (LCARS_WORKER_BIN=copilot) on the reconcile" \
+  "grep -q 'WORKER_BIN=copilot' '$repoEng/recon.log'"
 
 # ==========================================================================
 echo

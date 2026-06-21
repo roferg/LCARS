@@ -27,6 +27,9 @@ RELABEL_NOTE=""
 # in the sibling lcars-run skill dir; $LCARS_HOST_ADAPTER overrides that path.
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
+# The sibling run.sh — its `reconcile` subcommand is the S76 self-heal engine the
+# merge gate runs BEFORE merging (BUG-037). Override the path for tests.
+RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SELF_DIR/../lcars-run/run.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
 die() { printf 'lcars approve: %s\n' "$1" >&2; exit 1; }
@@ -131,6 +134,27 @@ case "$PR_URL" in
   *) die "no open PR recorded for this mission — run \`lcars run $MISSION_ID\` so Verify opens the PR, then approve to merge it. Mission stays at verify." ;;
 esac
 
+# --- self-heal-before-escalate: reconcile a possibly-behind base FIRST -------
+# Before merging, run the S76 reconcile/self-heal engine (the sibling run.sh
+# `reconcile` subcommand) so a PR that fell behind a moved base is merged into
+# the mission branch, re-tested, and self-healed to green — instead of letting
+# `gh pr merge` hit a conflict and escalate. It is a cheap no-op (exit 0) when
+# the base is not ahead. Pin the mission engine so a copilot mission heals on
+# copilot (a CLAUDECODE-tagged env would otherwise host-detect claude).
+engine="$(json_str "$STATE" workerBin)"
+rcode=0
+# The mission engine is plumbed via the environment (an assignment prefix built
+# by expansion is parsed as a command, not a var — export into the subshell).
+( export LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN"
+  [ -n "$engine" ] && export LCARS_WORKER_BIN="$engine"
+  bash "$RUN_SCRIPT" reconcile --mission "$MISSION_ID" ) || rcode=$?
+case "$rcode" in
+  0)  : ;;  # up to date / healed green → proceed to merge below.
+  10) echo "APPROVE: reconciling with the updated base — self-heal in flight. Mission stays at verify; re-run \`lcars approve $MISSION_ID\` once it's green."; exit 0 ;;
+  20) echo "APPROVE: the base moved ahead and the self-heal was escalated to you (awaiting your answer). Mission stays at verify."; exit 0 ;;
+  *)  echo "lcars approve: reconcile failed (rc=$rcode). Mission stays at verify." >&2; exit 1 ;;
+esac
+
 # A merge selector: prefer the recorded PR number, else the branch.
 MERGE_ARGS=()
 case "$PR_NUM" in
@@ -140,6 +164,16 @@ esac
 
 command -v "$GH_BIN" >/dev/null 2>&1 \
   || die "gh not found — cannot merge PR $PR_URL. Mission stays at verify (merge it by hand)."
+
+# A GREEN reconcile (exit 0) may have merged the moved base INTO the mission
+# branch — those commits live only on the LOCAL branch (reconcile_gate does not
+# push). Push the branch to origin so the remote PR head reflects the healed
+# tree and `gh pr merge` is conflict-free. Best-effort: a push failure (no
+# remote in a test repo, already up to date) must not block — gh pr merge below
+# is the real gate and will fail loudly if the branch is genuinely stale.
+if [ -n "$BRANCH" ] && command -v "$GIT_BIN" >/dev/null 2>&1; then
+  "$GIT_BIN" push origin "$BRANCH" >/dev/null 2>&1 || :
+fi
 
 # --- merge — only a SUCCESSFUL merge flips the Mission to Done ----------------
 if ! host pr-merge "${MERGE_ARGS[@]}"; then
