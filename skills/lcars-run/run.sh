@@ -1484,6 +1484,49 @@ $(scratch_globs)
 EOF
 }
 
+# --- resolve a mission's RECORDED base as a git ref -------------------------
+# A mission's branch must be born from its OWN recorded base (state.json `base`,
+# default `main`), NEVER from whatever HEAD the shared $REPO_ROOT happens to be
+# on — under two concurrent missions in one clone that ambient HEAD is the OTHER
+# mission's branch, so a born-from-HEAD branch inherits the sibling's commits
+# (the second contamination vector — branch CREATION, distinct from the replay
+# race). Resolution order mirrors reconcile_base_ref: the remote-tracking ref
+# first, then the local branch. Echoes the ref (empty ⇒ unresolvable, e.g. a
+# brand-new local repo whose base is the initial unborn HEAD).
+mission_base_ref() { # → echoes refs/remotes/origin/<base> | refs/heads/<base> | ""
+  local base; base="$(json_str "$STATE" base)"; base="${base:-main}"
+  if "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$base"; then
+    printf 'refs/remotes/origin/%s' "$base"
+  elif "$GIT_BIN" show-ref --verify --quiet "refs/heads/$base"; then
+    printf 'refs/heads/%s' "$base"
+  fi
+}
+
+# --- create the mission branch from its recorded base, idempotently, LOCKED --
+# Guarantees `refs/heads/$branch` exists and is rooted at the mission's recorded
+# base BEFORE any ticket builds. Done up front in cmd_implement so:
+#   • make_ticket_worktree ALWAYS finds the branch → every ticket builds in a
+#     worktree cut from the CORRECT base (never the in-tree fallback), and
+#   • the in-tree `checkout -b` fallback in commit_ticket never has to CREATE
+#     the branch from the ambient (possibly sibling-mission) HEAD.
+# The create runs under the EXISTING repo-global replay mutex so two concurrent
+# missions in one clone can't race the existence check ↔ create. Idempotent: a
+# branch that already exists is left exactly as-is (no reset — a re-entered or
+# resumed mission keeps its commits). Best-effort: an unresolvable base (unborn
+# initial HEAD) leaves the branch uncreated and the original in-tree fallback
+# still handles it. Single-mission runs take an uncontended lock (near-zero).
+ensure_mission_branch() { # branch
+  local branch="$1"
+  [ -n "$branch" ] || return 0
+  acquire_replay_lock
+  if ! "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+    local ref; ref="$(mission_base_ref)"
+    [ -n "$ref" ] && "$GIT_BIN" branch "$branch" "$ref" >/dev/null 2>&1 || :
+  fi
+  release_replay_lock
+  return 0
+}
+
 # --- commit a green ticket's produced files to the mission branch -----------
 # The Test Writer / Implementer write real files into the working tree; for the
 # PR to have content those files must be committed to the Mission's branch (the
@@ -1513,8 +1556,26 @@ commit_ticket() { # ticket  summary
         "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 \
           || { COMMIT_NOTE="  ⚠ could not checkout $branch — commit ticket $1 by hand."; return 0; }
       else
-        "$GIT_BIN" checkout -b "$branch" >/dev/null 2>&1 \
-          || { COMMIT_NOTE="  ⚠ could not create $branch — commit ticket $1 by hand."; return 0; }
+        # Defense-in-depth (branch-CREATION contamination): cmd_implement already
+        # created the branch up front from the mission's recorded base under the
+        # lock, so this path should be unreachable. If it IS reached, NEVER use
+        # `checkout -b` (which would root the branch at the ambient $REPO_ROOT
+        # HEAD — under concurrency a SIBLING mission's branch). Create it from the
+        # resolved base ref, atomically under the SAME replay mutex, then check it
+        # out. Falls back to the old behaviour only if the base is unresolvable.
+        acquire_replay_lock
+        if ! "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+          local _bref; _bref="$(mission_base_ref)"
+          [ -n "$_bref" ] && "$GIT_BIN" branch "$branch" "$_bref" >/dev/null 2>&1 || :
+        fi
+        release_replay_lock
+        if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+          "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 \
+            || { COMMIT_NOTE="  ⚠ could not checkout $branch — commit ticket $1 by hand."; return 0; }
+        else
+          "$GIT_BIN" checkout -b "$branch" >/dev/null 2>&1 \
+            || { COMMIT_NOTE="  ⚠ could not create $branch — commit ticket $1 by hand."; return 0; }
+        fi
       fi
     fi
   fi
@@ -1637,6 +1698,40 @@ resolve_test_cmd() {
   printf '%s' "$c"
 }
 
+# --- BUG-022: distinguish a compile/load failure from a valid assertion red --
+# The red gate wants the quarantined suite RED before the Implementer runs, but a
+# Test-Writer that emits a NON-COMPILING test (a SyntaxError, an import/parse error,
+# a load-time ReferenceError, or a leftover placeholder token like `<REPLACE>`)
+# also exits non-zero — and the gate would (wrongly) accept that as "valid red" and
+# hand a NON-RUNNABLE contract to the Implementer. The Implementer cannot edit the
+# immutable test to fix a syntax error, so it flags the ticket after one attempt.
+# We therefore triage the runner OUTPUT: a CLEAR compile/load failure is REJECTED
+# back to the Test-Writer (re-author, with the runner's error as feedback) via the
+# SAME RED_GATE_SIGNAL loop a trivially-green suite uses; a normal assertion failure
+# still passes the red gate untouched. Conservative by design — only signatures that
+# unambiguously mean "the file did not even load" divert; anything else is a real red.
+#
+# Signatures (node runner + an engine placeholder leak):
+#   • SyntaxError / parse error                     (SyntaxError, Unexpected token/identifier/end of input)
+#   • module load failure                           (Cannot find module, ERR_MODULE_NOT_FOUND, ERR_REQUIRE_ESM)
+#   • a load-time ReferenceError                    (… is not defined  — a symbol unresolved before any test ran)
+#   • an unsubstituted Test-Writer placeholder      (<REPLACE>, <TODO>, <PLACEHOLDER>, etc.)
+# Returns 0 (compile/load failure detected) or 1 (none).
+red_gate_compile_failure() { # runner-output → 0 if a compile/load failure signature is present
+  local out="$1"
+  # An unsubstituted placeholder token the Test-Writer left behind is a guaranteed
+  # parse failure (e.g. copilot's `const track<REPLACE> = …`). Catch it directly.
+  case "$out" in
+    *'<REPLACE>'*|*'<PLACEHOLDER>'*|*'<TODO>'*|*'<FILL'*|*'<INSERT'*) return 0 ;;
+  esac
+  # node/JS compile + load signatures, plus a generic interpreter parse error. These
+  # are emitted to stderr (which the gate captures with 2>&1) BEFORE any test runs.
+  printf '%s' "$out" | grep -Eq \
+    'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)' \
+    && return 0
+  return 1
+}
+
 # --- GUARDRAIL 1: the red gate ----------------------------------------------
 # BUG-007 contract. Run the configured test command against ONLY the just-written
 # QUARANTINED tests, with NO implementation present, and decide on the quarantined
@@ -1707,6 +1802,27 @@ red_gate_ok() { # quarantined-tests-dir
       if [ -n "$RED_GATE_SIGNAL" ]; then
         {
           printf 'rc=%s (the quarantined-tests run exited non-zero, but the command IGNORES $LCARS_TESTS_DIR so the red is unproven)\n' "$rc"
+          printf '%s\n' "$reason"
+        } >"$RED_GATE_SIGNAL"
+      fi
+      return 1
+    fi
+    # BUG-022: the command reacted to the var, but a non-zero exit is only a VALID
+    # red when the suite failed on ASSERTIONS. If the runner output carries a clear
+    # COMPILE/LOAD failure (SyntaxError, import/parse error, a load-time unresolved
+    # symbol, or an unsubstituted placeholder token), the test file did not even run
+    # — handing it to the Implementer is a dead end (it cannot edit the immutable
+    # test to fix the syntax). REJECT it back to the Test-Writer with the runner's
+    # error as feedback, the SAME loop a trivially-green suite uses. Conservative:
+    # only a clear compile/load signature diverts; a normal assertion failure falls
+    # through to the accept below, exactly as before.
+    if red_gate_compile_failure "$out"; then
+      reason="RED GATE — the quarantined suite did NOT fail on an assertion: it failed to COMPILE / LOAD (a SyntaxError, import/parse error, a load-time unresolved symbol, or a leftover placeholder token), so the test file never ran. A non-runnable contract cannot be handed to the Implementer (it must not edit the immutable tests to fix a syntax error). Re-author the test so it PARSES and LOADS cleanly, then FAILS on its assertions until the behaviour exists. Command run: $cmd. Runner output (quarantined run):
+$(printf '%s' "$out" | tail -20)"
+      printf '  ✗ %s\n' "$reason" >&2
+      if [ -n "$RED_GATE_SIGNAL" ]; then
+        {
+          printf 'rc=%s (the quarantined-tests run failed to COMPILE/LOAD — NOT a valid assertion red)\n' "$rc"
           printf '%s\n' "$reason"
         } >"$RED_GATE_SIGNAL"
       fi
@@ -2217,11 +2333,16 @@ full_suite_gate() { # ordered ticketId...
   local wt_base="$MISSION_DIR/fullsuite-wt" wt=""
   wt="$(make_ticket_worktree "$wt_base" "$branch" "all")"
   local regressed=""
+  # BUG-018/BUG-019: capture each failing suite's runner output so we can tell a
+  # mock/harness TypeError (an incomplete per-ticket test double — a harness gap)
+  # apart from a real assertion failure. The capture dir is scanned below and
+  # discarded; it never leaks.
+  local cap; cap="$MISSION_DIR/.fullsuite-cap"; rm -rf "$cap"
   if [ -n "$wt" ]; then
     # WORKTREE MODE: a real mission branch exists. Re-run each suite from the clean
     # tip via the shared helper, so relative-to-self target resolution behaves as
     # it did at green-time.
-    RETEST_CAPTURE="" retest_ticket_suites "$wt" "$cmd" "$@" || regressed="$RETEST_FAILED"
+    RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" "$@" || regressed="$RETEST_FAILED"
     # Clean up the worktree on EVERY exit path — never leak into the captain's
     # `git worktree list` or working tree. Mirrors cleanup_ticket_worktrees.
     "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
@@ -2230,10 +2351,22 @@ full_suite_gate() { # ordered ticketId...
   else
     # FALLBACK (no mission branch — a branch-less / local-only mission): keep the
     # original in-tree behaviour, running each suite from $REPO_ROOT.
-    RETEST_CAPTURE="" retest_ticket_suites "$REPO_ROOT" "$cmd" "$@" || regressed="$RETEST_FAILED"
+    RETEST_CAPTURE="$cap" retest_ticket_suites "$REPO_ROOT" "$cmd" "$@" || regressed="$RETEST_FAILED"
   fi
-  [ -z "$regressed" ] && return 0
+  if [ -z "$regressed" ]; then rm -rf "$cap" 2>/dev/null; return 0; fi
   local detail="FULL-SUITE GATE — these earlier ticket suite(s) no longer pass against the fully-built repo: ${regressed}. Each was green when built, so a LATER ticket's produced code REGRESSED its locked contract. The Mission is NOT shippable until the regression is resolved (fix the later ticket or re-open the regressed ticket). Command run: $cmd."
+  # Harness-gap detection (BUG-019): if any captured failing-suite output mentions a
+  # TypeError / undefined-method surface, this is very likely an INCOMPLETE per-ticket
+  # MOCK (an earlier ticket's headless browser/host double lacks a method a later
+  # ticket's code legitimately calls) rather than a real assertion failure. Flag that
+  # in the detail so the captain knows completing the mock may be the fix, not
+  # weakening an assertion. Pure string scan over the captured output — best-effort.
+  if [ -d "$cap" ] && grep -RqiE 'TypeError|is not a function|is not defined|undefined is not' "$cap" 2>/dev/null; then
+    detail="$detail
+
+NOTE: a failing suite's output mentions a TypeError / undefined surface — this often means a per-ticket test MOCK is incomplete (a HARNESS GAP, not a real assertion failure: see BUG-019). Completing the earlier ticket's mock (stub the missing method, or share one defensive per-mission double) may be the fix, rather than weakening an assertion."
+  fi
+  rm -rf "$cap" 2>/dev/null
   printf '  ✗ %s\n' "$detail" >&2
   [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$detail" >"$FULL_SUITE_SIGNAL"
   return 1
@@ -2271,10 +2404,38 @@ EOF
   # any regression, naming the regressed earlier ticket.
   local fssig; fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
   if ! FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
-    local why=""; [ -f "$fssig" ] && why="
-$(cat "$fssig")"
+    # BUG-018: a full-suite regression is a FIRST-CLASS, answerable outcome — NOT
+    # an opaque error halt. The gate wrote its DETAILED reason to $fssig; route it
+    # through the SAME awaiting-human escalation path the per-ticket attempt-cap
+    # uses (validate-pause shape): persist the reason as the pending question +
+    # event detail, set the awaiting-human state, overlay the label, and STOP
+    # CLEANLY (exit 0). Previously this `die`d, so the daemon (which doesn't
+    # capture the driver's stderr) lost the reason and the card just read "failed".
+    # The gate already distinguishes a mock/harness TypeError (a HARNESS GAP — see
+    # BUG-019) from a real assertion failure and folds that NOTE into the signal
+    # detail, so the reason we read back is already captain-ready.
+    local reason="a cross-ticket regression was detected by the full-suite gate"
+    [ -f "$fssig" ] && reason="$(cat "$fssig")"
     rm -f "$fssig"
-    die "the Mission cannot advance to Verify — a cross-ticket regression was detected by the full-suite gate.$why"
+
+    local q; q="$(mktemp)"
+    printf '%s\n' "$reason" >"$q"
+    write_pending "$q" "implement"
+    state_set_raw awaitingHuman true
+    state_set_str pendingQuestion "$reason"
+    # In-flight stage label (implement) first, THEN the awaiting-human overlay, so
+    # the parked card sits squarely in the Implement column (mirror validate-pause).
+    gh_relabel "lcars:implement lcars:awaiting-human" ""
+    rm -f "$q"
+
+    emit_event gate implement "full-suite regression — awaiting your answer: $reason" \
+      "phase=full-suite-gate"
+
+    echo "IMPLEMENT: full-suite regression — flagged the human"
+    printf '%s\n' "$reason"
+    echo "  Stage: implement (awaiting-human). Resolve with \`lcars respond $MISSION_ID\`."
+    [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+    exit 0
   fi
   rm -f "$fssig"
 
@@ -4208,6 +4369,20 @@ cmd_implement_ticket() {
     fi
   fi
 
+  # OUT-OF-WORKTREE INPUT READ GRANTS (session 76). Both halves of the adversarial
+  # pair run with cwd = this ticket's ISOLATED worktree, but EVERY input they read
+  # — the failing tests, manifests, approved-plan.json, adr.md, repo-map.md, the
+  # context-pack, answers.json — lives under the SHARED .git/lcars/ (resolved via
+  # --git-common-dir), OUTSIDE that worktree. A CLI with a hard path sandbox
+  # (copilot) can otherwise read NONE of them. Hand the adapter that ONE read-dir,
+  # CLI-AGNOSTICALLY (run.sh passes it for EVERY engine; the per-CLI translation —
+  # copilot adds a `--add-dir`, claude ignores it — is the adapter's job). The
+  # grant is READ-only and covers all inputs as a tidy superset; it never widens
+  # WRITE access, so the worktree write-isolation, red gate, immutable tests, and
+  # post-commit scope check are all untouched. Empty/unset for non-worktree spawns
+  # ⇒ argv byte-for-byte as before.
+  export LCARS_WORKER_INPUT_DIRS="$(dirname "$LCARS_CFG")"
+
   # Record the captain's pre-existing untracked files BEFORE any worker touches
   # the tree, so commit_ticket stages only the Implementer's NEW source — never
   # the captain's unrelated files or the worker's scratch (see commit_ticket).
@@ -4373,6 +4548,16 @@ cmd_implement() {
   require_stage implement
   require_worker
 
+  # Branch-CREATION contamination guard (BUG: concurrent-mission cross-birth).
+  # Implement is the first stage to touch git; the mission branch may not exist
+  # yet. Create it ONCE, up front, from the mission's RECORDED base under the
+  # repo-global replay mutex — never lazily from the ambient $REPO_ROOT HEAD,
+  # which under two concurrent missions in one clone is the OTHER mission's
+  # branch. This guarantees make_ticket_worktree finds the branch (so every
+  # ticket builds in a worktree off the correct base) and the in-tree fallback
+  # never has to create it. Idempotent + best-effort; single-mission unaffected.
+  ensure_mission_branch "$(json_str "$STATE" branch)"
+
   # --- S65: the live Implement-dashboard heartbeat ----------------------------
   # Start a bounded, best-effort ~60s ticker that re-renders + PATCHes the
   # Implement issue comment so elapsed/pace advance even during a long single
@@ -4413,6 +4598,16 @@ cmd_implement() {
     case "$st" in
       *"IMPLEMENT: complete"*)
         # Every ticket is green — advance to Verify (it re-checks all waves).
+        # BUG-020: the Implement→Verify handoff is driven from the DURABLE signal
+        # ("IMPLEMENT: complete" = all tickets green / impl-status), NOT from
+        # wait-ing a child that may have reparented. Before dispatching the
+        # advance, STOP the comment heartbeat EXPLICITLY here (don't rely solely on
+        # the EXIT trap firing only as the process exits) so its `sleep`/`gh` child
+        # can never outlive this stage, reparent to init, and hold the driver's
+        # command-substitution pipe open — which is what wedged this handoff for
+        # ~19 min in the field. cm_heartbeat_stop is idempotent; the EXIT trap below
+        # still runs as a belt-and-braces second reap.
+        declare -F cm_heartbeat_stop >/dev/null 2>&1 && cm_heartbeat_stop
         LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-advance --mission "$MISSION_ID"
         exit $? ;;
       *"IMPLEMENT: wave "*) : ;;   # a wave is active — build its pending tickets
@@ -4569,12 +4764,116 @@ make_ticket_worktree() { # base-dir  branch  ticket → echoes the worktree path
   printf '%s' "$wt"
 }
 
+# --- REPO-GLOBAL replay mutex (BUG: concurrent-mission branch cross-contamination)
+# `replay_ticket_commit` mutates the SHARED $REPO_ROOT working tree's HEAD
+# (checkout the mission branch, then cherry-pick). Two missions running
+# CONCURRENTLY in ONE clone each execute that in the SAME $REPO_ROOT, so
+# mission B's `checkout` can interleave BETWEEN mission A's `checkout` and its
+# `cherry-pick` — A's commit then lands on B's branch (confirmed live: 2 of
+# M2's commits ended up on M1's branch). The checkout-if-needed + cherry-pick +
+# conflict handling must therefore be ONE atomic critical section across ALL
+# missions in the clone.
+#
+# The lock is a DIRECTORY under the SHARED git common dir (resolved via
+# --git-common-dir, so a per-mission worktree resolves to the SAME path the main
+# clone does → all missions contend for the SAME lock). `mkdir` is atomic on
+# every POSIX fs, and crucially there is NO `flock` on macOS (darwin) — so this
+# is a portable mkdir SPINLOCK, not flock. A holder writes its PID; a waiter
+# spins until it can mkdir, reclaiming a STALE lock (dead-PID, or older than the
+# timeout guard) so a crashed holder can never deadlock the pipeline. A trap
+# releases it on every exit path, but only if we still own it.
+REPLAY_LOCK_DIR=""                 # set while we hold the lock; "" = none held.
+REPLAY_LOCK_STALE_SECS="${LCARS_REPLAY_LOCK_STALE_SECS:-300}"
+
+# Path of the repo-global replay lock dir under the SHARED git common dir.
+replay_lock_path() {
+  local common; common="$( cd "$REPO_ROOT" 2>/dev/null && "$GIT_BIN" rev-parse --git-common-dir 2>/dev/null )"
+  [ -n "$common" ] || common="$REPO_ROOT/.git"
+  # --git-common-dir may be relative (".git") — anchor it at $REPO_ROOT.
+  case "$common" in /*) : ;; *) common="$REPO_ROOT/$common" ;; esac
+  mkdir -p "$common/lcars" 2>/dev/null || :
+  printf '%s' "$common/lcars/replay.lock"
+}
+
+# Acquire the repo-global replay lock (BLOCKS — a true mutex). Spins on the
+# atomic mkdir; reclaims a stale lock (dead PID or older than the timeout) so a
+# crashed holder never deadlocks. Arms a trap to release on exit. Always 0.
+acquire_replay_lock() {
+  local lock; lock="$(replay_lock_path)"
+  local pidf="$lock/pid" spins=0
+  while :; do
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s' "$$" >"$pidf" 2>/dev/null || :
+      REPLAY_LOCK_DIR="$lock"
+      # BUG-021: cmd_implement arms a `trap … cm_heartbeat_stop … EXIT INT TERM`
+      # for the Implement comment-heartbeat, then calls replay_ticket_commit (which
+      # acquires THIS lock) in its own process. A bare `trap 'release_replay_lock'`
+      # here would CLOBBER that heartbeat trap, so any later flag/error/escalation
+      # EXIT path would release the lock but NEVER reap the heartbeat → an orphaned
+      # `while … gh issue comment …; sleep 60; done` loop (PPID=1) keeps POSTing
+      # forever. So the lock's exit trap also reaps the heartbeat. cm_heartbeat_stop
+      # is idempotent and a no-op when no heartbeat is running, so this is safe at
+      # every acquire_replay_lock site (the explicit clean-path stop still fires too).
+      trap 'release_replay_lock; declare -F cm_heartbeat_stop >/dev/null 2>&1 && cm_heartbeat_stop' EXIT INT TERM
+      return 0
+    fi
+    # Held — reclaim if the holder is dead OR the lock is older than the guard.
+    local owner=""; [ -f "$pidf" ] && owner="$(cat "$pidf" 2>/dev/null)"
+    local stale=0
+    if ! pid_alive "$owner"; then stale=1; fi
+    if [ "$stale" = 0 ]; then
+      # Live-PID guard against a hung holder: reclaim once the dir outlives the
+      # timeout. `find -mmin` keeps it bash-3.2 / macOS portable (no GNU stat).
+      if [ -n "$(find "$lock" -prune -mmin +"$(( REPLAY_LOCK_STALE_SECS / 60 + 1 ))" 2>/dev/null)" ]; then
+        stale=1
+      fi
+    fi
+    if [ "$stale" = 1 ]; then
+      rm -rf "$lock" 2>/dev/null || :
+      continue
+    fi
+    sleep 0.05
+    spins=$((spins + 1))
+  done
+}
+
+# Release the lock IFF we still own it (our PID in the pid file). Idempotent;
+# trap-safe — a process that never acquired it deletes nothing.
+release_replay_lock() {
+  [ -n "$REPLAY_LOCK_DIR" ] || return 0
+  local owner=""; [ -f "$REPLAY_LOCK_DIR/pid" ] && owner="$(cat "$REPLAY_LOCK_DIR/pid" 2>/dev/null)"
+  if [ "$owner" = "$$" ]; then
+    rm -rf "$REPLAY_LOCK_DIR" 2>/dev/null || :
+  fi
+  REPLAY_LOCK_DIR=""
+}
+
 # Cherry-pick a green ticket's worktree commit onto the real mission branch in the
 # main working tree, SERIALLY (called in plan order). Preserves the exact commit
 # message (cherry-pick keeps it) → one commit per ticket, summary intact, in order.
+#
+# The HEAD-mutating critical section (checkout-if-needed + cherry-pick + the
+# conflict/abort handling) runs under the REPO-GLOBAL replay mutex so concurrent
+# missions in one clone never interleave a checkout between this mission's
+# checkout and its cherry-pick — each pick is GUARANTEED to land on its own
+# branch regardless of which mission held HEAD last. Single-mission runs take an
+# uncontended lock (near-zero overhead; behaviour unchanged).
 replay_ticket_commit() { # branch  sha  ticket
+  local branch="$1" sha="$2" t="$3" rc=0
+  acquire_replay_lock
+  _replay_ticket_commit_locked "$branch" "$sha" "$t" || rc=$?
+  release_replay_lock
+  return "$rc"
+}
+
+# The atomic critical section — runs ONLY while the replay mutex is held. The
+# checkout-if-needed is INSIDE the lock so the cherry-pick lands on $branch no
+# matter which branch HEAD was left on by another mission's just-released replay.
+_replay_ticket_commit_locked() { # branch  sha  ticket
   local branch="$1" sha="$2" t="$3"
-  # Ensure the main tree is on the mission branch (it is, during Implement).
+  # Ensure the main tree is on the mission branch. Under concurrency HEAD may be
+  # on ANOTHER mission's branch (it just released the lock), so this re-checkout
+  # is load-bearing, not the old single-mission "it already is" assumption.
   local cur; cur="$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )"
   if [ "$cur" != "$branch" ]; then
     if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
@@ -4934,6 +5233,47 @@ pid_alive() { # pid
   kill -0 "$p" 2>/dev/null
 }
 
+# === Stage watchdog (BUG-020) ===============================================
+# A bounded guard so a Mission can NEVER sit SILENTLY frozen between/within
+# stages: run a command with a hard wall-clock timeout, killing it (and a brief
+# grace then SIGKILL) if it overruns. macOS/bash-3.2 safe — no `timeout(1)`
+# dependency. Returns the command's exit code, or 124 if it timed out (the GNU
+# `timeout` convention) so the caller can distinguish a wedge from a real error.
+# The default budget is generous ($LCARS_STAGE_TIMEOUT, seconds; 0/unset disables
+# the watchdog entirely so nothing here can shorten a legitimately long stage).
+run_with_watchdog() { # secs  cmd...
+  local secs="$1"; shift
+  case "$secs" in ''|*[!0-9]*) secs=0 ;; esac
+  if [ "$secs" -le 0 ] 2>/dev/null; then
+    "$@"
+    return $?
+  fi
+  # Run the command in the background; a sibling sleeper races it. Whichever the
+  # `wait -n`-free shell can observe first decides the outcome. bash-3.2 lacks
+  # `wait -n`, so we poll the command pid at a coarse interval up to the budget.
+  "$@" &
+  local cmd_pid=$!
+  local waited=0 step=1
+  while [ "$waited" -lt "$secs" ]; do
+    pid_alive "$cmd_pid" || break
+    sleep "$step" 2>/dev/null || break
+    waited=$((waited + step))
+  done
+  if pid_alive "$cmd_pid"; then
+    # Overran the budget — the wedge BUG-020 is about. Kill the stage tree and its
+    # reparented descendants (best-effort), then report the timeout sentinel.
+    local kids; kids="$(ps -o pid= --ppid "$cmd_pid" 2>/dev/null | tr -d ' ')"
+    kill -TERM "$cmd_pid" 2>/dev/null || true
+    local k; for k in $kids; do kill -TERM "$k" 2>/dev/null || true; done
+    wait "$cmd_pid" 2>/dev/null || true
+    kill -KILL "$cmd_pid" 2>/dev/null || true
+    for k in $kids; do kill -KILL "$k" 2>/dev/null || true; done
+    return 124
+  fi
+  wait "$cmd_pid"
+  return $?
+}
+
 # Try to take the per-mission driver lock. Prints nothing; returns:
 #   0  → lock acquired (DRIVER_LOCK_DIR set, trap armed, our pid written)
 #   1  → a LIVE driver already holds it (caller must no-op exit 0)
@@ -5062,8 +5402,43 @@ cmd_drive() {
     emit_event stage_start "$action" "starting"
     printf '%-12s ▶  running…\n' "$action"
 
-    local out rc=0
-    out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" "$action" --mission "$MISSION_ID" 2>&1)" || rc=$?
+    # BUG-020 watchdog: run the Stage subprocess under a bounded wall-clock guard
+    # so a wedged stage (e.g. a leaked Implement heartbeat holding the pipe open)
+    # can never freeze the driver SILENTLY between stages. We capture the stage's
+    # output via a FILE (not a `$(…)` pipe) so the watchdog can background the
+    # subprocess and reap it on overrun — a backgrounded child that inherits a
+    # command-substitution pipe is exactly what kept the driver blocked. On a
+    # timeout (rc 124) we escalate to awaiting-human with an actionable message
+    # rather than hang forever. The budget is $LCARS_STAGE_TIMEOUT seconds
+    # (0/unset = no watchdog, never shortening a legitimately long stage).
+    local out rc=0 stage_timeout="${LCARS_STAGE_TIMEOUT:-0}"
+    local outf; outf="$(mktemp)"
+    run_with_watchdog "$stage_timeout" \
+      env LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+        bash "$SELF" "$action" --mission "$MISSION_ID" >"$outf" 2>&1 || rc=$?
+    out="$(cat "$outf")"; rm -f "$outf"
+
+    if [ "$rc" -eq 124 ]; then
+      # The stage overran the watchdog — a wedge, not a clean result. Park it as
+      # awaiting-human (never a silent freeze): record an actionable question and
+      # stop cleanly. Re-read state first in case the stage DID transition just
+      # before the kill (then we fall through to the normal handling below).
+      local wd_stage wd_await
+      wd_stage="$(json_str "$STATE" stage)"; wd_await="$(json_raw "$STATE" awaitingHuman)"
+      if [ "$wd_stage" = "$stage" ] && [ "$wd_await" != "true" ]; then
+        local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Re-run \`lcars run $MISSION_ID\` to resume; if it recurs, inspect the worker/heartbeat for a leaked child."
+        local wq; wq="$(mktemp)"; printf '%s\n' "$wdq" >"$wq"
+        write_pending "$wq" "$stage"; rm -f "$wq"
+        state_set_raw awaitingHuman true
+        state_set_str pendingQuestion "$wdq"
+        gh_relabel "lcars:awaiting-human" ""
+        emit_event error "$stage" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
+        drive_print_summary "$summary"
+        printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with `lcars respond %s`).\n' "$action" "$MISSION_ID"
+        printf '%s\n' "$out"
+        return 0
+      fi
+    fi
 
     local new_stage new_awaiting
     new_stage="$(json_str "$STATE" stage)"
@@ -5120,6 +5495,7 @@ SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
 EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
+RC_BRANCH=""; RC_SHA=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --step)        STEP=1; shift ;;
@@ -5139,6 +5515,10 @@ while [ $# -gt 0 ]; do
     --verdict=*)   VERDICT="${1#--verdict=}"; shift ;;
     --ticket)      TICKET="${2:-}"; shift 2 ;;
     --ticket=*)    TICKET="${1#--ticket=}"; shift ;;
+    --branch)      RC_BRANCH="${2:-}"; shift 2 ;;
+    --branch=*)    RC_BRANCH="${1#--branch=}"; shift ;;
+    --sha)         RC_SHA="${2:-}"; shift 2 ;;
+    --sha=*)       RC_SHA="${1#--sha=}"; shift ;;
     --tests)       TESTS="${2:-}"; shift 2 ;;
     --tests=*)     TESTS="${1#--tests=}"; shift ;;
     --result)      RESULT="${2:-}"; shift 2 ;;
@@ -5233,6 +5613,22 @@ case "$SUB" in
   # each loop pass; it is also the standalone test/maintenance entry point.
   # Best-effort: mirror_comments never fails the caller, so force exit 0.
   mirror-comments)  locate_mission "$MISSION_ID"; mirror_comments || true ;;
+  # Test hook for the repo-global replay mutex (concurrent-mission branch
+  # cross-contamination fix): drive replay_ticket_commit for ONE commit onto a
+  # named branch, under the lock. --branch <b> --sha <sha> [--ticket <t>]. Exits
+  # non-zero iff the replay failed (e.g. cherry-pick conflict).
+  replay-commit)
+    locate_mission "$MISSION_ID"
+    [ -n "$RC_BRANCH" ] || die "usage: run.sh replay-commit --mission <id> --branch <b> --sha <sha>"
+    [ -n "$RC_SHA" ]    || die "usage: run.sh replay-commit --mission <id> --branch <b> --sha <sha>"
+    replay_ticket_commit "$RC_BRANCH" "$RC_SHA" "${TICKET:-t-x}" ;;
+  # Test hook for the branch-CREATION contamination fix: create the mission's
+  # branch from its RECORDED base under the replay mutex (idempotent), exactly as
+  # cmd_implement does up front. --branch <b> overrides state.json's branch (so a
+  # test can drive both missions' branches from one mission dir). Always exits 0.
+  ensure-mission-branch)
+    locate_mission "$MISSION_ID"
+    ensure_mission_branch "${RC_BRANCH:-$(json_str "$STATE" branch)}" ;;
   # Session 65 test/maintenance hook: start the Implement comment heartbeat,
   # report its ticker pid, let it run its bounded ticks ($LCARS_COMMENT_HEARTBEAT_TICKS),
   # then stop it cleanly (no orphan). Exercises the heartbeat lifecycle (start /
@@ -5244,6 +5640,30 @@ case "$SUB" in
     # Wait for the bounded ticker to finish on its own, then ensure it's reaped.
     [ -n "${CM_HEARTBEAT_PID:-}" ] && wait "$CM_HEARTBEAT_PID" 2>/dev/null
     cm_heartbeat_stop
+    exit 0 ;;
+  # BUG-021 test hook: reproduce the Implement FLAG/ERROR/ESCALATION exit path that
+  # leaked the comment-heartbeat. cmd_implement arms the heartbeat-reap EXIT trap,
+  # then (inside the wave loop) calls replay_ticket_commit → acquire_replay_lock,
+  # whose trap USED to CLOBBER the heartbeat trap; an escalation `exit 0` afterwards
+  # would then release the lock but NEVER reap the heartbeat → an orphaned ticker.
+  # This hook arms the SAME heartbeat trap cmd_implement does, acquires the replay
+  # lock (the clobber point), then exits via a NON-clean escalation path WITHOUT an
+  # explicit cm_heartbeat_stop — exactly the leak path. It prints the ticker pid so
+  # the test asserts no orphan ticker (or its `sleep` child) survives the exit.
+  heartbeat-reap-test)
+    locate_mission "$MISSION_ID"
+    cm_heartbeat_start
+    # The exact trap cmd_implement arms right after cm_heartbeat_start.
+    trap 'declare -F cm_heartbeat_stop >/dev/null 2>&1 && cm_heartbeat_stop' EXIT INT TERM
+    printf 'TICK_PID=%s\n' "${CM_HEARTBEAT_PID:-}"
+    # Take the repo-global replay lock — the operation that re-arms the EXIT trap and
+    # (pre-fix) clobbered the heartbeat reap. This is the SAME call replay_ticket_commit
+    # makes inside the wave loop. We do NOT call cm_heartbeat_stop after it: this stands
+    # in for a flag/error/escalation branch that early-exits the stage.
+    acquire_replay_lock
+    release_replay_lock
+    # Escalation early-exit: NO explicit cm_heartbeat_stop. With the fix, the lock's
+    # composite EXIT trap still reaps the ticker; without it, the ticker orphans.
     exit 0 ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

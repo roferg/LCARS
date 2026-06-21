@@ -55,6 +55,43 @@ appended to your inputs with the gate's verdict and the runner's output. Read it
 it tells you whether your last suite passed-on-nothing or simply did not exercise
 the new behaviour. Use it to write tests that fail until the behaviour exists.
 
+## Shared, DEFENSIVE test doubles (avoid false cross-ticket regressions)
+
+After every ticket is green, the harness re-runs **all** tickets' suites together
+against the integrated code (the full-suite gate). A common failure there is NOT a
+real regression but **mock drift**: each ticket authors its own headless double of
+a host surface (a browser canvas/`2d` context, `Audio`, `Image`, `requestAnimation‑
+Frame`, the DOM, a network/host client…), and the doubles diverge — a method one
+ticket's double omits, but a *later* ticket's production code legitimately calls,
+makes the earlier ticket's suite **crash** (`TypeError: … is not a function`) when
+re-run against the integrated code. The game/feature is correct; only the test
+double is incomplete. To prevent this:
+
+1. **Build on the mission's SHARED test harness, don't re-mock ad hoc.** If the
+   repo's tests already define a shared host/browser double (e.g. a `harness.*` /
+   `setup.*` / test-support helper a prior ticket created), **import and EXTEND
+   it** — add the surface your ticket needs to that one shared double rather than
+   writing a fresh, partial mock private to your file. One coherent double for the
+   whole mission means an earlier suite never crashes on a later ticket's API.
+   (This is about the **test DOUBLE / setup helper**, not a passing test *suite* —
+   you still write your own dedicated, fail-first **test file** per rule 4 above;
+   never append assertions to an already-green suite.)
+2. **Make any host/surface mock DEFENSIVE — stub unknown methods as no-ops.** When
+   you do define or extend a host double (canvas context, audio, etc.), make it
+   tolerant of methods you did not explicitly stub: back it with a fallback so an
+   un-stubbed method call **records or no-ops instead of throwing**. In JS, wrap
+   the double in a `Proxy` whose `get` returns the real stub when present and a
+   harmless no-op function otherwise; in other languages use the equivalent
+   catch-all. A later ticket calling a method your double didn't anticipate then
+   degrades to a no-op (at worst a real behavioural assertion), never a hard crash
+   that fails an unrelated earlier ticket.
+3. **Do not let defensiveness hide a real failure.** A no-op fallback is only for
+   *incidental* surface methods (drawing/audio side-effects you don't assert on).
+   Still assert the **observable behaviour** your ticket's criteria require through
+   the real entrypoints — the fallback must never turn a behaviour you DO test into
+   a silent pass. The red gate still applies: your suite must FAIL until the ticket
+   is built.
+
 ## Output — files FIRST
 
 Creating the test file(s) on disk with your file-creation / file-writing tool is

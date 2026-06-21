@@ -5201,11 +5201,17 @@ export GH_LOG="$repoFS2/gh.log"; : >"$GH_LOG"
 rcFS2=0
 ( cd "$repoFS2" && LCARS_TEST_CMD="bash $FS_RUNNER" LCARS_GH_BIN="$repoFS2/gh" \
     bash "$SCRIPT" impl-advance --mission "$MID" >outFS2.txt 2>&1 ) || rcFS2=$?
-check "FS2. impl-advance FAILS when a later ticket regressed an earlier suite" \
-  "[ '$rcFS2' -ne 0 ]"
+# BUG-018: a full-suite regression no longer DIEs — it ESCALATES (awaiting-human)
+# and exits CLEANLY so the daemon can surface the reason. The gate still does NOT
+# advance to verify, still names the regressed ticket, and still flags a LATER
+# ticket as the cause — but now via a parked gate, not a bare error halt.
+check "FS2. a regression escalates cleanly (exit 0, not a bare error halt) [BUG-018]" \
+  "[ '$rcFS2' -eq 0 ]"
+check "FS2. the Mission is parked awaiting-human on a regression [BUG-018]" \
+  "grep -q '\"awaitingHuman\": *true' '$(state_of "$repoFS2")'"
 check "FS2. does NOT advance to verify on a regression (stays at implement)" \
   "grep -q '\"stage\": *\"implement\"' '$(state_of "$repoFS2")'"
-check "FS2. names the regressed earlier ticket (t-001) in the failure" \
+check "FS2. names the regressed earlier ticket (t-001) in the surfaced reason" \
   "grep -q 't-001' '$repoFS2/outFS2.txt'"
 check "FS2. surfaces that a LATER ticket caused the regression" \
   "grep -qiE 'later|regress' '$repoFS2/outFS2.txt'"
@@ -5331,8 +5337,13 @@ export GH_LOG="$repoFS6/gh.log"; : >"$GH_LOG"
 rcFS6=0
 ( cd "$repoFS6" && LCARS_TEST_CMD="bash $BRANCH_RUNNER" LCARS_GH_BIN="$repoFS6/gh" \
     bash "$SCRIPT" impl-advance --mission "$MID" >outFS6.txt 2>&1 ) || rcFS6=$?
-check "FS6. a genuine cross-ticket regression at the tip still FAILS" \
-  "[ '$rcFS6' -ne 0 ]"
+# BUG-018: a genuine regression now escalates cleanly (awaiting-human), exit 0 —
+# the gate still detects it, names the ticket, and refuses Verify, but as a parked
+# human gate rather than a bare die.
+check "FS6. a genuine cross-ticket regression escalates cleanly (exit 0) [BUG-018]" \
+  "[ '$rcFS6' -eq 0 ]"
+check "FS6. the Mission is parked awaiting-human on the real regression [BUG-018]" \
+  "grep -q '\"awaitingHuman\": *true' '$(state_of "$repoFS6")'"
 check "FS6. names the regressed earlier ticket (t-001)" \
   "grep -q 't-001' '$repoFS6/outFS6.txt'"
 check "FS6. surfaces that a LATER ticket caused the regression" \
@@ -5630,6 +5641,651 @@ repoL3="$(new_repo_with_implement_mission)"; arm_drive "$repoL3"
 drive "$repoL3" drive --mission "$MID" >/dev/null 2>&1 || true
 check "LOCK3. a completed drive leaves no driver.lock behind" \
   "[ ! -d '$(lock_dir_of "$repoL3")' ]"
+
+# ==========================================================================
+echo
+echo "lcars run — replay mutex: concurrent-mission branch cross-contamination"
+#
+# BUG (root-caused live, HIGH): two Missions running concurrently in ONE clone
+# cross-contaminated their branches. replay_ticket_commit cherry-picks a green
+# ticket's worktree commit onto the mission branch IN THE SHARED $REPO_ROOT —
+# `checkout branch; cherry-pick sha`. Under two missions that is non-atomic, so
+# mission B's checkout interleaves between A's checkout and A's cherry-pick and
+# A's commit lands on B's branch (confirmed: 2 of M2's commits ended up on M1's
+# branch). The fix wraps checkout-if-needed + cherry-pick in a REPO-GLOBAL
+# mkdir mutex (no flock on macOS), so each pick lands on its NAMED branch
+# regardless of which branch HEAD was left on.
+#
+# Build one repo with a base commit and two mission branches A and B; produce
+# one commit for each on a DETACHED worktree (exactly like the per-ticket build
+# stashes a .commit-sha). Then replay each via the `replay-commit` test hook and
+# assert it lands on the NAMED branch even when the shared HEAD starts on the
+# OTHER branch.
+
+# A repo with branches lcars/A and lcars/B off a shared base, plus a mission
+# pinned at implement so locate_mission resolves REPO_ROOT/MISSION_DIR/STATE.
+new_repo_two_branches() {
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" \
+      && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m base \
+      && git branch lcars/A && git branch lcars/B )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "concurrency",
+  "stage": "implement",
+  "githubIssue": 42,
+  "branch": "lcars/A"
+}
+EOF
+  echo "$repo"
+}
+
+# In a fresh DETACHED worktree at <branch>'s tip, write <file>=<content> and
+# commit it; echo the new commit SHA. Mimics the per-ticket frozen-base build.
+make_commit_in_wt() { # repo branch file content -> sha
+  local repo="$1" branch="$2" file="$3" content="$4"
+  local wt="$repo/.wt-$file"
+  ( cd "$repo" && git worktree add -q --detach "$wt" "$branch" >/dev/null 2>&1 )
+  printf '%s\n' "$content" >"$wt/$file"
+  ( cd "$wt" && git add -- "$file" >/dev/null 2>&1 \
+      && git commit -q -m "add $file" >/dev/null 2>&1 )
+  ( cd "$wt" && git rev-parse HEAD )
+  ( cd "$repo" && git worktree remove --force "$wt" >/dev/null 2>&1 )
+}
+
+run_replay() { # repo branch sha
+  ( cd "$1" && LCARS_GH_BIN=true bash "$SCRIPT" replay-commit \
+      --mission "$MID" --branch "$2" --sha "$3" --ticket t-x >/dev/null 2>&1 )
+}
+
+# --- RM1: a replay lands on its NAMED branch even when HEAD starts on the OTHER
+repoRM1="$(new_repo_two_branches)"
+BASE_RM1="$(cd "$repoRM1" && git rev-parse lcars/A)"
+shaA1="$(make_commit_in_wt "$repoRM1" lcars/A fileA.txt aaa | head -1)"
+# Force the shared working tree's HEAD onto branch B (the WRONG branch) — the
+# exact mis-start the race produces (a sibling mission left HEAD on its branch).
+( cd "$repoRM1" && git checkout -q lcars/B )
+rcRM1=0; run_replay "$repoRM1" lcars/A "$shaA1" || rcRM1=$?
+check "RM1. replay onto A from a B-HEAD start exits 0" "[ '$rcRM1' -eq 0 ]"
+check "RM1. the commit landed on branch A (fileA.txt in A's tree)" \
+  "( cd '$repoRM1' && git ls-tree -r --name-only lcars/A | qgrep -q '^fileA.txt$' )"
+check "RM1. branch B was NOT touched (no fileA.txt in B's tree)" \
+  "( cd '$repoRM1' && ! git ls-tree -r --name-only lcars/B | qgrep -q '^fileA.txt$' )"
+check "RM1. A is exactly one commit ahead of base" \
+  "[ \"\$(cd '$repoRM1' && git rev-list --count $BASE_RM1..lcars/A)\" = '1' ]"
+
+# --- RM2: NO cross-contamination when two replays target A and B in sequence
+# from mismatched starting HEADs (deterministic simulation of the interleave —
+# the key invariant the lock guarantees is "a replay ALWAYS lands on its named
+# branch"). After replaying A's commit onto A and B's commit onto B, the two
+# branches must share ZERO non-base commits.
+repoRM2="$(new_repo_two_branches)"
+BASE_RM2="$(cd "$repoRM2" && git rev-parse lcars/A)"
+shaA2="$(make_commit_in_wt "$repoRM2" lcars/A onlyA.txt AAA | head -1)"
+shaB2="$(make_commit_in_wt "$repoRM2" lcars/B onlyB.txt BBB | head -1)"
+# Replay each from a HEAD that does NOT match — A's replay while HEAD is on B,
+# then B's replay while HEAD is on A — so the lock's checkout-if-needed is what
+# steers each pick to the right branch.
+( cd "$repoRM2" && git checkout -q lcars/B ); run_replay "$repoRM2" lcars/A "$shaA2"
+( cd "$repoRM2" && git checkout -q lcars/A ); run_replay "$repoRM2" lcars/B "$shaB2"
+listA_RM2="$(cd "$repoRM2" && git rev-list $BASE_RM2..lcars/A | sort)"
+listB_RM2="$(cd "$repoRM2" && git rev-list $BASE_RM2..lcars/B | sort)"
+shared_RM2="$(comm -12 <(printf '%s\n' "$listA_RM2") <(printf '%s\n' "$listB_RM2") | grep -c .)"
+check "RM2. branches A and B share ZERO commits above base (no contamination)" \
+  "[ '$shared_RM2' = '0' ]"
+check "RM2. A carries ONLY its own file (onlyA.txt, not onlyB.txt)" \
+  "( cd '$repoRM2' && git ls-tree -r --name-only lcars/A | qgrep -q '^onlyA.txt$' \
+     && ! git ls-tree -r --name-only lcars/A | qgrep -q '^onlyB.txt$' )"
+check "RM2. B carries ONLY its own file (onlyB.txt, not onlyA.txt)" \
+  "( cd '$repoRM2' && git ls-tree -r --name-only lcars/B | qgrep -q '^onlyB.txt$' \
+     && ! git ls-tree -r --name-only lcars/B | qgrep -q '^onlyA.txt$' )"
+
+# --- RM3: the repo-global lock is actually TAKEN around the critical section.
+# The lock lives under the SHARED git common dir, so it is the SAME path for
+# every mission in the clone. We can't observe the brief held window from
+# outside, so instead assert (a) the lock helpers resolve a common-dir path and
+# (b) a STALE leftover lock (dead pid) does NOT deadlock the replay — it is
+# reclaimed and the replay still lands.
+repoRM3="$(new_repo_two_branches)"
+shaA3="$(make_commit_in_wt "$repoRM3" lcars/A fileC.txt ccc | head -1)"
+# Plant a stale lock dir (a dead pid) at the repo-global path.
+( exit 0 ) & DEAD3=$!; wait "$DEAD3" 2>/dev/null
+lock3="$repoRM3/.git/lcars/replay.lock"; mkdir -p "$lock3"; printf '%s' "$DEAD3" >"$lock3/pid"
+# Use a tiny stale timeout so the guard fires immediately for a (theoretically)
+# live pid too; the dead-pid path reclaims regardless.
+rcRM3=0
+( cd "$repoRM3" && LCARS_GH_BIN=true LCARS_REPLAY_LOCK_STALE_SECS=0 bash "$SCRIPT" \
+    replay-commit --mission "$MID" --branch lcars/A --sha "$shaA3" --ticket t-x >/dev/null 2>&1 ) || rcRM3=$?
+check "RM3. a stale repo-global replay lock is reclaimed (replay exits 0, no deadlock)" \
+  "[ '$rcRM3' -eq 0 ]"
+check "RM3. the replay still landed on A after reclaiming the stale lock" \
+  "( cd '$repoRM3' && git ls-tree -r --name-only lcars/A | qgrep -q '^fileC.txt$' )"
+check "RM3. the replay released its own lock on exit (no leftover lock dir)" \
+  "[ ! -d '$lock3' ]"
+
+# --- RM4: TRUE concurrent spawn — the actual race. Two replay processes, one
+# targeting A and one targeting B, each replaying many commits onto its own
+# branch IN THE SAME CLONE at the same time. WITHOUT the repo-global mutex one
+# process's checkout interleaves between the other's checkout and cherry-pick,
+# and a commit lands on the wrong branch (the live BUG). WITH the lock each pick
+# lands on its NAMED branch, so A and B share ZERO commits above base. This is
+# the test that FAILS against the pre-fix code and PASSES with the lock.
+repoRM4="$(new_repo_two_branches)"
+BASE_RM4="$(cd "$repoRM4" && git rev-parse lcars/A)"
+N_RM4=12
+# Pre-build N disjoint commits for each branch (each off the SHARED base, so any
+# can cherry-pick cleanly onto its branch — the disjoint-file fast path). Stash
+# their SHAs so the concurrent replay loops only do checkout+cherry-pick.
+shasA=(); shasB=()
+i=0; while [ "$i" -lt "$N_RM4" ]; do
+  shasA+=("$(make_commit_in_wt "$repoRM4" lcars/A "a_$i.txt" "A$i" | head -1)")
+  shasB+=("$(make_commit_in_wt "$repoRM4" lcars/B "b_$i.txt" "B$i" | head -1)")
+  i=$((i + 1))
+done
+replay_loop() { # branch sha...
+  local br="$1"; shift
+  local s
+  for s in "$@"; do
+    ( cd "$repoRM4" && LCARS_GH_BIN=true bash "$SCRIPT" replay-commit \
+        --mission "$MID" --branch "$br" --sha "$s" --ticket t-x >/dev/null 2>&1 ) || true
+  done
+}
+( cd "$repoRM4" && git checkout -q lcars/B )   # start HEAD mismatched for A's loop
+replay_loop lcars/A "${shasA[@]}" &
+replay_loop lcars/B "${shasB[@]}" &
+wait
+# Each branch must carry ONLY its own files; A and B share ZERO commits above base.
+a_has_b=0
+i=0; while [ "$i" -lt "$N_RM4" ]; do
+  ( cd "$repoRM4" && git ls-tree -r --name-only lcars/A | qgrep -q "^b_$i.txt$" ) && a_has_b=1
+  i=$((i + 1))
+done
+listA_RM4="$(cd "$repoRM4" && git rev-list $BASE_RM4..lcars/A | sort)"
+listB_RM4="$(cd "$repoRM4" && git rev-list $BASE_RM4..lcars/B | sort)"
+shared_RM4="$(comm -12 <(printf '%s\n' "$listA_RM4") <(printf '%s\n' "$listB_RM4") | grep -c .)"
+check "RM4. concurrent replays: branch A carries NONE of B's files (no contamination)" \
+  "[ '$a_has_b' = '0' ]"
+check "RM4. concurrent replays: A and B share ZERO commits above base" \
+  "[ '$shared_RM4' = '0' ]"
+
+# ==========================================================================
+echo
+echo "lcars run — branch CREATION: concurrent-mission cross-birth contamination"
+#
+# BUG (root-caused live, HIGH — the SECOND vector; the replay mutex above closed
+# only the REPLAY race): for a mission's FIRST ticket the branch doesn't exist,
+# so make_ticket_worktree returns empty and commit_ticket falls back to in-tree
+# mode, where `git checkout -b "$branch"` CREATES the branch from the CURRENT
+# $REPO_ROOT HEAD. Under two missions in ONE clone, that ambient HEAD is the
+# OTHER mission's branch (it committed first), so the new branch is BORN on top
+# of the sibling's commits — the mission's RECORDED base (state.json `base`,
+# default `main`) is ignored. The fix creates each mission's branch from its
+# recorded base, up front + idempotently, under the EXISTING replay mutex, so
+# the born-from-ambient-HEAD path never runs. Drives the CREATION vector: two
+# missions A and B off the SAME base, NO branches yet, born while HEAD is on the
+# OTHER mission's branch; assert each ends with ONLY its own commit and the two
+# share ZERO commits above base.
+
+# A repo with a real `main` base and TWO mission dirs (A, B) recording base=main
+# but NO branches yet. Echoes the repo path; sets BR_A / BR_B branch names.
+BR_A="lcars/feat-A"; BR_B="lcars/feat-B"
+new_repo_no_branches() {
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" \
+      && git init -q -b main && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m base )
+  local ma="$repo/.git/lcars/missions/$MID-A" mb="$repo/.git/lcars/missions/$MID-B"
+  mkdir -p "$ma" "$mb"
+  cat >"$ma/state.json" <<EOF
+{ "id": "$MID-A", "type": "feature", "title": "A", "stage": "implement",
+  "githubIssue": 1, "base": "main", "branch": "$BR_A" }
+EOF
+  cat >"$mb/state.json" <<EOF
+{ "id": "$MID-B", "type": "feature", "title": "B", "stage": "implement",
+  "githubIssue": 2, "base": "main", "branch": "$BR_B" }
+EOF
+  echo "$repo"
+}
+
+# Simulate the first-ticket in-tree commit for one mission: ensure its branch
+# exists (the fix's up-front create), check it out in the shared tree, write +
+# commit a file. The pre-fix code path is `checkout -b "$branch"` from the
+# AMBIENT HEAD — so this helper mimics that exact create-then-commit, but routes
+# the create through the harness's ensure-mission-branch hook so the test drives
+# the REAL fix. Leaves the shared tree's HEAD ON this branch (mimicking the
+# sibling-left-HEAD state the next mission's create then races against).
+born_and_commit() { # repo mission-id branch file
+  local repo="$1" mid="$2" branch="$3" file="$4"
+  ( cd "$repo" \
+      && LCARS_GH_BIN=true bash "$SCRIPT" ensure-mission-branch \
+           --mission "$mid" --branch "$branch" >/dev/null 2>&1 \
+      && git checkout -q "$branch" \
+      && printf '%s\n' "$file" >"$file" \
+      && git add -- "$file" >/dev/null 2>&1 \
+      && git commit -q -m "add $file" >/dev/null 2>&1 )
+}
+
+# --- BC1: a mission branch is BORN from its recorded base, not the ambient HEAD.
+repoBC1="$(new_repo_no_branches)"
+BASE_BC1="$(cd "$repoBC1" && git rev-parse main)"
+# Pollute the ambient HEAD: create + check out an unrelated sibling branch with
+# its OWN extra commit, so $REPO_ROOT HEAD is NOT base when A is born.
+( cd "$repoBC1" && git checkout -q -b "$BR_B" \
+    && printf 'b\n' >sibling.txt && git add -- sibling.txt >/dev/null 2>&1 \
+    && git commit -q -m sibling )
+( cd "$repoBC1" && LCARS_GH_BIN=true bash "$SCRIPT" ensure-mission-branch \
+    --mission "$MID-A" --branch "$BR_A" >/dev/null 2>&1 )
+check "BC1. branch A was created (exists)" \
+  "( cd '$repoBC1' && git show-ref --verify --quiet 'refs/heads/$BR_A' )"
+check "BC1. branch A is rooted at base, NOT the polluted ambient HEAD" \
+  "[ \"\$(cd '$repoBC1' && git rev-parse $BR_A)\" = '$BASE_BC1' ]"
+check "BC1. branch A did NOT inherit the sibling's commit (no sibling.txt)" \
+  "( cd '$repoBC1' && ! git ls-tree -r --name-only $BR_A | qgrep -q '^sibling.txt$' )"
+
+# --- BC2: ensure-mission-branch is IDEMPOTENT — a second call keeps A's commits.
+repoBC2="$(new_repo_no_branches)"
+( cd "$repoBC2" && LCARS_GH_BIN=true bash "$SCRIPT" ensure-mission-branch \
+    --mission "$MID-A" --branch "$BR_A" >/dev/null 2>&1 )
+born_sha_BC2="$( ( cd "$repoBC2" && git checkout -q "$BR_A" \
+    && printf 'x\n' >onlyA.txt && git add -- onlyA.txt >/dev/null 2>&1 \
+    && git commit -q -m onlyA && git rev-parse HEAD ) )"
+( cd "$repoBC2" && LCARS_GH_BIN=true bash "$SCRIPT" ensure-mission-branch \
+    --mission "$MID-A" --branch "$BR_A" >/dev/null 2>&1 )
+check "BC2. a second ensure does NOT reset the branch (commit preserved)" \
+  "[ \"\$(cd '$repoBC2' && git rev-parse $BR_A)\" = '$born_sha_BC2' ]"
+
+# --- BC3: THE LIVE BUG — two missions' FIRST tickets born concurrently in ONE
+# clone off the SAME base must NOT cross-contaminate. Each is born while the
+# shared tree's HEAD is on the OTHER mission's branch (born_and_commit leaves
+# HEAD there). After both, A and B must share ZERO commits above base. Against
+# the pre-fix code (checkout -b from ambient HEAD) the second-born inherits the
+# first's commit → shared >= 1 (reproduces the live "1 shared commit" finding);
+# with the fix (born from recorded base under the lock) shared == 0.
+repoBC3="$(new_repo_no_branches)"
+BASE_BC3="$(cd "$repoBC3" && git rev-parse main)"
+born_and_commit "$repoBC3" "$MID-A" "$BR_A" onlyA.txt   # leaves HEAD on A
+born_and_commit "$repoBC3" "$MID-B" "$BR_B" onlyB.txt   # B born while HEAD is on A
+listA_BC3="$(cd "$repoBC3" && git rev-list $BASE_BC3..$BR_A | sort)"
+listB_BC3="$(cd "$repoBC3" && git rev-list $BASE_BC3..$BR_B | sort)"
+shared_BC3="$(comm -12 <(printf '%s\n' "$listA_BC3") <(printf '%s\n' "$listB_BC3") | grep -c .)"
+check "BC3. A and B (born concurrently off one base) share ZERO commits above base" \
+  "[ '$shared_BC3' = '0' ]"
+check "BC3. B carries ONLY its own file (onlyB.txt, not onlyA.txt)" \
+  "( cd '$repoBC3' && git ls-tree -r --name-only $BR_B | qgrep -q '^onlyB.txt$' \
+     && ! git ls-tree -r --name-only $BR_B | qgrep -q '^onlyA.txt$' )"
+check "BC3. A carries ONLY its own file (onlyA.txt, not onlyB.txt)" \
+  "( cd '$repoBC3' && git ls-tree -r --name-only $BR_A | qgrep -q '^onlyA.txt$' \
+     && ! git ls-tree -r --name-only $BR_A | qgrep -q '^onlyB.txt$' )"
+check "BC3. A is exactly one commit ahead of base" \
+  "[ \"\$(cd '$repoBC3' && git rev-list --count $BASE_BC3..$BR_A)\" = '1' ]"
+check "BC3. B is exactly one commit ahead of base" \
+  "[ \"\$(cd '$repoBC3' && git rev-list --count $BASE_BC3..$BR_B)\" = '1' ]"
+
+# ==========================================================================
+echo "lcars run — BUG-018: a full-suite regression ESCALATES (awaiting-human), reason captured"
+#
+# Ground truth of BUG-018: when full_suite_gate (GUARDRAIL 4 / BUG-013) catches a
+# real cross-ticket regression, impl-advance USED TO `die` with a generic error —
+# the detailed reason went to stderr (which the daemon never captures) and the
+# Mission halted on an error with awaitingHuman NOT set, so the captain saw only
+# "implement failed" with no actionable gate. The fix routes a full-suite failure
+# through the SAME awaiting-human path the per-ticket attempt-cap uses: the gate's
+# detailed reason is read back from FULL_SUITE_SIGNAL and written into pending.json
+# + state.json.pendingQuestion, the awaiting-human label is applied, and the stage
+# STOPS CLEANLY (exit 0) — not a bare error halt. The gate itself is UNCHANGED.
+#
+# Reuses the FS_RUNNER + new_repo_fullsuite fixtures from the BUG-013 block above:
+# a built value of v3 means every ticket (each expecting v2) now FAILS against the
+# fully-built repo — a regression.
+
+# --- B18-1: a regression parks at awaiting-human (NOT a bare error halt) ------
+repoB18="$(new_repo_fullsuite v3)"; make_gh_stub "$repoB18/gh"
+export GH_LOG="$repoB18/gh.log"; : >"$GH_LOG"
+rcB18=0
+( cd "$repoB18" && LCARS_TEST_CMD="bash $FS_RUNNER" LCARS_GH_BIN="$repoB18/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outB18.txt 2>&1 ) || rcB18=$?
+sB18="$(state_of "$repoB18")"
+check "B18-1. a full-suite regression EXITS CLEANLY (exit 0, not a bare error halt)" \
+  "[ '$rcB18' -eq 0 ]"
+check "B18-1. the Mission is parked awaiting-human (state)" \
+  "grep -q '\"awaitingHuman\": *true' '$sB18'"
+check "B18-1. it stays at the implement stage (not advanced to verify)" \
+  "grep -q '\"stage\": *\"implement\"' '$sB18'"
+check "B18-1. the awaiting-human label is applied (a human gate, not a die)" \
+  "qgrep -q 'add-label.*lcars:awaiting-human' '$repoB18/gh.log'"
+
+# --- B18-2: the DETAILED reason is captured (pending.json + pendingQuestion) --
+check "B18-2. pending.json is written for the regression gate" \
+  "[ -f '$repoB18/.git/lcars/missions/$MID/pending.json' ]"
+check "B18-2. pending.json carries the full-suite reason (names the gate)" \
+  "qgrep -qi 'full-suite' '$repoB18/.git/lcars/missions/$MID/pending.json'"
+check "B18-2. pending.json names the regressed earlier ticket (t-001)" \
+  "qgrep -q 't-001' '$repoB18/.git/lcars/missions/$MID/pending.json'"
+check "B18-2. state.pendingQuestion carries the regression reason (not lost to stderr)" \
+  "qgrep -qi 'regress\\|full-suite' '$sB18'"
+check "B18-2. the gate reason is surfaced on stdout (the daemon captures it)" \
+  "qgrep -qi 'regression\\|full-suite' '$repoB18/outB18.txt'"
+
+# --- B18-3: a clean (all-green) mission STILL advances (no false escalation) --
+# Additive only: the escalation must fire ONLY on a real regression, never on a
+# green mission. built v2 → every ticket green → advance to verify, no gate.
+repoB18g="$(new_repo_fullsuite v2)"; make_gh_stub "$repoB18g/gh"
+export GH_LOG="$repoB18g/gh.log"; : >"$GH_LOG"
+rcB18g=0
+( cd "$repoB18g" && LCARS_TEST_CMD="bash $FS_RUNNER" LCARS_GH_BIN="$repoB18g/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outB18g.txt 2>&1 ) || rcB18g=$?
+check "B18-3. an all-green mission advances to verify (no false escalation)" \
+  "[ '$rcB18g' -eq 0 ] && grep -q '\"stage\": *\"verify\"' '$(state_of "$repoB18g")'"
+check "B18-3. an all-green mission is NOT parked awaiting-human" \
+  "! grep -q '\"awaitingHuman\": *true' '$(state_of "$repoB18g")'"
+
+# --- B18-4: a mock TypeError is flagged as a likely HARNESS GAP (BUG-019 link) -
+# When the runner output mentions a TypeError / undefined surface, the captured
+# reason must hint that it is likely an incomplete test MOCK (a harness gap) rather
+# than a real assertion failure — so the captain knows to complete the mock.
+TE_RUNNER="$TMPROOT/typeerror-runner.sh"
+cat >"$TE_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+[ -n "$d" ] && [ -d "$d" ] || { echo "no quarantined tests dir" >&2; exit 1; }
+# Simulate an earlier ticket's incomplete canvas mock crashing on a later API.
+echo "TypeError: ctx.strokeText is not a function" >&2
+exit 1
+EOF
+chmod +x "$TE_RUNNER"
+repoB18t="$(new_repo_fullsuite v2)"; make_gh_stub "$repoB18t/gh"
+export GH_LOG="$repoB18t/gh.log"; : >"$GH_LOG"
+rcB18t=0
+( cd "$repoB18t" && LCARS_TEST_CMD="bash $TE_RUNNER" LCARS_GH_BIN="$repoB18t/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >outB18t.txt 2>&1 ) || rcB18t=$?
+check "B18-4. a TypeError regression still parks awaiting-human (clean exit)" \
+  "[ '$rcB18t' -eq 0 ] && grep -q '\"awaitingHuman\": *true' '$(state_of "$repoB18t")'"
+check "B18-4. the reason flags a likely HARNESS GAP / incomplete mock (BUG-019)" \
+  "qgrep -qi 'harness gap\\|incomplete.*mock\\|mock.*incomplete' '$repoB18t/.git/lcars/missions/$MID/pending.json'"
+
+# ==========================================================================
+echo "lcars run — BUG-020: the Implement comment-heartbeat is reaped, no orphan, no wedge"
+#
+# Ground truth of BUG-020: the Implement-stage comment-mirror heartbeat (a ~60s
+# backgrounded ticker that refreshes the GitHub issue comment) leaked — under some
+# timing it outlived the stage, reparented to init (PPID=1) with a live `sleep`
+# child, and HELD the driver's command-substitution pipe open, wedging the
+# Implement→Verify handoff for ~19 min with no PR. The fixes:
+#   (a) cm_heartbeat_start detaches the ticker's stdin/stdout/stderr from the
+#       parent (</dev/null >/dev/null 2>&1 &) so it can NEVER hold the driver's
+#       `out="$(… implement …)"` pipe open.
+#   (b) cm_heartbeat_stop reaps the ticker AND its children deterministically
+#       (TERM, reap, then KILL) — no reparented orphan survives.
+#   (c) cmd_implement stops the heartbeat EXPLICITLY on the durable
+#       "IMPLEMENT: complete" handoff, not relying solely on the EXIT trap.
+#   (d) the driver runs each stage under a bounded watchdog so a wedged stage
+#       escalates rather than freezing silently.
+
+# A repo with an implement mission + a recorded githubIssue so the heartbeat arms.
+new_repo_hb() {
+  local repo; repo="$(new_repo_with_implement_mission)"
+  echo "$repo"
+}
+
+# --- B20-1: the heartbeat ticker does NOT inherit the parent's stdout pipe ----
+# If the ticker held the parent's stdout, a command substitution that spawns the
+# heartbeat would BLOCK until the ticker died. We prove it does not: capture the
+# heartbeat-test subcommand's stdout via `$(…)` with a small interval+ticks; if the
+# ticker leaked the pipe, this `$(…)` would hang past the bounded ticks. A wrapper
+# enforces a hard wall-clock ceiling so a regression FAILS (does not hang the suite).
+repoB20="$(new_repo_hb)"; make_gh_stub "$repoB20/gh"
+export GH_LOG="$repoB20/gh.log"; : >"$GH_LOG"
+hb_out=""; hb_rc=0
+# Run the heartbeat-test under a background+poll ceiling: 2 ticks at 1s ≈ 2-3s; a
+# 15s ceiling fails a pipe-leak (which would hang) without flaking on a slow box.
+(
+  cd "$repoB20" && LCARS_COMMENT_HEARTBEAT=1 LCARS_COMMENT_HEARTBEAT_TICKS=2 \
+    LCARS_GH_BIN="$repoB20/gh" bash "$SCRIPT" comment-heartbeat-test --mission "$MID"
+) >"$repoB20/hb.out" 2>&1 &
+hb_pid=$!
+hb_waited=0
+while [ "$hb_waited" -lt 15 ]; do
+  kill -0 "$hb_pid" 2>/dev/null || break
+  sleep 1; hb_waited=$((hb_waited + 1))
+done
+if kill -0 "$hb_pid" 2>/dev/null; then
+  kill -KILL "$hb_pid" 2>/dev/null || true; hb_rc=1
+fi
+wait "$hb_pid" 2>/dev/null || true
+hb_out="$(cat "$repoB20/hb.out")"
+check "B20-1. heartbeat-test returns within the ceiling (ticker never holds the pipe)" \
+  "[ '$hb_rc' -eq 0 ]"
+check "B20-1. heartbeat-test reported a ticker pid (the heartbeat actually armed)" \
+  "printf '%s' \"\$hb_out\" | qgrep -q 'TICK_PID='"
+
+# --- B20-2: no orphaned ticker / sleep child survives the heartbeat lifecycle -
+# After comment-heartbeat-test runs (start → bounded ticks → cm_heartbeat_stop),
+# the reported TICK_PID must be DEAD — no reparented orphan.
+hb_tickpid="$(printf '%s' "$hb_out" | sed -n 's/.*TICK_PID=\([0-9]*\).*/\1/p' | head -1)"
+hb_alive=1
+if [ -n "$hb_tickpid" ]; then
+  kill -0 "$hb_tickpid" 2>/dev/null && hb_alive=0 || hb_alive=1
+fi
+check "B20-2. the ticker pid is DEAD after the lifecycle (no orphan heartbeat)" \
+  "[ '$hb_alive' -eq 1 ]"
+
+# --- B20-3: cm_heartbeat_start redirects the ticker's fds (source-level guard) -
+# The pipe-leak fix is structural: assert the heartbeat subshell is launched with
+# stdin/stdout/stderr detached, so a future edit can't silently reintroduce the
+# wedge. (qgrep the comment-mirror source for the detached background launch.)
+CMSRC="$REPO_ROOT/skills/lcars-run/comment-mirror.sh"
+check "B20-3. cm_heartbeat_start detaches the ticker's fds (</dev/null >/dev/null 2>&1 &)" \
+  "qgrep -qF '</dev/null >/dev/null 2>&1 &' '$CMSRC'"
+
+# --- B20-4: the Implement stage stops the heartbeat on the durable complete path
+# cmd_implement must call cm_heartbeat_stop EXPLICITLY before dispatching
+# impl-advance on the "IMPLEMENT: complete" branch (not rely only on the EXIT trap).
+check "B20-4. cmd_implement reaps the heartbeat explicitly on the complete handoff" \
+  "awk '/IMPLEMENT: complete/{f=1} f&&/cm_heartbeat_stop/{print;exit}' '$SCRIPT' | qgrep -q cm_heartbeat_stop"
+
+# --- B20-5: the driver runs each stage under a bounded watchdog ---------------
+# A wedged stage must escalate, never hang silently. Assert the watchdog helper
+# exists and is wired into the driver's stage dispatch.
+check "B20-5. a stage watchdog helper exists (run_with_watchdog)" \
+  "qgrep -q 'run_with_watchdog()' '$SCRIPT'"
+check "B20-5. the driver dispatches the stage under the watchdog" \
+  "qgrep -q 'run_with_watchdog .*stage_timeout' '$SCRIPT'"
+check "B20-5. a stage timeout escalates to awaiting-human (not a silent freeze)" \
+  "awk '/rc.*-eq 124/{f=1} f&&/awaitingHuman true/{print;exit}' '$SCRIPT' | qgrep -q awaitingHuman"
+
+# ==========================================================================
+echo "lcars run — BUG-019: the Test-Writer prompt steers shared + defensive mocks"
+#
+# BUG-019 is a PROMPT-LEVEL, best-effort fix (no harness guarantee): the Test-Writer
+# stage prompt must instruct the worker to (a) build on / extend a SINGLE shared
+# per-mission test harness rather than a fresh ad-hoc mock per ticket, and (b) make
+# any host/browser-surface mock DEFENSIVE — stub unknown methods as no-ops (a Proxy/
+# fallback) so an earlier suite never crashes on a later ticket's legitimately-used
+# API. The guidance must be ADDITIVE — it must not weaken the red-gate fail-first /
+# no-trivially-green rules. We assert the guidance text is present and the red-gate
+# rules are still intact.
+TWMD="$REPO_ROOT/skills/lcars-run/stages/implement-test-writer.md"
+check "B19-1. the Test-Writer prompt mentions a SHARED test harness/double" \
+  "qgrep -qi 'shared.*harness\\|shared test double\\|shared.*double' '$TWMD'"
+check "B19-2. it steers EXTENDING the shared double over a fresh ad-hoc mock" \
+  "qgrep -qi 'extend' '$TWMD' && qgrep -qi 'ad hoc\\|ad-hoc' '$TWMD'"
+check "B19-3. it requires DEFENSIVE mocks — unknown methods as no-ops (Proxy/fallback)" \
+  "qgrep -qi 'no-op' '$TWMD' && qgrep -qi 'proxy\\|fallback' '$TWMD'"
+check "B19-4. it cites the cross-ticket regression / mock-drift motivation" \
+  "qgrep -qi 'cross-ticket\\|drift\\|full-suite' '$TWMD'"
+check "B19-5. the red-gate fail-first rule is STILL intact (not weakened)" \
+  "qgrep -qi 'must.*FAIL\\|fail until\\|red gate' '$TWMD'"
+check "B19-6. the dedicated fail-first test-file rule is preserved" \
+  "qgrep -qi 'dedicated.*test file\\|dedicated, fail-first' '$TWMD'"
+
+# ==========================================================================
+echo "lcars run — BUG-021: the comment-heartbeat is reaped on a flag/error/escalation exit"
+#
+# Ground truth of BUG-021: the BUG-020 fd-detach stopped the STALL, and the clean
+# "IMPLEMENT: complete" path reaps the heartbeat explicitly. But cmd_implement arms
+# its heartbeat-reap EXIT trap, then (inside the wave loop) calls replay_ticket_commit
+# → acquire_replay_lock, whose own `trap 'release_replay_lock' EXIT INT TERM` CLOBBERED
+# the heartbeat trap. So a later FLAG/ERROR/ESCALATION exit released the lock but never
+# reaped the heartbeat → an orphaned `while … gh issue comment …; sleep 60; done` loop
+# (PPID=1) kept POSTing forever. Fix: acquire_replay_lock's exit trap ALSO reaps the
+# heartbeat (idempotent / no-op when none is running), so NO exit path can skip the reap.
+
+# --- B21-1: heartbeat reaped after acquire_replay_lock + a NON-clean exit ----
+# The heartbeat-reap-test hook arms the heartbeat, then takes the replay lock (the
+# clobber point), then exits WITHOUT an explicit cm_heartbeat_stop — exactly the
+# escalation early-exit path. Under the fix the lock's composite EXIT trap reaps the
+# ticker; the reported TICK_PID (and any `sleep` child) must be DEAD afterwards.
+repoB21="$(new_repo_with_implement_mission)"; make_gh_stub "$repoB21/gh"
+export GH_LOG="$repoB21/gh.log"; : >"$GH_LOG"
+b21_out=""; b21_rc=0
+(
+  cd "$repoB21" && LCARS_COMMENT_HEARTBEAT=1 \
+    LCARS_GH_BIN="$repoB21/gh" bash "$SCRIPT" heartbeat-reap-test --mission "$MID"
+) >"$repoB21/b21.out" 2>&1 &
+b21_pid=$!
+b21_waited=0
+while [ "$b21_waited" -lt 15 ]; do
+  kill -0 "$b21_pid" 2>/dev/null || break
+  sleep 1; b21_waited=$((b21_waited + 1))
+done
+if kill -0 "$b21_pid" 2>/dev/null; then kill -KILL "$b21_pid" 2>/dev/null || true; b21_rc=1; fi
+wait "$b21_pid" 2>/dev/null || true
+b21_out="$(cat "$repoB21/b21.out")"
+check "B21-1. heartbeat-reap-test returns within the ceiling (no wedge)" "[ '$b21_rc' -eq 0 ]"
+check "B21-1. the heartbeat actually armed (TICK_PID reported)" \
+  "printf '%s' \"\$b21_out\" | qgrep -q 'TICK_PID='"
+
+b21_tickpid="$(printf '%s' "$b21_out" | sed -n 's/.*TICK_PID=\([0-9]*\).*/\1/p' | head -1)"
+# Give the EXIT trap's TERM→KILL a beat to land, then assert the ticker is DEAD.
+sleep 1
+b21_alive=1
+if [ -n "$b21_tickpid" ]; then kill -0 "$b21_tickpid" 2>/dev/null && b21_alive=0 || b21_alive=1; fi
+check "B21-1. the ticker pid is DEAD after a flag/error/escalation exit (no orphan loop)" \
+  "[ '$b21_alive' -eq 1 ]"
+# Belt-and-braces: no orphaned `sleep` child of the dead ticker survives either.
+b21_kids=""
+[ -n "$b21_tickpid" ] && b21_kids="$(ps -o pid= --ppid "$b21_tickpid" 2>/dev/null | tr -d ' ')"
+check "B21-1. no orphaned heartbeat child (sleep) survives the exit" "[ -z '$b21_kids' ]"
+
+# --- B21-2: source-level guard — the replay-lock trap also reaps the heartbeat -
+# Structural assertion so a future edit cannot silently reintroduce the clobber:
+# acquire_replay_lock's EXIT/INT/TERM trap must reference cm_heartbeat_stop.
+check "B21-2. acquire_replay_lock's exit trap also reaps the heartbeat (cm_heartbeat_stop)" \
+  "awk '/acquire_replay_lock\\(\\)/{f=1} f&&/trap .*release_replay_lock.*cm_heartbeat_stop.* EXIT INT TERM/{print;exit}' '$SCRIPT' | qgrep -q cm_heartbeat_stop"
+check "B21-2. cm_heartbeat_stop is idempotent (clears CM_HEARTBEAT_PID before signalling)" \
+  "awk '/^cm_heartbeat_stop\\(\\)/{f=1} f&&/CM_HEARTBEAT_PID=\"\"/{print;exit}' '$REPO_ROOT/skills/lcars-run/comment-mirror.sh' | qgrep -q CM_HEARTBEAT_PID"
+
+# ==========================================================================
+echo "lcars run — BUG-022: the red gate rejects a non-COMPILING test back to the Test-Writer"
+#
+# Ground truth of BUG-022: a Test-Writer that emits a NON-COMPILING test (a SyntaxError,
+# an import/parse error, a leftover `<REPLACE>` placeholder) produces a non-zero exit,
+# which the red gate USED to accept as "valid red" → it handed the broken contract to the
+# Implementer, who cannot edit the immutable test to fix the syntax → flags the ticket.
+# Fix: the red gate triages the runner OUTPUT — a CLEAR compile/load failure is REJECTED
+# back to the Test-Writer (re-author, with the runner's error as feedback) via the SAME
+# RED_GATE_SIGNAL loop a trivially-green suite uses; a normal ASSERTION failure still
+# passes the gate untouched. Conservative: only unambiguous compile/load signatures divert.
+
+# A runner that HONORS $LCARS_TESTS_DIR and emits a node-style error keyed on the test
+# file's content: a SyntaxError (compile/load) when the file carries a syntax marker,
+# else a plain assertion failure. Vacuously GREEN on an empty dir so the empty-dir probe
+# proves the command reacted to the var (so the non-zero exit is about the new tests).
+NODELIKE_RUNNER="$TMPROOT/nodelike-runner.sh"
+cat >"$NODELIKE_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests collected (vacuous green)"; exit 0; }
+# Inspect the quarantined files: a compile/load failure vs a real assertion failure.
+if grep -rql 'SYNTAX_ERROR_MARKER\|<REPLACE>' "$d" 2>/dev/null; then
+  bad="$(grep -rl 'SYNTAX_ERROR_MARKER\|<REPLACE>' "$d" 2>/dev/null | head -1)"
+  # Mimic node loading a module that fails to parse — error BEFORE any test runs.
+  echo "$bad:1" >&2
+  echo "const track<REPLACE> = makeTracker()" >&2
+  echo "           ^^^^^^^^^" >&2
+  echo "" >&2
+  echo "SyntaxError: Unexpected token '<'" >&2
+  echo "    at compileSourceTextModule (node:internal/modules/esm/utils)" >&2
+  exit 1
+fi
+# Otherwise: a normal assertion failure (the file LOADED, ran, and an assert failed).
+echo "not ok 1 - adds two numbers" >&2
+echo "  AssertionError [ERR_ASSERTION]: expected 5 to equal 4" >&2
+echo "# tests 1 / # fail 1" >&2
+exit 1
+EOF
+chmod +x "$NODELIKE_RUNNER"
+
+# --- B22-1: a SyntaxError (compile/load) suite is REJECTED, never quarantined --
+repoB22="$(new_repo_with_implement_mission)"; make_gh_stub "$repoB22/gh"
+export GH_LOG="$repoB22/gh.log"; : >"$GH_LOG"
+tB22="$repoB22/tw"; mkdir -p "$tB22"
+# A test file that asserts something (passes GUARDRAIL 3) but does NOT compile.
+printf 'const track<REPLACE> = makeTracker()\nit("works", () => expect(track.value).toBe(42))  // SYNTAX_ERROR_MARKER\n' >"$tB22/broken.test.js"
+rcB22=0
+( cd "$repoB22" && LCARS_TEST_CMD="bash $NODELIKE_RUNNER" LCARS_GH_BIN="$repoB22/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tB22" >outB22.txt 2>&1 ) || rcB22=$?
+check "B22-1. red gate REJECTS a non-compiling (SyntaxError) suite" "[ '$rcB22' -ne 0 ]"
+check "B22-1. the rejection cites COMPILE/LOAD (not a plain 'must FAIL first')" \
+  "grep -qiE 'COMPILE|LOAD|did NOT fail on an assertion|SyntaxError|parse' '$repoB22/outB22.txt'"
+check "B22-1. a non-compiling suite is NOT quarantined (never reaches the Implementer)" \
+  "[ ! -d '$repoB22/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# --- B22-2: the captured signal feeds the Test-Writer re-author loop ----------
+# The rejection must write the durable red-gate signal so the next cold Test-Writer
+# attempt is re-prompted with the runner's compile error (the SAME loop a green suite
+# triggers). impl-save-tests removes its OWN signal on the die, but the rejection text
+# (which carries the runner output) is what the caller surfaces; assert it names the
+# runner's SyntaxError so the re-author has the error to fix.
+check "B22-2. the rejection carries the runner's compile error for re-author feedback" \
+  "grep -qi 'SyntaxError' '$repoB22/outB22.txt'"
+
+# --- B22-3: an UNSUBSTITUTED placeholder token alone is treated as compile-fail -
+# Even if a runner does not say 'SyntaxError', a leftover <REPLACE>/<TODO> in the
+# OUTPUT is an unambiguous unsubstituted placeholder → reject back to the Test-Writer.
+PLACEHOLDER_RUNNER="$TMPROOT/placeholder-runner.sh"
+cat >"$PLACEHOLDER_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 collected"; exit 0; }
+echo "ReferenceError: <REPLACE> is not a function" >&2
+exit 1
+EOF
+chmod +x "$PLACEHOLDER_RUNNER"
+repoB22p="$(new_repo_with_implement_mission)"; make_gh_stub "$repoB22p/gh"
+export GH_LOG="$repoB22p/gh.log"; : >"$GH_LOG"
+tB22p="$repoB22p/tw"; make_tests_dir "$tB22p"
+rcB22p=0
+( cd "$repoB22p" && LCARS_TEST_CMD="bash $PLACEHOLDER_RUNNER" LCARS_GH_BIN="$repoB22p/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tB22p" >outB22p.txt 2>&1 ) || rcB22p=$?
+check "B22-3. an unsubstituted placeholder (<REPLACE>) in the output is rejected" "[ '$rcB22p' -ne 0 ]"
+check "B22-3. the placeholder rejection is NOT quarantined" \
+  "[ ! -d '$repoB22p/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# --- B22-4: a NORMAL assertion failure still PASSES the red gate (not weakened) -
+# The additive triage must NOT divert a genuine assertion red. The same node-like
+# runner, given a file WITHOUT a syntax marker, emits an AssertionError — a valid red.
+# It must be ACCEPTED and quarantined, exactly as before BUG-022.
+repoB22a="$(new_repo_with_implement_mission)"; make_gh_stub "$repoB22a/gh"
+export GH_LOG="$repoB22a/gh.log"; : >"$GH_LOG"
+tB22a="$repoB22a/tw"; make_tests_dir "$tB22a"   # spec.test.js — no SYNTAX_ERROR_MARKER
+rcB22a=0
+( cd "$repoB22a" && LCARS_TEST_CMD="bash $NODELIKE_RUNNER" LCARS_GH_BIN="$repoB22a/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tB22a" >outB22a.txt 2>&1 ) || rcB22a=$?
+check "B22-4. red gate ACCEPTS a genuine assertion failure (valid red, not weakened)" \
+  "[ '$rcB22a' -eq 0 ]"
+check "B22-4. an accepted assertion-red suite IS quarantined for the Implementer" \
+  "[ -f '$repoB22a/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test.js' ]"
+
+# --- B22-5: source-level guard — the red gate's RED branch triages compile-fail
+check "B22-5. red_gate_ok routes a compile/load failure to a rejection (red_gate_compile_failure)" \
+  "qgrep -q 'red_gate_compile_failure' '$SCRIPT'"
 
 # ==========================================================================
 echo

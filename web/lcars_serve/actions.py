@@ -119,7 +119,8 @@ OUTPUT CONTRACT — print ONLY a single JSON object (no prose around it):
     {"status":"question",
      "question":{"text":"<the one question>",
                  "choices":["<opt>", ...],          // optional
-                 "recommended":"<your lead answer>"},// optional
+                 "recommended":"<your lead answer>", // optional
+                 "closing":true},                    // ONLY on the final turn
      "prd":"<the PARTIAL PRD markdown assembled so far>"}
   • When alignment is reached (the captain has confirmed the load-bearing
     decisions through the interview):
@@ -127,6 +128,12 @@ OUTPUT CONTRACT — print ONLY a single JSON object (no prose around it):
      "prd":"<the FULL, well-formed PRD markdown>",
      "adr":"<the ADR markdown, or null for a trivial mission>",
      "modelOverride":"<scope:tier, or null>"}
+
+The CLOSING turn (per the skill): when you believe alignment is reached, your
+LAST question MUST be the explicit "anything else before I file?" check-in, and
+that question object MUST carry "closing":true so the captain's UI can show the
+"estimating & creating mission" phase when they confirm. Do NOT emit status:done
+until the captain has answered that closing question affirmatively.
 
 The PRD/ADR shapes and the required sections are exactly as the skill specifies.
 === lcars-file skill (the Align interview — follow it) ===

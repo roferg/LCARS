@@ -383,6 +383,89 @@ class LocalAdapterTest(unittest.TestCase):
         detail = LocalAdapter(self.tmp).mission("m-001")
         self.assertTrue(detail["running"])
 
+    # ── BUG-017: a running, non-gated card shows its in-flight events stage ──
+    def _events(self, mid, rows):
+        d = fx.mission_dir(self.tmp, mid)
+        fx.write_jsonl(os.path.join(d, "events.jsonl"), rows)
+
+    def test_running_mission_uses_inflight_events_stage_not_state_stage(self):
+        """The crux of BUG-017: state.json.stage is the RESUME pointer (lags). A
+        running mission's column must come from events.jsonl's latest open
+        stage_start (the stage actually executing), not the stale state.stage."""
+        # state.json says align (resume pointer), but the latest open stage_start
+        # is research — the running card belongs in the Research column.
+        fx.plant_simple(self.tmp, "m-run", stage="align")
+        self._lock("m-run", os.getpid())
+        self._events("m-run", [
+            {"ts": 1, "stage": "research", "type": "stage_start",
+             "detail": "starting"},
+        ])
+        board = self._board()
+        self.assertEqual([m["id"] for m in board["columns"]["align"]], [])
+        col = board["columns"]["research"]
+        self.assertEqual([m["id"] for m in col], ["m-run"])
+        self.assertEqual(col[0]["stage"], "research")
+
+    def test_running_inflight_is_latest_open_stage_after_a_stage_done(self):
+        """A completed stage_done closes its stage; the following open stage_start
+        is the in-flight one. research done → validate started ⇒ Validate column."""
+        fx.plant_simple(self.tmp, "m-run", stage="align")
+        self._lock("m-run", os.getpid())
+        self._events("m-run", [
+            {"ts": 1, "stage": "research", "type": "stage_start", "detail": ""},
+            {"ts": 2, "stage": "research", "type": "stage_done", "detail": ""},
+            {"ts": 3, "stage": "validate", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-run")
+        self.assertEqual(m["stage"], "validate")
+
+    def test_running_falls_back_to_state_stage_with_no_stage_events(self):
+        """No stage_start events yet ⇒ keep state.json.stage (the resume pointer)."""
+        fx.plant_simple(self.tmp, "m-run", stage="plan")
+        self._lock("m-run", os.getpid())
+        self._events("m-run", [
+            {"ts": 1, "stage": "plan", "type": "ticket_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-run")
+        self.assertEqual(m["stage"], "plan")
+
+    def test_idle_mission_keeps_state_stage_even_with_open_stage_event(self):
+        """The in-flight override is RUNNING-only. An idle mission (no live driver
+        lock) keeps state.json.stage even if a stale stage_start is on disk —
+        avoids a crashed run leaving a card stuck in a column it isn't running."""
+        fx.plant_simple(self.tmp, "m-idle", stage="align")
+        # no driver lock ⇒ not running.
+        self._events("m-idle", [
+            {"ts": 1, "stage": "research", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-idle")
+        self.assertFalse(m["running"])
+        self.assertEqual(m["stage"], "align")
+
+    def test_awaiting_human_still_uses_pending_stage_not_events(self):
+        """The awaiting-human → pending.json.stage rule is UNCHANGED by BUG-017."""
+        fx.plant_gated(self.tmp, "m-gate", resume_stage="align",
+                       inflight_stage="research")
+        # even if events disagree, a gated mission follows pending.json.stage.
+        self._events("m-gate", [
+            {"ts": 1, "stage": "validate", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-gate")
+        self.assertTrue(m["awaiting"])
+        self.assertEqual(m["stage"], "research")
+
+    def test_paused_running_mission_keeps_state_stage(self):
+        """A paused mission (even if its lock is still live) is not 'actively
+        executing' a stage — keep the resume pointer, don't chase events."""
+        fx.plant_paused(self.tmp, "m-pause", stage="plan")
+        self._lock("m-pause", os.getpid())
+        self._events("m-pause", [
+            {"ts": 1, "stage": "implement", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-pause")
+        self.assertTrue(m["paused"])
+        self.assertEqual(m["stage"], "plan")
+
     # ── S70-A: board-level meta (which repo am I attached to) ──
     def test_board_meta_present_with_repo_and_mode(self):
         fx.plant_simple(self.tmp, "m-001", stage="plan")

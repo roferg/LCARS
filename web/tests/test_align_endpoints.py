@@ -252,6 +252,32 @@ class AlignAnswerTest(AlignBase):
         # the partial PRD comes back for the live right-panel.
         self.assertIn("Goal", ans["state"]["prd"])
 
+    def test_closing_flag_round_trips_to_the_question(self):
+        """BUG-015: the grill's final 'anything else before I file?' check-in is
+        flagged closing:true on the question turn; the daemon must pass it through
+        UNCHANGED so the Align console can swap to the 'estimating & creating
+        mission' loading copy when the captain answers it (the slow estimate runs
+        inside that POST)."""
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: G\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": "Anything else before I file this?",
+                          "recommended": "Go ahead", "closing": True},
+             "prd": "# Mission: G\n\n**Type:** feature\n**Goal:** ...\n"},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        # the opening question is a normal grill turn — not closing.
+        self.assertFalse(start["state"]["question"].get("closing"))
+        _, ans = self._post("/api/align/%s/answer" % sid,
+                            {"answer": "On completion"})
+        self.assertEqual(ans["state"]["status"], "question")
+        # the closing check-in carries the flag through verbatim.
+        self.assertTrue(ans["state"]["question"]["closing"])
+
     def test_answer_unknown_session_is_404(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self._post("/api/align/no-such-session/answer", {"answer": "x"})

@@ -221,12 +221,34 @@ A mid-flight override is also possible without re-filing via the
 `LCARS_MODEL_OVERRIDE='<scope>:<tier>'` env var on `lcars run` (the env path wins
 over the persisted one).
 
-When alignment is reached, write the PRD. **"Alignment reached" REQUIRES that the
-captain has confirmed the load-bearing decisions through the interview** — not
-the model deciding them on the captain's behalf. If a real decision went into the
-PRD without a captain exchange, alignment is **not** reached. It **must** contain
-all of these sections, in this exact shape — `file.sh` rejects a PRD that is
-missing any of them:
+### The closing turn — confirm before filing (NON-SKIPPABLE)
+
+Before you finalize the PRD and dispatch `file.sh`, you **must** make one
+explicit, final check-in with the captain. The grill does **not** get to decide
+on its own that it has heard enough and file silently — filing is an explicit,
+captain-confirmed act (cf. BUG-001, BUG-015). When you believe alignment is
+reached, end your turn with a closing question in this spirit:
+
+> I think I have what I need to file this. **Before I do — anything else?** Any
+> other questions, thoughts, topics, or corrections you want to fold in before I
+> lock the PRD and create the Mission?
+
+Then **stop and wait** — this is a HARD STOP with NO TIMEOUT, exactly like every
+other gate above. Silence/away is **never** a "go ahead."
+
+- If the captain raises anything (a new requirement, a tweak, a question),
+  resolve it — that may reopen the interview for one or more turns — then ask the
+  closing question again.
+- **Only on the captain's explicit confirmation** ("I'm good", "go ahead", "file
+  it", etc.) do you finalize the PRD and run `file.sh`. Until that confirmation
+  the Mission is **NOT** filed and nothing is written.
+
+When (and only when) the captain has confirmed, write the PRD. **"Alignment
+reached" REQUIRES that the captain has confirmed the load-bearing decisions
+through the interview** — not the model deciding them on the captain's behalf. If
+a real decision went into the PRD without a captain exchange, alignment is
+**not** reached. It **must** contain all of these sections, in this exact shape —
+`file.sh` rejects a PRD that is missing any of them:
 
 ```markdown
 # Mission: <title>
@@ -256,6 +278,10 @@ PRD
 ```
 
 ## STEP 3–5 — Persist, open the issue, confirm
+
+**Only run this step after the captain's explicit closing confirmation** (the
+closing turn in STEP 2). Do not dispatch `file.sh` on your own judgement that the
+grill is "done" — the captain's "go ahead" is what authorizes filing.
 
 Hand the PRD to the bundled script. It mints the mission ID
 (`lcars-YYYYMMDD-NNN`, sequenced per day), creates

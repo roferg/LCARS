@@ -122,12 +122,27 @@ class LocalAdapter(object):
         # status.sh's gate rule: when awaiting-human and a pending.json exists,
         # the in-flight column comes from pending.json.stage, not state.stage.
         pending = _load_json(os.path.join(d, "pending.json"))
+        events = _load_jsonl(os.path.join(d, "events.jsonl"))
         if awaiting and isinstance(pending, dict):
             pstage = pending.get("stage")
             if pstage:
                 stage = pstage
             if not question:
                 question = pending.get("question")
+        elif running and not paused:
+            # BUG-017: state.json.stage is the RESUME pointer — it lags the stage a
+            # running mission is actually executing (a card otherwise sits in the
+            # PREVIOUS column for the whole of Research/Implement; on a slow engine
+            # it's blatant, and a fast stage never lights up its column at all). For
+            # a RUNNING, non-gated mission the truer in-flight stage is in
+            # events.jsonl: the latest `stage_start` not yet closed by a `stage_done`
+            # / subsequent `stage_start`. Use it as the column; fall back to
+            # state.json.stage when there are no stage events. Read-only — state.json
+            # semantics are untouched (it stays the resume pointer). The
+            # awaiting-human → pending.json.stage rule above is left unchanged.
+            inflight = _inflight_stage(events)
+            if inflight:
+                stage = inflight
 
         estimate = _load_json(os.path.join(d, "estimate.json"))
         est = estimate if isinstance(estimate, dict) else {}
@@ -153,7 +168,6 @@ class LocalAdapter(object):
 
         plan = _load_json(os.path.join(d, "plan.json"))
         waves = _load_json(os.path.join(d, "waves.json"))
-        events = _load_jsonl(os.path.join(d, "events.jsonl"))
 
         tickets = _tickets(plan, waves, events)
         progress = _progress(waves, events) if board.normalise_stage(stage) == "implement" else None
@@ -264,6 +278,34 @@ class LocalAdapter(object):
                 "text": _human(ev),
             })
         return feed
+
+
+# --- BUG-017: the in-flight stage from events.jsonl --------------------------
+# state.json.stage is the resume pointer and LAGS the running stage. The truer
+# in-flight stage for a running, non-gated mission is the latest `stage_start`
+# event not yet closed by a `stage_done` (or superseded by a later `stage_start`).
+# events.jsonl is chronological (append-only; run.sh emit_event), so a single
+# forward walk suffices: a `stage_start` opens an in-flight stage; the matching
+# `stage_done` (same stage) closes it; a later `stage_start` supersedes any still
+# open. Returns the canonical column key, or None when there are no stage events
+# (caller falls back to state.json.stage). Crash-proof: any malformed row skipped.
+def _inflight_stage(events):
+    inflight = None
+    for ev in (events or []):
+        if not isinstance(ev, dict):
+            continue
+        typ = ev.get("type")
+        st = ev.get("stage")
+        if typ == "stage_start" and st:
+            inflight = st
+        elif typ == "stage_done" and st:
+            # close the open stage (whether or not it matches — a stage_done means
+            # that stage finished; the next stage_start opens the following one).
+            if inflight is not None and board.normalise_stage(st) == board.normalise_stage(inflight):
+                inflight = None
+    if inflight is None:
+        return None
+    return board.normalise_stage(inflight)
 
 
 # --- ticket + progress derivation (shared shape; mirrors render.sh ideas) ----

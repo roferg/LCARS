@@ -714,12 +714,19 @@ function renderAlignConsole(state) {
   var sid = state.sessionId;
   var picked = { val: null };
   var asked = 0;
+  // BUG-015: is the question currently on screen the grill's CLOSING turn (the
+  // explicit "anything else before I file?" check-in)? When it is, answering it
+  // confirms filing — the server then runs the cold opus estimator + file.sh
+  // (~1–2 min) inside that POST — so the in-flight spinner must read as
+  // "estimating & creating mission", NOT the between-questions grill copy.
+  var closing = { val: false };
 
   function paintPRD(md) { renderPrdDoc(prd, md || ""); }
 
   function paintQuestion(st) {
     asked += 1;
     var q = st.question || {};
+    closing.val = !!q.closing;
     count.textContent = "Question " + asked;
     qtext.textContent = q.text || "What would you like to refine?";
     choices.innerHTML = ""; picked.val = null; free.value = ""; err.hidden = true;
@@ -763,8 +770,13 @@ function renderAlignConsole(state) {
     // UX-2: the worker turn (and, on the final answer, the file.sh hand-off)
     // runs server-side within this POST. Show the themed working indicator the
     // whole time; it clears on the next question, on done, or on error.
-    busy.querySelector(".lcars-working-label").textContent =
-      "Formulating the next inquiry…";
+    // BUG-015: when the captain is answering the CLOSING turn, this POST runs the
+    // slow cold-opus estimate + mission creation — show a DISTINCT loading copy so
+    // it reads as progress ("estimating & creating mission"), not a stuck grill
+    // spinner. Otherwise it's a normal between-questions grill turn.
+    busy.querySelector(".lcars-working-label").textContent = closing.val
+      ? "Estimating cost & creating mission…"
+      : "Formulating the next inquiry…";
     busy.hidden = false;
     postWrite("/api/align/" + enc(sid) + "/answer", { answer: answer },
       function (st) {

@@ -181,7 +181,7 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
    card's top-right. Decorative: pointer-events:none so it never blocks the card
    click. Copilot reads in the bright UI ink, Claude in the LCARS amber. */
 .engine-badge{position:absolute;top:7px;right:8px;width:16px;height:16px;
-  opacity:.22;pointer-events:none;z-index:2;line-height:0}
+  opacity:.45;pointer-events:none;z-index:2;line-height:0}
 .engine-badge svg{display:block;width:16px;height:16px}
 .engine-badge svg path{fill:currentColor}
 .engine-copilot{color:var(--lcars-text-bright,#eaf2ff)}
@@ -200,6 +200,10 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .card.paused > *{opacity:.55}
 .card.paused > .pause-status,
 .card.paused .pause-action{opacity:1}
+/* BUG-016: keep the engine watermark legible on a paused card — the .55 child-dim
+   would re-mute it below its already-decorative .45, so opt it back to its own
+   base opacity (still decorative, just readable). */
+.card.paused > .engine-badge{opacity:.45}
 /* UX-21/UX-22: the paused/pausing status label is HIGH-contrast (not dim text). */
 .card .pause-status{color:var(--lcars-text-bright);font-family:var(--font-display);
   letter-spacing:.08em;margin-top:7px;font-size:10px}
