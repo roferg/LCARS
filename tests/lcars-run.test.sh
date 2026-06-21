@@ -6288,6 +6288,338 @@ check "B22-5. red_gate_ok routes a compile/load failure to a rejection (red_gate
   "qgrep -q 'red_gate_compile_failure' '$SCRIPT'"
 
 # ==========================================================================
+# BUG-026 — a Mission-Log bug child (parentMission set) does NOT open a per-bug
+# PR at Verify and emits NO degraded "needs attention" gate. Its fix folds onto
+# the parent's branch.
+# ==========================================================================
+
+# Build a verify-stage mission with parentMission set, a recorded branch, and NO
+# prUrl, then drive open-pr + drive (verify). It must skip the PR-open entirely.
+new_repo_with_bugchild_verify_mission() { # [parent]
+  local parent="${1:-lcars-20260620-002}"
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init && git branch "lcars/$MID" )
+  local base; base="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "bug",
+  "title": "Score labels overlap on game-over screen",
+  "stage": "verify",
+  "githubIssue": 47,
+  "branch": "lcars/$MID",
+  "base": "$base",
+  "parentMission": "$parent",
+  "parentIssue": 46
+}
+EOF
+  printf '# Mission: bug fix\n' >"$m/prd.md"
+  echo "$repo"
+}
+
+repoBC="$(new_repo_with_bugchild_verify_mission)"; make_gh_stub "$repoBC/gh"
+export GH_LOG="$repoBC/gh.log"; : >"$GH_LOG"
+rcBC=0
+( cd "$repoBC" && LCARS_GH_BIN="$repoBC/gh" bash "$SCRIPT" open-pr \
+    --mission "$MID" >"$repoBC/outBC.txt" 2>&1 ) || rcBC=$?
+check "BUG-026. open-pr exits 0 for a bug child (no PR opened)" "[ '$rcBC' -eq 0 ]"
+check "BUG-026. open-pr announces it SKIPPED the PR-open (folds onto parent)" \
+  "qgrep -qi 'skipped' '$repoBC/outBC.txt'"
+check "BUG-026. open-pr records NO prUrl for a bug child" \
+  "! qgrep -q '\"prUrl\"' '$(state_of "$repoBC")'"
+check "BUG-026. open-pr emits NO pr_opened event for a bug child" \
+  "[ ! -f '$repoBC/.git/lcars/missions/$MID/events.jsonl' ] || ! qgrep -q 'pr_opened' '$repoBC/.git/lcars/missions/$MID/events.jsonl'"
+
+# Drive the whole verify stage (drive --step into verify is flaky; call drive on a
+# mission already AT verify, which exercises drive_verify directly).
+repoBCd="$(new_repo_with_bugchild_verify_mission)"
+make_gh_stub "$repoBCd/gh"; export GH_LOG="$repoBCd/gh.log"; : >"$GH_LOG"
+# a notify stub so a stray gate notification can't escape / hang
+cat >"$repoBCd/notify" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$repoBCd/notify"
+rcBCd=0
+( cd "$repoBCd" && LCARS_GH_BIN="$repoBCd/gh" LCARS_NOTIFY="$repoBCd/notify" \
+    bash "$SCRIPT" drive --mission "$MID" --step >"$repoBCd/outBCd.txt" 2>&1 ) || rcBCd=$?
+check "BUG-026. drive (verify) on a bug child does NOT emit a degraded gate" \
+  "! qgrep -qi 'PR open degraded' '$repoBCd/outBCd.txt' && ( [ ! -f '$repoBCd/.git/lcars/missions/$MID/events.jsonl' ] || ! qgrep -qi 'degraded' '$repoBCd/.git/lcars/missions/$MID/events.jsonl' )"
+check "BUG-026. drive (verify) on a bug child does NOT open a PR" \
+  "! qgrep -q '\"prUrl\"' '$(state_of "$repoBCd")'"
+check "BUG-026. drive (verify) on a bug child surfaces the fold-onto-parent line" \
+  "qgrep -qi 'fold' '$repoBCd/outBCd.txt'"
+
+# Control: a TOP-LEVEL mission (no parentMission) still opens a PR (or hits the
+# degraded path) — i.e. the gate is keyed on parentMission, not disabled wholesale.
+repoBCt="$(new_repo_with_bugchild_verify_mission)"
+# strip parentMission/parentIssue → a top-level mission
+sed '/"parentMission"/d; /"parentIssue"/d' "$(state_of "$repoBCt")" >"$repoBCt/s.tmp" \
+  && mv "$repoBCt/s.tmp" "$(state_of "$repoBCt")"
+make_gh_stub "$repoBCt/gh"; export GH_LOG="$repoBCt/gh.log"; : >"$GH_LOG"
+rcBCt=0
+( cd "$repoBCt" && LCARS_GH_BIN="$repoBCt/gh" bash "$SCRIPT" open-pr \
+    --mission "$MID" >"$repoBCt/outBCt.txt" 2>&1 ) || rcBCt=$?
+check "BUG-026. a TOP-LEVEL mission does NOT take the bug-child skip path" \
+  "! qgrep -qi 'folds onto the parent' '$repoBCt/outBCt.txt'"
+
+# ==========================================================================
+# BUG-029 — a full-suite regression SELF-HEALS (auto-retry the regressing ticket's
+# implementer) before escalating; escalates only after the cap; a clean build does
+# not self-heal.
+# ==========================================================================
+
+# A controllable test runner for the full-suite gate: it goes RED while a sentinel
+# file exists at $SELFHEAL_SENTINEL and GREEN once it's gone. The implementer stub
+# (below) removes the sentinel when it sees the self-heal reconcile feedback,
+# simulating an implementer that reconciles the regression. The runner honours
+# $LCARS_TESTS_DIR (vacuous green on an empty quarantine) so the red gate / no-op
+# paths behave; the sentinel only governs the full-suite re-test.
+SELFHEAL_RUNNER="$TMPROOT/selfheal-runner.sh"
+cat >"$SELFHEAL_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests (vacuous green)"; exit 0; }
+if [ -n "${SELFHEAL_SENTINEL:-}" ] && [ -f "$SELFHEAL_SENTINEL" ]; then
+  echo "REGRESSION: an earlier ticket's contract is broken" >&2
+  exit 1
+fi
+echo "all suites green"
+exit 0
+EOF
+chmod +x "$SELFHEAL_RUNNER"
+
+# A worker stub whose implementer removes the sentinel ONLY when handed the
+# self-heal reconcile feedback (so the FIRST gate run is red, and the heal works).
+# It also writes a real source file + a valid result.json + a .commit-sha so the
+# parent's cherry-pick / worktree mechanics have something to act on.
+make_worker_stub_selfheal() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="${2:-}"; shift 2 ;; *) shift ;; esac; done
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"
+    printf 'it("works", () => expect(value).toBe(42))\n' >"$out/tests/spec.test.js"
+    ;;
+  implement-implementer)
+    printf 'export const fix = true;\n' > impl-fix.js
+    tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+    # If this dispatch carries the self-heal reconcile feedback, "fix" the
+    # regression by removing the sentinel (the gate goes green next run).
+    if printf '%s' "$prompt" | grep -q 'FULL-SUITE RECONCILE FEEDBACK'; then
+      [ -n "${SELFHEAL_SENTINEL:-}" ] && rm -f "$SELFHEAL_SENTINEL"
+    fi
+    cat >"$out/result.json" <<JSON
+{
+  "ticketId": "${tid:-t-001}",
+  "passed": true,
+  "attempts": 2,
+  "summary": "Reconciled the slice."
+}
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# A never-heals worker: implementer ignores the feedback (sentinel stays) so the
+# self-heal cap is exhausted and the gate escalates.
+make_worker_stub_nofix() { # path
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+prompt=""
+while [ $# -gt 0 ]; do case "$1" in -p) prompt="${2:-}"; shift 2 ;; *) shift ;; esac; done
+out="$LCARS_WORK_OUT"
+case "$LCARS_WORKER_ROLE" in
+  implement-test-writer)
+    mkdir -p "$out/tests"; printf 'it("x", () => expect(1).toBe(1))\n' >"$out/tests/spec.test.js" ;;
+  implement-implementer)
+    printf 'export const x = true;\n' > impl-x.js
+    tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
+    cat >"$out/result.json" <<JSON
+{ "ticketId": "${tid:-t-001}", "passed": true, "attempts": 2, "summary": "no-op." }
+JSON
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# Build a verify-precheck repo: a real branch, two GREEN tickets with quarantined
+# suites + result.json on disk, waves.json (t-001→#101, t-002→#102), config
+# testCommand = the sentinel runner, and the sentinel ARMED (gate starts red).
+new_repo_with_green_implement_regression() {
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init && git branch "lcars/$MID" \
+      && git checkout -q "lcars/$MID" )
+  local base; base="main"
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "implement",
+  "githubIssue": 42,
+  "branch": "lcars/$MID",
+  "base": "$base"
+}
+EOF
+  printf '# Mission: Add dark mode\n' >"$m/prd.md"
+  write_approved_plan_json "$m/approved-plan.json"
+  # 2-ticket waves so t-001→#101, t-002→#102 (the translation fixture). The
+  # EXPANDED shape is what parse_waves_table / ticket_issue read (one field per
+  # line), exactly like write_waves_json.
+  cat >"$m/waves.json" <<'JSON'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": 101
+      },
+      {
+        "id": "t-002",
+        "issue": 102
+      }
+    ]
+  }
+]
+JSON
+  # config with the sentinel runner as testCommand
+  cat >"$repo/.git/lcars/config.json" <<EOF
+{ "testCommand": "bash $SELFHEAL_RUNNER" }
+EOF
+  # both tickets green: quarantined suite + result.json + an immutable-tests
+  # snapshot (so the self-heal's LCARS_REUSE_TESTS genuinely SKIPS Phase 1 — only
+  # the Implementer re-runs, the locked contract is never re-authored).
+  local t
+  for t in t-001 t-002; do
+    mkdir -p "$m/tickets/$t/tests"
+    printf 'it("works", () => expect(value).toBe(42))\n' >"$m/tickets/$t/tests/spec.test.js"
+    write_result "$m/tickets/$t/result.json" "$t" true 2
+    ( cd "$m/tickets/$t/tests" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do
+        f="${f#./}"; printf '%s  %s\n' "$(shasum -a 256 "$f" | awk '{print $1}')" "$f"
+      done ) >"$m/tickets/$t/tests.sha256"
+  done
+  echo "$repo"
+}
+
+# --- BUG-029.1: a regression SELF-HEALS (implementer retried), then advances ---
+repoSH="$(new_repo_with_green_implement_regression)"
+make_worker_stub_selfheal "$repoSH/worker"; make_gh_stub "$repoSH/gh"
+export GH_LOG="$repoSH/gh.log"; : >"$GH_LOG"
+export SELFHEAL_SENTINEL="$repoSH/.git/lcars/missions/$MID/.regression-active"
+: >"$SELFHEAL_SENTINEL"   # arm the regression
+rcSH=0
+( cd "$repoSH" && SELFHEAL_SENTINEL="$SELFHEAL_SENTINEL" \
+    LCARS_WORKER_BIN="$repoSH/worker" LCARS_GH_BIN="$repoSH/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >"$repoSH/outSH.txt" 2>&1 ) || rcSH=$?
+EVSH="$repoSH/.git/lcars/missions/$MID/events.jsonl"
+check "BUG-029. a full-suite regression triggers a self-heal implementer retry" \
+  "[ -f '$EVSH' ] && qgrep -q 'selfheal' '$EVSH'"
+check "BUG-029. the regressing ticket's implementer was re-dispatched (worker ran)" \
+  "qgrep -q 'implement-implementer' '$repoSH/worker.log' 2>/dev/null || [ -f '$repoSH/.git/lcars/missions/$MID/tickets/t-002/result.json' ]"
+check "BUG-029. self-heal SUCCEEDED — emits selfheal_ok" \
+  "qgrep -q 'selfheal_ok' '$EVSH'"
+check "BUG-029. after healing, the mission ADVANCES to verify (no escalation)" \
+  "qgrep -q '\"stage\": *\"verify\"' '$(state_of "$repoSH")'"
+check "BUG-029. a healed mission is NOT left awaiting-human" \
+  "! qgrep -q '\"awaitingHuman\": *true' '$(state_of "$repoSH")'"
+unset SELFHEAL_SENTINEL
+
+# --- BUG-029.2: it escalates ONLY after the cap (never heals) ------------------
+repoSHc="$(new_repo_with_green_implement_regression)"
+make_worker_stub_nofix "$repoSHc/worker"; make_gh_stub "$repoSHc/gh"
+export GH_LOG="$repoSHc/gh.log"; : >"$GH_LOG"
+cat >"$repoSHc/notify" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$repoSHc/notify"
+SENTC="$repoSHc/.git/lcars/missions/$MID/.regression-active"; : >"$SENTC"
+rcSHc=0
+( cd "$repoSHc" && SELFHEAL_SENTINEL="$SENTC" LCARS_SELFHEAL_CAP=2 \
+    LCARS_WORKER_BIN="$repoSHc/worker" LCARS_GH_BIN="$repoSHc/gh" LCARS_NOTIFY="$repoSHc/notify" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >"$repoSHc/outSHc.txt" 2>&1 ) || rcSHc=$?
+EVSHc="$repoSHc/.git/lcars/missions/$MID/events.jsonl"
+check "BUG-029. an unhealable regression attempts self-heal up to the cap" \
+  "[ \"\$(qgrep -c 'self-heal round' '$EVSHc' 2>/dev/null || echo 0)\" -ge 2 ]"
+check "BUG-029. respects \$LCARS_SELFHEAL_CAP (2 rounds, not the default 3)" \
+  "[ \"\$(qgrep -c 'self-heal round' '$EVSHc' 2>/dev/null || echo 0)\" -eq 2 ]"
+check "BUG-029. after the cap it emits selfheal_exhausted" \
+  "qgrep -q 'selfheal_exhausted' '$EVSHc'"
+check "BUG-029. ONLY after the cap does it escalate to awaiting-human" \
+  "qgrep -q '\"awaitingHuman\": *true' '$(state_of "$repoSHc")'"
+check "BUG-029. the cap escalation stays at implement (does not advance to verify)" \
+  "qgrep -q '\"stage\": *\"implement\"' '$(state_of "$repoSHc")'"
+
+# --- BUG-029.3: a CLEAN build (no regression) does NOT self-heal --------------
+repoSHk="$(new_repo_with_green_implement_regression)"
+make_worker_stub_selfheal "$repoSHk/worker"; make_gh_stub "$repoSHk/gh"
+export GH_LOG="$repoSHk/gh.log"; : >"$GH_LOG"
+# DO NOT arm the sentinel → the full-suite gate is green from the start.
+rcSHk=0
+( cd "$repoSHk" && LCARS_WORKER_BIN="$repoSHk/worker" LCARS_GH_BIN="$repoSHk/gh" \
+    bash "$SCRIPT" impl-advance --mission "$MID" >"$repoSHk/outSHk.txt" 2>&1 ) || rcSHk=$?
+EVSHk="$repoSHk/.git/lcars/missions/$MID/events.jsonl"
+check "BUG-029. a clean build advances to verify" \
+  "[ '$rcSHk' -eq 0 ] && qgrep -q '\"stage\": *\"verify\"' '$(state_of "$repoSHk")'"
+check "BUG-029. a clean build does NOT emit any self-heal event" \
+  "[ ! -f '$EVSHk' ] || ! qgrep -q 'selfheal' '$EVSHk'"
+
+# Source guard: the cap is a named, env-overridable constant.
+check "BUG-029. SELFHEAL_CAP is a named constant overridable via \$LCARS_SELFHEAL_CAP" \
+  "qgrep -q 'SELFHEAL_CAP=\"\${LCARS_SELFHEAL_CAP:-3}\"' '$SCRIPT'"
+check "BUG-029. the self-heal reuses implement-ticket with LCARS_REUSE_TESTS (locked tests immutable)" \
+  "qgrep -q 'LCARS_REUSE_TESTS=1' '$SCRIPT' && qgrep -q 'LCARS_SELFHEAL_FEEDBACK' '$SCRIPT'"
+
+# ==========================================================================
+# BUG-027 — an escalation writes structured legible fields into pending.json:
+# humanSummary, escalationType, technicalDetail; and translates t-XXX → issue #.
+# ==========================================================================
+
+# Reuse the never-heals path: after the cap it escalates, writing the fields.
+PJ27="$repoSHc/.git/lcars/missions/$MID/pending.json"
+check "BUG-027. escalation writes pending.json" "[ -f '$PJ27' ]"
+check "BUG-027. pending.json carries humanSummary (plain language)" \
+  "qgrep -q '\"humanSummary\"' '$PJ27'"
+check "BUG-027. pending.json carries escalationType = regression" \
+  "qgrep -q '\"escalationType\": *\"regression\"' '$PJ27'"
+check "BUG-027. pending.json carries technicalDetail (the raw reason)" \
+  "qgrep -q '\"technicalDetail\"' '$PJ27'"
+check "BUG-027. humanSummary speaks GitHub-issue language (translated t-001 → #101)" \
+  "qgrep -q 'issue #101' '$PJ27'"
+check "BUG-027. humanSummary does NOT leak the internal t-XXX id" \
+  "! ( qgrep '\"humanSummary\"' '$PJ27' | qgrep -q 't-001' )"
+check "BUG-027. the raw t-XXX id is preserved verbatim inside technicalDetail" \
+  "qgrep '\"technicalDetail\"' '$PJ27' | qgrep -q 't-001'"
+check "BUG-027. the existing question text is preserved (back-compat)" \
+  "qgrep -q '\"questions\"' '$PJ27'"
+
+# An ordinary (non-structured) gate still writes byte-compatible pending.json: the
+# validate-pause path sets none of the new fields.
+repo27v="$(new_repo_with_validate_mission)"; make_gh_stub "$repo27v/gh"
+export GH_LOG="$repo27v/gh.log"; : >"$GH_LOG"
+q27="$repo27v/q.txt"; printf 'Global or per-course leaderboard?\n' >"$q27"
+( cd "$repo27v" && LCARS_GH_BIN="$repo27v/gh" bash "$SCRIPT" validate-pause \
+    --mission "$MID" --questions "$q27" >/dev/null 2>&1 )
+PJ27v="$repo27v/.git/lcars/missions/$MID/pending.json"
+check "BUG-027. a non-regression gate omits the structured fields (back-compat)" \
+  "[ -f '$PJ27v' ] && ! qgrep -q '\"escalationType\"' '$PJ27v' && ! qgrep -q '\"humanSummary\"' '$PJ27v'"
+
+# ==========================================================================
 echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

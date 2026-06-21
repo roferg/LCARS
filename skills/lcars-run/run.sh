@@ -798,6 +798,20 @@ write_pending() { # questions-file  stage
   {
     echo '{'
     printf '  "stage": "%s",\n' "$2"
+    # BUG-027: structured, legible escalation fields the viewscreen consumes. They
+    # are OPTIONAL — only emitted when the caller exports them — so every existing
+    # gate (no fields set) writes byte-identical pending.json as before, preserving
+    # back-compat. When present they sit ALONGSIDE the raw question text (never
+    # replacing it): humanSummary (plain-language, GitHub-issue language — no
+    # internal t-XXX ids), escalationType (regression|scope|cap so the UI picks
+    # type-appropriate copy), and technicalDetail (the raw reason + command,
+    # verbatim, where the internal ids may remain).
+    [ -n "${LCARS_PENDING_HUMAN_SUMMARY:-}" ] && \
+      printf '  "humanSummary": "%s",\n' "$(json_escape "$LCARS_PENDING_HUMAN_SUMMARY")"
+    [ -n "${LCARS_PENDING_ESCALATION_TYPE:-}" ] && \
+      printf '  "escalationType": "%s",\n' "$(json_escape "$LCARS_PENDING_ESCALATION_TYPE")"
+    [ -n "${LCARS_PENDING_TECHNICAL_DETAIL:-}" ] && \
+      printf '  "technicalDetail": "%s",\n' "$(json_escape "$LCARS_PENDING_TECHNICAL_DETAIL")"
     echo '  "questions": ['
     awk 'NF{ gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); q[++n]=$0 }
          END{ for(i=1;i<=n;i++) printf "    \"%s\"%s\n", q[i], (i<n?",":"") }' "$1"
@@ -2372,6 +2386,168 @@ NOTE: a failing suite's output mentions a TypeError / undefined surface — this
   return 1
 }
 
+# --- BUG-027: translate internal t-XXX ticket ids → GitHub issue language ----
+# The human-facing copy must speak the board's language. Given a space-separated
+# list of internal ticket ids, echo a human string mapping each to its GitHub
+# issue number (#N, via the Schedule-written waves.json issue field) — or, when a
+# ticket has no mapped issue, to its plan title (never the raw t-XXX). Used to
+# build humanSummary; the raw t-XXX stays only in technicalDetail.
+tickets_to_issues() { # ticketId...
+  local waves="$MISSION_DIR/waves.json" plan="$MISSION_DIR/approved-plan.json"
+  local out="" id issue title piece
+  for id in "$@"; do
+    [ -n "$id" ] || continue
+    issue=""
+    [ -f "$waves" ] && issue="$(ticket_issue "$waves" "$id")"
+    case "$issue" in
+      ''|null) issue="" ;;
+    esac
+    if [ -n "$issue" ]; then
+      piece="issue #$issue"
+    else
+      title=""
+      [ -f "$plan" ] && title="$(ticket_title "$plan" "$id" 2>/dev/null || true)"
+      if [ -n "$title" ]; then piece="\"$title\""; else piece="$id"; fi
+    fi
+    out="${out:+$out, }$piece"
+  done
+  printf '%s' "$out"
+}
+
+# Pull a ticket's title from a plan/approved-plan.json (jq-free) for the t-XXX
+# fallback above. Best-effort; empty when not found.
+ticket_title() { # plan.json  ticketId
+  awk -v want="$2" '
+    /"id"[[:space:]]*:/    { n=split($0,a,"\""); if (n>=4) cur=a[4]; next }
+    /"title"[[:space:]]*:/ { if (cur==want) {
+        v=$0; sub(/.*"title"[[:space:]]*:[[:space:]]*"/,"",v); sub(/".*/,"",v)
+        print v; exit } }
+  ' "$1"
+}
+
+# --- BUG-027: clean, legible escalation of a full-suite regression ----------
+# Mirrors the BUG-018 awaiting-human escalation (validate-pause shape), but ALSO
+# writes the structured fields the viewscreen consumes: a plain-language
+# humanSummary in GitHub-issue language (t-XXX translated), escalationType=
+# "regression", and the verbatim raw reason as technicalDetail (where t-XXX may
+# remain). The existing question text is preserved for back-compat. Reached only
+# AFTER self-heal exhausts its cap (genuinely irreducible).
+escalate_full_suite_regression() { # reason  ordered ticketId...
+  local reason="$1"; shift
+  local ordered="$*"
+  # The regressing (just-built, latest-in-plan-order) ticket and, when the gate
+  # named the regressed earlier suites, those tickets — translated to issue #s.
+  local regressor=""; for regressor in $ordered; do :; done   # last id in plan order
+  local regressed_ids; regressed_ids="$(printf '%s\n' "$reason" \
+    | sed -n 's/.*no longer pass against the fully-built repo: \([^.]*\)\..*/\1/p' | head -1)"
+  local victims; victims="$(tickets_to_issues $regressed_ids)"
+  local culprit; culprit="$(tickets_to_issues "$regressor")"
+  local summary
+  if [ -n "$victims" ]; then
+    summary="Two changes conflict — the fix for $culprit re-broke a test from $victims. Reply with how to reconcile them, send the mission back to re-fix, or drop one."
+  else
+    summary="A change conflicts with the rest of the branch and the harness could not auto-reconcile it. Reply with how to reconcile, or send the mission back to re-fix."
+  fi
+
+  local q; q="$(mktemp)"
+  printf '%s\n' "$reason" >"$q"
+  LCARS_PENDING_HUMAN_SUMMARY="$summary" \
+  LCARS_PENDING_ESCALATION_TYPE="regression" \
+  LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
+    write_pending "$q" "implement"
+  rm -f "$q"
+  state_set_raw awaitingHuman true
+  state_set_str pendingQuestion "$summary"
+  # In-flight stage label (implement) first, THEN the awaiting-human overlay, so
+  # the parked card sits squarely in the Implement column (mirror validate-pause).
+  gh_relabel "lcars:implement lcars:awaiting-human" ""
+
+  emit_event gate implement "full-suite regression — self-heal exhausted, awaiting your answer: $summary" \
+    "phase=full-suite-gate"
+
+  echo "IMPLEMENT: full-suite regression — self-heal exhausted, flagged the human"
+  printf '%s\n' "$summary"
+  echo "  Stage: implement (awaiting-human). Resolve with \`lcars respond $MISSION_ID\`."
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+}
+
+# --- BUG-029: self-heal a full-suite regression before escalating -----------
+# Auto-iterate the implementer of the regressing (latest-in-plan-order) ticket
+# with a harness-authored reconcile instruction, re-running the full-suite gate
+# after each attempt, up to a cap. Reuses the EXISTING implement-ticket
+# re-dispatch + LCARS_REUSE_TESTS path (the locked tests stay immutable — only the
+# Implementer re-runs), mirroring the S76 reconcile / same-file rebuild loops.
+# Returns 0 once every suite passes again (healed), non-zero when the cap is hit
+# (caller escalates). The last failing reason is written to $SELFHEAL_LAST_REASON.
+SELFHEAL_CAP="${LCARS_SELFHEAL_CAP:-3}"
+case "$SELFHEAL_CAP" in ''|*[!0-9]*) SELFHEAL_CAP=3 ;; esac
+SELFHEAL_LAST_REASON=""
+self_heal_full_suite() { # reason  ordered ticketId...
+  local reason="$1"; shift
+  local ordered="$*"
+  SELFHEAL_LAST_REASON="$MISSION_DIR/selfheal-last-reason.txt"
+  printf '%s\n' "$reason" >"$SELFHEAL_LAST_REASON"
+
+  # The regressing ticket is the latest one built (last in plan order).
+  local regressor=""; for regressor in $ordered; do :; done
+  [ -n "$regressor" ] || return 1
+
+  # Resolve the worktree base + branch the same way cmd_implement's rebuild does so
+  # the re-dispatched implementer composes on the CURRENT mission-branch tip.
+  local branch; branch="$(json_str "$STATE" branch)"
+  local wt_base="$MISSION_DIR/selfheal-wt"
+
+  local round=0 fssig
+  while [ "$round" -lt "$SELFHEAL_CAP" ]; do
+    round=$((round + 1))
+    emit_event selfheal implement "self-heal round $round/$SELFHEAL_CAP — re-running $regressor's implementer to reconcile the regression" \
+      "ticket=$regressor" "round=$round"
+
+    # Re-dispatch ONLY the regressing ticket's Implementer with the reconcile
+    # feedback. LCARS_REUSE_TESTS keeps the locked tests immutable (Phase 1 is
+    # skipped), so only production code can change — never the contract.
+    local irc=0
+    rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null
+    LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    LCARS_TICKET_WT_BASE="$wt_base" LCARS_TICKET_BRANCH="$branch" LCARS_REUSE_TESTS=1 \
+    LCARS_SELFHEAL_FEEDBACK="$(cat "$SELFHEAL_LAST_REASON")" \
+      bash "$SELF" implement-ticket --mission "$MISSION_ID" --ticket "$regressor" >/dev/null 2>&1 || irc=$?
+
+    # A flagged ticket (its own 5-attempt cap) set awaitingHuman in shared state —
+    # the per-ticket attempt cap already handled it; stop self-healing here.
+    if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
+      emit_event selfheal implement "self-heal round $round flagged the ticket's own attempt cap — stopping self-heal" \
+        "ticket=$regressor" "round=$round"
+      return 1
+    fi
+
+    # Cherry-pick the rebuild's fresh commit onto the mission branch (the worktree
+    # build committed on a detached HEAD), exactly like the same-file rebuild path,
+    # so the full-suite gate re-runs against the integrated tip.
+    local sha; sha="$(cat "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null || true)"
+    if [ -n "$sha" ] && [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+      "$GIT_BIN" -C "$REPO_ROOT" checkout -q "$branch" 2>/dev/null || :
+      "$GIT_BIN" -C "$REPO_ROOT" cherry-pick "$sha" >/dev/null 2>&1 \
+        || "$GIT_BIN" -C "$REPO_ROOT" cherry-pick --abort >/dev/null 2>&1 || :
+    fi
+
+    # Re-run the full-suite gate. Green → healed.
+    fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
+    if FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
+      rm -f "$fssig"
+      emit_event selfheal_ok implement "self-heal succeeded in round $round — every suite passes again" \
+        "ticket=$regressor" "round=$round"
+      return 0
+    fi
+    [ -f "$fssig" ] && cp "$fssig" "$SELFHEAL_LAST_REASON"
+    rm -f "$fssig"
+  done
+
+  emit_event selfheal_exhausted implement "self-heal exhausted $SELFHEAL_CAP round(s) — regression is irreducible, escalating" \
+    "ticket=$regressor" "rounds=$SELFHEAL_CAP"
+  return 1
+}
+
 # --- subcommand: impl-advance ----------------------------------------------
 # The final gate: only when EVERY ticket in EVERY wave has a passing result does
 # the Mission move to Verify. While any ticket is unfinished it refuses and names
@@ -2404,38 +2580,31 @@ EOF
   # any regression, naming the regressed earlier ticket.
   local fssig; fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
   if ! FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
-    # BUG-018: a full-suite regression is a FIRST-CLASS, answerable outcome — NOT
-    # an opaque error halt. The gate wrote its DETAILED reason to $fssig; route it
-    # through the SAME awaiting-human escalation path the per-ticket attempt-cap
-    # uses (validate-pause shape): persist the reason as the pending question +
-    # event detail, set the awaiting-human state, overlay the label, and STOP
-    # CLEANLY (exit 0). Previously this `die`d, so the daemon (which doesn't
-    # capture the driver's stderr) lost the reason and the card just read "failed".
-    # The gate already distinguishes a mock/harness TypeError (a HARNESS GAP — see
-    # BUG-019) from a real assertion failure and folds that NOTE into the signal
-    # detail, so the reason we read back is already captain-ready.
     local reason="a cross-ticket regression was detected by the full-suite gate"
     [ -f "$fssig" ] && reason="$(cat "$fssig")"
     rm -f "$fssig"
 
-    local q; q="$(mktemp)"
-    printf '%s\n' "$reason" >"$q"
-    write_pending "$q" "implement"
-    state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "$reason"
-    # In-flight stage label (implement) first, THEN the awaiting-human overlay, so
-    # the parked card sits squarely in the Implement column (mirror validate-pause).
-    gh_relabel "lcars:implement lcars:awaiting-human" ""
-    rm -f "$q"
-
-    emit_event gate implement "full-suite regression — awaiting your answer: $reason" \
-      "phase=full-suite-gate"
-
-    echo "IMPLEMENT: full-suite regression — flagged the human"
-    printf '%s\n' "$reason"
-    echo "  Stage: implement (awaiting-human). Resolve with \`lcars respond $MISSION_ID\`."
-    [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
-    exit 0
+    # BUG-029: SELF-HEAL BEFORE escalating. A full-suite regression is a
+    # MECHANICALLY-RECONCILABLE failure — a later ticket's change broke an earlier
+    # ticket's locked contract — exactly the kind of fix an implementer can be told
+    # to make (the captain otherwise hand-types "reconcile so test T passes; don't
+    # touch the locked contract"). So auto-iterate the implementer of the regressing
+    # (just-built, latest-in-plan-order) ticket with that harness-authored feedback,
+    # re-run the full-suite gate, and only escalate to the human AFTER the cap. This
+    # reuses the SAME implement-ticket re-dispatch + LCARS_REUSE_TESTS machinery the
+    # S76 reconcile / same-file rebuild already drive (the locked tests stay
+    # immutable — only the Implementer re-runs). The full-suite gate (BUG-013) is
+    # never weakened: it must still pass for the loop to clear.
+    if self_heal_full_suite "$reason" $ordered; then
+      # Healed: every suite passes again. Advance to Verify (fall through below).
+      reason=""
+    else
+      # Cap exhausted → genuinely irreducible. Escalate cleanly (BUG-018 path) with
+      # BUG-027's structured, legible fields.
+      reason="$(cat "$SELFHEAL_LAST_REASON" 2>/dev/null || printf '%s' "$reason")"
+      escalate_full_suite_regression "$reason" $ordered
+      exit 0
+    fi
   fi
   rm -f "$fssig"
 
@@ -2512,6 +2681,17 @@ EOF
 cmd_open_pr() {
   locate_mission "$MISSION_ID"
   require_stage verify
+
+  # BUG-026: a Mission-Log bug child (parentMission set) FOLDS its fix onto the
+  # PARENT Mission's branch — the parent's PR carries it; the bug has NO PR of its
+  # own. Only TOP-LEVEL Missions open a PR. So for a parentMission mission, skip
+  # the PR-open entirely (no pr_opened, no degraded gate) — resolve-logs drives it
+  # to the parent's single consolidated re-verify gate.
+  local parent; parent="$(json_str "$STATE" parentMission)"
+  if [ -n "$parent" ] && [ "$parent" != "null" ]; then
+    echo "OPEN-PR: skipped — Mission-Log bug child (parent $parent); its fix folds onto the parent's branch (no per-bug PR)."
+    exit 0
+  fi
 
   # The PR-open library lives with approve (its other consumer). After
   # ./install.sh both skills are symlinked siblings; $LCARS_PR_LIB overrides the
@@ -4511,6 +4691,24 @@ $TICKET$tspecblock$retryblock"
   # than re-flagging the same blocker.
   [ -f "$MISSION_DIR/answers.json" ] && iextra="$iextra
 - $MISSION_DIR/answers.json   (the captain's answer resolving the prior block on this ticket — treat it as DECIDED)"
+  # SELF-HEAL feedback (BUG-029): when the full-suite gate found this ticket's
+  # change REGRESSED an earlier ticket's locked contract, cmd_impl_advance re-runs
+  # this ticket's Implementer with $LCARS_SELFHEAL_FEEDBACK carrying the harness-
+  # authored reconcile instruction (which earlier test(s) broke + "do NOT touch the
+  # locked contract"). It is the SAME single-line declarative feedback channel as
+  # the red-gate signal / answers.json — never the implementation, never prior
+  # reasoning. Each attempt is still a fresh cold worker.
+  if [ -n "${LCARS_SELFHEAL_FEEDBACK:-}" ]; then
+    iextra="$iextra
+
+## FULL-SUITE RECONCILE FEEDBACK — your change regressed an earlier ticket (read this first)
+Your previous implementation passed its OWN suite but, integrated with the rest
+of the branch, it REGRESSED an earlier ticket's locked test. Reconcile your change
+with the rest of the branch so EVERY suite (yours AND the regressed one) passes
+again. You may ONLY edit production code — you must NOT alter any locked test or
+contract. The harness's verdict (the regressed suite(s) + the command run):
+$LCARS_SELFHEAL_FEEDBACK"
+  fi
   iextra="$iextra
 
 ## Your ticket
@@ -5083,6 +5281,22 @@ drive_mark_done() {
 drive_verify() { # accumulated-summary
   local summary="$1"
   local pr; pr="$(json_str "$STATE" prUrl)"
+
+  # BUG-026: a Mission-Log bug child (parentMission set) FOLDS its fix onto the
+  # PARENT Mission's branch — the parent's PR carries it; the bug has NO PR of its
+  # own. So at Verify it must NOT open a per-bug PR (and must NEVER hit the degraded
+  # "PR-open degraded; needs attention" gate that fires when no PR can be opened).
+  # Skip the entire reconcile + PR-open machinery; resolve-logs drives the fold and
+  # raises the parent's single consolidated re-verify gate. The child simply parks
+  # at verify with no PR affordance and no degraded gate.
+  local parent; parent="$(json_str "$STATE" parentMission)"
+  if [ -n "$parent" ] && [ "$parent" != "null" ]; then
+    emit_event gate verify "bug fix folds onto parent $parent — no per-bug PR"
+    drive_print_summary "$summary"
+    printf 'verify       ◇  bug fix folds onto parent %s — no per-bug PR (parent carries it)\n' "$parent"
+    printf '⏹ stopped at: verify  (folds onto the parent — accept via the parent'"'"'s re-verify gate)\n'
+    return 0
+  fi
 
   # S76 reconcile gate: ONLY when no PR is open yet (once a PR is open, the human/
   # GitHub owns conflicts — never re-reconcile). Before opening the PR, check

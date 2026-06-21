@@ -123,12 +123,28 @@ class LocalAdapter(object):
         # the in-flight column comes from pending.json.stage, not state.stage.
         pending = _load_json(os.path.join(d, "pending.json"))
         events = _load_jsonl(os.path.join(d, "events.jsonl"))
+        # BUG-027: the harness writes a legible, type-aware gate envelope into
+        # pending.json — `humanSummary` (plain-language headline), `escalationType`
+        # ("regression"|"scope"|"cap") and `technicalDetail` (raw reason + command).
+        # Pass them through verbatim so the front end can render type-appropriate
+        # copy + tuck the raw detail behind a disclosure. Absent ⇒ None (the
+        # renderer degrades to the bare `question` text). Read-only.
+        gate = None
         if awaiting and isinstance(pending, dict):
             pstage = pending.get("stage")
             if pstage:
                 stage = pstage
             if not question:
                 question = pending.get("question")
+            gate = {
+                "humanSummary": pending.get("humanSummary"),
+                "escalationType": pending.get("escalationType"),
+                "technicalDetail": pending.get("technicalDetail"),
+            }
+            # only surface the gate object if it carries at least one new field
+            # (so a plain pre-harness pending.json renders exactly as before).
+            if not any(v for v in gate.values()):
+                gate = None
         elif running and not paused:
             # BUG-017: state.json.stage is the RESUME pointer — it lags the stage a
             # running mission is actually executing (a card otherwise sits in the
@@ -246,6 +262,9 @@ class LocalAdapter(object):
             # on the boolean. The github adapter forces False (ADR-006).
             "queued": _truthy(state.get("queued")),
             "question": question if awaiting else None,
+            # BUG-027: the legible, type-aware gate envelope (humanSummary /
+            # escalationType / technicalDetail) when awaiting; None otherwise.
+            "gate": gate if awaiting else None,
             "linked": _truthy(state.get("linked")),
             # UX-28: parent mission id for a logged-bug child (None when not a
             # logged-bug child). The github adapter forces None (ADR-006).

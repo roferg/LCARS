@@ -971,6 +971,30 @@ function isReverifyGate(mi) {
   return reverify && loggedBug;
 }
 
+/* BUG-027: the "Why you're seeing this" copy is TYPE-AWARE — a regression gate
+   is NOT a strategic/scope call, so it must not read as one. Choose the wording
+   from the harness's escalationType ("regression" | "scope" | "cap"); an unknown
+   / absent type degrades to the generic copy (pre-harness behaviour). */
+function whyCopyForGate(type) {
+  switch (type) {
+    case "regression":
+      return "Why you’re seeing this — two of your changes conflict: a later " +
+        "fix re-broke a test an earlier change locked in. Tell the harness how " +
+        "to reconcile them (or send the mission back to re-fix), and it resumes " +
+        "from where it stopped.";
+    case "cap":
+      return "Why you’re seeing this — the harness hit its automatic-retry limit " +
+        "on this step and needs your call before it tries again. Answer below " +
+        "and the mission resumes from where it stopped.";
+    case "scope":
+      return "Why you’re seeing this — a stage escalated a strategic/scope call. " +
+        "Answer below and the mission resumes from where it stopped.";
+    default:
+      return "Why you’re seeing this — the harness needs your decision to " +
+        "proceed. Answer below and the mission resumes from where it stopped.";
+  }
+}
+
 /* ════════════════ SCREEN: RESPOND GATE (#respond) ════════════════ */
 function openRespond(id) {
   fetchMission(id, function (mi) {
@@ -981,15 +1005,37 @@ function openRespond(id) {
     var m = modal("● Awaiting You — Mission " + idLabel(mi) +
       " · " + (mi.stage || "").toUpperCase(), { wide: true, headClass: "red" });
 
-    var q = el("div", "qtext"); q.style.fontSize = "18px";
-    // UX-33: never parrot raw `lcars <verb>` CLI syntax in the GUI — sanitize the
-    // gate question before display.
-    q.textContent = sanitizeGateText(mi.question) ||
+    // BUG-027: the harness now writes a legible, type-aware gate envelope into
+    // pending.json, surfaced on the card as `mi.gate` ({humanSummary,
+    // escalationType, technicalDetail}). Render:
+    //   • humanSummary as the HEADLINE (plain language, GitHub issue numbers —
+    //     never raw t-XXX);
+    //   • the "Why you're seeing this" copy chosen from escalationType (a
+    //     regression gate must NOT read as a strategic/scope call);
+    //   • technicalDetail behind a collapsible "Technical details" disclosure,
+    //     NOT in the headline.
+    // Degrade gracefully when the fields are absent (pre-harness): fall back to
+    // the sanitized question text + the generic scope copy, exactly as before.
+    var gate = mi.gate || {};
+    var headline = sanitizeGateText(gate.humanSummary || mi.question) ||
       "The harness needs your decision to proceed.";
+
+    var q = el("div", "qtext"); q.style.fontSize = "18px";
+    q.textContent = headline;
     m.body.appendChild(q);
-    m.body.appendChild(noteEl(
-      "Why you’re seeing this — a stage escalated a strategic/scope call. " +
-      "Answer below and the mission resumes from where it stopped."));
+    m.body.appendChild(noteEl(whyCopyForGate(gate.escalationType)));
+
+    // technicalDetail → collapsible disclosure (raw reason + command + any
+    // internal ids). Only shown when the harness supplied it.
+    if (gate.technicalDetail) {
+      var det = el("details", "gate-tech");
+      var sum = el("summary"); sum.textContent = "Technical details";
+      det.appendChild(sum);
+      var pre = el("pre", "gate-tech-body");
+      pre.textContent = String(gate.technicalDetail);
+      det.appendChild(pre);
+      m.body.appendChild(det);
+    }
 
     var ans = el("textarea"); ans.rows = 3;
     ans.placeholder = "Answer in your own words…";
@@ -1103,12 +1149,27 @@ function openVerify(id) {
       m.body.appendChild(buildSummary(mi));
     }
 
-    // S75: Verify auto-opens the PR, so a verify card is normally "in review"
-    // with a recorded prUrl. Show the PR link + the in-review state, and make the
-    // primary action MERGE the PR (not "open" it — that already happened). Before
-    // a PR exists (shouldn't normally happen) degrade to a plain note.
+    // BUG-030: a Mission-Log bug child (mi.parentMission set) has NO PR concept —
+    // its fix rides the PARENT's PR. The Verify dialog for such a bug must show NO
+    // PR affordance at all: no "Merge PR" button and no "re-run to open a PR" copy.
+    // It offers exactly two actions — "✓ Verify" (accept the fix, which folds the
+    // bug to Done via the resolve-logs complete path) and "Send Back". We branch
+    // the whole PR-row + footer render on whether the mission has a parent.
+    var isBugChild = !!mi.parentMission;
+
+    // S75: Verify auto-opens the PR, so a (top-level) verify card is normally "in
+    // review" with a recorded prUrl. Show the PR link + the in-review state, and
+    // make the primary action MERGE the PR (not "open" it — that already
+    // happened). Before a PR exists (shouldn't normally happen) degrade to a plain
+    // note. SKIPPED entirely for a bug child (no PR concept).
     var inReview = !!(mi.prUrl && (mi.review === "open" || mi.review == null));
-    if (mi.prUrl) {
+    if (isBugChild) {
+      var foldNote = el("div", "dim");
+      foldNote.style.margin = "14px 0";
+      foldNote.textContent = "This fix rides the parent mission’s pull request — " +
+        "there is no separate PR for this bug. Verifying folds it to Done.";
+      m.body.appendChild(foldNote);
+    } else if (mi.prUrl) {
       var prRow = el("div", "pr-review-row");
       prRow.style.cssText = "margin:14px 0;padding:10px;border-radius:6px;background:rgba(255,153,0,.08)";
       var st = el("span", "dim");
@@ -1145,16 +1206,21 @@ function openVerify(id) {
         function () { closeOverlay(); },
         function (msg) { sendBack.disabled = false; showErr(err, msg); });
     }));
-    // The primary action: MERGE the open PR (the new "ship it"). The label never
-    // leaks a CLI verb (UX-33). Disabled gracefully when no PR is open yet.
-    var mergeLabel = "✓ Merge PR";
+    // The primary action.
+    //   • bug child (BUG-030): "✓ Verify" — accept the fix; the backend routes
+    //     the approve decision to the resolve-logs fold (no PR merge). Always
+    //     enabled (no PR gating — there is no PR to wait on).
+    //   • top-level: "✓ Merge PR" — merge the open PR (the "ship it"). Disabled
+    //     gracefully when no PR is open yet.
+    var mergeLabel = isBugChild ? "✓ Verify" : "✓ Merge PR";
+    var busyLabel = isBugChild ? "Verifying…" : "Merging PR…";
     var merge = applyWriteState(btn(mergeLabel, "go big", function () {
-      merge.disabled = true; merge.textContent = "Merging PR…";
+      merge.disabled = true; merge.textContent = busyLabel;
       postWrite("/api/mission/" + enc(id) + "/verify", { decision: "approve" },
         function () { closeOverlay(); },
         function (msg) { merge.disabled = false; merge.textContent = mergeLabel; showErr(err, msg); });
     }));
-    if (!inReview) {
+    if (!isBugChild && !inReview) {
       merge.disabled = true;
       merge.title = "No open PR to merge yet — re-run the mission so Verify opens one.";
     }
@@ -1192,6 +1258,8 @@ function openLog(id) {
 
     m.foot.appendChild(btn("Cancel", null, closeOverlay));
     var prev = applyWriteState(btn("Preview", null, function () {
+      // BUG-024: ignore re-clicks while the split/estimate request is pending.
+      if (prev.disabled) { return; }
       prev.disabled = true; prev.textContent = "Splitting…";
       err.hidden = true;
       // UX-25: themed working copy for the split worker turn.
@@ -1225,15 +1293,23 @@ function openLog(id) {
     // re-render the panel with the per-bug estimate + the now-applied override,
     // then "Run Fixes" resolves the already-filed batch.
     var file = applyWriteState(btn("File", null, function () {
+      // BUG-024: the File/preview control kicks off the async estimate (log.sh
+      // runs the estimator on every child). It MUST NOT be re-clickable while the
+      // request is in flight — a second click re-triggers the estimate (duplicate
+      // previews / a race / wasted worker spend). Ignore clicks while pending,
+      // disable + show a loading state, and re-enable only on success OR error.
+      if (file.disabled) { return; }   // already pending — ignore the click
       err.hidden = true;
       busy.querySelector(".lcars-working-label").textContent =
         "Filing bugs and estimating each fix…";
       busy.hidden = false;
       file.disabled = true;
+      var fileLabel = file.textContent;
+      file.textContent = "Filing…";
       postWrite("/api/mission/" + enc(id) + "/log/file",
         { prds: authored.prds || [], overrides: authored.overrides || [] },
         function (state) {
-          busy.hidden = true; file.disabled = false;
+          busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
           authored.prds = null;        // bugs are filed now — Run only resolves
           authored.filed = true;
           file.hidden = true;          // filing is done
@@ -1246,7 +1322,8 @@ function openLog(id) {
           renderLogPreview(preview, state, idLabel(mi), authored);
         },
         function (msg) {
-          busy.hidden = true; file.disabled = false; showErr(err, msg);
+          busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
+          showErr(err, msg);
         });
     }));
     var run = applyWriteState(btn("Run Fixes ▸", "warn big", function () {

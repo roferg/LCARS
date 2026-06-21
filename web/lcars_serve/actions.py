@@ -780,13 +780,69 @@ class Actions(object):
         return self._mission_state(mid)
 
     def respond(self, mid, answer):
-        """POST /api/mission/<id>/respond — answer a gate."""
+        """POST /api/mission/<id>/respond — answer a gate AND resume the run.
+
+        BUG-028: the "SUBMIT & RESUME" button (gate copy: "the mission resumes
+        from where it stopped") used to only record the answer + clear the gate —
+        the `lcars-respond` skill is designed to need a SEPARATE `lcars run <id>`
+        to resume, which the daemon never issued, so the mission sat
+        answered-but-idle. After the respond call succeeds we therefore
+        RE-DISPATCH the driver fire-and-forget (mirror start()'s _spawn + the
+        per-mission running-lock guard) so the escalated stage actually resumes
+        and consumes the answer, and we clear the stale pending.json. Make
+        "& Resume" real.
+
+          • a `parentMission`-linked bug child → resume the resolve-logs batch on
+            the PARENT (it folds onto the parent + drives to the consolidated
+            re-verify gate), NOT a standalone `run drive` on the child.
+          • a top-level mission → `run drive --mission <id>`.
+        """
         self._require_mission(mid)
         answer = (answer or "").strip()
         if not answer:
             raise ActionError(400, "missing required field: answer")
         self._run("respond", ["answer", "--mission", mid, "--answer", answer])
+        # the gate is now cleared on disk; drop the stale pending.json so the
+        # board stops rendering the answered question.
+        self._clear_pending(mid)
+        # re-dispatch the run (fire-and-forget), routed by parentage.
+        parent = self._persisted_parent_mission(mid)
+        if parent:
+            # a logged-bug child: resume the parent's resolve-logs batch (same
+            # path log_run uses) so the answered bug + the remaining bugs continue
+            # to the fold + the consolidated re-verify gate. Inherit the parent's
+            # engine so the batch drives on the right CLI (mirrors log_run).
+            engine = self._persisted_worker_bin(parent)
+            env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+            if not self._is_running(parent):
+                self._spawn("resolve", ["--parent", parent], env_extra=env_extra)
+        else:
+            # a top-level mission: resume its own driver. Defense-in-depth with
+            # run.sh's per-mission lock — skip the spawn if one is already live.
+            if not self._is_running(mid):
+                engine = self._persisted_worker_bin(mid)
+                env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+                self._spawn("run", ["drive", "--mission", mid],
+                            env_extra=env_extra)
         return self._mission_state(mid)
+
+    def _persisted_parent_mission(self, mid):
+        """The parent id of a logged-bug child (state.json.parentMission), or None."""
+        sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "state.json")
+        pm = _read_json_key(sp, "parentMission")
+        if isinstance(pm, str) and pm.strip():
+            return pm.strip()
+        return None
+
+    def _clear_pending(self, mid):
+        """Remove a mission's stale pending.json after its gate is answered."""
+        pp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "pending.json")
+        try:
+            os.unlink(pp)
+        except OSError:
+            pass
 
     def verify(self, mid, decision, feedback=None):
         """POST /api/mission/<id>/verify — approve vs send-back.
@@ -798,7 +854,19 @@ class Actions(object):
         self._require_mission(mid)
         decision = (decision or "").strip().lower()
         if decision == "approve":
-            self._run("approve", ["--mission", mid])
+            # BUG-030: a Mission-Log bug child has NO PR of its own — its fix
+            # rides the PARENT's PR. "Accept" must therefore FOLD it to Done via
+            # resolve-logs `complete` (NOT merge a per-bug PR with approve.sh,
+            # which would hit the BUG-026 spurious-PR path). A top-level mission
+            # still approves normally (merge its open PR).
+            parent = self._persisted_parent_mission(mid)
+            if parent:
+                engine = self._persisted_worker_bin(parent)
+                env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+                self._run("resolve", ["complete", "--parent", parent],
+                          env_extra=env_extra)
+            else:
+                self._run("approve", ["--mission", mid])
         elif decision in ("send-back", "sendback", "send_back"):
             note = (feedback or "").strip()
             if not note:

@@ -5,6 +5,7 @@ Behaviors covered:
   2. a gated mission lands in its in-flight (pending.json.stage) column, NOT
      align — mirroring status.sh's gate rule exactly.
 """
+import json
 import os
 import sys
 import tempfile
@@ -77,6 +78,37 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertTrue(m["awaiting"])
         self.assertEqual(m["stage"], "research")
         self.assertEqual(m["question"], "Global vs per-course leaderboard?")
+
+    def test_gate_envelope_fields_passed_through(self):
+        # BUG-027: the harness writes a legible, type-aware gate envelope into
+        # pending.json; the adapter must surface it verbatim as card["gate"] so the
+        # front end can render type-appropriate copy + a technical-detail
+        # disclosure.
+        d = fx.plant_gated(self.tmp, "m-gate", resume_stage="align",
+                           inflight_stage="implement")
+        pending = json.load(open(os.path.join(d, "pending.json")))
+        pending.update({
+            "humanSummary": "Two of your changes conflict — #47 re-broke a test "
+                            "#43 locked in.",
+            "escalationType": "regression",
+            "technicalDetail": "FULL-SUITE GATE: t-001 REGRESSED\n"
+                               "node --test tests/**/*.test.js",
+        })
+        fx.write_json(os.path.join(d, "pending.json"), pending)
+        m = self._by_id(self._board(), "m-gate")
+        self.assertIsNotNone(m["gate"])
+        self.assertEqual(m["gate"]["escalationType"], "regression")
+        self.assertIn("#47", m["gate"]["humanSummary"])
+        self.assertIn("FULL-SUITE GATE", m["gate"]["technicalDetail"])
+
+    def test_gate_none_when_no_envelope_fields(self):
+        # a plain pre-harness pending.json (no new fields) → gate is None so the
+        # renderer degrades to the bare question text.
+        fx.plant_gated(self.tmp, "m-gate", resume_stage="align",
+                       inflight_stage="research")
+        m = self._by_id(self._board(), "m-gate")
+        self.assertIsNone(m["gate"])
+        self.assertTrue(m["awaiting"])
 
     def test_paused_mission_flagged(self):
         fx.plant_paused(self.tmp, "m-pause", stage="implement")

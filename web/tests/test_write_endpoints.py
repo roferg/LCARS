@@ -931,5 +931,126 @@ def _plant_bug(root, mid, *, parent, issue, stage="plan", estimate=None,
         fx.write_json(os.path.join(d, "estimate.json"), estimate)
 
 
+def _plant_pending(root, mid, *, stage="implement", question="reconcile?",
+                   human_summary=None, escalation_type=None,
+                   technical_detail=None):
+    """Write a pending.json gate envelope for `mid` (BUG-027/BUG-028 tests)."""
+    d = fx.mission_dir(root, mid)
+    pending = {"stage": stage, "question": question}
+    if human_summary is not None:
+        pending["humanSummary"] = human_summary
+    if escalation_type is not None:
+        pending["escalationType"] = escalation_type
+    if technical_detail is not None:
+        pending["technicalDetail"] = technical_detail
+    fx.write_json(os.path.join(d, "pending.json"), pending)
+
+
+class RespondResumeTest(WriteEndpointBase):
+    """BUG-028: answering a gate must RECORD the answer AND re-dispatch the run
+    (the "& Resume" must be real), clearing the stale pending.json."""
+
+    def _arm_run_lock(self):
+        # point the run + resolve skills at a lock stub so the fire-and-forget
+        # spawn records its argv (and the mission doesn't look already-running).
+        # `actions` is closure-captured at make_server time, so REBUILD the server
+        # with the rearmed Actions rather than mutating the live handler.
+        for key in ("run", "resolve"):
+            self.scripts[key] = _lock_stub(self.records[key], 0.05)
+            try:
+                os.unlink(self.records[key])
+            except OSError:
+                pass
+        self.httpd.shutdown()
+        self.thread.join()
+        self.httpd.server_close()
+        self.actions = Actions(repo_root=self.tmp, scripts=self.scripts,
+                               worker_bin="/bin/echo")
+        from lcars_serve.server import make_server as _mk
+        self.httpd = _mk(self.adapter, host="127.0.0.1", port=0,
+                         poll_interval=0.05, actions=self.actions)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+    def test_top_level_respond_redispatches_run_drive(self):
+        # a top-level mission parked at a gate (resume pointer align, in-flight
+        # implement) with a pending.json on disk.
+        fx.plant_simple(self.tmp, "m-001", stage="implement", issue=142,
+                        awaiting_human=True, pending_question="reconcile?")
+        _plant_pending(self.tmp, "m-001", stage="implement")
+        self._arm_run_lock()
+        status, _ = self._post("/api/mission/m-001/respond",
+                               {"answer": "reconcile by keeping the lock"})
+        self.assertEqual(status, 200)
+        # the answer was recorded via respond.sh
+        self.assertIn("--mission m-001", self._record("respond"))
+        # and the run driver was re-dispatched (fire-and-forget) for THIS mission
+        run_rec = self._record_when("run", "m-001")
+        self.assertIn("drive", run_rec)
+        self.assertIn("--mission m-001", run_rec)
+        # a top-level mission must NOT route through resolve-logs
+        self.assertTrue(self._not_invoked("resolve"))
+        # the stale pending.json is gone
+        self.assertFalse(os.path.exists(
+            os.path.join(fx.mission_dir(self.tmp, "m-001"), "pending.json")))
+
+    def test_parented_bug_respond_resumes_resolve_logs_on_parent(self):
+        # a logged-bug child parked at a gate: respond must resume the PARENT's
+        # resolve-logs batch, NOT a standalone run drive on the child.
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="/usr/bin/copilot")
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201,
+                   stage="implement")
+        # mark the child awaiting + give it a pending.json.
+        bd = fx.mission_dir(self.tmp, "m-bug1")
+        st = json.load(open(os.path.join(bd, "state.json")))
+        st["awaitingHuman"] = True
+        st["pendingQuestion"] = "reconcile?"
+        fx.write_json(os.path.join(bd, "state.json"), st)
+        _plant_pending(self.tmp, "m-bug1", stage="implement")
+        self._arm_run_lock()
+        status, _ = self._post("/api/mission/m-bug1/respond",
+                               {"answer": "ok"})
+        self.assertEqual(status, 200)
+        # resolve-logs resumed on the PARENT
+        res_rec = self._record_when("resolve", "m-001")
+        self.assertIn("--parent m-001", res_rec)
+        # the child's own run driver must NOT be spawned
+        self.assertTrue(self._not_invoked("run"))
+        # the child's stale pending.json is cleared
+        self.assertFalse(os.path.exists(os.path.join(bd, "pending.json")))
+
+
+class VerifyBugFoldTest(WriteEndpointBase):
+    """BUG-030: a parented bug's Verify "accept" must FOLD via resolve-logs
+    `complete` (no per-bug PR merge); a top-level mission still merges."""
+
+    def test_parented_bug_approve_folds_via_resolve_complete(self):
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="/usr/bin/copilot")
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="verify")
+        status, _ = self._post("/api/mission/m-bug1/verify",
+                               {"decision": "approve"})
+        self.assertEqual(status, 200)
+        res_rec = self._record("resolve")
+        self.assertIn("complete", res_rec)
+        self.assertIn("--parent m-001", res_rec)
+        # it must NOT merge a per-bug PR via approve.sh
+        self.assertTrue(self._not_invoked("approve"))
+        # and the parent's engine is inherited on the fold dispatch
+        self.assertIn("ENV_WORKER_BIN: /usr/bin/copilot", res_rec)
+
+    def test_top_level_approve_still_merges_via_approve(self):
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        status, _ = self._post("/api/mission/m-001/verify",
+                               {"decision": "approve"})
+        self.assertEqual(status, 200)
+        self.assertIn("--mission m-001", self._record("approve"))
+        # a top-level mission must NOT route to resolve-logs complete
+        self.assertTrue(self._not_invoked("resolve"))
+
+
 if __name__ == "__main__":
     unittest.main()

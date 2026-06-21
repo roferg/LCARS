@@ -144,6 +144,10 @@ class GitHubAdapter(object):
             # crashing).
             "queued": False,
             "question": question,
+            # BUG-027: the legible gate envelope lives in the mission's LOCAL
+            # pending.json, which the github adapter cannot see — None here
+            # (adapter-neutral shape, ADR-006; renderer degrades to `question`).
+            "gate": None,
             "linked": _LINKED_LABEL in labels,
             # UX-28: `parentMission` (a logged-bug child's parent id) is read from
             # the child's LOCAL state.json, which the github adapter cannot see, so

@@ -213,7 +213,14 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
   letter-spacing:.08em;margin-top:7px;font-size:10px}
 /* the RESUME / Pausing button on a paused card keeps full prominence (UX-22). */
 .card.paused .card-ctrl{opacity:1}
-.card.child{border-left-color:var(--lcars-pink,#ff66aa);margin-left:14px;background:var(--lcars-card-alt)}
+/* BUG-025: a child/bug card used to indent with `margin-left:14px`, which
+   PHYSICALLY NARROWS the card inside its fixed-width column — so the absolutely
+   positioned engine watermark (top-right) ended up over the in-flight
+   phase-status text. Bring the card to WIDTH PARITY with a mission card: drop the
+   margin (no narrowing) and express the "nested" cue with left padding instead,
+   so the box is the full column width and the badge keeps its own clear corner. */
+.card.child{border-left-color:var(--lcars-pink,#ff66aa);
+  padding-left:24px;background:var(--lcars-card-alt)}
 /* UX-28: a logged bug (child of a parent mission) is a PINK accent child card
    (the mock spec'd pink for children) + a small "log bug · child of #<parent>"
    badge. The pink left bar is reinforced and a faint pink ring sets it apart
@@ -515,6 +522,17 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .note{border-left:3px solid var(--lcars-blue,#4499ff);background:rgba(68,153,255,.06);
   padding:10px 16px;border-radius:0 8px 8px 0;margin:14px 0;color:var(--lcars-text);font-size:14px}
 .note.amber{border-color:var(--lcars-amber);background:rgba(255,170,0,.06)}
+/* BUG-027: the raw reason + command behind a collapsible "Technical details"
+   disclosure on a regression/escalation gate — kept OUT of the plain-language
+   headline, available on demand. Monospace, muted, scrollable for long output. */
+.gate-tech{margin:12px 0}
+.gate-tech > summary{cursor:pointer;font-family:var(--font-display);
+  letter-spacing:.08em;text-transform:uppercase;font-size:11px;
+  color:var(--lcars-text-dim)}
+.gate-tech-body{font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;
+  word-break:break-word;background:var(--lcars-black);border:1px solid var(--lcars-border);
+  border-radius:6px;padding:10px;margin:8px 0 0;max-height:220px;overflow:auto;
+  color:var(--lcars-text)}
 .busy{font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
   font-size:11px;color:var(--lcars-amber)}
 .errline{color:#ff8a96;font-size:13px;margin-top:10px}
@@ -554,6 +572,13 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    "live drive" pulse on a running card / detail feed. Tighter margins so it sits
    inside a card; teal label to read as "in motion", not "blocked". */
 .lcars-working.lcars-running{margin:8px 0 0;gap:10px}
+/* BUG-025: belt-and-braces — keep the in-flight phase-status line clear of the
+   engine watermark's top-right corner on EVERY card (mission or bug/child),
+   regardless of width or stage. The badge owns its corner (z-index:2 above);
+   reserve room so the running copy can never run under it. */
+.card .lcars-working.lcars-running{padding-right:24px}
+.card .lcars-working.lcars-running .lcars-working-label{
+  overflow:hidden;text-overflow:ellipsis}
 .lcars-working.lcars-running .lcars-working-label{color:var(--lcars-teal);font-size:10px}
 .lcars-working.lcars-running .lcars-bars{height:14px}
 .lcars-working.lcars-running .lcars-bars > i{height:14px;width:5px}
