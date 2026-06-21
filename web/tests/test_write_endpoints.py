@@ -395,6 +395,76 @@ class VerifyRoutingTest(WriteEndpointBase):
             self._post("/api/mission/m-001/verify", {"decision": "maybe"})
         self.assertEqual(cm.exception.code, 400)
 
+    # ── BUG-031: send-back on a Mission-Log re-verify gate is NON-destructive ──
+    def test_verify_send_back_on_bug_child_feedbacks_bug_and_respawns_resolve(self):
+        """Case A: `mid` is a logged-bug CHILD (parentMission set). Send-back must
+        re-fix the BUG (feedback on the child), then re-drive the parent's batch
+        fire-and-forget (`resolve --parent <parent>` — the bare drive form, NOT
+        `complete`). It MUST NOT feedback the parent or touch its stage/PR."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="verify")
+        status, _ = self._post("/api/mission/m-bug1/verify",
+                               {"decision": "send-back",
+                                "feedback": "fix the off-by-one"})
+        self.assertEqual(status, 200)
+        # feedback was applied to the BUG, not the parent.
+        fb = self._record("feedback")
+        self.assertIn("--mission m-bug1", fb)
+        self.assertNotIn("--mission m-001", fb)
+        self.assertIn("fix the off-by-one", fb)
+        # the batch was re-driven (fire-and-forget) on the PARENT, bare form.
+        res = self._record_when("resolve", "m-001")
+        self.assertIn("--parent m-001", res)
+        self.assertNotIn("complete", res)
+
+    def test_verify_send_back_on_bug_child_threads_parent_engine(self):
+        """Case A engine: the resolve respawn inherits the PARENT's persisted
+        engine as LCARS_WORKER_BIN (mirrors the approve branch)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="copilot")
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="verify")
+        status, _ = self._post("/api/mission/m-bug1/verify",
+                               {"decision": "send-back",
+                                "feedback": "fix the off-by-one"})
+        self.assertEqual(status, 200)
+        res = self._record_when("resolve", "ENV_WORKER_BIN: copilot")
+        self.assertIn("--parent m-001", res)
+        self.assertIn("ENV_WORKER_BIN: copilot", res)
+
+    def test_verify_send_back_on_parent_feedbacks_each_child_not_parent(self):
+        """Case B: `mid` is the PARENT consolidated re-verify gate (no
+        parentMission, has linked non-done bug children). Send-back must apply the
+        feedback to EACH child, NONE to the parent, and re-drive `resolve --parent
+        <mid>` ONCE. The parent's verified state / PR stays intact."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="verify")
+        _plant_bug(self.tmp, "m-bug2", parent="m-001", issue=202, stage="verify")
+        status, _ = self._post("/api/mission/m-001/verify",
+                               {"decision": "send-back",
+                                "feedback": "redo both fixes"})
+        self.assertEqual(status, 200)
+        fb = self._record("feedback")
+        self.assertIn("--mission m-bug1", fb)
+        self.assertIn("--mission m-bug2", fb)
+        # the PARENT itself must NOT be fed back.
+        self.assertNotIn("--mission m-001", fb)
+        self.assertIn("redo both fixes", fb)
+        # the batch re-drove once on the parent.
+        res = self._record_when("resolve", "m-001")
+        self.assertIn("--parent m-001", res)
+        self.assertNotIn("complete", res)
+
+    def test_verify_send_back_on_plain_mission_unchanged(self):
+        """Case C: a plain top-level verify mission (no parent, no children) —
+        UNCHANGED: feedback on itself, resolve NOT invoked."""
+        # setUp's m-001 is a plain verify mission with no parent/children.
+        status, _ = self._post("/api/mission/m-001/verify",
+                               {"decision": "send-back",
+                                "feedback": "tighten the error copy"})
+        self.assertEqual(status, 200)
+        self.assertIn("--mission m-001", self._record("feedback"))
+        self.assertTrue(self._not_invoked("resolve"))
+
     def test_verify_approve_dispatches_the_merge_skill(self):
         """S75: the `approve` decision now dispatches approve.sh whose job is the
         MERGE (open PR → merged → Done). The endpoint contract is unchanged

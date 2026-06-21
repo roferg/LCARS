@@ -882,7 +882,42 @@ class Actions(object):
             note = (feedback or "").strip()
             if not note:
                 raise ActionError(400, "send-back requires a 'feedback' note")
-            self._run("feedback", ["--mission", mid, "--feedback", note])
+            # BUG-031: "Send Back" reaches this ONE endpoint from TWO surfaces.
+            # `lcars feedback` resets its target to align + clears the PR fields,
+            # so blindly running it on `mid` is destructive when `mid` is a logged
+            # bug's PARENT (it would nuke the parent's verified state + PR). Route
+            # by parentage, mirroring the approve branch above. The fix-pattern in
+            # every linked case is: feedback-the-BUG(s) (moves them OFF verify so
+            # resolve-logs re-drives them) + spawn `resolve --parent <p>` (re-fix +
+            # re-fold + re-raise ONE consolidated re-verify gate), parent untouched.
+            parent = self._persisted_parent_mission(mid)
+            if parent:
+                # Case A — `mid` is a logged-bug CHILD: re-fix THIS bug only, then
+                # re-drive the parent's batch fire-and-forget. Never feedback the
+                # parent; never touch its stage/PR.
+                self._run("feedback", ["--mission", mid, "--feedback", note])
+                engine = self._persisted_worker_bin(parent)
+                env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+                self._spawn("resolve", ["--parent", parent], env_extra=env_extra)
+            else:
+                children = self._linked_children(mid)
+                pending = [c for c in children
+                           if (c.get("stage") or "").lower() != "done"]
+                if pending:
+                    # Case B — `mid` is the PARENT consolidated re-verify gate:
+                    # apply the feedback to EACH non-done linked bug child (NOT the
+                    # parent), then re-drive the batch once. The parent's verified
+                    # state / PR stays intact.
+                    for child in pending:
+                        self._run("feedback",
+                                  ["--mission", child["id"], "--feedback", note])
+                    engine = self._persisted_worker_bin(mid)
+                    env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+                    self._spawn("resolve", ["--parent", mid],
+                                env_extra=env_extra)
+                else:
+                    # Case C — plain top-level mission: unchanged.
+                    self._run("feedback", ["--mission", mid, "--feedback", note])
         else:
             raise ActionError(
                 400, "decision must be 'approve' or 'send-back' (got %r)"
