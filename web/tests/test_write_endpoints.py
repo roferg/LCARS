@@ -1025,18 +1025,28 @@ class RespondResumeTest(WriteEndpointBase):
 
 class VerifyBugFoldTest(WriteEndpointBase):
     """BUG-030: a parented bug's Verify "accept" must FOLD via resolve-logs
-    `complete` (no per-bug PR merge); a top-level mission still merges."""
+    `complete` (no per-bug PR merge); a top-level mission still merges.
+
+    BUG-032: the per-bug Verify must fold ONLY that one bug — it dispatches the
+    SINGLE-bug mode (`complete --parent <p> --bug <mid>`), NOT the bulk
+    `complete --parent <p>` that folds every sibling at once."""
 
     def test_parented_bug_approve_folds_via_resolve_complete(self):
         fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
                         worker_bin="/usr/bin/copilot")
         _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="verify")
+        _plant_bug(self.tmp, "m-bug2", parent="m-001", issue=202, stage="verify")
         status, _ = self._post("/api/mission/m-bug1/verify",
                                {"decision": "approve"})
         self.assertEqual(status, 200)
         res_rec = self._record("resolve")
         self.assertIn("complete", res_rec)
         self.assertIn("--parent m-001", res_rec)
+        # BUG-032: it must target THIS one bug (single-bug mode), not the bulk
+        # all-remaining accept. The dispatched argv carries --bug m-bug1, and it
+        # must NOT name the sibling m-bug2 (one click ≠ whole batch).
+        self.assertIn("--bug m-bug1", res_rec)
+        self.assertNotIn("m-bug2", res_rec)
         # it must NOT merge a per-bug PR via approve.sh
         self.assertTrue(self._not_invoked("approve"))
         # and the parent's engine is inherited on the fold dispatch

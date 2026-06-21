@@ -94,10 +94,13 @@ case "${1:-}" in
 esac
 
 PARENT_SEL=""
+BUG_SEL=""   # single-bug mode (BUG-032): complete ONLY this one child bug.
 while [ $# -gt 0 ]; do
   case "$1" in
     --parent)   PARENT_SEL="${2:-}"; shift 2 ;;
     --parent=*) PARENT_SEL="${1#--parent=}"; shift ;;
+    --bug)      BUG_SEL="${2:-}"; shift 2 ;;
+    --bug=*)    BUG_SEL="${1#--bug=}"; shift ;;
     -*)         die "unknown argument: $1" ;;
     *)          [ -z "$PARENT_SEL" ] && PARENT_SEL="$1"; shift ;;
   esac
@@ -331,33 +334,111 @@ clear_queued()  { state_del     "$MISSIONS_DIR/$1/state.json" queued; }
 # (log.sh records the parent branch for a pre-merge child), so the parent's PR
 # carries it. We only flip the stage + board label here. A child must never be
 # left orphaned at Verify after acceptance. NEVER calls `gh pr create`.
+# fold_one_child — the per-bug fold-to-Done step, shared by the bulk and the
+# single-bug (BUG-032) complete paths so the fold logic is authored ONCE. Given a
+# child bug id whose stage is verify, flips it to done on disk and moves its board
+# column (clear stage labels, apply lcars:done) WITHOUT opening a per-bug PR — the
+# parent's PR carries the fix. Echoes nothing; returns 0 if it folded the child, 1
+# if the child was not at verify (skipped). Never rewrites the child's branch.
+fold_one_child() { # bug-id
+  local bid="$1" cstate stage cissue
+  cstate="$MISSIONS_DIR/$bid/state.json"
+  [ -f "$cstate" ] || return 1
+  stage="$(json_str "$cstate" stage)"
+  # Only fold children that reached their Verify gate. A child still mid-flight
+  # (escalated / earlier stage) is left untouched — it is not "resolved" yet.
+  [ "$stage" = "verify" ] || return 1
+  # Move the child to Done on disk — stage flips to done, branch is preserved
+  # (the fix stays folded onto the parent branch; we never rewrite it here).
+  state_set_str "$cstate" stage done
+  # Board: clear the stage labels, apply lcars:done — same column move approve
+  # makes, but WITHOUT a PR (the parent's PR carries the fix). Best-effort.
+  cissue="$(json_raw "$cstate" githubIssue)"
+  case "$cissue" in
+    ''|null) : ;;
+    *) if command -v "$GH_BIN" >/dev/null 2>&1; then
+         "$GH_BIN" issue edit "$cissue" \
+           --add-label "lcars:done" \
+           --remove-label "lcars:verify" \
+           --remove-label "lcars:awaiting-human" >/dev/null 2>&1 || true
+       fi ;;
+  esac
+  return 0
+}
+
+# parent_has_pending_children — 0 if ANY linked child of the parent is still
+# pending (stage != done), 1 if none remain. Used by the single-bug path to
+# decide whether the parent's consolidated re-verify gate should stay UP.
+# linked_children already excludes done children, so a non-empty list ⇒ pending.
+parent_has_pending_children() {
+  local bid stage
+  while IFS=$'\t' read -r bid stage; do
+    [ -n "$bid" ] && return 0
+  done < <(linked_children)
+  return 1
+}
+
+# clear_parent_gate — finalize the parent as the bulk path leaves it once every
+# child is folded: drop the awaiting-human overlay + pending.json + board label.
+# Best-effort; mirrors the gate-raising at the bottom of the default flow in
+# reverse. Called only when NO child of the parent remains pending.
+clear_parent_gate() {
+  state_del "$PARENT_STATE" awaitingHuman
+  state_del "$PARENT_STATE" pendingQuestion
+  rm -f "$PARENT_DIR/pending.json" 2>/dev/null || true
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *) if command -v "$GH_BIN" >/dev/null 2>&1; then
+         "$GH_BIN" issue edit "$PARENT_ISSUE" \
+           --remove-label "lcars:awaiting-human" >/dev/null 2>&1 || true
+       fi ;;
+  esac
+}
+
+# --- single-bug complete (BUG-032): fold ONLY one child, re-evaluate the gate --
+# The per-bug "Verify" on a single bug card must complete ONLY that bug — NOT the
+# whole batch. It folds just this child to Done, then re-checks the parent: if any
+# sibling bug is still pending, the parent's consolidated re-verify gate STAYS up;
+# only when none remain do we finalize the parent (clear the gate) as the bulk
+# path would. Contrast cmd_complete (no --bug), which accepts ALL remaining bugs.
+cmd_complete_single() { # bug-id
+  local bid="$1"
+  [ -f "$MISSIONS_DIR/$bid/state.json" ] \
+    || die "no such bug Mission \"$bid\" to complete."
+  # Guard: the --bug must actually be a linked child of this parent.
+  local cparent ctype
+  cparent="$(json_str "$MISSIONS_DIR/$bid/state.json" parentMission)"
+  ctype="$(json_str "$MISSIONS_DIR/$bid/state.json" type)"
+  [ "$ctype" = "bug" ] || die "$bid is not a bug Mission."
+  [ "$cparent" = "$PARENT_ID" ] \
+    || die "$bid is not linked to parent $PARENT_ID (parentMission=$cparent)."
+
+  if ! fold_one_child "$bid"; then
+    echo "lcars resolve-logs: $bid is not at a Verify gate (stage is '$(json_str "$MISSIONS_DIR/$bid/state.json" stage)') — nothing to complete for it."
+    exit 0
+  fi
+
+  case "$(json_raw "$MISSIONS_DIR/$bid/state.json" githubIssue)" in
+    ''|null) blabel="$bid" ;;
+    *) blabel="#$(json_raw "$MISSIONS_DIR/$bid/state.json" githubIssue)" ;;
+  esac
+
+  if parent_has_pending_children; then
+    printf 'Folded %s into %s (%s) — moved to Done. Other logged bugs are still pending; the consolidated re-verify gate stays up.\n' \
+      "$blabel" "$PARENT_ID" "$PARENT_TITLE"
+  else
+    clear_parent_gate
+    printf 'Folded %s into %s (%s) — moved to Done. No logged bugs remain; the consolidated re-verify gate is cleared.\n' \
+      "$blabel" "$PARENT_ID" "$PARENT_TITLE"
+  fi
+  exit 0
+}
+
 cmd_complete() {
-  local folded=0 line bid stage cstate cissue cbranch
+  local folded=0 bid stage
   while IFS=$'\t' read -r bid stage; do
     [ -n "$bid" ] || continue
-    # Only fold children that reached their Verify gate. A child still mid-flight
-    # (escalated / earlier stage) is left untouched — it is not "resolved" yet.
-    [ "$stage" = "verify" ] || continue
-    cstate="$MISSIONS_DIR/$bid/state.json"
-    cbranch="$(json_str "$cstate" branch)"
-
-    # Move the child to Done on disk — stage flips to done, branch is preserved
-    # (the fix stays folded onto the parent branch; we never rewrite it here).
-    state_set_str "$cstate" stage done
-
-    # Board: clear the stage labels, apply lcars:done — same column move approve
-    # makes, but WITHOUT a PR (the parent's PR carries the fix). Best-effort.
-    cissue="$(json_raw "$cstate" githubIssue)"
-    case "$cissue" in
-      ''|null) : ;;
-      *) if command -v "$GH_BIN" >/dev/null 2>&1; then
-           "$GH_BIN" issue edit "$cissue" \
-             --add-label "lcars:done" \
-             --remove-label "lcars:verify" \
-             --remove-label "lcars:awaiting-human" >/dev/null 2>&1 || true
-         fi ;;
-    esac
-    folded=$((folded + 1))
+    fold_one_child "$bid" && folded=$((folded + 1))
   done < <(linked_children)
 
   if [ "$folded" -eq 0 ]; then
@@ -371,6 +452,9 @@ cmd_complete() {
 }
 
 if [ "$SUBCOMMAND" = "complete" ]; then
+  if [ -n "$BUG_SEL" ]; then
+    cmd_complete_single "$BUG_SEL"
+  fi
   cmd_complete
 fi
 

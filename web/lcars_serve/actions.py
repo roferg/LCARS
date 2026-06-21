@@ -859,11 +859,22 @@ class Actions(object):
             # resolve-logs `complete` (NOT merge a per-bug PR with approve.sh,
             # which would hit the BUG-026 spurious-PR path). A top-level mission
             # still approves normally (merge its open PR).
+            #
+            # BUG-032: the per-bug "Verify" on a SINGLE bug card must complete
+            # ONLY this one bug (mid), NOT the whole batch. The bare
+            # `complete --parent` is the CONSOLIDATED accept that folds EVERY
+            # logged bug of the parent to Done — wiring it here marked sibling
+            # bugs Done on a single-card click. Use the single-bug mode
+            # (`complete --parent <p> --bug <mid>`): it folds just this bug and
+            # leaves the parent's consolidated re-verify gate up while any
+            # sibling is still pending. The all-remaining accept stays on the
+            # parent-gate respond path (respond → resolve-logs).
             parent = self._persisted_parent_mission(mid)
             if parent:
                 engine = self._persisted_worker_bin(parent)
                 env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
-                self._run("resolve", ["complete", "--parent", parent],
+                self._run("resolve",
+                          ["complete", "--parent", parent, "--bug", mid],
                           env_extra=env_extra)
             else:
                 self._run("approve", ["--mission", mid])

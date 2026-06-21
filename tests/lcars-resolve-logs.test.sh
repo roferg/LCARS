@@ -445,6 +445,67 @@ check "7. complete reports how many children it folded to Done" \
 check "7. children keep the parent branch as their working branch (folded)" \
   "qgrep '\"branch\":' '$repo7c/.git/lcars/missions/lcars-20260601-002/state.json'"
 
+# --- Behaviour 7b: single-bug complete (BUG-032) ----------------------------
+# `complete --parent <p> --bug <bug>` must fold ONLY that one child to Done and
+# leave the parent's OTHER bugs pending — the per-bug "Verify" on a single card.
+# Contrast the bulk `complete --parent` (Behaviour 7), which folds ALL of them.
+repo7e="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo7e/gh"; make_notify_stub "$repo7e/notify"
+export GH_LOG="$repo7e/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+# both children at verify; the parent already carries a consolidated gate.
+for seq in 002 003; do
+  s="$repo7e/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+pstate="$repo7e/.git/lcars/missions/lcars-20260601-001/state.json"
+sed 's/"base": "main"/"base": "main",\n  "awaitingHuman": true/' "$pstate" >"$pstate.t" && mv "$pstate.t" "$pstate"
+cat >"$repo7e/.git/lcars/missions/lcars-20260601-001/pending.json" <<'EOF'
+{ "stage": "verify", "questions": ["re-verify the 2 logged bugs"] }
+EOF
+rc7e=0
+(
+  cd "$repo7e"
+  LCARS_GH_BIN="$repo7e/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug "lcars-20260601-002" >out7e.txt 2>&1
+) || rc7e=$?
+check "7b. single-bug complete exits zero" "[ '$rc7e' -eq 0 ]"
+check "7b. ONLY the named bug 002 transitions to done" \
+  "qgrep '\"stage\": *\"done\"' '$repo7e/.git/lcars/missions/lcars-20260601-002/state.json'"
+check "7b. the SIBLING bug 003 is left pending (still verify, NOT done)" \
+  "qgrep '\"stage\": *\"verify\"' '$repo7e/.git/lcars/missions/lcars-20260601-003/state.json' && ! qgrep '\"stage\": *\"done\"' '$repo7e/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "7b. parent's consolidated re-verify gate STAYS up (a sibling pending)" \
+  "qgrep '\"awaitingHuman\": *true' '$pstate' && [ -f '$repo7e/.git/lcars/missions/lcars-20260601-001/pending.json' ]"
+check "7b. only ONE child issue relabelled lcars:done (not the whole batch)" \
+  "[ \"\$(grep -c 'add-label.*lcars:done' '$repo7e/gh.log')\" -eq 1 ]"
+check "7b. no per-bug PR opened" "! qgrep 'pr create' '$repo7e/gh.log'"
+
+# Folding the LAST remaining bug clears the parent gate.
+rc7f=0
+(
+  cd "$repo7e"
+  LCARS_GH_BIN="$repo7e/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug "lcars-20260601-003" >out7f.txt 2>&1
+) || rc7f=$?
+check "7b. folding the last bug exits zero" "[ '$rc7f' -eq 0 ]"
+check "7b. last bug 003 now done" \
+  "qgrep '\"stage\": *\"done\"' '$repo7e/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "7b. parent gate is CLEARED once no bug remains pending" \
+  "! qgrep '\"awaitingHuman\": *true' '$pstate' && [ ! -f '$repo7e/.git/lcars/missions/lcars-20260601-001/pending.json' ]"
+
+# a --bug that is not at verify is a clean no-op (does not fold, does not error).
+repo7g="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo7g/gh"; export GH_LOG="$repo7g/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+s7g="$repo7g/.git/lcars/missions/lcars-20260601-002/state.json"
+sed 's/"stage": "plan"/"stage": "verify"/' "$s7g" >"$s7g.t" && mv "$s7g.t" "$s7g"
+rc7g=0
+(
+  cd "$repo7g"
+  LCARS_GH_BIN="$repo7g/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug "lcars-20260601-003" >out7g.txt 2>&1
+) || rc7g=$?
+check "7b. --bug not at verify is a clean no-op (exit 0, nothing folded)" \
+  "[ '$rc7g' -eq 0 ] && ! qgrep '\"stage\": *\"done\"' '$repo7g/.git/lcars/missions/lcars-20260601-003/state.json'"
+
 # idempotent / no-op safety: a parent with no children-at-verify is a clean no-op.
 repo7d="$(new_repo_with_linked_bugs 0)"
 make_gh_stub "$repo7d/gh"
