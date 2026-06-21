@@ -755,6 +755,71 @@ check "8. the currently-driving child is NOT marked queued" \
 check "8. queued is cleared once the child has been driven (003 not queued at end)" \
   "! qgrep '\"queued\": *true' '$repo8c/.git/lcars/missions/lcars-20260601-003/state.json'"
 
+# --- Behaviour 9 (S76): a STALE consolidated gate on the parent is CLEARED ----
+# When re-driving (a previous round left a consolidated re-verify gate on the
+# parent, but a linked child has since been sent back and is NOT at verify), the
+# default flow must clear that stale gate BEFORE driving — so the parent shows
+# "resolving", not a falsely-acceptable gate, while the re-fix is in flight. The
+# gate is re-raised at the END exactly as today once every child reaches verify.
+repo9="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo9/gh"; make_notify_stub "$repo9/notify"; make_run_stub "$repo9/run"; make_worker_stub "$repo9/worker"
+export GH_LOG="$repo9/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo9/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo9/run.log"; : >"$RUN_LOG"
+# Plant a STALE consolidated gate on the parent (pending.json + awaitingHuman).
+p9="$repo9/.git/lcars/missions/lcars-20260601-001"
+awk 'NR==1{print; print "  \"awaitingHuman\": true,"; print "  \"pendingQuestion\": \"old re-verify ask\","; next} {print}' \
+  "$p9/state.json" >"$p9/state.json.t" && mv "$p9/state.json.t" "$p9/state.json"
+cat >"$p9/pending.json" <<'EOF'
+{ "stage": "verify", "questions": ["old re-verify ask"] }
+EOF
+# child 002 is at plan (NOT at verify) -> there IS work to drive.
+rc9=0
+(
+  cd "$repo9"
+  ESCALATE_IDS="" WORKER_ORDER="lcars-20260601-002 lcars-20260601-003" \
+  LCARS_GH_BIN="$repo9/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo9/notify" \
+  LCARS_RUN_SCRIPT="$repo9/run" LCARS_WORKER_BIN="$repo9/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out9.txt 2>&1
+) || rc9=$?
+check "9. exits zero re-driving with a stale gate present" "[ '$rc9' -eq 0 ]"
+check "9. drives the pending children" \
+  "[ \"\$(grep -c 'run drive' '$RUN_LOG')\" -eq 2 ]"
+# At the end the gate is RE-RAISED (the new round completed), so we assert the
+# stale pending.json text was replaced — the new ask mentions re-verify of the
+# resolved bugs, not the literal "old re-verify ask" we planted.
+check "9. the stale pending question was cleared/replaced" \
+  "! qgrep 'old re-verify ask' '$p9/pending.json'"
+check "9. a fresh consolidated gate is re-raised at the end" \
+  "qgrep '\"awaitingHuman\": *true' '$p9/state.json' && [ -f '$p9/pending.json' ]"
+check "9. the parent's awaiting-human label is removed while resolving" \
+  "qgrep 'remove-label lcars:awaiting-human' '$repo9/gh.log'"
+
+# 9b: when GATHER finds every child ALREADY at verify (no work to drive), the
+# stale-gate clear path must NOT fire a spurious early clear — the flow just
+# (re)raises the gate. We assert the parent still ends with a gate and the
+# children were not driven (no run.sh calls).
+repo9b="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo9b/gh"; make_notify_stub "$repo9b/notify"; make_run_stub "$repo9b/run"; make_worker_stub "$repo9b/worker"
+export GH_LOG="$repo9b/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo9b/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo9b/run.log"; : >"$RUN_LOG"
+for seq in 002 003; do
+  s="$repo9b/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+rc9b=0
+(
+  cd "$repo9b"
+  ESCALATE_IDS="" WORKER_ORDER="" \
+  LCARS_GH_BIN="$repo9b/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo9b/notify" \
+  LCARS_RUN_SCRIPT="$repo9b/run" LCARS_WORKER_BIN="$repo9b/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out9b.txt 2>&1
+) || rc9b=$?
+check "9b. all-at-verify re-raise drives nothing" "[ ! -s '$repo9b/run.log' ]"
+check "9b. all-at-verify still (re)raises the consolidated gate" \
+  "qgrep '\"awaitingHuman\": *true' '$repo9b/.git/lcars/missions/lcars-20260601-001/state.json'"
+
 # ==========================================================================
 echo
 printf 'lcars resolve-logs: %d passed, %d failed\n' "$pass" "$fail"

@@ -598,6 +598,18 @@ if [ -n "$paused_existing" ]; then
   exit 0
 fi
 
+# --- clear any STALE consolidated gate before re-driving (S76) ---------------
+# A previous round may have left a consolidated re-verify gate on the PARENT.
+# If THIS round has work to drive (a linked child is NOT yet at its Verify gate —
+# e.g. it was sent back), that gate is now stale: the parent should read
+# "resolving", not falsely-acceptable, while the re-fix is in flight. Clear it
+# here, before the DRIVE loop. The gate is re-raised at the END exactly as today
+# once every child reaches verify. We do NOT clear it when GATHER found the set
+# already all-at-verify (no work) — that path only (re)raises the gate.
+if [ "${#work[@]}" -gt 0 ]; then
+  clear_parent_gate
+fi
+
 # --- build the wave schedule over the ordered work set ----------------------
 # CONCURRENCY cap: same-wave children drive concurrently up to this many at once.
 # 1 ⇒ scheduled-but-serial (still produces the schedule + queued signal).

@@ -168,6 +168,85 @@ check "S75. clears the review marker" "! grep -q '\"review\"' '$sP'"
 check "S75. still resets the stage to align" "grep -q '\"stage\": *\"align\"' '$sP'"
 check "S75. still appends the feedback note" "grep -q 'Regressed on Safari' '$repoP/.git/lcars/missions/$MID/feedback.md'"
 
+# --- S76: a logged bug sent back goes to PLAN (not Align), correction folded --
+# A logged bug (type:bug + non-empty parentMission) was fast-tracked to Plan and
+# has NO Align stage. Sending it back must re-stage it to PLAN, fold the captain's
+# note into prd.md (the only artifact the cold Plan worker reads), and clear the
+# stale downstream artifacts so Plan regenerates cleanly. It must NOT touch a PR
+# (a logged bug's fix rides the parent's PR) and must keep feedback.md.
+new_repo_with_logged_bug() {
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  local m="$repo/.git/lcars/missions/$MID"
+  mkdir -p "$m/tickets/t-001/tests" "$m/manifests"
+  cat >"$m/prd.md" <<'EOF'
+# Mission: Fix the broken toggle
+**Type:** bug
+**Goal:** The dark-mode toggle should persist.
+EOF
+  cat >"$m/state.json" <<'EOF'
+{
+  "id": "lcars-20260530-001",
+  "type": "bug",
+  "title": "Toggle does not persist",
+  "stage": "verify",
+  "parentMission": "lcars-20260530-000",
+  "parentIssue": 7,
+  "created": "2026-05-30T10:00:00Z",
+  "githubIssue": 88,
+  "branch": "lcars/lcars-20260530-000",
+  "base": "main"
+}
+EOF
+  printf '[ { "id": "t-001" } ]\n' >"$m/plan.json"
+  printf '[ { "id": "t-001" } ]\n' >"$m/approved-plan.json"
+  printf '[ { "wave": 1, "tickets": ["t-001"] } ]\n' >"$m/waves.json"
+  printf 'stale ticket\n' >"$m/tickets/t-001/result.json"
+  printf 'stale manifest\n' >"$m/manifests/t-001.md"
+  echo "$repo"
+}
+repoB="$(new_repo_with_logged_bug)"; make_gh_stub "$repoB/gh"
+export GH_LOG="$repoB/gh.log"; : >"$GH_LOG"
+FBB="The fix must also cover the Firefox private-window case."
+rcB=0
+( cd "$repoB" && LCARS_GH_BIN="$repoB/gh" LCARS_NOW="2026-06-04T12:00:00Z" \
+    bash "$SCRIPT" --mission "$MID" --feedback "$FBB" >outB.txt 2>&1 ) || rcB=$?
+sB="$(state_of "$repoB")"
+mB="$repoB/.git/lcars/missions/$MID"
+check "S76. logged-bug feedback exits 0" "[ '$rcB' -eq 0 ]"
+check "S76. logged bug re-stages to PLAN (not align)" \
+  "grep -q '\"stage\": *\"plan\"' '$sB'"
+check "S76. logged bug is NOT sent to align" "! grep -q '\"stage\": *\"align\"' '$sB'"
+check "S76. correction is folded into prd.md" \
+  "grep -q 'Firefox private-window case' '$mB/prd.md'"
+check "S76. the correction has a marked heading in prd.md" \
+  "grep -qi 'correction' '$mB/prd.md'"
+check "S76. stale plan.json is cleared so Plan regenerates" "[ ! -f '$mB/plan.json' ]"
+check "S76. stale approved-plan.json is cleared" "[ ! -f '$mB/approved-plan.json' ]"
+check "S76. stale waves.json is cleared" "[ ! -f '$mB/waves.json' ]"
+check "S76. stale tickets/ dir is cleared" "[ ! -d '$mB/tickets' ]"
+check "S76. stale manifests/ dir is cleared" "[ ! -d '$mB/manifests' ]"
+check "S76. feedback.md is still recorded" \
+  "[ -f '$mB/feedback.md' ] && grep -q 'Firefox private-window case' '$mB/feedback.md'"
+check "S76. prd.md is NOT deleted (it was amended)" "[ -f '$mB/prd.md' ]"
+check "S76. relabels to lcars:plan" "grep -q 'add-label lcars:plan' '$repoB/gh.log'"
+check "S76. does NOT touch a PR (no gh pr close for a logged bug)" \
+  "! grep -q 'pr close' '$repoB/gh.log'"
+
+# Regression: a TOP-LEVEL mission (feature, no parentMission) still goes to align,
+# and its prd.md is NOT amended.
+repoT="$(new_repo_with_verify_mission)"; make_gh_stub "$repoT/gh"
+export GH_LOG="$repoT/gh.log"; : >"$GH_LOG"
+PRD_BEFORE="$(cat "$repoT/.git/lcars/missions/$MID/prd.md")"
+rcT=0
+( cd "$repoT" && LCARS_GH_BIN="$repoT/gh" LCARS_NOW="2026-06-04T13:00:00Z" \
+    bash "$SCRIPT" --mission "$MID" --feedback "Top-level note." >outT.txt 2>&1 ) || rcT=$?
+sT="$(state_of "$repoT")"
+PRD_AFTER="$(cat "$repoT/.git/lcars/missions/$MID/prd.md")"
+check "S76. top-level mission still resets to align" "grep -q '\"stage\": *\"align\"' '$sT'"
+check "S76. top-level mission's prd.md is NOT amended" \
+  "[ \"\$PRD_BEFORE\" = \"\$PRD_AFTER\" ]"
+
 # --- Guard: a bad mission id is rejected ------------------------------------
 repoFg="$(new_repo_with_verify_mission)"; make_gh_stub "$repoFg/gh"
 export GH_LOG="$repoFg/gh.log"; : >"$GH_LOG"

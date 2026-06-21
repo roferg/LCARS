@@ -134,6 +134,47 @@ PREV_STAGE="$(json_str "$STATE" stage)"
   printf '%s\n\n' "$FEEDBACK"
 } >>"$MISSION_DIR/feedback.md"
 
+# A logged bug (S76): type==bug AND a non-empty parentMission. It was fast-tracked
+# straight to Plan and has NO Align stage — its Align re-entry would be an
+# INTERACTIVE re-grill that a headless resolve-logs batch cannot clear, and no
+# headless stage reads feedback.md. So a logged-bug send-back goes back to PLAN,
+# with the correction folded into prd.md (the artifact the cold Plan worker reads).
+TYPE="$(json_str "$STATE" type)"
+PARENT="$(json_str "$STATE" parentMission)"
+
+if [ "$TYPE" = "bug" ] && [ -n "$PARENT" ]; then
+  # Do NOT touch any PR: a logged bug has no PR of its own (its fix rides the
+  # PARENT's PR), so close_open_pr is skipped here explicitly.
+
+  # Fold the note into prd.md as a clearly-marked correction the Plan worker reads.
+  {
+    printf '\n\n## Re-verify correction — %s\n\n' "$NOW"
+    printf '%s\n' "$FEEDBACK"
+  } >>"$MISSION_DIR/prd.md"
+
+  # Clear the stale downstream artifacts so the re-plan regenerates cleanly
+  # against the corrected PRD. Plan overwrites plan.json fresh; Plan Review writes
+  # approved-plan.json; Schedule rebuilds waves.json + manifests; Implement
+  # rebuilds tickets/. Best-effort. Do NOT delete prd.md (just amended) or
+  # feedback.md.
+  rm -f  "$MISSION_DIR/plan.json"          2>/dev/null || true
+  rm -f  "$MISSION_DIR/approved-plan.json" 2>/dev/null || true
+  rm -f  "$MISSION_DIR/waves.json"         2>/dev/null || true
+  rm -rf "$MISSION_DIR/tickets"            2>/dev/null || true
+  rm -rf "$MISSION_DIR/manifests"          2>/dev/null || true
+
+  set_stage "plan"
+  gh_relabel "lcars:plan" "${PREV_STAGE:+lcars:$PREV_STAGE} lcars:awaiting-human"
+
+  echo "FEEDBACK: logged bug re-staged to Plan with your correction folded into the PRD"
+  echo "  Appended your note to feedback.md and folded it into prd.md."
+  echo "  Stage:  plan (was ${PREV_STAGE:-unknown})"
+  echo "  Cleared the stale plan/schedule/implement artifacts so Plan re-runs against the corrected PRD."
+  echo "  Its fix rides the parent's PR — no PR was touched. \`lcars run $MISSION_ID\` re-plans headlessly."
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  exit 0
+fi
+
 # 1b. Close any open PR (S75) and clear the recorded PR/review markers, so the
 # in-review PR does not linger and a re-entry to Verify opens a fresh one.
 close_open_pr
