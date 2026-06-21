@@ -216,11 +216,13 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 /* BUG-025: a child/bug card used to indent with `margin-left:14px`, which
    PHYSICALLY NARROWS the card inside its fixed-width column — so the absolutely
    positioned engine watermark (top-right) ended up over the in-flight
-   phase-status text. Bring the card to WIDTH PARITY with a mission card: drop the
-   margin (no narrowing) and express the "nested" cue with left padding instead,
-   so the box is the full column width and the badge keeps its own clear corner. */
+   phase-status text. Bring the card to FULL PARITY with a mission card: no
+   narrowing margin AND no extra content inset — the box is full column width and
+   the CONTENT uses the same base padding (10px) as a mission card, so the title/
+   pills/status line up exactly. The "child/bug" cue is purely the pink + fatter
+   left border (and the alt background), never a content offset. */
 .card.child{border-left-color:var(--lcars-pink,#ff66aa);
-  padding-left:24px;background:var(--lcars-card-alt)}
+  background:var(--lcars-card-alt)}
 /* UX-28: a logged bug (child of a parent mission) is a PINK accent child card
    (the mock spec'd pink for children) + a small "log bug · child of #<parent>"
    badge. The pink left bar is reinforced and a faint pink ring sets it apart
