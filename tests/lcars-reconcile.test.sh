@@ -88,10 +88,19 @@ EOF
 }
 
 # resolve-logs.sh stub: records drive + complete invocations.
+# BUG-052: when $STUB_RESOLVE_FAIL is set, the DRIVE invocation exits NON-ZERO —
+# standing in for a real heal child that errored (e.g. its implement hard-failed)
+# and could NOT be driven to its Verify gate (the real resolve-logs `die`s with
+# WAVE_ERRORED in that case). The `complete` invocation still records + exits 0
+# (there is nothing at Verify to fold), exactly as the real script does.
 make_resolve_stub() {
   cat >"$1" <<'EOF'
 #!/usr/bin/env bash
 echo "RESOLVE $*" >>"$RESOLVE_LOG"
+case " $* " in
+  *" complete "*) exit 0 ;;
+esac
+[ -n "${STUB_RESOLVE_FAIL:-}" ] && exit 1
 exit 0
 EOF
   chmod +x "$1"
@@ -315,6 +324,7 @@ run_in() { # repo  subcommand-and-args…
          STUB_DESIGN_QUESTION_TEXT="${STUB_DESIGN_QUESTION_TEXT:-}" \
          STUB_FORCED_DESIGN_QUESTION_TEXT="${STUB_FORCED_DESIGN_QUESTION_TEXT:-}" \
          STUB_RESOLVE_RED="${STUB_RESOLVE_RED:-}" \
+         STUB_RESOLVE_FAIL="${STUB_RESOLVE_FAIL:-}" \
          LCARS_GH_BIN="$a/gh" LCARS_GIT_BIN="git" \
          LCARS_HOST_ADAPTER="$HOST_ADAPTER" \
          LCARS_LOG_SCRIPT="$a/log.sh" \
@@ -962,6 +972,53 @@ run_in "$b55" reconcile --mission "$MID" >"$b55.aux/p3.txt" 2>&1 || true
 round_after="$(sed -n 's/.*"reconcileRound"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$(state_of "$b55")" | head -1)"
 check "B55. the post-answer resume restarts the budget fresh (round 1, not carried forward)" \
   "[ \"\${round_after:-0}\" -eq 1 ]"
+
+# --- BUG-052: a HEAL DRIVE that itself FAILS must escalate, never freeze -------
+# The deadlock: on the FIRST red round the harness authors + dispatches a self-heal,
+# but the dispatched heal child cannot be driven to a usable state (its implement
+# hard-fails → resolve-logs `die`s with WAVE_ERRORED). The OLD code ignored that
+# failure and still set reconcileStatus=healing + returned 10 — leaving the parent
+# FROZEN: reconcileStatus=healing, nothing running, NO awaiting-human gate, and the
+# board's resolving/reconciling lock (BUG-035/039) suppressing Merge with no escape.
+# The fix: a FAILED heal drive must terminate cleanly as an awaiting-human gate
+# (reconcileStatus=escalated + pending.json + ONE notify, exit 20) so the board's
+# gate rendering clears the lock and the captain gets an action.
+b52="$(mktemp -d "$TMPROOT/b52.XXXX")"; new_repo_verify "$b52" >/dev/null; setup_stubs "$b52"
+stage_ticket_suite "$b52" red; advance_base "$b52" clean
+rc52=0
+STUB_RESOLVE_FAIL=1 run_in "$b52" reconcile --mission "$MID" >"$b52.aux/p1.txt" 2>&1 || rc52=$?
+s52="$(state_of "$b52")"
+pj52="$(mdir_of "$b52")/pending.json"
+check "B52. a FAILED heal drive escalates (exit 20), not a 'reconciling' halt (exit 10)" \
+  "[ '$rc52' -eq 20 ]"
+check "B52. a FAILED heal drive reaches reconcileStatus=escalated (clean terminal)" \
+  "grep -q '\"reconcileStatus\": *\"escalated\"' '$s52'"
+check "B52. a FAILED heal drive is NEVER left frozen at reconcileStatus=healing" \
+  "! grep -q '\"reconcileStatus\": *\"healing\"' '$s52'"
+check "B52. a FAILED heal drive raises the awaiting-human gate (state + pending.json)" \
+  "grep -q '\"awaitingHuman\": *true' '$s52' && [ -f '$pj52' ]"
+check "B52. a FAILED heal drive fires exactly one gate notification" \
+  "[ \"\$(grep -c NOTIFY '$b52.aux/notify.log')\" -eq 1 ]"
+check "B52. a FAILED heal drive never opens a PR" "! grep -q 'pr create' '$b52.aux/gh.log'"
+check "B52. live tree stays clean after a failed heal drive" \
+  "[ -z \"\$(cd '$b52' && git status --porcelain)\" ]"
+check "B52. no reconcile worktree leaks after a failed heal drive" \
+  "! (cd '$b52' && git worktree list | grep -q reconcile)"
+
+# B52b (regression guard): a SUCCESSFUL heal dispatch (drive does NOT fail) still
+# halts "reconciling" (exit 10, reconcileStatus=healing) on the first red round —
+# the fix must NOT over-fire on the healthy self-heal path.
+b52b="$(mktemp -d "$TMPROOT/b52b.XXXX")"; new_repo_verify "$b52b" >/dev/null; setup_stubs "$b52b"
+stage_ticket_suite "$b52b" red; advance_base "$b52b" clean
+rc52b=0
+run_in "$b52b" reconcile --mission "$MID" >"$b52b.aux/p1.txt" 2>&1 || rc52b=$?
+s52b="$(state_of "$b52b")"
+check "B52b. a SUCCESSFUL heal dispatch still returns 10 (reconciling halt)" \
+  "[ '$rc52b' -eq 10 ]"
+check "B52b. a SUCCESSFUL heal dispatch sets reconcileStatus=healing (unchanged behaviour)" \
+  "grep -q '\"reconcileStatus\": *\"healing\"' '$s52b'"
+check "B52b. a SUCCESSFUL heal dispatch does NOT raise an awaiting-human gate" \
+  "! grep -q '\"awaitingHuman\": *true' '$s52b'"
 
 # ==========================================================================
 echo

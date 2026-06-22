@@ -2973,19 +2973,12 @@ emit a design-question file this time."
       for p in "${prds[@]}"; do prd_args+=(--prd "$p"); done
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="$engine" \
         bash "$LOG_SCRIPT" --parent "$MISSION_ID" "${prd_args[@]}" >/dev/null 2>&1 || true
-      # Drive the bugs to their Verify gates (resolve-logs inherits the parent
-      # engine via PARENT_ENGINE), then FOLD them onto the parent branch WITHOUT
-      # raising resolve-logs' consolidated gate — the S75 verify gate is the single
-      # human gate.
-      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
-        bash "$RESOLVE_LOGS_SCRIPT" --parent "$MISSION_ID" >/dev/null 2>&1 || true
-      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
-        bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" >/dev/null 2>&1 || true
       rm -rf "$odir"
       # CONSUME the dedicated reconcile answer (BUG-043): a decision applies ONCE, so
       # a later unrelated answers.json — or a re-run — never re-injects this decision.
       [ -n "$recon_ans" ] && rm -f "$MISSION_DIR/reconcile-answer.txt"
-      return 0
+      # Drive + fold; the DRIVE's success/failure is the heal signal (BUG-052).
+      reconcile_drive_and_fold; return $?
     fi
     prior_no_file=no-file
     rm -rf "$odir"
@@ -3003,12 +2996,33 @@ emit a design-question file this time."
   } >"$fb"
   LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="$engine" \
     bash "$LOG_SCRIPT" --parent "$MISSION_ID" --prd "$fb" >/dev/null 2>&1 || true
-  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
-    bash "$RESOLVE_LOGS_SCRIPT" --parent "$MISSION_ID" >/dev/null 2>&1 || true
-  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
-    bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" >/dev/null 2>&1 || true
   # CONSUME the dedicated reconcile answer (BUG-043) — a heal was dispatched.
   [ -n "$recon_ans" ] && rm -f "$MISSION_DIR/reconcile-answer.txt"
+  # Drive + fold; the DRIVE's success/failure is the heal signal (BUG-052).
+  reconcile_drive_and_fold; return $?
+}
+
+# BUG-052 — drive the just-logged heal bug(s) to their Verify gate, then fold them
+# onto the parent branch. The DRIVE'S EXIT CODE is the heal signal: resolve-logs
+# `die`s (non-zero) when a heal child ERRORED — its implement hard-failed and it
+# could not be driven to a usable Verify state (WAVE_ERRORED). When that happens
+# the heal produced NO healed state, so we return 1 (FAILURE) and the gate escalates
+# to an awaiting-human gate INSTEAD of freezing at reconcileStatus=healing. On a
+# clean drive (the heal is dispatched + progressing) we fold and return 0 (success
+# → the gate halts "reconciling" as before). resolve-logs inherits the parent
+# engine via PARENT_ENGINE; complete folds WITHOUT raising resolve-logs' own
+# consolidated gate — the S75 verify gate is the single human gate.
+reconcile_drive_and_fold() {
+  local drive_rc=0
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    bash "$RESOLVE_LOGS_SCRIPT" --parent "$MISSION_ID" >/dev/null 2>&1 || drive_rc=$?
+  if [ "$drive_rc" -ne 0 ]; then
+    # The dispatched heal child could not be driven to a usable healed state — do
+    # NOT fold (nothing reached Verify) and signal FAILURE so the gate escalates.
+    return 1
+  fi
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -3335,7 +3349,8 @@ ${base_log:-(no log available)}"
   # branch with the just-landed bug fixes present — and if it is STILL red, the
   # deterministic BUG-045 path above escalates a design question.
   emit_event reconcile_red verify "merged $BASE but the combined state is not green — self-healing (round $round)"
-  reconcile_author_and_dispatch "$failure_summary" "$affected"
+  local heal_rc=0
+  reconcile_author_and_dispatch "$failure_summary" "$affected" || heal_rc=$?
 
   # BUG-042: the author judged this an UNRESOLVABLE design trade-off UPFRONT and
   # posed an experience-framed question rather than a self-heal. There is nothing to
@@ -3343,6 +3358,22 @@ ${base_log:-(no log available)}"
   # the next pass (after `lcars respond`) injects their answer into the heal.
   if [ -n "$RECONCILE_DESIGN_QUESTION" ]; then
     reconcile_escalate "$RECONCILE_DESIGN_QUESTION" design
+    return 20
+  fi
+
+  # BUG-052: the dispatched HEAL DRIVE itself FAILED — the heal child errored and
+  # could not be driven to a usable healed state (e.g. its implement hard-failed).
+  # Do NOT set reconcileStatus=healing + return 10: that would leave the parent
+  # FROZEN (stale healing, nothing running, no gate, Merge suppressed by the
+  # BUG-035/039 lock with no escape). Instead escalate cleanly to an awaiting-human
+  # gate so the board's gate rendering clears the lock and the captain gets an
+  # action. The author already persisted the diagnosis; surface it.
+  if [ "$heal_rc" -ne 0 ]; then
+    local hd; hd="$(json_str "$STATE" reconcileDiagnosis)"
+    [ -n "$hd" ] || hd="$failure_summary"
+    hd="The self-heal for this reconcile could not be completed — the dispatched fix errored before reaching a usable state. $hd"
+    emit_event reconcile_red verify "the dispatched self-heal failed to reach a usable state — escalating to the human (round $round)"
+    reconcile_escalate "$hd"
     return 20
   fi
 
