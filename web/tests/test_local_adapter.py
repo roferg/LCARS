@@ -497,6 +497,54 @@ class LocalAdapterTest(unittest.TestCase):
         detail = LocalAdapter(self.tmp).mission("m-001")
         self.assertTrue(detail["running"])
 
+    # ── BUG-062: the `dispatched` flag (was the run actually launched?) ──
+    # A logged bug fast-tracks to stage="plan" but, with the estimate gate, is
+    # FILED but HELD at estimate-review — only estimate.json exists, NO
+    # events.jsonl, no driver lock. It is NOT dispatched, so its card must show
+    # "Start", not "Pause". `dispatched` is the durable signal the front end
+    # gates the Start/Pause button on: true iff a run has actually run (events
+    # on disk) OR a live driver currently holds the lock.
+    def test_dispatched_false_for_filed_but_held_bug_estimate_only(self):
+        """The crux of BUG-062: a bug parked at plan with ONLY estimate.json (no
+        events.jsonl, no lock) is filed-but-held — not dispatched."""
+        fx.plant_simple(self.tmp, "m-bug", stage="plan", mtype="bug")
+        m = self._by_id(self._board(), "m-bug")
+        self.assertIn("dispatched", m)
+        self.assertFalse(m["dispatched"],
+                         "an estimate-only, no-events bug must not read dispatched")
+        self.assertFalse(m["running"])
+
+    def test_dispatched_true_when_events_jsonl_present(self):
+        """Once a run is actually dispatched it emits events.jsonl ⇒ dispatched."""
+        fx.plant_simple(self.tmp, "m-run", stage="plan")
+        self._events("m-run", [
+            {"ts": 1, "stage": "plan", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-run")
+        self.assertTrue(m["dispatched"])
+
+    def test_dispatched_true_when_a_live_driver_holds_the_lock(self):
+        """A live driver lock (run just started, events not yet flushed) ⇒
+        dispatched, so the card never flashes a clickable Start mid-launch."""
+        fx.plant_simple(self.tmp, "m-run", stage="plan")
+        self._lock("m-run", os.getpid())
+        m = self._by_id(self._board(), "m-run")
+        self.assertTrue(m["dispatched"])
+
+    def test_dispatched_false_for_align_mission_no_events(self):
+        """A fresh align mission (no events, no lock) is not dispatched."""
+        fx.plant_simple(self.tmp, "m-align", stage="align")
+        m = self._by_id(self._board(), "m-align")
+        self.assertFalse(m["dispatched"])
+
+    def test_dispatched_surfaced_on_mission_detail_too(self):
+        fx.plant_simple(self.tmp, "m-run", stage="plan")
+        self._events("m-run", [
+            {"ts": 1, "stage": "plan", "type": "stage_start", "detail": ""},
+        ])
+        detail = LocalAdapter(self.tmp).mission("m-run")
+        self.assertTrue(detail["dispatched"])
+
     # ── BUG-017: a running, non-gated card shows its in-flight events stage ──
     def _events(self, mid, rows):
         d = fx.mission_dir(self.tmp, mid)

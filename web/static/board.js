@@ -446,9 +446,13 @@ function cardControls(m) {
       pause.title = "Engaging the driver…";
     }
     ctrl.appendChild(pause);
-  } else if (isRunningStage(m.stage)) {
-    // an in-flight headless stage with no running flag yet — offer Pause, never
-    // Start (so Start can't be double-fired).
+  } else if (isRunningStage(m.stage) && m.dispatched) {
+    // BUG-062: an in-flight headless stage with no live running flag yet — offer
+    // Pause, never Start (so Start can't be double-fired). Gated on `dispatched`
+    // (the run was actually launched: events on disk OR a live driver lock).
+    // Without that gate a logged bug fast-tracked to plan but FILED-but-HELD at
+    // estimate-review (only estimate.json, no events) keyed off the STAGE alone
+    // and wrongly showed Pause; it must show Start until the run is dispatched.
     ctrl.appendChild(applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/pause", {},
         ctrl, "Holding station…");
@@ -1722,10 +1726,13 @@ function renderDetail(mi) {
     dpausing.disabled = true;
     dpausing.title = "Pause requested — stopping at the next safe boundary.";
     actions.appendChild(dpausing);
-  } else if (mrs === "running" || isRunningStage(mi.stage)) {
+  } else if (mrs === "running" || (isRunningStage(mi.stage) && mi.dispatched)) {
     // UX-13: mirror the card — a live drive overrides Start → Pause so Start
     // can't be double-fired from the detail header either. UX-17: while
     // optimistically starting the Pause stays disabled until running flips true.
+    // BUG-062: the stage-based fallback is gated on `dispatched` (the run was
+    // actually launched) so a filed-but-held mission (estimate-only, no events)
+    // shows Start, not Pause — identical to the card control.
     var dpause = applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCard("/api/mission/" + enc(mi.id) + "/pause", {}); closeOverlay();
     }));

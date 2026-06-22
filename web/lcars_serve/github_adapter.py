@@ -138,6 +138,12 @@ class GitHubAdapter(object):
             # adapter cannot see, so `running` is always False here (adapter-
             # neutral shape, ADR-006 — the field is present, never crashing).
             "running": False,
+            # BUG-062: `dispatched` (was a run launched?) is derived from LOCAL
+            # events.jsonl / the driver lock, which the github adapter cannot see.
+            # The forge view is read-only (Start/Pause are write actions, disabled
+            # here), so a forge-visible proxy is unnecessary; mirror the
+            # `running`/`queued` ADR-006 pattern — present, non-crashing, False.
+            "dispatched": False,
             # S73: `queued` (resolve-logs scheduled-but-not-started) is derived
             # from a LOCAL state.json flag the github adapter cannot see, so it is
             # always False here (adapter-neutral shape, ADR-006 — present, non-

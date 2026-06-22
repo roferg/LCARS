@@ -123,6 +123,18 @@ class LocalAdapter(object):
         # the in-flight column comes from pending.json.stage, not state.stage.
         pending = _load_json(os.path.join(d, "pending.json"))
         events = _load_jsonl(os.path.join(d, "events.jsonl"))
+
+        # BUG-062: `dispatched` — was a run ever actually LAUNCHED for this
+        # mission? With the estimate gate (BUG-059) a logged bug fast-tracks to
+        # stage="plan" but is FILED but HELD at estimate-review: only
+        # estimate.json exists, NO events.jsonl, no driver lock. Such a mission
+        # is NOT dispatched, so the front end must render "Start" — keying the
+        # button off the stage value alone wrongly shows "Pause". A run is
+        # dispatched iff it has emitted any events (durable proof it ran) OR a
+        # live driver currently holds the lock (just started, events not yet
+        # flushed). The front end (board.js) gates the Start/Pause control on
+        # this so a held mission reads as Start, a real run as Pause.
+        dispatched = bool(events) or running
         # BUG-027: the harness writes a legible, type-aware gate envelope into
         # pending.json — `humanSummary` (plain-language headline), `escalationType`
         # ("regression"|"scope"|"cap") and `technicalDetail` (raw reason + command).
@@ -275,6 +287,11 @@ class LocalAdapter(object):
             "awaiting": awaiting,
             "paused": paused,
             "running": running,
+            # BUG-062: was a run actually launched? (events emitted OR a live
+            # driver lock). A filed-but-held mission — parked at estimate-review
+            # with only estimate.json — reads False, so its card shows Start, not
+            # Pause. The front end gates the Start/Pause control on this.
+            "dispatched": dispatched,
             # `queued` (S73): true iff this mission is SCHEDULED in an active
             # resolve-logs batch but has not started driving its wave yet —
             # resolve-logs.sh stamps state.json.queued:true while a child waits
