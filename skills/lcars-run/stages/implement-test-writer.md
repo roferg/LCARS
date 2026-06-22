@@ -92,6 +92,53 @@ double is incomplete. To prevent this:
    a silent pass. The red gate still applies: your suite must FAIL until the ticket
    is built.
 
+## Locate repo sources PORTABLY — NEVER hardcode an absolute path
+
+You are authoring in a throwaway build worktree, but your test is RE-RUN later
+from a CLEAN checkout in a DIFFERENT directory (the full-suite gate). A test that
+opens a repo source (e.g. `game.js`) by an **absolute** path passes here and then
+**ENOENT-fails** there — a spurious "regression" that triggers a futile,
+human-confusing self-heal AND that the Implementer can **never fix** (your test is
+immutable once locked). The harness now **REJECTS** such a test and makes you
+retry, so get it right the first time:
+
+- **MUST** resolve every repo source **relative to the test file's own location** —
+  a walk-up locator from `__dirname` (JS) / the test file's directory (any lang).
+  One robust helper, used by every test that needs the source:
+
+  ```js
+  // RIGHT — portable: walk up from this test file until game.js is found.
+  const fs = require('fs'), path = require('path');
+  function findGameJs() {
+    let dir = __dirname;
+    for (let i = 0; i < 8; i++) {
+      const p = path.join(dir, 'game.js');
+      if (fs.existsSync(p)) return p;
+      const up = path.dirname(dir);
+      if (up === dir) break;
+      dir = up;
+    }
+    throw new Error('game.js not found walking up from ' + __dirname);
+  }
+  const gameSrc = fs.readFileSync(findGameJs(), 'utf8');
+  ```
+
+- **MUST NEVER** hardcode an absolute filesystem path to a source. All of these
+  are forbidden and will be **rejected**:
+
+  ```js
+  // WRONG — absolute build-worktree path; ENOENTs when re-run elsewhere.
+  fs.readFileSync('/private/var/worktrees/t-001/game.js');
+  // WRONG — absolute home path.
+  fs.readFileSync('/Users/you/Projects/app/game.js');
+  // WRONG — any /private/var/folders/... temp path, or a require() of one.
+  require('/private/var/folders/ab/cd/T/game.js');
+  ```
+
+The rule applies to **every** repo source you read, require, import, or open — not
+just `game.js`. Relative paths and the walk-up locator are always fine; absolute
+build-worktree / home / temp paths are never fine.
+
 ## Output — files FIRST
 
 Creating the test file(s) on disk with your file-creation / file-writing tool is

@@ -1906,6 +1906,52 @@ suite_has_assertions() { # tests-dir
   grep -rEiq 'assert|expect|should|\.to[A-Za-z]|require\(|t\.(is|deep|truthy|throws)|check\(|verify\(' "$1" 2>/dev/null
 }
 
+# --- GUARDRAIL 3.5: portable source location (BUG-074) ----------------------
+# A ticket test that loads a repo source (e.g. game.js) via a HARDCODED ABSOLUTE
+# build-worktree path — `fs.readFileSync('/private/var/worktrees/t-001/game.js')`
+# — passes in the worktree it was authored in (the ticket goes green) but ENOENTs
+# when the full-suite gate re-runs the suite from a CLEAN checkout elsewhere. That
+# spurious "regression" triggers a futile (billed) implement self-heal and a
+# confusing escalation, and the Implementer can NEVER fix it: the bad path lives
+# in the immutable/locked test. The robust fix is to REJECT such a test before it
+# locks in, so the Test Writer retries with a portable walk-up locator.
+#
+# `nonportable_path_in_tests` echoes the FIRST offending "<file>:<path>" and
+# returns 0 (found) / 1 (clean). It is deliberately PRECISE so it does not
+# false-positive on legitimate relative paths or on paths mentioned in comments:
+#   • Only flags an ABSOLUTE path under a known non-portable, host-/run-specific
+#     root: a `/private/var/` (or `/var/folders/`, `/private/var/folders/`) temp
+#     path, a `…/worktrees/…` build-worktree segment, or an absolute `/Users/`
+#     home path. A bare relative path (`../game.js`, `./fixtures/x`) is never
+#     flagged.
+#   • Only when that path is consumed by a path-OPENING construct on the same line
+#     (readFileSync/readFile/createReadStream/openSync/require/import/fs.* path
+#     args, or a Python open()/Path()) — not arbitrary string mentions.
+#   • Skips lines that are pure comments (`//`, `#`, or `*` leader).
+nonportable_path_in_tests() { # tests-dir → echoes "file:offending-path", rc 0 if found
+  local d="$1"
+  # The non-portable absolute roots that won't survive relocation. A path is one
+  # of: /private/var/..., /var/folders/..., any .../worktrees/... segment, /Users/...
+  local pathpat='(/private/var/[^"'"'"'`) ]+|/var/folders/[^"'"'"'`) ]+|/[^"'"'"'`) ]*/worktrees/[^"'"'"'`) ]+|/Users/[^"'"'"'`) ]+)'
+  # A path-opening construct that consumes such a literal on the same line.
+  local loadpat='(readFileSync|readFile|createReadStream|openSync|writeFileSync|require|import|fs\.[A-Za-z]+|path\.(resolve|join)|[^A-Za-z_]open|Path)\b'
+  local rel hit
+  while IFS= read -r rel; do
+    rel="${rel#./}"
+    # Strip pure-comment lines, then require BOTH a load construct AND a
+    # non-portable absolute literal on the same surviving line.
+    hit="$(grep -nE "$loadpat" "$d/$rel" 2>/dev/null \
+            | grep -vE '^[0-9]+:[[:space:]]*(//|#|\*)' \
+            | grep -oE "$pathpat" \
+            | head -n1)"
+    if [ -n "$hit" ]; then
+      printf '%s:%s' "$rel" "$hit"
+      return 0
+    fi
+  done < <(cd "$d" && find . -type f | LC_ALL=C sort)
+  return 1
+}
+
 # --- subcommand: impl-save-tests -------------------------------------------
 cmd_impl_save_tests() {
   locate_mission "$MISSION_ID"
@@ -1923,6 +1969,15 @@ cmd_impl_save_tests() {
   # that proves nothing.
   suite_has_assertions "$TESTS" \
     || die "the Test Writer's suite asserts nothing — no assertion found in any test file. A zero-assertion contract proves nothing; rejected by the test-quality guardrail."
+
+  # GUARDRAIL 3.5 (BUG-074): reject a NON-PORTABLE test before it locks in. A test
+  # that loads a repo source via a hardcoded absolute build-worktree path passes in
+  # the worktree it was authored in but ENOENTs from the full-suite gate, poisoning
+  # it with a spurious regression the Implementer can never fix (the path lives in
+  # the immutable test). Fail the attempt so the Test Writer retries portably.
+  local bad_path; bad_path="$(nonportable_path_in_tests "$TESTS" || true)"
+  [ -z "$bad_path" ] \
+    || die "ticket test hardcodes an absolute path ${bad_path#*:} (in ${bad_path%%:*}) — tests must locate sources via the portable walk-up (e.g. a findGameJs() that walks up from __dirname), never an absolute build-worktree path; rejecting so the Test Writer retries."
 
   # Quarantine the files to tickets/<id>/tests/. That dir is the sole handoff to
   # the Implementer, so Phase 1 output never leaks into the working tree.
