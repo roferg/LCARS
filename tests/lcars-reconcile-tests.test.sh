@@ -48,6 +48,9 @@ EOF
 # Its behaviour is driven by env:
 #   STUB_DECISION=reconciled → edit the parent test in place (shrink the X) and
 #                              write a result.json with a "changed" list.
+#   STUB_DECISION=reconciled_expr → BUG-060: edit the parent test in place to a
+#                              COMPUTED/RELATIVE assertion ('(digitDisplayH / 3)px')
+#                              instead of a guessed literal, and report it verbatim.
 #   STUB_DECISION=noop       → edit nothing, result.json says noop.
 #   STUB_DECISION=defer      → edit nothing, result.json carries a question.
 # It also records the role + that it saw the parent test path in its prompt.
@@ -75,6 +78,27 @@ case "${STUB_DECISION:-noop}" in
   "decision": "reconciled",
   "changed": [
     { "file": "${PARENT_TEST_FILE:-}", "change": "X size assertion: bold 32px -> numberHeight/3" }
+  ]
+}
+JSON
+    ;;
+  reconciled_expr)
+    # BUG-060: the bug defines the new value as a RELATIONSHIP ("⅓ of the digit
+    # height"). The worker must rewrite the assertion to a COMPUTED EXPRESSION over
+    # the test's own setup value — NOT a guessed literal. This stub edits the parent
+    # test in place to exactly that relative expression and reports it verbatim in
+    # the "change" field, to prove the harness applies/relays the expression as-is
+    # (never flattens it to a literal).
+    if [ -n "${PARENT_TEST_FILE:-}" ] && [ -f "$PARENT_TEST_FILE" ]; then
+      sed -i.bak "s|bold 32px|' + (digitDisplayH / 3) + 'px|" "$PARENT_TEST_FILE" 2>/dev/null \
+        || sed -i '' "s|bold 32px|' + (digitDisplayH / 3) + 'px|" "$PARENT_TEST_FILE" 2>/dev/null || true
+      rm -f "$PARENT_TEST_FILE.bak" 2>/dev/null || true
+    fi
+    cat >"$out/result.json" <<JSON
+{
+  "decision": "reconciled",
+  "changed": [
+    { "file": "${PARENT_TEST_FILE:-}", "change": "X size assertion: bold 32px -> computed (digitDisplayH / 3)px (relative, not a guessed literal)" }
   ]
 }
 JSON
@@ -249,6 +273,28 @@ check "4. the (parent-shaped) test is untouched for a top-level mission" \
   "grep -q 'bold 32px' '$(parent_test "$r4")'"
 check "4. NO tests_reconciled / noop / deferred events for a top-level mission" \
   "! grep -Eq 'tests_reconcile' '$(events_of "$r4")' 2>/dev/null"
+
+# === Case 5 (BUG-060): a RELATIVE/computed assertion the worker returns is applied
+#     VERBATIM — the harness must NOT flatten the expression to a literal. ======
+# The bug defines the new value as "⅓ of the digit height" (a relationship). The
+# worker rewrites the parent assertion to a computed expression over the test's own
+# mock value. The harness applies the worker's in-place edit as-is and relays the
+# expression intact through the event + gh audit comment.
+r5="$TMPROOT/r5"; mkdir -p "$r5"; new_bug_mission "$r5"; setup "$r5"
+rc5=0; STUB_DECISION=reconciled_expr run_rt "$r5" >"$r5.out" 2>&1 || rc5=$?
+check "5. reconcile-tests exits 0 on a relative reconciliation" "[ '$rc5' -eq 0 ]"
+check "5. the old literal assertion is gone from the parent test" \
+  "! grep -q 'bold 32px' '$(parent_test "$r5")'"
+check "5. the parent test now holds the COMPUTED expression VERBATIM (not a literal)" \
+  "grep -qF '(digitDisplayH / 3)' '$(parent_test "$r5")'"
+check "5. the parent test did NOT get a guessed numeric literal substituted" \
+  "! grep -Eq 'bold (12|5\.4)px' '$(parent_test "$r5")'"
+check "5. a tests_reconciled event was emitted" \
+  "grep -q '\"type\":\"tests_reconciled\"' '$(events_of "$r5")'"
+check "5. the tests_reconciled event relays the relative expression intact" \
+  "grep '\"type\":\"tests_reconciled\"' '$(events_of "$r5")' | grep -qF '(digitDisplayH / 3)'"
+check "5. the gh audit comment relays the relative expression intact" \
+  "grep -qF '(digitDisplayH / 3)' '$r5.gh.log'"
 
 echo
 echo "  ---- $pass passed, $fail failed ----"
