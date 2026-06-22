@@ -877,7 +877,14 @@ class Actions(object):
                           ["complete", "--parent", parent, "--bug", mid],
                           env_extra=env_extra)
             else:
-                self._run("approve", ["--mission", mid])
+                # BUG-040: the Merge click must be NON-BLOCKING. approve.sh merges
+                # the open PR and, when main has moved ahead, runs the reconcile /
+                # self-heal — which can take minutes. Blocking on it (the old
+                # _run) hung the HTTP request and spun the dialog. Dispatch it
+                # FIRE-AND-FORGET (_spawn, the same detached Popen start()/log_run
+                # use) and return the current state promptly; the board/SSE then
+                # reflects the evolving state (reconciling → escalated → done).
+                self._spawn("approve", ["--mission", mid])
         elif decision in ("send-back", "sendback", "send_back"):
             note = (feedback or "").strip()
             if not note:

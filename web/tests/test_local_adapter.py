@@ -204,6 +204,46 @@ class LocalAdapterTest(unittest.TestCase):
         detail = LocalAdapter(self.tmp).mission("m-bug")
         self.assertEqual(detail["parentMission"], "m-001")
 
+    # ── BUG-033: the child carries its parent's ISSUE number on the shape ──
+    def test_parent_issue_surfaced_from_child_state(self):
+        """BUG-033: a logged-bug child records state.json.parentIssue (its
+        parent's GitHub issue #). The board must surface it as `parentIssue` so
+        the "child of #<n>" badge survives the parent merging off the board (the
+        front-end ISSUE_BY_ID index only covers ACTIVE cards)."""
+        fx.plant_simple(self.tmp, "m-bug", stage="plan", parent_mission="m-001",
+                        parent_issue=142)
+        m = self._by_id(self._board(), "m-bug")
+        self.assertEqual(m["parentIssue"], 142)
+        detail = LocalAdapter(self.tmp).mission("m-bug")
+        self.assertEqual(detail["parentIssue"], 142)
+
+    def test_parent_issue_none_when_absent(self):
+        """No parentIssue on disk ⇒ the field is present and None (non-crashing)."""
+        fx.plant_simple(self.tmp, "m-norm", stage="plan")
+        m = self._by_id(self._board(), "m-norm")
+        self.assertIn("parentIssue", m)
+        self.assertIsNone(m["parentIssue"])
+
+    # ── BUG-036: prNumber is populated, deriving from prUrl when absent ──
+    def test_pr_number_derived_from_pr_url_when_absent(self):
+        """BUG-036: a verify mission with a prUrl but NO prNumber on disk must
+        still expose prNumber, derived from the prUrl trailing /pull/<n>, so the
+        Verify dialog never renders a blank 'PR #'."""
+        fx.plant_simple(self.tmp, "m-derive", stage="verify",
+                        pr_url="https://github.com/acme/repo/pull/93",
+                        review="open")  # NOTE: no pr_number planted
+        m = self._by_id(self._board(), "m-derive")
+        self.assertEqual(m["prUrl"], "https://github.com/acme/repo/pull/93")
+        self.assertEqual(m["prNumber"], 93)
+
+    def test_pr_number_explicit_wins_over_url(self):
+        """An explicit state.json.prNumber is used verbatim (not re-derived)."""
+        fx.plant_simple(self.tmp, "m-pr", stage="verify",
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        m = self._by_id(self._board(), "m-pr")
+        self.assertEqual(m["prNumber"], 77)
+
     def test_parent_mission_none_for_normal_mission(self):
         """A normal mission has no parentMission on disk ⇒ the card exposes
         parentMission None, no crash."""
@@ -249,6 +289,21 @@ class LocalAdapterTest(unittest.TestCase):
             # still at verify with no PR open while reconciling.
             self.assertEqual(m["stage"], "verify")
             self.assertIsNone(m["prUrl"])
+
+    def test_reconcile_status_surfaced_even_when_pr_open(self):
+        """BUG-039: a verify mission may carry a live reconcileStatus WHILE its PR
+        is open (prUrl set) — the now-normal self-heal case. The adapter must
+        surface reconcileStatus regardless of prUrl so the board can suppress
+        Merge and show the heal note even with a PR recorded."""
+        for st in ("merging", "retesting", "healing", "escalated"):
+            fx.plant_simple(self.tmp, "m-prrec-%s" % st, stage="verify",
+                            reconcile_status=st,
+                            pr_url="https://github.com/acme/repo/pull/88",
+                            pr_number=88, review="open")
+            m = self._by_id(self._board(), "m-prrec-%s" % st)
+            self.assertEqual(m["reconcileStatus"], st)
+            # the PR is still surfaced (the board uses it to suppress Merge).
+            self.assertEqual(m["prUrl"], "https://github.com/acme/repo/pull/88")
 
     def test_reconcile_status_none_when_not_reconciling(self):
         """The field is always present (non-crashing) and None for a normal

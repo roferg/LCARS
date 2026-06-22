@@ -41,10 +41,44 @@ var detailRepo = null;
    the "child of #<parentIssue>" badge + GitHub link we resolve that id to its
    issue here. Falls back to the parent id when the issue isn't on the board. */
 var ISSUE_BY_ID = Object.create(null);
+/* BUG-035: a board-wide index of parent-mission-id → its linked bug CHILDREN
+   (the active cards carrying parentMission == that id), captured on every render.
+   A parent whose resolve-logs batch is in flight (children exist that are NOT all
+   at verify) must lock its Verify actions; we derive that from this index. */
+var CHILDREN_BY_PARENT = Object.create(null);
 function indexIssues(board) {
   ISSUE_BY_ID = Object.create(null);
+  CHILDREN_BY_PARENT = Object.create(null);
   (board.missions || []).forEach(function (m) {
-    if (m && m.id != null) ISSUE_BY_ID[String(m.id)] = m.issue || null;
+    if (!m || m.id == null) return;
+    ISSUE_BY_ID[String(m.id)] = m.issue || null;
+    var pid = m.parentMission != null ? String(m.parentMission) : null;
+    if (pid) {
+      (CHILDREN_BY_PARENT[pid] || (CHILDREN_BY_PARENT[pid] = [])).push(m);
+    }
+  });
+}
+
+/* BUG-035: is a parent mission's logged-bug batch IN FLIGHT? True when it has
+   linked, non-done bug children that are NOT all at the verify stage — i.e.
+   resolve-logs is still driving them, before the consolidated re-verify gate is
+   up. Re-enable (returns false) when none are in flight (no children) or every
+   non-done child has reached verify (the consolidated gate is ready). Derived
+   from the board index, so it is available wherever a card is rendered. */
+function resolvingChildren(parentId) {
+  if (parentId == null) return [];
+  var kids = CHILDREN_BY_PARENT[String(parentId)] || [];
+  return kids.filter(function (c) {
+    return c && (c.stage || "").toLowerCase() !== "done";
+  });
+}
+function isResolvingLocked(m) {
+  if (!m || m.id == null) return false;
+  var pending = resolvingChildren(m.id);
+  if (!pending.length) return false;
+  // locked while ANY non-done child has not yet reached verify (batch in flight).
+  return pending.some(function (c) {
+    return (c.stage || "").toLowerCase() !== "verify";
   });
 }
 
@@ -65,9 +99,15 @@ function isLogBug(m) {
    the raw parent mission id. Returns { text, issue } (issue null when unknown). */
 function parentRef(m) {
   var pid = m && m.parentMission != null ? String(m.parentMission) : null;
-  if (!pid) return { text: null, issue: null };
-  var issue = ISSUE_BY_ID[pid] || null;
-  return { text: issue ? "#" + issue : pid, issue: issue };
+  // BUG-033: prefer the bug card's OWN carried parentIssue (from its
+  // state.json) so the badge keeps "#<n>" even after the parent merges/goes Done
+  // and drops off the active board (ISSUE_BY_ID only indexes active cards). Fall
+  // back to ISSUE_BY_ID, then the raw parent mission id.
+  var carried = (m && m.parentIssue != null && m.parentIssue !== "")
+    ? m.parentIssue : null;
+  var issue = carried != null ? carried : (pid ? (ISSUE_BY_ID[pid] || null) : null);
+  if (!pid && issue == null) return { text: null, issue: null };
+  return { text: issue != null ? "#" + issue : pid, issue: issue };
 }
 
 /* UX-17: optimistic "starting" set. After a captain clicks Start the driver
@@ -253,12 +293,16 @@ function cardNode(m) {
     card.appendChild(el("div", "no pause-status", "⏸ paused"));
   }
 
-  // S76: a verify-stage mission with no PR yet may be RECONCILING with the updated
-  // base — merging main in, re-verifying the merged branch, or self-healing via its
-  // linked bug children. Surface the state + the iterate-to-green progress as a
-  // note so the captain sees the card isn't stuck. No `lcars …` CLI text (UX-33).
-  if (m.stage === "verify" && !m.prUrl && m.reconcileStatus) {
-    card.appendChild(el("div", "no reconcile-status", reconcileNote(m.reconcileStatus)));
+  // S76 / BUG-039: a verify-stage mission may be RECONCILING with the updated
+  // base — merging main in, re-verifying the merged branch, or self-healing via
+  // its linked bug children — and this is now the normal case WHILE its PR is
+  // open. Surface the state as a note whenever a verify mission carries a live
+  // reconcileStatus (NO !m.prUrl gate), so the card reads as actively healing
+  // (or awaiting a design call when escalated). No `lcars …` CLI text (UX-33).
+  if (m.stage === "verify" && m.reconcileStatus) {
+    var rclass = m.reconcileStatus === "escalated"
+      ? "no reconcile-status escalated" : "no reconcile-status healing";
+    card.appendChild(el("div", rclass, reconcileNote(m.reconcileStatus)));
   }
 
   if (m.progress) {
@@ -298,7 +342,11 @@ function cardNode(m) {
 function cardControls(m) {
   var ctrl = el("div", "card-ctrl");
   if (m.awaiting) {
-    ctrl.appendChild(applyWriteState(btn("Answer ▸", "danger", function () {
+    // BUG-042: an escalated reconcile is an awaiting-human DESIGN CALL, not a
+    // "Review PR". Label its action so it reads as a design decision (the dialog
+    // — openRespond/openVerify gate — presents the question text). Suppress Merge.
+    var alabel = isReconcileEscalated(m) ? "◆ Make the call ▸" : "Answer ▸";
+    ctrl.appendChild(applyWriteState(btn(alabel, "danger", function () {
       openRespond(m.id);
     })));
     return ctrl;
@@ -308,6 +356,31 @@ function cardControls(m) {
   }
   var rs = runState(m);
   if (m.stage === "verify") {
+    // BUG-035: a parent with a resolve-logs batch in flight (linked non-done bug
+    // children not all at verify) must SUPPRESS Merge/Accept until the
+    // consolidated re-verify gate is up. A non-actionable "resolving N logged
+    // bug(s)…" affordance, no openVerify.
+    var pendingKids = resolvingChildren(m.id);
+    if (isResolvingLocked(m)) {
+      var resolving = btn("◐ resolving " + pendingKids.length + " logged bug"
+        + (pendingKids.length === 1 ? "" : "s") + "…", "warn", null);
+      resolving.disabled = true;
+      resolving.title = "Logged-bug fixes are in flight — Merge is unavailable "
+        + "until the consolidated re-verify gate is ready.";
+      ctrl.appendChild(resolving);
+      return ctrl;
+    }
+    // BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — switch the card OFF
+    // "Review PR" into a state that reads as actively healing and PREVENTS a
+    // Merge. A disabled "Merge heal in progress…" affordance, no openVerify.
+    if (isReconcileHealing(m)) {
+      var healing = btn("◐ Merge heal in progress…", "warn", null);
+      healing.disabled = true;
+      healing.title = "Self-healing the merge against main — Merge is unavailable "
+        + "until it settles.";
+      ctrl.appendChild(healing);
+      return ctrl;
+    }
     // S75: a verify card is "in review — PR open" once Verify auto-opened the PR.
     var vlabel = m.prUrl ? "✓ Review PR ▸" : "✓ Verify ▸";
     ctrl.appendChild(applyWriteState(btn(vlabel, "go", function () {
@@ -1002,8 +1075,17 @@ function openRespond(id) {
     // accept / send-back action buttons mapped to the existing endpoints.
     if (isReverifyGate(mi)) { openReverifyGate(mi); return; }
 
-    var m = modal("● Awaiting You — Mission " + idLabel(mi) +
-      " · " + (mi.stage || "").toUpperCase(), { wide: true, headClass: "red" });
+    // BUG-042: an escalated reconcile raised a player-experience DESIGN QUESTION,
+    // not an error gate. Title it as a design call. The body still renders the
+    // question text (mi.gate.humanSummary || mi.question) with a free-form answer
+    // that posts to /respond — the engine consumes it on the next reconcile pass.
+    var design = isReconcileEscalated(mi);
+    var m = design
+      ? modal("◆ Your Design Call — Mission " + idLabel(mi),
+              { wide: true, headClass: "teal" })
+      : modal("● Awaiting You — Mission " + idLabel(mi) +
+              " · " + (mi.stage || "").toUpperCase(),
+              { wide: true, headClass: "red" });
 
     // BUG-027: the harness now writes a legible, type-aware gate envelope into
     // pending.json, surfaced on the card as `mi.gate` ({humanSummary,
@@ -1023,7 +1105,14 @@ function openRespond(id) {
     var q = el("div", "qtext"); q.style.fontSize = "18px";
     q.textContent = headline;
     m.body.appendChild(q);
-    m.body.appendChild(noteEl(whyCopyForGate(gate.escalationType)));
+    // BUG-042: a reconcile design call gets player-experience framing, not the
+    // generic/error "why you're seeing this" copy.
+    m.body.appendChild(noteEl(design
+      ? "Reconciling with main surfaced a design choice only you can make. " +
+        "Decide how it should behave for the player, answer below, and the heal " +
+        "continues on the next pass."
+      : whyCopyForGate(gate.escalationType),
+      design ? "amber" : undefined));
 
     // technicalDetail → collapsible disclosure (raw reason + command + any
     // internal ids). Only shown when the harness supplied it.
@@ -1038,18 +1127,21 @@ function openRespond(id) {
     }
 
     var ans = el("textarea"); ans.rows = 3;
-    ans.placeholder = "Answer in your own words…";
-    m.body.appendChild(field("Your answer", ans));
+    ans.placeholder = design
+      ? "Describe how it should behave for the player…"
+      : "Answer in your own words…";
+    m.body.appendChild(field(design ? "Your design call" : "Your answer", ans));
 
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
-    var go = applyWriteState(btn("Submit & Resume ▸", "go big", function () {
+    var goLabel = design ? "◆ Submit Decision ▸" : "Submit & Resume ▸";
+    var go = applyWriteState(btn(goLabel, "go big", function () {
       var text = ans.value.trim();
       if (!text) { showErr(err, "Type an answer first."); return; }
       go.disabled = true; go.textContent = "Submitting…";
       postWrite("/api/mission/" + enc(id) + "/respond", { answer: text },
         function () { closeOverlay(); },
-        function (msg) { go.disabled = false; go.textContent = "Submit & Resume ▸"; showErr(err, msg); });
+        function (msg) { go.disabled = false; go.textContent = goLabel; showErr(err, msg); });
     }));
     m.foot.appendChild(go);
     showOverlay(m.wrap);
@@ -1173,9 +1265,18 @@ function openVerify(id) {
       var prRow = el("div", "pr-review-row");
       prRow.style.cssText = "margin:14px 0;padding:10px;border-radius:6px;background:rgba(255,153,0,.08)";
       var st = el("span", "dim");
-      st.textContent = "In review — PR open · ";
+      // BUG-042: an escalated reconcile is an awaiting-human design call, NOT
+      // "in review — Review PR". Read the PR row as healing/awaiting in that case.
+      st.textContent = isReconcileEscalated(mi)
+        ? "Awaiting your design call — PR · "
+        : isReconcileHealing(mi)
+          ? "Merge heal in progress — PR · "
+          : "In review — PR open · ";
       var link = el("a"); link.href = mi.prUrl; link.target = "_blank";
-      link.rel = "noopener"; link.textContent = "PR #" + (mi.prNumber || "");
+      // BUG-036: never render a bare "PR #". The adapter populates prNumber
+      // (deriving from prUrl when absent); fall back to deriving it here too.
+      link.rel = "noopener";
+      link.textContent = "PR #" + (mi.prNumber || prNumberFromUrl(mi.prUrl) || "");
       prRow.appendChild(st); prRow.appendChild(link);
       m.body.appendChild(prRow);
     } else {
@@ -1206,6 +1307,39 @@ function openVerify(id) {
         function () { closeOverlay(); },
         function (msg) { sendBack.disabled = false; showErr(err, msg); });
     }));
+    // BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — no merge is possible.
+    // Replace the primary action with a disabled "Merge heal in progress…"
+    // affordance and drop Send Back (the heal owns the branch right now).
+    if (isReconcileHealing(mi)) {
+      m.body.appendChild(noteEl(
+        "A self-heal is reconciling this mission with main — re-testing and "
+        + "healing the merged branch to green. Merge becomes available once it "
+        + "settles. Nothing to do right now.", "amber"));
+      var healing = btn("◐ Merge heal in progress…", "warn", null);
+      healing.disabled = true;
+      healing.title = "Self-healing the merge against main — Merge is unavailable.";
+      m.foot.appendChild(healing);
+      showOverlay(m.wrap);
+      return;
+    }
+    // BUG-035: a parent with a resolve-logs batch in flight (linked non-done bug
+    // children not all at verify) must SUPPRESS both Merge and Accept until the
+    // consolidated re-verify gate is up. Show a non-actionable "resolving N
+    // logged bug(s)…" state.
+    if (!isBugChild && isResolvingLocked(mi)) {
+      var pend = resolvingChildren(mi.id);
+      m.body.appendChild(noteEl(
+        "Logged-bug fixes are in flight against this mission (" + pend.length
+        + " not yet folded). Merge and Accept are unavailable until the "
+        + "consolidated re-verify gate is ready.", "amber"));
+      var lock = btn("◐ resolving " + pend.length + " logged bug"
+        + (pend.length === 1 ? "" : "s") + "…", "warn", null);
+      lock.disabled = true;
+      lock.title = "Resolve-logs batch in flight — re-verify gate not yet ready.";
+      m.foot.appendChild(lock);
+      showOverlay(m.wrap);
+      return;
+    }
     // The primary action.
     //   • bug child (BUG-030): "✓ Verify" — accept the fix; the backend routes
     //     the approve decision to the resolve-logs fold (no PR merge). Always
@@ -1215,6 +1349,9 @@ function openVerify(id) {
     var mergeLabel = isBugChild ? "✓ Verify" : "✓ Merge PR";
     var busyLabel = isBugChild ? "Verifying…" : "Merging PR…";
     var merge = applyWriteState(btn(mergeLabel, "go big", function () {
+      // BUG-040: the Merge dispatch is fire-and-forget server-side and returns
+      // promptly — close the dialog on a successful dispatch and let the board
+      // (SSE/refresh) reflect the evolving state (reconciling → escalated → done).
       merge.disabled = true; merge.textContent = busyLabel;
       postWrite("/api/mission/" + enc(id) + "/verify", { decision: "approve" },
         function () { closeOverlay(); },
@@ -2177,6 +2314,23 @@ function stageLabel(stage) {
 
 /* S76 — a human-readable note for the main-ahead reconcile sub-state. No `lcars …`
    CLI text leaks (UX-33); the copy carries the state + iterate-to-green hint. */
+/* BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — merging the base in,
+   re-testing the merged branch, or self-healing. While this is true the Merge
+   action must be SUPPRESSED (no merge possible mid-heal). escalated is NOT
+   in-flight (it's a human gate) — see isReconcileEscalated. */
+function isReconcileHealing(m) {
+  if (!m || m.stage !== "verify") return false;
+  var rs = m.reconcileStatus;
+  return rs === "merging" || rs === "retesting" || rs === "healing";
+}
+
+/* BUG-042: the reconcile raised an awaiting-human DESIGN QUESTION (a
+   player-experience call), not a "Review PR". The mission is awaiting-human with
+   reconcileStatus === "escalated". */
+function isReconcileEscalated(m) {
+  return !!(m && m.stage === "verify" && m.reconcileStatus === "escalated");
+}
+
 function reconcileNote(status) {
   switch (status) {
     case "merging":   return "◐ reconciling with main — merging the updated base in";
@@ -2243,6 +2397,13 @@ function addPills(host, pills) {
 function idLabel(mi) {
   return (mi.issue ? "#" + mi.issue : mi.id) +
     (mi.title ? " — " + mi.title : "");
+}
+
+/* BUG-036: derive a PR number from a PR url's trailing /pull/<n> (front-end
+   fallback when prNumber isn't on the shape). Returns null when not present. */
+function prNumberFromUrl(url) {
+  var m = /\/pull\/(\d+)/.exec(String(url || ""));
+  return m ? parseInt(m[1], 10) : null;
 }
 
 function normStage(stage) {

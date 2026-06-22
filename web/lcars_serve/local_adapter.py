@@ -215,6 +215,16 @@ class LocalAdapter(object):
         if not (isinstance(parent_mission, str) and parent_mission.strip()):
             parent_mission = None
 
+        # BUG-033: a logged-bug child carries its parent's GitHub issue number on
+        # disk (state.json.parentIssue). Surface it so the "child of #<n>" badge
+        # survives the parent merging off the active board (the front-end
+        # ISSUE_BY_ID index only resolves ACTIVE cards). Absent ⇒ None.
+        parent_issue = state.get("parentIssue")
+        if isinstance(parent_issue, str) and parent_issue.isdigit():
+            parent_issue = int(parent_issue)
+        if not isinstance(parent_issue, int):
+            parent_issue = None
+
         # S75: the Verify PR lifecycle. Verify auto-opens the PR and records
         # prUrl/prNumber + a `review` sub-state ("open" while in review, "merged"
         # once approve/GitHub merges). Surface them so the card/Verify modal can
@@ -228,6 +238,11 @@ class LocalAdapter(object):
             pr_number = int(pr_number)
         if not isinstance(pr_number, int):
             pr_number = None
+        # BUG-036: a blank "PR #". When prNumber is absent on disk but a prUrl is
+        # recorded, derive the number from the prUrl trailing /pull/<n> so the
+        # Verify dialog never renders a bare "PR #" while the link is present.
+        if pr_number is None and pr_url:
+            pr_number = _pr_number_from_url(pr_url)
         review = state.get("review")
         if not (isinstance(review, str) and review.strip()):
             review = None
@@ -269,6 +284,9 @@ class LocalAdapter(object):
             # UX-28: parent mission id for a logged-bug child (None when not a
             # logged-bug child). The github adapter forces None (ADR-006).
             "parentMission": parent_mission,
+            # BUG-033: the parent's issue number, carried on the child so its
+            # "child of #<n>" badge survives the parent leaving the active board.
+            "parentIssue": parent_issue,
             # S75 Verify PR lifecycle: the open PR + the in-review/merged state.
             "prUrl": pr_url,
             "prNumber": pr_number,
@@ -430,6 +448,18 @@ def _human(ev):
     detail = ev.get("detail") or ""
     fmt = _HUMAN.get(t)
     return (fmt % detail) if fmt else detail
+
+
+# --- BUG-036: derive a PR number from a PR url (trailing /pull/<n>) ----------
+_PR_NUM = re.compile(r"/pull/(\d+)")
+
+
+def _pr_number_from_url(url):
+    """The PR number from a GitHub PR url's trailing /pull/<n>, or None."""
+    if not isinstance(url, str):
+        return None
+    m = _PR_NUM.search(url)
+    return int(m.group(1)) if m else None
 
 
 # --- jq-free-equivalent loaders (lenient: bad/absent file → None) ------------

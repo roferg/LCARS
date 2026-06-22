@@ -370,7 +370,8 @@ class VerifyRoutingTest(WriteEndpointBase):
         status, body = self._post("/api/mission/m-001/verify",
                                   {"decision": "approve"})
         self.assertEqual(status, 200)
-        self.assertIn("--mission m-001", self._record("approve"))
+        # BUG-040: approve is fire-and-forget (Popen) → poll for its async record.
+        self.assertIn("--mission m-001", self._record_when("approve", "m-001"))
         # send-back stub must NOT have been invoked
         self.assertTrue(self._not_invoked("feedback"))
 
@@ -477,7 +478,8 @@ class VerifyRoutingTest(WriteEndpointBase):
         status, body = self._post("/api/mission/m-001/verify",
                                   {"decision": "approve"})
         self.assertEqual(status, 200)
-        self.assertIn("--mission m-001", self._record("approve"))
+        # BUG-040: approve is fire-and-forget (Popen) → poll for its async record.
+        self.assertIn("--mission m-001", self._record_when("approve", "m-001"))
         self.assertTrue(self._not_invoked("feedback"))
 
     def test_verify_card_carries_pr_and_review_state(self):
@@ -648,8 +650,10 @@ class LogTest(WriteEndpointBase):
                 return json.load(fh).get("modelOverride")
         self.assertEqual(_ov("m-bug1"), {"scope": "all", "tier": "opus"})
         self.assertEqual(_ov("m-bug2"), {"scope": "reasoning", "tier": "sonnet"})
-        # and resolve was still dispatched for the batch.
-        self.assertFalse(self._not_invoked("resolve"))
+        # and resolve was still dispatched for the batch. resolve is fire-and-
+        # forget (BUG-G _spawn), so poll for its async record instead of an
+        # immediate read (deflakes a race against the detached Popen).
+        self.assertIn("m-001", self._record_when("resolve", "m-001"))
 
     def test_log_run_blank_post_file_override_leaves_child_unsteered(self):
         """A blank override at Run Fixes must not stamp a steer (no-op), and must
@@ -1127,9 +1131,75 @@ class VerifyBugFoldTest(WriteEndpointBase):
         status, _ = self._post("/api/mission/m-001/verify",
                                {"decision": "approve"})
         self.assertEqual(status, 200)
-        self.assertIn("--mission m-001", self._record("approve"))
+        # approve is now FIRE-AND-FORGET (BUG-040) → its record is written
+        # asynchronously after the POST returns; poll for it.
+        self.assertIn("--mission m-001", self._record_when("approve", "m-001"))
         # a top-level mission must NOT route to resolve-logs complete
         self.assertTrue(self._not_invoked("resolve"))
+
+
+class ApproveNonBlockingTest(WriteEndpointBase):
+    """BUG-040: the Merge (approve) click must be NON-BLOCKING. When a reconcile/
+    self-heal runs, approve.sh can take minutes; the HTTP request must dispatch
+    fire-and-forget (Popen, _spawn) and return promptly so the dialog never spins.
+    """
+
+    def test_approve_returns_promptly_without_blocking_on_the_merge(self):
+        """Point the approve skill at a stub that sleeps ~3s; verify(approve) must
+        return well before that (fire-and-forget), not block on the long merge."""
+        import time
+        rec = os.path.join(self.tmp, "rec-approveslow.txt")
+        scripts = dict(self.scripts)
+        scripts["approve"] = _sleep_stub(rec, sleep_secs=3)
+        actions = Actions(repo_root=self.tmp, scripts=scripts)
+        t0 = time.time()
+        actions.verify("m-001", "approve")
+        elapsed = time.time() - t0
+        self.assertLess(elapsed, 1.5,
+                        "verify(approve) blocked on the long merge (%.2fs)"
+                        % elapsed)
+
+    def test_approve_uses_a_nonblocking_spawn(self):
+        """The fire-and-forget seam for approve is Popen (no wait): assert
+        verify(approve) on a top-level mission dispatches approve.sh via Popen
+        and never subprocess.run."""
+        import unittest.mock as mock
+
+        run_calls = []
+        popen_calls = []
+
+        class _FakeCompleted(object):
+            returncode = 0
+            stdout = b""
+
+        def _rec_run(cmd, *a, **k):
+            run_calls.append(cmd)
+            return _FakeCompleted()
+
+        class _FakePopen(object):
+            def __init__(self, cmd, *a, **k):
+                popen_calls.append(cmd)
+
+        with mock.patch.object(subprocess, "Popen", _FakePopen), \
+                mock.patch.object(subprocess, "run", _rec_run):
+            actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+            actions.verify("m-001", "approve")
+
+        script = self.scripts["approve"]
+        self.assertTrue(any(script in cmd for cmd in popen_calls),
+                        "approve.sh must be dispatched via Popen (_spawn)")
+        self.assertFalse(any(script in cmd for cmd in run_calls),
+                         "approve.sh must NOT block (subprocess.run)")
+
+    def test_approve_returns_current_mission_state_immediately(self):
+        """verify(approve) returns the mission state promptly (the dialog closes
+        on dispatch and the board/SSE reflects the evolving state)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        result = self.actions.verify("m-001", "approve")
+        # a mission/board state is returned (not an exception/hang).
+        self.assertTrue("mission" in result or "board" in result)
 
 
 if __name__ == "__main__":

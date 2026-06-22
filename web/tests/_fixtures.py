@@ -80,7 +80,7 @@ def plant_simple(root, mid, *, stage="align", issue=142,
                  title="Add Gamification to Course Site", estimate=ESTIMATE_CLAUDE,
                  created="2026-06-13T10:00:00Z", worker_bin=None,
                  worker_model=None, queued=None,
-                 parent_mission=None, mtype="feature",
+                 parent_mission=None, parent_issue=None, mtype="feature",
                  pr_url=None, pr_number=None, review=None,
                  reconcile_status=None, reconcile_diagnosis=None,
                  awaiting_human=None, pending_question=None):
@@ -112,6 +112,11 @@ def plant_simple(root, mid, *, stage="align", issue=142,
         state["queued"] = queued
     if parent_mission is not None:
         state["parentMission"] = parent_mission
+    # BUG-033: a logged-bug child carries its parent's issue number on disk
+    # (state.json.parentIssue) so the "child of #<n>" badge survives the parent
+    # merging off the board.
+    if parent_issue is not None:
+        state["parentIssue"] = parent_issue
     # S75 Verify PR lifecycle: an in-review mission records its open PR.
     if pr_url is not None:
         state["prUrl"] = pr_url
