@@ -3346,8 +3346,44 @@ ${base_log:-(no log available)}"
     # branch, so the live branch ref already advanced — just remove the worktree.
     reconcile_cleanup
     state_del reconcileRound
-    state_del reconcileStatus
     state_del reconcileDiagnosis
+
+    # BUG-067 — a self-heal that converges green AFTER a PR is open must NOT
+    # auto-merge. The captain has not seen the reconciled tree; blindly running
+    # `gh pr merge` (the old approve behaviour) gives them no sign-off and, when a
+    # push silently fails, reverts the mission to verify with no surfaced reason
+    # (BUG-066). So when a PR already exists (the `lcars approve` merge-gate flow),
+    # we STOP here, persist a human-readable awaiting-reapprove gate keyed off the
+    # reconciled tip, and let the captain REAPPROVE the merge once they have looked.
+    # The no-PR path (drive_verify, before the PR is opened) is unchanged: it
+    # clears the status and returns 0 so the driver proceeds to OPEN the PR — that
+    # PR-open IS the human surface there.
+    local pr_open; pr_open="$(json_str "$STATE" prUrl)"
+    case "$pr_open" in
+      http*|*/pull/*)
+        local merge_sha total
+        merge_sha="$("$GIT_BIN" rev-parse "$BRANCH" 2>/dev/null)"
+        total="$(printf '%s\n' "$ordered" | tr ' ' '\n' | grep -c .)"
+        [ -n "$total" ] && [ "$total" != 0 ] || total=1
+        local short; short="$(printf '%s' "$merge_sha" | cut -c1-7)"
+        local note="Reconciled $BASE into the branch ($short) and re-tested green ($total/$total). Reapprove to merge."
+        state_set_str reconcileStatus "awaiting-reapprove"
+        state_set_str reconcileNote "$note"
+        state_set_str reconcileMergeSha "$merge_sha"
+        state_set_raw awaitingHuman true
+        state_set_str pendingQuestion "$note"
+        local qf; qf="$(mktemp)"
+        printf '%s\nReapprove to merge the reconciled branch, or send it back.\n' "$note" >"$qf"
+        write_pending "$qf" "verify"
+        rm -f "$qf"
+        gh_relabel "lcars:verify lcars:awaiting-human" ""
+        emit_event reconcile_reapprove verify "merged $BASE and re-test is green ($total/$total) — awaiting your reapprove before merging"
+        notify_gate awaiting-human "$note"
+        echo "RECONCILE: awaiting-reapprove — merged $BASE; re-test green ($total/$total); reapprove to merge ($short)."
+        return 30 ;;
+    esac
+
+    state_del reconcileStatus
     emit_event reconcile_green verify "merged $BASE and re-test is green — proceeding to open the PR"
     echo "RECONCILE: ok — merged $BASE; re-test green; proceeding"
     return 0

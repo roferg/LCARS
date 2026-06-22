@@ -406,6 +406,34 @@ check "2. scoped re-test ran even on clean merge (output mentions re-test/green)
 check "2. live tree stays clean" "[ -z \"\$(cd '$r2' && git status --porcelain)\" ]"
 check "2. no reconcile worktree leaks" "! (cd '$r2' && git worktree list | grep -q reconcile)"
 
+# --- Behaviour 2r (BUG-067): ahead + clean + green + a PR ALREADY OPEN ---------
+# When a PR is already open (the `lcars approve` merge-gate flow), a self-heal that
+# converges green must NOT auto-merge. The gate STOPS, persists an awaiting-reapprove
+# gate keyed off the reconciled tip, and returns 30 — the captain reapproves to merge.
+r2r="$(mktemp -d "$TMPROOT/r2r.XXXX")"; new_repo_verify "$r2r" >/dev/null; setup_stubs "$r2r"
+# plant a prUrl/prNumber → this is the post-PR (approve) reconcile context.
+sed 's#\("base": "[^"]*"\)#\1,\n  "prUrl": "https://github.com/acme/repo/pull/77",\n  "prNumber": 77#' \
+  "$(state_of "$r2r")" >"$r2r.s.tmp" && mv "$r2r.s.tmp" "$(state_of "$r2r")"
+stage_ticket_suite "$r2r" green
+advance_base "$r2r" clean
+rc2r=0; run_in "$r2r" reconcile --mission "$MID" >"$r2r.aux/out.txt" 2>&1 || rc2r=$?
+s2r="$(state_of "$r2r")"
+check "2r. reconcile returns 30 (awaiting-reapprove) on green when a PR is open" "[ '$rc2r' -eq 30 ]"
+check "2r. reconcileStatus=awaiting-reapprove" \
+  "grep -q '\"reconcileStatus\": *\"awaiting-reapprove\"' '$s2r'"
+check "2r. reconcileNote is human-readable (mentions reapprove + re-tested green)" \
+  "grep -qi 'reapprove' '$s2r' && grep -qi 're-tested green' '$s2r'"
+check "2r. reconcileMergeSha persisted (full sha)" \
+  "grep -qE '\"reconcileMergeSha\": *\"[0-9a-f]{40}\"' '$s2r'"
+check "2r. awaitingHuman=true (board surfaces the gate)" \
+  "grep -q '\"awaitingHuman\": *true' '$s2r'"
+check "2r. one awaiting-human notification fired" \
+  "[ \"\$(grep -c 'awaiting-human' '$r2r.aux/notify.log')\" -ge 1 ]"
+check "2r. did NOT auto-merge (no gh pr merge)" "! grep -q 'pr merge' '$r2r.aux/gh.log'"
+check "2r. branch DID advance (merge kept on the branch)" \
+  "(cd '$r2r' && git log --oneline lcars/$MID) | qgrep -q 'main moves ahead'"
+check "2r. live tree stays clean" "[ -z \"\$(cd '$r2r' && git status --porcelain)\" ]"
+
 # --- Behaviour 3a: ahead + RED re-test (logical) → DETAILED log dispatched ----
 r3="$(mktemp -d "$TMPROOT/r3.XXXX")"; new_repo_verify "$r3" >/dev/null; setup_stubs "$r3"
 stage_ticket_suite "$r3" red

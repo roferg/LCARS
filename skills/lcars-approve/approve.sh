@@ -106,11 +106,19 @@ gh_relabel() { # "add labels…"  "remove labels…"
 . "$SELF_DIR/pr-lib.sh"
 
 # --- args ------------------------------------------------------------------
+# --reapprove (or LCARS_REAPPROVE=1, the flag the web layer invokes) runs ONLY
+# the merge step on an ALREADY-reconciled, already-green branch — the human's
+# sign-off after a self-heal converged (reconcileStatus=awaiting-reapprove). It
+# skips the reconcile/self-heal engine entirely and goes straight to the
+# push-then-merge path, with the push result CAPTURED (BUG-066) so a rejected
+# push surfaces as merge-failed instead of a silent revert.
 MISSION_ID=""
+REAPPROVE="${LCARS_REAPPROVE:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --mission)   MISSION_ID="${2:-}"; shift 2 ;;
     --mission=*) MISSION_ID="${1#--mission=}"; shift ;;
+    --reapprove) REAPPROVE=1; shift ;;
     *)           die "unknown argument: $1" ;;
   esac
 done
@@ -134,6 +142,96 @@ case "$PR_URL" in
   *) die "no open PR recorded for this mission — run \`lcars run $MISSION_ID\` so Verify opens the PR, then approve to merge it. Mission stays at verify." ;;
 esac
 
+# --- the merge step (shared by the normal flow + the reapprove flow) ---------
+# Push the (possibly reconciled) branch to origin with its result CAPTURED
+# (BUG-066), then `gh pr merge`. On a clean push → merge → Done. On a push that
+# was REJECTED (non-fast-forward / diverged) we do NOT proceed to merge: we set
+# reconcileStatus=merge-failed with the real reason and KEEP awaitingHuman so the
+# gate stays visible — never a silent revert. A benign push miss (no remote / not
+# configured, the test-repo case) is distinguished from a real rejection and is
+# allowed to fall through to gh pr merge (the real gate). On a gh-pr-merge failure
+# we likewise surface the real reason via reconcileStatus=merge-failed.
+do_merge() {
+  command -v "$GH_BIN" >/dev/null 2>&1 \
+    || die "gh not found — cannot merge PR $PR_URL. Mission stays at verify (merge it by hand)."
+
+  # Push the branch so the remote PR head reflects any reconciled/healed tree.
+  # Capture stderr + exit code; classify rejection (must block) vs benign miss.
+  if [ -n "$BRANCH" ] && command -v "$GIT_BIN" >/dev/null 2>&1; then
+    local push_out push_rc=0
+    push_out="$("$GIT_BIN" push origin "$BRANCH" 2>&1)" || push_rc=$?
+    if [ "$push_rc" -ne 0 ]; then
+      case "$push_out" in
+        *'[rejected]'*|*'non-fast-forward'*|*'! [remote rejected]'*|*'fetch first'*|*'tip of your current branch is behind'*)
+          # A real divergence — the remote PR branch moved on. Do NOT merge.
+          local sha; sha="$(json_str "$STATE" reconcileMergeSha)"
+          local note="Could not update the PR branch: non-fast-forward (the remote PR branch diverged). The heal is green at ${sha:-the reconciled tip} — force-update the PR branch (\`git push --force-with-lease origin $BRANCH\`) or push manually, then reapprove."
+          state_set_str reconcileStatus "merge-failed"
+          state_set_str reconcileNote "$note"
+          state_set_raw awaitingHuman true
+          state_set_str pendingQuestion "$note"
+          die "$note Mission stays at verify."
+          ;;
+        *'does not appear to be a git repository'*|*'No configured push destination'*|*'No such remote'*|*'Could not read from remote'*|*'Authentication failed'*|*'Permission denied'*|*'could not read Username'*)
+          # Benign in a test/local repo (no remote / no auth): the PR branch is
+          # the local branch. Fall through to gh pr merge — the real gate.
+          : ;;
+        *)
+          # Unknown push failure — fall through to gh pr merge, which is the
+          # authoritative gate and will fail loudly if the branch is stale.
+          : ;;
+      esac
+    fi
+  fi
+
+  # A merge selector: prefer the recorded PR number, else the branch.
+  local MERGE_ARGS=()
+  case "$PR_NUM" in
+    ''|null) MERGE_ARGS=(--head "$BRANCH") ;;
+    *)       MERGE_ARGS=(--number "$PR_NUM") ;;
+  esac
+
+  if ! host pr-merge "${MERGE_ARGS[@]}"; then
+    local note="gh pr merge failed for $PR_URL — resolve it (conflicts/checks/auth) and re-run \`lcars approve $MISSION_ID\` (or \`--reapprove\`), or merge on GitHub. Mission stays at verify."
+    state_set_str reconcileStatus "merge-failed"
+    state_set_str reconcileNote "$note"
+    state_set_raw awaitingHuman true
+    state_set_str pendingQuestion "$note"
+    die "$note"
+  fi
+
+  # Merge landed — clear the reconcile gate state and flip the Mission to Done.
+  state_del reconcileStatus
+  state_del reconcileNote
+  state_del reconcileMergeSha
+  state_del awaitingHuman
+  state_del pendingQuestion
+  gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
+  set_stage "done"
+  state_set_str review "merged"
+
+  echo "APPROVE: merged — $(pr_title)"
+  echo "  Merged PR: $PR_URL"
+  echo "  Branch:    $BRANCH → $BASE"
+  echo "  Stage:     done"
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  exit 0
+}
+
+# --- REAPPROVE: merge-only on an already-reconciled-green branch -------------
+# The web/inbox layer (or `lcars approve --reapprove`) invokes this AFTER the
+# captain has signed off on a self-heal that converged green (state set by the
+# reconcile gate: reconcileStatus=awaiting-reapprove). Skip the reconcile engine
+# entirely and run ONLY the merge step.
+if [ -n "$REAPPROVE" ]; then
+  rstat="$(json_str "$STATE" reconcileStatus)"
+  case "$rstat" in
+    awaiting-reapprove|merge-failed) : ;;  # the expected gate to clear.
+    *) : ;;  # tolerate a reapprove with no recorded gate — still just merges.
+  esac
+  do_merge
+fi
+
 # --- self-heal-before-escalate: reconcile a possibly-behind base FIRST -------
 # Before merging, run the S76 reconcile/self-heal engine (the sibling run.sh
 # `reconcile` subcommand) so a PR that fell behind a moved base is merged into
@@ -149,45 +247,18 @@ rcode=0
   [ -n "$engine" ] && export LCARS_WORKER_BIN="$engine"
   bash "$RUN_SCRIPT" reconcile --mission "$MISSION_ID" ) || rcode=$?
 case "$rcode" in
-  0)  : ;;  # up to date / healed green → proceed to merge below.
+  0)  : ;;  # up to date (base not ahead) → proceed to merge directly below.
   10) echo "APPROVE: reconciling with the updated base — self-heal in flight. Mission stays at verify; re-run \`lcars approve $MISSION_ID\` once it's green."; exit 0 ;;
   20) echo "APPROVE: the base moved ahead and the self-heal was escalated to you (awaiting your answer). Mission stays at verify."; exit 0 ;;
+  30) # BUG-067: the self-heal CONVERGED GREEN — do NOT auto-merge. The reconcile
+      # gate persisted reconcileStatus=awaiting-reapprove + reconcileNote and
+      # raised the awaiting-human gate. STOP here; the captain reapproves to merge.
+      note="$(json_str "$STATE" reconcileNote)"
+      echo "APPROVE: ${note:-the base moved ahead and the self-heal converged green.} Mission stays at verify awaiting your reapprove — run \`lcars approve $MISSION_ID --reapprove\` (or reapprove from the board) to merge."
+      exit 0 ;;
   *)  echo "lcars approve: reconcile failed (rc=$rcode). Mission stays at verify." >&2; exit 1 ;;
 esac
 
-# A merge selector: prefer the recorded PR number, else the branch.
-MERGE_ARGS=()
-case "$PR_NUM" in
-  ''|null) MERGE_ARGS=(--head "$BRANCH") ;;
-  *)       MERGE_ARGS=(--number "$PR_NUM") ;;
-esac
-
-command -v "$GH_BIN" >/dev/null 2>&1 \
-  || die "gh not found — cannot merge PR $PR_URL. Mission stays at verify (merge it by hand)."
-
-# A GREEN reconcile (exit 0) may have merged the moved base INTO the mission
-# branch — those commits live only on the LOCAL branch (reconcile_gate does not
-# push). Push the branch to origin so the remote PR head reflects the healed
-# tree and `gh pr merge` is conflict-free. Best-effort: a push failure (no
-# remote in a test repo, already up to date) must not block — gh pr merge below
-# is the real gate and will fail loudly if the branch is genuinely stale.
-if [ -n "$BRANCH" ] && command -v "$GIT_BIN" >/dev/null 2>&1; then
-  "$GIT_BIN" push origin "$BRANCH" >/dev/null 2>&1 || :
-fi
-
 # --- merge — only a SUCCESSFUL merge flips the Mission to Done ----------------
-if ! host pr-merge "${MERGE_ARGS[@]}"; then
-  die "gh pr merge failed for $PR_URL — resolve it (conflicts/checks/auth) and re-run \`lcars approve $MISSION_ID\`, or merge on GitHub. Mission stays at verify."
-fi
-
-# Merge landed — NOW flip the Mission to Done.
-gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
-set_stage "done"
-state_set_str review "merged"
-
-echo "APPROVE: merged — $(pr_title)"
-echo "  Merged PR: $PR_URL"
-echo "  Branch:    $BRANCH → $BASE"
-echo "  Stage:     done"
-[ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
-exit 0
+# base not ahead (rc=0): the recorded PR is already up to date — merge directly.
+do_merge

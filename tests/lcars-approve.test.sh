@@ -269,6 +269,131 @@ check "eng. ran the reconcile gate before merge" "grep -q 'reconcile' '$repoEng/
 check "eng. pinned the mission engine (LCARS_WORKER_BIN=copilot) on the reconcile" \
   "grep -q 'WORKER_BIN=copilot' '$repoEng/recon.log'"
 
+# --- BUG-067: self-heal converges green → DO NOT auto-merge; gate for reapprove
+# When the reconcile gate converges green AFTER a PR is open it returns 30 and
+# persists reconcileStatus=awaiting-reapprove + reconcileNote + reconcileMergeSha
+# + awaitingHuman. approve must STOP: no gh pr merge, stay at verify, and tell the
+# captain to reapprove. (The reconcile gate raises the board gate itself.)
+make_reconcile_stub_reapprove() { # <path>  — exits 30 AND writes the gate state
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "reconcile [WORKER_BIN=${LCARS_WORKER_BIN:-}] $*" >>"$RECON_LOG"
+# mimic the real gate's awaiting-reapprove persistence on the mission state.
+mid=""; while [ $# -gt 0 ]; do case "$1" in --mission) mid="$2"; shift 2;; *) shift;; esac; done
+st=".git/lcars/missions/$mid/state.json"
+tmp="$(mktemp)"
+grep -v '"reconcileStatus"\|"reconcileNote"\|"reconcileMergeSha"\|"awaitingHuman"' "$st" >"$tmp"
+awk 'NR==1{print; print "  \"reconcileStatus\": \"awaiting-reapprove\","; print "  \"reconcileNote\": \"Reconciled main into the branch (abc1234) and re-tested green (1/1). Reapprove to merge.\","; print "  \"reconcileMergeSha\": \"abc1234def5678abc1234def5678abc1234def56\","; print "  \"awaitingHuman\": true,"; next} {print}' "$tmp" >"$st"
+rm -f "$tmp"
+exit 30
+EOF
+  chmod +x "$1"
+}
+
+repoRA="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoRA/gh"
+make_reconcile_stub_reapprove "$repoRA/recon.sh"
+export GH_LOG="$repoRA/gh.log"; : >"$GH_LOG"
+rcRA=0
+( cd "$repoRA" && LCARS_GH_BIN="$repoRA/gh" LCARS_RUN_SCRIPT="$repoRA/recon.sh" \
+    RECON_LOG="$repoRA/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>&1 ) || rcRA=$?
+sRA="$(state_of "$repoRA")"
+check "ra. exits 0 (soft halt — gated for reapprove, not an error)" "[ '$rcRA' -eq 0 ]"
+check "ra. does NOT auto-merge on a green self-heal" "! grep -q 'pr merge' '$repoRA/gh.log'"
+check "ra. stays at verify (does NOT advance to done)" \
+  "grep -q '\"stage\": *\"verify\"' '$sRA'"
+check "ra. reconcileStatus stays awaiting-reapprove" \
+  "grep -q '\"reconcileStatus\": *\"awaiting-reapprove\"' '$sRA'"
+check "ra. message tells the captain to reapprove" "grep -qi 'reapprove' '$repoRA/out.txt'"
+
+# --- BUG-067: --reapprove with a CLEAN push → merges -------------------------
+# A reapprove on an already-reconciled-green branch skips the reconcile engine and
+# runs ONLY the merge step. With a clean push (the local test repo has no remote →
+# benign push miss → falls through to gh pr merge) it merges and marks Done.
+repoRC="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoRC/gh"
+make_reconcile_stub "$repoRC/recon.sh" 99   # must NOT be called on reapprove
+# seed the awaiting-reapprove gate state.
+awk 'NR==1{print; print "  \"reconcileStatus\": \"awaiting-reapprove\","; print "  \"awaitingHuman\": true,"; next} {print}' \
+  "$(state_of "$repoRC")" >"$repoRC/s.tmp" && mv "$repoRC/s.tmp" "$(state_of "$repoRC")"
+export GH_LOG="$repoRC/gh.log"; : >"$GH_LOG"
+rcRC=0
+( cd "$repoRC" && LCARS_GH_BIN="$repoRC/gh" LCARS_RUN_SCRIPT="$repoRC/recon.sh" \
+    RECON_LOG="$repoRC/recon.log" bash "$SCRIPT" \
+    --mission "$MID" --reapprove >out.txt 2>&1 ) || rcRC=$?
+sRC="$(state_of "$repoRC")"
+check "rc. reapprove exits 0" "[ '$rcRC' -eq 0 ]"
+check "rc. reapprove does NOT run the reconcile engine" "! grep -q 'reconcile' '$repoRC/recon.log' 2>/dev/null || [ ! -s '$repoRC/recon.log' ]"
+check "rc. reapprove calls gh pr merge" "grep -q 'pr merge' '$repoRC/gh.log'"
+check "rc. reapprove advances to done" "grep -q '\"stage\": *\"done\"' '$sRC'"
+check "rc. reapprove clears the awaiting-reapprove status" \
+  "! grep -q '\"reconcileStatus\": *\"awaiting-reapprove\"' '$sRC'"
+
+# --- BUG-066/067: --reapprove with a REJECTED push → merge-failed, no merge ---
+# A non-fast-forward push rejection must surface (reconcileStatus=merge-failed +
+# a specific reconcileNote), NOT silently revert, and must NOT attempt gh pr merge.
+# Inject a git stub whose `push` rejects non-ff; all other git calls pass through.
+make_git_stub_push_reject() { # <path>
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "push" ]; then
+  echo "To origin" >&2
+  echo " ! [rejected]        lcars/x -> lcars/x (non-fast-forward)" >&2
+  echo "error: failed to push some refs" >&2
+  exit 1
+fi
+exec git "$@"
+EOF
+  chmod +x "$1"
+}
+repoRR="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoRR/gh"
+make_git_stub_push_reject "$repoRR/git"
+make_reconcile_stub "$repoRR/recon.sh" 99
+awk 'NR==1{print; print "  \"reconcileStatus\": \"awaiting-reapprove\","; print "  \"reconcileMergeSha\": \"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\","; print "  \"awaitingHuman\": true,"; next} {print}' \
+  "$(state_of "$repoRR")" >"$repoRR/s.tmp" && mv "$repoRR/s.tmp" "$(state_of "$repoRR")"
+export GH_LOG="$repoRR/gh.log"; : >"$GH_LOG"
+rcRR=0
+( cd "$repoRR" && LCARS_GH_BIN="$repoRR/gh" LCARS_GIT_BIN="$repoRR/git" \
+    LCARS_RUN_SCRIPT="$repoRR/recon.sh" RECON_LOG="$repoRR/recon.log" bash "$SCRIPT" \
+    --mission "$MID" --reapprove >out.txt 2>&1 ) || rcRR=$?
+sRR="$(state_of "$repoRR")"
+check "rr. exits non-zero on a rejected push" "[ '$rcRR' -ne 0 ]"
+check "rr. sets reconcileStatus=merge-failed" \
+  "grep -q '\"reconcileStatus\": *\"merge-failed\"' '$sRR'"
+check "rr. reconcileNote names the non-fast-forward reason" \
+  "grep -qi 'non-fast-forward\|force-update\|push manually' '$sRR'"
+check "rr. does NOT attempt gh pr merge after a rejected push" \
+  "! grep -q 'pr merge' '$repoRR/gh.log'"
+check "rr. does NOT advance to done (no silent revert to a clean state)" \
+  "! grep -q '\"stage\": *\"done\"' '$sRR'"
+check "rr. keeps awaitingHuman true (gate stays visible)" \
+  "grep -q '\"awaitingHuman\": *true' '$sRR'"
+check "rr. prints a surfaced, actionable reason (not a generic die)" \
+  "grep -qi 'non-fast-forward\|force-update\|push manually' '$repoRR/out.txt'"
+
+# --- BUG-067: a FAILED self-heal stays escalated AND is surfaced -------------
+# reconcile exit 20 = escalated; approve must stay at verify, not merge, and the
+# failure must be surfaced (reconcile_escalate already persisted reconcileNote).
+repoFS="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoFS/gh"
+cat >"$repoFS/recon.sh" <<'EOF'
+#!/usr/bin/env bash
+mid=""; while [ $# -gt 0 ]; do case "$1" in --mission) mid="$2"; shift 2;; *) shift;; esac; done
+st=".git/lcars/missions/$mid/state.json"
+tmp="$(mktemp)"; grep -v '"reconcileStatus"\|"awaitingHuman"' "$st" >"$tmp"
+awk 'NR==1{print; print "  \"reconcileStatus\": \"escalated\","; print "  \"awaitingHuman\": true,"; next} {print}' "$tmp" >"$st"
+rm -f "$tmp"; exit 20
+EOF
+chmod +x "$repoFS/recon.sh"
+export GH_LOG="$repoFS/gh.log"; : >"$GH_LOG"
+rcFS=0
+( cd "$repoFS" && LCARS_GH_BIN="$repoFS/gh" LCARS_RUN_SCRIPT="$repoFS/recon.sh" \
+    RECON_LOG="$repoFS/recon.log" bash "$SCRIPT" --mission "$MID" >out.txt 2>&1 ) || rcFS=$?
+sFS="$(state_of "$repoFS")"
+check "fs. exits 0 (soft halt — escalation owns the gate)" "[ '$rcFS' -eq 0 ]"
+check "fs. does NOT merge on a failed self-heal" "! grep -q 'pr merge' '$repoFS/gh.log'"
+check "fs. stays at verify" "grep -q '\"stage\": *\"verify\"' '$sFS'"
+check "fs. reconcileStatus stays escalated (surfaced)" \
+  "grep -q '\"reconcileStatus\": *\"escalated\"' '$sFS'"
+
 # ==========================================================================
 echo
 printf 'lcars approve: %d passed, %d failed\n' "$pass" "$fail"
