@@ -5130,6 +5130,194 @@ $TICKET"
   die "the Implementer worker produced a result for $TICKET that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
 }
 
+# === Test reconciliation (logged-bug Implement only) =======================
+# BUG-058. A Mission-Log bug that CHANGES existing behaviour leaves a
+# contradictory locked test behind: the bug's fix shrinks the X and writes a new
+# test asserting the small X, but the PARENT mission's existing locked test still
+# asserts the OLD value — and the immutable-tests guardrail FORBIDS the bug's
+# Implementer from touching that locked parent test. The suite becomes self-
+# contradictory and the fix can never go green. This step reconciles the parent's
+# existing tests the bug's STATED change invalidates, BEFORE the bug's own Test
+# Writer / Implementer run.
+#
+# SCOPE / GATING (tiny blast radius — keep it surgical):
+#   • Runs ONLY for a LOGGED BUG: state.json type=="bug" AND parentMission set.
+#     For a top-level mission's Implement it does NOTHING — that path (Test Writer
+#     writes new fail-first tests + immutable-tests lock) is BYTE-FOR-BYTE
+#     unchanged (this returns immediately, before any worker spawns).
+#   • Reads ONLY the PARENT mission's ticket test suites under
+#     .git/lcars/missions/<parentMission>/tickets/*/tests/. It never scans or
+#     touches another mission's suites or the wider repo.
+#   • ALWAYS-ON for logged bugs (no human flag); a clean reconciliation no-ops.
+#
+# An isolated COLD worker (same spawn_worker pattern as every other stage worker,
+# engine-pinned) reads the bug's PRD (its intent + Out-of-Scope) and the parent's
+# existing tests, then ADAPTS in place those whose assertions the bug's change
+# contradicts (minimal assertion edits; remove a whole test only if fully
+# obsolete), respecting the PRD's Out-of-Scope. It writes result.json with one of:
+#   decision=reconciled  + a "changed" list → auto-apply: emit tests_reconciled,
+#                          post a GitHub issue comment listing each test + why.
+#   decision=noop         → nothing to reconcile → silent no-op.
+#   decision=defer        + a plain-language "question" → raise the awaiting-human
+#                          gate (pending.json + lcars:awaiting-human) and STOP.
+# Defer is for ONLY: (a) reconciling would need to go BEYOND the parent suite, or
+# (b) a genuine design ambiguity. NEVER for a routine, unambiguous reconciliation.
+reconcile_tests() {
+  # GATE: logged bug only (type==bug AND parentMission set). Anything else — a
+  # top-level mission — returns immediately so that path is untouched.
+  local mtype parent
+  mtype="$(json_str "$STATE" type)"
+  parent="$(json_str "$STATE" parentMission)"
+  [ "$mtype" = "bug" ] && [ -n "$parent" ] || return 0
+
+  # Resolve the PARENT mission's dir (sibling under .git/lcars/missions). Its test
+  # suites live at tickets/*/tests/. If the parent has no such suites, there is
+  # nothing to reconcile — a clean no-op.
+  local parent_dir; parent_dir="$(dirname "$MISSION_DIR")/$parent"
+  [ -d "$parent_dir/tickets" ] || return 0
+  local tests_dirs; tests_dirs="$(find "$parent_dir/tickets" -type d -name tests 2>/dev/null | sort)"
+  [ -n "$tests_dirs" ] || return 0
+
+  # Idempotent: a resumed/re-entered Implement must not re-run reconciliation once
+  # it has already reconciled or no-opped (re-editing locked parent tests would be
+  # destructive). Skip if we have a terminal reconcile-tests outcome on file.
+  if event_seen tests_reconciled implement "." || event_seen tests_reconcile_noop implement "."; then
+    return 0
+  fi
+  # A pending defer from a prior pass means the gate is still open — leave it.
+  if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
+     && grep -q '"stage": "reconcile-tests"' "$MISSION_DIR/pending.json" 2>/dev/null; then
+    emit_event tests_reconcile_blocked implement "test reconciliation still awaiting your answer — resolve it first"
+    echo "IMPLEMENT: test reconciliation awaiting-human — resolve with \`lcars respond $MISSION_ID\` before continuing."
+    exit 0
+  fi
+
+  # The bug's PRD — its intent + Out-of-Scope, the worker's primary input.
+  local prd="$MISSION_DIR/prd.md"
+  # Build the list of parent test dirs (by PATH only) for the worker prompt.
+  local tblock="" d
+  while IFS= read -r d; do
+    [ -n "$d" ] && tblock="$tblock
+- $d   (an existing locked test suite from the parent mission — adapt ONLY assertions this bug's change contradicts)"
+  done <<EOF
+$tests_dirs
+EOF
+
+  # Grant the worker READ+WRITE to the SHARED .git/lcars (so a hard-sandbox CLI can
+  # both read the parent tests and edit them in place), CLI-agnostically — the
+  # per-CLI translation is the adapter's job. Same mechanism implement-ticket uses.
+  export LCARS_WORKER_INPUT_DIRS="$(dirname "$LCARS_CFG")"
+
+  # The captain's recorded answer from a prior defer (lcars respond writes it), if
+  # any — fed so a resumed reconciliation acts on it instead of re-asking.
+  local ansblock=""
+  [ -f "$MISSION_DIR/answers.json" ] && ansblock="
+- $MISSION_DIR/answers.json   (the captain's answer resolving the prior reconciliation question — treat it as DECIDED)"
+
+  local odir; odir="$(mktemp -d)"
+  emit_event tests_reconcile_start implement "reconciling parent ($parent) tests the bug's change invalidates"
+  spawn_worker reconcile-tests "$STAGES_DIR/reconcile-tests.md" repo-write "$odir" \
+"## Read these artifacts (your ONLY inputs)
+- $prd   (THIS bug's PRD — its intent AND its Out-of-Scope section, a hard constraint)$tblock$ansblock
+
+## The parent mission
+$parent (the mission this bug was logged against — adapt ONLY its test suites listed above, nothing else)"
+
+  if [ ! -f "$odir/result.json" ]; then
+    rm -rf "$odir"
+    die "the test-reconciliation worker produced no result.json — Stage stopped."
+  fi
+  local result="$odir/result.json"
+  local decision; decision="$(json_str "$result" decision)"
+
+  case "$decision" in
+    defer)
+      # Beyond the parent suite OR a genuine design ambiguity — raise the awaiting-
+      # human gate (same shape as validate-pause) and STOP. Make NO test edits.
+      local q; q="$(json_str "$result" question)"
+      [ -n "$q" ] || q="Test reconciliation needs your decision before this bug can proceed."
+      local qf; qf="$(mktemp)"; printf '%s\n' "$q" >"$qf"
+      write_pending "$qf" "reconcile-tests"
+      rm -f "$qf"
+      state_set_raw awaitingHuman true
+      state_set_str pendingQuestion "$q"
+      gh_relabel "lcars:implement lcars:awaiting-human" ""
+      emit_event tests_reconcile_deferred implement "test reconciliation deferred to you: $q"
+      notify_gate awaiting-human "Test reconciliation needs your call: $q"
+      rm -rf "$odir"
+      echo "IMPLEMENT: test reconciliation deferred — awaiting-human."
+      echo "  $q"
+      echo "  Answer with \`lcars respond $MISSION_ID\`."
+      exit 0 ;;
+    reconciled)
+      # Auto-apply: the worker already edited the parent tests in place. Log WHAT it
+      # changed to BOTH the UI (event) AND the GitHub issue (comment) — the audit
+      # trail. Parse the "changed" array jq-free: pair each "file"/"change" line.
+      # Pair each "file" with its "change", whether they sit on the SAME line
+      # ({ "file":…, "change":… }) or on separate lines. Collect both key streams
+      # in encounter order, then zip them — jq-free, same spirit as the rest.
+      local lines; lines="$(awk '
+        function val(s,    v) { v=s; sub(/.*:[[:space:]]*"/,"",v); sub(/".*/,"",v); return v }
+        {
+          line=$0
+          while (match(line, /"file"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+            seg=substr(line, RSTART, RLENGTH); files[++nf]=val(seg)
+            line=substr(line, RSTART+RLENGTH)
+          }
+          line=$0
+          while (match(line, /"change"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+            seg=substr(line, RSTART, RLENGTH); changes[++nc]=val(seg)
+            line=substr(line, RSTART+RLENGTH)
+          }
+        }
+        END { for (i=1;i<=nf;i++) printf "%s: %s\n", files[i], (i<=nc?changes[i]:"") }
+      ' "$result")"
+      local n; n="$(printf '%s\n' "$lines" | grep -c .)"
+      [ "$n" -gt 0 ] || n=0
+      emit_event tests_reconciled implement "adapted $n test(s): $(printf '%s' "$lines" | tr '\n' '; ')" \
+        "reconciled=$n"
+      # Post a living GitHub issue comment listing each test changed + why (best-
+      # effort, via the host adapter — the same path other stages comment through).
+      local issue; issue="$(json_raw "$STATE" githubIssue)"
+      case "$issue" in
+        ''|null) : ;;
+        *)
+          local hdr items body
+          hdr="$(printf 'LCARS test reconciliation (logged bug %s)\n\nAdapted %s existing test(s) from parent mission %s whose assertions this bug stated change invalidated:\n' "$MISSION_ID" "$n" "$parent")"
+          items="$(printf '%s\n' "$lines" | sed '/^$/d; s/^/- /')"
+          body="$hdr
+$items"
+          if ! host issue-comment "$issue" --body "$body"; then
+            echo "  could not post the reconciliation comment to #$issue — record it by hand."
+          fi
+          ;;
+      esac
+      rm -rf "$odir"
+      echo "IMPLEMENT: reconciled $n existing parent test(s)."
+      while IFS= read -r l; do [ -n "$l" ] && echo "  • $l"; done <<EOF
+$lines
+EOF
+      ;;
+    *)
+      # noop (or an unrecognised decision treated conservatively as noop): nothing
+      # to reconcile. Record it so a re-entered Implement skips this step.
+      emit_event tests_reconcile_noop implement "nothing to reconcile — the bug adds behaviour / contradicts no existing parent test"
+      rm -rf "$odir"
+      echo "IMPLEMENT: no existing parent tests to reconcile."
+      ;;
+  esac
+  return 0
+}
+
+# --- subcommand: reconcile-tests (independently driveable + testable) -------
+cmd_reconcile_tests() {
+  locate_mission "$MISSION_ID"
+  require_stage implement
+  require_worker
+  reconcile_tests
+  exit 0
+}
+
 # === Stage driver: Implement (the whole stage) =============================
 # The token-free wave loop. It processes the waves in order and, within a wave,
 # builds every pending ticket through `implement-ticket` (the cold adversarial
@@ -5142,6 +5330,12 @@ cmd_implement() {
   locate_mission "$MISSION_ID"
   require_stage implement
   require_worker
+
+  # BUG-058: for a LOGGED BUG, reconcile the parent mission's existing tests the
+  # bug's change invalidates BEFORE the bug's own Test Writer / Implementer run.
+  # No-op (and untouched argv) for a top-level mission. May exit 0 here if it
+  # raises an awaiting-human gate (a genuine design ambiguity / beyond-parent scope).
+  reconcile_tests
 
   # Branch-CREATION contamination guard (BUG: concurrent-mission cross-birth).
   # Implement is the first stage to touch git; the mission branch may not exist
@@ -6207,7 +6401,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|open-pr|research|validate|estimate|plan|plan-review|implement|implement-ticket|drive|emit-event)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|open-pr|research|validate|estimate|plan|plan-review|implement|implement-ticket|reconcile-tests|drive|emit-event)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -6238,6 +6432,11 @@ case "$SUB" in
   plan-review)      cmd_plan_review ;;
   implement)        cmd_implement ;;
   implement-ticket) cmd_implement_ticket ;;
+  # BUG-058: reconcile the parent mission's existing tests a logged bug's change
+  # invalidates, before the bug's own Test Writer/Implementer run. No-op on a
+  # top-level mission. Independently driveable + testable; cmd_implement also
+  # calls reconcile_tests() directly up front.
+  reconcile-tests)  cmd_reconcile_tests ;;
   # One research agent, spawned as a capped fan-out job (run_capped). Stateless:
   # its ONLY inputs are $LCARS_RA_DIR (where to write) and $LCARS_RA_Q (the one
   # question). No --mission — research_agent_worker reaches no mission artifacts.
