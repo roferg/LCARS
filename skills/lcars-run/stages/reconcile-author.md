@@ -35,6 +35,44 @@ almost always preserves BOTH: keep this mission's behavior AND adopt the base's
 change. Resolve a textual conflict by combining the two sides' intent, not by
 deleting one. State that reconciliation explicitly in the PRD's intended fix.
 
+## When the conflict is a DESIGN trade-off you cannot resolve — ask, don't guess
+
+Most breaks have a single correct reconciliation (keep both intents — see above) and
+you author a self-heal PRD for it. But SOMETIMES the two sides encode two user-facing
+behaviours that genuinely CANNOT both hold — a real product decision only the human
+can make. The classic shape: this mission and the base each lay claim to the same
+piece of the EXPERIENCE (the same screen region, the same gesture, the same moment),
+and satisfying one necessarily breaks the other. There is no "combine both intents"
+edit — only a choice.
+
+When (and ONLY when) you hit that, do NOT pick a side and do NOT author a bug PRD.
+Instead write a SINGLE file named `design-question.txt` in your scratch output
+directory containing ONE concise question, and author NO `bug-NNN.md` files at all.
+
+The question MUST be framed entirely around the PLAYER'S / USER'S EXPERIENCE — what
+they see, where it sits, how it behaves — in plain natural language a non-programmer
+captain can answer in one sentence. Offer 2–3 concrete arrangements as examples so
+the answer is easy. It MUST NOT mention any code: no function or method names, no
+file names, no test ids, no class/variable names, no "refactor". Describe the
+observable collision, not the source of it.
+
+- GOOD: "The best-score readout and the xN multiplier badge both render in the
+  top-right corner and overlap — how should they be arranged? (e.g. stack them
+  vertically, move the best-score to the top-left, or shrink one)"
+- BAD: "How should I refactor `drawScore()` so the HUD elements in `hud.js` stop
+  colliding in test `t-014`?"
+
+Put ONLY that one question (with its example options) in `design-question.txt`. The
+harness will route it to the captain; once they answer, a later pass will hand you
+their decision and you will author the self-heal that implements EXACTLY that choice.
+
+## If the captain has already DECIDED a prior design question
+
+If the inputs above include the captain's decision ("The captain decided: …"), the
+trade-off is SETTLED. Do NOT emit `design-question.txt` and do NOT re-ask. Author the
+self-heal bug PRD(s) that implement EXACTLY the arrangement the captain chose, then
+reconcile any remaining mechanical breaks as usual.
+
 ## Each PRD's required shape — ALL sections mandatory
 
 The Mission Log requires the `# Mission:` title line and a `**Type:** bug` line.

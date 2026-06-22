@@ -105,12 +105,28 @@ EOF
 make_worker_stub() {
   cat >"$1" <<'EOF'
 #!/usr/bin/env bash
+# Capture the worker prompt (the arg right after `-p`) so tests can assert what
+# reached the cold worker — e.g. that a resumed self-heal carries the captain's
+# recorded answer (BUG-042). Append every prompt to $WORKER_PROMPT_LOG if set.
+if [ -n "${WORKER_PROMPT_LOG:-}" ]; then
+  prev=""
+  for a in "$@"; do
+    [ "$prev" = "-p" ] && { printf '%s\n----8<----\n' "$a" >>"$WORKER_PROMPT_LOG"; }
+    prev="$a"
+  done
+fi
 # Find the scratch output dir: it is one of the argv that is an existing directory
 # created by the harness (mkdir -p outdir happens before spawn). Prefer the last.
 out=""
 for a in "$@"; do [ -d "$a" ] && out="$a"; done
 [ -n "$out" ] || out="${LCARS_WORK_OUT:-}"
 [ -n "$out" ] || exit 0
+# BUG-042 path: the conflict is an unresolvable DESIGN trade-off, so the author
+# emits an experience-framed QUESTION (design-question.txt) instead of bug PRDs.
+if [ -n "${STUB_DESIGN_QUESTION:-}" ]; then
+  printf '%s\n' "${STUB_DESIGN_QUESTION_TEXT:-The best-score readout and the xN multiplier badge both render in the top-right corner and overlap — how should they be arranged? (e.g. stack them, move best-score to the top-left, shrink one)}" >"$out/design-question.txt"
+  exit 0
+fi
 n="${RECONCILE_BUGS:-1}"
 i=1
 while [ "$i" -le "$n" ]; do
@@ -235,6 +251,9 @@ run_in() { # repo  subcommand-and-args…
   local a; a="$(aux_of "$repo")"
   ( cd "$repo" \
       && PRD_CAPTURE="$a/prdcap" RECONCILE_BUGS="${RECONCILE_BUGS:-1}" \
+         WORKER_PROMPT_LOG="$a/worker-prompt.log" \
+         STUB_DESIGN_QUESTION="${STUB_DESIGN_QUESTION:-}" \
+         STUB_DESIGN_QUESTION_TEXT="${STUB_DESIGN_QUESTION_TEXT:-}" \
          LCARS_GH_BIN="$a/gh" LCARS_GIT_BIN="git" \
          LCARS_HOST_ADAPTER="$HOST_ADAPTER" \
          LCARS_LOG_SCRIPT="$a/log.sh" \
@@ -255,6 +274,7 @@ setup_stubs() { # repo
   make_resolve_stub "$a/resolve-logs.sh"
   make_worker_stub "$a/worker"
   : >"$a/gh.log"; : >"$a/notify.log"; : >"$a/log.log"; : >"$a/resolve.log"
+  : >"$a/worker-prompt.log"
 }
 
 # ==========================================================================
@@ -435,6 +455,85 @@ check "D. drive on a red reconcile prints the reconciling halt" \
   "grep -qi 'reconcil' '$rdr.aux/out.txt'"
 check "D. drive on a red reconcile dispatched a Mission Log" \
   "grep -q '^LOG' '$rdr.aux/log.log'"
+
+# --- BUG-038: worktree-cut failure → honest non-proceed, never false success --
+# Force `git worktree add` to fail by checking the mission branch out elsewhere
+# AND leaving a stale conflicting worktree dir registered, so even after a prune+
+# retry the cut still cannot happen. reconcile must NOT exit 0 and must NOT leave
+# state implying success — it must escalate with a clear, actionable message.
+b38="$(mktemp -d "$TMPROOT/b38.XXXX")"; new_repo_verify "$b38" >/dev/null; setup_stubs "$b38"
+stage_ticket_suite "$b38" green; advance_base "$b38" clean
+# Occupy the mission branch in a sibling worktree so it is "checked out elsewhere"
+# — git refuses to add a second worktree on the same branch.
+( cd "$b38" && git worktree add -q "$b38.busywt" "lcars/$MID" >/dev/null 2>&1 ) || true
+rc38=0; run_in "$b38" reconcile --mission "$MID" >"$b38.aux/out.txt" 2>&1 || rc38=$?
+s38="$(state_of "$b38")"
+check "B38. worktree-cut failure does NOT exit 0 (no false proceed)" "[ '$rc38' -ne 0 ]"
+check "B38. worktree-cut failure prints an actionable message (checked out elsewhere / stale worktree)" \
+  "grep -qi 'checked out\|another worktree\|stale worktree\|free it' '$b38.aux/out.txt'"
+check "B38. worktree-cut failure NEVER reports RECONCILE: ok" \
+  "! grep -q 'RECONCILE: ok' '$b38.aux/out.txt'"
+check "B38. worktree-cut failure never opens a PR" "! grep -q 'pr create' '$b38.aux/gh.log'"
+check "B38. no reconcileStatus implying success (merging/retesting/green not left as terminal)" \
+  "! grep -q '\"reconcileStatus\": *\"green\"' '$s38'"
+# clean up the busy sibling worktree so later assertions / EXIT trap stay tidy
+( cd "$b38" && git worktree remove --force "$b38.busywt" >/dev/null 2>&1 ) || true
+
+# --- BUG-041: a heal round that can't reach green must ESCALATE, never freeze ---
+# Drive the SAME red mission RECONCILE_MAX times. The final state MUST be a clean
+# terminal escalation (escalated + gate raised), NEVER a frozen reconcileStatus=
+# healing with no gate (the silent dead-end).
+b41="$(mktemp -d "$TMPROOT/b41.XXXX")"; new_repo_verify "$b41" >/dev/null; setup_stubs "$b41"
+stage_ticket_suite "$b41" red; advance_base "$b41" clean
+LCARS_RECONCILE_MAX=2 run_in "$b41" reconcile --mission "$MID" >"$b41.aux/p1.txt" 2>&1 || true
+LCARS_RECONCILE_MAX=2 run_in "$b41" reconcile --mission "$MID" >"$b41.aux/p2.txt" 2>&1 || true
+LCARS_RECONCILE_MAX=2 run_in "$b41" reconcile --mission "$MID" >"$b41.aux/p3.txt" 2>&1 || true
+s41="$(state_of "$b41")"
+check "B41. exhausted heal reaches reconcileStatus=escalated (clean terminal)" \
+  "grep -q '\"reconcileStatus\": *\"escalated\"' '$s41'"
+check "B41. exhausted heal is NEVER left frozen at reconcileStatus=healing" \
+  "! grep -q '\"reconcileStatus\": *\"healing\"' '$s41'"
+check "B41. exhausted heal raises the awaiting-human gate (pending.json)" \
+  "[ -f '$(mdir_of "$b41")/pending.json' ] && grep -q '\"awaitingHuman\": *true' '$s41'"
+check "B41. exhausted heal fires exactly one gate notification" \
+  "[ \"\$(grep -c NOTIFY '$b41.aux/notify.log')\" -eq 1 ]"
+check "B41. exhausted heal never opens a PR" "! grep -q 'pr create' '$b41.aux/gh.log'"
+
+# --- BUG-042: design-conflict → experience-framed question, then resume injects answer
+# The author detects an unresolvable DESIGN trade-off and emits an experience-framed
+# QUESTION instead of bug PRDs. reconcile escalates immediately with THAT question.
+b42="$(mktemp -d "$TMPROOT/b42.XXXX")"; new_repo_verify "$b42" >/dev/null; setup_stubs "$b42"
+stage_ticket_suite "$b42" red; advance_base "$b42" clean
+DQ='The best-score readout and the xN multiplier badge both render in the top-right corner and overlap — how should they be arranged? (e.g. stack them, move best-score to the top-left, shrink one)'
+STUB_DESIGN_QUESTION=1 STUB_DESIGN_QUESTION_TEXT="$DQ" \
+  run_in "$b42" reconcile --mission "$MID" >"$b42.aux/p1.txt" 2>&1 || true
+s42="$(state_of "$b42")"
+pj42="$(mdir_of "$b42")/pending.json"
+check "B42. design-conflict escalates to awaiting-human" "grep -q '\"awaitingHuman\": *true' '$s42'"
+check "B42. design-conflict writes pending.json" "[ -f '$pj42' ]"
+check "B42. the gate question is the experience-framed design question (player/UX language)" \
+  "grep -qi 'overlap\|arranged\|top-right\|badge' '$pj42'"
+check "B42. the gate question names NO CLI/code identifiers (no drawScore/refactor/t-001/function)" \
+  "! grep -Eqi 'drawScore|refactor|t-001|function|\.js|\.sh' '$pj42'"
+check "B42. design-conflict did NOT silently dead-end (status escalated, not healing)" \
+  "grep -q '\"reconcileStatus\": *\"escalated\"' '$s42' && ! grep -q '\"reconcileStatus\": *\"healing\"' '$s42'"
+check "B42. design-conflict never opens a PR" "! grep -q 'pr create' '$b42.aux/gh.log'"
+
+# Now simulate the captain answering via respond (writes answers.json + clears the
+# gate), then run the NEXT reconcile pass and assert the self-heal worker prompt
+# carries the captain's decision verbatim (the answer reached the heal worker).
+ANS='Move the best-score readout to the top-left corner and keep the multiplier badge top-right.'
+RESPOND_SH="$REPO_ROOT/skills/lcars-respond/respond.sh"
+( cd "$b42" && LCARS_GH_BIN="$b42.aux/gh" \
+    bash "$RESPOND_SH" answer --mission "$MID" --answer "$ANS" >/dev/null 2>&1 ) || true
+check "B42. respond recorded the answer in answers.json" \
+  "[ -f '$(mdir_of "$b42")/answers.json' ] && grep -q 'top-left' '$(mdir_of "$b42")/answers.json'"
+: >"$b42.aux/worker-prompt.log"
+run_in "$b42" reconcile --mission "$MID" >"$b42.aux/p2.txt" 2>&1 || true
+check "B42. resumed self-heal injects the captain's answer into the worker prompt" \
+  "grep -q 'top-left' '$b42.aux/worker-prompt.log'"
+check "B42. resumed self-heal frames the injected answer as a decision to implement" \
+  "grep -qi 'captain decided\|the captain decided\|implement exactly\|captain' '$b42.aux/worker-prompt.log'"
 
 # ==========================================================================
 echo

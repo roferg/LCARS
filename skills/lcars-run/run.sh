@@ -2764,8 +2764,15 @@ EOF
 # Author detailed bug PRD(s) from the failure summary via a cold worker on the
 # mission's OWN engine, then route them through log.sh → resolve-logs drive →
 # resolve-logs complete. $1 = the failure-summary text. Echoes nothing; returns 0.
+# Set by reconcile_author_and_dispatch when the author judged the conflict an
+# UNRESOLVABLE design trade-off and authored an experience-framed QUESTION instead
+# of a self-heal — the gate then escalates with this text (BUG-042). Empty = the
+# author dispatched a normal self-heal.
+RECONCILE_DESIGN_QUESTION=""
+
 reconcile_author_and_dispatch() { # failure-summary  affected-block
   local summary="$1" affected="$2"
+  RECONCILE_DESIGN_QUESTION=""
   state_set_str reconcileStatus "healing"
   emit_event reconcile_heal verify "authoring self-heal bug PRD(s) from the merge failure"
 
@@ -2789,12 +2796,40 @@ The deterministic failure summary is at:
 - This mission's goal/PRD: $MISSION_DIR/prd.md
 - What changed on the base branch since this branch was cut is quoted in the summary above."
 
+  # RESUME after `lcars respond` (BUG-042): if the captain already answered a prior
+  # design-trade-off escalation for this reconcile, INJECT that decision so the heal
+  # implements exactly what they chose (do NOT re-raise the same question).
+  if [ -f "$MISSION_DIR/answers.json" ]; then
+    local cap_answer; cap_answer="$(json_str "$MISSION_DIR/answers.json" answer)"
+    if [ -n "$cap_answer" ]; then
+      extra="$extra
+
+## The captain DECIDED the design trade-off — implement EXACTLY this
+A prior reconcile pass raised a design question to the captain; they answered:
+
+  The captain decided: $cap_answer
+
+This is a DECISION, not a new option to weigh. Author the self-heal bug PRD(s)
+that implement EXACTLY that arrangement — do NOT re-raise the question, and do NOT
+emit a design-question file this time."
+    fi
+  fi
+
   local odir tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     odir="$(mktemp -d)"
     LCARS_WORKER_BIN="$engine" \
       spawn_worker reconcile-author "$STAGES_DIR/reconcile-author.md" repo-read "$odir" "$extra" "$prior_no_file"
+    # The author may judge the conflict an UNRESOLVABLE design trade-off and write
+    # an experience-framed QUESTION (design-question.txt) instead of bug PRDs. If so,
+    # surface it for the gate to escalate — UNLESS the captain has already answered
+    # (answers.json present) and we are now implementing their decision.
+    if [ -s "$odir/design-question.txt" ] && [ ! -f "$MISSION_DIR/answers.json" ]; then
+      RECONCILE_DESIGN_QUESTION="$(cat "$odir/design-question.txt")"
+      rm -rf "$odir"
+      return 0
+    fi
     # collect the authored PRDs
     local prds=() f
     for f in "$odir"/bug-*.md; do
@@ -2915,10 +2950,25 @@ reconcile_gate() {
   # (b) MERGE (not rebase) in an isolated worktree ATTACHED to the mission branch.
   local wt; wt="$(mktemp -d "$MISSION_DIR/reconcile.XXXXXX")"; rm -rf "$wt"
   if ! "$GIT_BIN" worktree add -q "$wt" "$BRANCH" >/dev/null 2>&1; then
+    # BUG-038: do NOT silently "proceed". A failed worktree cut means we could not
+    # reconcile at all — returning 0 here would let the caller MERGE an un-reconciled
+    # branch (conflict → wrong). First try to RECOVER (a stale/abandoned worktree is
+    # the common cause), then retry ONCE; only if it still fails do we escalate with
+    # a clear, actionable message. Never report success when no reconcile happened.
     rm -rf "$wt"
-    echo "RECONCILE: ok — could not cut an isolated worktree; proceeding (will retry later)"
-    state_del reconcileRound
-    return 0
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+    wt="$(mktemp -d "$MISSION_DIR/reconcile.XXXXXX")"; rm -rf "$wt"
+    if ! "$GIT_BIN" worktree add -q "$wt" "$BRANCH" >/dev/null 2>&1; then
+      rm -rf "$wt"
+      # Roll the round back — this pass did nothing — so the round counter reflects
+      # only real reconcile attempts, then escalate honestly (awaiting-human, no PR).
+      round=$((round - 1))
+      if [ "$round" -le 0 ]; then state_del reconcileRound; else state_set_raw reconcileRound "$round"; fi
+      local wt_diag="Can't reconcile with '$BASE' — the mission branch '$BRANCH' is checked out in another worktree, or a stale worktree is blocking an isolated cut. Free it (\`git worktree list\` then \`git worktree remove\`/\`git worktree prune\`) and re-run."
+      reconcile_escalate "$wt_diag"
+      echo "RECONCILE: cannot reconcile — the mission branch is checked out in another worktree or a stale worktree exists; free it and re-run."
+      return 20
+    fi
   fi
   # Record the branch's PRE-MERGE tip so a RED reconcile can UNDO the merge: the
   # merge commits onto the live branch ref, and we must NOT leave a broken merge on
@@ -3024,6 +3074,16 @@ ${base_log:-(no log available)}"
   local affected="Conflicted/affected: ${conflicted:-$RETEST_FAILED}"
   reconcile_author_and_dispatch "$failure_summary" "$affected"
   reconcile_cleanup
+
+  # BUG-042: the author judged this an UNRESOLVABLE design trade-off and posed an
+  # experience-framed question rather than a self-heal. There is nothing to iterate
+  # on — escalate NOW with the player-facing question so the captain decides; the
+  # next pass (after `lcars respond`) injects their answer into the heal.
+  if [ -n "$RECONCILE_DESIGN_QUESTION" ]; then
+    reconcile_escalate "$RECONCILE_DESIGN_QUESTION"
+    return 20
+  fi
+
   state_set_str reconcileStatus "healing"
   echo "RECONCILE: reconciling — merged $BASE; combined state not green; self-heal dispatched (round $round/$RECONCILE_MAX)"
   return 10
