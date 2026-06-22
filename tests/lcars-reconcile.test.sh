@@ -521,6 +521,30 @@ check "B38. no reconcileStatus implying success (merging/retesting/green not lef
 # clean up the busy sibling worktree so later assertions / EXIT trap stay tidy
 ( cd "$b38" && git worktree remove --force "$b38.busywt" >/dev/null 2>&1 ) || true
 
+# --- BUG-054: reconcile while the MAIN tree is ON the mission branch -----------
+# The NORMAL post-Implement / post-heal state leaves $REPO_ROOT checked out ON the
+# mission branch (the heal's cherry-pick does `git checkout $BRANCH` in the repo
+# root). An ATTACHED `git worktree add "$wt" "$BRANCH"` then fails with "already
+# checked out at <repo>", which tripped the BUG-038 worktree-cut escalation and
+# dead-ended a 2nd reconcile round / 2nd captain Merge click. The gate must detach
+# the main tree off the branch first so the cut succeeds and the heal proceeds.
+b54="$(mktemp -d "$TMPROOT/b54.XXXX")"; new_repo_verify "$b54" >/dev/null; setup_stubs "$b54"
+stage_ticket_suite "$b54" red; advance_base "$b54" clean
+# Put the captain's MAIN working tree ON the mission branch — the real post-heal state.
+( cd "$b54" && git checkout -q "lcars/$MID" )
+rc54=0; run_in "$b54" reconcile --mission "$MID" >"$b54.aux/out.txt" 2>&1 || rc54=$?
+s54="$(state_of "$b54")"
+check "B54. reconcile on a branch-checked-out main tree does NOT raise the worktree-cut escalation" \
+  "! grep -qi 'checked out in another worktree\|stale worktree\|free it' '$b54.aux/out.txt'"
+check "B54. reconcile on a branch-checked-out main tree does NOT exit 20 with the cut diagnosis" \
+  "[ '$rc54' -ne 20 ]"
+check "B54. reconcile on a branch-checked-out main tree still cut the worktree and ran the heal (log dispatched)" \
+  "grep -q '^LOG' '$b54.aux/log.log'"
+check "B54. reconcile on a branch-checked-out main tree reached the healing path (round recorded)" \
+  "grep -q '\"reconcileRound\"' '$s54'"
+check "B54. no reconcile worktree leaks after a branch-checked-out reconcile" \
+  "! (cd '$b54' && git worktree list | grep -q reconcile)"
+
 # --- BUG-041: a heal round that can't reach green must ESCALATE, never freeze ---
 # Drive the SAME red mission RECONCILE_MAX times. The final state MUST be a clean
 # terminal escalation (escalated + gate raised), NEVER a frozen reconcileStatus=

@@ -3022,6 +3022,15 @@ reconcile_gate() {
   fi
 
   # (b) MERGE (not rebase) in an isolated worktree ATTACHED to the mission branch.
+  # BUG-054: a reconcile pass run while $REPO_ROOT is ON the mission branch (the
+  # normal post-Implement/post-heal state — the heal's cherry-pick leaves it there)
+  # cannot cut an ATTACHED worktree on that branch ("already checked out at …").
+  # Detach the main tree off the branch first so the cut succeeds; the heal re-checks
+  # the branch out in $REPO_ROOT as it needs it, and the captain's tree ends on the
+  # branch as usual.
+  if [ "$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )" = "$BRANCH" ]; then
+    ( cd "$REPO_ROOT" && "$GIT_BIN" checkout --detach --quiet ) >/dev/null 2>&1 || :
+  fi
   local wt; wt="$(mktemp -d "$MISSION_DIR/reconcile.XXXXXX")"; rm -rf "$wt"
   if ! "$GIT_BIN" worktree add -q "$wt" "$BRANCH" >/dev/null 2>&1; then
     # BUG-038: do NOT silently "proceed". A failed worktree cut means we could not
