@@ -51,6 +51,12 @@ EOF
 #   STUB_DECISION=reconciled_expr → BUG-060: edit the parent test in place to a
 #                              COMPUTED/RELATIVE assertion ('(digitDisplayH / 3)px')
 #                              instead of a guessed literal, and report it verbatim.
+#   STUB_DECISION=reconciled_observed → BUG-063: edit the parent test in place to an
+#                              assertion anchored on the OBSERVED render output
+#                              ('(observedDigitHeight / 3)px', read from the recording
+#                              ctx) — NOT a static input constant — and report it
+#                              verbatim, proving the harness relays observed-value
+#                              expressions intact (no flatten, no input-constant rewrite).
 #   STUB_DECISION=noop       → edit nothing, result.json says noop.
 #   STUB_DECISION=defer      → edit nothing, result.json carries a question.
 # It also records the role + that it saw the parent test path in its prompt.
@@ -99,6 +105,27 @@ JSON
   "decision": "reconciled",
   "changed": [
     { "file": "${PARENT_TEST_FILE:-}", "change": "X size assertion: bold 32px -> computed (digitDisplayH / 3)px (relative, not a guessed literal)" }
+  ]
+}
+JSON
+    ;;
+  reconciled_observed)
+    # BUG-063: the bug defines the new value as a RELATIONSHIP to a quantity the test
+    # OBSERVES in its own render output ("⅓ of the digit's DRAWN height"). The code may
+    # scale inputs, so the durable assertion reads the OBSERVED drawn height back from
+    # the recording context and computes from THAT — never a static input constant. This
+    # stub edits the parent test in place to exactly that observed-value expression and
+    # reports it verbatim, proving the harness applies/relays it as-is.
+    if [ -n "${PARENT_TEST_FILE:-}" ] && [ -f "$PARENT_TEST_FILE" ]; then
+      sed -i.bak "s|bold 32px|' + (observedDigitHeight / 3) + 'px|" "$PARENT_TEST_FILE" 2>/dev/null \
+        || sed -i '' "s|bold 32px|' + (observedDigitHeight / 3) + 'px|" "$PARENT_TEST_FILE" 2>/dev/null || true
+      rm -f "$PARENT_TEST_FILE.bak" 2>/dev/null || true
+    fi
+    cat >"$out/result.json" <<JSON
+{
+  "decision": "reconciled",
+  "changed": [
+    { "file": "${PARENT_TEST_FILE:-}", "change": "X size assertion: bold 32px -> computed (observedDigitHeight / 3)px (anchored on OBSERVED render output, not a static input constant)" }
   ]
 }
 JSON
@@ -295,6 +322,32 @@ check "5. the tests_reconciled event relays the relative expression intact" \
   "grep '\"type\":\"tests_reconciled\"' '$(events_of "$r5")' | grep -qF '(digitDisplayH / 3)'"
 check "5. the gh audit comment relays the relative expression intact" \
   "grep -qF '(digitDisplayH / 3)' '$r5.gh.log'"
+
+# === Case 6 (BUG-063): an OBSERVED-OUTPUT-anchored assertion is applied VERBATIM —
+#     the durable answer for a relationship whose anchor the code SCALES/transforms.
+# The bug defines the new value as "⅓ of the digit's DRAWN height". The worker rewrites
+# the parent assertion to compute from the OBSERVED drawn height (read back from the
+# recording context), NOT a static input sprite-size constant the code would scale. The
+# harness must apply the in-place edit as-is and relay the observed expression intact
+# through the event + gh audit comment — never flattening it to a literal nor swapping
+# in a raw input constant.
+r6="$TMPROOT/r6"; mkdir -p "$r6"; new_bug_mission "$r6"; setup "$r6"
+rc6=0; STUB_DECISION=reconciled_observed run_rt "$r6" >"$r6.out" 2>&1 || rc6=$?
+check "6. reconcile-tests exits 0 on an observed-output reconciliation" "[ '$rc6' -eq 0 ]"
+check "6. the old literal assertion is gone from the parent test" \
+  "! grep -q 'bold 32px' '$(parent_test "$r6")'"
+check "6. the parent test now holds the OBSERVED-value expression VERBATIM" \
+  "grep -qF '(observedDigitHeight / 3)' '$(parent_test "$r6")'"
+check "6. the parent test did NOT get a guessed numeric literal substituted" \
+  "! grep -Eq 'bold (12|5\.4)px' '$(parent_test "$r6")'"
+check "6. the parent test did NOT fall back to a static input constant" \
+  "! grep -q 'SPRITE_SIZES' '$(parent_test "$r6")'"
+check "6. a tests_reconciled event was emitted" \
+  "grep -q '\"type\":\"tests_reconciled\"' '$(events_of "$r6")'"
+check "6. the tests_reconciled event relays the observed-value expression intact" \
+  "grep '\"type\":\"tests_reconciled\"' '$(events_of "$r6")' | grep -qF '(observedDigitHeight / 3)'"
+check "6. the gh audit comment relays the observed-value expression intact" \
+  "grep -qF '(observedDigitHeight / 3)' '$r6.gh.log'"
 
 echo
 echo "  ---- $pass passed, $fail failed ----"

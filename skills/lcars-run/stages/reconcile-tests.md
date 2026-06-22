@@ -16,15 +16,30 @@ adapts it FIRST, the suite becomes self-contradictory and the fix can never go g
 
 ⚠️ CRITICAL ORDERING: you run BEFORE this bug's Test Writer and Implementer. The
 implementation that will produce the new value DOES NOT EXIST YET. So you CANNOT know
-the exact numeric literal the implementer will emit. If the bug changes a value defined
+the exact numeric literal the implementer will emit, NOR can you predict any
+scale/transform the code will apply to its inputs. If the bug changes a value defined
 as a RELATIONSHIP ("one-third of the digit height", "half the gap", "twice the
 padding"), you MUST express the reconciled assertion as that relationship COMPUTED from
-the test's own setup/mock values — NEVER a literal you guessed. Guessing a literal is a
-coin-flip: if the implementation computes `digitHeight/3` from a mock digit height of
-16.2, the real value is 5.4 — your guessed `12px` would still contradict the code and
-the suite would still fail. A computed assertion agrees with WHATEVER the implementer
+a value the test can actually SEE — NEVER a literal you guessed. Guessing a literal is a
+coin-flip: if the implementation computes `digitHeight/3` from a digit height of 16.2,
+the real value is 5.4 — your guessed `12px` would still contradict the code and the
+suite would still fail. A computed assertion agrees with WHATEVER the implementer
 derives from the same relationship, because both sides do the same arithmetic on the
-same inputs.
+same value.
+
+⚠️ ANCHOR ON OBSERVED OUTPUT, NOT ASSUMED INPUT. The single most common way this step
+goes wrong: computing the relationship from a raw INPUT constant (a mock sprite size, a
+config value) when the code SCALES or TRANSFORMS that input before using it. You cannot
+predict the transform — so anchoring on the input is just as fragile as guessing a
+literal. Concrete failure: the bug says "× is ⅓ the digit height" and the digit sprite's
+native size is 36px, so you write `SPRITE_SIZES['1'][1] / 3` = 12. But the code renders
+the digit at `36 * scale` (a resolution scale you couldn't see), so the drawn digit is
+e.g. 16.2px and the real × is `16.2/3 = 5.4` — your 12 contradicts the code, 7/8.
+The durable fix: read the quantity AS THE CODE ACTUALLY PRODUCED IT from the test's own
+recording/output (e.g. the digit sprite's ACTUAL drawn height captured by the recording
+context's `drawImage` call), then assert `xFontHeight === observedDigitHeight / 3`. This
+is correct BY CONSTRUCTION regardless of any scale/transform the implementation applies,
+because the observed value already has the transform baked in.
 
 This step is the ONLY place in the whole pipeline permitted to edit or remove an
 EXISTING locked test file — and ONLY those existing tests whose assertions the bug's
@@ -48,25 +63,40 @@ STATED change directly contradicts.
    the change makes it FULLY obsolete (nothing left to assert). Edit the parent test
    files DIRECTLY (you have write access to them).
 
-   **Relative vs absolute — this is the part that goes wrong if rushed.** Decide what
-   KIND of value the bug specifies:
+   **Relative vs absolute — this is the part that goes wrong if rushed.** Apply this
+   DECISION ORDER, in this priority:
 
-   - **RELATIONSHIP** (the bug defines the new value in terms of another value — "one-
-     third of the digit height", "half the row gap", "twice the padding", "the same as
-     X"): rewrite the assertion to COMPUTE that relationship from the value the test's
-     OWN setup/mock already defines. Use the test's existing variable / mock field as
-     the operand and let the arithmetic live in the assertion. Do NOT resolve it to a
-     number yourself — you do not have the implementation, so any number is a guess.
-     The computed expression will match whatever the implementer derives from the same
-     relationship; a guessed literal almost certainly will not.
+   1. **ABSOLUTE** — the bug states an exact, fixed value ("make it exactly 20px",
+      "set the count to 5", "use #ff0000"): substitute that LITERAL directly. There is
+      no relationship to preserve, so a literal is correct.
 
-   - **ABSOLUTE** (the bug states an exact, fixed value — "make it exactly 20px",
-     "set the count to 5", "use #ff0000"): substitute that literal directly. There is
-     no relationship to preserve, so a literal is correct.
+   2. **RELATIONSHIP to an OBSERVABLE quantity** — the bug defines the new value in
+      terms of another quantity that the test's OWN output/recording CAPTURES ("one-
+      third of the digit height", "half the row gap", "twice the padding", "the same
+      width as X"): rewrite the assertion to COMPUTE the relationship from the OBSERVED
+      value — what the code actually drew/produced, read back from the test's recording
+      context / captured calls. This is the PREFERRED form. Example: read the digit
+      sprite's actual drawn height from the recording context's `drawImage` call and
+      assert `xFontHeight === observedDigitHeight / 3`. Correct by construction — any
+      scale/transform the code applies is already baked into the observed value.
 
-   When in doubt about which kind it is, treat a value the bug describes by COMPARISON
-   to another value as a RELATIONSHIP and compute it. Only hardcode a literal when the
-   bug itself names the fixed value.
+   3. **RELATIONSHIP to a STATIC INPUT only** — the related quantity is NOT observable
+      in the test's output, only available as a raw input constant (a mock sprite size,
+      a config field): compute from that INPUT (e.g. `SPRITE_SIZES['1'][1] / 3`) — but
+      this is FRAGILE, because the code may scale/transform that input before using it
+      and you cannot predict the transform. So FLAG the fragility explicitly in your
+      `result.json` "change" note (e.g. "computed from static input SPRITE_SIZES — may
+      need scale adjustment if the code transforms it"), so a re-file can catch it.
+
+   PREFER (2) over (3) whenever the relationship's anchor quantity appears anywhere in
+   the test's recorded output — assumed input constants are a last resort. Do NOT resolve
+   a relationship to a number yourself — you do not have the implementation, so any
+   number is a guess. A computed expression matches whatever the implementer derives from
+   the same relationship; a guessed literal almost certainly will not.
+
+   When in doubt about ABSOLUTE vs RELATIONSHIP, treat a value the bug describes by
+   COMPARISON to another value as a RELATIONSHIP and compute it. Only hardcode a literal
+   when the bug itself names the fixed value.
 4. RESPECT the bug's Out-of-Scope absolutely. If the bug says "don't change the
    multiplier's value, position, or colour — only its size", you touch ONLY the size
    assertion and leave value/position/colour assertions exactly as they are.
@@ -79,37 +109,54 @@ For a CLEAR, unambiguous consequence of the bug's stated intent (e.g. "shrink th
 update the X's size assertion), just MAKE the edit. Do NOT ask — that is the routine
 case and the captain does not want to be interrupted for it.
 
-### Worked example — the ⅓-of-digit-height case (DO compute, do NOT guess)
+### Worked example — the ⅓-of-digit-height case (anchor on OBSERVED output)
 
-The parent's locked test sets up a mock and asserts the multiplier's `×` font size:
+The parent's locked test renders the HUD into a RECORDING canvas context that captures
+every `drawImage` call, then asserts the multiplier's `×` font size:
 
 ```js
-const digitDisplayH = 16.2;            // the test's own mock digit height
-// ... render the HUD with that mock ...
+const ctx = recordingContext();        // captures drawImage / font / fillText calls
+renderHUD(ctx, { /* ... sprites, score ... */ });
 assert.strictEqual(ctx.font, 'bold 32px Arial, sans-serif');  // OLD: too large
 ```
 
-The bug's intent: "the × is too large — size it to one-third the digit height." This is
-a RELATIONSHIP (⅓ of `digitDisplayH`), not an absolute value.
+The bug's intent: "the × is too large — size it to one-third the DIGIT HEIGHT." This is
+a RELATIONSHIP (⅓ of the digit's height), not an absolute value — decision order (2)/(3).
 
-❌ WRONG — guessing a literal. The implementation does not exist yet, so any number is
-a coin-flip. If the implementer writes `xFontPx = digitDisplayH/3`, the real value is
-`16.2/3 = 5.4`, NOT 12 — your guess still contradicts the code and the test still fails:
+❌ WRONG — guessing a literal. The implementation does not exist yet, so any number is a
+coin-flip:
 
 ```js
 assert.strictEqual(ctx.font, 'bold 12px Arial, sans-serif');  // guessed — WRONG
 ```
 
-✅ RIGHT — compute the relationship from the test's OWN setup value, so the assertion
-agrees with whatever the implementer derives from the SAME relationship:
+❌ ALSO WRONG — computing from a static INPUT constant (the native sprite size). The
+digit sprite's native height is `SPRITE_SIZES['1'][1]` = 36, so `36/3` = 12. But the
+code draws the digit at `36 * scale` (a resolution scale you cannot see here), so the
+DRAWN digit is e.g. 16.2px and the real × is `16.2/3 = 5.4` — your 12 still contradicts
+the code (7/8 green). The input ignores the transform the code applies:
 
 ```js
-assert.strictEqual(ctx.font, 'bold ' + (digitDisplayH / 3) + 'px Arial, sans-serif');
+assert.strictEqual(ctx.font, 'bold ' + (SPRITE_SIZES['1'][1] / 3) + 'px ...');  // WRONG
 ```
 
-Use whatever the test already calls its digit height (here `digitDisplayH`); do not
-introduce a new value or hardcode the arithmetic's result. Leave the `Arial, sans-serif`
-suffix and everything else the bug does not change exactly as it was.
+✅ RIGHT — anchor on the OBSERVED output: read the digit sprite's ACTUAL drawn height
+from the recording context's digit `drawImage` call, then divide by 3. Whatever scale or
+transform the implementation applies is already baked into the drawn height, so this is
+correct by construction:
+
+```js
+// the recorded drawImage call for the score digit: drawImage(img, dx, dy, dWidth, dHeight)
+const digitDraw = ctx.calls.find(c => c.fn === 'drawImage' && c.args[0] === digitSprite);
+const observedDigitHeight = digitDraw.args[4];   // dHeight as the code actually drew it
+assert.strictEqual(ctx.font, 'bold ' + (observedDigitHeight / 3) + 'px Arial, sans-serif');
+```
+
+Adapt the capture access to however THIS test records draws (call log, spy, mock fields).
+If the digit height is genuinely NOT observable in the test's output and only a static
+input is available, fall back to decision order (3): compute from the input AND flag the
+fragility in your `result.json` change note. Leave the `Arial, sans-serif` suffix and
+everything else the bug does not change exactly as it was.
 
 DEFER to the human (do NOT guess, do NOT edit) when EITHER:
 - (a) reconciling correctly would require going BEYOND the parent Mission's test suite —
