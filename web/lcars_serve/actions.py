@@ -931,6 +931,30 @@ class Actions(object):
                 % decision)
         return self._mission_state(mid)
 
+    def reapprove(self, mid):
+        """POST /api/mission/<id>/reapprove — the BUG-067 reapprove gate.
+
+        After a merge self-heal converges green the engine STOPS at an
+        awaiting-reapprove gate (SHARED CONTRACT: reconcileStatus ==
+        "awaiting-reapprove") instead of auto-merging — the human reviews the
+        reconcileNote and clicks Reapprove, which dispatches the engine's
+        MERGE-ONLY path. The engine exposes that as `approve.sh --reapprove`: it
+        merges the already-reconciled tip WITHOUT re-running the reconcile/heal.
+
+        Dispatched FIRE-AND-FORGET (the same _spawn the approve / Merge click
+        uses, BUG-040) so the HTTP request returns promptly and its output is
+        captured per BUG-051; the board/SSE then reflects done (or, if the merge
+        itself fails, the merge-failed outcome — surfaced, not silent). The
+        mission's persisted engine ($LCARS_WORKER_BIN) is threaded so the
+        merge-only path runs on the right CLI (mirrors start()/the approve branch).
+        """
+        self._require_mission(mid)
+        engine = self._persisted_worker_bin(mid)
+        env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+        self._spawn("approve", ["--mission", mid, "--reapprove"],
+                    env_extra=env_extra)
+        return self._mission_state(mid)
+
     def log_preview(self, mid, text=None):
         """POST /api/mission/<id>/log — preview the N child bug missions.
 

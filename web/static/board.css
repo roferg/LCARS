@@ -211,6 +211,17 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 /* S76 — the main-ahead reconcile note on a verify card (no PR yet). */
 .card .reconcile-status{color:var(--lcars-amber);font-family:var(--font-display);
   letter-spacing:.08em;margin-top:7px;font-size:10px}
+/* BUG-067 — the heal converged / escalated "needs you" call reads red (an
+   awaiting human gate, like .card.awaiting); the merge-failed outcome reads red
+   + bold (an attention/error state, never silence). */
+.card .reconcile-status.escalated{color:#ff8a96}
+.card .reconcile-status.failed{color:#ff8a96;font-weight:700}
+/* BUG-067 — the persisted human-readable reconcile summary (reconcileNote): the
+   green re-test count for a reapprove gate, or the failure reason for
+   merge-failed. Quieter than the status line, wraps so a multi-line summary
+   stays readable on the card. This is the field that was never surfaced before. */
+.card .reconcile-detail{color:var(--lcars-text);font-size:10px;margin-top:3px;
+  line-height:1.35;opacity:.92}
 /* the RESUME / Pausing button on a paused card keeps full prominence (UX-22). */
 .card.paused .card-ctrl{opacity:1}
 /* BUG-025: a child/bug card used to indent with `margin-left:14px`, which

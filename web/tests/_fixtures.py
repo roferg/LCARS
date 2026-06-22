@@ -83,6 +83,7 @@ def plant_simple(root, mid, *, stage="align", issue=142,
                  parent_mission=None, parent_issue=None, mtype="feature",
                  pr_url=None, pr_number=None, review=None,
                  reconcile_status=None, reconcile_diagnosis=None,
+                 reconcile_note=None, reconcile_merge_sha=None,
                  awaiting_human=None, pending_question=None):
     """A plain mission sitting in `stage`, no gate, no tickets.
 
@@ -132,6 +133,13 @@ def plant_simple(root, mid, *, stage="align", issue=142,
     # state.json valid JSON so the adapter does not drop the mission.
     if reconcile_diagnosis is not None:
         state["reconcileDiagnosis"] = reconcile_diagnosis
+    # BUG-067 SHARED CONTRACT: the human-readable reconcile summary the card shows
+    # (e.g. "Reconciled main … re-tested green (8/8). Reapprove to merge.") and the
+    # reconciled tip sha.
+    if reconcile_note is not None:
+        state["reconcileNote"] = reconcile_note
+    if reconcile_merge_sha is not None:
+        state["reconcileMergeSha"] = reconcile_merge_sha
     if awaiting_human is not None:
         state["awaitingHuman"] = awaiting_human
     if pending_question is not None:

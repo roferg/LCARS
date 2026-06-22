@@ -277,6 +277,24 @@ class LocalAdapter(object):
         if not (isinstance(reconcile_status, str) and reconcile_status.strip()):
             reconcile_status = None
 
+        # BUG-067 SHARED CONTRACT: alongside reconcileStatus the engine persists
+        # `reconcileNote` (a human-readable summary to show on the card — e.g.
+        # "Reconciled main … re-tested green (8/8). Reapprove to merge." or the
+        # merge-failed reason) and `reconcileMergeSha` (the reconciled tip). The
+        # new statuses `awaiting-reapprove` (heal converged, awaiting the human's
+        # reapprove) and `merge-failed` (push/merge failed — surfaced, not silent)
+        # pass through verbatim on reconcileStatus above. Surface both note/sha so
+        # the card/detail can render the gate + the merge-failed outcome with the
+        # exact summary; absent ⇒ None (present, non-crashing). The github adapter
+        # forces None (ADR-006: a read-only forge view can't see this).
+        reconcile_note = state.get("reconcileNote")
+        if not (isinstance(reconcile_note, str) and reconcile_note.strip()):
+            reconcile_note = None
+        reconcile_merge_sha = state.get("reconcileMergeSha")
+        if not (isinstance(reconcile_merge_sha, str)
+                and reconcile_merge_sha.strip()):
+            reconcile_merge_sha = None
+
         return {
             "id": mid,
             "issue": issue,
@@ -317,6 +335,11 @@ class LocalAdapter(object):
             "review": review,
             # S76: the main-ahead reconcile sub-state (None when not reconciling).
             "reconcileStatus": reconcile_status,
+            # BUG-067: the human-readable reconcile summary + the reconciled tip
+            # sha, surfaced so the board can render the awaiting-reapprove gate and
+            # the merge-failed outcome with the exact note (None when absent).
+            "reconcileNote": reconcile_note,
+            "reconcileMergeSha": reconcile_merge_sha,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,

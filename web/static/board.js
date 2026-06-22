@@ -169,10 +169,18 @@ function isMerging(id) {
    cleared in runState once m.running flips true. Call from cardControls render. */
 function clearMergingOnState(m) {
   if (!m || m.id == null || !isMerging(m.id)) return;
-  if (m.reconcileStatus || m.awaiting
-      || (m.stage || "").toLowerCase() !== "verify") {
-    clearMerging(m.id);
-  }
+  // BUG-067: the reapprove gate ITSELF carries reconcileStatus==awaiting-reapprove
+  // (a truthy reconcileStatus) at click time, so we must NOT clear the optimistic
+  // merging flag merely because reconcileStatus is set — that would re-arm the
+  // Reapprove button before the merge even ran. Clear only once the state has
+  // genuinely MOVED past the merge: the mission left verify (→ done), a fresh
+  // in-flight heal sub-state began (merging/retesting/resolving/healing), it
+  // escalated to a design call, or the merge surfaced as failed.
+  var rs = m.reconcileStatus;
+  var moved = (m.stage || "").toLowerCase() !== "verify"
+    || rs === "merging" || rs === "retesting" || rs === "resolving"
+    || rs === "healing" || rs === "escalated" || rs === "merge-failed";
+  if (moved) clearMerging(m.id);
 }
 
 /* UX-17/UX-20/UX-21: the single source of truth for a mission's run/pause
@@ -340,9 +348,24 @@ function cardNode(m) {
   // reconcileStatus (NO !m.prUrl gate), so the card reads as actively healing
   // (or awaiting a design call when escalated). No `lcars …` CLI text (UX-33).
   if (m.stage === "verify" && m.reconcileStatus) {
-    var rclass = m.reconcileStatus === "escalated"
-      ? "no reconcile-status escalated" : "no reconcile-status healing";
-    card.appendChild(el("div", rclass, reconcileNote(m.reconcileStatus)));
+    // BUG-067: pick the chrome by sub-state — a merge-failed outcome reads as an
+    // ERROR (attention), the awaiting-reapprove / escalated gates as a persistent
+    // "needs you" call, the in-flight sub-states (merging/retesting/resolving/
+    // healing) as a calm "self-healing…" progress note.
+    var rs2 = m.reconcileStatus;
+    var rclass = rs2 === "merge-failed"
+        ? "no reconcile-status failed"
+      : (rs2 === "escalated" || rs2 === "awaiting-reapprove")
+        ? "no reconcile-status escalated"
+        : "no reconcile-status healing";
+    card.appendChild(el("div", rclass, reconcileNote(rs2)));
+    // BUG-067: when the engine persisted a human-readable summary (reconcileNote),
+    // show it verbatim under the status line so the captain reads WHY (the green
+    // re-test count for a reapprove gate, or the failure reason for merge-failed)
+    // — the field that was never surfaced before (the silent revert bug).
+    if (m.reconcileNote) {
+      card.appendChild(el("div", "reconcile-detail", m.reconcileNote));
+    }
   }
 
   if (m.progress) {
@@ -381,6 +404,27 @@ function cardNode(m) {
    gets a themed client-side pulse so a long silent stage never reads as stuck. */
 function cardControls(m) {
   var ctrl = el("div", "card-ctrl");
+  // BUG-067: the reapprove gate. The heal converged green and the engine STOPPED
+  // here (awaiting-human, reconcileStatus == awaiting-reapprove) instead of
+  // auto-merging. Render a CLEAR, PERSISTENT "Reapprove ▸" action so the captain
+  // ships the reconciled, re-tested tip — checked BEFORE the generic awaiting
+  // branch (which would mislabel it "Answer ▸" and open the respond dialog).
+  if (isReconcileAwaitingReapprove(m)) {
+    ctrl.appendChild(applyWriteState(btn("✓ Reapprove ▸", "go", function () {
+      doReapprove(m.id, ctrl);
+    })));
+    return ctrl;
+  }
+  // BUG-067: the merge FAILED (push/merge rejected — surfaced, not silent). It is
+  // an attention state, not a routine gate: offer a retry of the merge-only path
+  // (Reapprove) so the captain can re-attempt after fixing the cause, styled as a
+  // danger/attention affordance carrying the reason (reconcileNote, on the card).
+  if (isReconcileMergeFailed(m)) {
+    ctrl.appendChild(applyWriteState(btn("↻ Retry merge ▸", "danger", function () {
+      doReapprove(m.id, ctrl);
+    })));
+    return ctrl;
+  }
   if (m.awaiting) {
     // BUG-042: an escalated reconcile is an awaiting-human DESIGN CALL, not a
     // "Review PR". Label its action so it reads as a design decision (the dialog
@@ -1694,7 +1738,17 @@ function renderDetail(mi) {
     actions.appendChild(gh);
   }
   var mrs = runState(mi); // mirror the card's derived lifecycle (UX-17/20/21).
-  if (mi.awaiting) {
+  // BUG-067: the reapprove / merge-failed gates carry awaiting=true but are NOT a
+  // generic "Answer ▸" respond gate — they ship via the merge-only Reapprove
+  // path. Intercept them BEFORE the awaiting branch so the header offers the
+  // right action (and clears the optimistic merge flag once state moves).
+  if (isReconcileAwaitingReapprove(mi) || isReconcileMergeFailed(mi)) {
+    clearMergingOnState(mi);
+    var raff = verifyAffordance(mi);
+    actions.appendChild(applyWriteState(btn(raff.label, raff.cls, function () {
+      doReapprove(mi.id); closeOverlay();
+    })));
+  } else if (mi.awaiting) {
     actions.appendChild(applyWriteState(btn("Answer ▸", "danger", function () { openRespond(mi.id); })));
   } else if (mi.stage === "verify") {
     // BUG-049: the header verify action must gate IDENTICALLY to the card — a
@@ -2426,6 +2480,16 @@ function stageLabel(stage) {
    wire their own click handlers / dispatch styles). */
 function verifyAffordance(m) {
   if (!m) return null;
+  // BUG-067: the heal converged → reapprove gate. A merge-only Reapprove action,
+  // NOT a "Review PR" (the PR is already reconciled + re-tested green).
+  if (isReconcileAwaitingReapprove(m)) {
+    return { kind: "reapprove", label: "✓ Reapprove ▸", cls: "go" };
+  }
+  // BUG-067: the merge FAILED — an attention state offering a retry of the
+  // merge-only path (NOT silence, NOT a routine "Review PR").
+  if (isReconcileMergeFailed(m)) {
+    return { kind: "merge-failed", label: "↻ Retry merge ▸", cls: "danger" };
+  }
   if (isReconcileEscalated(m)) {
     return { kind: "escalated", label: "◆ Make the call ▸", cls: "danger" };
   }
@@ -2453,14 +2517,16 @@ function verifyAffordance(m) {
   };
 }
 
-/* BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — merging the base in,
-   re-testing the merged branch, or self-healing. While this is true the Merge
-   action must be SUPPRESSED (no merge possible mid-heal). escalated is NOT
-   in-flight (it's a human gate) — see isReconcileEscalated. */
+/* BUG-039 / BUG-067: a self-heal (merge/reconcile) is IN FLIGHT — merging the
+   base in, re-testing the merged branch, resolving a conflict, or self-healing.
+   While this is true the Merge action must be SUPPRESSED (no merge possible
+   mid-heal). escalated / awaiting-reapprove / merge-failed are NOT in-flight
+   (each is a human-facing terminal-of-the-heal state) — handled separately. */
 function isReconcileHealing(m) {
   if (!m || m.stage !== "verify") return false;
   var rs = m.reconcileStatus;
-  return rs === "merging" || rs === "retesting" || rs === "healing";
+  return rs === "merging" || rs === "retesting" || rs === "resolving"
+      || rs === "healing";
 }
 
 /* BUG-042: the reconcile raised an awaiting-human DESIGN QUESTION (a
@@ -2470,11 +2536,33 @@ function isReconcileEscalated(m) {
   return !!(m && m.stage === "verify" && m.reconcileStatus === "escalated");
 }
 
+/* BUG-067: the merge self-heal CONVERGED green and the engine STOPPED at the
+   reapprove gate (it no longer auto-merges). The mission is awaiting-human with
+   reconcileStatus === "awaiting-reapprove" — the board renders a persistent gate
+   with a Reapprove action (NOT a transient flash, NOT a silent revert to verify). */
+function isReconcileAwaitingReapprove(m) {
+  return !!(m && m.stage === "verify"
+            && m.reconcileStatus === "awaiting-reapprove");
+}
+
+/* BUG-067: the push/merge FAILED (e.g. non-fast-forward, checks, auth). The
+   engine surfaces it as reconcileStatus === "merge-failed" with the reason in
+   reconcileNote — the board renders this distinctly as an error/attention state
+   (NOT silence; today this outcome vanished and the card reverted to verify). */
+function isReconcileMergeFailed(m) {
+  return !!(m && m.stage === "verify" && m.reconcileStatus === "merge-failed");
+}
+
 function reconcileNote(status) {
   switch (status) {
     case "merging":   return "◐ reconciling with main — merging the updated base in";
     case "retesting": return "◐ re-verifying the merged branch against main";
+    case "resolving": return "◐ reconciling — resolving the merge conflict";
     case "healing":   return "◐ reconciling — self-healing the merge to green";
+    case "awaiting-reapprove":
+      return "● reconciled & green — reapprove to merge";
+    case "merge-failed":
+      return "✖ merge failed — needs you";
     case "escalated": return "● reconcile needs you — couldn't auto-heal against main";
     default:          return "◐ reconciling with main";
   }
@@ -2526,6 +2614,24 @@ function dispatchCardBusy(id, path, payload, host, label) {
     function (msg) { setStatus(msg); refresh(); });
 }
 
+/* BUG-067 / BUG-065: dispatch the Reapprove (merge-only) path. The engine runs
+   the merge fire-and-forget server-side, so this returns promptly. We apply the
+   OPTIMISTIC merging busy-state immediately (markMerging + showCardBusy) so the
+   card flips to "merging…" without a manual refresh (BUG-065), then rely on the
+   board/SSE to land the real outcome (done, or the merge-failed attention state).
+   On a dispatch error we clear the optimistic flag so the card re-arms. */
+function doReapprove(id, host) {
+  markMerging(id);
+  if (host) {
+    var busy = workingNode("Merging the reconciled tip…");
+    busy.className += " lcars-running";
+    host.innerHTML = ""; host.appendChild(busy);
+  }
+  postWrite("/api/mission/" + enc(id) + "/reapprove", {},
+    function () { /* board/SSE refresh shows the merge outcome */ },
+    function (msg) { clearMerging(id); setStatus(msg); refresh(); });
+}
+
 function addPills(host, pills) {
   if (!pills) return;
   var c = pillNode(pills.cost, "cost"); if (c) host.appendChild(c);
@@ -2574,8 +2680,25 @@ function fetchMission(id, cb) {
 }
 
 /* ════════════════ live channel ════════════════ */
+/* BUG-065: keep the board live WITHOUT a manual page refresh after a write action
+   (Go / Merge / Reapprove) AND as a reconcile sub-state advances. Two paths back
+   each other up:
+     1. SSE (/api/events) pushes one `update` per SETTLED state change — but it
+        debounces behind a quiet window, so a churning, multi-step reconcile/heal
+        (state.json rewritten merging→retesting→…→awaiting-reapprove) only emits
+        ONCE writes stop. That left the board frozen mid-heal (the bug: transient
+        states flashed by / the failed outcome was never surfaced).
+     2. A lightweight SAFETY POLL re-fetches the board on a steady interval so the
+        evolving sub-states (and the write actions' own fire-and-forget effects,
+        which land asynchronously after the POST returns) appear live regardless.
+   The poll is cheap (one /api/board GET) and idempotent with the SSE — whichever
+   observes the change first re-renders; the other is a no-op re-render. */
+var LIVE_POLL_MS = 4000;
 function connect() {
   var conn = document.getElementById("conn");
+  // The safety poll runs ALWAYS (independent of SSE health) so a debounced or
+  // dropped SSE never leaves the board stale during a reconcile.
+  setInterval(refresh, LIVE_POLL_MS);
   try {
     var es = new EventSource("/api/events");
     es.addEventListener("update", function () { refresh(); });
@@ -2584,7 +2707,7 @@ function connect() {
       conn.className = "conn stale"; conn.textContent = "○ RECONNECTING";
     };
   } catch (e) {
-    setInterval(refresh, 5000);
+    /* no EventSource — the safety poll above is the sole live path. */
   }
 }
 

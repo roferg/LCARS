@@ -386,6 +386,38 @@ class VerifyRoutingTest(WriteEndpointBase):
         # approve stub must NOT have been invoked
         self.assertTrue(self._not_invoked("approve"))
 
+    def test_reapprove_dispatches_approve_reapprove(self):
+        """BUG-067: the Reapprove gate (heal converged → awaiting-reapprove) must
+        dispatch the engine's MERGE-ONLY reapprove path — approve.sh --reapprove —
+        fire-and-forget (per BUG-051 capture). Assert the spawn argv."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        reconcile_status="awaiting-reapprove",
+                        awaiting_human=True,
+                        reconcile_note="re-tested green (8/8). Reapprove to merge.")
+        status, body = self._post("/api/mission/m-001/reapprove")
+        self.assertEqual(status, 200)
+        rec = self._record_when("approve", "m-001")
+        self.assertIn("--mission m-001", rec)
+        self.assertIn("--reapprove", rec)
+        # never the send-back path.
+        self.assertTrue(self._not_invoked("feedback"))
+
+    def test_reapprove_threads_persisted_engine(self):
+        """The reapprove spawn inherits the mission's persisted engine
+        ($LCARS_WORKER_BIN) so the merge-only path runs on the right CLI."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        reconcile_status="awaiting-reapprove",
+                        awaiting_human=True, worker_bin="copilot")
+        status, _ = self._post("/api/mission/m-001/reapprove")
+        self.assertEqual(status, 200)
+        rec = self._record_when("approve", "m-001")
+        self.assertIn("ENV_WORKER_BIN: copilot", rec)
+
+    def test_reapprove_unknown_mission_is_404(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post("/api/mission/nope/reapprove")
+        self.assertEqual(cm.exception.code, 404)
+
     def test_verify_send_back_requires_feedback(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self._post("/api/mission/m-001/verify", {"decision": "send-back"})

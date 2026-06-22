@@ -23,6 +23,7 @@ with 403. Each write shells out to the matching `lcars` skill (ADR-002):
   POST /api/mission/<id>/resume          resume                  → pause.sh
   POST /api/mission/<id>/respond         answer a gate           → respond.sh
   POST /api/mission/<id>/verify          approve | send-back     → approve|feedback.sh
+  POST /api/mission/<id>/reapprove       merge-only after a heal → approve.sh --reapprove
   POST /api/mission/<id>/log             preview/author child bugs→ worker | (read)
   POST /api/mission/<id>/log/file        file logged bugs (+estimate), return review → log.sh
   POST /api/mission/<id>/log/run         drive ALREADY-FILED logged bugs (the
@@ -185,6 +186,8 @@ def _build_handler(adapter, poll_interval, actions=None):
             if verb == "verify":
                 return actions.verify(mid, decision=body.get("decision"),
                                       feedback=body.get("feedback"))
+            if verb == "reapprove":
+                return actions.reapprove(mid)
             if verb == "log":
                 return actions.log_preview(mid, text=body.get("text"))
             if verb == "log/file":

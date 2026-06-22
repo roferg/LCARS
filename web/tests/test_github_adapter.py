@@ -119,6 +119,12 @@ class GitHubAdapterTest(unittest.TestCase):
         # state.json the github read-path can't see; ADR-006).
         self.assertIn("reconcileStatus", m)
         self.assertIsNone(m["reconcileStatus"])
+        # BUG-067: reconcileNote / reconcileMergeSha are adapter-neutral too —
+        # present and None on the github read-path (live in the local state.json).
+        self.assertIn("reconcileNote", m)
+        self.assertIsNone(m["reconcileNote"])
+        self.assertIn("reconcileMergeSha", m)
+        self.assertIsNone(m["reconcileMergeSha"])
 
     def test_mission_placed_by_stage_label(self):
         board = self._board()

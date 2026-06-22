@@ -173,6 +173,11 @@ class GitHubAdapter(object):
             # state.json (reconcileStatus), which the github adapter cannot see —
             # adapter-neutral read-path: None here (ADR-006).
             "reconcileStatus": None,
+            # BUG-067: reconcileNote (the card summary) + reconcileMergeSha (the
+            # reconciled tip) likewise live in the LOCAL state.json the github
+            # read-path can't see — present and None (ADR-006 adapter-neutral).
+            "reconcileNote": None,
+            "reconcileMergeSha": None,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,

@@ -340,6 +340,54 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertIn("reconcileStatus", m)
         self.assertIsNone(m["reconcileStatus"])
 
+    def test_reconcile_new_statuses_surfaced(self):
+        """BUG-067 SHARED CONTRACT: the two NEW reconcileStatus values —
+        awaiting-reapprove (heal converged, awaiting the human's reapprove) and
+        merge-failed (push/merge failed, surfaced not silent) — pass through
+        verbatim so the board can render the gate + the merge-failed outcome."""
+        for st in ("awaiting-reapprove", "merge-failed"):
+            fx.plant_simple(self.tmp, "m-new-%s" % st, stage="verify",
+                            reconcile_status=st, awaiting_human=True,
+                            reconcile_note="some human-readable summary")
+            m = self._by_id(self._board(), "m-new-%s" % st)
+            self.assertEqual(m["reconcileStatus"], st)
+            self.assertTrue(m["awaiting"])
+
+    def test_reconcile_note_and_merge_sha_surfaced(self):
+        """BUG-067: reconcileNote (the card summary) and reconcileMergeSha (the
+        reconciled tip) are exposed on the card shape so the gate/merge-failed
+        renderer can show the summary + sha verbatim."""
+        note = ("Reconciled main into the branch (abc1234) and re-tested green "
+                "(8/8). Reapprove to merge.")
+        fx.plant_simple(self.tmp, "m-rn", stage="verify",
+                        reconcile_status="awaiting-reapprove",
+                        awaiting_human=True, reconcile_note=note,
+                        reconcile_merge_sha="abc1234")
+        m = self._by_id(self._board(), "m-rn")
+        self.assertEqual(m["reconcileNote"], note)
+        self.assertEqual(m["reconcileMergeSha"], "abc1234")
+
+    def test_reconcile_note_and_merge_sha_none_when_absent(self):
+        """Both fields are always present (non-crashing) and None when not set."""
+        fx.plant_simple(self.tmp, "m-nonote", stage="implement")
+        m = self._by_id(self._board(), "m-nonote")
+        self.assertIn("reconcileNote", m)
+        self.assertIsNone(m["reconcileNote"])
+        self.assertIn("reconcileMergeSha", m)
+        self.assertIsNone(m["reconcileMergeSha"])
+
+    def test_merge_failed_surfaced_on_detail_too(self):
+        """BUG-067: the merge-failed outcome + its note ride the detail endpoint
+        (not just the board) so the modal can render the error state."""
+        fx.plant_simple(self.tmp, "m-mf", stage="verify",
+                        reconcile_status="merge-failed", awaiting_human=True,
+                        reconcile_note="push rejected: non-fast-forward")
+        detail = LocalAdapter(self.tmp).mission("m-mf")
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["reconcileStatus"], "merge-failed")
+        self.assertEqual(detail["reconcileNote"],
+                         "push rejected: non-fast-forward")
+
     def test_reconciling_mission_with_multiline_diagnosis_not_dropped(self):
         """S76 DEFECT regression: reconcile_gate writes a MULTI-LINE failure
         summary into reconcileDiagnosis. With the FIXED json_escape this stays
