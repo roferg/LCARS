@@ -2856,22 +2856,44 @@ $MISSION_DIR" \
     # originally-conflicted file means the worker did not finish; retry (or fall
     # through after the cap). This never relies on --diff-filter=U post-edit.
     ( cd "$wt" && "$GIT_BIN" add -A >/dev/null 2>&1 ) || :
-    local markers=0 mf
+    local markers=0 mf marker_files=""
     while IFS= read -r mf; do
       [ -n "$mf" ] || continue
-      grep -Eq '^(<<<<<<< |={7}$|>>>>>>> )' "$wt/$mf" 2>/dev/null && markers=1
+      if grep -Eq '^(<<<<<<< |={7}$|>>>>>>> )' "$wt/$mf" 2>/dev/null; then
+        markers=1
+        marker_files="${marker_files:+$marker_files }$mf"
+      fi
     done <<EOF
 $conflicted_now
 EOF
     if [ "$markers" -ne 0 ]; then
+      # DURABLE WHY (BUG-057 / BUG-051 parity): the worker ran but did NOT finish —
+      # conflict markers REMAIN in $marker_files. Record it before retrying so the
+      # cause is not ephemeral. Purely additive; the `continue` below is unchanged.
+      reconcile_resolve_record "$tries" "markers-remain in $marker_files" \
+        "Conflict markers (<<<<<<< / ======= / >>>>>>>) still present after the resolve worker ran in: $marker_files"
       continue   # markers remain — retry (or fall through after the cap)
     fi
 
     # Markers gone (and staged) → re-test the resolved worktree.
     local green=1
+    local red_suites="" red_tail=""
     if [ -n "$cmd" ] && [ -n "$ordered" ]; then
       local cap; cap="$(mktemp -d)"
       RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" $ordered || green=0
+      if [ "$green" -ne 1 ]; then
+        # Capture WHICH suite(s) went red + the tail of each captured log BEFORE the
+        # capture dir is removed (BUG-057). RETEST_FAILED holds the failing ticket ids.
+        red_suites="$RETEST_FAILED"
+        local rid
+        for rid in $RETEST_FAILED; do
+          if [ -s "$cap/$rid.log" ]; then
+            red_tail="$red_tail
+--- suite $rid (last ~40 lines) ---
+$(tail -n 40 "$cap/$rid.log" 2>/dev/null)"
+          fi
+        done
+      fi
       rm -rf "$cap"
     fi
     if [ "$green" -eq 1 ]; then
@@ -2881,9 +2903,31 @@ EOF
       emit_event reconcile_resolved verify "textual conflict resolved + re-test green — keeping the merge"
       return 0   # converged
     fi
+    # DURABLE WHY (BUG-057): markers were cleared but the re-test stayed RED. Record
+    # the red suite name(s) + their output tail before retrying. Purely additive.
+    reconcile_resolve_record "$tries" "retest red — suite(s): ${red_suites:-unknown}" \
+      "Markers cleared but re-test RED.
+Failing suite(s): ${red_suites:-unknown}${red_tail}"
     # Resolved but red — let the worker try again (a cleaner composition) up to the cap.
   done
   return 1   # could not resolve+green within the cap → caller takes the RED path
+}
+
+# DURABLE instrumentation for the in-worktree resolve path (BUG-057, BUG-051 parity):
+# append a timestamped, attempt-scoped record to $MISSION_DIR/reconcile-resolve.log
+# (append, never overwrite) AND emit a reconcile_resolve_failed event with a short,
+# NON-generic reason, on EACH failed resolve attempt. Purely additive — changes no
+# control flow / outcome; it only ensures the cause is not silently discarded.
+reconcile_resolve_record() { # attempt  short-reason  detail-block
+  local attempt="$1" reason="$2" detail="$3"
+  [ -n "${MISSION_DIR:-}" ] && {
+    printf '%s\tattempt=%s\treason=%s\n%s\n----8<----\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" \
+      "$attempt" "$reason" "$detail" \
+      >>"$MISSION_DIR/reconcile-resolve.log" 2>/dev/null || :
+  }
+  emit_event reconcile_resolve_failed verify \
+    "resolve attempt $attempt failed: $reason" "attempt=$attempt"
 }
 
 reconcile_author_and_dispatch() { # failure-summary  affected-block

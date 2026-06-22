@@ -144,6 +144,9 @@ fi
 # UNLESS STUB_RESOLVE_RED is set, in which case it removes the markers but writes
 # content the green suite cannot accept (simulating a resolution that stays red).
 if [ "${LCARS_WORKER_ROLE:-}" = "reconcile-resolve" ]; then
+  # STUB_RESOLVE_NOOP: the worker "ran" but did NOT finish — leave the conflict
+  # markers in place (simulates an incomplete resolution, a prime live suspect).
+  if [ -n "${STUB_RESOLVE_NOOP:-}" ]; then exit 0; fi
   prompt=""; prev=""
   for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done
   # Pull every "- <abs path>" line under the worktree from the prompt.
@@ -324,6 +327,7 @@ run_in() { # repo  subcommand-and-args…
          STUB_DESIGN_QUESTION_TEXT="${STUB_DESIGN_QUESTION_TEXT:-}" \
          STUB_FORCED_DESIGN_QUESTION_TEXT="${STUB_FORCED_DESIGN_QUESTION_TEXT:-}" \
          STUB_RESOLVE_RED="${STUB_RESOLVE_RED:-}" \
+         STUB_RESOLVE_NOOP="${STUB_RESOLVE_NOOP:-}" \
          STUB_RESOLVE_FAIL="${STUB_RESOLVE_FAIL:-}" \
          LCARS_GH_BIN="$a/gh" LCARS_GIT_BIN="git" \
          LCARS_HOST_ADAPTER="$HOST_ADAPTER" \
@@ -540,6 +544,61 @@ check "B56c. a never-green textual resolution never opens a PR" \
   "! grep -q 'pr create' '$b56c.aux/gh.log'"
 check "B56c. live tree clean after the never-green resolution" \
   "[ -z \"\$(cd '$b56c' && git status --porcelain)\" ]"
+
+# --- BUG-057: a non-green in-worktree RESOLVE records WHY, durably (BUG-051 parity) --
+# In LIVE runs the cold resolve worker keeps falling through to the heal loop, but
+# the reason is invisible (the worktree + retest output are ephemeral). The resolve
+# path must append a timestamped record to $MISSION_DIR/reconcile-resolve.log on each
+# attempt — capturing whether conflict markers REMAIN and/or which ticket suite went
+# RED with its output tail — AND emit a reconcile_resolve_failed event carrying a
+# NON-generic reason. Purely additive: outcomes (3b/B56c) are unchanged.
+#
+# B57a — the resolution is MARKER-FREE but the retest stays RED (STUB_RESOLVE_RED +
+# the needs-resolved suite): the log must name the RED suite (t-001) and carry its
+# output tail; the event reason must name the red suite, not a bare "failed".
+b57="$(mktemp -d "$TMPROOT/b57.XXXX")"; new_repo_verify "$b57" >/dev/null; setup_stubs "$b57"
+stage_ticket_suite "$b57" needs-resolved
+advance_base "$b57" conflict
+STUB_RESOLVE_RED=1 run_in "$b57" reconcile --mission "$MID" >"$b57.aux/out.txt" 2>&1 || true
+rl57="$(mdir_of "$b57")/reconcile-resolve.log"
+ev57="$(mdir_of "$b57")/events.jsonl"
+check "B57a. reconcile-resolve.log is written on a non-green resolve attempt" \
+  "[ -s '$rl57' ]"
+check "B57a. reconcile-resolve.log names the RED ticket suite (non-generic)" \
+  "grep -q 't-001' '$rl57'"
+check "B57a. reconcile-resolve.log carries the failing suite's output tail" \
+  "grep -Eqi 'red|fail|retest|suite' '$rl57'"
+check "B57a. reconcile-resolve.log records the attempt number" \
+  "grep -Eqi 'attempt' '$rl57'"
+check "B57a. a reconcile_resolve_failed event is emitted" \
+  "grep -q '\"type\":\"reconcile_resolve_failed\"' '$ev57'"
+check "B57a. the reconcile_resolve_failed event carries a NON-generic reason (names the red suite)" \
+  "grep '\"type\":\"reconcile_resolve_failed\"' '$ev57' | grep -Eq 't-001|suite|red'"
+check "B57a. additive only: the still-red resolve STILL falls through to the heal/log" \
+  "grep -q '^LOG' '$b57.aux/log.log'"
+check "B57a. additive only: still no PR on a non-green resolve" \
+  "! grep -q 'pr create' '$b57.aux/gh.log'"
+
+# B57b — the resolution leaves conflict MARKERS in place (the worker did not finish):
+# the log must record that markers REMAIN in the conflicted file, and the event reason
+# must say markers-remain. Simulate a worker that does NOT clear the markers by
+# pointing $LCARS_WORKER_BIN at a no-op stub for the resolve role only is awkward;
+# instead use a worker stub variant that leaves the markers. We reuse the existing
+# stub but with STUB_RESOLVE_NOOP to make it a no-op (markers untouched).
+b57b="$(mktemp -d "$TMPROOT/b57b.XXXX")"; new_repo_verify "$b57b" >/dev/null; setup_stubs "$b57b"
+stage_ticket_suite "$b57b" needs-resolved
+advance_base "$b57b" conflict
+STUB_RESOLVE_NOOP=1 run_in "$b57b" reconcile --mission "$MID" >"$b57b.aux/out.txt" 2>&1 || true
+rl57b="$(mdir_of "$b57b")/reconcile-resolve.log"
+ev57b="$(mdir_of "$b57b")/events.jsonl"
+check "B57b. reconcile-resolve.log records that conflict MARKERS REMAIN" \
+  "grep -Eqi 'marker' '$rl57b'"
+check "B57b. reconcile-resolve.log names the file that still has markers" \
+  "grep -q 'shared.txt' '$rl57b'"
+check "B57b. the reconcile_resolve_failed event reason says markers-remain" \
+  "grep '\"type\":\"reconcile_resolve_failed\"' '$ev57b' | grep -Eqi 'marker'"
+check "B57b. additive only: markers-remain still falls through to the heal/log" \
+  "grep -q '^LOG' '$b57b.aux/log.log'"
 
 # --- Behaviour 3c: authoring runs on the COPILOT engine too (BUG-D) -----------
 r3c="$(mktemp -d "$TMPROOT/r3c.XXXX")"; MISSION_ENGINE=copilot new_repo_verify "$r3c" >/dev/null
