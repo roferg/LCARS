@@ -63,6 +63,28 @@ EOF
   chmod +x "$1"
 }
 
+# BUG-069: a gh stub that mimics the post-push mergeability LAG — the FIRST
+# `gh pr merge` fails ("not mergeable yet" — GitHub is still recomputing), then
+# a later attempt SUCCEEDS. Counts attempts in $GH_LOG so a bounded retry in
+# approve recovers without ever falling into the merge-failed path. <fail_n> =
+# how many leading merge attempts fail before one succeeds.
+make_gh_stub_merge_transient() { # <path> <fail_n>
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+echo "gh \$*" | tr '\n' ' ' >>"\$GH_LOG"; echo >>"\$GH_LOG"
+if [ "\${1:-}" = "pr" ] && [ "\${2:-}" = "merge" ]; then
+  n="\$(grep -c 'pr merge' "\$GH_LOG")"
+  if [ "\$n" -le $2 ]; then
+    echo "Pull request is not mergeable: the merge commit cannot be created yet." >&2
+    exit 1
+  fi
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+
 # A fake reconcile (sibling run.sh) injected via LCARS_RUN_SCRIPT: it records its
 # args to $RECON_LOG and exits with a chosen code. It NEVER touches the real
 # run.sh, so no real model worker is ever spawned. The recorded line also
@@ -393,6 +415,81 @@ check "fs. does NOT merge on a failed self-heal" "! grep -q 'pr merge' '$repoFS/
 check "fs. stays at verify" "grep -q '\"stage\": *\"verify\"' '$sFS'"
 check "fs. reconcileStatus stays escalated (surfaced)" \
   "grep -q '\"reconcileStatus\": *\"escalated\"' '$sFS'"
+
+# --- BUG-068: the merge-failed path sets awaitingHuman with NO "command not found"
+# approve called an UNDEFINED state_set_raw on the merge-failed paths, so the line
+# errored ("command not found") and awaitingHuman never got set. A failed merge
+# must set awaitingHuman=true cleanly, with no command-not-found on stderr.
+repo68="$(new_repo_with_open_pr_mission)"; make_gh_stub_merge_fail "$repo68/gh"
+make_reconcile_stub "$repo68/recon.sh" 0
+export GH_LOG="$repo68/gh.log"; : >"$GH_LOG"
+rc68=0
+( cd "$repo68" && LCARS_GH_BIN="$repo68/gh" LCARS_RUN_SCRIPT="$repo68/recon.sh" \
+    RECON_LOG="$repo68/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>err.txt ) || rc68=$?
+s68="$(state_of "$repo68")"
+check "068. exits non-zero on a failed merge" "[ '$rc68' -ne 0 ]"
+check "068. sets awaitingHuman true on a failed merge" \
+  "grep -q '\"awaitingHuman\": *true' '$s68'"
+check "068. NO 'command not found' on stderr (state_set_raw is defined)" \
+  "! grep -qi 'command not found' '$repo68/err.txt'"
+check "068. sets reconcileStatus=merge-failed" \
+  "grep -q '\"reconcileStatus\": *\"merge-failed\"' '$s68'"
+
+# --- BUG-069: post-push mergeability LAG → approve RETRIES, then merges -------
+# Right after a push GitHub needs a few seconds to recompute mergeability, so the
+# first `gh pr merge` can spuriously fail. approve must RETRY a bounded number of
+# times and succeed on a later attempt — no spurious merge-failed.
+repo69="$(new_repo_with_open_pr_mission)"
+make_gh_stub_merge_transient "$repo69/gh" 1   # 1 transient failure, then success
+make_reconcile_stub "$repo69/recon.sh" 0
+export GH_LOG="$repo69/gh.log"; : >"$GH_LOG"
+rc69=0
+( cd "$repo69" && LCARS_GH_BIN="$repo69/gh" LCARS_RUN_SCRIPT="$repo69/recon.sh" \
+    LCARS_MERGE_RETRY_SLEEP=0 RECON_LOG="$repo69/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>err.txt ) || rc69=$?
+s69="$(state_of "$repo69")"
+check "069. exits 0 — the transient not-mergeable was retried, not surfaced" \
+  "[ '$rc69' -eq 0 ]"
+check "069. retried gh pr merge (more than one attempt)" \
+  "[ \"\$(grep -c 'pr merge' '$repo69/gh.log')\" -gt 1 ]"
+check "069. advances to done after the retry succeeds" \
+  "grep -q '\"stage\": *\"done\"' '$s69'"
+check "069. does NOT set merge-failed on a transient lag" \
+  "! grep -q '\"reconcileStatus\": *\"merge-failed\"' '$s69'"
+
+# A PERSISTENT failure (conflict) must still surface merge-failed AFTER the
+# bounded retries exhaust — the retry must not paper over a real conflict.
+repo69p="$(new_repo_with_open_pr_mission)"
+make_gh_stub_merge_transient "$repo69p/gh" 99   # never succeeds
+make_reconcile_stub "$repo69p/recon.sh" 0
+export GH_LOG="$repo69p/gh.log"; : >"$GH_LOG"
+rc69p=0
+( cd "$repo69p" && LCARS_GH_BIN="$repo69p/gh" LCARS_RUN_SCRIPT="$repo69p/recon.sh" \
+    LCARS_MERGE_RETRY_SLEEP=0 RECON_LOG="$repo69p/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>err.txt ) || rc69p=$?
+s69p="$(state_of "$repo69p")"
+check "069p. exits non-zero when merge never becomes mergeable" "[ '$rc69p' -ne 0 ]"
+check "069p. surfaces merge-failed after the retries exhaust" \
+  "grep -q '\"reconcileStatus\": *\"merge-failed\"' '$s69p'"
+check "069p. stays at verify (no false done)" \
+  "grep -q '\"stage\": *\"verify\"' '$s69p'"
+check "069p. tried gh pr merge more than once before giving up" \
+  "[ \"\$(grep -c 'pr merge' '$repo69p/gh.log')\" -gt 1 ]"
+
+# --- BUG-071: a successful merge emits a `merged` event to events.jsonl -------
+# The mission timeline never recorded the ship. A landed merge must append a
+# `merged` event so the card shows the milestone.
+repo71="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repo71/gh"
+make_reconcile_stub "$repo71/recon.sh" 0
+export GH_LOG="$repo71/gh.log"; : >"$GH_LOG"
+rc71=0
+( cd "$repo71" && LCARS_GH_BIN="$repo71/gh" LCARS_RUN_SCRIPT="$repo71/recon.sh" \
+    RECON_LOG="$repo71/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>err.txt ) || rc71=$?
+ev71="$repo71/.git/lcars/missions/$MID/events.jsonl"
+check "071. emits a merged event to events.jsonl on a successful merge" \
+  "[ -f '$ev71' ] && grep -q '\"type\":\"merged\"' '$ev71'"
 
 # ==========================================================================
 echo

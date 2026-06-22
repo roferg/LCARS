@@ -81,6 +81,32 @@ state_set_str() {
   K="$1" V="$esc" awk 'NR==1{print; printf "  \"%s\": \"%s\",\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
     "$STATE" >"$tmp" && mv "$tmp" "$STATE"
 }
+# add or replace a BARE field (true/false/number, unquoted) — mirrors
+# run.sh:state_set_raw / pause.sh. BUG-068: the merge-failed paths call this to
+# set `awaitingHuman true`; it was undefined here so those lines errored
+# ("command not found") and the gate flag never got set.
+state_set_raw() { # key token
+  state_del "$1"
+  local tmp; tmp="$(mktemp)"
+  K="$1" V="$2" awk 'NR==1{print; printf "  \"%s\": %s,\n", ENVIRON["K"], ENVIRON["V"]; next} {print}' \
+    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+}
+
+# --- append-only mission event (BUG-071) -----------------------------------
+# Mirrors run.sh / pause.sh emit_event: one short single-line JSON record per
+# milestone, written in APPEND mode (atomic under PIPE_BUF) to the mission's
+# events.jsonl so the card timeline shows the ship. approve had NO emit_event,
+# so a merge never recorded a `merged` milestone. NO-OP-SAFE: no MISSION_DIR →
+# returns 0. Timestamp overridable via $LCARS_NOW for deterministic tests.
+emit_event() { # type stage detail
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  local ts type stage detail mid
+  ts="${LCARS_NOW:-$(date +%s)}"
+  type="$(json_escape "${1:-}")"; stage="$(json_escape "${2:-}")"
+  detail="$(json_escape "${3:-}")"; mid="$(json_escape "${MISSION_ID:-}")"
+  printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"}\n' \
+    "$ts" "$mid" "$stage" "$type" "$detail" >>"$MISSION_DIR/events.jsonl"
+}
 
 # --- gh relabel: best-effort, never blocks the local stage change ----------
 gh_relabel() { # "add labels…"  "remove labels…"
@@ -191,8 +217,34 @@ do_merge() {
     *)       MERGE_ARGS=(--number "$PR_NUM") ;;
   esac
 
-  if ! host pr-merge "${MERGE_ARGS[@]}"; then
-    local note="gh pr merge failed for $PR_URL — resolve it (conflicts/checks/auth) and re-run \`lcars approve $MISSION_ID\` (or \`--reapprove\`), or merge on GitHub. Mission stays at verify."
+  # BUG-069: right after a push GitHub needs a few seconds to RECOMPUTE the PR's
+  # mergeability, so the FIRST `gh pr merge` can spuriously fail with a transient
+  # "not mergeable yet" even though nothing is wrong. RETRY the merge with a
+  # short bounded backoff before falling into the merge-failed path. A real
+  # CONFLICTING/DIRTY state simply keeps failing and surfaces after the retries
+  # exhaust — we never paper over a true conflict, only ride out the post-push
+  # lag. Tunable via env so the test drives it with zero real sleep.
+  local merge_tries="${LCARS_MERGE_RETRIES:-6}"        # up to ~6 attempts …
+  local merge_sleep="${LCARS_MERGE_RETRY_SLEEP:-5}"    # … ~5s apart (~30s total)
+  local attempt=1 merged_ok=0
+  while [ "$attempt" -le "$merge_tries" ]; do
+    if host pr-merge "${MERGE_ARGS[@]}"; then
+      merged_ok=1; break
+    fi
+    # The attempt failed. It may be the post-push lag (retry) or a real conflict
+    # (will keep failing). If the PR has ALREADY merged out from under us (a
+    # prior attempt that reported failure but actually landed), treat as success.
+    if host pr-view "${MERGE_ARGS[@]}" 2>/dev/null | grep -qi $'state\tMERGED'; then
+      merged_ok=1; break
+    fi
+    if [ "$attempt" -lt "$merge_tries" ]; then
+      [ "$merge_sleep" = "0" ] || sleep "$merge_sleep"
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  if [ "$merged_ok" -ne 1 ]; then
+    local note="gh pr merge failed for $PR_URL after $merge_tries attempt(s) — resolve it (conflicts/checks/auth) and re-run \`lcars approve $MISSION_ID\` (or \`--reapprove\`), or merge on GitHub. Mission stays at verify."
     state_set_str reconcileStatus "merge-failed"
     state_set_str reconcileNote "$note"
     state_set_raw awaitingHuman true
@@ -209,6 +261,11 @@ do_merge() {
   gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
   set_stage "done"
   state_set_str review "merged"
+
+  # BUG-071: record the ship on the mission timeline so the card shows the
+  # `merged` milestone (and a terminal `mission_done`), not just stdout.
+  emit_event merged verify "PR merged — $PR_URL"
+  emit_event mission_done done "Mission shipped — the PR is merged"
 
   echo "APPROVE: merged — $(pr_title)"
   echo "  Merged PR: $PR_URL"
@@ -229,6 +286,7 @@ if [ -n "$REAPPROVE" ]; then
     awaiting-reapprove|merge-failed) : ;;  # the expected gate to clear.
     *) : ;;  # tolerate a reapprove with no recorded gate — still just merges.
   esac
+  emit_event reapprove verify "captain reapproved a converged self-heal — merging $PR_URL"
   do_merge
 fi
 
