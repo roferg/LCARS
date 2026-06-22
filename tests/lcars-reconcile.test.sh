@@ -644,6 +644,51 @@ check "B45d. an already-escalated reconcile does not fire a second notification"
   "[ \"\$(grep -c NOTIFY '$b45d.aux/notify.log')\" -eq 1 ]"
 check "B45d. an already-escalated reconcile never opens a PR" "! grep -q 'pr create' '$b45d.aux/gh.log'"
 
+# --- BUG-051: a TERMINAL replay/cherry-pick failure records WHY (durable cause) --
+# When a ticket's replay cherry-pick genuinely FAILS (BUG-053: green-via-serial-
+# rebuild, then a cherry-pick that vanishes), the cause used to be discarded — the
+# only signal was a generic "implement failed". Drive a DETERMINISTIC cherry-pick
+# CONFLICT through the terminal-recording path (the same path rebuild_ticket_on_tip
+# takes when its rebuilt commit still fails to cherry-pick) and assert the cause is
+# captured: implement-failure.log written with the conflicted path + git error, AND
+# a ticket_replay_failed event carrying a NON-generic reason. NO worker, NO tokens —
+# only real local git builds the conflict, exactly like the existing replay tests.
+b51="$(mktemp -d "$TMPROOT/b51.XXXX")"
+( cd "$b51" && git init -q && git config user.email t@t && git config user.name t \
+    && printf 'orig\n' >shared.txt && git add -A && git commit -q -m base \
+    && git branch lcars/B )
+# A commit on a SIBLING branch that edits shared.txt's only line (off the SAME
+# parent), so cherry-picking it onto B — which also moved that line — CONFLICTS.
+sha51="$( cd "$b51" \
+    && git worktree add -q --detach "$b51/.wtX" lcars/B >/dev/null 2>&1 \
+    && printf 'X-from-ticket\n' >"$b51/.wtX/shared.txt" \
+    && ( cd "$b51/.wtX" && git add -A >/dev/null 2>&1 && git commit -q -m 'ticket X' >/dev/null 2>&1 && git rev-parse HEAD ) \
+    ; git worktree remove --force "$b51/.wtX" >/dev/null 2>&1 )"
+# Move branch B's tip so the SAME line differs → the cherry-pick of sha51 conflicts.
+( cd "$b51" && git checkout -q lcars/B \
+    && printf 'B-from-main\n' >shared.txt && git add -A && git commit -q -m 'B tip' \
+    && git checkout -q "$(git rev-parse --abbrev-ref HEAD@{-1} 2>/dev/null || echo main)" >/dev/null 2>&1 || true )
+m51="$b51/.git/lcars/missions/$MID"; mkdir -p "$m51"
+cat >"$m51/state.json" <<EOF
+{ "id": "$MID", "type": "feature", "title": "t", "stage": "implement",
+  "githubIssue": 42, "branch": "lcars/B" }
+EOF
+rc51=0
+( cd "$b51" && LCARS_GH_BIN=true bash "$RUN_SH" replay-commit-record \
+    --mission "$MID" --branch lcars/B --sha "$sha51" --ticket t-051 \
+    >"$b51.out" 2>&1 ) || rc51=$?
+check "B51. a genuine replay cherry-pick failure exits non-zero" "[ '$rc51' -ne 0 ]"
+check "B51. implement-failure.log is written on the terminal replay failure" \
+  "[ -s '$m51/implement-failure.log' ]"
+check "B51. implement-failure.log names the failing ticket" \
+  "grep -q 'ticket=t-051' '$m51/implement-failure.log'"
+check "B51. implement-failure.log captures the conflicted path / git error (non-generic)" \
+  "grep -Eq 'shared.txt|cherry-pick|conflict' '$m51/implement-failure.log'"
+check "B51. a ticket_replay_failed event is emitted" \
+  "grep -q '\"type\":\"ticket_replay_failed\"' '$m51/events.jsonl'"
+check "B51. the ticket_replay_failed event carries a NON-generic reason (not just 'failed')" \
+  "grep '\"type\":\"ticket_replay_failed\"' '$m51/events.jsonl' | grep -Eq 'shared.txt|cherry-pick|conflict'"
+
 # ==========================================================================
 echo
 printf 'lcars reconcile: %d passed, %d failed\n' "$pass" "$fail"

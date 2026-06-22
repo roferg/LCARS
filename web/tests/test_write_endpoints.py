@@ -1202,5 +1202,81 @@ class ApproveNonBlockingTest(WriteEndpointBase):
         self.assertTrue("mission" in result or "board" in result)
 
 
+def _emit_stub(record_path, marker):
+    """A fire-and-forget stub that PRINTS a marker to stdout/stderr (so a test can
+    assert the spawn CAPTURED it) and also records its argv. Used to prove _spawn
+    redirects child output to a durable log instead of /dev/null (BUG-051)."""
+    fd, path = tempfile.mkstemp(suffix=".sh")
+    os.close(fd)
+    script = (
+        '#!/usr/bin/env bash\n'
+        '{ printf "ARGV: %s\\n" "$*"; } >> "' + record_path + '"\n'
+        'printf "' + marker + '\\n"\n'          # to stdout
+        'printf "' + marker + '-ERR\\n" >&2\n'  # to stderr (merged via STDOUT)
+        'exit 0\n'
+    )
+    with open(path, "w") as fh:
+        fh.write(script)
+    os.chmod(path, 0o755)
+    return path
+
+
+class SpawnCaptureTest(WriteEndpointBase):
+    """BUG-051: the fire-and-forget _spawn must NOT discard the detached child's
+    output (approve/reconcile/driver, incl. the die reason) — it must be captured
+    to a durable per-run log under .git/lcars/ so the cause survives."""
+
+    def test_spawn_gives_popen_a_real_file_handle_not_devnull(self):
+        """Assert _spawn hands subprocess.Popen a real writable file object for
+        stdout — never subprocess.DEVNULL."""
+        import unittest.mock as mock
+
+        captured = {}
+
+        class _FakePopen(object):
+            def __init__(self, *a, **k):
+                captured["stdout"] = k.get("stdout")
+                captured["stderr"] = k.get("stderr")
+
+        with mock.patch.object(subprocess, "Popen", _FakePopen):
+            actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+            actions._spawn("run", ["drive", "--mission", "m-001"])
+
+        self.assertIsNot(captured.get("stdout"), subprocess.DEVNULL,
+                         "_spawn discarded child stdout to DEVNULL")
+        # a real captured file handle, not the int DEVNULL sentinel
+        self.assertTrue(hasattr(captured.get("stdout"), "fileno"),
+                        "_spawn did not give Popen a real file handle for stdout")
+
+    def test_spawn_writes_child_output_to_a_captured_log_under_git_lcars(self):
+        """End-to-end: the detached child's stdout/stderr land in a durable log
+        file under .git/lcars/, not /dev/null."""
+        import time
+        rec = os.path.join(self.tmp, "rec-emit.txt")
+        scripts = dict(self.scripts)
+        scripts["run"] = _emit_stub(rec, "DIE-REASON-cherry-pick-failed")
+        actions = Actions(repo_root=self.tmp, scripts=scripts)
+        actions._spawn("run", ["drive", "--mission", "m-001"])
+
+        log_path = os.path.join(self.tmp, ".git", "lcars", "logs",
+                                "spawn-run-m-001.log")
+        deadline = time.time() + 5
+        contents = ""
+        while time.time() < deadline:
+            if os.path.exists(log_path):
+                with open(log_path) as fh:
+                    contents = fh.read()
+                if "DIE-REASON-cherry-pick-failed" in contents:
+                    break
+            time.sleep(0.02)
+
+        self.assertTrue(os.path.exists(log_path),
+                        "no captured spawn log was written under .git/lcars/logs")
+        self.assertIn("DIE-REASON-cherry-pick-failed", contents,
+                      "the detached child's stdout was not captured to the log")
+        self.assertIn("DIE-REASON-cherry-pick-failed-ERR", contents,
+                      "the detached child's stderr was not captured to the log")
+
+
 if __name__ == "__main__":
     unittest.main()

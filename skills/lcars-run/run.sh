@@ -5084,7 +5084,7 @@ cmd_implement() {
       local escalate=""
       [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] && escalate=1
       cleanup_ticket_worktrees "$wt_base"
-      [ -z "$hard_fail" ] || die "implement-ticket $hard_fail failed — Stage stopped, no advance."
+      [ -z "$hard_fail" ] || die "implement-ticket $hard_fail failed — Stage stopped, no advance.$(implement_failure_tail)"
       [ -z "$escalate" ] || exit 0
     else
       # SERIAL FALLBACK (no mission branch): the original one-at-a-time in-tree
@@ -5094,7 +5094,7 @@ cmd_implement() {
         local irc=0
         LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" implement-ticket \
           --mission "$MISSION_ID" --ticket "$t" || irc=$?
-        [ "$irc" -eq 0 ] || die "implement-ticket $t failed — Stage stopped, no advance."
+        [ "$irc" -eq 0 ] || die "implement-ticket $t failed — Stage stopped, no advance.$(implement_failure_tail)"
         [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] && exit 0
       done
     fi
@@ -5212,8 +5212,38 @@ release_replay_lock() {
 # checkout and its cherry-pick — each pick is GUARANTEED to land on its own
 # branch regardless of which mission held HEAD last. Single-mission runs take an
 # uncontended lock (near-zero overhead; behaviour unchanged).
+# Set by _replay_ticket_commit_locked on a cherry-pick failure to the captured
+# reason (conflicted paths + git error). Read by callers/record_replay_failure so
+# a TERMINAL replay failure records WHY (BUG-051). Reset on entry to each replay.
+REPLAY_FAIL_REASON=""
+
+# Durably record a TERMINAL replay/rebuild cherry-pick failure (BUG-051): append a
+# timestamped, ticket-scoped line (with the git error + conflicted paths) to the
+# per-mission implement-failure.log AND emit a ticket_replay_failed event carrying
+# a short reason. This is purely additive instrumentation — it changes no control
+# flow / outcome; it only ensures the cause is not silently discarded. Called ONLY
+# at the genuine terminal-failure point (not the expected conflict→rebuild path).
+record_replay_failure() { # ticket  reason
+  local t="$1" reason="$2"
+  [ -n "${MISSION_DIR:-}" ] && printf '%s\tticket=%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" "$t" "$reason" \
+    >>"$MISSION_DIR/implement-failure.log" 2>/dev/null || :
+  emit_event ticket_replay_failed implement \
+    "ticket $t cherry-pick failed: $reason" "ticket=$t"
+}
+
+# Tail of the per-mission implement-failure.log, formatted to ride a die message
+# (BUG-051) — so a hard stage stop names WHY rather than a bare generic line. Empty
+# string when there's nothing logged (the die message is then unchanged).
+implement_failure_tail() {
+  [ -n "${MISSION_DIR:-}" ] && [ -s "$MISSION_DIR/implement-failure.log" ] || return 0
+  local tail; tail="$(tail -n 3 "$MISSION_DIR/implement-failure.log" 2>/dev/null)"
+  [ -n "$tail" ] && printf ' reason: %s' "$(printf '%s' "$tail" | tr '\n' ' ')"
+}
+
 replay_ticket_commit() { # branch  sha  ticket
   local branch="$1" sha="$2" t="$3" rc=0
+  REPLAY_FAIL_REASON=""
   acquire_replay_lock
   _replay_ticket_commit_locked "$branch" "$sha" "$t" || rc=$?
   release_replay_lock
@@ -5234,7 +5264,14 @@ _replay_ticket_commit_locked() { # branch  sha  ticket
       ( cd "$REPO_ROOT" && "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 ) || return 1
     fi
   fi
-  ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --allow-empty "$sha" >/dev/null 2>&1 ) || {
+  # Capture the cherry-pick's own STDERR (the git error) and, while the conflict
+  # state still exists (BEFORE --abort wipes it), the list of conflicted paths —
+  # so a genuine replay failure records WHY instead of discarding it (BUG-051).
+  local cp_err
+  cp_err="$( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --allow-empty "$sha" 2>&1 >/dev/null )" || {
+    local cp_conflicts
+    cp_conflicts="$( cd "$REPO_ROOT" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ' )"
+    REPLAY_FAIL_REASON="cherry-pick of $sha failed${cp_conflicts:+; conflicted paths: ${cp_conflicts% }}${cp_err:+; git: $(printf '%s' "$cp_err" | tr '\n' ' ')}"
     ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --abort >/dev/null 2>&1 ) || :
     # `cherry-pick --abort` restores only TRACKED state. Any UNTRACKED residue the
     # just-failed pick left at one of THIS commit's paths — a NEW file the pick
@@ -5305,7 +5342,18 @@ rebuild_ticket_on_tip() { # base-dir  branch  ticket
       "ticket $t rebuilt empty on the tip after a replay conflict; escalating to awaiting-human" "ticket=$t"
     return 1
   fi
-  replay_ticket_commit "$branch" "$sha" "$t"
+  # The serial rebuild produced a fresh commit ON the current tip — its cherry-pick
+  # should land cleanly. If it STILL fails (BUG-053: green-via-serial-rebuild then a
+  # cherry-pick that vanishes), this is a TERMINAL failure — durably record WHY so
+  # the cause does not disappear (BUG-051), then return non-zero unchanged.
+  local rrc=0
+  replay_ticket_commit "$branch" "$sha" "$t" || rrc=$?
+  if [ "$rrc" -ne 0 ]; then
+    record_replay_failure "$t" \
+      "${REPLAY_FAIL_REASON:-rebuilt ticket $t failed to cherry-pick onto the tip ($sha)}"
+    return "$rrc"
+  fi
+  return 0
 }
 
 # Remove every per-ticket worktree for this wave and prune git's bookkeeping, so
@@ -5851,8 +5899,12 @@ cmd_drive() {
       continue
     fi
 
-    # Nothing advanced and no gate was raised → a hard Stage error.
-    emit_event error "$stage" "$stage failed"
+    # Nothing advanced and no gate was raised → a hard Stage error. Carry the
+    # cause: the tail of the stage subprocess output ($out) — including any die
+    # reason — so the board event itself names WHY (BUG-051), not a bare "failed".
+    local err_tail; err_tail="$(printf '%s' "$out" | tr '\n' ' ')"
+    err_tail="${err_tail: -200}"
+    emit_event error "$stage" "$stage failed${err_tail:+: $err_tail}"
     drive_print_summary "$summary"
     printf '⏹ stopped: %s failed\n' "$stage"
     printf '%s\n' "$out"
@@ -5992,6 +6044,22 @@ case "$SUB" in
     [ -n "$RC_BRANCH" ] || die "usage: run.sh replay-commit --mission <id> --branch <b> --sha <sha>"
     [ -n "$RC_SHA" ]    || die "usage: run.sh replay-commit --mission <id> --branch <b> --sha <sha>"
     replay_ticket_commit "$RC_BRANCH" "$RC_SHA" "${TICKET:-t-x}" ;;
+  # BUG-051 test hook: drive replay_ticket_commit and, on a TERMINAL cherry-pick
+  # failure, run the SAME durable-recording path rebuild_ticket_on_tip's terminal
+  # branch uses (record_replay_failure → implement-failure.log + ticket_replay_failed
+  # event with the captured reason). Asserts the cause is captured, not discarded.
+  # --branch <b> --sha <sha> [--ticket <t>]. Exits non-zero iff the replay failed.
+  replay-commit-record)
+    locate_mission "$MISSION_ID"
+    [ -n "$RC_BRANCH" ] || die "usage: run.sh replay-commit-record --mission <id> --branch <b> --sha <sha>"
+    [ -n "$RC_SHA" ]    || die "usage: run.sh replay-commit-record --mission <id> --branch <b> --sha <sha>"
+    _rcr=0
+    replay_ticket_commit "$RC_BRANCH" "$RC_SHA" "${TICKET:-t-x}" || _rcr=$?
+    if [ "$_rcr" -ne 0 ]; then
+      record_replay_failure "${TICKET:-t-x}" \
+        "${REPLAY_FAIL_REASON:-rebuilt ticket failed to cherry-pick onto the tip ($RC_SHA)}"
+    fi
+    exit "$_rcr" ;;
   # Test hook for the branch-CREATION contamination fix: create the mission's
   # branch from its RECORDED base under the replay mutex (idempotent), exactly as
   # cmd_implement does up front. --branch <b> overrides state.json's branch (so a

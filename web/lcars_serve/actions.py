@@ -1161,25 +1161,60 @@ class Actions(object):
                 502, "skill '%s' exited %d: %s" % (key, proc.returncode, out))
         return proc
 
+    def _spawn_log_path(self, key, args):
+        """Per-run capture-log path under .git/lcars/logs/ for a fire-and-forget
+        spawn. The detached approve/reconcile/driver output (BUG-051: incl. the
+        die reason) lands here so it SURVIVES instead of going to /dev/null. Keyed
+        by the command + its mission/parent so concurrent spawns don't clobber."""
+        mid = ""
+        for flag in ("--mission", "--parent"):
+            if flag in args:
+                try:
+                    mid = args[args.index(flag) + 1]
+                except IndexError:
+                    mid = ""
+                break
+        logs_dir = os.path.join(self.repo_root, ".git", "lcars", "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        name = "spawn-%s%s.log" % (key, ("-" + mid) if mid else "")
+        return os.path.join(logs_dir, name)
+
     def _spawn(self, key, args, env_extra=None):
         """Fire-and-forget dispatch — for the LONG `run drive` driver. Launches
         the skill DETACHED (Popen, never waited on) so the HTTP request returns
         promptly; the board/SSE then reflects progress and the `running` flag.
 
-        Output is discarded (the run's truth is its on-disk state + events.jsonl,
-        which the SSE already carries) so a full pipe can never wedge the daemon.
-        start_new_session detaches the child from the daemon's process group, so
-        a daemon restart / Ctrl-C doesn't take a running mission down with it.
-        Returns the Popen handle (the caller does NOT wait)."""
+        Output is CAPTURED to a per-run log under .git/lcars/logs/ (BUG-051) — not
+        discarded — so the detached approve/reconcile/driver output, including any
+        hard-fail die reason, survives the fire-and-forget. We still NEVER wait on
+        the child (a real file handle, not a pipe, so it can never wedge the
+        daemon). start_new_session detaches the child from the daemon's process
+        group, so a daemon restart / Ctrl-C doesn't take a running mission down
+        with it. Returns the Popen handle (the caller does NOT wait)."""
         cmd, env = self._resolve_run(key, args, env_extra)
+        try:
+            log_path = self._spawn_log_path(key, args)
+            logf = open(log_path, "ab", buffering=0)
+        except OSError:
+            # Never let a logging-path failure break the dispatch — fall back to
+            # the old discard behaviour (semantics unchanged).
+            logf = subprocess.DEVNULL
         try:
             return subprocess.Popen(
                 cmd, cwd=self.repo_root, env=env,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=logf, stderr=subprocess.STDOUT,
                 start_new_session=True)
         except OSError as exc:
             raise ActionError(502, "failed to launch skill '%s': %s" % (key, exc))
+        finally:
+            # The child inherited the fd; close our copy so the daemon holds no
+            # extra handle. DEVNULL is an int sentinel — nothing to close.
+            if logf is not subprocess.DEVNULL:
+                try:
+                    logf.close()
+                except OSError:
+                    pass
 
     def _require_mission(self, mid):
         d = os.path.join(self.repo_root, ".git", "lcars", "missions", mid)
