@@ -45,6 +45,30 @@ piece of the EXPERIENCE (the same screen region, the same gesture, the same mome
 and satisfying one necessarily breaks the other. There is no "combine both intents"
 edit — only a choice.
 
+### The decisive test — apply it before you author anything
+
+Run this check on the failure. Emit `design-question.txt` (and NO bug PRDs) when
+ALL THREE hold:
+
+1. Both sides are USER-FACING behaviours (something the player sees or does), not
+   internal mechanics — a renamed symbol, a moved constant, or a changed signature
+   is NOT this; that is a normal self-heal.
+2. They lay claim to the SAME piece of the experience — the same screen region, the
+   same gesture, the same on-screen moment — at the same time.
+3. Satisfying one NECESSARILY breaks the other: there is no edit that keeps both,
+   because the locked tests are MUTUALLY EXCLUSIVE (making one pass forces the other
+   to fail — they cannot both be green at once).
+
+If any one of those is false, it is a mechanical reconciliation — author the self-
+heal bug PRD(s), don't ask. If all three hold, it is a product decision only the
+captain can make — ask, don't guess.
+
+The canonical example: the mission adds a best-score readout pinned to the top-right
+corner of the HUD, while the base added an "xN" combo-multiplier badge pinned to the
+SAME top-right corner. Each ticket's locked test asserts ITS element owns that
+corner, so the two tests can never both pass — there is no "keep both" edit, only a
+choice of what the player sees there. That is a `design-question.txt`, not a heal.
+
 When (and ONLY when) you hit that, do NOT pick a side and do NOT author a bug PRD.
 Instead write a SINGLE file named `design-question.txt` in your scratch output
 directory containing ONE concise question, and author NO `bug-NNN.md` files at all.
@@ -65,6 +89,16 @@ observable collision, not the source of it.
 Put ONLY that one question (with its example options) in `design-question.txt`. The
 harness will route it to the captain; once they answer, a later pass will hand you
 their decision and you will author the self-heal that implements EXACTLY that choice.
+
+## If the harness tells you the heal ALREADY FAILED (FORCE-DESIGN-QUESTION)
+
+If the inputs include a `FORCE-DESIGN-QUESTION` instruction, a prior self-heal pass
+already tried to reconcile this exact conflict and could NOT drive the merged state
+to green. The decision is settled by behaviour, not by your judgement: this IS an
+unresolvable trade-off. Do NOT author any bug PRD this time. Write ONLY a single
+`design-question.txt` — one concise, experience-framed question (with 2–3 concrete
+arrangement options, no code identifiers), exactly as described above. The captain
+will choose; a later pass hands you their decision to implement.
 
 ## If the captain has already DECIDED a prior design question
 

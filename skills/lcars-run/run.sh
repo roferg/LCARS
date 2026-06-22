@@ -2884,6 +2884,67 @@ emit a design-question file this time."
   return 0
 }
 
+# BUG-045: DETERMINISTIC design-question authoring. The harness — not the author's
+# upfront guess — has decided this conflict is genuinely unresolvable (a dispatched
+# heal round could not drive the combined state to green). Re-invoke the reconcile-
+# author with a FORCE-DESIGN-QUESTION instruction so it frames the persistent
+# failure as ONE experience-framed question for the captain. Echoes the question.
+# If the author yields nothing, fall back to a harness-composed, player-facing
+# question derived from the mission goal (over-asking the captain beats grinding
+# heal rounds silently — they can always reply "just retry").
+reconcile_author_design_question() { # failure-summary  affected-block
+  local summary="$1" affected="$2"
+  local engine; engine="$(json_str "$STATE" workerBin)"
+  [ -n "$engine" ] || engine="$WORKER_BIN"
+  local sumfile; sumfile="$MISSION_DIR/reconcile-failure.txt"
+  printf '%s\n' "$summary" >"$sumfile"
+  # FORCE-DESIGN-QUESTION: the marker the worker keys on; the prose tells the author
+  # the heal already failed, so this is no longer a "do I heal or ask?" judgement —
+  # it MUST emit design-question.txt and author NO bug PRDs.
+  local extra="## FORCE-DESIGN-QUESTION — the heal already FAILED; ask the captain
+A prior self-heal pass already tried to reconcile this conflict and could NOT drive
+the merged state to green: the two sides are competing for the SAME piece of the
+player's experience and cannot both hold. This is no longer a judgement call. Do
+NOT author any bug PRD. You MUST write a SINGLE design-question.txt containing ONE
+concise, experience-framed question (what the player sees / where it sits / how it
+behaves), in plain language with 2–3 concrete arrangement options, naming NO code
+(no file names, function names, test ids, or 'refactor'). Describe the observable
+collision, not its source.
+
+## The persistent merge-failure summary
+$affected
+
+The deterministic failure summary is at:
+- $sumfile
+
+## The two intents in collision
+- This mission's goal/PRD: $MISSION_DIR/prd.md
+- What changed on the base branch is quoted in the summary above."
+
+  local odir tries=0 q=""
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    odir="$(mktemp -d)"
+    LCARS_WORKER_BIN="$engine" \
+      spawn_worker reconcile-author "$STAGES_DIR/reconcile-author.md" repo-read "$odir" "$extra"
+    if [ -s "$odir/design-question.txt" ]; then
+      q="$(cat "$odir/design-question.txt")"
+      rm -rf "$odir"
+      break
+    fi
+    rm -rf "$odir"
+  done
+
+  if [ -z "$q" ]; then
+    # Harness fallback — a player-facing question framed from the mission goal,
+    # carrying NO code identifiers. The captain can always answer "just retry".
+    local goal; goal="$(json_str "$STATE" title)"
+    [ -f "$MISSION_DIR/prd.md" ] && { local g2; g2="$(sed -n 's/^\*\*Goal:\*\*[[:space:]]*//p' "$MISSION_DIR/prd.md" | head -1)"; [ -n "$g2" ] && goal="$g2"; }
+    q="This mission (${goal:-this change}) and a change already on the branch are competing for the same part of the experience, and the harness could not make both work at once. Which should the player get — keep this mission's behaviour, keep the existing one, or some blend of the two? (Reply with the arrangement you want, or say 'just retry' to attempt the merge again.)"
+  fi
+  printf '%s' "$q"
+}
+
 # Escalate to the human after K rounds still red. Never opens a PR.
 reconcile_escalate() { # diagnosis-text
   local diag="$1"
@@ -2912,6 +2973,19 @@ reconcile_gate() {
   local BASE BRANCH
   BRANCH="$(json_str "$STATE" branch)"
   BASE="$(json_str "$STATE" base)"; BASE="${BASE:-main}"
+
+  # Idempotency: once this reconcile has ESCALATED (awaiting the captain's call —
+  # an exhausted heal, a design trade-off, or a worktree-cut failure), a re-run of
+  # the gate must NOT re-escalate or re-notify. The mission stays parked at verify
+  # awaiting-human until `lcars respond` clears the gate; only then does a fresh
+  # pass re-enter the heal. This keeps "exactly one gate notification" true under
+  # the BUG-045 earlier (post-heal) design-question escalation. (BUG-041/045)
+  if [ "$(json_str "$STATE" reconcileStatus)" = "escalated" ] \
+     && [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
+    echo "RECONCILE: escalated — awaiting the captain's answer; not re-asking."
+    return 20
+  fi
+
   # No branch → nothing to reconcile; let the open-PR path handle the no-branch die.
   [ -n "$BRANCH" ] || { echo "RECONCILE: ok — no branch on file"; return 0; }
   "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH" \
@@ -3065,20 +3139,42 @@ ${base_log:-(no log available)}"
 
   # RED. UNDO the broken merge on the branch (never leave a stale-and-broken merge
   # that reads as "not ahead" next pass), persist the diagnosis for a later
-  # escalation, author + dispatch the self-heal, clean up the worktree, and halt
-  # "reconciling" for THIS pass. The next pass re-merges the (still-behind) branch
-  # with the just-landed bug fixes present.
+  # escalation.
   reconcile_undo_merge
   state_set_str reconcileDiagnosis "$failure_summary"
-  emit_event reconcile_red verify "merged $BASE but the combined state is not green — self-healing (round $round)"
   local affected="Conflicted/affected: ${conflicted:-$RETEST_FAILED}"
+
+  # BUG-045 — DETERMINISTIC post-heal design-question escalation (the PRIMARY fix).
+  # If a self-heal round ALREADY ran on a prior pass (round > 1) and the combined
+  # state is STILL red, the dispatched heal could not drive the conflict to green:
+  # the two sides are competing for the same piece of the experience and cannot
+  # both hold. Do NOT grind another heal round to the cap, and do NOT escalate with
+  # only a generic diagnosis — re-author the persistent failure as an experience-
+  # framed DESIGN QUESTION and escalate with it RELIABLY, regardless of whether the
+  # author guessed "trade-off" upfront. The captain answers (or says "just retry");
+  # a later pass (after `lcars respond`) injects their decision into the heal.
+  # Skip this when the captain has ALREADY answered (answers.json present) — then we
+  # are implementing their decision and must keep healing toward it, not re-ask.
+  if [ "$round" -gt 1 ] && [ ! -f "$MISSION_DIR/answers.json" ]; then
+    emit_event reconcile_red verify "merged $BASE but a prior heal could not reach green — re-framing as a design question (round $round)"
+    local dq; dq="$(reconcile_author_design_question "$failure_summary" "$affected")"
+    reconcile_cleanup
+    reconcile_escalate "$dq"
+    return 20
+  fi
+
+  # First RED round: author + dispatch the self-heal, clean up the worktree, and
+  # halt "reconciling" for THIS pass. The next pass re-merges the (still-behind)
+  # branch with the just-landed bug fixes present — and if it is STILL red, the
+  # deterministic BUG-045 path above escalates a design question.
+  emit_event reconcile_red verify "merged $BASE but the combined state is not green — self-healing (round $round)"
   reconcile_author_and_dispatch "$failure_summary" "$affected"
   reconcile_cleanup
 
-  # BUG-042: the author judged this an UNRESOLVABLE design trade-off and posed an
-  # experience-framed question rather than a self-heal. There is nothing to iterate
-  # on — escalate NOW with the player-facing question so the captain decides; the
-  # next pass (after `lcars respond`) injects their answer into the heal.
+  # BUG-042: the author judged this an UNRESOLVABLE design trade-off UPFRONT and
+  # posed an experience-framed question rather than a self-heal. There is nothing to
+  # iterate on — escalate NOW with the player-facing question so the captain decides;
+  # the next pass (after `lcars respond`) injects their answer into the heal.
   if [ -n "$RECONCILE_DESIGN_QUESTION" ]; then
     reconcile_escalate "$RECONCILE_DESIGN_QUESTION"
     return 20

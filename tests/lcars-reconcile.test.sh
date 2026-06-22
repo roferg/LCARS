@@ -127,6 +127,22 @@ if [ -n "${STUB_DESIGN_QUESTION:-}" ]; then
   printf '%s\n' "${STUB_DESIGN_QUESTION_TEXT:-The best-score readout and the xN multiplier badge both render in the top-right corner and overlap — how should they be arranged? (e.g. stack them, move best-score to the top-left, shrink one)}" >"$out/design-question.txt"
   exit 0
 fi
+# BUG-045 path: the HARNESS deterministically decided this conflict is unresolvable
+# (a heal round could not reach green) and is RE-AUTHORING the question with a
+# force-design-question instruction. The stub detects that instruction in the
+# captured prompt and emits an experience-framed question.
+if [ -n "${STUB_FORCED_DESIGN_QUESTION_TEXT:-}" ]; then
+  forced=""
+  prev=""
+  for a in "$@"; do
+    [ "$prev" = "-p" ] && case "$a" in *FORCE-DESIGN-QUESTION*) forced=1 ;; esac
+    prev="$a"
+  done
+  if [ -n "$forced" ]; then
+    printf '%s\n' "$STUB_FORCED_DESIGN_QUESTION_TEXT" >"$out/design-question.txt"
+    exit 0
+  fi
+fi
 n="${RECONCILE_BUGS:-1}"
 i=1
 while [ "$i" -le "$n" ]; do
@@ -254,6 +270,7 @@ run_in() { # repo  subcommand-and-args…
          WORKER_PROMPT_LOG="$a/worker-prompt.log" \
          STUB_DESIGN_QUESTION="${STUB_DESIGN_QUESTION:-}" \
          STUB_DESIGN_QUESTION_TEXT="${STUB_DESIGN_QUESTION_TEXT:-}" \
+         STUB_FORCED_DESIGN_QUESTION_TEXT="${STUB_FORCED_DESIGN_QUESTION_TEXT:-}" \
          LCARS_GH_BIN="$a/gh" LCARS_GIT_BIN="git" \
          LCARS_HOST_ADAPTER="$HOST_ADAPTER" \
          LCARS_LOG_SCRIPT="$a/log.sh" \
@@ -534,6 +551,98 @@ check "B42. resumed self-heal injects the captain's answer into the worker promp
   "grep -q 'top-left' '$b42.aux/worker-prompt.log'"
 check "B42. resumed self-heal frames the injected answer as a decision to implement" \
   "grep -qi 'captain decided\|the captain decided\|implement exactly\|captain' '$b42.aux/worker-prompt.log'"
+
+# --- BUG-045: the design-question must fire DETERMINISTICALLY on a genuinely
+# unresolvable conflict — NOT only when the author guesses "trade-off" upfront.
+#
+# The collision shape: two features competing for the SAME experience (mutually-
+# exclusive locked tests). The reconcile-author judges "I can heal this" and
+# authors a self-heal (NOT a design-question) on pass 1. That heal CANNOT reach
+# green (the suite stays red on the next merge). The harness must then ESCALATE
+# WITH AN EXPERIENCE-FRAMED DESIGN QUESTION rather than grind heal rounds to the
+# cap, regardless of the author's upfront output.
+
+# B45a (regression guard): a heal that DOES reach green → NO design question,
+# reconcile proceeds (the deterministic escalation must NOT over-fire when the
+# heal actually works — simulate the heal landing its fix by flipping the suite
+# green between passes).
+b45a="$(mktemp -d "$TMPROOT/b45a.XXXX")"; new_repo_verify "$b45a" >/dev/null; setup_stubs "$b45a"
+stage_ticket_suite "$b45a" red; advance_base "$b45a" clean
+run_in "$b45a" reconcile --mission "$MID" >"$b45a.aux/p1.txt" 2>&1 || true   # round 1: red → heal
+stage_ticket_suite "$b45a" green                                            # the heal "landed" a fix
+run_in "$b45a" reconcile --mission "$MID" >"$b45a.aux/p2.txt" 2>&1 || true   # round 2: green → proceed
+s45a="$(state_of "$b45a")"
+check "B45a. a heal that reaches green never escalates a design question" \
+  "! grep -q '\"reconcileStatus\": *\"escalated\"' '$s45a'"
+check "B45a. a healed reconcile clears the round (green path) and never raises a gate" \
+  "! grep -q '\"awaitingHuman\": *true' '$s45a'"
+check "B45a. a healed reconcile reports green/proceed" \
+  "grep -qi 'green\|proceed' '$b45a.aux/p2.txt'"
+
+# B45b (the bug): a heal that CANNOT reach green on a mutually-exclusive cross-
+# ticket conflict → reconcile ESCALATES WITH a design question deterministically,
+# WITHOUT the author emitting design-question.txt upfront on pass 1.
+#   pass 1: author writes a self-heal (no design-question.txt) → dispatched → halt.
+#   pass 2: re-merge still RED (heal couldn't satisfy both) → harness re-authors
+#           the question with FORCE-DESIGN-QUESTION and escalates with it.
+b45b="$(mktemp -d "$TMPROOT/b45b.XXXX")"; new_repo_verify "$b45b" >/dev/null; setup_stubs "$b45b"
+stage_ticket_suite "$b45b" red; advance_base "$b45b" clean
+FDQ='Two features want the same top-right corner of the screen at the same moment, and only one can sit there — which should the player see there? (e.g. keep the score badge, show the timer instead, or alternate them)'
+# pass 1: NO upfront design question (STUB_DESIGN_QUESTION unset) → author heals.
+run_in "$b45b" reconcile --mission "$MID" >"$b45b.aux/p1.txt" 2>&1 || rc45p1=$?
+s45b="$(state_of "$b45b")"
+check "B45b. pass 1 (heal authored, not a design question) halts reconciling, no escalation yet" \
+  "! grep -q '\"reconcileStatus\": *\"escalated\"' '$s45b'"
+# pass 2: suite STILL red (the heal could not satisfy both sides) → deterministic
+# design-question escalation. The re-author honours FORCE-DESIGN-QUESTION.
+rc45=0
+STUB_FORCED_DESIGN_QUESTION_TEXT="$FDQ" \
+  run_in "$b45b" reconcile --mission "$MID" >"$b45b.aux/p2.txt" 2>&1 || rc45=$?
+s45b="$(state_of "$b45b")"
+pj45b="$(mdir_of "$b45b")/pending.json"
+check "B45b. an unhealable conflict escalates (exit 20), never silently grinds" "[ '$rc45' -eq 20 ]"
+check "B45b. reconcileStatus=escalated (clean terminal, not healing)" \
+  "grep -q '\"reconcileStatus\": *\"escalated\"' '$s45b' && ! grep -q '\"reconcileStatus\": *\"healing\"' '$s45b'"
+check "B45b. raises the awaiting-human gate with pending.json" \
+  "grep -q '\"awaitingHuman\": *true' '$s45b' && [ -f '$pj45b' ]"
+check "B45b. the escalation question is the experience-framed design question" \
+  "grep -qi 'top-right\|player\|screen\|corner' '$pj45b'"
+check "B45b. the design question names NO code identifiers (no .js/.sh/t-001/function/refactor)" \
+  "! grep -Eqi 'drawScore|refactor|t-001|function|\.js|\.sh' '$pj45b'"
+check "B45b. never opens a PR on the unhealable conflict" "! grep -q 'pr create' '$b45b.aux/gh.log'"
+check "B45b. fires exactly one gate notification across the escalation pass" \
+  "[ \"\$(grep -c NOTIFY '$b45b.aux/notify.log')\" -ge 1 ]"
+check "B45b. live tree stays clean after the unhealable reconcile" \
+  "[ -z \"\$(cd '$b45b' && git status --porcelain)\" ]"
+check "B45b. no reconcile worktree leaks" "! (cd '$b45b' && git worktree list | grep -q reconcile)"
+
+# B45c (deterministic-fallback): even when the re-author yields NO question text,
+# the harness must STILL escalate with an experience-framed question (over-asking
+# beats grinding). Here STUB_FORCED_DESIGN_QUESTION_TEXT is UNSET so the re-author
+# produces nothing; the harness falls back to its own player-facing question.
+b45c="$(mktemp -d "$TMPROOT/b45c.XXXX")"; new_repo_verify "$b45c" >/dev/null; setup_stubs "$b45c"
+stage_ticket_suite "$b45c" red; advance_base "$b45c" clean
+run_in "$b45c" reconcile --mission "$MID" >"$b45c.aux/p1.txt" 2>&1 || true     # round 1 → heal
+rc45c=0
+run_in "$b45c" reconcile --mission "$MID" >"$b45c.aux/p2.txt" 2>&1 || rc45c=$? # round 2 → escalate
+s45c="$(state_of "$b45c")"
+pj45c="$(mdir_of "$b45c")/pending.json"
+check "B45c. still escalates a design question when the re-author yields no text" \
+  "[ '$rc45c' -eq 20 ] && grep -q '\"reconcileStatus\": *\"escalated\"' '$s45c'"
+check "B45c. fallback question still raises pending.json and avoids code identifiers" \
+  "[ -f '$pj45c' ] && ! grep -Eqi 'drawScore|t-001|\.js|\.sh' '$pj45c'"
+
+# B45d (idempotency): once escalated, re-running the gate must NOT re-notify or
+# re-escalate (protects BUG-041's 'exactly one notification' contract under the
+# new earlier escalation).
+b45d="$(mktemp -d "$TMPROOT/b45d.XXXX")"; new_repo_verify "$b45d" >/dev/null; setup_stubs "$b45d"
+stage_ticket_suite "$b45d" red; advance_base "$b45d" clean
+run_in "$b45d" reconcile --mission "$MID" >"$b45d.aux/p1.txt" 2>&1 || true   # heal
+run_in "$b45d" reconcile --mission "$MID" >"$b45d.aux/p2.txt" 2>&1 || true   # escalate (notify)
+run_in "$b45d" reconcile --mission "$MID" >"$b45d.aux/p3.txt" 2>&1 || true   # already escalated → no-op
+check "B45d. an already-escalated reconcile does not fire a second notification" \
+  "[ \"\$(grep -c NOTIFY '$b45d.aux/notify.log')\" -eq 1 ]"
+check "B45d. an already-escalated reconcile never opens a PR" "! grep -q 'pr create' '$b45d.aux/gh.log'"
 
 # ==========================================================================
 echo
