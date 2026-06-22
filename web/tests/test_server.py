@@ -366,6 +366,30 @@ class FrontEndAssetsTest(unittest.TestCase):
         self.assertIn("isReconcileHealing(m) || isMerging(m.id)", js)
         self.assertIn("isReconcileHealing(mi) || isMerging(mi.id)", js)
 
+    def test_board_js_reapprove_has_optimistic_busy_state(self):
+        """BUG-070: the Reapprove (merge-heal awaiting-reapprove gate) button must
+        get the SAME optimistic busy treatment as the Merge button (BUG-044) — the
+        button is DISABLED on the very first click so a second click can't double-
+        fire the reapprove dispatch. doReapprove takes the clicked button and
+        disables it immediately (before dispatch returns), and every call site
+        (the card Reapprove gate, the card Retry-merge gate, and the detail-header
+        Reapprove) passes its button so the disable applies. The dispatch error
+        path re-arms (button.disabled = false), and the optimistic merge flag still
+        rides the shared MERGING set (markMerging / clearMergingOnState)."""
+        js = self._text("/board.js")
+        # doReapprove must accept a button arg and disable it immediately on click.
+        self.assertIn("function doReapprove(id, host, button)", js)
+        self.assertIn("if (button) { button.disabled = true;", js)
+        # it still applies the optimistic merge flag (shared with Merge, BUG-044).
+        self.assertIn("markMerging(id)", js)
+        # the error path re-arms the button so a failed dispatch is retryable.
+        self.assertIn("if (button) { button.disabled = false; }", js)
+        # every call site passes the clicked button so the disable actually applies
+        # (card Reapprove gate, card Retry-merge gate, detail-header Reapprove).
+        self.assertIn("doReapprove(m.id, ctrl, reBtn)", js)
+        self.assertIn("doReapprove(m.id, ctrl, retryBtn)", js)
+        self.assertIn("doReapprove(mi.id, null, rBtn)", js)
+
     def test_board_js_detail_header_verify_is_reconcile_gated(self):
         """BUG-049: the DETAIL-HEADER verify action must gate IDENTICALLY to the
         board card (cardControls) during a reconcile/merge/heal/resolving — a

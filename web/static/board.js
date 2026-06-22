@@ -410,9 +410,12 @@ function cardControls(m) {
   // ships the reconciled, re-tested tip — checked BEFORE the generic awaiting
   // branch (which would mislabel it "Answer ▸" and open the respond dialog).
   if (isReconcileAwaitingReapprove(m)) {
-    ctrl.appendChild(applyWriteState(btn("✓ Reapprove ▸", "go", function () {
-      doReapprove(m.id, ctrl);
-    })));
+    // BUG-070: capture the button so the click disables it immediately (mirror
+    // the Merge button, BUG-044) — no double-fire of the reapprove dispatch.
+    var reBtn = applyWriteState(btn("✓ Reapprove ▸", "go", function () {
+      doReapprove(m.id, ctrl, reBtn);
+    }));
+    ctrl.appendChild(reBtn);
     return ctrl;
   }
   // BUG-067: the merge FAILED (push/merge rejected — surfaced, not silent). It is
@@ -420,9 +423,11 @@ function cardControls(m) {
   // (Reapprove) so the captain can re-attempt after fixing the cause, styled as a
   // danger/attention affordance carrying the reason (reconcileNote, on the card).
   if (isReconcileMergeFailed(m)) {
-    ctrl.appendChild(applyWriteState(btn("↻ Retry merge ▸", "danger", function () {
-      doReapprove(m.id, ctrl);
-    })));
+    // BUG-070: same optimistic disable as the Reapprove gate above.
+    var retryBtn = applyWriteState(btn("↻ Retry merge ▸", "danger", function () {
+      doReapprove(m.id, ctrl, retryBtn);
+    }));
+    ctrl.appendChild(retryBtn);
     return ctrl;
   }
   if (m.awaiting) {
@@ -1745,9 +1750,13 @@ function renderDetail(mi) {
   if (isReconcileAwaitingReapprove(mi) || isReconcileMergeFailed(mi)) {
     clearMergingOnState(mi);
     var raff = verifyAffordance(mi);
-    actions.appendChild(applyWriteState(btn(raff.label, raff.cls, function () {
-      doReapprove(mi.id); closeOverlay();
-    })));
+    // BUG-070: disable the header Reapprove button on the first click (mirror the
+    // Merge button, BUG-044) before closing the overlay, so a fast double-click
+    // can't double-fire the reapprove dispatch.
+    var rBtn = applyWriteState(btn(raff.label, raff.cls, function () {
+      doReapprove(mi.id, null, rBtn); closeOverlay();
+    }));
+    actions.appendChild(rBtn);
   } else if (mi.awaiting) {
     actions.appendChild(applyWriteState(btn("Answer ▸", "danger", function () { openRespond(mi.id); })));
   } else if (mi.stage === "verify") {
@@ -2619,8 +2628,15 @@ function dispatchCardBusy(id, path, payload, host, label) {
    OPTIMISTIC merging busy-state immediately (markMerging + showCardBusy) so the
    card flips to "merging…" without a manual refresh (BUG-065), then rely on the
    board/SSE to land the real outcome (done, or the merge-failed attention state).
-   On a dispatch error we clear the optimistic flag so the card re-arms. */
-function doReapprove(id, host) {
+   On a dispatch error we clear the optimistic flag so the card re-arms.
+   BUG-070: mirror the Merge button (BUG-044) — the Reapprove button itself is
+   DISABLED + relabelled busy on the very first click (before the optimistic
+   markMerging / before the dispatch returns), so a second click can't re-fire
+   the reapprove dispatch while the merge is in flight. The disable is cleared on
+   a dispatch ERROR (re-arm) and the optimistic merge flag clears when the served
+   state advances out of awaiting-reapprove (clearMergingOnState) or via timeout. */
+function doReapprove(id, host, button) {
+  if (button) { button.disabled = true; button.textContent = "Merging PR…"; }
   markMerging(id);
   if (host) {
     var busy = workingNode("Merging the reconciled tip…");
@@ -2629,7 +2645,11 @@ function doReapprove(id, host) {
   }
   postWrite("/api/mission/" + enc(id) + "/reapprove", {},
     function () { /* board/SSE refresh shows the merge outcome */ },
-    function (msg) { clearMerging(id); setStatus(msg); refresh(); });
+    function (msg) {
+      clearMerging(id);
+      if (button) { button.disabled = false; }
+      setStatus(msg); refresh();
+    });
 }
 
 function addPills(host, pills) {
