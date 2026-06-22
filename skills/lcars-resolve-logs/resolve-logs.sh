@@ -711,8 +711,18 @@ if [ -n "$WAVE_PAUSED" ]; then
   pause_at "$WAVE_PAUSED"
   exit 0
 fi
+# BUG-064: a child that did not reach its Verify gate (stuck mid-flight, NOT
+# awaiting-human) must NOT throw away the consolidated gate for the children that
+# DID fold to verify. If at least one child reached verify, we fall through and
+# raise the parent's single consolidated re-verify gate for the resolved set,
+# surfacing the stuck child as still needing manual attention. Only when NOTHING
+# reached verify is there genuinely no gate to raise — then we error out as before.
+STUCK_NOTE=""
 if [ -n "$WAVE_ERRORED" ]; then
-  die "driving $WAVE_ERRORED did not reach its Verify gate (stage is now '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)') — resolve it manually with \`lcars run $WAVE_ERRORED\`, then re-run."
+  if [ "${#resolved[@]}" -eq 0 ]; then
+    die "driving $WAVE_ERRORED did not reach its Verify gate (stage is now '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)') — resolve it manually with \`lcars run $WAVE_ERRORED\`, then re-run."
+  fi
+  STUCK_NOTE="One logged bug did NOT reach its Verify gate and still needs attention: $WAVE_ERRORED (stage '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)'). Resolve it with \`lcars run $WAVE_ERRORED\`, then re-run \`lcars resolve-logs $PARENT_ID\` to fold it in."
 fi
 
 # --- THE SINGLE RE-VERIFY ASK ----------------------------------------------
@@ -732,6 +742,7 @@ noun="logged bugs"; [ "$n" -eq 1 ] && noun="logged bug"
 # this gate (answer it in the inbox) folds the children to Done. Sending the
 # parent back uses the parent's own feedback loop.
 ASK="$n $noun resolved on $PARENT_ID ($PARENT_TITLE)'s branch — ready for your single re-verify. Re-inspect the fixes (they ride this Mission's PR — no per-bug PR), then ANSWER this gate to accept them (each logged bug is folded to Done) or send the Mission back with \`lcars feedback $PARENT_ID\`."
+[ -n "$STUCK_NOTE" ] && ASK="$ASK $STUCK_NOTE"
 
 # pending.json on the PARENT (the answer inbox reads this).
 {
@@ -761,6 +772,10 @@ LCARS_CFG="$CONFIG" "$NOTIFY_BIN" "$PARENT_ID" "awaiting-human" "$ASK" >/dev/nul
 # --- summary ---------------------------------------------------------------
 case "$PARENT_ISSUE" in ''|null) plabel="$PARENT_ID" ;; *) plabel="#$PARENT_ISSUE" ;; esac
 printf '%d %s resolved to Verify and folded onto %s (%s):%s\n' "$n" "$noun" "$plabel" "$PARENT_TITLE" "$list_txt"
+if [ -n "$STUCK_NOTE" ]; then
+  echo
+  echo "⚠ $STUCK_NOTE"
+fi
 echo
 echo "Raised ONE consolidated re-verify gate on $PARENT_ID and pinged you once."
 echo "The fixes ride this Mission's PR — there is NO per-bug PR. Re-inspect them, then:"
