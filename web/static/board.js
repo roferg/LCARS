@@ -135,6 +135,46 @@ function isStarting(id) {
   return id != null && !!STARTING[String(id)];
 }
 
+/* BUG-044: optimistic "merging" set. After BUG-040 made the Merge (approve)
+   click fire-and-forget, the card keeps rendering the clickable "✓ Review PR ▸"
+   for ~2-3s until the next refresh/SSE delivers the real reconcileStatus that
+   flips it to the disabled "◐ Merge heal in progress…" (BUG-039). In that gap a
+   second click fires ANOTHER approve → a concurrent reconcile/self-heal (wasted
+   spend + worktree clash). We mark the mission id "merging" on click and treat
+   it as actively healing across every board refresh until the real state arrives
+   (reconcileStatus / awaiting / left verify — see clearMergingOnState) OR a
+   safety timeout fires (~30s) so a failed dispatch never wedges the card.
+   Keyed by mission id → timeout handle — mirrors the STARTING pattern (UX-17). */
+var MERGING = Object.create(null);
+var MERGING_TIMEOUT_MS = 30000;
+
+function markMerging(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (MERGING[key]) clearTimeout(MERGING[key]);
+  MERGING[key] = setTimeout(function () { clearMerging(key); refresh(); },
+    MERGING_TIMEOUT_MS);
+}
+function clearMerging(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (MERGING[key]) { clearTimeout(MERGING[key]); delete MERGING[key]; }
+}
+function isMerging(id) {
+  return id != null && !!MERGING[String(id)];
+}
+/* BUG-044: drop the optimistic merging flag once the REAL state arrives — the
+   reconcile started (reconcileStatus truthy), it escalated to a human gate
+   (awaiting), or the mission left verify / went done. Mirrors how STARTING is
+   cleared in runState once m.running flips true. Call from cardControls render. */
+function clearMergingOnState(m) {
+  if (!m || m.id == null || !isMerging(m.id)) return;
+  if (m.reconcileStatus || m.awaiting
+      || (m.stage || "").toLowerCase() !== "verify") {
+    clearMerging(m.id);
+  }
+}
+
 /* UX-17/UX-20/UX-21: the single source of truth for a mission's run/pause
    lifecycle, derived purely client-side from the adapter-neutral shape (running,
    paused) plus the optimistic STARTING set. Every running-pulse / in-flight /
@@ -370,10 +410,14 @@ function cardControls(m) {
       ctrl.appendChild(resolving);
       return ctrl;
     }
+    // BUG-044: drop the optimistic merging flag once the real state has arrived.
+    clearMergingOnState(m);
     // BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — switch the card OFF
     // "Review PR" into a state that reads as actively healing and PREVENTS a
     // Merge. A disabled "Merge heal in progress…" affordance, no openVerify.
-    if (isReconcileHealing(m)) {
+    // BUG-044: an OPTIMISTIC merge (just clicked, real reconcileStatus not yet
+    // delivered) reads the same — render it non-clickable from the first click.
+    if (isReconcileHealing(m) || isMerging(m.id)) {
       var healing = btn("◐ Merge heal in progress…", "warn", null);
       healing.disabled = true;
       healing.title = "Self-healing the merge against main — Merge is unavailable "
@@ -1310,7 +1354,9 @@ function openVerify(id) {
     // BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — no merge is possible.
     // Replace the primary action with a disabled "Merge heal in progress…"
     // affordance and drop Send Back (the heal owns the branch right now).
-    if (isReconcileHealing(mi)) {
+    // BUG-044: an OPTIMISTIC merge (clicked, real reconcileStatus not yet here)
+    // gates the same way so a re-opened dialog can't fire a second approve.
+    if (isReconcileHealing(mi) || isMerging(mi.id)) {
       m.body.appendChild(noteEl(
         "A self-heal is reconciling this mission with main — re-testing and "
         + "healing the merged branch to green. Merge becomes available once it "
@@ -1352,10 +1398,16 @@ function openVerify(id) {
       // BUG-040: the Merge dispatch is fire-and-forget server-side and returns
       // promptly — close the dialog on a successful dispatch and let the board
       // (SSE/refresh) reflect the evolving state (reconciling → escalated → done).
+      // BUG-044: OPTIMISTICALLY mark the card busy on the very first click so the
+      // card/dialog become non-clickable immediately (before the real
+      // reconcileStatus arrives), preventing a second approve → concurrent
+      // reconcile. Cleared when the real state lands (clearMergingOnState) or by
+      // the safety timeout. On a dispatch ERROR we clear it so the card re-arms.
+      markMerging(id);
       merge.disabled = true; merge.textContent = busyLabel;
       postWrite("/api/mission/" + enc(id) + "/verify", { decision: "approve" },
         function () { closeOverlay(); },
-        function (msg) { merge.disabled = false; merge.textContent = mergeLabel; showErr(err, msg); });
+        function (msg) { clearMerging(id); merge.disabled = false; merge.textContent = mergeLabel; showErr(err, msg); });
     }));
     if (!isBugChild && !inReview) {
       merge.disabled = true;

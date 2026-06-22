@@ -324,6 +324,22 @@ class FrontEndAssetsTest(unittest.TestCase):
         self.assertIn("markViewOnly", js)
         self.assertIn("writesActive", js)
 
+    def test_board_js_merge_has_optimistic_busy_state(self):
+        """BUG-044: the Merge (approve) click must OPTIMISTICALLY mark the card
+        busy so it is non-clickable from the first click until the real
+        reconcileStatus arrives — no double-dispatch. Mirrors the STARTING
+        pattern (UX-17): a MERGING set with mark/clear/is helpers + safety
+        timeout, gated like isReconcileHealing in the card + verify dialog."""
+        js = self._text("/board.js")
+        for fn in ("markMerging", "clearMerging", "isMerging"):
+            self.assertIn(fn, js, "board.js must define %s" % fn)
+        # the optimistic set + a safety timeout (mirror STARTING_TIMEOUT_MS).
+        self.assertIn("MERGING", js)
+        self.assertIn("MERGING_TIMEOUT_MS", js)
+        # the card/dialog gate must treat an optimistic merge like a live heal.
+        self.assertIn("isReconcileHealing(m) || isMerging(m.id)", js)
+        self.assertIn("isReconcileHealing(mi) || isMerging(mi.id)", js)
+
     def test_board_css_has_detail_twopane_and_screen_classes(self):
         css = self._text("/board.css")
         # detail two-pane (mock .detail-grid / .det-head / .det-body / .feed)
