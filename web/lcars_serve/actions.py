@@ -1064,15 +1064,29 @@ class Actions(object):
         return {"children": children, "count": len(children),
                 "parent": mid, "filed": True, "overrides": resolved}
 
-    def log_run(self, mid, prds=None, overrides=None):
+    def log_run(self, mid, prds=None, overrides=None, confirm=False):
         """POST /api/mission/<id>/log/run — file authored bugs, then resolve.
 
-        If `prds` (the authored bug PRDs from the preview) are supplied, FIRST
-        dispatch log.sh --parent <id> --prd <each> (+ paired --model-override) to
-        persist one linked bug mission per PRD (ADR-002), THEN kick resolve-logs to
-        drive them to the one consolidated re-verify gate. With no prds it just
-        resolves whatever is already linked (the S68 read-only batch). The captain
-        overrides (S74) pair positionally with the prds and are persisted by log.sh.
+        BUG-059 — the human cost-review GATE. Filing a logged bug computes its cost
+        estimate (log.sh runs the estimator + persists estimate.json) but it MUST
+        NOT auto-proceed into running the fix: the captain has to review the
+        estimate, optionally re-steer the model, and click an explicit "Go" first.
+
+        So the dispatch of resolve-logs is GATED behind `confirm`:
+          • `prds` supplied AND NOT `confirm` ⇒ this is the FILE step. File the
+            children (so the estimator runs + each estimate.json exists), return the
+            estimate-enriched review, and STOP — do NOT dispatch resolve. Walking
+            away here leaves the bugs parked, filed-but-idle. (Identical to the
+            dedicated `log_file` step; this keeps the single-endpoint flow gated
+            too, so a UI that posts prds to /log/run never auto-runs.)
+          • no prds ⇒ the bugs are ALREADY filed (the captain reviewed the estimate
+            in the breakdown). This IS the explicit Go: apply any edited overrides
+            and dispatch resolve-logs.
+          • `prds` supplied AND `confirm` ⇒ the explicit one-shot "file & go" power
+            path: file the children then dispatch in one call.
+
+        The captain overrides (S74) pair positionally with the prds and are
+        persisted by log.sh.
         """
         self._require_mission(mid)
         # BUG-C: the child bug missions inherit the PARENT's persisted engine.
@@ -1082,6 +1096,13 @@ class Actions(object):
         engine = self._persisted_worker_bin(mid)
         env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
         prds = [p for p in (prds or []) if isinstance(p, str) and p.strip()]
+        # BUG-059 GATE: filing must HOLD for the human. When prds are supplied
+        # without an explicit confirm, this is the File step — file + return the
+        # estimate review and STOP (the dispatch waits for the explicit Go, which
+        # re-posts with no prds once the bugs are filed). Delegate to log_file so
+        # the file-then-review contract is shared and never drifts.
+        if prds and not confirm:
+            return self.log_file(mid, prds=prds, overrides=overrides)
         file_report = self._file_children(mid, prds, overrides, env_extra)
         # S74 follow-up CHANGE 4: when there are NO prds the bugs are ALREADY
         # filed (the captain edited the steers in the post-File breakdown, then

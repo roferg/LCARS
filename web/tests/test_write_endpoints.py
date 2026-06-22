@@ -619,10 +619,12 @@ class LogTest(WriteEndpointBase):
         self.assertTrue(self._not_invoked("resolve"))
 
     def test_log_run_threads_per_bug_overrides_to_log(self):
-        """The File & Run path must also carry per-bug overrides into log.sh so a
-        captain who steers then runs in one click still persists each steer."""
+        """The explicit one-shot file & run path (confirm=True) must also carry
+        per-bug overrides into log.sh so a captain who steers then confirms in one
+        call still persists each steer."""
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
-        actions.log_run("m-001", prds=["# Bug: a\n\nb"], overrides=["reasoning:opus"])
+        actions.log_run("m-001", prds=["# Bug: a\n\nb"],
+                        overrides=["reasoning:opus"], confirm=True)
         log_rec = self._record("log")
         self.assertIn("--model-override reasoning:opus", log_rec)
 
@@ -812,7 +814,8 @@ class LogTest(WriteEndpointBase):
         fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
                         worker_bin="copilot")
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # no default
-        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"])
+        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"],
+                        confirm=True)
         # log.sh filing stays BLOCKING → its record is present synchronously.
         log_rec = self._record("log")
         self.assertIn("ENV_WORKER_BIN: copilot", log_rec)
@@ -826,7 +829,7 @@ class LogTest(WriteEndpointBase):
         """No persisted parent engine ⇒ log_run must not invent one (the dispatch
         env's LCARS_WORKER_BIN stays whatever the daemon default is — empty here)."""
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # no default
-        actions.log_run("m-001", prds=["# Bug: x\n\nb"])
+        actions.log_run("m-001", prds=["# Bug: x\n\nb"], confirm=True)
         log_rec = self._record("log")
         self.assertIn("ENV_WORKER_BIN: \n", log_rec)
 
@@ -842,7 +845,7 @@ class LogTest(WriteEndpointBase):
         scripts["resolve"] = _sleep_stub(rec, sleep_secs=3)
         actions = Actions(repo_root=self.tmp, scripts=scripts)
         t0 = time.time()
-        actions.log_run("m-001", prds=["# Bug: x\n\nb"])
+        actions.log_run("m-001", prds=["# Bug: x\n\nb"], confirm=True)
         elapsed = time.time() - t0
         # blocking would take >=3s; fire-and-forget returns near-instantly.
         self.assertLess(elapsed, 1.5,
@@ -873,7 +876,7 @@ class LogTest(WriteEndpointBase):
         with mock.patch.object(subprocess, "Popen", _FakePopen), \
                 mock.patch.object(subprocess, "run", _rec_run):
             actions = Actions(repo_root=self.tmp, scripts=self.scripts)
-            actions.log_run("m-001", prds=["# Bug: x\n\nb"])
+            actions.log_run("m-001", prds=["# Bug: x\n\nb"], confirm=True)
 
         def _is(key, cmds):
             script = self.scripts[key]
@@ -898,7 +901,8 @@ class LogTest(WriteEndpointBase):
         fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
                         worker_bin="copilot")
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
-        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"])
+        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"],
+                        confirm=True)
         # log.sh ran synchronously (blocking) → its record is present immediately.
         log_rec = self._record("log")
         self.assertIn("--parent m-001", log_rec)
@@ -907,6 +911,74 @@ class LogTest(WriteEndpointBase):
         res_rec = self._record_when("resolve", "ENV_WORKER_BIN: copilot")
         self.assertIn("ENV_WORKER_BIN: copilot", res_rec)
         self.assertIn("m-001", res_rec)
+
+    # ── BUG-059: filing a logged bug HOLDS for the human cost review ──────────
+    # Filing computes the estimate but must NOT auto-proceed into running the
+    # fix — the captain reviews the cost, may re-steer the model, then clicks an
+    # explicit Go. So `log/run` with prds (but no confirm) FILES + estimates and
+    # stops; resolve is dispatched ONLY on the explicit Go (a re-post with no
+    # prds, the bugs already filed) or the explicit confirm power path. ─────────
+    def test_log_run_with_prds_does_not_dispatch_before_confirm(self):
+        """Filing via /log/run (prds, no confirm) must FILE the children + return
+        their estimates but NOT dispatch resolve-logs — the human gate. (BUG-059:
+        the captain hit File and walked away and it had already dispatched.)"""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        out = actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"],
+                              overrides=["all:opus"])
+        # the bug WAS filed (so its estimate gets computed) ...
+        log_rec = self._record("log")
+        self.assertIn("--parent m-001", log_rec)
+        self.assertIn("--model-override all:opus", log_rec)
+        # ... and the response carries the filed children for the cost review.
+        self.assertTrue(out.get("filed"))
+        self.assertIn("children", out)
+        # but resolve-logs was NOT dispatched — filing HELD for the human Go.
+        # (poll briefly: a fire-and-forget spawn would show up async if it ran.)
+        self.assertEqual(self._record_when("resolve", "m-001", timeout=0.5), "",
+                         "filing must HOLD — resolve must not run before the Go")
+
+    def test_log_run_endpoint_with_prds_does_not_dispatch_before_confirm(self):
+        """Over HTTP: POST /log/run {prds} (no confirm) files + estimates and
+        HOLDS — no resolve dispatch (the daemon gate, end to end)."""
+        status, body = self._post(
+            "/api/mission/m-001/log/run",
+            {"prds": ["# Bug: save\n\nthe save fails"]})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["state"].get("filed"))
+        self.assertIn("--parent m-001", self._record("log"))
+        self.assertEqual(self._record_when("resolve", "m-001", timeout=0.5), "",
+                         "the endpoint must HOLD on filing — no auto-run")
+
+    def test_log_run_explicit_go_after_filing_dispatches(self):
+        """The explicit Go: with the bugs ALREADY filed (no prds), /log/run
+        applies the reviewed override and DISPATCHES resolve-logs (the human
+        confirmed after seeing the estimate)."""
+        import json
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_run("m-001", prds=[], overrides=["all:opus"])
+        # the reviewed override is persisted onto the already-filed child ...
+        p = os.path.join(fx.mission_dir(self.tmp, "m-bug1"), "state.json")
+        with open(p) as fh:
+            self.assertEqual(json.load(fh).get("modelOverride"),
+                             {"scope": "all", "tier": "opus"})
+        # ... and NOW resolve-logs is dispatched (the Go).
+        self.assertIn("m-001", self._record_when("resolve", "m-001"))
+
+    def test_log_run_confirm_power_path_files_and_dispatches(self):
+        """The explicit one-shot power path: confirm=True files the children AND
+        dispatches resolve in one call (the deliberate file-and-go, not the
+        default UI flow)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"],
+                        confirm=True)
+        self.assertIn("--parent m-001", self._record("log"))
+        self.assertIn("m-001", self._record_when("resolve", "m-001"))
 
 
 class LiveChannelTest(WriteEndpointBase):

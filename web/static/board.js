@@ -1461,11 +1461,12 @@ function openLog(id) {
           prev.disabled = false; prev.textContent = "Preview"; showErr(err, msg);
         });
     }));
-    // S74: the captain reviews each bug's ESTIMATE (cost + difficulty pills +
-    // suggested model) and can STEER the model before running fixes. We FILE the
-    // authored bugs first (so log.sh runs the estimator + persists each estimate),
-    // re-render the panel with the per-bug estimate + the now-applied override,
-    // then "Run Fixes" resolves the already-filed batch.
+    // S74 / BUG-059: the captain reviews each bug's ESTIMATE (cost + difficulty
+    // pills + suggested model) and can STEER the model BEFORE anything runs. We
+    // FILE the authored bugs first (so log.sh runs the estimator + persists each
+    // estimate.json) and re-render the panel with the per-bug estimate + override
+    // box — then we HOLD. Filing NEVER auto-proceeds into the fix; only the
+    // explicit "Go" (revealed after File) resolves the already-filed batch.
     var file = applyWriteState(btn("File", null, function () {
       // BUG-024: the File/preview control kicks off the async estimate (log.sh
       // runs the estimator on every child). It MUST NOT be re-clickable while the
@@ -1500,20 +1501,27 @@ function openLog(id) {
           showErr(err, msg);
         });
     }));
-    var run = applyWriteState(btn("Run Fixes ▸", "warn big", function () {
+    var run = applyWriteState(btn("Go ▸", "go big", function () {
+      // BUG-059 — the explicit human GO. The bugs are ALWAYS filed first (the
+      // File step computed + showed each estimate and HELD); this button is the
+      // captain's confirm-after-review, so it only RESOLVES the already-filed
+      // batch. We never file+run in one click here — filing must hold for the
+      // cost review (the combined path is the daemon's confirm:true power path,
+      // not the UI default). If the bugs somehow aren't filed yet, refuse rather
+      // than auto-proceed.
+      if (!authored.filed) {
+        showErr(err, "Click File first to estimate each fix, then Go to run.");
+        return;
+      }
+      err.hidden = true;
       // BUG-G (front-end half): the backend dispatches the fixes fire-and-forget
       // and returns promptly, so close the dialog IMMEDIATELY on dispatch
-      // (optimistic — the same close-on-dispatch pattern as the Start modal). The
-      // bugs are already filed (File for Review), so this only resolves them.
-      err.hidden = true;
+      // (optimistic — the same close-on-dispatch pattern as the Start modal).
       // S74 follow-up CHANGE 4: the per-bug override box lives in the post-File
-      // breakdown, so even on the resolve-already-filed path we send the edited
+      // breakdown, so on the resolve-already-filed path we send the edited
       // overrides — the backend (_apply_child_overrides) persists each onto its
       // already-filed child's state.json before dispatching the batch.
-      var payload = authored.filed
-        ? { overrides: authored.overrides || [] }       // resolve already-filed
-        : { prds: authored.prds || [],                  // file + resolve in one go
-            overrides: authored.overrides || [] };
+      var payload = { overrides: authored.overrides || [] };  // resolve filed
       closeOverlay();
       setStatus("Fixes dispatched — child bug missions are being driven…");
       postWrite("/api/mission/" + enc(id) + "/log/run", payload,

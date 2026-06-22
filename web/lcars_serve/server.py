@@ -25,7 +25,11 @@ with 403. Each write shells out to the matching `lcars` skill (ADR-002):
   POST /api/mission/<id>/verify          approve | send-back     → approve|feedback.sh
   POST /api/mission/<id>/log             preview/author child bugs→ worker | (read)
   POST /api/mission/<id>/log/file        file logged bugs (+estimate), return review → log.sh
-  POST /api/mission/<id>/log/run         file + drive logged bugs → log.sh+resolve-logs.sh
+  POST /api/mission/<id>/log/run         drive ALREADY-FILED logged bugs (the
+                                         explicit Go) → resolve-logs.sh. Posting
+                                         prds WITHOUT confirm:true is gated — it
+                                         files+estimates and HOLDS (BUG-059); only
+                                         confirm:true file-and-runs in one call.
 
 The Align console is multi-turn: each POST spawns ONE cold worker turn (engine
 $LCARS_WORKER_BIN) driving the EXISTING lcars-file grilling instructions with the
@@ -188,7 +192,8 @@ def _build_handler(adapter, poll_interval, actions=None):
                                         overrides=body.get("overrides"))
             if verb == "log/run":
                 return actions.log_run(mid, prds=body.get("prds"),
-                                       overrides=body.get("overrides"))
+                                       overrides=body.get("overrides"),
+                                       confirm=bool(body.get("confirm")))
             raise _ActionError(404, "no such action: %s" % verb)
 
         def _read_json_body(self):
