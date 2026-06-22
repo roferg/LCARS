@@ -304,6 +304,16 @@ class FrontEndAssetsTest(unittest.TestCase):
         self.assertIn("adrs", js)
         self.assertIn("criteria", js)
 
+    def test_board_js_align_submit_allows_empty_answer(self):
+        """BUG-073: the Align console Submit must NOT block on an empty answer.
+        An empty Submit = 'nothing to add / accept the recommendation /
+        proceed'. The old guard ('Pick the recommendation or type an answer.'
+        with an early return) forced filler text; it must be gone so an empty
+        answer POSTs through to /answer (which now treats empty as proceed)."""
+        js = self._text("/board.js")
+        self.assertNotIn("Pick the recommendation or type an answer.", js,
+                         "the empty-answer block must be removed (BUG-073)")
+
     def test_board_js_has_all_eight_screens(self):
         js = self._text("/board.js")
         for fn in ("openFile", "openLaunch", "openRespond", "openVerify",

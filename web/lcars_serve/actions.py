@@ -135,6 +135,14 @@ that question object MUST carry "closing":true so the captain's UI can show the
 "estimating & creating mission" phase when they confirm. Do NOT emit status:done
 until the captain has answered that closing question affirmatively.
 
+CLOSING-QUESTION BREVITY (UI parity, BUG-072): the captain's UI renders the
+assembled PRD LIVE in a panel beside the question from your "prd" field. So the
+closing question "text" must be ONLY the concise lead-in — e.g. "Perfect — the
+complete PRD is on the right. Anything else before I lock it?" — and must NOT
+restate or inline the PRD body (Type/Goal/Acceptance Criteria/Out of Scope/
+Constraints). Put the full PRD in the "prd" field as always; never duplicate it
+into the question text.
+
 The PRD/ADR shapes and the required sections are exactly as the skill specifies.
 === lcars-file skill (the Align interview — follow it) ===
 """
@@ -150,6 +158,14 @@ OUTPUT CONTRACT — print ONLY a single JSON object (no prose around it):
   {"bugs":["<full bug PRD markdown #1>", "<full bug PRD markdown #2>", ...]}
 === lcars-log skill (the bug split — follow it) ===
 """
+
+
+# BUG-073: the signal an EMPTY Submit feeds the grill — "nothing to add, accept
+# the recommendation, proceed". The grill already handles "proceed"/"go ahead"
+# (see the closing turn in skills/lcars-file/SKILL.md). Spelled out so the worker
+# treats it as the captain's affirmative, not as a new requirement.
+_PROCEED_ANSWER = ("(no additional input — accept your recommendation and "
+                   "proceed)")
 
 
 def _extract_json(text):
@@ -187,6 +203,37 @@ def _extract_json(text):
                         break
         start = text.find("{", start + 1)
     return None
+
+
+# BUG-072: markers that signal a PRD body has begun inside a question's text.
+# The closing-confirm question should be just the concise lead-in; if the worker
+# inlines the PRD, the text crosses into PRD territory at the FIRST of these.
+_PRD_BODY_MARKERS = re.compile(
+    r"(?im)^\s*(?:#\s*Mission\s*:|\*\*Type\*\*\s*:|\*\*Goal\*\*\s*:|"
+    r"\*\*Acceptance\s+Criteria\*\*\s*:|\*\*Out\s+of\s+Scope\*\*\s*:|"
+    r"\*\*Constraints\*\*\s*:)")
+
+
+def _strip_inlined_prd(question_text, prd):
+    """Return `question_text` with any inlined PRD body removed (BUG-072).
+
+    The closing/confirm question must be a concise lead-in only — the PRD already
+    flows to the live-PRD panel via the `prd` field. A worker that restates the
+    PRD inside the question body crosses into PRD territory at the first PRD
+    section marker (`# Mission:`, `**Type:**`, `**Goal:**`, …); truncate there and
+    keep just the lead-in. If the whole question IS the PRD (no lead-in), or there
+    is no marker, fall back gracefully: prefer a non-empty lead-in, else leave the
+    text untouched so we never blank the question.
+    """
+    if not question_text:
+        return question_text
+    m = _PRD_BODY_MARKERS.search(question_text)
+    if not m:
+        return question_text
+    lead = question_text[:m.start()].rstrip()
+    # only strip if there's a real lead-in to keep; if the question is ALL PRD
+    # (marker at the very start), leave it as-is rather than emit an empty prompt.
+    return lead if lead else question_text
 
 
 def _prd_title(prd):
@@ -461,8 +508,13 @@ class Actions(object):
         if sess is None:
             raise ActionError(404, "no such align session: %s" % sid)
         answer = (answer or "").strip()
+        # BUG-073: an EMPTY answer is NOT an error — it means "nothing to add /
+        # accept the recommendation / proceed". Submit must work with a blank box
+        # so the captain never has to type filler to advance. Feed the warm grill
+        # a clear proceed/accept signal (the grill already handles "proceed"); the
+        # recommendation it surfaced this turn stands as the captain's pick.
         if not answer:
-            raise ActionError(400, "missing required field: answer")
+            answer = _PROCEED_ANSWER
         if sess.done:
             raise ActionError(409, "align session already completed")
         # attach the answer to the last asked question.
@@ -507,6 +559,13 @@ class Actions(object):
         q = turn.get("question") or {}
         if isinstance(q, str):
             q = {"text": q}
+        # BUG-072: the closing/confirm question must be a CONCISE lead-in — never
+        # the whole PRD inlined. The PRD already flows to the `prd` field (the
+        # live "PRD · BUILDING LIVE" right panel), so a worker that restates it in
+        # the question body just duplicates it. Strip any inlined PRD out of the
+        # question text, keeping only the lead-in (the PRD stays in sess.prd).
+        if q.get("text"):
+            q["text"] = _strip_inlined_prd(q["text"], sess.prd)
         sess.transcript.append({"question": q.get("text", ""), "answer": None})
         return {"sessionId": sid, "status": "question",
                 "question": q, "prd": sess.prd}

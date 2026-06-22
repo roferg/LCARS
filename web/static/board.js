@@ -918,8 +918,12 @@ function renderAlignConsole(state) {
   }
 
   submit.onclick = function () {
+    // BUG-073: an EMPTY answer is allowed — it means "nothing to add / accept
+    // the recommendation / proceed". Do NOT block on a blank box; the server
+    // treats an empty answer as a proceed signal (and the grill's surfaced
+    // recommendation stands). Typing an answer still overrides the recommendation
+    // exactly as before.
     var answer = free.value.trim() || picked.val || "";
-    if (!answer) { showErr(err, "Pick the recommendation or type an answer."); return; }
     submit.disabled = true; submit.textContent = "Working…";
     err.hidden = true;
     // UX-2: the worker turn (and, on the final answer, the file.sh hand-off)

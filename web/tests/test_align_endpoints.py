@@ -283,6 +283,125 @@ class AlignAnswerTest(AlignBase):
             self._post("/api/align/no-such-session/answer", {"answer": "x"})
         self.assertEqual(cm.exception.code, 404)
 
+    def test_empty_answer_proceeds_does_not_400(self):
+        """BUG-073: an EMPTY answer = 'nothing to add / accept the
+        recommendation / proceed'. The endpoint must NOT 400 (require text); it
+        must advance the turn, feeding the warm worker a 'proceed' signal (the
+        grill already handles 'proceed'/'go ahead')."""
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: G\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": "Anything else before I file this?",
+                          "recommended": "Go ahead", "closing": True},
+             "prd": "# Mission: G\n\n**Type:** feature\n**Goal:** ...\n"},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        # empty answer must be accepted and advance to the next question.
+        status, ans = self._post("/api/align/%s/answer" % sid, {"answer": ""})
+        self.assertEqual(status, 200)
+        self.assertEqual(ans["state"]["status"], "question")
+        self.assertEqual(ans["state"]["question"]["text"],
+                         "Anything else before I file this?")
+        # the worker turn must have carried a proceed/accept signal (not blank),
+        # so the grill knows the captain had nothing to add.
+        cont = self._prompt_turns()[1]
+        self.assertTrue(
+            "proceed" in cont.lower() or "accept" in cont.lower()
+            or "nothing to add" in cont.lower(),
+            "an empty answer must reach the worker as a proceed/accept signal")
+
+    def test_missing_answer_field_proceeds(self):
+        """BUG-073: a body with NO answer field at all is also 'proceed' — the
+        captain hit Submit with an empty box (the client may omit the key)."""
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: G\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": "Anything else before I file this?",
+                          "closing": True},
+             "prd": "# Mission: G\n\n**Type:** feature\n**Goal:** ...\n"},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        status, ans = self._post("/api/align/%s/answer" % sid, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(ans["state"]["status"], "question")
+
+
+class AlignClosingQuestionTest(AlignBase):
+    """BUG-072: the final-confirm (closing) question must be a CONCISE lead-in —
+    it must NOT inline the entire PRD body. The PRD already flows to the `prd`
+    field (rendered in the live 'PRD · BUILDING LIVE' right panel); duplicating
+    it into the question text is redundant. The daemon must strip a PRD body the
+    worker inlines into the closing question so only the lead-in survives, while
+    the `prd` field keeps the full PRD."""
+
+    _FULL_PRD = ("# Mission: Gamification\n\n"
+                 "**Type:** feature\n\n"
+                 "**Goal:** Add XP, badges and a leaderboard.\n\n"
+                 "**Acceptance Criteria:**\n- XP is awarded on completion\n"
+                 "- Badges unlock at thresholds\n\n"
+                 "**Out of Scope:**\n- Social sharing\n\n"
+                 "**Constraints:**\n- Reuse the existing XP service\n")
+
+    def test_closing_question_does_not_inline_full_prd_body(self):
+        # the worker (mis)behaves like the bug report: it inlines the WHOLE PRD
+        # into the closing question text AND also returns it in the prd field.
+        bad_question = (
+            "Perfect. Here's the complete PRD I'll file — anything else before "
+            "I lock it?\n\n" + self._FULL_PRD)
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: Gamification\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": bad_question, "closing": True},
+             "prd": self._FULL_PRD},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        _, ans = self._post("/api/align/%s/answer" % sid,
+                            {"answer": "On completion"})
+        self.assertEqual(ans["state"]["status"], "question")
+        qtext = ans["state"]["question"]["text"]
+        # the concise lead-in survives ...
+        self.assertIn("anything else", qtext.lower())
+        # ... but the PRD body sections must NOT be duplicated into the question.
+        self.assertNotIn("Acceptance Criteria", qtext,
+                         "closing question must not inline the PRD body")
+        self.assertNotIn("Out of Scope", qtext)
+        self.assertNotIn("Reuse the existing XP service", qtext)
+        # the full PRD still flows to the prd field (the live right panel).
+        self.assertIn("Acceptance Criteria", ans["state"]["prd"])
+        self.assertIn("Reuse the existing XP service", ans["state"]["prd"])
+
+    def test_clean_closing_question_is_left_untouched(self):
+        # a worker that already keeps the closing question concise must pass
+        # through verbatim (the strip is a no-op when there's no inlined PRD).
+        clean = ("Perfect — the complete PRD is on the right. Anything else "
+                 "before I lock it?")
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: Gamification\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": clean, "closing": True},
+             "prd": self._FULL_PRD},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        _, ans = self._post("/api/align/%s/answer" % sid,
+                            {"answer": "On completion"})
+        self.assertEqual(ans["state"]["question"]["text"], clean)
+
 
 class AlignDoneTest(AlignBase):
     def test_done_dispatches_file_script_with_prd(self):
