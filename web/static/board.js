@@ -1729,7 +1729,11 @@ function renderDetail(mi) {
     actions.appendChild(applyWriteState(btn("▶ Start", "go", function () { openLaunch(mi.id); })));
   }
   // Mission Log is available at every stage (not on terminal Done missions).
-  if (mi.stage !== "done") {
+  // BUG-046: a logged-bug CHILD (type=="bug" && parentMission set, the isLogBug
+  // predicate that gates the rest of the logged-bug chrome) is itself a bug entry
+  // — you cannot log bugs AGAINST a logged bug. So the button renders for
+  // top-level missions only, never for a bug child.
+  if (mi.stage !== "done" && !isLogBug(mi)) {
     actions.appendChild(applyWriteState(btn("Mission Log", null, function () { openLog(mi.id); })));
   }
   row1.appendChild(actions);
@@ -1891,22 +1895,47 @@ function activeRuntimeNode(mi, opts) {
     if (!isInFlight(mi)) return null;
     base = 0;
   }
+  // BUG-047: `activeSecondsAt` is the SERVER wall-clock (seconds) at which `base`
+  // (activeSeconds) was computed. The live display = base + (now - activeSecondsAt)
+  // while running — so it is correct on EVERY render/re-open, not re-based from the
+  // stale snapshot (which equals the total only up to the last stage boundary, so a
+  // close→re-open mid-stage used to reset the clock). Client/server share the host
+  // clock, so this is accurate to a few seconds. Absent ⇒ fall back to render-time
+  // anchor (old behaviour) so a pre-anchor shape still ticks.
+  var anchorAt = mi && typeof mi.activeSecondsAt === "number" ? mi.activeSecondsAt : null;
+  function liveSeconds() {
+    // FREEZE when not running (awaiting/paused/queued/verify/done) — shows the
+    // frozen total, preserving "excludes time awaiting you" semantics: the
+    // in-flight delta only advances while actively running.
+    if (!isInFlight(mi)) return base;
+    var nowSec = Date.now() / 1000;
+    if (anchorAt != null) {
+      return base + Math.max(0, Math.floor(nowSec - anchorAt));
+    }
+    return base; // no anchor → freeze at base (the tick below handles fallback).
+  }
   var node = el("div", "active-runtime");
   node.title = "active runtime — excludes time awaiting you";
-  var val = el("span", "ar-val", "Active " + fmtDuration(base));
+  var val = el("span", "ar-val", "Active " + fmtDuration(liveSeconds()));
   node.appendChild(val);
   if (!opts.compact) {
     node.appendChild(el("span", "ar-hint", "excludes time awaiting you"));
   }
-  // UX-32: live tick only while running. Anchor to the wall clock at render time
-  // so each second adds to the authoritative server base; the next board refresh
-  // rebuilds this node (snap to server). Frozen (no interval) when not running.
+  // UX-32/BUG-047: live tick only while running. Recompute from the SERVER anchor
+  // every tick (and on every render this node is rebuilt, re-reading the anchor),
+  // so a re-open shows true elapsed from the anchor rather than re-basing from a
+  // stale snapshot. Frozen (no interval) when not running.
   if (isInFlight(mi)) {
-    var anchor = Date.now();
+    var fallbackAnchor = Date.now();
     var timer = setInterval(function () {
       if (!document.body.contains(val)) { clearInterval(timer); return; }
-      var elapsed = Math.floor((Date.now() - anchor) / 1000);
-      val.textContent = "Active " + fmtDuration(base + elapsed);
+      var secs;
+      if (anchorAt != null) {
+        secs = liveSeconds();
+      } else {
+        secs = base + Math.floor((Date.now() - fallbackAnchor) / 1000);
+      }
+      val.textContent = "Active " + fmtDuration(secs);
     }, 1000);
     DETAIL_TIMERS.push(timer);
   }

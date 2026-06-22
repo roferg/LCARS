@@ -317,6 +317,32 @@ class FrontEndAssetsTest(unittest.TestCase):
         self.assertIn('"approve"', js)
         self.assertIn('"send-back"', js)
 
+    def test_board_js_mission_log_gated_off_bug_child(self):
+        """BUG-046: the Mission Log button must NOT render for a logged-bug child
+        (type=="bug" && parentMission) — you cannot log bugs against a logged bug.
+        The render is gated by the existing logged-bug predicate (isLogBug)."""
+        js = self._text("/board.js")
+        # the gate guards the Mission Log button render with the bug-child predicate.
+        self.assertIn("!isLogBug(mi)", js)
+        # and it still sits on the same conditional as the Mission Log button.
+        idx_gate = js.find("!isLogBug(mi)")
+        idx_btn = js.find('"Mission Log"')
+        self.assertNotEqual(idx_gate, -1)
+        self.assertNotEqual(idx_btn, -1)
+        # the gate appears just before the Mission Log button render.
+        self.assertLess(idx_gate, idx_btn)
+
+    def test_board_js_active_runtime_from_server_anchor(self):
+        """BUG-047: the live runtime must re-base from the server anchor
+        (activeSecondsAt) — base + (clientNow - activeSecondsAt) — so a re-opened
+        card shows true elapsed instead of a stale snapshot. It must NOT simply
+        anchor on Date.now() at render and add to the bare base."""
+        js = self._text("/board.js")
+        self.assertIn("activeSecondsAt", js)
+        # the live value derives from the server anchor.
+        self.assertIn("anchorAt", js)
+        self.assertIn("nowSec - anchorAt", js)
+
     def test_board_js_handles_view_only_403(self):
         js = self._text("/board.js")
         # a 403 must flip the board to view-only, not break the read path.

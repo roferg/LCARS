@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -854,6 +855,24 @@ class ActiveSecondsOnMissionTest(unittest.TestCase):
         fx.plant_simple(self.tmp, "m-none", stage="align")
         detail = LocalAdapter(self.tmp).mission("m-none")
         self.assertEqual(detail.get("activeSeconds", 0), 0)
+
+    def test_active_seconds_at_anchor_present(self):
+        """BUG-047: the shape carries activeSecondsAt (the server `now` used to
+        compute activeSeconds) so the front-end live clock re-bases from a server
+        anchor instead of a snapshot frozen at the last stage boundary."""
+        d = fx.plant_simple(self.tmp, "m-anchor", stage="research")
+        fx.write_jsonl(os.path.join(d, "events.jsonl"), [
+            {"ts": 100, "mission": "m-anchor", "stage": "research",
+             "type": "stage_start", "detail": "starting"},
+        ])
+        before = time.time()
+        detail = LocalAdapter(self.tmp).mission("m-anchor")
+        after = time.time()
+        self.assertIn("activeSecondsAt", detail)
+        self.assertIsInstance(detail["activeSecondsAt"], (int, float))
+        # the anchor is the wall-clock `now` at shape-build time.
+        self.assertGreaterEqual(detail["activeSecondsAt"], before)
+        self.assertLessEqual(detail["activeSecondsAt"], after)
 
 
 if __name__ == "__main__":

@@ -193,7 +193,14 @@ class LocalAdapter(object):
         # already loaded) so it rides on the card as well as the detail. `now` is
         # real wall-clock here; the computation lives in board.active_seconds,
         # which the tests drive with an injected `now`.
-        active_seconds = board.active_seconds(events, now=time.time())
+        # BUG-047: anchor the live front-end clock on the SAME server `now` used to
+        # compute active_seconds. The front end shows activeSeconds + (clientNow -
+        # activeSecondsAt) while running, so a card re-opened mid-stage shows true
+        # elapsed instead of re-basing from a snapshot frozen at the last stage
+        # boundary. Client/server share the host clock, so this is seconds-accurate.
+        now = time.time()
+        active_seconds = board.active_seconds(events, now=now)
+        active_seconds_at = now
 
         # GitHub issue number may be the literal null / absent.
         issue = state.get("githubIssue")
@@ -298,6 +305,9 @@ class LocalAdapter(object):
             "progress": progress,
             "tickets": tickets,
             "activeSeconds": active_seconds,
+            # BUG-047: the server wall-clock (seconds) at which activeSeconds was
+            # computed — the anchor the front-end live tick re-bases from.
+            "activeSecondsAt": active_seconds_at,
             "_created": state.get("created") or "",
         }
 
