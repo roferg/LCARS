@@ -2770,6 +2770,117 @@ EOF
 # author dispatched a normal self-heal.
 RECONCILE_DESIGN_QUESTION=""
 
+# BUG-056 — CONVERGE a TEXTUAL merge conflict by KEEPING a resolved merge.
+# The merge worktree ($wt) holds the conflicted merge (markers present). Dispatch a
+# cold resolve worker (mission's own engine) to edit the conflicted file(s) IN $wt
+# so every conflict marker is gone — composing BOTH intents, honouring the captain's
+# decision in answers.json if present (BUG-042 parity). After each attempt, verify
+# no markers remain AND the mission's own ticket suites re-test GREEN against the
+# resolved tree; if so, COMPLETE the merge commit in $wt (the branch ref advances to
+# the merged+resolved commit) and return 0 — converged. If still conflicted/red
+# after MAX_WORKER_TRIES, return 1 so the caller falls through to the existing RED
+# undo+escalation path (round cap / design question — no infinite loop).
+# Args: $wt  base_ref  failure-summary  affected-block  cmd  ordered-tickets...
+reconcile_resolve_in_worktree() {
+  local wt="$1" base_ref="$2" summary="$3" affected="$4" cmd="$5"; shift 5
+  local ordered="$*"
+
+  # The conflicted files, as absolute paths inside the worktree, for the worker.
+  local conflicted_now; conflicted_now="$( cd "$wt" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null )"
+  [ -n "$conflicted_now" ] || return 1
+  local abs_list="" cf
+  while IFS= read -r cf; do
+    [ -n "$cf" ] || continue
+    abs_list="$abs_list
+- $wt/$cf"
+  done <<EOF
+$conflicted_now
+EOF
+
+  # The mission's own engine (BUG-D parity with the heal author).
+  local engine; engine="$(json_str "$STATE" workerBin)"
+  [ -n "$engine" ] || engine="$WORKER_BIN"
+
+  local sumfile; sumfile="$MISSION_DIR/reconcile-failure.txt"
+  printf '%s\n' "$summary" >"$sumfile"
+  local extra="## The conflicted files to RESOLVE IN PLACE (absolute paths in the merge worktree)
+Edit each of these files so EVERY conflict marker (<<<<<<<, =======, >>>>>>>) is gone:$abs_list
+
+$affected
+
+The deterministic failure summary (with the conflict hunks) is at:
+- $sumfile
+
+## The two intents to reconcile
+- This mission's goal/PRD: $MISSION_DIR/prd.md
+- What changed on the base branch since this branch was cut is quoted in the summary above."
+
+  # RESUME after `lcars respond` (BUG-042 parity): inject the captain's decision so
+  # the resolution implements EXACTLY their choice rather than re-guessing.
+  if [ -f "$MISSION_DIR/answers.json" ]; then
+    local cap_answer; cap_answer="$(json_str "$MISSION_DIR/answers.json" answer)"
+    if [ -n "$cap_answer" ]; then
+      extra="$extra
+
+## The captain DECIDED the design trade-off — implement EXACTLY this
+A prior reconcile pass raised a design question to the captain; they answered:
+
+  The captain decided: $cap_answer
+
+This is a DECISION, not a new option to weigh. Resolve the conflict to implement
+EXACTLY that arrangement."
+    fi
+  fi
+
+  state_set_str reconcileStatus "resolving"
+  emit_event reconcile_resolve verify "resolving textual conflict in place via a cold worker (keeping the merge)"
+
+  local tries=0 odir
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    # The worker edits files in $wt directly; $odir is its (unused) scratch channel.
+    odir="$(mktemp -d)"
+    LCARS_WORKER_BIN="$engine" LCARS_WORKER_INPUT_DIRS="$wt
+$MISSION_DIR" \
+      spawn_worker reconcile-resolve "$STAGES_DIR/reconcile-resolve.md" repo-write "$odir" "$extra"
+    rm -rf "$odir"
+
+    # STAGE the worker's edits FIRST: editing a conflicted working-tree file does NOT
+    # clear its UNMERGED index entry, so `git add -A` is what marks the conflict
+    # resolved. Then judge resolution by CONTENT — any conflict marker still in an
+    # originally-conflicted file means the worker did not finish; retry (or fall
+    # through after the cap). This never relies on --diff-filter=U post-edit.
+    ( cd "$wt" && "$GIT_BIN" add -A >/dev/null 2>&1 ) || :
+    local markers=0 mf
+    while IFS= read -r mf; do
+      [ -n "$mf" ] || continue
+      grep -Eq '^(<<<<<<< |={7}$|>>>>>>> )' "$wt/$mf" 2>/dev/null && markers=1
+    done <<EOF
+$conflicted_now
+EOF
+    if [ "$markers" -ne 0 ]; then
+      continue   # markers remain — retry (or fall through after the cap)
+    fi
+
+    # Markers gone (and staged) → re-test the resolved worktree.
+    local green=1
+    if [ -n "$cmd" ] && [ -n "$ordered" ]; then
+      local cap; cap="$(mktemp -d)"
+      RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" $ordered || green=0
+      rm -rf "$cap"
+    fi
+    if [ "$green" -eq 1 ]; then
+      # KEEP the merge: complete the merge commit so the branch ref advances to the
+      # merged+resolved commit (mirrors the GREEN path, where the merge auto-commits).
+      ( cd "$wt" && "$GIT_BIN" commit --no-edit >/dev/null 2>&1 ) || :
+      emit_event reconcile_resolved verify "textual conflict resolved + re-test green — keeping the merge"
+      return 0   # converged
+    fi
+    # Resolved but red — let the worker try again (a cleaner composition) up to the cap.
+  done
+  return 1   # could not resolve+green within the cap → caller takes the RED path
+}
+
 reconcile_author_and_dispatch() { # failure-summary  affected-block
   local summary="$1" affected="$2"
   RECONCILE_DESIGN_QUESTION=""
@@ -3133,6 +3244,20 @@ $(head -80 "$cap/$fid.log" 2>/dev/null)"
 THIS MISSION'S GOAL: ${goal:-$(json_str "$STATE" title)}
 WHAT CHANGED ON $BASE (oldest→newest):
 ${base_log:-(no log available)}"
+
+  # BUG-056 — CONVERGE a TEXTUAL conflict by KEEPING a resolved merge. Before
+  # undoing the merge and re-healing on the un-merged branch (which re-conflicts on
+  # the next fresh merge forever), try to RESOLVE the markers IN this merge worktree
+  # and KEEP the merge. On success the branch ref advances to the merged+resolved
+  # commit → it now CONTAINS base → the next pass reads "not behind" → green. Only
+  # the textual-conflict path takes this; the clean-merge logical-conflict path
+  # ($conflicted empty) is untouched and still self-heals exactly as before.
+  if [ -n "$conflicted" ] && [ "$red" -eq 1 ]; then
+    if reconcile_resolve_in_worktree "$wt" "$base_ref" "$failure_summary" \
+         "Conflicted/affected: $conflicted" "$cmd" $ordered; then
+      red=0   # converged → fall through to the shared GREEN exit (keeps the merge)
+    fi
+  fi
 
   if [ "$red" -eq 0 ]; then
     # Clean (or conflict-free) AND green: the worktree committed the merge ON the

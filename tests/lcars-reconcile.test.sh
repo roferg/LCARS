@@ -128,6 +128,27 @@ if [ -n "${WORKER_WT_PROBE:-}" ] && [ -n "${WORKER_WT_PROBE_REPO:-}" ]; then
     echo "absent" >>"$WORKER_WT_PROBE"
   fi
 fi
+# BUG-056 in-worktree RESOLVE mode: the harness dispatched the reconcile-resolve
+# worker to remove the conflict markers IN the merge worktree (not author a PRD).
+# The prompt lists each conflicted file as an absolute path on a "- <path>" line.
+# This stub edits those files in place: removing the markers (composing both sides)
+# UNLESS STUB_RESOLVE_RED is set, in which case it removes the markers but writes
+# content the green suite cannot accept (simulating a resolution that stays red).
+if [ "${LCARS_WORKER_ROLE:-}" = "reconcile-resolve" ]; then
+  prompt=""; prev=""
+  for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done
+  # Pull every "- <abs path>" line under the worktree from the prompt.
+  printf '%s\n' "$prompt" | sed -n 's/^- \(\/.*\)$/\1/p' | while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    grep -Eq '^(<<<<<<< |={7}$|>>>>>>> )' "$f" || continue
+    if [ -n "${STUB_RESOLVE_RED:-}" ]; then
+      printf 'still-broken\n' >"$f"   # markers gone but the green suite stays red
+    else
+      printf 'resolved\n' >"$f"       # markers gone, combined content
+    fi
+  done
+  exit 0
+fi
 # Find the scratch output dir: it is one of the argv that is an existing directory
 # created by the harness (mkdir -p outdir happens before spawn). Prefer the last.
 out=""
@@ -244,6 +265,14 @@ stage_ticket_suite() { # repo  green|red
 #!/usr/bin/env bash
 exit 0
 EOF
+  elif [ "$2" = needs-resolved ]; then
+    # GREEN only if shared.txt was resolved to the marker-free "resolved" content.
+    # The resolve stub writes "resolved" on success and "still-broken" under
+    # STUB_RESOLVE_RED — so this suite passes iff the resolution is the good one.
+    cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
+#!/usr/bin/env bash
+grep -q '^resolved$' shared.txt
+EOF
   else
     cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -285,6 +314,7 @@ run_in() { # repo  subcommand-and-args…
          STUB_DESIGN_QUESTION="${STUB_DESIGN_QUESTION:-}" \
          STUB_DESIGN_QUESTION_TEXT="${STUB_DESIGN_QUESTION_TEXT:-}" \
          STUB_FORCED_DESIGN_QUESTION_TEXT="${STUB_FORCED_DESIGN_QUESTION_TEXT:-}" \
+         STUB_RESOLVE_RED="${STUB_RESOLVE_RED:-}" \
          LCARS_GH_BIN="$a/gh" LCARS_GIT_BIN="git" \
          LCARS_HOST_ADAPTER="$HOST_ADAPTER" \
          LCARS_LOG_SCRIPT="$a/log.sh" \
@@ -403,11 +433,16 @@ check "3a. BUG-053: heal author dispatched (probe recorded at least once)" \
 check "3a. BUG-053: reconcile worktree was ALREADY FREED before the heal dispatch" \
   "! grep -q present '$r3.aux/wt-probe.log'"
 
-# --- Behaviour 3b: TEXTUAL conflict → log dispatched, multiple PRDs supported -
+# --- Behaviour 3b: TEXTUAL conflict whose in-worktree resolution STAYS RED →
+# falls through to the self-heal log dispatch (multiple PRDs supported). The
+# resolve worker removes the markers but cannot reach green (STUB_RESOLVE_RED +
+# the needs-resolved suite), so the gate must NOT keep the merge — it undoes it
+# and self-heals exactly as before. This is the "still-red still escalates / heals,
+# never silently keeps a bad merge" guard alongside the BUG-056 converge path.
 r3b="$(mktemp -d "$TMPROOT/r3b.XXXX")"; new_repo_verify "$r3b" >/dev/null; setup_stubs "$r3b"
-stage_ticket_suite "$r3b" green
+stage_ticket_suite "$r3b" needs-resolved
 advance_base "$r3b" conflict
-RECONCILE_BUGS=2 rc=0; RECONCILE_BUGS=2 run_in "$r3b" reconcile --mission "$MID" >"$r3b.aux/out.txt" 2>&1 || rc=$?
+RECONCILE_BUGS=2 rc=0; STUB_RESOLVE_RED=1 RECONCILE_BUGS=2 run_in "$r3b" reconcile --mission "$MID" >"$r3b.aux/out.txt" 2>&1 || rc=$?
 check "3b. textual conflict dispatches a Mission Log" "grep -q '^LOG' '$r3b.aux/log.log'"
 check "3b. two clusters → two --prd args" \
   "[ \"\$(grep -o -- '--prd' '$r3b.aux/log.log' | wc -l | tr -d ' ')\" -ge 2 ]"
@@ -416,6 +451,85 @@ check "3b. live tree clean after a conflicting merge" \
   "[ -z \"\$(cd '$r3b' && git status --porcelain)\" ]"
 check "3b. no reconcile worktree leaks after conflict" \
   "! (cd '$r3b' && git worktree list | grep -q reconcile)"
+
+# --- BUG-056: a TEXTUAL conflict that RESOLVES green CONVERGES — keep the merge ---
+# The bug: every reconcile pass re-merged base FRESH into the un-merged branch, so a
+# resolved-then-undone merge re-conflicted forever → loop to escalate. The fix
+# RESOLVES the markers IN the merge worktree and KEEPS the merge (commits it), so
+# the branch genuinely contains base and the next pass reads "not behind" → green.
+# Here the resolve worker (default stub) removes the markers and the suite goes green
+# → the gate must EXIT 0, KEEP the merge (branch now an ancestor-of-base / contains
+# base's commit), dispatch NO Mission Log, open NO PR itself, and leave a clean tree.
+b56="$(mktemp -d "$TMPROOT/b56.XXXX")"; new_repo_verify "$b56" >/dev/null; setup_stubs "$b56"
+stage_ticket_suite "$b56" needs-resolved      # green ONLY if the markers are resolved to "resolved"
+advance_base "$b56" conflict                  # textual conflict on shared.txt
+b56base="$(cd "$b56" && git rev-parse --abbrev-ref HEAD)"
+b56base_sha="$(cd "$b56" && git rev-parse "$b56base")"
+rc56=0; run_in "$b56" reconcile --mission "$MID" >"$b56.aux/out.txt" 2>&1 || rc56=$?
+s56="$(state_of "$b56")"
+check "B56. a resolvable textual conflict CONVERGES (exit 0, not a heal/escalate loop)" \
+  "[ '$rc56' -eq 0 ]"
+check "B56. the resolved merge is KEPT — the mission branch now CONTAINS base" \
+  "(cd '$b56' && git merge-base --is-ancestor '$b56base_sha' lcars/$MID)"
+check "B56. a re-run is now 'not behind' base (true convergence, no second round)" \
+  "[ \"\$(cd '$b56' && git rev-list --count lcars/$MID..$b56base 2>/dev/null)\" = 0 ]"
+check "B56. convergence dispatched NO Mission Log (no undo+re-heal)" \
+  "! grep -q '^LOG' '$b56.aux/log.log'"
+check "B56. convergence opened NO PR itself (reports proceed)" \
+  "! grep -q 'pr create' '$b56.aux/gh.log' && grep -qi 'proceed\|RECONCILE: ok\|green' '$b56.aux/out.txt'"
+check "B56. convergence did NOT escalate (no awaiting-human gate)" \
+  "! grep -q '\"awaitingHuman\": *true' '$s56'"
+check "B56. reconcileRound cleared on a converged resolution" \
+  "! grep -q '\"reconcileRound\"' '$s56'"
+check "B56. the captain's live tree stays clean after a resolved-merge convergence" \
+  "[ -z \"\$(cd '$b56' && git status --porcelain)\" ]"
+check "B56. no reconcile worktree leaks after convergence" \
+  "! (cd '$b56' && git worktree list | grep -q reconcile)"
+
+# B56a — the in-worktree resolve honours the captain's answers.json decision (BUG-042
+# parity): when a decision has been recorded, the resolve worker's prompt must carry
+# it verbatim, framed as a decision to implement (not a fresh option to weigh).
+b56a="$(mktemp -d "$TMPROOT/b56a.XXXX")"; new_repo_verify "$b56a" >/dev/null; setup_stubs "$b56a"
+stage_ticket_suite "$b56a" needs-resolved; advance_base "$b56a" conflict
+printf '{ "answer": "Move the best-score readout to the top-left corner." }\n' \
+  >"$(mdir_of "$b56a")/answers.json"
+: >"$b56a.aux/worker-prompt.log"
+run_in "$b56a" reconcile --mission "$MID" >"$b56a.aux/out.txt" 2>&1 || true
+check "B56a. the resolve worker prompt carries the captain's recorded decision verbatim" \
+  "grep -q 'top-left corner' '$b56a.aux/worker-prompt.log'"
+check "B56a. the injected decision is framed as a settled choice to implement" \
+  "grep -qi 'captain decided\|implement EXACTLY' '$b56a.aux/worker-prompt.log'"
+
+# B56b — convergence under a DRIVE pass: the resolved merge is kept AND the PR opens
+# (the converge path returns 0, so drive_verify proceeds to open the PR — exactly
+# like the clean+green path). Proves the fix integrates end-to-end, not just in the
+# bare `reconcile` subcommand.
+b56d="$(mktemp -d "$TMPROOT/b56d.XXXX")"; new_repo_verify "$b56d" >/dev/null; setup_stubs "$b56d"
+stage_ticket_suite "$b56d" needs-resolved; advance_base "$b56d" conflict
+run_in "$b56d" drive --mission "$MID" >"$b56d.aux/out.txt" 2>&1 || true
+check "B56b. drive on a resolvable textual conflict reconciles THEN opens the PR" \
+  "grep -q 'pr create' '$b56d.aux/gh.log'"
+check "B56b. drive kept the resolved merge on the branch (contains base's commit)" \
+  "(cd '$b56d' && git log --oneline lcars/$MID) | qgrep -q 'main edits shared'"
+
+# B56c — a STILL-RED textual resolution must NOT keep the merge: it falls through to
+# the existing self-heal (round 1) and, when never green, escalates after K rounds —
+# i.e. no infinite loop and no shipping a bad merge. (Companion to 3b.)
+b56c="$(mktemp -d "$TMPROOT/b56c.XXXX")"; new_repo_verify "$b56c" >/dev/null; setup_stubs "$b56c"
+stage_ticket_suite "$b56c" needs-resolved; advance_base "$b56c" conflict
+b56cbase="$(cd "$b56c" && git rev-parse --abbrev-ref HEAD)"
+LCARS_RECONCILE_MAX=2 STUB_RESOLVE_RED=1 run_in "$b56c" reconcile --mission "$MID" >"$b56c.aux/p1.txt" 2>&1 || true
+LCARS_RECONCILE_MAX=2 STUB_RESOLVE_RED=1 run_in "$b56c" reconcile --mission "$MID" >"$b56c.aux/p2.txt" 2>&1 || true
+LCARS_RECONCILE_MAX=2 STUB_RESOLVE_RED=1 run_in "$b56c" reconcile --mission "$MID" >"$b56c.aux/p3.txt" 2>&1 || true
+s56c="$(state_of "$b56c")"
+check "B56c. a never-green textual resolution does NOT keep the merge (still behind base)" \
+  "[ \"\$(cd '$b56c' && git rev-list --count lcars/$MID..$b56cbase 2>/dev/null)\" -ge 1 ]"
+check "B56c. a never-green textual resolution escalates (no infinite loop)" \
+  "grep -q '\"reconcileStatus\": *\"escalated\"' '$s56c' && grep -q '\"awaitingHuman\": *true' '$s56c'"
+check "B56c. a never-green textual resolution never opens a PR" \
+  "! grep -q 'pr create' '$b56c.aux/gh.log'"
+check "B56c. live tree clean after the never-green resolution" \
+  "[ -z \"\$(cd '$b56c' && git status --porcelain)\" ]"
 
 # --- Behaviour 3c: authoring runs on the COPILOT engine too (BUG-D) -----------
 r3c="$(mktemp -d "$TMPROOT/r3c.XXXX")"; MISSION_ENGINE=copilot new_repo_verify "$r3c" >/dev/null
