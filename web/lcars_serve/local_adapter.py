@@ -422,7 +422,14 @@ def _progress(waves, events):
         for w in waves:
             tickets_total += len((w.get("tickets") or [])) if isinstance(w, dict) else 0
     cur_wave = None
-    tickets_done = 0
+    # BUG-050: count DISTINCT tickets that reached green — a single ticket can
+    # emit MULTIPLE `ticket_green` events (goes green → ticket_replay_conflict →
+    # serial rebuild → goes green AGAIN), so a naive per-event increment over-
+    # counts ("TICKET 2/1", a >100% bar). Collect the ticket id from each
+    # ticket_green into a set (same `data.ticket` shape _ticket_states reads) and
+    # take its size; then defensively clamp to tickets_total so it can never
+    # exceed the total even on unexpected event streams.
+    green_tickets = set()
     for ev in events:
         if not isinstance(ev, dict):
             continue
@@ -431,7 +438,12 @@ def _progress(waves, events):
             if isinstance(w, int):
                 cur_wave = w
         elif ev.get("type") == "ticket_green":
-            tickets_done += 1
+            tid = (ev.get("data") or {}).get("ticket")
+            if tid:
+                green_tickets.add(tid)
+    tickets_done = len(green_tickets)
+    if tickets_total:
+        tickets_done = min(tickets_done, tickets_total)
     if cur_wave is None and waves_total:
         cur_wave = 1
     wt = waves_total or "?"

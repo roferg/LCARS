@@ -135,6 +135,32 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertEqual(m["progress"]["ticketsDone"], 1)
         self.assertEqual(m["progress"]["ticketsTotal"], 3)
 
+    def test_progress_counts_distinct_green_tickets_not_every_event(self):
+        """BUG-050: a single ticket can emit MULTIPLE ticket_green events (goes
+        green → ticket_replay_conflict → serial rebuild → goes green AGAIN), so a
+        naive per-event increment over-counts ("TICKET 2/1", a >100% bar).
+        _progress must count DISTINCT tickets that reached green, clamped to the
+        total."""
+        from lcars_serve.local_adapter import _progress
+        waves = [{"wave": 1, "tickets": [{"id": "t-001", "issue": 201}]}]
+        events = [
+            {"type": "wave_start", "data": {"wave": 1}},
+            {"type": "ticket_start", "data": {"ticket": "t-001"}},
+            {"type": "ticket_green", "data": {"ticket": "t-001"}},
+            {"type": "ticket_replay_conflict", "data": {"ticket": "t-001"}},
+            # the SAME ticket goes green again after the serial rebuild
+            {"type": "ticket_green", "data": {"ticket": "t-001"}},
+        ]
+        prog = _progress(waves, events)
+        # one distinct ticket reached green, not two
+        self.assertEqual(prog["ticketsDone"], 1)
+        self.assertEqual(prog["ticketsTotal"], 1)
+        # the label reads 1/1 (never "TICKET 2/1")
+        self.assertIn("TICKET 1/1", prog["label"])
+        self.assertNotIn("2/1", prog["label"])
+        # defensive clamp: ticketsDone can never exceed the total
+        self.assertLessEqual(prog["ticketsDone"], prog["ticketsTotal"])
+
     def test_single_ticket_mission_shows_no_tickets(self):
         fx.plant_simple(self.tmp, "m-solo", stage="plan")
         m = self._by_id(self._board(), "m-solo")

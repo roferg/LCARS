@@ -396,38 +396,23 @@ function cardControls(m) {
   }
   var rs = runState(m);
   if (m.stage === "verify") {
-    // BUG-035: a parent with a resolve-logs batch in flight (linked non-done bug
-    // children not all at verify) must SUPPRESS Merge/Accept until the
-    // consolidated re-verify gate is up. A non-actionable "resolving N logged
-    // bug(s)…" affordance, no openVerify.
-    var pendingKids = resolvingChildren(m.id);
-    if (isResolvingLocked(m)) {
-      var resolving = btn("◐ resolving " + pendingKids.length + " logged bug"
-        + (pendingKids.length === 1 ? "" : "s") + "…", "warn", null);
-      resolving.disabled = true;
-      resolving.title = "Logged-bug fixes are in flight — Merge is unavailable "
-        + "until the consolidated re-verify gate is ready.";
-      ctrl.appendChild(resolving);
-      return ctrl;
-    }
     // BUG-044: drop the optimistic merging flag once the real state has arrived.
     clearMergingOnState(m);
-    // BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — switch the card OFF
-    // "Review PR" into a state that reads as actively healing and PREVENTS a
-    // Merge. A disabled "Merge heal in progress…" affordance, no openVerify.
-    // BUG-044: an OPTIMISTIC merge (just clicked, real reconcileStatus not yet
-    // delivered) reads the same — render it non-clickable from the first click.
-    if (isReconcileHealing(m) || isMerging(m.id)) {
-      var healing = btn("◐ Merge heal in progress…", "warn", null);
-      healing.disabled = true;
-      healing.title = "Self-healing the merge against main — Merge is unavailable "
-        + "until it settles.";
-      ctrl.appendChild(healing);
+    // BUG-049: the verify-affordance decision is SHARED with the detail header
+    // (verifyAffordance) so both gate identically during a reconcile/merge/heal.
+    // BUG-035: a logged-bug batch in flight → disabled "resolving N…", no
+    // openVerify. BUG-039/044: a self-heal (incl. an optimistic isMerging) →
+    // disabled "Merge heal in progress…", no openVerify. Otherwise the live
+    // Verify/Review PR action.
+    var aff = verifyAffordance(m);
+    if (aff.kind !== "action") {
+      var gated = btn(aff.label, aff.cls, null);
+      gated.disabled = !!aff.disabled;
+      if (aff.title) gated.title = aff.title;
+      ctrl.appendChild(gated);
       return ctrl;
     }
-    // S75: a verify card is "in review — PR open" once Verify auto-opened the PR.
-    var vlabel = m.prUrl ? "✓ Review PR ▸" : "✓ Verify ▸";
-    ctrl.appendChild(applyWriteState(btn(vlabel, "go", function () {
+    ctrl.appendChild(applyWriteState(btn(aff.label, aff.cls, function () {
       openVerify(m.id);
     })));
   } else if (rs === "paused") {
@@ -1700,7 +1685,23 @@ function renderDetail(mi) {
   if (mi.awaiting) {
     actions.appendChild(applyWriteState(btn("Answer ▸", "danger", function () { openRespond(mi.id); })));
   } else if (mi.stage === "verify") {
-    actions.appendChild(applyWriteState(btn("✓ Verify", "go", function () { openVerify(mi.id); })));
+    // BUG-049: the header verify action must gate IDENTICALLY to the card — a
+    // plain "✓ Verify" here while a mission is mid-reconcile/heal/resolving (the
+    // dialog it opens IS gated, but the affordance shouldn't show). Use the SAME
+    // shared verifyAffordance decision the card control uses (DRY): a gated kind
+    // renders a disabled/relabelled button (no openVerify); only the live action
+    // wires Verify/Review PR. clearMergingOnState mirrors the card so an
+    // optimistic merge flag drops once the real reconcile state arrives.
+    clearMergingOnState(mi);
+    var daff = verifyAffordance(mi);
+    if (daff.kind !== "action") {
+      var dgated = btn(daff.label, daff.cls, null);
+      dgated.disabled = !!daff.disabled;
+      if (daff.title) dgated.title = daff.title;
+      actions.appendChild(dgated);
+    } else {
+      actions.appendChild(applyWriteState(btn(daff.label, daff.cls, function () { openVerify(mi.id); })));
+    }
   } else if (mi.stage === "done") {
     /* terminal — no primary action */
   } else if (mrs === "paused") {
@@ -2395,6 +2396,48 @@ function stageLabel(stage) {
 
 /* S76 — a human-readable note for the main-ahead reconcile sub-state. No `lcars …`
    CLI text leaks (UX-33); the copy carries the state + iterate-to-green hint. */
+/* BUG-049: the SHARED verify-affordance decision. Both the board card control
+   (cardControls) and the detail-header action row must gate the verify action
+   IDENTICALLY during a reconcile/merge/heal — otherwise the header offers a
+   plain "✓ Verify" while a mission is mid-reconcile (the dialog it opens IS
+   gated, but the affordance shouldn't appear). One helper returns the decision
+   so both render the same priority gating (mirrors cardControls' order):
+     escalated : awaiting-human reconcile DESIGN CALL → "Make the call" (answer)
+     resolving : a logged-bug batch in flight        → disabled "resolving N…"
+     healing   : a merge/self-heal in flight (incl. optimistic isMerging)
+                                                      → disabled "Merge heal…"
+     action    : the live Verify/Review PR action     → "✓ Review PR"/"✓ Verify"
+   The renderer reads `.kind` and builds the right button (the card and header
+   wire their own click handlers / dispatch styles). */
+function verifyAffordance(m) {
+  if (!m) return null;
+  if (isReconcileEscalated(m)) {
+    return { kind: "escalated", label: "◆ Make the call ▸", cls: "danger" };
+  }
+  if (isResolvingLocked(m)) {
+    var pend = resolvingChildren(m.id);
+    return {
+      kind: "resolving",
+      label: "◐ resolving " + pend.length + " logged bug"
+        + (pend.length === 1 ? "" : "s") + "…",
+      cls: "warn", disabled: true,
+      title: "Logged-bug fixes are in flight — Merge is unavailable until the "
+        + "consolidated re-verify gate is ready.",
+    };
+  }
+  if (isReconcileHealing(m) || isMerging(m.id)) {
+    return {
+      kind: "healing", label: "◐ Merge heal in progress…",
+      cls: "warn", disabled: true,
+      title: "Self-healing the merge against main — Merge is unavailable until "
+        + "it settles.",
+    };
+  }
+  return {
+    kind: "action", label: m.prUrl ? "✓ Review PR ▸" : "✓ Verify ▸", cls: "go",
+  };
+}
+
 /* BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — merging the base in,
    re-testing the merged branch, or self-healing. While this is true the Merge
    action must be SUPPRESSED (no merge possible mid-heal). escalated is NOT

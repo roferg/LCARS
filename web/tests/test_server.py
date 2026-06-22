@@ -366,6 +366,29 @@ class FrontEndAssetsTest(unittest.TestCase):
         self.assertIn("isReconcileHealing(m) || isMerging(m.id)", js)
         self.assertIn("isReconcileHealing(mi) || isMerging(mi.id)", js)
 
+    def test_board_js_detail_header_verify_is_reconcile_gated(self):
+        """BUG-049: the DETAIL-HEADER verify action must gate IDENTICALLY to the
+        board card (cardControls) during a reconcile/merge/heal/resolving — a
+        plain "✓ Verify" must NOT render in the header while the mission is mid-
+        reconcile. Both call sites share the verifyAffordance decision (DRY),
+        which carries the same reconcile/merge guards as the card."""
+        js = self._text("/board.js")
+        # the shared affordance helper exists and carries the reconcile/merge guards.
+        self.assertIn("function verifyAffordance(m)", js)
+        self.assertIn("isReconcileEscalated(m)", js)
+        self.assertIn("isResolvingLocked(m)", js)
+        self.assertIn("isReconcileHealing(m) || isMerging(m.id)", js)
+        # the detail header must call the SHARED helper (not a bare btn("✓ Verify")).
+        idx_actions = js.find("var actions = el(\"div\", \"det-actions\")")
+        self.assertNotEqual(idx_actions, -1, "detail header det-actions block missing")
+        header = js[idx_actions:idx_actions + 2500]
+        # the header verify branch routes through the shared affordance decision.
+        self.assertIn("verifyAffordance(mi)", header)
+        # and gates exactly like the card: a non-action kind renders disabled.
+        self.assertIn('daff.kind !== "action"', header)
+        # the ungated plain "✓ Verify" header button (the BUG) is gone.
+        self.assertNotIn('btn("✓ Verify", "go", function () { openVerify(mi.id); })', header)
+
     def test_board_css_has_detail_twopane_and_screen_classes(self):
         css = self._text("/board.css")
         # detail two-pane (mock .detail-grid / .det-head / .det-body / .feed)
