@@ -115,6 +115,19 @@ if [ -n "${WORKER_PROMPT_LOG:-}" ]; then
     prev="$a"
   done
 fi
+# BUG-053 probe: at the MOMENT the heal author runs, record whether the reconcile
+# gate's attached worktree is still registered on the mission branch. The bug was
+# that reconcile_cleanup ran AFTER this dispatch, so $BRANCH stayed checked out in
+# the reconcile worktree and the heal's `git checkout $BRANCH` failed. After the
+# fix the worktree is freed BEFORE dispatch, so this probe must see NO reconcile.*
+# worktree. Records exactly one line ("present"/"absent") per dispatch.
+if [ -n "${WORKER_WT_PROBE:-}" ] && [ -n "${WORKER_WT_PROBE_REPO:-}" ]; then
+  if git -C "$WORKER_WT_PROBE_REPO" worktree list 2>/dev/null | grep -q 'reconcile\.'; then
+    echo "present" >>"$WORKER_WT_PROBE"
+  else
+    echo "absent" >>"$WORKER_WT_PROBE"
+  fi
+fi
 # Find the scratch output dir: it is one of the argv that is an existing directory
 # created by the harness (mkdir -p outdir happens before spawn). Prefer the last.
 out=""
@@ -268,6 +281,7 @@ run_in() { # repo  subcommand-and-args…
   ( cd "$repo" \
       && PRD_CAPTURE="$a/prdcap" RECONCILE_BUGS="${RECONCILE_BUGS:-1}" \
          WORKER_PROMPT_LOG="$a/worker-prompt.log" \
+         WORKER_WT_PROBE="$a/wt-probe.log" WORKER_WT_PROBE_REPO="$repo" \
          STUB_DESIGN_QUESTION="${STUB_DESIGN_QUESTION:-}" \
          STUB_DESIGN_QUESTION_TEXT="${STUB_DESIGN_QUESTION_TEXT:-}" \
          STUB_FORCED_DESIGN_QUESTION_TEXT="${STUB_FORCED_DESIGN_QUESTION_TEXT:-}" \
@@ -291,7 +305,7 @@ setup_stubs() { # repo
   make_resolve_stub "$a/resolve-logs.sh"
   make_worker_stub "$a/worker"
   : >"$a/gh.log"; : >"$a/notify.log"; : >"$a/log.log"; : >"$a/resolve.log"
-  : >"$a/worker-prompt.log"
+  : >"$a/worker-prompt.log"; : >"$a/wt-probe.log"
 }
 
 # ==========================================================================
@@ -377,6 +391,17 @@ check "3a. reconcileStatus persisted" "grep -q '\"reconcileStatus\"' '$s3'"
 check "3a. live tree clean even after a red reconcile" \
   "[ -z \"\$(cd '$r3' && git status --porcelain)\" ]"
 check "3a. no reconcile worktree leaks" "! (cd '$r3' && git worktree list | grep -q reconcile)"
+# BUG-053: the reconcile gate's attached worktree (on $BRANCH) MUST be freed BEFORE
+# the self-heal author/dispatch runs. The heal child cherry-picks its green commit
+# by `git checkout $BRANCH` in the repo root; if the reconcile worktree still has
+# $BRANCH checked out, that checkout fails ("already checked out") and the heal can
+# never land → the reconcile dead-ends. The worker stub probes, at the moment it
+# runs, whether a reconcile.* worktree is still registered. It must be ABSENT
+# (cleanup happened before dispatch) — and never present on ANY dispatch.
+check "3a. BUG-053: heal author dispatched (probe recorded at least once)" \
+  "[ -s '$r3.aux/wt-probe.log' ]"
+check "3a. BUG-053: reconcile worktree was ALREADY FREED before the heal dispatch" \
+  "! grep -q present '$r3.aux/wt-probe.log'"
 
 # --- Behaviour 3b: TEXTUAL conflict → log dispatched, multiple PRDs supported -
 r3b="$(mktemp -d "$TMPROOT/r3b.XXXX")"; new_repo_verify "$r3b" >/dev/null; setup_stubs "$r3b"

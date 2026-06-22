@@ -3141,6 +3141,14 @@ ${base_log:-(no log available)}"
   # that reads as "not ahead" next pass), persist the diagnosis for a later
   # escalation.
   reconcile_undo_merge
+  # BUG-053: free THIS gate's attached worktree NOW — BEFORE any heal/author work.
+  # reconcile_undo_merge above resets the branch via $wt (so it must run while $wt
+  # exists), but the self-heal child cherry-picks its green commit by checking out
+  # $BRANCH in $REPO_ROOT; if the reconcile worktree still has $BRANCH checked out,
+  # that checkout fails ("already checked out") and the heal can never land. Cleaning
+  # up here frees $BRANCH so the heal succeeds. The later cleanup calls are now
+  # redundant and have been removed.
+  reconcile_cleanup
   state_set_str reconcileDiagnosis "$failure_summary"
   local affected="Conflicted/affected: ${conflicted:-$RETEST_FAILED}"
 
@@ -3158,7 +3166,6 @@ ${base_log:-(no log available)}"
   if [ "$round" -gt 1 ] && [ ! -f "$MISSION_DIR/answers.json" ]; then
     emit_event reconcile_red verify "merged $BASE but a prior heal could not reach green — re-framing as a design question (round $round)"
     local dq; dq="$(reconcile_author_design_question "$failure_summary" "$affected")"
-    reconcile_cleanup
     reconcile_escalate "$dq"
     return 20
   fi
@@ -3169,7 +3176,6 @@ ${base_log:-(no log available)}"
   # deterministic BUG-045 path above escalates a design question.
   emit_event reconcile_red verify "merged $BASE but the combined state is not green — self-healing (round $round)"
   reconcile_author_and_dispatch "$failure_summary" "$affected"
-  reconcile_cleanup
 
   # BUG-042: the author judged this an UNRESOLVABLE design trade-off UPFRONT and
   # posed an experience-framed question rather than a self-heal. There is nothing to
