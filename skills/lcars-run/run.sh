@@ -5832,10 +5832,17 @@ run_with_watchdog() { # secs  cmd...
     "$@"
     return $?
   fi
-  # Run the command in the background; a sibling sleeper races it. Whichever the
-  # `wait -n`-free shell can observe first decides the outcome. bash-3.2 lacks
-  # `wait -n`, so we poll the command pid at a coarse interval up to the budget.
-  "$@" &
+  # Run the command in the background as its OWN session/process-group leader, so
+  # a timeout can reap the WHOLE descendant tree — not just direct children — even
+  # when nested workers reparent/orphan (BUG-048). macOS has no `setsid(1)`, so we
+  # use perl's POSIX::setsid (same trick the daemon launcher uses): the perl `exec`
+  # replaces itself with the command, preserving the backgrounded pid, and after
+  # setsid that pid is its own group leader (PGID == PID). setsid() fails if the
+  # caller is already a group leader; backgrounding with `&` normally makes the
+  # child a non-leader so it succeeds, but we guard in eval so a no-op setsid never
+  # aborts the exec. A sibling poll races it: bash-3.2 lacks `wait -n`, so we poll
+  # the command pid at a coarse interval up to the budget.
+  perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- "$@" &
   local cmd_pid=$!
   local waited=0 step=1
   while [ "$waited" -lt "$secs" ]; do
@@ -5844,14 +5851,14 @@ run_with_watchdog() { # secs  cmd...
     waited=$((waited + step))
   done
   if pid_alive "$cmd_pid"; then
-    # Overran the budget — the wedge BUG-020 is about. Kill the stage tree and its
-    # reparented descendants (best-effort), then report the timeout sentinel.
-    local kids; kids="$(ps -o pid= --ppid "$cmd_pid" 2>/dev/null | tr -d ' ')"
-    kill -TERM "$cmd_pid" 2>/dev/null || true
-    local k; for k in $kids; do kill -TERM "$k" 2>/dev/null || true; done
+    # Overran the budget — the wedge BUG-020 is about. Kill the entire PROCESS
+    # GROUP (negative pid == kill the group led by cmd_pid), which reaps the whole
+    # descendant tree regardless of reparenting and works on macOS. Brief grace,
+    # then SIGKILL the group, then report the timeout sentinel.
+    kill -TERM -"$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null || true
+    sleep 1 2>/dev/null || true
+    kill -KILL -"$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null || true
     wait "$cmd_pid" 2>/dev/null || true
-    kill -KILL "$cmd_pid" 2>/dev/null || true
-    for k in $kids; do kill -KILL "$k" 2>/dev/null || true; done
     return 124
   fi
   wait "$cmd_pid"
