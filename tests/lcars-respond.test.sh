@@ -411,6 +411,93 @@ check "8b. a plain escalation answer still exits 0 with the hook present" "[ '$r
 check "8b. no PR is opened on a plain escalation answer" \
   "! grep -q 'pr create' '$repo8b/gh.log'"
 
+# --- Behaviour 9 (BUG-043/055): answering a RECONCILE design gate is SPECIFIC --
+# A reconcile design gate is marked with a dedicated marker file
+# (reconcile-design-question.txt). When respond answers a mission whose pending
+# gate is that reconcile design gate, in ADDITION to the generic answers.json it
+# must: (a) write the captain's answer to a DEDICATED store the reconcile resume
+# reads (reconcile-answer.txt), (b) RESET the reconcile round budget
+# (reconcileRound deleted) and clear the escalated reconcileStatus, and
+# (c) clear the marker. A NON-reconcile gate must be unchanged (no dedicated
+# store, no round reset).
+reconcile_marker_of() { echo "$1/.git/lcars/missions/$MID/reconcile-design-question.txt"; }
+reconcile_answer_of() { echo "$1/.git/lcars/missions/$MID/reconcile-answer.txt"; }
+
+# Build a Mission parked at the Verify reconcile design gate: the marker is set,
+# state carries reconcileRound + reconcileStatus=escalated, awaitingHuman, and a
+# pending design question.
+new_repo_with_reconcile_design_gate() {
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  cat >"$m/state.json" <<'EOF'
+{
+  "id": "lcars-20260530-001",
+  "type": "feature",
+  "title": "Add gamification",
+  "stage": "verify",
+  "created": "2026-05-30T10:00:00Z",
+  "model": "claude-sonnet",
+  "githubIssue": 42,
+  "branch": "lcars/lcars-20260530-001",
+  "base": "main",
+  "reconcileRound": 2,
+  "reconcileStatus": "escalated",
+  "awaitingHuman": true,
+  "pendingQuestion": "Two readouts overlap top-right — which should the player see?"
+}
+EOF
+  cat >"$m/pending.json" <<'EOF'
+{
+  "stage": "verify",
+  "questions": [
+    "Two readouts overlap top-right — which should the player see?"
+  ]
+}
+EOF
+  # the marker that tells respond this is a RECONCILE design gate
+  printf 'Two readouts overlap top-right — which should the player see?\n' \
+    >"$m/reconcile-design-question.txt"
+  echo "$repo"
+}
+
+repo9="$(new_repo_with_reconcile_design_gate)"; make_gh_stub "$repo9/gh"
+export GH_LOG="$repo9/gh.log"; : >"$GH_LOG"
+RANS="Move the best-score readout to the top-left and keep the badge top-right."
+rc9=0
+( cd "$repo9" && LCARS_GH_BIN="$repo9/gh" bash "$SCRIPT" answer \
+    --mission "$MID" --answer "$RANS" >out9.txt 2>&1 ) || rc9=$?
+s9="$(state_of "$repo9")"
+check "9. answering a reconcile design gate exits 0" "[ '$rc9' -eq 0 ]"
+check "9. writes the DEDICATED reconcile answer store" \
+  "[ -f '$(reconcile_answer_of "$repo9")' ]"
+check "9. the dedicated reconcile answer carries the captain's answer verbatim" \
+  "grep -q 'top-left' '$(reconcile_answer_of "$repo9")'"
+check "9. RESETS the reconcile round budget (reconcileRound deleted)" \
+  "! grep -q '\"reconcileRound\"' '$s9'"
+check "9. clears the escalated reconcileStatus" \
+  "! grep -q '\"reconcileStatus\": *\"escalated\"' '$s9'"
+check "9. clears the reconcile-design marker file" \
+  "[ ! -f '$(reconcile_marker_of "$repo9")' ]"
+check "9. still clears the generic awaiting-human gate" \
+  "! grep -q '\"awaitingHuman\": *true' '$s9'"
+check "9. still writes the generic answers.json (unchanged behaviour)" \
+  "[ -f '$(answers_of "$repo9")' ]"
+
+# --- Behaviour 9b: a NON-reconcile gate answer is UNCHANGED -----------------
+# Answering an ordinary escalation (no reconcile-design marker) must NOT create a
+# dedicated reconcile answer store and must NOT touch a reconcile round budget.
+repo9b="$(new_repo_with_paused_mission)"; make_gh_stub "$repo9b/gh"
+export GH_LOG="$repo9b/gh.log"; : >"$GH_LOG"
+rc9b=0
+( cd "$repo9b" && LCARS_GH_BIN="$repo9b/gh" bash "$SCRIPT" answer \
+    --mission "$MID" --answer "Per-course." >out9b.txt 2>&1 ) || rc9b=$?
+check "9b. a non-reconcile gate answer exits 0" "[ '$rc9b' -eq 0 ]"
+check "9b. a non-reconcile gate writes NO dedicated reconcile answer store" \
+  "[ ! -f '$(reconcile_answer_of "$repo9b")' ]"
+check "9b. a non-reconcile gate still writes the generic answers.json" \
+  "[ -f '$(answers_of "$repo9b")' ]"
+
 # ==========================================================================
 echo
 printf 'lcars respond: %d passed, %d failed\n' "$pass" "$fail"

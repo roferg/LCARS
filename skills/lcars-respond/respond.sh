@@ -256,6 +256,25 @@ cmd_answer() {
     echo '}'
   } >"$MISSION_DIR/answers.json"
 
+  # RECONCILE design gate (BUG-043/055): a reconcile design question marks the
+  # mission with a dedicated marker file (reconcile-design-question.txt) so this
+  # gate is distinguishable from a GENERIC awaiting-human gate. For it we ALSO:
+  #   • write the captain's answer to a DEDICATED store the reconcile resume reads
+  #     (reconcile-answer.txt) — so a later, unrelated answers.json never interferes;
+  #   • RESET the reconcile round budget (drop reconcileRound) and clear the
+  #     escalated reconcileStatus, so the post-answer resume starts with a fresh
+  #     RECONCILE_MAX (the decision-heal + re-merge verify need their own rounds);
+  #   • clear the marker.
+  # Generic gates are untouched by all of this.
+  RECONCILE_NOTE=""
+  if [ -f "$MISSION_DIR/reconcile-design-question.txt" ]; then
+    printf '%s\n' "$ANSWER" >"$MISSION_DIR/reconcile-answer.txt"
+    state_del reconcileRound
+    state_del reconcileStatus
+    rm -f "$MISSION_DIR/reconcile-design-question.txt"
+    RECONCILE_NOTE="  Recorded your reconcile design decision and reset the reconcile budget."
+  fi
+
   # Clear the gate — but DO NOT touch the stage. The Mission stays parked at the
   # stage that escalated; `lcars run` re-enters it and consumes answers.json.
   state_del awaitingHuman
@@ -281,6 +300,7 @@ cmd_answer() {
   echo "  Recorded your answer in answers.json (stage unchanged)."
   echo "  Stage:  $stage"
   echo "  Run \`lcars run $MISSION_ID\` to resume $stage — it will consume your answer, not re-ask."
+  [ -n "$RECONCILE_NOTE" ] && echo "$RECONCILE_NOTE"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   exit 0
 }

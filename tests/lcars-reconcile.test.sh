@@ -852,6 +852,117 @@ check "B51. a ticket_replay_failed event is emitted" \
 check "B51. the ticket_replay_failed event carries a NON-generic reason (not just 'failed')" \
   "grep '\"type\":\"ticket_replay_failed\"' '$m51/events.jsonl' | grep -Eq 'shared.txt|cherry-pick|conflict'"
 
+# --- BUG-043: the reconcile resume must key off a DEDICATED reconcile answer,
+# NEVER the generic answers.json that respond writes for ANY awaiting-human gate.
+#
+# The defect: reconcile_author_and_dispatch read $MISSION_DIR/answers.json and
+# (a) injected it as "the captain decided …", and (b) gated design-question
+# authoring on `[ ! -f answers.json ]`. But answers.json is the GENERIC gate
+# answer (research >20, validate scope, re-verify Accept, …). A STALE, UNRELATED
+# answers.json from a PRIOR gate would therefore be mistaken for the design
+# decision AND suppress the design question from ever being raised.
+#
+# After the fix the reconcile path uses a DEDICATED store (reconcile-answer.txt):
+# a stale generic answers.json must NOT suppress the design question, must NOT be
+# injected as the decision, and the dedicated answer (when present) is injected
+# ONCE and then consumed.
+RESPOND_SH="$REPO_ROOT/skills/lcars-respond/respond.sh"
+
+# B43a — a stale GENERIC answers.json (an unrelated prior gate) must NOT suppress
+# the BUG-045 deterministic design-question escalation. Drive an unhealable
+# conflict to its second pass with a stale answers.json sitting on disk; the gate
+# must still escalate a design question (not silently keep healing as if decided).
+b43="$(mktemp -d "$TMPROOT/b43.XXXX")"; new_repo_verify "$b43" >/dev/null; setup_stubs "$b43"
+stage_ticket_suite "$b43" red; advance_base "$b43" clean
+FDQ43='Two readouts want the same corner of the screen and only one fits — which should the player see? (e.g. keep the score, show the timer, or alternate)'
+# A STALE, UNRELATED generic answer (e.g. left from an earlier research/validate
+# gate). It must NOT be treated as a reconcile design decision.
+printf '{ "stage": "validate", "answer": "Use a global leaderboard." }\n' \
+  >"$(mdir_of "$b43")/answers.json"
+run_in "$b43" reconcile --mission "$MID" >"$b43.aux/p1.txt" 2>&1 || true   # pass 1: heal
+rc43=0
+STUB_FORCED_DESIGN_QUESTION_TEXT="$FDQ43" \
+  run_in "$b43" reconcile --mission "$MID" >"$b43.aux/p2.txt" 2>&1 || rc43=$?
+s43="$(state_of "$b43")"
+pj43="$(mdir_of "$b43")/pending.json"
+check "B43a. a stale generic answers.json does NOT suppress the design-question escalation" \
+  "[ '$rc43' -eq 20 ] && grep -q '\"reconcileStatus\": *\"escalated\"' '$s43'"
+check "B43a. the design-question gate is raised despite the stale answers.json" \
+  "grep -q '\"awaitingHuman\": *true' '$s43' && [ -f '$pj43' ]"
+check "B43a. the stale generic answer is NOT injected as the captain's reconcile decision" \
+  "! grep -q 'global leaderboard' '$b43.aux/worker-prompt.log'"
+
+# B43b — the resume injects ONLY the DEDICATED reconcile answer (not a stale
+# generic answers.json), and CONSUMES it after one use. Set up an escalated
+# reconcile design gate, answer it via respond (which writes the dedicated
+# reconcile answer + resets the round), keep an unrelated stale answers.json on
+# disk, then run the next reconcile pass.
+b43b="$(mktemp -d "$TMPROOT/b43b.XXXX")"; new_repo_verify "$b43b" >/dev/null; setup_stubs "$b43b"
+stage_ticket_suite "$b43b" red; advance_base "$b43b" clean
+DQ43b='The best-score readout and the multiplier badge overlap top-right — how should they sit? (stack, move one, or shrink)'
+STUB_DESIGN_QUESTION=1 STUB_DESIGN_QUESTION_TEXT="$DQ43b" \
+  run_in "$b43b" reconcile --mission "$MID" >"$b43b.aux/p1.txt" 2>&1 || true
+check "B43b. setup: design gate escalated" \
+  "grep -q '\"reconcileStatus\": *\"escalated\"' '$(state_of "$b43b")'"
+# The captain answers the reconcile design gate via respond.
+RA='Move the best-score readout to the top-left and keep the badge top-right.'
+( cd "$b43b" && LCARS_GH_BIN="$b43b.aux/gh" \
+    bash "$RESPOND_SH" answer --mission "$MID" --answer "$RA" >/dev/null 2>&1 ) || true
+# Plant a stale, UNRELATED generic answers.json AFTER the respond, to prove the
+# resume ignores it and uses only the dedicated reconcile answer.
+printf '{ "stage": "research", "answer": "Unrelated stale decision DO-NOT-USE." }\n' \
+  >"$(mdir_of "$b43b")/answers.json"
+: >"$b43b.aux/worker-prompt.log"
+run_in "$b43b" reconcile --mission "$MID" >"$b43b.aux/p2.txt" 2>&1 || true
+check "B43b. resume injects the DEDICATED reconcile answer into the heal worker prompt" \
+  "grep -q 'top-left' '$b43b.aux/worker-prompt.log'"
+check "B43b. resume frames the dedicated answer as a decision to implement" \
+  "grep -qi 'captain decided\|implement EXACTLY' '$b43b.aux/worker-prompt.log'"
+check "B43b. resume does NOT inject the stale unrelated generic answer" \
+  "! grep -q 'DO-NOT-USE' '$b43b.aux/worker-prompt.log'"
+check "B43b. the dedicated reconcile answer is CONSUMED after one use" \
+  "[ ! -f '$(mdir_of "$b43b")/reconcile-answer.txt' ]"
+
+# B43c — once the dedicated reconcile answer is present (a decision is in hand),
+# the resume must NOT re-raise the design question even if the merge is still red.
+b43c="$(mktemp -d "$TMPROOT/b43c.XXXX")"; new_repo_verify "$b43c" >/dev/null; setup_stubs "$b43c"
+stage_ticket_suite "$b43c" red; advance_base "$b43c" clean
+DQ43c='Two panels overlap — which should the player see?'
+STUB_DESIGN_QUESTION=1 STUB_DESIGN_QUESTION_TEXT="$DQ43c" \
+  run_in "$b43c" reconcile --mission "$MID" >"$b43c.aux/p1.txt" 2>&1 || true
+( cd "$b43c" && LCARS_GH_BIN="$b43c.aux/gh" \
+    bash "$RESPOND_SH" answer --mission "$MID" --answer "Keep the score panel." >/dev/null 2>&1 ) || true
+rc43c=0
+run_in "$b43c" reconcile --mission "$MID" >"$b43c.aux/p2.txt" 2>&1 || rc43c=$?
+check "B43c. with a reconcile decision in hand the resume heals (does not re-escalate a design question)" \
+  "[ '$rc43c' -ne 20 ] || ! grep -q '\"awaitingHuman\": *true' '$(state_of "$b43c")'"
+
+# --- BUG-055: answering a reconcile design question RESETS the round budget, so
+# the post-answer resume gets a FRESH RECONCILE_MAX (decision-heal + re-merge
+# verify) instead of carrying the pre-answer round forward and escalating early.
+b55="$(mktemp -d "$TMPROOT/b55.XXXX")"; new_repo_verify "$b55" >/dev/null; setup_stubs "$b55"
+stage_ticket_suite "$b55" red; advance_base "$b55" clean
+DQ55='Two readouts collide — which should the player see?'
+# Drive to the design-question escalation (pass1 heal → pass2 design question).
+run_in "$b55" reconcile --mission "$MID" >"$b55.aux/p1.txt" 2>&1 || true
+STUB_FORCED_DESIGN_QUESTION_TEXT="$DQ55" \
+  run_in "$b55" reconcile --mission "$MID" >"$b55.aux/p2.txt" 2>&1 || true
+# At escalation the round counter has advanced (>=2). Capture it.
+round_before="$(sed -n 's/.*"reconcileRound"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$(state_of "$b55")" | head -1)"
+check "B55. round advanced before the answer (>=2)" "[ \"\${round_before:-0}\" -ge 2 ]"
+# The captain answers the reconcile design gate via respond.
+( cd "$b55" && LCARS_GH_BIN="$b55.aux/gh" \
+    bash "$RESPOND_SH" answer --mission "$MID" --answer "Keep the score." >/dev/null 2>&1 ) || true
+check "B55. answering a reconcile design gate RESETS the round budget (reconcileRound cleared)" \
+  "! grep -q '\"reconcileRound\"' '$(state_of "$b55")'"
+check "B55. answering clears the escalated status so the resume can re-enter" \
+  "! grep -q '\"reconcileStatus\": *\"escalated\"' '$(state_of "$b55")'"
+# The next reconcile pass must start FRESH (round 1), not carry round_before forward.
+run_in "$b55" reconcile --mission "$MID" >"$b55.aux/p3.txt" 2>&1 || true
+round_after="$(sed -n 's/.*"reconcileRound"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$(state_of "$b55")" | head -1)"
+check "B55. the post-answer resume restarts the budget fresh (round 1, not carried forward)" \
+  "[ \"\${round_after:-0}\" -eq 1 ]"
+
 # ==========================================================================
 echo
 printf 'lcars reconcile: %d passed, %d failed\n' "$pass" "$fail"

@@ -2815,12 +2815,18 @@ The deterministic failure summary (with the conflict hunks) is at:
 - This mission's goal/PRD: $MISSION_DIR/prd.md
 - What changed on the base branch since this branch was cut is quoted in the summary above."
 
-  # RESUME after `lcars respond` (BUG-042 parity): inject the captain's decision so
-  # the resolution implements EXACTLY their choice rather than re-guessing.
-  if [ -f "$MISSION_DIR/answers.json" ]; then
-    local cap_answer; cap_answer="$(json_str "$MISSION_DIR/answers.json" answer)"
-    if [ -n "$cap_answer" ]; then
-      extra="$extra
+  # RESUME after `lcars respond` (BUG-042/043 parity): inject the captain's decision
+  # so the resolution implements EXACTLY their choice rather than re-guessing. Prefer
+  # the DEDICATED reconcile answer (BUG-043); fall back to the generic answers.json
+  # only when no dedicated answer exists.
+  local cap_answer=""
+  if [ -s "$MISSION_DIR/reconcile-answer.txt" ]; then
+    cap_answer="$(cat "$MISSION_DIR/reconcile-answer.txt")"
+  elif [ -f "$MISSION_DIR/answers.json" ]; then
+    cap_answer="$(json_str "$MISSION_DIR/answers.json" answer)"
+  fi
+  if [ -n "$cap_answer" ]; then
+    extra="$extra
 
 ## The captain DECIDED the design trade-off — implement EXACTLY this
 A prior reconcile pass raised a design question to the captain; they answered:
@@ -2829,7 +2835,6 @@ A prior reconcile pass raised a design question to the captain; they answered:
 
 This is a DECISION, not a new option to weigh. Resolve the conflict to implement
 EXACTLY that arrangement."
-    fi
   fi
 
   state_set_str reconcileStatus "resolving"
@@ -2907,18 +2912,22 @@ The deterministic failure summary is at:
 - This mission's goal/PRD: $MISSION_DIR/prd.md
 - What changed on the base branch since this branch was cut is quoted in the summary above."
 
-  # RESUME after `lcars respond` (BUG-042): if the captain already answered a prior
-  # design-trade-off escalation for this reconcile, INJECT that decision so the heal
-  # implements exactly what they chose (do NOT re-raise the same question).
-  if [ -f "$MISSION_DIR/answers.json" ]; then
-    local cap_answer; cap_answer="$(json_str "$MISSION_DIR/answers.json" answer)"
-    if [ -n "$cap_answer" ]; then
+  # RESUME after `lcars respond` (BUG-042/043): if the captain already answered a
+  # prior RECONCILE design-trade-off escalation, INJECT that decision so the heal
+  # implements exactly what they chose (do NOT re-raise the same question). The
+  # answer comes from the DEDICATED reconcile store (reconcile-answer.txt) — NOT the
+  # generic answers.json, which respond writes for ANY awaiting-human gate and could
+  # be a stale, unrelated decision (BUG-043). Consumed below after one use.
+  local recon_ans=""
+  if [ -s "$MISSION_DIR/reconcile-answer.txt" ]; then
+    recon_ans="$(cat "$MISSION_DIR/reconcile-answer.txt")"
+    if [ -n "$recon_ans" ]; then
       extra="$extra
 
 ## The captain DECIDED the design trade-off — implement EXACTLY this
 A prior reconcile pass raised a design question to the captain; they answered:
 
-  The captain decided: $cap_answer
+  The captain decided: $recon_ans
 
 This is a DECISION, not a new option to weigh. Author the self-heal bug PRD(s)
 that implement EXACTLY that arrangement — do NOT re-raise the question, and do NOT
@@ -2935,8 +2944,11 @@ emit a design-question file this time."
     # The author may judge the conflict an UNRESOLVABLE design trade-off and write
     # an experience-framed QUESTION (design-question.txt) instead of bug PRDs. If so,
     # surface it for the gate to escalate — UNLESS the captain has already answered
-    # (answers.json present) and we are now implementing their decision.
-    if [ -s "$odir/design-question.txt" ] && [ ! -f "$MISSION_DIR/answers.json" ]; then
+    # THIS reconcile's design question (a dedicated reconcile answer is in hand) and
+    # we are now implementing their decision. Gate on the DEDICATED reconcile answer
+    # (recon_ans), NOT the generic answers.json (BUG-043: an unrelated prior gate's
+    # answer must never suppress this design question).
+    if [ -s "$odir/design-question.txt" ] && [ -z "$recon_ans" ]; then
       RECONCILE_DESIGN_QUESTION="$(cat "$odir/design-question.txt")"
       rm -rf "$odir"
       return 0
@@ -2970,6 +2982,9 @@ emit a design-question file this time."
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
         bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" >/dev/null 2>&1 || true
       rm -rf "$odir"
+      # CONSUME the dedicated reconcile answer (BUG-043): a decision applies ONCE, so
+      # a later unrelated answers.json — or a re-run — never re-injects this decision.
+      [ -n "$recon_ans" ] && rm -f "$MISSION_DIR/reconcile-answer.txt"
       return 0
     fi
     prior_no_file=no-file
@@ -2992,6 +3007,8 @@ emit a design-question file this time."
     bash "$RESOLVE_LOGS_SCRIPT" --parent "$MISSION_ID" >/dev/null 2>&1 || true
   LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
     bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" >/dev/null 2>&1 || true
+  # CONSUME the dedicated reconcile answer (BUG-043) — a heal was dispatched.
+  [ -n "$recon_ans" ] && rm -f "$MISSION_DIR/reconcile-answer.txt"
   return 0
 }
 
@@ -3057,9 +3074,16 @@ The deterministic failure summary is at:
 }
 
 # Escalate to the human after K rounds still red. Never opens a PR.
-reconcile_escalate() { # diagnosis-text
-  local diag="$1"
+# $2 = "design" marks this as a reconcile DESIGN-QUESTION gate (BUG-043/055): it
+# drops a dedicated marker file so `lcars respond` can tell this gate apart from a
+# generic awaiting-human gate — answering it then writes a DEDICATED reconcile
+# answer and RESETS the round budget, rather than reusing the generic answers.json.
+reconcile_escalate() { # diagnosis-text  [design]
+  local diag="$1" kind="${2:-}"
   state_set_str reconcileStatus "escalated"
+  if [ "$kind" = "design" ]; then
+    printf '%s\n' "$diag" >"$MISSION_DIR/reconcile-design-question.txt"
+  fi
   local qf; qf="$(mktemp)"
   printf 'Reconcile with %s failed after %s round(s). Diagnosis:\n%s\n' \
     "$BASE" "$RECONCILE_MAX" "$diag" >"$qf"
@@ -3295,12 +3319,14 @@ ${base_log:-(no log available)}"
   # framed DESIGN QUESTION and escalate with it RELIABLY, regardless of whether the
   # author guessed "trade-off" upfront. The captain answers (or says "just retry");
   # a later pass (after `lcars respond`) injects their decision into the heal.
-  # Skip this when the captain has ALREADY answered (answers.json present) — then we
-  # are implementing their decision and must keep healing toward it, not re-ask.
-  if [ "$round" -gt 1 ] && [ ! -f "$MISSION_DIR/answers.json" ]; then
+  # Skip this ONLY when the captain has ALREADY answered THIS reconcile's design
+  # question — i.e. a DEDICATED reconcile answer is in hand (BUG-043). The generic
+  # answers.json must NEVER suppress this escalation: it is written for ANY
+  # awaiting-human gate and could be a stale, unrelated decision.
+  if [ "$round" -gt 1 ] && [ ! -s "$MISSION_DIR/reconcile-answer.txt" ]; then
     emit_event reconcile_red verify "merged $BASE but a prior heal could not reach green — re-framing as a design question (round $round)"
     local dq; dq="$(reconcile_author_design_question "$failure_summary" "$affected")"
-    reconcile_escalate "$dq"
+    reconcile_escalate "$dq" design
     return 20
   fi
 
@@ -3316,7 +3342,7 @@ ${base_log:-(no log available)}"
   # iterate on — escalate NOW with the player-facing question so the captain decides;
   # the next pass (after `lcars respond`) injects their answer into the heal.
   if [ -n "$RECONCILE_DESIGN_QUESTION" ]; then
-    reconcile_escalate "$RECONCILE_DESIGN_QUESTION"
+    reconcile_escalate "$RECONCILE_DESIGN_QUESTION" design
     return 20
   fi
 
