@@ -3882,7 +3882,13 @@ worker_spawn() { # role outdir prompt
   local stage_key stage_model
   stage_key="$(stage_key_for_role "${LCARS_WORKER_ROLE:-$role}")"
   stage_model="$(resolve_stage_model "$stage_key")"
+  # HANG-GUARD (BUG-076): wrap the cold-worker spawn so a mid-turn hang (0% CPU,
+  # no output, never returns) is auto-killed and the caller's retry loop kicks in.
+  # The guard polls the worker's process-group CPU% and the growth of the adapter's
+  # $outdir/.worker.out/.err; a slow-but-working worker is left alone. Covers EVERY
+  # cold worker (every Stage routes through here). LCARS_WORKER_HANG_SECS=0 disables.
   LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="$stage_model" \
+    run_worker_hang_guarded "$outdir" \
     bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt"
 }
 
@@ -6252,6 +6258,106 @@ run_with_watchdog() { # secs  cmd...
     wait "$cmd_pid" 2>/dev/null || true
     return 124
   fi
+  wait "$cmd_pid"
+  return $?
+}
+
+# === Cold-worker hang watchdog (BUG-076) ====================================
+# A `copilot -p` (or any cold) worker can hang MID-TURN: 0% CPU, no output, and
+# it NEVER returns — so the spawn_worker retry loop (which only retries when a
+# worker RETURNS a failure) is wedged forever. run_with_watchdog above is a
+# wall-clock cap and cannot tell a SLOW-but-working worker from a HUNG one; a
+# generous wall-clock budget either kills legitimately long work early or lets a
+# hang sit. This guard is CPU- AND output-AWARE: it kills a worker ONLY when it
+# is BOTH idle (group CPU ~0%) AND silent (output files not growing) for a
+# SUSTAINED window, and leaves a worker that is using CPU or still producing
+# output completely alone. macOS/bash-3.2 safe — no `timeout(1)`, no GNU ps flags.
+
+# Sum the CPU% across an entire process GROUP (pgid == the session leader's pid).
+# Portable `ps` (BSD/macOS + Linux): list pid,pcpu,pgid for all procs and add up
+# %CPU of those whose pgid matches. Prints an integer (floored). Empty/no match
+# ⇒ 0. Used to decide "is this worker tree doing ANY work right now?".
+_pgid_cpu_sum() { # pgid → integer cpu% (stdout)
+  local pgid="$1"
+  case "$pgid" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+  ps -axo pid=,pcpu=,pgid= 2>/dev/null | awk -v g="$pgid" '
+    $3 == g { sum += $2 }
+    END { printf "%d", (sum + 0) }'
+}
+
+# Print "<size> <mtime>" for a file (portable: BSD `stat -f`, GNU `stat -c`),
+# or "0 0" when the file is absent. Used to detect output GROWTH between polls —
+# either the byte size changed or the mtime advanced counts as progress.
+_file_size_mtime() { # path → "<size> <mtime>" (stdout)
+  local f="$1"
+  [ -f "$f" ] || { printf '0 0'; return 0; }
+  stat -f '%z %m' "$f" 2>/dev/null && return 0   # BSD / macOS
+  stat -c '%s %Y' "$f" 2>/dev/null && return 0   # GNU / Linux
+  printf '0 0'
+}
+
+# Run a cold-worker command HANG-GUARDED. Launches it as its OWN process-group
+# leader (perl POSIX::setsid + exec — REUSE the BUG-048 pattern in
+# run_with_watchdog), so the whole descendant tree can be group-killed. While it
+# runs, poll every LCARS_WORKER_HANG_POLL seconds: read the group's CPU% and the
+# combined size+mtime of $outdir/.worker.out + .worker.err. Whenever CPU exceeds
+# the threshold OR the output has grown, RESET the stagnation timer (the worker
+# is alive and working). If CPU stays at/below the threshold AND the output is
+# unchanged for a SUSTAINED LCARS_WORKER_HANG_SECS, declare it HUNG: group-kill
+# it (TERM then KILL, falling back to the bare pid like run_with_watchdog) and
+# return the HUNG sentinel 137, which the spawn_worker retry loop counts as a
+# FAILED try (so it retries within MAX_WORKER_TRIES; escalates only if exhausted).
+# The HUNG sentinel is 137 (128+SIGKILL) — distinct from a normal worker rc.
+# LCARS_WORKER_HANG_SECS=0 (or unset/non-numeric ⇒ default) disables the guard:
+# the command runs unguarded and its real rc round-trips.
+run_worker_hang_guarded() { # outdir  cmd...
+  local outdir="$1"; shift
+  local hang_secs="${LCARS_WORKER_HANG_SECS:-240}"
+  case "$hang_secs" in ''|*[!0-9]*) hang_secs=240 ;; esac
+  # Disabled → run inline, unguarded; the command's real rc round-trips.
+  if [ "$hang_secs" -le 0 ] 2>/dev/null; then
+    "$@"
+    return $?
+  fi
+  local poll="${LCARS_WORKER_HANG_POLL:-15}"
+  case "$poll" in ''|*[!0-9]*) poll=15 ;; esac
+  [ "$poll" -ge 1 ] 2>/dev/null || poll=1
+  local cpu_min="${LCARS_WORKER_HANG_CPU_MIN:-2}"
+  case "$cpu_min" in ''|*[!0-9]*) cpu_min=2 ;; esac
+
+  # Launch as its own session/group leader (PGID == PID) so a group-kill reaps
+  # the whole tree even when nested workers reparent/orphan. Same perl trick as
+  # run_with_watchdog; the perl `exec` preserves the backgrounded pid.
+  perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- "$@" &
+  local cmd_pid=$!
+
+  local out_a="$outdir/.worker.out" out_b="$outdir/.worker.err"
+  local last_sig=""; last_sig="$(_file_size_mtime "$out_a")|$(_file_size_mtime "$out_b")"
+  local stagnant=0
+  while pid_alive "$cmd_pid"; do
+    sleep "$poll" 2>/dev/null || break
+    pid_alive "$cmd_pid" || break
+    local cpu sig
+    cpu="$(_pgid_cpu_sum "$cmd_pid")"
+    sig="$(_file_size_mtime "$out_a")|$(_file_size_mtime "$out_b")"
+    # Progress = the worker is burning CPU OR its output grew → reset the timer.
+    if [ "$cpu" -gt "$cpu_min" ] 2>/dev/null || [ "$sig" != "$last_sig" ]; then
+      stagnant=0
+      last_sig="$sig"
+      continue
+    fi
+    # Idle AND silent this interval — accumulate stagnation.
+    stagnant=$((stagnant + poll))
+    if [ "$stagnant" -ge "$hang_secs" ]; then
+      # HUNG: group-kill the whole tree, then return the distinct sentinel so the
+      # caller's retry loop counts this as a failed try.
+      kill -TERM -"$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null || true
+      sleep 1 2>/dev/null || true
+      kill -KILL -"$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null || true
+      wait "$cmd_pid" 2>/dev/null || true
+      return 137   # HUNG sentinel (128+SIGKILL) — see header
+    fi
+  done
   wait "$cmd_pid"
   return $?
 }
