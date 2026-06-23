@@ -189,14 +189,58 @@ do_merge() {
     if [ "$push_rc" -ne 0 ]; then
       case "$push_out" in
         *'[rejected]'*|*'non-fast-forward'*|*'! [remote rejected]'*|*'fetch first'*|*'tip of your current branch is behind'*)
-          # A real divergence — the remote PR branch moved on. Do NOT merge.
-          local sha; sha="$(json_str "$STATE" reconcileMergeSha)"
-          local note="Could not update the PR branch: non-fast-forward (the remote PR branch diverged). The heal is green at ${sha:-the reconciled tip} — force-update the PR branch (\`git push --force-with-lease origin $BRANCH\`) or push manually, then reapprove."
-          state_set_str reconcileStatus "merge-failed"
-          state_set_str reconcileNote "$note"
-          state_set_raw awaitingHuman true
-          state_set_str pendingQuestion "$note"
-          die "$note Mission stays at verify."
+          # A non-fast-forward push: the remote PR head diverged from our local
+          # branch. BUG-077: a reconcile that was killed/parked and retried leaves
+          # the local mission branch at the dead attempt's merge commit, so the
+          # retry's reconciled tip DIVERGES from the last-pushed remote PR head.
+          # When the local branch tip IS the freshly-reconciled green tip
+          # (reconcileMergeSha) AND it already CONTAINS current origin/main, the
+          # local IS the authoritative resolution → auto-recover with a
+          # --force-with-lease push and proceed to merge. STALENESS GUARD
+          # (BUG-075): if origin/main advanced PAST the heal (local no longer
+          # contains it) we must NOT force over a remote that legitimately moved —
+          # surface merge-failed asking the captain to re-reconcile. And a local
+          # tip that is not the known green reconcileMergeSha is never forced.
+          local sha local_tip recovered=0
+          sha="$(json_str "$STATE" reconcileMergeSha)"
+          local_tip="$("$GIT_BIN" rev-parse "$BRANCH" 2>/dev/null)"
+          if [ -n "$sha" ] && [ "$local_tip" = "$sha" ]; then
+            # Refresh remote-tracking refs, then check the local branch still
+            # contains current origin/$BASE (the heal incorporates current main).
+            "$GIT_BIN" fetch origin "$BASE" >/dev/null 2>&1 || true
+            if "$GIT_BIN" merge-base --is-ancestor "origin/$BASE" "$BRANCH" >/dev/null 2>&1; then
+              # Authoritative + still on top of current main → force-with-lease.
+              if "$GIT_BIN" push --force-with-lease origin "$BRANCH" >/dev/null 2>&1; then
+                recovered=1
+              else
+                local fnote="Could not force-update the PR branch (\`git push --force-with-lease origin $BRANCH\`) — the remote lease was stale (someone else pushed). Re-run the reconcile, then reapprove."
+                state_set_str reconcileStatus "merge-failed"
+                state_set_str reconcileNote "$fnote"
+                state_set_raw awaitingHuman true
+                state_set_str pendingQuestion "$fnote"
+                die "$fnote Mission stays at verify."
+              fi
+            else
+              # STALENESS GUARD: main moved past the heal → never force.
+              local mnote="main moved since the heal — re-reconcile required. origin/$BASE advanced past the reconciled tip ($sha); the heal no longer incorporates current main. Re-run \`lcars approve $MISSION_ID\` to reconcile against the new base, then reapprove."
+              state_set_str reconcileStatus "merge-failed"
+              state_set_str reconcileNote "$mnote"
+              state_set_raw awaitingHuman true
+              state_set_str pendingQuestion "$mnote"
+              die "$mnote Mission stays at verify."
+            fi
+          fi
+          if [ "$recovered" -ne 1 ]; then
+            # Not the authoritative tip (or no recorded green tip) — do NOT force;
+            # surface the divergence for the captain to resolve, as before.
+            local note="Could not update the PR branch: non-fast-forward (the remote PR branch diverged) and the local tip is not the recorded reconciled green tip. The heal is green at ${sha:-the reconciled tip} — re-run the reconcile (\`lcars approve $MISSION_ID\`) or push manually (\`git push --force-with-lease origin $BRANCH\`), then reapprove."
+            state_set_str reconcileStatus "merge-failed"
+            state_set_str reconcileNote "$note"
+            state_set_raw awaitingHuman true
+            state_set_str pendingQuestion "$note"
+            die "$note Mission stays at verify."
+          fi
+          # recovered: fall through to gh pr merge below.
           ;;
         *'does not appear to be a git repository'*|*'No configured push destination'*|*'No such remote'*|*'Could not read from remote'*|*'Authentication failed'*|*'Permission denied'*|*'could not read Username'*)
           # Benign in a test/local repo (no remote / no auth): the PR branch is

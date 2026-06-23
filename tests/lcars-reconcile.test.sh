@@ -314,6 +314,21 @@ advance_base() { # repo  clean|conflict
   ( cd "$repo" && git push -q origin "$base" 2>/dev/null || true )
 }
 
+# BUG-077: make the LOCAL mission branch DIVERGE from the remote PR head. Mimics a
+# reconcile that was killed/parked and retried: the local branch tip is left at a
+# dead attempt's commit while origin/<branch> still holds the last-pushed head. We
+# add a local-only commit (NOT pushed) so `local tip != origin/<branch>` and the
+# remote is NOT an ancestor of local — a true divergence. The dead commit drops a
+# marker file the test asserts disappears once the gate resets to the remote head.
+diverge_local_branch() { # repo
+  local repo="$1" base
+  base="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+  ( cd "$repo" && git checkout -q "lcars/$MID" \
+      && printf 'dead-attempt\n' >dead-attempt.txt \
+      && git add -A && git commit -q -m "dead reconcile attempt (local-only, diverged)" \
+      && git checkout -q "$base" )
+}
+
 # Drive a run.sh subcommand inside a repo with all stub bins injected (from the
 # sibling aux dir, never inside the repo working tree).
 run_in() { # repo  subcommand-and-args…
@@ -1106,6 +1121,48 @@ check "B52b. a SUCCESSFUL heal dispatch sets reconcileStatus=healing (unchanged 
   "grep -q '\"reconcileStatus\": *\"healing\"' '$s52b'"
 check "B52b. a SUCCESSFUL heal dispatch does NOT raise an awaiting-human gate" \
   "! grep -q '\"awaitingHuman\": *true' '$s52b'"
+
+# --- BUG-077: re-entry with an existing remote PR branch resets local to remote --
+# A reconcile killed/parked and retried leaves the local mission branch DIVERGED
+# from the last-pushed remote PR head. On re-entry, when a remote PR branch exists,
+# the gate must reset the local branch to origin/<branch> BEFORE merging main again
+# so the retry merges from the SAME base the remote has — and cannot diverge. After
+# the reset+merge, the local-only dead-attempt commit must be gone, and the branch
+# must descend from the remote head (origin/<branch> is an ancestor of the result).
+b77="$(mktemp -d "$TMPROOT/b77.XXXX")"; new_repo_verify "$b77" >/dev/null; setup_stubs "$b77"
+# this is the post-PR (approve merge-gate) re-entry context: a PR is already open.
+sed 's#\("base": "[^"]*"\)#\1,\n  "prUrl": "https://github.com/acme/repo/pull/77",\n  "prNumber": 77#' \
+  "$(state_of "$b77")" >"$b77.s.tmp" && mv "$b77.s.tmp" "$(state_of "$b77")"
+stage_ticket_suite "$b77" green
+diverge_local_branch "$b77"   # local tip now != origin/lcars/$MID (a dead attempt)
+advance_base "$b77" clean      # main moves ahead → reconcile will run
+# capture the remote head BEFORE the run so we can assert the local descends from it.
+remote_head77="$(cd "$b77" && git rev-parse "origin/lcars/$MID")"
+rc77=0; run_in "$b77" reconcile --mission "$MID" >"$b77.aux/out.txt" 2>&1 || rc77=$?
+check "B77. re-entry resets local to remote head: the dead-attempt commit is GONE" \
+  "! ( cd '$b77' && git log --oneline lcars/$MID | qgrep -q 'dead reconcile attempt' )"
+check "B77. the reconciled branch DESCENDS from the remote PR head (no divergence)" \
+  "( cd '$b77' && git merge-base --is-ancestor '$remote_head77' lcars/$MID )"
+check "B77. the merge still happened (branch contains base's new commit)" \
+  "( cd '$b77' && git log --oneline lcars/$MID ) | qgrep -q 'main moves ahead'"
+check "B77. live tree stays clean" "[ -z \"\$(cd '$b77' && git status --porcelain)\" ]"
+check "B77. no reconcile worktree leaks" "! (cd '$b77' && git worktree list | grep -q reconcile)"
+
+# B77b (guard): a FIRST run with NO divergence (local == remote head) is UNCHANGED —
+# the reset is a no-op when local already matches the remote, and the normal
+# clean+green reconcile proceeds exactly as Behaviour 2/2r. Here there is no remote
+# PR branch divergence; the gate must not disturb the branch beyond the merge.
+b77b="$(mktemp -d "$TMPROOT/b77b.XXXX")"; new_repo_verify "$b77b" >/dev/null; setup_stubs "$b77b"
+sed 's#\("base": "[^"]*"\)#\1,\n  "prUrl": "https://github.com/acme/repo/pull/77",\n  "prNumber": 77#' \
+  "$(state_of "$b77b")" >"$b77b.s.tmp" && mv "$b77b.s.tmp" "$(state_of "$b77b")"
+stage_ticket_suite "$b77b" green
+advance_base "$b77b" clean
+rc77b=0; run_in "$b77b" reconcile --mission "$MID" >"$b77b.aux/out.txt" 2>&1 || rc77b=$?
+check "B77b. no-divergence re-entry still converges (awaiting-reapprove, exit 30)" \
+  "[ '$rc77b' -eq 30 ]"
+check "B77b. the merge still happened on a non-diverged branch" \
+  "( cd '$b77b' && git log --oneline lcars/$MID ) | qgrep -q 'main moves ahead'"
+check "B77b. live tree stays clean" "[ -z \"\$(cd '$b77b' && git status --porcelain)\" ]"
 
 # ==========================================================================
 echo

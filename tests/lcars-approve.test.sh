@@ -392,6 +392,140 @@ check "rr. keeps awaitingHuman true (gate stays visible)" \
 check "rr. prints a surfaced, actionable reason (not a generic die)" \
   "grep -qi 'non-fast-forward\|force-update\|push manually' '$repoRR/out.txt'"
 
+# --- BUG-077: auto-recover a non-ff push of the AUTHORITATIVE reconciled tip --
+# When a reconcile is killed/parked and retried, the local mission branch is left
+# at the dead attempt's merge commit; a retry merges main onto THAT so the local
+# reconciled tip DIVERGES from the last-pushed remote PR head. A plain `git push`
+# is then rejected non-fast-forward, and the old code told the human to
+# force-with-lease by hand (no in-flow recovery). The fix: in the non-ff push
+# branch of do_merge, if the local branch tip == the freshly-reconciled green tip
+# (reconcileMergeSha) AND the local branch CONTAINS origin/main (the heal already
+# incorporates current main), the local IS the authoritative resolution → do a
+# `git push --force-with-lease` and, on success, proceed to gh pr merge. With a
+# STALENESS GUARD: if origin/main advanced PAST the heal (local no longer contains
+# origin/main) → do NOT force; set merge-failed "main moved — re-reconcile". And a
+# local tip that is NOT the reconcileMergeSha is not authoritative → never force.
+#
+# A configurable git stub drives all three cases from env, deterministically:
+#   STUB_LOCAL_SHA      what `git rev-parse <branch>` returns (the local tip)
+#   STUB_CONTAINS_MAIN  1 ⇒ `git merge-base --is-ancestor origin/<base> <branch>`
+#                       succeeds (local contains current main); 0 ⇒ fails (main
+#                       advanced past the heal)
+#   STUB_FORCE_OK       1 ⇒ `git push --force-with-lease` succeeds; 0 ⇒ fails
+# A plain `git push` (no --force-with-lease) ALWAYS rejects non-ff. Pushes are
+# recorded to $GIT_LOG so a test can assert whether a force-with-lease was issued.
+make_git_stub_recover() { # <path>
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "git $*" >>"$GIT_LOG"
+case "${1:-}" in
+  push)
+    shift
+    forced=0
+    for a in "$@"; do case "$a" in --force-with-lease*) forced=1 ;; esac; done
+    if [ "$forced" = 1 ]; then
+      [ "${STUB_FORCE_OK:-1}" = 1 ] && exit 0
+      echo "error: failed to force-push (stale lease)" >&2; exit 1
+    fi
+    # a plain push always rejects non-fast-forward
+    echo "To origin" >&2
+    echo " ! [rejected]        b -> b (non-fast-forward)" >&2
+    echo "error: failed to push some refs" >&2
+    exit 1 ;;
+  fetch) exit 0 ;;
+  rev-parse)
+    # `git rev-parse <branch>` → the configured local tip; anything else passes.
+    printf '%s\n' "${STUB_LOCAL_SHA:-localsha}"; exit 0 ;;
+  merge-base)
+    # `git merge-base --is-ancestor origin/<base> <branch>` → contains-main check.
+    [ "${STUB_CONTAINS_MAIN:-1}" = 1 ] && exit 0 || exit 1 ;;
+  *) exit 0 ;;
+esac
+EOF
+  chmod +x "$1"
+}
+
+# Helper: seed the awaiting-reapprove gate with a chosen reconcileMergeSha.
+seed_reapprove_gate() { # <state-path> <merge-sha>
+  awk -v SHA="$2" 'NR==1{print; print "  \"reconcileStatus\": \"awaiting-reapprove\",";
+    printf "  \"reconcileMergeSha\": \"%s\",\n", SHA; print "  \"awaitingHuman\": true,";
+    next} {print}' "$1" >"$1.tmp" && mv "$1.tmp" "$1"
+}
+
+# Case 77a: local tip == reconcileMergeSha AND contains origin/main → the local
+# IS the authoritative resolution → force-with-lease, then gh pr merge succeeds.
+repo77a="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repo77a/gh"
+make_git_stub_recover "$repo77a/git"
+make_reconcile_stub "$repo77a/recon.sh" 99
+seed_reapprove_gate "$(state_of "$repo77a")" "abc123authoritative"
+export GH_LOG="$repo77a/gh.log"; : >"$GH_LOG"
+export GIT_LOG="$repo77a/git.log"; : >"$GIT_LOG"
+rc77a=0
+( cd "$repo77a" && LCARS_GH_BIN="$repo77a/gh" LCARS_GIT_BIN="$repo77a/git" \
+    STUB_LOCAL_SHA="abc123authoritative" STUB_CONTAINS_MAIN=1 STUB_FORCE_OK=1 \
+    GIT_LOG="$repo77a/git.log" \
+    LCARS_RUN_SCRIPT="$repo77a/recon.sh" RECON_LOG="$repo77a/recon.log" bash "$SCRIPT" \
+    --mission "$MID" --reapprove >out.txt 2>&1 ) || rc77a=$?
+s77a="$(state_of "$repo77a")"
+check "77a. exits 0 — authoritative tip force-pushed then merged" "[ '$rc77a' -eq 0 ]"
+check "77a. issued a force-with-lease push of the authoritative tip" \
+  "grep -q 'push --force-with-lease' '$repo77a/git.log'"
+check "77a. proceeds to gh pr merge after the force-with-lease" \
+  "grep -q 'pr merge' '$repo77a/gh.log'"
+check "77a. advances to done" "grep -q '\"stage\": *\"done\"' '$s77a'"
+check "77a. does NOT set merge-failed (recovered in-flow)" \
+  "! grep -q '\"reconcileStatus\": *\"merge-failed\"' '$s77a'"
+
+# Case 77b STALENESS GUARD (BUG-075): origin/main advanced PAST the heal (local no
+# longer contains origin/main) → do NOT force-push; set merge-failed "main moved —
+# re-reconcile required". Never force over a remote that legitimately advanced.
+repo77b="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repo77b/gh"
+make_git_stub_recover "$repo77b/git"
+make_reconcile_stub "$repo77b/recon.sh" 99
+seed_reapprove_gate "$(state_of "$repo77b")" "abc123authoritative"
+export GH_LOG="$repo77b/gh.log"; : >"$GH_LOG"
+export GIT_LOG="$repo77b/git.log"; : >"$GIT_LOG"
+rc77b=0
+( cd "$repo77b" && LCARS_GH_BIN="$repo77b/gh" LCARS_GIT_BIN="$repo77b/git" \
+    STUB_LOCAL_SHA="abc123authoritative" STUB_CONTAINS_MAIN=0 STUB_FORCE_OK=1 \
+    GIT_LOG="$repo77b/git.log" \
+    LCARS_RUN_SCRIPT="$repo77b/recon.sh" RECON_LOG="$repo77b/recon.log" bash "$SCRIPT" \
+    --mission "$MID" --reapprove >out.txt 2>&1 ) || rc77b=$?
+s77b="$(state_of "$repo77b")"
+check "77b. exits non-zero when main moved past the heal" "[ '$rc77b' -ne 0 ]"
+check "77b. does NOT force-push over a remote that legitimately advanced" \
+  "! grep -q 'push --force-with-lease' '$repo77b/git.log'"
+check "77b. sets reconcileStatus=merge-failed" \
+  "grep -q '\"reconcileStatus\": *\"merge-failed\"' '$s77b'"
+check "77b. note says main moved / re-reconcile" \
+  "grep -qi 'main moved\|re-reconcile' '$s77b'"
+check "77b. does NOT attempt gh pr merge" "! grep -q 'pr merge' '$repo77b/gh.log'"
+check "77b. stays at verify (no false done)" \
+  "grep -q '\"stage\": *\"verify\"' '$s77b'"
+
+# Case 77c: local tip != reconcileMergeSha (NOT the authoritative reconciled tip)
+# → must NOT force-push; surfaces as merge-failed exactly as before. (This mirrors
+# the existing `rr.` case: never force when the local is not the known green tip.)
+repo77c="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repo77c/gh"
+make_git_stub_recover "$repo77c/git"
+make_reconcile_stub "$repo77c/recon.sh" 99
+seed_reapprove_gate "$(state_of "$repo77c")" "abc123authoritative"
+export GH_LOG="$repo77c/gh.log"; : >"$GH_LOG"
+export GIT_LOG="$repo77c/git.log"; : >"$GIT_LOG"
+rc77c=0
+( cd "$repo77c" && LCARS_GH_BIN="$repo77c/gh" LCARS_GIT_BIN="$repo77c/git" \
+    STUB_LOCAL_SHA="something-else-entirely" STUB_CONTAINS_MAIN=1 STUB_FORCE_OK=1 \
+    GIT_LOG="$repo77c/git.log" \
+    LCARS_RUN_SCRIPT="$repo77c/recon.sh" RECON_LOG="$repo77c/recon.log" bash "$SCRIPT" \
+    --mission "$MID" --reapprove >out.txt 2>&1 ) || rc77c=$?
+s77c="$(state_of "$repo77c")"
+check "77c. exits non-zero (not the authoritative tip → surfaces)" "[ '$rc77c' -ne 0 ]"
+check "77c. does NOT force-push when local != reconcileMergeSha" \
+  "! grep -q 'push --force-with-lease' '$repo77c/git.log'"
+check "77c. sets reconcileStatus=merge-failed" \
+  "grep -q '\"reconcileStatus\": *\"merge-failed\"' '$s77c'"
+check "77c. does NOT attempt gh pr merge" "! grep -q 'pr merge' '$repo77c/gh.log'"
+
 # --- BUG-067: a FAILED self-heal stays escalated AND is surfaced -------------
 # reconcile exit 20 = escalated; approve must stay at verify, not merge, and the
 # failure must be surfaced (reconcile_escalate already persisted reconcileNote).

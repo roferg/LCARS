@@ -3239,6 +3239,37 @@ reconcile_gate() {
   "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH" \
     || { echo "RECONCILE: ok — branch not present locally"; return 0; }
 
+  # BUG-077: don't diverge on re-entry. A reconcile killed/parked and retried leaves
+  # the LOCAL mission branch at the dead attempt's merge commit; merging main onto
+  # THAT makes the local reconciled tip DIVERGE from the last-pushed remote PR head,
+  # so the eventual push is rejected non-fast-forward and approve gets stuck. When a
+  # REMOTE PR branch already exists, reset the local branch to the remote PR head
+  # BEFORE merging main again — so a retry merges from the SAME base the remote has
+  # and cannot diverge. Guard: only on a RE-ENTRY for a mission that ALREADY has an
+  # open PR (prUrl recorded) — the `lcars approve` merge-gate retry context where
+  # BUG-077 occurs. The pre-PR drive_verify path (no prUrl) is unchanged: there the
+  # branch's local-only commits (a fresh merge / textual-conflict resolution that
+  # hasn't been pushed yet) are the authoritative work and must NOT be discarded.
+  local pr_for_reset; pr_for_reset="$(json_str "$STATE" prUrl)"
+  case "$pr_for_reset" in http*|*/pull/*) : ;; *) pr_for_reset="" ;; esac
+  if [ -n "$pr_for_reset" ] \
+     && "$GIT_BIN" fetch origin "$BRANCH" --quiet 2>/dev/null \
+     && "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+    local local_tip remote_tip
+    local_tip="$("$GIT_BIN" rev-parse "$BRANCH" 2>/dev/null)"
+    remote_tip="$("$GIT_BIN" rev-parse "origin/$BRANCH" 2>/dev/null)"
+    if [ -n "$remote_tip" ] && [ "$local_tip" != "$remote_tip" ]; then
+      # If the live tree is checked out ON the branch, detach it first so the ref
+      # can be moved (mirrors the worktree-cut detach below).
+      if [ "$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )" = "$BRANCH" ]; then
+        ( cd "$REPO_ROOT" && "$GIT_BIN" checkout --detach --quiet ) >/dev/null 2>&1 || :
+      fi
+      if "$GIT_BIN" branch -f "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1; then
+        emit_event reconcile_reset verify "re-entry: reset local '$BRANCH' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) before re-merging — avoids divergence"
+      fi
+    fi
+  fi
+
   # (a) main-ahead check. Best-effort; any unresolvable/non-numeric → not-ahead.
   local base_ref ahead
   base_ref="$(reconcile_base_ref)"
