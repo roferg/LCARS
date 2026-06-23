@@ -5965,8 +5965,8 @@ check "B18-2. pending.json carries the full-suite reason (names the gate)" \
   "qgrep -qi 'full-suite' '$repoB18/.git/lcars/missions/$MID/pending.json'"
 check "B18-2. pending.json names the regressed earlier ticket (t-001)" \
   "qgrep -q 't-001' '$repoB18/.git/lcars/missions/$MID/pending.json'"
-check "B18-2. state.pendingQuestion carries the regression reason (not lost to stderr)" \
-  "qgrep -qi 'regress\\|full-suite' '$sB18'"
+check "B18-2. state.pendingQuestion carries the human-facing gate summary (BUG-027 reframing; the raw reason lives in pending.json/technicalDetail, asserted above)" \
+  "qgrep -qi 'reconcile\\|conflict' '$sB18'"
 check "B18-2. the gate reason is surfaced on stdout (the daemon captures it)" \
   "qgrep -qi 'regression\\|full-suite' '$repoB18/outB18.txt'"
 
