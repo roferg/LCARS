@@ -72,8 +72,8 @@
       <a href="#install"><div class="dot"></div>Installation</a>
     </div>
     <div class="nav-section" data-color="red">
-      <div class="nav-label">Roadmap</div>
-      <a href="#future"><div class="dot"></div>Kanban Interface</a>
+      <div class="nav-label">Interface &amp; Scope</div>
+      <a href="#future"><div class="dot"></div>Kanban Interface <span class="nav-badge">primary</span></a>
       <a href="#scope"><div class="dot"></div>Scope</a>
     </div>
   </nav>
@@ -339,7 +339,18 @@ stateDiagram-v2
 
     <!-- CLI -->
     <section id="cli">
-      <h2>The CLI</h2>
+      <h2>Driving LCARS: the Viewscreen and the CLI</h2>
+      <p>LCARS is driven through two interchangeable surfaces over one harness. The
+      <strong>viewscreen</strong> — the LCARS-themed kanban web board (see
+      <a href="#future">The Kanban Interface</a>) — is the <strong>recommended,
+      default</strong> way to use it: file an idea, watch each Mission drive to a
+      merged PR as a card, and answer every gate visually, all from one screen. The
+      <strong>CLI</strong> is the equivalent power path — the same harness,
+      command-line first — for headless shells, SSH, and scripting. CLI/UI parity
+      is a core principle: every action the board takes dispatches to the same
+      <code>lcars</code> skills the CLI exposes, so the two never drift. The
+      sections below describe the harness and the CLI surface; the viewscreen is a
+      viewport over exactly this.</p>
       <h3>How it runs: a token-free driver, model-selected workers</h3>
       <p>LCARS is driven by a <strong>deterministic loop</strong> — plain shell, no model, no tokens. The loop never reasons about your code; it reads each Mission's state, decides the next Stage mechanically, and spawns a fresh worker to do that Stage's thinking. All the <em>reasoning</em> happens in those workers; the loop only sequences them and records results.</p>
       <p>Each headless Stage (Research, Validate, Plan, Plan Review, Implement) runs as a <strong>cold worker</strong> — a one-shot, non-interactive LLM invocation given only the Mission's on-disk artifacts, sharing no context with the loop or the previous Stage. Workers are spawned through a single, swappable binary that defaults to <strong>whichever CLI you launched from</strong>: run LCARS inside Claude Code and every worker is Claude; run it inside GitHub Copilot and every worker is Copilot. The interactive Stages — Align's grilling and the Verify gate — run on that same host CLI.</p>
@@ -571,7 +582,7 @@ flowchart LR
       <h2>The Kanban Interface</h2>
       <div class="future-banner">
         <h3>Command &amp; Control</h3>
-        <p>LCARS now ships a dedicated visual interface. The Kanban Board is a full application — not a GitHub Projects board, but a custom interface purpose-built for the Harness. Launch it with <code>lcars viewscreen</code> (alias <code>lcars serve</code>); <code>lcars viewscreen --open</code> boots on a free port and opens the board in your browser. It is a Python-3-stdlib-only daemon — no pip, npm, or build step — serving a vanilla LCARS-themed front end.</p>
+        <p>The <strong>viewscreen</strong> is the <strong>primary, recommended</strong> way to use LCARS. It is a dedicated visual interface — a full application, not a GitHub Projects board, but a custom kanban purpose-built for the Harness. Launch it with <code>lcars viewscreen</code> (alias <code>lcars serve</code>); <code>lcars viewscreen --open</code> boots on a free port and opens the board in your browser. It is a Python-3-stdlib-only daemon — no pip, npm, or build step — serving a vanilla LCARS-themed front end. It is the default surface for the whole idea → merged PR loop; the CLI (above) is the equivalent power path for when you'd rather stay in the terminal.</p>
         <p style="margin-top:12px">Each column corresponds to a Stage. Each Mission is a card carrying one <strong>cost pill</strong> and two <strong>difficulty pills</strong> (reasoning + implementation), with awaiting-you and paused card states, nested ticket rows, and live Implement wave/ticket progress. The human can see at a glance what is in flight, what is waiting for human input, and what is blocked. Questions from the Harness appear on Mission cards; the human responds from the interface, and the Harness resumes.</p>
         <p style="margin-top:12px">This is the command-and-control layer: one view of all Missions, all Stages, all pending decisions — with the ability to start, stop, and steer from a single screen. You can drive the whole idea→PR loop from the browser: File a Mission, watch the live Align grilling console, Start a run (with a plain-language model override), answer a Respond gate, work the centered two-pane mission-detail modal, Verify (approve / send-back), and use the Mission Log. <strong>Pause</strong> and <strong>Resume</strong> halt and continue a Mission at a safe boundary right from the board, and the Mission Log gives each logged bug its own estimate (cost + reasoning/implementation difficulty + per-stage model recommendation) with a plain-language per-bug model override.</p>
         <p style="margin-top:12px">One adapter-neutral board shape backs two interchangeable read adapters: a <strong>local</strong> adapter parsing <code>.git/lcars/missions/*</code> (the default) and a <strong>GitHub</strong> adapter reading issues + <code>lcars:*</code> labels. A live SSE channel pushes updates on every state change; the local adapter also exposes operator write endpoints, while the GitHub adapter (and <code>--read-only</code>) stay view-only — so a hosted, view-only reader is a configuration away.</p>

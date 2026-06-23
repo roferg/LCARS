@@ -148,20 +148,42 @@ function isStarting(id) {
 var MERGING = Object.create(null);
 var MERGING_TIMEOUT_MS = 30000;
 
-function markMerging(id) {
+function markMerging(id, fromStatus) {
   if (id == null) return;
   var key = String(id);
-  if (MERGING[key]) clearTimeout(MERGING[key]);
-  MERGING[key] = setTimeout(function () { clearMerging(key); refresh(); },
-    MERGING_TIMEOUT_MS);
+  if (MERGING[key]) clearTimeout(MERGING[key].t);
+  // BUG-078: remember the reconcileStatus that was current at dispatch (the
+  // "origin" gate the captain clicked from) so clearMergingOnState can tell a
+  // STILL-same-state repaint (keep busy, sticky) from a real TERMINAL change
+  // (clear). Keyed by id → { t: timeout handle, from: origin reconcileStatus }.
+  MERGING[key] = {
+    t: setTimeout(function () { clearMerging(key); refresh(); },
+      MERGING_TIMEOUT_MS),
+    from: fromStatus || null,
+  };
 }
 function clearMerging(id) {
   if (id == null) return;
   var key = String(id);
-  if (MERGING[key]) { clearTimeout(MERGING[key]); delete MERGING[key]; }
+  if (MERGING[key]) { clearTimeout(MERGING[key].t); delete MERGING[key]; }
 }
 function isMerging(id) {
   return id != null && !!MERGING[String(id)];
+}
+function mergingFrom(id) {
+  var e = id != null && MERGING[String(id)];
+  return e ? e.from : null;
+}
+/* BUG-078: the shared disabled busy affordance shown while an optimistic merge /
+   reapprove / retry-merge is in flight — identical copy to verifyAffordance's
+   "healing" kind, so the card reads the same whether the busy state is a live
+   reconcile or an optimistic post-click one. */
+function mergeBusyBtn() {
+  var b = btn("◐ Merge heal in progress…", "warn", null);
+  b.disabled = true;
+  b.title = "Self-healing the merge against main — Merge is unavailable until "
+    + "it settles.";
+  return b;
 }
 /* BUG-044: drop the optimistic merging flag once the REAL state arrives — the
    reconcile started (reconcileStatus truthy), it escalated to a human gate
@@ -176,10 +198,20 @@ function clearMergingOnState(m) {
   // genuinely MOVED past the merge: the mission left verify (→ done), a fresh
   // in-flight heal sub-state began (merging/retesting/resolving/healing), it
   // escalated to a design call, or the merge surfaced as failed.
+  // BUG-078: clear only on a TERMINAL change away from the gate the captain
+  // clicked. The mission left verify (→ done) is always terminal. Otherwise the
+  // served reconcileStatus must have genuinely CHANGED from the origin gate — a
+  // repaint that still shows the SAME state (e.g. still awaiting-reapprove while
+  // the merge runs, or still merge-failed mid retry) keeps the busy flag sticky,
+  // so the button never reverts mid-flight. A fresh in-flight heal sub-state or
+  // an escalation is also terminal for the optimistic flag.
   var rs = m.reconcileStatus;
+  var from = mergingFrom(m.id);
   var moved = (m.stage || "").toLowerCase() !== "verify"
     || rs === "merging" || rs === "retesting" || rs === "resolving"
-    || rs === "healing" || rs === "escalated" || rs === "merge-failed";
+    || rs === "healing" || rs === "escalated"
+    || (rs === "merge-failed" && from !== "merge-failed")
+    || (rs === "awaiting-reapprove" && from && from !== "awaiting-reapprove");
   if (moved) clearMerging(m.id);
 }
 
@@ -410,10 +442,21 @@ function cardControls(m) {
   // ships the reconciled, re-tested tip — checked BEFORE the generic awaiting
   // branch (which would mislabel it "Answer ▸" and open the respond dialog).
   if (isReconcileAwaitingReapprove(m)) {
+    // BUG-078: the per-click button.disabled (BUG-070) is lost on the next
+    // poll/SSE repaint (a fresh button is built), and a repaint that still serves
+    // awaiting-reapprove (the merge hasn't finished) would re-render the LIVE
+    // Reapprove — a busy → Reapprove → merged flicker. Keep the optimistic merge
+    // flag STICKY across those intermediate repaints: clear it only on a TERMINAL
+    // change (clearMergingOnState clears on done/merge-failed, NOT on a still-
+    // awaiting-reapprove repaint), and while it survives render the disabled busy
+    // affordance so the button stays "Merge heal in progress…" from click to the
+    // terminal state. Re-uses the shared MERGING set (no parallel mechanism).
+    clearMergingOnState(m);
+    if (isMerging(m.id)) { ctrl.appendChild(mergeBusyBtn()); return ctrl; }
     // BUG-070: capture the button so the click disables it immediately (mirror
     // the Merge button, BUG-044) — no double-fire of the reapprove dispatch.
     var reBtn = applyWriteState(btn("✓ Reapprove ▸", "go", function () {
-      doReapprove(m.id, ctrl, reBtn);
+      doReapprove(m.id, ctrl, reBtn, m.reconcileStatus);
     }));
     ctrl.appendChild(reBtn);
     return ctrl;
@@ -423,9 +466,16 @@ function cardControls(m) {
   // (Reapprove) so the captain can re-attempt after fixing the cause, styled as a
   // danger/attention affordance carrying the reason (reconcileNote, on the card).
   if (isReconcileMergeFailed(m)) {
+    // BUG-078: keep the Retry-merge busy state sticky too — once a retried merge
+    // is dispatched (markMerging), a repaint that still serves merge-failed must
+    // not revert to the live Retry button until a terminal change. (Reaching
+    // merge-failed is itself terminal for an awaiting-reapprove dispatch, so the
+    // flag is already cleared by the time a FRESH merge-failed gate renders.)
+    clearMergingOnState(m);
+    if (isMerging(m.id)) { ctrl.appendChild(mergeBusyBtn()); return ctrl; }
     // BUG-070: same optimistic disable as the Reapprove gate above.
     var retryBtn = applyWriteState(btn("↻ Retry merge ▸", "danger", function () {
-      doReapprove(m.id, ctrl, retryBtn);
+      doReapprove(m.id, ctrl, retryBtn, m.reconcileStatus);
     }));
     ctrl.appendChild(retryBtn);
     return ctrl;
@@ -1752,15 +1802,26 @@ function renderDetail(mi) {
   // path. Intercept them BEFORE the awaiting branch so the header offers the
   // right action (and clears the optimistic merge flag once state moves).
   if (isReconcileAwaitingReapprove(mi) || isReconcileMergeFailed(mi)) {
+    // BUG-078: clear the optimistic merge flag only on a terminal change, then —
+    // if a dispatched reapprove/retry is still in flight (isMerging) — render the
+    // SAME disabled busy affordance the card shows, sticky across repaints, so the
+    // header button never reverts to the live Reapprove mid-merge (mirrors card).
     clearMergingOnState(mi);
     var raff = verifyAffordance(mi);
-    // BUG-070: disable the header Reapprove button on the first click (mirror the
-    // Merge button, BUG-044) before closing the overlay, so a fast double-click
-    // can't double-fire the reapprove dispatch.
-    var rBtn = applyWriteState(btn(raff.label, raff.cls, function () {
-      doReapprove(mi.id, null, rBtn); closeOverlay();
-    }));
-    actions.appendChild(rBtn);
+    if (raff.kind !== "reapprove" && raff.kind !== "merge-failed") {
+      var rGated = btn(raff.label, raff.cls, null);
+      rGated.disabled = !!raff.disabled;
+      if (raff.title) rGated.title = raff.title;
+      actions.appendChild(rGated);
+    } else {
+      // BUG-070: disable the header Reapprove button on the first click (mirror the
+      // Merge button, BUG-044) before closing the overlay, so a fast double-click
+      // can't double-fire the reapprove dispatch.
+      var rBtn = applyWriteState(btn(raff.label, raff.cls, function () {
+        doReapprove(mi.id, null, rBtn, mi.reconcileStatus); closeOverlay();
+      }));
+      actions.appendChild(rBtn);
+    }
   } else if (mi.awaiting) {
     actions.appendChild(applyWriteState(btn("Answer ▸", "danger", function () { openRespond(mi.id); })));
   } else if (mi.stage === "verify") {
@@ -2493,6 +2554,19 @@ function stageLabel(stage) {
    wire their own click handlers / dispatch styles). */
 function verifyAffordance(m) {
   if (!m) return null;
+  // BUG-078: an OPTIMISTIC reapprove/retry-merge dispatch is in flight (isMerging,
+  // kept sticky by clearMergingOnState until a terminal change). It must win over
+  // the reapprove / merge-failed gate kinds below so the button stays the disabled
+  // busy affordance across repaints — no busy → Reapprove → merged flicker. The
+  // caller is expected to have run clearMergingOnState first (terminal-only clear).
+  if (isMerging(m.id)) {
+    return {
+      kind: "healing", label: "◐ Merge heal in progress…",
+      cls: "warn", disabled: true,
+      title: "Self-healing the merge against main — Merge is unavailable until "
+        + "it settles.",
+    };
+  }
   // BUG-067: the heal converged → reapprove gate. A merge-only Reapprove action,
   // NOT a "Review PR" (the PR is already reconciled + re-tested green).
   if (isReconcileAwaitingReapprove(m)) {
@@ -2639,9 +2713,11 @@ function dispatchCardBusy(id, path, payload, host, label) {
    the reapprove dispatch while the merge is in flight. The disable is cleared on
    a dispatch ERROR (re-arm) and the optimistic merge flag clears when the served
    state advances out of awaiting-reapprove (clearMergingOnState) or via timeout. */
-function doReapprove(id, host, button) {
+function doReapprove(id, host, button, fromStatus) {
   if (button) { button.disabled = true; button.textContent = "Merging PR…"; }
-  markMerging(id);
+  // BUG-078: record the gate clicked from (awaiting-reapprove / merge-failed) so
+  // the optimistic busy flag stays sticky until a TERMINAL change away from it.
+  markMerging(id, fromStatus);
   if (host) {
     var busy = workingNode("Merging the reconciled tip…");
     busy.className += " lcars-running";
