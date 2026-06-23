@@ -241,7 +241,18 @@ Multiple Missions can be active simultaneously at different Stages. `lcars statu
 
 ---
 
-## The CLI
+## Driving LCARS: the Viewscreen and the CLI
+
+LCARS is driven through two interchangeable surfaces over one harness. The
+**viewscreen** — the LCARS-themed kanban web board (see *[The Kanban
+Interface](#the-kanban-interface)*) — is the **recommended, default** way to use
+it: you file an idea, watch each Mission drive to a merged PR as a card, and
+answer every gate visually, all from one screen. The **CLI** is the equivalent
+power path — the same harness, command-line first — for headless shells, SSH, and
+scripting. CLI/UI parity is a core principle: every action the board takes
+dispatches to the same `lcars` skills the CLI exposes, so the two never drift.
+The sections below describe the harness and the CLI surface; the viewscreen is a
+viewport over exactly this.
 
 ### How it runs: a token-free driver, model-selected workers
 
@@ -460,7 +471,7 @@ Each LLM session spawned by the harness — every cold Stage worker — receives
 
 ## The Kanban Interface
 
-LCARS now ships a dedicated visual interface. The Kanban Board is a full application — not a GitHub Projects board, but a custom interface purpose-built for the Harness. Launch it with `lcars viewscreen` (alias `lcars serve`); `lcars viewscreen --open` boots on a free port and opens the board in your browser. It is a Python-3-stdlib-only daemon — no pip, npm, or build step — serving a vanilla LCARS-themed front end.
+The **viewscreen** is the **primary, recommended** way to use LCARS. It is a dedicated visual interface — a full application, not a GitHub Projects board, but a custom kanban purpose-built for the Harness. Launch it with `lcars viewscreen` (alias `lcars serve`); `lcars viewscreen --open` boots on a free port and opens the board in your browser. It is a Python-3-stdlib-only daemon — no pip, npm, or build step — serving a vanilla LCARS-themed front end. It is the default surface for the whole idea → merged PR loop; the CLI (above) is the equivalent power path for when you'd rather stay in the terminal.
 
 Each column corresponds to a Stage. Each Mission is a card carrying one **cost pill** and two **difficulty pills** (reasoning + implementation), with awaiting-you and paused card states, nested ticket rows, and live Implement wave/ticket progress. The human can see at a glance what is in flight, what is waiting for human input, and what is blocked. Questions from the Harness appear on Mission cards; the human responds from the interface and the Harness resumes.
 

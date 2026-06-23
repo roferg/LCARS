@@ -52,7 +52,18 @@ die() { printf 'lcars resolve-logs: %s\n' "$1" >&2; exit 1; }
 # --- tiny JSON readers (no jq; same decoding as log.sh / run.sh) -----------
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
-json_escape() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"; }
+# JSON-string-safe escape (no surrounding quotes): backslash/quote via bash,
+# then awk escapes every control char (newline/tab/CR → \n \t \r, rest \u00XX)
+# so any multi-line value yields VALID JSON. jq-free. Order: backslash first.
+json_escape() {
+  local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  printf '%s' "$s" | awk '
+    BEGIN { RS="\034"; ORS=""; MAP=""; for (k=1;k<32;k++) MAP=MAP sprintf("%c",k) }
+    { n=length($0); for (i=1;i<=n;i++){ c=substr($0,i,1)
+        if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
+        else if (c=="\r") printf "\\r"
+        else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
+}
 
 # --- state mutators (jq-free; same shape as run.sh) ------------------------
 state_del() { # file key
@@ -83,10 +94,13 @@ case "${1:-}" in
 esac
 
 PARENT_SEL=""
+BUG_SEL=""   # single-bug mode (BUG-032): complete ONLY this one child bug.
 while [ $# -gt 0 ]; do
   case "$1" in
     --parent)   PARENT_SEL="${2:-}"; shift 2 ;;
     --parent=*) PARENT_SEL="${1#--parent=}"; shift ;;
+    --bug)      BUG_SEL="${2:-}"; shift 2 ;;
+    --bug=*)    BUG_SEL="${1#--bug=}"; shift ;;
     -*)         die "unknown argument: $1" ;;
     *)          [ -z "$PARENT_SEL" ] && PARENT_SEL="$1"; shift ;;
   esac
@@ -320,33 +334,111 @@ clear_queued()  { state_del     "$MISSIONS_DIR/$1/state.json" queued; }
 # (log.sh records the parent branch for a pre-merge child), so the parent's PR
 # carries it. We only flip the stage + board label here. A child must never be
 # left orphaned at Verify after acceptance. NEVER calls `gh pr create`.
+# fold_one_child — the per-bug fold-to-Done step, shared by the bulk and the
+# single-bug (BUG-032) complete paths so the fold logic is authored ONCE. Given a
+# child bug id whose stage is verify, flips it to done on disk and moves its board
+# column (clear stage labels, apply lcars:done) WITHOUT opening a per-bug PR — the
+# parent's PR carries the fix. Echoes nothing; returns 0 if it folded the child, 1
+# if the child was not at verify (skipped). Never rewrites the child's branch.
+fold_one_child() { # bug-id
+  local bid="$1" cstate stage cissue
+  cstate="$MISSIONS_DIR/$bid/state.json"
+  [ -f "$cstate" ] || return 1
+  stage="$(json_str "$cstate" stage)"
+  # Only fold children that reached their Verify gate. A child still mid-flight
+  # (escalated / earlier stage) is left untouched — it is not "resolved" yet.
+  [ "$stage" = "verify" ] || return 1
+  # Move the child to Done on disk — stage flips to done, branch is preserved
+  # (the fix stays folded onto the parent branch; we never rewrite it here).
+  state_set_str "$cstate" stage done
+  # Board: clear the stage labels, apply lcars:done — same column move approve
+  # makes, but WITHOUT a PR (the parent's PR carries the fix). Best-effort.
+  cissue="$(json_raw "$cstate" githubIssue)"
+  case "$cissue" in
+    ''|null) : ;;
+    *) if command -v "$GH_BIN" >/dev/null 2>&1; then
+         "$GH_BIN" issue edit "$cissue" \
+           --add-label "lcars:done" \
+           --remove-label "lcars:verify" \
+           --remove-label "lcars:awaiting-human" >/dev/null 2>&1 || true
+       fi ;;
+  esac
+  return 0
+}
+
+# parent_has_pending_children — 0 if ANY linked child of the parent is still
+# pending (stage != done), 1 if none remain. Used by the single-bug path to
+# decide whether the parent's consolidated re-verify gate should stay UP.
+# linked_children already excludes done children, so a non-empty list ⇒ pending.
+parent_has_pending_children() {
+  local bid stage
+  while IFS=$'\t' read -r bid stage; do
+    [ -n "$bid" ] && return 0
+  done < <(linked_children)
+  return 1
+}
+
+# clear_parent_gate — finalize the parent as the bulk path leaves it once every
+# child is folded: drop the awaiting-human overlay + pending.json + board label.
+# Best-effort; mirrors the gate-raising at the bottom of the default flow in
+# reverse. Called only when NO child of the parent remains pending.
+clear_parent_gate() {
+  state_del "$PARENT_STATE" awaitingHuman
+  state_del "$PARENT_STATE" pendingQuestion
+  rm -f "$PARENT_DIR/pending.json" 2>/dev/null || true
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *) if command -v "$GH_BIN" >/dev/null 2>&1; then
+         "$GH_BIN" issue edit "$PARENT_ISSUE" \
+           --remove-label "lcars:awaiting-human" >/dev/null 2>&1 || true
+       fi ;;
+  esac
+}
+
+# --- single-bug complete (BUG-032): fold ONLY one child, re-evaluate the gate --
+# The per-bug "Verify" on a single bug card must complete ONLY that bug — NOT the
+# whole batch. It folds just this child to Done, then re-checks the parent: if any
+# sibling bug is still pending, the parent's consolidated re-verify gate STAYS up;
+# only when none remain do we finalize the parent (clear the gate) as the bulk
+# path would. Contrast cmd_complete (no --bug), which accepts ALL remaining bugs.
+cmd_complete_single() { # bug-id
+  local bid="$1"
+  [ -f "$MISSIONS_DIR/$bid/state.json" ] \
+    || die "no such bug Mission \"$bid\" to complete."
+  # Guard: the --bug must actually be a linked child of this parent.
+  local cparent ctype
+  cparent="$(json_str "$MISSIONS_DIR/$bid/state.json" parentMission)"
+  ctype="$(json_str "$MISSIONS_DIR/$bid/state.json" type)"
+  [ "$ctype" = "bug" ] || die "$bid is not a bug Mission."
+  [ "$cparent" = "$PARENT_ID" ] \
+    || die "$bid is not linked to parent $PARENT_ID (parentMission=$cparent)."
+
+  if ! fold_one_child "$bid"; then
+    echo "lcars resolve-logs: $bid is not at a Verify gate (stage is '$(json_str "$MISSIONS_DIR/$bid/state.json" stage)') — nothing to complete for it."
+    exit 0
+  fi
+
+  case "$(json_raw "$MISSIONS_DIR/$bid/state.json" githubIssue)" in
+    ''|null) blabel="$bid" ;;
+    *) blabel="#$(json_raw "$MISSIONS_DIR/$bid/state.json" githubIssue)" ;;
+  esac
+
+  if parent_has_pending_children; then
+    printf 'Folded %s into %s (%s) — moved to Done. Other logged bugs are still pending; the consolidated re-verify gate stays up.\n' \
+      "$blabel" "$PARENT_ID" "$PARENT_TITLE"
+  else
+    clear_parent_gate
+    printf 'Folded %s into %s (%s) — moved to Done. No logged bugs remain; the consolidated re-verify gate is cleared.\n' \
+      "$blabel" "$PARENT_ID" "$PARENT_TITLE"
+  fi
+  exit 0
+}
+
 cmd_complete() {
-  local folded=0 line bid stage cstate cissue cbranch
+  local folded=0 bid stage
   while IFS=$'\t' read -r bid stage; do
     [ -n "$bid" ] || continue
-    # Only fold children that reached their Verify gate. A child still mid-flight
-    # (escalated / earlier stage) is left untouched — it is not "resolved" yet.
-    [ "$stage" = "verify" ] || continue
-    cstate="$MISSIONS_DIR/$bid/state.json"
-    cbranch="$(json_str "$cstate" branch)"
-
-    # Move the child to Done on disk — stage flips to done, branch is preserved
-    # (the fix stays folded onto the parent branch; we never rewrite it here).
-    state_set_str "$cstate" stage done
-
-    # Board: clear the stage labels, apply lcars:done — same column move approve
-    # makes, but WITHOUT a PR (the parent's PR carries the fix). Best-effort.
-    cissue="$(json_raw "$cstate" githubIssue)"
-    case "$cissue" in
-      ''|null) : ;;
-      *) if command -v "$GH_BIN" >/dev/null 2>&1; then
-           "$GH_BIN" issue edit "$cissue" \
-             --add-label "lcars:done" \
-             --remove-label "lcars:verify" \
-             --remove-label "lcars:awaiting-human" >/dev/null 2>&1 || true
-         fi ;;
-    esac
-    folded=$((folded + 1))
+    fold_one_child "$bid" && folded=$((folded + 1))
   done < <(linked_children)
 
   if [ "$folded" -eq 0 ]; then
@@ -360,6 +452,9 @@ cmd_complete() {
 }
 
 if [ "$SUBCOMMAND" = "complete" ]; then
+  if [ -n "$BUG_SEL" ]; then
+    cmd_complete_single "$BUG_SEL"
+  fi
   cmd_complete
 fi
 
@@ -503,6 +598,18 @@ if [ -n "$paused_existing" ]; then
   exit 0
 fi
 
+# --- clear any STALE consolidated gate before re-driving (S76) ---------------
+# A previous round may have left a consolidated re-verify gate on the PARENT.
+# If THIS round has work to drive (a linked child is NOT yet at its Verify gate —
+# e.g. it was sent back), that gate is now stale: the parent should read
+# "resolving", not falsely-acceptable, while the re-fix is in flight. Clear it
+# here, before the DRIVE loop. The gate is re-raised at the END exactly as today
+# once every child reaches verify. We do NOT clear it when GATHER found the set
+# already all-at-verify (no work) — that path only (re)raises the gate.
+if [ "${#work[@]}" -gt 0 ]; then
+  clear_parent_gate
+fi
+
 # --- build the wave schedule over the ordered work set ----------------------
 # CONCURRENCY cap: same-wave children drive concurrently up to this many at once.
 # 1 ⇒ scheduled-but-serial (still produces the schedule + queued signal).
@@ -604,8 +711,18 @@ if [ -n "$WAVE_PAUSED" ]; then
   pause_at "$WAVE_PAUSED"
   exit 0
 fi
+# BUG-064: a child that did not reach its Verify gate (stuck mid-flight, NOT
+# awaiting-human) must NOT throw away the consolidated gate for the children that
+# DID fold to verify. If at least one child reached verify, we fall through and
+# raise the parent's single consolidated re-verify gate for the resolved set,
+# surfacing the stuck child as still needing manual attention. Only when NOTHING
+# reached verify is there genuinely no gate to raise — then we error out as before.
+STUCK_NOTE=""
 if [ -n "$WAVE_ERRORED" ]; then
-  die "driving $WAVE_ERRORED did not reach its Verify gate (stage is now '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)') — resolve it manually with \`lcars run $WAVE_ERRORED\`, then re-run."
+  if [ "${#resolved[@]}" -eq 0 ]; then
+    die "driving $WAVE_ERRORED did not reach its Verify gate (stage is now '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)') — resolve it manually with \`lcars run $WAVE_ERRORED\`, then re-run."
+  fi
+  STUCK_NOTE="One logged bug did NOT reach its Verify gate and still needs attention: $WAVE_ERRORED (stage '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)'). Resolve it with \`lcars run $WAVE_ERRORED\`, then re-run \`lcars resolve-logs $PARENT_ID\` to fold it in."
 fi
 
 # --- THE SINGLE RE-VERIFY ASK ----------------------------------------------
@@ -625,6 +742,7 @@ noun="logged bugs"; [ "$n" -eq 1 ] && noun="logged bug"
 # this gate (answer it in the inbox) folds the children to Done. Sending the
 # parent back uses the parent's own feedback loop.
 ASK="$n $noun resolved on $PARENT_ID ($PARENT_TITLE)'s branch — ready for your single re-verify. Re-inspect the fixes (they ride this Mission's PR — no per-bug PR), then ANSWER this gate to accept them (each logged bug is folded to Done) or send the Mission back with \`lcars feedback $PARENT_ID\`."
+[ -n "$STUCK_NOTE" ] && ASK="$ASK $STUCK_NOTE"
 
 # pending.json on the PARENT (the answer inbox reads this).
 {
@@ -654,6 +772,10 @@ LCARS_CFG="$CONFIG" "$NOTIFY_BIN" "$PARENT_ID" "awaiting-human" "$ASK" >/dev/nul
 # --- summary ---------------------------------------------------------------
 case "$PARENT_ISSUE" in ''|null) plabel="$PARENT_ID" ;; *) plabel="#$PARENT_ISSUE" ;; esac
 printf '%d %s resolved to Verify and folded onto %s (%s):%s\n' "$n" "$noun" "$plabel" "$PARENT_TITLE" "$list_txt"
+if [ -n "$STUCK_NOTE" ]; then
+  echo
+  echo "⚠ $STUCK_NOTE"
+fi
 echo
 echo "Raised ONE consolidated re-verify gate on $PARENT_ID and pinged you once."
 echo "The fixes ride this Mission's PR — there is NO per-bug PR. Re-inspect them, then:"

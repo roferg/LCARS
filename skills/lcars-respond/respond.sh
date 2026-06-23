@@ -79,7 +79,19 @@ json_raw() { # file key
 }
 
 # --- escape a string for embedding in JSON (printed) -----------------------
-json_escape() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"; }
+# Escape a string into JSON-string-safe text (no surrounding quotes). Backslash
+# and quote first via fast bash substitution; then awk escapes EVERY control
+# char (0x01–0x1F) — newline/tab/CR get \n \t \r, the rest \u00XX — so a
+# multi-line captain answer yields VALID JSON. jq-free. Order: backslash first.
+json_escape() {
+  local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  printf '%s' "$s" | awk '
+    BEGIN { RS="\034"; ORS=""; MAP=""; for (k=1;k<32;k++) MAP=MAP sprintf("%c",k) }
+    { n=length($0); for (i=1;i<=n;i++){ c=substr($0,i,1)
+        if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
+        else if (c=="\r") printf "\\r"
+        else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
+}
 
 # --- read pending.json's questions, one per line (decoded) -----------------
 # The canonical pending.json (run.sh's write_pending) puts one "question" per
@@ -244,6 +256,25 @@ cmd_answer() {
     echo '}'
   } >"$MISSION_DIR/answers.json"
 
+  # RECONCILE design gate (BUG-043/055): a reconcile design question marks the
+  # mission with a dedicated marker file (reconcile-design-question.txt) so this
+  # gate is distinguishable from a GENERIC awaiting-human gate. For it we ALSO:
+  #   • write the captain's answer to a DEDICATED store the reconcile resume reads
+  #     (reconcile-answer.txt) — so a later, unrelated answers.json never interferes;
+  #   • RESET the reconcile round budget (drop reconcileRound) and clear the
+  #     escalated reconcileStatus, so the post-answer resume starts with a fresh
+  #     RECONCILE_MAX (the decision-heal + re-merge verify need their own rounds);
+  #   • clear the marker.
+  # Generic gates are untouched by all of this.
+  RECONCILE_NOTE=""
+  if [ -f "$MISSION_DIR/reconcile-design-question.txt" ]; then
+    printf '%s\n' "$ANSWER" >"$MISSION_DIR/reconcile-answer.txt"
+    state_del reconcileRound
+    state_del reconcileStatus
+    rm -f "$MISSION_DIR/reconcile-design-question.txt"
+    RECONCILE_NOTE="  Recorded your reconcile design decision and reset the reconcile budget."
+  fi
+
   # Clear the gate — but DO NOT touch the stage. The Mission stays parked at the
   # stage that escalated; `lcars run` re-enters it and consumes answers.json.
   state_del awaitingHuman
@@ -269,6 +300,7 @@ cmd_answer() {
   echo "  Recorded your answer in answers.json (stage unchanged)."
   echo "  Stage:  $stage"
   echo "  Run \`lcars run $MISSION_ID\` to resume $stage — it will consume your answer, not re-ask."
+  [ -n "$RECONCILE_NOTE" ] && echo "$RECONCILE_NOTE"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   exit 0
 }

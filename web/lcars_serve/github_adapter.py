@@ -138,18 +138,46 @@ class GitHubAdapter(object):
             # adapter cannot see, so `running` is always False here (adapter-
             # neutral shape, ADR-006 — the field is present, never crashing).
             "running": False,
+            # BUG-062: `dispatched` (was a run launched?) is derived from LOCAL
+            # events.jsonl / the driver lock, which the github adapter cannot see.
+            # The forge view is read-only (Start/Pause are write actions, disabled
+            # here), so a forge-visible proxy is unnecessary; mirror the
+            # `running`/`queued` ADR-006 pattern — present, non-crashing, False.
+            "dispatched": False,
             # S73: `queued` (resolve-logs scheduled-but-not-started) is derived
             # from a LOCAL state.json flag the github adapter cannot see, so it is
             # always False here (adapter-neutral shape, ADR-006 — present, non-
             # crashing).
             "queued": False,
             "question": question,
+            # BUG-027: the legible gate envelope lives in the mission's LOCAL
+            # pending.json, which the github adapter cannot see — None here
+            # (adapter-neutral shape, ADR-006; renderer degrades to `question`).
+            "gate": None,
             "linked": _LINKED_LABEL in labels,
             # UX-28: `parentMission` (a logged-bug child's parent id) is read from
             # the child's LOCAL state.json, which the github adapter cannot see, so
             # it is always None here (adapter-neutral shape, ADR-006 — present,
             # non-crashing).
             "parentMission": None,
+            # S75 Verify PR lifecycle (ADR-006 adapter-neutral). The PR URL +
+            # number live in the mission's LOCAL state.json, which the github
+            # adapter cannot see, so they are None here. `review` is DERIVED from
+            # the stage label so a github card still reads "in review" while at
+            # verify (Verify auto-opens the PR, so a verify card always has an open
+            # PR under review) — present, non-crashing, no extra forge calls.
+            "prUrl": None,
+            "prNumber": None,
+            "review": "open" if stage == "verify" else None,
+            # S76: the main-ahead reconcile sub-state lives in the mission's LOCAL
+            # state.json (reconcileStatus), which the github adapter cannot see —
+            # adapter-neutral read-path: None here (ADR-006).
+            "reconcileStatus": None,
+            # BUG-067: reconcileNote (the card summary) + reconcileMergeSha (the
+            # reconciled tip) likewise live in the LOCAL state.json the github
+            # read-path can't see — present and None (ADR-006 adapter-neutral).
+            "reconcileNote": None,
+            "reconcileMergeSha": None,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,

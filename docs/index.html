@@ -50,7 +50,8 @@
     <div class="nav-section" data-color="peach">
       <div class="nav-label">Operate</div>
       <a href="#install"><div class="dot"></div>Install</a>
-      <a href="#quickstart"><div class="dot"></div>Quick start</a>
+      <a href="#quickstart"><div class="dot"></div>Quick start <span class="nav-badge">viewscreen</span></a>
+      <a href="#cli"><div class="dot"></div>The CLI</a>
       <a href="#copilot"><div class="dot"></div>GitHub Copilot</a>
       <a href="#commands"><div class="dot"></div>Commands</a>
       <a href="#loop"><div class="dot"></div>Worked loop <span class="nav-badge">walk-away</span></a>
@@ -87,7 +88,10 @@
 
       <p>It installs as a set of Claude Code skills (<code>lcars init</code>,
       <code>lcars file</code>, …) that work in <strong>any</strong> repo, and
-      leaves <strong>zero</strong> files in your working tree.</p>
+      leaves <strong>zero</strong> files in your working tree. The
+      <strong>recommended</strong> way to drive it is the <strong>viewscreen</strong>
+      — a local LCARS web board — with the CLI available as the equivalent power
+      path underneath.</p>
 
       <div class="lcars-alert blue">
         <div><strong>Read more:</strong> <a href="../vision.md">vision.md</a> is
@@ -302,8 +306,66 @@ cd lcars
          QUICK START
          ═══════════════════════════════════════════════════ -->
     <section id="quickstart">
-      <h2>Quick start</h2>
+      <h2>Quick start — the viewscreen</h2>
+      <p>The <strong>recommended</strong> way to use LCARS is the
+      <strong>viewscreen</strong> — a local, browser-based LCARS-themed kanban
+      board. It's the default experience: file an idea, watch it drive to a merged
+      PR, and answer any gates visually, all from one screen. (Prefer the terminal?
+      Everything here maps to <code>lcars</code> commands — see
+      <a href="#cli">The CLI</a>.)</p>
+
       <p>Run these inside <strong>any repo</strong> you want to ship work in:</p>
+
+      <pre>lcars init                # one-time per-repo setup: .git/lcars/ + GitHub labels
+lcars viewscreen --open   # launch the board and open it in your browser</pre>
+
+      <p><code>lcars viewscreen --open</code> starts a Python-3-stdlib-only daemon
+      (no pip / npm / build step), boots it on a free local port, and opens the
+      kanban board in your browser. (<code>lcars serve</code> is the older power
+      alias and still works.) From there you drive the whole idea → merged PR loop
+      without leaving the page:</p>
+
+      <div class="mission-card">
+        <ul>
+          <li><strong>File a Mission.</strong> Type your idea into the board; the
+          live Align console <strong>grills you</strong> until the spec is sharp,
+          then files the Mission as a card.</li>
+          <li><strong>Watch it drive.</strong> Each Mission is a card in its Stage
+          column, carrying one <strong>cost pill</strong> and two
+          <strong>difficulty pills</strong> (reasoning + implementation), with
+          nested ticket rows and live Implement wave/ticket progress streamed over
+          SSE. The harness auto-advances; the board updates itself as it goes.</li>
+          <li><strong>Answer the gates, visually.</strong> When LCARS needs you — a
+          scope escalation, a design question, the Verify ship-or-send-back gate —
+          the card flips to an <strong>AWAITING YOU</strong> state and you respond
+          right there: Respond, <strong>Verify</strong> (approve / send back),
+          <strong>Pause</strong> / <strong>Resume</strong>, and the
+          <strong>Mission Log</strong> are all card actions.</li>
+        </ul>
+      </div>
+
+      <div class="lcars-alert blue">
+        <div>The viewscreen is a <strong>viewport over the same harness the CLI
+        drives</strong> — not a separate implementation. CLI/UI parity is a core
+        principle: every write the board makes dispatches to the same
+        <code>lcars</code> skills, so the two surfaces never drift. One
+        adapter-neutral board shape backs two read adapters — a <strong>local</strong>
+        one parsing <code>.git/lcars/missions/*</code> (the default, with the
+        operator write endpoints) and a <strong>GitHub</strong> one reading issues
+        + <code>lcars:*</code> labels (<code>--read-only</code>, view-only) — so a
+        hosted, read-only board is a configuration away.</div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         THE CLI
+         ═══════════════════════════════════════════════════ -->
+    <section id="cli">
+      <h2>The CLI — the power path</h2>
+      <p>Everything the viewscreen does, you can do from the terminal — same
+      harness underneath. The CLI is the equivalent power path, handy in a headless
+      shell, over SSH, or when you want to script LCARS:</p>
 
       <pre>lcars init            # one-time per-repo setup: .git/lcars/ + GitHub labels
 lcars file            # file your first Mission — describe the idea, get grilled, get a PRD
@@ -416,14 +478,28 @@ flowchart LR
     <section id="commands">
       <h2>The commands</h2>
       <p>LCARS collapses to <strong>two things you do</strong> — hand it work, and
-      answer what it's waiting on — plus a board to look at. The older per-stage
-      verbs still work as power entry points.</p>
+      answer what it's waiting on — surfaced through the <strong>viewscreen</strong>
+      (the recommended board) or the CLI. The older per-stage verbs still work as
+      power entry points.</p>
 
       <h4>The everyday surface</h4>
       <div class="control-grid">
         <div class="control-card">
+          <div class="control-cmd">lcars viewscreen</div>
+          <div class="control-desc"><strong>The recommended surface — the Kanban
+          web board</strong> (alias <code>lcars serve</code>). A
+          Python-3-stdlib-only daemon — no pip/npm/build — serving every active
+          Mission as a card in its Stage column, with a cost pill +
+          reasoning/implementation difficulty pills, awaiting-you / paused states,
+          nested ticket rows, and live Implement progress over SSE. Drive the whole
+          idea→PR loop from the browser (File, the live Align console, Start with a
+          model override, Respond, Verify, Pause/Resume, Mission Log) — a viewport
+          over the same harness the CLI drives. <code>lcars viewscreen --open</code>
+          boots on a free port and opens it in your browser.</div>
+        </div>
+        <div class="control-card">
           <div class="control-cmd">lcars</div>
-          <div class="control-desc">The one entry point. Infers the right action
+          <div class="control-desc">The one CLI entry point. Infers the right action
           from state and announces it: nothing filed → file a Mission; work in
           flight → drive it; a decision waiting → open the inbox. No verb to
           remember, no id to paste.</div>
@@ -432,27 +508,15 @@ flowchart LR
           <div class="control-cmd">lcars answer</div>
           <div class="control-desc">The inbox — every pending decision across all
           Missions in one list. <strong>approve</strong> and <strong>send
-          back</strong> are actions on a Verify card here, not separate
-          commands.</div>
+          back</strong> are actions on a Verify card here, not separate commands.
+          (The viewscreen surfaces the same gates on the cards themselves.)</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars status</div>
-          <div class="control-desc">The read-only board: every active Mission, its
-          Stage, and anything awaiting you. Add <code>--watch</code> to follow a
-          running Mission <strong>live</strong> — a streaming event view with a
-          pace line (wave, ticket, attempt, avg/ticket, elapsed).</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars viewscreen</div>
-          <div class="control-desc">The Kanban web board (alias <code>lcars
-          serve</code>). A Python-3-stdlib-only daemon — no pip/npm/build —
-          serving every active Mission as a card in its Stage column, with a cost
-          pill + reasoning/implementation difficulty pills, awaiting-you / paused
-          states, nested ticket rows, and live Implement progress over SSE. Drive
-          the whole idea→PR loop from the browser (File, the live Align console,
-          Start with a model override, Respond, Verify, Mission Log).
-          <code>lcars viewscreen --open</code> boots on a free port and opens it
-          in your browser.</div>
+          <div class="control-desc">The read-only terminal board: every active
+          Mission, its Stage, and anything awaiting you. Add <code>--watch</code>
+          to follow a running Mission <strong>live</strong> — a streaming event view
+          with a pace line (wave, ticket, attempt, avg/ticket, elapsed).</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars init</div>
@@ -553,7 +617,12 @@ flowchart LR
          ═══════════════════════════════════════════════════ -->
     <section id="loop">
       <h2>How a mission runs — a worked loop</h2>
-      <p>Here's the full walk-away rhythm for a real feature.</p>
+      <p>Here's the full walk-away rhythm for a real feature, shown on the
+      <strong>CLI</strong> so each step is explicit. The <strong>viewscreen</strong>
+      mirrors it beat for beat — File becomes the board's File panel + live Align
+      console, <em>drive</em> and <em>answer</em> become the card's auto-advancing
+      progress and AWAITING-YOU actions, and ship is the card's Verify button —
+      because both surfaces drive the same harness.</p>
 
       <div class="stages-flow">
         <div class="stage-pill">1 · file</div><div class="stage-arrow">→</div>

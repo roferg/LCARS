@@ -252,10 +252,155 @@ class AlignAnswerTest(AlignBase):
         # the partial PRD comes back for the live right-panel.
         self.assertIn("Goal", ans["state"]["prd"])
 
+    def test_closing_flag_round_trips_to_the_question(self):
+        """BUG-015: the grill's final 'anything else before I file?' check-in is
+        flagged closing:true on the question turn; the daemon must pass it through
+        UNCHANGED so the Align console can swap to the 'estimating & creating
+        mission' loading copy when the captain answers it (the slow estimate runs
+        inside that POST)."""
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: G\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": "Anything else before I file this?",
+                          "recommended": "Go ahead", "closing": True},
+             "prd": "# Mission: G\n\n**Type:** feature\n**Goal:** ...\n"},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        # the opening question is a normal grill turn — not closing.
+        self.assertFalse(start["state"]["question"].get("closing"))
+        _, ans = self._post("/api/align/%s/answer" % sid,
+                            {"answer": "On completion"})
+        self.assertEqual(ans["state"]["status"], "question")
+        # the closing check-in carries the flag through verbatim.
+        self.assertTrue(ans["state"]["question"]["closing"])
+
     def test_answer_unknown_session_is_404(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self._post("/api/align/no-such-session/answer", {"answer": "x"})
         self.assertEqual(cm.exception.code, 404)
+
+    def test_empty_answer_proceeds_does_not_400(self):
+        """BUG-073: an EMPTY answer = 'nothing to add / accept the
+        recommendation / proceed'. The endpoint must NOT 400 (require text); it
+        must advance the turn, feeding the warm worker a 'proceed' signal (the
+        grill already handles 'proceed'/'go ahead')."""
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: G\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": "Anything else before I file this?",
+                          "recommended": "Go ahead", "closing": True},
+             "prd": "# Mission: G\n\n**Type:** feature\n**Goal:** ...\n"},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        # empty answer must be accepted and advance to the next question.
+        status, ans = self._post("/api/align/%s/answer" % sid, {"answer": ""})
+        self.assertEqual(status, 200)
+        self.assertEqual(ans["state"]["status"], "question")
+        self.assertEqual(ans["state"]["question"]["text"],
+                         "Anything else before I file this?")
+        # the worker turn must have carried a proceed/accept signal (not blank),
+        # so the grill knows the captain had nothing to add.
+        cont = self._prompt_turns()[1]
+        self.assertTrue(
+            "proceed" in cont.lower() or "accept" in cont.lower()
+            or "nothing to add" in cont.lower(),
+            "an empty answer must reach the worker as a proceed/accept signal")
+
+    def test_missing_answer_field_proceeds(self):
+        """BUG-073: a body with NO answer field at all is also 'proceed' — the
+        captain hit Submit with an empty box (the client may omit the key)."""
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: G\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": "Anything else before I file this?",
+                          "closing": True},
+             "prd": "# Mission: G\n\n**Type:** feature\n**Goal:** ...\n"},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        status, ans = self._post("/api/align/%s/answer" % sid, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(ans["state"]["status"], "question")
+
+
+class AlignClosingQuestionTest(AlignBase):
+    """BUG-072: the final-confirm (closing) question must be a CONCISE lead-in —
+    it must NOT inline the entire PRD body. The PRD already flows to the `prd`
+    field (rendered in the live 'PRD · BUILDING LIVE' right panel); duplicating
+    it into the question text is redundant. The daemon must strip a PRD body the
+    worker inlines into the closing question so only the lead-in survives, while
+    the `prd` field keeps the full PRD."""
+
+    _FULL_PRD = ("# Mission: Gamification\n\n"
+                 "**Type:** feature\n\n"
+                 "**Goal:** Add XP, badges and a leaderboard.\n\n"
+                 "**Acceptance Criteria:**\n- XP is awarded on completion\n"
+                 "- Badges unlock at thresholds\n\n"
+                 "**Out of Scope:**\n- Social sharing\n\n"
+                 "**Constraints:**\n- Reuse the existing XP service\n")
+
+    def test_closing_question_does_not_inline_full_prd_body(self):
+        # the worker (mis)behaves like the bug report: it inlines the WHOLE PRD
+        # into the closing question text AND also returns it in the prd field.
+        bad_question = (
+            "Perfect. Here's the complete PRD I'll file — anything else before "
+            "I lock it?\n\n" + self._FULL_PRD)
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: Gamification\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": bad_question, "closing": True},
+             "prd": self._FULL_PRD},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        _, ans = self._post("/api/align/%s/answer" % sid,
+                            {"answer": "On completion"})
+        self.assertEqual(ans["state"]["status"], "question")
+        qtext = ans["state"]["question"]["text"]
+        # the concise lead-in survives ...
+        self.assertIn("anything else", qtext.lower())
+        # ... but the PRD body sections must NOT be duplicated into the question.
+        self.assertNotIn("Acceptance Criteria", qtext,
+                         "closing question must not inline the PRD body")
+        self.assertNotIn("Out of Scope", qtext)
+        self.assertNotIn("Reuse the existing XP service", qtext)
+        # the full PRD still flows to the prd field (the live right panel).
+        self.assertIn("Acceptance Criteria", ans["state"]["prd"])
+        self.assertIn("Reuse the existing XP service", ans["state"]["prd"])
+
+    def test_clean_closing_question_is_left_untouched(self):
+        # a worker that already keeps the closing question concise must pass
+        # through verbatim (the strip is a no-op when there's no inlined PRD).
+        clean = ("Perfect — the complete PRD is on the right. Anything else "
+                 "before I lock it?")
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "How is XP awarded?",
+                          "recommended": "On completion"},
+             "prd": "# Mission: Gamification\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": clean, "closing": True},
+             "prd": self._FULL_PRD},
+        )
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        _, ans = self._post("/api/align/%s/answer" % sid,
+                            {"answer": "On completion"})
+        self.assertEqual(ans["state"]["question"]["text"], clean)
 
 
 class AlignDoneTest(AlignBase):
@@ -572,6 +717,61 @@ class AlignCopilotFlagsTest(AlignBase):
             # pure space-form --session-id / --resume (no extra flags).
             kind, _ = _session_flag(argv)
             self.assertIn(kind, ("open", "resume"))
+
+
+class AlignModelParityTest(AlignBase):
+    """S78 CHANGE 3 — the Align grill must pass `--model <m>` resolved from the
+    mission ENGINE, mirroring alias_for_tier's per-engine DEFAULT (copilot is
+    opus-safe → claude-opus-4.8; claude → its sonnet default). Previously the
+    grill ran each CLI's BARE default (no --model), so the grill was not at CLI
+    parity with the pipeline. The flag is ADDITIVE (space-form for both engines);
+    the S72 tools-denied / session flags stay intact.
+    """
+
+    def _three_question_done(self):
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "Q1?", "recommended": "Per-course"},
+             "prd": "# Mission: G\n\n**Type:** feature\n"},
+            {"status": "done",
+             "prd": ("# Mission: G\n\n**Type:** feature\n**Goal:** g\n"
+                     "**Acceptance Criteria:**\n- a\n**Out of Scope:**\n- n\n"
+                     "**Constraints:**\n- c\n")},
+        )
+
+    @staticmethod
+    def _model_of(argv):
+        toks = argv.split()
+        for i, t in enumerate(toks):
+            if t == "--model" and i + 1 < len(toks):
+                return toks[i + 1]
+        return None
+
+    def test_copilot_align_turn_carries_opus_safe_model(self):
+        self._three_question_done()
+        copilot_bin = _copilot_worker_stub(
+            self.turns_path, self.prompt_log, self.argv_log)
+        self._post("/api/align/start",
+                   {"idea": "Gamify", "engine": copilot_bin})
+        opening = self._argvs()[0]
+        toks = opening.split()
+        self.assertEqual(self._model_of(opening), "claude-opus-4.8",
+                         "copilot Align grill must run opus-safe (--model "
+                         "claude-opus-4.8), mirroring alias_for_tier")
+        # the S72 tools-denied flags must still be present (additive --model).
+        self.assertIn("--available-tools=", toks)
+        self.assertIn("--no-ask-user", toks)
+        self.assertIn("--disable-builtin-mcps", toks)
+        self.assertIn("--no-custom-instructions", toks)
+
+    def test_claude_align_turn_carries_sonnet_model(self):
+        self._three_question_done()
+        # default worker_bin is a claude-named stub.
+        self._post("/api/align/start", {"idea": "Gamify"})
+        opening = self._argvs()[0]
+        self.assertEqual(self._model_of(opening), "sonnet",
+                         "claude Align grill must run its sonnet default "
+                         "(--model sonnet)")
 
 
 class LogAuthoringTest(AlignBase):

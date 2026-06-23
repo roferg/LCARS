@@ -88,11 +88,35 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
 # sets it). When it is EMPTY/UNSET the argv is byte-for-byte the session-18 lines
 # — no `--model` flag at all — so an unmodelled run is unchanged. When non-empty
 # the cli's model flag is APPENDED (claude: `--model <m>`), never reordered.
+#
+# INPUT READ-DIRS (session 76): a worker whose cwd is an ISOLATED git worktree
+# (the Implement-stage Implementer) must still READ its ticket inputs — the
+# failing tests, manifests, approved-plan.json, repo-map.md, context-pack.md —
+# which live under .git/lcars/, OUTSIDE the worktree. The CLI-AGNOSTIC caller
+# (run.sh) supplies those dirs via the env var $LCARS_WORKER_INPUT_DIRS, ONE
+# absolute dir PER LINE (newline-separated; empty/unset ⇒ none). The PER-CLI
+# translation lives HERE:
+#   • copilot — emit one EXTRA `--add-dir <dir>` per input dir so copilot's hard
+#               path sandbox grants READ of each. Appended AFTER the scratch
+#               outdir grant; this only widens READ access — it never weakens
+#               WRITE isolation (no --allow-all-paths), so the Implementer still
+#               writes only inside its worktree + scratch.
+#   • claude  — IGNORED: claude's `-p --allowedTools` spawn has no per-path
+#               sandbox, so absolute input reads already work. Adding the dirs is
+#               unnecessary, so its argv stays byte-for-byte unchanged.
+# When the var is empty/unset the argv is byte-for-byte the pre-session-76 lines
+# for BOTH CLIs, so research/validate/plan and every claude spawn are unchanged.
 adapter_argv() { # cli role outdir
   local cli="$1" role="$2" outdir="${3:-}" tools model="${LCARS_WORKER_MODEL:-}"
   tools="$(adapter_tools "$cli" "$role")" || exit 1
+  # Collect the caller-supplied INPUT read-dirs (one per line; blank lines skipped).
+  local indirs=() iline
+  while IFS= read -r iline; do
+    [ -n "$iline" ] && indirs+=("$iline")
+  done <<< "${LCARS_WORKER_INPUT_DIRS:-}"
   case "$cli" in
     claude)
+      # claude has no per-path sandbox — input dirs are irrelevant; argv unchanged.
       printf '%s\n' '-p' '--allowedTools' "$tools" '--output-format' 'text'
       [ -n "$model" ] && printf '%s\n' '--model' "$model"
       ;;
@@ -116,6 +140,12 @@ adapter_argv() { # cli role outdir
         '--disable-builtin-mcps' \
         '--no-custom-instructions' \
         '--add-dir' "$outdir"
+      # READ grants for the ticket's out-of-worktree inputs (session 76). One
+      # extra --add-dir per supplied dir; none supplied ⇒ exactly the old argv.
+      local d
+      for d in ${indirs[@]+"${indirs[@]}"}; do
+        printf '%s\n' '--add-dir' "$d"
+      done
       [ -n "$model" ] && printf '%s\n' '--model' "$model"
       ;;
     *) die "unknown worker cli '$cli' — no adapter for this CLI" ;;

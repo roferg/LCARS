@@ -304,6 +304,16 @@ class FrontEndAssetsTest(unittest.TestCase):
         self.assertIn("adrs", js)
         self.assertIn("criteria", js)
 
+    def test_board_js_align_submit_allows_empty_answer(self):
+        """BUG-073: the Align console Submit must NOT block on an empty answer.
+        An empty Submit = 'nothing to add / accept the recommendation /
+        proceed'. The old guard ('Pick the recommendation or type an answer.'
+        with an early return) forced filler text; it must be gone so an empty
+        answer POSTs through to /answer (which now treats empty as proceed)."""
+        js = self._text("/board.js")
+        self.assertNotIn("Pick the recommendation or type an answer.", js,
+                         "the empty-answer block must be removed (BUG-073)")
+
     def test_board_js_has_all_eight_screens(self):
         js = self._text("/board.js")
         for fn in ("openFile", "openLaunch", "openRespond", "openVerify",
@@ -317,12 +327,156 @@ class FrontEndAssetsTest(unittest.TestCase):
         self.assertIn('"approve"', js)
         self.assertIn('"send-back"', js)
 
+    def test_board_js_mission_log_gated_off_bug_child(self):
+        """BUG-046: the Mission Log button must NOT render for a logged-bug child
+        (type=="bug" && parentMission) — you cannot log bugs against a logged bug.
+        The render is gated by the existing logged-bug predicate (isLogBug)."""
+        js = self._text("/board.js")
+        # the gate guards the Mission Log button render with the bug-child predicate.
+        self.assertIn("!isLogBug(mi)", js)
+        # and it still sits on the same conditional as the Mission Log button.
+        idx_gate = js.find("!isLogBug(mi)")
+        idx_btn = js.find('"Mission Log"')
+        self.assertNotEqual(idx_gate, -1)
+        self.assertNotEqual(idx_btn, -1)
+        # the gate appears just before the Mission Log button render.
+        self.assertLess(idx_gate, idx_btn)
+
+    def test_board_js_active_runtime_from_server_anchor(self):
+        """BUG-047: the live runtime must re-base from the server anchor
+        (activeSecondsAt) — base + (clientNow - activeSecondsAt) — so a re-opened
+        card shows true elapsed instead of a stale snapshot. It must NOT simply
+        anchor on Date.now() at render and add to the bare base."""
+        js = self._text("/board.js")
+        self.assertIn("activeSecondsAt", js)
+        # the live value derives from the server anchor.
+        self.assertIn("anchorAt", js)
+        self.assertIn("nowSec - anchorAt", js)
+
     def test_board_js_handles_view_only_403(self):
         js = self._text("/board.js")
         # a 403 must flip the board to view-only, not break the read path.
         self.assertIn("403", js)
         self.assertIn("markViewOnly", js)
         self.assertIn("writesActive", js)
+
+    def test_board_js_merge_has_optimistic_busy_state(self):
+        """BUG-044: the Merge (approve) click must OPTIMISTICALLY mark the card
+        busy so it is non-clickable from the first click until the real
+        reconcileStatus arrives — no double-dispatch. Mirrors the STARTING
+        pattern (UX-17): a MERGING set with mark/clear/is helpers + safety
+        timeout, gated like isReconcileHealing in the card + verify dialog."""
+        js = self._text("/board.js")
+        for fn in ("markMerging", "clearMerging", "isMerging"):
+            self.assertIn(fn, js, "board.js must define %s" % fn)
+        # the optimistic set + a safety timeout (mirror STARTING_TIMEOUT_MS).
+        self.assertIn("MERGING", js)
+        self.assertIn("MERGING_TIMEOUT_MS", js)
+        # the card/dialog gate must treat an optimistic merge like a live heal.
+        self.assertIn("isReconcileHealing(m) || isMerging(m.id)", js)
+        self.assertIn("isReconcileHealing(mi) || isMerging(mi.id)", js)
+
+    def test_board_js_reapprove_has_optimistic_busy_state(self):
+        """BUG-070: the Reapprove (merge-heal awaiting-reapprove gate) button must
+        get the SAME optimistic busy treatment as the Merge button (BUG-044) — the
+        button is DISABLED on the very first click so a second click can't double-
+        fire the reapprove dispatch. doReapprove takes the clicked button and
+        disables it immediately (before dispatch returns), and every call site
+        (the card Reapprove gate, the card Retry-merge gate, and the detail-header
+        Reapprove) passes its button so the disable applies. The dispatch error
+        path re-arms (button.disabled = false), and the optimistic merge flag still
+        rides the shared MERGING set (markMerging / clearMergingOnState)."""
+        js = self._text("/board.js")
+        # doReapprove must accept a button arg and disable it immediately on click.
+        # (BUG-078 added a trailing fromStatus arg for sticky-busy origin tracking.)
+        self.assertIn("function doReapprove(id, host, button, fromStatus)", js)
+        self.assertIn("if (button) { button.disabled = true;", js)
+        # it still applies the optimistic merge flag (shared with Merge, BUG-044).
+        self.assertIn("markMerging(id, fromStatus)", js)
+        # the error path re-arms the button so a failed dispatch is retryable.
+        self.assertIn("if (button) { button.disabled = false; }", js)
+        # every call site passes the clicked button so the disable actually applies
+        # (card Reapprove gate, card Retry-merge gate, detail-header Reapprove);
+        # BUG-078 also threads the origin reconcileStatus through each.
+        self.assertIn("doReapprove(m.id, ctrl, reBtn, m.reconcileStatus)", js)
+        self.assertIn("doReapprove(m.id, ctrl, retryBtn, m.reconcileStatus)", js)
+        self.assertIn("doReapprove(mi.id, null, rBtn, mi.reconcileStatus)", js)
+
+    def test_board_js_reapprove_busy_is_sticky_across_repaints(self):
+        """BUG-078: the per-click button.disabled from BUG-070 is LOST on the next
+        poll/SSE repaint (cardControls builds a fresh button), so a repaint that
+        still serves reconcileStatus == 'awaiting-reapprove' (the merge hasn't
+        finished) re-renders the LIVE, clickable "✓ Reapprove ▸" — a busy →
+        Reapprove → merged flicker. The fix: the optimistic merge flag (the shared
+        MERGING set) must STAY sticky across those intermediate repaints and the
+        awaiting-reapprove / merge-failed card branches must consult isMerging and
+        render the DISABLED busy affordance while the dispatched reapprove is in
+        flight, only going live again when clearMergingOnState clears the flag on a
+        TERMINAL change (done / merge-failed). Re-uses the existing MERGING set."""
+        js = self._text("/board.js")
+        # the awaiting-reapprove / merge-failed CARD branches must keep the busy
+        # affordance sticky: clear the flag only on a terminal state, then if still
+        # merging render the gated busy button instead of the live Reapprove/Retry.
+        idx = js.find("function cardControls(m)")
+        self.assertNotEqual(idx, -1, "cardControls missing")
+        cc = js[idx:idx + 2400]
+        # the reapprove/merge-failed gates run clearMergingOnState (terminal-only)
+        # and short-circuit to the shared busy affordance while still merging.
+        self.assertIn("clearMergingOnState(m)", cc)
+        self.assertIn("isMerging(m.id)", cc)
+        # the shared busy affordance (re-uses the existing healing copy) is rendered
+        # while still merging — not a parallel mechanism.
+        self.assertIn("function mergeBusyBtn()", js)
+        self.assertIn("ctrl.appendChild(mergeBusyBtn())", cc)
+        # clearMergingOnState must keep a still-SAME-state repaint sticky and clear
+        # only on a terminal change away from the gate clicked from (origin status).
+        idx2 = js.find("function clearMergingOnState(m)")
+        self.assertNotEqual(idx2, -1, "clearMergingOnState missing")
+        cms = js[idx2:idx2 + 1800]
+        # done (left verify) is terminal; merge-failed clears only when NOT the
+        # origin (so a retry FROM merge-failed stays sticky); a different
+        # reconcileStatus is terminal.
+        self.assertIn('rs === "merge-failed" && from !== "merge-failed"', cms)
+        self.assertIn("mergingFrom", js)
+        # markMerging records the origin gate so the clear is origin-aware.
+        self.assertIn("function markMerging(id, fromStatus)", js)
+        self.assertIn("markMerging(id, fromStatus)", js)
+        # every dispatch records the origin reconcileStatus.
+        self.assertIn("doReapprove(m.id, ctrl, reBtn, m.reconcileStatus)", js)
+        self.assertIn("doReapprove(m.id, ctrl, retryBtn, m.reconcileStatus)", js)
+        self.assertIn("doReapprove(mi.id, null, rBtn, mi.reconcileStatus)", js)
+        # the optimistic merge busy wins over the reapprove/merge-failed gate kinds
+        # in the shared verifyAffordance, so the header stays busy across repaints.
+        idx3 = js.find("function verifyAffordance(m)")
+        self.assertNotEqual(idx3, -1, "verifyAffordance missing")
+        va = js[idx3:idx3 + 1200]
+        self.assertIn("isMerging(m.id)", va)
+        self.assertLess(va.find("isMerging(m.id)"),
+                        va.find("isReconcileAwaitingReapprove(m)"),
+                        "optimistic isMerging busy must precede the reapprove gate")
+
+    def test_board_js_detail_header_verify_is_reconcile_gated(self):
+        """BUG-049: the DETAIL-HEADER verify action must gate IDENTICALLY to the
+        board card (cardControls) during a reconcile/merge/heal/resolving — a
+        plain "✓ Verify" must NOT render in the header while the mission is mid-
+        reconcile. Both call sites share the verifyAffordance decision (DRY),
+        which carries the same reconcile/merge guards as the card."""
+        js = self._text("/board.js")
+        # the shared affordance helper exists and carries the reconcile/merge guards.
+        self.assertIn("function verifyAffordance(m)", js)
+        self.assertIn("isReconcileEscalated(m)", js)
+        self.assertIn("isResolvingLocked(m)", js)
+        self.assertIn("isReconcileHealing(m) || isMerging(m.id)", js)
+        # the detail header must call the SHARED helper (not a bare btn("✓ Verify")).
+        idx_actions = js.find("var actions = el(\"div\", \"det-actions\")")
+        self.assertNotEqual(idx_actions, -1, "detail header det-actions block missing")
+        header = js[idx_actions:idx_actions + 3200]
+        # the header verify branch routes through the shared affordance decision.
+        self.assertIn("verifyAffordance(mi)", header)
+        # and gates exactly like the card: a non-action kind renders disabled.
+        self.assertIn('daff.kind !== "action"', header)
+        # the ungated plain "✓ Verify" header button (the BUG) is gone.
+        self.assertNotIn('btn("✓ Verify", "go", function () { openVerify(mi.id); })', header)
 
     def test_board_css_has_detail_twopane_and_screen_classes(self):
         css = self._text("/board.css")

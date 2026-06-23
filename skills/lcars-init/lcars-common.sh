@@ -115,12 +115,19 @@ EOF
 
 # lcars_json_escape — escape a string for embedding inside a JSON string literal.
 # Backslashes are escaped FIRST, then double-quotes (the standard order — mirrors
-# json_escape in skills/lcars-run/run.sh). The result is safe to wrap in quotes.
+# json_escape in skills/lcars-run/run.sh), then awk escapes every control char
+# (newline/tab/CR → \n \t \r, the rest \u00XX) so ANY value yields VALID JSON.
+# The result is safe to wrap in quotes. jq-free.
 lcars_json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"   # backslashes first…
   s="${s//\"/\\\"}"   # …then double-quotes
-  printf '%s' "$s"
+  printf '%s' "$s" | awk '
+    BEGIN { RS="\034"; ORS=""; MAP=""; for (k=1;k<32;k++) MAP=MAP sprintf("%c",k) }
+    { n=length($0); for (i=1;i<=n;i++){ c=substr($0,i,1)
+        if (c=="\n") printf "\\n"; else if (c=="\t") printf "\\t"
+        else if (c=="\r") printf "\\r"
+        else { b=index(MAP,c); if (b>0) printf "\\u%04x",b; else printf "%s",c } } }'
 }
 
 # lcars_config_has_key — 0 if the config file has a top-level "key": present.

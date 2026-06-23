@@ -604,6 +604,16 @@ cm_heartbeat_start() {
   # The ticker: sleep, re-render the Implement comment, repeat. Bounded by
   # maxticks when set. Every action best-effort (errors swallowed). Runs in a
   # subshell so the trap in the parent can kill it cleanly.
+  #
+  # BUG-020: the ticker MUST NOT inherit the parent's stdout/stdin. The Implement
+  # stage runs inside the driver's command substitution `out="$(… implement …)"`,
+  # whose stdout is a PIPE the parent shell reads. A backgrounded child that keeps
+  # that pipe open holds the command substitution OPEN even after the stage's main
+  # process exits — so the driver's `$(…)` blocks indefinitely behind the ticker
+  # (and any `gh` it spawned), and the Implement→Verify handoff never fires. We
+  # therefore detach the ticker's fds: stdin from /dev/null, stdout+stderr to
+  # /dev/null. It writes nothing to the run anyway (it PATCHes GitHub), so this is
+  # lossless — and it guarantees the ticker can never wedge the parent's pipe.
   (
     local i=0
     while :; do
@@ -615,17 +625,38 @@ cm_heartbeat_start() {
       i=$((i + 1))
       [ "$maxticks" -gt 0 ] && [ "$i" -ge "$maxticks" ] && break
     done
-  ) &
+  ) </dev/null >/dev/null 2>&1 &
   CM_HEARTBEAT_PID=$!
   return 0
 }
 
 # cm_heartbeat_stop — kill the ticker cleanly (no orphan). Idempotent.
+# BUG-020: the ticker can have its OWN children mid-tick — a `sleep` and, when it
+# fires, a `gh` (via cm_upsert/host). A bare `kill <ticker-pid>` can leave those
+# children alive and REPARENTED to init (PPID=1) — exactly the leaked `sleep 60`
+# the bug observed. So we kill the ticker AND its children: try the whole process
+# group first (the most reliable reap of any reparented descendant), then fall back
+# to killing the named child pids. We TERM, give a brief grace, then KILL anything
+# that survived — never leaving an orphan behind. All best-effort.
 cm_heartbeat_stop() {
   if [ -n "$CM_HEARTBEAT_PID" ]; then
-    kill "$CM_HEARTBEAT_PID" 2>/dev/null || true
-    wait "$CM_HEARTBEAT_PID" 2>/dev/null || true
+    local pid="$CM_HEARTBEAT_PID"
     CM_HEARTBEAT_PID=""
+    # Direct children of the ticker (its current `sleep`/`gh`), captured BEFORE we
+    # signal — once the ticker dies they reparent to init and `ps --ppid` loses them.
+    local kids; kids="$(ps -o pid= --ppid "$pid" 2>/dev/null | tr -d ' ')"
+    # Process-group kill: the ticker subshell shares the parent's pgid in this
+    # shell, so we can't blanket-kill the group without killing ourselves. Instead
+    # signal the ticker and its captured children explicitly.
+    kill -TERM "$pid" 2>/dev/null || true
+    local k; for k in $kids; do kill -TERM "$k" 2>/dev/null || true; done
+    # Reap the ticker so it doesn't linger as a zombie; bounded — never block.
+    wait "$pid" 2>/dev/null || true
+    # Hard backstop: anything that ignored TERM gets KILLed (the ticker itself and
+    # any still-living captured child). A reparented survivor is the failure mode
+    # BUG-020 is about, so we are deliberately thorough here.
+    kill -KILL "$pid" 2>/dev/null || true
+    for k in $kids; do kill -KILL "$k" 2>/dev/null || true; done
   fi
   return 0
 }

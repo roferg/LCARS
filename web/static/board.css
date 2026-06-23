@@ -176,7 +176,16 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 /* ── mission card ── */
 .card{background:var(--lcars-card,#0b1224);border:1px solid var(--lcars-border);
   border-left:4px solid var(--lcars-amber);border-radius:8px;padding:10px;cursor:pointer;
-  transition:transform .25s,box-shadow .25s}
+  position:relative;transition:transform .25s,box-shadow .25s}
+/* Engine watermark — a small, semi-transparent Copilot/Claude mark pinned to the
+   card's top-right. Decorative: pointer-events:none so it never blocks the card
+   click. Copilot reads in the bright UI ink, Claude in the LCARS amber. */
+.engine-badge{position:absolute;top:7px;right:8px;width:16px;height:16px;
+  opacity:.45;pointer-events:none;z-index:2;line-height:0}
+.engine-badge svg{display:block;width:16px;height:16px}
+.engine-badge svg path{fill:currentColor}
+.engine-copilot{color:var(--lcars-text-bright,#eaf2ff)}
+.engine-claude{color:#d97757} /* Claude clay */
 /* UX-12: the whole card is click-to-open (no explicit Open button) — cursor +
    a subtle lift/glow on hover so it still reads as clickable. */
 .card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.5);
@@ -191,13 +200,40 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .card.paused > *{opacity:.55}
 .card.paused > .pause-status,
 .card.paused .pause-action{opacity:1}
+/* BUG-016: keep the engine watermark legible on a paused card — the .55 child-dim
+   would re-mute it below its already-decorative .45, so opt it back to its own
+   base opacity (still decorative, just readable). */
+.card.paused > .engine-badge{opacity:.45}
 /* UX-21/UX-22: the paused/pausing status label is HIGH-contrast (not dim text). */
 .card .pause-status{color:var(--lcars-text-bright);font-family:var(--font-display);
   letter-spacing:.08em;margin-top:7px;font-size:10px}
 .card .pause-status.pausing{color:var(--lcars-amber)}
+/* S76 — the main-ahead reconcile note on a verify card (no PR yet). */
+.card .reconcile-status{color:var(--lcars-amber);font-family:var(--font-display);
+  letter-spacing:.08em;margin-top:7px;font-size:10px}
+/* BUG-067 — the heal converged / escalated "needs you" call reads red (an
+   awaiting human gate, like .card.awaiting); the merge-failed outcome reads red
+   + bold (an attention/error state, never silence). */
+.card .reconcile-status.escalated{color:#ff8a96}
+.card .reconcile-status.failed{color:#ff8a96;font-weight:700}
+/* BUG-067 — the persisted human-readable reconcile summary (reconcileNote): the
+   green re-test count for a reapprove gate, or the failure reason for
+   merge-failed. Quieter than the status line, wraps so a multi-line summary
+   stays readable on the card. This is the field that was never surfaced before. */
+.card .reconcile-detail{color:var(--lcars-text);font-size:10px;margin-top:3px;
+  line-height:1.35;opacity:.92}
 /* the RESUME / Pausing button on a paused card keeps full prominence (UX-22). */
 .card.paused .card-ctrl{opacity:1}
-.card.child{border-left-color:var(--lcars-pink,#ff66aa);margin-left:14px;background:var(--lcars-card-alt)}
+/* BUG-025: a child/bug card used to indent with `margin-left:14px`, which
+   PHYSICALLY NARROWS the card inside its fixed-width column — so the absolutely
+   positioned engine watermark (top-right) ended up over the in-flight
+   phase-status text. Bring the card to FULL PARITY with a mission card: no
+   narrowing margin AND no extra content inset — the box is full column width and
+   the CONTENT uses the same base padding (10px) as a mission card, so the title/
+   pills/status line up exactly. The "child/bug" cue is purely the pink + fatter
+   left border (and the alt background), never a content offset. */
+.card.child{border-left-color:var(--lcars-pink,#ff66aa);
+  background:var(--lcars-card-alt)}
 /* UX-28: a logged bug (child of a parent mission) is a PINK accent child card
    (the mock spec'd pink for children) + a small "log bug · child of #<parent>"
    badge. The pink left bar is reinforced and a faint pink ring sets it apart
@@ -499,6 +535,17 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .note{border-left:3px solid var(--lcars-blue,#4499ff);background:rgba(68,153,255,.06);
   padding:10px 16px;border-radius:0 8px 8px 0;margin:14px 0;color:var(--lcars-text);font-size:14px}
 .note.amber{border-color:var(--lcars-amber);background:rgba(255,170,0,.06)}
+/* BUG-027: the raw reason + command behind a collapsible "Technical details"
+   disclosure on a regression/escalation gate — kept OUT of the plain-language
+   headline, available on demand. Monospace, muted, scrollable for long output. */
+.gate-tech{margin:12px 0}
+.gate-tech > summary{cursor:pointer;font-family:var(--font-display);
+  letter-spacing:.08em;text-transform:uppercase;font-size:11px;
+  color:var(--lcars-text-dim)}
+.gate-tech-body{font-family:var(--font-mono);font-size:12px;white-space:pre-wrap;
+  word-break:break-word;background:var(--lcars-black);border:1px solid var(--lcars-border);
+  border-radius:6px;padding:10px;margin:8px 0 0;max-height:220px;overflow:auto;
+  color:var(--lcars-text)}
 .busy{font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
   font-size:11px;color:var(--lcars-amber)}
 .errline{color:#ff8a96;font-size:13px;margin-top:10px}
@@ -538,6 +585,13 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    "live drive" pulse on a running card / detail feed. Tighter margins so it sits
    inside a card; teal label to read as "in motion", not "blocked". */
 .lcars-working.lcars-running{margin:8px 0 0;gap:10px}
+/* BUG-025: belt-and-braces — keep the in-flight phase-status line clear of the
+   engine watermark's top-right corner on EVERY card (mission or bug/child),
+   regardless of width or stage. The badge owns its corner (z-index:2 above);
+   reserve room so the running copy can never run under it. */
+.card .lcars-working.lcars-running{padding-right:24px}
+.card .lcars-working.lcars-running .lcars-working-label{
+  overflow:hidden;text-overflow:ellipsis}
 .lcars-working.lcars-running .lcars-working-label{color:var(--lcars-teal);font-size:10px}
 .lcars-working.lcars-running .lcars-bars{height:14px}
 .lcars-working.lcars-running .lcars-bars > i{height:14px;width:5px}

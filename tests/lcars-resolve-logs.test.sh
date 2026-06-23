@@ -113,7 +113,16 @@ sdir="$gitdir/lcars/missions/$mid"
 state="$sdir/state.json"
 escalate=0
 for e in $ESCALATE_IDS; do [ "$e" = "$mid" ] && escalate=1; done
-if [ "$escalate" -eq 1 ]; then
+errored=0
+for e in $ERROR_IDS; do [ "$e" = "$mid" ] && errored=1; done
+if [ "$errored" -eq 1 ]; then
+  # Silent failure to advance: the child does NOT reach Verify and does NOT park
+  # at awaiting-human — it is left mid-flight at implement (BUG-064 scenario:
+  # "driving <bug> did not reach its Verify gate (stage is now 'implement')").
+  tmp="$(mktemp)"
+  awk 'NR==1{print; print "  \"stage\": \"implement\","; next} /"stage"|"awaitingHuman"|"pendingQuestion"/{next} {print}' "$state" >"$tmp" && mv "$tmp" "$state"
+  rm -f "$sdir/pending.json"
+elif [ "$escalate" -eq 1 ]; then
   tmp="$(mktemp)"
   grep -v '"stage"\|"awaitingHuman"\|"pendingQuestion"' "$state" \
     | sed '1!b; /{/!b' >/dev/null 2>&1
@@ -445,6 +454,67 @@ check "7. complete reports how many children it folded to Done" \
 check "7. children keep the parent branch as their working branch (folded)" \
   "qgrep '\"branch\":' '$repo7c/.git/lcars/missions/lcars-20260601-002/state.json'"
 
+# --- Behaviour 7b: single-bug complete (BUG-032) ----------------------------
+# `complete --parent <p> --bug <bug>` must fold ONLY that one child to Done and
+# leave the parent's OTHER bugs pending — the per-bug "Verify" on a single card.
+# Contrast the bulk `complete --parent` (Behaviour 7), which folds ALL of them.
+repo7e="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo7e/gh"; make_notify_stub "$repo7e/notify"
+export GH_LOG="$repo7e/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+# both children at verify; the parent already carries a consolidated gate.
+for seq in 002 003; do
+  s="$repo7e/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+pstate="$repo7e/.git/lcars/missions/lcars-20260601-001/state.json"
+sed 's/"base": "main"/"base": "main",\n  "awaitingHuman": true/' "$pstate" >"$pstate.t" && mv "$pstate.t" "$pstate"
+cat >"$repo7e/.git/lcars/missions/lcars-20260601-001/pending.json" <<'EOF'
+{ "stage": "verify", "questions": ["re-verify the 2 logged bugs"] }
+EOF
+rc7e=0
+(
+  cd "$repo7e"
+  LCARS_GH_BIN="$repo7e/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug "lcars-20260601-002" >out7e.txt 2>&1
+) || rc7e=$?
+check "7b. single-bug complete exits zero" "[ '$rc7e' -eq 0 ]"
+check "7b. ONLY the named bug 002 transitions to done" \
+  "qgrep '\"stage\": *\"done\"' '$repo7e/.git/lcars/missions/lcars-20260601-002/state.json'"
+check "7b. the SIBLING bug 003 is left pending (still verify, NOT done)" \
+  "qgrep '\"stage\": *\"verify\"' '$repo7e/.git/lcars/missions/lcars-20260601-003/state.json' && ! qgrep '\"stage\": *\"done\"' '$repo7e/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "7b. parent's consolidated re-verify gate STAYS up (a sibling pending)" \
+  "qgrep '\"awaitingHuman\": *true' '$pstate' && [ -f '$repo7e/.git/lcars/missions/lcars-20260601-001/pending.json' ]"
+check "7b. only ONE child issue relabelled lcars:done (not the whole batch)" \
+  "[ \"\$(grep -c 'add-label.*lcars:done' '$repo7e/gh.log')\" -eq 1 ]"
+check "7b. no per-bug PR opened" "! qgrep 'pr create' '$repo7e/gh.log'"
+
+# Folding the LAST remaining bug clears the parent gate.
+rc7f=0
+(
+  cd "$repo7e"
+  LCARS_GH_BIN="$repo7e/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug "lcars-20260601-003" >out7f.txt 2>&1
+) || rc7f=$?
+check "7b. folding the last bug exits zero" "[ '$rc7f' -eq 0 ]"
+check "7b. last bug 003 now done" \
+  "qgrep '\"stage\": *\"done\"' '$repo7e/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "7b. parent gate is CLEARED once no bug remains pending" \
+  "! qgrep '\"awaitingHuman\": *true' '$pstate' && [ ! -f '$repo7e/.git/lcars/missions/lcars-20260601-001/pending.json' ]"
+
+# a --bug that is not at verify is a clean no-op (does not fold, does not error).
+repo7g="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo7g/gh"; export GH_LOG="$repo7g/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+s7g="$repo7g/.git/lcars/missions/lcars-20260601-002/state.json"
+sed 's/"stage": "plan"/"stage": "verify"/' "$s7g" >"$s7g.t" && mv "$s7g.t" "$s7g"
+rc7g=0
+(
+  cd "$repo7g"
+  LCARS_GH_BIN="$repo7g/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug "lcars-20260601-003" >out7g.txt 2>&1
+) || rc7g=$?
+check "7b. --bug not at verify is a clean no-op (exit 0, nothing folded)" \
+  "[ '$rc7g' -eq 0 ] && ! qgrep '\"stage\": *\"done\"' '$repo7g/.git/lcars/missions/lcars-20260601-003/state.json'"
+
 # idempotent / no-op safety: a parent with no children-at-verify is a clean no-op.
 repo7d="$(new_repo_with_linked_bugs 0)"
 make_gh_stub "$repo7d/gh"
@@ -693,6 +763,142 @@ check "8. the currently-driving child is NOT marked queued" \
   "[ '$not_queued_002' -eq 1 ]"
 check "8. queued is cleared once the child has been driven (003 not queued at end)" \
   "! qgrep '\"queued\": *true' '$repo8c/.git/lcars/missions/lcars-20260601-003/state.json'"
+
+# --- Behaviour 9 (S76): a STALE consolidated gate on the parent is CLEARED ----
+# When re-driving (a previous round left a consolidated re-verify gate on the
+# parent, but a linked child has since been sent back and is NOT at verify), the
+# default flow must clear that stale gate BEFORE driving — so the parent shows
+# "resolving", not a falsely-acceptable gate, while the re-fix is in flight. The
+# gate is re-raised at the END exactly as today once every child reaches verify.
+repo9="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo9/gh"; make_notify_stub "$repo9/notify"; make_run_stub "$repo9/run"; make_worker_stub "$repo9/worker"
+export GH_LOG="$repo9/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo9/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo9/run.log"; : >"$RUN_LOG"
+# Plant a STALE consolidated gate on the parent (pending.json + awaitingHuman).
+p9="$repo9/.git/lcars/missions/lcars-20260601-001"
+awk 'NR==1{print; print "  \"awaitingHuman\": true,"; print "  \"pendingQuestion\": \"old re-verify ask\","; next} {print}' \
+  "$p9/state.json" >"$p9/state.json.t" && mv "$p9/state.json.t" "$p9/state.json"
+cat >"$p9/pending.json" <<'EOF'
+{ "stage": "verify", "questions": ["old re-verify ask"] }
+EOF
+# child 002 is at plan (NOT at verify) -> there IS work to drive.
+rc9=0
+(
+  cd "$repo9"
+  ESCALATE_IDS="" WORKER_ORDER="lcars-20260601-002 lcars-20260601-003" \
+  LCARS_GH_BIN="$repo9/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo9/notify" \
+  LCARS_RUN_SCRIPT="$repo9/run" LCARS_WORKER_BIN="$repo9/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out9.txt 2>&1
+) || rc9=$?
+check "9. exits zero re-driving with a stale gate present" "[ '$rc9' -eq 0 ]"
+check "9. drives the pending children" \
+  "[ \"\$(grep -c 'run drive' '$RUN_LOG')\" -eq 2 ]"
+# At the end the gate is RE-RAISED (the new round completed), so we assert the
+# stale pending.json text was replaced — the new ask mentions re-verify of the
+# resolved bugs, not the literal "old re-verify ask" we planted.
+check "9. the stale pending question was cleared/replaced" \
+  "! qgrep 'old re-verify ask' '$p9/pending.json'"
+check "9. a fresh consolidated gate is re-raised at the end" \
+  "qgrep '\"awaitingHuman\": *true' '$p9/state.json' && [ -f '$p9/pending.json' ]"
+check "9. the parent's awaiting-human label is removed while resolving" \
+  "qgrep 'remove-label lcars:awaiting-human' '$repo9/gh.log'"
+
+# 9b: when GATHER finds every child ALREADY at verify (no work to drive), the
+# stale-gate clear path must NOT fire a spurious early clear — the flow just
+# (re)raises the gate. We assert the parent still ends with a gate and the
+# children were not driven (no run.sh calls).
+repo9b="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo9b/gh"; make_notify_stub "$repo9b/notify"; make_run_stub "$repo9b/run"; make_worker_stub "$repo9b/worker"
+export GH_LOG="$repo9b/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo9b/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo9b/run.log"; : >"$RUN_LOG"
+for seq in 002 003; do
+  s="$repo9b/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+rc9b=0
+(
+  cd "$repo9b"
+  ESCALATE_IDS="" WORKER_ORDER="" \
+  LCARS_GH_BIN="$repo9b/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo9b/notify" \
+  LCARS_RUN_SCRIPT="$repo9b/run" LCARS_WORKER_BIN="$repo9b/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out9b.txt 2>&1
+) || rc9b=$?
+check "9b. all-at-verify re-raise drives nothing" "[ ! -s '$repo9b/run.log' ]"
+check "9b. all-at-verify still (re)raises the consolidated gate" \
+  "qgrep '\"awaitingHuman\": *true' '$repo9b/.git/lcars/missions/lcars-20260601-001/state.json'"
+
+# --- Behaviour 10 (BUG-064): a child that folds to Verify STILL raises the -----
+# consolidated parent gate even when a SIBLING fails to advance. Regression: a
+# child that did not reach its Verify gate (left mid-flight at implement, NOT
+# awaiting-human) made resolve-logs `die` and THROW AWAY the consolidated gate
+# for the children that DID fold — the parent was left awaitingHuman=None with no
+# pending.json (parent #46 after bug #77 folded). The folded child must still
+# raise the parent's single consolidated re-verify gate; the stuck sibling is
+# reported as still needing attention, not allowed to suppress the gate.
+repo10="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo10/gh"; make_notify_stub "$repo10/notify"; make_run_stub "$repo10/run"; make_worker_stub "$repo10/worker"
+export GH_LOG="$repo10/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo10/notify.log"; : >"$NOTIFY_LOG"
+export RUN_LOG="$repo10/run.log"; : >"$RUN_LOG"
+# Force serial separate waves (shared path) so 002 folds to verify and 003 then
+# errors — exercising the error path WITHOUT relying on wave ordering luck.
+plant_child_plan "$repo10/.git/lcars/missions/lcars-20260601-002" "src/shared.py"
+plant_child_plan "$repo10/.git/lcars/missions/lcars-20260601-003" "src/shared.py"
+rc10=0
+(
+  cd "$repo10"
+  ESCALATE_IDS="" ERROR_IDS="lcars-20260601-003" \
+  WORKER_ORDER="lcars-20260601-002 lcars-20260601-003" LCARS_RESOLVE_CONCURRENCY=1 \
+  LCARS_GH_BIN="$repo10/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo10/notify" \
+  LCARS_RUN_SCRIPT="$repo10/run" LCARS_WORKER_BIN="$repo10/worker" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" "$PARENT" >out10.txt 2>&1
+) || rc10=$?
+check "10. the folded child reached its Verify gate" \
+  "qgrep '\"stage\": *\"verify\"' '$repo10/.git/lcars/missions/lcars-20260601-002/state.json'"
+check "10. the stuck sibling stayed mid-flight (implement, not awaiting-human)" \
+  "qgrep '\"stage\": *\"implement\"' '$repo10/.git/lcars/missions/lcars-20260601-003/state.json' && ! qgrep '\"awaitingHuman\": *true' '$repo10/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "10. parent STILL raises the consolidated awaiting-human gate" \
+  "qgrep '\"awaitingHuman\": *true' '$repo10/.git/lcars/missions/lcars-20260601-001/state.json'"
+check "10. parent STILL gets a pending.json with the re-verify ask" \
+  "[ -f '$repo10/.git/lcars/missions/lcars-20260601-001/pending.json' ] && qgrep -i 'verif' '$repo10/.git/lcars/missions/lcars-20260601-001/pending.json'"
+check "10. fires EXACTLY ONE notification on the parent" \
+  "[ \"\$(wc -l <'$NOTIFY_LOG' | tr -d ' ')\" -eq 1 ] && qgrep 'mission=lcars-20260601-001' '$NOTIFY_LOG'"
+check "10. surfaces the stuck sibling so the captain knows it needs attention" \
+  "qgrep -i 'lcars-20260601-003' '$repo10/out10.txt'"
+
+# 10b: the captain then clears the consolidated gate BOTH ways.
+#   1-by-1 — `complete --bug` folds ONLY the verified child; gate stays up because
+#   the stuck sibling is still pending.
+rc10b=0
+(
+  cd "$repo10"
+  LCARS_GH_BIN="$repo10/gh" LCARS_GIT_BIN="$(command -v git)" \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug "lcars-20260601-002" >out10b.txt 2>&1
+) || rc10b=$?
+check "10b. 1-by-1 verify folds ONLY that bug to Done" \
+  "[ '$rc10b' -eq 0 ] && qgrep '\"stage\": *\"done\"' '$repo10/.git/lcars/missions/lcars-20260601-002/state.json'"
+check "10b. gate STAYS up while the stuck sibling is still pending" \
+  "qgrep '\"awaitingHuman\": *true' '$repo10/.git/lcars/missions/lcars-20260601-001/state.json'"
+
+# 10c: bulk-accept on the parent (complete --parent) re-checked on a 2-verify
+# parent folds ALL verified children to Done in one go (the bulk path).
+repo10c="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo10c/gh"; make_notify_stub "$repo10c/notify"; make_run_stub "$repo10c/run"; make_worker_stub "$repo10c/worker"
+export GH_LOG="$repo10c/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+for seq in 002 003; do
+  s="$repo10c/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+rc10c=0
+(
+  cd "$repo10c"
+  LCARS_GH_BIN="$repo10c/gh" LCARS_GIT_BIN="$(command -v git)" \
+    bash "$SCRIPT" complete --parent "$PARENT" >out10c.txt 2>&1
+) || rc10c=$?
+check "10c. bulk-accept folds ALL verified children to Done" \
+  "[ '$rc10c' -eq 0 ] && qgrep '\"stage\": *\"done\"' '$repo10c/.git/lcars/missions/lcars-20260601-002/state.json' && qgrep '\"stage\": *\"done\"' '$repo10c/.git/lcars/missions/lcars-20260601-003/state.json'"
 
 # ==========================================================================
 echo

@@ -78,8 +78,13 @@ def mission_dir(root, mid):
 
 def plant_simple(root, mid, *, stage="align", issue=142,
                  title="Add Gamification to Course Site", estimate=ESTIMATE_CLAUDE,
-                 created="2026-06-13T10:00:00Z", worker_bin=None, queued=None,
-                 parent_mission=None, mtype="feature"):
+                 created="2026-06-13T10:00:00Z", worker_bin=None,
+                 worker_model=None, queued=None,
+                 parent_mission=None, parent_issue=None, mtype="feature",
+                 pr_url=None, pr_number=None, review=None,
+                 reconcile_status=None, reconcile_diagnosis=None,
+                 reconcile_note=None, reconcile_merge_sha=None,
+                 awaiting_human=None, pending_question=None):
     """A plain mission sitting in `stage`, no gate, no tickets.
 
     `worker_bin` plants the persisted engine field (state.json.workerBin) the
@@ -99,10 +104,46 @@ def plant_simple(root, mid, *, stage="align", issue=142,
     }
     if worker_bin is not None:
         state["workerBin"] = worker_bin
+    # S78: an OPTIONAL per-mission frozen model (state.json.workerModel). When
+    # present, Start feeds it as a PER-RUN $LCARS_WORKER_MODEL; when absent the
+    # mission self-resolves (and Start strips any inherited daemon-wide pin).
+    if worker_model is not None:
+        state["workerModel"] = worker_model
     if queued is not None:
         state["queued"] = queued
     if parent_mission is not None:
         state["parentMission"] = parent_mission
+    # BUG-033: a logged-bug child carries its parent's issue number on disk
+    # (state.json.parentIssue) so the "child of #<n>" badge survives the parent
+    # merging off the board.
+    if parent_issue is not None:
+        state["parentIssue"] = parent_issue
+    # S75 Verify PR lifecycle: an in-review mission records its open PR.
+    if pr_url is not None:
+        state["prUrl"] = pr_url
+    if pr_number is not None:
+        state["prNumber"] = pr_number
+    if review is not None:
+        state["review"] = review
+    # S76 main-ahead reconcile sub-state (merging/retesting/healing/escalated).
+    if reconcile_status is not None:
+        state["reconcileStatus"] = reconcile_status
+    # S76 BUG: reconcile_gate persists a MULTI-LINE failure summary here. The
+    # value can carry newlines/tabs/quotes — run.sh's json_escape must keep
+    # state.json valid JSON so the adapter does not drop the mission.
+    if reconcile_diagnosis is not None:
+        state["reconcileDiagnosis"] = reconcile_diagnosis
+    # BUG-067 SHARED CONTRACT: the human-readable reconcile summary the card shows
+    # (e.g. "Reconciled main … re-tested green (8/8). Reapprove to merge.") and the
+    # reconciled tip sha.
+    if reconcile_note is not None:
+        state["reconcileNote"] = reconcile_note
+    if reconcile_merge_sha is not None:
+        state["reconcileMergeSha"] = reconcile_merge_sha
+    if awaiting_human is not None:
+        state["awaitingHuman"] = awaiting_human
+    if pending_question is not None:
+        state["pendingQuestion"] = pending_question
     write_json(os.path.join(d, "state.json"), state)
     if estimate is not None:
         write_json(os.path.join(d, "estimate.json"), estimate)

@@ -24,6 +24,14 @@ set -uo pipefail
 GH_BIN="${LCARS_GH_BIN:-gh}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 RELABEL_NOTE=""
+PR_NOTE=""
+
+# The host-integration adapter — the ONE place that speaks to a forge. Lives in
+# the sibling lcars-run skill dir; $LCARS_HOST_ADAPTER overrides the path so
+# tests can stub the whole adapter.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
+host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
 die() { printf 'lcars feedback: %s\n' "$1" >&2; exit 1; }
 
@@ -47,6 +55,39 @@ set_stage() {
   local newstage="$1" tmp; tmp="$(mktemp)"
   sed "s/\(\"stage\"[[:space:]]*:[[:space:]]*\"\)[^\"]*\(\"\)/\1$newstage\2/" "$STATE" >"$tmp" \
     && mv "$tmp" "$STATE"
+}
+
+# drop a field's line if present (no-op otherwise) — clears the recorded PR so a
+# re-entry to Verify opens a fresh PR.
+state_del() { local tmp; tmp="$(mktemp)"; grep -v "\"$1\"[[:space:]]*:" "$STATE" >"$tmp" && mv "$tmp" "$STATE"; }
+
+# Close the Mission's open PR (S75): send-back returns the Mission to Align, so
+# the in-flight PR must not linger open. Best-effort — gh absent / a forge error
+# leaves a note but never blocks the send-back (the stage reset is the contract).
+close_open_pr() {
+  local pr num branch sel_args=()
+  pr="$(json_str "$STATE" prUrl)"
+  case "$pr" in
+    http*|*/pull/*) : ;;
+    *) return 0 ;;   # no PR on file → nothing to close.
+  esac
+  num="$(json_raw "$STATE" prNumber)"
+  branch="$(json_str "$STATE" branch)"
+  case "$num" in
+    ''|null) sel_args=(--head "$branch") ;;
+    *)       sel_args=(--number "$num") ;;
+  esac
+  if command -v "$GH_BIN" >/dev/null 2>&1; then
+    host pr-close "${sel_args[@]}" \
+      || PR_NOTE="  ⚠ could not close PR $pr — close it by hand."
+  else
+    PR_NOTE="  ⚠ gh not found — close PR $pr by hand."
+  fi
+  # Clear the recorded PR + review marker either way, so a re-entry to Verify
+  # opens a FRESH PR rather than re-using the closed one.
+  state_del prUrl
+  state_del prNumber
+  state_del review
 }
 
 # --- gh relabel: best-effort, never blocks the local stage change ----------
@@ -93,6 +134,51 @@ PREV_STAGE="$(json_str "$STATE" stage)"
   printf '%s\n\n' "$FEEDBACK"
 } >>"$MISSION_DIR/feedback.md"
 
+# A logged bug (S76): type==bug AND a non-empty parentMission. It was fast-tracked
+# straight to Plan and has NO Align stage — its Align re-entry would be an
+# INTERACTIVE re-grill that a headless resolve-logs batch cannot clear, and no
+# headless stage reads feedback.md. So a logged-bug send-back goes back to PLAN,
+# with the correction folded into prd.md (the artifact the cold Plan worker reads).
+TYPE="$(json_str "$STATE" type)"
+PARENT="$(json_str "$STATE" parentMission)"
+
+if [ "$TYPE" = "bug" ] && [ -n "$PARENT" ]; then
+  # Do NOT touch any PR: a logged bug has no PR of its own (its fix rides the
+  # PARENT's PR), so close_open_pr is skipped here explicitly.
+
+  # Fold the note into prd.md as a clearly-marked correction the Plan worker reads.
+  {
+    printf '\n\n## Re-verify correction — %s\n\n' "$NOW"
+    printf '%s\n' "$FEEDBACK"
+  } >>"$MISSION_DIR/prd.md"
+
+  # Clear the stale downstream artifacts so the re-plan regenerates cleanly
+  # against the corrected PRD. Plan overwrites plan.json fresh; Plan Review writes
+  # approved-plan.json; Schedule rebuilds waves.json + manifests; Implement
+  # rebuilds tickets/. Best-effort. Do NOT delete prd.md (just amended) or
+  # feedback.md.
+  rm -f  "$MISSION_DIR/plan.json"          2>/dev/null || true
+  rm -f  "$MISSION_DIR/approved-plan.json" 2>/dev/null || true
+  rm -f  "$MISSION_DIR/waves.json"         2>/dev/null || true
+  rm -rf "$MISSION_DIR/tickets"            2>/dev/null || true
+  rm -rf "$MISSION_DIR/manifests"          2>/dev/null || true
+
+  set_stage "plan"
+  gh_relabel "lcars:plan" "${PREV_STAGE:+lcars:$PREV_STAGE} lcars:awaiting-human"
+
+  echo "FEEDBACK: logged bug re-staged to Plan with your correction folded into the PRD"
+  echo "  Appended your note to feedback.md and folded it into prd.md."
+  echo "  Stage:  plan (was ${PREV_STAGE:-unknown})"
+  echo "  Cleared the stale plan/schedule/implement artifacts so Plan re-runs against the corrected PRD."
+  echo "  Its fix rides the parent's PR — no PR was touched. \`lcars run $MISSION_ID\` re-plans headlessly."
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  exit 0
+fi
+
+# 1b. Close any open PR (S75) and clear the recorded PR/review markers, so the
+# in-review PR does not linger and a re-entry to Verify opens a fresh one.
+close_open_pr
+
 # 2 + 3. Reset to Align and move the label in step. Remove whatever stage label
 # the card carried (plus any awaiting-human overlay) and add lcars:align.
 set_stage "align"
@@ -102,5 +188,6 @@ echo "FEEDBACK: sent back to Align"
 echo "  Appended your note to feedback.md."
 echo "  Stage:  align (was ${PREV_STAGE:-unknown})"
 echo "  The prior PRD and artifacts are kept — \`lcars run $MISSION_ID\` re-enters Align with the full history."
+[ -n "$PR_NOTE" ] && echo "$PR_NOTE"
 [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
 exit 0

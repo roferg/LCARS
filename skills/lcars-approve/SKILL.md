@@ -1,14 +1,16 @@
 ---
 name: lcars-approve
-description: Ship a verified LCARS Mission — open its pull request and mark it Done. Runs only on a Mission parked at the Verify stage (where `lcars run` left it after every ticket went green). It checks out the Mission's branch (recorded by `lcars file`), requires commits ahead of the base, pushes the branch, and opens the PR with `gh pr create --head <branch> --base <base>` — titled from the PRD and bodied with a per-wave summary of the tickets — then, only once a PR URL is captured, clears the stage labels, applies `lcars:done`, moves the stage to `done`, and prints the PR URL. If no PR can be created it stays at Verify (never a false Done). Use when the captain runs `lcars approve <mission-id>`, or asks to approve / ship / create the PR for a Mission they have finished reviewing in Verify.
+description: Ship a verified LCARS Mission — MERGE its open pull request and mark it Done. Runs only on a Mission parked at the Verify stage, where `lcars run` has already AUTO-OPENED the PR and left the Mission "in review — PR open" (prUrl recorded in state.json). `lcars approve` is the captain's MERGE signal: it merges that open PR with `gh pr merge` (via the host adapter) and, only on a SUCCESSFUL merge, clears the stage labels, applies `lcars:done`, moves the stage to `done`, and prints the merged PR URL. It NEVER marks a Mission Done without a real merge — a failed merge (conflicts, checks, auth) leaves it at Verify with an actionable message (no false Done). With no open PR recorded it refuses (re-run the mission so Verify opens the PR first). Use when the captain runs `lcars approve <mission-id>`, or asks to approve / ship / merge the PR for a Mission they have finished reviewing in Verify.
 ---
 
 # lcars approve
 
 `lcars approve <mission-id>` is the captain's go-ahead at the end of **Verify**.
-The human has read the diff and run the app; this skill ships it. It is purely
-mechanical — there is no LLM work to do — so you just run the one script and
-report what it did.
+By the time a Mission reaches Verify, `lcars run` has already **auto-opened the
+PR** and parked the Mission "in review — PR open". The human has read the diff,
+run the app, and reviewed the PR; `lcars approve` is the **merge** signal that
+ships it. It is purely mechanical — there is no LLM work to do — so you just run
+the one script and report what it did.
 
 ## What it does
 
@@ -16,55 +18,56 @@ report what it did.
 bash ~/.claude/skills/lcars-approve/approve.sh --mission <id>
 ```
 
-`approve.sh` opens the PR **deterministically from the Mission's own branch** —
-it does not rely on the captain happening to be on the right branch:
-
-1. **Reads `branch` and `base` from `state.json`** (recorded by `lcars file`).
-2. **Checks the branch out** (it must exist — Implement committed the tickets to
-   it) and **requires commits ahead of `base`** — no content, no PR.
-3. **Pushes it** with `git push -u origin <branch>`.
-4. **Opens the PR** with `gh pr create --head <branch> --base <base>`. The title
-   is the PRD's `# Mission:` line (falling back to the `state.json` title); the
-   body is a `## Summary` plus a per-wave list of the tickets, read from
-   `waves.json` and `approved-plan.json`.
-5. **Only once a PR URL is captured:** clears the stage labels (removes
+1. **Requires an open PR.** It reads `prUrl` / `prNumber` from `state.json` —
+   the PR **Verify** opened. With no recorded PR it refuses (re-run the mission
+   so Verify opens one), staying at `verify`.
+2. **Merges the PR** with `gh pr merge` (via the host adapter), identifying it by
+   the recorded PR number (or the branch).
+3. **Only on a successful merge:** clears the stage labels (removes
    `lcars:verify` + any `lcars:awaiting-human`, adds `lcars:done`), advances the
-   stage to `done` in `state.json` (label and stage in lockstep), and prints the
-   PR URL.
+   stage to `done` in `state.json` (label and stage in lockstep), records
+   `review: "merged"`, and prints the merged PR URL.
 
 On success it prints:
 
 ```
-APPROVE: shipped — <title>
-  Opened PR: https://github.com/<owner>/<repo>/pull/<n>
+APPROVE: merged — <title>
+  Merged PR: https://github.com/<owner>/<repo>/pull/<n>
   Branch:    lcars/<id> → <base>
   Stage:     done
 ```
 
+The PR-open logic (title/body/manifest builders + the checkout/push/`gh pr
+create` orchestration) lives in `pr-lib.sh` next to this file, shared with the
+Verify driver's auto-open (`run.sh open-pr`) so the PR body is built in exactly
+one place.
+
 ## Guards & failure modes
 
 - **Verify only.** `approve.sh` refuses to run on any stage other than `verify`
-  and changes nothing — a Mission can only be shipped once Implement has every
-  ticket green and `lcars run` has parked it at Verify.
-- **No PR ⇒ no Done — the Mission stays at `verify`.** This is the core
-  invariant. If the branch is missing, has **no commits ahead** of base, the
-  **push fails**, `gh` is missing, or **`gh pr create` returns no URL**,
-  `approve.sh` exits non-zero with an actionable message and applies **no**
-  `lcars:done` and **no** stage change. A card in the Done column with no pull
-  request behind it is a false signal, so approve never produces one — fix the
-  blocker (e.g. push the branch, fix `gh` auth) and re-run.
+  and changes nothing.
+- **No merge ⇒ no Done — the Mission stays at `verify`.** This is the core
+  invariant. If `gh pr merge` fails (merge conflicts, failing required checks,
+  auth, or `gh` missing), `approve.sh` exits non-zero with an actionable message
+  and applies **no** `lcars:done` and **no** stage change. A card in the Done
+  column with no merged pull request behind it is a false signal, so approve
+  never produces one — fix the blocker (resolve conflicts, fix `gh` auth, or
+  merge on GitHub) and re-run.
+- **GitHub-side merge.** If the captain merges the PR directly on GitHub, the
+  `lcars run` driver's Verify heartbeat detects it (`gh pr view --json
+  state,mergedAt`) and marks the Mission Done the same way — `lcars approve` is
+  not the only path to Done, just the in-CLI one.
 
 ## Report
 
-Tell the captain the PR is open (with its URL), that the Mission is now
-**Done**, and surface any warning the script printed (e.g. open the PR by hand
-if `gh` was unavailable).
+Tell the captain the PR is merged (with its URL), that the Mission is now
+**Done**, and surface any warning the script printed.
 
 ## Implementation
 
-The logic lives in `approve.sh` next to this file; its behaviour is covered by
-`tests/lcars-approve.test.sh` in the LCARS repo (run with `bash tests/run.sh`).
-The `gh` and `git` binaries are taken via `LCARS_GH_BIN` / `LCARS_GIT_BIN` so
-tests can stub them (the suite uses a real local bare repo as `origin` to
-exercise the push + `--head`/`--base` path for real). Edit the repo copy, not
-`~/.claude` — `./install.sh` symlinks it in.
+The logic lives in `approve.sh` + `pr-lib.sh` next to this file; behaviour is
+covered by `tests/lcars-approve.test.sh` (merge role) and
+`tests/lcars-verify-pr.test.sh` (Verify auto-open) in the LCARS repo (run with
+`bash tests/run.sh`). The `gh` and `git` binaries are taken via `LCARS_GH_BIN` /
+`LCARS_GIT_BIN` so tests can stub them. Edit the repo copy, not `~/.claude` —
+`./install.sh` symlinks it in.

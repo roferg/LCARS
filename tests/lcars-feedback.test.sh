@@ -38,11 +38,12 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 MID="lcars-20260530-001"
 state_of() { echo "$1/.git/lcars/missions/$MID/state.json"; }
 
-# A fake `gh` that records every call to $GH_LOG and otherwise succeeds.
+# A fake `gh` that records every call to $GH_LOG and otherwise succeeds. Folds
+# newlines so each call is one line (the host adapter shells `gh pr close …`).
 make_gh_stub() {
   cat >"$1" <<'EOF'
 #!/usr/bin/env bash
-echo "gh $*" >>"$GH_LOG"
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
 exit 0
 EOF
   chmod +x "$1"
@@ -123,6 +124,128 @@ check "5. leaves the approved plan intact" \
     bash "$SCRIPT" --mission "$MID" --feedback "Also the icon is wrong." >out2.txt 2>&1 )
 check "5. a second feedback note is appended, not overwritten" \
   "grep -q 'does not persist on Safari' '$FBMD' && grep -q 'icon is wrong' '$FBMD'"
+
+# --- S75: send-back CLOSES the open PR and clears the recorded PR -------------
+# When a Mission bounced back from Verify has an open PR, feedback must close it
+# (so it doesn't linger) and clear prUrl/prNumber/review, so a re-entry to Verify
+# opens a FRESH PR. The note still lands and the stage still resets to align.
+new_repo_with_open_pr() {
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  local m="$repo/.git/lcars/missions/$MID"
+  mkdir -p "$m"
+  cat >"$m/prd.md" <<'EOF'
+# Mission: Add dark mode
+EOF
+  cat >"$m/state.json" <<'EOF'
+{
+  "id": "lcars-20260530-001",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "verify",
+  "review": "open",
+  "prUrl": "https://github.com/acme/repo/pull/77",
+  "prNumber": 77,
+  "created": "2026-05-30T10:00:00Z",
+  "githubIssue": 42,
+  "branch": "lcars/lcars-20260530-001",
+  "base": "main"
+}
+EOF
+  echo "$repo"
+}
+repoP="$(new_repo_with_open_pr)"; make_gh_stub "$repoP/gh"
+export GH_LOG="$repoP/gh.log"; : >"$GH_LOG"
+rcP=0
+( cd "$repoP" && LCARS_GH_BIN="$repoP/gh" LCARS_NOW="2026-06-03T09:00:00Z" \
+    bash "$SCRIPT" --mission "$MID" --feedback "Regressed on Safari." >out.txt 2>&1 ) || rcP=$?
+sP="$(state_of "$repoP")"
+check "S75. feedback exits 0 with an open PR" "[ '$rcP' -eq 0 ]"
+check "S75. closes the open PR (gh pr close 77)" "grep -q 'pr close 77' '$repoP/gh.log'"
+check "S75. clears the recorded prUrl" "! grep -q 'prUrl' '$sP'"
+check "S75. clears the recorded prNumber" "! grep -q 'prNumber' '$sP'"
+check "S75. clears the review marker" "! grep -q '\"review\"' '$sP'"
+check "S75. still resets the stage to align" "grep -q '\"stage\": *\"align\"' '$sP'"
+check "S75. still appends the feedback note" "grep -q 'Regressed on Safari' '$repoP/.git/lcars/missions/$MID/feedback.md'"
+
+# --- S76: a logged bug sent back goes to PLAN (not Align), correction folded --
+# A logged bug (type:bug + non-empty parentMission) was fast-tracked to Plan and
+# has NO Align stage. Sending it back must re-stage it to PLAN, fold the captain's
+# note into prd.md (the only artifact the cold Plan worker reads), and clear the
+# stale downstream artifacts so Plan regenerates cleanly. It must NOT touch a PR
+# (a logged bug's fix rides the parent's PR) and must keep feedback.md.
+new_repo_with_logged_bug() {
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  local m="$repo/.git/lcars/missions/$MID"
+  mkdir -p "$m/tickets/t-001/tests" "$m/manifests"
+  cat >"$m/prd.md" <<'EOF'
+# Mission: Fix the broken toggle
+**Type:** bug
+**Goal:** The dark-mode toggle should persist.
+EOF
+  cat >"$m/state.json" <<'EOF'
+{
+  "id": "lcars-20260530-001",
+  "type": "bug",
+  "title": "Toggle does not persist",
+  "stage": "verify",
+  "parentMission": "lcars-20260530-000",
+  "parentIssue": 7,
+  "created": "2026-05-30T10:00:00Z",
+  "githubIssue": 88,
+  "branch": "lcars/lcars-20260530-000",
+  "base": "main"
+}
+EOF
+  printf '[ { "id": "t-001" } ]\n' >"$m/plan.json"
+  printf '[ { "id": "t-001" } ]\n' >"$m/approved-plan.json"
+  printf '[ { "wave": 1, "tickets": ["t-001"] } ]\n' >"$m/waves.json"
+  printf 'stale ticket\n' >"$m/tickets/t-001/result.json"
+  printf 'stale manifest\n' >"$m/manifests/t-001.md"
+  echo "$repo"
+}
+repoB="$(new_repo_with_logged_bug)"; make_gh_stub "$repoB/gh"
+export GH_LOG="$repoB/gh.log"; : >"$GH_LOG"
+FBB="The fix must also cover the Firefox private-window case."
+rcB=0
+( cd "$repoB" && LCARS_GH_BIN="$repoB/gh" LCARS_NOW="2026-06-04T12:00:00Z" \
+    bash "$SCRIPT" --mission "$MID" --feedback "$FBB" >outB.txt 2>&1 ) || rcB=$?
+sB="$(state_of "$repoB")"
+mB="$repoB/.git/lcars/missions/$MID"
+check "S76. logged-bug feedback exits 0" "[ '$rcB' -eq 0 ]"
+check "S76. logged bug re-stages to PLAN (not align)" \
+  "grep -q '\"stage\": *\"plan\"' '$sB'"
+check "S76. logged bug is NOT sent to align" "! grep -q '\"stage\": *\"align\"' '$sB'"
+check "S76. correction is folded into prd.md" \
+  "grep -q 'Firefox private-window case' '$mB/prd.md'"
+check "S76. the correction has a marked heading in prd.md" \
+  "grep -qi 'correction' '$mB/prd.md'"
+check "S76. stale plan.json is cleared so Plan regenerates" "[ ! -f '$mB/plan.json' ]"
+check "S76. stale approved-plan.json is cleared" "[ ! -f '$mB/approved-plan.json' ]"
+check "S76. stale waves.json is cleared" "[ ! -f '$mB/waves.json' ]"
+check "S76. stale tickets/ dir is cleared" "[ ! -d '$mB/tickets' ]"
+check "S76. stale manifests/ dir is cleared" "[ ! -d '$mB/manifests' ]"
+check "S76. feedback.md is still recorded" \
+  "[ -f '$mB/feedback.md' ] && grep -q 'Firefox private-window case' '$mB/feedback.md'"
+check "S76. prd.md is NOT deleted (it was amended)" "[ -f '$mB/prd.md' ]"
+check "S76. relabels to lcars:plan" "grep -q 'add-label lcars:plan' '$repoB/gh.log'"
+check "S76. does NOT touch a PR (no gh pr close for a logged bug)" \
+  "! grep -q 'pr close' '$repoB/gh.log'"
+
+# Regression: a TOP-LEVEL mission (feature, no parentMission) still goes to align,
+# and its prd.md is NOT amended.
+repoT="$(new_repo_with_verify_mission)"; make_gh_stub "$repoT/gh"
+export GH_LOG="$repoT/gh.log"; : >"$GH_LOG"
+PRD_BEFORE="$(cat "$repoT/.git/lcars/missions/$MID/prd.md")"
+rcT=0
+( cd "$repoT" && LCARS_GH_BIN="$repoT/gh" LCARS_NOW="2026-06-04T13:00:00Z" \
+    bash "$SCRIPT" --mission "$MID" --feedback "Top-level note." >outT.txt 2>&1 ) || rcT=$?
+sT="$(state_of "$repoT")"
+PRD_AFTER="$(cat "$repoT/.git/lcars/missions/$MID/prd.md")"
+check "S76. top-level mission still resets to align" "grep -q '\"stage\": *\"align\"' '$sT'"
+check "S76. top-level mission's prd.md is NOT amended" \
+  "[ \"\$PRD_BEFORE\" = \"\$PRD_AFTER\" ]"
 
 # --- Guard: a bad mission id is rejected ------------------------------------
 repoFg="$(new_repo_with_verify_mission)"; make_gh_stub "$repoFg/gh"

@@ -41,10 +41,44 @@ var detailRepo = null;
    the "child of #<parentIssue>" badge + GitHub link we resolve that id to its
    issue here. Falls back to the parent id when the issue isn't on the board. */
 var ISSUE_BY_ID = Object.create(null);
+/* BUG-035: a board-wide index of parent-mission-id → its linked bug CHILDREN
+   (the active cards carrying parentMission == that id), captured on every render.
+   A parent whose resolve-logs batch is in flight (children exist that are NOT all
+   at verify) must lock its Verify actions; we derive that from this index. */
+var CHILDREN_BY_PARENT = Object.create(null);
 function indexIssues(board) {
   ISSUE_BY_ID = Object.create(null);
+  CHILDREN_BY_PARENT = Object.create(null);
   (board.missions || []).forEach(function (m) {
-    if (m && m.id != null) ISSUE_BY_ID[String(m.id)] = m.issue || null;
+    if (!m || m.id == null) return;
+    ISSUE_BY_ID[String(m.id)] = m.issue || null;
+    var pid = m.parentMission != null ? String(m.parentMission) : null;
+    if (pid) {
+      (CHILDREN_BY_PARENT[pid] || (CHILDREN_BY_PARENT[pid] = [])).push(m);
+    }
+  });
+}
+
+/* BUG-035: is a parent mission's logged-bug batch IN FLIGHT? True when it has
+   linked, non-done bug children that are NOT all at the verify stage — i.e.
+   resolve-logs is still driving them, before the consolidated re-verify gate is
+   up. Re-enable (returns false) when none are in flight (no children) or every
+   non-done child has reached verify (the consolidated gate is ready). Derived
+   from the board index, so it is available wherever a card is rendered. */
+function resolvingChildren(parentId) {
+  if (parentId == null) return [];
+  var kids = CHILDREN_BY_PARENT[String(parentId)] || [];
+  return kids.filter(function (c) {
+    return c && (c.stage || "").toLowerCase() !== "done";
+  });
+}
+function isResolvingLocked(m) {
+  if (!m || m.id == null) return false;
+  var pending = resolvingChildren(m.id);
+  if (!pending.length) return false;
+  // locked while ANY non-done child has not yet reached verify (batch in flight).
+  return pending.some(function (c) {
+    return (c.stage || "").toLowerCase() !== "verify";
   });
 }
 
@@ -65,9 +99,15 @@ function isLogBug(m) {
    the raw parent mission id. Returns { text, issue } (issue null when unknown). */
 function parentRef(m) {
   var pid = m && m.parentMission != null ? String(m.parentMission) : null;
-  if (!pid) return { text: null, issue: null };
-  var issue = ISSUE_BY_ID[pid] || null;
-  return { text: issue ? "#" + issue : pid, issue: issue };
+  // BUG-033: prefer the bug card's OWN carried parentIssue (from its
+  // state.json) so the badge keeps "#<n>" even after the parent merges/goes Done
+  // and drops off the active board (ISSUE_BY_ID only indexes active cards). Fall
+  // back to ISSUE_BY_ID, then the raw parent mission id.
+  var carried = (m && m.parentIssue != null && m.parentIssue !== "")
+    ? m.parentIssue : null;
+  var issue = carried != null ? carried : (pid ? (ISSUE_BY_ID[pid] || null) : null);
+  if (!pid && issue == null) return { text: null, issue: null };
+  return { text: issue != null ? "#" + issue : pid, issue: issue };
 }
 
 /* UX-17: optimistic "starting" set. After a captain clicks Start the driver
@@ -93,6 +133,86 @@ function clearStarting(id) {
 }
 function isStarting(id) {
   return id != null && !!STARTING[String(id)];
+}
+
+/* BUG-044: optimistic "merging" set. After BUG-040 made the Merge (approve)
+   click fire-and-forget, the card keeps rendering the clickable "✓ Review PR ▸"
+   for ~2-3s until the next refresh/SSE delivers the real reconcileStatus that
+   flips it to the disabled "◐ Merge heal in progress…" (BUG-039). In that gap a
+   second click fires ANOTHER approve → a concurrent reconcile/self-heal (wasted
+   spend + worktree clash). We mark the mission id "merging" on click and treat
+   it as actively healing across every board refresh until the real state arrives
+   (reconcileStatus / awaiting / left verify — see clearMergingOnState) OR a
+   safety timeout fires (~30s) so a failed dispatch never wedges the card.
+   Keyed by mission id → timeout handle — mirrors the STARTING pattern (UX-17). */
+var MERGING = Object.create(null);
+var MERGING_TIMEOUT_MS = 30000;
+
+function markMerging(id, fromStatus) {
+  if (id == null) return;
+  var key = String(id);
+  if (MERGING[key]) clearTimeout(MERGING[key].t);
+  // BUG-078: remember the reconcileStatus that was current at dispatch (the
+  // "origin" gate the captain clicked from) so clearMergingOnState can tell a
+  // STILL-same-state repaint (keep busy, sticky) from a real TERMINAL change
+  // (clear). Keyed by id → { t: timeout handle, from: origin reconcileStatus }.
+  MERGING[key] = {
+    t: setTimeout(function () { clearMerging(key); refresh(); },
+      MERGING_TIMEOUT_MS),
+    from: fromStatus || null,
+  };
+}
+function clearMerging(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (MERGING[key]) { clearTimeout(MERGING[key].t); delete MERGING[key]; }
+}
+function isMerging(id) {
+  return id != null && !!MERGING[String(id)];
+}
+function mergingFrom(id) {
+  var e = id != null && MERGING[String(id)];
+  return e ? e.from : null;
+}
+/* BUG-078: the shared disabled busy affordance shown while an optimistic merge /
+   reapprove / retry-merge is in flight — identical copy to verifyAffordance's
+   "healing" kind, so the card reads the same whether the busy state is a live
+   reconcile or an optimistic post-click one. */
+function mergeBusyBtn() {
+  var b = btn("◐ Merge heal in progress…", "warn", null);
+  b.disabled = true;
+  b.title = "Self-healing the merge against main — Merge is unavailable until "
+    + "it settles.";
+  return b;
+}
+/* BUG-044: drop the optimistic merging flag once the REAL state arrives — the
+   reconcile started (reconcileStatus truthy), it escalated to a human gate
+   (awaiting), or the mission left verify / went done. Mirrors how STARTING is
+   cleared in runState once m.running flips true. Call from cardControls render. */
+function clearMergingOnState(m) {
+  if (!m || m.id == null || !isMerging(m.id)) return;
+  // BUG-067: the reapprove gate ITSELF carries reconcileStatus==awaiting-reapprove
+  // (a truthy reconcileStatus) at click time, so we must NOT clear the optimistic
+  // merging flag merely because reconcileStatus is set — that would re-arm the
+  // Reapprove button before the merge even ran. Clear only once the state has
+  // genuinely MOVED past the merge: the mission left verify (→ done), a fresh
+  // in-flight heal sub-state began (merging/retesting/resolving/healing), it
+  // escalated to a design call, or the merge surfaced as failed.
+  // BUG-078: clear only on a TERMINAL change away from the gate the captain
+  // clicked. The mission left verify (→ done) is always terminal. Otherwise the
+  // served reconcileStatus must have genuinely CHANGED from the origin gate — a
+  // repaint that still shows the SAME state (e.g. still awaiting-reapprove while
+  // the merge runs, or still merge-failed mid retry) keeps the busy flag sticky,
+  // so the button never reverts mid-flight. A fresh in-flight heal sub-state or
+  // an escalation is also terminal for the optimistic flag.
+  var rs = m.reconcileStatus;
+  var from = mergingFrom(m.id);
+  var moved = (m.stage || "").toLowerCase() !== "verify"
+    || rs === "merging" || rs === "retesting" || rs === "resolving"
+    || rs === "healing" || rs === "escalated"
+    || (rs === "merge-failed" && from !== "merge-failed")
+    || (rs === "awaiting-reapprove" && from && from !== "awaiting-reapprove");
+  if (moved) clearMerging(m.id);
 }
 
 /* UX-17/UX-20/UX-21: the single source of truth for a mission's run/pause
@@ -130,6 +250,32 @@ function el(tag, cls, text) {
   if (cls) n.className = cls;
   if (text != null) n.textContent = text;
   return n;
+}
+
+/* A small, semi-transparent mark of the CLI driving this mission, sat in the
+   card's top-right corner so the engine reads at a glance. Driven purely by
+   m.engine (state.json.workerBin, surfaced on the board shape by S78) — so it
+   covers logged-bug child cards too (a bug inherits its parent's engine). It is
+   DECORATIVE: aria-hidden + pointer-events:none so it never intercepts the
+   card's click-to-open. Returns null when the engine is unknown (no badge). */
+var ENGINE_SVG = {
+  // Official single-colour marks (Simple Icons, CC0): GitHub Copilot + Claude.
+  // One <path> each, coloured by `currentColor` (set per engine in CSS); the
+  // 0 0 24 24 viewBox matches the badge box. Nominative use only — a private
+  // dashboard tagging which CLI drives a mission.
+  copilot: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M23.922 16.997C23.061 18.492 18.063 22.02 12 22.02 5.937 22.02.939 18.492.078 16.997A.641.641 0 0 1 0 16.741v-2.869a.883.883 0 0 1 .053-.22c.372-.935 1.347-2.292 2.605-2.656.167-.429.414-1.055.644-1.517a10.098 10.098 0 0 1-.052-1.086c0-1.331.282-2.499 1.132-3.368.397-.406.89-.717 1.474-.952C7.255 2.937 9.248 1.98 11.978 1.98c2.731 0 4.767.957 6.166 2.093.584.235 1.077.546 1.474.952.85.869 1.132 2.037 1.132 3.368 0 .368-.014.733-.052 1.086.23.462.477 1.088.644 1.517 1.258.364 2.233 1.721 2.605 2.656a.841.841 0 0 1 .053.22v2.869a.641.641 0 0 1-.078.256Zm-11.75-5.992h-.344a4.359 4.359 0 0 1-.355.508c-.77.947-1.918 1.492-3.508 1.492-1.725 0-2.989-.359-3.782-1.259a2.137 2.137 0 0 1-.085-.104L4 11.746v6.585c1.435.779 4.514 2.179 8 2.179 3.486 0 6.565-1.4 8-2.179v-6.585l-.098-.104s-.033.045-.085.104c-.793.9-2.057 1.259-3.782 1.259-1.59 0-2.738-.545-3.508-1.492a4.359 4.359 0 0 1-.355-.508Zm2.328 3.25c.549 0 1 .451 1 1v2c0 .549-.451 1-1 1-.549 0-1-.451-1-1v-2c0-.549.451-1 1-1Zm-5 0c.549 0 1 .451 1 1v2c0 .549-.451 1-1 1-.549 0-1-.451-1-1v-2c0-.549.451-1 1-1Zm3.313-6.185c.136 1.057.403 1.913.878 2.497.442.544 1.134.938 2.344.938 1.573 0 2.292-.337 2.657-.751.384-.435.558-1.15.558-2.361 0-1.14-.243-1.847-.705-2.319-.477-.488-1.319-.862-2.824-1.025-1.487-.161-2.192.138-2.533.529-.269.307-.437.808-.438 1.578v.021c0 .265.021.562.063.893Zm-1.626 0c.042-.331.063-.628.063-.894v-.02c-.001-.77-.169-1.271-.438-1.578-.341-.391-1.046-.69-2.533-.529-1.505.163-2.347.537-2.824 1.025-.462.472-.705 1.179-.705 2.319 0 1.211.175 1.926.558 2.361.365.414 1.084.751 2.657.751 1.21 0 1.902-.394 2.344-.938.475-.584.742-1.44.878-2.497Z"/></svg>',
+  claude: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"/></svg>'
+};
+function engineBadge(m) {
+  var eng = String(m.engine || "").toLowerCase();
+  var kind = eng.indexOf("copilot") >= 0 ? "copilot"
+           : eng.indexOf("claude") >= 0 ? "claude" : "";
+  if (!kind) return null;
+  var b = el("div", "engine-badge engine-" + kind);
+  b.setAttribute("aria-hidden", "true");
+  b.title = kind === "copilot" ? "Copilot" : "Claude";
+  b.innerHTML = ENGINE_SVG[kind];
+  return b;
 }
 
 function btn(label, cls, onClick) {
@@ -185,6 +331,11 @@ function cardNode(m) {
   // animation onto this card (showCardBusy).
   if (m.id != null) card.setAttribute("data-mid", String(m.id));
 
+  // Engine watermark (Copilot / Claude) in the top-right corner. Decorative,
+  // semi-transparent; null when the engine is unknown.
+  var badge = engineBadge(m);
+  if (badge) card.appendChild(badge);
+
   var issue = m.issue ? "#" + m.issue : "—";
   card.appendChild(el("div", "no", issue + " · lcars:" + m.stage));
   card.appendChild(el("div", "ttl", m.title || m.id));
@@ -220,6 +371,33 @@ function cardNode(m) {
       "◐ PAUSING — stopping at next safe boundary"));
   } else if (rs === "paused") {
     card.appendChild(el("div", "no pause-status", "⏸ paused"));
+  }
+
+  // S76 / BUG-039: a verify-stage mission may be RECONCILING with the updated
+  // base — merging main in, re-verifying the merged branch, or self-healing via
+  // its linked bug children — and this is now the normal case WHILE its PR is
+  // open. Surface the state as a note whenever a verify mission carries a live
+  // reconcileStatus (NO !m.prUrl gate), so the card reads as actively healing
+  // (or awaiting a design call when escalated). No `lcars …` CLI text (UX-33).
+  if (m.stage === "verify" && m.reconcileStatus) {
+    // BUG-067: pick the chrome by sub-state — a merge-failed outcome reads as an
+    // ERROR (attention), the awaiting-reapprove / escalated gates as a persistent
+    // "needs you" call, the in-flight sub-states (merging/retesting/resolving/
+    // healing) as a calm "self-healing…" progress note.
+    var rs2 = m.reconcileStatus;
+    var rclass = rs2 === "merge-failed"
+        ? "no reconcile-status failed"
+      : (rs2 === "escalated" || rs2 === "awaiting-reapprove")
+        ? "no reconcile-status escalated"
+        : "no reconcile-status healing";
+    card.appendChild(el("div", rclass, reconcileNote(rs2)));
+    // BUG-067: when the engine persisted a human-readable summary (reconcileNote),
+    // show it verbatim under the status line so the captain reads WHY (the green
+    // re-test count for a reapprove gate, or the failure reason for merge-failed)
+    // — the field that was never surfaced before (the silent revert bug).
+    if (m.reconcileNote) {
+      card.appendChild(el("div", "reconcile-detail", m.reconcileNote));
+    }
   }
 
   if (m.progress) {
@@ -258,8 +436,56 @@ function cardNode(m) {
    gets a themed client-side pulse so a long silent stage never reads as stuck. */
 function cardControls(m) {
   var ctrl = el("div", "card-ctrl");
+  // BUG-067: the reapprove gate. The heal converged green and the engine STOPPED
+  // here (awaiting-human, reconcileStatus == awaiting-reapprove) instead of
+  // auto-merging. Render a CLEAR, PERSISTENT "Reapprove ▸" action so the captain
+  // ships the reconciled, re-tested tip — checked BEFORE the generic awaiting
+  // branch (which would mislabel it "Answer ▸" and open the respond dialog).
+  if (isReconcileAwaitingReapprove(m)) {
+    // BUG-078: the per-click button.disabled (BUG-070) is lost on the next
+    // poll/SSE repaint (a fresh button is built), and a repaint that still serves
+    // awaiting-reapprove (the merge hasn't finished) would re-render the LIVE
+    // Reapprove — a busy → Reapprove → merged flicker. Keep the optimistic merge
+    // flag STICKY across those intermediate repaints: clear it only on a TERMINAL
+    // change (clearMergingOnState clears on done/merge-failed, NOT on a still-
+    // awaiting-reapprove repaint), and while it survives render the disabled busy
+    // affordance so the button stays "Merge heal in progress…" from click to the
+    // terminal state. Re-uses the shared MERGING set (no parallel mechanism).
+    clearMergingOnState(m);
+    if (isMerging(m.id)) { ctrl.appendChild(mergeBusyBtn()); return ctrl; }
+    // BUG-070: capture the button so the click disables it immediately (mirror
+    // the Merge button, BUG-044) — no double-fire of the reapprove dispatch.
+    var reBtn = applyWriteState(btn("✓ Reapprove ▸", "go", function () {
+      doReapprove(m.id, ctrl, reBtn, m.reconcileStatus);
+    }));
+    ctrl.appendChild(reBtn);
+    return ctrl;
+  }
+  // BUG-067: the merge FAILED (push/merge rejected — surfaced, not silent). It is
+  // an attention state, not a routine gate: offer a retry of the merge-only path
+  // (Reapprove) so the captain can re-attempt after fixing the cause, styled as a
+  // danger/attention affordance carrying the reason (reconcileNote, on the card).
+  if (isReconcileMergeFailed(m)) {
+    // BUG-078: keep the Retry-merge busy state sticky too — once a retried merge
+    // is dispatched (markMerging), a repaint that still serves merge-failed must
+    // not revert to the live Retry button until a terminal change. (Reaching
+    // merge-failed is itself terminal for an awaiting-reapprove dispatch, so the
+    // flag is already cleared by the time a FRESH merge-failed gate renders.)
+    clearMergingOnState(m);
+    if (isMerging(m.id)) { ctrl.appendChild(mergeBusyBtn()); return ctrl; }
+    // BUG-070: same optimistic disable as the Reapprove gate above.
+    var retryBtn = applyWriteState(btn("↻ Retry merge ▸", "danger", function () {
+      doReapprove(m.id, ctrl, retryBtn, m.reconcileStatus);
+    }));
+    ctrl.appendChild(retryBtn);
+    return ctrl;
+  }
   if (m.awaiting) {
-    ctrl.appendChild(applyWriteState(btn("Answer ▸", "danger", function () {
+    // BUG-042: an escalated reconcile is an awaiting-human DESIGN CALL, not a
+    // "Review PR". Label its action so it reads as a design decision (the dialog
+    // — openRespond/openVerify gate — presents the question text). Suppress Merge.
+    var alabel = isReconcileEscalated(m) ? "◆ Make the call ▸" : "Answer ▸";
+    ctrl.appendChild(applyWriteState(btn(alabel, "danger", function () {
       openRespond(m.id);
     })));
     return ctrl;
@@ -269,7 +495,23 @@ function cardControls(m) {
   }
   var rs = runState(m);
   if (m.stage === "verify") {
-    ctrl.appendChild(applyWriteState(btn("✓ Verify ▸", "go", function () {
+    // BUG-044: drop the optimistic merging flag once the real state has arrived.
+    clearMergingOnState(m);
+    // BUG-049: the verify-affordance decision is SHARED with the detail header
+    // (verifyAffordance) so both gate identically during a reconcile/merge/heal.
+    // BUG-035: a logged-bug batch in flight → disabled "resolving N…", no
+    // openVerify. BUG-039/044: a self-heal (incl. an optimistic isMerging) →
+    // disabled "Merge heal in progress…", no openVerify. Otherwise the live
+    // Verify/Review PR action.
+    var aff = verifyAffordance(m);
+    if (aff.kind !== "action") {
+      var gated = btn(aff.label, aff.cls, null);
+      gated.disabled = !!aff.disabled;
+      if (aff.title) gated.title = aff.title;
+      ctrl.appendChild(gated);
+      return ctrl;
+    }
+    ctrl.appendChild(applyWriteState(btn(aff.label, aff.cls, function () {
       openVerify(m.id);
     })));
   } else if (rs === "paused") {
@@ -303,9 +545,13 @@ function cardControls(m) {
       pause.title = "Engaging the driver…";
     }
     ctrl.appendChild(pause);
-  } else if (isRunningStage(m.stage)) {
-    // an in-flight headless stage with no running flag yet — offer Pause, never
-    // Start (so Start can't be double-fired).
+  } else if (isRunningStage(m.stage) && m.dispatched) {
+    // BUG-062: an in-flight headless stage with no live running flag yet — offer
+    // Pause, never Start (so Start can't be double-fired). Gated on `dispatched`
+    // (the run was actually launched: events on disk OR a live driver lock).
+    // Without that gate a logged bug fast-tracked to plan but FILED-but-HELD at
+    // estimate-review (only estimate.json, no events) keyed off the STAGE alone
+    // and wrongly showed Pause; it must show Start until the run is dispatched.
     ctrl.appendChild(applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/pause", {},
         ctrl, "Holding station…");
@@ -673,12 +919,19 @@ function renderAlignConsole(state) {
   var sid = state.sessionId;
   var picked = { val: null };
   var asked = 0;
+  // BUG-015: is the question currently on screen the grill's CLOSING turn (the
+  // explicit "anything else before I file?" check-in)? When it is, answering it
+  // confirms filing — the server then runs the cold opus estimator + file.sh
+  // (~1–2 min) inside that POST — so the in-flight spinner must read as
+  // "estimating & creating mission", NOT the between-questions grill copy.
+  var closing = { val: false };
 
   function paintPRD(md) { renderPrdDoc(prd, md || ""); }
 
   function paintQuestion(st) {
     asked += 1;
     var q = st.question || {};
+    closing.val = !!q.closing;
     count.textContent = "Question " + asked;
     qtext.textContent = q.text || "What would you like to refine?";
     choices.innerHTML = ""; picked.val = null; free.value = ""; err.hidden = true;
@@ -715,15 +968,24 @@ function renderAlignConsole(state) {
   }
 
   submit.onclick = function () {
+    // BUG-073: an EMPTY answer is allowed — it means "nothing to add / accept
+    // the recommendation / proceed". Do NOT block on a blank box; the server
+    // treats an empty answer as a proceed signal (and the grill's surfaced
+    // recommendation stands). Typing an answer still overrides the recommendation
+    // exactly as before.
     var answer = free.value.trim() || picked.val || "";
-    if (!answer) { showErr(err, "Pick the recommendation or type an answer."); return; }
     submit.disabled = true; submit.textContent = "Working…";
     err.hidden = true;
     // UX-2: the worker turn (and, on the final answer, the file.sh hand-off)
     // runs server-side within this POST. Show the themed working indicator the
     // whole time; it clears on the next question, on done, or on error.
-    busy.querySelector(".lcars-working-label").textContent =
-      "Formulating the next inquiry…";
+    // BUG-015: when the captain is answering the CLOSING turn, this POST runs the
+    // slow cold-opus estimate + mission creation — show a DISTINCT loading copy so
+    // it reads as progress ("estimating & creating mission"), not a stuck grill
+    // spinner. Otherwise it's a normal between-questions grill turn.
+    busy.querySelector(".lcars-working-label").textContent = closing.val
+      ? "Estimating cost & creating mission…"
+      : "Formulating the next inquiry…";
     busy.hidden = false;
     postWrite("/api/align/" + enc(sid) + "/answer", { answer: answer },
       function (st) {
@@ -918,6 +1180,30 @@ function isReverifyGate(mi) {
   return reverify && loggedBug;
 }
 
+/* BUG-027: the "Why you're seeing this" copy is TYPE-AWARE — a regression gate
+   is NOT a strategic/scope call, so it must not read as one. Choose the wording
+   from the harness's escalationType ("regression" | "scope" | "cap"); an unknown
+   / absent type degrades to the generic copy (pre-harness behaviour). */
+function whyCopyForGate(type) {
+  switch (type) {
+    case "regression":
+      return "Why you’re seeing this — two of your changes conflict: a later " +
+        "fix re-broke a test an earlier change locked in. Tell the harness how " +
+        "to reconcile them (or send the mission back to re-fix), and it resumes " +
+        "from where it stopped.";
+    case "cap":
+      return "Why you’re seeing this — the harness hit its automatic-retry limit " +
+        "on this step and needs your call before it tries again. Answer below " +
+        "and the mission resumes from where it stopped.";
+    case "scope":
+      return "Why you’re seeing this — a stage escalated a strategic/scope call. " +
+        "Answer below and the mission resumes from where it stopped.";
+    default:
+      return "Why you’re seeing this — the harness needs your decision to " +
+        "proceed. Answer below and the mission resumes from where it stopped.";
+  }
+}
+
 /* ════════════════ SCREEN: RESPOND GATE (#respond) ════════════════ */
 function openRespond(id) {
   fetchMission(id, function (mi) {
@@ -925,32 +1211,73 @@ function openRespond(id) {
     // accept / send-back action buttons mapped to the existing endpoints.
     if (isReverifyGate(mi)) { openReverifyGate(mi); return; }
 
-    var m = modal("● Awaiting You — Mission " + idLabel(mi) +
-      " · " + (mi.stage || "").toUpperCase(), { wide: true, headClass: "red" });
+    // BUG-042: an escalated reconcile raised a player-experience DESIGN QUESTION,
+    // not an error gate. Title it as a design call. The body still renders the
+    // question text (mi.gate.humanSummary || mi.question) with a free-form answer
+    // that posts to /respond — the engine consumes it on the next reconcile pass.
+    var design = isReconcileEscalated(mi);
+    var m = design
+      ? modal("◆ Your Design Call — Mission " + idLabel(mi),
+              { wide: true, headClass: "teal" })
+      : modal("● Awaiting You — Mission " + idLabel(mi) +
+              " · " + (mi.stage || "").toUpperCase(),
+              { wide: true, headClass: "red" });
+
+    // BUG-027: the harness now writes a legible, type-aware gate envelope into
+    // pending.json, surfaced on the card as `mi.gate` ({humanSummary,
+    // escalationType, technicalDetail}). Render:
+    //   • humanSummary as the HEADLINE (plain language, GitHub issue numbers —
+    //     never raw t-XXX);
+    //   • the "Why you're seeing this" copy chosen from escalationType (a
+    //     regression gate must NOT read as a strategic/scope call);
+    //   • technicalDetail behind a collapsible "Technical details" disclosure,
+    //     NOT in the headline.
+    // Degrade gracefully when the fields are absent (pre-harness): fall back to
+    // the sanitized question text + the generic scope copy, exactly as before.
+    var gate = mi.gate || {};
+    var headline = sanitizeGateText(gate.humanSummary || mi.question) ||
+      "The harness needs your decision to proceed.";
 
     var q = el("div", "qtext"); q.style.fontSize = "18px";
-    // UX-33: never parrot raw `lcars <verb>` CLI syntax in the GUI — sanitize the
-    // gate question before display.
-    q.textContent = sanitizeGateText(mi.question) ||
-      "The harness needs your decision to proceed.";
+    q.textContent = headline;
     m.body.appendChild(q);
-    m.body.appendChild(noteEl(
-      "Why you’re seeing this — a stage escalated a strategic/scope call. " +
-      "Answer below and the mission resumes from where it stopped."));
+    // BUG-042: a reconcile design call gets player-experience framing, not the
+    // generic/error "why you're seeing this" copy.
+    m.body.appendChild(noteEl(design
+      ? "Reconciling with main surfaced a design choice only you can make. " +
+        "Decide how it should behave for the player, answer below, and the heal " +
+        "continues on the next pass."
+      : whyCopyForGate(gate.escalationType),
+      design ? "amber" : undefined));
+
+    // technicalDetail → collapsible disclosure (raw reason + command + any
+    // internal ids). Only shown when the harness supplied it.
+    if (gate.technicalDetail) {
+      var det = el("details", "gate-tech");
+      var sum = el("summary"); sum.textContent = "Technical details";
+      det.appendChild(sum);
+      var pre = el("pre", "gate-tech-body");
+      pre.textContent = String(gate.technicalDetail);
+      det.appendChild(pre);
+      m.body.appendChild(det);
+    }
 
     var ans = el("textarea"); ans.rows = 3;
-    ans.placeholder = "Answer in your own words…";
-    m.body.appendChild(field("Your answer", ans));
+    ans.placeholder = design
+      ? "Describe how it should behave for the player…"
+      : "Answer in your own words…";
+    m.body.appendChild(field(design ? "Your design call" : "Your answer", ans));
 
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
-    var go = applyWriteState(btn("Submit & Resume ▸", "go big", function () {
+    var goLabel = design ? "◆ Submit Decision ▸" : "Submit & Resume ▸";
+    var go = applyWriteState(btn(goLabel, "go big", function () {
       var text = ans.value.trim();
       if (!text) { showErr(err, "Type an answer first."); return; }
       go.disabled = true; go.textContent = "Submitting…";
       postWrite("/api/mission/" + enc(id) + "/respond", { answer: text },
         function () { closeOverlay(); },
-        function (msg) { go.disabled = false; go.textContent = "Submit & Resume ▸"; showErr(err, msg); });
+        function (msg) { go.disabled = false; go.textContent = goLabel; showErr(err, msg); });
     }));
     m.foot.appendChild(go);
     showOverlay(m.wrap);
@@ -1050,12 +1377,59 @@ function openVerify(id) {
       m.body.appendChild(buildSummary(mi));
     }
 
+    // BUG-030: a Mission-Log bug child (mi.parentMission set) has NO PR concept —
+    // its fix rides the PARENT's PR. The Verify dialog for such a bug must show NO
+    // PR affordance at all: no "Merge PR" button and no "re-run to open a PR" copy.
+    // It offers exactly two actions — "✓ Verify" (accept the fix, which folds the
+    // bug to Done via the resolve-logs complete path) and "Send Back". We branch
+    // the whole PR-row + footer render on whether the mission has a parent.
+    var isBugChild = !!mi.parentMission;
+
+    // S75: Verify auto-opens the PR, so a (top-level) verify card is normally "in
+    // review" with a recorded prUrl. Show the PR link + the in-review state, and
+    // make the primary action MERGE the PR (not "open" it — that already
+    // happened). Before a PR exists (shouldn't normally happen) degrade to a plain
+    // note. SKIPPED entirely for a bug child (no PR concept).
+    var inReview = !!(mi.prUrl && (mi.review === "open" || mi.review == null));
+    if (isBugChild) {
+      var foldNote = el("div", "dim");
+      foldNote.style.margin = "14px 0";
+      foldNote.textContent = "This fix rides the parent mission’s pull request — " +
+        "there is no separate PR for this bug. Verifying folds it to Done.";
+      m.body.appendChild(foldNote);
+    } else if (mi.prUrl) {
+      var prRow = el("div", "pr-review-row");
+      prRow.style.cssText = "margin:14px 0;padding:10px;border-radius:6px;background:rgba(255,153,0,.08)";
+      var st = el("span", "dim");
+      // BUG-042: an escalated reconcile is an awaiting-human design call, NOT
+      // "in review — Review PR". Read the PR row as healing/awaiting in that case.
+      st.textContent = isReconcileEscalated(mi)
+        ? "Awaiting your design call — PR · "
+        : isReconcileHealing(mi)
+          ? "Merge heal in progress — PR · "
+          : "In review — PR open · ";
+      var link = el("a"); link.href = mi.prUrl; link.target = "_blank";
+      // BUG-036: never render a bare "PR #". The adapter populates prNumber
+      // (deriving from prUrl when absent); fall back to deriving it here too.
+      link.rel = "noopener";
+      link.textContent = "PR #" + (mi.prNumber || prNumberFromUrl(mi.prUrl) || "");
+      prRow.appendChild(st); prRow.appendChild(link);
+      m.body.appendChild(prRow);
+    } else {
+      var noPr = el("div", "dim");
+      noPr.style.margin = "14px 0";
+      noPr.textContent = "No PR open yet — re-run the mission so Verify opens it.";
+      m.body.appendChild(noPr);
+    }
+
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
     // Send-back reveals a feedback field, then dispatches the OTHER decision.
+    // S75: send-back now also closes the open PR (handled by feedback.sh).
     var fbWrap = el("div"); fbWrap.hidden = true;
     var fb = el("textarea"); fb.rows = 2;
-    fb.placeholder = "What needs to change? This loops the mission back to Align.";
+    fb.placeholder = "What needs to change? This loops the mission back to Align"
+      + (mi.prUrl ? " and closes the PR." : ".");
     fbWrap.appendChild(field("Feedback for send-back", fb));
     m.body.appendChild(fbWrap);
 
@@ -1069,14 +1443,70 @@ function openVerify(id) {
         function () { closeOverlay(); },
         function (msg) { sendBack.disabled = false; showErr(err, msg); });
     }));
-    var approve = applyWriteState(btn("✓ Approve & Open PR", "go big", function () {
-      approve.disabled = true; approve.textContent = "Opening PR…";
+    // BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — no merge is possible.
+    // Replace the primary action with a disabled "Merge heal in progress…"
+    // affordance and drop Send Back (the heal owns the branch right now).
+    // BUG-044: an OPTIMISTIC merge (clicked, real reconcileStatus not yet here)
+    // gates the same way so a re-opened dialog can't fire a second approve.
+    if (isReconcileHealing(mi) || isMerging(mi.id)) {
+      m.body.appendChild(noteEl(
+        "A self-heal is reconciling this mission with main — re-testing and "
+        + "healing the merged branch to green. Merge becomes available once it "
+        + "settles. Nothing to do right now.", "amber"));
+      var healing = btn("◐ Merge heal in progress…", "warn", null);
+      healing.disabled = true;
+      healing.title = "Self-healing the merge against main — Merge is unavailable.";
+      m.foot.appendChild(healing);
+      showOverlay(m.wrap);
+      return;
+    }
+    // BUG-035: a parent with a resolve-logs batch in flight (linked non-done bug
+    // children not all at verify) must SUPPRESS both Merge and Accept until the
+    // consolidated re-verify gate is up. Show a non-actionable "resolving N
+    // logged bug(s)…" state.
+    if (!isBugChild && isResolvingLocked(mi)) {
+      var pend = resolvingChildren(mi.id);
+      m.body.appendChild(noteEl(
+        "Logged-bug fixes are in flight against this mission (" + pend.length
+        + " not yet folded). Merge and Accept are unavailable until the "
+        + "consolidated re-verify gate is ready.", "amber"));
+      var lock = btn("◐ resolving " + pend.length + " logged bug"
+        + (pend.length === 1 ? "" : "s") + "…", "warn", null);
+      lock.disabled = true;
+      lock.title = "Resolve-logs batch in flight — re-verify gate not yet ready.";
+      m.foot.appendChild(lock);
+      showOverlay(m.wrap);
+      return;
+    }
+    // The primary action.
+    //   • bug child (BUG-030): "✓ Verify" — accept the fix; the backend routes
+    //     the approve decision to the resolve-logs fold (no PR merge). Always
+    //     enabled (no PR gating — there is no PR to wait on).
+    //   • top-level: "✓ Merge PR" — merge the open PR (the "ship it"). Disabled
+    //     gracefully when no PR is open yet.
+    var mergeLabel = isBugChild ? "✓ Verify" : "✓ Merge PR";
+    var busyLabel = isBugChild ? "Verifying…" : "Merging PR…";
+    var merge = applyWriteState(btn(mergeLabel, "go big", function () {
+      // BUG-040: the Merge dispatch is fire-and-forget server-side and returns
+      // promptly — close the dialog on a successful dispatch and let the board
+      // (SSE/refresh) reflect the evolving state (reconciling → escalated → done).
+      // BUG-044: OPTIMISTICALLY mark the card busy on the very first click so the
+      // card/dialog become non-clickable immediately (before the real
+      // reconcileStatus arrives), preventing a second approve → concurrent
+      // reconcile. Cleared when the real state lands (clearMergingOnState) or by
+      // the safety timeout. On a dispatch ERROR we clear it so the card re-arms.
+      markMerging(id);
+      merge.disabled = true; merge.textContent = busyLabel;
       postWrite("/api/mission/" + enc(id) + "/verify", { decision: "approve" },
         function () { closeOverlay(); },
-        function (msg) { approve.disabled = false; approve.textContent = "✓ Approve & Open PR"; showErr(err, msg); });
+        function (msg) { clearMerging(id); merge.disabled = false; merge.textContent = mergeLabel; showErr(err, msg); });
     }));
+    if (!isBugChild && !inReview) {
+      merge.disabled = true;
+      merge.title = "No open PR to merge yet — re-run the mission so Verify opens one.";
+    }
     m.foot.appendChild(sendBack);
-    m.foot.appendChild(approve);
+    m.foot.appendChild(merge);
     showOverlay(m.wrap);
   });
 }
@@ -1109,6 +1539,8 @@ function openLog(id) {
 
     m.foot.appendChild(btn("Cancel", null, closeOverlay));
     var prev = applyWriteState(btn("Preview", null, function () {
+      // BUG-024: ignore re-clicks while the split/estimate request is pending.
+      if (prev.disabled) { return; }
       prev.disabled = true; prev.textContent = "Splitting…";
       err.hidden = true;
       // UX-25: themed working copy for the split worker turn.
@@ -1136,21 +1568,30 @@ function openLog(id) {
           prev.disabled = false; prev.textContent = "Preview"; showErr(err, msg);
         });
     }));
-    // S74: the captain reviews each bug's ESTIMATE (cost + difficulty pills +
-    // suggested model) and can STEER the model before running fixes. We FILE the
-    // authored bugs first (so log.sh runs the estimator + persists each estimate),
-    // re-render the panel with the per-bug estimate + the now-applied override,
-    // then "Run Fixes" resolves the already-filed batch.
+    // S74 / BUG-059: the captain reviews each bug's ESTIMATE (cost + difficulty
+    // pills + suggested model) and can STEER the model BEFORE anything runs. We
+    // FILE the authored bugs first (so log.sh runs the estimator + persists each
+    // estimate.json) and re-render the panel with the per-bug estimate + override
+    // box — then we HOLD. Filing NEVER auto-proceeds into the fix; only the
+    // explicit "Go" (revealed after File) resolves the already-filed batch.
     var file = applyWriteState(btn("File", null, function () {
+      // BUG-024: the File/preview control kicks off the async estimate (log.sh
+      // runs the estimator on every child). It MUST NOT be re-clickable while the
+      // request is in flight — a second click re-triggers the estimate (duplicate
+      // previews / a race / wasted worker spend). Ignore clicks while pending,
+      // disable + show a loading state, and re-enable only on success OR error.
+      if (file.disabled) { return; }   // already pending — ignore the click
       err.hidden = true;
       busy.querySelector(".lcars-working-label").textContent =
         "Filing bugs and estimating each fix…";
       busy.hidden = false;
       file.disabled = true;
+      var fileLabel = file.textContent;
+      file.textContent = "Filing…";
       postWrite("/api/mission/" + enc(id) + "/log/file",
         { prds: authored.prds || [], overrides: authored.overrides || [] },
         function (state) {
-          busy.hidden = true; file.disabled = false;
+          busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
           authored.prds = null;        // bugs are filed now — Run only resolves
           authored.filed = true;
           file.hidden = true;          // filing is done
@@ -1163,23 +1604,31 @@ function openLog(id) {
           renderLogPreview(preview, state, idLabel(mi), authored);
         },
         function (msg) {
-          busy.hidden = true; file.disabled = false; showErr(err, msg);
+          busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
+          showErr(err, msg);
         });
     }));
-    var run = applyWriteState(btn("Run Fixes ▸", "warn big", function () {
+    var run = applyWriteState(btn("Go ▸", "go big", function () {
+      // BUG-059 — the explicit human GO. The bugs are ALWAYS filed first (the
+      // File step computed + showed each estimate and HELD); this button is the
+      // captain's confirm-after-review, so it only RESOLVES the already-filed
+      // batch. We never file+run in one click here — filing must hold for the
+      // cost review (the combined path is the daemon's confirm:true power path,
+      // not the UI default). If the bugs somehow aren't filed yet, refuse rather
+      // than auto-proceed.
+      if (!authored.filed) {
+        showErr(err, "Click File first to estimate each fix, then Go to run.");
+        return;
+      }
+      err.hidden = true;
       // BUG-G (front-end half): the backend dispatches the fixes fire-and-forget
       // and returns promptly, so close the dialog IMMEDIATELY on dispatch
-      // (optimistic — the same close-on-dispatch pattern as the Start modal). The
-      // bugs are already filed (File for Review), so this only resolves them.
-      err.hidden = true;
+      // (optimistic — the same close-on-dispatch pattern as the Start modal).
       // S74 follow-up CHANGE 4: the per-bug override box lives in the post-File
-      // breakdown, so even on the resolve-already-filed path we send the edited
+      // breakdown, so on the resolve-already-filed path we send the edited
       // overrides — the backend (_apply_child_overrides) persists each onto its
       // already-filed child's state.json before dispatching the batch.
-      var payload = authored.filed
-        ? { overrides: authored.overrides || [] }       // resolve already-filed
-        : { prds: authored.prds || [],                  // file + resolve in one go
-            overrides: authored.overrides || [] };
+      var payload = { overrides: authored.overrides || [] };  // resolve filed
       closeOverlay();
       setStatus("Fixes dispatched — child bug missions are being driven…");
       postWrite("/api/mission/" + enc(id) + "/log/run", payload,
@@ -1348,10 +1797,51 @@ function renderDetail(mi) {
     actions.appendChild(gh);
   }
   var mrs = runState(mi); // mirror the card's derived lifecycle (UX-17/20/21).
-  if (mi.awaiting) {
+  // BUG-067: the reapprove / merge-failed gates carry awaiting=true but are NOT a
+  // generic "Answer ▸" respond gate — they ship via the merge-only Reapprove
+  // path. Intercept them BEFORE the awaiting branch so the header offers the
+  // right action (and clears the optimistic merge flag once state moves).
+  if (isReconcileAwaitingReapprove(mi) || isReconcileMergeFailed(mi)) {
+    // BUG-078: clear the optimistic merge flag only on a terminal change, then —
+    // if a dispatched reapprove/retry is still in flight (isMerging) — render the
+    // SAME disabled busy affordance the card shows, sticky across repaints, so the
+    // header button never reverts to the live Reapprove mid-merge (mirrors card).
+    clearMergingOnState(mi);
+    var raff = verifyAffordance(mi);
+    if (raff.kind !== "reapprove" && raff.kind !== "merge-failed") {
+      var rGated = btn(raff.label, raff.cls, null);
+      rGated.disabled = !!raff.disabled;
+      if (raff.title) rGated.title = raff.title;
+      actions.appendChild(rGated);
+    } else {
+      // BUG-070: disable the header Reapprove button on the first click (mirror the
+      // Merge button, BUG-044) before closing the overlay, so a fast double-click
+      // can't double-fire the reapprove dispatch.
+      var rBtn = applyWriteState(btn(raff.label, raff.cls, function () {
+        doReapprove(mi.id, null, rBtn, mi.reconcileStatus); closeOverlay();
+      }));
+      actions.appendChild(rBtn);
+    }
+  } else if (mi.awaiting) {
     actions.appendChild(applyWriteState(btn("Answer ▸", "danger", function () { openRespond(mi.id); })));
   } else if (mi.stage === "verify") {
-    actions.appendChild(applyWriteState(btn("✓ Verify", "go", function () { openVerify(mi.id); })));
+    // BUG-049: the header verify action must gate IDENTICALLY to the card — a
+    // plain "✓ Verify" here while a mission is mid-reconcile/heal/resolving (the
+    // dialog it opens IS gated, but the affordance shouldn't show). Use the SAME
+    // shared verifyAffordance decision the card control uses (DRY): a gated kind
+    // renders a disabled/relabelled button (no openVerify); only the live action
+    // wires Verify/Review PR. clearMergingOnState mirrors the card so an
+    // optimistic merge flag drops once the real reconcile state arrives.
+    clearMergingOnState(mi);
+    var daff = verifyAffordance(mi);
+    if (daff.kind !== "action") {
+      var dgated = btn(daff.label, daff.cls, null);
+      dgated.disabled = !!daff.disabled;
+      if (daff.title) dgated.title = daff.title;
+      actions.appendChild(dgated);
+    } else {
+      actions.appendChild(applyWriteState(btn(daff.label, daff.cls, function () { openVerify(mi.id); })));
+    }
   } else if (mi.stage === "done") {
     /* terminal — no primary action */
   } else if (mrs === "paused") {
@@ -1364,10 +1854,13 @@ function renderDetail(mi) {
     dpausing.disabled = true;
     dpausing.title = "Pause requested — stopping at the next safe boundary.";
     actions.appendChild(dpausing);
-  } else if (mrs === "running" || isRunningStage(mi.stage)) {
+  } else if (mrs === "running" || (isRunningStage(mi.stage) && mi.dispatched)) {
     // UX-13: mirror the card — a live drive overrides Start → Pause so Start
     // can't be double-fired from the detail header either. UX-17: while
     // optimistically starting the Pause stays disabled until running flips true.
+    // BUG-062: the stage-based fallback is gated on `dispatched` (the run was
+    // actually launched) so a filed-but-held mission (estimate-only, no events)
+    // shows Start, not Pause — identical to the card control.
     var dpause = applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCard("/api/mission/" + enc(mi.id) + "/pause", {}); closeOverlay();
     }));
@@ -1380,7 +1873,11 @@ function renderDetail(mi) {
     actions.appendChild(applyWriteState(btn("▶ Start", "go", function () { openLaunch(mi.id); })));
   }
   // Mission Log is available at every stage (not on terminal Done missions).
-  if (mi.stage !== "done") {
+  // BUG-046: a logged-bug CHILD (type=="bug" && parentMission set, the isLogBug
+  // predicate that gates the rest of the logged-bug chrome) is itself a bug entry
+  // — you cannot log bugs AGAINST a logged bug. So the button renders for
+  // top-level missions only, never for a bug child.
+  if (mi.stage !== "done" && !isLogBug(mi)) {
     actions.appendChild(applyWriteState(btn("Mission Log", null, function () { openLog(mi.id); })));
   }
   row1.appendChild(actions);
@@ -1542,22 +2039,47 @@ function activeRuntimeNode(mi, opts) {
     if (!isInFlight(mi)) return null;
     base = 0;
   }
+  // BUG-047: `activeSecondsAt` is the SERVER wall-clock (seconds) at which `base`
+  // (activeSeconds) was computed. The live display = base + (now - activeSecondsAt)
+  // while running — so it is correct on EVERY render/re-open, not re-based from the
+  // stale snapshot (which equals the total only up to the last stage boundary, so a
+  // close→re-open mid-stage used to reset the clock). Client/server share the host
+  // clock, so this is accurate to a few seconds. Absent ⇒ fall back to render-time
+  // anchor (old behaviour) so a pre-anchor shape still ticks.
+  var anchorAt = mi && typeof mi.activeSecondsAt === "number" ? mi.activeSecondsAt : null;
+  function liveSeconds() {
+    // FREEZE when not running (awaiting/paused/queued/verify/done) — shows the
+    // frozen total, preserving "excludes time awaiting you" semantics: the
+    // in-flight delta only advances while actively running.
+    if (!isInFlight(mi)) return base;
+    var nowSec = Date.now() / 1000;
+    if (anchorAt != null) {
+      return base + Math.max(0, Math.floor(nowSec - anchorAt));
+    }
+    return base; // no anchor → freeze at base (the tick below handles fallback).
+  }
   var node = el("div", "active-runtime");
   node.title = "active runtime — excludes time awaiting you";
-  var val = el("span", "ar-val", "Active " + fmtDuration(base));
+  var val = el("span", "ar-val", "Active " + fmtDuration(liveSeconds()));
   node.appendChild(val);
   if (!opts.compact) {
     node.appendChild(el("span", "ar-hint", "excludes time awaiting you"));
   }
-  // UX-32: live tick only while running. Anchor to the wall clock at render time
-  // so each second adds to the authoritative server base; the next board refresh
-  // rebuilds this node (snap to server). Frozen (no interval) when not running.
+  // UX-32/BUG-047: live tick only while running. Recompute from the SERVER anchor
+  // every tick (and on every render this node is rebuilt, re-reading the anchor),
+  // so a re-open shows true elapsed from the anchor rather than re-basing from a
+  // stale snapshot. Frozen (no interval) when not running.
   if (isInFlight(mi)) {
-    var anchor = Date.now();
+    var fallbackAnchor = Date.now();
     var timer = setInterval(function () {
       if (!document.body.contains(val)) { clearInterval(timer); return; }
-      var elapsed = Math.floor((Date.now() - anchor) / 1000);
-      val.textContent = "Active " + fmtDuration(base + elapsed);
+      var secs;
+      if (anchorAt != null) {
+        secs = liveSeconds();
+      } else {
+        secs = base + Math.floor((Date.now() - fallbackAnchor) / 1000);
+      }
+      val.textContent = "Active " + fmtDuration(secs);
     }, 1000);
     DETAIL_TIMERS.push(timer);
   }
@@ -1625,6 +2147,22 @@ function prdPane(mi) {
   label.appendChild(b);
   pane.appendChild(label);
   pane.appendChild(criteriaChecklist(mi));
+  // S76: a logged-bug child (incl. a self-authored reconcile bug) carries no
+  // Acceptance-Criteria section — its detailed PRD (Conflict/failure summary,
+  // Root cause, Intended fix, …) IS the auditable record, so render the full PRD
+  // body for a bug child when the detail shape carries it. The captain audits the
+  // self-heal straight from here.
+  if (isLogBug(mi) && mi.prd) {
+    var cap = el("div", "mock-cap", "Bug report (PRD)");
+    cap.style.marginTop = "12px";
+    pane.appendChild(cap);
+    var doc = el("div", "prd-doc");
+    renderPrdDoc(doc, mi.prd);
+    var box = el("div");
+    box.style.cssText = "background:var(--lcars-black);padding:12px 14px;border-radius:8px;max-height:40vh;overflow:auto";
+    box.appendChild(doc);
+    pane.appendChild(box);
+  }
   return pane;
 }
 
@@ -1999,6 +2537,124 @@ function stageLabel(stage) {
   return map[s] || (stage || "running");
 }
 
+/* S76 — a human-readable note for the main-ahead reconcile sub-state. No `lcars …`
+   CLI text leaks (UX-33); the copy carries the state + iterate-to-green hint. */
+/* BUG-049: the SHARED verify-affordance decision. Both the board card control
+   (cardControls) and the detail-header action row must gate the verify action
+   IDENTICALLY during a reconcile/merge/heal — otherwise the header offers a
+   plain "✓ Verify" while a mission is mid-reconcile (the dialog it opens IS
+   gated, but the affordance shouldn't appear). One helper returns the decision
+   so both render the same priority gating (mirrors cardControls' order):
+     escalated : awaiting-human reconcile DESIGN CALL → "Make the call" (answer)
+     resolving : a logged-bug batch in flight        → disabled "resolving N…"
+     healing   : a merge/self-heal in flight (incl. optimistic isMerging)
+                                                      → disabled "Merge heal…"
+     action    : the live Verify/Review PR action     → "✓ Review PR"/"✓ Verify"
+   The renderer reads `.kind` and builds the right button (the card and header
+   wire their own click handlers / dispatch styles). */
+function verifyAffordance(m) {
+  if (!m) return null;
+  // BUG-078: an OPTIMISTIC reapprove/retry-merge dispatch is in flight (isMerging,
+  // kept sticky by clearMergingOnState until a terminal change). It must win over
+  // the reapprove / merge-failed gate kinds below so the button stays the disabled
+  // busy affordance across repaints — no busy → Reapprove → merged flicker. The
+  // caller is expected to have run clearMergingOnState first (terminal-only clear).
+  if (isMerging(m.id)) {
+    return {
+      kind: "healing", label: "◐ Merge heal in progress…",
+      cls: "warn", disabled: true,
+      title: "Self-healing the merge against main — Merge is unavailable until "
+        + "it settles.",
+    };
+  }
+  // BUG-067: the heal converged → reapprove gate. A merge-only Reapprove action,
+  // NOT a "Review PR" (the PR is already reconciled + re-tested green).
+  if (isReconcileAwaitingReapprove(m)) {
+    return { kind: "reapprove", label: "✓ Reapprove ▸", cls: "go" };
+  }
+  // BUG-067: the merge FAILED — an attention state offering a retry of the
+  // merge-only path (NOT silence, NOT a routine "Review PR").
+  if (isReconcileMergeFailed(m)) {
+    return { kind: "merge-failed", label: "↻ Retry merge ▸", cls: "danger" };
+  }
+  if (isReconcileEscalated(m)) {
+    return { kind: "escalated", label: "◆ Make the call ▸", cls: "danger" };
+  }
+  if (isResolvingLocked(m)) {
+    var pend = resolvingChildren(m.id);
+    return {
+      kind: "resolving",
+      label: "◐ resolving " + pend.length + " logged bug"
+        + (pend.length === 1 ? "" : "s") + "…",
+      cls: "warn", disabled: true,
+      title: "Logged-bug fixes are in flight — Merge is unavailable until the "
+        + "consolidated re-verify gate is ready.",
+    };
+  }
+  if (isReconcileHealing(m) || isMerging(m.id)) {
+    return {
+      kind: "healing", label: "◐ Merge heal in progress…",
+      cls: "warn", disabled: true,
+      title: "Self-healing the merge against main — Merge is unavailable until "
+        + "it settles.",
+    };
+  }
+  return {
+    kind: "action", label: m.prUrl ? "✓ Review PR ▸" : "✓ Verify ▸", cls: "go",
+  };
+}
+
+/* BUG-039 / BUG-067: a self-heal (merge/reconcile) is IN FLIGHT — merging the
+   base in, re-testing the merged branch, resolving a conflict, or self-healing.
+   While this is true the Merge action must be SUPPRESSED (no merge possible
+   mid-heal). escalated / awaiting-reapprove / merge-failed are NOT in-flight
+   (each is a human-facing terminal-of-the-heal state) — handled separately. */
+function isReconcileHealing(m) {
+  if (!m || m.stage !== "verify") return false;
+  var rs = m.reconcileStatus;
+  return rs === "merging" || rs === "retesting" || rs === "resolving"
+      || rs === "healing";
+}
+
+/* BUG-042: the reconcile raised an awaiting-human DESIGN QUESTION (a
+   player-experience call), not a "Review PR". The mission is awaiting-human with
+   reconcileStatus === "escalated". */
+function isReconcileEscalated(m) {
+  return !!(m && m.stage === "verify" && m.reconcileStatus === "escalated");
+}
+
+/* BUG-067: the merge self-heal CONVERGED green and the engine STOPPED at the
+   reapprove gate (it no longer auto-merges). The mission is awaiting-human with
+   reconcileStatus === "awaiting-reapprove" — the board renders a persistent gate
+   with a Reapprove action (NOT a transient flash, NOT a silent revert to verify). */
+function isReconcileAwaitingReapprove(m) {
+  return !!(m && m.stage === "verify"
+            && m.reconcileStatus === "awaiting-reapprove");
+}
+
+/* BUG-067: the push/merge FAILED (e.g. non-fast-forward, checks, auth). The
+   engine surfaces it as reconcileStatus === "merge-failed" with the reason in
+   reconcileNote — the board renders this distinctly as an error/attention state
+   (NOT silence; today this outcome vanished and the card reverted to verify). */
+function isReconcileMergeFailed(m) {
+  return !!(m && m.stage === "verify" && m.reconcileStatus === "merge-failed");
+}
+
+function reconcileNote(status) {
+  switch (status) {
+    case "merging":   return "◐ reconciling with main — merging the updated base in";
+    case "retesting": return "◐ re-verifying the merged branch against main";
+    case "resolving": return "◐ reconciling — resolving the merge conflict";
+    case "healing":   return "◐ reconciling — self-healing the merge to green";
+    case "awaiting-reapprove":
+      return "● reconciled & green — reapprove to merge";
+    case "merge-failed":
+      return "✖ merge failed — needs you";
+    case "escalated": return "● reconcile needs you — couldn't auto-heal against main";
+    default:          return "◐ reconciling with main";
+  }
+}
+
 /* UX-7 / UX-13 — curated Star-Trek/LCARS-flavoured running copy per Stage. Each
    line hints at WHAT the harness is doing (headless turns don't stream sub-
    progress, so the copy is curated, not live). The visible label carries the
@@ -2045,6 +2701,37 @@ function dispatchCardBusy(id, path, payload, host, label) {
     function (msg) { setStatus(msg); refresh(); });
 }
 
+/* BUG-067 / BUG-065: dispatch the Reapprove (merge-only) path. The engine runs
+   the merge fire-and-forget server-side, so this returns promptly. We apply the
+   OPTIMISTIC merging busy-state immediately (markMerging + showCardBusy) so the
+   card flips to "merging…" without a manual refresh (BUG-065), then rely on the
+   board/SSE to land the real outcome (done, or the merge-failed attention state).
+   On a dispatch error we clear the optimistic flag so the card re-arms.
+   BUG-070: mirror the Merge button (BUG-044) — the Reapprove button itself is
+   DISABLED + relabelled busy on the very first click (before the optimistic
+   markMerging / before the dispatch returns), so a second click can't re-fire
+   the reapprove dispatch while the merge is in flight. The disable is cleared on
+   a dispatch ERROR (re-arm) and the optimistic merge flag clears when the served
+   state advances out of awaiting-reapprove (clearMergingOnState) or via timeout. */
+function doReapprove(id, host, button, fromStatus) {
+  if (button) { button.disabled = true; button.textContent = "Merging PR…"; }
+  // BUG-078: record the gate clicked from (awaiting-reapprove / merge-failed) so
+  // the optimistic busy flag stays sticky until a TERMINAL change away from it.
+  markMerging(id, fromStatus);
+  if (host) {
+    var busy = workingNode("Merging the reconciled tip…");
+    busy.className += " lcars-running";
+    host.innerHTML = ""; host.appendChild(busy);
+  }
+  postWrite("/api/mission/" + enc(id) + "/reapprove", {},
+    function () { /* board/SSE refresh shows the merge outcome */ },
+    function (msg) {
+      clearMerging(id);
+      if (button) { button.disabled = false; }
+      setStatus(msg); refresh();
+    });
+}
+
 function addPills(host, pills) {
   if (!pills) return;
   var c = pillNode(pills.cost, "cost"); if (c) host.appendChild(c);
@@ -2055,6 +2742,13 @@ function addPills(host, pills) {
 function idLabel(mi) {
   return (mi.issue ? "#" + mi.issue : mi.id) +
     (mi.title ? " — " + mi.title : "");
+}
+
+/* BUG-036: derive a PR number from a PR url's trailing /pull/<n> (front-end
+   fallback when prNumber isn't on the shape). Returns null when not present. */
+function prNumberFromUrl(url) {
+  var m = /\/pull\/(\d+)/.exec(String(url || ""));
+  return m ? parseInt(m[1], 10) : null;
 }
 
 function normStage(stage) {
@@ -2086,8 +2780,25 @@ function fetchMission(id, cb) {
 }
 
 /* ════════════════ live channel ════════════════ */
+/* BUG-065: keep the board live WITHOUT a manual page refresh after a write action
+   (Go / Merge / Reapprove) AND as a reconcile sub-state advances. Two paths back
+   each other up:
+     1. SSE (/api/events) pushes one `update` per SETTLED state change — but it
+        debounces behind a quiet window, so a churning, multi-step reconcile/heal
+        (state.json rewritten merging→retesting→…→awaiting-reapprove) only emits
+        ONCE writes stop. That left the board frozen mid-heal (the bug: transient
+        states flashed by / the failed outcome was never surfaced).
+     2. A lightweight SAFETY POLL re-fetches the board on a steady interval so the
+        evolving sub-states (and the write actions' own fire-and-forget effects,
+        which land asynchronously after the POST returns) appear live regardless.
+   The poll is cheap (one /api/board GET) and idempotent with the SSE — whichever
+   observes the change first re-renders; the other is a no-op re-render. */
+var LIVE_POLL_MS = 4000;
 function connect() {
   var conn = document.getElementById("conn");
+  // The safety poll runs ALWAYS (independent of SSE health) so a debounced or
+  // dropped SSE never leaves the board stale during a reconcile.
+  setInterval(refresh, LIVE_POLL_MS);
   try {
     var es = new EventSource("/api/events");
     es.addEventListener("update", function () { refresh(); });
@@ -2096,7 +2807,7 @@ function connect() {
       conn.className = "conn stale"; conn.textContent = "○ RECONNECTING";
     };
   } catch (e) {
-    setInterval(refresh, 5000);
+    /* no EventSource — the safety poll above is the sole live path. */
   }
 }
 

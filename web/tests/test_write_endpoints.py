@@ -45,6 +45,8 @@ def _record_stub(record_path):
         '  printf "ARGV: %s\\n" "$*"\n'
         '  printf "ENV_MODEL_OVERRIDE: %s\\n" "${LCARS_MODEL_OVERRIDE:-}"\n'
         '  printf "ENV_WORKER_BIN: %s\\n" "${LCARS_WORKER_BIN:-}"\n'
+        '  printf "ENV_WORKER_MODEL_SET: %s\\n" "${LCARS_WORKER_MODEL+yes}"\n'
+        '  printf "ENV_WORKER_MODEL: %s\\n" "${LCARS_WORKER_MODEL:-}"\n'
         '  printf "STDIN_START\\n"\n'
         '  cat\n'
         '  printf "\\nSTDIN_END\\n"\n'
@@ -220,6 +222,55 @@ class StartEndpointTest(WriteEndpointBase):
         rec = self._record_when("run", "ENV_WORKER_BIN")
         self.assertIn("ENV_WORKER_BIN: \n", rec)
 
+    def test_start_strips_inherited_daemon_wide_model_pin(self):
+        """S78: a daemon launched with LCARS_WORKER_MODEL set must NOT leak that
+        pin into a mission's run — Start strips it so the mission SELF-RESOLVES
+        from engine + estimate.json + overrides (no global clobber across all
+        stages of all missions). m-001 has no persisted workerModel."""
+        import unittest.mock as mock
+        with mock.patch.dict(os.environ, {"LCARS_WORKER_MODEL": "somepin"}):
+            actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+            actions.start("m-001")
+        rec = self._record_when("run", "ENV_WORKER_MODEL_SET")
+        # the inherited pin must be ABSENT from the child env (stripped, not "").
+        self.assertIn("ENV_WORKER_MODEL_SET: \n", rec,
+                      "daemon-wide LCARS_WORKER_MODEL leaked into the run "
+                      "(it must be stripped so the mission self-resolves)")
+
+    def test_start_feeds_persisted_per_mission_model_no_global_clobber(self):
+        """S78: a mission with state.json.workerModel spawns its run WITH that
+        per-mission LCARS_WORKER_MODEL, while a DIFFERENT mission (no workerModel)
+        in the SAME daemon spawns WITHOUT it — proving per-mission resolution and
+        no shared global state, even if the daemon inherited a pin."""
+        import unittest.mock as mock
+        fx.plant_simple(self.tmp, "m-pinned", stage="verify", issue=143,
+                        worker_model="opus")
+        fx.plant_simple(self.tmp, "m-free", stage="verify", issue=144)
+        rec_pinned = os.path.join(self.tmp, "rec-pinned.txt")
+        rec_free = os.path.join(self.tmp, "rec-free.txt")
+        scripts_pinned = dict(self.scripts)
+        scripts_pinned["run"] = _record_stub(rec_pinned)
+        scripts_free = dict(self.scripts)
+        scripts_free["run"] = _record_stub(rec_free)
+        with mock.patch.dict(os.environ, {"LCARS_WORKER_MODEL": "daemonpin"}):
+            Actions(repo_root=self.tmp, scripts=scripts_pinned).start("m-pinned")
+            Actions(repo_root=self.tmp, scripts=scripts_free).start("m-free")
+        import time
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if (os.path.exists(rec_pinned) and os.path.exists(rec_free)):
+                break
+            time.sleep(0.02)
+        with open(rec_pinned) as fh:
+            pinned = fh.read()
+        with open(rec_free) as fh:
+            free = fh.read()
+        # the pinned mission carries ITS OWN model (not the daemon pin).
+        self.assertIn("ENV_WORKER_MODEL: opus\n", pinned)
+        # the free mission carries NO model — the daemon pin did not leak.
+        self.assertIn("ENV_WORKER_MODEL_SET: \n", free,
+                      "the free mission inherited a global pin (clobber)")
+
     def test_start_returns_promptly_without_blocking_on_the_run(self):
         """start() is FIRE-AND-FORGET: the run driver is a long process, so start()
         must NOT block on it. Point the run skill at a stub that holds a driver lock
@@ -319,7 +370,8 @@ class VerifyRoutingTest(WriteEndpointBase):
         status, body = self._post("/api/mission/m-001/verify",
                                   {"decision": "approve"})
         self.assertEqual(status, 200)
-        self.assertIn("--mission m-001", self._record("approve"))
+        # BUG-040: approve is fire-and-forget (Popen) → poll for its async record.
+        self.assertIn("--mission m-001", self._record_when("approve", "m-001"))
         # send-back stub must NOT have been invoked
         self.assertTrue(self._not_invoked("feedback"))
 
@@ -334,6 +386,38 @@ class VerifyRoutingTest(WriteEndpointBase):
         # approve stub must NOT have been invoked
         self.assertTrue(self._not_invoked("approve"))
 
+    def test_reapprove_dispatches_approve_reapprove(self):
+        """BUG-067: the Reapprove gate (heal converged → awaiting-reapprove) must
+        dispatch the engine's MERGE-ONLY reapprove path — approve.sh --reapprove —
+        fire-and-forget (per BUG-051 capture). Assert the spawn argv."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        reconcile_status="awaiting-reapprove",
+                        awaiting_human=True,
+                        reconcile_note="re-tested green (8/8). Reapprove to merge.")
+        status, body = self._post("/api/mission/m-001/reapprove")
+        self.assertEqual(status, 200)
+        rec = self._record_when("approve", "m-001")
+        self.assertIn("--mission m-001", rec)
+        self.assertIn("--reapprove", rec)
+        # never the send-back path.
+        self.assertTrue(self._not_invoked("feedback"))
+
+    def test_reapprove_threads_persisted_engine(self):
+        """The reapprove spawn inherits the mission's persisted engine
+        ($LCARS_WORKER_BIN) so the merge-only path runs on the right CLI."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        reconcile_status="awaiting-reapprove",
+                        awaiting_human=True, worker_bin="copilot")
+        status, _ = self._post("/api/mission/m-001/reapprove")
+        self.assertEqual(status, 200)
+        rec = self._record_when("approve", "m-001")
+        self.assertIn("ENV_WORKER_BIN: copilot", rec)
+
+    def test_reapprove_unknown_mission_is_404(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post("/api/mission/nope/reapprove")
+        self.assertEqual(cm.exception.code, 404)
+
     def test_verify_send_back_requires_feedback(self):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self._post("/api/mission/m-001/verify", {"decision": "send-back"})
@@ -343,6 +427,105 @@ class VerifyRoutingTest(WriteEndpointBase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self._post("/api/mission/m-001/verify", {"decision": "maybe"})
         self.assertEqual(cm.exception.code, 400)
+
+    # ── BUG-031: send-back on a Mission-Log re-verify gate is NON-destructive ──
+    def test_verify_send_back_on_bug_child_feedbacks_bug_and_respawns_resolve(self):
+        """Case A: `mid` is a logged-bug CHILD (parentMission set). Send-back must
+        re-fix the BUG (feedback on the child), then re-drive the parent's batch
+        fire-and-forget (`resolve --parent <parent>` — the bare drive form, NOT
+        `complete`). It MUST NOT feedback the parent or touch its stage/PR."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="verify")
+        status, _ = self._post("/api/mission/m-bug1/verify",
+                               {"decision": "send-back",
+                                "feedback": "fix the off-by-one"})
+        self.assertEqual(status, 200)
+        # feedback was applied to the BUG, not the parent.
+        fb = self._record("feedback")
+        self.assertIn("--mission m-bug1", fb)
+        self.assertNotIn("--mission m-001", fb)
+        self.assertIn("fix the off-by-one", fb)
+        # the batch was re-driven (fire-and-forget) on the PARENT, bare form.
+        res = self._record_when("resolve", "m-001")
+        self.assertIn("--parent m-001", res)
+        self.assertNotIn("complete", res)
+
+    def test_verify_send_back_on_bug_child_threads_parent_engine(self):
+        """Case A engine: the resolve respawn inherits the PARENT's persisted
+        engine as LCARS_WORKER_BIN (mirrors the approve branch)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="copilot")
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="verify")
+        status, _ = self._post("/api/mission/m-bug1/verify",
+                               {"decision": "send-back",
+                                "feedback": "fix the off-by-one"})
+        self.assertEqual(status, 200)
+        res = self._record_when("resolve", "ENV_WORKER_BIN: copilot")
+        self.assertIn("--parent m-001", res)
+        self.assertIn("ENV_WORKER_BIN: copilot", res)
+
+    def test_verify_send_back_on_parent_feedbacks_each_child_not_parent(self):
+        """Case B: `mid` is the PARENT consolidated re-verify gate (no
+        parentMission, has linked non-done bug children). Send-back must apply the
+        feedback to EACH child, NONE to the parent, and re-drive `resolve --parent
+        <mid>` ONCE. The parent's verified state / PR stays intact."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="verify")
+        _plant_bug(self.tmp, "m-bug2", parent="m-001", issue=202, stage="verify")
+        status, _ = self._post("/api/mission/m-001/verify",
+                               {"decision": "send-back",
+                                "feedback": "redo both fixes"})
+        self.assertEqual(status, 200)
+        fb = self._record("feedback")
+        self.assertIn("--mission m-bug1", fb)
+        self.assertIn("--mission m-bug2", fb)
+        # the PARENT itself must NOT be fed back.
+        self.assertNotIn("--mission m-001", fb)
+        self.assertIn("redo both fixes", fb)
+        # the batch re-drove once on the parent.
+        res = self._record_when("resolve", "m-001")
+        self.assertIn("--parent m-001", res)
+        self.assertNotIn("complete", res)
+
+    def test_verify_send_back_on_plain_mission_unchanged(self):
+        """Case C: a plain top-level verify mission (no parent, no children) —
+        UNCHANGED: feedback on itself, resolve NOT invoked."""
+        # setUp's m-001 is a plain verify mission with no parent/children.
+        status, _ = self._post("/api/mission/m-001/verify",
+                               {"decision": "send-back",
+                                "feedback": "tighten the error copy"})
+        self.assertEqual(status, 200)
+        self.assertIn("--mission m-001", self._record("feedback"))
+        self.assertTrue(self._not_invoked("resolve"))
+
+    def test_verify_approve_dispatches_the_merge_skill(self):
+        """S75: the `approve` decision now dispatches approve.sh whose job is the
+        MERGE (open PR → merged → Done). The endpoint contract is unchanged
+        (routes to approve.sh); we lock that an in-review mission's approve still
+        reaches approve.sh — the merge signal — and not feedback.sh."""
+        # an in-review mission: stage verify, an open PR recorded.
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        status, body = self._post("/api/mission/m-001/verify",
+                                  {"decision": "approve"})
+        self.assertEqual(status, 200)
+        # BUG-040: approve is fire-and-forget (Popen) → poll for its async record.
+        self.assertIn("--mission m-001", self._record_when("approve", "m-001"))
+        self.assertTrue(self._not_invoked("feedback"))
+
+    def test_verify_card_carries_pr_and_review_state(self):
+        """The board card the verify endpoint returns (mission state) must carry
+        the open PR + the in-review state so the front end can show the PR link
+        and the Merge PR action."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        # the board read surfaces the in-review fields on the card.
+        board = self.adapter.board()
+        card = next(c for c in board["missions"] if c["id"] == "m-001")
+        self.assertEqual(card["prUrl"], "https://github.com/acme/repo/pull/77")
+        self.assertEqual(card["review"], "open")
 
 
 class MissionFileTest(WriteEndpointBase):
@@ -468,10 +651,12 @@ class LogTest(WriteEndpointBase):
         self.assertTrue(self._not_invoked("resolve"))
 
     def test_log_run_threads_per_bug_overrides_to_log(self):
-        """The File & Run path must also carry per-bug overrides into log.sh so a
-        captain who steers then runs in one click still persists each steer."""
+        """The explicit one-shot file & run path (confirm=True) must also carry
+        per-bug overrides into log.sh so a captain who steers then confirms in one
+        call still persists each steer."""
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
-        actions.log_run("m-001", prds=["# Bug: a\n\nb"], overrides=["reasoning:opus"])
+        actions.log_run("m-001", prds=["# Bug: a\n\nb"],
+                        overrides=["reasoning:opus"], confirm=True)
         log_rec = self._record("log")
         self.assertIn("--model-override reasoning:opus", log_rec)
 
@@ -499,8 +684,10 @@ class LogTest(WriteEndpointBase):
                 return json.load(fh).get("modelOverride")
         self.assertEqual(_ov("m-bug1"), {"scope": "all", "tier": "opus"})
         self.assertEqual(_ov("m-bug2"), {"scope": "reasoning", "tier": "sonnet"})
-        # and resolve was still dispatched for the batch.
-        self.assertFalse(self._not_invoked("resolve"))
+        # and resolve was still dispatched for the batch. resolve is fire-and-
+        # forget (BUG-G _spawn), so poll for its async record instead of an
+        # immediate read (deflakes a race against the detached Popen).
+        self.assertIn("m-001", self._record_when("resolve", "m-001"))
 
     def test_log_run_blank_post_file_override_leaves_child_unsteered(self):
         """A blank override at Run Fixes must not stamp a steer (no-op), and must
@@ -659,7 +846,8 @@ class LogTest(WriteEndpointBase):
         fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
                         worker_bin="copilot")
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # no default
-        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"])
+        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"],
+                        confirm=True)
         # log.sh filing stays BLOCKING → its record is present synchronously.
         log_rec = self._record("log")
         self.assertIn("ENV_WORKER_BIN: copilot", log_rec)
@@ -673,7 +861,7 @@ class LogTest(WriteEndpointBase):
         """No persisted parent engine ⇒ log_run must not invent one (the dispatch
         env's LCARS_WORKER_BIN stays whatever the daemon default is — empty here)."""
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # no default
-        actions.log_run("m-001", prds=["# Bug: x\n\nb"])
+        actions.log_run("m-001", prds=["# Bug: x\n\nb"], confirm=True)
         log_rec = self._record("log")
         self.assertIn("ENV_WORKER_BIN: \n", log_rec)
 
@@ -689,7 +877,7 @@ class LogTest(WriteEndpointBase):
         scripts["resolve"] = _sleep_stub(rec, sleep_secs=3)
         actions = Actions(repo_root=self.tmp, scripts=scripts)
         t0 = time.time()
-        actions.log_run("m-001", prds=["# Bug: x\n\nb"])
+        actions.log_run("m-001", prds=["# Bug: x\n\nb"], confirm=True)
         elapsed = time.time() - t0
         # blocking would take >=3s; fire-and-forget returns near-instantly.
         self.assertLess(elapsed, 1.5,
@@ -720,7 +908,7 @@ class LogTest(WriteEndpointBase):
         with mock.patch.object(subprocess, "Popen", _FakePopen), \
                 mock.patch.object(subprocess, "run", _rec_run):
             actions = Actions(repo_root=self.tmp, scripts=self.scripts)
-            actions.log_run("m-001", prds=["# Bug: x\n\nb"])
+            actions.log_run("m-001", prds=["# Bug: x\n\nb"], confirm=True)
 
         def _is(key, cmds):
             script = self.scripts[key]
@@ -745,7 +933,8 @@ class LogTest(WriteEndpointBase):
         fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
                         worker_bin="copilot")
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
-        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"])
+        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"],
+                        confirm=True)
         # log.sh ran synchronously (blocking) → its record is present immediately.
         log_rec = self._record("log")
         self.assertIn("--parent m-001", log_rec)
@@ -754,6 +943,74 @@ class LogTest(WriteEndpointBase):
         res_rec = self._record_when("resolve", "ENV_WORKER_BIN: copilot")
         self.assertIn("ENV_WORKER_BIN: copilot", res_rec)
         self.assertIn("m-001", res_rec)
+
+    # ── BUG-059: filing a logged bug HOLDS for the human cost review ──────────
+    # Filing computes the estimate but must NOT auto-proceed into running the
+    # fix — the captain reviews the cost, may re-steer the model, then clicks an
+    # explicit Go. So `log/run` with prds (but no confirm) FILES + estimates and
+    # stops; resolve is dispatched ONLY on the explicit Go (a re-post with no
+    # prds, the bugs already filed) or the explicit confirm power path. ─────────
+    def test_log_run_with_prds_does_not_dispatch_before_confirm(self):
+        """Filing via /log/run (prds, no confirm) must FILE the children + return
+        their estimates but NOT dispatch resolve-logs — the human gate. (BUG-059:
+        the captain hit File and walked away and it had already dispatched.)"""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        out = actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"],
+                              overrides=["all:opus"])
+        # the bug WAS filed (so its estimate gets computed) ...
+        log_rec = self._record("log")
+        self.assertIn("--parent m-001", log_rec)
+        self.assertIn("--model-override all:opus", log_rec)
+        # ... and the response carries the filed children for the cost review.
+        self.assertTrue(out.get("filed"))
+        self.assertIn("children", out)
+        # but resolve-logs was NOT dispatched — filing HELD for the human Go.
+        # (poll briefly: a fire-and-forget spawn would show up async if it ran.)
+        self.assertEqual(self._record_when("resolve", "m-001", timeout=0.5), "",
+                         "filing must HOLD — resolve must not run before the Go")
+
+    def test_log_run_endpoint_with_prds_does_not_dispatch_before_confirm(self):
+        """Over HTTP: POST /log/run {prds} (no confirm) files + estimates and
+        HOLDS — no resolve dispatch (the daemon gate, end to end)."""
+        status, body = self._post(
+            "/api/mission/m-001/log/run",
+            {"prds": ["# Bug: save\n\nthe save fails"]})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["state"].get("filed"))
+        self.assertIn("--parent m-001", self._record("log"))
+        self.assertEqual(self._record_when("resolve", "m-001", timeout=0.5), "",
+                         "the endpoint must HOLD on filing — no auto-run")
+
+    def test_log_run_explicit_go_after_filing_dispatches(self):
+        """The explicit Go: with the bugs ALREADY filed (no prds), /log/run
+        applies the reviewed override and DISPATCHES resolve-logs (the human
+        confirmed after seeing the estimate)."""
+        import json
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
+                   estimate=fx.ESTIMATE_CLAUDE)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_run("m-001", prds=[], overrides=["all:opus"])
+        # the reviewed override is persisted onto the already-filed child ...
+        p = os.path.join(fx.mission_dir(self.tmp, "m-bug1"), "state.json")
+        with open(p) as fh:
+            self.assertEqual(json.load(fh).get("modelOverride"),
+                             {"scope": "all", "tier": "opus"})
+        # ... and NOW resolve-logs is dispatched (the Go).
+        self.assertIn("m-001", self._record_when("resolve", "m-001"))
+
+    def test_log_run_confirm_power_path_files_and_dispatches(self):
+        """The explicit one-shot power path: confirm=True files the children AND
+        dispatches resolve in one call (the deliberate file-and-go, not the
+        default UI flow)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_run("m-001", prds=["# Bug: save\n\nthe save fails"],
+                        confirm=True)
+        self.assertIn("--parent m-001", self._record("log"))
+        self.assertIn("m-001", self._record_when("resolve", "m-001"))
 
 
 class LiveChannelTest(WriteEndpointBase):
@@ -850,6 +1107,279 @@ def _plant_bug(root, mid, *, parent, issue, stage="plan", estimate=None,
     fx.write_json(os.path.join(d, "state.json"), state)
     if estimate is not None:
         fx.write_json(os.path.join(d, "estimate.json"), estimate)
+
+
+def _plant_pending(root, mid, *, stage="implement", question="reconcile?",
+                   human_summary=None, escalation_type=None,
+                   technical_detail=None):
+    """Write a pending.json gate envelope for `mid` (BUG-027/BUG-028 tests)."""
+    d = fx.mission_dir(root, mid)
+    pending = {"stage": stage, "question": question}
+    if human_summary is not None:
+        pending["humanSummary"] = human_summary
+    if escalation_type is not None:
+        pending["escalationType"] = escalation_type
+    if technical_detail is not None:
+        pending["technicalDetail"] = technical_detail
+    fx.write_json(os.path.join(d, "pending.json"), pending)
+
+
+class RespondResumeTest(WriteEndpointBase):
+    """BUG-028: answering a gate must RECORD the answer AND re-dispatch the run
+    (the "& Resume" must be real), clearing the stale pending.json."""
+
+    def _arm_run_lock(self):
+        # point the run + resolve skills at a lock stub so the fire-and-forget
+        # spawn records its argv (and the mission doesn't look already-running).
+        # `actions` is closure-captured at make_server time, so REBUILD the server
+        # with the rearmed Actions rather than mutating the live handler.
+        for key in ("run", "resolve"):
+            self.scripts[key] = _lock_stub(self.records[key], 0.05)
+            try:
+                os.unlink(self.records[key])
+            except OSError:
+                pass
+        self.httpd.shutdown()
+        self.thread.join()
+        self.httpd.server_close()
+        self.actions = Actions(repo_root=self.tmp, scripts=self.scripts,
+                               worker_bin="/bin/echo")
+        from lcars_serve.server import make_server as _mk
+        self.httpd = _mk(self.adapter, host="127.0.0.1", port=0,
+                         poll_interval=0.05, actions=self.actions)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+    def test_top_level_respond_redispatches_run_drive(self):
+        # a top-level mission parked at a gate (resume pointer align, in-flight
+        # implement) with a pending.json on disk.
+        fx.plant_simple(self.tmp, "m-001", stage="implement", issue=142,
+                        awaiting_human=True, pending_question="reconcile?")
+        _plant_pending(self.tmp, "m-001", stage="implement")
+        self._arm_run_lock()
+        status, _ = self._post("/api/mission/m-001/respond",
+                               {"answer": "reconcile by keeping the lock"})
+        self.assertEqual(status, 200)
+        # the answer was recorded via respond.sh
+        self.assertIn("--mission m-001", self._record("respond"))
+        # and the run driver was re-dispatched (fire-and-forget) for THIS mission
+        run_rec = self._record_when("run", "m-001")
+        self.assertIn("drive", run_rec)
+        self.assertIn("--mission m-001", run_rec)
+        # a top-level mission must NOT route through resolve-logs
+        self.assertTrue(self._not_invoked("resolve"))
+        # the stale pending.json is gone
+        self.assertFalse(os.path.exists(
+            os.path.join(fx.mission_dir(self.tmp, "m-001"), "pending.json")))
+
+    def test_parented_bug_respond_resumes_resolve_logs_on_parent(self):
+        # a logged-bug child parked at a gate: respond must resume the PARENT's
+        # resolve-logs batch, NOT a standalone run drive on the child.
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="/usr/bin/copilot")
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201,
+                   stage="implement")
+        # mark the child awaiting + give it a pending.json.
+        bd = fx.mission_dir(self.tmp, "m-bug1")
+        st = json.load(open(os.path.join(bd, "state.json")))
+        st["awaitingHuman"] = True
+        st["pendingQuestion"] = "reconcile?"
+        fx.write_json(os.path.join(bd, "state.json"), st)
+        _plant_pending(self.tmp, "m-bug1", stage="implement")
+        self._arm_run_lock()
+        status, _ = self._post("/api/mission/m-bug1/respond",
+                               {"answer": "ok"})
+        self.assertEqual(status, 200)
+        # resolve-logs resumed on the PARENT
+        res_rec = self._record_when("resolve", "m-001")
+        self.assertIn("--parent m-001", res_rec)
+        # the child's own run driver must NOT be spawned
+        self.assertTrue(self._not_invoked("run"))
+        # the child's stale pending.json is cleared
+        self.assertFalse(os.path.exists(os.path.join(bd, "pending.json")))
+
+
+class VerifyBugFoldTest(WriteEndpointBase):
+    """BUG-030: a parented bug's Verify "accept" must FOLD via resolve-logs
+    `complete` (no per-bug PR merge); a top-level mission still merges.
+
+    BUG-032: the per-bug Verify must fold ONLY that one bug — it dispatches the
+    SINGLE-bug mode (`complete --parent <p> --bug <mid>`), NOT the bulk
+    `complete --parent <p>` that folds every sibling at once."""
+
+    def test_parented_bug_approve_folds_via_resolve_complete(self):
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="/usr/bin/copilot")
+        _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="verify")
+        _plant_bug(self.tmp, "m-bug2", parent="m-001", issue=202, stage="verify")
+        status, _ = self._post("/api/mission/m-bug1/verify",
+                               {"decision": "approve"})
+        self.assertEqual(status, 200)
+        res_rec = self._record("resolve")
+        self.assertIn("complete", res_rec)
+        self.assertIn("--parent m-001", res_rec)
+        # BUG-032: it must target THIS one bug (single-bug mode), not the bulk
+        # all-remaining accept. The dispatched argv carries --bug m-bug1, and it
+        # must NOT name the sibling m-bug2 (one click ≠ whole batch).
+        self.assertIn("--bug m-bug1", res_rec)
+        self.assertNotIn("m-bug2", res_rec)
+        # it must NOT merge a per-bug PR via approve.sh
+        self.assertTrue(self._not_invoked("approve"))
+        # and the parent's engine is inherited on the fold dispatch
+        self.assertIn("ENV_WORKER_BIN: /usr/bin/copilot", res_rec)
+
+    def test_top_level_approve_still_merges_via_approve(self):
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
+        status, _ = self._post("/api/mission/m-001/verify",
+                               {"decision": "approve"})
+        self.assertEqual(status, 200)
+        # approve is now FIRE-AND-FORGET (BUG-040) → its record is written
+        # asynchronously after the POST returns; poll for it.
+        self.assertIn("--mission m-001", self._record_when("approve", "m-001"))
+        # a top-level mission must NOT route to resolve-logs complete
+        self.assertTrue(self._not_invoked("resolve"))
+
+
+class ApproveNonBlockingTest(WriteEndpointBase):
+    """BUG-040: the Merge (approve) click must be NON-BLOCKING. When a reconcile/
+    self-heal runs, approve.sh can take minutes; the HTTP request must dispatch
+    fire-and-forget (Popen, _spawn) and return promptly so the dialog never spins.
+    """
+
+    def test_approve_returns_promptly_without_blocking_on_the_merge(self):
+        """Point the approve skill at a stub that sleeps ~3s; verify(approve) must
+        return well before that (fire-and-forget), not block on the long merge."""
+        import time
+        rec = os.path.join(self.tmp, "rec-approveslow.txt")
+        scripts = dict(self.scripts)
+        scripts["approve"] = _sleep_stub(rec, sleep_secs=3)
+        actions = Actions(repo_root=self.tmp, scripts=scripts)
+        t0 = time.time()
+        actions.verify("m-001", "approve")
+        elapsed = time.time() - t0
+        self.assertLess(elapsed, 1.5,
+                        "verify(approve) blocked on the long merge (%.2fs)"
+                        % elapsed)
+
+    def test_approve_uses_a_nonblocking_spawn(self):
+        """The fire-and-forget seam for approve is Popen (no wait): assert
+        verify(approve) on a top-level mission dispatches approve.sh via Popen
+        and never subprocess.run."""
+        import unittest.mock as mock
+
+        run_calls = []
+        popen_calls = []
+
+        class _FakeCompleted(object):
+            returncode = 0
+            stdout = b""
+
+        def _rec_run(cmd, *a, **k):
+            run_calls.append(cmd)
+            return _FakeCompleted()
+
+        class _FakePopen(object):
+            def __init__(self, cmd, *a, **k):
+                popen_calls.append(cmd)
+
+        with mock.patch.object(subprocess, "Popen", _FakePopen), \
+                mock.patch.object(subprocess, "run", _rec_run):
+            actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+            actions.verify("m-001", "approve")
+
+        script = self.scripts["approve"]
+        self.assertTrue(any(script in cmd for cmd in popen_calls),
+                        "approve.sh must be dispatched via Popen (_spawn)")
+        self.assertFalse(any(script in cmd for cmd in run_calls),
+                         "approve.sh must NOT block (subprocess.run)")
+
+    def test_approve_returns_current_mission_state_immediately(self):
+        """verify(approve) returns the mission state promptly (the dialog closes
+        on dispatch and the board/SSE reflects the evolving state)."""
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        result = self.actions.verify("m-001", "approve")
+        # a mission/board state is returned (not an exception/hang).
+        self.assertTrue("mission" in result or "board" in result)
+
+
+def _emit_stub(record_path, marker):
+    """A fire-and-forget stub that PRINTS a marker to stdout/stderr (so a test can
+    assert the spawn CAPTURED it) and also records its argv. Used to prove _spawn
+    redirects child output to a durable log instead of /dev/null (BUG-051)."""
+    fd, path = tempfile.mkstemp(suffix=".sh")
+    os.close(fd)
+    script = (
+        '#!/usr/bin/env bash\n'
+        '{ printf "ARGV: %s\\n" "$*"; } >> "' + record_path + '"\n'
+        'printf "' + marker + '\\n"\n'          # to stdout
+        'printf "' + marker + '-ERR\\n" >&2\n'  # to stderr (merged via STDOUT)
+        'exit 0\n'
+    )
+    with open(path, "w") as fh:
+        fh.write(script)
+    os.chmod(path, 0o755)
+    return path
+
+
+class SpawnCaptureTest(WriteEndpointBase):
+    """BUG-051: the fire-and-forget _spawn must NOT discard the detached child's
+    output (approve/reconcile/driver, incl. the die reason) — it must be captured
+    to a durable per-run log under .git/lcars/ so the cause survives."""
+
+    def test_spawn_gives_popen_a_real_file_handle_not_devnull(self):
+        """Assert _spawn hands subprocess.Popen a real writable file object for
+        stdout — never subprocess.DEVNULL."""
+        import unittest.mock as mock
+
+        captured = {}
+
+        class _FakePopen(object):
+            def __init__(self, *a, **k):
+                captured["stdout"] = k.get("stdout")
+                captured["stderr"] = k.get("stderr")
+
+        with mock.patch.object(subprocess, "Popen", _FakePopen):
+            actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+            actions._spawn("run", ["drive", "--mission", "m-001"])
+
+        self.assertIsNot(captured.get("stdout"), subprocess.DEVNULL,
+                         "_spawn discarded child stdout to DEVNULL")
+        # a real captured file handle, not the int DEVNULL sentinel
+        self.assertTrue(hasattr(captured.get("stdout"), "fileno"),
+                        "_spawn did not give Popen a real file handle for stdout")
+
+    def test_spawn_writes_child_output_to_a_captured_log_under_git_lcars(self):
+        """End-to-end: the detached child's stdout/stderr land in a durable log
+        file under .git/lcars/, not /dev/null."""
+        import time
+        rec = os.path.join(self.tmp, "rec-emit.txt")
+        scripts = dict(self.scripts)
+        scripts["run"] = _emit_stub(rec, "DIE-REASON-cherry-pick-failed")
+        actions = Actions(repo_root=self.tmp, scripts=scripts)
+        actions._spawn("run", ["drive", "--mission", "m-001"])
+
+        log_path = os.path.join(self.tmp, ".git", "lcars", "logs",
+                                "spawn-run-m-001.log")
+        deadline = time.time() + 5
+        contents = ""
+        while time.time() < deadline:
+            if os.path.exists(log_path):
+                with open(log_path) as fh:
+                    contents = fh.read()
+                if "DIE-REASON-cherry-pick-failed" in contents:
+                    break
+            time.sleep(0.02)
+
+        self.assertTrue(os.path.exists(log_path),
+                        "no captured spawn log was written under .git/lcars/logs")
+        self.assertIn("DIE-REASON-cherry-pick-failed", contents,
+                      "the detached child's stdout was not captured to the log")
+        self.assertIn("DIE-REASON-cherry-pick-failed-ERR", contents,
+                      "the detached child's stderr was not captured to the log")
 
 
 if __name__ == "__main__":

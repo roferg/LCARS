@@ -65,6 +65,12 @@ class LocalAdapter(object):
         # detail-only shape fields (S70-B): ADRs + verbatim acceptance criteria.
         card["adrs"] = _adrs_from_file(os.path.join(d, "adr.md"))
         card["criteria"] = _criteria_from_prd(os.path.join(d, "prd.md"))
+        # S76: the verbatim PRD body, so the detail modal can render the full,
+        # human-followable text. For a self-authored reconcile bug child this is the
+        # detailed bug PRD (Conflict/failure summary, Root cause, Intended fix, …) —
+        # the captain audits the self-heal straight from this. Empty string when
+        # absent (non-crashing). The github adapter omits it (no local files).
+        card["prd"] = _read_text(os.path.join(d, "prd.md"))
         return card
 
     def fingerprint(self):
@@ -116,12 +122,55 @@ class LocalAdapter(object):
         # status.sh's gate rule: when awaiting-human and a pending.json exists,
         # the in-flight column comes from pending.json.stage, not state.stage.
         pending = _load_json(os.path.join(d, "pending.json"))
+        events = _load_jsonl(os.path.join(d, "events.jsonl"))
+
+        # BUG-062: `dispatched` — was a run ever actually LAUNCHED for this
+        # mission? With the estimate gate (BUG-059) a logged bug fast-tracks to
+        # stage="plan" but is FILED but HELD at estimate-review: only
+        # estimate.json exists, NO events.jsonl, no driver lock. Such a mission
+        # is NOT dispatched, so the front end must render "Start" — keying the
+        # button off the stage value alone wrongly shows "Pause". A run is
+        # dispatched iff it has emitted any events (durable proof it ran) OR a
+        # live driver currently holds the lock (just started, events not yet
+        # flushed). The front end (board.js) gates the Start/Pause control on
+        # this so a held mission reads as Start, a real run as Pause.
+        dispatched = bool(events) or running
+        # BUG-027: the harness writes a legible, type-aware gate envelope into
+        # pending.json — `humanSummary` (plain-language headline), `escalationType`
+        # ("regression"|"scope"|"cap") and `technicalDetail` (raw reason + command).
+        # Pass them through verbatim so the front end can render type-appropriate
+        # copy + tuck the raw detail behind a disclosure. Absent ⇒ None (the
+        # renderer degrades to the bare `question` text). Read-only.
+        gate = None
         if awaiting and isinstance(pending, dict):
             pstage = pending.get("stage")
             if pstage:
                 stage = pstage
             if not question:
                 question = pending.get("question")
+            gate = {
+                "humanSummary": pending.get("humanSummary"),
+                "escalationType": pending.get("escalationType"),
+                "technicalDetail": pending.get("technicalDetail"),
+            }
+            # only surface the gate object if it carries at least one new field
+            # (so a plain pre-harness pending.json renders exactly as before).
+            if not any(v for v in gate.values()):
+                gate = None
+        elif running and not paused:
+            # BUG-017: state.json.stage is the RESUME pointer — it lags the stage a
+            # running mission is actually executing (a card otherwise sits in the
+            # PREVIOUS column for the whole of Research/Implement; on a slow engine
+            # it's blatant, and a fast stage never lights up its column at all). For
+            # a RUNNING, non-gated mission the truer in-flight stage is in
+            # events.jsonl: the latest `stage_start` not yet closed by a `stage_done`
+            # / subsequent `stage_start`. Use it as the column; fall back to
+            # state.json.stage when there are no stage events. Read-only — state.json
+            # semantics are untouched (it stays the resume pointer). The
+            # awaiting-human → pending.json.stage rule above is left unchanged.
+            inflight = _inflight_stage(events)
+            if inflight:
+                stage = inflight
 
         estimate = _load_json(os.path.join(d, "estimate.json"))
         est = estimate if isinstance(estimate, dict) else {}
@@ -135,11 +184,18 @@ class LocalAdapter(object):
         is_bug = ((state.get("type") or "feature") == "bug"
                   or _truthy(state.get("linked"))
                   or bool(state.get("parentMission")))
-        model_mix = board.model_mix_from_estimate(est, is_bug=is_bug)
+        # The chosen engine (S67): file.sh persists state.json.workerBin. S78
+        # CHANGE 4 needs it BEFORE model_mix so the displayed mix reflects the
+        # per-engine resolution (a copilot mission is opus-safe ⇒ every row opus).
+        # Read it here (the card field below reuses this value).
+        engine = state.get("workerBin")
+        if not (isinstance(engine, str) and engine.strip()):
+            engine = None
+        model_mix = board.model_mix_from_estimate(est, is_bug=is_bug,
+                                                  engine=engine)
 
         plan = _load_json(os.path.join(d, "plan.json"))
         waves = _load_json(os.path.join(d, "waves.json"))
-        events = _load_jsonl(os.path.join(d, "events.jsonl"))
 
         tickets = _tickets(plan, waves, events)
         progress = _progress(waves, events) if board.normalise_stage(stage) == "implement" else None
@@ -149,7 +205,14 @@ class LocalAdapter(object):
         # already loaded) so it rides on the card as well as the detail. `now` is
         # real wall-clock here; the computation lives in board.active_seconds,
         # which the tests drive with an injected `now`.
-        active_seconds = board.active_seconds(events, now=time.time())
+        # BUG-047: anchor the live front-end clock on the SAME server `now` used to
+        # compute active_seconds. The front end shows activeSeconds + (clientNow -
+        # activeSecondsAt) while running, so a card re-opened mid-stage shows true
+        # elapsed instead of re-basing from a snapshot frozen at the last stage
+        # boundary. Client/server share the host clock, so this is seconds-accurate.
+        now = time.time()
+        active_seconds = board.active_seconds(events, now=now)
+        active_seconds_at = now
 
         # GitHub issue number may be the literal null / absent.
         issue = state.get("githubIssue")
@@ -158,12 +221,9 @@ class LocalAdapter(object):
         if not isinstance(issue, int):
             issue = None
 
-        # The chosen engine (S67): file.sh persists state.json.workerBin when the
-        # captain picked one. Surface it as `engine` so the card/detail shows
-        # "claude"/"copilot" rather than None. Absent ⇒ None (no field on disk).
-        engine = state.get("workerBin")
-        if not (isinstance(engine, str) and engine.strip()):
-            engine = None
+        # The chosen engine (S67): `engine` was read above (it is also required by
+        # S78 CHANGE 4's per-engine model mix). It surfaces on the card/detail as
+        # "claude"/"copilot" rather than None; absent ⇒ None (no field on disk).
 
         # UX-28: a logged-bug child mission records its parent's id in
         # state.json.parentMission (lcars log links a bug to the parent it was
@@ -173,6 +233,67 @@ class LocalAdapter(object):
         parent_mission = state.get("parentMission")
         if not (isinstance(parent_mission, str) and parent_mission.strip()):
             parent_mission = None
+
+        # BUG-033: a logged-bug child carries its parent's GitHub issue number on
+        # disk (state.json.parentIssue). Surface it so the "child of #<n>" badge
+        # survives the parent merging off the active board (the front-end
+        # ISSUE_BY_ID index only resolves ACTIVE cards). Absent ⇒ None.
+        parent_issue = state.get("parentIssue")
+        if isinstance(parent_issue, str) and parent_issue.isdigit():
+            parent_issue = int(parent_issue)
+        if not isinstance(parent_issue, int):
+            parent_issue = None
+
+        # S75: the Verify PR lifecycle. Verify auto-opens the PR and records
+        # prUrl/prNumber + a `review` sub-state ("open" while in review, "merged"
+        # once approve/GitHub merges). Surface them so the card/Verify modal can
+        # show the PR link and the in-review state, and the primary action can be
+        # "Merge PR". Absent ⇒ None/None/None (a mission not yet in review).
+        pr_url = state.get("prUrl")
+        if not (isinstance(pr_url, str) and pr_url.strip()):
+            pr_url = None
+        pr_number = state.get("prNumber")
+        if isinstance(pr_number, str) and pr_number.isdigit():
+            pr_number = int(pr_number)
+        if not isinstance(pr_number, int):
+            pr_number = None
+        # BUG-036: a blank "PR #". When prNumber is absent on disk but a prUrl is
+        # recorded, derive the number from the prUrl trailing /pull/<n> so the
+        # Verify dialog never renders a bare "PR #" while the link is present.
+        if pr_number is None and pr_url:
+            pr_number = _pr_number_from_url(pr_url)
+        review = state.get("review")
+        if not (isinstance(review, str) and review.strip()):
+            review = None
+
+        # S76: the main-ahead reconcile sub-state. While a verify-stage mission with
+        # no PR yet is reconciling with the updated base (merging / re-testing the
+        # merged branch / self-healing via Mission Log children / escalated), run.sh
+        # records reconcileStatus in {"merging","retesting","healing","escalated"}.
+        # Surface it so the card can show a "reconciling with main / re-verifying"
+        # note. Absent ⇒ None (a mission not reconciling). The github adapter forces
+        # None (ADR-006: a read-only forge view cannot see this private sub-state).
+        reconcile_status = state.get("reconcileStatus")
+        if not (isinstance(reconcile_status, str) and reconcile_status.strip()):
+            reconcile_status = None
+
+        # BUG-067 SHARED CONTRACT: alongside reconcileStatus the engine persists
+        # `reconcileNote` (a human-readable summary to show on the card — e.g.
+        # "Reconciled main … re-tested green (8/8). Reapprove to merge." or the
+        # merge-failed reason) and `reconcileMergeSha` (the reconciled tip). The
+        # new statuses `awaiting-reapprove` (heal converged, awaiting the human's
+        # reapprove) and `merge-failed` (push/merge failed — surfaced, not silent)
+        # pass through verbatim on reconcileStatus above. Surface both note/sha so
+        # the card/detail can render the gate + the merge-failed outcome with the
+        # exact summary; absent ⇒ None (present, non-crashing). The github adapter
+        # forces None (ADR-006: a read-only forge view can't see this).
+        reconcile_note = state.get("reconcileNote")
+        if not (isinstance(reconcile_note, str) and reconcile_note.strip()):
+            reconcile_note = None
+        reconcile_merge_sha = state.get("reconcileMergeSha")
+        if not (isinstance(reconcile_merge_sha, str)
+                and reconcile_merge_sha.strip()):
+            reconcile_merge_sha = None
 
         return {
             "id": mid,
@@ -184,6 +305,11 @@ class LocalAdapter(object):
             "awaiting": awaiting,
             "paused": paused,
             "running": running,
+            # BUG-062: was a run actually launched? (events emitted OR a live
+            # driver lock). A filed-but-held mission — parked at estimate-review
+            # with only estimate.json — reads False, so its card shows Start, not
+            # Pause. The front end gates the Start/Pause control on this.
+            "dispatched": dispatched,
             # `queued` (S73): true iff this mission is SCHEDULED in an active
             # resolve-logs batch but has not started driving its wave yet —
             # resolve-logs.sh stamps state.json.queued:true while a child waits
@@ -193,15 +319,35 @@ class LocalAdapter(object):
             # on the boolean. The github adapter forces False (ADR-006).
             "queued": _truthy(state.get("queued")),
             "question": question if awaiting else None,
+            # BUG-027: the legible, type-aware gate envelope (humanSummary /
+            # escalationType / technicalDetail) when awaiting; None otherwise.
+            "gate": gate if awaiting else None,
             "linked": _truthy(state.get("linked")),
             # UX-28: parent mission id for a logged-bug child (None when not a
             # logged-bug child). The github adapter forces None (ADR-006).
             "parentMission": parent_mission,
+            # BUG-033: the parent's issue number, carried on the child so its
+            # "child of #<n>" badge survives the parent leaving the active board.
+            "parentIssue": parent_issue,
+            # S75 Verify PR lifecycle: the open PR + the in-review/merged state.
+            "prUrl": pr_url,
+            "prNumber": pr_number,
+            "review": review,
+            # S76: the main-ahead reconcile sub-state (None when not reconciling).
+            "reconcileStatus": reconcile_status,
+            # BUG-067: the human-readable reconcile summary + the reconciled tip
+            # sha, surfaced so the board can render the awaiting-reapprove gate and
+            # the merge-failed outcome with the exact note (None when absent).
+            "reconcileNote": reconcile_note,
+            "reconcileMergeSha": reconcile_merge_sha,
             "pills": pills,
             "modelMix": model_mix,
             "progress": progress,
             "tickets": tickets,
             "activeSeconds": active_seconds,
+            # BUG-047: the server wall-clock (seconds) at which activeSeconds was
+            # computed — the anchor the front-end live tick re-bases from.
+            "activeSecondsAt": active_seconds_at,
             "_created": state.get("created") or "",
         }
 
@@ -219,6 +365,34 @@ class LocalAdapter(object):
                 "text": _human(ev),
             })
         return feed
+
+
+# --- BUG-017: the in-flight stage from events.jsonl --------------------------
+# state.json.stage is the resume pointer and LAGS the running stage. The truer
+# in-flight stage for a running, non-gated mission is the latest `stage_start`
+# event not yet closed by a `stage_done` (or superseded by a later `stage_start`).
+# events.jsonl is chronological (append-only; run.sh emit_event), so a single
+# forward walk suffices: a `stage_start` opens an in-flight stage; the matching
+# `stage_done` (same stage) closes it; a later `stage_start` supersedes any still
+# open. Returns the canonical column key, or None when there are no stage events
+# (caller falls back to state.json.stage). Crash-proof: any malformed row skipped.
+def _inflight_stage(events):
+    inflight = None
+    for ev in (events or []):
+        if not isinstance(ev, dict):
+            continue
+        typ = ev.get("type")
+        st = ev.get("stage")
+        if typ == "stage_start" and st:
+            inflight = st
+        elif typ == "stage_done" and st:
+            # close the open stage (whether or not it matches — a stage_done means
+            # that stage finished; the next stage_start opens the following one).
+            if inflight is not None and board.normalise_stage(st) == board.normalise_stage(inflight):
+                inflight = None
+    if inflight is None:
+        return None
+    return board.normalise_stage(inflight)
 
 
 # --- ticket + progress derivation (shared shape; mirrors render.sh ideas) ----
@@ -288,7 +462,14 @@ def _progress(waves, events):
         for w in waves:
             tickets_total += len((w.get("tickets") or [])) if isinstance(w, dict) else 0
     cur_wave = None
-    tickets_done = 0
+    # BUG-050: count DISTINCT tickets that reached green — a single ticket can
+    # emit MULTIPLE `ticket_green` events (goes green → ticket_replay_conflict →
+    # serial rebuild → goes green AGAIN), so a naive per-event increment over-
+    # counts ("TICKET 2/1", a >100% bar). Collect the ticket id from each
+    # ticket_green into a set (same `data.ticket` shape _ticket_states reads) and
+    # take its size; then defensively clamp to tickets_total so it can never
+    # exceed the total even on unexpected event streams.
+    green_tickets = set()
     for ev in events:
         if not isinstance(ev, dict):
             continue
@@ -297,7 +478,12 @@ def _progress(waves, events):
             if isinstance(w, int):
                 cur_wave = w
         elif ev.get("type") == "ticket_green":
-            tickets_done += 1
+            tid = (ev.get("data") or {}).get("ticket")
+            if tid:
+                green_tickets.add(tid)
+    tickets_done = len(green_tickets)
+    if tickets_total:
+        tickets_done = min(tickets_done, tickets_total)
     if cur_wave is None and waves_total:
         cur_wave = 1
     wt = waves_total or "?"
@@ -324,6 +510,18 @@ def _human(ev):
     detail = ev.get("detail") or ""
     fmt = _HUMAN.get(t)
     return (fmt % detail) if fmt else detail
+
+
+# --- BUG-036: derive a PR number from a PR url (trailing /pull/<n>) ----------
+_PR_NUM = re.compile(r"/pull/(\d+)")
+
+
+def _pr_number_from_url(url):
+    """The PR number from a GitHub PR url's trailing /pull/<n>, or None."""
+    if not isinstance(url, str):
+        return None
+    m = _PR_NUM.search(url)
+    return int(m.group(1)) if m else None
 
 
 # --- jq-free-equivalent loaders (lenient: bad/absent file → None) ------------
@@ -524,6 +722,15 @@ _AC_HEADER = re.compile(r'^\s*\*\*Acceptance Criteria:\*\*\s*$', re.I)
 _SECTION_HEADER = re.compile(r'^\s*\*\*[^*]+:\*\*\s*$')
 _BULLET = re.compile(r'^\s*[-*]\s+(.*\S)\s*$')
 _CHECKBOX = re.compile(r'^\[( |x|X)\]\s*(.*)$')
+
+
+def _read_text(path):
+    """The verbatim contents of a text file, or "" when it is absent/unreadable."""
+    try:
+        with open(path) as fh:
+            return fh.read()
+    except OSError:
+        return ""
 
 
 def _criteria_from_prd(path):

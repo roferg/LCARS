@@ -55,6 +55,90 @@ appended to your inputs with the gate's verdict and the runner's output. Read it
 it tells you whether your last suite passed-on-nothing or simply did not exercise
 the new behaviour. Use it to write tests that fail until the behaviour exists.
 
+## Shared, DEFENSIVE test doubles (avoid false cross-ticket regressions)
+
+After every ticket is green, the harness re-runs **all** tickets' suites together
+against the integrated code (the full-suite gate). A common failure there is NOT a
+real regression but **mock drift**: each ticket authors its own headless double of
+a host surface (a browser canvas/`2d` context, `Audio`, `Image`, `requestAnimation‑
+Frame`, the DOM, a network/host client…), and the doubles diverge — a method one
+ticket's double omits, but a *later* ticket's production code legitimately calls,
+makes the earlier ticket's suite **crash** (`TypeError: … is not a function`) when
+re-run against the integrated code. The game/feature is correct; only the test
+double is incomplete. To prevent this:
+
+1. **Build on the mission's SHARED test harness, don't re-mock ad hoc.** If the
+   repo's tests already define a shared host/browser double (e.g. a `harness.*` /
+   `setup.*` / test-support helper a prior ticket created), **import and EXTEND
+   it** — add the surface your ticket needs to that one shared double rather than
+   writing a fresh, partial mock private to your file. One coherent double for the
+   whole mission means an earlier suite never crashes on a later ticket's API.
+   (This is about the **test DOUBLE / setup helper**, not a passing test *suite* —
+   you still write your own dedicated, fail-first **test file** per rule 4 above;
+   never append assertions to an already-green suite.)
+2. **Make any host/surface mock DEFENSIVE — stub unknown methods as no-ops.** When
+   you do define or extend a host double (canvas context, audio, etc.), make it
+   tolerant of methods you did not explicitly stub: back it with a fallback so an
+   un-stubbed method call **records or no-ops instead of throwing**. In JS, wrap
+   the double in a `Proxy` whose `get` returns the real stub when present and a
+   harmless no-op function otherwise; in other languages use the equivalent
+   catch-all. A later ticket calling a method your double didn't anticipate then
+   degrades to a no-op (at worst a real behavioural assertion), never a hard crash
+   that fails an unrelated earlier ticket.
+3. **Do not let defensiveness hide a real failure.** A no-op fallback is only for
+   *incidental* surface methods (drawing/audio side-effects you don't assert on).
+   Still assert the **observable behaviour** your ticket's criteria require through
+   the real entrypoints — the fallback must never turn a behaviour you DO test into
+   a silent pass. The red gate still applies: your suite must FAIL until the ticket
+   is built.
+
+## Locate repo sources PORTABLY — NEVER hardcode an absolute path
+
+You are authoring in a throwaway build worktree, but your test is RE-RUN later
+from a CLEAN checkout in a DIFFERENT directory (the full-suite gate). A test that
+opens a repo source (e.g. `game.js`) by an **absolute** path passes here and then
+**ENOENT-fails** there — a spurious "regression" that triggers a futile,
+human-confusing self-heal AND that the Implementer can **never fix** (your test is
+immutable once locked). The harness now **REJECTS** such a test and makes you
+retry, so get it right the first time:
+
+- **MUST** resolve every repo source **relative to the test file's own location** —
+  a walk-up locator from `__dirname` (JS) / the test file's directory (any lang).
+  One robust helper, used by every test that needs the source:
+
+  ```js
+  // RIGHT — portable: walk up from this test file until game.js is found.
+  const fs = require('fs'), path = require('path');
+  function findGameJs() {
+    let dir = __dirname;
+    for (let i = 0; i < 8; i++) {
+      const p = path.join(dir, 'game.js');
+      if (fs.existsSync(p)) return p;
+      const up = path.dirname(dir);
+      if (up === dir) break;
+      dir = up;
+    }
+    throw new Error('game.js not found walking up from ' + __dirname);
+  }
+  const gameSrc = fs.readFileSync(findGameJs(), 'utf8');
+  ```
+
+- **MUST NEVER** hardcode an absolute filesystem path to a source. All of these
+  are forbidden and will be **rejected**:
+
+  ```js
+  // WRONG — absolute build-worktree path; ENOENTs when re-run elsewhere.
+  fs.readFileSync('/private/var/worktrees/t-001/game.js');
+  // WRONG — absolute home path.
+  fs.readFileSync('/Users/you/Projects/app/game.js');
+  // WRONG — any /private/var/folders/... temp path, or a require() of one.
+  require('/private/var/folders/ab/cd/T/game.js');
+  ```
+
+The rule applies to **every** repo source you read, require, import, or open — not
+just `game.js`. Relative paths and the walk-up locator are always fine; absolute
+build-worktree / home / temp paths are never fine.
+
 ## Output — files FIRST
 
 Creating the test file(s) on disk with your file-creation / file-writing tool is

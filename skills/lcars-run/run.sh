@@ -101,6 +101,11 @@ WORKER_ADAPTER="${LCARS_WORKER_ADAPTER:-$SKILL_DIR/worker-adapter.sh}"
 # (awaiting-human or verify). Defaults to the bundled notify.sh; env-injectable
 # (like LCARS_GH_BIN) so tests assert the call without sending anything.
 NOTIFY_BIN="${LCARS_NOTIFY:-$SKILL_DIR/notify.sh}"
+# S76 reconcile: the Mission Log scripts the self-heal routes through. Both are
+# sibling skills after ./install.sh; env-injectable (like LCARS_PR_LIB) so tests
+# can point a stub at them without touching the symlinks.
+LOG_SCRIPT="${LCARS_LOG_SCRIPT:-$SKILL_DIR/../lcars-log/log.sh}"
+RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 # A malformed worker output stops the Stage; the driver re-dispatches up to this
 # many attempts before surfacing failure (no silent advance).
 MAX_WORKER_TRIES="${LCARS_WORKER_TRIES:-3}"
@@ -259,11 +264,39 @@ json_decode_string() { # raw-escaped-body (via $1) → literal string
 # line. New fields are inserted right after the opening brace — always valid
 # because `id` always follows. Untrusted text (question text) is JSON-escaped
 # and handed to awk via the environment so awk never reinterprets its escapes.
-json_escape() { # string → backslash/quote-escaped (printed)
+json_escape() { # string → JSON-string-safe (printed, no surrounding quotes)
+  # Backslash and double-quote first via fast bash substitution; then hand the
+  # result to awk to escape EVERY control character (0x00–0x1F) — newline, tab,
+  # carriage-return get their short forms (\n \t \r), the rest become \u00XX —
+  # so ANY worker-derived text (e.g. a multi-line reconcileDiagnosis) yields
+  # VALID JSON. jq-free, in the house style. Order matters: backslash first so
+  # the escapes we add below are not themselves re-escaped.
   local s="$1"
   s="${s//\\/\\\\}"   # backslashes first…
   s="${s//\"/\\\"}"   # …then double-quotes
-  printf '%s' "$s"
+  # awk does the control-character pass. RS="" + reading the whole record keeps
+  # embedded newlines; we walk byte by byte so we never depend on locale.
+  printf '%s' "$s" | awk '
+    BEGIN {
+      RS="\034"; ORS=""              # record sep that cannot appear in our text
+      # MAP holds the bytes with codes 1..31; index() is 1-based so the position
+      # of a byte in MAP IS its character code. NUL (0x00) cannot reach us
+      # through a bash variable, so it need not be mapped.
+      MAP = ""
+      for (k = 1; k < 32; k++) MAP = MAP sprintf("%c", k)
+    }
+    {
+      n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if      (c == "\n") printf "\\n"
+        else if (c == "\t") printf "\\t"
+        else if (c == "\r") printf "\\r"
+        else { b = index(MAP, c)      # other 0x01–0x1F → \u00XX, else verbatim
+               if (b > 0) printf "\\u%04x", b; else printf "%s", c }
+      }
+    }
+  '
 }
 
 # --- the Mission event log (append-only JSONL) -----------------------------
@@ -765,6 +798,20 @@ write_pending() { # questions-file  stage
   {
     echo '{'
     printf '  "stage": "%s",\n' "$2"
+    # BUG-027: structured, legible escalation fields the viewscreen consumes. They
+    # are OPTIONAL — only emitted when the caller exports them — so every existing
+    # gate (no fields set) writes byte-identical pending.json as before, preserving
+    # back-compat. When present they sit ALONGSIDE the raw question text (never
+    # replacing it): humanSummary (plain-language, GitHub-issue language — no
+    # internal t-XXX ids), escalationType (regression|scope|cap so the UI picks
+    # type-appropriate copy), and technicalDetail (the raw reason + command,
+    # verbatim, where the internal ids may remain).
+    [ -n "${LCARS_PENDING_HUMAN_SUMMARY:-}" ] && \
+      printf '  "humanSummary": "%s",\n' "$(json_escape "$LCARS_PENDING_HUMAN_SUMMARY")"
+    [ -n "${LCARS_PENDING_ESCALATION_TYPE:-}" ] && \
+      printf '  "escalationType": "%s",\n' "$(json_escape "$LCARS_PENDING_ESCALATION_TYPE")"
+    [ -n "${LCARS_PENDING_TECHNICAL_DETAIL:-}" ] && \
+      printf '  "technicalDetail": "%s",\n' "$(json_escape "$LCARS_PENDING_TECHNICAL_DETAIL")"
     echo '  "questions": ['
     awk 'NF{ gsub(/\\/,"\\\\"); gsub(/"/,"\\\""); q[++n]=$0 }
          END{ for(i=1;i<=n;i++) printf "    \"%s\"%s\n", q[i], (i<n?",":"") }' "$1"
@@ -1451,6 +1498,49 @@ $(scratch_globs)
 EOF
 }
 
+# --- resolve a mission's RECORDED base as a git ref -------------------------
+# A mission's branch must be born from its OWN recorded base (state.json `base`,
+# default `main`), NEVER from whatever HEAD the shared $REPO_ROOT happens to be
+# on — under two concurrent missions in one clone that ambient HEAD is the OTHER
+# mission's branch, so a born-from-HEAD branch inherits the sibling's commits
+# (the second contamination vector — branch CREATION, distinct from the replay
+# race). Resolution order mirrors reconcile_base_ref: the remote-tracking ref
+# first, then the local branch. Echoes the ref (empty ⇒ unresolvable, e.g. a
+# brand-new local repo whose base is the initial unborn HEAD).
+mission_base_ref() { # → echoes refs/remotes/origin/<base> | refs/heads/<base> | ""
+  local base; base="$(json_str "$STATE" base)"; base="${base:-main}"
+  if "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$base"; then
+    printf 'refs/remotes/origin/%s' "$base"
+  elif "$GIT_BIN" show-ref --verify --quiet "refs/heads/$base"; then
+    printf 'refs/heads/%s' "$base"
+  fi
+}
+
+# --- create the mission branch from its recorded base, idempotently, LOCKED --
+# Guarantees `refs/heads/$branch` exists and is rooted at the mission's recorded
+# base BEFORE any ticket builds. Done up front in cmd_implement so:
+#   • make_ticket_worktree ALWAYS finds the branch → every ticket builds in a
+#     worktree cut from the CORRECT base (never the in-tree fallback), and
+#   • the in-tree `checkout -b` fallback in commit_ticket never has to CREATE
+#     the branch from the ambient (possibly sibling-mission) HEAD.
+# The create runs under the EXISTING repo-global replay mutex so two concurrent
+# missions in one clone can't race the existence check ↔ create. Idempotent: a
+# branch that already exists is left exactly as-is (no reset — a re-entered or
+# resumed mission keeps its commits). Best-effort: an unresolvable base (unborn
+# initial HEAD) leaves the branch uncreated and the original in-tree fallback
+# still handles it. Single-mission runs take an uncontended lock (near-zero).
+ensure_mission_branch() { # branch
+  local branch="$1"
+  [ -n "$branch" ] || return 0
+  acquire_replay_lock
+  if ! "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+    local ref; ref="$(mission_base_ref)"
+    [ -n "$ref" ] && "$GIT_BIN" branch "$branch" "$ref" >/dev/null 2>&1 || :
+  fi
+  release_replay_lock
+  return 0
+}
+
 # --- commit a green ticket's produced files to the mission branch -----------
 # The Test Writer / Implementer write real files into the working tree; for the
 # PR to have content those files must be committed to the Mission's branch (the
@@ -1480,8 +1570,26 @@ commit_ticket() { # ticket  summary
         "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 \
           || { COMMIT_NOTE="  ⚠ could not checkout $branch — commit ticket $1 by hand."; return 0; }
       else
-        "$GIT_BIN" checkout -b "$branch" >/dev/null 2>&1 \
-          || { COMMIT_NOTE="  ⚠ could not create $branch — commit ticket $1 by hand."; return 0; }
+        # Defense-in-depth (branch-CREATION contamination): cmd_implement already
+        # created the branch up front from the mission's recorded base under the
+        # lock, so this path should be unreachable. If it IS reached, NEVER use
+        # `checkout -b` (which would root the branch at the ambient $REPO_ROOT
+        # HEAD — under concurrency a SIBLING mission's branch). Create it from the
+        # resolved base ref, atomically under the SAME replay mutex, then check it
+        # out. Falls back to the old behaviour only if the base is unresolvable.
+        acquire_replay_lock
+        if ! "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+          local _bref; _bref="$(mission_base_ref)"
+          [ -n "$_bref" ] && "$GIT_BIN" branch "$branch" "$_bref" >/dev/null 2>&1 || :
+        fi
+        release_replay_lock
+        if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+          "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 \
+            || { COMMIT_NOTE="  ⚠ could not checkout $branch — commit ticket $1 by hand."; return 0; }
+        else
+          "$GIT_BIN" checkout -b "$branch" >/dev/null 2>&1 \
+            || { COMMIT_NOTE="  ⚠ could not create $branch — commit ticket $1 by hand."; return 0; }
+        fi
       fi
     fi
   fi
@@ -1604,6 +1712,40 @@ resolve_test_cmd() {
   printf '%s' "$c"
 }
 
+# --- BUG-022: distinguish a compile/load failure from a valid assertion red --
+# The red gate wants the quarantined suite RED before the Implementer runs, but a
+# Test-Writer that emits a NON-COMPILING test (a SyntaxError, an import/parse error,
+# a load-time ReferenceError, or a leftover placeholder token like `<REPLACE>`)
+# also exits non-zero — and the gate would (wrongly) accept that as "valid red" and
+# hand a NON-RUNNABLE contract to the Implementer. The Implementer cannot edit the
+# immutable test to fix a syntax error, so it flags the ticket after one attempt.
+# We therefore triage the runner OUTPUT: a CLEAR compile/load failure is REJECTED
+# back to the Test-Writer (re-author, with the runner's error as feedback) via the
+# SAME RED_GATE_SIGNAL loop a trivially-green suite uses; a normal assertion failure
+# still passes the red gate untouched. Conservative by design — only signatures that
+# unambiguously mean "the file did not even load" divert; anything else is a real red.
+#
+# Signatures (node runner + an engine placeholder leak):
+#   • SyntaxError / parse error                     (SyntaxError, Unexpected token/identifier/end of input)
+#   • module load failure                           (Cannot find module, ERR_MODULE_NOT_FOUND, ERR_REQUIRE_ESM)
+#   • a load-time ReferenceError                    (… is not defined  — a symbol unresolved before any test ran)
+#   • an unsubstituted Test-Writer placeholder      (<REPLACE>, <TODO>, <PLACEHOLDER>, etc.)
+# Returns 0 (compile/load failure detected) or 1 (none).
+red_gate_compile_failure() { # runner-output → 0 if a compile/load failure signature is present
+  local out="$1"
+  # An unsubstituted placeholder token the Test-Writer left behind is a guaranteed
+  # parse failure (e.g. copilot's `const track<REPLACE> = …`). Catch it directly.
+  case "$out" in
+    *'<REPLACE>'*|*'<PLACEHOLDER>'*|*'<TODO>'*|*'<FILL'*|*'<INSERT'*) return 0 ;;
+  esac
+  # node/JS compile + load signatures, plus a generic interpreter parse error. These
+  # are emitted to stderr (which the gate captures with 2>&1) BEFORE any test runs.
+  printf '%s' "$out" | grep -Eq \
+    'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)' \
+    && return 0
+  return 1
+}
+
 # --- GUARDRAIL 1: the red gate ----------------------------------------------
 # BUG-007 contract. Run the configured test command against ONLY the just-written
 # QUARANTINED tests, with NO implementation present, and decide on the quarantined
@@ -1679,6 +1821,27 @@ red_gate_ok() { # quarantined-tests-dir
       fi
       return 1
     fi
+    # BUG-022: the command reacted to the var, but a non-zero exit is only a VALID
+    # red when the suite failed on ASSERTIONS. If the runner output carries a clear
+    # COMPILE/LOAD failure (SyntaxError, import/parse error, a load-time unresolved
+    # symbol, or an unsubstituted placeholder token), the test file did not even run
+    # — handing it to the Implementer is a dead end (it cannot edit the immutable
+    # test to fix the syntax). REJECT it back to the Test-Writer with the runner's
+    # error as feedback, the SAME loop a trivially-green suite uses. Conservative:
+    # only a clear compile/load signature diverts; a normal assertion failure falls
+    # through to the accept below, exactly as before.
+    if red_gate_compile_failure "$out"; then
+      reason="RED GATE — the quarantined suite did NOT fail on an assertion: it failed to COMPILE / LOAD (a SyntaxError, import/parse error, a load-time unresolved symbol, or a leftover placeholder token), so the test file never ran. A non-runnable contract cannot be handed to the Implementer (it must not edit the immutable tests to fix a syntax error). Re-author the test so it PARSES and LOADS cleanly, then FAILS on its assertions until the behaviour exists. Command run: $cmd. Runner output (quarantined run):
+$(printf '%s' "$out" | tail -20)"
+      printf '  ✗ %s\n' "$reason" >&2
+      if [ -n "$RED_GATE_SIGNAL" ]; then
+        {
+          printf 'rc=%s (the quarantined-tests run failed to COMPILE/LOAD — NOT a valid assertion red)\n' "$rc"
+          printf '%s\n' "$reason"
+        } >"$RED_GATE_SIGNAL"
+      fi
+      return 1
+    fi
     # The command reacted to the var → the non-zero exit is a genuine red of the
     # quarantined tests. Safe to hand off.
     return 0
@@ -1743,6 +1906,52 @@ suite_has_assertions() { # tests-dir
   grep -rEiq 'assert|expect|should|\.to[A-Za-z]|require\(|t\.(is|deep|truthy|throws)|check\(|verify\(' "$1" 2>/dev/null
 }
 
+# --- GUARDRAIL 3.5: portable source location (BUG-074) ----------------------
+# A ticket test that loads a repo source (e.g. game.js) via a HARDCODED ABSOLUTE
+# build-worktree path — `fs.readFileSync('/private/var/worktrees/t-001/game.js')`
+# — passes in the worktree it was authored in (the ticket goes green) but ENOENTs
+# when the full-suite gate re-runs the suite from a CLEAN checkout elsewhere. That
+# spurious "regression" triggers a futile (billed) implement self-heal and a
+# confusing escalation, and the Implementer can NEVER fix it: the bad path lives
+# in the immutable/locked test. The robust fix is to REJECT such a test before it
+# locks in, so the Test Writer retries with a portable walk-up locator.
+#
+# `nonportable_path_in_tests` echoes the FIRST offending "<file>:<path>" and
+# returns 0 (found) / 1 (clean). It is deliberately PRECISE so it does not
+# false-positive on legitimate relative paths or on paths mentioned in comments:
+#   • Only flags an ABSOLUTE path under a known non-portable, host-/run-specific
+#     root: a `/private/var/` (or `/var/folders/`, `/private/var/folders/`) temp
+#     path, a `…/worktrees/…` build-worktree segment, or an absolute `/Users/`
+#     home path. A bare relative path (`../game.js`, `./fixtures/x`) is never
+#     flagged.
+#   • Only when that path is consumed by a path-OPENING construct on the same line
+#     (readFileSync/readFile/createReadStream/openSync/require/import/fs.* path
+#     args, or a Python open()/Path()) — not arbitrary string mentions.
+#   • Skips lines that are pure comments (`//`, `#`, or `*` leader).
+nonportable_path_in_tests() { # tests-dir → echoes "file:offending-path", rc 0 if found
+  local d="$1"
+  # The non-portable absolute roots that won't survive relocation. A path is one
+  # of: /private/var/..., /var/folders/..., any .../worktrees/... segment, /Users/...
+  local pathpat='(/private/var/[^"'"'"'`) ]+|/var/folders/[^"'"'"'`) ]+|/[^"'"'"'`) ]*/worktrees/[^"'"'"'`) ]+|/Users/[^"'"'"'`) ]+)'
+  # A path-opening construct that consumes such a literal on the same line.
+  local loadpat='(readFileSync|readFile|createReadStream|openSync|writeFileSync|require|import|fs\.[A-Za-z]+|path\.(resolve|join)|[^A-Za-z_]open|Path)\b'
+  local rel hit
+  while IFS= read -r rel; do
+    rel="${rel#./}"
+    # Strip pure-comment lines, then require BOTH a load construct AND a
+    # non-portable absolute literal on the same surviving line.
+    hit="$(grep -nE "$loadpat" "$d/$rel" 2>/dev/null \
+            | grep -vE '^[0-9]+:[[:space:]]*(//|#|\*)' \
+            | grep -oE "$pathpat" \
+            | head -n1)"
+    if [ -n "$hit" ]; then
+      printf '%s:%s' "$rel" "$hit"
+      return 0
+    fi
+  done < <(cd "$d" && find . -type f | LC_ALL=C sort)
+  return 1
+}
+
 # --- subcommand: impl-save-tests -------------------------------------------
 cmd_impl_save_tests() {
   locate_mission "$MISSION_ID"
@@ -1760,6 +1969,15 @@ cmd_impl_save_tests() {
   # that proves nothing.
   suite_has_assertions "$TESTS" \
     || die "the Test Writer's suite asserts nothing — no assertion found in any test file. A zero-assertion contract proves nothing; rejected by the test-quality guardrail."
+
+  # GUARDRAIL 3.5 (BUG-074): reject a NON-PORTABLE test before it locks in. A test
+  # that loads a repo source via a hardcoded absolute build-worktree path passes in
+  # the worktree it was authored in but ENOENTs from the full-suite gate, poisoning
+  # it with a spurious regression the Implementer can never fix (the path lives in
+  # the immutable test). Fail the attempt so the Test Writer retries portably.
+  local bad_path; bad_path="$(nonportable_path_in_tests "$TESTS" || true)"
+  [ -z "$bad_path" ] \
+    || die "ticket test hardcodes an absolute path ${bad_path#*:} (in ${bad_path%%:*}) — tests must locate sources via the portable walk-up (e.g. a findGameJs() that walks up from __dirname), never an absolute build-worktree path; rejecting so the Test Writer retries."
 
   # Quarantine the files to tickets/<id>/tests/. That dir is the sole handoff to
   # the Implementer, so Phase 1 output never leaks into the working tree.
@@ -2119,6 +2337,45 @@ EOF
 # — it does not weaken the per-ticket red/green gate, the immutable-test snapshot,
 # or the test-quality check. With NO runner configured it SKIPS LOUD (never a
 # false pass and never a false fail), matching the red gate's no-runner stance.
+# --- SHARED: re-run every named ticket's quarantined suite against a given tree -
+# Extracted from full_suite_gate (BUG-013) so BOTH the full-suite gate AND the
+# S76 reconcile gate re-test ticket suites the SAME way: stage each ticket's
+# `tests/` at a DEPTH-1 dir under the run tree (so a test that resolves its target
+# relative to its own location finds it at the repo root, exactly as at green-time),
+# then run the configured testCommand from that tree with $LCARS_TESTS_DIR pointing
+# at the staged dir. $run_dir is the tree to run against (a worktree at the branch
+# tip for the gate, the reconcile merge worktree for the reconcile). On any per-
+# ticket non-zero exit the ticket id is appended to the global $RETEST_FAILED list,
+# and (when $RETEST_CAPTURE is set) its combined stdout/stderr is captured to
+# $RETEST_CAPTURE/<id>.log so the reconcile author can quote the failure. Returns 0
+# iff every suite passed. $RETEST_FAILED / $RETEST_FAILED is reset by the caller.
+RETEST_FAILED=""     # space-separated ticket ids that failed the last retest
+RETEST_CAPTURE=""    # caller may point this at a dir to capture per-ticket output
+retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
+  local run_dir="$1" cmd="$2"; shift 2
+  RETEST_FAILED=""
+  local stage_dir="$run_dir/.lcars-retest"
+  local id tdir rc out
+  for id in "$@"; do
+    [ -n "$id" ] || continue
+    tdir="$(ticket_dir "$id")/tests"
+    # Defensive: a green ticket should always have a quarantined suite. If one is
+    # missing we skip it rather than crash — we never INVENT a failure.
+    [ -d "$tdir" ] || continue
+    # Recreate the staging dir empty per ticket so suites never bleed together.
+    rm -rf "$stage_dir"; mkdir -p "$stage_dir"
+    ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
+    rc=0
+    out="$( cd "$run_dir" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" 2>&1 )" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      RETEST_FAILED="${RETEST_FAILED:+$RETEST_FAILED }$id"
+      [ -n "$RETEST_CAPTURE" ] && { mkdir -p "$RETEST_CAPTURE"; printf '%s\n' "$out" >"$RETEST_CAPTURE/$id.log"; }
+    fi
+  done
+  rm -rf "$stage_dir" 2>/dev/null || :
+  [ -z "$RETEST_FAILED" ]
+}
+
 FULL_SUITE_SIGNAL=""   # caller may point this at a file to capture the regression detail
 full_suite_gate() { # ordered ticketId...
   local cmd; cmd="$(resolve_test_cmd)"
@@ -2140,30 +2397,21 @@ full_suite_gate() { # ordered ticketId...
   # regression. To re-run each suite in the SAME condition it was locked under, we
   # cut ONE clean detached worktree at the mission-branch tip (all tickets' code
   # present) and stage each ticket's tests at a DEPTH-1 dir under that worktree
-  # root, so their relative target-resolution works exactly as when they were green.
+  # root via the shared retest_ticket_suites helper (also used by the reconcile).
   local branch; branch="$(json_str "$STATE" branch)"
   local wt_base="$MISSION_DIR/fullsuite-wt" wt=""
   wt="$(make_ticket_worktree "$wt_base" "$branch" "all")"
-  local id tdir rc regressed=""
+  local regressed=""
+  # BUG-018/BUG-019: capture each failing suite's runner output so we can tell a
+  # mock/harness TypeError (an incomplete per-ticket test double — a harness gap)
+  # apart from a real assertion failure. The capture dir is scanned below and
+  # discarded; it never leaks.
+  local cap; cap="$MISSION_DIR/.fullsuite-cap"; rm -rf "$cap"
   if [ -n "$wt" ]; then
     # WORKTREE MODE: a real mission branch exists. Re-run each suite from the clean
-    # tip with the tests at a depth-1 dir, so relative-to-self target resolution
-    # behaves as it did at green-time.
-    local stage_dir="$wt/.lcars-fullsuite"
-    for id in "$@"; do
-      [ -n "$id" ] || continue
-      tdir="$(ticket_dir "$id")/tests"
-      # Defensive: a green ticket should always have a quarantined suite. If one is
-      # missing we skip it rather than crash — we never INVENT a regression.
-      [ -d "$tdir" ] || continue
-      # Recreate the staging dir empty per ticket so suites never bleed together.
-      rm -rf "$stage_dir"; mkdir -p "$stage_dir"
-      ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
-      rc=0
-      ( cd "$wt" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
-      [ "$rc" -ne 0 ] && regressed="${regressed:+$regressed }$id"
-    done
-    rm -rf "$stage_dir" 2>/dev/null || :
+    # tip via the shared helper, so relative-to-self target resolution behaves as
+    # it did at green-time.
+    RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" "$@" || regressed="$RETEST_FAILED"
     # Clean up the worktree on EVERY exit path — never leak into the captain's
     # `git worktree list` or working tree. Mirrors cleanup_ticket_worktrees.
     "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
@@ -2172,19 +2420,186 @@ full_suite_gate() { # ordered ticketId...
   else
     # FALLBACK (no mission branch — a branch-less / local-only mission): keep the
     # original in-tree behaviour, running each suite from $REPO_ROOT.
-    for id in "$@"; do
-      [ -n "$id" ] || continue
-      tdir="$(ticket_dir "$id")/tests"
-      [ -d "$tdir" ] || continue
-      rc=0
-      ( cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
-      [ "$rc" -ne 0 ] && regressed="${regressed:+$regressed }$id"
-    done
+    RETEST_CAPTURE="$cap" retest_ticket_suites "$REPO_ROOT" "$cmd" "$@" || regressed="$RETEST_FAILED"
   fi
-  [ -z "$regressed" ] && return 0
+  if [ -z "$regressed" ]; then rm -rf "$cap" 2>/dev/null; return 0; fi
   local detail="FULL-SUITE GATE — these earlier ticket suite(s) no longer pass against the fully-built repo: ${regressed}. Each was green when built, so a LATER ticket's produced code REGRESSED its locked contract. The Mission is NOT shippable until the regression is resolved (fix the later ticket or re-open the regressed ticket). Command run: $cmd."
+  # Harness-gap detection (BUG-019): if any captured failing-suite output mentions a
+  # TypeError / undefined-method surface, this is very likely an INCOMPLETE per-ticket
+  # MOCK (an earlier ticket's headless browser/host double lacks a method a later
+  # ticket's code legitimately calls) rather than a real assertion failure. Flag that
+  # in the detail so the captain knows completing the mock may be the fix, not
+  # weakening an assertion. Pure string scan over the captured output — best-effort.
+  if [ -d "$cap" ] && grep -RqiE 'TypeError|is not a function|is not defined|undefined is not' "$cap" 2>/dev/null; then
+    detail="$detail
+
+NOTE: a failing suite's output mentions a TypeError / undefined surface — this often means a per-ticket test MOCK is incomplete (a HARNESS GAP, not a real assertion failure: see BUG-019). Completing the earlier ticket's mock (stub the missing method, or share one defensive per-mission double) may be the fix, rather than weakening an assertion."
+  fi
+  rm -rf "$cap" 2>/dev/null
   printf '  ✗ %s\n' "$detail" >&2
   [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$detail" >"$FULL_SUITE_SIGNAL"
+  return 1
+}
+
+# --- BUG-027: translate internal t-XXX ticket ids → GitHub issue language ----
+# The human-facing copy must speak the board's language. Given a space-separated
+# list of internal ticket ids, echo a human string mapping each to its GitHub
+# issue number (#N, via the Schedule-written waves.json issue field) — or, when a
+# ticket has no mapped issue, to its plan title (never the raw t-XXX). Used to
+# build humanSummary; the raw t-XXX stays only in technicalDetail.
+tickets_to_issues() { # ticketId...
+  local waves="$MISSION_DIR/waves.json" plan="$MISSION_DIR/approved-plan.json"
+  local out="" id issue title piece
+  for id in "$@"; do
+    [ -n "$id" ] || continue
+    issue=""
+    [ -f "$waves" ] && issue="$(ticket_issue "$waves" "$id")"
+    case "$issue" in
+      ''|null) issue="" ;;
+    esac
+    if [ -n "$issue" ]; then
+      piece="issue #$issue"
+    else
+      title=""
+      [ -f "$plan" ] && title="$(ticket_title "$plan" "$id" 2>/dev/null || true)"
+      if [ -n "$title" ]; then piece="\"$title\""; else piece="$id"; fi
+    fi
+    out="${out:+$out, }$piece"
+  done
+  printf '%s' "$out"
+}
+
+# Pull a ticket's title from a plan/approved-plan.json (jq-free) for the t-XXX
+# fallback above. Best-effort; empty when not found.
+ticket_title() { # plan.json  ticketId
+  awk -v want="$2" '
+    /"id"[[:space:]]*:/    { n=split($0,a,"\""); if (n>=4) cur=a[4]; next }
+    /"title"[[:space:]]*:/ { if (cur==want) {
+        v=$0; sub(/.*"title"[[:space:]]*:[[:space:]]*"/,"",v); sub(/".*/,"",v)
+        print v; exit } }
+  ' "$1"
+}
+
+# --- BUG-027: clean, legible escalation of a full-suite regression ----------
+# Mirrors the BUG-018 awaiting-human escalation (validate-pause shape), but ALSO
+# writes the structured fields the viewscreen consumes: a plain-language
+# humanSummary in GitHub-issue language (t-XXX translated), escalationType=
+# "regression", and the verbatim raw reason as technicalDetail (where t-XXX may
+# remain). The existing question text is preserved for back-compat. Reached only
+# AFTER self-heal exhausts its cap (genuinely irreducible).
+escalate_full_suite_regression() { # reason  ordered ticketId...
+  local reason="$1"; shift
+  local ordered="$*"
+  # The regressing (just-built, latest-in-plan-order) ticket and, when the gate
+  # named the regressed earlier suites, those tickets — translated to issue #s.
+  local regressor=""; for regressor in $ordered; do :; done   # last id in plan order
+  local regressed_ids; regressed_ids="$(printf '%s\n' "$reason" \
+    | sed -n 's/.*no longer pass against the fully-built repo: \([^.]*\)\..*/\1/p' | head -1)"
+  local victims; victims="$(tickets_to_issues $regressed_ids)"
+  local culprit; culprit="$(tickets_to_issues "$regressor")"
+  local summary
+  if [ -n "$victims" ]; then
+    summary="Two changes conflict — the fix for $culprit re-broke a test from $victims. Reply with how to reconcile them, send the mission back to re-fix, or drop one."
+  else
+    summary="A change conflicts with the rest of the branch and the harness could not auto-reconcile it. Reply with how to reconcile, or send the mission back to re-fix."
+  fi
+
+  local q; q="$(mktemp)"
+  printf '%s\n' "$reason" >"$q"
+  LCARS_PENDING_HUMAN_SUMMARY="$summary" \
+  LCARS_PENDING_ESCALATION_TYPE="regression" \
+  LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
+    write_pending "$q" "implement"
+  rm -f "$q"
+  state_set_raw awaitingHuman true
+  state_set_str pendingQuestion "$summary"
+  # In-flight stage label (implement) first, THEN the awaiting-human overlay, so
+  # the parked card sits squarely in the Implement column (mirror validate-pause).
+  gh_relabel "lcars:implement lcars:awaiting-human" ""
+
+  emit_event gate implement "full-suite regression — self-heal exhausted, awaiting your answer: $summary" \
+    "phase=full-suite-gate"
+
+  echo "IMPLEMENT: full-suite regression — self-heal exhausted, flagged the human"
+  printf '%s\n' "$summary"
+  echo "  Stage: implement (awaiting-human). Resolve with \`lcars respond $MISSION_ID\`."
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+}
+
+# --- BUG-029: self-heal a full-suite regression before escalating -----------
+# Auto-iterate the implementer of the regressing (latest-in-plan-order) ticket
+# with a harness-authored reconcile instruction, re-running the full-suite gate
+# after each attempt, up to a cap. Reuses the EXISTING implement-ticket
+# re-dispatch + LCARS_REUSE_TESTS path (the locked tests stay immutable — only the
+# Implementer re-runs), mirroring the S76 reconcile / same-file rebuild loops.
+# Returns 0 once every suite passes again (healed), non-zero when the cap is hit
+# (caller escalates). The last failing reason is written to $SELFHEAL_LAST_REASON.
+SELFHEAL_CAP="${LCARS_SELFHEAL_CAP:-3}"
+case "$SELFHEAL_CAP" in ''|*[!0-9]*) SELFHEAL_CAP=3 ;; esac
+SELFHEAL_LAST_REASON=""
+self_heal_full_suite() { # reason  ordered ticketId...
+  local reason="$1"; shift
+  local ordered="$*"
+  SELFHEAL_LAST_REASON="$MISSION_DIR/selfheal-last-reason.txt"
+  printf '%s\n' "$reason" >"$SELFHEAL_LAST_REASON"
+
+  # The regressing ticket is the latest one built (last in plan order).
+  local regressor=""; for regressor in $ordered; do :; done
+  [ -n "$regressor" ] || return 1
+
+  # Resolve the worktree base + branch the same way cmd_implement's rebuild does so
+  # the re-dispatched implementer composes on the CURRENT mission-branch tip.
+  local branch; branch="$(json_str "$STATE" branch)"
+  local wt_base="$MISSION_DIR/selfheal-wt"
+
+  local round=0 fssig
+  while [ "$round" -lt "$SELFHEAL_CAP" ]; do
+    round=$((round + 1))
+    emit_event selfheal implement "self-heal round $round/$SELFHEAL_CAP — re-running $regressor's implementer to reconcile the regression" \
+      "ticket=$regressor" "round=$round"
+
+    # Re-dispatch ONLY the regressing ticket's Implementer with the reconcile
+    # feedback. LCARS_REUSE_TESTS keeps the locked tests immutable (Phase 1 is
+    # skipped), so only production code can change — never the contract.
+    local irc=0
+    rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null
+    LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    LCARS_TICKET_WT_BASE="$wt_base" LCARS_TICKET_BRANCH="$branch" LCARS_REUSE_TESTS=1 \
+    LCARS_SELFHEAL_FEEDBACK="$(cat "$SELFHEAL_LAST_REASON")" \
+      bash "$SELF" implement-ticket --mission "$MISSION_ID" --ticket "$regressor" >/dev/null 2>&1 || irc=$?
+
+    # A flagged ticket (its own 5-attempt cap) set awaitingHuman in shared state —
+    # the per-ticket attempt cap already handled it; stop self-healing here.
+    if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
+      emit_event selfheal implement "self-heal round $round flagged the ticket's own attempt cap — stopping self-heal" \
+        "ticket=$regressor" "round=$round"
+      return 1
+    fi
+
+    # Cherry-pick the rebuild's fresh commit onto the mission branch (the worktree
+    # build committed on a detached HEAD), exactly like the same-file rebuild path,
+    # so the full-suite gate re-runs against the integrated tip.
+    local sha; sha="$(cat "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null || true)"
+    if [ -n "$sha" ] && [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+      "$GIT_BIN" -C "$REPO_ROOT" checkout -q "$branch" 2>/dev/null || :
+      "$GIT_BIN" -C "$REPO_ROOT" cherry-pick "$sha" >/dev/null 2>&1 \
+        || "$GIT_BIN" -C "$REPO_ROOT" cherry-pick --abort >/dev/null 2>&1 || :
+    fi
+
+    # Re-run the full-suite gate. Green → healed.
+    fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
+    if FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
+      rm -f "$fssig"
+      emit_event selfheal_ok implement "self-heal succeeded in round $round — every suite passes again" \
+        "ticket=$regressor" "round=$round"
+      return 0
+    fi
+    [ -f "$fssig" ] && cp "$fssig" "$SELFHEAL_LAST_REASON"
+    rm -f "$fssig"
+  done
+
+  emit_event selfheal_exhausted implement "self-heal exhausted $SELFHEAL_CAP round(s) — regression is irreducible, escalating" \
+    "ticket=$regressor" "rounds=$SELFHEAL_CAP"
   return 1
 }
 
@@ -2220,10 +2635,31 @@ EOF
   # any regression, naming the regressed earlier ticket.
   local fssig; fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
   if ! FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
-    local why=""; [ -f "$fssig" ] && why="
-$(cat "$fssig")"
+    local reason="a cross-ticket regression was detected by the full-suite gate"
+    [ -f "$fssig" ] && reason="$(cat "$fssig")"
     rm -f "$fssig"
-    die "the Mission cannot advance to Verify — a cross-ticket regression was detected by the full-suite gate.$why"
+
+    # BUG-029: SELF-HEAL BEFORE escalating. A full-suite regression is a
+    # MECHANICALLY-RECONCILABLE failure — a later ticket's change broke an earlier
+    # ticket's locked contract — exactly the kind of fix an implementer can be told
+    # to make (the captain otherwise hand-types "reconcile so test T passes; don't
+    # touch the locked contract"). So auto-iterate the implementer of the regressing
+    # (just-built, latest-in-plan-order) ticket with that harness-authored feedback,
+    # re-run the full-suite gate, and only escalate to the human AFTER the cap. This
+    # reuses the SAME implement-ticket re-dispatch + LCARS_REUSE_TESTS machinery the
+    # S76 reconcile / same-file rebuild already drive (the locked tests stay
+    # immutable — only the Implementer re-runs). The full-suite gate (BUG-013) is
+    # never weakened: it must still pass for the loop to clear.
+    if self_heal_full_suite "$reason" $ordered; then
+      # Healed: every suite passes again. Advance to Verify (fall through below).
+      reason=""
+    else
+      # Cap exhausted → genuinely irreducible. Escalate cleanly (BUG-018 path) with
+      # BUG-027's structured, legible fields.
+      reason="$(cat "$SELFHEAL_LAST_REASON" 2>/dev/null || printf '%s' "$reason")"
+      escalate_full_suite_regression "$reason" $ordered
+      exit 0
+    fi
   fi
   rm -f "$fssig"
 
@@ -2282,9 +2718,845 @@ EOF
 
   echo "  Test results: $green/$total ticket(s) green across $nwaves wave(s)."
   echo "  Review the changes and run the app if needed."
-  echo "    lcars approve $MISSION_ID    — create the PR"
+  echo "    lcars approve $MISSION_ID    — merge the PR (ship it)"
   echo "    lcars feedback $MISSION_ID   — send back with feedback"
   exit 0
+}
+
+# === open-pr (S75): Verify AUTO-OPENS the PR =================================
+# When the driver reaches Verify with no PR yet, it opens the PR by REUSING the
+# shared pr-lib.sh open_pr (the same title/body/manifest builders approve used
+# to carry), records prUrl/prNumber + a `review:"open"` sub-state into state.json,
+# and stays at the verify stage — the Mission is "in review — PR open", NOT Done.
+# Idempotent: a recorded prUrl means open_pr returns the existing URL and opens
+# no second PR. Degrades gracefully: any precondition failure `die`s (non-zero,
+# no review marker) so a card never reads "in review" with no PR behind it.
+#
+#   open-pr  --mission <id>
+cmd_open_pr() {
+  locate_mission "$MISSION_ID"
+  require_stage verify
+
+  # BUG-026: a Mission-Log bug child (parentMission set) FOLDS its fix onto the
+  # PARENT Mission's branch — the parent's PR carries it; the bug has NO PR of its
+  # own. Only TOP-LEVEL Missions open a PR. So for a parentMission mission, skip
+  # the PR-open entirely (no pr_opened, no degraded gate) — resolve-logs drives it
+  # to the parent's single consolidated re-verify gate.
+  local parent; parent="$(json_str "$STATE" parentMission)"
+  if [ -n "$parent" ] && [ "$parent" != "null" ]; then
+    echo "OPEN-PR: skipped — Mission-Log bug child (parent $parent); its fix folds onto the parent's branch (no per-bug PR)."
+    exit 0
+  fi
+
+  # The PR-open library lives with approve (its other consumer). After
+  # ./install.sh both skills are symlinked siblings; $LCARS_PR_LIB overrides the
+  # path so tests can point at the source tree.
+  local pr_lib="${LCARS_PR_LIB:-$SKILL_DIR/../lcars-approve/pr-lib.sh}"
+  [ -f "$pr_lib" ] || die "pr-lib.sh not found at $pr_lib — cannot open the PR."
+  # shellcheck source=skills/lcars-approve/pr-lib.sh
+  . "$pr_lib"
+
+  BRANCH="$(json_str "$STATE" branch)"
+  BASE="$(json_str "$STATE" base)"; BASE="${BASE:-main}"
+
+  # Already recorded? Idempotent — open_pr returns the existing URL, opens none.
+  local existing; existing="$(json_str "$STATE" prUrl)"
+  case "$existing" in
+    http*|*/pull/*)
+      echo "OPEN-PR: already open — $existing"
+      exit 0 ;;
+  esac
+
+  open_pr   # sets PR_URL, records prUrl/prNumber; dies on any precondition fail.
+
+  # Record the in-review sub-state so the board shows "in review — PR open".
+  state_set_str review "open"
+  emit_event pr_opened verify "PR opened — $PR_URL"
+
+  echo "OPEN-PR: opened — $PR_URL"
+  echo "  Stage:  verify (in review — PR open)"
+  exit 0
+}
+
+# === S76: main-ahead reconcile + self-heal =================================
+# Before Verify opens the PR, integrate like a real engineer: if the mission
+# branch's base (main) has MOVED AHEAD since the branch was cut, MERGE the updated
+# base into the branch in an ISOLATED worktree, re-run the mission's OWN ticket
+# suites against the combined state, and — if anything breaks (textual conflict OR
+# a silent logical conflict the re-test catches) — self-dispatch detailed Mission
+# Log(s) authored from the failure and drive the fixes onto the branch through the
+# EXISTING lcars log → resolve-logs → complete machinery, iterating to green. Only
+# once green-against-updated-main does Verify proceed to open the PR. After K rounds
+# still red → escalate (awaiting-human). NEVER opens a PR on a stale-and-broken
+# branch. Reuse, don't fork.
+RECONCILE_MAX="${LCARS_RECONCILE_MAX:-3}"
+case "$RECONCILE_MAX" in ''|*[!0-9]*) RECONCILE_MAX=3 ;; esac
+
+# Resolve the base ref to merge from, preferring the remote-tracking ref (best-
+# effort fetched first). Echoes the ref (empty = unresolvable).
+reconcile_base_ref() { # BASE BRANCH (in caller scope)
+  "$GIT_BIN" fetch origin "$BASE" --quiet 2>/dev/null || true
+  if "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$BASE"; then
+    printf 'refs/remotes/origin/%s' "$BASE"
+  elif "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BASE"; then
+    printf 'refs/heads/%s' "$BASE"
+  fi
+}
+
+# The ordered green tickets whose suites we re-test (waves order = plan order).
+reconcile_ordered_tickets() {
+  local waves="$MISSION_DIR/waves.json" table w id ordered=""
+  [ -f "$waves" ] || return 0
+  table="$(parse_waves_table "$waves")"
+  while IFS=$'\t' read -r w id; do
+    [ -n "$id" ] && ordered="${ordered:+$ordered }$id"
+  done <<EOF
+$table
+EOF
+  printf '%s' "$ordered"
+}
+
+# Author detailed bug PRD(s) from the failure summary via a cold worker on the
+# mission's OWN engine, then route them through log.sh → resolve-logs drive →
+# resolve-logs complete. $1 = the failure-summary text. Echoes nothing; returns 0.
+# Set by reconcile_author_and_dispatch when the author judged the conflict an
+# UNRESOLVABLE design trade-off and authored an experience-framed QUESTION instead
+# of a self-heal — the gate then escalates with this text (BUG-042). Empty = the
+# author dispatched a normal self-heal.
+RECONCILE_DESIGN_QUESTION=""
+
+# BUG-056 — CONVERGE a TEXTUAL merge conflict by KEEPING a resolved merge.
+# The merge worktree ($wt) holds the conflicted merge (markers present). Dispatch a
+# cold resolve worker (mission's own engine) to edit the conflicted file(s) IN $wt
+# so every conflict marker is gone — composing BOTH intents, honouring the captain's
+# decision in answers.json if present (BUG-042 parity). After each attempt, verify
+# no markers remain AND the mission's own ticket suites re-test GREEN against the
+# resolved tree; if so, COMPLETE the merge commit in $wt (the branch ref advances to
+# the merged+resolved commit) and return 0 — converged. If still conflicted/red
+# after MAX_WORKER_TRIES, return 1 so the caller falls through to the existing RED
+# undo+escalation path (round cap / design question — no infinite loop).
+# Args: $wt  base_ref  failure-summary  affected-block  cmd  ordered-tickets...
+reconcile_resolve_in_worktree() {
+  local wt="$1" base_ref="$2" summary="$3" affected="$4" cmd="$5"; shift 5
+  local ordered="$*"
+
+  # The conflicted files, as absolute paths inside the worktree, for the worker.
+  local conflicted_now; conflicted_now="$( cd "$wt" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null )"
+  [ -n "$conflicted_now" ] || return 1
+  local abs_list="" cf
+  while IFS= read -r cf; do
+    [ -n "$cf" ] || continue
+    abs_list="$abs_list
+- $wt/$cf"
+  done <<EOF
+$conflicted_now
+EOF
+
+  # The mission's own engine (BUG-D parity with the heal author).
+  local engine; engine="$(json_str "$STATE" workerBin)"
+  [ -n "$engine" ] || engine="$WORKER_BIN"
+
+  local sumfile; sumfile="$MISSION_DIR/reconcile-failure.txt"
+  printf '%s\n' "$summary" >"$sumfile"
+  local extra="## The conflicted files to RESOLVE IN PLACE (absolute paths in the merge worktree)
+Edit each of these files so EVERY conflict marker (<<<<<<<, =======, >>>>>>>) is gone:$abs_list
+
+$affected
+
+The deterministic failure summary (with the conflict hunks) is at:
+- $sumfile
+
+## The two intents to reconcile
+- This mission's goal/PRD: $MISSION_DIR/prd.md
+- What changed on the base branch since this branch was cut is quoted in the summary above."
+
+  # RESUME after `lcars respond` (BUG-042/043 parity): inject the captain's decision
+  # so the resolution implements EXACTLY their choice rather than re-guessing. Prefer
+  # the DEDICATED reconcile answer (BUG-043); fall back to the generic answers.json
+  # only when no dedicated answer exists.
+  local cap_answer=""
+  if [ -s "$MISSION_DIR/reconcile-answer.txt" ]; then
+    cap_answer="$(cat "$MISSION_DIR/reconcile-answer.txt")"
+  elif [ -f "$MISSION_DIR/answers.json" ]; then
+    cap_answer="$(json_str "$MISSION_DIR/answers.json" answer)"
+  fi
+  if [ -n "$cap_answer" ]; then
+    extra="$extra
+
+## The captain DECIDED the design trade-off — implement EXACTLY this
+A prior reconcile pass raised a design question to the captain; they answered:
+
+  The captain decided: $cap_answer
+
+This is a DECISION, not a new option to weigh. Resolve the conflict to implement
+EXACTLY that arrangement."
+  fi
+
+  state_set_str reconcileStatus "resolving"
+  emit_event reconcile_resolve verify "resolving textual conflict in place via a cold worker (keeping the merge)"
+
+  local tries=0 odir
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    # The worker edits files in $wt directly; $odir is its (unused) scratch channel.
+    odir="$(mktemp -d)"
+    LCARS_WORKER_BIN="$engine" LCARS_WORKER_INPUT_DIRS="$wt
+$MISSION_DIR" \
+      spawn_worker reconcile-resolve "$STAGES_DIR/reconcile-resolve.md" repo-write "$odir" "$extra"
+    rm -rf "$odir"
+
+    # STAGE the worker's edits FIRST: editing a conflicted working-tree file does NOT
+    # clear its UNMERGED index entry, so `git add -A` is what marks the conflict
+    # resolved. Then judge resolution by CONTENT — any conflict marker still in an
+    # originally-conflicted file means the worker did not finish; retry (or fall
+    # through after the cap). This never relies on --diff-filter=U post-edit.
+    ( cd "$wt" && "$GIT_BIN" add -A >/dev/null 2>&1 ) || :
+    local markers=0 mf marker_files=""
+    while IFS= read -r mf; do
+      [ -n "$mf" ] || continue
+      if grep -Eq '^(<<<<<<< |={7}$|>>>>>>> )' "$wt/$mf" 2>/dev/null; then
+        markers=1
+        marker_files="${marker_files:+$marker_files }$mf"
+      fi
+    done <<EOF
+$conflicted_now
+EOF
+    if [ "$markers" -ne 0 ]; then
+      # DURABLE WHY (BUG-057 / BUG-051 parity): the worker ran but did NOT finish —
+      # conflict markers REMAIN in $marker_files. Record it before retrying so the
+      # cause is not ephemeral. Purely additive; the `continue` below is unchanged.
+      reconcile_resolve_record "$tries" "markers-remain in $marker_files" \
+        "Conflict markers (<<<<<<< / ======= / >>>>>>>) still present after the resolve worker ran in: $marker_files"
+      continue   # markers remain — retry (or fall through after the cap)
+    fi
+
+    # Markers gone (and staged) → re-test the resolved worktree.
+    local green=1
+    local red_suites="" red_tail=""
+    if [ -n "$cmd" ] && [ -n "$ordered" ]; then
+      local cap; cap="$(mktemp -d)"
+      RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" $ordered || green=0
+      if [ "$green" -ne 1 ]; then
+        # Capture WHICH suite(s) went red + the tail of each captured log BEFORE the
+        # capture dir is removed (BUG-057). RETEST_FAILED holds the failing ticket ids.
+        red_suites="$RETEST_FAILED"
+        local rid
+        for rid in $RETEST_FAILED; do
+          if [ -s "$cap/$rid.log" ]; then
+            red_tail="$red_tail
+--- suite $rid (last ~40 lines) ---
+$(tail -n 40 "$cap/$rid.log" 2>/dev/null)"
+          fi
+        done
+      fi
+      rm -rf "$cap"
+    fi
+    if [ "$green" -eq 1 ]; then
+      # KEEP the merge: complete the merge commit so the branch ref advances to the
+      # merged+resolved commit (mirrors the GREEN path, where the merge auto-commits).
+      ( cd "$wt" && "$GIT_BIN" commit --no-edit >/dev/null 2>&1 ) || :
+      emit_event reconcile_resolved verify "textual conflict resolved + re-test green — keeping the merge"
+      return 0   # converged
+    fi
+    # DURABLE WHY (BUG-057): markers were cleared but the re-test stayed RED. Record
+    # the red suite name(s) + their output tail before retrying. Purely additive.
+    reconcile_resolve_record "$tries" "retest red — suite(s): ${red_suites:-unknown}" \
+      "Markers cleared but re-test RED.
+Failing suite(s): ${red_suites:-unknown}${red_tail}"
+    # Resolved but red — let the worker try again (a cleaner composition) up to the cap.
+  done
+  return 1   # could not resolve+green within the cap → caller takes the RED path
+}
+
+# DURABLE instrumentation for the in-worktree resolve path (BUG-057, BUG-051 parity):
+# append a timestamped, attempt-scoped record to $MISSION_DIR/reconcile-resolve.log
+# (append, never overwrite) AND emit a reconcile_resolve_failed event with a short,
+# NON-generic reason, on EACH failed resolve attempt. Purely additive — changes no
+# control flow / outcome; it only ensures the cause is not silently discarded.
+reconcile_resolve_record() { # attempt  short-reason  detail-block
+  local attempt="$1" reason="$2" detail="$3"
+  [ -n "${MISSION_DIR:-}" ] && {
+    printf '%s\tattempt=%s\treason=%s\n%s\n----8<----\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" \
+      "$attempt" "$reason" "$detail" \
+      >>"$MISSION_DIR/reconcile-resolve.log" 2>/dev/null || :
+  }
+  emit_event reconcile_resolve_failed verify \
+    "resolve attempt $attempt failed: $reason" "attempt=$attempt"
+}
+
+reconcile_author_and_dispatch() { # failure-summary  affected-block
+  local summary="$1" affected="$2"
+  RECONCILE_DESIGN_QUESTION=""
+  state_set_str reconcileStatus "healing"
+  emit_event reconcile_heal verify "authoring self-heal bug PRD(s) from the merge failure"
+
+  # The mission's own engine (BUG-D): a copilot mission self-heals on copilot. Feed
+  # it to the author worker AND to log.sh so each child inherits it.
+  local engine; engine="$(json_str "$STATE" workerBin)"
+  [ -n "$engine" ] || engine="$WORKER_BIN"
+
+  # Cold-worker authoring: feed ONLY the failure summary + the two intents (this
+  # mission's PRD goal + what changed on main), assembled from PATHS like the other
+  # stages. The worker writes bug-NNN.md files into the scratch dir.
+  local sumfile; sumfile="$MISSION_DIR/reconcile-failure.txt"
+  printf '%s\n' "$summary" >"$sumfile"
+  local extra="## The merge-failure summary (your ONLY inputs)
+$affected
+
+The deterministic failure summary is at:
+- $sumfile
+
+## The two intents to reconcile
+- This mission's goal/PRD: $MISSION_DIR/prd.md
+- What changed on the base branch since this branch was cut is quoted in the summary above."
+
+  # RESUME after `lcars respond` (BUG-042/043): if the captain already answered a
+  # prior RECONCILE design-trade-off escalation, INJECT that decision so the heal
+  # implements exactly what they chose (do NOT re-raise the same question). The
+  # answer comes from the DEDICATED reconcile store (reconcile-answer.txt) — NOT the
+  # generic answers.json, which respond writes for ANY awaiting-human gate and could
+  # be a stale, unrelated decision (BUG-043). Consumed below after one use.
+  local recon_ans=""
+  if [ -s "$MISSION_DIR/reconcile-answer.txt" ]; then
+    recon_ans="$(cat "$MISSION_DIR/reconcile-answer.txt")"
+    if [ -n "$recon_ans" ]; then
+      extra="$extra
+
+## The captain DECIDED the design trade-off — implement EXACTLY this
+A prior reconcile pass raised a design question to the captain; they answered:
+
+  The captain decided: $recon_ans
+
+This is a DECISION, not a new option to weigh. Author the self-heal bug PRD(s)
+that implement EXACTLY that arrangement — do NOT re-raise the question, and do NOT
+emit a design-question file this time."
+    fi
+  fi
+
+  local odir tries=0 prior_no_file=""
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    odir="$(mktemp -d)"
+    LCARS_WORKER_BIN="$engine" \
+      spawn_worker reconcile-author "$STAGES_DIR/reconcile-author.md" repo-read "$odir" "$extra" "$prior_no_file"
+    # The author may judge the conflict an UNRESOLVABLE design trade-off and write
+    # an experience-framed QUESTION (design-question.txt) instead of bug PRDs. If so,
+    # surface it for the gate to escalate — UNLESS the captain has already answered
+    # THIS reconcile's design question (a dedicated reconcile answer is in hand) and
+    # we are now implementing their decision. Gate on the DEDICATED reconcile answer
+    # (recon_ans), NOT the generic answers.json (BUG-043: an unrelated prior gate's
+    # answer must never suppress this design question).
+    if [ -s "$odir/design-question.txt" ] && [ -z "$recon_ans" ]; then
+      RECONCILE_DESIGN_QUESTION="$(cat "$odir/design-question.txt")"
+      rm -rf "$odir"
+      return 0
+    fi
+    # collect the authored PRDs
+    local prds=() f
+    for f in "$odir"/bug-*.md; do
+      [ -f "$f" ] || continue
+      grep -q '^# Mission:' "$f" || continue
+      grep -q '\*\*Type:\*\*' "$f" || continue
+      # copy to a stable path under the mission dir so log.sh reads a durable file
+      local dst; dst="$MISSION_DIR/reconcile-bug-$(basename "$f")"
+      cp "$f" "$dst"
+      prds+=("$dst")
+    done
+    if [ "${#prds[@]}" -gt 0 ]; then
+      prior_no_file=""
+      # Route through the Mission Log: one --prd per bug. BUG-D stamps each child's
+      # workerBin from $LCARS_WORKER_BIN; log.sh fast-tracks to Plan, links the
+      # parent, and (BUG-011) commits the fixes onto the parent's pre-merge branch.
+      local prd_args=() p
+      for p in "${prds[@]}"; do prd_args+=(--prd "$p"); done
+      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="$engine" \
+        bash "$LOG_SCRIPT" --parent "$MISSION_ID" "${prd_args[@]}" >/dev/null 2>&1 || true
+      rm -rf "$odir"
+      # CONSUME the dedicated reconcile answer (BUG-043): a decision applies ONCE, so
+      # a later unrelated answers.json — or a re-run — never re-injects this decision.
+      [ -n "$recon_ans" ] && rm -f "$MISSION_DIR/reconcile-answer.txt"
+      # Drive + fold; the DRIVE's success/failure is the heal signal (BUG-052).
+      reconcile_drive_and_fold; return $?
+    fi
+    prior_no_file=no-file
+    rm -rf "$odir"
+  done
+  # The author produced nothing across all tries — leave a placeholder PRD so the
+  # self-heal still has SOMETHING auditable, then dispatch it (never silently drop).
+  local fb; fb="$MISSION_DIR/reconcile-bug-fallback.md"
+  {
+    printf '# Mission: reconcile failure merging %s into the branch\n' "$BASE"
+    printf '**Type:** bug\n'
+    printf '**Conflict/failure summary:** %s\n' "$summary"
+    printf '**Affected files / tests:** see the summary above.\n'
+    printf '**Root cause:** the base moved ahead and the merged state is not green; the author worker could not characterise it.\n'
+    printf '**Intended fix:** inspect the conflict/failing suite above and reconcile this branch with the updated base.\n'
+  } >"$fb"
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" LCARS_WORKER_BIN="$engine" \
+    bash "$LOG_SCRIPT" --parent "$MISSION_ID" --prd "$fb" >/dev/null 2>&1 || true
+  # CONSUME the dedicated reconcile answer (BUG-043) — a heal was dispatched.
+  [ -n "$recon_ans" ] && rm -f "$MISSION_DIR/reconcile-answer.txt"
+  # Drive + fold; the DRIVE's success/failure is the heal signal (BUG-052).
+  reconcile_drive_and_fold; return $?
+}
+
+# BUG-052 — drive the just-logged heal bug(s) to their Verify gate, then fold them
+# onto the parent branch. The DRIVE'S EXIT CODE is the heal signal: resolve-logs
+# `die`s (non-zero) when a heal child ERRORED — its implement hard-failed and it
+# could not be driven to a usable Verify state (WAVE_ERRORED). When that happens
+# the heal produced NO healed state, so we return 1 (FAILURE) and the gate escalates
+# to an awaiting-human gate INSTEAD of freezing at reconcileStatus=healing. On a
+# clean drive (the heal is dispatched + progressing) we fold and return 0 (success
+# → the gate halts "reconciling" as before). resolve-logs inherits the parent
+# engine via PARENT_ENGINE; complete folds WITHOUT raising resolve-logs' own
+# consolidated gate — the S75 verify gate is the single human gate.
+reconcile_drive_and_fold() {
+  local drive_rc=0
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    bash "$RESOLVE_LOGS_SCRIPT" --parent "$MISSION_ID" >/dev/null 2>&1 || drive_rc=$?
+  if [ "$drive_rc" -ne 0 ]; then
+    # The dispatched heal child could not be driven to a usable healed state — do
+    # NOT fold (nothing reached Verify) and signal FAILURE so the gate escalates.
+    return 1
+  fi
+  LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+    bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" >/dev/null 2>&1 || true
+  return 0
+}
+
+# BUG-045: DETERMINISTIC design-question authoring. The harness — not the author's
+# upfront guess — has decided this conflict is genuinely unresolvable (a dispatched
+# heal round could not drive the combined state to green). Re-invoke the reconcile-
+# author with a FORCE-DESIGN-QUESTION instruction so it frames the persistent
+# failure as ONE experience-framed question for the captain. Echoes the question.
+# If the author yields nothing, fall back to a harness-composed, player-facing
+# question derived from the mission goal (over-asking the captain beats grinding
+# heal rounds silently — they can always reply "just retry").
+reconcile_author_design_question() { # failure-summary  affected-block
+  local summary="$1" affected="$2"
+  local engine; engine="$(json_str "$STATE" workerBin)"
+  [ -n "$engine" ] || engine="$WORKER_BIN"
+  local sumfile; sumfile="$MISSION_DIR/reconcile-failure.txt"
+  printf '%s\n' "$summary" >"$sumfile"
+  # FORCE-DESIGN-QUESTION: the marker the worker keys on; the prose tells the author
+  # the heal already failed, so this is no longer a "do I heal or ask?" judgement —
+  # it MUST emit design-question.txt and author NO bug PRDs.
+  local extra="## FORCE-DESIGN-QUESTION — the heal already FAILED; ask the captain
+A prior self-heal pass already tried to reconcile this conflict and could NOT drive
+the merged state to green: the two sides are competing for the SAME piece of the
+player's experience and cannot both hold. This is no longer a judgement call. Do
+NOT author any bug PRD. You MUST write a SINGLE design-question.txt containing ONE
+concise, experience-framed question (what the player sees / where it sits / how it
+behaves), in plain language with 2–3 concrete arrangement options, naming NO code
+(no file names, function names, test ids, or 'refactor'). Describe the observable
+collision, not its source.
+
+## The persistent merge-failure summary
+$affected
+
+The deterministic failure summary is at:
+- $sumfile
+
+## The two intents in collision
+- This mission's goal/PRD: $MISSION_DIR/prd.md
+- What changed on the base branch is quoted in the summary above."
+
+  local odir tries=0 q=""
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    odir="$(mktemp -d)"
+    LCARS_WORKER_BIN="$engine" \
+      spawn_worker reconcile-author "$STAGES_DIR/reconcile-author.md" repo-read "$odir" "$extra"
+    if [ -s "$odir/design-question.txt" ]; then
+      q="$(cat "$odir/design-question.txt")"
+      rm -rf "$odir"
+      break
+    fi
+    rm -rf "$odir"
+  done
+
+  if [ -z "$q" ]; then
+    # Harness fallback — a player-facing question framed from the mission goal,
+    # carrying NO code identifiers. The captain can always answer "just retry".
+    local goal; goal="$(json_str "$STATE" title)"
+    [ -f "$MISSION_DIR/prd.md" ] && { local g2; g2="$(sed -n 's/^\*\*Goal:\*\*[[:space:]]*//p' "$MISSION_DIR/prd.md" | head -1)"; [ -n "$g2" ] && goal="$g2"; }
+    q="This mission (${goal:-this change}) and a change already on the branch are competing for the same part of the experience, and the harness could not make both work at once. Which should the player get — keep this mission's behaviour, keep the existing one, or some blend of the two? (Reply with the arrangement you want, or say 'just retry' to attempt the merge again.)"
+  fi
+  printf '%s' "$q"
+}
+
+# Escalate to the human after K rounds still red. Never opens a PR.
+# $2 = "design" marks this as a reconcile DESIGN-QUESTION gate (BUG-043/055): it
+# drops a dedicated marker file so `lcars respond` can tell this gate apart from a
+# generic awaiting-human gate — answering it then writes a DEDICATED reconcile
+# answer and RESETS the round budget, rather than reusing the generic answers.json.
+reconcile_escalate() { # diagnosis-text  [design]
+  local diag="$1" kind="${2:-}"
+  state_set_str reconcileStatus "escalated"
+  if [ "$kind" = "design" ]; then
+    printf '%s\n' "$diag" >"$MISSION_DIR/reconcile-design-question.txt"
+  fi
+  local qf; qf="$(mktemp)"
+  printf 'Reconcile with %s failed after %s round(s). Diagnosis:\n%s\n' \
+    "$BASE" "$RECONCILE_MAX" "$diag" >"$qf"
+  write_pending "$qf" "verify"
+  local first; first="$(grep -ve '^[[:space:]]*$' "$qf" | head -1)"
+  state_set_raw awaitingHuman true
+  state_set_str pendingQuestion "$first"
+  rm -f "$qf"
+  gh_relabel "lcars:verify lcars:awaiting-human" ""
+  emit_event reconcile_escalated verify "reconcile exhausted ${RECONCILE_MAX} round(s) — escalated to the human"
+  notify_gate awaiting-human "Reconcile with $BASE failed after $RECONCILE_MAX rounds — needs your call"
+  printf 'RECONCILE: escalated — %s rounds exhausted; awaiting human.\n' "$RECONCILE_MAX"
+}
+
+# The reconcile gate. Echoes a RECONCILE: line and returns:
+#   0  ("RECONCILE: ok")          → not ahead, or clean+green → caller proceeds to
+#                                    open the PR. The merge (if any) is already on
+#                                    the live branch.
+#   10 ("RECONCILE: reconciling") → red → self-heal dispatched, halt this pass.
+#   20 ("RECONCILE: escalated")   → K rounds exhausted → awaiting-human, no PR.
+reconcile_gate() {
+  local BASE BRANCH
+  BRANCH="$(json_str "$STATE" branch)"
+  BASE="$(json_str "$STATE" base)"; BASE="${BASE:-main}"
+
+  # Idempotency: once this reconcile has ESCALATED (awaiting the captain's call —
+  # an exhausted heal, a design trade-off, or a worktree-cut failure), a re-run of
+  # the gate must NOT re-escalate or re-notify. The mission stays parked at verify
+  # awaiting-human until `lcars respond` clears the gate; only then does a fresh
+  # pass re-enter the heal. This keeps "exactly one gate notification" true under
+  # the BUG-045 earlier (post-heal) design-question escalation. (BUG-041/045)
+  if [ "$(json_str "$STATE" reconcileStatus)" = "escalated" ] \
+     && [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
+    echo "RECONCILE: escalated — awaiting the captain's answer; not re-asking."
+    return 20
+  fi
+
+  # No branch → nothing to reconcile; let the open-PR path handle the no-branch die.
+  [ -n "$BRANCH" ] || { echo "RECONCILE: ok — no branch on file"; return 0; }
+  "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH" \
+    || { echo "RECONCILE: ok — branch not present locally"; return 0; }
+
+  # BUG-077: don't diverge on re-entry. A reconcile killed/parked and retried leaves
+  # the LOCAL mission branch at the dead attempt's merge commit; merging main onto
+  # THAT makes the local reconciled tip DIVERGE from the last-pushed remote PR head,
+  # so the eventual push is rejected non-fast-forward and approve gets stuck. When a
+  # REMOTE PR branch already exists, reset the local branch to the remote PR head
+  # BEFORE merging main again — so a retry merges from the SAME base the remote has
+  # and cannot diverge. Guard: only on a RE-ENTRY for a mission that ALREADY has an
+  # open PR (prUrl recorded) — the `lcars approve` merge-gate retry context where
+  # BUG-077 occurs. The pre-PR drive_verify path (no prUrl) is unchanged: there the
+  # branch's local-only commits (a fresh merge / textual-conflict resolution that
+  # hasn't been pushed yet) are the authoritative work and must NOT be discarded.
+  local pr_for_reset; pr_for_reset="$(json_str "$STATE" prUrl)"
+  case "$pr_for_reset" in http*|*/pull/*) : ;; *) pr_for_reset="" ;; esac
+  if [ -n "$pr_for_reset" ] \
+     && "$GIT_BIN" fetch origin "$BRANCH" --quiet 2>/dev/null \
+     && "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+    local local_tip remote_tip
+    local_tip="$("$GIT_BIN" rev-parse "$BRANCH" 2>/dev/null)"
+    remote_tip="$("$GIT_BIN" rev-parse "origin/$BRANCH" 2>/dev/null)"
+    if [ -n "$remote_tip" ] && [ "$local_tip" != "$remote_tip" ]; then
+      # If the live tree is checked out ON the branch, detach it first so the ref
+      # can be moved (mirrors the worktree-cut detach below).
+      if [ "$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )" = "$BRANCH" ]; then
+        ( cd "$REPO_ROOT" && "$GIT_BIN" checkout --detach --quiet ) >/dev/null 2>&1 || :
+      fi
+      if "$GIT_BIN" branch -f "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1; then
+        emit_event reconcile_reset verify "re-entry: reset local '$BRANCH' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) before re-merging — avoids divergence"
+      fi
+    fi
+  fi
+
+  # (a) main-ahead check. Best-effort; any unresolvable/non-numeric → not-ahead.
+  local base_ref ahead
+  base_ref="$(reconcile_base_ref)"
+  if [ -z "$base_ref" ]; then
+    echo "RECONCILE: ok — base '$BASE' unresolvable; proceeding (not ahead)"
+    return 0
+  fi
+  ahead="$("$GIT_BIN" rev-list --count "$BRANCH..$base_ref" 2>/dev/null)"
+  case "$ahead" in
+    ''|*[!0-9]*) echo "RECONCILE: ok — ahead count indeterminate; proceeding (not ahead)"; return 0 ;;
+    0)           echo "RECONCILE: ok — base '$BASE' not ahead of '$BRANCH'; proceeding"; return 0 ;;
+  esac
+
+  # Base is ahead → reconcile. Bump the round counter (persists across passes).
+  local round; round="$(json_raw "$STATE" reconcileRound)"
+  case "$round" in ''|*[!0-9]*) round=0 ;; esac
+  round=$((round + 1))
+  state_set_raw reconcileRound "$round"
+  state_set_str reconcileStatus "merging"
+  emit_event reconcile_start verify "base '$BASE' is $ahead commit(s) ahead — reconciling (round $round)" \
+    "round=$round" "ahead=$ahead"
+
+  # K exhausted? If this pass would be round > K, escalate instead of re-attempting.
+  if [ "$round" -gt "$RECONCILE_MAX" ]; then
+    local prev; prev="$(json_str "$STATE" reconcileDiagnosis)"
+    [ -n "$prev" ] || prev="the merged state was not green against '$BASE'."
+    reconcile_escalate "$prev"
+    return 20
+  fi
+
+  # (b) MERGE (not rebase) in an isolated worktree ATTACHED to the mission branch.
+  # BUG-054: a reconcile pass run while $REPO_ROOT is ON the mission branch (the
+  # normal post-Implement/post-heal state — the heal's cherry-pick leaves it there)
+  # cannot cut an ATTACHED worktree on that branch ("already checked out at …").
+  # Detach the main tree off the branch first so the cut succeeds; the heal re-checks
+  # the branch out in $REPO_ROOT as it needs it, and the captain's tree ends on the
+  # branch as usual.
+  if [ "$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )" = "$BRANCH" ]; then
+    ( cd "$REPO_ROOT" && "$GIT_BIN" checkout --detach --quiet ) >/dev/null 2>&1 || :
+  fi
+  local wt; wt="$(mktemp -d "$MISSION_DIR/reconcile.XXXXXX")"; rm -rf "$wt"
+  if ! "$GIT_BIN" worktree add -q "$wt" "$BRANCH" >/dev/null 2>&1; then
+    # BUG-038: do NOT silently "proceed". A failed worktree cut means we could not
+    # reconcile at all — returning 0 here would let the caller MERGE an un-reconciled
+    # branch (conflict → wrong). First try to RECOVER (a stale/abandoned worktree is
+    # the common cause), then retry ONCE; only if it still fails do we escalate with
+    # a clear, actionable message. Never report success when no reconcile happened.
+    rm -rf "$wt"
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+    wt="$(mktemp -d "$MISSION_DIR/reconcile.XXXXXX")"; rm -rf "$wt"
+    if ! "$GIT_BIN" worktree add -q "$wt" "$BRANCH" >/dev/null 2>&1; then
+      rm -rf "$wt"
+      # Roll the round back — this pass did nothing — so the round counter reflects
+      # only real reconcile attempts, then escalate honestly (awaiting-human, no PR).
+      round=$((round - 1))
+      if [ "$round" -le 0 ]; then state_del reconcileRound; else state_set_raw reconcileRound "$round"; fi
+      local wt_diag="Can't reconcile with '$BASE' — the mission branch '$BRANCH' is checked out in another worktree, or a stale worktree is blocking an isolated cut. Free it (\`git worktree list\` then \`git worktree remove\`/\`git worktree prune\`) and re-run."
+      reconcile_escalate "$wt_diag"
+      echo "RECONCILE: cannot reconcile — the mission branch is checked out in another worktree or a stale worktree exists; free it and re-run."
+      return 20
+    fi
+  fi
+  # Record the branch's PRE-MERGE tip so a RED reconcile can UNDO the merge: the
+  # merge commits onto the live branch ref, and we must NOT leave a broken merge on
+  # the branch (it would read as "not ahead" next pass and ship a stale-and-broken
+  # tree). Only a GREEN reconcile keeps the merge. The bug-children's fixes land on
+  # the branch via the Mission Log machinery (from $REPO_ROOT), so on the next pass
+  # the still-behind branch re-merges WITH the fixes present.
+  local pre_merge; pre_merge="$( cd "$wt" && "$GIT_BIN" rev-parse HEAD 2>/dev/null )"
+  # Clean up this gate's OWN worktree path on every exit (never a global prune).
+  # On a RED outcome the caller resets the branch to $pre_merge BEFORE cleanup.
+  reconcile_cleanup() { "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"; }
+  reconcile_undo_merge() {
+    [ -n "$pre_merge" ] || return 0
+    ( cd "$wt" && "$GIT_BIN" merge --abort >/dev/null 2>&1; "$GIT_BIN" reset -q --hard "$pre_merge" >/dev/null 2>&1 ) || :
+  }
+
+  local merge_rc=0 conflicted=""
+  ( cd "$wt" && "$GIT_BIN" merge --no-edit "$base_ref" ) >/dev/null 2>&1 || merge_rc=$?
+  if [ "$merge_rc" -ne 0 ]; then
+    conflicted="$( cd "$wt" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null )"
+    emit_event reconcile_conflict verify "textual merge conflict in: $(printf '%s' "$conflicted" | tr '\n' ' ')"
+  fi
+
+  # The base-change intent — what moved on main since this branch was cut.
+  local base_log; base_log="$("$GIT_BIN" log --oneline "$BRANCH..$base_ref" 2>/dev/null | head -40)"
+
+  # (c) Decide: textual conflict = red WITHOUT running tests. Otherwise scoped
+  # re-test (ALWAYS, even on a clean merge — S73, to catch silent logical conflicts).
+  local cmd; cmd="$(resolve_test_cmd)"
+  local ordered; ordered="$(reconcile_ordered_tickets)"
+  local failure_summary="" red=0
+
+  if [ -n "$conflicted" ]; then
+    red=1
+    failure_summary="MERGING $BASE into the mission branch produced a TEXTUAL conflict.
+
+Conflicted file(s):
+$conflicted
+
+Conflict hunk(s):"
+    local cf
+    while IFS= read -r cf; do
+      [ -n "$cf" ] || continue
+      failure_summary="$failure_summary
+
+--- $cf ---
+$(sed -n '/^<<<<<<< /,/^>>>>>>> /p' "$wt/$cf" 2>/dev/null | head -60)"
+    done <<EOF
+$conflicted
+EOF
+  else
+    state_set_str reconcileStatus "retesting"
+    emit_event reconcile_retest verify "clean merge — re-testing $ordered against the merged state"
+    if [ -n "$cmd" ] && [ -n "$ordered" ]; then
+      local cap; cap="$(mktemp -d)"
+      if ! RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" $ordered; then
+        red=1
+        failure_summary="MERGING $BASE into the mission branch merged CLEANLY, but re-running the mission's own ticket suite(s) against the combined state went RED (a silent logical conflict).
+
+Failing ticket suite(s): $RETEST_FAILED
+
+Captured output:"
+        local fid
+        for fid in $RETEST_FAILED; do
+          failure_summary="$failure_summary
+
+--- $fid ---
+$(head -80 "$cap/$fid.log" 2>/dev/null)"
+        done
+      fi
+      rm -rf "$cap"
+    fi
+  fi
+
+  # Append the two intents to every summary.
+  local goal=""; [ -f "$MISSION_DIR/prd.md" ] && goal="$(sed -n 's/^\*\*Goal:\*\*[[:space:]]*//p' "$MISSION_DIR/prd.md" | head -1)"
+  failure_summary="$failure_summary
+
+THIS MISSION'S GOAL: ${goal:-$(json_str "$STATE" title)}
+WHAT CHANGED ON $BASE (oldest→newest):
+${base_log:-(no log available)}"
+
+  # BUG-056 — CONVERGE a TEXTUAL conflict by KEEPING a resolved merge. Before
+  # undoing the merge and re-healing on the un-merged branch (which re-conflicts on
+  # the next fresh merge forever), try to RESOLVE the markers IN this merge worktree
+  # and KEEP the merge. On success the branch ref advances to the merged+resolved
+  # commit → it now CONTAINS base → the next pass reads "not behind" → green. Only
+  # the textual-conflict path takes this; the clean-merge logical-conflict path
+  # ($conflicted empty) is untouched and still self-heals exactly as before.
+  if [ -n "$conflicted" ] && [ "$red" -eq 1 ]; then
+    if reconcile_resolve_in_worktree "$wt" "$base_ref" "$failure_summary" \
+         "Conflicted/affected: $conflicted" "$cmd" $ordered; then
+      red=0   # converged → fall through to the shared GREEN exit (keeps the merge)
+    fi
+  fi
+
+  if [ "$red" -eq 0 ]; then
+    # Clean (or conflict-free) AND green: the worktree committed the merge ON the
+    # branch, so the live branch ref already advanced — just remove the worktree.
+    reconcile_cleanup
+    state_del reconcileRound
+    state_del reconcileDiagnosis
+
+    # BUG-067 — a self-heal that converges green AFTER a PR is open must NOT
+    # auto-merge. The captain has not seen the reconciled tree; blindly running
+    # `gh pr merge` (the old approve behaviour) gives them no sign-off and, when a
+    # push silently fails, reverts the mission to verify with no surfaced reason
+    # (BUG-066). So when a PR already exists (the `lcars approve` merge-gate flow),
+    # we STOP here, persist a human-readable awaiting-reapprove gate keyed off the
+    # reconciled tip, and let the captain REAPPROVE the merge once they have looked.
+    # The no-PR path (drive_verify, before the PR is opened) is unchanged: it
+    # clears the status and returns 0 so the driver proceeds to OPEN the PR — that
+    # PR-open IS the human surface there.
+    local pr_open; pr_open="$(json_str "$STATE" prUrl)"
+    case "$pr_open" in
+      http*|*/pull/*)
+        local merge_sha total
+        merge_sha="$("$GIT_BIN" rev-parse "$BRANCH" 2>/dev/null)"
+        total="$(printf '%s\n' "$ordered" | tr ' ' '\n' | grep -c .)"
+        [ -n "$total" ] && [ "$total" != 0 ] || total=1
+        local short; short="$(printf '%s' "$merge_sha" | cut -c1-7)"
+        local note="Reconciled $BASE into the branch ($short) and re-tested green ($total/$total). Reapprove to merge."
+        state_set_str reconcileStatus "awaiting-reapprove"
+        state_set_str reconcileNote "$note"
+        state_set_str reconcileMergeSha "$merge_sha"
+        state_set_raw awaitingHuman true
+        state_set_str pendingQuestion "$note"
+        local qf; qf="$(mktemp)"
+        printf '%s\nReapprove to merge the reconciled branch, or send it back.\n' "$note" >"$qf"
+        write_pending "$qf" "verify"
+        rm -f "$qf"
+        gh_relabel "lcars:verify lcars:awaiting-human" ""
+        emit_event reconcile_reapprove verify "merged $BASE and re-test is green ($total/$total) — awaiting your reapprove before merging"
+        notify_gate awaiting-human "$note"
+        echo "RECONCILE: awaiting-reapprove — merged $BASE; re-test green ($total/$total); reapprove to merge ($short)."
+        return 30 ;;
+    esac
+
+    state_del reconcileStatus
+    emit_event reconcile_green verify "merged $BASE and re-test is green — proceeding to open the PR"
+    echo "RECONCILE: ok — merged $BASE; re-test green; proceeding"
+    return 0
+  fi
+
+  # RED. UNDO the broken merge on the branch (never leave a stale-and-broken merge
+  # that reads as "not ahead" next pass), persist the diagnosis for a later
+  # escalation.
+  reconcile_undo_merge
+  # BUG-053: free THIS gate's attached worktree NOW — BEFORE any heal/author work.
+  # reconcile_undo_merge above resets the branch via $wt (so it must run while $wt
+  # exists), but the self-heal child cherry-picks its green commit by checking out
+  # $BRANCH in $REPO_ROOT; if the reconcile worktree still has $BRANCH checked out,
+  # that checkout fails ("already checked out") and the heal can never land. Cleaning
+  # up here frees $BRANCH so the heal succeeds. The later cleanup calls are now
+  # redundant and have been removed.
+  reconcile_cleanup
+  state_set_str reconcileDiagnosis "$failure_summary"
+  local affected="Conflicted/affected: ${conflicted:-$RETEST_FAILED}"
+
+  # BUG-045 — DETERMINISTIC post-heal design-question escalation (the PRIMARY fix).
+  # If a self-heal round ALREADY ran on a prior pass (round > 1) and the combined
+  # state is STILL red, the dispatched heal could not drive the conflict to green:
+  # the two sides are competing for the same piece of the experience and cannot
+  # both hold. Do NOT grind another heal round to the cap, and do NOT escalate with
+  # only a generic diagnosis — re-author the persistent failure as an experience-
+  # framed DESIGN QUESTION and escalate with it RELIABLY, regardless of whether the
+  # author guessed "trade-off" upfront. The captain answers (or says "just retry");
+  # a later pass (after `lcars respond`) injects their decision into the heal.
+  # Skip this ONLY when the captain has ALREADY answered THIS reconcile's design
+  # question — i.e. a DEDICATED reconcile answer is in hand (BUG-043). The generic
+  # answers.json must NEVER suppress this escalation: it is written for ANY
+  # awaiting-human gate and could be a stale, unrelated decision.
+  if [ "$round" -gt 1 ] && [ ! -s "$MISSION_DIR/reconcile-answer.txt" ]; then
+    emit_event reconcile_red verify "merged $BASE but a prior heal could not reach green — re-framing as a design question (round $round)"
+    local dq; dq="$(reconcile_author_design_question "$failure_summary" "$affected")"
+    reconcile_escalate "$dq" design
+    return 20
+  fi
+
+  # First RED round: author + dispatch the self-heal, clean up the worktree, and
+  # halt "reconciling" for THIS pass. The next pass re-merges the (still-behind)
+  # branch with the just-landed bug fixes present — and if it is STILL red, the
+  # deterministic BUG-045 path above escalates a design question.
+  emit_event reconcile_red verify "merged $BASE but the combined state is not green — self-healing (round $round)"
+  local heal_rc=0
+  reconcile_author_and_dispatch "$failure_summary" "$affected" || heal_rc=$?
+
+  # BUG-042: the author judged this an UNRESOLVABLE design trade-off UPFRONT and
+  # posed an experience-framed question rather than a self-heal. There is nothing to
+  # iterate on — escalate NOW with the player-facing question so the captain decides;
+  # the next pass (after `lcars respond`) injects their answer into the heal.
+  if [ -n "$RECONCILE_DESIGN_QUESTION" ]; then
+    reconcile_escalate "$RECONCILE_DESIGN_QUESTION" design
+    return 20
+  fi
+
+  # BUG-052: the dispatched HEAL DRIVE itself FAILED — the heal child errored and
+  # could not be driven to a usable healed state (e.g. its implement hard-failed).
+  # Do NOT set reconcileStatus=healing + return 10: that would leave the parent
+  # FROZEN (stale healing, nothing running, no gate, Merge suppressed by the
+  # BUG-035/039 lock with no escape). Instead escalate cleanly to an awaiting-human
+  # gate so the board's gate rendering clears the lock and the captain gets an
+  # action. The author already persisted the diagnosis; surface it.
+  if [ "$heal_rc" -ne 0 ]; then
+    local hd; hd="$(json_str "$STATE" reconcileDiagnosis)"
+    [ -n "$hd" ] || hd="$failure_summary"
+    hd="The self-heal for this reconcile could not be completed — the dispatched fix errored before reaching a usable state. $hd"
+    emit_event reconcile_red verify "the dispatched self-heal failed to reach a usable state — escalating to the human (round $round)"
+    reconcile_escalate "$hd"
+    return 20
+  fi
+
+  state_set_str reconcileStatus "healing"
+  echo "RECONCILE: reconciling — merged $BASE; combined state not green; self-heal dispatched (round $round/$RECONCILE_MAX)"
+  return 10
+}
+
+# The `reconcile` subcommand: drive the gate once (used directly by drive_verify
+# in-process AND exposed for tests). Mirrors cmd_open_pr's locate/require.
+cmd_reconcile() {
+  locate_mission "$MISSION_ID"
+  require_stage verify
+  resolve_worker
+  local rc=0
+  reconcile_gate || rc=$?
+  exit "$rc"
 }
 
 # === Cold-worker layer (per-Stage isolation) ===============================
@@ -2413,10 +3685,15 @@ alias_for_tier() { # cli tier → flag string (stdout; may be empty)
     claude)
       case "$tier" in sonnet) printf 'sonnet' ;; opus) printf 'opus' ;; esac ;;
     copilot)
-      # Finalized by S59's spike against Copilot CLI v1.0.62: the Sonnet tier maps
-      # to `claude-sonnet-4.6`, the Opus tier to `claude-opus-4.8`. Both stay
-      # config-overridable via modelAliases.copilot.<tier> (handled above).
-      case "$tier" in sonnet) printf 'claude-sonnet-4.6' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
+      # S78 — copilot is OPUS-SAFE BY DEFAULT: BOTH the sonnet AND the opus tier
+      # resolve to `claude-opus-4.8`, so a Copilot mission runs opus on EVERY
+      # stage regardless of the estimator's tier. WHY: Copilot's `create` tool
+      # cannot overwrite an existing file (or mkdir) on a non-opus tier, so a
+      # sonnet-tier Implement stage breaks the run. Pinning opus everywhere keeps
+      # Copilot end-to-end-safe. This is the ONE home for the policy. Both tiers
+      # stay config-overridable via modelAliases.copilot.<tier> (handled above):
+      # a repo that sets modelAliases.copilot.sonnet still wins over this default.
+      case "$tier" in sonnet) printf 'claude-opus-4.8' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
   esac
 }
 
@@ -2605,7 +3882,13 @@ worker_spawn() { # role outdir prompt
   local stage_key stage_model
   stage_key="$(stage_key_for_role "${LCARS_WORKER_ROLE:-$role}")"
   stage_model="$(resolve_stage_model "$stage_key")"
+  # HANG-GUARD (BUG-076): wrap the cold-worker spawn so a mid-turn hang (0% CPU,
+  # no output, never returns) is auto-killed and the caller's retry loop kicks in.
+  # The guard polls the worker's process-group CPU% and the growth of the adapter's
+  # $outdir/.worker.out/.err; a slow-but-working worker is left alone. Covers EVERY
+  # cold worker (every Stage routes through here). LCARS_WORKER_HANG_SECS=0 disables.
   LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="$stage_model" \
+    run_worker_hang_guarded "$outdir" \
     bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt"
 }
 
@@ -3791,6 +5074,20 @@ cmd_implement_ticket() {
     fi
   fi
 
+  # OUT-OF-WORKTREE INPUT READ GRANTS (session 76). Both halves of the adversarial
+  # pair run with cwd = this ticket's ISOLATED worktree, but EVERY input they read
+  # — the failing tests, manifests, approved-plan.json, adr.md, repo-map.md, the
+  # context-pack, answers.json — lives under the SHARED .git/lcars/ (resolved via
+  # --git-common-dir), OUTSIDE that worktree. A CLI with a hard path sandbox
+  # (copilot) can otherwise read NONE of them. Hand the adapter that ONE read-dir,
+  # CLI-AGNOSTICALLY (run.sh passes it for EVERY engine; the per-CLI translation —
+  # copilot adds a `--add-dir`, claude ignores it — is the adapter's job). The
+  # grant is READ-only and covers all inputs as a tidy superset; it never widens
+  # WRITE access, so the worktree write-isolation, red gate, immutable tests, and
+  # post-commit scope check are all untouched. Empty/unset for non-worktree spawns
+  # ⇒ argv byte-for-byte as before.
+  export LCARS_WORKER_INPUT_DIRS="$(dirname "$LCARS_CFG")"
+
   # Record the captain's pre-existing untracked files BEFORE any worker touches
   # the tree, so commit_ticket stages only the Implementer's NEW source — never
   # the captain's unrelated files or the worker's scratch (see commit_ticket).
@@ -3919,6 +5216,24 @@ $TICKET$tspecblock$retryblock"
   # than re-flagging the same blocker.
   [ -f "$MISSION_DIR/answers.json" ] && iextra="$iextra
 - $MISSION_DIR/answers.json   (the captain's answer resolving the prior block on this ticket — treat it as DECIDED)"
+  # SELF-HEAL feedback (BUG-029): when the full-suite gate found this ticket's
+  # change REGRESSED an earlier ticket's locked contract, cmd_impl_advance re-runs
+  # this ticket's Implementer with $LCARS_SELFHEAL_FEEDBACK carrying the harness-
+  # authored reconcile instruction (which earlier test(s) broke + "do NOT touch the
+  # locked contract"). It is the SAME single-line declarative feedback channel as
+  # the red-gate signal / answers.json — never the implementation, never prior
+  # reasoning. Each attempt is still a fresh cold worker.
+  if [ -n "${LCARS_SELFHEAL_FEEDBACK:-}" ]; then
+    iextra="$iextra
+
+## FULL-SUITE RECONCILE FEEDBACK — your change regressed an earlier ticket (read this first)
+Your previous implementation passed its OWN suite but, integrated with the rest
+of the branch, it REGRESSED an earlier ticket's locked test. Reconcile your change
+with the rest of the branch so EVERY suite (yours AND the regressed one) passes
+again. You may ONLY edit production code — you must NOT alter any locked test or
+contract. The harness's verdict (the regressed suite(s) + the command run):
+$LCARS_SELFHEAL_FEEDBACK"
+  fi
   iextra="$iextra
 
 ## Your ticket
@@ -3943,6 +5258,194 @@ $TICKET"
   die "the Implementer worker produced a result for $TICKET that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
 }
 
+# === Test reconciliation (logged-bug Implement only) =======================
+# BUG-058. A Mission-Log bug that CHANGES existing behaviour leaves a
+# contradictory locked test behind: the bug's fix shrinks the X and writes a new
+# test asserting the small X, but the PARENT mission's existing locked test still
+# asserts the OLD value — and the immutable-tests guardrail FORBIDS the bug's
+# Implementer from touching that locked parent test. The suite becomes self-
+# contradictory and the fix can never go green. This step reconciles the parent's
+# existing tests the bug's STATED change invalidates, BEFORE the bug's own Test
+# Writer / Implementer run.
+#
+# SCOPE / GATING (tiny blast radius — keep it surgical):
+#   • Runs ONLY for a LOGGED BUG: state.json type=="bug" AND parentMission set.
+#     For a top-level mission's Implement it does NOTHING — that path (Test Writer
+#     writes new fail-first tests + immutable-tests lock) is BYTE-FOR-BYTE
+#     unchanged (this returns immediately, before any worker spawns).
+#   • Reads ONLY the PARENT mission's ticket test suites under
+#     .git/lcars/missions/<parentMission>/tickets/*/tests/. It never scans or
+#     touches another mission's suites or the wider repo.
+#   • ALWAYS-ON for logged bugs (no human flag); a clean reconciliation no-ops.
+#
+# An isolated COLD worker (same spawn_worker pattern as every other stage worker,
+# engine-pinned) reads the bug's PRD (its intent + Out-of-Scope) and the parent's
+# existing tests, then ADAPTS in place those whose assertions the bug's change
+# contradicts (minimal assertion edits; remove a whole test only if fully
+# obsolete), respecting the PRD's Out-of-Scope. It writes result.json with one of:
+#   decision=reconciled  + a "changed" list → auto-apply: emit tests_reconciled,
+#                          post a GitHub issue comment listing each test + why.
+#   decision=noop         → nothing to reconcile → silent no-op.
+#   decision=defer        + a plain-language "question" → raise the awaiting-human
+#                          gate (pending.json + lcars:awaiting-human) and STOP.
+# Defer is for ONLY: (a) reconciling would need to go BEYOND the parent suite, or
+# (b) a genuine design ambiguity. NEVER for a routine, unambiguous reconciliation.
+reconcile_tests() {
+  # GATE: logged bug only (type==bug AND parentMission set). Anything else — a
+  # top-level mission — returns immediately so that path is untouched.
+  local mtype parent
+  mtype="$(json_str "$STATE" type)"
+  parent="$(json_str "$STATE" parentMission)"
+  [ "$mtype" = "bug" ] && [ -n "$parent" ] || return 0
+
+  # Resolve the PARENT mission's dir (sibling under .git/lcars/missions). Its test
+  # suites live at tickets/*/tests/. If the parent has no such suites, there is
+  # nothing to reconcile — a clean no-op.
+  local parent_dir; parent_dir="$(dirname "$MISSION_DIR")/$parent"
+  [ -d "$parent_dir/tickets" ] || return 0
+  local tests_dirs; tests_dirs="$(find "$parent_dir/tickets" -type d -name tests 2>/dev/null | sort)"
+  [ -n "$tests_dirs" ] || return 0
+
+  # Idempotent: a resumed/re-entered Implement must not re-run reconciliation once
+  # it has already reconciled or no-opped (re-editing locked parent tests would be
+  # destructive). Skip if we have a terminal reconcile-tests outcome on file.
+  if event_seen tests_reconciled implement "." || event_seen tests_reconcile_noop implement "."; then
+    return 0
+  fi
+  # A pending defer from a prior pass means the gate is still open — leave it.
+  if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
+     && grep -q '"stage": "reconcile-tests"' "$MISSION_DIR/pending.json" 2>/dev/null; then
+    emit_event tests_reconcile_blocked implement "test reconciliation still awaiting your answer — resolve it first"
+    echo "IMPLEMENT: test reconciliation awaiting-human — resolve with \`lcars respond $MISSION_ID\` before continuing."
+    exit 0
+  fi
+
+  # The bug's PRD — its intent + Out-of-Scope, the worker's primary input.
+  local prd="$MISSION_DIR/prd.md"
+  # Build the list of parent test dirs (by PATH only) for the worker prompt.
+  local tblock="" d
+  while IFS= read -r d; do
+    [ -n "$d" ] && tblock="$tblock
+- $d   (an existing locked test suite from the parent mission — adapt ONLY assertions this bug's change contradicts)"
+  done <<EOF
+$tests_dirs
+EOF
+
+  # Grant the worker READ+WRITE to the SHARED .git/lcars (so a hard-sandbox CLI can
+  # both read the parent tests and edit them in place), CLI-agnostically — the
+  # per-CLI translation is the adapter's job. Same mechanism implement-ticket uses.
+  export LCARS_WORKER_INPUT_DIRS="$(dirname "$LCARS_CFG")"
+
+  # The captain's recorded answer from a prior defer (lcars respond writes it), if
+  # any — fed so a resumed reconciliation acts on it instead of re-asking.
+  local ansblock=""
+  [ -f "$MISSION_DIR/answers.json" ] && ansblock="
+- $MISSION_DIR/answers.json   (the captain's answer resolving the prior reconciliation question — treat it as DECIDED)"
+
+  local odir; odir="$(mktemp -d)"
+  emit_event tests_reconcile_start implement "reconciling parent ($parent) tests the bug's change invalidates"
+  spawn_worker reconcile-tests "$STAGES_DIR/reconcile-tests.md" repo-write "$odir" \
+"## Read these artifacts (your ONLY inputs)
+- $prd   (THIS bug's PRD — its intent AND its Out-of-Scope section, a hard constraint)$tblock$ansblock
+
+## The parent mission
+$parent (the mission this bug was logged against — adapt ONLY its test suites listed above, nothing else)"
+
+  if [ ! -f "$odir/result.json" ]; then
+    rm -rf "$odir"
+    die "the test-reconciliation worker produced no result.json — Stage stopped."
+  fi
+  local result="$odir/result.json"
+  local decision; decision="$(json_str "$result" decision)"
+
+  case "$decision" in
+    defer)
+      # Beyond the parent suite OR a genuine design ambiguity — raise the awaiting-
+      # human gate (same shape as validate-pause) and STOP. Make NO test edits.
+      local q; q="$(json_str "$result" question)"
+      [ -n "$q" ] || q="Test reconciliation needs your decision before this bug can proceed."
+      local qf; qf="$(mktemp)"; printf '%s\n' "$q" >"$qf"
+      write_pending "$qf" "reconcile-tests"
+      rm -f "$qf"
+      state_set_raw awaitingHuman true
+      state_set_str pendingQuestion "$q"
+      gh_relabel "lcars:implement lcars:awaiting-human" ""
+      emit_event tests_reconcile_deferred implement "test reconciliation deferred to you: $q"
+      notify_gate awaiting-human "Test reconciliation needs your call: $q"
+      rm -rf "$odir"
+      echo "IMPLEMENT: test reconciliation deferred — awaiting-human."
+      echo "  $q"
+      echo "  Answer with \`lcars respond $MISSION_ID\`."
+      exit 0 ;;
+    reconciled)
+      # Auto-apply: the worker already edited the parent tests in place. Log WHAT it
+      # changed to BOTH the UI (event) AND the GitHub issue (comment) — the audit
+      # trail. Parse the "changed" array jq-free: pair each "file"/"change" line.
+      # Pair each "file" with its "change", whether they sit on the SAME line
+      # ({ "file":…, "change":… }) or on separate lines. Collect both key streams
+      # in encounter order, then zip them — jq-free, same spirit as the rest.
+      local lines; lines="$(awk '
+        function val(s,    v) { v=s; sub(/.*:[[:space:]]*"/,"",v); sub(/".*/,"",v); return v }
+        {
+          line=$0
+          while (match(line, /"file"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+            seg=substr(line, RSTART, RLENGTH); files[++nf]=val(seg)
+            line=substr(line, RSTART+RLENGTH)
+          }
+          line=$0
+          while (match(line, /"change"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+            seg=substr(line, RSTART, RLENGTH); changes[++nc]=val(seg)
+            line=substr(line, RSTART+RLENGTH)
+          }
+        }
+        END { for (i=1;i<=nf;i++) printf "%s: %s\n", files[i], (i<=nc?changes[i]:"") }
+      ' "$result")"
+      local n; n="$(printf '%s\n' "$lines" | grep -c .)"
+      [ "$n" -gt 0 ] || n=0
+      emit_event tests_reconciled implement "adapted $n test(s): $(printf '%s' "$lines" | tr '\n' '; ')" \
+        "reconciled=$n"
+      # Post a living GitHub issue comment listing each test changed + why (best-
+      # effort, via the host adapter — the same path other stages comment through).
+      local issue; issue="$(json_raw "$STATE" githubIssue)"
+      case "$issue" in
+        ''|null) : ;;
+        *)
+          local hdr items body
+          hdr="$(printf 'LCARS test reconciliation (logged bug %s)\n\nAdapted %s existing test(s) from parent mission %s whose assertions this bug stated change invalidated:\n' "$MISSION_ID" "$n" "$parent")"
+          items="$(printf '%s\n' "$lines" | sed '/^$/d; s/^/- /')"
+          body="$hdr
+$items"
+          if ! host issue-comment "$issue" --body "$body"; then
+            echo "  could not post the reconciliation comment to #$issue — record it by hand."
+          fi
+          ;;
+      esac
+      rm -rf "$odir"
+      echo "IMPLEMENT: reconciled $n existing parent test(s)."
+      while IFS= read -r l; do [ -n "$l" ] && echo "  • $l"; done <<EOF
+$lines
+EOF
+      ;;
+    *)
+      # noop (or an unrecognised decision treated conservatively as noop): nothing
+      # to reconcile. Record it so a re-entered Implement skips this step.
+      emit_event tests_reconcile_noop implement "nothing to reconcile — the bug adds behaviour / contradicts no existing parent test"
+      rm -rf "$odir"
+      echo "IMPLEMENT: no existing parent tests to reconcile."
+      ;;
+  esac
+  return 0
+}
+
+# --- subcommand: reconcile-tests (independently driveable + testable) -------
+cmd_reconcile_tests() {
+  locate_mission "$MISSION_ID"
+  require_stage implement
+  require_worker
+  reconcile_tests
+  exit 0
+}
+
 # === Stage driver: Implement (the whole stage) =============================
 # The token-free wave loop. It processes the waves in order and, within a wave,
 # builds every pending ticket through `implement-ticket` (the cold adversarial
@@ -3955,6 +5458,22 @@ cmd_implement() {
   locate_mission "$MISSION_ID"
   require_stage implement
   require_worker
+
+  # BUG-058: for a LOGGED BUG, reconcile the parent mission's existing tests the
+  # bug's change invalidates BEFORE the bug's own Test Writer / Implementer run.
+  # No-op (and untouched argv) for a top-level mission. May exit 0 here if it
+  # raises an awaiting-human gate (a genuine design ambiguity / beyond-parent scope).
+  reconcile_tests
+
+  # Branch-CREATION contamination guard (BUG: concurrent-mission cross-birth).
+  # Implement is the first stage to touch git; the mission branch may not exist
+  # yet. Create it ONCE, up front, from the mission's RECORDED base under the
+  # repo-global replay mutex — never lazily from the ambient $REPO_ROOT HEAD,
+  # which under two concurrent missions in one clone is the OTHER mission's
+  # branch. This guarantees make_ticket_worktree finds the branch (so every
+  # ticket builds in a worktree off the correct base) and the in-tree fallback
+  # never has to create it. Idempotent + best-effort; single-mission unaffected.
+  ensure_mission_branch "$(json_str "$STATE" branch)"
 
   # --- S65: the live Implement-dashboard heartbeat ----------------------------
   # Start a bounded, best-effort ~60s ticker that re-renders + PATCHes the
@@ -3996,6 +5515,16 @@ cmd_implement() {
     case "$st" in
       *"IMPLEMENT: complete"*)
         # Every ticket is green — advance to Verify (it re-checks all waves).
+        # BUG-020: the Implement→Verify handoff is driven from the DURABLE signal
+        # ("IMPLEMENT: complete" = all tickets green / impl-status), NOT from
+        # wait-ing a child that may have reparented. Before dispatching the
+        # advance, STOP the comment heartbeat EXPLICITLY here (don't rely solely on
+        # the EXIT trap firing only as the process exits) so its `sleep`/`gh` child
+        # can never outlive this stage, reparent to init, and hold the driver's
+        # command-substitution pipe open — which is what wedged this handoff for
+        # ~19 min in the field. cm_heartbeat_stop is idempotent; the EXIT trap below
+        # still runs as a belt-and-braces second reap.
+        declare -F cm_heartbeat_stop >/dev/null 2>&1 && cm_heartbeat_stop
         LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-advance --mission "$MISSION_ID"
         exit $? ;;
       *"IMPLEMENT: wave "*) : ;;   # a wave is active — build its pending tickets
@@ -4118,7 +5647,7 @@ cmd_implement() {
       local escalate=""
       [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] && escalate=1
       cleanup_ticket_worktrees "$wt_base"
-      [ -z "$hard_fail" ] || die "implement-ticket $hard_fail failed — Stage stopped, no advance."
+      [ -z "$hard_fail" ] || die "implement-ticket $hard_fail failed — Stage stopped, no advance.$(implement_failure_tail)"
       [ -z "$escalate" ] || exit 0
     else
       # SERIAL FALLBACK (no mission branch): the original one-at-a-time in-tree
@@ -4128,7 +5657,7 @@ cmd_implement() {
         local irc=0
         LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" implement-ticket \
           --mission "$MISSION_ID" --ticket "$t" || irc=$?
-        [ "$irc" -eq 0 ] || die "implement-ticket $t failed — Stage stopped, no advance."
+        [ "$irc" -eq 0 ] || die "implement-ticket $t failed — Stage stopped, no advance.$(implement_failure_tail)"
         [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] && exit 0
       done
     fi
@@ -4152,19 +5681,160 @@ make_ticket_worktree() { # base-dir  branch  ticket → echoes the worktree path
   printf '%s' "$wt"
 }
 
+# --- REPO-GLOBAL replay mutex (BUG: concurrent-mission branch cross-contamination)
+# `replay_ticket_commit` mutates the SHARED $REPO_ROOT working tree's HEAD
+# (checkout the mission branch, then cherry-pick). Two missions running
+# CONCURRENTLY in ONE clone each execute that in the SAME $REPO_ROOT, so
+# mission B's `checkout` can interleave BETWEEN mission A's `checkout` and its
+# `cherry-pick` — A's commit then lands on B's branch (confirmed live: 2 of
+# M2's commits ended up on M1's branch). The checkout-if-needed + cherry-pick +
+# conflict handling must therefore be ONE atomic critical section across ALL
+# missions in the clone.
+#
+# The lock is a DIRECTORY under the SHARED git common dir (resolved via
+# --git-common-dir, so a per-mission worktree resolves to the SAME path the main
+# clone does → all missions contend for the SAME lock). `mkdir` is atomic on
+# every POSIX fs, and crucially there is NO `flock` on macOS (darwin) — so this
+# is a portable mkdir SPINLOCK, not flock. A holder writes its PID; a waiter
+# spins until it can mkdir, reclaiming a STALE lock (dead-PID, or older than the
+# timeout guard) so a crashed holder can never deadlock the pipeline. A trap
+# releases it on every exit path, but only if we still own it.
+REPLAY_LOCK_DIR=""                 # set while we hold the lock; "" = none held.
+REPLAY_LOCK_STALE_SECS="${LCARS_REPLAY_LOCK_STALE_SECS:-300}"
+
+# Path of the repo-global replay lock dir under the SHARED git common dir.
+replay_lock_path() {
+  local common; common="$( cd "$REPO_ROOT" 2>/dev/null && "$GIT_BIN" rev-parse --git-common-dir 2>/dev/null )"
+  [ -n "$common" ] || common="$REPO_ROOT/.git"
+  # --git-common-dir may be relative (".git") — anchor it at $REPO_ROOT.
+  case "$common" in /*) : ;; *) common="$REPO_ROOT/$common" ;; esac
+  mkdir -p "$common/lcars" 2>/dev/null || :
+  printf '%s' "$common/lcars/replay.lock"
+}
+
+# Acquire the repo-global replay lock (BLOCKS — a true mutex). Spins on the
+# atomic mkdir; reclaims a stale lock (dead PID or older than the timeout) so a
+# crashed holder never deadlocks. Arms a trap to release on exit. Always 0.
+acquire_replay_lock() {
+  local lock; lock="$(replay_lock_path)"
+  local pidf="$lock/pid" spins=0
+  while :; do
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s' "$$" >"$pidf" 2>/dev/null || :
+      REPLAY_LOCK_DIR="$lock"
+      # BUG-021: cmd_implement arms a `trap … cm_heartbeat_stop … EXIT INT TERM`
+      # for the Implement comment-heartbeat, then calls replay_ticket_commit (which
+      # acquires THIS lock) in its own process. A bare `trap 'release_replay_lock'`
+      # here would CLOBBER that heartbeat trap, so any later flag/error/escalation
+      # EXIT path would release the lock but NEVER reap the heartbeat → an orphaned
+      # `while … gh issue comment …; sleep 60; done` loop (PPID=1) keeps POSTing
+      # forever. So the lock's exit trap also reaps the heartbeat. cm_heartbeat_stop
+      # is idempotent and a no-op when no heartbeat is running, so this is safe at
+      # every acquire_replay_lock site (the explicit clean-path stop still fires too).
+      trap 'release_replay_lock; declare -F cm_heartbeat_stop >/dev/null 2>&1 && cm_heartbeat_stop' EXIT INT TERM
+      return 0
+    fi
+    # Held — reclaim if the holder is dead OR the lock is older than the guard.
+    local owner=""; [ -f "$pidf" ] && owner="$(cat "$pidf" 2>/dev/null)"
+    local stale=0
+    if ! pid_alive "$owner"; then stale=1; fi
+    if [ "$stale" = 0 ]; then
+      # Live-PID guard against a hung holder: reclaim once the dir outlives the
+      # timeout. `find -mmin` keeps it bash-3.2 / macOS portable (no GNU stat).
+      if [ -n "$(find "$lock" -prune -mmin +"$(( REPLAY_LOCK_STALE_SECS / 60 + 1 ))" 2>/dev/null)" ]; then
+        stale=1
+      fi
+    fi
+    if [ "$stale" = 1 ]; then
+      rm -rf "$lock" 2>/dev/null || :
+      continue
+    fi
+    sleep 0.05
+    spins=$((spins + 1))
+  done
+}
+
+# Release the lock IFF we still own it (our PID in the pid file). Idempotent;
+# trap-safe — a process that never acquired it deletes nothing.
+release_replay_lock() {
+  [ -n "$REPLAY_LOCK_DIR" ] || return 0
+  local owner=""; [ -f "$REPLAY_LOCK_DIR/pid" ] && owner="$(cat "$REPLAY_LOCK_DIR/pid" 2>/dev/null)"
+  if [ "$owner" = "$$" ]; then
+    rm -rf "$REPLAY_LOCK_DIR" 2>/dev/null || :
+  fi
+  REPLAY_LOCK_DIR=""
+}
+
 # Cherry-pick a green ticket's worktree commit onto the real mission branch in the
 # main working tree, SERIALLY (called in plan order). Preserves the exact commit
 # message (cherry-pick keeps it) → one commit per ticket, summary intact, in order.
+#
+# The HEAD-mutating critical section (checkout-if-needed + cherry-pick + the
+# conflict/abort handling) runs under the REPO-GLOBAL replay mutex so concurrent
+# missions in one clone never interleave a checkout between this mission's
+# checkout and its cherry-pick — each pick is GUARANTEED to land on its own
+# branch regardless of which mission held HEAD last. Single-mission runs take an
+# uncontended lock (near-zero overhead; behaviour unchanged).
+# Set by _replay_ticket_commit_locked on a cherry-pick failure to the captured
+# reason (conflicted paths + git error). Read by callers/record_replay_failure so
+# a TERMINAL replay failure records WHY (BUG-051). Reset on entry to each replay.
+REPLAY_FAIL_REASON=""
+
+# Durably record a TERMINAL replay/rebuild cherry-pick failure (BUG-051): append a
+# timestamped, ticket-scoped line (with the git error + conflicted paths) to the
+# per-mission implement-failure.log AND emit a ticket_replay_failed event carrying
+# a short reason. This is purely additive instrumentation — it changes no control
+# flow / outcome; it only ensures the cause is not silently discarded. Called ONLY
+# at the genuine terminal-failure point (not the expected conflict→rebuild path).
+record_replay_failure() { # ticket  reason
+  local t="$1" reason="$2"
+  [ -n "${MISSION_DIR:-}" ] && printf '%s\tticket=%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" "$t" "$reason" \
+    >>"$MISSION_DIR/implement-failure.log" 2>/dev/null || :
+  emit_event ticket_replay_failed implement \
+    "ticket $t cherry-pick failed: $reason" "ticket=$t"
+}
+
+# Tail of the per-mission implement-failure.log, formatted to ride a die message
+# (BUG-051) — so a hard stage stop names WHY rather than a bare generic line. Empty
+# string when there's nothing logged (the die message is then unchanged).
+implement_failure_tail() {
+  [ -n "${MISSION_DIR:-}" ] && [ -s "$MISSION_DIR/implement-failure.log" ] || return 0
+  local tail; tail="$(tail -n 3 "$MISSION_DIR/implement-failure.log" 2>/dev/null)"
+  [ -n "$tail" ] && printf ' reason: %s' "$(printf '%s' "$tail" | tr '\n' ' ')"
+}
+
 replay_ticket_commit() { # branch  sha  ticket
+  local branch="$1" sha="$2" t="$3" rc=0
+  REPLAY_FAIL_REASON=""
+  acquire_replay_lock
+  _replay_ticket_commit_locked "$branch" "$sha" "$t" || rc=$?
+  release_replay_lock
+  return "$rc"
+}
+
+# The atomic critical section — runs ONLY while the replay mutex is held. The
+# checkout-if-needed is INSIDE the lock so the cherry-pick lands on $branch no
+# matter which branch HEAD was left on by another mission's just-released replay.
+_replay_ticket_commit_locked() { # branch  sha  ticket
   local branch="$1" sha="$2" t="$3"
-  # Ensure the main tree is on the mission branch (it is, during Implement).
+  # Ensure the main tree is on the mission branch. Under concurrency HEAD may be
+  # on ANOTHER mission's branch (it just released the lock), so this re-checkout
+  # is load-bearing, not the old single-mission "it already is" assumption.
   local cur; cur="$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )"
   if [ "$cur" != "$branch" ]; then
     if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
       ( cd "$REPO_ROOT" && "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 ) || return 1
     fi
   fi
-  ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --allow-empty "$sha" >/dev/null 2>&1 ) || {
+  # Capture the cherry-pick's own STDERR (the git error) and, while the conflict
+  # state still exists (BEFORE --abort wipes it), the list of conflicted paths —
+  # so a genuine replay failure records WHY instead of discarding it (BUG-051).
+  local cp_err
+  cp_err="$( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --allow-empty "$sha" 2>&1 >/dev/null )" || {
+    local cp_conflicts
+    cp_conflicts="$( cd "$REPO_ROOT" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ' )"
+    REPLAY_FAIL_REASON="cherry-pick of $sha failed${cp_conflicts:+; conflicted paths: ${cp_conflicts% }}${cp_err:+; git: $(printf '%s' "$cp_err" | tr '\n' ' ')}"
     ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --abort >/dev/null 2>&1 ) || :
     # `cherry-pick --abort` restores only TRACKED state. Any UNTRACKED residue the
     # just-failed pick left at one of THIS commit's paths — a NEW file the pick
@@ -4235,7 +5905,18 @@ rebuild_ticket_on_tip() { # base-dir  branch  ticket
       "ticket $t rebuilt empty on the tip after a replay conflict; escalating to awaiting-human" "ticket=$t"
     return 1
   fi
-  replay_ticket_commit "$branch" "$sha" "$t"
+  # The serial rebuild produced a fresh commit ON the current tip — its cherry-pick
+  # should land cleanly. If it STILL fails (BUG-053: green-via-serial-rebuild then a
+  # cherry-pick that vanishes), this is a TERMINAL failure — durably record WHY so
+  # the cause does not disappear (BUG-051), then return non-zero unchanged.
+  local rrc=0
+  replay_ticket_commit "$branch" "$sha" "$t" || rrc=$?
+  if [ "$rrc" -ne 0 ]; then
+    record_replay_failure "$t" \
+      "${REPLAY_FAIL_REASON:-rebuilt ticket $t failed to cherry-pick onto the tip ($sha)}"
+    return "$rrc"
+  fi
+  return 0
 }
 
 # Remove every per-ticket worktree for this wave and prune git's bookkeeping, so
@@ -4327,13 +6008,156 @@ drive_print_summary() { # accumulated-lines
   printf '%s\n' "$SEP"
 }
 
-drive_halt_verify() {
-  printf '⏹ stopped at: verify  (human review required)\n'
-  printf 'Review the changes and run the app, then:\n'
-  printf '  lcars approve %s    — create the PR\n' "$MISSION_ID"
-  printf '  lcars feedback %s   — send back with feedback\n' "$MISSION_ID"
+# --- the PR merge-state poll: "merged" iff the host says state MERGED OR
+# mergedAt is a non-null value. gh absent/failing → echoes nothing → not merged
+# (best-effort: a transient failure just keeps the Mission in review, never a
+# false Done). Identify the PR by the recorded number, else the branch.
+drive_pr_merged() { # → 0 if merged, 1 otherwise
+  local num branch sel_args=() out st merged
+  num="$(json_raw "$STATE" prNumber)"
+  branch="$(json_str "$STATE" branch)"
+  case "$num" in
+    ''|null) sel_args=(--head "$branch") ;;
+    *)       sel_args=(--number "$num") ;;
+  esac
+  out="$(host pr-view "${sel_args[@]}" 2>/dev/null)" || return 1
+  st="$(printf '%s\n' "$out" | sed -n 's/^state	//p' | head -1)"
+  merged="$(printf '%s\n' "$out" | sed -n 's/^mergedAt	//p' | head -1)"
+  [ "$st" = "MERGED" ] && return 0
+  case "$merged" in ''|null|'""') return 1 ;; *) return 0 ;; esac
+}
+
+# --- mark a Mission Done after a merge detected on the board's side (the driver
+# saw the PR merged on GitHub, or directly). Mirrors approve's done transition.
+drive_mark_done() {
+  gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
+  set_stage "done"
+  state_set_str review "merged"
+  emit_event stage_done verify "PR merged — Mission shipped"
+}
+
+# --- S75 Verify: auto-open the PR, then poll for a merge ----------------------
+# Three paths:
+#   • no PR yet      → open it (cmd_open_pr subprocess), record prUrl, fire ONE
+#                      notification, halt "in review". Sets nothing in
+#                      $DRIVE_VERIFY_DONE → the driver STOPS.
+#   • PR open, merged (here or on GitHub) → mark Done. Sets $DRIVE_VERIFY_DONE=1
+#                      so the driver continues (next pass: stage=done → terminal).
+#   • PR open, unmerged → halt "in review" WITHOUT re-notifying (the ping fires
+#                      ONCE, when the PR is first opened). Driver STOPS.
+drive_verify() { # accumulated-summary
+  local summary="$1"
+  local pr; pr="$(json_str "$STATE" prUrl)"
+
+  # BUG-026: a Mission-Log bug child (parentMission set) FOLDS its fix onto the
+  # PARENT Mission's branch — the parent's PR carries it; the bug has NO PR of its
+  # own. So at Verify it must NOT open a per-bug PR (and must NEVER hit the degraded
+  # "PR-open degraded; needs attention" gate that fires when no PR can be opened).
+  # Skip the entire reconcile + PR-open machinery; resolve-logs drives the fold and
+  # raises the parent's single consolidated re-verify gate. The child simply parks
+  # at verify with no PR affordance and no degraded gate.
+  local parent; parent="$(json_str "$STATE" parentMission)"
+  if [ -n "$parent" ] && [ "$parent" != "null" ]; then
+    emit_event gate verify "bug fix folds onto parent $parent — no per-bug PR"
+    drive_print_summary "$summary"
+    printf 'verify       ◇  bug fix folds onto parent %s — no per-bug PR (parent carries it)\n' "$parent"
+    printf '⏹ stopped at: verify  (folds onto the parent — accept via the parent'"'"'s re-verify gate)\n'
+    return 0
+  fi
+
+  # S76 reconcile gate: ONLY when no PR is open yet (once a PR is open, the human/
+  # GitHub owns conflicts — never re-reconcile). Before opening the PR, check
+  # whether the base moved ahead; if so, merge it in an isolated worktree and
+  # re-test the combined state, self-healing to green via Mission Log(s). The gate
+  # runs as a subprocess (same pattern as open-pr) so it shares one code path and
+  # its worker/log/resolve spawns are scoped. Exit codes: 0 = proceed (not ahead
+  # or clean+green), 10 = reconciling (halt this pass), 20 = escalated (halt, no PR).
+  case "$pr" in
+    http*|*/pull/*) : ;;   # a PR exists — skip the reconcile gate entirely.
+    *)
+      local rcout rrc=0
+      rcout="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" reconcile --mission "$MISSION_ID" 2>&1)" || rrc=$?
+      case "$rrc" in
+        10) # reconciling — self-heal dispatched; halt this pass, resume next pass.
+            mirror_comments || true
+            drive_print_summary "$summary"
+            printf 'verify       ◐  reconciling with %s — re-verifying the merged branch\n' "$(json_str "$STATE" base)"
+            printf '%s\n' "$rcout"
+            printf '⏹ stopped at: verify  (reconciling with the updated base — self-heal in flight)\n'
+            printf 'It will re-merge & re-verify on the next `lcars run %s` pass.\n' "$MISSION_ID"
+            return 0 ;;
+        20) # escalated — awaiting-human; reconcile_escalate already fired the gate.
+            mirror_comments || true
+            drive_print_summary "$summary"
+            printf '%s\n' "$rcout"
+            drive_halt_awaiting verify
+            return 0 ;;
+        *)  : ;;   # 0 (or any other) → proceed to today's open-PR path below.
+      esac ;;
+  esac
+
+  case "$pr" in
+    http*|*/pull/*)
+      # A PR exists — has it merged (here or on GitHub)?
+      if drive_pr_merged; then
+        drive_mark_done
+        drive_line_done_inline="$(printf 'verify       ✓  PR merged — Mission shipped')"
+        printf '%s\n' "$drive_line_done_inline"
+        DRIVE_VERIFY_DONE=1
+        return 0
+      fi
+      # Still open — in review. Halt, but do NOT re-ping (one ping at open time).
+      emit_event gate verify "in review — PR open"
+      mirror_comments || true
+      drive_print_summary "$summary"
+      drive_halt_in_review "$pr"
+      return 0 ;;
+  esac
+
+  # No PR yet — open it (reusing the cmd_open_pr subprocess so the open path is
+  # one code path). On a hard open failure, surface it and STOP at verify.
+  printf '%-12s ▶  opening PR…\n' "verify"
+  local out rc=0
+  out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" open-pr --mission "$MISSION_ID" 2>&1)" || rc=$?
+  local pr2; pr2="$(json_str "$STATE" prUrl)"
+  case "$pr2" in
+    http*|*/pull/*) : ;;
+    *) # PR-open degraded (no gh / unauthed / create failed). This is STILL a
+       # human gate — the Mission is parked at verify needing attention — so we
+       # must fire EXACTLY ONE walk-away notification (never a false Done), and
+       # only once: a guard flag makes a later retry not re-ping. The driver
+       # STOPS here.
+       emit_event gate verify "parked at verify — PR open degraded; needs attention"
+       drive_print_summary "$summary"
+       printf '⏹ stopped at: verify  (could not open the PR)\n'
+       printf '%s\n' "$out"
+       printf 'Fix the cause (push/auth/gh), then `lcars run %s` to retry the open.\n' "$MISSION_ID"
+       if [ "$(json_str "$STATE" verifyDegradedNotified)" != "1" ]; then
+         notify_gate verify "Mission parked at verify — review needed (PR could not be opened automatically)"
+         state_set_str verifyDegradedNotified "1"
+       fi
+       return 0 ;;
+  esac
+
+  # PR opened — fire the ONE notification and halt "in review".
+  emit_event gate verify "PR opened — review & merge"
+  mirror_comments || true
+  drive_print_summary "$summary"
+  printf 'verify       ✓  PR opened — %s\n' "$pr2"
   local title; title="$(json_str "$STATE" title)"; title="${title:-$MISSION_ID}"
-  notify_gate verify "$title is ready for review — \`lcars approve $MISSION_ID\` to ship, or \`lcars feedback $MISSION_ID\` to send it back."
+  notify_gate verify "PR open — review & merge: $pr2"
+  drive_halt_in_review "$pr2"
+  return 0
+}
+
+# --- the in-review halt banner (no notification here; the ping fired once at
+# open time). Shows the PR link + the two moves: merge (approve) / send-back.
+drive_halt_in_review() { # pr-url
+  printf '⏹ stopped at: verify  (in review — PR open)\n'
+  printf 'PR is open for review: %s\n' "$1"
+  printf 'Review & merge, then:\n'
+  printf '  lcars approve %s    — merge the PR (ship it)\n' "$MISSION_ID"
+  printf '  lcars feedback %s   — send back with feedback (closes the PR)\n' "$MISSION_ID"
 }
 
 drive_halt_awaiting() { # stage
@@ -4388,6 +6212,154 @@ pid_alive() { # pid
   local p="$1"
   case "$p" in ''|*[!0-9]*) return 1 ;; esac
   kill -0 "$p" 2>/dev/null
+}
+
+# === Stage watchdog (BUG-020) ===============================================
+# A bounded guard so a Mission can NEVER sit SILENTLY frozen between/within
+# stages: run a command with a hard wall-clock timeout, killing it (and a brief
+# grace then SIGKILL) if it overruns. macOS/bash-3.2 safe — no `timeout(1)`
+# dependency. Returns the command's exit code, or 124 if it timed out (the GNU
+# `timeout` convention) so the caller can distinguish a wedge from a real error.
+# The default budget is generous ($LCARS_STAGE_TIMEOUT, seconds; 0/unset disables
+# the watchdog entirely so nothing here can shorten a legitimately long stage).
+run_with_watchdog() { # secs  cmd...
+  local secs="$1"; shift
+  case "$secs" in ''|*[!0-9]*) secs=0 ;; esac
+  if [ "$secs" -le 0 ] 2>/dev/null; then
+    "$@"
+    return $?
+  fi
+  # Run the command in the background as its OWN session/process-group leader, so
+  # a timeout can reap the WHOLE descendant tree — not just direct children — even
+  # when nested workers reparent/orphan (BUG-048). macOS has no `setsid(1)`, so we
+  # use perl's POSIX::setsid (same trick the daemon launcher uses): the perl `exec`
+  # replaces itself with the command, preserving the backgrounded pid, and after
+  # setsid that pid is its own group leader (PGID == PID). setsid() fails if the
+  # caller is already a group leader; backgrounding with `&` normally makes the
+  # child a non-leader so it succeeds, but we guard in eval so a no-op setsid never
+  # aborts the exec. A sibling poll races it: bash-3.2 lacks `wait -n`, so we poll
+  # the command pid at a coarse interval up to the budget.
+  perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- "$@" &
+  local cmd_pid=$!
+  local waited=0 step=1
+  while [ "$waited" -lt "$secs" ]; do
+    pid_alive "$cmd_pid" || break
+    sleep "$step" 2>/dev/null || break
+    waited=$((waited + step))
+  done
+  if pid_alive "$cmd_pid"; then
+    # Overran the budget — the wedge BUG-020 is about. Kill the entire PROCESS
+    # GROUP (negative pid == kill the group led by cmd_pid), which reaps the whole
+    # descendant tree regardless of reparenting and works on macOS. Brief grace,
+    # then SIGKILL the group, then report the timeout sentinel.
+    kill -TERM -"$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null || true
+    sleep 1 2>/dev/null || true
+    kill -KILL -"$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null || true
+    wait "$cmd_pid" 2>/dev/null || true
+    return 124
+  fi
+  wait "$cmd_pid"
+  return $?
+}
+
+# === Cold-worker hang watchdog (BUG-076) ====================================
+# A `copilot -p` (or any cold) worker can hang MID-TURN: 0% CPU, no output, and
+# it NEVER returns — so the spawn_worker retry loop (which only retries when a
+# worker RETURNS a failure) is wedged forever. run_with_watchdog above is a
+# wall-clock cap and cannot tell a SLOW-but-working worker from a HUNG one; a
+# generous wall-clock budget either kills legitimately long work early or lets a
+# hang sit. This guard is CPU- AND output-AWARE: it kills a worker ONLY when it
+# is BOTH idle (group CPU ~0%) AND silent (output files not growing) for a
+# SUSTAINED window, and leaves a worker that is using CPU or still producing
+# output completely alone. macOS/bash-3.2 safe — no `timeout(1)`, no GNU ps flags.
+
+# Sum the CPU% across an entire process GROUP (pgid == the session leader's pid).
+# Portable `ps` (BSD/macOS + Linux): list pid,pcpu,pgid for all procs and add up
+# %CPU of those whose pgid matches. Prints an integer (floored). Empty/no match
+# ⇒ 0. Used to decide "is this worker tree doing ANY work right now?".
+_pgid_cpu_sum() { # pgid → integer cpu% (stdout)
+  local pgid="$1"
+  case "$pgid" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+  ps -axo pid=,pcpu=,pgid= 2>/dev/null | awk -v g="$pgid" '
+    $3 == g { sum += $2 }
+    END { printf "%d", (sum + 0) }'
+}
+
+# Print "<size> <mtime>" for a file (portable: BSD `stat -f`, GNU `stat -c`),
+# or "0 0" when the file is absent. Used to detect output GROWTH between polls —
+# either the byte size changed or the mtime advanced counts as progress.
+_file_size_mtime() { # path → "<size> <mtime>" (stdout)
+  local f="$1"
+  [ -f "$f" ] || { printf '0 0'; return 0; }
+  stat -f '%z %m' "$f" 2>/dev/null && return 0   # BSD / macOS
+  stat -c '%s %Y' "$f" 2>/dev/null && return 0   # GNU / Linux
+  printf '0 0'
+}
+
+# Run a cold-worker command HANG-GUARDED. Launches it as its OWN process-group
+# leader (perl POSIX::setsid + exec — REUSE the BUG-048 pattern in
+# run_with_watchdog), so the whole descendant tree can be group-killed. While it
+# runs, poll every LCARS_WORKER_HANG_POLL seconds: read the group's CPU% and the
+# combined size+mtime of $outdir/.worker.out + .worker.err. Whenever CPU exceeds
+# the threshold OR the output has grown, RESET the stagnation timer (the worker
+# is alive and working). If CPU stays at/below the threshold AND the output is
+# unchanged for a SUSTAINED LCARS_WORKER_HANG_SECS, declare it HUNG: group-kill
+# it (TERM then KILL, falling back to the bare pid like run_with_watchdog) and
+# return the HUNG sentinel 137, which the spawn_worker retry loop counts as a
+# FAILED try (so it retries within MAX_WORKER_TRIES; escalates only if exhausted).
+# The HUNG sentinel is 137 (128+SIGKILL) — distinct from a normal worker rc.
+# LCARS_WORKER_HANG_SECS=0 (or unset/non-numeric ⇒ default) disables the guard:
+# the command runs unguarded and its real rc round-trips.
+run_worker_hang_guarded() { # outdir  cmd...
+  local outdir="$1"; shift
+  local hang_secs="${LCARS_WORKER_HANG_SECS:-240}"
+  case "$hang_secs" in ''|*[!0-9]*) hang_secs=240 ;; esac
+  # Disabled → run inline, unguarded; the command's real rc round-trips.
+  if [ "$hang_secs" -le 0 ] 2>/dev/null; then
+    "$@"
+    return $?
+  fi
+  local poll="${LCARS_WORKER_HANG_POLL:-15}"
+  case "$poll" in ''|*[!0-9]*) poll=15 ;; esac
+  [ "$poll" -ge 1 ] 2>/dev/null || poll=1
+  local cpu_min="${LCARS_WORKER_HANG_CPU_MIN:-2}"
+  case "$cpu_min" in ''|*[!0-9]*) cpu_min=2 ;; esac
+
+  # Launch as its own session/group leader (PGID == PID) so a group-kill reaps
+  # the whole tree even when nested workers reparent/orphan. Same perl trick as
+  # run_with_watchdog; the perl `exec` preserves the backgrounded pid.
+  perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- "$@" &
+  local cmd_pid=$!
+
+  local out_a="$outdir/.worker.out" out_b="$outdir/.worker.err"
+  local last_sig=""; last_sig="$(_file_size_mtime "$out_a")|$(_file_size_mtime "$out_b")"
+  local stagnant=0
+  while pid_alive "$cmd_pid"; do
+    sleep "$poll" 2>/dev/null || break
+    pid_alive "$cmd_pid" || break
+    local cpu sig
+    cpu="$(_pgid_cpu_sum "$cmd_pid")"
+    sig="$(_file_size_mtime "$out_a")|$(_file_size_mtime "$out_b")"
+    # Progress = the worker is burning CPU OR its output grew → reset the timer.
+    if [ "$cpu" -gt "$cpu_min" ] 2>/dev/null || [ "$sig" != "$last_sig" ]; then
+      stagnant=0
+      last_sig="$sig"
+      continue
+    fi
+    # Idle AND silent this interval — accumulate stagnation.
+    stagnant=$((stagnant + poll))
+    if [ "$stagnant" -ge "$hang_secs" ]; then
+      # HUNG: group-kill the whole tree, then return the distinct sentinel so the
+      # caller's retry loop counts this as a failed try.
+      kill -TERM -"$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null || true
+      sleep 1 2>/dev/null || true
+      kill -KILL -"$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null || true
+      wait "$cmd_pid" 2>/dev/null || true
+      return 137   # HUNG sentinel (128+SIGKILL) — see header
+    fi
+  done
+  wait "$cmd_pid"
+  return $?
 }
 
 # Try to take the per-mission driver lock. Prints nothing; returns:
@@ -4479,13 +6451,19 @@ cmd_drive() {
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
     fi
     case "$stage" in
-      verify) emit_event gate verify "human review required"
-              mirror_comments || true
-              drive_print_summary "$summary"; drive_halt_verify; return 0 ;;
-      done)   emit_event gate done "Mission shipped — the PR is open"
+      verify) # S75: Verify auto-opens the PR, then parks "in review — PR open"
+              # and polls for a merge (here or on GitHub) → Done. drive_verify
+              # owns the open/poll/halt; it returns 0 to STOP the driver (in
+              # review or a hard open failure) or non-empty $DRIVE_VERIFY_DONE to
+              # signal "merged → continue the loop" (the next pass sees stage=done).
+              DRIVE_VERIFY_DONE=""
+              drive_verify "$summary"
+              [ -n "$DRIVE_VERIFY_DONE" ] && continue
+              return 0 ;;
+      done)   emit_event gate done "Mission shipped — the PR is merged"
               mirror_comments || true
               drive_print_summary "$summary"
-              printf '⏹ stopped at: done  (Mission shipped — the PR is open)\n'; return 0 ;;
+              printf '⏹ stopped at: done  (Mission shipped — the PR is merged)\n'; return 0 ;;
       align)  if [ -f "$MISSION_DIR/feedback.md" ]; then
                 emit_event gate align "interactive Align re-grill required"
                 mirror_comments || true
@@ -4512,8 +6490,43 @@ cmd_drive() {
     emit_event stage_start "$action" "starting"
     printf '%-12s ▶  running…\n' "$action"
 
-    local out rc=0
-    out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" "$action" --mission "$MISSION_ID" 2>&1)" || rc=$?
+    # BUG-020 watchdog: run the Stage subprocess under a bounded wall-clock guard
+    # so a wedged stage (e.g. a leaked Implement heartbeat holding the pipe open)
+    # can never freeze the driver SILENTLY between stages. We capture the stage's
+    # output via a FILE (not a `$(…)` pipe) so the watchdog can background the
+    # subprocess and reap it on overrun — a backgrounded child that inherits a
+    # command-substitution pipe is exactly what kept the driver blocked. On a
+    # timeout (rc 124) we escalate to awaiting-human with an actionable message
+    # rather than hang forever. The budget is $LCARS_STAGE_TIMEOUT seconds
+    # (0/unset = no watchdog, never shortening a legitimately long stage).
+    local out rc=0 stage_timeout="${LCARS_STAGE_TIMEOUT:-0}"
+    local outf; outf="$(mktemp)"
+    run_with_watchdog "$stage_timeout" \
+      env LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+        bash "$SELF" "$action" --mission "$MISSION_ID" >"$outf" 2>&1 || rc=$?
+    out="$(cat "$outf")"; rm -f "$outf"
+
+    if [ "$rc" -eq 124 ]; then
+      # The stage overran the watchdog — a wedge, not a clean result. Park it as
+      # awaiting-human (never a silent freeze): record an actionable question and
+      # stop cleanly. Re-read state first in case the stage DID transition just
+      # before the kill (then we fall through to the normal handling below).
+      local wd_stage wd_await
+      wd_stage="$(json_str "$STATE" stage)"; wd_await="$(json_raw "$STATE" awaitingHuman)"
+      if [ "$wd_stage" = "$stage" ] && [ "$wd_await" != "true" ]; then
+        local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Re-run \`lcars run $MISSION_ID\` to resume; if it recurs, inspect the worker/heartbeat for a leaked child."
+        local wq; wq="$(mktemp)"; printf '%s\n' "$wdq" >"$wq"
+        write_pending "$wq" "$stage"; rm -f "$wq"
+        state_set_raw awaitingHuman true
+        state_set_str pendingQuestion "$wdq"
+        gh_relabel "lcars:awaiting-human" ""
+        emit_event error "$stage" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
+        drive_print_summary "$summary"
+        printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with `lcars respond %s`).\n' "$action" "$MISSION_ID"
+        printf '%s\n' "$out"
+        return 0
+      fi
+    fi
 
     local new_stage new_awaiting
     new_stage="$(json_str "$STATE" stage)"
@@ -4541,18 +6554,27 @@ cmd_drive() {
       summary="${summary:+$summary
 }$line"
       if [ "$mode" = "step" ]; then
-        drive_print_summary "$summary"
-        if [ "$new_stage" = "verify" ]; then drive_halt_verify
-        else printf '⏹ stepped one Stage → now at: %s\n' "$new_stage"
-             printf 'Run `lcars run %s` to continue (or add `--step` for one more).\n' "$MISSION_ID"
+        if [ "$new_stage" = "verify" ]; then
+          # Stepping INTO verify auto-opens the PR (same path as auto mode), then
+          # parks in review. drive_verify prints its own summary + banner.
+          DRIVE_VERIFY_DONE=""
+          drive_verify "$summary"
+        else
+          drive_print_summary "$summary"
+          printf '⏹ stepped one Stage → now at: %s\n' "$new_stage"
+          printf 'Run `lcars run %s` to continue (or add `--step` for one more).\n' "$MISSION_ID"
         fi
         return 0
       fi
       continue
     fi
 
-    # Nothing advanced and no gate was raised → a hard Stage error.
-    emit_event error "$stage" "$stage failed"
+    # Nothing advanced and no gate was raised → a hard Stage error. Carry the
+    # cause: the tail of the stage subprocess output ($out) — including any die
+    # reason — so the board event itself names WHY (BUG-051), not a bare "failed".
+    local err_tail; err_tail="$(printf '%s' "$out" | tr '\n' ' ')"
+    err_tail="${err_tail: -200}"
+    emit_event error "$stage" "$stage failed${err_tail:+: $err_tail}"
     drive_print_summary "$summary"
     printf '⏹ stopped: %s failed\n' "$stage"
     printf '%s\n' "$out"
@@ -4565,6 +6587,7 @@ SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
 EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
+RC_BRANCH=""; RC_SHA=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --step)        STEP=1; shift ;;
@@ -4584,6 +6607,10 @@ while [ $# -gt 0 ]; do
     --verdict=*)   VERDICT="${1#--verdict=}"; shift ;;
     --ticket)      TICKET="${2:-}"; shift 2 ;;
     --ticket=*)    TICKET="${1#--ticket=}"; shift ;;
+    --branch)      RC_BRANCH="${2:-}"; shift 2 ;;
+    --branch=*)    RC_BRANCH="${1#--branch=}"; shift ;;
+    --sha)         RC_SHA="${2:-}"; shift 2 ;;
+    --sha=*)       RC_SHA="${1#--sha=}"; shift ;;
     --tests)       TESTS="${2:-}"; shift 2 ;;
     --tests=*)     TESTS="${1#--tests=}"; shift ;;
     --result)      RESULT="${2:-}"; shift 2 ;;
@@ -4602,7 +6629,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|research|validate|estimate|plan|plan-review|implement|implement-ticket|drive|emit-event)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|open-pr|research|validate|estimate|plan|plan-review|implement|implement-ticket|reconcile-tests|drive|emit-event)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -4620,6 +6647,8 @@ case "$SUB" in
   impl-status)      cmd_impl_status ;;
   impl-advance)     cmd_impl_advance ;;
   verify-summary)   cmd_verify_summary ;;
+  open-pr)          cmd_open_pr ;;
+  reconcile)        cmd_reconcile ;;
   # Stage drivers (spawn cold workers, then persist via the subcommands above).
   research)         cmd_research ;;
   validate)         cmd_validate ;;
@@ -4631,6 +6660,11 @@ case "$SUB" in
   plan-review)      cmd_plan_review ;;
   implement)        cmd_implement ;;
   implement-ticket) cmd_implement_ticket ;;
+  # BUG-058: reconcile the parent mission's existing tests a logged bug's change
+  # invalidates, before the bug's own Test Writer/Implementer run. No-op on a
+  # top-level mission. Independently driveable + testable; cmd_implement also
+  # calls reconcile_tests() directly up front.
+  reconcile-tests)  cmd_reconcile_tests ;;
   # One research agent, spawned as a capped fan-out job (run_capped). Stateless:
   # its ONLY inputs are $LCARS_RA_DIR (where to write) and $LCARS_RA_Q (the one
   # question). No --mission — research_agent_worker reaches no mission artifacts.
@@ -4676,6 +6710,38 @@ case "$SUB" in
   # each loop pass; it is also the standalone test/maintenance entry point.
   # Best-effort: mirror_comments never fails the caller, so force exit 0.
   mirror-comments)  locate_mission "$MISSION_ID"; mirror_comments || true ;;
+  # Test hook for the repo-global replay mutex (concurrent-mission branch
+  # cross-contamination fix): drive replay_ticket_commit for ONE commit onto a
+  # named branch, under the lock. --branch <b> --sha <sha> [--ticket <t>]. Exits
+  # non-zero iff the replay failed (e.g. cherry-pick conflict).
+  replay-commit)
+    locate_mission "$MISSION_ID"
+    [ -n "$RC_BRANCH" ] || die "usage: run.sh replay-commit --mission <id> --branch <b> --sha <sha>"
+    [ -n "$RC_SHA" ]    || die "usage: run.sh replay-commit --mission <id> --branch <b> --sha <sha>"
+    replay_ticket_commit "$RC_BRANCH" "$RC_SHA" "${TICKET:-t-x}" ;;
+  # BUG-051 test hook: drive replay_ticket_commit and, on a TERMINAL cherry-pick
+  # failure, run the SAME durable-recording path rebuild_ticket_on_tip's terminal
+  # branch uses (record_replay_failure → implement-failure.log + ticket_replay_failed
+  # event with the captured reason). Asserts the cause is captured, not discarded.
+  # --branch <b> --sha <sha> [--ticket <t>]. Exits non-zero iff the replay failed.
+  replay-commit-record)
+    locate_mission "$MISSION_ID"
+    [ -n "$RC_BRANCH" ] || die "usage: run.sh replay-commit-record --mission <id> --branch <b> --sha <sha>"
+    [ -n "$RC_SHA" ]    || die "usage: run.sh replay-commit-record --mission <id> --branch <b> --sha <sha>"
+    _rcr=0
+    replay_ticket_commit "$RC_BRANCH" "$RC_SHA" "${TICKET:-t-x}" || _rcr=$?
+    if [ "$_rcr" -ne 0 ]; then
+      record_replay_failure "${TICKET:-t-x}" \
+        "${REPLAY_FAIL_REASON:-rebuilt ticket failed to cherry-pick onto the tip ($RC_SHA)}"
+    fi
+    exit "$_rcr" ;;
+  # Test hook for the branch-CREATION contamination fix: create the mission's
+  # branch from its RECORDED base under the replay mutex (idempotent), exactly as
+  # cmd_implement does up front. --branch <b> overrides state.json's branch (so a
+  # test can drive both missions' branches from one mission dir). Always exits 0.
+  ensure-mission-branch)
+    locate_mission "$MISSION_ID"
+    ensure_mission_branch "${RC_BRANCH:-$(json_str "$STATE" branch)}" ;;
   # Session 65 test/maintenance hook: start the Implement comment heartbeat,
   # report its ticker pid, let it run its bounded ticks ($LCARS_COMMENT_HEARTBEAT_TICKS),
   # then stop it cleanly (no orphan). Exercises the heartbeat lifecycle (start /
@@ -4687,6 +6753,30 @@ case "$SUB" in
     # Wait for the bounded ticker to finish on its own, then ensure it's reaped.
     [ -n "${CM_HEARTBEAT_PID:-}" ] && wait "$CM_HEARTBEAT_PID" 2>/dev/null
     cm_heartbeat_stop
+    exit 0 ;;
+  # BUG-021 test hook: reproduce the Implement FLAG/ERROR/ESCALATION exit path that
+  # leaked the comment-heartbeat. cmd_implement arms the heartbeat-reap EXIT trap,
+  # then (inside the wave loop) calls replay_ticket_commit → acquire_replay_lock,
+  # whose trap USED to CLOBBER the heartbeat trap; an escalation `exit 0` afterwards
+  # would then release the lock but NEVER reap the heartbeat → an orphaned ticker.
+  # This hook arms the SAME heartbeat trap cmd_implement does, acquires the replay
+  # lock (the clobber point), then exits via a NON-clean escalation path WITHOUT an
+  # explicit cm_heartbeat_stop — exactly the leak path. It prints the ticker pid so
+  # the test asserts no orphan ticker (or its `sleep` child) survives the exit.
+  heartbeat-reap-test)
+    locate_mission "$MISSION_ID"
+    cm_heartbeat_start
+    # The exact trap cmd_implement arms right after cm_heartbeat_start.
+    trap 'declare -F cm_heartbeat_stop >/dev/null 2>&1 && cm_heartbeat_stop' EXIT INT TERM
+    printf 'TICK_PID=%s\n' "${CM_HEARTBEAT_PID:-}"
+    # Take the repo-global replay lock — the operation that re-arms the EXIT trap and
+    # (pre-fix) clobbered the heartbeat reap. This is the SAME call replay_ticket_commit
+    # makes inside the wave loop. We do NOT call cm_heartbeat_stop after it: this stands
+    # in for a flag/error/escalation branch that early-exits the stage.
+    acquire_replay_lock
+    release_replay_lock
+    # Escalation early-exit: NO explicit cm_heartbeat_stop. With the fix, the lock's
+    # composite EXIT trap still reaps the ticker; without it, the ticker orphans.
     exit 0 ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

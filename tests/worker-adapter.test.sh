@@ -259,5 +259,83 @@ check "C7c. spawn copilot captures stdout → <outdir>/.worker.out" \
 check "C7d. spawn copilot captures stderr → <outdir>/.worker.err" \
   "grep -q STDERR-MARKER \"$dc7/out/.worker.err\""
 
+# ============================================================================
+# INPUT READ-DIRS (session 76) — the Implement-stage copilot sandbox fix.
+# When a ticket's Implementer runs in an ISOLATED worktree (cwd = worktree),
+# copilot's hard path sandbox only grants the cwd + the scratch outdir. The
+# ticket's INPUT artifacts (failing tests, manifests, approved-plan.json,
+# repo-map.md, context-pack.md) live under .git/lcars/, OUTSIDE the worktree.
+# The caller (run.sh) supplies those INPUT read-dirs CLI-AGNOSTICALLY via the
+# env var LCARS_WORKER_INPUT_DIRS (newline-separated); the adapter translates:
+#   • copilot → one EXTRA `--add-dir <dir>` per input dir (so it can READ them),
+#               appended AFTER the scratch outdir --add-dir.
+#   • claude  → byte-for-byte unchanged (no per-path sandbox; absolute reads work).
+# Backward compat: no input dirs supplied ⇒ EXACTLY the old argv for both CLIs.
+# ============================================================================
+echo "worker-adapter — input read-dirs (session 76, copilot Implement sandbox)"
+
+# Two input dirs to grant (the mission dir + the .git/lcars dir, say).
+IN1="$(mktemp -d "$TMPROOT/in.XXXX")"
+IN2="$(mktemp -d "$TMPROOT/in.XXXX")"
+dI="$(mktemp -d "$TMPROOT/d.XXXX")"
+
+# Helper: collect EVERY `--add-dir <value>` pair from an argv string, in order.
+add_dirs() { awk '/^--add-dir$/{getline; print}'; }
+
+# --- I1. copilot WITH input dirs → one --add-dir per input dir (read grants) ---
+AI1="$(LCARS_WORKER_MODEL= LCARS_WORKER_INPUT_DIRS="$IN1
+$IN2" bash "$ADAPTER" argv copilot repo-write "$dI")"
+# The outdir --add-dir is still present (the answer channel) …
+check "I1a. copilot argv still grants the scratch outdir via --add-dir" \
+  "[ -n \"\$(printf '%s\\n' \"\$AI1\" | add_dirs | grep -xF \"$dI\")\" ]"
+# … plus an EXTRA --add-dir for each supplied input dir (so copilot can READ them).
+check "I1b. copilot argv grants input dir 1 via --add-dir" \
+  "[ -n \"\$(printf '%s\\n' \"\$AI1\" | add_dirs | grep -xF \"$IN1\")\" ]"
+check "I1c. copilot argv grants input dir 2 via --add-dir" \
+  "[ -n \"\$(printf '%s\\n' \"\$AI1\" | add_dirs | grep -xF \"$IN2\")\" ]"
+# Exactly THREE --add-dir grants total: outdir + 2 inputs (no extras, no dupes).
+check "I1d. copilot argv has exactly 3 --add-dir grants (outdir + 2 inputs)" \
+  "[ \"\$(printf '%s\\n' \"\$AI1\" | grep -cxF -- --add-dir)\" = '3' ]"
+# READ-ONLY widening — write isolation flags must NOT be weakened.
+check "I1e. copilot argv does NOT add --allow-all-paths (write isolation intact)" \
+  "[ -z \"\$(printf '%s\\n' \"\$AI1\" | grep -xF -- --allow-all-paths)\" ]"
+
+# --- I2. claude WITH input dirs → byte-for-byte unchanged (no path sandbox) ----
+AI2="$(LCARS_WORKER_MODEL= LCARS_WORKER_INPUT_DIRS="$IN1
+$IN2" bash "$ADAPTER" argv claude repo-write "$dI")"
+EXPECT_I2='-p
+--allowedTools
+Read,Grep,Glob,Write,Edit,Bash
+--output-format
+text'
+check "I2. claude argv UNCHANGED with input dirs (no per-path flags, no regression)" \
+  "[ \"\$AI2\" = \"\$EXPECT_I2\" ]"
+
+# --- I3. NO input dirs → old argv for BOTH CLIs (backward compat) --------------
+# copilot: exactly the session-20 byte-for-byte lock (single --add-dir = outdir).
+AI3c="$(LCARS_WORKER_MODEL= LCARS_WORKER_INPUT_DIRS= bash "$ADAPTER" argv copilot repo-read "$d1")"
+check "I3a. copilot argv with NO input dirs = the old single-outdir argv" \
+  "[ \"\$AI3c\" = \"\$EXPECT_5\" ]"
+check "I3b. copilot argv with NO input dirs has exactly ONE --add-dir (outdir)" \
+  "[ \"\$(printf '%s\\n' \"\$AI3c\" | grep -cxF -- --add-dir)\" = '1' ]"
+# claude: still the session-18 byte-for-byte lock.
+AI3j="$(LCARS_WORKER_MODEL= LCARS_WORKER_INPUT_DIRS= bash "$ADAPTER" argv claude repo-read "$d1")"
+check "I3c. claude argv with NO input dirs = the session-18 argv (unchanged)" \
+  "[ \"\$AI3j\" = \"\$EXPECT_1\" ]"
+
+# --- I4. spawn threads the input dirs end-to-end (copilot Implement path) -------
+dI4="$(mktemp -d "$TMPROOT/d.XXXX")"
+make_copilot_stub "$dI4/copilot"
+export COPILOT_ARGV="$dI4/argv.log" COPILOT_ENV="$dI4/env.log"
+LCARS_WORKER_MODEL= LCARS_WORKER_INPUT_DIRS="$IN1
+$IN2" LCARS_WORKER_BIN="$dI4/copilot" \
+  bash "$ADAPTER" spawn copilot repo-write "$dI4/out" "THE PROMPT BODY"
+check "I4a. spawn copilot grants the scratch outdir --add-dir" \
+  "[ -n \"\$(add_dirs <\"$dI4/argv.log\" | grep -xF \"$dI4/out\")\" ]"
+check "I4b. spawn copilot grants input dir 1 --add-dir" \
+  "[ -n \"\$(add_dirs <\"$dI4/argv.log\" | grep -xF \"$IN1\")\" ]"
+check "I4c. spawn copilot grants input dir 2 --add-dir" \
+  "[ -n \"\$(add_dirs <\"$dI4/argv.log\" | grep -xF \"$IN2\")\" ]"
+
 echo "worker-adapter: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -5,9 +5,11 @@ Behaviors covered:
   2. a gated mission lands in its in-flight (pending.json.stage) column, NOT
      align — mirroring status.sh's gate rule exactly.
 """
+import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -78,6 +80,37 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertEqual(m["stage"], "research")
         self.assertEqual(m["question"], "Global vs per-course leaderboard?")
 
+    def test_gate_envelope_fields_passed_through(self):
+        # BUG-027: the harness writes a legible, type-aware gate envelope into
+        # pending.json; the adapter must surface it verbatim as card["gate"] so the
+        # front end can render type-appropriate copy + a technical-detail
+        # disclosure.
+        d = fx.plant_gated(self.tmp, "m-gate", resume_stage="align",
+                           inflight_stage="implement")
+        pending = json.load(open(os.path.join(d, "pending.json")))
+        pending.update({
+            "humanSummary": "Two of your changes conflict — #47 re-broke a test "
+                            "#43 locked in.",
+            "escalationType": "regression",
+            "technicalDetail": "FULL-SUITE GATE: t-001 REGRESSED\n"
+                               "node --test tests/**/*.test.js",
+        })
+        fx.write_json(os.path.join(d, "pending.json"), pending)
+        m = self._by_id(self._board(), "m-gate")
+        self.assertIsNotNone(m["gate"])
+        self.assertEqual(m["gate"]["escalationType"], "regression")
+        self.assertIn("#47", m["gate"]["humanSummary"])
+        self.assertIn("FULL-SUITE GATE", m["gate"]["technicalDetail"])
+
+    def test_gate_none_when_no_envelope_fields(self):
+        # a plain pre-harness pending.json (no new fields) → gate is None so the
+        # renderer degrades to the bare question text.
+        fx.plant_gated(self.tmp, "m-gate", resume_stage="align",
+                       inflight_stage="research")
+        m = self._by_id(self._board(), "m-gate")
+        self.assertIsNone(m["gate"])
+        self.assertTrue(m["awaiting"])
+
     def test_paused_mission_flagged(self):
         fx.plant_paused(self.tmp, "m-pause", stage="implement")
         m = self._by_id(self._board(), "m-pause")
@@ -101,6 +134,32 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertEqual(m["progress"]["wavesTotal"], 2)
         self.assertEqual(m["progress"]["ticketsDone"], 1)
         self.assertEqual(m["progress"]["ticketsTotal"], 3)
+
+    def test_progress_counts_distinct_green_tickets_not_every_event(self):
+        """BUG-050: a single ticket can emit MULTIPLE ticket_green events (goes
+        green → ticket_replay_conflict → serial rebuild → goes green AGAIN), so a
+        naive per-event increment over-counts ("TICKET 2/1", a >100% bar).
+        _progress must count DISTINCT tickets that reached green, clamped to the
+        total."""
+        from lcars_serve.local_adapter import _progress
+        waves = [{"wave": 1, "tickets": [{"id": "t-001", "issue": 201}]}]
+        events = [
+            {"type": "wave_start", "data": {"wave": 1}},
+            {"type": "ticket_start", "data": {"ticket": "t-001"}},
+            {"type": "ticket_green", "data": {"ticket": "t-001"}},
+            {"type": "ticket_replay_conflict", "data": {"ticket": "t-001"}},
+            # the SAME ticket goes green again after the serial rebuild
+            {"type": "ticket_green", "data": {"ticket": "t-001"}},
+        ]
+        prog = _progress(waves, events)
+        # one distinct ticket reached green, not two
+        self.assertEqual(prog["ticketsDone"], 1)
+        self.assertEqual(prog["ticketsTotal"], 1)
+        # the label reads 1/1 (never "TICKET 2/1")
+        self.assertIn("TICKET 1/1", prog["label"])
+        self.assertNotIn("2/1", prog["label"])
+        # defensive clamp: ticketsDone can never exceed the total
+        self.assertLessEqual(prog["ticketsDone"], prog["ticketsTotal"])
 
     def test_single_ticket_mission_shows_no_tickets(self):
         fx.plant_simple(self.tmp, "m-solo", stage="plan")
@@ -172,6 +231,46 @@ class LocalAdapterTest(unittest.TestCase):
         detail = LocalAdapter(self.tmp).mission("m-bug")
         self.assertEqual(detail["parentMission"], "m-001")
 
+    # ── BUG-033: the child carries its parent's ISSUE number on the shape ──
+    def test_parent_issue_surfaced_from_child_state(self):
+        """BUG-033: a logged-bug child records state.json.parentIssue (its
+        parent's GitHub issue #). The board must surface it as `parentIssue` so
+        the "child of #<n>" badge survives the parent merging off the board (the
+        front-end ISSUE_BY_ID index only covers ACTIVE cards)."""
+        fx.plant_simple(self.tmp, "m-bug", stage="plan", parent_mission="m-001",
+                        parent_issue=142)
+        m = self._by_id(self._board(), "m-bug")
+        self.assertEqual(m["parentIssue"], 142)
+        detail = LocalAdapter(self.tmp).mission("m-bug")
+        self.assertEqual(detail["parentIssue"], 142)
+
+    def test_parent_issue_none_when_absent(self):
+        """No parentIssue on disk ⇒ the field is present and None (non-crashing)."""
+        fx.plant_simple(self.tmp, "m-norm", stage="plan")
+        m = self._by_id(self._board(), "m-norm")
+        self.assertIn("parentIssue", m)
+        self.assertIsNone(m["parentIssue"])
+
+    # ── BUG-036: prNumber is populated, deriving from prUrl when absent ──
+    def test_pr_number_derived_from_pr_url_when_absent(self):
+        """BUG-036: a verify mission with a prUrl but NO prNumber on disk must
+        still expose prNumber, derived from the prUrl trailing /pull/<n>, so the
+        Verify dialog never renders a blank 'PR #'."""
+        fx.plant_simple(self.tmp, "m-derive", stage="verify",
+                        pr_url="https://github.com/acme/repo/pull/93",
+                        review="open")  # NOTE: no pr_number planted
+        m = self._by_id(self._board(), "m-derive")
+        self.assertEqual(m["prUrl"], "https://github.com/acme/repo/pull/93")
+        self.assertEqual(m["prNumber"], 93)
+
+    def test_pr_number_explicit_wins_over_url(self):
+        """An explicit state.json.prNumber is used verbatim (not re-derived)."""
+        fx.plant_simple(self.tmp, "m-pr", stage="verify",
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        m = self._by_id(self._board(), "m-pr")
+        self.assertEqual(m["prNumber"], 77)
+
     def test_parent_mission_none_for_normal_mission(self):
         """A normal mission has no parentMission on disk ⇒ the card exposes
         parentMission None, no crash."""
@@ -179,6 +278,206 @@ class LocalAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "m-norm")
         self.assertIn("parentMission", m)
         self.assertIsNone(m["parentMission"])
+
+    # ── S75: the Verify PR lifecycle on the card shape ──────────────────────
+    def test_in_review_mission_surfaces_pr_and_review_state(self):
+        """A Mission Verify auto-opened a PR for records prUrl/prNumber + a
+        review="open" sub-state; the card must surface all three so the Verify
+        modal can show the PR link + the in-review state and offer Merge PR."""
+        fx.plant_simple(self.tmp, "m-rev", stage="verify",
+                        pr_url="https://github.com/acme/repo/pull/77",
+                        pr_number=77, review="open")
+        m = self._by_id(self._board(), "m-rev")
+        self.assertEqual(m["prUrl"], "https://github.com/acme/repo/pull/77")
+        self.assertEqual(m["prNumber"], 77)
+        self.assertEqual(m["review"], "open")
+        # the card stays in the verify column (NOT done) while in review.
+        self.assertEqual(m["stage"], "verify")
+
+    def test_mission_without_pr_has_null_pr_fields(self):
+        """A mission not yet in review exposes prUrl/prNumber/review None — the
+        fields are present (non-crashing) but empty."""
+        fx.plant_simple(self.tmp, "m-nopr", stage="implement")
+        m = self._by_id(self._board(), "m-nopr")
+        self.assertIn("prUrl", m)
+        self.assertIsNone(m["prUrl"])
+        self.assertIsNone(m["prNumber"])
+        self.assertIsNone(m["review"])
+
+    def test_reconcile_status_surfaced_on_verify_card(self):
+        """S76: a verify-stage mission with no PR yet that is reconciling with the
+        updated base surfaces its reconcileStatus so the board can show the
+        'reconciling with main / re-verifying' note."""
+        for st in ("merging", "retesting", "healing", "escalated"):
+            fx.plant_simple(self.tmp, "m-rec-%s" % st, stage="verify",
+                            reconcile_status=st)
+            m = self._by_id(self._board(), "m-rec-%s" % st)
+            self.assertEqual(m["reconcileStatus"], st)
+            # still at verify with no PR open while reconciling.
+            self.assertEqual(m["stage"], "verify")
+            self.assertIsNone(m["prUrl"])
+
+    def test_reconcile_status_surfaced_even_when_pr_open(self):
+        """BUG-039: a verify mission may carry a live reconcileStatus WHILE its PR
+        is open (prUrl set) — the now-normal self-heal case. The adapter must
+        surface reconcileStatus regardless of prUrl so the board can suppress
+        Merge and show the heal note even with a PR recorded."""
+        for st in ("merging", "retesting", "healing", "escalated"):
+            fx.plant_simple(self.tmp, "m-prrec-%s" % st, stage="verify",
+                            reconcile_status=st,
+                            pr_url="https://github.com/acme/repo/pull/88",
+                            pr_number=88, review="open")
+            m = self._by_id(self._board(), "m-prrec-%s" % st)
+            self.assertEqual(m["reconcileStatus"], st)
+            # the PR is still surfaced (the board uses it to suppress Merge).
+            self.assertEqual(m["prUrl"], "https://github.com/acme/repo/pull/88")
+
+    def test_reconcile_status_none_when_not_reconciling(self):
+        """The field is always present (non-crashing) and None for a normal
+        mission that is not reconciling."""
+        fx.plant_simple(self.tmp, "m-norec", stage="implement")
+        m = self._by_id(self._board(), "m-norec")
+        self.assertIn("reconcileStatus", m)
+        self.assertIsNone(m["reconcileStatus"])
+
+    def test_reconcile_new_statuses_surfaced(self):
+        """BUG-067 SHARED CONTRACT: the two NEW reconcileStatus values —
+        awaiting-reapprove (heal converged, awaiting the human's reapprove) and
+        merge-failed (push/merge failed, surfaced not silent) — pass through
+        verbatim so the board can render the gate + the merge-failed outcome."""
+        for st in ("awaiting-reapprove", "merge-failed"):
+            fx.plant_simple(self.tmp, "m-new-%s" % st, stage="verify",
+                            reconcile_status=st, awaiting_human=True,
+                            reconcile_note="some human-readable summary")
+            m = self._by_id(self._board(), "m-new-%s" % st)
+            self.assertEqual(m["reconcileStatus"], st)
+            self.assertTrue(m["awaiting"])
+
+    def test_reconcile_note_and_merge_sha_surfaced(self):
+        """BUG-067: reconcileNote (the card summary) and reconcileMergeSha (the
+        reconciled tip) are exposed on the card shape so the gate/merge-failed
+        renderer can show the summary + sha verbatim."""
+        note = ("Reconciled main into the branch (abc1234) and re-tested green "
+                "(8/8). Reapprove to merge.")
+        fx.plant_simple(self.tmp, "m-rn", stage="verify",
+                        reconcile_status="awaiting-reapprove",
+                        awaiting_human=True, reconcile_note=note,
+                        reconcile_merge_sha="abc1234")
+        m = self._by_id(self._board(), "m-rn")
+        self.assertEqual(m["reconcileNote"], note)
+        self.assertEqual(m["reconcileMergeSha"], "abc1234")
+
+    def test_reconcile_note_and_merge_sha_none_when_absent(self):
+        """Both fields are always present (non-crashing) and None when not set."""
+        fx.plant_simple(self.tmp, "m-nonote", stage="implement")
+        m = self._by_id(self._board(), "m-nonote")
+        self.assertIn("reconcileNote", m)
+        self.assertIsNone(m["reconcileNote"])
+        self.assertIn("reconcileMergeSha", m)
+        self.assertIsNone(m["reconcileMergeSha"])
+
+    def test_merge_failed_surfaced_on_detail_too(self):
+        """BUG-067: the merge-failed outcome + its note ride the detail endpoint
+        (not just the board) so the modal can render the error state."""
+        fx.plant_simple(self.tmp, "m-mf", stage="verify",
+                        reconcile_status="merge-failed", awaiting_human=True,
+                        reconcile_note="push rejected: non-fast-forward")
+        detail = LocalAdapter(self.tmp).mission("m-mf")
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["reconcileStatus"], "merge-failed")
+        self.assertEqual(detail["reconcileNote"],
+                         "push rejected: non-fast-forward")
+
+    def test_reconciling_mission_with_multiline_diagnosis_not_dropped(self):
+        """S76 DEFECT regression: reconcile_gate writes a MULTI-LINE failure
+        summary into reconcileDiagnosis. With the FIXED json_escape this stays
+        VALID JSON, so the reconciling/escalated parent MUST still appear on the
+        board (carrying its reconcile state) and be readable via the detail
+        endpoint — instead of silently vanishing (the old behaviour: invalid JSON
+        ⇒ _load_json None ⇒ card dropped ⇒ 404) at the worst moment (escalated +
+        awaiting the captain)."""
+        diagnosis = (
+            "MERGING main into the mission branch produced a TEXTUAL conflict.\n"
+            "Conflicted/affected: shared.txt\n"
+            "\tsuite t-001 went red\tafter merging \"main\".\n"
+            "Root cause: main renamed fooBar to foo_bar."
+        )
+        # healing state (mid-self-heal)
+        fx.plant_simple(self.tmp, "m-heal", stage="verify",
+                        reconcile_status="healing", reconcile_diagnosis=diagnosis)
+        # escalated + awaiting-human (the worst-case the defect hit)
+        fx.plant_simple(self.tmp, "m-esc", stage="verify",
+                        reconcile_status="escalated", reconcile_diagnosis=diagnosis,
+                        awaiting_human=True,
+                        pending_question="Reconcile still red after K rounds.")
+
+        board = self._board()
+        # BOTH cards must be present (not dropped by a JSON parse error).
+        heal = self._by_id(board, "m-heal")
+        esc = self._by_id(board, "m-esc")
+        self.assertEqual(heal["reconcileStatus"], "healing")
+        self.assertEqual(esc["reconcileStatus"], "escalated")
+        self.assertTrue(esc["awaiting"])
+
+        # the detail endpoint must serve them (previously 404 "no such mission").
+        adapter = LocalAdapter(self.tmp)
+        self.assertIsNotNone(adapter.mission("m-heal"))
+        esc_detail = adapter.mission("m-esc")
+        self.assertIsNotNone(esc_detail)
+        self.assertEqual(esc_detail["reconcileStatus"], "escalated")
+
+    def test_malformed_state_json_is_dropped_documenting_the_defect(self):
+        """The root cause: an INVALID state.json (a raw newline inside a JSON
+        string, exactly what the OLD json_escape emitted for a multi-line
+        reconcileDiagnosis) is unparseable, so the adapter drops the mission and
+        the detail endpoint 404s. This is why the escaper fix is load-bearing."""
+        d = fx.mission_dir(self.tmp, "m-bad")
+        os.makedirs(d, exist_ok=True)
+        # a literal newline inside the "reconcileDiagnosis" string value → the
+        # json.JSONDecodeError "Invalid control character" the defect produced.
+        bad = (
+            '{\n'
+            '  "id": "m-bad",\n'
+            '  "stage": "verify",\n'
+            '  "reconcileStatus": "escalated",\n'
+            '  "reconcileDiagnosis": "line1\nline2",\n'
+            '  "awaitingHuman": true\n'
+            '}\n'
+        )
+        with open(os.path.join(d, "state.json"), "w") as fh:
+            fh.write(bad)
+        # dropped from the board, and 404 on detail — the exact symptom reported.
+        board = self._board()
+        self.assertNotIn("m-bad", [m["id"] for m in board["missions"]])
+        self.assertIsNone(LocalAdapter(self.tmp).mission("m-bad"))
+
+    def test_detail_serves_child_bug_prd_body(self):
+        """S76 behaviour 6: a self-authored reconcile bug child's DETAILED PRD
+        (Conflict/failure summary, Root cause, Intended fix) must be readable in
+        the detail modal — so the detail endpoint serves the verbatim prd body."""
+        d = fx.plant_simple(self.tmp, "m-recbug", stage="plan",
+                            parent_mission="m-001", mtype="bug")
+        prd = (
+            "# Mission: reconcile break when main merged in\n"
+            "**Type:** bug\n"
+            "**Conflict/failure summary:** suite t-001 went red after merging main.\n"
+            "**Affected files / tests:** src/foo.js\n"
+            "**Root cause:** main renamed fooBar to foo_bar.\n"
+            "**Intended fix:** rename the call site, keeping the toggle behaviour.\n"
+        )
+        with open(os.path.join(d, "prd.md"), "w") as fh:
+            fh.write(prd)
+        detail = LocalAdapter(self.tmp).mission("m-recbug")
+        self.assertIn("prd", detail)
+        self.assertIn("Conflict/failure summary", detail["prd"])
+        self.assertIn("Root cause", detail["prd"])
+        self.assertIn("Intended fix", detail["prd"])
+
+    def test_detail_prd_empty_when_absent(self):
+        """No prd.md ⇒ the detail's prd is "" (present, non-crashing)."""
+        fx.plant_simple(self.tmp, "m-noprd", stage="implement")
+        detail = LocalAdapter(self.tmp).mission("m-noprd")
+        self.assertEqual(detail.get("prd"), "")
 
     def test_empty_tree_is_empty_board(self):
         board = self._board()
@@ -245,6 +544,137 @@ class LocalAdapterTest(unittest.TestCase):
         self._lock("m-001", os.getpid())
         detail = LocalAdapter(self.tmp).mission("m-001")
         self.assertTrue(detail["running"])
+
+    # ── BUG-062: the `dispatched` flag (was the run actually launched?) ──
+    # A logged bug fast-tracks to stage="plan" but, with the estimate gate, is
+    # FILED but HELD at estimate-review — only estimate.json exists, NO
+    # events.jsonl, no driver lock. It is NOT dispatched, so its card must show
+    # "Start", not "Pause". `dispatched` is the durable signal the front end
+    # gates the Start/Pause button on: true iff a run has actually run (events
+    # on disk) OR a live driver currently holds the lock.
+    def test_dispatched_false_for_filed_but_held_bug_estimate_only(self):
+        """The crux of BUG-062: a bug parked at plan with ONLY estimate.json (no
+        events.jsonl, no lock) is filed-but-held — not dispatched."""
+        fx.plant_simple(self.tmp, "m-bug", stage="plan", mtype="bug")
+        m = self._by_id(self._board(), "m-bug")
+        self.assertIn("dispatched", m)
+        self.assertFalse(m["dispatched"],
+                         "an estimate-only, no-events bug must not read dispatched")
+        self.assertFalse(m["running"])
+
+    def test_dispatched_true_when_events_jsonl_present(self):
+        """Once a run is actually dispatched it emits events.jsonl ⇒ dispatched."""
+        fx.plant_simple(self.tmp, "m-run", stage="plan")
+        self._events("m-run", [
+            {"ts": 1, "stage": "plan", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-run")
+        self.assertTrue(m["dispatched"])
+
+    def test_dispatched_true_when_a_live_driver_holds_the_lock(self):
+        """A live driver lock (run just started, events not yet flushed) ⇒
+        dispatched, so the card never flashes a clickable Start mid-launch."""
+        fx.plant_simple(self.tmp, "m-run", stage="plan")
+        self._lock("m-run", os.getpid())
+        m = self._by_id(self._board(), "m-run")
+        self.assertTrue(m["dispatched"])
+
+    def test_dispatched_false_for_align_mission_no_events(self):
+        """A fresh align mission (no events, no lock) is not dispatched."""
+        fx.plant_simple(self.tmp, "m-align", stage="align")
+        m = self._by_id(self._board(), "m-align")
+        self.assertFalse(m["dispatched"])
+
+    def test_dispatched_surfaced_on_mission_detail_too(self):
+        fx.plant_simple(self.tmp, "m-run", stage="plan")
+        self._events("m-run", [
+            {"ts": 1, "stage": "plan", "type": "stage_start", "detail": ""},
+        ])
+        detail = LocalAdapter(self.tmp).mission("m-run")
+        self.assertTrue(detail["dispatched"])
+
+    # ── BUG-017: a running, non-gated card shows its in-flight events stage ──
+    def _events(self, mid, rows):
+        d = fx.mission_dir(self.tmp, mid)
+        fx.write_jsonl(os.path.join(d, "events.jsonl"), rows)
+
+    def test_running_mission_uses_inflight_events_stage_not_state_stage(self):
+        """The crux of BUG-017: state.json.stage is the RESUME pointer (lags). A
+        running mission's column must come from events.jsonl's latest open
+        stage_start (the stage actually executing), not the stale state.stage."""
+        # state.json says align (resume pointer), but the latest open stage_start
+        # is research — the running card belongs in the Research column.
+        fx.plant_simple(self.tmp, "m-run", stage="align")
+        self._lock("m-run", os.getpid())
+        self._events("m-run", [
+            {"ts": 1, "stage": "research", "type": "stage_start",
+             "detail": "starting"},
+        ])
+        board = self._board()
+        self.assertEqual([m["id"] for m in board["columns"]["align"]], [])
+        col = board["columns"]["research"]
+        self.assertEqual([m["id"] for m in col], ["m-run"])
+        self.assertEqual(col[0]["stage"], "research")
+
+    def test_running_inflight_is_latest_open_stage_after_a_stage_done(self):
+        """A completed stage_done closes its stage; the following open stage_start
+        is the in-flight one. research done → validate started ⇒ Validate column."""
+        fx.plant_simple(self.tmp, "m-run", stage="align")
+        self._lock("m-run", os.getpid())
+        self._events("m-run", [
+            {"ts": 1, "stage": "research", "type": "stage_start", "detail": ""},
+            {"ts": 2, "stage": "research", "type": "stage_done", "detail": ""},
+            {"ts": 3, "stage": "validate", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-run")
+        self.assertEqual(m["stage"], "validate")
+
+    def test_running_falls_back_to_state_stage_with_no_stage_events(self):
+        """No stage_start events yet ⇒ keep state.json.stage (the resume pointer)."""
+        fx.plant_simple(self.tmp, "m-run", stage="plan")
+        self._lock("m-run", os.getpid())
+        self._events("m-run", [
+            {"ts": 1, "stage": "plan", "type": "ticket_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-run")
+        self.assertEqual(m["stage"], "plan")
+
+    def test_idle_mission_keeps_state_stage_even_with_open_stage_event(self):
+        """The in-flight override is RUNNING-only. An idle mission (no live driver
+        lock) keeps state.json.stage even if a stale stage_start is on disk —
+        avoids a crashed run leaving a card stuck in a column it isn't running."""
+        fx.plant_simple(self.tmp, "m-idle", stage="align")
+        # no driver lock ⇒ not running.
+        self._events("m-idle", [
+            {"ts": 1, "stage": "research", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-idle")
+        self.assertFalse(m["running"])
+        self.assertEqual(m["stage"], "align")
+
+    def test_awaiting_human_still_uses_pending_stage_not_events(self):
+        """The awaiting-human → pending.json.stage rule is UNCHANGED by BUG-017."""
+        fx.plant_gated(self.tmp, "m-gate", resume_stage="align",
+                       inflight_stage="research")
+        # even if events disagree, a gated mission follows pending.json.stage.
+        self._events("m-gate", [
+            {"ts": 1, "stage": "validate", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-gate")
+        self.assertTrue(m["awaiting"])
+        self.assertEqual(m["stage"], "research")
+
+    def test_paused_running_mission_keeps_state_stage(self):
+        """A paused mission (even if its lock is still live) is not 'actively
+        executing' a stage — keep the resume pointer, don't chase events."""
+        fx.plant_paused(self.tmp, "m-pause", stage="plan")
+        self._lock("m-pause", os.getpid())
+        self._events("m-pause", [
+            {"ts": 1, "stage": "implement", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-pause")
+        self.assertTrue(m["paused"])
+        self.assertEqual(m["stage"], "plan")
 
     # ── S70-A: board-level meta (which repo am I attached to) ──
     def test_board_meta_present_with_repo_and_mode(self):
@@ -342,6 +772,36 @@ class LocalAdapterTest(unittest.TestCase):
         stages = [r["stage"] for r in m["modelMix"]]
         self.assertEqual(stages, ["Research", "Validate", "Plan",
                                   "Plan Review", "Implement", "Verify"])
+
+    # ── S78 CHANGE 4: per-engine model mix. A COPILOT mission is opus-safe, so
+    # the DISPLAYED mix must reflect that resolution — every row shows `opus`
+    # (mirroring alias_for_tier's copilot default). A CLAUDE mission keeps the
+    # estimate's per-stage tiers. ONE estimate, two engines, shape layer. ──
+    def test_copilot_mission_mix_is_opus_safe_every_row(self):
+        # ESTIMATE_COPILOT_USAGE has sonnet-tier stages; a copilot mission must
+        # display opus on EVERY row (opus-safe), and engine == "copilot".
+        fx.plant_simple(self.tmp, "m-cop", stage="plan",
+                        worker_bin="copilot",
+                        estimate=fx.ESTIMATE_COPILOT_USAGE)
+        m = self._by_id(self._board(), "m-cop")
+        self.assertEqual(m["engine"], "copilot")
+        self.assertIsNotNone(m["modelMix"])
+        tiers = {r["tier"] for r in m["modelMix"]}
+        self.assertEqual(tiers, {"opus"},
+                         "a copilot mission's displayed mix must be opus-safe "
+                         "on EVERY row, got %r" % tiers)
+
+    def test_claude_mission_mix_keeps_estimate_tiers(self):
+        # the SAME sonnet-heavy estimate on a claude engine keeps its tiers.
+        fx.plant_simple(self.tmp, "m-cla", stage="plan",
+                        worker_bin="claude",
+                        estimate=fx.ESTIMATE_COPILOT_USAGE)
+        m = self._by_id(self._board(), "m-cla")
+        self.assertEqual(m["engine"], "claude")
+        rows = {r["stage"]: r["tier"] for r in m["modelMix"]}
+        # ESTIMATE_COPILOT_USAGE is all-sonnet → claude keeps sonnet everywhere.
+        self.assertEqual(set(rows.values()), {"sonnet"},
+                         "claude must keep the estimate's tiers, got %r" % rows)
 
     # ── S70-B2: ADRs (from adr.md) ──
     def test_adrs_parsed_from_adr_md(self):
@@ -517,6 +977,24 @@ class ActiveSecondsOnMissionTest(unittest.TestCase):
         fx.plant_simple(self.tmp, "m-none", stage="align")
         detail = LocalAdapter(self.tmp).mission("m-none")
         self.assertEqual(detail.get("activeSeconds", 0), 0)
+
+    def test_active_seconds_at_anchor_present(self):
+        """BUG-047: the shape carries activeSecondsAt (the server `now` used to
+        compute activeSeconds) so the front-end live clock re-bases from a server
+        anchor instead of a snapshot frozen at the last stage boundary."""
+        d = fx.plant_simple(self.tmp, "m-anchor", stage="research")
+        fx.write_jsonl(os.path.join(d, "events.jsonl"), [
+            {"ts": 100, "mission": "m-anchor", "stage": "research",
+             "type": "stage_start", "detail": "starting"},
+        ])
+        before = time.time()
+        detail = LocalAdapter(self.tmp).mission("m-anchor")
+        after = time.time()
+        self.assertIn("activeSecondsAt", detail)
+        self.assertIsInstance(detail["activeSecondsAt"], (int, float))
+        # the anchor is the wall-clock `now` at shape-build time.
+        self.assertGreaterEqual(detail["activeSecondsAt"], before)
+        self.assertLessEqual(detail["activeSecondsAt"], after)
 
 
 if __name__ == "__main__":

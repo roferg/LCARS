@@ -268,7 +268,7 @@ _BUG_SKIPPED_STAGE_LABELS = (_MODEL_STAGE_LABELS["research"],
                              _MODEL_STAGE_LABELS["validate"])
 
 
-def model_mix_from_estimate(estimate, is_bug=False):
+def model_mix_from_estimate(estimate, is_bug=False, engine=None):
     """Build `[{stage, tier, why}]` from estimate.json. None when absent.
 
     Returns None (not []) when there is no `models` map, so the front end shows
@@ -280,25 +280,42 @@ def model_mix_from_estimate(estimate, is_bug=False):
     (Plan, Plan Review, Implement, Verify) — adapter-neutral, at the shape layer,
     so already-filed children (whose estimate.json still has all six stages)
     render correctly too. Cost is untouched (a separate follow-up owns that).
+
+    `engine` (S78 CHANGE 4): per-engine model resolution AT THE SHAPE LAYER. A
+    COPILOT mission is OPUS-SAFE (its create-tool can't overwrite on a non-opus
+    tier → Implement breaks), so the DISPLAYED mix must show `opus` on EVERY row
+    — mirroring the harness's alias_for_tier copilot default. A CLAUDE mission
+    (or an unknown engine) keeps the estimate's per-stage tiers. Adapter-neutral
+    (ADR-006): this is the render shape only; resolution by engine basename, no
+    coupling to the write layer.
     """
     est = estimate or {}
     models = est.get("models")
     if not isinstance(models, dict) or not models:
         return None
     why = est.get("rationale") or None
+    # Engine selection by basename (mirrors _session_args / alias_for_tier): the
+    # value may be a bare id ("copilot") or a path ("/usr/bin/copilot").
+    _eng = str(engine or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    is_copilot = "copilot" in _eng
+
+    def _tier(val):
+        # S78: a copilot mission is opus-safe — force every row to opus.
+        return "opus" if is_copilot else str(val).strip().lower()
+
     rows = []
     # Keep the canonical stage order; tolerate extra/missing keys gracefully.
     seen = set()
     for key in _MODEL_STAGE_ORDER:
         if key in models and models[key]:
             rows.append({"stage": _MODEL_STAGE_LABELS.get(key, key),
-                         "tier": str(models[key]).strip().lower(),
+                         "tier": _tier(models[key]),
                          "why": why})
             seen.add(key)
     for key, val in models.items():
         if key not in seen and val:
             rows.append({"stage": _MODEL_STAGE_LABELS.get(key, key),
-                         "tier": str(val).strip().lower(), "why": why})
+                         "tier": _tier(val), "why": why})
     if is_bug:
         rows = filter_bug_mix_rows(rows)
     return rows or None

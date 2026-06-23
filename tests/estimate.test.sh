@@ -20,7 +20,8 @@
 #      state.json written, readout printed); no estimate.json; no crash.
 #   5. The produced estimate.json then drives S58's resolver end-to-end:
 #      resolve-stage-model / spawn-stage per-stage --model matches the map, for
-#      BOTH claude and copilot (copilot opus→claude-opus-4.8, sonnet→claude-sonnet-4.6).
+#      BOTH claude and copilot. S78: copilot is OPUS-SAFE — both tiers map to
+#      claude-opus-4.8 (claude keeps its dynamic per-stage tiers).
 #
 # Usage: bash tests/estimate.test.sh
 set -uo pipefail
@@ -217,11 +218,12 @@ check "5a. claude research → opus (from estimate.json)" \
 check "5b. claude implement → sonnet (from estimate.json)" \
   "[ \"\$(rsm5 \"$r2\" implement CLAUDECODE=1 | sm_model)\" = 'sonnet' ]"
 
-# copilot active: opus tier → claude-opus-4.8, sonnet tier → claude-sonnet-4.6.
+# copilot active (S78): OPUS-SAFE — BOTH tiers resolve to claude-opus-4.8 (the
+# copilot create-tool can't overwrite on a non-opus tier → Implement breaks).
 check "5c. copilot research → claude-opus-4.8 (opus tier)" \
   "[ \"\$(rsm5 \"$r2\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
-check "5d. copilot implement → claude-sonnet-4.6 (sonnet tier)" \
-  "[ \"\$(rsm5 \"$r2\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-sonnet-4.6' ]"
+check "5d. copilot implement → claude-opus-4.8 (sonnet tier, opus-safe default)" \
+  "[ \"\$(rsm5 \"$r2\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
 
 # And the SAME via the real spawned argv through a recording stub.
 spawn5() { # repo role

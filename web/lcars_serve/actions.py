@@ -119,7 +119,8 @@ OUTPUT CONTRACT — print ONLY a single JSON object (no prose around it):
     {"status":"question",
      "question":{"text":"<the one question>",
                  "choices":["<opt>", ...],          // optional
-                 "recommended":"<your lead answer>"},// optional
+                 "recommended":"<your lead answer>", // optional
+                 "closing":true},                    // ONLY on the final turn
      "prd":"<the PARTIAL PRD markdown assembled so far>"}
   • When alignment is reached (the captain has confirmed the load-bearing
     decisions through the interview):
@@ -127,6 +128,20 @@ OUTPUT CONTRACT — print ONLY a single JSON object (no prose around it):
      "prd":"<the FULL, well-formed PRD markdown>",
      "adr":"<the ADR markdown, or null for a trivial mission>",
      "modelOverride":"<scope:tier, or null>"}
+
+The CLOSING turn (per the skill): when you believe alignment is reached, your
+LAST question MUST be the explicit "anything else before I file?" check-in, and
+that question object MUST carry "closing":true so the captain's UI can show the
+"estimating & creating mission" phase when they confirm. Do NOT emit status:done
+until the captain has answered that closing question affirmatively.
+
+CLOSING-QUESTION BREVITY (UI parity, BUG-072): the captain's UI renders the
+assembled PRD LIVE in a panel beside the question from your "prd" field. So the
+closing question "text" must be ONLY the concise lead-in — e.g. "Perfect — the
+complete PRD is on the right. Anything else before I lock it?" — and must NOT
+restate or inline the PRD body (Type/Goal/Acceptance Criteria/Out of Scope/
+Constraints). Put the full PRD in the "prd" field as always; never duplicate it
+into the question text.
 
 The PRD/ADR shapes and the required sections are exactly as the skill specifies.
 === lcars-file skill (the Align interview — follow it) ===
@@ -143,6 +158,14 @@ OUTPUT CONTRACT — print ONLY a single JSON object (no prose around it):
   {"bugs":["<full bug PRD markdown #1>", "<full bug PRD markdown #2>", ...]}
 === lcars-log skill (the bug split — follow it) ===
 """
+
+
+# BUG-073: the signal an EMPTY Submit feeds the grill — "nothing to add, accept
+# the recommendation, proceed". The grill already handles "proceed"/"go ahead"
+# (see the closing turn in skills/lcars-file/SKILL.md). Spelled out so the worker
+# treats it as the captain's affirmative, not as a new requirement.
+_PROCEED_ANSWER = ("(no additional input — accept your recommendation and "
+                   "proceed)")
 
 
 def _extract_json(text):
@@ -180,6 +203,37 @@ def _extract_json(text):
                         break
         start = text.find("{", start + 1)
     return None
+
+
+# BUG-072: markers that signal a PRD body has begun inside a question's text.
+# The closing-confirm question should be just the concise lead-in; if the worker
+# inlines the PRD, the text crosses into PRD territory at the FIRST of these.
+_PRD_BODY_MARKERS = re.compile(
+    r"(?im)^\s*(?:#\s*Mission\s*:|\*\*Type\*\*\s*:|\*\*Goal\*\*\s*:|"
+    r"\*\*Acceptance\s+Criteria\*\*\s*:|\*\*Out\s+of\s+Scope\*\*\s*:|"
+    r"\*\*Constraints\*\*\s*:)")
+
+
+def _strip_inlined_prd(question_text, prd):
+    """Return `question_text` with any inlined PRD body removed (BUG-072).
+
+    The closing/confirm question must be a concise lead-in only — the PRD already
+    flows to the live-PRD panel via the `prd` field. A worker that restates the
+    PRD inside the question body crosses into PRD territory at the first PRD
+    section marker (`# Mission:`, `**Type:**`, `**Goal:**`, …); truncate there and
+    keep just the lead-in. If the whole question IS the PRD (no lead-in), or there
+    is no marker, fall back gracefully: prefer a non-empty lead-in, else leave the
+    text untouched so we never blank the question.
+    """
+    if not question_text:
+        return question_text
+    m = _PRD_BODY_MARKERS.search(question_text)
+    if not m:
+        return question_text
+    lead = question_text[:m.start()].rstrip()
+    # only strip if there's a real lead-in to keep; if the question is ALL PRD
+    # (marker at the very start), leave it as-is rather than emit an empty prompt.
+    return lead if lead else question_text
 
 
 def _prd_title(prd):
@@ -454,8 +508,13 @@ class Actions(object):
         if sess is None:
             raise ActionError(404, "no such align session: %s" % sid)
         answer = (answer or "").strip()
+        # BUG-073: an EMPTY answer is NOT an error — it means "nothing to add /
+        # accept the recommendation / proceed". Submit must work with a blank box
+        # so the captain never has to type filler to advance. Feed the warm grill
+        # a clear proceed/accept signal (the grill already handles "proceed"); the
+        # recommendation it surfaced this turn stands as the captain's pick.
         if not answer:
-            raise ActionError(400, "missing required field: answer")
+            answer = _PROCEED_ANSWER
         if sess.done:
             raise ActionError(409, "align session already completed")
         # attach the answer to the last asked question.
@@ -500,6 +559,13 @@ class Actions(object):
         q = turn.get("question") or {}
         if isinstance(q, str):
             q = {"text": q}
+        # BUG-072: the closing/confirm question must be a CONCISE lead-in — never
+        # the whole PRD inlined. The PRD already flows to the `prd` field (the
+        # live "PRD · BUILDING LIVE" right panel), so a worker that restates it in
+        # the question body just duplicates it. Strip any inlined PRD out of the
+        # question text, keeping only the lead-in (the PRD stays in sess.prd).
+        if q.get("text"):
+            q["text"] = _strip_inlined_prd(q["text"], sess.prd)
         sess.transcript.append({"question": q.get("text", ""), "answer": None})
         return {"sessionId": sid, "status": "question",
                 "question": q, "prd": sess.prd}
@@ -620,8 +686,14 @@ class Actions(object):
         if self.gh_bin:
             env["LCARS_GH_BIN"] = self.gh_bin
         env["LCARS_WORK_OUT"] = outdir
-        cmd = [bin_, "-p", prompt] + self._session_args(
-            bin_, session_id, opening)
+        # S78 CHANGE 3 — Align-grill model parity. The grill used to run each
+        # CLI's BARE default (no --model), so it was not at CLI parity with the
+        # pipeline. Resolve the model from the mission ENGINE and pass it
+        # space-form (BOTH engines use `--model <m>`, mirroring worker-adapter.sh).
+        # The flag is ADDITIVE — the S72 tools-denied / session flags are untouched.
+        cmd = ([bin_, "-p", prompt]
+               + self._session_args(bin_, session_id, opening)
+               + ["--model", _grill_model(bin_)])
         try:
             proc = subprocess.run(
                 cmd, cwd=self.repo_root, env=env,
@@ -705,6 +777,21 @@ class Actions(object):
         engine = self._persisted_worker_bin(mid)
         if engine and "LCARS_WORKER_BIN" not in env_extra:
             env_extra["LCARS_WORKER_BIN"] = engine
+        # S78 — NO daemon-wide model pin. The daemon must NOT depend on a
+        # process-wide $LCARS_WORKER_MODEL: if it was launched with one set, it
+        # would leak into EVERY mission's run (resolve_stage_model precedence (a)
+        # clobbers ALL stages of ALL missions). Each run must self-resolve its OWN
+        # model (engine + estimate.json + overrides), so N missions run
+        # concurrently — each independently Copilot or Claude — with no shared pin.
+        #   * If the mission has a persisted FROZEN model (state.json.workerModel),
+        #     feed it as a PER-RUN LCARS_WORKER_MODEL (this run only).
+        #   * Otherwise set it to None so _resolve_run STRIPS any inherited
+        #     daemon-wide pin for this run and the mission self-resolves.
+        worker_model = self._persisted_worker_model(mid)
+        if worker_model:
+            env_extra["LCARS_WORKER_MODEL"] = worker_model
+        else:
+            env_extra["LCARS_WORKER_MODEL"] = None
         self._spawn("run", ["drive", "--mission", mid], env_extra=env_extra)
         return self._mission_state(mid)
 
@@ -725,6 +812,20 @@ class Actions(object):
             return wb.strip()
         return None
 
+    def _persisted_worker_model(self, mid):
+        """S78: the OPTIONAL per-mission frozen model (state.json.workerModel).
+
+        When present, Start feeds it as a PER-RUN $LCARS_WORKER_MODEL so the
+        mission runs that exact model regardless of the daemon's launch env.
+        Absent ⇒ None (the mission self-resolves from engine + estimate.json +
+        overrides, and Start strips any inherited daemon-wide pin)."""
+        sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "state.json")
+        wm = _read_json_key(sp, "workerModel")
+        if isinstance(wm, str) and wm.strip():
+            return wm.strip()
+        return None
+
     def pause(self, mid):
         """POST /api/mission/<id>/pause."""
         self._require_mission(mid)
@@ -738,13 +839,69 @@ class Actions(object):
         return self._mission_state(mid)
 
     def respond(self, mid, answer):
-        """POST /api/mission/<id>/respond — answer a gate."""
+        """POST /api/mission/<id>/respond — answer a gate AND resume the run.
+
+        BUG-028: the "SUBMIT & RESUME" button (gate copy: "the mission resumes
+        from where it stopped") used to only record the answer + clear the gate —
+        the `lcars-respond` skill is designed to need a SEPARATE `lcars run <id>`
+        to resume, which the daemon never issued, so the mission sat
+        answered-but-idle. After the respond call succeeds we therefore
+        RE-DISPATCH the driver fire-and-forget (mirror start()'s _spawn + the
+        per-mission running-lock guard) so the escalated stage actually resumes
+        and consumes the answer, and we clear the stale pending.json. Make
+        "& Resume" real.
+
+          • a `parentMission`-linked bug child → resume the resolve-logs batch on
+            the PARENT (it folds onto the parent + drives to the consolidated
+            re-verify gate), NOT a standalone `run drive` on the child.
+          • a top-level mission → `run drive --mission <id>`.
+        """
         self._require_mission(mid)
         answer = (answer or "").strip()
         if not answer:
             raise ActionError(400, "missing required field: answer")
         self._run("respond", ["answer", "--mission", mid, "--answer", answer])
+        # the gate is now cleared on disk; drop the stale pending.json so the
+        # board stops rendering the answered question.
+        self._clear_pending(mid)
+        # re-dispatch the run (fire-and-forget), routed by parentage.
+        parent = self._persisted_parent_mission(mid)
+        if parent:
+            # a logged-bug child: resume the parent's resolve-logs batch (same
+            # path log_run uses) so the answered bug + the remaining bugs continue
+            # to the fold + the consolidated re-verify gate. Inherit the parent's
+            # engine so the batch drives on the right CLI (mirrors log_run).
+            engine = self._persisted_worker_bin(parent)
+            env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+            if not self._is_running(parent):
+                self._spawn("resolve", ["--parent", parent], env_extra=env_extra)
+        else:
+            # a top-level mission: resume its own driver. Defense-in-depth with
+            # run.sh's per-mission lock — skip the spawn if one is already live.
+            if not self._is_running(mid):
+                engine = self._persisted_worker_bin(mid)
+                env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+                self._spawn("run", ["drive", "--mission", mid],
+                            env_extra=env_extra)
         return self._mission_state(mid)
+
+    def _persisted_parent_mission(self, mid):
+        """The parent id of a logged-bug child (state.json.parentMission), or None."""
+        sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "state.json")
+        pm = _read_json_key(sp, "parentMission")
+        if isinstance(pm, str) and pm.strip():
+            return pm.strip()
+        return None
+
+    def _clear_pending(self, mid):
+        """Remove a mission's stale pending.json after its gate is answered."""
+        pp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "pending.json")
+        try:
+            os.unlink(pp)
+        except OSError:
+            pass
 
     def verify(self, mid, decision, feedback=None):
         """POST /api/mission/<id>/verify — approve vs send-back.
@@ -756,16 +913,105 @@ class Actions(object):
         self._require_mission(mid)
         decision = (decision or "").strip().lower()
         if decision == "approve":
-            self._run("approve", ["--mission", mid])
+            # BUG-030: a Mission-Log bug child has NO PR of its own — its fix
+            # rides the PARENT's PR. "Accept" must therefore FOLD it to Done via
+            # resolve-logs `complete` (NOT merge a per-bug PR with approve.sh,
+            # which would hit the BUG-026 spurious-PR path). A top-level mission
+            # still approves normally (merge its open PR).
+            #
+            # BUG-032: the per-bug "Verify" on a SINGLE bug card must complete
+            # ONLY this one bug (mid), NOT the whole batch. The bare
+            # `complete --parent` is the CONSOLIDATED accept that folds EVERY
+            # logged bug of the parent to Done — wiring it here marked sibling
+            # bugs Done on a single-card click. Use the single-bug mode
+            # (`complete --parent <p> --bug <mid>`): it folds just this bug and
+            # leaves the parent's consolidated re-verify gate up while any
+            # sibling is still pending. The all-remaining accept stays on the
+            # parent-gate respond path (respond → resolve-logs).
+            parent = self._persisted_parent_mission(mid)
+            if parent:
+                engine = self._persisted_worker_bin(parent)
+                env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+                self._run("resolve",
+                          ["complete", "--parent", parent, "--bug", mid],
+                          env_extra=env_extra)
+            else:
+                # BUG-040: the Merge click must be NON-BLOCKING. approve.sh merges
+                # the open PR and, when main has moved ahead, runs the reconcile /
+                # self-heal — which can take minutes. Blocking on it (the old
+                # _run) hung the HTTP request and spun the dialog. Dispatch it
+                # FIRE-AND-FORGET (_spawn, the same detached Popen start()/log_run
+                # use) and return the current state promptly; the board/SSE then
+                # reflects the evolving state (reconciling → escalated → done).
+                self._spawn("approve", ["--mission", mid])
         elif decision in ("send-back", "sendback", "send_back"):
             note = (feedback or "").strip()
             if not note:
                 raise ActionError(400, "send-back requires a 'feedback' note")
-            self._run("feedback", ["--mission", mid, "--feedback", note])
+            # BUG-031: "Send Back" reaches this ONE endpoint from TWO surfaces.
+            # `lcars feedback` resets its target to align + clears the PR fields,
+            # so blindly running it on `mid` is destructive when `mid` is a logged
+            # bug's PARENT (it would nuke the parent's verified state + PR). Route
+            # by parentage, mirroring the approve branch above. The fix-pattern in
+            # every linked case is: feedback-the-BUG(s) (moves them OFF verify so
+            # resolve-logs re-drives them) + spawn `resolve --parent <p>` (re-fix +
+            # re-fold + re-raise ONE consolidated re-verify gate), parent untouched.
+            parent = self._persisted_parent_mission(mid)
+            if parent:
+                # Case A — `mid` is a logged-bug CHILD: re-fix THIS bug only, then
+                # re-drive the parent's batch fire-and-forget. Never feedback the
+                # parent; never touch its stage/PR.
+                self._run("feedback", ["--mission", mid, "--feedback", note])
+                engine = self._persisted_worker_bin(parent)
+                env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+                self._spawn("resolve", ["--parent", parent], env_extra=env_extra)
+            else:
+                children = self._linked_children(mid)
+                pending = [c for c in children
+                           if (c.get("stage") or "").lower() != "done"]
+                if pending:
+                    # Case B — `mid` is the PARENT consolidated re-verify gate:
+                    # apply the feedback to EACH non-done linked bug child (NOT the
+                    # parent), then re-drive the batch once. The parent's verified
+                    # state / PR stays intact.
+                    for child in pending:
+                        self._run("feedback",
+                                  ["--mission", child["id"], "--feedback", note])
+                    engine = self._persisted_worker_bin(mid)
+                    env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+                    self._spawn("resolve", ["--parent", mid],
+                                env_extra=env_extra)
+                else:
+                    # Case C — plain top-level mission: unchanged.
+                    self._run("feedback", ["--mission", mid, "--feedback", note])
         else:
             raise ActionError(
                 400, "decision must be 'approve' or 'send-back' (got %r)"
                 % decision)
+        return self._mission_state(mid)
+
+    def reapprove(self, mid):
+        """POST /api/mission/<id>/reapprove — the BUG-067 reapprove gate.
+
+        After a merge self-heal converges green the engine STOPS at an
+        awaiting-reapprove gate (SHARED CONTRACT: reconcileStatus ==
+        "awaiting-reapprove") instead of auto-merging — the human reviews the
+        reconcileNote and clicks Reapprove, which dispatches the engine's
+        MERGE-ONLY path. The engine exposes that as `approve.sh --reapprove`: it
+        merges the already-reconciled tip WITHOUT re-running the reconcile/heal.
+
+        Dispatched FIRE-AND-FORGET (the same _spawn the approve / Merge click
+        uses, BUG-040) so the HTTP request returns promptly and its output is
+        captured per BUG-051; the board/SSE then reflects done (or, if the merge
+        itself fails, the merge-failed outcome — surfaced, not silent). The
+        mission's persisted engine ($LCARS_WORKER_BIN) is threaded so the
+        merge-only path runs on the right CLI (mirrors start()/the approve branch).
+        """
+        self._require_mission(mid)
+        engine = self._persisted_worker_bin(mid)
+        env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+        self._spawn("approve", ["--mission", mid, "--reapprove"],
+                    env_extra=env_extra)
         return self._mission_state(mid)
 
     def log_preview(self, mid, text=None):
@@ -901,15 +1147,29 @@ class Actions(object):
         return {"children": children, "count": len(children),
                 "parent": mid, "filed": True, "overrides": resolved}
 
-    def log_run(self, mid, prds=None, overrides=None):
+    def log_run(self, mid, prds=None, overrides=None, confirm=False):
         """POST /api/mission/<id>/log/run — file authored bugs, then resolve.
 
-        If `prds` (the authored bug PRDs from the preview) are supplied, FIRST
-        dispatch log.sh --parent <id> --prd <each> (+ paired --model-override) to
-        persist one linked bug mission per PRD (ADR-002), THEN kick resolve-logs to
-        drive them to the one consolidated re-verify gate. With no prds it just
-        resolves whatever is already linked (the S68 read-only batch). The captain
-        overrides (S74) pair positionally with the prds and are persisted by log.sh.
+        BUG-059 — the human cost-review GATE. Filing a logged bug computes its cost
+        estimate (log.sh runs the estimator + persists estimate.json) but it MUST
+        NOT auto-proceed into running the fix: the captain has to review the
+        estimate, optionally re-steer the model, and click an explicit "Go" first.
+
+        So the dispatch of resolve-logs is GATED behind `confirm`:
+          • `prds` supplied AND NOT `confirm` ⇒ this is the FILE step. File the
+            children (so the estimator runs + each estimate.json exists), return the
+            estimate-enriched review, and STOP — do NOT dispatch resolve. Walking
+            away here leaves the bugs parked, filed-but-idle. (Identical to the
+            dedicated `log_file` step; this keeps the single-endpoint flow gated
+            too, so a UI that posts prds to /log/run never auto-runs.)
+          • no prds ⇒ the bugs are ALREADY filed (the captain reviewed the estimate
+            in the breakdown). This IS the explicit Go: apply any edited overrides
+            and dispatch resolve-logs.
+          • `prds` supplied AND `confirm` ⇒ the explicit one-shot "file & go" power
+            path: file the children then dispatch in one call.
+
+        The captain overrides (S74) pair positionally with the prds and are
+        persisted by log.sh.
         """
         self._require_mission(mid)
         # BUG-C: the child bug missions inherit the PARENT's persisted engine.
@@ -919,6 +1179,13 @@ class Actions(object):
         engine = self._persisted_worker_bin(mid)
         env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
         prds = [p for p in (prds or []) if isinstance(p, str) and p.strip()]
+        # BUG-059 GATE: filing must HOLD for the human. When prds are supplied
+        # without an explicit confirm, this is the File step — file + return the
+        # estimate review and STOP (the dispatch waits for the explicit Go, which
+        # re-posts with no prds once the bugs are filed). Delegate to log_file so
+        # the file-then-review contract is shared and never drifts.
+        if prds and not confirm:
+            return self.log_file(mid, prds=prds, overrides=overrides)
         file_report = self._file_children(mid, prds, overrides, env_extra)
         # S74 follow-up CHANGE 4: when there are NO prds the bugs are ALREADY
         # filed (the captain edited the steers in the post-File breakdown, then
@@ -974,7 +1241,15 @@ class Actions(object):
         if self.worker_bin and "LCARS_WORKER_BIN" not in (env_extra or {}):
             env["LCARS_WORKER_BIN"] = self.worker_bin
         if env_extra:
-            env.update(env_extra)
+            # S78: an env_extra value of None means "STRIP this key from the child
+            # env" — so a caller can explicitly remove an inherited daemon-wide
+            # var (e.g. a leaked LCARS_WORKER_MODEL pin) for THIS run. Non-None
+            # values set/override as before.
+            for k, v in env_extra.items():
+                if v is None:
+                    env.pop(k, None)
+                else:
+                    env[k] = v
         return ["bash", script] + list(args), env
 
     def _run(self, key, args, env_extra=None):
@@ -990,25 +1265,60 @@ class Actions(object):
                 502, "skill '%s' exited %d: %s" % (key, proc.returncode, out))
         return proc
 
+    def _spawn_log_path(self, key, args):
+        """Per-run capture-log path under .git/lcars/logs/ for a fire-and-forget
+        spawn. The detached approve/reconcile/driver output (BUG-051: incl. the
+        die reason) lands here so it SURVIVES instead of going to /dev/null. Keyed
+        by the command + its mission/parent so concurrent spawns don't clobber."""
+        mid = ""
+        for flag in ("--mission", "--parent"):
+            if flag in args:
+                try:
+                    mid = args[args.index(flag) + 1]
+                except IndexError:
+                    mid = ""
+                break
+        logs_dir = os.path.join(self.repo_root, ".git", "lcars", "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        name = "spawn-%s%s.log" % (key, ("-" + mid) if mid else "")
+        return os.path.join(logs_dir, name)
+
     def _spawn(self, key, args, env_extra=None):
         """Fire-and-forget dispatch — for the LONG `run drive` driver. Launches
         the skill DETACHED (Popen, never waited on) so the HTTP request returns
         promptly; the board/SSE then reflects progress and the `running` flag.
 
-        Output is discarded (the run's truth is its on-disk state + events.jsonl,
-        which the SSE already carries) so a full pipe can never wedge the daemon.
-        start_new_session detaches the child from the daemon's process group, so
-        a daemon restart / Ctrl-C doesn't take a running mission down with it.
-        Returns the Popen handle (the caller does NOT wait)."""
+        Output is CAPTURED to a per-run log under .git/lcars/logs/ (BUG-051) — not
+        discarded — so the detached approve/reconcile/driver output, including any
+        hard-fail die reason, survives the fire-and-forget. We still NEVER wait on
+        the child (a real file handle, not a pipe, so it can never wedge the
+        daemon). start_new_session detaches the child from the daemon's process
+        group, so a daemon restart / Ctrl-C doesn't take a running mission down
+        with it. Returns the Popen handle (the caller does NOT wait)."""
         cmd, env = self._resolve_run(key, args, env_extra)
+        try:
+            log_path = self._spawn_log_path(key, args)
+            logf = open(log_path, "ab", buffering=0)
+        except OSError:
+            # Never let a logging-path failure break the dispatch — fall back to
+            # the old discard behaviour (semantics unchanged).
+            logf = subprocess.DEVNULL
         try:
             return subprocess.Popen(
                 cmd, cwd=self.repo_root, env=env,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=logf, stderr=subprocess.STDOUT,
                 start_new_session=True)
         except OSError as exc:
             raise ActionError(502, "failed to launch skill '%s': %s" % (key, exc))
+        finally:
+            # The child inherited the fd; close our copy so the daemon holds no
+            # extra handle. DEVNULL is an int sentinel — nothing to close.
+            if logf is not subprocess.DEVNULL:
+                try:
+                    logf.close()
+                except OSError:
+                    pass
 
     def _require_mission(self, mid):
         d = os.path.join(self.repo_root, ".git", "lcars", "missions", mid)
@@ -1142,6 +1452,24 @@ class Actions(object):
         with os.fdopen(fd, "w") as fh:
             fh.write(content)
         return path
+
+
+def _grill_model(engine):
+    """S78 CHANGE 3 — the Align-grill model, resolved from the mission ENGINE.
+
+    Mirrors alias_for_tier's per-engine DEFAULT (skills/lcars-run/run.sh) so the
+    grill is NOT a bare CLI default and stays at CLI parity with the pipeline:
+      * copilot → "claude-opus-4.8" (OPUS-SAFE — copilot's create-tool can't
+        overwrite on a non-opus tier, so the whole engine runs opus by default).
+      * claude  → "sonnet" (its default reasoning tier).
+    Engine is the worker bin path; selection is by basename (same idiom as
+    _session_args). Stdlib only — no second resolver, no estimate read here (the
+    grill predates an estimate; it follows the engine's DEFAULT tier).
+    """
+    base = os.path.basename(engine or "").lower()
+    if "copilot" in base:
+        return "claude-opus-4.8"
+    return "sonnet"
 
 
 def _read_json_key(path, key):
