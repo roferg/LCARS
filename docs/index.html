@@ -276,7 +276,16 @@ sequenceDiagram
 
       <pre>git clone &lt;this-repo&gt; lcars
 cd lcars
-./install.sh          # symlinks skills/* into ~/.claude/skills/</pre>
+./install.sh          # symlinks skills/* into ~/.claude/skills/ AND drops the
+                      # lcars-viewscreen / lcars-serve launchers on ~/.local/bin</pre>
+
+      <p><code>./install.sh</code> also installs a real
+      <strong><code>lcars-viewscreen</code></strong> command (alias
+      <code>lcars-serve</code>) into <code>~/.local/bin</code> — a wrapper that
+      execs the repo's <code>viewscreen.sh</code>, so the kanban board is one word
+      to launch from any shell on either CLI. If <code>~/.local/bin</code> isn't
+      already on your <code>PATH</code>, the installer prints the line to add it
+      (e.g. <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell rc).</p>
 
       <div class="lcars-panel">
         <div class="lcars-panel-header">Requirements</div>
@@ -314,16 +323,39 @@ cd lcars
       Everything here maps to <code>lcars</code> commands — see
       <a href="#cli">The CLI</a>.)</p>
 
-      <p>Run these inside <strong>any repo</strong> you want to ship work in:</p>
+      <p><strong>Two kinds of commands — and where to run each.</strong> LCARS has
+      two surfaces, and they run in different places:</p>
 
-      <pre>lcars init                # one-time per-repo setup: .git/lcars/ + GitHub labels
-lcars viewscreen --open   # launch the board and open it in your browser</pre>
+      <ul>
+        <li>The <strong><code>lcars &lt;verb&gt;</code></strong> family
+        (<code>lcars init</code>, <code>lcars file</code>, <code>lcars run</code>, …)
+        are <strong>agent skills</strong> — type them to your agent (Claude Code or
+        Copilot) inside the repo. They are not shell binaries.</li>
+        <li><strong><code>lcars-viewscreen</code></strong> (alias
+        <code>lcars-serve</code>) is different: it's a <strong>real command on your
+        <code>PATH</code></strong> that <code>./install.sh</code> installs to
+        <code>~/.local/bin</code>. Run it in <strong>any plain terminal</strong> —
+        you do <strong>not</strong> need Claude Code or Copilot open.</li>
+      </ul>
 
-      <p><code>lcars viewscreen --open</code> starts a Python-3-stdlib-only daemon
+      <p>So, inside <strong>any repo</strong> you want to ship work in:</p>
+
+      <pre># 1. In your agent (Claude Code or Copilot), inside the repo:
+lcars init                # one-time per-repo setup: .git/lcars/ + GitHub labels
+
+# 2. Then in any plain terminal — no agent needed:
+lcars-viewscreen --open   # launch the board and open it in your browser</pre>
+
+      <p><code>lcars-viewscreen --open</code> starts a Python-3-stdlib-only daemon
       (no pip / npm / build step), boots it on a free local port, and opens the
-      kanban board in your browser. (<code>lcars serve</code> is the older power
-      alias and still works.) From there you drive the whole idea → merged PR loop
-      without leaving the page:</p>
+      kanban board in your browser. Because it's a real command on your
+      <code>PATH</code> (alias <code>lcars-serve</code>), the <strong>same
+      invocation works from any shell</strong> — a bare terminal, a Claude Code
+      session, or a Copilot session — and the daemon spawns no model workers, so
+      watching the board costs nothing. It runs in the foreground and is
+      <strong>session-bound</strong>: it stays up for that terminal and stops when
+      you close it (or Ctrl-C). From there you drive the whole idea → merged PR
+      loop without leaving the page:</p>
 
       <div class="mission-card">
         <ul>
@@ -494,8 +526,11 @@ flowchart LR
           nested ticket rows, and live Implement progress over SSE. Drive the whole
           idea→PR loop from the browser (File, the live Align console, Start with a
           model override, Respond, Verify, Pause/Resume, Mission Log) — a viewport
-          over the same harness the CLI drives. <code>lcars viewscreen --open</code>
-          boots on a free port and opens it in your browser.</div>
+          over the same harness the CLI drives. It launches via the real on-PATH
+          command <code>lcars-viewscreen --open</code> (alias <code>lcars-serve</code>),
+          which you run in <strong>any plain terminal — no Claude Code or Copilot
+          session needed</strong>; it boots on a free port and opens it in your
+          browser.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars</div>

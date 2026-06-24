@@ -152,19 +152,34 @@ idea, watch it drive to a merged PR, and answer any gates visually, all from one
 screen. (Prefer the terminal? Everything here maps to `lcars` commands — see
 [The CLI (the power path)](#the-cli-the-power-path).)
 
-Run these inside **any repo** you want to ship work in:
+**Two kinds of commands — and where to run each.** LCARS has two surfaces, and
+they run in different places:
+
+- The **`lcars <verb>`** family (`lcars init`, `lcars file`, `lcars run`, …) are
+  **agent skills** — type them to your agent (Claude Code or Copilot) inside the
+  repo. They are not shell binaries.
+- **`lcars-viewscreen`** (alias `lcars-serve`) is different: it's a **real command
+  on your `PATH`** that `./install.sh` installs to `~/.local/bin`. Run it in **any
+  plain terminal** — you do **not** need Claude Code or Copilot open.
+
+So, inside **any repo** you want to ship work in:
 
 ```bash
-lcars init            # one-time per-repo setup: .git/lcars/ + GitHub labels
+# 1. In your agent (Claude Code or Copilot), inside the repo:
+lcars init                # one-time per-repo setup: .git/lcars/ + GitHub labels
+
+# 2. Then in any plain terminal — no agent needed:
 lcars-viewscreen --open   # launch the board and open it in your browser
 ```
 
-`lcars-viewscreen --open` (a real command on your `PATH`, dropped into
-`~/.local/bin` by `./install.sh`; alias `lcars-serve`) starts a
-Python-3-stdlib-only daemon (no pip / npm / build step), boots it on a free local
-port, and opens the kanban board in your browser. The same command works from any
-shell under **either Claude Code or Copilot**. From there you
-drive the whole idea → merged PR loop without leaving the page:
+`lcars-viewscreen --open` starts a Python-3-stdlib-only daemon (no pip / npm /
+build step), boots it on a free local port, and opens the kanban board in your
+browser. Because it's a real command on your `PATH` (alias `lcars-serve`), the
+**same invocation works from any shell** — a bare terminal, a Claude Code
+session, or a Copilot session — and the daemon itself spawns no model workers, so
+watching the board costs nothing. It runs in the foreground and is **session-bound**:
+it stays up for that terminal and stops when you close it (or Ctrl-C). From there
+you drive the whole idea → merged PR loop without leaving the page:
 
 - **File a Mission.** Type your idea into the board; the live Align console
   **grills you** until the spec is sharp, then files the Mission as a card.
@@ -305,7 +320,7 @@ CLI. The older per-stage verbs still work as power entry points.
 
 | Command | What it does |
 |---|---|
-| `lcars viewscreen` | **The recommended surface — the Kanban web board** (alias `lcars serve`). A Python-3-stdlib-only daemon — no pip/npm/build — serving every active Mission as a card in its Stage column, with a cost pill + reasoning/implementation difficulty pills, awaiting-you / paused states, nested ticket rows, and live Implement progress over SSE. Drive the whole idea→PR loop from the browser (File, the live Align console, Start with a plain-language model override, Respond, Verify, Pause/Resume, Mission Log) — a viewport over the same harness the CLI drives. `lcars viewscreen --open` boots on a free port and opens it in your browser. |
+| `lcars viewscreen` | **The recommended surface — the Kanban web board** (alias `lcars serve`). A Python-3-stdlib-only daemon — no pip/npm/build — serving every active Mission as a card in its Stage column, with a cost pill + reasoning/implementation difficulty pills, awaiting-you / paused states, nested ticket rows, and live Implement progress over SSE. Drive the whole idea→PR loop from the browser (File, the live Align console, Start with a plain-language model override, Respond, Verify, Pause/Resume, Mission Log) — a viewport over the same harness the CLI drives. It launches via the real on-PATH command `lcars-viewscreen --open` (alias `lcars-serve`), which you run in any plain terminal — no Claude Code or Copilot session needed — booting on a free port and opening it in your browser. |
 | `lcars` | **The one CLI entry point.** Infers the right action from state and announces it first: nothing filed → runs the `lcars file` flow; work in flight & nothing pending → drives the active Mission (auto-advance); a decision waiting → opens the inbox. Never makes you remember a verb or paste an id. |
 | `lcars answer` | **The inbox** — every pending decision across *all* Missions in one list: scope escalations, plan-review stand-offs, blocked tickets, and the Verify gate. **approve** and **send back** are actions on a Verify card here, not separate commands. (The viewscreen surfaces the same gates on the cards themselves.) |
 | `lcars status` | The read-only **terminal board**: every active Mission, its Stage, and anything awaiting you. Add `--watch` to follow a running Mission **live** — a streaming event view with a pace line (wave, ticket, attempt, avg/ticket, elapsed). |
