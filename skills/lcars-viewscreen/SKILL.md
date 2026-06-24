@@ -23,9 +23,18 @@ The bundled `viewscreen.sh` launches the daemon so the skill stays testable; you
 ## Start the board
 
 ```bash
-bash ~/.claude/skills/lcars-viewscreen/viewscreen.sh
-# the power alias is identical: …/lcars-viewscreen/serve.sh
+lcars-viewscreen
+# the power alias is identical: lcars-serve
 ```
+
+> **From either CLI.** `lcars-viewscreen` (alias `lcars-serve`) is a real command
+> on your `PATH` — `./install.sh` drops a wrapper into `~/.local/bin` that execs
+> the repo's `viewscreen.sh` by absolute path. The **same** command works under
+> **Claude Code and Copilot** with no `~/.claude` (or `~/.copilot`) path: an agent
+> just runs it via its shell (under Claude Code the captain can use the
+> `! lcars-viewscreen --open` shell prefix). The daemon runs in the **foreground**
+> and is **session-bound** — it stays up for that terminal session and closing the
+> session stops the board. There is no separate stop command.
 
 This launches a **Python-3-stdlib-only** `http.server` daemon (no pip, no npm, no
 build step — ADR-007) bound to `127.0.0.1:8765` by default, serving:
@@ -77,7 +86,7 @@ Each skill path is **env-injected** (so tests stub it): `LCARS_FILE_SCRIPT`,
 ### Enter the interface
 
 ```bash
-bash ~/.claude/skills/lcars-viewscreen/viewscreen.sh --open
+lcars-viewscreen --open
 ```
 
 `--open` boots the daemon on a **free port** (the OS assigns one; the daemon
@@ -108,9 +117,9 @@ Select the adapter via flag or env (flag wins, then `LCARS_SERVE_ADAPTER`, then 
 `serveAdapter` key in `.git/lcars/config.json`, else `local`):
 
 ```bash
-bash ~/.claude/skills/lcars-viewscreen/viewscreen.sh --adapter github
+lcars-viewscreen --adapter github
 # or
-LCARS_SERVE_ADAPTER=github bash ~/.claude/skills/lcars-viewscreen/viewscreen.sh
+LCARS_SERVE_ADAPTER=github lcars-viewscreen
 ```
 
 ## Options (all via flag or env)
@@ -140,5 +149,9 @@ names are intentionally unchanged; only the user-facing verb was renamed). Its
 behaviour is covered by `web/tests/` (run with `cd web && python3 -m unittest
 discover`) and a smoke test in `tests/lcars-viewscreen.test.sh` (run with `bash
 tests/run.sh`). `LCARS_PYTHON_BIN`, `LCARS_WEB_DIR`, and `LCARS_GH_BIN` are taken
-via env so tests can stub them. Edit the repo copy, not `~/.claude` —
-`./install.sh` symlinks it in.
+via env so tests can stub them. `./install.sh` both symlinks the skill in and
+drops the on-PATH **`lcars-viewscreen`** launcher (alias `lcars-serve`) into
+`~/.local/bin` — a generated wrapper that execs this repo's `viewscreen.sh` by
+absolute path, so the one command works from any shell on either CLI and `git
+pull` keeps it current with no re-install. Always edit the repo copy, never
+`~/.claude` or `~/.copilot` (those are install targets only).

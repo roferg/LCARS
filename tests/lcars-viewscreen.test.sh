@@ -51,6 +51,21 @@ echo "lcars-viewscreen: launcher + Kanban daemon smoke (+ serve alias)"
 check "serve.sh power-alias shim exists"          "[ -f \"$SERVE_ALIAS\" ]"
 check "serve.sh shim execs viewscreen.sh"         "qgrep -q 'exec .*viewscreen.sh' < \"$SERVE_ALIAS\""
 
+# --- S80 docs: SKILL.md documents the on-PATH command, not the ~/.claude path --
+# The board is launched via the real `lcars-viewscreen` command on ~/.local/bin
+# (alias `lcars-serve`) installed by ./install.sh — identical + correct under BOTH
+# Claude Code and Copilot. The old `bash ~/.claude/skills/lcars-viewscreen/...`
+# invocation was wrong under Copilot (skill installs under ~/.copilot/...), so it
+# must NOT appear in the skill doc at all.
+SKILL_MD="$REPO_ROOT/skills/lcars-viewscreen/SKILL.md"
+check "SKILL.md exists"                            "[ -f \"$SKILL_MD\" ]"
+check "SKILL.md has NO ~/.claude/skills/lcars-viewscreen path" \
+  "! qgrep -q '~/.claude/skills/lcars-viewscreen' < \"$SKILL_MD\""
+check "SKILL.md documents the on-PATH lcars-viewscreen command" \
+  "qgrep -q 'lcars-viewscreen' < \"$SKILL_MD\""
+check "SKILL.md documents the lcars-serve alias" \
+  "qgrep -q 'lcars-serve' < \"$SKILL_MD\""
+
 # --- preflight: python3 present? (the daemon is python-stdlib-only) ----------
 PY_BIN="${LCARS_PYTHON_BIN:-python3}"
 if ! command -v "$PY_BIN" >/dev/null 2>&1; then

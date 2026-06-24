@@ -112,8 +112,15 @@ delivers updates with no re-install.
 ```bash
 git clone <this-repo> lcars
 cd lcars
-./install.sh          # symlinks skills/* into ~/.claude/skills/
+./install.sh          # symlinks skills/* into ~/.claude/skills/ AND drops the
+                      # lcars-viewscreen / lcars-serve launchers on ~/.local/bin
 ```
+
+`./install.sh` also installs a real **`lcars-viewscreen`** command (alias
+`lcars-serve`) into `~/.local/bin` — a wrapper that execs the repo's
+`viewscreen.sh`, so the kanban board is one word to launch from any shell on
+either CLI. If `~/.local/bin` isn't already on your `PATH`, the installer prints
+the line to add it (e.g. `export PATH="$HOME/.local/bin:$PATH"` in your shell rc).
 
 **Requirements**
 
@@ -149,12 +156,14 @@ Run these inside **any repo** you want to ship work in:
 
 ```bash
 lcars init            # one-time per-repo setup: .git/lcars/ + GitHub labels
-lcars viewscreen --open   # launch the board and open it in your browser
+lcars-viewscreen --open   # launch the board and open it in your browser
 ```
 
-`lcars viewscreen --open` starts a Python-3-stdlib-only daemon (no pip / npm /
-build step), boots it on a free local port, and opens the kanban board in your
-browser. (`lcars serve` is the older power alias and still works.) From there you
+`lcars-viewscreen --open` (a real command on your `PATH`, dropped into
+`~/.local/bin` by `./install.sh`; alias `lcars-serve`) starts a
+Python-3-stdlib-only daemon (no pip / npm / build step), boots it on a free local
+port, and opens the kanban board in your browser. The same command works from any
+shell under **either Claude Code or Copilot**. From there you
 drive the whole idea → merged PR loop without leaving the page:
 
 - **File a Mission.** Type your idea into the board; the live Align console
@@ -264,6 +273,12 @@ waits for your answer. `--autopilot` is different — it makes the agent continu
 use `--autopilot` (or `--no-ask-user`) for interactive LCARS work. This is the
 Copilot analog of Claude Code's `auto` permission mode: auto-approve tools, still
 stop at real decisions.
+
+**The viewscreen launches the same way on Copilot as on Claude.** From a Copilot
+session started as above (`copilot --model claude-opus-4.8 --allow-all-tools`),
+run the **same** on-PATH command — `lcars-viewscreen --open` — in the session
+shell. There is no `~/.claude` path to get wrong: `./install.sh` put the launcher
+on `~/.local/bin`, so the one command is identical and correct on both CLIs.
 
 ```mermaid
 flowchart LR
@@ -683,7 +698,8 @@ skills/<name>/SKILL.md     frontmatter + instructions
 skills/<name>/<name>.sh    the executable logic (kept testable; deps via env vars)
 tests/<name>.test.sh       one suite per skill
 tests/run.sh               runs every *.test.sh
-install.sh                 symlinks skills/* into ~/.claude/skills/
+install.sh                 symlinks skills/* into ~/.claude/skills/ and drops the
+                           lcars-viewscreen / lcars-serve launchers on ~/.local/bin
 ```
 
 The golden rule: **skills are authored in this repo, never directly under
