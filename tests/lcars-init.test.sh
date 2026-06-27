@@ -388,6 +388,65 @@ check "S43 init: summary banner reflects the PERSISTED custom testCommand" \
 check "S43 init: summary banner does NOT show the detected default model on a re-run" \
   "! grep -q 'model: claude-sonnet' '$repoB/outB.txt'"
 
+# --- Session 82: worktreeSetupCommand detection (gate-worktree-deps) --------
+# init seeds a default worktreeSetupCommand per ecosystem so the S81 provisioning
+# seam works in ANY repo without hand-editing config. The default REUSES the main
+# checkout's installed deps (symlinks its node_modules) with an OFFLINE-install
+# fallback. The emitted string runs under `bash -c` in the worktree, so its
+# $MAIN / $(...) must survive into config UN-expanded (escaped, valid JSON).
+
+# pnpm repo: git-common-dir resolution + node_modules symlink + pnpm offline fallback
+repoWTp="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoWTp/package.json"
+printf 'lockfileVersion: 9\n' >"$repoWTp/pnpm-lock.yaml"
+make_claude_stub "$repoWTp/claude"; make_gh_stub "$repoWTp/gh"
+export GH_LOG="$repoWTp/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoWTp/existing"; : >"$GH_EXISTING"
+( cd "$repoWTp" && LCARS_CLAUDE_BIN="$repoWTp/claude" LCARS_GH_BIN="$repoWTp/gh" bash "$SCRIPT" >outWTp.txt 2>&1 )
+cfgWTp="$repoWTp/.git/lcars/config.json"
+check "S82 init: config has worktreeSetupCommand key" \
+  "grep -q '\"worktreeSetupCommand\"' '$cfgWTp'"
+check "S82 init (pnpm): default resolves the main checkout via git-common-dir" \
+  "grep -q 'git rev-parse' '$cfgWTp' && grep -q 'git-common-dir' '$cfgWTp'"
+check "S82 init (pnpm): default symlinks node_modules" \
+  "grep -q 'ln -snf' '$cfgWTp' && grep -q 'node_modules' '$cfgWTp'"
+check "S82 init (pnpm): default names a pnpm offline-install fallback" \
+  "grep -q 'pnpm install' '$cfgWTp' && grep -q 'prefer-offline' '$cfgWTp'"
+check "S82 init (pnpm): config.json is VALID JSON after the worktree default" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgWTp'"
+# Read back through the SAME jq-free reader the provisioner uses: the value must
+# be the FULL command (terminating `fi` survives), not truncated at an inner quote.
+check "S82 init (pnpm): worktreeSetupCommand reads back un-truncated (ends in 'fi')" \
+  "printf '%s' \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgWTp' worktreeSetupCommand )\" | qgrep -q '; fi\$'"
+
+# npm repo (package-lock.json): the fallback is `npm ci`
+repoWTn="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoWTn/package.json"
+: >"$repoWTn/package-lock.json"
+make_claude_stub "$repoWTn/claude"; make_gh_stub "$repoWTn/gh"
+export GH_LOG="$repoWTn/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoWTn/existing"; : >"$GH_EXISTING"
+( cd "$repoWTn" && LCARS_CLAUDE_BIN="$repoWTn/claude" LCARS_GH_BIN="$repoWTn/gh" bash "$SCRIPT" >outWTn.txt 2>&1 )
+cfgWTn="$repoWTn/.git/lcars/config.json"
+check "S82 init (npm): default names 'npm ci' as the install fallback" \
+  "grep -q 'npm ci' '$cfgWTn'"
+check "S82 init (npm): default still symlinks node_modules first" \
+  "grep -q 'ln -snf' '$cfgWTn'"
+check "S82 init (npm): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgWTn'"
+
+# pure-bash repo (only tests/run.sh): no installed runner to provision -> null
+repoWTb="$(new_repo)"
+mkdir -p "$repoWTb/tests"
+printf '#!/usr/bin/env bash\necho runner\n' >"$repoWTb/tests/run.sh"
+make_claude_stub "$repoWTb/claude"; make_gh_stub "$repoWTb/gh"
+export GH_LOG="$repoWTb/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoWTb/existing"; : >"$GH_EXISTING"
+( cd "$repoWTb" && LCARS_CLAUDE_BIN="$repoWTb/claude" LCARS_GH_BIN="$repoWTb/gh" bash "$SCRIPT" >outWTb.txt 2>&1 )
+cfgWTb="$repoWTb/.git/lcars/config.json"
+check "S82 init (bash): worktreeSetupCommand is null in a pure-bash repo (no provisioning)" \
+  "grep -q '\"worktreeSetupCommand\": *null' '$cfgWTb'"
+
 # When the persisted testCommand is genuinely null, the banner still shows 'none'.
 repoBn="$(new_repo)"
 make_claude_stub "$repoBn/claude"; make_gh_stub "$repoBn/gh"

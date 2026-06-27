@@ -197,3 +197,50 @@ EOF
 
   printf '{\n%s\n}\n' "$body" >"$config"
 }
+
+# ---------------------------------------------------------------------------
+# WORKTREE PROVISIONING DEFAULT (ecosystem detection)
+# ---------------------------------------------------------------------------
+# `lcars run` provisions each Stage's isolated git worktree by running the
+# config's `worktreeSetupCommand` ONCE with the worktree as CWD (via `bash -c`).
+# A fresh worktree shares the object store but NOT the main checkout's
+# uncommitted/gitignored installed deps (node_modules, venv), so a Stage that
+# needs the test runner installed would otherwise break. This emits a sensible
+# per-ecosystem default that REUSES what the main checkout already has —
+# symlinking its node_modules (root + each pnpm-workspace package) into the
+# worktree, falling back to an OFFLINE, lockfile-frozen install when the main
+# checkout has none. No network, no special cache.
+#
+# Shared by BOTH `lcars init` (seed on first setup) and `lcars update` (backfill
+# the key into an older config) so the default can never drift between them.
+# Reads $TOPLEVEL (the repo root) from the caller's environment, exactly like
+# init's detect_test_cmd.
+#
+# IMPORTANT: the emitted string is a SINGLE shell command whose `$MAIN` / `$(…)`
+# must be evaluated AT PROVISION TIME in the worktree — NOT now. It is therefore
+# emitted as a single-quoted literal (no expansion here); the caller stores it
+# via lcars_json_escape (valid JSON) and the runtime `bash -c` expands it. Empty
+# when LCARS can't infer a safe default (Python/Rust/Go/Make/bash/none) — the
+# provisioner then warns and skips rather than running a command that errors.
+detect_worktree_setup_cmd() {
+  # JS/TS: symlink the main checkout's node_modules (root + every pnpm workspace
+  # package's own, which nests its .bin), else an offline lockfile-frozen install.
+  if [ -f "$TOPLEVEL/package.json" ]; then
+    local install
+    if [ -f "$TOPLEVEL/pnpm-lock.yaml" ] || [ -f "$TOPLEVEL/pnpm-workspace.yaml" ]; then
+      install='pnpm install --frozen-lockfile --prefer-offline --silent'
+    elif [ -f "$TOPLEVEL/yarn.lock" ]; then
+      install='yarn install --immutable'
+    else
+      install='npm ci'
+    fi
+    # find symlinks EVERY node_modules that is not nested inside another one
+    # (-prune halts the descent at each match), recreating its path relative to
+    # the main checkout inside the worktree. Generic across npm/yarn/pnpm.
+    printf '%s\n' 'MAIN="$(git rev-parse --path-format=absolute --git-common-dir)"; MAIN="${MAIN%/.git}"; if [ -d "$MAIN/node_modules" ]; then find "$MAIN" -name node_modules -type d -prune -print | while IFS= read -r nm; do rel="${nm#$MAIN/}"; mkdir -p "$(dirname "$rel")"; ln -snf "$nm" "$rel"; done; else '"$install"'; fi'
+    return
+  fi
+  # Python and everything else: no single offline-safe string we can guarantee —
+  # emit empty and let the provisioner warn (never emit a command that errors).
+  echo ""
+}

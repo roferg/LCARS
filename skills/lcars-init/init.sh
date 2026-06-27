@@ -110,6 +110,20 @@ else
   TESTCMD_VALUE='null'; TESTCMD_HUMAN="none (set testCommand to enable the Implement red gate)"
 fi
 
+# --- detect a worktree provisioning command (S82) -------------------------
+# `lcars run` provisions each Stage's isolated git worktree by running this once
+# in the worktree. The detected default REUSES the main checkout's installed deps
+# (symlinks node_modules, offline-install fallback — see detect_worktree_setup_cmd
+# in lcars-common.sh) so any repo works with no hand-edit. Honour an explicit
+# LCARS_WORKTREE_SETUP_CMD override (mirrors LCARS_TEST_CMD). Null when nothing is
+# detected — the provisioner then warns and skips, it does not block.
+WT_SETUP_CMD="${LCARS_WORKTREE_SETUP_CMD:-$(detect_worktree_setup_cmd)}"
+if [ -n "$WT_SETUP_CMD" ]; then
+  WTSETUP_VALUE="\"$(lcars_json_escape "$WT_SETUP_CMD")\""
+else
+  WTSETUP_VALUE='null'
+fi
+
 # Preserve the original creation time across re-runs (idempotent).
 if [ -f "$CONFIG" ] && grep -q '"created"' "$CONFIG"; then
   CREATED="$(sed -n 's/.*"created": *"\([^"]*\)".*/\1/p' "$CONFIG" | head -1)"
@@ -124,6 +138,7 @@ DESIRED_CONFIG="model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
 contextFile=$CONTEXT_VALUE
 testCommand=$TESTCMD_VALUE
+worktreeSetupCommand=$WTSETUP_VALUE
 comprehensionBudget=1200
 created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
