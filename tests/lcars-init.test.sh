@@ -529,6 +529,83 @@ check "S85 init: the no-nag case really has a worktreeSetupCommand set" \
 check "S85 init: a local-dep runner WITH worktreeSetupCommand does NOT warn (no nag)" \
   "! grep -qi 'local dependency' '$repoNoNag/outNoNag.txt'"
 
+# --- Session 87: vitest gate staging — relativizing testCommand + __lcarsq__ --
+# The Implement gates stage a sub-package's quarantine INSIDE the package and run
+# vitest FROM there; vitest's positional filter is matched RELATIVE to that cwd but
+# $LCARS_TESTS_DIR is exported ABSOLUTE. So init must emit a RELATIVIZING vitest
+# command (strip a leading "$PWD/") for BOTH single-package and monorepo vitest, the
+# workspace fan-out fallback must DETECT the sub-package runner, and __lcarsq__ must
+# be ignored via .git/info/exclude.
+RELCMD='npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+
+# (1) A monorepo whose ROOT "test" script does NOT name the runner (a bare
+#     `pnpm -r test` fan-out) must DETECT vitest from a sub-package and emit the
+#     RELATIVIZING command, never a fan-out.
+repoMR="$(new_repo)"
+printf '{ "scripts": { "test": "pnpm -r test" } }\n' >"$repoMR/package.json"
+printf 'packages:\n  - "packages/*"\n' >"$repoMR/pnpm-workspace.yaml"
+printf 'lockfileVersion: 9\n' >"$repoMR/pnpm-lock.yaml"
+mkdir -p "$repoMR/packages/core"
+printf '{ "name": "@x/core", "devDependencies": { "vitest": "^2" } }\n' >"$repoMR/packages/core/package.json"
+make_claude_stub "$repoMR/claude"; make_gh_stub "$repoMR/gh"
+export GH_LOG="$repoMR/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoMR/existing"; : >"$GH_EXISTING"
+( cd "$repoMR" && LCARS_CLAUDE_BIN="$repoMR/claude" LCARS_GH_BIN="$repoMR/gh" bash "$SCRIPT" >outMR.txt 2>&1 )
+cfgMR="$repoMR/.git/lcars/config.json"
+check "S87 init (monorepo fan-out): NOT a 'pnpm -r' fan-out testCommand" \
+  "! grep -q 'pnpm -r' '$cfgMR'"
+check "S87 init (monorepo fan-out): NOT a bare 'npm test' fan-out" \
+  "! grep -qE '\"testCommand\": *\"npm test' '$cfgMR'"
+check "S87 init (monorepo fan-out): detects vitest from the sub-package and emits the RELATIVIZING command" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgMR' testCommand )\" = '$RELCMD' ]"
+check "S87 init (monorepo fan-out): config.json is VALID JSON after the \$/{/}/#/\" round-trip" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgMR'"
+
+# (2) A single-package VITEST repo (root "test" names vitest) now emits the
+#     RELATIVIZING command too (same abs-positional bug), reading back intact.
+repoSV="$(new_repo)"
+printf '{ "scripts": { "test": "vitest run" } }\n' >"$repoSV/package.json"
+printf '{}\n' >"$repoSV/package-lock.json"
+make_claude_stub "$repoSV/claude"; make_gh_stub "$repoSV/gh"
+export GH_LOG="$repoSV/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoSV/existing"; : >"$GH_EXISTING"
+( cd "$repoSV" && LCARS_CLAUDE_BIN="$repoSV/claude" LCARS_GH_BIN="$repoSV/gh" bash "$SCRIPT" >outSV.txt 2>&1 )
+cfgSV="$repoSV/.git/lcars/config.json"
+check "S87 init (single-package vitest): testCommand is the RELATIVIZING form" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgSV' testCommand )\" = '$RELCMD' ]"
+check "S87 init (single-package vitest): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgSV'"
+
+# (3) A monorepo whose ROOT "test" names vitest directly — still RELATIVIZING.
+repoMV="$(new_repo)"
+printf '{ "workspaces": ["packages/*"], "scripts": { "test": "vitest run" } }\n' >"$repoMV/package.json"
+printf 'packages:\n  - "packages/*"\n' >"$repoMV/pnpm-workspace.yaml"
+make_claude_stub "$repoMV/claude"; make_gh_stub "$repoMV/gh"
+export GH_LOG="$repoMV/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoMV/existing"; : >"$GH_EXISTING"
+( cd "$repoMV" && LCARS_CLAUDE_BIN="$repoMV/claude" LCARS_GH_BIN="$repoMV/gh" bash "$SCRIPT" >outMV.txt 2>&1 )
+cfgMV="$repoMV/.git/lcars/config.json"
+check "S87 init (monorepo vitest script): testCommand is the RELATIVIZING form" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgMV' testCommand )\" = '$RELCMD' ]"
+
+# (4) pytest is UNCHANGED (no regression) — non-vitest ecosystems keep their default.
+repoPY="$(new_repo)"
+printf '[tool.pytest]\n' >"$repoPY/pyproject.toml"
+make_claude_stub "$repoPY/claude"; make_gh_stub "$repoPY/gh"
+export GH_LOG="$repoPY/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoPY/existing"; : >"$GH_EXISTING"
+( cd "$repoPY" && LCARS_CLAUDE_BIN="$repoPY/claude" LCARS_GH_BIN="$repoPY/gh" bash "$SCRIPT" >outPY.txt 2>&1 )
+cfgPY="$repoPY/.git/lcars/config.json"
+check "S87 init (pytest unchanged): testCommand is the pytest default" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgPY' testCommand )\" = 'pytest \${LCARS_TESTS_DIR:-.}' ]"
+
+# (5) .git/info/exclude lists the __lcarsq__ globs so a gate's in-package
+#     quarantine can never be git-added into a ticket commit.
+check "S87 init: .git/info/exclude ignores __lcarsq__ (dir form)" \
+  "grep -qxF '__lcarsq__/' '$repoPY/.git/info/exclude'"
+check "S87 init: .git/info/exclude ignores nested */__lcarsq__" \
+  "grep -qxF '*/__lcarsq__' '$repoPY/.git/info/exclude'"
+
 # ==========================================================================
 echo
 printf 'lcars init: %d passed, %d failed\n' "$pass" "$fail"

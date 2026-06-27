@@ -6949,6 +6949,188 @@ PJ27v="$repo27v/.git/lcars/missions/$MID/pending.json"
 check "BUG-027. a non-regression gate omits the structured fields (back-compat)" \
   "[ -f '$PJ27v' ] && ! qgrep -q '\"escalationType\"' '$PJ27v' && ! qgrep -q '\"humanSummary\"' '$PJ27v'"
 
+# --- Session 87: monorepo / sub-package gate staging (in-package __lcarsq__) ---
+# A pnpm+Vitest monorepo discovers & filters tests RELATIVE to a PACKAGE root and
+# imports package-relative sources (`../src/x`); staging the quarantine at a depth-1
+# dir under the REPO root makes vitest find "No test files" and RED-fail a correct
+# implementation. The fix stages a ticket's quarantine INSIDE its target package
+# (`<pkg>/__lcarsq__`) and runs the runner FROM the package, with a RELATIVE
+# positional. These drives use the token-free test hooks (no billable worker).
+
+# A monorepo repo with a packages/core sub-package + a manifest pointing into it,
+# at the implement stage. Echoes the repo path.
+new_mono_mission() { # → repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/mono.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init )
+  mkdir -p "$repo/packages/core/src"
+  printf '{ "name": "@x/core" }\n' >"$repo/packages/core/package.json"
+  printf 'export const y = 1\n' >"$repo/packages/core/src/y.ts"
+  printf '{ "workspaces": ["packages/*"] }\n' >"$repo/package.json"
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m/manifests"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "x",
+  "stage": "implement",
+  "githubIssue": 42,
+  "branch": "",
+  "base": "main"
+}
+EOF
+  cat >"$m/manifests/t-001.md" <<'EOF'
+# Manifest: t-001
+
+## Relevant files
+
+- `packages/core/src/y.ts` — the thing to build here
+- `packages/core/src/z.ts` — sibling
+EOF
+  echo "$repo"
+}
+
+# A package-relative quarantine test (imports `../src/y`) that asserts a behaviour.
+mono_make_tests() { # dir
+  mkdir -p "$1"
+  printf 'import { y } from "../src/y"\nit("does the thing", () => { expect(y).toBe(42) })\n' >"$1/y.test.ts"
+}
+
+# A FAKE vitest: GREEN only when cd'd INTO packages/core AND the relativized
+# positional resolves to a staged *.test.* AND a sibling ../src exists (package-
+# relative imports). RED on a real staged suite unless an IMPL_DONE marker is
+# present. With NO positional (unset var) it runs the "whole suite" green. This is
+# the package-rootedness the depth-1 staging breaks and the in-package staging fixes.
+MONO_RUNNER="$TMPROOT/mono-vitest.sh"
+cat >"$MONO_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+rel="${1:-}"
+case "$PWD" in */packages/core) : ;; *) echo "WRONGPKG pwd=$PWD" >&2; exit 9 ;; esac
+[ -d "$PWD/src" ] || { echo "no ../src from pkg root" >&2; exit 9; }
+[ -z "$rel" ] && { echo "ran whole suite"; exit 0; }
+target="$PWD/$rel"
+if [ ! -d "$target" ] || [ -z "$(find "$target" -name '*.test.*' -print -quit 2>/dev/null)" ]; then
+  echo "No test files found, matched: $rel" >&2; exit 1; fi
+[ -f "$PWD/src/IMPL_DONE" ] && { echo "all green"; exit 0; }
+echo "AssertionError: behaviour not implemented" >&2; exit 1
+EOF
+chmod +x "$MONO_RUNNER"
+# The S87 seeded vitest relativizing command, invoking the fake runner.
+MONO_TCMD='bash '"$MONO_RUNNER"' ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+
+# Turn a new_mono_mission repo into branch mode (a real branch tip = committed state).
+mono_branch() { # repo
+  ( cd "$1" && git add -A && git commit -q -m base && git branch "lcars/$MID" )
+  local s="$1/.git/lcars/missions/$MID/state.json"
+  sed 's#"branch": ""#"branch": "lcars/'"$MID"'"#' "$s" >"$1/s87.tmp" && mv "$1/s87.tmp" "$s"
+}
+
+# (a) ticket_target_package unit — sub-package, root, missing, multi.
+repoTP="$(new_mono_mission)"
+gotTP="$( cd "$repoTP" && bash "$SCRIPT" ticket-target-package-test --mission "$MID" --ticket t-001 )"
+check "S87. ticket_target_package resolves a sub-package ticket to packages/core" \
+  "[ '$gotTP' = 'packages/core' ]"
+printf '## Relevant files\n- `README.md` — root file\n' >"$repoTP/.git/lcars/missions/$MID/manifests/t-root.md"
+gotTPr="$( cd "$repoTP" && bash "$SCRIPT" ticket-target-package-test --mission "$MID" --ticket t-root )"
+check "S87. repo-root code resolves to empty (today's repo-root no-op)" "[ -z '$gotTPr' ]"
+gotTPm="$( cd "$repoTP" && bash "$SCRIPT" ticket-target-package-test --mission "$MID" --ticket t-missing )"
+check "S87. a missing manifest resolves to empty (safe no-op)" "[ -z '$gotTPm' ]"
+mkdir -p "$repoTP/packages/api"; printf '{ "name": "@x/api" }\n' >"$repoTP/packages/api/package.json"
+printf '## Relevant files\n- `packages/core/src/y.ts` — a\n- `packages/api/src/z.ts` — b\n' \
+  >"$repoTP/.git/lcars/missions/$MID/manifests/t-multi.md"
+gotTPmul="$( cd "$repoTP" && bash "$SCRIPT" ticket-target-package-test --mission "$MID" --ticket t-multi )"
+check "S87. files spanning MULTIPLE packages resolve to empty (safe no-op)" "[ -z '$gotTPmul' ]"
+
+# (b) RED gate ACCEPTS a package-relative fail-first in a monorepo (today it can't).
+repoRG="$(new_mono_mission)"; make_gh_stub "$repoRG/gh"
+export GH_LOG="$repoRG/gh.log"; : >"$GH_LOG"
+twRG="$repoRG/tw"; mono_make_tests "$twRG"; rcRG=0
+( cd "$repoRG" && LCARS_TEST_CMD="$MONO_TCMD" LCARS_GH_BIN="$repoRG/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twRG" >"$repoRG/outRG.txt" 2>&1 ) || rcRG=$?
+check "S87. red gate ACCEPTS a package-relative fail-first (monorepo)" "[ '$rcRG' -eq 0 ]"
+check "S87. the durable quarantine contract is still saved at tickets/<id>/tests" \
+  "[ -f '$repoRG/.git/lcars/missions/$MID/tickets/t-001/tests/y.test.ts' ]"
+
+# (c) NO-LEAK — the in-package __lcarsq__ is gone after the gate, and git never sees it.
+check "S87. NO-LEAK: __lcarsq__ removed from the package after the red gate" \
+  "[ ! -e '$repoRG/packages/core/__lcarsq__' ]"
+check "S87. NO-LEAK: git status / ls-files --others show no __lcarsq__" \
+  "[ -z \"\$( cd '$repoRG' && git ls-files --others --exclude-standard | grep __lcarsq__ )\" ]"
+check "S87. scratch_globs covers the nested */__lcarsq__/* path" \
+  "qgrep -qF '*/__lcarsq__/*' '$SCRIPT'"
+
+# (d) RED gate still REJECTS a green-on-nothing in-package suite (probe differ holds).
+repoRGg="$(new_mono_mission)"; make_gh_stub "$repoRGg/gh"
+export GH_LOG="$repoRGg/gh.log"; : >"$GH_LOG"
+MONO_GREEN="$TMPROOT/mono-green.sh"
+cat >"$MONO_GREEN" <<'EOF'
+#!/usr/bin/env bash
+rel="${1:-}"
+case "$PWD" in */packages/core) : ;; *) exit 9 ;; esac
+[ -z "$rel" ] && { echo "whole suite"; exit 0; }
+target="$PWD/$rel"
+[ -d "$target" ] && [ -n "$(find "$target" -name '*.test.*' -print -quit 2>/dev/null)" ] \
+  || { echo "No test files found" >&2; exit 1; }
+echo "always green (never red)"; exit 0
+EOF
+chmod +x "$MONO_GREEN"
+MONO_GREEN_TCMD='bash '"$MONO_GREEN"' ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+twRGg="$repoRGg/tw"; mono_make_tests "$twRGg"; rcRGg=0
+( cd "$repoRGg" && LCARS_TEST_CMD="$MONO_GREEN_TCMD" LCARS_GH_BIN="$repoRGg/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twRGg" >"$repoRGg/outRGg.txt" 2>&1 ) || rcRGg=$?
+check "S87. red gate REJECTS a green-on-nothing in-package suite" "[ '$rcRGg' -ne 0 ]"
+check "S87. the green-on-nothing rejection names the red gate" \
+  "grep -qi 'red gate' '$repoRGg/outRGg.txt'"
+check "S87. rejected: no __lcarsq__ leaked" "[ ! -e '$repoRGg/packages/core/__lcarsq__' ]"
+
+# (e) post_commit_gate monorepo — GREEN with the impl on the committed branch, RED without.
+repoPCg="$(new_mono_mission)"; make_gh_stub "$repoPCg/gh"
+export GH_LOG="$repoPCg/gh.log"; : >"$GH_LOG"
+printf 'done\n' >"$repoPCg/packages/core/src/IMPL_DONE"
+mkdir -p "$repoPCg/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_make_tests "$repoPCg/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_branch "$repoPCg"
+outPCg="$( cd "$repoPCg" && LCARS_TEST_CMD="$MONO_TCMD" LCARS_GH_BIN="$repoPCg/gh" bash "$SCRIPT" \
+    post-commit-gate-test --mission "$MID" --ticket t-001 2>/dev/null )"
+check "S87. post-commit gate is GREEN when the impl is on the committed branch (monorepo)" \
+  "printf '%s' '$outPCg' | qgrep -q 'PCRC=0'"
+repoPCr="$(new_mono_mission)"; make_gh_stub "$repoPCr/gh"
+export GH_LOG="$repoPCr/gh.log"; : >"$GH_LOG"
+mkdir -p "$repoPCr/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_make_tests "$repoPCr/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_branch "$repoPCr"
+outPCr="$( cd "$repoPCr" && LCARS_TEST_CMD="$MONO_TCMD" LCARS_GH_BIN="$repoPCr/gh" bash "$SCRIPT" \
+    post-commit-gate-test --mission "$MID" --ticket t-001 2>/dev/null )"
+check "S87. post-commit gate is RED when the impl is NOT on the committed branch (monorepo)" \
+  "printf '%s' '$outPCr' | qgrep -qE 'PCRC=[1-9]'"
+
+# (f) full-suite / retest_ticket_suites monorepo — GREEN with the impl present.
+repoFS="$(new_mono_mission)"; make_gh_stub "$repoFS/gh"
+export GH_LOG="$repoFS/gh.log"; : >"$GH_LOG"
+printf 'done\n' >"$repoFS/packages/core/src/IMPL_DONE"
+mkdir -p "$repoFS/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_make_tests "$repoFS/.git/lcars/missions/$MID/tickets/t-001/tests"
+printf '{ "waves": [ { "wave": 1, "tickets": ["t-001"] } ] }\n' \
+  >"$repoFS/.git/lcars/missions/$MID/waves.json"
+mono_branch "$repoFS"
+outFS="$( cd "$repoFS" && LCARS_TEST_CMD="$MONO_TCMD" LCARS_GH_BIN="$repoFS/gh" bash "$SCRIPT" \
+    full-suite-gate-test --mission "$MID" 2>/dev/null )"
+check "S87. full-suite gate (retest_ticket_suites) is GREEN in a monorepo (in-package staging)" \
+  "printf '%s' '$outFS' | qgrep -q 'FSRC=0'"
+
+# (g) NO-OP equivalence — a single-package repo with NO manifest takes the repo-root
+#     path byte-for-byte: the existing honoring runner (run from the repo root) still
+#     accepts a fail-first, and nothing stages an __lcarsq__ dir.
+repoNO="$(new_repo_with_implement_mission)"; make_gh_stub "$repoNO/gh"
+export GH_LOG="$repoNO/gh.log"; : >"$GH_LOG"
+tNO="$repoNO/tw"; make_tests_dir "$tNO"; rcNO=0
+( cd "$repoNO" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoNO/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tNO" >"$repoNO/outNO.txt" 2>&1 ) || rcNO=$?
+check "S87. NO-OP: single-package (no manifest) red gate still accepts a fail-first" \
+  "[ '$rcNO' -eq 0 ]"
+check "S87. NO-OP: no __lcarsq__ dir is created at the repo root" \
+  "[ ! -e '$repoNO/__lcarsq__' ]"
+
 # ==========================================================================
 echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"

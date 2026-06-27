@@ -69,27 +69,68 @@ PROJECT_NAME="$(basename "$TOPLEVEL")"
 # hand) it falls back to the whole suite. The captain can override it in
 # config.json or per-run via $LCARS_TEST_CMD. Null when nothing is detected — the
 # red gate then warns and skips (the pre-existing degradation), it does not block.
+# The vitest test command must RELATIVIZE $LCARS_TESTS_DIR to the runner's cwd:
+# vitest's positional test filter is matched RELATIVE to the package root the
+# runner runs from, but the Implement gates export $LCARS_TESTS_DIR as an ABSOLUTE
+# path (and, for a monorepo, the gate cd's into the touched package). Stripping a
+# leading "$PWD/" turns the absolute quarantine path into the package-relative
+# positional vitest expects, so the staged tests are discovered & filtered; unset
+# (a human running it by hand) it falls back to the whole suite. This abs-positional
+# bug bites BOTH single-package AND monorepo vitest, so both emit this form.
+VITEST_RELATIVIZING_CMD='npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+
+# detect_workspace_runner — name the local test runner a monorepo actually uses, so
+# the workspace fallback emits a runner-SCOPED command instead of a bare `npm test`
+# fan-out across every package. Inspects (in order) a runner config at the workspace
+# root (vitest.config.*/jest.config.*), the pnpm lockfile, then every sub-package's
+# package.json devDependencies. Echoes vitest|jest|mocha (empty when none found).
+detect_workspace_runner() {
+  local r
+  for r in vitest jest mocha; do
+    ls "$TOPLEVEL/$r.config".* >/dev/null 2>&1 && { echo "$r"; return; }
+  done
+  for r in vitest jest mocha; do
+    grep -qs -- "$r" "$TOPLEVEL/pnpm-lock.yaml" 2>/dev/null && { echo "$r"; return; }
+  done
+  for r in vitest jest mocha; do
+    grep -rqs --include='package.json' --exclude-dir='node_modules' -- "\"$r\"" "$TOPLEVEL" 2>/dev/null \
+      && { echo "$r"; return; }
+  done
+  echo ""
+}
+
 detect_test_cmd() {
   if [ -f "$TOPLEVEL/package.json" ] && grep -q '"test"[[:space:]]*:' "$TOPLEVEL/package.json"; then
     # Monorepo (a pnpm workspace, or a "workspaces" field): a bare `npm test` /
     # `pnpm -r test` here FANS OUT across every package, so the red gate can never
     # scope itself to the touched package's quarantined tests. Prefer a command
     # scoped to the local runner that STILL honours $LCARS_TESTS_DIR — LCARS points
-    # the var at the touched package (it knows it from the plan/manifests). When we
-    # can't recognise the runner from the test script, fall back to the
-    # non-recursive npm default and lean on the local-dep warning below rather than
-    # emitting a fan-out across every package.
+    # the var at the touched package (it knows it from the plan/manifests). When the
+    # root "test" script doesn't name the runner, DETECT it from the sub-packages
+    # (lockfile / config / devDependencies) rather than emitting a fan-out.
     if [ -f "$TOPLEVEL/pnpm-workspace.yaml" ] || grep -q '"workspaces"[[:space:]]*:' "$TOPLEVEL/package.json"; then
-      local script
+      local script runner
       script="$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)"
       case "$script" in
-        *vitest*) echo 'npx vitest run ${LCARS_TESTS_DIR:-}'; return ;;
-        *jest*)   echo 'npx jest ${LCARS_TESTS_DIR:-}';       return ;;
-        *mocha*)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';      return ;;
-        *)        echo 'npm test -- ${LCARS_TESTS_DIR:-}';    return ;;
+        *vitest*) echo "$VITEST_RELATIVIZING_CMD";              return ;;
+        *jest*)   echo 'npx jest ${LCARS_TESTS_DIR:-}';         return ;;
+        *mocha*)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';        return ;;
+        *)
+          runner="$(detect_workspace_runner)"
+          case "$runner" in
+            vitest) echo "$VITEST_RELATIVIZING_CMD";            return ;;
+            jest)   echo 'npx jest ${LCARS_TESTS_DIR:-}';       return ;;
+            mocha)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';      return ;;
+            *)      echo 'npm test -- ${LCARS_TESTS_DIR:-}';    return ;;
+          esac ;;
       esac
     fi
-    # Single package: jest/mocha/vitest take a path positional after `--`; empty runs the suite.
+    # Single package: a vitest runner needs the RELATIVIZING positional (same abs-
+    # path bug as the monorepo); jest/mocha/other keep the `npm test --` positional
+    # default (empty runs the suite).
+    case "$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)" in
+      *vitest*) echo "$VITEST_RELATIVIZING_CMD"; return ;;
+    esac
     echo 'npm test -- ${LCARS_TESTS_DIR:-}'; return; fi
   if [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ]; then
     echo 'pytest ${LCARS_TESTS_DIR:-.}'; return; fi
@@ -225,6 +266,7 @@ EXCLUDE_FILE="$GIT_DIR/info/exclude"
 mkdir -p "$GIT_DIR/info" 2>/dev/null || true
 [ -f "$EXCLUDE_FILE" ] || : >"$EXCLUDE_FILE"
 for g in '.lcars-*' '*/.lcars-*' '.lcars-run-*' '*/.lcars-run-*' \
+         '__lcarsq__/' '__lcarsq__/*' '*/__lcarsq__' '*/__lcarsq__/*' \
          '.claude/' '.claude/*' '*/.claude/*' \
          '.copilot/' '.copilot/*' '*/.copilot/*' \
          '.*-run.cjs' '.*-run.mjs' '.*-run.js' '.*-run.sh' '.*-run.py' \

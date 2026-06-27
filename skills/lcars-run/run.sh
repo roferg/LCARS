@@ -1406,6 +1406,79 @@ COMMIT_NOTE=""
 # --- resolve a ticket's working dir under the mission -----------------------
 ticket_dir() { printf '%s/tickets/%s' "$MISSION_DIR" "$1"; }
 
+# --- the package a ticket's code lives in (S87, monorepo gate staging) -------
+# A monorepo gate cannot stage the quarantined suite at a DEPTH-1 dir under the
+# REPO ROOT and run the runner there: vitest/jest DISCOVER and FILTER tests
+# RELATIVE to a PACKAGE root, and the quarantined tests import package-relative
+# sources (`import {x} from "../src/y"`). Staged at the wrong root the runner finds
+# "No test files" and a correct implementation RED-fails the gate. So when a
+# ticket's code lives in a sub-package we stage the quarantine INSIDE that package
+# and run the runner FROM it. This helper names that package.
+#
+# It reads the ticket's manifest ($MISSION_DIR/manifests/<id>.md), parses the
+# `## Relevant files` bullet list (`- <path>`, backticks/whitespace tolerated), and
+# for each listed path walks UP to the nearest ancestor dir D (D != ".") where
+# `<root>/D/package.json` exists. <root> defaults to $REPO_ROOT and is the tree the
+# package.json existence is checked against, so a gate checks its OWN worktree.
+# Echoes the single distinct D RELATIVE to the repo root (e.g. `packages/core`), or
+# "" when: the code sits at the repo root / no sub-package.json is found (0
+# candidates), the files SPAN multiple packages (>1 candidate), or the manifest is
+# missing. Every "" case routes the gate through TODAY'S byte-for-byte repo-root
+# behaviour — a safe no-op.
+ticket_target_package() { # ticketId [root]  → pkg dir relative to repo root, or ""
+  local id="$1" root="${2:-$REPO_ROOT}"
+  local mf="$MISSION_DIR/manifests/$id.md"
+  [ -f "$mf" ] || return 0
+  local found="" path d cand
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    # Walk UP from the listed path to the nearest ancestor dir holding a
+    # package.json. The path itself is tried first (it may BE a package dir).
+    d="$path"; cand=""
+    while [ -n "$d" ] && [ "$d" != "." ]; do
+      if [ -f "$root/$d/package.json" ]; then cand="$d"; break; fi
+      case "$d" in */*) d="${d%/*}" ;; *) d="." ;; esac
+    done
+    [ -n "$cand" ] || continue
+    case " $found " in *" $cand "*) : ;; *) found="${found:+$found }$cand" ;; esac
+  done <<EOF
+$(manifest_relevant_files "$mf")
+EOF
+  # 0 candidates → "" (root / no sub-package); exactly 1 → it; >1 (spans packages) → "".
+  set -- $found
+  [ "$#" -eq 1 ] || return 0
+  printf '%s' "$1"
+}
+
+# --- parse a manifest's `## Relevant files` bullet paths --------------------
+# Emits one path per line. Reads only the `## Relevant files` section, tolerates
+# `-`/`*` bullets, backtick-wrapped paths, a trailing ` — description`, and a
+# leading `./`. Used by ticket_target_package; jq-free, awk-only.
+manifest_relevant_files() { # manifest-file → one path per line
+  awk '
+    /^##[[:space:]]+[Rr]elevant[[:space:]]+files/ { ins=1; next }
+    /^##[[:space:]]/                              { ins=0 }
+    ins && /^[[:space:]]*[-*][[:space:]]+/ {
+      line=$0
+      sub(/^[[:space:]]*[-*][[:space:]]+/, "", line)  # strip the bullet marker
+      gsub(/`/, "", line)                              # strip backticks
+      n=split(line, a, /[[:space:]]+/)                 # first token = the path
+      if (n>0 && a[1] != "") { p=a[1]; sub(/^\.\//, "", p); sub(/\/+$/, "", p); if (p!="") print p }
+    }
+  ' "$1" 2>/dev/null
+}
+
+# --- where a gate stages an in-package quarantine (S87) ----------------------
+# Given a tree and a package-rel path (from ticket_target_package), echo the
+# tab-separated RUN dir the runner cd's into (`<tree>/<pkg>`) and the STAGE dir the
+# quarantine copies into (`<run>/__lcarsq__`). `__lcarsq__` is a NON-dot dir so
+# vitest's default `**/*.test.ts` include discovers it. Used only on the non-empty
+# (sub-package) branch — the empty branch keeps each gate's existing `.lcars-*` dir.
+lcarsq_stage() { # tree pkg_rel  → "<run_dir>\t<stage_dir>"
+  local run_dir="$1/$2"
+  printf '%s\t%s' "$run_dir" "$run_dir/__lcarsq__"
+}
+
 # --- snapshot the working tree's untracked files ----------------------------
 # Records the captain's PRE-EXISTING untracked files (taken before any worker
 # runs for a ticket) so commit_ticket can tell the Implementer's NEW source from
@@ -1443,6 +1516,7 @@ scratch_globs() {
   printf '%s\n' \
     '.lcars-*' '*/.lcars-*' \
     '.lcars-run-*' '*/.lcars-run-*' \
+    '__lcarsq__/' '__lcarsq__/*' '*/__lcarsq__' '*/__lcarsq__/*' \
     '.claude/' '.claude/*' '*/.claude/*' \
     '.copilot/' '.copilot/*' '*/.copilot/*' \
     '.*-run.cjs' '.*-run.mjs' '.*-run.js' '.*-run.sh' '.*-run.py' \
@@ -1820,8 +1894,13 @@ red_gate_env_failure() { # runner-output → 0 if the runner could not execute
 # We NEVER discard the rc or the output — both are surfaced to $RED_GATE_SIGNAL
 # (if set) so the human and the next grounded Test-Writer attempt see WHY.
 RED_GATE_SIGNAL=""   # caller may point this at a file to capture the rejection signal
-red_gate_ok() { # quarantined-tests-dir
-  local tdir="$1" cmd rc=0 prc=0 out probe_out reason=""
+red_gate_ok() { # quarantined-tests-dir [run-dir]
+  # S87: run-dir is the cwd the runner is invoked from (BOTH the real run AND the
+  # empty-dir probe), default $REPO_ROOT (byte-identical to before). A monorepo
+  # ticket passes its own package dir so vitest/jest discover & filter at the
+  # package root. The probe still cd's the SAME place and consumes $LCARS_TESTS_DIR,
+  # so its differ-requirement is preserved.
+  local tdir="$1" run_dir="${2:-$REPO_ROOT}" cmd rc=0 prc=0 out probe_out reason=""
   cmd="$(resolve_test_cmd)"
   if [ -z "$cmd" ]; then
     # NO RUNNER configured: the gate cannot run anything. This is the documented,
@@ -1833,7 +1912,7 @@ red_gate_ok() { # quarantined-tests-dir
     return 0
   fi
 
-  out="$(cd "$REPO_ROOT" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" 2>&1)" || rc=$?
+  out="$(cd "$run_dir" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" 2>&1)" || rc=$?
 
   # PROBE: re-run the SAME command with an EMPTY quarantine dir. This is the only
   # way to prove the command reacts to $LCARS_TESTS_DIR (i.e. it scoped itself to
@@ -1850,7 +1929,7 @@ red_gate_ok() { # quarantined-tests-dir
   # failing test, with DIFFERENT output — so we MUST compare output too, and err
   # toward ACCEPT on any difference (a false-BLOCK would re-introduce BUG-007).
   local empty; empty="$(mktemp -d)"
-  probe_out="$(cd "$REPO_ROOT" && LCARS_TESTS_DIR="$empty" bash -c "$cmd" 2>&1)" || prc=$?
+  probe_out="$(cd "$run_dir" && LCARS_TESTS_DIR="$empty" bash -c "$cmd" 2>&1)" || prc=$?
   rm -rf "$empty"
   local ignored_var=no
   if [ "$prc" -eq "$rc" ] && [ "$probe_out" = "$out" ]; then ignored_var=yes; fi
@@ -2079,7 +2158,26 @@ cmd_impl_save_tests() {
   # went wrong. The signal is SIGNAL ONLY — never the implementation.
   local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"
   rm -f "$sig"
-  if ! RED_GATE_SIGNAL="$sig" red_gate_ok "$tdir"; then
+  # S87: a ticket whose code lives in a sub-package must run its red gate INSIDE
+  # that package — vitest/jest discover & filter tests RELATIVE to a package root
+  # and the quarantined tests import package-relative sources. Stage an EPHEMERAL,
+  # gate-only copy at <pkg>/__lcarsq__ and run the gate FROM <pkg>. The DURABLE
+  # contract stays tickets/<id>/tests + tests.sha256 (snapshotted above); the
+  # in-package dir is removed on EVERY exit path BEFORE the Implementer is ever
+  # dispatched. An empty pkg_rel (code at the repo root / no sub-package / missing
+  # or multi-package manifest) takes today's repo-root path, byte-for-byte.
+  local pkg_rel; pkg_rel="$(ticket_target_package "$TICKET")"
+  local red_rc=0
+  if [ -z "$pkg_rel" ]; then
+    RED_GATE_SIGNAL="$sig" red_gate_ok "$tdir" || red_rc=$?
+  else
+    local inpkg="$REPO_ROOT/$pkg_rel/__lcarsq__"
+    rm -rf "$inpkg"; mkdir -p "$inpkg"
+    ( cd "$tdir" && cp -R . "$inpkg/" )
+    RED_GATE_SIGNAL="$sig" red_gate_ok "$inpkg" "$REPO_ROOT/$pkg_rel" || red_rc=$?
+    rm -rf "$inpkg"
+  fi
+  if [ "$red_rc" -ne 0 ]; then
     rm -rf "$tdir" "$snap"
     local why=""; [ -f "$sig" ] && why="
 $(cat "$sig")"
@@ -2180,7 +2278,19 @@ post_commit_gate() { # ticket
   # Stage the ticket's quarantined tests at a DEPTH-1 dir under the clean worktree
   # root, so a portable test that resolves its target relative to its own location
   # (`$here/../...`) finds the committed code exactly as it did at green-time.
-  local stage_dir="$wt/.lcars-postcommit" tdir rc=0 out=""
+  # S87: when the ticket's code lives in a sub-package, stage & run the suite
+  # INSIDE that package (run_dir=<wt>/<pkg>, stage_dir=<run>/__lcarsq__) so the
+  # runner discovers/filters tests at the package root exactly as the red gate did
+  # — checked against THIS worktree ($wt). An empty pkg_rel keeps today's depth-1
+  # .lcars-postcommit at the worktree root. The wholesale worktree cleanup below
+  # removes whichever was staged.
+  local pkg_rel; pkg_rel="$(ticket_target_package "$t" "$wt")"
+  local run_dir stage_dir tdir rc=0 out=""
+  if [ -n "$pkg_rel" ]; then
+    IFS=$'\t' read -r run_dir stage_dir < <(lcarsq_stage "$wt" "$pkg_rel")
+  else
+    run_dir="$wt"; stage_dir="$wt/.lcars-postcommit"
+  fi
   tdir="$(ticket_dir "$t")/tests"
   if [ -d "$tdir" ]; then
     rm -rf "$stage_dir"; mkdir -p "$stage_dir"
@@ -2191,7 +2301,7 @@ post_commit_gate() { # ticket
       # S84 (gate-worktree-deps): CAPTURE the combined stdout+stderr (not >/dev/null)
       # so the env-failure classifier below can read WHY a non-zero exit happened —
       # the pass/fail decision is still PURELY rc, exactly as before.
-      out="$( cd "$wt" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" 2>&1 )" || rc=$?
+      out="$( cd "$run_dir" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" 2>&1 )" || rc=$?
     fi
     rm -rf "$stage_dir" 2>/dev/null || :
   fi
@@ -2476,25 +2586,34 @@ RETEST_CAPTURE=""    # caller may point this at a dir to capture per-ticket outp
 retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
   local run_dir="$1" cmd="$2"; shift 2
   RETEST_FAILED=""
-  local stage_dir="$run_dir/.lcars-retest"
-  local id tdir rc out
+  local id tdir rc out pkg_rel trun stage_dir
   for id in "$@"; do
     [ -n "$id" ] || continue
     tdir="$(ticket_dir "$id")/tests"
     # Defensive: a green ticket should always have a quarantined suite. If one is
     # missing we skip it rather than crash — we never INVENT a failure.
     [ -d "$tdir" ] || continue
+    # S87: PER-TICKET, a sub-package ticket re-runs INSIDE its own package (vitest/
+    # jest discover & filter at the package root); an empty pkg_rel keeps today's
+    # depth-1 .lcars-retest at the run-tree root. Checked against $run_dir so every
+    # caller (full-suite gate worktree, reconcile merge worktree) stays symmetric.
+    pkg_rel="$(ticket_target_package "$id" "$run_dir")"
+    if [ -n "$pkg_rel" ]; then
+      IFS=$'\t' read -r trun stage_dir < <(lcarsq_stage "$run_dir" "$pkg_rel")
+    else
+      trun="$run_dir"; stage_dir="$run_dir/.lcars-retest"
+    fi
     # Recreate the staging dir empty per ticket so suites never bleed together.
     rm -rf "$stage_dir"; mkdir -p "$stage_dir"
     ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
     rc=0
-    out="$( cd "$run_dir" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" 2>&1 )" || rc=$?
+    out="$( cd "$trun" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" 2>&1 )" || rc=$?
     if [ "$rc" -ne 0 ]; then
       RETEST_FAILED="${RETEST_FAILED:+$RETEST_FAILED }$id"
       [ -n "$RETEST_CAPTURE" ] && { mkdir -p "$RETEST_CAPTURE"; printf '%s\n' "$out" >"$RETEST_CAPTURE/$id.log"; }
     fi
+    rm -rf "$stage_dir" 2>/dev/null || :
   done
-  rm -rf "$stage_dir" 2>/dev/null || :
   [ -z "$RETEST_FAILED" ]
 }
 
@@ -6981,6 +7100,27 @@ case "$SUB" in
     _rg_in="$(cat)"
     if red_gate_env_failure "$_rg_in"; then exit 0; else exit 1; fi
     ;;
+  # S87 test hook: echo ticket_target_package for a ticket (optionally against a
+  # given root, the positional). Inert for every real subcommand — reachable only
+  # by this token from the test suite, so the manifest→package resolver can be
+  # unit-tested directly without driving a whole Implement attempt.
+  ticket-target-package-test)
+    locate_mission "$MISSION_ID"
+    ticket_target_package "$TICKET" "${POSARG:-$REPO_ROOT}"
+    printf '\n'
+    exit 0 ;;
+  # S87 test hook: drive the REAL post_commit_gate (branch mode) for one ticket,
+  # without spawning any worker. The mission's state.json branch must point at a
+  # real branch whose tip is the COMMITTED state to verify. Captures the gate's
+  # signal to $POST_COMMIT_SIGNAL and prints its rc, so the in-package monorepo
+  # staging can be exercised on a real worktree cut at that branch tip.
+  post-commit-gate-test)
+    locate_mission "$MISSION_ID"
+    __pcg_sig="${LCARS_PC_SIGNAL_OUT:-$MISSION_DIR/pc-test-signal.txt}"; rm -f "$__pcg_sig"
+    __pcg_rc=0
+    POST_COMMIT_SIGNAL="$__pcg_sig" post_commit_gate "$TICKET" || __pcg_rc=$?
+    printf 'PCRC=%s\n' "$__pcg_rc"
+    exit 0 ;;
   # S84 test hook: drive the REAL full_suite_gate over the mission's scheduled
   # tickets (parsed from waves.json, exactly as cmd_impl_advance does) WITHOUT the
   # self-heal wrapper — so the gate's env-vs-regression classification can be
