@@ -7132,6 +7132,95 @@ check "S87. NO-OP: no __lcarsq__ dir is created at the repo root" \
   "[ ! -e '$repoNO/__lcarsq__' ]"
 
 # ==========================================================================
+# S88 (gate-worktree-deps) — bundler MODULE-RESOLUTION load failures at the red gate.
+# S87 stages the quarantined test inside the ticket's package at `<pkg>/__lcarsq__/`
+# and runs the runner FROM the package. That fixes a PACKAGE-ROOT-relative import
+# (`../src/math.js` resolves from `<pkg>/__lcarsq__/`). But a CO-LOCATED import
+# (`./utils.js`, authored as if the test sat next to the source) CANNOT resolve from
+# `<pkg>/__lcarsq__/`, so vitest/vite errors `Failed to load url ./utils.js (resolved
+# id: ./utils.js). Does the file exist?` and the suite fails to LOAD. The old
+# red_gate_compile_failure pattern matched only node's `Cannot find module`, so it
+# WRONGLY accepted this load-failure as a valid fail-first. S88 extends the detector
+# with vite/vitest/rollup resolution signatures (rejecting MORE reds, never loosening)
+# and gives red_gate_ok a RESOLUTION-specific, actionable reason. A small inert hook
+# (`red-gate-compile-detect-test`) runs the pure detector on stdin so the new pattern
+# coverage is unit-testable directly.
+
+compile_detect() { # runner-output → 0 if classified as a compile/load failure
+  printf '%s' "$1" | ( cd "$REPO_ROOT" && bash "$SCRIPT" red-gate-compile-detect-test )
+}
+
+# S88-1: the detector MATCHES the real vitest/vite module-resolution load failures.
+check "S88-1. compile detector matches the real vitest 'Failed to load url' string" \
+  "compile_detect 'Error: Failed to load url ./utils.js (resolved id: ./utils.js). Does the file exist?'"
+check "S88-1. compile detector matches a 'Failed to resolve import' string" \
+  "compile_detect 'Failed to resolve import \"./x\" from \"foo.test.ts\". Does the file exist?'"
+check "S88-1. compile detector matches 'Rollup failed to resolve'" \
+  "compile_detect 'Rollup failed to resolve import \"./utils.js\"'"
+check "S88-1. compile detector matches ERR_UNSUPPORTED_DIR_IMPORT" \
+  "compile_detect 'Error [ERR_UNSUPPORTED_DIR_IMPORT]: Directory import is not supported'"
+
+# S88-2: the detector does NOT match a NORMAL assertion failure (no false positive
+# that would block a real fail-first).
+check "S88-2. compile detector does NOT match a plain assertion summary ('2 failed')" \
+  "! compile_detect 'Tests: 2 failed, 3 passed'"
+check "S88-2. compile detector does NOT match an assertion diff ('expected 5 to be 999')" \
+  "! compile_detect 'AssertionError: expected 5 to be 999'"
+
+# S88-3: the detector does NOT match a test that LOADED an existing module but hit an
+# undefined SYMBOL (a VALID fail-first that must still be accepted) — no load-url error.
+check "S88-3. compile detector does NOT match an undefined-symbol fail-first (module loaded)" \
+  "! compile_detect 'TypeError: rectCenter is not a function'"
+
+# S88-4: red_gate_ok REJECTS a quarantined suite whose output is a module-resolution
+# load failure, and the reason names the __lcarsq__ quarantine dir + package-root-relative
+# / package-name imports (so the retry knows the fix). The stub REACTS to
+# $LCARS_TESTS_DIR (green on empty dir, resolution failure on a real dir) so
+# ignored_var=no — proving the rejection is the NEW resolution guard.
+RESO_FAIL_RUNNER="$TMPROOT/reso-fail-runner.sh"
+cat >"$RESO_FAIL_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+# Honors $LCARS_TESTS_DIR: vacuously green on an empty/missing dir (so the empty-dir
+# probe proves the command reacted → ignored_var=no), but on a real quarantine dir the
+# test cannot RESOLVE its co-located import of the code under test (real vitest phrasing).
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests collected (vacuous green)"; exit 0; }
+echo "Error: Failed to load url ./utils.js (resolved id: ./utils.js). Does the file exist?" >&2
+exit 1
+EOF
+chmod +x "$RESO_FAIL_RUNNER"
+repoS88="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS88/gh"
+export GH_LOG="$repoS88/gh.log"; : >"$GH_LOG"
+tS88="$repoS88/tw"; make_tests_dir "$tS88"
+rcS88=0
+( cd "$repoS88" && LCARS_TEST_CMD="bash $RESO_FAIL_RUNNER" LCARS_GH_BIN="$repoS88/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS88" >"$repoS88/outS88.txt" 2>&1 ) || rcS88=$?
+check "S88-4. red gate REJECTS a module-resolution load-failure red (test never loaded)" \
+  "[ '$rcS88' -ne 0 ]"
+check "S88-4. the rejection names the __lcarsq__ quarantine dir (the WHERE)" \
+  "grep -q '__lcarsq__' '$repoS88/outS88.txt'"
+check "S88-4. the rejection names a package-root-relative / package-name import (the FIX)" \
+  "grep -qi 'package-root-relative' '$repoS88/outS88.txt'"
+check "S88-4. a resolution-failure red is NOT quarantined (never reaches the Implementer)" \
+  "[ ! -d '$repoS88/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# S88-5: a GENUINE assertion fail-first is still ACCEPTED + quarantined (regression guard).
+repoS88b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS88b/gh"
+export GH_LOG="$repoS88b/gh.log"; : >"$GH_LOG"
+tS88b="$repoS88b/tw"; make_tests_dir "$tS88b"; rcS88b=0
+( cd "$repoS88b" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoS88b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS88b" >"$repoS88b/outS88b.txt" 2>&1 ) || rcS88b=$?
+check "S88-5. red gate still ACCEPTS a genuine assertion fail-first (no false positive)" \
+  "[ '$rcS88b' -eq 0 ]"
+check "S88-5. the accepted assertion-red suite IS quarantined for the Implementer" \
+  "[ -f '$repoS88b/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test.js' ]"
+
+# S88-6: source-level guard — red_gate_ok's compile branch consults the resolution detector.
+check "S88-6. red_gate_ok routes a resolution failure to a rejection (red_gate_resolution_failure)" \
+  "qgrep -q 'red_gate_resolution_failure' '$SCRIPT'"
+
+# ==========================================================================
 echo
 printf 'lcars run: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

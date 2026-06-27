@@ -99,6 +99,15 @@ the implementation, NEVER the solution, NEVER the diff — listing the work woul
 invite the Implementer to copy rather than think. Point at WHERE the code lives
 and WHAT its interface is; the Implementer reads the file itself for the rest.
 
+**Navigation only — never dictate the TEST's location or its import path.** A
+"Relevant files" entry describes the SOURCE file under test (its path + interface
+signatures) for navigation; it MUST NOT tell the Test Writer where to PUT its test
+(e.g. "append the test here", "place the test next to the source") nor how to
+IMPORT the code (e.g. "import `./foo.js`"). The Test Writer owns its dedicated test
+file, which the harness quarantines and runs from a separate dir — so a co-located
+`./<sibling>` import prescribed by the manifest would fail to load. List the source
+path and signatures; the Test Writer decides its own test file and import path.
+
 A thin greenfield ticket with little existing code may have a near-empty
 "Relevant files" section — that is fine; still emit the file.
 

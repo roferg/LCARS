@@ -1802,6 +1802,9 @@ resolve_test_cmd() {
 # Signatures (node runner + an engine placeholder leak):
 #   • SyntaxError / parse error                     (SyntaxError, Unexpected token/identifier/end of input)
 #   • module load failure                           (Cannot find module, ERR_MODULE_NOT_FOUND, ERR_REQUIRE_ESM)
+#   • a bundler MODULE-RESOLUTION failure            (vite/vitest/rollup: Failed to load url / Failed to
+#                                                     resolve import|entry / "Does the file exist?" — see
+#                                                     red_gate_resolution_failure for the full subset & rationale)
 #   • a load-time ReferenceError                    (… is not defined  — a symbol unresolved before any test ran)
 #   • an unsubstituted Test-Writer placeholder      (<REPLACE>, <TODO>, <PLACEHOLDER>, etc.)
 # Returns 0 (compile/load failure detected) or 1 (none).
@@ -1812,10 +1815,41 @@ red_gate_compile_failure() { # runner-output → 0 if a compile/load failure sig
   case "$out" in
     *'<REPLACE>'*|*'<PLACEHOLDER>'*|*'<TODO>'*|*'<FILL'*|*'<INSERT'*) return 0 ;;
   esac
+  # A bundler/ESM MODULE-RESOLUTION failure (vite/vitest/rollup) is a load failure too
+  # — the test could not even resolve its import of the code under test, so nothing ran.
+  # Delegated to red_gate_resolution_failure (shared with red_gate_ok's actionable reason).
+  red_gate_resolution_failure "$out" && return 0
   # node/JS compile + load signatures, plus a generic interpreter parse error. These
   # are emitted to stderr (which the gate captures with 2>&1) BEFORE any test runs.
   printf '%s' "$out" | grep -Eq \
     'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)' \
+    && return 0
+  return 1
+}
+
+# BUG-024 (gate-worktree-deps): the module-RESOLUTION subset of red_gate_compile_failure.
+# The quarantined test LOADED into a WORKING runner but could not RESOLVE its import of
+# the code under test. This is DISTINCT from a pure SyntaxError because the FIX differs:
+# the harness runs the quarantined test from the ticket's package quarantine dir
+# `<pkg>/__lcarsq__/`, so a CO-LOCATED `./<sibling>` import (authored as if the test sat
+# next to the source) cannot resolve from there — vitest/vite/rollup then report the
+# failure with their OWN phrasing, which node's bare `Cannot find module` did not cover.
+# red_gate_ok uses a match here to give a RESOLUTION-specific, actionable reason (import
+# package-root-relative or by package name, NOT co-located) so the retry self-corrects.
+# Each signature is a RUNNER module-resolution failure — NOT a normal assertion failure,
+# and NOT a test that imports an EXISTING module but a not-yet-defined SYMBOL (that loads
+# fine → undefined symbol → a VALID assertion fail-first that must still be accepted):
+#   • Cannot find module / ERR_MODULE_NOT_FOUND / ERR_REQUIRE_ESM — node's own resolver.
+#   • ERR_UNSUPPORTED_DIR_IMPORT                     — node refused a directory import (no resolution).
+#   • Failed to load url                             — vite/vitest could not load the imported url.
+#   • Failed to resolve import / Failed to resolve entry — vite/vitest could not resolve the specifier.
+#   • Does the file exist\?                          — the tail vitest appends to a Failed-to-load-url error.
+#   • Rollup failed to resolve                       — rollup/vite build-time resolution failure.
+# Returns 0 (a module-resolution/load failure) or 1 (none).
+red_gate_resolution_failure() { # runner-output → 0 if a module-resolution failure signature is present
+  local out="$1"
+  printf '%s' "$out" | grep -Eq \
+    'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve' \
     && return 0
   return 1
 }
@@ -1990,8 +2024,21 @@ $(printf '%s' "$out" | tail -20)"
     # only a clear compile/load signature diverts; a normal assertion failure falls
     # through to the accept below, exactly as before.
     if red_gate_compile_failure "$out"; then
-      reason="RED GATE — the quarantined suite did NOT fail on an assertion: it failed to COMPILE / LOAD (a SyntaxError, import/parse error, a load-time unresolved symbol, or a leftover placeholder token), so the test file never ran. A non-runnable contract cannot be handed to the Implementer (it must not edit the immutable tests to fix a syntax error). Re-author the test so it PARSES and LOADS cleanly, then FAILS on its assertions until the behaviour exists. Command run: $cmd. Runner output (quarantined run):
+      # BUG-024: a module-RESOLUTION load failure needs a DIFFERENT, actionable reason
+      # than a pure SyntaxError. The quarantined test is executed from the ticket's
+      # package quarantine dir `<package>/__lcarsq__/`, so a co-located `./<sibling>`
+      # import of the code under test (authored as if the test sat next to the source)
+      # cannot resolve from there. Tell the Test-Writer to import via a path that
+      # resolves FROM the quarantine dir — package-root-relative or by package name —
+      # so the retry self-corrects. A non-resolution compile/parse error keeps the
+      # original SyntaxError wording.
+      if red_gate_resolution_failure "$out"; then
+        reason="RED GATE — the quarantined suite did NOT fail on an assertion: it could not RESOLVE its import of the code under test (a module-resolution / load failure), so the test file never ran. The harness QUARANTINES your test and runs it from the ticket's package quarantine dir \`<package>/__lcarsq__/\` — NOT where you authored it — so it must import the code under test via a path that resolves FROM THERE: a package-root-relative path (e.g. \`../src/<...>.js\`) or the package's NAME — NEVER a co-located \`./<sibling>\` path that assumes the test sits next to the source. Re-author the import accordingly so the test LOADS, then FAILS on its assertions until the behaviour exists. Command run: $cmd. Runner output (quarantined run):
 $(printf '%s' "$out" | tail -20)"
+      else
+        reason="RED GATE — the quarantined suite did NOT fail on an assertion: it failed to COMPILE / LOAD (a SyntaxError, import/parse error, a load-time unresolved symbol, or a leftover placeholder token), so the test file never ran. A non-runnable contract cannot be handed to the Implementer (it must not edit the immutable tests to fix a syntax error). Re-author the test so it PARSES and LOADS cleanly, then FAILS on its assertions until the behaviour exists. Command run: $cmd. Runner output (quarantined run):
+$(printf '%s' "$out" | tail -20)"
+      fi
       printf '  ✗ %s\n' "$reason" >&2
       if [ -n "$RED_GATE_SIGNAL" ]; then
         {
@@ -7099,6 +7146,14 @@ case "$SUB" in
   red-gate-env-detect-test)
     _rg_in="$(cat)"
     if red_gate_env_failure "$_rg_in"; then exit 0; else exit 1; fi
+    ;;
+  # BUG-024 test hook: run the compile/LOAD-failure detector on stdin and exit with
+  # its return code (0 = compile/load failure detected, 1 = none). Inert for every
+  # real subcommand — reachable only by this explicit token from the test suite, so
+  # the detector's module-resolution pattern coverage can be unit-tested directly.
+  red-gate-compile-detect-test)
+    _rg_in="$(cat)"
+    if red_gate_compile_failure "$_rg_in"; then exit 0; else exit 1; fi
     ;;
   # S87 test hook: echo ticket_target_package for a ticket (optionally against a
   # given root, the positional). Inert for every real subcommand — reachable only

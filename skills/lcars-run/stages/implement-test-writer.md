@@ -102,9 +102,20 @@ human-confusing self-heal AND that the Implementer can **never fix** (your test 
 immutable once locked). The harness now **REJECTS** such a test and makes you
 retry, so get it right the first time:
 
-- **MUST** resolve every repo source **relative to the test file's own location** —
-  a walk-up locator from `__dirname` (JS) / the test file's directory (any lang).
-  One robust helper, used by every test that needs the source:
+- **The harness QUARANTINES your test file and runs it from the ticket's package
+  quarantine dir `<package-root>/__lcarsq__/` — NOT from where you write it.** So
+  when you import the **source MODULE under test** in a (mono)repo, import it via a
+  path that resolves FROM THAT location: a **package-root-relative** path (e.g.
+  `../src/<dir>/<file>.js`) **or the package's NAME** — **NEVER** a co-located
+  `./<sibling>` import that assumes your test sits next to the source. A co-located
+  `import './utils.js'` is correct where you author it but **cannot resolve** from
+  `<package-root>/__lcarsq__/`, so the suite fails to LOAD and the harness **REJECTS**
+  it (you will be asked to retry). Do not co-locate; import per the path above.
+
+- For locating a BUILT artifact / a repo source file you READ (not import) — e.g.
+  reading `game.js` as text — **MUST** resolve it **portably relative to the test
+  file's own location** (a walk-up locator from `__dirname` (JS) / the test file's
+  directory (any lang)), never an absolute path. One robust helper:
 
   ```js
   // RIGHT — portable: walk up from this test file until game.js is found.
