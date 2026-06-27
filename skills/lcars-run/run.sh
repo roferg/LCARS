@@ -2180,7 +2180,7 @@ post_commit_gate() { # ticket
   # Stage the ticket's quarantined tests at a DEPTH-1 dir under the clean worktree
   # root, so a portable test that resolves its target relative to its own location
   # (`$here/../...`) finds the committed code exactly as it did at green-time.
-  local stage_dir="$wt/.lcars-postcommit" tdir rc=0
+  local stage_dir="$wt/.lcars-postcommit" tdir rc=0 out=""
   tdir="$(ticket_dir "$t")/tests"
   if [ -d "$tdir" ]; then
     rm -rf "$stage_dir"; mkdir -p "$stage_dir"
@@ -2188,7 +2188,10 @@ post_commit_gate() { # ticket
     # If tar failed to populate the staging dir, NEVER run against an empty suite
     # and false-GREEN — mirror the harness refusing an empty quarantined suite.
     if [ -n "$(find "$stage_dir" -type f -print -quit 2>/dev/null)" ]; then
-      ( cd "$wt" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" >/dev/null 2>&1 ) || rc=$?
+      # S84 (gate-worktree-deps): CAPTURE the combined stdout+stderr (not >/dev/null)
+      # so the env-failure classifier below can read WHY a non-zero exit happened —
+      # the pass/fail decision is still PURELY rc, exactly as before.
+      out="$( cd "$wt" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" 2>&1 )" || rc=$?
     fi
     rm -rf "$stage_dir" 2>/dev/null || :
   fi
@@ -2199,6 +2202,26 @@ post_commit_gate() { # ticket
   "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt" 2>/dev/null || :
 
   [ "$rc" -eq 0 ] && return 0
+
+  # S84 (gate-worktree-deps): CLASSIFY a runner-STARTUP failure distinctly from a
+  # genuine missing-implementation red. If the test runner ITSELF could not launch
+  # in the gate worktree (no node_modules/venv, an absent test binary, no lockfile —
+  # a `command not found` class failure), the suite is RED for an ENVIRONMENT reason,
+  # NOT because the implementation is absent — so the misleading "not present on the
+  # committed branch" wording would send the captain hunting a non-existent code bug.
+  # Report the env-unprovisioned diagnosis and signal it with a DISTINCT return code
+  # (3) so the call site emits the right event. We use red_gate_env_failure ONLY
+  # (never red_gate_compile_failure): a genuinely-absent implementation legitimately
+  # yields a module/compile error from the test FILE, which IS the missing-impl case
+  # and must keep its existing wording. This is diagnosis only — the attempt STILL
+  # fails (never a red flipped to green).
+  if red_gate_env_failure "$out"; then
+    local edetail="POST-COMMIT GATE — environment not provisioned — the test runner could not start in the gate worktree (missing node_modules/venv or an absent test binary); set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`). This is NOT a missing implementation. Command run: $cmd."
+    printf '  ✗ %s\n' "$edetail" >&2
+    [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$edetail" >"$POST_COMMIT_SIGNAL"
+    return 3
+  fi
+
   local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this attempt — it must land its change on the committed branch to pass. Command run: $cmd."
   printf '  ✗ %s\n' "$detail" >&2
   [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$detail" >"$POST_COMMIT_SIGNAL"
@@ -2286,15 +2309,30 @@ cmd_impl_save_result() {
   # green, emit the harness's own event, and `die` so the Implementer loop retries
   # exactly as for any other failed attempt (the same retry/flag path).
   local pcsig; pcsig="$(ticket_dir "$TICKET")/post-commit-signal.txt"; rm -f "$pcsig"
-  if ! POST_COMMIT_SIGNAL="$pcsig" post_commit_gate "$TICKET"; then
+  local pcrc=0; POST_COMMIT_SIGNAL="$pcsig" post_commit_gate "$TICKET" || pcrc=$?
+  if [ "$pcrc" -ne 0 ]; then
     local why=""; [ -f "$pcsig" ] && why="
 $(cat "$pcsig")"
     rm -f "$pcsig"
     rm -f "$(ticket_dir "$TICKET")/result.json"   # not green on the branch — never let it count
-    emit_event ticket_postcommit_red implement \
-      "ticket $TICKET failed the post-commit check — implementation not present on the committed branch" \
-      "ticket=$TICKET" "attempts=$attempts"
-    die "ticket $TICKET reported green but its suite is RED against the COMMITTED branch state — the implementation is not present on the committed branch (worktree-only green or out-of-scope commit). Result rejected by the post-commit guardrail.$why"
+    case "$pcrc" in
+      3)
+        # S84 (gate-worktree-deps): the gate could not even START the test runner in
+        # the gate worktree — the environment is UN-PROVISIONED, NOT a missing
+        # implementation. Emit a DISTINCT event and die with the env-grounded reason
+        # ($why now carries the worktreeSetupCommand wording). The attempt STILL fails.
+        emit_event ticket_env_unprovisioned implement \
+          "ticket $TICKET — environment not provisioned (the test runner could not start in the gate worktree); set worktreeSetupCommand in .git/lcars/config.json" \
+          "ticket=$TICKET" "attempts=$attempts"
+        die "ticket $TICKET could not be re-verified — the test runner could not start in the gate worktree (environment not provisioned); this is NOT a missing implementation. Set worktreeSetupCommand in .git/lcars/config.json.$why"
+        ;;
+      *)
+        emit_event ticket_postcommit_red implement \
+          "ticket $TICKET failed the post-commit check — implementation not present on the committed branch" \
+          "ticket=$TICKET" "attempts=$attempts"
+        die "ticket $TICKET reported green but its suite is RED against the COMMITTED branch state — the implementation is not present on the committed branch (worktree-only green or out-of-scope commit). Result rejected by the post-commit guardrail.$why"
+        ;;
+    esac
   fi
   rm -f "$pcsig"
 
@@ -2507,6 +2545,30 @@ full_suite_gate() { # ordered ticketId...
     RETEST_CAPTURE="$cap" retest_ticket_suites "$REPO_ROOT" "$cmd" "$@" || regressed="$RETEST_FAILED"
   fi
   if [ -z "$regressed" ]; then rm -rf "$cap" 2>/dev/null; return 0; fi
+
+  # S84 (gate-worktree-deps): before attributing a cross-ticket REGRESSION, classify
+  # whether the suites failed because the test RUNNER could not START in the gate
+  # worktree (an UN-PROVISIONED environment — no node_modules/venv, an absent test
+  # binary) rather than a real code regression. Mirror the BUG-019 capture scan:
+  # concatenate the captured failing-suite output and run the env-failure detector
+  # (red_gate_env_failure, narrowly scoped to runner-startup signatures). On a match,
+  # report the env-unprovisioned diagnosis (naming worktreeSetupCommand) INSTEAD of
+  # the misleading regression wording, and emit a distinct ticket_env_unprovisioned
+  # event (best-effort, like the TypeError note). The gate STILL returns non-zero —
+  # this is diagnosis only, never a fail flipped to a pass.
+  if [ -d "$cap" ]; then
+    local _envout=""; _envout="$(cat "$cap"/*.log 2>/dev/null)"
+    if red_gate_env_failure "$_envout"; then
+      local edetail="FULL-SUITE GATE — environment not provisioned — the test runner could not start in the gate worktree (missing node_modules/venv or an absent test binary), so earlier ticket suite(s) could not be re-run against the fully-built repo. This is NOT a cross-ticket regression. Set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`). Command run: $cmd."
+      emit_event ticket_env_unprovisioned implement \
+        "full-suite gate — environment not provisioned (the test runner could not start in the gate worktree); set worktreeSetupCommand in .git/lcars/config.json" || :
+      rm -rf "$cap" 2>/dev/null
+      printf '  ✗ %s\n' "$edetail" >&2
+      [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$edetail" >"$FULL_SUITE_SIGNAL"
+      return 1
+    fi
+  fi
+
   local detail="FULL-SUITE GATE — these earlier ticket suite(s) no longer pass against the fully-built repo: ${regressed}. Each was green when built, so a LATER ticket's produced code REGRESSED its locked contract. The Mission is NOT shippable until the regression is resolved (fix the later ticket or re-open the regressed ticket). Command run: $cmd."
   # Harness-gap detection (BUG-019): if any captured failing-suite output mentions a
   # TypeError / undefined-method surface, this is very likely an INCOMPLETE per-ticket
@@ -6919,5 +6981,26 @@ case "$SUB" in
     _rg_in="$(cat)"
     if red_gate_env_failure "$_rg_in"; then exit 0; else exit 1; fi
     ;;
+  # S84 test hook: drive the REAL full_suite_gate over the mission's scheduled
+  # tickets (parsed from waves.json, exactly as cmd_impl_advance does) WITHOUT the
+  # self-heal wrapper — so the gate's env-vs-regression classification can be
+  # exercised on a missing runner without spawning any (billable) Implementer
+  # worker. Captures the gate's signal to $LCARS_FS_SIGNAL_OUT and prints its rc.
+  full-suite-gate-test)
+    locate_mission "$MISSION_ID"
+    __fsg_ordered=""
+    if [ -f "$MISSION_DIR/waves.json" ]; then
+      while IFS=$'\t' read -r __fsg_w __fsg_id; do
+        [ -n "$__fsg_id" ] || continue
+        __fsg_ordered="${__fsg_ordered:+$__fsg_ordered }$__fsg_id"
+      done <<FSG_EOF
+$(parse_waves_table "$MISSION_DIR/waves.json")
+FSG_EOF
+    fi
+    __fsg_sig="${LCARS_FS_SIGNAL_OUT:-$MISSION_DIR/fs-test-signal.txt}"; rm -f "$__fsg_sig"
+    __fsg_rc=0
+    FULL_SUITE_SIGNAL="$__fsg_sig" full_suite_gate $__fsg_ordered || __fsg_rc=$?
+    printf 'FSRC=%s\n' "$__fsg_rc"
+    exit 0 ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

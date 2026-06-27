@@ -5596,6 +5596,86 @@ check "PC7. leaves no t-001 post-commit worktree behind (own worktree cleaned up
   "[ -z \"\$(ls -d '$MDIR7'/postcommit-t-001.* 2>/dev/null)\" ]"
 
 # ==========================================================================
+echo
+echo "lcars run — S84 (gate-worktree-deps): green-gate env-not-provisioned diagnosis"
+#
+# Ground truth: the green gates MIS-DIAGNOSE an environment failure as a code
+# failure. When a gate worktree's test RUNNER cannot even START (missing
+# node_modules/venv, an absent test binary — a `command not found` class failure),
+# the post-commit gate WRONGLY reports "implementation not present on the committed
+# branch" and the full-suite gate WRONGLY reports a cross-ticket regression. S84
+# adds a THIN classification layer (reusing S83's red_gate_env_failure) so these
+# gates report a DISTINCT "environment not provisioned" diagnosis + a
+# `ticket_env_unprovisioned` event (naming worktreeSetupCommand) — WITHOUT ever
+# flipping a real red into a green or a real green into a fail (diagnosis only).
+
+# --- ENV1: post_commit_gate env failure → distinct env diagnosis -------------
+# Quarantine t-001 with the WORKING PC_RUNNER (so the red gate at impl-save-tests
+# passes), then drive impl-save-result with LCARS_TEST_CMD pointing at a NON-EXISTENT
+# runner so the post-commit gate's run yields a `command not found` env signature.
+# The attempt STILL fails (no false green), but the diagnosis must be env, not "impl
+# not present".
+repoENV1="$(new_repo_postcommit)"; make_gh_stub "$repoENV1/gh"
+export GH_LOG="$repoENV1/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoENV1"
+resENV1="$repoENV1/result.json"; write_result "$resENV1" t-001 true 2
+rcENV1=0
+( cd "$repoENV1" && LCARS_NOW=1700018401 LCARS_TEST_CMD="definitely-not-a-real-bin run" LCARS_GH_BIN="$repoENV1/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resENV1" \
+    >outENV1.txt 2>&1 ) || rcENV1=$?
+evENV1="$repoENV1/.git/lcars/missions/$MID/events.jsonl"
+check "ENV1. impl-save-result still FAILS on an env failure (never a false green)" \
+  "[ '$rcENV1' -ne 0 ]"
+check "ENV1. does NOT save result.json (attempt still fails)" \
+  "[ ! -f '$repoENV1/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+check "ENV1. emits ticket_env_unprovisioned (the distinct env diagnosis)" \
+  "grep -q '\"type\":\"ticket_env_unprovisioned\"' '$evENV1'"
+check "ENV1. does NOT emit ticket_postcommit_red (not mis-attributed to missing impl)" \
+  "! grep -q '\"type\":\"ticket_postcommit_red\"' '$evENV1'"
+check "ENV1. names the environment-not-provisioned diagnosis" \
+  "grep -qi 'environment not provisioned' '$repoENV1/outENV1.txt'"
+check "ENV1. points the captain at worktreeSetupCommand" \
+  "grep -q 'worktreeSetupCommand' '$repoENV1/outENV1.txt'"
+check "ENV1. does NOT use the misleading 'not present on the committed branch' wording" \
+  "! grep -qi 'not present on the committed branch' '$repoENV1/outENV1.txt'"
+
+# --- ENV2: genuine post-commit red is NOT over-classified as env --------------
+# Guard against over-classification: PC1 (real failing suite, WORKING runner, impl
+# absent) must STILL emit ticket_postcommit_red and must NOT emit the env event —
+# a genuinely-absent implementation is the missing-impl case, not an env case.
+check "ENV2. genuine post-commit red still emits ticket_postcommit_red (PC1)" \
+  "grep -q '\"type\":\"ticket_postcommit_red\"' '$repoPC1/.git/lcars/missions/$MID/events.jsonl'"
+check "ENV2. genuine post-commit red does NOT emit the env event (no over-classification)" \
+  "! grep -q '\"type\":\"ticket_env_unprovisioned\"' '$repoPC1/.git/lcars/missions/$MID/events.jsonl'"
+
+# --- ENV3: honest green still passes, no env event (green untouched) ----------
+check "ENV3. honest green (PC3) emits no env event (green path untouched)" \
+  "! grep -q '\"type\":\"ticket_env_unprovisioned\"' '$repoPC3/.git/lcars/missions/$MID/events.jsonl'"
+
+# --- ENV4: full_suite_gate env failure → env diagnosis, not regression --------
+# Drive the REAL full_suite_gate (via the inert full-suite-gate-test hook, which
+# bypasses the worker-spawning self-heal loop) over an already-green ticket set with
+# a MISSING runner. The gate must surface the env-unprovisioned diagnosis (naming
+# worktreeSetupCommand + emitting ticket_env_unprovisioned) rather than the
+# cross-ticket regression wording, and STILL return non-zero.
+repoENV4="$(new_repo_fullsuite_branch v2 v2)"; make_gh_stub "$repoENV4/gh"
+export GH_LOG="$repoENV4/gh.log"; : >"$GH_LOG"
+fsigENV4="$repoENV4/fs-env-signal.txt"
+outENV4="$( cd "$repoENV4" && LCARS_NOW=1700018404 LCARS_TEST_CMD="definitely-not-a-real-bin run" \
+    LCARS_FS_SIGNAL_OUT="$fsigENV4" LCARS_GH_BIN="$repoENV4/gh" \
+    bash "$SCRIPT" full-suite-gate-test --mission "$MID" 2>/dev/null )"
+check "ENV4. full-suite gate still returns non-zero on an env failure (never a false pass)" \
+  "echo '$outENV4' | qgrep -q 'FSRC=[^0]'"
+check "ENV4. full-suite env diagnosis names worktreeSetupCommand" \
+  "[ -f '$fsigENV4' ] && grep -q 'worktreeSetupCommand' '$fsigENV4'"
+check "ENV4. full-suite env diagnosis says environment not provisioned" \
+  "[ -f '$fsigENV4' ] && grep -qi 'environment not provisioned' '$fsigENV4'"
+check "ENV4. full-suite env diagnosis does NOT use the misleading regression wording" \
+  "[ -f '$fsigENV4' ] && ! grep -qi 'no longer pass' '$fsigENV4'"
+check "ENV4. emits ticket_env_unprovisioned from the full-suite gate" \
+  "grep -q '\"type\":\"ticket_env_unprovisioned\"' '$repoENV4/.git/lcars/missions/$MID/events.jsonl'"
+
+# ==========================================================================
 echo "lcars run — Session 81: worktree provisioning (worktreeSetupCommand)"
 #
 # A freshly-cut gate worktree must be PROVISIONED (config-driven worktreeSetupCommand,
