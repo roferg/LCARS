@@ -69,9 +69,68 @@ PROJECT_NAME="$(basename "$TOPLEVEL")"
 # hand) it falls back to the whole suite. The captain can override it in
 # config.json or per-run via $LCARS_TEST_CMD. Null when nothing is detected — the
 # red gate then warns and skips (the pre-existing degradation), it does not block.
+# The vitest test command must RELATIVIZE $LCARS_TESTS_DIR to the runner's cwd:
+# vitest's positional test filter is matched RELATIVE to the package root the
+# runner runs from, but the Implement gates export $LCARS_TESTS_DIR as an ABSOLUTE
+# path (and, for a monorepo, the gate cd's into the touched package). Stripping a
+# leading "$PWD/" turns the absolute quarantine path into the package-relative
+# positional vitest expects, so the staged tests are discovered & filtered; unset
+# (a human running it by hand) it falls back to the whole suite. This abs-positional
+# bug bites BOTH single-package AND monorepo vitest, so both emit this form.
+VITEST_RELATIVIZING_CMD='npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+
+# detect_workspace_runner — name the local test runner a monorepo actually uses, so
+# the workspace fallback emits a runner-SCOPED command instead of a bare `npm test`
+# fan-out across every package. Inspects (in order) a runner config at the workspace
+# root (vitest.config.*/jest.config.*), the pnpm lockfile, then every sub-package's
+# package.json devDependencies. Echoes vitest|jest|mocha (empty when none found).
+detect_workspace_runner() {
+  local r
+  for r in vitest jest mocha; do
+    ls "$TOPLEVEL/$r.config".* >/dev/null 2>&1 && { echo "$r"; return; }
+  done
+  for r in vitest jest mocha; do
+    grep -qs -- "$r" "$TOPLEVEL/pnpm-lock.yaml" 2>/dev/null && { echo "$r"; return; }
+  done
+  for r in vitest jest mocha; do
+    grep -rqs --include='package.json' --exclude-dir='node_modules' -- "\"$r\"" "$TOPLEVEL" 2>/dev/null \
+      && { echo "$r"; return; }
+  done
+  echo ""
+}
+
 detect_test_cmd() {
   if [ -f "$TOPLEVEL/package.json" ] && grep -q '"test"[[:space:]]*:' "$TOPLEVEL/package.json"; then
-    # jest/mocha/vitest take a path positional after `--`; empty runs the suite.
+    # Monorepo (a pnpm workspace, or a "workspaces" field): a bare `npm test` /
+    # `pnpm -r test` here FANS OUT across every package, so the red gate can never
+    # scope itself to the touched package's quarantined tests. Prefer a command
+    # scoped to the local runner that STILL honours $LCARS_TESTS_DIR — LCARS points
+    # the var at the touched package (it knows it from the plan/manifests). When the
+    # root "test" script doesn't name the runner, DETECT it from the sub-packages
+    # (lockfile / config / devDependencies) rather than emitting a fan-out.
+    if [ -f "$TOPLEVEL/pnpm-workspace.yaml" ] || grep -q '"workspaces"[[:space:]]*:' "$TOPLEVEL/package.json"; then
+      local script runner
+      script="$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)"
+      case "$script" in
+        *vitest*) echo "$VITEST_RELATIVIZING_CMD";              return ;;
+        *jest*)   echo 'npx jest ${LCARS_TESTS_DIR:-}';         return ;;
+        *mocha*)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';        return ;;
+        *)
+          runner="$(detect_workspace_runner)"
+          case "$runner" in
+            vitest) echo "$VITEST_RELATIVIZING_CMD";            return ;;
+            jest)   echo 'npx jest ${LCARS_TESTS_DIR:-}';       return ;;
+            mocha)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';      return ;;
+            *)      echo 'npm test -- ${LCARS_TESTS_DIR:-}';    return ;;
+          esac ;;
+      esac
+    fi
+    # Single package: a vitest runner needs the RELATIVIZING positional (same abs-
+    # path bug as the monorepo); jest/mocha/other keep the `npm test --` positional
+    # default (empty runs the suite).
+    case "$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)" in
+      *vitest*) echo "$VITEST_RELATIVIZING_CMD"; return ;;
+    esac
     echo 'npm test -- ${LCARS_TESTS_DIR:-}'; return; fi
   if [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ]; then
     echo 'pytest ${LCARS_TESTS_DIR:-.}'; return; fi
@@ -85,6 +144,24 @@ detect_test_cmd() {
   if [ -f "$TOPLEVEL/tests/run.sh" ]; then
     echo 'bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'; return; fi
   echo ""
+}
+
+# runner_is_local_dep — 0 if the test command's runner resolves ONLY from a
+# project-local location (node_modules/.bin or a venv) rather than a binary
+# guaranteed on PATH. vitest/jest/mocha (Node) and pytest (Python) are all
+# project-local: they are installed as dependencies, not system tools. The npm
+# default ("npm test -- …") hides the runner in package.json's "test" script, so
+# inspect that too. Used only to decide whether to warn (S85) — never to gate.
+runner_is_local_dep() {
+  local cmd="$1"
+  case "$cmd" in
+    *vitest*|*jest*|*mocha*|*pytest*) return 0 ;;
+  esac
+  if [ -f "$TOPLEVEL/package.json" ] \
+     && grep -Eq '"test"[[:space:]]*:[[:space:]]*"[^"]*(vitest|jest|mocha)' "$TOPLEVEL/package.json"; then
+    return 0
+  fi
+  return 1
 }
 TEST_CMD="${LCARS_TEST_CMD:-$(detect_test_cmd)}"
 if [ -n "$TEST_CMD" ]; then
@@ -110,6 +187,40 @@ else
   TESTCMD_VALUE='null'; TESTCMD_HUMAN="none (set testCommand to enable the Implement red gate)"
 fi
 
+# --- detect a worktree provisioning command (S82) -------------------------
+# `lcars run` provisions each Stage's isolated git worktree by running this once
+# in the worktree. The detected default REUSES the main checkout's installed deps
+# (symlinks node_modules, offline-install fallback — see detect_worktree_setup_cmd
+# in lcars-common.sh) so any repo works with no hand-edit. Honour an explicit
+# LCARS_WORKTREE_SETUP_CMD override (mirrors LCARS_TEST_CMD). Null when nothing is
+# detected — the provisioner then warns and skips, it does not block.
+WT_SETUP_CMD="${LCARS_WORKTREE_SETUP_CMD:-$(detect_worktree_setup_cmd)}"
+if [ -n "$WT_SETUP_CMD" ]; then
+  WTSETUP_VALUE="\"$(lcars_json_escape "$WT_SETUP_CMD")\""
+else
+  WTSETUP_VALUE='null'
+fi
+
+# --- warn when a LOCAL-dependency runner has nothing to provision it (S85) -----
+# The Implement red/green gates run testCommand inside an ISOLATED git worktree.
+# A runner that resolves only from node_modules/.bin or a venv (vitest/jest/mocha/
+# pytest — not a binary guaranteed on PATH) will NOT exist in that fresh worktree
+# unless worktreeSetupCommand provisions it. S82 auto-seeds that command for JS
+# repos, but when it ends up null (a captain cleared it, or an ecosystem we can't
+# yet provision, e.g. Python) the gate would fail with "command not found" and the
+# failure misreads as a missing implementation. Flag it LOUD at init — the runner
+# is detected, the provisioning is not — so the captain wires it now, not
+# mid-Implement. Detection + warning only; this never gates.
+if [ -n "$TEST_CMD" ] && [ "$WTSETUP_VALUE" = 'null' ] && runner_is_local_dep "$TEST_CMD"; then
+  printf '  ⚠ testCommand runner is a LOCAL dependency but worktreeSetupCommand is not set.\n' >&2
+  printf '    The Implement gates run "%s"\n' "$TEST_CMD" >&2
+  printf '    inside an isolated git worktree; a runner resolvable only from\n' >&2
+  printf '    node_modules/venv will be MISSING there unless worktreeSetupCommand\n' >&2
+  printf '    provisions it. Set worktreeSetupCommand in .git/lcars/config.json (see the\n' >&2
+  printf '    S82 ecosystem default) or run `lcars update` to backfill it, so the gate\n' >&2
+  printf '    worktree has the test runner installed.\n' >&2
+fi
+
 # Preserve the original creation time across re-runs (idempotent).
 if [ -f "$CONFIG" ] && grep -q '"created"' "$CONFIG"; then
   CREATED="$(sed -n 's/.*"created": *"\([^"]*\)".*/\1/p' "$CONFIG" | head -1)"
@@ -124,6 +235,7 @@ DESIRED_CONFIG="model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
 contextFile=$CONTEXT_VALUE
 testCommand=$TESTCMD_VALUE
+worktreeSetupCommand=$WTSETUP_VALUE
 comprehensionBudget=1200
 created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
@@ -154,6 +266,7 @@ EXCLUDE_FILE="$GIT_DIR/info/exclude"
 mkdir -p "$GIT_DIR/info" 2>/dev/null || true
 [ -f "$EXCLUDE_FILE" ] || : >"$EXCLUDE_FILE"
 for g in '.lcars-*' '*/.lcars-*' '.lcars-run-*' '*/.lcars-run-*' \
+         '__lcarsq__/' '__lcarsq__/*' '*/__lcarsq__' '*/__lcarsq__/*' \
          '.claude/' '.claude/*' '*/.claude/*' \
          '.copilot/' '.copilot/*' '*/.copilot/*' \
          '.*-run.cjs' '.*-run.mjs' '.*-run.js' '.*-run.sh' '.*-run.py' \

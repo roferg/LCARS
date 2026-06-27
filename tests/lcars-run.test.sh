@@ -5596,6 +5596,167 @@ check "PC7. leaves no t-001 post-commit worktree behind (own worktree cleaned up
   "[ -z \"\$(ls -d '$MDIR7'/postcommit-t-001.* 2>/dev/null)\" ]"
 
 # ==========================================================================
+echo
+echo "lcars run — S84 (gate-worktree-deps): green-gate env-not-provisioned diagnosis"
+#
+# Ground truth: the green gates MIS-DIAGNOSE an environment failure as a code
+# failure. When a gate worktree's test RUNNER cannot even START (missing
+# node_modules/venv, an absent test binary — a `command not found` class failure),
+# the post-commit gate WRONGLY reports "implementation not present on the committed
+# branch" and the full-suite gate WRONGLY reports a cross-ticket regression. S84
+# adds a THIN classification layer (reusing S83's red_gate_env_failure) so these
+# gates report a DISTINCT "environment not provisioned" diagnosis + a
+# `ticket_env_unprovisioned` event (naming worktreeSetupCommand) — WITHOUT ever
+# flipping a real red into a green or a real green into a fail (diagnosis only).
+
+# --- ENV1: post_commit_gate env failure → distinct env diagnosis -------------
+# Quarantine t-001 with the WORKING PC_RUNNER (so the red gate at impl-save-tests
+# passes), then drive impl-save-result with LCARS_TEST_CMD pointing at a NON-EXISTENT
+# runner so the post-commit gate's run yields a `command not found` env signature.
+# The attempt STILL fails (no false green), but the diagnosis must be env, not "impl
+# not present".
+repoENV1="$(new_repo_postcommit)"; make_gh_stub "$repoENV1/gh"
+export GH_LOG="$repoENV1/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoENV1"
+resENV1="$repoENV1/result.json"; write_result "$resENV1" t-001 true 2
+rcENV1=0
+( cd "$repoENV1" && LCARS_NOW=1700018401 LCARS_TEST_CMD="definitely-not-a-real-bin run" LCARS_GH_BIN="$repoENV1/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resENV1" \
+    >outENV1.txt 2>&1 ) || rcENV1=$?
+evENV1="$repoENV1/.git/lcars/missions/$MID/events.jsonl"
+check "ENV1. impl-save-result still FAILS on an env failure (never a false green)" \
+  "[ '$rcENV1' -ne 0 ]"
+check "ENV1. does NOT save result.json (attempt still fails)" \
+  "[ ! -f '$repoENV1/.git/lcars/missions/$MID/tickets/t-001/result.json' ]"
+check "ENV1. emits ticket_env_unprovisioned (the distinct env diagnosis)" \
+  "grep -q '\"type\":\"ticket_env_unprovisioned\"' '$evENV1'"
+check "ENV1. does NOT emit ticket_postcommit_red (not mis-attributed to missing impl)" \
+  "! grep -q '\"type\":\"ticket_postcommit_red\"' '$evENV1'"
+check "ENV1. names the environment-not-provisioned diagnosis" \
+  "grep -qi 'environment not provisioned' '$repoENV1/outENV1.txt'"
+check "ENV1. points the captain at worktreeSetupCommand" \
+  "grep -q 'worktreeSetupCommand' '$repoENV1/outENV1.txt'"
+check "ENV1. does NOT use the misleading 'not present on the committed branch' wording" \
+  "! grep -qi 'not present on the committed branch' '$repoENV1/outENV1.txt'"
+
+# --- ENV2: genuine post-commit red is NOT over-classified as env --------------
+# Guard against over-classification: PC1 (real failing suite, WORKING runner, impl
+# absent) must STILL emit ticket_postcommit_red and must NOT emit the env event —
+# a genuinely-absent implementation is the missing-impl case, not an env case.
+check "ENV2. genuine post-commit red still emits ticket_postcommit_red (PC1)" \
+  "grep -q '\"type\":\"ticket_postcommit_red\"' '$repoPC1/.git/lcars/missions/$MID/events.jsonl'"
+check "ENV2. genuine post-commit red does NOT emit the env event (no over-classification)" \
+  "! grep -q '\"type\":\"ticket_env_unprovisioned\"' '$repoPC1/.git/lcars/missions/$MID/events.jsonl'"
+
+# --- ENV3: honest green still passes, no env event (green untouched) ----------
+check "ENV3. honest green (PC3) emits no env event (green path untouched)" \
+  "! grep -q '\"type\":\"ticket_env_unprovisioned\"' '$repoPC3/.git/lcars/missions/$MID/events.jsonl'"
+
+# --- ENV4: full_suite_gate env failure → env diagnosis, not regression --------
+# Drive the REAL full_suite_gate (via the inert full-suite-gate-test hook, which
+# bypasses the worker-spawning self-heal loop) over an already-green ticket set with
+# a MISSING runner. The gate must surface the env-unprovisioned diagnosis (naming
+# worktreeSetupCommand + emitting ticket_env_unprovisioned) rather than the
+# cross-ticket regression wording, and STILL return non-zero.
+repoENV4="$(new_repo_fullsuite_branch v2 v2)"; make_gh_stub "$repoENV4/gh"
+export GH_LOG="$repoENV4/gh.log"; : >"$GH_LOG"
+fsigENV4="$repoENV4/fs-env-signal.txt"
+outENV4="$( cd "$repoENV4" && LCARS_NOW=1700018404 LCARS_TEST_CMD="definitely-not-a-real-bin run" \
+    LCARS_FS_SIGNAL_OUT="$fsigENV4" LCARS_GH_BIN="$repoENV4/gh" \
+    bash "$SCRIPT" full-suite-gate-test --mission "$MID" 2>/dev/null )"
+check "ENV4. full-suite gate still returns non-zero on an env failure (never a false pass)" \
+  "echo '$outENV4' | qgrep -q 'FSRC=[^0]'"
+check "ENV4. full-suite env diagnosis names worktreeSetupCommand" \
+  "[ -f '$fsigENV4' ] && grep -q 'worktreeSetupCommand' '$fsigENV4'"
+check "ENV4. full-suite env diagnosis says environment not provisioned" \
+  "[ -f '$fsigENV4' ] && grep -qi 'environment not provisioned' '$fsigENV4'"
+check "ENV4. full-suite env diagnosis does NOT use the misleading regression wording" \
+  "[ -f '$fsigENV4' ] && ! grep -qi 'no longer pass' '$fsigENV4'"
+check "ENV4. emits ticket_env_unprovisioned from the full-suite gate" \
+  "grep -q '\"type\":\"ticket_env_unprovisioned\"' '$repoENV4/.git/lcars/missions/$MID/events.jsonl'"
+
+# ==========================================================================
+echo "lcars run — Session 81: worktree provisioning (worktreeSetupCommand)"
+#
+# A freshly-cut gate worktree must be PROVISIONED (config-driven worktreeSetupCommand,
+# e.g. a dep install) ONCE, right after `git worktree add` and BEFORE any testCommand
+# runs, so the red gate and the green (full-suite / post-commit) gates all evaluate in
+# the SAME dependency-complete environment. provision_worktree() is the single helper;
+# it honours $LCARS_WORKTREE_SETUP_CMD (the env override the suite stubs) over the repo
+# config, is a clean NO-OP when no command is configured (LCARS's own dep-free dogfood),
+# runs the command exactly once with the worktree as CWD, is best-effort (a non-zero
+# exit drops a `worktree_provision_failed` breadcrumb but never aborts the gate), and
+# never git-adds anything. run.sh routes ALL gate worktree creation through it.
+#
+# The `provision-worktree-test` hook cuts a worktree via make_ticket_worktree (the
+# SHARED path for the red gate's build worktree AND the full-suite gate) and, unlike the
+# real flow, does NOT clean it up, so the test can inspect the provisioned tree directly.
+
+# --- PW1: make_ticket_worktree provisions the fresh worktree exactly once -----
+repoPW1="$(new_repo_postcommit)"; make_gh_stub "$repoPW1/gh"
+export GH_LOG="$repoPW1/gh.log"; : >"$GH_LOG"
+CNT_PW1="$repoPW1/provision-count"; : >"$CNT_PW1"
+outPW1="$( cd "$repoPW1" \
+    && LCARS_WORKTREE_SETUP_CMD="printf x >> '$CNT_PW1'; touch .provisioned; pwd > .pwd-record" \
+       LCARS_GH_BIN="$repoPW1/gh" bash "$SCRIPT" provision-worktree-test --mission "$MID" 2>/dev/null )"
+WT_PW1="${outPW1#WT=}"
+check "PW1. make_ticket_worktree creates the worktree" \
+  "[ -n '$WT_PW1' ] && [ -d '$WT_PW1' ]"
+check "PW1. provisions it — the setup command ran in the worktree (.provisioned present)" \
+  "[ -f '$WT_PW1/.provisioned' ]"
+check "PW1. provisions EXACTLY once (not re-run on a single creation)" \
+  "[ \"\$(wc -c < '$CNT_PW1' | tr -d ' ')\" = '1' ]"
+# PW4: the setup command's CWD is the WORKTREE, not the main checkout.
+check "PW4. the setup command's CWD is the worktree (pwd), not the main checkout" \
+  "[ \"\$(cat '$WT_PW1/.pwd-record')\" != '$repoPW1' ] && qgrep -q 'wt-test/all' '$WT_PW1/.pwd-record'"
+# PW6: provisioning never stages anything — the index stays clean despite new files.
+check "PW6. provision_worktree never git-adds (nothing staged in the worktree)" \
+  "( cd '$WT_PW1' && git diff --cached --quiet )"
+
+# --- PW2: the post_commit_gate worktree is provisioned the same way -----------
+# Honest-green post-commit run (version.sh present, suite green) — post_commit_gate cuts
+# its OWN worktree, which must be provisioned ONCE before its testCommand re-runs. The
+# gate cleans the worktree up, so we record provisioning to an EXTERNAL counter.
+repoPW2="$(new_repo_postcommit)"; make_gh_stub "$repoPW2/gh"
+export GH_LOG="$repoPW2/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoPW2"
+printf '#!/usr/bin/env bash\necho v2\n' >"$repoPW2/version.sh"
+CNT_PW2="$repoPW2/provision-count"; : >"$CNT_PW2"
+resPW2="$repoPW2/result.json"; write_result "$resPW2" t-001 true 2
+rcPW2=0
+( cd "$repoPW2" && LCARS_NOW=1700018102 LCARS_TEST_CMD="bash $PC_RUNNER" \
+    LCARS_WORKTREE_SETUP_CMD="printf x >> '$CNT_PW2'" LCARS_GH_BIN="$repoPW2/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resPW2" \
+    >outPW2.txt 2>&1 ) || rcPW2=$?
+check "PW2. post-commit honest-green still exits 0 (provisioning did not break it)" \
+  "[ '$rcPW2' -eq 0 ]"
+check "PW2. provisions the post-commit worktree EXACTLY once" \
+  "[ \"\$(wc -c < '$CNT_PW2' | tr -d ' ')\" = '1' ]"
+
+# --- PW3: no command configured (env + config) → clean NO-OP ------------------
+# Proves the dep-free dogfood path is unaffected: nothing provisioned, worktree still cut.
+repoPW3="$(new_repo_postcommit)"; make_gh_stub "$repoPW3/gh"
+export GH_LOG="$repoPW3/gh.log"; : >"$GH_LOG"
+outPW3="$( cd "$repoPW3" && LCARS_GH_BIN="$repoPW3/gh" \
+    bash "$SCRIPT" provision-worktree-test --mission "$MID" 2>/dev/null )"
+WT_PW3="${outPW3#WT=}"
+check "PW3. no command configured: the worktree is still created (no-op is safe)" \
+  "[ -n '$WT_PW3' ] && [ -d '$WT_PW3' ]"
+check "PW3. no command configured: nothing provisioned (.provisioned absent)" \
+  "[ ! -f '$WT_PW3/.provisioned' ]"
+
+# --- PW5: a failing setup command returns non-zero + breadcrumb, never aborts --
+repoPW5="$(new_repo_postcommit)"; make_gh_stub "$repoPW5/gh"
+export GH_LOG="$repoPW5/gh.log"; : >"$GH_LOG"
+outPW5="$( cd "$repoPW5" && LCARS_NOW=1700018105 LCARS_WORKTREE_SETUP_CMD='exit 7' \
+    LCARS_GH_BIN="$repoPW5/gh" bash "$SCRIPT" provision-worktree-test --mission "$MID" 2>/dev/null )"
+WT_PW5="${outPW5#WT=}"
+check "PW5. a failing setup command does NOT abort the gate (worktree still created)" \
+  "[ -n '$WT_PW5' ] && [ -d '$WT_PW5' ]"
+check "PW5. a failing setup command emits the worktree_provision_failed breadcrumb" \
+  "grep -q '\"type\":\"worktree_provision_failed\"' '$repoPW5/.git/lcars/missions/$MID/events.jsonl'"
+
+# ==========================================================================
 # --- Behaviour LOCK: single-instance `drive` per mission (BUG-A) ------------
 # The viewscreen Start button could fire `run drive` for the SAME mission more
 # than once (no feedback + a blocking POST), so THREE drivers raced one mission,
@@ -6288,6 +6449,175 @@ check "B22-5. red_gate_ok routes a compile/load failure to a rejection (red_gate
   "qgrep -q 'red_gate_compile_failure' '$SCRIPT'"
 
 # ==========================================================================
+# S83 (gate-worktree-deps) — un-runnable ENVIRONMENT detector.
+# The red gate's compile/load triage catches a test file that LOADED but did not
+# PARSE. It does NOT catch the DIFFERENT failure where the RUNNER ITSELF could not
+# start (no node_modules/venv, an absent test binary, no pnpm lockfile, bad perms):
+# such a run exits non-zero with output that DIFFERS from the empty-dir probe, so it
+# was WRONGLY accepted as a satisfying fail-first red even though not one assertion
+# ran. S83 adds an ADDITIONAL guard, layered BEFORE acceptance, that classifies these
+# startup failures and REFUSES to count them — failing LOUD with an actionable reason
+# (provisioning is S81/S82; this session only CLASSIFIES). This is the OPPOSITE of
+# loosening the gate: it REJECTS more reds (the env-failure ones), and touches NONE of
+# the empty-dir probe / ignored-var / differ logic.
+# A small inert test hook (`red-gate-env-detect-test`) runs the pure detector on stdin
+# and exits with its return code (0 = env failure, 1 = none) so we can unit-test the
+# pattern coverage directly.
+
+env_detect() { # runner-output → 0 if classified as an env failure
+  printf '%s' "$1" | ( cd "$REPO_ROOT" && bash "$SCRIPT" red-gate-env-detect-test )
+}
+
+# S83-1: the detector MATCHES each representative un-runnable-environment signature.
+check "S83-1. env detector matches 'command not found' (missing test binary)" \
+  "env_detect 'sh: vitest: command not found'"
+check "S83-1. env detector matches an ERR_PNPM_ lockfile failure" \
+  "env_detect 'ERR_PNPM_NO_LOCKFILE  Cannot install with frozen lockfile'"
+check "S83-1. env detector matches a Python ModuleNotFoundError (missing runner)" \
+  "env_detect \"ModuleNotFoundError: No module named 'pytest'\""
+check "S83-1. env detector matches a missing node_modules" \
+  "env_detect 'node_modules missing — run install first'"
+# Anchored shell/exec-diagnostic forms the runner emits at STARTUP (must still match):
+check "S83-1. env detector matches a bash 'command not found' line" \
+  "env_detect 'bash: line 1: vitestxyz: command not found'"
+check "S83-1. env detector matches a zsh 'command not found' line" \
+  "env_detect 'zsh: command not found: vitest'"
+check "S83-1. env detector matches a 'jest: not found' shell line" \
+  "env_detect 'sh: jest: not found'"
+check "S83-1. env detector matches an exec Permission-denied line (path-trailing)" \
+  "env_detect '/usr/local/bin/vitest: Permission denied'"
+check "S83-1. env detector matches a missing-interpreter 'env: node: No such file or directory'" \
+  "env_detect 'env: node: No such file or directory'"
+
+# S83-2: the detector does NOT match a NORMAL failing-test red (no false positive
+# that would block a real fail-first). This is the FIX-LOOP guard: the shell/exec
+# phrases above must NOT trip the detector when they appear QUOTED inside an
+# assertion diff, mid-line, or inside a test NAME (the tester's proven defects).
+check "S83-2. env detector does NOT match a plain assertion summary ('2 failed')" \
+  "! env_detect 'Tests: 2 failed, 3 passed'"
+check "S83-2. env detector does NOT match an assertion diff ('expected 3 to be 4')" \
+  "! env_detect 'AssertionError: expected 3 to be 4'"
+check "S83-2. env detector does NOT match a quoted 'Permission denied' assertion diff" \
+  "! env_detect \"AssertionError: expected undefined to equal 'Permission denied'\""
+check "S83-2. env detector does NOT match a quoted 'command not found' assertion diff" \
+  "! env_detect \"AssertionError: expected 'ok' to equal 'command not found'\""
+check "S83-2. env detector does NOT match a quoted 'cannot execute …' assertion diff" \
+  "! env_detect \"AssertionError: expected 'cannot execute migration' to equal 'ok'\""
+check "S83-2. env detector does NOT match a bare 'Expected: not found' diff label" \
+  "! env_detect 'Expected: not found'"
+check "S83-2. env detector does NOT match a JSON payload carrying 'user: not found'" \
+  "! env_detect '{\"error\": \"user: not found\"}'"
+check "S83-2. env detector does NOT match 'command not found' inside a test NAME" \
+  "! env_detect \"it('shows git: command not found', () => {})\""
+
+# S83-3: red_gate_ok REJECTS an env-failure red (does NOT accept it as fail-first)
+# and the reason names 'environment not provisioned' / worktreeSetupCommand. The stub
+# REACTS to \$LCARS_TESTS_DIR (green on empty dir, env-failure on a real dir) so
+# ignored_var=no — proving the rejection is the NEW env-failure guard, not the
+# pre-existing ignored-var block.
+ENV_FAIL_RUNNER="$TMPROOT/env-fail-runner.sh"
+cat >"$ENV_FAIL_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+# Honors $LCARS_TESTS_DIR: vacuously green on an empty/missing dir (so the empty-dir
+# probe proves the command reacted → ignored_var=no), but on a real quarantine dir the
+# RUNNER ITSELF cannot start — the worktree is not provisioned.
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests collected (vacuous green)"; exit 0; }
+echo "sh: vitest: command not found" >&2
+exit 127
+EOF
+chmod +x "$ENV_FAIL_RUNNER"
+repoS83="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS83/gh"
+export GH_LOG="$repoS83/gh.log"; : >"$GH_LOG"
+tS83="$repoS83/tw"; make_tests_dir "$tS83"
+rcS83=0
+( cd "$repoS83" && LCARS_TEST_CMD="bash $ENV_FAIL_RUNNER" LCARS_GH_BIN="$repoS83/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS83" >outS83.txt 2>&1 ) || rcS83=$?
+check "S83-3. red gate REJECTS an env-failure red (runner could not start)" "[ '$rcS83' -ne 0 ]"
+check "S83-3. the rejection names 'environment not provisioned'" \
+  "grep -qi 'environment not provisioned' '$repoS83/outS83.txt'"
+check "S83-3. the rejection names worktreeSetupCommand (actionable next step)" \
+  "grep -q 'worktreeSetupCommand' '$repoS83/outS83.txt'"
+check "S83-3. an env-failure red is NOT quarantined (never reaches the Implementer)" \
+  "[ ! -d '$repoS83/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# S83-4: a GENUINE fail-first red (real assertions that react to \$LCARS_TESTS_DIR,
+# no env signature) is still ACCEPTED and quarantined — no regression to the happy path.
+repoS83b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS83b/gh"
+export GH_LOG="$repoS83b/gh.log"; : >"$GH_LOG"
+tS83b="$repoS83b/tw"; make_tests_dir "$tS83b"
+rcS83b=0
+( cd "$repoS83b" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoS83b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS83b" >outS83b.txt 2>&1 ) || rcS83b=$?
+check "S83-4. red gate still ACCEPTS a genuine assertion red (no env false-positive)" \
+  "[ '$rcS83b' -eq 0 ]"
+check "S83-4. the accepted genuine red IS quarantined for the Implementer" \
+  "[ -f '$repoS83b/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test.js' ]"
+
+# S83-5: source-level guard — red_gate_ok's RED branch calls the env-failure detector.
+check "S83-5. red_gate_ok routes an env failure to a rejection (red_gate_env_failure)" \
+  "qgrep -q 'red_gate_env_failure' '$SCRIPT'"
+
+# S83-6: FIX-LOOP end-to-end — a GENUINE assertion red whose message merely QUOTES a
+# shell/exec phrase must be ACCEPTED + quarantined, not rejected as an env failure.
+# Reproduces the tester's two proven defects through impl-save-tests. The stub reacts
+# to $LCARS_TESTS_DIR (vacuous green on empty dir, the assertion red on a real dir).
+# $1 = the assertion line the runner emits on a real quarantine dir.
+make_assert_red_runner() { # file assertion-line
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+d="\${LCARS_TESTS_DIR:-}"
+n=0; [ -n "\$d" ] && [ -d "\$d" ] && n="\$(find "\$d" -type f | wc -l | tr -d ' ')"
+[ "\$n" -eq 0 ] && { echo "0 tests collected (vacuous green)"; exit 0; }
+echo "$2" >&2
+exit 1
+EOF
+  chmod +x "$1"
+}
+s83_e2e_accepts() { # label assertion-line
+  local label="$1" line="$2"
+  local runner="$TMPROOT/s83-e2e-$RANDOM.sh"; make_assert_red_runner "$runner" "$line"
+  local repo; repo="$(new_repo_with_implement_mission)"; make_gh_stub "$repo/gh"
+  export GH_LOG="$repo/gh.log"; : >"$GH_LOG"
+  local t="$repo/tw"; make_tests_dir "$t"; local rc=0
+  ( cd "$repo" && LCARS_TEST_CMD="bash $runner" LCARS_GH_BIN="$repo/gh" bash "$SCRIPT" impl-save-tests \
+      --mission "$MID" --ticket t-001 --tests "$t" >out.txt 2>&1 ) || rc=$?
+  check "S83-6. $label — genuine assertion red is ACCEPTED (rc 0)" "[ '$rc' -eq 0 ]"
+  check "S83-6. $label — the accepted red IS quarantined" \
+    "[ -f '$repo/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test.js' ]"
+}
+# DEFECT 1 (authz ticket) and DEFECT 2 (CLI ticket): both must now advance.
+s83_e2e_accepts "DEFECT 1 (quoted 'Permission denied')" \
+  "AssertionError: expected undefined to equal 'Permission denied'"
+s83_e2e_accepts "DEFECT 2 (quoted 'command not found')" \
+  "AssertionError: expected 'ok' to equal 'command not found'"
+
+# S83-6: and a REAL env failure (the runner cannot start) is STILL rejected with the
+# environment-not-provisioned reason — the cure for the primary bug is intact.
+ENV_FAIL_RUNNER2="$TMPROOT/env-fail-runner2.sh"
+make_assert_red_runner "$ENV_FAIL_RUNNER2" "PLACEHOLDER"   # overwritten below
+cat >"$ENV_FAIL_RUNNER2" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests collected (vacuous green)"; exit 0; }
+echo "sh: vitest: command not found" >&2
+exit 127
+EOF
+chmod +x "$ENV_FAIL_RUNNER2"
+repoS83r="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS83r/gh"
+export GH_LOG="$repoS83r/gh.log"; : >"$GH_LOG"
+tS83r="$repoS83r/tw"; make_tests_dir "$tS83r"; rcS83r=0
+( cd "$repoS83r" && LCARS_TEST_CMD="bash $ENV_FAIL_RUNNER2" LCARS_GH_BIN="$repoS83r/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS83r" >outS83r.txt 2>&1 ) || rcS83r=$?
+check "S83-6. a real env failure is STILL REJECTED (cure intact)" "[ '$rcS83r' -ne 0 ]"
+check "S83-6. the real-env rejection still names 'environment not provisioned'" \
+  "grep -qi 'environment not provisioned' '$repoS83r/outS83r.txt'"
+check "S83-6. the real-env rejection is NOT quarantined" \
+  "[ ! -d '$repoS83r/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# ==========================================================================
 # BUG-026 — a Mission-Log bug child (parentMission set) does NOT open a per-bug
 # PR at Verify and emits NO degraded "needs attention" gate. Its fix folds onto
 # the parent's branch.
@@ -6618,6 +6948,277 @@ q27="$repo27v/q.txt"; printf 'Global or per-course leaderboard?\n' >"$q27"
 PJ27v="$repo27v/.git/lcars/missions/$MID/pending.json"
 check "BUG-027. a non-regression gate omits the structured fields (back-compat)" \
   "[ -f '$PJ27v' ] && ! qgrep -q '\"escalationType\"' '$PJ27v' && ! qgrep -q '\"humanSummary\"' '$PJ27v'"
+
+# --- Session 87: monorepo / sub-package gate staging (in-package __lcarsq__) ---
+# A pnpm+Vitest monorepo discovers & filters tests RELATIVE to a PACKAGE root and
+# imports package-relative sources (`../src/x`); staging the quarantine at a depth-1
+# dir under the REPO root makes vitest find "No test files" and RED-fail a correct
+# implementation. The fix stages a ticket's quarantine INSIDE its target package
+# (`<pkg>/__lcarsq__`) and runs the runner FROM the package, with a RELATIVE
+# positional. These drives use the token-free test hooks (no billable worker).
+
+# A monorepo repo with a packages/core sub-package + a manifest pointing into it,
+# at the implement stage. Echoes the repo path.
+new_mono_mission() { # → repo path
+  local repo; repo="$(mktemp -d "$TMPROOT/mono.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init )
+  mkdir -p "$repo/packages/core/src"
+  printf '{ "name": "@x/core" }\n' >"$repo/packages/core/package.json"
+  printf 'export const y = 1\n' >"$repo/packages/core/src/y.ts"
+  printf '{ "workspaces": ["packages/*"] }\n' >"$repo/package.json"
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m/manifests"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "x",
+  "stage": "implement",
+  "githubIssue": 42,
+  "branch": "",
+  "base": "main"
+}
+EOF
+  cat >"$m/manifests/t-001.md" <<'EOF'
+# Manifest: t-001
+
+## Relevant files
+
+- `packages/core/src/y.ts` — the thing to build here
+- `packages/core/src/z.ts` — sibling
+EOF
+  echo "$repo"
+}
+
+# A package-relative quarantine test (imports `../src/y`) that asserts a behaviour.
+mono_make_tests() { # dir
+  mkdir -p "$1"
+  printf 'import { y } from "../src/y"\nit("does the thing", () => { expect(y).toBe(42) })\n' >"$1/y.test.ts"
+}
+
+# A FAKE vitest: GREEN only when cd'd INTO packages/core AND the relativized
+# positional resolves to a staged *.test.* AND a sibling ../src exists (package-
+# relative imports). RED on a real staged suite unless an IMPL_DONE marker is
+# present. With NO positional (unset var) it runs the "whole suite" green. This is
+# the package-rootedness the depth-1 staging breaks and the in-package staging fixes.
+MONO_RUNNER="$TMPROOT/mono-vitest.sh"
+cat >"$MONO_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+rel="${1:-}"
+case "$PWD" in */packages/core) : ;; *) echo "WRONGPKG pwd=$PWD" >&2; exit 9 ;; esac
+[ -d "$PWD/src" ] || { echo "no ../src from pkg root" >&2; exit 9; }
+[ -z "$rel" ] && { echo "ran whole suite"; exit 0; }
+target="$PWD/$rel"
+if [ ! -d "$target" ] || [ -z "$(find "$target" -name '*.test.*' -print -quit 2>/dev/null)" ]; then
+  echo "No test files found, matched: $rel" >&2; exit 1; fi
+[ -f "$PWD/src/IMPL_DONE" ] && { echo "all green"; exit 0; }
+echo "AssertionError: behaviour not implemented" >&2; exit 1
+EOF
+chmod +x "$MONO_RUNNER"
+# The S87 seeded vitest relativizing command, invoking the fake runner.
+MONO_TCMD='bash '"$MONO_RUNNER"' ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+
+# Turn a new_mono_mission repo into branch mode (a real branch tip = committed state).
+mono_branch() { # repo
+  ( cd "$1" && git add -A && git commit -q -m base && git branch "lcars/$MID" )
+  local s="$1/.git/lcars/missions/$MID/state.json"
+  sed 's#"branch": ""#"branch": "lcars/'"$MID"'"#' "$s" >"$1/s87.tmp" && mv "$1/s87.tmp" "$s"
+}
+
+# (a) ticket_target_package unit — sub-package, root, missing, multi.
+repoTP="$(new_mono_mission)"
+gotTP="$( cd "$repoTP" && bash "$SCRIPT" ticket-target-package-test --mission "$MID" --ticket t-001 )"
+check "S87. ticket_target_package resolves a sub-package ticket to packages/core" \
+  "[ '$gotTP' = 'packages/core' ]"
+printf '## Relevant files\n- `README.md` — root file\n' >"$repoTP/.git/lcars/missions/$MID/manifests/t-root.md"
+gotTPr="$( cd "$repoTP" && bash "$SCRIPT" ticket-target-package-test --mission "$MID" --ticket t-root )"
+check "S87. repo-root code resolves to empty (today's repo-root no-op)" "[ -z '$gotTPr' ]"
+gotTPm="$( cd "$repoTP" && bash "$SCRIPT" ticket-target-package-test --mission "$MID" --ticket t-missing )"
+check "S87. a missing manifest resolves to empty (safe no-op)" "[ -z '$gotTPm' ]"
+mkdir -p "$repoTP/packages/api"; printf '{ "name": "@x/api" }\n' >"$repoTP/packages/api/package.json"
+printf '## Relevant files\n- `packages/core/src/y.ts` — a\n- `packages/api/src/z.ts` — b\n' \
+  >"$repoTP/.git/lcars/missions/$MID/manifests/t-multi.md"
+gotTPmul="$( cd "$repoTP" && bash "$SCRIPT" ticket-target-package-test --mission "$MID" --ticket t-multi )"
+check "S87. files spanning MULTIPLE packages resolve to empty (safe no-op)" "[ -z '$gotTPmul' ]"
+
+# (b) RED gate ACCEPTS a package-relative fail-first in a monorepo (today it can't).
+repoRG="$(new_mono_mission)"; make_gh_stub "$repoRG/gh"
+export GH_LOG="$repoRG/gh.log"; : >"$GH_LOG"
+twRG="$repoRG/tw"; mono_make_tests "$twRG"; rcRG=0
+( cd "$repoRG" && LCARS_TEST_CMD="$MONO_TCMD" LCARS_GH_BIN="$repoRG/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twRG" >"$repoRG/outRG.txt" 2>&1 ) || rcRG=$?
+check "S87. red gate ACCEPTS a package-relative fail-first (monorepo)" "[ '$rcRG' -eq 0 ]"
+check "S87. the durable quarantine contract is still saved at tickets/<id>/tests" \
+  "[ -f '$repoRG/.git/lcars/missions/$MID/tickets/t-001/tests/y.test.ts' ]"
+
+# (c) NO-LEAK — the in-package __lcarsq__ is gone after the gate, and git never sees it.
+check "S87. NO-LEAK: __lcarsq__ removed from the package after the red gate" \
+  "[ ! -e '$repoRG/packages/core/__lcarsq__' ]"
+check "S87. NO-LEAK: git status / ls-files --others show no __lcarsq__" \
+  "[ -z \"\$( cd '$repoRG' && git ls-files --others --exclude-standard | grep __lcarsq__ )\" ]"
+check "S87. scratch_globs covers the nested */__lcarsq__/* path" \
+  "qgrep -qF '*/__lcarsq__/*' '$SCRIPT'"
+
+# (d) RED gate still REJECTS a green-on-nothing in-package suite (probe differ holds).
+repoRGg="$(new_mono_mission)"; make_gh_stub "$repoRGg/gh"
+export GH_LOG="$repoRGg/gh.log"; : >"$GH_LOG"
+MONO_GREEN="$TMPROOT/mono-green.sh"
+cat >"$MONO_GREEN" <<'EOF'
+#!/usr/bin/env bash
+rel="${1:-}"
+case "$PWD" in */packages/core) : ;; *) exit 9 ;; esac
+[ -z "$rel" ] && { echo "whole suite"; exit 0; }
+target="$PWD/$rel"
+[ -d "$target" ] && [ -n "$(find "$target" -name '*.test.*' -print -quit 2>/dev/null)" ] \
+  || { echo "No test files found" >&2; exit 1; }
+echo "always green (never red)"; exit 0
+EOF
+chmod +x "$MONO_GREEN"
+MONO_GREEN_TCMD='bash '"$MONO_GREEN"' ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+twRGg="$repoRGg/tw"; mono_make_tests "$twRGg"; rcRGg=0
+( cd "$repoRGg" && LCARS_TEST_CMD="$MONO_GREEN_TCMD" LCARS_GH_BIN="$repoRGg/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$twRGg" >"$repoRGg/outRGg.txt" 2>&1 ) || rcRGg=$?
+check "S87. red gate REJECTS a green-on-nothing in-package suite" "[ '$rcRGg' -ne 0 ]"
+check "S87. the green-on-nothing rejection names the red gate" \
+  "grep -qi 'red gate' '$repoRGg/outRGg.txt'"
+check "S87. rejected: no __lcarsq__ leaked" "[ ! -e '$repoRGg/packages/core/__lcarsq__' ]"
+
+# (e) post_commit_gate monorepo — GREEN with the impl on the committed branch, RED without.
+repoPCg="$(new_mono_mission)"; make_gh_stub "$repoPCg/gh"
+export GH_LOG="$repoPCg/gh.log"; : >"$GH_LOG"
+printf 'done\n' >"$repoPCg/packages/core/src/IMPL_DONE"
+mkdir -p "$repoPCg/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_make_tests "$repoPCg/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_branch "$repoPCg"
+outPCg="$( cd "$repoPCg" && LCARS_TEST_CMD="$MONO_TCMD" LCARS_GH_BIN="$repoPCg/gh" bash "$SCRIPT" \
+    post-commit-gate-test --mission "$MID" --ticket t-001 2>/dev/null )"
+check "S87. post-commit gate is GREEN when the impl is on the committed branch (monorepo)" \
+  "printf '%s' '$outPCg' | qgrep -q 'PCRC=0'"
+repoPCr="$(new_mono_mission)"; make_gh_stub "$repoPCr/gh"
+export GH_LOG="$repoPCr/gh.log"; : >"$GH_LOG"
+mkdir -p "$repoPCr/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_make_tests "$repoPCr/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_branch "$repoPCr"
+outPCr="$( cd "$repoPCr" && LCARS_TEST_CMD="$MONO_TCMD" LCARS_GH_BIN="$repoPCr/gh" bash "$SCRIPT" \
+    post-commit-gate-test --mission "$MID" --ticket t-001 2>/dev/null )"
+check "S87. post-commit gate is RED when the impl is NOT on the committed branch (monorepo)" \
+  "printf '%s' '$outPCr' | qgrep -qE 'PCRC=[1-9]'"
+
+# (f) full-suite / retest_ticket_suites monorepo — GREEN with the impl present.
+repoFS="$(new_mono_mission)"; make_gh_stub "$repoFS/gh"
+export GH_LOG="$repoFS/gh.log"; : >"$GH_LOG"
+printf 'done\n' >"$repoFS/packages/core/src/IMPL_DONE"
+mkdir -p "$repoFS/.git/lcars/missions/$MID/tickets/t-001/tests"
+mono_make_tests "$repoFS/.git/lcars/missions/$MID/tickets/t-001/tests"
+printf '{ "waves": [ { "wave": 1, "tickets": ["t-001"] } ] }\n' \
+  >"$repoFS/.git/lcars/missions/$MID/waves.json"
+mono_branch "$repoFS"
+outFS="$( cd "$repoFS" && LCARS_TEST_CMD="$MONO_TCMD" LCARS_GH_BIN="$repoFS/gh" bash "$SCRIPT" \
+    full-suite-gate-test --mission "$MID" 2>/dev/null )"
+check "S87. full-suite gate (retest_ticket_suites) is GREEN in a monorepo (in-package staging)" \
+  "printf '%s' '$outFS' | qgrep -q 'FSRC=0'"
+
+# (g) NO-OP equivalence — a single-package repo with NO manifest takes the repo-root
+#     path byte-for-byte: the existing honoring runner (run from the repo root) still
+#     accepts a fail-first, and nothing stages an __lcarsq__ dir.
+repoNO="$(new_repo_with_implement_mission)"; make_gh_stub "$repoNO/gh"
+export GH_LOG="$repoNO/gh.log"; : >"$GH_LOG"
+tNO="$repoNO/tw"; make_tests_dir "$tNO"; rcNO=0
+( cd "$repoNO" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoNO/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tNO" >"$repoNO/outNO.txt" 2>&1 ) || rcNO=$?
+check "S87. NO-OP: single-package (no manifest) red gate still accepts a fail-first" \
+  "[ '$rcNO' -eq 0 ]"
+check "S87. NO-OP: no __lcarsq__ dir is created at the repo root" \
+  "[ ! -e '$repoNO/__lcarsq__' ]"
+
+# ==========================================================================
+# S88 (gate-worktree-deps) — bundler MODULE-RESOLUTION load failures at the red gate.
+# S87 stages the quarantined test inside the ticket's package at `<pkg>/__lcarsq__/`
+# and runs the runner FROM the package. That fixes a PACKAGE-ROOT-relative import
+# (`../src/math.js` resolves from `<pkg>/__lcarsq__/`). But a CO-LOCATED import
+# (`./utils.js`, authored as if the test sat next to the source) CANNOT resolve from
+# `<pkg>/__lcarsq__/`, so vitest/vite errors `Failed to load url ./utils.js (resolved
+# id: ./utils.js). Does the file exist?` and the suite fails to LOAD. The old
+# red_gate_compile_failure pattern matched only node's `Cannot find module`, so it
+# WRONGLY accepted this load-failure as a valid fail-first. S88 extends the detector
+# with vite/vitest/rollup resolution signatures (rejecting MORE reds, never loosening)
+# and gives red_gate_ok a RESOLUTION-specific, actionable reason. A small inert hook
+# (`red-gate-compile-detect-test`) runs the pure detector on stdin so the new pattern
+# coverage is unit-testable directly.
+
+compile_detect() { # runner-output → 0 if classified as a compile/load failure
+  printf '%s' "$1" | ( cd "$REPO_ROOT" && bash "$SCRIPT" red-gate-compile-detect-test )
+}
+
+# S88-1: the detector MATCHES the real vitest/vite module-resolution load failures.
+check "S88-1. compile detector matches the real vitest 'Failed to load url' string" \
+  "compile_detect 'Error: Failed to load url ./utils.js (resolved id: ./utils.js). Does the file exist?'"
+check "S88-1. compile detector matches a 'Failed to resolve import' string" \
+  "compile_detect 'Failed to resolve import \"./x\" from \"foo.test.ts\". Does the file exist?'"
+check "S88-1. compile detector matches 'Rollup failed to resolve'" \
+  "compile_detect 'Rollup failed to resolve import \"./utils.js\"'"
+check "S88-1. compile detector matches ERR_UNSUPPORTED_DIR_IMPORT" \
+  "compile_detect 'Error [ERR_UNSUPPORTED_DIR_IMPORT]: Directory import is not supported'"
+
+# S88-2: the detector does NOT match a NORMAL assertion failure (no false positive
+# that would block a real fail-first).
+check "S88-2. compile detector does NOT match a plain assertion summary ('2 failed')" \
+  "! compile_detect 'Tests: 2 failed, 3 passed'"
+check "S88-2. compile detector does NOT match an assertion diff ('expected 5 to be 999')" \
+  "! compile_detect 'AssertionError: expected 5 to be 999'"
+
+# S88-3: the detector does NOT match a test that LOADED an existing module but hit an
+# undefined SYMBOL (a VALID fail-first that must still be accepted) — no load-url error.
+check "S88-3. compile detector does NOT match an undefined-symbol fail-first (module loaded)" \
+  "! compile_detect 'TypeError: rectCenter is not a function'"
+
+# S88-4: red_gate_ok REJECTS a quarantined suite whose output is a module-resolution
+# load failure, and the reason names the __lcarsq__ quarantine dir + package-root-relative
+# / package-name imports (so the retry knows the fix). The stub REACTS to
+# $LCARS_TESTS_DIR (green on empty dir, resolution failure on a real dir) so
+# ignored_var=no — proving the rejection is the NEW resolution guard.
+RESO_FAIL_RUNNER="$TMPROOT/reso-fail-runner.sh"
+cat >"$RESO_FAIL_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+# Honors $LCARS_TESTS_DIR: vacuously green on an empty/missing dir (so the empty-dir
+# probe proves the command reacted → ignored_var=no), but on a real quarantine dir the
+# test cannot RESOLVE its co-located import of the code under test (real vitest phrasing).
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests collected (vacuous green)"; exit 0; }
+echo "Error: Failed to load url ./utils.js (resolved id: ./utils.js). Does the file exist?" >&2
+exit 1
+EOF
+chmod +x "$RESO_FAIL_RUNNER"
+repoS88="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS88/gh"
+export GH_LOG="$repoS88/gh.log"; : >"$GH_LOG"
+tS88="$repoS88/tw"; make_tests_dir "$tS88"
+rcS88=0
+( cd "$repoS88" && LCARS_TEST_CMD="bash $RESO_FAIL_RUNNER" LCARS_GH_BIN="$repoS88/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS88" >"$repoS88/outS88.txt" 2>&1 ) || rcS88=$?
+check "S88-4. red gate REJECTS a module-resolution load-failure red (test never loaded)" \
+  "[ '$rcS88' -ne 0 ]"
+check "S88-4. the rejection names the __lcarsq__ quarantine dir (the WHERE)" \
+  "grep -q '__lcarsq__' '$repoS88/outS88.txt'"
+check "S88-4. the rejection names a package-root-relative / package-name import (the FIX)" \
+  "grep -qi 'package-root-relative' '$repoS88/outS88.txt'"
+check "S88-4. a resolution-failure red is NOT quarantined (never reaches the Implementer)" \
+  "[ ! -d '$repoS88/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# S88-5: a GENUINE assertion fail-first is still ACCEPTED + quarantined (regression guard).
+repoS88b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS88b/gh"
+export GH_LOG="$repoS88b/gh.log"; : >"$GH_LOG"
+tS88b="$repoS88b/tw"; make_tests_dir "$tS88b"; rcS88b=0
+( cd "$repoS88b" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoS88b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS88b" >"$repoS88b/outS88b.txt" 2>&1 ) || rcS88b=$?
+check "S88-5. red gate still ACCEPTS a genuine assertion fail-first (no false positive)" \
+  "[ '$rcS88b' -eq 0 ]"
+check "S88-5. the accepted assertion-red suite IS quarantined for the Implementer" \
+  "[ -f '$repoS88b/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test.js' ]"
+
+# S88-6: source-level guard — red_gate_ok's compile branch consults the resolution detector.
+check "S88-6. red_gate_ok routes a resolution failure to a rejection (red_gate_resolution_failure)" \
+  "qgrep -q 'red_gate_resolution_failure' '$SCRIPT'"
 
 # ==========================================================================
 echo

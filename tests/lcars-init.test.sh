@@ -388,6 +388,65 @@ check "S43 init: summary banner reflects the PERSISTED custom testCommand" \
 check "S43 init: summary banner does NOT show the detected default model on a re-run" \
   "! grep -q 'model: claude-sonnet' '$repoB/outB.txt'"
 
+# --- Session 82: worktreeSetupCommand detection (gate-worktree-deps) --------
+# init seeds a default worktreeSetupCommand per ecosystem so the S81 provisioning
+# seam works in ANY repo without hand-editing config. The default REUSES the main
+# checkout's installed deps (symlinks its node_modules) with an OFFLINE-install
+# fallback. The emitted string runs under `bash -c` in the worktree, so its
+# $MAIN / $(...) must survive into config UN-expanded (escaped, valid JSON).
+
+# pnpm repo: git-common-dir resolution + node_modules symlink + pnpm offline fallback
+repoWTp="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoWTp/package.json"
+printf 'lockfileVersion: 9\n' >"$repoWTp/pnpm-lock.yaml"
+make_claude_stub "$repoWTp/claude"; make_gh_stub "$repoWTp/gh"
+export GH_LOG="$repoWTp/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoWTp/existing"; : >"$GH_EXISTING"
+( cd "$repoWTp" && LCARS_CLAUDE_BIN="$repoWTp/claude" LCARS_GH_BIN="$repoWTp/gh" bash "$SCRIPT" >outWTp.txt 2>&1 )
+cfgWTp="$repoWTp/.git/lcars/config.json"
+check "S82 init: config has worktreeSetupCommand key" \
+  "grep -q '\"worktreeSetupCommand\"' '$cfgWTp'"
+check "S82 init (pnpm): default resolves the main checkout via git-common-dir" \
+  "grep -q 'git rev-parse' '$cfgWTp' && grep -q 'git-common-dir' '$cfgWTp'"
+check "S82 init (pnpm): default symlinks node_modules" \
+  "grep -q 'ln -snf' '$cfgWTp' && grep -q 'node_modules' '$cfgWTp'"
+check "S82 init (pnpm): default names a pnpm offline-install fallback" \
+  "grep -q 'pnpm install' '$cfgWTp' && grep -q 'prefer-offline' '$cfgWTp'"
+check "S82 init (pnpm): config.json is VALID JSON after the worktree default" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgWTp'"
+# Read back through the SAME jq-free reader the provisioner uses: the value must
+# be the FULL command (terminating `fi` survives), not truncated at an inner quote.
+check "S82 init (pnpm): worktreeSetupCommand reads back un-truncated (ends in 'fi')" \
+  "printf '%s' \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgWTp' worktreeSetupCommand )\" | qgrep -q '; fi\$'"
+
+# npm repo (package-lock.json): the fallback is `npm ci`
+repoWTn="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoWTn/package.json"
+: >"$repoWTn/package-lock.json"
+make_claude_stub "$repoWTn/claude"; make_gh_stub "$repoWTn/gh"
+export GH_LOG="$repoWTn/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoWTn/existing"; : >"$GH_EXISTING"
+( cd "$repoWTn" && LCARS_CLAUDE_BIN="$repoWTn/claude" LCARS_GH_BIN="$repoWTn/gh" bash "$SCRIPT" >outWTn.txt 2>&1 )
+cfgWTn="$repoWTn/.git/lcars/config.json"
+check "S82 init (npm): default names 'npm ci' as the install fallback" \
+  "grep -q 'npm ci' '$cfgWTn'"
+check "S82 init (npm): default still symlinks node_modules first" \
+  "grep -q 'ln -snf' '$cfgWTn'"
+check "S82 init (npm): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgWTn'"
+
+# pure-bash repo (only tests/run.sh): no installed runner to provision -> null
+repoWTb="$(new_repo)"
+mkdir -p "$repoWTb/tests"
+printf '#!/usr/bin/env bash\necho runner\n' >"$repoWTb/tests/run.sh"
+make_claude_stub "$repoWTb/claude"; make_gh_stub "$repoWTb/gh"
+export GH_LOG="$repoWTb/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoWTb/existing"; : >"$GH_EXISTING"
+( cd "$repoWTb" && LCARS_CLAUDE_BIN="$repoWTb/claude" LCARS_GH_BIN="$repoWTb/gh" bash "$SCRIPT" >outWTb.txt 2>&1 )
+cfgWTb="$repoWTb/.git/lcars/config.json"
+check "S82 init (bash): worktreeSetupCommand is null in a pure-bash repo (no provisioning)" \
+  "grep -q '\"worktreeSetupCommand\": *null' '$cfgWTb'"
+
 # When the persisted testCommand is genuinely null, the banner still shows 'none'.
 repoBn="$(new_repo)"
 make_claude_stub "$repoBn/claude"; make_gh_stub "$repoBn/gh"
@@ -396,6 +455,156 @@ export GH_EXISTING="$repoBn/existing"; : >"$GH_EXISTING"
 ( cd "$repoBn" && LCARS_CLAUDE_BIN="$repoBn/claude" LCARS_GH_BIN="$repoBn/gh" bash "$SCRIPT" >outBn.txt 2>&1 )
 check "S43 init: a null persisted testCommand renders as 'none' in the banner" \
   "grep -q 'tests: none' '$repoBn/outBn.txt'"
+
+# --- Session 85: monorepo testCommand + local-dep runner warning ------------
+# Two changes that stop init from emitting a testCommand that NEEDS provisioning
+# while saying nothing: (1) monorepo-aware detection avoids a blind `npm test`
+# fan-out across every package, and (2) a loud warning when the runner is a LOCAL
+# dependency (vitest/jest/mocha/pytest) but worktreeSetupCommand is null — the
+# runner won't exist in the gate worktree unless provisioning is wired.
+
+# (1) A monorepo (pnpm-workspace.yaml / a "workspaces" field) must NOT emit a bare
+#     `npm test` / `pnpm -r test` fan-out — that can't be scoped to the touched
+#     package's quarantined tests. It scopes to the local runner while still
+#     honouring $LCARS_TESTS_DIR so the red gate stays satisfiable.
+repoMono="$(new_repo)"
+printf '{ "workspaces": ["packages/*"], "scripts": { "test": "vitest run" } }\n' >"$repoMono/package.json"
+printf 'packages:\n  - "packages/*"\n' >"$repoMono/pnpm-workspace.yaml"
+make_claude_stub "$repoMono/claude"; make_gh_stub "$repoMono/gh"
+export GH_LOG="$repoMono/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoMono/existing"; : >"$GH_EXISTING"
+( cd "$repoMono" && LCARS_CLAUDE_BIN="$repoMono/claude" LCARS_GH_BIN="$repoMono/gh" bash "$SCRIPT" >outMono.txt 2>&1 )
+cfgMono="$repoMono/.git/lcars/config.json"
+check "S85 init (monorepo): testCommand is NOT a bare 'npm test' fan-out" \
+  "! grep -qE '\"testCommand\": *\"npm test' '$cfgMono'"
+check "S85 init (monorepo): testCommand is NOT a 'pnpm -r' fan-out" \
+  "! grep -q 'pnpm -r' '$cfgMono'"
+check "S85 init (monorepo): testCommand is scoped to the local runner (vitest)" \
+  "grep -q 'vitest' '$cfgMono'"
+check "S85 init (monorepo): testCommand still honours \$LCARS_TESTS_DIR (red-gate-scopable)" \
+  "grep -q 'LCARS_TESTS_DIR' '$cfgMono'"
+check "S85 init (monorepo): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgMono'"
+
+# (2) A single-package npm repo is UNCHANGED from today (no regression): the bare
+#     `npm test -- ${LCARS_TESTS_DIR:-}` default is preserved verbatim.
+repoSingle="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoSingle/package.json"
+printf '{}\n' >"$repoSingle/package-lock.json"
+make_claude_stub "$repoSingle/claude"; make_gh_stub "$repoSingle/gh"
+export GH_LOG="$repoSingle/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoSingle/existing"; : >"$GH_EXISTING"
+( cd "$repoSingle" && LCARS_CLAUDE_BIN="$repoSingle/claude" LCARS_GH_BIN="$repoSingle/gh" bash "$SCRIPT" >outSingle.txt 2>&1 )
+cfgSingle="$repoSingle/.git/lcars/config.json"
+check "S85 init (single-package npm): testCommand is the UNCHANGED 'npm test --' default" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgSingle' testCommand )\" = 'npm test -- \${LCARS_TESTS_DIR:-}' ]"
+
+# (3) A local-dep runner (pytest, resolvable only from a venv) with a NULL
+#     worktreeSetupCommand (Python has no auto-provision default) warns LOUD:
+#     the runner won't exist in the gate worktree unless provisioning is wired.
+repoLD="$(new_repo)"
+printf '[tool.pytest]\n' >"$repoLD/pyproject.toml"
+make_claude_stub "$repoLD/claude"; make_gh_stub "$repoLD/gh"
+export GH_LOG="$repoLD/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoLD/existing"; : >"$GH_EXISTING"
+( cd "$repoLD" && LCARS_CLAUDE_BIN="$repoLD/claude" LCARS_GH_BIN="$repoLD/gh" bash "$SCRIPT" >outLD.txt 2>&1 )
+cfgLD="$repoLD/.git/lcars/config.json"
+check "S85 init: the local-dep case really has a NULL worktreeSetupCommand" \
+  "grep -q '\"worktreeSetupCommand\": *null' '$cfgLD'"
+check "S85 init: a local-dep runner + NULL worktreeSetupCommand warns LOUD on stderr" \
+  "grep -qi 'local dependency' '$repoLD/outLD.txt' && grep -q 'worktreeSetupCommand' '$repoLD/outLD.txt'"
+
+# (4) When worktreeSetupCommand IS set (the normal S82 JS path), NO nag fires —
+#     the gap is already handled, so init must not nag about it.
+repoNoNag="$(new_repo)"
+printf '{ "scripts": { "test": "vitest run" } }\n' >"$repoNoNag/package.json"
+printf '{}\n' >"$repoNoNag/package-lock.json"
+make_claude_stub "$repoNoNag/claude"; make_gh_stub "$repoNoNag/gh"
+export GH_LOG="$repoNoNag/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoNoNag/existing"; : >"$GH_EXISTING"
+( cd "$repoNoNag" && LCARS_CLAUDE_BIN="$repoNoNag/claude" LCARS_GH_BIN="$repoNoNag/gh" bash "$SCRIPT" >outNoNag.txt 2>&1 )
+cfgNoNag="$repoNoNag/.git/lcars/config.json"
+check "S85 init: the no-nag case really has a worktreeSetupCommand set" \
+  "! grep -q '\"worktreeSetupCommand\": *null' '$cfgNoNag'"
+check "S85 init: a local-dep runner WITH worktreeSetupCommand does NOT warn (no nag)" \
+  "! grep -qi 'local dependency' '$repoNoNag/outNoNag.txt'"
+
+# --- Session 87: vitest gate staging — relativizing testCommand + __lcarsq__ --
+# The Implement gates stage a sub-package's quarantine INSIDE the package and run
+# vitest FROM there; vitest's positional filter is matched RELATIVE to that cwd but
+# $LCARS_TESTS_DIR is exported ABSOLUTE. So init must emit a RELATIVIZING vitest
+# command (strip a leading "$PWD/") for BOTH single-package and monorepo vitest, the
+# workspace fan-out fallback must DETECT the sub-package runner, and __lcarsq__ must
+# be ignored via .git/info/exclude.
+RELCMD='npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+
+# (1) A monorepo whose ROOT "test" script does NOT name the runner (a bare
+#     `pnpm -r test` fan-out) must DETECT vitest from a sub-package and emit the
+#     RELATIVIZING command, never a fan-out.
+repoMR="$(new_repo)"
+printf '{ "scripts": { "test": "pnpm -r test" } }\n' >"$repoMR/package.json"
+printf 'packages:\n  - "packages/*"\n' >"$repoMR/pnpm-workspace.yaml"
+printf 'lockfileVersion: 9\n' >"$repoMR/pnpm-lock.yaml"
+mkdir -p "$repoMR/packages/core"
+printf '{ "name": "@x/core", "devDependencies": { "vitest": "^2" } }\n' >"$repoMR/packages/core/package.json"
+make_claude_stub "$repoMR/claude"; make_gh_stub "$repoMR/gh"
+export GH_LOG="$repoMR/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoMR/existing"; : >"$GH_EXISTING"
+( cd "$repoMR" && LCARS_CLAUDE_BIN="$repoMR/claude" LCARS_GH_BIN="$repoMR/gh" bash "$SCRIPT" >outMR.txt 2>&1 )
+cfgMR="$repoMR/.git/lcars/config.json"
+check "S87 init (monorepo fan-out): NOT a 'pnpm -r' fan-out testCommand" \
+  "! grep -q 'pnpm -r' '$cfgMR'"
+check "S87 init (monorepo fan-out): NOT a bare 'npm test' fan-out" \
+  "! grep -qE '\"testCommand\": *\"npm test' '$cfgMR'"
+check "S87 init (monorepo fan-out): detects vitest from the sub-package and emits the RELATIVIZING command" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgMR' testCommand )\" = '$RELCMD' ]"
+check "S87 init (monorepo fan-out): config.json is VALID JSON after the \$/{/}/#/\" round-trip" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgMR'"
+
+# (2) A single-package VITEST repo (root "test" names vitest) now emits the
+#     RELATIVIZING command too (same abs-positional bug), reading back intact.
+repoSV="$(new_repo)"
+printf '{ "scripts": { "test": "vitest run" } }\n' >"$repoSV/package.json"
+printf '{}\n' >"$repoSV/package-lock.json"
+make_claude_stub "$repoSV/claude"; make_gh_stub "$repoSV/gh"
+export GH_LOG="$repoSV/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoSV/existing"; : >"$GH_EXISTING"
+( cd "$repoSV" && LCARS_CLAUDE_BIN="$repoSV/claude" LCARS_GH_BIN="$repoSV/gh" bash "$SCRIPT" >outSV.txt 2>&1 )
+cfgSV="$repoSV/.git/lcars/config.json"
+check "S87 init (single-package vitest): testCommand is the RELATIVIZING form" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgSV' testCommand )\" = '$RELCMD' ]"
+check "S87 init (single-package vitest): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgSV'"
+
+# (3) A monorepo whose ROOT "test" names vitest directly — still RELATIVIZING.
+repoMV="$(new_repo)"
+printf '{ "workspaces": ["packages/*"], "scripts": { "test": "vitest run" } }\n' >"$repoMV/package.json"
+printf 'packages:\n  - "packages/*"\n' >"$repoMV/pnpm-workspace.yaml"
+make_claude_stub "$repoMV/claude"; make_gh_stub "$repoMV/gh"
+export GH_LOG="$repoMV/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoMV/existing"; : >"$GH_EXISTING"
+( cd "$repoMV" && LCARS_CLAUDE_BIN="$repoMV/claude" LCARS_GH_BIN="$repoMV/gh" bash "$SCRIPT" >outMV.txt 2>&1 )
+cfgMV="$repoMV/.git/lcars/config.json"
+check "S87 init (monorepo vitest script): testCommand is the RELATIVIZING form" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgMV' testCommand )\" = '$RELCMD' ]"
+
+# (4) pytest is UNCHANGED (no regression) — non-vitest ecosystems keep their default.
+repoPY="$(new_repo)"
+printf '[tool.pytest]\n' >"$repoPY/pyproject.toml"
+make_claude_stub "$repoPY/claude"; make_gh_stub "$repoPY/gh"
+export GH_LOG="$repoPY/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoPY/existing"; : >"$GH_EXISTING"
+( cd "$repoPY" && LCARS_CLAUDE_BIN="$repoPY/claude" LCARS_GH_BIN="$repoPY/gh" bash "$SCRIPT" >outPY.txt 2>&1 )
+cfgPY="$repoPY/.git/lcars/config.json"
+check "S87 init (pytest unchanged): testCommand is the pytest default" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgPY' testCommand )\" = 'pytest \${LCARS_TESTS_DIR:-.}' ]"
+
+# (5) .git/info/exclude lists the __lcarsq__ globs so a gate's in-package
+#     quarantine can never be git-added into a ticket commit.
+check "S87 init: .git/info/exclude ignores __lcarsq__ (dir form)" \
+  "grep -qxF '__lcarsq__/' '$repoPY/.git/info/exclude'"
+check "S87 init: .git/info/exclude ignores nested */__lcarsq__" \
+  "grep -qxF '*/__lcarsq__' '$repoPY/.git/info/exclude'"
 
 # ==========================================================================
 echo

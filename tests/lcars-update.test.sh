@@ -218,6 +218,106 @@ check "4. up-to-date repo creates no labels" \
 check "4. up-to-date config.json is unchanged" \
   "[ \"\$( cat '$cfg' )\" = \"\$cfg_before\" ]"
 
+# --- Session 82: backfills worktreeSetupCommand without clobbering ----------
+# An OLD config predates the worktreeSetupCommand key. update must ADD it with
+# the ecosystem-detected default (here npm) and preserve every existing value.
+repoU="$(new_repo)"
+init_repo "$repoU"
+# Make the repo look like an npm project so update's detect emits a real default.
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoU/package.json"
+: >"$repoU/package-lock.json"
+cfgU="$repoU/.git/lcars/config.json"
+cat >"$cfgU" <<'JSON'
+{
+  "model": "captain-chosen-model",
+  "projectName": "myproj",
+  "contextFile": null,
+  "testCommand": "custom-runner ${LCARS_TESTS_DIR:-.}",
+  "comprehensionBudget": 1200,
+  "created": "2019-09-09T00:00:00Z"
+}
+JSON
+export GH_LOG="$repoU/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoU/existing"
+cat >"$GH_EXISTING" <<'EOF'
+lcars:align
+lcars:research
+lcars:validate
+lcars:plan
+lcars:plan-review
+lcars:schedule
+lcars:implement
+lcars:verify
+lcars:done
+lcars:feature
+lcars:bug
+lcars:paused
+lcars:awaiting-human
+lcars:linked
+lcars:mission
+lcars:ticket
+EOF
+( cd "$repoU" && LCARS_GH_BIN="$repoU/gh" bash "$SCRIPT" >outU.txt 2>&1 )
+check "S82 update: backfills the missing worktreeSetupCommand (npm default)" \
+  "grep -q '\"worktreeSetupCommand\"' '$cfgU' && grep -q 'npm ci' '$cfgU'"
+check "S82 update: backfilled config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgU'"
+check "S82 update: preserves the captain's custom model" \
+  "grep -q '\"model\": *\"captain-chosen-model\"' '$cfgU'"
+check "S82 update: preserves the captain's custom testCommand" \
+  "grep -q 'custom-runner' '$cfgU'"
+check "S82 update: preserves the captain's comprehensionBudget" \
+  "grep -q '\"comprehensionBudget\": *1200' '$cfgU'"
+check "S82 update: preserves the captain's created timestamp" \
+  "grep -q '\"created\": *\"2019-09-09T00:00:00Z\"' '$cfgU'"
+check "S82 update: reports the added worktreeSetupCommand key" \
+  "grep -qi 'worktreeSetupCommand' '$repoU/outU.txt'"
+
+# A config that ALREADY has a captain-customized worktreeSetupCommand is NEVER
+# clobbered (idempotent, no rewrite when nothing is missing).
+repoUc="$(new_repo)"
+init_repo "$repoUc"
+cfgUc="$repoUc/.git/lcars/config.json"
+cat >"$cfgUc" <<'JSON'
+{
+  "model": "claude-sonnet",
+  "projectName": "p",
+  "contextFile": null,
+  "testCommand": null,
+  "worktreeSetupCommand": "my-bespoke-provision --offline",
+  "comprehensionBudget": 1200,
+  "created": "2018-01-01T00:00:00Z"
+}
+JSON
+cfgUc_before="$(cat "$cfgUc")"
+export GH_LOG="$repoUc/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoUc/existing"
+cat >"$GH_EXISTING" <<'EOF'
+lcars:align
+lcars:research
+lcars:validate
+lcars:plan
+lcars:plan-review
+lcars:schedule
+lcars:implement
+lcars:verify
+lcars:done
+lcars:feature
+lcars:bug
+lcars:paused
+lcars:awaiting-human
+lcars:linked
+lcars:mission
+lcars:ticket
+EOF
+( cd "$repoUc" && LCARS_GH_BIN="$repoUc/gh" bash "$SCRIPT" >outUc.txt 2>&1 )
+check "S82 update: a captain-set worktreeSetupCommand is left untouched (no clobber)" \
+  "grep -q 'my-bespoke-provision --offline' '$cfgUc'"
+check "S82 update: config unchanged byte-for-byte when the key is already present" \
+  "[ \"\$( cat '$cfgUc' )\" = \"\$cfgUc_before\" ]"
+check "S82 update: reports 'nothing to update' when fully current" \
+  "grep -qi 'nothing to update' '$repoUc/outUc.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars update: %d passed, %d failed\n' "$pass" "$fail"

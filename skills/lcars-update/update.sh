@@ -66,10 +66,22 @@ if [ -f "$TOPLEVEL/CONTEXT.md" ]; then CONTEXT_VALUE='"CONTEXT.md"'; else CONTEX
 PROJECT_NAME="$(basename "$TOPLEVEL")"
 CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"  # only used if 'created' is somehow absent
 
+# Recompute the worktree provisioning default the SAME way init does (shared
+# helper in lcars-common.sh), so an older config gets the proper ecosystem
+# default backfilled. Existing values are preserved by lcars_config_merge — only
+# an absent key takes this default.
+WT_SETUP_CMD="$(detect_worktree_setup_cmd)"
+if [ -n "$WT_SETUP_CMD" ]; then
+  WTSETUP_VALUE="\"$(lcars_json_escape "$WT_SETUP_CMD")\""
+else
+  WTSETUP_VALUE='null'
+fi
+
 DESIRED_CONFIG="model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
 contextFile=$CONTEXT_VALUE
 testCommand=null
+worktreeSetupCommand=$WTSETUP_VALUE
 comprehensionBudget=1200
 created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
