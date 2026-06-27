@@ -5596,6 +5596,87 @@ check "PC7. leaves no t-001 post-commit worktree behind (own worktree cleaned up
   "[ -z \"\$(ls -d '$MDIR7'/postcommit-t-001.* 2>/dev/null)\" ]"
 
 # ==========================================================================
+echo "lcars run — Session 81: worktree provisioning (worktreeSetupCommand)"
+#
+# A freshly-cut gate worktree must be PROVISIONED (config-driven worktreeSetupCommand,
+# e.g. a dep install) ONCE, right after `git worktree add` and BEFORE any testCommand
+# runs, so the red gate and the green (full-suite / post-commit) gates all evaluate in
+# the SAME dependency-complete environment. provision_worktree() is the single helper;
+# it honours $LCARS_WORKTREE_SETUP_CMD (the env override the suite stubs) over the repo
+# config, is a clean NO-OP when no command is configured (LCARS's own dep-free dogfood),
+# runs the command exactly once with the worktree as CWD, is best-effort (a non-zero
+# exit drops a `worktree_provision_failed` breadcrumb but never aborts the gate), and
+# never git-adds anything. run.sh routes ALL gate worktree creation through it.
+#
+# The `provision-worktree-test` hook cuts a worktree via make_ticket_worktree (the
+# SHARED path for the red gate's build worktree AND the full-suite gate) and, unlike the
+# real flow, does NOT clean it up, so the test can inspect the provisioned tree directly.
+
+# --- PW1: make_ticket_worktree provisions the fresh worktree exactly once -----
+repoPW1="$(new_repo_postcommit)"; make_gh_stub "$repoPW1/gh"
+export GH_LOG="$repoPW1/gh.log"; : >"$GH_LOG"
+CNT_PW1="$repoPW1/provision-count"; : >"$CNT_PW1"
+outPW1="$( cd "$repoPW1" \
+    && LCARS_WORKTREE_SETUP_CMD="printf x >> '$CNT_PW1'; touch .provisioned; pwd > .pwd-record" \
+       LCARS_GH_BIN="$repoPW1/gh" bash "$SCRIPT" provision-worktree-test --mission "$MID" 2>/dev/null )"
+WT_PW1="${outPW1#WT=}"
+check "PW1. make_ticket_worktree creates the worktree" \
+  "[ -n '$WT_PW1' ] && [ -d '$WT_PW1' ]"
+check "PW1. provisions it — the setup command ran in the worktree (.provisioned present)" \
+  "[ -f '$WT_PW1/.provisioned' ]"
+check "PW1. provisions EXACTLY once (not re-run on a single creation)" \
+  "[ \"\$(wc -c < '$CNT_PW1' | tr -d ' ')\" = '1' ]"
+# PW4: the setup command's CWD is the WORKTREE, not the main checkout.
+check "PW4. the setup command's CWD is the worktree (pwd), not the main checkout" \
+  "[ \"\$(cat '$WT_PW1/.pwd-record')\" != '$repoPW1' ] && qgrep -q 'wt-test/all' '$WT_PW1/.pwd-record'"
+# PW6: provisioning never stages anything — the index stays clean despite new files.
+check "PW6. provision_worktree never git-adds (nothing staged in the worktree)" \
+  "( cd '$WT_PW1' && git diff --cached --quiet )"
+
+# --- PW2: the post_commit_gate worktree is provisioned the same way -----------
+# Honest-green post-commit run (version.sh present, suite green) — post_commit_gate cuts
+# its OWN worktree, which must be provisioned ONCE before its testCommand re-runs. The
+# gate cleans the worktree up, so we record provisioning to an EXTERNAL counter.
+repoPW2="$(new_repo_postcommit)"; make_gh_stub "$repoPW2/gh"
+export GH_LOG="$repoPW2/gh.log"; : >"$GH_LOG"
+pc_save_tests "$repoPW2"
+printf '#!/usr/bin/env bash\necho v2\n' >"$repoPW2/version.sh"
+CNT_PW2="$repoPW2/provision-count"; : >"$CNT_PW2"
+resPW2="$repoPW2/result.json"; write_result "$resPW2" t-001 true 2
+rcPW2=0
+( cd "$repoPW2" && LCARS_NOW=1700018102 LCARS_TEST_CMD="bash $PC_RUNNER" \
+    LCARS_WORKTREE_SETUP_CMD="printf x >> '$CNT_PW2'" LCARS_GH_BIN="$repoPW2/gh" \
+    bash "$SCRIPT" impl-save-result --mission "$MID" --ticket t-001 --result "$resPW2" \
+    >outPW2.txt 2>&1 ) || rcPW2=$?
+check "PW2. post-commit honest-green still exits 0 (provisioning did not break it)" \
+  "[ '$rcPW2' -eq 0 ]"
+check "PW2. provisions the post-commit worktree EXACTLY once" \
+  "[ \"\$(wc -c < '$CNT_PW2' | tr -d ' ')\" = '1' ]"
+
+# --- PW3: no command configured (env + config) → clean NO-OP ------------------
+# Proves the dep-free dogfood path is unaffected: nothing provisioned, worktree still cut.
+repoPW3="$(new_repo_postcommit)"; make_gh_stub "$repoPW3/gh"
+export GH_LOG="$repoPW3/gh.log"; : >"$GH_LOG"
+outPW3="$( cd "$repoPW3" && LCARS_GH_BIN="$repoPW3/gh" \
+    bash "$SCRIPT" provision-worktree-test --mission "$MID" 2>/dev/null )"
+WT_PW3="${outPW3#WT=}"
+check "PW3. no command configured: the worktree is still created (no-op is safe)" \
+  "[ -n '$WT_PW3' ] && [ -d '$WT_PW3' ]"
+check "PW3. no command configured: nothing provisioned (.provisioned absent)" \
+  "[ ! -f '$WT_PW3/.provisioned' ]"
+
+# --- PW5: a failing setup command returns non-zero + breadcrumb, never aborts --
+repoPW5="$(new_repo_postcommit)"; make_gh_stub "$repoPW5/gh"
+export GH_LOG="$repoPW5/gh.log"; : >"$GH_LOG"
+outPW5="$( cd "$repoPW5" && LCARS_NOW=1700018105 LCARS_WORKTREE_SETUP_CMD='exit 7' \
+    LCARS_GH_BIN="$repoPW5/gh" bash "$SCRIPT" provision-worktree-test --mission "$MID" 2>/dev/null )"
+WT_PW5="${outPW5#WT=}"
+check "PW5. a failing setup command does NOT abort the gate (worktree still created)" \
+  "[ -n '$WT_PW5' ] && [ -d '$WT_PW5' ]"
+check "PW5. a failing setup command emits the worktree_provision_failed breadcrumb" \
+  "grep -q '\"type\":\"worktree_provision_failed\"' '$repoPW5/.git/lcars/missions/$MID/events.jsonl'"
+
+# ==========================================================================
 # --- Behaviour LOCK: single-instance `drive` per mission (BUG-A) ------------
 # The viewscreen Start button could fire `run drive` for the SAME mission more
 # than once (no feedback + a blocking POST), so THREE drivers raced one mission,

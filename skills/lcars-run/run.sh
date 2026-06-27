@@ -2092,6 +2092,10 @@ post_commit_gate() { # ticket
     "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt" 2>/dev/null || :
     return 0
   fi
+  # Session 81: provision the fresh post-commit worktree ONCE, before its testCommand
+  # re-runs, so it evaluates in the same dependency-complete environment as the red /
+  # full-suite gates. Best-effort: a failure breadcrumbs but never aborts the gate.
+  provision_worktree "$wt" || :
 
   # Stage the ticket's quarantined tests at a DEPTH-1 dir under the clean worktree
   # root, so a portable test that resolves its target relative to its own location
@@ -5664,6 +5668,40 @@ cmd_implement() {
   done
 }
 
+# --- provision a freshly-created worktree (Session 81) -----------------------
+# Run a config-driven `worktreeSetupCommand` ONCE inside a just-created worktree,
+# right after `git worktree add` and BEFORE any testCommand runs, so the red gate
+# and the green (full-suite / post-commit) gates all evaluate in the SAME,
+# dependency-complete environment. The command string is GENERIC — every ecosystem
+# specific (npm ci / pnpm install / …) lives in that config value, NEVER here.
+#
+# Resolution mirrors resolve_test_cmd(): the env override ($LCARS_WORKTREE_SETUP_CMD)
+# wins, then the repo config (worktreeSetupCommand). With NO command configured this
+# is a safe NO-OP (rc 0, nothing created) so LCARS's own dependency-free dogfood stays
+# green. The command runs EXACTLY ONCE with the worktree as CWD. Provisioning is
+# BEST-EFFORT: a non-zero exit does NOT abort/throw the gate — it drops a concise
+# `worktree_provision_failed` breadcrumb and returns the command's rc (the caller
+# ignores it). It NEVER stages or git-adds anything (it only runs the command).
+provision_worktree() { # worktree-path → 0 (no-op or success), else the command's rc
+  local wt="$1" cmd rc=0
+  if [ -n "${LCARS_WORKTREE_SETUP_CMD:-}" ]; then
+    cmd="$LCARS_WORKTREE_SETUP_CMD"
+  else
+    [ -f "$LCARS_CFG" ] || return 0
+    cmd="$(json_str "$LCARS_CFG" worktreeSetupCommand)"
+  fi
+  case "$cmd" in ''|null) return 0 ;; esac
+  # Run ONCE with the worktree as CWD; capture combined output for the breadcrumb.
+  local out; out="$( cd "$wt" && bash -c "$cmd" 2>&1 )" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    emit_event worktree_provision_failed implement \
+      "worktreeSetupCommand exited $rc in $wt — provisioning is best-effort, the gate continues" \
+      "rc=$rc"
+    return "$rc"
+  fi
+  return 0
+}
+
 # --- per-ticket worktree lifecycle (Session 37) -----------------------------
 # Create a detached worktree at the mission-branch tip for ONE ticket's build, so
 # concurrent tickets never collide on the shared working tree. The branch itself
@@ -5678,6 +5716,11 @@ make_ticket_worktree() { # base-dir  branch  ticket → echoes the worktree path
   "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || :
   rm -rf "$wt"
   "$GIT_BIN" worktree add -q --detach "$wt" "$branch" >/dev/null 2>&1 || { rm -rf "$wt"; return 0; }
+  # Session 81: provision the fresh worktree (dep install, etc.) ONCE, before any
+  # gate's testCommand runs — covers BOTH the red gate's build worktree and the
+  # full-suite gate. Best-effort: a failure drops a breadcrumb but never aborts the
+  # worktree creation (the gate still runs inside it).
+  provision_worktree "$wt" || :
   printf '%s' "$wt"
 }
 
@@ -6742,6 +6785,16 @@ case "$SUB" in
   ensure-mission-branch)
     locate_mission "$MISSION_ID"
     ensure_mission_branch "${RC_BRANCH:-$(json_str "$STATE" branch)}" ;;
+  # Session 81 test hook: exercise make_ticket_worktree's provisioning. Cuts a fresh
+  # detached worktree (the SHARED path for the red gate's build worktree AND the
+  # full-suite gate) and — unlike the real flow — does NOT clean it up, so the test
+  # can inspect the provisioned tree. Echoes `WT=<path>` (empty on fall-back). The
+  # branch defaults to state.json's (override with --branch); ticket defaults to "all".
+  provision-worktree-test)
+    locate_mission "$MISSION_ID"
+    __pwt="$(make_ticket_worktree "$MISSION_DIR/wt-test" "${RC_BRANCH:-$(json_str "$STATE" branch)}" "${TICKET:-all}")"
+    printf 'WT=%s\n' "$__pwt"
+    exit 0 ;;
   # Session 65 test/maintenance hook: start the Implement comment heartbeat,
   # report its ticker pid, let it run its bounded ticks ($LCARS_COMMENT_HEARTBEAT_TICKS),
   # then stop it cleanly (no orphan). Exercises the heartbeat lifecycle (start /
