@@ -1746,6 +1746,58 @@ red_gate_compile_failure() { # runner-output → 0 if a compile/load failure sig
   return 1
 }
 
+# S83 (gate-worktree-deps): an un-runnable ENVIRONMENT detector — companion to
+# red_gate_compile_failure. That detector catches a test file that LOADED into a
+# WORKING runner but failed to PARSE/COMPILE. This one catches the DIFFERENT
+# failure where the test RUNNER ITSELF could not START at all: the gate worktree
+# is not provisioned — no node_modules / venv, the runner binary is absent, no
+# pnpm lockfile, or a permissions error. Such a run exits non-zero with output
+# that DIFFERS from the empty-dir probe (so `ignored_var=no`), and WITHOUT this
+# guard the red gate would WRONGLY accept it as a satisfying fail-first red even
+# though not a single assertion ever executed — the bug then stays silent until
+# it is fatal at a downstream green gate. We CLASSIFY these startup failures so
+# red_gate_ok can REFUSE to count them and fail LOUD with an actionable reason.
+# This is an ADDITIONAL guard that REJECTS MORE reds — it never loosens the gate.
+# (Provisioning itself is S81/S82; this session only classifies output.)
+#
+# Each signature below is a runner-STARTUP failure (emitted before any test ran).
+# CRITICAL: every shell/exec-diagnostic arm is ANCHORED to the way the shell ITSELF
+# prints the error, so an assertion that merely PRINTS the same phrase — typically
+# QUOTED inside an expected/received diff (`expected 'ok' to equal 'command not
+# found'`), mid-line, or inside a test NAME (`it('shows git: command not found')`) —
+# does NOT match. We MUST NOT block a genuine fail-first (that would re-break Implement).
+#   • shell "command not found" / "<x>: not found": ONLY when the line BEGINS with the
+#       interpreter's own diagnostic prefix (sh:/bash:/zsh:/dash:/ash:/ksh:/env:, opt.
+#       leading path / `[pid]`) — e.g. `sh: vitest: command not found`, `bash: line 1:
+#       vitestxyz: command not found`, `zsh: command not found: vitest`, `sh: jest: not
+#       found`. An assertion line starts with `AssertionError:` / `it(` / `{` instead.
+#   • runner-binary self-report: a line BEGINNING with a known runner name then
+#       `: … not found` (vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|
+#       yarn|node) — the only bare `<name>: not found` forms the brief ever named.
+#   • ERR_PNPM_… — pnpm refused to run (e.g. ERR_PNPM_NO_LOCKFILE) → deps not installed.
+#   • node_modules … missing/not found/No such — JS deps not installed in the worktree.
+#   • ModuleNotFoundError / No module named — the Python interpreter could not import
+#       the runner/its deps (venv not provisioned).
+#   • exec-permission/format errors as the SHELL prints them at end-of-line: a path
+#       then `: Permission denied$`, or `: cannot execute` / `cannot execute binary
+#       file`. The assertion forms end with a QUOTE (`…'Permission denied'`) or quote
+#       the phrase (`'cannot execute migration'`), so neither the end-anchored nor the
+#       colon-prefixed arm matches them.
+#   • `env: <interp>: No such file or directory` — a missing interpreter via shebang
+#       (e.g. `env: node: No such file or directory`), anchored at line start.
+#   • venv-missing: `No such file or directory` pointing at a venv/bin path, or a
+#       missing `source …/activate` step.
+# So "2 failed", "expected 3 to be 4", and every quoted/test-name phrase above do NOT
+# match — kept TIGHT, no false positive that would block a genuine fail-first.
+# Returns 0 (the runner could not execute) or 1 (no env-failure signature).
+red_gate_env_failure() { # runner-output → 0 if the runner could not execute
+  local out="$1"
+  printf '%s' "$out" | grep -Eq \
+    '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate' \
+    && return 0
+  return 1
+}
+
 # --- GUARDRAIL 1: the red gate ----------------------------------------------
 # BUG-007 contract. Run the configured test command against ONLY the just-written
 # QUARANTINED tests, with NO implementation present, and decide on the quarantined
@@ -1816,6 +1868,34 @@ red_gate_ok() { # quarantined-tests-dir
       if [ -n "$RED_GATE_SIGNAL" ]; then
         {
           printf 'rc=%s (the quarantined-tests run exited non-zero, but the command IGNORES $LCARS_TESTS_DIR so the red is unproven)\n' "$rc"
+          printf '%s\n' "$reason"
+        } >"$RED_GATE_SIGNAL"
+      fi
+      return 1
+    fi
+    # S83: the command reacted to the var, but a non-zero exit is only a VALID red
+    # when the runner actually STARTED and a test ASSERTION failed. Triage the
+    # un-runnable ENVIRONMENT first — BEFORE the compile/load check — because a
+    # runner that never launched must be diagnosed as "environment not provisioned",
+    # not mis-reported as a compile/load error. (The env signatures are tight enough
+    # that a genuine compile error — SyntaxError, generic Cannot-find-module — does
+    # NOT match here and falls through to red_gate_compile_failure below.) If the
+    # output shows the runner could not start (missing node_modules/venv, an absent
+    # test binary, no pnpm lockfile, a permissions error), then NOT ONE assertion ran,
+    # so this red proves NOTHING about the new tests. It differs from the empty-dir
+    # probe (ignored_var=no), so without this guard it would be WRONGLY accepted as a
+    # satisfying fail-first. REFUSE it: route to the SAME awaiting-human / retry path a
+    # genuine red-gate rejection uses, with a distinct, actionable reason. This is an
+    # ADDITIONAL guard that rejects MORE reds — it does NOT loosen the gate, and leaves
+    # the empty-dir probe / ignored_var / differ logic untouched. (Provisioning the
+    # worktree is S81/S82; here we only classify and fail loud.)
+    if red_gate_env_failure "$out"; then
+      reason="RED GATE — environment not provisioned — the test runner could not start (is worktreeSetupCommand set?). The quarantined suite exited non-zero, but the failure is the RUNNER ITSELF failing to LAUNCH (missing node_modules/venv, an absent test binary, no pnpm lockfile, or a permissions error), NOT a test assertion — so not a single test ran and this red proves NOTHING about the new tests. Provision the gate worktree (set \`worktreeSetupCommand\` so the runner's dependencies are installed before the gate runs), then the suite can fail-first on its assertions. Command run: $cmd. Runner output (quarantined run):
+$(printf '%s' "$out" | tail -20)"
+      printf '  ✗ %s\n' "$reason" >&2
+      if [ -n "$RED_GATE_SIGNAL" ]; then
+        {
+          printf 'rc=%s (the quarantined-tests run could not START the runner — environment not provisioned, NOT a valid assertion red)\n' "$rc"
           printf '%s\n' "$reason"
         } >"$RED_GATE_SIGNAL"
       fi
@@ -6831,5 +6911,13 @@ case "$SUB" in
     # Escalation early-exit: NO explicit cm_heartbeat_stop. With the fix, the lock's
     # composite EXIT trap still reaps the ticker; without it, the ticker orphans.
     exit 0 ;;
+  # S83 test hook: run the un-runnable-ENVIRONMENT detector on stdin and exit with
+  # its return code (0 = env failure detected, 1 = none). Inert for every real
+  # subcommand — reachable only by this explicit token from the test suite, so the
+  # pure detector's pattern coverage can be unit-tested directly.
+  red-gate-env-detect-test)
+    _rg_in="$(cat)"
+    if red_gate_env_failure "$_rg_in"; then exit 0; else exit 1; fi
+    ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

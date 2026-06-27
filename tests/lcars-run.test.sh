@@ -6369,6 +6369,175 @@ check "B22-5. red_gate_ok routes a compile/load failure to a rejection (red_gate
   "qgrep -q 'red_gate_compile_failure' '$SCRIPT'"
 
 # ==========================================================================
+# S83 (gate-worktree-deps) — un-runnable ENVIRONMENT detector.
+# The red gate's compile/load triage catches a test file that LOADED but did not
+# PARSE. It does NOT catch the DIFFERENT failure where the RUNNER ITSELF could not
+# start (no node_modules/venv, an absent test binary, no pnpm lockfile, bad perms):
+# such a run exits non-zero with output that DIFFERS from the empty-dir probe, so it
+# was WRONGLY accepted as a satisfying fail-first red even though not one assertion
+# ran. S83 adds an ADDITIONAL guard, layered BEFORE acceptance, that classifies these
+# startup failures and REFUSES to count them — failing LOUD with an actionable reason
+# (provisioning is S81/S82; this session only CLASSIFIES). This is the OPPOSITE of
+# loosening the gate: it REJECTS more reds (the env-failure ones), and touches NONE of
+# the empty-dir probe / ignored-var / differ logic.
+# A small inert test hook (`red-gate-env-detect-test`) runs the pure detector on stdin
+# and exits with its return code (0 = env failure, 1 = none) so we can unit-test the
+# pattern coverage directly.
+
+env_detect() { # runner-output → 0 if classified as an env failure
+  printf '%s' "$1" | ( cd "$REPO_ROOT" && bash "$SCRIPT" red-gate-env-detect-test )
+}
+
+# S83-1: the detector MATCHES each representative un-runnable-environment signature.
+check "S83-1. env detector matches 'command not found' (missing test binary)" \
+  "env_detect 'sh: vitest: command not found'"
+check "S83-1. env detector matches an ERR_PNPM_ lockfile failure" \
+  "env_detect 'ERR_PNPM_NO_LOCKFILE  Cannot install with frozen lockfile'"
+check "S83-1. env detector matches a Python ModuleNotFoundError (missing runner)" \
+  "env_detect \"ModuleNotFoundError: No module named 'pytest'\""
+check "S83-1. env detector matches a missing node_modules" \
+  "env_detect 'node_modules missing — run install first'"
+# Anchored shell/exec-diagnostic forms the runner emits at STARTUP (must still match):
+check "S83-1. env detector matches a bash 'command not found' line" \
+  "env_detect 'bash: line 1: vitestxyz: command not found'"
+check "S83-1. env detector matches a zsh 'command not found' line" \
+  "env_detect 'zsh: command not found: vitest'"
+check "S83-1. env detector matches a 'jest: not found' shell line" \
+  "env_detect 'sh: jest: not found'"
+check "S83-1. env detector matches an exec Permission-denied line (path-trailing)" \
+  "env_detect '/usr/local/bin/vitest: Permission denied'"
+check "S83-1. env detector matches a missing-interpreter 'env: node: No such file or directory'" \
+  "env_detect 'env: node: No such file or directory'"
+
+# S83-2: the detector does NOT match a NORMAL failing-test red (no false positive
+# that would block a real fail-first). This is the FIX-LOOP guard: the shell/exec
+# phrases above must NOT trip the detector when they appear QUOTED inside an
+# assertion diff, mid-line, or inside a test NAME (the tester's proven defects).
+check "S83-2. env detector does NOT match a plain assertion summary ('2 failed')" \
+  "! env_detect 'Tests: 2 failed, 3 passed'"
+check "S83-2. env detector does NOT match an assertion diff ('expected 3 to be 4')" \
+  "! env_detect 'AssertionError: expected 3 to be 4'"
+check "S83-2. env detector does NOT match a quoted 'Permission denied' assertion diff" \
+  "! env_detect \"AssertionError: expected undefined to equal 'Permission denied'\""
+check "S83-2. env detector does NOT match a quoted 'command not found' assertion diff" \
+  "! env_detect \"AssertionError: expected 'ok' to equal 'command not found'\""
+check "S83-2. env detector does NOT match a quoted 'cannot execute …' assertion diff" \
+  "! env_detect \"AssertionError: expected 'cannot execute migration' to equal 'ok'\""
+check "S83-2. env detector does NOT match a bare 'Expected: not found' diff label" \
+  "! env_detect 'Expected: not found'"
+check "S83-2. env detector does NOT match a JSON payload carrying 'user: not found'" \
+  "! env_detect '{\"error\": \"user: not found\"}'"
+check "S83-2. env detector does NOT match 'command not found' inside a test NAME" \
+  "! env_detect \"it('shows git: command not found', () => {})\""
+
+# S83-3: red_gate_ok REJECTS an env-failure red (does NOT accept it as fail-first)
+# and the reason names 'environment not provisioned' / worktreeSetupCommand. The stub
+# REACTS to \$LCARS_TESTS_DIR (green on empty dir, env-failure on a real dir) so
+# ignored_var=no — proving the rejection is the NEW env-failure guard, not the
+# pre-existing ignored-var block.
+ENV_FAIL_RUNNER="$TMPROOT/env-fail-runner.sh"
+cat >"$ENV_FAIL_RUNNER" <<'EOF'
+#!/usr/bin/env bash
+# Honors $LCARS_TESTS_DIR: vacuously green on an empty/missing dir (so the empty-dir
+# probe proves the command reacted → ignored_var=no), but on a real quarantine dir the
+# RUNNER ITSELF cannot start — the worktree is not provisioned.
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests collected (vacuous green)"; exit 0; }
+echo "sh: vitest: command not found" >&2
+exit 127
+EOF
+chmod +x "$ENV_FAIL_RUNNER"
+repoS83="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS83/gh"
+export GH_LOG="$repoS83/gh.log"; : >"$GH_LOG"
+tS83="$repoS83/tw"; make_tests_dir "$tS83"
+rcS83=0
+( cd "$repoS83" && LCARS_TEST_CMD="bash $ENV_FAIL_RUNNER" LCARS_GH_BIN="$repoS83/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS83" >outS83.txt 2>&1 ) || rcS83=$?
+check "S83-3. red gate REJECTS an env-failure red (runner could not start)" "[ '$rcS83' -ne 0 ]"
+check "S83-3. the rejection names 'environment not provisioned'" \
+  "grep -qi 'environment not provisioned' '$repoS83/outS83.txt'"
+check "S83-3. the rejection names worktreeSetupCommand (actionable next step)" \
+  "grep -q 'worktreeSetupCommand' '$repoS83/outS83.txt'"
+check "S83-3. an env-failure red is NOT quarantined (never reaches the Implementer)" \
+  "[ ! -d '$repoS83/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# S83-4: a GENUINE fail-first red (real assertions that react to \$LCARS_TESTS_DIR,
+# no env signature) is still ACCEPTED and quarantined — no regression to the happy path.
+repoS83b="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS83b/gh"
+export GH_LOG="$repoS83b/gh.log"; : >"$GH_LOG"
+tS83b="$repoS83b/tw"; make_tests_dir "$tS83b"
+rcS83b=0
+( cd "$repoS83b" && LCARS_TEST_CMD="bash $EARLY_HONOR_RED" LCARS_GH_BIN="$repoS83b/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS83b" >outS83b.txt 2>&1 ) || rcS83b=$?
+check "S83-4. red gate still ACCEPTS a genuine assertion red (no env false-positive)" \
+  "[ '$rcS83b' -eq 0 ]"
+check "S83-4. the accepted genuine red IS quarantined for the Implementer" \
+  "[ -f '$repoS83b/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test.js' ]"
+
+# S83-5: source-level guard — red_gate_ok's RED branch calls the env-failure detector.
+check "S83-5. red_gate_ok routes an env failure to a rejection (red_gate_env_failure)" \
+  "qgrep -q 'red_gate_env_failure' '$SCRIPT'"
+
+# S83-6: FIX-LOOP end-to-end — a GENUINE assertion red whose message merely QUOTES a
+# shell/exec phrase must be ACCEPTED + quarantined, not rejected as an env failure.
+# Reproduces the tester's two proven defects through impl-save-tests. The stub reacts
+# to $LCARS_TESTS_DIR (vacuous green on empty dir, the assertion red on a real dir).
+# $1 = the assertion line the runner emits on a real quarantine dir.
+make_assert_red_runner() { # file assertion-line
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+d="\${LCARS_TESTS_DIR:-}"
+n=0; [ -n "\$d" ] && [ -d "\$d" ] && n="\$(find "\$d" -type f | wc -l | tr -d ' ')"
+[ "\$n" -eq 0 ] && { echo "0 tests collected (vacuous green)"; exit 0; }
+echo "$2" >&2
+exit 1
+EOF
+  chmod +x "$1"
+}
+s83_e2e_accepts() { # label assertion-line
+  local label="$1" line="$2"
+  local runner="$TMPROOT/s83-e2e-$RANDOM.sh"; make_assert_red_runner "$runner" "$line"
+  local repo; repo="$(new_repo_with_implement_mission)"; make_gh_stub "$repo/gh"
+  export GH_LOG="$repo/gh.log"; : >"$GH_LOG"
+  local t="$repo/tw"; make_tests_dir "$t"; local rc=0
+  ( cd "$repo" && LCARS_TEST_CMD="bash $runner" LCARS_GH_BIN="$repo/gh" bash "$SCRIPT" impl-save-tests \
+      --mission "$MID" --ticket t-001 --tests "$t" >out.txt 2>&1 ) || rc=$?
+  check "S83-6. $label — genuine assertion red is ACCEPTED (rc 0)" "[ '$rc' -eq 0 ]"
+  check "S83-6. $label — the accepted red IS quarantined" \
+    "[ -f '$repo/.git/lcars/missions/$MID/tickets/t-001/tests/spec.test.js' ]"
+}
+# DEFECT 1 (authz ticket) and DEFECT 2 (CLI ticket): both must now advance.
+s83_e2e_accepts "DEFECT 1 (quoted 'Permission denied')" \
+  "AssertionError: expected undefined to equal 'Permission denied'"
+s83_e2e_accepts "DEFECT 2 (quoted 'command not found')" \
+  "AssertionError: expected 'ok' to equal 'command not found'"
+
+# S83-6: and a REAL env failure (the runner cannot start) is STILL rejected with the
+# environment-not-provisioned reason — the cure for the primary bug is intact.
+ENV_FAIL_RUNNER2="$TMPROOT/env-fail-runner2.sh"
+make_assert_red_runner "$ENV_FAIL_RUNNER2" "PLACEHOLDER"   # overwritten below
+cat >"$ENV_FAIL_RUNNER2" <<'EOF'
+#!/usr/bin/env bash
+d="${LCARS_TESTS_DIR:-}"
+n=0; [ -n "$d" ] && [ -d "$d" ] && n="$(find "$d" -type f | wc -l | tr -d ' ')"
+[ "$n" -eq 0 ] && { echo "0 tests collected (vacuous green)"; exit 0; }
+echo "sh: vitest: command not found" >&2
+exit 127
+EOF
+chmod +x "$ENV_FAIL_RUNNER2"
+repoS83r="$(new_repo_with_implement_mission)"; make_gh_stub "$repoS83r/gh"
+export GH_LOG="$repoS83r/gh.log"; : >"$GH_LOG"
+tS83r="$repoS83r/tw"; make_tests_dir "$tS83r"; rcS83r=0
+( cd "$repoS83r" && LCARS_TEST_CMD="bash $ENV_FAIL_RUNNER2" LCARS_GH_BIN="$repoS83r/gh" bash "$SCRIPT" impl-save-tests \
+    --mission "$MID" --ticket t-001 --tests "$tS83r" >outS83r.txt 2>&1 ) || rcS83r=$?
+check "S83-6. a real env failure is STILL REJECTED (cure intact)" "[ '$rcS83r' -ne 0 ]"
+check "S83-6. the real-env rejection still names 'environment not provisioned'" \
+  "grep -qi 'environment not provisioned' '$repoS83r/outS83r.txt'"
+check "S83-6. the real-env rejection is NOT quarantined" \
+  "[ ! -d '$repoS83r/.git/lcars/missions/$MID/tickets/t-001/tests' ]"
+
+# ==========================================================================
 # BUG-026 — a Mission-Log bug child (parentMission set) does NOT open a per-bug
 # PR at Verify and emits NO degraded "needs attention" gate. Its fix folds onto
 # the parent's branch.
