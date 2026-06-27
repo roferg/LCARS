@@ -456,6 +456,79 @@ export GH_EXISTING="$repoBn/existing"; : >"$GH_EXISTING"
 check "S43 init: a null persisted testCommand renders as 'none' in the banner" \
   "grep -q 'tests: none' '$repoBn/outBn.txt'"
 
+# --- Session 85: monorepo testCommand + local-dep runner warning ------------
+# Two changes that stop init from emitting a testCommand that NEEDS provisioning
+# while saying nothing: (1) monorepo-aware detection avoids a blind `npm test`
+# fan-out across every package, and (2) a loud warning when the runner is a LOCAL
+# dependency (vitest/jest/mocha/pytest) but worktreeSetupCommand is null — the
+# runner won't exist in the gate worktree unless provisioning is wired.
+
+# (1) A monorepo (pnpm-workspace.yaml / a "workspaces" field) must NOT emit a bare
+#     `npm test` / `pnpm -r test` fan-out — that can't be scoped to the touched
+#     package's quarantined tests. It scopes to the local runner while still
+#     honouring $LCARS_TESTS_DIR so the red gate stays satisfiable.
+repoMono="$(new_repo)"
+printf '{ "workspaces": ["packages/*"], "scripts": { "test": "vitest run" } }\n' >"$repoMono/package.json"
+printf 'packages:\n  - "packages/*"\n' >"$repoMono/pnpm-workspace.yaml"
+make_claude_stub "$repoMono/claude"; make_gh_stub "$repoMono/gh"
+export GH_LOG="$repoMono/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoMono/existing"; : >"$GH_EXISTING"
+( cd "$repoMono" && LCARS_CLAUDE_BIN="$repoMono/claude" LCARS_GH_BIN="$repoMono/gh" bash "$SCRIPT" >outMono.txt 2>&1 )
+cfgMono="$repoMono/.git/lcars/config.json"
+check "S85 init (monorepo): testCommand is NOT a bare 'npm test' fan-out" \
+  "! grep -qE '\"testCommand\": *\"npm test' '$cfgMono'"
+check "S85 init (monorepo): testCommand is NOT a 'pnpm -r' fan-out" \
+  "! grep -q 'pnpm -r' '$cfgMono'"
+check "S85 init (monorepo): testCommand is scoped to the local runner (vitest)" \
+  "grep -q 'vitest' '$cfgMono'"
+check "S85 init (monorepo): testCommand still honours \$LCARS_TESTS_DIR (red-gate-scopable)" \
+  "grep -q 'LCARS_TESTS_DIR' '$cfgMono'"
+check "S85 init (monorepo): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgMono'"
+
+# (2) A single-package npm repo is UNCHANGED from today (no regression): the bare
+#     `npm test -- ${LCARS_TESTS_DIR:-}` default is preserved verbatim.
+repoSingle="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoSingle/package.json"
+printf '{}\n' >"$repoSingle/package-lock.json"
+make_claude_stub "$repoSingle/claude"; make_gh_stub "$repoSingle/gh"
+export GH_LOG="$repoSingle/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoSingle/existing"; : >"$GH_EXISTING"
+( cd "$repoSingle" && LCARS_CLAUDE_BIN="$repoSingle/claude" LCARS_GH_BIN="$repoSingle/gh" bash "$SCRIPT" >outSingle.txt 2>&1 )
+cfgSingle="$repoSingle/.git/lcars/config.json"
+check "S85 init (single-package npm): testCommand is the UNCHANGED 'npm test --' default" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgSingle' testCommand )\" = 'npm test -- \${LCARS_TESTS_DIR:-}' ]"
+
+# (3) A local-dep runner (pytest, resolvable only from a venv) with a NULL
+#     worktreeSetupCommand (Python has no auto-provision default) warns LOUD:
+#     the runner won't exist in the gate worktree unless provisioning is wired.
+repoLD="$(new_repo)"
+printf '[tool.pytest]\n' >"$repoLD/pyproject.toml"
+make_claude_stub "$repoLD/claude"; make_gh_stub "$repoLD/gh"
+export GH_LOG="$repoLD/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoLD/existing"; : >"$GH_EXISTING"
+( cd "$repoLD" && LCARS_CLAUDE_BIN="$repoLD/claude" LCARS_GH_BIN="$repoLD/gh" bash "$SCRIPT" >outLD.txt 2>&1 )
+cfgLD="$repoLD/.git/lcars/config.json"
+check "S85 init: the local-dep case really has a NULL worktreeSetupCommand" \
+  "grep -q '\"worktreeSetupCommand\": *null' '$cfgLD'"
+check "S85 init: a local-dep runner + NULL worktreeSetupCommand warns LOUD on stderr" \
+  "grep -qi 'local dependency' '$repoLD/outLD.txt' && grep -q 'worktreeSetupCommand' '$repoLD/outLD.txt'"
+
+# (4) When worktreeSetupCommand IS set (the normal S82 JS path), NO nag fires —
+#     the gap is already handled, so init must not nag about it.
+repoNoNag="$(new_repo)"
+printf '{ "scripts": { "test": "vitest run" } }\n' >"$repoNoNag/package.json"
+printf '{}\n' >"$repoNoNag/package-lock.json"
+make_claude_stub "$repoNoNag/claude"; make_gh_stub "$repoNoNag/gh"
+export GH_LOG="$repoNoNag/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoNoNag/existing"; : >"$GH_EXISTING"
+( cd "$repoNoNag" && LCARS_CLAUDE_BIN="$repoNoNag/claude" LCARS_GH_BIN="$repoNoNag/gh" bash "$SCRIPT" >outNoNag.txt 2>&1 )
+cfgNoNag="$repoNoNag/.git/lcars/config.json"
+check "S85 init: the no-nag case really has a worktreeSetupCommand set" \
+  "! grep -q '\"worktreeSetupCommand\": *null' '$cfgNoNag'"
+check "S85 init: a local-dep runner WITH worktreeSetupCommand does NOT warn (no nag)" \
+  "! grep -qi 'local dependency' '$repoNoNag/outNoNag.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars init: %d passed, %d failed\n' "$pass" "$fail"

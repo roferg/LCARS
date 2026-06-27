@@ -71,7 +71,25 @@ PROJECT_NAME="$(basename "$TOPLEVEL")"
 # red gate then warns and skips (the pre-existing degradation), it does not block.
 detect_test_cmd() {
   if [ -f "$TOPLEVEL/package.json" ] && grep -q '"test"[[:space:]]*:' "$TOPLEVEL/package.json"; then
-    # jest/mocha/vitest take a path positional after `--`; empty runs the suite.
+    # Monorepo (a pnpm workspace, or a "workspaces" field): a bare `npm test` /
+    # `pnpm -r test` here FANS OUT across every package, so the red gate can never
+    # scope itself to the touched package's quarantined tests. Prefer a command
+    # scoped to the local runner that STILL honours $LCARS_TESTS_DIR — LCARS points
+    # the var at the touched package (it knows it from the plan/manifests). When we
+    # can't recognise the runner from the test script, fall back to the
+    # non-recursive npm default and lean on the local-dep warning below rather than
+    # emitting a fan-out across every package.
+    if [ -f "$TOPLEVEL/pnpm-workspace.yaml" ] || grep -q '"workspaces"[[:space:]]*:' "$TOPLEVEL/package.json"; then
+      local script
+      script="$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)"
+      case "$script" in
+        *vitest*) echo 'npx vitest run ${LCARS_TESTS_DIR:-}'; return ;;
+        *jest*)   echo 'npx jest ${LCARS_TESTS_DIR:-}';       return ;;
+        *mocha*)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';      return ;;
+        *)        echo 'npm test -- ${LCARS_TESTS_DIR:-}';    return ;;
+      esac
+    fi
+    # Single package: jest/mocha/vitest take a path positional after `--`; empty runs the suite.
     echo 'npm test -- ${LCARS_TESTS_DIR:-}'; return; fi
   if [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ]; then
     echo 'pytest ${LCARS_TESTS_DIR:-.}'; return; fi
@@ -85,6 +103,24 @@ detect_test_cmd() {
   if [ -f "$TOPLEVEL/tests/run.sh" ]; then
     echo 'bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'; return; fi
   echo ""
+}
+
+# runner_is_local_dep — 0 if the test command's runner resolves ONLY from a
+# project-local location (node_modules/.bin or a venv) rather than a binary
+# guaranteed on PATH. vitest/jest/mocha (Node) and pytest (Python) are all
+# project-local: they are installed as dependencies, not system tools. The npm
+# default ("npm test -- …") hides the runner in package.json's "test" script, so
+# inspect that too. Used only to decide whether to warn (S85) — never to gate.
+runner_is_local_dep() {
+  local cmd="$1"
+  case "$cmd" in
+    *vitest*|*jest*|*mocha*|*pytest*) return 0 ;;
+  esac
+  if [ -f "$TOPLEVEL/package.json" ] \
+     && grep -Eq '"test"[[:space:]]*:[[:space:]]*"[^"]*(vitest|jest|mocha)' "$TOPLEVEL/package.json"; then
+    return 0
+  fi
+  return 1
 }
 TEST_CMD="${LCARS_TEST_CMD:-$(detect_test_cmd)}"
 if [ -n "$TEST_CMD" ]; then
@@ -122,6 +158,26 @@ if [ -n "$WT_SETUP_CMD" ]; then
   WTSETUP_VALUE="\"$(lcars_json_escape "$WT_SETUP_CMD")\""
 else
   WTSETUP_VALUE='null'
+fi
+
+# --- warn when a LOCAL-dependency runner has nothing to provision it (S85) -----
+# The Implement red/green gates run testCommand inside an ISOLATED git worktree.
+# A runner that resolves only from node_modules/.bin or a venv (vitest/jest/mocha/
+# pytest — not a binary guaranteed on PATH) will NOT exist in that fresh worktree
+# unless worktreeSetupCommand provisions it. S82 auto-seeds that command for JS
+# repos, but when it ends up null (a captain cleared it, or an ecosystem we can't
+# yet provision, e.g. Python) the gate would fail with "command not found" and the
+# failure misreads as a missing implementation. Flag it LOUD at init — the runner
+# is detected, the provisioning is not — so the captain wires it now, not
+# mid-Implement. Detection + warning only; this never gates.
+if [ -n "$TEST_CMD" ] && [ "$WTSETUP_VALUE" = 'null' ] && runner_is_local_dep "$TEST_CMD"; then
+  printf '  ⚠ testCommand runner is a LOCAL dependency but worktreeSetupCommand is not set.\n' >&2
+  printf '    The Implement gates run "%s"\n' "$TEST_CMD" >&2
+  printf '    inside an isolated git worktree; a runner resolvable only from\n' >&2
+  printf '    node_modules/venv will be MISSING there unless worktreeSetupCommand\n' >&2
+  printf '    provisions it. Set worktreeSetupCommand in .git/lcars/config.json (see the\n' >&2
+  printf '    S82 ecosystem default) or run `lcars update` to backfill it, so the gate\n' >&2
+  printf '    worktree has the test runner installed.\n' >&2
 fi
 
 # Preserve the original creation time across re-runs (idempotent).
