@@ -378,6 +378,22 @@ parent_has_pending_children() {
   return 1
 }
 
+# undriven_children — linked children that have NOT reached Verify (stage is
+# neither verify nor done): the un-driven / queued stragglers. A non-empty list
+# means the batch is INCOMPLETE — a bulk accept would fold the verified children
+# to Done and SILENTLY DROP these (the real incident: 002/003 reached Verify and
+# folded while 004 sat stranded at plan). Echoes one "<id>\t<stage>" line each.
+undriven_children() {
+  local bid stage
+  while IFS=$'\t' read -r bid stage; do
+    [ -n "$bid" ] || continue
+    case "$stage" in
+      verify|done) ;;
+      *) printf '%s\t%s\n' "$bid" "$stage" ;;
+    esac
+  done < <(linked_children)
+}
+
 # clear_parent_gate — finalize the parent as the bulk path leaves it once every
 # child is folded: drop the awaiting-human overlay + pending.json + board label.
 # Best-effort; mirrors the gate-raising at the bottom of the default flow in
@@ -392,6 +408,38 @@ clear_parent_gate() {
          "$GH_BIN" issue edit "$PARENT_ISSUE" \
            --remove-label "lcars:awaiting-human" >/dev/null 2>&1 || true
        fi ;;
+  esac
+}
+
+# reraise_incomplete_gate — the completeness guard's counterpart to
+# clear_parent_gate. respond.sh CLEARS the consolidated gate before delegating the
+# fold to us and never blocks on our exit code (PRD: "never blocks clearing the
+# gate"), so merely refusing would leave the gate gone and the straggler dropped.
+# Instead we RE-RAISE the parent's gate with a corrective ask naming the un-driven
+# bug(s): the parent returns to awaiting-human, and the captain drives them (re-run
+# resolve-logs) before re-accepting. Mirrors the bottom gate-raise; folds nothing.
+reraise_incomplete_gate() { # $1 = "<id>\t<stage>" lines (the undriven set)
+  local bid stage idlist=""
+  while IFS=$'\t' read -r bid stage; do
+    [ -n "$bid" ] || continue
+    idlist="$idlist
+  • $bid (stage $stage)"
+  done <<<"$1"
+  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) yet — one or more logged bugs have NOT reached their Verify gate and would be silently dropped. Drive them with \`lcars resolve-logs $PARENT_ID\`, then re-accept. Still unresolved:$idlist"
+  {
+    echo '{'
+    printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "questions": ['
+    printf '    "%s"\n' "$(json_escape "$ask")"
+    echo '  ]'
+    echo '}'
+  } >"$PARENT_DIR/pending.json"
+  state_set_raw "$PARENT_STATE" awaitingHuman true
+  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *) command -v "$GH_BIN" >/dev/null 2>&1 \
+         && "$GH_BIN" issue edit "$PARENT_ISSUE" --add-label "lcars:awaiting-human" >/dev/null 2>&1 || true ;;
   esac
 }
 
@@ -436,6 +484,24 @@ cmd_complete_single() { # bug-id
 
 cmd_complete() {
   local folded=0 bid stage
+  # --- COMPLETENESS GUARD ---------------------------------------------------
+  # Never fold a PARTIAL batch. If ANY linked child has not reached Verify, a bulk
+  # accept would fold the verified children to Done and SILENTLY DROP the rest (the
+  # real incident: 004 stranded at plan while 002/003 folded). respond.sh has
+  # already cleared the gate and ignores our exit code, so we RE-RAISE the gate with
+  # a corrective ask and refuse (non-zero). The captain drives the straggler (re-run
+  # resolve-logs), then re-accepts. Single-bug `complete --bug` is intentionally
+  # exempt: it folds one verified card and leaves the gate up for the rest.
+  local undriven; undriven="$(undriven_children)"
+  if [ -n "$undriven" ]; then
+    reraise_incomplete_gate "$undriven"
+    echo "lcars resolve-logs: NOT completing $PARENT_ID — these logged bugs have not reached Verify:" >&2
+    while IFS=$'\t' read -r bid stage; do
+      [ -n "$bid" ] && echo "  • $bid (stage $stage)" >&2
+    done <<<"$undriven"
+    echo "  Re-raised the consolidated gate. Drive them with \`lcars resolve-logs $PARENT_ID\`, then accept again." >&2
+    exit 1
+  fi
   while IFS=$'\t' read -r bid stage; do
     [ -n "$bid" ] || continue
     fold_one_child "$bid" && folded=$((folded + 1))
