@@ -545,6 +545,20 @@ function cardControls(m) {
       pause.title = "Engaging the driver…";
     }
     ctrl.appendChild(pause);
+  } else if (rs === "queued") {
+    // UX-29 follow-up: a logged bug SCHEDULED in a resolve-logs batch but not yet
+    // started (state.json.queued) — the batch resolver OWNS its scheduling and
+    // drives it automatically when its turn comes. The status pill already reads
+    // "QUEUED · WAITING"; the control must MATCH it. Falling through to the Start
+    // `else` (below) rendered a live Start on a queued card, inviting a manual
+    // launch that RACES the batch driver for the same mission (two drivers, lock
+    // contention). Show a disabled "Queued…" affordance instead — mirrors the
+    // non-actionable `pausing` pattern above.
+    var queuedAff = btn("◷ Queued…", "warn", null);
+    queuedAff.disabled = true;
+    queuedAff.title =
+      "Scheduled in a resolve-logs batch — it starts automatically when its turn comes.";
+    ctrl.appendChild(queuedAff);
   } else if (isRunningStage(m.stage) && m.dispatched) {
     // BUG-062: an in-flight headless stage with no live running flag yet — offer
     // Pause, never Start (so Start can't be double-fired). Gated on `dispatched`
