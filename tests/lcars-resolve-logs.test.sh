@@ -900,6 +900,39 @@ rc10c=0
 check "10c. bulk-accept folds ALL verified children to Done" \
   "[ '$rc10c' -eq 0 ] && qgrep '\"stage\": *\"done\"' '$repo10c/.git/lcars/missions/lcars-20260601-002/state.json' && qgrep '\"stage\": *\"done\"' '$repo10c/.git/lcars/missions/lcars-20260601-003/state.json'"
 
+# --- Behaviour 12 (completeness guard): bulk complete REFUSES + RE-RAISES the gate
+# while a logged bug is still un-driven, instead of silently dropping it. Reproduces
+# the real incident: 002+003 reached Verify, 004 was stranded at plan; respond.sh
+# clears the consolidated gate THEN best-effort-folds (ignoring our exit), so a naive
+# fold would move 002/003 to Done and lose 004. The guard must re-raise the gate.
+repo12="$(new_repo_with_linked_bugs 3)"
+make_gh_stub "$repo12/gh"; make_notify_stub "$repo12/notify"
+export GH_LOG="$repo12/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export NOTIFY_LOG="$repo12/notify.log"; : >"$NOTIFY_LOG"
+# 002 & 003 reached verify; 004 LEFT at plan (the stranded straggler). The parent
+# carries NO awaitingHuman — simulating respond.sh having already cleared the gate
+# right before delegating the fold to us (so we must RE-RAISE it).
+for seq in 002 003; do
+  s="$repo12/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+p12="$repo12/.git/lcars/missions/lcars-20260601-001/state.json"
+rc12=0
+(
+  cd "$repo12"
+  LCARS_GH_BIN="$repo12/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_NOTIFY="$repo12/notify" \
+  LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out12.txt 2>&1
+) || rc12=$?
+check "12. bulk complete REFUSES (non-zero) while a logged bug is un-driven" \
+  "[ '$rc12' -ne 0 ]"
+check "12. verified siblings are NOT folded to Done (no silent partial accept)" \
+  "qgrep '\"stage\": *\"verify\"' '$repo12/.git/lcars/missions/lcars-20260601-002/state.json' && ! qgrep '\"stage\": *\"done\"' '$repo12/.git/lcars/missions/lcars-20260601-002/state.json'"
+check "12. the stranded bug 004 is named in the refusal" \
+  "qgrep 'lcars-20260601-004' '$repo12/out12.txt'"
+check "12. the parent gate is RE-RAISED (awaitingHuman set + pending.json written)" \
+  "qgrep '\"awaitingHuman\": *true' '$p12' && [ -f '$repo12/.git/lcars/missions/lcars-20260601-001/pending.json' ]"
+
 # ==========================================================================
 echo
 printf 'lcars resolve-logs: %d passed, %d failed\n' "$pass" "$fail"
