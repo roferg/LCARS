@@ -302,6 +302,26 @@ OPENOUT="$(LCARS_WEB_DIR="$WEB_DIR" LCARS_PYTHON_BIN="$PYSTUB" LCARS_GH_BIN="$GH
 check "launcher forwards --open to the daemon" \
   "printf '%s' \"\$OPENOUT\" | qgrep -q -- '--open'"
 
+# --- BUG (lcars-buddy): a QUEUED card must not render a live Start button -------
+# A logged bug SCHEDULED in a resolve-logs batch carries state.json.queued:true; the
+# board derives runState→"queued" and shows a "QUEUED · WAITING" pill. But the card's
+# action control (cardControls) branched only on paused/pausing/running and otherwise
+# FELL THROUGH to a live "▶ Start" — so a queued card showed Start, and clicking it
+# RACES the batch driver for the same mission (two drivers, lock contention).
+# cardControls MUST handle rs==="queued" with a DISABLED affordance, BEFORE the Start
+# fallthrough. Locked structurally: this app is python-stdlib-only with NO JS DOM
+# harness (the board *shape* — queued:true — is covered in web/tests/test_local_adapter).
+CARDCTRL="$(awk '/^function cardControls\(m\) \{/{f=1} f{print} f&&/^\}/{exit}' \
+  "$WEB_DIR/static/board.js")"
+qln="$(printf '%s\n' "$CARDCTRL" | grep -n 'rs === "queued"' | head -1 | cut -d: -f1)"
+sln="$(printf '%s\n' "$CARDCTRL" | grep -n 'openLaunch'      | head -1 | cut -d: -f1)"
+check "cardControls resolves the queued state before the Start fallthrough" \
+  "[ -n \"$qln\" ] && [ -n \"$sln\" ] && [ \"$qln\" -lt \"$sln\" ]"
+QARM="$(printf '%s\n' "$CARDCTRL" \
+  | awk '/rs === "queued"/{f=1} /isRunningStage\(m\.stage\) && m\.dispatched/{f=0} f{print}')"
+check "queued card renders a DISABLED affordance, never a live Start" \
+  "printf '%s' \"\$QARM\" | qgrep -q 'disabled = true' && ! printf '%s' \"\$QARM\" | qgrep -q 'openLaunch'"
+
 echo
 [ "$fail" -eq 0 ] && echo "lcars-viewscreen: ALL PASS ($pass)" || echo "lcars-viewscreen: $fail FAILED"
 exit "$fail"
