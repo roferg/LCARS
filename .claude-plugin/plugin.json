@@ -4,6 +4,7 @@
     "./skills/lcars",
     "./skills/lcars-answer",
     "./skills/lcars-approve",
+    "./skills/lcars-buddy",
     "./skills/lcars-feedback",
     "./skills/lcars-file",
     "./skills/lcars-init",
