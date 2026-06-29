@@ -625,6 +625,68 @@ ev71="$repo71/.git/lcars/missions/$MID/events.jsonl"
 check "071. emits a merged event to events.jsonl on a successful merge" \
   "[ -f '$ev71' ] && grep -q '\"type\":\"merged\"' '$ev71'"
 
+# --- S90: a GENUINE up-to-date push (rc 0, REAL remote) → merge PROCEEDS ------
+# After S89's push-on-accept the parent branch is ALREADY on origin, so approve's
+# final `git push origin <branch>` is a CLEAN no-op: git prints "Everything
+# up-to-date" and returns rc 0. The contract: an up-to-date push is SUCCESS and
+# must fall straight through to `gh pr merge` → done — it must NEVER be mis-read
+# as a merge-failure. The pre-S90 tests only exercised the "no remote → benign
+# push miss → merge" path (rc != 0, classified benign); they never proved a
+# genuine rc-0 up-to-date push against a REAL remote. This fills that gap with a
+# real local bare remote already at the branch tip (the strongest proof).
+add_bare_remote_uptodate() { # <repo>  — push lcars/$MID so remote head == local
+  local repo="$1" bare
+  bare="$(mktemp -d "$TMPROOT/bare.XXXX")"
+  ( cd "$bare" && git init -q --bare )
+  ( cd "$repo" && git remote add origin "$bare" && git push -q origin "lcars/$MID" )
+}
+
+repoUTD="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoUTD/gh"
+add_bare_remote_uptodate "$repoUTD"
+make_reconcile_stub "$repoUTD/recon.sh" 0
+export GH_LOG="$repoUTD/gh.log"; : >"$GH_LOG"
+rcUTD=0
+( cd "$repoUTD" && LCARS_GH_BIN="$repoUTD/gh" LCARS_RUN_SCRIPT="$repoUTD/recon.sh" \
+    LCARS_MERGE_RETRIES=1 LCARS_MERGE_RETRY_SLEEP=0 RECON_LOG="$repoUTD/recon.log" \
+    bash "$SCRIPT" --mission "$MID" >out.txt 2>err.txt ) || rcUTD=$?
+sUTD="$(state_of "$repoUTD")"
+check "utd. exits 0 on a genuine up-to-date push (Everything up-to-date, rc 0)" \
+  "[ '$rcUTD' -eq 0 ]"
+check "utd. proceeds to gh pr merge after the no-op push (merges PR 77)" \
+  "grep -q 'pr merge 77' '$repoUTD/gh.log'"
+check "utd. advances the stage to done" "grep -q '\"stage\": *\"done\"' '$sUTD'"
+check "utd. does NOT mis-read up-to-date as merge-failed" \
+  "! grep -q '\"reconcileStatus\": *\"merge-failed\"' '$sUTD'"
+check "utd. does NOT raise awaitingHuman on an up-to-date push" \
+  "! grep -q '\"awaitingHuman\": *true' '$sUTD'"
+check "utd. marks the review merged" "grep -q '\"review\": *\"merged\"' '$sUTD'"
+
+# --- S90: DISTINCTNESS — a genuine non-ff push (NO reconcileMergeSha) surfaces
+# merge-failed + stays at verify. Proves the up-to-date SUCCESS path is DISTINCT
+# from the rejection path, and that the force-with-lease / staleness guards are
+# UNTOUCHED: with no recorded reconciled green tip the branch is never forced —
+# the divergence is surfaced for the captain. (Sibling of `rr.`, but on the NORMAL
+# flow with NO reconcileMergeSha recorded — the post-S89 default shape.)
+repoNFF="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoNFF/gh"
+make_git_stub_push_reject "$repoNFF/git"
+make_reconcile_stub "$repoNFF/recon.sh" 0
+export GH_LOG="$repoNFF/gh.log"; : >"$GH_LOG"
+rcNFF=0
+( cd "$repoNFF" && LCARS_GH_BIN="$repoNFF/gh" LCARS_GIT_BIN="$repoNFF/git" \
+    LCARS_RUN_SCRIPT="$repoNFF/recon.sh" LCARS_MERGE_RETRY_SLEEP=0 \
+    RECON_LOG="$repoNFF/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>err.txt ) || rcNFF=$?
+sNFF="$(state_of "$repoNFF")"
+check "nff. exits non-zero on a genuine non-fast-forward push" "[ '$rcNFF' -ne 0 ]"
+check "nff. sets reconcileStatus=merge-failed" \
+  "grep -q '\"reconcileStatus\": *\"merge-failed\"' '$sNFF'"
+check "nff. does NOT attempt gh pr merge after a rejected push" \
+  "! grep -q 'pr merge' '$repoNFF/gh.log'"
+check "nff. stays at verify (no false done)" \
+  "grep -q '\"stage\": *\"verify\"' '$sNFF'"
+check "nff. keeps awaitingHuman true (gate stays visible)" \
+  "grep -q '\"awaitingHuman\": *true' '$sNFF'"
+
 # ==========================================================================
 echo
 printf 'lcars approve: %d passed, %d failed\n' "$pass" "$fail"

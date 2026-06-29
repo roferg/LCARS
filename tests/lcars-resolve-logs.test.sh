@@ -933,6 +933,240 @@ check "12. the stranded bug 004 is named in the refusal" \
 check "12. the parent gate is RE-RAISED (awaitingHuman set + pending.json written)" \
   "qgrep '\"awaitingHuman\": *true' '$p12' && [ -f '$repo12/.git/lcars/missions/lcars-20260601-001/pending.json' ]"
 
+# --- Behaviour 13 (S89, push-on-accept): the BULK consolidated accept PUSHES the
+# parent branch to origin so the open PR reflects the accepted logged-bug fixes,
+# and BLOCKS the accept until that push succeeds. The fix commits already live on
+# the parent branch (fold only flips child stage/labels), so pushing the parent
+# branch ships them. Push BEFORE folding: on a push failure NOTHING is folded
+# (nothing reads as shipped) and a re-run RETRIES the push.
+
+# git push stub: intercept `push` (record argv to $GIT_PUSH_LOG, exit 0; OR exit
+# non-zero simulating a real rejection when $PUSH_FAIL=1). Any OTHER subcommand
+# execs real git so `rev-parse --git-common-dir` / `remote get-url` still work.
+make_git_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "push" ]; then
+  echo "git $*" >>"$GIT_PUSH_LOG"
+  if [ "${PUSH_NONFF:-0}" = "1" ]; then
+    # A GENUINE non-fast-forward rejection: the remote head diverged from local.
+    echo " ! [rejected]        ${3:-b} -> ${3:-b} (non-fast-forward)" >&2
+    echo "error: failed to push some refs to 'origin'" >&2
+    echo "hint: Updates were rejected because the tip of your current branch is behind" >&2
+    exit 1
+  fi
+  if [ "${PUSH_FAIL:-0}" = "1" ]; then
+    echo "! [remote rejected] (simulated push failure)" >&2
+    exit 1
+  fi
+  exit 0
+fi
+exec "$REAL_GIT" "$@"
+EOF
+  chmod +x "$1"
+}
+
+# 13a HAPPY: parent + all linked bugs at verify, parent has branch + reachable
+# (stubbed) origin → bulk accept folds all to done AND pushes the parent branch
+# EXACTLY ONCE; exit 0.
+repo13="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo13/gh"; make_notify_stub "$repo13/notify"; make_git_stub "$repo13/git"
+export GH_LOG="$repo13/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export GIT_PUSH_LOG="$repo13/push.log"; : >"$GIT_PUSH_LOG"
+( cd "$repo13" && git remote add origin https://example.invalid/r.git )
+for seq in 002 003; do
+  s="$repo13/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+rc13=0
+(
+  cd "$repo13"
+  REAL_GIT="$(command -v git)" GIT_PUSH_LOG="$repo13/push.log" \
+  LCARS_GH_BIN="$repo13/gh" LCARS_GIT_BIN="$repo13/git" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out13.txt 2>&1
+) || rc13=$?
+check "13. push-on-accept: bulk complete exits zero" "[ '$rc13' -eq 0 ]"
+check "13. both children fold to Done" \
+  "qgrep '\"stage\": *\"done\"' '$repo13/.git/lcars/missions/lcars-20260601-002/state.json' && qgrep '\"stage\": *\"done\"' '$repo13/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "13. pushed the parent branch EXACTLY ONCE" \
+  "[ \"\$(wc -l <'$repo13/push.log' | tr -d ' ')\" -eq 1 ]"
+check "13. the push targets origin <parent branch>" \
+  "qgrep 'push origin lcars/lcars-20260601-001' '$repo13/push.log'"
+
+# 13b PUSH FAILS: the accept is BLOCKED (non-zero), folds NOTHING, and the parent
+# gate is RE-RAISED VISIBLY (awaitingHuman + pending.json naming the branch and a
+# push failure). Then a RE-RUN (push now succeeds) RETRIES the push and folds.
+repo13b="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo13b/gh"; make_notify_stub "$repo13b/notify"; make_git_stub "$repo13b/git"
+export GH_LOG="$repo13b/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+( cd "$repo13b" && git remote add origin https://example.invalid/r.git )
+for seq in 002 003; do
+  s="$repo13b/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+p13b="$repo13b/.git/lcars/missions/lcars-20260601-001/state.json"
+pj13b="$repo13b/.git/lcars/missions/lcars-20260601-001/pending.json"
+rc13b=0
+(
+  cd "$repo13b"
+  PUSH_FAIL=1 REAL_GIT="$(command -v git)" GIT_PUSH_LOG="$repo13b/push.log" \
+  LCARS_GH_BIN="$repo13b/gh" LCARS_GIT_BIN="$repo13b/git" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out13b.txt 2>&1
+) || rc13b=$?
+check "13. a failed push BLOCKS the accept (non-zero)" "[ '$rc13b' -ne 0 ]"
+check "13. a failed push folds NOTHING (children stay at verify, not done)" \
+  "qgrep '\"stage\": *\"verify\"' '$repo13b/.git/lcars/missions/lcars-20260601-002/state.json' && ! qgrep '\"stage\": *\"done\"' '$repo13b/.git/lcars/missions/lcars-20260601-002/state.json' && qgrep '\"stage\": *\"verify\"' '$repo13b/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "13. a failed push RE-RAISES the parent gate (awaitingHuman + pending.json)" \
+  "qgrep '\"awaitingHuman\": *true' '$p13b' && [ -f '$pj13b' ]"
+check "13. the re-raised ask names the branch AND indicates a push failure" \
+  "qgrep 'lcars/lcars-20260601-001' '$pj13b' && qgrep -i 'push' '$pj13b'"
+check "13. nothing reads as shipped — no child is Done after a failed push" \
+  "! qgrep '\"stage\": *\"done\"' '$repo13b/.git/lcars/missions/lcars-20260601-002/state.json' && ! qgrep '\"stage\": *\"done\"' '$repo13b/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "13. the failed push was actually attempted (logged once)" \
+  "[ \"\$(wc -l <'$repo13b/push.log' | tr -d ' ')\" -eq 1 ]"
+
+# re-run: push now succeeds → retries the push AND folds to done.
+: >"$repo13b/push.log"
+rc13c=0
+(
+  cd "$repo13b"
+  REAL_GIT="$(command -v git)" GIT_PUSH_LOG="$repo13b/push.log" \
+  LCARS_GH_BIN="$repo13b/gh" LCARS_GIT_BIN="$repo13b/git" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out13c.txt 2>&1
+) || rc13c=$?
+check "13. a re-run after a failed push RETRIES the push (logged once)" \
+  "[ \"\$(wc -l <'$repo13b/push.log' | tr -d ' ')\" -eq 1 ]"
+check "13. the retry folds all children to Done, exit 0" \
+  "[ '$rc13c' -eq 0 ] && qgrep '\"stage\": *\"done\"' '$repo13b/.git/lcars/missions/lcars-20260601-002/state.json' && qgrep '\"stage\": *\"done\"' '$repo13b/.git/lcars/missions/lcars-20260601-003/state.json'"
+
+# 13d IDEMPOTENT: a second bulk accept when everything is already done+pushed is a
+# clean no-op — exit 0, NO push attempted (a stub-fail-on-push would NOT fire).
+: >"$repo13b/push.log"
+rc13d=0
+(
+  cd "$repo13b"
+  PUSH_FAIL=1 REAL_GIT="$(command -v git)" GIT_PUSH_LOG="$repo13b/push.log" \
+  LCARS_GH_BIN="$repo13b/gh" LCARS_GIT_BIN="$repo13b/git" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out13d.txt 2>&1
+) || rc13d=$?
+check "13. idempotent re-accept (all already done) is a clean no-op (exit 0)" \
+  "[ '$rc13d' -eq 0 ]"
+check "13. idempotent re-accept attempts NO push (so stub-fail-on-push never fires)" \
+  "[ ! -s '$repo13b/push.log' ]"
+
+# 13e: the --bug SINGLE complete must NOT push (it folds one card; the bulk accept
+# is the ship point). PUSH_FAIL is armed to prove the single path never pushes.
+repo13e="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo13e/gh"; make_notify_stub "$repo13e/notify"; make_git_stub "$repo13e/git"
+export GH_LOG="$repo13e/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+( cd "$repo13e" && git remote add origin https://example.invalid/r.git )
+for seq in 002 003; do
+  s="$repo13e/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+rc13e=0
+(
+  cd "$repo13e"
+  PUSH_FAIL=1 REAL_GIT="$(command -v git)" GIT_PUSH_LOG="$repo13e/push.log" \
+  LCARS_GH_BIN="$repo13e/gh" LCARS_GIT_BIN="$repo13e/git" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug "lcars-20260601-002" >out13e.txt 2>&1
+) || rc13e=$?
+check "13. --bug single complete exits zero" "[ '$rc13e' -eq 0 ]"
+check "13. --bug single complete folds only that bug to Done" \
+  "qgrep '\"stage\": *\"done\"' '$repo13e/.git/lcars/missions/lcars-20260601-002/state.json'"
+check "13. --bug single complete does NOT push (zero pushes logged)" \
+  "[ ! -s '$repo13e/push.log' ]"
+
+# 13f NON-FAST-FORWARD (S90 GAP 1, lock-in): a GENUINE non-ff rejection — the
+# remote PR head diverged from the local branch — must BLOCK the accept, fold
+# NOTHING, and re-raise the gate. resolve-logs does NOT classify or force-push:
+# ANY push failure blocks, which is CORRECT here. The local branch is expected to
+# be a fast-forward of the PR head (we hold the committed fixes), so a non-ff means
+# the remote genuinely diverged and the human must reconcile it — we never force.
+repo13f="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo13f/gh"; make_notify_stub "$repo13f/notify"; make_git_stub "$repo13f/git"
+export GH_LOG="$repo13f/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+( cd "$repo13f" && git remote add origin https://example.invalid/r.git )
+for seq in 002 003; do
+  s="$repo13f/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+p13f="$repo13f/.git/lcars/missions/lcars-20260601-001/state.json"
+pj13f="$repo13f/.git/lcars/missions/lcars-20260601-001/pending.json"
+rc13f=0
+(
+  cd "$repo13f"
+  PUSH_NONFF=1 REAL_GIT="$(command -v git)" GIT_PUSH_LOG="$repo13f/push.log" \
+  LCARS_GH_BIN="$repo13f/gh" LCARS_GIT_BIN="$repo13f/git" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out13f.txt 2>&1
+) || rc13f=$?
+check "13f. a non-fast-forward rejection BLOCKS the accept (non-zero)" "[ '$rc13f' -ne 0 ]"
+check "13f. a non-ff rejection folds NOTHING (children stay at verify, none done)" \
+  "qgrep '\"stage\": *\"verify\"' '$repo13f/.git/lcars/missions/lcars-20260601-002/state.json' && ! qgrep '\"stage\": *\"done\"' '$repo13f/.git/lcars/missions/lcars-20260601-002/state.json' && ! qgrep '\"stage\": *\"done\"' '$repo13f/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "13f. a non-ff rejection RE-RAISES the parent gate naming the branch + push" \
+  "qgrep '\"awaitingHuman\": *true' '$p13f' && [ -f '$pj13f' ] && qgrep 'lcars/lcars-20260601-001' '$pj13f' && qgrep -i 'push' '$pj13f'"
+check "13f. the non-ff push was attempted exactly once (we never force-push)" \
+  "[ \"\$(wc -l <'$repo13f/push.log' | tr -d ' ')\" -eq 1 ]"
+
+# 13g MISSING BRANCH + ORIGIN (S90 GAP 2, the real hole): a parent whose state.json
+# records NO branch, with an origin configured, must BLOCK — folding would silently
+# ship nothing to the open PR. Assert non-zero, NOTHING folded, gate re-raised with
+# a message indicating no branch / cannot bring the PR current, and ZERO pushes (the
+# push is never reached — there is nothing to push).
+repo13g="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo13g/gh"; make_notify_stub "$repo13g/notify"; make_git_stub "$repo13g/git"
+export GH_LOG="$repo13g/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+( cd "$repo13g" && git remote add origin https://example.invalid/r.git )
+for seq in 002 003; do
+  s="$repo13g/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+# Strip the parent's branch line → no branch recorded.
+p13g="$repo13g/.git/lcars/missions/lcars-20260601-001/state.json"
+grep -v '"branch"' "$p13g" >"$p13g.t" && mv "$p13g.t" "$p13g"
+pj13g="$repo13g/.git/lcars/missions/lcars-20260601-001/pending.json"
+rc13g=0
+(
+  cd "$repo13g"
+  PUSH_FAIL=1 REAL_GIT="$(command -v git)" GIT_PUSH_LOG="$repo13g/push.log" \
+  LCARS_GH_BIN="$repo13g/gh" LCARS_GIT_BIN="$repo13g/git" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out13g.txt 2>&1
+) || rc13g=$?
+check "13g. missing-branch + origin BLOCKS the accept (non-zero)" "[ '$rc13g' -ne 0 ]"
+check "13g. missing-branch + origin folds NOTHING (children stay at verify)" \
+  "! qgrep '\"stage\": *\"done\"' '$repo13g/.git/lcars/missions/lcars-20260601-002/state.json' && ! qgrep '\"stage\": *\"done\"' '$repo13g/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "13g. missing-branch + origin RE-RAISES the parent gate (awaitingHuman + pending.json)" \
+  "qgrep '\"awaitingHuman\": *true' '$p13g' && [ -f '$pj13g' ]"
+check "13g. the missing-branch ask indicates no branch / cannot bring PR current" \
+  "qgrep -i 'branch' '$pj13g' && qgrep -i 'cannot|current' '$pj13g'"
+check "13g. ZERO push attempts (the push is never reached)" \
+  "[ ! -s '$repo13g/push.log' ]"
+
+# 13h MISSING BRANCH + NO ORIGIN (S90 escape hatch preserved): the same empty-branch
+# parent but with NO origin remote folds the batch to Done — the local/test path is
+# untouched (no remote ⇒ nothing to keep current). Exit 0, zero pushes.
+repo13h="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo13h/gh"; make_notify_stub "$repo13h/notify"; make_git_stub "$repo13h/git"
+export GH_LOG="$repo13h/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+# NO `git remote add origin` here — that is the point of the escape hatch.
+for seq in 002 003; do
+  s="$repo13h/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s" >"$s.t" && mv "$s.t" "$s"
+done
+p13h="$repo13h/.git/lcars/missions/lcars-20260601-001/state.json"
+grep -v '"branch"' "$p13h" >"$p13h.t" && mv "$p13h.t" "$p13h"
+rc13h=0
+(
+  cd "$repo13h"
+  PUSH_FAIL=1 REAL_GIT="$(command -v git)" GIT_PUSH_LOG="$repo13h/push.log" \
+  LCARS_GH_BIN="$repo13h/gh" LCARS_GIT_BIN="$repo13h/git" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out13h.txt 2>&1
+) || rc13h=$?
+check "13h. missing-branch + NO origin FOLDS the batch to Done (escape hatch intact), exit 0" \
+  "[ '$rc13h' -eq 0 ] && qgrep '\"stage\": *\"done\"' '$repo13h/.git/lcars/missions/lcars-20260601-002/state.json' && qgrep '\"stage\": *\"done\"' '$repo13h/.git/lcars/missions/lcars-20260601-003/state.json'"
+check "13h. missing-branch + NO origin attempts ZERO pushes" \
+  "[ ! -s '$repo13h/push.log' ]"
+
 # ==========================================================================
 echo
 printf 'lcars resolve-logs: %d passed, %d failed\n' "$pass" "$fail"

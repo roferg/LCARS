@@ -443,6 +443,62 @@ reraise_incomplete_gate() { # $1 = "<id>\t<stage>" lines (the undriven set)
   esac
 }
 
+# reraise_push_failure_gate — sibling of reraise_incomplete_gate for the S89
+# push-on-accept guard. The BULK accept must PUSH the parent branch (which carries
+# the already-committed logged-bug fixes) to origin so the open PR reflects them,
+# and BLOCK the accept until that push succeeds. respond.sh CLEARS the consolidated
+# gate before delegating the fold to us and ignores our exit code, so a printed
+# error is invisible — a push failure MUST surface via STATE. We RE-RAISE the
+# parent's gate with an ask naming the branch + the captured git push output, so
+# the parent returns to awaiting-human and never reads as shipped/PR-current.
+# Mirrors the bottom gate-raise; folds nothing. $1 = branch, $2 = push output.
+reraise_push_failure_gate() {
+  local branch="$1" out="$2"
+  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) — pushing the parent branch \`$branch\` to origin FAILED, so the open PR does NOT reflect the accepted logged-bug fixes. Nothing was shipped and no logged bug was folded to Done. Fix the push (auth / network / non-fast-forward), then re-run \`lcars resolve-logs complete --parent $PARENT_ID\` to retry the push and fold. git push said: $out"
+  {
+    echo '{'
+    printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "questions": ['
+    printf '    "%s"\n' "$(json_escape "$ask")"
+    echo '  ]'
+    echo '}'
+  } >"$PARENT_DIR/pending.json"
+  state_set_raw "$PARENT_STATE" awaitingHuman true
+  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *) command -v "$GH_BIN" >/dev/null 2>&1 \
+         && "$GH_BIN" issue edit "$PARENT_ISSUE" --add-label "lcars:awaiting-human" >/dev/null 2>&1 || true ;;
+  esac
+}
+
+# reraise_no_branch_gate — the missing-branch counterpart of the push-failure gate
+# (S90 GAP 2). When an origin IS configured (a real PR to keep current) but the
+# parent records NO branch, there is nothing to push — we cannot bring the open PR
+# current, and folding would SILENTLY ship nothing to it (the stale-PR hazard this
+# round closes). As with the push-failure case respond.sh has already cleared the
+# gate and ignores our exit code, so a printed error is invisible: we RE-RAISE the
+# parent's gate via STATE with an ask making clear the parent records NO branch so
+# its open PR cannot be brought current and the batch was NOT folded. Folds nothing.
+reraise_no_branch_gate() {
+  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) — an origin is configured (its open PR must be kept current) but the parent records NO branch, so its open PR cannot be brought current to reflect the accepted logged-bug fixes. Nothing was shipped and no logged bug was folded to Done. Record the parent's working branch in its state.json, then re-run \`lcars resolve-logs complete --parent $PARENT_ID\`."
+  {
+    echo '{'
+    printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "questions": ['
+    printf '    "%s"\n' "$(json_escape "$ask")"
+    echo '  ]'
+    echo '}'
+  } >"$PARENT_DIR/pending.json"
+  state_set_raw "$PARENT_STATE" awaitingHuman true
+  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *) command -v "$GH_BIN" >/dev/null 2>&1 \
+         && "$GH_BIN" issue edit "$PARENT_ISSUE" --add-label "lcars:awaiting-human" >/dev/null 2>&1 || true ;;
+  esac
+}
+
 # --- single-bug complete (BUG-032): fold ONLY one child, re-evaluate the gate --
 # The per-bug "Verify" on a single bug card must complete ONLY that bug — NOT the
 # whole batch. It folds just this child to Done, then re-checks the parent: if any
@@ -502,10 +558,73 @@ cmd_complete() {
     echo "  Re-raised the consolidated gate. Drive them with \`lcars resolve-logs $PARENT_ID\`, then accept again." >&2
     exit 1
   fi
+
+  # The fold set: after the guard, every remaining linked (non-done) child is at
+  # its Verify gate. Gather it up front so we know whether there is a REAL batch
+  # to ship before touching the remote.
+  local fold_ids=()
   while IFS=$'\t' read -r bid stage; do
     [ -n "$bid" ] || continue
-    fold_one_child "$bid" && folded=$((folded + 1))
+    fold_ids+=("$bid")
   done < <(linked_children)
+
+  # IDEMPOTENT / no-op: nothing at Verify to fold (all already done, or none).
+  # There is no batch to ship, so we DO NOT push — a second accept of an
+  # already-folded+pushed parent is a clean no-op. Return before the push.
+  if [ "${#fold_ids[@]}" -eq 0 ]; then
+    echo "lcars resolve-logs: no child bug at Verify to fold into $PARENT_ID — nothing to complete."
+    exit 0
+  fi
+
+  # --- PUSH-BEFORE-FOLD (S89) -----------------------------------------------
+  # The fix commits already live on the PARENT branch (fold only flips child
+  # stage/labels), so accepting the consolidated gate must make the OPEN PR
+  # reflect them: PUSH the parent branch to origin and BLOCK the accept until it
+  # succeeds. We push BEFORE folding (not fold-then-push-then-rollback) for two
+  # reasons: (1) on a push failure NOTHING is folded — nothing reads as
+  # shipped/PR-current; and (2) a RE-RUN naturally RETRIES the push, because the
+  # children are still at Verify (un-folded) so the fold set is non-empty again.
+  # respond.sh ignores our exit code, so a failure MUST surface via the re-raised
+  # STATE gate (reraise_push_failure_gate), never just stdout. Capture-the-result
+  # (BUG-066 pattern), never fire-and-forget.
+  #
+  # ORIGIN-FIRST (S90 GAP 2): the decision pivots on whether there is a real remote
+  # to keep current, NOT on whether a branch happens to be recorded. When an origin
+  # IS configured there is an open PR to bring current, so:
+  #   • parent records NO branch → we cannot push anything → folding would SILENTLY
+  #     ship nothing to the open PR (the stale-PR hazard). BLOCK + re-raise; fold
+  #     NOTHING. (Previously `[ -n "$branch" ]` short-circuited the whole guard and
+  #     folded silently — the hole this closes.)
+  #   • parent HAS a branch → push it; on failure re-raise + block (no force-push —
+  #     a non-fast-forward means the remote genuinely diverged and the human must
+  #     reconcile; that is approve's concern, never ours).
+  # When NO origin is configured (the local/test-repo escape hatch — the parent
+  # branch IS the local branch with nowhere to ship) we skip the push entirely and
+  # fall through to the fold, exactly as before.
+  local branch; branch="$(json_str "$PARENT_STATE" branch)"
+  if command -v "$GIT_BIN" >/dev/null 2>&1 \
+     && "$GIT_BIN" remote get-url origin >/dev/null 2>&1; then
+    if [ -z "$branch" ]; then
+      reraise_no_branch_gate
+      echo "lcars resolve-logs: NOT completing $PARENT_ID — an origin is configured but the parent records NO branch, so its open PR cannot be brought current; nothing was folded. Re-raised the consolidated gate." >&2
+      echo "  Record the parent's branch in its state.json, then re-run \`lcars resolve-logs complete --parent $PARENT_ID\`." >&2
+      exit 1
+    fi
+    local push_out push_rc=0
+    push_out="$("$GIT_BIN" push origin "$branch" 2>&1)" || push_rc=$?
+    if [ "$push_rc" -ne 0 ]; then
+      reraise_push_failure_gate "$branch" "$push_out"
+      echo "lcars resolve-logs: NOT completing $PARENT_ID — pushing branch '$branch' to origin failed; the PR would not reflect the fixes, so nothing was folded. Re-raised the consolidated gate." >&2
+      echo "  git push: $push_out" >&2
+      echo "  Fix the push, then re-run \`lcars resolve-logs complete --parent $PARENT_ID\`." >&2
+      exit 1
+    fi
+  fi
+
+  # Push landed (or there is no remote to ship to) — fold the verified children.
+  for bid in "${fold_ids[@]}"; do
+    fold_one_child "$bid" && folded=$((folded + 1))
+  done
 
   if [ "$folded" -eq 0 ]; then
     echo "lcars resolve-logs: no child bug at Verify to fold into $PARENT_ID — nothing to complete."
