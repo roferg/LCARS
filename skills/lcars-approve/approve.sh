@@ -186,6 +186,14 @@ do_merge() {
   if [ -n "$BRANCH" ] && command -v "$GIT_BIN" >/dev/null 2>&1; then
     local push_out push_rc=0
     push_out="$("$GIT_BIN" push origin "$BRANCH" 2>&1)" || push_rc=$?
+    # push_rc == 0 is SUCCESS — and that INCLUDES the up-to-date no-op. After
+    # S89's push-on-accept (resolve-logs complete --parent pushes the parent
+    # branch), the open PR head already equals the local tip, so this final push
+    # is a clean fast-forward / "Everything up-to-date" and git returns 0. We fall
+    # straight through to `gh pr merge` below. ONLY a non-zero push (rc != 0 —
+    # non-fast-forward / diverged / benign-miss) enters the classification block;
+    # the force-with-lease + staleness guards below run on rejection alone and are
+    # never reached by an up-to-date no-op. (See tests: utd. / nff.)
     if [ "$push_rc" -ne 0 ]; then
       case "$push_out" in
         *'[rejected]'*|*'non-fast-forward'*|*'! [remote rejected]'*|*'fetch first'*|*'tip of your current branch is behind'*)
