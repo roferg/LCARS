@@ -472,6 +472,33 @@ reraise_push_failure_gate() {
   esac
 }
 
+# reraise_no_branch_gate — the missing-branch counterpart of the push-failure gate
+# (S90 GAP 2). When an origin IS configured (a real PR to keep current) but the
+# parent records NO branch, there is nothing to push — we cannot bring the open PR
+# current, and folding would SILENTLY ship nothing to it (the stale-PR hazard this
+# round closes). As with the push-failure case respond.sh has already cleared the
+# gate and ignores our exit code, so a printed error is invisible: we RE-RAISE the
+# parent's gate via STATE with an ask making clear the parent records NO branch so
+# its open PR cannot be brought current and the batch was NOT folded. Folds nothing.
+reraise_no_branch_gate() {
+  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) — an origin is configured (its open PR must be kept current) but the parent records NO branch, so its open PR cannot be brought current to reflect the accepted logged-bug fixes. Nothing was shipped and no logged bug was folded to Done. Record the parent's working branch in its state.json, then re-run \`lcars resolve-logs complete --parent $PARENT_ID\`."
+  {
+    echo '{'
+    printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
+    echo '  "questions": ['
+    printf '    "%s"\n' "$(json_escape "$ask")"
+    echo '  ]'
+    echo '}'
+  } >"$PARENT_DIR/pending.json"
+  state_set_raw "$PARENT_STATE" awaitingHuman true
+  state_set_str "$PARENT_STATE" pendingQuestion "$ask"
+  case "$PARENT_ISSUE" in
+    ''|null) : ;;
+    *) command -v "$GH_BIN" >/dev/null 2>&1 \
+         && "$GH_BIN" issue edit "$PARENT_ISSUE" --add-label "lcars:awaiting-human" >/dev/null 2>&1 || true ;;
+  esac
+}
+
 # --- single-bug complete (BUG-032): fold ONLY one child, re-evaluate the gate --
 # The per-bug "Verify" on a single bug card must complete ONLY that bug — NOT the
 # whole batch. It folds just this child to Done, then re-checks the parent: if any
@@ -559,12 +586,30 @@ cmd_complete() {
   # children are still at Verify (un-folded) so the fold set is non-empty again.
   # respond.sh ignores our exit code, so a failure MUST surface via the re-raised
   # STATE gate (reraise_push_failure_gate), never just stdout. Capture-the-result
-  # (BUG-066 pattern), never fire-and-forget. When no `origin` is configured (the
-  # local/test-repo case — the parent branch IS the local branch with nowhere to
-  # ship) we skip the push and fall through to the fold, exactly as before.
+  # (BUG-066 pattern), never fire-and-forget.
+  #
+  # ORIGIN-FIRST (S90 GAP 2): the decision pivots on whether there is a real remote
+  # to keep current, NOT on whether a branch happens to be recorded. When an origin
+  # IS configured there is an open PR to bring current, so:
+  #   • parent records NO branch → we cannot push anything → folding would SILENTLY
+  #     ship nothing to the open PR (the stale-PR hazard). BLOCK + re-raise; fold
+  #     NOTHING. (Previously `[ -n "$branch" ]` short-circuited the whole guard and
+  #     folded silently — the hole this closes.)
+  #   • parent HAS a branch → push it; on failure re-raise + block (no force-push —
+  #     a non-fast-forward means the remote genuinely diverged and the human must
+  #     reconcile; that is approve's concern, never ours).
+  # When NO origin is configured (the local/test-repo escape hatch — the parent
+  # branch IS the local branch with nowhere to ship) we skip the push entirely and
+  # fall through to the fold, exactly as before.
   local branch; branch="$(json_str "$PARENT_STATE" branch)"
-  if [ -n "$branch" ] && command -v "$GIT_BIN" >/dev/null 2>&1 \
+  if command -v "$GIT_BIN" >/dev/null 2>&1 \
      && "$GIT_BIN" remote get-url origin >/dev/null 2>&1; then
+    if [ -z "$branch" ]; then
+      reraise_no_branch_gate
+      echo "lcars resolve-logs: NOT completing $PARENT_ID — an origin is configured but the parent records NO branch, so its open PR cannot be brought current; nothing was folded. Re-raised the consolidated gate." >&2
+      echo "  Record the parent's branch in its state.json, then re-run \`lcars resolve-logs complete --parent $PARENT_ID\`." >&2
+      exit 1
+    fi
     local push_out push_rc=0
     push_out="$("$GIT_BIN" push origin "$branch" 2>&1)" || push_rc=$?
     if [ "$push_rc" -ne 0 ]; then
