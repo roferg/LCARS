@@ -175,7 +175,8 @@ def _build_handler(adapter, poll_interval, actions=None):
                 return actions.file_mission(
                     idea=body.get("idea"),
                     engine=body.get("engine"),
-                    mission_type=body.get("type", "feature"))
+                    mission_type=body.get("type", "feature"),
+                    images=self._images(body))
             # POST /api/mission/<id>/<verb>[/<sub>]
             if path.startswith("/api/mission/"):
                 rest = path[len("/api/mission/"):]
@@ -205,11 +206,13 @@ def _build_handler(adapter, poll_interval, actions=None):
                                            images=self._images(body))
             if verb == "log/file":
                 return actions.log_file(mid, prds=body.get("prds"),
-                                        overrides=body.get("overrides"))
+                                        overrides=body.get("overrides"),
+                                        images=self._images(body))
             if verb == "log/run":
                 return actions.log_run(mid, prds=body.get("prds"),
                                        overrides=body.get("overrides"),
-                                       confirm=bool(body.get("confirm")))
+                                       confirm=bool(body.get("confirm")),
+                                       images=self._images(body))
             raise _ActionError(404, "no such action: %s" % verb)
 
         def _read_json_body(self):

@@ -69,10 +69,17 @@ json_raw() { # file key -> first bare token (number/bool/null)
 PARENT_SEL=""
 PRDS=()
 OVERRIDES=()
+# Durable image attachments (S92). The captain's pasted screenshots describe the
+# WHOLE report, so each --attach <path> is copied into EVERY child bug's
+# attachments/ dir, referenced by RELATIVE path in that bug's prd.md, and
+# recorded in its state.json. Repeatable; applies to all bugs in this invocation.
+ATTACHMENTS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --parent)   PARENT_SEL="${2:-}"; shift 2 ;;
     --parent=*) PARENT_SEL="${1#--parent=}"; shift ;;
+    --attach)   ATTACHMENTS+=("${2:-}"); shift 2 ;;
+    --attach=*) ATTACHMENTS+=("${1#--attach=}"); shift ;;
     --prd)      PRDS+=("${2:-}"); OVERRIDES+=(""); shift 2 ;;
     --prd=*)    PRDS+=("${1#--prd=}"); OVERRIDES+=(""); shift ;;
     --model-override|--model-override=*)
@@ -93,6 +100,15 @@ done
 for p in "${PRDS[@]}"; do
   [ -f "$p" ] || die "bug PRD file not found: $p"
 done
+
+# Attachments are optional, but if given each must point at a real file — checked
+# BEFORE anything is filed so a bad --attach stops with nothing partial (S92).
+if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
+  for a in "${ATTACHMENTS[@]}"; do
+    [ -n "$a" ] || die "empty --attach path given."
+    [ -f "$a" ] || die "attachment file not found: $a"
+  done
+fi
 
 # Validate every per-bug override BEFORE anything is filed (nothing partial on a
 # bad value), the same way `lcars file` does. Format is "<scope>:<tier>" with
@@ -254,6 +270,30 @@ file_one_bug() { # prd-path [model-override]
   # prd.md — the bug report verbatim.
   cat "$prd" >"$mdir/prd.md"
 
+  # --- stage durable image attachments for THIS bug (S92) ------------------
+  # The captain's screenshots describe the whole report, so every child bug gets
+  # the same shots: copy each into attachments/ under a stable name, append a
+  # `## Attached images` section to this bug's prd.md (relative paths), and
+  # collect the relative paths for state.json below. No attachments ⇒ nothing
+  # written (byte-identical to before).
+  local attach_rels=()
+  if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
+    mkdir -p "$mdir/attachments"
+    local an=0 asrc aext arel
+    for asrc in "${ATTACHMENTS[@]}"; do
+      an=$((an + 1))
+      aext=""
+      case "$asrc" in *.*) aext=".${asrc##*.}" ;; esac
+      arel="$(printf 'attachments/attachment-%02d%s' "$an" "$aext")"
+      cp "$asrc" "$mdir/$arel"
+      attach_rels+=("$arel")
+    done
+    {
+      printf '\n## Attached images\n\n'
+      for arel in "${attach_rels[@]}"; do printf -- '- %s\n' "$arel"; done
+    } >>"$mdir/prd.md"
+  fi
+
   # validated-plan.md — bugs skip Validate, but Plan reads this. The report is
   # the validated direction, so synthesise a thin plan from it. (See header.)
   {
@@ -340,6 +380,18 @@ file_one_bug() { # prd-path [model-override]
     local ov_scope="${override%%:*}" ov_tier="${override#*:}"
     override_line="  \"modelOverride\": { \"scope\": \"$ov_scope\", \"tier\": \"$ov_tier\" },"
   fi
+  # The durable attachments array (S92), emitted only when ≥1 was staged for this
+  # bug — mirroring the optional WORKER_BIN_LINE / override_line pattern so a
+  # no-attachment bug keeps the exact prior state.json shape (no attachments key).
+  local attach_line=""
+  if [ "${#attach_rels[@]}" -gt 0 ]; then
+    local attach_items="" arel2
+    for arel2 in "${attach_rels[@]}"; do
+      [ -n "$attach_items" ] && attach_items="$attach_items, "
+      attach_items="$attach_items\"$arel2\""
+    done
+    attach_line="  \"attachments\": [$attach_items],"
+  fi
   local title_json="${title//\\/\\\\}"; title_json="${title_json//\"/\\\"}"
   local issue_json="${issue:-null}"
   {
@@ -352,6 +404,7 @@ file_one_bug() { # prd-path [model-override]
     printf '  "model": "%s",\n' "$MODEL"
     [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
     [ -n "$override_line" ] && printf '%s\n' "$override_line"
+    [ -n "$attach_line" ] && printf '%s\n' "$attach_line"
     printf '  "githubIssue": %s,\n' "$issue_json"
     printf '  "parentMission": "%s",\n' "$PARENT_ID"
     printf '  "parentIssue": %s,\n' "${PARENT_ISSUE:-null}"

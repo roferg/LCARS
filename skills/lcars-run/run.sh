@@ -529,6 +529,31 @@ context_extra_block() {
 - %s' "$src"
 }
 
+# Resolve the mission's durable image attachments (staged at File / Mission-Log
+# time under $MISSION_DIR/attachments/) into a block of ABSOLUTE paths appended
+# to a cold Stage's `extra`, so the Research/Validate/Plan/Implement workers READ
+# the captain's screenshots BY PATH (the S91 spike proved cold-stage
+# Read-image-by-path works for both engines; a path is sufficient). MIRRORS
+# context_extra_block, but globs the attachments dir directly so it is robust —
+# independent of state.json. Returns EMPTY when the dir is absent or empty, so a
+# no-attachment mission's prompt is byte-identical to before.
+attachments_extra_block() {
+  local d="$MISSION_DIR/attachments" f any=0 out=""
+  [ -d "$d" ] || return 0
+  for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    if [ "$any" -eq 0 ]; then
+      out='
+## Attached images (the captain attached these; view/read them as part of your input)'
+      any=1
+    fi
+    out="$out
+- $f"
+  done
+  [ "$any" -eq 1 ] && printf '%s' "$out"
+  return 0
+}
+
 # === Per-wave repo map (pure bash, token-free, CLI-neutral) =================
 # A SYMBOL SKELETON of the repo's source: top-level interface SIGNATURES
 # (function / method / class / def / type / interface / export / shell-func
@@ -4358,9 +4383,13 @@ cmd_research() {
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     qdir="$(mktemp -d)"
+    # The captain's durable image attachments (S92) ride in by ABSOLUTE path so
+    # the question-generator can view them as input; empty when none exist.
+    local rq_extra="## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/prd.md"
+    rq_extra="$rq_extra$(attachments_extra_block)"
     spawn_worker research-questions "$STAGES_DIR/research-questions.md" repo-read "$qdir" \
-"## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/prd.md" "$( [ "$tries" -gt 1 ] && printf no-file )"
+      "$rq_extra" "$( [ "$tries" -gt 1 ] && printf no-file )"
     [ -f "$qdir/questions.txt" ] && break
     rm -rf "$qdir"; qdir=""
   done
@@ -4494,6 +4523,8 @@ cmd_validate() {
   # The durable repo context source (CONTEXT.md or the generated pack) — shared
   # declarative facts, by PATH only. Safe for this declarative Stage.
   extra="$extra$(context_extra_block)"
+  # The captain's durable image attachments (S92) — ABSOLUTE paths, read as input.
+  extra="$extra$(attachments_extra_block)"
 
   local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -5274,6 +5305,8 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
 - $MISSION_DIR/adr.md   (the engineering ADRs — architectural decisions + rationale; plan within them)"
   # Shared declarative repo facts, by PATH only.
   extra="$extra$(context_extra_block)"
+  # The captain's durable image attachments (S92) — ABSOLUTE paths, read as input.
+  extra="$extra$(attachments_extra_block)"
 
   local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -5420,8 +5453,10 @@ cmd_implement_ticket() {
   # or restarts when a fresh process re-enters. DISTINCT from the Implementer's
   # own internal 1–5 attempts that land in result.json.attempts.attempts.
   # The durable repo context source (shared declarative facts, by PATH only) —
-  # resolved once for both halves of the adversarial pair.
-  local cblock; cblock="$(context_extra_block)"
+  # resolved once for both halves of the adversarial pair. The captain's durable
+  # image attachments (S92) ride the same artifact-paths list (ABSOLUTE paths) so
+  # BOTH the Test Writer and the Implementer can view them; empty when none exist.
+  local cblock; cblock="$(context_extra_block)$(attachments_extra_block)"
   # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
   # architectural facts BOTH halves of the pair may read, by PATH only. Absent on
   # a trivial Mission, in which case this stays empty. Prepended to $cblock so it
@@ -7196,6 +7231,14 @@ FSG_EOF
     __fsg_rc=0
     FULL_SUITE_SIGNAL="$__fsg_sig" full_suite_gate $__fsg_ordered || __fsg_rc=$?
     printf 'FSRC=%s\n' "$__fsg_rc"
+    exit 0 ;;
+  # S92 test hook: exercise attachments_extra_block in ISOLATION. MISSION_DIR is
+  # taken straight from $LCARS_ATT_TEST_DIR (no locate_mission, no worker spawn),
+  # so a focused test can assert the block emits the ABSOLUTE attachment paths
+  # when the dir has files and is empty when the dir is absent/empty.
+  attachments-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    attachments_extra_block
     exit 0 ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

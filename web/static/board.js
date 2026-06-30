@@ -1678,7 +1678,9 @@ function openLog(id) {
         { text: report.value.trim(), images: reportImgs.payload() },
         function (state) {
           busy.hidden = true;
-          reportImgs.clear();   // attached images consumed by this split turn
+          // S92: keep the pasted screenshots alive past Preview — they must ride
+          // the /log/file body too so they become DURABLE attachments on every
+          // filed bug. They are cleared only after a successful File (below).
           prev.disabled = false; prev.textContent = "Preview";
           authored.prds = state && state.authored
             ? (state.children || []).map(function (c) { return c.prd; })
@@ -1717,9 +1719,11 @@ function openLog(id) {
       var fileLabel = file.textContent;
       file.textContent = "Filing…";
       postWrite("/api/mission/" + enc(id) + "/log/file",
-        { prds: authored.prds || [], overrides: authored.overrides || [] },
+        { prds: authored.prds || [], overrides: authored.overrides || [],
+          images: reportImgs.payload() },   // S92: durable attachments on file
         function (state) {
           busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
+          reportImgs.clear();          // attachments now persisted on each bug
           authored.prds = null;        // bugs are filed now — Run only resolves
           authored.filed = true;
           file.hidden = true;          // filing is done

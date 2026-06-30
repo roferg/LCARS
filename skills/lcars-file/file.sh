@@ -41,6 +41,11 @@ ADR_SRC=""
 # session normalized to a structured "<scope>:<tier>" string. scope ∈
 # {all,reasoning,implementation}; tier ∈ {sonnet,opus}. Empty = no override.
 MODEL_OVERRIDE=""
+# Durable image attachments (S92). Each --attach <path> is a screenshot the
+# captain pasted at File time; it is copied into the mission's attachments/ dir
+# under a stable name, referenced by RELATIVE path in prd.md, and recorded in
+# state.json — so a cold Stage worker can later READ it by path. Repeatable.
+ATTACHMENTS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --prd)   PRD_SRC="${2:-}"; shift 2 ;;
@@ -49,6 +54,8 @@ while [ $# -gt 0 ]; do
     --adr=*) ADR_SRC="${1#--adr=}"; shift ;;
     --model-override)   MODEL_OVERRIDE="${2:-}"; shift 2 ;;
     --model-override=*) MODEL_OVERRIDE="${1#--model-override=}"; shift ;;
+    --attach)   ATTACHMENTS+=("${2:-}"); shift 2 ;;
+    --attach=*) ATTACHMENTS+=("${1#--attach=}"); shift ;;
     *)       die "unknown argument: $1" ;;
   esac
 done
@@ -81,6 +88,16 @@ fi
 # --adr is optional, but if given it must point at a real file.
 if [ -n "$ADR_SRC" ]; then
   [ -f "$ADR_SRC" ] || die "ADR file not found: $ADR_SRC"
+fi
+
+# Attachments are optional, but if given each must point at a real file — checked
+# BEFORE anything is written so a bad --attach stops filing with nothing partial,
+# the same way a malformed PRD/ADR does (S92).
+if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
+  for a in "${ATTACHMENTS[@]}"; do
+    [ -n "$a" ] || die "empty --attach path given."
+    [ -f "$a" ] || die "attachment file not found: $a"
+  done
 fi
 
 # --- locate the repo + state dir ------------------------------------------
@@ -172,6 +189,30 @@ fi
 # --- write prd.md ---------------------------------------------------------
 cat "$PRD_SRC" >"$MISSION_DIR/prd.md"
 
+# --- stage durable image attachments (S92) --------------------------------
+# Copy each --attach into attachments/ under a stable, deterministic name
+# (attachment-NN.<ext>, NN zero-padded by order, ext from the source), append a
+# `## Attached images` section to prd.md listing each by RELATIVE path, and
+# collect the relative paths for state.json below. mkdir only when ≥1 attach is
+# given; no attachments ⇒ nothing written (byte-identical to before).
+ATTACH_RELS=()
+if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
+  mkdir -p "$MISSION_DIR/attachments"
+  an=0
+  for asrc in "${ATTACHMENTS[@]}"; do
+    an=$((an + 1))
+    aext=""
+    case "$asrc" in *.*) aext=".${asrc##*.}" ;; esac
+    arel="$(printf 'attachments/attachment-%02d%s' "$an" "$aext")"
+    cp "$asrc" "$MISSION_DIR/$arel"
+    ATTACH_RELS+=("$arel")
+  done
+  {
+    printf '\n## Attached images\n\n'
+    for arel in "${ATTACH_RELS[@]}"; do printf -- '- %s\n' "$arel"; done
+  } >>"$MISSION_DIR/prd.md"
+fi
+
 # --- write adr.md (complex Missions only) ---------------------------------
 # Mirrors how --prd is persisted: copy the (already shape-checked) ADR set into
 # the mission dir as the durable adr.md every downstream worker (EXCEPT research
@@ -215,6 +256,19 @@ if [ -n "${LCARS_WORKER_BIN:-}" ]; then
   wb_json="${wb_json//\"/\\\"}"
   WORKER_BIN_LINE="  \"workerBin\": \"$wb_json\","
 fi
+# The durable attachments array (S92), emitted only when ≥1 attachment was staged
+# — mirroring the OVERRIDE_LINE / WORKER_BIN_LINE optional-line pattern so a
+# no-attachment mission's state.json is byte-identical (no attachments key). Each
+# entry is a RELATIVE path under the mission dir (attachments/attachment-NN.ext).
+ATTACH_LINE=""
+if [ "${#ATTACH_RELS[@]}" -gt 0 ]; then
+  attach_items=""
+  for arel in "${ATTACH_RELS[@]}"; do
+    [ -n "$attach_items" ] && attach_items="$attach_items, "
+    attach_items="$attach_items\"$arel\""
+  done
+  ATTACH_LINE="  \"attachments\": [$attach_items],"
+fi
 write_state() { # issue-json (a number or the literal `null`)
   {
     printf '{\n'
@@ -226,6 +280,7 @@ write_state() { # issue-json (a number or the literal `null`)
     printf '  "model": "%s",\n' "$MODEL"
     [ -n "$OVERRIDE_LINE" ] && printf '%s\n' "$OVERRIDE_LINE"
     [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
+    [ -n "$ATTACH_LINE" ] && printf '%s\n' "$ATTACH_LINE"
     printf '  "githubIssue": %s,\n' "${1:-null}"
     printf '  "branch": "%s",\n' "$BRANCH"
     printf '  "base": "%s"\n' "$BASE"

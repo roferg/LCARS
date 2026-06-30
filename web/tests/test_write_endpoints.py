@@ -11,6 +11,7 @@ configuration drops it — GET still works, writes are declined.
 
 stdlib only; the daemon runs on an ephemeral localhost port inside the test.
 """
+import base64
 import json
 import os
 import subprocess
@@ -20,6 +21,12 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+
+
+def _img(data=b"\x89PNG\r\n\x1a\n_S92_", ctype="image/png", name="shot.png"):
+    """A {name,type,dataB64} image-paste entry (the postWrite body shape)."""
+    return {"name": name, "type": ctype,
+            "dataB64": base64.b64encode(data).decode("ascii")}
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -556,6 +563,33 @@ class MissionFileTest(WriteEndpointBase):
         rec = self._record("file")
         self.assertIn("ENV_WORKER_BIN: copilot", rec)
 
+    def test_file_threads_attached_image_path_to_file_script(self):
+        """S92: an image pasted on the File idea box is staged under repo_root and
+        threaded to file.sh as a repeated `--attach <staged path>` so file.sh
+        persists it as a durable mission attachment."""
+        status, body = self._post(
+            "/api/mission",
+            {"idea": "Add a dark mode toggle", "images": [_img()]})
+        self.assertEqual(status, 200)
+        rec = self._record("file")
+        self.assertIn("--attach", rec)
+        # the threaded path is a staged lcars-img-* file under repo_root.
+        self.assertIn("lcars-img-", rec)
+
+    def test_file_without_image_threads_no_attach(self):
+        """Regression: a no-image file call is byte-identical (no --attach)."""
+        status, _ = self._post("/api/mission", {"idea": "Add a dark mode toggle"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("--attach", self._record("file"))
+
+    def test_file_with_image_reaps_staged_temp(self):
+        """The staged temp copy is reaped after file.sh has copied it in (the
+        record stub is a no-op cp, so nothing should leak under repo_root)."""
+        import glob
+        self._post("/api/mission",
+                   {"idea": "x", "images": [_img()]})
+        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-img-*")), [])
+
 
 class LogTest(WriteEndpointBase):
     def test_log_preview_returns_children(self):
@@ -649,6 +683,31 @@ class LogTest(WriteEndpointBase):
         self.assertIn("--model-override all:opus", log_rec)
         # log_file must NOT dispatch resolve (review happens first)
         self.assertTrue(self._not_invoked("resolve"))
+
+    def test_log_file_threads_attached_image_to_log_script(self):
+        """S92: an image pasted into the Mission-Log box rides /log/file and is
+        threaded to log.sh as a repeated `--attach <staged path>` so every filed
+        bug gets it as a durable attachment."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001", prds=["# Bug: a\n\nbody a"],
+                         overrides=[""], images=[_img()])
+        log_rec = self._record("log")
+        self.assertIn("--parent m-001", log_rec)
+        self.assertIn("--attach", log_rec)
+        self.assertIn("lcars-img-", log_rec)
+
+    def test_log_file_without_image_threads_no_attach(self):
+        """Regression: a no-image log_file is byte-identical (no --attach)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001", prds=["# Bug: a\n\nbody a"], overrides=[""])
+        self.assertNotIn("--attach", self._record("log"))
+
+    def test_log_file_with_image_reaps_staged_temp(self):
+        import glob
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001", prds=["# Bug: a\n\nbody a"],
+                         overrides=[""], images=[_img()])
+        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-img-*")), [])
 
     def test_log_run_threads_per_bug_overrides_to_log(self):
         """The explicit one-shot file & run path (confirm=True) must also carry
@@ -1084,6 +1143,18 @@ class ReadOnlyGatingTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             urllib.request.urlopen(req, timeout=5)
         # 403 (write layer inactive) — not a silent 200.
+        self.assertIn(cm.exception.code, (403, 405))
+
+    def test_file_with_image_declined_when_read_only(self):
+        # S92: an attached image must NOT bypass the view-only write block — the
+        # write layer is off (actions=None), so /api/mission 403s before any
+        # image is staged.
+        url = "http://127.0.0.1:%d/api/mission" % self.port
+        body = json.dumps({"idea": "x", "images": [_img()]}).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=5)
         self.assertIn(cm.exception.code, (403, 405))
 
     def test_github_adapter_is_read_only_by_construction(self):

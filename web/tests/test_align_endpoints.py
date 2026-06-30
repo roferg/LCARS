@@ -904,6 +904,38 @@ class ImagePasteGrillTest(AlignBase):
         # the claude path must NOT add a copilot --attachment flag.
         self.assertNotIn("--attachment", self._argvs()[0])
 
+    def test_done_turn_threads_attach_to_file_script(self):
+        # S92: an image pasted DURING the grill becomes a durable mission
+        # attachment — on the done turn the session's accumulated staged images
+        # are threaded to file.sh as a repeated `--attach <path>`.
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "Q?", "recommended": "x"},
+             "prd": "# Mission: G\n\n**Type:** bug\n"},
+            {"status": "done",
+             "prd": ("# Mission: G\n\n**Type:** bug\n**Goal:** g\n"
+                     "**Acceptance Criteria:**\n- a\n**Out of Scope:**\n- n\n"
+                     "**Constraints:**\n- c\n")})
+        _, start = self._post("/api/align/start",
+                              {"idea": "fix this", "images": [_img()]})
+        sid = start["state"]["sessionId"]
+        _, done = self._post("/api/align/%s/answer" % sid, {"answer": "go"})
+        self.assertEqual(done["state"]["status"], "done")
+        rec = self._record("file")
+        self.assertIn("--prd", rec)
+        self.assertIn("--attach", rec)
+        self.assertIn("lcars-img-", rec)
+
+    def test_done_turn_without_image_threads_no_attach(self):
+        # Regression: a grill with no image files with NO --attach.
+        self._set_turns(
+            {"status": "done",
+             "prd": ("# Mission: G\n\n**Type:** bug\n**Goal:** g\n"
+                     "**Acceptance Criteria:**\n- a\n**Out of Scope:**\n- n\n"
+                     "**Constraints:**\n- c\n")})
+        self._post("/api/align/start", {"idea": "no image"})
+        self.assertNotIn("--attach", self._record("file"))
+
     def test_done_turn_reaps_staged_images(self):
         self._set_turns(
             {"status": "question",

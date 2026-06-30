@@ -456,10 +456,15 @@ class Actions(object):
         self._align_lock = threading.Lock()
 
     # -- public action surface (one per endpoint) -------------------------------
-    def file_mission(self, idea, engine=None, mission_type="feature"):
+    def file_mission(self, idea, engine=None, mission_type="feature",
+                     images=None):
         """POST /api/mission — file a new mission from a free-form idea.
 
         engine selects the worker CLI ($LCARS_WORKER_BIN) for this mission.
+        `images` (S92) are pasted screenshots: each is staged under repo_root and
+        threaded to file.sh as a repeated `--attach <path>` so file.sh persists it
+        as a DURABLE mission attachment (attachments/ + prd.md ref + state.json).
+        The staged temp copies are reaped here once file.sh has copied them in.
         Returns the freshly-assembled board state.
         """
         idea = (idea or "").strip()
@@ -469,16 +474,21 @@ class Actions(object):
         title = self._title_from_idea(idea)
         prd = _PRD_TEMPLATE.format(title=title, type=mtype, idea=idea)
         prd_path = self._tmp_prd(prd)
+        staged = self._stage_images(images)
         env_extra = {}
         if engine:
             env_extra["LCARS_WORKER_BIN"] = engine
+        args = ["--prd", prd_path]
+        for p in staged:
+            args += ["--attach", p]
         try:
-            self._run("file", ["--prd", prd_path], env_extra=env_extra)
+            self._run("file", args, env_extra=env_extra)
         finally:
-            try:
-                os.unlink(prd_path)
-            except OSError:
-                pass
+            for p in [prd_path] + staged:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
         return {"board": self._reader.board()}
 
     # -- the interactive Align grilling console (S70-B) --------------------------
@@ -558,7 +568,12 @@ class Actions(object):
             sess.prd = turn["prd"]
         if status == "done":
             sess.done = True
-            board = self._file_from_align(turn, engine=sess.engine)
+            # S92 — the grill's accumulated staged images (sess.image_paths) become
+            # DURABLE mission attachments: thread them to file.sh BEFORE they are
+            # reaped just below (the reap removes the temp staged copies once
+            # file.sh has copied them into the mission's attachments/ dir).
+            board = self._file_from_align(turn, engine=sess.engine,
+                                          image_paths=sess.image_paths)
             self._reap_session_images(sess)
             with self._align_lock:
                 self._align.pop(sid, None)
@@ -583,14 +598,20 @@ class Actions(object):
         return {"sessionId": sid, "status": "question",
                 "question": q, "prd": sess.prd}
 
-    def _file_from_align(self, turn, engine=None):
+    def _file_from_align(self, turn, engine=None, image_paths=None):
         """Persist a finished Align turn via file.sh (ADR-002 dispatch).
 
         `engine` is the per-session chosen engine: it is threaded to file.sh as
         $LCARS_WORKER_BIN so file.sh persists it as state.json.workerBin (S67),
         making the engine survive the real browser Align console flow — not just
         the direct /api/mission endpoint. Empty/None leaves the daemon default
-        (self.worker_bin, injected by _run) in charge."""
+        (self.worker_bin, injected by _run) in charge.
+
+        `image_paths` (S92) are the grill session's accumulated staged images;
+        each is threaded to file.sh as a repeated `--attach <path>` so an image
+        pasted DURING the Align grill becomes a durable mission attachment, not
+        just a one-turn worker input. The caller reaps the staged copies after
+        this returns (file.sh has copied them into the mission dir by then)."""
         prd = (turn.get("prd") or "").strip()
         if not prd:
             raise ActionError(502, "the Align worker returned done with no PRD")
@@ -606,6 +627,9 @@ class Actions(object):
         ov = (turn.get("modelOverride") or "").strip()
         if ov and ov.lower() != "null":
             args += ["--model-override", ov]
+        for p in (image_paths or []):
+            if p:
+                args += ["--attach", p]
         env_extra = {}
         eng = (engine or "").strip()
         if eng:
@@ -1121,7 +1145,7 @@ class Actions(object):
         return {"children": children, "count": len(children),
                 "parent": parent, "authored": True}
 
-    def _file_children(self, mid, prds, overrides, env_extra):
+    def _file_children(self, mid, prds, overrides, env_extra, images=None):
         """Persist one linked bug Mission per PRD via log.sh (blocking).
 
         Each PRD is paired POSITIONALLY with its captain override (S74). The
@@ -1141,8 +1165,16 @@ class Actions(object):
         report = []
         if not prds:
             return report
+        # S92 — the captain's pasted screenshots describe the WHOLE report, so
+        # every child bug gets them: stage each under repo_root once and thread it
+        # to log.sh as a repeated `--attach <path>` (log.sh applies the set to
+        # EACH bug). The staged temp copies are reaped in the finally below, after
+        # log.sh has copied them into each bug's attachments/ dir.
+        staged = self._stage_images(images)
         tmp = []
         args = ["--parent", mid]
+        for p in staged:
+            args += ["--attach", p]
         try:
             for i, prd in enumerate(prds):
                 p = self._tmp_prd(prd.rstrip() + "\n")
@@ -1165,14 +1197,14 @@ class Actions(object):
                                "error": None})
             self._run("log", args, env_extra=env_extra)
         finally:
-            for p in tmp:
+            for p in tmp + staged:
                 try:
                     os.unlink(p)
                 except OSError:
                     pass
         return report
 
-    def log_file(self, mid, prds=None, overrides=None):
+    def log_file(self, mid, prds=None, overrides=None, images=None):
         """POST /api/mission/<id>/log/file — file authored bugs, return enriched.
 
         The file-then-review-then-run flow (S74): the captain's confirm step FILES
@@ -1186,7 +1218,8 @@ class Actions(object):
         engine = self._persisted_worker_bin(mid)
         env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
         prds = [p for p in (prds or []) if isinstance(p, str) and p.strip()]
-        report = self._file_children(mid, prds, overrides, env_extra)
+        report = self._file_children(mid, prds, overrides, env_extra,
+                                     images=images)
         children = self._linked_children(mid)
         # map the per-PRD override report onto the freshly-filed child ids (same
         # positional order) so the review panel can echo each resolved steer /
@@ -1202,7 +1235,8 @@ class Actions(object):
         return {"children": children, "count": len(children),
                 "parent": mid, "filed": True, "overrides": resolved}
 
-    def log_run(self, mid, prds=None, overrides=None, confirm=False):
+    def log_run(self, mid, prds=None, overrides=None, confirm=False,
+                images=None):
         """POST /api/mission/<id>/log/run — file authored bugs, then resolve.
 
         BUG-059 — the human cost-review GATE. Filing a logged bug computes its cost
@@ -1240,8 +1274,10 @@ class Actions(object):
         # re-posts with no prds once the bugs are filed). Delegate to log_file so
         # the file-then-review contract is shared and never drifts.
         if prds and not confirm:
-            return self.log_file(mid, prds=prds, overrides=overrides)
-        file_report = self._file_children(mid, prds, overrides, env_extra)
+            return self.log_file(mid, prds=prds, overrides=overrides,
+                                 images=images)
+        file_report = self._file_children(mid, prds, overrides, env_extra,
+                                          images=images)
         # S74 follow-up CHANGE 4: when there are NO prds the bugs are ALREADY
         # filed (the captain edited the steers in the post-File breakdown, then
         # clicked Run Fixes). _file_children no-ops on no prds, so apply the
