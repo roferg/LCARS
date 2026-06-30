@@ -817,6 +817,105 @@ function probeWrites() {
   }).catch(function () { /* leave unknown; lazy 403 handling still applies */ });
 }
 
+/* ════════════════ IMAGE PASTE / DROP (S91) ════════════════ */
+/* CLI-style image attachment for one input surface. The captain pastes or drops
+   an image; we read it as base64 and show a CLI-style placeholder chip
+   "[Image #N]" with a remove ✕ — NO thumbnail, NO render, NO detail viewer
+   (UX-33: a placeholder chip only, no CLI-command text leaked). The images ride
+   the EXISTING postWrite body as images:[{name,type,dataB64}] (no new endpoint);
+   the daemon stages them and the conversational worker (the Align grill / the
+   Mission-Log split) actually sees them. Writes are a LOCAL-BRIDGE affordance —
+   a view-only board never offers them (writesActive === false short-circuits, and
+   the server 403s any write regardless). Client-side type + size pre-checks
+   mirror the server allow-list + body cap so a bad paste fails fast and clearly. */
+var IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+var IMAGE_MAX_BYTES = 8 * 1024 * 1024;   /* headroom under the 12 MB server cap */
+
+function attachImagePaster(textarea, onError) {
+  var imgs = [];
+  var chips = el("div", "img-chips");
+  chips.hidden = true;
+  if (textarea.parentNode) {
+    textarea.parentNode.insertBefore(chips, textarea.nextSibling);
+  }
+  function repaint() {
+    chips.innerHTML = "";
+    chips.hidden = imgs.length === 0;
+    imgs.forEach(function (img, i) {
+      var chip = el("span", "img-chip");
+      chip.appendChild(el("span", "img-chip-name", "[Image #" + (i + 1) + "]"));
+      var x = el("span", "img-chip-x", "✕");
+      x.title = "Remove this image";
+      x.addEventListener("click", function (e) {
+        e.stopPropagation();
+        imgs.splice(i, 1); repaint();
+      });
+      chip.appendChild(x);
+      chips.appendChild(chip);
+    });
+  }
+  function accept(file) {
+    if (writesActive === false) {
+      if (onError) onError("This board is view-only — image attach is disabled.");
+      return;
+    }
+    if (IMAGE_TYPES.indexOf(file.type) < 0) {
+      if (onError) onError("Unsupported image — use PNG, JPEG, GIF or WebP.");
+      return;
+    }
+    if (file.size > IMAGE_MAX_BYTES) {
+      if (onError) onError("Image is too large — keep it under 8 MB.");
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var res = String(reader.result || "");
+      var comma = res.indexOf(",");           /* strip the data: URL prefix */
+      var b64 = comma >= 0 ? res.slice(comma + 1) : res;
+      imgs.push({ name: file.name || "pasted-image", type: file.type,
+                  dataB64: b64 });
+      repaint();
+    };
+    reader.readAsDataURL(file);
+  }
+  function harvest(items) {
+    var found = false;
+    for (var i = 0; items && i < items.length; i++) {
+      var it = items[i];
+      if (it.kind === "file") {
+        var f = it.getAsFile();
+        if (f && f.type && f.type.indexOf("image/") === 0) {
+          accept(f); found = true;
+        }
+      }
+    }
+    return found;
+  }
+  textarea.addEventListener("paste", function (e) {
+    var dt = e.clipboardData;
+    if (dt && harvest(dt.items)) { e.preventDefault(); }
+  });
+  textarea.addEventListener("dragover", function (e) { e.preventDefault(); });
+  textarea.addEventListener("drop", function (e) {
+    var dt = e.dataTransfer;
+    if (!dt) { return; }
+    var handled = harvest(dt.items);
+    if (!handled && dt.files) {
+      for (var i = 0; i < dt.files.length; i++) {
+        var f = dt.files[i];
+        if (f.type && f.type.indexOf("image/") === 0) { accept(f); handled = true; }
+      }
+    }
+    if (handled) { e.preventDefault(); }
+  });
+  return {
+    /* the postWrite payload value: the chip list, or undefined when empty so
+       JSON.stringify omits the `images` key and the turn is unchanged. */
+    payload: function () { return imgs.length ? imgs.slice() : undefined; },
+    clear: function () { imgs = []; repaint(); },
+  };
+}
+
 /* ════════════════ SCREEN: FILE A MISSION (#file) ════════════════ */
 function openFile() {
   var m = modal("▦ File New Mission");
@@ -849,6 +948,10 @@ function openFile() {
   var err = el("div", "errline"); err.hidden = true;
   m.body.appendChild(err);
 
+  // S91: paste/drop an image into the idea box → a "[Image #N]" chip; it rides
+  // /api/align/start so the grill worker sees the screenshot from turn one.
+  var ideaImgs = attachImagePaster(idea, function (msg) { showErr(err, msg); });
+
   m.foot.appendChild(btn("Cancel", null, closeOverlay));
   // "File & Begin Alignment" opens the interactive Align grilling console
   // (S70-B) — the structured one-question-at-a-time interview, not a
@@ -867,7 +970,7 @@ function openFile() {
     if (!text) { showErr(err, "Describe the idea first."); return; }
     go.disabled = true; go.textContent = "Scanning…";
     err.hidden = true; fileBusy.hidden = false;
-    openAlignConsole(text, chosen.engine, function (msg) {
+    openAlignConsole(text, chosen.engine, ideaImgs.payload(), function (msg) {
       go.disabled = false; go.textContent = "File & Begin Alignment ▸";
       fileBusy.hidden = true;
       showErr(err, msg);
@@ -884,8 +987,8 @@ function openFile() {
    + .progress-line), the PRD assembling LIVE on the RIGHT (.prd-doc). Each
    answer POSTs to /api/align/<sid>/answer; the server spawns the next worker
    turn. On `done` file.sh has already run server-side and the board refreshes. */
-function openAlignConsole(idea, engine, onStartError) {
-  postWrite("/api/align/start", { idea: idea, engine: engine },
+function openAlignConsole(idea, engine, images, onStartError) {
+  postWrite("/api/align/start", { idea: idea, engine: engine, images: images },
     function (state) { renderAlignConsole(state); },
     function (msg) { if (onStartError) onStartError(msg); });
 }
@@ -906,6 +1009,9 @@ function renderAlignConsole(state) {
   free.placeholder = "…or answer in your own words";
   freeWrap.appendChild(label("Your answer")); freeWrap.appendChild(free);
   var err = el("div", "errline"); err.hidden = true;
+  // S91: paste/drop an image into the grill reply → a "[Image #N]" chip on THIS
+  // turn; it rides /api/align/<sid>/answer so the warm worker sees it this turn.
+  var freeImgs = attachImagePaster(free, function (msg) { showErr(err, msg); });
   // UX-2: themed working indicator for each answer's worker turn (and the final
   // hand-off). Lives in the left console pane; label is re-set per phase.
   // UX-7: themed copy for each Align-answer worker turn + the final hand-off.
@@ -1001,9 +1107,11 @@ function renderAlignConsole(state) {
       ? "Estimating cost & creating mission…"
       : "Formulating the next inquiry…";
     busy.hidden = false;
-    postWrite("/api/align/" + enc(sid) + "/answer", { answer: answer },
+    postWrite("/api/align/" + enc(sid) + "/answer",
+      { answer: answer, images: freeImgs.payload() },
       function (st) {
         busy.hidden = true;
+        freeImgs.clear();   // attached images consumed by this turn
         if (st.status === "done") {
           // explicit, labelled hand-off state before the board refresh swaps in
           // the new Align card and the confirmation modal. UX-7: the captain's
@@ -1539,6 +1647,10 @@ function openLog(id) {
 
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
+    // S91: paste/drop an image into the bug-report box → a "[Image #N]" chip; it
+    // rides /api/mission/<id>/log so the Mission-Log split worker sees the shot.
+    var reportImgs = attachImagePaster(report, function (msg) { showErr(err, msg); });
+
     // UX-25: both the Preview and the File & Run Fixes actions dispatch a worker
     // turn (~25s on copilot) with no feedback. Show the shared LCARS working
     // animation inline while each POST is in flight; it clears on response AND
@@ -1562,9 +1674,11 @@ function openLog(id) {
         "Splitting the report into bugs…";
       busy.hidden = false;
       // free-form text → AUTHORING preview; empty → read-only linked children.
-      postWrite("/api/mission/" + enc(id) + "/log", { text: report.value.trim() },
+      postWrite("/api/mission/" + enc(id) + "/log",
+        { text: report.value.trim(), images: reportImgs.payload() },
         function (state) {
           busy.hidden = true;
+          reportImgs.clear();   // attached images consumed by this split turn
           prev.disabled = false; prev.textContent = "Preview";
           authored.prds = state && state.authored
             ? (state.children || []).map(function (c) { return c.prd; })

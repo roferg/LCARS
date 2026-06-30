@@ -18,6 +18,8 @@ so the existing /api/events SSE loop carries the update — no second push path.
 
 stdlib only; no pip/npm/build step (ADR-007).
 """
+import base64
+import binascii
 import json
 import os
 import re
@@ -405,7 +407,7 @@ class _AlignSession(object):
     """
 
     __slots__ = ("idea", "engine", "transcript", "prd", "done",
-                 "worker_sid", "started")
+                 "worker_sid", "started", "image_paths")
 
     def __init__(self, idea, engine):
         self.idea = idea
@@ -418,6 +420,11 @@ class _AlignSession(object):
         # first turn and RESUMED on every later turn.
         self.worker_sid = str(uuid.uuid4())
         self.started = False
+        # S91 — every image the captain has pasted across this grill's turns,
+        # staged on disk under repo_root. Accumulated (not reset per turn) so
+        # claude can Read an earlier turn's image if a later turn references it;
+        # reaped when the session ends (done or cancel) so nothing leaks.
+        self.image_paths = []
 
 
 class Actions(object):
@@ -475,7 +482,7 @@ class Actions(object):
         return {"board": self._reader.board()}
 
     # -- the interactive Align grilling console (S70-B) --------------------------
-    def align_start(self, idea, engine=None):
+    def align_start(self, idea, engine=None, images=None):
         """POST /api/align/start — open a multi-turn Align session.
 
         OPENS ONE warm, resumable worker session (BUG-B) driving the existing
@@ -493,9 +500,11 @@ class Actions(object):
         sess = _AlignSession(idea=idea, engine=(engine or "").strip() or None)
         with self._align_lock:
             self._align[sid] = sess
-        return self._align_turn(sid, sess)
+        # the captain may paste an image on the File idea box (this first turn).
+        turn_paths = self._stage_session_images(sess, images)
+        return self._align_turn(sid, sess, image_paths=turn_paths)
 
-    def align_answer(self, sid, answer):
+    def align_answer(self, sid, answer, images=None):
         """POST /api/align/<sid>/answer — record the answer, run the next turn.
 
         RESUMES the same warm worker session (by its UUID) and feeds JUST the
@@ -522,9 +531,11 @@ class Actions(object):
             sess.transcript[-1]["answer"] = answer
         else:
             sess.transcript.append({"question": "(implicit)", "answer": answer})
-        return self._align_turn(sid, sess)
+        # an image pasted into THIS reply is attached to THIS turn's worker call.
+        turn_paths = self._stage_session_images(sess, images)
+        return self._align_turn(sid, sess, image_paths=turn_paths)
 
-    def _align_turn(self, sid, sess):
+    def _align_turn(self, sid, sess, image_paths=None):
         """Run one worker turn for `sess` and shape the HTTP response.
 
         Returns {sessionId, status:"question", question, prd} or, on done,
@@ -533,7 +544,8 @@ class Actions(object):
         opening = not sess.started
         prompt = self._build_align_prompt(sess, opening=opening)
         out = self._worker_turn(prompt, engine=sess.engine,
-                                session_id=sess.worker_sid, opening=opening)
+                                session_id=sess.worker_sid, opening=opening,
+                                image_paths=image_paths)
         # the warm session is now open; every later turn resumes this UUID.
         sess.started = True
         turn = _extract_json(out)
@@ -547,6 +559,7 @@ class Actions(object):
         if status == "done":
             sess.done = True
             board = self._file_from_align(turn, engine=sess.engine)
+            self._reap_session_images(sess)
             with self._align_lock:
                 self._align.pop(sid, None)
             resp = {"sessionId": sid, "status": "done",
@@ -617,7 +630,11 @@ class Actions(object):
         console; a subsequent answer to the reaped sid 404s. Idempotent.
         """
         with self._align_lock:
-            self._align.pop(sid, None)
+            sess = self._align.pop(sid, None)
+        # S91 — reap any staged images for this grill so a cancelled console
+        # leaks no files into the repo working tree.
+        if sess is not None:
+            self._reap_session_images(sess)
         return {"sessionId": sid, "status": "cancelled"}
 
     def _build_align_prompt(self, sess, opening=True):
@@ -650,7 +667,7 @@ class Actions(object):
         return "".join(parts)
 
     def _worker_turn(self, prompt, engine=None, outdir=None,
-                     session_id=None, opening=True):
+                     session_id=None, opening=True, image_paths=None):
         """The ONE injectable worker seam: run a one-shot turn and return its
         stdout. The engine is $LCARS_WORKER_BIN (overridable per-session); tests
         point it at a recording stub so a turn costs ZERO tokens.
@@ -679,6 +696,31 @@ class Actions(object):
             raise ActionError(
                 502, "no worker engine configured ($LCARS_WORKER_BIN) — cannot "
                 "drive the Align/Log worker")
+        # S91 — pasted-image hand-off (the ONE shared seam carries images to the
+        # conversational worker; the Align grill AND the Mission-Log split both
+        # run through here). Per-engine mechanism, PROVEN by the S91 spike:
+        #   • copilot: native `--attachment <path>` (repeatable, non-interactive
+        #     only). The image rides into the prompt NATIVELY — NO tool needed —
+        #     so the S72 tools-denied posture (`--available-tools=`) stays intact.
+        #   • claude (and the default): the grill is NOT tools-denied
+        #     (`_session_args` denies tools only for copilot), so REFERENCE the
+        #     staged ABS PATH in the prompt text and claude views it with its Read
+        #     tool. No stdin/output-format change, no scoped tools exception.
+        # Selection is by basename (same idiom as `_session_args`). When
+        # `image_paths` is empty the turn is BYTE-IDENTICAL to today — no argv flag
+        # is appended and the prompt text is untouched (regression-tested).
+        image_paths = [p for p in (image_paths or []) if p]
+        attach_args = []
+        if image_paths:
+            base = os.path.basename(bin_ or "").lower()
+            if "copilot" in base:
+                for p in image_paths:
+                    attach_args += ["--attachment", p]
+            else:
+                prompt = prompt + (
+                    "\n\n=== attached images (the captain pasted these; view "
+                    "them with your Read tool as relevant) ===\n"
+                    + "\n".join(image_paths))
         own_outdir = outdir is None
         if own_outdir:
             outdir = tempfile.mkdtemp(prefix="lcars-worker-", dir=self.repo_root)
@@ -693,7 +735,8 @@ class Actions(object):
         # The flag is ADDITIVE — the S72 tools-denied / session flags are untouched.
         cmd = ([bin_, "-p", prompt]
                + self._session_args(bin_, session_id, opening)
-               + ["--model", _grill_model(bin_)])
+               + ["--model", _grill_model(bin_)]
+               + attach_args)
         try:
             proc = subprocess.run(
                 cmd, cwd=self.repo_root, env=env,
@@ -1014,7 +1057,7 @@ class Actions(object):
                     env_extra=env_extra)
         return self._mission_state(mid)
 
-    def log_preview(self, mid, text=None):
+    def log_preview(self, mid, text=None, images=None):
         """POST /api/mission/<id>/log — preview the N child bug missions.
 
         Two modes:
@@ -1032,9 +1075,9 @@ class Actions(object):
             children = self._linked_children(mid)
             return {"children": children, "count": len(children),
                     "parent": mid, "authored": False}
-        return self._log_author(mid, text)
+        return self._log_author(mid, text, images=images)
 
-    def _log_author(self, parent, text):
+    def _log_author(self, parent, text, images=None):
         """Author N bug PRDs from a free-form report via one worker turn.
 
         Returns a preview {children:[{title, prd, type}], count} WITHOUT
@@ -1051,7 +1094,19 @@ class Actions(object):
         # PARENT mission's persisted engine (state.json.workerBin). Falls back to
         # _worker_turn's default (None) when the parent has none.
         engine = self._persisted_worker_bin(parent)
-        out = self._worker_turn(prompt, engine=engine)
+        # S91 — an image pasted into the Mission-Log box rides into the SAME cold
+        # (session_id=None) worker turn that splits the report, so the log-split
+        # worker sees it. Stage under repo_root, attach, then clean up after the
+        # turn (this is a one-shot cold turn — no session to read it across).
+        staged = self._stage_images(images)
+        try:
+            out = self._worker_turn(prompt, engine=engine, image_paths=staged)
+        finally:
+            for p in staged:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
         turn = _extract_json(out)
         bugs = (turn or {}).get("bugs") if isinstance(turn, dict) else None
         if not isinstance(bugs, list) or not bugs:
@@ -1452,6 +1507,75 @@ class Actions(object):
         with os.fdopen(fd, "w") as fh:
             fh.write(content)
         return path
+
+    # ── S91: staging pasted images for the conversational worker ──────────────
+    # The captain pastes/drops an image into the File idea box, the Align grill
+    # reply, or the Mission-Log box; it rides the existing write body as
+    # `images:[{name,type,dataB64}]`. We DECODE the base64 with the stdlib
+    # `base64` module (NO Pillow/PIL — we never inspect or re-encode the pixels,
+    # we just write the bytes) and stage each under repo_root, MIRRORING
+    # `_tmp_prd`, so the worker can reach it: copilot via `--attachment <path>`,
+    # claude via its Read tool on the abs path. The server has already enforced
+    # the content-type allow-list (415) and the body cap (413) before we get here.
+    def _stage_image(self, content_type, data_b64):
+        """Decode one base64 image and stage it under repo_root; return the abs
+        path. The suffix follows the (already allow-listed) content type so the
+        worker's image loader recognises it. Caller owns cleanup."""
+        suffix = _IMAGE_SUFFIX.get((content_type or "").strip().lower(), ".png")
+        try:
+            raw = base64.b64decode((data_b64 or "").encode("ascii"),
+                                   validate=True)
+        except (binascii.Error, ValueError, UnicodeEncodeError):
+            raise ActionError(400, "image data is not valid base64")
+        fd, path = tempfile.mkstemp(prefix="lcars-img-", suffix=suffix,
+                                    dir=self.repo_root)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
+        return path
+
+    def _stage_images(self, images):
+        """Stage every `{name,type,dataB64}` in `images`; return the abs paths
+        (in order). A blank/None list stages nothing and returns []."""
+        out = []
+        for img in (images or []):
+            if not isinstance(img, dict):
+                continue
+            data = img.get("dataB64")
+            if not data:
+                continue
+            out.append(self._stage_image(img.get("type"), data))
+        return out
+
+    def _stage_session_images(self, sess, images):
+        """Stage THIS turn's images, record them on the grill session for
+        end-of-session cleanup, and return THIS turn's paths to attach to THIS
+        turn's worker call (the captain pasted them into THIS reply)."""
+        paths = self._stage_images(images)
+        if paths:
+            sess.image_paths.extend(paths)
+        return paths
+
+    @staticmethod
+    def _reap_session_images(sess):
+        """Unlink every image staged across a grill session (done/cancel)."""
+        for p in (sess.image_paths or []):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        sess.image_paths = []
+
+
+# S91 — the allow-listed image content types → the staged-file suffix. Mirrors
+# the server's content-type allow-list (server.py `_ALLOWED_IMAGE_TYPES`); an
+# unknown type never reaches here (the server 415s first), so the `.png` default
+# is only a belt-and-braces fallback.
+_IMAGE_SUFFIX = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
 
 
 def _grill_model(engine):

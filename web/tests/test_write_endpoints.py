@@ -812,7 +812,7 @@ class LogTest(WriteEndpointBase):
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # worker_bin=None
         seen = {}
 
-        def _fake_turn(prompt, engine=None, outdir=None):
+        def _fake_turn(prompt, engine=None, outdir=None, image_paths=None):
             seen["engine"] = engine
             # a minimal valid worker JSON so _log_author parses one bug.
             return '{"bugs": ["# Bug: thing\\n\\nbody"]}'
@@ -831,7 +831,7 @@ class LogTest(WriteEndpointBase):
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
         seen = {}
 
-        def _fake_turn(prompt, engine=None, outdir=None):
+        def _fake_turn(prompt, engine=None, outdir=None, image_paths=None):
             seen["engine"] = engine
             return '{"bugs": ["# Bug: x\\n\\nb"]}'
 

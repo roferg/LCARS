@@ -355,6 +355,16 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   padding:10px 12px;resize:vertical}
 .field textarea:focus,.field input:focus{outline:none;border-color:var(--lcars-amber)}
 
+/* ── S91: pasted-image placeholder chips (CLI-style, NO thumbnail/render) ── */
+.img-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.img-chip{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-body);
+  font-size:12px;color:var(--lcars-text-bright);background:var(--lcars-card-alt);
+  border:1px solid var(--lcars-border);border-radius:11px;padding:3px 8px;line-height:1.4}
+.img-chip-name{letter-spacing:.02em}
+.img-chip-x{cursor:pointer;color:var(--lcars-peach);font-weight:700;
+  padding:0 2px;border-radius:50%}
+.img-chip-x:hover{color:#ff8a96}
+
 /* ── choice opts (mock .choice .opt .rec) ──
    UX-35: selected-state clarity. Applies everywhere .opt renders (the File-modal
    engine picker AND the Align answer options). The OLD scheme lit BOTH selected

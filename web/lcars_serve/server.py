@@ -69,6 +69,16 @@ _CONTENT_TYPES = {
     ".ico": "image/x-icon",
 }
 
+# S91 — guards on the write body now that it can carry a pasted image as base64.
+#  • _MAX_BODY_BYTES caps the whole JSON body (Content-Length) so a giant paste
+#    can't exhaust memory. 12 MB leaves room for a ~9 MB image (base64 inflates
+#    ~33%) plus the surrounding JSON; the front end pre-checks at a tighter ~8 MB
+#    per image. Rejected BEFORE the body is read → 413.
+#  • _ALLOWED_IMAGE_TYPES is the image content-type allow-list — an `images[]`
+#    entry of any other type is rejected → 415, before it can reach the worker.
+_MAX_BODY_BYTES = 12 * 1024 * 1024
+_ALLOWED_IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+
 
 def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0,
                 actions=None):
@@ -148,13 +158,15 @@ def _build_handler(adapter, poll_interval, actions=None):
             # POST /api/align/<sid>/answer     — answer + run the next turn
             if path == "/api/align/start":
                 return actions.align_start(idea=body.get("idea"),
-                                           engine=body.get("engine"))
+                                           engine=body.get("engine"),
+                                           images=self._images(body))
             if path.startswith("/api/align/"):
                 rest = path[len("/api/align/"):]
                 parts = [p for p in rest.split("/") if p != ""]
                 if len(parts) == 2 and parts[1] == "answer":
                     return actions.align_answer(parts[0],
-                                                answer=body.get("answer"))
+                                                answer=body.get("answer"),
+                                                images=self._images(body))
                 if len(parts) == 2 and parts[1] == "cancel":
                     return actions.align_cancel(parts[0])
                 raise _ActionError(404, "no such align endpoint: %s" % path)
@@ -189,7 +201,8 @@ def _build_handler(adapter, poll_interval, actions=None):
             if verb == "reapprove":
                 return actions.reapprove(mid)
             if verb == "log":
-                return actions.log_preview(mid, text=body.get("text"))
+                return actions.log_preview(mid, text=body.get("text"),
+                                           images=self._images(body))
             if verb == "log/file":
                 return actions.log_file(mid, prds=body.get("prds"),
                                         overrides=body.get("overrides"))
@@ -201,6 +214,15 @@ def _build_handler(adapter, poll_interval, actions=None):
 
         def _read_json_body(self):
             length = int(self.headers.get("Content-Length") or 0)
+            # S91 — reject an oversize body BEFORE reading it (a runaway image
+            # paste must not be slurped into memory). Close the connection so the
+            # unread request body can't corrupt a keep-alive socket.
+            if length > _MAX_BODY_BYTES:
+                self.close_connection = True
+                raise _ActionError(
+                    413, "request body too large (%d bytes; limit is %d MB) — an "
+                    "attached image may exceed the cap"
+                    % (length, _MAX_BODY_BYTES // (1024 * 1024)))
             if length <= 0:
                 return {}
             raw = self.rfile.read(length)
@@ -213,6 +235,30 @@ def _build_handler(adapter, poll_interval, actions=None):
             if not isinstance(obj, dict):
                 raise _ActionError(400, "request body must be a JSON object")
             return obj
+
+        def _images(self, body):
+            """S91 — validate + return the body's `images[]` (or None).
+
+            Enforces the image content-type allow-list HERE, before any image can
+            reach the worker: an entry whose `type` is not in _ALLOWED_IMAGE_TYPES
+            is rejected with 415. The base64 decode + on-disk staging happen in
+            the Actions layer (it owns repo_root + cleanup); this gate only blocks
+            an unknown type from getting that far.
+            """
+            images = body.get("images")
+            if images in (None, []):
+                return None
+            if not isinstance(images, list):
+                raise _ActionError(400, "images must be a JSON array")
+            for img in images:
+                if not isinstance(img, dict):
+                    raise _ActionError(400, "each image must be a JSON object")
+                ctype = (img.get("type") or "").strip().lower()
+                if ctype not in _ALLOWED_IMAGE_TYPES:
+                    raise _ActionError(
+                        415, "unsupported image type %r — allowed: %s"
+                        % (ctype, ", ".join(_ALLOWED_IMAGE_TYPES)))
+            return images
 
         def _reject(self):
             self._error(405, "method not supported")
