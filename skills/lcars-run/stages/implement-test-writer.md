@@ -50,6 +50,24 @@ ticket is built**. Concretely, for each acceptance criterion:
    suite**: that suite is already green, so the runner would report green and the
    gate would reject you. Your file must stand alone and fail-first.
 
+### Pick the test ENVIRONMENT your assertions need
+
+Some criteria are about **DOM / browser** behaviour — a class on `document`, a
+rendered element, `localStorage`, `window`. Under the runner's default **Node**
+environment `document`/`window` are undefined, so every such test errors out the
+same way forever — a red the Implementer can NEVER turn green. If your ticket
+asserts on the DOM, declare a DOM environment at the TOP of your test file with
+the runner's per-file pragma — for Vitest:
+
+```js
+// @vitest-environment jsdom
+```
+
+(Jest: `/** @jest-environment jsdom */`.) Opt in ONLY when you actually touch the
+DOM; pure-logic tests stay on the fast default environment. If the repo has no
+DOM test dependency installed at all, say so plainly in your output rather than
+writing tests that can never run.
+
 If the harness **rejects a prior attempt**, a `RED-GATE FEEDBACK` block will be
 appended to your inputs with the gate's verdict and the runner's output. Read it:
 it tells you whether your last suite passed-on-nothing or simply did not exercise

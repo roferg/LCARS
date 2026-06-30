@@ -922,7 +922,7 @@ validate_plan_json() { # file
     # object boundaries — canonical format puts { and } on their own lines, and
     # the only braces in the file are object delimiters (arrays are inline).
     /^[[:space:]]*\{[[:space:]]*$/ {
-      inobj=1; delete have; acok=0; id=""; ndep=0; next
+      inobj=1; delete have; acok=0; id=""; ndep=0; in_ac=0; next
     }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ {
       if (!inobj) next
@@ -933,12 +933,25 @@ validate_plan_json() { # file
       for (d=1; d<=ndep; d++) { depof[++drefs]=dep[d]; depticket[drefs]=id }
       inobj=0; next
     }
+    # Inside a MULTI-LINE acceptanceCriteria array (canonical shape is inline, but
+    # a worker that pretty-prints the array across lines is still valid): count any
+    # non-empty quoted string as a satisfied criterion, and close the array on its
+    # `]`. Runs BEFORE the generic key parser so criterion text never pollutes have[].
+    inobj && in_ac {
+      m=split($0, b, "\"")
+      for (i=2; i<m; i+=2) if (b[i] != "") acok=1
+      if ($0 ~ /\]/) in_ac=0
+      next
+    }
     inobj {
       n=split($0, a, "\"")          # inside-quote contents land at even indices
       if (n < 2) next
       key=a[2]; have[key]=1
       if (key=="id") id=a[4]
-      else if (key=="acceptanceCriteria") { if (n >= 4) acok=1 }
+      else if (key=="acceptanceCriteria") {
+        if (n >= 4) acok=1          # inline ["a", …] — criterion text on this line
+        if ($0 !~ /\]/) in_ac=1     # array opens here, closes on a later line
+      }
       else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
     }
     # DESIGN NOTE (Session 31): the three estimate fields are a SHAPE contract,
