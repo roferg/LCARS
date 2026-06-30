@@ -2209,6 +2209,27 @@ cmd_impl_save_tests() {
   # prove the Implementer never edited the locked contract.
   snapshot_tests "$tdir" "$snap"
 
+  # S94 (greenfield stubs): a ticket that creates a BRAND-NEW source module can't
+  # pass the red gate today — the Test-Writer's `import '../src/canvas/utils'`
+  # cannot RESOLVE (the file does not exist yet), so 0 tests collect and the gate
+  # rejects it as a resolution-failure red. To "make it compile first" (what a
+  # human does), the Test-Writer ALSO emits a MINIMAL EMPTY stub for any module
+  # its tests import that does not exist yet, under a `stubs/` tree mirroring repo
+  # paths. OVERLAY that tree onto the worktree source HERE — BEFORE the red gate —
+  # so the import resolves and the suite reds on a real ASSERTION (a valid red).
+  # The full mirrored relpath under $REPO_ROOT resolves correctly for BOTH the
+  # repo-root case AND the monorepo case (where the gate runs vitest from
+  # $REPO_ROOT/<pkg> and the test imports `../src/...` → $REPO_ROOT/<pkg>/src/...),
+  # so we stage to $REPO_ROOT/<mirrored-relpath> and do NOT special-case pkg_rel.
+  # The stubs are scaffolding the Implementer OVERWRITES: they are NOT snapshotted
+  # (not added to tests.sha256, not copied into $tdir) and are LEFT in place on
+  # success (NO cleanup). With no stubs given the behaviour is byte-identical to
+  # before — a still-missing module reds with the resolution-failure reason.
+  if [ -n "$STUBS" ] && [ -d "$STUBS" ] \
+     && [ -n "$(find "$STUBS" -type f -print -quit 2>/dev/null)" ]; then
+    cp -R "$STUBS/." "$REPO_ROOT/"
+  fi
+
   # GUARDRAIL 1 (the red gate): the suite must FAIL against no implementation
   # before the Implementer is allowed to run. A green-on-nothing suite is
   # rejected and the quarantine is rolled back, so nothing reaches the Implementer.
@@ -5512,8 +5533,12 @@ $(cat "$sigfile")"
     local odir; odir="$(mktemp -d)"
     # Harness owns directory scaffolding (workers only create files): pre-create
     # the tests/ scratch subdir so the worker's `create tests/<file>` lands without
-    # needing to mkdir. CLI-neutral; Claude is unaffected.
-    mkdir -p "$odir/tests"
+    # needing to mkdir. CLI-neutral; Claude is unaffected. S94: ALSO pre-create the
+    # stubs/ scratch subdir — the worker writes any minimal empty greenfield-module
+    # stubs there (mirroring repo paths), which impl-save-tests overlays before the
+    # red gate so a brand-new module's import resolves and the suite reds on an
+    # assertion rather than a resolution failure.
+    mkdir -p "$odir/tests" "$odir/stubs"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock
@@ -5523,7 +5548,7 @@ $TICKET$tspecblock$retryblock"
     if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
-        --mission "$MISSION_ID" --ticket "$TICKET" --tests "$odir/tests" || rc=$?
+        --mission "$MISSION_ID" --ticket "$TICKET" --tests "$odir/tests" --stubs "$odir/stubs" || rc=$?
       if [ "$rc" -eq 0 ]; then saved=1; rm -rf "$odir"; break; fi
     fi
     rm -rf "$odir"
@@ -6949,7 +6974,7 @@ cmd_drive() {
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
-MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
+MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; RESULT=""; STEP=0
 EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
 RC_BRANCH=""; RC_SHA=""
 while [ $# -gt 0 ]; do
@@ -6977,6 +7002,8 @@ while [ $# -gt 0 ]; do
     --sha=*)       RC_SHA="${1#--sha=}"; shift ;;
     --tests)       TESTS="${2:-}"; shift 2 ;;
     --tests=*)     TESTS="${1#--tests=}"; shift ;;
+    --stubs)       STUBS="${2:-}"; shift 2 ;;
+    --stubs=*)     STUBS="${1#--stubs=}"; shift ;;
     --result)      RESULT="${2:-}"; shift 2 ;;
     --result=*)    RESULT="${1#--result=}"; shift ;;
     --type)        EV_TYPE="${2:-}"; shift 2 ;;
