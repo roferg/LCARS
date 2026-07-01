@@ -1799,6 +1799,32 @@ resolve_test_cmd() {
   printf '%s' "$c"
 }
 
+# --- S96: table-driven classifier signatures -------------------------------
+# The red-gate failure detectors below (compile / resolution / env) share ONE
+# data table keyed by CATEGORY, so a future stack (multi-stack-dev.md) slots a new
+# recognizer in HERE instead of editing each detector inline. This session adds NO
+# new language arms: the `resolution`, `compile`, and `env` patterns are
+# BYTE-IDENTICAL to the pre-S96 inline regexes (regression — JS/Python classify
+# exactly as before); only their STORAGE moved into this one lookup. `assertion`
+# is a NEW, classify-ONLY signature (used solely by classify_impl_failure to tell
+# a genuine assertion red from a no-coherent-red rejection); it is NOT consulted by
+# the three red-gate detectors, so it cannot change any existing gate verdict.
+rg_signature() { # category → the ERE for that category's runner-output signature
+  case "$1" in
+    resolution)
+      printf '%s' 'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve' ;;
+    compile)
+      printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)' ;;
+    env)
+      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate' ;;
+    assertion)
+      # A GENUINE assertion red (the runner started, tests ran, an assertion FAILED)
+      # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs
+      # against the gate, so it can never accept a red the gate would reject.
+      printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]' ;;
+  esac
+}
+
 # --- BUG-022: distinguish a compile/load failure from a valid assertion red --
 # The red gate wants the quarantined suite RED before the Implementer runs, but a
 # Test-Writer that emits a NON-COMPILING test (a SyntaxError, an import/parse error,
@@ -1834,8 +1860,8 @@ red_gate_compile_failure() { # runner-output → 0 if a compile/load failure sig
   red_gate_resolution_failure "$out" && return 0
   # node/JS compile + load signatures, plus a generic interpreter parse error. These
   # are emitted to stderr (which the gate captures with 2>&1) BEFORE any test runs.
-  printf '%s' "$out" | grep -Eq \
-    'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)' \
+  # Pattern is the `compile` arm of rg_signature (byte-identical to the prior inline).
+  printf '%s' "$out" | grep -Eq "$(rg_signature compile)" \
     && return 0
   return 1
 }
@@ -1861,8 +1887,8 @@ red_gate_compile_failure() { # runner-output → 0 if a compile/load failure sig
 # Returns 0 (a module-resolution/load failure) or 1 (none).
 red_gate_resolution_failure() { # runner-output → 0 if a module-resolution failure signature is present
   local out="$1"
-  printf '%s' "$out" | grep -Eq \
-    'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve' \
+  # Pattern is the `resolution` arm of rg_signature (byte-identical to the prior inline).
+  printf '%s' "$out" | grep -Eq "$(rg_signature resolution)" \
     && return 0
   return 1
 }
@@ -1945,10 +1971,124 @@ unresolved_imports_in_output() { # runner-output ($1 or stdin) → distinct unre
 # Returns 0 (the runner could not execute) or 1 (no env-failure signature).
 red_gate_env_failure() { # runner-output → 0 if the runner could not execute
   local out="$1"
-  printf '%s' "$out" | grep -Eq \
-    '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate' \
+  # Pattern is the `env` arm of rg_signature (byte-identical to the prior inline).
+  printf '%s' "$out" | grep -Eq "$(rg_signature env)" \
     && return 0
   return 1
+}
+
+# --- S96: actionable failure classification --------------------------------
+# When an Implement (or retest) attempt STOPS, name ONE root-cause CATEGORY so the
+# failure event + awaiting-human gate say WHY, instead of the generic "no usable
+# tests". PURE + SIGNAL-ONLY: reads only CAPTURED output, runs nothing, and NEVER
+# changes a verdict — it labels a failure the gate already decided. The three
+# inputs are the last attempt's RUNNER output (the red-gate signal / runner
+# stderr), the WORKER's own stdout+stderr, and the newline-separated list of FILES
+# the worker wrote (its test file(s) + any S94 stub(s)).
+#
+# PRECEDENCE (first match wins) — mirrors red_gate_ok's own triage order where it
+# matters, so the category always AGREES with the verdict already rendered:
+#   1. empty-worker-output — the worker produced NOTHING (no file AND empty
+#      stdout/stderr). Checked FIRST: there is no runner output to classify, and
+#      this is the S98 worker-health signal (a dead/transient CLI, not a code bug).
+#   2. env-failure         — the runner could not LAUNCH (red_gate_env_failure).
+#      Checked BEFORE resolution/compile, exactly as red_gate_ok triages env first,
+#      so an unprovisioned runner never mis-reads as a code fault.
+#   3. missing-new-module / bad-import-path — a module-RESOLUTION failure
+#      (red_gate_resolution_failure). Greenfield (a path the ticket CREATES — the
+#      worker wrote a stub/file mirroring the unresolved specifier, per S94) →
+#      missing-new-module; otherwise (a typo'd / non-created path) → bad-import-path.
+#   4. genuine-red-exhausted — the runner output shows a REAL assertion red
+#      (rg_signature assertion) with none of the above causes: the tests genuinely
+#      went red and attempts ran out.
+#   5. over-broad-slice    — a test file WAS written but nothing above pinned a
+#      coherent failing test (green-on-nothing / ignored-var / a non-resolution load
+#      defect): the Test-Writer wrote something the gate kept rejecting.
+#   6. empty-worker-output — fallback: no file was written and we could not classify
+#      (worker noise but no usable artifact) → still a worker-health miss.
+classify_impl_failure() { # runner_out  worker_out  files_written
+  local runner_out="${1:-}" worker_out="${2:-}" files_written="${3:-}"
+  local has_files=no has_runner=no has_worker=no
+  [ -n "$(printf '%s' "$files_written" | tr -d '[:space:]')" ] && has_files=yes
+  [ -n "$(printf '%s' "$runner_out"    | tr -d '[:space:]')" ] && has_runner=yes
+  [ -n "$(printf '%s' "$worker_out"    | tr -d '[:space:]')" ] && has_worker=yes
+
+  # 1. empty-worker-output — nothing produced at all.
+  if [ "$has_files" = no ] && [ "$has_runner" = no ] && [ "$has_worker" = no ]; then
+    printf 'empty-worker-output'; return 0
+  fi
+
+  # 2. env-failure — the runner could not start (checked before resolution/compile).
+  if red_gate_env_failure "$runner_out"; then
+    printf 'env-failure'; return 0
+  fi
+
+  # 3. module-resolution — greenfield (a created module) vs a typo/non-created path.
+  if red_gate_resolution_failure "$runner_out"; then
+    if unresolved_specifier_is_created "$runner_out" "$files_written"; then
+      printf 'missing-new-module'
+    else
+      printf 'bad-import-path'
+    fi
+    return 0
+  fi
+
+  # 4. genuine-red-exhausted — a real assertion red exhausted the attempt cap.
+  if printf '%s' "$runner_out" | grep -Eq "$(rg_signature assertion)"; then
+    printf 'genuine-red-exhausted'; return 0
+  fi
+
+  # 5. over-broad-slice — a file was written but no coherent red ever converged.
+  if [ "$has_files" = yes ]; then
+    printf 'over-broad-slice'; return 0
+  fi
+
+  # 6. fallback — no file, not strictly empty (worker noise) → worker-health miss.
+  printf 'empty-worker-output'
+}
+
+# S96 helper: decide whether ANY unresolved import specifier in a resolution
+# failure names a module the TICKET is trying to CREATE (greenfield) — i.e. the
+# worker WROTE a file (an S94 stub, or the source) mirroring that specifier's
+# module name. If so the resolution failure is `missing-new-module` (the stub just
+# did not resolve yet); if the specifier matches nothing the worker wrote, it is a
+# `bad-import-path` (a typo'd / non-created path). A *.test / *.spec file is the
+# TEST, not a created module, so it never counts as the greenfield target. PURE
+# string comparison; returns 0 if greenfield, 1 otherwise.
+unresolved_specifier_is_created() { # runner_out  files_written  → 0 if greenfield
+  local runner_out="$1" files_written="$2" spec base f fb
+  [ -n "$(printf '%s' "$files_written" | tr -d '[:space:]')" ] || return 1
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    base="${spec##*/}"; base="${base%.*}"     # module stem: drop dir prefix + ext
+    [ -n "$base" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      fb="${f##*/}"; fb="${fb%.*}"            # written-file stem
+      case "$fb" in *.test|*.spec) continue ;; esac
+      [ "$fb" = "$base" ] && return 0
+    done <<EOF
+$files_written
+EOF
+  done <<EOF
+$(unresolved_imports_in_output "$runner_out")
+EOF
+  return 1
+}
+
+# S96: the human-facing phrase for a failure category — used in the failure event
+# detail, the awaiting-human gate / stop text, and the notification, so the board
+# reads e.g. "over-broad slice (no coherent failing test)" instead of a bare token.
+impl_failure_category_phrase() { # category → phrase
+  case "$1" in
+    missing-new-module)         printf 'missing new module (a greenfield import the ticket must create did not resolve)' ;;
+    bad-import-path)            printf 'bad import path (a mistyped / non-created import did not resolve)' ;;
+    over-broad-slice)           printf 'over-broad slice (no coherent failing test — the Test-Writer could not pin a red)' ;;
+    empty-worker-output)        printf 'empty worker output (the worker produced no file and no output — likely a transient CLI failure, not a code problem)' ;;
+    env-failure|runner-startup) printf 'environment failure (the test runner could not start — the worktree is not provisioned; NOT a code problem)' ;;
+    genuine-red-exhausted)      printf 'genuine red exhausted (the tests went red but never turned green within the attempt cap)' ;;
+    *)                          printf '%s' "$1" ;;
+  esac
 }
 
 # --- GUARDRAIL 1: the red gate ----------------------------------------------
@@ -5550,6 +5690,9 @@ $tspecblock"
   # is still a fresh cold worker; nothing of the prior session survives but this
   # one declarative line of feedback).
   local sigfile; sigfile="$(ticket_dir "$TICKET")/red-gate-signal.txt"
+  # S96: retain the LAST attempt's worker output + files-written so, if the loop
+  # exhausts without a usable suite, classify_impl_failure can name the root cause.
+  local cl_worker="" cl_files=""
   while [ "$saved" != 1 ] && [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     # attempt = 1 + (existing ticket_attempt lines for THIS ticket+phase). Within
@@ -5586,6 +5729,10 @@ $(cat "$sigfile")"
 
 ## Your ticket
 $TICKET$tspecblock$retryblock"
+    # S96: capture THIS attempt's worker output + files-written BEFORE $odir is
+    # removed, so an eventual exhaustion can be classified. Signal only.
+    cl_worker="$(cat "$odir/.worker.out" "$odir/.worker.err" 2>/dev/null || true)"
+    cl_files="$(find "$odir/tests" "$odir/stubs" -type f 2>/dev/null || true)"
     if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
@@ -5594,7 +5741,29 @@ $TICKET$tspecblock$retryblock"
     fi
     rm -rf "$odir"
   done
-  [ "$saved" = 1 ] || die "the Test Writer worker produced no usable tests for $TICKET after $MAX_WORKER_TRIES attempt(s) — Stage stopped."
+  if [ "$saved" != 1 ]; then
+    # S96 (SIGNAL ONLY — control flow + verdict unchanged): name the ROOT-CAUSE
+    # category so the failure event and the stage-stop / awaiting-human text say
+    # WHY, instead of the generic "no usable tests". The last attempt's red-gate
+    # signal is the runner output; the worker output + files-written were retained
+    # above. This ADDS a category; it never turns this rejection into an accept.
+    local cl_runner=""; [ -f "$sigfile" ] && cl_runner="$(cat "$sigfile" 2>/dev/null || true)"
+    local cl_cat cl_phrase
+    cl_cat="$(classify_impl_failure "$cl_runner" "$cl_worker" "$cl_files")"
+    cl_phrase="$(impl_failure_category_phrase "$cl_cat")"
+    # Categorised failure event — the board renders the new "category" data field.
+    emit_event ticket_test_writer_failed implement \
+      "ticket $TICKET stopped: $cl_phrase" \
+      "ticket=$TICKET" "phase=test-writer" "category=$cl_cat" "attempts=$MAX_WORKER_TRIES"
+    # Durably record the phrase so implement_failure_tail surfaces it in the
+    # stage-stop text the human sees (same additive channel as record_replay_failure).
+    if [ -n "${MISSION_DIR:-}" ]; then
+      printf '%s\tticket=%s\t%s: %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" "$TICKET" "$cl_cat" "$cl_phrase" \
+        >>"$MISSION_DIR/implement-failure.log" 2>/dev/null || :
+    fi
+    die "the Test Writer worker produced no usable tests for $TICKET after $MAX_WORKER_TRIES attempt(s) — $cl_phrase — Stage stopped."
+  fi
 
   # PHASE 2 — Implementer worker (no Test Writer context) → result.json →
   # impl-save-result. Its ONLY handoff is the tests now on disk.
@@ -7241,6 +7410,25 @@ case "$SUB" in
     _rg_in="$(cat)"
     if red_gate_compile_failure "$_rg_in"; then exit 0; else exit 1; fi
     ;;
+  # S96 test hook: run the module-RESOLUTION detector on stdin and exit with its
+  # return code (0 = resolution failure detected, 1 = none). Inert for every real
+  # subcommand — reachable only by this token, so the table-driven detector's
+  # pattern coverage is unit-testable directly (regression: byte-equivalent).
+  red-gate-resolution-detect-test)
+    _rg_in="$(cat)"
+    if red_gate_resolution_failure "$_rg_in"; then exit 0; else exit 1; fi
+    ;;
+  # S96 test hook: classify a stopped Implement attempt into ONE root-cause
+  # category and print it. The runner output is read from stdin; the worker's
+  # output and the newline-separated files-written list are passed via env
+  # ($LCARS_CLASSIFY_WORKER_OUT / $LCARS_CLASSIFY_FILES, both default empty) so the
+  # precedence of classify_impl_failure can be driven directly, offline + free.
+  # Inert for every real subcommand — reachable only by this explicit token.
+  classify-impl-failure-test)
+    _ci_runner="$(cat)"
+    classify_impl_failure "$_ci_runner" "${LCARS_CLASSIFY_WORKER_OUT:-}" "${LCARS_CLASSIFY_FILES:-}"
+    printf '\n'
+    exit 0 ;;
   # S87 test hook: echo ticket_target_package for a ticket (optionally against a
   # given root, the positional). Inert for every real subcommand — reachable only
   # by this token from the test suite, so the manifest→package resolver can be
