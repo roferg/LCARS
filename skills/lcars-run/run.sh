@@ -3738,6 +3738,60 @@ reconcile_escalate() { # diagnosis-text  [design]
   printf 'RECONCILE: escalated — %s rounds exhausted; awaiting human.\n' "$RECONCILE_MAX"
 }
 
+# S97 — did the reconcile RETEST go red because the RUNNER could not START, rather
+# than because of a real logical conflict? A reconcile merge worktree that is not
+# provisioned (no node_modules / no worktreeSetupCommand, a missing testCommand
+# binary, `cd: <pkg>: No such file or directory`) makes EVERY ticket suite error at
+# STARTUP — which the reconcile would otherwise mis-read as an ALL-SUITES-RED
+# logical conflict and chase with a phantom self-heal bug (the S97 demo bug). This
+# is a PURE, offline verdict built on the SAME env-failure detector the Implement /
+# full-suite gates use (red_gate_env_failure), so an unprovisioned retest is NEVER
+# chased as a code fault. $1 is the retest CAPTURE dir (the reconcile writes one
+# <id>.log per failing suite there) OR a single log file OR raw text (test
+# convenience). Returns 0 (env-blocked: the runner could not start) or 1 (a genuine
+# red the self-heal path may act on).
+reconcile_retest_env_blocked() { # capture-dir-or-log-or-text → 0 if env-blocked
+  local p="${1:-}" out=""
+  if [ -d "$p" ]; then
+    out="$(cat "$p"/*.log 2>/dev/null)"
+  elif [ -f "$p" ]; then
+    out="$(cat "$p" 2>/dev/null)"
+  else
+    out="$p"
+  fi
+  red_gate_env_failure "$out"
+}
+
+# S97 — the reconcile merge was CLEAN but the RETEST could not RUN (the merge
+# worktree was not provisioned). This is NOT a logical merge conflict, so we must
+# NOT self-heal and must NOT author a phantom reconcile-bug PRD. STOP at an
+# actionable awaiting-human gate that names worktreeSetupCommand, preserving the raw
+# captured output so the captain sees exactly why the runner could not start. Mirrors
+# reconcile_escalate's gate wiring, but with a DISTINCT status (env-blocked, so a
+# re-run after the captain fixes the config re-attempts rather than being suppressed
+# by the escalated-idempotency guard) and a DISTINCT event (reconcile_env_blocked).
+reconcile_retest_env_escalate() { # failed-ids  captured-output
+  local ids="$1" cap_out="$2"
+  state_set_str reconcileStatus "env-blocked"
+  local note="Reconcile with $BASE merged CLEANLY, but the re-test could not RUN — the reconcile merge worktree was not provisioned (no node_modules / the testCommand binary was not found), so the mission's ticket suite(s) errored at startup. This is NOT a code conflict. Set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`) so the retest environment matches the build, then re-run \`lcars approve\` / \`lcars run\`."
+  local qf; qf="$(mktemp)"
+  {
+    printf '%s\n\nSuite(s) that could not run: %s\n' "$note" "${ids:-all}"
+    if [ -n "$cap_out" ]; then
+      printf '\nCaptured retest output (raw):\n%s\n' "$cap_out"
+    fi
+  } >"$qf"
+  write_pending "$qf" "verify"
+  state_set_str reconcileDiagnosis "$note"
+  state_set_raw awaitingHuman true
+  state_set_str pendingQuestion "$note"
+  rm -f "$qf"
+  gh_relabel "lcars:verify lcars:awaiting-human" ""
+  emit_event reconcile_env_blocked verify "reconcile merged $BASE cleanly but the retest could not run — the merge worktree was not provisioned; set worktreeSetupCommand (NOT a code conflict)"
+  notify_gate awaiting-human "$note"
+  printf 'RECONCILE: env-blocked — merged %s cleanly but the retest could not run (worktree not provisioned); set worktreeSetupCommand and re-run.\n' "$BASE"
+}
+
 # The reconcile gate. Echoes a RECONCILE: line and returns:
 #   0  ("RECONCILE: ok")          → not ahead, or clean+green → caller proceeds to
 #                                    open the PR. The merge (if any) is already on
@@ -3859,6 +3913,16 @@ reconcile_gate() {
       return 20
     fi
   fi
+  # S97 — ENV PARITY: provision the reconcile merge worktree EXACTLY as the Implement
+  # gates provision theirs (make_ticket_worktree / the post-commit gate both call
+  # provision_worktree right after `git worktree add`), so the configured testCommand
+  # can RESOLVE (node_modules, package layout, the test binary) when the retest runs.
+  # Without this the retest errors at STARTUP and the reconcile mis-reads that as an
+  # all-suites-red LOGICAL conflict, chasing a phantom self-heal bug (the S97 demo
+  # bug). REUSES the shared primitive — no forked/weaker setup. Best-effort: a failure
+  # drops a breadcrumb and is CAUGHT by the S97 env-blocked routing below (it is never
+  # chased as a code conflict). NEVER clobbers the captain's configured command.
+  provision_worktree "$wt" || :
   # Record the branch's PRE-MERGE tip so a RED reconcile can UNDO the merge: the
   # merge commits onto the live branch ref, and we must NOT leave a broken merge on
   # the branch (it would read as "not ahead" next pass and ship a stale-and-broken
@@ -3915,6 +3979,26 @@ EOF
       local cap; cap="$(mktemp -d)"
       if ! RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" $ordered; then
         red=1
+        # S97 — ENV-FAILURE ROUTING: the retest went RED — but did the runner actually
+        # RUN? An unprovisioned merge worktree (no node_modules, a missing testCommand
+        # binary, `cd: <pkg>: No such file or directory`, `vitest: not found`) makes
+        # EVERY suite error at STARTUP. That is NOT a logical merge conflict — the merge
+        # was clean; only the retest ENVIRONMENT is broken. Reading it as a code
+        # conflict auto-files a phantom self-heal bug (the S97 demo bug). Classify the
+        # captured retest output through the SAME env detector the Implement/full-suite
+        # gates use; on an env-failure, STOP at an actionable awaiting-human gate
+        # (env-blocked) — undo the un-verifiable merge so a re-run re-tests, preserve
+        # the raw output, and NEVER reach the self-heal author. Only a GENUINE red (real
+        # assertion failures after a provisioned run) falls through to self-heal below.
+        if reconcile_retest_env_blocked "$cap"; then
+          local envcap; envcap="$(cat "$cap"/*.log 2>/dev/null)"
+          local envids="$RETEST_FAILED"
+          rm -rf "$cap"
+          reconcile_undo_merge
+          reconcile_cleanup
+          reconcile_retest_env_escalate "$envids" "$envcap"
+          return 20
+        fi
         failure_summary="MERGING $BASE into the mission branch merged CLEANLY, but re-running the mission's own ticket suite(s) against the combined state went RED (a silent logical conflict).
 
 Failing ticket suite(s): $RETEST_FAILED
@@ -7429,6 +7513,17 @@ case "$SUB" in
     classify_impl_failure "$_ci_runner" "${LCARS_CLASSIFY_WORKER_OUT:-}" "${LCARS_CLASSIFY_FILES:-}"
     printf '\n'
     exit 0 ;;
+  # S97 test hook: run the reconcile RETEST env-blocked verdict on stdin and exit
+  # with its return code (0 = env-blocked / the runner could not start, 1 = a genuine
+  # red). Reads the captured retest output on stdin (written to a temp <id>.log so the
+  # dir-capture path is exercised). Inert for every real subcommand — reachable only
+  # by this explicit token, so the pure verdict is unit-testable offline + free.
+  reconcile-retest-env-blocked-test)
+    _re_in="$(cat)"
+    _re_tmp="$(mktemp -d)"
+    printf '%s\n' "$_re_in" >"$_re_tmp/t-001.log"
+    if reconcile_retest_env_blocked "$_re_tmp"; then rm -rf "$_re_tmp"; exit 0; else rm -rf "$_re_tmp"; exit 1; fi
+    ;;
   # S87 test hook: echo ticket_target_package for a ticket (optionally against a
   # given root, the positional). Inert for every real subcommand — reachable only
   # by this token from the test suite, so the manifest→package resolver can be
