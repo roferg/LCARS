@@ -47,15 +47,16 @@ EOF
 
 echo "worker-adapter — the one CLI-specific seam (session 18)"
 
-# --- 1. argv claude repo-read emits the exact 5 lines, order-sensitive --------
+# --- 1. argv claude repo-read emits the exact 6 lines, order-sensitive --------
 d1="$(mktemp -d "$TMPROOT/d.XXXX")"
 A1="$(bash "$ADAPTER" argv claude repo-read "$d1")"
 EXPECT_1='-p
 --allowedTools
 Read,Grep,Glob,Write
 --output-format
-text'
-check "1. argv claude repo-read → exact 5 lines in order" \
+text
+--dangerously-skip-permissions'
+check "1. argv claude repo-read → exact 6 lines in order" \
   "[ \"\$A1\" = \"\$EXPECT_1\" ]"
 
 # --- 2. each role yields TODAY's Claude tool list (regression lock) ------------
@@ -70,22 +71,24 @@ check "2d. default       → Read (the old \`*\` case)" \
   "[ \"\$(tool_line default)\" = 'Read' ]"
 
 # argv never emits the prompt — purely flags.
-check "2e. argv emits exactly 5 lines (no prompt)" \
-  "[ \"\$(bash \"$ADAPTER\" argv claude repo-read \"$d1\" | wc -l | tr -d ' ')\" = '5' ]"
+check "2e. argv emits exactly 6 lines (no prompt)" \
+  "[ \"\$(bash \"$ADAPTER\" argv claude repo-read \"$d1\" | wc -l | tr -d ' ')\" = '6' ]"
 
 # --- 3. spawn runs the (stubbed) claude with -p <prompt> + flags, captures -----
 d3="$(mktemp -d "$TMPROOT/d.XXXX")"
 make_claude_stub "$d3/claude"
 export CLAUDE_ARGV="$d3/argv.log" CLAUDE_ENV="$d3/env.log"
 LCARS_WORKER_BIN="$d3/claude" bash "$ADAPTER" spawn claude repo-read "$d3/out" "THE PROMPT BODY"
-# Byte-for-byte the old call: -p <prompt> --allowedTools <list> --output-format text
+# Byte-for-byte the call: -p <prompt> --allowedTools <list> --output-format text
+# --dangerously-skip-permissions (headless auto-approve; see adapter claude case).
 EXPECT_ARGV='-p
 THE PROMPT BODY
 --allowedTools
 Read,Grep,Glob,Write
 --output-format
-text'
-check "3a. spawn argv = -p <prompt> --allowedTools <list> --output-format text" \
+text
+--dangerously-skip-permissions'
+check "3a. spawn argv = -p <prompt> --allowedTools <list> --output-format text --dangerously-skip-permissions" \
   "[ \"\$(cat \"$d3/argv.log\")\" = \"\$EXPECT_ARGV\" ]"
 check "3b. spawn sets LCARS_WORKER_ROLE + LCARS_WORK_OUT" \
   "grep -q 'role=repo-read out=$d3/out' \"$d3/env.log\""
@@ -307,7 +310,8 @@ EXPECT_I2='-p
 --allowedTools
 Read,Grep,Glob,Write,Edit,Bash
 --output-format
-text'
+text
+--dangerously-skip-permissions'
 check "I2. claude argv UNCHANGED with input dirs (no per-path flags, no regression)" \
   "[ \"\$AI2\" = \"\$EXPECT_I2\" ]"
 

@@ -129,12 +129,20 @@ run_save "$repo" "$tdir" "$sdir"
   || bad "real-behaviour stub rejected (rc=$RC: $OUT)"
 
 # --- case 4: missing module, NO stubs → resolution-failure REJECT -----------
+# The fake runner emits a realistic vite `Failed to resolve import "<spec>" ...
+# Does the file exist?` line for the imported greenfield module. The verdict is
+# unchanged (still REJECTED as a resolution failure), AND the enriched feedback
+# must now NAME that exact specifier up front so a weaker model self-corrects.
 repo="$(new_mission)"; tdir="$repo/_t"
-write_test "$tdir"
+write_test "$tdir"                       # imports '../src/canvas/utils'
 run_save "$repo" "$tdir" ""
 { [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "could not RESOLVE its import"; } \
   && ok "no stubs + missing module still rejected (resolution failure)" \
   || bad "no stubs + missing module rejected (rc=$RC: $OUT)"
+{ printf '%s' "$OUT" | grep -q "these import(s) did not resolve" \
+    && printf '%s' "$OUT" | grep -q "../src/canvas/utils"; } \
+  && ok "resolution-failure feedback NAMES the exact unresolved specifier" \
+  || bad "resolution-failure feedback names the specifier (rc=$RC: $OUT)"
 
 # --- case 5: runner-startup failure → env-failure REJECT (regardless of stub) -
 repo="$(new_mission)"; tdir="$repo/_t"; sdir="$repo/_s"
