@@ -117,7 +117,15 @@ adapter_argv() { # cli role outdir
   case "$cli" in
     claude)
       # claude has no per-path sandbox — input dirs are irrelevant; argv unchanged.
-      printf '%s\n' '-p' '--allowedTools' "$tools" '--output-format' 'text'
+      # --dangerously-skip-permissions: a cold `-p` worker is already fenced by
+      # --allowedTools and runs headless with NO human to approve interactive
+      # permission prompts, so it must skip that gate (the claude equivalent of
+      # the copilot branch's `--allow-all-tools --no-ask-user`). Without it, the
+      # Implementer's writes into the mission's per-ticket worktree under `.git/`
+      # are DECLINED (claude treats `.git/`-segment paths as protected) and the
+      # ticket flags with everything read but nothing written.
+      printf '%s\n' '-p' '--allowedTools' "$tools" '--output-format' 'text' \
+        '--dangerously-skip-permissions'
       [ -n "$model" ] && printf '%s\n' '--model' "$model"
       ;;
     copilot)

@@ -922,7 +922,7 @@ validate_plan_json() { # file
     # object boundaries — canonical format puts { and } on their own lines, and
     # the only braces in the file are object delimiters (arrays are inline).
     /^[[:space:]]*\{[[:space:]]*$/ {
-      inobj=1; delete have; acok=0; id=""; ndep=0; next
+      inobj=1; delete have; acok=0; id=""; ndep=0; in_ac=0; next
     }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ {
       if (!inobj) next
@@ -933,12 +933,25 @@ validate_plan_json() { # file
       for (d=1; d<=ndep; d++) { depof[++drefs]=dep[d]; depticket[drefs]=id }
       inobj=0; next
     }
+    # Inside a MULTI-LINE acceptanceCriteria array (canonical shape is inline, but
+    # a worker that pretty-prints the array across lines is still valid): count any
+    # non-empty quoted string as a satisfied criterion, and close the array on its
+    # `]`. Runs BEFORE the generic key parser so criterion text never pollutes have[].
+    inobj && in_ac {
+      m=split($0, b, "\"")
+      for (i=2; i<m; i+=2) if (b[i] != "") acok=1
+      if ($0 ~ /\]/) in_ac=0
+      next
+    }
     inobj {
       n=split($0, a, "\"")          # inside-quote contents land at even indices
       if (n < 2) next
       key=a[2]; have[key]=1
       if (key=="id") id=a[4]
-      else if (key=="acceptanceCriteria") { if (n >= 4) acok=1 }
+      else if (key=="acceptanceCriteria") {
+        if (n >= 4) acok=1          # inline ["a", …] — criterion text on this line
+        if ($0 !~ /\]/) in_ac=1     # array opens here, closes on a later line
+      }
       else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
     }
     # DESIGN NOTE (Session 31): the three estimate fields are a SHAPE contract,
@@ -1854,6 +1867,38 @@ red_gate_resolution_failure() { # runner-output → 0 if a module-resolution fai
   return 1
 }
 
+# S95 (greenfield-tests): pull the EXACT unresolved import specifier(s) out of a
+# resolution-failure runner output so red_gate_ok's feedback can NAME them up
+# front instead of burying them in vite's verbose stack trace. A strong model
+# (claude) digs the specifier out of the raw tail; a weaker one (copilot) does
+# NOT reliably self-correct within the 3-attempt cap — so a legitimately-
+# greenfield ticket that creates MULTIPLE new modules dies "no usable tests".
+# Naming each specifier turns a fuzzy retry into a precise, actionable one.
+#
+# PURE string parsing — reads runner output from $1 or stdin, echoes the DISTINCT
+# specifier(s) it can extract (one per line, deduped), empty output if none.
+# Defensive: an unrecognised format echoes nothing and never errors. Portable
+# BSD/GNU only (grep -oE + sed; no PCRE \K, no grep -P). Covers the common
+# bundler/runtime phrasings:
+#   • Failed to resolve import "X" / 'X'        (vite/vitest — quoted specifier)
+#   • Failed to resolve entry for package "X"   (vite — quoted package name)
+#   • Cannot find module 'X' / "X"              (node resolver — quoted specifier)
+#   • Cannot find package 'X' / "X"             (node/pnpm — quoted package)
+#   • Failed to load url X                       (vite — bare url up to whitespace)
+unresolved_imports_in_output() { # runner-output ($1 or stdin) → distinct unresolved specifier(s), one per line
+  local out
+  if [ "$#" -gt 0 ]; then out="$1"; else out="$(cat)"; fi
+  {
+    # Quoted specifiers: extract the token inside the FIRST quote pair on each match.
+    printf '%s\n' "$out" | grep -oE \
+      '(Failed to resolve import|Failed to resolve entry for package|Cannot find module|Cannot find package)[[:space:]]+["'"'"'][^"'"'"']+["'"'"']' \
+      | sed -E 's/.*["'"'"']([^"'"'"']+)["'"'"'].*/\1/'
+    # Bare (unquoted) url form: everything up to the next whitespace or paren.
+    printf '%s\n' "$out" | grep -oE 'Failed to load url[[:space:]]+[^[:space:])]+' \
+      | sed -E 's/^Failed to load url[[:space:]]+//'
+  } | grep -v '^[[:space:]]*$' | LC_ALL=C sort -u
+}
+
 # S83 (gate-worktree-deps): an un-runnable ENVIRONMENT detector — companion to
 # red_gate_compile_failure. That detector catches a test file that LOADED into a
 # WORKING runner but failed to PARSE/COMPILE. This one catches the DIFFERENT
@@ -2033,7 +2078,16 @@ $(printf '%s' "$out" | tail -20)"
       # so the retry self-corrects. A non-resolution compile/parse error keeps the
       # original SyntaxError wording.
       if red_gate_resolution_failure "$out"; then
-        reason="RED GATE — the quarantined suite did NOT fail on an assertion: it could not RESOLVE its import of the code under test (a module-resolution / load failure), so the test file never ran. The harness QUARANTINES your test and runs it from the ticket's package quarantine dir \`<package>/__lcarsq__/\` — NOT where you authored it — so it must import the code under test via a path that resolves FROM THERE: a package-root-relative path (e.g. \`../src/<...>.js\`) or the package's NAME — NEVER a co-located \`./<sibling>\` path that assumes the test sits next to the source. Re-author the import accordingly so the test LOADS, then FAILS on its assertions until the behaviour exists. Command run: $cmd. Runner output (quarantined run):
+        # S95 (greenfield-tests): NAME the exact unresolved specifier(s) up front
+        # so a weaker worker self-corrects instead of digging them out of the raw
+        # tail. Only when the parser extracts something (else byte-identical to
+        # the pre-S95 reason — no empty line, no dangling label).
+        local unres="" hint=""
+        unres="$(unresolved_imports_in_output "$out" | paste -sd' ' - 2>/dev/null)"
+        if [ -n "$unres" ]; then
+          hint="SPECIFICALLY, these import(s) did not resolve: $unres. For EACH one that is a brand-new module your ticket must create, emit an EMPTY stub for it under stubs/ at the mirrored repo path so it resolves (an import of \`../src/state/themeStore\` from the quarantine dir needs a stub at the package-relative path \`src/state/themeStore.ts\`, i.e. \`stubs/<package-root>/src/state/themeStore.ts\`); if instead the import PATH is wrong, re-author it package-root-relative. Create a stub for EVERY brand-new module you import — a single missing stub fails the whole suite to load. "
+        fi
+        reason="RED GATE — the quarantined suite did NOT fail on an assertion: it could not RESOLVE its import of the code under test (a module-resolution / load failure), so the test file never ran. The harness QUARANTINES your test and runs it from the ticket's package quarantine dir \`<package>/__lcarsq__/\` — NOT where you authored it — so it must import the code under test via a path that resolves FROM THERE: a package-root-relative path (e.g. \`../src/<...>.js\`) or the package's NAME — NEVER a co-located \`./<sibling>\` path that assumes the test sits next to the source. Re-author the import accordingly so the test LOADS, then FAILS on its assertions until the behaviour exists. ${hint}Command run: $cmd. Runner output (quarantined run):
 $(printf '%s' "$out" | tail -20)"
       else
         reason="RED GATE — the quarantined suite did NOT fail on an assertion: it failed to COMPILE / LOAD (a SyntaxError, import/parse error, a load-time unresolved symbol, or a leftover placeholder token), so the test file never ran. A non-runnable contract cannot be handed to the Implementer (it must not edit the immutable tests to fix a syntax error). Re-author the test so it PARSES and LOADS cleanly, then FAILS on its assertions until the behaviour exists. Command run: $cmd. Runner output (quarantined run):
@@ -2195,6 +2249,27 @@ cmd_impl_save_tests() {
   # GUARDRAIL 2 setup: snapshot the quarantined files so impl-save-result can
   # prove the Implementer never edited the locked contract.
   snapshot_tests "$tdir" "$snap"
+
+  # S94 (greenfield stubs): a ticket that creates a BRAND-NEW source module can't
+  # pass the red gate today — the Test-Writer's `import '../src/canvas/utils'`
+  # cannot RESOLVE (the file does not exist yet), so 0 tests collect and the gate
+  # rejects it as a resolution-failure red. To "make it compile first" (what a
+  # human does), the Test-Writer ALSO emits a MINIMAL EMPTY stub for any module
+  # its tests import that does not exist yet, under a `stubs/` tree mirroring repo
+  # paths. OVERLAY that tree onto the worktree source HERE — BEFORE the red gate —
+  # so the import resolves and the suite reds on a real ASSERTION (a valid red).
+  # The full mirrored relpath under $REPO_ROOT resolves correctly for BOTH the
+  # repo-root case AND the monorepo case (where the gate runs vitest from
+  # $REPO_ROOT/<pkg> and the test imports `../src/...` → $REPO_ROOT/<pkg>/src/...),
+  # so we stage to $REPO_ROOT/<mirrored-relpath> and do NOT special-case pkg_rel.
+  # The stubs are scaffolding the Implementer OVERWRITES: they are NOT snapshotted
+  # (not added to tests.sha256, not copied into $tdir) and are LEFT in place on
+  # success (NO cleanup). With no stubs given the behaviour is byte-identical to
+  # before — a still-missing module reds with the resolution-failure reason.
+  if [ -n "$STUBS" ] && [ -d "$STUBS" ] \
+     && [ -n "$(find "$STUBS" -type f -print -quit 2>/dev/null)" ]; then
+    cp -R "$STUBS/." "$REPO_ROOT/"
+  fi
 
   # GUARDRAIL 1 (the red gate): the suite must FAIL against no implementation
   # before the Implementer is allowed to run. A green-on-nothing suite is
@@ -5499,8 +5574,12 @@ $(cat "$sigfile")"
     local odir; odir="$(mktemp -d)"
     # Harness owns directory scaffolding (workers only create files): pre-create
     # the tests/ scratch subdir so the worker's `create tests/<file>` lands without
-    # needing to mkdir. CLI-neutral; Claude is unaffected.
-    mkdir -p "$odir/tests"
+    # needing to mkdir. CLI-neutral; Claude is unaffected. S94: ALSO pre-create the
+    # stubs/ scratch subdir — the worker writes any minimal empty greenfield-module
+    # stubs there (mirroring repo paths), which impl-save-tests overlays before the
+    # red gate so a brand-new module's import resolves and the suite reds on an
+    # assertion rather than a resolution failure.
+    mkdir -p "$odir/tests" "$odir/stubs"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock
@@ -5510,7 +5589,7 @@ $TICKET$tspecblock$retryblock"
     if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
-        --mission "$MISSION_ID" --ticket "$TICKET" --tests "$odir/tests" || rc=$?
+        --mission "$MISSION_ID" --ticket "$TICKET" --tests "$odir/tests" --stubs "$odir/stubs" || rc=$?
       if [ "$rc" -eq 0 ]; then saved=1; rm -rf "$odir"; break; fi
     fi
     rm -rf "$odir"
@@ -6661,10 +6740,15 @@ _file_size_mtime() { # path → "<size> <mtime>" (stdout)
 # The HUNG sentinel is 137 (128+SIGKILL) — distinct from a normal worker rc.
 # LCARS_WORKER_HANG_SECS=0 (or unset/non-numeric ⇒ default) disables the guard:
 # the command runs unguarded and its real rc round-trips.
+# Default window = 900s (15 min): comprehension-heavy cold workers on modular
+# repos are API-bound (near-0 LOCAL CPU) and buffer output to end-of-turn, so a
+# legitimate 4-8 min Test-Writer/Implementer turn reads as "idle+silent" and the
+# old 240s window false-killed it; a genuinely wedged worker is still caught
+# within 15 min and the retry loop bounds the waste. Env-overridable.
 run_worker_hang_guarded() { # outdir  cmd...
   local outdir="$1"; shift
-  local hang_secs="${LCARS_WORKER_HANG_SECS:-240}"
-  case "$hang_secs" in ''|*[!0-9]*) hang_secs=240 ;; esac
+  local hang_secs="${LCARS_WORKER_HANG_SECS:-900}"
+  case "$hang_secs" in ''|*[!0-9]*) hang_secs=900 ;; esac
   # Disabled → run inline, unguarded; the command's real rc round-trips.
   if [ "$hang_secs" -le 0 ] 2>/dev/null; then
     "$@"
@@ -6936,7 +7020,7 @@ cmd_drive() {
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
-MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; RESULT=""; STEP=0
+MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; RESULT=""; STEP=0
 EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
 RC_BRANCH=""; RC_SHA=""
 while [ $# -gt 0 ]; do
@@ -6964,6 +7048,8 @@ while [ $# -gt 0 ]; do
     --sha=*)       RC_SHA="${1#--sha=}"; shift ;;
     --tests)       TESTS="${2:-}"; shift 2 ;;
     --tests=*)     TESTS="${1#--tests=}"; shift ;;
+    --stubs)       STUBS="${2:-}"; shift 2 ;;
+    --stubs=*)     STUBS="${1#--stubs=}"; shift ;;
     --result)      RESULT="${2:-}"; shift 2 ;;
     --result=*)    RESULT="${1#--result=}"; shift ;;
     --type)        EV_TYPE="${2:-}"; shift 2 ;;

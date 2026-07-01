@@ -175,6 +175,36 @@ else
   bad "E. quick clean worker rc (expected 0, got $rc)"
 fi
 
+# === F. the guard's DEFAULT window is 900s (S95 recalibration) ==============
+# Regression guard: comprehension-heavy cold workers on modular repos are
+# API-bound (near-0 LOCAL CPU) and buffer ALL stdout to end-of-turn, so a
+# legitimate 4-8 min Test-Writer/Implementer turn shows as "idle+silent" and
+# the OLD 240s window false-killed it. The default must now be 900s (15 min).
+# Asserted structurally (no 900s wait): the extracted function body must carry
+# the :-900 default and NO residual :-240 / non-numeric-fallback of 240.
+HG_BODY="$(declare -f run_worker_hang_guarded)"
+if grep -Eq ':-900' <<<"$HG_BODY"; then
+  ok "F1. default LCARS_WORKER_HANG_SECS is 900 (:-900 present)"
+else
+  bad "F1. default window is not 900 (no ':-900' in run_worker_hang_guarded)"
+fi
+if ! grep -Eq ':-240|hang_secs=240' <<<"$HG_BODY"; then
+  ok "F2. no residual 240s default/fallback remains in the guard"
+else
+  bad "F2. a 240s default/fallback still remains in the guard"
+fi
+# Behavioral: with the default UNSET and a fast-finishing (idle+silent) worker,
+# the guard must NOT kill it — the legitimate long-turn-under-the-window path.
+F_OUT="$TMPROOT/f"; mkdir -p "$F_OUT"
+FQUICK="$TMPROOT/fquick.sh"; printf '#!/usr/bin/env bash\nsleep 1\nexit 0\n' >"$FQUICK"; chmod +x "$FQUICK"
+( unset LCARS_WORKER_HANG_SECS; run_worker_hang_guarded "$F_OUT" "$FQUICK" )
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "F3. default-window idle+silent worker finishing quickly is NOT killed (rc 0)"
+else
+  bad "F3. default-window quick worker rc (expected 0, got $rc)"
+fi
+
 # --- summary ----------------------------------------------------------------
 echo
 printf 'worker-hang guard: %d passed, %d failed\n' "$pass" "$fail"

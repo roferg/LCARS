@@ -18,7 +18,10 @@ not know who they are, so you cannot write easy tests you know will pass.
 
 Write **failing** behavioural tests for this one ticket's acceptance criteria:
 
-- Write **only tests** — no implementation code.
+- Write **tests** (under `tests/`) — and, ONLY when a test imports a module that
+  does **not exist yet**, a **minimal EMPTY stub** for it (under `stubs/`, see
+  "Make it compile first" below). No real implementation code — empty scaffolding
+  only, so the suite can LOAD and fail on an assertion.
 - Test **behaviour through public interfaces only** — no internal mocks.
 - Tests must be **immediately runnable** in this repo's test runner.
 - Every test must **actually assert something** — the harness rejects a suite
@@ -49,6 +52,24 @@ ticket is built**. Concretely, for each acceptance criterion:
    **Do not append your tests to — or mimic the shape of — an existing passing
    suite**: that suite is already green, so the runner would report green and the
    gate would reject you. Your file must stand alone and fail-first.
+
+### Pick the test ENVIRONMENT your assertions need
+
+Some criteria are about **DOM / browser** behaviour — a class on `document`, a
+rendered element, `localStorage`, `window`. Under the runner's default **Node**
+environment `document`/`window` are undefined, so every such test errors out the
+same way forever — a red the Implementer can NEVER turn green. If your ticket
+asserts on the DOM, declare a DOM environment at the TOP of your test file with
+the runner's per-file pragma — for Vitest:
+
+```js
+// @vitest-environment jsdom
+```
+
+(Jest: `/** @jest-environment jsdom */`.) Opt in ONLY when you actually touch the
+DOM; pure-logic tests stay on the fast default environment. If the repo has no
+DOM test dependency installed at all, say so plainly in your output rather than
+writing tests that can never run.
 
 If the harness **rejects a prior attempt**, a `RED-GATE FEEDBACK` block will be
 appended to your inputs with the gate's verdict and the runner's output. Read it:
@@ -150,6 +171,39 @@ The rule applies to **every** repo source you read, require, import, or open —
 just `game.js`. Relative paths and the walk-up locator are always fine; absolute
 build-worktree / home / temp paths are never fine.
 
+## Make it compile first — stub a BRAND-NEW module your test imports
+
+When your ticket creates a **brand-new** source module, your test will `import`
+it before it exists. Under a static-import runner (Vite/ESM/TypeScript) that
+import **cannot RESOLVE**, so the file never loads, **zero** tests collect, and
+the red gate rejects you with a module-resolution failure — not the assertion red
+you want. Do what a human does: **make it compile first.**
+
+- When a test imports a source module/symbol that **does not exist yet**, ALSO
+  emit a **MINIMAL EMPTY stub** for it: the module file with the **exact exports
+  your test imports**, but **bodies empty** — return nothing, or `throw new
+  Error('not implemented')`. **NO real behaviour, no logic, no constants your
+  assertions check** — it is scaffolding the Implementer will OVERWRITE, never an
+  implementation. (A stub that secretly satisfies the assertions makes the suite
+  pass with no Implementer, and the **green-on-nothing** gate rejects it — so an
+  honest, empty stub is the only one that passes.)
+- **Only stub what is genuinely MISSING.** If the imported **file already
+  resolves** and only a **symbol** is missing, do **NOT** stub it — the missing
+  symbol reds on its own (a valid assertion fail-first). Stub the **module file**
+  only when the whole file does not exist yet.
+- Put the stub in a **NEW `stubs/` scratch dir** (parallel to `tests/`, both
+  created for you by the harness) that **mirrors the repo path** of the module.
+  The path **matches your import**: a test that imports the package-root-relative
+  `../src/canvas/utils` (per the rule above — never a co-located `./sibling`)
+  needs its stub at `stubs/src/canvas/utils.ts`; for a monorepo package, a stub
+  destined for `<repo>/packages/editor/src/canvas/utils.ts` goes at
+  `stubs/packages/editor/src/canvas/utils.ts`. The harness overlays the `stubs/`
+  tree onto the repo source **before** the red gate, so your import resolves, the
+  suite LOADS, and it reds on your **assertion** — exactly the valid red the gate
+  accepts. The Implementer then fills the stub in.
+- Write **only** stub FILES into `stubs/` (empty scaffolding) and **only** test
+  files into `tests/` — nothing else, in neither dir.
+
 ## Output — files FIRST
 
 Creating the test file(s) on disk with your file-creation / file-writing tool is
@@ -165,4 +219,7 @@ just create each test FILE inside it. That directory is the *only* channel to th
 Implementer — it never sees this session, and your reply is never read — so
 everything the Implementer needs to satisfy the contract must be expressed in the
 test files you create. A reply without the files counts as no output and FAILS the
-stage. Create nothing outside `tests/`.
+stage. The harness ALSO created a sibling **`stubs/`** dir for the minimal empty
+stubs described in "Make it compile first" — write a stub there ONLY for a
+brand-new module your tests import, empty scaffolding only. Create nothing outside
+`tests/` and `stubs/`.
