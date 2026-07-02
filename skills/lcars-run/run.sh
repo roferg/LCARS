@@ -2066,6 +2066,84 @@ commit_ticket() { # ticket  summary
   cleanup_runner_scratch "$before"
 }
 
+# --- S102: commit the LOCKED test in its OWN commit, BEFORE the Implementer ---
+# Tests ride along into the PR (S102). At the END of Phase 1 (impl-save-tests), the
+# Test-Writer's fail-first test has been placed in-tree at the repo convention (S101),
+# self-smoked, snapshotted (tests.sha256), and passed the red gate. Here we commit
+# EXACTLY those locked test file(s) as their OWN commit, so they merge to `main` and
+# downstream contributors inherit the coverage — WITHOUT handing the Implementer an
+# editable test:
+#   • WORKTREE MODE ($LCARS_TICKET_WORKTREE): the ticket built on a DETACHED HEAD at
+#     the mission-branch tip. Commit the test there and record the commit OBJECT to
+#     .test-commit-sha; the parent cherry-picks it onto the real branch in plan order
+#     JUST BEFORE the impl commit, so history is test-commit → impl-commit.
+#   • NON-WORKTREE + a real mission branch (rare — a direct implement-ticket call):
+#     mirror commit_ticket — checkout the branch, then commit.
+#   • NO mission branch (branch-less / local-only): SKIP — keep S101 behaviour (tests
+#     stay in-tree + mirrored, uncommitted); the caller then records them in
+#     .untracked-before so commit_ticket never stages them. Back-compat.
+# We stage ONLY the snapshot's test relpaths, EXPLICITLY (never `git add -u`/`-A`), so
+# the greenfield stubs (STUB_RELS) and every other change stay UNCOMMITTED and
+# overwritable by the Implementer. Sets COMMIT_TESTS_NOTE to the outcome; never crashes
+# (a defensive skip leaves the tests uncommitted, exactly as S101 left them).
+COMMIT_TESTS_NOTE=""
+commit_locked_tests() { # ticket
+  COMMIT_TESTS_NOTE=""
+  local t="$1"
+  local branch; branch="$(json_str "$STATE" branch)"
+  # Branch-less / local-only mission → S102 skip (S101 behaviour preserved).
+  if [ -z "$branch" ]; then COMMIT_TESTS_NOTE="skip-no-branch"; return 0; fi
+
+  # The locked test relpaths — EXACTLY what impl-save-tests just placed + snapshotted.
+  local rels; rels="$(snapshot_test_rels "$t")"
+  [ -n "$(printf '%s' "$rels" | grep . || true)" ] || { COMMIT_TESTS_NOTE="skip-no-tests"; return 0; }
+
+  # Deterministic, legible subject: <behavior> = the ticket's plan title when cheaply
+  # available (approved-plan.json), else a stable generic phrase (kept stable so the
+  # commit subject is reproducible under test).
+  local title=""
+  [ -f "$MISSION_DIR/approved-plan.json" ] && title="$(ticket_title "$MISSION_DIR/approved-plan.json" "$t" 2>/dev/null || true)"
+  [ -n "$title" ] || title="locked failing test"
+  local msg="test($t): $title (LCARS Test-Writer)"
+
+  # NON-WORKTREE + real branch: get onto the branch first (mirror commit_ticket).
+  if [ -z "${LCARS_TICKET_WORKTREE:-}" ]; then
+    local cur; cur="$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )"
+    if [ "$cur" != "$branch" ]; then
+      if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+        ( cd "$REPO_ROOT" && "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 ) \
+          || { COMMIT_TESTS_NOTE="skip-checkout-failed"; return 0; }
+      else
+        COMMIT_TESTS_NOTE="skip-no-branch-ref"; return 0
+      fi
+    fi
+  fi
+
+  ensure_scratch_excluded
+
+  # Stage ONLY the locked test file(s), explicitly. NEVER `git add -u`/`-A` here.
+  local rel staged=0
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    ( cd "$REPO_ROOT" && "$GIT_BIN" add -- "$rel" >/dev/null 2>&1 ) && staged=1
+  done <<REL_EOF
+$rels
+REL_EOF
+  # Defensive: nothing actually staged → keep the tests uncommitted (S101 behaviour).
+  if [ "$staged" != 1 ] || ( cd "$REPO_ROOT" && "$GIT_BIN" diff --cached --quiet 2>/dev/null ); then
+    COMMIT_TESTS_NOTE="skip-nothing-staged"; return 0
+  fi
+  ( cd "$REPO_ROOT" && "$GIT_BIN" commit -q -m "$msg" >/dev/null 2>&1 ) \
+    || { COMMIT_TESTS_NOTE="skip-commit-failed"; return 0; }
+  # Worktree mode: stash the test commit OBJECT so the parent cherry-picks it BEFORE
+  # the impl commit. (Shared mission dir → visible to the parent.)
+  if [ -n "${LCARS_TICKET_WORKTREE:-}" ]; then
+    ( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse HEAD ) >"$(ticket_dir "$t")/.test-commit-sha" 2>/dev/null || :
+  fi
+  COMMIT_TESTS_NOTE="committed"
+  return 0
+}
+
 # --- remove the harness-owned runner scratch from the working tree ----------
 # Deletes ONLY `.lcars-run-*` files the harness controls, and ONLY when they were
 # NOT pre-existing (absent from the .untracked-before snapshot). Uses `git
@@ -2812,24 +2890,54 @@ snapshot_tests() { # tests-dir  out-file
 # non-zero if any test file was added, removed, or changed.
 # S101: the snapshot records the IN-TREE relpaths (the test now lives in the repo
 # tree, not a flat quarantine), so immutability is verified over the IN-TREE files
-# under $REPO_ROOT — a post-snapshot edit to (or deletion of) the ridden-along test
-# is caught exactly as an edit to the old quarantine copy was. Each snapshot line is
-# "<hash>  <relpath>"; we re-hash $REPO_ROOT/<relpath> and diff against the snapshot.
-tests_unchanged() { # ticketId
-  local snap cur h rel
+# under a given TREE — a post-snapshot edit to (or deletion of) the ridden-along
+# test is caught exactly as an edit to the old quarantine copy was. Each snapshot
+# line is "<hash>  <relpath>"; we re-hash <tree>/<relpath> and diff the snapshot.
+# S102 (tests ride along, part 2): an optional second arg names the TREE ROOT to
+# re-hash under (default $REPO_ROOT). This lets the SAME immutability check verify
+# the COMMITTED test blob in a clean gate worktree (post-commit / pre-merge), so a
+# weakened ridden-along test is caught ACROSS the commit boundary, not only in the
+# Implementer's own scratch worktree.
+tests_unchanged() { # ticketId  [tree-root]
+  local snap cur h rel tree="${2:-$REPO_ROOT}"
   snap="$(ticket_dir "$1")/tests.sha256"
   [ -f "$snap" ] || return 1   # no snapshot → cannot prove unchanged → treat as a violation
   cur="$(mktemp)"; : >"$cur"
   while read -r h rel; do
     [ -n "$rel" ] || continue
-    if [ -f "$REPO_ROOT/$rel" ]; then
-      printf '%s  %s\n' "$(sha_of "$REPO_ROOT/$rel")" "$rel" >>"$cur"
+    if [ -f "$tree/$rel" ]; then
+      printf '%s  %s\n' "$(sha_of "$tree/$rel")" "$rel" >>"$cur"
     else
       printf 'MISSING  %s\n' "$rel" >>"$cur"   # deleted / moved → mismatch
     fi
   done <"$snap"
   if diff -q "$snap" "$cur" >/dev/null 2>&1; then rm -f "$cur"; return 0; fi
   rm -f "$cur"; return 1
+}
+
+# S102: the IN-TREE test relpaths recorded in a ticket's immutable snapshot (one
+# per line). Mirrors tests_unchanged's read of "<hash>  <relpath>" — the relpath is
+# everything after the first field. Used by the gates to scope the run to (and check
+# for the committed presence of) exactly the locked test files.
+snapshot_test_rels() { # ticketId  -> in-tree relpaths (newline)
+  local snap h rel; snap="$(ticket_dir "$1")/tests.sha256"
+  [ -f "$snap" ] || return 0
+  while read -r h rel; do [ -n "$rel" ] && printf '%s\n' "$rel"; done <"$snap"
+}
+
+# S102: 0 iff EVERY snapshot test relpath exists as a real file under <tree> — i.e.
+# the ticket's locked tests RODE ALONG committed and are present in this clean gate
+# worktree (so the gate runs them IN PLACE instead of overlaying the mirror). Empty
+# snapshot → non-zero (nothing committed to run in place). A branch-less / S101-era
+# mission that never committed its tests returns non-zero → the overlay fallback.
+tests_committed_in_tree() { # ticketId  tree
+  local rel any=0 all=1
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    any=1
+    [ -f "$2/$rel" ] || all=0
+  done < <(snapshot_test_rels "$1")
+  [ "$any" = 1 ] && [ "$all" = 1 ]
 }
 
 # --- GUARDRAIL 3: test quality (the suite must assert something) ------------
@@ -3097,17 +3205,29 @@ $(cat "$sig")"
   fi
   rm -f "$sig"
 
-  # S101: the ridden-along test now lives in the working tree, but part 1 does NOT
-  # commit it (that is S102). Record its in-tree relpath(s) in .untracked-before so
-  # commit_ticket treats them as PRE-EXISTING untracked and NEVER stages them onto
-  # the mission branch / PR. (commit_ticket matches repo-relative paths line-for-line
-  # via `grep -qxF`; a missing before-file is created, a duplicate line is harmless.)
-  local ub; ub="$(ticket_dir "$TICKET")/.untracked-before"
-  [ -n "$INTREE_RELS" ] && printf '%s' "$INTREE_RELS" | grep -v '^$' >>"$ub" 2>/dev/null || :
+  # S102 (tests ride along, part 2): COMMIT the locked test in its OWN commit BEFORE
+  # the Implementer runs, so it merges into the PR — WITHOUT handing the Implementer an
+  # editable test (it stages ONLY the snapshotted test file(s), explicitly; the stubs
+  # and every other change stay uncommitted). Worktree mode records .test-commit-sha
+  # for the parent to cherry-pick JUST BEFORE the impl commit; a branch-less mission
+  # SKIPS the commit and keeps S101 behaviour. When we did NOT commit (no branch, or a
+  # defensive skip) we fall back to S101: record the in-tree relpath(s) in
+  # .untracked-before so commit_ticket treats them as PRE-EXISTING untracked and NEVER
+  # stages them onto the branch. When we DID commit, the test is now tracked and
+  # unchanged, so commit_ticket's `git add -u` is a no-op for it (immutability is
+  # re-verified at ticket-green and pre-merge against the COMMITTED blob).
+  commit_locked_tests "$TICKET"
+  if [ "$COMMIT_TESTS_NOTE" != "committed" ]; then
+    local ub; ub="$(ticket_dir "$TICKET")/.untracked-before"
+    [ -n "$INTREE_RELS" ] && printf '%s' "$INTREE_RELS" | grep -v '^$' >>"$ub" 2>/dev/null || :
+  fi
 
   echo "IMPLEMENT: tests saved — $TICKET"
   echo "  Saved $count Test Writer file(s) at the repo's test convention ($convention): ${scope_rel:-<repo root>}."
   echo "  Red gate: suite fails as required; the contract is locked (immutable)."
+  if [ "$COMMIT_TESTS_NOTE" = "committed" ]; then
+    echo "  Test committed (rides along into the PR) BEFORE the Implementer; the contract is committed + locked."
+  fi
   exit 0
 }
 
@@ -3195,39 +3315,61 @@ post_commit_gate() { # ticket
   # full-suite gates. Best-effort: a failure breadcrumbs but never aborts the gate.
   provision_worktree "$wt" || :
 
-  # S101 (tests ride along): OVERLAY the ticket's in-tree tests onto the clean
-  # worktree at their in-tree relpaths — co-located with the committed source — so a
-  # co-located `./<sibling>` import resolves against the real source next to it (the
-  # S101 spike proved a detached copy breaks that import). The tests are NOT
-  # committed (part 1), so overlaying reproduces exactly the green-time in-place
-  # layout. S87: a sub-package ticket runs vitest/jest FROM its package root
-  # (run_dir=<wt>/<pkg>) for discovery/config; an empty pkg_rel runs from the
-  # worktree root. Scope $LCARS_TESTS_DIR to the overlaid file(s); remove exactly
-  # them after (the wholesale worktree cleanup below also discards the tree).
+  # S102 (tests ride along, part 2) — the tests are now COMMITTED alongside the source,
+  # so in the common path they are ALREADY PRESENT in this clean worktree. Two changes
+  # over S101's blanket overlay:
+  #   (a) CROSS-BOUNDARY IMMUTABILITY: before running, re-hash the COMMITTED test blob
+  #       against the locked snapshot (tests_unchanged over $wt). A mismatch = the
+  #       ridden-along test was weakened after it was locked → a TAMPERING violation,
+  #       returned as a DISTINCT code (4) so cmd_impl_save_result routes it like any
+  #       immutable-test violation (loud BLOCK), never a normal red / self-heal.
+  #   (b) OVERLAY RECONCILE: only OVERLAY the mirror when the test is NOT committed in
+  #       the tree (a branch-less / S101-era mission) — never overlay-then-remove a
+  #       file that is already committed (that would delete a committed file). When the
+  #       test IS committed we run it IN PLACE at its committed path (no overlay, no
+  #       removal) and scope $LCARS_TESTS_DIR to the snapshot relpaths.
+  # S87: a sub-package ticket runs vitest/jest FROM its package root (run_dir=<wt>/<pkg>)
+  # for discovery/config; an empty pkg_rel runs from the worktree root.
   local pkg_rel; pkg_rel="$(ticket_target_package "$t" "$wt")"
-  local run_dir tdir rc=0 out="" rels scope
+  local run_dir tdir rc=0 out="" rels scope tamper=0
   run_dir="$wt"; [ -n "$pkg_rel" ] && run_dir="$wt/$pkg_rel"
   tdir="$(ticket_dir "$t")/tests"
   if [ -d "$tdir" ]; then
-    rels="$(overlay_intree_tests "$tdir" "$wt")"
-    scope="$(intree_scope_for "$wt" "$rels")"
-    # If nothing was overlaid, NEVER run against an empty suite and false-GREEN —
-    # mirror the harness refusing an empty saved suite.
-    if [ -n "$(printf '%s' "$rels" | grep . || true)" ]; then
-      # S84 (gate-worktree-deps): CAPTURE the combined stdout+stderr (not >/dev/null)
-      # so the env-failure classifier below can read WHY a non-zero exit happened —
-      # the pass/fail decision is still PURELY rc, exactly as before.
-      out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
-    fi
-    remove_overlaid_tests "$wt" <<REMOVE_EOF
+    if tests_committed_in_tree "$t" "$wt"; then
+      # Committed (S102): verify the COMMITTED blob is still the locked snapshot.
+      if tests_unchanged "$t" "$wt"; then
+        rels="$(snapshot_test_rels "$t")"
+        scope="$(intree_scope_for "$wt" "$rels")"
+        out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+      else
+        tamper=1
+        local tdetail="POST-COMMIT GATE — LOCKED-TEST TAMPERING: ticket $t's COMMITTED test file no longer matches its immutable snapshot (tests.sha256). The ridden-along test was weakened after it was locked; refusing. This is NOT a normal red and is NOT self-healable — the adversarial/immutable contract was violated across the commit boundary. Restore the locked test or re-open the ticket."
+        printf '  ✗ %s\n' "$tdetail" >&2
+        [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$tdetail" >"$POST_COMMIT_SIGNAL"
+      fi
+    else
+      # S101 fallback (branch-less / uncommitted): OVERLAY the mirror, run, remove.
+      # A co-located `./<sibling>` import resolves against the real source next to it.
+      rels="$(overlay_intree_tests "$tdir" "$wt")"
+      scope="$(intree_scope_for "$wt" "$rels")"
+      # If nothing was overlaid, NEVER run against an empty suite and false-GREEN.
+      if [ -n "$(printf '%s' "$rels" | grep . || true)" ]; then
+        out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+      fi
+      remove_overlaid_tests "$wt" <<REMOVE_EOF
 $rels
 REMOVE_EOF
+    fi
   fi
 
   # Clean up ONLY this ticket's own worktree on EVERY exit path — never leak into
   # the captain's `git worktree list`, and never remove a shared dir or prune
   # globally (a sibling ticket may be mid-run in the same MISSION_DIR).
   "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt" 2>/dev/null || :
+
+  # S102: a tampered COMMITTED test blocks with a DISTINCT code, ahead of the normal
+  # env/red verdicts (the signal was already written above).
+  [ "$tamper" = 1 ] && return 4
 
   [ "$rc" -eq 0 ] && return 0
 
@@ -3353,6 +3495,17 @@ $(cat "$pcsig")"
           "ticket $TICKET — environment not provisioned (the test runner could not start in the gate worktree); set worktreeSetupCommand in .git/lcars/config.json" \
           "ticket=$TICKET" "attempts=$attempts"
         die "ticket $TICKET could not be re-verified — the test runner could not start in the gate worktree (environment not provisioned); this is NOT a missing implementation. Set worktreeSetupCommand in .git/lcars/config.json.$why"
+        ;;
+      4)
+        # S102 (tests ride along): the COMMITTED locked test no longer matches its
+        # immutable snapshot — the ridden-along contract was WEAKENED across the commit
+        # boundary. Route it exactly like the in-worktree immutable-tests violation: a
+        # distinct event + a loud die. Green must be earned by implementing, never by
+        # weakening the test — even after it rides along committed.
+        emit_event ticket_locked_test_tampered implement \
+          "ticket $TICKET — committed locked test no longer matches the immutable snapshot (tampering detected across the commit boundary)" \
+          "ticket=$TICKET" "attempts=$attempts"
+        die "ticket $TICKET — LOCKED-TEST TAMPERING: the COMMITTED test file no longer matches its immutable snapshot. Green must be earned by implementing, never by weakening the ridden-along contract. Rejected by the cross-boundary immutable-tests guardrail.$why"
         ;;
       *)
         emit_event ticket_postcommit_red implement \
@@ -3542,10 +3695,12 @@ intree_scope_for() { # tree  rels(newline)
 }
 
 RETEST_FAILED=""     # space-separated ticket ids that failed the last retest
+RETEST_TAMPERED=""   # S102: ids whose COMMITTED test no longer matches the snapshot
 RETEST_CAPTURE=""    # caller may point this at a dir to capture per-ticket output
 retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
   local run_dir="$1" cmd="$2"; shift 2
   RETEST_FAILED=""
+  RETEST_TAMPERED=""
   local id tdir rc out pkg_rel trun rels scope
   for id in "$@"; do
     [ -n "$id" ] || continue
@@ -3557,18 +3712,39 @@ retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
     # jest discover & filter at the package root); an empty pkg_rel runs from the
     # run-tree root. Checked against $run_dir so every caller (full-suite gate
     # worktree, reconcile merge worktree) stays symmetric.
-    # S101: OVERLAY the ticket's in-tree tests onto the clean tree (co-located with
-    # the committed source) rather than copying into a detached staging dir, so
-    # co-located imports resolve; scope the run to them; then remove exactly them.
     pkg_rel="$(ticket_target_package "$id" "$run_dir")"
     trun="$run_dir"; [ -n "$pkg_rel" ] && trun="$run_dir/$pkg_rel"
-    rels="$(overlay_intree_tests "$tdir" "$run_dir")"
-    scope="$(intree_scope_for "$run_dir" "$rels")"
     rc=0
-    out="$( cd "$trun" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
-    remove_overlaid_tests "$run_dir" <<REMOVE_EOF
+    # S102 (tests ride along, part 2): the tests are COMMITTED, so in the common path
+    # they are ALREADY present in this clean tree. PRE-MERGE CROSS-BOUNDARY IMMUTABILITY:
+    # before running, re-hash the COMMITTED test blob against the locked snapshot. A
+    # mismatch = the ridden-along test was weakened after locking → BLOCK LOUD (this is
+    # not a regression to self-heal; the Mission must NOT merge a weakened test). We
+    # `die` here so EVERY caller — the full-suite gate AND the reconcile — stops with the
+    # tampering reason rather than proceeding to merge or self-heal.
+    if tests_committed_in_tree "$id" "$run_dir"; then
+      if ! tests_unchanged "$id" "$run_dir"; then
+        RETEST_TAMPERED="${RETEST_TAMPERED:+$RETEST_TAMPERED }$id"
+        emit_event ticket_locked_test_tampered implement \
+          "ticket $id — committed locked test no longer matches the immutable snapshot (pre-merge tamper check)" \
+          "ticket=$id" || :
+        die "PRE-MERGE LOCKED-TEST TAMPERING: ticket $id's COMMITTED test no longer matches its immutable snapshot (tests.sha256) — the ridden-along contract was weakened after it was locked. BLOCKED: the Mission cannot merge a weakened test, and this is NOT a self-healable regression. Restore the locked test or re-open the ticket."
+      fi
+      # Committed + intact → run IN PLACE at the committed path (no overlay, no removal).
+      rels="$(snapshot_test_rels "$id")"
+      scope="$(intree_scope_for "$run_dir" "$rels")"
+      out="$( cd "$trun" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+    else
+      # S101 fallback (branch-less / uncommitted): OVERLAY the ticket's in-tree tests
+      # onto the clean tree (co-located with the committed source), run, then remove
+      # exactly them.
+      rels="$(overlay_intree_tests "$tdir" "$run_dir")"
+      scope="$(intree_scope_for "$run_dir" "$rels")"
+      out="$( cd "$trun" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+      remove_overlaid_tests "$run_dir" <<REMOVE_EOF
 $rels
 REMOVE_EOF
+    fi
     if [ "$rc" -ne 0 ]; then
       RETEST_FAILED="${RETEST_FAILED:+$RETEST_FAILED }$id"
       [ -n "$RETEST_CAPTURE" ] && { mkdir -p "$RETEST_CAPTURE"; printf '%s\n' "$out" >"$RETEST_CAPTURE/$id.log"; }
@@ -7004,7 +7180,10 @@ cmd_implement() {
       local wt_base; wt_base="$MISSION_DIR/worktrees"
       local jobs; jobs="$(mktemp)"; : >"$jobs"
       for t in $pending; do
-        rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" 2>/dev/null
+        # S102: also drop a stale .test-commit-sha so this FRESH build's Phase 1 writes
+        # its own (a REUSE/rebuild build skips Phase 1 and never reaches here).
+        rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" \
+              "$(ticket_dir "$t")/.test-commit-sha" 2>/dev/null
         printf 'LCARS_TICKET_WT_BASE=%q LCARS_TICKET_BRANCH=%q bash %q implement-ticket --mission %q --ticket %q\n' \
           "$wt_base" "$branch" "$SELF" "$MISSION_ID" "$t" >>"$jobs"
       done
@@ -7040,6 +7219,21 @@ cmd_implement() {
       for t in $pending; do
         local brc; brc="$(cat "$(ticket_dir "$t")/.build-rc" 2>/dev/null || echo 1)"
         if [ "$brc" != "0" ]; then hard_fail="$t"; break; fi
+        # S102 (tests ride along): the ticket's LOCKED TEST was committed in Phase 1 on
+        # the worktree's detached HEAD (its own commit, recorded to .test-commit-sha).
+        # Cherry-pick it onto the real mission branch FIRST — BEFORE the impl commit —
+        # so history reads test-commit → impl-commit and the test rides into the PR.
+        # It is a NEW, unique co-located file, so it lands independently (no conflict);
+        # a rare failure is best-effort (the impl replay + rebuild path still runs, and
+        # the gates fall back to overlaying the mirror). On the REUSE/rebuild path Phase 1
+        # was skipped so there is no fresh .test-commit-sha — correct, because the test
+        # commit already landed here in this first pass, before the conflicting impl.
+        local tsha; tsha="$(cat "$(ticket_dir "$t")/.test-commit-sha" 2>/dev/null || true)"
+        if [ -n "$tsha" ]; then
+          replay_ticket_commit "$branch" "$tsha" "$t" \
+            || emit_event ticket_test_replay_conflict implement \
+                 "ticket $t's locked-test commit did not cherry-pick cleanly; the gate will overlay the mirror" "ticket=$t"
+        fi
         local sha; sha="$(cat "$(ticket_dir "$t")/.commit-sha" 2>/dev/null || true)"
         # No commit (a flagged ticket, or a green ticket with no file changes) →
         # nothing to replay.
