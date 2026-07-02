@@ -64,6 +64,20 @@ expect_cat "4. empty output + no files → empty-worker-output" \
   "empty-worker-output" \
   "$(classify "" "" "")"
 
+# 4a. NOISY-FILELESS: worker PRINTED output but wrote NO test file and the runner
+#     produced nothing → over-broad-slice, NOT empty-worker-output (S98: empty ≠ bad).
+#     The worker produced output, so calling it "no file AND no output" is factually
+#     wrong; some signal is present (worker noise) so it is a bad/over-broad attempt.
+expect_cat "4a. worker printed output but wrote no file → over-broad-slice (not empty)" \
+  "over-broad-slice" \
+  "$(classify "" "" "I read the ticket and thought about a suite but wrote nothing")"
+
+# 4b. runner emitted some unmatched non-assertion output + no files + no worker → over-broad-slice
+#     (signal present, so NOT the truly-empty #1 case).
+expect_cat "4b. runner noise, no files, no worker → over-broad-slice (not empty)" \
+  "over-broad-slice" \
+  "$(classify "$(printf 'some runner chatter that matches no red-gate signature\n')" "" "")"
+
 # 5a. env / runner-startup signatures → env-failure
 expect_cat "5a. 'vitest: not found' → env-failure" \
   "env-failure" \

@@ -109,6 +109,11 @@ RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-lo
 # A malformed worker output stops the Stage; the driver re-dispatches up to this
 # many attempts before surfacing failure (no silent advance).
 MAX_WORKER_TRIES="${LCARS_WORKER_TRIES:-3}"
+# S98: a SHORTER bound for the EMPTY-worker case (a cold worker that produced
+# NOTHING — empty stdout/stderr AND no files, the transient-CLI signal). A dead
+# CLI should not burn the full attempt budget on long hang-guard timeouts: give
+# it a couple of chances then escalate DISTINCTLY (see worker_produced_nothing).
+MAX_EMPTY_WORKER_TRIES="${LCARS_EMPTY_WORKER_TRIES:-2}"
 MAX_QUESTIONS=20
 MAX_REVIEW_ROUNDS=3
 RELABEL_NOTE=""
@@ -2004,8 +2009,10 @@ red_gate_env_failure() { # runner-output → 0 if the runner could not execute
 #   5. over-broad-slice    — a test file WAS written but nothing above pinned a
 #      coherent failing test (green-on-nothing / ignored-var / a non-resolution load
 #      defect): the Test-Writer wrote something the gate kept rejecting.
-#   6. empty-worker-output — fallback: no file was written and we could not classify
-#      (worker noise but no usable artifact) → still a worker-health miss.
+#   6. over-broad-slice    — fallback: no file was written, but NOT truly empty —
+#      some signal is present (runner output and/or worker noise), the truly-nothing
+#      case having been claimed by #1. A worker that emitted output/runner signal but
+#      no usable test file is a bad/over-broad attempt, NOT an empty/transient-CLI miss.
 classify_impl_failure() { # runner_out  worker_out  files_written
   local runner_out="${1:-}" worker_out="${2:-}" files_written="${3:-}"
   local has_files=no has_runner=no has_worker=no
@@ -2043,8 +2050,12 @@ classify_impl_failure() { # runner_out  worker_out  files_written
     printf 'over-broad-slice'; return 0
   fi
 
-  # 6. fallback — no file, not strictly empty (worker noise) → worker-health miss.
-  printf 'empty-worker-output'
+  # 6. over-broad-slice — no file written, but NOT truly empty: some signal is
+  #    present (runner output and/or worker noise), since the truly-nothing case is
+  #    caught by category #1 above. A worker that produced output/runner signal but
+  #    no usable test file is a bad/over-broad attempt (the Test-Writer could not pin
+  #    a red), NOT an empty/transient-CLI miss — so it must NOT read as empty-worker-output.
+  printf 'over-broad-slice'
 }
 
 # S96 helper: decide whether ANY unresolved import specifier in a resolution
@@ -2089,6 +2100,38 @@ impl_failure_category_phrase() { # category → phrase
     genuine-red-exhausted)      printf 'genuine red exhausted (the tests went red but never turned green within the attempt cap)' ;;
     *)                          printf '%s' "$1" ;;
   esac
+}
+
+# S98: decide whether a just-finished cold worker produced NOTHING AT ALL — the
+# transient-CLI signal (a dead/hung/denied worker, seen with copilot), as opposed
+# to one that produced BAD work (reasoned toward a rejected suite, or wrote a file
+# the gate declined). This is the per-attempt, phase-level companion to
+# classify_impl_failure's `empty-worker-output` category, run INLINE in the
+# Test-Writer and Implementer loops BEFORE the "did it write the expected file"
+# check, so an empty worker is bounded-retried and escalated distinctly.
+#
+# It reads ONLY the worker's OUTDIR contents — the NON-hidden files it wrote plus
+# the hidden .worker.out / .worker.err captures — and NEVER the CLI name, so the
+# detection is inherently engine-agnostic (no vendor special-casing). Returns:
+#   • 0 (nothing) — the worker wrote NO real file AND its stdout+stderr, stripped
+#                   of whitespace, are empty.
+#   • 1 (something) — a real file exists, OR the captures held any output at all
+#                   (a worker that did something — even a bad something).
+worker_produced_nothing() { # outdir → 0 if the worker produced nothing at all
+  local outdir="$1"
+  [ -d "$outdir" ] || return 0   # no outdir at all ⇒ nothing was produced
+  # Any REAL artifact (anything the worker wrote EXCEPT the hidden capture files)
+  # means it produced something — regardless of stdout/stderr.
+  if [ -n "$(find "$outdir" -type f \
+              ! -name '.worker.out' ! -name '.worker.err' -print -quit 2>/dev/null)" ]; then
+    return 1
+  fi
+  # No real file: fall back to the captures. Any non-whitespace output means the
+  # worker DID run and say something (a real, classifiable attempt) — NOT empty.
+  if [ -n "$(cat "$outdir/.worker.out" "$outdir/.worker.err" 2>/dev/null | tr -d '[:space:]')" ]; then
+    return 1
+  fi
+  return 0   # no file AND no output ⇒ produced nothing
 }
 
 # --- GUARDRAIL 1: the red gate ----------------------------------------------
@@ -5777,6 +5820,9 @@ $tspecblock"
   # S96: retain the LAST attempt's worker output + files-written so, if the loop
   # exhausts without a usable suite, classify_impl_failure can name the root cause.
   local cl_worker="" cl_files=""
+  # S98: separate, SHORTER budget for the EMPTY-worker (transient-CLI) case, plus a
+  # flag that arms spawn_worker's re-prompt hint on the retry AFTER an empty attempt.
+  local empty_tries=0 prior_empty=""
   while [ "$saved" != 1 ] && [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     # attempt = 1 + (existing ticket_attempt lines for THIS ticket+phase). Within
@@ -5812,11 +5858,41 @@ $(cat "$sigfile")"
 - $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock
 
 ## Your ticket
-$TICKET$tspecblock$retryblock"
+$TICKET$tspecblock$retryblock" "${prior_empty:-}"
     # S96: capture THIS attempt's worker output + files-written BEFORE $odir is
     # removed, so an eventual exhaustion can be classified. Signal only.
     cl_worker="$(cat "$odir/.worker.out" "$odir/.worker.err" 2>/dev/null || true)"
     cl_files="$(find "$odir/tests" "$odir/stubs" -type f 2>/dev/null || true)"
+    # S98: EMPTY-WORKER branch — a worker that produced NOTHING (no file AND no
+    # stdout/stderr) is the transient-CLI signal, NOT a bad suite. Detect it BEFORE
+    # the "did it write tests" check, label it with the S96 `empty-worker-output`
+    # category, bounded-retry with the file-first re-prompt, and — after a short cap
+    # — escalate DISTINCTLY (never fold it into the generic "no usable tests" budget).
+    if worker_produced_nothing "$odir"; then
+      empty_tries=$((empty_tries + 1))
+      emit_event ticket_worker_empty_output implement \
+        "test-writer produced no output for $TICKET (attempt $awtry)" \
+        "ticket=$TICKET" "phase=test-writer" "attempt=$awtry" "category=empty-worker-output"
+      if [ "$empty_tries" -ge "$MAX_EMPTY_WORKER_TRIES" ]; then
+        local ew_phrase; ew_phrase="$(impl_failure_category_phrase empty-worker-output)"
+        emit_event ticket_test_writer_failed implement \
+          "ticket $TICKET stopped: $ew_phrase" \
+          "ticket=$TICKET" "phase=test-writer" "category=empty-worker-output" "attempts=$empty_tries"
+        if [ -n "${MISSION_DIR:-}" ]; then
+          printf '%s\tticket=%s\t%s: %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" "$TICKET" \
+            "empty-worker-output" "$ew_phrase" \
+            >>"$MISSION_DIR/implement-failure.log" 2>/dev/null || :
+        fi
+        rm -rf "$odir"
+        die "the Test Writer worker produced no output $empty_tries times for $TICKET — likely a transient CLI failure, not a code problem — Stage stopped."
+      fi
+      # Arm the file-first re-prompt for the NEXT attempt, then retry from scratch.
+      prior_empty=1
+      rm -rf "$odir"
+      continue
+    fi
+    prior_empty=""   # a non-empty attempt: keep the next prompt byte-for-byte normal
     if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
@@ -5883,6 +5959,8 @@ $LCARS_SELFHEAL_FEEDBACK"
 ## Your ticket
 $TICKET"
   tries=0
+  # S98: fresh EMPTY-worker budget + re-prompt flag for the Implementer phase.
+  empty_tries=0; prior_empty=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     # Same cumulative-from-the-log numbering as Phase 1, for the implementer phase.
@@ -5890,7 +5968,36 @@ $TICKET"
     emit_event ticket_attempt implement "implementer try $aitry for $TICKET" \
       "ticket=$TICKET" "phase=implementer" "attempt=$aitry"
     local odir; odir="$(mktemp -d)"
-    spawn_worker implement-implementer "$STAGES_DIR/implement-implementer.md" repo-write "$odir" "$iextra"
+    spawn_worker implement-implementer "$STAGES_DIR/implement-implementer.md" repo-write "$odir" "$iextra" "${prior_empty:-}"
+    # S98: EMPTY-WORKER branch (same shape as Phase 1) — a worker that produced
+    # NOTHING (no result.json / no source AND no stdout/stderr) is the transient-CLI
+    # signal, distinct from an Implementer whose result FAILED validation. Detect it
+    # BEFORE the result.json check, label it, bounded-retry with the file-first
+    # re-prompt, then escalate distinctly after the short cap.
+    if worker_produced_nothing "$odir"; then
+      empty_tries=$((empty_tries + 1))
+      emit_event ticket_worker_empty_output implement \
+        "implementer produced no output for $TICKET (attempt $aitry)" \
+        "ticket=$TICKET" "phase=implementer" "attempt=$aitry" "category=empty-worker-output"
+      if [ "$empty_tries" -ge "$MAX_EMPTY_WORKER_TRIES" ]; then
+        local ew_phrase; ew_phrase="$(impl_failure_category_phrase empty-worker-output)"
+        emit_event ticket_implementer_failed implement \
+          "ticket $TICKET stopped: $ew_phrase" \
+          "ticket=$TICKET" "phase=implementer" "category=empty-worker-output" "attempts=$empty_tries"
+        if [ -n "${MISSION_DIR:-}" ]; then
+          printf '%s\tticket=%s\t%s: %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" "$TICKET" \
+            "empty-worker-output" "$ew_phrase" \
+            >>"$MISSION_DIR/implement-failure.log" 2>/dev/null || :
+        fi
+        rm -rf "$odir"
+        die "the Implementer worker produced no output $empty_tries times for $TICKET — likely a transient CLI failure, not a code problem — Stage stopped."
+      fi
+      prior_empty=1
+      rm -rf "$odir"
+      continue
+    fi
+    prior_empty=""
     if [ -f "$odir/result.json" ]; then
       local rc=0
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-result \
@@ -7513,6 +7620,15 @@ case "$SUB" in
     classify_impl_failure "$_ci_runner" "${LCARS_CLASSIFY_WORKER_OUT:-}" "${LCARS_CLASSIFY_FILES:-}"
     printf '\n'
     exit 0 ;;
+  # S98 test hook: run the pure EMPTY-worker detector on a pre-populated OUTDIR
+  # ($LCARS_TEST_OUTDIR) and exit with its return code (0 = produced NOTHING, 1 =
+  # produced something — a real file OR any stdout/stderr). Detection reads ONLY the
+  # outdir contents (files + .worker.out/.worker.err), never the CLI name, so this
+  # hook proves the transient-CLI signal is engine-agnostic. Inert for every real
+  # subcommand — reachable only by this explicit token from the test suite.
+  worker-empty-detect-test)
+    if worker_produced_nothing "${LCARS_TEST_OUTDIR:-}"; then exit 0; else exit 1; fi
+    ;;
   # S97 test hook: run the reconcile RETEST env-blocked verdict on stdin and exit
   # with its return code (0 = env-blocked / the runner could not start, 1 = a genuine
   # red). Reads the captured retest output on stdin (written to a temp <id>.log so the
