@@ -105,13 +105,45 @@ double is incomplete. To prevent this:
    harmless no-op function otherwise; in other languages use the equivalent
    catch-all. A later ticket calling a method your double didn't anticipate then
    degrades to a no-op (at worst a real behavioural assertion), never a hard crash
-   that fails an unrelated earlier ticket.
+   that fails an unrelated earlier ticket. **One carve-out (see the hazard rules
+   below): a `Proxy` / catch-all double MUST return `undefined` for `then` (and
+   `catch` / `finally`)** — a callable `then` trap makes the mock a *thenable*, so
+   `await <mock>` never settles and the whole suite HANGS at the pre-gate self-smoke.
 3. **Do not let defensiveness hide a real failure.** A no-op fallback is only for
    *incidental* surface methods (drawing/audio side-effects you don't assert on).
    Still assert the **observable behaviour** your ticket's criteria require through
    the real entrypoints — the fallback must never turn a behaviour you DO test into
    a silent pass. The red gate still applies: your suite must FAIL until the ticket
    is built.
+
+## Hazard rules (HARD — a suite that violates these is bounced at the pre-gate self-smoke)
+
+Before your suite reaches the Implementer the harness runs it ONCE under a HARD
+TIMEOUT (the pre-gate self-smoke). A suite that HANGS or collects ZERO tests is
+bounced straight back to you (you retry), never handed on. These four rules are the
+common causes — follow every one:
+
+1. **A `Proxy` / catch-all test double MUST return `undefined` for `then`** (and
+   likewise `catch` / `finally`). A `get` trap that returns a callable for `then`
+   makes the double a *thenable*: `await <mock>` (or any `Promise.resolve(<mock>)`)
+   then waits FOREVER for a promise that never settles, and the whole suite HANGS —
+   the self-smoke kills it and you get nothing. Special-case those keys to `undefined`
+   in the trap before falling back to the no-op function.
+2. **You must never `await` a synchronously-constructed mock** object. A hand-built double is
+   not a promise; awaiting it is either a no-op (harmless) or, if it is accidentally
+   thenable (rule 1), a permanent hang. Only `await` real async entrypoints of the
+   code under test — never a mock you constructed synchronously in the test.
+3. **A DOM test MUST declare the jsdom pragma** at the TOP of the file —
+   `// @vitest-environment jsdom` (Jest: `/** @jest-environment jsdom */`). Without
+   it `document` / `window` are undefined under the default Node environment and the
+   test errors forever — a red the Implementer can never turn green. Pure-logic tests
+   stay on the default environment (do NOT add the pragma when you don't touch the DOM).
+4. **Browser globals `localStorage`/`window` that Node shadows MUST be stubbed, not
+   assumed.** Recent Node ships its OWN built-in `localStorage` / `window` that
+   SHADOW jsdom's and are non-functional (throw / no-op / missing methods), so a test
+   that assumes a working browser global can hang or error unpredictably. Explicitly
+   stub the storage / window surface your assertions need on the test's global, rather
+   than relying on whichever `localStorage`/`window` the runtime happens to expose.
 
 ## Locate repo sources PORTABLY — NEVER hardcode an absolute path
 

@@ -1827,6 +1827,19 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs
       # against the gate, so it can never accept a red the gate would reject.
       printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]' ;;
+    zerotests)
+      # S99 — the runner FINISHED but collected/ran ZERO tests. CLASSIFY-ONLY (the
+      # self-smoke's zero-tests verdict + classify_impl_failure); NEVER consulted by
+      # red_gate_ok's verdicts. TIGHT on purpose: it must NOT match a healthy red
+      # suite that happens to print "0 passed" — only the runner's own "no tests
+      # collected / ran" phrasings.
+      printf '%s' 'No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items' ;;
+    hang)
+      # S99 — a Test-Writer suite that HUNG under the pre-gate self-smoke timeout.
+      # CLASSIFY-ONLY (classify_impl_failure at exhaustion); NEVER consulted by
+      # red_gate_ok. Anchored to the self-smoke's OWN captured marker so it cannot
+      # false-positive on ordinary runner chatter.
+      printf '%s' 'SELF-SMOKE — your suite HUNG|the suite never (settled|finished) within the hard timeout' ;;
   esac
 }
 
@@ -1996,20 +2009,24 @@ red_gate_env_failure() { # runner-output → 0 if the runner could not execute
 #   1. empty-worker-output — the worker produced NOTHING (no file AND empty
 #      stdout/stderr). Checked FIRST: there is no runner output to classify, and
 #      this is the S98 worker-health signal (a dead/transient CLI, not a code bug).
-#   2. env-failure         — the runner could not LAUNCH (red_gate_env_failure).
+#   2. test-writer-hang    — the S99 pre-gate self-smoke's HANG marker (the suite
+#      never settled under the hard timeout — a never-settling awaited/thenable mock
+#      or an infinite async init). Checked BEFORE env so a hang is never mis-read as
+#      an unprovisioned runner.
+#   3. env-failure         — the runner could not LAUNCH (red_gate_env_failure).
 #      Checked BEFORE resolution/compile, exactly as red_gate_ok triages env first,
 #      so an unprovisioned runner never mis-reads as a code fault.
-#   3. missing-new-module / bad-import-path — a module-RESOLUTION failure
+#   4. missing-new-module / bad-import-path — a module-RESOLUTION failure
 #      (red_gate_resolution_failure). Greenfield (a path the ticket CREATES — the
 #      worker wrote a stub/file mirroring the unresolved specifier, per S94) →
 #      missing-new-module; otherwise (a typo'd / non-created path) → bad-import-path.
-#   4. genuine-red-exhausted — the runner output shows a REAL assertion red
+#   5. genuine-red-exhausted — the runner output shows a REAL assertion red
 #      (rg_signature assertion) with none of the above causes: the tests genuinely
 #      went red and attempts ran out.
-#   5. over-broad-slice    — a test file WAS written but nothing above pinned a
+#   6. over-broad-slice    — a test file WAS written but nothing above pinned a
 #      coherent failing test (green-on-nothing / ignored-var / a non-resolution load
 #      defect): the Test-Writer wrote something the gate kept rejecting.
-#   6. over-broad-slice    — fallback: no file was written, but NOT truly empty —
+#   7. over-broad-slice    — fallback: no file was written, but NOT truly empty —
 #      some signal is present (runner output and/or worker noise), the truly-nothing
 #      case having been claimed by #1. A worker that emitted output/runner signal but
 #      no usable test file is a bad/over-broad attempt, NOT an empty/transient-CLI miss.
@@ -2025,12 +2042,21 @@ classify_impl_failure() { # runner_out  worker_out  files_written
     printf 'empty-worker-output'; return 0
   fi
 
-  # 2. env-failure — the runner could not start (checked before resolution/compile).
+  # 2. test-writer-hang — a Test-Writer self-smoke HANG (the suite never settled
+  # under the hard timeout — a never-settling awaited/thenable mock or an infinite
+  # async init). Recognised from the self-smoke's own captured marker so an
+  # EXHAUSTED ticket names the hang instead of a generic over-broad slice. Checked
+  # before env so a hang is never mis-read as an unprovisioned runner.
+  if printf '%s' "$runner_out" | grep -Eq "$(rg_signature hang)"; then
+    printf 'test-writer-hang'; return 0
+  fi
+
+  # 3. env-failure — the runner could not start (checked before resolution/compile).
   if red_gate_env_failure "$runner_out"; then
     printf 'env-failure'; return 0
   fi
 
-  # 3. module-resolution — greenfield (a created module) vs a typo/non-created path.
+  # 4. module-resolution — greenfield (a created module) vs a typo/non-created path.
   if red_gate_resolution_failure "$runner_out"; then
     if unresolved_specifier_is_created "$runner_out" "$files_written"; then
       printf 'missing-new-module'
@@ -2040,17 +2066,17 @@ classify_impl_failure() { # runner_out  worker_out  files_written
     return 0
   fi
 
-  # 4. genuine-red-exhausted — a real assertion red exhausted the attempt cap.
+  # 5. genuine-red-exhausted — a real assertion red exhausted the attempt cap.
   if printf '%s' "$runner_out" | grep -Eq "$(rg_signature assertion)"; then
     printf 'genuine-red-exhausted'; return 0
   fi
 
-  # 5. over-broad-slice — a file was written but no coherent red ever converged.
+  # 6. over-broad-slice — a file was written but no coherent red ever converged.
   if [ "$has_files" = yes ]; then
     printf 'over-broad-slice'; return 0
   fi
 
-  # 6. over-broad-slice — no file written, but NOT truly empty: some signal is
+  # 7. over-broad-slice — no file written, but NOT truly empty: some signal is
   #    present (runner output and/or worker noise), since the truly-nothing case is
   #    caught by category #1 above. A worker that produced output/runner signal but
   #    no usable test file is a bad/over-broad attempt (the Test-Writer could not pin
@@ -2096,6 +2122,7 @@ impl_failure_category_phrase() { # category → phrase
     bad-import-path)            printf 'bad import path (a mistyped / non-created import did not resolve)' ;;
     over-broad-slice)           printf 'over-broad slice (no coherent failing test — the Test-Writer could not pin a red)' ;;
     empty-worker-output)        printf 'empty worker output (the worker produced no file and no output — likely a transient CLI failure, not a code problem)' ;;
+    test-writer-hang)           printf 'test-writer hang (the suite never settled under the pre-gate self-smoke timeout — likely an awaited / thenable mock; caught before the Implementer)' ;;
     env-failure|runner-startup) printf 'environment failure (the test runner could not start — the worktree is not provisioned; NOT a code problem)' ;;
     genuine-red-exhausted)      printf 'genuine red exhausted (the tests went red but never turned green within the attempt cap)' ;;
     *)                          printf '%s' "$1" ;;
@@ -2314,6 +2341,113 @@ $(printf '%s' "$out" | tail -20)"
   return 1
 }
 
+# S99: a PORTABLE hard wall-clock timeout (macOS has no coreutils `timeout`). Runs
+# the given command with combined stdout+stderr captured to $2, returning the
+# command's own rc — OR 124 (GNU-timeout's convention) if it exceeded $1 seconds
+# and was killed. Launched as its own process-group leader (perl setsid, same trick
+# as run_worker_hang_guarded) so a group-kill reaps children the runner forked
+# (vitest/jest worker pools).
+run_with_hard_timeout() { # secs  outfile  cmd...
+  local secs="$1" outfile="$2"; shift 2
+  case "$secs" in ''|*[!0-9]*) secs=120 ;; esac
+  perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- "$@" >"$outfile" 2>&1 &
+  local pid=$! waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$secs" ]; then
+      kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      sleep 1 2>/dev/null || true
+      kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1 2>/dev/null || waited="$secs"
+    waited=$((waited + 1))
+  done
+  wait "$pid"
+  return $?
+}
+
+# S99: did the runner FINISH but collect/run ZERO tests? Classify-only; never a
+# red-gate verdict. Uses the rg_signature `zerotests` arm.
+suite_collected_zero_tests() { # runner-output → 0 if zero tests were collected
+  printf '%s' "$1" | grep -Eq "$(rg_signature zerotests)"
+}
+
+# S99: the Test-Writer PRE-GATE self-smoke VERDICT (pure). Given the timed run's rc
+# and captured output, decide what the smoke does:
+#   hang       — rc 124: the hard timeout fired (a never-settling awaited/thenable
+#                mock, or an infinite async init) → Test-Writer defect (self-smoke bounces).
+#   zero-tests — the suite finished but collected NO tests → Test-Writer defect (bounces).
+#   ok         — everything else (a real run: red, green, OR a load/env failure) →
+#                the self-smoke PROCEEDS and lets the authoritative red gate render the
+#                verdict (it already rejects load/env/green with richer feedback).
+# NOTE the deliberate split: load-error/env/green are NOT bounced by the smoke — the
+# red gate is the single authority for those (avoids duplicating S95 feedback / a
+# second weaker gate). The smoke ADDS only the two cases the gate cannot catch (a
+# hang: no timeout; a zero-test suite: can slip through as a "valid red").
+self_smoke_verdict() { # rc  runner-output → echoes hang|zero-tests|ok
+  local rc="$1" out="$2"
+  if [ "$rc" = 124 ]; then printf 'hang'; return 0; fi
+  # A load/compile/resolution failure is the red gate's job (richer feedback) — do
+  # NOT bounce it here; only fall through to the zero-tests check when it is NOT one.
+  if red_gate_compile_failure "$out"; then printf 'ok'; return 0; fi
+  if suite_collected_zero_tests "$out"; then printf 'zero-tests'; return 0; fi
+  printf 'ok'
+}
+
+# S99: the actionable Test-Writer feedback for a bounced self-smoke. Written to the
+# red-gate-signal.txt grounded-retry channel so the NEXT fresh Test-Writer attempt is
+# told exactly what to fix; also becomes the last-attempt signal classify_impl_failure
+# reads at exhaustion (the `hang` marker → the test-writer-hang category).
+self_smoke_reason() { # verdict  cmd  runner-output
+  local v="$1" cmd="$2" out="$3" tail
+  tail="$(printf '%s' "$out" | tail -20)"
+  case "$v" in
+    hang)
+      printf 'SELF-SMOKE — your suite HUNG: the suite never settled within the hard timeout when run before any implementation, so it produced no result. The usual cause is an AWAITED mock that never settles — e.g. a Proxy / catch-all host double whose `then` trap returns a callable makes the mock a THENABLE, so `await <mock>` waits forever. FIX: a Proxy / catch-all double MUST return `undefined` for `then` (and `catch` / `finally`), and NEVER `await` a synchronously-constructed mock object. Re-author so the suite COLLECTS and FAILS FAST on an assertion. Command run: %s. Runner output (self-smoke, killed at timeout):\n%s\n' "$cmd" "$tail" ;;
+    zero-tests)
+      printf 'SELF-SMOKE — your suite collected ZERO tests: no test case actually ran, so there is no red to hand off. Write at least one dedicated, fail-first test that INVOKES the not-yet-built behaviour through its public entrypoint and ASSERTS the observable output. Command run: %s. Runner output (self-smoke):\n%s\n' "$cmd" "$tail" ;;
+  esac
+}
+
+# S99: run the authored suite ONCE, in the SAME (monorepo-aware) environment the
+# red gate uses, under a HARD TIMEOUT, BEFORE the immutable snapshot. On a hang /
+# zero-tests Test-Writer defect: write the reason to $sig (grounded-retry channel),
+# roll back the quarantine ($tdir), and `die` → the Phase-1 loop retries the
+# TEST-WRITER, never the Implementer, and nothing is snapshotted from a broken suite.
+# A suite that RUNS (red/green/load-error) returns 0 and proceeds to the snapshot +
+# the authoritative red gate. NEVER accepts anything the gate would reject.
+test_writer_self_smoke() { # tdir  pkg_rel  sig
+  local tdir="$1" pkg_rel="$2" sig="$3" cmd
+  cmd="$(resolve_test_cmd)"
+  if [ -z "$cmd" ]; then
+    printf '  ⚠ SELF-SMOKE SKIPPED — no test command; cannot pre-run the suite (the red gate skips loud too).\n' >&2
+    return 0
+  fi
+  local timeout_secs="${LCARS_SELF_SMOKE_TIMEOUT_SECS:-120}"
+  # Stage + run EXACTLY like the red gate: repo-root ticket runs from $REPO_ROOT; a
+  # sub-package ticket stages an ephemeral __lcarsq__ inside the package and runs
+  # from there so discovery + package-relative imports resolve identically.
+  local run_dir stage_dir cleanup=""
+  if [ -z "$pkg_rel" ]; then
+    run_dir="$REPO_ROOT"; stage_dir="$tdir"
+  else
+    run_dir="$REPO_ROOT/$pkg_rel"; stage_dir="$run_dir/__lcarsq__"
+    rm -rf "$stage_dir"; mkdir -p "$stage_dir"; ( cd "$tdir" && cp -R . "$stage_dir/" ); cleanup="$stage_dir"
+  fi
+  local out; out="$(mktemp)"; local rc=0
+  ( cd "$run_dir" && LCARS_TESTS_DIR="$stage_dir" run_with_hard_timeout "$timeout_secs" "$out" bash -c "$cmd" ) || rc=$?
+  local runner_out; runner_out="$(cat "$out" 2>/dev/null || true)"; rm -f "$out"
+  [ -n "$cleanup" ] && rm -rf "$cleanup"
+  local verdict; verdict="$(self_smoke_verdict "$rc" "$runner_out")"
+  [ "$verdict" = ok ] && return 0
+  local reason; reason="$(self_smoke_reason "$verdict" "$cmd" "$runner_out")"
+  printf '%s' "$reason" >"$sig"
+  printf '  ✗ SELF-SMOKE (%s): %s\n' "$verdict" "$reason" >&2
+  rm -rf "$tdir"
+  die "the Test Writer's suite failed the pre-gate self-smoke ($verdict) — a hanging or empty suite must never reach the Implementer; retrying the Test Writer."
+}
+
 # --- GUARDRAIL 2: immutable tests (hash snapshot + verify) ------------------
 sha_of() { # file → hex digest
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
@@ -2429,10 +2563,6 @@ cmd_impl_save_tests() {
   rm -rf "$tdir"; mkdir -p "$tdir"
   ( cd "$TESTS" && cp -R . "$tdir/" )
 
-  # GUARDRAIL 2 setup: snapshot the quarantined files so impl-save-result can
-  # prove the Implementer never edited the locked contract.
-  snapshot_tests "$tdir" "$snap"
-
   # S94 (greenfield stubs): a ticket that creates a BRAND-NEW source module can't
   # pass the red gate today — the Test-Writer's `import '../src/canvas/utils'`
   # cannot RESOLVE (the file does not exist yet), so 0 tests collect and the gate
@@ -2449,10 +2579,28 @@ cmd_impl_save_tests() {
   # (not added to tests.sha256, not copied into $tdir) and are LEFT in place on
   # success (NO cleanup). With no stubs given the behaviour is byte-identical to
   # before — a still-missing module reds with the resolution-failure reason.
+  # S99: MOVED UP (was after the snapshot) so BOTH the pre-gate self-smoke and the
+  # red gate resolve greenfield imports against the same staged stubs.
   if [ -n "$STUBS" ] && [ -d "$STUBS" ] \
      && [ -n "$(find "$STUBS" -type f -print -quit 2>/dev/null)" ]; then
     cp -R "$STUBS/." "$REPO_ROOT/"
   fi
+
+  # S99: pkg_rel + the grounded-retry signal file — computed ONCE here, shared by the
+  # pre-gate self-smoke and the red gate below.
+  local pkg_rel; pkg_rel="$(ticket_target_package "$TICKET")"
+  local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"; rm -f "$sig"
+
+  # S99 PRE-GATE SELF-SMOKE (BEFORE the immutable snapshot / handoff): bounce a
+  # hanging or zero-test suite back to the TEST-WRITER (retry) so the Implementer
+  # never burns attempts on it and a hang never wedges the ticket. A suite that runs
+  # (red/green/load-error) proceeds to the snapshot + the authoritative red gate.
+  test_writer_self_smoke "$tdir" "$pkg_rel" "$sig"
+
+  # GUARDRAIL 2 setup: snapshot the quarantined files so impl-save-result can
+  # prove the Implementer never edited the locked contract. AFTER the self-smoke so
+  # a hanging / zero-test suite is never snapshotted.
+  snapshot_tests "$tdir" "$snap"
 
   # GUARDRAIL 1 (the red gate): the suite must FAIL against no implementation
   # before the Implementer is allowed to run. A green-on-nothing suite is
@@ -2461,8 +2609,6 @@ cmd_impl_save_tests() {
   # diagnosis) to a durable signal file so (a) the human sees WHY instead of a
   # silent stall, and (b) the next grounded Test-Writer attempt can be told what
   # went wrong. The signal is SIGNAL ONLY — never the implementation.
-  local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"
-  rm -f "$sig"
   # S87: a ticket whose code lives in a sub-package must run its red gate INSIDE
   # that package — vitest/jest discover & filter tests RELATIVE to a package root
   # and the quarantined tests import package-relative sources. Stage an EPHEMERAL,
@@ -2471,7 +2617,7 @@ cmd_impl_save_tests() {
   # in-package dir is removed on EVERY exit path BEFORE the Implementer is ever
   # dispatched. An empty pkg_rel (code at the repo root / no sub-package / missing
   # or multi-package manifest) takes today's repo-root path, byte-for-byte.
-  local pkg_rel; pkg_rel="$(ticket_target_package "$TICKET")"
+  # S99: pkg_rel + sig are hoisted above (shared with the self-smoke).
   local red_rc=0
   if [ -z "$pkg_rel" ]; then
     RED_GATE_SIGNAL="$sig" red_gate_ok "$tdir" || red_rc=$?
@@ -7629,6 +7775,20 @@ case "$SUB" in
   worker-empty-detect-test)
     if worker_produced_nothing "${LCARS_TEST_OUTDIR:-}"; then exit 0; else exit 1; fi
     ;;
+  # S99 test hook: pure self-smoke verdict — runner output on stdin, rc via env.
+  self-smoke-verdict-test)
+    _ss_in="$(cat)"
+    self_smoke_verdict "${LCARS_SS_RC:-0}" "$_ss_in"
+    printf '\n'; exit 0 ;;
+  # S99 test hook: portable hard timeout — runs $LCARS_HT_CMD under $LCARS_HT_SECS,
+  # prints RC=<rc> (124 = timed out+killed). Offline, free.
+  run-hard-timeout-test)
+    _ht_out="$(mktemp)"; _ht_rc=0
+    run_with_hard_timeout "${LCARS_HT_SECS:-120}" "$_ht_out" bash -c "${LCARS_HT_CMD:-true}" || _ht_rc=$?
+    rm -f "$_ht_out"; printf 'RC=%s\n' "$_ht_rc"; exit 0 ;;
+  # S99 test hook: zero-tests detector on stdin (rc 0 = zero tests).
+  suite-zero-tests-test)
+    _zt_in="$(cat)"; if suite_collected_zero_tests "$_zt_in"; then exit 0; else exit 1; fi ;;
   # S97 test hook: run the reconcile RETEST env-blocked verdict on stdin and exit
   # with its return code (0 = env-blocked / the runner could not start, 1 = a genuine
   # red). Reads the captured retest output on stdin (written to a temp <id>.log so the
