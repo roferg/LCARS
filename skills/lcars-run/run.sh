@@ -1486,6 +1486,134 @@ manifest_relevant_files() { # manifest-file → one path per line
   ' "$1" 2>/dev/null
 }
 
+# === Plan Review: SOFT under-slice signal (S100) ============================
+# Plan Review kept passing a MEGA-ticket that hid a whole surface behind a simple
+# title (the "migrate all the chrome to tokens" ticket that silently left App.tsx
+# / the Toolbar unscoped). slice_pressure is a HEURISTIC HINT that helps the
+# reviewer notice such an under-slice. It is SIGNAL ONLY: it NEVER changes the
+# accept/reject verdict, never `die`s, never exits nonzero on pressure — the
+# reviewer LLM still decides. The mechanical validator (validate_plan_json) is
+# untouched; the budget stays a PLANNING TARGET.
+
+# --- slice_pressure: one ticket's under-slice pressure from its OWN fields ---
+# Inputs (all from a ticket's DECLARED fields): number of distinct acceptance
+# criteria, number of files it touches + distinct dirs (from its manifest's
+# "Relevant files"; 0/0 when no manifest — degrade gracefully), and
+# estimatedNewLoc vs comprehensionBudget. Echoes "<level>\t<reason>" where level
+# is low|elevated|high. A simple additive score over the four signals; level
+# thresholds: score>=4 high, >=2 elevated, else low.
+#
+# CRITICAL (budget-is-a-target): the LoC signal is estimatedNewLoc — the
+# IMPLEMENTATION weight — NOT estimatedReadLoc. A ticket that is over budget only
+# because it must READ one big existing file carries a small newLoc, so it never
+# reads as high pressure. That is exactly the case the design note protects.
+slice_pressure() { # nCriteria nFiles nDirs newLoc budget -> "<level>\t<reason>"
+  local nc="${1:-0}" nf="${2:-0}" nd="${3:-0}" newloc="${4:-0}" budget="${5:-1200}"
+  nc=$((nc + 0)); nf=$((nf + 0)); nd=$((nd + 0)); newloc=$((newloc + 0)); budget=$((budget + 0))
+  [ "$budget" -gt 0 ] || budget=1200
+  local score=0
+  # acceptance-criteria breadth — many distinct criteria hint at bundled behaviors.
+  if   [ "$nc" -ge 5 ]; then score=$((score + 2))
+  elif [ "$nc" -ge 3 ]; then score=$((score + 1)); fi
+  # file breadth — many touched files hint at a wide surface (secondary; 0 = no manifest).
+  if   [ "$nf" -ge 6 ]; then score=$((score + 2))
+  elif [ "$nf" -ge 3 ]; then score=$((score + 1)); fi
+  # directory breadth — spread across dirs hints at multiple layers/areas.
+  if   [ "$nd" -ge 3 ]; then score=$((score + 2))
+  elif [ "$nd" -ge 2 ]; then score=$((score + 1)); fi
+  # implementation weight — estimatedNewLoc (NOT read) vs the planning target.
+  local loc_rel
+  if [ "$newloc" -gt "$budget" ]; then
+    score=$((score + 2)); loc_rel="estimatedNewLoc $newloc > budget $budget"
+  elif [ $((newloc * 4)) -gt $((budget * 3)) ]; then
+    score=$((score + 1)); loc_rel="estimatedNewLoc $newloc near budget $budget"
+  else
+    loc_rel="estimatedNewLoc $newloc <= budget $budget"
+  fi
+  local level=low
+  if   [ "$score" -ge 4 ]; then level=high
+  elif [ "$score" -ge 2 ]; then level=elevated; fi
+  printf '%s\t%d criteria, %d file(s) across %d dir(s); %s' \
+    "$level" "$nc" "$nf" "$nd" "$loc_rel"
+}
+
+# --- per-ticket rows for the hint: id \t title \t criteriaCount \t newLoc -----
+# jq-free awk over the canonical one-field-per-line plan.json shape (inline OR
+# multi-line acceptanceCriteria), mirroring validate_plan_json's object parse.
+slice_pressure_rows() { # plan.json
+  awk '
+    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; nc=0; newloc=0; in_ac=0; next }
+    /^[[:space:]]*\}[,]?[[:space:]]*$/ {
+      if (inobj) printf "%s\t%s\t%d\t%d\n", id, title, nc, newloc
+      inobj=0; next
+    }
+    inobj && in_ac {
+      m=split($0, b, "\""); for (i=2;i<m;i+=2) if (b[i] != "") nc++
+      if ($0 ~ /\]/) in_ac=0
+      next
+    }
+    inobj {
+      n=split($0, a, "\""); if (n < 2) next
+      key=a[2]
+      if (key=="id") id=a[4]
+      else if (key=="title") title=a[4]
+      else if (key=="acceptanceCriteria") {
+        if (n >= 4) { for (i=4;i<n;i+=2) if (a[i] != "") nc++ }  # inline items
+        if ($0 !~ /\]/) in_ac=1                                   # opens multi-line
+      }
+      else if (key=="estimatedNewLoc") { v=a[3]; gsub(/[^0-9]/, "", v); newloc=v+0 }
+    }
+  ' "$1" 2>/dev/null
+}
+
+# --- build_slice_pressure_hint: the ADVISORY block appended to the reviewer ---
+# Emits a clearly-labelled, ADVISORY-ONLY hint block (never a verdict) listing
+# every ticket's slice-pressure level + reason. Secondary file/dir signals come
+# from each ticket's manifest (optional). Silent (emits nothing) on a missing /
+# empty plan. Never rejects — pure text for the reviewer to weigh.
+build_slice_pressure_hint() { # plan.json [manifests_dir] [budget]
+  local plan="$1" mdir="${2:-}" budget="${3:-1200}"
+  [ -f "$plan" ] || return 0
+  budget=$((budget + 0)); [ "$budget" -gt 0 ] || budget=1200
+  local rows; rows="$(slice_pressure_rows "$plan")"
+  [ -n "$rows" ] || return 0
+
+  local body="" id title nc newloc nf nd files lr lvl reason
+  while IFS=$'\t' read -r id title nc newloc; do
+    [ -n "$id" ] || continue
+    nf=0; nd=0
+    if [ -n "$mdir" ] && [ -f "$mdir/$id.md" ]; then
+      files="$(manifest_relevant_files "$mdir/$id.md")"
+      if [ -n "$files" ]; then
+        nf="$(printf '%s\n' "$files" | grep -c '.')"
+        nd="$(printf '%s\n' "$files" \
+          | awk 'NF { if (index($0, "/") > 0) { sub("/[^/]*$", "", $0); print } else print "." }' \
+          | sort -u | grep -c '.')"
+      fi
+    fi
+    lr="$(slice_pressure "$nc" "$nf" "$nd" "$newloc" "$budget")"
+    lvl="${lr%%$'\t'*}"; reason="${lr#*$'\t'}"
+    body="$body
+- $id [$lvl] $reason"
+  done <<SP_ROWS_EOF
+$rows
+SP_ROWS_EOF
+  [ -n "$body" ] || return 0
+
+  local header="## Slice-pressure signals (heuristic — advisory only, NOT a verdict)
+
+Computed mechanically from each ticket's OWN declared fields: acceptance-criterion
+count, files and directories from its manifest, and estimatedNewLoc vs
+comprehensionBudget. ADVISORY ONLY — these do NOT decide pass/fail, you do. Treat
+an elevated or high signal as a prompt to look HARDER for an UNDER-SLICE: a ticket
+whose title HIDES multiple behaviors, or whose scope SILENTLY OMITS part of the
+surface it claims. Concrete failure mode: a \"migrate all the chrome to tokens\"
+ticket that never names App.tsx or the Toolbar is an under-slice — reject it and
+tell the planner the omitted surface. A low signal is NOT a licence to pass a
+coupled or horizontal ticket."
+  printf '%s\n%s' "$header" "$body"
+}
+
 # --- where a gate stages an in-package quarantine (S87) ----------------------
 # Given a tree and a package-rel path (from ticket_target_package), echo the
 # tab-separated RUN dir the runner cd's into (`<tree>/<pkg>`) and the STAGE dir the
@@ -5820,6 +5948,16 @@ acceptable — do not raise it."
   # we add nothing but the declarative repo-facts context source, by PATH only.
   extra="$extra$(context_extra_block)"
 
+  # S100: APPEND the SOFT under-slice hint — a heuristic, ADVISORY-ONLY signal
+  # computed from each ticket's own fields (see build_slice_pressure_hint). It is
+  # SIGNAL, never a verdict: it changes nothing about accept/reject (the reviewer
+  # still decides), it only helps the reviewer catch a mega-ticket that hides a
+  # whole surface behind a simple title. The durable BAR lives in the template.
+  local sphint; sphint="$(build_slice_pressure_hint "$MISSION_DIR/plan.json" "$MISSION_DIR/manifests" "$budget")"
+  [ -n "$sphint" ] && extra="$extra
+
+$sphint"
+
   local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
@@ -7842,5 +7980,20 @@ FSG_EOF
     FULL_SUITE_SIGNAL="$__fsg_sig" full_suite_gate $__fsg_ordered || __fsg_rc=$?
     printf 'FSRC=%s\n' "$__fsg_rc"
     exit 0 ;;
+  # S100 test hook: pure slice_pressure scalar — inputs via env (nCriteria /
+  # nFiles / nDirs / newLoc / budget), echoes "<level>\t<reason>". Reads no CLI
+  # name and spawns no worker, so the under-slice heuristic is unit-testable
+  # offline + free. Inert for every real subcommand — reachable only by this token.
+  slice-pressure-test)
+    slice_pressure "${LCARS_SP_NC:-0}" "${LCARS_SP_NF:-0}" "${LCARS_SP_ND:-0}" \
+      "${LCARS_SP_NEWLOC:-0}" "${LCARS_SP_BUDGET:-1200}"
+    printf '\n'; exit 0 ;;
+  # S100 test hook: build_slice_pressure_hint over a given plan.json (--plan),
+  # optional per-ticket manifests (--manifests), and budget (the positional).
+  # Emits the ADVISORY hint block the reviewer sees. NEVER rejects — always exit 0,
+  # proving the signal cannot change a verdict. Inert for every real subcommand.
+  slice-pressure-hint-test)
+    build_slice_pressure_hint "$PLAN" "${MANIFESTS:-}" "${POSARG:-1200}"
+    printf '\n'; exit 0 ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

@@ -46,6 +46,19 @@ Audit **every** ticket against the criteria below:
   The actionable re-slice: split along the persistence seam so `t-001` owns the
   write contract and `t-002` owns only the storage/restore contract layered on
   top of it (a clean dependency), not a shared mutation.
+- **Under-slice / hidden surface** — does the ticket's TITLE honestly bound its
+  scope, or does it HIDE multiple behaviors behind one broad label? Reject a
+  ticket whose title hides multiple behaviors, OR whose scope SILENTLY OMITS part
+  of the surface it plainly claims to cover. This is the mirror of over-slicing:
+  a sweeping title like "migrate all the chrome to tokens" that names only a
+  couple of files — leaving, say, `App.tsx` and the toolbar unscoped — is an
+  under-slice; it will look done while a whole surface goes unbuilt. Use your
+  judgment on the ticket's own text (title vs description vs acceptance criteria
+  vs its manifest): when the claim is broad but the acceptance criteria and
+  touched files cover only a slice of it, object and tell the planner the exact
+  surface the ticket must either NAME or hand to a sibling ticket. (An advisory
+  "slice-pressure" hint may be supplied in your inputs to flag likely offenders;
+  it is a heuristic prompt to look harder, never a verdict — you still decide.)
 - **Testability** — at least one clear, observable acceptance criterion?
 - **Dependencies** — does every id in `dependencies` reference another ticket in
   this same plan?
