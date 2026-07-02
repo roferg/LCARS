@@ -155,15 +155,26 @@ human-confusing self-heal AND that the Implementer can **never fix** (your test 
 immutable once locked). The harness now **REJECTS** such a test and makes you
 retry, so get it right the first time:
 
-- **The harness QUARANTINES your test file and runs it from the ticket's package
-  quarantine dir `<package-root>/__lcarsq__/` — NOT from where you write it.** So
-  when you import the **source MODULE under test** in a (mono)repo, import it via a
-  path that resolves FROM THAT location: a **package-root-relative** path (e.g.
-  `../src/<dir>/<file>.js`) **or the package's NAME** — **NEVER** a co-located
-  `./<sibling>` import that assumes your test sits next to the source. A co-located
-  `import './utils.js'` is correct where you author it but **cannot resolve** from
-  `<package-root>/__lcarsq__/`, so the suite fails to LOAD and the harness **REJECTS**
-  it (you will be asked to retry). Do not co-locate; import per the path above.
+- **The harness places your test file IN THE REPO at the repo's OWN test convention
+  and runs the suite IN PLACE — right where the test sits, NOT from a quarantine
+  dir.** So import the **source MODULE under test** via a path that resolves **FROM
+  THE TEST'S IN-TREE LOCATION**. Author the test **as if it already sits at that
+  location**:
+    - **Co-located convention (the DEFAULT — the test sits NEXT TO the source,
+      `foo.test.ts` beside `foo.ts`):** import the sibling **co-located**, e.g.
+      `import { area } from './utils'` for a test beside `utils.ts`. This is the
+      correct form — the harness runs the suite in place, so the `./<sibling>`
+      import **resolves**. (This is the exact form older guidance forbade under the
+      old quarantine staging; that staging is gone.)
+    - **`__tests__/` convention (the test sits in a `__tests__/` dir beside the
+      source):** the source is ONE level up — import `../<sibling>` (e.g.
+      `import { area } from '../utils'`).
+    - **Top-level `tests/` convention (the test sits in a repo/package top-level
+      `tests/` dir):** import the source by its **package-root-relative** path,
+      e.g. `../src/<dir>/<file>`.
+  When in doubt, prefer the **co-located `./<sibling>`** form: it is the harness
+  default and the common case. If your import cannot resolve, the red gate REJECTS
+  the suite and tells you the exact specifier + the correct in-tree form to retry.
 
 - For locating a BUILT artifact / a repo source file you READ (not import) — e.g.
   reading `game.js` as text — **MUST** resolve it **portably relative to the test
@@ -224,15 +235,21 @@ you want. Do what a human does: **make it compile first.**
   symbol reds on its own (a valid assertion fail-first). Stub the **module file**
   only when the whole file does not exist yet.
 - Put the stub in a **NEW `stubs/` scratch dir** (parallel to `tests/`, both
-  created for you by the harness) that **mirrors the repo path** of the module.
-  The path **matches your import**: a test that imports the package-root-relative
-  `../src/canvas/utils` (per the rule above — never a co-located `./sibling`)
-  needs its stub at `stubs/src/canvas/utils.ts`; for a monorepo package, a stub
-  destined for `<repo>/packages/editor/src/canvas/utils.ts` goes at
-  `stubs/packages/editor/src/canvas/utils.ts`. The harness overlays the `stubs/`
-  tree onto the repo source **before** the red gate, so your import resolves, the
-  suite LOADS, and it reds on your **assertion** — exactly the valid red the gate
-  accepts. The Implementer then fills the stub in.
+  created for you by the harness), named to **match the specifier you import** —
+  the harness places it where your import RESOLVES FROM (right next to your test,
+  in place). Because the harness knows the test's in-tree location and you do not
+  need the repo path prefix:
+    - **Co-located `./<sibling>` import (the DEFAULT):** put the stub at
+      `stubs/<sibling>.ts` — a test that imports `./utils` needs `stubs/utils.ts`;
+      `./helpers/store` needs `stubs/helpers/store.ts`. The harness reroots the
+      `stubs/` tree next to your test, so `./utils` resolves.
+    - **`__tests__/` `../<sibling>` import:** same — `stubs/<sibling>.ts` (the
+      harness places it one level up, where `../<sibling>` resolves).
+    - **Top-level `tests/` package-root-relative import:** mirror the repo path,
+      e.g. a stub for `../src/canvas/utils` goes at `stubs/src/canvas/utils.ts`.
+  The harness overlays the `stubs/` tree **before** the red gate, so your import
+  resolves, the suite LOADS, and it reds on your **assertion** — exactly the valid
+  red the gate accepts. The Implementer then fills the stub in.
 - Write **only** stub FILES into `stubs/` (empty scaffolding) and **only** test
   files into `tests/` — nothing else, in neither dir.
 

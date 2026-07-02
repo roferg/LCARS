@@ -1486,6 +1486,211 @@ manifest_relevant_files() { # manifest-file → one path per line
   ' "$1" 2>/dev/null
 }
 
+# === S101 (tests ride along, part 1): in-tree test convention =================
+# The Test-Writer's per-ticket fail-first test should land IN THE REPO at the
+# repo's OWN test convention (co-located `foo.test.ts`, a `__tests__/` dir, or a
+# top-level `tests/` dir) rather than only in the `.git/lcars` quarantine — so the
+# red gate + the Implementer run it IN PLACE (co-located `./sibling` imports
+# resolve) and a later session can commit it by path. These two functions are
+# PURE (filesystem read only — NO execution, NO network) and hook-testable.
+
+# --- detect_test_convention: infer the repo's test-file convention -----------
+# Walks the repo for EXISTING tests and picks the convention nearest the target
+# source path. Echoes exactly one of: co-located | __tests__ | tests. A TS/JS repo
+# with NO existing tests DEFAULTS to co-located. node_modules and .git are skipped.
+detect_test_convention() { # repo_root  target_src_path
+  local root="$1" target="${2:-}"
+  local tdir=""; case "$target" in */*) tdir="${target%/*}" ;; *) tdir="" ;; esac
+
+  # 1) NEAREST-to-target: a sibling *.test.*/*.spec.* in the target's OWN dir is the
+  #    strongest co-located signal; a sibling __tests__/ dir the strongest __tests__.
+  if [ -n "$tdir" ] && [ -d "$root/$tdir" ]; then
+    if find "$root/$tdir" -maxdepth 1 -type f \( -name '*.test.*' -o -name '*.spec.*' \) \
+         -print -quit 2>/dev/null | grep -q .; then
+      printf 'co-located'; return 0
+    fi
+    if [ -d "$root/$tdir/__tests__" ]; then printf '__tests__'; return 0; fi
+  fi
+
+  # 2) Repo-wide fallback. A co-located test anywhere (outside __tests__/ and a
+  #    top-level tests/) wins; else any __tests__/ dir; else a populated top-level
+  #    tests/; else — no existing tests — default co-located.
+  if find "$root" \
+       \( -path '*/.git' -o -path '*/node_modules' -o -path '*/__tests__' -o -path '*/tests' \) -prune -o \
+       -type f \( -name '*.test.*' -o -name '*.spec.*' \) -print 2>/dev/null \
+       | head -1 | grep -q .; then
+    printf 'co-located'; return 0
+  fi
+  if find "$root" -type d -name '__tests__' \
+       ! -path '*/.git/*' ! -path '*/node_modules/*' -print -quit 2>/dev/null | grep -q .; then
+    printf '__tests__'; return 0
+  fi
+  if [ -d "$root/tests" ] && find "$root/tests" -type f \
+       \( -name '*.test.*' -o -name '*.spec.*' -o -name 'test_*' -o -name '*_test.*' \) \
+       -print -quit 2>/dev/null | grep -q .; then
+    printf 'tests'; return 0
+  fi
+  printf 'co-located'
+}
+
+# --- test_path_for: map a target SOURCE path → the in-tree TEST relpath -------
+# Preserves the source extension family (.ts/.tsx/.js/.jsx/.mts/.cts/.mjs/.cjs;
+# default .ts when the source has no extension).
+#   co-located → a/b/foo.ts → a/b/foo.test.ts
+#   __tests__  → a/b/foo.ts → a/b/__tests__/foo.test.ts
+#   tests      → a/b/foo.ts → tests/foo.test.ts
+test_path_for() { # convention  target_src_path
+  local conv="$1" src="$2" dir base ext stem
+  case "$src" in */*) dir="${src%/*}" ;; *) dir="" ;; esac
+  base="${src##*/}"
+  case "$base" in
+    *.*) ext="${base##*.}"; stem="${base%.*}" ;;
+    *)   ext="ts"; stem="$base" ;;
+  esac
+  case "$conv" in
+    __tests__) printf '%s%s__tests__/%s.test.%s' "$dir" "${dir:+/}" "$stem" "$ext" ;;
+    tests)     printf 'tests/%s.test.%s' "$stem" "$ext" ;;
+    *)         printf '%s%s%s.test.%s' "$dir" "${dir:+/}" "$stem" "$ext" ;;
+  esac
+}
+
+# --- ticket_target_src: the ticket's primary SOURCE path (for convention) ----
+# 1) the first source-looking path in the manifest's `## Relevant files` (skips
+#    test/spec files and test dirs); 2) fallback — infer from the greenfield
+#    sibling the Test-Writer's suite imports (a strong signal for a brand-new
+#    module). Echoes a repo-relative source path, or "" when nothing is derivable.
+ticket_target_src() { # ticketId  [tests-dir]  → source relpath or ""
+  local mf="$MISSION_DIR/manifests/$1.md" p
+  if [ -f "$mf" ]; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      case "$p" in *.test.*|*.spec.*|*/__tests__/*|tests/*) continue ;; esac
+      case "$p" in
+        *.ts|*.tsx|*.js|*.jsx|*.mts|*.cts|*.mjs|*.cjs) printf '%s' "$p"; return 0 ;;
+      esac
+    done <<EOF
+$(manifest_relevant_files "$mf")
+EOF
+  fi
+  local tdir="${2:-}" spec norm
+  if [ -n "$tdir" ] && [ -d "$tdir" ]; then
+    spec="$(grep -rhoE "(from|import|require\()[[:space:]]*['\"][^'\"]+['\"]" "$tdir" 2>/dev/null \
+             | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" \
+             | grep -E '^[.]' | head -1)"
+    if [ -n "$spec" ]; then
+      norm="${spec#./}"
+      while case "$norm" in ../*) true ;; *) false ;; esac; do norm="${norm#../}"; done
+      case "$norm" in *.*) : ;; *) norm="$norm.ts" ;; esac
+      printf '%s' "$norm"; return 0
+    fi
+  fi
+  return 0
+}
+
+# === S101 (tests ride along) — MULTI-FILE / MULTI-DIR co-located placement ====
+# The Test-Writer for one ticket can author SEVERAL test files whose target sources
+# live in DIFFERENT dirs (e.g. a greenfield `src/utils/isDefaultViewport.ts`, an
+# existing `src/canvas/editorCanvas.ts`, and a `src/components/MapCanvas/MapCanvas.tsx`).
+# Each test must land co-located NEXT TO ITS OWN source so its `./<sibling>` import
+# resolves in place; placing them all in one dir (the first target's) breaks every
+# import but the first. These PURE helpers derive each file's own destination and the
+# common scope for the in-place red gate. Filesystem read only — NO execution.
+
+# --- test_primary_sibling: the module-under-test a test file imports ----------
+# Scans a test file's RELATIVE (`./…` / `../…`) import specifiers and echoes the STEM
+# of its primary module-under-test: PREFER the relative import whose basename stem
+# equals the test's OWN stem (`editorCanvas.test.ts` → `./editorCanvas`), else the
+# FIRST relative import. Echoes "" when the file has no relative import (the caller
+# falls back to the ticket's primary source). Nested paths degrade to the basename.
+test_primary_sibling() { # test-file → sibling stem or ""
+  local f="$1" base tstem spec sb first=""
+  base="${f##*/}"; base="${base%.*}"                 # drop the file extension
+  case "$base" in *.test) tstem="${base%.test}" ;; *.spec) tstem="${base%.spec}" ;; *) tstem="$base" ;; esac
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    sb="${spec##*/}"; case "$sb" in *.*) sb="${sb%.*}" ;; esac   # last segment, drop any ext
+    [ -n "$sb" ] || continue
+    [ -z "$first" ] && first="$sb"
+    [ "$sb" = "$tstem" ] && { printf '%s' "$sb"; return 0; }
+  done <<EOF
+$(grep -hoE "(from|import|require\()[[:space:]]*['\"][^'\"]+['\"]" "$f" 2>/dev/null \
+   | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | grep -E '^[.]')
+EOF
+  printf '%s' "$first"
+}
+
+# --- resolve_sibling_src: a co-located sibling STEM → its in-tree SOURCE path --
+# So a per-file placement can co-locate the test next to the real source:
+#   1) MANIFEST match — a `## Relevant files` SOURCE path (skips test/spec files)
+#      whose basename stem equals STEM (any source ext). Covers existing sources AND
+#      greenfield ones the ticket DECLARES (e.g. a new isDefaultViewport.ts).
+#   2) PACKAGE/REPO search — find <STEM>.<ext> under the ticket's package (or the
+#      whole repo) for a source not named in the manifest.
+#   3) FALLBACK — a truly novel greenfield not in the manifest: use $fallback_src
+#      (the ticket's primary target source) so the test co-locates in the ticket's
+#      primary source dir, byte-identical to the pre-multi-dir single-dir behaviour.
+# $prune (5th arg, newline-separated ABS dirs) are input scratch dirs to NEVER resolve
+# into — the worker's tests/ + stubs/ scratch dirs (a mktemp OUTSIDE the repo in real
+# use, so the repo-wide search never sees them; pruned explicitly so a fixture that
+# nests them under the repo still resolves the sibling to the real in-tree source, not
+# a copy of the test/stub). Echoes a repo-relative source path (never "" for a STEM).
+resolve_sibling_src() { # stem  ticketId  fallback_src  [pkg_rel]  [prune] → source relpath
+  local stem="$1" tid="$2" fallback="$3" pkg="${4:-}" prune="${5:-}"
+  [ -n "$stem" ] || { printf '%s' "$fallback"; return 0; }
+  local mf="$MISSION_DIR/manifests/$tid.md" p pb
+  if [ -f "$mf" ]; then
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      case "$p" in *.test.*|*.spec.*|*/__tests__/*|tests/*) continue ;; esac
+      case "$p" in *.ts|*.tsx|*.js|*.jsx|*.mts|*.cts|*.mjs|*.cjs) : ;; *) continue ;; esac
+      pb="${p##*/}"; pb="${pb%.*}"
+      [ "$pb" = "$stem" ] && { printf '%s' "$p"; return 0; }
+    done <<EOF
+$(manifest_relevant_files "$mf")
+EOF
+  fi
+  local root hit skip pd
+  for root in ${pkg:+"$REPO_ROOT/$pkg"} "$REPO_ROOT"; do
+    [ -d "$root" ] || continue
+    while IFS= read -r hit; do
+      [ -n "$hit" ] || continue
+      skip=no
+      while IFS= read -r pd; do
+        [ -n "$pd" ] || continue
+        case "$hit" in "$pd"/*) skip=yes; break ;; esac
+      done <<PRUNE
+$prune
+PRUNE
+      [ "$skip" = yes ] && continue
+      printf '%s' "${hit#"$REPO_ROOT"/}"; return 0
+    done <<EOF
+$(find "$root" \( -path '*/.git' -o -path '*/node_modules' \) -prune -o \
+     -type f \( -name "$stem.ts" -o -name "$stem.tsx" -o -name "$stem.js" \
+     -o -name "$stem.jsx" -o -name "$stem.mts" -o -name "$stem.cts" \
+     -o -name "$stem.mjs" -o -name "$stem.cjs" \) -print 2>/dev/null \
+   | grep -vE '\.(test|spec)\.' | LC_ALL=C sort)
+EOF
+  done
+  printf '%s' "$fallback"
+}
+
+# --- common_ancestor_dir: deepest shared parent DIR of a set of relpaths -------
+# Given newline-separated repo-relative paths, echoes the deepest directory that is a
+# leading path-segment prefix of EVERY path's dir ("" = repo root). Used to scope the
+# in-place red gate when a ticket's placed test files span more than one dir.
+common_ancestor_dir() { # <newline relpaths> → common dir ("" = root)
+  local rels="$1"
+  printf '%s\n' "$rels" | awk '
+    { if ($0=="") next
+      dir=$0; sub(/\/[^\/]*$/, "", dir); if (dir==$0) dir=""     # dirname
+      if (!seen) { common=dir; seen=1; next }
+      n=split(common,C,"/"); m=split(dir,D,"/"); k=(n<m)?n:m; out=""
+      for (i=1;i<=k;i++){ if (C[i]==D[i]) out=(out=="")?C[i]:out"/"C[i]; else break }
+      common=out
+    }
+    END { if (seen) print common }'
+}
+
 # === Plan Review: SOFT under-slice signal (S100) ============================
 # Plan Review kept passing a MEGA-ticket that hid a whole surface behind a simple
 # title (the "migrate all the chrome to tokens" ticket that silently left App.tsx
@@ -2311,6 +2516,11 @@ worker_produced_nothing() { # outdir → 0 if the worker produced nothing at all
 # We NEVER discard the rc or the output — both are surfaced to $RED_GATE_SIGNAL
 # (if set) so the human and the next grounded Test-Writer attempt see WHY.
 RED_GATE_SIGNAL=""   # caller may point this at a file to capture the rejection signal
+# S101: the repo's test convention (co-located | __tests__ | tests) the harness
+# placed this test at, so the resolution-failure hint tells the Test-Writer to
+# re-author the import + stub for the ACTUAL in-tree location. Default co-located
+# (groutwork's + the harness default). SIGNAL/WORDING ONLY — never a verdict.
+RED_GATE_CONVENTION="co-located"
 red_gate_ok() { # quarantined-tests-dir [run-dir]
   # S87: run-dir is the cwd the runner is invoked from (BOTH the real run AND the
   # empty-dir probe), default $REPO_ROOT (byte-identical to before). A monorepo
@@ -2420,12 +2630,24 @@ $(printf '%s' "$out" | tail -20)"
         # so a weaker worker self-corrects instead of digging them out of the raw
         # tail. Only when the parser extracts something (else byte-identical to
         # the pre-S95 reason — no empty line, no dangling label).
-        local unres="" hint=""
+        # S101: the hint is CONVENTION-AWARE — the harness now places the test IN THE
+        # REPO at $RED_GATE_CONVENTION and runs it IN PLACE, so the correct import +
+        # stub path depends on where the test physically sits. co-located is the
+        # default (groutwork); __tests__/ and top-level tests/ get their own prefix.
+        local unres="" hint="" imp_form stub_form
+        case "$RED_GATE_CONVENTION" in
+          __tests__)  imp_form="a sibling import ONE level up, \`../<sibling>\` (the source sits in the dir ABOVE your \`__tests__/\` test)"
+                      stub_form="\`stubs/<sibling>.ts\` (the harness places it beside the source, one level up from your test)" ;;
+          tests)      imp_form="the source's package-root-relative path, e.g. \`../src/<dir>/<file>\` (your test lives in a top-level \`tests/\` dir)"
+                      stub_form="\`stubs/<package-root>/src/<dir>/<file>.ts\` (the mirrored repo path)" ;;
+          *)          imp_form="a CO-LOCATED \`./<sibling>\` import, e.g. \`import { area } from './utils'\` (your test sits NEXT TO the source)"
+                      stub_form="\`stubs/<sibling>.ts\` (the harness places it beside your test)" ;;
+        esac
         unres="$(unresolved_imports_in_output "$out" | paste -sd' ' - 2>/dev/null)"
         if [ -n "$unres" ]; then
-          hint="SPECIFICALLY, these import(s) did not resolve: $unres. For EACH one that is a brand-new module your ticket must create, emit an EMPTY stub for it under stubs/ at the mirrored repo path so it resolves (an import of \`../src/state/themeStore\` from the quarantine dir needs a stub at the package-relative path \`src/state/themeStore.ts\`, i.e. \`stubs/<package-root>/src/state/themeStore.ts\`); if instead the import PATH is wrong, re-author it package-root-relative. Create a stub for EVERY brand-new module you import — a single missing stub fails the whole suite to load. "
+          hint="SPECIFICALLY, these import(s) did not resolve: $unres. For EACH one that is a brand-new module your ticket must create, emit an EMPTY stub for it under stubs/ named for the sibling — $stub_form — so it resolves; if instead the import PATH is wrong, re-author it as $imp_form. Create a stub for EVERY brand-new module you import — a single missing stub fails the whole suite to load. "
         fi
-        reason="RED GATE — the quarantined suite did NOT fail on an assertion: it could not RESOLVE its import of the code under test (a module-resolution / load failure), so the test file never ran. The harness QUARANTINES your test and runs it from the ticket's package quarantine dir \`<package>/__lcarsq__/\` — NOT where you authored it — so it must import the code under test via a path that resolves FROM THERE: a package-root-relative path (e.g. \`../src/<...>.js\`) or the package's NAME — NEVER a co-located \`./<sibling>\` path that assumes the test sits next to the source. Re-author the import accordingly so the test LOADS, then FAILS on its assertions until the behaviour exists. ${hint}Command run: $cmd. Runner output (quarantined run):
+        reason="RED GATE — the suite did NOT fail on an assertion: it could not RESOLVE its import of the code under test (a module-resolution / load failure), so the test file never ran. The harness places your test IN THE REPO at its own test convention ($RED_GATE_CONVENTION) and runs it IN PLACE, right where the test sits — so import the code under test via a path that resolves FROM THERE: $imp_form. Re-author the import accordingly so the test LOADS, then FAILS on its assertions until the behaviour exists. ${hint}Command run: $cmd. Runner output (run):
 $(printf '%s' "$out" | tail -20)"
       else
         reason="RED GATE — the quarantined suite did NOT fail on an assertion: it failed to COMPILE / LOAD (a SyntaxError, import/parse error, a load-time unresolved symbol, or a leftover placeholder token), so the test file never ran. A non-runnable contract cannot be handed to the Implementer (it must not edit the immutable tests to fix a syntax error). Re-author the test so it PARSES and LOADS cleanly, then FAILS on its assertions until the behaviour exists. Command run: $cmd. Runner output (quarantined run):
@@ -2545,35 +2767,30 @@ self_smoke_reason() { # verdict  cmd  runner-output
 # TEST-WRITER, never the Implementer, and nothing is snapshotted from a broken suite.
 # A suite that RUNS (red/green/load-error) returns 0 and proceeds to the snapshot +
 # the authoritative red gate. NEVER accepts anything the gate would reject.
-test_writer_self_smoke() { # tdir  pkg_rel  sig
-  local tdir="$1" pkg_rel="$2" sig="$3" cmd
+# S101: runs the suite IN PLACE at its in-tree location (co-located `./sibling`
+# imports resolve — NEVER copied into a quarantine/staging dir). `scope` is the
+# in-tree file (or dir) to run, `run_dir` the cwd the runner is invoked from
+# ($REPO_ROOT, or the sub-package dir for a monorepo ticket). On a failing verdict
+# it writes the grounded-retry reason to $sig, prints the ✗ line, and RETURNS 1 —
+# the caller rolls back the in-tree copies + quarantine mirror and dies (so a
+# hanging / zero-test suite is never snapshotted and never reaches the Implementer).
+test_writer_self_smoke() { # scope  run_dir  sig
+  local scope="$1" run_dir="${2:-$REPO_ROOT}" sig="$3" cmd
   cmd="$(resolve_test_cmd)"
   if [ -z "$cmd" ]; then
     printf '  ⚠ SELF-SMOKE SKIPPED — no test command; cannot pre-run the suite (the red gate skips loud too).\n' >&2
     return 0
   fi
   local timeout_secs="${LCARS_SELF_SMOKE_TIMEOUT_SECS:-120}"
-  # Stage + run EXACTLY like the red gate: repo-root ticket runs from $REPO_ROOT; a
-  # sub-package ticket stages an ephemeral __lcarsq__ inside the package and runs
-  # from there so discovery + package-relative imports resolve identically.
-  local run_dir stage_dir cleanup=""
-  if [ -z "$pkg_rel" ]; then
-    run_dir="$REPO_ROOT"; stage_dir="$tdir"
-  else
-    run_dir="$REPO_ROOT/$pkg_rel"; stage_dir="$run_dir/__lcarsq__"
-    rm -rf "$stage_dir"; mkdir -p "$stage_dir"; ( cd "$tdir" && cp -R . "$stage_dir/" ); cleanup="$stage_dir"
-  fi
   local out; out="$(mktemp)"; local rc=0
-  ( cd "$run_dir" && LCARS_TESTS_DIR="$stage_dir" run_with_hard_timeout "$timeout_secs" "$out" bash -c "$cmd" ) || rc=$?
+  ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$timeout_secs" "$out" bash -c "$cmd" ) || rc=$?
   local runner_out; runner_out="$(cat "$out" 2>/dev/null || true)"; rm -f "$out"
-  [ -n "$cleanup" ] && rm -rf "$cleanup"
   local verdict; verdict="$(self_smoke_verdict "$rc" "$runner_out")"
   [ "$verdict" = ok ] && return 0
   local reason; reason="$(self_smoke_reason "$verdict" "$cmd" "$runner_out")"
   printf '%s' "$reason" >"$sig"
   printf '  ✗ SELF-SMOKE (%s): %s\n' "$verdict" "$reason" >&2
-  rm -rf "$tdir"
-  die "the Test Writer's suite failed the pre-gate self-smoke ($verdict) — a hanging or empty suite must never reach the Implementer; retrying the Test Writer."
+  return 1
 }
 
 # --- GUARDRAIL 2: immutable tests (hash snapshot + verify) ------------------
@@ -2591,13 +2808,26 @@ snapshot_tests() { # tests-dir  out-file
     printf '%s  %s\n' "$(sha_of "$d/$rel")" "$rel" >>"$out"
   done < <(cd "$d" && find . -type f | LC_ALL=C sort)
 }
-# 0 if the ticket's quarantined tests still match the snapshot taken at
-# impl-save-tests; non-zero if any test file was added, removed, or changed.
+# 0 if the ticket's tests still match the snapshot taken at impl-save-tests;
+# non-zero if any test file was added, removed, or changed.
+# S101: the snapshot records the IN-TREE relpaths (the test now lives in the repo
+# tree, not a flat quarantine), so immutability is verified over the IN-TREE files
+# under $REPO_ROOT — a post-snapshot edit to (or deletion of) the ridden-along test
+# is caught exactly as an edit to the old quarantine copy was. Each snapshot line is
+# "<hash>  <relpath>"; we re-hash $REPO_ROOT/<relpath> and diff against the snapshot.
 tests_unchanged() { # ticketId
-  local tdir snap cur
-  tdir="$(ticket_dir "$1")/tests"; snap="$(ticket_dir "$1")/tests.sha256"
+  local snap cur h rel
+  snap="$(ticket_dir "$1")/tests.sha256"
   [ -f "$snap" ] || return 1   # no snapshot → cannot prove unchanged → treat as a violation
-  cur="$(mktemp)"; snapshot_tests "$tdir" "$cur"
+  cur="$(mktemp)"; : >"$cur"
+  while read -r h rel; do
+    [ -n "$rel" ] || continue
+    if [ -f "$REPO_ROOT/$rel" ]; then
+      printf '%s  %s\n' "$(sha_of "$REPO_ROOT/$rel")" "$rel" >>"$cur"
+    else
+      printf 'MISSING  %s\n' "$rel" >>"$cur"   # deleted / moved → mismatch
+    fi
+  done <"$snap"
   if diff -q "$snap" "$cur" >/dev/null 2>&1; then rm -f "$cur"; return 0; fi
   rm -f "$cur"; return 1
 }
@@ -2684,88 +2914,199 @@ cmd_impl_save_tests() {
   [ -z "$bad_path" ] \
     || die "ticket test hardcodes an absolute path ${bad_path#*:} (in ${bad_path%%:*}) — tests must locate sources via the portable walk-up (e.g. a findGameJs() that walks up from __dirname), never an absolute build-worktree path; rejecting so the Test Writer retries."
 
-  # Quarantine the files to tickets/<id>/tests/. That dir is the sole handoff to
-  # the Implementer, so Phase 1 output never leaks into the working tree.
+  # S101 (tests ride along, part 1): the Test-Writer's fail-first test lands IN THE
+  # REPO at the repo's OWN convention (co-located / __tests__/ / top-level tests/),
+  # not only in the .git/lcars quarantine. We (a) detect the convention from the
+  # repo, (b) map the ticket's target source to the in-tree test dir, and (c) write
+  # each authored test file BOTH into the working tree ($REPO_ROOT/<relpath>, so the
+  # red gate + Implementer run it IN PLACE and a later session can commit it by path)
+  # AND into a MIRROR at tickets/<id>/tests/<relpath> whose relpaths equal the
+  # in-tree relpaths — so the immutable snapshot records in-tree relpaths and every
+  # downstream immutability re-check keys off the same path. Detection runs BEFORE we
+  # write, so we never read back our own just-written test.
   local tdir; tdir="$(ticket_dir "$TICKET")/tests"
   local snap; snap="$(ticket_dir "$TICKET")/tests.sha256"
+  local target_src; target_src="$(ticket_target_src "$TICKET" "$TESTS")"
+  local convention; convention="$(detect_test_convention "$REPO_ROOT" "$target_src")"
+  local fallback_src="${target_src:-src/index.ts}"
+  # The ticket's package (monorepo-aware) — the RUN DIR for the in-place gate AND the
+  # root the per-file sibling search prefers. Computed once, reused below.
+  local pkg_rel; pkg_rel="$(ticket_target_package "$TICKET")"
+  # The worker's scratch input dirs — NEVER resolve a sibling to a copy of the test or
+  # stub living there (a mktemp OUTSIDE the repo in real use; pruned so a fixture that
+  # nests them under the repo still resolves to the real in-tree source). Canonicalised
+  # to PHYSICAL paths so the prune matches the physical paths `find $REPO_ROOT` yields
+  # (macOS resolves /var → /private/var, so the raw arg would not prefix-match).
+  local _sib_prune="" _sd
+  for _sd in "$TESTS" "$STUBS"; do
+    [ -n "$_sd" ] || continue
+    [ -d "$_sd" ] && _sd="$(cd "$_sd" 2>/dev/null && pwd -P)"
+    _sib_prune="${_sib_prune}${_sd}
+"
+  done
+
+  # S101 (MULTI-DIR): a ticket can author SEVERAL test files whose sources live in
+  # DIFFERENT dirs — so we place EACH file at ITS OWN co-located destination, not all
+  # in one dir. For each authored test we (1) read the `./<sibling>` it imports, (2)
+  # resolve that sibling to a real in-tree source (manifest → package/repo → the
+  # ticket's primary source as fallback), and (3) map that source to the in-tree test
+  # relpath at the repo convention. A SINGLE-FILE / single-dir ticket is byte-identical
+  # to before (all files map to one dir).
   rm -rf "$tdir"; mkdir -p "$tdir"
-  ( cd "$TESTS" && cp -R . "$tdir/" )
+  local INTREE_RELS="" f bn stem src_f canon_f destdir_f reldir rel
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    bn="${f##*/}"
+    stem="$(test_primary_sibling "$f")"
+    src_f="$(resolve_sibling_src "$stem" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"
+    canon_f="$(test_path_for "$convention" "$src_f")"
+    destdir_f="${canon_f%/*}"; [ "$destdir_f" = "$canon_f" ] && destdir_f=""
+    rel="${destdir_f:+$destdir_f/}$bn"
+    reldir="${rel%/*}"; [ "$reldir" = "$rel" ] && reldir=""
+    [ -n "$reldir" ] && { mkdir -p "$tdir/$reldir" 2>/dev/null || :; mkdir -p "$REPO_ROOT/$reldir" 2>/dev/null || :; }
+    cp "$f" "$tdir/$rel"
+    cp "$f" "$REPO_ROOT/$rel"
+    INTREE_RELS="${INTREE_RELS}${rel}
+"
+  done < <(find "$TESTS" -type f | LC_ALL=C sort)
+
+  # Roll the in-tree test copies AND any overlaid greenfield stubs back out of the
+  # working tree — used on every rejection path so a suite that fails the self-smoke
+  # / red gate leaves NO trace behind (and a retry that emits no stub still reds on
+  # RESOLUTION rather than tripping over a leftover stub). STUB_RELS is populated by
+  # the stub-overlay block below (empty until then).
+  local STUB_RELS=""
+  _impl_rollback_intree() {
+    local r
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      rm -f "$REPO_ROOT/$r"
+      rmdir -p "$REPO_ROOT/${r%/*}" 2>/dev/null || :   # prune now-empty dirs, best-effort
+    done <<ROLLBACK_EOF
+$INTREE_RELS
+$STUB_RELS
+ROLLBACK_EOF
+  }
+
+  # The IN-PLACE scope the self-smoke + red gate run against: the single in-tree test
+  # file when there is exactly one (precise positional filter), else the deepest COMMON
+  # ANCESTOR dir of the placed files (so a multi-dir ticket's gate covers every file —
+  # e.g. `src` for tests in src/utils + src/canvas + src/components/MapCanvas). When all
+  # files share one dir the ancestor IS that dir, byte-identical to the old behaviour.
+  # NOTE: a common-ancestor scope may also run PRE-EXISTING tests under that ancestor
+  # (green on a clean base) — acceptable: the new red still fails the suite, and the
+  # red gate's empty-dir PROBE still isolates the new red (a runner ignoring
+  # $LCARS_TESTS_DIR is still BLOCKED). Absolute so the runner relativizes from any dir.
+  local n_tests; n_tests="$(printf '%s' "$INTREE_RELS" | grep -c . || true)"
+  local scope_rel
+  if [ "$n_tests" -eq 1 ]; then scope_rel="$(printf '%s' "$INTREE_RELS" | grep . | head -1)"
+  else scope_rel="$(common_ancestor_dir "$INTREE_RELS")"; fi
+  local scope_abs="$REPO_ROOT${scope_rel:+/$scope_rel}"
 
   # S94 (greenfield stubs): a ticket that creates a BRAND-NEW source module can't
-  # pass the red gate today — the Test-Writer's `import '../src/canvas/utils'`
-  # cannot RESOLVE (the file does not exist yet), so 0 tests collect and the gate
-  # rejects it as a resolution-failure red. To "make it compile first" (what a
-  # human does), the Test-Writer ALSO emits a MINIMAL EMPTY stub for any module
-  # its tests import that does not exist yet, under a `stubs/` tree mirroring repo
-  # paths. OVERLAY that tree onto the worktree source HERE — BEFORE the red gate —
-  # so the import resolves and the suite reds on a real ASSERTION (a valid red).
-  # The full mirrored relpath under $REPO_ROOT resolves correctly for BOTH the
-  # repo-root case AND the monorepo case (where the gate runs vitest from
-  # $REPO_ROOT/<pkg> and the test imports `../src/...` → $REPO_ROOT/<pkg>/src/...),
-  # so we stage to $REPO_ROOT/<mirrored-relpath> and do NOT special-case pkg_rel.
-  # The stubs are scaffolding the Implementer OVERWRITES: they are NOT snapshotted
-  # (not added to tests.sha256, not copied into $tdir) and are LEFT in place on
-  # success (NO cleanup). With no stubs given the behaviour is byte-identical to
-  # before — a still-missing module reds with the resolution-failure reason.
-  # S99: MOVED UP (was after the snapshot) so BOTH the pre-gate self-smoke and the
-  # red gate resolve greenfield imports against the same staged stubs.
+  # pass the red gate today — the Test-Writer's import of the not-yet-existent module
+  # cannot RESOLVE, so 0 tests collect and the gate rejects it as a resolution-failure
+  # red. To "make it compile first" (what a human does), the Test-Writer ALSO emits a
+  # MINIMAL EMPTY stub for any module its tests import that does not exist yet, under
+  # a `stubs/` tree. OVERLAY that tree onto the worktree source HERE — BEFORE the red
+  # gate — so the import resolves and the suite reds on a real ASSERTION (a valid red).
+  # S101: the test now runs IN PLACE at the repo's convention, so a co-located
+  # `./<sibling>` import resolves next to the RELOCATED test — NOT at a repo-mirrored
+  # path the Test-Writer would have to guess. S101 (MULTI-DIR): each greenfield stub
+  # must land next to ITS OWN test — the dir where that test's `./<sibling>` resolves —
+  # NOT all stubs in one dir. A stub is named for its module stem, so we resolve THAT
+  # stem the same way the test placement did (manifest → package/repo → primary source
+  # fallback) and place the stub in the resolved SOURCE dir — the identical dir its
+  # matching test was co-located into. For __tests__ the source sits one level up from
+  # the test (the module's own dir = the resolved source dir); for top-level tests/ the
+  # import is package-root-relative, so we keep the mirrored repo path. Nested imports
+  # (`./a/b`) degrade to basename — documented limitation. The stubs are scaffolding
+  # the Implementer OVERWRITES: they are NOT
+  # snapshotted (not in tests.sha256, not in $tdir) and are LEFT in place on SUCCESS;
+  # on REJECTION they are rolled back with the tests (STUB_RELS). With no stubs the
+  # behaviour is byte-identical to before — a still-missing module reds with the
+  # resolution-failure reason. S99: overlaid BEFORE the snapshot so BOTH the pre-gate
+  # self-smoke and the red gate resolve greenfield imports against the same stubs.
   if [ -n "$STUBS" ] && [ -d "$STUBS" ] \
      && [ -n "$(find "$STUBS" -type f -print -quit 2>/dev/null)" ]; then
-    cp -R "$STUBS/." "$REPO_ROOT/"
+    local srel sstem ssrc sbase dest ddir
+    while IFS= read -r srel; do
+      srel="${srel#./}"; [ -n "$srel" ] || continue
+      case "$convention" in
+        tests) dest="$srel" ;;   # top-level tests/: keep the mirrored repo relpath
+        *)     # co-located / __tests__: resolve the stub's own stem → its source dir.
+          sstem="${srel##*/}"; sstem="${sstem%.*}"
+          ssrc="$(resolve_sibling_src "$sstem" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"
+          sbase="${ssrc%/*}"; [ "$sbase" = "$ssrc" ] && sbase=""
+          dest="${sbase:+$sbase/}${srel##*/}"
+          ;;
+      esac
+      ddir="${dest%/*}"; [ "$ddir" = "$dest" ] && ddir=""
+      [ -n "$ddir" ] && { mkdir -p "$REPO_ROOT/$ddir" 2>/dev/null || :; }
+      cp "$STUBS/$srel" "$REPO_ROOT/$dest"
+      STUB_RELS="${STUB_RELS}${dest}
+"
+    done < <(cd "$STUBS" && find . -type f | LC_ALL=C sort)
   fi
 
-  # S99: pkg_rel + the grounded-retry signal file — computed ONCE here, shared by the
-  # pre-gate self-smoke and the red gate below.
-  local pkg_rel; pkg_rel="$(ticket_target_package "$TICKET")"
+  # S99: the grounded-retry signal file + the RUN DIR the in-place gate cd's into
+  # ($pkg_rel, computed once above, is the monorepo package root so config/discovery
+  # resolves there); the tests run co-located in the tree, NOT copied into a quarantine.
+  local run_dir="$REPO_ROOT"; [ -n "$pkg_rel" ] && run_dir="$REPO_ROOT/$pkg_rel"
   local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"; rm -f "$sig"
 
   # S99 PRE-GATE SELF-SMOKE (BEFORE the immutable snapshot / handoff): bounce a
   # hanging or zero-test suite back to the TEST-WRITER (retry) so the Implementer
   # never burns attempts on it and a hang never wedges the ticket. A suite that runs
   # (red/green/load-error) proceeds to the snapshot + the authoritative red gate.
-  test_writer_self_smoke "$tdir" "$pkg_rel" "$sig"
+  # S101: run IN PLACE at the in-tree scope (co-located imports resolve). On a
+  # failing verdict, roll the in-tree copies + mirror back out and die.
+  if ! test_writer_self_smoke "$scope_abs" "$run_dir" "$sig"; then
+    _impl_rollback_intree; rm -rf "$tdir" "$snap"
+    local why=""; [ -f "$sig" ] && why="
+$(cat "$sig")"
+    die "the Test Writer's suite failed the pre-gate self-smoke — a hanging or empty suite must never reach the Implementer; retrying the Test Writer.$why"
+  fi
 
-  # GUARDRAIL 2 setup: snapshot the quarantined files so impl-save-result can
-  # prove the Implementer never edited the locked contract. AFTER the self-smoke so
-  # a hanging / zero-test suite is never snapshotted.
+  # GUARDRAIL 2 setup: snapshot the in-tree test files (via the mirror, whose
+  # relpaths equal the in-tree relpaths) so impl-save-result can prove the
+  # Implementer never edited the locked contract. AFTER the self-smoke so a hanging /
+  # zero-test suite is never snapshotted. The snapshot records IN-TREE relpaths.
   snapshot_tests "$tdir" "$snap"
 
-  # GUARDRAIL 1 (the red gate): the suite must FAIL against no implementation
-  # before the Implementer is allowed to run. A green-on-nothing suite is
-  # rejected and the quarantine is rolled back, so nothing reaches the Implementer.
-  # We CAPTURE the rejection reason (rc + bounded runner output + which-suite
-  # diagnosis) to a durable signal file so (a) the human sees WHY instead of a
-  # silent stall, and (b) the next grounded Test-Writer attempt can be told what
-  # went wrong. The signal is SIGNAL ONLY — never the implementation.
-  # S87: a ticket whose code lives in a sub-package must run its red gate INSIDE
-  # that package — vitest/jest discover & filter tests RELATIVE to a package root
-  # and the quarantined tests import package-relative sources. Stage an EPHEMERAL,
-  # gate-only copy at <pkg>/__lcarsq__ and run the gate FROM <pkg>. The DURABLE
-  # contract stays tickets/<id>/tests + tests.sha256 (snapshotted above); the
-  # in-package dir is removed on EVERY exit path BEFORE the Implementer is ever
-  # dispatched. An empty pkg_rel (code at the repo root / no sub-package / missing
-  # or multi-package manifest) takes today's repo-root path, byte-for-byte.
-  # S99: pkg_rel + sig are hoisted above (shared with the self-smoke).
+  # GUARDRAIL 1 (the red gate): the suite must FAIL against no implementation before
+  # the Implementer is allowed to run. A green-on-nothing suite is rejected and the
+  # in-tree copies + mirror are rolled back, so nothing reaches the Implementer. We
+  # CAPTURE the rejection reason (rc + bounded runner output + which-suite diagnosis)
+  # to a durable signal file so (a) the human sees WHY instead of a silent stall, and
+  # (b) the next grounded Test-Writer attempt can be told what went wrong.
+  # S101: the gate runs IN PLACE — LCARS_TESTS_DIR points at the in-tree test scope
+  # under $REPO_ROOT and the runner is invoked from $run_dir (the package root for a
+  # monorepo ticket). NOTHING is copied into <pkg>/__lcarsq__: a co-located test that
+  # imports `./<sibling>` resolves against the real source next to it. The empty-dir
+  # PROBE inside red_gate_ok still runs the SAME command with an EMPTY dir, so a
+  # runner that ignores $LCARS_TESTS_DIR is still BLOCKED (probe discrimination
+  # preserved). An empty pkg_rel runs from $REPO_ROOT, as before.
   local red_rc=0
-  if [ -z "$pkg_rel" ]; then
-    RED_GATE_SIGNAL="$sig" red_gate_ok "$tdir" || red_rc=$?
-  else
-    local inpkg="$REPO_ROOT/$pkg_rel/__lcarsq__"
-    rm -rf "$inpkg"; mkdir -p "$inpkg"
-    ( cd "$tdir" && cp -R . "$inpkg/" )
-    RED_GATE_SIGNAL="$sig" red_gate_ok "$inpkg" "$REPO_ROOT/$pkg_rel" || red_rc=$?
-    rm -rf "$inpkg"
-  fi
+  RED_GATE_SIGNAL="$sig" RED_GATE_CONVENTION="$convention" red_gate_ok "$scope_abs" "$run_dir" || red_rc=$?
   if [ "$red_rc" -ne 0 ]; then
-    rm -rf "$tdir" "$snap"
+    _impl_rollback_intree; rm -rf "$tdir" "$snap"
     local why=""; [ -f "$sig" ] && why="
 $(cat "$sig")"
     die "the Test Writer's suite did not pass the red gate — a contract that is green (or unprovable) before anything is built proves nothing; the tests must FAIL first.$why"
   fi
   rm -f "$sig"
 
+  # S101: the ridden-along test now lives in the working tree, but part 1 does NOT
+  # commit it (that is S102). Record its in-tree relpath(s) in .untracked-before so
+  # commit_ticket treats them as PRE-EXISTING untracked and NEVER stages them onto
+  # the mission branch / PR. (commit_ticket matches repo-relative paths line-for-line
+  # via `grep -qxF`; a missing before-file is created, a duplicate line is harmless.)
+  local ub; ub="$(ticket_dir "$TICKET")/.untracked-before"
+  [ -n "$INTREE_RELS" ] && printf '%s' "$INTREE_RELS" | grep -v '^$' >>"$ub" 2>/dev/null || :
+
   echo "IMPLEMENT: tests saved — $TICKET"
-  echo "  Saved $count Test Writer file(s) to tickets/$TICKET/tests/."
+  echo "  Saved $count Test Writer file(s) at the repo's test convention ($convention): ${scope_rel:-<repo root>}."
   echo "  Red gate: suite fails as required; the contract is locked (immutable)."
   exit 0
 }
@@ -2854,35 +3195,33 @@ post_commit_gate() { # ticket
   # full-suite gates. Best-effort: a failure breadcrumbs but never aborts the gate.
   provision_worktree "$wt" || :
 
-  # Stage the ticket's quarantined tests at a DEPTH-1 dir under the clean worktree
-  # root, so a portable test that resolves its target relative to its own location
-  # (`$here/../...`) finds the committed code exactly as it did at green-time.
-  # S87: when the ticket's code lives in a sub-package, stage & run the suite
-  # INSIDE that package (run_dir=<wt>/<pkg>, stage_dir=<run>/__lcarsq__) so the
-  # runner discovers/filters tests at the package root exactly as the red gate did
-  # — checked against THIS worktree ($wt). An empty pkg_rel keeps today's depth-1
-  # .lcars-postcommit at the worktree root. The wholesale worktree cleanup below
-  # removes whichever was staged.
+  # S101 (tests ride along): OVERLAY the ticket's in-tree tests onto the clean
+  # worktree at their in-tree relpaths — co-located with the committed source — so a
+  # co-located `./<sibling>` import resolves against the real source next to it (the
+  # S101 spike proved a detached copy breaks that import). The tests are NOT
+  # committed (part 1), so overlaying reproduces exactly the green-time in-place
+  # layout. S87: a sub-package ticket runs vitest/jest FROM its package root
+  # (run_dir=<wt>/<pkg>) for discovery/config; an empty pkg_rel runs from the
+  # worktree root. Scope $LCARS_TESTS_DIR to the overlaid file(s); remove exactly
+  # them after (the wholesale worktree cleanup below also discards the tree).
   local pkg_rel; pkg_rel="$(ticket_target_package "$t" "$wt")"
-  local run_dir stage_dir tdir rc=0 out=""
-  if [ -n "$pkg_rel" ]; then
-    IFS=$'\t' read -r run_dir stage_dir < <(lcarsq_stage "$wt" "$pkg_rel")
-  else
-    run_dir="$wt"; stage_dir="$wt/.lcars-postcommit"
-  fi
+  local run_dir tdir rc=0 out="" rels scope
+  run_dir="$wt"; [ -n "$pkg_rel" ] && run_dir="$wt/$pkg_rel"
   tdir="$(ticket_dir "$t")/tests"
   if [ -d "$tdir" ]; then
-    rm -rf "$stage_dir"; mkdir -p "$stage_dir"
-    ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
-    # If tar failed to populate the staging dir, NEVER run against an empty suite
-    # and false-GREEN — mirror the harness refusing an empty quarantined suite.
-    if [ -n "$(find "$stage_dir" -type f -print -quit 2>/dev/null)" ]; then
+    rels="$(overlay_intree_tests "$tdir" "$wt")"
+    scope="$(intree_scope_for "$wt" "$rels")"
+    # If nothing was overlaid, NEVER run against an empty suite and false-GREEN —
+    # mirror the harness refusing an empty saved suite.
+    if [ -n "$(printf '%s' "$rels" | grep . || true)" ]; then
       # S84 (gate-worktree-deps): CAPTURE the combined stdout+stderr (not >/dev/null)
       # so the env-failure classifier below can read WHY a non-zero exit happened —
       # the pass/fail decision is still PURELY rc, exactly as before.
-      out="$( cd "$run_dir" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" 2>&1 )" || rc=$?
+      out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
     fi
-    rm -rf "$stage_dir" 2>/dev/null || :
+    remove_overlaid_tests "$wt" <<REMOVE_EOF
+$rels
+REMOVE_EOF
   fi
 
   # Clean up ONLY this ticket's own worktree on EVERY exit path — never leak into
@@ -3160,38 +3499,80 @@ EOF
 # and (when $RETEST_CAPTURE is set) its combined stdout/stderr is captured to
 # $RETEST_CAPTURE/<id>.log so the reconcile author can quote the failure. Returns 0
 # iff every suite passed. $RETEST_FAILED / $RETEST_FAILED is reset by the caller.
+# S101 (tests ride along): a ticket's tests are MIRRORED at their IN-TREE relpaths
+# ($tdir has the in-tree relpath layout). To re-run one against a CLEAN worktree
+# (post-commit / full-suite / reconcile) where the test is NOT committed, OVERLAY it
+# onto the tree at its in-tree relpath — co-located with that tree's committed
+# source — so a co-located `./<sibling>` import resolves against the real source
+# next to it, NOT a detached copy (which the S101 spike proved breaks the import).
+# Echoes the overlaid relpaths (one per line) for scoping + removal.
+overlay_intree_tests() { # tdir  tree  -> echoes overlaid relpaths (newline)
+  local tdir="$1" tree="$2" rel
+  [ -d "$tdir" ] || return 0
+  while IFS= read -r rel; do
+    rel="${rel#./}"; [ -n "$rel" ] || continue
+    mkdir -p "$tree/${rel%/*}" 2>/dev/null || :
+    cp "$tdir/$rel" "$tree/$rel"
+    printf '%s\n' "$rel"
+  done < <(cd "$tdir" && find . -type f | LC_ALL=C sort)
+}
+# Remove ONLY the relpaths this run overlaid (never a committed file we didn't add).
+remove_overlaid_tests() { # tree  <<< rels
+  local tree="$1" rel
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    rm -f "$tree/$rel"; rmdir -p "$tree/${rel%/*}" 2>/dev/null || :
+  done
+}
+# The absolute $LCARS_TESTS_DIR scope for the overlaid relpaths: the single file when
+# there is exactly one (precise positional filter), else the deepest COMMON ANCESTOR
+# dir of the overlaid files — SAME rule as the in-place gate in cmd_impl_save_tests, so
+# a ticket whose tests span multiple dirs re-tests symmetrically here (post-commit /
+# full-suite / reconcile). Empty rels → the tree itself.
+intree_scope_for() { # tree  rels(newline)
+  local tree="$1" rels="$2" n first ca
+  n="$(printf '%s' "$rels" | grep -c . || true)"
+  first="$(printf '%s' "$rels" | grep . | head -1)"
+  [ -n "$first" ] || { printf '%s' "$tree"; return; }
+  if [ "$n" -eq 1 ]; then printf '%s/%s' "$tree" "$first"
+  else
+    ca="$(common_ancestor_dir "$rels")"
+    printf '%s%s' "$tree" "${ca:+/$ca}"
+  fi
+}
+
 RETEST_FAILED=""     # space-separated ticket ids that failed the last retest
 RETEST_CAPTURE=""    # caller may point this at a dir to capture per-ticket output
 retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
   local run_dir="$1" cmd="$2"; shift 2
   RETEST_FAILED=""
-  local id tdir rc out pkg_rel trun stage_dir
+  local id tdir rc out pkg_rel trun rels scope
   for id in "$@"; do
     [ -n "$id" ] || continue
     tdir="$(ticket_dir "$id")/tests"
-    # Defensive: a green ticket should always have a quarantined suite. If one is
-    # missing we skip it rather than crash — we never INVENT a failure.
+    # Defensive: a green ticket should always have a saved suite. If one is missing
+    # we skip it rather than crash — we never INVENT a failure.
     [ -d "$tdir" ] || continue
     # S87: PER-TICKET, a sub-package ticket re-runs INSIDE its own package (vitest/
-    # jest discover & filter at the package root); an empty pkg_rel keeps today's
-    # depth-1 .lcars-retest at the run-tree root. Checked against $run_dir so every
-    # caller (full-suite gate worktree, reconcile merge worktree) stays symmetric.
+    # jest discover & filter at the package root); an empty pkg_rel runs from the
+    # run-tree root. Checked against $run_dir so every caller (full-suite gate
+    # worktree, reconcile merge worktree) stays symmetric.
+    # S101: OVERLAY the ticket's in-tree tests onto the clean tree (co-located with
+    # the committed source) rather than copying into a detached staging dir, so
+    # co-located imports resolve; scope the run to them; then remove exactly them.
     pkg_rel="$(ticket_target_package "$id" "$run_dir")"
-    if [ -n "$pkg_rel" ]; then
-      IFS=$'\t' read -r trun stage_dir < <(lcarsq_stage "$run_dir" "$pkg_rel")
-    else
-      trun="$run_dir"; stage_dir="$run_dir/.lcars-retest"
-    fi
-    # Recreate the staging dir empty per ticket so suites never bleed together.
-    rm -rf "$stage_dir"; mkdir -p "$stage_dir"
-    ( cd "$tdir" && tar cf - . ) | ( cd "$stage_dir" && tar xf - ) 2>/dev/null
+    trun="$run_dir"; [ -n "$pkg_rel" ] && trun="$run_dir/$pkg_rel"
+    rels="$(overlay_intree_tests "$tdir" "$run_dir")"
+    scope="$(intree_scope_for "$run_dir" "$rels")"
     rc=0
-    out="$( cd "$trun" && LCARS_TESTS_DIR="$stage_dir" bash -c "$cmd" 2>&1 )" || rc=$?
+    out="$( cd "$trun" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+    remove_overlaid_tests "$run_dir" <<REMOVE_EOF
+$rels
+REMOVE_EOF
     if [ "$rc" -ne 0 ]; then
       RETEST_FAILED="${RETEST_FAILED:+$RETEST_FAILED }$id"
       [ -n "$RETEST_CAPTURE" ] && { mkdir -p "$RETEST_CAPTURE"; printf '%s\n' "$out" >"$RETEST_CAPTURE/$id.log"; }
     fi
-    rm -rf "$stage_dir" 2>/dev/null || :
   done
   [ -z "$RETEST_FAILED" ]
 }
@@ -7995,5 +8376,23 @@ FSG_EOF
   slice-pressure-hint-test)
     build_slice_pressure_hint "$PLAN" "${MANIFESTS:-}" "${POSARG:-1200}"
     printf '\n'; exit 0 ;;
+  # S101 test hook: pure test-convention detector — repo root via $LCARS_DTC_ROOT
+  # (default $REPO_ROOT), target source via $LCARS_DTC_TARGET. Echoes exactly one of
+  # co-located|__tests__|tests. Pure filesystem read; inert for every real subcommand.
+  detect-test-convention-test)
+    detect_test_convention "${LCARS_DTC_ROOT:-$REPO_ROOT}" "${LCARS_DTC_TARGET:-}"
+    printf '\n'; exit 0 ;;
+  # S101 test hook: pure path-mapper — convention via $LCARS_TPF_CONV, target source
+  # via $LCARS_TPF_TARGET. Echoes the in-tree test relpath. Inert for real subcommands.
+  test-path-for-test)
+    test_path_for "${LCARS_TPF_CONV:-co-located}" "${LCARS_TPF_TARGET:-}"
+    printf '\n'; exit 0 ;;
+  # S101 test hook: run tests_unchanged for a ticket against the IN-TREE files under
+  # $REPO_ROOT and print its rc (0 = unchanged, 1 = tampered/missing). Lets the fast
+  # test prove a post-snapshot edit to the ridden-along in-tree test is still caught.
+  tests-unchanged-test)
+    locate_mission "$MISSION_ID"
+    __tu_rc=0; tests_unchanged "$TICKET" || __tu_rc=$?
+    printf 'TURC=%s\n' "$__tu_rc"; exit 0 ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac
