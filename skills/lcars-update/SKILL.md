@@ -1,6 +1,6 @@
 ---
 name: lcars-update
-description: Bring an already-initialized LCARS repo up to the current schema without clobbering the captain's customizations. Creates any MISSING GitHub labels and adds any MISSING config.json keys with their defaults, while preserving every existing value (customized testCommand / model / comprehensionBudget) and leaving missions/ untouched. Use when the user runs `lcars update`, asks to refresh / upgrade / sync an existing LCARS setup after pulling new versions, or wants new labels/config keys added without re-initializing.
+description: Bring an already-initialized LCARS repo up to the current schema without clobbering the captain's customizations. Creates any MISSING GitHub labels and adds any MISSING config.json keys with their defaults, while preserving every existing value (customized testCommand / model / comprehensionBudget) and leaving missions/ untouched. Also migrates a stale LCARS-generated copy-based vitest testCommand (the incompatible `.lcars-tests` copy-staging form) to the in-place equivalent, preserving its runner flags and any leading `cd`. Use when the user runs `lcars update`, asks to refresh / upgrade / sync an existing LCARS setup after pulling new versions, or wants new labels/config keys added without re-initializing.
 ---
 
 # lcars update
