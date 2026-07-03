@@ -33,7 +33,7 @@ The third Stage. A Validator LLM reviews all Research Agent responses in the con
 The fourth Stage. The Harness decomposes the validated plan into small, independently testable GitHub issues (sub-tickets). Each issue is a vertical slice of full-stack functionality, targeting fewer than 300 lines of code (excluding tests). The output feeds directly into Plan Review before any scheduling occurs.
 
 ## Plan Review
-The fifth Stage. A fresh LLM session — with no access to the planning conversation — audits every issue produced by Plan against a fixed set of quality criteria: vertical slice (touches multiple layers end-to-end, not just one horizontal layer), under 300 lines of production code, clear testable acceptance criterion, and explicit dependency edges.
+The fifth Stage. A fresh LLM session — with no access to the planning conversation — audits every issue produced by Plan against a fixed set of quality criteria: vertical slice (touches multiple layers end-to-end, not just one horizontal layer), under 300 lines of production code, clear testable acceptance criterion, and explicit dependency edges. A **slice-pressure** heuristic (declared acceptance criteria, new files, breadth of touched directories) additionally flags a ticket that hides a whole surface behind a simple title, so the reviewer rejects a title that conceals multiple behaviors *or* a scope that silently omits part of the surface it claims (an under-slice) — a soft signal, never a mechanical size-reject.
 
 If any issues fail, Plan Review returns the full set with specific objections and the Plan stage must revise. This loop repeats until all issues pass. After three rounds without a clean plan, Plan Review escalates to the human with the unresolved issues flagged — the human can override and proceed, or redirect.
 
@@ -50,8 +50,10 @@ The seventh Stage. Each issue in a Wave is handled by two sequential LLM session
 
 The separation is adversarial by design: the Test Writer cannot sandbag because it does not know who will implement; the Implementer cannot skip tests because they are handed as a constraint.
 
+The Test Writer authors each ticket's suite at the repo's **own test convention** — co-located `*.test.ts`, a `__tests__/` dir, or a top-level `tests/`, detected from the repo — and it is committed alongside the work (the locked test in its own commit, the implementation after), so the coverage **rides into the PR** and merges to the trunk instead of evaporating in a scratch dir. Immutability holds across that commit boundary: the committed test is re-hashed against its locked snapshot at ticket-green and again at the pre-merge gate.
+
 ## Verify
-The eighth Stage. The human reviews the completed Mission — inspecting code, running the app locally if needed — and either approves (triggering PR creation) or sends feedback that re-enters the loop.
+The eighth Stage. The human reviews the completed Mission — inspecting code, running the app locally if needed — and either approves (triggering PR creation) or sends feedback that re-enters the loop. The PR carries each ticket's Test Writer suite, committed at the repo's own test convention, so the hard-won coverage ships with the change; a pre-merge gate re-checks each committed test against its locked snapshot (provisioning its environment the same way Implement does, so an environment failure is never mistaken for a real conflict), preserving immutability across the commit boundary.
 
 ## Setup Skill
 A one-time-per-repo CLI skill (`lcars init`) that prepares a repo for LCARS usage. Does two things:

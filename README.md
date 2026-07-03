@@ -504,9 +504,17 @@ change), the batch **pauses** at that bug and drops its question into
   re-slice along; it loops back until clean (or escalates after 3 rounds).
 - **Implement is adversarial and guarded by the harness, not the prompt.** The
   Test Writer's tests must actually **fail** before the Implementer runs — and the
-  gate judges that **quarantined suite alone**, never the repo's existing passing
+  red gate judges that suite **in isolation**, never the repo's existing passing
   tests, so a green-on-nothing contract can't slip through even in a repo whose own
-  suite is green (a rejection says *why* and grounds the next attempt). The test
+  suite is green (a rejection names a root cause — an over-broad slice, a missing
+  module, a runner/environment failure, an empty worker — and grounds the next
+  attempt, after the Test Writer has already **self-smoked** the suite once to catch
+  a hanging or collection-time defect on its own side). Once red, that suite is
+  then **committed into the PR at the repo's own test convention** (co-located
+  `*.test.ts`, a `__tests__/` dir, or a top-level `tests/`) — the locked test in its
+  own commit ahead of the implementation — so the coverage merges to the trunk
+  instead of evaporating in a scratch dir, its immutability re-checked across that
+  commit boundary. The test
   files are **locked** so green can't be reached by editing them, and a quality
   check rejects assertion-free suites, and every ticket commit must leave the
   **whole** repo suite green — a later ticket that silently regresses an earlier
@@ -759,6 +767,12 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Mission Log batch resolve (`lcars resolve-logs`) | ✅ |
 | **Copilot enablement** (run LCARS under GitHub Copilot — *new; premium model required*) | ✅ |
 | **Cost estimator + per-stage model selection** (estimate at Align · Sonnet/Opus per Stage · NL override · per-CLI cost) | ✅ |
+| **Tests ride along into the PR** (committed at the repo's own convention · immutability preserved across the commit boundary) | ✅ |
+| Under-slice pressure signal (Plan Review) | ✅ |
+| Actionable red-gate failure classification | ✅ |
+| Test-Writer pre-gate self-smoke | ✅ |
+| Empty-output worker detection | ✅ |
+| Reconcile env-parity (no phantom self-heal) | ✅ |
 
 **Roadmap.** Copilot enablement is in: `$LCARS_WORKER_BIN` auto-resolves to
 `copilot` when you launch from Copilot, so the harness runs on whichever CLI you
