@@ -172,6 +172,28 @@ check "B. NEVER sets awaitingHuman (grounding cannot escalate)" \
   "! grep -q 'awaitingHuman' '$BUG/state.json'"
 check "B. writes no pending.json (no escalation)" \
   "[ ! -f '$BUG/pending.json' ]"
+check "B. no attachments dir => grounding prompt has NO attachments section" \
+  "! grep -q 'Attached images' '$repo/prompts.log'"
+
+# ==========================================================================
+# B2. GROUNDING + ATTACHMENTS: a logged bug's screenshot reaches the grounding
+# worker — attachments_extra_block is threaded into the research-grounding
+# spawn (S92 contract, re-seated by the 2026-07-03 main merge). The captain's
+# screenshot is often THE symptom; the worker that anchors it must see it.
+# ==========================================================================
+repo="$(setup)"
+BUG="$repo/.git/lcars/missions/bug-002"
+mkdir -p "$BUG/attachments"
+printf 'PNGDATA-B2' >"$BUG/attachments/attachment-01.png"
+drive "$repo" research --mission bug-002
+
+check "B2. grounding research exits zero with an attachment present" "[ '$RC' -eq 0 ]"
+check "B2. grounding prompt carries the Attached-images section" \
+  "grep -q 'Attached images' '$repo/prompts.log'"
+check "B2. grounding prompt carries the ABSOLUTE attachment path" \
+  "grep -qF -- '$BUG/attachments/attachment-01.png' '$repo/prompts.log'"
+check "B2. still saves grounding.json + advances to validate" \
+  "[ -f '$BUG/research/grounding.json' ] && grep -q '\"stage\": *\"validate\"' '$BUG/state.json'"
 
 # --- the assembled grounding prompt is fed the PARENT's artifacts -----------
 check "B. grounding prompt names the parent's prd.md path" \
