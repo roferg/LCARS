@@ -710,6 +710,20 @@ cmd_gate() {
     exit 0
   fi
 
+  # A LOGGED bug runs Research in grounding mode (cmd_research short-circuits to
+  # cmd_research_grounding before ever calling this gate), so a bug should never
+  # reach the >MAX escalation. Belt-and-braces: if a bug ever DOES hit the gate,
+  # it can NEVER escalate to awaiting-human from Research — treat any count as a
+  # plain dispatch (no awaitingHuman flag is ever set for a bug here).
+  local g_origin g_type
+  g_origin="$(json_str "$STATE" origin)"
+  g_type="$(json_str "$STATE" type)"
+  if { [ "$g_origin" = "log" ] || [ "$g_type" = "bug" ]; } && [ "$n" -gt "$MAX_QUESTIONS" ]; then
+    echo "GATE: dispatch $n"
+    echo "  Logged bug — grounding mode never escalates; dispatching $n agent(s)."
+    exit 0
+  fi
+
   if [ "$n" -gt "$MAX_QUESTIONS" ]; then
     # Over the cap → escalate to the human, walk-away style (same awaiting-human
     # gate shape as validate-pause). The Mission's STAGE pointer stays "align"
@@ -5147,7 +5161,7 @@ resolve_worker_model() {
 # `context-pack` maps to `infra` but is NEVER escalated (see resolve_stage_model).
 stage_key_for_role() { # role → stage key (stdout; empty if none)
   case "$1" in
-    research-questions|research-agent)            printf 'research' ;;
+    research-questions|research-agent|research-grounding)  printf 'research' ;;
     validate)                                     printf 'validate' ;;
     plan)                                         printf 'plan' ;;
     plan-review)                                  printf 'planReview' ;;
@@ -5520,6 +5534,22 @@ cmd_research() {
   require_stage align
   require_worker
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md — Align has not produced a PRD for '$MISSION_ID'."
+
+  # GROUNDING MODE (logged bug). A bug filed via `lcars log` carries origin=="log"
+  # (fallback type=="bug") and enters the pipeline at Research NOT to generate open
+  # questions, but to ANCHOR the reported symptom to the EXISTING code the feature
+  # already ships — so the downstream plan MODIFIES the real implementation instead
+  # of building a parallel decoy (the sun/moon-icon regression). Grounding runs ONE
+  # bounded, read-only worker fed the bug PRD + the PARENT Mission's PRD/plan, writes
+  # research/grounding.json, and advances to Validate. It NEVER generates questions,
+  # NEVER fans out per-question agents, and can NEVER escalate to awaiting-human.
+  local m_origin m_type
+  m_origin="$(json_str "$STATE" origin)"
+  m_type="$(json_str "$STATE" type)"
+  if [ "$m_origin" = "log" ] || [ "$m_type" = "bug" ]; then
+    cmd_research_grounding
+    return $?
+  fi
   # NOTE: a feedback re-entry (feedback.md present at align) is handled by the
   # dispatch in SKILL.md — Claude re-grills against prd.md + feedback.md and
   # rewrites prd.md on the host CLI FIRST, then runs this driver. So Research
@@ -5606,6 +5636,73 @@ cmd_research() {
   exit 0
 }
 
+# === Research: GROUNDING mode (logged bug) =================================
+# A logged bug enters Research not to open questions but to ANCHOR its symptom to
+# the EXISTING code the feature already ships. This runs ONE bounded, read-only
+# cold worker fed the bug PRD + the PARENT Mission's PRD/plan (the highest-signal
+# map of the real symbols), writes research/grounding.json, and advances to
+# Validate — which consumes research/*.json automatically. NO question-gen, NO
+# per-question fan-out, and NO awaiting-human escalation is EVER reachable here.
+# Called from cmd_research (already locate_mission'd, require_stage align,
+# require_worker'd, prd.md verified).
+cmd_research_grounding() {
+  # Locate the PARENT Mission's artifacts — the parent's plan names the real
+  # symbols (e.g. themeStore.toggleTheme), so it is the strongest anchor.
+  local parent missions_root parent_dir parent_branch
+  parent="$(json_str "$STATE" parentMission)"
+  missions_root="$(dirname "$MISSION_DIR")"
+  [ -n "$parent" ] && parent_dir="$missions_root/$parent" || parent_dir=""
+
+  # Assemble the worker prompt from artifact PATHS only (cold-worker discipline).
+  local extra="## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/prd.md   (the bug symptom, as the captain reported it — casual language)"
+  if [ -n "$parent_dir" ] && [ -d "$parent_dir" ]; then
+    [ -f "$parent_dir/prd.md" ] && extra="$extra
+- $parent_dir/prd.md   (the PARENT Mission's PRD — what the existing feature was built to do)"
+    [ -f "$parent_dir/validated-plan.md" ] && extra="$extra
+- $parent_dir/validated-plan.md   (the PARENT's validated plan — the intended design of the existing feature)"
+    [ -f "$parent_dir/plan.json" ] && extra="$extra
+- $parent_dir/plan.json   (the PARENT's ticket plan — HIGHEST SIGNAL: it names the real files/symbols/components the feature already ships; ground the symptom in these)"
+    # A pointer to the parent's delivered code so the worker inspects the ACTUAL
+    # implementation (read-only repo access is already granted by the toolset).
+    parent_branch="$(json_str "$parent_dir/state.json" branch)"
+  fi
+  [ -n "$parent_branch" ] || parent_branch="$(json_str "$STATE" base)"
+  if [ -n "$parent_branch" ]; then
+    extra="$extra
+
+## Where the delivered code lives
+The existing feature's code was delivered on branch \`$parent_branch\`. Inspect
+the actual implementation there (read-only) to confirm the real targets — do not
+guess from the plan alone."
+  fi
+  extra="$extra$(context_extra_block)"
+
+  # ONE bounded worker, retried on a no-file attempt (same lever as validate).
+  local tries=0 prior_no_file=""
+  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
+    tries=$((tries + 1))
+    local odir; odir="$(mktemp -d)"
+    spawn_worker research-grounding "$STAGES_DIR/research-grounding.md" repo-read "$odir" "$extra" "$prior_no_file"
+    if [ -f "$odir/grounding.json" ]; then
+      mkdir -p "$MISSION_DIR/research"
+      cp "$odir/grounding.json" "$MISSION_DIR/research/grounding.json"
+      rm -rf "$odir"
+      advance   # stage align → validate, label align → validate (same path as save)
+      echo "GROUND: bug anchored to existing code"
+      echo "  Grounding worker anchored the symptom to the existing implementation."
+      echo "  Saved research/grounding.json."
+      echo "  Stage:  validate"
+      [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+      isolated_line research 1
+      return 0
+    fi
+    prior_no_file=no-file
+    rm -rf "$odir"
+  done
+  die "the grounding worker produced no grounding.json after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
+}
+
 # One research agent, retried until it yields a well-shaped response (or the cap).
 # Runs in a background subshell (no `local`, no `exit` that escapes the parent).
 research_agent_worker() { # outdir  question
@@ -5653,6 +5750,12 @@ cmd_validate() {
     [ -f "$f" ] && extra="$extra
 - $f"
   done
+  # A logged bug's Research runs in grounding mode and leaves research/grounding.json
+  # (targets/kind/restated/reuse_directive). When present, direct the Validator to
+  # anchor the plan to the EXISTING code it names — modify those targets, do NOT
+  # stand up a parallel/duplicate mechanism (the sun/moon-icon regression this cures).
+  [ -f "$MISSION_DIR/research/grounding.json" ] && extra="$extra
+  NOTE: research/grounding.json is a GROUNDING artifact — it names the EXISTING code (targets) this bug is about and a reuse_directive. The validated plan MUST modify those existing targets, NOT introduce new state/components/flags that duplicate their behaviour."
   # RESUME after `lcars respond`: the captain's recorded answer resolves the
   # prior scope question. Feed it so the fresh Validator FOLDS IT IN and does not
   # re-raise the same question — otherwise the awaiting-human gate loops forever.

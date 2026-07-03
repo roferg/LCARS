@@ -136,10 +136,11 @@ check "1. mints the second bug mission lcars-20260530-003" \
   "[ -d '$repo/.git/lcars/missions/lcars-20260530-003' ]"
 check "1. each bug mission has a prd.md" \
   "[ -f '$repo/.git/lcars/missions/lcars-20260530-002/prd.md' ] && [ -f '$repo/.git/lcars/missions/lcars-20260530-003/prd.md' ]"
-# Bugs skip Validate, but Plan still needs validated-plan.md — log.sh writes it
-# so `lcars run <id>` is immediately runnable from Plan.
-check "1. each bug mission has a validated-plan.md (runnable from Plan)" \
-  "[ -f '$repo/.git/lcars/missions/lcars-20260530-002/validated-plan.md' ] && [ -f '$repo/.git/lcars/missions/lcars-20260530-003/validated-plan.md' ]"
+# A logged bug now ENTERS at Research (grounding mode) and walks the full pipeline,
+# so log.sh no longer hand-writes a thin validated-plan.md — Validate produces the
+# real one after grounding. It must NOT exist at file time.
+check "1. no validated-plan.md at file time (Validate now produces it)" \
+  "[ ! -f '$repo/.git/lcars/missions/lcars-20260530-002/validated-plan.md' ] && [ ! -f '$repo/.git/lcars/missions/lcars-20260530-003/validated-plan.md' ]"
 check "1. summary reports 2 bug missions filed" \
   "grep -Eq '2 bug missions filed' '$repo/out.txt'"
 check "1. summary lists both bug titles" \
@@ -158,20 +159,27 @@ check "2. bug 1 state.json id matches its dir" \
 check "2. bug 1 state.json records the bug title" \
   "grep -q 'XP not awarded for video completions' '$B2/state.json'"
 
-# --- Behaviour 3: initial stage is plan (skips align/research/validate) ----
-check "3. bug 1 starts at stage plan" \
-  "grep -q '\"stage\": *\"plan\"' '$B2/state.json'"
-check "3. bug 2 starts at stage plan" \
-  "grep -q '\"stage\": *\"plan\"' '$B3/state.json'"
-check "3. no research/ dir is created (Research is skipped)" \
+# --- Behaviour 3: enters at Research via stage "align" + origin "log" -------
+# A logged bug enters the pipeline at Research (grounding mode): stage="align"
+# (the drive maps align + no feedback.md → Research, NO re-grill) plus an explicit
+# origin="log" flag Research keys grounding-mode on. Align itself is still skipped.
+check "3. bug 1 seeds stage align (drive → Research, no re-grill)" \
+  "grep -q '\"stage\": *\"align\"' '$B2/state.json'"
+check "3. bug 2 seeds stage align" \
+  "grep -q '\"stage\": *\"align\"' '$B3/state.json'"
+check "3. bug 1 carries origin=log (grounding-mode key)" \
+  "grep -q '\"origin\": *\"log\"' '$B2/state.json'"
+check "3. bug 2 carries origin=log" \
+  "grep -q '\"origin\": *\"log\"' '$B3/state.json'"
+check "3. no research/ dir at file time (grounding runs at Research, not now)" \
   "[ ! -d '$B2/research' ] && [ ! -d '$B3/research' ]"
 
 # --- Behaviour 4: GitHub issues with the right labels ----------------------
 check "4. calls gh issue create" "grep -q 'issue create' '$repo/gh.log'"
-check "4. passes lcars:plan,lcars:bug,lcars:linked labels" \
-  "grep -q 'lcars:plan,lcars:bug,lcars:linked' '$repo/gh.log'"
+check "4. passes lcars:align,lcars:bug,lcars:linked labels" \
+  "grep -q 'lcars:align,lcars:bug,lcars:linked' '$repo/gh.log'"
 check "4. tags each child bug Mission lcars:mission (role)" \
-  "grep -q 'lcars:plan,lcars:bug,lcars:linked,lcars:mission' '$repo/gh.log'"
+  "grep -q 'lcars:align,lcars:bug,lcars:linked,lcars:mission' '$repo/gh.log'"
 check "4. never tags a child bug Mission lcars:ticket" \
   "! grep -q 'lcars:ticket' '$repo/gh.log'"
 check "4. creates two issues (one per bug)" \
@@ -281,7 +289,7 @@ check "7. one link-subissue call per bug issue created" \
 # parentIssue/parentMission state.json records must still be written.
 B8="$repo8/.git/lcars/missions/lcars-20260530-002"
 check "8. still applies the lcars:linked label" \
-  "grep -q 'lcars:plan,lcars:bug,lcars:linked' '$repo8/gh.log'"
+  "grep -q 'lcars:align,lcars:bug,lcars:linked' '$repo8/gh.log'"
 check "8. still records parentMission in state.json" \
   "grep -q '\"parentMission\": *\"lcars-20260530-001\"' '$B8/state.json'"
 check "8. still records parentIssue (#42) in state.json" \
@@ -499,6 +507,13 @@ check "15. child estimate carries a per-stage models map" \
   "grep -q '\"models\"' '$B16/estimate.json' && grep -Eq '\"implement\": *\"(sonnet|opus)\"' '$B16/estimate.json'"
 check "15. child estimate carries a computed cost block" \
   "grep -q '\"cost\"' '$B16/estimate.json'"
+# D-verification: a logged bug now enters at align (stage="align"), so the
+# estimator's bug fast-track fork (mtype=bug && mstage=plan) does NOT fire and the
+# estimate now INCLUDES research + validate — the full pipeline it actually runs.
+check "15. bug estimate now INCLUDES research (enters at align, full pipeline)" \
+  "grep -Eq '\"research\": *\"(sonnet|opus)\"' '$B16/estimate.json'"
+check "15. bug estimate now INCLUDES validate" \
+  "grep -Eq '\"validate\": *\"(sonnet|opus)\"' '$B16/estimate.json'"
 
 # --- Behaviour 16: a quote/newline rationale round-trips to valid JSON (S69) -
 # The S69 escaping fix lives inside estimate_validate_and_write; it must still
