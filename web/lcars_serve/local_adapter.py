@@ -175,15 +175,6 @@ class LocalAdapter(object):
         estimate = _load_json(os.path.join(d, "estimate.json"))
         est = estimate if isinstance(estimate, dict) else {}
         pills = board.pills_from_estimate(est)
-        # S74 follow-up CHANGE 3: a logged bug fast-tracks past Research+Validate
-        # (lcars-log stamps state.json.stage="plan"), so its model-mix table must
-        # omit those two rows. Identify a bug the way the rest of the codebase
-        # does: state.json.type == "bug", OR a linked/parented logged-bug child
-        # (`linked` flag / `parentMission` id). Threaded into the shared shape
-        # layer so the github adapter applies the same skip (board.filter_bug_*).
-        is_bug = ((state.get("type") or "feature") == "bug"
-                  or _truthy(state.get("linked"))
-                  or bool(state.get("parentMission")))
         # The chosen engine (S67): file.sh persists state.json.workerBin. S78
         # CHANGE 4 needs it BEFORE model_mix so the displayed mix reflects the
         # per-engine resolution (a copilot mission is opus-safe ⇒ every row opus).
@@ -191,8 +182,26 @@ class LocalAdapter(object):
         engine = state.get("workerBin")
         if not (isinstance(engine, str) and engine.strip()):
             engine = None
-        model_mix = board.model_mix_from_estimate(est, is_bug=is_bug,
-                                                  engine=engine)
+        # Mission-log-grounding round: the model mix is now driven PURELY by what
+        # estimate.json carries (one row per stage present in `models`). A logged
+        # bug walks the FULL pipeline (Research grounding → Validate → …) so its
+        # estimate scores all six stages and the table shows Research + Validate
+        # too; the old is_bug row-drop is gone (a real fast-track bug's estimate
+        # simply omits those keys, so no empty rows). See board.model_mix_from_estimate.
+        model_mix = board.model_mix_from_estimate(est, engine=engine)
+
+        # Mission-log-grounding round: a logged bug runs Research in a scoped
+        # GROUNDING mode (run.sh cmd_research short-circuits to
+        # cmd_research_grounding for origin=="log", fallback type=="bug") — it
+        # anchors the symptom to the EXISTING code rather than doing full
+        # question-fan-out research. Surface a `groundingResearch` flag so the
+        # front end can label the Research pass "grounding (scoped to existing
+        # code)" on the same generic card — no new card type. Mirror run.sh's
+        # exact condition: origin=="log" OR type=="bug".
+        origin = state.get("origin")
+        origin = origin if (isinstance(origin, str) and origin.strip()) else None
+        grounding_research = (origin == "log"
+                              or (state.get("type") or "feature") == "bug")
 
         plan = _load_json(os.path.join(d, "plan.json"))
         waves = _load_json(os.path.join(d, "waves.json"))
@@ -323,6 +332,12 @@ class LocalAdapter(object):
             # escalationType / technicalDetail) when awaiting; None otherwise.
             "gate": gate if awaiting else None,
             "linked": _truthy(state.get("linked")),
+            # Mission-log-grounding round: `origin` ("log" for a bug filed via
+            # `lcars log", else None) + `groundingResearch` (True when the
+            # Research pass is the scoped grounding one). The front end shows a
+            # small "grounding" descriptor on the Research stage of such a card.
+            "origin": origin,
+            "groundingResearch": grounding_research,
             # UX-28: parent mission id for a logged-bug child (None when not a
             # logged-bug child). The github adapter forces None (ADR-006).
             "parentMission": parent_mission,

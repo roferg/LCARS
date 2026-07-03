@@ -114,14 +114,14 @@ class GitHubAdapter(object):
         paused = _PAUSED_LABEL in labels
         body = issue.get("body") or ""
         pills = _pills_from_body(body)
+        # Mission-log-grounding round: the mix is driven PURELY by the issue
+        # body's table (parity with the local adapter, which now drives it purely
+        # off estimate.json). A logged bug walks the FULL pipeline, so its body
+        # table lists all six stages and they all show; the old bug-skip filter
+        # (which dropped Research/Validate) is gone. _model_mix_from_body skips
+        # any empty-model row, so a genuinely fast-tracked bug — whose body may
+        # still render blank Research/Validate cells — never shows empty rows.
         model_mix = _model_mix_from_body(body)
-        # S74 follow-up CHANGE 3: a logged bug skips Research+Validate, so drop
-        # those rows from its model-mix table for adapter parity with the local
-        # adapter. The github adapter knows a bug by its labels (lcars:bug /
-        # lcars:linked). Shared filter (board.filter_bug_mix_rows) keeps the skip
-        # identical across both adapters.
-        if model_mix and ("lcars:bug" in labels or _LINKED_LABEL in labels):
-            model_mix = board.filter_bug_mix_rows(model_mix) or None
         question = _gate_question(issue) if awaiting else None
         tickets = _tickets_for(issue, issues)
         progress = None  # GitHub progress lives in the mirrored Implement comment
@@ -155,6 +155,13 @@ class GitHubAdapter(object):
             # (adapter-neutral shape, ADR-006; renderer degrades to `question`).
             "gate": None,
             "linked": _LINKED_LABEL in labels,
+            # Mission-log-grounding round (adapter parity): the github read-path
+            # can't see the LOCAL state.json.origin, so a bug's grounding Research
+            # is inferred from its labels — a logged/linked bug (lcars:bug /
+            # lcars:linked) grounds. `origin` stays None (not forge-visible).
+            "origin": None,
+            "groundingResearch": ("lcars:bug" in labels
+                                  or _LINKED_LABEL in labels),
             # UX-28: `parentMission` (a logged-bug child's parent id) is read from
             # the child's LOCAL state.json, which the github adapter cannot see, so
             # it is always None here (adapter-neutral shape, ADR-006 — present,
@@ -325,6 +332,15 @@ def _model_mix_from_body(body):
             started = True
             continue
         started = True
+        # Mission-log-grounding round: skip a row whose MODEL cell is empty. A
+        # genuinely fast-tracked bug's issue body can render a blank Research /
+        # Validate cell (`| Research |  |`) because render_estimate_issue loops
+        # all six labels while the estimate omits those tiers. Dropping the empty
+        # row here is what keeps a real fast-track bug from showing empty rows now
+        # that the bug-skip filter is gone — while a logged bug (all cells filled)
+        # keeps its Research + Validate rows.
+        if not b:
+            continue
         rows.append({"stage": a, "tier": b.lower(), "why": None})
     return rows or None
 

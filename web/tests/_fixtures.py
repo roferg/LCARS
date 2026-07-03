@@ -72,6 +72,25 @@ ESTIMATE_COPILOT_USAGE = {
 }
 
 
+# A genuinely FAST-TRACKED bug's canonical estimate.json (legacy/none path): the
+# estimator canonicalizes `models` down to ONLY the stages it runs — Research +
+# Validate are ABSENT from the map (run.sh estimate fork, stage=="plan"). The
+# model mix must then show only these four stages, never empty Research/Validate.
+ESTIMATE_FASTTRACK_BUG = {
+    "schemaVersion": 3,
+    "reasoningCriticality": "low",
+    "implCriticality": "medium",
+    "models": {
+        "plan": "opus", "planReview": "sonnet",
+        "implement": "opus", "verify": "sonnet",
+    },
+    "rationale": "Small fix, fast-tracked.",
+    "cost": {"cli": "claude", "unit": "usd", "currency": "USD",
+             "usd": {"low": 1.0, "high": 2.0}},
+    "estimatorModel": "opus",
+}
+
+
 def mission_dir(root, mid):
     return os.path.join(root, ".git", "lcars", "missions", mid)
 
@@ -81,6 +100,7 @@ def plant_simple(root, mid, *, stage="align", issue=142,
                  created="2026-06-13T10:00:00Z", worker_bin=None,
                  worker_model=None, queued=None,
                  parent_mission=None, parent_issue=None, mtype="feature",
+                 origin=None,
                  pr_url=None, pr_number=None, review=None,
                  reconcile_status=None, reconcile_diagnosis=None,
                  reconcile_note=None, reconcile_merge_sha=None,
@@ -113,6 +133,10 @@ def plant_simple(root, mid, *, stage="align", issue=142,
         state["queued"] = queued
     if parent_mission is not None:
         state["parentMission"] = parent_mission
+    # Mission-log-grounding: a bug filed via `lcars log` stamps origin="log", the
+    # signal that its Research pass runs in scoped GROUNDING mode.
+    if origin is not None:
+        state["origin"] = origin
     # BUG-033: a logged-bug child carries its parent's issue number on disk
     # (state.json.parentIssue) so the "child of #<n>" badge survives the parent
     # merging off the board.

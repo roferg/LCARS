@@ -264,6 +264,9 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 @keyframes card-running{0%,100%{box-shadow:0 0 0 0 rgba(0,204,170,0)}50%{box-shadow:0 0 0 2px rgba(0,204,170,.28)}}
 @media (prefers-reduced-motion:reduce){.card.running{animation:none;box-shadow:0 0 0 1px rgba(0,204,170,.3)}}
 .card .no{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);letter-spacing:.08em}
+/* Mission-log-grounding: the scoped "grounding" descriptor on a Research-stage
+   logged bug — a touch brighter than the plain .no line so it reads as a badge. */
+.card .no.grounding-note{color:var(--lcars-peach,#f7b26a);text-transform:none;letter-spacing:.04em;margin-top:1px}
 .card .ttl{font-family:var(--font-display);font-size:14px;letter-spacing:.04em;
   color:var(--lcars-text-bright);margin:2px 0 8px;line-height:1.2}
 .card .pills{display:flex;flex-wrap:wrap;gap:5px}
