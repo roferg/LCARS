@@ -25,6 +25,73 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { printf 'lcars update: %s\n' "$1" >&2; exit 1; }
 
+# --- MIGRATION: stale copy-based vitest testCommand -> in-place form ---------
+# S101 made the Test-Writer author each per-ticket test IN THE REPO at its
+# convention and run the red gate IN PLACE (positional scope): a co-located test
+# imports its sibling source via `./sibling`, so copying it into a `.lcars-tests`
+# staging dir DETACHES it from that source and breaks the import. Repos initialized
+# by an OLDER `lcars init` carry a COPY-STAGING vitest testCommand that does exactly
+# that — now INCOMPATIBLE. This migration recognizes that unambiguous LCARS-generated
+# fingerprint and rewrites it to the in-place equivalent, PRESERVING the runner
+# invocation + its flags and any leading `cd <pkg>`. It touches ONLY that exact
+# form; a genuine custom / already-in-place / non-vitest / null testCommand is left
+# completely alone (config is sacred — but the .lcars-tests copy pattern is never
+# hand-written).
+#
+# Sets MIGRATED_TESTCOMMAND=1 when it rewrote the value.
+migrate_stale_testcommand() {
+  local config="$1"
+  MIGRATED_TESTCOMMAND=0
+  [ -f "$config" ] || return 0
+
+  local tc; tc="$(lcars_config_get "$config" testCommand)"
+  [ -n "$tc" ] || return 0
+
+  # Fingerprint — ALL markers of the LCARS copy-staging vitest form must be present
+  # together. Any one absent => not our form => leave untouched.
+  case "$tc" in *.lcars-tests*)               : ;; *) return 0 ;; esac
+  case "$tc" in *'cp -R "${LCARS_TESTS_DIR'*)  : ;; *) return 0 ;; esac
+  case "$tc" in *'--dir .lcars-tests'*)        : ;; *) return 0 ;; esac
+  case "$tc" in *'else exec '*'; fi'*)         : ;; *) return 0 ;; esac
+
+  # BASE = the base vitest invocation from the `else exec <BASE>; fi` full-suite
+  # branch — preserves the runner path AND flags (e.g. --pool=forks).
+  local base
+  base="$(printf '%s' "$tc" | sed -n 's/.*else exec \(.*\); fi.*/\1/p')"
+  base="$(printf '%s' "$base" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  if [ -z "$base" ]; then
+    echo "  ⚠ testCommand matches the stale .lcars-tests copy form but its base vitest" >&2
+    echo "    invocation could not be derived; set an in-place testCommand manually" >&2
+    echo "    (S101: e.g. 'exec node_modules/.bin/vitest run \${LCARS_TESTS_DIR:+\"\${LCARS_TESTS_DIR#\"\$PWD/\"}\"}')." >&2
+    return 0
+  fi
+
+  # CD = the leading `cd <dir>` before the first `;`, if present.
+  local cd_dir="" firstseg
+  case "$tc" in
+    cd\ *)
+      firstseg="${tc%%;*}"
+      cd_dir="${firstseg#cd}"
+      cd_dir="$(printf '%s' "$cd_dir" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      ;;
+  esac
+
+  # In-place form: relativize $LCARS_TESTS_DIR to the runner's cwd (same tail init
+  # emits for vitest today). Single-quoted so nothing expands here — the runtime
+  # `bash -c` expands it at gate time.
+  local tail='${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+  local newtc
+  if [ -n "$cd_dir" ]; then
+    newtc="cd $cd_dir 2>/dev/null; exec $base $tail"
+  else
+    newtc="exec $base $tail"
+  fi
+
+  [ "$newtc" = "$tc" ] && return 0
+  lcars_config_set_string "$config" testCommand "$newtc"
+  MIGRATED_TESTCOMMAND=1
+}
+
 # --- locate the repo ------------------------------------------------------
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" \
   || die "not inside a git repository — run this from a repo root."
@@ -87,6 +154,10 @@ created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
 CONFIG_ADDED="$LCARS_CONFIG_ADDED_KEYS"
 
+# Targeted schema migration: rewrite a stale copy-based vitest testCommand to the
+# in-place form (S101). Runs AFTER the merge so it rewrites the preserved value.
+migrate_stale_testcommand "$CONFIG"
+
 # --- OUTPUT: report added vs present ---------------------------------------
 changed=0
 
@@ -104,6 +175,11 @@ fi
 if [ -n "$CONFIG_ADDED" ]; then
   changed=1
   echo "  ✓ config keys added (defaults filled, existing values preserved): $CONFIG_ADDED"
+fi
+
+if [ "${MIGRATED_TESTCOMMAND:-0}" -eq 1 ]; then
+  changed=1
+  echo "  ✓ testCommand migrated to in-place form (S101: co-located tests run in place; old .lcars-tests copy form is incompatible)"
 fi
 
 if [ "$changed" -eq 0 ]; then

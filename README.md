@@ -327,7 +327,7 @@ CLI. The older per-stage verbs still work as power entry points.
 | `lcars init` | One-time per-repo setup (local config + GitHub labels). Safe to re-run — it **preserves** your config customizations, only filling in anything missing. |
 | `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`. A clean no-op when nothing's changed. |
 | `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. |
-| `lcars log` | Log one or more bugs against an active Mission in free-form language; fast-tracks a Mission per bug straight to Plan and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, excluding the skipped Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
+| `lcars log` | Log one or more bugs against an active Mission in free-form language; files a Mission per bug that enters at **Research in a grounding mode** — anchoring the free-form symptom to the parent's existing code so the fix modifies the real feature rather than a duplicate — then flows the full pipeline to Verify (only Align is skipped), and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, now **including** the Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
 | `lcars resolve-logs <parent>` | Drive **every** bug logged against a Mission to its Verify gate in a sensible, worker-chosen order, then raise **one** consolidated re-verify gate on the parent instead of one per bug. |
 
 ### Power verbs (still supported)
@@ -431,7 +431,9 @@ $ lcars approve lcars-20260604-001
 ## Resolving bugs you logged during Verify
 
 When you're reviewing a Mission at Verify and spot several bugs, `lcars log`
-them as you go — each becomes a fast-tracked bug Mission linked to the parent.
+them as you go — each becomes a bug Mission linked to the parent and grounded
+against the parent's existing code (so a casual report fixes the real feature,
+not a duplicate).
 Then hand the whole batch to **`lcars resolve-logs`** and walk away. It drives
 every logged bug to its own Verify gate in a sensible order the worker chooses
 (root-cause and dependency bugs first, cosmetic ones last), and collapses what
@@ -502,9 +504,17 @@ change), the batch **pauses** at that bug and drops its question into
   re-slice along; it loops back until clean (or escalates after 3 rounds).
 - **Implement is adversarial and guarded by the harness, not the prompt.** The
   Test Writer's tests must actually **fail** before the Implementer runs — and the
-  gate judges that **quarantined suite alone**, never the repo's existing passing
+  red gate judges that suite **in isolation**, never the repo's existing passing
   tests, so a green-on-nothing contract can't slip through even in a repo whose own
-  suite is green (a rejection says *why* and grounds the next attempt). The test
+  suite is green (a rejection names a root cause — an over-broad slice, a missing
+  module, a runner/environment failure, an empty worker — and grounds the next
+  attempt, after the Test Writer has already **self-smoked** the suite once to catch
+  a hanging or collection-time defect on its own side). Once red, that suite is
+  then **committed into the PR at the repo's own test convention** (co-located
+  `*.test.ts`, a `__tests__/` dir, or a top-level `tests/`) — the locked test in its
+  own commit ahead of the implementation — so the coverage merges to the trunk
+  instead of evaporating in a scratch dir, its immutability re-checked across that
+  commit boundary. The test
   files are **locked** so green can't be reached by editing them, and a quality
   check rejects assertion-free suites, and every ticket commit must leave the
   **whole** repo suite green — a later ticket that silently regresses an earlier
@@ -757,6 +767,12 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Mission Log batch resolve (`lcars resolve-logs`) | ✅ |
 | **Copilot enablement** (run LCARS under GitHub Copilot — *new; premium model required*) | ✅ |
 | **Cost estimator + per-stage model selection** (estimate at Align · Sonnet/Opus per Stage · NL override · per-CLI cost) | ✅ |
+| **Tests ride along into the PR** (committed at the repo's own convention · immutability preserved across the commit boundary) | ✅ |
+| Under-slice pressure signal (Plan Review) | ✅ |
+| Actionable red-gate failure classification | ✅ |
+| Test-Writer pre-gate self-smoke | ✅ |
+| Empty-output worker detection | ✅ |
+| Reconcile env-parity (no phantom self-heal) | ✅ |
 
 **Roadmap.** Copilot enablement is in: `$LCARS_WORKER_BIN` auto-resolves to
 `copilot` when you launch from Copilot, so the harness runs on whichever CLI you

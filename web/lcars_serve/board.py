@@ -260,26 +260,24 @@ _MODEL_STAGE_LABELS = {
     "research": "Research", "validate": "Validate", "plan": "Plan",
     "planReview": "Plan Review", "implement": "Implement", "verify": "Verify",
 }
-# S74 follow-up CHANGE 3: a logged bug fast-tracks straight to Plan (lcars-log
-# stamps the child's state.json.stage = "plan"), so it NEVER runs Research or
-# Validate. The display labels of the stages a bug skips — used to drop those
-# rows from the model-mix table even though estimate.json still carries all six.
-_BUG_SKIPPED_STAGE_LABELS = (_MODEL_STAGE_LABELS["research"],
-                             _MODEL_STAGE_LABELS["validate"])
 
 
-def model_mix_from_estimate(estimate, is_bug=False, engine=None):
+def model_mix_from_estimate(estimate, engine=None):
     """Build `[{stage, tier, why}]` from estimate.json. None when absent.
 
     Returns None (not []) when there is no `models` map, so the front end shows
     its graceful note rather than an empty table.
 
-    `is_bug` (S74 follow-up CHANGE 3): when True the mission is a logged bug,
-    which skips Research + Validate (fast-track to Plan). Those rows are dropped
-    from the table so the breakdown shows only the stages the bug actually runs
-    (Plan, Plan Review, Implement, Verify) — adapter-neutral, at the shape layer,
-    so already-filed children (whose estimate.json still has all six stages)
-    render correctly too. Cost is untouched (a separate follow-up owns that).
+    Mission-log-grounding round: the mix is driven PURELY by what the estimate
+    actually carries — one row per stage present in the `models` map. A logged
+    bug now walks the FULL pipeline (Research grounding → Validate → …), so the
+    estimator scores all six stages and this shows all six rows including
+    Research + Validate. A genuinely fast-tracked bug (legacy/none) whose
+    estimate.json omits research/validate from `models` naturally shows only the
+    stages it runs — no is_bug special-case needed, and it can never regress into
+    empty Research/Validate rows because absent keys add no row. This removed the
+    old S74 bug-skip filter (which dropped Research/Validate even when the
+    estimate carried them) now that a logged bug genuinely runs those stages.
 
     `engine` (S78 CHANGE 4): per-engine model resolution AT THE SHAPE LAYER. A
     COPILOT mission is OPUS-SAFE (its create-tool can't overwrite on a non-opus
@@ -316,23 +314,7 @@ def model_mix_from_estimate(estimate, is_bug=False, engine=None):
         if key not in seen and val:
             rows.append({"stage": _MODEL_STAGE_LABELS.get(key, key),
                          "tier": _tier(val), "why": why})
-    if is_bug:
-        rows = filter_bug_mix_rows(rows)
     return rows or None
-
-
-def filter_bug_mix_rows(rows):
-    """Drop the Research + Validate rows from a model-mix list for a logged bug.
-
-    Shared so BOTH read adapters apply the same skip: the local adapter derives
-    rows from estimate.json (via model_mix_from_estimate), the github adapter
-    parses them from the issue body — both feed their rows through here when the
-    mission is a bug. Stage cells are the display labels by this point. None-safe.
-    """
-    if not rows:
-        return rows
-    return [r for r in rows
-            if r.get("stage") not in _BUG_SKIPPED_STAGE_LABELS]
 
 
 def empty_meta():

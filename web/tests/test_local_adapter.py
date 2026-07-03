@@ -664,6 +664,42 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertTrue(m["awaiting"])
         self.assertEqual(m["stage"], "research")
 
+    # ── Mission-log-grounding round: a logged bug (state.json.stage="align" as
+    # the resume pointer, origin="log") FLOWS through the columns exactly like a
+    # normal running mission — the in-flight column comes from events.jsonl's
+    # latest open stage_start (BUG-017 path), which for a logged bug is Research
+    # (grounding) → Validate → Plan → …. No columning special-case is needed; it
+    # inherits the normal-mission behaviour. These prove it. ──
+    def test_logged_bug_columns_into_research_while_grounding(self):
+        # state.json.stage is align (resume pointer); the driver emits a research
+        # stage_start → the card belongs in the Research column, NOT Align.
+        fx.plant_simple(self.tmp, "m-lb", stage="align", mtype="bug",
+                        origin="log", parent_mission="m-001")
+        self._lock("m-lb", os.getpid())
+        self._events("m-lb", [
+            {"ts": 1, "stage": "research", "type": "stage_start", "detail": ""},
+        ])
+        board = self._board()
+        self.assertEqual([m["id"] for m in board["columns"]["align"]], [])
+        col = board["columns"]["research"]
+        self.assertEqual([m["id"] for m in col], ["m-lb"])
+        self.assertEqual(col[0]["stage"], "research")
+        # and it carries the grounding descriptor while in Research.
+        self.assertTrue(col[0]["groundingResearch"])
+
+    def test_logged_bug_flows_research_to_validate(self):
+        # research done → validate started ⇒ the logged bug lands in Validate.
+        fx.plant_simple(self.tmp, "m-lb", stage="align", mtype="bug",
+                        origin="log", parent_mission="m-001")
+        self._lock("m-lb", os.getpid())
+        self._events("m-lb", [
+            {"ts": 1, "stage": "research", "type": "stage_start", "detail": ""},
+            {"ts": 2, "stage": "research", "type": "stage_done", "detail": ""},
+            {"ts": 3, "stage": "validate", "type": "stage_start", "detail": ""},
+        ])
+        m = self._by_id(self._board(), "m-lb")
+        self.assertEqual(m["stage"], "validate")
+
     def test_paused_running_mission_keeps_state_stage(self):
         """A paused mission (even if its lock is still live) is not 'actively
         executing' a stage — keep the resume pointer, don't chase events."""
@@ -752,13 +788,37 @@ class LocalAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "m-noest")
         self.assertIsNone(m["modelMix"])
 
-    # ── S74 follow-up CHANGE 3: a logged BUG fast-tracks past Research+Validate,
-    # so its model-mix table must omit those rows even though estimate.json still
-    # carries all six stages. Adapter-neutral: the filter lives in the shared
-    # shape layer (board.model_mix_from_estimate), keyed off mission type. ──
-    def test_bug_mission_mix_omits_research_and_validate(self):
+    # ── Mission-log-grounding round: a LOGGED bug now walks the FULL pipeline
+    # (Research grounding → Validate → …), so its model-mix table KEEPS the
+    # Research + Validate rows. The mix is driven purely by what estimate.json
+    # carries; a logged bug's estimate scores all six stages. ──
+    def test_logged_bug_mix_keeps_research_and_validate(self):
+        fx.plant_simple(self.tmp, "m-logbug", stage="align", mtype="bug",
+                        origin="log", parent_mission="m-001",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        m = self._by_id(self._board(), "m-logbug")
+        self.assertIsNotNone(m["modelMix"])
+        stages = [r["stage"] for r in m["modelMix"]]
+        self.assertEqual(stages, ["Research", "Validate", "Plan",
+                                  "Plan Review", "Implement", "Verify"])
+        self.assertIn("Research", stages)
+        self.assertIn("Validate", stages)
+        # cost + both difficulty pills populate from the 6-stage filing estimate.
+        self.assertIsNotNone(m["pills"]["cost"])
+        self.assertEqual(m["pills"]["cost"]["unit"], "usd")
+        self.assertEqual(m["pills"]["reasoning"]["level"], "medium")
+        self.assertEqual(m["pills"]["implementation"]["level"], "high")
+        # the grounding descriptor rides the card (scoped Research pass).
+        self.assertTrue(m["groundingResearch"])
+        self.assertEqual(m["origin"], "log")
+
+    # Regression: a genuinely FAST-TRACKED bug (legacy/none) whose estimate.json
+    # omits research/validate from `models` still HIDES those rows — no empty
+    # Research/Validate rows now that the is_bug filter is gone.
+    def test_real_fast_track_bug_mix_omits_research_and_validate(self):
         fx.plant_simple(self.tmp, "m-bugmix", stage="plan", mtype="bug",
-                        parent_mission="m-001")
+                        parent_mission="m-001",
+                        estimate=fx.ESTIMATE_FASTTRACK_BUG)
         m = self._by_id(self._board(), "m-bugmix")
         self.assertIsNotNone(m["modelMix"])
         stages = [r["stage"] for r in m["modelMix"]]
