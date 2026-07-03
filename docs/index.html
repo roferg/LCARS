@@ -574,11 +574,15 @@ flowchart LR
         <div class="control-card">
           <div class="control-cmd">lcars log</div>
           <div class="control-desc">Log one or more bugs against an active
-          Mission; fast-tracks a Mission per bug straight to Plan and links
-          them. Each logged bug gets its own dynamic estimate (cost +
-          reasoning/implementation difficulty + per-stage model recommendation,
-          excluding the skipped Research/Validate Stages) in a Launch-style
-          review panel, with a plain-language per-bug model override.</div>
+          Mission; files a Mission per bug that enters at <strong>Research in a
+          grounding mode</strong> — anchoring the free-form symptom to the
+          parent's existing code so the fix modifies the real feature rather
+          than a duplicate — then flows the full pipeline to Verify (only Align
+          is skipped), and links them. Each logged bug gets its own dynamic
+          estimate (cost + reasoning/implementation difficulty + per-stage model
+          recommendation, now including the Research/Validate Stages) in a
+          Launch-style review panel, with a plain-language per-bug model
+          override.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars resolve-logs &lt;parent&gt;</div>
@@ -732,10 +736,12 @@ implement   ✓ ⊘ isolated  11/11 tickets green
         <div class="lcars-panel-body">
           <p>Found a bug while a Mission is still open? <code>lcars log</code>
           takes free-form language describing one or many bugs, extracts each,
-          fast-tracks a Mission per bug straight to <strong>Plan</strong>
-          (skipping Align / Research / Validate), and links them to the parent
-          with <code>lcars:linked</code>. They run in parallel on their own
-          branches and merge as soon as they verify.</p>
+          files a Mission per bug that enters at <strong>Research in a grounding
+          mode</strong> — anchoring the casual symptom to the parent's existing
+          code so the fix lands in the real feature, not a duplicate — then
+          flows the full pipeline to Verify (only Align is skipped), and links
+          them to the parent with <code>lcars:linked</code>. They run in
+          parallel on their own branches and merge as soon as they verify.</p>
           <p>Logged several bugs while reviewing a Mission at Verify?
           <code>lcars resolve-logs &lt;parent&gt;</code> hands the whole batch to
           the Harness. It picks a sensible order (root-cause and dependency bugs

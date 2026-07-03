@@ -175,6 +175,7 @@ flowchart TD
       </div>
       <p>Each question goes to a <strong>Research Agent</strong> — a stateless LLM worker with access to the codebase and the web. Agents work in parallel with no access to the PRD or each other's findings. Their only job is to return a recommendation and 2–3 supporting points.</p>
       <p>If more than 20 questions are needed, the Harness explains why and gives the human the choice to override or return to Align so the PRD can be sharpened.</p>
+      <p><strong>Grounding — Research for a logged bug.</strong> A bug filed via the <strong>Mission Log</strong> (against an existing parent Mission) does not run the question fan-out. Instead Research runs in a <strong>grounding</strong> mode: a single bounded, read-only worker anchors the bug's free-form symptom to the <em>existing</em> code it is about — reading the parent Mission's PRD, plan, and delivered code — and records which existing files and symbols the fix must modify, explicitly forbidding a parallel duplicate. It never escalates. This is what stops a casually-worded bug ("the icon is missing when no game is open") from being "fixed" by building a new control beside the real one instead of changing it. The logged bug then flows the full pipeline (Research → Validate → Plan → … → Verify); only Align is skipped.</p>
     </section>
 
     <section id="validate">
@@ -391,7 +392,7 @@ stateDiagram-v2
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars log</div>
-          <div class="control-desc">Log bugs against an active Mission in free-form language. One invocation can describe several bugs; the Harness fast-tracks a Mission per bug and links them to the parent.</div>
+          <div class="control-desc">Log bugs against an active Mission in free-form language. One invocation can describe several bugs; the Harness files a Mission per bug — grounded against the parent's existing code (each enters at Research in grounding mode, so a casual symptom is fixed in the real feature rather than duplicated; only Align is skipped) — and links them to the parent.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars resolve-logs &lt;parent&gt;</div>
@@ -476,7 +477,7 @@ flowchart TB
           <span class="example-title">Two Bugs Logged Against an Active Mission</span>
         </div>
         <div class="idea-quote">"Found two bugs. XP isn't being awarded when a video is marked complete — only quiz completions trigger it. Also, the leaderboard has a visible flicker on first page load before the data comes in. These are against the gamification mission."</div>
-        <p>One invocation of <strong>Mission Log</strong>. The Harness extracts two distinct bugs, creates a fast-tracked Mission for each, and links both to the open gamification Mission as native GitHub sub-issues. No second step.</p>
+        <p>One invocation of <strong>Mission Log</strong>. The Harness extracts two distinct bugs, creates a Mission for each — grounded against the parent's existing code — and links both to the open gamification Mission as native GitHub sub-issues. No second step.</p>
         <div class="diagram-wrap">
           <div class="mermaid">
 flowchart LR
@@ -500,7 +501,7 @@ flowchart LR
     ML -. "2 bugs extracted" .-> BUG2
           </div>
         </div>
-        <p>Both bug Missions fast-track in parallel: thin PRDs, zero research questions, one issue each. They run concurrently with each other and with the in-progress gamification Mission. The Kanban Board shows all three cards simultaneously. A bug logged against a Mission that has <strong>already merged</strong> rides its own branch and merges as soon as it's verified; a bug logged against a Mission still <strong>in flight</strong> lands its fix on that Mission's branch, so the fix ships with the parent rather than stranding on a branch whose base never merges. Either way the gamification Mission continues uninterrupted.</p>
+        <p>Both bug Missions run in parallel: each is first <strong>grounded</strong> against the parent's existing code (a scoped Research pass — no question fan-out, no human gate — that pins the fix to the real files it touches), then planned and implemented. They run concurrently with each other and with the in-progress gamification Mission. The Kanban Board shows all three cards simultaneously. A bug logged against a Mission that has <strong>already merged</strong> rides its own branch and merges as soon as it's verified; a bug logged against a Mission still <strong>in flight</strong> lands its fix on that Mission's branch, so the fix ships with the parent rather than stranding on a branch whose base never merges. Either way the gamification Mission continues uninterrupted.</p>
         <p style="margin-top:16px"><strong>Resolving a batch with one re-verify.</strong> When the bugs are found during the parent's <em>own</em> Verify — you're reviewing the finished Mission and file several in a row — driving each to its own Verify gate would mean one "review me" interruption per bug. <code>lcars resolve-logs &lt;parent&gt;</code> collapses them: it asks the worker for a sensible order (root-cause and dependency bugs first, cosmetic last), drives every linked bug Mission to its Verify gate one-by-one, and raises a <strong>single</strong> consolidated re-verify gate — one notification — on the parent.</p>
         <div class="diagram-wrap">
           <div class="mermaid">
