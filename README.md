@@ -327,7 +327,7 @@ CLI. The older per-stage verbs still work as power entry points.
 | `lcars init` | One-time per-repo setup (local config + GitHub labels). Safe to re-run — it **preserves** your config customizations, only filling in anything missing. |
 | `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`. A clean no-op when nothing's changed. |
 | `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. |
-| `lcars log` | Log one or more bugs against an active Mission in free-form language; fast-tracks a Mission per bug straight to Plan and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, excluding the skipped Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
+| `lcars log` | Log one or more bugs against an active Mission in free-form language; files a Mission per bug that enters at **Research in a grounding mode** — anchoring the free-form symptom to the parent's existing code so the fix modifies the real feature rather than a duplicate — then flows the full pipeline to Verify (only Align is skipped), and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, now **including** the Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
 | `lcars resolve-logs <parent>` | Drive **every** bug logged against a Mission to its Verify gate in a sensible, worker-chosen order, then raise **one** consolidated re-verify gate on the parent instead of one per bug. |
 
 ### Power verbs (still supported)
@@ -431,7 +431,9 @@ $ lcars approve lcars-20260604-001
 ## Resolving bugs you logged during Verify
 
 When you're reviewing a Mission at Verify and spot several bugs, `lcars log`
-them as you go — each becomes a fast-tracked bug Mission linked to the parent.
+them as you go — each becomes a bug Mission linked to the parent and grounded
+against the parent's existing code (so a casual report fixes the real feature,
+not a duplicate).
 Then hand the whole batch to **`lcars resolve-logs`** and walk away. It drives
 every logged bug to its own Verify gate in a sensible order the worker chooses
 (root-cause and dependency bugs first, cosmetic ones last), and collapses what
