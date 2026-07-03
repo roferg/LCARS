@@ -633,15 +633,17 @@ class LogTest(WriteEndpointBase):
         self.assertEqual(c["pills"]["reasoning"]["level"], "medium")
         self.assertEqual(c["pills"]["implementation"]["level"], "high")
         # the suggested per-stage model map (the same shape Launch renders).
-        # S74 follow-up CHANGE 3: a logged bug skips Research+Validate, so the
-        # review-panel mix omits those rows and starts at Plan.
+        # Mission-log-grounding round: a logged bug now walks the FULL pipeline
+        # (Research grounding → Validate → …), so its review-panel mix KEEPS the
+        # Research + Validate rows (driven purely by the 6-stage estimate.json).
         self.assertTrue(c.get("modelMix"))
         stage_order = [row["stage"] for row in c["modelMix"]]
         self.assertEqual(stage_order,
-                         ["Plan", "Plan Review", "Implement", "Verify"])
+                         ["Research", "Validate", "Plan",
+                          "Plan Review", "Implement", "Verify"])
         stages = {row["stage"]: row["tier"] for row in c["modelMix"]}
-        self.assertNotIn("Research", stages)
-        self.assertNotIn("Validate", stages)
+        self.assertIn("Research", stages)
+        self.assertIn("Validate", stages)
         self.assertEqual(stages.get("Plan Review"), "sonnet")
 
     def test_log_preview_child_without_estimate_degrades_gracefully(self):

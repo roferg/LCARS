@@ -338,6 +338,14 @@ function cardNode(m) {
 
   var issue = m.issue ? "#" + m.issue : "—";
   card.appendChild(el("div", "no", issue + " · lcars:" + m.stage));
+  // Mission-log-grounding round: a logged bug runs Research in a scoped GROUNDING
+  // mode (it anchors the symptom to the existing code, not full research). While
+  // the card sits in the Research column, show a small "grounding" descriptor so
+  // the Research pass reads as scoped — on the same generic card, no new type.
+  if (normStage(m.stage) === "research" && m.groundingResearch) {
+    card.appendChild(el("div", "no grounding-note",
+      "grounding · scoped to existing code"));
+  }
   card.appendChild(el("div", "ttl", m.title || m.id));
 
   // UX-28: a small "log bug · child of #<parentIssue>" badge on a logged bug,
@@ -1220,7 +1228,7 @@ function openLaunch(id) {
     mix.style.marginBottom = "6px";
     m.body.appendChild(mix);
     if (mi.modelMix && mi.modelMix.length) {
-      m.body.appendChild(modelMixTable(mi.modelMix));
+      m.body.appendChild(modelMixTable(mi.modelMix, mi.groundingResearch));
     } else {
       m.body.appendChild(noteEl(
         "The per-stage model mix is not exposed for this mission — the cost and " +
@@ -1821,12 +1829,12 @@ function renderLogPreview(host, state, parentLabel, authored) {
       // with no estimate yet (graceful degradation).
       if (c.pills) addPills(pills, c.pills);
       card.appendChild(pills);
-      // S74: the suggested per-stage model mix — the SAME modelMixTable the
-      // Launch panel renders. The shape already excludes Research+Validate for a
-      // logged bug (board.model_mix_from_estimate), so no filtering is needed
-      // here. Only when the estimate exposes it.
+      // The suggested per-stage model mix — the SAME modelMixTable the Launch
+      // panel renders. Mission-log-grounding round: a logged bug now walks the
+      // FULL pipeline, so its mix INCLUDES Research (grounding) + Validate; the
+      // shape carries exactly the stages the estimate scored. Only when exposed.
       if (c.modelMix && c.modelMix.length) {
-        card.appendChild(modelMixTable(c.modelMix));
+        card.appendChild(modelMixTable(c.modelMix, c.groundingResearch));
       }
       // S74 follow-up CHANGE 4: the per-bug OVERRIDE box lives in the post-File
       // breakdown (not at preview). The captain edits these, then clicks Run
@@ -2429,7 +2437,7 @@ function buildSummary(mi) {
 /* S70-B1: the per-stage model-mix table (mock .mix / .tier.opus / .tier.sonnet).
    modelMix = [{stage, tier, why}]; `why` (the estimator rationale) is shown once
    below the table when present. */
-function modelMixTable(mix) {
+function modelMixTable(mix, grounding) {
   var wrap = el("div");
   var table = el("table", "mix");
   var thead = el("thead");
@@ -2442,7 +2450,12 @@ function modelMixTable(mix) {
   var why = null;
   mix.forEach(function (r) {
     var tr = el("tr");
-    tr.appendChild(el("td", null, r.stage || ""));
+    // Mission-log-grounding round: on a grounding mission the Research row runs
+    // in the scoped GROUNDING mode, so tag it "Research · grounding" to explain
+    // why a bug still carries a Research row on the same generic card.
+    var stageTxt = r.stage || "";
+    if (grounding && stageTxt === "Research") stageTxt = "Research · grounding";
+    tr.appendChild(el("td", null, stageTxt));
     var td = el("td");
     var tierCls = (r.tier === "opus") ? "opus" : (r.tier === "sonnet") ? "sonnet" : "";
     td.appendChild(el("span", "tier" + (tierCls ? " " + tierCls : ""),

@@ -150,6 +150,32 @@ lcars_config_get() {
     | sed 's/\\"/"/g; s/\\\\/\\/g'
 }
 
+# lcars_config_set_string — overwrite the JSON value of ONE top-level key with a
+# (JSON-escaped) string, preserving every other line, key order, and the file's
+# trailing-comma structure. jq-free, line-oriented (relies on the one-key-per-line
+# layout lcars_config_merge writes). Unlike lcars_config_merge this DELIBERATELY
+# replaces an existing value — use it only for targeted, fingerprinted migrations.
+lcars_config_set_string() {
+  local config="$1" key="$2" value="$3"
+  [ -f "$config" ] || return 1
+  local esc; esc="$(lcars_json_escape "$value")"
+  local tmp="$config.tmp.$$"
+  local line indent comma
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *"\"$key\""*:*)
+        comma=""; case "$line" in *,) comma="," ;; esac
+        indent="${line%%\"*}"
+        printf '%s"%s": "%s"%s\n' "$indent" "$key" "$esc" "$comma"
+        ;;
+      *)
+        printf '%s\n' "$line"
+        ;;
+    esac
+  done <"$config" >"$tmp"
+  mv "$tmp" "$config"
+}
+
 # lcars_config_merge — write config.json preserving existing keys.
 #
 # Args:

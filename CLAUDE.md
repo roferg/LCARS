@@ -92,11 +92,20 @@ Skills are built in this sequence. Status:
 15. `lcars`       — Human surface: `lcars` (do-the-right-thing) + `lcars answer`
     (one inbox absorbing respond/approve/feedback) + the read-only board; no
     mission-id juggling. Old verbs stay as power aliases.  ✅ built
-16. `lcars log`   — Mission Log: bugs against an active mission.  ✅ built
+16. `lcars log`   — Mission Log: bugs against an active mission (fast-track entry;
+    the grounded flow lands in #18).  ✅ built
 17. Copilot enablement — **RESEARCH session**: run the capability spike, then
     propose a phased plan of incremental Copilot build sessions (18+) behind
     `$LCARS_WORKER_BIN` rather than one big-bang. **DEFERRED** (closes BUG-003);
     start with the spike.
+18. `lcars log`   — Mission-log grounding: a logged bug enters at **Research in a
+    grounding mode** — a bounded, read-only worker anchors the free-form symptom
+    to the parent Mission's *existing* code (its PRD, plan, delivered diff) and
+    forbids a duplicate fix — then flows the full pipeline to Verify (only Align
+    skipped), instead of fast-tracking straight to Plan. Closes the "green-but-
+    wrong decoy" class (a fix that builds a parallel dead control beside the real
+    one). Viewscreen + CLI show the Research + Validate Stages and their models on
+    the same generic card. See `CONTEXT.md` → *Grounding*.  ✅ built
 
 Detailed per-session prompts live in `.dev/bootstrap.md` (author-local, not
 shipped). When you finish a skill, tick it off here.

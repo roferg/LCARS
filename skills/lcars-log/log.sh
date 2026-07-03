@@ -8,16 +8,21 @@
 # resolves which active parent Mission they belong to. This script takes those
 # PRDs + the parent selector and, for each bug:
 #   1. mints a mission ID            lcars-YYYYMMDD-NNN (NNN per-day sequence)
-#   2. creates .git/lcars/missions/<id>/ with prd.md, validated-plan.md, state.json
+#   2. creates .git/lcars/missions/<id>/ with prd.md + state.json
 #   3. gives the Mission its own branch lcars/<id> (off the current branch)
-#   4. opens a GitHub issue labelled lcars:plan + lcars:bug + lcars:linked + lcars:mission
+#   4. opens a GitHub issue labelled lcars:align + lcars:bug + lcars:linked + lcars:mission
 #   5. links it to the parent (parentMission/parentIssue in state.json + label)
 # then prints one aggregate summary.
 #
-# Bugs SKIP Align, Research, and Validate — they start at the **Plan** stage
-# (vision Example 3). Plan's worker still reads validated-plan.md, so we write a
-# thin one from the bug PRD: the report IS the validated direction. That makes
-# `lcars run <id>` immediately runnable from Plan with no upstream stages.
+# Bugs SKIP Align (no re-grill — the captain's report stays casual), but they now
+# ENTER the pipeline at **Research** in a grounding-only mode and walk the FULL
+# pipeline (Research → Validate → Plan → … → Verify). So the child seeds
+# stage="align" (the drive maps align + no feedback.md → Research) plus an explicit
+# origin="log" flag that Research keys grounding-mode on. Research anchors the
+# symptom to the EXISTING code (reading the PARENT Mission's PRD/plan + the
+# delivered code), and Validate then writes the real validated-plan.md — so we no
+# longer hand-write a thin one here. This exists because a fast-tracked bug once
+# built a parallel decoy fix instead of modifying the real feature.
 #
 # Dependencies are taken via env so they can be stubbed in tests:
 #   LCARS_GH_BIN   the gh binary       (default: gh)
@@ -294,19 +299,12 @@ file_one_bug() { # prd-path [model-override]
     } >>"$mdir/prd.md"
   fi
 
-  # validated-plan.md — bugs skip Validate, but Plan reads this. The report is
-  # the validated direction, so synthesise a thin plan from it. (See header.)
-  {
-    printf '# Validated Plan: %s\n\n' "$title"
-    printf 'This is a **bug Mission** logged via `lcars log` against %s' "$PARENT_ID"
-    case "$PARENT_ISSUE" in ''|null) : ;; *) printf ' (#%s)' "$PARENT_ISSUE" ;; esac
-    printf '.\n\n'
-    printf 'It skips Align, Research, and Validate: the bug report below IS the\n'
-    printf 'validated direction. Plan should decompose it into the smallest set of\n'
-    printf 'vertical-slice tickets that fix the defect and lock it with a test.\n\n'
-    printf -- '---\n\n'
-    cat "$prd"
-  } >"$mdir/validated-plan.md"
+  # NOTE: a logged bug now ENTERS the pipeline at Research (grounding mode) and
+  # walks Research → Validate → Plan → … (stage="align", origin="log" below), so
+  # we DO NOT hand-write a thin validated-plan.md here anymore — Validate produces
+  # the real one after Research has anchored the symptom to the existing code.
+  # (Align is still skipped: the drive maps stage=align + no feedback.md straight
+  # to Research, with no re-grill; the captain's report stays casual.)
 
   # the Mission's working branch. When the parent Mission is still PRE-MERGE —
   # its branch ref still exists locally — accumulate this fix as commits ONTO
@@ -348,7 +346,7 @@ file_one_bug() { # prd-path [model-override]
     url="$("$GH_BIN" issue create \
             --title "$title" \
             --body-file "$body" \
-            --label "lcars:plan,lcars:bug,lcars:linked,lcars:mission" 2>/dev/null)"
+            --label "lcars:align,lcars:bug,lcars:linked,lcars:mission" 2>/dev/null)"
     rm -f "$body"
     num="${url##*/}"
     case "$num" in ''|*[!0-9]*) issue="" ;; *) issue="$num" ;; esac
@@ -398,8 +396,9 @@ file_one_bug() { # prd-path [model-override]
     printf '{\n'
     printf '  "id": "%s",\n' "$id"
     printf '  "type": "bug",\n'
+    printf '  "origin": "log",\n'
     printf '  "title": "%s",\n' "$title_json"
-    printf '  "stage": "plan",\n'
+    printf '  "stage": "align",\n'
     printf '  "created": "%s",\n' "$NOW"
     printf '  "model": "%s",\n' "$MODEL"
     [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"

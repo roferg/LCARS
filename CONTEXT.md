@@ -18,10 +18,13 @@ The first Stage. A grill-me-with-docs session between the human and an LLM to re
 The structured output of the Align stage. Contains the Mission's goals, acceptance criteria, constraints, and scope. All downstream stages refer to the PRD as the source of truth.
 
 ## Research
-The second Stage. The Harness generates 0–20 questions based on the PRD. Each question is sent to a stateless Research Agent. If more than 20 questions are needed, the Harness explains why and gives the human the choice to override or loop back to Align with that context.
+The second Stage. The Harness generates 0–20 questions based on the PRD. Each question is sent to a stateless Research Agent. If more than 20 questions are needed, the Harness explains why and gives the human the choice to override or loop back to Align with that context. For a **logged bug** (filed via the Mission Log) Research runs in **Grounding** mode instead of the question fan-out — see *Grounding*.
 
 ## Research Agent
 A stateless LLM worker that receives a single question (no PRD, no prior context) and returns a structured response: a recommendation plus 2–3 supporting points. Research Agents have access to both the codebase and the web. Each Agent is blind to what the others are finding.
+
+## Grounding
+The mode Research runs in for a **logged bug** — a Mission filed via the Mission Log against an existing parent Mission. Instead of the 0–20 question fan-out, a single bounded, read-only worker anchors the bug's free-form symptom to the **existing code it is about** — reading the parent Mission's PRD, plan, and delivered code — and records which existing files and symbols the fix must modify, explicitly forbidding a parallel duplicate. It never escalates to the human. This is what keeps a casually-worded bug ("the icon is missing when no game is open") from being "fixed" by building a new control beside the real one instead of changing it. A logged bug then flows the full pipeline (Research → Validate → Plan → … → Verify); only Align is skipped.
 
 ## Validate
 The third Stage. A Validator LLM reviews all Research Agent responses in the context of the PRD, synthesizes recommendations into a plan, and escalates to the human only when a finding implies a scope or direction change — something that would change *what* gets built, not *how*.
@@ -30,7 +33,7 @@ The third Stage. A Validator LLM reviews all Research Agent responses in the con
 The fourth Stage. The Harness decomposes the validated plan into small, independently testable GitHub issues (sub-tickets). Each issue is a vertical slice of full-stack functionality, targeting fewer than 300 lines of code (excluding tests). The output feeds directly into Plan Review before any scheduling occurs.
 
 ## Plan Review
-The fifth Stage. A fresh LLM session — with no access to the planning conversation — audits every issue produced by Plan against a fixed set of quality criteria: vertical slice (touches multiple layers end-to-end, not just one horizontal layer), under 300 lines of production code, clear testable acceptance criterion, and explicit dependency edges.
+The fifth Stage. A fresh LLM session — with no access to the planning conversation — audits every issue produced by Plan against a fixed set of quality criteria: vertical slice (touches multiple layers end-to-end, not just one horizontal layer), under 300 lines of production code, clear testable acceptance criterion, and explicit dependency edges. A **slice-pressure** heuristic (declared acceptance criteria, new files, breadth of touched directories) additionally flags a ticket that hides a whole surface behind a simple title, so the reviewer rejects a title that conceals multiple behaviors *or* a scope that silently omits part of the surface it claims (an under-slice) — a soft signal, never a mechanical size-reject.
 
 If any issues fail, Plan Review returns the full set with specific objections and the Plan stage must revise. This loop repeats until all issues pass. After three rounds without a clean plan, Plan Review escalates to the human with the unresolved issues flagged — the human can override and proceed, or redirect.
 
@@ -47,8 +50,10 @@ The seventh Stage. Each issue in a Wave is handled by two sequential LLM session
 
 The separation is adversarial by design: the Test Writer cannot sandbag because it does not know who will implement; the Implementer cannot skip tests because they are handed as a constraint.
 
+The Test Writer authors each ticket's suite at the repo's **own test convention** — co-located `*.test.ts`, a `__tests__/` dir, or a top-level `tests/`, detected from the repo — and it is committed alongside the work (the locked test in its own commit, the implementation after), so the coverage **rides into the PR** and merges to the trunk instead of evaporating in a scratch dir. Immutability holds across that commit boundary: the committed test is re-hashed against its locked snapshot at ticket-green and again at the pre-merge gate.
+
 ## Verify
-The eighth Stage. The human reviews the completed Mission — inspecting code, running the app locally if needed — and either approves (triggering PR creation) or sends feedback that re-enters the loop.
+The eighth Stage. The human reviews the completed Mission — inspecting code, running the app locally if needed — and either approves (triggering PR creation) or sends feedback that re-enters the loop. The PR carries each ticket's Test Writer suite, committed at the repo's own test convention, so the hard-won coverage ships with the change; a pre-merge gate re-checks each committed test against its locked snapshot (provisioning its environment the same way Implement does, so an environment failure is never mistaken for a real conflict), preserving immutability across the commit boundary.
 
 ## Setup Skill
 A one-time-per-repo CLI skill (`lcars init`) that prepares a repo for LCARS usage. Does two things:
@@ -76,7 +81,7 @@ A standard set of GitHub issue labels created by the Setup Skill. They are the s
 A global CLI skill invokable from any repo. Accepts a free-form description of a new Mission (feature or bug) and launches the Harness pipeline from the Align stage. Used for standalone Missions with no relationship to other active work.
 
 ## Mission Log
-A global CLI skill for logging bugs or feedback against an active Mission (one whose PR has not yet merged). Accepts free-form natural language — a single session can describe multiple bugs. The Harness extracts each distinct bug, creates a fast-tracked Mission for each, and links all of them to the referenced open Mission.
+A global CLI skill for logging bugs or feedback against an active Mission (one whose PR has not yet merged). Accepts free-form natural language — a single session can describe multiple bugs. The Harness extracts each distinct bug, creates a Mission for each — **grounded against the parent Mission's existing code** (it enters at Research in Grounding mode, skipping only Align) — and links all of them to the referenced open Mission.
 
 The human is expected to name the open Mission in their feedback. If none is referenced, the skill asks which active Mission to link against before proceeding.
 

@@ -207,13 +207,15 @@ class GitHubAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "143")
         self.assertIsNone(m["modelMix"])
 
-    # ── S74 follow-up CHANGE 3 (adapter parity): a logged BUG (lcars:bug /
-    # lcars:linked) skips Research+Validate, so those rows are dropped from its
-    # model-mix table even when the issue body's table still lists all six. ──
-    def test_bug_mission_mix_omits_research_and_validate(self):
+    # ── Mission-log-grounding round (adapter parity): a LOGGED bug (lcars:bug /
+    # lcars:linked) now walks the FULL pipeline, so its issue-body table lists all
+    # six stages and they ALL show — the old bug-skip filter is gone. The mix is
+    # driven purely by the body's table (mirrors the local adapter driving it off
+    # estimate.json). ──
+    def test_logged_bug_mix_keeps_research_and_validate(self):
         payload = [{
             "number": 150, "title": "Bug: leaderboard off-by-one", "state": "OPEN",
-            "labels": [{"name": "lcars:mission"}, {"name": "lcars:plan"},
+            "labels": [{"name": "lcars:mission"}, {"name": "lcars:research"},
                        {"name": "lcars:bug"}, {"name": "lcars:linked"}],
             "body": ("Bug PRD…\n\n## Estimate\n\n"
                      "**Per-stage model mix:**\n\n"
@@ -225,6 +227,33 @@ class GitHubAdapterTest(unittest.TestCase):
         }]
         _write_stub(self.stub, payload)
         m = self._by_id(self._board(), "150")
+        stages = [r["stage"] for r in m["modelMix"]]
+        self.assertEqual(stages, ["Research", "Validate", "Plan",
+                                  "Plan Review", "Implement", "Verify"])
+        self.assertIn("Research", stages)
+        self.assertIn("Validate", stages)
+        # the grounding descriptor is inferred from the bug labels for parity.
+        self.assertTrue(m["groundingResearch"])
+
+    # Regression: a genuinely FAST-TRACKED bug whose body renders BLANK
+    # Research/Validate cells (render_estimate_issue loops all six labels while
+    # the estimate omitted those tiers) still HIDES those rows — the empty-model
+    # cell is skipped, so no empty rows now that the is_bug filter is gone.
+    def test_fast_track_bug_with_blank_cells_omits_research_and_validate(self):
+        payload = [{
+            "number": 151, "title": "Bug: quick fix", "state": "OPEN",
+            "labels": [{"name": "lcars:mission"}, {"name": "lcars:plan"},
+                       {"name": "lcars:bug"}, {"name": "lcars:linked"}],
+            "body": ("Bug PRD…\n\n## Estimate\n\n"
+                     "**Per-stage model mix:**\n\n"
+                     "| Stage | Model |\n| --- | --- |\n"
+                     "| Research |  |\n| Validate |  |\n| Plan | Opus |\n"
+                     "| Plan Review | Sonnet |\n| Implement | Opus |\n"
+                     "| Verify | Sonnet |\n\n"
+                     "**Estimated cost:** $1.00–$2.00\n"),
+        }]
+        _write_stub(self.stub, payload)
+        m = self._by_id(self._board(), "151")
         stages = [r["stage"] for r in m["modelMix"]]
         self.assertEqual(stages, ["Plan", "Plan Review", "Implement", "Verify"])
         self.assertNotIn("Research", stages)

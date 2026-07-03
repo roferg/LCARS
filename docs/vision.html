@@ -175,6 +175,7 @@ flowchart TD
       </div>
       <p>Each question goes to a <strong>Research Agent</strong> — a stateless LLM worker with access to the codebase and the web. Agents work in parallel with no access to the PRD or each other's findings. Their only job is to return a recommendation and 2–3 supporting points.</p>
       <p>If more than 20 questions are needed, the Harness explains why and gives the human the choice to override or return to Align so the PRD can be sharpened.</p>
+      <p><strong>Grounding — Research for a logged bug.</strong> A bug filed via the <strong>Mission Log</strong> (against an existing parent Mission) does not run the question fan-out. Instead Research runs in a <strong>grounding</strong> mode: a single bounded, read-only worker anchors the bug's free-form symptom to the <em>existing</em> code it is about — reading the parent Mission's PRD, plan, and delivered code — and records which existing files and symbols the fix must modify, explicitly forbidding a parallel duplicate. It never escalates. This is what stops a casually-worded bug ("the icon is missing when no game is open") from being "fixed" by building a new control beside the real one instead of changing it. The logged bug then flows the full pipeline (Research → Validate → Plan → … → Verify); only Align is skipped.</p>
     </section>
 
     <section id="validate">
@@ -197,6 +198,7 @@ flowchart TD
           <li><strong>Vertical slice</strong> — does it touch multiple layers end-to-end, not just one horizontal layer?</li>
           <li><strong>Size</strong> — is the total comprehension load (read + test + new code) within <code>comprehensionBudget</code>? Over budget is an objection <em>only</em> when it comes from bundling two behaviors; load from an unavoidably large existing file is acceptable.</li>
           <li><strong>Coupling</strong> — can each issue's acceptance criteria be satisfied <em>without</em> changing behavior another issue's tests already pin? If satisfying issue A requires modifying behavior issue B locks down, they are coupled — the reviewer objects and names the behavioral seam to re-slice along. This is the real meaning of "too big": a sub-100-line issue can still be dangerously coupled, so coupling is a first-class reject reason on equal footing with the others.</li>
+          <li><strong>Slice pressure</strong> — a per-ticket heuristic (declared acceptance criteria, new files, and breadth of touched directories) flags a ticket that may hide a whole surface behind a simple title. The reviewer must reject a ticket whose title conceals multiple behaviors <em>or</em> whose scope silently omits part of the surface it claims — a "migrate all the chrome" ticket that leaves a file unthemed is an under-slice. A soft signal, never a mechanical size-reject; the budget stays a planning target.</li>
           <li><strong>Testability</strong> — is there a clear, observable acceptance criterion?</li>
           <li><strong>Explicit dependencies</strong> — are all dependencies on other issues captured in the graph?</li>
         </ul>
@@ -258,8 +260,9 @@ sequenceDiagram
       <div class="mission-card" style="border-left-color:var(--lcars-red)">
         <strong>The Harness — not the LLMs — enforces the split:</strong>
         <ul>
-          <li><strong>Red gate</strong> — the tests must actually <em>fail</em> before the Implementer runs. The gate evaluates the Test Writer's tests <strong>in isolation</strong> — only that quarantined suite, never the repo's existing passing tests — so a contract that is green before anything is built is always caught, even in a repo whose own suite is green. A rejection is never a silent stall: the Harness reports <em>why</em> and feeds that signal into the next Test-Writer attempt, so it writes a genuinely failing test instead of blindly retrying.</li>
+          <li><strong>Red gate</strong> — the tests must actually <em>fail</em> before the Implementer runs. The gate evaluates the Test Writer's tests <strong>in isolation</strong> — only that quarantined suite, never the repo's existing passing tests — so a contract that is green before anything is built is always caught, even in a repo whose own suite is green. A rejection is never a silent stall: the Harness reports <em>why</em> and feeds that signal into the next Test-Writer attempt — and the "why" is a named root cause: an over-broad slice that never converged on a coherent failure, a missing new module, a runner or environment failure, or a worker that returned nothing — not a generic "no usable tests." And before the gate ever runs, the Test Writer <strong>self-smokes</strong> its suite once in isolation under a hard timeout: a mock that hangs (an awaited thenable trap) or errors at collection is caught here as a Test-Writer defect and retried on its side, never charged to the Implementer's attempts.</li>
           <li><strong>Immutable tests</strong> — the Implementer cannot edit the test files; green is earned by implementing, never by weakening the contract.</li>
+          <li><strong>Tests ride along into the PR</strong> — the Test Writer authors each ticket's suite at the repo's <em>own</em> test convention — co-located <code>*.test.ts</code> next to the source, a <code>__tests__/</code> dir, or a top-level <code>tests/</code>, detected from the repo — and it is committed alongside the work: the locked test in its own commit first, the implementation after. The hard-won coverage lands in the PR and merges to the trunk instead of evaporating in a scratch dir, so downstream contributors inherit it. Immutability holds <em>across</em> that commit boundary — the committed test is re-hashed against its locked snapshot at ticket-green and again at the pre-merge gate (which provisions its environment the same way Implement does, so an environment failure is never mistaken for a real conflict), and a tampered test is blocked even after it is in the repo.</li>
           <li><strong>Test quality</strong> — a light check guards against a sandbagging Test Writer handing over a contract that proves nothing.</li>
           <li><strong>Full-suite green gate</strong> — passing a ticket's own locked tests is not enough; its commit must also leave the <strong>entire</strong> repo suite green, so a later ticket can't silently regress an earlier one. A cross-ticket regression fails the Wave loudly instead of slipping through to Verify.</li>
         </ul>
@@ -391,7 +394,7 @@ stateDiagram-v2
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars log</div>
-          <div class="control-desc">Log bugs against an active Mission in free-form language. One invocation can describe several bugs; the Harness fast-tracks a Mission per bug and links them to the parent.</div>
+          <div class="control-desc">Log bugs against an active Mission in free-form language. One invocation can describe several bugs; the Harness files a Mission per bug — grounded against the parent's existing code (each enters at Research in grounding mode, so a casual symptom is fixed in the real feature rather than duplicated; only Align is skipped) — and links them to the parent.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars resolve-logs &lt;parent&gt;</div>
@@ -476,7 +479,7 @@ flowchart TB
           <span class="example-title">Two Bugs Logged Against an Active Mission</span>
         </div>
         <div class="idea-quote">"Found two bugs. XP isn't being awarded when a video is marked complete — only quiz completions trigger it. Also, the leaderboard has a visible flicker on first page load before the data comes in. These are against the gamification mission."</div>
-        <p>One invocation of <strong>Mission Log</strong>. The Harness extracts two distinct bugs, creates a fast-tracked Mission for each, and links both to the open gamification Mission as native GitHub sub-issues. No second step.</p>
+        <p>One invocation of <strong>Mission Log</strong>. The Harness extracts two distinct bugs, creates a Mission for each — grounded against the parent's existing code — and links both to the open gamification Mission as native GitHub sub-issues. No second step.</p>
         <div class="diagram-wrap">
           <div class="mermaid">
 flowchart LR
@@ -500,7 +503,7 @@ flowchart LR
     ML -. "2 bugs extracted" .-> BUG2
           </div>
         </div>
-        <p>Both bug Missions fast-track in parallel: thin PRDs, zero research questions, one issue each. They run concurrently with each other and with the in-progress gamification Mission. The Kanban Board shows all three cards simultaneously. A bug logged against a Mission that has <strong>already merged</strong> rides its own branch and merges as soon as it's verified; a bug logged against a Mission still <strong>in flight</strong> lands its fix on that Mission's branch, so the fix ships with the parent rather than stranding on a branch whose base never merges. Either way the gamification Mission continues uninterrupted.</p>
+        <p>Both bug Missions run in parallel: each is first <strong>grounded</strong> against the parent's existing code (a scoped Research pass — no question fan-out, no human gate — that pins the fix to the real files it touches), then planned and implemented. They run concurrently with each other and with the in-progress gamification Mission. The Kanban Board shows all three cards simultaneously. A bug logged against a Mission that has <strong>already merged</strong> rides its own branch and merges as soon as it's verified; a bug logged against a Mission still <strong>in flight</strong> lands its fix on that Mission's branch, so the fix ships with the parent rather than stranding on a branch whose base never merges. Either way the gamification Mission continues uninterrupted.</p>
         <p style="margin-top:16px"><strong>Resolving a batch with one re-verify.</strong> When the bugs are found during the parent's <em>own</em> Verify — you're reviewing the finished Mission and file several in a row — driving each to its own Verify gate would mean one "review me" interruption per bug. <code>lcars resolve-logs &lt;parent&gt;</code> collapses them: it asks the worker for a sensible order (root-cause and dependency bugs first, cosmetic last), drives every linked bug Mission to its Verify gate one-by-one, and raises a <strong>single</strong> consolidated re-verify gate — one notification — on the parent.</p>
         <div class="diagram-wrap">
           <div class="mermaid">

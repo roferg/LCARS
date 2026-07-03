@@ -574,11 +574,15 @@ flowchart LR
         <div class="control-card">
           <div class="control-cmd">lcars log</div>
           <div class="control-desc">Log one or more bugs against an active
-          Mission; fast-tracks a Mission per bug straight to Plan and links
-          them. Each logged bug gets its own dynamic estimate (cost +
-          reasoning/implementation difficulty + per-stage model recommendation,
-          excluding the skipped Research/Validate Stages) in a Launch-style
-          review panel, with a plain-language per-bug model override.</div>
+          Mission; files a Mission per bug that enters at <strong>Research in a
+          grounding mode</strong> — anchoring the free-form symptom to the
+          parent's existing code so the fix modifies the real feature rather
+          than a duplicate — then flows the full pipeline to Verify (only Align
+          is skipped), and links them. Each logged bug gets its own dynamic
+          estimate (cost + reasoning/implementation difficulty + per-stage model
+          recommendation, now including the Research/Validate Stages) in a
+          Launch-style review panel, with a plain-language per-bug model
+          override.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars resolve-logs &lt;parent&gt;</div>
@@ -732,10 +736,12 @@ implement   ✓ ⊘ isolated  11/11 tickets green
         <div class="lcars-panel-body">
           <p>Found a bug while a Mission is still open? <code>lcars log</code>
           takes free-form language describing one or many bugs, extracts each,
-          fast-tracks a Mission per bug straight to <strong>Plan</strong>
-          (skipping Align / Research / Validate), and links them to the parent
-          with <code>lcars:linked</code>. They run in parallel on their own
-          branches and merge as soon as they verify.</p>
+          files a Mission per bug that enters at <strong>Research in a grounding
+          mode</strong> — anchoring the casual symptom to the parent's existing
+          code so the fix lands in the real feature, not a duplicate — then
+          flows the full pipeline to Verify (only Align is skipped), and links
+          them to the parent with <code>lcars:linked</code>. They run in
+          parallel on their own branches and merge as soon as they verify.</p>
           <p>Logged several bugs while reviewing a Mission at Verify?
           <code>lcars resolve-logs &lt;parent&gt;</code> hands the whole batch to
           the Harness. It picks a sensible order (root-cause and dependency bugs
@@ -807,10 +813,19 @@ lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
           escalating after 3 rounds).</li>
           <li><strong>Implement is adversarial and guarded by the harness, not the
           prompt.</strong> The Test Writer's tests must actually <strong>fail</strong>
-          before the Implementer runs — and the gate judges that <strong>quarantined
-          suite alone</strong>, never the repo's existing passing tests, so a
+          before the Implementer runs — and the red gate judges that suite
+          <strong>in isolation</strong>, never the repo's existing passing tests, so a
           green-on-nothing contract can't slip through even in a repo whose own suite
-          is green (a rejection says <em>why</em> and grounds the next attempt). The
+          is green (a rejection names a root cause — an over-broad slice, a missing
+          module, a runner/environment failure, an empty worker — and grounds the next
+          attempt, after the Test Writer has already <strong>self-smoked</strong> the
+          suite once to catch a hanging or collection-time defect on its own side).
+          Once red, that suite is then <strong>committed into the PR at the repo's own
+          test convention</strong> (co-located <code>*.test.ts</code>, a
+          <code>__tests__/</code> dir, or a top-level <code>tests/</code>) — the locked
+          test in its own commit ahead of the implementation — so the coverage merges
+          to the trunk instead of evaporating in a scratch dir, its immutability
+          re-checked across that commit boundary. The
           test files are <strong>locked</strong> so green can't be reached by editing
           them, and a quality check rejects assertion-free suites. Independent tickets
           in a Wave build <strong>concurrently</strong> in isolated per-ticket
@@ -1197,6 +1212,14 @@ install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
           </div>
           <div class="lcars-status-row">
             <div class="lcars-status active">Cost estimator + per-stage model selection</div>
+          </div>
+          <div class="lcars-status-row">
+            <div class="lcars-status active">Tests ride along into the PR</div>
+            <div class="lcars-status active">Under-slice pressure signal</div>
+            <div class="lcars-status active">Actionable red-gate classification</div>
+            <div class="lcars-status active">Test-Writer self-smoke</div>
+            <div class="lcars-status active">Empty-output worker detection</div>
+            <div class="lcars-status active">Reconcile env-parity</div>
           </div>
         </div>
       </div>
