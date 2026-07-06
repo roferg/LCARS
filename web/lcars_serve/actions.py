@@ -18,12 +18,14 @@ so the existing /api/events SSE loop carries the update — no second push path.
 
 stdlib only; no pip/npm/build step (ADR-007).
 """
+import atexit
 import base64
 import binascii
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -52,6 +54,8 @@ SCRIPT_ENV = {
     "feedback": "LCARS_FEEDBACK_SCRIPT",
     "log": "LCARS_LOG_SCRIPT",
     "resolve": "LCARS_RESOLVE_SCRIPT",
+    # S109: `lcars launch` — get a mission's app running locally during Verify.
+    "launch": "LCARS_LAUNCH_SCRIPT",
     # S130: the shared version helper the /api/update button shells (check.sh).
     "version_check": "LCARS_VERSION_CHECK_BIN",
 }
@@ -508,6 +512,34 @@ class Actions(object):
         # active Align grillings, keyed by sessionId (in-memory; ADR-006 local).
         self._align = {}
         self._align_lock = threading.Lock()
+        # S109: the DAEMON OWNS launched-app lifecycles. Each `lcars launch` setsids
+        # its app into its OWN process group (PGID == app pid) and RETURNS — so the
+        # app is NOT a child of anything the daemon waited on; to kill it we must
+        # target that process GROUP. Track mid → pgid here so daemon shutdown can
+        # group-kill everything it launched (nothing orphaned). Guarded by a lock
+        # (the shutdown handler may run on a signal thread).
+        self._launches = {}
+        self._launches_lock = threading.Lock()
+        # Kill every launched app on interpreter exit AND on SIGTERM (the daemon's
+        # normal stop signal). atexit won't fire on a bare SIGTERM, so install a
+        # handler that reaps launches then chains any prior handler. Best-effort:
+        # a restricted environment (no signal on this thread) must not break init.
+        atexit.register(self.shutdown_launches)
+        try:
+            prev = signal.getsignal(signal.SIGTERM)
+
+            def _on_sigterm(signum, frame, _prev=prev):
+                try:
+                    self.shutdown_launches()
+                finally:
+                    if callable(_prev) and _prev not in (
+                            signal.SIG_DFL, signal.SIG_IGN):
+                        _prev(signum, frame)
+            signal.signal(signal.SIGTERM, _on_sigterm)
+        except (ValueError, OSError, RuntimeError):
+            # e.g. not on the main thread — the atexit hook still covers a clean
+            # interpreter exit; skip the signal handler in that case.
+            pass
 
     # -- public action surface (one per endpoint) -------------------------------
     def file_mission(self, idea, engine=None, mission_type="feature",
@@ -946,6 +978,100 @@ class Actions(object):
         if isinstance(wm, str) and wm.strip():
             return wm.strip()
         return None
+
+    # -- S109: launch a mission's app locally (daemon-owned lifecycle) -----------
+    def launch(self, mid, hint=None):
+        """POST /api/mission/<id>/launch — run the mission's app for Verify.
+
+        Dispatches `lcars launch <mission> [hint]` BLOCKING: launch.sh discovers
+        how to start the app, launches it DETACHED into its own process group, and
+        writes launch.json (status running|failed) BEFORE returning — so on return
+        the terminal state is already on disk (the FE's "launching" state is just
+        the in-flight request spinner). A running record carries a numeric `pgid`
+        (== the app pid, setsid'd into its own session); we record mid → pgid so
+        the daemon can group-kill it on Stop / shutdown (the app is NOT our child).
+
+        A FAILED launch leaves a readable status=failed launch.json (plain-English
+        `message`); we surface that via the board's additive `launch` field rather
+        than leaking the skill's non-zero exit as a 502 + stack (UX-33).
+        """
+        self._require_mission(mid)
+        args = [mid]
+        h = (hint or "").strip()
+        if h:
+            args += h.split()
+        env_extra = {}
+        engine = self._persisted_worker_bin(mid)
+        if engine:
+            env_extra["LCARS_WORKER_BIN"] = engine
+        try:
+            self._run("launch", args, env_extra=env_extra)
+        except ActionError:
+            # A discovery/liveness failure exits non-zero AND writes a failed
+            # launch.json. If that readable record is present, swallow the exit and
+            # surface the message via the board; otherwise re-raise (a genuine
+            # dispatch error with no record for the FE to show).
+            if not isinstance(self._read_launch_json(mid), dict):
+                raise
+        rec = self._read_launch_json(mid)
+        if isinstance(rec, dict) and rec.get("status") == "running":
+            pgid = rec.get("pgid")
+            if isinstance(pgid, int) and pgid > 0:
+                with self._launches_lock:
+                    self._launches[mid] = pgid
+        return {"board": self._reader.board()}
+
+    def launch_stop(self, mid):
+        """POST /api/mission/<id>/launch/stop — stop the mission's launched app.
+
+        Dispatches `lcars launch <mission> --stop`, which kills the app's process
+        group and prunes the worktree, then drops the mission from the tracking
+        table. Idempotent: a double-stop is a clean no-op (the skill's --stop is
+        itself idempotent, and popping an absent key is harmless)."""
+        self._require_mission(mid)
+        env_extra = {}
+        engine = self._persisted_worker_bin(mid)
+        if engine:
+            env_extra["LCARS_WORKER_BIN"] = engine
+        try:
+            self._run("launch", [mid, "--stop"], env_extra=env_extra)
+        finally:
+            with self._launches_lock:
+                self._launches.pop(mid, None)
+        return {"board": self._reader.board()}
+
+    def shutdown_launches(self):
+        """Kill every app this daemon launched — the daemon owns their lifecycles,
+        so a shutdown must not orphan any. Each was setsid'd into its own process
+        group (PGID == the recorded pgid), so we group-kill the pgid (a plain
+        kill of the launch subprocess would leave the app running). Best-effort
+        and safe to call more than once (atexit + SIGTERM + explicit both land
+        here): the table is drained under the lock first, so a second call is a
+        no-op even if a signal races the exit hook."""
+        with self._launches_lock:
+            items = list(self._launches.items())
+            self._launches.clear()
+        for _mid, pgid in items:
+            if not (isinstance(pgid, int) and pgid > 0):
+                continue
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
+
+    # `close` is an alias so a daemon can call whichever reads clearer at its
+    # shutdown site; both drain the launch table.
+    close = shutdown_launches
+
+    def _read_launch_json(self, mid):
+        """The mission's launch.json as a dict, or None (absent/unreadable)."""
+        p = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                         "launch.json")
+        try:
+            with open(p) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
 
     def pause(self, mid):
         """POST /api/mission/<id>/pause."""
@@ -1787,6 +1913,8 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
         "log": os.path.join(home, ".claude/skills/lcars-log/log.sh"),
         "resolve": os.path.join(
             home, ".claude/skills/lcars-resolve-logs/resolve-logs.sh"),
+        "launch": os.path.join(
+            home, ".claude/skills/lcars-launch/launch.sh"),
         "version_check": os.path.join(
             home, ".claude/skills/lcars-version/check.sh"),
     }

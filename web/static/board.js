@@ -1570,6 +1570,9 @@ function openReverifyGate(mi) {
     m.body.appendChild(list);
   }
 
+  // S109: RUN / STOP the mission's app so the captain can view it during re-verify.
+  m.body.appendChild(launchAffordance(mi));
+
   var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
   // Send-back reveals a feedback field, then dispatches the feedback decision.
@@ -1604,6 +1607,100 @@ function openReverifyGate(mi) {
   m.foot.appendChild(sendBack);
   m.foot.appendChild(accept);
   showOverlay(m.wrap);
+}
+
+/* S109: the RUN / STOP launch affordance, shared by BOTH Verify surfaces
+   (openVerify + openReverifyGate) — one component. Reads mi.launch
+   {status,target,url,message}:
+     • absent / stopped / failed → a themed ⚡ RUN button + an optional one-line
+       hint input (a prior failure shows its plain-English message above it — the
+       message is human English already, never a raw command or stack trace).
+     • running → the target + a clickable URL + a ■ STOP button.
+   Clicking dispatches to the daemon (POST …/launch | …/launch/stop), which OWNS
+   the launched process group. A workingNode covers the in-flight "launching…"
+   state; on completion the panel re-fetches this mission and re-renders in place
+   (launching → running / failed) without closing the dialog. View-only builds
+   degrade the buttons via applyWriteState like every other write. */
+function launchAffordance(mi) {
+  var wrap = el("div", "launch-panel");
+  wrap.style.cssText = "margin:14px 0;padding:10px;border-radius:6px;"
+    + "background:rgba(153,153,255,.10)";
+
+  function busyLabel(busy, text) {
+    var lab = busy.querySelector(".lcars-working-label");
+    if (lab) lab.textContent = text;
+  }
+
+  function reload() {
+    // Re-fetch the mission so the panel reflects the settled launch state
+    // (SSE also nudges the board; this keeps the OPEN dialog in sync).
+    fetchMission(mi.id, function (fresh) {
+      mi.launch = fresh.launch;
+      render(fresh.launch);
+    });
+  }
+
+  function render(launch) {
+    wrap.textContent = "";
+    var head = el("div", "dim");
+    head.style.cssText = "text-transform:uppercase;letter-spacing:.08em;"
+      + "font-size:11px;margin-bottom:6px";
+    head.textContent = "Run the app";
+    wrap.appendChild(head);
+
+    var err = el("div", "errline"); err.hidden = true; wrap.appendChild(err);
+    var busy = workingNode("Launching the app…"); busy.hidden = true;
+    wrap.appendChild(busy);
+
+    var status = launch && launch.status;
+    if (status === "running") {
+      var line = el("div"); line.style.marginBottom = "8px";
+      line.appendChild(el("span", "pill go", "● LIVE"));
+      line.appendChild(document.createTextNode(
+        " " + (launch.target || "the app") + " "));
+      if (launch.url) {
+        var a = el("a"); a.href = launch.url; a.target = "_blank";
+        a.rel = "noopener"; a.textContent = launch.url;
+        line.appendChild(a);
+      }
+      wrap.appendChild(line);
+      var stop = applyWriteState(btn("■ STOP", "danger", function () {
+        err.hidden = true; busy.hidden = false;
+        busyLabel(busy, "Standing the app down…");
+        stop.disabled = true;
+        postWrite("/api/mission/" + enc(mi.id) + "/launch/stop", {},
+          function () { reload(); },
+          function (msg) {
+            busy.hidden = true; stop.disabled = false; showErr(err, msg);
+          });
+      }));
+      wrap.appendChild(stop);
+    } else {
+      if (status === "failed" && launch && launch.message) {
+        showErr(err, launch.message);
+      }
+      var hint = el("input"); hint.type = "text";
+      hint.placeholder =
+        "Optional — name the app or its directory (e.g. “the game in web/”)";
+      hint.style.cssText = "width:100%;box-sizing:border-box;margin-bottom:8px";
+      wrap.appendChild(hint);
+      var run = applyWriteState(btn("⚡ RUN", "go", function () {
+        err.hidden = true; busy.hidden = false;
+        busyLabel(busy, "Launching the app…");
+        run.disabled = true;
+        postWrite("/api/mission/" + enc(mi.id) + "/launch",
+          { hint: (hint.value || "").trim() },
+          function () { reload(); },
+          function (msg) {
+            busy.hidden = true; run.disabled = false; showErr(err, msg);
+          });
+      }));
+      wrap.appendChild(run);
+    }
+  }
+
+  render(mi.launch);
+  return wrap;
 }
 
 /* ════════════════ SCREEN: VERIFY (#verify) ════════════════ */
@@ -1671,6 +1768,9 @@ function openVerify(id) {
       noPr.textContent = "No PR open yet — re-run the mission so Verify opens it.";
       m.body.appendChild(noPr);
     }
+
+    // S109: RUN / STOP the mission's app so the captain can view it during Verify.
+    m.body.appendChild(launchAffordance(mi));
 
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 

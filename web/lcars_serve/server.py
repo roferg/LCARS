@@ -246,6 +246,13 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
                                       feedback=body.get("feedback"))
             if verb == "reapprove":
                 return actions.reapprove(mid)
+            # S109: launch a mission's app locally (Verify), and stop it. The
+            # daemon owns the launched process group (see actions.launch). LOCAL-
+            # only is automatic — a read-only build has actions=None (403'd above).
+            if verb == "launch":
+                return actions.launch(mid, hint=body.get("hint"))
+            if verb == "launch/stop":
+                return actions.launch_stop(mid)
             if verb == "log":
                 return actions.log_preview(mid, text=body.get("text"),
                                            images=self._images(body))
