@@ -278,6 +278,8 @@ check "S82 update: reports the added worktreeSetupCommand key" \
 repoUc="$(new_repo)"
 init_repo "$repoUc"
 cfgUc="$repoUc/.git/lcars/config.json"
+# Includes a current lcarsVersion (pinned below via LCARS_VERSION) so this repo is
+# genuinely fully-current under the versioned schema — update must change nothing.
 cat >"$cfgUc" <<'JSON'
 {
   "model": "claude-sonnet",
@@ -286,6 +288,7 @@ cat >"$cfgUc" <<'JSON'
   "testCommand": null,
   "worktreeSetupCommand": "my-bespoke-provision --offline",
   "comprehensionBudget": 1200,
+  "lcarsVersion": "2099.1.1",
   "created": "2018-01-01T00:00:00Z"
 }
 JSON
@@ -310,7 +313,7 @@ lcars:linked
 lcars:mission
 lcars:ticket
 EOF
-( cd "$repoUc" && LCARS_GH_BIN="$repoUc/gh" bash "$SCRIPT" >outUc.txt 2>&1 )
+( cd "$repoUc" && LCARS_VERSION="2099.1.1" LCARS_GH_BIN="$repoUc/gh" bash "$SCRIPT" >outUc.txt 2>&1 )
 check "S82 update: a captain-set worktreeSetupCommand is left untouched (no clobber)" \
   "grep -q 'my-bespoke-provision --offline' '$cfgUc'"
 check "S82 update: config unchanged byte-for-byte when the key is already present" \

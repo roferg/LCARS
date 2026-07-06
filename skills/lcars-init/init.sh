@@ -25,6 +25,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { printf 'lcars init: %s\n' "$1" >&2; exit 1; }
 
+# --- the running LCARS version (stamped into the repo's config) ------------
+# The VERSION file ships in the repo root (../.. from this skill dir; -P resolves
+# the install symlink to the physical checkout). An explicit LCARS_VERSION wins so
+# tests can pin it; LCARS_REPO redirects the checkout root (mirrors the resolution
+# in skills/lcars-version/version.sh). Empty when unresolved — the key is then
+# simply omitted rather than seeding a bogus stamp.
+lcars_running_version() {
+  if [ -n "${LCARS_VERSION:-}" ]; then printf '%s' "$LCARS_VERSION"; return; fi
+  local phys repo vf
+  phys="$(cd "$SCRIPT_DIR" && pwd -P)"
+  repo="${LCARS_REPO:-$(cd "$phys/../.." 2>/dev/null && pwd -P)}"
+  vf="$repo/VERSION"
+  [ -f "$vf" ] || return 0
+  sed -n '/[^[:space:]]/{s/^[[:space:]]*//; s/[[:space:]]*$//; p; q;}' "$vf"
+}
+RUNNING_VERSION="$(lcars_running_version)"
+
 # --- locate the repo ------------------------------------------------------
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" \
   || die "not inside a git repository — run this from a repo root."
@@ -231,12 +248,19 @@ fi
 # customized testCommand / model / comprehensionBudget) is preserved; only
 # missing keys are filled from the detected defaults below. The desired list is
 # the canonical schema, in key order.
+# lcarsVersion stamps the repo with the LCARS version that initialized it (MISSING-
+# only, like every other key — a re-init preserves a hand-edited stamp; `lcars
+# update` is what force-refreshes it). Omitted only when the running version can't
+# be resolved (no VERSION file), so we never seed a bogus stamp.
+VERSION_LINE=""
+[ -n "$RUNNING_VERSION" ] && VERSION_LINE="
+lcarsVersion=\"$RUNNING_VERSION\""
 DESIRED_CONFIG="model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
 contextFile=$CONTEXT_VALUE
 testCommand=$TESTCMD_VALUE
 worktreeSetupCommand=$WTSETUP_VALUE
-comprehensionBudget=1200
+comprehensionBudget=1200$VERSION_LINE
 created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
 

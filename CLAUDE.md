@@ -53,6 +53,13 @@ ignored — never put skills, tests, installers, or docs there.
 A skill is not "done" until its source and test are committed in this repo.
 Files left only in `~/.claude/` do not count — they don't ship.
 
+**Versioning contract.** Every PR into `main` bumps the root `VERSION` file
+(`YYYY.M.N` — year, month with no leading zero, per-month counter) and adds a
+matching newest-first `CHANGELOG.md` entry summarized from the PR body. `lcars
+init` stamps a repo's `lcarsVersion`, `lcars update` refreshes it, and `lcars
+version` reports the running/source/stamp picture — an unbumped `main` reads as
+drift.
+
 ## Build order (from `.dev/bootstrap.md`)
 
 Skills are built in this sequence. Status:
