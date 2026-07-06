@@ -38,33 +38,12 @@ REPO="${LCARS_REPO:-$DEFAULT_REPO}"
 COMMON="$REPO/skills/lcars-init/lcars-common.sh"
 [ -f "$COMMON" ] && . "$COMMON"
 
+# Shared version parse/compare (version_valid, version_cmp, running-version read):
+# YYYY.M.N compared FIELD-BY-FIELD NUMERICALLY (2026.7.10 > 2026.7.2). One copy,
+# also used by check.sh, so the rules can never drift between the two.
+. "$SCRIPT_DIR/version-lib.sh"
+
 die() { printf 'lcars version: %s\n' "$1" >&2; exit 1; }
-
-# --- version parsing: YYYY.M.N, compared FIELD-BY-FIELD NUMERICALLY --------
-# String compare is wrong (2026.7.2 vs 2026.7.10 — 10 > 2 numerically), so parse
-# the three integer fields and compare each. version_valid guards every read so a
-# malformed / empty VERSION yields a readable error, never an arithmetic blow-up.
-version_valid() {
-  case "$1" in
-    ''|*[!0-9.]*) return 1 ;;                       # empty or non-[0-9.] chars
-  esac
-  # exactly three dot-separated, non-empty, numeric fields
-  local IFS=.; set -f; set -- $1; set +f
-  [ "$#" -eq 3 ] && [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ]
-}
-
-# version_cmp A B -> echoes -1 (A<B), 0 (A==B), 1 (A>B). Assumes both valid.
-version_cmp() {
-  local a="$1" b="$2" ai bi i
-  local -a af bf
-  local IFS=.; set -f; af=($a); bf=($b); set +f; unset IFS
-  for i in 0 1 2; do
-    ai=$((10#${af[i]})); bi=$((10#${bf[i]}))
-    if [ "$ai" -lt "$bi" ]; then echo -1; return; fi
-    if [ "$ai" -gt "$bi" ]; then echo 1;  return; fi
-  done
-  echo 0
-}
 
 hr() { printf -- '────────────────────────────────────────────────────────\n'; }
 
@@ -74,11 +53,8 @@ hr() { printf -- '────────────────────�
 VERSION_FILE="$REPO/VERSION"
 if [ -n "${LCARS_VERSION:-}" ]; then
   RUNNING="$LCARS_VERSION"
-elif [ -f "$VERSION_FILE" ]; then
-  # first non-empty line, whitespace-trimmed
-  RUNNING="$(sed -n '/[^[:space:]]/{s/^[[:space:]]*//; s/[[:space:]]*$//; p; q;}' "$VERSION_FILE")"
 else
-  RUNNING=""
+  RUNNING="$(lcars_version_read_running "$VERSION_FILE")"
 fi
 
 if ! version_valid "$RUNNING"; then

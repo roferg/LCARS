@@ -32,6 +32,14 @@ RUN_BIN="${LCARS_RUN_BIN:-$HOME/.claude/skills/lcars-run/run.sh}"
 
 die() { printf 'lcars file: %s\n' "$1" >&2; exit 1; }
 
+# --- version check + ask-to-update (interactive; S129) ---------------------
+# `lcars file` is an interactive entry point, so BEFORE any real work we run the
+# throttled version check in ASK mode. Fully guarded (`|| true`) + honours the
+# LCARS_VERSION_CHECK=0 kill switch, so it can never fail the filing.
+FILE_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$FILE_SKILL_DIR/../lcars-version/check.sh}"
+[ -f "$VERSION_CHECK" ] && bash "$VERSION_CHECK" ask || true
+
 # --- args -----------------------------------------------------------------
 # --prd is REQUIRED. --adr is OPTIONAL: Align passes it ONLY for a complex
 # Mission (an engineering ADR set); a trivial Mission ships no adr.md at all.

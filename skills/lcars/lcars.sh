@@ -49,6 +49,13 @@ case "${1:-}" in
     exec bash "$PAUSE_SCRIPT" resume "$@" ;;
 esac
 
+# --- version check + ask-to-update (interactive; S129) ---------------------
+# `lcars` is an interactive entry point, so BEFORE routing we run the throttled
+# version check in ASK mode. It is fully guarded: a missing helper, a non-zero
+# exit, or the LCARS_VERSION_CHECK=0 kill switch can never sink the verb.
+VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$SKILL_DIR/../lcars-version/check.sh}"
+[ -f "$VERSION_CHECK" ] && bash "$VERSION_CHECK" ask || true
+
 
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 
