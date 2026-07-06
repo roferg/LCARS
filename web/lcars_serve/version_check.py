@@ -98,6 +98,7 @@ def _parse_report(text):
     """
     running = None
     remote = None
+    stamped = None
     seen = set()
     for raw in (text or "").splitlines():
         line = raw.strip()
@@ -110,6 +111,8 @@ def _parse_report(text):
             running = val or None
         elif key == "remote":
             remote = val or None
+        elif key == "stamped":
+            stamped = val or None
         elif key == "verdict" and val:
             seen.add(val)
     verdicts = [v for v in _VERDICTS if v in seen]
@@ -120,4 +123,8 @@ def _parse_report(text):
     block = {"running": running, "verdicts": verdicts}
     if remote:
         block["remote"] = remote
+    # the viewed repo's stamped version (from→to on the banner); omitted for an
+    # unstamped/predates repo, where the front end shows "unstamped".
+    if stamped:
+        block["stamped"] = stamped
     return block

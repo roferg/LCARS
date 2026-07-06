@@ -31,6 +31,11 @@ var STAGE_META = [
 // or the capability probe said so). When false, write controls are disabled.
 var writesActive = null;
 
+// Version banner dismissal — session-only (in-memory, NOT persisted). Clicking the
+// banner's ✕ hides it for the rest of this page's life; a refresh / relaunch of the
+// viewscreen reloads board.js, resets this to false, and the banner returns.
+var versionBannerDismissed = false;
+
 // UX-14: the repo the board is attached to (board.meta.repo), captured on every
 // render so the detail modal's "View on GitHub" link can build the issue URL
 // even when the per-mission payload doesn't echo the repo. May stay null.
@@ -688,64 +693,116 @@ function render(board) {
 }
 
 /* S130: the version UPDATE banner. Driven purely by the ADDITIVE
-   board.meta.version block ({running, remote?, verdicts[]}). When verdicts is
-   empty/absent (a current install) the banner is HIDDEN and the board is
-   byte-identical to before. SOURCE_BEHIND → "LCARS <remote> AVAILABLE — ENGAGE
-   UPDATE"; REPO_STALE / REPO_PREDATES → "REPO NEEDS UPDATE"; each with an update
-   button that POSTs /api/update (decline reasons render inline). A VIEW-ONLY
-   build (writesActive === false) shows the banner WITHOUT the button — read-safe
-   info, no write affordance. */
+   board.meta.version block ({running, remote?, stamped?, verdicts[]}). The banner
+   is HIDDEN unless there is an ACTIONABLE update: SOURCE_BEHIND → "LCARS <remote>
+   AVAILABLE — ENGAGE UPDATE"; REPO_STALE / REPO_PREDATES → "UPDATE LCARS IN THIS
+   REPO — <stamped> → <running>", each with an update button that POSTs
+   /api/update (decline reasons render inline). A drift-only state (main moved
+   without a bump) is a maintainer signal with no board action, so it shows no
+   banner — it lives in the CLI. A current install (no verdicts) is likewise
+   hidden and byte-identical to before. A VIEW-ONLY build (writesActive === false)
+   shows the banner WITHOUT the button — read-safe info, no write affordance. */
 function renderVersionBanner(version) {
   var host = document.getElementById("versionBanner");
   if (!host) return;
   host.innerHTML = "";
+  // Dismissed for this session → stay hidden through every live re-render.
+  if (versionBannerDismissed) { host.hidden = true; return; }
   var verdicts = (version && version.verdicts) || [];
-  if (!verdicts.length) { host.hidden = true; return; }
-  host.hidden = false;
-
   var sourceBehind = verdicts.indexOf("source_behind") >= 0;
   var repoStale = verdicts.indexOf("repo_stale") >= 0
                || verdicts.indexOf("repo_predates") >= 0;
-  var driftOnly = !sourceBehind && !repoStale
-               && verdicts.indexOf("drift") >= 0;
+  // The board banner is an ACTIONABLE "update available/needed" affordance. Only
+  // source-behind and repo-stale/predates qualify (each has an ENGAGE UPDATE
+  // button). A drift-only state ("main moved without a bump") is a maintainer
+  // signal with no board action — it lives in the CLI (`lcars version` /
+  // `lcars release`), not as a persistent banner — so the board shows NOTHING
+  // (and a successful update, which leaves at most drift, makes the banner clear).
+  if (!sourceBehind && !repoStale) { host.hidden = true; return; }
+  host.hidden = false;
+
   var remote = version.remote || "";
   var running = version.running || "";
 
-  var msg;
+  // Always name LCARS (never just "REPO", which reads as the repo's own code) and
+  // show BOTH the current version and the one they'd move to. sourceBehind updates
+  // the whole install to the released version; repoStale/predates re-syncs the
+  // LCARS wired into THIS repo up to the version already installed.
+  var stamped = version.stamped || "";
+  var predates = verdicts.indexOf("repo_predates") >= 0;
+  // Only actionable states reach here (the guard above returns on drift-only /
+  // current), so this is either sourceBehind or repoStale.
+  var msg, sub = "";
   if (sourceBehind) {
     msg = "LCARS " + (remote || "UPDATE") + " AVAILABLE — ENGAGE UPDATE";
-  } else if (repoStale) {
-    msg = "REPO NEEDS UPDATE";
-  } else {
-    msg = "LCARS MAIN HAS UNVERSIONED CHANGES — SEE lcars release";
+    if (running) sub = "this install is on " + running;
+  } else {  // repoStale / predates
+    if (stamped) {
+      // from → to, both known (repo stamp behind the installed version)
+      msg = "UPDATE LCARS IN THIS REPO — " + stamped + " → " + (running || "LATEST");
+    } else {
+      // predates versioning: no stamp to show a "from" for
+      msg = "UPDATE LCARS IN THIS REPO → " + (running || "LATEST");
+      sub = predates ? "this repo is unstamped (predates versioning)"
+                     : "this repo is on an older LCARS";
+    }
   }
 
-  var band = el("div", "vb-band" + (sourceBehind ? " source" : repoStale ? " repo" : " drift"));
+  var verdictClass = sourceBehind ? "source" : "repo";
+  var band = el("div", "vb-band " + verdictClass);
   band.appendChild(el("span", "vb-pip", ""));
-  band.appendChild(el("span", "vb-msg", msg));
-  if (running) band.appendChild(el("span", "vb-run", "running " + running));
+  var msgEl = el("span", "vb-msg", msg);
+  band.appendChild(msgEl);
+  if (sub) band.appendChild(el("span", "vb-run", sub));
 
-  // The ENGAGE UPDATE button is a LOCAL write affordance. A view-only board
-  // (writesActive === false) shows the banner WITHOUT it; a drift-only banner is
-  // informational (the repair is the manual `lcars release`), so no button.
-  if (writesActive !== false && (sourceBehind || repoStale)) {
+  // Right cluster: the ENGAGE UPDATE button (if any) and the ✕ sit together, tight,
+  // in one margin-left:auto group — so the band's 14px gap never opens up between
+  // them and they share a clean vertical centre. Any status/decline text (vb-reason)
+  // is a band sibling to the LEFT of the cluster, so an empty one adds no gap here.
+  var right = el("div", "vb-right");
+  var hasButton = writesActive !== false && (sourceBehind || repoStale);
+  if (hasButton) {
     var reason = el("span", "vb-reason");
     var b = btn("▸ ENGAGE UPDATE", "go vb-btn", function () {
+      // In-flight: recolour the band LCARS blue and say so, so the press has
+      // visible feedback while pull → install → lcars update runs (seconds).
       b.disabled = true;
-      reason.textContent = "Updating…";
+      band.classList.remove(verdictClass);
+      band.classList.add("vb-updating");
+      msgEl.textContent = "UPDATING LCARS…";
+      reason.textContent = "";
       postWrite("/api/update", {}, function (state) {
-        reason.textContent = (state && state.update)
-          ? state.update : "Update complete.";
-        // a live SSE tick re-fetches the board; the banner clears once the
-        // source/repo stamp is current (the checker's memo was invalidated).
+        // Finished: flash teal "UPDATE COMPLETE"; the live SSE tick re-fetches
+        // and clears the banner once the stamp reads current (memo invalidated).
+        band.classList.remove("vb-updating");
+        band.classList.add("vb-done");
+        msgEl.textContent = "UPDATE COMPLETE";
+        reason.textContent = (state && state.update) ? state.update : "";
       }, function (m) {
+        // Failed/declined: revert to the verdict colour and surface the reason.
+        band.classList.remove("vb-updating");
+        band.classList.add(verdictClass);
         b.disabled = false;
+        msgEl.textContent = msg;
         reason.textContent = m;
       });
     });
-    band.appendChild(b);
     band.appendChild(reason);
+    right.appendChild(b);
   }
+
+  // Session-only dismiss ✕: hide the banner for the rest of this page's life. No
+  // persistence — a refresh / relaunch brings it back.
+  var x = btn("✕", "vb-x", function () {
+    versionBannerDismissed = true;
+    host.hidden = true;
+    host.innerHTML = "";
+  });
+  x.title = "Dismiss until the viewscreen is refreshed or relaunched";
+  x.setAttribute("aria-label", "Dismiss update banner for this session");
+  right.appendChild(x);
+  band.appendChild(right);
+
   host.appendChild(band);
 }
 

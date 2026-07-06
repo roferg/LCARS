@@ -135,7 +135,12 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
    current board is untouched. LCARS idiom: a full rounded-pill band, dark text
    on the stage colour, a blinking pip on the left, the ENGAGE UPDATE button as a
    contrasting capsule on the right. */
-.version-banner{margin:0 0 14px 0}
+/* Drop the banner clear of the frame with a top gap below the solid yellow band,
+   and align its left edge to the board columns by matching the .board-wrap
+   gutter (28px). The 18px top gap already clears the concave inner-corner fillet
+   at that x, so no extra left inset is needed — it lines up with the ALIGN
+   column instead of floating in from it. */
+.version-banner{margin:18px 28px 6px}
 .version-banner .vb-band{display:flex;align-items:center;gap:14px;
   padding:9px 16px 9px 18px;border-radius:var(--lcars-radius,18px);
   font-family:var(--font-display);letter-spacing:.12em;text-transform:uppercase;
@@ -144,18 +149,35 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
   box-shadow:0 0 0 1px rgba(0,0,0,.15) inset}
 .version-banner .vb-band.repo{background:var(--lcars-red);color:#fff}
 .version-banner .vb-band.drift{background:var(--lcars-gold,var(--lcars-amber))}
+/* In-flight + finished states: while /api/update runs the band turns LCARS blue
+   ("working"), then teal ("success") on the recorded result, before the live SSE
+   tick re-fetches and clears it — so the button press has visible feedback other
+   than a message string. These win over the verdict colour (added last / here). */
+.version-banner .vb-band.vb-updating{background:var(--lcars-blue,#4499ff);color:#03131f}
+.version-banner .vb-band.vb-updating .vb-btn{background:rgba(0,0,0,.55);color:#eaf4ff}
+.version-banner .vb-band.vb-done{background:var(--lcars-teal,#00ccaa);color:#03131f}
 .version-banner .vb-pip{width:12px;height:12px;border-radius:50%;
   background:currentColor;flex:0 0 auto;animation:vb-blink 1.2s steps(2) infinite}
 @keyframes vb-blink{50%{opacity:.25}}
 .version-banner .vb-msg{font-size:15px;font-weight:700}
 .version-banner .vb-run{font-size:11px;letter-spacing:.1em;opacity:.7;
   font-weight:400}
-.version-banner .vb-btn{margin-left:auto;flex:0 0 auto;
+.version-banner .vb-btn{flex:0 0 auto;
   font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
   background:var(--lcars-black,#030608);color:var(--lcars-amber);
   border:none;border-radius:14px;padding:6px 16px;cursor:pointer}
 .version-banner .vb-band.repo .vb-btn{color:#fff;background:rgba(0,0,0,.55)}
 .version-banner .vb-btn:disabled{opacity:.5;cursor:default}
+/* Right cluster: the ENGAGE UPDATE button + the ✕, pushed to the right edge as one
+   tight, vertically-centred group (its own small gap, immune to the band's 14px). */
+.version-banner .vb-right{margin-left:auto;flex:0 0 auto;
+  display:flex;align-items:center;gap:10px}
+/* Session-only dismiss ✕ — a plain glyph capsule, centred against the button. */
+.version-banner .vb-x{flex:0 0 auto;display:inline-flex;align-items:center;
+  justify-content:center;padding:4px 8px;min-width:26px;
+  background:transparent;border:none;color:currentColor;opacity:.7;
+  font-size:16px;line-height:1;cursor:pointer;font-family:var(--font-display)}
+.version-banner .vb-x:hover{opacity:1}
 .version-banner .vb-reason{font-family:var(--font-display);font-size:11px;
   letter-spacing:.08em;text-transform:none;opacity:.9;flex:0 1 auto;
   max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -698,4 +720,6 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   .topbar .brand{font-size:16px;letter-spacing:.14em}
   .topbar .band-block.band-grow{min-width:8px}
   .board-wrap{padding:12px 14px}
+  /* keep the banner's left edge on the (thinner) column gutter at this breakpoint */
+  .version-banner{margin:12px 14px 6px}
 }
