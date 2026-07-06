@@ -131,7 +131,11 @@ fi
 if "$GIT_BIN" -C "$REPO" rev-parse --verify -q origin/main >/dev/null 2>&1; then
   vcommit="$("$GIT_BIN" -C "$REPO" rev-list -n1 origin/main -- VERSION 2>/dev/null)"
   if [ -n "$vcommit" ]; then
-    ahead="$("$GIT_BIN" -C "$REPO" rev-list --count "${vcommit}..origin/main" 2>/dev/null)"
+    # Count only REAL content commits since the last VERSION touch — `--no-merges`
+    # excludes the PR merge commit itself, which always trails the bump under a
+    # merge-commit workflow and would otherwise flag drift after EVERY merged PR.
+    # Drift then means what it should: content landed on main without a bump.
+    ahead="$("$GIT_BIN" -C "$REPO" rev-list --count --no-merges "${vcommit}..origin/main" 2>/dev/null)"
     case "$ahead" in ''|0|*[!0-9]*) : ;; *) DRIFT=1 ;; esac
   fi
 fi

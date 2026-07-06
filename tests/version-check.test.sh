@@ -269,6 +269,48 @@ check "5. DRIFT warns about unversioned changes" \
 check "5. DRIFT names \`lcars release\` as the repair" \
   "grep -qi 'lcars release' '$OUT'"
 
+# --- 5b. a PR MERGE COMMIT trailing the bump is NOT drift (--no-merges) ------
+# Real workflow: the bump lands on a feature branch, then a --no-ff merge commit
+# (which does NOT touch VERSION) becomes main's tip. Only that merge commit
+# trails the last VERSION touch, so drift must NOT fire (before --no-merges it
+# did — flagging drift after every merged PR). Then a REAL content commit on top
+# must STILL drift, so the guard isn't over-broad.
+FXM="$(mktemp -d "$TMPROOT/fxm.XXXX")"
+git init -q --bare "$FXM/origin.git"
+git clone -q "$FXM/origin.git" "$FXM/seed" 2>/dev/null
+(
+  cd "$FXM/seed"
+  git config user.email t@t; git config user.name t
+  mkdir -p skills/lcars-init
+  cp "$REPO_ROOT/skills/lcars-init/lcars-common.sh" skills/lcars-init/
+  printf '2026.7.1\n' >VERSION
+  git add -A && git commit -qm genesis
+  base="$(git rev-parse --abbrev-ref HEAD)"
+  git checkout -q -b feat
+  printf '2026.7.2\n' >VERSION                 # the last VERSION touch (on the branch)
+  git add -A && git commit -qm "bump 2026.7.2"
+  git checkout -q "$base"
+  git merge -q --no-ff -m "Merge pull request #99" feat   # merge commit = tip, no VERSION
+  git push -q origin HEAD:main
+)
+git clone -q "$FXM/origin.git" "$FXM/srcm" 2>/dev/null
+( cd "$FXM/srcm" && git config user.email t@t && git config user.name t )
+FX="$FXM"; setup_stubs
+MREPO="$(mk_initrepo "2026.7.2")"
+run_merge_report() {  # $1 = out file; fetches for real, then reports
+  ( cd "$FXM/srcm" && git fetch -q origin main >/dev/null 2>&1 )
+  LCARS_REPO="$FXM/srcm" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+    LCARS_VERSION_CWD="$MREPO" LCARS_VERSION_STAMP="$FXM/stamp.$RANDOM" LCARS_NOW_EPOCH=1000 \
+    bash "$CHECK" report </dev/null >"$1" 2>&1
+}
+run_merge_report "$FXM/out5b.txt"
+check "5b. merge commit trailing the bump does NOT drift" \
+  "! grep -q 'verdict=drift' '$FXM/out5b.txt'"
+( cd "$FXM/seed" && printf 'x\n' >README.md && git add -A && git commit -qm 'unversioned change' && git push -q origin HEAD:main )
+run_merge_report "$FXM/out5c.txt"
+check "5b. a real unversioned content commit STILL drifts (guard not over-broad)" \
+  "grep -q 'verdict=drift' '$FXM/out5c.txt'"
+
 # --- 6. throttle + kill switch --------------------------------------------
 mk_fixture "2026.7.2"
 ( cd "$SRC" && git reset -q --hard HEAD~1 )

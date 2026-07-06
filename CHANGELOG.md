@@ -4,6 +4,15 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.3 — 2026-07-06
+
+Drift detection no longer false-positives after a merged PR. The `drift` verdict
+("main moved without a version bump") now counts only real content commits since
+the last `VERSION` touch (`git rev-list --count --no-merges`), so the PR **merge
+commit** — which always trails the bump under a merge-commit workflow and never
+touches `VERSION` — no longer trips drift after every merge. A genuine
+unversioned content commit on `main` still drifts. No other behaviour changes.
+
 ## 2026.7.2 — 2026-07-06
 
 Viewscreen update-banner UX polish. The version banner now drops clear of the
