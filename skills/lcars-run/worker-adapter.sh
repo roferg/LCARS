@@ -34,6 +34,8 @@
 #       repo-read      → Read,Grep,Glob,Write
 #       repo-read-web  → Read,Grep,Glob,Write,WebSearch,WebFetch
 #       repo-write     → Read,Grep,Glob,Write,Edit,Bash
+#       launch         → Read,Grep,Glob,Bash  (inspect + shell to DISCOVER how to
+#                        run an app; NO Write/Edit — must not touch the checkout)
 #       default        → Read              (explicit sentinel for the old `*` case)
 # An unknown <cli> or unknown <role> exits NON-ZERO with a message on stderr —
 # never a silent empty argv / silent inline run.
@@ -55,6 +57,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-read)     printf 'Read,Grep,Glob,Write' ;;
         repo-read-web) printf 'Read,Grep,Glob,Write,WebSearch,WebFetch' ;;
         repo-write)    printf 'Read,Grep,Glob,Write,Edit,Bash' ;;
+        launch)        printf 'Read,Grep,Glob,Bash' ;;
         default)       printf 'Read' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
@@ -72,6 +75,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
         repo-read)     printf 'view,grep,glob,create' ;;
         repo-read-web) printf 'view,grep,glob,create,web_fetch,web_search' ;;
         repo-write)    printf 'view,grep,glob,create,edit,bash' ;;
+        launch)        printf 'view,grep,glob,bash' ;;
         default)       printf 'view' ;;
         *) die "unknown worker role '$role' for cli '$cli'" ;;
       esac
