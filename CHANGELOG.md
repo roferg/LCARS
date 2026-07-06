@@ -4,6 +4,28 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.2 — 2026-07-06
+
+Viewscreen update-banner UX polish. The version banner now drops clear of the
+LCARS frame — a gap below the solid yellow top band — and its left edge lines up
+with the board columns (the ALIGN column) instead of floating in from them. The
+repo-stale copy names LCARS explicitly and shows both the current and target
+version — *UPDATE LCARS IN THIS REPO — &lt;from&gt; → &lt;to&gt;* rather than the
+ambiguous "REPO NEEDS UPDATE" (which read as the repo's own code being stale); an
+unstamped repo that predates versioning says so instead of a from-version. The
+board's `meta.version` block now carries the viewed repo's stamped version to
+feed that from→to. The banner is now shown **only for actionable states** (source-behind or
+repo-stale/predates, each with an update button); a drift-only state ("main
+moved without a bump") is a maintainer signal surfaced in the CLI, not a
+persistent board banner — so a successful update, which leaves at most drift,
+clears the banner instead of stranding a confusing red bar. Pressing **ENGAGE
+UPDATE** now gives
+visible feedback: the band turns LCARS blue ("UPDATING LCARS…") while pull →
+install → `lcars update` runs, then teal ("UPDATE COMPLETE") on success, before
+the live SSE tick clears it — instead of only changing a small message string,
+which read as "still running." No behavioural change to the check, the update
+action, or `lcars release`.
+
 ## 2026.7.1 — 2026-07-05
 
 Genesis release: the LCARS harness through the image-paste round. LCARS is a

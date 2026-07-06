@@ -72,6 +72,15 @@ class ParseReportTest(unittest.TestCase):
         # ordered by the canonical verdict order; de-duplicated.
         self.assertEqual(blk["verdicts"], ["repo_predates", "drift"])
         self.assertNotIn("remote", blk)  # remote omitted when absent
+        self.assertNotIn("stamped", blk)  # unstamped/predates → no from-version
+
+    def test_repo_stale_carries_stamped_from_version(self):
+        # the viewed repo's current stamp flows through so the banner shows from→to
+        blk = _parse_report("running=2026.7.2\nstamped=2026.7.1\n"
+                            "verdict=repo_stale\n")
+        self.assertEqual(blk["stamped"], "2026.7.1")
+        self.assertEqual(blk["running"], "2026.7.2")
+        self.assertEqual(blk["verdicts"], ["repo_stale"])
 
 
 class VersionCheckerTest(unittest.TestCase):
@@ -255,15 +264,47 @@ class BannerFrontEndTest(unittest.TestCase):
         self.assertIn("renderVersionBanner", js)
         self.assertIn("meta.version", js)
         self.assertIn("ENGAGE UPDATE", js)
-        self.assertIn("REPO NEEDS UPDATE", js)
+        # copy names LCARS explicitly (not just "REPO") and shows the target version.
+        self.assertIn("UPDATE LCARS IN THIS REPO", js)
+        # and the repo's CURRENT (stamped) version, rendered from → to.
+        self.assertIn("version.stamped", js)
         self.assertIn("/api/update", js)
         # view-only build shows the banner WITHOUT the button.
         self.assertIn("writesActive !== false", js)
+        # a non-actionable (drift-only / current) state hides the banner, so a
+        # successful update — which leaves at most drift — clears it.
+        self.assertIn("if (!sourceBehind && !repoStale)", js)
 
     def test_board_css_styles_the_banner(self):
         css = self._text("/board.css")
         for sel in (".version-banner", ".vb-band", ".vb-btn"):
             self.assertIn(sel, css, "board.css must style %s" % sel)
+
+    def test_banner_left_aligns_with_the_columns(self):
+        # UX: the banner's left edge lines up with the board columns (the ALIGN
+        # column), i.e. it shares the .board-wrap horizontal gutter (28px) rather
+        # than floating in from it. The 18px top gap clears the rounded corner.
+        css = self._text("/board.css")
+        self.assertIn(".version-banner{margin:18px28px6px}", css.replace(" ", ""),
+                      "banner must share the 28px column gutter so it aligns left")
+
+    def test_banner_has_session_dismiss(self):
+        # A ✕ hides the banner for the session only (in-memory flag, not persisted
+        # to storage); a refresh reloads board.js and the banner returns.
+        js = self._text("/board.js")
+        self.assertIn("versionBannerDismissed", js)
+        self.assertNotIn("localStorage", js)
+        self.assertNotIn("sessionStorage", js)
+        self.assertIn(".vb-x", self._text("/board.css"))
+
+    def test_banner_has_running_and_done_states(self):
+        # Pressing ENGAGE UPDATE recolours the band (blue → teal) for feedback.
+        css = self._text("/board.css")
+        self.assertIn(".vb-updating", css)
+        self.assertIn(".vb-done", css)
+        js = self._text("/board.js")
+        self.assertIn("vb-updating", js)
+        self.assertIn("UPDATE COMPLETE", js)
 
 
 if __name__ == "__main__":

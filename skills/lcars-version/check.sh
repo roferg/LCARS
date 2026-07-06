@@ -220,6 +220,9 @@ do_full_update() {
 if [ "$MODE" = "report" ]; then
   printf 'running=%s\n' "$RUNNING"
   [ -n "$REMOTE" ] && printf 'remote=%s\n' "$REMOTE"
+  # the current repo's stamped LCARS version, so the banner can show from→to
+  # (absent for an unstamped/predates repo — the banner treats that as "unstamped")
+  [ -n "$STAMPED" ] && printf 'stamped=%s\n' "$STAMPED"
   [ "$FETCH_FAILED" = 1 ] && printf 'fetch_failed=1\n'
   [ "$SOURCE_BEHIND" = 1 ] && printf 'verdict=source_behind\n'
   if [ "$REPO_STALE" = 1 ]; then
