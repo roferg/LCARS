@@ -1693,6 +1693,13 @@ function openLog(id) {
           authored.prds = state && state.authored
             ? (state.children || []).map(function (c) { return c.prd; })
             : null;
+          // per-bug EXPLICIT image refs (the split worker mapped the report's
+          // "image 1"/"the second screenshot" wording to numbers). Round-trip
+          // them to /log/file so the daemon recomputes the SAME orphaned∪explicit
+          // union at filing (the pill shown here uses the already-computed union).
+          authored.imageRefs = state && state.authored
+            ? (state.children || []).map(function (c) { return c.imageRefs || []; })
+            : null;
           authored.overrides = (state && state.children || [])
             .map(function (c) { return c.override || ""; });
           authored.filed = !!(state && (state.filed || !state.authored));
@@ -1728,6 +1735,7 @@ function openLog(id) {
       file.textContent = "Filing…";
       postWrite("/api/mission/" + enc(id) + "/log/file",
         { prds: authored.prds || [], overrides: authored.overrides || [],
+          imageRefs: authored.imageRefs || [],  // per-bug routing
           images: reportImgs.payload() },   // S92: durable attachments on file
         function (state) {
           busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
@@ -1819,6 +1827,13 @@ function renderLogPreview(host, state, parentLabel, authored) {
     card.appendChild(el("div", "ttl", "Bug · " + (c.title || c.id)));
     var pills = el("div", "pills");
     pills.appendChild(el("span", "pill", "lcars:" + (c.stage || "plan")));
+    // per-bug image pill (Mission-Log per-bug routing): the FINAL image set this
+    // bug will carry (its explicit refs ∪ the orphaned/all-bugs images). A small
+    // "🖼 1,2" chip — no thumbnail. Absent/empty ⇒ no pill (theme-consistent).
+    if (c.images && c.images.length) {
+      pills.appendChild(el("span", "pill img",
+        "🖼 " + c.images.join(",")));
+    }
     // S74 follow-up CHANGE 1: the PREVIEW (pre-file) stage shows the SPLITS ONLY
     // — the "↳ child of …" breadcrumb, the "Bug · <title>" line, and the
     // lcars:plan pill. The estimate-driven pills, the model mix, and the override

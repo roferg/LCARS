@@ -28,6 +28,21 @@ finding that changes *what* gets built (e.g. "global vs. per-course leaderboard
 — this changes the DB schema"). Most Missions raise **zero** scope questions; do
 not over-escalate, or the walk-away gate becomes a chat.
 
+## Grounding (logged bugs) — the grounding is AUTHORITATIVE
+
+If a `research/grounding.json` is listed in your inputs, this Mission is a logged
+bug and that artifact is the GROUND TRUTH for which **existing** code the fix
+targets. Synthesise a plan that MODIFIES those named targets — it is **not** your
+job to re-litigate the grounding. If your reading of the repository leads you to
+conclude the grounded targets are already correct, that the bug is already fixed,
+or that the grounding is stale/wrong, **do NOT silently emit a `validated-plan.md`
+that overrides it** (in particular, not a no-op "already fixed" verification plan
+— that is exactly how a real bug is closed as a false negative). Instead **emit no
+`validated-plan.md` at all** and put a single plain-language question in
+`scope.txt` describing the discrepancy (what the grounding says vs. what you
+found). The harness routes that to the captain and holds the Mission; the
+grounding is not yours to override.
+
 ## Output — files you CREATE in your scratch output directory
 
 You MAY first read your input artifacts (read tools are allowed), but you MUST

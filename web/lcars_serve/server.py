@@ -207,12 +207,14 @@ def _build_handler(adapter, poll_interval, actions=None):
             if verb == "log/file":
                 return actions.log_file(mid, prds=body.get("prds"),
                                         overrides=body.get("overrides"),
-                                        images=self._images(body))
+                                        images=self._images(body),
+                                        image_refs=body.get("imageRefs"))
             if verb == "log/run":
                 return actions.log_run(mid, prds=body.get("prds"),
                                        overrides=body.get("overrides"),
                                        confirm=bool(body.get("confirm")),
-                                       images=self._images(body))
+                                       images=self._images(body),
+                                       image_refs=body.get("imageRefs"))
             raise _ActionError(404, "no such action: %s" % verb)
 
         def _read_json_body(self):

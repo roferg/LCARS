@@ -156,8 +156,24 @@ skill's STEP 1 + STEP 3 specify, and author one well-formed bug PRD per bug \
 (Type always `bug`, the same shape as lcars-file). This is fast intake, not a \
 grilling — one invocation, no questions.
 
-OUTPUT CONTRACT — print ONLY a single JSON object (no prose around it):
-  {"bugs":["<full bug PRD markdown #1>", "<full bug PRD markdown #2>", ...]}
+OUTPUT CONTRACT — print ONLY a single JSON object (no prose around it). Use the
+per-bug object form so you can route pasted screenshots to the bug they show:
+  {"bugs":[{"prd":"<full bug PRD markdown #1>","imageRefs":[1]},
+           {"prd":"<full bug PRD markdown #2>","imageRefs":[2]}, ...]}
+The legacy plain-string form is still accepted (each is treated as no image
+refs): {"bugs":["<full bug PRD markdown #1>", ...]}
+
+IMAGE ROUTING (only when the captain pasted screenshots): the screenshots are
+shown to you numbered image 1, image 2, … in the order they were pasted. For
+EACH bug, put in its "imageRefs" ONLY the 1-based numbers the report EXPLICITLY
+ties to that bug (e.g. "the first screenshot shows the crash", "image 2 is the
+alignment bug"). This is pure ordinal text-parsing — map the report's wording to
+the numbers, do NOT try to match image content. Rules:
+  • An image the report ties to NO specific bug: OMIT it everywhere (leave it out
+    of every imageRefs). The harness gives such unreferenced images to ALL bugs.
+  • A bug the report ties to NO image: give it an empty/absent imageRefs.
+  • Ambiguous singular wording ("the screenshot" when several were pasted): treat
+    it as tied to no specific bug — omit it (so it goes to all bugs).
 === lcars-log skill (the bug split — follow it) ===
 """
 
@@ -244,6 +260,37 @@ def _prd_title(prd):
         return None
     m = re.search(r"^#\s*Mission:\s*(.+)$", prd, re.MULTILINE)
     return m.group(1).strip() if m else None
+
+
+def _route_images(image_refs, n):
+    """The ONE deterministic image-routing formula (Mission-Log per-bug images).
+
+    Given `image_refs` (a list parallel to the bugs; each element is the 1-based
+    image indices the report EXPLICITLY tied to that bug — a list, or None) and
+    `n` (the number of pasted images, numbered 1..n in paste order), return
+    `(orphaned, explicit, union)` where:
+      • explicit[i] — sorted, de-duplicated, in-range (1..n) refs for bug i.
+      • orphaned    — sorted 1..n indices NO bug referenced.
+      • union[i]    — sorted(explicit[i] ∪ orphaned) = that bug's FINAL image set.
+
+    The rule per bug is exactly union = explicit ∪ orphaned:
+      • no refs anywhere → every image orphaned → every bug gets all images
+        (today's all-to-all default);
+      • an image tied to some bug is NOT orphaned → other bugs don't get it unless
+        they reference it too;
+      • a bug that referenced nothing, when all images are assigned, gets [].
+    """
+    refs = list(image_refs or [])
+    explicit = []
+    referenced = set()
+    for r in refs:
+        valid = sorted({k for k in (r or [])
+                        if isinstance(k, int) and 1 <= k <= n})
+        explicit.append(valid)
+        referenced.update(valid)
+    orphaned = [k for k in range(1, n + 1) if k not in referenced]
+    union = [sorted(set(e) | set(orphaned)) for e in explicit]
+    return orphaned, explicit, union
 
 
 # ── the per-bug model-override NORMALIZER (S74 follow-up) ─────────────────────
@@ -1136,16 +1183,43 @@ class Actions(object):
         if not isinstance(bugs, list) or not bugs:
             raise ActionError(
                 502, "the Mission-Log worker returned no bug PRDs from the report")
-        children = []
-        for prd in bugs:
+        # Parse BOTH schemas: a plain string bug (legacy → no image refs) or the
+        # per-bug object {"prd":..., "imageRefs":[...]} (new). Collect each bug's
+        # PRD + its EXPLICIT image refs, then route the pasted images through the
+        # one deterministic union formula so each child carries its FINAL image set.
+        prds = []
+        raw_refs = []
+        for bug in bugs:
+            if isinstance(bug, str):
+                prd, refs = bug, []
+            elif isinstance(bug, dict):
+                prd = bug.get("prd")
+                refs = bug.get("imageRefs")
+                if not isinstance(refs, list):
+                    refs = []
+            else:
+                continue
             if not isinstance(prd, str) or not prd.strip():
                 continue
+            prds.append(prd)
+            raw_refs.append([k for k in refs if isinstance(k, int)])
+        n = len(staged)
+        _orphaned, explicit, union = _route_images(raw_refs, n)
+        children = []
+        for i, prd in enumerate(prds):
             children.append({"title": _prd_title(prd) or "Untitled bug",
-                             "type": "bug", "prd": prd})
+                             "type": "bug", "prd": prd,
+                             # the FINAL image set (explicit ∪ orphaned) — the FE
+                             # renders a pill from this; empty when no images.
+                             "images": union[i],
+                             # the EXPLICIT refs — round-tripped to /log/file so
+                             # _file_children recomputes the SAME union at filing.
+                             "imageRefs": explicit[i]})
         return {"children": children, "count": len(children),
                 "parent": parent, "authored": True}
 
-    def _file_children(self, mid, prds, overrides, env_extra, images=None):
+    def _file_children(self, mid, prds, overrides, env_extra, images=None,
+                       image_refs=None):
         """Persist one linked bug Mission per PRD via log.sh (blocking).
 
         Each PRD is paired POSITIONALLY with its captain override (S74). The
@@ -1165,21 +1239,31 @@ class Actions(object):
         report = []
         if not prds:
             return report
-        # S92 — the captain's pasted screenshots describe the WHOLE report, so
-        # every child bug gets them: stage each under repo_root once and thread it
-        # to log.sh as a repeated `--attach <path>` (log.sh applies the set to
-        # EACH bug). The staged temp copies are reaped in the finally below, after
-        # log.sh has copied them into each bug's attachments/ dir.
+        # S92 + per-bug routing — the captain's pasted screenshots are staged once
+        # under repo_root and threaded to log.sh's POSITIONAL `--attach`. Each bug's
+        # EXPLICIT refs (from the split-worker, round-tripped by the FE) route via
+        # the SAME deterministic union: ORPHANED images (referenced by no bug) go
+        # BEFORE the first --prd as GLOBAL attaches (log.sh gives globals to every
+        # bug); each bug's EXPLICIT images go right AFTER its own --prd. log.sh's
+        # global∪positional union then equals explicit∪orphaned. With no refs every
+        # image is orphaned → all threaded as globals → byte-identical to before.
+        # The staged temp copies are reaped in the finally below.
         staged = self._stage_images(images)
+        n = len(staged)
+        refs = [(image_refs[i] if (image_refs and i < len(image_refs)) else None)
+                for i in range(len(prds))]
+        orphaned, explicit, _union = _route_images(refs, n)
         tmp = []
         args = ["--parent", mid]
-        for p in staged:
-            args += ["--attach", p]
+        for k in orphaned:                      # globals: k is 1-based
+            args += ["--attach", staged[k - 1]]
         try:
             for i, prd in enumerate(prds):
                 p = self._tmp_prd(prd.rstrip() + "\n")
                 tmp.append(p)
                 args += ["--prd", p]
+                for k in explicit[i]:           # per-bug positional attaches
+                    args += ["--attach", staged[k - 1]]
                 ov = overrides[i] if i < len(overrides) else None
                 if not (isinstance(ov, str) and ov.strip()):
                     continue
@@ -1204,7 +1288,8 @@ class Actions(object):
                     pass
         return report
 
-    def log_file(self, mid, prds=None, overrides=None, images=None):
+    def log_file(self, mid, prds=None, overrides=None, images=None,
+                 image_refs=None):
         """POST /api/mission/<id>/log/file — file authored bugs, return enriched.
 
         The file-then-review-then-run flow (S74): the captain's confirm step FILES
@@ -1219,7 +1304,7 @@ class Actions(object):
         env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
         prds = [p for p in (prds or []) if isinstance(p, str) and p.strip()]
         report = self._file_children(mid, prds, overrides, env_extra,
-                                     images=images)
+                                     images=images, image_refs=image_refs)
         children = self._linked_children(mid)
         # map the per-PRD override report onto the freshly-filed child ids (same
         # positional order) so the review panel can echo each resolved steer /
@@ -1236,7 +1321,7 @@ class Actions(object):
                 "parent": mid, "filed": True, "overrides": resolved}
 
     def log_run(self, mid, prds=None, overrides=None, confirm=False,
-                images=None):
+                images=None, image_refs=None):
         """POST /api/mission/<id>/log/run — file authored bugs, then resolve.
 
         BUG-059 — the human cost-review GATE. Filing a logged bug computes its cost
@@ -1275,9 +1360,9 @@ class Actions(object):
         # the file-then-review contract is shared and never drifts.
         if prds and not confirm:
             return self.log_file(mid, prds=prds, overrides=overrides,
-                                 images=images)
+                                 images=images, image_refs=image_refs)
         file_report = self._file_children(mid, prds, overrides, env_extra,
-                                          images=images)
+                                          images=images, image_refs=image_refs)
         # S74 follow-up CHANGE 4: when there are NO prds the bugs are ALREADY
         # filed (the captain edited the steers in the post-File breakdown, then
         # clicked Run Fixes). _file_children no-ops on no prds, so apply the

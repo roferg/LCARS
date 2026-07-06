@@ -964,6 +964,50 @@ check "B51. a ticket_replay_failed event is emitted" \
 check "B51. the ticket_replay_failed event carries a NON-generic reason (not just 'failed')" \
   "grep '\"type\":\"ticket_replay_failed\"' '$m51/events.jsonl' | grep -Eq 'shared.txt|cherry-pick|conflict'"
 
+# --- BUG-054: a branch checked out in ANOTHER git worktree blocks the replay
+# checkout — the failure must NAME the busy branch + worktree + remedy, not the
+# misleading generic "cherry-pick failed onto the tip". The replay lands a green
+# ticket's commit by checking out the mission branch in the MAIN tree; when that
+# branch is already checked out elsewhere, `git checkout` fatals ("already checked
+# out at <path>") — deliberate git behaviour, NOT a mergeable conflict. Drive the
+# terminal-recording path (replay-commit-record → REPLAY_FAIL_REASON →
+# implement-failure.log + ticket_replay_failed event) with a branch held in a
+# SECOND worktree and assert the surfaced reason is the actionable branch-held one.
+# NO worker, NO tokens — only real local git holds the branch.
+b54="$(mktemp -d "$TMPROOT/b54.XXXX")"
+( cd "$b54" && git init -q && git config user.email t@t && git config user.name t \
+    && printf 'orig\n' >f.txt && git add -A && git commit -q -m base \
+    && git branch lcars/B )
+# Any commit to (attempt to) replay — the checkout fails BEFORE the cherry-pick,
+# so its content is irrelevant; use the base commit's sha.
+sha54="$( cd "$b54" && git rev-parse HEAD )"
+# Hold lcars/B in a SECOND, ATTACHED worktree so the MAIN tree (still on the
+# default branch) cannot check it out. This is what git refuses to move.
+heldwt54="$b54/.busywt"
+( cd "$b54" && git worktree add -q "$heldwt54" lcars/B >/dev/null 2>&1 )
+m54="$b54/.git/lcars/missions/$MID"; mkdir -p "$m54"
+cat >"$m54/state.json" <<EOF
+{ "id": "$MID", "type": "feature", "title": "t", "stage": "implement",
+  "githubIssue": 42, "branch": "lcars/B" }
+EOF
+rc54=0
+( cd "$b54" && LCARS_GH_BIN=true bash "$RUN_SH" replay-commit-record \
+    --mission "$MID" --branch lcars/B --sha "$sha54" --ticket t-054 \
+    >"$b54.out" 2>&1 ) || rc54=$?
+check "B54. a branch-held replay checkout exits non-zero" "[ '$rc54' -ne 0 ]"
+check "B54. implement-failure.log is written on the branch-held failure" \
+  "[ -s '$m54/implement-failure.log' ]"
+check "B54. the reason NAMES the busy branch and says it's checked out in another worktree" \
+  "grep -q 'lcars/B is checked out in another git worktree' '$m54/implement-failure.log'"
+check "B54. the reason includes the HOLDING worktree path" \
+  "grep -Fq '$heldwt54' '$m54/implement-failure.log'"
+check "B54. the reason states the remedy (free that worktree / re-run implement)" \
+  "grep -Eq 'free that worktree|check it out detached|re-run implement' '$m54/implement-failure.log'"
+check "B54. the reason does NOT fall back to the generic cherry-pick-onto-tip line" \
+  "! grep -q 'failed to cherry-pick onto the tip' '$m54/implement-failure.log'"
+check "B54. the ticket_replay_failed event carries the branch-held reason" \
+  "grep '\"type\":\"ticket_replay_failed\"' '$m54/events.jsonl' | grep -q 'checked out in another git worktree'"
+
 # --- BUG-043: the reconcile resume must key off a DEDICATED reconcile answer,
 # NEVER the generic answers.json that respond writes for ANY awaiting-human gate.
 #

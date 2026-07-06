@@ -1073,6 +1073,140 @@ class LogTest(WriteEndpointBase):
         self.assertIn("--parent m-001", self._record("log"))
         self.assertIn("m-001", self._record_when("resolve", "m-001"))
 
+    # ── per-bug image routing: the split worker maps "image N" wording to bugs;
+    # the daemon does the DETERMINISTIC orphaned∪explicit union. ────────────────
+    def _log_argv_tokens(self):
+        """The tokens of the (single) log.sh ARGV line the record stub captured."""
+        rec = self._record("log")
+        for line in rec.splitlines():
+            if line.startswith("ARGV: "):
+                return line[len("ARGV: "):].split()
+        return []
+
+    def test_log_author_old_string_schema_gives_every_bug_all_images(self):
+        """Legacy `{"bugs":["<md>", ...]}` (no imageRefs) + K pasted images ⇒ each
+        child carries the FULL image set (all orphaned → all-to-all)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions._worker_turn = lambda *a, **k: (
+            '{"bugs": ["# Mission: A\\n\\n**Type:** bug\\nbody",'
+            ' "# Mission: B\\n\\n**Type:** bug\\nbody"]}')
+        out = actions.log_preview("m-001", text="two bugs",
+                                  images=[_img(), _img()])
+        kids = out["children"]
+        self.assertEqual([c["images"] for c in kids], [[1, 2], [1, 2]])
+        self.assertEqual([c["imageRefs"] for c in kids], [[], []])
+
+    def test_log_author_per_bug_refs_route_and_orphan_goes_to_all(self):
+        """New object schema: bug A refs image 1, image 2 referenced by nobody ⇒
+        A gets {1,2}, B gets {2} (the orphan reaches all)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions._worker_turn = lambda *a, **k: (
+            '{"bugs": [{"prd":"# Mission: A\\n\\n**Type:** bug\\nb","imageRefs":[1]},'
+            ' {"prd":"# Mission: B\\n\\n**Type:** bug\\nb"}]}')
+        out = actions.log_preview("m-001", text="two bugs",
+                                  images=[_img(), _img()])
+        kids = out["children"]
+        self.assertEqual(kids[0]["images"], [1, 2])   # explicit {1} ∪ orphan {2}
+        self.assertEqual(kids[1]["images"], [2])      # orphan {2} only
+        self.assertEqual(kids[0]["imageRefs"], [1])
+        self.assertEqual(kids[1]["imageRefs"], [])
+
+    def test_log_author_all_assigned_leaves_unmentioned_bug_empty(self):
+        """Every image assigned to SOME bug ⇒ a bug the report tied to no image
+        carries NOTHING (no orphans to fall back on)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions._worker_turn = lambda *a, **k: (
+            '{"bugs": [{"prd":"# Mission: A\\n\\n**Type:** bug\\nb","imageRefs":[1]},'
+            ' {"prd":"# Mission: B\\n\\n**Type:** bug\\nb","imageRefs":[2]},'
+            ' {"prd":"# Mission: C\\n\\n**Type:** bug\\nb"}]}')
+        out = actions.log_preview("m-001", text="three bugs",
+                                  images=[_img(), _img()])
+        kids = out["children"]
+        self.assertEqual(kids[0]["images"], [1])
+        self.assertEqual(kids[1]["images"], [2])
+        self.assertEqual(kids[2]["images"], [])       # unmentioned → nothing
+
+    def test_file_children_no_refs_threads_all_images_as_globals(self):
+        """No refs (or none supplied) + K images ⇒ every image threaded as a GLOBAL
+        --attach BEFORE the first --prd — byte-identical to the pre-routing dispatch
+        (log.sh gives globals to all bugs)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001",
+                         prds=["# Bug: a\n\nbody a", "# Bug: b\n\nbody b"],
+                         overrides=["", ""],
+                         images=[_img(), _img()])
+        toks = self._log_argv_tokens()
+        first_prd = toks.index("--prd")
+        before = [toks[i + 1] for i, t in enumerate(toks[:first_prd])
+                  if t == "--attach"]
+        after = [toks[i + 1] for i, t in enumerate(toks)
+                 if t == "--attach" and i > first_prd]
+        self.assertEqual(len(before), 2, "both images must be global (pre --prd)")
+        self.assertEqual(after, [], "no per-bug (post --prd) attaches with no refs")
+
+    def test_file_children_routes_orphan_global_and_explicit_positional(self):
+        """image_refs=[[1],[]] with 2 images ⇒ image 2 is orphaned (global, before
+        the first --prd); image 1 is bug-0 explicit (positional, right after bug-0's
+        --prd); nothing after bug-1's --prd."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001",
+                         prds=["# Bug: a\n\nbody a", "# Bug: b\n\nbody b"],
+                         overrides=["", ""],
+                         images=[_img(), _img()],
+                         image_refs=[[1], []])
+        toks = self._log_argv_tokens()
+        prd_positions = [i for i, t in enumerate(toks) if t == "--prd"]
+        self.assertEqual(len(prd_positions), 2)
+        p0, p1 = prd_positions
+        # exactly one GLOBAL --attach before the first --prd (the orphan, image 2)
+        globals_ = [i for i, t in enumerate(toks[:p0]) if t == "--attach"]
+        self.assertEqual(len(globals_), 1)
+        # exactly one --attach between bug-0's --prd and bug-1's --prd (image 1)
+        between = [i for i in range(p0 + 1, p1) if toks[i] == "--attach"]
+        self.assertEqual(len(between), 1)
+        # nothing attached after bug-1's --prd
+        after1 = [i for i in range(p1 + 1, len(toks)) if toks[i] == "--attach"]
+        self.assertEqual(after1, [])
+        # and the two staged sources are distinct (orphan != explicit)
+        self.assertNotEqual(toks[globals_[0] + 1], toks[between[0] + 1])
+
+
+class RouteImagesUnitTest(unittest.TestCase):
+    """The pure deterministic routing formula (union = explicit ∪ orphaned)."""
+
+    def test_no_refs_all_orphaned(self):
+        from lcars_serve.actions import _route_images
+        orphaned, explicit, union = _route_images([[], []], 2)
+        self.assertEqual(orphaned, [1, 2])
+        self.assertEqual(explicit, [[], []])
+        self.assertEqual(union, [[1, 2], [1, 2]])
+
+    def test_one_orphan_among_assigned(self):
+        from lcars_serve.actions import _route_images
+        orphaned, explicit, union = _route_images([[1], []], 2)
+        self.assertEqual(orphaned, [2])          # image 2 referenced by nobody
+        self.assertEqual(union, [[1, 2], [2]])
+
+    def test_all_assigned_empty_bug_gets_nothing(self):
+        from lcars_serve.actions import _route_images
+        orphaned, explicit, union = _route_images([[1], [2], []], 2)
+        self.assertEqual(orphaned, [])
+        self.assertEqual(union, [[1], [2], []])
+
+    def test_out_of_range_and_dupe_refs_are_dropped(self):
+        from lcars_serve.actions import _route_images
+        # 9 is out of range (n=2), duplicate 1s collapse.
+        orphaned, explicit, union = _route_images([[1, 1, 9], []], 2)
+        self.assertEqual(explicit, [[1], []])
+        self.assertEqual(orphaned, [2])
+        self.assertEqual(union, [[1, 2], [2]])
+
+    def test_no_images_all_empty(self):
+        from lcars_serve.actions import _route_images
+        orphaned, explicit, union = _route_images([[], []], 0)
+        self.assertEqual(orphaned, [])
+        self.assertEqual(union, [[], []])
+
 
 class LiveChannelTest(WriteEndpointBase):
     """Behavior 5: a state-changing dispatch moves the LocalAdapter fingerprint,

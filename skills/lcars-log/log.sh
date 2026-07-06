@@ -74,19 +74,42 @@ json_raw() { # file key -> first bare token (number/bool/null)
 PARENT_SEL=""
 PRDS=()
 OVERRIDES=()
-# Durable image attachments (S92). The captain's pasted screenshots describe the
-# WHOLE report, so each --attach <path> is copied into EVERY child bug's
-# attachments/ dir, referenced by RELATIVE path in that bug's prd.md, and
-# recorded in its state.json. Repeatable; applies to all bugs in this invocation.
-ATTACHMENTS=()
+# Durable image attachments (S92 + per-bug routing). The captain's pasted
+# screenshots are copied into a child bug's attachments/ dir, referenced by
+# RELATIVE path in that bug's prd.md, and recorded in its state.json. `--attach`
+# is now POSITIONAL (mirroring --model-override):
+#   • seen BEFORE any --prd  → GLOBAL_ATTACH: applies to EVERY bug (this is the
+#     legacy all-images-to-all-bugs behaviour, unchanged when only globals pass).
+#   • seen AFTER a --prd      → PER_BUG_ATTACH[i]: applies to that ONE bug only,
+#     paired positionally with the most recent --prd (parallel to OVERRIDES).
+# A bug's final attachment set is GLOBAL_ATTACH ∪ its own PER_BUG_ATTACH (deduped
+# by source path). PER_BUG_ATTACH entries are newline-delimited path lists (bash
+# arrays can't nest); the staged temp paths carry no newlines.
+GLOBAL_ATTACH=()
+PER_BUG_ATTACH=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --parent)   PARENT_SEL="${2:-}"; shift 2 ;;
     --parent=*) PARENT_SEL="${1#--parent=}"; shift ;;
-    --attach)   ATTACHMENTS+=("${2:-}"); shift 2 ;;
-    --attach=*) ATTACHMENTS+=("${1#--attach=}"); shift ;;
-    --prd)      PRDS+=("${2:-}"); OVERRIDES+=(""); shift 2 ;;
-    --prd=*)    PRDS+=("${1#--prd=}"); OVERRIDES+=(""); shift ;;
+    --attach|--attach=*)
+      av=""
+      case "$1" in
+        --attach) av="${2:-}"; shift 2 ;;
+        *)        av="${1#--attach=}"; shift ;;
+      esac
+      if [ "${#PRDS[@]}" -eq 0 ]; then
+        GLOBAL_ATTACH+=("$av")
+      else
+        pbi=$(( ${#PRDS[@]} - 1 ))
+        if [ -n "${PER_BUG_ATTACH[$pbi]:-}" ]; then
+          PER_BUG_ATTACH[$pbi]="${PER_BUG_ATTACH[$pbi]}"$'\n'"$av"
+        else
+          PER_BUG_ATTACH[$pbi]="$av"
+        fi
+      fi
+      ;;
+    --prd)      PRDS+=("${2:-}"); OVERRIDES+=(""); PER_BUG_ATTACH+=(""); shift 2 ;;
+    --prd=*)    PRDS+=("${1#--prd=}"); OVERRIDES+=(""); PER_BUG_ATTACH+=(""); shift ;;
     --model-override|--model-override=*)
       mo=""
       case "$1" in
@@ -108,10 +131,18 @@ done
 
 # Attachments are optional, but if given each must point at a real file — checked
 # BEFORE anything is filed so a bad --attach stops with nothing partial (S92).
-if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
-  for a in "${ATTACHMENTS[@]}"; do
-    [ -n "$a" ] || die "empty --attach path given."
-    [ -f "$a" ] || die "attachment file not found: $a"
+# Both the global and the per-bug attaches are validated here.
+validate_attach() { # path
+  [ -n "$1" ] || die "empty --attach path given."
+  [ -f "$1" ] || die "attachment file not found: $1"
+}
+if [ "${#GLOBAL_ATTACH[@]}" -gt 0 ]; then
+  for a in "${GLOBAL_ATTACH[@]}"; do validate_attach "$a"; done
+fi
+if [ "${#PER_BUG_ATTACH[@]}" -gt 0 ]; then
+  for pb in "${PER_BUG_ATTACH[@]}"; do
+    [ -n "$pb" ] || continue
+    while IFS= read -r a; do [ -n "$a" ] && validate_attach "$a"; done <<<"$pb"
   done
 fi
 
@@ -236,8 +267,25 @@ if [ -n "${LCARS_WORKER_BIN:-}" ]; then
 fi
 
 # --- the base branch every bug Mission branches off ------------------------
-BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-case "$BASE" in ''|HEAD) BASE="main" ;; esac
+# `lcars log` is ALWAYS the Mission-Log path: a logged bug fixes the delivered
+# code of its PARENT Mission, so its base must track the PARENT's branch, NOT
+# the incidental working-tree checkout. Filing bugs against a Claude parent
+# (branch lcars/…-002) while the tree happens to sit on the Copilot branch
+# (lcars/…-001) must still base on lcars/…-002. Read the parent's
+# state.json.branch — the SAME source (with the SAME lcars/<PARENT_ID> fallback)
+# the fix-branch logic in file_one_bug uses — and only when there is genuinely
+# NO parent fall back to the checked-out HEAD/main (defensive: every Mission-Log
+# invocation resolves a parent above).
+BASE=""
+if [ -n "$PARENT_ID" ]; then
+  pstate_base="$MISSIONS_DIR/$PARENT_ID/state.json"
+  [ -f "$pstate_base" ] && BASE="$(json_str "$pstate_base" branch)"
+  [ -n "$BASE" ] || BASE="lcars/$PARENT_ID"
+fi
+if [ -z "$BASE" ]; then
+  BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  case "$BASE" in ''|HEAD) BASE="main" ;; esac
+fi
 HAS_COMMITS=0
 "$GIT_BIN" rev-parse --verify --quiet HEAD >/dev/null 2>&1 && HAS_COMMITS=1
 
@@ -254,9 +302,10 @@ next_id() {
 }
 
 # --- file one bug; echoes "id<TAB>issue<TAB>title" for the summary ----------
-file_one_bug() { # prd-path [model-override]
+file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
   local prd="$1"
   local override="${2:-}"
+  local perbug_raw="${3:-}"
 
   # The bug PRD must be well-formed enough for Plan to consume it. Title + type
   # are the source of truth, exactly like `lcars file`.
@@ -275,17 +324,40 @@ file_one_bug() { # prd-path [model-override]
   # prd.md — the bug report verbatim.
   cat "$prd" >"$mdir/prd.md"
 
-  # --- stage durable image attachments for THIS bug (S92) ------------------
-  # The captain's screenshots describe the whole report, so every child bug gets
-  # the same shots: copy each into attachments/ under a stable name, append a
-  # `## Attached images` section to this bug's prd.md (relative paths), and
-  # collect the relative paths for state.json below. No attachments ⇒ nothing
-  # written (byte-identical to before).
+  # --- stage durable image attachments for THIS bug (S92 + per-bug routing) --
+  # This bug's attachment set is GLOBAL_ATTACH ∪ its own PER_BUG_ATTACH, deduped
+  # by source path (globals first, then this bug's own, preserving order). Copy
+  # each into attachments/ under a stable name, append a `## Attached images`
+  # section to this bug's prd.md (relative paths), and collect the relative paths
+  # for state.json below. No attachments ⇒ nothing written (byte-identical).
+  local attach_srcs=()
+  if [ "${#GLOBAL_ATTACH[@]}" -gt 0 ]; then
+    local ga
+    for ga in "${GLOBAL_ATTACH[@]}"; do [ -n "$ga" ] && attach_srcs+=("$ga"); done
+  fi
+  if [ -n "$perbug_raw" ]; then
+    local pa
+    while IFS= read -r pa; do [ -n "$pa" ] && attach_srcs+=("$pa"); done <<<"$perbug_raw"
+  fi
+  # dedup by source path, preserving first-seen order.
+  local attach_list=()
+  if [ "${#attach_srcs[@]}" -gt 0 ]; then
+    local cand seen dup
+    for cand in "${attach_srcs[@]}"; do
+      dup=0
+      if [ "${#attach_list[@]}" -gt 0 ]; then
+        for seen in "${attach_list[@]}"; do
+          [ "$seen" = "$cand" ] && { dup=1; break; }
+        done
+      fi
+      [ "$dup" -eq 0 ] && attach_list+=("$cand")
+    done
+  fi
   local attach_rels=()
-  if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
+  if [ "${#attach_list[@]}" -gt 0 ]; then
     mkdir -p "$mdir/attachments"
     local an=0 asrc aext arel
-    for asrc in "${ATTACHMENTS[@]}"; do
+    for asrc in "${attach_list[@]}"; do
       an=$((an + 1))
       aext=""
       case "$asrc" in *.*) aext=".${asrc##*.}" ;; esac
@@ -432,7 +504,7 @@ file_one_bug() { # prd-path [model-override]
 ROWS=()
 i=0
 for prd in "${PRDS[@]}"; do
-  ROWS+=("$(file_one_bug "$prd" "${OVERRIDES[$i]:-}")")
+  ROWS+=("$(file_one_bug "$prd" "${OVERRIDES[$i]:-}" "${PER_BUG_ATTACH[$i]:-}")")
   i=$((i + 1))
 done
 

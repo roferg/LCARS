@@ -373,6 +373,13 @@ lcars-viewscreen --open   # launch the board and open it in your browser</pre>
           right there: Respond, <strong>Verify</strong> (approve / send back),
           <strong>Pause</strong> / <strong>Resume</strong>, and the
           <strong>Mission Log</strong> are all card actions.</li>
+          <li><strong>Paste screenshots.</strong> The File box, the live Align
+          grill, and the Mission Log box all accept pasted images. Each shows as a
+          CLI-style placeholder chip (never a rendered thumbnail), is saved into
+          the Mission's <code>attachments/</code> dir, referenced by relative path
+          in the PRD, and threaded by absolute path into every cold Stage — so the
+          grill and the grounding worker actually <em>see</em> it (Claude via a
+          path in the prompt, Copilot via <code>--attachment</code>).</li>
         </ul>
       </div>
 
@@ -740,8 +747,15 @@ implement   ✓ ⊘ isolated  11/11 tickets green
           mode</strong> — anchoring the casual symptom to the parent's existing
           code so the fix lands in the real feature, not a duplicate — then
           flows the full pipeline to Verify (only Align is skipped), and links
-          them to the parent with <code>lcars:linked</code>. They run in
+          them to the parent with <code>lcars:linked</code>. Grounding reads the
+          parent's own branch, not whatever's checked out. They run in
           parallel on their own branches and merge as soon as they verify.</p>
+          <p>Paste screenshots straight into the log box: if you reference them
+          per bug ("see image 1", "the second screenshot"), the split routes each
+          image to the bug that names it (plus any image no bug claims), and the
+          log-split preview shows an <strong>images pill per bug</strong> so you
+          can check the mapping before filing. With no per-bug references, every
+          image goes to every bug.</p>
           <p>Logged several bugs while reviewing a Mission at Verify?
           <code>lcars resolve-logs &lt;parent&gt;</code> hands the whole batch to
           the Harness. It picks a sensible order (root-cause and dependency bugs

@@ -153,6 +153,10 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 @media (prefers-reduced-motion:reduce){.pill.queued{animation:none;opacity:.9}}
 .pill.stage{background:var(--lcars-violet,#9977ff);border-color:var(--lcars-violet,#9977ff);color:#fff}
 .pill.go{background:var(--lcars-teal);border-color:var(--lcars-teal);color:var(--lcars-text-on-color)}
+/* per-bug image-routing pill (Mission-Log): a calm cyan "carries screenshot(s)"
+   tone — informational, not a status/urgency signal. Keeps the emoji upright. */
+.pill.img{background:rgba(0,204,170,.10);border-color:var(--lcars-teal);
+  color:var(--lcars-teal);text-transform:none;letter-spacing:.04em}
 @keyframes awaitpulse{0%,100%{box-shadow:0 0 0 0 rgba(255,51,68,.5)}50%{box-shadow:0 0 0 6px rgba(255,51,68,0)}}
 
 /* ── kanban board ── */

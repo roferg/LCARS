@@ -322,6 +322,19 @@ QARM="$(printf '%s\n' "$CARDCTRL" \
 check "queued card renders a DISABLED affordance, never a live Start" \
   "printf '%s' \"\$QARM\" | qgrep -q 'disabled = true' && ! printf '%s' \"\$QARM\" | qgrep -q 'openLaunch'"
 
+# --- Mission-Log per-bug image routing: the preview renders an images pill ------
+# renderLogPreview draws each split bug as a child card; when the daemon routed
+# pasted screenshots to a bug, that child carries `images` (its final index set)
+# and the card shows a "🖼 N" pill. No JS DOM harness (python-stdlib-only), so
+# lock the render structurally: the function must key the pill off `c.images` and
+# emit a `pill img` chip. The union math itself is covered in the web unit tests.
+RENDERLOG="$(awk '/^function renderLogPreview\(/{f=1} f{print} f&&/^\}/{exit}' \
+  "$WEB_DIR/static/board.js")"
+check "renderLogPreview drives an images pill off each child's images" \
+  "printf '%s' \"\$RENDERLOG\" | qgrep -q 'c.images'"
+check "renderLogPreview emits a themed 'pill img' chip" \
+  "printf '%s' \"\$RENDERLOG\" | qgrep -q 'pill img'"
+
 echo
 [ "$fail" -eq 0 ] && echo "lcars-viewscreen: ALL PASS ($pass)" || echo "lcars-viewscreen: $fail FAILED"
 exit "$fail"
