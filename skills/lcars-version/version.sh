@@ -8,7 +8,8 @@
 #      so "is my checkout current?" has an answer.
 #   3. THIS repo's stamp — when the current working dir is an LCARS-initialized
 #      repo, the lcarsVersion recorded in its config.json, plus a one-line verdict:
-#      current / needs `lcars update` / unknown (predates versioning).
+#      current / needs `lcars update` (stamp behind OR unstamped-predates) /
+#      unknown (a malformed stamp only).
 #
 # READ-ONLY: it scans and prints, changing nothing. In particular it NEVER runs a
 # `git fetch` (this path has no network) — ahead/behind is out of scope; branch +
@@ -99,8 +100,11 @@ if command -v lcars_config_get >/dev/null 2>&1; then
 fi
 
 if [ -z "$STAMPED" ]; then
+  # An initialized-but-UNSTAMPED repo predates the versioning round, so it
+  # definitely needs `lcars update` — an ACTIONABLE verdict, not passive "unknown"
+  # (captain amendment). A MALFORMED stamp below stays unknown (never nag garbage).
   echo "  stamped version: (unstamped)"
-  echo "  verdict:         unknown — repo predates versioning."
+  echo "  verdict:         repo needs \`lcars update\` (predates versioning)"
 elif ! version_valid "$STAMPED"; then
   echo "  stamped version: $STAMPED"
   echo "  verdict:         unknown — stamped version is malformed."

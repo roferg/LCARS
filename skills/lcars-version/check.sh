@@ -16,7 +16,13 @@
 #
 # Verdicts (MULTIPLE can hold at once — every one that holds is emitted):
 #   SOURCE_BEHIND  remote VERSION > running               → offer the full update
-#   REPO_STALE     this repo's config lcarsVersion < running → offer `lcars update`
+#   REPO_STALE     this repo's config lcarsVersion < running → offer `lcars update`.
+#                  ALSO holds when the repo is LCARS-initialized but UNSTAMPED
+#                  (no lcarsVersion key at all) — that repo predates versioning, so
+#                  it definitely needs `lcars update` (REPO_PREDATES: a clean
+#                  "predates" message, not "stamp () is behind"). A non-empty but
+#                  MALFORMED stamp stays UNKNOWN (no nag); an uninitialized cwd is
+#                  silent.
 #   DRIFT          origin/main tip is ahead of the commit that last touched
 #                  VERSION ("main has unversioned changes") → warn, name `lcars release`
 #   CURRENT        none of the above                        → say nothing
@@ -26,7 +32,13 @@
 # every unsafe case (dirty / on a branch / a worktree holds main / diverged)
 # prints a one-line reason and CONTINUES.
 #
-# Usage:  check.sh [ask|warn]      (default: warn — the safe one)
+# Usage:  check.sh [ask|warn|report|update]   (default: warn — the safe one)
+#   ask     interactive: prompt to update (default ENTER = No)
+#   warn    headless: one human line per verdict, no prompt, no stdin
+#   report  machine-readable KEY=VALUE verdict lines (the viewscreen daemon reads
+#           these into meta.version); cache/throttle-identical to warn
+#   update  run the update action non-interactively (the viewscreen button);
+#           unsafe cases print their reason and exit 0
 #
 # Everything external is env-injected so tests stub every binary and pin time:
 #   LCARS_VERSION_CHECK   "0" = global kill switch (no output, ZERO git calls)
@@ -106,7 +118,7 @@ else
 fi
 
 # --- verdicts (all that hold) ---------------------------------------------
-SOURCE_BEHIND=0; DRIFT=0; REPO_STALE=0
+SOURCE_BEHIND=0; DRIFT=0; REPO_STALE=0; REPO_PREDATES=0
 
 if version_valid "$REMOTE" && [ "$(version_cmp "$REMOTE" "$RUNNING")" = "1" ]; then
   SOURCE_BEHIND=1
@@ -124,14 +136,23 @@ if "$GIT_BIN" -C "$REPO" rev-parse --verify -q origin/main >/dev/null 2>&1; then
   fi
 fi
 
-# REPO_STALE: this repo's stamped lcarsVersion < the running version.
+# REPO_STALE: this repo IS LCARS-initialized (config.json exists) but its stamp
+# is behind — OR absent. An initialized repo whose config carries NO lcarsVersion
+# key predates the versioning round, so it DEFINITELY needs `lcars update`
+# (REPO_PREDATES → a clean "predates" message, not "stamp () is behind"). A
+# non-empty but MALFORMED stamp stays UNKNOWN — never nag on garbage. An
+# UNINITIALIZED cwd (no config.json) is silent (the `[ -f "$CONFIG" ]` guard).
 STAMPED=""
 CONFIG="$CWD/.git/lcars/config.json"
 if [ -f "$CONFIG" ] && command -v lcars_config_get >/dev/null 2>&1; then
   STAMPED="$(lcars_config_get "$CONFIG" lcarsVersion)"
-fi
-if version_valid "$STAMPED" && [ "$(version_cmp "$STAMPED" "$RUNNING")" = "-1" ]; then
-  REPO_STALE=1
+  if [ -z "$STAMPED" ]; then
+    # initialized but never stamped ⇒ predates versioning ⇒ needs update.
+    REPO_STALE=1; REPO_PREDATES=1
+  elif version_valid "$STAMPED" && [ "$(version_cmp "$STAMPED" "$RUNNING")" = "-1" ]; then
+    REPO_STALE=1
+  fi
+  # a non-empty but malformed stamp is intentionally left as unknown (no nag).
 fi
 
 # --- update actions (interactive only; each is a NO-FAIL, warn-and-continue) --
@@ -191,6 +212,42 @@ do_full_update() {
   run_repo_update
 }
 
+# --- REPORT mode: machine-readable verdicts (the viewscreen daemon's source) --
+# Cache/throttle semantics IDENTICAL to warn (no prompt, no stdin; the git fetch
+# is bounded by the stamp file). Emits KEY=VALUE lines the daemon parses into
+# meta.version — so the board's banner can NEVER drift from the CLI's verdicts,
+# and the daemon never re-implements the check. Always exits 0.
+if [ "$MODE" = "report" ]; then
+  printf 'running=%s\n' "$RUNNING"
+  [ -n "$REMOTE" ] && printf 'remote=%s\n' "$REMOTE"
+  [ "$FETCH_FAILED" = 1 ] && printf 'fetch_failed=1\n'
+  [ "$SOURCE_BEHIND" = 1 ] && printf 'verdict=source_behind\n'
+  if [ "$REPO_STALE" = 1 ]; then
+    if [ "$REPO_PREDATES" = 1 ]; then printf 'verdict=repo_predates\n'
+    else printf 'verdict=repo_stale\n'; fi
+  fi
+  [ "$DRIFT" = 1 ] && printf 'verdict=drift\n'
+  exit 0
+fi
+
+# --- UPDATE mode: run the update action non-interactively (the board button) --
+# Same actions the ask-mode 'y' path runs, but WITHOUT a prompt (the daemon
+# already captured the captain's click). Unsafe cases (dirty / branched /
+# diverged) print their one-line reason and exit 0, so the button surfaces the
+# decline reason rather than failing. The captain's clones stay sacred.
+if [ "$MODE" = "update" ]; then
+  [ "$FETCH_FAILED" = 1 ] && \
+    say "⚠ could not reach origin — continuing on the current version ($RUNNING)."
+  if [ "$SOURCE_BEHIND" = 1 ]; then
+    do_full_update
+  elif [ "$REPO_STALE" = 1 ]; then
+    run_repo_update
+  else
+    say "Already current ($RUNNING) — nothing to update."
+  fi
+  exit 0
+fi
+
 # --- report / act ---------------------------------------------------------
 # A fetch failure is reported in BOTH modes (informational; never blocks).
 [ "$FETCH_FAILED" = 1 ] && \
@@ -205,8 +262,13 @@ fi
 if [ "$MODE" != "ask" ]; then
   [ "$SOURCE_BEHIND" = 1 ] && \
     say "⚠ LCARS $REMOTE available (running $RUNNING) — run \`lcars\` interactively to update."
-  [ "$REPO_STALE" = 1 ] && \
-    say "⚠ this repo's LCARS stamp ($STAMPED) is behind the running version ($RUNNING) — run \`lcars update\`."
+  if [ "$REPO_STALE" = 1 ]; then
+    if [ "$REPO_PREDATES" = 1 ]; then
+      say "⚠ this repo predates LCARS versioning — run \`lcars update\`."
+    else
+      say "⚠ this repo's LCARS stamp ($STAMPED) is behind the running version ($RUNNING) — run \`lcars update\`."
+    fi
+  fi
   [ "$DRIFT" = 1 ] && \
     say "⚠ LCARS main has unversioned changes — see \`lcars release\`."
   exit 0
@@ -227,11 +289,15 @@ if [ "$SOURCE_BEHIND" = 1 ]; then
   esac
 elif [ "$REPO_STALE" = 1 ]; then
   # Source is current; only this repo's stamp trails — offer JUST `lcars update`.
-  printf 'LCARS REPO STAMP %s BEHIND RUNNING %s — RUN lcars update? [y/N] ' "$STAMPED" "$RUNNING"
+  if [ "$REPO_PREDATES" = 1 ]; then
+    printf 'LCARS REPO PREDATES VERSIONING — RUN lcars update? [y/N] '
+  else
+    printf 'LCARS REPO STAMP %s BEHIND RUNNING %s — RUN lcars update? [y/N] ' "$STAMPED" "$RUNNING"
+  fi
   reply=""; read -r reply || reply=""
   case "$reply" in
     y|Y|yes|YES|Yes) run_repo_update ;;
-    *) say "Holding this repo at $STAMPED." ;;
+    *) say "Holding this repo at ${STAMPED:-unstamped}." ;;
   esac
 fi
 

@@ -130,12 +130,33 @@ check "1b. stamped 2026.7.2 < running 2026.7.10 -> needs update (numeric compare
 check "1b. does NOT mis-verdict a numerically-lower stamp as current" \
   "! grep -qi 'verdict: *current' '$repo/out.txt'"
 
-# --- 1c. verdict: unstamped -> unknown ------------------------------------
+# --- 1c. verdict: unstamped (initialized, predates versioning) -> needs update -
+# Captain amendment (S130): an LCARS-initialized repo with NO lcarsVersion key
+# predates versioning, so its verdict is the ACTIONABLE "needs lcars update
+# (predates versioning)" — NOT the passive "unknown".
 repo="$(new_repo)"; init_repo_stamped "$repo" ""
 LCARS_REPO="$REPO_ROOT" LCARS_VERSION="2026.7.5" LCARS_VERSION_CWD="$repo" \
   bash "$SCRIPT" >"$repo/out.txt" 2>&1
-check "1c. unstamped repo -> verdict 'unknown'" \
-  "grep -qi 'unknown' '$repo/out.txt'"
+check "1c. unstamped (predates) repo -> actionable 'needs lcars update'" \
+  "grep -qi 'needs .*lcars update' '$repo/out.txt' && grep -qi 'predates' '$repo/out.txt'"
+check "1c. unstamped (predates) repo does NOT verdict a passive 'unknown'" \
+  "! grep -qi 'verdict: *unknown' '$repo/out.txt'"
+
+# --- 1d. verdict: MALFORMED stamp -> stays 'unknown' (never nag on garbage) ----
+repo="$(new_repo)"; init_repo_stamped "$repo" "not-a-version"
+LCARS_REPO="$REPO_ROOT" LCARS_VERSION="2026.7.5" LCARS_VERSION_CWD="$repo" \
+  bash "$SCRIPT" >"$repo/out.txt" 2>&1
+check "1d. malformed stamp -> verdict 'unknown' (malformed), NOT needs-update" \
+  "grep -qi 'verdict: *unknown' '$repo/out.txt' && grep -qi 'malformed' '$repo/out.txt'"
+check "1d. malformed stamp does NOT tell the captain to run lcars update" \
+  "! grep -qi 'needs .*lcars update' '$repo/out.txt'"
+
+# --- 1e. UNINITIALIZED cwd -> silent about a stamp (no false predates nag) ------
+bare="$(new_repo)"   # a git repo, but NO .git/lcars/config.json
+LCARS_REPO="$REPO_ROOT" LCARS_VERSION="2026.7.5" LCARS_VERSION_CWD="$bare" \
+  bash "$SCRIPT" >"$bare/out.txt" 2>&1
+check "1e. uninitialized cwd -> 'not LCARS-initialized', no stamp verdict" \
+  "grep -qi 'not LCARS-initialized' '$bare/out.txt' && ! grep -qi 'predates' '$bare/out.txt'"
 
 # --- 2. init stamps lcarsVersion; re-init PRESERVES a hand-edit ------------
 repoI="$(new_repo)"

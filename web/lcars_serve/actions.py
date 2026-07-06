@@ -52,6 +52,8 @@ SCRIPT_ENV = {
     "feedback": "LCARS_FEEDBACK_SCRIPT",
     "log": "LCARS_LOG_SCRIPT",
     "resolve": "LCARS_RESOLVE_SCRIPT",
+    # S130: the shared version helper the /api/update button shells (check.sh).
+    "version_check": "LCARS_VERSION_CHECK_BIN",
 }
 
 
@@ -492,11 +494,16 @@ class Actions(object):
         The gh binary, threaded to every script as $LCARS_GH_BIN.
     """
 
-    def __init__(self, repo_root, scripts, worker_bin=None, gh_bin=None):
+    def __init__(self, repo_root, scripts, worker_bin=None, gh_bin=None,
+                 check_script=None):
         self.repo_root = repo_root
         self.scripts = dict(scripts or {})
         self.worker_bin = worker_bin
         self.gh_bin = gh_bin
+        # S130: the shared version helper (skills/lcars-version/check.sh) the
+        # /api/update button shells in `update` mode. Falls back to a `scripts`
+        # entry so a directly-constructed Actions can still wire it.
+        self.check_script = check_script or self.scripts.get("version_check")
         self._reader = LocalAdapter(repo_root)
         # active Align grillings, keyed by sessionId (in-memory; ADR-006 local).
         self._align = {}
@@ -1128,6 +1135,38 @@ class Actions(object):
                     env_extra=env_extra)
         return self._mission_state(mid)
 
+    def update(self):
+        """POST /api/update — run the version UPDATE action (S130 board button).
+
+        Shells the shared helper `check.sh update` (the SAME update the ask-mode
+        'y' path runs) NON-interactively: it fast-forwards the source main
+        checkout when safe (on main + clean + ff-able), re-installs, and restamps
+        this repo — or, for an unsafe source (dirty / branched / diverged), prints
+        a one-line decline reason and exits 0. Either way we return that output as
+        the response line so the banner surfaces success or the decline reason;
+        SSE refreshes the board (and the banner clears) after the restamp.
+
+        LOCAL-BRIDGE only (ADR-006): the server's read-only 403 guard already
+        blocks this on the github / view-only build (actions is None there).
+        """
+        script = self.check_script
+        if not script:
+            raise ActionError(500, "no version check wired ($LCARS_VERSION_CHECK_BIN)")
+        env = dict(os.environ)
+        if self.gh_bin:
+            env["LCARS_GH_BIN"] = self.gh_bin
+        # anchor the repo-restamp on THIS board's working tree.
+        env["LCARS_VERSION_CWD"] = self.repo_root
+        try:
+            proc = subprocess.run(
+                ["bash", script, "update"], cwd=self.repo_root, env=env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT)
+        except OSError as exc:
+            raise ActionError(502, "version update failed to start: %s" % exc)
+        out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        return {"update": out, "board": self._reader.board()}
+
     def log_preview(self, mid, text=None, images=None):
         """POST /api/mission/<id>/log — preview the N child bug missions.
 
@@ -1748,9 +1787,12 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
         "log": os.path.join(home, ".claude/skills/lcars-log/log.sh"),
         "resolve": os.path.join(
             home, ".claude/skills/lcars-resolve-logs/resolve-logs.sh"),
+        "version_check": os.path.join(
+            home, ".claude/skills/lcars-version/check.sh"),
     }
     scripts = {}
     for key, default in default_dir.items():
         scripts[key] = env.get(SCRIPT_ENV[key], default)
     return Actions(repo_root=repo_root, scripts=scripts,
-                   worker_bin=worker_bin, gh_bin=gh_bin)
+                   worker_bin=worker_bin, gh_bin=gh_bin,
+                   check_script=scripts.get("version_check"))

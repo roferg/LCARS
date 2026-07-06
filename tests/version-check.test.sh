@@ -342,6 +342,256 @@ check "7. the warn line surfaces in the drive output" \
 check "7. the drive still HALTS at awaiting-human (proceeds past the check)" \
   "grep -qi 'awaiting' '$OUT'"
 
+# --- 8. PART 0 amendment: unstamped-but-initialized ⇒ needs update ----------
+# An LCARS-initialized repo whose config.json has NO lcarsVersion key predates
+# versioning ⇒ it DEFINITELY needs `lcars update`. A malformed stamp stays
+# unknown (no nag); an uninitialized cwd stays silent. Source is CURRENT here
+# (remote == running == 2026.7.1) so REPO_STALE is the only verdict in play.
+echo "-- part 0: unstamped-but-initialized ⇒ needs update"
+
+# 8a. unstamped + initialized → warn nags a CLEAN predates message.
+mk_fixture "2026.7.1"
+setup_stubs
+OUT="$FX/out8a.txt"
+LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$(mk_initrepo "")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  bash "$CHECK" warn </dev/null >"$OUT" 2>&1
+check "8a. unstamped+initialized → warns it predates versioning + names lcars update" \
+  "grep -qi 'predates' '$OUT' && grep -qi 'lcars update' '$OUT'"
+check "8a. the predates message is CLEAN (never 'stamp () is behind')" \
+  "! grep -qi 'stamp ()' '$OUT' && ! grep -qi 'stamp  is behind' '$OUT'"
+
+# 8b. malformed stamp → stays UNKNOWN: NOT stale, NO update nag.
+mk_fixture "2026.7.1"
+setup_stubs
+OUT="$FX/out8b.txt"
+LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$(mk_initrepo "not-a-version")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  bash "$CHECK" warn </dev/null >"$OUT" 2>&1
+check "8b. malformed stamp → NOT flagged stale (no lcars update nag)" \
+  "! grep -qi 'lcars update' '$OUT'"
+
+# 8c. uninitialized cwd (no .git/lcars) → silent (no false predates nag).
+mk_fixture "2026.7.1"
+setup_stubs
+PLAIN="$(mktemp -d "$TMPROOT/plain.XXXX")"
+( cd "$PLAIN" && git init -q && git config user.email t@t && git config user.name t )
+OUT="$FX/out8c.txt"
+LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$PLAIN" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  bash "$CHECK" warn </dev/null >"$OUT" 2>&1
+check "8c. uninitialized cwd → no predates / update nag" \
+  "! grep -qi 'predates' '$OUT' && ! grep -qi 'lcars update' '$OUT'"
+
+# 8d. ASK mode on an unstamped repo → prompt says PREDATES, 'y' runs lcars update.
+mk_fixture "2026.7.1"
+setup_stubs
+OUT="$FX/out8d.txt"
+printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$(mk_initrepo "")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
+  bash "$CHECK" ask >"$OUT" 2>&1
+check "8d. ask-mode unstamped prompt says PREDATES (not 'STAMP  BEHIND')" \
+  "grep -qi 'PREDATES' '$OUT'"
+check "8d. ask-mode unstamped 'y' runs ONLY lcars update (no pull/install)" \
+  "[ \"\$(tr '\n' ' ' < '$ORDER')\" = 'update ' ]"
+
+# --- 9. REPORT + UPDATE modes (the viewscreen daemon's machine surface) -----
+echo "-- report + update modes"
+
+# 9a. SOURCE_BEHIND fixture → report emits running/remote + verdict=source_behind.
+mk_fixture "2026.7.2"
+( cd "$SRC" && git reset -q --hard HEAD~1 )     # running 2026.7.1, origin 2026.7.2
+setup_stubs
+OUT="$FX/out9a.txt"
+LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$(mk_initrepo "2026.7.1")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  bash "$CHECK" report </dev/null >"$OUT" 2>&1
+check "9a. report emits running=2026.7.1" "grep -qx 'running=2026.7.1' '$OUT'"
+check "9a. report emits remote=2026.7.2"  "grep -qx 'remote=2026.7.2' '$OUT'"
+check "9a. report emits verdict=source_behind" "grep -qx 'verdict=source_behind' '$OUT'"
+check "9a. report is machine-only (no human ⚠ prose)" "! grep -q '⚠' '$OUT'"
+
+# 9b. CURRENT → report emits running but NO verdict lines (banner stays absent).
+mk_fixture "2026.7.1"
+setup_stubs
+OUT="$FX/out9b.txt"
+LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$(mk_initrepo "2026.7.1")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  bash "$CHECK" report </dev/null >"$OUT" 2>&1
+check "9b. current → report has NO verdict line" "! grep -q '^verdict=' '$OUT'"
+check "9b. current → report still emits running" "grep -qx 'running=2026.7.1' '$OUT'"
+
+# 9c. predates → report emits verdict=repo_predates (distinct from repo_stale).
+mk_fixture "2026.7.1"
+setup_stubs
+OUT="$FX/out9c.txt"
+LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$(mk_initrepo "")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  bash "$CHECK" report </dev/null >"$OUT" 2>&1
+check "9c. predates → report emits verdict=repo_predates" "grep -qx 'verdict=repo_predates' '$OUT'"
+check "9c. predates → report does NOT emit verdict=repo_stale" "! grep -qx 'verdict=repo_stale' '$OUT'"
+
+# 9d. valid-behind stamp → report emits verdict=repo_stale.
+mk_fixture "2026.7.1"
+setup_stubs
+OUT="$FX/out9d.txt"
+LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$(mk_initrepo "2026.7.0")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  bash "$CHECK" report </dev/null >"$OUT" 2>&1
+check "9d. valid-behind → report emits verdict=repo_stale" "grep -qx 'verdict=repo_stale' '$OUT'"
+
+# 9e. UPDATE mode on a SOURCE_BEHIND fixture → runs pull→install→update, no prompt.
+mk_fixture "2026.7.2"
+( cd "$SRC" && git reset -q --hard HEAD~1 )
+setup_stubs
+REPO9="$(mk_initrepo "2026.7.1")"
+OUT="$FX/out9e.txt"
+LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+  LCARS_VERSION_CWD="$REPO9" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+  LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
+  bash "$CHECK" update </dev/null >"$OUT" 2>&1; rc=$?
+check "9e. update mode runs pull → install → update WITHOUT a prompt" \
+  "[ '$rc' -eq 0 ] && [ \"\$(tr '\n' ' ' < '$ORDER')\" = 'pull install update ' ]"
+check "9e. update mode never printed a [y/N] prompt" "! grep -qi 'y/N' '$OUT'"
+check "9e. update mode restamped the repo current (2026.7.2)" \
+  "grep -q '\"lcarsVersion\": *\"2026.7.2\"' '$REPO9/.git/lcars/config.json'"
+
+# ============================================================================
+# 10. `lcars release` — the DRIFT-repair (Part 3). Fixture: a plain source repo
+# on main with VERSION committed + N unversioned drift commits. The ONE
+# summarization worker goes through worker-adapter.sh with a RECORDING STUB —
+# stub-argv asserted on BOTH engines, ZERO tokens.
+# ============================================================================
+echo "-- lcars release (drift repair)"
+
+RELEASE="$REPO_ROOT/skills/lcars-version/release.sh"
+[ -f "$RELEASE" ] || { echo "release.sh not found at $RELEASE"; exit 1; }
+
+# A source-repo fixture on main: genesis commit (touches VERSION+CHANGELOG),
+# then `drift` extra commits that do NOT touch VERSION. Sets RREPO.
+mk_release_fixture() {
+  local drift="${1:-0}" i
+  RREPO="$(mktemp -d "$TMPROOT/rel.XXXX")"
+  git -c init.defaultBranch=main init -q "$RREPO"
+  (
+    cd "$RREPO"
+    git config user.email t@t; git config user.name t
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf '2026.7.1\n' > VERSION
+    printf '# Changelog\n\nAll notable changes, newest first.\n\n## 2026.7.1 — 2020-01-01\n\nGenesis.\n' > CHANGELOG.md
+    git add -A && git commit -qm "genesis 2026.7.1"
+    git branch -M main 2>/dev/null || true
+    i=1
+    while [ "$i" -le "$drift" ]; do
+      printf 'change %s\n' "$i" >> feature.txt
+      git add -A && git commit -qm "feat: unversioned change $i"
+      i=$((i + 1))
+    done
+  )
+}
+
+# A recording worker stub named for its engine (basename = cli id). It records
+# argv (one per line) to $2, appends a call marker to $2.calls, and writes the
+# changelog entry to $LCARS_WORK_OUT/changelog-entry.md (the adapter sets that env).
+make_release_worker() { # path argvlog
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+: >"$2"
+for a in "\$@"; do printf '%s\n' "\$a" >>"$2"; done
+printf 'call\n' >>"$2.calls"
+printf 'Summarized: rolled up the unversioned changes on main.\n' \
+  > "\${LCARS_WORK_OUT:-.}/changelog-entry.md"
+exit 0
+EOF
+  chmod +x "$1"
+}
+
+# 10a+10b. On BOTH engines: drift fixture → worker argv recorded (exactly once),
+# changelog prepended, VERSION incremented, a release commit made.
+for eng in claude copilot; do
+  mk_release_fixture 2
+  W="$TMPROOT/worker-$eng"; make_release_worker "$W" "$TMPROOT/argv-$eng"
+  : >"$TMPROOT/argv-$eng.calls"
+  head0="$(git -C "$RREPO" rev-parse HEAD)"
+  ln -sf "$W" "$TMPROOT/$eng"   # basename must be the engine id for the adapter
+  OUT="$TMPROOT/rel-$eng.out"
+  LCARS_REPO="$RREPO" LCARS_GIT_BIN="git" LCARS_WORKER_BIN="$TMPROOT/$eng" \
+    LCARS_NOW_YEAR=2026 LCARS_NOW_MONTH=7 LCARS_NOW_DATE=2026-07-09 \
+    bash "$RELEASE" >"$OUT" 2>&1; rc=$?
+  check "10.$eng release exits 0 on a drift fixture" "[ '$rc' -eq 0 ]"
+  check "10.$eng worker invoked EXACTLY once (one stub-argv call)" \
+    "[ \"\$(wc -l < '$TMPROOT/argv-$eng.calls' | tr -d ' ')\" = '1' ]"
+  check "10.$eng worker argv recorded (adapter spawned it with -p <prompt>)" \
+    "grep -qx -- '-p' '$TMPROOT/argv-$eng'"
+  check "10.$eng VERSION incremented to 2026.7.2" \
+    "[ \"\$(cat '$RREPO/VERSION')\" = '2026.7.2' ]"
+  check "10.$eng CHANGELOG prepended (new 2026.7.2 section above the old 2026.7.1)" \
+    "[ \"\$(grep -n '## 2026.7.2' '$RREPO/CHANGELOG.md' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n '## 2026.7.1' '$RREPO/CHANGELOG.md' | head -1 | cut -d: -f1)\" ]"
+  check "10.$eng CHANGELOG carries the worker's summarized entry" \
+    "grep -qi 'Summarized: rolled up' '$RREPO/CHANGELOG.md'"
+  check "10.$eng a NEW release commit was made" \
+    "[ \"\$(git -C '$RREPO' rev-parse HEAD)\" != '$head0' ] && git -C '$RREPO' log -1 --format='%s' | grep -qi 'release.*2026.7.2'"
+  check "10.$eng CHANGELOG preamble stays on top (## is not line 1)" \
+    "[ \"\$(grep -n '^## ' '$RREPO/CHANGELOG.md' | head -1 | cut -d: -f1)\" -gt 1 ]"
+done
+
+# 10c. month-roll: running 2026.7.1 with now = 2026-08 → 2026.8.1 (N resets).
+mk_release_fixture 1
+W="$TMPROOT/worker-roll"; make_release_worker "$W" "$TMPROOT/argv-roll"
+ln -sf "$W" "$TMPROOT/claude-roll"
+LCARS_REPO="$RREPO" LCARS_GIT_BIN="git" LCARS_WORKER_BIN="$TMPROOT/claude-roll" \
+  LCARS_WORKER_CLI=claude LCARS_NOW_YEAR=2026 LCARS_NOW_MONTH=8 LCARS_NOW_DATE=2026-08-01 \
+  bash "$RELEASE" >/dev/null 2>&1
+check "10c. month-roll bumps to 2026.8.1 (N resets on a new month)" \
+  "[ \"\$(cat '$RREPO/VERSION')\" = '2026.8.1' ]"
+
+# 10d. clean-main required: a DIRTY source main → refuse, no commit, no worker.
+mk_release_fixture 2
+W="$TMPROOT/worker-dirty"; make_release_worker "$W" "$TMPROOT/argv-dirty"
+: >"$TMPROOT/argv-dirty.calls"
+ln -sf "$W" "$TMPROOT/claude-dirty"
+( cd "$RREPO" && echo scratch > dirty.txt )      # make the tree dirty
+head_d="$(git -C "$RREPO" rev-parse HEAD)"
+LCARS_REPO="$RREPO" LCARS_GIT_BIN="git" LCARS_WORKER_BIN="$TMPROOT/claude-dirty" \
+  LCARS_WORKER_CLI=claude LCARS_NOW_YEAR=2026 LCARS_NOW_MONTH=7 \
+  bash "$RELEASE" >"$TMPROOT/rel-dirty.out" 2>&1; rc=$?
+check "10d. dirty main → refuses (non-zero) with a reason" \
+  "[ '$rc' -ne 0 ] && grep -qi 'dirty' '$TMPROOT/rel-dirty.out'"
+check "10d. dirty main → no release commit made" \
+  "[ \"\$(git -C '$RREPO' rev-parse HEAD)\" = '$head_d' ]"
+check "10d. dirty main → VERSION unchanged (2026.7.1)" \
+  "[ \"\$(cat '$RREPO/VERSION')\" = '2026.7.1' ]"
+check "10d. dirty main → NO worker spawned" \
+  "[ ! -s '$TMPROOT/argv-dirty.calls' ]"
+
+# 10e. not on main → refuse, no-op.
+mk_release_fixture 2
+( cd "$RREPO" && git checkout -q -b feature/x )
+head_b="$(git -C "$RREPO" rev-parse HEAD)"
+LCARS_REPO="$RREPO" LCARS_GIT_BIN="git" LCARS_WORKER_BIN="claude" \
+  bash "$RELEASE" >"$TMPROOT/rel-branch.out" 2>&1; rc=$?
+check "10e. not-on-main → refuses (non-zero) naming main" \
+  "[ '$rc' -ne 0 ] && grep -qi 'not main' '$TMPROOT/rel-branch.out'"
+check "10e. not-on-main → VERSION unchanged" \
+  "[ \"\$(cat '$RREPO/VERSION')\" = '2026.7.1' ]"
+
+# 10f. NO drift → clean no-op: 'nothing to release', no worker, no commit.
+mk_release_fixture 0
+W="$TMPROOT/worker-none"; make_release_worker "$W" "$TMPROOT/argv-none"
+: >"$TMPROOT/argv-none.calls"
+ln -sf "$W" "$TMPROOT/claude-none"
+head_n="$(git -C "$RREPO" rev-parse HEAD)"
+LCARS_REPO="$RREPO" LCARS_GIT_BIN="git" LCARS_WORKER_BIN="$TMPROOT/claude-none" \
+  LCARS_WORKER_CLI=claude LCARS_NOW_YEAR=2026 LCARS_NOW_MONTH=7 \
+  bash "$RELEASE" >"$TMPROOT/rel-none.out" 2>&1; rc=$?
+check "10f. no-drift → exits 0 with 'nothing to release'" \
+  "[ '$rc' -eq 0 ] && grep -qi 'nothing to release' '$TMPROOT/rel-none.out'"
+check "10f. no-drift → NO worker spawned" \
+  "[ ! -s '$TMPROOT/argv-none.calls' ]"
+check "10f. no-drift → no commit, VERSION unchanged" \
+  "[ \"\$(git -C '$RREPO' rev-parse HEAD)\" = '$head_n' ] && [ \"\$(cat '$RREPO/VERSION')\" = '2026.7.1' ]"
+
 # ==========================================================================
 echo
 printf 'version check: %d passed, %d failed\n' "$pass" "$fail"

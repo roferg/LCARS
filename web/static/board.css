@@ -129,6 +129,37 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
   background:var(--lcars-teal);padding:4px 10px;border-radius:11px}
 .topbar .conn.stale{background:var(--lcars-red);color:#fff}
 
+/* ── S130 version UPDATE banner ──────────────────────────────────────────────
+   A themed LCARS pill-band that drops in at the top of the framed content when
+   the install is stale. Hidden (display:none via [hidden]) when current, so a
+   current board is untouched. LCARS idiom: a full rounded-pill band, dark text
+   on the stage colour, a blinking pip on the left, the ENGAGE UPDATE button as a
+   contrasting capsule on the right. */
+.version-banner{margin:0 0 14px 0}
+.version-banner .vb-band{display:flex;align-items:center;gap:14px;
+  padding:9px 16px 9px 18px;border-radius:var(--lcars-radius,18px);
+  font-family:var(--font-display);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--lcars-black,#030608);
+  background:var(--lcars-amber);
+  box-shadow:0 0 0 1px rgba(0,0,0,.15) inset}
+.version-banner .vb-band.repo{background:var(--lcars-red);color:#fff}
+.version-banner .vb-band.drift{background:var(--lcars-gold,var(--lcars-amber))}
+.version-banner .vb-pip{width:12px;height:12px;border-radius:50%;
+  background:currentColor;flex:0 0 auto;animation:vb-blink 1.2s steps(2) infinite}
+@keyframes vb-blink{50%{opacity:.25}}
+.version-banner .vb-msg{font-size:15px;font-weight:700}
+.version-banner .vb-run{font-size:11px;letter-spacing:.1em;opacity:.7;
+  font-weight:400}
+.version-banner .vb-btn{margin-left:auto;flex:0 0 auto;
+  font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
+  background:var(--lcars-black,#030608);color:var(--lcars-amber);
+  border:none;border-radius:14px;padding:6px 16px;cursor:pointer}
+.version-banner .vb-band.repo .vb-btn{color:#fff;background:rgba(0,0,0,.55)}
+.version-banner .vb-btn:disabled{opacity:.5;cursor:default}
+.version-banner .vb-reason{font-family:var(--font-display);font-size:11px;
+  letter-spacing:.08em;text-transform:none;opacity:.9;flex:0 1 auto;
+  max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 /* ── pills ── */
 /* UX-9: any pills container (board card, Launch panel, detail header — they all
    render via the shared `.pills` markup) lays its pills out with a horizontal
