@@ -11,6 +11,7 @@ configuration drops it — GET still works, writes are declined.
 
 stdlib only; the daemon runs on an ephemeral localhost port inside the test.
 """
+import base64
 import json
 import os
 import subprocess
@@ -20,6 +21,12 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+
+
+def _img(data=b"\x89PNG\r\n\x1a\n_S92_", ctype="image/png", name="shot.png"):
+    """A {name,type,dataB64} image-paste entry (the postWrite body shape)."""
+    return {"name": name, "type": ctype,
+            "dataB64": base64.b64encode(data).decode("ascii")}
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -556,6 +563,33 @@ class MissionFileTest(WriteEndpointBase):
         rec = self._record("file")
         self.assertIn("ENV_WORKER_BIN: copilot", rec)
 
+    def test_file_threads_attached_image_path_to_file_script(self):
+        """S92: an image pasted on the File idea box is staged under repo_root and
+        threaded to file.sh as a repeated `--attach <staged path>` so file.sh
+        persists it as a durable mission attachment."""
+        status, body = self._post(
+            "/api/mission",
+            {"idea": "Add a dark mode toggle", "images": [_img()]})
+        self.assertEqual(status, 200)
+        rec = self._record("file")
+        self.assertIn("--attach", rec)
+        # the threaded path is a staged lcars-img-* file under repo_root.
+        self.assertIn("lcars-img-", rec)
+
+    def test_file_without_image_threads_no_attach(self):
+        """Regression: a no-image file call is byte-identical (no --attach)."""
+        status, _ = self._post("/api/mission", {"idea": "Add a dark mode toggle"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("--attach", self._record("file"))
+
+    def test_file_with_image_reaps_staged_temp(self):
+        """The staged temp copy is reaped after file.sh has copied it in (the
+        record stub is a no-op cp, so nothing should leak under repo_root)."""
+        import glob
+        self._post("/api/mission",
+                   {"idea": "x", "images": [_img()]})
+        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-img-*")), [])
+
 
 class LogTest(WriteEndpointBase):
     def test_log_preview_returns_children(self):
@@ -651,6 +685,31 @@ class LogTest(WriteEndpointBase):
         self.assertIn("--model-override all:opus", log_rec)
         # log_file must NOT dispatch resolve (review happens first)
         self.assertTrue(self._not_invoked("resolve"))
+
+    def test_log_file_threads_attached_image_to_log_script(self):
+        """S92: an image pasted into the Mission-Log box rides /log/file and is
+        threaded to log.sh as a repeated `--attach <staged path>` so every filed
+        bug gets it as a durable attachment."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001", prds=["# Bug: a\n\nbody a"],
+                         overrides=[""], images=[_img()])
+        log_rec = self._record("log")
+        self.assertIn("--parent m-001", log_rec)
+        self.assertIn("--attach", log_rec)
+        self.assertIn("lcars-img-", log_rec)
+
+    def test_log_file_without_image_threads_no_attach(self):
+        """Regression: a no-image log_file is byte-identical (no --attach)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001", prds=["# Bug: a\n\nbody a"], overrides=[""])
+        self.assertNotIn("--attach", self._record("log"))
+
+    def test_log_file_with_image_reaps_staged_temp(self):
+        import glob
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001", prds=["# Bug: a\n\nbody a"],
+                         overrides=[""], images=[_img()])
+        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-img-*")), [])
 
     def test_log_run_threads_per_bug_overrides_to_log(self):
         """The explicit one-shot file & run path (confirm=True) must also carry
@@ -814,7 +873,7 @@ class LogTest(WriteEndpointBase):
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)  # worker_bin=None
         seen = {}
 
-        def _fake_turn(prompt, engine=None, outdir=None):
+        def _fake_turn(prompt, engine=None, outdir=None, image_paths=None):
             seen["engine"] = engine
             # a minimal valid worker JSON so _log_author parses one bug.
             return '{"bugs": ["# Bug: thing\\n\\nbody"]}'
@@ -833,7 +892,7 @@ class LogTest(WriteEndpointBase):
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
         seen = {}
 
-        def _fake_turn(prompt, engine=None, outdir=None):
+        def _fake_turn(prompt, engine=None, outdir=None, image_paths=None):
             seen["engine"] = engine
             return '{"bugs": ["# Bug: x\\n\\nb"]}'
 
@@ -1014,6 +1073,140 @@ class LogTest(WriteEndpointBase):
         self.assertIn("--parent m-001", self._record("log"))
         self.assertIn("m-001", self._record_when("resolve", "m-001"))
 
+    # ── per-bug image routing: the split worker maps "image N" wording to bugs;
+    # the daemon does the DETERMINISTIC orphaned∪explicit union. ────────────────
+    def _log_argv_tokens(self):
+        """The tokens of the (single) log.sh ARGV line the record stub captured."""
+        rec = self._record("log")
+        for line in rec.splitlines():
+            if line.startswith("ARGV: "):
+                return line[len("ARGV: "):].split()
+        return []
+
+    def test_log_author_old_string_schema_gives_every_bug_all_images(self):
+        """Legacy `{"bugs":["<md>", ...]}` (no imageRefs) + K pasted images ⇒ each
+        child carries the FULL image set (all orphaned → all-to-all)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions._worker_turn = lambda *a, **k: (
+            '{"bugs": ["# Mission: A\\n\\n**Type:** bug\\nbody",'
+            ' "# Mission: B\\n\\n**Type:** bug\\nbody"]}')
+        out = actions.log_preview("m-001", text="two bugs",
+                                  images=[_img(), _img()])
+        kids = out["children"]
+        self.assertEqual([c["images"] for c in kids], [[1, 2], [1, 2]])
+        self.assertEqual([c["imageRefs"] for c in kids], [[], []])
+
+    def test_log_author_per_bug_refs_route_and_orphan_goes_to_all(self):
+        """New object schema: bug A refs image 1, image 2 referenced by nobody ⇒
+        A gets {1,2}, B gets {2} (the orphan reaches all)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions._worker_turn = lambda *a, **k: (
+            '{"bugs": [{"prd":"# Mission: A\\n\\n**Type:** bug\\nb","imageRefs":[1]},'
+            ' {"prd":"# Mission: B\\n\\n**Type:** bug\\nb"}]}')
+        out = actions.log_preview("m-001", text="two bugs",
+                                  images=[_img(), _img()])
+        kids = out["children"]
+        self.assertEqual(kids[0]["images"], [1, 2])   # explicit {1} ∪ orphan {2}
+        self.assertEqual(kids[1]["images"], [2])      # orphan {2} only
+        self.assertEqual(kids[0]["imageRefs"], [1])
+        self.assertEqual(kids[1]["imageRefs"], [])
+
+    def test_log_author_all_assigned_leaves_unmentioned_bug_empty(self):
+        """Every image assigned to SOME bug ⇒ a bug the report tied to no image
+        carries NOTHING (no orphans to fall back on)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions._worker_turn = lambda *a, **k: (
+            '{"bugs": [{"prd":"# Mission: A\\n\\n**Type:** bug\\nb","imageRefs":[1]},'
+            ' {"prd":"# Mission: B\\n\\n**Type:** bug\\nb","imageRefs":[2]},'
+            ' {"prd":"# Mission: C\\n\\n**Type:** bug\\nb"}]}')
+        out = actions.log_preview("m-001", text="three bugs",
+                                  images=[_img(), _img()])
+        kids = out["children"]
+        self.assertEqual(kids[0]["images"], [1])
+        self.assertEqual(kids[1]["images"], [2])
+        self.assertEqual(kids[2]["images"], [])       # unmentioned → nothing
+
+    def test_file_children_no_refs_threads_all_images_as_globals(self):
+        """No refs (or none supplied) + K images ⇒ every image threaded as a GLOBAL
+        --attach BEFORE the first --prd — byte-identical to the pre-routing dispatch
+        (log.sh gives globals to all bugs)."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001",
+                         prds=["# Bug: a\n\nbody a", "# Bug: b\n\nbody b"],
+                         overrides=["", ""],
+                         images=[_img(), _img()])
+        toks = self._log_argv_tokens()
+        first_prd = toks.index("--prd")
+        before = [toks[i + 1] for i, t in enumerate(toks[:first_prd])
+                  if t == "--attach"]
+        after = [toks[i + 1] for i, t in enumerate(toks)
+                 if t == "--attach" and i > first_prd]
+        self.assertEqual(len(before), 2, "both images must be global (pre --prd)")
+        self.assertEqual(after, [], "no per-bug (post --prd) attaches with no refs")
+
+    def test_file_children_routes_orphan_global_and_explicit_positional(self):
+        """image_refs=[[1],[]] with 2 images ⇒ image 2 is orphaned (global, before
+        the first --prd); image 1 is bug-0 explicit (positional, right after bug-0's
+        --prd); nothing after bug-1's --prd."""
+        actions = Actions(repo_root=self.tmp, scripts=self.scripts)
+        actions.log_file("m-001",
+                         prds=["# Bug: a\n\nbody a", "# Bug: b\n\nbody b"],
+                         overrides=["", ""],
+                         images=[_img(), _img()],
+                         image_refs=[[1], []])
+        toks = self._log_argv_tokens()
+        prd_positions = [i for i, t in enumerate(toks) if t == "--prd"]
+        self.assertEqual(len(prd_positions), 2)
+        p0, p1 = prd_positions
+        # exactly one GLOBAL --attach before the first --prd (the orphan, image 2)
+        globals_ = [i for i, t in enumerate(toks[:p0]) if t == "--attach"]
+        self.assertEqual(len(globals_), 1)
+        # exactly one --attach between bug-0's --prd and bug-1's --prd (image 1)
+        between = [i for i in range(p0 + 1, p1) if toks[i] == "--attach"]
+        self.assertEqual(len(between), 1)
+        # nothing attached after bug-1's --prd
+        after1 = [i for i in range(p1 + 1, len(toks)) if toks[i] == "--attach"]
+        self.assertEqual(after1, [])
+        # and the two staged sources are distinct (orphan != explicit)
+        self.assertNotEqual(toks[globals_[0] + 1], toks[between[0] + 1])
+
+
+class RouteImagesUnitTest(unittest.TestCase):
+    """The pure deterministic routing formula (union = explicit ∪ orphaned)."""
+
+    def test_no_refs_all_orphaned(self):
+        from lcars_serve.actions import _route_images
+        orphaned, explicit, union = _route_images([[], []], 2)
+        self.assertEqual(orphaned, [1, 2])
+        self.assertEqual(explicit, [[], []])
+        self.assertEqual(union, [[1, 2], [1, 2]])
+
+    def test_one_orphan_among_assigned(self):
+        from lcars_serve.actions import _route_images
+        orphaned, explicit, union = _route_images([[1], []], 2)
+        self.assertEqual(orphaned, [2])          # image 2 referenced by nobody
+        self.assertEqual(union, [[1, 2], [2]])
+
+    def test_all_assigned_empty_bug_gets_nothing(self):
+        from lcars_serve.actions import _route_images
+        orphaned, explicit, union = _route_images([[1], [2], []], 2)
+        self.assertEqual(orphaned, [])
+        self.assertEqual(union, [[1], [2], []])
+
+    def test_out_of_range_and_dupe_refs_are_dropped(self):
+        from lcars_serve.actions import _route_images
+        # 9 is out of range (n=2), duplicate 1s collapse.
+        orphaned, explicit, union = _route_images([[1, 1, 9], []], 2)
+        self.assertEqual(explicit, [[1], []])
+        self.assertEqual(orphaned, [2])
+        self.assertEqual(union, [[1, 2], [2]])
+
+    def test_no_images_all_empty(self):
+        from lcars_serve.actions import _route_images
+        orphaned, explicit, union = _route_images([[], []], 0)
+        self.assertEqual(orphaned, [])
+        self.assertEqual(union, [[], []])
+
 
 class LiveChannelTest(WriteEndpointBase):
     """Behavior 5: a state-changing dispatch moves the LocalAdapter fingerprint,
@@ -1086,6 +1279,18 @@ class ReadOnlyGatingTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             urllib.request.urlopen(req, timeout=5)
         # 403 (write layer inactive) — not a silent 200.
+        self.assertIn(cm.exception.code, (403, 405))
+
+    def test_file_with_image_declined_when_read_only(self):
+        # S92: an attached image must NOT bypass the view-only write block — the
+        # write layer is off (actions=None), so /api/mission 403s before any
+        # image is staged.
+        url = "http://127.0.0.1:%d/api/mission" % self.port
+        body = json.dumps({"idea": "x", "images": [_img()]}).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=5)
         self.assertIn(cm.exception.code, (403, 405))
 
     def test_github_adapter_is_read_only_by_construction(self):

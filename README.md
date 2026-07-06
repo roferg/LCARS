@@ -192,6 +192,12 @@ you drive the whole idea → merged PR loop without leaving the page:
   **AWAITING YOU** state and you respond right there: Respond, **Verify**
   (approve / send back), **Pause** / **Resume**, and the **Mission Log** are all
   card actions.
+- **Paste screenshots.** The File box, the live Align grill, and the Mission Log
+  box all accept pasted images. Each shows as a CLI-style placeholder chip (never
+  a rendered thumbnail), is saved into the Mission's `attachments/` dir,
+  referenced by relative path in the PRD, and threaded by absolute path into every
+  cold Stage — so the grill and the grounding worker actually *see* it (Claude via
+  a path in the prompt, Copilot via `--attachment`).
 
 The viewscreen is a **viewport over the same harness the CLI drives** — not a
 separate implementation. CLI/UI parity is a core principle: every write the board
@@ -432,8 +438,13 @@ $ lcars approve lcars-20260604-001
 
 When you're reviewing a Mission at Verify and spot several bugs, `lcars log`
 them as you go — each becomes a bug Mission linked to the parent and grounded
-against the parent's existing code (so a casual report fixes the real feature,
-not a duplicate).
+against the parent's existing code — read from the parent's own branch, not
+whatever's checked out — so a casual report fixes the real feature, not a
+duplicate. Paste screenshots straight into the log box: if you reference them per
+bug ("see image 1", "the second screenshot"), the split routes each image to the
+bug that names it (plus any image no bug claims), and the log-split preview shows
+an **images pill per bug** so you can check the mapping before filing. With no
+per-bug references, every image goes to every bug.
 Then hand the whole batch to **`lcars resolve-logs`** and walk away. It drives
 every logged bug to its own Verify gate in a sensible order the worker chooses
 (root-cause and dependency bugs first, cosmetic ones last), and collapses what

@@ -15,6 +15,9 @@ transcript reached it — with ZERO real spend.
 
 stdlib only; the daemon runs on an ephemeral localhost port inside the test.
 """
+import base64
+import glob
+import http.client
 import json
 import os
 import sys
@@ -844,6 +847,220 @@ class ViewOnlyAlignTest(unittest.TestCase):
         with urllib.request.urlopen(url, timeout=5) as r:
             data = json.loads(r.read())
         self.assertIn("columns", data)
+
+    def test_align_start_with_image_still_403_view_only(self):
+        # S91: an attached image must NOT bypass the view-only write block — the
+        # write layer is off (actions=None), so it 403s before any image guard.
+        url = "http://127.0.0.1:%d/api/align/start" % self.port
+        body = json.dumps({"idea": "x", "images": [_img()]}).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST",
+                                     headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=5)
+        self.assertEqual(cm.exception.code, 403)
+
+
+# ── S91: pasted-image hand-off into the ONE shared _worker_turn seam ──────────
+_IMG_BYTES = b"\x89PNG\r\n\x1a\n_S91_IMAGE_PAYLOAD_73294_"
+
+
+def _img(data=_IMG_BYTES, ctype="image/png", name="shot.png"):
+    """A {name,type,dataB64} image-paste entry (the postWrite body shape)."""
+    return {"name": name, "type": ctype,
+            "dataB64": base64.b64encode(data).decode("ascii")}
+
+
+def _staged_imgs(root):
+    """Every image the daemon has staged under repo_root (lcars-img-*)."""
+    return sorted(glob.glob(os.path.join(root, "lcars-img-*")))
+
+
+class ImagePasteGrillTest(AlignBase):
+    """S91 — an image pasted into the File/Align grill reaches the conversational
+    worker through the ONE shared `_worker_turn` seam. The DEFAULT worker_bin is
+    a non-copilot stub, so this exercises the CLAUDE branch: the staged abs path
+    is referenced in the PROMPT text (claude views it with Read; the grill is not
+    tools-denied). Bytes are staged for real; the session reaps them on done."""
+
+    def test_claude_grill_references_staged_path_in_prompt(self):
+        # a single QUESTION turn keeps the session alive (no done-reap yet) so we
+        # can inspect the on-disk staged file.
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "What's broken?", "recommended": "x"},
+             "prd": "# Mission: G\n\n**Type:** bug\n"})
+        status, _ = self._post("/api/align/start",
+                               {"idea": "fix this", "images": [_img()]})
+        self.assertEqual(status, 200)
+        # exactly ONE real file staged under repo_root; bytes match the input.
+        staged = _staged_imgs(self.tmp)
+        self.assertEqual(len(staged), 1)
+        with open(staged[0], "rb") as fh:
+            self.assertEqual(fh.read(), _IMG_BYTES)
+        # claude REFERENCES the abs path in the prompt text (Read-tool hand-off).
+        prompt = self._prompt_turns()[0]
+        self.assertIn(staged[0], prompt)
+        self.assertIn("attached images", prompt.lower())
+        # the claude path must NOT add a copilot --attachment flag.
+        self.assertNotIn("--attachment", self._argvs()[0])
+
+    def test_done_turn_threads_attach_to_file_script(self):
+        # S92: an image pasted DURING the grill becomes a durable mission
+        # attachment — on the done turn the session's accumulated staged images
+        # are threaded to file.sh as a repeated `--attach <path>`.
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "Q?", "recommended": "x"},
+             "prd": "# Mission: G\n\n**Type:** bug\n"},
+            {"status": "done",
+             "prd": ("# Mission: G\n\n**Type:** bug\n**Goal:** g\n"
+                     "**Acceptance Criteria:**\n- a\n**Out of Scope:**\n- n\n"
+                     "**Constraints:**\n- c\n")})
+        _, start = self._post("/api/align/start",
+                              {"idea": "fix this", "images": [_img()]})
+        sid = start["state"]["sessionId"]
+        _, done = self._post("/api/align/%s/answer" % sid, {"answer": "go"})
+        self.assertEqual(done["state"]["status"], "done")
+        rec = self._record("file")
+        self.assertIn("--prd", rec)
+        self.assertIn("--attach", rec)
+        self.assertIn("lcars-img-", rec)
+
+    def test_done_turn_without_image_threads_no_attach(self):
+        # Regression: a grill with no image files with NO --attach.
+        self._set_turns(
+            {"status": "done",
+             "prd": ("# Mission: G\n\n**Type:** bug\n**Goal:** g\n"
+                     "**Acceptance Criteria:**\n- a\n**Out of Scope:**\n- n\n"
+                     "**Constraints:**\n- c\n")})
+        self._post("/api/align/start", {"idea": "no image"})
+        self.assertNotIn("--attach", self._record("file"))
+
+    def test_done_turn_reaps_staged_images(self):
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "Q?", "recommended": "x"},
+             "prd": "# Mission: G\n\n**Type:** bug\n"},
+            {"status": "done",
+             "prd": ("# Mission: G\n\n**Type:** bug\n**Goal:** g\n"
+                     "**Acceptance Criteria:**\n- a\n**Out of Scope:**\n- n\n"
+                     "**Constraints:**\n- c\n")})
+        _, start = self._post("/api/align/start",
+                              {"idea": "fix this", "images": [_img()]})
+        # staged + present while the grill session is open.
+        self.assertEqual(len(_staged_imgs(self.tmp)), 1)
+        sid = start["state"]["sessionId"]
+        _, done = self._post("/api/align/%s/answer" % sid, {"answer": "go"})
+        self.assertEqual(done["state"]["status"], "done")
+        # the session ended → its staged images are reaped (no working-tree leak).
+        self.assertEqual(_staged_imgs(self.tmp), [])
+
+    def test_no_image_turn_is_byte_identical(self):
+        # regression (test #4): a turn with NO image stages nothing, adds no
+        # --attachment flag, and leaves the prompt text untouched.
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "Q?", "recommended": "x"},
+             "prd": "# Mission: G\n\n**Type:** bug\n"})
+        self._post("/api/align/start", {"idea": "no image here"})
+        self.assertEqual(_staged_imgs(self.tmp), [])
+        prompt = self._prompt_turns()[0]
+        self.assertNotIn("attached images", prompt.lower())
+        self.assertNotIn("--attachment", self._argvs()[0])
+
+
+class ImagePasteCopilotGrillTest(AlignBase):
+    """S91 — the COPILOT branch: the image rides natively via `--attachment
+    <path>` (repeatable), tools stay denied (`--available-tools=`), and the
+    prompt text is NOT augmented (no Read-tool note)."""
+
+    def setUp(self):
+        super().setUp()
+        self.copilot_bin = _copilot_worker_stub(
+            self.turns_path, self.prompt_log, self.argv_log)
+
+    def test_copilot_grill_attaches_image_via_flag(self):
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "Q?", "recommended": "x"},
+             "prd": "# Mission: G\n\n**Type:** bug\n"})
+        status, _ = self._post(
+            "/api/align/start",
+            {"idea": "fix this", "engine": self.copilot_bin, "images": [_img()]})
+        self.assertEqual(status, 200)
+        staged = _staged_imgs(self.tmp)
+        self.assertEqual(len(staged), 1)
+        toks = self._argvs()[0].split()
+        # native --attachment <staged path>; tools-denied posture intact.
+        self.assertIn("--attachment", toks)
+        i = toks.index("--attachment")
+        self.assertEqual(toks[i + 1], staged[0])
+        self.assertIn("--available-tools=", toks)
+        # copilot prompt is NOT augmented with the claude path-in-prompt note.
+        self.assertNotIn("attached images", self._prompt_turns()[0].lower())
+
+
+class ImagePasteLogTest(AlignBase):
+    """S91 — the Mission-Log split runs through the SAME seam on the cold
+    (session_id=None) path; a pasted image reaches it and is cleaned up after the
+    one-shot turn (no session to read it across)."""
+
+    def test_log_split_references_staged_path_and_cleans_up(self):
+        bug = ("# Mission: Crash on load\n\n**Type:** bug\n**Goal:** g\n"
+               "**Acceptance Criteria:**\n- a\n**Out of Scope:**\n- n\n"
+               "**Constraints:**\n- c\n")
+        self._set_turns({"bugs": [bug]})
+        status, body = self._post(
+            "/api/mission/m-001/log",
+            {"text": "it crashes — see the screenshot", "images": [_img()]})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"]["count"], 1)
+        # the staged path reached the claude log-split PROMPT ...
+        prompt = self._prompts()
+        self.assertRegex(prompt, r"lcars-img-\S+",
+                         "log-split prompt must reference the staged image path")
+        self.assertIn("attached images", prompt.lower())
+        # ... and the cold one-shot turn cleaned the staged file up (no leak).
+        self.assertEqual(_staged_imgs(self.tmp), [])
+
+
+class ImageGuardTest(AlignBase):
+    """S91 — the daemon guards: an oversize body 413s before it is read; a
+    non-image content-type 415s before the worker; neither reaches the worker."""
+
+    def test_oversize_body_is_413_and_worker_untouched(self):
+        # spoof a large Content-Length (rejected on the header, before the body
+        # is read) — no need to actually ship 12 MB+ over the socket.
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.putrequest("POST", "/api/align/start")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(13 * 1024 * 1024))
+        conn.endheaders()
+        conn.send(b'{"idea":"x"}')
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 413)
+        # the worker was never spawned, nothing staged.
+        self.assertEqual(self._argvs(), [])
+        self.assertEqual(_staged_imgs(self.tmp), [])
+
+    def test_bad_content_type_is_415_and_worker_untouched(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post("/api/align/start",
+                       {"idea": "x",
+                        "images": [_img(ctype="image/svg+xml", name="x.svg")]})
+        self.assertEqual(cm.exception.code, 415)
+        # rejected before the worker; nothing spawned, nothing staged.
+        self.assertEqual(self._argvs(), [])
+        self.assertEqual(_staged_imgs(self.tmp), [])
+
+    def test_bad_content_type_on_log_is_415(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post("/api/mission/m-001/log",
+                       {"text": "bug", "images": [_img(ctype="text/plain")]})
+        self.assertEqual(cm.exception.code, 415)
+        self.assertEqual(self._argvs(), [])
 
 
 def _plant_bug(root, mid, *, parent, issue, stage="plan"):

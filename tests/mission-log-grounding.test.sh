@@ -172,6 +172,28 @@ check "B. NEVER sets awaitingHuman (grounding cannot escalate)" \
   "! grep -q 'awaitingHuman' '$BUG/state.json'"
 check "B. writes no pending.json (no escalation)" \
   "[ ! -f '$BUG/pending.json' ]"
+check "B. no attachments dir => grounding prompt has NO attachments section" \
+  "! grep -q 'Attached images' '$repo/prompts.log'"
+
+# ==========================================================================
+# B2. GROUNDING + ATTACHMENTS: a logged bug's screenshot reaches the grounding
+# worker — attachments_extra_block is threaded into the research-grounding
+# spawn (S92 contract, re-seated by the 2026-07-03 main merge). The captain's
+# screenshot is often THE symptom; the worker that anchors it must see it.
+# ==========================================================================
+repo="$(setup)"
+BUG="$repo/.git/lcars/missions/bug-002"
+mkdir -p "$BUG/attachments"
+printf 'PNGDATA-B2' >"$BUG/attachments/attachment-01.png"
+drive "$repo" research --mission bug-002
+
+check "B2. grounding research exits zero with an attachment present" "[ '$RC' -eq 0 ]"
+check "B2. grounding prompt carries the Attached-images section" \
+  "grep -q 'Attached images' '$repo/prompts.log'"
+check "B2. grounding prompt carries the ABSOLUTE attachment path" \
+  "grep -qF -- '$BUG/attachments/attachment-01.png' '$repo/prompts.log'"
+check "B2. still saves grounding.json + advances to validate" \
+  "[ -f '$BUG/research/grounding.json' ] && grep -q '\"stage\": *\"validate\"' '$BUG/state.json'"
 
 # --- the assembled grounding prompt is fed the PARENT's artifacts -----------
 check "B. grounding prompt names the parent's prd.md path" \
@@ -247,6 +269,91 @@ drive "$repo3" gate --mission feat-004 --questions "$qf"
 FEAT4="$repo3/.git/lcars/missions/feat-004"
 check "G. a NON-bug with >MAX questions STILL escalates (gate not loosened)" \
   "[ '$RC' -eq 3 ] && grep -q 'awaitingHuman' '$FEAT4/state.json'"
+
+# ==========================================================================
+# F. BRANCH-ANCHORING: the four read-only stages (Research-questions, Validate,
+#    Plan, Plan Review) pin their repo-read worker to the MISSION's OWN branch,
+#    not the ambient working-tree checkout. Regression guard for the cross-mission
+#    "reason leak": a bug filed while the tree sat on a sibling branch had Validate
+#    read that checked-out branch and override the grounding. We deliberately put
+#    the working tree on a DIFFERENT branch than the missions' branch and assert
+#    every stage prompt still names the mission branch + tells the worker to
+#    IGNORE the working-tree checkout.
+# ==========================================================================
+repoF="$(setup)"
+( cd "$repoF" && git checkout -q -b some-other-branch )   # mismatch: tree != mission branch
+mF="$repoF/.git/lcars/missions"
+BR="lcars/parent-x"
+IGN='checkout may be on an UNRELATED branch; IGNORE it and its history'
+
+# --- Research (question-gen): a feature mission with a branch -----------------
+mkdir -p "$mF/fa-010"
+cat >"$mF/fa-010/state.json" <<JSON
+{ "id": "fa-010", "type": "feature", "title": "Anchor feat", "stage": "align", "branch": "$BR", "githubIssue": null }
+JSON
+printf '# Mission: Anchor feat\n\n**Type:** feature\nBuild it.\n' >"$mF/fa-010/prd.md"
+: >"$repoF/prompts.log"; : >"$repoF/roles.log"
+drive "$repoF" research --mission fa-010
+check "F. research-questions ran (role research-questions)" \
+  "grep -q '^research-questions$' '$repoF/roles.log'"
+check "F. research-questions prompt names the Mission branch ($BR)" \
+  "grep -qF -- '$BR' '$repoF/prompts.log'"
+check "F. research-questions prompt says to ignore the working-tree checkout" \
+  "grep -qF -- '$IGN' '$repoF/prompts.log'"
+
+# --- Validate: a logged bug with grounding.json (also asserts escalate note) --
+mkdir -p "$mF/va-011/research"
+cat >"$mF/va-011/state.json" <<JSON
+{ "id": "va-011", "type": "bug", "origin": "log", "title": "V", "stage": "validate", "branch": "$BR", "githubIssue": null, "parentMission": "parent-001" }
+JSON
+printf '# Mission: V\n\n**Type:** bug\nSymptom.\n' >"$mF/va-011/prd.md"
+cat >"$mF/va-011/research/grounding.json" <<'JSON'
+{ "targets": ["src/x.ts:foo"], "kind": "modify-existing", "restated": "x", "reuse_directive": "modify foo" }
+JSON
+: >"$repoF/prompts.log"; : >"$repoF/roles.log"
+drive "$repoF" validate --mission va-011
+check "F. validate prompt names the Mission branch ($BR)" \
+  "grep -qF -- '$BR' '$repoF/prompts.log'"
+check "F. validate prompt says to ignore the working-tree checkout" \
+  "grep -qF -- '$IGN' '$repoF/prompts.log'"
+check "F. validate prompt carries the escalate-on-override (grounding AUTHORITATIVE) note" \
+  "grep -q 'AUTHORITATIVE' '$repoF/prompts.log'"
+check "F. validate escalate note routes through the scope.txt gate" \
+  "grep -q 'emit scope.txt' '$repoF/prompts.log'"
+
+# --- Plan: worker output stubbed absent → stage will fail, but the PROMPT is
+#     recorded on the first spawn (that is all we assert). -----------------------
+mkdir -p "$mF/pl-012"
+cat >"$mF/pl-012/state.json" <<JSON
+{ "id": "pl-012", "type": "feature", "title": "P", "stage": "plan", "branch": "$BR", "githubIssue": null }
+JSON
+printf '# Mission: P\n' >"$mF/pl-012/prd.md"
+printf '# Validated Plan: P\n## Synthesis\nx\n## Decisions\n- y\n## Rationale\nz\n' >"$mF/pl-012/validated-plan.md"
+: >"$repoF/prompts.log"; : >"$repoF/roles.log"
+drive "$repoF" plan --mission pl-012
+check "F. plan ran its worker (role plan)" \
+  "grep -q '^plan$' '$repoF/roles.log'"
+check "F. plan prompt names the Mission branch ($BR)" \
+  "grep -qF -- '$BR' '$repoF/prompts.log'"
+check "F. plan prompt says to ignore the working-tree checkout" \
+  "grep -qF -- '$IGN' '$repoF/prompts.log'"
+
+# --- Plan Review: worker output stubbed absent → stage fails; prompt recorded. -
+mkdir -p "$mF/pr-013"
+cat >"$mF/pr-013/state.json" <<JSON
+{ "id": "pr-013", "type": "feature", "title": "R", "stage": "plan-review", "branch": "$BR", "githubIssue": null }
+JSON
+cat >"$mF/pr-013/plan.json" <<'JSON'
+[ { "id": "t-001", "title": "t", "description": "d", "acceptanceCriteria": ["a"], "dependencies": [], "estimatedReadLoc": 10, "estimatedTestLoc": 10, "estimatedNewLoc": 10 } ]
+JSON
+: >"$repoF/prompts.log"; : >"$repoF/roles.log"
+drive "$repoF" plan-review --mission pr-013
+check "F. plan-review ran its worker (role plan-review)" \
+  "grep -q '^plan-review$' '$repoF/roles.log'"
+check "F. plan-review prompt names the Mission branch ($BR)" \
+  "grep -qF -- '$BR' '$repoF/prompts.log'"
+check "F. plan-review prompt says to ignore the working-tree checkout" \
+  "grep -qF -- '$IGN' '$repoF/prompts.log'"
 
 # ==========================================================================
 echo

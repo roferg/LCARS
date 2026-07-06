@@ -157,6 +157,35 @@ anything is filed (nothing partial). The override is persisted into the child's
 the same format the Launch panel's override sends, so the Mission-Log review panel
 and Mission Start stay consistent.
 
+## Routing pasted screenshots per bug — `--attach`
+
+When the captain pastes screenshots into the report, each is a durable image
+attachment. `--attach <path>` is **positional**, mirroring `--model-override`:
+
+- `--attach` **before any `--prd`** → a **global** attach: copied into **every**
+  bug (this is the default all-images-to-all-bugs behaviour).
+- `--attach` **after a `--prd`** → a **per-bug** attach: copied into **that one**
+  bug only, paired positionally with the most recent `--prd`.
+
+Each bug's final image set is `global ∪ its-own-positional` (deduped by source
+path, renumbered `attachment-01..` locally per bug). So route an image the report
+ties to a specific bug as that bug's positional `--attach`, and leave an image
+tied to no specific bug as a global (it reaches all bugs):
+
+```bash
+bash ~/.claude/skills/lcars-log/log.sh \
+  --parent lcars-20260530-001 \
+  --attach "$orphan_shot" \                 # no bug named it → all bugs get it
+  --prd "$prd1" --attach "$bug1_shot" \      # only bug 1 shows this crash
+  --prd "$prd2"                              # bug 2 gets just the orphan
+```
+
+With **only** global `--attach` (all before the first `--prd`), the output is
+byte-identical to the pre-routing behaviour — every bug gets every image. A
+missing/empty `--attach` path is rejected **before** anything is filed. In the
+web flow the split worker returns per-bug `imageRefs` (1-based paste-order
+indices) and the daemon computes this same union for you.
+
 ## Why `validated-plan.md`?
 
 Bugs start at **Plan**, skipping Validate — but Plan's worker reads

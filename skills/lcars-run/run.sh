@@ -534,6 +534,56 @@ context_extra_block() {
 - %s' "$src"
 }
 
+# Resolve the mission's durable image attachments (staged at File / Mission-Log
+# time under $MISSION_DIR/attachments/) into a block of ABSOLUTE paths appended
+# to a cold Stage's `extra`, so the Research/Validate/Plan/Implement workers READ
+# the captain's screenshots BY PATH (the S91 spike proved cold-stage
+# Read-image-by-path works for both engines; a path is sufficient). MIRRORS
+# context_extra_block, but globs the attachments dir directly so it is robust —
+# independent of state.json. Returns EMPTY when the dir is absent or empty, so a
+# no-attachment mission's prompt is byte-identical to before.
+attachments_extra_block() {
+  local d="$MISSION_DIR/attachments" f any=0 out=""
+  [ -d "$d" ] || return 0
+  for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    if [ "$any" -eq 0 ]; then
+      out='
+## Attached images (the captain attached these; view/read them as part of your input)'
+      any=1
+    fi
+    out="$out
+- $f"
+  done
+  [ "$any" -eq 1 ] && printf '%s' "$out"
+  return 0
+}
+
+# The branch that anchors this Mission's code. For a full Mission it is the base
+# branch the work builds on (recorded at File time); for a logged bug it equals
+# the parent's delivered branch (the code the fix targets). The four read-only
+# stages (Research questions, Validate, Plan, Plan Review) spawn a repo-read
+# worker whose cwd is the AMBIENT working-tree checkout — which may be sitting on
+# an UNRELATED branch. That is the cross-mission "reason leak": a bug filed while
+# the tree was on a sibling Copilot branch had its Validate worker `git log` that
+# CHECKED-OUT branch, decide the feature was "already fixed" by that lineage, and
+# OVERRIDE the correct grounding. Naming the Mission's OWN branch here pins every
+# such worker to the right code (mirrors research-grounding's "Where the delivered
+# code lives" block). Returns EMPTY when no branch is recorded, so a mission
+# without one produces a byte-identical prompt to before.
+mission_branch_block() {
+  local b; b="$(json_str "$STATE" branch)"
+  [ -n "$b" ] || return 0
+  printf '
+
+## Which code to read — READ THIS
+The code for this Mission lives on branch `%s`. When you inspect the
+repository, inspect THAT branch (e.g. `git show %s:<path>`, `git log %s`)
+— it holds the implementation this Mission is reasoning about. The working-tree
+checkout may be on an UNRELATED branch; IGNORE it and its history. Do not draw
+conclusions from, or defer to, any other Mission'\''s branch or commits.' "$b" "$b" "$b"
+}
+
 # === Per-wave repo map (pure bash, token-free, CLI-neutral) =================
 # A SYMBOL SKELETON of the repo's source: top-level interface SIGNATURES
 # (function / method / class / def / type / interface / export / shell-func
@@ -5561,9 +5611,15 @@ cmd_research() {
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
     tries=$((tries + 1))
     qdir="$(mktemp -d)"
+    # The captain's durable image attachments (S92) ride in by ABSOLUTE path so
+    # the question-generator can view them as input; empty when none exist.
+    local rq_extra="## Read these artifacts (your ONLY inputs)
+- $MISSION_DIR/prd.md"
+    rq_extra="$rq_extra$(attachments_extra_block)"
+    # Pin the reader to the Mission's own branch, not the ambient checkout.
+    rq_extra="$rq_extra$(mission_branch_block)"
     spawn_worker research-questions "$STAGES_DIR/research-questions.md" repo-read "$qdir" \
-"## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/prd.md" "$( [ "$tries" -gt 1 ] && printf no-file )"
+      "$rq_extra" "$( [ "$tries" -gt 1 ] && printf no-file )"
     [ -f "$qdir/questions.txt" ] && break
     rm -rf "$qdir"; qdir=""
   done
@@ -5676,7 +5732,9 @@ The existing feature's code was delivered on branch \`$parent_branch\`. Inspect
 the actual implementation there (read-only) to confirm the real targets — do not
 guess from the plan alone."
   fi
-  extra="$extra$(context_extra_block)"
+  # S92 attachments ride into grounding too: a logged bug's screenshot is often
+  # THE symptom — the grounding worker must see it like every other cold stage.
+  extra="$extra$(context_extra_block)$(attachments_extra_block)"
 
   # ONE bounded worker, retried on a no-file attempt (same lever as validate).
   local tries=0 prior_no_file=""
@@ -5755,7 +5813,8 @@ cmd_validate() {
   # anchor the plan to the EXISTING code it names — modify those targets, do NOT
   # stand up a parallel/duplicate mechanism (the sun/moon-icon regression this cures).
   [ -f "$MISSION_DIR/research/grounding.json" ] && extra="$extra
-  NOTE: research/grounding.json is a GROUNDING artifact — it names the EXISTING code (targets) this bug is about and a reuse_directive. The validated plan MUST modify those existing targets, NOT introduce new state/components/flags that duplicate their behaviour."
+  NOTE: research/grounding.json is a GROUNDING artifact — it names the EXISTING code (targets) this bug is about and a reuse_directive. The validated plan MUST modify those existing targets, NOT introduce new state/components/flags that duplicate their behaviour.
+  The grounding is AUTHORITATIVE and is NOT yours to override. If you conclude the grounded targets are already correct, that the bug is already fixed, or that the grounding is stale/wrong, do NOT emit validated-plan.md (in particular NOT a no-op 'already fixed' verification plan). Instead emit scope.txt with a single plain-language question for the human describing the discrepancy (what the grounding says vs. what you found), and stop — the harness routes that to the captain via the existing scope gate."
   # RESUME after `lcars respond`: the captain's recorded answer resolves the
   # prior scope question. Feed it so the fresh Validator FOLDS IT IN and does not
   # re-raise the same question — otherwise the awaiting-human gate loops forever.
@@ -5770,6 +5829,10 @@ cmd_validate() {
   # The durable repo context source (CONTEXT.md or the generated pack) — shared
   # declarative facts, by PATH only. Safe for this declarative Stage.
   extra="$extra$(context_extra_block)"
+  # The captain's durable image attachments (S92) — ABSOLUTE paths, read as input.
+  extra="$extra$(attachments_extra_block)"
+  # Pin the reader to the Mission's own branch, not the ambient checkout.
+  extra="$extra$(mission_branch_block)"
 
   local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -6550,6 +6613,10 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
 - $MISSION_DIR/adr.md   (the engineering ADRs — architectural decisions + rationale; plan within them)"
   # Shared declarative repo facts, by PATH only.
   extra="$extra$(context_extra_block)"
+  # The captain's durable image attachments (S92) — ABSOLUTE paths, read as input.
+  extra="$extra$(attachments_extra_block)"
+  # Pin the reader to the Mission's own branch, not the ambient checkout.
+  extra="$extra$(mission_branch_block)"
 
   local tries=0 prior_no_file=""
   while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
@@ -6607,6 +6674,8 @@ acceptable — do not raise it."
   # The reviewer still sees ONLY the tickets (never prd.md / validated-plan.md) —
   # we add nothing but the declarative repo-facts context source, by PATH only.
   extra="$extra$(context_extra_block)"
+  # Pin the reader to the Mission's own branch, not the ambient checkout.
+  extra="$extra$(mission_branch_block)"
 
   # S100: APPEND the SOFT under-slice hint — a heuristic, ADVISORY-ONLY signal
   # computed from each ticket's own fields (see build_slice_pressure_hint). It is
@@ -6706,8 +6775,10 @@ cmd_implement_ticket() {
   # or restarts when a fresh process re-enters. DISTINCT from the Implementer's
   # own internal 1–5 attempts that land in result.json.attempts.attempts.
   # The durable repo context source (shared declarative facts, by PATH only) —
-  # resolved once for both halves of the adversarial pair.
-  local cblock; cblock="$(context_extra_block)"
+  # resolved once for both halves of the adversarial pair. The captain's durable
+  # image attachments (S92) ride the same artifact-paths list (ABSOLUTE paths) so
+  # BOTH the Test Writer and the Implementer can view them; empty when none exist.
+  local cblock; cblock="$(context_extra_block)$(attachments_extra_block)"
   # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
   # architectural facts BOTH halves of the pair may read, by PATH only. Absent on
   # a trivial Mission, in which case this stays empty. Prepended to $cblock so it
@@ -7576,7 +7647,27 @@ _replay_ticket_commit_locked() { # branch  sha  ticket
   local cur; cur="$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )"
   if [ "$cur" != "$branch" ]; then
     if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
-      ( cd "$REPO_ROOT" && "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 ) || return 1
+      # Capture the checkout's OWN stderr (do not discard it) so a failure names
+      # its real cause instead of degrading to the generic "cherry-pick failed".
+      # The dominant failure here is git REFUSING to move a branch that is checked
+      # out in ANOTHER worktree ("fatal: '<b>' is already checked out at '<path>'")
+      # — deliberate git behaviour, NOT a mergeable condition. Surface WHICH
+      # worktree holds it + the remedy so the operator frees that tree rather than
+      # chasing a phantom merge conflict. The fix itself is already built and green.
+      local co_err
+      if ! co_err="$( cd "$REPO_ROOT" && "$GIT_BIN" checkout "$branch" 2>&1 >/dev/null )"; then
+        local held_wt
+        held_wt="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
+          | awk -v b="branch refs/heads/$branch" '
+              /^worktree /{p=substr($0,10)}
+              $0==b{print p; exit}' )"
+        if [ -n "$held_wt" ]; then
+          REPLAY_FAIL_REASON="branch $branch is checked out in another git worktree ($held_wt) — git will not let the fix land there while it is held. The ticket's fix is built and green; free that worktree (remove it, or check it out detached) and re-run implement."
+        else
+          REPLAY_FAIL_REASON="could not check out branch $branch in the main tree to land the fix${co_err:+; git: $(printf '%s' "$co_err" | tr '\n' ' ')}"
+        fi
+        return 1
+      fi
     fi
   fi
   # Capture the cherry-pick's own STDERR (the git error) and, while the conflict
@@ -8657,6 +8748,14 @@ FSG_EOF
     __fsg_rc=0
     FULL_SUITE_SIGNAL="$__fsg_sig" full_suite_gate $__fsg_ordered || __fsg_rc=$?
     printf 'FSRC=%s\n' "$__fsg_rc"
+    exit 0 ;;
+  # S92 test hook: exercise attachments_extra_block in ISOLATION. MISSION_DIR is
+  # taken straight from $LCARS_ATT_TEST_DIR (no locate_mission, no worker spawn),
+  # so a focused test can assert the block emits the ABSOLUTE attachment paths
+  # when the dir has files and is empty when the dir is absent/empty.
+  attachments-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    attachments_extra_block
     exit 0 ;;
   # S100 test hook: pure slice_pressure scalar — inputs via env (nCriteria /
   # nFiles / nDirs / newLoc / budget), echoes "<level>\t<reason>". Reads no CLI

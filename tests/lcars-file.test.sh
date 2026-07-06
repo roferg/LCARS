@@ -664,5 +664,86 @@ check "12b. no engine ⇒ state.json has no workerBin field" \
 check "12b. state.json is valid JSON (engine unset)" \
   "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$MWN'"
 
+# --- Behaviour 13: durable image attachments (--attach) (S92) --------------
+# `lcars file --attach <img>` (repeatable) copies each image into the mission's
+# attachments/ dir under a STABLE name (attachment-NN.<ext>), references each by
+# RELATIVE path in prd.md under a `## Attached images` section, and records the
+# relative paths in state.json as an "attachments" array. With NO --attach,
+# nothing changes: no attachments/ dir, no prd.md section, no state.json key.
+
+# 13a. one --attach ⇒ staged file + prd.md ref + state.json array.
+repoAT="$(new_repo)"; make_gh_stub "$repoAT/gh"
+export GH_LOG="$repoAT/gh.log"; : >"$GH_LOG"
+prdAT="$repoAT/prd.md"; write_prd "$prdAT"
+imgAT="$repoAT/shot.png"; printf 'PNGDATA-AT' >"$imgAT"
+rcAT=0
+(
+  cd "$repoAT"
+  LCARS_GH_BIN="$repoAT/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdAT" --attach "$imgAT" >outAT.txt 2>&1
+) || rcAT=$?
+MAT="$repoAT/.git/lcars/missions/lcars-20260530-001"
+check "13a. file with --attach succeeds" "[ '$rcAT' -eq 0 ]"
+check "13a. attachments/attachment-01.png is staged" \
+  "[ -f '$MAT/attachments/attachment-01.png' ]"
+check "13a. staged bytes match the source image" \
+  "[ \"\$(cat '$MAT/attachments/attachment-01.png')\" = 'PNGDATA-AT' ]"
+check "13a. prd.md has the '## Attached images' section" \
+  "grep -q '## Attached images' '$MAT/prd.md'"
+check "13a. prd.md references the attachment by RELATIVE path" \
+  "grep -q 'attachments/attachment-01.png' '$MAT/prd.md'"
+check "13a. state.json lists the attachment (relative path)" \
+  "grep -q '\"attachments\": *\\[ *\"attachments/attachment-01.png\"' '$MAT/state.json'"
+check "13a. state.json is valid JSON (attachment set)" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$MAT/state.json'"
+
+# 13b. two --attach ⇒ both staged, both listed, names increment by order.
+repoAT2="$(new_repo)"; make_gh_stub "$repoAT2/gh"
+export GH_LOG="$repoAT2/gh.log"; : >"$GH_LOG"
+prdAT2="$repoAT2/prd.md"; write_prd "$prdAT2"
+imgA="$repoAT2/a.png"; printf 'AAA' >"$imgA"
+imgB="$repoAT2/b.jpg"; printf 'BBB' >"$imgB"
+(
+  cd "$repoAT2"
+  LCARS_GH_BIN="$repoAT2/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdAT2" --attach "$imgA" --attach "$imgB" >outAT2.txt 2>&1
+)
+MAT2="$repoAT2/.git/lcars/missions/lcars-20260530-001"
+check "13b. first attachment keeps its .png ext" \
+  "[ -f '$MAT2/attachments/attachment-01.png' ]"
+check "13b. second attachment keeps its .jpg ext (order-numbered)" \
+  "[ -f '$MAT2/attachments/attachment-02.jpg' ]"
+check "13b. state.json lists both attachments" \
+  "grep -q 'attachment-01.png' '$MAT2/state.json' && grep -q 'attachment-02.jpg' '$MAT2/state.json'"
+
+# 13c. NO --attach ⇒ no attachments/ dir, no prd.md section, no state.json key.
+repoAT3="$(new_repo)"; make_gh_stub "$repoAT3/gh"
+export GH_LOG="$repoAT3/gh.log"; : >"$GH_LOG"
+prdAT3="$repoAT3/prd.md"; write_prd "$prdAT3"
+(
+  cd "$repoAT3"
+  LCARS_GH_BIN="$repoAT3/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdAT3" >outAT3.txt 2>&1
+)
+MAT3="$repoAT3/.git/lcars/missions/lcars-20260530-001"
+check "13c. no --attach ⇒ no attachments/ dir" "[ ! -d '$MAT3/attachments' ]"
+check "13c. no --attach ⇒ prd.md has no Attached images section" \
+  "! grep -q '## Attached images' '$MAT3/prd.md'"
+check "13c. no --attach ⇒ state.json has no attachments key" \
+  "! grep -q 'attachments' '$MAT3/state.json'"
+
+# 13d. a missing --attach file is rejected before anything is written.
+repoAT4="$(new_repo)"; make_gh_stub "$repoAT4/gh"
+export GH_LOG="$repoAT4/gh.log"; : >"$GH_LOG"
+prdAT4="$repoAT4/prd.md"; write_prd "$prdAT4"
+rcAT4=0
+(
+  cd "$repoAT4"
+  LCARS_GH_BIN="$repoAT4/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdAT4" --attach "$repoAT4/nope.png" >outAT4.txt 2>&1
+) || rcAT4=$?
+check "13d. missing attachment ⇒ non-zero exit" "[ '$rcAT4' -ne 0 ]"
+check "13d. missing attachment ⇒ no mission written" \
+  "[ ! -d '$repoAT4/.git/lcars/missions/lcars-20260530-001' ]"
+
 # ==========================================================================
 [ "$fail" -eq 0 ]

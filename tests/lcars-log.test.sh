@@ -636,6 +636,233 @@ check "20. refuses (non-zero) on a malformed override scope" "[ '$rc21' -ne 0 ]"
 check "20. files no bug mission on a malformed override" \
   "[ ! -d '$repo21/.git/lcars/missions/lcars-20260530-002' ]"
 
+# --- Behaviour 21: durable image attachments (--attach) (S92) ---------------
+# `lcars log --attach <img>` (repeatable) copies each image into EVERY child
+# bug's attachments/ dir under a stable name, references it by RELATIVE path in
+# that bug's prd.md, and records it in state.json. With NO --attach nothing
+# changes (no attachments/ dir, no prd.md section, no state.json key).
+
+# 21a. two bugs + one --attach ⇒ EACH bug gets the staged image + refs.
+repo22="$(new_repo_with_parent)"
+make_gh_stub "$repo22/gh"
+export GH_LOG="$repo22/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug22a="$repo22/b1.md"; write_bug_prd "$bug22a" "First bug" "First defect."
+bug22b="$repo22/b2.md"; write_bug_prd "$bug22b" "Second bug" "Second defect."
+img22="$repo22/shot.png"; printf 'LOGIMG-22' >"$img22"
+rc22=0
+(
+  cd "$repo22"
+  LCARS_GH_BIN="$repo22/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$img22" \
+      --prd "$bug22a" --prd "$bug22b" >out22.txt 2>&1
+) || rc22=$?
+B22A="$repo22/.git/lcars/missions/lcars-20260530-002"
+B22B="$repo22/.git/lcars/missions/lcars-20260530-003"
+check "21a. log with --attach succeeds" "[ '$rc22' -eq 0 ]"
+check "21a. first bug has attachments/attachment-01.png" \
+  "[ -f '$B22A/attachments/attachment-01.png' ]"
+check "21a. second bug has attachments/attachment-01.png" \
+  "[ -f '$B22B/attachments/attachment-01.png' ]"
+check "21a. first bug staged bytes match the source" \
+  "[ \"\$(cat '$B22A/attachments/attachment-01.png')\" = 'LOGIMG-22' ]"
+check "21a. first bug prd.md references the attachment (relative)" \
+  "grep -q 'attachments/attachment-01.png' '$B22A/prd.md'"
+check "21a. first bug prd.md has the Attached images section" \
+  "grep -q '## Attached images' '$B22A/prd.md'"
+check "21a. first bug state.json lists the attachment" \
+  "grep -q '\"attachments\": *\\[ *\"attachments/attachment-01.png\"' '$B22A/state.json'"
+check "21a. second bug state.json lists the attachment" \
+  "grep -q 'attachment-01.png' '$B22B/state.json'"
+check "21a. both children stay valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B22A/state.json' && python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$B22B/state.json'"
+
+# 21b. NO --attach ⇒ no attachments anywhere (regression).
+repo23="$(new_repo_with_parent)"
+make_gh_stub "$repo23/gh"
+export GH_LOG="$repo23/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug23="$repo23/b.md"; write_bug_prd "$bug23" "No-attach bug" "No images."
+(
+  cd "$repo23"
+  LCARS_GH_BIN="$repo23/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug23" >out23.txt 2>&1
+)
+B23="$repo23/.git/lcars/missions/lcars-20260530-002"
+check "21b. no --attach ⇒ no attachments/ dir" "[ ! -d '$B23/attachments' ]"
+check "21b. no --attach ⇒ no prd.md section" \
+  "! grep -q '## Attached images' '$B23/prd.md'"
+check "21b. no --attach ⇒ no state.json attachments key" \
+  "! grep -q 'attachments' '$B23/state.json'"
+
+# 21c. a missing --attach file is rejected before anything is filed.
+repo24="$(new_repo_with_parent)"
+make_gh_stub "$repo24/gh"
+export GH_LOG="$repo24/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug24="$repo24/b.md"; write_bug_prd "$bug24" "Bad attach bug" "Missing image."
+rc24=0
+(
+  cd "$repo24"
+  LCARS_GH_BIN="$repo24/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$repo24/nope.png" --prd "$bug24" >out24.txt 2>&1
+) || rc24=$?
+check "21c. missing attachment ⇒ non-zero exit" "[ '$rc24' -ne 0 ]"
+check "21c. missing attachment ⇒ no bug filed" \
+  "[ ! -d '$repo24/.git/lcars/missions/lcars-20260530-002' ]"
+
+# --- Behaviour 22: per-bug image routing via POSITIONAL --attach -------------
+# `--attach` is now positional (mirroring --model-override): a global attach
+# (before any --prd) applies to EVERY bug; a per-bug attach (after a --prd) is
+# paired to THAT --prd only. A bug's final set = GLOBAL ∪ its-own, deduped.
+
+# 22a. GLOBAL-only (before any --prd) ⇒ every bug gets it (legacy, byte-identical).
+repo25="$(new_repo_with_parent)"
+make_gh_stub "$repo25/gh"
+export GH_LOG="$repo25/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug25a="$repo25/b1.md"; write_bug_prd "$bug25a" "Global bug one" "First."
+bug25b="$repo25/b2.md"; write_bug_prd "$bug25b" "Global bug two" "Second."
+imgG="$repo25/global.png"; printf 'GLOBAL' >"$imgG"
+rc25=0
+(
+  cd "$repo25"
+  LCARS_GH_BIN="$repo25/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$imgG" \
+      --prd "$bug25a" --prd "$bug25b" >out25.txt 2>&1
+) || rc25=$?
+B25A="$repo25/.git/lcars/missions/lcars-20260530-002"
+B25B="$repo25/.git/lcars/missions/lcars-20260530-003"
+check "22a. global --attach succeeds" "[ '$rc25' -eq 0 ]"
+check "22a. global image lands in BOTH bugs" \
+  "[ \"\$(cat '$B25A/attachments/attachment-01.png')\" = 'GLOBAL' ] && [ \"\$(cat '$B25B/attachments/attachment-01.png')\" = 'GLOBAL' ]"
+
+# 22b. PER-BUG attaches (after each --prd) route to THAT bug only.
+repo26="$(new_repo_with_parent)"
+make_gh_stub "$repo26/gh"
+export GH_LOG="$repo26/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug26a="$repo26/b1.md"; write_bug_prd "$bug26a" "Per-bug one" "First."
+bug26b="$repo26/b2.md"; write_bug_prd "$bug26b" "Per-bug two" "Second."
+img1="$repo26/one.png"; printf 'IMG-ONE' >"$img1"
+img2="$repo26/two.png"; printf 'IMG-TWO' >"$img2"
+rc26=0
+(
+  cd "$repo26"
+  LCARS_GH_BIN="$repo26/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 \
+      --prd "$bug26a" --attach "$img1" \
+      --prd "$bug26b" --attach "$img2" >out26.txt 2>&1
+) || rc26=$?
+B26A="$repo26/.git/lcars/missions/lcars-20260530-002"
+B26B="$repo26/.git/lcars/missions/lcars-20260530-003"
+check "22b. per-bug --attach succeeds" "[ '$rc26' -eq 0 ]"
+check "22b. bug 1 gets ONLY its own image (IMG-ONE)" \
+  "[ \"\$(cat '$B26A/attachments/attachment-01.png')\" = 'IMG-ONE' ] && [ ! -f '$B26A/attachments/attachment-02.png' ]"
+check "22b. bug 2 gets ONLY its own image (IMG-TWO)" \
+  "[ \"\$(cat '$B26B/attachments/attachment-01.png')\" = 'IMG-TWO' ] && [ ! -f '$B26B/attachments/attachment-02.png' ]"
+
+# 22c. GLOBAL ∪ PER-BUG: a global orphan reaches every bug, plus each bug's own.
+repo27="$(new_repo_with_parent)"
+make_gh_stub "$repo27/gh"
+export GH_LOG="$repo27/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug27a="$repo27/b1.md"; write_bug_prd "$bug27a" "Union one" "First."
+bug27b="$repo27/b2.md"; write_bug_prd "$bug27b" "Union two" "Second."
+imgOrphan="$repo27/orphan.png"; printf 'ORPHAN' >"$imgOrphan"
+imgOwn="$repo27/own.png"; printf 'OWN' >"$imgOwn"
+rc27=0
+(
+  cd "$repo27"
+  LCARS_GH_BIN="$repo27/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$imgOrphan" \
+      --prd "$bug27a" --attach "$imgOwn" \
+      --prd "$bug27b" >out27.txt 2>&1
+) || rc27=$?
+B27A="$repo27/.git/lcars/missions/lcars-20260530-002"
+B27B="$repo27/.git/lcars/missions/lcars-20260530-003"
+check "22c. union --attach succeeds" "[ '$rc27' -eq 0 ]"
+check "22c. bug 1 gets global orphan (01) AND its own (02)" \
+  "[ \"\$(cat '$B27A/attachments/attachment-01.png')\" = 'ORPHAN' ] && [ \"\$(cat '$B27A/attachments/attachment-02.png')\" = 'OWN' ]"
+check "22c. bug 2 gets ONLY the global orphan" \
+  "[ \"\$(cat '$B27B/attachments/attachment-01.png')\" = 'ORPHAN' ] && [ ! -f '$B27B/attachments/attachment-02.png' ]"
+
+# 22d. a bug with an empty per-bug set and NO globals gets NO attachments dir.
+repo28="$(new_repo_with_parent)"
+make_gh_stub "$repo28/gh"
+export GH_LOG="$repo28/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug28a="$repo28/b1.md"; write_bug_prd "$bug28a" "Has image" "First."
+bug28b="$repo28/b2.md"; write_bug_prd "$bug28b" "No image" "Second."
+img28="$repo28/only.png"; printf 'ONLY-ONE' >"$img28"
+rc28=0
+(
+  cd "$repo28"
+  LCARS_GH_BIN="$repo28/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 \
+      --prd "$bug28a" --attach "$img28" \
+      --prd "$bug28b" >out28.txt 2>&1
+) || rc28=$?
+B28A="$repo28/.git/lcars/missions/lcars-20260530-002"
+B28B="$repo28/.git/lcars/missions/lcars-20260530-003"
+check "22d. bug with an assigned image has it" \
+  "[ -f '$B28A/attachments/attachment-01.png' ]"
+check "22d. bug with no image + no globals has NO attachments dir" \
+  "[ ! -d '$B28B/attachments' ]"
+check "22d. bug with no image has no state.json attachments key" \
+  "! grep -q 'attachments' '$B28B/state.json'"
+
+# --- Behaviour 23: base tracks the PARENT's branch, NOT the checkout ---------
+# `lcars log` is ALWAYS the Mission-Log path: a logged bug fixes the delivered
+# code of its PARENT Mission, so its `base` must be the PARENT's branch — not the
+# incidental working-tree checkout. Filing bugs against a Claude parent (branch
+# lcars/…-002) while the tree sits on the Copilot branch (lcars/…-001) must still
+# base on the Claude branch. Here the parent's branch is a DISTINCT custom name
+# (not lcars/<parent-id>) so we prove log.sh reads state.json.branch, and the tree
+# is checked out on a different branch entirely.
+repo29="$(new_repo_with_parent)"
+make_gh_stub "$repo29/gh"
+export GH_LOG="$repo29/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+# give the parent a custom branch (distinct from lcars/<parent-id>), and DON'T
+# create that ref, so the child mints its own branch while base still tracks it.
+sed 's#"branch": "lcars/lcars-20260530-001"#"branch": "lcars/parent-custom"#' \
+  "$repo29/.git/lcars/missions/lcars-20260530-001/state.json" >"$repo29/tmp.json"
+mv "$repo29/tmp.json" "$repo29/.git/lcars/missions/lcars-20260530-001/state.json"
+# check the tree out on a DIFFERENT branch than the parent's.
+( cd "$repo29" && git checkout -q -b some-other-branch )
+bug29="$repo29/bug.md"; write_bug_prd "$bug29" "Base-tracks-parent bug" "Base must be the parent's branch."
+rc29=0
+(
+  cd "$repo29"
+  LCARS_GH_BIN="$repo29/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug29" >out29.txt 2>&1
+) || rc29=$?
+B29="$repo29/.git/lcars/missions/lcars-20260530-002"
+check "23. exits zero filing against a parent on a different branch" "[ '$rc29' -eq 0 ]"
+check "23. child base = the PARENT's branch (lcars/parent-custom)" \
+  "grep -q '\"base\": *\"lcars/parent-custom\"' '$B29/state.json'"
+check "23. child base is NOT the checked-out branch (some-other-branch)" \
+  "! grep -q '\"base\": *\"some-other-branch\"' '$B29/state.json'"
+
+# --- Behaviour 24: base falls back to lcars/<parent-id> with no branch field --
+# When the parent's state.json has NO `branch` field, base falls back to
+# lcars/<parent-id> — the SAME fallback the fix-branch logic uses — still NOT the
+# checked-out branch.
+repo30="$(new_repo_with_parent)"
+make_gh_stub "$repo30/gh"
+export GH_LOG="$repo30/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+# strip the parent's branch field entirely.
+grep -v '"branch":' "$repo30/.git/lcars/missions/lcars-20260530-001/state.json" \
+  >"$repo30/tmp.json"
+mv "$repo30/tmp.json" "$repo30/.git/lcars/missions/lcars-20260530-001/state.json"
+( cd "$repo30" && git checkout -q -b some-other-branch )
+bug30="$repo30/bug.md"; write_bug_prd "$bug30" "Base-fallback bug" "Base falls back to lcars/<parent-id>."
+rc30=0
+(
+  cd "$repo30"
+  LCARS_GH_BIN="$repo30/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug30" >out30.txt 2>&1
+) || rc30=$?
+B30="$repo30/.git/lcars/missions/lcars-20260530-002"
+check "24. exits zero when the parent has no branch field" "[ '$rc30' -eq 0 ]"
+check "24. child base falls back to lcars/<parent-id>" \
+  "grep -q '\"base\": *\"lcars/lcars-20260530-001\"' '$B30/state.json'"
+check "24. child base is NOT the checked-out branch (fallback case)" \
+  "! grep -q '\"base\": *\"some-other-branch\"' '$B30/state.json'"
+
 # ==========================================================================
 echo
 printf 'lcars log: %d passed, %d failed\n' "$pass" "$fail"
