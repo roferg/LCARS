@@ -142,6 +142,16 @@ git pull              # skill source updates in place — symlinks already point
 `install.sh` is idempotent. If a real (non-symlink) skill of the same name
 already exists in `~/.claude/skills/`, it is backed up rather than clobbered.
 
+From now on LCARS also **knows its version**. `lcars init` stamps the running
+version into the repo, and interactive entry points (`lcars`, `lcars file`, an
+interactive run start, the viewscreen launcher) notice on a throttled ~daily
+basis when the source clone or this repo's stamp has fallen behind and **offer
+to pull, reinstall, and `lcars update`** for you — always asking first,
+defaulting to No, so nothing changes by surprise. Headless paths just print a
+one-line warning and carry on. The manual `git pull` above still works; run
+`lcars version` any time for the running / source / repo-stamp picture, or set
+`LCARS_VERSION_CHECK=0` to silence the check.
+
 ---
 
 ## Quick start (the viewscreen)
@@ -331,7 +341,8 @@ CLI. The older per-stage verbs still work as power entry points.
 | `lcars answer` | **The inbox** — every pending decision across *all* Missions in one list: scope escalations, plan-review stand-offs, blocked tickets, and the Verify gate. **approve** and **send back** are actions on a Verify card here, not separate commands. (The viewscreen surfaces the same gates on the cards themselves.) |
 | `lcars status` | The read-only **terminal board**: every active Mission, its Stage, and anything awaiting you. Add `--watch` to follow a running Mission **live** — a streaming event view with a pace line (wave, ticket, attempt, avg/ticket, elapsed). |
 | `lcars init` | One-time per-repo setup (local config + GitHub labels). Safe to re-run — it **preserves** your config customizations, only filling in anything missing. |
-| `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`. A clean no-op when nothing's changed. |
+| `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`, and re-stamps the repo's `lcarsVersion`. A clean no-op when nothing's changed. |
+| `lcars version` | Show the version picture — the **running** version (this LCARS clone's `VERSION`), the source clone's path + git state, and, inside an initialized repo, its stamped `lcarsVersion` with a verdict (**current** / **needs `lcars update`** / unknown). Read-only, no network fetch. |
 | `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. |
 | `lcars log` | Log one or more bugs against an active Mission in free-form language; files a Mission per bug that enters at **Research in a grounding mode** — anchoring the free-form symptom to the parent's existing code so the fix modifies the real feature rather than a duplicate — then flows the full pipeline to Verify (only Align is skipped), and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, now **including** the Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
 | `lcars resolve-logs <parent>` | Drive **every** bug logged against a Mission to its Verify gate in a sensible, worker-chosen order, then raise **one** consolidated re-verify gate on the parent instead of one per bug. |
@@ -348,6 +359,7 @@ CLI. The older per-stage verbs still work as power entry points.
 | `lcars feedback <id> "<note>"` | Send a Mission at Verify back to Align with a note (kept in an accumulating history). |
 | `lcars pause <id>` | Halt a Mission at the next safe boundary (between Stages, or between waves/tickets in Implement) — applies `lcars:paused`; never hard-kills a worker mid-step. |
 | `lcars resume <id>` | Clear the pause and re-enter the driver from the recorded Stage. Both verbs are idempotent. |
+| `lcars release` | Drift repair on a clean `main`: collect the commits that landed without a version bump, summarize them into a `CHANGELOG.md` entry (one cold worker), bump `VERSION`, and commit. Idempotent no-op when nothing's unstamped. |
 
 > **No id juggling.** A shared resolver picks the target Mission: one candidate →
 > no id needed; several → a fuzzy picker; an explicit id / partial / title always
@@ -690,7 +702,8 @@ fully idempotent and never resets a customization. When LCARS itself gains new
 labels or config keys, `lcars update` absorbs them into an already-initialized
 repo the same way: missing labels and keys are added at their defaults, existing
 values and `missions/` are left untouched, and it reports what it added (or says
-there's nothing to update).
+there's nothing to update). It also refreshes the repo's stamped `lcarsVersion`
+so the staleness checker reads the repo as current.
 
 External dependencies are injected via env vars so they're swappable (and
 stubbable in tests):
@@ -703,6 +716,7 @@ stubbable in tests):
 | `LCARS_GH_BIN` | The GitHub CLI | `gh` |
 | `LCARS_MAX_PARALLEL` | Concurrency cap for a Wave's tickets and the Research fan-out | `4` |
 | `LCARS_NOTIFY` | The walk-away notification hook fired at human gates | local desktop banner + bell |
+| `LCARS_VERSION_CHECK` | Set `0` to disable the throttled staleness check on interactive entry points | enabled |
 
 **Per-Stage model selection (config keys).** The Align estimator writes the
 per-Stage tiers into the Mission's `estimate.json`; you rarely touch the model

@@ -8263,6 +8263,14 @@ cmd_drive() {
   local mode="auto"; [ "$STEP" = 1 ] && mode="step"
   printf '%s  %s-advance\n%s\n' "$MISSION_ID" "$mode" "$SEP"
 
+  # Version check (S129) — WARN mode ONLY. The drive loop is a headless,
+  # walk-away path: it must NEVER prompt or block on the update ask. `warn` mode
+  # prints at most one throttled line and never reads stdin; run once here at the
+  # top (before the loop) so a cold-stage-spawning drive still surfaces staleness
+  # without ever stopping. Fully guarded + kill-switch aware.
+  local version_check="${LCARS_VERSION_CHECK_BIN:-$SKILL_DIR/../lcars-version/check.sh}"
+  [ -f "$version_check" ] && bash "$version_check" warn </dev/null || true
+
   local summary=""
   while :; do
     # Re-read the live state each pass (a Stage subprocess just rewrote it).

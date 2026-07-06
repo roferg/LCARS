@@ -55,6 +55,13 @@ command -v "$PY_BIN" >/dev/null 2>&1 \
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 [ -n "$REPO_ROOT" ] || REPO_ROOT="$PWD"
 
+# --- version check + ask-to-update (interactive; S129) ---------------------
+# The launcher is a REAL terminal before the daemon detaches, so it CAN ask.
+# Run the throttled check in ASK mode against the repo we are about to serve,
+# BEFORE `cd web/` + the exec. Fully guarded; the kill switch disables it.
+VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$SKILL_DIR/../lcars-version/check.sh}"
+[ -f "$VERSION_CHECK" ] && LCARS_VERSION_CWD="$REPO_ROOT" bash "$VERSION_CHECK" ask || true
+
 # --- adapter selection: flag/env > config.json `serveAdapter` > local --------
 # config.json lives under .git/lcars/config.json (init/update write it). A
 # `serveAdapter` key, when present, picks the default adapter; the env var /

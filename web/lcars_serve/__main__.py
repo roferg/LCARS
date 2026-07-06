@@ -29,6 +29,28 @@ from .local_adapter import LocalAdapter
 from .github_adapter import GitHubAdapter
 from .server import make_server
 from .actions import build_actions
+from .version_check import VersionChecker
+
+
+def resolve_check_script(env=None):
+    """Locate skills/lcars-version/check.sh for the daemon's version banner.
+
+    Env override first (LCARS_VERSION_CHECK_BIN — the same seam run.sh + the
+    write layer use), else this clone's in-repo copy (web/ → repo/skills/…),
+    else the installed symlink under ~/.claude. Returns a path (may not exist;
+    VersionChecker degrades to None when it can't run).
+    """
+    env = env if env is not None else os.environ
+    override = env.get("LCARS_VERSION_CHECK_BIN")
+    if override:
+        return override
+    repo_root = os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    in_repo = os.path.join(repo_root, "skills", "lcars-version", "check.sh")
+    if os.path.isfile(in_repo):
+        return in_repo
+    home = env.get("HOME", os.path.expanduser("~"))
+    return os.path.join(home, ".claude", "skills", "lcars-version", "check.sh")
 
 
 def build_adapter(kind, repo_root, gh_bin, repo, read_only=False):
@@ -100,8 +122,24 @@ def main(argv=None):
             worker_bin=os.environ.get("LCARS_WORKER_BIN"),
             gh_bin=args.gh_bin)
 
+    # S130: the version-banner provider. Adapter-neutral — it shows on BOTH the
+    # local and github/view-only builds (the UPDATE BUTTON is LOCAL-only; the
+    # read-only 403 guard blocks its POST on view-only). check.sh runs in
+    # cache/report mode ONLY (never a fetch storm: S129's stamp-file throttle +
+    # the checker's in-process TTL memo bound it; a subprocess timeout means a
+    # wedged git never blocks board serving). Disabled by LCARS_VERSION_CHECK=0.
+    version_provider = None
+    if os.environ.get("LCARS_VERSION_CHECK") != "0":
+        # pass the checker OBJECT (not the bound method) so the server can also
+        # invalidate its memo after an /api/update (banner clears promptly).
+        version_provider = VersionChecker(
+            repo_root=args.repo_root,
+            check_script=resolve_check_script(),
+            gh_bin=args.gh_bin)
+
     httpd = make_server(adapter, host=args.host, port=args.port,
-                        poll_interval=args.poll_interval, actions=actions)
+                        poll_interval=args.poll_interval, actions=actions,
+                        version_provider=version_provider)
     bound = httpd.server_address
     url = "http://%s:%d/" % (bound[0], bound[1])
     mode = "read-only" if actions is None else "read+write"

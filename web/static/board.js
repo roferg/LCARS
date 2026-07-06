@@ -684,6 +684,69 @@ function render(board) {
   var n = (board.missions || []).length;
   setStatus(n + " active mission" + (n === 1 ? "" : "s"));
   renderMeta(board.meta);
+  renderVersionBanner(board.meta && board.meta.version);
+}
+
+/* S130: the version UPDATE banner. Driven purely by the ADDITIVE
+   board.meta.version block ({running, remote?, verdicts[]}). When verdicts is
+   empty/absent (a current install) the banner is HIDDEN and the board is
+   byte-identical to before. SOURCE_BEHIND → "LCARS <remote> AVAILABLE — ENGAGE
+   UPDATE"; REPO_STALE / REPO_PREDATES → "REPO NEEDS UPDATE"; each with an update
+   button that POSTs /api/update (decline reasons render inline). A VIEW-ONLY
+   build (writesActive === false) shows the banner WITHOUT the button — read-safe
+   info, no write affordance. */
+function renderVersionBanner(version) {
+  var host = document.getElementById("versionBanner");
+  if (!host) return;
+  host.innerHTML = "";
+  var verdicts = (version && version.verdicts) || [];
+  if (!verdicts.length) { host.hidden = true; return; }
+  host.hidden = false;
+
+  var sourceBehind = verdicts.indexOf("source_behind") >= 0;
+  var repoStale = verdicts.indexOf("repo_stale") >= 0
+               || verdicts.indexOf("repo_predates") >= 0;
+  var driftOnly = !sourceBehind && !repoStale
+               && verdicts.indexOf("drift") >= 0;
+  var remote = version.remote || "";
+  var running = version.running || "";
+
+  var msg;
+  if (sourceBehind) {
+    msg = "LCARS " + (remote || "UPDATE") + " AVAILABLE — ENGAGE UPDATE";
+  } else if (repoStale) {
+    msg = "REPO NEEDS UPDATE";
+  } else {
+    msg = "LCARS MAIN HAS UNVERSIONED CHANGES — SEE lcars release";
+  }
+
+  var band = el("div", "vb-band" + (sourceBehind ? " source" : repoStale ? " repo" : " drift"));
+  band.appendChild(el("span", "vb-pip", ""));
+  band.appendChild(el("span", "vb-msg", msg));
+  if (running) band.appendChild(el("span", "vb-run", "running " + running));
+
+  // The ENGAGE UPDATE button is a LOCAL write affordance. A view-only board
+  // (writesActive === false) shows the banner WITHOUT it; a drift-only banner is
+  // informational (the repair is the manual `lcars release`), so no button.
+  if (writesActive !== false && (sourceBehind || repoStale)) {
+    var reason = el("span", "vb-reason");
+    var b = btn("▸ ENGAGE UPDATE", "go vb-btn", function () {
+      b.disabled = true;
+      reason.textContent = "Updating…";
+      postWrite("/api/update", {}, function (state) {
+        reason.textContent = (state && state.update)
+          ? state.update : "Update complete.";
+        // a live SSE tick re-fetches the board; the banner clears once the
+        // source/repo stamp is current (the checker's memo was invalidated).
+      }, function (m) {
+        b.disabled = false;
+        reason.textContent = m;
+      });
+    });
+    band.appendChild(b);
+    band.appendChild(reason);
+  }
+  host.appendChild(band);
 }
 
 /* S70-A: render "which repo am I attached to" + adapter/mode hint in the topbar.

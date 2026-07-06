@@ -308,6 +308,17 @@ cd lcars
       <p><code>install.sh</code> is idempotent. If a real (non-symlink) skill of
       the same name already exists in <code>~/.claude/skills/</code>, it is backed
       up rather than clobbered.</p>
+      <p>From now on LCARS also <strong>knows its version</strong>.
+      <code>lcars init</code> stamps the running version into the repo, and
+      interactive entry points (<code>lcars</code>, <code>lcars file</code>, an
+      interactive run start, the viewscreen launcher) notice on a throttled ~daily
+      basis when the source clone or this repo's stamp has fallen behind and
+      <strong>offer to pull, reinstall, and <code>lcars update</code></strong> for
+      you — always asking first, defaulting to No, so nothing changes by surprise.
+      Headless paths just print a one-line warning and carry on. The manual
+      <code>git pull</code> above still works; run <code>lcars version</code> any
+      time for the running / source / repo-stamp picture, or set
+      <code>LCARS_VERSION_CHECK=0</code> to silence the check.</p>
     </section>
 
 
@@ -392,7 +403,12 @@ lcars-viewscreen --open   # launch the board and open it in your browser</pre>
         one parsing <code>.git/lcars/missions/*</code> (the default, with the
         operator write endpoints) and a <strong>GitHub</strong> one reading issues
         + <code>lcars:*</code> labels (<code>--read-only</code>, view-only) — so a
-        hosted, read-only board is a configuration away.</div>
+        hosted, read-only board is a configuration away. When the running LCARS is
+        stale, the board raises a themed topbar <strong>update banner</strong> —
+        <em>LCARS &lt;version&gt; AVAILABLE — ENGAGE UPDATE</em> (source behind) or
+        <em>REPO NEEDS UPDATE</em> (repo stamp behind) — with a one-click
+        <strong>update button</strong> on the local build; view-only builds show the
+        banner without the button.</div>
       </div>
     </section>
 
@@ -571,7 +587,17 @@ flowchart LR
           <div class="control-desc">Bring an already-initialized repo up to date
           after a <code>git pull</code>: adds any new LCARS labels and config keys,
           <strong>never</strong> clobbering your customizations or touching
-          <code>missions/</code>. A clean no-op when nothing's changed.</div>
+          <code>missions/</code>, and re-stamps the repo's <code>lcarsVersion</code>.
+          A clean no-op when nothing's changed.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars version</div>
+          <div class="control-desc">Show the version picture — the
+          <strong>running</strong> version (this LCARS clone's <code>VERSION</code>),
+          the source clone's path + git state, and, inside an initialized repo, its
+          stamped <code>lcarsVersion</code> with a verdict (<strong>current</strong> /
+          <strong>needs <code>lcars update</code></strong> / unknown). Read-only, no
+          network fetch.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars file</div>
@@ -646,6 +672,14 @@ flowchart LR
           <div class="control-cmd">lcars resume &lt;id&gt;</div>
           <div class="control-desc">Clear the pause and re-enter the driver from
           the recorded Stage. Both verbs are idempotent.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars release</div>
+          <div class="control-desc">Drift repair on a clean <code>main</code>:
+          collect the commits that landed without a version bump, summarize them
+          into a <code>CHANGELOG.md</code> entry (one cold worker), bump
+          <code>VERSION</code>, and commit. Idempotent no-op when nothing's
+          unstamped.</div>
         </div>
       </div>
 
@@ -1084,7 +1118,8 @@ An inline run must never masquerade as isolated.</div>
       into an already-initialized repo the same way: missing labels and keys are
       added at their defaults, existing values and <code>missions/</code> are left
       untouched, and it reports what it added (or says there's nothing to
-      update).</p>
+      update). It also refreshes the repo's stamped <code>lcarsVersion</code> so the
+      staleness checker reads the repo as current.</p>
 
       <p>External dependencies are injected via env vars so they're swappable (and
       stubbable in tests):</p>
@@ -1122,6 +1157,11 @@ An inline run must never masquerade as isolated.</div>
           <div class="control-cmd">LCARS_NOTIFY</div>
           <div class="control-desc">The walk-away notification hook fired at human
           gates. Default: local desktop banner + bell.</div>
+        </div>
+        <div class="control-card">
+          <div class="control-cmd">LCARS_VERSION_CHECK</div>
+          <div class="control-desc">Set <code>0</code> to disable the throttled
+          staleness check on interactive entry points. Default: enabled.</div>
         </div>
       </div>
 

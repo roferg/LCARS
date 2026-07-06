@@ -49,6 +49,13 @@
 
   <!-- CONTENT AREA: the existing board + legend, behavior unchanged -->
   <div class="frame-content">
+
+    <!-- S130 version banner: filled by board.js from board.meta.version when the
+         LCARS install is stale (source behind / repo needs update). Hidden (and
+         byte-identical to the pre-S130 board) when current. View-only builds show
+         the banner WITHOUT the ENGAGE UPDATE button (read-safe info only). -->
+    <div class="version-banner" id="versionBanner" hidden></div>
+
     <div class="board-wrap">
       <div class="board" id="board"><!-- columns + cards injected by board.js --></div>
     </div>

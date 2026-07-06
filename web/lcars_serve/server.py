@@ -81,14 +81,21 @@ _ALLOWED_IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
 
 
 def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0,
-                actions=None):
+                actions=None, version_provider=None):
     """Build (do not start) the daemon bound to `adapter`. Caller serves it.
 
     `actions` is the optional LOCAL-BRIDGE write layer (an actions.Actions). When
     None the daemon is READ-ONLY — every write returns 403 (the github/view-only
     shape). When present, the POST endpoints dispatch to the `lcars` skills.
+
+    `version_provider` (S130) is an optional zero-arg callable returning the
+    additive `meta.version` block (or None when the install is current). It is
+    injected onto GET /api/board only; when it returns None the board is
+    byte-identical to the pre-S130 shape (no banner). Adapter-neutral: the banner
+    shows on BOTH the local and github/view-only builds (the UPDATE BUTTON is
+    LOCAL-only — it POSTs /api/update, which the read-only 403 guard blocks).
     """
-    handler = _build_handler(adapter, poll_interval, actions)
+    handler = _build_handler(adapter, poll_interval, actions, version_provider)
 
     class _Server(ThreadingHTTPServer):
         daemon_threads = True
@@ -105,7 +112,7 @@ def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0,
     return httpd
 
 
-def _build_handler(adapter, poll_interval, actions=None):
+def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -116,7 +123,7 @@ def _build_handler(adapter, poll_interval, actions=None):
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path == "/api/board":
-                return self._json(adapter.board())
+                return self._json(self._board_with_version())
             if path.startswith("/api/mission/"):
                 mid = path[len("/api/mission/"):]
                 detail = adapter.mission(mid)
@@ -126,6 +133,28 @@ def _build_handler(adapter, poll_interval, actions=None):
             if path == "/api/events":
                 return self._sse()
             return self._static(path)
+
+        def _board_with_version(self):
+            """The board shape, plus the ADDITIVE meta.version block when stale.
+
+            When version_provider returns None (current install) the board is
+            byte-identical to the pre-S130 shape — no `version` key at all — so
+            existing web tests stay green and a current board shows no banner.
+            The provider is memoized/throttled (never a fetch storm) and never
+            raises; a failure here degrades to the plain board.
+            """
+            board = adapter.board()
+            if version_provider is not None:
+                try:
+                    # version_provider may be a bare callable OR a VersionChecker
+                    # (object with .block()/.invalidate()); accept both.
+                    call = getattr(version_provider, "block", version_provider)
+                    blk = call()
+                except Exception:
+                    blk = None
+                if blk and isinstance(board.get("meta"), dict):
+                    board["meta"]["version"] = blk
+            return board
 
         # -- writes (LOCAL-BRIDGE only) --------------------------------------
         def do_POST(self):
@@ -141,6 +170,16 @@ def _build_handler(adapter, poll_interval, actions=None):
                 return self._write_error(exc.status, exc.message)
             except Exception as exc:  # never leak a stack to the client
                 return self._write_error(500, "write failed: %s" % exc)
+            # S130: an update moves the source/repo stamp, so drop the version
+            # checker's memo — the very next /api/board (SSE-triggered) re-probes
+            # and the banner clears instead of lingering for the memo window.
+            if path == "/api/update" and version_provider is not None:
+                inval = getattr(version_provider, "invalidate", None)
+                if callable(inval):
+                    try:
+                        inval()
+                    except Exception:
+                        pass
             return self._json({"ok": True, "state": result})
 
         def _write_error(self, code, msg):
@@ -154,6 +193,12 @@ def _build_handler(adapter, poll_interval, actions=None):
             self.wfile.write(body)
 
         def _dispatch_write(self, path, body):
+            # POST /api/update — run the S130/S129 update action (LOCAL only; the
+            # read-only / github build has actions=None, so do_POST already 403'd
+            # before reaching here). The response body carries the success line or
+            # the decline reason; SSE naturally refreshes the board after install.
+            if path == "/api/update":
+                return actions.update()
             # POST /api/align/start            — open an Align grilling session
             # POST /api/align/<sid>/answer     — answer + run the next turn
             if path == "/api/align/start":

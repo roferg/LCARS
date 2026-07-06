@@ -49,6 +49,13 @@ NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
 die() { printf 'lcars resolve-logs: %s\n' "$1" >&2; exit 1; }
 
+# --- version check (S129) — WARN mode ONLY ---------------------------------
+# resolve-logs is a headless, walk-away orchestration verb (it drives bugs to
+# their Verify gate). It must never prompt or block on the update ask, so it uses
+# `warn` mode: at most one throttled line, no stdin. Guarded + kill-switch aware.
+VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$SKILL_DIR/../lcars-version/check.sh}"
+[ -f "$VERSION_CHECK" ] && bash "$VERSION_CHECK" warn </dev/null || true
+
 # --- tiny JSON readers (no jq; same decoding as log.sh / run.sh) -----------
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
