@@ -620,6 +620,16 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   font-size:11px;color:var(--lcars-amber)}
 .errline{color:#ff8a96;font-size:13px;margin-top:10px}
 
+/* S110: the RUN-the-app hint input on the Verify launch panel. Themed with the
+   SHARED --lcars-* tokens (never redefined — ADR-007) so it reads as LCARS, not a
+   browser-default white box. Teal border matches the panel's ⚡ RUN / ● LIVE idiom;
+   the width:100%/box-sizing come inline from board.js. */
+.launch-hint{background:var(--lcars-black,#030608);color:var(--lcars-text,#c4d4ee);
+  border:1px solid var(--lcars-teal);border-radius:8px;
+  font-family:var(--font-body);font-size:13px;padding:8px 11px}
+.launch-hint::placeholder{color:var(--lcars-text-dim);opacity:1}
+.launch-hint:focus{outline:none;border-color:var(--lcars-amber)}
+
 /* S74 follow-up: the per-bug model-steer confirmation line under the Mission-Log
    override input. Echoes the RESOLVED steer ("Opus 4.8 → Opus · all stages"),
    shows a pending hint for tier-less plain language (resolved server-side at

@@ -373,6 +373,16 @@ function cardNode(m) {
     var r = pillNode(m.pills.reasoning); if (r) pills.appendChild(r);
     var i = pillNode(m.pills.implementation); if (i) pills.appendChild(i);
   }
+  // S110: surface a LAUNCHED demo app on the card itself, so the captain reads
+  // "the app is running" from the board at a glance (not only inside the Verify
+  // dialog). Additive — driven purely by m.launch (absent ⇒ no badge, byte-
+  // identical to before). Only the live/launching states show; failed/stopped/
+  // absent render exactly as today. Reuses the dialog's ● LIVE idiom.
+  if (m.launch && m.launch.status === "running") {
+    pills.appendChild(el("span", "pill go", "● APP LIVE"));
+  } else if (m.launch && m.launch.status === "launching") {
+    pills.appendChild(el("span", "pill", "▶ LAUNCHING…"));
+  }
   card.appendChild(pills);
 
   // UX-21/UX-22: a high-contrast status label for paused/pausing. It carries the
@@ -1653,6 +1663,15 @@ function launchAffordance(mi) {
     wrap.appendChild(busy);
 
     var status = launch && launch.status;
+    if (status === "launching") {
+      // A launch is in flight (15–60s: discovery worker + app spawn). Show ONLY the
+      // busy state — no hint input, no RUN button. launch.sh persists this record
+      // for the whole window, so reopening the card mid-launch lands here too. It
+      // resolves to running / failed via reload() / SSE.
+      busy.hidden = false;
+      busyLabel(busy, "Launching the app…");
+      return;
+    }
     if (status === "running") {
       var line = el("div"); line.style.marginBottom = "8px";
       line.appendChild(el("span", "pill go", "● LIVE"));
@@ -1679,20 +1698,24 @@ function launchAffordance(mi) {
       if (status === "failed" && launch && launch.message) {
         showErr(err, launch.message);
       }
-      var hint = el("input"); hint.type = "text";
+      var hint = el("input", "launch-hint"); hint.type = "text";
       hint.placeholder =
         "Optional — name the app or its directory (e.g. “the game in web/”)";
       hint.style.cssText = "width:100%;box-sizing:border-box;margin-bottom:8px";
       wrap.appendChild(hint);
       var run = applyWriteState(btn("⚡ RUN", "go", function () {
-        err.hidden = true; busy.hidden = false;
-        busyLabel(busy, "Launching the app…");
-        run.disabled = true;
-        postWrite("/api/mission/" + enc(mi.id) + "/launch",
-          { hint: (hint.value || "").trim() },
+        var h = (hint.value || "").trim();
+        // Optimistically re-render into the launching state so the hint input +
+        // RUN button vanish immediately (a launch takes 15–60s). This mirrors the
+        // record launch.sh persists, so it matches a card reopened mid-launch.
+        render({ status: "launching", target: h });
+        postWrite("/api/mission/" + enc(mi.id) + "/launch", { hint: h },
           function () { reload(); },
           function (msg) {
-            busy.hidden = true; run.disabled = false; showErr(err, msg);
+            // Fall back to the RUN prompt and surface the error.
+            render(mi.launch);
+            var e2 = wrap.querySelector(".errline");
+            if (e2) showErr(e2, msg);
           });
       }));
       wrap.appendChild(run);

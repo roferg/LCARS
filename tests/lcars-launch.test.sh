@@ -143,6 +143,29 @@ EOF
   chmod +x "$1"
 }
 
+# A pass-through git wrapper (used as $LCARS_GIT_BIN) that intercepts ONLY
+# `merge-base` (→ a canned sha) and `diff --name-only` (→ a canned changed-file
+# list), delegating every OTHER subcommand to the real git so rev-parse/worktree
+# still work against the temp repo. $2 = newline-separated changed paths ("" for
+# an empty diff / no touched target).
+make_git_stub() { # path changed-paths
+  cat >"$1" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = merge-base ]; then
+  echo 0000000000000000000000000000000000000000
+  exit 0
+fi
+if [ "\$1" = diff ]; then
+  cat <<'FILES'
+$2
+FILES
+  exit 0
+fi
+exec git "\$@"
+EOF
+  chmod +x "$1"
+}
+
 # A long-lived fake "app": stays alive ~30s (killed by --stop long before).
 make_app() { # path
   cat >"$1" <<'EOF'
@@ -392,6 +415,162 @@ check "7f. a survivor still reaches status=running with a live pid" \
 check "7g. the survivor launch completed within a bounded time (< 5s)" \
   "[ \$(( T1 - T0 )) -lt 5 ]"
 ( cd "$R7b" && LCARS_WORKER_BIN="$W7b" bash "$LAUNCH_SH" m7b --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 8. The launch worktree is PROVISIONED (deps installed) before the app runs.
+#    A disposable detached worktree has an EMPTY node_modules; without running the
+#    repo's worktreeSetupCommand a real Node/pnpm app dies instantly
+#    ("electron-vite: command not found"). The skill must run the resolved
+#    worktreeSetupCommand ONCE with the worktree as CWD — mirroring run.sh's
+#    provision_worktree() — right after the worktree is created and BEFORE launch.
+# =====================================================================
+# 8a. PROVISIONING RUNS: an env-override setup command writes a sentinel into CWD;
+#     it must land INSIDE the launch worktree (proving cmd ran with wt as CWD).
+R8="$(make_repo m8)"
+APP8="$TMPROOT/app8.sh"; make_app "$APP8"
+W8="$(claude_stub_path)"; make_ready_worker "$W8" "$APP8" "m8 dev server" "" "lcars launch m8 --stop"
+( cd "$R8" && LCARS_WORKTREE_SETUP_CMD='touch .provisioned' \
+    LCARS_WORKER_BIN="$W8" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m8 >/dev/null 2>&1 )
+WT8="$R8/.git/lcars/launch/m8"
+PID8="$(json_num "$R8/.git/lcars/missions/m8/launch.json" pid)"
+[ -n "$PID8" ] && LAUNCHED_PIDS+=("$PID8")
+check "8a. worktreeSetupCommand ran with the worktree as CWD (sentinel inside wt)" \
+  "[ -f \"$WT8/.provisioned\" ]"
+( cd "$R8" && LCARS_WORKER_BIN="$W8" bash "$LAUNCH_SH" m8 --stop >/dev/null 2>&1 )
+
+# 8b. NO-OP SAFE: with NO worktreeSetupCommand configured and no env override, the
+#     launch still proceeds normally (status=running) — the provisioning path is a
+#     clean no-op and introduces no error (protects LCARS's own dep-free dogfood).
+R8b="$(make_repo m8b)"
+APP8b="$TMPROOT/app8b.sh"; make_app "$APP8b"
+W8b="$(claude_stub_path)"; make_ready_worker "$W8b" "$APP8b" "m8b dev server" "" "lcars launch m8b --stop"
+OUT8b="$( cd "$R8b" && LCARS_WORKER_BIN="$W8b" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m8b 2>&1 )"; RC8b=$?
+LJ8b="$R8b/.git/lcars/missions/m8b/launch.json"
+PID8b="$(json_num "$LJ8b" pid)"
+[ -n "$PID8b" ] && LAUNCHED_PIDS+=("$PID8b")
+check "8b. no worktreeSetupCommand → launch still proceeds normally (running)" \
+  "[ \"$RC8b\" = 0 ] && [ \"\$(json_field \"$LJ8b\" status)\" = running ]"
+( cd "$R8b" && LCARS_WORKER_BIN="$W8b" bash "$LAUNCH_SH" m8b --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 9. An intermediate `status:"launching"` record is persisted BEFORE the
+#    discovery worker runs, so any observer (a card reopened mid-launch, SSE, a
+#    second browser) during the 15–60s discovery+spawn window sees "launching"
+#    instead of the RUN prompt. Deterministic proof: the worker copies the
+#    launch.json it SEES on entry to a side file; assert it saw status=launching.
+# =====================================================================
+R9="$(make_repo m9)"
+SEEN9="$TMPROOT/seen9.json"
+APP9="$TMPROOT/app9.sh"; make_app "$APP9"
+W9="$(claude_stub_path)"
+# A worker that records the launch.json present at the moment it runs, THEN writes
+# a normal READY discovery so the launch proceeds to running.
+cat >"$W9" <<EOF
+#!/usr/bin/env bash
+cp "\$LCARS_LAUNCH_JSON" "$SEEN9" 2>/dev/null || :
+cat > "\$LCARS_LAUNCH_JSON" <<'JSON'
+{
+  "target": "m9 dev server",
+  "command": "$APP9",
+  "cwd": ".",
+  "url": "",
+  "howToStop": "lcars launch m9 --stop",
+  "status": "ready"
+}
+JSON
+exit 0
+EOF
+chmod +x "$W9"
+( cd "$R9" && LCARS_WORKER_BIN="$W9" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m9 "the m9 app" >/dev/null 2>&1 )
+LJ9="$R9/.git/lcars/missions/m9/launch.json"
+PID9="$(json_num "$LJ9" pid)"
+[ -n "$PID9" ] && LAUNCHED_PIDS+=("$PID9")
+check "9a. the worker saw a launching record already on disk (persisted BEFORE it ran)" \
+  "[ \"\$(json_field \"$SEEN9\" status)\" = launching ]"
+check "9b. the intermediate record carried the captain's hint as its target" \
+  "[ \"\$(json_field \"$SEEN9\" target)\" = 'the m9 app' ]"
+check "9c. the final settle overwrote launching → running" \
+  "[ \"\$(json_field \"$LJ9\" status)\" = running ]"
+( cd "$R9" && LCARS_WORKER_BIN="$W9" bash "$LAUNCH_SH" m9 --stop >/dev/null 2>&1 )
+
+# 9d/e. NEW silent-worker semantics: a worker that writes NOTHING leaves the status
+#       STILL at "launching" (the intermediate record it never overwrote). That is
+#       the semantic equivalent of the old "no launch.json file" case, so the launch
+#       must report FAILED with the human silent-worker message — never a false
+#       "running" (the intermediate record must not be mistaken for a result).
+R9b="$(make_repo m9b)"
+Wsilent="$(claude_stub_path)"
+cat >"$Wsilent" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$Wsilent"
+OUT9b="$( cd "$R9b" && LCARS_WORKER_BIN="$Wsilent" bash "$LAUNCH_SH" m9b 2>&1 )"; RC9b=$?
+LJ9b="$R9b/.git/lcars/missions/m9b/launch.json"
+check "9d. a silent worker (status still launching) → exit non-zero, status=failed" \
+  "[ \"$RC9b\" != 0 ] && [ \"\$(json_field \"$LJ9b\" status)\" = failed ]"
+check "9e. the silent-worker failure carries the human 'reported nothing back' message" \
+  "printf '%s' \"\$OUT9b\" | grep -qi 'reported nothing back'"
+
+# =====================================================================
+# 10. TOUCHED-TARGET DEFAULT: the mission's changed top-level dir(s) are fed to
+#     the discovery worker as the DEFAULT target to pin, so a no-hint launch
+#     defaults to the app that exercises THIS mission's change (not a sibling
+#     target in a multi-target monorepo). Derived from a diff of the mission
+#     branch against its merge-base with the recorded base, reduced to top-level
+#     target dir(s). Stub git so the diff is deterministic; the rec worker
+#     records the assembled prompt so we can inspect the injected section.
+# =====================================================================
+# 10. SINGLE TARGET: all changes under one package → that dir is pinned.
+R10="$(make_repo m10)"
+ARGV10="$TMPROOT/argv10"
+GIT10="$TMPROOT/git10"; make_git_stub "$GIT10" "packages/editor/src/main.ts
+packages/editor/src/app.tsx"
+W10="$(claude_stub_path)"; make_rec_worker "$W10" "$ARGV10"
+( cd "$R10" && LCARS_GIT_BIN="$GIT10" LCARS_WORKER_BIN="$W10" bash "$LAUNCH_SH" m10 >/dev/null 2>&1 )
+check "10a. single touched target → prompt names the touched-target section" \
+  "grep -q \"This Mission's changes are in\" \"$ARGV10\""
+check "10b. single touched target → the section names packages/editor" \
+  "grep -q 'packages/editor' \"$ARGV10\""
+
+# 11. MULTI TARGET: changes span two top-level dirs → BOTH are listed.
+R11="$(make_repo m11)"
+ARGV11="$TMPROOT/argv11"
+GIT11="$TMPROOT/git11"; make_git_stub "$GIT11" "packages/editor/src/main.ts
+apps/game/src/index.ts"
+W11="$(claude_stub_path)"; make_rec_worker "$W11" "$ARGV11"
+( cd "$R11" && LCARS_GIT_BIN="$GIT11" LCARS_WORKER_BIN="$W11" bash "$LAUNCH_SH" m11 >/dev/null 2>&1 )
+check "11a. multi touched target → the section lists packages/editor" \
+  "grep -q 'packages/editor' \"$ARGV11\""
+check "11b. multi touched target → the section ALSO lists apps/game" \
+  "grep -q 'apps/game' \"$ARGV11\""
+
+# 12. EMPTY / NO CONTEXT: an empty diff (no derivable target) → NO section, and
+#     the prompt is exactly today's — the existing discovery/hint text preserved.
+R12="$(make_repo m12)"
+ARGV12="$TMPROOT/argv12"
+GIT12="$TMPROOT/git12"; make_git_stub "$GIT12" ""     # empty diff
+W12="$(claude_stub_path)"; make_rec_worker "$W12" "$ARGV12"
+( cd "$R12" && LCARS_GIT_BIN="$GIT12" LCARS_WORKER_BIN="$W12" bash "$LAUNCH_SH" m12 >/dev/null 2>&1 )
+check "12a. empty diff → NO touched-target section is injected" \
+  "! grep -q \"This Mission's changes are in\" \"$ARGV12\""
+check "12b. empty diff → today's existing prompt is preserved (discovery line)" \
+  "grep -q 'DISCOVER how to start it' \"$ARGV12\""
+check "12c. empty diff → today's existing hint line is preserved" \
+  "grep -q 'The captain wants to run' \"$ARGV12\""
+
+# 13. HINT OVERRIDE PRESERVED: with a hint AND a derived target, the hint is
+#     still carried and the derived section frames itself as the default the
+#     hint OVERRIDES (captain's hint must keep winning).
+R13="$(make_repo m13)"
+ARGV13="$TMPROOT/argv13"
+GIT13="$TMPROOT/git13"; make_git_stub "$GIT13" "packages/editor/src/main.ts"
+W13="$(claude_stub_path)"; make_rec_worker "$W13" "$ARGV13"
+( cd "$R13" && LCARS_GIT_BIN="$GIT13" LCARS_WORKER_BIN="$W13" bash "$LAUNCH_SH" m13 "the example game" >/dev/null 2>&1 )
+check "13a. hint + derived target → the captain's hint is still carried" \
+  "grep -q 'the example game' \"$ARGV13\""
+check "13b. hint + derived target → the section frames itself as the hint-overridable default" \
+  "grep -qi 'OVERRIDES this default' \"$ARGV13\""
 
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

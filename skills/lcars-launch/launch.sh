@@ -101,6 +101,7 @@ case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
 GIT_DIR="$(cd "$GIT_DIR" 2>/dev/null && pwd -P)" || die "cannot resolve the git directory."
 
 LCARS_DIR="$GIT_DIR/lcars"
+LCARS_CFG="$LCARS_DIR/config.json"
 MISSIONS_DIR="$LCARS_DIR/missions"
 MDIR="$MISSIONS_DIR/$MISSION"
 STATE="$MDIR/state.json"
@@ -114,6 +115,32 @@ LOG="$MDIR/launch.log"                   # the app's captured stdout+stderr
 OUTDIR="$MDIR/.launch-work"              # the worker's answer channel
 
 BRANCH="$(json_str "$STATE" branch)"
+
+# --- provision a freshly-created launch worktree --------------------------
+# A disposable DETACHED worktree checks out the mission's CONTENT but has no
+# installed dependencies (its node_modules / venv / etc. are absent), so a real
+# Node/pnpm app dies instantly ("electron-vite: command not found …"). Mirror
+# run.sh's provision_worktree(): run the repo's configured `worktreeSetupCommand`
+# ONCE with the worktree as CWD, right after `git worktree add` and BEFORE the app
+# is launched. Resolution: the env override ($LCARS_WORKTREE_SETUP_CMD) wins, else
+# the repo config (worktreeSetupCommand). With NO command configured this is a safe
+# NO-OP (rc 0) so LCARS's own dependency-free dogfood stays unaffected. BEST-EFFORT:
+# a non-zero provisioning exit does NOT abort the launch — the subsequent app-launch
+# surfaces its own human-readable failure if deps truly cannot be provisioned. It is
+# purely additive: it never changes the worktree from its --detach checkout.
+provision_worktree() { # worktree-path → 0 (no-op or success), else the command's rc
+  local wt="$1" cmd rc=0
+  if [ -n "${LCARS_WORKTREE_SETUP_CMD:-}" ]; then
+    cmd="$LCARS_WORKTREE_SETUP_CMD"
+  else
+    [ -f "$LCARS_CFG" ] || return 0
+    cmd="$(json_str "$LCARS_CFG" worktreeSetupCommand)"
+  fi
+  case "$cmd" in ''|null) return 0 ;; esac
+  # Run ONCE with the worktree as CWD; best-effort — swallow a non-zero exit.
+  ( cd "$wt" && bash -c "$cmd" ) >/dev/null 2>&1 || rc=$?
+  return "$rc"
+}
 
 # --- worktree teardown (shared by --stop and a clean re-launch) -----------
 remove_worktree() {
@@ -196,6 +223,12 @@ if [ "$already" -eq 0 ]; then
     || die "couldn't check out the mission's code — its branch \"$BRANCH\" may be in a bad state."
 fi
 
+# Provision the worktree's dependencies (dep install, etc.) ONCE with the worktree
+# as CWD, right after check-out and BEFORE the app is launched. Idempotent, so it is
+# safe on both the fresh-add and reuse paths; best-effort — a failure never aborts
+# the launch (the app-launch surfaces any real dependency failure itself).
+provision_worktree "$WT" || :
+
 # --- resolve the engine + spawn the launch-role discovery worker ----------
 WORKER_BIN="${LCARS_WORKER_BIN:-}"
 [ -n "$WORKER_BIN" ] || WORKER_BIN="$(json_str "$STATE" workerBin)"
@@ -203,7 +236,64 @@ WORKER_BIN="${LCARS_WORKER_BIN:-}"
 CLI="$(basename "$WORKER_BIN")"
 
 mkdir -p "$OUTDIR"
-rm -f "$LAUNCH_JSON"          # clear any prior record so a silent worker is detectable
+rm -f "$LAUNCH_JSON"          # clear any prior record
+
+# Persist an intermediate `launching` record IMMEDIATELY — before the discovery
+# worker and app spawn, which together take 15–60s. Without it there is NO record
+# during that window, so a card reopened mid-launch (or any other observer: SSE, a
+# second browser) reads no launch state and wrongly re-renders the RUN prompt. With
+# it, every observer sees "launching…" until the flow settles. The final settle
+# (status=running) or any write_failed OVERWRITES this record. NB: this record is
+# also how a SILENT worker is now detected — a worker that writes nothing leaves the
+# status STILL at "launching" (see the check below), the semantic equivalent of the
+# old "no launch.json file" test.
+LAUNCH_TARGET="${HINT:-discovering how to run the app…}"
+{
+  printf '{\n'
+  printf '  "status": "launching",\n'
+  printf '  "target": "%s",\n' "$(json_esc "$LAUNCH_TARGET")"
+  printf '  "message": "the app is starting…"\n'
+  printf '}\n'
+} > "$LAUNCH_JSON"
+
+# --- derive this mission's touched target(s) → the launch DEFAULT ----------
+# The launch should default to the app that exercises THIS mission's change. In a
+# multi-target monorepo the worker's only other disambiguation signal is the
+# captain's free-text hint; with no hint it can guess the WRONG target. So diff
+# the mission branch against its merge-base with the recorded base, reduce the
+# changed paths to their top-level target dir(s) (packages/<x>, apps/<x>, or the
+# first path segment), and feed those to the discovery worker as the DEFAULT
+# target to pin. The captain's hint still WINS over this default. Any failure —
+# no base, detached head, git error, or an empty diff — yields NO section, so the
+# no-context prompt stays byte-for-byte today's (do not regress that path).
+BASE="$(json_str "$STATE" base)"
+TOUCHED_BLOCK=""
+if [ -n "$BASE" ]; then
+  _mb="$("$GIT_BIN" merge-base "$BASE" "$BRANCH" 2>/dev/null)"
+  if [ -n "$_mb" ]; then
+    _range="$_mb..$BRANCH"
+  else
+    _range="$BASE..$BRANCH"   # merge-base failed (base moved/absent) — best effort
+  fi
+  _diff="$("$GIT_BIN" diff --name-only "$_range" 2>/dev/null)"
+  if [ -n "$_diff" ]; then
+    # Reduce each changed path to its top-level target dir, dedupe, join ", ".
+    _dirs="$(printf '%s\n' "$_diff" | awk '
+      $0=="" { next }
+      {
+        n = split($0, a, "/")
+        if ((a[1] == "packages" || a[1] == "apps") && n >= 2) print a[1] "/" a[2]
+        else print a[1]
+      }' | sort -u | awk 'NR>1{printf ", "} {printf "%s", $0} END{if (NR) printf "\n"}')"
+    if [ -n "$_dirs" ]; then
+      TOUCHED_BLOCK="
+This Mission's changes are in: $_dirs. DEFAULT to launching the app that lets the
+captain SEE those changes — the runnable app in / downstream of that package (an
+editor/site/game, NOT a pure library). If the captain gave a hint above, the hint
+OVERRIDES this default."
+    fi
+  fi
+fi
 
 # Assemble the prompt with `read -d ''` (NOT $(cat <<EOF …)): the prompt text
 # contains parentheses, and a heredoc inside a command substitution trips bash
@@ -213,7 +303,7 @@ IFS= read -r -d '' PROMPT <<EOF || true
 You are the LCARS launch inspector. A checkout of a Mission's code is at:
   $WT
 The captain wants to run: ${HINT:-the app}.
-
+${TOUCHED_BLOCK}
 DISCOVER how to start it. Do NOT start it yourself, and do NOT modify any file in
 the checkout — inspection only. Read package.json / Makefile / pyproject / README
 / config as needed to find the exact command that starts the app the captain named.
@@ -258,7 +348,13 @@ write_failed() { # message  → persist a status=failed record (no pid)
 }
 
 TARGET=""; CMD=""; CWD=""; URL=""; HOWSTOP=""; DSTATUS=""; WMSG=""
-if [ ! -f "$LAUNCH_JSON" ]; then
+# SILENT-WORKER detection. Previously this was `[ ! -f "$LAUNCH_JSON" ]` — a worker
+# that produced no file at all. Now launch.sh itself seeds an intermediate
+# `status:"launching"` record before the worker runs, so the file ALWAYS exists.
+# The semantic equivalent: a worker that produced no usable record ⟺ the status is
+# STILL "launching" after the worker ran (it overwrote nothing). Treat that exactly
+# like the old "no file" case — the silent-worker failure path.
+if [ ! -f "$LAUNCH_JSON" ] || [ "$(json_str "$LAUNCH_JSON" status)" = "launching" ]; then
   TARGET=""; URL=""; HOWSTOP=""
   write_failed "couldn't work out how to run this app — the inspector reported nothing back. Try naming the app or its directory as a hint."
   remove_worktree

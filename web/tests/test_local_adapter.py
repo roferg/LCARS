@@ -917,6 +917,44 @@ class LocalAdapterTest(unittest.TestCase):
         detail = LocalAdapter(self.tmp).mission("m-noprd")
         self.assertIsNone(detail["criteria"])
 
+    def test_launch_launching_status_surfaces_on_card(self):
+        # S110: launch.sh persists an intermediate `status:"launching"` record for
+        # the whole 15–60s discovery+spawn window so a card reopened mid-launch
+        # shows "launching", not the RUN prompt. The launch shape flows generically
+        # through the adapter; this pins the new status is carried through verbatim.
+        d = fx.plant_simple(self.tmp, "m-launching", stage="verify")
+        fx.write_json(os.path.join(d, "launch.json"), {
+            "status": "launching",
+            "target": "the m9 app",
+            "message": "the app is starting…",
+        })
+        m = self._by_id(self._board(), "m-launching")
+        self.assertIn("launch", m)
+        self.assertEqual(m["launch"]["status"], "launching")
+        self.assertEqual(m["launch"]["target"], "the m9 app")
+        # the detail view carries the same launch shape
+        detail = LocalAdapter(self.tmp).mission("m-launching")
+        self.assertEqual(detail["launch"]["status"], "launching")
+
+    def test_launch_running_status_surfaces_on_card_for_badge(self):
+        # S110 (card badge): a running launch.json yields launch.status=="running"
+        # on the card so the board can render the ● APP LIVE badge. Guard for the
+        # data the front-end badge depends on.
+        d = fx.plant_simple(self.tmp, "m-live", stage="verify")
+        fx.write_json(os.path.join(d, "launch.json"), {
+            "status": "running", "target": "the game",
+            "url": "http://localhost:5173", "message": "the app is running.",
+        })
+        m = self._by_id(self._board(), "m-live")
+        self.assertEqual(m["launch"]["status"], "running")
+
+    def test_never_launched_mission_has_no_launch_key(self):
+        # Board-shape-additive invariant: a mission that was never launched (no
+        # launch.json) carries NO `launch` key at all — renders exactly as before.
+        fx.plant_simple(self.tmp, "m-nolaunch", stage="verify")
+        m = self._by_id(self._board(), "m-nolaunch")
+        self.assertNotIn("launch", m)
+
 
 class ActiveSecondsTest(unittest.TestCase):
     """UX-24: active run time = wall-clock from first stage_start to the last
