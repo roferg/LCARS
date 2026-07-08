@@ -1646,12 +1646,25 @@ function launchAffordance(mi) {
   wrap.style.cssText = "margin:14px 0;padding:10px;border-radius:6px;"
     + "background:rgba(153,153,255,.10)";
 
+  // S110: a single closure-scoped poll timer. While the panel shows LAUNCHING
+  // it re-fetches on a cadence so a card reopened mid-launch AUTO-ADVANCES to
+  // ● LIVE / failed the moment launch.json resolves (SSE nudges the board cards
+  // but never the contents of an already-open dialog). render() is the sole
+  // owner: it clears this at the top and re-arms it only in the launching
+  // branch, so exactly one loop is ever live and it stops on resolve.
+  var pollTimer = null;
+
   function busyLabel(busy, text) {
     var lab = busy.querySelector(".lcars-working-label");
     if (lab) lab.textContent = text;
   }
 
   function reload() {
+    // S110: if the dialog was closed, halt the poll loop — a detached panel
+    // must not keep re-fetching forever.
+    if (!document.body.contains(wrap)) {
+      clearTimeout(pollTimer); pollTimer = null; return;
+    }
     // Re-fetch the mission so the panel reflects the settled launch state
     // (SSE also nudges the board; this keeps the OPEN dialog in sync). The
     // truth comes from the live launch.json — RUN only if genuinely idle,
@@ -1689,6 +1702,9 @@ function launchAffordance(mi) {
   }
 
   function render(launch) {
+    // S110: reset the poll loop on every render — only the launching branch
+    // below re-arms it, guaranteeing exactly one live timer at any moment.
+    clearTimeout(pollTimer); pollTimer = null;
     wrap.textContent = "";
     var head = el("div", "dim");
     head.style.cssText = "text-transform:uppercase;letter-spacing:.08em;"
@@ -1708,6 +1724,11 @@ function launchAffordance(mi) {
       // resolves to running / failed via reload() / SSE.
       busy.hidden = false;
       busyLabel(busy, "Launching the app…");
+      // S110: keep polling the live launch.json until it resolves. reload()
+      // re-fetches and re-renders, so this self-perpetuates while still
+      // launching and naturally stops once the status becomes running / failed
+      // / stopped (those branches don't reschedule).
+      pollTimer = setTimeout(reload, 1500);
       return;
     }
     if (status === "running") {
