@@ -3522,6 +3522,25 @@ ROLLBACK_EOF
     if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
       if apply_declared_setup "$SETUP" "$(dirname "$SETUP")/setup" "$pkg_rel"; then
         [ -n "$SETUP_NOTE" ] && printf '  ⚠ declared setup applied with a note: %s\n' "$SETUP_NOTE" >&2
+        # S111: an install can EXIT 0 yet cure nothing — pnpm no-ops "up to
+        # date" THROUGH the provisioning's symlinked node_modules (caught live:
+        # a bug child declared plain `pnpm install`), so the failure-triggered
+        # heal never fires. When the runner is STILL dead after a clean apply,
+        # force the relink cycle ONCE — drop symlinked node_modules, re-link
+        # with `pnpm install`, re-run the declared install — before parking.
+        if runner_preflight_env_failure "$run_dir"; then
+          local heal_icmd; heal_icmd="$(json_str "$SETUP" installCommand)"
+          if [ -n "$heal_icmd" ]; then
+            emit_event test_setup_install_heal implement \
+              "declared-setup install exited clean but the runner is STILL dead — forcing the symlink-drop + re-link cycle once" \
+              "ticket=$TICKET"
+            ( cd "$REPO_ROOT" && find . -maxdepth 5 -name node_modules -type l -exec rm -f {} + 2>/dev/null ) || :
+            local heal_out; heal_out="$(mktemp)"
+            ( cd "$REPO_ROOT" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-600}" "$heal_out" bash -c "pnpm install" ) || :
+            ( cd "$REPO_ROOT${pkg_rel:+/$pkg_rel}" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$heal_out" bash -c "$heal_icmd" ) || :
+            rm -f "$heal_out"
+          fi
+        fi
         if runner_preflight_env_failure "$run_dir"; then
           _impl_rollback_intree; rm -rf "$tdir"
           {

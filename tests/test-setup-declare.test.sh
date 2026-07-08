@@ -338,6 +338,42 @@ SH
   fi
 fi
 
+# === G9: an install that EXITS 0 but cures nothing → forced relink heal ======
+# (caught live: the bug-child's worker declared plain `pnpm install`, which
+# no-ops through the provisioning's SYMLINKED node_modules — exit 0, runner
+# still dead, and the failure-triggered heal never fired.)
+repo="$(new_repo)"
+touch "$repo/.runner-installed"
+mkdir -p "$repo/bin"
+cat > "$repo/bin/pnpm" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = "install" ] && touch "$PWD/.pnpm-relinked"
+exit 0
+SH
+chmod +x "$repo/bin/pnpm"
+cat > "$repo/install-fake.sh" <<'SH'
+#!/usr/bin/env bash
+# Succeeds (exit 0) but only actually installs once the tree was re-linked —
+# the silent-no-op-through-symlinks shape.
+if [ -f ".pnpm-relinked" ] || [ -f "../.pnpm-relinked" ]; then
+  touch .runner-installed
+fi
+exit 0
+SH
+STUB_MODE=declare-setup run_ticket "$repo" STUB_MODE=declare-setup \
+  STUB_INSTALL="$repo/install-fake.sh" PATH="$repo/bin:$PATH"
+if [ -f "$repo/pkgA/.runner-installed" ]; then
+  ok "G9a. silent no-op install → forced relink heal cures the runner"
+else
+  bad "G9a. still-dead-after-exit-0 install not healed (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
+fi
+if [ -d "$repo/.git/lcars/missions/test-001/tickets/t-001/tests" ] \
+   && [ -n "$(find "$repo/.git/lcars/missions/test-001/tickets/t-001/tests" -type f 2>/dev/null)" ]; then
+  ok "G9b. gate proceeded to a locked red after the forced relink"
+else
+  bad "G9b. tests not locked after forced relink (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
+fi
+
 # === G8: a fully-greenfield test lands INSIDE the target package =============
 # (caught live: stem matches no manifest entry / no existing file → the old
 # fallback placed the test at REPO-ROOT src/, outside the package the gate runs
