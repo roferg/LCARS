@@ -1658,6 +1658,12 @@ function launchAffordance(mi) {
   // full teardown+rebuild — which would restart the busy-wave CSS animation
   // every 1.5s and make it visibly stutter.
   var shownStatus = null;
+  // S110: has the captain triggered a launch FROM THIS panel instance? Gates the
+  // failure banner so a stale "failed" status surfaced on a fresh open renders a
+  // clean RUN prompt (no leftover error), while a launch started here that then
+  // fails still shows its message. Deliberately per-instance: reopening the card
+  // resets it — never surface a STALE failure on open (see S110 edge note).
+  var attempted = false;
 
   // S110: the poll callback, factored out so it can be re-armed from BOTH the
   // launching branch and the unchanged-launching fast-path without a full
@@ -1780,7 +1786,11 @@ function launchAffordance(mi) {
       }));
       wrap.appendChild(stop);
     } else {
-      if (status === "failed" && launch && launch.message) {
+      // S110: only surface the failure banner as immediate feedback for a launch
+      // the captain triggered in THIS panel instance (attempted). A stale "failed"
+      // status painted on a fresh open renders the clean RUN prompt below — the
+      // hint input + RUN button still render regardless; only the banner is gated.
+      if (status === "failed" && attempted && launch && launch.message) {
         showErr(err, launch.message);
       }
       var hint = el("input", "launch-hint"); hint.type = "text";
@@ -1795,6 +1805,10 @@ function launchAffordance(mi) {
         // renders LAUNCHING (never a false RUN). Cleared when the launch resolves
         // (reload) or the dispatch errors (below).
         pendingLaunch[String(mi.id)] = true;
+        // S110: a launch was dispatched from this panel instance — arm the failure
+        // banner so if this launch resolves to "failed", render() surfaces its
+        // message (reload() → render(failed) / the dispatch error path below).
+        attempted = true;
         // Optimistically re-render into the launching state so the hint input +
         // RUN button vanish immediately (a launch takes 15–60s). This mirrors the
         // record launch.sh persists, so it matches a card reopened mid-launch.
