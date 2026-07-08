@@ -4,6 +4,49 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.4 — 2026-07-08
+
+The run-app + test-setup robustness round. Two features, one hardening sweep —
+proven live by driving three groutwork missions Align→Verify (two fully
+hands-off, including a runner-less package) plus four mission-log bugs across
+both engines.
+
+**`lcars launch` — deploy/run a mission's app for Verify.** A `launch`-role
+cold worker DISCOVERS how to start the app in a disposable detached worktree
+(dep provisioning included); the skill starts it detached, owns the process
+group, and records launch.json for both the CLI and the viewscreen. RUN/STOP
+land on the board's Verify dialogs (daemon-owned launches, per-mission
+instances, target pinning, card badge). The discovery worker writes a PRIVATE
+launch-discovery.json and launch.json is written only atomically — the mid-
+launch RUN-button flash is gone.
+
+**Test-setup robustness (S111).** The Test Writer can now survive contact with
+any package's test reality:
+- The red gate triages an un-launchable runner BEFORE the ignored-var verdict
+  (rc-3 "cannot run tests here" escalates instead of burning retries), and a
+  RUNNER PREFLIGHT probes the ticket's package before any worker spawn.
+- EVIDENCE-GATED DECLARED SETUP: when the preflight proves a package cannot
+  run tests while the repo tests elsewhere (sibling runner declarations count),
+  the Test Writer is invited to declare the missing infra (ADD-only whitelist,
+  package-manager installs only); the harness applies it PROBE-VERIFIED —
+  exit codes are never trusted, pnpm's symlink/virtual-store no-ops are healed
+  by a forced relink cycle at every gate door — and a verified green records
+  the facts to `.git/lcars/test-landscape/`.
+- ROOT-TREE SOVEREIGNTY: missions never touch the captain's checkout again —
+  commits land via an ephemeral landing worktree under the replay mutex, the
+  self-heal and reconcile no longer check out or detach the root, and PR-open
+  pushes by ref. Switching branches mid-drive is safe by construction.
+- Fail-loud isolation: no silent in-tree fallback when a worktree cut fails
+  (stale registrations self-heal via prune+retry), and the post-commit gate
+  names WHERE stray code landed (the wrong-tree suspect note).
+- Worker comprehension: the resolution-failure hint now states a per-specifier
+  VERDICT (module exists at <path> → fix the import / no match → must stub),
+  greenfield tests place INSIDE the target package, and the Test Writer/Planner
+  carry the objective-residue rule — never invent numeric proxies for taste;
+  subjective qualities are the captain's Verify judgment.
+- worktreeSetupCommand's node_modules find prunes .git (launch worktrees carry
+  node_modules there), and the npx no-binary phrasing joined the env signatures.
+
 ## 2026.7.3 — 2026-07-06
 
 Drift detection no longer false-positives after a merged PR. The `drift` verdict
