@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:517fc745310f90157dc43d9c571e716fbadb85634eff336d5bb3a075bcc76297 -->
-<!-- lcars-docs-src: vision.md sha256:12834df2debab5d3f68364464b064c0d7008685f90057b2ea6f4613edcc2fe14 -->
+<!-- lcars-docs-src: README.md sha256:d7fc499a43f5b56627a6ecd31a5e9f16685892b8b6f8001b2da88e07cd1760eb -->
+<!-- lcars-docs-src: vision.md sha256:31ba228e825b8790dab53a33da8f904e87638bfe20c84a79c2c85ec145c93cfd -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -628,6 +628,20 @@ flowchart LR
           raise <strong>one</strong> consolidated re-verify gate on the parent
           instead of one per bug. Never auto-approves.</div>
         </div>
+        <div class="control-card">
+          <div class="control-cmd">lcars launch &lt;mission&gt; [hint]</div>
+          <div class="control-desc"><strong>Run the Mission's app so you can SEE
+          it during Verify</strong> (the board's ⚡ RUN/STOP does the same).
+          Checks the branch into a disposable detached worktree, spawns a
+          <code>launch</code>-role cold worker that <em>discovers</em> how to
+          start the app (never starts it itself), then runs the command detached
+          — the harness owns the process group, records <code>launch.json</code>
+          for the CLI and the board, and <code>--stop</code> kills the group and
+          prunes the worktree. The optional hint picks the target in a multi-app
+          repo ("the example game"); each Mission gets its <strong>own</strong>
+          instance, so two builds can run side by side. Your own checkout is
+          never touched.</div>
+        </div>
       </div>
 
       <h4>Power verbs (still supported)</h4>
@@ -884,9 +898,25 @@ lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
           worktrees (capped by <code>LCARS_MAX_PARALLEL</code>) and commit serially in
           plan order, and each worker reads a per-ticket <strong>context manifest +
           repo pack</strong> instead of cold-exploring the tree. Up to 5 attempts per
-          ticket, then it flags you.</li>
+          ticket, then it flags you. And the gates <strong>survive the repo's real
+          test setup</strong>: a runner preflight probes the ticket's package
+          <em>before any worker is spent</em> (a runner that can't launch is a
+          truthful "cannot run tests here" — never blamed on the tests); a package
+          with <strong>no runner</strong> in a repo that tests elsewhere invites the
+          Test Writer to <strong>declare the missing setup</strong> (evidence-gated,
+          ADD-only, package-manager installs only), applied
+          <strong>probe-verified</strong> — exit codes are never trusted, pnpm's
+          silent symlink no-ops are healed by a forced relink — with a verified
+          green recorded to the repo's <strong>test landscape</strong>
+          (<code>.git/lcars/test-landscape/</code>) as a durable, proven fact.</li>
           <li><strong>Verify never auto-passes.</strong> Auto-advance always stops
-          here. Shipping is your call.</li>
+          here. Shipping is your call — and <strong>seeing it run is one
+          click</strong>: <code>lcars launch &lt;mission&gt; [hint]</code> (or the
+          ⚡ RUN/STOP on the board's Verify dialogs) checks the branch into a
+          disposable worktree, has a cold worker <em>discover</em> how to start the
+          app, runs it detached with the harness owning the process group, and
+          stops/prunes on demand. Per-Mission instances, plain-English failures,
+          and your own checkout is never touched.</li>
         </ul>
       </div>
 
@@ -986,6 +1016,15 @@ flowchart TB
           generated reasoning, and never anything at all to a Research Agent:
           sharing facts lets a worker read instead of re-derive (cutting cost)
           without the conversational carryover cold isolation exists to prevent.</p>
+          <p><strong>Your checkout is sacred (root-tree sovereignty).</strong> A
+          Mission never checks out, detaches, or dirties the working tree you sit
+          in: builds run in per-ticket worktrees, commits land through an
+          ephemeral <strong>landing worktree</strong> under a repo-global mutex,
+          the reconcile works in its own worktree, and the PR opens by ref.
+          Switch branches mid-drive with three Missions running — neither side
+          notices; if <em>you</em> hold a Mission's branch, it says so plainly
+          instead of moving your HEAD, and a failed worktree cut is
+          <strong>loud</strong>, never a silent fallback into the shared tree.</p>
           <div class="lcars-readout">STAGE MARKER: ⊘ isolated  (printed on every stage line)
 IF A STAGE CANNOT ISOLATE → the driver refuses LOUDLY, changes nothing.
 An inline run must never masquerade as isolated.</div>

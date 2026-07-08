@@ -4,6 +4,16 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.5 — 2026-07-08
+
+Docs catch-up for 2026.7.4: `lcars launch` (the deploy/run-app feature) and the
+S111 test-setup robustness round are now documented in README.md and vision.md
+— the launch command + Verify RUN/STOP flow, the runner preflight, the
+evidence-gated declared test setup with probe-verified installs, the test
+landscape, root-tree sovereignty, and the objective-residue testing rule — with
+both rendered docs/ mirrors updated and their source-hash breadcrumbs
+refreshed (docs-sync guard green).
+
 ## 2026.7.4 — 2026-07-08
 
 The run-app + test-setup robustness round. Two features, one hardening sweep —

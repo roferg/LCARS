@@ -346,6 +346,7 @@ CLI. The older per-stage verbs still work as power entry points.
 | `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. |
 | `lcars log` | Log one or more bugs against an active Mission in free-form language; files a Mission per bug that enters at **Research in a grounding mode** — anchoring the free-form symptom to the parent's existing code so the fix modifies the real feature rather than a duplicate — then flows the full pipeline to Verify (only Align is skipped), and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, now **including** the Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
 | `lcars resolve-logs <parent>` | Drive **every** bug logged against a Mission to its Verify gate in a sensible, worker-chosen order, then raise **one** consolidated re-verify gate on the parent instead of one per bug. |
+| `lcars launch <mission> [hint]` | **Run the Mission's app so you can SEE it during Verify** (the board's ⚡ RUN/STOP does the same). Checks the branch into a disposable detached worktree, spawns a `launch`-role cold worker that *discovers* how to start the app (never starts it itself), then runs the command detached — the harness owns the process group, records `launch.json` for the CLI and the board, and `--stop` kills the group and prunes the worktree. The optional hint picks the target in a multi-app repo ("the example game"); each Mission gets its **own** instance, so two builds can run side by side. Your own checkout is never touched. |
 
 ### Power verbs (still supported)
 
@@ -549,8 +550,22 @@ change), the batch **pauses** at that bug and drops its question into
   lands every ticket's change instead of dropping one. Each worker reads a per-ticket **context
   manifest + repo pack** instead of cold-exploring the tree. Up to 5 attempts per
   ticket, then it flags you.
+  And the gates **survive the repo's real test setup**: a runner preflight probes
+  the ticket's package *before any worker is spent* (a runner that can't launch is
+  a truthful "cannot run tests here" — never blamed on the tests); a package with
+  **no runner** in a repo that tests elsewhere invites the Test Writer to
+  **declare the missing setup** (evidence-gated, ADD-only, package-manager installs
+  only), which the harness applies **probe-verified** — exit codes are never
+  trusted, and pnpm's silent symlink no-ops are healed by a forced relink — with a
+  verified green recorded to the repo's **test landscape**
+  (`.git/lcars/test-landscape/`) as a durable, proven fact.
 - **Verify never auto-passes.** Auto-advance always stops here. Shipping is your
-  call.
+  call — and **seeing it run is one click**: `lcars launch <mission> [hint]` (or
+  the ⚡ **RUN/STOP** on the board's Verify dialogs) checks the branch into a
+  disposable worktree, has a cold worker *discover* how to start the app, runs it
+  detached with the harness owning the process group, and stops/prunes on demand.
+  Per-Mission instances, plain-English failures, and your own checkout is never
+  touched.
 
 ---
 
@@ -602,6 +617,14 @@ Two deliberate properties make this robust:
   pack — never another worker's generated reasoning, and never anything at all to
   a Research Agent: sharing facts lets a worker read instead of re-derive (cutting
   cost) without the conversational carryover cold isolation exists to prevent.
+- **Your checkout is sacred (root-tree sovereignty).** A Mission never checks
+  out, detaches, or dirties the working tree you sit in: builds run in per-ticket
+  worktrees, commits land through an ephemeral **landing worktree** under a
+  repo-global mutex, the reconcile works in its own worktree, and the PR opens by
+  ref. Switch branches mid-drive with three Missions running — neither side
+  notices; if *you* hold a Mission's branch, it says so plainly instead of moving
+  your HEAD, and a failed worktree cut is **loud**, never a silent fallback into
+  the shared tree.
 - **Observable, not silent.** The driver keeps a per-Mission append-only **event
   log** (`events.jsonl`) as it goes — every Stage start and finish, every gate,
   and fine-grained Implement progress (each wave, each ticket, each attempt, and
