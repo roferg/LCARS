@@ -2408,6 +2408,36 @@ red_gate_resolution_failure() { # runner-output → 0 if a module-resolution fai
 #   • Cannot find module 'X' / "X"              (node resolver — quoted specifier)
 #   • Cannot find package 'X' / "X"             (node/pnpm — quoted package)
 #   • Failed to load url X                       (vite — bare url up to whitespace)
+# S111: per-specifier EXISTENCE triage for the resolution-failure hint. The S95
+# feedback asked the worker to CHOOSE between "emit a stub" (brand-new module)
+# and "fix the import path" (existing module) — a weak model chooses wrong
+# repeatedly (five identical bounces, live). The harness can decide MECHANICALLY:
+# a specifier whose basename matches a real source file gets its actual repo
+# location(s) named ("your path is wrong — the file lives HERE"); one with no
+# match anywhere is provably brand-new ("you MUST emit the stub"). One line per
+# specifier, deterministic, pure filesystem read.
+unresolved_specifier_triage() { # repo-root  specifiers(one per line, $2 or stdin)
+  local root="$1" specs
+  if [ "$#" -gt 1 ]; then specs="$2"; else specs="$(cat)"; fi
+  local spec base matches
+  while IFS= read -r spec; do
+    [ -n "$spec" ] || continue
+    base="${spec##*/}"; base="${base%.*}"
+    [ -n "$base" ] || continue
+    matches="$(find "$root" -maxdepth 7 \
+        \( -path '*/node_modules' -o -path "$root/.git" -o -path '*/dist' -o -path '*/build' \) -prune -o \
+        -type f \( -name "$base.ts" -o -name "$base.tsx" -o -name "$base.js" -o -name "$base.jsx" -o -name "$base.mjs" \) -print 2>/dev/null \
+      | head -3 | sed "s|^$root/||" | paste -sd' ' -)"
+    if [ -n "$matches" ]; then
+      printf '%s → the module EXISTS in the repo at: %s — your import PATH is wrong, do NOT stub it; re-author the import to reach that file RELATIVE TO YOUR TEST FILE'\''S OWN location.\n' "$spec" "$matches"
+    else
+      printf '%s → NO file matching '\''%s'\'' exists anywhere in the repo — this is a brand-new module your ticket creates; you MUST emit the empty stub for it (stubs/%s.*), there is no path fix.\n' "$spec" "$base" "$base"
+    fi
+  done <<TRIAGE_EOF
+$specs
+TRIAGE_EOF
+}
+
 unresolved_imports_in_output() { # runner-output ($1 or stdin) → distinct unresolved specifier(s), one per line
   local out
   if [ "$#" -gt 0 ]; then out="$1"; else out="$(cat)"; fi
@@ -3021,9 +3051,15 @@ $(printf '%s' "$out" | tail -20)"
           *)          imp_form="a CO-LOCATED \`./<sibling>\` import, e.g. \`import { area } from './utils'\` (your test sits NEXT TO the source)"
                       stub_form="\`stubs/<sibling>.ts\` (the harness places it beside your test)" ;;
         esac
-        unres="$(unresolved_imports_in_output "$out" | paste -sd' ' - 2>/dev/null)"
+        local unres_lines; unres_lines="$(unresolved_imports_in_output "$out")"
+        unres="$(printf '%s\n' "$unres_lines" | paste -sd' ' - 2>/dev/null)"
         if [ -n "$unres" ]; then
-          hint="SPECIFICALLY, these import(s) did not resolve: $unres. For EACH one that is a brand-new module your ticket must create, emit an EMPTY stub for it under stubs/ named for the sibling — $stub_form — so it resolves; if instead the import PATH is wrong, re-author it as $imp_form. Create a stub for EVERY brand-new module you import — a single missing stub fails the whole suite to load. "
+          # S111: don't make the worker CHOOSE stub-vs-path — the harness checked
+          # the repo per specifier and states the verdict (exists→path, absent→stub).
+          local triage; triage="$(unresolved_specifier_triage "$REPO_ROOT" "$unres_lines")"
+          hint="SPECIFICALLY, these import(s) did not resolve. The harness checked the repo for EACH one — FOLLOW ITS VERDICT below, do not re-guess:
+$triage
+For a brand-new module the stub goes under stubs/ — $stub_form. For an existing module re-author the import as $imp_form. A single unresolved import fails the whole suite to load. "
         fi
         reason="RED GATE — the suite did NOT fail on an assertion: it could not RESOLVE its import of the code under test (a module-resolution / load failure), so the test file never ran. The harness places your test IN THE REPO at its own test convention ($RED_GATE_CONVENTION) and runs it IN PLACE, right where the test sits — so import the code under test via a path that resolves FROM THERE: $imp_form. Re-author the import accordingly so the test LOADS, then FAILS on its assertions until the behaviour exists. ${hint}Command run: $cmd. Runner output (run):
 $(printf '%s' "$out" | tail -20)"
