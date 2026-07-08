@@ -3372,10 +3372,16 @@ cmd_impl_save_tests() {
   local snap; snap="$(ticket_dir "$TICKET")/tests.sha256"
   local target_src; target_src="$(ticket_target_src "$TICKET" "$TESTS")"
   local convention; convention="$(detect_test_convention "$REPO_ROOT" "$target_src")"
-  local fallback_src="${target_src:-src/index.ts}"
   # The ticket's package (monorepo-aware) — the RUN DIR for the in-place gate AND the
   # root the per-file sibling search prefers. Computed once, reused below.
   local pkg_rel; pkg_rel="$(ticket_target_package "$TICKET")"
+  # S111: the LAST-RESORT placement fallback must live INSIDE the ticket's target
+  # package. The old bare `src/index.ts` dropped a fully-greenfield test (a stem
+  # matching no manifest entry and no existing file) at the REPO ROOT's src/ —
+  # OUTSIDE the package the gate runs from — so vitest's package-rooted include
+  # never discovered it and every attempt bounced as "zero tests" (caught live,
+  # 001 run 4: example-game gate rooted at the package, test placed at <root>/src/).
+  local fallback_src="${target_src:-${pkg_rel:+$pkg_rel/}src/index.ts}"
   # The worker's scratch input dirs — NEVER resolve a sibling to a copy of the test or
   # stub living there (a mktemp OUTSIDE the repo in real use; pruned so a fixture that
   # nests them under the repo still resolves to the real in-tree source). Canonicalised

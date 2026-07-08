@@ -337,6 +337,32 @@ SH
   fi
 fi
 
+# === G8: a fully-greenfield test lands INSIDE the target package =============
+# (caught live: stem matches no manifest entry / no existing file → the old
+# fallback placed the test at REPO-ROOT src/, outside the package the gate runs
+# from → vitest discovered zero tests forever.)
+repo="$(new_repo)"
+touch "$repo/.runner-installed" "$repo/pkgA/.runner-installed"
+tdirG8="$repo/_t8"; mkdir -p "$tdirG8"
+cat > "$tdirG8/hint-overlay.test.ts" <<'TS'
+import { showHint } from './hint-overlay';
+test('overlay', () => { expect(showHint()).toBe(true); });
+TS
+sdirG8="$repo/_s8"; mkdir -p "$sdirG8"
+printf 'export function showHint() {}\n' > "$sdirG8/hint-overlay.ts"
+OUT="$( cd "$repo" && LCARS_TEST_CMD="bash $repo/probe.sh" \
+          LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+          bash "$SCRIPT" impl-save-tests --mission test-001 --ticket t-001 \
+          --tests "$tdirG8" --stubs "$sdirG8" 2>&1 )"
+RC=$?
+placed="$(find "$repo/pkgA" -name 'hint-overlay.test.ts' 2>/dev/null | head -1)"
+stray="$(find "$repo/src" -name 'hint-overlay.test.ts' 2>/dev/null | head -1)"
+if [ "$RC" -eq 0 ] && [ -n "$placed" ] && [ -z "$stray" ]; then
+  ok "G8. greenfield test placed inside the target package (never repo-root src/)"
+else
+  bad "G8. greenfield placement (rc=$RC placed='$placed' stray='$stray': $(printf '%s' "$OUT" | tail -3))"
+fi
+
 echo
 printf 'test-setup-declare: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
