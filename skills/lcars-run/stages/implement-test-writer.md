@@ -99,6 +99,18 @@ appended to your inputs with the gate's verdict and the runner's output. Read it
 it tells you whether your last suite passed-on-nothing or simply did not exercise
 the new behaviour. Use it to write tests that fail until the behaviour exists.
 
+## Declared test setup — ONLY when the harness invites it
+
+When the harness itself has PROVEN the ticket's target package cannot run tests
+(its preflight probe failed), your inputs will include a **"DECLARED TEST
+SETUP"** section carrying the evidence and the exact rules for declaring the
+missing infrastructure (a `setup/` dir of new config files + `test-setup.json`
+with an install command). Follow that section when — and ONLY when — it is
+present. Without that invitation, NEVER emit `test-setup.json` or `setup/`
+files: an unsolicited setup is ignored, and reaching for new tooling when the
+repo's existing runner works is exactly the behaviour this gate exists to
+prevent. Try the repo's own infrastructure first — always.
+
 ## Shared, DEFENSIVE test doubles (avoid false cross-ticket regressions)
 
 After every ticket is green, the harness re-runs **all** tickets' suites together

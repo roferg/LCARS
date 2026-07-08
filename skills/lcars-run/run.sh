@@ -2719,6 +2719,129 @@ impl_park_env_cannot_test() { # ticket  reason-text
   exit 0
 }
 
+# === S111 Phase 3′: EVIDENCE-GATED DECLARED TEST SETUP ======================
+# When the preflight proves the ticket's target package cannot run tests while
+# the repo root can, the Test Writer is INVITED to DECLARE the missing infra:
+# a `setup/` scratch dir of NEW package-relative files + `test-setup.json`
+# naming {package, gap, installCommand}. The HARNESS applies it (never the
+# worker), the gates verify it via the honest 127→red transition, and a green
+# ticket records the verified facts to the repo test landscape. Hard rules:
+#   • evidence-gated — no observed env failure, no application (attempt-1 naked)
+#   • ADD-only — never overwrite an existing file, never anything under src/
+#   • bounded — ≤4 files, ≤20KB each, installCommand must be a package-manager
+#     invocation (pnpm/npm/yarn/bun; $LCARS_SETUP_INSTALL_ALLOW_RE overrides)
+SETUP_NOTE=""
+apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 rejected
+  local mf="$1" sdir="$2" pkg="$3"
+  SETUP_NOTE=""
+  local mpkg gap icmd
+  mpkg="$(json_str "$mf" package)"
+  gap="$(json_str "$mf" gap)"
+  icmd="$(json_str "$mf" installCommand)"
+  if [ "$mpkg" != "$pkg" ]; then
+    SETUP_NOTE="the manifest names package '$mpkg' but the observed gap is in '${pkg:-<repo root>}' — a declared setup must address the package the evidence is about"
+    return 1
+  fi
+  local allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-^(pnpm|npm|yarn|bun)[[:space:]]}"
+  if [ -n "$icmd" ] && ! printf '%s' "$icmd" | grep -Eq "$allow"; then
+    SETUP_NOTE="installCommand '$icmd' is not a plain package-manager invocation (must match: $allow)"
+    return 1
+  fi
+  local dest="$REPO_ROOT${pkg:+/$pkg}"
+  local n=0 f rel
+  if [ -d "$sdir" ]; then
+    while IFS= read -r f; do
+      rel="${f#"$sdir"/}"
+      n=$((n + 1))
+      if [ "$n" -gt 4 ]; then SETUP_NOTE="more than 4 setup files declared"; return 1; fi
+      if [ "$(wc -c < "$f" | tr -d ' ')" -gt 20000 ]; then SETUP_NOTE="setup file $rel exceeds 20KB"; return 1; fi
+      case "/$rel/" in
+        *"/../"*)   SETUP_NOTE="path traversal in setup file '$rel'"; return 1 ;;
+        *"/src/"*)  SETUP_NOTE="setup file '$rel' targets src/ — declared setup may only add TEST infrastructure, never source"; return 1 ;;
+      esac
+      if [ -e "$dest/$rel" ]; then
+        SETUP_NOTE="setup file '$rel' already exists in the package — declared setup may only ADD files, never modify or loosen existing config"
+        return 1
+      fi
+    done < <(find "$sdir" -type f 2>/dev/null)
+  fi
+  # Validated — APPLY: copy the new files, then run the install command in the
+  # package dir under a hard timeout. The applied files ride the ticket's commit
+  # (they are new post-snapshot untracked files), so every downstream gate and
+  # the PR see exactly what was provisioned.
+  if [ -d "$sdir" ]; then
+    while IFS= read -r f; do
+      rel="${f#"$sdir"/}"
+      case "$rel" in */*) mkdir -p "$dest/${rel%/*}" 2>/dev/null || : ;; esac
+      cp "$f" "$dest/$rel"
+    done < <(find "$sdir" -type f 2>/dev/null)
+  fi
+  local irc=0 outf; outf="$(mktemp)"
+  if [ -n "$icmd" ]; then
+    ( cd "$dest" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || irc=$?
+  fi
+  local itail; itail="$(tail -5 "$outf" 2>/dev/null | tr '\n' ' ')"; rm -f "$outf"
+  [ "$irc" -ne 0 ] && SETUP_NOTE="installCommand exited $irc: $itail"
+  cp "$mf" "$(ticket_dir "$TICKET")/test-setup-applied.json" 2>/dev/null || :
+  cp "$mf" "$MISSION_DIR/test-setup-applied.json" 2>/dev/null || :
+  emit_event test_setup_applied implement \
+    "declared test setup applied to ${pkg:-<root>} — gap: ${gap:-unspecified}; install: ${icmd:-none}${SETUP_NOTE:+ (note: $SETUP_NOTE)}" \
+    "ticket=$TICKET"
+  return 0
+}
+
+# Re-apply a mission's verified/applied setup install in a FRESH gate worktree
+# (post-commit / full-suite / reconcile), so those gates judge the same
+# provisioned environment the red gate did. The declared FILES already ride the
+# committed branch; only the install needs re-running. Best-effort + bounded.
+setup_reapply_in_worktree() { # worktree-path
+  local wt="$1" rec="${MISSION_DIR:-}/test-setup-applied.json"
+  [ -n "${MISSION_DIR:-}" ] && [ -f "$rec" ] || return 0
+  local pkg icmd
+  pkg="$(json_str "$rec" package)"
+  icmd="$(json_str "$rec" installCommand)"
+  [ -n "$icmd" ] || return 0
+  local allow="${LCARS_SETUP_INSTALL_ALLOW_RE:-^(pnpm|npm|yarn|bun)[[:space:]]}"
+  printf '%s' "$icmd" | grep -Eq "$allow" || return 0
+  local d="$wt${pkg:+/$pkg}"
+  [ -d "$d" ] || return 0
+  local outf; outf="$(mktemp)" rc=0
+  ( cd "$d" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || rc=$?
+  rm -f "$outf"
+  [ "$rc" -ne 0 ] && emit_event test_setup_reapply_failed implement \
+    "declared-setup install exited $rc in gate worktree $wt — the gate may misjudge the env" || :
+  return 0
+}
+
+# On ticket GREEN (post-commit verified), record the setup as a DURABLE, PROVEN
+# fact in the repo's test landscape — one file per package under
+# .git/lcars/test-landscape/ — so humans and future missions see what testing
+# capability this repo actually has and how it got there.
+record_test_landscape() {
+  local rec="$MISSION_DIR/test-setup-applied.json"
+  [ -f "$rec" ] || return 0
+  local pkg gap icmd dir key
+  pkg="$(json_str "$rec" package)"
+  gap="$(json_str "$rec" gap)"
+  icmd="$(json_str "$rec" installCommand)"
+  dir="$(dirname "$LCARS_CFG")/test-landscape"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  key="$(printf '%s' "${pkg:-root}" | tr '/' '_')"
+  {
+    echo '{'
+    printf '  "package": "%s",\n' "$(json_escape "${pkg:-}")"
+    printf '  "gap": "%s",\n' "$(json_escape "${gap:-}")"
+    printf '  "installCommand": "%s",\n' "$(json_escape "${icmd:-}")"
+    printf '  "verifiedBy": "%s/%s",\n' "$(json_escape "$MISSION_ID")" "$(json_escape "$TICKET")"
+    printf '  "verifiedAt": "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)"
+    echo '}'
+  } >"$dir/$key.json"
+  emit_event test_setup_verified implement \
+    "declared test setup VERIFIED green for ${pkg:-root} — recorded to the repo test landscape" \
+    "ticket=$TICKET"
+  return 0
+}
+
 red_gate_ok() { # quarantined-tests-dir [run-dir]
   # S87: run-dir is the cwd the runner is invoked from (BOTH the real run AND the
   # empty-dir probe), default $REPO_ROOT (byte-identical to before). A monorepo
@@ -3297,6 +3420,37 @@ ROLLBACK_EOF
   local run_dir="$REPO_ROOT"; [ -n "$pkg_rel" ] && run_dir="$REPO_ROOT/$pkg_rel"
   local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"; rm -f "$sig"
 
+  # --- S111 3′: DECLARED TEST SETUP (evidence-gated) --------------------------
+  # A test-setup.json rides in ONLY when the Test Writer was INVITED (the
+  # preflight observed an env-cannot-run gap and exported the evidence). Without
+  # evidence the manifest is IGNORED — attempt 1 always runs naked. Applied
+  # setup is re-probed immediately: a still-dead runner exits 3 (the caller
+  # parks awaiting-human, naming that the setup was tried).
+  if [ -n "${SETUP:-}" ] && [ -f "$SETUP" ]; then
+    if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
+      if apply_declared_setup "$SETUP" "$(dirname "$SETUP")/setup" "$pkg_rel"; then
+        [ -n "$SETUP_NOTE" ] && printf '  ⚠ declared setup applied with a note: %s\n' "$SETUP_NOTE" >&2
+        if runner_preflight_env_failure "$run_dir"; then
+          _impl_rollback_intree; rm -rf "$tdir"
+          {
+            printf 'rc=env (the declared test setup was APPLIED — files + install — but the runner STILL cannot launch in %s)\n' "${pkg_rel:-<root>}"
+            printf 'The declared setup did not cure the gap. Setup note: %s\n' "${SETUP_NOTE:-none}"
+            printf 'Runner said after the setup:\n%s\n' "$(printf '%s' "$PREFLIGHT_OUT" | tail -10)"
+          } >"$sig"
+          printf 'lcars run: the declared test setup did not cure the env — escalating to the human.\n' >&2
+          exit 3
+        fi
+        printf '  ✓ declared setup applied — the runner now launches in %s (the red gate will demand the honest fail-first next)\n' "${pkg_rel:-<root>}" >&2
+      else
+        printf '  ⚠ declared setup REJECTED: %s — continuing without it\n' "$SETUP_NOTE" >&2
+        emit_event test_setup_rejected implement \
+          "declared setup rejected: $SETUP_NOTE" "ticket=$TICKET"
+      fi
+    else
+      printf '  ⚠ a test-setup.json was provided WITHOUT an observed infra gap — ignored (setup is invited only after the harness itself hits the failure; attempt 1 always runs naked)\n' >&2
+    fi
+  fi
+
   # S99 PRE-GATE SELF-SMOKE (BEFORE the immutable snapshot / handoff): bounce a
   # hanging or zero-test suite back to the TEST-WRITER (retry) so the Implementer
   # never burns attempts on it and a hang never wedges the ticket. A suite that runs
@@ -3698,6 +3852,11 @@ $(cat "$pcsig")"
   emit_event ticket_postcommit_ok implement \
     "ticket $TICKET verified green on the committed branch" \
     "ticket=$TICKET" "attempts=$attempts"
+
+  # S111 3′: a declared test setup that carried this ticket all the way to a
+  # post-commit-verified green is now a PROVEN fact — record it to the repo's
+  # test landscape (durable, human-visible, one file per package).
+  record_test_landscape
 
   # ticket_green is emitted ONLY HERE — AFTER the immutable-tests check, the
   # shape/attempts validation (both `die` earlier on rejection) AND commit_ticket.
@@ -6916,17 +7075,35 @@ cmd_implement_ticket() {
   pf_pkg="$(ticket_target_package "$TICKET")"
   pf_dir="$REPO_ROOT${pf_pkg:+/$pf_pkg}"
   if runner_preflight_env_failure "$pf_dir"; then
-    local pf_out="$PREFLIGHT_OUT" pf_diag
+    local pf_out="$PREFLIGHT_OUT" pf_root_alive=0
     if [ -n "$pf_pkg" ] && ! runner_preflight_env_failure "$REPO_ROOT"; then
-      pf_diag="package '$pf_pkg' has no working test runner (the repo root can run tests; that package cannot). Add a test runner to '$pf_pkg', set a package-specific test command, or retarget the mission."
-    else
-      pf_diag="the test runner cannot launch anywhere in this checkout — the environment is not provisioned (are dependencies installed? is worktreeSetupCommand set?)."
+      pf_root_alive=1
     fi
-    impl_park_env_cannot_test "$TICKET" \
+    # S111 3′: a RUNNER-LESS PACKAGE in an otherwise-working repo is the case a
+    # DECLARED TEST SETUP can self-heal — INVITE the Test Writer (evidence rides
+    # the prompt) instead of parking, unless a setup was already tried for this
+    # mission (then the human decides) or the captain disabled the mechanism.
+    if [ "$pf_root_alive" = 1 ] \
+       && [ ! -f "$MISSION_DIR/test-setup-applied.json" ] \
+       && [ "${LCARS_DECLARED_SETUP:-1}" != "0" ]; then
+      export LCARS_SETUP_EVIDENCE="package '$pf_pkg' cannot run tests (the repo root can). Command probed: $(resolve_test_cmd) (from: $pf_dir). Runner said:
+$(printf '%s' "$pf_out" | tail -10)"
+      emit_event test_setup_invited implement \
+        "package '$pf_pkg' has no working test runner — inviting the Test Writer to declare the missing test setup (evidence-gated)" \
+        "ticket=$TICKET"
+    else
+      local pf_diag
+      if [ "$pf_root_alive" = 1 ]; then
+        pf_diag="package '$pf_pkg' has no working test runner (the repo root can run tests; that package cannot), and a declared test setup was already tried for this mission without curing it. Add a test runner to '$pf_pkg' yourself, set a package-specific test command, or retarget the mission."
+      else
+        pf_diag="the test runner cannot launch anywhere in this checkout — the environment is not provisioned (are dependencies installed? is worktreeSetupCommand set?). A declared setup cannot fix repo-wide provisioning."
+      fi
+      impl_park_env_cannot_test "$TICKET" \
 "Ticket $TICKET cannot start: $pf_diag
 Command probed: $(resolve_test_cmd) (from: $pf_dir)
 Runner said:
 $(printf '%s' "$pf_out" | tail -10)"
+    fi
   fi
 
   # NOTE: `attempt` in the ticket_attempt events below is the CUMULATIVE
@@ -7041,10 +7218,37 @@ $(cat "$sigfile")"
     # stubs there (mirroring repo paths), which impl-save-tests overlays before the
     # red gate so a brand-new module's import resolves and the suite reds on an
     # assertion rather than a resolution failure.
-    mkdir -p "$odir/tests" "$odir/stubs"
+    mkdir -p "$odir/tests" "$odir/stubs" "$odir/setup"
+    # S111 3′: the declared-setup INVITATION — appended ONLY when the preflight
+    # observed the gap and exported the evidence. Rules mirror the harness-side
+    # whitelist so a compliant manifest is accepted first try.
+    local setupblock=""
+    [ -n "${LCARS_SETUP_EVIDENCE:-}" ] && setupblock="
+
+## DECLARED TEST SETUP — the target package cannot run tests; you may provision it
+The harness probed this ticket's target package and the test runner CANNOT
+launch there. This is the harness's own observation (the evidence):
+$LCARS_SETUP_EVIDENCE
+You are INVITED to declare the missing test infrastructure ALONGSIDE your
+tests, and the HARNESS will apply and verify it:
+- Write any NEW config/setup files into the \`setup/\` scratch dir (sibling of
+  \`tests/\`), at their PACKAGE-RELATIVE paths — e.g. \`setup/vitest.config.ts\`.
+  ADD-only: never a file that already exists, never anything under \`src/\`.
+  Keep it minimal (at most 4 small files).
+- Create \`test-setup.json\` in the scratch output directory root (NOT inside
+  tests/ or setup/):
+  {\"package\": \"<the package dir named in the evidence>\",
+   \"gap\": \"<one line: what is missing>\",
+   \"installCommand\": \"<a plain package-manager command run inside that package, e.g. pnpm add -D vitest@^1.6>\"}
+  Match the workspace's existing runner + version (look at the sibling
+  packages' package.json) — never introduce a different framework than the
+  repo already uses elsewhere.
+- Then write your failing tests exactly as normal. The harness applies your
+  setup, re-probes the runner, and your suite must still FAIL-FIRST on its
+  assertions — a setup that fakes green is rejected by the red gate."
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock$wtblock
+- $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock$wtblock$setupblock
 
 ## Your ticket
 $TICKET$tspecblock$retryblock" "${prior_empty:-}"
@@ -7084,8 +7288,13 @@ $TICKET$tspecblock$retryblock" "${prior_empty:-}"
     prior_empty=""   # a non-empty attempt: keep the next prompt byte-for-byte normal
     if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
       local rc=0
+      # S111 3′: hand the declared-setup manifest along when the worker emitted
+      # one (impl-save-tests enforces the evidence gate — no evidence, no apply).
+      local setup_arg=()
+      [ -f "$odir/test-setup.json" ] && setup_arg=(--setup "$odir/test-setup.json")
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
-        --mission "$MISSION_ID" --ticket "$TICKET" --tests "$odir/tests" --stubs "$odir/stubs" || rc=$?
+        --mission "$MISSION_ID" --ticket "$TICKET" --tests "$odir/tests" --stubs "$odir/stubs" \
+        ${setup_arg[@]+"${setup_arg[@]}"} || rc=$?
       if [ "$rc" -eq 0 ]; then saved=1; rm -rf "$odir"; break; fi
       # S111: rc 3 = the gate could not run ANY test (env-cannot-run). Not a
       # Test-Writer defect — park awaiting-human with the gate's own signal quoted
@@ -7647,23 +7856,27 @@ cmd_implement() {
 # `worktree_provision_failed` breadcrumb and returns the command's rc (the caller
 # ignores it). It NEVER stages or git-adds anything (it only runs the command).
 provision_worktree() { # worktree-path → 0 (no-op or success), else the command's rc
-  local wt="$1" cmd rc=0
+  local wt="$1" cmd="" rc=0
   if [ -n "${LCARS_WORKTREE_SETUP_CMD:-}" ]; then
     cmd="$LCARS_WORKTREE_SETUP_CMD"
-  else
-    [ -f "$LCARS_CFG" ] || return 0
+  elif [ -f "$LCARS_CFG" ]; then
     cmd="$(json_str "$LCARS_CFG" worktreeSetupCommand)"
   fi
-  case "$cmd" in ''|null) return 0 ;; esac
-  # Run ONCE with the worktree as CWD; capture combined output for the breadcrumb.
-  local out; out="$( cd "$wt" && bash -c "$cmd" 2>&1 )" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    emit_event worktree_provision_failed implement \
-      "worktreeSetupCommand exited $rc in $wt — provisioning is best-effort, the gate continues" \
-      "rc=$rc"
-    return "$rc"
+  case "$cmd" in ''|null) cmd="" ;; esac
+  if [ -n "$cmd" ]; then
+    # Run ONCE with the worktree as CWD; capture combined output for the breadcrumb.
+    local out; out="$( cd "$wt" && bash -c "$cmd" 2>&1 )" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      emit_event worktree_provision_failed implement \
+        "worktreeSetupCommand exited $rc in $wt — provisioning is best-effort, the gate continues" \
+        "rc=$rc"
+    fi
   fi
-  return 0
+  # S111 3′: re-apply this mission's declared-setup install (when one was
+  # applied) so post-commit / full-suite / reconcile gates judge the SAME
+  # provisioned env the red gate did. Best-effort, after the base provisioning.
+  setup_reapply_in_worktree "$wt" || :
+  return "$rc"
 }
 
 # --- per-ticket worktree lifecycle (Session 37) -----------------------------
@@ -8642,7 +8855,7 @@ cmd_drive() {
 # --- dispatch --------------------------------------------------------------
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
-MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; RESULT=""; STEP=0
+MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; SETUP=""; RESULT=""; STEP=0
 EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; MANIFESTS=""; POSARG=""; SURFACE=""
 RC_BRANCH=""; RC_SHA=""
 while [ $# -gt 0 ]; do
@@ -8672,6 +8885,8 @@ while [ $# -gt 0 ]; do
     --tests=*)     TESTS="${1#--tests=}"; shift ;;
     --stubs)       STUBS="${2:-}"; shift 2 ;;
     --stubs=*)     STUBS="${1#--stubs=}"; shift ;;
+    --setup)       SETUP="${2:-}"; shift 2 ;;
+    --setup=*)     SETUP="${1#--setup=}"; shift ;;
     --result)      RESULT="${2:-}"; shift 2 ;;
     --result=*)    RESULT="${1#--result=}"; shift ;;
     --type)        EV_TYPE="${2:-}"; shift 2 ;;
