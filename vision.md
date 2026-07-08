@@ -154,7 +154,7 @@ sequenceDiagram
     TS-->>H: Green ✓ — ticket done
 ```
 
-1. **Test Writer** — reads the issue and writes failing behavioral tests against its public interface. Tests describe *what* the system does, not *how*.
+1. **Test Writer** — reads the issue and writes failing behavioral tests against its public interface. Tests describe *what* the system does, not *how* — and only the **objective residue** of the criteria: placement, visibility, state, persistence, a stated property. It never invents a numeric proxy for a preference word ("unobtrusive", "looks right") the captain didn't state; subjective qualities are deliberately left to the human's eyes at Verify, because an invented proxy becomes an immutable contract that fights every future restyle.
 2. **Implementer** — reads the issue and the failing tests (without access to the Test Writer's session) and implements until all tests pass.
 
 The separation is adversarial by design. The Test Writer cannot write easy tests it knows will pass, because it doesn't know who is implementing. The Implementer cannot skip or weaken tests, because they arrive as a constraint. A passing test suite means the ticket is done.
@@ -175,9 +175,18 @@ The Harness — not the LLMs — enforces five guardrails that make the adversar
 
 These live in the deterministic driver, because an LLM rewarded for a green suite will otherwise game the contract.
 
+**The gates survive contact with the repo's real test setup.** Real repos are messy — a monorepo package with *no* test runner at all, pnpm worktrees whose store refuses installs, a greenfield module no test can import yet. The Harness treats these as *its* problem, never the Test Writer's:
+
+- A **runner preflight** probes the ticket's target package *before any worker is spent*. A runner that cannot launch is a distinct, truthful verdict — "cannot run tests here" — that escalates or self-heals; it is never mis-blamed on the tests, and it never burns the Test Writer's retry budget on something no retry can fix.
+- When a package has no runner but the repo demonstrably tests elsewhere, the Test Writer is **invited to declare the missing test setup** — new config files and a package-manager install, evidence-gated (no observed gap, no invitation) and whitelist-bounded (ADD-only, never `src/`, never an existing file). The Harness applies it and **verifies by probing, never by exit codes** — a silent no-op install is healed by force-relinking the tree — and the honest fail-first transition (runner dead → suite red → green) proves the setup works before any code ships.
+- A setup that carries a ticket to a verified green is recorded to the repo's **test landscape** (`.git/lcars/test-landscape/`) — a durable, *proven* fact about how that package tests, written only after the gates confirmed it, so the repo's testing knowledge accretes mission by mission instead of being rediscovered.
+- Rejection feedback states **verdicts, not choices**: an unresolved import is checked against the repo per specifier — "this module *exists* at `<path>`, fix your import" versus "no such file anywhere, you must stub it" — so a weaker model follows a fact instead of guessing between remedies.
+
 ### 8. Verify
 
 When all Waves are complete, the human reviews the Mission. This is a full inspection — reading the diff, running the app locally, testing the golden path. The human either approves or sends feedback that re-enters the loop.
+
+Running the app is one click. `lcars launch <mission> [hint]` — and the **⚡ RUN / STOP** controls on the viewscreen's Verify dialogs — check the Mission's branch out into a **disposable detached worktree**, spawn a `launch`-role cold worker that *discovers* how to start the app (it inspects `package.json` / Makefile / README and reports the exact command — it never starts anything itself), then start that command detached with the Harness owning the whole process group. A `launch.json` record drives both the CLI readout and the board's state (launching → running → stopped), the optional *hint* picks the right target in a multi-app repo ("the example game", "the editor"), and each Mission launches its **own** instance — so two Missions' builds can run side by side for comparison. Stop kills the process group and prunes the worktree; failures are plain English, never a stack trace. The captain's own checkout is never touched.
 
 ### 8. Done
 
@@ -192,6 +201,8 @@ Every Stage runs as a fresh session that sees only what the previous Stage wrote
 Because the artifact is the only thing that crosses the boundary, each Stage records **decisions and their rationale, not just output** — the *why*, not only the *what*. A handoff that drops the implicit reasoning behind a choice is how the next Stage ends up building the wrong thing; capturing the rationale in the artifact is what keeps the cold handoff sufficient.
 
 What crosses that boundary is always a **declarative fact** — the PRD, the engineering ADRs, a ticket's context manifest, the repo pack — never another worker's generated reasoning, and never anything at all to a Research Agent. Sharing facts is what lets a worker read instead of re-derive (cutting cost and wrong turns) without ever creating the conversational carryover cold isolation exists to prevent.
+
+Isolation extends to the captain's own working tree: **a Mission never checks out, detaches, or dirties the checkout you sit in.** Every build runs in a per-ticket worktree, every commit lands on the Mission branch through an ephemeral landing worktree under a repo-global mutex, the merge-time reconcile works in its own attached worktree, and opening the PR pushes by ref. You can switch branches and edit files mid-drive — with three Missions running — and neither side notices the other; if *you* are holding a Mission's branch, the Mission tells you plainly instead of moving your HEAD. A failed worktree cut is loud, never a silent fallback into the shared tree.
 
 ---
 
