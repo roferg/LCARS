@@ -211,9 +211,13 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
    Scoped under .pill.go so it overrides the base .btn chrome (button element). */
 .pill.go .pill-stop{display:inline-flex;align-items:center;justify-content:center;
   box-sizing:border-box;width:17px;height:17px;min-width:17px;margin-left:4px;
-  padding:0;font-size:12px;line-height:1;border-radius:4px;
+  padding:0;font-size:0;line-height:0;border-radius:4px;
   border:1px solid rgba(3,6,8,.5);
   background:rgba(3,6,8,.28);color:var(--lcars-text-on-color);cursor:pointer}
+/* Draw the stop square in CSS (font-size:0 hides the ■ glyph, whose metrics
+   sit low): a flex-centered box is pixel-perfectly centered. */
+.pill.go .pill-stop::before{content:"";display:block;width:9px;height:9px;
+  background:currentColor;border-radius:1px}
 .pill.go .pill-stop:hover{background:rgba(3,6,8,.42);border-color:var(--lcars-black,#030608)}
 .pill.go .pill-stop[disabled]{opacity:.5;cursor:progress}
 /* per-bug image-routing pill (Mission-Log): a calm cyan "carries screenshot(s)"
