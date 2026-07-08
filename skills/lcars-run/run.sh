@@ -2296,7 +2296,11 @@ rg_signature() { # category → the ERE for that category's runner-output signat
     compile)
       printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)' ;;
     env)
-      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate' ;;
+      # S111: `^npm (error|ERR!) could not determine executable to run` is npx's
+      # own no-binary diagnostic (`npx vitest` in a package without vitest) —
+      # anchored to npm's line-start prefix so an assertion QUOTING the phrase
+      # mid-line can never match.
+      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate' ;;
     assertion)
       # A GENUINE assertion red (the runner started, tests ran, an assertion FAILED)
       # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs
@@ -2663,6 +2667,58 @@ RED_GATE_SIGNAL=""   # caller may point this at a file to capture the rejection 
 # re-author the import + stub for the ACTUAL in-tree location. Default co-located
 # (groutwork's + the harness default). SIGNAL/WORDING ONLY — never a verdict.
 RED_GATE_CONVENTION="co-located"
+# --- S111: runner PREFLIGHT + the env-cannot-test park ----------------------
+# runner_preflight_env_failure probes whether the configured testCommand can
+# LAUNCH at all in a given dir — the same empty-quarantine invocation as the red
+# gate's probe, classified with the same env-failure signatures. Run BEFORE the
+# first Test-Writer spawn so a runner-less package (S110 example-game: `npx
+# vitest` → 127) parks the mission with a precise question and ZERO worker
+# spends, instead of three retries blamed on the slice. Returns 0 ONLY when the
+# runner provably cannot launch (rc!=0 AND an env signature); a healthy runner,
+# an empty testCommand (the documented no-runner degradation elsewhere), or the
+# kill-switch ($LCARS_RUNNER_PREFLIGHT=0) all return 1 = "do not block".
+# Captures the probe output in $PREFLIGHT_OUT for the escalation text.
+PREFLIGHT_OUT=""
+runner_preflight_env_failure() { # run-dir → 0 iff the runner cannot launch there
+  local run_dir="$1" cmd rc=0
+  PREFLIGHT_OUT=""
+  [ "${LCARS_RUNNER_PREFLIGHT:-1}" != "0" ] || return 1
+  cmd="$(resolve_test_cmd)"
+  [ -n "$cmd" ] || return 1
+  [ -d "$run_dir" ] || return 1
+  local empty; empty="$(mktemp -d)"
+  PREFLIGHT_OUT="$(cd "$run_dir" && LCARS_TESTS_DIR="$empty" bash -c "$cmd" 2>&1)" || rc=$?
+  rm -rf "$empty"
+  [ "$rc" -ne 0 ] || return 1
+  red_gate_env_failure "$PREFLIGHT_OUT"
+}
+
+# Park the mission awaiting-human because the test environment cannot run ANY
+# test for this ticket — the same gate shape as the 5-attempt flag (pending.json
+# + awaitingHuman + label overlay), with the BUG-027 structured fields so the
+# viewscreen renders a legible card. EXITS 0: the parent driver routes the park
+# via the awaitingHuman flag exactly like a flagged ticket.
+impl_park_env_cannot_test() { # ticket  reason-text
+  local t="$1" reason="$2"
+  local q; q="$(mktemp)"
+  printf '%s\n' "$reason" >"$q"
+  LCARS_PENDING_HUMAN_SUMMARY="The code this mission touches has no working way to run tests, so the fail-first TDD gate cannot run. Add a test runner there, point LCARS at one, or retarget the mission." \
+  LCARS_PENDING_ESCALATION_TYPE="cap" \
+  LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
+    write_pending "$q" "implement"
+  rm -f "$q"
+  state_set_raw awaitingHuman true
+  state_set_str pendingQuestion "Ticket $t is blocked: the test runner cannot run where this ticket builds — needs a human (add a runner / fix provisioning / retarget)."
+  gh_relabel "lcars:awaiting-human" ""
+  emit_event ticket_env_cannot_test implement \
+    "ticket $t parked: the test environment cannot run any tests (no runner in the target package, or unprovisioned)" \
+    "ticket=$t" "category=env-cannot-test"
+  echo "IMPLEMENT: environment cannot run tests — $t parked (awaiting-human)."
+  echo "  No Test-Writer retry can conjure a test runner; this needs a human call."
+  echo "  Resolve with \`lcars respond $MISSION_ID\`."
+  exit 0
+}
+
 red_gate_ok() { # quarantined-tests-dir [run-dir]
   # S87: run-dir is the cwd the runner is invoked from (BOTH the real run AND the
   # empty-dir probe), default $REPO_ROOT (byte-identical to before). A monorepo
@@ -2704,46 +2760,60 @@ red_gate_ok() { # quarantined-tests-dir [run-dir]
   if [ "$prc" -eq "$rc" ] && [ "$probe_out" = "$out" ]; then ignored_var=yes; fi
 
   if [ "$rc" -ne 0 ]; then
-    # RED: the quarantined tests appear to fail as required. But a non-zero exit is
-    # only "red = safe" when it is ABOUT the quarantined tests. If emptying the dir
-    # changed NOTHING (identical rc AND output), the command IGNORED $LCARS_TESTS_DIR
-    # — it ran a fixed target (e.g. the repo's own red suite), so this non-zero exit
-    # proves NOTHING about the quarantined tests. BLOCK loud — never accept an
-    # UNPROVEN suite. Otherwise the command reacted → genuine red → accept (as before).
-    if [ "$ignored_var" = yes ]; then
-      reason="RED GATE — the configured test command exited non-zero (red) but exits IDENTICALLY (same rc AND output) with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran a FIXED target (the repo's own suite), not the quarantined tests. A red on the repo's own already-failing suite proves NOTHING about the new tests, so the harness refuses to hand them on. Command run: $cmd. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
-      printf '  ✗ %s\n' "$reason" >&2
-      if [ -n "$RED_GATE_SIGNAL" ]; then
-        {
-          printf 'rc=%s (the quarantined-tests run exited non-zero, but the command IGNORES $LCARS_TESTS_DIR so the red is unproven)\n' "$rc"
-          printf '%s\n' "$reason"
-        } >"$RED_GATE_SIGNAL"
-      fi
-      return 1
-    fi
-    # S83: the command reacted to the var, but a non-zero exit is only a VALID red
-    # when the runner actually STARTED and a test ASSERTION failed. Triage the
-    # un-runnable ENVIRONMENT first — BEFORE the compile/load check — because a
-    # runner that never launched must be diagnosed as "environment not provisioned",
-    # not mis-reported as a compile/load error. (The env signatures are tight enough
-    # that a genuine compile error — SyntaxError, generic Cannot-find-module — does
-    # NOT match here and falls through to red_gate_compile_failure below.) If the
-    # output shows the runner could not start (missing node_modules/venv, an absent
-    # test binary, no pnpm lockfile, a permissions error), then NOT ONE assertion ran,
-    # so this red proves NOTHING about the new tests. It differs from the empty-dir
-    # probe (ignored_var=no), so without this guard it would be WRONGLY accepted as a
-    # satisfying fail-first. REFUSE it: route to the SAME awaiting-human / retry path a
-    # genuine red-gate rejection uses, with a distinct, actionable reason. This is an
-    # ADDITIONAL guard that rejects MORE reds — it does NOT loosen the gate, and leaves
-    # the empty-dir probe / ignored_var / differ logic untouched. (Provisioning the
-    # worktree is S81/S82; here we only classify and fail loud.)
+    # S111 TRIAGE ORDER: the un-runnable ENVIRONMENT is checked FIRST — BEFORE the
+    # ignored-var verdict — because a runner that never LAUNCHED produces identical
+    # output with or without tests present, so ignored_var is ALWAYS yes for a dead
+    # runner and the old order misblamed it as "testCommand ignores $LCARS_TESTS_DIR"
+    # (the S110 example-game 127: `sh: vitest: command not found`, three Test-Writer
+    # retries for something no retry can fix). An env failure is NEVER the
+    # Test-Writer's fault, so BOTH env flavors return the DISTINCT rc 3 — the caller
+    # escalates to the human instead of burning the retry budget.
     if red_gate_env_failure "$out"; then
+      if [ "$ignored_var" = yes ]; then
+        # TOTAL launch failure: identical dead output with or without the new tests
+        # — the run dir has NO working test runner at all (a runner-less package,
+        # or a wholly unprovisioned tree). The harness cannot run any test here.
+        reason="RED GATE — CANNOT RUN TESTS HERE — the test runner itself failed to launch, IDENTICALLY with and without the new tests present, so the harness cannot run any test in this directory. Either the package this ticket builds in has NO test runner (e.g. no vitest/jest in its dependency tree) or the environment is not provisioned (is worktreeSetupCommand set?). This is NOT a Test-Writer problem and NO retry can fix it — add a test runner to the package, set a package-specific test command, provision the worktree, or retarget the mission. Command run: $cmd (run from: $run_dir). Runner output:
+$(printf '%s' "$out" | tail -20)"
+        printf '  ✗ %s\n' "$reason" >&2
+        if [ -n "$RED_GATE_SIGNAL" ]; then
+          {
+            printf 'rc=%s (the harness cannot run any test here — the runner failed to launch with AND without tests; env-cannot-run, not a Test-Writer defect)\n' "$rc"
+            printf '%s\n' "$reason"
+          } >"$RED_GATE_SIGNAL"
+        fi
+        return 3
+      fi
+      # S83 flavor: the runner reacted to the var (it launches on an empty dir) but
+      # could not START once real tests were present — deps/binaries missing in this
+      # tree. Still an env failure, still not a Test-Writer defect → rc 3 (S111; was
+      # a retryable 1, which burned the Test-Writer budget on a provisioning gap).
       reason="RED GATE — environment not provisioned — the test runner could not start (is worktreeSetupCommand set?). The quarantined suite exited non-zero, but the failure is the RUNNER ITSELF failing to LAUNCH (missing node_modules/venv, an absent test binary, no pnpm lockfile, or a permissions error), NOT a test assertion — so not a single test ran and this red proves NOTHING about the new tests. Provision the gate worktree (set \`worktreeSetupCommand\` so the runner's dependencies are installed before the gate runs), then the suite can fail-first on its assertions. Command run: $cmd. Runner output (quarantined run):
 $(printf '%s' "$out" | tail -20)"
       printf '  ✗ %s\n' "$reason" >&2
       if [ -n "$RED_GATE_SIGNAL" ]; then
         {
           printf 'rc=%s (the quarantined-tests run could not START the runner — environment not provisioned, NOT a valid assertion red)\n' "$rc"
+          printf '%s\n' "$reason"
+        } >"$RED_GATE_SIGNAL"
+      fi
+      return 3
+    fi
+    # RED: the quarantined tests appear to fail as required. But a non-zero exit is
+    # only "red = safe" when it is ABOUT the quarantined tests. If emptying the dir
+    # changed NOTHING (identical rc AND output), the command IGNORED $LCARS_TESTS_DIR
+    # — it ran a fixed target (e.g. the repo's own red suite), so this non-zero exit
+    # proves NOTHING about the quarantined tests. BLOCK loud — never accept an
+    # UNPROVEN suite. Otherwise the command reacted → genuine red → accept (as before).
+    # (Env failures were already triaged above, so reaching here means the runner
+    # LAUNCHED — this verdict is about a live runner pinned to a fixed target.)
+    if [ "$ignored_var" = yes ]; then
+      reason="RED GATE — the configured test command exited non-zero (red) but exits IDENTICALLY (same rc AND output) with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran a FIXED target (the repo's own suite), not the quarantined tests. A red on the repo's own already-failing suite proves NOTHING about the new tests, so the harness refuses to hand them on. Command run: $cmd. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`. Runner output:
+$(printf '%s' "$out" | tail -20)"
+      printf '  ✗ %s\n' "$reason" >&2
+      if [ -n "$RED_GATE_SIGNAL" ]; then
+        {
+          printf 'rc=%s (the quarantined-tests run exited non-zero, but the command IGNORES $LCARS_TESTS_DIR so the red is unproven)\n' "$rc"
           printf '%s\n' "$reason"
         } >"$RED_GATE_SIGNAL"
       fi
@@ -3261,6 +3331,17 @@ $(cat "$sig")"
   # preserved). An empty pkg_rel runs from $REPO_ROOT, as before.
   local red_rc=0
   RED_GATE_SIGNAL="$sig" RED_GATE_CONVENTION="$convention" red_gate_ok "$scope_abs" "$run_dir" || red_rc=$?
+  if [ "$red_rc" -eq 3 ]; then
+    # S111: the gate could not run ANY test (env-cannot-run — a runner-less package
+    # or an unprovisioned tree). NOT a Test-Writer defect: roll back, KEEP the signal
+    # (the caller's escalation quotes it), and exit with the DISTINCT rc 3 so the
+    # Phase-1 loop parks the mission awaiting-human instead of retrying the worker.
+    _impl_rollback_intree; rm -rf "$tdir" "$snap"
+    local why3=""; [ -f "$sig" ] && why3="
+$(cat "$sig")"
+    printf 'lcars run: the test environment cannot run any tests for %s — not a Test-Writer problem; escalating to the human instead of retrying.%s\n' "$TICKET" "$why3" >&2
+    exit 3
+  fi
   if [ "$red_rc" -ne 0 ]; then
     _impl_rollback_intree; rm -rf "$tdir" "$snap"
     local why=""; [ -f "$sig" ] && why="
@@ -3325,6 +3406,33 @@ $(cat "$sig")"
 # SKIPS LOUD (never a false pass, never a false fail), matching the other gates;
 # a branch-less / local-only mission has no committed branch to check, so it keeps
 # the current behaviour rather than crash.
+# S111 (the 002 wrong-tree lesson): when a post-commit red says "implementation
+# not present on the committed branch", the code often EXISTS — sitting as
+# uncommitted edits in the WRONG tree (the shared clone root) because a worker
+# wandered out of its isolated worktree. Name that instead of leaving a mystery.
+# Pure + read-only: resolves the MAIN checkout from the git common dir, and only
+# reports when the gate ran ISOLATED from it (in a non-isolated run the main
+# tree's edits ARE the build). Echoes a bounded note, or nothing.
+stray_edit_note() { # → wrong-tree note (empty when clean / non-isolated / unknown)
+  local common main status here
+  common="$( cd "${REPO_ROOT:-.}" 2>/dev/null && "$GIT_BIN" rev-parse --git-common-dir 2>/dev/null )"
+  [ -n "$common" ] || return 0
+  case "$common" in /*) : ;; *) common="${REPO_ROOT:-.}/$common" ;; esac
+  main="$(dirname "$common")"
+  [ -d "$main" ] || return 0
+  here="$( cd "${REPO_ROOT:-.}" 2>/dev/null && pwd -P )"
+  [ "$( cd "$main" && pwd -P )" != "$here" ] || return 0
+  status="$( cd "$main" && "$GIT_BIN" status --porcelain 2>/dev/null | head -10 )"
+  [ -n "$status" ] || return 0
+  # Fire only when a TRACKED file is modified — untracked-only noise (the
+  # captain's own scratch files in the clone root) is not a wrong-tree signal,
+  # but a worker that wandered always dirties the tracked sources it edited.
+  printf '%s\n' "$status" | grep -q '^[^?]' || return 0
+  local br; br="$( cd "$main" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )"
+  printf ' NOTE — WRONG-TREE SUSPECT: the MAIN checkout at %s (on %s) carries uncommitted edits:\n%s\nA worker may have written its implementation into the SHARED clone root instead of this ticket'\''s isolated worktree — inspect those paths before re-running (the code may exist, just in the wrong tree).' \
+    "$main" "${br:-?}" "$status"
+}
+
 POST_COMMIT_SIGNAL=""   # caller may point this at a file to capture the failure detail
 post_commit_gate() { # ticket
   local t="$1" cmd; cmd="$(resolve_test_cmd)"
@@ -3572,10 +3680,14 @@ $(cat "$pcsig")"
         die "ticket $TICKET — LOCKED-TEST TAMPERING: the COMMITTED test file no longer matches its immutable snapshot. Green must be earned by implementing, never by weakening the ridden-along contract. Rejected by the cross-boundary immutable-tests guardrail.$why"
         ;;
       *)
+        # S111: before declaring the work missing, check whether it landed in the
+        # WRONG tree (uncommitted edits in the shared clone root — the S110 002
+        # failure) and say so in the die text.
+        local stray; stray="$(stray_edit_note)"
         emit_event ticket_postcommit_red implement \
-          "ticket $TICKET failed the post-commit check — implementation not present on the committed branch" \
+          "ticket $TICKET failed the post-commit check — implementation not present on the committed branch${stray:+ (wrong-tree suspect: uncommitted edits found in the main checkout)}" \
           "ticket=$TICKET" "attempts=$attempts"
-        die "ticket $TICKET reported green but its suite is RED against the COMMITTED branch state — the implementation is not present on the committed branch (worktree-only green or out-of-scope commit). Result rejected by the post-commit guardrail.$why"
+        die "ticket $TICKET reported green but its suite is RED against the COMMITTED branch state — the implementation is not present on the committed branch (worktree-only green or out-of-scope commit). Result rejected by the post-commit guardrail.$why$stray"
         ;;
     esac
   fi
@@ -3841,7 +3953,12 @@ full_suite_gate() { # ordered ticketId...
   # root via the shared retest_ticket_suites helper (also used by the reconcile).
   local branch; branch="$(json_str "$STATE" branch)"
   local wt_base="$MISSION_DIR/fullsuite-wt" wt=""
-  wt="$(make_ticket_worktree "$wt_base" "$branch" "all")"
+  # S111: with a real branch a failed worktree cut is LOUD (make_ticket_worktree
+  # rc!=0) — retesting in the SHARED checkout instead would judge the suites
+  # against whatever branch happens to be checked out there (false regressions /
+  # false greens). Only the branch-less empty return may fall through to in-tree.
+  wt="$(make_ticket_worktree "$wt_base" "$branch" "all")" \
+    || die "the full-suite gate could not cut its verification worktree (see the error above) — refusing to retest in the shared checkout. Free or prune stale worktrees (\`git worktree list\`, \`git worktree prune\`) and re-run."
   local regressed=""
   # BUG-018/BUG-019: capture each failing suite's runner output so we can tell a
   # mock/harness TypeError (an incomplete per-ticket test double — a harness gap)
@@ -6769,6 +6886,30 @@ cmd_implement_ticket() {
   event_seen ticket_start "\"ticket\":\"$TICKET\"" \
     || emit_event ticket_start implement "ticket $TICKET starting" "ticket=$TICKET" "wave=${tw:-0}"
 
+  # --- S111 RUNNER PREFLIGHT (before ANY worker spend) -----------------------
+  # Probe the configured testCommand in the ticket's target package. A runner
+  # that cannot LAUNCH (a runner-less package — the S110 example-game 127 — or an
+  # unprovisioned tree) makes the whole adversarial pair pointless: no Test-Writer
+  # retry can conjure a runner. Park awaiting-human NOW, with the package named
+  # and the runner's own output quoted, having spawned NOTHING. A second probe at
+  # the repo root splits the diagnosis: package-without-runner vs nothing-runs.
+  local pf_pkg pf_dir
+  pf_pkg="$(ticket_target_package "$TICKET")"
+  pf_dir="$REPO_ROOT${pf_pkg:+/$pf_pkg}"
+  if runner_preflight_env_failure "$pf_dir"; then
+    local pf_out="$PREFLIGHT_OUT" pf_diag
+    if [ -n "$pf_pkg" ] && ! runner_preflight_env_failure "$REPO_ROOT"; then
+      pf_diag="package '$pf_pkg' has no working test runner (the repo root can run tests; that package cannot). Add a test runner to '$pf_pkg', set a package-specific test command, or retarget the mission."
+    else
+      pf_diag="the test runner cannot launch anywhere in this checkout — the environment is not provisioned (are dependencies installed? is worktreeSetupCommand set?)."
+    fi
+    impl_park_env_cannot_test "$TICKET" \
+"Ticket $TICKET cannot start: $pf_diag
+Command probed: $(resolve_test_cmd) (from: $pf_dir)
+Runner said:
+$(printf '%s' "$pf_out" | tail -10)"
+  fi
+
   # NOTE: `attempt` in the ticket_attempt events below is the CUMULATIVE
   # worker-DISPATCH count for this (ticket, phase) ACROSS invocations — one index
   # per real spawn_worker dispatch, derived from events.jsonl so it never repeats
@@ -6779,6 +6920,20 @@ cmd_implement_ticket() {
   # image attachments (S92) ride the same artifact-paths list (ABSOLUTE paths) so
   # BOTH the Test Writer and the Implementer can view them; empty when none exist.
   local cblock; cblock="$(context_extra_block)$(attachments_extra_block)"
+  # S111 (the 002 wrong-tree lesson): when this build runs in an ISOLATED
+  # worktree, PIN both workers to it by absolute path. Input artifacts under the
+  # shared .git/lcars/ may mention the main clone root; a worker following those
+  # paths lands its edits in the WRONG tree. Empty for non-worktree builds.
+  local wtblock=""
+  [ -n "${LCARS_TICKET_WORKTREE:-}" ] && wtblock="
+
+## Your repository working tree — THE ONLY TREE YOU MAY TOUCH
+$LCARS_TICKET_WORKTREE
+This exact absolute path is your cwd and your ONLY copy of the repository: read
+the code from here, and (if your role writes) create/edit files ONLY under this
+path. NEVER follow a path into any OTHER checkout of this repository (e.g. the
+main clone root) — if an input artifact names one, translate that path into this
+working tree first. Files written anywhere else are LOST to this ticket."
   # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
   # architectural facts BOTH halves of the pair may read, by PATH only. Absent on
   # a trivial Mission, in which case this stays empty. Prepended to $cblock so it
@@ -6870,7 +7025,7 @@ $(cat "$sigfile")"
     mkdir -p "$odir/tests" "$odir/stubs"
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock
+- $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock$wtblock
 
 ## Your ticket
 $TICKET$tspecblock$retryblock" "${prior_empty:-}"
@@ -6913,6 +7068,16 @@ $TICKET$tspecblock$retryblock" "${prior_empty:-}"
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
         --mission "$MISSION_ID" --ticket "$TICKET" --tests "$odir/tests" --stubs "$odir/stubs" || rc=$?
       if [ "$rc" -eq 0 ]; then saved=1; rm -rf "$odir"; break; fi
+      # S111: rc 3 = the gate could not run ANY test (env-cannot-run). Not a
+      # Test-Writer defect — park awaiting-human with the gate's own signal quoted
+      # instead of burning the remaining retries on an unfixable environment.
+      if [ "$rc" -eq 3 ]; then
+        rm -rf "$odir"
+        local sig3=""; [ -f "$sigfile" ] && sig3="$(cat "$sigfile" 2>/dev/null)"
+        impl_park_env_cannot_test "$TICKET" \
+"Ticket $TICKET is blocked: the red gate could not run any test in this ticket's package (a runner-less package, or an unprovisioned environment).
+${sig3:-No gate signal was captured.}"
+      fi
     fi
     rm -rf "$odir"
   done
@@ -6945,7 +7110,7 @@ $TICKET$tspecblock$retryblock" "${prior_empty:-}"
   local tdir; tdir="$(ticket_dir "$TICKET")/tests"
   local iextra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json
-- $tdir   (the failing tests — your entire handoff from the Test Writer)$adrblock$navblock$cblock"
+- $tdir   (the failing tests — your entire handoff from the Test Writer)$adrblock$navblock$cblock$wtblock"
   # RESUME after a 5-attempt flag was answered: the captain's recorded note is
   # how to get this ticket unstuck. Feed it so the Implementer acts on it rather
   # than re-flagging the same blocker.
@@ -7490,12 +7655,34 @@ make_ticket_worktree() { # base-dir  branch  ticket → echoes the worktree path
   local base="$1" branch="$2" t="$3"
   # No branch ref (a branch-less / local-only mission, or an unborn HEAD) ⇒ no
   # worktree; the caller falls back to the original in-tree path. Echo nothing.
+  # This is the ONLY quiet fallback left: with a REAL branch, every failure below
+  # is LOUD (S111). The old `|| return 0` on a failed `worktree add` silently
+  # dropped the whole build into the SHARED clone-root checkout — the Implementer
+  # then edited whatever branch happened to be checked out there (the S110 002
+  # wrong-tree failure; a stale registration from a manual reset was enough to
+  # trigger it).
   [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch" || return 0
   local wt="$base/$t"
-  mkdir -p "$base"
+  if ! mkdir -p "$base" 2>/dev/null; then
+    printf 'lcars run: cannot create the worktree base dir %s (path blocked by a file?) — REFUSING the in-tree fallback: a mission with a real branch must build in an isolated worktree, never the shared checkout.\n' "$base" >&2
+    return 1
+  fi
   "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || :
   rm -rf "$wt"
-  "$GIT_BIN" worktree add -q --detach "$wt" "$branch" >/dev/null 2>&1 || { rm -rf "$wt"; return 0; }
+  local add_err=""
+  if ! add_err="$("$GIT_BIN" worktree add -q --detach "$wt" "$branch" 2>&1 >/dev/null)"; then
+    # SELF-HEAL: the dominant cause is a STALE registration — a prior worktree dir
+    # deleted without `git worktree prune` (manual resets do this). Prune + retry
+    # once; only a second failure is terminal, and it is LOUD.
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+    rm -rf "$wt"
+    if ! add_err="$("$GIT_BIN" worktree add -q --detach "$wt" "$branch" 2>&1 >/dev/null)"; then
+      rm -rf "$wt"
+      printf 'lcars run: could not cut the per-ticket worktree at %s for branch %s (git: %s) — REFUSING the in-tree fallback: building in the shared checkout risks landing edits on the wrong branch. Free or prune stale worktrees (`git worktree list`, `git worktree prune`) and re-run.\n' \
+        "$wt" "$branch" "$(printf '%s' "$add_err" | tr '\n' ' ')" >&2
+      return 1
+    fi
+  fi
   # Session 81: provision the fresh worktree (dep install, etc.) ONCE, before any
   # gate's testCommand runs — covers BOTH the red gate's build worktree and the
   # full-suite gate. Best-effort: a failure drops a breadcrumb but never aborts the
@@ -8607,7 +8794,8 @@ case "$SUB" in
   # branch defaults to state.json's (override with --branch); ticket defaults to "all".
   provision-worktree-test)
     locate_mission "$MISSION_ID"
-    __pwt="$(make_ticket_worktree "$MISSION_DIR/wt-test" "${RC_BRANCH:-$(json_str "$STATE" branch)}" "${TICKET:-all}")"
+    __pwt="$(make_ticket_worktree "$MISSION_DIR/wt-test" "${RC_BRANCH:-$(json_str "$STATE" branch)}" "${TICKET:-all}")" \
+      || { printf 'WT-ERR: make_ticket_worktree failed loud (no silent in-tree fallback)\n'; exit 1; }
     printf 'WT=%s\n' "$__pwt"
     exit 0 ;;
   # Session 65 test/maintenance hook: start the Implement comment heartbeat,
