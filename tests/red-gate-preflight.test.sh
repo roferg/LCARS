@@ -348,6 +348,73 @@ else
   fi
 fi
 
+# === Part F: ROOT-TREE SOVEREIGNTY — replay never touches the main checkout ==
+# Drive the REAL replay_ticket_commit via the replay-test hook: the commit must
+# land on the mission branch via the ephemeral landing worktree while the main
+# checkout's HEAD, working tree, and worktree list stay byte-identical.
+mk_detached_commit() { # repo branch → echoes sha of a commit made on a detached wt
+  local repo="$1" branch="$2" wt="$TMPROOT/detwt.$$"
+  ( cd "$repo" && git worktree add -q --detach "$wt" "$branch" ) || return 1
+  ( cd "$wt" && printf 'landed change\n' >> f.txt && git add f.txt \
+      && git commit -qm "ticket change" && git rev-parse HEAD )
+  local sha_rc=$?
+  ( cd "$repo" && git worktree remove --force "$wt" >/dev/null 2>&1 ) || rm -rf "$wt"
+  return $sha_rc
+}
+
+repo="$(new_wt_mission)"
+( cd "$repo" && printf 'base\n' > f.txt && git add f.txt && git commit -qm base \
+    && git branch -f lcars/test-001 HEAD )
+SHA="$(mk_detached_commit "$repo" lcars/test-001)"
+HEAD_BEFORE="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+STATUS_BEFORE="$(cd "$repo" && git status --porcelain)"
+OUT="$( cd "$repo" && LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+          bash "$SCRIPT" replay-test --mission test-001 --ticket t-001 "$SHA" 2>&1 )"
+RC=$?
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "REPLAY-OK"; then
+  ok "F1a. replay lands the commit (REPLAY-OK)"
+else
+  bad "F1a. replay failed (rc=$RC: $OUT)"
+fi
+if ( cd "$repo" && git log --oneline lcars/test-001 | grep -q "ticket change" ); then
+  ok "F1b. the commit is on the mission branch"
+else
+  bad "F1b. commit missing from the mission branch"
+fi
+HEAD_AFTER="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+STATUS_AFTER="$(cd "$repo" && git status --porcelain)"
+if [ "$HEAD_BEFORE" = "$HEAD_AFTER" ] && [ "$STATUS_BEFORE" = "$STATUS_AFTER" ]; then
+  ok "F1c. main checkout HEAD + working tree byte-identical (sovereignty)"
+else
+  bad "F1c. main checkout mutated (HEAD $HEAD_BEFORE→$HEAD_AFTER, status changed)"
+fi
+if ( cd "$repo" && git worktree list | grep -q "landing" ); then
+  bad "F1d. landing worktree leaked into git worktree list"
+else
+  ok "F1d. no landing worktree left behind"
+fi
+
+# F2. The CAPTAIN holds the mission branch in the main checkout → replay fails
+# LOUD naming the holder, and still never touches their checkout.
+repo="$(new_wt_mission)"
+( cd "$repo" && printf 'base\n' > f.txt && git add f.txt && git commit -qm base \
+    && git branch -f lcars/test-001 HEAD )
+SHA="$(mk_detached_commit "$repo" lcars/test-001)"
+( cd "$repo" && git checkout -q lcars/test-001 )
+OUT="$( cd "$repo" && LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+          bash "$SCRIPT" replay-test --mission test-001 --ticket t-001 "$SHA" 2>&1 )"
+RC=$?
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "checked out at"; then
+  ok "F2a. captain-held branch → loud failure naming the holder"
+else
+  bad "F2a. captain-held branch handling (rc=$RC: $OUT)"
+fi
+if [ "$(cd "$repo" && git rev-parse --abbrev-ref HEAD)" = "lcars/test-001" ]; then
+  ok "F2b. the captain's checkout was left exactly where they put it"
+else
+  bad "F2b. the captain's checkout was moved"
+fi
+
 echo
 printf 'red-gate-preflight: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

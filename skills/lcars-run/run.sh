@@ -4160,12 +4160,16 @@ self_heal_full_suite() { # reason  ordered ticketId...
 
     # Cherry-pick the rebuild's fresh commit onto the mission branch (the worktree
     # build committed on a detached HEAD), exactly like the same-file rebuild path,
-    # so the full-suite gate re-runs against the integrated tip.
+    # so the full-suite gate re-runs against the integrated tip. S111: via the
+    # SAME mutex-protected landing replay every other commit uses — the old inline
+    # `checkout $branch` here is what left the captain's checkout stranded on the
+    # mission branch after every heal (root-tree sovereignty).
     local sha; sha="$(cat "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null || true)"
     if [ -n "$sha" ] && [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
-      "$GIT_BIN" -C "$REPO_ROOT" checkout -q "$branch" 2>/dev/null || :
-      "$GIT_BIN" -C "$REPO_ROOT" cherry-pick "$sha" >/dev/null 2>&1 \
-        || "$GIT_BIN" -C "$REPO_ROOT" cherry-pick --abort >/dev/null 2>&1 || :
+      replay_ticket_commit "$branch" "$sha" "$regressor" \
+        || emit_event selfheal implement \
+             "self-heal round $round: the rebuilt commit did not land cleanly (${REPLAY_FAIL_REASON:-cherry-pick failed}) — the full-suite retest will judge the unchanged tip" \
+             "ticket=$regressor" "round=$round"
     fi
 
     # Re-run the full-suite gate. Green → healed.
@@ -4895,13 +4899,26 @@ reconcile_gate() {
     local_tip="$("$GIT_BIN" rev-parse "$BRANCH" 2>/dev/null)"
     remote_tip="$("$GIT_BIN" rev-parse "origin/$BRANCH" 2>/dev/null)"
     if [ -n "$remote_tip" ] && [ "$local_tip" != "$remote_tip" ]; then
-      # If the live tree is checked out ON the branch, detach it first so the ref
-      # can be moved (mirrors the worktree-cut detach below).
-      if [ "$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )" = "$BRANCH" ]; then
-        ( cd "$REPO_ROOT" && "$GIT_BIN" checkout --detach --quiet ) >/dev/null 2>&1 || :
-      fi
+      # S111 (root-tree sovereignty): NEVER detach the captain's checkout to free
+      # the ref. LCARS itself no longer parks any tree on the mission branch, so a
+      # holder is either a stale LCARS worktree (prune + retry) or the CAPTAIN's
+      # own checkout — in that case SKIP the reset with a loud event rather than
+      # yanking their HEAD out from under them.
       if "$GIT_BIN" branch -f "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1; then
         emit_event reconcile_reset verify "re-entry: reset local '$BRANCH' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) before re-merging — avoids divergence"
+      else
+        "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+        if "$GIT_BIN" branch -f "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1; then
+          emit_event reconcile_reset verify "re-entry: reset local '$BRANCH' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) after pruning a stale worktree"
+        else
+          local rr_holder
+          rr_holder="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
+            | awk -v b="branch refs/heads/$BRANCH" '
+                /^worktree /{p=substr($0,10)}
+                $0==b{print p; exit}' )"
+          emit_event reconcile_reset_skipped verify \
+            "re-entry: could NOT reset '$BRANCH' to the remote PR head — the branch is checked out at ${rr_holder:-an unknown worktree} (likely your own checkout). Proceeding from the local tip; if approve later rejects the push as non-fast-forward, switch that checkout off the branch and re-run."
+        fi
       fi
     fi
   fi
@@ -4937,15 +4954,12 @@ reconcile_gate() {
   fi
 
   # (b) MERGE (not rebase) in an isolated worktree ATTACHED to the mission branch.
-  # BUG-054: a reconcile pass run while $REPO_ROOT is ON the mission branch (the
-  # normal post-Implement/post-heal state — the heal's cherry-pick leaves it there)
-  # cannot cut an ATTACHED worktree on that branch ("already checked out at …").
-  # Detach the main tree off the branch first so the cut succeeds; the heal re-checks
-  # the branch out in $REPO_ROOT as it needs it, and the captain's tree ends on the
-  # branch as usual.
-  if [ "$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )" = "$BRANCH" ]; then
-    ( cd "$REPO_ROOT" && "$GIT_BIN" checkout --detach --quiet ) >/dev/null 2>&1 || :
-  fi
+  # S111 (root-tree sovereignty): the old BUG-054 pre-detach of $REPO_ROOT is
+  # GONE — LCARS no longer parks any tree on the mission branch (the heal lands
+  # via the mutex-protected landing replay, which cleans up after itself), so the
+  # attached cut below succeeds on its own. If it still fails, the holder is the
+  # CAPTAIN's checkout or a stale tree — the recovery path below prunes, retries,
+  # and escalates with the holder named; it never touches the captain's HEAD.
   local wt; wt="$(mktemp -d "$MISSION_DIR/reconcile.XXXXXX")"; rm -rf "$wt"
   if ! "$GIT_BIN" worktree add -q "$wt" "$BRANCH" >/dev/null 2>&1; then
     # BUG-038: do NOT silently "proceed". A failed worktree cut means we could not
@@ -4962,7 +4976,12 @@ reconcile_gate() {
       # only real reconcile attempts, then escalate honestly (awaiting-human, no PR).
       round=$((round - 1))
       if [ "$round" -le 0 ]; then state_del reconcileRound; else state_set_raw reconcileRound "$round"; fi
-      local wt_diag="Can't reconcile with '$BASE' — the mission branch '$BRANCH' is checked out in another worktree, or a stale worktree is blocking an isolated cut. Free it (\`git worktree list\` then \`git worktree remove\`/\`git worktree prune\`) and re-run."
+      local rc_holder
+      rc_holder="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
+        | awk -v b="branch refs/heads/$BRANCH" '
+            /^worktree /{p=substr($0,10)}
+            $0==b{print p; exit}' )"
+      local wt_diag="Can't reconcile with '$BASE' — the mission branch '$BRANCH' is checked out at ${rc_holder:-another worktree}${rc_holder:+ (likely your own checkout)}. Switch that checkout to another branch (or \`git worktree remove\` a stale tree, then \`git worktree prune\`) and re-run. LCARS reconciles in its own worktree and never touches your checkout."
       reconcile_escalate "$wt_diag"
       echo "RECONCILE: cannot reconcile — the mission branch is checked out in another worktree or a stale worktree exists; free it and re-run."
       return 20
@@ -7823,66 +7842,61 @@ replay_ticket_commit() { # branch  sha  ticket
   return "$rc"
 }
 
-# The atomic critical section — runs ONLY while the replay mutex is held. The
-# checkout-if-needed is INSIDE the lock so the cherry-pick lands on $branch no
-# matter which branch HEAD was left on by another mission's just-released replay.
+# The atomic critical section — runs ONLY while the replay mutex is held.
+# S111 ROOT-TREE SOVEREIGNTY: the commit lands via an EPHEMERAL "landing"
+# worktree ATTACHED to the mission branch — the captain's main checkout is
+# NEVER checked out, detached, or dirtied by a mission again (the old path
+# `git checkout $branch` + `cherry-pick` in $REPO_ROOT is what left clones
+# stranded on mission branches and fought the captain's own branch switching).
+# The landing worktree is created fresh and removed per replay, all inside the
+# repo-global mutex, so: (a) a sibling mission can never contend for it, (b) a
+# failed pick's residue dies with the tree — no untracked-cleanup needed, and
+# (c) the reconcile's own ATTACHED worktree cut (Verify stage) never finds the
+# branch held, because nothing holds it between replays.
 _replay_ticket_commit_locked() { # branch  sha  ticket
   local branch="$1" sha="$2" t="$3"
-  # Ensure the main tree is on the mission branch. Under concurrency HEAD may be
-  # on ANOTHER mission's branch (it just released the lock), so this re-checkout
-  # is load-bearing, not the old single-mission "it already is" assumption.
-  local cur; cur="$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )"
-  if [ "$cur" != "$branch" ]; then
-    if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
-      # Capture the checkout's OWN stderr (do not discard it) so a failure names
-      # its real cause instead of degrading to the generic "cherry-pick failed".
-      # The dominant failure here is git REFUSING to move a branch that is checked
-      # out in ANOTHER worktree ("fatal: '<b>' is already checked out at '<path>'")
-      # — deliberate git behaviour, NOT a mergeable condition. Surface WHICH
-      # worktree holds it + the remedy so the operator frees that tree rather than
-      # chasing a phantom merge conflict. The fix itself is already built and green.
-      local co_err
-      if ! co_err="$( cd "$REPO_ROOT" && "$GIT_BIN" checkout "$branch" 2>&1 >/dev/null )"; then
-        local held_wt
-        held_wt="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
-          | awk -v b="branch refs/heads/$branch" '
-              /^worktree /{p=substr($0,10)}
-              $0==b{print p; exit}' )"
-        if [ -n "$held_wt" ]; then
-          REPLAY_FAIL_REASON="branch $branch is checked out in another git worktree ($held_wt) — git will not let the fix land there while it is held. The ticket's fix is built and green; free that worktree (remove it, or check it out detached) and re-run implement."
-        else
-          REPLAY_FAIL_REASON="could not check out branch $branch in the main tree to land the fix${co_err:+; git: $(printf '%s' "$co_err" | tr '\n' ' ')}"
-        fi
-        return 1
+  "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch" \
+    || { REPLAY_FAIL_REASON="branch $branch does not exist — nothing to land on"; return 1; }
+  local land="$MISSION_DIR/landing"
+  _landing_cleanup() {
+    "$GIT_BIN" worktree remove --force "$land" >/dev/null 2>&1 || rm -rf "$land"
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+  }
+  _landing_cleanup
+  local add_err=""
+  if ! add_err="$("$GIT_BIN" worktree add -q "$land" "$branch" 2>&1 >/dev/null)"; then
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+    rm -rf "$land"
+    if ! add_err="$("$GIT_BIN" worktree add -q "$land" "$branch" 2>&1 >/dev/null)"; then
+      # An ATTACHED add fails when something ELSE holds the branch. Under
+      # sovereignty LCARS itself never holds it between replays — so name the
+      # holder: usually the CAPTAIN's own checkout sitting on the mission branch.
+      local held_wt
+      held_wt="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
+        | awk -v b="branch refs/heads/$branch" '
+            /^worktree /{p=substr($0,10)}
+            $0==b{print p; exit}' )"
+      if [ -n "$held_wt" ]; then
+        REPLAY_FAIL_REASON="branch $branch is checked out at $held_wt (likely your own checkout) — git will not let the fix land while that tree holds the branch. The ticket's fix is built and green; switch that checkout to another branch (or \`git worktree remove\` a stale tree) and re-run implement. LCARS lands mission commits via its own worktree and never touches your checkout."
+      else
+        REPLAY_FAIL_REASON="could not cut the landing worktree for branch $branch${add_err:+; git: $(printf '%s' "$add_err" | tr '\n' ' ')}"
       fi
+      return 1
     fi
   fi
   # Capture the cherry-pick's own STDERR (the git error) and, while the conflict
   # state still exists (BEFORE --abort wipes it), the list of conflicted paths —
   # so a genuine replay failure records WHY instead of discarding it (BUG-051).
   local cp_err
-  cp_err="$( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --allow-empty "$sha" 2>&1 >/dev/null )" || {
+  cp_err="$( cd "$land" && "$GIT_BIN" cherry-pick --allow-empty "$sha" 2>&1 >/dev/null )" || {
     local cp_conflicts
-    cp_conflicts="$( cd "$REPO_ROOT" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ' )"
+    cp_conflicts="$( cd "$land" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ' )"
     REPLAY_FAIL_REASON="cherry-pick of $sha failed${cp_conflicts:+; conflicted paths: ${cp_conflicts% }}${cp_err:+; git: $(printf '%s' "$cp_err" | tr '\n' ' ')}"
-    ( cd "$REPO_ROOT" && "$GIT_BIN" cherry-pick --abort >/dev/null 2>&1 ) || :
-    # `cherry-pick --abort` restores only TRACKED state. Any UNTRACKED residue the
-    # just-failed pick left at one of THIS commit's paths — a NEW file the pick
-    # staged then could not fully apply, or a path it refused to overwrite ("would
-    # be overwritten by merge", so --abort is a no-op) — survives. The serial
-    # rebuild then produces a clean commit ADDING that same path, whose re-apply
-    # git refuses ("untracked working tree files would be overwritten") → the wave
-    # hard-fails instead of degrading to serial. Clear ONLY this commit's own paths
-    # that are now untracked, so the rebuilt commit re-applies — never the captain's
-    # unrelated untracked files (we touch nothing outside $sha's changed paths).
-    ( cd "$REPO_ROOT" && "$GIT_BIN" diff-tree --no-commit-id --name-only -r "$sha" 2>/dev/null \
-        | while IFS= read -r p; do
-            [ -n "$p" ] || continue
-            [ -n "$("$GIT_BIN" ls-files --others --exclude-standard -- "$p" 2>/dev/null)" ] \
-              && rm -f -- "$p"
-          done ) || :
+    ( cd "$land" && "$GIT_BIN" cherry-pick --abort >/dev/null 2>&1 ) || :
+    _landing_cleanup
     return 1
   }
+  _landing_cleanup
   return 0
 }
 
@@ -8798,6 +8812,19 @@ case "$SUB" in
       || { printf 'WT-ERR: make_ticket_worktree failed loud (no silent in-tree fallback)\n'; exit 1; }
     printf 'WT=%s\n' "$__pwt"
     exit 0 ;;
+  # S111 test hook: drive the REAL replay_ticket_commit (mutex + landing worktree)
+  # for one commit object. Positional arg = the commit sha; --ticket defaults
+  # t-001; --branch overrides state.json's. Prints REPLAY-OK, or REPLAY-ERR with
+  # the recorded reason and exits 1 — so the sovereignty test can assert both the
+  # landing AND that the captain's checkout was never touched.
+  replay-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$POSARG" ] || die "usage: run.sh replay-test --mission <id> [--ticket <t>] <commit-sha>"
+    if replay_ticket_commit "${RC_BRANCH:-$(json_str "$STATE" branch)}" "$POSARG" "${TICKET:-t-001}"; then
+      printf 'REPLAY-OK\n'; exit 0
+    else
+      printf 'REPLAY-ERR: %s\n' "${REPLAY_FAIL_REASON:-failed}"; exit 1
+    fi ;;
   # Session 65 test/maintenance hook: start the Implement comment heartbeat,
   # report its ticker pid, let it run its bounded ticks ($LCARS_COMMENT_HEARTBEAT_TICKS),
   # then stop it cleanly (no orphan). Exercises the heartbeat lifecycle (start /
