@@ -209,6 +209,30 @@ SHA="$("$GIT_BIN" rev-parse --verify --quiet "$BRANCH^{commit}" 2>/dev/null)"
 [ -n "$SHA" ] \
   || die "the mission's branch \"$BRANCH\" doesn't exist here — run the mission first, or fetch its branch."
 
+# --- persist the `launching` record IMMEDIATELY, before the SLOW pre-flight --
+# Write it at the VERY TOP of the launch flow — BEFORE `git worktree add --detach`
+# and `provision_worktree` (a pnpm/node_modules provision can take several seconds).
+# Those two, plus the later discovery worker + app spawn, together take ~15–60s;
+# without this record on disk FIRST, any observer during that window (a Verify card
+# reopened right after clicking RUN, SSE, a second browser) reads the STALE
+# pre-launch launch.json → wrongly re-renders the ⚡ RUN button, letting the captain
+# "outrun" the launch and re-click RUN. Writing `launching` here (milliseconds into
+# launch.sh) shrinks that window to nothing. `$MDIR` already exists (the worktree
+# does not yet), so writing $MDIR/launch.json now is safe. This single early write
+# also ESTABLISHES the known starting state the silent-worker check depends on: a
+# worker that writes nothing leaves the status STILL "launching" (see the check
+# after the worker spawn) — the semantic equivalent of the old "no launch.json"
+# test. The final settle (status=running) or any write_failed OVERWRITES it; using
+# `>` here also clears any prior record, so no separate `rm` is needed.
+LAUNCH_TARGET="${HINT:-discovering how to run the app…}"
+{
+  printf '{\n'
+  printf '  "status": "launching",\n'
+  printf '  "target": "%s",\n' "$(json_esc "$LAUNCH_TARGET")"
+  printf '  "message": "the app is starting…"\n'
+  printf '}\n'
+} > "$LAUNCH_JSON"
+
 # --- check the SHA into a DETACHED, disposable worktree (idempotent) -------
 mkdir -p "$(dirname "$WT")"
 already=0
@@ -236,25 +260,10 @@ WORKER_BIN="${LCARS_WORKER_BIN:-}"
 CLI="$(basename "$WORKER_BIN")"
 
 mkdir -p "$OUTDIR"
-rm -f "$LAUNCH_JSON"          # clear any prior record
-
-# Persist an intermediate `launching` record IMMEDIATELY — before the discovery
-# worker and app spawn, which together take 15–60s. Without it there is NO record
-# during that window, so a card reopened mid-launch (or any other observer: SSE, a
-# second browser) reads no launch state and wrongly re-renders the RUN prompt. With
-# it, every observer sees "launching…" until the flow settles. The final settle
-# (status=running) or any write_failed OVERWRITES this record. NB: this record is
-# also how a SILENT worker is now detected — a worker that writes nothing leaves the
-# status STILL at "launching" (see the check below), the semantic equivalent of the
-# old "no launch.json file" test.
-LAUNCH_TARGET="${HINT:-discovering how to run the app…}"
-{
-  printf '{\n'
-  printf '  "status": "launching",\n'
-  printf '  "target": "%s",\n' "$(json_esc "$LAUNCH_TARGET")"
-  printf '  "message": "the app is starting…"\n'
-  printf '}\n'
-} > "$LAUNCH_JSON"
+# NB: the `launching` record was already written at the TOP of this flow (before the
+# worktree + provision), so there is no rm/rewrite here — that early write both keeps
+# every observer on "launching…" through the whole spin-up AND seeds the known
+# starting state the silent-worker check below relies on.
 
 # --- derive this mission's touched target(s) → the launch DEFAULT ----------
 # The launch should default to the app that exercises THIS mission's change. In a

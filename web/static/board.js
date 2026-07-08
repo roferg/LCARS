@@ -124,6 +124,16 @@ function parentRef(m) {
 var STARTING = Object.create(null);
 var STARTING_TIMEOUT_MS = 30000;
 
+/* S110: instant client-side "launching" marker for the RUN affordance. Even with
+   the server writing its `launching` record first (launch.sh), a card closed and
+   reopened within the ~network-latency window before the POST lands could still
+   read the pre-launch launch.json and flash a false ⚡ RUN. Keyed by mission id →
+   true, set synchronously on the RUN click and cleared once the launch RESOLVES
+   (running/failed/stopped) or the dispatch POST errors. Lives only for this page
+   session (a refresh drops it — the server's launching record then covers the
+   reopen case). */
+var pendingLaunch = Object.create(null);
+
 function markStarting(id) {
   if (id == null) return;
   var key = String(id);
@@ -1648,6 +1658,13 @@ function launchAffordance(mi) {
     // Launching… if a launch is in flight, ● LIVE if running.
     fetchMission(mi.id, function (fresh) {
       mi.launch = fresh.launch;
+      // S110: the launch has RESOLVED once the live record reads a terminal state
+      // — drop the instant client-side marker so a genuinely idle mission can show
+      // RUN again (and a running/failed one renders its own state).
+      var fs = fresh.launch && fresh.launch.status;
+      if (fs === "running" || fs === "failed" || fs === "stopped") {
+        delete pendingLaunch[String(mi.id)];
+      }
       render(fresh.launch);
     }, function () {
       // Resilience: if the re-fetch fails (network/error), don't leave the
@@ -1726,6 +1743,11 @@ function launchAffordance(mi) {
       wrap.appendChild(hint);
       var run = applyWriteState(btn("⚡ RUN", "go", function () {
         var h = (hint.value || "").trim();
+        // S110: mark this mission launching SYNCHRONOUSLY, before anything async,
+        // so a card closed and reopened in the window before the POST lands still
+        // renders LAUNCHING (never a false RUN). Cleared when the launch resolves
+        // (reload) or the dispatch errors (below).
+        pendingLaunch[String(mi.id)] = true;
         // Optimistically re-render into the launching state so the hint input +
         // RUN button vanish immediately (a launch takes 15–60s). This mirrors the
         // record launch.sh persists, so it matches a card reopened mid-launch.
@@ -1733,7 +1755,9 @@ function launchAffordance(mi) {
         postWrite("/api/mission/" + enc(mi.id) + "/launch", { hint: h },
           function () { reload(); },
           function (msg) {
-            // Fall back to the RUN prompt and surface the error.
+            // Dispatch failed → not launching; drop the marker and fall back to
+            // the RUN prompt with the error.
+            delete pendingLaunch[String(mi.id)];
             render(mi.launch);
             var e2 = wrap.querySelector(".errline");
             if (e2) showErr(e2, msg);
@@ -1751,7 +1775,12 @@ function launchAffordance(mi) {
   //  • Otherwise render a NEUTRAL "Checking…" (no RUN button) first; reload()
   //    then renders the TRUTH from the live launch.json.
   var openStatus = mi.launch && mi.launch.status;
-  if (openStatus === "running" || openStatus === "launching") {
+  if (pendingLaunch[String(mi.id)]) {
+    // S110: a launch was dispatched from this page session and hasn't resolved —
+    // paint LAUNCHING immediately (never RUN, never "checking"), then let reload()
+    // resolve it against the live launch.json.
+    render({ status: "launching" });
+  } else if (openStatus === "running" || openStatus === "launching") {
     render(mi.launch);
   } else {
     renderChecking();

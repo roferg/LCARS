@@ -572,5 +572,33 @@ check "13a. hint + derived target → the captain's hint is still carried" \
 check "13b. hint + derived target → the section frames itself as the hint-overridable default" \
   "grep -qi 'OVERRIDES this default' \"$ARGV13\""
 
+# =====================================================================
+# 14. ORDERING: the `launching` record is written BEFORE the SLOW pre-flight
+#     (`git worktree add --detach` + provision) — the MEASURED bug. It used to be
+#     written LATE, only after the ~7s worktree+provision pre-flight, so an
+#     observer that reopened a card right after clicking RUN read the STALE
+#     pre-launch launch.json and wrongly re-rendered the ⚡ RUN button (the captain
+#     could "outrun" the launch). Deterministic proof: the worktreeSetupCommand —
+#     which runs DURING provisioning, right after the worktree is created and BEFORE
+#     the discovery worker — copies the launch.json it sees to a side file; assert
+#     provisioning already saw status=launching (it could only if launching was
+#     written BEFORE the worktree/provision step). RED before the write was moved
+#     (no launch.json exists at provision time → nothing to copy); GREEN after.
+# =====================================================================
+R14="$(make_repo m14)"
+APP14="$TMPROOT/app14.sh"; make_app "$APP14"
+W14="$(claude_stub_path)"; make_ready_worker "$W14" "$APP14" "m14 dev server" "" "lcars launch m14 --stop"
+LJ14="$R14/.git/lcars/missions/m14/launch.json"
+PROV14="$TMPROOT/prov_seen14.json"
+( cd "$R14" && LCARS_WORKTREE_SETUP_CMD="cp '$LJ14' '$PROV14' 2>/dev/null || true" \
+    LCARS_WORKER_BIN="$W14" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m14 "the m14 app" >/dev/null 2>&1 )
+PID14="$(json_num "$LJ14" pid)"
+[ -n "$PID14" ] && LAUNCHED_PIDS+=("$PID14")
+check "14a. provisioning already saw a launching record on disk (written BEFORE worktree/provision)" \
+  "[ \"\$(json_field \"$PROV14\" status)\" = launching ]"
+check "14b. the record provisioning saw carried the captain's hint as its target" \
+  "[ \"\$(json_field \"$PROV14\" target)\" = 'the m14 app' ]"
+( cd "$R14" && LCARS_WORKER_BIN="$W14" bash "$LAUNCH_SH" m14 --stop >/dev/null 2>&1 )
+
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
