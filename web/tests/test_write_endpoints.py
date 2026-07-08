@@ -77,7 +77,7 @@ class WriteEndpointBase(unittest.TestCase):
         self.records = {}
         self.scripts = {}
         for key in ("file", "run", "pause", "respond",
-                    "approve", "feedback", "log", "resolve"):
+                    "approve", "feedback", "log", "resolve", "launch"):
             rec = os.path.join(self.tmp, "rec-%s.txt" % key)
             self.records[key] = rec
             self.scripts[key] = _record_stub(rec)
@@ -186,6 +186,101 @@ def _sleep_stub(record_path, sleep_secs):
         fh.write(script)
     os.chmod(path, 0o755)
     return path
+
+
+def _launch_stub(record_path, *, spawn_real=False, fail=False):
+    """A stub for skills/lcars-launch/launch.sh (S109).
+
+    Records its argv/env (so a test can assert the mission id + hint + engine
+    reached the dispatch), then writes a launch.json into the target mission dir
+    (derived from the first positional arg + cwd=repo_root), mirroring launch.sh's
+    contract. Modes:
+      * default            → status=running record (no real process; pid/pgid
+                             omitted so the daemon tracks nothing to kill).
+      * spawn_real=True    → spawn a REAL long-lived process in its OWN process
+                             group (perl POSIX::setsid, PGID==PID, like launch.sh)
+                             and record its pid/pgid — so the daemon has a real
+                             pgid to group-kill on shutdown and the test can prove
+                             the pid is dead afterward.
+      * fail=True          → status=failed record + a human message, exit 1 (as
+                             launch.sh dies on a discovery/liveness failure).
+    A `--stop` invocation kills the recorded pgid (best-effort) and rewrites the
+    record to status=stopped. Returns the stub's absolute path.
+    """
+    fd, path = tempfile.mkstemp(suffix=".sh")
+    os.close(fd)
+    if fail:
+        write_body = (
+            '  printf \'{"status":"failed","target":"","url":"",\' > "$lj"\n'
+            '  printf \'"message":"could not determine how to start this app '
+            '— no dev script was found. Try naming the app as a hint."}\' >> "$lj"\n'
+            '  printf "\\n" >> "$lj"\n'
+            '  exit 1\n'
+        )
+    elif spawn_real:
+        write_body = (
+            "  perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- "
+            "sleep 300 >/dev/null 2>&1 &\n"
+            '  pid=$!\n'
+            '  printf \'{"status":"running","target":"fake app",'
+            '"url":"http://localhost:9931",'
+            '"howToStop":"stop it from the board","command":"sleep 300",'
+            '"cwd":".","pid":%s,"pgid":%s,"message":"the app is running."}\\n\' '
+            '"$pid" "$pid" > "$lj"\n'
+            '  exit 0\n'
+        )
+    else:
+        write_body = (
+            '  printf \'{"status":"running","target":"fake app",'
+            '"url":"http://localhost:9931",'
+            '"howToStop":"stop it from the board",'
+            '"message":"the app is running."}\\n\' > "$lj"\n'
+            '  exit 0\n'
+        )
+    script = (
+        '#!/usr/bin/env bash\n'
+        '{\n'
+        '  printf "ARGV: %s\\n" "$*"\n'
+        '  printf "ENV_WORKER_BIN: %s\\n" "${LCARS_WORKER_BIN:-}"\n'
+        '} >> "' + record_path + '"\n'
+        'mid=""; stop=0\n'
+        'for a in "$@"; do\n'
+        '  case "$a" in\n'
+        '    --stop) stop=1 ;;\n'
+        '    --*) ;;\n'
+        '    *) [ -z "$mid" ] && mid="$a" ;;\n'
+        '  esac\n'
+        'done\n'
+        'lj=".git/lcars/missions/$mid/launch.json"\n'
+        'mkdir -p ".git/lcars/missions/$mid"\n'
+        'if [ "$stop" -eq 1 ]; then\n'
+        '  if [ -f "$lj" ]; then\n'
+        '    pgid=$(sed -n \'s/.*"pgid"[: ]*\\([0-9][0-9]*\\).*/\\1/p\' "$lj" | head -1)\n'
+        '    [ -n "$pgid" ] && kill -TERM -"$pgid" 2>/dev/null || true\n'
+        '  fi\n'
+        '  printf \'{"status":"stopped","target":"fake app","url":"",'
+        '"message":"the app has been stopped."}\\n\' > "$lj"\n'
+        '  exit 0\n'
+        'fi\n'
+        + write_body
+    )
+    with open(path, "w") as fh:
+        fh.write(script)
+    os.chmod(path, 0o755)
+    return path
+
+
+def _pid_alive(pid):
+    """True iff `pid` is a live process (os.kill(pid, 0) does not raise ESRCH)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 class StartEndpointTest(WriteEndpointBase):
@@ -1246,6 +1341,245 @@ class ValidationTest(WriteEndpointBase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self._post("/api/mission/nope/start")
         self.assertEqual(cm.exception.code, 404)
+
+
+class LaunchEndpointTest(WriteEndpointBase):
+    """S109: the daemon dispatches `lcars launch` and OWNS the launched app's
+    lifecycle — Stop kills it, and daemon shutdown kills everything it launched."""
+
+    def tearDown(self):
+        # Safety net: reap any real launch this test spawned so no sleep leaks.
+        try:
+            self.actions.shutdown_launches()
+        except Exception:
+            pass
+        super(LaunchEndpointTest, self).tearDown()
+
+    def _rebuild_with_launch(self, **stub_kw):
+        """Point the launch skill at a real launch stub and rebuild the server
+        (actions is closure-captured at make_server time)."""
+        self.scripts["launch"] = _launch_stub(self.records["launch"], **stub_kw)
+        try:
+            os.unlink(self.records["launch"])
+        except OSError:
+            pass
+        self.httpd.shutdown()
+        self.thread.join()
+        self.httpd.server_close()
+        self.actions = Actions(repo_root=self.tmp, scripts=self.scripts,
+                               worker_bin="/bin/echo")
+        from lcars_serve.server import make_server as _mk
+        self.httpd = _mk(self.adapter, host="127.0.0.1", port=0,
+                         poll_interval=0.05, actions=self.actions)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+    def _mission_launch_json(self, mid):
+        return os.path.join(fx.mission_dir(self.tmp, mid), "launch.json")
+
+    # ── 1: launch dispatch + the additive board/detail `launch` field ─────────
+    def test_launch_dispatches_script_with_hint_and_surfaces_launch_field(self):
+        self._rebuild_with_launch()
+        status, body = self._post("/api/mission/m-001/launch",
+                                  {"hint": "the game in web"})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        # the mission id + hint reached the launch skill's argv.
+        rec = self._record("launch")
+        self.assertIn("m-001", rec)
+        self.assertIn("the game in web", rec)
+        # launch.json now sits in the mission dir (written by the stub).
+        self.assertTrue(os.path.exists(self._mission_launch_json("m-001")))
+        # the board carries the additive `launch` {status,target,url,message}.
+        _, board = self._get("/api/board")
+        card = next(c for c in board["missions"] if c["id"] == "m-001")
+        self.assertEqual(card["launch"]["status"], "running")
+        self.assertEqual(card["launch"]["target"], "fake app")
+        self.assertEqual(card["launch"]["url"], "http://localhost:9931")
+        self.assertIn("running", card["launch"]["message"])
+        # the mission detail carries it too.
+        _, detail = self._get("/api/mission/m-001")
+        self.assertEqual(detail["launch"]["status"], "running")
+
+    def test_launch_threads_persisted_engine(self):
+        fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142,
+                        worker_bin="copilot")
+        self._rebuild_with_launch()
+        status, _ = self._post("/api/mission/m-001/launch", {})
+        self.assertEqual(status, 200)
+        self.assertIn("ENV_WORKER_BIN: copilot", self._record("launch"))
+
+    def test_launch_unknown_mission_is_404(self):
+        self._rebuild_with_launch()
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post("/api/mission/nope/launch", {})
+        self.assertEqual(cm.exception.code, 404)
+
+    # ── S110: in-flight guard — a duplicate launch while one is spinning up ────
+    def test_concurrent_launch_dispatches_only_once_inflight_guard(self):
+        """A second launch POST arriving WHILE the first is still spinning up
+        (the SSE-lagged card lets the captain click RUN twice) must be an
+        idempotent no-op — NOT a second concurrent `lcars launch`, which would
+        spawn a duplicate app. Hold one launch mid-dispatch and prove a second
+        launch() no-ops (returns a board) and the dispatch fires EXACTLY ONCE."""
+        calls = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_run(key, args, env_extra=None):
+            calls.append(key)
+            if key == "launch":
+                # thread-1 is now PAST the guard, inside the dispatch; hold it
+                # "in flight" until the second call has had its chance to race.
+                started.set()
+                release.wait(5)
+            return 0
+
+        self.actions._run = fake_run
+
+        results = {}
+
+        def first():
+            results["a"] = self.actions.launch("m-001")
+
+        t1 = threading.Thread(target=first, daemon=True)
+        t1.start()
+        self.assertTrue(started.wait(5), "first launch never reached dispatch")
+
+        # second launch arrives WHILE the first is still in flight → no-op board.
+        results["b"] = self.actions.launch("m-001")
+        self.assertIn("board", results["b"])
+
+        release.set()
+        t1.join(5)
+        self.assertFalse(t1.is_alive(), "first launch thread never finished")
+
+        self.assertEqual([k for k in calls if k == "launch"], ["launch"],
+                         "the in-flight guard let a duplicate launch dispatch")
+        # the finally: cleared the in-flight mark, so a fresh launch dispatches.
+        self.actions.launch("m-001")
+        self.assertEqual(len([k for k in calls if k == "launch"]), 2)
+
+    def test_launch_inflight_seed_no_ops_then_finally_clears(self):
+        """Seeded (non-threaded) form of the guard: a mission already marked
+        in-flight no-ops WITHOUT dispatching; a normal launch dispatches once and
+        clears the in-flight mark in its finally."""
+        calls = []
+
+        def fake_run(key, args, env_extra=None):
+            calls.append(key)
+            return 0
+
+        self.actions._run = fake_run
+        # simulate a launch already in flight for this mission.
+        self.actions._launching = {"m-001"}
+        out = self.actions.launch("m-001")
+        self.assertIn("board", out)
+        self.assertNotIn("launch", calls)
+        # nothing in flight now → the launch DOES dispatch once and clears itself.
+        self.actions._launching = set()
+        self.actions.launch("m-001")
+        self.assertEqual(calls.count("launch"), 1)
+        self.assertNotIn("m-001", self.actions._launching)
+
+    # ── 2: stop dispatch + daemon-owned lifecycle (shutdown kills the app) ────
+    def test_launch_stop_dispatches_stop(self):
+        self._rebuild_with_launch()
+        status, body = self._post("/api/mission/m-001/launch/stop", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        rec = self._record("launch")
+        self.assertIn("--stop", rec)
+        self.assertIn("m-001", rec)
+
+    def test_daemon_shutdown_kills_a_still_running_launch(self):
+        """The daemon OWNS the launch: a fake app started via launch survives in
+        its own process group; shutdown_launches() must group-kill it so nothing
+        is orphaned. Assert the recorded pid is DEAD afterward."""
+        scripts = dict(self.scripts)
+        scripts["launch"] = _launch_stub(self.records["launch"], spawn_real=True)
+        actions = Actions(repo_root=self.tmp, scripts=scripts,
+                          worker_bin="/bin/echo")
+        self.actions = actions  # tearDown reaps it too
+        actions.launch("m-001")
+        with open(self._mission_launch_json("m-001")) as fh:
+            rec = json.load(fh)
+        pid = rec["pid"]
+        self.assertTrue(_pid_alive(pid), "the fake app never started")
+        # the daemon tracked its process group ...
+        self.assertIn("m-001", actions._launches)
+        # ... and shutdown group-kills it — nothing orphaned.
+        actions.shutdown_launches()
+        import time
+        deadline = time.time() + 3
+        while time.time() < deadline and _pid_alive(pid):
+            time.sleep(0.05)
+        self.assertFalse(_pid_alive(pid),
+                         "the launched app was orphaned by daemon shutdown")
+        # the tracking table is cleared and shutdown is safe to call twice.
+        self.assertNotIn("m-001", actions._launches)
+        actions.shutdown_launches()
+
+    def test_stop_kills_and_double_stop_is_a_clean_no_op(self):
+        scripts = dict(self.scripts)
+        scripts["launch"] = _launch_stub(self.records["launch"], spawn_real=True)
+        actions = Actions(repo_root=self.tmp, scripts=scripts,
+                          worker_bin="/bin/echo")
+        self.actions = actions
+        actions.launch("m-001")
+        with open(self._mission_launch_json("m-001")) as fh:
+            pid = json.load(fh)["pid"]
+        actions.launch_stop("m-001")
+        # the mission was pruned from the tracking table ...
+        self.assertNotIn("m-001", actions._launches)
+        # ... and a second stop is a clean no-op (idempotent, no raise).
+        actions.launch_stop("m-001")
+        self.assertNotIn("m-001", actions._launches)
+
+    # ── failure path: a failed launch surfaces a readable message, no trace ───
+    def test_launch_failure_surfaces_message_not_a_stack_trace(self):
+        self._rebuild_with_launch(fail=True)
+        status, body = self._post("/api/mission/m-001/launch", {})
+        # the failure is surfaced as a readable launch record, not a 5xx/trace.
+        self.assertEqual(status, 200)
+        _, board = self._get("/api/board")
+        card = next(c for c in board["missions"] if c["id"] == "m-001")
+        self.assertEqual(card["launch"]["status"], "failed")
+        self.assertTrue(card["launch"]["message"])
+        self.assertNotIn("Traceback", json.dumps(body))
+        self.assertNotIn("Traceback", json.dumps(card))
+
+    # ── 3/4: read-only 403 + the additive field is truly additive ─────────────
+    def test_launch_declined_when_read_only(self):
+        httpd = make_server(self.adapter, host="127.0.0.1", port=0,
+                            poll_interval=0.05, actions=None)
+        port = httpd.server_address[1]
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        t.start()
+        try:
+            url = "http://127.0.0.1:%d/api/mission/m-001/launch" % port
+            req = urllib.request.Request(url, data=b"{}", method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(cm.exception.code, 403)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_mission_without_launch_json_has_no_launch_key(self):
+        # a fresh mission (no launch.json) renders with NO `launch` key at all.
+        card = self.adapter.mission("m-001")
+        self.assertNotIn("launch", card)
+        board = self.adapter.board()
+        bcard = next(c for c in board["missions"] if c["id"] == "m-001")
+        self.assertNotIn("launch", bcard)
+
+    def _get(self, path, timeout=5):
+        url = "http://127.0.0.1:%d%s" % (self.port, path)
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status, json.loads(r.read())
 
 
 class ReadOnlyGatingTest(unittest.TestCase):

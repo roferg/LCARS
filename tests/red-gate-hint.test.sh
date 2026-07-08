@@ -30,6 +30,7 @@ bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 LIB="$(mktemp)"; trap 'rm -f "$LIB"' EXIT
 sed -n '/^unresolved_imports_in_output() {/,/^}/p' "$RUN_SH" >"$LIB"
 sed -n '/^red_gate_resolution_failure() {/,/^}/p'  "$RUN_SH" >>"$LIB"
+sed -n '/^unresolved_specifier_triage() {/,/^}/p'  "$RUN_SH" >>"$LIB"
 # shellcheck source=/dev/null
 . "$LIB"
 
@@ -83,6 +84,25 @@ if [ "$got" = "../src/state/themeStore" ]; then
   ok "E. reads runner output from stdin too"
 else
   bad "E. stdin path (expected ../src/state/themeStore, got '$got')"
+fi
+
+# === F. S111 specifier triage: exists→path verdict, absent→stub verdict ======
+# (five identical live bounces: the worker kept choosing stub-vs-path wrong;
+# the harness now states the verdict per specifier.)
+TRROOT="$(mktemp -d)"; trap 'rm -f "$LIB"; rm -rf "$TRROOT"' EXIT
+mkdir -p "$TRROOT/src/components/Toolbar" "$TRROOT/src/state" "$TRROOT/node_modules/junk"
+printf 'x\n' > "$TRROOT/src/components/Toolbar/Toolbar.tsx"
+printf 'x\n' > "$TRROOT/node_modules/junk/useTheme.ts"   # must be ignored
+got="$(printf './Toolbar\n./useTheme\n' | unresolved_specifier_triage "$TRROOT")"
+if printf '%s' "$got" | grep -q "\./Toolbar → the module EXISTS in the repo at: src/components/Toolbar/Toolbar.tsx"; then
+  ok "F1. existing module → names its real repo location (path verdict)"
+else
+  bad "F1. exists-verdict wrong (got: $(printf '%s' "$got" | head -1))"
+fi
+if printf '%s' "$got" | grep -q "\./useTheme → NO file matching 'useTheme' exists"; then
+  ok "F2. absent module → MUST-stub verdict (node_modules match ignored)"
+else
+  bad "F2. absent-verdict wrong (got: $(printf '%s' "$got" | tail -1))"
 fi
 
 # --- summary ----------------------------------------------------------------

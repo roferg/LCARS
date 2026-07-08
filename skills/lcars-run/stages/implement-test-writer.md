@@ -32,6 +32,29 @@ against the (still un-built) repo and **requires it to FAIL**. A suite that
 passes before anything is implemented proves nothing and is rejected — so write
 tests that genuinely fail until the ticket is built.
 
+## Test the OBJECTIVE residue only — never taste
+
+Acceptance criteria mix two kinds of claim. Test the first kind, and ONLY the
+first kind:
+
+- **Objective (testable — your job):** anything with a mechanical oracle the
+  criteria actually STATE or that is structurally implied — placement in a named
+  container ("in the top bar", "bottom-left corner" → the element exists in that
+  container/position class), visibility rules, state transitions, persistence,
+  text content, an explicitly stated property ("semi-transparent" → opacity < 1).
+- **Subjective (human judgment — NOT your job):** preference words with no stated
+  delta — "looks right", "unobtrusive", "doesn't obscure gameplay", "feels
+  clean". The captain reviews these with their own eyes at the Verify stage.
+
+For a subjective phrase, assert the objective residue it implies (the element
+exists, where it lives, opacity < 1) and STOP. **NEVER invent a numeric proxy
+the criteria did not state** — do not assert a specific hex color, a pixel
+margin, a font size, or an exact opacity value nobody asked for. An invented
+proxy becomes an immutable contract that fails future legitimate restyling; an
+over-specified aesthetic test is worse than no test. If a criterion is PURELY
+subjective (no objective residue at all), skip it — do not manufacture an
+assertion for it.
+
 ## The RED-FIRST recipe (follow it exactly)
 
 The whole point of Phase 1 is a suite that is **red now, green only once the
@@ -75,6 +98,18 @@ If the harness **rejects a prior attempt**, a `RED-GATE FEEDBACK` block will be
 appended to your inputs with the gate's verdict and the runner's output. Read it:
 it tells you whether your last suite passed-on-nothing or simply did not exercise
 the new behaviour. Use it to write tests that fail until the behaviour exists.
+
+## Declared test setup — ONLY when the harness invites it
+
+When the harness itself has PROVEN the ticket's target package cannot run tests
+(its preflight probe failed), your inputs will include a **"DECLARED TEST
+SETUP"** section carrying the evidence and the exact rules for declaring the
+missing infrastructure (a `setup/` dir of new config files + `test-setup.json`
+with an install command). Follow that section when — and ONLY when — it is
+present. Without that invitation, NEVER emit `test-setup.json` or `setup/`
+files: an unsolicited setup is ignored, and reaching for new tooling when the
+repo's existing runner works is exactly the behaviour this gate exists to
+prevent. Try the repo's own infrastructure first — always.
 
 ## Shared, DEFENSIVE test doubles (avoid false cross-ticket regressions)
 

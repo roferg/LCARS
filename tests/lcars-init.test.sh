@@ -418,6 +418,12 @@ check "S82 init (pnpm): config.json is VALID JSON after the worktree default" \
 # be the FULL command (terminating `fi` survives), not truncated at an inner quote.
 check "S82 init (pnpm): worktreeSetupCommand reads back un-truncated (ends in 'fi')" \
   "printf '%s' \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgWTp' worktreeSetupCommand )\" | qgrep -q '; fi\$'"
+# S111: the symlink FIND must PRUNE .git — LCARS itself parks worktrees with
+# node_modules under .git/lcars/ (launch worktrees), and mirroring a .git/ path
+# inside a linked worktree fails ('.git' is a FILE there): caught live when a
+# launched mission's node_modules broke every later gate's provisioning.
+check "S111 init (pnpm): the node_modules find prunes the .git dir" \
+  "python3 -c \"import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if '.git\\\" -prune -o' in c['worktreeSetupCommand'] else 1)\" '$cfgWTp'"
 
 # npm repo (package-lock.json): the fallback is `npm ci`
 repoWTn="$(new_repo)"

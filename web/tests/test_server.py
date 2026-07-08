@@ -81,6 +81,22 @@ class ServerTest(unittest.TestCase):
         # shares the docs/lcars.css token set — the LCARS amber must be present.
         self.assertIn(b"--lcars", body)
 
+    def test_static_assets_are_not_stale_cached(self):
+        """S110 (Fix A): the static-asset handler MUST send a Cache-Control
+        header that prevents heuristic browser caching, so an open/soft-reloaded
+        tab always fetches the CURRENT board.js/board.css after a daemon restart
+        (otherwise the captain runs stale front-end JS and never gets fixes
+        without a hard reload). Assert board.js carries a no-store / no-cache
+        directive."""
+        url = "http://127.0.0.1:%d/board.js" % self.port
+        with urllib.request.urlopen(url, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            cc = (r.headers.get("Cache-Control") or "").lower()
+        self.assertTrue(cc, "static assets must send a Cache-Control header")
+        self.assertTrue(
+            "no-store" in cc or "no-cache" in cc,
+            "static Cache-Control must prevent stale caching, got %r" % cc)
+
     def test_board_css_hides_drawer_when_hidden(self):
         """Regression (S67 fix-loop r2, DEFECT 1): the served board.css MUST
         carry a rule that hides an element with the `hidden` attribute, so the

@@ -23,6 +23,18 @@ tickets. **Every ticket must be:**
   criterion that an independent test suite can fully specify.
 - **Titled in the imperative** — "Add XP trigger for video completions".
 
+**Acceptance criteria must be OBJECTIVE — split out human judgment.** Write
+each criterion so a machine can check it: placement in a named container,
+visibility rules, state transitions, persistence, stated properties
+("semi-transparent" → opacity < 1). When the PRD uses a preference word with no
+stated delta — "unobtrusive", "looks right", "doesn't obscure gameplay" — do
+NOT copy it into `acceptanceCriteria` (the Test Writer would either dead-end on
+it or invent a numeric proxy nobody asked for). Extract its objective residue
+into the criteria, and leave the subjective quality out: the captain judges it
+with their own eyes at the Verify stage. Mention the deferred judgment in the
+ticket's `description` (e.g. "visual unobtrusiveness is judged at Verify") so
+nothing silently disappears.
+
 ## Slicing: cohesion first, size second
 
 **Slice on behavioral seams, not on a line count.** The primary rule is

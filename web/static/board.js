@@ -124,6 +124,16 @@ function parentRef(m) {
 var STARTING = Object.create(null);
 var STARTING_TIMEOUT_MS = 30000;
 
+/* S110: instant client-side "launching" marker for the RUN affordance. Even with
+   the server writing its `launching` record first (launch.sh), a card closed and
+   reopened within the ~network-latency window before the POST lands could still
+   read the pre-launch launch.json and flash a false ⚡ RUN. Keyed by mission id →
+   true, set synchronously on the RUN click and cleared once the launch RESOLVES
+   (running/failed/stopped) or the dispatch POST errors. Lives only for this page
+   session (a refresh drops it — the server's launching record then covers the
+   reopen case). */
+var pendingLaunch = Object.create(null);
+
 function markStarting(id) {
   if (id == null) return;
   var key = String(id);
@@ -372,6 +382,43 @@ function cardNode(m) {
     var c = pillNode(m.pills.cost, "cost"); if (c) pills.appendChild(c);
     var r = pillNode(m.pills.reasoning); if (r) pills.appendChild(r);
     var i = pillNode(m.pills.implementation); if (i) pills.appendChild(i);
+  }
+  // S110: surface a LAUNCHED demo app on the card itself, so the captain reads
+  // "the app is running" from the board at a glance (not only inside the Verify
+  // dialog). Additive — driven purely by m.launch (absent ⇒ no badge, byte-
+  // identical to before). Only the live/launching states show; failed/stopped/
+  // absent render exactly as today. Reuses the dialog's ● LIVE idiom.
+  if (m.launch && m.launch.status === "running") {
+    // S110: the ● APP LIVE pill carries an inline ■ stop control so the captain
+    // can stand a running app down STRAIGHT FROM THE BOARD — no need to open the
+    // Verify dialog (unreachable when focused on a logged-bug flow). It hits the
+    // SAME endpoint the dialog's ■ STOP uses (…/launch/stop). btn() already
+    // stopPropagations before our handler (the card is click-to-open), and we
+    // stopPropagation again FIRST for good measure so stopping never also opens
+    // the detail dialog.
+    var livePill = el("span", "pill go", "● APP LIVE ");
+    var stop = btn("■", "pill-stop", function (e) {
+      if (e) e.stopPropagation();
+      // Optimistically disable so a double-click can't fire the stop twice; the
+      // board's SSE re-render drops the whole pill once launch.status flips off
+      // "running" (the card is rebuilt from fresh m).
+      stop.disabled = true;
+      stop.title = "Stopping…";
+      postWrite("/api/mission/" + enc(m.id) + "/launch/stop", {},
+        function () { /* SSE re-render removes the pill (fresh m) — nothing to do */ },
+        function (msg) {
+          // Re-enable and surface the reason on the control itself (no modal).
+          stop.disabled = false;
+          stop.title = msg || "Stop failed — try again";
+        });
+    });
+    stop.title = "Stop the app";
+    applyWriteState(stop); // view-only boards disable it (and set the view-only title)
+    livePill.appendChild(stop);
+    pills.appendChild(livePill);
+  } else if (m.launch && m.launch.status === "launching") {
+    // Informational only — matches the dialog, which offers STOP only once running.
+    pills.appendChild(el("span", "pill", "▶ LAUNCHING…"));
   }
   card.appendChild(pills);
 
@@ -1570,6 +1617,9 @@ function openReverifyGate(mi) {
     m.body.appendChild(list);
   }
 
+  // S109: RUN / STOP the mission's app so the captain can view it during re-verify.
+  m.body.appendChild(launchAffordance(mi));
+
   var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
   // Send-back reveals a feedback field, then dispatches the feedback decision.
@@ -1604,6 +1654,229 @@ function openReverifyGate(mi) {
   m.foot.appendChild(sendBack);
   m.foot.appendChild(accept);
   showOverlay(m.wrap);
+}
+
+/* S109: the RUN / STOP launch affordance, shared by BOTH Verify surfaces
+   (openVerify + openReverifyGate) — one component. Reads mi.launch
+   {status,target,url,message}:
+     • absent / stopped / failed → a themed ⚡ RUN button + an optional one-line
+       hint input (a prior failure shows its plain-English message above it — the
+       message is human English already, never a raw command or stack trace).
+     • running → the target + a clickable URL + a ■ STOP button.
+   Clicking dispatches to the daemon (POST …/launch | …/launch/stop), which OWNS
+   the launched process group. A workingNode covers the in-flight "launching…"
+   state; on completion the panel re-fetches this mission and re-renders in place
+   (launching → running / failed) without closing the dialog. View-only builds
+   degrade the buttons via applyWriteState like every other write. */
+function launchAffordance(mi) {
+  var wrap = el("div", "launch-panel");
+  wrap.style.cssText = "margin:14px 0;padding:10px;border-radius:6px;"
+    + "background:rgba(153,153,255,.10)";
+
+  // S110: a single closure-scoped poll timer. While the panel shows LAUNCHING
+  // it re-fetches on a cadence so a card reopened mid-launch AUTO-ADVANCES to
+  // ● LIVE / failed the moment launch.json resolves (SSE nudges the board cards
+  // but never the contents of an already-open dialog). render() is the sole
+  // owner: it clears this at the top and re-arms it only in the launching
+  // branch, so exactly one loop is ever live and it stops on resolve.
+  var pollTimer = null;
+  // S110: the launch.status the panel is CURRENTLY painting. Lets a poll tick
+  // that's still "launching" detect that nothing visible changed and skip the
+  // full teardown+rebuild — which would restart the busy-wave CSS animation
+  // every 1.5s and make it visibly stutter.
+  var shownStatus = null;
+  // S110: has the captain triggered a launch FROM THIS panel instance? Gates the
+  // failure banner so a stale "failed" status surfaced on a fresh open renders a
+  // clean RUN prompt (no leftover error), while a launch started here that then
+  // fails still shows its message. Deliberately per-instance: reopening the card
+  // resets it — never surface a STALE failure on open (see S110 edge note).
+  var attempted = false;
+
+  // S110: the poll callback, factored out so it can be re-armed from BOTH the
+  // launching branch and the unchanged-launching fast-path without a full
+  // render. Halts the loop once the dialog is closed (panel off the DOM).
+  function pollTick() {
+    if (!document.body.contains(wrap)) { clearTimeout(pollTimer); pollTimer = null; return; }
+    reload();
+  }
+
+  function busyLabel(busy, text) {
+    var lab = busy.querySelector(".lcars-working-label");
+    if (lab) lab.textContent = text;
+  }
+
+  function reload() {
+    // Re-fetch the mission so the panel reflects the settled launch state
+    // (SSE also nudges the board; this keeps the OPEN dialog in sync). The
+    // truth comes from the live launch.json — RUN only if genuinely idle,
+    // Launching… if a launch is in flight, ● LIVE if running.
+    fetchMission(mi.id, function (fresh) {
+      mi.launch = fresh.launch;
+      // S110: the launch has RESOLVED once the live record reads a terminal state
+      // — drop the instant client-side marker so a genuinely idle mission can show
+      // RUN again (and a running/failed one renders its own state).
+      var fs = fresh.launch && fresh.launch.status;
+      if (fs === "running" || fs === "failed" || fs === "stopped") {
+        delete pendingLaunch[String(mi.id)];
+      }
+      render(fresh.launch);
+    }, function () {
+      // Resilience: if the re-fetch fails (network/error), don't leave the
+      // panel stuck on the neutral "checking" state — fall back to the board
+      // copy so the captain still has a usable affordance.
+      render(mi.launch);
+    });
+  }
+
+  // A neutral, trustworthy-until-proven placeholder while reload() fetches the
+  // live launch.json: bars only, NO hint input and NO RUN button — so a card
+  // reopened during a launch's spin-up window can never flash a false RUN.
+  function renderChecking() {
+    wrap.textContent = "";
+    var head = el("div", "dim");
+    head.style.cssText = "text-transform:uppercase;letter-spacing:.08em;"
+      + "font-size:11px;margin-bottom:6px";
+    head.textContent = "Run the app";
+    wrap.appendChild(head);
+    var busy = workingNode("Checking app status…");
+    wrap.appendChild(busy);
+  }
+
+  function render(launch) {
+    var status = launch && launch.status;
+    // S110: unchanged-launching fast-path. If the panel is ALREADY painting the
+    // animated launching state, a poll tick that's still "launching" must NOT
+    // tear down + rebuild the panel — that recreates the busy node and restarts
+    // its wave animation from the start (a visible stutter every 1.5s). Just
+    // re-arm the poll (the timer that fired is spent) and return, leaving the
+    // live launching DOM untouched.
+    if (status === "launching" && shownStatus === "launching") {
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(pollTick, 1500);
+      return;
+    }
+    // S110: reset the poll loop on every render — only the launching branch
+    // below re-arms it, guaranteeing exactly one live timer at any moment.
+    clearTimeout(pollTimer); pollTimer = null;
+    // Record the status this render is about to paint so subsequent poll ticks
+    // can detect an unchanged launching state and hit the fast-path above.
+    shownStatus = status;
+    wrap.textContent = "";
+    var head = el("div", "dim");
+    head.style.cssText = "text-transform:uppercase;letter-spacing:.08em;"
+      + "font-size:11px;margin-bottom:6px";
+    head.textContent = "Run the app";
+    wrap.appendChild(head);
+
+    var err = el("div", "errline"); err.hidden = true; wrap.appendChild(err);
+    var busy = workingNode("Launching the app…"); busy.hidden = true;
+    wrap.appendChild(busy);
+
+    if (status === "launching") {
+      // A launch is in flight (15–60s: discovery worker + app spawn). Show ONLY the
+      // busy state — no hint input, no RUN button. launch.sh persists this record
+      // for the whole window, so reopening the card mid-launch lands here too. It
+      // resolves to running / failed via reload() / SSE.
+      busy.hidden = false;
+      busyLabel(busy, "Launching the app…");
+      // S110: keep polling the live launch.json until it resolves. reload()
+      // re-fetches and re-renders, so this self-perpetuates while still
+      // launching and naturally stops once the status becomes running / failed
+      // / stopped (those branches don't reschedule).
+      // Poll until the launch resolves. The detach check lives in pollTick (not
+      // reload) so the INITIAL reload — fired before the caller attaches this
+      // panel to the DOM — still runs; only the ongoing poll halts once the
+      // dialog is closed (the panel is no longer in the document).
+      pollTimer = setTimeout(pollTick, 1500);
+      return;
+    }
+    if (status === "running") {
+      var line = el("div"); line.style.marginBottom = "8px";
+      line.appendChild(el("span", "pill go", "● LIVE"));
+      line.appendChild(document.createTextNode(
+        " " + (launch.target || "the app") + " "));
+      if (launch.url) {
+        var a = el("a"); a.href = launch.url; a.target = "_blank";
+        a.rel = "noopener"; a.textContent = launch.url;
+        line.appendChild(a);
+      }
+      wrap.appendChild(line);
+      var stop = applyWriteState(btn("■ STOP", "danger", function () {
+        err.hidden = true; busy.hidden = false;
+        busyLabel(busy, "Standing the app down…");
+        stop.disabled = true;
+        postWrite("/api/mission/" + enc(mi.id) + "/launch/stop", {},
+          function () { reload(); },
+          function (msg) {
+            busy.hidden = true; stop.disabled = false; showErr(err, msg);
+          });
+      }));
+      wrap.appendChild(stop);
+    } else {
+      // S110: only surface the failure banner as immediate feedback for a launch
+      // the captain triggered in THIS panel instance (attempted). A stale "failed"
+      // status painted on a fresh open renders the clean RUN prompt below — the
+      // hint input + RUN button still render regardless; only the banner is gated.
+      if (status === "failed" && attempted && launch && launch.message) {
+        showErr(err, launch.message);
+      }
+      var hint = el("input", "launch-hint"); hint.type = "text";
+      hint.placeholder =
+        "Optional — name the app or its directory (e.g. “the game in web/”)";
+      hint.style.cssText = "width:100%;box-sizing:border-box;margin-bottom:8px";
+      wrap.appendChild(hint);
+      var run = applyWriteState(btn("⚡ RUN", "go", function () {
+        var h = (hint.value || "").trim();
+        // S110: mark this mission launching SYNCHRONOUSLY, before anything async,
+        // so a card closed and reopened in the window before the POST lands still
+        // renders LAUNCHING (never a false RUN). Cleared when the launch resolves
+        // (reload) or the dispatch errors (below).
+        pendingLaunch[String(mi.id)] = true;
+        // S110: a launch was dispatched from this panel instance — arm the failure
+        // banner so if this launch resolves to "failed", render() surfaces its
+        // message (reload() → render(failed) / the dispatch error path below).
+        attempted = true;
+        // Optimistically re-render into the launching state so the hint input +
+        // RUN button vanish immediately (a launch takes 15–60s). This mirrors the
+        // record launch.sh persists, so it matches a card reopened mid-launch.
+        render({ status: "launching", target: h });
+        postWrite("/api/mission/" + enc(mi.id) + "/launch", { hint: h },
+          function () { reload(); },
+          function (msg) {
+            // Dispatch failed → not launching; drop the marker and fall back to
+            // the RUN prompt with the error.
+            delete pendingLaunch[String(mi.id)];
+            render(mi.launch);
+            var e2 = wrap.querySelector(".errline");
+            if (e2) showErr(e2, msg);
+          });
+      }));
+      wrap.appendChild(run);
+    }
+  }
+
+  // S110: mi.launch is the SSE-LAGGED board copy. During a launch's spin-up
+  // window (15–60s) it can still read as pre-launch (absent / stopped / failed)
+  // even though a launch just started — painting the RUN state from it here
+  // would flash a FALSE ⚡ RUN button before reload() corrects it a beat later.
+  //  • ACTIVE states (running / launching) are trustworthy enough to paint now.
+  //  • Otherwise render a NEUTRAL "Checking…" (no RUN button) first; reload()
+  //    then renders the TRUTH from the live launch.json.
+  var openStatus = mi.launch && mi.launch.status;
+  if (pendingLaunch[String(mi.id)]) {
+    // S110: a launch was dispatched from this page session and hasn't resolved —
+    // paint LAUNCHING immediately (never RUN, never "checking"), then let reload()
+    // resolve it against the live launch.json.
+    render({ status: "launching" });
+  } else if (openStatus === "running" || openStatus === "launching") {
+    render(mi.launch);
+  } else {
+    renderChecking();
+  }
+  // Freshen from the CURRENT launch.json so a launch already in flight renders
+  // as launching/running (hiding RUN); a truly idle mission settles to RUN.
+  reload();
+  return wrap;
 }
 
 /* ════════════════ SCREEN: VERIFY (#verify) ════════════════ */
@@ -1671,6 +1944,9 @@ function openVerify(id) {
       noPr.textContent = "No PR open yet — re-run the mission so Verify opens it.";
       m.body.appendChild(noPr);
     }
+
+    // S109: RUN / STOP the mission's app so the captain can view it during Verify.
+    m.body.appendChild(launchAffordance(mi));
 
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
@@ -3049,14 +3325,20 @@ function fmtTs(ts) {
   return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
 }
 
-function fetchMission(id, cb) {
+function fetchMission(id, cb, onErr) {
   fetch("/api/mission/" + enc(id))
     .then(function (r) {
       if (r.status === 404) throw new Error("no such mission");
       return r.json();
     })
     .then(cb)
-    .catch(function () { setStatus("mission unavailable"); });
+    .catch(function () {
+      // An optional caller-supplied error handler keeps a live panel from
+      // getting stuck on a transient state (e.g. launchAffordance's "checking")
+      // when the fetch fails; the default keeps the historic status message.
+      if (typeof onErr === "function") { onErr(); return; }
+      setStatus("mission unavailable");
+    });
 }
 
 /* ════════════════ live channel ════════════════ */

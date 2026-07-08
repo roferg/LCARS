@@ -341,5 +341,22 @@ check "I4b. spawn copilot grants input dir 1 --add-dir" \
 check "I4c. spawn copilot grants input dir 2 --add-dir" \
   "[ -n \"\$(add_dirs <\"$dI4/argv.log\" | grep -xF \"$IN2\")\" ]"
 
+# ============================================================================
+# LAUNCH role (session 108) — the `lcars launch` app-inspector toolset. A launch
+# worker gets Read+shell to DISCOVER how to run an app, but NO Write/Edit so it
+# cannot mutate the disposable checkout. Both engines mirror the same semantics.
+# (Additive: existing role assertions above are untouched.)
+# ============================================================================
+echo "worker-adapter — launch role (session 108)"
+
+check "L1. claude launch → Read,Grep,Glob,Bash (read + shell, no Write/Edit)" \
+  "[ \"\$(tool_line launch)\" = 'Read,Grep,Glob,Bash' ]"
+check "L2. claude launch tool list has NO Write and NO Edit" \
+  "[ -z \"\$(tool_line launch | grep -oE 'Write|Edit')\" ]"
+check "L3. copilot launch → view,grep,glob,bash (view + shell, no create/edit)" \
+  "[ \"\$(cop_tools launch)\" = 'view,grep,glob,bash' ]"
+check "L4. copilot launch tool list has NO create and NO edit" \
+  "[ -z \"\$(cop_tools launch | grep -oE 'create|edit')\" ]"
+
 echo "worker-adapter: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -203,6 +203,25 @@ class LocalAdapter(object):
         grounding_research = (origin == "log"
                               or (state.get("type") or "feature") == "bug")
 
+        # S109: the launched-app record `lcars launch` writes into the mission dir
+        # (launch.json). It's an ad-hoc action, NOT a pipeline artifact, so it's
+        # purely ADDITIVE: present ⇒ a small `launch` {status,target,url,message}
+        # rides the card so the Verify dialog can show launching→running→failed
+        # with a clickable URL + a Stop affordance; ABSENT ⇒ no `launch` key at
+        # all (a mission that was never launched renders byte-identically to
+        # before). The github adapter never reads launch.json, so its shape is
+        # unchanged. Writing launch.json into the mission dir moves the adapter
+        # fingerprint, so the board/SSE reflects the state change for free.
+        lj = _load_json(os.path.join(d, "launch.json"))
+        launch = None
+        if isinstance(lj, dict):
+            launch = {
+                "status": lj.get("status"),
+                "target": lj.get("target"),
+                "url": lj.get("url"),
+                "message": lj.get("message"),
+            }
+
         plan = _load_json(os.path.join(d, "plan.json"))
         waves = _load_json(os.path.join(d, "waves.json"))
 
@@ -304,7 +323,7 @@ class LocalAdapter(object):
                 and reconcile_merge_sha.strip()):
             reconcile_merge_sha = None
 
-        return {
+        card = {
             "id": mid,
             "issue": issue,
             "title": state.get("title") or mid,
@@ -365,6 +384,11 @@ class LocalAdapter(object):
             "activeSecondsAt": active_seconds_at,
             "_created": state.get("created") or "",
         }
+        # S109: additive — only present a `launch` field when launch.json exists
+        # (a never-launched mission's card is byte-identical to before).
+        if launch is not None:
+            card["launch"] = launch
+        return card
 
     def _activity(self, d):
         """Render each event to a concise feed entry for the detail view."""

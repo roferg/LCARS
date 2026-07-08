@@ -8,6 +8,7 @@
     "./skills/lcars-feedback",
     "./skills/lcars-file",
     "./skills/lcars-init",
+    "./skills/lcars-launch",
     "./skills/lcars-log",
     "./skills/lcars-pause",
     "./skills/lcars-resolve-logs",
