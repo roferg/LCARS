@@ -129,6 +129,32 @@ else
   bad "G1. no setup invitation in the prompt (rc=$RC: $(printf '%s' "$OUT" | tail -3))"
 fi
 
+# === G1b: root ALSO dead, but a SIBLING package declares a runner → invite ===
+# (the pnpm-monorepo reality: the workspace root has no runner in .bin, yet
+# sibling packages test fine — the invite must key off sibling runner decls,
+# not a root probe.)
+repo="$(new_repo)"
+mkdir -p "$repo/pkgB"
+printf '{ "name": "pkgB", "devDependencies": { "vitest": "^1.6.0" } }\n' > "$repo/pkgB/package.json"
+PLOG="$TMPROOT/g1b-prompts.txt"; : > "$PLOG"
+run_ticket "$repo" STUB_MODE= STUB_PROMPT_LOG="$PLOG"       # NO root marker: root probe dead
+if grep -q "test-setup.json" "$PLOG"; then
+  ok "G1b. dead root + sibling vitest decl → still INVITES the declared setup"
+else
+  bad "G1b. sibling-runner repo did not invite (rc=$RC: $(printf '%s' "$OUT" | tail -3))"
+fi
+
+# === G1c: dead EVERYWHERE (no sibling runner) → park, no invite ==============
+repo="$(new_repo)"
+PLOG="$TMPROOT/g1c-prompts.txt"; : > "$PLOG"
+run_ticket "$repo" STUB_MODE= STUB_PROMPT_LOG="$PLOG"
+state="$repo/.git/lcars/missions/test-001/state.json"
+if grep -q '"awaitingHuman": *true' "$state" && ! grep -q "test-setup.json" "$PLOG"; then
+  ok "G1c. runner-less everywhere → parked, no invite (setup can't fix repo-wide provisioning)"
+else
+  bad "G1c. dead-everywhere handling (rc=$RC, invited=$(grep -c 'test-setup.json' "$PLOG" 2>/dev/null))"
+fi
+
 # === G2: declared setup is APPLIED, gate goes 127→red, tests saved ===========
 repo="$(new_repo)"
 touch "$repo/.runner-installed"     # root alive

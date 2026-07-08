@@ -2693,6 +2693,25 @@ runner_preflight_env_failure() { # run-dir → 0 iff the runner cannot launch th
   red_gate_env_failure "$PREFLIGHT_OUT"
 }
 
+# Can this repo demonstrably run tests OUTSIDE the target package? The oracle
+# that decides invite-vs-park for a dead-runner package. Two arms, both cheap:
+#   1. the repo-root probe launches a runner (single-package repos, hoisted bins)
+#   2. any SIBLING package.json declares a known runner (the pnpm-monorepo
+#      reality: the workspace ROOT often has no runner in .bin while sibling
+#      packages test fine — a root probe alone wrongly reads "dead everywhere")
+repo_tests_elsewhere() { # target-pkg-rel → 0 if tests provably run elsewhere
+  local pkg="$1"
+  if ! runner_preflight_env_failure "$REPO_ROOT"; then return 0; fi
+  local pj rel
+  while IFS= read -r pj; do
+    rel="${pj#"$REPO_ROOT"/}"
+    [ "$rel" = "package.json" ] && continue
+    case "$rel" in "$pkg"/*) continue ;; esac
+    grep -Eq '"(vitest|jest|mocha|ava|tap|playwright)"' "$pj" 2>/dev/null && return 0
+  done < <(find "$REPO_ROOT" -maxdepth 4 -name package.json -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null)
+  return 1
+}
+
 # Park the mission awaiting-human because the test environment cannot run ANY
 # test for this ticket — the same gate shape as the 5-attempt flag (pending.json
 # + awaitingHuman + label overlay), with the BUG-027 structured fields so the
@@ -7076,7 +7095,7 @@ cmd_implement_ticket() {
   pf_dir="$REPO_ROOT${pf_pkg:+/$pf_pkg}"
   if runner_preflight_env_failure "$pf_dir"; then
     local pf_out="$PREFLIGHT_OUT" pf_root_alive=0
-    if [ -n "$pf_pkg" ] && ! runner_preflight_env_failure "$REPO_ROOT"; then
+    if [ -n "$pf_pkg" ] && repo_tests_elsewhere "$pf_pkg"; then
       pf_root_alive=1
     fi
     # S111 3′: a RUNNER-LESS PACKAGE in an otherwise-working repo is the case a
@@ -7096,7 +7115,7 @@ $(printf '%s' "$pf_out" | tail -10)"
       if [ "$pf_root_alive" = 1 ]; then
         pf_diag="package '$pf_pkg' has no working test runner (the repo root can run tests; that package cannot), and a declared test setup was already tried for this mission without curing it. Add a test runner to '$pf_pkg' yourself, set a package-specific test command, or retarget the mission."
       else
-        pf_diag="the test runner cannot launch anywhere in this checkout — the environment is not provisioned (are dependencies installed? is worktreeSetupCommand set?). A declared setup cannot fix repo-wide provisioning."
+        pf_diag="the test runner cannot launch anywhere in this checkout and no other package in this repo declares a known test runner — the environment is not provisioned (are dependencies installed? is worktreeSetupCommand set?). A declared setup cannot fix repo-wide provisioning."
       fi
       impl_park_env_cannot_test "$TICKET" \
 "Ticket $TICKET cannot start: $pf_diag
