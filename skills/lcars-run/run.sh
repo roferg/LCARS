@@ -2832,26 +2832,7 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   fi
   local irc=0 outf; outf="$(mktemp)"
   if [ -n "$icmd" ]; then
-    ( cd "$dest" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || irc=$?
-    # SELF-HEAL (caught live, S111 001): in a fresh worktree whose node_modules
-    # were symlinked in by worktreeSetupCommand, pnpm REFUSES to add a dep until
-    # the tree's virtual store is re-linked ("pnpm now wants to use the virtual
-    # store at ... reinstall with pnpm install"). Recognize the pnpm complaint,
-    # re-link the workspace IN THIS TREE, and retry the declared install ONCE.
-    if [ "$irc" -ne 0 ] && grep -qiE 'virtual store|ERR_PNPM' "$outf"; then
-      emit_event test_setup_install_heal implement \
-        "declared-setup install hit pnpm's virtual-store guard — dropping the SYMLINKED node_modules, re-linking with 'pnpm install', and retrying once" \
-        "ticket=$TICKET"
-      # The provisioning symlinks node_modules from the main clone; pnpm cannot
-      # re-link a store THROUGH a symlink, so `pnpm install` alone is a no-op
-      # cure (caught live, second round). Drop ONLY the symlinked node_modules
-      # entries (-type l — a real node_modules dir is never touched) so pnpm
-      # rebuilds a real worktree-local store from the lockfile + global store.
-      ( cd "$REPO_ROOT" && find . -maxdepth 5 -name node_modules -type l -exec rm -f {} + 2>/dev/null ) || :
-      ( cd "$REPO_ROOT" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-600}" "$outf" bash -c "pnpm install" ) || :
-      irc=0
-      ( cd "$dest" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || irc=$?
-    fi
+    setup_install_healed "$dest" "$REPO_ROOT" "$icmd" "$outf" || irc=$?
   fi
   local itail; itail="$(tail -5 "$outf" 2>/dev/null | tr '\n' ' ')"; rm -f "$outf"
   [ "$irc" -ne 0 ] && SETUP_NOTE="installCommand exited $irc: $itail"
@@ -2863,10 +2844,36 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   return 0
 }
 
+# Run a declared install with the pnpm virtual-store SELF-HEAL (caught live,
+# S111 001, twice): in a tree whose node_modules were SYMLINKED in by
+# worktreeSetupCommand, pnpm refuses to add a dep until the tree's virtual
+# store is re-linked — and it cannot re-link THROUGH a symlink. On the pnpm
+# complaint: drop ONLY the symlinked node_modules entries (-type l — a real
+# dir is never touched), `pnpm install` to rebuild a real tree-local store
+# from the lockfile + global store, retry the declared install ONCE. Shared by
+# the first application AND every gate-worktree re-apply (the post-commit gate
+# hit the unhealed path first, run 5).
+setup_install_healed() { # dest-dir  tree-root  install-cmd  outfile → install rc
+  local dest="$1" root="$2" icmd="$3" outf="$4" irc=0
+  ( cd "$dest" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || irc=$?
+  if [ "$irc" -ne 0 ] && grep -qiE 'virtual store|ERR_PNPM' "$outf"; then
+    emit_event test_setup_install_heal implement \
+      "declared-setup install hit pnpm's virtual-store guard in $root — dropping the SYMLINKED node_modules, re-linking with 'pnpm install', and retrying once" \
+      "ticket=${TICKET:-}"
+    ( cd "$root" && find . -maxdepth 5 -name node_modules -type l -exec rm -f {} + 2>/dev/null ) || :
+    ( cd "$root" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-600}" "$outf" bash -c "pnpm install" ) || :
+    irc=0
+    ( cd "$dest" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || irc=$?
+  fi
+  return "$irc"
+}
+
 # Re-apply a mission's verified/applied setup install in a FRESH gate worktree
 # (post-commit / full-suite / reconcile), so those gates judge the same
 # provisioned environment the red gate did. The declared FILES already ride the
-# committed branch; only the install needs re-running. Best-effort + bounded.
+# committed branch; only the install needs re-running — WITH the same pnpm
+# virtual-store heal as the first application (the gate worktrees are exactly
+# the symlinked-node_modules trees the heal exists for). Best-effort + bounded.
 setup_reapply_in_worktree() { # worktree-path
   local wt="$1" rec="${MISSION_DIR:-}/test-setup-applied.json"
   [ -n "${MISSION_DIR:-}" ] && [ -f "$rec" ] || return 0
@@ -2879,7 +2886,7 @@ setup_reapply_in_worktree() { # worktree-path
   local d="$wt${pkg:+/$pkg}"
   [ -d "$d" ] || return 0
   local outf; outf="$(mktemp)" rc=0
-  ( cd "$d" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || rc=$?
+  setup_install_healed "$d" "$wt" "$icmd" "$outf" || rc=$?
   rm -f "$outf"
   [ "$rc" -ne 0 ] && emit_event test_setup_reapply_failed implement \
     "declared-setup install exited $rc in gate worktree $wt — the gate may misjudge the env" || :
