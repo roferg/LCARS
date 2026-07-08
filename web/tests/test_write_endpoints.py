@@ -1417,6 +1417,73 @@ class LaunchEndpointTest(WriteEndpointBase):
             self._post("/api/mission/nope/launch", {})
         self.assertEqual(cm.exception.code, 404)
 
+    # ── S110: in-flight guard — a duplicate launch while one is spinning up ────
+    def test_concurrent_launch_dispatches_only_once_inflight_guard(self):
+        """A second launch POST arriving WHILE the first is still spinning up
+        (the SSE-lagged card lets the captain click RUN twice) must be an
+        idempotent no-op — NOT a second concurrent `lcars launch`, which would
+        spawn a duplicate app. Hold one launch mid-dispatch and prove a second
+        launch() no-ops (returns a board) and the dispatch fires EXACTLY ONCE."""
+        calls = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_run(key, args, env_extra=None):
+            calls.append(key)
+            if key == "launch":
+                # thread-1 is now PAST the guard, inside the dispatch; hold it
+                # "in flight" until the second call has had its chance to race.
+                started.set()
+                release.wait(5)
+            return 0
+
+        self.actions._run = fake_run
+
+        results = {}
+
+        def first():
+            results["a"] = self.actions.launch("m-001")
+
+        t1 = threading.Thread(target=first, daemon=True)
+        t1.start()
+        self.assertTrue(started.wait(5), "first launch never reached dispatch")
+
+        # second launch arrives WHILE the first is still in flight → no-op board.
+        results["b"] = self.actions.launch("m-001")
+        self.assertIn("board", results["b"])
+
+        release.set()
+        t1.join(5)
+        self.assertFalse(t1.is_alive(), "first launch thread never finished")
+
+        self.assertEqual([k for k in calls if k == "launch"], ["launch"],
+                         "the in-flight guard let a duplicate launch dispatch")
+        # the finally: cleared the in-flight mark, so a fresh launch dispatches.
+        self.actions.launch("m-001")
+        self.assertEqual(len([k for k in calls if k == "launch"]), 2)
+
+    def test_launch_inflight_seed_no_ops_then_finally_clears(self):
+        """Seeded (non-threaded) form of the guard: a mission already marked
+        in-flight no-ops WITHOUT dispatching; a normal launch dispatches once and
+        clears the in-flight mark in its finally."""
+        calls = []
+
+        def fake_run(key, args, env_extra=None):
+            calls.append(key)
+            return 0
+
+        self.actions._run = fake_run
+        # simulate a launch already in flight for this mission.
+        self.actions._launching = {"m-001"}
+        out = self.actions.launch("m-001")
+        self.assertIn("board", out)
+        self.assertNotIn("launch", calls)
+        # nothing in flight now → the launch DOES dispatch once and clears itself.
+        self.actions._launching = set()
+        self.actions.launch("m-001")
+        self.assertEqual(calls.count("launch"), 1)
+        self.assertNotIn("m-001", self.actions._launching)
+
     # ── 2: stop dispatch + daemon-owned lifecycle (shutdown kills the app) ────
     def test_launch_stop_dispatches_stop(self):
         self._rebuild_with_launch()

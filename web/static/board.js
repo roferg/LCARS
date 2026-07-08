@@ -1723,6 +1723,10 @@ function launchAffordance(mi) {
   }
 
   render(mi.launch);
+  // S110: mi.launch is the SSE-lagged board copy — a card reopened right after a
+  // RUN can still show it as pre-launch. Freshen once from the CURRENT launch.json
+  // so a launch already in flight renders as launching/running (hiding RUN).
+  reload();
   return wrap;
 }
 

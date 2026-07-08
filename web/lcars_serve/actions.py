@@ -520,6 +520,14 @@ class Actions(object):
         # (the shutdown handler may run on a signal thread).
         self._launches = {}
         self._launches_lock = threading.Lock()
+        # S110: in-flight launch guard. `_launches` tracks RUNNING pgids; this is a
+        # SEPARATE set of missions whose `lcars launch` dispatch is still spinning
+        # up (between the POST arriving and launch.json landing). A second POST that
+        # arrives in that window — e.g. the captain reopens a card before SSE has
+        # propagated status:"launching" and clicks RUN again — must be an idempotent
+        # no-op, NOT a second concurrent `lcars launch` of the same mission (which
+        # would spawn a duplicate app). Guarded by `_launches_lock`.
+        self._launching = set()
         # Kill every launched app on interpreter exit AND on SIGTERM (the daemon's
         # normal stop signal). atexit won't fire on a bare SIGTERM, so install a
         # handler that reaps launches then chains any prior handler. Best-effort:
@@ -996,30 +1004,42 @@ class Actions(object):
         than leaking the skill's non-zero exit as a 502 + stack (UX-33).
         """
         self._require_mission(mid)
-        args = [mid]
-        h = (hint or "").strip()
-        if h:
-            args += h.split()
-        env_extra = {}
-        engine = self._persisted_worker_bin(mid)
-        if engine:
-            env_extra["LCARS_WORKER_BIN"] = engine
+        # In-flight guard (S110): if a launch for this mission is already spinning
+        # up, a second POST is an idempotent no-op — return the (now "launching")
+        # board WITHOUT dispatching a duplicate `lcars launch`. The check-and-add is
+        # a SINGLE locked critical section so two threads can't both pass the check.
+        with self._launches_lock:
+            if mid in self._launching:
+                return {"board": self._reader.board()}
+            self._launching.add(mid)
         try:
-            self._run("launch", args, env_extra=env_extra)
-        except ActionError:
-            # A discovery/liveness failure exits non-zero AND writes a failed
-            # launch.json. If that readable record is present, swallow the exit and
-            # surface the message via the board; otherwise re-raise (a genuine
-            # dispatch error with no record for the FE to show).
-            if not isinstance(self._read_launch_json(mid), dict):
-                raise
-        rec = self._read_launch_json(mid)
-        if isinstance(rec, dict) and rec.get("status") == "running":
-            pgid = rec.get("pgid")
-            if isinstance(pgid, int) and pgid > 0:
-                with self._launches_lock:
-                    self._launches[mid] = pgid
-        return {"board": self._reader.board()}
+            args = [mid]
+            h = (hint or "").strip()
+            if h:
+                args += h.split()
+            env_extra = {}
+            engine = self._persisted_worker_bin(mid)
+            if engine:
+                env_extra["LCARS_WORKER_BIN"] = engine
+            try:
+                self._run("launch", args, env_extra=env_extra)
+            except ActionError:
+                # A discovery/liveness failure exits non-zero AND writes a failed
+                # launch.json. If that readable record is present, swallow the exit
+                # and surface the message via the board; otherwise re-raise (a
+                # genuine dispatch error with no record for the FE to show).
+                if not isinstance(self._read_launch_json(mid), dict):
+                    raise
+            rec = self._read_launch_json(mid)
+            if isinstance(rec, dict) and rec.get("status") == "running":
+                pgid = rec.get("pgid")
+                if isinstance(pgid, int) and pgid > 0:
+                    with self._launches_lock:
+                        self._launches[mid] = pgid
+            return {"board": self._reader.board()}
+        finally:
+            with self._launches_lock:
+                self._launching.discard(mid)
 
     def launch_stop(self, mid):
         """POST /api/mission/<id>/launch/stop — stop the mission's launched app.
