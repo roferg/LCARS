@@ -2702,13 +2702,18 @@ runner_preflight_env_failure() { # run-dir → 0 iff the runner cannot launch th
 repo_tests_elsewhere() { # target-pkg-rel → 0 if tests provably run elsewhere
   local pkg="$1"
   if ! runner_preflight_env_failure "$REPO_ROOT"; then return 0; fi
+  # NB: the .git exclusion must be ANCHORED at $REPO_ROOT — a per-ticket
+  # worktree lives UNDER the clone's .git/lcars/, so a bare '*/.git/*' filter
+  # would exclude EVERY file of the worktree and blind the scan (caught live
+  # in the S111 proof drive).
   local pj rel
   while IFS= read -r pj; do
     rel="${pj#"$REPO_ROOT"/}"
     [ "$rel" = "package.json" ] && continue
     case "$rel" in "$pkg"/*) continue ;; esac
     grep -Eq '"(vitest|jest|mocha|ava|tap|playwright)"' "$pj" 2>/dev/null && return 0
-  done < <(find "$REPO_ROOT" -maxdepth 4 -name package.json -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null)
+  done < <(find "$REPO_ROOT" -maxdepth 4 -name package.json \
+             -not -path '*/node_modules/*' -not -path "$REPO_ROOT/.git/*" 2>/dev/null)
   return 1
 }
 

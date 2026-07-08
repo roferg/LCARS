@@ -155,6 +155,37 @@ else
   bad "G1c. dead-everywhere handling (rc=$RC, invited=$(grep -c 'test-setup.json' "$PLOG" 2>/dev/null))"
 fi
 
+# === G1d: repo_tests_elsewhere works FROM A TICKET WORKTREE UNDER .git/ ======
+# (caught live: a bare '*/.git/*' find filter excluded every file of a worktree
+# that lives at .git/lcars/missions/<id>/worktrees/<t>, blinding the scan.)
+LIBW="$(mktemp "$TMPROOT/libw.XXXX")"
+sed -n '/^rg_signature() {/,/^}/p' "$SCRIPT" >"$LIBW"
+sed -n '/^red_gate_env_failure() {/,/^}/p' "$SCRIPT" >>"$LIBW"
+sed -n '/^resolve_test_cmd() {/,/^}/p' "$SCRIPT" >>"$LIBW"
+sed -n '/^runner_preflight_env_failure() {/,/^}/p' "$SCRIPT" >>"$LIBW"
+sed -n '/^repo_tests_elsewhere() {/,/^}/p' "$SCRIPT" >>"$LIBW"
+# shellcheck source=/dev/null
+. "$LIBW"
+if ! type repo_tests_elsewhere >/dev/null 2>&1; then
+  bad "G1d. repo_tests_elsewhere not extractable"
+else
+  wrepo="$(mktemp -d "$TMPROOT/wrepo.XXXX")"
+  ( cd "$wrepo" && git init -q && git config user.email t@t && git config user.name t )
+  mkdir -p "$wrepo/pkgA" "$wrepo/pkgB"
+  printf '{ "name": "pkgA" }\n' > "$wrepo/pkgA/package.json"
+  printf '{ "name": "pkgB", "devDependencies": { "vitest": "^1.6.0" } }\n' > "$wrepo/pkgB/package.json"
+  ( cd "$wrepo" && git add -A && git commit -qm init && git branch b1 )
+  wt="$wrepo/.git/lcars/missions/m/worktrees/t-001"
+  mkdir -p "$(dirname "$wt")"
+  ( cd "$wrepo" && git worktree add -q --detach "$wt" b1 )
+  if ( REPO_ROOT="$wt" TEST_CMD_ENV='echo "sh: vitest: command not found"; exit 127' \
+        LCARS_CFG=/dev/null repo_tests_elsewhere "pkgA" ); then
+    ok "G1d. sibling-runner scan sees through a .git/-nested worktree"
+  else
+    bad "G1d. scan still blind inside a .git/-nested worktree"
+  fi
+fi
+
 # === G2: declared setup is APPLIED, gate goes 127→red, tests saved ===========
 repo="$(new_repo)"
 touch "$repo/.runner-installed"     # root alive
