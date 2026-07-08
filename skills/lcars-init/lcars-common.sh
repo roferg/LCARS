@@ -263,7 +263,7 @@ detect_worktree_setup_cmd() {
     # find symlinks EVERY node_modules that is not nested inside another one
     # (-prune halts the descent at each match), recreating its path relative to
     # the main checkout inside the worktree. Generic across npm/yarn/pnpm.
-    printf '%s\n' 'MAIN="$(git rev-parse --path-format=absolute --git-common-dir)"; MAIN="${MAIN%/.git}"; if [ -d "$MAIN/node_modules" ]; then find "$MAIN" -name node_modules -type d -prune -print | while IFS= read -r nm; do rel="${nm#$MAIN/}"; mkdir -p "$(dirname "$rel")"; ln -snf "$nm" "$rel"; done; else '"$install"'; fi'
+    printf '%s\n' 'MAIN="$(git rev-parse --path-format=absolute --git-common-dir)"; MAIN="${MAIN%/.git}"; if [ -d "$MAIN/node_modules" ]; then find "$MAIN" -path "$MAIN/.git" -prune -o -name node_modules -type d -prune -print | while IFS= read -r nm; do rel="${nm#$MAIN/}"; mkdir -p "$(dirname "$rel")"; ln -snf "$nm" "$rel"; done; else '"$install"'; fi'
     return
   fi
   # Python and everything else: no single offline-safe string we can guarantee —
