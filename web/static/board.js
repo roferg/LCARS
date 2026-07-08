@@ -1653,6 +1653,19 @@ function launchAffordance(mi) {
   // owner: it clears this at the top and re-arms it only in the launching
   // branch, so exactly one loop is ever live and it stops on resolve.
   var pollTimer = null;
+  // S110: the launch.status the panel is CURRENTLY painting. Lets a poll tick
+  // that's still "launching" detect that nothing visible changed and skip the
+  // full teardown+rebuild — which would restart the busy-wave CSS animation
+  // every 1.5s and make it visibly stutter.
+  var shownStatus = null;
+
+  // S110: the poll callback, factored out so it can be re-armed from BOTH the
+  // launching branch and the unchanged-launching fast-path without a full
+  // render. Halts the loop once the dialog is closed (panel off the DOM).
+  function pollTick() {
+    if (!document.body.contains(wrap)) { clearTimeout(pollTimer); pollTimer = null; return; }
+    reload();
+  }
 
   function busyLabel(busy, text) {
     var lab = busy.querySelector(".lcars-working-label");
@@ -1697,9 +1710,24 @@ function launchAffordance(mi) {
   }
 
   function render(launch) {
+    var status = launch && launch.status;
+    // S110: unchanged-launching fast-path. If the panel is ALREADY painting the
+    // animated launching state, a poll tick that's still "launching" must NOT
+    // tear down + rebuild the panel — that recreates the busy node and restarts
+    // its wave animation from the start (a visible stutter every 1.5s). Just
+    // re-arm the poll (the timer that fired is spent) and return, leaving the
+    // live launching DOM untouched.
+    if (status === "launching" && shownStatus === "launching") {
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(pollTick, 1500);
+      return;
+    }
     // S110: reset the poll loop on every render — only the launching branch
     // below re-arms it, guaranteeing exactly one live timer at any moment.
     clearTimeout(pollTimer); pollTimer = null;
+    // Record the status this render is about to paint so subsequent poll ticks
+    // can detect an unchanged launching state and hit the fast-path above.
+    shownStatus = status;
     wrap.textContent = "";
     var head = el("div", "dim");
     head.style.cssText = "text-transform:uppercase;letter-spacing:.08em;"
@@ -1711,7 +1739,6 @@ function launchAffordance(mi) {
     var busy = workingNode("Launching the app…"); busy.hidden = true;
     wrap.appendChild(busy);
 
-    var status = launch && launch.status;
     if (status === "launching") {
       // A launch is in flight (15–60s: discovery worker + app spawn). Show ONLY the
       // busy state — no hint input, no RUN button. launch.sh persists this record
@@ -1723,14 +1750,11 @@ function launchAffordance(mi) {
       // re-fetches and re-renders, so this self-perpetuates while still
       // launching and naturally stops once the status becomes running / failed
       // / stopped (those branches don't reschedule).
-      // Poll until the launch resolves. The detach check lives HERE (not in
+      // Poll until the launch resolves. The detach check lives in pollTick (not
       // reload) so the INITIAL reload — fired before the caller attaches this
       // panel to the DOM — still runs; only the ongoing poll halts once the
       // dialog is closed (the panel is no longer in the document).
-      pollTimer = setTimeout(function () {
-        if (document.body.contains(wrap)) reload();
-        else { clearTimeout(pollTimer); pollTimer = null; }
-      }, 1500);
+      pollTimer = setTimeout(pollTick, 1500);
       return;
     }
     if (status === "running") {
