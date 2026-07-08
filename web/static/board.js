@@ -389,8 +389,35 @@ function cardNode(m) {
   // identical to before). Only the live/launching states show; failed/stopped/
   // absent render exactly as today. Reuses the dialog's ● LIVE idiom.
   if (m.launch && m.launch.status === "running") {
-    pills.appendChild(el("span", "pill go", "● APP LIVE"));
+    // S110: the ● APP LIVE pill carries an inline ■ stop control so the captain
+    // can stand a running app down STRAIGHT FROM THE BOARD — no need to open the
+    // Verify dialog (unreachable when focused on a logged-bug flow). It hits the
+    // SAME endpoint the dialog's ■ STOP uses (…/launch/stop). btn() already
+    // stopPropagations before our handler (the card is click-to-open), and we
+    // stopPropagation again FIRST for good measure so stopping never also opens
+    // the detail dialog.
+    var livePill = el("span", "pill go", "● APP LIVE ");
+    var stop = btn("■", "pill-stop", function (e) {
+      if (e) e.stopPropagation();
+      // Optimistically disable so a double-click can't fire the stop twice; the
+      // board's SSE re-render drops the whole pill once launch.status flips off
+      // "running" (the card is rebuilt from fresh m).
+      stop.disabled = true;
+      stop.title = "Stopping…";
+      postWrite("/api/mission/" + enc(m.id) + "/launch/stop", {},
+        function () { /* SSE re-render removes the pill (fresh m) — nothing to do */ },
+        function (msg) {
+          // Re-enable and surface the reason on the control itself (no modal).
+          stop.disabled = false;
+          stop.title = msg || "Stop failed — try again";
+        });
+    });
+    stop.title = "Stop the app";
+    applyWriteState(stop); // view-only boards disable it (and set the view-only title)
+    livePill.appendChild(stop);
+    pills.appendChild(livePill);
   } else if (m.launch && m.launch.status === "launching") {
+    // Informational only — matches the dialog, which offers STOP only once running.
     pills.appendChild(el("span", "pill", "▶ LAUNCHING…"));
   }
   card.appendChild(pills);
