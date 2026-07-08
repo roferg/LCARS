@@ -189,6 +189,20 @@ check "3. relabels to lcars:done on a detected merge" \
 check "3. an unmerged/open PR never reaches done" \
   "! grep -q '\"stage\": *\"done\"' '$(state_of "$r2")'"
 
+# --- Behaviour 4 (S111 root-tree sovereignty): open-pr NEVER moves HEAD -------
+# The old open_pr checked the mission branch out in the shared checkout before
+# pushing — the last site that yanked the captain's working tree onto a mission
+# branch (caught live at 002's Verify boundary in the S111 proof drive). Push +
+# pr-create are ref-based; the checkout must stay wherever the captain left it.
+r4="$(new_repo_verify)"; make_gh_stub "$r4/gh"; make_notify_stub "$r4/notify"
+head4_before="$(cd "$r4" && git rev-parse --abbrev-ref HEAD)"
+run_in "$r4" open-pr --mission "$MID" >"$r4/out.txt" 2>&1 || :
+head4_after="$(cd "$r4" && git rev-parse --abbrev-ref HEAD)"
+check "4. open-pr leaves the captain's checkout exactly where it was" \
+  "[ '$head4_before' = '$head4_after' ]"
+check "4. open-pr still opened the PR without the checkout" \
+  "grep -q 'pull/77' '$(state_of "$r4")'"
+
 # ==========================================================================
 echo
 printf 'lcars verify-pr: %d passed, %d failed\n' "$pass" "$fail"

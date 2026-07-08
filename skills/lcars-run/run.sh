@@ -2803,6 +2803,19 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   local irc=0 outf; outf="$(mktemp)"
   if [ -n "$icmd" ]; then
     ( cd "$dest" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || irc=$?
+    # SELF-HEAL (caught live, S111 001): in a fresh worktree whose node_modules
+    # were symlinked in by worktreeSetupCommand, pnpm REFUSES to add a dep until
+    # the tree's virtual store is re-linked ("pnpm now wants to use the virtual
+    # store at ... reinstall with pnpm install"). Recognize the pnpm complaint,
+    # re-link the workspace IN THIS TREE, and retry the declared install ONCE.
+    if [ "$irc" -ne 0 ] && grep -qiE 'virtual store|ERR_PNPM' "$outf"; then
+      emit_event test_setup_install_heal implement \
+        "declared-setup install hit pnpm's virtual-store guard — running 'pnpm install' in the build tree and retrying once" \
+        "ticket=$TICKET"
+      ( cd "$REPO_ROOT" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-600}" "$outf" bash -c "pnpm install" ) || :
+      irc=0
+      ( cd "$dest" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || irc=$?
+    fi
   fi
   local itail; itail="$(tail -5 "$outf" 2>/dev/null | tr '\n' ' ')"; rm -f "$outf"
   [ "$irc" -ne 0 ] && SETUP_NOTE="installCommand exited $irc: $itail"

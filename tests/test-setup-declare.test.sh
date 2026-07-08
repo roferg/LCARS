@@ -273,6 +273,38 @@ else
   bad "G5b. pending question does not mention the setup attempt"
 fi
 
+# === G7: pnpm virtual-store failure self-heals (pnpm install → retry once) ===
+# (caught live: pnpm refuses `add` in a worktree with symlinked node_modules
+# until the tree is re-linked with `pnpm install`.)
+repo="$(new_repo)"
+touch "$repo/.runner-installed"
+mkdir -p "$repo/bin"
+cat > "$repo/bin/pnpm" <<'SH'
+#!/usr/bin/env bash
+# stub pnpm: `pnpm install` re-links the tree (drops the marker the declared
+# install needs); anything else no-ops.
+[ "$1" = "install" ] && touch "$PWD/.pnpm-relinked"
+exit 0
+SH
+chmod +x "$repo/bin/pnpm"
+cat > "$repo/install-fake.sh" <<'SH'
+#!/usr/bin/env bash
+# declared install: fails with pnpm's virtual-store complaint until the tree
+# has been re-linked, then succeeds and installs the runner.
+if [ ! -f "$(git rev-parse --show-toplevel 2>/dev/null || echo .)/.pnpm-relinked" ] && [ ! -f "../.pnpm-relinked" ] && [ ! -f ".pnpm-relinked" ]; then
+  echo 'ERR_PNPM: pnpm now wants to use the virtual store — reinstall with "pnpm install".'
+  exit 1
+fi
+touch .runner-installed
+SH
+STUB_MODE=declare-setup run_ticket "$repo" STUB_MODE=declare-setup \
+  STUB_INSTALL="$repo/install-fake.sh" PATH="$repo/bin:$PATH"
+if [ -f "$repo/pkgA/.runner-installed" ]; then
+  ok "G7. virtual-store failure healed (pnpm install → declared install retried OK)"
+else
+  bad "G7. virtual-store heal did not cure the install (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
+fi
+
 # === G6: provision_worktree re-applies the recorded installCommand ===========
 LIB="$(mktemp "$TMPROOT/lib.XXXX")"
 sed -n '/^provision_worktree() {/,/^}/p' "$SCRIPT" >"$LIB"

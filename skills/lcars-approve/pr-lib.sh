@@ -141,14 +141,13 @@ open_pr() {
     http*|*/pull/*) PR_URL="$existing"; return 0 ;;
   esac
 
-  # Ensure the mission branch is the one checked out.
-  local cur; cur="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  if [ "$cur" != "$BRANCH" ]; then
-    "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH" \
-      || die "mission branch '$BRANCH' does not exist — Implement never committed to it. Mission stays at verify."
-    "$GIT_BIN" checkout "$BRANCH" >/dev/null 2>&1 \
-      || die "could not checkout '$BRANCH'. Mission stays at verify."
-  fi
+  # S111 (root-tree sovereignty): the branch must EXIST, but it is NEVER checked
+  # out here — `git push origin <branch>` and `gh pr create --head` are ref-based
+  # and work from any checkout. The old checkout at this line was the last site
+  # that moved the captain's working tree onto a mission branch (caught live at
+  # 002's Verify boundary in the S111 proof drive).
+  "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH" \
+    || die "mission branch '$BRANCH' does not exist — Implement never committed to it. Mission stays at verify."
 
   # Require commits ahead of the base — no content, no PR.
   local ahead; ahead="$("$GIT_BIN" rev-list --count "$BASE..$BRANCH" 2>/dev/null)"
