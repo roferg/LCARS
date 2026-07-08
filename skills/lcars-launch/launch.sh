@@ -111,6 +111,22 @@ STATE="$MDIR/state.json"
 # Per-mission artifacts.
 WT="$LCARS_DIR/launch/$MISSION"          # the disposable detached worktree
 LAUNCH_JSON="$MDIR/launch.json"          # the record both CLI + daemon read
+# S111 (RUN-button flash fix): the discovery worker gets its OWN answer file —
+# it must NEVER write the shared launch.json directly. Its {status:"ready"}
+# answer sitting in launch.json between worker-end and the final "running"
+# write made the board briefly render the idle RUN affordance mid-launch (the
+# captain saw the button flash). launch.json is now written ONLY by this skill,
+# ONLY atomically (commit_launch_json), and only ever carries
+# launching|running|failed|stopped.
+LAUNCH_DISCOVERY="$MDIR/launch-discovery.json"
+
+# Atomically commit stdin as the new launch.json: write a temp sibling, then
+# `mv -f` (an atomic rename on the same filesystem) — a concurrent board poll
+# reads either the OLD record or the NEW one, never a truncated half-write.
+commit_launch_json() { # (json on stdin)
+  local tmp="$LAUNCH_JSON.tmp.$$"
+  cat > "$tmp" && mv -f "$tmp" "$LAUNCH_JSON"
+}
 LOG="$MDIR/launch.log"                   # the app's captured stdout+stderr
 OUTDIR="$MDIR/.launch-work"              # the worker's answer channel
 
@@ -189,7 +205,7 @@ if [ "$STOP" -eq 1 ]; then
       printf '  "howToStop": "%s",\n' "$(json_esc "$st_stop")"
       printf '  "message": "the app has been stopped."\n'
       printf '}\n'
-    } > "$LAUNCH_JSON"
+    } | commit_launch_json
   fi
 
   printf 'LCARS — mission app offline. The %s viewer has been powered down.\n' "$MISSION"
@@ -231,7 +247,10 @@ LAUNCH_TARGET="${HINT:-discovering how to run the app…}"
   printf '  "target": "%s",\n' "$(json_esc "$LAUNCH_TARGET")"
   printf '  "message": "the app is starting…"\n'
   printf '}\n'
-} > "$LAUNCH_JSON"
+} | commit_launch_json
+# A STALE discovery answer from a prior launch must never satisfy the
+# silent-worker check below — the worker's channel starts empty every launch.
+rm -f "$LAUNCH_DISCOVERY"
 
 # --- check the SHA into a DETACHED, disposable worktree (idempotent) -------
 mkdir -p "$(dirname "$WT")"
@@ -318,7 +337,7 @@ the checkout — inspection only. Read package.json / Makefile / pyproject / REA
 / config as needed to find the exact command that starts the app the captain named.
 
 Then write a JSON object to EXACTLY this path (and print nothing):
-  $LAUNCH_JSON
+  $LAUNCH_DISCOVERY
 with these fields:
   "target"    a short human name for what runs (e.g. "example-game dev server")
   "command"   the exact shell command that starts it
@@ -338,8 +357,10 @@ from the root scripts. Use the captain's hint to select the correct target.
 EOF
 
 # Reuse the worker-adapter's spawn (never re-implement spawning). Export the
-# engine + the launch.json target so both the adapter and the worker resolve them.
-LCARS_LAUNCH_JSON="$LAUNCH_JSON" LCARS_WORKER_BIN="$WORKER_BIN" \
+# engine + the DISCOVERY target so both the adapter and the worker resolve them.
+# (The env var keeps its historical name — test stubs write to it — but it now
+# points at the worker's PRIVATE discovery file, never the shared launch.json.)
+LCARS_LAUNCH_JSON="$LAUNCH_DISCOVERY" LCARS_WORKER_BIN="$WORKER_BIN" \
   bash "$WORKER_ADAPTER" spawn "$CLI" launch "$OUTDIR" "$PROMPT" || true
 
 # --- read the discovery result --------------------------------------------
@@ -353,29 +374,27 @@ write_failed() { # message  → persist a status=failed record (no pid)
     printf '  "howToStop": "%s",\n' "$(json_esc "${HOWSTOP:-}")"
     printf '  "message": "%s"\n'    "$(json_esc "$msg")"
     printf '}\n'
-  } > "$LAUNCH_JSON"
+  } | commit_launch_json
 }
 
 TARGET=""; CMD=""; CWD=""; URL=""; HOWSTOP=""; DSTATUS=""; WMSG=""
-# SILENT-WORKER detection. Previously this was `[ ! -f "$LAUNCH_JSON" ]` — a worker
-# that produced no file at all. Now launch.sh itself seeds an intermediate
-# `status:"launching"` record before the worker runs, so the file ALWAYS exists.
-# The semantic equivalent: a worker that produced no usable record ⟺ the status is
-# STILL "launching" after the worker ran (it overwrote nothing). Treat that exactly
-# like the old "no file" case — the silent-worker failure path.
-if [ ! -f "$LAUNCH_JSON" ] || [ "$(json_str "$LAUNCH_JSON" status)" = "launching" ]; then
+# SILENT-WORKER detection — back to the simple original semantic: the worker
+# writes its answer to its OWN discovery file (cleared before the spawn), so
+# "no file" ⟺ the inspector reported nothing. The shared launch.json still
+# says "launching" throughout and is never consulted here.
+if [ ! -f "$LAUNCH_DISCOVERY" ]; then
   TARGET=""; URL=""; HOWSTOP=""
   write_failed "couldn't work out how to run this app — the inspector reported nothing back. Try naming the app or its directory as a hint."
   remove_worktree
   die "couldn't work out how to run this app — the inspector reported nothing back. Try naming the app or its directory as a hint."
 fi
-DSTATUS="$(json_str "$LAUNCH_JSON" status)"
-TARGET="$(json_str "$LAUNCH_JSON" target)"
-CMD="$(json_str "$LAUNCH_JSON" command)"
-CWD="$(json_str "$LAUNCH_JSON" cwd)"
-URL="$(json_str "$LAUNCH_JSON" url)"
-HOWSTOP="$(json_str "$LAUNCH_JSON" howToStop)"
-WMSG="$(json_str "$LAUNCH_JSON" message)"
+DSTATUS="$(json_str "$LAUNCH_DISCOVERY" status)"
+TARGET="$(json_str "$LAUNCH_DISCOVERY" target)"
+CMD="$(json_str "$LAUNCH_DISCOVERY" command)"
+CWD="$(json_str "$LAUNCH_DISCOVERY" cwd)"
+URL="$(json_str "$LAUNCH_DISCOVERY" url)"
+HOWSTOP="$(json_str "$LAUNCH_DISCOVERY" howToStop)"
+WMSG="$(json_str "$LAUNCH_DISCOVERY" message)"
 
 if [ "$DSTATUS" = "failed" ] || [ -z "$CMD" ]; then
   # NB: an apostrophe inside a ${VAR:-default} default trips bash 3.2's parser,
@@ -453,7 +472,7 @@ fi
   printf '  "pgid": %s,\n'        "$PGID"
   printf '  "message": "the app is running."\n'
   printf '}\n'
-} > "$LAUNCH_JSON"
+} | commit_launch_json
 
 # --- LCARS-voice readout --------------------------------------------------
 printf 'LCARS — mission app online. The %s is on the viewscreen.\n' "${TARGET:-app}"

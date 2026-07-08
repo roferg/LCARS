@@ -467,7 +467,10 @@ W9="$(claude_stub_path)"
 # a normal READY discovery so the launch proceeds to running.
 cat >"$W9" <<EOF
 #!/usr/bin/env bash
-cp "\$LCARS_LAUNCH_JSON" "$SEEN9" 2>/dev/null || :
+# S111: \$LCARS_LAUNCH_JSON now points at the worker's PRIVATE discovery file
+# (empty before the worker writes); the "launching" record the harness persists
+# BEFORE the worker lives at the sibling launch.json — snapshot THAT.
+cp "\$(dirname "\$LCARS_LAUNCH_JSON")/launch.json" "$SEEN9" 2>/dev/null || :
 cat > "\$LCARS_LAUNCH_JSON" <<'JSON'
 {
   "target": "m9 dev server",
@@ -491,6 +494,11 @@ check "9b. the intermediate record carried the captain's hint as its target" \
   "[ \"\$(json_field \"$SEEN9\" target)\" = 'the m9 app' ]"
 check "9c. the final settle overwrote launching → running" \
   "[ \"\$(json_field \"$LJ9\" status)\" = running ]"
+# S111 (RUN-button flash): the worker's answer goes to its PRIVATE discovery
+# file — the shared launch.json must NEVER carry the worker's \"ready\" status
+# (that transient state is what flashed the idle RUN button mid-launch).
+check "9f. the worker's ready answer lives in launch-discovery.json, not launch.json" \
+  "[ \"\$(json_field \"$(dirname "$LJ9")/launch-discovery.json\" status)\" = ready ]"
 ( cd "$R9" && LCARS_WORKER_BIN="$W9" bash "$LAUNCH_SH" m9 --stop >/dev/null 2>&1 )
 
 # 9d/e. NEW silent-worker semantics: a worker that writes NOTHING leaves the status
