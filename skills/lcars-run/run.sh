@@ -2810,8 +2810,14 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
     # re-link the workspace IN THIS TREE, and retry the declared install ONCE.
     if [ "$irc" -ne 0 ] && grep -qiE 'virtual store|ERR_PNPM' "$outf"; then
       emit_event test_setup_install_heal implement \
-        "declared-setup install hit pnpm's virtual-store guard — running 'pnpm install' in the build tree and retrying once" \
+        "declared-setup install hit pnpm's virtual-store guard — dropping the SYMLINKED node_modules, re-linking with 'pnpm install', and retrying once" \
         "ticket=$TICKET"
+      # The provisioning symlinks node_modules from the main clone; pnpm cannot
+      # re-link a store THROUGH a symlink, so `pnpm install` alone is a no-op
+      # cure (caught live, second round). Drop ONLY the symlinked node_modules
+      # entries (-type l — a real node_modules dir is never touched) so pnpm
+      # rebuilds a real worktree-local store from the lockfile + global store.
+      ( cd "$REPO_ROOT" && find . -maxdepth 5 -name node_modules -type l -exec rm -f {} + 2>/dev/null ) || :
       ( cd "$REPO_ROOT" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-600}" "$outf" bash -c "pnpm install" ) || :
       irc=0
       ( cd "$dest" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || irc=$?
