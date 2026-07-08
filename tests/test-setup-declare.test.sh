@@ -309,7 +309,12 @@ fi
 LIB="$(mktemp "$TMPROOT/lib.XXXX")"
 sed -n '/^provision_worktree() {/,/^}/p' "$SCRIPT" >"$LIB"
 sed -n '/^setup_reapply_in_worktree() {/,/^}/p' "$SCRIPT" >>"$LIB"
+sed -n '/^setup_ensure_runner() {/,/^}/p' "$SCRIPT" >>"$LIB"
 sed -n '/^setup_install_healed() {/,/^}/p' "$SCRIPT" >>"$LIB"
+sed -n '/^runner_preflight_env_failure() {/,/^}/p' "$SCRIPT" >>"$LIB"
+sed -n '/^resolve_test_cmd() {/,/^}/p' "$SCRIPT" >>"$LIB"
+sed -n '/^rg_signature() {/,/^}/p' "$SCRIPT" >>"$LIB"
+sed -n '/^red_gate_env_failure() {/,/^}/p' "$SCRIPT" >>"$LIB"
 sed -n '/^run_with_hard_timeout() {/,/^}/p' "$SCRIPT" >>"$LIB"
 # shellcheck source=/dev/null
 . "$LIB" 2>/dev/null

@@ -2830,12 +2830,13 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
       cp "$f" "$dest/$rel"
     done < <(find "$sdir" -type f 2>/dev/null)
   fi
-  local irc=0 outf; outf="$(mktemp)"
+  local irc=0
   if [ -n "$icmd" ]; then
-    setup_install_healed "$dest" "$REPO_ROOT" "$icmd" "$outf" || irc=$?
+    # Probe-verified: the runner must actually LAUNCH afterwards — exit codes
+    # are never trusted (see setup_ensure_runner; shared with the gate reapply).
+    setup_ensure_runner "$dest" "$REPO_ROOT" "$icmd" || irc=1
   fi
-  local itail; itail="$(tail -5 "$outf" 2>/dev/null | tr '\n' ' ')"; rm -f "$outf"
-  [ "$irc" -ne 0 ] && SETUP_NOTE="installCommand exited $irc: $itail"
+  [ "$irc" -ne 0 ] && SETUP_NOTE="the runner still cannot launch after the declared install AND a forced symlink-drop + re-link cycle"
   cp "$mf" "$(ticket_dir "$TICKET")/test-setup-applied.json" 2>/dev/null || :
   cp "$mf" "$MISSION_DIR/test-setup-applied.json" 2>/dev/null || :
   emit_event test_setup_applied implement \
@@ -2868,12 +2869,36 @@ setup_install_healed() { # dest-dir  tree-root  install-cmd  outfile → install
   return "$irc"
 }
 
+# ENSURE the declared runner actually LAUNCHES in a tree — the ONE helper every
+# door uses (first apply, gate-worktree reapply). Exit codes are never trusted:
+# after the (failure-healed) install, the runner is PROBED; if it is still dead
+# — pnpm's silent "up to date" no-op through symlinked node_modules — the
+# relink cycle is FORCED once (drop -type l node_modules only, `pnpm install` a
+# real tree-local store, re-run the declared install) and the probe decides.
+# Returns 0 iff the runner now launches (or there is nothing to probe with).
+setup_ensure_runner() { # dest-dir  tree-root  install-cmd → 0 alive, 1 still dead
+  local dest="$1" root="$2" icmd="$3"
+  local outf; outf="$(mktemp)"
+  setup_install_healed "$dest" "$root" "$icmd" "$outf" || :
+  if runner_preflight_env_failure "$dest"; then
+    emit_event test_setup_install_heal implement \
+      "declared-setup install exited clean but the runner is STILL dead — forcing the symlink-drop + re-link cycle once" \
+      "ticket=${TICKET:-}"
+    ( cd "$root" && find . -maxdepth 5 -name node_modules -type l -exec rm -f {} + 2>/dev/null ) || :
+    ( cd "$root" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-600}" "$outf" bash -c "pnpm install" ) || :
+    ( cd "$dest" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$outf" bash -c "$icmd" ) || :
+  fi
+  rm -f "$outf"
+  ! runner_preflight_env_failure "$dest"
+}
+
 # Re-apply a mission's verified/applied setup install in a FRESH gate worktree
 # (post-commit / full-suite / reconcile), so those gates judge the same
 # provisioned environment the red gate did. The declared FILES already ride the
-# committed branch; only the install needs re-running — WITH the same pnpm
-# virtual-store heal as the first application (the gate worktrees are exactly
-# the symlinked-node_modules trees the heal exists for). Best-effort + bounded.
+# committed branch; only the install needs re-running — through the SAME
+# probe-verified ensure the first application uses (the post-commit gate hit
+# the exit-code-trusting variant live: clean no-op install, dead runner, false
+# env-unprovisioned verdict). Best-effort + bounded.
 setup_reapply_in_worktree() { # worktree-path
   local wt="$1" rec="${MISSION_DIR:-}/test-setup-applied.json"
   [ -n "${MISSION_DIR:-}" ] && [ -f "$rec" ] || return 0
@@ -2885,11 +2910,9 @@ setup_reapply_in_worktree() { # worktree-path
   printf '%s' "$icmd" | grep -Eq "$allow" || return 0
   local d="$wt${pkg:+/$pkg}"
   [ -d "$d" ] || return 0
-  local outf; outf="$(mktemp)" rc=0
-  setup_install_healed "$d" "$wt" "$icmd" "$outf" || rc=$?
-  rm -f "$outf"
-  [ "$rc" -ne 0 ] && emit_event test_setup_reapply_failed implement \
-    "declared-setup install exited $rc in gate worktree $wt — the gate may misjudge the env" || :
+  setup_ensure_runner "$d" "$wt" "$icmd" \
+    || emit_event test_setup_reapply_failed implement \
+         "declared-setup install left the runner dead in gate worktree $wt even after the forced relink — the gate may misjudge the env" || :
   return 0
 }
 
@@ -3522,25 +3545,9 @@ ROLLBACK_EOF
     if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
       if apply_declared_setup "$SETUP" "$(dirname "$SETUP")/setup" "$pkg_rel"; then
         [ -n "$SETUP_NOTE" ] && printf '  ⚠ declared setup applied with a note: %s\n' "$SETUP_NOTE" >&2
-        # S111: an install can EXIT 0 yet cure nothing — pnpm no-ops "up to
-        # date" THROUGH the provisioning's symlinked node_modules (caught live:
-        # a bug child declared plain `pnpm install`), so the failure-triggered
-        # heal never fires. When the runner is STILL dead after a clean apply,
-        # force the relink cycle ONCE — drop symlinked node_modules, re-link
-        # with `pnpm install`, re-run the declared install — before parking.
-        if runner_preflight_env_failure "$run_dir"; then
-          local heal_icmd; heal_icmd="$(json_str "$SETUP" installCommand)"
-          if [ -n "$heal_icmd" ]; then
-            emit_event test_setup_install_heal implement \
-              "declared-setup install exited clean but the runner is STILL dead — forcing the symlink-drop + re-link cycle once" \
-              "ticket=$TICKET"
-            ( cd "$REPO_ROOT" && find . -maxdepth 5 -name node_modules -type l -exec rm -f {} + 2>/dev/null ) || :
-            local heal_out; heal_out="$(mktemp)"
-            ( cd "$REPO_ROOT" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-600}" "$heal_out" bash -c "pnpm install" ) || :
-            ( cd "$REPO_ROOT${pkg_rel:+/$pkg_rel}" && run_with_hard_timeout "${LCARS_SETUP_INSTALL_TIMEOUT_SECS:-300}" "$heal_out" bash -c "$heal_icmd" ) || :
-            rm -f "$heal_out"
-          fi
-        fi
+        # (The apply above is probe-verified end-to-end — setup_ensure_runner
+        # already forced the relink cycle if a clean install left the runner
+        # dead. A still-dead runner HERE is genuinely incurable → park.)
         if runner_preflight_env_failure "$run_dir"; then
           _impl_rollback_intree; rm -rf "$tdir"
           {
