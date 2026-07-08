@@ -367,6 +367,12 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
             self.send_header("Content-Type",
                              _CONTENT_TYPES.get(ext, "application/octet-stream"))
             self.send_header("Content-Length", str(len(body)))
+            # Never let a browser heuristically cache the front-end assets: an
+            # open (or soft-reloaded) tab must always fetch the CURRENT file
+            # after the daemon restarts, or the captain keeps running stale JS
+            # (board.js/board.css) and never receives front-end fixes without a
+            # hard reload. `no-store` is the strongest directive here.
+            self.send_header("Cache-Control", "no-store, must-revalidate")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(body)

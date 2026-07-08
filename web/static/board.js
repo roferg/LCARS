@@ -1643,11 +1643,32 @@ function launchAffordance(mi) {
 
   function reload() {
     // Re-fetch the mission so the panel reflects the settled launch state
-    // (SSE also nudges the board; this keeps the OPEN dialog in sync).
+    // (SSE also nudges the board; this keeps the OPEN dialog in sync). The
+    // truth comes from the live launch.json — RUN only if genuinely idle,
+    // Launching… if a launch is in flight, ● LIVE if running.
     fetchMission(mi.id, function (fresh) {
       mi.launch = fresh.launch;
       render(fresh.launch);
+    }, function () {
+      // Resilience: if the re-fetch fails (network/error), don't leave the
+      // panel stuck on the neutral "checking" state — fall back to the board
+      // copy so the captain still has a usable affordance.
+      render(mi.launch);
     });
+  }
+
+  // A neutral, trustworthy-until-proven placeholder while reload() fetches the
+  // live launch.json: bars only, NO hint input and NO RUN button — so a card
+  // reopened during a launch's spin-up window can never flash a false RUN.
+  function renderChecking() {
+    wrap.textContent = "";
+    var head = el("div", "dim");
+    head.style.cssText = "text-transform:uppercase;letter-spacing:.08em;"
+      + "font-size:11px;margin-bottom:6px";
+    head.textContent = "Run the app";
+    wrap.appendChild(head);
+    var busy = workingNode("Checking app status…");
+    wrap.appendChild(busy);
   }
 
   function render(launch) {
@@ -1722,10 +1743,21 @@ function launchAffordance(mi) {
     }
   }
 
-  render(mi.launch);
-  // S110: mi.launch is the SSE-lagged board copy — a card reopened right after a
-  // RUN can still show it as pre-launch. Freshen once from the CURRENT launch.json
-  // so a launch already in flight renders as launching/running (hiding RUN).
+  // S110: mi.launch is the SSE-LAGGED board copy. During a launch's spin-up
+  // window (15–60s) it can still read as pre-launch (absent / stopped / failed)
+  // even though a launch just started — painting the RUN state from it here
+  // would flash a FALSE ⚡ RUN button before reload() corrects it a beat later.
+  //  • ACTIVE states (running / launching) are trustworthy enough to paint now.
+  //  • Otherwise render a NEUTRAL "Checking…" (no RUN button) first; reload()
+  //    then renders the TRUTH from the live launch.json.
+  var openStatus = mi.launch && mi.launch.status;
+  if (openStatus === "running" || openStatus === "launching") {
+    render(mi.launch);
+  } else {
+    renderChecking();
+  }
+  // Freshen from the CURRENT launch.json so a launch already in flight renders
+  // as launching/running (hiding RUN); a truly idle mission settles to RUN.
   reload();
   return wrap;
 }
@@ -3176,14 +3208,20 @@ function fmtTs(ts) {
   return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2);
 }
 
-function fetchMission(id, cb) {
+function fetchMission(id, cb, onErr) {
   fetch("/api/mission/" + enc(id))
     .then(function (r) {
       if (r.status === 404) throw new Error("no such mission");
       return r.json();
     })
     .then(cb)
-    .catch(function () { setStatus("mission unavailable"); });
+    .catch(function () {
+      // An optional caller-supplied error handler keeps a live panel from
+      // getting stuck on a transient state (e.g. launchAffordance's "checking")
+      // when the fetch fails; the default keeps the historic status message.
+      if (typeof onErr === "function") { onErr(); return; }
+      setStatus("mission unavailable");
+    });
 }
 
 /* ════════════════ live channel ════════════════ */
