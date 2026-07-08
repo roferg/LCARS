@@ -1660,11 +1660,6 @@ function launchAffordance(mi) {
   }
 
   function reload() {
-    // S110: if the dialog was closed, halt the poll loop — a detached panel
-    // must not keep re-fetching forever.
-    if (!document.body.contains(wrap)) {
-      clearTimeout(pollTimer); pollTimer = null; return;
-    }
     // Re-fetch the mission so the panel reflects the settled launch state
     // (SSE also nudges the board; this keeps the OPEN dialog in sync). The
     // truth comes from the live launch.json — RUN only if genuinely idle,
@@ -1728,7 +1723,14 @@ function launchAffordance(mi) {
       // re-fetches and re-renders, so this self-perpetuates while still
       // launching and naturally stops once the status becomes running / failed
       // / stopped (those branches don't reschedule).
-      pollTimer = setTimeout(reload, 1500);
+      // Poll until the launch resolves. The detach check lives HERE (not in
+      // reload) so the INITIAL reload — fired before the caller attaches this
+      // panel to the DOM — still runs; only the ongoing poll halts once the
+      // dialog is closed (the panel is no longer in the document).
+      pollTimer = setTimeout(function () {
+        if (document.body.contains(wrap)) reload();
+        else { clearTimeout(pollTimer); pollTimer = null; }
+      }, 1500);
       return;
     }
     if (status === "running") {
