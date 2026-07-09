@@ -208,6 +208,53 @@ grep_tpl '`localStorage`/`window` that Node shadows' \
   && ok "hazard #4: Node-shadow globals string present" \
   || bad "hazard #4: '\`localStorage\`/\`window\` that Node shadows' missing"
 
+# ---------------------------------------------------------------------------
+# 7. S131: setup-aware ZERO-COLLECT diagnostics — self_smoke_reason names the
+#    include/placement mismatch when a declared setup was applied this mission.
+#    (Live 2026-07-09: an authored vitest config with include: tests/** vs a test
+#    relocated co-located → zero collected → three BLIND retries, because the
+#    bounce only gave the generic "write a fail-first test" advice.)
+# ---------------------------------------------------------------------------
+echo "S131 self_smoke_reason — setup-aware include/placement mismatch"
+
+LIBR="$(mktemp "$TMPROOT/libr.XXXX")"
+sed -n '/^self_smoke_reason() {/,/^}/p' "$SCRIPT" >"$LIBR"
+# shellcheck source=/dev/null
+. "$LIBR"
+if ! type self_smoke_reason >/dev/null 2>&1; then
+  bad "self_smoke_reason not extractable from run.sh"
+else
+  SMOKE_OUT=' RUN  v1.6.1 /w/t-001/example-game
+filter:  src/controls-hint.test.js
+include: tests/**/*.test.{js,mjs,ts}
+No test files found, exiting with code 1'
+  # 7a. setup applied → the reason quotes include:/filter: + the placed relpath
+  r="$(self_smoke_reason zero-tests 'pnpm vitest run' "$SMOKE_OUT" 'src/controls-hint.test.js' 1)"
+  if printf '%s' "$r" | grep -q 'include/placement MISMATCH' \
+     && printf '%s' "$r" | grep -q 'include: tests/\*\*/\*.test.{js,mjs,ts}' \
+     && printf '%s' "$r" | grep -q 'in-tree to: src/controls-hint.test.js' \
+     && printf '%s' "$r" | grep -q 'MUST agree'; then
+    ok "7a. setup applied → mismatch named: include/filter lines + placed relpath + must-agree"
+  else
+    bad "7a. setup-aware reason missing mismatch details (got: $(printf '%s' "$r" | head -3))"
+  fi
+  # 7b. NO setup applied → the generic zero-tests advice, byte-compatible
+  r2="$(self_smoke_reason zero-tests 'pnpm vitest run' "$SMOKE_OUT" 'src/controls-hint.test.js' '')"
+  if printf '%s' "$r2" | grep -q 'Write at least one dedicated, fail-first test' \
+     && ! printf '%s' "$r2" | grep -q 'MISMATCH'; then
+    ok "7b. no setup applied → generic zero-tests advice unchanged"
+  else
+    bad "7b. generic advice regressed (got: $(printf '%s' "$r2" | head -2))"
+  fi
+  # 7c. the hang arm is untouched by the new params
+  r3="$(self_smoke_reason hang 'pnpm vitest run' 'whatever' 'src/x.test.js' 1)"
+  if printf '%s' "$r3" | grep -q 'your suite HUNG'; then
+    ok "7c. hang reason unchanged with the new params"
+  else
+    bad "7c. hang reason regressed"
+  fi
+fi
+
 echo
 printf 'self-smoke: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

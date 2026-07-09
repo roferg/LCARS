@@ -129,6 +129,26 @@ else
   bad "G1. no setup invitation in the prompt (rc=$RC: $(printf '%s' "$OUT" | tail -3))"
 fi
 
+# === G1-PC (S131): the invitation states the PLACEMENT CONTRACT ==============
+# (caught live 2026-07-09: the writer authored a vitest config with
+# include: tests/** — reasonable from its seat, where tests live in a tests/
+# scratch dir — but S101 relocated the test to the repo's co-located convention,
+# so the config collected ZERO tests and three blind retries hit the same trap.
+# The invitation must say WHERE the tests will land and that any declared runner
+# config MUST collect from there.)
+if grep -q "PLACEMENT CONTRACT" "$PLOG" \
+   && grep -q "co-located" "$PLOG" \
+   && grep -q "pkgA/game.test.js" "$PLOG"; then
+  ok "G1-PC-a. invitation names the detected convention + a concrete placed path"
+else
+  bad "G1-PC-a. placement contract (convention + placed example) missing from the invitation"
+fi
+if grep -q 'do NOT narrow `include`' "$PLOG"; then
+  ok "G1-PC-b. invitation says the safest config does not narrow include"
+else
+  bad "G1-PC-b. include guidance missing from the invitation"
+fi
+
 # === G1b: root ALSO dead, but a SIBLING package declares a runner → invite ===
 # (the pnpm-monorepo reality: the workspace root has no runner in .bin, yet
 # sibling packages test fine — the invite must key off sibling runner decls,
@@ -403,6 +423,66 @@ if [ "$RC" -eq 0 ] && [ -n "$placed" ] && [ -z "$stray" ]; then
   ok "G8. greenfield test placed inside the target package (never repo-root src/)"
 else
   bad "G8. greenfield placement (rc=$RC placed='$placed' stray='$stray': $(printf '%s' "$OUT" | tail -3))"
+fi
+
+# === G10 (S131): setup applied but the runner COLLECTS ZERO tests forever ====
+# (the live 2026-07-09 demo shape: declared vitest config with include: tests/**,
+# test relocated co-located → "No test files found" on every attempt. The bounce
+# must name the include/placement mismatch — quoting the runner's include:/filter:
+# lines and the placed in-tree relpath — and exhaustion must classify as the NEW
+# test-infra-mismatch category naming the package, NOT over-broad-slice.)
+repo="$(new_repo)"
+touch "$repo/.runner-installed"     # root alive; pkgA dead until installed
+cat > "$repo/probe-zero.sh" <<'SH'
+#!/usr/bin/env bash
+if [ ! -f ".runner-installed" ]; then
+  echo "sh: vitest: command not found"
+  exit 127
+fi
+# post-install: the authored config's include never matches the placed test
+echo " RUN  v1.6.1 $PWD"
+echo "filter:  ${LCARS_TESTS_DIR:-}"
+echo "include: tests/**/*.test.{js,mjs,ts}"
+echo "No test files found, exiting with code 1"
+exit 1
+SH
+cat > "$repo/install-fake.sh" <<'SH'
+#!/usr/bin/env bash
+touch .runner-installed
+SH
+PLOG="$TMPROOT/g10-prompts.txt"; : > "$PLOG"
+OUT="$( cd "$repo" && env STUB_MODE=declare-setup STUB_PROMPT_LOG="$PLOG" \
+          STUB_INSTALL="$repo/install-fake.sh" \
+          LCARS_TEST_CMD="bash $repo/probe-zero.sh" \
+          LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+          LCARS_WORKER_BIN="$WORKER" LCARS_WORKER_CLI=claude \
+          LCARS_EMPTY_WORKER_TRIES=1 LCARS_WORKER_TRIES=2 \
+          LCARS_SETUP_INSTALL_ALLOW_RE='^bash ' \
+          bash "$SCRIPT" implement-ticket --mission test-001 --ticket t-001 2>&1 )"
+RC=$?
+sig="$repo/.git/lcars/missions/test-001/tickets/t-001/red-gate-signal.txt"
+if [ -f "$sig" ] && grep -q "MISMATCH" "$sig" \
+   && grep -q "include: tests/\*\*/\*.test.{js,mjs,ts}" "$sig" \
+   && grep -q "pkgA/t-001.test.js" "$sig"; then
+  ok "G10a. zero-collect bounce names the include/placement mismatch (include line + placed relpath)"
+else
+  bad "G10a. bounce does not name the mismatch (sig=$(cat "$sig" 2>/dev/null | head -4))"
+fi
+if grep -q "MISMATCH" "$PLOG"; then
+  ok "G10b. the retry prompt carries the mismatch feedback (no more blind retries)"
+else
+  bad "G10b. retry prompt lacks the mismatch feedback"
+fi
+flog="$repo/.git/lcars/missions/test-001/implement-failure.log"
+if [ -f "$flog" ] && grep -q "test-infra-mismatch" "$flog" && grep -q "pkgA" "$flog"; then
+  ok "G10c. exhaustion classifies as test-infra-mismatch and names the package"
+else
+  bad "G10c. exhaustion category wrong (log=$(cat "$flog" 2>/dev/null))"
+fi
+if [ -f "$flog" ] && ! grep -q "over-broad-slice" "$flog"; then
+  ok "G10d. NOT misclassified as over-broad-slice"
+else
+  bad "G10d. still reads as over-broad-slice"
 fi
 
 echo
