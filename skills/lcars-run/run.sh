@@ -2522,6 +2522,15 @@ red_gate_env_failure() { # runner-output → 0 if the runner could not execute
 #      never settled under the hard timeout — a never-settling awaited/thenable mock
 #      or an infinite async init). Checked BEFORE env so a hang is never mis-read as
 #      an unprovisioned runner.
+#   2.5 test-infra-mismatch — S131: a DECLARED TEST SETUP was applied this
+#      mission (the caller threads the $MISSION_DIR/test-setup-applied.json
+#      marker as the 4th input) AND the runner COLLECTED ZERO tests
+#      (rg_signature zerotests): the authored runner config's include and the
+#      harness's S101 in-tree placement disagree. Named BEFORE env / over-broad
+#      so the captain is pointed at the config/placement trap, never at a
+#      scoping problem that does not exist (the live 2026-07-09 misdirection).
+#      BOTH conditions required — the flag alone never hijacks a genuine red,
+#      hang, or env verdict.
 #   3. env-failure         — the runner could not LAUNCH (red_gate_env_failure).
 #      Checked BEFORE resolution/compile, exactly as red_gate_ok triages env first,
 #      so an unprovisioned runner never mis-reads as a code fault.
@@ -2539,8 +2548,8 @@ red_gate_env_failure() { # runner-output → 0 if the runner could not execute
 #      some signal is present (runner output and/or worker noise), the truly-nothing
 #      case having been claimed by #1. A worker that emitted output/runner signal but
 #      no usable test file is a bad/over-broad attempt, NOT an empty/transient-CLI miss.
-classify_impl_failure() { # runner_out  worker_out  files_written
-  local runner_out="${1:-}" worker_out="${2:-}" files_written="${3:-}"
+classify_impl_failure() { # runner_out  worker_out  files_written  [setup_applied]
+  local runner_out="${1:-}" worker_out="${2:-}" files_written="${3:-}" setup_applied="${4:-}"
   local has_files=no has_runner=no has_worker=no
   [ -n "$(printf '%s' "$files_written" | tr -d '[:space:]')" ] && has_files=yes
   [ -n "$(printf '%s' "$runner_out"    | tr -d '[:space:]')" ] && has_runner=yes
@@ -2558,6 +2567,16 @@ classify_impl_failure() { # runner_out  worker_out  files_written
   # before env so a hang is never mis-read as an unprovisioned runner.
   if printf '%s' "$runner_out" | grep -Eq "$(rg_signature hang)"; then
     printf 'test-writer-hang'; return 0
+  fi
+
+  # 2.5. test-infra-mismatch (S131) — a declared setup was applied this mission AND
+  # the runner collected ZERO tests: the authored config's include never matched
+  # the harness-placed in-tree test. Checked after hang (a hang is a hang) and
+  # before env/over-broad, so the exhaustion names the include/placement trap
+  # instead of a scoping problem that does not exist.
+  if [ -n "$setup_applied" ] \
+     && printf '%s' "$runner_out" | grep -Eq "$(rg_signature zerotests)"; then
+    printf 'test-infra-mismatch'; return 0
   fi
 
   # 3. env-failure — the runner could not start (checked before resolution/compile).
@@ -2630,6 +2649,12 @@ impl_failure_category_phrase() { # category → phrase
     missing-new-module)         printf 'missing new module (a greenfield import the ticket must create did not resolve)' ;;
     bad-import-path)            printf 'bad import path (a mistyped / non-created import did not resolve)' ;;
     over-broad-slice)           printf 'over-broad slice (no coherent failing test — the Test-Writer could not pin a red)' ;;
+    test-infra-mismatch)
+      # S131: name the PACKAGE from the mission's applied-setup marker when readable.
+      local _tim_pkg=""
+      [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/test-setup-applied.json" ] \
+        && _tim_pkg="$(json_str "$MISSION_DIR/test-setup-applied.json" package)"
+      printf "test-infra mismatch (a declared test setup was applied%s but its runner config never collected the harness-placed test — the config's include and the in-tree test placement must agree; NOT a scoping problem)" "${_tim_pkg:+ in '$_tim_pkg'}" ;;
     empty-worker-output)        printf 'empty worker output (the worker produced no file and no output — likely a transient CLI failure, not a code problem)' ;;
     test-writer-hang)           printf 'test-writer hang (the suite never settled under the pre-gate self-smoke timeout — likely an awaited / thenable mock; caught before the Implementer)' ;;
     env-failure|runner-startup) printf 'environment failure (the test runner could not start — the worktree is not provisioned; NOT a code problem)' ;;
@@ -3193,14 +3218,29 @@ self_smoke_verdict() { # rc  runner-output → echoes hang|zero-tests|ok
 # red-gate-signal.txt grounded-retry channel so the NEXT fresh Test-Writer attempt is
 # told exactly what to fix; also becomes the last-attempt signal classify_impl_failure
 # reads at exhaustion (the `hang` marker → the test-writer-hang category).
-self_smoke_reason() { # verdict  cmd  runner-output
-  local v="$1" cmd="$2" out="$3" tail
+self_smoke_reason() { # verdict  cmd  runner-output  [placed-rels]  [setup-applied]
+  local v="$1" cmd="$2" out="$3" placed="${4:-}" setup="${5:-}" tail
   tail="$(printf '%s' "$out" | tail -20)"
   case "$v" in
     hang)
       printf 'SELF-SMOKE — your suite HUNG: the suite never settled within the hard timeout when run before any implementation, so it produced no result. The usual cause is an AWAITED mock that never settles — e.g. a Proxy / catch-all host double whose `then` trap returns a callable makes the mock a THENABLE, so `await <mock>` waits forever. FIX: a Proxy / catch-all double MUST return `undefined` for `then` (and `catch` / `finally`), and NEVER `await` a synchronously-constructed mock object. Re-author so the suite COLLECTS and FAILS FAST on an assertion. Command run: %s. Runner output (self-smoke, killed at timeout):\n%s\n' "$cmd" "$tail" ;;
     zero-tests)
-      printf 'SELF-SMOKE — your suite collected ZERO tests: no test case actually ran, so there is no red to hand off. Write at least one dedicated, fail-first test that INVOKES the not-yet-built behaviour through its public entrypoint and ASSERTS the observable output. Command run: %s. Runner output (self-smoke):\n%s\n' "$cmd" "$tail" ;;
+      # S131 (the include-vs-placement trap, caught live 2026-07-09): when a
+      # DECLARED TEST SETUP was applied this mission (the caller threads the
+      # marker + the placed in-tree relpaths), a zero-collect is almost always
+      # the authored runner config's include NOT matching where the harness's
+      # S101 placement put the test. Name that mismatch — quote the runner's own
+      # include:/filter: lines and the placed relpath(s) — instead of the
+      # generic fail-first advice that sent the writer into blind retries.
+      if [ -n "$setup" ]; then
+        local placed_line scoped
+        placed_line="$(printf '%s\n' "$placed" | grep . | tr '\n' ' ' | sed 's/ $//')"
+        scoped="$(printf '%s' "$out" | grep -E '^[[:space:]]*(include|filter):' | sed 's/^[[:space:]]*//')"
+        [ -n "$scoped" ] || scoped='(the runner printed no include:/filter: lines)'
+        printf 'SELF-SMOKE — your suite collected ZERO tests, and a DECLARED TEST SETUP was applied this mission: the likely cause is an include/placement MISMATCH — the runner config you authored does not collect the location the harness placed your test at. The harness relocated your test(s) in-tree to: %s. The runner reported:\n%s\nThese MUST agree: the config must collect that placed in-tree path. Safest: do NOT narrow `include` at all (vitest'\''s default include already matches both co-located src/**/*.test.* and tests/**) — never limit it to the scratch tests/ layout you author into. Command run: %s. Runner output (self-smoke):\n%s\n' "$placed_line" "$scoped" "$cmd" "$tail"
+      else
+        printf 'SELF-SMOKE — your suite collected ZERO tests: no test case actually ran, so there is no red to hand off. Write at least one dedicated, fail-first test that INVOKES the not-yet-built behaviour through its public entrypoint and ASSERTS the observable output. Command run: %s. Runner output (self-smoke):\n%s\n' "$cmd" "$tail"
+      fi ;;
   esac
 }
 
@@ -3218,8 +3258,8 @@ self_smoke_reason() { # verdict  cmd  runner-output
 # it writes the grounded-retry reason to $sig, prints the ✗ line, and RETURNS 1 —
 # the caller rolls back the in-tree copies + quarantine mirror and dies (so a
 # hanging / zero-test suite is never snapshotted and never reaches the Implementer).
-test_writer_self_smoke() { # scope  run_dir  sig
-  local scope="$1" run_dir="${2:-$REPO_ROOT}" sig="$3" cmd
+test_writer_self_smoke() { # scope  run_dir  sig  [placed-rels]
+  local scope="$1" run_dir="${2:-$REPO_ROOT}" sig="$3" placed="${4:-}" cmd
   cmd="$(resolve_test_cmd)"
   if [ -z "$cmd" ]; then
     printf '  ⚠ SELF-SMOKE SKIPPED — no test command; cannot pre-run the suite (the red gate skips loud too).\n' >&2
@@ -3231,7 +3271,12 @@ test_writer_self_smoke() { # scope  run_dir  sig
   local runner_out; runner_out="$(cat "$out" 2>/dev/null || true)"; rm -f "$out"
   local verdict; verdict="$(self_smoke_verdict "$rc" "$runner_out")"
   [ "$verdict" = ok ] && return 0
-  local reason; reason="$(self_smoke_reason "$verdict" "$cmd" "$runner_out")"
+  # S131: thread the mission-level applied-setup marker + the placed in-tree
+  # relpaths so a zero-collect bounce names the include/placement mismatch
+  # (setup-aware) instead of the generic fail-first advice. Verdicts unchanged.
+  local setup_applied=""
+  [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/test-setup-applied.json" ] && setup_applied=1
+  local reason; reason="$(self_smoke_reason "$verdict" "$cmd" "$runner_out" "$placed" "$setup_applied")"
   printf '%s' "$reason" >"$sig"
   printf '  ✗ SELF-SMOKE (%s): %s\n' "$verdict" "$reason" >&2
   return 1
@@ -3575,7 +3620,7 @@ ROLLBACK_EOF
   # (red/green/load-error) proceeds to the snapshot + the authoritative red gate.
   # S101: run IN PLACE at the in-tree scope (co-located imports resolve). On a
   # failing verdict, roll the in-tree copies + mirror back out and die.
-  if ! test_writer_self_smoke "$scope_abs" "$run_dir" "$sig"; then
+  if ! test_writer_self_smoke "$scope_abs" "$run_dir" "$sig" "$INTREE_RELS"; then
     _impl_rollback_intree; rm -rf "$tdir" "$snap"
     local why=""; [ -f "$sig" ] && why="
 $(cat "$sig")"
@@ -7340,8 +7385,27 @@ $(cat "$sigfile")"
     # S111 3′: the declared-setup INVITATION — appended ONLY when the preflight
     # observed the gap and exported the evidence. Rules mirror the harness-side
     # whitelist so a compliant manifest is accepted first try.
+    # S131 (the include-vs-placement trap, caught live 2026-07-09): the
+    # invitation must also state WHERE the authored tests will LAND — the S101
+    # placement relocates them to the REPO's own convention, not the writer's
+    # tests/ scratch layout, so a declared runner config narrowed to tests/**
+    # collects ZERO tests at the gate. The contract is stated with the SAME
+    # computation impl-save-tests runs later — detect_test_convention on this
+    # tree with the ticket's manifest-derived source, and the same in-package
+    # fallback ($pf_pkg is the preflight's ticket_target_package) — never a
+    # second, different detector.
     local setupblock=""
-    [ -n "${LCARS_SETUP_EVIDENCE:-}" ] && setupblock="
+    if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
+      local sb_src sb_conv sb_example sb_for
+      sb_src="$(ticket_target_src "$TICKET")"
+      sb_conv="$(detect_test_convention "$REPO_ROOT" "$sb_src")"
+      sb_example="$(test_path_for "$sb_conv" "${sb_src:-${pf_pkg:+$pf_pkg/}src/index.ts}")"
+      # NB: computed OUTSIDE the block below — macOS bash 3.2 mis-parses an
+      # apostrophe inside a \${var:-default} expansion in a double-quoted
+      # string (it opens a quote and swallows text up to the next apostrophe).
+      sb_for="$sb_src"
+      [ -n "$sb_for" ] || sb_for="this ticket's module"
+      setupblock="
 
 ## DECLARED TEST SETUP — the target package cannot run tests; you may provision it
 The harness probed this ticket's target package and the test runner CANNOT
@@ -7353,6 +7417,15 @@ tests, and the HARNESS will apply and verify it:
   \`tests/\`), at their PACKAGE-RELATIVE paths — e.g. \`setup/vitest.config.ts\`.
   ADD-only: never a file that already exists, never anything under \`src/\`.
   Keep it minimal (at most 4 small files).
+- PLACEMENT CONTRACT — where your tests will actually RUN: you author tests
+  into the \`tests/\` scratch dir, but the harness RELOCATES them into the
+  repo at its own test convention — detected here: $sb_conv — e.g. a test for
+  \`$sb_for\` runs in-tree at \`$sb_example\`. Any
+  runner config you declare MUST collect tests from that in-tree location.
+  Safest: do NOT narrow \`include\` at all (vitest's default include already
+  matches both co-located src/**/*.test.* and tests/**); an \`include\`
+  limited to your scratch \`tests/\` layout collects ZERO tests at the gate
+  and bounces your suite.
 - Create \`test-setup.json\` in the scratch output directory root (NOT inside
   tests/ or setup/):
   {\"package\": \"<the package dir named in the evidence>\",
@@ -7364,6 +7437,7 @@ tests, and the HARNESS will apply and verify it:
 - Then write your failing tests exactly as normal. The harness applies your
   setup, re-probes the runner, and your suite must still FAIL-FIRST on its
   assertions — a setup that fakes green is rejected by the red gate."
+    fi
     spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
 "## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock$wtblock$setupblock
@@ -7434,8 +7508,13 @@ ${sig3:-No gate signal was captured.}"
     # signal is the runner output; the worker output + files-written were retained
     # above. This ADDS a category; it never turns this rejection into an accept.
     local cl_runner=""; [ -f "$sigfile" ] && cl_runner="$(cat "$sigfile" 2>/dev/null || true)"
+    # S131: thread the mission-level applied-setup marker so exhaustion with a
+    # zero-collected self-smoke names the include/placement trap
+    # (test-infra-mismatch) instead of over-broad-slice.
+    local cl_setup=""
+    [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/test-setup-applied.json" ] && cl_setup=1
     local cl_cat cl_phrase
-    cl_cat="$(classify_impl_failure "$cl_runner" "$cl_worker" "$cl_files")"
+    cl_cat="$(classify_impl_failure "$cl_runner" "$cl_worker" "$cl_files" "$cl_setup")"
     cl_phrase="$(impl_failure_category_phrase "$cl_cat")"
     # Categorised failure event — the board renders the new "category" data field.
     emit_event ticket_test_writer_failed implement \
@@ -9220,13 +9299,14 @@ case "$SUB" in
     ;;
   # S96 test hook: classify a stopped Implement attempt into ONE root-cause
   # category and print it. The runner output is read from stdin; the worker's
-  # output and the newline-separated files-written list are passed via env
-  # ($LCARS_CLASSIFY_WORKER_OUT / $LCARS_CLASSIFY_FILES, both default empty) so the
-  # precedence of classify_impl_failure can be driven directly, offline + free.
+  # output, the newline-separated files-written list, and the S131 applied-setup
+  # flag are passed via env ($LCARS_CLASSIFY_WORKER_OUT / $LCARS_CLASSIFY_FILES /
+  # $LCARS_CLASSIFY_SETUP_APPLIED, all default empty) so the precedence of
+  # classify_impl_failure can be driven directly, offline + free.
   # Inert for every real subcommand — reachable only by this explicit token.
   classify-impl-failure-test)
     _ci_runner="$(cat)"
-    classify_impl_failure "$_ci_runner" "${LCARS_CLASSIFY_WORKER_OUT:-}" "${LCARS_CLASSIFY_FILES:-}"
+    classify_impl_failure "$_ci_runner" "${LCARS_CLASSIFY_WORKER_OUT:-}" "${LCARS_CLASSIFY_FILES:-}" "${LCARS_CLASSIFY_SETUP_APPLIED:-}"
     printf '\n'
     exit 0 ;;
   # S98 test hook: run the pure EMPTY-worker detector on a pre-populated OUTDIR

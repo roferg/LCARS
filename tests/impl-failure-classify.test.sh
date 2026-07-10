@@ -101,6 +101,37 @@ expect_cat "precedence: env before resolution" \
   "env-failure" \
   "$(classify "$RUNNER_ENV_AND_RESO" "$(printf 'tests/x.test.ts\nstubs/src/foo.ts\n')")"
 
+# 7. (S131) HONEST TERMINAL CATEGORY for the declared-setup include/placement trap.
+#    (Live 2026-07-09: a declared vitest config with include: tests/** vs a test
+#    relocated co-located → zero collected on every attempt → exhaustion was
+#    misclassified as over-broad-slice, pointing the captain at a scoping problem
+#    that doesn't exist.) Trigger: a declared setup was APPLIED this mission
+#    (marker threaded by the caller as the 4th input / $LCARS_CLASSIFY_SETUP_APPLIED)
+#    AND the runner output carries the zero-collect signature.
+classify_setup() { # runner_out [files_written] -> echoes the category (setup applied)
+  local runner="$1" files="${2:-tests/x.test.js}"
+  printf '%s' "$runner" | ( cd "$REPO_ROOT" \
+    && LCARS_CLASSIFY_FILES="$files" LCARS_CLASSIFY_SETUP_APPLIED=1 \
+       bash "$SCRIPT" classify-impl-failure-test )
+}
+RUNNER_ZERO='SELF-SMOKE — your suite collected ZERO tests
+ RUN  v1.6.1 /w/t-001/example-game
+filter:  src/controls-hint.test.js
+include: tests/**/*.test.{js,mjs,ts}
+No test files found, exiting with code 1'
+expect_cat "7a. zero-collect + setup applied → test-infra-mismatch" \
+  "test-infra-mismatch" \
+  "$(classify_setup "$RUNNER_ZERO")"
+expect_cat "7b. zero-collect WITHOUT setup → over-broad-slice (genuine no-coherent-red keeps its name)" \
+  "over-broad-slice" \
+  "$(classify "$RUNNER_ZERO" "tests/x.test.js")"
+expect_cat "7c. genuine assertion red + setup applied → genuine-red-exhausted (the flag alone never hijacks)" \
+  "genuine-red-exhausted" \
+  "$(classify_setup "$RUNNER_ASSERT")"
+expect_cat "7d. hang marker + setup applied → test-writer-hang (hang precedence holds)" \
+  "test-writer-hang" \
+  "$(classify_setup 'SELF-SMOKE — your suite HUNG: the suite never settled within the hard timeout')"
+
 echo
 echo "S96 regression — the three detectors classify IDENTICALLY to today (byte-equivalent)"
 
