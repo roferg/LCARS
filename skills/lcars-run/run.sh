@@ -2292,9 +2292,25 @@ resolve_test_cmd() {
 rg_signature() { # category → the ERE for that category's runner-output signature
   case "$1" in
     resolution)
-      printf '%s' 'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve' ;;
+      # JS/TS + bundler forms (byte-identical to pre-S104), then S104 GO module
+      # resolution. Go's forms are ANCHORED to the compiler's OWN `file.go:LINE:COL:`
+      # prefix (the go compiler emits line AND column; the testing package prints a
+      # single line number) OR line-start `^go: `, so an assertion that merely QUOTES
+      # e.g. "cannot find package" mid-diff can never false-match — mirroring the env
+      # arm's line-start discipline. Missing-package is RESOLUTION (a type/syntax
+      # error is compile, in the `compile` arm below).
+      printf '%s' 'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve|\.go:[0-9]+:[0-9]+: (cannot find package|no required module provides package|cannot find module providing package)|^go: .*cannot find module providing package' ;;
     compile)
-      printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)' ;;
+      # JS/TS + Python forms (byte-identical to pre-S104), then S104 RUST / GO / DOTNET
+      # / JVM compile failures. Every new arm is ANCHORED the way each toolchain prints
+      # its OWN diagnostic — rustc's `^error[E####]` / `^error: could not compile`, the
+      # go compiler's `file.go:LINE:COL:` (line+col) prefix, csc's `(line,col): error
+      # CS####` + MSBuild's `^Build FAILED`, javac's `file.java:LINE: error:` /
+      # `^error: cannot find symbol`, maven's `[ERROR] COMPILATION ERROR`, gradle's
+      # `^> Task :compile… FAILED` (compile-scoped, so a `:test FAILED` red is untouched)
+      # — so an assertion diff that QUOTES a compile phrase, or a genuine cargo/go/junit
+      # assertion red, stays a valid fail-first and never trips this detector.
+      printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)|^error\[E[0-9]+\]|^error: could not compile |\.go:[0-9]+:[0-9]+: (undefined:|syntax error)|\([0-9]+,[0-9]+\): error CS[0-9]+|^Build FAILED|\.java:[0-9]+: error:|^error: cannot find symbol|\[ERROR\] COMPILATION ERROR|^> Task :compile[A-Za-z]* FAILED' ;;
     env)
       # S111: `^npm (error|ERR!) could not determine executable to run` is npx's
       # own no-binary diagnostic (`npx vitest` in a package without vitest) —
@@ -2305,7 +2321,11 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # A GENUINE assertion red (the runner started, tests ran, an assertion FAILED)
       # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs
       # against the gate, so it can never accept a red the gate would reject.
-      printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]' ;;
+      # S104: cargo/go assertion phrasings appended for legibility (classify-only —
+      # this arm never feeds a red-gate verdict, so it cannot accept a red the gate
+      # would reject; it only lets classify_impl_failure NAME a genuine cross-stack
+      # assertion red instead of the generic over-broad-slice).
+      printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]|panicked at|--- FAIL:|test result: FAILED' ;;
     zerotests)
       # S99 — the runner FINISHED but collected/ran ZERO tests. CLASSIFY-ONLY (the
       # self-smoke's zero-tests verdict + classify_impl_failure); NEVER consulted by
