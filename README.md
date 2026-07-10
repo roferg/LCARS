@@ -558,7 +558,13 @@ change), the batch **pauses** at that bug and drops its question into
   only), which the harness applies **probe-verified** — exit codes are never
   trusted, and pnpm's silent symlink no-ops are healed by a forced relink — with a
   verified green recorded to the repo's **test landscape**
-  (`.git/lcars/test-landscape/`) as a durable, proven fact.
+  (`.git/lcars/test-landscape/`) as a durable, proven fact. And the gates are
+  **multi-stack**: `lcars init` detects the repo's toolchain (Rust, Go, Python,
+  JS/TS, plus .NET / JVM for failure legibility) and seeds per-stack defaults,
+  and the red-gate isolation speaks each runner's idiom — a directory scope for
+  JS/Python, `cargo test --test` for Rust, `go test -run` for Go — so a compiled
+  crate/package proves fail-first in isolation and rides its test along at its own
+  convention (`tests/*.rs`, `*_test.go`) without ever faking a green on no tests.
 - **Verify never auto-passes.** Auto-advance always stops here. Shipping is your
   call — and **seeing it run is one click**: `lcars launch <mission> [hint]` (or
   the ⚡ **RUN/STOP** on the board's Verify dialogs) checks the branch into a

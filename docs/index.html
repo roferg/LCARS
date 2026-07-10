@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:d7fc499a43f5b56627a6ecd31a5e9f16685892b8b6f8001b2da88e07cd1760eb -->
-<!-- lcars-docs-src: vision.md sha256:31ba228e825b8790dab53a33da8f904e87638bfe20c84a79c2c85ec145c93cfd -->
+<!-- lcars-docs-src: README.md sha256:37bcdd6f305040003c921a4188b496c404c08501cd9a800f70af365b28abdbfa -->
+<!-- lcars-docs-src: vision.md sha256:e9efc0e70020a5c757957103c430f7332d033f6e4848035584db14e86dbae742 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -908,7 +908,15 @@ lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
           <strong>probe-verified</strong> — exit codes are never trusted, pnpm's
           silent symlink no-ops are healed by a forced relink — with a verified
           green recorded to the repo's <strong>test landscape</strong>
-          (<code>.git/lcars/test-landscape/</code>) as a durable, proven fact.</li>
+          (<code>.git/lcars/test-landscape/</code>) as a durable, proven fact. And
+          the gates are <strong>multi-stack</strong>: <code>lcars init</code> detects
+          the repo's toolchain (Rust, Go, Python, JS/TS, plus .NET / JVM for failure
+          legibility) and seeds per-stack defaults, and the red-gate isolation speaks
+          each runner's idiom — a directory scope for JS/Python, <code>cargo test
+          --test</code> for Rust, <code>go test -run</code> for Go — so a compiled
+          crate/package proves fail-first in isolation and rides its test along at
+          its own convention (<code>tests/*.rs</code>, <code>*_test.go</code>) without
+          ever faking a green on no tests.</li>
           <li><strong>Verify never auto-passes.</strong> Auto-advance always stops
           here. Shipping is your call — and <strong>seeing it run is one
           click</strong>: <code>lcars launch &lt;mission&gt; [hint]</code> (or the
