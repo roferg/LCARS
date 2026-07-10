@@ -4,6 +4,34 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.6 — 2026-07-09
+
+The declared-test-setup ↔ placement contract round (S131) — a one-off harness
+fix from the 2026-07-09 groutwork demo failure, where a test-writer's declared
+vitest config (`include: tests/**`) disagreed with the harness's S101 placement
+(co-located under `src/`), collecting zero tests through three blind retries
+and a terminal `over-broad-slice` misclassification.
+
+- **The invitation states the placement contract.** The declared-setup block
+  now names the DETECTED test convention (co-located / `__tests__` / `tests`)
+  with a concrete example placed path — computed by the same
+  `detect_test_convention`/`test_path_for` calls placement itself uses — and
+  instructs that any authored runner config must collect that location (safest:
+  don't narrow `include` at all).
+- **Setup-aware zero-collect diagnostics.** When the self-smoke collects zero
+  tests and a declared setup was applied this mission, the bounce quotes the
+  runner's own `include:`/`filter:` lines and the placed in-tree test path and
+  says they must agree — no more blind retries.
+- **Honest terminal category.** That exhaustion signature now reads
+  `test-infra-mismatch` (naming the package), not `over-broad-slice`, which
+  remains for genuine no-coherent-red cases.
+
+Red-gate semantics, S101 placement, and the evidence gate are untouched
+(verified zero-diff). Proven by re-driving the failed demo mission hands-off
+Align→Verify on BOTH engines (copilot + claude): setup invited/applied/
+probe-verified, co-located placement collected, one attempt per role, zero
+infra stalls (groutwork PRs #203/#205, torn down after the pass).
+
 ## 2026.7.5 — 2026-07-08
 
 Docs catch-up for 2026.7.4: `lcars launch` (the deploy/run-app feature) and the
