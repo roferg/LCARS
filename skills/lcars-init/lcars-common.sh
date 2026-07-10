@@ -270,3 +270,61 @@ detect_worktree_setup_cmd() {
   # emit empty and let the provisioner warn (never emit a command that errors).
   echo ""
 }
+
+# ---------------------------------------------------------------------------
+# STACK DETECTION (S105 — multi-stack breadth)
+# ---------------------------------------------------------------------------
+# detect_stack — inspect the repo's TOP LEVEL for language/build markers and echo
+# ONE stack id. The id is the classifier key the S104 `lcars run` arms are keyed
+# by (rust/go/python/js/dotnet/jvm), so seeding it into config.json lets every
+# downstream stage know the mission's ecosystem without re-sniffing.
+#
+# Marker → id:
+#   Cargo.toml                                   → rust
+#   go.mod                                       → go
+#   pyproject.toml / setup.py                    → python
+#   package.json                                 → js
+#   *.csproj / *.sln                             → dotnet
+#   pom.xml / build.gradle / build.gradle.kts    → jvm
+#
+# Several DISTINCT stacks present   → ambiguous(<comma-list, in detection order>)
+# NONE present                      → unknown
+#
+# Reads $TOPLEVEL (the repo root) from the caller's environment, exactly like
+# detect_worktree_setup_cmd / init's detect_test_cmd. POSIX/bash-3.2 portable and
+# nullglob-safe: glob markers (*.csproj, build.gradle*) are probed with a
+# `for f in …; do [ -e "$f" ]` guard so an UNMATCHED glob (which stays a literal
+# under bash-3.2) can never false-positive. Shared by BOTH `lcars init` and
+# `lcars update` so the two can never disagree on a repo's stack.
+detect_stack() {
+  local candidates="" f matched
+
+  [ -f "$TOPLEVEL/Cargo.toml" ] && candidates="$candidates rust"
+  [ -f "$TOPLEVEL/go.mod" ]     && candidates="$candidates go"
+  { [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/setup.py" ]; } \
+    && candidates="$candidates python"
+  [ -f "$TOPLEVEL/package.json" ] && candidates="$candidates js"
+
+  # dotnet — any *.csproj or *.sln at the top level (nullglob-safe glob probe).
+  matched=0
+  for f in "$TOPLEVEL"/*.csproj "$TOPLEVEL"/*.sln; do
+    [ -e "$f" ] && { matched=1; break; }
+  done
+  [ "$matched" -eq 1 ] && candidates="$candidates dotnet"
+
+  # jvm — Maven (pom.xml) or Gradle (build.gradle / build.gradle.kts).
+  matched=0
+  for f in "$TOPLEVEL"/pom.xml "$TOPLEVEL"/build.gradle "$TOPLEVEL"/build.gradle.kts; do
+    [ -e "$f" ] && { matched=1; break; }
+  done
+  [ "$matched" -eq 1 ] && candidates="$candidates jvm"
+
+  # Strip the leading space and split on whitespace to count distinct stacks.
+  # shellcheck disable=SC2086
+  set -- $candidates
+  case $# in
+    0) echo "unknown" ;;
+    1) echo "$1" ;;
+    *) echo "ambiguous($(echo "$candidates" | sed 's/^ *//; s/ /,/g'))" ;;
+  esac
+}
