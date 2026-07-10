@@ -180,7 +180,26 @@ runner_is_local_dep() {
   fi
   return 1
 }
-TEST_CMD="${LCARS_TEST_CMD:-$(detect_test_cmd)}"
+# --- detect the repo's STACK (S105) --------------------------------------
+# Sniff the top-level markers into ONE stack id (the S104 classifier key) so every
+# downstream stage knows the ecosystem. When SEVERAL stacks are present the repo is
+# AMBIGUOUS: rather than silently seeding a testCommand by detection precedence
+# (package.json is checked before Cargo.toml, so a Rust+JS repo used to quietly get
+# `npm test`), we seed NO testCommand and warn, naming the candidate stacks. An
+# explicit LCARS_TEST_CMD override still wins (the captain chose it). A single
+# detected stack seeds its testCommand exactly as before (byte-equivalent).
+STACK="$(detect_stack)"
+
+case "$STACK" in
+  ambiguous*)
+    # Multiple stacks: only an explicit override seeds a command; otherwise null.
+    TEST_CMD="${LCARS_TEST_CMD:-}"
+    ;;
+  *)
+    TEST_CMD="${LCARS_TEST_CMD:-$(detect_test_cmd)}"
+    ;;
+esac
+
 if [ -n "$TEST_CMD" ]; then
   TESTCMD_VALUE="\"$(lcars_json_escape "$TEST_CMD")\""; TESTCMD_HUMAN="$TEST_CMD"
   # LOUD flag (BUG-007 invariant): the red gate can only judge the QUARANTINED
@@ -202,6 +221,25 @@ if [ -n "$TEST_CMD" ]; then
   esac
 else
   TESTCMD_VALUE='null'; TESTCMD_HUMAN="none (set testCommand to enable the Implement red gate)"
+  # No testCommand was seeded. Explain WHY per the detected stack (S105), mirroring
+  # the LCARS_TESTS_DIR warning voice above — an AMBIGUOUS repo needs the captain to
+  # pick a stack; an UNKNOWN repo has no recognized ecosystem at all.
+  case "$STACK" in
+    ambiguous*)
+      cands="${STACK#ambiguous(}"; cands="${cands%)}"
+      printf '  ⚠ multiple stacks detected (%s) — no testCommand seeded.\n' "$cands" >&2
+      printf '    LCARS will not guess which ecosystem to run tests with when several are\n' >&2
+      printf '    present (it would pick one by precedence and silently ignore the others).\n' >&2
+      printf '    Set testCommand in .git/lcars/config.json to the runner for the stack you\n' >&2
+      printf '    want the Implement red gate to use (honouring "$LCARS_TESTS_DIR").\n' >&2
+      ;;
+    unknown)
+      printf '  ⚠ no known stack detected (no Cargo.toml/go.mod/pyproject.toml/setup.py/\n' >&2
+      printf '    package.json/*.csproj/*.sln/pom.xml/build.gradle) — no testCommand seeded.\n' >&2
+      printf '    The Implement red gate needs one; set testCommand in\n' >&2
+      printf '    .git/lcars/config.json (honouring "$LCARS_TESTS_DIR") to enable it.\n' >&2
+      ;;
+  esac
 fi
 
 # --- detect a worktree provisioning command (S82) -------------------------
@@ -255,9 +293,13 @@ fi
 VERSION_LINE=""
 [ -n "$RUNNING_VERSION" ] && VERSION_LINE="
 lcarsVersion=\"$RUNNING_VERSION\""
+# stack is the detected ecosystem id (S105); ambiguous(...)/unknown are stored as
+# their literal token so the config self-documents WHY a testCommand may be absent.
+STACK_VALUE="\"$(lcars_json_escape "$STACK")\""
 DESIRED_CONFIG="model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
 contextFile=$CONTEXT_VALUE
+stack=$STACK_VALUE
 testCommand=$TESTCMD_VALUE
 worktreeSetupCommand=$WTSETUP_VALUE
 comprehensionBudget=1200$VERSION_LINE
@@ -275,6 +317,8 @@ PERSISTED_CONTEXT="$(lcars_config_get "$CONFIG" contextFile)"
 [ -n "$PERSISTED_CONTEXT" ] || PERSISTED_CONTEXT="none"
 PERSISTED_TESTCMD="$(lcars_config_get "$CONFIG" testCommand)"
 [ -n "$PERSISTED_TESTCMD" ] || PERSISTED_TESTCMD="none"
+PERSISTED_STACK="$(lcars_config_get "$CONFIG" stack)"
+[ -n "$PERSISTED_STACK" ] || PERSISTED_STACK="unknown"
 
 # --- LOCAL: keep the harness's scratch out of the target repo -------------
 # LCARS workers leave throwaway scratch in the tree (LCARS runners, and each
@@ -318,7 +362,8 @@ fi
 
 # --- OUTPUT: readiness summary --------------------------------------------
 echo "  ✓ .git/lcars/ created"
-echo "  ✓ config.json written  (model: $PERSISTED_MODEL, context: $PERSISTED_CONTEXT, tests: $PERSISTED_TESTCMD)"
+echo "  ✓ config.json written  (stack: $PERSISTED_STACK, model: $PERSISTED_MODEL, context: $PERSISTED_CONTEXT, tests: $PERSISTED_TESTCMD)"
+[ -n "${LCARS_CONFIG_ADDED_KEYS:-}" ] && echo "    keys seeded: $LCARS_CONFIG_ADDED_KEYS"
 echo "  ✓ Claude CLI verified  ($CLAUDE_VERSION)"
 if [ "$GH_OK" -eq 1 ]; then
   total=$((LABELS_CREATED + LABELS_SKIPPED))

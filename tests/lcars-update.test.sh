@@ -285,6 +285,7 @@ cat >"$cfgUc" <<'JSON'
   "model": "claude-sonnet",
   "projectName": "p",
   "contextFile": null,
+  "stack": "unknown",
   "testCommand": null,
   "worktreeSetupCommand": "my-bespoke-provision --offline",
   "comprehensionBudget": 1200,
@@ -320,6 +321,109 @@ check "S82 update: config unchanged byte-for-byte when the key is already presen
   "[ \"\$( cat '$cfgUc' )\" = \"\$cfgUc_before\" ]"
 check "S82 update: reports 'nothing to update' when fully current" \
   "grep -qi 'nothing to update' '$repoUc/outUc.txt'"
+
+# --- Session 105: backfills the `stack` key without clobbering --------------
+# A pre-S105 config has every current key EXCEPT `stack`. update must ADD ONLY
+# that key (with the ecosystem-detected id), report it, and preserve everything
+# else byte-for-byte. Pin lcarsVersion current so the ONLY thing missing is stack.
+repoS105="$(new_repo)"
+init_repo "$repoS105"
+# Make the repo an npm project so detect_stack sees `js`.
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoS105/package.json"
+: >"$repoS105/package-lock.json"
+cfgS105="$repoS105/.git/lcars/config.json"
+cat >"$cfgS105" <<'JSON'
+{
+  "model": "captain-chosen-model",
+  "projectName": "myproj",
+  "contextFile": null,
+  "testCommand": "custom-runner ${LCARS_TESTS_DIR:-.}",
+  "worktreeSetupCommand": "my-bespoke-provision",
+  "comprehensionBudget": 1200,
+  "lcarsVersion": "2099.1.1",
+  "created": "2019-09-09T00:00:00Z"
+}
+JSON
+export GH_LOG="$repoS105/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoS105/existing"
+cat >"$GH_EXISTING" <<'EOF'
+lcars:align
+lcars:research
+lcars:validate
+lcars:plan
+lcars:plan-review
+lcars:schedule
+lcars:implement
+lcars:verify
+lcars:done
+lcars:feature
+lcars:bug
+lcars:paused
+lcars:awaiting-human
+lcars:linked
+lcars:mission
+lcars:ticket
+EOF
+( cd "$repoS105" && LCARS_VERSION="2099.1.1" LCARS_GH_BIN="$repoS105/gh" bash "$SCRIPT" >outS105.txt 2>&1 )
+check "S105 update: adds the missing 'stack' key with the detected id (js)" \
+  "grep -q '\"stack\": *\"js\"' '$cfgS105'"
+check "S105 update: reports the added 'stack' key" \
+  "grep -qi 'stack' '$repoS105/outS105.txt'"
+check "S105 update: preserves the captain's custom model" \
+  "grep -q '\"model\": *\"captain-chosen-model\"' '$cfgS105'"
+check "S105 update: preserves the captain's custom testCommand" \
+  "grep -q 'custom-runner' '$cfgS105'"
+check "S105 update: preserves the captain's custom worktreeSetupCommand" \
+  "grep -q 'my-bespoke-provision' '$cfgS105'"
+check "S105 update: preserves the captain's created timestamp" \
+  "grep -q '\"created\": *\"2019-09-09T00:00:00Z\"' '$cfgS105'"
+check "S105 update: backfilled config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgS105'"
+
+# A config that ALREADY has a captain-set stack is NEVER clobbered.
+repoS105c="$(new_repo)"
+init_repo "$repoS105c"
+# rust markers present, but the captain pinned stack to something bespoke.
+printf '[package]\nname = "x"\n' >"$repoS105c/Cargo.toml"
+cfgS105c="$repoS105c/.git/lcars/config.json"
+cat >"$cfgS105c" <<'JSON'
+{
+  "model": "claude-sonnet",
+  "projectName": "p",
+  "contextFile": null,
+  "stack": "captain-pinned-stack",
+  "testCommand": null,
+  "worktreeSetupCommand": null,
+  "comprehensionBudget": 1200,
+  "lcarsVersion": "2099.1.1",
+  "created": "2018-01-01T00:00:00Z"
+}
+JSON
+export GH_LOG="$repoS105c/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoS105c/existing"
+cat >"$GH_EXISTING" <<'EOF'
+lcars:align
+lcars:research
+lcars:validate
+lcars:plan
+lcars:plan-review
+lcars:schedule
+lcars:implement
+lcars:verify
+lcars:done
+lcars:feature
+lcars:bug
+lcars:paused
+lcars:awaiting-human
+lcars:linked
+lcars:mission
+lcars:ticket
+EOF
+( cd "$repoS105c" && LCARS_VERSION="2099.1.1" LCARS_GH_BIN="$repoS105c/gh" bash "$SCRIPT" >outS105c.txt 2>&1 )
+check "S105 update: a captain-pinned stack is left untouched (no clobber)" \
+  "grep -q '\"stack\": *\"captain-pinned-stack\"' '$cfgS105c'"
+check "S105 update: reports 'nothing to update' when stack already present + current" \
+  "grep -qi 'nothing to update' '$repoS105c/outS105c.txt'"
 
 # ==========================================================================
 echo

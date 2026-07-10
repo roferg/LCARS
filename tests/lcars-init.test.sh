@@ -612,6 +612,179 @@ check "S87 init: .git/info/exclude ignores __lcarsq__ (dir form)" \
 check "S87 init: .git/info/exclude ignores nested */__lcarsq__" \
   "grep -qxF '*/__lcarsq__' '$repoPY/.git/info/exclude'"
 
+# --- Session 105: stack detection (multi-stack breadth) ---------------------
+# init now sniffs the repo's top-level markers into a `stack` id (the S104
+# classifier key) and, when SEVERAL stacks are present, refuses to guess a
+# testCommand and warns instead of silently seeding one by precedence.
+
+# helper: run init in a fresh repo with the given marker files pre-created.
+# usage: s105_init <repo-var-name> ; caller pre-populates $repo first is awkward,
+# so we inline per-case below following the existing fixture idiom.
+
+# (1) rust: Cargo.toml → stack rust + testCommand "cargo test"
+repoRust="$(new_repo)"
+printf '[package]\nname = "x"\n' >"$repoRust/Cargo.toml"
+make_claude_stub "$repoRust/claude"; make_gh_stub "$repoRust/gh"
+export GH_LOG="$repoRust/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoRust/existing"; : >"$GH_EXISTING"
+( cd "$repoRust" && LCARS_CLAUDE_BIN="$repoRust/claude" LCARS_GH_BIN="$repoRust/gh" bash "$SCRIPT" >outRust.txt 2>&1 )
+cfgRust="$repoRust/.git/lcars/config.json"
+check "S105 init (rust): stack is 'rust'" \
+  "grep -q '\"stack\": *\"rust\"' '$cfgRust'"
+check "S105 init (rust): testCommand is the byte-equivalent 'cargo test'" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgRust' testCommand )\" = 'cargo test' ]"
+check "S105 init (rust): worktreeSetupCommand is null (compiles deps in-tree)" \
+  "grep -q '\"worktreeSetupCommand\": *null' '$cfgRust'"
+check "S105 init (rust): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgRust'"
+
+# (2) go: go.mod → stack go + testCommand "go test ./..."
+repoGo="$(new_repo)"
+printf 'module x\n\ngo 1.22\n' >"$repoGo/go.mod"
+make_claude_stub "$repoGo/claude"; make_gh_stub "$repoGo/gh"
+export GH_LOG="$repoGo/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoGo/existing"; : >"$GH_EXISTING"
+( cd "$repoGo" && LCARS_CLAUDE_BIN="$repoGo/claude" LCARS_GH_BIN="$repoGo/gh" bash "$SCRIPT" >outGo.txt 2>&1 )
+cfgGo="$repoGo/.git/lcars/config.json"
+check "S105 init (go): stack is 'go'" \
+  "grep -q '\"stack\": *\"go\"' '$cfgGo'"
+check "S105 init (go): testCommand is the byte-equivalent 'go test ./...'" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgGo' testCommand )\" = 'go test ./...' ]"
+
+# (3) python: pyproject.toml → stack python (testCommand already covered above)
+repoPy105="$(new_repo)"
+printf '[tool.pytest]\n' >"$repoPy105/pyproject.toml"
+make_claude_stub "$repoPy105/claude"; make_gh_stub "$repoPy105/gh"
+export GH_LOG="$repoPy105/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoPy105/existing"; : >"$GH_EXISTING"
+( cd "$repoPy105" && LCARS_CLAUDE_BIN="$repoPy105/claude" LCARS_GH_BIN="$repoPy105/gh" bash "$SCRIPT" >outPy105.txt 2>&1 )
+cfgPy105="$repoPy105/.git/lcars/config.json"
+check "S105 init (python): stack is 'python'" \
+  "grep -q '\"stack\": *\"python\"' '$cfgPy105'"
+check "S105 init (python): testCommand still the pytest default (byte-equivalent)" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgPy105' testCommand )\" = 'pytest \${LCARS_TESTS_DIR:-.}' ]"
+
+# setup.py is also a python signal
+repoPy2="$(new_repo)"
+printf 'from setuptools import setup\nsetup()\n' >"$repoPy2/setup.py"
+make_claude_stub "$repoPy2/claude"; make_gh_stub "$repoPy2/gh"
+export GH_LOG="$repoPy2/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoPy2/existing"; : >"$GH_EXISTING"
+( cd "$repoPy2" && LCARS_CLAUDE_BIN="$repoPy2/claude" LCARS_GH_BIN="$repoPy2/gh" bash "$SCRIPT" >outPy2.txt 2>&1 )
+check "S105 init (python/setup.py): stack is 'python'" \
+  "grep -q '\"stack\": *\"python\"' '$repoPy2/.git/lcars/config.json'"
+
+# (4) js: package.json → stack js (testCommand already covered above)
+repoJs="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoJs/package.json"
+make_claude_stub "$repoJs/claude"; make_gh_stub "$repoJs/gh"
+export GH_LOG="$repoJs/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoJs/existing"; : >"$GH_EXISTING"
+( cd "$repoJs" && LCARS_CLAUDE_BIN="$repoJs/claude" LCARS_GH_BIN="$repoJs/gh" bash "$SCRIPT" >outJs.txt 2>&1 )
+check "S105 init (js): stack is 'js'" \
+  "grep -q '\"stack\": *\"js\"' '$repoJs/.git/lcars/config.json'"
+
+# (5) dotnet: a *.csproj → stack dotnet; no auto testCommand (null), no crash
+repoNet="$(new_repo)"
+printf '<Project Sdk="Microsoft.NET.Sdk"></Project>\n' >"$repoNet/App.csproj"
+make_claude_stub "$repoNet/claude"; make_gh_stub "$repoNet/gh"
+export GH_LOG="$repoNet/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoNet/existing"; : >"$GH_EXISTING"
+( cd "$repoNet" && LCARS_CLAUDE_BIN="$repoNet/claude" LCARS_GH_BIN="$repoNet/gh" bash "$SCRIPT" >outNet.txt 2>&1 )
+cfgNet="$repoNet/.git/lcars/config.json"
+check "S105 init (dotnet): stack is 'dotnet'" \
+  "grep -q '\"stack\": *\"dotnet\"' '$cfgNet'"
+check "S105 init (dotnet): testCommand is null (no auto default for dotnet)" \
+  "grep -q '\"testCommand\": *null' '$cfgNet'"
+check "S105 init (dotnet): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgNet'"
+
+# a *.sln is also a dotnet signal
+repoSln="$(new_repo)"
+printf 'Microsoft Visual Studio Solution File\n' >"$repoSln/App.sln"
+make_claude_stub "$repoSln/claude"; make_gh_stub "$repoSln/gh"
+export GH_LOG="$repoSln/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoSln/existing"; : >"$GH_EXISTING"
+( cd "$repoSln" && LCARS_CLAUDE_BIN="$repoSln/claude" LCARS_GH_BIN="$repoSln/gh" bash "$SCRIPT" >outSln.txt 2>&1 )
+check "S105 init (dotnet/.sln): stack is 'dotnet'" \
+  "grep -q '\"stack\": *\"dotnet\"' '$repoSln/.git/lcars/config.json'"
+
+# (6) jvm: pom.xml → stack jvm; build.gradle also → jvm
+repoJvm="$(new_repo)"
+printf '<project></project>\n' >"$repoJvm/pom.xml"
+make_claude_stub "$repoJvm/claude"; make_gh_stub "$repoJvm/gh"
+export GH_LOG="$repoJvm/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoJvm/existing"; : >"$GH_EXISTING"
+( cd "$repoJvm" && LCARS_CLAUDE_BIN="$repoJvm/claude" LCARS_GH_BIN="$repoJvm/gh" bash "$SCRIPT" >outJvm.txt 2>&1 )
+cfgJvm="$repoJvm/.git/lcars/config.json"
+check "S105 init (jvm/maven): stack is 'jvm'" \
+  "grep -q '\"stack\": *\"jvm\"' '$cfgJvm'"
+check "S105 init (jvm): testCommand is null (no auto default for jvm)" \
+  "grep -q '\"testCommand\": *null' '$cfgJvm'"
+
+repoGradle="$(new_repo)"
+printf 'plugins { id "java" }\n' >"$repoGradle/build.gradle"
+make_claude_stub "$repoGradle/claude"; make_gh_stub "$repoGradle/gh"
+export GH_LOG="$repoGradle/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoGradle/existing"; : >"$GH_EXISTING"
+( cd "$repoGradle" && LCARS_CLAUDE_BIN="$repoGradle/claude" LCARS_GH_BIN="$repoGradle/gh" bash "$SCRIPT" >outGradle.txt 2>&1 )
+check "S105 init (jvm/gradle): stack is 'jvm'" \
+  "grep -q '\"stack\": *\"jvm\"' '$repoGradle/.git/lcars/config.json'"
+
+# (7) AMBIGUOUS: Cargo.toml + package.json → stack ambiguous(rust,js), NO
+#     testCommand seeded, warning NAMES BOTH candidate stacks.
+repoAmb="$(new_repo)"
+printf '[package]\nname = "x"\n' >"$repoAmb/Cargo.toml"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoAmb/package.json"
+make_claude_stub "$repoAmb/claude"; make_gh_stub "$repoAmb/gh"
+export GH_LOG="$repoAmb/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoAmb/existing"; : >"$GH_EXISTING"
+( cd "$repoAmb" && LCARS_CLAUDE_BIN="$repoAmb/claude" LCARS_GH_BIN="$repoAmb/gh" bash "$SCRIPT" >outAmb.txt 2>&1 )
+cfgAmb="$repoAmb/.git/lcars/config.json"
+check "S105 init (ambiguous): stack records the ambiguous token naming both stacks" \
+  "grep -q '\"stack\": *\"ambiguous(rust,js)\"' '$cfgAmb'"
+check "S105 init (ambiguous): NO testCommand is guessed (null, not a silent 'npm test')" \
+  "grep -q '\"testCommand\": *null' '$cfgAmb'"
+check "S105 init (ambiguous): the warning NAMES both candidate stacks (rust AND js)" \
+  "grep -qi 'rust' '$repoAmb/outAmb.txt' && grep -qi '\\bjs\\b' '$repoAmb/outAmb.txt'"
+check "S105 init (ambiguous): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgAmb'"
+
+# (8) UNKNOWN: a bare repo (no markers) → stack unknown, no testCommand, a warning, no crash
+repoUnk="$(new_repo)"
+make_claude_stub "$repoUnk/claude"; make_gh_stub "$repoUnk/gh"
+export GH_LOG="$repoUnk/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoUnk/existing"; : >"$GH_EXISTING"
+rcUnk=0
+( cd "$repoUnk" && LCARS_CLAUDE_BIN="$repoUnk/claude" LCARS_GH_BIN="$repoUnk/gh" bash "$SCRIPT" >outUnk.txt 2>&1 ) || rcUnk=$?
+cfgUnk="$repoUnk/.git/lcars/config.json"
+check "S105 init (unknown): does not crash (exit 0)" "[ '$rcUnk' -eq 0 ]"
+check "S105 init (unknown): stack is 'unknown'" \
+  "grep -q '\"stack\": *\"unknown\"' '$cfgUnk'"
+check "S105 init (unknown): testCommand is null" \
+  "grep -q '\"testCommand\": *null' '$cfgUnk'"
+check "S105 init (unknown): warns that no known stack was detected" \
+  "grep -qi 'no known stack\\|no.*stack.*detected' '$repoUnk/outUnk.txt'"
+
+# (9) a bash tests/run.sh repo has NO stack marker (unknown) but STILL keeps its
+#     detected bash testCommand — byte-equivalence with pre-S105 (no suppression).
+repoBash105="$(new_repo)"
+mkdir -p "$repoBash105/tests"
+printf '#!/usr/bin/env bash\necho runner\n' >"$repoBash105/tests/run.sh"
+make_claude_stub "$repoBash105/claude"; make_gh_stub "$repoBash105/gh"
+export GH_LOG="$repoBash105/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoBash105/existing"; : >"$GH_EXISTING"
+( cd "$repoBash105" && LCARS_CLAUDE_BIN="$repoBash105/claude" LCARS_GH_BIN="$repoBash105/gh" bash "$SCRIPT" >outBash105.txt 2>&1 )
+cfgBash105="$repoBash105/.git/lcars/config.json"
+check "S105 init (bash-runner): stack is 'unknown' (no language marker)" \
+  "grep -q '\"stack\": *\"unknown\"' '$cfgBash105'"
+check "S105 init (bash-runner): testCommand PRESERVED as the bash runner (byte-equivalent, not suppressed)" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgBash105' testCommand )\" = 'bash tests/run.sh \"\${LCARS_TESTS_DIR:-tests}\"' ]"
+
+# (10) banner reports the detected stack
+check "S105 init: the readiness banner reports the detected stack" \
+  "grep -qi 'stack: *rust' '$repoRust/outRust.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars init: %d passed, %d failed\n' "$pass" "$fail"

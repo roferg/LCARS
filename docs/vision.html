@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: vision.md sha256:31ba228e825b8790dab53a33da8f904e87638bfe20c84a79c2c85ec145c93cfd -->
+<!-- lcars-docs-src: vision.md sha256:e9efc0e70020a5c757957103c430f7332d033f6e4848035584db14e86dbae742 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -276,6 +276,7 @@ sequenceDiagram
           <li><strong>Declared test setup</strong> — when a package has no runner but the repo demonstrably tests elsewhere, the Test Writer is <em>invited</em> to declare the missing setup: new config files plus a package-manager install, evidence-gated (no observed gap, no invitation) and whitelist-bounded (ADD-only, never <code>src/</code>, never an existing file). The Harness applies it and <strong>verifies by probing, never by exit codes</strong> — a silent no-op install is healed by force-relinking the tree — and the honest fail-first transition (runner dead → suite red → green) proves the setup works before any code ships.</li>
           <li><strong>Test landscape</strong> — a setup that carries a ticket to a verified green is recorded to <code>.git/lcars/test-landscape/</code>: a durable, <em>proven</em> fact about how that package tests, written only after the gates confirmed it, so the repo's testing knowledge accretes mission by mission instead of being rediscovered.</li>
           <li><strong>Verdicts, not choices</strong> — rejection feedback checks the repo per unresolved import and states the answer: "this module <em>exists</em> at <code>&lt;path&gt;</code>, fix your import" versus "no such file anywhere, you must stub it" — so a weaker model follows a fact instead of guessing between remedies.</li>
+          <li><strong>The toolchain is detected, not assumed</strong> — <code>lcars init</code> recognizes the repo's stack from its markers (Rust, Go, Python, JS/TS, and — for failure legibility — .NET and the JVM) and seeds per-stack defaults, warning rather than guessing when the markers are ambiguous. The red gate's isolation is then expressed in <em>each runner's own idiom</em>: a directory scope for JS/Python, <code>cargo test --test</code> for Rust, <code>go test -run</code> for Go. So a compiled crate or package — whose tests live <em>inside</em> it and can't be pointed at an external directory — still proves fail-first in isolation and rides its test along at the stack's own convention (<code>tests/*.rs</code>, <code>*_test.go</code>), never faking a green on zero tests; and a <code>cargo</code> compile error or a Go "cannot find package" is named as the compile/resolution failure it is. Adding a stack only makes the gate <em>more</em> precise — it never loosens it.</li>
         </ul>
       </div>
     </section>
@@ -398,7 +399,7 @@ stateDiagram-v2
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars init</div>
-          <div class="control-desc">One-time per-repo setup: creates <code>.git/lcars/</code>, writes config, scans <code>CONTEXT.md</code>, verifies CLI auth, and creates the LCARS Labels. Run once before the first Mission. Safe to re-run: config writing is merge-preserving, so it keeps every value you've customized (<code>testCommand</code>, <code>model</code>, <code>comprehensionBudget</code>) and only fills in what's missing.</div>
+          <div class="control-desc">One-time per-repo setup: creates <code>.git/lcars/</code>, <strong>detects the repo's stack</strong> (Rust, Go, Python, JS/TS, .NET, JVM — warning rather than guessing when ambiguous) and seeds per-stack defaults, writes config, scans <code>CONTEXT.md</code>, verifies CLI auth, and creates the LCARS Labels. Run once before the first Mission. Safe to re-run: config writing is merge-preserving, so it keeps every value you've customized (<code>testCommand</code>, <code>model</code>, <code>comprehensionBudget</code>) and only fills in what's missing.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars update</div>

@@ -160,6 +160,13 @@ else
   WTSETUP_VALUE='null'
 fi
 
+# Detect the repo's stack the SAME way init does (shared helper), so a pre-S105
+# config missing the `stack` key gets it backfilled with the proper id. Existing
+# values are preserved by lcars_config_merge — only an absent key takes this
+# default (a captain-pinned stack survives untouched).
+STACK="$(detect_stack)"
+STACK_VALUE="\"$(lcars_json_escape "$STACK")\""
+
 # The version STAMP is the one key update deliberately refreshes (that IS update's
 # meaning). Read the OLD stamp BEFORE the merge so we can report old → new. Seed
 # lcarsVersion in the desired schema (so an absent key is added by the merge, and
@@ -174,6 +181,7 @@ lcarsVersion=\"$RUNNING_VERSION\""
 DESIRED_CONFIG="model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
 contextFile=$CONTEXT_VALUE
+stack=$STACK_VALUE
 testCommand=null
 worktreeSetupCommand=$WTSETUP_VALUE
 comprehensionBudget=1200$VERSION_LINE

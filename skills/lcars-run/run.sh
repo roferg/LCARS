@@ -2279,6 +2279,173 @@ resolve_test_cmd() {
   printf '%s' "$c"
 }
 
+# --- S106: multi-stack isolation seam --------------------------------------
+# The Implement red gate proves the Test-Writer's suite FAILS-first, scoped to
+# ONLY the ticket's tests. The default (js/python) mechanism POINTS the runner at
+# a tests dir via $LCARS_TESTS_DIR and discriminates scope-was-honored with an
+# EMPTY-dir probe (red_gate_ok). But cargo and go CANNOT be pointed at a dir —
+# their tests compile INSIDE the crate/package — so scope must be expressed
+# per-runner (`cargo test --test <file>` / `go test -run <pattern>`) and the
+# scope-was-honored proof becomes a FILE-ABSENCE probe (rerun the same scoped
+# invocation with the staged test removed; a DETECTABLE difference proves the
+# runner reacted to the staging — the S85 invariant, per stack). A stack id
+# selects the strategy; js/python stay the DEFAULT $LCARS_TESTS_DIR path
+# UNCHANGED (byte-for-byte), rust/go are NEW branches. `resolve_stack` reads the
+# S105 `stack` config key (env override first, for tests).
+resolve_stack() {
+  if [ -n "${LCARS_STACK:-}" ]; then printf '%s' "$LCARS_STACK"; return 0; fi
+  [ -f "$LCARS_CFG" ] || { printf 'unknown'; return 0; }
+  local s; s="$(json_str "$LCARS_CFG" stack)"
+  case "$s" in ''|null) printf 'unknown' ;; *) printf '%s' "$s" ;; esac
+}
+
+# A NATIVE-isolation stack is one whose runner cannot be pointed at an external
+# tests dir (compiled per-crate/package) — it needs the per-runner scoped
+# invocation + file-absence probe instead of the $LCARS_TESTS_DIR path.
+stack_is_native() { case "$(resolve_stack)" in rust|go) return 0 ;; *) return 1 ;; esac }
+
+# The runner binary a native stack's scoped invocation needs on PATH.
+native_runner_bin() { # stack
+  case "$1" in rust) printf 'cargo' ;; go) printf 'go' ;; *) printf '' ;; esac
+}
+
+# A filesystem-safe token derived from a ticket id (for staged filenames / -run).
+native_safe_token() { printf '%s' "$1" | tr -c 'A-Za-z0-9' '_'; }
+
+# WHERE a native stack's staged test physically lives (its ride-along convention),
+# derived from the authored test's basename. rust → an integration test at the
+# crate's tests/ dir (so `cargo test --test <stem>` targets exactly it); go → an
+# in-package `*_test.go` (so `go test -run` scopes to its funcs). The staged
+# basename is namespaced with the ticket token so siblings never collide and the
+# scoped invocation is unambiguous.
+native_dest_rel() { # stack ticket authored-basename
+  local stack="$1" tok base stem
+  tok="$(native_safe_token "$2")"
+  base="${3##*/}"; stem="${base%.*}"
+  # go: strip a trailing _test so we don't double it.
+  case "$stack" in
+    rust) printf 'tests/__lcarsq_%s__%s.rs' "$tok" "$stem" ;;
+    # go's build tool IGNORES files whose name begins with `_` or `.`, so the
+    # native marker must NOT lead with an underscore or the staged test becomes
+    # invisible to `go test` (a false "no tests to run" green). Use a leading
+    # letter (`lcarsq_`); the trailing `_test.go` is mandatory for go to see it.
+    go)   stem="${stem%_test}"; printf 'lcarsq_%s__%s_test.go' "$tok" "$stem" ;;
+    *)    printf '' ;;
+  esac
+}
+
+# The go test-function names a staged file declares — the basis for the `-run`
+# pattern that scopes go to ONLY this file's tests (no sibling runs).
+native_go_test_funcs() { # file
+  grep -Eo '^func[[:space:]]+(Test|Benchmark|Example|Fuzz)[A-Za-z0-9_]*' "$1" 2>/dev/null \
+    | awk '{print $2}'
+}
+
+# The SCOPED invocation for a native stack: run ONLY the ticket's staged test(s),
+# no siblings. Echoes the command string (eval'd from the run dir) or EMPTY when
+# no runnable target exists in the staged files (no #[test] / no Test func) — the
+# caller then BLOCKS loud (scope cannot be proven). Reads the IN-TREE staged files
+# (under $REPO_ROOT) named on stdin, one relpath per line.
+native_scoped_cmd() { # stack   (relpaths on stdin)
+  local stack="$1" rel stem funcs f names=""
+  case "$stack" in
+    rust)
+      local targets=""
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        # Only a file with a #[test]-style attribute yields a runnable target.
+        grep -Eq '#\[[a-z_:]*test' "$REPO_ROOT/$rel" 2>/dev/null || continue
+        stem="${rel##*/}"; stem="${stem%.rs}"
+        targets="$targets --test $stem"
+      done
+      [ -n "$targets" ] || { printf ''; return 0; }
+      printf 'cargo test%s' "$targets"
+      ;;
+    go)
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        for f in $(native_go_test_funcs "$REPO_ROOT/$rel"); do
+          names="${names:+$names|}$f"
+        done
+      done
+      [ -n "$names" ] || { printf ''; return 0; }
+      printf "go test -run '^(%s)\$'" "$names"
+      ;;
+    *) printf '' ;;
+  esac
+}
+
+# The native red gate: prove the ticket's staged suite FAILS-first, scoped to
+# ONLY its own tests, with scope-was-honored proven by a FILE-ABSENCE probe.
+# Preserves EVERY guarantee red_gate_ok gives (fail-first, scope-honored, never a
+# silent green) via the per-runner mechanism. Relpaths (in-tree, under REPO_ROOT)
+# on stdin. $NATIVE_GATE_SIGNAL (like RED_GATE_SIGNAL) captures the block reason.
+#   return 0 → RED and scope proven (safe to hand off)
+#   return 1 → BLOCK (green-on-nothing, or scope unprovable — never accept)
+#   return 3 → the runner itself is not installed (env; not a Test-Writer defect)
+red_gate_native() { # stack  run_dir   (relpaths on stdin)
+  local stack="$1" run_dir="$2" bin cmd rels rel reason=""
+  rels="$(cat)"
+  bin="$(native_runner_bin "$stack")"
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    reason="RED GATE — the $stack test runner '$bin' is not installed on PATH, so the harness cannot run any test for this native stack. This is an ENVIRONMENT gap, NOT a Test-Writer defect — install $bin (or retarget the mission)."
+    printf '  ✗ %s\n' "$reason" >&2
+    [ -n "${NATIVE_GATE_SIGNAL:-}" ] && printf 'rc=env\n%s\n' "$reason" >"$NATIVE_GATE_SIGNAL"
+    return 3
+  fi
+  cmd="$(printf '%s\n' "$rels" | native_scoped_cmd "$stack")"
+  if [ -z "$cmd" ]; then
+    reason="RED GATE — cannot scope the $stack suite: the staged test file(s) declare NO runnable test target (no #[test] function for rust / no func Test… for go), so there is nothing the harness can invoke in isolation and it CANNOT prove scope was honored. A contract the runner cannot even select proves nothing — BLOCK (never a silent green). Have the Test-Writer declare a real test function."
+    printf '  ✗ %s\n' "$reason" >&2
+    [ -n "${NATIVE_GATE_SIGNAL:-}" ] && printf 'rc=unscopable\n%s\n' "$reason" >"$NATIVE_GATE_SIGNAL"
+    return 1
+  fi
+
+  local out rc=0 probe_out prc=0
+  out="$( cd "$run_dir" && eval "$cmd" 2>&1 )" || rc=$?
+
+  # SCOPE-WAS-HONORED PROBE (the S85 invariant, per stack): rerun the IDENTICAL
+  # scoped invocation with the staged test file(s) moved ASIDE. A runner that
+  # honors the scoping reacts DETECTABLY (cargo → "no test target", exit 101; go
+  # → "no tests to run", exit 0 vs a FAIL); an IDENTICAL result (same rc AND
+  # output) means the invocation ignored the staging → we cannot prove the staged
+  # test is what ran → BLOCK. Restore the files on EVERY path.
+  local moved=""
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if [ -f "$REPO_ROOT/$rel" ]; then
+      mv "$REPO_ROOT/$rel" "$REPO_ROOT/$rel.__lcarsq_probe_bak" 2>/dev/null && moved="$moved$rel
+"
+    fi
+  done <<NATIVE_PROBE_EOF
+$rels
+NATIVE_PROBE_EOF
+  probe_out="$( cd "$run_dir" && eval "$cmd" 2>&1 )" || prc=$?
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    mv "$REPO_ROOT/$rel.__lcarsq_probe_bak" "$REPO_ROOT/$rel" 2>/dev/null || :
+  done <<NATIVE_RESTORE_EOF
+$moved
+NATIVE_RESTORE_EOF
+
+  if [ "$prc" -eq "$rc" ] && [ "$probe_out" = "$out" ]; then
+    reason="RED GATE — the $stack scoped invocation produced an IDENTICAL result (same exit AND output) with and WITHOUT the staged test present, so it did NOT react to the ticket's scoping — the harness cannot prove the staged test is what ran (the S85 masking case). BLOCK; never accept an unprovable suite. Command: $cmd (from $run_dir)."
+    printf '  ✗ %s\n' "$reason" >&2
+    [ -n "${NATIVE_GATE_SIGNAL:-}" ] && { printf 'rc=%s (scope unprovable — identical with/without the staged test)\n%s\n' "$rc" "$reason" >"$NATIVE_GATE_SIGNAL"; }
+    return 1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    reason="RED GATE — the staged $stack suite PASSED (exit 0) with no implementation. A contract that is green before anything is built proves nothing; the tests must FAIL first. Command: $cmd. Runner output:
+$(printf '%s' "$out" | tail -20)"
+    printf '  ✗ %s\n' "$reason" >&2
+    [ -n "${NATIVE_GATE_SIGNAL:-}" ] && printf 'rc=0 (green-on-nothing — the staged suite must FAIL first)\n%s\n' "$reason" >"$NATIVE_GATE_SIGNAL"
+    return 1
+  fi
+  # Non-zero AND scope proven (the probe differed) → a genuine red of the staged
+  # tests. Safe to hand off.
+  return 0
+}
+
 # --- S96: table-driven classifier signatures -------------------------------
 # The red-gate failure detectors below (compile / resolution / env) share ONE
 # data table keyed by CATEGORY, so a future stack (multi-stack-dev.md) slots a new
@@ -2292,9 +2459,25 @@ resolve_test_cmd() {
 rg_signature() { # category → the ERE for that category's runner-output signature
   case "$1" in
     resolution)
-      printf '%s' 'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve' ;;
+      # JS/TS + bundler forms (byte-identical to pre-S104), then S104 GO module
+      # resolution. Go's forms are ANCHORED to the compiler's OWN `file.go:LINE:COL:`
+      # prefix (the go compiler emits line AND column; the testing package prints a
+      # single line number) OR line-start `^go: `, so an assertion that merely QUOTES
+      # e.g. "cannot find package" mid-diff can never false-match — mirroring the env
+      # arm's line-start discipline. Missing-package is RESOLUTION (a type/syntax
+      # error is compile, in the `compile` arm below).
+      printf '%s' 'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve|\.go:[0-9]+:[0-9]+: (cannot find package|no required module provides package|cannot find module providing package)|^go: .*cannot find module providing package' ;;
     compile)
-      printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)' ;;
+      # JS/TS + Python forms (byte-identical to pre-S104), then S104 RUST / GO / DOTNET
+      # / JVM compile failures. Every new arm is ANCHORED the way each toolchain prints
+      # its OWN diagnostic — rustc's `^error[E####]` / `^error: could not compile`, the
+      # go compiler's `file.go:LINE:COL:` (line+col) prefix, csc's `(line,col): error
+      # CS####` + MSBuild's `^Build FAILED`, javac's `file.java:LINE: error:` /
+      # `^error: cannot find symbol`, maven's `[ERROR] COMPILATION ERROR`, gradle's
+      # `^> Task :compile… FAILED` (compile-scoped, so a `:test FAILED` red is untouched)
+      # — so an assertion diff that QUOTES a compile phrase, or a genuine cargo/go/junit
+      # assertion red, stays a valid fail-first and never trips this detector.
+      printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)|^error\[E[0-9]+\]|^error: could not compile |\.go:[0-9]+:[0-9]+: (undefined:|syntax error)|\([0-9]+,[0-9]+\): error CS[0-9]+|^Build FAILED|\.java:[0-9]+: error:|^error: cannot find symbol|\[ERROR\] COMPILATION ERROR|^> Task :compile[A-Za-z]* FAILED' ;;
     env)
       # S111: `^npm (error|ERR!) could not determine executable to run` is npx's
       # own no-binary diagnostic (`npx vitest` in a package without vitest) —
@@ -2305,7 +2488,11 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # A GENUINE assertion red (the runner started, tests ran, an assertion FAILED)
       # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs
       # against the gate, so it can never accept a red the gate would reject.
-      printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]' ;;
+      # S104: cargo/go assertion phrasings appended for legibility (classify-only —
+      # this arm never feeds a red-gate verdict, so it cannot accept a red the gate
+      # would reject; it only lets classify_impl_failure NAME a genuine cross-stack
+      # assertion red instead of the generic over-broad-slice).
+      printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]|panicked at|--- FAIL:|test result: FAILED' ;;
     zerotests)
       # S99 — the runner FINISHED but collected/ran ZERO tests. CLASSIFY-ONLY (the
       # self-smoke's zero-tests verdict + classify_impl_failure); NEVER consulted by
@@ -3357,7 +3544,11 @@ tests_committed_in_tree() { # ticketId  tree
 # nothing. The red gate catches a trivially-PASSING suite; this catches one that
 # asserts nothing at all.
 suite_has_assertions() { # tests-dir
-  grep -rEiq 'assert|expect|should|\.to[A-Za-z]|require\(|t\.(is|deep|truthy|throws)|check\(|verify\(' "$1" 2>/dev/null
+  # S106: the construct set is language-agnostic — rust (assert!/assert_eq!/panic!)
+  # already matches `assert`, but go uses testing.T methods (t.Fatal/t.Error/t.Fail),
+  # which none of the JS/py forms cover, so add them (plus rust's panic!). Without
+  # this a well-formed go suite would be rejected as "asserts nothing".
+  grep -rEiq 'assert|expect|should|\.to[A-Za-z]|require\(|t\.(is|deep|truthy|throws)|check\(|verify\(|t\.(Fatal|Error|Fail|Skip)|panic!' "$1" 2>/dev/null
 }
 
 # --- GUARDRAIL 3.5: portable source location (BUG-074) ----------------------
@@ -3406,6 +3597,125 @@ nonportable_path_in_tests() { # tests-dir → echoes "file:offending-path", rc 0
   return 1
 }
 
+# --- S106: native (rust/go) impl-save-tests staging + red gate --------------
+# The native counterpart to the js/python S101/S102 flow. It is intentionally
+# SIMPLER — a native runner compiles tests inside the crate/package, so there is
+# no co-location resolution, no greenfield-stub overlay, and no monorepo package
+# math: each authored test is STAGED at the stack's own ride-along convention
+# (rust: tests/<name>.rs; go: <name>_test.go), snapshotted (immutable), red-gated
+# via the per-runner scoped invocation + file-absence probe, committed so it rides
+# into the PR (S102), and — on any FAILURE exit — rolled back so no staged copy
+# leaks. On SUCCESS the staged file is the ride-along (committed, tracked). Every
+# red_gate guarantee is preserved via red_gate_native. Called by cmd_impl_save_tests
+# after the shared count + assertion guardrails.
+cmd_impl_save_tests_native() {
+  local stack; stack="$(resolve_stack)"
+  local tdir; tdir="$(ticket_dir "$TICKET")/tests"
+  local snap; snap="$(ticket_dir "$TICKET")/tests.sha256"
+  # Native fixtures compile at the crate/package ROOT (go.mod / Cargo.toml at the
+  # repo root); the scoped runner is invoked from there.
+  local run_dir="$REPO_ROOT"
+
+  # STAGE each authored test at its ride-along convention (in-tree + a mirror whose
+  # relpaths equal the in-tree relpaths, so the immutable snapshot keys off one path).
+  rm -rf "$tdir"; mkdir -p "$tdir"
+  local INTREE_RELS="" f rel reldir
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rel="$(native_dest_rel "$stack" "$TICKET" "$f")"
+    [ -n "$rel" ] || continue
+    reldir="${rel%/*}"; [ "$reldir" = "$rel" ] && reldir=""
+    [ -n "$reldir" ] && { mkdir -p "$tdir/$reldir" 2>/dev/null || :; mkdir -p "$REPO_ROOT/$reldir" 2>/dev/null || :; }
+    cp "$f" "$tdir/$rel"
+    cp "$f" "$REPO_ROOT/$rel"
+    INTREE_RELS="${INTREE_RELS}${rel}
+"
+  done < <(find "$TESTS" -type f | LC_ALL=C sort)
+
+  # Roll the in-tree staged copies back out — used on EVERY failure exit so a
+  # rejected suite leaves NO staged copy behind.
+  _native_rollback() {
+    local r
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      rm -f "$REPO_ROOT/$r"
+      rmdir -p "$REPO_ROOT/${r%/*}" 2>/dev/null || :
+    done <<NATIVE_RB_EOF
+$INTREE_RELS
+NATIVE_RB_EOF
+  }
+
+  if [ -z "$(printf '%s' "$INTREE_RELS" | grep . || true)" ]; then
+    _native_rollback; rm -rf "$tdir"
+    die "no ${stack} test file could be staged from the Test Writer's suite — expected a ${stack} test file (*.rs / *_test.go)."
+  fi
+
+  # GUARDRAIL 2 setup: snapshot the staged files (immutability keys off in-tree relpaths).
+  snapshot_tests "$tdir" "$snap"
+
+  # GUARDRAIL 1 (the native red gate): the suite must FAIL-first AND prove scope was
+  # honored (file-absence probe). Capture the reason to a durable signal so the human
+  # and the next attempt see WHY. rc 3 = env (runner not installed) → escalate, not retry.
+  local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"; rm -f "$sig"
+  local red_rc=0
+  NATIVE_GATE_SIGNAL="$sig" red_gate_native "$stack" "$run_dir" <<NATIVE_GATE_EOF || red_rc=$?
+$INTREE_RELS
+NATIVE_GATE_EOF
+  if [ "$red_rc" -eq 3 ]; then
+    _native_rollback; rm -rf "$tdir" "$snap"
+    local why3=""; [ -f "$sig" ] && why3="
+$(cat "$sig")"
+    printf 'lcars run: the %s test runner is not installed — not a Test-Writer problem; escalating to the human instead of retrying.%s\n' "$stack" "$why3" >&2
+    exit 3
+  fi
+  if [ "$red_rc" -ne 0 ]; then
+    _native_rollback; rm -rf "$tdir" "$snap"
+    local why=""; [ -f "$sig" ] && why="
+$(cat "$sig")"
+    die "the Test Writer's suite did not pass the ${stack} red gate — a contract that is green (or unprovable) before anything is built proves nothing; the tests must FAIL first.$why"
+  fi
+  rm -f "$sig"
+
+  # S102 (tests ride along): COMMIT the locked test BEFORE the Implementer runs so it
+  # merges into the PR at the stack's OWN convention (tests/*.rs / *_test.go). Reuses
+  # the stack-agnostic committer (it stages ONLY the snapshot relpaths, explicitly).
+  commit_locked_tests "$TICKET"
+  if [ "$COMMIT_TESTS_NOTE" != "committed" ]; then
+    local ub; ub="$(ticket_dir "$TICKET")/.untracked-before"
+    [ -n "$INTREE_RELS" ] && printf '%s' "$INTREE_RELS" | grep -v '^$' >>"$ub" 2>/dev/null || :
+  fi
+
+  local count; count="$(printf '%s' "$INTREE_RELS" | grep -c . || true)"
+  echo "IMPLEMENT: tests saved — $TICKET"
+  echo "  Saved $count Test Writer file(s) at the $stack test convention: $(printf '%s' "$INTREE_RELS" | grep . | paste -sd' ' -)."
+  echo "  Red gate: suite fails as required (scope proven via the $stack file-absence probe); the contract is locked (immutable)."
+  if [ "$COMMIT_TESTS_NOTE" = "committed" ]; then
+    echo "  Test committed (rides along into the PR) BEFORE the Implementer; the contract is committed + locked."
+  fi
+  exit 0
+}
+
+# --- S106: native-scope (introspection) -------------------------------------
+# Read-only: prints the native scoped invocation the harness would use for a
+# ticket's locked tests (from the immutable snapshot's in-tree relpaths), plus the
+# run dir. Lets a caller re-run the SAME scoped command the red gate used — to see
+# it go RED (no impl) then GREEN (impl present), or to exercise the file-absence
+# probe — without re-invoking the whole gate. Emits `RUN_DIR=`, `SCOPED_CMD=`, and
+# one `RELPATH=` per staged file.
+cmd_native_scope() {
+  locate_mission "$MISSION_ID"
+  [ -n "$TICKET" ] || die "no ticket id — pass --ticket <id>."
+  local stack; stack="$(resolve_stack)"
+  stack_is_native || die "native-scope applies only to native stacks (rust/go); this mission's stack is '$stack'."
+  local rels; rels="$(snapshot_test_rels "$TICKET")"
+  [ -n "$(printf '%s' "$rels" | grep . || true)" ] || die "no locked tests for $TICKET — run impl-save-tests first."
+  local cmd; cmd="$(printf '%s\n' "$rels" | native_scoped_cmd "$stack")"
+  printf 'RUN_DIR=%s\n' "$REPO_ROOT"
+  printf 'SCOPED_CMD=%s\n' "$cmd"
+  printf '%s\n' "$rels" | while IFS= read -r r; do [ -n "$r" ] && printf 'RELPATH=%s\n' "$r"; done
+  exit 0
+}
+
 # --- subcommand: impl-save-tests -------------------------------------------
 cmd_impl_save_tests() {
   locate_mission "$MISSION_ID"
@@ -3423,6 +3733,12 @@ cmd_impl_save_tests() {
   # that proves nothing.
   suite_has_assertions "$TESTS" \
     || die "the Test Writer's suite asserts nothing — no assertion found in any test file. A zero-assertion contract proves nothing; rejected by the test-quality guardrail."
+
+  # S106: NATIVE stacks (rust/go) can't be pointed at a tests dir — their scoped
+  # red gate + ride-along convention differ per-runner. Branch here, AFTER the
+  # language-agnostic count + assertion guardrails, so the js/python path below is
+  # byte-for-byte unchanged (default = the $LCARS_TESTS_DIR mechanism).
+  if stack_is_native; then cmd_impl_save_tests_native; return $?; fi
 
   # GUARDRAIL 3.5 (BUG-074): reject a NON-PORTABLE test before it locks in. A test
   # that loads a repo source via a hardcoded absolute build-worktree path passes in
@@ -9100,7 +9416,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|open-pr|research|validate|estimate|plan|plan-review|implement|implement-ticket|reconcile-tests|drive|emit-event)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|open-pr|research|validate|estimate|plan|plan-review|implement|implement-ticket|reconcile-tests|drive|emit-event|native-scope)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -9114,6 +9430,7 @@ case "$SUB" in
   review-save)      cmd_review_save ;;
   schedule)         cmd_schedule ;;
   impl-save-tests)  cmd_impl_save_tests ;;
+  native-scope)     cmd_native_scope ;;
   impl-save-result) cmd_impl_save_result ;;
   impl-status)      cmd_impl_status ;;
   impl-advance)     cmd_impl_advance ;;

@@ -4,6 +4,41 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.7 — 2026-07-09
+
+The Multi-Stack Breadth round (S104–106) — LCARS goes from JS/TS-and-Python to
+*recognizing and running* compiled/managed toolchains. Every change generalizes
+the harness and never loosens a gate: a new stack makes rejection MORE precise.
+
+- **Per-stack classifier arms (S104).** The S96 table-driven red-gate classifier
+  (`rg_signature`) gains Rust / Go / .NET / JVM arms. A `cargo` compile error,
+  a Go "cannot find package", a C# `error CS####`, or a javac "cannot find
+  symbol" is now named as the compile/resolution failure it is — while a genuine
+  cargo/go assertion failure stays a valid red. Each signature is anchored to the
+  way each toolchain prints its own diagnostic, so an assertion diff that merely
+  quotes a compile phrase can't false-match. Every JS/Python arm is byte-identical.
+- **Stack detection + per-stack defaults (S105).** `lcars init` (and `lcars
+  update`) detect the repo's stack from its markers — Rust, Go, Python, JS/TS,
+  .NET, JVM; several markers → `ambiguous(list)`; none → `unknown` — via a shared
+  `detect_stack()`. They seed a MISSING-only `stack` key and a per-stack test
+  command, warning (never guessing) on ambiguity. Customized values survive both
+  re-init and update untouched.
+- **Per-stack test isolation (S106).** The Implement red gate now isolates a
+  ticket's fail-first tests for compiled runners whose tests live *inside* the
+  crate/package and can't be pointed at an external dir. Keyed by the `stack`
+  key: Rust stages an integration test scoped by `cargo test --test`; Go stages
+  an in-package `_test.go` scoped by `go test -run` (leading-letter name — a
+  spike-caught Go `_`-prefix file-invisibility false-green is avoided); JS/Python
+  keep their `$LCARS_TESTS_DIR` path byte-for-byte. A file-absence probe enforces
+  scope-was-honored per stack — green-on-nothing or unprovable scope BLOCKS loud,
+  never a silent green. Immutability, ride-along-into-the-PR (at each stack's own
+  convention), and staging cleanup on every exit are preserved.
+
+Proven by a live dual-CLI capstone: two real fixture repos driven Align→Verify
+hands-off with zero interventions — a Rust crate on Claude and a Go module on
+Copilot — each reaching Verify on the first attempt with its fail-first test
+riding into a real PR via the native isolation gate.
+
 ## 2026.7.6 — 2026-07-09
 
 The declared-test-setup ↔ placement contract round (S131) — a one-off harness
