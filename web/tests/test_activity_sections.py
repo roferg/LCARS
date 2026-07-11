@@ -87,17 +87,22 @@ def _multistage_events():
     ]
 
 
+def _run_harness(acts, mode=None):
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(acts, f)
+        path = f.name
+    argv = [NODE, HARNESS, path] + ([mode] if mode else [])
+    try:
+        out = subprocess.check_output(argv, stderr=subprocess.STDOUT)
+    finally:
+        os.unlink(path)
+    return json.loads(out.decode("utf-8"))
+
+
 @unittest.skipUnless(NODE, "node is required to exercise the pure JS helper")
 class GroupActivityHelperTest(unittest.TestCase):
     def _group(self, acts):
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-            json.dump(acts, f)
-            path = f.name
-        try:
-            out = subprocess.check_output([NODE, HARNESS, path], stderr=subprocess.STDOUT)
-        finally:
-            os.unlink(path)
-        return json.loads(out.decode("utf-8"))
+        return _run_harness(acts)
 
     # (1) a 3-wave / 9-ticket mission → 3 sections, 2 collapsed + 1 open.
     def test_three_waves_three_sections_last_open(self):
@@ -166,6 +171,117 @@ class GroupActivityHelperTest(unittest.TestCase):
         self.assertEqual(self._group([]), [])
 
 
+def _one_ticket_wave():
+    """A single-ticket, single-attempt wave (for the singular chip forms)."""
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+        {"ts": 1002, "stage": "implement", "type": "ticket_start", "detail": "t-001"},
+        {"ts": 1008, "stage": "implement", "type": "ticket_green", "detail": "t-001 green"},
+    ]
+
+
+def _zero_attempt_wave():
+    """A wave whose ticket has no outcome/attempt yet → 0 attempts (chip omitted)."""
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+        {"ts": 1002, "stage": "implement", "type": "ticket_start", "detail": "t-001"},
+    ]
+
+
+def _zero_ticket_wave():
+    """A wave header with no tickets at all → no health bar."""
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+    ]
+
+
+def _red_health_wave():
+    """A 2-ticket wave: one green, one flagged-and-unresolved → 50/50 health bar."""
+    return [
+        {"ts": 1000, "stage": "implement", "type": "stage_start", "detail": "s"},
+        {"ts": 1001, "stage": "implement", "type": "wave_start", "detail": "wave 1"},
+        {"ts": 1002, "stage": "implement", "type": "ticket_start", "detail": "t-001"},
+        {"ts": 1005, "stage": "implement", "type": "ticket_green", "detail": "t-001 green"},
+        {"ts": 1006, "stage": "implement", "type": "ticket_start", "detail": "t-002"},
+        {"ts": 1009, "stage": "implement", "type": "ticket_flagged", "detail": "t-002 flag"},
+    ]
+
+
+@unittest.skipUnless(NODE, "node is required to exercise the chip DOM builders")
+class SectionChipsTest(unittest.TestCase):
+    """VISUAL POLISH: the graphic stat chips + wave-health micro-bar produced by
+    the SHIPPING board.js (sectionSummaryChips / sectionHealthBar)."""
+
+    def _chips(self, acts):
+        return _run_harness(acts, mode="chips")
+
+    def _classes(self, sec):
+        return " ".join(sec["chipClasses"])
+
+    def test_wave_chip_classes_present(self):
+        secs = self._chips(_big_gamify_events())
+        cls0 = self._classes(secs[0])
+        # a wave band gets ticket + attempt + duration chips.
+        self.assertIn("chip-tickets", cls0)
+        self.assertIn("chip-attempts", cls0)
+        self.assertIn("chip-duration", cls0)
+        # clean wave 1 → attempts NOT flagged-tinted; flagged wave 2 → flagged.
+        self.assertNotIn("flagged", self._classes(secs[0]))
+        self.assertIn("chip-attempts flagged", self._classes(secs[1]))
+
+    def test_plural_and_singular(self):
+        secs = self._chips(_big_gamify_events())
+        self.assertEqual(secs[0]["chipTexts"][0], "⬢ 3 tickets")  # plural
+        one = self._chips(_one_ticket_wave())
+        self.assertEqual(one[0]["chipTexts"][0], "⬢ 1 ticket")     # singular
+        self.assertIn("↻ 1 attempt", one[0]["chipTexts"])          # singular attempt
+
+    def test_zero_attempts_chip_omitted(self):
+        secs = self._chips(_zero_attempt_wave())
+        self.assertIn("chip-tickets", self._classes(secs[0]))
+        self.assertNotIn("chip-attempts", self._classes(secs[0]))
+
+    def test_stage_chip_status(self):
+        secs = self._chips(_multistage_events())
+        # research + validate are STAGE sections → a status chip (not tickets).
+        self.assertIn("chip-status", self._classes(secs[0]))
+        self.assertNotIn("chip-tickets", self._classes(secs[0]))
+        # a completed (non-active) stage reads "✓ complete".
+        self.assertIn("✓ complete", secs[0]["chipTexts"])
+        # a stream ending on an OPEN stage → its last chip reads "in progress".
+        active_stage = self._chips([
+            {"ts": 1000, "stage": "research", "type": "stage_start", "detail": "r"},
+            {"ts": 1010, "stage": "research", "type": "stage_done", "detail": "r done"},
+            {"ts": 1020, "stage": "validate", "type": "stage_start", "detail": "v"},
+        ])
+        self.assertIn("chip-status active", self._classes(active_stage[-1]))
+        self.assertIn("in progress", active_stage[-1]["chipTexts"])
+
+    def test_health_bar_wave_only(self):
+        # a wave with tickets → a health bar; a stage / zero-ticket wave → none.
+        wave = self._chips(_big_gamify_events())
+        self.assertIsNotNone(wave[0]["healthBar"])
+        self.assertIn("band-health", wave[0]["healthBar"])
+        multi = self._chips(_multistage_events())
+        self.assertIsNone(multi[0]["healthBar"])  # research STAGE section
+        self.assertIsNone(self._chips(_zero_ticket_wave())[0]["healthBar"])
+
+    def test_health_bar_proportions(self):
+        secs = self._chips(_red_health_wave())
+        self.assertEqual(secs[0]["healthGreen"], "50%")
+        self.assertEqual(secs[0]["healthRed"], "50%")
+
+    def test_flagged_badge_class(self):
+        # a flagged wave still emits the band-flag badge (built in sectionNode);
+        # the chip cluster carries the flagged-tinted attempts chip.
+        secs = self._chips(_big_gamify_events())
+        self.assertTrue(secs[1]["flagged"])
+        self.assertIn("chip-attempts flagged", self._classes(secs[1]))
+
+
 class BoardJsWiringTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -199,6 +315,54 @@ class BoardJsWiringTest(unittest.TestCase):
         # the mission-log parent's linked-bug list gets the same band idiom.
         self.assertIn("function linkedBugsSection", self.js)
         self.assertIn("linkedBugsSection(kids)", self.js)
+
+    def test_chip_and_health_builders_defined(self):
+        # VISUAL POLISH: the graphic stat-chip + health-bar builders exist and the
+        # band renders them (the run-together band-summary text is superseded).
+        self.assertIn("function sectionSummaryChips", self.js)
+        self.assertIn("function sectionHealthBar", self.js)
+        self.assertIn("band-chips", self.js)
+        self.assertIn("band-health", self.js)
+        self.assertIn("sectionSummaryChips(sec)", self.js)
+        self.assertIn("sectionHealthBar(sec)", self.js)
+
+
+class BoardCssMotionTest(unittest.TestCase):
+    """VISUAL POLISH: every new animation MUST sit inside a
+    prefers-reduced-motion:no-preference block (reduced-motion → static)."""
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(STATIC, "board.css"), encoding="utf-8") as f:
+            cls.css = f.read()
+
+    def test_chip_and_health_styles_present(self):
+        for sel in (".band-chip", ".band-chip.chip-tickets", ".band-chip.chip-attempts",
+                    ".band-chip.chip-attempts.flagged", ".band-chip.chip-duration",
+                    ".band-chip.chip-status", ".band-health"):
+            self.assertIn(sel, self.css, sel)
+
+    def test_animations_gated_on_no_preference(self):
+        marker = "@media (prefers-reduced-motion:no-preference){"
+        self.assertIn(marker, self.css)
+        block = self.css.split(marker, 1)[1]
+        # close the block at the matching brace depth so we test only its contents.
+        depth, end = 1, 0
+        for i, ch in enumerate(block):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        inner = block[:end]
+        # each new keyframe animation must live INSIDE the no-preference block.
+        for kf in ("band-flag-pulse", "band-dot-pulse", "band-active-glow",
+                   "band-events-in"):
+            self.assertIn(kf, inner, kf + " must be gated on no-preference")
+        # and NOT leak outside it (no bare animation on these selectors elsewhere).
+        outside = self.css.replace(inner, "")
+        self.assertNotIn("band-flag-pulse", outside)
 
 
 class CardsUntouchedTest(unittest.TestCase):

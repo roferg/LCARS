@@ -12,15 +12,19 @@ const path = require("path");
 const vm = require("vm");
 
 function stubEl() {
-  return {
+  var node = {
     style: {},
     classList: { add() {}, remove() {}, toggle() { return false; }, contains() { return false; } },
     addEventListener() {}, removeEventListener() {},
-    appendChild() {}, removeChild() {}, setAttribute() {}, removeAttribute() {},
+    // track appended children so the chip / health-bar DOM builders can be
+    // inspected (className, textContent, and segment style.width) by the tests.
+    appendChild(c) { node.children.push(c); return c; },
+    removeChild() {}, setAttribute() {}, removeAttribute() {},
     querySelector() { return null; }, querySelectorAll() { return []; },
     getAttribute() { return null; }, focus() {},
     children: [], innerHTML: "", textContent: "", hidden: false, title: "",
   };
+  return node;
 }
 const documentStub = {
   getElementById() { return stubEl(); },
@@ -60,4 +64,32 @@ if (typeof sandbox.groupActivityIntoSections !== "function") {
 }
 const acts = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const sections = sandbox.groupActivityIntoSections(acts);
-process.stdout.write(JSON.stringify(sections));
+const mode = process.argv[3] || "";
+
+if (mode === "chips") {
+  // VISUAL POLISH: exercise the graphic chip + health-bar DOM builders against
+  // the SHIPPING board.js, projecting the produced DOM to inspectable JSON.
+  if (typeof sandbox.sectionSummaryChips !== "function"
+      || typeof sandbox.sectionHealthBar !== "function") {
+    process.stderr.write("chip helpers are not defined\n");
+    process.exit(2);
+  }
+  const out = sections.map(function (s) {
+    const chips = sandbox.sectionSummaryChips(s) || [];
+    const hb = sandbox.sectionHealthBar(s);
+    return {
+      kind: s.kind, wave: s.wave, active: s.active,
+      ticketCount: s.ticketCount, greenCount: s.greenCount,
+      flaggedCount: s.flaggedCount, flagged: s.flagged,
+      durationSec: s.durationSec, attemptCount: s.attemptCount,
+      chipClasses: chips.map(function (c) { return c.className || ""; }),
+      chipTexts: chips.map(function (c) { return c.textContent || ""; }),
+      healthBar: hb ? (hb.className || "") : null,
+      healthGreen: hb && hb.children[0] ? hb.children[0].style.width : null,
+      healthRed: hb && hb.children[1] ? hb.children[1].style.width : null,
+    };
+  });
+  process.stdout.write(JSON.stringify(out));
+} else {
+  process.stdout.write(JSON.stringify(sections));
+}

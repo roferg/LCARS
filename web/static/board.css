@@ -577,7 +577,7 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   border:1px solid var(--lcars-border)}
 .feed-expand-btn:hover{border-color:var(--lcars-peach);color:var(--lcars-text-bright)}
 .feed-section{margin-bottom:10px}
-.feed-band{display:flex;align-items:center;gap:10px;cursor:pointer;
+.feed-band{display:flex;align-items:center;gap:10px;cursor:pointer;flex-wrap:wrap;
   padding:8px 14px;border-radius:var(--lcars-radius,14px);
   background:var(--lcars-card-alt);border:1px solid var(--lcars-border);
   border-left:5px solid var(--lcars-text-dim)}
@@ -602,6 +602,58 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .feed-section.open>.feed-band{background:var(--lcars-surface,#070d1c)}
 .band-events{padding:14px 4px 4px 8px}
 .band-events[hidden]{display:none}
+
+/* ── S115 VISUAL POLISH: graphic stat chips + wave-health micro-bar + badge ──
+   The band summary is now discrete icon-led LCARS stat chips, a thin green/red
+   wave-health bar, and a ⚠ FLAGGED badge. All colour comes from the shared
+   --lcars-* tokens; all MOTION lives in the prefers-reduced-motion:no-preference
+   block below so reduced-motion users get a static, still-legible render. */
+.feed-band .band-chips{display:flex;align-items:center;gap:6px;margin-left:auto;
+  flex-wrap:wrap;justify-content:flex-end}
+.band-chip{font-family:var(--font-mono);font-size:10px;letter-spacing:.04em;
+  padding:2px 8px;border-radius:9px;white-space:nowrap;
+  border:1px solid var(--lcars-border);background:var(--lcars-card-alt);
+  color:var(--lcars-text-dim)}
+.band-chip.chip-tickets{color:var(--lcars-teal);
+  border-color:rgba(0,204,170,.4);background:rgba(0,204,170,.10)}
+.band-chip.chip-attempts{color:var(--lcars-amber);
+  border-color:rgba(255,170,0,.4);background:rgba(255,170,0,.12)}
+.band-chip.chip-attempts.flagged{color:#ff8a96;
+  border-color:rgba(255,51,68,.5);background:rgba(255,51,68,.14)}
+.band-chip.chip-duration{color:var(--lcars-text-dim)}
+.band-chip.chip-status{color:var(--lcars-text-dim)}
+.band-chip.chip-status.active{color:var(--lcars-teal);border-color:rgba(0,204,170,.4)}
+.band-chip.chip-status.active::before{content:"";display:inline-block;
+  width:6px;height:6px;border-radius:50%;background:var(--lcars-teal);
+  margin-right:5px;vertical-align:middle}
+/* wave-health micro-bar: a full-width (wraps to its own row) thin green/red split. */
+.band-health{flex:1 0 100%;display:flex;height:4px;margin-top:8px;
+  border-radius:3px;overflow:hidden;background:rgba(80,104,138,.20)}
+.band-health .hb-green{background:var(--lcars-teal);min-width:0}
+.band-health .hb-red{background:var(--lcars-red);min-width:0}
+/* graphic FLAGGED badge — the red pill, now read as a badge (⚠ glyph). */
+.feed-band .band-flag{display:inline-flex;align-items:center;gap:4px}
+
+@media (prefers-reduced-motion:no-preference){
+  /* FLAGGED badge: a subtle red pulse/glow. */
+  .feed-band .band-flag{animation:band-flag-pulse 1.6s ease-in-out infinite}
+  @keyframes band-flag-pulse{
+    0%,100%{box-shadow:0 0 0 0 rgba(255,51,68,.5)}
+    50%{box-shadow:0 0 0 5px rgba(255,51,68,0)}}
+  /* the in-progress stage chip's dot breathes. */
+  .band-chip.chip-status.active::before{animation:band-dot-pulse 1.4s ease-in-out infinite}
+  @keyframes band-dot-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  /* the ACTIVE (open/in-flight) band: a soft accent glow (border colour kept
+     per-stage; the breathing rides a box-shadow, mirroring .card.running). */
+  .feed-section.open>.feed-band{animation:band-active-glow 2.8s ease-in-out infinite}
+  @keyframes band-active-glow{
+    0%,100%{box-shadow:0 0 0 0 rgba(0,204,170,0)}
+    50%{box-shadow:0 0 0 2px rgba(0,204,170,.22)}}
+  /* events fade / slide in when a band opens. */
+  .band-events:not([hidden]){animation:band-events-in .28s ease-out}
+  @keyframes band-events-in{
+    from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+}
 
 /* ── tabs (mock .tabs / .tabbar .tab .on / .tabpane .on) ── */
 .tabs{padding:18px 20px;background:var(--lcars-black);overflow:auto;min-height:0}

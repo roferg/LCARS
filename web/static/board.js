@@ -2721,7 +2721,9 @@ function sectionTitle(sec) {
 
 /* S115: the one-line Star-Trek-voiced summary shown on a collapsed band. Wave
    bands read "N tickets · M attempts · <dur>"; stage bands read a stage-flavoured
-   line with the duration. Duration is omitted when unknown. */
+   line with the duration. Duration is omitted when unknown. Kept as the plain-
+   text fallback; the band now renders sectionSummaryChips (graphic stat chips)
+   with the SAME singular/plural + omit-when-zero rules. */
 function sectionSummary(sec) {
   var bits = [];
   if (sec.kind === "wave") {
@@ -2736,6 +2738,58 @@ function sectionSummary(sec) {
   return bits.join(" · ");
 }
 
+/* VISUAL POLISH (S115 follow-up): the band summary rendered as discrete,
+   icon-led LCARS stat chips instead of one run-together line. Returns an ARRAY
+   of chip spans (each its own class) so sectionNode can drop them into the band.
+   Same omit/singular-plural rules as sectionSummary:
+     WAVE  → ⬢ tickets (teal) · ↻ attempts (amber, RED when any flagged) · ◷ dur
+     STAGE → in-progress (pulsing dot) / complete chip · ◷ dur
+   A chip whose value is 0/absent is omitted (no attempt chip at 0 attempts, no
+   duration chip when unknown) exactly as the text summary omits it. */
+function sectionSummaryChips(sec) {
+  var chips = [];
+  if (sec.kind === "wave") {
+    chips.push(el("span", "band-chip chip-tickets",
+      "⬢ " + sec.ticketCount + " ticket" + (sec.ticketCount === 1 ? "" : "s")));
+    if (sec.attemptCount) {
+      // RED tint when this wave carries a flagged ticket, amber otherwise.
+      chips.push(el("span",
+        "band-chip chip-attempts" + (sec.flaggedCount > 0 ? " flagged" : ""),
+        "↻ " + sec.attemptCount + " attempt" + (sec.attemptCount === 1 ? "" : "s")));
+    }
+  } else {
+    // STAGE: an in-progress (pulsing dot via CSS ::before) / complete chip.
+    chips.push(el("span", "band-chip chip-status" + (sec.active ? " active" : ""),
+      sec.active ? "in progress" : "✓ complete"));
+  }
+  if (sec.durationSec != null && sec.durationSec > 0) {
+    chips.push(el("span", "band-chip chip-duration", "◷ " + fmtDuration(sec.durationSec)));
+  }
+  return chips;
+}
+
+/* VISUAL POLISH: a thin wave-health micro-bar — a GREEN segment (greenCount) and
+   a RED segment (flaggedCount) sized proportionally to the wave's ticketCount,
+   the remainder left neutral (in-flight / not-yet-resolved). Returns the bar
+   node, or null for a stage section or a zero-ticket wave (no bar rendered,
+   matching where the chips degrade). Counts are clamped so a stray over-count
+   never overflows the bar. Decorative (aria-hidden). */
+function sectionHealthBar(sec) {
+  if (!sec || sec.kind !== "wave" || !sec.ticketCount || sec.ticketCount <= 0) return null;
+  var total = sec.ticketCount;
+  var green = Math.max(0, Math.min(sec.greenCount || 0, total));
+  var red = Math.max(0, Math.min(sec.flaggedCount || 0, total - green));
+  var bar = el("div", "band-health");
+  bar.setAttribute("aria-hidden", "true");
+  var g = el("span", "hb-green");
+  g.style.width = (green / total * 100) + "%";
+  var r = el("span", "hb-red");
+  r.style.width = (red / total * 100) + "%";
+  bar.appendChild(g);
+  bar.appendChild(r);
+  return bar;
+}
+
 /* S115: one collapsible section. Returns {node, setOpen(bool)}. The band header
    (caret + title + summary + a ⚠ flag marker when any ticket flagged) toggles the
    events on click; the ACTIVE section opens by default, completed sections
@@ -2748,8 +2802,18 @@ function sectionNode(sec) {
   var caret = el("span", "band-caret", sec.active ? "▾" : "▸");
   band.appendChild(caret);
   band.appendChild(el("span", "band-title", sectionTitle(sec)));
-  band.appendChild(el("span", "band-summary", sectionSummary(sec)));
-  if (sec.flagged) band.appendChild(el("span", "band-flag", "⚠ FLAGGED"));
+  // VISUAL POLISH: discrete icon-led stat chips (+ the graphic FLAGGED badge)
+  // in one right-aligned cluster, replacing the run-together band-summary text.
+  var chipWrap = el("div", "band-chips");
+  sectionSummaryChips(sec).forEach(function (c) { chipWrap.appendChild(c); });
+  // Graphic FLAGGED badge: the red pill now reads as a badge — ⚠ glyph + a
+  // subtle pulse/glow (the animation is gated on prefers-reduced-motion in CSS).
+  if (sec.flagged) chipWrap.appendChild(el("span", "band-flag", "⚠ FLAGGED"));
+  band.appendChild(chipWrap);
+  // VISUAL POLISH: the wave-health micro-bar (green/red split), waves-with-
+  // tickets only — null (nothing appended) for stage / zero-ticket sections.
+  var health = sectionHealthBar(sec);
+  if (health) band.appendChild(health);
   var events = el("div", "band-events");
   sec.events.forEach(function (ev) { events.appendChild(renderEvent(ev)); });
   events.hidden = !sec.active;
