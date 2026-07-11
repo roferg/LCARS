@@ -4,6 +4,41 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.8 — 2026-07-11
+
+The Actual-Cost & Honest-Progress round (S111–115) — replace two guesses with
+truth: measured per-mission cost, and a real activity signal in place of the
+fake pulse. Everything is additive and display-only; no gate changes, and the
+no-usage path stays byte-for-byte as before.
+
+- **Per-engine usage-capture spike (S111).** Both engines expose what one cold
+  `-p` worker actually spent via a minted `--session-id` + the CLI's own on-disk
+  session artifact (claude transcript / copilot session-state `events.jsonl`),
+  parsed after exit — stdout format untouched, so no `.worker.out` consumer
+  breaks. Recorded in `skills/lcars-run/USAGE-CAPTURE-SPIKE.md` with fixtures.
+- **Actual usage capture (S112).** Every cold-worker spawn appends its real
+  usage to the mission's `usage.json` and emits a `worker_usage` event, cost
+  computed by code from `pricing.json`. A missing artifact degrades to a
+  recorded `"unavailable"` entry and never fails a stage; capture-off argv is
+  byte-identical. New `run.sh usage <mission>` sums per-stage + total.
+- **ACTUAL cost pill (S113).** At Verify/Done, mission and mission-log cards show
+  an ACTUAL pill beside the estimate — same billing-unit rules — plus an
+  "EST → ACTUAL" line in the detail modal, Verify dialog, and CLI verify
+  summary. Absent/partial usage renders honestly; per-mission only (no roll-up).
+- **Honest liveness (S114).** The make-believe CSS pulse becomes a real signal
+  derived from the hang-guard's existing output watch — THINKING / WRITING
+  OUTPUT / SUBSPACE QUIET Ns (+ hang-guard-watching) on the board and
+  `lcars status --watch`. Removed on worker exit; the CLI tail is gated on a live
+  driver lock so a crashed driver can't show a false "producing".
+- **Collapsible activity sections (S115).** A big mission's detail feed groups
+  into collapsible per-wave/per-stage bands — completed waves fold to one LCARS
+  summary band with graphic stat chips (tickets / attempts / duration), a
+  wave-health micro-bar, and a flagged badge; the active section stays open,
+  everything expandable, nothing lost. Mission-log parents get the same idiom.
+  Motion honors `prefers-reduced-motion`; cards and board shape untouched.
+- **Docs.** First screenshots in the repo (viewscreen board, Mission Log,
+  Re-Verify gate) added to the README and vision guides.
+
 ## 2026.7.7 — 2026-07-09
 
 The Multi-Stack Breadth round (S104–106) — LCARS goes from JS/TS-and-Python to
