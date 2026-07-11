@@ -6180,6 +6180,166 @@ cmd_resolve_worker() {
     "${WORKER_MODEL:--}" "$WORKER_MODEL_SRC"
 }
 
+# === USAGE CAPTURE (session 112) ============================================
+# ACTUAL per-spawn usage for a cold worker. After the worker exits, read the
+# CLI's OWN on-disk session artifact (keyed by the minted --session-id — a SIDE
+# channel, never `.worker.out`) and append ONE record to $MISSION_DIR/usage.json
+# (JSONL, one record per spawn — a sibling of estimate.json; the estimate is
+# NEVER mutated). Cost is computed BY CODE from pricing.json rates (the same
+# json_scoped_num lookups cost_compute uses — pricing numbers are not
+# reimplemented here). Capture is best-effort telemetry: it NEVER fails a stage;
+# a miss degrades to a `source:"unavailable"` record. Mechanism + schema live in
+# skills/lcars-run/USAGE-CAPTURE-SPIKE.md.
+
+# Is usage capture enabled? Env LCARS_USAGE_CAPTURE (1/on/true ⇢ on, 0/off/false
+# ⇢ off) wins; else config.json `usageCapture:false` disables; DEFAULT ON. When
+# on, worker_spawn also needs `uuidgen` to mint the correlation key (it skips
+# minting — hence capture — if uuidgen is unavailable, so argv stays unchanged).
+usage_capture_enabled() {
+  case "${LCARS_USAGE_CAPTURE:-}" in
+    0|off|OFF|false|FALSE|no|NO)  return 1 ;;
+    1|on|ON|true|TRUE|yes|YES)    return 0 ;;
+  esac
+  if [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ]; then
+    case "$(json_scoped_str "$LCARS_CFG" "usageCapture")" in
+      false|off|0|no) return 1 ;;
+    esac
+  fi
+  return 0
+}
+
+# A model string (from the artifact) → the logical pricing tier. Unknown ⇒ opus
+# (the safe default; LCARS runs opus by default on both engines).
+usage_model_tier() { case "$1" in *sonnet*|*Sonnet*) printf 'sonnet' ;; *) printf 'opus' ;; esac; }
+
+# Parse the CLI's on-disk session artifact for <session-id>. Emits ONE pipe line:
+#   source|model|inputTokens|outputTokens|cacheReadTokens|cacheWriteTokens|premiumRequests
+# (premiumRequests empty for claude). Non-zero + no output when nothing is found.
+# Artifact roots are env-overridable so tests point capture at a stub location:
+#   claude  : $LCARS_CLAUDE_PROJECTS_DIR (default ~/.claude/projects); glob **/<id>.jsonl
+#   copilot : $LCARS_COPILOT_SESSION_DIR (default ~/.copilot/session-state)/<id>/events.jsonl
+usage_parse_artifact() { # engine session-id
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" <<'PY'
+import json,sys,os,glob
+engine=sys.argv[1]; sid=sys.argv[2]
+def geti(d,k):
+    try: return int(d.get(k,0) or 0)
+    except Exception: return 0
+if engine=='claude':
+    root=os.environ.get('LCARS_CLAUDE_PROJECTS_DIR') or os.path.join(os.path.expanduser('~'),'.claude','projects')
+    m=glob.glob(os.path.join(root,'**',sid+'.jsonl'),recursive=True)
+    if not m: sys.exit(1)
+    intok=outtok=crtok=cwtok=0; model=''
+    try:
+        for line in open(m[0]):
+            line=line.strip()
+            if not line: continue
+            try: d=json.loads(line)
+            except Exception: continue
+            if d.get('type')!='assistant': continue
+            msg=d.get('message') or {}
+            u=msg.get('usage') or {}
+            intok+=geti(u,'input_tokens'); outtok+=geti(u,'output_tokens')
+            crtok+=geti(u,'cache_read_input_tokens'); cwtok+=geti(u,'cache_creation_input_tokens')
+            if msg.get('model'): model=msg['model']
+    except OSError:
+        sys.exit(1)
+    if not model and intok==0 and outtok==0: sys.exit(1)
+    print('session-transcript|%s|%d|%d|%d|%d|'%(model,intok,outtok,crtok,cwtok))
+else:
+    root=os.environ.get('LCARS_COPILOT_SESSION_DIR') or os.path.join(os.path.expanduser('~'),'.copilot','session-state')
+    path=os.path.join(root,sid,'events.jsonl')
+    if not os.path.exists(path): sys.exit(1)
+    sd=None
+    for line in open(path):
+        line=line.strip()
+        if not line: continue
+        try: d=json.loads(line)
+        except Exception: continue
+        if d.get('type')=='session.shutdown': sd=d.get('data') or {}
+    if sd is None: sys.exit(1)
+    intok=outtok=crtok=cwtok=0; model=sd.get('currentModel') or ''
+    for mname,mv in (sd.get('modelMetrics') or {}).items():
+        u=(mv or {}).get('usage') or {}
+        intok+=geti(u,'inputTokens'); outtok+=geti(u,'outputTokens')
+        crtok+=geti(u,'cacheReadTokens'); cwtok+=geti(u,'cacheWriteTokens')
+        if not model: model=mname
+    print('session-state|%s|%d|%d|%d|%d|%d'%(model,intok,outtok,crtok,cwtok,geti(sd,'totalPremiumRequests')))
+PY
+}
+
+# The post-exit hook (called by worker_spawn). Parse the artifact, compute cost by
+# code from pricing.json, append ONE usage.json record, and emit a worker_usage
+# event. Always returns 0 — capture is telemetry, never a gate.
+usage_capture() { # env-role outdir stage-key cli session-id
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  local role="$1" outdir="$2" stage="$3" cli="$4" sid="$5"
+  local uf="$MISSION_DIR/usage.json"
+  local ts; ts="${LCARS_NOW_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)}"
+  local parsed; parsed="$(usage_parse_artifact "$cli" "$sid" 2>/dev/null)" || parsed=""
+  if [ -z "$parsed" ]; then
+    # DEGRADE: the mechanism found nothing. Record it (never a stage failure).
+    printf '{"stage":%s,"role":%s,"engine":%s,"sessionId":%s,"source":"unavailable","ts":%s}\n' \
+      "$(json_encode_string "$stage")" "$(json_encode_string "$role")" \
+      "$(json_encode_string "$cli")" "$(json_encode_string "$sid")" \
+      "$(json_encode_string "$ts")" >>"$uf" 2>/dev/null || true
+    emit_event worker_usage "$stage" "usage unavailable" engine="$cli" unavailable=1
+    return 0
+  fi
+  local source model intok outtok crtok cwtok premium
+  IFS='|' read -r source model intok outtok crtok cwtok premium <<<"$parsed"
+  [ -n "$intok" ]  || intok=0;  [ -n "$outtok" ] || outtok=0
+  [ -n "$crtok" ]  || crtok=0;  [ -n "$cwtok" ]  || cwtok=0
+  [ -n "$premium" ] || premium=0
+  local tier; tier="$(usage_model_tier "$model")"
+  # --- cost BY CODE, reusing pricing.json rate lookups ----------------------
+  local unit="usd" cost="0" costusd="0"
+  if [ "$cli" = "copilot" ] && [ "$(copilot_billing_model)" = "legacy" ]; then
+    # Legacy premium-request billing: the native unit is premium requests (taken
+    # straight from the artifact); USD is the optional $/request overage.
+    unit="premiumRequests"
+    local overage; overage="$(json_scoped_num "$PRICING_FILE" "copilot.legacy.overagePerRequest")"
+    [ -n "$overage" ] || overage=0
+    cost="$premium"
+    costusd="$(awk -v p="$premium" -v o="$overage" 'BEGIN{printf "%g", p*o}')"
+  else
+    # Token → USD. claude splits base input from cache (apply cacheRead/Write
+    # mults); copilot.usage inputTokens ALREADY includes cache, so no cache mult.
+    local scope="claude" inr outr
+    [ "$cli" = "copilot" ] && scope="copilot.usage"
+    inr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.inputPerMTok")";  [ -n "$inr" ]  || inr=0
+    outr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.outputPerMTok")"; [ -n "$outr" ] || outr=0
+    if [ "$cli" = "copilot" ]; then
+      costusd="$(awk -v i="$intok" -v o="$outtok" -v ir="$inr" -v orr="$outr" \
+        'BEGIN{printf "%.6f",(i*ir + o*orr)/1000000}')"
+    else
+      local crmult cwmult
+      crmult="$(json_scoped_num "$PRICING_FILE" "claude.cacheReadMult")";  [ -n "$crmult" ] || crmult=0
+      cwmult="$(json_scoped_num "$PRICING_FILE" "claude.cacheWriteMult")"; [ -n "$cwmult" ] || cwmult=0
+      costusd="$(awk -v i="$intok" -v o="$outtok" -v cr="$crtok" -v cw="$cwtok" \
+        -v ir="$inr" -v orr="$outr" -v crm="$crmult" -v cwm="$cwmult" \
+        'BEGIN{printf "%.6f",(i*ir + o*orr + cr*ir*crm + cw*ir*cwm)/1000000}')"
+    fi
+    costusd="$(awk -v v="$costusd" 'BEGIN{printf "%g", v}')"
+    cost="$costusd"
+  fi
+  # --- append ONE record (JSONL) --------------------------------------------
+  local rec
+  rec="$(printf '{"stage":%s,"role":%s,"engine":%s,"model":%s,"inputTokens":%d,"outputTokens":%d,"cacheReadTokens":%d,"cacheWriteTokens":%d' \
+      "$(json_encode_string "$stage")" "$(json_encode_string "$role")" \
+      "$(json_encode_string "$cli")" "$(json_encode_string "$model")" \
+      "$intok" "$outtok" "$crtok" "$cwtok")"
+  [ "$cli" = "copilot" ] && rec="$rec$(printf ',"premiumRequests":%d' "$premium")"
+  rec="$rec$(printf ',"sessionId":%s,"source":%s,"ts":%s,"billingUnit":%s,"costUsd":%s,"cost":%s}' \
+      "$(json_encode_string "$sid")" "$(json_encode_string "$source")" \
+      "$(json_encode_string "$ts")" "$(json_encode_string "$unit")" \
+      "$costusd" "$cost")"
+  printf '%s\n' "$rec" >>"$uf" 2>/dev/null || true
+  emit_event worker_usage "$stage" "usage captured" engine="$cli" \
+    inputTokens="$intok" outputTokens="$outtok" cost="$cost" billingUnit="$unit"
+  return 0
+}
+
 # --- delegate one cold-worker invocation to the CLI adapter -----------------
 # The driver passes a role keyword + outdir + prompt; the adapter (selected by the
 # cli id = basename WORKER_BIN) knows the flags and tool names. The worker binary
@@ -6205,14 +6365,31 @@ worker_spawn() { # role outdir prompt
   local stage_key stage_model
   stage_key="$(stage_key_for_role "${LCARS_WORKER_ROLE:-$role}")"
   stage_model="$(resolve_stage_model "$stage_key")"
+  # USAGE CAPTURE (session 112): when enabled, mint a fresh per-spawn UUID and
+  # export it so the adapter adds `--session-id <uuid>` (ONLY then — the no-usage
+  # argv stays byte-for-byte). After the worker exits we parse the CLI's own
+  # on-disk session artifact keyed by that id and append ONE record to
+  # $MISSION_DIR/usage.json. Capture is best-effort telemetry: it NEVER changes
+  # the stage's exit status and NEVER fails the stage (a miss ⇒ `unavailable`
+  # record). See skills/lcars-run/USAGE-CAPTURE-SPIKE.md.
+  local usage_sid=""
+  if usage_capture_enabled; then usage_sid="$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z')"; fi
   # HANG-GUARD (BUG-076): wrap the cold-worker spawn so a mid-turn hang (0% CPU,
   # no output, never returns) is auto-killed and the caller's retry loop kicks in.
   # The guard polls the worker's process-group CPU% and the growth of the adapter's
   # $outdir/.worker.out/.err; a slow-but-working worker is left alone. Covers EVERY
   # cold worker (every Stage routes through here). LCARS_WORKER_HANG_SECS=0 disables.
+  local spawn_rc=0
   LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="$stage_model" \
+    LCARS_WORKER_SESSION_ID="$usage_sid" \
     run_worker_hang_guarded "$outdir" \
-    bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt"
+    bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt" || spawn_rc=$?
+  # Post-exit, side-channel usage read. Guarded so a capture bug can never break a
+  # Stage: preserve the worker's own exit status ($spawn_rc), swallow capture errors.
+  if [ -n "$usage_sid" ]; then
+    usage_capture "${LCARS_WORKER_ROLE:-$role}" "$outdir" "$stage_key" "$cli" "$usage_sid" || true
+  fi
+  return "$spawn_rc"
 }
 
 # --- refuse to run a Stage without a real worker, LOUDLY --------------------
@@ -7125,6 +7302,53 @@ cmd_cost() {
   local block; block="$(cost_compute "$est" "$cli")"
   printf 'COST cli=%s\n' "$cli"
   printf '%s\n' "$block"
+}
+
+# The `usage --mission <id>` subcommand (session 112): sum the mission's
+# usage.json (JSONL — one record per cold-worker spawn) per stage + a grand
+# total. The read/parity surface S113 builds on. Pure (no LLM), tolerant of an
+# absent or partial file. Reuses cost_compute NOTHING — it only aggregates the
+# already-recorded ACTUALS (cost was computed at capture time).
+cmd_usage() {
+  local gitdir
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" || gitdir=""
+  if [ -n "$gitdir" ]; then
+    case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
+    LCARS_CFG="$gitdir/lcars/config.json"
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  fi
+  local uf="${MISSION_DIR:-}/usage.json"
+  printf 'USAGE mission=%s\n' "${MISSION_ID:-?}"
+  if [ ! -f "$uf" ]; then
+    printf 'TOTAL records=0 inputTokens=0 outputTokens=0 costUsd=0 premiumRequests=0\n'
+    return 0
+  fi
+  "${LCARS_PYTHON_BIN:-python3}" - "$uf" <<'PY'
+import json,sys
+from collections import OrderedDict
+stages=OrderedDict()
+tot={'records':0,'inputTokens':0,'outputTokens':0,'costUsd':0.0,'premiumRequests':0}
+def blank(): return {'records':0,'inputTokens':0,'outputTokens':0,'costUsd':0.0,'premiumRequests':0}
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: d=json.loads(line)
+    except Exception: continue
+    st=stages.setdefault(d.get('stage','?'), blank())
+    st['records']+=1; tot['records']+=1
+    for k in ('inputTokens','outputTokens','premiumRequests'):
+        try: v=int(d.get(k,0) or 0)
+        except Exception: v=0
+        st[k]+=v; tot[k]+=v
+    try: c=float(d.get('costUsd',0) or 0)
+    except Exception: c=0.0
+    st['costUsd']+=c; tot['costUsd']+=c
+for s,st in stages.items():
+    print('STAGE %s records=%d inputTokens=%d outputTokens=%d costUsd=%g premiumRequests=%d'%(
+        s,st['records'],st['inputTokens'],st['outputTokens'],st['costUsd'],st['premiumRequests']))
+print('TOTAL records=%d inputTokens=%d outputTokens=%d costUsd=%g premiumRequests=%d'%(
+    tot['records'],tot['inputTokens'],tot['outputTokens'],tot['costUsd'],tot['premiumRequests']))
+PY
 }
 
 # === Captain-facing estimate rendering (session 61) ========================
@@ -9481,6 +9705,10 @@ case "$SUB" in
   # LLM); the test surface for cost_compute.
   cost)             [ -n "$MISSION_ID" ] || die "usage: run.sh cost --mission <id>"
                     cmd_cost ;;
+  # ACTUAL per-mission usage (session 112) — sums usage.json (the actuals cold
+  # workers recorded on exit) per stage + total. Pure; the CLI-parity read surface.
+  usage)            [ -n "$MISSION_ID" ] || die "usage: run.sh usage --mission <id>"
+                    cmd_usage ;;
   # Captain-facing estimate rendering (session 61) — reads --mission's
   # estimate.json + the active CLI, prints the requested --surface (issue|cli)
   # block. Absent estimate.json ⇒ no output + non-zero (lcars-file degradation).
