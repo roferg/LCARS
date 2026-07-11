@@ -4941,6 +4941,23 @@ $table
 EOF
 
   echo "  Test results: $green/$total ticket(s) green across $nwaves wave(s)."
+
+  # S113: show the ACTUAL cost beside the ESTIMATE (display-only — actuals are
+  # captured by S112 into usage.json; the estimate is never touched). Present
+  # ONLY when this mission has a usage.json with records; absent usage.json → NO
+  # line, so a pre-round / pre-verify mission's readout is byte-identical to
+  # before. Unit tracks the mission's billing unit (usd / premium reqs), matching
+  # the estimate readout so EST and ACTUAL are same-unit.
+  local est_f="$MISSION_DIR/estimate.json" usage_f="$MISSION_DIR/usage.json"
+  if [ -f "$est_f" ] && [ -f "$usage_f" ]; then
+    local act_c; act_c="$(usage_actual_compact "$usage_f")"
+    if [ -n "$act_c" ]; then
+      local cli; cli="$(json_scoped_str "$est_f" "cost.cli")"
+      [ -n "$cli" ] || cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+      echo "  Cost: EST $(render_cost_compact "$est_f" "$cli") → ACTUAL $act_c"
+    fi
+  fi
+
   echo "  Review the changes and run the app if needed."
   echo "    lcars approve $MISSION_ID    — merge the PR (ship it)"
   echo "    lcars feedback $MISSION_ID   — send back with feedback"
@@ -7348,6 +7365,39 @@ for s,st in stages.items():
         s,st['records'],st['inputTokens'],st['outputTokens'],st['costUsd'],st['premiumRequests']))
 print('TOTAL records=%d inputTokens=%d outputTokens=%d costUsd=%g premiumRequests=%d'%(
     tot['records'],tot['inputTokens'],tot['outputTokens'],tot['costUsd'],tot['premiumRequests']))
+PY
+}
+
+# S113: sum a mission's usage.json (JSONL) into a COMPACT ACTUAL cost string in
+# the mission's billing unit — usd → "$X.XX", copilot-legacy premiumRequests →
+# "~N reqs" — matching the estimate pill's unit rules so EST and ACTUAL read in
+# the SAME unit. A "· partial" suffix is appended when ANY stage's usage was
+# `source":"unavailable"` (honest, never a silently-wrong total). Prints NOTHING
+# when the file is absent or carries no records (so the no-usage CLI readout is
+# byte-identical to before this round). Mirrors board.sum_usage / cmd_usage.
+usage_actual_compact() { # usage-json-file → "$5.10" | "~42 reqs" | "$5.10 · partial" | ""
+  local uf="$1"
+  [ -f "$uf" ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$uf" <<'PY'
+import json,sys
+unit=None; usd=0.0; reqs=0; partial=False; n=0
+for line in open(sys.argv[1]):
+    line=line.strip()
+    if not line: continue
+    try: d=json.loads(line)
+    except Exception: continue
+    n+=1
+    try: usd+=float(d.get('costUsd',0) or 0)
+    except Exception: pass
+    try: reqs+=int(d.get('premiumRequests',0) or 0)
+    except Exception: pass
+    if d.get('source')=='unavailable': partial=True
+    bu=d.get('billingUnit')
+    if bu and unit is None: unit=bu
+if not n: sys.exit(0)
+s=('~%g reqs'%reqs) if unit=='premiumRequests' else ('$%.2f'%usd)
+if partial: s+=' · partial'
+sys.stdout.write(s)
 PY
 }
 

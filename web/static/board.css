@@ -193,6 +193,10 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
   border-radius:12px;background:var(--lcars-card-alt);color:var(--lcars-text-bright);
   border:1px solid var(--lcars-border);white-space:nowrap}
 .pill.cost{background:rgba(255,221,68,.14);border-color:var(--lcars-gold,#ffdd44);color:var(--lcars-gold,#ffdd44)}
+/* S113: the ACTUAL usage pill — teal (verified/spent) to read apart from the
+   gold estimate. `.partial` softens to amber, an honest "not every stage" cue. */
+.pill.actual{background:rgba(0,204,170,.14);border-color:var(--lcars-teal);color:var(--lcars-teal)}
+.pill.actual.partial{background:rgba(255,170,0,.16);border-color:var(--lcars-amber);color:var(--lcars-amber)}
 .pill.low{background:rgba(0,204,170,.14);border-color:var(--lcars-teal);color:var(--lcars-teal)}
 .pill.med{background:rgba(255,170,0,.16);border-color:var(--lcars-amber);color:var(--lcars-amber)}
 .pill.high{background:rgba(255,51,68,.16);border-color:var(--lcars-red);color:#ff8a96}

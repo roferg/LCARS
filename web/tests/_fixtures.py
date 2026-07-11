@@ -91,6 +91,44 @@ ESTIMATE_FASTTRACK_BUG = {
 }
 
 
+# S113: usage.json (JSONL) records — S112 appends one per cold-worker spawn.
+# Cost is code-computed at capture time; `billingUnit` is the unit the card
+# renders (usd / premiumRequests). Totals below are hand-summed for exact asserts.
+# Claude (usd): 0.05 + 0.10 = $0.15.
+USAGE_CLAUDE = [
+    {"stage": "research", "role": "researcher", "engine": "claude",
+     "model": "claude-opus-4-8", "inputTokens": 100, "outputTokens": 50,
+     "billingUnit": "usd", "source": "session-transcript",
+     "costUsd": 0.05, "cost": 0.05},
+    {"stage": "plan", "role": "planner", "engine": "claude",
+     "model": "claude-opus-4-8", "inputTokens": 200, "outputTokens": 80,
+     "billingUnit": "usd", "source": "session-transcript",
+     "costUsd": 0.10, "cost": 0.10},
+]
+# Copilot legacy (premiumRequests): 10 + 5 = 15 reqs.
+USAGE_COPILOT_LEGACY = [
+    {"stage": "research", "engine": "copilot", "model": "claude-opus-4.8",
+     "premiumRequests": 10, "billingUnit": "premiumRequests",
+     "source": "session-state", "costUsd": 0.40, "cost": 10},
+    {"stage": "plan", "engine": "copilot", "model": "claude-opus-4.8",
+     "premiumRequests": 5, "billingUnit": "premiumRequests",
+     "source": "session-state", "costUsd": 0.20, "cost": 5},
+]
+# Partial (usd): one stage captured ($0.05), one `unavailable` → partial marker.
+USAGE_PARTIAL = [
+    {"stage": "research", "engine": "claude", "model": "claude-opus-4-8",
+     "inputTokens": 100, "outputTokens": 50, "billingUnit": "usd",
+     "source": "session-transcript", "costUsd": 0.05, "cost": 0.05},
+    {"stage": "plan", "engine": "claude", "billingUnit": "usd",
+     "source": "unavailable"},
+]
+
+
+def plant_usage(root, mid, records):
+    """Append a usage.json (JSONL) beside a mission the way S112's capture does."""
+    write_jsonl(os.path.join(mission_dir(root, mid), "usage.json"), records)
+
+
 def mission_dir(root, mid):
     return os.path.join(root, ".git", "lcars", "missions", mid)
 

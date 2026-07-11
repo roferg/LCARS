@@ -504,6 +504,95 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertNotIn("$0.00", cost["label"])
         self.assertIn("3.50", cost["label"])
 
+    # ── S113: the ACTUAL usage pill (display-only, beside the estimate) ──
+    def test_actual_pill_present_at_verify_with_full_usage(self):
+        # a verify-stage mission WITH usage.json → pills.actual in usd, exact total.
+        fx.plant_simple(self.tmp, "m-ver", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-ver", fx.USAGE_CLAUDE)
+        m = self._by_id(self._board(), "m-ver")
+        actual = m["pills"]["actual"]
+        self.assertEqual(actual["unit"], "usd")
+        self.assertAlmostEqual(actual["value"], 0.15, places=6)
+        self.assertFalse(actual["partial"])
+        self.assertEqual(actual["label"], "~$0.15")
+        # the estimate pill is UNCHANGED beside it (both same unit).
+        self.assertEqual(m["pills"]["cost"]["unit"], "usd")
+
+    def test_actual_pill_present_at_done(self):
+        fx.plant_simple(self.tmp, "m-done", stage="done",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-done", fx.USAGE_CLAUDE)
+        # done missions live in the done column (out of the flat missions list).
+        m = None
+        for c in self._board()["columns"]["done"]:
+            if c["id"] == "m-done":
+                m = c
+        self.assertIsNotNone(m)
+        self.assertEqual(m["pills"]["actual"]["label"], "~$0.15")
+
+    def test_actual_pill_copilot_legacy_is_premium_requests(self):
+        fx.plant_simple(self.tmp, "m-cop", stage="verify",
+                        estimate=fx.ESTIMATE_COPILOT_LEGACY)
+        fx.plant_usage(self.tmp, "m-cop", fx.USAGE_COPILOT_LEGACY)
+        m = self._by_id(self._board(), "m-cop")
+        actual = m["pills"]["actual"]
+        self.assertEqual(actual["unit"], "premiumRequests")
+        self.assertEqual(actual["value"], 15)
+        self.assertEqual(actual["label"], "~15 reqs")
+        # same unit as its estimate pill (both premiumRequests).
+        self.assertEqual(m["pills"]["cost"]["unit"], "premiumRequests")
+
+    def test_actual_pill_partial_when_a_stage_unavailable(self):
+        fx.plant_simple(self.tmp, "m-part", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-part", fx.USAGE_PARTIAL)
+        m = self._by_id(self._board(), "m-part")
+        actual = m["pills"]["actual"]
+        self.assertTrue(actual["partial"])
+        self.assertAlmostEqual(actual["value"], 0.05, places=6)
+        self.assertIn("partial", actual["label"])
+        self.assertEqual(actual["label"], "~$0.05 · partial")
+
+    def test_no_usage_json_no_actual_key_byte_identical(self):
+        # THE key regression: a verify mission WITHOUT usage.json produces the
+        # EXACT same card payload as before this round — no pills.actual key.
+        fx.plant_simple(self.tmp, "m-nou", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        # baseline: capture the card, then confirm adding NOTHING keeps it equal.
+        m = self._by_id(self._board(), "m-nou")
+        self.assertNotIn("actual", m["pills"])
+        self.assertEqual(set(m["pills"].keys()),
+                         {"cost", "reasoning", "implementation"})
+
+    def test_no_actual_pill_before_verify_even_with_usage(self):
+        # usage present but the mission is still at plan → NO actual pill yet
+        # (only verify/done surface actuals).
+        fx.plant_simple(self.tmp, "m-early", stage="plan",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-early", fx.USAGE_CLAUDE)
+        m = self._by_id(self._board(), "m-early")
+        self.assertNotIn("actual", m["pills"])
+
+    def test_actual_pill_on_mission_log_child_card(self):
+        # a logged-bug CHILD is a mission — it flows through the same _card path,
+        # so at verify with usage it gets the actual pill for free.
+        fx.plant_simple(self.tmp, "m-child", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE, mtype="bug",
+                        parent_mission="m-parent", parent_issue=99)
+        fx.plant_usage(self.tmp, "m-child", fx.USAGE_CLAUDE)
+        m = self._by_id(self._board(), "m-child")
+        self.assertEqual(m["parentMission"], "m-parent")
+        self.assertEqual(m["pills"]["actual"]["label"], "~$0.15")
+
+    def test_actual_pill_in_mission_detail(self):
+        # the detail shape (mission(mid)) carries the same actual pill.
+        fx.plant_simple(self.tmp, "m-ver", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-ver", fx.USAGE_CLAUDE)
+        detail = LocalAdapter(self.tmp).mission("m-ver")
+        self.assertEqual(detail["pills"]["actual"]["label"], "~$0.15")
+
     # ── S67 BUG-A: the `running` flag (live driver lock) ──
     def _lock(self, mid, pid):
         """Plant a driver.lock/pid for mission `mid` holding `pid`."""

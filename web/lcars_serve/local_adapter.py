@@ -222,6 +222,23 @@ class LocalAdapter(object):
                 "message": lj.get("message"),
             }
 
+        # S113: the ACTUAL usage pill (display-only). S112 appends one usage
+        # record per cold-worker spawn to usage.json (JSONL). We show the ACTUAL
+        # cost beside the ESTIMATE only for a mission at Verify or Done WITH usage
+        # present — the pipeline has actually spent by then. ADDITIVE: an absent
+        # usage.json (any pre-verify mission, or a pre-round mission) adds NO
+        # `actual` key at all, so the card/board payload is byte-identical to
+        # before this round. We MIRROR run.sh cmd_usage's summing (board.sum_usage)
+        # so the pill and the CLI readout agree; we never mutate usage.json /
+        # estimate.json (display-only). The github adapter never reaches here (its
+        # own _card), so its shape is unchanged.
+        if board.normalise_stage(stage) in ("verify", "done"):
+            usage_totals = board.sum_usage(
+                _load_jsonl(os.path.join(d, "usage.json")))
+            actual = board.actual_pill(usage_totals)
+            if actual is not None:
+                pills["actual"] = actual
+
         plan = _load_json(os.path.join(d, "plan.json"))
         waves = _load_json(os.path.join(d, "waves.json"))
 

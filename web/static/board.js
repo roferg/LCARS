@@ -310,7 +310,34 @@ function levelClass(level) {
 function pillNode(p, kind) {
   if (!p) return null;
   if (kind === "cost") return el("span", "pill cost", "⬡ " + (p.label || ""));
+  // S113: the ACTUAL usage pill (display-only). Filled hexagon ⬢ vs the
+  // estimate's outline ⬡ so EST and ACTUAL read apart at a glance; a `partial`
+  // marker rides both the label ("· partial") and a class for honest styling.
+  if (kind === "actual") {
+    return el("span", "pill actual" + (p.partial ? " partial" : ""),
+      "⬢ ACTUAL " + (p.label || ""));
+  }
   return el("span", "pill " + levelClass(p.level), p.label || "");
+}
+
+/* S113: the "EST ⬡ $a–$b → ⬢ ACTUAL $c" comparison line for the Verify surfaces
+   (openVerify + openReverifyGate). Reads the estimate cost pill (mi.pills.cost)
+   and the ACTUAL usage pill (mi.pills.actual, present ONLY for a verify/done
+   mission with usage). Returns null when there is no actual to compare (no
+   usage → the dialog renders byte-identically to before this round). */
+function costCompareLine(mi) {
+  if (!mi.pills || !mi.pills.actual) return null;
+  var row = el("div", "cost-compare");
+  row.style.cssText =
+    "margin:14px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap";
+  var cap = el("span", "dim"); cap.textContent = "EST";
+  row.appendChild(cap);
+  var est = pillNode(mi.pills.cost, "cost");
+  if (est) { row.appendChild(est); }
+  else { var dash = el("span", "dim"); dash.textContent = "—"; row.appendChild(dash); }
+  row.appendChild(document.createTextNode("→"));
+  row.appendChild(pillNode(mi.pills.actual, "actual"));
+  return row;
 }
 
 /* When the write layer is known to be inactive, disable a write control so the
@@ -378,8 +405,12 @@ function cardNode(m) {
   if (m.awaiting) {
     pills.appendChild(el("span", "pill await", "● AWAITING YOU"));
     if (m.pills && m.pills.cost) pills.appendChild(pillNode(m.pills.cost, "cost"));
+    // S113: an awaiting verify mission still shows its ACTUAL spend beside EST.
+    if (m.pills) { var aw = pillNode(m.pills.actual, "actual"); if (aw) pills.appendChild(aw); }
   } else if (m.pills) {
     var c = pillNode(m.pills.cost, "cost"); if (c) pills.appendChild(c);
+    // S113: ACTUAL usage pill (present only for verify/done missions with usage).
+    var a = pillNode(m.pills.actual, "actual"); if (a) pills.appendChild(a);
     var r = pillNode(m.pills.reasoning); if (r) pills.appendChild(r);
     var i = pillNode(m.pills.implementation); if (i) pills.appendChild(i);
   }
@@ -1617,6 +1648,10 @@ function openReverifyGate(mi) {
     m.body.appendChild(list);
   }
 
+  // S113: EST → ACTUAL cost line (present only when this mission has usage).
+  var costLine = costCompareLine(mi);
+  if (costLine) m.body.appendChild(costLine);
+
   // S109: RUN / STOP the mission's app so the captain can view it during re-verify.
   m.body.appendChild(launchAffordance(mi));
 
@@ -1899,6 +1934,10 @@ function openVerify(id) {
       m.body.appendChild(bh);
       m.body.appendChild(buildSummary(mi));
     }
+
+    // S113: EST → ACTUAL cost line (present only when this mission has usage).
+    var costLine = costCompareLine(mi);
+    if (costLine) m.body.appendChild(costLine);
 
     // BUG-030: a Mission-Log bug child (mi.parentMission set) has NO PR concept —
     // its fix rides the PARENT's PR. The Verify dialog for such a bug must show NO
@@ -3291,6 +3330,8 @@ function doReapprove(id, host, button, fromStatus) {
 function addPills(host, pills) {
   if (!pills) return;
   var c = pillNode(pills.cost, "cost"); if (c) host.appendChild(c);
+  // S113: ACTUAL usage pill in the detail pill row (present only verify/done + usage).
+  var a = pillNode(pills.actual, "actual"); if (a) host.appendChild(a);
   var r = pillNode(pills.reasoning); if (r) host.appendChild(r);
   var i = pillNode(pills.implementation); if (i) host.appendChild(i);
 }
