@@ -259,6 +259,19 @@ class LocalAdapter(object):
         active_seconds = board.active_seconds(events, now=now)
         active_seconds_at = now
 
+        # S114: the REAL liveness signal. run.sh's hang guard maintains
+        # worker-liveness.json ({stage, startedAt, lastOutputTs, outputBytes,
+        # state}) for the LIVE worker and REMOVES it on exit (normal or hung), so
+        # the file's mere presence means "a worker is producing/thinking/quiet
+        # right now". We surface it as an additive `liveness` field with the
+        # QUIET-SECONDS staleness computed SERVER-SIDE (now - lastOutputTs) so the
+        # client needn't. Gated on `running` (a live driver lock) as well as the
+        # file, so a stale file left by a hard-crashed process can NEVER show a
+        # fake pulse — a dead worker shows nothing. ABSENT (no file / not running)
+        # ⇒ NO `liveness` key at all, so the card/board payload is byte-identical
+        # to before this round. The github adapter never reaches here.
+        liveness = _liveness(d, running, now) if running else None
+
         # GitHub issue number may be the literal null / absent.
         issue = state.get("githubIssue")
         if isinstance(issue, str) and issue.isdigit():
@@ -405,6 +418,10 @@ class LocalAdapter(object):
         # (a never-launched mission's card is byte-identical to before).
         if launch is not None:
             card["launch"] = launch
+        # S114: additive — only present `liveness` while a live worker's sidecar
+        # file exists (byte-identical to before for every idle/finished mission).
+        if liveness is not None:
+            card["liveness"] = liveness
         return card
 
     def _activity(self, d):
@@ -618,6 +635,43 @@ def _truthy(v):
 # unreachable pid raises, which we treat as not-running. A STALE lock (the driver
 # crashed without releasing) thus reads as running == False, matching run.sh's own
 # reclaim rule. Crash-proof: any read/parse/probe error → False (never raises).
+def _liveness(mission_dir, running, now):
+    """S114: the live worker's liveness sidecar → an additive card field, or None.
+
+    run.sh's hang guard writes worker-liveness.json for the CURRENT cold worker and
+    removes it on exit, so its presence means a worker is live. We echo its fields
+    and compute the QUIET-SECONDS staleness server-side (now - lastOutputTs) so the
+    front end never has to. Returns None when the file is absent, malformed, or the
+    mission isn't running (a stale file after a hard crash never shows a pulse).
+    Crash-proof: any malformed shape degrades to None (never raises).
+    """
+    if not running:
+        return None
+    data = _load_json(os.path.join(mission_dir, "worker-liveness.json"))
+    if not isinstance(data, dict):
+        return None
+    state = data.get("state")
+    if state not in ("thinking", "producing", "quiet"):
+        return None
+    last_out = data.get("lastOutputTs")
+    started = data.get("startedAt")
+    try:
+        quiet_seconds = int(max(0.0, now - float(last_out)))
+    except (TypeError, ValueError):
+        quiet_seconds = 0
+    out = {
+        "state": state,
+        "stage": data.get("stage") or None,
+        "startedAt": started if isinstance(started, (int, float)) else None,
+        "lastOutputTs": last_out if isinstance(last_out, (int, float)) else None,
+        "outputBytes": data.get("outputBytes")
+        if isinstance(data.get("outputBytes"), (int, float)) else None,
+        # server-side staleness so the client renders "quiet Ns" without its own clock.
+        "quietSeconds": quiet_seconds,
+    }
+    return out
+
+
 def _driver_running(mission_dir):
     pidf = os.path.join(mission_dir, "driver.lock", "pid")
     try:

@@ -693,6 +693,16 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .lcars-working.lcars-running .lcars-working-label{color:var(--lcars-teal);font-size:10px}
 .lcars-working.lcars-running .lcars-bars{height:14px}
 .lcars-working.lcars-running .lcars-bars > i{height:14px;width:5px}
+/* S114 — the REAL liveness signal. The pulse is no longer a make-believe CSS
+   loop: it reflects the worker's actual output activity. `producing` keeps the
+   lively teal label; `thinking` tints amber; `quiet` reads peach as "idle but
+   watched". `.lcars-quiescent` (a stale/quiet worker) slows + dims the bars so a
+   genuinely silent stage no longer reads as actively producing. */
+.lcars-working.lcars-running.live-producing .lcars-working-label{color:var(--lcars-teal)}
+.lcars-working.lcars-running.live-thinking .lcars-working-label{color:var(--lcars-amber)}
+.lcars-working.lcars-running.live-quiet .lcars-working-label{color:var(--lcars-peach,#ff9966)}
+.lcars-working.lcars-running.lcars-quiescent .lcars-bars > i{
+  animation-duration:2.6s;opacity:.5}
 /* the in-flight event leading the detail activity feed (UX-13). */
 .evt.evt-live .ec .when{color:var(--lcars-teal)}
 

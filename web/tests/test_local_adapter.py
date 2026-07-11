@@ -491,6 +491,77 @@ class LocalAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "m-cop")
         self.assertEqual(m["pills"]["cost"]["unit"], "premiumRequests")
 
+    # ── S114: the REAL liveness signal (worker-liveness.json → card.liveness) ──
+    def _make_running(self, mid, stage="implement"):
+        """Plant a running mission: a live driver.lock (this test's own pid) makes
+        _driver_running() True, the gate liveness surfaces behind."""
+        d = fx.plant_simple(self.tmp, mid, stage=stage)
+        lock = os.path.join(d, "driver.lock")
+        os.makedirs(lock, exist_ok=True)
+        with open(os.path.join(lock, "pid"), "w") as fh:
+            fh.write(str(os.getpid()))   # alive → running True
+        return d
+
+    def _write_liveness(self, d, **kv):
+        with open(os.path.join(d, "worker-liveness.json"), "w") as fh:
+            fh.write(json.dumps(kv))
+
+    def test_liveness_surfaced_for_running_worker(self):
+        """A live worker's sidecar file surfaces as an additive `liveness` card
+        field, echoing state/stage/outputBytes."""
+        d = self._make_running("m-live")
+        now = time.time()
+        self._write_liveness(d, stage="implement", startedAt=now - 20,
+                             lastOutputTs=now - 1, outputBytes=4096,
+                             state="producing")
+        m = self._by_id(self._board(), "m-live")
+        self.assertIn("liveness", m)
+        self.assertEqual(m["liveness"]["state"], "producing")
+        self.assertEqual(m["liveness"]["stage"], "implement")
+        self.assertEqual(m["liveness"]["outputBytes"], 4096)
+
+    def test_liveness_quiet_seconds_computed_server_side(self):
+        """Staleness (quietSeconds = now - lastOutputTs) is computed SERVER-SIDE so
+        the client needn't carry its own clock."""
+        d = self._make_running("m-quiet")
+        now = time.time()
+        self._write_liveness(d, stage="implement", startedAt=now - 300,
+                             lastOutputTs=now - 40, outputBytes=10,
+                             state="quiet")
+        m = self._by_id(self._board(), "m-quiet")
+        self.assertEqual(m["liveness"]["state"], "quiet")
+        # server-computed, ~40s (allow a hair of test-runtime drift)
+        self.assertGreaterEqual(m["liveness"]["quietSeconds"], 39)
+        self.assertLessEqual(m["liveness"]["quietSeconds"], 43)
+
+    def test_liveness_absent_when_no_file_is_byte_identical(self):
+        """A RUNNING mission with NO sidecar file adds NO `liveness` key at all —
+        the card payload is byte-identical to before S114."""
+        self._make_running("m-nofile")
+        m = self._by_id(self._board(), "m-nofile")
+        self.assertNotIn("liveness", m)
+
+    def test_liveness_never_shown_when_not_running(self):
+        """A STALE sidecar left by a hard-crashed process (no live driver lock)
+        must NEVER show a pulse — a dead worker shows nothing (the tester's #1
+        hunt). No driver.lock ⇒ running False ⇒ no `liveness` key even though the
+        file is present on disk."""
+        d = fx.plant_simple(self.tmp, "m-stale", stage="implement")  # no lock
+        now = time.time()
+        self._write_liveness(d, stage="implement", startedAt=now - 99,
+                             lastOutputTs=now - 99, outputBytes=1,
+                             state="producing")
+        m = self._by_id(self._board(), "m-stale")
+        self.assertNotIn("liveness", m)
+
+    def test_liveness_malformed_state_ignored(self):
+        """A sidecar with an unknown/garbled state is ignored (no crash, no key)."""
+        d = self._make_running("m-bad-live")
+        self._write_liveness(d, stage="implement", lastOutputTs=1,
+                             state="haywire")
+        m = self._by_id(self._board(), "m-bad-live")
+        self.assertNotIn("liveness", m)
+
     # ── UX-15: Copilot usage cost pill shows GROSS, not net-$0 ──
     def test_copilot_usage_cost_pill_shows_gross_not_net_zero(self):
         fx.plant_simple(self.tmp, "m-usage", stage="plan",

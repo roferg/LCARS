@@ -411,6 +411,90 @@ check "W6. an explicit partial id is honoured" \
   "grep -qi 'avg/ticket' '$repoW6/out2.txt'"
 
 # ==========================================================================
+# Behaviour WL (S114 honesty fix): the live-worker liveness tail is gated on a
+# LIVE driver lock — the SAME running signal the web adapter's _liveness() uses —
+# not on the mere PRESENCE of worker-liveness.json.
+#
+# run_worker_hang_guarded removes the sidecar on its normal AND hung exits, but a
+# HARD driver death (SIGKILL/crash/OOM/closed terminal) never runs that finalize
+# and release_driver_lock does NOT remove the sidecar. So an orphaned sidecar with
+# state:"producing" would make `lcars status` print "WRITING OUTPUT" — a flat lie
+# claiming a live worker while the driver is dead. The fix: liveness_tail surfaces
+# NOTHING unless $MISSION_DIR/driver.lock/pid names a LIVE process (mirroring
+# _driver_running / acquire_driver_lock's reclaim rule). A dead/absent lock must be
+# BYTE-IDENTICAL to the no-sidecar path.
+# ==========================================================================
+echo
+echo "lcars status --watch liveness tail is gated on a live driver lock (S114)"
+
+# A producing sidecar: state=producing, quiet ~1s at LCARS_NOW=1100.
+WL_SIDECAR='{"stage":"implement","startedAt":990,"lastOutputTs":1099,"outputBytes":4096,"state":"producing"}'
+# A minimal in-progress implement stream (no green — keeps the line simple).
+WL_EVENTS='{"ts":1000,"mission":"MID","stage":"implement","type":"wave_start","detail":"wave 1 starting","data":{"wave":1,"ticketCount":1,"totalWaves":1}}
+{"ts":1001,"mission":"MID","stage":"implement","type":"ticket_start","detail":"ticket t-001","data":{"ticket":"t-001","wave":1}}'
+WL_WAVES='[ { "wave": 1, "tickets": [ { "id": "t-001", "issue": 11 } ] } ]'
+
+# --- WL-baseline: NO sidecar at all → the progress line has no liveness tail ---
+repoWLb="$(new_init_repo)"
+write_mission "$repoWLb" "lcars-20260601-010" "implement" "40" \
+  "2026-06-01T10:00:00Z" "No sidecar"
+write_events "$repoWLb" "lcars-20260601-010" "${WL_EVENTS//MID/lcars-20260601-010}"
+write_waves  "$repoWLb" "lcars-20260601-010" "$WL_WAVES"
+( cd "$repoWLb" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-010 >out.txt 2>&1 )
+WL_BASE_LINE="$(grep -i 'avg/ticket' "$repoWLb/out.txt" | tail -1)"
+
+# --- WL1: sidecar present but driver lock ABSENT → NO liveness tail (byte-id) --
+repoWL1="$(new_init_repo)"
+write_mission "$repoWL1" "lcars-20260601-011" "implement" "41" \
+  "2026-06-01T10:00:00Z" "Orphaned sidecar, no lock"
+write_events "$repoWL1" "lcars-20260601-011" "${WL_EVENTS//MID/lcars-20260601-011}"
+write_waves  "$repoWL1" "lcars-20260601-011" "$WL_WAVES"
+printf '%s\n' "$WL_SIDECAR" >"$repoWL1/.git/lcars/missions/lcars-20260601-011/worker-liveness.json"
+( cd "$repoWL1" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-011 >out.txt 2>&1 )
+WL1_LINE="$(grep -i 'avg/ticket' "$repoWL1/out.txt" | tail -1)"
+check "WL1. an orphaned sidecar with NO driver lock shows no 'WRITING OUTPUT'" \
+  "! grep -qi 'WRITING OUTPUT' '$repoWL1/out.txt'"
+check "WL1. no liveness diamond tail when the driver lock is absent" \
+  "! printf '%s' '$WL1_LINE' | qgrep -qF '◇'"
+check "WL1. progress line is byte-identical to the no-sidecar baseline" \
+  "[ \"\$(printf '%s' '$WL1_LINE' | sed 's/lcars-20260601-011/MID/')\" = \"\$(printf '%s' '$WL_BASE_LINE' | sed 's/lcars-20260601-010/MID/')\" ]"
+
+# --- WL2: sidecar present but driver lock DEAD (crashed driver) → NO tail ------
+repoWL2="$(new_init_repo)"
+write_mission "$repoWL2" "lcars-20260601-012" "implement" "42" \
+  "2026-06-01T10:00:00Z" "Orphaned sidecar, dead lock"
+write_events "$repoWL2" "lcars-20260601-012" "${WL_EVENTS//MID/lcars-20260601-012}"
+write_waves  "$repoWL2" "lcars-20260601-012" "$WL_WAVES"
+WL2_DIR="$repoWL2/.git/lcars/missions/lcars-20260601-012"
+printf '%s\n' "$WL_SIDECAR" >"$WL2_DIR/worker-liveness.json"
+# A pid that is (almost certainly) not alive: spawn+reap a process, reuse its pid.
+( exit 0 ) & WL_DEAD_PID=$!; wait "$WL_DEAD_PID" 2>/dev/null
+mkdir -p "$WL2_DIR/driver.lock"; printf '%s' "$WL_DEAD_PID" >"$WL2_DIR/driver.lock/pid"
+( cd "$repoWL2" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-012 >out.txt 2>&1 )
+check "WL2. a sidecar behind a DEAD driver lock shows no 'WRITING OUTPUT'" \
+  "! grep -qi 'WRITING OUTPUT' '$repoWL2/out.txt'"
+check "WL2. no liveness diamond tail when the driver lock is dead" \
+  "! grep -i 'avg/ticket' '$repoWL2/out.txt' | qgrep -qF '◇'"
+
+# --- WL3: sidecar present AND driver lock LIVE → the tail IS shown -------------
+repoWL3="$(new_init_repo)"
+write_mission "$repoWL3" "lcars-20260601-013" "implement" "43" \
+  "2026-06-01T10:00:00Z" "Live worker producing"
+write_events "$repoWL3" "lcars-20260601-013" "${WL_EVENTS//MID/lcars-20260601-013}"
+write_waves  "$repoWL3" "lcars-20260601-013" "$WL_WAVES"
+WL3_DIR="$repoWL3/.git/lcars/missions/lcars-20260601-013"
+printf '%s\n' "$WL_SIDECAR" >"$WL3_DIR/worker-liveness.json"
+# A live driver: a long-lived background process owns the lock.
+sleep 60 & WL_LIVE_PID=$!
+mkdir -p "$WL3_DIR/driver.lock"; printf '%s' "$WL_LIVE_PID" >"$WL3_DIR/driver.lock/pid"
+( cd "$repoWL3" && LCARS_NOW=1100 bash "$SCRIPT" --once lcars-20260601-013 >out.txt 2>&1 )
+kill "$WL_LIVE_PID" 2>/dev/null; wait "$WL_LIVE_PID" 2>/dev/null
+check "WL3. a LIVE driver lock + producing sidecar shows 'WRITING OUTPUT'" \
+  "grep -qi 'WRITING OUTPUT' '$repoWL3/out.txt'"
+check "WL3. the live liveness tail rides the progress line with the ◇ marker" \
+  "grep -i 'avg/ticket' '$repoWL3/out.txt' | qgrep -qF '◇'"
+
+# ==========================================================================
 # Behaviour WI (Session 42): the --watch re-render cadence is configurable.
 # Default 60s; overridable by $LCARS_WATCH_INTERVAL and by a --interval <secs>
 # flag (flag > env > default). status.sh exposes the RESOLVED value under the

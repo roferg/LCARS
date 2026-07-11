@@ -510,7 +510,7 @@ function cardNode(m) {
   // UX-13/UX-20: live "running" pulse — shown ONLY when truly in flight (running
   // && !paused; optimistic-start counts). Suppressed while pausing/paused so a
   // halting card never shows motion. Client-side animation only.
-  if (isInFlight(m)) card.appendChild(runningPulse(stageLabel(m.stage)));
+  if (isInFlight(m)) card.appendChild(runningPulse(stageLabel(m.stage), m.liveness));
 
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
   card.appendChild(cardControls(m));
@@ -2523,7 +2523,7 @@ function activityFeed(mi) {
     var lec = el("div", "ec");
     lec.appendChild(el("div", "when",
       (activeStage || "").toUpperCase() + " · IN FLIGHT"));
-    lec.appendChild(runningPulse(stageLabel(activeStage)));
+    lec.appendChild(runningPulse(stageLabel(activeStage), mi.liveness));
     var rt = activeRuntimeNode(mi); // UX-24
     if (rt) lec.appendChild(rt);
     live.appendChild(lec);
@@ -3115,10 +3115,55 @@ function workingNode(labelText) {
    adding the .lcars-running modifier for the running tint, plus a stage-aware
    themed label so a silent stage still reads as in motion. role=status / aria-
    live carry the state to assistive tech (not colour alone). */
-function runningPulse(label) {
-  var w = workingNode(RUNNING_COPY[label] || ("Underway · " + (label || "running") + "…"));
+function runningPulse(label, liveness) {
+  var base = RUNNING_COPY[label] || ("Underway · " + (label || "running") + "…");
+  // S114: a REAL liveness tail derived from the worker's output activity (present
+  // only while a live worker's sidecar exists). ABSENT ⇒ today's plain pulse,
+  // byte-identical DOM (class list + label text) to before this round.
+  var lv = livenessTail(liveness);
+  var w = workingNode(lv ? (base + " — " + lv.text) : base);
   w.className += " lcars-running";
+  if (lv) {
+    w.className += " " + lv.cls;
+    // A quiet/thinking-with-stale worker dampens the bars (still visible, calmer)
+    // so a genuinely silent stage no longer reads as "actively producing".
+    if (lv.quiescent) w.className += " lcars-quiescent";
+  }
   return w;
+}
+
+/* S114 — the LCARS-voice liveness tail for the running pulse. Maps the server's
+   liveness {state, quietSeconds} to a short uppercase phrase + a class the CSS
+   tints/dampens. `producing` stays lively ("WRITING OUTPUT"); `thinking` reads as
+   working with a subspace-quiet tail once it's been silent a beat; `quiet` reads
+   as idle-but-watched, escalating to "hang guard watching" past ~4m (the guard's
+   territory). Returns null when there's no liveness (caller renders the plain
+   pulse). */
+function fmtQuiet(s) {
+  s = (typeof s === "number" && s > 0) ? Math.floor(s) : 0;
+  if (s < 60) return s + "s";
+  var m = Math.floor(s / 60);
+  return m + "m";
+}
+function livenessTail(lv) {
+  if (!lv || typeof lv !== "object" || !lv.state) return null;
+  var q = (typeof lv.quietSeconds === "number") ? lv.quietSeconds : 0;
+  if (lv.state === "producing") {
+    return { text: "WRITING OUTPUT", cls: "live-producing", quiescent: false };
+  }
+  if (lv.state === "thinking") {
+    return {
+      text: "THINKING" + (q >= 3 ? " · SUBSPACE QUIET " + fmtQuiet(q) : ""),
+      cls: "live-thinking",
+      quiescent: q >= 8,
+    };
+  }
+  // quiet
+  return {
+    text: "SUBSPACE QUIET " + fmtQuiet(q) + (q >= 240 ? " — HANG GUARD WATCHING" : ""),
+    cls: "live-quiet",
+    quiescent: true,
+  };
 }
 
 /* Friendly Stage names for the running pulse copy lookup + fallback. */

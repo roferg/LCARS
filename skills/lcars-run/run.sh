@@ -6399,6 +6399,7 @@ worker_spawn() { # role outdir prompt
   local spawn_rc=0
   LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="$stage_model" \
     LCARS_WORKER_SESSION_ID="$usage_sid" \
+    LCARS_LIVENESS_STAGE="$stage_key" \
     run_worker_hang_guarded "$outdir" \
     bash "$WORKER_ADAPTER" spawn "$cli" "$role" "$outdir" "$prompt" || spawn_rc=$?
   # Post-exit, side-channel usage read. Guarded so a capture bug can never break a
@@ -9340,6 +9341,31 @@ _file_size_mtime() { # path → "<size> <mtime>" (stdout)
   printf '0 0'
 }
 
+# S114 liveness: total output bytes across the worker's stdout+stderr (the SIZE
+# fields of _file_size_mtime, summed). Feeds worker-liveness.json's outputBytes.
+# Non-numeric/absent ⇒ counted as 0. Read-only — never touches the hang timer.
+_liveness_output_bytes() { # outfile errfile → integer total bytes (stdout)
+  local sa sb a b
+  sa="$(_file_size_mtime "$1")"; sb="$(_file_size_mtime "$2")"
+  a="${sa%% *}"; b="${sb%% *}"
+  case "$a" in ''|*[!0-9]*) a=0 ;; esac
+  case "$b" in ''|*[!0-9]*) b=0 ;; esac
+  printf '%d' "$(( a + b ))"
+}
+
+# S114 liveness: write worker-liveness.json ATOMICALLY (tmp+mv, same dir → the
+# server never reads a half-written file). Shape (all bare integers except the two
+# short identifier strings): {"stage":..,"startedAt":N,"lastOutputTs":N,
+# "outputBytes":N,"state":"thinking|producing|quiet"}. jq-free; the identifiers are
+# our own stage keys / enum, so a plain quote is safe.
+_liveness_write() { # file stage startedAt lastOutputTs outputBytes state
+  local file="$1" stage="$2" started="$3" lastout="$4" bytes="$5" state="$6"
+  local tmp="$file.tmp.$$"
+  printf '{"stage":"%s","startedAt":%s,"lastOutputTs":%s,"outputBytes":%s,"state":"%s"}\n' \
+    "$stage" "$started" "$lastout" "$bytes" "$state" >"$tmp" 2>/dev/null || return 0
+  mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
 # Run a cold-worker command HANG-GUARDED. Launches it as its OWN process-group
 # leader (perl POSIX::setsid + exec — REUSE the BUG-048 pattern in
 # run_with_watchdog), so the whole descendant tree can be group-killed. While it
@@ -9383,12 +9409,74 @@ run_worker_hang_guarded() { # outdir  cmd...
   local out_a="$outdir/.worker.out" out_b="$outdir/.worker.err"
   local last_sig=""; last_sig="$(_file_size_mtime "$out_a")|$(_file_size_mtime "$out_b")"
   local stagnant=0
+
+  # === S114 liveness sidecar (ADDITIVE — ZERO effect on hang semantics) =======
+  # A REAL liveness signal for the board, derived PURELY from the cpu/sig data the
+  # hang guard already computes below (we only READ it; the stagnant/kill logic is
+  # byte-for-byte unchanged). Maintain $MISSION_DIR/worker-liveness.json describing
+  # whether the worker is producing output / thinking (burning CPU) / quiet, plus
+  # startedAt + lastOutputTs so the server can compute staleness. No-op when there
+  # is no $MISSION_DIR (e.g. the Align context-pack path). Finalized (removed) on
+  # EVERY exit path (normal, break, HUNG) so a finished/dead worker shows nothing.
+  #
+  # Anti-thrash: the sidecar bumps the adapter fingerprint (SSE push), so writes
+  # are STATE-CHANGE-driven and floored to at most one every LCARS_LIVENESS_MIN_WRITE
+  # seconds (default 5) regardless of the poll interval — a chatty producing↔thinking
+  # flip coalesces to ≤1 write / floor. Quiet-seconds staleness needs NO rewrite: the
+  # server recomputes it from lastOutputTs on each read, so a steady state never
+  # rewrites the file. This keeps SSE calm even at poll=1.
+  local live_file="" live_min live_started live_last_out live_bytes live_prev_sig
+  local live_state="" live_written="" live_last_write=0 live_stage
+  if [ -n "${MISSION_DIR:-}" ] && [ -d "${MISSION_DIR:-}" ]; then
+    live_file="$MISSION_DIR/worker-liveness.json"
+    live_min="${LCARS_LIVENESS_MIN_WRITE:-5}"
+    case "$live_min" in ''|*[!0-9]*) live_min=5 ;; esac
+    live_stage="${LCARS_LIVENESS_STAGE:-}"
+    live_started="$(date +%s)"
+    live_last_out="$live_started"
+    live_bytes="$(_liveness_output_bytes "$out_a" "$out_b")"
+    live_prev_sig="$last_sig"
+    live_state="thinking"
+    # Immediate first write so the board lights up as soon as the worker starts.
+    _liveness_write "$live_file" "$live_stage" "$live_started" \
+      "$live_last_out" "$live_bytes" "$live_state"
+    live_written="$live_state"; live_last_write="$live_started"
+  fi
+
   while pid_alive "$cmd_pid"; do
     sleep "$poll" 2>/dev/null || break
     pid_alive "$cmd_pid" || break
     local cpu sig
     cpu="$(_pgid_cpu_sum "$cmd_pid")"
     sig="$(_file_size_mtime "$out_a")|$(_file_size_mtime "$out_b")"
+
+    # --- S114 liveness derivation (READ-ONLY wrt the hang timer below) --------
+    # Placed BEFORE the hang logic so a producing tick (which `continue`s below)
+    # still updates liveness. producing ⇒ output actually GREW this tick (never a
+    # lie); else thinking when burning CPU; else quiet. Write only on a real state
+    # change AND only once per floor (coalesces flip-flop into a calm SSE stream).
+    if [ -n "$live_file" ]; then
+      local live_now new_state
+      live_now="$(date +%s)"
+      if [ "$sig" != "$live_prev_sig" ]; then
+        new_state="producing"
+        live_last_out="$live_now"
+        live_bytes="$(_liveness_output_bytes "$out_a" "$out_b")"
+      elif [ "$cpu" -gt "$cpu_min" ] 2>/dev/null; then
+        new_state="thinking"
+      else
+        new_state="quiet"
+      fi
+      live_prev_sig="$sig"
+      live_state="$new_state"
+      if [ "$new_state" != "$live_written" ] \
+         && [ "$(( live_now - live_last_write ))" -ge "$live_min" ]; then
+        _liveness_write "$live_file" "$live_stage" "$live_started" \
+          "$live_last_out" "$live_bytes" "$new_state"
+        live_written="$new_state"; live_last_write="$live_now"
+      fi
+    fi
+
     # Progress = the worker is burning CPU OR its output grew → reset the timer.
     if [ "$cpu" -gt "$cpu_min" ] 2>/dev/null || [ "$sig" != "$last_sig" ]; then
       stagnant=0
@@ -9404,9 +9492,11 @@ run_worker_hang_guarded() { # outdir  cmd...
       sleep 1 2>/dev/null || true
       kill -KILL -"$cmd_pid" 2>/dev/null || kill -KILL "$cmd_pid" 2>/dev/null || true
       wait "$cmd_pid" 2>/dev/null || true
+      [ -n "$live_file" ] && rm -f "$live_file" 2>/dev/null   # finalize: HUNG → no pulse
       return 137   # HUNG sentinel (128+SIGKILL) — see header
     fi
   done
+  [ -n "$live_file" ] && rm -f "$live_file" 2>/dev/null   # finalize: exited → no pulse
   wait "$cmd_pid"
   return $?
 }
