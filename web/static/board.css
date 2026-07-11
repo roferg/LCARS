@@ -565,6 +565,44 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   color:var(--lcars-violet,#9977ff);text-transform:uppercase}
 .feed .empty{color:var(--lcars-text-dim);font-size:13px}
 
+/* ── S115: collapsible activity sections (per-stage / per-wave) ──
+   A completed section collapses to one LCARS summary band; the active section
+   stays open. Bands reuse the shared --lcars-* tokens (ADR-007) and echo the
+   pill/section idioms already in this sheet. */
+.feed-expand{display:flex;justify-content:flex-end;margin-bottom:12px}
+.feed-expand-btn{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.1em;font-size:10px;cursor:pointer;
+  padding:4px 12px;border-radius:11px;
+  color:var(--lcars-peach);background:transparent;
+  border:1px solid var(--lcars-border)}
+.feed-expand-btn:hover{border-color:var(--lcars-peach);color:var(--lcars-text-bright)}
+.feed-section{margin-bottom:10px}
+.feed-band{display:flex;align-items:center;gap:10px;cursor:pointer;
+  padding:8px 14px;border-radius:var(--lcars-radius,14px);
+  background:var(--lcars-card-alt);border:1px solid var(--lcars-border);
+  border-left:5px solid var(--lcars-text-dim)}
+.feed-band:hover{border-color:var(--lcars-peach)}
+.feed-section.s-align .feed-band{border-left-color:var(--lcars-amber)}
+.feed-section.s-research .feed-band{border-left-color:var(--lcars-peach)}
+.feed-section.s-validate .feed-band{border-left-color:var(--lcars-blue,#4499ff)}
+.feed-section.s-plan .feed-band{border-left-color:var(--lcars-gold,#ffdd44)}
+.feed-section.s-plan-review .feed-band{border-left-color:var(--lcars-violet,#9977ff)}
+.feed-section.s-schedule .feed-band{border-left-color:var(--lcars-pink,#ff66aa)}
+.feed-section.s-implement .feed-band{border-left-color:var(--lcars-amber)}
+.feed-section.s-verify .feed-band{border-left-color:var(--lcars-red)}
+.feed-section.s-done .feed-band{border-left-color:var(--lcars-teal)}
+.feed-band .band-caret{font-size:11px;color:var(--lcars-text-dim);width:10px;flex:0 0 10px}
+.feed-band .band-title{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.1em;font-size:12px;color:var(--lcars-text-bright)}
+.feed-band .band-summary{font-family:var(--font-mono);font-size:10px;
+  color:var(--lcars-text-dim);letter-spacing:.04em;margin-left:auto}
+.feed-band .band-flag{font-family:var(--font-display);font-size:9px;
+  letter-spacing:.1em;color:#fff;background:var(--lcars-red);
+  padding:2px 8px;border-radius:9px}
+.feed-section.open>.feed-band{background:var(--lcars-surface,#070d1c)}
+.band-events{padding:14px 4px 4px 8px}
+.band-events[hidden]{display:none}
+
 /* ── tabs (mock .tabs / .tabbar .tab .on / .tabpane .on) ── */
 .tabs{padding:18px 20px;background:var(--lcars-black);overflow:auto;min-height:0}
 .tabbar{display:flex;gap:6px;margin-bottom:14px}

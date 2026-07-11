@@ -1638,14 +1638,7 @@ function openReverifyGate(mi) {
   var kids = (mi.children || mi.linkedChildren || []);
   if (kids.length) {
     m.body.appendChild(el("h4", null, "Logged bugs resolved"));
-    var list = el("div", "log-preview-list");
-    kids.forEach(function (c) {
-      var row = el("div", "crit");
-      row.appendChild(el("span", "pill go", "✓"));
-      row.appendChild(document.createTextNode(" " + (c.title || c.id || "Bug")));
-      list.appendChild(row);
-    });
-    m.body.appendChild(list);
+    m.body.appendChild(linkedBugsSection(kids));
   }
 
   // S113: EST → ACTUAL cost line (present only when this mission has usage).
@@ -2558,30 +2551,263 @@ function activityFeed(mi) {
     feed.appendChild(hist);
     return feed;
   }
-  acts.forEach(function (ev) {
-    var stage = normStage(ev.stage);
-    var isGate = ev.type === "gate";
-    var e = el("div", "evt s-" + (isGate ? "gate" : stage));
-    e.appendChild(el("div", "marker"));
-    var ec = el("div", "ec");
-    var when = ev.ts != null ? fmtTs(ev.ts) + " · " : "";
-    ec.appendChild(el("div", "when", when + (ev.stage || "").toUpperCase()));
-    ec.appendChild(el("div", "head", headlineFor(ev)));
-    // UX-33: sanitize gate/feed prose so a backtick `lcars …` CLI command is
-    // never shown verbatim in the GUI feed.
-    // UX-37: the remaining prose is worker-authored Markdown — render it XSS-safe
-    // (sanitizeGateText runs FIRST, mdToHtml escapes before emitting any tag).
-    if (ev.detail || ev.text) {
-      var txt = el("div", "txt");
-      setMd(txt, sanitizeGateText(ev.text || ev.detail));
-      ec.appendChild(txt);
-    }
-    ec.appendChild(el("div", "bot", "⬡ posted by lcars-bot"));
-    e.appendChild(ec);
-    hist.appendChild(e);
+  // S115: group the ordered stream into collapsible per-stage / per-wave
+  // sections so a big mission reads at a glance. Completed sections collapse to
+  // one LCARS summary band; the active (last) section stays open; every event is
+  // still reachable (each band expands; an "expand all" reveals the lot). A
+  // small mission (a single section) renders effectively as the old flat feed —
+  // no band chrome is forced onto a mission with nothing to collapse.
+  var sections = groupActivityIntoSections(acts);
+  if (sections.length <= 1) {
+    // Passthrough: 1 (or 0) section → the flat timeline exactly as before.
+    acts.forEach(function (ev) { hist.appendChild(renderEvent(ev)); });
+    feed.appendChild(hist);
+    return feed;
+  }
+  // >1 section → collapsible bands + an expand-all affordance.
+  var bands = [];
+  var expandRow = el("div", "feed-expand");
+  var expandBtn = el("button", "feed-expand-btn", "⧉ Expand all");
+  var allOpen = false;
+  expandBtn.addEventListener("click", function () {
+    allOpen = !allOpen;
+    bands.forEach(function (b) { b.setOpen(allOpen); });
+    expandBtn.textContent = allOpen ? "⊟ Collapse to summary" : "⧉ Expand all";
+  });
+  expandRow.appendChild(expandBtn);
+  hist.appendChild(expandRow);
+  sections.forEach(function (sec) {
+    var band = sectionNode(sec);
+    bands.push(band);
+    hist.appendChild(band.node);
   });
   feed.appendChild(hist);
   return feed;
+}
+
+/* S115: render ONE activity event as the standard `.evt` timeline block. Factored
+   out of activityFeed so the SAME per-event rendering is reused by the flat
+   small-mission passthrough AND inside every expandable section — no event is
+   ever rendered by only one path, and every event maps to exactly one `.evt`
+   node (the "nothing lost" invariant). Behaviour is byte-identical to the old
+   inline loop. */
+function renderEvent(ev) {
+  var stage = normStage(ev.stage);
+  var isGate = ev.type === "gate";
+  var e = el("div", "evt s-" + (isGate ? "gate" : stage));
+  e.appendChild(el("div", "marker"));
+  var ec = el("div", "ec");
+  var when = ev.ts != null ? fmtTs(ev.ts) + " · " : "";
+  ec.appendChild(el("div", "when", when + (ev.stage || "").toUpperCase()));
+  ec.appendChild(el("div", "head", headlineFor(ev)));
+  // UX-33: sanitize gate/feed prose so a backtick `lcars …` CLI command is
+  // never shown verbatim in the GUI feed.
+  // UX-37: the remaining prose is worker-authored Markdown — render it XSS-safe
+  // (sanitizeGateText runs FIRST, mdToHtml escapes before emitting any tag).
+  if (ev.detail || ev.text) {
+    var txt = el("div", "txt");
+    setMd(txt, sanitizeGateText(ev.text || ev.detail));
+    ec.appendChild(txt);
+  }
+  ec.appendChild(el("div", "bot", "⬡ posted by lcars-bot"));
+  e.appendChild(ec);
+  return e;
+}
+
+/* S115: group an ORDERED activity stream (mi.activity — {ts,stage,type,detail,
+   text}) into collapsible sections, CLIENT-SIDE, off the stream alone (no board
+   shape / event changes). A `stage_start` opens a STAGE section; a `wave_start`
+   opens a WAVE section (numbered by its ordinal within the run). The Implement
+   stage_start is a bare header that the first wave ABSORBS, so it is never an
+   orphan band. Any other event joins the current section (a fresh stage-change
+   with no explicit boundary opens an implicit stage section). Nothing is ever
+   dropped: every input event lands in exactly one section, in order.
+
+   Each section carries derived summary data: ticketCount (ticket_start events),
+   greenCount / flaggedCount, attemptCount (ticket_attempt events when present,
+   else green+flagged outcomes), a `flagged` marker (any ticket flagged), the
+   first/last ts and their durationSec, and `active` (the LAST section — the
+   in-flight / most-recent one, which renders OPEN). */
+function groupActivityIntoSections(acts) {
+  var sections = [];
+  var cur = null;
+  var waveOrdinal = 0;
+
+  function tally(sec, ev) {
+    sec.events.push(ev);
+    var t = tsSeconds(ev.ts);
+    if (t != null) {
+      if (sec.startTs == null) sec.startTs = t;
+      sec.endTs = t;
+    }
+    switch (ev.type) {
+      case "ticket_start": sec.ticketCount++; break;
+      case "ticket_green": sec.greenCount++; sec._outcomes++; break;
+      case "ticket_flagged": sec.flaggedCount++; sec._outcomes++; sec.flagged = true; break;
+      case "ticket_attempt": sec._attempts++; break;
+    }
+  }
+  function open(kind, stage, wave) {
+    var sec = {
+      kind: kind, stage: normStage(stage), wave: wave || null,
+      events: [], startTs: null, endTs: null,
+      ticketCount: 0, greenCount: 0, flaggedCount: 0, flagged: false,
+      _attempts: 0, _outcomes: 0,
+    };
+    sections.push(sec);
+    cur = sec;
+    return sec;
+  }
+
+  (acts || []).forEach(function (ev) {
+    if (!ev || typeof ev !== "object") return;
+    var stage = normStage(ev.stage);
+    if (ev.type === "wave_start") {
+      waveOrdinal++;
+      // Absorb a bare stage header (only a stage_start, no tickets yet) of the
+      // same stage into this wave so the Implement stage_start isn't an orphan.
+      if (cur && cur.kind === "stage" && cur.stage === stage &&
+          cur.ticketCount === 0 &&
+          cur.events.every(function (e) { return e.type === "stage_start"; })) {
+        cur.kind = "wave";
+        cur.wave = waveOrdinal;
+        tally(cur, ev);
+        return;
+      }
+      open("wave", stage, waveOrdinal);
+      tally(cur, ev);
+      return;
+    }
+    if (ev.type === "stage_start") {
+      open("stage", stage);
+      tally(cur, ev);
+      return;
+    }
+    // Any other event: join the current section. Open an implicit stage section
+    // when none is open, or when the stage changes with no explicit boundary
+    // (never re-splitting an open wave, whose events share the implement stage).
+    if (!cur || (cur.kind !== "wave" && cur.stage !== stage)) {
+      open("stage", stage);
+    }
+    tally(cur, ev);
+  });
+
+  sections.forEach(function (sec, i) {
+    sec.active = (i === sections.length - 1);
+    sec.durationSec = (sec.startTs != null && sec.endTs != null)
+      ? Math.max(0, Math.round(sec.endTs - sec.startTs)) : null;
+    sec.attemptCount = sec._attempts > 0 ? sec._attempts : sec._outcomes;
+    delete sec._attempts; delete sec._outcomes;
+  });
+  return sections;
+}
+
+/* S115: ts → whole seconds (epoch). Mirrors fmtTs's tolerance of epoch-seconds,
+   epoch-millis and ISO strings; returns null for an unparseable/absent ts so a
+   section duration is simply omitted rather than NaN. */
+function tsSeconds(ts) {
+  if (ts == null) return null;
+  if (typeof ts === "number") return ts < 1e12 ? ts : ts / 1000;
+  var n = new Date(ts).getTime();
+  return isNaN(n) ? null : n / 1000;
+}
+
+/* S115: the LCARS section title — "WAVE n" for a wave band, the stage label
+   (uppercased) for a stage band. */
+function sectionTitle(sec) {
+  if (sec.kind === "wave") return "WAVE " + sec.wave;
+  return stageLabel(sec.stage).toUpperCase();
+}
+
+/* S115: the one-line Star-Trek-voiced summary shown on a collapsed band. Wave
+   bands read "N tickets · M attempts · <dur>"; stage bands read a stage-flavoured
+   line with the duration. Duration is omitted when unknown. */
+function sectionSummary(sec) {
+  var bits = [];
+  if (sec.kind === "wave") {
+    bits.push(sec.ticketCount + " ticket" + (sec.ticketCount === 1 ? "" : "s"));
+    if (sec.attemptCount) {
+      bits.push(sec.attemptCount + " attempt" + (sec.attemptCount === 1 ? "" : "s"));
+    }
+  } else {
+    bits.push(sec.active ? "in progress" : "complete");
+  }
+  if (sec.durationSec != null && sec.durationSec > 0) bits.push(fmtDuration(sec.durationSec));
+  return bits.join(" · ");
+}
+
+/* S115: one collapsible section. Returns {node, setOpen(bool)}. The band header
+   (caret + title + summary + a ⚠ flag marker when any ticket flagged) toggles the
+   events on click; the ACTIVE section opens by default, completed sections
+   collapse to just the band. The events container always CONTAINS every event
+   (rendered via renderEvent) — collapsing only hides it, so nothing is ever
+   dropped or unreachable. */
+function sectionNode(sec) {
+  var wrap = el("div", "feed-section s-" + sec.stage + (sec.active ? " open" : ""));
+  var band = el("div", "feed-band");
+  var caret = el("span", "band-caret", sec.active ? "▾" : "▸");
+  band.appendChild(caret);
+  band.appendChild(el("span", "band-title", sectionTitle(sec)));
+  band.appendChild(el("span", "band-summary", sectionSummary(sec)));
+  if (sec.flagged) band.appendChild(el("span", "band-flag", "⚠ FLAGGED"));
+  var events = el("div", "band-events");
+  sec.events.forEach(function (ev) { events.appendChild(renderEvent(ev)); });
+  events.hidden = !sec.active;
+
+  function setOpen(o) {
+    events.hidden = !o;
+    caret.textContent = o ? "▾" : "▸";
+    if (o) wrap.classList.add("open"); else wrap.classList.remove("open");
+  }
+  band.addEventListener("click", function () { setOpen(events.hidden); });
+
+  wrap.appendChild(band);
+  wrap.appendChild(events);
+  return { node: wrap, setOpen: setOpen };
+}
+
+/* S115: the mission-log PARENT's linked-bug list gets the same collapsed-band
+   idiom as the activity feed — resolved bugs fold into one LCARS summary band
+   (expandable, so nothing is lost), while any still-active bug stays open as its
+   own row. A short list (≤3, or nothing worth folding) renders flat exactly as
+   before — no chrome forced onto a parent with only a couple of bugs. */
+function linkedBugsSection(kids) {
+  var wrap = el("div", "log-preview-list");
+  function bugRow(c) {
+    var row = el("div", "crit");
+    row.appendChild(el("span", "pill go", "✓"));
+    row.appendChild(document.createTextNode(" " + (c.title || c.id || "Bug")));
+    return row;
+  }
+  function resolved(c) {
+    var s = normStage(c.stage);
+    return s === "done" || s === "verify" || !!c.done || !!c.resolved;
+  }
+  var doneKids = kids.filter(resolved);
+  var activeKids = kids.filter(function (c) { return !resolved(c); });
+  if (kids.length <= 3 || doneKids.length <= 1) {
+    kids.forEach(function (c) { wrap.appendChild(bugRow(c)); });
+    return wrap;
+  }
+  var band = el("div", "feed-section s-done");
+  var head = el("div", "feed-band");
+  var caret = el("span", "band-caret", "▸");
+  head.appendChild(caret);
+  head.appendChild(el("span", "band-title", "RESOLVED"));
+  head.appendChild(el("span", "band-summary",
+    doneKids.length + " logged bug" + (doneKids.length === 1 ? "" : "s") + " fixed"));
+  var list = el("div", "band-events"); list.hidden = true;
+  doneKids.forEach(function (c) { list.appendChild(bugRow(c)); });
+  head.addEventListener("click", function () {
+    list.hidden = !list.hidden;
+    caret.textContent = list.hidden ? "▸" : "▾";
+    if (list.hidden) band.classList.remove("open"); else band.classList.add("open");
+  });
+  band.appendChild(head);
+  band.appendChild(list);
+  wrap.appendChild(band);
+  activeKids.forEach(function (c) { wrap.appendChild(bugRow(c)); });
+  return wrap;
 }
 
 /* UX-18: the current/active stage = the latest stage_start event with no later
