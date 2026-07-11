@@ -6,6 +6,10 @@ LCARS is a reusable AI harness that takes a human idea and drives it to a merged
 
 The human provides the idea and the final judgment. The Harness does everything in between.
 
+![The LCARS viewscreen — a Star-Trek-themed Kanban board of every Mission in its Stage, each card carrying cost and difficulty pills, live worker activity, and logged-bug children.](docs/assets/viewscreen-board.png)
+
+*The viewscreen — command and control for the whole idea → merged-PR loop.*
+
 ---
 
 ## The Core Unit: The Mission
@@ -188,6 +192,10 @@ These live in the deterministic driver, because an LLM rewarded for a green suit
 When all Waves are complete, the human reviews the Mission. This is a full inspection — reading the diff, running the app locally, testing the golden path. The human either approves or sends feedback that re-enters the loop.
 
 Running the app is one click. `lcars launch <mission> [hint]` — and the **⚡ RUN / STOP** controls on the viewscreen's Verify dialogs — check the Mission's branch out into a **disposable detached worktree**, spawn a `launch`-role cold worker that *discovers* how to start the app (it inspects `package.json` / Makefile / README and reports the exact command — it never starts anything itself), then start that command detached with the Harness owning the whole process group. A `launch.json` record drives both the CLI readout and the board's state (launching → running → stopped), the optional *hint* picks the right target in a multi-app repo ("the example game", "the editor"), and each Mission launches its **own** instance — so two Missions' builds can run side by side for comparison. Stop kills the process group and prunes the worktree; failures are plain English, never a stack trace. The captain's own checkout is never touched.
+
+![The Verify gate — a Re-Verify dialog for a mission whose logged bugs were fixed and folded onto its branch, with a one-click live "run the app" launch affordance and Accept-the-fixes / Send-back controls.](docs/assets/reverify-gate.png)
+
+*The human review gate: inspect the diff, launch the app live in one click, then accept or send back with feedback.*
 
 ### 8. Done
 
@@ -403,6 +411,10 @@ Each of the 11 tickets gets a Test Writer + Implementer pair. Tickets within a w
 > *"Found two bugs. XP isn't being awarded when a video is marked complete — only quiz completions trigger it. Also, the leaderboard has a visible flicker on first page load before the data comes in. These are against the gamification mission."*
 
 The Harness extracts two distinct bugs, creates a fast-tracked Mission for each, and links both to the open gamification Mission as native GitHub sub-issues. No second step required.
+
+![The Mission Log dialog — a free-form "what went wrong?" box with pasted screenshots, previewing two auto-detected bug Missions, each linked as a child of the parent with its own plan label and images pill.](docs/assets/mission-log.png)
+
+*Mission Log: dump the bugs in plain language, and the Harness splits them into linked bug Missions, routing each screenshot to the bug that names it.*
 
 When a report carries pasted screenshots and refers to them per bug ("see image 1", "the second screenshot"), the split routes each image to the bug that names it — a bug gets the images that explicitly reference it *plus* any image no bug claims (an unreferenced image goes to every bug; if the report ties each image to a specific bug, a bug that names none gets none). The log-split preview shows an **images pill per bug**, so the captain can check the mapping before filing. With no per-bug references the default is unchanged: every image goes to every bug.
 

@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:37bcdd6f305040003c921a4188b496c404c08501cd9a800f70af365b28abdbfa -->
-<!-- lcars-docs-src: vision.md sha256:e9efc0e70020a5c757957103c430f7332d033f6e4848035584db14e86dbae742 -->
+<!-- lcars-docs-src: README.md sha256:684cefa0b52bdcefd1cc91e4b4a108391f312636ff01d0867a53f64f7b72af15 -->
+<!-- lcars-docs-src: vision.md sha256:2fa547d31428ed3bea4439d97878d41d493dc8578505e812474b97a8140cb305 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -101,6 +101,11 @@
         glossary · <a href="vision.html">vision.html</a> is the vision in LCARS
         livery. This page is the fast path to getting started.</div>
       </div>
+
+      <figure class="screenshot">
+        <img src="assets/viewscreen-board.png" alt="The LCARS viewscreen — a Star-Trek-themed Kanban board showing missions moving through Validate → Plan → Plan Review → Schedule → Implement → Verify → Done, each card carrying live cost and difficulty pills, real working status, and logged-bug children." />
+        <figcaption>The <strong>viewscreen</strong> — local mission control. Every mission is a card in its stage, with actual/estimated cost, difficulty, live worker activity, and one-click file / pause / review.</figcaption>
+      </figure>
 
       <h2>What it does</h2>
       <p>LCARS is <strong>not</strong> a code generator, a chat box, or a one-shot
@@ -262,6 +267,11 @@ sequenceDiagram
         ambiguity), Validate → Align (scope change), Plan Review → Plan (bad
         tickets), and Verify → Align (you weren't satisfied).</div>
       </div>
+
+      <figure class="screenshot">
+        <img src="assets/reverify-gate.png" alt="The consolidated Re-Verify gate — one dialog telling you the logged bugs were fixed and folded onto the parent's branch, with a run-the-app live-launch affordance and Accept-the-fixes / Send-back buttons." />
+        <figcaption>The human review gate: inspect the diff, launch the app live in one click, then accept the fixes or send the mission back with a note.</figcaption>
+      </figure>
     </section>
 
 
@@ -643,6 +653,11 @@ flowchart LR
           never touched.</div>
         </div>
       </div>
+
+      <figure class="screenshot">
+        <img src="assets/mission-log.png" alt="The Mission Log dialog — a free-form what-went-wrong box with pasted screenshots, previewing two auto-detected bug Missions, each a child of the parent with its own plan label and images pill." />
+        <figcaption><strong>Mission Log</strong> — dump every bug you spot in plain language; LCARS splits them into linked bug Missions and routes each pasted screenshot to the bug that names it.</figcaption>
+      </figure>
 
       <h4>Power verbs (still supported)</h4>
       <div class="control-grid">

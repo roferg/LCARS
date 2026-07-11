@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: vision.md sha256:e9efc0e70020a5c757957103c430f7332d033f6e4848035584db14e86dbae742 -->
+<!-- lcars-docs-src: vision.md sha256:2fa547d31428ed3bea4439d97878d41d493dc8578505e812474b97a8140cb305 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -89,6 +89,11 @@
       <h2>What Is LCARS?</h2>
       <p>LCARS is a reusable AI harness that takes a human idea and drives it to a merged pull request. It is not a code generator, a chat interface, or a one-shot prompt. It is an <strong>orchestration system</strong> — a defined pipeline of LLM operations, automated checks, and human checkpoints — that turns intent into shipped software.</p>
       <p>The human provides the idea and the final judgment. The Harness does everything in between.</p>
+
+      <figure class="screenshot">
+        <img src="assets/viewscreen-board.png" alt="The LCARS viewscreen — a Star-Trek-themed Kanban board of every Mission in its Stage, each card carrying cost and difficulty pills, live worker activity, and logged-bug children." />
+        <figcaption>The viewscreen — command and control for the whole idea → merged-PR loop.</figcaption>
+      </figure>
     </section>
 
     <!-- MISSION -->
@@ -285,6 +290,11 @@ sequenceDiagram
       <h3><span class="stage-num">8</span>Verify</h3>
       <p>When all Waves are complete, the human reviews the Mission — reading the diff, running the app locally, testing the golden path. The human either approves (triggering PR creation and merge) or sends feedback that re-enters the loop.</p>
       <p>Running the app is one click. <code>lcars launch &lt;mission&gt; [hint]</code> — and the <strong>⚡ RUN / STOP</strong> controls on the viewscreen's Verify dialogs — check the Mission's branch out into a <strong>disposable detached worktree</strong>, spawn a <code>launch</code>-role cold worker that <em>discovers</em> how to start the app (it inspects <code>package.json</code> / Makefile / README and reports the exact command — it never starts anything itself), then start that command detached with the Harness owning the whole process group. A <code>launch.json</code> record drives both the CLI readout and the board's state (launching → running → stopped), the optional <em>hint</em> picks the right target in a multi-app repo ("the example game", "the editor"), and each Mission launches its <strong>own</strong> instance — so two Missions' builds can run side by side for comparison. Stop kills the process group and prunes the worktree; failures are plain English, never a stack trace. The captain's own checkout is never touched.</p>
+
+      <figure class="screenshot">
+        <img src="assets/reverify-gate.png" alt="The Verify gate — a Re-Verify dialog for a mission whose logged bugs were fixed and folded onto its branch, with a one-click live run-the-app launch affordance and Accept-the-fixes / Send-back controls." />
+        <figcaption>The human review gate: inspect the diff, launch the app live in one click, then accept or send back with feedback.</figcaption>
+      </figure>
     </section>
 
     <section id="done">
@@ -502,6 +512,11 @@ flowchart TB
         </div>
         <div class="idea-quote">"Found two bugs. XP isn't being awarded when a video is marked complete — only quiz completions trigger it. Also, the leaderboard has a visible flicker on first page load before the data comes in. These are against the gamification mission."</div>
         <p>One invocation of <strong>Mission Log</strong>. The Harness extracts two distinct bugs, creates a Mission for each — grounded against the parent's existing code — and links both to the open gamification Mission as native GitHub sub-issues. No second step.</p>
+
+        <figure class="screenshot">
+          <img src="assets/mission-log.png" alt="The Mission Log dialog — a free-form what-went-wrong box with pasted screenshots, previewing two auto-detected bug Missions, each linked as a child of the parent with its own plan label and images pill." />
+          <figcaption>Mission Log: dump the bugs in plain language, and the Harness splits them into linked bug Missions, routing each screenshot to the bug that names it.</figcaption>
+        </figure>
         <p style="margin-top:16px">When a report carries pasted screenshots and refers to them per bug ("see image 1", "the second screenshot"), the split routes each image to the bug that names it — a bug gets the images that explicitly reference it <em>plus</em> any image no bug claims (an unreferenced image goes to every bug; if the report ties each image to a specific bug, a bug that names none gets none). The log-split preview shows an <strong>images pill per bug</strong>, so the captain can check the mapping before filing. With no per-bug references the default is unchanged: every image goes to every bug.</p>
         <div class="diagram-wrap">
           <div class="mermaid">
