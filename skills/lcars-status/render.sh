@@ -107,6 +107,74 @@ fmt_elapsed() {
   fi
 }
 
+# --- fmt_quiet <seconds> → "8s" / "4m" (coarse, LCARS-voice liveness tail) ---
+fmt_quiet() {
+  local s="$1"
+  case "$s" in ''|*[!0-9]*) s=0 ;; esac
+  if [ "$s" -lt 60 ]; then printf '%ds' "$s"; else printf '%dm' "$(( s / 60 ))"; fi
+}
+
+# --- driver_lock_alive — is a LIVE run driver holding this mission's lock? -----
+# Mirrors the web adapter's local_adapter._driver_running() and run.sh's
+# acquire_driver_lock reclaim rule EXACTLY: the lock is $MISSION_DIR/driver.lock
+# (a directory whose `pid` file names the live driver). Alive iff that pid file
+# exists and names a running process (kill -0, no signal sent). A dead/absent lock
+# (SIGKILL, crash, OOM, closed terminal) reads NOT alive — the same signal run.sh
+# uses to reclaim a stale lock and the web adapter uses to gate `running`.
+# SELF-CONTAINED: render.sh is sourced by BOTH status.sh and comment-mirror.sh, so
+# this must not depend on run.sh's pid_alive being in scope. Crash-proof: any
+# read/parse/probe failure ⇒ not alive (never raises).
+driver_lock_alive() { # mission_dir
+  local pidf="$1/driver.lock/pid" raw
+  [ -f "$pidf" ] || return 1
+  raw="$(cat "$pidf" 2>/dev/null | tr -d '[:space:]')"
+  case "$raw" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$raw" -gt 0 ] 2>/dev/null || return 1
+  kill -0 "$raw" 2>/dev/null
+}
+
+# --- liveness_tail — the S114 REAL liveness signal for the live watch line ----
+# run.sh's hang guard maintains $MISSION_DIR/worker-liveness.json for the CURRENT
+# cold worker and REMOVES it on its normal AND hung exits, so its presence means a
+# worker is live. Echo a short LCARS-voice phrase describing the worker's output
+# activity, with quiet seconds computed HERE from lastOutputTs (mirrors the
+# server-side staleness). No file ⇒ prints nothing (the watch line is byte-
+# identical to before this round).
+#
+# S114 HONESTY GATE: a HARD driver death (SIGKILL/crash/OOM/closed terminal) never
+# runs the sidecar finalize, and release_driver_lock does NOT remove the sidecar —
+# so file-presence ALONE would print "WRITING OUTPUT" for a producing sidecar left
+# by a DEAD worker (a flat lie the climbing quiet-seconds never reveals). So we
+# gate on the SAME running signal the web adapter's _liveness() uses: a LIVE driver
+# lock. When the lock is dead/absent, surface NOTHING — byte-identical to the
+# no-file path, mirroring _liveness() returning None. jq-free: the sidecar is a
+# single JSON line, parsed with the ev_str/ev_num readers.
+liveness_tail() {
+  local lf="${LIVENESS:-}"
+  [ -n "$lf" ] || lf="$(dirname "$EVENTS")/worker-liveness.json"
+  [ -f "$lf" ] || return 0
+  # Only a LIVE driver lock (beside the sidecar in the mission dir) may show a
+  # pulse; a dead/absent lock means the worker is gone — say nothing.
+  driver_lock_alive "$(dirname "$lf")" || return 0
+  local line; line="$(cat "$lf" 2>/dev/null)"
+  [ -n "$line" ] || return 0
+  local state lastout q qh
+  state="$(ev_str "$line" state)"
+  [ -n "$state" ] || return 0
+  lastout="$(ev_num "$line" lastOutputTs)"
+  q=0
+  if [ -n "$lastout" ]; then q=$(( $(now) - lastout )); [ "$q" -lt 0 ] && q=0; fi
+  qh="$(fmt_quiet "$q")"
+  case "$state" in
+    producing) printf 'WRITING OUTPUT' ;;
+    thinking)
+      if [ "$q" -ge 3 ]; then printf 'THINKING (quiet %s)' "$qh"; else printf 'THINKING'; fi ;;
+    quiet)
+      if [ "$q" -ge 240 ]; then printf 'QUIET %s — hang guard watching' "$qh"
+      else printf 'QUIET %s' "$qh"; fi ;;
+  esac
+}
+
 # --- compute_progress — read $EVENTS, print the one progress/pace line -------
 # Format (exact substrings asserted by the tests):
 #   Wave <cur>/<tot> · ticket <id> (<k>/<n>) · attempt <a> · ~<avg>s avg/ticket · elapsed <…>
@@ -186,9 +254,15 @@ compute_progress() {
     elapsed_field="elapsed $(fmt_elapsed "$el")"
   fi
 
-  printf 'Wave %s/%s · ticket %s (%s/%s) · attempt %s · %s · %s\n' \
+  # S114: append the REAL liveness tail when a live worker's sidecar exists (no
+  # file ⇒ empty ⇒ the line is byte-identical to before this round).
+  local live_tail; live_tail="$(liveness_tail)"
+  local live_suffix=""
+  [ -n "$live_tail" ] && live_suffix=" · ◇ $live_tail"
+
+  printf 'Wave %s/%s · ticket %s (%s/%s) · attempt %s · %s · %s%s\n' \
     "$cur_wave" "$tot_waves" "$cur_ticket" "$greens" "$tot_tickets" \
-    "$cur_attempt" "$avg_field" "$elapsed_field"
+    "$cur_attempt" "$avg_field" "$elapsed_field" "$live_suffix"
 }
 
 # --- is_terminal <line> — does this event end the watch? --------------------

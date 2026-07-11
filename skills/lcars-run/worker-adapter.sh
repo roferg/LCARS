@@ -131,6 +131,10 @@ adapter_argv() { # cli role outdir
       printf '%s\n' '-p' '--allowedTools' "$tools" '--output-format' 'text' \
         '--dangerously-skip-permissions'
       [ -n "$model" ] && printf '%s\n' '--model' "$model"
+      # USAGE CAPTURE (session 112): pin the minted correlation session-id ONLY
+      # when the caller enabled capture (LCARS_WORKER_SESSION_ID non-empty). Off ⇒
+      # this line emits nothing, so the argv is byte-for-byte the pre-112 lines.
+      [ -n "${LCARS_WORKER_SESSION_ID:-}" ] && printf '%s\n' '--session-id' "$LCARS_WORKER_SESSION_ID"
       ;;
     copilot)
       # Copilot cold-worker call (verified live against copilot v1.0.60):
@@ -159,6 +163,9 @@ adapter_argv() { # cli role outdir
         printf '%s\n' '--add-dir' "$d"
       done
       [ -n "$model" ] && printf '%s\n' '--model' "$model"
+      # USAGE CAPTURE (session 112): pin the minted correlation session-id ONLY
+      # when capture is enabled (see the claude branch); off ⇒ argv unchanged.
+      [ -n "${LCARS_WORKER_SESSION_ID:-}" ] && printf '%s\n' '--session-id' "$LCARS_WORKER_SESSION_ID"
       ;;
     *) die "unknown worker cli '$cli' — no adapter for this CLI" ;;
   esac

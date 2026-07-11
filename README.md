@@ -15,6 +15,10 @@ web board — with the CLI available as the equivalent power path underneath.
 > the domain glossary. [`docs/index.html`](docs/index.html) is this guide in
 > LCARS livery. This README is the fast path to getting started.
 
+![The LCARS viewscreen — a Star-Trek-themed Kanban board showing missions moving through Validate → Plan → Plan Review → Schedule → Implement → Verify → Done, each card carrying live cost and difficulty pills, real "working" status, and logged-bug children.](docs/assets/viewscreen-board.png)
+
+<p align="center"><em>The <strong>viewscreen</strong> — local mission control. Every mission is a card in its stage, with actual/estimated cost, difficulty, live worker activity, and one-click file / pause / review.</em></p>
+
 ---
 
 ## Table of contents
@@ -458,6 +462,11 @@ bug ("see image 1", "the second screenshot"), the split routes each image to the
 bug that names it (plus any image no bug claims), and the log-split preview shows
 an **images pill per bug** so you can check the mapping before filing. With no
 per-bug references, every image goes to every bug.
+
+![The Mission Log dialog — a free-form "what went wrong?" box with pasted screenshots, previewing two auto-detected bug Missions, each a child of the parent with its own plan label and images pill.](docs/assets/mission-log.png)
+
+*Dump every bug you spot in plain language; LCARS splits them into linked bug Missions and routes each pasted screenshot to the bug that names it.*
+
 Then hand the whole batch to **`lcars resolve-logs`** and walk away. It drives
 every logged bug to its own Verify gate in a sensible order the worker chooses
 (root-cause and dependency bugs first, cosmetic ones last), and collapses what
@@ -483,6 +492,10 @@ lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
    Re-inspect, then `lcars approve` / `lcars feedback` each.
                                             🔔 (one notification fired)
 ```
+
+![The consolidated Re-Verify gate — one dialog telling you the logged bugs were fixed and folded onto the parent's branch, with a "run the app" live-launch affordance and Accept-the-fixes / Send-back buttons.](docs/assets/reverify-gate.png)
+
+*One gate instead of N: the fixes ride the parent's pull request, you can launch the app to check them live, then accept the whole batch or send it back with a note.*
 
 It never auto-approves and opens no PRs — re-verifying and shipping each bug
 stays your call. If a bug escalates mid-batch (a cap-exhausted ticket, a scope

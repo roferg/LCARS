@@ -310,7 +310,34 @@ function levelClass(level) {
 function pillNode(p, kind) {
   if (!p) return null;
   if (kind === "cost") return el("span", "pill cost", "⬡ " + (p.label || ""));
+  // S113: the ACTUAL usage pill (display-only). Filled hexagon ⬢ vs the
+  // estimate's outline ⬡ so EST and ACTUAL read apart at a glance; a `partial`
+  // marker rides both the label ("· partial") and a class for honest styling.
+  if (kind === "actual") {
+    return el("span", "pill actual" + (p.partial ? " partial" : ""),
+      "⬢ ACTUAL " + (p.label || ""));
+  }
   return el("span", "pill " + levelClass(p.level), p.label || "");
+}
+
+/* S113: the "EST ⬡ $a–$b → ⬢ ACTUAL $c" comparison line for the Verify surfaces
+   (openVerify + openReverifyGate). Reads the estimate cost pill (mi.pills.cost)
+   and the ACTUAL usage pill (mi.pills.actual, present ONLY for a verify/done
+   mission with usage). Returns null when there is no actual to compare (no
+   usage → the dialog renders byte-identically to before this round). */
+function costCompareLine(mi) {
+  if (!mi.pills || !mi.pills.actual) return null;
+  var row = el("div", "cost-compare");
+  row.style.cssText =
+    "margin:14px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap";
+  var cap = el("span", "dim"); cap.textContent = "EST";
+  row.appendChild(cap);
+  var est = pillNode(mi.pills.cost, "cost");
+  if (est) { row.appendChild(est); }
+  else { var dash = el("span", "dim"); dash.textContent = "—"; row.appendChild(dash); }
+  row.appendChild(document.createTextNode("→"));
+  row.appendChild(pillNode(mi.pills.actual, "actual"));
+  return row;
 }
 
 /* When the write layer is known to be inactive, disable a write control so the
@@ -378,8 +405,12 @@ function cardNode(m) {
   if (m.awaiting) {
     pills.appendChild(el("span", "pill await", "● AWAITING YOU"));
     if (m.pills && m.pills.cost) pills.appendChild(pillNode(m.pills.cost, "cost"));
+    // S113: an awaiting verify mission still shows its ACTUAL spend beside EST.
+    if (m.pills) { var aw = pillNode(m.pills.actual, "actual"); if (aw) pills.appendChild(aw); }
   } else if (m.pills) {
     var c = pillNode(m.pills.cost, "cost"); if (c) pills.appendChild(c);
+    // S113: ACTUAL usage pill (present only for verify/done missions with usage).
+    var a = pillNode(m.pills.actual, "actual"); if (a) pills.appendChild(a);
     var r = pillNode(m.pills.reasoning); if (r) pills.appendChild(r);
     var i = pillNode(m.pills.implementation); if (i) pills.appendChild(i);
   }
@@ -479,7 +510,7 @@ function cardNode(m) {
   // UX-13/UX-20: live "running" pulse — shown ONLY when truly in flight (running
   // && !paused; optimistic-start counts). Suppressed while pausing/paused so a
   // halting card never shows motion. Client-side animation only.
-  if (isInFlight(m)) card.appendChild(runningPulse(stageLabel(m.stage)));
+  if (isInFlight(m)) card.appendChild(runningPulse(stageLabel(m.stage), m.liveness));
 
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
   card.appendChild(cardControls(m));
@@ -1607,15 +1638,12 @@ function openReverifyGate(mi) {
   var kids = (mi.children || mi.linkedChildren || []);
   if (kids.length) {
     m.body.appendChild(el("h4", null, "Logged bugs resolved"));
-    var list = el("div", "log-preview-list");
-    kids.forEach(function (c) {
-      var row = el("div", "crit");
-      row.appendChild(el("span", "pill go", "✓"));
-      row.appendChild(document.createTextNode(" " + (c.title || c.id || "Bug")));
-      list.appendChild(row);
-    });
-    m.body.appendChild(list);
+    m.body.appendChild(linkedBugsSection(kids));
   }
+
+  // S113: EST → ACTUAL cost line (present only when this mission has usage).
+  var costLine = costCompareLine(mi);
+  if (costLine) m.body.appendChild(costLine);
 
   // S109: RUN / STOP the mission's app so the captain can view it during re-verify.
   m.body.appendChild(launchAffordance(mi));
@@ -1899,6 +1927,10 @@ function openVerify(id) {
       m.body.appendChild(bh);
       m.body.appendChild(buildSummary(mi));
     }
+
+    // S113: EST → ACTUAL cost line (present only when this mission has usage).
+    var costLine = costCompareLine(mi);
+    if (costLine) m.body.appendChild(costLine);
 
     // BUG-030: a Mission-Log bug child (mi.parentMission set) has NO PR concept —
     // its fix rides the PARENT's PR. The Verify dialog for such a bug must show NO
@@ -2484,7 +2516,7 @@ function activityFeed(mi) {
     var lec = el("div", "ec");
     lec.appendChild(el("div", "when",
       (activeStage || "").toUpperCase() + " · IN FLIGHT"));
-    lec.appendChild(runningPulse(stageLabel(activeStage)));
+    lec.appendChild(runningPulse(stageLabel(activeStage), mi.liveness));
     var rt = activeRuntimeNode(mi); // UX-24
     if (rt) lec.appendChild(rt);
     live.appendChild(lec);
@@ -2519,30 +2551,327 @@ function activityFeed(mi) {
     feed.appendChild(hist);
     return feed;
   }
-  acts.forEach(function (ev) {
-    var stage = normStage(ev.stage);
-    var isGate = ev.type === "gate";
-    var e = el("div", "evt s-" + (isGate ? "gate" : stage));
-    e.appendChild(el("div", "marker"));
-    var ec = el("div", "ec");
-    var when = ev.ts != null ? fmtTs(ev.ts) + " · " : "";
-    ec.appendChild(el("div", "when", when + (ev.stage || "").toUpperCase()));
-    ec.appendChild(el("div", "head", headlineFor(ev)));
-    // UX-33: sanitize gate/feed prose so a backtick `lcars …` CLI command is
-    // never shown verbatim in the GUI feed.
-    // UX-37: the remaining prose is worker-authored Markdown — render it XSS-safe
-    // (sanitizeGateText runs FIRST, mdToHtml escapes before emitting any tag).
-    if (ev.detail || ev.text) {
-      var txt = el("div", "txt");
-      setMd(txt, sanitizeGateText(ev.text || ev.detail));
-      ec.appendChild(txt);
-    }
-    ec.appendChild(el("div", "bot", "⬡ posted by lcars-bot"));
-    e.appendChild(ec);
-    hist.appendChild(e);
+  // S115: group the ordered stream into collapsible per-stage / per-wave
+  // sections so a big mission reads at a glance. Completed sections collapse to
+  // one LCARS summary band; the active (last) section stays open; every event is
+  // still reachable (each band expands; an "expand all" reveals the lot). A
+  // small mission (a single section) renders effectively as the old flat feed —
+  // no band chrome is forced onto a mission with nothing to collapse.
+  var sections = groupActivityIntoSections(acts);
+  if (sections.length <= 1) {
+    // Passthrough: 1 (or 0) section → the flat timeline exactly as before.
+    acts.forEach(function (ev) { hist.appendChild(renderEvent(ev)); });
+    feed.appendChild(hist);
+    return feed;
+  }
+  // >1 section → collapsible bands + an expand-all affordance.
+  var bands = [];
+  var expandRow = el("div", "feed-expand");
+  var expandBtn = el("button", "feed-expand-btn", "⧉ Expand all");
+  var allOpen = false;
+  expandBtn.addEventListener("click", function () {
+    allOpen = !allOpen;
+    bands.forEach(function (b) { b.setOpen(allOpen); });
+    expandBtn.textContent = allOpen ? "⊟ Collapse to summary" : "⧉ Expand all";
+  });
+  expandRow.appendChild(expandBtn);
+  hist.appendChild(expandRow);
+  sections.forEach(function (sec) {
+    var band = sectionNode(sec);
+    bands.push(band);
+    hist.appendChild(band.node);
   });
   feed.appendChild(hist);
   return feed;
+}
+
+/* S115: render ONE activity event as the standard `.evt` timeline block. Factored
+   out of activityFeed so the SAME per-event rendering is reused by the flat
+   small-mission passthrough AND inside every expandable section — no event is
+   ever rendered by only one path, and every event maps to exactly one `.evt`
+   node (the "nothing lost" invariant). Behaviour is byte-identical to the old
+   inline loop. */
+function renderEvent(ev) {
+  var stage = normStage(ev.stage);
+  var isGate = ev.type === "gate";
+  var e = el("div", "evt s-" + (isGate ? "gate" : stage));
+  e.appendChild(el("div", "marker"));
+  var ec = el("div", "ec");
+  var when = ev.ts != null ? fmtTs(ev.ts) + " · " : "";
+  ec.appendChild(el("div", "when", when + (ev.stage || "").toUpperCase()));
+  ec.appendChild(el("div", "head", headlineFor(ev)));
+  // UX-33: sanitize gate/feed prose so a backtick `lcars …` CLI command is
+  // never shown verbatim in the GUI feed.
+  // UX-37: the remaining prose is worker-authored Markdown — render it XSS-safe
+  // (sanitizeGateText runs FIRST, mdToHtml escapes before emitting any tag).
+  if (ev.detail || ev.text) {
+    var txt = el("div", "txt");
+    setMd(txt, sanitizeGateText(ev.text || ev.detail));
+    ec.appendChild(txt);
+  }
+  ec.appendChild(el("div", "bot", "⬡ posted by lcars-bot"));
+  e.appendChild(ec);
+  return e;
+}
+
+/* S115: group an ORDERED activity stream (mi.activity — {ts,stage,type,detail,
+   text}) into collapsible sections, CLIENT-SIDE, off the stream alone (no board
+   shape / event changes). A `stage_start` opens a STAGE section; a `wave_start`
+   opens a WAVE section (numbered by its ordinal within the run). The Implement
+   stage_start is a bare header that the first wave ABSORBS, so it is never an
+   orphan band. Any other event joins the current section (a fresh stage-change
+   with no explicit boundary opens an implicit stage section). Nothing is ever
+   dropped: every input event lands in exactly one section, in order.
+
+   Each section carries derived summary data: ticketCount (ticket_start events),
+   greenCount / flaggedCount, attemptCount (ticket_attempt events when present,
+   else green+flagged outcomes), a `flagged` marker (any ticket flagged), the
+   first/last ts and their durationSec, and `active` (the LAST section — the
+   in-flight / most-recent one, which renders OPEN). */
+function groupActivityIntoSections(acts) {
+  var sections = [];
+  var cur = null;
+  var waveOrdinal = 0;
+
+  function tally(sec, ev) {
+    sec.events.push(ev);
+    var t = tsSeconds(ev.ts);
+    if (t != null) {
+      if (sec.startTs == null) sec.startTs = t;
+      sec.endTs = t;
+    }
+    switch (ev.type) {
+      case "ticket_start": sec.ticketCount++; break;
+      case "ticket_green": sec.greenCount++; sec._outcomes++; break;
+      case "ticket_flagged": sec.flaggedCount++; sec._outcomes++; sec.flagged = true; break;
+      case "ticket_attempt": sec._attempts++; break;
+    }
+  }
+  function open(kind, stage, wave) {
+    var sec = {
+      kind: kind, stage: normStage(stage), wave: wave || null,
+      events: [], startTs: null, endTs: null,
+      ticketCount: 0, greenCount: 0, flaggedCount: 0, flagged: false,
+      _attempts: 0, _outcomes: 0,
+    };
+    sections.push(sec);
+    cur = sec;
+    return sec;
+  }
+
+  (acts || []).forEach(function (ev) {
+    if (!ev || typeof ev !== "object") return;
+    var stage = normStage(ev.stage);
+    if (ev.type === "wave_start") {
+      waveOrdinal++;
+      // Absorb a bare stage header (only a stage_start, no tickets yet) of the
+      // same stage into this wave so the Implement stage_start isn't an orphan.
+      if (cur && cur.kind === "stage" && cur.stage === stage &&
+          cur.ticketCount === 0 &&
+          cur.events.every(function (e) { return e.type === "stage_start"; })) {
+        cur.kind = "wave";
+        cur.wave = waveOrdinal;
+        tally(cur, ev);
+        return;
+      }
+      open("wave", stage, waveOrdinal);
+      tally(cur, ev);
+      return;
+    }
+    if (ev.type === "stage_start") {
+      open("stage", stage);
+      tally(cur, ev);
+      return;
+    }
+    // Any other event: join the current section. Open an implicit stage section
+    // when none is open, or when the stage changes with no explicit boundary
+    // (never re-splitting an open wave, whose events share the implement stage).
+    if (!cur || (cur.kind !== "wave" && cur.stage !== stage)) {
+      open("stage", stage);
+    }
+    tally(cur, ev);
+  });
+
+  sections.forEach(function (sec, i) {
+    sec.active = (i === sections.length - 1);
+    sec.durationSec = (sec.startTs != null && sec.endTs != null)
+      ? Math.max(0, Math.round(sec.endTs - sec.startTs)) : null;
+    sec.attemptCount = sec._attempts > 0 ? sec._attempts : sec._outcomes;
+    delete sec._attempts; delete sec._outcomes;
+  });
+  return sections;
+}
+
+/* S115: ts → whole seconds (epoch). Mirrors fmtTs's tolerance of epoch-seconds,
+   epoch-millis and ISO strings; returns null for an unparseable/absent ts so a
+   section duration is simply omitted rather than NaN. */
+function tsSeconds(ts) {
+  if (ts == null) return null;
+  if (typeof ts === "number") return ts < 1e12 ? ts : ts / 1000;
+  var n = new Date(ts).getTime();
+  return isNaN(n) ? null : n / 1000;
+}
+
+/* S115: the LCARS section title — "WAVE n" for a wave band, the stage label
+   (uppercased) for a stage band. */
+function sectionTitle(sec) {
+  if (sec.kind === "wave") return "WAVE " + sec.wave;
+  return stageLabel(sec.stage).toUpperCase();
+}
+
+/* S115: the one-line Star-Trek-voiced summary shown on a collapsed band. Wave
+   bands read "N tickets · M attempts · <dur>"; stage bands read a stage-flavoured
+   line with the duration. Duration is omitted when unknown. Kept as the plain-
+   text fallback; the band now renders sectionSummaryChips (graphic stat chips)
+   with the SAME singular/plural + omit-when-zero rules. */
+function sectionSummary(sec) {
+  var bits = [];
+  if (sec.kind === "wave") {
+    bits.push(sec.ticketCount + " ticket" + (sec.ticketCount === 1 ? "" : "s"));
+    if (sec.attemptCount) {
+      bits.push(sec.attemptCount + " attempt" + (sec.attemptCount === 1 ? "" : "s"));
+    }
+  } else {
+    bits.push(sec.active ? "in progress" : "complete");
+  }
+  if (sec.durationSec != null && sec.durationSec > 0) bits.push(fmtDuration(sec.durationSec));
+  return bits.join(" · ");
+}
+
+/* VISUAL POLISH (S115 follow-up): the band summary rendered as discrete,
+   icon-led LCARS stat chips instead of one run-together line. Returns an ARRAY
+   of chip spans (each its own class) so sectionNode can drop them into the band.
+   Same omit/singular-plural rules as sectionSummary:
+     WAVE  → ⬢ tickets (teal) · ↻ attempts (amber, RED when any flagged) · ◷ dur
+     STAGE → in-progress (pulsing dot) / complete chip · ◷ dur
+   A chip whose value is 0/absent is omitted (no attempt chip at 0 attempts, no
+   duration chip when unknown) exactly as the text summary omits it. */
+function sectionSummaryChips(sec) {
+  var chips = [];
+  if (sec.kind === "wave") {
+    chips.push(el("span", "band-chip chip-tickets",
+      "⬢ " + sec.ticketCount + " ticket" + (sec.ticketCount === 1 ? "" : "s")));
+    if (sec.attemptCount) {
+      // RED tint when this wave carries a flagged ticket, amber otherwise.
+      chips.push(el("span",
+        "band-chip chip-attempts" + (sec.flaggedCount > 0 ? " flagged" : ""),
+        "↻ " + sec.attemptCount + " attempt" + (sec.attemptCount === 1 ? "" : "s")));
+    }
+  } else {
+    // STAGE: an in-progress (pulsing dot via CSS ::before) / complete chip.
+    chips.push(el("span", "band-chip chip-status" + (sec.active ? " active" : ""),
+      sec.active ? "in progress" : "✓ complete"));
+  }
+  if (sec.durationSec != null && sec.durationSec > 0) {
+    chips.push(el("span", "band-chip chip-duration", "◷ " + fmtDuration(sec.durationSec)));
+  }
+  return chips;
+}
+
+/* VISUAL POLISH: a thin wave-health micro-bar — a GREEN segment (greenCount) and
+   a RED segment (flaggedCount) sized proportionally to the wave's ticketCount,
+   the remainder left neutral (in-flight / not-yet-resolved). Returns the bar
+   node, or null for a stage section or a zero-ticket wave (no bar rendered,
+   matching where the chips degrade). Counts are clamped so a stray over-count
+   never overflows the bar. Decorative (aria-hidden). */
+function sectionHealthBar(sec) {
+  if (!sec || sec.kind !== "wave" || !sec.ticketCount || sec.ticketCount <= 0) return null;
+  var total = sec.ticketCount;
+  var green = Math.max(0, Math.min(sec.greenCount || 0, total));
+  var red = Math.max(0, Math.min(sec.flaggedCount || 0, total - green));
+  var bar = el("div", "band-health");
+  bar.setAttribute("aria-hidden", "true");
+  var g = el("span", "hb-green");
+  g.style.width = (green / total * 100) + "%";
+  var r = el("span", "hb-red");
+  r.style.width = (red / total * 100) + "%";
+  bar.appendChild(g);
+  bar.appendChild(r);
+  return bar;
+}
+
+/* S115: one collapsible section. Returns {node, setOpen(bool)}. The band header
+   (caret + title + summary + a ⚠ flag marker when any ticket flagged) toggles the
+   events on click; the ACTIVE section opens by default, completed sections
+   collapse to just the band. The events container always CONTAINS every event
+   (rendered via renderEvent) — collapsing only hides it, so nothing is ever
+   dropped or unreachable. */
+function sectionNode(sec) {
+  var wrap = el("div", "feed-section s-" + sec.stage + (sec.active ? " open" : ""));
+  var band = el("div", "feed-band");
+  var caret = el("span", "band-caret", sec.active ? "▾" : "▸");
+  band.appendChild(caret);
+  band.appendChild(el("span", "band-title", sectionTitle(sec)));
+  // VISUAL POLISH: discrete icon-led stat chips (+ the graphic FLAGGED badge)
+  // in one right-aligned cluster, replacing the run-together band-summary text.
+  var chipWrap = el("div", "band-chips");
+  sectionSummaryChips(sec).forEach(function (c) { chipWrap.appendChild(c); });
+  // Graphic FLAGGED badge: the red pill now reads as a badge — ⚠ glyph + a
+  // subtle pulse/glow (the animation is gated on prefers-reduced-motion in CSS).
+  if (sec.flagged) chipWrap.appendChild(el("span", "band-flag", "⚠ FLAGGED"));
+  band.appendChild(chipWrap);
+  // VISUAL POLISH: the wave-health micro-bar (green/red split), waves-with-
+  // tickets only — null (nothing appended) for stage / zero-ticket sections.
+  var health = sectionHealthBar(sec);
+  if (health) band.appendChild(health);
+  var events = el("div", "band-events");
+  sec.events.forEach(function (ev) { events.appendChild(renderEvent(ev)); });
+  events.hidden = !sec.active;
+
+  function setOpen(o) {
+    events.hidden = !o;
+    caret.textContent = o ? "▾" : "▸";
+    if (o) wrap.classList.add("open"); else wrap.classList.remove("open");
+  }
+  band.addEventListener("click", function () { setOpen(events.hidden); });
+
+  wrap.appendChild(band);
+  wrap.appendChild(events);
+  return { node: wrap, setOpen: setOpen };
+}
+
+/* S115: the mission-log PARENT's linked-bug list gets the same collapsed-band
+   idiom as the activity feed — resolved bugs fold into one LCARS summary band
+   (expandable, so nothing is lost), while any still-active bug stays open as its
+   own row. A short list (≤3, or nothing worth folding) renders flat exactly as
+   before — no chrome forced onto a parent with only a couple of bugs. */
+function linkedBugsSection(kids) {
+  var wrap = el("div", "log-preview-list");
+  function bugRow(c) {
+    var row = el("div", "crit");
+    row.appendChild(el("span", "pill go", "✓"));
+    row.appendChild(document.createTextNode(" " + (c.title || c.id || "Bug")));
+    return row;
+  }
+  function resolved(c) {
+    var s = normStage(c.stage);
+    return s === "done" || s === "verify" || !!c.done || !!c.resolved;
+  }
+  var doneKids = kids.filter(resolved);
+  var activeKids = kids.filter(function (c) { return !resolved(c); });
+  if (kids.length <= 3 || doneKids.length <= 1) {
+    kids.forEach(function (c) { wrap.appendChild(bugRow(c)); });
+    return wrap;
+  }
+  var band = el("div", "feed-section s-done");
+  var head = el("div", "feed-band");
+  var caret = el("span", "band-caret", "▸");
+  head.appendChild(caret);
+  head.appendChild(el("span", "band-title", "RESOLVED"));
+  head.appendChild(el("span", "band-summary",
+    doneKids.length + " logged bug" + (doneKids.length === 1 ? "" : "s") + " fixed"));
+  var list = el("div", "band-events"); list.hidden = true;
+  doneKids.forEach(function (c) { list.appendChild(bugRow(c)); });
+  head.addEventListener("click", function () {
+    list.hidden = !list.hidden;
+    caret.textContent = list.hidden ? "▸" : "▾";
+    if (list.hidden) band.classList.remove("open"); else band.classList.add("open");
+  });
+  band.appendChild(head);
+  band.appendChild(list);
+  wrap.appendChild(band);
+  activeKids.forEach(function (c) { wrap.appendChild(bugRow(c)); });
+  return wrap;
 }
 
 /* UX-18: the current/active stage = the latest stage_start event with no later
@@ -3076,10 +3405,55 @@ function workingNode(labelText) {
    adding the .lcars-running modifier for the running tint, plus a stage-aware
    themed label so a silent stage still reads as in motion. role=status / aria-
    live carry the state to assistive tech (not colour alone). */
-function runningPulse(label) {
-  var w = workingNode(RUNNING_COPY[label] || ("Underway · " + (label || "running") + "…"));
+function runningPulse(label, liveness) {
+  var base = RUNNING_COPY[label] || ("Underway · " + (label || "running") + "…");
+  // S114: a REAL liveness tail derived from the worker's output activity (present
+  // only while a live worker's sidecar exists). ABSENT ⇒ today's plain pulse,
+  // byte-identical DOM (class list + label text) to before this round.
+  var lv = livenessTail(liveness);
+  var w = workingNode(lv ? (base + " — " + lv.text) : base);
   w.className += " lcars-running";
+  if (lv) {
+    w.className += " " + lv.cls;
+    // A quiet/thinking-with-stale worker dampens the bars (still visible, calmer)
+    // so a genuinely silent stage no longer reads as "actively producing".
+    if (lv.quiescent) w.className += " lcars-quiescent";
+  }
   return w;
+}
+
+/* S114 — the LCARS-voice liveness tail for the running pulse. Maps the server's
+   liveness {state, quietSeconds} to a short uppercase phrase + a class the CSS
+   tints/dampens. `producing` stays lively ("WRITING OUTPUT"); `thinking` reads as
+   working with a subspace-quiet tail once it's been silent a beat; `quiet` reads
+   as idle-but-watched, escalating to "hang guard watching" past ~4m (the guard's
+   territory). Returns null when there's no liveness (caller renders the plain
+   pulse). */
+function fmtQuiet(s) {
+  s = (typeof s === "number" && s > 0) ? Math.floor(s) : 0;
+  if (s < 60) return s + "s";
+  var m = Math.floor(s / 60);
+  return m + "m";
+}
+function livenessTail(lv) {
+  if (!lv || typeof lv !== "object" || !lv.state) return null;
+  var q = (typeof lv.quietSeconds === "number") ? lv.quietSeconds : 0;
+  if (lv.state === "producing") {
+    return { text: "WRITING OUTPUT", cls: "live-producing", quiescent: false };
+  }
+  if (lv.state === "thinking") {
+    return {
+      text: "THINKING" + (q >= 3 ? " · SUBSPACE QUIET " + fmtQuiet(q) : ""),
+      cls: "live-thinking",
+      quiescent: q >= 8,
+    };
+  }
+  // quiet
+  return {
+    text: "SUBSPACE QUIET " + fmtQuiet(q) + (q >= 240 ? " — HANG GUARD WATCHING" : ""),
+    cls: "live-quiet",
+    quiescent: true,
+  };
 }
 
 /* Friendly Stage names for the running pulse copy lookup + fallback. */
@@ -3291,6 +3665,8 @@ function doReapprove(id, host, button, fromStatus) {
 function addPills(host, pills) {
   if (!pills) return;
   var c = pillNode(pills.cost, "cost"); if (c) host.appendChild(c);
+  // S113: ACTUAL usage pill in the detail pill row (present only verify/done + usage).
+  var a = pillNode(pills.actual, "actual"); if (a) host.appendChild(a);
   var r = pillNode(pills.reasoning); if (r) host.appendChild(r);
   var i = pillNode(pills.implementation); if (i) host.appendChild(i);
 }

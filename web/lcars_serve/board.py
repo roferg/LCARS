@@ -248,6 +248,84 @@ def pills_from_estimate(estimate):
     }
 
 
+# --- S113: ACTUAL usage (display-only, sibling of estimate.json) --------------
+# S112 appends one usage record per cold-worker spawn to `$MISSION_DIR/usage.json`
+# (JSONL). Each record carries a code-computed cost (`costUsd`/`cost`), a
+# `billingUnit` ("usd"|"premiumRequests" — the unit the card renders, matching
+# the estimate pill's unit rules), `premiumRequests` (copilot-legacy), token
+# counts, and a `source` ("session-transcript"|"session-state"|"unavailable").
+# This is DISPLAY-ONLY: we never mutate usage.json / estimate.json and never feed
+# actuals back into the estimator.
+
+
+def sum_usage(records):
+    """Sum usage.json (JSONL) records into per-mission totals.
+
+    MIRRORS run.sh `cmd_usage` (the `run.sh usage <mission>` subcommand) so the
+    pill and the CLI agree: sum `costUsd` (float), `premiumRequests` (int), and
+    input/output tokens (int). `unit` is the records' `billingUnit` (first one
+    seen; one mission == one engine, so they agree). ANY record marked
+    `source":"unavailable"` flags the totals `partial` — an honest "we could not
+    read every stage's usage" marker, never a silently-wrong total.
+
+    Returns None when there are NO records at all (no usage → no actual pill →
+    the no-usage render stays byte-identical). Crash-proof: malformed rows are
+    skipped, never raised.
+    """
+    rows = [r for r in (records or []) if isinstance(r, dict)]
+    if not rows:
+        return None
+    tot = {"records": 0, "inputTokens": 0, "outputTokens": 0,
+           "usd": 0.0, "premiumRequests": 0, "partial": False, "unit": None}
+    for d in rows:
+        tot["records"] += 1
+        for k in ("inputTokens", "outputTokens", "premiumRequests"):
+            try:
+                tot[k] += int(d.get(k, 0) or 0)
+            except (TypeError, ValueError):
+                pass
+        try:
+            tot["usd"] += float(d.get("costUsd", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+        if d.get("source") == "unavailable":
+            tot["partial"] = True
+        bu = d.get("billingUnit")
+        if bu and tot["unit"] is None:
+            tot["unit"] = bu
+    if tot["unit"] is None:
+        tot["unit"] = "usd"
+    return tot
+
+
+def actual_pill(totals):
+    """Render summed usage TOTALS (from sum_usage) as an ACTUAL cost pill.
+
+    Same billing-unit rules as `cost_pill` (reusing `_usd_label`/`_req_label`) so
+    the EST and ACTUAL pills read in the SAME unit: claude / copilot-usage → usd;
+    copilot-legacy → premiumRequests ("reqs"). The pill carries a single `value`
+    (actuals are a point, not a band). When any stage's usage was `unavailable`
+    the totals are `partial`, and the pill is marked honestly ("· partial" label
+    suffix + a `partial:true` flag the front end can style).
+
+    Returns None when `totals` is falsy / has no records (no actual to show).
+    """
+    if not isinstance(totals, dict) or not totals.get("records"):
+        return None
+    partial = bool(totals.get("partial"))
+    unit = totals.get("unit") or "usd"
+    if unit == "premiumRequests":
+        value = totals.get("premiumRequests") or 0
+        label = _req_label(value, None)
+    else:
+        unit = "usd"
+        value = totals.get("usd") or 0.0
+        label = _usd_label(value, None)
+    if partial:
+        label = label + " · partial"
+    return {"unit": unit, "value": value, "label": label, "partial": partial}
+
+
 # --- S70-B: per-stage model mix (Launch panel) ------------------------------
 # The estimator persists a per-stage model map in estimate.json under `models`,
 # keyed by the stage camelCase key, with a logical tier value ("opus"/"sonnet").

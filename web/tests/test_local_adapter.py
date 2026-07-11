@@ -491,6 +491,77 @@ class LocalAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "m-cop")
         self.assertEqual(m["pills"]["cost"]["unit"], "premiumRequests")
 
+    # ── S114: the REAL liveness signal (worker-liveness.json → card.liveness) ──
+    def _make_running(self, mid, stage="implement"):
+        """Plant a running mission: a live driver.lock (this test's own pid) makes
+        _driver_running() True, the gate liveness surfaces behind."""
+        d = fx.plant_simple(self.tmp, mid, stage=stage)
+        lock = os.path.join(d, "driver.lock")
+        os.makedirs(lock, exist_ok=True)
+        with open(os.path.join(lock, "pid"), "w") as fh:
+            fh.write(str(os.getpid()))   # alive → running True
+        return d
+
+    def _write_liveness(self, d, **kv):
+        with open(os.path.join(d, "worker-liveness.json"), "w") as fh:
+            fh.write(json.dumps(kv))
+
+    def test_liveness_surfaced_for_running_worker(self):
+        """A live worker's sidecar file surfaces as an additive `liveness` card
+        field, echoing state/stage/outputBytes."""
+        d = self._make_running("m-live")
+        now = time.time()
+        self._write_liveness(d, stage="implement", startedAt=now - 20,
+                             lastOutputTs=now - 1, outputBytes=4096,
+                             state="producing")
+        m = self._by_id(self._board(), "m-live")
+        self.assertIn("liveness", m)
+        self.assertEqual(m["liveness"]["state"], "producing")
+        self.assertEqual(m["liveness"]["stage"], "implement")
+        self.assertEqual(m["liveness"]["outputBytes"], 4096)
+
+    def test_liveness_quiet_seconds_computed_server_side(self):
+        """Staleness (quietSeconds = now - lastOutputTs) is computed SERVER-SIDE so
+        the client needn't carry its own clock."""
+        d = self._make_running("m-quiet")
+        now = time.time()
+        self._write_liveness(d, stage="implement", startedAt=now - 300,
+                             lastOutputTs=now - 40, outputBytes=10,
+                             state="quiet")
+        m = self._by_id(self._board(), "m-quiet")
+        self.assertEqual(m["liveness"]["state"], "quiet")
+        # server-computed, ~40s (allow a hair of test-runtime drift)
+        self.assertGreaterEqual(m["liveness"]["quietSeconds"], 39)
+        self.assertLessEqual(m["liveness"]["quietSeconds"], 43)
+
+    def test_liveness_absent_when_no_file_is_byte_identical(self):
+        """A RUNNING mission with NO sidecar file adds NO `liveness` key at all —
+        the card payload is byte-identical to before S114."""
+        self._make_running("m-nofile")
+        m = self._by_id(self._board(), "m-nofile")
+        self.assertNotIn("liveness", m)
+
+    def test_liveness_never_shown_when_not_running(self):
+        """A STALE sidecar left by a hard-crashed process (no live driver lock)
+        must NEVER show a pulse — a dead worker shows nothing (the tester's #1
+        hunt). No driver.lock ⇒ running False ⇒ no `liveness` key even though the
+        file is present on disk."""
+        d = fx.plant_simple(self.tmp, "m-stale", stage="implement")  # no lock
+        now = time.time()
+        self._write_liveness(d, stage="implement", startedAt=now - 99,
+                             lastOutputTs=now - 99, outputBytes=1,
+                             state="producing")
+        m = self._by_id(self._board(), "m-stale")
+        self.assertNotIn("liveness", m)
+
+    def test_liveness_malformed_state_ignored(self):
+        """A sidecar with an unknown/garbled state is ignored (no crash, no key)."""
+        d = self._make_running("m-bad-live")
+        self._write_liveness(d, stage="implement", lastOutputTs=1,
+                             state="haywire")
+        m = self._by_id(self._board(), "m-bad-live")
+        self.assertNotIn("liveness", m)
+
     # ── UX-15: Copilot usage cost pill shows GROSS, not net-$0 ──
     def test_copilot_usage_cost_pill_shows_gross_not_net_zero(self):
         fx.plant_simple(self.tmp, "m-usage", stage="plan",
@@ -503,6 +574,95 @@ class LocalAdapterTest(unittest.TestCase):
         # and its label must not read as a bare $0 when gross is non-zero.
         self.assertNotIn("$0.00", cost["label"])
         self.assertIn("3.50", cost["label"])
+
+    # ── S113: the ACTUAL usage pill (display-only, beside the estimate) ──
+    def test_actual_pill_present_at_verify_with_full_usage(self):
+        # a verify-stage mission WITH usage.json → pills.actual in usd, exact total.
+        fx.plant_simple(self.tmp, "m-ver", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-ver", fx.USAGE_CLAUDE)
+        m = self._by_id(self._board(), "m-ver")
+        actual = m["pills"]["actual"]
+        self.assertEqual(actual["unit"], "usd")
+        self.assertAlmostEqual(actual["value"], 0.15, places=6)
+        self.assertFalse(actual["partial"])
+        self.assertEqual(actual["label"], "~$0.15")
+        # the estimate pill is UNCHANGED beside it (both same unit).
+        self.assertEqual(m["pills"]["cost"]["unit"], "usd")
+
+    def test_actual_pill_present_at_done(self):
+        fx.plant_simple(self.tmp, "m-done", stage="done",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-done", fx.USAGE_CLAUDE)
+        # done missions live in the done column (out of the flat missions list).
+        m = None
+        for c in self._board()["columns"]["done"]:
+            if c["id"] == "m-done":
+                m = c
+        self.assertIsNotNone(m)
+        self.assertEqual(m["pills"]["actual"]["label"], "~$0.15")
+
+    def test_actual_pill_copilot_legacy_is_premium_requests(self):
+        fx.plant_simple(self.tmp, "m-cop", stage="verify",
+                        estimate=fx.ESTIMATE_COPILOT_LEGACY)
+        fx.plant_usage(self.tmp, "m-cop", fx.USAGE_COPILOT_LEGACY)
+        m = self._by_id(self._board(), "m-cop")
+        actual = m["pills"]["actual"]
+        self.assertEqual(actual["unit"], "premiumRequests")
+        self.assertEqual(actual["value"], 15)
+        self.assertEqual(actual["label"], "~15 reqs")
+        # same unit as its estimate pill (both premiumRequests).
+        self.assertEqual(m["pills"]["cost"]["unit"], "premiumRequests")
+
+    def test_actual_pill_partial_when_a_stage_unavailable(self):
+        fx.plant_simple(self.tmp, "m-part", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-part", fx.USAGE_PARTIAL)
+        m = self._by_id(self._board(), "m-part")
+        actual = m["pills"]["actual"]
+        self.assertTrue(actual["partial"])
+        self.assertAlmostEqual(actual["value"], 0.05, places=6)
+        self.assertIn("partial", actual["label"])
+        self.assertEqual(actual["label"], "~$0.05 · partial")
+
+    def test_no_usage_json_no_actual_key_byte_identical(self):
+        # THE key regression: a verify mission WITHOUT usage.json produces the
+        # EXACT same card payload as before this round — no pills.actual key.
+        fx.plant_simple(self.tmp, "m-nou", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        # baseline: capture the card, then confirm adding NOTHING keeps it equal.
+        m = self._by_id(self._board(), "m-nou")
+        self.assertNotIn("actual", m["pills"])
+        self.assertEqual(set(m["pills"].keys()),
+                         {"cost", "reasoning", "implementation"})
+
+    def test_no_actual_pill_before_verify_even_with_usage(self):
+        # usage present but the mission is still at plan → NO actual pill yet
+        # (only verify/done surface actuals).
+        fx.plant_simple(self.tmp, "m-early", stage="plan",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-early", fx.USAGE_CLAUDE)
+        m = self._by_id(self._board(), "m-early")
+        self.assertNotIn("actual", m["pills"])
+
+    def test_actual_pill_on_mission_log_child_card(self):
+        # a logged-bug CHILD is a mission — it flows through the same _card path,
+        # so at verify with usage it gets the actual pill for free.
+        fx.plant_simple(self.tmp, "m-child", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE, mtype="bug",
+                        parent_mission="m-parent", parent_issue=99)
+        fx.plant_usage(self.tmp, "m-child", fx.USAGE_CLAUDE)
+        m = self._by_id(self._board(), "m-child")
+        self.assertEqual(m["parentMission"], "m-parent")
+        self.assertEqual(m["pills"]["actual"]["label"], "~$0.15")
+
+    def test_actual_pill_in_mission_detail(self):
+        # the detail shape (mission(mid)) carries the same actual pill.
+        fx.plant_simple(self.tmp, "m-ver", stage="verify",
+                        estimate=fx.ESTIMATE_CLAUDE)
+        fx.plant_usage(self.tmp, "m-ver", fx.USAGE_CLAUDE)
+        detail = LocalAdapter(self.tmp).mission("m-ver")
+        self.assertEqual(detail["pills"]["actual"]["label"], "~$0.15")
 
     # ── S67 BUG-A: the `running` flag (live driver lock) ──
     def _lock(self, mid, pid):
