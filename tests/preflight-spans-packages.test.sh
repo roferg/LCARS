@@ -29,7 +29,7 @@ ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 
 LIB="$(mktemp)"; TMP="$(mktemp -d)"; trap 'rm -rf "$LIB" "$TMP"' EXIT
-for fn in rg_signature resolve_test_cmd red_gate_env_failure runner_preflight_env_failure repo_tests_elsewhere; do
+for fn in rg_signature resolve_test_cmd red_gate_env_failure runner_preflight_env_failure repo_tests_elsewhere package_of_relpath; do
   sed -n "/^$fn() {/,/^}/p" "$RUN_SH" >>"$LIB"
 done
 # shellcheck source=/dev/null
@@ -78,6 +78,24 @@ if repo_tests_elsewhere "packages/other"; then
 else
   bad "C. named-target sibling-runner path regressed"
 fi
+
+# --- package_of_relpath: the gate run-dir for a spanning ticket's placed tests ---
+# The gates (red / post-commit / full-suite) run FROM the package the tests are
+# PLACED in, not the empty target package. package_of_relpath walks up a placed
+# test path to its package so the non-hoisted-monorepo runner resolves there.
+REPO_ROOT="$(mk_repo)"; export REPO_ROOT
+mkdir -p "$REPO_ROOT/packages/editor/src/canvas"
+got="$(package_of_relpath "packages/editor/src/canvas/editorCanvas.test.ts")"
+[ "$got" = "packages/editor" ] \
+  && ok "D. a placed test deep in a package → its package root (packages/editor)" \
+  || bad "D. expected packages/editor, got '$got'"
+got="$(package_of_relpath "packages/editor")"
+[ "$got" = "packages/editor" ] \
+  && ok "D2. the package dir itself → itself" || bad "D2. expected packages/editor, got '$got'"
+got="$(package_of_relpath "README.md")"
+[ -z "$got" ] \
+  && ok "E. a root-level path in no sub-package → '' (run from repo root)" \
+  || bad "E. expected empty, got '$got'"
 
 echo
 printf 'preflight-spans-packages: %d passed, %d failed\n' "$pass" "$fail"

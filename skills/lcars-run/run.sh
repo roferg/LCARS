@@ -1532,6 +1532,36 @@ EOF
   printf '%s' "$1"
 }
 
+# --- package_of_relpath: the nearest ancestor dir of a path holding a package.json
+# The runner's discovery/config root for a given in-tree path. Walks UP from the
+# path (which may itself be a package dir) to the first ancestor with a package.json.
+# Echoes a repo-relative dir, or "" (repo root / none). PURE — filesystem read only.
+package_of_relpath() { # relpath  [root] → pkg dir rel, or ""
+  local d="$1" root="${2:-$REPO_ROOT}"
+  while [ -n "$d" ] && [ "$d" != "." ]; do
+    [ -f "$root/$d/package.json" ] && { printf '%s' "$d"; return 0; }
+    case "$d" in */*) d="${d%/*}" ;; *) d="." ;; esac
+  done
+  return 0
+}
+
+# --- ticket_tests_package: the package a ticket's PLACED tests live in ----------
+# S133: a package-SPANNING ticket has an empty ticket_target_package (no single
+# package), but its fail-first tests are PLACED co-located in a REAL package (where
+# their `./sibling` imports resolve). The gates must run FROM that package so the
+# runner resolves in a non-hoisted monorepo — the repo root has no hoisted runner.
+# Reads the ticket's test MIRROR (tickets/<id>/tests, whose relpaths equal the
+# in-tree relpaths) and walks up from the first test to its package. "" when none.
+ticket_tests_package() { # ticket  [root] → pkg dir of the ticket's tests, or ""
+  local t="$1" root="${2:-$REPO_ROOT}" td rel
+  td="$(ticket_dir "$t")/tests"
+  [ -d "$td" ] || return 0
+  rel="$( ( cd "$td" && find . \( -name '*.test.*' -o -name '*.spec.*' \) 2>/dev/null ) \
+            | sed 's#^\./##' | LC_ALL=C sort | head -1 )"
+  [ -n "$rel" ] || return 0
+  package_of_relpath "$rel" "$root"
+}
+
 # --- parse a manifest's `## Relevant files` bullet paths --------------------
 # Emits one path per line. Reads only the `## Relevant files` section, tolerates
 # `-`/`*` bullets, backtick-wrapped paths, a trailing ` — description`, and a
@@ -4030,7 +4060,16 @@ ROLLBACK_EOF
   # S99: the grounded-retry signal file + the RUN DIR the in-place gate cd's into
   # ($pkg_rel, computed once above, is the monorepo package root so config/discovery
   # resolves there); the tests run co-located in the tree, NOT copied into a quarantine.
-  local run_dir="$REPO_ROOT"; [ -n "$pkg_rel" ] && run_dir="$REPO_ROOT/$pkg_rel"
+  local run_dir="$REPO_ROOT"
+  if [ -n "$pkg_rel" ]; then run_dir="$REPO_ROOT/$pkg_rel"
+  else
+    # S133: a package-SPANNING ticket has empty pkg_rel, so run FROM the package the
+    # tests were PLACED in (scope_rel) — a non-hoisted monorepo has no runner at the
+    # repo root, but the placed tests' package does. Falls back to the root when the
+    # placed tests are not inside any package.
+    local _rgpkg; _rgpkg="$(package_of_relpath "$scope_rel")"
+    [ -n "$_rgpkg" ] && run_dir="$REPO_ROOT/$_rgpkg"
+  fi
   local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"; rm -f "$sig"
 
   # --- S111 3′: DECLARED TEST SETUP (evidence-gated) --------------------------
@@ -4274,7 +4313,13 @@ post_commit_gate() { # ticket
   # for discovery/config; an empty pkg_rel runs from the worktree root.
   local pkg_rel; pkg_rel="$(ticket_target_package "$t" "$wt")"
   local run_dir tdir rc=0 out="" rels scope tamper=0
-  run_dir="$wt"; [ -n "$pkg_rel" ] && run_dir="$wt/$pkg_rel"
+  run_dir="$wt"
+  if [ -n "$pkg_rel" ]; then run_dir="$wt/$pkg_rel"
+  else
+    # S133: package-spanning ticket → run from the package its tests live in.
+    local _pcpkg; _pcpkg="$(ticket_tests_package "$t" "$wt")"
+    [ -n "$_pcpkg" ] && run_dir="$wt/$_pcpkg"
+  fi
   tdir="$(ticket_dir "$t")/tests"
   if [ -d "$tdir" ]; then
     if tests_committed_in_tree "$t" "$wt"; then
@@ -4664,7 +4709,13 @@ retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
     # run-tree root. Checked against $run_dir so every caller (full-suite gate
     # worktree, reconcile merge worktree) stays symmetric.
     pkg_rel="$(ticket_target_package "$id" "$run_dir")"
-    trun="$run_dir"; [ -n "$pkg_rel" ] && trun="$run_dir/$pkg_rel"
+    trun="$run_dir"
+    if [ -n "$pkg_rel" ]; then trun="$run_dir/$pkg_rel"
+    else
+      # S133: package-spanning ticket → re-run from the package its tests live in.
+      local _fspkg; _fspkg="$(ticket_tests_package "$id" "$run_dir")"
+      [ -n "$_fspkg" ] && trun="$run_dir/$_fspkg"
+    fi
     rc=0
     # S102 (tests ride along, part 2): the tests are COMMITTED, so in the common path
     # they are ALREADY present in this clean tree. PRE-MERGE CROSS-BOUNDARY IMMUTABILITY:
