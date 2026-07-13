@@ -7970,6 +7970,20 @@ cmd_implement_ticket() {
   # transient provisioning miss then clears itself instead of stranding a human
   # at an un-answerable env gate. Escalate ONLY if the runner still cannot launch.
   if ! preflight_runner_or_heal "$pf_dir"; then
+    # S133 (span-packages false negative, caught live on bug lcars-20260713-003):
+    # a ticket whose relevant files span MORE THAN ONE package has NO single target
+    # package, so ticket_target_package returns "" and the preflight probed the REPO
+    # ROOT. In a non-hoisted monorepo (pnpm keeps vitest in each package's
+    # node_modules, NOT the root) the root has no runner → a FALSE "cannot test",
+    # even though the ticket's test WILL be placed and run in a real package that
+    # can. So: when the target package is empty (root-probed) AND some package can
+    # run tests, DON'T park — proceed and let the red gate judge in the package
+    # where the test lands. Only when NOTHING can run tests anywhere do we escalate.
+    if [ -z "$pf_pkg" ] && repo_tests_elsewhere ""; then
+      emit_event preflight_spans_packages implement \
+        "$TICKET spans packages (no single target package) and the repo root has no hoisted runner, but a package can run tests — proceeding; the red gate judges where the test lands" \
+        "ticket=$TICKET"
+    else
     local pf_out="$PREFLIGHT_OUT" pf_root_alive=0
     if [ -n "$pf_pkg" ] && repo_tests_elsewhere "$pf_pkg"; then
       pf_root_alive=1
@@ -7998,6 +8012,7 @@ $(printf '%s' "$pf_out" | tail -10)"
 Command probed: $(resolve_test_cmd) (from: $pf_dir)
 Runner said:
 $(printf '%s' "$pf_out" | tail -10)"
+    fi
     fi
   fi
 
