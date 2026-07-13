@@ -50,11 +50,15 @@ if [ "${FAKE_MODE:-}" = "runner-missing" ]; then echo "vitest: command not found
 red=0
 for tf in $files; do
   td="$(dirname "$tf")"
-  spec="$(grep -hoE "from[[:space:]]*['\"][^'\"]+['\"]" "$tf" | head -1 | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/")"
-  [ -n "$spec" ] || spec="$(grep -hoE "import[[:space:]]+['\"][^'\"]+['\"]" "$tf" | head -1 | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/")"
-  mod="$td/${spec#./}.ts"
-  if [ ! -f "$mod" ]; then echo "Failed to resolve import \"$spec\" Does the file exist?"; exit 1; fi
-  if ! grep -q REAL_IMPL "$mod"; then red=1; fi
+  # check EVERY relative import (a single test file can import across dirs) —
+  # resolve each RELATIVE to the test's OWN dir, letting the filesystem collapse
+  # ./ and ../ so it only passes when the test runs IN PLACE.
+  specs="$(grep -hoE "(from|import|require\()[[:space:]]*['\"][^'\"]+['\"]" "$tf" | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | grep -E '^[.]')"
+  for spec in $specs; do
+    mod="$td/$spec.ts"
+    if [ ! -f "$mod" ]; then echo "Failed to resolve import \"$spec\" Does the file exist?"; exit 1; fi
+    if ! grep -q REAL_IMPL "$mod"; then red=1; fi
+  done
 done
 if [ "$red" -ne 0 ]; then echo "AssertionError: expected value to be defined, got undefined"; exit 1; fi
 exit 0
@@ -182,6 +186,52 @@ run_save "$repo" "$tdir" "$sdir"
 { [ ! -f "$repo/src/a/foo.test.ts" ] && [ ! -f "$repo/src/b/bar.test.ts" ] && [ ! -f "$repo/src/a/foo.ts" ]; } \
   && ok "rejection → ALL placed tests + stubs rolled back across all dirs (no trace)" \
   || bad "rejection rollback (foo.test=$([ -f "$repo/src/a/foo.test.ts" ] && echo Y) bar.test=$([ -f "$repo/src/b/bar.test.ts" ] && echo Y) stub=$([ -f "$repo/src/a/foo.ts" ] && echo Y))"
+
+# --- case 5 (S133): a SINGLE test file importing sources in TWO dirs -----------
+# The live t-002 shape: one test imports `./a/foo` (src/a) AND `./b/bar` (src/b),
+# spelled as DESCENDANTS of their common ancestor. The harness must anchor the ONE
+# file at that ancestor (src/) so BOTH `./descendant` imports resolve in place —
+# NOT co-locate it next to the first import's source (which breaks the second).
+repo="$(new_mission)"; tdir="$repo/_t"
+mkdir -p "$tdir"
+cat > "$tdir/combined.test.ts" <<'TS'
+import { foo } from './a/foo';
+import { bar } from './b/bar';
+test('combined', () => { expect(foo() + bar()).toBe(3); });
+TS
+mkdir -p "$repo/src/a" "$repo/src/b"
+printf 'export function foo(){}\n' > "$repo/src/a/foo.ts"   # exists, no REAL_IMPL → reds on assertion
+printf 'export function bar(){}\n' > "$repo/src/b/bar.ts"
+run_save "$repo" "$tdir" ""
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "tests saved"; } \
+  && ok "single file importing two dirs → anchored at common ancestor, both resolve → accepted" \
+  || bad "single-file multi-dir accepted (rc=$RC: $OUT)"
+[ -f "$repo/src/combined.test.ts" ] \
+  && ok "single multi-dir file placed at the common ancestor (src/combined.test.ts)" \
+  || bad "placed at src/ (a=$([ -f "$repo/src/a/combined.test.ts" ] && echo Y) b=$([ -f "$repo/src/b/combined.test.ts" ] && echo Y) src=$([ -f "$repo/src/combined.test.ts" ] && echo Y))"
+
+# --- case 6 (S133 regression): a ./sibling + a ../reach-out must NOT hoist ------
+# The test imports its co-located `./editorCanvas` (src/canvas) AND reaches out to
+# `../utils/isDefaultViewport` (src/utils). The reach-out must be TRUSTED, not
+# counted for anchoring — so the file stays co-located at src/canvas (hoisting it
+# to the common ancestor src/ would break the `./editorCanvas` import).
+repo="$(new_mission)"; tdir="$repo/_t"
+mkdir -p "$tdir"
+cat > "$tdir/editorCanvas.test.ts" <<'TS'
+import { render } from './editorCanvas';
+import { isDefaultViewport } from '../utils/isDefaultViewport';
+test('canvas', () => { expect(render()).toBe(1); });
+TS
+mkdir -p "$repo/src/canvas" "$repo/src/utils"
+printf 'export function render(){}\n' > "$repo/src/canvas/editorCanvas.ts"
+printf 'export function isDefaultViewport(){}\n' > "$repo/src/utils/isDefaultViewport.ts"
+run_save "$repo" "$tdir" ""
+[ -f "$repo/src/canvas/editorCanvas.test.ts" ] \
+  && ok "./sibling + ../reach-out → placed at the sibling dir (src/canvas), NOT hoisted" \
+  || bad "placed at src/canvas ($([ -f "$repo/src/editorCanvas.test.ts" ] && echo at-src-root))"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "tests saved"; } \
+  && ok "reach-out case resolves in place + reds → accepted" \
+  || bad "reach-out accepted (rc=$RC: $OUT)"
 
 echo
 printf 'multi-dir-tests: %d passed, %d failed\n' "$PASS" "$FAIL"

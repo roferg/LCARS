@@ -1755,6 +1755,78 @@ common_ancestor_dir() { # <newline relpaths> → common dir ("" = root)
     END { if (seen) print common }'
 }
 
+# --- import_specs_in: every RELATIVE import specifier a test file names --------
+# One `./…` / `../…` specifier per line (from/import/require forms). Non-relative
+# (bare package) imports are dropped. PURE — filesystem read only.
+import_specs_in() { # test-file → one relative specifier per line
+  grep -hoE "(from|import|require\()[[:space:]]*['\"][^'\"]+['\"]" "$1" 2>/dev/null \
+    | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | grep -E '^[.]'
+}
+
+# --- anchor_from_pairs: the co-located source dir a file's imports AGREE on -----
+# The S133 multi-dir fix. A single test file can import sources that live in
+# DIFFERENT dirs (e.g. `./App` in src/, `./components/MapCanvas/MapCanvas` in
+# src/components/MapCanvas/). A bare co-located placement (next to the FIRST
+# import's source) then breaks every OTHER `./sibling` import → the red gate
+# rejects on resolution failure → the ticket cap-exhausts. This derives the ONE
+# dir the test must sit in so EVERY same-level import resolves in place, by
+# RESPECTING each import's spelling (not just the source locations):
+#   • `ua` is the convention's anchoring up-count — co-located: 0 (`./descendant`);
+#     __tests__: 1 (`../descendant`, one `..` to exit the `__tests__/` dir).
+#   • Reads `spec<TAB>source` pairs on stdin. Only specs with EXACTLY `ua` leading
+#     `../` anchor the test; a spec that reaches FURTHER out (more `..`) is trusted
+#     and IGNORED (so a co-located `./sibling` + a `../otherdir/util` still anchors
+#     on the sibling's dir — no regression).
+#   • Each anchoring spec pins a dir = its source dir with its own descendant
+#     dir-part removed. If every anchoring spec agrees → echo that dir (may be ""
+#     = package/repo root), exit 0. No anchoring spec, or a conflict → exit 1 (the
+#     caller falls back to the legacy primary-sibling placement).
+anchor_from_pairs() { # ua   (reads spec<TAB>src lines on stdin) → anchor dir, exit 1 if none/conflict
+  awk -F'\t' -v ua="$1" '
+    function dirname(p,   d){ d=p; if (sub(/\/[^\/]*$/,"",d)) return d; return "" }
+    {
+      spec=$1; src=$2
+      if (spec=="" || src=="") next
+      sub(/^\.\//,"",spec)                         # strip a leading ./
+      ups=0
+      while (spec ~ /^\.\.\//){ sub(/^\.\.\//,"",spec); ups++ }
+      if (ups != ua+0) next                        # only same-level imports anchor
+      td=dirname(spec)                             # the descendant dir-part of the spec
+      pdir=dirname(src)
+      if (td==""){ anchor=pdir }
+      else if (pdir==td){ anchor="" }
+      else { want="/" td; L=length(pdir); W=length(want)
+             if (L>W && substr(pdir,L-W+1)==want) anchor=substr(pdir,1,L-W)
+             else next }                           # spelling vs real source dir mismatch
+      if (!seen){ common=anchor; seen=1; ok=1 }
+      else if (anchor!=common){ ok=0 }
+    }
+    END{ if (seen && ok){ print common; exit 0 } else exit 1 }'
+}
+
+# --- test_file_anchor_dir: resolve a file'\''s imports, then anchor_from_pairs ----
+# Impure wrapper (reads the manifest / repo via resolve_sibling_src). Echoes the
+# co-located source dir the test must sit in (per the file'\''s own import spelling),
+# exit 1 when no anchor is determinable. `tests` (top-level) convention is NOT
+# anchored here — its imports are package-root-relative, so the caller keeps the
+# legacy placement for it.
+test_file_anchor_dir() { # file convention ticket fallback pkg prune → anchor srcdir, exit 1
+  local f="$1" conv="$2" tid="$3" fb="$4" pkg="$5" prune="$6" ua spec sp src
+  case "$conv" in __tests__) ua=1 ;; tests) return 1 ;; *) ua=0 ;; esac
+  {
+    while IFS= read -r spec; do
+      [ -n "$spec" ] || continue
+      sp="${spec##*/}"; case "$sp" in *.*) sp="${sp%.*}" ;; esac
+      [ -n "$sp" ] || continue
+      src="$(resolve_sibling_src "$sp" "$tid" "$fb" "$pkg" "$prune")"
+      [ -n "$src" ] || continue
+      printf '%s\t%s\n' "$spec" "$src"
+    done <<EOF
+$(import_specs_in "$f")
+EOF
+  } | anchor_from_pairs "$ua"
+}
+
 # === Plan Review: SOFT under-slice signal (S100) ============================
 # Plan Review kept passing a MEGA-ticket that hid a whole surface behind a simple
 # title (the "migrate all the chrome to tokens" ticket that silently left App.tsx
@@ -3286,11 +3358,11 @@ $(printf '%s' "$out" | tail -20)"
         # default (groutwork); __tests__/ and top-level tests/ get their own prefix.
         local unres="" hint="" imp_form stub_form
         case "$RED_GATE_CONVENTION" in
-          __tests__)  imp_form="a sibling import ONE level up, \`../<sibling>\` (the source sits in the dir ABOVE your \`__tests__/\` test)"
+          __tests__)  imp_form="a relative import from your \`__tests__/\` dir — for a source in the SAME module dir, one level up (\`../<sibling>\`); for a source in a DIFFERENT dir, the harness anchors your \`__tests__/\` at the deepest COMMON ANCESTOR of every source the file imports, so spell each import as a descendant from there, e.g. \`../<subdir>/<name>\`"
                       stub_form="\`stubs/<sibling>.ts\` (the harness places it beside the source, one level up from your test)" ;;
           tests)      imp_form="the source's package-root-relative path, e.g. \`../src/<dir>/<file>\` (your test lives in a top-level \`tests/\` dir)"
                       stub_form="\`stubs/<package-root>/src/<dir>/<file>.ts\` (the mirrored repo path)" ;;
-          *)          imp_form="a CO-LOCATED \`./<sibling>\` import, e.g. \`import { area } from './utils'\` (your test sits NEXT TO the source)"
+          *)          imp_form="a relative import that resolves from where the harness co-locates your test — for a sibling in the SAME dir a bare \`./<name>\` (e.g. \`import { area } from './utils'\`); for a source in a DIFFERENT dir the harness anchors your test at the deepest COMMON ANCESTOR of every source the file imports, so spell each import as a \`./<subdir>/<name>\` DESCENDANT from that ancestor (e.g. \`./components/MapCanvas/MapCanvas\`), NEVER a bare \`./<name>\` for a nested source"
                       stub_form="\`stubs/<sibling>.ts\` (the harness places it beside your test)" ;;
         esac
         local unres_lines; unres_lines="$(unresolved_imports_in_output "$out")"
@@ -3301,7 +3373,7 @@ $(printf '%s' "$out" | tail -20)"
           local triage; triage="$(unresolved_specifier_triage "$REPO_ROOT" "$unres_lines")"
           hint="SPECIFICALLY, these import(s) did not resolve. The harness checked the repo for EACH one — FOLLOW ITS VERDICT below, do not re-guess:
 $triage
-For a brand-new module the stub goes under stubs/ — $stub_form. For an existing module re-author the import as $imp_form. A single unresolved import fails the whole suite to load. "
+For a brand-new module the stub goes under stubs/ — $stub_form. For an existing module re-author the import as $imp_form. MULTI-DIR: if THIS test imports sources from more than one directory, a single co-located test cannot reach them all with bare \`./<name>\` imports — the harness places it at the deepest COMMON ANCESTOR of every source it imports, so spell EVERY import as a descendant path from that ancestor (and keep them consistent so they agree on one anchor). A single unresolved import fails the whole suite to load. "
         fi
         reason="RED GATE — the suite did NOT fail on an assertion: it could not RESOLVE its import of the code under test (a module-resolution / load failure), so the test file never ran. The harness places your test IN THE REPO at its own test convention ($RED_GATE_CONVENTION) and runs it IN PLACE, right where the test sits — so import the code under test via a path that resolves FROM THERE: $imp_form. Re-author the import accordingly so the test LOADS, then FAILS on its assertions until the behaviour exists. ${hint}Command run: $cmd. Runner output (run):
 $(printf '%s' "$out" | tail -20)"
@@ -3794,13 +3866,22 @@ cmd_impl_save_tests() {
   # relpath at the repo convention. A SINGLE-FILE / single-dir ticket is byte-identical
   # to before (all files map to one dir).
   rm -rf "$tdir"; mkdir -p "$tdir"
-  local INTREE_RELS="" f bn stem src_f canon_f destdir_f reldir rel
+  local INTREE_RELS="" f bn stem src_f canon_f destdir_f reldir rel anchor_src
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     bn="${f##*/}"
-    stem="$(test_primary_sibling "$f")"
-    src_f="$(resolve_sibling_src "$stem" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"
-    canon_f="$(test_path_for "$convention" "$src_f")"
+    # S133 (multi-dir single file): anchor the test at the source dir ALL its own
+    # `./descendant` imports agree on (a `../reach-out` is trusted, not counted), so
+    # a file importing across dirs resolves in place. When no anchor is derivable
+    # (or under the top-level `tests/` convention) fall back to the primary-sibling
+    # placement — byte-identical to the pre-S133 single-dir behaviour.
+    if anchor_src="$(test_file_anchor_dir "$f" "$convention" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"; then
+      canon_f="$(test_path_for "$convention" "${anchor_src:+$anchor_src/}__anchor.ts")"
+    else
+      stem="$(test_primary_sibling "$f")"
+      src_f="$(resolve_sibling_src "$stem" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"
+      canon_f="$(test_path_for "$convention" "$src_f")"
+    fi
     destdir_f="${canon_f%/*}"; [ "$destdir_f" = "$canon_f" ] && destdir_f=""
     rel="${destdir_f:+$destdir_f/}$bn"
     reldir="${rel%/*}"; [ "$reldir" = "$rel" ] && reldir=""
