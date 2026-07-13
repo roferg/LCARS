@@ -3007,6 +3007,49 @@ runner_preflight_env_failure() { # run-dir → 0 iff the runner cannot launch th
   red_gate_env_failure "$PREFLIGHT_OUT"
 }
 
+# --- worktree_setup_configured: is a worktreeSetupCommand declared? -----------
+# 0 iff the captain declared a worktree provisioning command (env override or the
+# repo config). Mirrors provision_worktree's own resolution. Used to decide whether
+# a dead-runner preflight can self-heal by RE-APPLYING that declared command.
+worktree_setup_configured() { # → 0 if a worktreeSetupCommand is set, else 1
+  [ -n "${LCARS_WORKTREE_SETUP_CMD:-}" ] && return 0
+  [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 1
+  local c; c="$(json_str "$LCARS_CFG" worktreeSetupCommand)"
+  case "$c" in ''|null) return 1 ;; *) return 0 ;; esac
+}
+
+# --- preflight_runner_or_heal: probe the runner, SELF-HEAL once before failing --
+# The S133 env self-heal. A configured `worktreeSetupCommand` that silently didn't
+# take (a partial `ln`, a transient miss — the loop returns 0 either way, so
+# provision_worktree emits no failure) leaves the runner DEAD in the worktree, and
+# the ticket would park at an un-answerable human gate (answering can't provision a
+# runner, so it re-parks). Before escalating: if this is a worktree build with a
+# declared setup command, RE-APPLY that command ONCE and re-probe. A transient miss
+# then clears itself; only a runner that STILL cannot launch after honestly
+# re-applying the captain's OWN provisioning escalates (a real env decision). This
+# INVENTS nothing — it re-runs only the declared command. Sets PREFLIGHT_HEALED to
+# `ok` (launched first try) or `healed` (recovered by the re-apply). Returns 0 when
+# the runner can launch (caller proceeds), 1 when it still cannot (caller escalates).
+preflight_runner_or_heal() { # run-dir → 0 runner-ok, 1 still-dead
+  local pf_dir="$1"
+  PREFLIGHT_HEALED=ok
+  runner_preflight_env_failure "$pf_dir" || return 0     # runner launches → proceed
+  # A worktree build with a declared setup is the only self-healable case.
+  [ -n "${LCARS_TICKET_WORKTREE:-}" ] && worktree_setup_configured || return 1
+  emit_event worktree_reprovision implement \
+    "the test runner could not launch at preflight — re-applying worktreeSetupCommand for ${TICKET:-?} before escalating" \
+    "ticket=${TICKET:-?}"
+  provision_worktree "$LCARS_TICKET_WORKTREE" || :
+  if runner_preflight_env_failure "$pf_dir"; then
+    return 1                                             # re-apply did not cure it → escalate
+  fi
+  PREFLIGHT_HEALED=healed
+  emit_event worktree_reprovision_ok implement \
+    "worktreeSetupCommand re-applied — the runner now launches for ${TICKET:-?}; continuing (no human gate needed)" \
+    "ticket=${TICKET:-?}"
+  return 0
+}
+
 # Can this repo demonstrably run tests OUTSIDE the target package? The oracle
 # that decides invite-vs-park for a dead-runner package. Two arms, both cheap:
 #   1. the repo-root probe launches a runner (single-package repos, hoisted bins)
@@ -7909,7 +7952,11 @@ cmd_implement_ticket() {
   local pf_pkg pf_dir
   pf_pkg="$(ticket_target_package "$TICKET")"
   pf_dir="$REPO_ROOT${pf_pkg:+/$pf_pkg}"
-  if runner_preflight_env_failure "$pf_dir"; then
+  # S133 SELF-HEAL: before escalating a dead runner to a human, re-apply the
+  # captain's OWN declared worktreeSetupCommand ONCE and re-probe — a silent /
+  # transient provisioning miss then clears itself instead of stranding a human
+  # at an un-answerable env gate. Escalate ONLY if the runner still cannot launch.
+  if ! preflight_runner_or_heal "$pf_dir"; then
     local pf_out="$PREFLIGHT_OUT" pf_root_alive=0
     if [ -n "$pf_pkg" ] && repo_tests_elsewhere "$pf_pkg"; then
       pf_root_alive=1
@@ -9989,6 +10036,20 @@ case "$SUB" in
     __pwt="$(make_ticket_worktree "$MISSION_DIR/wt-test" "${RC_BRANCH:-$(json_str "$STATE" branch)}" "${TICKET:-all}")" \
       || { printf 'WT-ERR: make_ticket_worktree failed loud (no silent in-tree fallback)\n'; exit 1; }
     printf 'WT=%s\n' "$__pwt"
+    exit 0 ;;
+  # S133 test hook: exercise the preflight runner SELF-HEAL. Probes the runner in
+  # the given dir (POSARG, default $REPO_ROOT); if dead and this is a worktree build
+  # (LCARS_TICKET_WORKTREE) with a declared worktreeSetupCommand, re-applies it ONCE
+  # and re-probes. Prints PREFLIGHT=ok|healed|dead. testCommand + setup command are
+  # env-injectable ($LCARS_TEST_CMD / $LCARS_WORKTREE_SETUP_CMD) so a test drives it
+  # with ZERO real spend. Always exits 0.
+  preflight-heal-test)
+    locate_mission "$MISSION_ID"
+    if preflight_runner_or_heal "${POSARG:-$REPO_ROOT}"; then
+      printf 'PREFLIGHT=%s\n' "${PREFLIGHT_HEALED:-ok}"
+    else
+      printf 'PREFLIGHT=dead\n'
+    fi
     exit 0 ;;
   # S111 test hook: drive the REAL replay_ticket_commit (mutex + landing worktree)
   # for one commit object. Positional arg = the commit sha; --ticket defaults
