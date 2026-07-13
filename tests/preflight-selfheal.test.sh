@@ -44,7 +44,8 @@ JSON
 # heal <repo> <posarg-dir> <env...> -> sets OUT
 heal() { # repo  dir  extra-env
   local repo="$1" dir="$2" env="$3"
-  OUT="$( cd "$repo" && eval "$env" LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+  # LCARS_PREFLIGHT_HEAL_BACKOFF=0 → the retry loop does not sleep (instant test).
+  OUT="$( cd "$repo" && eval "$env" LCARS_PREFLIGHT_HEAL_BACKOFF=0 LCARS_GH_BIN=true LCARS_GIT_BIN=git \
             bash "$SCRIPT" preflight-heal-test --mission test-001 "$dir" 2>&1 )"
 }
 
@@ -99,6 +100,23 @@ printf '%s' "$OUT" | grep -q "PREFLIGHT=dead" \
 [ "$(evjson worktree_reprovision "$repo")" -ge 1 ] \
   && ok "D. heal was ATTEMPTED before escalating (worktree_reprovision breadcrumb)" \
   || bad "D. heal attempted (no worktree_reprovision breadcrumb)"
+
+# --- E: TRANSIENT race — dead on the 1st re-apply, cured on the 2nd → healed ---
+# The live lcars-20260713-003 failure: provisioning momentarily failed (a worktree-
+# teardown race) and a single immediate re-apply was too fast to outlast it. The
+# setup command here "succeeds" only on its 2nd invocation (mimicking the race
+# settling); the retry-with-backoff must ride it out and heal, NOT escalate.
+repo="$(new_mission)"; wt="$repo/wt"; mkdir -p "$wt"
+heal "$repo" "$wt" \
+  'LCARS_TICKET_WORKTREE='"$wt"' '\
+'LCARS_WORKTREE_SETUP_CMD='\''n=$(cat .n 2>/dev/null || echo 0); n=$((n+1)); echo $n >.n; [ $n -ge 2 ] && touch .healed; true'\'' '\
+'LCARS_TEST_CMD='\''[ -f .healed ] && exit 0 || { printf "sh: vitest: command not found\n" >&2; exit 127; }'\'''
+printf '%s' "$OUT" | grep -q "PREFLIGHT=healed" \
+  && ok "E. transient race (cured on 2nd re-apply) → PREFLIGHT=healed (backoff-retry rides it out)" \
+  || bad "E. expected PREFLIGHT=healed via retry (got: $OUT)"
+[ "$(evjson worktree_reprovision "$repo")" -ge 2 ] \
+  && ok "E. it actually RETRIED (>=2 worktree_reprovision attempts before healing)" \
+  || bad "E. expected >=2 reprovision attempts (got $(evjson worktree_reprovision "$repo"))"
 
 echo
 printf 'preflight-selfheal: %d passed, %d failed\n' "$PASS" "$FAIL"

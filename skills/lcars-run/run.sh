@@ -3036,18 +3036,31 @@ preflight_runner_or_heal() { # run-dir → 0 runner-ok, 1 still-dead
   runner_preflight_env_failure "$pf_dir" || return 0     # runner launches → proceed
   # A worktree build with a declared setup is the only self-healable case.
   [ -n "${LCARS_TICKET_WORKTREE:-}" ] && worktree_setup_configured || return 1
-  emit_event worktree_reprovision implement \
-    "the test runner could not launch at preflight — re-applying worktreeSetupCommand for ${TICKET:-?} before escalating" \
-    "ticket=${TICKET:-?}"
-  provision_worktree "$LCARS_TICKET_WORKTREE" || :
-  if runner_preflight_env_failure "$pf_dir"; then
-    return 1                                             # re-apply did not cure it → escalate
-  fi
-  PREFLIGHT_HEALED=healed
-  emit_event worktree_reprovision_ok implement \
-    "worktreeSetupCommand re-applied — the runner now launches for ${TICKET:-?}; continuing (no human gate needed)" \
-    "ticket=${TICKET:-?}"
-  return 0
+  # RETRY WITH BACKOFF: the dead runner can be a TRANSIENT worktree-lifecycle race
+  # — a prior ticket's worktree being torn down as this one provisions momentarily
+  # leaves node_modules half-linked (observed live: bug lcars-20260713-003
+  # re-parked when its provisioning ran ~10s behind the previous bug's teardown,
+  # while it provisions cleanly in isolation). A single immediate re-apply is too
+  # fast to outlast that window, so re-apply the declared command a few times with
+  # a short backoff, re-probing each round. Still re-runs ONLY the captain's own
+  # command; escalate only if the runner is STILL dead after the last attempt.
+  local attempts="${LCARS_PREFLIGHT_HEAL_ATTEMPTS:-3}" backoff="${LCARS_PREFLIGHT_HEAL_BACKOFF:-3}" i=1
+  while [ "$i" -le "$attempts" ]; do
+    emit_event worktree_reprovision implement \
+      "the test runner could not launch at preflight — re-applying worktreeSetupCommand for ${TICKET:-?} (attempt $i/$attempts) before escalating" \
+      "ticket=${TICKET:-?}" "attempt=$i"
+    provision_worktree "$LCARS_TICKET_WORKTREE" || :
+    if ! runner_preflight_env_failure "$pf_dir"; then
+      PREFLIGHT_HEALED=healed
+      emit_event worktree_reprovision_ok implement \
+        "worktreeSetupCommand re-applied — the runner now launches for ${TICKET:-?} (attempt $i); continuing (no human gate needed)" \
+        "ticket=${TICKET:-?}" "attempt=$i"
+      return 0
+    fi
+    [ "$i" -lt "$attempts" ] && [ "$backoff" -gt 0 ] && sleep "$backoff"
+    i=$((i + 1))
+  done
+  return 1                                               # still dead after every re-apply → escalate
 }
 
 # Can this repo demonstrably run tests OUTSIDE the target package? The oracle
