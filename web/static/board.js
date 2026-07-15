@@ -1653,7 +1653,10 @@ function openReverifyGate(mi) {
   // Send-back reveals a feedback field, then dispatches the feedback decision.
   var fbWrap = el("div"); fbWrap.hidden = true;
   var fb = el("textarea"); fb.rows = 2;
-  fb.placeholder = "What still needs to change? This loops the mission back to Align.";
+  // A logged bug's send-back loops the BUG(s) back to Plan (feedback.sh routes a
+  // type=bug+parent mission to Plan, not Align) — the parent mission + its PR are
+  // untouched. This gate is always about logged bugs, so name Plan, not Align.
+  fb.placeholder = "What still needs to change? This loops the affected logged bug(s) back to Plan — the parent mission and its PR stay put.";
   fbWrap.appendChild(field("Feedback for send-back", fb));
   m.body.appendChild(fbWrap);
 
@@ -1986,8 +1989,14 @@ function openVerify(id) {
     // S75: send-back now also closes the open PR (handled by feedback.sh).
     var fbWrap = el("div"); fbWrap.hidden = true;
     var fb = el("textarea"); fb.rows = 2;
-    fb.placeholder = "What needs to change? This loops the mission back to Align"
-      + (mi.prUrl ? " and closes the PR." : ".");
+    // A logged-bug child loops back to PLAN on send-back (feedback.sh routes a
+    // type=bug+parent mission to Plan) and its fix rides the PARENT's PR, so the
+    // PR is never touched. A top-level mission loops back to Align (and closes its
+    // own PR). Name the right target so send-back reads as what it actually does.
+    fb.placeholder = isBugChild
+      ? "What needs to change? This loops this bug back to Plan — the parent mission’s PR is untouched."
+      : "What needs to change? This loops the mission back to Align"
+        + (mi.prUrl ? " and closes the PR." : ".");
     fbWrap.appendChild(field("Feedback for send-back", fb));
     m.body.appendChild(fbWrap);
 

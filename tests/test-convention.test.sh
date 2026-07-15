@@ -239,8 +239,9 @@ run_save "$repo" "$tdir" ""
 repo="$(new_mission)"; tdir="$repo/_t"
 write_test "$tdir"
 run_save "$repo" "$tdir" ""
-{ printf '%s' "$OUT" | grep -q "CO-LOCATED" && printf '%s' "$OUT" | grep -q "'./utils'"; } \
-  && ok "resolution-failure hint tells the Test-Writer to import CO-LOCATED ./sibling" \
+{ printf '%s' "$OUT" | grep -q "co-locate" && printf '%s' "$OUT" | grep -q "'./utils'" \
+    && printf '%s' "$OUT" | grep -q "COMMON ANCESTOR"; } \
+  && ok "resolution-failure hint tells the Test-Writer to import co-located ./sibling (+ multi-dir ancestor rule)" \
   || bad "resolution hint co-located (rc=$RC: $OUT)"
 
 # --- case I: template import contract flipped to in-tree co-located --------------

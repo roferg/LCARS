@@ -1532,6 +1532,36 @@ EOF
   printf '%s' "$1"
 }
 
+# --- package_of_relpath: the nearest ancestor dir of a path holding a package.json
+# The runner's discovery/config root for a given in-tree path. Walks UP from the
+# path (which may itself be a package dir) to the first ancestor with a package.json.
+# Echoes a repo-relative dir, or "" (repo root / none). PURE — filesystem read only.
+package_of_relpath() { # relpath  [root] → pkg dir rel, or ""
+  local d="$1" root="${2:-$REPO_ROOT}"
+  while [ -n "$d" ] && [ "$d" != "." ]; do
+    [ -f "$root/$d/package.json" ] && { printf '%s' "$d"; return 0; }
+    case "$d" in */*) d="${d%/*}" ;; *) d="." ;; esac
+  done
+  return 0
+}
+
+# --- ticket_tests_package: the package a ticket's PLACED tests live in ----------
+# S133: a package-SPANNING ticket has an empty ticket_target_package (no single
+# package), but its fail-first tests are PLACED co-located in a REAL package (where
+# their `./sibling` imports resolve). The gates must run FROM that package so the
+# runner resolves in a non-hoisted monorepo — the repo root has no hoisted runner.
+# Reads the ticket's test MIRROR (tickets/<id>/tests, whose relpaths equal the
+# in-tree relpaths) and walks up from the first test to its package. "" when none.
+ticket_tests_package() { # ticket  [root] → pkg dir of the ticket's tests, or ""
+  local t="$1" root="${2:-$REPO_ROOT}" td rel
+  td="$(ticket_dir "$t")/tests"
+  [ -d "$td" ] || return 0
+  rel="$( ( cd "$td" && find . \( -name '*.test.*' -o -name '*.spec.*' \) 2>/dev/null ) \
+            | sed 's#^\./##' | LC_ALL=C sort | head -1 )"
+  [ -n "$rel" ] || return 0
+  package_of_relpath "$rel" "$root"
+}
+
 # --- parse a manifest's `## Relevant files` bullet paths --------------------
 # Emits one path per line. Reads only the `## Relevant files` section, tolerates
 # `-`/`*` bullets, backtick-wrapped paths, a trailing ` — description`, and a
@@ -1753,6 +1783,78 @@ common_ancestor_dir() { # <newline relpaths> → common dir ("" = root)
       common=out
     }
     END { if (seen) print common }'
+}
+
+# --- import_specs_in: every RELATIVE import specifier a test file names --------
+# One `./…` / `../…` specifier per line (from/import/require forms). Non-relative
+# (bare package) imports are dropped. PURE — filesystem read only.
+import_specs_in() { # test-file → one relative specifier per line
+  grep -hoE "(from|import|require\()[[:space:]]*['\"][^'\"]+['\"]" "$1" 2>/dev/null \
+    | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | grep -E '^[.]'
+}
+
+# --- anchor_from_pairs: the co-located source dir a file's imports AGREE on -----
+# The S133 multi-dir fix. A single test file can import sources that live in
+# DIFFERENT dirs (e.g. `./App` in src/, `./components/MapCanvas/MapCanvas` in
+# src/components/MapCanvas/). A bare co-located placement (next to the FIRST
+# import's source) then breaks every OTHER `./sibling` import → the red gate
+# rejects on resolution failure → the ticket cap-exhausts. This derives the ONE
+# dir the test must sit in so EVERY same-level import resolves in place, by
+# RESPECTING each import's spelling (not just the source locations):
+#   • `ua` is the convention's anchoring up-count — co-located: 0 (`./descendant`);
+#     __tests__: 1 (`../descendant`, one `..` to exit the `__tests__/` dir).
+#   • Reads `spec<TAB>source` pairs on stdin. Only specs with EXACTLY `ua` leading
+#     `../` anchor the test; a spec that reaches FURTHER out (more `..`) is trusted
+#     and IGNORED (so a co-located `./sibling` + a `../otherdir/util` still anchors
+#     on the sibling's dir — no regression).
+#   • Each anchoring spec pins a dir = its source dir with its own descendant
+#     dir-part removed. If every anchoring spec agrees → echo that dir (may be ""
+#     = package/repo root), exit 0. No anchoring spec, or a conflict → exit 1 (the
+#     caller falls back to the legacy primary-sibling placement).
+anchor_from_pairs() { # ua   (reads spec<TAB>src lines on stdin) → anchor dir, exit 1 if none/conflict
+  awk -F'\t' -v ua="$1" '
+    function dirname(p,   d){ d=p; if (sub(/\/[^\/]*$/,"",d)) return d; return "" }
+    {
+      spec=$1; src=$2
+      if (spec=="" || src=="") next
+      sub(/^\.\//,"",spec)                         # strip a leading ./
+      ups=0
+      while (spec ~ /^\.\.\//){ sub(/^\.\.\//,"",spec); ups++ }
+      if (ups != ua+0) next                        # only same-level imports anchor
+      td=dirname(spec)                             # the descendant dir-part of the spec
+      pdir=dirname(src)
+      if (td==""){ anchor=pdir }
+      else if (pdir==td){ anchor="" }
+      else { want="/" td; L=length(pdir); W=length(want)
+             if (L>W && substr(pdir,L-W+1)==want) anchor=substr(pdir,1,L-W)
+             else next }                           # spelling vs real source dir mismatch
+      if (!seen){ common=anchor; seen=1; ok=1 }
+      else if (anchor!=common){ ok=0 }
+    }
+    END{ if (seen && ok){ print common; exit 0 } else exit 1 }'
+}
+
+# --- test_file_anchor_dir: resolve a file'\''s imports, then anchor_from_pairs ----
+# Impure wrapper (reads the manifest / repo via resolve_sibling_src). Echoes the
+# co-located source dir the test must sit in (per the file'\''s own import spelling),
+# exit 1 when no anchor is determinable. `tests` (top-level) convention is NOT
+# anchored here — its imports are package-root-relative, so the caller keeps the
+# legacy placement for it.
+test_file_anchor_dir() { # file convention ticket fallback pkg prune → anchor srcdir, exit 1
+  local f="$1" conv="$2" tid="$3" fb="$4" pkg="$5" prune="$6" ua spec sp src
+  case "$conv" in __tests__) ua=1 ;; tests) return 1 ;; *) ua=0 ;; esac
+  {
+    while IFS= read -r spec; do
+      [ -n "$spec" ] || continue
+      sp="${spec##*/}"; case "$sp" in *.*) sp="${sp%.*}" ;; esac
+      [ -n "$sp" ] || continue
+      src="$(resolve_sibling_src "$sp" "$tid" "$fb" "$pkg" "$prune")"
+      [ -n "$src" ] || continue
+      printf '%s\t%s\n' "$spec" "$src"
+    done <<EOF
+$(import_specs_in "$f")
+EOF
+  } | anchor_from_pairs "$ua"
 }
 
 # === Plan Review: SOFT under-slice signal (S100) ============================
@@ -2935,6 +3037,62 @@ runner_preflight_env_failure() { # run-dir → 0 iff the runner cannot launch th
   red_gate_env_failure "$PREFLIGHT_OUT"
 }
 
+# --- worktree_setup_configured: is a worktreeSetupCommand declared? -----------
+# 0 iff the captain declared a worktree provisioning command (env override or the
+# repo config). Mirrors provision_worktree's own resolution. Used to decide whether
+# a dead-runner preflight can self-heal by RE-APPLYING that declared command.
+worktree_setup_configured() { # → 0 if a worktreeSetupCommand is set, else 1
+  [ -n "${LCARS_WORKTREE_SETUP_CMD:-}" ] && return 0
+  [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ] || return 1
+  local c; c="$(json_str "$LCARS_CFG" worktreeSetupCommand)"
+  case "$c" in ''|null) return 1 ;; *) return 0 ;; esac
+}
+
+# --- preflight_runner_or_heal: probe the runner, SELF-HEAL once before failing --
+# The S133 env self-heal. A configured `worktreeSetupCommand` that silently didn't
+# take (a partial `ln`, a transient miss — the loop returns 0 either way, so
+# provision_worktree emits no failure) leaves the runner DEAD in the worktree, and
+# the ticket would park at an un-answerable human gate (answering can't provision a
+# runner, so it re-parks). Before escalating: if this is a worktree build with a
+# declared setup command, RE-APPLY that command ONCE and re-probe. A transient miss
+# then clears itself; only a runner that STILL cannot launch after honestly
+# re-applying the captain's OWN provisioning escalates (a real env decision). This
+# INVENTS nothing — it re-runs only the declared command. Sets PREFLIGHT_HEALED to
+# `ok` (launched first try) or `healed` (recovered by the re-apply). Returns 0 when
+# the runner can launch (caller proceeds), 1 when it still cannot (caller escalates).
+preflight_runner_or_heal() { # run-dir → 0 runner-ok, 1 still-dead
+  local pf_dir="$1"
+  PREFLIGHT_HEALED=ok
+  runner_preflight_env_failure "$pf_dir" || return 0     # runner launches → proceed
+  # A worktree build with a declared setup is the only self-healable case.
+  [ -n "${LCARS_TICKET_WORKTREE:-}" ] && worktree_setup_configured || return 1
+  # RETRY WITH BACKOFF: the dead runner can be a TRANSIENT worktree-lifecycle race
+  # — a prior ticket's worktree being torn down as this one provisions momentarily
+  # leaves node_modules half-linked (observed live: bug lcars-20260713-003
+  # re-parked when its provisioning ran ~10s behind the previous bug's teardown,
+  # while it provisions cleanly in isolation). A single immediate re-apply is too
+  # fast to outlast that window, so re-apply the declared command a few times with
+  # a short backoff, re-probing each round. Still re-runs ONLY the captain's own
+  # command; escalate only if the runner is STILL dead after the last attempt.
+  local attempts="${LCARS_PREFLIGHT_HEAL_ATTEMPTS:-3}" backoff="${LCARS_PREFLIGHT_HEAL_BACKOFF:-3}" i=1
+  while [ "$i" -le "$attempts" ]; do
+    emit_event worktree_reprovision implement \
+      "the test runner could not launch at preflight — re-applying worktreeSetupCommand for ${TICKET:-?} (attempt $i/$attempts) before escalating" \
+      "ticket=${TICKET:-?}" "attempt=$i"
+    provision_worktree "$LCARS_TICKET_WORKTREE" || :
+    if ! runner_preflight_env_failure "$pf_dir"; then
+      PREFLIGHT_HEALED=healed
+      emit_event worktree_reprovision_ok implement \
+        "worktreeSetupCommand re-applied — the runner now launches for ${TICKET:-?} (attempt $i); continuing (no human gate needed)" \
+        "ticket=${TICKET:-?}" "attempt=$i"
+      return 0
+    fi
+    [ "$i" -lt "$attempts" ] && [ "$backoff" -gt 0 ] && sleep "$backoff"
+    i=$((i + 1))
+  done
+  return 1                                               # still dead after every re-apply → escalate
+}
+
 # Can this repo demonstrably run tests OUTSIDE the target package? The oracle
 # that decides invite-vs-park for a dead-runner package. Two arms, both cheap:
 #   1. the repo-root probe launches a runner (single-package repos, hoisted bins)
@@ -3286,11 +3444,11 @@ $(printf '%s' "$out" | tail -20)"
         # default (groutwork); __tests__/ and top-level tests/ get their own prefix.
         local unres="" hint="" imp_form stub_form
         case "$RED_GATE_CONVENTION" in
-          __tests__)  imp_form="a sibling import ONE level up, \`../<sibling>\` (the source sits in the dir ABOVE your \`__tests__/\` test)"
+          __tests__)  imp_form="a relative import from your \`__tests__/\` dir — for a source in the SAME module dir, one level up (\`../<sibling>\`); for a source in a DIFFERENT dir, the harness anchors your \`__tests__/\` at the deepest COMMON ANCESTOR of every source the file imports, so spell each import as a descendant from there, e.g. \`../<subdir>/<name>\`"
                       stub_form="\`stubs/<sibling>.ts\` (the harness places it beside the source, one level up from your test)" ;;
           tests)      imp_form="the source's package-root-relative path, e.g. \`../src/<dir>/<file>\` (your test lives in a top-level \`tests/\` dir)"
                       stub_form="\`stubs/<package-root>/src/<dir>/<file>.ts\` (the mirrored repo path)" ;;
-          *)          imp_form="a CO-LOCATED \`./<sibling>\` import, e.g. \`import { area } from './utils'\` (your test sits NEXT TO the source)"
+          *)          imp_form="a relative import that resolves from where the harness co-locates your test — for a sibling in the SAME dir a bare \`./<name>\` (e.g. \`import { area } from './utils'\`); for a source in a DIFFERENT dir the harness anchors your test at the deepest COMMON ANCESTOR of every source the file imports, so spell each import as a \`./<subdir>/<name>\` DESCENDANT from that ancestor (e.g. \`./components/MapCanvas/MapCanvas\`), NEVER a bare \`./<name>\` for a nested source"
                       stub_form="\`stubs/<sibling>.ts\` (the harness places it beside your test)" ;;
         esac
         local unres_lines; unres_lines="$(unresolved_imports_in_output "$out")"
@@ -3301,7 +3459,7 @@ $(printf '%s' "$out" | tail -20)"
           local triage; triage="$(unresolved_specifier_triage "$REPO_ROOT" "$unres_lines")"
           hint="SPECIFICALLY, these import(s) did not resolve. The harness checked the repo for EACH one — FOLLOW ITS VERDICT below, do not re-guess:
 $triage
-For a brand-new module the stub goes under stubs/ — $stub_form. For an existing module re-author the import as $imp_form. A single unresolved import fails the whole suite to load. "
+For a brand-new module the stub goes under stubs/ — $stub_form. For an existing module re-author the import as $imp_form. MULTI-DIR: if THIS test imports sources from more than one directory, a single co-located test cannot reach them all with bare \`./<name>\` imports — the harness places it at the deepest COMMON ANCESTOR of every source it imports, so spell EVERY import as a descendant path from that ancestor (and keep them consistent so they agree on one anchor). A single unresolved import fails the whole suite to load. "
         fi
         reason="RED GATE — the suite did NOT fail on an assertion: it could not RESOLVE its import of the code under test (a module-resolution / load failure), so the test file never ran. The harness places your test IN THE REPO at its own test convention ($RED_GATE_CONVENTION) and runs it IN PLACE, right where the test sits — so import the code under test via a path that resolves FROM THERE: $imp_form. Re-author the import accordingly so the test LOADS, then FAILS on its assertions until the behaviour exists. ${hint}Command run: $cmd. Runner output (run):
 $(printf '%s' "$out" | tail -20)"
@@ -3794,13 +3952,22 @@ cmd_impl_save_tests() {
   # relpath at the repo convention. A SINGLE-FILE / single-dir ticket is byte-identical
   # to before (all files map to one dir).
   rm -rf "$tdir"; mkdir -p "$tdir"
-  local INTREE_RELS="" f bn stem src_f canon_f destdir_f reldir rel
+  local INTREE_RELS="" f bn stem src_f canon_f destdir_f reldir rel anchor_src
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     bn="${f##*/}"
-    stem="$(test_primary_sibling "$f")"
-    src_f="$(resolve_sibling_src "$stem" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"
-    canon_f="$(test_path_for "$convention" "$src_f")"
+    # S133 (multi-dir single file): anchor the test at the source dir ALL its own
+    # `./descendant` imports agree on (a `../reach-out` is trusted, not counted), so
+    # a file importing across dirs resolves in place. When no anchor is derivable
+    # (or under the top-level `tests/` convention) fall back to the primary-sibling
+    # placement — byte-identical to the pre-S133 single-dir behaviour.
+    if anchor_src="$(test_file_anchor_dir "$f" "$convention" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"; then
+      canon_f="$(test_path_for "$convention" "${anchor_src:+$anchor_src/}__anchor.ts")"
+    else
+      stem="$(test_primary_sibling "$f")"
+      src_f="$(resolve_sibling_src "$stem" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"
+      canon_f="$(test_path_for "$convention" "$src_f")"
+    fi
     destdir_f="${canon_f%/*}"; [ "$destdir_f" = "$canon_f" ] && destdir_f=""
     rel="${destdir_f:+$destdir_f/}$bn"
     reldir="${rel%/*}"; [ "$reldir" = "$rel" ] && reldir=""
@@ -3893,7 +4060,16 @@ ROLLBACK_EOF
   # S99: the grounded-retry signal file + the RUN DIR the in-place gate cd's into
   # ($pkg_rel, computed once above, is the monorepo package root so config/discovery
   # resolves there); the tests run co-located in the tree, NOT copied into a quarantine.
-  local run_dir="$REPO_ROOT"; [ -n "$pkg_rel" ] && run_dir="$REPO_ROOT/$pkg_rel"
+  local run_dir="$REPO_ROOT"
+  if [ -n "$pkg_rel" ]; then run_dir="$REPO_ROOT/$pkg_rel"
+  else
+    # S133: a package-SPANNING ticket has empty pkg_rel, so run FROM the package the
+    # tests were PLACED in (scope_rel) — a non-hoisted monorepo has no runner at the
+    # repo root, but the placed tests' package does. Falls back to the root when the
+    # placed tests are not inside any package.
+    local _rgpkg; _rgpkg="$(package_of_relpath "$scope_rel")"
+    [ -n "$_rgpkg" ] && run_dir="$REPO_ROOT/$_rgpkg"
+  fi
   local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"; rm -f "$sig"
 
   # --- S111 3′: DECLARED TEST SETUP (evidence-gated) --------------------------
@@ -4137,7 +4313,13 @@ post_commit_gate() { # ticket
   # for discovery/config; an empty pkg_rel runs from the worktree root.
   local pkg_rel; pkg_rel="$(ticket_target_package "$t" "$wt")"
   local run_dir tdir rc=0 out="" rels scope tamper=0
-  run_dir="$wt"; [ -n "$pkg_rel" ] && run_dir="$wt/$pkg_rel"
+  run_dir="$wt"
+  if [ -n "$pkg_rel" ]; then run_dir="$wt/$pkg_rel"
+  else
+    # S133: package-spanning ticket → run from the package its tests live in.
+    local _pcpkg; _pcpkg="$(ticket_tests_package "$t" "$wt")"
+    [ -n "$_pcpkg" ] && run_dir="$wt/$_pcpkg"
+  fi
   tdir="$(ticket_dir "$t")/tests"
   if [ -d "$tdir" ]; then
     if tests_committed_in_tree "$t" "$wt"; then
@@ -4527,7 +4709,13 @@ retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
     # run-tree root. Checked against $run_dir so every caller (full-suite gate
     # worktree, reconcile merge worktree) stays symmetric.
     pkg_rel="$(ticket_target_package "$id" "$run_dir")"
-    trun="$run_dir"; [ -n "$pkg_rel" ] && trun="$run_dir/$pkg_rel"
+    trun="$run_dir"
+    if [ -n "$pkg_rel" ]; then trun="$run_dir/$pkg_rel"
+    else
+      # S133: package-spanning ticket → re-run from the package its tests live in.
+      local _fspkg; _fspkg="$(ticket_tests_package "$id" "$run_dir")"
+      [ -n "$_fspkg" ] && trun="$run_dir/$_fspkg"
+    fi
     rc=0
     # S102 (tests ride along, part 2): the tests are COMMITTED, so in the common path
     # they are ALREADY present in this clean tree. PRE-MERGE CROSS-BOUNDARY IMMUTABILITY:
@@ -7828,7 +8016,25 @@ cmd_implement_ticket() {
   local pf_pkg pf_dir
   pf_pkg="$(ticket_target_package "$TICKET")"
   pf_dir="$REPO_ROOT${pf_pkg:+/$pf_pkg}"
-  if runner_preflight_env_failure "$pf_dir"; then
+  # S133 SELF-HEAL: before escalating a dead runner to a human, re-apply the
+  # captain's OWN declared worktreeSetupCommand ONCE and re-probe — a silent /
+  # transient provisioning miss then clears itself instead of stranding a human
+  # at an un-answerable env gate. Escalate ONLY if the runner still cannot launch.
+  if ! preflight_runner_or_heal "$pf_dir"; then
+    # S133 (span-packages false negative, caught live on bug lcars-20260713-003):
+    # a ticket whose relevant files span MORE THAN ONE package has NO single target
+    # package, so ticket_target_package returns "" and the preflight probed the REPO
+    # ROOT. In a non-hoisted monorepo (pnpm keeps vitest in each package's
+    # node_modules, NOT the root) the root has no runner → a FALSE "cannot test",
+    # even though the ticket's test WILL be placed and run in a real package that
+    # can. So: when the target package is empty (root-probed) AND some package can
+    # run tests, DON'T park — proceed and let the red gate judge in the package
+    # where the test lands. Only when NOTHING can run tests anywhere do we escalate.
+    if [ -z "$pf_pkg" ] && repo_tests_elsewhere ""; then
+      emit_event preflight_spans_packages implement \
+        "$TICKET spans packages (no single target package) and the repo root has no hoisted runner, but a package can run tests — proceeding; the red gate judges where the test lands" \
+        "ticket=$TICKET"
+    else
     local pf_out="$PREFLIGHT_OUT" pf_root_alive=0
     if [ -n "$pf_pkg" ] && repo_tests_elsewhere "$pf_pkg"; then
       pf_root_alive=1
@@ -7857,6 +8063,7 @@ $(printf '%s' "$pf_out" | tail -10)"
 Command probed: $(resolve_test_cmd) (from: $pf_dir)
 Runner said:
 $(printf '%s' "$pf_out" | tail -10)"
+    fi
     fi
   fi
 
@@ -9908,6 +10115,20 @@ case "$SUB" in
     __pwt="$(make_ticket_worktree "$MISSION_DIR/wt-test" "${RC_BRANCH:-$(json_str "$STATE" branch)}" "${TICKET:-all}")" \
       || { printf 'WT-ERR: make_ticket_worktree failed loud (no silent in-tree fallback)\n'; exit 1; }
     printf 'WT=%s\n' "$__pwt"
+    exit 0 ;;
+  # S133 test hook: exercise the preflight runner SELF-HEAL. Probes the runner in
+  # the given dir (POSARG, default $REPO_ROOT); if dead and this is a worktree build
+  # (LCARS_TICKET_WORKTREE) with a declared worktreeSetupCommand, re-applies it ONCE
+  # and re-probes. Prints PREFLIGHT=ok|healed|dead. testCommand + setup command are
+  # env-injectable ($LCARS_TEST_CMD / $LCARS_WORKTREE_SETUP_CMD) so a test drives it
+  # with ZERO real spend. Always exits 0.
+  preflight-heal-test)
+    locate_mission "$MISSION_ID"
+    if preflight_runner_or_heal "${POSARG:-$REPO_ROOT}"; then
+      printf 'PREFLIGHT=%s\n' "${PREFLIGHT_HEALED:-ok}"
+    else
+      printf 'PREFLIGHT=dead\n'
+    fi
     exit 0 ;;
   # S111 test hook: drive the REAL replay_ticket_commit (mutex + landing worktree)
   # for one commit object. Positional arg = the commit sha; --ticket defaults
