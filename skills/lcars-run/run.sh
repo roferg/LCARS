@@ -3755,6 +3755,503 @@ nonportable_path_in_tests() { # tests-dir → echoes "file:offending-path", rc 0
   return 1
 }
 
+# ===========================================================================
+# S132: PROOF-OF-WORK GATES — STANDALONE (unified-TDD-worker round, S132–135)
+# ===========================================================================
+# The unified worker retires the Test-Writer/Implementer standoff: ONE worker
+# does TDD end-to-end, and proof moves AFTER implementation. The PARENT commit
+# is the snapshot (git itself), and fail-on-parent / pass-on-tip is the proof:
+#
+#   flip_flop_gate       TIP leg green + PARENT leg red on the ticket's own
+#                        new/changed tests (scratch worktree at the parent sha,
+#                        S87-provisioned, SAME tests staged in, S106-scoped run).
+#   declared_edits_guard every test-classified path in the diff must be declared
+#                        (result.json newTests ∪ testEdits[].path); deletions count.
+#   proof_validate_result the v2 result shape (v1 rejects legibly — no dual-shape).
+#   proof_quality_floor  suite_has_assertions over the new/changed tests in-tree;
+#                        ≥1 new/changed test unless flipFlop=not-applicable.
+#
+# NOTHING in the live implement path calls these yet — the path flips in S133.
+# They are reachable only via the *-test dispatch hooks (house style), and they
+# REUSE the existing machinery: provision_worktree (S87), native_scoped_cmd +
+# intree_scope_for (S106/S87 scoping), suite_collected_zero_tests (S99), the
+# red-gate failure detectors (S96 classify arms), emit_event, and the JSON
+# helpers. bash-3.2 safe; jq-free (python3 only where json_encode_string already
+# depends on it).
+
+# Is a relpath a TEST file? The repo's detected conventions + per-stack patterns
+# (*.test.* / *.spec.* / __tests__ for js-ts, test_*.py / *_test.py for python,
+# *_test.go for go, tests/*.rs — generalized to any tests|test dir — for rust and
+# the "tests" convention repos). A deliberate SUPERSET: over-classifying a helper
+# under tests/ only means the worker must declare touching it, never a false pass.
+proof_is_test_path() { # relpath → 0 if test-classified
+  local p="$1" b; b="${p##*/}"
+  case "$p" in
+    */__tests__/*|__tests__/*)          return 0 ;;
+    tests/*|*/tests/*|test/*|*/test/*)  return 0 ;;
+  esac
+  case "$b" in
+    *.test.*|*.spec.*)   return 0 ;;
+    test_*.py|*_test.py) return 0 ;;
+    *_test.go)           return 0 ;;
+  esac
+  return 1
+}
+
+# Every path the tip differs from the parent in: the tracked diff (modifications
+# AND deletions) plus untracked files (a not-yet-committed new test still counts).
+# --no-renames: git's rename detection would collapse an R100 rename to just the
+# NEW path, letting the old test vanish undeclared — surface it as delete+add.
+proof_diff_paths() { # parent-sha worktree → one relpath per line (sorted, unique)
+  local parent="$1" wt="$2"
+  {
+    "$GIT_BIN" -C "$wt" diff --no-renames --name-only "$parent" -- 2>/dev/null
+    "$GIT_BIN" -C "$wt" ls-files --others --exclude-standard 2>/dev/null
+  } | grep . | LC_ALL=C sort -u
+}
+
+# The diff's TEST-classified paths. mode "existing" keeps only files present in
+# the worktree (the runnable set); default "all" includes deletions (the
+# declared-edits set — a deleted test is an edit).
+proof_test_rels_in_diff() { # parent-sha worktree [existing|all] → relpaths
+  local parent="$1" wt="$2" mode="${3:-all}" p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    proof_is_test_path "$p" || continue
+    if [ "$mode" = existing ] && [ ! -f "$wt/$p" ]; then continue; fi
+    printf '%s\n' "$p"
+  done < <(proof_diff_paths "$parent" "$wt")
+}
+
+# ZERO tests collected/ran on a leg — the S85/S106 green-on-nothing trap,
+# INCONCLUSIVE on either leg, never a pass. Extends suite_collected_zero_tests
+# (S99, js/py phrasings) with the native runners' own zero phrasings LOCALLY —
+# the shared `zerotests` signature is classify-only for the LIVE path and must
+# stay byte-identical (this session touches no live verdict).
+proof_zero_collected() { # runner-output → 0 if zero tests were collected/ran
+  suite_collected_zero_tests "$1" && return 0
+  printf '%s' "$1" | grep -Eq 'no tests to run|test result: ok\. 0 passed'
+}
+
+# Run the ticket's tests SCOPED, per stack, from a given tree root (either the
+# tip worktree or the parent scratch worktree). Sets PROOF_LEG_RC + PROOF_LEG_OUT.
+# rc 96/97 are local sentinels for "cannot even construct the run" (no
+# testCommand / no runnable native target) — the caller renders INCONCLUSIVE.
+PROOF_LEG_RC=0; PROOF_LEG_OUT=""
+proof_scoped_leg_run() { # leg-root rels(newline)
+  local root="$1" rels="$2" first cmd run_dir rc=0 out
+  PROOF_LEG_RC=0; PROOF_LEG_OUT=""
+  first="$(printf '%s\n' "$rels" | grep . | head -1)"
+  local stack; stack="$(resolve_stack)"
+  if stack_is_native; then
+    # S106 native scoping: cargo test --test <stem> / go test -run '^(funcs)$',
+    # built from the staged files AT THIS LEG'S ROOT.
+    cmd="$(printf '%s\n' "$rels" | REPO_ROOT="$root" native_scoped_cmd "$stack")"
+    if [ -z "$cmd" ]; then
+      PROOF_LEG_RC=97
+      PROOF_LEG_OUT="proof-gate: the ticket's $stack test file(s) declare no runnable test target — the scoped invocation cannot be constructed."
+      return 0
+    fi
+    run_dir="$(proof_native_run_dir "$stack" "$root" "$first")"
+    out="$( cd "$run_dir" && eval "$cmd" 2>&1 )" || rc=$?
+  else
+    # js/py: the S87 dir-scoped run — LCARS_TESTS_DIR points at the single file
+    # (or the common ancestor), invoked from the tests' own package.
+    cmd="$(resolve_test_cmd)"
+    if [ -z "$cmd" ]; then
+      PROOF_LEG_RC=96
+      PROOF_LEG_OUT="proof-gate: no testCommand configured — the harness cannot run the ticket's tests."
+      return 0
+    fi
+    local pkg; pkg="$(package_of_relpath "$first" "$root")"
+    run_dir="$root${pkg:+/$pkg}"
+    local scope; scope="$(intree_scope_for "$root" "$rels")"
+    out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+  fi
+  PROOF_LEG_RC="$rc"
+  PROOF_LEG_OUT="$out"
+}
+
+# The cwd a native scoped invocation must run from: go tests compile in their
+# package DIR; cargo runs from the crate root (nearest ancestor Cargo.toml).
+proof_native_run_dir() { # stack leg-root first-rel → abs run dir
+  local stack="$1" root="$2" rel="$3" d
+  d="${rel%/*}"; [ "$d" = "$rel" ] && d=""
+  case "$stack" in
+    go)   printf '%s%s' "$root" "${d:+/$d}" ;;
+    rust)
+      while [ -n "$d" ]; do
+        [ -f "$root/$d/Cargo.toml" ] && { printf '%s/%s' "$root" "$d"; return 0; }
+        case "$d" in */*) d="${d%/*}" ;; *) d="" ;; esac
+      done
+      printf '%s' "$root" ;;
+    *)    printf '%s' "$root" ;;
+  esac
+}
+
+# Cut the DISPOSABLE parent-leg scratch worktree at the parent sha, provisioned
+# via the S87 machinery (worktreeSetupCommand + declared-setup re-apply). Echoes
+# its path; empty on failure. Mirrors make_ticket_worktree's prune-and-retry
+# self-heal for stale registrations.
+proof_parent_scratch() { # tip-worktree parent-sha ticket → scratch path ("" = failed)
+  local wt="$1" sha="$2" t="$3" base scratch
+  base="${LCARS_PROOF_WT_BASE:-$MISSION_DIR/proof-worktrees}"
+  mkdir -p "$base" 2>/dev/null || { printf ''; return 1; }
+  scratch="$base/$t-parent"
+  "$GIT_BIN" -C "$wt" worktree remove --force "$scratch" >/dev/null 2>&1 || :
+  rm -rf "$scratch"
+  if ! "$GIT_BIN" -C "$wt" worktree add -q --detach "$scratch" "$sha" >/dev/null 2>&1; then
+    "$GIT_BIN" -C "$wt" worktree prune >/dev/null 2>&1 || :
+    rm -rf "$scratch"
+    "$GIT_BIN" -C "$wt" worktree add -q --detach "$scratch" "$sha" >/dev/null 2>&1 \
+      || { rm -rf "$scratch"; printf ''; return 1; }
+  fi
+  provision_worktree "$scratch" || :
+  printf '%s' "$scratch"
+}
+
+# Prune the scratch worktree — called on EVERY exit path (pass, fail,
+# inconclusive), immediately after the parent leg runs and before any verdict.
+proof_prune_scratch() { # tip-worktree scratch
+  [ -n "${2:-}" ] || return 0
+  "$GIT_BIN" -C "$1" worktree remove --force "$2" >/dev/null 2>&1 || :
+  rm -rf "$2"
+  "$GIT_BIN" -C "$1" worktree prune >/dev/null 2>&1 || :
+}
+
+# The parent-leg RED's KIND, for legibility — the same S96 detector arms
+# classify_impl_failure routes through, in the same precedence. A red caused by
+# the change's NEW SYMBOLS (compile / resolution) COUNTS as proof; only an env
+# failure (the runner could not start in the scratch) is not proof at all.
+proof_parent_red_kind() { # runner-out files-written → kind token
+  local out="$1" files="$2"
+  if red_gate_env_failure "$out"; then printf 'env-failure'; return 0; fi
+  if red_gate_resolution_failure "$out"; then
+    if unresolved_specifier_is_created "$out" "$files"; then
+      printf 'missing-new-module'
+    else
+      printf 'bad-import-path'
+    fi
+    return 0
+  fi
+  if red_gate_compile_failure "$out"; then printf 'compile-failure'; return 0; fi
+  if printf '%s' "$out" | grep -Eq "$(rg_signature assertion)"; then
+    printf 'assertion-red'; return 0
+  fi
+  printf 'runner-red'
+}
+
+# flip-flop.json writer + the single finish point (event + verdict rc).
+FF_TIP_RC=null; FF_TIP_TAIL=""; FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""
+_ff_reset() { FF_TIP_RC=null; FF_TIP_TAIL=""; FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; }
+_ff_write_json() { # file ticket parent verdict reason rels
+  local f="$1" t="$2" p="$3" v="$4" r="$5" rels="$6" files="" sep="" rel
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    files="$files$sep\"$(json_escape "$rel")\""; sep=", "
+  done <<FFJ_EOF
+$rels
+FFJ_EOF
+  {
+    echo '{'
+    printf '  "ticketId": "%s",\n'  "$(json_escape "$t")"
+    printf '  "parentSha": "%s",\n' "$(json_escape "$p")"
+    printf '  "verdict": "%s",\n'   "$(json_escape "$v")"
+    printf '  "reason": "%s",\n'    "$(json_escape "$r")"
+    printf '  "testFiles": [%s],\n' "$files"
+    printf '  "tip": { "rc": %s, "tail": "%s" },\n' "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_TAIL:-}")"
+    printf '  "parent": { "rc": %s, "kind": "%s", "tail": "%s" }\n' "${FF_PAR_RC:-null}" "$(json_escape "${FF_PAR_KIND:-}")" "$(json_escape "${FF_PAR_TAIL:-}")"
+    echo '}'
+  } >"$f"
+}
+_ff_finish() { # ticket parent json-file verdict reason rels → rc by verdict
+  local t="$1" p="$2" f="$3" v="$4" r="$5" rels="$6"
+  _ff_write_json "$f" "$t" "$p" "$v" "$r" "$rels"
+  case "$v" in
+    pass)
+      emit_event flip_flop_pass implement \
+        "flip-flop PASS for $t — tests GREEN on tip, RED on parent${FF_PAR_KIND:+ ($FF_PAR_KIND)}" "ticket=$t"
+      printf '  ✓ flip-flop PASS — %s\n' "$r"
+      return 0 ;;
+    fail)
+      emit_event flip_flop_fail implement "flip-flop FAIL for $t — $r" "ticket=$t"
+      printf '  ✗ flip-flop FAIL — %s\n' "$r" >&2
+      return 1 ;;
+    inconclusive)
+      emit_event flip_flop_inconclusive implement \
+        "flip-flop INCONCLUSIVE for $t — $r (inconclusive is never a pass)" "ticket=$t"
+      printf '  ✗ flip-flop INCONCLUSIVE — %s\n' "$r" >&2
+      return 2 ;;
+    skipped)
+      emit_event flip_flop_skipped implement "flip-flop gate skipped for $t — $r" "ticket=$t"
+      printf '  – flip-flop skipped — %s\n' "$r"
+      return 0 ;;
+  esac
+}
+
+# THE FLIP-FLOP GATE. rc 0 = pass (or declared-not-applicable skip), 1 = fail,
+# 2 = inconclusive (never a pass). Writes tickets/<id>/flip-flop.json always.
+flip_flop_gate() { # ticket parent-sha worktree
+  local t="$1" parent="$2" wt="$3"
+  local td; td="$(ticket_dir "$t")"; mkdir -p "$td"
+  local ffj="$td/flip-flop.json" resf="$td/result.json"
+  _ff_reset
+
+  # Declared not-applicable → SKIP with the reason as the recorded fact
+  # (declared-edits + the full suite still apply — behavior owned by S133).
+  local ffdecl=""
+  [ -f "$resf" ] && ffdecl="$(json_str "$resf" flipFlop)"
+  if [ "$ffdecl" = "not-applicable" ]; then
+    local why; why="$(json_str "$resf" flipFlopReason)"
+    _ff_finish "$t" "$parent" "$ffj" skipped \
+      "declared not-applicable: ${why:-no reason recorded}" ""
+    return $?
+  fi
+
+  local rels; rels="$(proof_test_rels_in_diff "$parent" "$wt" existing)"
+  if [ -z "$(printf '%s' "$rels" | grep . || true)" ]; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "no new/changed test file in the diff vs $parent — there is nothing to flip, so fail-first cannot be proven" ""
+    return $?
+  fi
+
+  # Non-test paths the change wrote — feeds the greenfield discrimination
+  # (missing-new-module vs bad-import-path) exactly as classify_impl_failure does.
+  local changed_src="" p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    proof_is_test_path "$p" && continue
+    changed_src="$changed_src$p
+"
+  done < <(proof_diff_paths "$parent" "$wt")
+
+  # --- TIP leg: the implemented tree must be GREEN on the ticket's tests -----
+  proof_scoped_leg_run "$wt" "$rels"
+  FF_TIP_RC="$PROOF_LEG_RC"
+  FF_TIP_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
+  if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ]; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$PROOF_LEG_OUT" "$rels"; return $?
+  fi
+  if proof_zero_collected "$PROOF_LEG_OUT"; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "the TIP leg collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap)" "$rels"
+    return $?
+  fi
+  if [ "$FF_TIP_RC" -ne 0 ]; then
+    _ff_finish "$t" "$parent" "$ffj" fail \
+      "the TIP leg is RED (exit $FF_TIP_RC) — the ticket's tests do not pass on the implemented tree" "$rels"
+    return $?
+  fi
+
+  # --- PARENT leg: same tests staged into a scratch worktree at the parent ---
+  local scratch; scratch="$(proof_parent_scratch "$wt" "$parent" "$t")"
+  if [ -z "$scratch" ]; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "could not cut the parent scratch worktree at $parent — the parent leg never ran" "$rels"
+    return $?
+  fi
+  local rel
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    mkdir -p "$scratch/$(dirname "$rel")" 2>/dev/null || :
+    cp "$wt/$rel" "$scratch/$rel" 2>/dev/null || :
+  done <<FF_STAGE_EOF
+$rels
+FF_STAGE_EOF
+  proof_scoped_leg_run "$scratch" "$rels"
+  FF_PAR_RC="$PROOF_LEG_RC"
+  FF_PAR_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
+  local par_out="$PROOF_LEG_OUT"
+  # PRUNE FIRST — on every verdict path (behavior: pruned on success AND failure).
+  proof_prune_scratch "$wt" "$scratch"
+
+  if [ "$FF_PAR_RC" = 96 ] || [ "$FF_PAR_RC" = 97 ]; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$par_out" "$rels"; return $?
+  fi
+  if proof_zero_collected "$par_out"; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' exits 0) — red-on-parent is unproven, and inconclusive is never a pass" "$rels"
+    return $?
+  fi
+  if [ "$FF_PAR_RC" -eq 0 ]; then
+    _ff_finish "$t" "$parent" "$ffj" fail \
+      "the ticket's tests PASS on the PARENT commit — red-on-parent is not proven (a test that asserts pre-existing behavior is not proof of work)" "$rels"
+    return $?
+  fi
+  FF_PAR_KIND="$(proof_parent_red_kind "$par_out" "$changed_src")"
+  if [ "$FF_PAR_KIND" = env-failure ]; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "the PARENT leg's runner could not start in the scratch worktree (env failure, exit $FF_PAR_RC) — a dead runner is not a red" "$rels"
+    return $?
+  fi
+  _ff_finish "$t" "$parent" "$ffj" pass \
+    "tests GREEN on tip, RED on parent (exit $FF_PAR_RC, $FF_PAR_KIND — a compile/resolution red from the change's new symbols counts as proof)" "$rels"
+}
+
+# result.json's declared test paths: newTests ∪ testEdits[].path, one per line.
+proof_result_declared_paths() { # result-file
+  "${LCARS_PYTHON_BIN:-python3}" -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+out = []
+for p in (d.get("newTests") or []):
+    if isinstance(p, str) and p: out.append(p)
+for e in (d.get("testEdits") or []):
+    if isinstance(e, dict) and e.get("path"): out.append(e["path"])
+sys.stdout.write("\n".join(out))
+' "$1" 2>/dev/null
+}
+
+# Persist the declared edits as the ticket's durable {path, reason} artifact.
+proof_write_test_edits() { # result-file out-file
+  "${LCARS_PYTHON_BIN:-python3}" -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+edits = [e for e in (d.get("testEdits") or []) if isinstance(e, dict) and e.get("path")]
+with open(sys.argv[2], "w") as f:
+    json.dump([{"path": e.get("path"), "reason": e.get("reason", "")} for e in edits], f, indent=2)
+    f.write("\n")
+' "$1" "$2" 2>/dev/null
+}
+
+# THE DECLARED-EDITS GUARD. Every test-classified path in the diff vs the parent
+# must be declared (newTests ∪ testEdits[].path); deletions count as edits. Any
+# remainder is an UNDECLARED edit → fail, files named. No repo-wide hashing —
+# the parent commit IS the snapshot. rc 0 = clean (test-edits.json + event
+# written), 1 = undeclared / no result to check against.
+declared_edits_guard() { # ticket parent-sha worktree
+  local t="$1" parent="$2" wt="$3"
+  local td; td="$(ticket_dir "$t")"; local resf="$td/result.json"
+  if [ ! -f "$resf" ]; then
+    printf 'proof-gate: declared-edits guard — no result.json for %s, so declarations cannot be verified.\n' "$t" >&2
+    return 1
+  fi
+  local rels declared undeclared="" p
+  rels="$(proof_test_rels_in_diff "$parent" "$wt")"     # all — deletions included
+  declared="$(proof_result_declared_paths "$resf")"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf '%s\n' "$declared" | grep -Fxq "$p" || undeclared="${undeclared:+$undeclared }$p"
+  done <<DE_EOF
+$rels
+DE_EOF
+  if [ -n "$undeclared" ]; then
+    printf 'proof-gate: UNDECLARED test edit(s) for %s — the diff vs %s touches test-classified file(s) the result never declared (newTests / testEdits): %s. Deletions count as edits. Declare every test edit with a reason, or leave the file untouched.\n' \
+      "$t" "$parent" "$undeclared" >&2
+    return 1
+  fi
+  proof_write_test_edits "$resf" "$td/test-edits.json"
+  local n; n="$(printf '%s\n' "$declared" | grep -c . || true)"
+  emit_event ticket_test_edits implement \
+    "ticket $t test-edit declarations verified against the diff vs $parent ($n declared path(s)) — recorded to test-edits.json" \
+    "ticket=$t"
+  return 0
+}
+
+# result.json v2 validation — the unified worker's contract. NO dual-shape
+# support: a v1 file REJECTS with the missing keys NAMED (the path flips in
+# S133, and an old-shape result must never be silently accepted).
+proof_validate_result() { # result-file [ticket] → 0 valid, 1 reject (reason on stderr)
+  local f="$1" t="${2:-}"
+  [ -n "$f" ] && [ -f "$f" ] || { printf 'proof-gate: no result file to validate.\n' >&2; return 1; }
+  local missing="" k
+  for k in ticketId passed attempts summary newTests testEdits flipFlop; do
+    grep -q "\"$k\"" "$f" || missing="${missing:+$missing, }\"$k\""
+  done
+  if [ -n "$missing" ]; then
+    printf 'proof-gate: result.json REJECTED — missing key(s): %s. This gate accepts ONLY the v2 unified-worker shape {ticketId, passed, attempts, summary, newTests[], testEdits[] ({path, reason}), flipFlop: "expected"|"not-applicable", flipFlopReason (required iff not-applicable)}; the v1 {ticketId, passed, attempts, summary} shape is not valid here.\n' "$missing" >&2
+    return 1
+  fi
+  local rid passed attempts ffv ffr
+  rid="$(json_str "$f" ticketId)"
+  passed="$(json_raw "$f" passed)"
+  attempts="$(json_raw "$f" attempts)"
+  ffv="$(json_str "$f" flipFlop)"
+  ffr="$(json_str "$f" flipFlopReason)"
+  if [ -n "$t" ] && [ "$rid" != "$t" ]; then
+    printf 'proof-gate: result.json REJECTED — ticketId "%s" does not match the ticket "%s".\n' "$rid" "$t" >&2
+    return 1
+  fi
+  case "$passed" in true|false) : ;; *)
+    printf 'proof-gate: result.json REJECTED — "passed" must be true or false.\n' >&2; return 1 ;; esac
+  case "$attempts" in ''|*[!0-9]*)
+    printf 'proof-gate: result.json REJECTED — "attempts" must be a number.\n' >&2; return 1 ;; esac
+  if [ "$attempts" -lt 1 ] || [ "$attempts" -gt "$MAX_ATTEMPTS" ]; then
+    printf 'proof-gate: result.json REJECTED — "attempts" is %s; it must be 1..%s (a ticket flags the human at the cap).\n' "$attempts" "$MAX_ATTEMPTS" >&2
+    return 1
+  fi
+  case "$ffv" in
+    expected) : ;;
+    not-applicable)
+      if [ -z "$ffr" ]; then
+        printf 'proof-gate: result.json REJECTED — flipFlop is "not-applicable" but "flipFlopReason" is missing/empty. The reason IS the recorded fact; it is required.\n' >&2
+        return 1
+      fi ;;
+    *)
+      printf 'proof-gate: result.json REJECTED — "flipFlop" must be "expected" or "not-applicable" (got "%s").\n' "$ffv" >&2
+      return 1 ;;
+  esac
+  local structerr
+  structerr="$("${LCARS_PYTHON_BIN:-python3}" -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    print("proof-gate: result.json REJECTED — not valid JSON: %s" % e); sys.exit(1)
+nt = d.get("newTests"); te = d.get("testEdits")
+if not isinstance(nt, list) or any(not (isinstance(p, str) and p) for p in nt):
+    print("proof-gate: result.json REJECTED — \"newTests\" must be an array of non-empty path strings."); sys.exit(1)
+if d.get("flipFlop") == "not-applicable" and nt:
+    print("proof-gate: result.json REJECTED — the result declares new tests yet claims flip-flop \"not-applicable\"; a ticket that authors tests must expect them to flip. Declare flipFlop \"expected\", or drop the tests."); sys.exit(1)
+def bad(e):
+    return not (isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"]
+                and isinstance(e.get("reason"), str) and e["reason"])
+if not isinstance(te, list) or any(bad(e) for e in te):
+    print("proof-gate: result.json REJECTED — \"testEdits\" must be an array of {path, reason} objects (both non-empty strings)."); sys.exit(1)
+' "$f" 2>&1)" || { printf '%s\n' "$structerr" >&2; return 1; }
+  return 0
+}
+
+# THE QUALITY FLOOR. ≥1 new/changed test in the diff AND suite_has_assertions
+# over those files (judged in-tree at the tip), unless the result declares
+# flipFlop=not-applicable — then the declared reason is the recorded fact and
+# the floor is waived (declared-edits + the full suite still apply).
+proof_quality_floor() { # ticket parent-sha worktree → 0 ok/waived, 1 fail
+  local t="$1" parent="$2" wt="$3"
+  local resf; resf="$(ticket_dir "$t")/result.json"
+  local ffv=""; [ -f "$resf" ] && ffv="$(json_str "$resf" flipFlop)"
+  if [ "$ffv" = "not-applicable" ]; then
+    return 0
+  fi
+  local rels; rels="$(proof_test_rels_in_diff "$parent" "$wt" existing)"
+  if [ -z "$(printf '%s' "$rels" | grep . || true)" ]; then
+    printf 'proof-gate: QUALITY FLOOR — ticket %s has NO new/changed test file in its diff vs %s; at least one is required unless the result declares flipFlop "not-applicable" (with a reason).\n' \
+      "$t" "$parent" >&2
+    return 1
+  fi
+  local qd rel; qd="$(mktemp -d)"
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    mkdir -p "$qd/$(dirname "$rel")" 2>/dev/null || :
+    cp "$wt/$rel" "$qd/$rel" 2>/dev/null || :
+  done <<QF_EOF
+$rels
+QF_EOF
+  if suite_has_assertions "$qd"; then
+    rm -rf "$qd"
+    return 0
+  fi
+  rm -rf "$qd"
+  printf 'proof-gate: QUALITY FLOOR — ticket %s new/changed test file(s) contain NO recognizable assertion; a test that claims nothing proves nothing.\n' "$t" >&2
+  return 1
+}
+
 # --- S106: native (rust/go) impl-save-tests staging + red gate --------------
 # The native counterpart to the js/python S101/S102 flow. It is intentionally
 # SIMPLER — a native runner compiles tests inside the crate/package, so there is
@@ -10332,5 +10829,31 @@ FSG_EOF
     locate_mission "$MISSION_ID"
     __tu_rc=0; tests_unchanged "$TICKET" || __tu_rc=$?
     printf 'TURC=%s\n' "$__tu_rc"; exit 0 ;;
+  # S132 test hooks: the STANDALONE proof-of-work gates (no live implement path
+  # calls these — the path flips in S133). Each drives the REAL gate function
+  # against a mission fixture and prints its rc as a parseable token, so the
+  # flip-flop / declared-edits / quality-floor / v2-result contracts are
+  # exercised offline + token-free. Inert for every real subcommand.
+  flip-flop-gate-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh flip-flop-gate-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"
+    [ -n "$RC_SHA" ] || die "flip-flop-gate-test needs --sha <parent-sha> (the parent commit is the snapshot)."
+    __ff_rc=0; flip_flop_gate "$TICKET" "$RC_SHA" "${POSARG:-$REPO_ROOT}" || __ff_rc=$?
+    printf 'FFRC=%s\n' "$__ff_rc"; exit 0 ;;
+  declared-edits-guard-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh declared-edits-guard-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"
+    [ -n "$RC_SHA" ] || die "declared-edits-guard-test needs --sha <parent-sha>."
+    __de_rc=0; declared_edits_guard "$TICKET" "$RC_SHA" "${POSARG:-$REPO_ROOT}" || __de_rc=$?
+    printf 'DERC=%s\n' "$__de_rc"; exit 0 ;;
+  proof-validate-result-test)
+    __pv_rc=0; proof_validate_result "$RESULT" "$TICKET" || __pv_rc=$?
+    printf 'PVRC=%s\n' "$__pv_rc"; exit 0 ;;
+  proof-quality-floor-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh proof-quality-floor-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"
+    [ -n "$RC_SHA" ] || die "proof-quality-floor-test needs --sha <parent-sha>."
+    __qf_rc=0; proof_quality_floor "$TICKET" "$RC_SHA" "${POSARG:-$REPO_ROOT}" || __qf_rc=$?
+    printf 'QFRC=%s\n' "$__qf_rc"; exit 0 ;;
   ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac
