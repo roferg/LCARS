@@ -4,6 +4,42 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.9 — 2026-07-24
+
+The Unified TDD Implementer round (S132–135) — retire the adversarial Test
+Writer / Implementer standoff for ONE cold TDD worker per ticket, with
+correctness enforced by three deterministic, post-hoc proof-of-work gates
+instead of a second agent's judgment. A gate rejection bounces to a fresh worker
+(≤3 sessions) then parks awaiting-human — no worker can fail terminally on
+quality grounds. Full replacement, no fallback flag; the standoff code is retired
+to git history (`run.sh` −1,335 LOC).
+
+- **Proof-of-work gates, standalone (S132).** `flip_flop_gate` (a ticket's
+  new/changed tests must FAIL on the parent commit and PASS on the tip;
+  zero-collected = inconclusive, never a pass), `declared_edits_guard`
+  (undeclared edits to existing tests BLOCK; declared `{path,reason}` ride to
+  Verify), a `result.json` v2 contract, and a quality floor — built and
+  fixture-proven while the live path still ran the old standoff.
+- **The path flip (S133).** `cmd_implement_ticket` drives ONE `implement-tdd`
+  worker → the S132 gates → bounce-3-then-park. The Test Writer, red-gate
+  choreography, `tests.sha256` lifecycle, and `reconcile_tests` are deleted; the
+  `ticket_test_writer_failed → die` class no longer exists. Env-truth machinery
+  (preflight/self-heal, declared-setup invitation, worktree isolation,
+  full-suite gate, empty-worker budgets) is byte-preserved.
+- **Surfaces + doctrine (S134).** Verify shows a per-ticket flip-flop verdict
+  chip (PROVEN / N-A) + a "CONTRACT AMENDMENTS" block (declared edits verbatim)
+  on both the CLI and the board from one shared shape; single-ticket missions
+  surface their proof via a mission-level fallback. Board activity renders the
+  gate events in LCARS voice with a worker-session marker on bounce and no role
+  chip. `vision.md` / `CONTEXT.md` / `CLAUDE.md` / `README.md` + the rendered
+  `docs/` HTML tell the unified doctrine. Display-only; pre-S133 missions render
+  byte-identically.
+- **Dual-CLI cutover capstone (S135).** Two real missions driven Align→Verify
+  hands-off, one per engine (claude + copilot), through the unified path — every
+  ticket flip-flop-proven, zero test-writer events, zero stage-stop dies. First
+  real missions through S112 usage capture; validate + implement are the cost
+  peaks.
+
 ## 2026.7.8 — 2026-07-11
 
 The Actual-Cost & Honest-Progress round (S111–115) — replace two guesses with
