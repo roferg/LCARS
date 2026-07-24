@@ -167,7 +167,7 @@ check "7b. no usage.json written when OFF"            "[ ! -f \"\$(usage_file \"
 
 # === 8. ALL-STAGES coverage: each spawn appends EXACTLY ONE record =============
 r8="$(make_repo '{}')"
-for role in research-questions validate plan plan-review implement-implementer; do
+for role in research-questions validate plan plan-review implement-tdd; do
   drive "$r8" "$role" claude 1 "$FIX/claude-transcript.jsonl"
 done
 check "8a. five spawns → five records (one per spawn)" "[ \"\$(rec_count \"$r8\")\" = '5' ]"

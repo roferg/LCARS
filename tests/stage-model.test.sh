@@ -127,8 +127,8 @@ check "1g. spawn validate argv carries --model sonnet" \
   "[ \"\$(spawn_argv \"$r1\" validate CLAUDECODE=1 | model_of)\" = 'sonnet' ]"
 check "1h. spawn plan-review argv carries --model opus" \
   "[ \"\$(spawn_argv \"$r1\" plan-review CLAUDECODE=1 | model_of)\" = 'opus' ]"
-check "1i. spawn implement-implementer argv carries --model opus" \
-  "[ \"\$(spawn_argv \"$r1\" implement-implementer CLAUDECODE=1 | model_of)\" = 'opus' ]"
+check "1i. spawn implement-tdd argv carries --model opus" \
+  "[ \"\$(spawn_argv \"$r1\" implement-tdd CLAUDECODE=1 | model_of)\" = 'opus' ]"
 
 # === Behavior 2: NO estimate, no per-stage config, no env ⇒ NO --model anywhere
 r2="$(make_repo '{}')"   # no estimate.json passed
@@ -137,7 +137,7 @@ for k in research validate plan planReview implement; do
     "[ -z \"\$(rsm \"$r2\" $k CLAUDECODE=1 | sm_model)\" ]"
 done
 for role in research-questions research-agent validate plan plan-review \
-            implement-test-writer implement-implementer context-pack; do
+            implement-tdd context-pack; do
   check "2.argv $role has ZERO --model tokens (byte-identical legacy)" \
     "[ -z \"\$(spawn_argv \"$r2\" $role CLAUDECODE=1 | grep -x -- --model)\" ]"
 done
@@ -211,8 +211,8 @@ for k in research validate plan planReview implement verify; do
 done
 check "8.argv spawn research-questions carries --model opus (all override)" \
   "[ \"\$(spawn_argv \"$r8\" research-questions CLAUDECODE=1 | model_of)\" = 'opus' ]"
-check "8.argv spawn implement-implementer carries --model opus (all override)" \
-  "[ \"\$(spawn_argv \"$r8\" implement-implementer CLAUDECODE=1 | model_of)\" = 'opus' ]"
+check "8.argv spawn implement-tdd carries --model opus (all override)" \
+  "[ \"\$(spawn_argv \"$r8\" implement-tdd CLAUDECODE=1 | model_of)\" = 'opus' ]"
 
 # --- Behavior 9: scope=implementation pins implement+verify only -------------
 # implement/verify → opus; the reasoning axis still follows estimate.json.
@@ -282,7 +282,7 @@ spawn_argv_copilot() { # repo role override
   cat "$argv" 2>/dev/null
 }
 check "14b. copilot all:opus override reaches spawned argv as claude-opus-4.8" \
-  "[ \"\$(spawn_argv_copilot \"$r14\" implement-implementer all:opus | model_of)\" = 'claude-opus-4.8' ]"
+  "[ \"\$(spawn_argv_copilot \"$r14\" implement-tdd all:opus | model_of)\" = 'claude-opus-4.8' ]"
 r14b="$(make_repo '{}' "$EST")"
 # S78 opus-safe default: the sonnet tier of an override maps to claude-opus-4.8
 # under copilot too (per-engine alias mapping of the override tier).

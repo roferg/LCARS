@@ -172,13 +172,23 @@ pv_result "$rd/bogus-ff.json"
 [ "$PVRC" = 1 ] && ok "A4. flipFlop outside expected|not-applicable rejects" \
                 || bad "A4. bogus flipFlop should reject (PVRC=$PVRC)"
 
+# S133: the internal-attempts cap is RETIRED — attempts is the worker's own
+# honest iteration count, informational and uncapped (the enforced cap is the
+# 3-session gate-bounce loop). attempts 6 must now be ACCEPTED; 0 still rejects.
 cat > "$rd/overcap.json" <<'JSON'
 { "ticketId": "t-001", "passed": true, "attempts": 6, "summary": "s",
   "newTests": [], "testEdits": [], "flipFlop": "expected" }
 JSON
 pv_result "$rd/overcap.json"
-[ "$PVRC" = 1 ] && ok "A5. attempts over the 5 cap rejects" \
-                || bad "A5. attempts 6 should reject (PVRC=$PVRC)"
+[ "$PVRC" = 0 ] && ok "A5a. attempts above the old 5 cap ACCEPTED (uncapped-but-reported, S133)" \
+                || bad "A5a. attempts 6 should accept now (PVRC=$PVRC: $OUT)"
+cat > "$rd/zeroattempts.json" <<'JSON'
+{ "ticketId": "t-001", "passed": true, "attempts": 0, "summary": "s",
+  "newTests": [], "testEdits": [], "flipFlop": "expected" }
+JSON
+pv_result "$rd/zeroattempts.json"
+[ "$PVRC" = 1 ] && ok "A5b. attempts 0 still rejects" \
+                || bad "A5b. attempts 0 should reject (PVRC=$PVRC)"
 
 cat > "$rd/badedit.json" <<'JSON'
 { "ticketId": "t-001", "passed": true, "attempts": 1, "summary": "s",

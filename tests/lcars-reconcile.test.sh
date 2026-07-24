@@ -222,7 +222,7 @@ new_repo_verify() { # repo  [base-content]
   git init -q --bare "$repo.remote.git"
   ( cd "$repo" && git remote add origin "$repo.remote.git" \
       && git push -q origin "$base" "lcars/$MID" )
-  local m; m="$(mdir_of "$repo")"; mkdir -p "$m/tickets/t-001/tests"
+  local m; m="$(mdir_of "$repo")"; mkdir -p "$m/tickets/t-001"
   cat >"$m/prd.md" <<'EOF'
 # Mission: Add dark mode
 **Goal:** Let users switch to a dark colour scheme.
@@ -263,36 +263,45 @@ EOF
 EOF
   # config with a test command that honours LCARS_TESTS_DIR and runs the staged suite
   cat >"$repo/.git/lcars/config.json" <<'EOF'
-{ "testCommand": "for f in \"$LCARS_TESTS_DIR\"/*.sh; do [ -f \"$f\" ] && bash \"$f\" || exit 1; done" }
+{ "testCommand": "if [ -f \"$LCARS_TESTS_DIR\" ]; then bash \"$LCARS_TESTS_DIR\"; else for f in \"$LCARS_TESTS_DIR\"/*.sh; do [ -f \"$f\" ] && bash \"$f\" || exit 1; done; fi" }
 EOF
   echo "$base"
 }
 
-# Stage ticket t-001's test suite. $2 controls whether the suite is "green" (exits
-# 0 against the merged tree) or "red". For green we test for the merged base file.
-stage_ticket_suite() { # repo  green|red
-  local m; m="$(mdir_of "$1")"
+# Stage ticket t-001's suite — S133 shape: the test is COMMITTED IN-TREE on the
+# mission branch (it rode along in the ticket's commit) and the mission records
+# its proof-time hash in proof-tests.sha256 (the drift baseline the retest
+# checks). $2 controls whether the suite is green/red against the merged tree.
+commit_ticket_suite() { # repo  content
+  local repo="$1" content="$2" m; m="$(mdir_of "$repo")"
+  local cur; cur="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+  ( cd "$repo" && git checkout -q "lcars/$MID" \
+      && mkdir -p tests && printf '%s\n' "$content" > tests/t-001.sh \
+      && chmod +x tests/t-001.sh \
+      && git add tests/t-001.sh && git commit -q -m "test(t-001): suite" \
+      && { git push -qf origin "lcars/$MID" 2>/dev/null || :; } \
+      && git checkout -q "$cur" )
+  mkdir -p "$m/tickets/t-001"
+  local h; h="$(cd "$repo" && git show "lcars/$MID:tests/t-001.sh" | shasum -a 256 | awk '{print $1}')"
+  printf '%s  %s\n' "$h" "tests/t-001.sh" > "$m/tickets/t-001/proof-tests.sha256"
+}
+stage_ticket_suite() { # repo  green|red|needs-resolved
+  local content
   if [ "$2" = green ]; then
-    cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
+    content='#!/usr/bin/env bash
+exit 0'
   elif [ "$2" = needs-resolved ]; then
     # GREEN only if shared.txt was resolved to the marker-free "resolved" content.
     # The resolve stub writes "resolved" on success and "still-broken" under
     # STUB_RESOLVE_RED — so this suite passes iff the resolution is the good one.
-    cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
-#!/usr/bin/env bash
-grep -q '^resolved$' shared.txt
-EOF
+    content='#!/usr/bin/env bash
+grep -q "^resolved$" shared.txt'
   else
-    cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
-#!/usr/bin/env bash
+    content='#!/usr/bin/env bash
 # fails against the merged state (silent logical conflict)
-exit 1
-EOF
+exit 1'
   fi
-  chmod +x "$m/tickets/t-001/tests/t.sh"
+  commit_ticket_suite "$1" "$content"
 }
 
 # Move base AHEAD: add a new commit to base on origin (and locally), so the mission

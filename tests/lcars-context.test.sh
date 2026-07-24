@@ -135,15 +135,13 @@ JSON
   plan-review)
     printf '{ "passed": true, "issues": [] }\n' >"$out/verdict.json"
     ;;
-  implement-test-writer)
-    mkdir -p "$out/tests"
-    printf 'it("x",()=>expect(false).toBe(true))\n' >"$out/tests/stub.test.js"
-    ;;
-  implement-implementer)
+  implement-tdd)
     printf 'export const ok=true;\n' > impl-output.js
     tid="$(printf '%s' "$prompt" | awk '/## Your ticket/{getline; gsub(/^[[:space:]]+|[[:space:]]+$/,"",$0); print; exit}')"
     cat >"$out/result.json" <<JSON
-{ "ticketId": "${tid:-t-001}", "passed": true, "attempts": 1, "summary": "green" }
+{ "ticketId": "${tid:-t-001}", "passed": true, "attempts": 1, "summary": "green",
+  "newTests": [], "testEdits": [],
+  "flipFlop": "not-applicable", "flipFlopReason": "context-suite stub: no testable behaviour change" }
 JSON
     ;;
 esac
@@ -345,10 +343,8 @@ cat > "$mrI/waves.json" <<'JSON'
 JSON
 ( cd "$rI" && LCARS_WORKER_BIN="$BIN/worker" LCARS_GH_BIN="$BIN/gh" LCARS_GIT_BIN="$(command -v git)" \
     bash "$SCRIPT" implement-ticket --mission lcars-20260530-001 --ticket t-001 >/dev/null 2>&1 )
-check "4. Test-Writer worker prompt names the context source path" \
-  "prompt_of '$WORKER_CALLS' implement-test-writer | qgrep -qF '$(pack_path "$rI")'"
-check "4. Implementer worker prompt names the context source path" \
-  "prompt_of '$WORKER_CALLS' implement-implementer | qgrep -qF '$(pack_path "$rI")'"
+check "4. unified TDD worker prompt names the context source path" \
+  "prompt_of '$WORKER_CALLS' implement-tdd | qgrep -qF '$(pack_path "$rI")'"
 
 # PURITY — Research must NEVER receive the context source. The pack EXISTS on
 # disk (pre-generated), so if Research leaked it the path would be available;
