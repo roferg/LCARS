@@ -132,10 +132,12 @@ if [ "$MODE" = "snapshot" ]; then
 # ties on id. Record fields: id, issue, stage, glyph, title.
 PAUSE_GLYPH="⏸"
 ASK_GLYPH="❓"
+STANDBY_GLYPH="◇"
 
 rows=()
 questions=()  # "id\tissue\tquestion" for the awaiting-human footer
 any_glyph=0   # did any rendered row carry a status glyph? gates the legend
+any_standby=0 # did any row carry the standby (parked / awaiting-alignment) glyph?
 for s in "${states[@]}"; do
   id="$(json_str "$s" id)"
   [ -n "$id" ] || id="$(basename "$(dirname "$s")")"
@@ -145,6 +147,11 @@ for s in "${states[@]}"; do
   issue="$(json_raw "$s" githubIssue)"
   paused="$(json_raw "$s" paused)"
   question="$(json_str "$s" pendingQuestion)"
+  # A PARKED mission (`lcars file --park`) sits at stage "align" but has no PRD
+  # yet — it is on STANDBY, awaiting the Align grill. It reads as a distinct
+  # row state (a ◇ glyph + an "awaiting alignment" stage cell), never as a
+  # runnable align card.
+  prdpending="$(json_raw "$s" prdPending)"
 
   # When a Mission is parked behind the awaiting-human gate, state.json.stage is
   # the *resume pointer* (e.g. "align", so `lcars run` re-enters Research), not
@@ -173,6 +180,13 @@ for s in "${states[@]}"; do
     glyph="${glyph:+$glyph}$ASK_GLYPH"
     questions+=("$id"$'\t'"$issue_disp"$'\t'"$question")
   fi
+  # A parked mission carries the standby glyph and its stage cell reads
+  # "awaiting alignment" (rather than the bare "align" of a runnable card).
+  if [ "$prdpending" = "true" ]; then
+    glyph="${glyph:+$glyph}$STANDBY_GLYPH"
+    stage="awaiting alignment"
+    any_standby=1
+  fi
   [ -n "$glyph" ] && any_glyph=1
 
   rows+=("$created"$'\t'"$id"$'\t'"$id"$'\t'"$issue_disp"$'\t'"$stage"$'\t'"$glyph"$'\t'"$title")
@@ -186,10 +200,13 @@ RULE="────────────────────────�
 
 echo "LCARS — Active Missions"
 echo "$RULE"
-printf '%-22s%-7s%-13s%-4s%s\n' "ID" "ISSUE" "STAGE" "" "TITLE"
+# STAGE column is 19 wide so the longest stage label — the parked "awaiting
+# alignment" (18 chars) — still gets a separating space before the glyph column
+# instead of gluing into it (e.g. "awaiting alignment◇ Title").
+printf '%-22s%-7s%-19s%-4s%s\n' "ID" "ISSUE" "STAGE" "" "TITLE"
 while IFS=$'\t' read -r _created _sortid id issue stage glyph title; do
   [ -n "$id" ] || continue
-  printf '%-22s%-7s%-13s%-4s%s\n' "$id" "$issue" "$stage" "$glyph" "$title"
+  printf '%-22s%-7s%-19s%-4s%s\n' "$id" "$issue" "$stage" "$glyph" "$title"
 done <<<"$sorted"
 echo "$RULE"
 # Only show the glyph legend when a row actually carries a glyph — otherwise a
@@ -197,7 +214,9 @@ echo "$RULE"
 # line that reads as if a mission has that status. "Legend:" makes it unmistakably
 # a key, not state.
 if [ "$any_glyph" -eq 1 ]; then
-  printf 'Legend: %s paused    %s awaiting your input\n' "$PAUSE_GLYPH" "$ASK_GLYPH"
+  legend="Legend: $PAUSE_GLYPH paused    $ASK_GLYPH awaiting your input"
+  [ "$any_standby" -eq 1 ] && legend="$legend    $STANDBY_GLYPH awaiting alignment"
+  printf '%s\n' "$legend"
 fi
 
 # --- awaiting-human footer ------------------------------------------------

@@ -701,6 +701,18 @@ require_stage() { # wanted-stage
   [ "$stage" = "$1" ] || die "mission is at stage '${stage:-unknown}', not '$1' — this Stage only runs on a mission parked at '$1'."
 }
 
+# A PARKED mission (`"prdPending": true`, filed via `lcars file --park`) sits at
+# stage "align" but has NO PRD yet — Research, and every downstream Stage, would
+# have nothing to consume. Refuse cleanly, naming the align command, rather than
+# letting a Stage die on a missing prd.md with a confusing message (or worse,
+# have the driver spin it). The invariant this protects — "a Stage consumes
+# artifacts that exist" — is old; only the actionable message is new.
+refuse_if_parked() {
+  local pend; pend="$(json_raw "$STATE" prdPending)"
+  [ "$pend" = "true" ] || return 0
+  die "Mission $MISSION_ID is parked awaiting alignment — run \`lcars file $MISSION_ID\` to align it first."
+}
+
 # --- rewrite state.json's stage field in place (portable sed) --------------
 set_stage() {
   local newstage="$1" tmp
@@ -6214,6 +6226,7 @@ run_capped() { # jobs on stdin, one shell command per line
 # only its question text; then `save` persists the findings and advances.
 cmd_research() {
   locate_mission "$MISSION_ID"
+  refuse_if_parked
   require_stage align
   require_worker
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md — Align has not produced a PRD for '$MISSION_ID'."
@@ -9023,6 +9036,9 @@ release_driver_lock() {
 
 cmd_drive() {
   locate_mission "$MISSION_ID"
+  # A parked mission (prdPending) is NOT drivable — the driver never runs a
+  # PRD-less mission. Refuse before taking the lock, naming the align command.
+  refuse_if_parked
 
   # Single-instance guard (BUG-A). If a live driver already holds this mission's
   # lock, this invocation is a clean no-op — never a second concurrent driver.
