@@ -276,3 +276,48 @@ def plant_implementing(root, mid, *, issue=145, title="Implement mission"):
          "detail": "t-002 Badge model", "data": {"ticket": "t-002"}},
     ])
     return d
+
+
+def plant_single_ticket_proof(root, mid, *, issue=146, title="Lone-slice fix",
+                              ticket_id="t-solo", flip_flop="pass",
+                              flip_flop_reason=None, edits=None, new_tests=1,
+                              stage="verify"):
+    """A SINGLE-ticket mission (one plan/waves ticket) parked at Verify, carrying
+    the S133 proof artifacts (result.json v2 + flip-flop.json + test-edits.json)
+    on its lone ticket.
+
+    A single-ticket mission shows NO ticket rows (the lone slice reuses the
+    mission's own issue), so the board must surface this proof at MISSION level as
+    `contractProof` for CLI↔UI parity. Pass `flip_flop=None` (and no edits) to
+    plant a PRE-S133 single-ticket mission — NO proof artifacts at all — so the
+    adapter must omit `contractProof` entirely (byte-identity)."""
+    d = mission_dir(root, mid)
+    write_json(os.path.join(d, "state.json"), {
+        "id": mid, "type": "feature", "title": title, "stage": stage,
+        "created": "2026-07-23T09:00:00Z", "githubIssue": issue,
+        "branch": "lcars/%s" % mid, "base": "main",
+    })
+    write_json(os.path.join(d, "estimate.json"), ESTIMATE_CLAUDE)
+    write_json(os.path.join(d, "plan.json"), [
+        {"id": ticket_id, "title": title, "acceptanceCriteria": ["fixed"],
+         "dependencies": []},
+    ])
+    write_json(os.path.join(d, "waves.json"), [
+        {"wave": 1, "tickets": [{"id": ticket_id, "issue": issue}]},
+    ])
+    td = os.path.join(d, "tickets", ticket_id)
+    if flip_flop is not None:
+        write_json(os.path.join(td, "flip-flop.json"),
+                   {"verdict": flip_flop,
+                    "reason": flip_flop_reason} if flip_flop_reason is not None
+                   else {"verdict": flip_flop})
+        edits = edits if edits is not None else []
+        write_json(os.path.join(td, "test-edits.json"), edits)
+        write_json(os.path.join(td, "result.json"), {
+            "ticketId": ticket_id, "passed": True, "attempts": 1,
+            "summary": "done", "newTests": ["src/solo.test.ts"] * new_tests,
+            "testEdits": edits,
+            "flipFlop": "not-applicable" if flip_flop == "skipped" else "expected",
+            "flipFlopReason": flip_flop_reason,
+        })
+    return d

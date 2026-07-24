@@ -2,7 +2,7 @@
 
 **Local mission control for shipping software with AI.** LCARS is a reusable
 harness that takes a free-form human idea and drives it all the way to a merged
-pull request — through alignment, research, planning, adversarial
+pull request — through alignment, research, planning, gate-proven
 test-and-implement, and a human review gate — mostly unattended. You file the
 idea and give the final yes; the harness does everything in between.
 
@@ -99,7 +99,7 @@ flowchart LR
 | 4 | **Plan** | 🤖 auto | Decomposes the validated plan into small, independently testable tickets — each a vertical slice owning **one cohesive behavior**, sized by total **comprehension load** (code-to-read + tests + new code) against a tunable budget, not a flat line count. |
 | 5 | **Plan Review** | 🤖 auto | A *fresh* reviewer (no planning context) audits every ticket for slice, size, **coupling** (rejecting tickets whose criteria force changing behavior another ticket's tests pin — the real meaning of "too big"), testability, and dependencies. Loops back to Plan until clean; escalates after 3 rounds. |
 | 6 | **Schedule** | 🤖 auto | Builds the dependency graph into sequential **Waves** and opens one GitHub sub-issue per ticket, each **nested under the Mission's issue** (a single-ticket Mission reuses its own issue instead of opening a redundant one). |
-| 7 | **Implement** | 🤖 auto | Per ticket, an adversarial **Test Writer → Implementer** pair. Tests are written first, must fail (red gate), then are locked while the Implementer makes them pass, and each commit must keep the **whole** repo suite green (no silent cross-ticket regression). Independent tickets in a Wave build **concurrently** in isolated worktrees, committing serially in plan order; same-file tickets rebuild serially so every change lands. |
+| 7 | **Implement** | 🤖 auto | Per ticket, one **unified TDD worker** writes tests and code and is proven by deterministic post-hoc gates: **flip-flop** (its new/changed tests must fail on the parent commit, pass on the tip), a **declared-edits** contract (any edit to an existing test must be declared with a reason, else the ticket blocks), a **quality floor**, and the **whole**-repo-suite green gate (no silent cross-ticket regression). A rejection bounces to a fresh worker (≤3 sessions) then parks awaiting-human — never a stage-stop. Independent tickets in a Wave build **concurrently** in isolated worktrees, committing serially in plan order; same-file tickets rebuild serially so every change lands. |
 | 8 | **Verify** | 🧑 you | You read the diff, run the app, test the golden path — then **approve** (open the PR) or **send back** with feedback. |
 
 Four feedback loops keep it honest: Research → Align (too much ambiguity),
@@ -539,34 +539,38 @@ change), the batch **pauses** at that bug and drops its question into
   behaviors, and **coupled** tickets — ones whose criteria can only be met by
   changing behavior another ticket's tests already pin — naming the seam to
   re-slice along; it loops back until clean (or escalates after 3 rounds).
-- **Implement is adversarial and guarded by the harness, not the prompt.** The
-  Test Writer's tests must actually **fail** before the Implementer runs — and the
-  red gate judges that suite **in isolation**, never the repo's existing passing
-  tests, so a green-on-nothing contract can't slip through even in a repo whose own
-  suite is green (a rejection names a root cause — an over-broad slice, a missing
-  module, a runner/environment failure, an empty worker — and grounds the next
-  attempt, after the Test Writer has already **self-smoked** the suite once to catch
-  a hanging or collection-time defect on its own side). Once red, that suite is
-  then **committed into the PR at the repo's own test convention** (co-located
-  `*.test.ts`, a `__tests__/` dir, or a top-level `tests/`) — the locked test in its
-  own commit ahead of the implementation — so the coverage merges to the trunk
-  instead of evaporating in a scratch dir, its immutability re-checked across that
-  commit boundary. The test
-  files are **locked** so green can't be reached by editing them, and a quality
-  check rejects assertion-free suites, and every ticket commit must leave the
-  **whole** repo suite green — a later ticket that silently regresses an earlier
-  one's locked tests fails the Wave loudly instead of slipping through to Verify.
+- **Implement is one unified TDD worker, proven by the harness, not the prompt.**
+  Each ticket is built by a single cold worker that writes both tests and code and
+  runs the suite freely — and its work is proven **afterward** by deterministic,
+  post-hoc gates against git itself, because an LLM rewarded for a green suite will
+  game any contract another LLM writes. The **flip-flop gate** re-runs the ticket's
+  new/changed tests scoped twice — green on the tip, **red on the parent commit** —
+  so a green-on-nothing contract can't slip through even in a repo whose own suite
+  is green (zero tests collected on either leg is *inconclusive, never a pass*). The
+  worker may adapt an existing test the ticket genuinely invalidates, but every edit
+  must be **declared with a reason** in `result.json` — an **undeclared** test change
+  blocks the ticket (the parent commit is the snapshot; git diff is the check), and
+  declared edits ride to Verify as a first-class **contract-amendments** readout. A
+  **quality floor** requires at least one new/changed test that actually asserts
+  something (a genuinely behavior-free ticket may declare `flipFlop: not-applicable`
+  with a reason). Tests are authored **in-tree at the repo's own convention**
+  (co-located `*.test.ts`, a `__tests__/` dir, or a top-level `tests/`) so the
+  coverage merges to the trunk, and every ticket commit must leave the **whole** repo
+  suite green — a later ticket that silently regresses an earlier one fails the Wave
+  loudly instead of slipping through to Verify. **No worker fails terminally on
+  quality:** a gate rejection writes its verdict into a signal and re-spawns a
+  **fresh** worker carrying it, up to **3 sessions**, then parks the ticket
+  awaiting-human with the failing gate named — never a stage-stop.
   Independent tickets in a Wave build
   **concurrently** in isolated per-ticket worktrees (capped by `LCARS_MAX_PARALLEL`)
   and commit serially in plan order; when two tickets touch the **same file** the
   second is rebuilt serially on the current tip so a fully-overlapping Wave still
   lands every ticket's change instead of dropping one. Each worker reads a per-ticket **context
-  manifest + repo pack** instead of cold-exploring the tree. Up to 5 attempts per
-  ticket, then it flags you.
+  manifest + repo pack** instead of cold-exploring the tree.
   And the gates **survive the repo's real test setup**: a runner preflight probes
-  the ticket's package *before any worker is spent* (a runner that can't launch is
+  the ticket's package *before the worker is spent* (a runner that can't launch is
   a truthful "cannot run tests here" — never blamed on the tests); a package with
-  **no runner** in a repo that tests elsewhere invites the Test Writer to
+  **no runner** in a repo that tests elsewhere invites the worker to
   **declare the missing setup** (evidence-gated, ADD-only, package-manager installs
   only), which the harness applies **probe-verified** — exit codes are never
   trusted, and pnpm's silent symlink no-ops are healed by a forced relink — with a
@@ -574,10 +578,10 @@ change), the batch **pauses** at that bug and drops its question into
   (`.git/lcars/test-landscape/`) as a durable, proven fact. And the gates are
   **multi-stack**: `lcars init` detects the repo's toolchain (Rust, Go, Python,
   JS/TS, plus .NET / JVM for failure legibility) and seeds per-stack defaults,
-  and the red-gate isolation speaks each runner's idiom — a directory scope for
+  and the flip-flop scoped runs speak each runner's idiom — a directory scope for
   JS/Python, `cargo test --test` for Rust, `go test -run` for Go — so a compiled
-  crate/package proves fail-first in isolation and rides its test along at its own
-  convention (`tests/*.rs`, `*_test.go`) without ever faking a green on no tests.
+  crate/package proves fail-on-parent / pass-on-tip and rides its test along at its
+  own convention (`tests/*.rs`, `*_test.go`) without ever faking a green on no tests.
 - **Verify never auto-passes.** Auto-advance always stops here. Shipping is your
   call — and **seeing it run is one click**: `lcars launch <mission> [hint]` (or
   the ⚡ **RUN/STOP** on the board's Verify dialogs) checks the branch into a
@@ -600,11 +604,10 @@ flowchart TB
         W2["Validate\n(read-only)"]
         W3["Plan\n(read-only)"]
         W4["Plan Review\n(read-only)"]
-        W5["Test Writer\n(read)"]
-        W6["Implementer\n(read+write+shell)"]
+        W5["Unified TDD Implementer\n(read+write+shell)"]
     end
-    D --> W1 & W2 & W3 & W4 & W5 & W6
-    W1 & W2 & W3 & W4 & W5 & W6 -. "structured output\nto disk" .-> D
+    D --> W1 & W2 & W3 & W4 & W5
+    W1 & W2 & W3 & W4 & W5 -. "structured output\nto disk" .-> D
 ```
 
 Two deliberate properties make this robust:
@@ -693,9 +696,10 @@ never tracks it and the target repo's working tree stays clean. Don't add it to
       plan-review-<round>.json    objections per round
       manifests/<ticket>.md       per-ticket context manifest (files + signatures + ADRs)
       waves.json                  dependency graph → waves + sub-issue numbers
-      tickets/<ticket>/tests/     Test Writer's locked tests
-      tickets/<ticket>/result.json  pass/attempts/summary
-      tickets/<ticket>/red-gate-signal.txt  why a rejected suite failed the red gate (grounds the retry)
+      tickets/<ticket>/result.json  pass/attempts/summary + newTests + declared testEdits (v2)
+      tickets/<ticket>/flip-flop.json   the flip-flop verdict (green-on-tip / red-on-parent legs)
+      tickets/<ticket>/test-edits.json  declared edits to existing tests ({path, reason})
+      tickets/<ticket>/gate-signal.txt  why a rejected gate bounced (grounds the fresh worker)
       pending.json / answers.json   escalated questions + your answers
       feedback.md                 accumulating Verify feedback history
 ```
@@ -733,7 +737,7 @@ the close is tied to the merge — never to approval or to reaching Verify.
 ## Configuration & environment
 
 `lcars init` writes `.git/lcars/config.json` (default model, detected
-`CONTEXT.md`, test command for the red gate, optional notify target). The harness
+`CONTEXT.md`, test command for the proof gates, optional notify target). The harness
 **never** modifies `CLAUDE.md`, `.gitignore`, `CONTEXT.md`, `.claude/settings.json`,
 or any source files.
 
@@ -827,17 +831,17 @@ The full pipeline is built and runs unattended (idea → PR). Sessions 1–16 of
 | Schedule · Implement · Verify + PR (build & ship) | ✅ |
 | `lcars respond` (async human gate) | ✅ |
 | Per-stage isolation (cold subprocess workers) | ✅ |
-| Implement guardrails (red gate · immutable tests · quality · full-suite green gate) | ✅ |
+| Implement proof-of-work gates (flip-flop · declared-edits contract · quality floor · full-suite green gate) | ✅ |
 | Auto-advance + notifications (the unattended loop) | ✅ |
 | Human surface (`lcars` + `lcars answer`) | ✅ |
 | Mission Log (`lcars log`) | ✅ |
 | Mission Log batch resolve (`lcars resolve-logs`) | ✅ |
 | **Copilot enablement** (run LCARS under GitHub Copilot — *new; premium model required*) | ✅ |
 | **Cost estimator + per-stage model selection** (estimate at Align · Sonnet/Opus per Stage · NL override · per-CLI cost) | ✅ |
-| **Tests ride along into the PR** (committed at the repo's own convention · immutability preserved across the commit boundary) | ✅ |
+| **Tests ride along into the PR** (authored in-tree at the repo's own convention · declared-edits audited across the commit boundary) | ✅ |
 | Under-slice pressure signal (Plan Review) | ✅ |
-| Actionable red-gate failure classification | ✅ |
-| Test-Writer pre-gate self-smoke | ✅ |
+| Actionable proof-gate failure classification | ✅ |
+| Unified TDD worker · bounce-3-then-park (no stage-stop on quality) | ✅ |
 | Empty-output worker detection | ✅ |
 | Reconcile env-parity (no phantom self-heal) | ✅ |
 

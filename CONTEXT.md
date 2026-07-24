@@ -44,16 +44,22 @@ The sixth Stage. The Harness builds a dependency graph of Plan issues and groups
 A set of Plan issues that can be implemented concurrently because they have no mutual dependencies. Waves execute sequentially; the next Wave begins only when all issues in the current Wave are complete.
 
 ## Implement
-The seventh Stage. Each issue in a Wave is handled by two sequential LLM sessions:
-1. **Test Writer** — writes failing behavioral tests against the issue's public interface only.
-2. **Implementer** — implements the issue to make the tests pass, without access to the Test Writer's session.
+The seventh Stage. Each issue in a Wave is handled by one **Unified (TDD) Implementer** — a single cold worker that writes both the tests and the code, in any order, running the suite freely until green. Its work is then proven by the harness's deterministic, post-hoc **proof-of-work** gates rather than by any second agent's judgment (see *Flip-flop gate*, *Declared edits*). The worker authors each ticket's suite at the repo's **own test convention** — co-located `*.test.ts`, a `__tests__/` dir, or a top-level `tests/`, detected from the repo — committed alongside the work, so the coverage **rides into the PR** and merges to the trunk instead of evaporating in a scratch dir. A quality failure never crashes the stage: a rejected ticket bounces to a fresh worker (up to three sessions) and then parks awaiting a human, with the failing gate named.
 
-The separation is adversarial by design: the Test Writer cannot sandbag because it does not know who will implement; the Implementer cannot skip tests because they are handed as a constraint.
+## Unified (TDD) Implementer
+The single cold worker that builds one ticket in the Implement Stage. It replaces the retired adversarial Test-Writer / Implementer split (each ran as a separate session; the split stopped a ticket dead whenever the test-authoring agent failed). One worker ping-pongs tests and code; correctness is enforced afterward by the proof-of-work gates in the deterministic driver, because an LLM rewarded for a green suite would otherwise game a contract written by another LLM.
 
-The Test Writer authors each ticket's suite at the repo's **own test convention** — co-located `*.test.ts`, a `__tests__/` dir, or a top-level `tests/`, detected from the repo — and it is committed alongside the work (the locked test in its own commit, the implementation after), so the coverage **rides into the PR** and merges to the trunk instead of evaporating in a scratch dir. Immutability holds across that commit boundary: the committed test is re-hashed against its locked snapshot at ticket-green and again at the pre-merge gate.
+## Flip-flop gate
+The core proof-of-work gate. A ticket's new and changed tests must **fail on the parent commit and pass on the tip** — the harness runs them scoped in the worker's worktree (green) and again in a disposable scratch worktree at the parent (red). Order-independent and mechanical, it proves the tests test *the change*. Zero tests collected on either leg is **inconclusive, never a pass**. Replaces the old pre-implementation fail-first check; strictly stronger.
+
+## Declared edits (contract amendments)
+The unified worker may adapt an existing test the ticket genuinely invalidates, but must declare each edit — `{path, reason}` — in `result.json`. The harness diffs the tests against the parent commit (the commit **is** the snapshot); an **undeclared** test change blocks the ticket, naming the file. Declared edits are recorded to `tickets/<id>/test-edits.json` and surface at Verify as the **contract-amendments** readout, so the human sees which existing tests the change rewrote and why.
+
+## gate-signal
+The durable verdict a rejected proof gate writes (`tickets/<id>/gate-signal.txt`): which gate rejected the ticket, its verdict, and the runner tail. It rides the next (fresh) worker's prompt so a bounce carries forward exactly what was wrong — the mechanism that lets a quality failure retry instead of crashing, capped at three sessions before the ticket parks awaiting a human.
 
 ## Verify
-The eighth Stage. The human reviews the completed Mission — inspecting code, running the app locally if needed — and either approves (triggering PR creation) or sends feedback that re-enters the loop. The PR carries each ticket's Test Writer suite, committed at the repo's own test convention, so the hard-won coverage ships with the change; a pre-merge gate re-checks each committed test against its locked snapshot (provisioning its environment the same way Implement does, so an environment failure is never mistaken for a real conflict), preserving immutability across the commit boundary.
+The eighth Stage. The human reviews the completed Mission — inspecting code, running the app locally if needed — and either approves (triggering PR creation) or sends feedback that re-enters the loop. The PR carries each ticket's tests, committed at the repo's own test convention, so the hard-won coverage ships with the change; the pre-ship readout shows the per-ticket flip-flop verdict and any declared **contract amendments**, and a pre-merge check re-audits that no committed test drifted without a ticket declaring the edit.
 
 ## Setup Skill
 A one-time-per-repo CLI skill (`lcars init`) that prepares a repo for LCARS usage. Does two things:

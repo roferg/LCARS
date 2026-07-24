@@ -1641,6 +1641,11 @@ function openReverifyGate(mi) {
     m.body.appendChild(linkedBugsSection(kids));
   }
 
+  // S134: the CONTRACT AMENDMENTS block for the parent mission's own tickets.
+  // Null (nothing appended) for a pre-S133 mission → byte-identical.
+  var reAmend = contractAmendments(mi);
+  if (reAmend) m.body.appendChild(reAmend);
+
   // S113: EST → ACTUAL cost line (present only when this mission has usage).
   var costLine = costCompareLine(mi);
   if (costLine) m.body.appendChild(costLine);
@@ -1929,7 +1934,21 @@ function openVerify(id) {
       bh.textContent = "What was built — " + mi.tickets.length + " tickets";
       m.body.appendChild(bh);
       m.body.appendChild(buildSummary(mi));
+    } else if (mi.contractProof) {
+      // S134 parity: a SINGLE-ticket mission carries no ticket rows, but its lone
+      // ticket's proof-of-work rides the mission as `contractProof`. Surface the
+      // PROVEN / N/A chip so the board matches the CLI verify-summary. Absent for
+      // a pre-S133 / multi-ticket mission → this branch never fires (byte-identical).
+      var bh1 = el("h4"); bh1.style.margin = "16px 0 8px";
+      bh1.textContent = "What was built";
+      m.body.appendChild(bh1);
+      m.body.appendChild(buildSummary(mi));
     }
+
+    // S134: the CONTRACT AMENDMENTS block (declared test edits). Null (nothing
+    // appended) for a pre-S133 mission, so the readout is byte-identical.
+    var amend = contractAmendments(mi);
+    if (amend) m.body.appendChild(amend);
 
     // S113: EST → ACTUAL cost line (present only when this mission has usage).
     var costLine = costCompareLine(mi);
@@ -2603,7 +2622,10 @@ function activityFeed(mi) {
 function renderEvent(ev) {
   var stage = normStage(ev.stage);
   var isGate = ev.type === "gate";
-  var e = el("div", "evt s-" + (isGate ? "gate" : stage));
+  // S134: a proof-gate event gets an extra accent class (green/red/teal) so its
+  // outcome reads at a glance; every other event keeps its plain stage accent.
+  var proofCls = PROOF_EVENT_CLASS[ev.type];
+  var e = el("div", "evt s-" + (isGate ? "gate" : stage) + (proofCls ? " " + proofCls : ""));
   e.appendChild(el("div", "marker"));
   var ec = el("div", "ec");
   var when = ev.ts != null ? fmtTs(ev.ts) + " · " : "";
@@ -2993,8 +3015,41 @@ var EVENT_HEADS = {
   wave_start: "Wave started", ticket_start: "Ticket started",
   ticket_attempt: "Ticket attempt", ticket_green: "Ticket green",
   ticket_flagged: "Ticket flagged", gate: "Gate raised", error: "Error",
+  // S134 — the S133 unified-implementer proof-gate vocabulary, in Trek console
+  // voice. There is NO per-event role chip anymore: with one unified worker the
+  // old Test-Writer / Implementer distinction is retired. The visible sub-
+  // structure is the PROOF GATE outcome (below) and the worker-session marker
+  // (headlineFor, for ticket_attempt phase=tdd).
+  flip_flop_pass: "PROOF ACCEPTED",
+  flip_flop_fail: "PROOF REJECTED",
+  flip_flop_inconclusive: "PROOF INCONCLUSIVE",
+  flip_flop_skipped: "PROOF WAIVED — N/A",
+  ticket_test_edits: "CONTRACT AMENDMENT",
+  ticket_gate_bounce: "Gate bounce — fresh worker",
 };
+
+/* S134 — the accent class for each S133 proof-gate event, so the timeline reads
+   the proof outcome at a glance (green accept, red reject, teal amendment). Any
+   event NOT in this map keeps its plain stage accent — nothing lost. */
+var PROOF_EVENT_CLASS = {
+  flip_flop_pass: "proof-pass",
+  flip_flop_fail: "proof-fail",
+  flip_flop_inconclusive: "proof-fail",
+  flip_flop_skipped: "proof-na",
+  ticket_test_edits: "proof-amend",
+  ticket_gate_bounce: "proof-bounce",
+};
+
 function headlineFor(ev) {
+  // S134: the worker-session marker. On a bounce (gate rejection → fresh worker,
+  // up to 3 sessions) each unified-TDD session emits a ticket_attempt with
+  // phase=tdd + attempt=N. Surface that session number so multiple worker passes
+  // on one ticket are legible — the meaningful sub-structure that replaces the
+  // retired role distinction (there is no role/"TDD" chip anywhere).
+  if (ev.type === "ticket_attempt") {
+    var d = ev.data || {};
+    if (d.phase === "tdd" && d.attempt != null) return "Worker session " + d.attempt;
+  }
   return EVENT_HEADS[ev.type] || (ev.type || "Event").replace(/_/g, " ");
 }
 
@@ -3164,11 +3219,26 @@ function criteriaChecklist(mi) {
   return host;
 }
 
+/* S134 parity — the proof-bearing ticket rows the Verify surfaces render.
+   Normally the mission's own ticket rows (mi.tickets). A SINGLE-ticket mission
+   carries NO rows (the lone slice reuses the mission's own issue), so its lone
+   ticket's proof rides the mission as `mi.contractProof`; we synthesize one row
+   from it so the flip-flop chip + contract amendments render exactly as the CLI
+   verify-summary shows them. A multi-ticket mission never carries contractProof
+   (adapter), so there is no double-render. */
+function proofTickets(mi) {
+  var tickets = (mi && mi.tickets) || [];
+  if (tickets.some(function (t) { return t && t.proof; })) return tickets;
+  var cp = mi && mi.contractProof;
+  if (cp) return [{ id: cp.id, title: cp.title || cp.id, state: "done", proof: cp }];
+  return tickets;
+}
+
 function buildSummary(mi) {
   // group tickets into a per-wave-ish summary. Without wave grouping in the card
   // shape we render one row per ticket with its state pill.
   var host = el("div");
-  (mi.tickets || []).forEach(function (t) {
+  proofTickets(mi).forEach(function (t) {
     var row = el("div", "crit");
     var cls = t.state === "done" ? "go" : t.state === "flagged" ? "high" : "med";
     var pill = el("span", "pill " + cls, t.state === "done" ? "✓" : (t.id || ""));
@@ -3178,9 +3248,99 @@ function buildSummary(mi) {
     var ttext = el("span", "md md-inline");
     setMd(ttext, " " + (t.title || t.id || ""));
     row.appendChild(ttext);
+    // S134: the flip-flop verdict chip — PROVEN (tests proved fail-on-parent /
+    // pass-on-tip) or N/A (declared not-applicable, with the reason shown). Only
+    // rendered when the ticket carries S133 proof data, so a pre-S133 ticket row
+    // is byte-identical to before this round.
+    var chip = flipFlopChip(t);
+    if (chip) row.appendChild(chip);
     host.appendChild(row);
   });
   return host;
+}
+
+/* S134: the per-ticket flip-flop verdict chip (or null for a pre-S133 ticket /
+   a ticket with no recorded verdict). PROVEN reads teal (go); N/A reads dim and
+   shows the reason inline; a fail/inconclusive verdict reads red. */
+function flipFlopChip(t) {
+  var ff = t && t.proof && t.proof.flipFlop;
+  if (!ff || !ff.verdict) return null;
+  var wrap = el("span", "ff-wrap");
+  wrap.style.marginLeft = "6px";
+  if (ff.verdict === "proven") {
+    wrap.appendChild(el("span", "ff-chip proven", "◈ PROVEN"));
+  } else if (ff.verdict === "n-a") {
+    wrap.appendChild(el("span", "ff-chip na", "◇ N/A"));
+    if (ff.reason) {
+      var why = el("span", "ff-reason dim", " " + ff.reason);
+      why.style.fontSize = "11px";
+      wrap.appendChild(why);
+    }
+  } else {
+    wrap.appendChild(el("span", "ff-chip rejected", "✗ " + String(ff.verdict).toUpperCase()));
+    if (ff.reason) wrap.appendChild(el("span", "ff-reason dim", " " + ff.reason));
+  }
+  return wrap;
+}
+
+/* S134 — the CONTRACT AMENDMENTS block: the declared test edits ({path, reason}
+   verbatim) the unified TDD worker made across a mission's tickets, presented as
+   one LCARS-themed section. Rules:
+     • pre-S133 mission (NO ticket carries proof data) → returns null, so nothing
+       is appended and the Verify readout is byte-identical to before this round;
+     • proofed mission with NO declared edits anywhere → a single quiet line;
+     • otherwise → the amendments, each row naming ticket · path — reason (the
+       reason rendered as verbatim text, never markdown, so a contract is exact).
+   The board reads the SAME shape the CLI verify_contract_readout reads. */
+function contractAmendments(mi) {
+  // S134 parity: proofTickets folds in a single-ticket mission's mission-level
+  // proof (mi.contractProof) so the amendments render identically to the CLI.
+  var tickets = proofTickets(mi);
+  var proofed = tickets.some(function (t) { return t && t.proof; });
+  if (!proofed) return null;                 // pre-S133 → byte-identical
+
+  var wrap = el("div", "contract-amend");
+  wrap.style.margin = "16px 0 8px";
+  var edits = [];
+  tickets.forEach(function (t) {
+    ((t.proof && t.proof.declaredEdits) || []).forEach(function (e) {
+      if (e && e.path) edits.push({ id: t.id, path: e.path, reason: e.reason || "" });
+    });
+  });
+  if (!edits.length) {
+    // exactly one quiet line — no existing tests were adapted this mission.
+    var quiet = el("div", "amend-none dim",
+      "No contract changes — no existing tests were adapted.");
+    quiet.style.fontSize = "13px";
+    wrap.appendChild(quiet);
+    return wrap;
+  }
+  var head = el("h4", null, "Contract amendments");
+  head.style.margin = "0 0 8px";
+  wrap.appendChild(head);
+  var note = el("div", "dim");
+  note.style.cssText = "font-size:12px;margin-bottom:6px";
+  note.textContent = "Existing tests the work adapted — each declared with a reason.";
+  wrap.appendChild(note);
+  edits.forEach(function (e) {
+    var row = el("div", "amend-row");
+    row.style.cssText = "margin:4px 0;padding:8px 10px;border-radius:6px;background:rgba(255,153,0,.08)";
+    var tid = el("span", "amend-tid");
+    tid.style.cssText = "font-weight:bold;color:var(--lcars-amber);margin-right:6px";
+    tid.textContent = e.id;
+    var path = el("span", "amend-path");
+    path.style.cssText = "font-family:var(--font-mono,monospace);font-size:12px";
+    path.textContent = e.path;
+    row.appendChild(tid);
+    row.appendChild(path);
+    // reason VERBATIM (textContent, not markdown) — a contract must be exact.
+    var reason = el("div", "amend-reason");
+    reason.style.cssText = "font-size:12px;margin-top:2px;opacity:.9";
+    reason.textContent = e.reason;
+    row.appendChild(reason);
+    wrap.appendChild(row);
+  });
+  return wrap;
 }
 
 /* S70-B1: the per-stage model-mix table (mock .mix / .tier.opus / .tier.sonnet).

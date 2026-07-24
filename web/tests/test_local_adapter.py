@@ -166,6 +166,41 @@ class LocalAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "m-solo")
         self.assertEqual(m["tickets"], [])
 
+    def test_single_ticket_proof_surfaced_at_mission_level(self):
+        """S134 defect: a single-ticket mission carries NO ticket rows, so its
+        lone ticket's proof-of-work must ride the mission as `contractProof`
+        (same _ticket_proof shape + its id) — the CLI↔UI parity field the board
+        renders the PROVEN chip + CONTRACT AMENDMENTS from."""
+        fx.plant_single_ticket_proof(
+            self.tmp, "m-lone", ticket_id="t-solo", flip_flop="pass",
+            edits=[{"path": "src/api.test.ts",
+                    "reason": "the fix changes the error return from null to a Result"}])
+        m = self._by_id(self._board(), "m-lone")
+        # the "no nested rows" convention is preserved
+        self.assertEqual(m["tickets"], [])
+        cp = m["contractProof"]
+        self.assertEqual(cp["id"], "t-solo")
+        self.assertEqual(cp["flipFlop"]["verdict"], "proven")
+        self.assertEqual(cp["declaredEdits"],
+                         [{"path": "src/api.test.ts",
+                           "reason": "the fix changes the error return from null to a Result"}])
+
+    def test_single_ticket_no_proof_omits_contract_proof(self):
+        """Byte-identity: a single-ticket mission with NO proof artifacts must NOT
+        carry a `contractProof` key at all (ABSENT, not empty)."""
+        fx.plant_single_ticket_proof(self.tmp, "m-bare", flip_flop=None)
+        m = self._by_id(self._board(), "m-bare")
+        self.assertEqual(m["tickets"], [])
+        self.assertNotIn("contractProof", m)
+
+    def test_multi_ticket_mission_has_no_contract_proof(self):
+        """No double-render: a multi-ticket mission surfaces proof via its
+        per-ticket rows, so the mission-level `contractProof` must be ABSENT."""
+        fx.plant_implementing(self.tmp, "m-multi")
+        m = self._by_id(self._board(), "m-multi")
+        self.assertTrue(len(m["tickets"]) > 1)
+        self.assertNotIn("contractProof", m)
+
     def test_done_missions_in_done_column_but_not_active(self):
         """S67 fix-loop r2, DEFECT 2: a done mission (state.stage == "done")
         belongs in the Done COLUMN (PRD §5.1 — done is a Stage label), with its

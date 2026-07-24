@@ -557,6 +557,23 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .evt.s-gate .marker{background:var(--lcars-red)}
 .evt.s-verify .marker{background:var(--lcars-red)}
 .evt.s-done .marker{background:var(--lcars-teal)}
+/* S134 — proof-gate event accents (S133 unified implementer): the marker + the
+   headline colour read the proof outcome at a glance. PROVEN/accept = teal,
+   reject/inconclusive = red, contract amendment = amber, bounce = gold. */
+.evt.proof-pass .marker{background:var(--lcars-teal)}
+.evt.proof-pass .ec .head{color:var(--lcars-teal)}
+.evt.proof-fail .marker{background:var(--lcars-red)}
+.evt.proof-fail .ec .head{color:#ff8a96}
+.evt.proof-na .marker{background:var(--lcars-text-dim)}
+.evt.proof-amend .marker{background:var(--lcars-amber)}
+.evt.proof-amend .ec .head{color:var(--lcars-amber)}
+.evt.proof-bounce .marker{background:var(--lcars-gold,#ffdd44)}
+/* S134 — the per-ticket flip-flop verdict chip in the Verify "what was built" list. */
+.ff-chip{display:inline-block;font-family:var(--font-display);font-size:10px;
+  letter-spacing:.06em;padding:1px 7px;border-radius:9px;border:1px solid transparent}
+.ff-chip.proven{background:rgba(0,204,170,.14);border-color:var(--lcars-teal);color:var(--lcars-teal)}
+.ff-chip.na{background:rgba(255,170,0,.12);border-color:var(--lcars-amber);color:var(--lcars-amber)}
+.ff-chip.rejected{background:rgba(255,51,68,.16);border-color:var(--lcars-red);color:#ff8a96}
 .evt .ec .when{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);letter-spacing:.06em}
 .evt .ec .head{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;
   font-size:12px;color:var(--lcars-text-bright)}

@@ -72,7 +72,8 @@ Skills are built in this sequence. Status:
 6. `lcars run`   — Plan stage: validated-plan → vertical-slice tickets in plan.json.  ✅ built
 7. `lcars run`   — Plan Review stage: fresh reviewer audits tickets → approve/loop/escalate.  ✅ built
 8. `lcars run`   — Schedule stage: dependency graph → waves, create sub-issues.  ✅ built
-9. `lcars run`   — Implement stage: waves → Test Writer + Implementer per ticket.  ✅ built
+9. `lcars run`   — Implement stage: waves → one unified TDD worker per ticket,
+   proven by post-hoc harness gates (see #13).  ✅ built
 10. `lcars run`  — Verify stage + `lcars approve` / `lcars feedback`.  ✅ built
 11. `lcars respond` — Async human gate: when a stage escalates (e.g. Research
     >20, Validate scope change), persist the question + apply
@@ -89,9 +90,11 @@ Skills are built in this sequence. Status:
     via `$LCARS_WORKER_BIN` (defaults to the host CLI), prompt assembled by
     `run.sh` from artifact paths alone; decision-rich artifacts. Closes BUG-004,
     lays the CLI-agnostic groundwork for BUG-003.  ✅ built
-13. `lcars run`   — Implement guardrails: harness-enforced red gate (tests must
-    fail before the Implementer runs) + immutable test files + a test-quality
-    check.  ✅ built
+13. `lcars run`   — Implement guardrails: the adversarial Test-Writer/Implementer
+    split is retired for ONE unified TDD worker, proven by deterministic post-hoc
+    gates — flip-flop (tests fail on parent, pass on tip) + declared-edits
+    contract + a quality floor; a gate rejection bounces to a fresh worker (≤3
+    sessions) then parks awaiting-human, never a stage-stop.  ✅ built (S132–135)
 14. `lcars run`   — Auto-advance + notifications: token-free bash driver loops the
     per-stage advances; `--step` for one; fires `$LCARS_NOTIFY` at every human
     gate (local banner default, ntfy/Pushover opt-in). **Full unattended loop.**

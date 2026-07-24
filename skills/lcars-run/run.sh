@@ -4500,6 +4500,74 @@ EOF
 # `lcars approve` / `lcars feedback` (their own skills), not here.
 #
 #   verify-summary  --mission <id>
+# S134 — the CONTRACT-CHANGES readout. Given the mission's ordered ticket ids,
+# reads each ticket's S133 proof artifacts (result.json v2, flip-flop.json,
+# test-edits.json) and prints the per-ticket flip-flop verdict + the mission's
+# CONTRACT AMENDMENTS block (declared {path, reason} edits, verbatim). It prints
+# NOTHING for a pre-S133 mission (no flip-flop.json / test-edits.json on ANY
+# ticket) so that readout is BYTE-IDENTICAL to before this round. The board
+# renders the same shape (local_adapter `_ticket_proof`), so CLI ↔ UI agree.
+verify_contract_readout() { # ordered ticket ids as args
+  [ "$#" -gt 0 ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$MISSION_DIR" "$@" <<'PYEOF'
+import json, os, sys
+mdir = sys.argv[1]; ids = sys.argv[2:]
+def load(p):
+    try:
+        with open(p) as f: return json.load(f)
+    except Exception:
+        return None
+rows = []; proofed = False
+for tid in ids:
+    td = os.path.join(mdir, "tickets", tid)
+    ff = load(os.path.join(td, "flip-flop.json"))
+    te = load(os.path.join(td, "test-edits.json"))
+    res = load(os.path.join(td, "result.json"))
+    if not isinstance(ff, dict) and not isinstance(te, list):
+        rows.append((tid, None)); continue          # pre-S133 ticket
+    proofed = True
+    edits = te if isinstance(te, list) else (
+        (res.get("testEdits") if isinstance(res, dict) else []) or [])
+    edits = [e for e in edits if isinstance(e, dict) and e.get("path")]
+    new = 0
+    if isinstance(res, dict) and isinstance(res.get("newTests"), list):
+        new = len([p for p in res["newTests"] if isinstance(p, str) and p])
+    decl = res.get("flipFlop") if isinstance(res, dict) else None
+    ffv = ff.get("verdict") if isinstance(ff, dict) else None
+    if decl == "not-applicable" or ffv == "skipped":
+        verdict = "N/A"
+        reason = (res.get("flipFlopReason") if isinstance(res, dict) else None) \
+            or (ff.get("reason") if isinstance(ff, dict) else "") or ""
+    elif ffv == "pass":
+        verdict, reason = "PROVEN", ""
+    elif ffv in ("fail", "inconclusive"):
+        verdict = ffv.upper()
+        reason = (ff.get("reason") if isinstance(ff, dict) else "") or ""
+    else:
+        verdict, reason = None, ""
+    rows.append((tid, {"new": new, "edits": edits, "verdict": verdict, "reason": reason}))
+if not proofed:
+    sys.exit(0)                                       # byte-identical: print nothing
+out = ["  Proof of work:"]
+for tid, p in rows:
+    if p is None:
+        out.append("    - %s: no proof artifacts on file" % tid); continue
+    chip = "flip-flop %s" % (p["verdict"] or "-")
+    if p["verdict"] == "N/A" and p["reason"]:
+        chip += " (%s)" % p["reason"]
+    glyph = "✓" if p["verdict"] == "PROVEN" else "-"
+    out.append("    %s %s -- %s · %d new/changed test(s)" % (glyph, tid, chip, p["new"]))
+amend = [(tid, e) for tid, p in rows if p for e in p["edits"]]
+if amend:
+    out.append("  CONTRACT AMENDMENTS (declared test edits):")
+    for tid, e in amend:
+        out.append("    ✎ %s · %s -- %s" % (tid, e.get("path"), e.get("reason", "") or ""))
+else:
+    out.append("  Contract amendments: none -- no existing tests were adapted.")
+sys.stdout.write("\n".join(out) + "\n")
+PYEOF
+}
+
 cmd_verify_summary() {
   locate_mission "$MISSION_ID"
   require_stage verify
@@ -4513,10 +4581,11 @@ cmd_verify_summary() {
 
   echo "VERIFY: $title"
   echo "  All tickets completed:"
-  local total=0 green=0 nwaves=0 w id rf attempts
+  local total=0 green=0 nwaves=0 w id rf attempts ordered_ids=""
   while IFS=$'\t' read -r w id; do
     [ -n "$id" ] || continue
     total=$((total + 1))
+    ordered_ids="${ordered_ids:+$ordered_ids }$id"
     [ "$w" -gt "$nwaves" ] && nwaves="$w"
     rf="$(ticket_dir "$id")/result.json"
     if [ -f "$rf" ] && [ "$(json_raw "$rf" passed)" = "true" ]; then
@@ -4530,6 +4599,12 @@ $table
 EOF
 
   echo "  Test results: $green/$total ticket(s) green across $nwaves wave(s)."
+
+  # S134: the contract-changes readout (per-ticket flip-flop verdict + declared
+  # test edits). Prints NOTHING for a pre-S133 mission, so its readout is
+  # byte-identical to before this round.
+  # shellcheck disable=SC2086
+  verify_contract_readout $ordered_ids
 
   # S113: show the ACTUAL cost beside the ESTIMATE (display-only — actuals are
   # captured by S112 into usage.json; the estimate is never touched). Present

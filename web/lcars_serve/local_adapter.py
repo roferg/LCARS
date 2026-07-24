@@ -242,7 +242,10 @@ class LocalAdapter(object):
         plan = _load_json(os.path.join(d, "plan.json"))
         waves = _load_json(os.path.join(d, "waves.json"))
 
-        tickets = _tickets(plan, waves, events)
+        tickets = _tickets(plan, waves, events, d)
+        # S134 parity: a single-ticket mission has NO ticket rows, so its lone
+        # ticket's proof-of-work rides the mission itself (None → key omitted).
+        contract_proof = _contract_proof(plan, waves, d)
         progress = _progress(waves, events) if board.normalise_stage(stage) == "implement" else None
 
         # UX-24: active run time (wall-clock since the first stage_start, minus
@@ -422,6 +425,11 @@ class LocalAdapter(object):
         # file exists (byte-identical to before for every idle/finished mission).
         if liveness is not None:
             card["liveness"] = liveness
+        # S134 parity: additive — only present `contractProof` for a single-ticket
+        # mission whose lone ticket has S133 proof artifacts. ABSENT (not null)
+        # otherwise, so a pre-S133 / multi-ticket mission's card is byte-identical.
+        if contract_proof is not None:
+            card["contractProof"] = contract_proof
         return card
 
     def _activity(self, d):
@@ -430,13 +438,22 @@ class LocalAdapter(object):
         for ev in _load_jsonl(os.path.join(d, "events.jsonl")):
             if not isinstance(ev, dict):
                 continue
-            feed.append({
+            entry = {
                 "ts": ev.get("ts"),
                 "stage": ev.get("stage"),
                 "type": ev.get("type"),
                 "detail": ev.get("detail"),
                 "text": _human(ev),
-            })
+            }
+            # S134: pass the event's structured `data` through (additive) so the
+            # front end can read the worker-session number (ticket_attempt
+            # phase=tdd, attempt=N), the bounced gate name, and the park category
+            # — the sub-structure that replaces the retired role distinction.
+            # Absent/empty ⇒ no `data` key, so a pre-round event is unchanged.
+            data = ev.get("data")
+            if isinstance(data, dict) and data:
+                entry["data"] = data
+            feed.append(entry)
         return feed
 
 
@@ -469,11 +486,16 @@ def _inflight_stage(events):
 
 
 # --- ticket + progress derivation (shared shape; mirrors render.sh ideas) ----
-def _tickets(plan, waves, events):
+def _tickets(plan, waves, events, mission_dir=None):
     """Ordered ticket rows with sub-issue numbers and an event-derived state.
 
     A single-ticket mission shows none (the lone ticket reuses the mission's own
     issue, per the Schedule fast-path) — same "no nested rows" rule as the card.
+
+    S134: each row ALSO carries an additive `proof` object read from the ticket's
+    S133 gate artifacts (see `_ticket_proof`) so the Verify surfaces can render
+    the contract-changes story. A pre-S133 ticket (no such artifacts) gets NO
+    `proof` key at all, so its row is byte-identical to before this round.
     """
     order = []
     titles = {}
@@ -496,13 +518,105 @@ def _tickets(plan, waves, events):
     states = _ticket_states(events)
     rows = []
     for tid in order:
-        rows.append({
+        row = {
             "id": tid,
             "issue": issues.get(tid),
             "title": titles.get(tid, tid),
             "state": states.get(tid, "pending"),
-        })
+        }
+        proof = _ticket_proof(mission_dir, tid)
+        if proof is not None:
+            row["proof"] = proof
+        rows.append(row)
     return rows
+
+
+# --- S134: the per-ticket proof-of-work contract (from the S133 gate artifacts)
+# The unified TDD Implementer's work is proven post-hoc and recorded to
+# tickets/<id>/{result.json (v2), flip-flop.json, test-edits.json}. This reads
+# those into the adapter-neutral shape the Verify surfaces render:
+#     {newTests: int, declaredEdits: [{path, reason}], flipFlop: {verdict, reason}}
+# verdict is the human-facing chip: "proven" | "n-a" | "fail" | "inconclusive";
+# reason carries the not-applicable / rejection reason (None for a clean PROVEN).
+# ADDITIVE: a ticket with NO gate artifacts at all (a pre-S133 mission) returns
+# None, so its row is byte-identical to before this round. Mirrors run.sh's
+# verify_contract_readout so the CLI and the board read the SAME source.
+def _ticket_proof(mission_dir, tid):
+    if not mission_dir:
+        return None
+    td = os.path.join(mission_dir, "tickets", tid)
+    ff = _load_json(os.path.join(td, "flip-flop.json"))
+    te = _load_json(os.path.join(td, "test-edits.json"))
+    res = _load_json(os.path.join(td, "result.json"))
+    if not isinstance(ff, dict) and not isinstance(te, list):
+        return None  # pre-S133 ticket — no proof artifacts
+
+    # declared edits: the durable {path, reason} list (falls back to result.testEdits)
+    src = te if isinstance(te, list) else (
+        (res.get("testEdits") if isinstance(res, dict) else None) or [])
+    edits = [{"path": e.get("path"), "reason": e.get("reason", "") or ""}
+             for e in (src or []) if isinstance(e, dict) and e.get("path")]
+
+    new_tests = 0
+    if isinstance(res, dict) and isinstance(res.get("newTests"), list):
+        new_tests = len([p for p in res["newTests"] if isinstance(p, str) and p])
+
+    verdict = reason = None
+    decl = res.get("flipFlop") if isinstance(res, dict) else None
+    ffv = ff.get("verdict") if isinstance(ff, dict) else None
+    if decl == "not-applicable" or ffv == "skipped":
+        verdict = "n-a"
+        reason = (res.get("flipFlopReason") if isinstance(res, dict) else None) \
+            or (ff.get("reason") if isinstance(ff, dict) else None)
+    elif ffv == "pass":
+        verdict = "proven"
+    elif ffv in ("fail", "inconclusive"):
+        verdict = ffv
+        reason = ff.get("reason") if isinstance(ff, dict) else None
+
+    proof = {"newTests": new_tests, "declaredEdits": edits}
+    if verdict is not None:
+        proof["flipFlop"] = {"verdict": verdict, "reason": reason}
+    return proof
+
+
+# --- S134 parity: MISSION-LEVEL proof for a SINGLE-ticket mission -------------
+# A single-ticket mission carries NO ticket rows (`_tickets` returns [] — the lone
+# slice reuses the mission's own issue, per the Schedule fast-path), so the
+# board's per-row proof render has nothing to hang the flip-flop verdict / contract
+# amendments on, while the CLI verify-summary reads the lone ticket directly and
+# DOES show them. To restore CLI↔UI parity we surface the lone ticket's proof at
+# MISSION level (the same `_ticket_proof` shape, PLUS its id + title) as the card's
+# `contractProof` field. Rules that protect the round's invariants:
+#   * returns None unless there is EXACTLY ONE ticket — a multi-ticket mission
+#     carries its proof on the per-ticket rows, so this stays None → NO
+#     double-render (the card never sets contractProof for a multi-ticket mission);
+#   * returns None when that lone ticket has NO S133 proof artifacts (a pre-S133
+#     mission), so the caller omits the key ENTIRELY → byte-identical render.
+def _contract_proof(plan, waves, mission_dir):
+    order = []
+    titles = {}
+    if isinstance(plan, list):
+        for t in plan:
+            if isinstance(t, dict) and t.get("id"):
+                if t["id"] not in order:
+                    order.append(t["id"])
+                titles.setdefault(t["id"], t.get("title") or t["id"])
+    if isinstance(waves, list):
+        for w in waves:
+            for t in (w.get("tickets") or []) if isinstance(w, dict) else []:
+                if isinstance(t, dict) and t.get("id") and t["id"] not in order:
+                    order.append(t["id"])
+    if len(order) != 1:
+        return None
+    tid = order[0]
+    proof = _ticket_proof(mission_dir, tid)
+    if proof is None:
+        return None
+    out = dict(proof)
+    out["id"] = tid
+    out["title"] = titles.get(tid, tid)
+    return out
 
 
 def _ticket_states(events):
