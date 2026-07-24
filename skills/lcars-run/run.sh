@@ -687,7 +687,7 @@ cmd_repo_map() {
 implement_nav_block() { # ticket-id
   local tid="$1" block=""
   [ -f "$MISSION_DIR/manifests/$tid.md" ] && block="$block
-- $MISSION_DIR/manifests/$tid.md   (this ticket's context manifest — relevant files + interface signatures + touched ADR ids; NAVIGATION ONLY, not the implementation. The Test Writer uses the listed files to find the PUBLIC INTERFACE to test against — NOT as a place to add tests into; always write a dedicated fail-first test file.)"
+- $MISSION_DIR/manifests/$tid.md   (this ticket's context manifest — relevant files + interface signatures + touched ADR ids; NAVIGATION ONLY, not the implementation. Use the listed files to find the PUBLIC INTERFACE to test against; author the ticket's tests in-tree at the repo's own convention.)"
   [ -f "$MISSION_DIR/repo-map.md" ] && block="$block
 - $MISSION_DIR/repo-map.md   (the repo symbol map — interface signatures + paths across the codebase, regenerated this wave; navigate from it instead of cold file-walking)"
   printf '%s' "$block"
@@ -2289,10 +2289,12 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # collected / ran" phrasings.
       printf '%s' 'No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items' ;;
     hang)
-      # S99 — a Test-Writer suite that HUNG under the pre-gate self-smoke timeout.
-      # CLASSIFY-ONLY (classify_impl_failure at exhaustion); NEVER consulted by
-      # red_gate_ok. Anchored to the self-smoke's OWN captured marker so it cannot
-      # false-positive on ordinary runner chatter.
+      # A suite that HUNG and never settled under the hard timeout. CLASSIFY-ONLY
+      # (classify_impl_failure at exhaustion); NEVER consulted by a gate verdict.
+      # (S133: the flip-flop gate legs now time out and render such a suite
+      # INCONCLUSIVE at the gate; this arm defensively names a hang phrasing that
+      # still reaches exhaustion.) Anchored to explicit "never settled/finished"
+      # phrasing so it cannot false-positive on ordinary runner chatter.
       printf '%s' 'SELF-SMOKE — your suite HUNG|the suite never (settled|finished) within the hard timeout' ;;
   esac
 }
@@ -2493,10 +2495,12 @@ red_gate_env_failure() { # runner-output → 0 if the runner could not execute
 #   1. empty-worker-output — the worker produced NOTHING (no file AND empty
 #      stdout/stderr). Checked FIRST: there is no runner output to classify, and
 #      this is the S98 worker-health signal (a dead/transient CLI, not a code bug).
-#   2. test-writer-hang    — the S99 pre-gate self-smoke's HANG marker (the suite
-#      never settled under the hard timeout — a never-settling awaited/thenable mock
-#      or an infinite async init). Checked BEFORE env so a hang is never mis-read as
-#      an unprovisioned runner.
+#   2. suite-hang          — the runner's own HANG marker (a suite that never
+#      settled under the hard timeout — a never-settling awaited/thenable mock or an
+#      infinite async init). Checked BEFORE env so a hang is never mis-read as an
+#      unprovisioned runner. (S133: the flip-flop gate legs now also time out and
+#      render such a suite INCONCLUSIVE at the gate; this arm is the classifier's
+#      defensive name for a hang signature that still reaches exhaustion.)
 #   2.5 test-infra-mismatch — S131: a DECLARED TEST SETUP was applied this
 #      mission (the caller threads the $MISSION_DIR/test-setup-applied.json
 #      marker as the 4th input) AND the runner COLLECTED ZERO tests
@@ -2535,13 +2539,13 @@ classify_impl_failure() { # runner_out  worker_out  files_written  [setup_applie
     printf 'empty-worker-output'; return 0
   fi
 
-  # 2. test-writer-hang — a Test-Writer self-smoke HANG (the suite never settled
-  # under the hard timeout — a never-settling awaited/thenable mock or an infinite
-  # async init). Recognised from the self-smoke's own captured marker so an
-  # EXHAUSTED ticket names the hang instead of a generic over-broad slice. Checked
-  # before env so a hang is never mis-read as an unprovisioned runner.
+  # 2. suite-hang — the runner's suite never settled under the hard timeout (a
+  # never-settling awaited/thenable mock or an infinite async init). Recognised from
+  # the runner's own captured marker so an EXHAUSTED ticket names the hang instead of
+  # a generic over-broad slice. Checked before env so a hang is never mis-read as an
+  # unprovisioned runner. (S133: the flip-flop gate legs also time out at the gate.)
   if printf '%s' "$runner_out" | grep -Eq "$(rg_signature hang)"; then
-    printf 'test-writer-hang'; return 0
+    printf 'suite-hang'; return 0
   fi
 
   # 2.5. test-infra-mismatch (S131) — a declared setup was applied this mission AND
@@ -2631,7 +2635,7 @@ impl_failure_category_phrase() { # category → phrase
         && _tim_pkg="$(json_str "$MISSION_DIR/test-setup-applied.json" package)"
       printf "test-infra mismatch (a declared test setup was applied%s but its runner config never collected the harness-placed test — the config's include and the in-tree test placement must agree; NOT a scoping problem)" "${_tim_pkg:+ in '$_tim_pkg'}" ;;
     empty-worker-output)        printf 'empty worker output (the worker produced no file and no output — likely a transient CLI failure, not a code problem)' ;;
-    test-writer-hang)           printf 'test-writer hang (the suite never settled under the pre-gate self-smoke timeout — likely an awaited / thenable mock; caught before the Implementer)' ;;
+    suite-hang)                 printf 'suite hang (the suite never settled under the hard timeout — likely an awaited / thenable mock or an infinite async init)' ;;
     env-failure|runner-startup) printf 'environment failure (the test runner could not start — the worktree is not provisioned; NOT a code problem)' ;;
     genuine-red-exhausted)      printf 'genuine red exhausted (the tests went red but never turned green within the attempt cap)' ;;
     *)                          printf '%s' "$1" ;;
@@ -3203,22 +3207,33 @@ proof_scoped_leg_run() { # leg-root rels(newline)
   PROOF_LEG_RC=0; PROOF_LEG_OUT=""
   first="$(printf '%s\n' "$rels" | grep . | head -1)"
   local stack; stack="$(resolve_stack)"
+  # S133/DEFECT-2: both flip-flop legs run under a PORTABLE hard timeout so a
+  # suite that never settles (the awaited-thenable-mock hang class the retired
+  # self-smoke used to catch) is rendered INCONCLUSIVE — sentinel 98 — instead
+  # of silently hanging the ticket build. run_with_hard_timeout group-kills the
+  # runner (perl setsid) so no forked child (vitest/jest pool) survives.
+  local gsecs="${LCARS_GATE_TIMEOUT:-120}"
+  case "$gsecs" in ''|*[!0-9]*) gsecs=120 ;; esac
+  local gof; gof="$(mktemp "${TMPDIR:-/tmp}/lcars-ffleg.XXXXXX" 2>/dev/null)" \
+    || gof="${MISSION_DIR:-$root}/.ffleg.$$"
   if stack_is_native; then
     # S106 native scoping: cargo test --test <stem> / go test -run '^(funcs)$',
     # built from the staged files AT THIS LEG'S ROOT.
     cmd="$(printf '%s\n' "$rels" | REPO_ROOT="$root" native_scoped_cmd "$stack")"
     if [ -z "$cmd" ]; then
+      rm -f "$gof"
       PROOF_LEG_RC=97
       PROOF_LEG_OUT="proof-gate: the ticket's $stack test file(s) declare no runnable test target — the scoped invocation cannot be constructed."
       return 0
     fi
     run_dir="$(proof_native_run_dir "$stack" "$root" "$first")"
-    out="$( cd "$run_dir" && eval "$cmd" 2>&1 )" || rc=$?
+    ( cd "$run_dir" && run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
   else
     # js/py: the S87 dir-scoped run — LCARS_TESTS_DIR points at the single file
     # (or the common ancestor), invoked from the tests' own package.
     cmd="$(resolve_test_cmd)"
     if [ -z "$cmd" ]; then
+      rm -f "$gof"
       PROOF_LEG_RC=96
       PROOF_LEG_OUT="proof-gate: no testCommand configured — the harness cannot run the ticket's tests."
       return 0
@@ -3226,7 +3241,14 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     local pkg; pkg="$(package_of_relpath "$first" "$root")"
     run_dir="$root${pkg:+/$pkg}"
     local scope; scope="$(intree_scope_for "$root" "$rels")"
-    out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+    ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
+  fi
+  out="$(cat "$gof" 2>/dev/null)"; rm -f "$gof"
+  if [ "$rc" = 124 ]; then
+    PROOF_LEG_RC=98
+    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout (LCARS_GATE_TIMEOUT) and was terminated — a suite that never settles cannot prove anything.
+${out}"
+    return 0
   fi
   PROOF_LEG_RC="$rc"
   PROOF_LEG_OUT="$out"
@@ -3389,8 +3411,10 @@ flip_flop_gate() { # ticket parent-sha worktree
   proof_scoped_leg_run "$wt" "$rels"
   FF_TIP_RC="$PROOF_LEG_RC"
   FF_TIP_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
-  if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ]; then
-    _ff_finish "$t" "$parent" "$ffj" inconclusive "$PROOF_LEG_OUT" "$rels"; return $?
+  if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ] || [ "$PROOF_LEG_RC" = 98 ]; then
+    local tipreason="$PROOF_LEG_OUT"
+    [ "$PROOF_LEG_RC" = 98 ] && tipreason="the TIP leg's $PROOF_LEG_OUT"
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipreason" "$rels"; return $?
   fi
   if proof_zero_collected "$PROOF_LEG_OUT"; then
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
@@ -3425,8 +3449,10 @@ FF_STAGE_EOF
   # PRUNE FIRST — on every verdict path (behavior: pruned on success AND failure).
   proof_prune_scratch "$wt" "$scratch"
 
-  if [ "$FF_PAR_RC" = 96 ] || [ "$FF_PAR_RC" = 97 ]; then
-    _ff_finish "$t" "$parent" "$ffj" inconclusive "$par_out" "$rels"; return $?
+  if [ "$FF_PAR_RC" = 96 ] || [ "$FF_PAR_RC" = 97 ] || [ "$FF_PAR_RC" = 98 ]; then
+    local parreason="$par_out"
+    [ "$FF_PAR_RC" = 98 ] && parreason="the PARENT leg's $par_out"
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$parreason" "$rels"; return $?
   fi
   if proof_zero_collected "$par_out"; then
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
@@ -4016,7 +4042,7 @@ EOF
 
   echo "IMPLEMENT: wave $cur active"
   echo "  Pending ticket(s) in wave $cur: $pending"
-  echo "  Build these (Test Writer → Implementer) before wave $((cur + 1))."
+  echo "  Build these (unified TDD implementer, one worker per ticket) before wave $((cur + 1))."
   exit 0
 }
 
@@ -7415,7 +7441,7 @@ cmd_implement_ticket() {
       pf_root_alive=1
     fi
     # S111 3′: a RUNNER-LESS PACKAGE in an otherwise-working repo is the case a
-    # DECLARED TEST SETUP can self-heal — INVITE the Test Writer (evidence rides
+    # DECLARED TEST SETUP can self-heal — INVITE the implementer (evidence rides
     # the prompt) instead of parking, unless a setup was already tried for this
     # mission (then the human decides) or the captain disabled the mechanism.
     if [ "$pf_root_alive" = 1 ] \
@@ -7424,7 +7450,7 @@ cmd_implement_ticket() {
       export LCARS_SETUP_EVIDENCE="package '$pf_pkg' cannot run tests (the repo root can). Command probed: $(resolve_test_cmd) (from: $pf_dir). Runner said:
 $(printf '%s' "$pf_out" | tail -10)"
       emit_event test_setup_invited implement \
-        "package '$pf_pkg' has no working test runner — inviting the Test Writer to declare the missing test setup (evidence-gated)" \
+        "package '$pf_pkg' has no working test runner — inviting the implementer to declare the missing test setup (evidence-gated)" \
         "ticket=$TICKET"
     else
       local pf_diag

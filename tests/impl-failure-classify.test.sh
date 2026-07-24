@@ -128,8 +128,8 @@ expect_cat "7b. zero-collect WITHOUT setup → over-broad-slice (genuine no-cohe
 expect_cat "7c. genuine assertion red + setup applied → genuine-red-exhausted (the flag alone never hijacks)" \
   "genuine-red-exhausted" \
   "$(classify_setup "$RUNNER_ASSERT")"
-expect_cat "7d. hang marker + setup applied → test-writer-hang (hang precedence holds)" \
-  "test-writer-hang" \
+expect_cat "7d. hang marker + setup applied → suite-hang (hang precedence holds)" \
+  "suite-hang" \
   "$(classify_setup 'SELF-SMOKE — your suite HUNG: the suite never settled within the hard timeout')"
 
 echo

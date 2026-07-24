@@ -541,6 +541,103 @@ pv_result "$rd2/na-clean.json"
                 || bad "I4. clean not-applicable should accept (PVRC=$PVRC: $OUT)"
 
 # ==========================================================================
+# J. hang timeout (DEFECT-2): a scoped leg that never settles is INCONCLUSIVE,
+#    NOT a silent hang — the runner's process group is reaped, no orphan.
+# ==========================================================================
+echo "== J. flip-flop leg hang timeout =="
+
+# J1-J4: the TIP leg's runner never settles → INCONCLUSIVE, reason names the
+# timeout + the TIP leg, scratch pruned, no runaway runner left behind.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD='sleep 691' LCARS_GATE_TIMEOUT=2
+[ "$FFRC" = 2 ] && ok "J1. a hanging TIP runner → flip-flop INCONCLUSIVE (rc 2), not a hang" \
+                || bad "J1. hanging runner should be inconclusive (FFRC=$FFRC: $OUT)"
+ffj="$(TD "$repo")/flip-flop.json"
+if grep -q '"verdict": "inconclusive"' "$ffj" 2>/dev/null \
+   && grep -qi 'timeout' "$ffj" 2>/dev/null && grep -qi 'TIP leg' "$ffj" 2>/dev/null; then
+  ok "J2. flip-flop.json reason NAMES the timeout and the TIP leg"
+else
+  bad "J2. inconclusive reason should name the timeout + TIP leg ($(cat "$ffj" 2>/dev/null))"
+fi
+no_scratch_left "$repo" && ok "J3. no scratch worktree survives the TIP timeout" \
+                        || bad "J3. scratch worktree leaked after a TIP timeout"
+if pgrep -f 'sleep 691' >/dev/null 2>&1; then
+  bad "J4. a runaway runner (sleep 691) survived the group-kill"
+else
+  ok "J4. the hung runner's process group was reaped (no orphan)"
+fi
+
+# J5-J6: the SAME wrapper guards the PARENT leg. Tip-only untracked marker makes
+# the tests GREEN on tip but the runner SLEEP on the parent scratch → the PARENT
+# leg times out → INCONCLUSIVE naming the PARENT leg (not a false pass).
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+: > "$repo/tip-marker"
+HCMD='if [ -f tip-marker ]; then node --test $LCARS_TESTS_DIR; else sleep 693; fi'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$HCMD" LCARS_GATE_TIMEOUT=2
+[ "$FFRC" = 2 ] && ok "J5. a hanging PARENT runner → flip-flop INCONCLUSIVE (rc 2)" \
+                || bad "J5. hanging parent leg should be inconclusive (FFRC=$FFRC: $OUT)"
+ffj="$(TD "$repo")/flip-flop.json"
+if grep -qi 'timeout' "$ffj" 2>/dev/null && grep -qi 'PARENT leg' "$ffj" 2>/dev/null; then
+  ok "J6. flip-flop.json reason names the timeout + the PARENT leg"
+else
+  bad "J6. parent-timeout reason should name the timeout + PARENT leg ($(cat "$ffj" 2>/dev/null))"
+fi
+no_scratch_left "$repo" && ok "J7. no scratch worktree survives the PARENT timeout" \
+                        || bad "J7. scratch worktree leaked after a PARENT timeout"
+pgrep -f 'sleep 693' >/dev/null 2>&1 \
+  && bad "J8. a runaway parent-leg runner (sleep 693) survived the group-kill" \
+  || ok "J8. the parent-leg hung runner's process group was reaped (no orphan)"
+
+# ==========================================================================
+# K. multi-dir ticket (DEFECT-3): the flip-flop legs must collect tests SPANNING
+#    two directories — intree_scope_for's common-ancestor arm, live but untested.
+# ==========================================================================
+echo "== K. multi-dir flip-flop scoping (js) =="
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+mkdir -p "$repo/src/a" "$repo/src/b"
+printf 'exports.up = (s) => String(s).toUpperCase();\n' > "$repo/src/a/up.js"
+cat > "$repo/src/a/up.test.js" <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { up } = require('./up.js');
+test('up upcases', () => { assert.strictEqual(up('hi'), 'HI'); });
+JS
+printf 'exports.down = (s) => String(s).toLowerCase();\n' > "$repo/src/b/down.js"
+cat > "$repo/src/b/down.test.js" <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { down } = require('./down.js');
+test('down downcases', () => { assert.strictEqual(down('HI'), 'hi'); });
+JS
+commit_all "$repo"
+write_result "$(TD "$repo")" '["src/a/up.test.js","src/b/down.test.js"]' '[]' expected
+# intree_scope_for's common-ancestor arm resolves LCARS_TESTS_DIR to `src` (the
+# span of both dirs). A dir-recursing runner (vitest/jest/pytest — the real js
+# defaults) collects both; `node --test <dir>` does NOT recurse in every node, so
+# the fixture stands in for that recursion with an explicit find over the scope.
+MULTI_CMD='node --test $(find "$LCARS_TESTS_DIR" -name "*.test.js")'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$MULTI_CMD"
+[ "$FFRC" = 0 ] && ok "K1. multi-dir ticket → flip-flop PASS (tests across two dirs collected on both legs)" \
+                || bad "K1. multi-dir honest ticket should pass (FFRC=$FFRC: $OUT)"
+ffj="$(TD "$repo")/flip-flop.json"
+if grep -q 'src/a/up.test.js' "$ffj" 2>/dev/null && grep -q 'src/b/down.test.js' "$ffj" 2>/dev/null; then
+  ok "K2. flip-flop.json names BOTH spanning test files"
+else
+  bad "K2. flip-flop.json should name both dirs' test files ($(cat "$ffj" 2>/dev/null))"
+fi
+# The tip tail must show BOTH spanning tests actually RAN (not just one) — proof
+# the common-ancestor scope collected across both dirs, not a single-dir subset.
+if grep -q 'up upcases' "$ffj" 2>/dev/null && grep -q 'down downcases' "$ffj" 2>/dev/null; then
+  ok "K3. both spanning tests executed (tip tail shows up + down, tests 2)"
+else
+  bad "K3. tip tail should show BOTH dirs' tests ran ($(cat "$ffj" 2>/dev/null))"
+fi
+no_scratch_left "$repo" && ok "K4. scratch pruned on the multi-dir pass path" \
+                        || bad "K4. scratch worktree leaked (multi-dir)"
+
+# ==========================================================================
 echo
 printf 'proof-gates: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
