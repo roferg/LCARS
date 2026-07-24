@@ -239,8 +239,8 @@ spawn5() { # repo role
 }
 check "5e. spawn research-questions argv carries --model opus" \
   "[ \"\$(spawn5 \"$r2\" research-questions CLAUDECODE=1 | model_of)\" = 'opus' ]"
-check "5f. spawn implement-implementer argv carries --model sonnet" \
-  "[ \"\$(spawn5 \"$r2\" implement-implementer CLAUDECODE=1 | model_of)\" = 'sonnet' ]"
+check "5f. spawn implement-tdd argv carries --model sonnet" \
+  "[ \"\$(spawn5 \"$r2\" implement-tdd CLAUDECODE=1 | model_of)\" = 'sonnet' ]"
 
 # === Behavior 6: a quote/newline-bearing rationale round-trips to valid JSON ==
 # The worker's rationale may carry embedded double-quotes (quoting code or the

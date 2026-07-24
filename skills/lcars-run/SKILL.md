@@ -1,6 +1,6 @@
 ---
 name: lcars-run
-description: Advance an LCARS Mission through the pipeline. By default `lcars run <id>` AUTO-ADVANCES — a thin, token-free bash driver sequences the Stages back-to-back (Research → Validate → Plan → Plan Review → Schedule → Implement), each spawned as a cold isolated worker, and stops only at a human gate, firing a walk-away notification. It halts when a Stage escalates a question (awaiting-human), at the Verify review gate, at an `align` feedback re-entry (an interactive re-grill), or on an error; `lcars run <id> --step` advances exactly one Stage (the old one-at-a-time behaviour, for debugging). Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement; Implement processes the waves sequentially, running each ticket through an adversarial Test Writer → Implementer pair (iterating up to 5 attempts, flagging the human on failure) and advancing to Verify when every ticket is green; and Verify prints the captain's pre-ship summary and the two next moves, then stops at the human gate. It also handles the Align re-entry after `lcars feedback` bounces a Mission back from Verify — re-grilling against the PRD plus the accumulated feedback before Research. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue / auto-run a mission, or to run a single Research, Validate, Plan, Plan Review, Schedule, Implement, or Verify stage.
+description: Advance an LCARS Mission through the pipeline. By default `lcars run <id>` AUTO-ADVANCES — a thin, token-free bash driver sequences the Stages back-to-back (Research → Validate → Plan → Plan Review → Schedule → Implement), each spawned as a cold isolated worker, and stops only at a human gate, firing a walk-away notification. It halts when a Stage escalates a question (awaiting-human), at the Verify review gate, at an `align` feedback re-entry (an interactive re-grill), or on an error; `lcars run <id> --step` advances exactly one Stage (the old one-at-a-time behaviour, for debugging). Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement; Implement processes the waves sequentially, running each ticket through ONE unified TDD worker whose work is then proven by deterministic gates (fail-on-parent/pass-on-tip flip-flop, declared test edits, a quality floor — a rejection bounces to a fresh worker up to 3 sessions, then parks awaiting-human) and advancing to Verify when every ticket is green; and Verify prints the captain's pre-ship summary and the two next moves, then stops at the human gate. It also handles the Align re-entry after `lcars feedback` bounces a Mission back from Verify — re-grilling against the PRD plus the accumulated feedback before Research. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue / auto-run a mission, or to run a single Research, Validate, Plan, Plan Review, Schedule, Implement, or Verify stage.
 ---
 
 # lcars run
@@ -40,7 +40,7 @@ Each headless Stage is therefore a single driver subcommand you run and report:
 | Validate | `run.sh validate --mission <id>` | one Validator worker (fed only `prd.md` + `research/*.json`) |
 | Plan | `run.sh plan --mission <id>` | one Planner worker (fed only `prd.md` + `validated-plan.md`) |
 | Plan Review | `run.sh plan-review --mission <id>` | one fresh reviewer worker (fed only `plan.json`) |
-| Implement | `run.sh implement-ticket --mission <id> --ticket <id>` | a Test Writer worker, then a separate Implementer worker |
+| Implement | `run.sh implement-ticket --mission <id> --ticket <id>` | one unified TDD worker, proven post-hoc by the harness gates |
 
 Each driver prints a **`⊘ isolated`** marker naming the worker it ran in. If no
 worker binary is available the driver refuses **loudly** (`⚠ NOT ISOLATED`) and
@@ -355,10 +355,10 @@ the Mission is now at **Implement**.
 
 Runs when `state.json.stage` is `implement` and `awaitingHuman` is not `true`.
 The Mission's `waves.json` (from Schedule) is the work plan: **process the waves
-in order, and within a wave build the tickets in parallel.** Each ticket is built
-by two **adversarially-separated** LLM sessions (see vision.md → *Implement*): a
-**Test Writer** that writes failing tests, then a **fresh Implementer** — with
-*no* Test Writer context — that makes them pass.
+in order, and within a wave build the tickets in parallel.** S133: each ticket is
+built by **ONE unified TDD worker** (it writes the tests AND the code, in-tree at
+the repo's own convention), and the harness **proves the work afterwards** with
+deterministic gates — the parent commit is the snapshot.
 
 **The driver composes this whole loop for you.** Both auto mode and `--step` run
 the Implement Stage by spawning one subcommand —
@@ -387,54 +387,45 @@ sequential-wave rule. Two outcomes:
 | `IMPLEMENT: wave N active` | Wave N is the current wave; the line lists its pending tickets. | Build **every** listed ticket (STEP 2), then loop back to STEP 1. |
 | `IMPLEMENT: complete` | Every ticket in every wave is green. | Go to STEP 4 — advance to Verify. |
 
-### STEP 2 — Build each pending ticket (the cold adversarial pair)
+### STEP 2 — Build each pending ticket (the unified TDD worker + proof gates)
 
 For each pending ticket the current wave lists, run the **implement-ticket**
 driver. **Do not write tests or implement anything yourself** — the driver
-spawns the two cold, adversarially-separated workers for you: a **Test Writer**
-worker (fed only the ticket from `approved-plan.json`) writes failing tests,
-which are quarantined to `tickets/<id>/tests/`; then a **separate Implementer**
-worker (fed only the ticket + those on-disk tests — *never* the Test Writer's
-session) makes them pass, iterating up to 5 attempts.
+spawns ONE cold **unified TDD worker** (fed the ticket from
+`approved-plan.json`): it writes failing tests AND the code that satisfies them,
+in any order, authored **in-tree at the repo's own test convention**, iterating
+freely (its `attempts` count is honest and uncapped), and reports `result.json`
+v2 (`{ ticketId, passed, attempts, summary, newTests[], testEdits[], flipFlop }`).
 
 ```bash
 bash ~/.claude/skills/lcars-run/run.sh implement-ticket --mission <id> --ticket <ticket-id>
 ```
 
-The two workers never share a session: the on-disk `tests/` dir is the
-Implementer's *entire* handoff, which is what keeps the split adversarial. The
-driver persists each phase (`impl-save-tests`, then `impl-save-result`) and, on a
-green ticket, **commits the Implementer's produced files to the Mission's
-branch** (the `branch` from `state.json`) so the eventual PR has content — a
-missing branch / no changes / git failure is a best-effort warning, the result
-still stands. On success it prints `⊘ isolated — implement(<id>)`.
+**The harness then PROVES the work with deterministic gates** — the parent
+commit is the snapshot; a worker rewarded for a green suite cannot talk its way
+around them (see vision.md → *Implement*):
 
-**Three deterministic guardrails make the adversarial split hold** — the harness
-enforces them in `run.sh`, so a worker rewarded for a green suite cannot talk its
-way around them (see vision.md → *Implement*):
+- **result v2 validation** — the shape above, rejected legibly when malformed.
+- **Declared edits** — every test-classified path in the diff vs the parent
+  (adds, edits, deletions, renames) must be declared (`newTests` ∪
+  `testEdits[].path`, each edit with a reason); an undeclared test edit voids
+  the session. Verified declarations land in `tickets/<id>/test-edits.json`.
+- **Quality floor** — ≥1 new/changed asserting test, unless the result declares
+  `flipFlop: "not-applicable"` with a reason.
+- **Flip-flop** — the ticket's tests must be **GREEN on the tip** and **RED on
+  the parent commit** (same tests staged into a scratch worktree at the parent
+  sha). Zero-collected legs are INCONCLUSIVE, never a pass. Verdict + both
+  legs' runner tails land in `tickets/<id>/flip-flop.json`.
 
-- **Red gate** — at `impl-save-tests`, after quarantining the tests the harness
-  *runs* them and requires them to **FAIL** before the Implementer is allowed to
-  run. A suite that passes against no implementation is rejected and rolled back.
-  The test command comes from `testCommand` in `.git/lcars/config.json` (written
-  by `lcars init`) or `$LCARS_TEST_CMD`; if neither is set the gate **warns and
-  skips** rather than blocking.
-- **Immutable tests** — `impl-save-tests` snapshots the quarantined test files
-  (`tickets/<id>/tests.sha256`); `impl-save-result` re-hashes them and **rejects
-  the result if any test file changed**. Green is earned by implementing, never
-  by weakening the contract.
-- **Test quality** — `impl-save-tests` rejects a suite where no file asserts
-  anything, so a sandbagging Test Writer can't hand over a contract that proves
-  nothing.
+On a full pass the driver commits the ticket (tests + code in one commit),
+re-verifies against the committed state (post-commit gate), and prints
+`⊘ isolated — implement(<id>)`.
 
-A rejection at either subcommand is the driver's cue to **re-dispatch the worker**
-(it retries up to `LCARS_WORKER_TRIES`); a persistent rejection stops the Stage
-with a non-zero exit rather than advancing.
-
-If the Implementer exhausts its 5 attempts (`passed:false`), the driver **flags
-the human**: it writes the blocker to `pending.json`, sets the awaiting-human
-gate, and keeps the card in Implement. Surface that and **stop** — the ticket
-needs `lcars respond <id>`; do not re-run it.
+**A gate rejection bounces, it does not die**: the verdict + runner tail is
+written to `tickets/<id>/gate-signal.txt` and a FRESH worker is spawned carrying
+that signal, up to `LCARS_WORKER_TRIES` (default 3) total sessions. Exhaustion
+**parks the Mission awaiting-human** with the last gate verdict quoted — the
+ticket then needs `lcars respond <id>`; do not re-run it until answered.
 
 Run `implement-ticket` for **every** pending ticket the current wave lists (they
 are independent within the wave), then loop back to STEP 1, which reveals the
@@ -610,9 +601,11 @@ trust the board to show exactly where every Mission is.
   waves.json            ← the wave graph: [ { wave, tickets:[ { id, issue } ] } ] (Schedule → Implement)
   tickets/
     <ticket-id>/
-      tests/            ← the Test Writer's failing tests (Implement, Phase 1)
-      tests.sha256      ← hash snapshot of tests/, the immutable-tests guardrail (Implement, Phase 1)
-      result.json       ← { ticketId, passed, attempts, summary } (Implement, Phase 2)
+      result.json         ← v2: { ticketId, passed, attempts, summary, newTests, testEdits, flipFlop } (Implement)
+      flip-flop.json      ← the flip-flop gate's verdict + both legs' rc/tails (Implement)
+      test-edits.json     ← the verified declared test edits [{path, reason}] (Implement)
+      proof-tests.sha256  ← proof-time hashes of the ticket's tests (the drift baseline)
+      gate-signal.txt     ← the last gate rejection fed to the next session (bounce loop)
   pending.json          ← scope/objection/flagged-ticket questions, while paused at the human gate only
   feedback.md           ← the captain's Verify feedback, accumulated (written by `lcars feedback`; read by the Align re-entry)
   state.json            ← stage pointer + branch/base; + planReviewRound, awaitingHuman/pendingQuestion while paused
@@ -683,32 +676,26 @@ working tree changes.
   fails, the waves are still grouped and `waves.json` is still written (with
   `"issue": null` for the un-opened tickets) and the stage still advances; you
   get a warning to open the sub-issues by hand.
-- **Implement keeps the Test Writer and Implementer adversarially separate.**
-  They are two distinct cold workers: the Implementer's *only* handoff from the
-  Test Writer is the tests on disk (`tickets/<id>/tests/`) — the
-  `implement-ticket` driver never gives the Implementer the Test Writer's output
-  channel beyond that dir. `impl-save-result` refuses a result for a ticket whose
-  tests aren't saved yet, so Phase 1 always precedes Phase 2. The Implementer
-  must not modify the test files, and the Test Writer must not write
-  implementation code.
-- **The adversarial split is enforced by the harness, not by trust.** Three
-  deterministic guardrails in `run.sh` (see *The Implement stage* above): a
-  **red gate** (`impl-save-tests` runs the suite and requires it to FAIL first —
-  test command from `testCommand`/`$LCARS_TEST_CMD`, warn-and-skip if unset), an
-  **immutable-tests** snapshot (`tickets/<id>/tests.sha256`, re-verified at
-  `impl-save-result`), and a **test-quality** check (a zero-assertion suite is
-  refused). A worker that games the contract trips one of these and the Stage
-  re-dispatches or stops — it never silently advances.
+- **Implement's honesty is enforced by the harness, not by trust.** S133: the
+  unified worker's work is proven post-hoc by deterministic gates in `run.sh`
+  (see *The Implement stage* above): **result v2 validation**, the
+  **declared-edits guard** (an undeclared test edit voids the session — a test
+  may only change when the ticket declares it with a reason), the **quality
+  floor**, and the **flip-flop gate** (green-on-tip + red-on-parent; test
+  command from `testCommand`/`$LCARS_TEST_CMD`). A worker that games the
+  contract trips one of these and the session bounces with the verdict — it
+  never silently advances.
 - **Implement processes waves strictly in order.** `impl-status` never reveals a
   later wave while an earlier one has an open ticket, and `impl-advance` refuses
   to reach Verify until *every* ticket in *every* wave is green — so a half-built
   Mission can't slip forward. Build all of the current wave before looping back.
-- **A ticket flags the human at the 5-attempt cap.** `impl-save-result` caps
-  `attempts` at 5 and, on `passed: false`, parks the Mission at the
-  awaiting-human gate (stage stays `implement`, `lcars:awaiting-human` overlays
-  the card). Don't keep re-running a flagged ticket — wait for `lcars respond`.
+- **A ticket flags the human at the session cap.** After `LCARS_WORKER_TRIES`
+  (default 3) gate-rejected sessions, `implement-ticket` parks the Mission at
+  the awaiting-human gate with the last gate verdict quoted (stage stays
+  `implement`, `lcars:awaiting-human` overlays the card). Don't keep re-running
+  a flagged ticket — wait for `lcars respond`.
 - **Implement commits each green ticket to the Mission's branch.** The files
-  the Test Writer / Implementer produce are committed to `lcars/<id>` (recorded
+  the unified worker produces are committed to `lcars/<id>` (recorded
   by `lcars file`) the moment a ticket goes green, so the eventual PR has
   content. The commit is best-effort and jq-free: no branch on file, no file
   changes, or a git failure just leaves a warning — the saved result still
@@ -734,7 +721,7 @@ output: `research`, `validate`, `plan`, `plan-review`, `implement` (the whole
 wave loop), `implement-ticket` (one ticket). **Persistence subcommands** (which
 the drivers reuse, and which the test suite drives directly) do the mechanical,
 jq-free recording: `gate`, `save`, `validate-pause`, `validate-advance`,
-`plan-save`, `review-save`, `schedule`, `impl-save-tests`, `impl-save-result`,
+`plan-save`, `review-save`, `schedule`, `impl-save-result`,
 `impl-status`, `impl-advance`, `verify-summary`. Each headless Stage's worker
 prompt is a template under `skills/lcars-run/stages/<role>.md`; `run.sh`
 assembles the final prompt from the template plus the artifact *paths* and spawns

@@ -113,7 +113,7 @@ new_repo_verify() { # repo
   git init -q --bare "$repo.remote.git"
   ( cd "$repo" && git remote add origin "$repo.remote.git" \
       && git push -q origin "$base" "lcars/$MID" )
-  local m; m="$(mdir_of "$repo")"; mkdir -p "$m/tickets/t-001/tests"
+  local m; m="$(mdir_of "$repo")"; mkdir -p "$m/tickets/t-001"
   cat >"$m/prd.md" <<'EOF'
 # Mission: Add dark mode
 **Goal:** Let users switch to a dark colour scheme.
@@ -152,40 +152,45 @@ EOF
 EOF
   # testCommand runs each staged suite file; behaviour is controlled by t.sh content.
   cat >"$repo/.git/lcars/config.json" <<'EOF'
-{ "testCommand": "for f in \"$LCARS_TESTS_DIR\"/*.sh; do [ -f \"$f\" ] && bash \"$f\" || exit 1; done" }
+{ "testCommand": "if [ -f \"$LCARS_TESTS_DIR\" ]; then bash \"$LCARS_TESTS_DIR\"; else for f in \"$LCARS_TESTS_DIR\"/*.sh; do [ -f \"$f\" ] && bash \"$f\" || exit 1; done; fi" }
 EOF
   echo "$base"
 }
 
-# Stage ticket t-001's suite. $2 ∈ {green, env, assert}.
+# Stage ticket t-001's suite — S133 shape: the test is COMMITTED IN-TREE on the
+# mission branch and its proof-time hash recorded to proof-tests.sha256.
 #   green  → exits 0
 #   env    → prints the DEMO env-failure signatures, exits 1 (runner could not start)
 #   assert → prints a REAL assertion failure, exits 1 (genuine logical red)
+commit_ticket_suite() { # repo  content
+  local repo="$1" content="$2" m; m="$(mdir_of "$repo")"
+  local cur; cur="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+  ( cd "$repo" && git checkout -q "lcars/$MID" \
+      && mkdir -p tests && printf '%s\n' "$content" > tests/t-001.sh \
+      && chmod +x tests/t-001.sh \
+      && git add tests/t-001.sh && git commit -q -m "test(t-001): suite" \
+      && { git push -qf origin "lcars/$MID" 2>/dev/null || :; } \
+      && git checkout -q "$cur" )
+  mkdir -p "$m/tickets/t-001"
+  local h; h="$(cd "$repo" && git show "lcars/$MID:tests/t-001.sh" | shasum -a 256 | awk '{print $1}')"
+  printf '%s  %s\n' "$h" "tests/t-001.sh" > "$m/tickets/t-001/proof-tests.sha256"
+}
 stage_ticket_suite() { # repo  green|env|assert
-  local m; m="$(mdir_of "$1")"
+  local content
   case "$2" in
-    green)  cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-    ;;
-    env)    cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
-#!/usr/bin/env bash
+    green)  content='#!/usr/bin/env bash
+exit 0' ;;
+    env)    content='#!/usr/bin/env bash
 echo "cd: packages/editor: No such file or directory" >&2
 echo "vitest: not found" >&2
-exit 1
-EOF
-    ;;
-    assert) cat >"$m/tickets/t-001/tests/t.sh" <<'EOF'
-#!/usr/bin/env bash
+exit 1' ;;
+    assert) content='#!/usr/bin/env bash
 echo "FAIL src/theme.test.ts > applies dark by default"
 echo "AssertionError: expected 3 to be 4"
 echo "Tests: 1 failed, 2 passed"
-exit 1
-EOF
-    ;;
+exit 1' ;;
   esac
-  chmod +x "$m/tickets/t-001/tests/t.sh"
+  commit_ticket_suite "$1" "$content"
 }
 
 # Move base AHEAD by a clean commit so the mission branch is behind (merges cleanly).
@@ -315,12 +320,9 @@ check "3. green kept the merge on the branch" \
 r4="$(mktemp -d "$TMPROOT/r4.XXXX")"; base4="$(new_repo_verify "$r4")"; setup_stubs "$r4"
 a4="$(aux_of "$r4")"
 # green suite that records WHEN the retest ran (into the sibling aux dir, absolute path)
-cat >"$(mdir_of "$r4")/tickets/t-001/tests/t.sh" <<EOF
-#!/usr/bin/env bash
-date +%s%N > "$a4/retest.ts"
-exit 0
-EOF
-chmod +x "$(mdir_of "$r4")/tickets/t-001/tests/t.sh"
+commit_ticket_suite "$r4" "#!/usr/bin/env bash
+date +%s%N > \"$a4/retest.ts\"
+exit 0"
 advance_base "$r4"
 LCARS_WORKTREE_SETUP_CMD="touch '$a4/provisioned.marker'; date +%s%N > '$a4/provision.ts'" \
   run_in "$r4" reconcile --mission "$MID" >"$r4.aux/out.txt" 2>&1 || true

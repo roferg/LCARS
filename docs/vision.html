@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: vision.md sha256:2fa547d31428ed3bea4439d97878d41d493dc8578505e812474b97a8140cb305 -->
+<!-- lcars-docs-src: vision.md sha256:e8957bd4cabbafceff172422f76531703cef1c802e258175056eb0e372a307c1 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -241,47 +241,46 @@ flowchart TB
 
     <section id="implement">
       <h3><span class="stage-num">7</span>Implement</h3>
-      <p>Each issue in a Wave is handled by <strong>two sequential LLM sessions</strong>:</p>
+      <p>Each issue in a Wave is handled by <strong>one unified TDD worker</strong> — a single cold session that writes both the tests and the code:</p>
       <div class="diagram-wrap">
-        <div class="diagram-label">Adversarial TDD per ticket</div>
+        <div class="diagram-label">Unified TDD worker + proof gates</div>
         <div class="mermaid">
 sequenceDiagram
     participant H as Harness
-    participant TW as Test Writer LLM
-    participant IM as Implementer LLM
+    participant W as Unified TDD Worker
     participant TS as Test Suite
-    H->>TW: Ticket + codebase context
-    TW->>TS: Write failing tests
-    Note over TW,TS: Behavioral only — public interface, no mocks
-    H->>IM: Ticket + failing tests (no Test Writer context)
-    IM->>TS: Implement until passing
-    TS-->>H: Green ✓ — ticket done
+    participant G as Proof Gates (deterministic)
+    H->>W: Ticket + codebase context (parent commit = the snapshot)
+    W->>TS: Write tests AND code, run the suite freely
+    Note over W,TS: Ping-pong tests↔code until green; declare any edit to existing tests
+    W-->>H: result.json v2 (green, new tests, declared edits)
+    H->>G: Prove it: flip-flop · declared-edits · quality floor
+    G-->>H: Accepted ✓ — commit · or rejected → fresh worker (≤3), then park
         </div>
       </div>
-      <p>The <strong>Test Writer</strong> reads the issue and writes failing behavioral tests against the public interface only — and only the <strong>objective residue</strong> of the criteria: placement, visibility, state, persistence, a stated property. It never invents a numeric proxy for a preference word ("unobtrusive", "looks right") the captain didn't state; subjective qualities are deliberately left to the human's eyes at Verify, because an invented proxy becomes an immutable contract that fights every future restyle. The <strong>Implementer</strong> reads the issue and the failing tests — with no access to the Test Writer's session — and implements until all tests pass.</p>
-      <p>The separation is adversarial by design. The Test Writer cannot sandbag because it doesn't know who is implementing. The Implementer cannot skip tests because they arrive as a hard constraint. A passing test suite means the ticket is done.</p>
-      <p>Within a Wave, independent tickets build <strong>concurrently</strong> — each Test Writer → Implementer pair runs in its own isolated git worktree off the Mission branch, so parallel file writes and test runs never collide. As a ticket goes green its commit is replayed serially onto the Mission branch in plan order, so the observable history is unchanged: exactly one commit per ticket, with its summary, in order. When two tickets in the same Wave touch the <strong>same file</strong>, the second can't replay cleanly onto the first, so the Harness rebuilds it serially on the current tip with its locked tests — a fully-overlapping Wave degrades gracefully toward serial and every ticket's change still lands, never silently dropped. A bounded concurrency cap (<code>LCARS_MAX_PARALLEL</code>) keeps a wide Wave — and the Research fan-out — from spawning unboundedly.</p>
-      <p>To keep each cold worker from re-exploring the repo from scratch, Plan and Schedule attach a per-ticket <strong>context manifest</strong> — the relevant files, their interface <em>signatures</em> (skeletons, not bodies), and the ADRs the ticket touches — and the Harness maintains a durable <strong>repo pack</strong> (how to run the tests, the conventions, an architecture summary) refreshed each Wave. The Test Writer and Implementer read these instead of cold-walking the tree; neither ever carries the implementation to write, and neither reaches a Research Agent.</p>
+      <p>The worker owns the ticket end-to-end. It writes failing tests, implements against them, runs the suite as often as it wants, and authors tests <strong>in-tree at the repo's own convention</strong> so they ride into the PR. It may <strong>adapt an existing test the ticket genuinely invalidates</strong>, but every such edit must be declared, with a reason, in its <code>result.json</code> — an undeclared test change voids the ticket. Behavioral tests describe <em>what</em> the system does, not <em>how</em>, and only the <strong>objective residue</strong> of the criteria: placement, visibility, state, persistence, a stated property. The worker never invents a numeric proxy for a preference word ("unobtrusive", "looks right") the captain didn't state; subjective qualities are left to the human's eyes at Verify.</p>
+      <p><strong>Why one worker instead of the old two-agent split?</strong> Quality does not come from a second agent's judgment — an LLM rewarded for a green suite will game whatever contract another LLM writes. It comes from <strong>proof moved out of any worker's judgment into the deterministic driver</strong>: mechanical, post-hoc gates the harness runs <em>after</em> implementation, against git itself. The parent commit is the snapshot; fail-on-parent / pass-on-tip is the proof. That removes the split's structural failure mode — a separate test-authoring agent that wrote failing tests against code that didn't exist yet, couldn't iterate against reality, and stopped the whole ticket dead when it failed.</p>
+      <p>Within a Wave, independent tickets build <strong>concurrently</strong> — each unified worker runs in its own isolated git worktree off the Mission branch, so parallel file writes and test runs never collide. As a ticket goes green its commit is replayed serially onto the Mission branch in plan order, so the observable history is unchanged: exactly one commit per ticket, in order. When two tickets in the same Wave touch the <strong>same file</strong>, the second can't replay cleanly onto the first, so the Harness rebuilds it serially on the current tip — re-running the one worker against the updated tip, its proof gates re-proving on the new base — so a fully-overlapping Wave degrades gracefully toward serial and every ticket's change still lands, never silently dropped. A bounded concurrency cap (<code>LCARS_MAX_PARALLEL</code>) keeps a wide Wave — and the Research fan-out — from spawning unboundedly.</p>
+      <p>To keep each cold worker from re-exploring the repo from scratch, Plan and Schedule attach a per-ticket <strong>context manifest</strong> — the relevant files, their interface <em>signatures</em> (skeletons, not bodies), and the ADRs the ticket touches — and the Harness maintains a durable <strong>repo pack</strong> (how to run the tests, the conventions, an architecture summary) refreshed each Wave. The unified worker reads these instead of cold-walking the tree, and never reaches a Research Agent.</p>
       <p>As each ticket goes green and commits, its sub-issue is relabelled <code>lcars:done</code> and <strong>closed</strong> — so the board reflects real per-ticket progress while a Wave is still running, instead of a pile of open issues that only clears at the end.</p>
       <div class="mission-card" style="border-left-color:var(--lcars-red)">
-        <strong>The Harness — not the LLMs — enforces the split:</strong>
+        <strong>The Harness — not the LLM — proves the work (a proof-of-work trio + the full-suite gate, all run <em>after</em> the worker finishes):</strong>
         <ul>
-          <li><strong>Red gate</strong> — the tests must actually <em>fail</em> before the Implementer runs. The gate evaluates the Test Writer's tests <strong>in isolation</strong> — only that quarantined suite, never the repo's existing passing tests — so a contract that is green before anything is built is always caught, even in a repo whose own suite is green. A rejection is never a silent stall: the Harness reports <em>why</em> and feeds that signal into the next Test-Writer attempt — and the "why" is a named root cause: an over-broad slice that never converged on a coherent failure, a missing new module, a runner or environment failure, or a worker that returned nothing — not a generic "no usable tests." And before the gate ever runs, the Test Writer <strong>self-smokes</strong> its suite once in isolation under a hard timeout: a mock that hangs (an awaited thenable trap) or errors at collection is caught here as a Test-Writer defect and retried on its side, never charged to the Implementer's attempts.</li>
-          <li><strong>Immutable tests</strong> — the Implementer cannot edit the test files; green is earned by implementing, never by weakening the contract.</li>
-          <li><strong>Tests ride along into the PR</strong> — the Test Writer authors each ticket's suite at the repo's <em>own</em> test convention — co-located <code>*.test.ts</code> next to the source, a <code>__tests__/</code> dir, or a top-level <code>tests/</code>, detected from the repo — and it is committed alongside the work: the locked test in its own commit first, the implementation after. The hard-won coverage lands in the PR and merges to the trunk instead of evaporating in a scratch dir, so downstream contributors inherit it. Immutability holds <em>across</em> that commit boundary — the committed test is re-hashed against its locked snapshot at ticket-green and again at the pre-merge gate (which provisions its environment the same way Implement does, so an environment failure is never mistaken for a real conflict), and a tampered test is blocked even after it is in the repo.</li>
-          <li><strong>Test quality</strong> — a light check guards against a sandbagging Test Writer handing over a contract that proves nothing.</li>
-          <li><strong>Full-suite green gate</strong> — passing a ticket's own locked tests is not enough; its commit must also leave the <strong>entire</strong> repo suite green, so a later ticket can't silently regress an earlier one. A cross-ticket regression fails the Wave loudly instead of slipping through to Verify.</li>
+          <li><strong>Flip-flop gate</strong> — the ticket's new and changed tests must <strong>fail on the parent commit and pass on the tip</strong>. The Harness runs them scoped, twice: green in the worker's worktree, then red in a disposable scratch worktree at the parent. Order-independent and mechanical, it proves the tests actually test <em>the change</em> — immune to a prompt that talks its way to green. Zero tests collected on either leg is <strong>inconclusive, never a pass</strong>. A compile/resolution failure on the parent, caused by the change's own new symbols, counts as a legitimate red.</li>
+          <li><strong>Declared-edits contract</strong> — the worker may edit an existing test the ticket genuinely invalidates, but every edit must be declared with a reason in <code>result.json</code>. The Harness diffs the tests against the parent commit (the commit <em>is</em> the snapshot); an <strong>undeclared</strong> test change blocks the ticket, naming the file. Declared edits ride to Verify as a first-class <strong>contract-amendments</strong> readout, and a pre-merge check re-audits that no committed test drifted without a ticket declaring it.</li>
+          <li><strong>Quality floor</strong> — a ticket must carry at least one new/changed test that actually asserts something. A genuinely behavior-free ticket may declare <code>flipFlop: "not-applicable"</code> with a reason; that carve-out is recorded and shown at Verify, the flip-flop gate is skipped for it, and the declared-edits and full-suite gates still apply.</li>
+          <li><strong>Full-suite green gate</strong> — passing a ticket's own tests is not enough; its commit must also leave the <strong>entire</strong> repo suite green, so a later ticket can't silently regress an earlier one. A cross-ticket regression fails the Wave loudly instead of slipping through to Verify.</li>
         </ul>
-        <p style="margin-top:10px;font-size:13px;color:var(--lcars-text-dim)">These live in the deterministic driver, because an LLM rewarded for a green suite will otherwise game the contract.</p>
+        <p style="margin-top:10px;font-size:13px;color:var(--lcars-text-dim)">These live in the deterministic driver, because an LLM rewarded for a green suite will otherwise game the contract. <strong>No worker fails terminally on quality:</strong> a gate rejection re-spawns a fresh worker carrying the gate's verdict, up to three sessions, then parks the ticket awaiting a human — with the failing gate named — never a stage-stopping crash.</p>
       </div>
       <div class="mission-card" style="border-left-color:var(--lcars-teal)">
         <strong>The gates survive contact with the repo's real test setup:</strong>
         <ul>
-          <li><strong>Runner preflight</strong> — the Harness probes the ticket's target package <em>before any worker is spent</em>. A runner that cannot launch is a distinct, truthful verdict — "cannot run tests here" — that escalates or self-heals; it is never mis-blamed on the tests, and it never burns the Test Writer's retry budget on something no retry can fix.</li>
-          <li><strong>Declared test setup</strong> — when a package has no runner but the repo demonstrably tests elsewhere, the Test Writer is <em>invited</em> to declare the missing setup: new config files plus a package-manager install, evidence-gated (no observed gap, no invitation) and whitelist-bounded (ADD-only, never <code>src/</code>, never an existing file). The Harness applies it and <strong>verifies by probing, never by exit codes</strong> — a silent no-op install is healed by force-relinking the tree — and the honest fail-first transition (runner dead → suite red → green) proves the setup works before any code ships.</li>
+          <li><strong>Runner preflight</strong> — the Harness probes the ticket's target package <em>before the worker is spent</em>. A runner that cannot launch is a distinct, truthful verdict — "cannot run tests here" — that escalates or self-heals; it is never mis-blamed on the tests, and it never burns a session on something no retry can fix.</li>
+          <li><strong>Declared test setup</strong> — when a package has no runner but the repo demonstrably tests elsewhere, the worker is <em>invited</em> to declare the missing setup: new config files plus a package-manager install, evidence-gated (no observed gap, no invitation) and whitelist-bounded (ADD-only, never <code>src/</code>, never an existing file). The Harness applies it and <strong>verifies by probing, never by exit codes</strong> — a silent no-op install is healed by force-relinking the tree — and the honest fail-first transition (runner dead → suite red → green) proves the setup works before any code ships.</li>
           <li><strong>Test landscape</strong> — a setup that carries a ticket to a verified green is recorded to <code>.git/lcars/test-landscape/</code>: a durable, <em>proven</em> fact about how that package tests, written only after the gates confirmed it, so the repo's testing knowledge accretes mission by mission instead of being rediscovered.</li>
           <li><strong>Verdicts, not choices</strong> — rejection feedback checks the repo per unresolved import and states the answer: "this module <em>exists</em> at <code>&lt;path&gt;</code>, fix your import" versus "no such file anywhere, you must stub it" — so a weaker model follows a fact instead of guessing between remedies.</li>
-          <li><strong>The toolchain is detected, not assumed</strong> — <code>lcars init</code> recognizes the repo's stack from its markers (Rust, Go, Python, JS/TS, and — for failure legibility — .NET and the JVM) and seeds per-stack defaults, warning rather than guessing when the markers are ambiguous. The red gate's isolation is then expressed in <em>each runner's own idiom</em>: a directory scope for JS/Python, <code>cargo test --test</code> for Rust, <code>go test -run</code> for Go. So a compiled crate or package — whose tests live <em>inside</em> it and can't be pointed at an external directory — still proves fail-first in isolation and rides its test along at the stack's own convention (<code>tests/*.rs</code>, <code>*_test.go</code>), never faking a green on zero tests; and a <code>cargo</code> compile error or a Go "cannot find package" is named as the compile/resolution failure it is. Adding a stack only makes the gate <em>more</em> precise — it never loosens it.</li>
+          <li><strong>The toolchain is detected, not assumed</strong> — <code>lcars init</code> recognizes the repo's stack from its markers (Rust, Go, Python, JS/TS, and — for failure legibility — .NET and the JVM) and seeds per-stack defaults, warning rather than guessing when the markers are ambiguous. The flip-flop gate's scoped runs are expressed in <em>each runner's own idiom</em>: a directory scope for JS/Python, <code>cargo test --test</code> for Rust, <code>go test -run</code> for Go. So a compiled crate or package — whose tests live <em>inside</em> it and can't be pointed at an external directory — still proves fail-on-parent / pass-on-tip and rides its test along at the stack's own convention (<code>tests/*.rs</code>, <code>*_test.go</code>), never faking a green on zero tests; and a <code>cargo</code> compile error or a Go "cannot find package" is named as the compile/resolution failure it is. Adding a stack only makes the gate <em>more</em> precise — it never loosens it.</li>
         </ul>
       </div>
     </section>
@@ -462,9 +461,9 @@ flowchart LR
           </div>
         </div>
         <p>The Align session is quick — the PRD is one sentence: <em>The <code>/about</code> route returns 404. It should resolve to the About page.</em> Research generates zero questions. The Validator passes immediately. Plan produces a single issue: <em>Fix /about route handler.</em></p>
-        <p>The Test Writer produces one failing test:</p>
+        <p>The unified TDD worker writes one failing test and the route to satisfy it:</p>
         <pre>expect(GET('/about')).resolves.toMatchObject({ status: 200 })</pre>
-        <p style="margin-top:0">The Implementer adds the missing route. Test passes. Human confirms the link works. Total wall clock: <strong>~10 minutes</strong>.</p>
+        <p style="margin-top:0">The suite goes green; the flip-flop gate proves the test was red on the parent and passes on the tip; the commit lands. Human confirms the link works. Total wall clock: <strong>~10 minutes</strong>.</p>
       </div>
 
       <div id="ex2" class="example">
@@ -502,7 +501,7 @@ flowchart TB
     W2 --> W3
           </div>
         </div>
-        <p>Each of the 11 tickets gets a Test Writer + Implementer pair. Tickets within a wave run concurrently. <strong>Verify</strong>: the human earns XP on a quiz, watches the badge unlock animation, checks their leaderboard position. Satisfied — PR created and merged.</p>
+        <p>Each of the 11 tickets is built by one unified TDD worker and proven by the harness's proof-of-work gates. Tickets within a wave run concurrently. <strong>Verify</strong>: the human earns XP on a quiz, watches the badge unlock animation, checks their leaderboard position. Satisfied — PR created and merged.</p>
       </div>
 
       <div id="ex3" class="example">

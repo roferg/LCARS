@@ -687,7 +687,7 @@ cmd_repo_map() {
 implement_nav_block() { # ticket-id
   local tid="$1" block=""
   [ -f "$MISSION_DIR/manifests/$tid.md" ] && block="$block
-- $MISSION_DIR/manifests/$tid.md   (this ticket's context manifest — relevant files + interface signatures + touched ADR ids; NAVIGATION ONLY, not the implementation. The Test Writer uses the listed files to find the PUBLIC INTERFACE to test against — NOT as a place to add tests into; always write a dedicated fail-first test file.)"
+- $MISSION_DIR/manifests/$tid.md   (this ticket's context manifest — relevant files + interface signatures + touched ADR ids; NAVIGATION ONLY, not the implementation. Use the listed files to find the PUBLIC INTERFACE to test against; author the ticket's tests in-tree at the repo's own convention.)"
   [ -f "$MISSION_DIR/repo-map.md" ] && block="$block
 - $MISSION_DIR/repo-map.md   (the repo symbol map — interface signatures + paths across the codebase, regenerated this wave; navigate from it instead of cold file-walking)"
   printf '%s' "$block"
@@ -1457,20 +1457,15 @@ cmd_schedule() {
 
 # === Implement stage =======================================================
 # Processes the waves from waves.json sequentially; tickets within a wave run in
-# parallel. Each ticket is built by two adversarially-separated LLM sessions
-# (Claude, per SKILL.md): a Test Writer (Phase 1) writes failing tests, then a
-# FRESH Implementer (Phase 2 — no Test Writer context) makes them pass, iterating
-# up to 5 attempts. This script owns the mechanical, testable handoffs:
-#
-#   impl-save-tests   --mission <id> --ticket <id> --tests <dir>
-#         Phase 1 output. Quarantine the Test Writer's files into
-#         tickets/<id>/tests/ — that dir is the ONLY channel to the Implementer,
-#         so the separation stays adversarial. Refuses an empty set.
+# parallel. S133: each ticket is built by ONE unified TDD worker (tests + code,
+# any order, authored in-tree at the repo's convention); proof runs AFTER
+# implementation via the S132 gates (result v2, declared-edits, quality floor,
+# flip-flop vs the parent commit). This script owns the mechanical handoffs:
 #
 #   impl-save-result  --mission <id> --ticket <id> --result <file>
-#         Phase 2 output. Validate { ticketId, passed, attempts, summary },
-#         cap attempts at 5, and persist tickets/<id>/result.json. A passed=false
-#         result means the Implementer exhausted its 5 attempts — flag the human.
+#         The unified worker's output, after the proof gates pass. Validate the
+#         v2 shape and persist tickets/<id>/result.json; commit + post-commit
+#         verify + green. A passed=false result flags the human.
 #
 #   impl-status       --mission <id>
 #         Read-only. Report the current wave (the lowest wave with an unfinished
@@ -1482,7 +1477,10 @@ cmd_schedule() {
 #         Mission to Verify (stage + label implement → verify). Refuses while any
 #         ticket is unfinished.
 
-MAX_ATTEMPTS=5
+# S133: the old MAX_ATTEMPTS=5 internal-attempts cap is RETIRED — result v2's
+# `attempts` is the unified worker's own iteration count, informational and
+# uncapped-but-reported. The enforced cap is the 3-session gate-bounce loop
+# (MAX_WORKER_TRIES) in cmd_implement_ticket.
 COMMIT_NOTE=""
 
 # --- resolve a ticket's working dir under the mission -----------------------
@@ -1553,11 +1551,10 @@ package_of_relpath() { # relpath  [root] → pkg dir rel, or ""
 # Reads the ticket's test MIRROR (tickets/<id>/tests, whose relpaths equal the
 # in-tree relpaths) and walks up from the first test to its package. "" when none.
 ticket_tests_package() { # ticket  [root] → pkg dir of the ticket's tests, or ""
-  local t="$1" root="${2:-$REPO_ROOT}" td rel
-  td="$(ticket_dir "$t")/tests"
-  [ -d "$td" ] || return 0
-  rel="$( ( cd "$td" && find . \( -name '*.test.*' -o -name '*.spec.*' \) 2>/dev/null ) \
-            | sed 's#^\./##' | LC_ALL=C sort | head -1 )"
+  # S133: the ticket's tests are recorded at gate-pass time in proof-tests.sha256
+  # (the old tickets/<id>/tests mirror is retired with the standoff).
+  local t="$1" root="${2:-$REPO_ROOT}" rel
+  rel="$(proof_snapshot_rels "$t" | LC_ALL=C sort | head -1)"
   [ -n "$rel" ] || return 0
   package_of_relpath "$rel" "$root"
 }
@@ -1681,92 +1678,13 @@ EOF
   return 0
 }
 
-# === S101 (tests ride along) — MULTI-FILE / MULTI-DIR co-located placement ====
-# The Test-Writer for one ticket can author SEVERAL test files whose target sources
-# live in DIFFERENT dirs (e.g. a greenfield `src/utils/isDefaultViewport.ts`, an
-# existing `src/canvas/editorCanvas.ts`, and a `src/components/MapCanvas/MapCanvas.tsx`).
-# Each test must land co-located NEXT TO ITS OWN source so its `./<sibling>` import
-# resolves in place; placing them all in one dir (the first target's) breaks every
-# import but the first. These PURE helpers derive each file's own destination and the
-# common scope for the in-place red gate. Filesystem read only — NO execution.
-
-# --- test_primary_sibling: the module-under-test a test file imports ----------
-# Scans a test file's RELATIVE (`./…` / `../…`) import specifiers and echoes the STEM
-# of its primary module-under-test: PREFER the relative import whose basename stem
-# equals the test's OWN stem (`editorCanvas.test.ts` → `./editorCanvas`), else the
-# FIRST relative import. Echoes "" when the file has no relative import (the caller
-# falls back to the ticket's primary source). Nested paths degrade to the basename.
-test_primary_sibling() { # test-file → sibling stem or ""
-  local f="$1" base tstem spec sb first=""
-  base="${f##*/}"; base="${base%.*}"                 # drop the file extension
-  case "$base" in *.test) tstem="${base%.test}" ;; *.spec) tstem="${base%.spec}" ;; *) tstem="$base" ;; esac
-  while IFS= read -r spec; do
-    [ -n "$spec" ] || continue
-    sb="${spec##*/}"; case "$sb" in *.*) sb="${sb%.*}" ;; esac   # last segment, drop any ext
-    [ -n "$sb" ] || continue
-    [ -z "$first" ] && first="$sb"
-    [ "$sb" = "$tstem" ] && { printf '%s' "$sb"; return 0; }
-  done <<EOF
-$(grep -hoE "(from|import|require\()[[:space:]]*['\"][^'\"]+['\"]" "$f" 2>/dev/null \
-   | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | grep -E '^[.]')
-EOF
-  printf '%s' "$first"
-}
-
-# --- resolve_sibling_src: a co-located sibling STEM → its in-tree SOURCE path --
-# So a per-file placement can co-locate the test next to the real source:
-#   1) MANIFEST match — a `## Relevant files` SOURCE path (skips test/spec files)
-#      whose basename stem equals STEM (any source ext). Covers existing sources AND
-#      greenfield ones the ticket DECLARES (e.g. a new isDefaultViewport.ts).
-#   2) PACKAGE/REPO search — find <STEM>.<ext> under the ticket's package (or the
-#      whole repo) for a source not named in the manifest.
-#   3) FALLBACK — a truly novel greenfield not in the manifest: use $fallback_src
-#      (the ticket's primary target source) so the test co-locates in the ticket's
-#      primary source dir, byte-identical to the pre-multi-dir single-dir behaviour.
-# $prune (5th arg, newline-separated ABS dirs) are input scratch dirs to NEVER resolve
-# into — the worker's tests/ + stubs/ scratch dirs (a mktemp OUTSIDE the repo in real
-# use, so the repo-wide search never sees them; pruned explicitly so a fixture that
-# nests them under the repo still resolves the sibling to the real in-tree source, not
-# a copy of the test/stub). Echoes a repo-relative source path (never "" for a STEM).
-resolve_sibling_src() { # stem  ticketId  fallback_src  [pkg_rel]  [prune] → source relpath
-  local stem="$1" tid="$2" fallback="$3" pkg="${4:-}" prune="${5:-}"
-  [ -n "$stem" ] || { printf '%s' "$fallback"; return 0; }
-  local mf="$MISSION_DIR/manifests/$tid.md" p pb
-  if [ -f "$mf" ]; then
-    while IFS= read -r p; do
-      [ -n "$p" ] || continue
-      case "$p" in *.test.*|*.spec.*|*/__tests__/*|tests/*) continue ;; esac
-      case "$p" in *.ts|*.tsx|*.js|*.jsx|*.mts|*.cts|*.mjs|*.cjs) : ;; *) continue ;; esac
-      pb="${p##*/}"; pb="${pb%.*}"
-      [ "$pb" = "$stem" ] && { printf '%s' "$p"; return 0; }
-    done <<EOF
-$(manifest_relevant_files "$mf")
-EOF
-  fi
-  local root hit skip pd
-  for root in ${pkg:+"$REPO_ROOT/$pkg"} "$REPO_ROOT"; do
-    [ -d "$root" ] || continue
-    while IFS= read -r hit; do
-      [ -n "$hit" ] || continue
-      skip=no
-      while IFS= read -r pd; do
-        [ -n "$pd" ] || continue
-        case "$hit" in "$pd"/*) skip=yes; break ;; esac
-      done <<PRUNE
-$prune
-PRUNE
-      [ "$skip" = yes ] && continue
-      printf '%s' "${hit#"$REPO_ROOT"/}"; return 0
-    done <<EOF
-$(find "$root" \( -path '*/.git' -o -path '*/node_modules' \) -prune -o \
-     -type f \( -name "$stem.ts" -o -name "$stem.tsx" -o -name "$stem.js" \
-     -o -name "$stem.jsx" -o -name "$stem.mts" -o -name "$stem.cts" \
-     -o -name "$stem.mjs" -o -name "$stem.cjs" \) -print 2>/dev/null \
-   | grep -vE '\.(test|spec)\.' | LC_ALL=C sort)
-EOF
-  done
-  printf '%s' "$fallback"
-}
+# === S101/S133 placement machinery: RETIRED (S133) ===========================
+# The harness no longer PLACES tests — the unified TDD worker authors them
+# in-tree at the repo's own convention itself. test_primary_sibling,
+# resolve_sibling_src, import_specs_in, anchor_from_pairs and test_file_anchor_dir
+# are deleted with the standoff; detect_test_convention + test_path_for remain
+# (they state the placement contract in the declared-setup invitation), and
+# common_ancestor_dir remains (it scopes multi-dir retests).
 
 # --- common_ancestor_dir: deepest shared parent DIR of a set of relpaths -------
 # Given newline-separated repo-relative paths, echoes the deepest directory that is a
@@ -1785,77 +1703,6 @@ common_ancestor_dir() { # <newline relpaths> → common dir ("" = root)
     END { if (seen) print common }'
 }
 
-# --- import_specs_in: every RELATIVE import specifier a test file names --------
-# One `./…` / `../…` specifier per line (from/import/require forms). Non-relative
-# (bare package) imports are dropped. PURE — filesystem read only.
-import_specs_in() { # test-file → one relative specifier per line
-  grep -hoE "(from|import|require\()[[:space:]]*['\"][^'\"]+['\"]" "$1" 2>/dev/null \
-    | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/" | grep -E '^[.]'
-}
-
-# --- anchor_from_pairs: the co-located source dir a file's imports AGREE on -----
-# The S133 multi-dir fix. A single test file can import sources that live in
-# DIFFERENT dirs (e.g. `./App` in src/, `./components/MapCanvas/MapCanvas` in
-# src/components/MapCanvas/). A bare co-located placement (next to the FIRST
-# import's source) then breaks every OTHER `./sibling` import → the red gate
-# rejects on resolution failure → the ticket cap-exhausts. This derives the ONE
-# dir the test must sit in so EVERY same-level import resolves in place, by
-# RESPECTING each import's spelling (not just the source locations):
-#   • `ua` is the convention's anchoring up-count — co-located: 0 (`./descendant`);
-#     __tests__: 1 (`../descendant`, one `..` to exit the `__tests__/` dir).
-#   • Reads `spec<TAB>source` pairs on stdin. Only specs with EXACTLY `ua` leading
-#     `../` anchor the test; a spec that reaches FURTHER out (more `..`) is trusted
-#     and IGNORED (so a co-located `./sibling` + a `../otherdir/util` still anchors
-#     on the sibling's dir — no regression).
-#   • Each anchoring spec pins a dir = its source dir with its own descendant
-#     dir-part removed. If every anchoring spec agrees → echo that dir (may be ""
-#     = package/repo root), exit 0. No anchoring spec, or a conflict → exit 1 (the
-#     caller falls back to the legacy primary-sibling placement).
-anchor_from_pairs() { # ua   (reads spec<TAB>src lines on stdin) → anchor dir, exit 1 if none/conflict
-  awk -F'\t' -v ua="$1" '
-    function dirname(p,   d){ d=p; if (sub(/\/[^\/]*$/,"",d)) return d; return "" }
-    {
-      spec=$1; src=$2
-      if (spec=="" || src=="") next
-      sub(/^\.\//,"",spec)                         # strip a leading ./
-      ups=0
-      while (spec ~ /^\.\.\//){ sub(/^\.\.\//,"",spec); ups++ }
-      if (ups != ua+0) next                        # only same-level imports anchor
-      td=dirname(spec)                             # the descendant dir-part of the spec
-      pdir=dirname(src)
-      if (td==""){ anchor=pdir }
-      else if (pdir==td){ anchor="" }
-      else { want="/" td; L=length(pdir); W=length(want)
-             if (L>W && substr(pdir,L-W+1)==want) anchor=substr(pdir,1,L-W)
-             else next }                           # spelling vs real source dir mismatch
-      if (!seen){ common=anchor; seen=1; ok=1 }
-      else if (anchor!=common){ ok=0 }
-    }
-    END{ if (seen && ok){ print common; exit 0 } else exit 1 }'
-}
-
-# --- test_file_anchor_dir: resolve a file'\''s imports, then anchor_from_pairs ----
-# Impure wrapper (reads the manifest / repo via resolve_sibling_src). Echoes the
-# co-located source dir the test must sit in (per the file'\''s own import spelling),
-# exit 1 when no anchor is determinable. `tests` (top-level) convention is NOT
-# anchored here — its imports are package-root-relative, so the caller keeps the
-# legacy placement for it.
-test_file_anchor_dir() { # file convention ticket fallback pkg prune → anchor srcdir, exit 1
-  local f="$1" conv="$2" tid="$3" fb="$4" pkg="$5" prune="$6" ua spec sp src
-  case "$conv" in __tests__) ua=1 ;; tests) return 1 ;; *) ua=0 ;; esac
-  {
-    while IFS= read -r spec; do
-      [ -n "$spec" ] || continue
-      sp="${spec##*/}"; case "$sp" in *.*) sp="${sp%.*}" ;; esac
-      [ -n "$sp" ] || continue
-      src="$(resolve_sibling_src "$sp" "$tid" "$fb" "$pkg" "$prune")"
-      [ -n "$src" ] || continue
-      printf '%s\t%s\n' "$spec" "$src"
-    done <<EOF
-$(import_specs_in "$f")
-EOF
-  } | anchor_from_pairs "$ua"
-}
 
 # === Plan Review: SOFT under-slice signal (S100) ============================
 # Plan Review kept passing a MEGA-ticket that hid a whole surface behind a simple
@@ -2019,7 +1866,7 @@ snapshot_untracked() { # out-file
 # A repo-write worker (the Implementer) may need a throwaway runner file in the
 # tree (e.g. to invoke the suite). The harness OWNS one neutral, CLI-agnostic
 # name for it — `.lcars-run-*` — so the driver can both refuse to commit it and
-# DELETE it afterwards without guessing per-CLI names. The implement-implementer
+# DELETE it afterwards without guessing per-CLI names. The implement-tdd
 # prompt steers workers to this name (and to LCARS_WORK_OUT for runners). The
 # `.lcars-*` family already covers it; this constant names it for cleanup.
 LCARS_RUNNER_GLOB='.lcars-run-*'
@@ -2232,83 +2079,10 @@ commit_ticket() { # ticket  summary
   cleanup_runner_scratch "$before"
 }
 
-# --- S102: commit the LOCKED test in its OWN commit, BEFORE the Implementer ---
-# Tests ride along into the PR (S102). At the END of Phase 1 (impl-save-tests), the
-# Test-Writer's fail-first test has been placed in-tree at the repo convention (S101),
-# self-smoked, snapshotted (tests.sha256), and passed the red gate. Here we commit
-# EXACTLY those locked test file(s) as their OWN commit, so they merge to `main` and
-# downstream contributors inherit the coverage — WITHOUT handing the Implementer an
-# editable test:
-#   • WORKTREE MODE ($LCARS_TICKET_WORKTREE): the ticket built on a DETACHED HEAD at
-#     the mission-branch tip. Commit the test there and record the commit OBJECT to
-#     .test-commit-sha; the parent cherry-picks it onto the real branch in plan order
-#     JUST BEFORE the impl commit, so history is test-commit → impl-commit.
-#   • NON-WORKTREE + a real mission branch (rare — a direct implement-ticket call):
-#     mirror commit_ticket — checkout the branch, then commit.
-#   • NO mission branch (branch-less / local-only): SKIP — keep S101 behaviour (tests
-#     stay in-tree + mirrored, uncommitted); the caller then records them in
-#     .untracked-before so commit_ticket never stages them. Back-compat.
-# We stage ONLY the snapshot's test relpaths, EXPLICITLY (never `git add -u`/`-A`), so
-# the greenfield stubs (STUB_RELS) and every other change stay UNCOMMITTED and
-# overwritable by the Implementer. Sets COMMIT_TESTS_NOTE to the outcome; never crashes
-# (a defensive skip leaves the tests uncommitted, exactly as S101 left them).
-COMMIT_TESTS_NOTE=""
-commit_locked_tests() { # ticket
-  COMMIT_TESTS_NOTE=""
-  local t="$1"
-  local branch; branch="$(json_str "$STATE" branch)"
-  # Branch-less / local-only mission → S102 skip (S101 behaviour preserved).
-  if [ -z "$branch" ]; then COMMIT_TESTS_NOTE="skip-no-branch"; return 0; fi
-
-  # The locked test relpaths — EXACTLY what impl-save-tests just placed + snapshotted.
-  local rels; rels="$(snapshot_test_rels "$t")"
-  [ -n "$(printf '%s' "$rels" | grep . || true)" ] || { COMMIT_TESTS_NOTE="skip-no-tests"; return 0; }
-
-  # Deterministic, legible subject: <behavior> = the ticket's plan title when cheaply
-  # available (approved-plan.json), else a stable generic phrase (kept stable so the
-  # commit subject is reproducible under test).
-  local title=""
-  [ -f "$MISSION_DIR/approved-plan.json" ] && title="$(ticket_title "$MISSION_DIR/approved-plan.json" "$t" 2>/dev/null || true)"
-  [ -n "$title" ] || title="locked failing test"
-  local msg="test($t): $title (LCARS Test-Writer)"
-
-  # NON-WORKTREE + real branch: get onto the branch first (mirror commit_ticket).
-  if [ -z "${LCARS_TICKET_WORKTREE:-}" ]; then
-    local cur; cur="$( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null )"
-    if [ "$cur" != "$branch" ]; then
-      if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
-        ( cd "$REPO_ROOT" && "$GIT_BIN" checkout "$branch" >/dev/null 2>&1 ) \
-          || { COMMIT_TESTS_NOTE="skip-checkout-failed"; return 0; }
-      else
-        COMMIT_TESTS_NOTE="skip-no-branch-ref"; return 0
-      fi
-    fi
-  fi
-
-  ensure_scratch_excluded
-
-  # Stage ONLY the locked test file(s), explicitly. NEVER `git add -u`/`-A` here.
-  local rel staged=0
-  while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    ( cd "$REPO_ROOT" && "$GIT_BIN" add -- "$rel" >/dev/null 2>&1 ) && staged=1
-  done <<REL_EOF
-$rels
-REL_EOF
-  # Defensive: nothing actually staged → keep the tests uncommitted (S101 behaviour).
-  if [ "$staged" != 1 ] || ( cd "$REPO_ROOT" && "$GIT_BIN" diff --cached --quiet 2>/dev/null ); then
-    COMMIT_TESTS_NOTE="skip-nothing-staged"; return 0
-  fi
-  ( cd "$REPO_ROOT" && "$GIT_BIN" commit -q -m "$msg" >/dev/null 2>&1 ) \
-    || { COMMIT_TESTS_NOTE="skip-commit-failed"; return 0; }
-  # Worktree mode: stash the test commit OBJECT so the parent cherry-picks it BEFORE
-  # the impl commit. (Shared mission dir → visible to the parent.)
-  if [ -n "${LCARS_TICKET_WORKTREE:-}" ]; then
-    ( cd "$REPO_ROOT" && "$GIT_BIN" rev-parse HEAD ) >"$(ticket_dir "$t")/.test-commit-sha" 2>/dev/null || :
-  fi
-  COMMIT_TESTS_NOTE="committed"
-  return 0
-}
+# --- S102 commit_locked_tests: RETIRED (S133) --------------------------------
+# The separate pre-Implementer locked-test commit is gone with the standoff: the
+# unified worker's tests are authored in-tree and land in the ONE ticket commit
+# (commit_ticket), riding into the PR alongside the source.
 
 # --- remove the harness-owned runner scratch from the working tree ----------
 # Deletes ONLY `.lcars-run-*` files the harness controls, and ONLY when they were
@@ -2411,30 +2185,10 @@ native_runner_bin() { # stack
   case "$1" in rust) printf 'cargo' ;; go) printf 'go' ;; *) printf '' ;; esac
 }
 
-# A filesystem-safe token derived from a ticket id (for staged filenames / -run).
-native_safe_token() { printf '%s' "$1" | tr -c 'A-Za-z0-9' '_'; }
+# (S133: native_dest_rel — the native staged-test destination mapper — is
+# retired with impl-save-tests; the unified worker authors native tests in-tree
+# at the stack's own convention itself.)
 
-# WHERE a native stack's staged test physically lives (its ride-along convention),
-# derived from the authored test's basename. rust → an integration test at the
-# crate's tests/ dir (so `cargo test --test <stem>` targets exactly it); go → an
-# in-package `*_test.go` (so `go test -run` scopes to its funcs). The staged
-# basename is namespaced with the ticket token so siblings never collide and the
-# scoped invocation is unambiguous.
-native_dest_rel() { # stack ticket authored-basename
-  local stack="$1" tok base stem
-  tok="$(native_safe_token "$2")"
-  base="${3##*/}"; stem="${base%.*}"
-  # go: strip a trailing _test so we don't double it.
-  case "$stack" in
-    rust) printf 'tests/__lcarsq_%s__%s.rs' "$tok" "$stem" ;;
-    # go's build tool IGNORES files whose name begins with `_` or `.`, so the
-    # native marker must NOT lead with an underscore or the staged test becomes
-    # invisible to `go test` (a false "no tests to run" green). Use a leading
-    # letter (`lcarsq_`); the trailing `_test.go` is mandatory for go to see it.
-    go)   stem="${stem%_test}"; printf 'lcarsq_%s__%s_test.go' "$tok" "$stem" ;;
-    *)    printf '' ;;
-  esac
-}
 
 # The go test-function names a staged file declares — the basis for the `-run`
 # pattern that scopes go to ONLY this file's tests (no sibling runs).
@@ -2476,77 +2230,9 @@ native_scoped_cmd() { # stack   (relpaths on stdin)
     *) printf '' ;;
   esac
 }
-
-# The native red gate: prove the ticket's staged suite FAILS-first, scoped to
-# ONLY its own tests, with scope-was-honored proven by a FILE-ABSENCE probe.
-# Preserves EVERY guarantee red_gate_ok gives (fail-first, scope-honored, never a
-# silent green) via the per-runner mechanism. Relpaths (in-tree, under REPO_ROOT)
-# on stdin. $NATIVE_GATE_SIGNAL (like RED_GATE_SIGNAL) captures the block reason.
-#   return 0 → RED and scope proven (safe to hand off)
-#   return 1 → BLOCK (green-on-nothing, or scope unprovable — never accept)
-#   return 3 → the runner itself is not installed (env; not a Test-Writer defect)
-red_gate_native() { # stack  run_dir   (relpaths on stdin)
-  local stack="$1" run_dir="$2" bin cmd rels rel reason=""
-  rels="$(cat)"
-  bin="$(native_runner_bin "$stack")"
-  if ! command -v "$bin" >/dev/null 2>&1; then
-    reason="RED GATE — the $stack test runner '$bin' is not installed on PATH, so the harness cannot run any test for this native stack. This is an ENVIRONMENT gap, NOT a Test-Writer defect — install $bin (or retarget the mission)."
-    printf '  ✗ %s\n' "$reason" >&2
-    [ -n "${NATIVE_GATE_SIGNAL:-}" ] && printf 'rc=env\n%s\n' "$reason" >"$NATIVE_GATE_SIGNAL"
-    return 3
-  fi
-  cmd="$(printf '%s\n' "$rels" | native_scoped_cmd "$stack")"
-  if [ -z "$cmd" ]; then
-    reason="RED GATE — cannot scope the $stack suite: the staged test file(s) declare NO runnable test target (no #[test] function for rust / no func Test… for go), so there is nothing the harness can invoke in isolation and it CANNOT prove scope was honored. A contract the runner cannot even select proves nothing — BLOCK (never a silent green). Have the Test-Writer declare a real test function."
-    printf '  ✗ %s\n' "$reason" >&2
-    [ -n "${NATIVE_GATE_SIGNAL:-}" ] && printf 'rc=unscopable\n%s\n' "$reason" >"$NATIVE_GATE_SIGNAL"
-    return 1
-  fi
-
-  local out rc=0 probe_out prc=0
-  out="$( cd "$run_dir" && eval "$cmd" 2>&1 )" || rc=$?
-
-  # SCOPE-WAS-HONORED PROBE (the S85 invariant, per stack): rerun the IDENTICAL
-  # scoped invocation with the staged test file(s) moved ASIDE. A runner that
-  # honors the scoping reacts DETECTABLY (cargo → "no test target", exit 101; go
-  # → "no tests to run", exit 0 vs a FAIL); an IDENTICAL result (same rc AND
-  # output) means the invocation ignored the staging → we cannot prove the staged
-  # test is what ran → BLOCK. Restore the files on EVERY path.
-  local moved=""
-  while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    if [ -f "$REPO_ROOT/$rel" ]; then
-      mv "$REPO_ROOT/$rel" "$REPO_ROOT/$rel.__lcarsq_probe_bak" 2>/dev/null && moved="$moved$rel
-"
-    fi
-  done <<NATIVE_PROBE_EOF
-$rels
-NATIVE_PROBE_EOF
-  probe_out="$( cd "$run_dir" && eval "$cmd" 2>&1 )" || prc=$?
-  while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    mv "$REPO_ROOT/$rel.__lcarsq_probe_bak" "$REPO_ROOT/$rel" 2>/dev/null || :
-  done <<NATIVE_RESTORE_EOF
-$moved
-NATIVE_RESTORE_EOF
-
-  if [ "$prc" -eq "$rc" ] && [ "$probe_out" = "$out" ]; then
-    reason="RED GATE — the $stack scoped invocation produced an IDENTICAL result (same exit AND output) with and WITHOUT the staged test present, so it did NOT react to the ticket's scoping — the harness cannot prove the staged test is what ran (the S85 masking case). BLOCK; never accept an unprovable suite. Command: $cmd (from $run_dir)."
-    printf '  ✗ %s\n' "$reason" >&2
-    [ -n "${NATIVE_GATE_SIGNAL:-}" ] && { printf 'rc=%s (scope unprovable — identical with/without the staged test)\n%s\n' "$rc" "$reason" >"$NATIVE_GATE_SIGNAL"; }
-    return 1
-  fi
-  if [ "$rc" -eq 0 ]; then
-    reason="RED GATE — the staged $stack suite PASSED (exit 0) with no implementation. A contract that is green before anything is built proves nothing; the tests must FAIL first. Command: $cmd. Runner output:
-$(printf '%s' "$out" | tail -20)"
-    printf '  ✗ %s\n' "$reason" >&2
-    [ -n "${NATIVE_GATE_SIGNAL:-}" ] && printf 'rc=0 (green-on-nothing — the staged suite must FAIL first)\n%s\n' "$reason" >"$NATIVE_GATE_SIGNAL"
-    return 1
-  fi
-  # Non-zero AND scope proven (the probe differed) → a genuine red of the staged
-  # tests. Safe to hand off.
-  return 0
-}
+# (S133: red_gate_native — the pre-implementation native red gate — is retired
+# with the standoff; the flip-flop gate's native legs (proof_scoped_leg_run via
+# native_scoped_cmd) carry the per-runner scoping truth now.)
 
 # --- S96: table-driven classifier signatures -------------------------------
 # The red-gate failure detectors below (compile / resolution / env) share ONE
@@ -2603,10 +2289,12 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # collected / ran" phrasings.
       printf '%s' 'No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items' ;;
     hang)
-      # S99 — a Test-Writer suite that HUNG under the pre-gate self-smoke timeout.
-      # CLASSIFY-ONLY (classify_impl_failure at exhaustion); NEVER consulted by
-      # red_gate_ok. Anchored to the self-smoke's OWN captured marker so it cannot
-      # false-positive on ordinary runner chatter.
+      # A suite that HUNG and never settled under the hard timeout. CLASSIFY-ONLY
+      # (classify_impl_failure at exhaustion); NEVER consulted by a gate verdict.
+      # (S133: the flip-flop gate legs now time out and render such a suite
+      # INCONCLUSIVE at the gate; this arm defensively names a hang phrasing that
+      # still reaches exhaustion.) Anchored to explicit "never settled/finished"
+      # phrasing so it cannot false-positive on ordinary runner chatter.
       printf '%s' 'SELF-SMOKE — your suite HUNG|the suite never (settled|finished) within the hard timeout' ;;
   esac
 }
@@ -2807,10 +2495,12 @@ red_gate_env_failure() { # runner-output → 0 if the runner could not execute
 #   1. empty-worker-output — the worker produced NOTHING (no file AND empty
 #      stdout/stderr). Checked FIRST: there is no runner output to classify, and
 #      this is the S98 worker-health signal (a dead/transient CLI, not a code bug).
-#   2. test-writer-hang    — the S99 pre-gate self-smoke's HANG marker (the suite
-#      never settled under the hard timeout — a never-settling awaited/thenable mock
-#      or an infinite async init). Checked BEFORE env so a hang is never mis-read as
-#      an unprovisioned runner.
+#   2. suite-hang          — the runner's own HANG marker (a suite that never
+#      settled under the hard timeout — a never-settling awaited/thenable mock or an
+#      infinite async init). Checked BEFORE env so a hang is never mis-read as an
+#      unprovisioned runner. (S133: the flip-flop gate legs now also time out and
+#      render such a suite INCONCLUSIVE at the gate; this arm is the classifier's
+#      defensive name for a hang signature that still reaches exhaustion.)
 #   2.5 test-infra-mismatch — S131: a DECLARED TEST SETUP was applied this
 #      mission (the caller threads the $MISSION_DIR/test-setup-applied.json
 #      marker as the 4th input) AND the runner COLLECTED ZERO tests
@@ -2849,13 +2539,13 @@ classify_impl_failure() { # runner_out  worker_out  files_written  [setup_applie
     printf 'empty-worker-output'; return 0
   fi
 
-  # 2. test-writer-hang — a Test-Writer self-smoke HANG (the suite never settled
-  # under the hard timeout — a never-settling awaited/thenable mock or an infinite
-  # async init). Recognised from the self-smoke's own captured marker so an
-  # EXHAUSTED ticket names the hang instead of a generic over-broad slice. Checked
-  # before env so a hang is never mis-read as an unprovisioned runner.
+  # 2. suite-hang — the runner's suite never settled under the hard timeout (a
+  # never-settling awaited/thenable mock or an infinite async init). Recognised from
+  # the runner's own captured marker so an EXHAUSTED ticket names the hang instead of
+  # a generic over-broad slice. Checked before env so a hang is never mis-read as an
+  # unprovisioned runner. (S133: the flip-flop gate legs also time out at the gate.)
   if printf '%s' "$runner_out" | grep -Eq "$(rg_signature hang)"; then
-    printf 'test-writer-hang'; return 0
+    printf 'suite-hang'; return 0
   fi
 
   # 2.5. test-infra-mismatch (S131) — a declared setup was applied this mission AND
@@ -2945,7 +2635,7 @@ impl_failure_category_phrase() { # category → phrase
         && _tim_pkg="$(json_str "$MISSION_DIR/test-setup-applied.json" package)"
       printf "test-infra mismatch (a declared test setup was applied%s but its runner config never collected the harness-placed test — the config's include and the in-tree test placement must agree; NOT a scoping problem)" "${_tim_pkg:+ in '$_tim_pkg'}" ;;
     empty-worker-output)        printf 'empty worker output (the worker produced no file and no output — likely a transient CLI failure, not a code problem)' ;;
-    test-writer-hang)           printf 'test-writer hang (the suite never settled under the pre-gate self-smoke timeout — likely an awaited / thenable mock; caught before the Implementer)' ;;
+    suite-hang)                 printf 'suite hang (the suite never settled under the hard timeout — likely an awaited / thenable mock or an infinite async init)' ;;
     env-failure|runner-startup) printf 'environment failure (the test runner could not start — the worktree is not provisioned; NOT a code problem)' ;;
     genuine-red-exhausted)      printf 'genuine red exhausted (the tests went red but never turned green within the attempt cap)' ;;
     *)                          printf '%s' "$1" ;;
@@ -2984,33 +2674,12 @@ worker_produced_nothing() { # outdir → 0 if the worker produced nothing at all
   return 0   # no file AND no output ⇒ produced nothing
 }
 
-# --- GUARDRAIL 1: the red gate ----------------------------------------------
-# BUG-007 contract. Run the configured test command against ONLY the just-written
-# QUARANTINED tests, with NO implementation present, and decide on the quarantined
-# tests ALONE — never on the repo's existing suite. The verdict is a PURE function
-# of "did the quarantined tests fail":
-#
-#   • quarantined suite RED (cmd exits non-zero)        → return 0  (SAFE — hand off)
-#   • quarantined suite GREEN, and we can PROVE it was   → return 1  (green-on-nothing — REJECT)
-#     the quarantined tests that passed
-#   • quarantined suite GREEN, but the command IGNORES   → return 1  (CAN'T PROVE — BLOCK loud,
-#     $LCARS_TESTS_DIR (so we cannot tell whether it       NEVER a green-light)
-#     ran the quarantined tests or the repo's own suite)
-#   • no runner configured                               → return 2  (CANNOT APPLY — block loud)
-#
-# The command runs from the repo root with $LCARS_TESTS_DIR pointing at the
-# quarantined tests, so a real per-repo runner honours that var to scope itself.
-# We then PROBE with $LCARS_TESTS_DIR pointing at an EMPTY dir: if the exit code
-# is identical, the command did not react to the var (it ran a fixed target — the
-# repo's own suite), so a green result proves NOTHING about the quarantined tests.
-# We NEVER discard the rc or the output — both are surfaced to $RED_GATE_SIGNAL
-# (if set) so the human and the next grounded Test-Writer attempt see WHY.
-RED_GATE_SIGNAL=""   # caller may point this at a file to capture the rejection signal
-# S101: the repo's test convention (co-located | __tests__ | tests) the harness
-# placed this test at, so the resolution-failure hint tells the Test-Writer to
-# re-author the import + stub for the ACTUAL in-tree location. Default co-located
-# (groutwork's + the harness default). SIGNAL/WORDING ONLY — never a verdict.
-RED_GATE_CONVENTION="co-located"
+# --- GUARDRAIL 1 (pre-implementation red gate): RETIRED (S133) ---------------
+# red_gate_ok — the BUG-007 fail-first gate over a quarantined/in-place suite,
+# with the empty-dir scope probe — is deleted with the standoff. Fail-first is
+# now proven POST-implementation by the flip-flop gate (green-on-tip +
+# red-on-parent, S132), which reuses the same failure detectors below.
+
 # --- S111: runner PREFLIGHT + the env-cannot-test park ----------------------
 # runner_preflight_env_failure probes whether the configured testCommand can
 # LAUNCH at all in a given dir — the same empty-quarantine invocation as the red
@@ -3315,195 +2984,6 @@ record_test_landscape() {
   return 0
 }
 
-red_gate_ok() { # quarantined-tests-dir [run-dir]
-  # S87: run-dir is the cwd the runner is invoked from (BOTH the real run AND the
-  # empty-dir probe), default $REPO_ROOT (byte-identical to before). A monorepo
-  # ticket passes its own package dir so vitest/jest discover & filter at the
-  # package root. The probe still cd's the SAME place and consumes $LCARS_TESTS_DIR,
-  # so its differ-requirement is preserved.
-  local tdir="$1" run_dir="${2:-$REPO_ROOT}" cmd rc=0 prc=0 out probe_out reason=""
-  cmd="$(resolve_test_cmd)"
-  if [ -z "$cmd" ]; then
-    # NO RUNNER configured: the gate cannot run anything. This is the documented,
-    # pre-existing degradation for repos without a test command — it is NOT a fix
-    # to widen and it green-lights nothing on its own (there is literally no suite
-    # to pass). We surface it LOUDLY (it is a real hole, not a silent pass) and
-    # leave it unchanged: WIDENING it would be the regression BUG-007 forbids.
-    printf '  ⚠ RED GATE SKIPPED — no test command (set `testCommand` in .git/lcars/config.json or $LCARS_TEST_CMD). The harness cannot prove the suite fails-first without a runner; configure one to close this gap.\n' >&2
-    return 0
-  fi
-
-  out="$(cd "$run_dir" && LCARS_TESTS_DIR="$tdir" bash -c "$cmd" 2>&1)" || rc=$?
-
-  # PROBE: re-run the SAME command with an EMPTY quarantine dir. This is the only
-  # way to prove the command reacts to $LCARS_TESTS_DIR (i.e. it scoped itself to
-  # the quarantined tests) versus running a fixed target (the repo's own suite).
-  # We use it on BOTH verdicts:
-  #   • GREEN branch — to tell a green-on-nothing from a dir-ignoring green.
-  #   • RED branch  — to tell a genuine red of the quarantined tests from a
-  #     dir-ignoring red on the repo's own (already failing) suite.
-  # A command "did NOT react" only when emptying the dir changed NOTHING — i.e.
-  # the empty-dir run is IDENTICAL: same rc AND byte-identical output. Any
-  # difference (different output OR different rc) ⟹ the command reacted ⟹ the
-  # verdict is about the quarantined tests. rc-equality alone is INSUFFICIENT: a
-  # honouring runner can exit the same non-zero rc on an empty dir as on a real
-  # failing test, with DIFFERENT output — so we MUST compare output too, and err
-  # toward ACCEPT on any difference (a false-BLOCK would re-introduce BUG-007).
-  local empty; empty="$(mktemp -d)"
-  probe_out="$(cd "$run_dir" && LCARS_TESTS_DIR="$empty" bash -c "$cmd" 2>&1)" || prc=$?
-  rm -rf "$empty"
-  local ignored_var=no
-  if [ "$prc" -eq "$rc" ] && [ "$probe_out" = "$out" ]; then ignored_var=yes; fi
-
-  if [ "$rc" -ne 0 ]; then
-    # S111 TRIAGE ORDER: the un-runnable ENVIRONMENT is checked FIRST — BEFORE the
-    # ignored-var verdict — because a runner that never LAUNCHED produces identical
-    # output with or without tests present, so ignored_var is ALWAYS yes for a dead
-    # runner and the old order misblamed it as "testCommand ignores $LCARS_TESTS_DIR"
-    # (the S110 example-game 127: `sh: vitest: command not found`, three Test-Writer
-    # retries for something no retry can fix). An env failure is NEVER the
-    # Test-Writer's fault, so BOTH env flavors return the DISTINCT rc 3 — the caller
-    # escalates to the human instead of burning the retry budget.
-    if red_gate_env_failure "$out"; then
-      if [ "$ignored_var" = yes ]; then
-        # TOTAL launch failure: identical dead output with or without the new tests
-        # — the run dir has NO working test runner at all (a runner-less package,
-        # or a wholly unprovisioned tree). The harness cannot run any test here.
-        reason="RED GATE — CANNOT RUN TESTS HERE — the test runner itself failed to launch, IDENTICALLY with and without the new tests present, so the harness cannot run any test in this directory. Either the package this ticket builds in has NO test runner (e.g. no vitest/jest in its dependency tree) or the environment is not provisioned (is worktreeSetupCommand set?). This is NOT a Test-Writer problem and NO retry can fix it — add a test runner to the package, set a package-specific test command, provision the worktree, or retarget the mission. Command run: $cmd (run from: $run_dir). Runner output:
-$(printf '%s' "$out" | tail -20)"
-        printf '  ✗ %s\n' "$reason" >&2
-        if [ -n "$RED_GATE_SIGNAL" ]; then
-          {
-            printf 'rc=%s (the harness cannot run any test here — the runner failed to launch with AND without tests; env-cannot-run, not a Test-Writer defect)\n' "$rc"
-            printf '%s\n' "$reason"
-          } >"$RED_GATE_SIGNAL"
-        fi
-        return 3
-      fi
-      # S83 flavor: the runner reacted to the var (it launches on an empty dir) but
-      # could not START once real tests were present — deps/binaries missing in this
-      # tree. Still an env failure, still not a Test-Writer defect → rc 3 (S111; was
-      # a retryable 1, which burned the Test-Writer budget on a provisioning gap).
-      reason="RED GATE — environment not provisioned — the test runner could not start (is worktreeSetupCommand set?). The quarantined suite exited non-zero, but the failure is the RUNNER ITSELF failing to LAUNCH (missing node_modules/venv, an absent test binary, no pnpm lockfile, or a permissions error), NOT a test assertion — so not a single test ran and this red proves NOTHING about the new tests. Provision the gate worktree (set \`worktreeSetupCommand\` so the runner's dependencies are installed before the gate runs), then the suite can fail-first on its assertions. Command run: $cmd. Runner output (quarantined run):
-$(printf '%s' "$out" | tail -20)"
-      printf '  ✗ %s\n' "$reason" >&2
-      if [ -n "$RED_GATE_SIGNAL" ]; then
-        {
-          printf 'rc=%s (the quarantined-tests run could not START the runner — environment not provisioned, NOT a valid assertion red)\n' "$rc"
-          printf '%s\n' "$reason"
-        } >"$RED_GATE_SIGNAL"
-      fi
-      return 3
-    fi
-    # RED: the quarantined tests appear to fail as required. But a non-zero exit is
-    # only "red = safe" when it is ABOUT the quarantined tests. If emptying the dir
-    # changed NOTHING (identical rc AND output), the command IGNORED $LCARS_TESTS_DIR
-    # — it ran a fixed target (e.g. the repo's own red suite), so this non-zero exit
-    # proves NOTHING about the quarantined tests. BLOCK loud — never accept an
-    # UNPROVEN suite. Otherwise the command reacted → genuine red → accept (as before).
-    # (Env failures were already triaged above, so reaching here means the runner
-    # LAUNCHED — this verdict is about a live runner pinned to a fixed target.)
-    if [ "$ignored_var" = yes ]; then
-      reason="RED GATE — the configured test command exited non-zero (red) but exits IDENTICALLY (same rc AND output) with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran a FIXED target (the repo's own suite), not the quarantined tests. A red on the repo's own already-failing suite proves NOTHING about the new tests, so the harness refuses to hand them on. Command run: $cmd. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`. Runner output:
-$(printf '%s' "$out" | tail -20)"
-      printf '  ✗ %s\n' "$reason" >&2
-      if [ -n "$RED_GATE_SIGNAL" ]; then
-        {
-          printf 'rc=%s (the quarantined-tests run exited non-zero, but the command IGNORES $LCARS_TESTS_DIR so the red is unproven)\n' "$rc"
-          printf '%s\n' "$reason"
-        } >"$RED_GATE_SIGNAL"
-      fi
-      return 1
-    fi
-    # BUG-022: the command reacted to the var, but a non-zero exit is only a VALID
-    # red when the suite failed on ASSERTIONS. If the runner output carries a clear
-    # COMPILE/LOAD failure (SyntaxError, import/parse error, a load-time unresolved
-    # symbol, or an unsubstituted placeholder token), the test file did not even run
-    # — handing it to the Implementer is a dead end (it cannot edit the immutable
-    # test to fix the syntax). REJECT it back to the Test-Writer with the runner's
-    # error as feedback, the SAME loop a trivially-green suite uses. Conservative:
-    # only a clear compile/load signature diverts; a normal assertion failure falls
-    # through to the accept below, exactly as before.
-    if red_gate_compile_failure "$out"; then
-      # BUG-024: a module-RESOLUTION load failure needs a DIFFERENT, actionable reason
-      # than a pure SyntaxError. The quarantined test is executed from the ticket's
-      # package quarantine dir `<package>/__lcarsq__/`, so a co-located `./<sibling>`
-      # import of the code under test (authored as if the test sat next to the source)
-      # cannot resolve from there. Tell the Test-Writer to import via a path that
-      # resolves FROM the quarantine dir — package-root-relative or by package name —
-      # so the retry self-corrects. A non-resolution compile/parse error keeps the
-      # original SyntaxError wording.
-      if red_gate_resolution_failure "$out"; then
-        # S95 (greenfield-tests): NAME the exact unresolved specifier(s) up front
-        # so a weaker worker self-corrects instead of digging them out of the raw
-        # tail. Only when the parser extracts something (else byte-identical to
-        # the pre-S95 reason — no empty line, no dangling label).
-        # S101: the hint is CONVENTION-AWARE — the harness now places the test IN THE
-        # REPO at $RED_GATE_CONVENTION and runs it IN PLACE, so the correct import +
-        # stub path depends on where the test physically sits. co-located is the
-        # default (groutwork); __tests__/ and top-level tests/ get their own prefix.
-        local unres="" hint="" imp_form stub_form
-        case "$RED_GATE_CONVENTION" in
-          __tests__)  imp_form="a relative import from your \`__tests__/\` dir — for a source in the SAME module dir, one level up (\`../<sibling>\`); for a source in a DIFFERENT dir, the harness anchors your \`__tests__/\` at the deepest COMMON ANCESTOR of every source the file imports, so spell each import as a descendant from there, e.g. \`../<subdir>/<name>\`"
-                      stub_form="\`stubs/<sibling>.ts\` (the harness places it beside the source, one level up from your test)" ;;
-          tests)      imp_form="the source's package-root-relative path, e.g. \`../src/<dir>/<file>\` (your test lives in a top-level \`tests/\` dir)"
-                      stub_form="\`stubs/<package-root>/src/<dir>/<file>.ts\` (the mirrored repo path)" ;;
-          *)          imp_form="a relative import that resolves from where the harness co-locates your test — for a sibling in the SAME dir a bare \`./<name>\` (e.g. \`import { area } from './utils'\`); for a source in a DIFFERENT dir the harness anchors your test at the deepest COMMON ANCESTOR of every source the file imports, so spell each import as a \`./<subdir>/<name>\` DESCENDANT from that ancestor (e.g. \`./components/MapCanvas/MapCanvas\`), NEVER a bare \`./<name>\` for a nested source"
-                      stub_form="\`stubs/<sibling>.ts\` (the harness places it beside your test)" ;;
-        esac
-        local unres_lines; unres_lines="$(unresolved_imports_in_output "$out")"
-        unres="$(printf '%s\n' "$unres_lines" | paste -sd' ' - 2>/dev/null)"
-        if [ -n "$unres" ]; then
-          # S111: don't make the worker CHOOSE stub-vs-path — the harness checked
-          # the repo per specifier and states the verdict (exists→path, absent→stub).
-          local triage; triage="$(unresolved_specifier_triage "$REPO_ROOT" "$unres_lines")"
-          hint="SPECIFICALLY, these import(s) did not resolve. The harness checked the repo for EACH one — FOLLOW ITS VERDICT below, do not re-guess:
-$triage
-For a brand-new module the stub goes under stubs/ — $stub_form. For an existing module re-author the import as $imp_form. MULTI-DIR: if THIS test imports sources from more than one directory, a single co-located test cannot reach them all with bare \`./<name>\` imports — the harness places it at the deepest COMMON ANCESTOR of every source it imports, so spell EVERY import as a descendant path from that ancestor (and keep them consistent so they agree on one anchor). A single unresolved import fails the whole suite to load. "
-        fi
-        reason="RED GATE — the suite did NOT fail on an assertion: it could not RESOLVE its import of the code under test (a module-resolution / load failure), so the test file never ran. The harness places your test IN THE REPO at its own test convention ($RED_GATE_CONVENTION) and runs it IN PLACE, right where the test sits — so import the code under test via a path that resolves FROM THERE: $imp_form. Re-author the import accordingly so the test LOADS, then FAILS on its assertions until the behaviour exists. ${hint}Command run: $cmd. Runner output (run):
-$(printf '%s' "$out" | tail -20)"
-      else
-        reason="RED GATE — the quarantined suite did NOT fail on an assertion: it failed to COMPILE / LOAD (a SyntaxError, import/parse error, a load-time unresolved symbol, or a leftover placeholder token), so the test file never ran. A non-runnable contract cannot be handed to the Implementer (it must not edit the immutable tests to fix a syntax error). Re-author the test so it PARSES and LOADS cleanly, then FAILS on its assertions until the behaviour exists. Command run: $cmd. Runner output (quarantined run):
-$(printf '%s' "$out" | tail -20)"
-      fi
-      printf '  ✗ %s\n' "$reason" >&2
-      if [ -n "$RED_GATE_SIGNAL" ]; then
-        {
-          printf 'rc=%s (the quarantined-tests run failed to COMPILE/LOAD — NOT a valid assertion red)\n' "$rc"
-          printf '%s\n' "$reason"
-        } >"$RED_GATE_SIGNAL"
-      fi
-      return 1
-    fi
-    # The command reacted to the var → the non-zero exit is a genuine red of the
-    # quarantined tests. Safe to hand off.
-    return 0
-  fi
-
-  # GREEN against nothing. Before rejecting we diagnose WHY, so the signal tells
-  # the next attempt whether the suite truly passed-on-nothing or the runner
-  # simply ignored the quarantine. The probe above already ran.
-  if [ "$ignored_var" = yes ]; then
-    # Identical GREEN with NO quarantined tests present → the command did not react
-    # to $LCARS_TESTS_DIR. It ran a fixed target (the repo's existing suite), so we
-    # CANNOT prove the quarantined tests are what passed. BLOCK loud — never pass.
-    reason="RED GATE — the configured test command exited 0 (green) but ALSO exits 0 with NO quarantined tests present, so it IGNORES \$LCARS_TESTS_DIR and ran the repo's EXISTING suite, not the quarantined tests. The harness cannot prove the new tests fail-first, so it refuses to hand them on. Command run: $cmd. Make \`testCommand\` honour \$LCARS_TESTS_DIR (run only that dir) — see \`lcars init\`."
-  else
-    # The runner reacted to the var (empty dir → different result) yet the quarantined
-    # tests passed → a genuine green-on-nothing contract. Reject as proving nothing.
-    reason="RED GATE — the quarantined suite PASSED with no implementation (exit 0). A contract that is green before anything is built proves nothing; the tests must FAIL first. Command run: $cmd. Runner output (quarantined run):
-$(printf '%s' "$out" | tail -20)"
-  fi
-  printf '  ✗ %s\n' "$reason" >&2
-  if [ -n "$RED_GATE_SIGNAL" ]; then
-    {
-      printf 'rc=%s (the quarantined-tests run exited 0 = GREEN, which the red gate rejects)\n' "$rc"
-      printf '%s\n' "$reason"
-    } >"$RED_GATE_SIGNAL"
-  fi
-  return 1
-}
 
 # S99: a PORTABLE hard wall-clock timeout (macOS has no coreutils `timeout`). Runs
 # the given command with combined stdout+stderr captured to $2, returning the
@@ -3537,163 +3017,89 @@ suite_collected_zero_tests() { # runner-output → 0 if zero tests were collecte
   printf '%s' "$1" | grep -Eq "$(rg_signature zerotests)"
 }
 
-# S99: the Test-Writer PRE-GATE self-smoke VERDICT (pure). Given the timed run's rc
-# and captured output, decide what the smoke does:
-#   hang       — rc 124: the hard timeout fired (a never-settling awaited/thenable
-#                mock, or an infinite async init) → Test-Writer defect (self-smoke bounces).
-#   zero-tests — the suite finished but collected NO tests → Test-Writer defect (bounces).
-#   ok         — everything else (a real run: red, green, OR a load/env failure) →
-#                the self-smoke PROCEEDS and lets the authoritative red gate render the
-#                verdict (it already rejects load/env/green with richer feedback).
-# NOTE the deliberate split: load-error/env/green are NOT bounced by the smoke — the
-# red gate is the single authority for those (avoids duplicating S95 feedback / a
-# second weaker gate). The smoke ADDS only the two cases the gate cannot catch (a
-# hang: no timeout; a zero-test suite: can slip through as a "valid red").
-self_smoke_verdict() { # rc  runner-output → echoes hang|zero-tests|ok
-  local rc="$1" out="$2"
-  if [ "$rc" = 124 ]; then printf 'hang'; return 0; fi
-  # A load/compile/resolution failure is the red gate's job (richer feedback) — do
-  # NOT bounce it here; only fall through to the zero-tests check when it is NOT one.
-  if red_gate_compile_failure "$out"; then printf 'ok'; return 0; fi
-  if suite_collected_zero_tests "$out"; then printf 'zero-tests'; return 0; fi
-  printf 'ok'
-}
+# (S133: the S99 Test-Writer pre-gate self-smoke — self_smoke_verdict /
+# self_smoke_reason / test_writer_self_smoke — is retired with the standoff; the
+# flip-flop gate's zero-collect check (proof_zero_collected) carries the
+# green-on-nothing truth now.)
 
-# S99: the actionable Test-Writer feedback for a bounced self-smoke. Written to the
-# red-gate-signal.txt grounded-retry channel so the NEXT fresh Test-Writer attempt is
-# told exactly what to fix; also becomes the last-attempt signal classify_impl_failure
-# reads at exhaustion (the `hang` marker → the test-writer-hang category).
-self_smoke_reason() { # verdict  cmd  runner-output  [placed-rels]  [setup-applied]
-  local v="$1" cmd="$2" out="$3" placed="${4:-}" setup="${5:-}" tail
-  tail="$(printf '%s' "$out" | tail -20)"
-  case "$v" in
-    hang)
-      printf 'SELF-SMOKE — your suite HUNG: the suite never settled within the hard timeout when run before any implementation, so it produced no result. The usual cause is an AWAITED mock that never settles — e.g. a Proxy / catch-all host double whose `then` trap returns a callable makes the mock a THENABLE, so `await <mock>` waits forever. FIX: a Proxy / catch-all double MUST return `undefined` for `then` (and `catch` / `finally`), and NEVER `await` a synchronously-constructed mock object. Re-author so the suite COLLECTS and FAILS FAST on an assertion. Command run: %s. Runner output (self-smoke, killed at timeout):\n%s\n' "$cmd" "$tail" ;;
-    zero-tests)
-      # S131 (the include-vs-placement trap, caught live 2026-07-09): when a
-      # DECLARED TEST SETUP was applied this mission (the caller threads the
-      # marker + the placed in-tree relpaths), a zero-collect is almost always
-      # the authored runner config's include NOT matching where the harness's
-      # S101 placement put the test. Name that mismatch — quote the runner's own
-      # include:/filter: lines and the placed relpath(s) — instead of the
-      # generic fail-first advice that sent the writer into blind retries.
-      if [ -n "$setup" ]; then
-        local placed_line scoped
-        placed_line="$(printf '%s\n' "$placed" | grep . | tr '\n' ' ' | sed 's/ $//')"
-        scoped="$(printf '%s' "$out" | grep -E '^[[:space:]]*(include|filter):' | sed 's/^[[:space:]]*//')"
-        [ -n "$scoped" ] || scoped='(the runner printed no include:/filter: lines)'
-        printf 'SELF-SMOKE — your suite collected ZERO tests, and a DECLARED TEST SETUP was applied this mission: the likely cause is an include/placement MISMATCH — the runner config you authored does not collect the location the harness placed your test at. The harness relocated your test(s) in-tree to: %s. The runner reported:\n%s\nThese MUST agree: the config must collect that placed in-tree path. Safest: do NOT narrow `include` at all (vitest'\''s default include already matches both co-located src/**/*.test.* and tests/**) — never limit it to the scratch tests/ layout you author into. Command run: %s. Runner output (self-smoke):\n%s\n' "$placed_line" "$scoped" "$cmd" "$tail"
-      else
-        printf 'SELF-SMOKE — your suite collected ZERO tests: no test case actually ran, so there is no red to hand off. Write at least one dedicated, fail-first test that INVOKES the not-yet-built behaviour through its public entrypoint and ASSERTS the observable output. Command run: %s. Runner output (self-smoke):\n%s\n' "$cmd" "$tail"
-      fi ;;
-  esac
-}
-
-# S99: run the authored suite ONCE, in the SAME (monorepo-aware) environment the
-# red gate uses, under a HARD TIMEOUT, BEFORE the immutable snapshot. On a hang /
-# zero-tests Test-Writer defect: write the reason to $sig (grounded-retry channel),
-# roll back the quarantine ($tdir), and `die` → the Phase-1 loop retries the
-# TEST-WRITER, never the Implementer, and nothing is snapshotted from a broken suite.
-# A suite that RUNS (red/green/load-error) returns 0 and proceeds to the snapshot +
-# the authoritative red gate. NEVER accepts anything the gate would reject.
-# S101: runs the suite IN PLACE at its in-tree location (co-located `./sibling`
-# imports resolve — NEVER copied into a quarantine/staging dir). `scope` is the
-# in-tree file (or dir) to run, `run_dir` the cwd the runner is invoked from
-# ($REPO_ROOT, or the sub-package dir for a monorepo ticket). On a failing verdict
-# it writes the grounded-retry reason to $sig, prints the ✗ line, and RETURNS 1 —
-# the caller rolls back the in-tree copies + quarantine mirror and dies (so a
-# hanging / zero-test suite is never snapshotted and never reaches the Implementer).
-test_writer_self_smoke() { # scope  run_dir  sig  [placed-rels]
-  local scope="$1" run_dir="${2:-$REPO_ROOT}" sig="$3" placed="${4:-}" cmd
-  cmd="$(resolve_test_cmd)"
-  if [ -z "$cmd" ]; then
-    printf '  ⚠ SELF-SMOKE SKIPPED — no test command; cannot pre-run the suite (the red gate skips loud too).\n' >&2
-    return 0
-  fi
-  local timeout_secs="${LCARS_SELF_SMOKE_TIMEOUT_SECS:-120}"
-  local out; out="$(mktemp)"; local rc=0
-  ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$timeout_secs" "$out" bash -c "$cmd" ) || rc=$?
-  local runner_out; runner_out="$(cat "$out" 2>/dev/null || true)"; rm -f "$out"
-  local verdict; verdict="$(self_smoke_verdict "$rc" "$runner_out")"
-  [ "$verdict" = ok ] && return 0
-  # S131: thread the mission-level applied-setup marker + the placed in-tree
-  # relpaths so a zero-collect bounce names the include/placement mismatch
-  # (setup-aware) instead of the generic fail-first advice. Verdicts unchanged.
-  local setup_applied=""
-  [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/test-setup-applied.json" ] && setup_applied=1
-  local reason; reason="$(self_smoke_reason "$verdict" "$cmd" "$runner_out" "$placed" "$setup_applied")"
-  printf '%s' "$reason" >"$sig"
-  printf '  ✗ SELF-SMOKE (%s): %s\n' "$verdict" "$reason" >&2
-  return 1
-}
-
-# --- GUARDRAIL 2: immutable tests (hash snapshot + verify) ------------------
+# --- GUARDRAIL 2 (S133 shape): post-proof test snapshot, declared-edits-aware --
+# The old pre-implementation tests.sha256 lifecycle (Test-Writer lock + immutable
+# enforcement against the Implementer) is RETIRED with the standoff: the unified
+# TDD worker owns its tests, and per-ticket proof is the S132 gates (flip-flop +
+# declared-edits). What remains cross-boundary is DRIFT detection: after a
+# ticket's gates PASS, the harness records each of its declared test files' hash
+# (proof-tests.sha256). Downstream (post-commit / pre-merge) a mismatch is fine
+# IFF the editing ticket DECLARED it (its test-edits.json) — an UNDECLARED drift
+# of an earlier ticket's committed test still blocks.
 sha_of() { # file → hex digest
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
   elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-  else die "no sha256 tool (shasum / sha256sum) available for the immutable-tests guardrail."; fi
-}
-# Write "<hash>  <relpath>" for every file under a tests dir, in stable order.
-snapshot_tests() { # tests-dir  out-file
-  local d="$1" out="$2" rel
-  : >"$out"
-  while IFS= read -r rel; do
-    rel="${rel#./}"
-    printf '%s  %s\n' "$(sha_of "$d/$rel")" "$rel" >>"$out"
-  done < <(cd "$d" && find . -type f | LC_ALL=C sort)
-}
-# 0 if the ticket's tests still match the snapshot taken at impl-save-tests;
-# non-zero if any test file was added, removed, or changed.
-# S101: the snapshot records the IN-TREE relpaths (the test now lives in the repo
-# tree, not a flat quarantine), so immutability is verified over the IN-TREE files
-# under a given TREE — a post-snapshot edit to (or deletion of) the ridden-along
-# test is caught exactly as an edit to the old quarantine copy was. Each snapshot
-# line is "<hash>  <relpath>"; we re-hash <tree>/<relpath> and diff the snapshot.
-# S102 (tests ride along, part 2): an optional second arg names the TREE ROOT to
-# re-hash under (default $REPO_ROOT). This lets the SAME immutability check verify
-# the COMMITTED test blob in a clean gate worktree (post-commit / pre-merge), so a
-# weakened ridden-along test is caught ACROSS the commit boundary, not only in the
-# Implementer's own scratch worktree.
-tests_unchanged() { # ticketId  [tree-root]
-  local snap cur h rel tree="${2:-$REPO_ROOT}"
-  snap="$(ticket_dir "$1")/tests.sha256"
-  [ -f "$snap" ] || return 1   # no snapshot → cannot prove unchanged → treat as a violation
-  cur="$(mktemp)"; : >"$cur"
-  while read -r h rel; do
-    [ -n "$rel" ] || continue
-    if [ -f "$tree/$rel" ]; then
-      printf '%s  %s\n' "$(sha_of "$tree/$rel")" "$rel" >>"$cur"
-    else
-      printf 'MISSING  %s\n' "$rel" >>"$cur"   # deleted / moved → mismatch
-    fi
-  done <"$snap"
-  if diff -q "$snap" "$cur" >/dev/null 2>&1; then rm -f "$cur"; return 0; fi
-  rm -f "$cur"; return 1
+  else die "no sha256 tool (shasum / sha256sum) available for the test-drift guardrail."; fi
 }
 
-# S102: the IN-TREE test relpaths recorded in a ticket's immutable snapshot (one
-# per line). Mirrors tests_unchanged's read of "<hash>  <relpath>" — the relpath is
-# everything after the first field. Used by the gates to scope the run to (and check
-# for the committed presence of) exactly the locked test files.
-snapshot_test_rels() { # ticketId  -> in-tree relpaths (newline)
-  local snap h rel; snap="$(ticket_dir "$1")/tests.sha256"
+# Record "<hash>  <relpath>" for every declared test file of a just-proven ticket
+# (newTests ∪ testEdits paths from tickets/<id>/result.json) that exists under
+# <tree>. Written ONCE, at gate-pass time, by cmd_implement_ticket.
+proof_snapshot_tests() { # ticketId  tree
+  local t="$1" tree="$2" out rel
+  out="$(ticket_dir "$t")/proof-tests.sha256"
+  : >"$out"
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    [ -f "$tree/$rel" ] || continue
+    printf '%s  %s\n' "$(sha_of "$tree/$rel")" "$rel" >>"$out"
+  done < <(proof_result_declared_paths "$(ticket_dir "$t")/result.json" | LC_ALL=C sort -u)
+}
+
+# The proven ticket's recorded test relpaths (one per line; empty if none).
+proof_snapshot_rels() { # ticketId → relpaths (newline)
+  local snap h rel; snap="$(ticket_dir "$1")/proof-tests.sha256"
   [ -f "$snap" ] || return 0
   while read -r h rel; do [ -n "$rel" ] && printf '%s\n' "$rel"; done <"$snap"
 }
 
-# S102: 0 iff EVERY snapshot test relpath exists as a real file under <tree> — i.e.
-# the ticket's locked tests RODE ALONG committed and are present in this clean gate
-# worktree (so the gate runs them IN PLACE instead of overlaying the mirror). Empty
-# snapshot → non-zero (nothing committed to run in place). A branch-less / S101-era
-# mission that never committed its tests returns non-zero → the overlay fallback.
-tests_committed_in_tree() { # ticketId  tree
-  local rel any=0 all=1
+# Echo every recorded test relpath of <ticket> whose content under <tree> no
+# longer matches the proof-time hash (or is missing). Empty output = no drift.
+proof_tests_drift() { # ticketId  tree → drifted relpaths (newline)
+  local snap h rel tree="$2"; snap="$(ticket_dir "$1")/proof-tests.sha256"
+  [ -f "$snap" ] || return 0
+  while read -r h rel; do
+    [ -n "$rel" ] || continue
+    if [ ! -f "$tree/$rel" ] || [ "$(sha_of "$tree/$rel")" != "$h" ]; then
+      printf '%s\n' "$rel"
+    fi
+  done <"$snap"
+}
+
+# Union of every ticket's DECLARED test edits (test-edits.json {path} entries)
+# for this mission — the allow-list a later ticket's edit of an earlier ticket's
+# committed test must appear in. jq-free.
+mission_declared_edit_paths() { # → paths (newline)
+  local f
+  for f in "$MISSION_DIR"/tickets/*/test-edits.json; do
+    [ -f "$f" ] || continue
+    grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" \
+      | sed 's/.*:[[:space:]]*"//; s/"$//'
+  done 2>/dev/null | LC_ALL=C sort -u
+}
+
+# 0 iff every drifted test of <ticket> under <tree> was DECLARED by some ticket's
+# test-edits.json; on failure echoes the undeclared drifted relpaths.
+proof_drift_declared_ok() { # ticketId  tree → 0 ok; 1 undeclared (echoes rels)
+  local drift declared bad="" rel
+  drift="$(proof_tests_drift "$1" "$2")"
+  [ -n "$(printf '%s' "$drift" | grep . || true)" ] || return 0
+  declared="$(mission_declared_edit_paths)"
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
-    any=1
-    [ -f "$2/$rel" ] || all=0
-  done < <(snapshot_test_rels "$1")
-  [ "$any" = 1 ] && [ "$all" = 1 ]
+    printf '%s\n' "$declared" | grep -Fxq "$rel" || bad="${bad:+$bad
+}$rel"
+  done <<PDD_EOF
+$drift
+PDD_EOF
+  [ -z "$bad" ] && return 0
+  printf '%s\n' "$bad"
+  return 1
 }
 
 # --- GUARDRAIL 3: test quality (the suite must assert something) ------------
@@ -3709,481 +3115,537 @@ suite_has_assertions() { # tests-dir
   grep -rEiq 'assert|expect|should|\.to[A-Za-z]|require\(|t\.(is|deep|truthy|throws)|check\(|verify\(|t\.(Fatal|Error|Fail|Skip)|panic!' "$1" 2>/dev/null
 }
 
-# --- GUARDRAIL 3.5: portable source location (BUG-074) ----------------------
-# A ticket test that loads a repo source (e.g. game.js) via a HARDCODED ABSOLUTE
-# build-worktree path — `fs.readFileSync('/private/var/worktrees/t-001/game.js')`
-# — passes in the worktree it was authored in (the ticket goes green) but ENOENTs
-# when the full-suite gate re-runs the suite from a CLEAN checkout elsewhere. That
-# spurious "regression" triggers a futile (billed) implement self-heal and a
-# confusing escalation, and the Implementer can NEVER fix it: the bad path lives
-# in the immutable/locked test. The robust fix is to REJECT such a test before it
-# locks in, so the Test Writer retries with a portable walk-up locator.
+# (S133: GUARDRAIL 3.5 — nonportable_path_in_tests, the Test-Writer absolute-
+# path guard — is retired with the standoff; a non-portable test path fails the
+# flip-flop parent leg / the clean-worktree gates naturally.)
+
+# ===========================================================================
+# S132: PROOF-OF-WORK GATES — STANDALONE (unified-TDD-worker round, S132–135)
+# ===========================================================================
+# The unified worker retires the Test-Writer/Implementer standoff: ONE worker
+# does TDD end-to-end, and proof moves AFTER implementation. The PARENT commit
+# is the snapshot (git itself), and fail-on-parent / pass-on-tip is the proof:
 #
-# `nonportable_path_in_tests` echoes the FIRST offending "<file>:<path>" and
-# returns 0 (found) / 1 (clean). It is deliberately PRECISE so it does not
-# false-positive on legitimate relative paths or on paths mentioned in comments:
-#   • Only flags an ABSOLUTE path under a known non-portable, host-/run-specific
-#     root: a `/private/var/` (or `/var/folders/`, `/private/var/folders/`) temp
-#     path, a `…/worktrees/…` build-worktree segment, or an absolute `/Users/`
-#     home path. A bare relative path (`../game.js`, `./fixtures/x`) is never
-#     flagged.
-#   • Only when that path is consumed by a path-OPENING construct on the same line
-#     (readFileSync/readFile/createReadStream/openSync/require/import/fs.* path
-#     args, or a Python open()/Path()) — not arbitrary string mentions.
-#   • Skips lines that are pure comments (`//`, `#`, or `*` leader).
-nonportable_path_in_tests() { # tests-dir → echoes "file:offending-path", rc 0 if found
-  local d="$1"
-  # The non-portable absolute roots that won't survive relocation. A path is one
-  # of: /private/var/..., /var/folders/..., any .../worktrees/... segment, /Users/...
-  local pathpat='(/private/var/[^"'"'"'`) ]+|/var/folders/[^"'"'"'`) ]+|/[^"'"'"'`) ]*/worktrees/[^"'"'"'`) ]+|/Users/[^"'"'"'`) ]+)'
-  # A path-opening construct that consumes such a literal on the same line.
-  local loadpat='(readFileSync|readFile|createReadStream|openSync|writeFileSync|require|import|fs\.[A-Za-z]+|path\.(resolve|join)|[^A-Za-z_]open|Path)\b'
-  local rel hit
-  while IFS= read -r rel; do
-    rel="${rel#./}"
-    # Strip pure-comment lines, then require BOTH a load construct AND a
-    # non-portable absolute literal on the same surviving line.
-    hit="$(grep -nE "$loadpat" "$d/$rel" 2>/dev/null \
-            | grep -vE '^[0-9]+:[[:space:]]*(//|#|\*)' \
-            | grep -oE "$pathpat" \
-            | head -n1)"
-    if [ -n "$hit" ]; then
-      printf '%s:%s' "$rel" "$hit"
-      return 0
-    fi
-  done < <(cd "$d" && find . -type f | LC_ALL=C sort)
+#   flip_flop_gate       TIP leg green + PARENT leg red on the ticket's own
+#                        new/changed tests (scratch worktree at the parent sha,
+#                        S87-provisioned, SAME tests staged in, S106-scoped run).
+#   declared_edits_guard every test-classified path in the diff must be declared
+#                        (result.json newTests ∪ testEdits[].path); deletions count.
+#   proof_validate_result the v2 result shape (v1 rejects legibly — no dual-shape).
+#   proof_quality_floor  suite_has_assertions over the new/changed tests in-tree;
+#                        ≥1 new/changed test unless flipFlop=not-applicable.
+#
+# S133: cmd_implement_ticket now drives these on every ticket (the path HAS
+# flipped). They also stay reachable via the *-test dispatch hooks, and they
+# REUSE the existing machinery: provision_worktree (S87), native_scoped_cmd +
+# intree_scope_for (S106/S87 scoping), suite_collected_zero_tests (S99), the
+# red-gate failure detectors (S96 classify arms), emit_event, and the JSON
+# helpers. bash-3.2 safe; jq-free (python3 only where json_encode_string already
+# depends on it).
+
+# Is a relpath a TEST file? The repo's detected conventions + per-stack patterns
+# (*.test.* / *.spec.* / __tests__ for js-ts, test_*.py / *_test.py for python,
+# *_test.go for go, tests/*.rs — generalized to any tests|test dir — for rust and
+# the "tests" convention repos). A deliberate SUPERSET: over-classifying a helper
+# under tests/ only means the worker must declare touching it, never a false pass.
+proof_is_test_path() { # relpath → 0 if test-classified
+  local p="$1" b; b="${p##*/}"
+  case "$p" in
+    */__tests__/*|__tests__/*)          return 0 ;;
+    tests/*|*/tests/*|test/*|*/test/*)  return 0 ;;
+  esac
+  case "$b" in
+    *.test.*|*.spec.*)   return 0 ;;
+    test_*.py|*_test.py) return 0 ;;
+    *_test.go)           return 0 ;;
+  esac
   return 1
 }
 
-# --- S106: native (rust/go) impl-save-tests staging + red gate --------------
-# The native counterpart to the js/python S101/S102 flow. It is intentionally
-# SIMPLER — a native runner compiles tests inside the crate/package, so there is
-# no co-location resolution, no greenfield-stub overlay, and no monorepo package
-# math: each authored test is STAGED at the stack's own ride-along convention
-# (rust: tests/<name>.rs; go: <name>_test.go), snapshotted (immutable), red-gated
-# via the per-runner scoped invocation + file-absence probe, committed so it rides
-# into the PR (S102), and — on any FAILURE exit — rolled back so no staged copy
-# leaks. On SUCCESS the staged file is the ride-along (committed, tracked). Every
-# red_gate guarantee is preserved via red_gate_native. Called by cmd_impl_save_tests
-# after the shared count + assertion guardrails.
-cmd_impl_save_tests_native() {
-  local stack; stack="$(resolve_stack)"
-  local tdir; tdir="$(ticket_dir "$TICKET")/tests"
-  local snap; snap="$(ticket_dir "$TICKET")/tests.sha256"
-  # Native fixtures compile at the crate/package ROOT (go.mod / Cargo.toml at the
-  # repo root); the scoped runner is invoked from there.
-  local run_dir="$REPO_ROOT"
-
-  # STAGE each authored test at its ride-along convention (in-tree + a mirror whose
-  # relpaths equal the in-tree relpaths, so the immutable snapshot keys off one path).
-  rm -rf "$tdir"; mkdir -p "$tdir"
-  local INTREE_RELS="" f rel reldir
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    rel="$(native_dest_rel "$stack" "$TICKET" "$f")"
-    [ -n "$rel" ] || continue
-    reldir="${rel%/*}"; [ "$reldir" = "$rel" ] && reldir=""
-    [ -n "$reldir" ] && { mkdir -p "$tdir/$reldir" 2>/dev/null || :; mkdir -p "$REPO_ROOT/$reldir" 2>/dev/null || :; }
-    cp "$f" "$tdir/$rel"
-    cp "$f" "$REPO_ROOT/$rel"
-    INTREE_RELS="${INTREE_RELS}${rel}
-"
-  done < <(find "$TESTS" -type f | LC_ALL=C sort)
-
-  # Roll the in-tree staged copies back out — used on EVERY failure exit so a
-  # rejected suite leaves NO staged copy behind.
-  _native_rollback() {
-    local r
-    while IFS= read -r r; do
-      [ -n "$r" ] || continue
-      rm -f "$REPO_ROOT/$r"
-      rmdir -p "$REPO_ROOT/${r%/*}" 2>/dev/null || :
-    done <<NATIVE_RB_EOF
-$INTREE_RELS
-NATIVE_RB_EOF
-  }
-
-  if [ -z "$(printf '%s' "$INTREE_RELS" | grep . || true)" ]; then
-    _native_rollback; rm -rf "$tdir"
-    die "no ${stack} test file could be staged from the Test Writer's suite — expected a ${stack} test file (*.rs / *_test.go)."
-  fi
-
-  # GUARDRAIL 2 setup: snapshot the staged files (immutability keys off in-tree relpaths).
-  snapshot_tests "$tdir" "$snap"
-
-  # GUARDRAIL 1 (the native red gate): the suite must FAIL-first AND prove scope was
-  # honored (file-absence probe). Capture the reason to a durable signal so the human
-  # and the next attempt see WHY. rc 3 = env (runner not installed) → escalate, not retry.
-  local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"; rm -f "$sig"
-  local red_rc=0
-  NATIVE_GATE_SIGNAL="$sig" red_gate_native "$stack" "$run_dir" <<NATIVE_GATE_EOF || red_rc=$?
-$INTREE_RELS
-NATIVE_GATE_EOF
-  if [ "$red_rc" -eq 3 ]; then
-    _native_rollback; rm -rf "$tdir" "$snap"
-    local why3=""; [ -f "$sig" ] && why3="
-$(cat "$sig")"
-    printf 'lcars run: the %s test runner is not installed — not a Test-Writer problem; escalating to the human instead of retrying.%s\n' "$stack" "$why3" >&2
-    exit 3
-  fi
-  if [ "$red_rc" -ne 0 ]; then
-    _native_rollback; rm -rf "$tdir" "$snap"
-    local why=""; [ -f "$sig" ] && why="
-$(cat "$sig")"
-    die "the Test Writer's suite did not pass the ${stack} red gate — a contract that is green (or unprovable) before anything is built proves nothing; the tests must FAIL first.$why"
-  fi
-  rm -f "$sig"
-
-  # S102 (tests ride along): COMMIT the locked test BEFORE the Implementer runs so it
-  # merges into the PR at the stack's OWN convention (tests/*.rs / *_test.go). Reuses
-  # the stack-agnostic committer (it stages ONLY the snapshot relpaths, explicitly).
-  commit_locked_tests "$TICKET"
-  if [ "$COMMIT_TESTS_NOTE" != "committed" ]; then
-    local ub; ub="$(ticket_dir "$TICKET")/.untracked-before"
-    [ -n "$INTREE_RELS" ] && printf '%s' "$INTREE_RELS" | grep -v '^$' >>"$ub" 2>/dev/null || :
-  fi
-
-  local count; count="$(printf '%s' "$INTREE_RELS" | grep -c . || true)"
-  echo "IMPLEMENT: tests saved — $TICKET"
-  echo "  Saved $count Test Writer file(s) at the $stack test convention: $(printf '%s' "$INTREE_RELS" | grep . | paste -sd' ' -)."
-  echo "  Red gate: suite fails as required (scope proven via the $stack file-absence probe); the contract is locked (immutable)."
-  if [ "$COMMIT_TESTS_NOTE" = "committed" ]; then
-    echo "  Test committed (rides along into the PR) BEFORE the Implementer; the contract is committed + locked."
-  fi
-  exit 0
+# Every path the tip differs from the parent in: the tracked diff (modifications
+# AND deletions) plus untracked files (a not-yet-committed new test still counts).
+# --no-renames: git's rename detection would collapse an R100 rename to just the
+# NEW path, letting the old test vanish undeclared — surface it as delete+add.
+proof_diff_paths() { # parent-sha worktree → one relpath per line (sorted, unique)
+  local parent="$1" wt="$2"
+  {
+    "$GIT_BIN" -C "$wt" diff --no-renames --name-only "$parent" -- 2>/dev/null
+    "$GIT_BIN" -C "$wt" ls-files --others --exclude-standard 2>/dev/null
+  } | grep . | LC_ALL=C sort -u
 }
 
-# --- S106: native-scope (introspection) -------------------------------------
-# Read-only: prints the native scoped invocation the harness would use for a
-# ticket's locked tests (from the immutable snapshot's in-tree relpaths), plus the
-# run dir. Lets a caller re-run the SAME scoped command the red gate used — to see
-# it go RED (no impl) then GREEN (impl present), or to exercise the file-absence
-# probe — without re-invoking the whole gate. Emits `RUN_DIR=`, `SCOPED_CMD=`, and
-# one `RELPATH=` per staged file.
-cmd_native_scope() {
-  locate_mission "$MISSION_ID"
-  [ -n "$TICKET" ] || die "no ticket id — pass --ticket <id>."
-  local stack; stack="$(resolve_stack)"
-  stack_is_native || die "native-scope applies only to native stacks (rust/go); this mission's stack is '$stack'."
-  local rels; rels="$(snapshot_test_rels "$TICKET")"
-  [ -n "$(printf '%s' "$rels" | grep . || true)" ] || die "no locked tests for $TICKET — run impl-save-tests first."
-  local cmd; cmd="$(printf '%s\n' "$rels" | native_scoped_cmd "$stack")"
-  printf 'RUN_DIR=%s\n' "$REPO_ROOT"
-  printf 'SCOPED_CMD=%s\n' "$cmd"
-  printf '%s\n' "$rels" | while IFS= read -r r; do [ -n "$r" ] && printf 'RELPATH=%s\n' "$r"; done
-  exit 0
+# The diff's TEST-classified paths. mode "existing" keeps only files present in
+# the worktree (the runnable set); default "all" includes deletions (the
+# declared-edits set — a deleted test is an edit).
+proof_test_rels_in_diff() { # parent-sha worktree [existing|all] → relpaths
+  local parent="$1" wt="$2" mode="${3:-all}" p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    proof_is_test_path "$p" || continue
+    if [ "$mode" = existing ] && [ ! -f "$wt/$p" ]; then continue; fi
+    printf '%s\n' "$p"
+  done < <(proof_diff_paths "$parent" "$wt")
 }
 
-# --- subcommand: impl-save-tests -------------------------------------------
-cmd_impl_save_tests() {
-  locate_mission "$MISSION_ID"
-  require_stage implement
-  [ -n "$TICKET" ] || die "no ticket id — pass --ticket <id>."
-  [ -n "$TESTS" ] && [ -d "$TESTS" ] || die "no tests dir — pass --tests <dir>."
+# ZERO tests collected/ran on a leg — the S85/S106 green-on-nothing trap,
+# INCONCLUSIVE on either leg, never a pass. Extends suite_collected_zero_tests
+# (S99, js/py phrasings) with the native runners' own zero phrasings LOCALLY —
+# the shared `zerotests` signature is classify-only for the LIVE path and must
+# stay byte-identical (this session touches no live verdict).
+proof_zero_collected() { # runner-output → 0 if zero tests were collected/ran
+  suite_collected_zero_tests "$1" && return 0
+  printf '%s' "$1" | grep -Eq 'no tests to run|test result: ok\. 0 passed'
+}
 
-  # The Test Writer MUST produce failing tests — an empty set is a no-op session,
-  # not a valid Phase 1. Refuse it so we never hand the Implementer nothing.
-  local count; count="$(find "$TESTS" -type f | wc -l | tr -d ' ')"
-  [ "$count" -gt 0 ] || die "the tests dir is empty — the Test Writer produced no tests."
-
-  # GUARDRAIL 3 (before quarantine, so a junk suite never lands): the tests must
-  # actually assert something, or a sandbagging Test Writer hands over a contract
-  # that proves nothing.
-  suite_has_assertions "$TESTS" \
-    || die "the Test Writer's suite asserts nothing — no assertion found in any test file. A zero-assertion contract proves nothing; rejected by the test-quality guardrail."
-
-  # S106: NATIVE stacks (rust/go) can't be pointed at a tests dir — their scoped
-  # red gate + ride-along convention differ per-runner. Branch here, AFTER the
-  # language-agnostic count + assertion guardrails, so the js/python path below is
-  # byte-for-byte unchanged (default = the $LCARS_TESTS_DIR mechanism).
-  if stack_is_native; then cmd_impl_save_tests_native; return $?; fi
-
-  # GUARDRAIL 3.5 (BUG-074): reject a NON-PORTABLE test before it locks in. A test
-  # that loads a repo source via a hardcoded absolute build-worktree path passes in
-  # the worktree it was authored in but ENOENTs from the full-suite gate, poisoning
-  # it with a spurious regression the Implementer can never fix (the path lives in
-  # the immutable test). Fail the attempt so the Test Writer retries portably.
-  local bad_path; bad_path="$(nonportable_path_in_tests "$TESTS" || true)"
-  [ -z "$bad_path" ] \
-    || die "ticket test hardcodes an absolute path ${bad_path#*:} (in ${bad_path%%:*}) — tests must locate sources via the portable walk-up (e.g. a findGameJs() that walks up from __dirname), never an absolute build-worktree path; rejecting so the Test Writer retries."
-
-  # S101 (tests ride along, part 1): the Test-Writer's fail-first test lands IN THE
-  # REPO at the repo's OWN convention (co-located / __tests__/ / top-level tests/),
-  # not only in the .git/lcars quarantine. We (a) detect the convention from the
-  # repo, (b) map the ticket's target source to the in-tree test dir, and (c) write
-  # each authored test file BOTH into the working tree ($REPO_ROOT/<relpath>, so the
-  # red gate + Implementer run it IN PLACE and a later session can commit it by path)
-  # AND into a MIRROR at tickets/<id>/tests/<relpath> whose relpaths equal the
-  # in-tree relpaths — so the immutable snapshot records in-tree relpaths and every
-  # downstream immutability re-check keys off the same path. Detection runs BEFORE we
-  # write, so we never read back our own just-written test.
-  local tdir; tdir="$(ticket_dir "$TICKET")/tests"
-  local snap; snap="$(ticket_dir "$TICKET")/tests.sha256"
-  local target_src; target_src="$(ticket_target_src "$TICKET" "$TESTS")"
-  local convention; convention="$(detect_test_convention "$REPO_ROOT" "$target_src")"
-  # The ticket's package (monorepo-aware) — the RUN DIR for the in-place gate AND the
-  # root the per-file sibling search prefers. Computed once, reused below.
-  local pkg_rel; pkg_rel="$(ticket_target_package "$TICKET")"
-  # S111: the LAST-RESORT placement fallback must live INSIDE the ticket's target
-  # package. The old bare `src/index.ts` dropped a fully-greenfield test (a stem
-  # matching no manifest entry and no existing file) at the REPO ROOT's src/ —
-  # OUTSIDE the package the gate runs from — so vitest's package-rooted include
-  # never discovered it and every attempt bounced as "zero tests" (caught live,
-  # 001 run 4: example-game gate rooted at the package, test placed at <root>/src/).
-  local fallback_src="${target_src:-${pkg_rel:+$pkg_rel/}src/index.ts}"
-  # The worker's scratch input dirs — NEVER resolve a sibling to a copy of the test or
-  # stub living there (a mktemp OUTSIDE the repo in real use; pruned so a fixture that
-  # nests them under the repo still resolves to the real in-tree source). Canonicalised
-  # to PHYSICAL paths so the prune matches the physical paths `find $REPO_ROOT` yields
-  # (macOS resolves /var → /private/var, so the raw arg would not prefix-match).
-  local _sib_prune="" _sd
-  for _sd in "$TESTS" "$STUBS"; do
-    [ -n "$_sd" ] || continue
-    [ -d "$_sd" ] && _sd="$(cd "$_sd" 2>/dev/null && pwd -P)"
-    _sib_prune="${_sib_prune}${_sd}
-"
-  done
-
-  # S101 (MULTI-DIR): a ticket can author SEVERAL test files whose sources live in
-  # DIFFERENT dirs — so we place EACH file at ITS OWN co-located destination, not all
-  # in one dir. For each authored test we (1) read the `./<sibling>` it imports, (2)
-  # resolve that sibling to a real in-tree source (manifest → package/repo → the
-  # ticket's primary source as fallback), and (3) map that source to the in-tree test
-  # relpath at the repo convention. A SINGLE-FILE / single-dir ticket is byte-identical
-  # to before (all files map to one dir).
-  rm -rf "$tdir"; mkdir -p "$tdir"
-  local INTREE_RELS="" f bn stem src_f canon_f destdir_f reldir rel anchor_src
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    bn="${f##*/}"
-    # S133 (multi-dir single file): anchor the test at the source dir ALL its own
-    # `./descendant` imports agree on (a `../reach-out` is trusted, not counted), so
-    # a file importing across dirs resolves in place. When no anchor is derivable
-    # (or under the top-level `tests/` convention) fall back to the primary-sibling
-    # placement — byte-identical to the pre-S133 single-dir behaviour.
-    if anchor_src="$(test_file_anchor_dir "$f" "$convention" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"; then
-      canon_f="$(test_path_for "$convention" "${anchor_src:+$anchor_src/}__anchor.ts")"
-    else
-      stem="$(test_primary_sibling "$f")"
-      src_f="$(resolve_sibling_src "$stem" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"
-      canon_f="$(test_path_for "$convention" "$src_f")"
+# Run the ticket's tests SCOPED, per stack, from a given tree root (either the
+# tip worktree or the parent scratch worktree). Sets PROOF_LEG_RC + PROOF_LEG_OUT.
+# rc 96/97 are local sentinels for "cannot even construct the run" (no
+# testCommand / no runnable native target) — the caller renders INCONCLUSIVE.
+PROOF_LEG_RC=0; PROOF_LEG_OUT=""
+proof_scoped_leg_run() { # leg-root rels(newline)
+  local root="$1" rels="$2" first cmd run_dir rc=0 out
+  PROOF_LEG_RC=0; PROOF_LEG_OUT=""
+  first="$(printf '%s\n' "$rels" | grep . | head -1)"
+  local stack; stack="$(resolve_stack)"
+  # S133/DEFECT-2: both flip-flop legs run under a PORTABLE hard timeout so a
+  # suite that never settles (the awaited-thenable-mock hang class the retired
+  # self-smoke used to catch) is rendered INCONCLUSIVE — sentinel 98 — instead
+  # of silently hanging the ticket build. run_with_hard_timeout group-kills the
+  # runner (perl setsid) so no forked child (vitest/jest pool) survives.
+  local gsecs="${LCARS_GATE_TIMEOUT:-120}"
+  case "$gsecs" in ''|*[!0-9]*) gsecs=120 ;; esac
+  local gof; gof="$(mktemp "${TMPDIR:-/tmp}/lcars-ffleg.XXXXXX" 2>/dev/null)" \
+    || gof="${MISSION_DIR:-$root}/.ffleg.$$"
+  if stack_is_native; then
+    # S106 native scoping: cargo test --test <stem> / go test -run '^(funcs)$',
+    # built from the staged files AT THIS LEG'S ROOT.
+    cmd="$(printf '%s\n' "$rels" | REPO_ROOT="$root" native_scoped_cmd "$stack")"
+    if [ -z "$cmd" ]; then
+      rm -f "$gof"
+      PROOF_LEG_RC=97
+      PROOF_LEG_OUT="proof-gate: the ticket's $stack test file(s) declare no runnable test target — the scoped invocation cannot be constructed."
+      return 0
     fi
-    destdir_f="${canon_f%/*}"; [ "$destdir_f" = "$canon_f" ] && destdir_f=""
-    rel="${destdir_f:+$destdir_f/}$bn"
-    reldir="${rel%/*}"; [ "$reldir" = "$rel" ] && reldir=""
-    [ -n "$reldir" ] && { mkdir -p "$tdir/$reldir" 2>/dev/null || :; mkdir -p "$REPO_ROOT/$reldir" 2>/dev/null || :; }
-    cp "$f" "$tdir/$rel"
-    cp "$f" "$REPO_ROOT/$rel"
-    INTREE_RELS="${INTREE_RELS}${rel}
-"
-  done < <(find "$TESTS" -type f | LC_ALL=C sort)
-
-  # Roll the in-tree test copies AND any overlaid greenfield stubs back out of the
-  # working tree — used on every rejection path so a suite that fails the self-smoke
-  # / red gate leaves NO trace behind (and a retry that emits no stub still reds on
-  # RESOLUTION rather than tripping over a leftover stub). STUB_RELS is populated by
-  # the stub-overlay block below (empty until then).
-  local STUB_RELS=""
-  _impl_rollback_intree() {
-    local r
-    while IFS= read -r r; do
-      [ -n "$r" ] || continue
-      rm -f "$REPO_ROOT/$r"
-      rmdir -p "$REPO_ROOT/${r%/*}" 2>/dev/null || :   # prune now-empty dirs, best-effort
-    done <<ROLLBACK_EOF
-$INTREE_RELS
-$STUB_RELS
-ROLLBACK_EOF
-  }
-
-  # The IN-PLACE scope the self-smoke + red gate run against: the single in-tree test
-  # file when there is exactly one (precise positional filter), else the deepest COMMON
-  # ANCESTOR dir of the placed files (so a multi-dir ticket's gate covers every file —
-  # e.g. `src` for tests in src/utils + src/canvas + src/components/MapCanvas). When all
-  # files share one dir the ancestor IS that dir, byte-identical to the old behaviour.
-  # NOTE: a common-ancestor scope may also run PRE-EXISTING tests under that ancestor
-  # (green on a clean base) — acceptable: the new red still fails the suite, and the
-  # red gate's empty-dir PROBE still isolates the new red (a runner ignoring
-  # $LCARS_TESTS_DIR is still BLOCKED). Absolute so the runner relativizes from any dir.
-  local n_tests; n_tests="$(printf '%s' "$INTREE_RELS" | grep -c . || true)"
-  local scope_rel
-  if [ "$n_tests" -eq 1 ]; then scope_rel="$(printf '%s' "$INTREE_RELS" | grep . | head -1)"
-  else scope_rel="$(common_ancestor_dir "$INTREE_RELS")"; fi
-  local scope_abs="$REPO_ROOT${scope_rel:+/$scope_rel}"
-
-  # S94 (greenfield stubs): a ticket that creates a BRAND-NEW source module can't
-  # pass the red gate today — the Test-Writer's import of the not-yet-existent module
-  # cannot RESOLVE, so 0 tests collect and the gate rejects it as a resolution-failure
-  # red. To "make it compile first" (what a human does), the Test-Writer ALSO emits a
-  # MINIMAL EMPTY stub for any module its tests import that does not exist yet, under
-  # a `stubs/` tree. OVERLAY that tree onto the worktree source HERE — BEFORE the red
-  # gate — so the import resolves and the suite reds on a real ASSERTION (a valid red).
-  # S101: the test now runs IN PLACE at the repo's convention, so a co-located
-  # `./<sibling>` import resolves next to the RELOCATED test — NOT at a repo-mirrored
-  # path the Test-Writer would have to guess. S101 (MULTI-DIR): each greenfield stub
-  # must land next to ITS OWN test — the dir where that test's `./<sibling>` resolves —
-  # NOT all stubs in one dir. A stub is named for its module stem, so we resolve THAT
-  # stem the same way the test placement did (manifest → package/repo → primary source
-  # fallback) and place the stub in the resolved SOURCE dir — the identical dir its
-  # matching test was co-located into. For __tests__ the source sits one level up from
-  # the test (the module's own dir = the resolved source dir); for top-level tests/ the
-  # import is package-root-relative, so we keep the mirrored repo path. Nested imports
-  # (`./a/b`) degrade to basename — documented limitation. The stubs are scaffolding
-  # the Implementer OVERWRITES: they are NOT
-  # snapshotted (not in tests.sha256, not in $tdir) and are LEFT in place on SUCCESS;
-  # on REJECTION they are rolled back with the tests (STUB_RELS). With no stubs the
-  # behaviour is byte-identical to before — a still-missing module reds with the
-  # resolution-failure reason. S99: overlaid BEFORE the snapshot so BOTH the pre-gate
-  # self-smoke and the red gate resolve greenfield imports against the same stubs.
-  if [ -n "$STUBS" ] && [ -d "$STUBS" ] \
-     && [ -n "$(find "$STUBS" -type f -print -quit 2>/dev/null)" ]; then
-    local srel sstem ssrc sbase dest ddir
-    while IFS= read -r srel; do
-      srel="${srel#./}"; [ -n "$srel" ] || continue
-      case "$convention" in
-        tests) dest="$srel" ;;   # top-level tests/: keep the mirrored repo relpath
-        *)     # co-located / __tests__: resolve the stub's own stem → its source dir.
-          sstem="${srel##*/}"; sstem="${sstem%.*}"
-          ssrc="$(resolve_sibling_src "$sstem" "$TICKET" "$fallback_src" "$pkg_rel" "$_sib_prune")"
-          sbase="${ssrc%/*}"; [ "$sbase" = "$ssrc" ] && sbase=""
-          dest="${sbase:+$sbase/}${srel##*/}"
-          ;;
-      esac
-      ddir="${dest%/*}"; [ "$ddir" = "$dest" ] && ddir=""
-      [ -n "$ddir" ] && { mkdir -p "$REPO_ROOT/$ddir" 2>/dev/null || :; }
-      cp "$STUBS/$srel" "$REPO_ROOT/$dest"
-      STUB_RELS="${STUB_RELS}${dest}
-"
-    done < <(cd "$STUBS" && find . -type f | LC_ALL=C sort)
-  fi
-
-  # S99: the grounded-retry signal file + the RUN DIR the in-place gate cd's into
-  # ($pkg_rel, computed once above, is the monorepo package root so config/discovery
-  # resolves there); the tests run co-located in the tree, NOT copied into a quarantine.
-  local run_dir="$REPO_ROOT"
-  if [ -n "$pkg_rel" ]; then run_dir="$REPO_ROOT/$pkg_rel"
+    run_dir="$(proof_native_run_dir "$stack" "$root" "$first")"
+    ( cd "$run_dir" && run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
   else
-    # S133: a package-SPANNING ticket has empty pkg_rel, so run FROM the package the
-    # tests were PLACED in (scope_rel) — a non-hoisted monorepo has no runner at the
-    # repo root, but the placed tests' package does. Falls back to the root when the
-    # placed tests are not inside any package.
-    local _rgpkg; _rgpkg="$(package_of_relpath "$scope_rel")"
-    [ -n "$_rgpkg" ] && run_dir="$REPO_ROOT/$_rgpkg"
-  fi
-  local sig; sig="$(ticket_dir "$TICKET")/red-gate-signal.txt"; rm -f "$sig"
-
-  # --- S111 3′: DECLARED TEST SETUP (evidence-gated) --------------------------
-  # A test-setup.json rides in ONLY when the Test Writer was INVITED (the
-  # preflight observed an env-cannot-run gap and exported the evidence). Without
-  # evidence the manifest is IGNORED — attempt 1 always runs naked. Applied
-  # setup is re-probed immediately: a still-dead runner exits 3 (the caller
-  # parks awaiting-human, naming that the setup was tried).
-  if [ -n "${SETUP:-}" ] && [ -f "$SETUP" ]; then
-    if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
-      if apply_declared_setup "$SETUP" "$(dirname "$SETUP")/setup" "$pkg_rel"; then
-        [ -n "$SETUP_NOTE" ] && printf '  ⚠ declared setup applied with a note: %s\n' "$SETUP_NOTE" >&2
-        # (The apply above is probe-verified end-to-end — setup_ensure_runner
-        # already forced the relink cycle if a clean install left the runner
-        # dead. A still-dead runner HERE is genuinely incurable → park.)
-        if runner_preflight_env_failure "$run_dir"; then
-          _impl_rollback_intree; rm -rf "$tdir"
-          {
-            printf 'rc=env (the declared test setup was APPLIED — files + install — but the runner STILL cannot launch in %s)\n' "${pkg_rel:-<root>}"
-            printf 'The declared setup did not cure the gap. Setup note: %s\n' "${SETUP_NOTE:-none}"
-            printf 'Runner said after the setup:\n%s\n' "$(printf '%s' "$PREFLIGHT_OUT" | tail -10)"
-          } >"$sig"
-          printf 'lcars run: the declared test setup did not cure the env — escalating to the human.\n' >&2
-          exit 3
-        fi
-        printf '  ✓ declared setup applied — the runner now launches in %s (the red gate will demand the honest fail-first next)\n' "${pkg_rel:-<root>}" >&2
-      else
-        printf '  ⚠ declared setup REJECTED: %s — continuing without it\n' "$SETUP_NOTE" >&2
-        emit_event test_setup_rejected implement \
-          "declared setup rejected: $SETUP_NOTE" "ticket=$TICKET"
-      fi
-    else
-      printf '  ⚠ a test-setup.json was provided WITHOUT an observed infra gap — ignored (setup is invited only after the harness itself hits the failure; attempt 1 always runs naked)\n' >&2
+    # js/py: the S87 dir-scoped run — LCARS_TESTS_DIR points at the single file
+    # (or the common ancestor), invoked from the tests' own package.
+    cmd="$(resolve_test_cmd)"
+    if [ -z "$cmd" ]; then
+      rm -f "$gof"
+      PROOF_LEG_RC=96
+      PROOF_LEG_OUT="proof-gate: no testCommand configured — the harness cannot run the ticket's tests."
+      return 0
     fi
+    local pkg; pkg="$(package_of_relpath "$first" "$root")"
+    run_dir="$root${pkg:+/$pkg}"
+    local scope; scope="$(intree_scope_for "$root" "$rels")"
+    ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
   fi
-
-  # S99 PRE-GATE SELF-SMOKE (BEFORE the immutable snapshot / handoff): bounce a
-  # hanging or zero-test suite back to the TEST-WRITER (retry) so the Implementer
-  # never burns attempts on it and a hang never wedges the ticket. A suite that runs
-  # (red/green/load-error) proceeds to the snapshot + the authoritative red gate.
-  # S101: run IN PLACE at the in-tree scope (co-located imports resolve). On a
-  # failing verdict, roll the in-tree copies + mirror back out and die.
-  if ! test_writer_self_smoke "$scope_abs" "$run_dir" "$sig" "$INTREE_RELS"; then
-    _impl_rollback_intree; rm -rf "$tdir" "$snap"
-    local why=""; [ -f "$sig" ] && why="
-$(cat "$sig")"
-    die "the Test Writer's suite failed the pre-gate self-smoke — a hanging or empty suite must never reach the Implementer; retrying the Test Writer.$why"
+  out="$(cat "$gof" 2>/dev/null)"; rm -f "$gof"
+  if [ "$rc" = 124 ]; then
+    PROOF_LEG_RC=98
+    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout (LCARS_GATE_TIMEOUT) and was terminated — a suite that never settles cannot prove anything.
+${out}"
+    return 0
   fi
-
-  # GUARDRAIL 2 setup: snapshot the in-tree test files (via the mirror, whose
-  # relpaths equal the in-tree relpaths) so impl-save-result can prove the
-  # Implementer never edited the locked contract. AFTER the self-smoke so a hanging /
-  # zero-test suite is never snapshotted. The snapshot records IN-TREE relpaths.
-  snapshot_tests "$tdir" "$snap"
-
-  # GUARDRAIL 1 (the red gate): the suite must FAIL against no implementation before
-  # the Implementer is allowed to run. A green-on-nothing suite is rejected and the
-  # in-tree copies + mirror are rolled back, so nothing reaches the Implementer. We
-  # CAPTURE the rejection reason (rc + bounded runner output + which-suite diagnosis)
-  # to a durable signal file so (a) the human sees WHY instead of a silent stall, and
-  # (b) the next grounded Test-Writer attempt can be told what went wrong.
-  # S101: the gate runs IN PLACE — LCARS_TESTS_DIR points at the in-tree test scope
-  # under $REPO_ROOT and the runner is invoked from $run_dir (the package root for a
-  # monorepo ticket). NOTHING is copied into <pkg>/__lcarsq__: a co-located test that
-  # imports `./<sibling>` resolves against the real source next to it. The empty-dir
-  # PROBE inside red_gate_ok still runs the SAME command with an EMPTY dir, so a
-  # runner that ignores $LCARS_TESTS_DIR is still BLOCKED (probe discrimination
-  # preserved). An empty pkg_rel runs from $REPO_ROOT, as before.
-  local red_rc=0
-  RED_GATE_SIGNAL="$sig" RED_GATE_CONVENTION="$convention" red_gate_ok "$scope_abs" "$run_dir" || red_rc=$?
-  if [ "$red_rc" -eq 3 ]; then
-    # S111: the gate could not run ANY test (env-cannot-run — a runner-less package
-    # or an unprovisioned tree). NOT a Test-Writer defect: roll back, KEEP the signal
-    # (the caller's escalation quotes it), and exit with the DISTINCT rc 3 so the
-    # Phase-1 loop parks the mission awaiting-human instead of retrying the worker.
-    _impl_rollback_intree; rm -rf "$tdir" "$snap"
-    local why3=""; [ -f "$sig" ] && why3="
-$(cat "$sig")"
-    printf 'lcars run: the test environment cannot run any tests for %s — not a Test-Writer problem; escalating to the human instead of retrying.%s\n' "$TICKET" "$why3" >&2
-    exit 3
-  fi
-  if [ "$red_rc" -ne 0 ]; then
-    _impl_rollback_intree; rm -rf "$tdir" "$snap"
-    local why=""; [ -f "$sig" ] && why="
-$(cat "$sig")"
-    die "the Test Writer's suite did not pass the red gate — a contract that is green (or unprovable) before anything is built proves nothing; the tests must FAIL first.$why"
-  fi
-  rm -f "$sig"
-
-  # S102 (tests ride along, part 2): COMMIT the locked test in its OWN commit BEFORE
-  # the Implementer runs, so it merges into the PR — WITHOUT handing the Implementer an
-  # editable test (it stages ONLY the snapshotted test file(s), explicitly; the stubs
-  # and every other change stay uncommitted). Worktree mode records .test-commit-sha
-  # for the parent to cherry-pick JUST BEFORE the impl commit; a branch-less mission
-  # SKIPS the commit and keeps S101 behaviour. When we did NOT commit (no branch, or a
-  # defensive skip) we fall back to S101: record the in-tree relpath(s) in
-  # .untracked-before so commit_ticket treats them as PRE-EXISTING untracked and NEVER
-  # stages them onto the branch. When we DID commit, the test is now tracked and
-  # unchanged, so commit_ticket's `git add -u` is a no-op for it (immutability is
-  # re-verified at ticket-green and pre-merge against the COMMITTED blob).
-  commit_locked_tests "$TICKET"
-  if [ "$COMMIT_TESTS_NOTE" != "committed" ]; then
-    local ub; ub="$(ticket_dir "$TICKET")/.untracked-before"
-    [ -n "$INTREE_RELS" ] && printf '%s' "$INTREE_RELS" | grep -v '^$' >>"$ub" 2>/dev/null || :
-  fi
-
-  echo "IMPLEMENT: tests saved — $TICKET"
-  echo "  Saved $count Test Writer file(s) at the repo's test convention ($convention): ${scope_rel:-<repo root>}."
-  echo "  Red gate: suite fails as required; the contract is locked (immutable)."
-  if [ "$COMMIT_TESTS_NOTE" = "committed" ]; then
-    echo "  Test committed (rides along into the PR) BEFORE the Implementer; the contract is committed + locked."
-  fi
-  exit 0
+  PROOF_LEG_RC="$rc"
+  PROOF_LEG_OUT="$out"
 }
+
+# The cwd a native scoped invocation must run from: go tests compile in their
+# package DIR; cargo runs from the crate root (nearest ancestor Cargo.toml).
+proof_native_run_dir() { # stack leg-root first-rel → abs run dir
+  local stack="$1" root="$2" rel="$3" d
+  d="${rel%/*}"; [ "$d" = "$rel" ] && d=""
+  case "$stack" in
+    go)   printf '%s%s' "$root" "${d:+/$d}" ;;
+    rust)
+      while [ -n "$d" ]; do
+        [ -f "$root/$d/Cargo.toml" ] && { printf '%s/%s' "$root" "$d"; return 0; }
+        case "$d" in */*) d="${d%/*}" ;; *) d="" ;; esac
+      done
+      printf '%s' "$root" ;;
+    *)    printf '%s' "$root" ;;
+  esac
+}
+
+# Cut the DISPOSABLE parent-leg scratch worktree at the parent sha, provisioned
+# via the S87 machinery (worktreeSetupCommand + declared-setup re-apply). Echoes
+# its path; empty on failure. Mirrors make_ticket_worktree's prune-and-retry
+# self-heal for stale registrations.
+proof_parent_scratch() { # tip-worktree parent-sha ticket → scratch path ("" = failed)
+  local wt="$1" sha="$2" t="$3" base scratch
+  base="${LCARS_PROOF_WT_BASE:-$MISSION_DIR/proof-worktrees}"
+  mkdir -p "$base" 2>/dev/null || { printf ''; return 1; }
+  scratch="$base/$t-parent"
+  "$GIT_BIN" -C "$wt" worktree remove --force "$scratch" >/dev/null 2>&1 || :
+  rm -rf "$scratch"
+  if ! "$GIT_BIN" -C "$wt" worktree add -q --detach "$scratch" "$sha" >/dev/null 2>&1; then
+    "$GIT_BIN" -C "$wt" worktree prune >/dev/null 2>&1 || :
+    rm -rf "$scratch"
+    "$GIT_BIN" -C "$wt" worktree add -q --detach "$scratch" "$sha" >/dev/null 2>&1 \
+      || { rm -rf "$scratch"; printf ''; return 1; }
+  fi
+  provision_worktree "$scratch" || :
+  printf '%s' "$scratch"
+}
+
+# Prune the scratch worktree — called on EVERY exit path (pass, fail,
+# inconclusive), immediately after the parent leg runs and before any verdict.
+proof_prune_scratch() { # tip-worktree scratch
+  [ -n "${2:-}" ] || return 0
+  "$GIT_BIN" -C "$1" worktree remove --force "$2" >/dev/null 2>&1 || :
+  rm -rf "$2"
+  "$GIT_BIN" -C "$1" worktree prune >/dev/null 2>&1 || :
+}
+
+# The parent-leg RED's KIND, for legibility — the same S96 detector arms
+# classify_impl_failure routes through, in the same precedence. A red caused by
+# the change's NEW SYMBOLS (compile / resolution) COUNTS as proof; only an env
+# failure (the runner could not start in the scratch) is not proof at all.
+proof_parent_red_kind() { # runner-out files-written → kind token
+  local out="$1" files="$2"
+  if red_gate_env_failure "$out"; then printf 'env-failure'; return 0; fi
+  if red_gate_resolution_failure "$out"; then
+    if unresolved_specifier_is_created "$out" "$files"; then
+      printf 'missing-new-module'
+    else
+      printf 'bad-import-path'
+    fi
+    return 0
+  fi
+  if red_gate_compile_failure "$out"; then printf 'compile-failure'; return 0; fi
+  if printf '%s' "$out" | grep -Eq "$(rg_signature assertion)"; then
+    printf 'assertion-red'; return 0
+  fi
+  printf 'runner-red'
+}
+
+# flip-flop.json writer + the single finish point (event + verdict rc).
+FF_TIP_RC=null; FF_TIP_TAIL=""; FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""
+_ff_reset() { FF_TIP_RC=null; FF_TIP_TAIL=""; FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; }
+_ff_write_json() { # file ticket parent verdict reason rels
+  local f="$1" t="$2" p="$3" v="$4" r="$5" rels="$6" files="" sep="" rel
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    files="$files$sep\"$(json_escape "$rel")\""; sep=", "
+  done <<FFJ_EOF
+$rels
+FFJ_EOF
+  {
+    echo '{'
+    printf '  "ticketId": "%s",\n'  "$(json_escape "$t")"
+    printf '  "parentSha": "%s",\n' "$(json_escape "$p")"
+    printf '  "verdict": "%s",\n'   "$(json_escape "$v")"
+    printf '  "reason": "%s",\n'    "$(json_escape "$r")"
+    printf '  "testFiles": [%s],\n' "$files"
+    printf '  "tip": { "rc": %s, "tail": "%s" },\n' "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_TAIL:-}")"
+    printf '  "parent": { "rc": %s, "kind": "%s", "tail": "%s" }\n' "${FF_PAR_RC:-null}" "$(json_escape "${FF_PAR_KIND:-}")" "$(json_escape "${FF_PAR_TAIL:-}")"
+    echo '}'
+  } >"$f"
+}
+_ff_finish() { # ticket parent json-file verdict reason rels → rc by verdict
+  local t="$1" p="$2" f="$3" v="$4" r="$5" rels="$6"
+  _ff_write_json "$f" "$t" "$p" "$v" "$r" "$rels"
+  case "$v" in
+    pass)
+      emit_event flip_flop_pass implement \
+        "flip-flop PASS for $t — tests GREEN on tip, RED on parent${FF_PAR_KIND:+ ($FF_PAR_KIND)}" "ticket=$t"
+      printf '  ✓ flip-flop PASS — %s\n' "$r"
+      return 0 ;;
+    fail)
+      emit_event flip_flop_fail implement "flip-flop FAIL for $t — $r" "ticket=$t"
+      printf '  ✗ flip-flop FAIL — %s\n' "$r" >&2
+      return 1 ;;
+    inconclusive)
+      emit_event flip_flop_inconclusive implement \
+        "flip-flop INCONCLUSIVE for $t — $r (inconclusive is never a pass)" "ticket=$t"
+      printf '  ✗ flip-flop INCONCLUSIVE — %s\n' "$r" >&2
+      return 2 ;;
+    skipped)
+      emit_event flip_flop_skipped implement "flip-flop gate skipped for $t — $r" "ticket=$t"
+      printf '  – flip-flop skipped — %s\n' "$r"
+      return 0 ;;
+  esac
+}
+
+# THE FLIP-FLOP GATE. rc 0 = pass (or declared-not-applicable skip), 1 = fail,
+# 2 = inconclusive (never a pass). Writes tickets/<id>/flip-flop.json always.
+flip_flop_gate() { # ticket parent-sha worktree
+  local t="$1" parent="$2" wt="$3"
+  local td; td="$(ticket_dir "$t")"; mkdir -p "$td"
+  local ffj="$td/flip-flop.json" resf="$td/result.json"
+  _ff_reset
+
+  # Declared not-applicable → SKIP with the reason as the recorded fact
+  # (declared-edits + the full suite still apply — behavior owned by S133).
+  local ffdecl=""
+  [ -f "$resf" ] && ffdecl="$(json_str "$resf" flipFlop)"
+  if [ "$ffdecl" = "not-applicable" ]; then
+    local why; why="$(json_str "$resf" flipFlopReason)"
+    _ff_finish "$t" "$parent" "$ffj" skipped \
+      "declared not-applicable: ${why:-no reason recorded}" ""
+    return $?
+  fi
+
+  local rels; rels="$(proof_test_rels_in_diff "$parent" "$wt" existing)"
+  if [ -z "$(printf '%s' "$rels" | grep . || true)" ]; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "no new/changed test file in the diff vs $parent — there is nothing to flip, so fail-first cannot be proven" ""
+    return $?
+  fi
+
+  # Non-test paths the change wrote — feeds the greenfield discrimination
+  # (missing-new-module vs bad-import-path) exactly as classify_impl_failure does.
+  local changed_src="" p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    proof_is_test_path "$p" && continue
+    changed_src="$changed_src$p
+"
+  done < <(proof_diff_paths "$parent" "$wt")
+
+  # --- TIP leg: the implemented tree must be GREEN on the ticket's tests -----
+  proof_scoped_leg_run "$wt" "$rels"
+  FF_TIP_RC="$PROOF_LEG_RC"
+  FF_TIP_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
+  if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ] || [ "$PROOF_LEG_RC" = 98 ]; then
+    local tipreason="$PROOF_LEG_OUT"
+    [ "$PROOF_LEG_RC" = 98 ] && tipreason="the TIP leg's $PROOF_LEG_OUT"
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipreason" "$rels"; return $?
+  fi
+  if proof_zero_collected "$PROOF_LEG_OUT"; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "the TIP leg collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap)" "$rels"
+    return $?
+  fi
+  if [ "$FF_TIP_RC" -ne 0 ]; then
+    _ff_finish "$t" "$parent" "$ffj" fail \
+      "the TIP leg is RED (exit $FF_TIP_RC) — the ticket's tests do not pass on the implemented tree" "$rels"
+    return $?
+  fi
+
+  # --- PARENT leg: same tests staged into a scratch worktree at the parent ---
+  local scratch; scratch="$(proof_parent_scratch "$wt" "$parent" "$t")"
+  if [ -z "$scratch" ]; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "could not cut the parent scratch worktree at $parent — the parent leg never ran" "$rels"
+    return $?
+  fi
+  local rel
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    mkdir -p "$scratch/$(dirname "$rel")" 2>/dev/null || :
+    cp "$wt/$rel" "$scratch/$rel" 2>/dev/null || :
+  done <<FF_STAGE_EOF
+$rels
+FF_STAGE_EOF
+  proof_scoped_leg_run "$scratch" "$rels"
+  FF_PAR_RC="$PROOF_LEG_RC"
+  FF_PAR_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
+  local par_out="$PROOF_LEG_OUT"
+  # PRUNE FIRST — on every verdict path (behavior: pruned on success AND failure).
+  proof_prune_scratch "$wt" "$scratch"
+
+  if [ "$FF_PAR_RC" = 96 ] || [ "$FF_PAR_RC" = 97 ] || [ "$FF_PAR_RC" = 98 ]; then
+    local parreason="$par_out"
+    [ "$FF_PAR_RC" = 98 ] && parreason="the PARENT leg's $par_out"
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$parreason" "$rels"; return $?
+  fi
+  if proof_zero_collected "$par_out"; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' exits 0) — red-on-parent is unproven, and inconclusive is never a pass" "$rels"
+    return $?
+  fi
+  if [ "$FF_PAR_RC" -eq 0 ]; then
+    _ff_finish "$t" "$parent" "$ffj" fail \
+      "the ticket's tests PASS on the PARENT commit — red-on-parent is not proven (a test that asserts pre-existing behavior is not proof of work)" "$rels"
+    return $?
+  fi
+  FF_PAR_KIND="$(proof_parent_red_kind "$par_out" "$changed_src")"
+  if [ "$FF_PAR_KIND" = env-failure ]; then
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "the PARENT leg's runner could not start in the scratch worktree (env failure, exit $FF_PAR_RC) — a dead runner is not a red" "$rels"
+    return $?
+  fi
+  _ff_finish "$t" "$parent" "$ffj" pass \
+    "tests GREEN on tip, RED on parent (exit $FF_PAR_RC, $FF_PAR_KIND — a compile/resolution red from the change's new symbols counts as proof)" "$rels"
+}
+
+# result.json's declared test paths: newTests ∪ testEdits[].path, one per line.
+proof_result_declared_paths() { # result-file
+  "${LCARS_PYTHON_BIN:-python3}" -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+out = []
+for p in (d.get("newTests") or []):
+    if isinstance(p, str) and p: out.append(p)
+for e in (d.get("testEdits") or []):
+    if isinstance(e, dict) and e.get("path"): out.append(e["path"])
+sys.stdout.write("\n".join(out))
+' "$1" 2>/dev/null
+}
+
+# Persist the declared edits as the ticket's durable {path, reason} artifact.
+proof_write_test_edits() { # result-file out-file
+  "${LCARS_PYTHON_BIN:-python3}" -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+edits = [e for e in (d.get("testEdits") or []) if isinstance(e, dict) and e.get("path")]
+with open(sys.argv[2], "w") as f:
+    json.dump([{"path": e.get("path"), "reason": e.get("reason", "")} for e in edits], f, indent=2)
+    f.write("\n")
+' "$1" "$2" 2>/dev/null
+}
+
+# THE DECLARED-EDITS GUARD. Every test-classified path in the diff vs the parent
+# must be declared (newTests ∪ testEdits[].path); deletions count as edits. Any
+# remainder is an UNDECLARED edit → fail, files named. No repo-wide hashing —
+# the parent commit IS the snapshot. rc 0 = clean (test-edits.json + event
+# written), 1 = undeclared / no result to check against.
+declared_edits_guard() { # ticket parent-sha worktree
+  local t="$1" parent="$2" wt="$3"
+  local td; td="$(ticket_dir "$t")"; local resf="$td/result.json"
+  if [ ! -f "$resf" ]; then
+    printf 'proof-gate: declared-edits guard — no result.json for %s, so declarations cannot be verified.\n' "$t" >&2
+    return 1
+  fi
+  local rels declared undeclared="" p
+  rels="$(proof_test_rels_in_diff "$parent" "$wt")"     # all — deletions included
+  declared="$(proof_result_declared_paths "$resf")"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    printf '%s\n' "$declared" | grep -Fxq "$p" || undeclared="${undeclared:+$undeclared }$p"
+  done <<DE_EOF
+$rels
+DE_EOF
+  if [ -n "$undeclared" ]; then
+    printf 'proof-gate: UNDECLARED test edit(s) for %s — the diff vs %s touches test-classified file(s) the result never declared (newTests / testEdits): %s. Deletions count as edits. Declare every test edit with a reason, or leave the file untouched.\n' \
+      "$t" "$parent" "$undeclared" >&2
+    return 1
+  fi
+  proof_write_test_edits "$resf" "$td/test-edits.json"
+  local n; n="$(printf '%s\n' "$declared" | grep -c . || true)"
+  emit_event ticket_test_edits implement \
+    "ticket $t test-edit declarations verified against the diff vs $parent ($n declared path(s)) — recorded to test-edits.json" \
+    "ticket=$t"
+  return 0
+}
+
+# result.json v2 validation — the unified worker's contract. NO dual-shape
+# support: a v1 file REJECTS with the missing keys NAMED (the path flips in
+# S133, and an old-shape result must never be silently accepted).
+proof_validate_result() { # result-file [ticket] → 0 valid, 1 reject (reason on stderr)
+  local f="$1" t="${2:-}"
+  [ -n "$f" ] && [ -f "$f" ] || { printf 'proof-gate: no result file to validate.\n' >&2; return 1; }
+  local missing="" k
+  for k in ticketId passed attempts summary newTests testEdits flipFlop; do
+    grep -q "\"$k\"" "$f" || missing="${missing:+$missing, }\"$k\""
+  done
+  if [ -n "$missing" ]; then
+    printf 'proof-gate: result.json REJECTED — missing key(s): %s. This gate accepts ONLY the v2 unified-worker shape {ticketId, passed, attempts, summary, newTests[], testEdits[] ({path, reason}), flipFlop: "expected"|"not-applicable", flipFlopReason (required iff not-applicable)}; the v1 {ticketId, passed, attempts, summary} shape is not valid here.\n' "$missing" >&2
+    return 1
+  fi
+  local rid passed attempts ffv ffr
+  rid="$(json_str "$f" ticketId)"
+  passed="$(json_raw "$f" passed)"
+  attempts="$(json_raw "$f" attempts)"
+  ffv="$(json_str "$f" flipFlop)"
+  ffr="$(json_str "$f" flipFlopReason)"
+  if [ -n "$t" ] && [ "$rid" != "$t" ]; then
+    printf 'proof-gate: result.json REJECTED — ticketId "%s" does not match the ticket "%s".\n' "$rid" "$t" >&2
+    return 1
+  fi
+  case "$passed" in true|false) : ;; *)
+    printf 'proof-gate: result.json REJECTED — "passed" must be true or false.\n' >&2; return 1 ;; esac
+  case "$attempts" in ''|*[!0-9]*)
+    printf 'proof-gate: result.json REJECTED — "attempts" must be a number.\n' >&2; return 1 ;; esac
+  # S133: attempts is the worker's OWN iteration count — informational,
+  # uncapped-but-reported (the enforced cap is the session bounce loop).
+  if [ "$attempts" -lt 1 ]; then
+    printf 'proof-gate: result.json REJECTED — "attempts" is %s; it must be at least 1.\n' "$attempts" >&2
+    return 1
+  fi
+  case "$ffv" in
+    expected) : ;;
+    not-applicable)
+      if [ -z "$ffr" ]; then
+        printf 'proof-gate: result.json REJECTED — flipFlop is "not-applicable" but "flipFlopReason" is missing/empty. The reason IS the recorded fact; it is required.\n' >&2
+        return 1
+      fi ;;
+    *)
+      printf 'proof-gate: result.json REJECTED — "flipFlop" must be "expected" or "not-applicable" (got "%s").\n' "$ffv" >&2
+      return 1 ;;
+  esac
+  local structerr
+  structerr="$("${LCARS_PYTHON_BIN:-python3}" -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    print("proof-gate: result.json REJECTED — not valid JSON: %s" % e); sys.exit(1)
+nt = d.get("newTests"); te = d.get("testEdits")
+if not isinstance(nt, list) or any(not (isinstance(p, str) and p) for p in nt):
+    print("proof-gate: result.json REJECTED — \"newTests\" must be an array of non-empty path strings."); sys.exit(1)
+if d.get("flipFlop") == "not-applicable" and nt:
+    print("proof-gate: result.json REJECTED — the result declares new tests yet claims flip-flop \"not-applicable\"; a ticket that authors tests must expect them to flip. Declare flipFlop \"expected\", or drop the tests."); sys.exit(1)
+def bad(e):
+    return not (isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"]
+                and isinstance(e.get("reason"), str) and e["reason"])
+if not isinstance(te, list) or any(bad(e) for e in te):
+    print("proof-gate: result.json REJECTED — \"testEdits\" must be an array of {path, reason} objects (both non-empty strings)."); sys.exit(1)
+' "$f" 2>&1)" || { printf '%s\n' "$structerr" >&2; return 1; }
+  return 0
+}
+
+# THE QUALITY FLOOR. ≥1 new/changed test in the diff AND suite_has_assertions
+# over those files (judged in-tree at the tip), unless the result declares
+# flipFlop=not-applicable — then the declared reason is the recorded fact and
+# the floor is waived (declared-edits + the full suite still apply).
+proof_quality_floor() { # ticket parent-sha worktree → 0 ok/waived, 1 fail
+  local t="$1" parent="$2" wt="$3"
+  local resf; resf="$(ticket_dir "$t")/result.json"
+  local ffv=""; [ -f "$resf" ] && ffv="$(json_str "$resf" flipFlop)"
+  if [ "$ffv" = "not-applicable" ]; then
+    return 0
+  fi
+  local rels; rels="$(proof_test_rels_in_diff "$parent" "$wt" existing)"
+  if [ -z "$(printf '%s' "$rels" | grep . || true)" ]; then
+    printf 'proof-gate: QUALITY FLOOR — ticket %s has NO new/changed test file in its diff vs %s; at least one is required unless the result declares flipFlop "not-applicable" (with a reason).\n' \
+      "$t" "$parent" >&2
+    return 1
+  fi
+  local qd rel; qd="$(mktemp -d)"
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    mkdir -p "$qd/$(dirname "$rel")" 2>/dev/null || :
+    cp "$wt/$rel" "$qd/$rel" 2>/dev/null || :
+  done <<QF_EOF
+$rels
+QF_EOF
+  if suite_has_assertions "$qd"; then
+    rm -rf "$qd"
+    return 0
+  fi
+  rm -rf "$qd"
+  printf 'proof-gate: QUALITY FLOOR — ticket %s new/changed test file(s) contain NO recognizable assertion; a test that claims nothing proves nothing.\n' "$t" >&2
+  return 1
+}
+
+# --- S133: the standoff persistence subcommands are RETIRED -----------------
+# cmd_impl_save_tests (js/py placement + red gate), its native (rust/go)
+# counterpart, and native-scope are deleted with the Test-Writer/Implementer
+# standoff: the unified TDD worker authors its tests IN-TREE at the repo's own
+# convention, and proof moves AFTER implementation (the S132 gates driven by
+# cmd_implement_ticket). The parent commit is the snapshot.
 
 # --- GUARDRAIL 5: the post-commit verification (BUG-017) --------------------
 # The adversarial Implementer often builds in its OWN ephemeral per-ticket git
@@ -4296,23 +3758,17 @@ post_commit_gate() { # ticket
   # full-suite gates. Best-effort: a failure breadcrumbs but never aborts the gate.
   provision_worktree "$wt" || :
 
-  # S102 (tests ride along, part 2) — the tests are now COMMITTED alongside the source,
-  # so in the common path they are ALREADY PRESENT in this clean worktree. Two changes
-  # over S101's blanket overlay:
-  #   (a) CROSS-BOUNDARY IMMUTABILITY: before running, re-hash the COMMITTED test blob
-  #       against the locked snapshot (tests_unchanged over $wt). A mismatch = the
-  #       ridden-along test was weakened after it was locked → a TAMPERING violation,
-  #       returned as a DISTINCT code (4) so cmd_impl_save_result routes it like any
-  #       immutable-test violation (loud BLOCK), never a normal red / self-heal.
-  #   (b) OVERLAY RECONCILE: only OVERLAY the mirror when the test is NOT committed in
-  #       the tree (a branch-less / S101-era mission) — never overlay-then-remove a
-  #       file that is already committed (that would delete a committed file). When the
-  #       test IS committed we run it IN PLACE at its committed path (no overlay, no
-  #       removal) and scope $LCARS_TESTS_DIR to the snapshot relpaths.
+  # S133 (unified worker): the ticket's tests were authored IN-TREE and committed
+  # WITH the source in the ONE ticket commit, so they are already present in this
+  # clean worktree — run them IN PLACE, scoped to the proof-time recorded relpaths.
+  # CROSS-BOUNDARY DRIFT (declared-edits-aware, replaces the tests.sha256 re-hash):
+  # a committed test whose blob no longer matches its proof-time hash is fine IFF
+  # some ticket DECLARED that edit (test-edits.json); an UNDECLARED drift is the
+  # tampering violation, returned as the DISTINCT code (4) exactly as before.
   # S87: a sub-package ticket runs vitest/jest FROM its package root (run_dir=<wt>/<pkg>)
   # for discovery/config; an empty pkg_rel runs from the worktree root.
   local pkg_rel; pkg_rel="$(ticket_target_package "$t" "$wt")"
-  local run_dir tdir rc=0 out="" rels scope tamper=0
+  local run_dir rc=0 out="" rels scope tamper=0 undecl
   run_dir="$wt"
   if [ -n "$pkg_rel" ]; then run_dir="$wt/$pkg_rel"
   else
@@ -4320,32 +3776,27 @@ post_commit_gate() { # ticket
     local _pcpkg; _pcpkg="$(ticket_tests_package "$t" "$wt")"
     [ -n "$_pcpkg" ] && run_dir="$wt/$_pcpkg"
   fi
-  tdir="$(ticket_dir "$t")/tests"
-  if [ -d "$tdir" ]; then
-    if tests_committed_in_tree "$t" "$wt"; then
-      # Committed (S102): verify the COMMITTED blob is still the locked snapshot.
-      if tests_unchanged "$t" "$wt"; then
-        rels="$(snapshot_test_rels "$t")"
-        scope="$(intree_scope_for "$wt" "$rels")"
-        out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
-      else
-        tamper=1
-        local tdetail="POST-COMMIT GATE — LOCKED-TEST TAMPERING: ticket $t's COMMITTED test file no longer matches its immutable snapshot (tests.sha256). The ridden-along test was weakened after it was locked; refusing. This is NOT a normal red and is NOT self-healable — the adversarial/immutable contract was violated across the commit boundary. Restore the locked test or re-open the ticket."
-        printf '  ✗ %s\n' "$tdetail" >&2
-        [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$tdetail" >"$POST_COMMIT_SIGNAL"
-      fi
-    else
-      # S101 fallback (branch-less / uncommitted): OVERLAY the mirror, run, remove.
-      # A co-located `./<sibling>` import resolves against the real source next to it.
-      rels="$(overlay_intree_tests "$tdir" "$wt")"
-      scope="$(intree_scope_for "$wt" "$rels")"
-      # If nothing was overlaid, NEVER run against an empty suite and false-GREEN.
-      if [ -n "$(printf '%s' "$rels" | grep . || true)" ]; then
-        out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
-      fi
-      remove_overlaid_tests "$wt" <<REMOVE_EOF
+  rels="$(proof_snapshot_rels "$t")"
+  if [ -n "$(printf '%s' "$rels" | grep . || true)" ]; then
+    undecl="$(proof_drift_declared_ok "$t" "$wt")" || {
+      tamper=1
+      local tdetail="POST-COMMIT GATE — UNDECLARED TEST DRIFT: ticket $t's COMMITTED test file(s) no longer match the proof-time snapshot (proof-tests.sha256) and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). A test may only change when the editing ticket declares it with a reason; refusing. This is NOT a normal red and is NOT self-healable. Restore the test or re-open the ticket."
+      printf '  ✗ %s\n' "$tdetail" >&2
+      [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$tdetail" >"$POST_COMMIT_SIGNAL"
+    }
+    if [ "$tamper" != 1 ]; then
+      # Run only the still-present recorded tests (a DECLARED deletion is legal).
+      local _pcrels="" _pcr
+      while IFS= read -r _pcr; do
+        [ -n "$_pcr" ] && [ -f "$wt/$_pcr" ] && _pcrels="${_pcrels}${_pcr}
+"
+      done <<PC_RELS_EOF
 $rels
-REMOVE_EOF
+PC_RELS_EOF
+      if [ -n "$(printf '%s' "$_pcrels" | grep . || true)" ]; then
+        scope="$(intree_scope_for "$wt" "$_pcrels")"
+        out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+      fi
     fi
   fi
 
@@ -4392,63 +3843,40 @@ cmd_impl_save_result() {
   [ -n "$TICKET" ] || die "no ticket id — pass --ticket <id>."
   [ -n "$RESULT" ] && [ -f "$RESULT" ] || die "no result file — pass --result <file>."
 
-  # The Implementer runs only after the Test Writer: its sole handoff is the
-  # on-disk tests (no shared session), so a result with no saved tests is invalid.
-  local tdir; tdir="$(ticket_dir "$TICKET")/tests"
-  [ -d "$tdir" ] && [ -n "$(find "$tdir" -type f -print -quit)" ] \
-    || die "no tests on disk for $TICKET — run impl-save-tests first (the Implementer builds against them)."
+  # S133 (unified worker): validate the v2 result shape — ticketId match, passed,
+  # honest uncapped attempts, newTests/testEdits/flipFlop. A v1 (standoff-era)
+  # result REJECTS legibly; there is no dual-shape support.
+  proof_validate_result "$RESULT" "$TICKET" \
+    || die "result for $TICKET failed v2 validation (see the proof-gate reason above)."
 
-  # GUARDRAIL 2 (immutable tests): the locked contract must be byte-for-byte the
-  # snapshot taken at impl-save-tests. If the Implementer edited / added / removed
-  # any test file, "green" was reached by weakening the contract, not by building
-  # — reject the result before it is saved or committed.
-  tests_unchanged "$TICKET" \
-    || die "the Implementer modified the locked test files for $TICKET — green must be earned by implementing, never by weakening the contract. Result rejected by the immutable-tests guardrail."
-
-  # Shape contract — same spirit as the research/plan/verdict guards: every
-  # result carries all four fields, and a malformed reply stops the save.
-  grep -q '"ticketId"' "$RESULT" || die "result is missing \"ticketId\"."
-  grep -q '"passed"'   "$RESULT" || die "result is missing \"passed\"."
-  grep -q '"attempts"' "$RESULT" || die "result is missing \"attempts\"."
-  grep -q '"summary"'  "$RESULT" || die "result is missing \"summary\"."
-
-  local rid passed attempts
-  rid="$(json_str "$RESULT" ticketId)"
+  local passed attempts
   passed="$(json_raw "$RESULT" passed)"
   attempts="$(json_raw "$RESULT" attempts)"
-
-  [ "$rid" = "$TICKET" ] || die "result ticketId \"$rid\" does not match --ticket \"$TICKET\"."
-  case "$passed" in true|false) : ;; *) die "result \"passed\" must be true or false." ;; esac
-  case "$attempts" in
-    ''|*[!0-9]*) die "result \"attempts\" must be a number." ;;
-  esac
-  [ "$attempts" -ge 1 ] || die "result \"attempts\" must be at least 1."
-  # The Implementer iterates AT MOST 5 times; more than that breaks the cap and
-  # means the loop ran away — refuse it rather than record an impossible result.
-  [ "$attempts" -le "$MAX_ATTEMPTS" ] \
-    || die "result \"attempts\" is $attempts — over the cap of $MAX_ATTEMPTS; a ticket flags the human at $MAX_ATTEMPTS."
 
   cp "$RESULT" "$(ticket_dir "$TICKET")/result.json"
 
   if [ "$passed" = "false" ]; then
-    # The Implementer exhausted its attempts. Flag the human — same awaiting-human
-    # gate shape as validate-pause / the plan-review escalation: persist the
-    # blocker, set the state fields, overlay the label, and stop.
+    # The worker itself reports the ticket not green. Flag the human — same
+    # awaiting-human gate shape as validate-pause: persist the blocker, set the
+    # state fields, overlay the label, and stop. (cmd_implement_ticket normally
+    # bounces a passed:false session before reaching here; this is the direct-
+    # invocation recourse.)
+    rm -f "$(ticket_dir "$TICKET")/result.json"   # never let a failed result read as green
     local q; q="$(mktemp)"
-    printf 'Ticket %s could not be made green after %s attempt(s): %s\n' \
+    printf 'Ticket %s could not be made green (the worker iterated %s time(s)): %s\n' \
       "$TICKET" "$attempts" "$(json_str "$RESULT" summary)" >"$q"
     write_pending "$q" "implement"
     state_set_raw awaitingHuman true
-    state_set_str pendingQuestion "Ticket $TICKET failed after $attempts attempt(s) — needs a human."
+    state_set_str pendingQuestion "Ticket $TICKET failed — needs a human."
     gh_relabel "lcars:awaiting-human" ""
     rm -f "$q"
 
-    emit_event ticket_flagged implement "ticket $TICKET flagged after $attempts attempt(s)" \
+    emit_event ticket_flagged implement "ticket $TICKET flagged (worker reported not green after $attempts iteration(s))" \
       "ticket=$TICKET" "attempts=$attempts"
 
     echo "IMPLEMENT: ticket flagged — $TICKET"
-    echo "  $TICKET still fails after $attempts attempt(s) (the $MAX_ATTEMPTS-attempt cap)."
-    echo "  Saved result.json and flagged the human. Stage: implement (awaiting-human)."
+    echo "  $TICKET is still not green (the worker reported $attempts iteration(s))."
+    echo "  Flagged the human. Stage: implement (awaiting-human)."
     echo "  Resolve with \`lcars respond $MISSION_ID\`."
     [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
     exit 0
@@ -4484,15 +3912,15 @@ $(cat "$pcsig")"
         die "ticket $TICKET could not be re-verified — the test runner could not start in the gate worktree (environment not provisioned); this is NOT a missing implementation. Set worktreeSetupCommand in .git/lcars/config.json.$why"
         ;;
       4)
-        # S102 (tests ride along): the COMMITTED locked test no longer matches its
-        # immutable snapshot — the ridden-along contract was WEAKENED across the commit
-        # boundary. Route it exactly like the in-worktree immutable-tests violation: a
-        # distinct event + a loud die. Green must be earned by implementing, never by
-        # weakening the test — even after it rides along committed.
+        # S133 (declared-edits-aware drift): a COMMITTED test of this ticket no
+        # longer matches its proof-time snapshot and NO ticket declared the edit
+        # (test-edits.json). Route it like the old tampering violation: a distinct
+        # event + a loud die. A test may only change when the editing ticket
+        # declares it with a reason.
         emit_event ticket_locked_test_tampered implement \
-          "ticket $TICKET — committed locked test no longer matches the immutable snapshot (tampering detected across the commit boundary)" \
+          "ticket $TICKET — committed test no longer matches the proof-time snapshot and no ticket declared the edit (undeclared drift across the commit boundary)" \
           "ticket=$TICKET" "attempts=$attempts"
-        die "ticket $TICKET — LOCKED-TEST TAMPERING: the COMMITTED test file no longer matches its immutable snapshot. Green must be earned by implementing, never by weakening the ridden-along contract. Rejected by the cross-boundary immutable-tests guardrail.$why"
+        die "ticket $TICKET — UNDECLARED TEST DRIFT: a COMMITTED test file no longer matches its proof-time snapshot and no ticket declared that edit. Green must be earned by implementing; a test edit must be declared with a reason. Rejected by the cross-boundary drift guardrail.$why"
         ;;
       *)
         # S111: before declaring the work missing, check whether it landed in the
@@ -4614,7 +4042,7 @@ EOF
 
   echo "IMPLEMENT: wave $cur active"
   echo "  Pending ticket(s) in wave $cur: $pending"
-  echo "  Build these (Test Writer → Implementer) before wave $((cur + 1))."
+  echo "  Build these (unified TDD implementer, one worker per ticket) before wave $((cur + 1))."
   exit 0
 }
 
@@ -4636,48 +4064,21 @@ EOF
 # — it does not weaken the per-ticket red/green gate, the immutable-test snapshot,
 # or the test-quality check. With NO runner configured it SKIPS LOUD (never a
 # false pass and never a false fail), matching the red gate's no-runner stance.
-# --- SHARED: re-run every named ticket's quarantined suite against a given tree -
+# --- SHARED: re-run every named ticket's ridden-along suite against a given tree -
 # Extracted from full_suite_gate (BUG-013) so BOTH the full-suite gate AND the
-# S76 reconcile gate re-test ticket suites the SAME way: stage each ticket's
-# `tests/` at a DEPTH-1 dir under the run tree (so a test that resolves its target
-# relative to its own location finds it at the repo root, exactly as at green-time),
-# then run the configured testCommand from that tree with $LCARS_TESTS_DIR pointing
-# at the staged dir. $run_dir is the tree to run against (a worktree at the branch
-# tip for the gate, the reconcile merge worktree for the reconcile). On any per-
-# ticket non-zero exit the ticket id is appended to the global $RETEST_FAILED list,
-# and (when $RETEST_CAPTURE is set) its combined stdout/stderr is captured to
-# $RETEST_CAPTURE/<id>.log so the reconcile author can quote the failure. Returns 0
-# iff every suite passed. $RETEST_FAILED / $RETEST_FAILED is reset by the caller.
-# S101 (tests ride along): a ticket's tests are MIRRORED at their IN-TREE relpaths
-# ($tdir has the in-tree relpath layout). To re-run one against a CLEAN worktree
-# (post-commit / full-suite / reconcile) where the test is NOT committed, OVERLAY it
-# onto the tree at its in-tree relpath — co-located with that tree's committed
-# source — so a co-located `./<sibling>` import resolves against the real source
-# next to it, NOT a detached copy (which the S101 spike proved breaks the import).
-# Echoes the overlaid relpaths (one per line) for scoping + removal.
-overlay_intree_tests() { # tdir  tree  -> echoes overlaid relpaths (newline)
-  local tdir="$1" tree="$2" rel
-  [ -d "$tdir" ] || return 0
-  while IFS= read -r rel; do
-    rel="${rel#./}"; [ -n "$rel" ] || continue
-    mkdir -p "$tree/${rel%/*}" 2>/dev/null || :
-    cp "$tdir/$rel" "$tree/$rel"
-    printf '%s\n' "$rel"
-  done < <(cd "$tdir" && find . -type f | LC_ALL=C sort)
-}
-# Remove ONLY the relpaths this run overlaid (never a committed file we didn't add).
-remove_overlaid_tests() { # tree  <<< rels
-  local tree="$1" rel
-  while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    rm -f "$tree/$rel"; rmdir -p "$tree/${rel%/*}" 2>/dev/null || :
-  done
-}
-# The absolute $LCARS_TESTS_DIR scope for the overlaid relpaths: the single file when
+# S76 reconcile gate re-test ticket suites the SAME way. S133 (unified worker):
+# each ticket's tests were authored IN-TREE and committed WITH its source, so the
+# retest runs them IN PLACE at their committed paths, scoped via $LCARS_TESTS_DIR
+# to the proof-time recorded relpaths (proof-tests.sha256). $run_dir is the tree
+# to run against (a worktree at the branch tip for the gate, the reconcile merge
+# worktree for the reconcile). On any per-ticket non-zero exit the ticket id is
+# appended to the global $RETEST_FAILED list, and (when $RETEST_CAPTURE is set)
+# its combined stdout/stderr is captured to $RETEST_CAPTURE/<id>.log so the
+# reconcile author can quote the failure. Returns 0 iff every suite passed.
+# The absolute $LCARS_TESTS_DIR scope for a set of relpaths: the single file when
 # there is exactly one (precise positional filter), else the deepest COMMON ANCESTOR
-# dir of the overlaid files — SAME rule as the in-place gate in cmd_impl_save_tests, so
-# a ticket whose tests span multiple dirs re-tests symmetrically here (post-commit /
-# full-suite / reconcile). Empty rels → the tree itself.
+# dir of the files — so a ticket whose tests span multiple dirs re-tests
+# symmetrically here (post-commit / full-suite / reconcile). Empty rels → the tree.
 intree_scope_for() { # tree  rels(newline)
   local tree="$1" rels="$2" n first ca
   n="$(printf '%s' "$rels" | grep -c . || true)"
@@ -4691,19 +4092,21 @@ intree_scope_for() { # tree  rels(newline)
 }
 
 RETEST_FAILED=""     # space-separated ticket ids that failed the last retest
-RETEST_TAMPERED=""   # S102: ids whose COMMITTED test no longer matches the snapshot
+RETEST_TAMPERED=""   # S133: ids whose COMMITTED test drifted UNDECLARED from the proof snapshot
 RETEST_CAPTURE=""    # caller may point this at a dir to capture per-ticket output
 retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
   local run_dir="$1" cmd="$2"; shift 2
   RETEST_FAILED=""
   RETEST_TAMPERED=""
-  local id tdir rc out pkg_rel trun rels scope
+  local id rc out pkg_rel trun rels scope undecl
   for id in "$@"; do
     [ -n "$id" ] || continue
-    tdir="$(ticket_dir "$id")/tests"
-    # Defensive: a green ticket should always have a saved suite. If one is missing
-    # we skip it rather than crash — we never INVENT a failure.
-    [ -d "$tdir" ] || continue
+    rels="$(proof_snapshot_rels "$id")"
+    # Defensive: a green ticket should have recorded proof tests. A ticket with
+    # none (a declared flipFlop=not-applicable ticket, or a pre-S133 record) has
+    # nothing of its own to re-run — skip it rather than crash; we never INVENT
+    # a failure.
+    [ -n "$(printf '%s' "$rels" | grep . || true)" ] || continue
     # S87: PER-TICKET, a sub-package ticket re-runs INSIDE its own package (vitest/
     # jest discover & filter at the package root); an empty pkg_rel runs from the
     # run-tree root. Checked against $run_dir so every caller (full-suite gate
@@ -4717,36 +4120,33 @@ retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
       [ -n "$_fspkg" ] && trun="$run_dir/$_fspkg"
     fi
     rc=0
-    # S102 (tests ride along, part 2): the tests are COMMITTED, so in the common path
-    # they are ALREADY present in this clean tree. PRE-MERGE CROSS-BOUNDARY IMMUTABILITY:
-    # before running, re-hash the COMMITTED test blob against the locked snapshot. A
-    # mismatch = the ridden-along test was weakened after locking → BLOCK LOUD (this is
-    # not a regression to self-heal; the Mission must NOT merge a weakened test). We
-    # `die` here so EVERY caller — the full-suite gate AND the reconcile — stops with the
-    # tampering reason rather than proceeding to merge or self-heal.
-    if tests_committed_in_tree "$id" "$run_dir"; then
-      if ! tests_unchanged "$id" "$run_dir"; then
-        RETEST_TAMPERED="${RETEST_TAMPERED:+$RETEST_TAMPERED }$id"
-        emit_event ticket_locked_test_tampered implement \
-          "ticket $id — committed locked test no longer matches the immutable snapshot (pre-merge tamper check)" \
-          "ticket=$id" || :
-        die "PRE-MERGE LOCKED-TEST TAMPERING: ticket $id's COMMITTED test no longer matches its immutable snapshot (tests.sha256) — the ridden-along contract was weakened after it was locked. BLOCKED: the Mission cannot merge a weakened test, and this is NOT a self-healable regression. Restore the locked test or re-open the ticket."
-      fi
-      # Committed + intact → run IN PLACE at the committed path (no overlay, no removal).
-      rels="$(snapshot_test_rels "$id")"
-      scope="$(intree_scope_for "$run_dir" "$rels")"
-      out="$( cd "$trun" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
-    else
-      # S101 fallback (branch-less / uncommitted): OVERLAY the ticket's in-tree tests
-      # onto the clean tree (co-located with the committed source), run, then remove
-      # exactly them.
-      rels="$(overlay_intree_tests "$tdir" "$run_dir")"
-      scope="$(intree_scope_for "$run_dir" "$rels")"
-      out="$( cd "$trun" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
-      remove_overlaid_tests "$run_dir" <<REMOVE_EOF
+    # PRE-MERGE CROSS-BOUNDARY DRIFT (S133, declared-edits-aware — replaces the
+    # tests.sha256 re-hash): a committed test whose blob no longer matches its
+    # proof-time hash is legal IFF the editing ticket DECLARED it (test-edits.json
+    # — a LATER ticket may adapt an EARLIER ticket's test, with a reason). An
+    # UNDECLARED drift is the tampering violation: BLOCK LOUD (this is not a
+    # regression to self-heal; the Mission must NOT merge an undeclared edit). We
+    # `die` here so EVERY caller — the full-suite gate AND the reconcile — stops
+    # with the drift reason rather than proceeding to merge or self-heal.
+    undecl="$(proof_drift_declared_ok "$id" "$run_dir")" || {
+      RETEST_TAMPERED="${RETEST_TAMPERED:+$RETEST_TAMPERED }$id"
+      emit_event ticket_locked_test_tampered implement \
+        "ticket $id — committed test drifted from the proof-time snapshot with no declaring ticket (pre-merge drift check)" \
+        "ticket=$id" || :
+      die "PRE-MERGE UNDECLARED TEST DRIFT: ticket $id's COMMITTED test file(s) no longer match the proof-time snapshot and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). BLOCKED: the Mission cannot merge an undeclared test edit, and this is NOT a self-healable regression. Restore the test or re-open the ticket."
+    }
+    # Run only the still-present recorded tests IN PLACE at their committed paths
+    # (a DECLARED deletion is legal and simply has nothing to re-run).
+    local _rrels="" _rr
+    while IFS= read -r _rr; do
+      [ -n "$_rr" ] && [ -f "$run_dir/$_rr" ] && _rrels="${_rrels}${_rr}
+"
+    done <<RT_RELS_EOF
 $rels
-REMOVE_EOF
-    fi
+RT_RELS_EOF
+    [ -n "$(printf '%s' "$_rrels" | grep . || true)" ] || continue
+    scope="$(intree_scope_for "$run_dir" "$_rrels")"
+    out="$( cd "$trun" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
     if [ "$rc" -ne 0 ]; then
       RETEST_FAILED="${RETEST_FAILED:+$RETEST_FAILED }$id"
       [ -n "$RETEST_CAPTURE" ] && { mkdir -p "$RETEST_CAPTURE"; printf '%s\n' "$out" >"$RETEST_CAPTURE/$id.log"; }
@@ -4935,11 +4335,11 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
 }
 
 # --- BUG-029: self-heal a full-suite regression before escalating -----------
-# Auto-iterate the implementer of the regressing (latest-in-plan-order) ticket
+# Auto-iterate the regressing (latest-in-plan-order) ticket's unified TDD worker
 # with a harness-authored reconcile instruction, re-running the full-suite gate
 # after each attempt, up to a cap. Reuses the EXISTING implement-ticket
-# re-dispatch + LCARS_REUSE_TESTS path (the locked tests stay immutable — only the
-# Implementer re-runs), mirroring the S76 reconcile / same-file rebuild loops.
+# re-dispatch path (S133: the fresh worker re-proves the S132 gates on the
+# updated tip), mirroring the S76 reconcile / same-file rebuild loops.
 # Returns 0 once every suite passes again (healed), non-zero when the cap is hit
 # (caller escalates). The last failing reason is written to $SELFHEAL_LAST_REASON.
 SELFHEAL_CAP="${LCARS_SELFHEAL_CAP:-3}"
@@ -4966,18 +4366,19 @@ self_heal_full_suite() { # reason  ordered ticketId...
     emit_event selfheal implement "self-heal round $round/$SELFHEAL_CAP — re-running $regressor's implementer to reconcile the regression" \
       "ticket=$regressor" "round=$round"
 
-    # Re-dispatch ONLY the regressing ticket's Implementer with the reconcile
-    # feedback. LCARS_REUSE_TESTS keeps the locked tests immutable (Phase 1 is
-    # skipped), so only production code can change — never the contract.
+    # Re-dispatch ONLY the regressing ticket's unified worker with the reconcile
+    # feedback (S133: the fresh worker re-proves every gate on the updated tip;
+    # an undeclared weakening of the regressed test is still blocked by the
+    # declared-edits guard + the pre-merge drift check).
     local irc=0
     rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null
     LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
-    LCARS_TICKET_WT_BASE="$wt_base" LCARS_TICKET_BRANCH="$branch" LCARS_REUSE_TESTS=1 \
+    LCARS_TICKET_WT_BASE="$wt_base" LCARS_TICKET_BRANCH="$branch" \
     LCARS_SELFHEAL_FEEDBACK="$(cat "$SELFHEAL_LAST_REASON")" \
       bash "$SELF" implement-ticket --mission "$MISSION_ID" --ticket "$regressor" >/dev/null 2>&1 || irc=$?
 
-    # A flagged ticket (its own 5-attempt cap) set awaitingHuman in shared state —
-    # the per-ticket attempt cap already handled it; stop self-healing here.
+    # A flagged ticket (its own session cap) set awaitingHuman in shared state —
+    # the per-ticket cap already handled it; stop self-healing here.
     if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
       emit_event selfheal implement "self-heal round $round flagged the ticket's own attempt cap — stopping self-heal" \
         "ticket=$regressor" "round=$round"
@@ -5058,10 +4459,10 @@ EOF
     # touch the locked contract"). So auto-iterate the implementer of the regressing
     # (just-built, latest-in-plan-order) ticket with that harness-authored feedback,
     # re-run the full-suite gate, and only escalate to the human AFTER the cap. This
-    # reuses the SAME implement-ticket re-dispatch + LCARS_REUSE_TESTS machinery the
-    # S76 reconcile / same-file rebuild already drive (the locked tests stay
-    # immutable — only the Implementer re-runs). The full-suite gate (BUG-013) is
-    # never weakened: it must still pass for the loop to clear.
+    # reuses the SAME implement-ticket re-dispatch machinery the S76 reconcile /
+    # same-file rebuild already drive (S133: the fresh unified worker re-proves
+    # the gates; an undeclared test weakening is still blocked). The full-suite
+    # gate (BUG-013) is never weakened: it must still pass for the loop to clear.
     if self_heal_full_suite "$reason" $ordered; then
       # Healed: every suite passes again. Advance to Verify (fall through below).
       reason=""
@@ -5099,6 +4500,74 @@ EOF
 # `lcars approve` / `lcars feedback` (their own skills), not here.
 #
 #   verify-summary  --mission <id>
+# S134 — the CONTRACT-CHANGES readout. Given the mission's ordered ticket ids,
+# reads each ticket's S133 proof artifacts (result.json v2, flip-flop.json,
+# test-edits.json) and prints the per-ticket flip-flop verdict + the mission's
+# CONTRACT AMENDMENTS block (declared {path, reason} edits, verbatim). It prints
+# NOTHING for a pre-S133 mission (no flip-flop.json / test-edits.json on ANY
+# ticket) so that readout is BYTE-IDENTICAL to before this round. The board
+# renders the same shape (local_adapter `_ticket_proof`), so CLI ↔ UI agree.
+verify_contract_readout() { # ordered ticket ids as args
+  [ "$#" -gt 0 ] || return 0
+  "${LCARS_PYTHON_BIN:-python3}" - "$MISSION_DIR" "$@" <<'PYEOF'
+import json, os, sys
+mdir = sys.argv[1]; ids = sys.argv[2:]
+def load(p):
+    try:
+        with open(p) as f: return json.load(f)
+    except Exception:
+        return None
+rows = []; proofed = False
+for tid in ids:
+    td = os.path.join(mdir, "tickets", tid)
+    ff = load(os.path.join(td, "flip-flop.json"))
+    te = load(os.path.join(td, "test-edits.json"))
+    res = load(os.path.join(td, "result.json"))
+    if not isinstance(ff, dict) and not isinstance(te, list):
+        rows.append((tid, None)); continue          # pre-S133 ticket
+    proofed = True
+    edits = te if isinstance(te, list) else (
+        (res.get("testEdits") if isinstance(res, dict) else []) or [])
+    edits = [e for e in edits if isinstance(e, dict) and e.get("path")]
+    new = 0
+    if isinstance(res, dict) and isinstance(res.get("newTests"), list):
+        new = len([p for p in res["newTests"] if isinstance(p, str) and p])
+    decl = res.get("flipFlop") if isinstance(res, dict) else None
+    ffv = ff.get("verdict") if isinstance(ff, dict) else None
+    if decl == "not-applicable" or ffv == "skipped":
+        verdict = "N/A"
+        reason = (res.get("flipFlopReason") if isinstance(res, dict) else None) \
+            or (ff.get("reason") if isinstance(ff, dict) else "") or ""
+    elif ffv == "pass":
+        verdict, reason = "PROVEN", ""
+    elif ffv in ("fail", "inconclusive"):
+        verdict = ffv.upper()
+        reason = (ff.get("reason") if isinstance(ff, dict) else "") or ""
+    else:
+        verdict, reason = None, ""
+    rows.append((tid, {"new": new, "edits": edits, "verdict": verdict, "reason": reason}))
+if not proofed:
+    sys.exit(0)                                       # byte-identical: print nothing
+out = ["  Proof of work:"]
+for tid, p in rows:
+    if p is None:
+        out.append("    - %s: no proof artifacts on file" % tid); continue
+    chip = "flip-flop %s" % (p["verdict"] or "-")
+    if p["verdict"] == "N/A" and p["reason"]:
+        chip += " (%s)" % p["reason"]
+    glyph = "✓" if p["verdict"] == "PROVEN" else "-"
+    out.append("    %s %s -- %s · %d new/changed test(s)" % (glyph, tid, chip, p["new"]))
+amend = [(tid, e) for tid, p in rows if p for e in p["edits"]]
+if amend:
+    out.append("  CONTRACT AMENDMENTS (declared test edits):")
+    for tid, e in amend:
+        out.append("    ✎ %s · %s -- %s" % (tid, e.get("path"), e.get("reason", "") or ""))
+else:
+    out.append("  Contract amendments: none -- no existing tests were adapted.")
+sys.stdout.write("\n".join(out) + "\n")
+PYEOF
+}
+
 cmd_verify_summary() {
   locate_mission "$MISSION_ID"
   require_stage verify
@@ -5112,10 +4581,11 @@ cmd_verify_summary() {
 
   echo "VERIFY: $title"
   echo "  All tickets completed:"
-  local total=0 green=0 nwaves=0 w id rf attempts
+  local total=0 green=0 nwaves=0 w id rf attempts ordered_ids=""
   while IFS=$'\t' read -r w id; do
     [ -n "$id" ] || continue
     total=$((total + 1))
+    ordered_ids="${ordered_ids:+$ordered_ids }$id"
     [ "$w" -gt "$nwaves" ] && nwaves="$w"
     rf="$(ticket_dir "$id")/result.json"
     if [ -f "$rf" ] && [ "$(json_raw "$rf" passed)" = "true" ]; then
@@ -5129,6 +4599,12 @@ $table
 EOF
 
   echo "  Test results: $green/$total ticket(s) green across $nwaves wave(s)."
+
+  # S134: the contract-changes readout (per-ticket flip-flop verdict + declared
+  # test edits). Prints NOTHING for a pre-S133 mission, so its readout is
+  # byte-identical to before this round.
+  # shellcheck disable=SC2086
+  verify_contract_readout $ordered_ids
 
   # S113: show the ACTUAL cost beside the ESTIMATE (display-only — actuals are
   # captured by S112 into usage.json; the estimate is never touched). Present
@@ -6194,7 +5670,7 @@ stage_key_for_role() { # role → stage key (stdout; empty if none)
     validate)                                     printf 'validate' ;;
     plan)                                         printf 'plan' ;;
     plan-review)                                  printf 'planReview' ;;
-    implement-test-writer|implement-implementer)  printf 'implement' ;;
+    implement-tdd)                                printf 'implement' ;;
     context-pack)                                 printf 'infra' ;;
   esac
 }
@@ -7942,11 +7418,11 @@ $sphint"
 }
 
 # === Stage driver: Implement (one ticket) ==================================
-# The adversarial pair, both cold workers: a Test Writer fed only the approved
-# ticket writes failing tests (quarantined via impl-save-tests — its ONLY channel
-# to the Implementer), then a SEPARATE Implementer fed only the ticket + those
-# on-disk tests makes them pass (persisted via impl-save-result). The two never
-# share a session.
+# S133: ONE cold unified TDD worker per ticket — it writes the tests AND the
+# code, in-tree, and the harness proves the work AFTERWARDS with the S132 gates
+# (fail-on-parent / pass-on-tip + declared edits + the quality floor). A gate
+# rejection bounces to a FRESH worker carrying the verdict; exhaustion parks
+# awaiting-human.
 cmd_implement_ticket() {
   locate_mission "$MISSION_ID"
   require_stage implement
@@ -8040,7 +7516,7 @@ cmd_implement_ticket() {
       pf_root_alive=1
     fi
     # S111 3′: a RUNNER-LESS PACKAGE in an otherwise-working repo is the case a
-    # DECLARED TEST SETUP can self-heal — INVITE the Test Writer (evidence rides
+    # DECLARED TEST SETUP can self-heal — INVITE the implementer (evidence rides
     # the prompt) instead of parking, unless a setup was already tried for this
     # mission (then the human decides) or the captain disabled the mechanism.
     if [ "$pf_root_alive" = 1 ] \
@@ -8049,7 +7525,7 @@ cmd_implement_ticket() {
       export LCARS_SETUP_EVIDENCE="package '$pf_pkg' cannot run tests (the repo root can). Command probed: $(resolve_test_cmd) (from: $pf_dir). Runner said:
 $(printf '%s' "$pf_out" | tail -10)"
       emit_event test_setup_invited implement \
-        "package '$pf_pkg' has no working test runner — inviting the Test Writer to declare the missing test setup (evidence-gated)" \
+        "package '$pf_pkg' has no working test runner — inviting the implementer to declare the missing test setup (evidence-gated)" \
         "ticket=$TICKET"
     else
       local pf_diag
@@ -8068,14 +7544,14 @@ $(printf '%s' "$pf_out" | tail -10)"
   fi
 
   # NOTE: `attempt` in the ticket_attempt events below is the CUMULATIVE
-  # worker-DISPATCH count for this (ticket, phase) ACROSS invocations — one index
-  # per real spawn_worker dispatch, derived from events.jsonl so it never repeats
-  # or restarts when a fresh process re-enters. DISTINCT from the Implementer's
-  # own internal 1–5 attempts that land in result.json.attempts.attempts.
-  # The durable repo context source (shared declarative facts, by PATH only) —
-  # resolved once for both halves of the adversarial pair. The captain's durable
-  # image attachments (S92) ride the same artifact-paths list (ABSOLUTE paths) so
-  # BOTH the Test Writer and the Implementer can view them; empty when none exist.
+  # worker-DISPATCH count for this ticket ACROSS invocations — one index per real
+  # spawn_worker dispatch, derived from events.jsonl so it never repeats or
+  # restarts when a fresh process re-enters. DISTINCT from the worker's own
+  # internal iteration count that lands in result.json.attempts (S133:
+  # informational, uncapped-but-reported).
+  # The durable repo context source (shared declarative facts, by PATH only).
+  # The captain's durable image attachments (S92) ride the same artifact-paths
+  # list (ABSOLUTE paths) so the worker can view them; empty when none exist.
   local cblock; cblock="$(context_extra_block)$(attachments_extra_block)"
   # S111 (the 002 wrong-tree lesson): when this build runs in an ISOLATED
   # worktree, PIN both workers to it by absolute path. Input artifacts under the
@@ -8105,93 +7581,115 @@ working tree first. Files written anywhere else are LOST to this ticket."
   # neither artifact exists (thin greenfield / pre-wave).
   local navblock; navblock="$(implement_nav_block "$TICKET")"
 
-  # Session 22: the Test Writer's inlined ticket spec — THIS ticket's title +
-  # description + acceptanceCriteria TEXT, extracted from approved-plan.json so the
-  # cold worker SEES what to test instead of having to find it in the plan (the
-  # path-only handoff let a worker ground on the wrong artifact and build the wrong
-  # feature). Resolved ONCE; appended under "## Your ticket" in the Phase-1 prompt
-  # only — the Implementer (Phase 2) is deliberately NOT given this (its sole
-  # behavioural handoff stays the failing tests, preserving the adversarial split).
+  # Session 22 (re-addressed S133): the inlined ticket spec — THIS ticket's
+  # title + description + acceptanceCriteria TEXT, extracted from
+  # approved-plan.json so the cold worker SEES what to build + test instead of
+  # having to find it in the plan (the path-only handoff let a worker ground on
+  # the wrong artifact and build the wrong feature). Resolved ONCE; appended
+  # under "## Your ticket" in the unified worker's prompt.
   # CLI-AGNOSTIC: shared assembly, no per-CLI branch. Empty on a ticket missing
   # from the plan, so the bare id line below still carries the handoff.
   local tspecblock; tspecblock="$(ticket_spec_block "$MISSION_DIR/approved-plan.json" "$TICKET")"
   [ -n "$tspecblock" ] && tspecblock="
 $tspecblock"
 
-  # PHASE 1 — Test Writer worker → tests/ → impl-save-tests
-  local tries=0 saved=0
-  # REUSE PATH (Session 37 conflict rebuild): when the parent re-runs this ticket
-  # to recompose a same-file edit on the UPDATED mission tip (its concurrent
-  # commit could not cherry-pick), the Test Writer already ran and its immutable
-  # contract is on disk (tickets/<id>/tests + tests.sha256). Re-running it would
-  # re-snapshot a fresh contract and re-red-gate against the new tree — wasteful
-  # and risks a different suite. So when $LCARS_REUSE_TESTS is set AND the locked
-  # tests already exist, SKIP Phase 1 entirely: only the Implementer re-runs,
-  # against the updated tree, exactly as the old serial in-tree path composed.
-  if [ -n "${LCARS_REUSE_TESTS:-}" ] \
-     && [ -d "$(ticket_dir "$TICKET")/tests" ] \
-     && [ -n "$(find "$(ticket_dir "$TICKET")/tests" -type f -print -quit 2>/dev/null)" ] \
-     && [ -f "$(ticket_dir "$TICKET")/tests.sha256" ]; then
-    saved=1
+  # --- S133: THE UNIFIED TDD WORKER + POST-HOC PROOF GATES --------------------
+  # ONE cold worker owns the ticket end-to-end — it writes tests AND code, in any
+  # order, authored IN-TREE at the repo's own convention — and proof moves AFTER
+  # implementation. The PARENT COMMIT is the snapshot (git itself): the S132
+  # gates verify result v2 → declared-edits → quality floor → flip-flop
+  # (green-on-tip + red-on-parent), then the EXISTING commit_ticket + post-commit
+  # + full-suite flow runs unchanged. Any gate FAIL/INCONCLUSIVE writes
+  # tickets/<id>/gate-signal.txt (gate name + verdict + runner tail — the
+  # red-gate-signal idiom) and re-spawns a FRESH worker carrying that signal;
+  # cap MAX_WORKER_TRIES total sessions; exhaustion PARKS awaiting-human with
+  # the last verdict quoted — NEVER a die. `lcars respond` + re-run resumes
+  # (answers.json rides the next session's prompt).
+  local parent_sha
+  parent_sha="$("$GIT_BIN" -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" \
+    || die "no parent commit — the repo has no HEAD to prove fail-on-parent against (commit something first)."
+
+  local tdir; tdir="$(ticket_dir "$TICKET")"
+  local sigfile="$tdir/gate-signal.txt"
+  local sessions=0 empty_tries=0 prior_empty="" last_verdict="" awtry=0
+  local odir=""
+
+  # RESUME after a park was answered: the captain's recorded note is how to get
+  # this ticket unstuck. Feed it so the worker acts on it rather than re-hitting
+  # the same wall.
+  local ansblock=""
+  [ -f "$MISSION_DIR/answers.json" ] && ansblock="
+- $MISSION_DIR/answers.json   (the captain's answer resolving the prior block on this ticket — treat it as DECIDED)"
+  # SELF-HEAL feedback (BUG-029): when the full-suite gate found this ticket's
+  # change REGRESSED an earlier ticket's test, cmd_impl_advance re-runs this
+  # ticket with $LCARS_SELFHEAL_FEEDBACK carrying the harness-authored reconcile
+  # instruction. SIGNAL ONLY — same declarative channel as the gate signal.
+  local healblock=""
+  if [ -n "${LCARS_SELFHEAL_FEEDBACK:-}" ]; then
+    healblock="
+
+## FULL-SUITE RECONCILE FEEDBACK — your change regressed an earlier ticket (read this first)
+A previous build of this ticket passed its OWN tests but, integrated with the
+rest of the branch, it REGRESSED an earlier ticket's test. Reconcile your change
+with the rest of the branch so EVERY suite (yours AND the regressed one) passes
+again. Do NOT weaken the regressed test to get there; if adapting ANY existing
+test is genuinely required by this ticket's stated change, declare it in
+result.json testEdits with the reason. The harness's verdict (the regressed
+suite(s) + the command run):
+$LCARS_SELFHEAL_FEEDBACK"
   fi
-  # GROUNDED RETRY (BUG-007): the previous naive loop re-spawned the Test Writer
-  # with an IDENTICAL prompt on a red-gate rejection, so it kept producing the
-  # same green-on-nothing suite until it gave up. Instead we CAPTURE the red-gate
-  # signal (rc + bounded runner output + which-suite diagnosis) that impl-save-tests
-  # persists to tickets/<id>/red-gate-signal.txt and FEED it into the next attempt's
-  # prompt. SIGNAL ONLY — it is the harness's own gate verdict + runner stderr,
-  # never the implementation and never the worker's prior reasoning (each attempt
-  # is still a fresh cold worker; nothing of the prior session survives but this
-  # one declarative line of feedback).
-  local sigfile; sigfile="$(ticket_dir "$TICKET")/red-gate-signal.txt"
-  # S96: retain the LAST attempt's worker output + files-written so, if the loop
-  # exhausts without a usable suite, classify_impl_failure can name the root cause.
-  local cl_worker="" cl_files=""
-  # S98: separate, SHORTER budget for the EMPTY-worker (transient-CLI) case, plus a
-  # flag that arms spawn_worker's re-prompt hint on the retry AFTER an empty attempt.
-  local empty_tries=0 prior_empty=""
-  while [ "$saved" != 1 ] && [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
-    tries=$((tries + 1))
-    # attempt = 1 + (existing ticket_attempt lines for THIS ticket+phase). Within
-    # one invocation this is 1,2,3; a re-invocation continues 4,5,6 — one unique
-    # index per real spawn_worker dispatch below, never a repeat.
-    local awtry; awtry=$(( $(event_count ticket_attempt "\"ticket\":\"$TICKET\".*\"phase\":\"test-writer\"") + 1 ))
-    emit_event ticket_attempt implement "test-writer try $awtry for $TICKET" \
-      "ticket=$TICKET" "phase=test-writer" "attempt=$awtry"
-    # On a retry (a prior attempt left a red-gate signal on disk), prepend the
-    # captured signal so this fresh worker writes tests that genuinely fail first.
+
+  # Reject THIS session with a durable gate signal; the loop re-spawns fresh.
+  # A bounced session's result.json must never linger where ticket_green reads.
+  _tdd_reject() { # gate-name  verdict  detail
+    last_verdict="$1 ($2)"
+    {
+      printf 'GATE: %s — verdict=%s\n' "$1" "$2"
+      printf '%s\n' "$3"
+    } >"$sigfile"
+    emit_event ticket_gate_bounce implement \
+      "ticket $TICKET bounced by the $1 gate ($2) — session $awtry; re-spawning a fresh worker with the verdict" \
+      "ticket=$TICKET" "gate=$1" "attempt=$awtry"
+    rm -f "$tdir/result.json"
+    rm -rf "$odir"
+  }
+
+  while [ "$sessions" -lt "$MAX_WORKER_TRIES" ]; do
+    sessions=$((sessions + 1))
+    # attempt = 1 + (existing ticket_attempt lines for THIS ticket, phase=tdd) —
+    # the CUMULATIVE worker-dispatch count across invocations, one unique index
+    # per real spawn_worker dispatch (same idiom the old per-phase loops used).
+    awtry=$(( $(event_count ticket_attempt "\"ticket\":\"$TICKET\".*\"phase\":\"tdd\"") + 1 ))
+    emit_event ticket_attempt implement "tdd session $awtry for $TICKET" \
+      "ticket=$TICKET" "phase=tdd" "attempt=$awtry"
+
+    # GATE FEEDBACK — a prior session's gate verdict + runner tail rides the
+    # fresh worker's prompt (the red-gate-signal idiom, generalized to every
+    # gate). SIGNAL ONLY: the harness's own verdict + runner output, never the
+    # prior worker's code or reasoning.
     local retryblock=""
     if [ -f "$sigfile" ]; then
       retryblock="
 
-## RED-GATE FEEDBACK — your PREVIOUS suite was REJECTED (read this before writing)
-The harness ran your last suite against the repo with NO implementation and it
-did NOT fail-first. This is the gate's verdict and the runner's own output — the
-ONLY thing carried over from the prior attempt (you do not see its tests, code,
-or reasoning). Write tests that FAIL until the ticket's behaviour exists:
+## GATE FEEDBACK — a PREVIOUS session of this ticket was REJECTED (read this first)
+The harness verified that session's work mechanically and rejected it. This is
+the gate's verdict and the runner's own output — the ONLY thing carried over
+(you do not see the prior session's code or reasoning). Fix THIS:
 $(cat "$sigfile")"
     fi
-    local odir; odir="$(mktemp -d)"
-    # Harness owns directory scaffolding (workers only create files): pre-create
-    # the tests/ scratch subdir so the worker's `create tests/<file>` lands without
-    # needing to mkdir. CLI-neutral; Claude is unaffected. S94: ALSO pre-create the
-    # stubs/ scratch subdir — the worker writes any minimal empty greenfield-module
-    # stubs there (mirroring repo paths), which impl-save-tests overlays before the
-    # red gate so a brand-new module's import resolves and the suite reds on an
-    # assertion rather than a resolution failure.
-    mkdir -p "$odir/tests" "$odir/stubs" "$odir/setup"
+
+    odir="$(mktemp -d)"
+    # Harness owns directory scaffolding: pre-create the setup/ scratch subdir so
+    # a declared-setup manifest's files land without needing a mkdir (S111 3′;
+    # CLI-neutral — a worker that emits no setup is unaffected).
+    mkdir -p "$odir/setup"
+
     # S111 3′: the declared-setup INVITATION — appended ONLY when the preflight
-    # observed the gap and exported the evidence. Rules mirror the harness-side
-    # whitelist so a compliant manifest is accepted first try.
-    # S131 (the include-vs-placement trap, caught live 2026-07-09): the
-    # invitation must also state WHERE the authored tests will LAND — the S101
-    # placement relocates them to the REPO's own convention, not the writer's
-    # tests/ scratch layout, so a declared runner config narrowed to tests/**
-    # collects ZERO tests at the gate. The contract is stated with the SAME
-    # computation impl-save-tests runs later — detect_test_convention on this
-    # tree with the ticket's manifest-derived source, and the same in-package
-    # fallback ($pf_pkg is the preflight's ticket_target_package) — never a
-    # second, different detector.
+    # observed the gap and exported the evidence. Re-addressed to the unified
+    # worker: it authors tests IN-TREE itself now (no harness relocation), so the
+    # S131 placement contract states WHERE those tests must live — the repo's
+    # detected convention — so a declared runner config collects them (the
+    # include-vs-placement trap, caught live 2026-07-09).
     local setupblock=""
     if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
       local sb_src sb_conv sb_example sb_for
@@ -8199,8 +7697,7 @@ $(cat "$sigfile")"
       sb_conv="$(detect_test_convention "$REPO_ROOT" "$sb_src")"
       sb_example="$(test_path_for "$sb_conv" "${sb_src:-${pf_pkg:+$pf_pkg/}src/index.ts}")"
       # NB: computed OUTSIDE the block below — macOS bash 3.2 mis-parses an
-      # apostrophe inside a \${var:-default} expansion in a double-quoted
-      # string (it opens a quote and swallows text up to the next apostrophe).
+      # apostrophe inside a \${var:-default} expansion in a double-quoted string.
       sb_for="$sb_src"
       [ -n "$sb_for" ] || sb_for="this ticket's module"
       setupblock="
@@ -8209,184 +7706,56 @@ $(cat "$sigfile")"
 The harness probed this ticket's target package and the test runner CANNOT
 launch there. This is the harness's own observation (the evidence):
 $LCARS_SETUP_EVIDENCE
-You are INVITED to declare the missing test infrastructure ALONGSIDE your
-tests, and the HARNESS will apply and verify it:
-- Write any NEW config/setup files into the \`setup/\` scratch dir (sibling of
-  \`tests/\`), at their PACKAGE-RELATIVE paths — e.g. \`setup/vitest.config.ts\`.
+You are INVITED to declare the missing test infrastructure ALONGSIDE your work,
+and the HARNESS will apply and verify it:
+- Write any NEW config/setup files into the \`setup/\` subdir of your scratch
+  output directory, at their PACKAGE-RELATIVE paths — e.g. \`setup/vitest.config.ts\`.
   ADD-only: never a file that already exists, never anything under \`src/\`.
   Keep it minimal (at most 4 small files).
-- PLACEMENT CONTRACT — where your tests will actually RUN: you author tests
-  into the \`tests/\` scratch dir, but the harness RELOCATES them into the
-  repo at its own test convention — detected here: $sb_conv — e.g. a test for
-  \`$sb_for\` runs in-tree at \`$sb_example\`. Any
+- PLACEMENT CONTRACT — where your tests must LIVE to be collected: author your
+  tests IN THE REPO TREE at its own test convention — detected here: $sb_conv —
+  e.g. a test for \`$sb_for\` lives in-tree at \`$sb_example\`. Any
   runner config you declare MUST collect tests from that in-tree location.
   Safest: do NOT narrow \`include\` at all (vitest's default include already
-  matches both co-located src/**/*.test.* and tests/**); an \`include\`
-  limited to your scratch \`tests/\` layout collects ZERO tests at the gate
-  and bounces your suite.
+  matches both co-located src/**/*.test.* and tests/**); an \`include\` that
+  misses your tests' real location collects ZERO tests at the gate and bounces
+  your session.
 - Create \`test-setup.json\` in the scratch output directory root (NOT inside
-  tests/ or setup/):
+  setup/):
   {\"package\": \"<the package dir named in the evidence>\",
    \"gap\": \"<one line: what is missing>\",
    \"installCommand\": \"<a plain package-manager command run inside that package, e.g. pnpm add -D vitest@^1.6>\"}
   Match the workspace's existing runner + version (look at the sibling
   packages' package.json) — never introduce a different framework than the
   repo already uses elsewhere.
-- Then write your failing tests exactly as normal. The harness applies your
-  setup, re-probes the runner, and your suite must still FAIL-FIRST on its
-  assertions — a setup that fakes green is rejected by the red gate."
+- Then do the ticket exactly as normal. The harness applies your setup,
+  re-probes the runner, and your tests must still prove the flip-flop (green on
+  your tree, red on the parent) — a setup that fakes green is rejected."
     fi
-    spawn_worker implement-test-writer "$STAGES_DIR/implement-test-writer.md" repo-read "$odir" \
+
+    spawn_worker implement-tdd "$STAGES_DIR/implement-tdd.md" repo-write "$odir" \
 "## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock$wtblock$setupblock
+- $MISSION_DIR/approved-plan.json$adrblock$navblock$cblock$wtblock$setupblock$ansblock$healblock
 
 ## Your ticket
 $TICKET$tspecblock$retryblock" "${prior_empty:-}"
-    # S96: capture THIS attempt's worker output + files-written BEFORE $odir is
-    # removed, so an eventual exhaustion can be classified. Signal only.
-    cl_worker="$(cat "$odir/.worker.out" "$odir/.worker.err" 2>/dev/null || true)"
-    cl_files="$(find "$odir/tests" "$odir/stubs" -type f 2>/dev/null || true)"
+
     # S98: EMPTY-WORKER branch — a worker that produced NOTHING (no file AND no
-    # stdout/stderr) is the transient-CLI signal, NOT a bad suite. Detect it BEFORE
-    # the "did it write tests" check, label it with the S96 `empty-worker-output`
-    # category, bounded-retry with the file-first re-prompt, and — after a short cap
-    # — escalate DISTINCTLY (never fold it into the generic "no usable tests" budget).
+    # stdout/stderr) is the transient-CLI signal, NOT a gate rejection. It does
+    # not consume a proof session: bounded-retry with the file-first re-prompt,
+    # then escalate DISTINCTLY after the short cap (budget unchanged from the
+    # standoff era).
     if worker_produced_nothing "$odir"; then
+      sessions=$((sessions - 1))   # a transient-CLI blank never burns a proof session
       empty_tries=$((empty_tries + 1))
       emit_event ticket_worker_empty_output implement \
-        "test-writer produced no output for $TICKET (attempt $awtry)" \
-        "ticket=$TICKET" "phase=test-writer" "attempt=$awtry" "category=empty-worker-output"
-      if [ "$empty_tries" -ge "$MAX_EMPTY_WORKER_TRIES" ]; then
-        local ew_phrase; ew_phrase="$(impl_failure_category_phrase empty-worker-output)"
-        emit_event ticket_test_writer_failed implement \
-          "ticket $TICKET stopped: $ew_phrase" \
-          "ticket=$TICKET" "phase=test-writer" "category=empty-worker-output" "attempts=$empty_tries"
-        if [ -n "${MISSION_DIR:-}" ]; then
-          printf '%s\tticket=%s\t%s: %s\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" "$TICKET" \
-            "empty-worker-output" "$ew_phrase" \
-            >>"$MISSION_DIR/implement-failure.log" 2>/dev/null || :
-        fi
-        rm -rf "$odir"
-        die "the Test Writer worker produced no output $empty_tries times for $TICKET — likely a transient CLI failure, not a code problem — Stage stopped."
-      fi
-      # Arm the file-first re-prompt for the NEXT attempt, then retry from scratch.
-      prior_empty=1
-      rm -rf "$odir"
-      continue
-    fi
-    prior_empty=""   # a non-empty attempt: keep the next prompt byte-for-byte normal
-    if [ -d "$odir/tests" ] && [ -n "$(find "$odir/tests" -type f -print -quit 2>/dev/null)" ]; then
-      local rc=0
-      # S111 3′: hand the declared-setup manifest along when the worker emitted
-      # one (impl-save-tests enforces the evidence gate — no evidence, no apply).
-      local setup_arg=()
-      [ -f "$odir/test-setup.json" ] && setup_arg=(--setup "$odir/test-setup.json")
-      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-tests \
-        --mission "$MISSION_ID" --ticket "$TICKET" --tests "$odir/tests" --stubs "$odir/stubs" \
-        ${setup_arg[@]+"${setup_arg[@]}"} || rc=$?
-      if [ "$rc" -eq 0 ]; then saved=1; rm -rf "$odir"; break; fi
-      # S111: rc 3 = the gate could not run ANY test (env-cannot-run). Not a
-      # Test-Writer defect — park awaiting-human with the gate's own signal quoted
-      # instead of burning the remaining retries on an unfixable environment.
-      if [ "$rc" -eq 3 ]; then
-        rm -rf "$odir"
-        local sig3=""; [ -f "$sigfile" ] && sig3="$(cat "$sigfile" 2>/dev/null)"
-        impl_park_env_cannot_test "$TICKET" \
-"Ticket $TICKET is blocked: the red gate could not run any test in this ticket's package (a runner-less package, or an unprovisioned environment).
-${sig3:-No gate signal was captured.}"
-      fi
-    fi
-    rm -rf "$odir"
-  done
-  if [ "$saved" != 1 ]; then
-    # S96 (SIGNAL ONLY — control flow + verdict unchanged): name the ROOT-CAUSE
-    # category so the failure event and the stage-stop / awaiting-human text say
-    # WHY, instead of the generic "no usable tests". The last attempt's red-gate
-    # signal is the runner output; the worker output + files-written were retained
-    # above. This ADDS a category; it never turns this rejection into an accept.
-    local cl_runner=""; [ -f "$sigfile" ] && cl_runner="$(cat "$sigfile" 2>/dev/null || true)"
-    # S131: thread the mission-level applied-setup marker so exhaustion with a
-    # zero-collected self-smoke names the include/placement trap
-    # (test-infra-mismatch) instead of over-broad-slice.
-    local cl_setup=""
-    [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/test-setup-applied.json" ] && cl_setup=1
-    local cl_cat cl_phrase
-    cl_cat="$(classify_impl_failure "$cl_runner" "$cl_worker" "$cl_files" "$cl_setup")"
-    cl_phrase="$(impl_failure_category_phrase "$cl_cat")"
-    # Categorised failure event — the board renders the new "category" data field.
-    emit_event ticket_test_writer_failed implement \
-      "ticket $TICKET stopped: $cl_phrase" \
-      "ticket=$TICKET" "phase=test-writer" "category=$cl_cat" "attempts=$MAX_WORKER_TRIES"
-    # Durably record the phrase so implement_failure_tail surfaces it in the
-    # stage-stop text the human sees (same additive channel as record_replay_failure).
-    if [ -n "${MISSION_DIR:-}" ]; then
-      printf '%s\tticket=%s\t%s: %s\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" "$TICKET" "$cl_cat" "$cl_phrase" \
-        >>"$MISSION_DIR/implement-failure.log" 2>/dev/null || :
-    fi
-    die "the Test Writer worker produced no usable tests for $TICKET after $MAX_WORKER_TRIES attempt(s) — $cl_phrase — Stage stopped."
-  fi
-
-  # PHASE 2 — Implementer worker (no Test Writer context) → result.json →
-  # impl-save-result. Its ONLY handoff is the tests now on disk.
-  local tdir; tdir="$(ticket_dir "$TICKET")/tests"
-  local iextra="## Read these artifacts (your ONLY inputs)
-- $MISSION_DIR/approved-plan.json
-- $tdir   (the failing tests — your entire handoff from the Test Writer)$adrblock$navblock$cblock$wtblock"
-  # RESUME after a 5-attempt flag was answered: the captain's recorded note is
-  # how to get this ticket unstuck. Feed it so the Implementer acts on it rather
-  # than re-flagging the same blocker.
-  [ -f "$MISSION_DIR/answers.json" ] && iextra="$iextra
-- $MISSION_DIR/answers.json   (the captain's answer resolving the prior block on this ticket — treat it as DECIDED)"
-  # SELF-HEAL feedback (BUG-029): when the full-suite gate found this ticket's
-  # change REGRESSED an earlier ticket's locked contract, cmd_impl_advance re-runs
-  # this ticket's Implementer with $LCARS_SELFHEAL_FEEDBACK carrying the harness-
-  # authored reconcile instruction (which earlier test(s) broke + "do NOT touch the
-  # locked contract"). It is the SAME single-line declarative feedback channel as
-  # the red-gate signal / answers.json — never the implementation, never prior
-  # reasoning. Each attempt is still a fresh cold worker.
-  if [ -n "${LCARS_SELFHEAL_FEEDBACK:-}" ]; then
-    iextra="$iextra
-
-## FULL-SUITE RECONCILE FEEDBACK — your change regressed an earlier ticket (read this first)
-Your previous implementation passed its OWN suite but, integrated with the rest
-of the branch, it REGRESSED an earlier ticket's locked test. Reconcile your change
-with the rest of the branch so EVERY suite (yours AND the regressed one) passes
-again. You may ONLY edit production code — you must NOT alter any locked test or
-contract. The harness's verdict (the regressed suite(s) + the command run):
-$LCARS_SELFHEAL_FEEDBACK"
-  fi
-  iextra="$iextra
-
-## Your ticket
-$TICKET"
-  tries=0
-  # S98: fresh EMPTY-worker budget + re-prompt flag for the Implementer phase.
-  empty_tries=0; prior_empty=""
-  while [ "$tries" -lt "$MAX_WORKER_TRIES" ]; do
-    tries=$((tries + 1))
-    # Same cumulative-from-the-log numbering as Phase 1, for the implementer phase.
-    local aitry; aitry=$(( $(event_count ticket_attempt "\"ticket\":\"$TICKET\".*\"phase\":\"implementer\"") + 1 ))
-    emit_event ticket_attempt implement "implementer try $aitry for $TICKET" \
-      "ticket=$TICKET" "phase=implementer" "attempt=$aitry"
-    local odir; odir="$(mktemp -d)"
-    spawn_worker implement-implementer "$STAGES_DIR/implement-implementer.md" repo-write "$odir" "$iextra" "${prior_empty:-}"
-    # S98: EMPTY-WORKER branch (same shape as Phase 1) — a worker that produced
-    # NOTHING (no result.json / no source AND no stdout/stderr) is the transient-CLI
-    # signal, distinct from an Implementer whose result FAILED validation. Detect it
-    # BEFORE the result.json check, label it, bounded-retry with the file-first
-    # re-prompt, then escalate distinctly after the short cap.
-    if worker_produced_nothing "$odir"; then
-      empty_tries=$((empty_tries + 1))
-      emit_event ticket_worker_empty_output implement \
-        "implementer produced no output for $TICKET (attempt $aitry)" \
-        "ticket=$TICKET" "phase=implementer" "attempt=$aitry" "category=empty-worker-output"
+        "tdd worker produced no output for $TICKET (attempt $awtry)" \
+        "ticket=$TICKET" "phase=tdd" "attempt=$awtry" "category=empty-worker-output"
       if [ "$empty_tries" -ge "$MAX_EMPTY_WORKER_TRIES" ]; then
         local ew_phrase; ew_phrase="$(impl_failure_category_phrase empty-worker-output)"
         emit_event ticket_implementer_failed implement \
           "ticket $TICKET stopped: $ew_phrase" \
-          "ticket=$TICKET" "phase=implementer" "category=empty-worker-output" "attempts=$empty_tries"
+          "ticket=$TICKET" "phase=tdd" "category=empty-worker-output" "attempts=$empty_tries"
         if [ -n "${MISSION_DIR:-}" ]; then
           printf '%s\tticket=%s\t%s: %s\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%s)" "$TICKET" \
@@ -8394,230 +7763,152 @@ $TICKET"
             >>"$MISSION_DIR/implement-failure.log" 2>/dev/null || :
         fi
         rm -rf "$odir"
-        die "the Implementer worker produced no output $empty_tries times for $TICKET — likely a transient CLI failure, not a code problem — Stage stopped."
+        die "the TDD worker produced no output $empty_tries times for $TICKET — likely a transient CLI failure, not a code problem — Stage stopped."
       fi
       prior_empty=1
       rm -rf "$odir"
       continue
     fi
     prior_empty=""
-    if [ -f "$odir/result.json" ]; then
-      local rc=0
-      LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-result \
-        --mission "$MISSION_ID" --ticket "$TICKET" --result "$odir/result.json" || rc=$?
-      if [ "$rc" -eq 0 ]; then isolated_line "implement($TICKET)" 2; rm -rf "$odir"; exit 0; fi
-    fi
-    rm -rf "$odir"
-  done
-  die "the Implementer worker produced a result for $TICKET that failed validation after $MAX_WORKER_TRIES attempt(s) — Stage stopped, no advance."
-}
 
-# === Test reconciliation (logged-bug Implement only) =======================
-# BUG-058. A Mission-Log bug that CHANGES existing behaviour leaves a
-# contradictory locked test behind: the bug's fix shrinks the X and writes a new
-# test asserting the small X, but the PARENT mission's existing locked test still
-# asserts the OLD value — and the immutable-tests guardrail FORBIDS the bug's
-# Implementer from touching that locked parent test. The suite becomes self-
-# contradictory and the fix can never go green. This step reconciles the parent's
-# existing tests the bug's STATED change invalidates, BEFORE the bug's own Test
-# Writer / Implementer run.
-#
-# SCOPE / GATING (tiny blast radius — keep it surgical):
-#   • Runs ONLY for a LOGGED BUG: state.json type=="bug" AND parentMission set.
-#     For a top-level mission's Implement it does NOTHING — that path (Test Writer
-#     writes new fail-first tests + immutable-tests lock) is BYTE-FOR-BYTE
-#     unchanged (this returns immediately, before any worker spawns).
-#   • Reads ONLY the PARENT mission's ticket test suites under
-#     .git/lcars/missions/<parentMission>/tickets/*/tests/. It never scans or
-#     touches another mission's suites or the wider repo.
-#   • ALWAYS-ON for logged bugs (no human flag); a clean reconciliation no-ops.
-#
-# An isolated COLD worker (same spawn_worker pattern as every other stage worker,
-# engine-pinned) reads the bug's PRD (its intent + Out-of-Scope) and the parent's
-# existing tests, then ADAPTS in place those whose assertions the bug's change
-# contradicts (minimal assertion edits; remove a whole test only if fully
-# obsolete), respecting the PRD's Out-of-Scope. It writes result.json with one of:
-#   decision=reconciled  + a "changed" list → auto-apply: emit tests_reconciled,
-#                          post a GitHub issue comment listing each test + why.
-#   decision=noop         → nothing to reconcile → silent no-op.
-#   decision=defer        + a plain-language "question" → raise the awaiting-human
-#                          gate (pending.json + lcars:awaiting-human) and STOP.
-# Defer is for ONLY: (a) reconciling would need to go BEYOND the parent suite, or
-# (b) a genuine design ambiguity. NEVER for a routine, unambiguous reconciliation.
-reconcile_tests() {
-  # GATE: logged bug only (type==bug AND parentMission set). Anything else — a
-  # top-level mission — returns immediately so that path is untouched.
-  local mtype parent
-  mtype="$(json_str "$STATE" type)"
-  parent="$(json_str "$STATE" parentMission)"
-  [ "$mtype" = "bug" ] && [ -n "$parent" ] || return 0
-
-  # Resolve the PARENT mission's dir (sibling under .git/lcars/missions). Its test
-  # suites live at tickets/*/tests/. If the parent has no such suites, there is
-  # nothing to reconcile — a clean no-op.
-  local parent_dir; parent_dir="$(dirname "$MISSION_DIR")/$parent"
-  [ -d "$parent_dir/tickets" ] || return 0
-  local tests_dirs; tests_dirs="$(find "$parent_dir/tickets" -type d -name tests 2>/dev/null | sort)"
-  [ -n "$tests_dirs" ] || return 0
-
-  # Idempotent: a resumed/re-entered Implement must not re-run reconciliation once
-  # it has already reconciled or no-opped (re-editing locked parent tests would be
-  # destructive). Skip if we have a terminal reconcile-tests outcome on file.
-  if event_seen tests_reconciled implement "." || event_seen tests_reconcile_noop implement "."; then
-    return 0
-  fi
-  # A pending defer from a prior pass means the gate is still open — leave it.
-  if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
-     && grep -q '"stage": "reconcile-tests"' "$MISSION_DIR/pending.json" 2>/dev/null; then
-    emit_event tests_reconcile_blocked implement "test reconciliation still awaiting your answer — resolve it first"
-    echo "IMPLEMENT: test reconciliation awaiting-human — resolve with \`lcars respond $MISSION_ID\` before continuing."
-    exit 0
-  fi
-
-  # The bug's PRD — its intent + Out-of-Scope, the worker's primary input.
-  local prd="$MISSION_DIR/prd.md"
-  # Build the list of parent test dirs (by PATH only) for the worker prompt.
-  local tblock="" d
-  while IFS= read -r d; do
-    [ -n "$d" ] && tblock="$tblock
-- $d   (an existing locked test suite from the parent mission — adapt ONLY assertions this bug's change contradicts)"
-  done <<EOF
-$tests_dirs
-EOF
-
-  # Grant the worker READ+WRITE to the SHARED .git/lcars (so a hard-sandbox CLI can
-  # both read the parent tests and edit them in place), CLI-agnostically — the
-  # per-CLI translation is the adapter's job. Same mechanism implement-ticket uses.
-  export LCARS_WORKER_INPUT_DIRS="$(dirname "$LCARS_CFG")"
-
-  # The captain's recorded answer from a prior defer (lcars respond writes it), if
-  # any — fed so a resumed reconciliation acts on it instead of re-asking.
-  local ansblock=""
-  [ -f "$MISSION_DIR/answers.json" ] && ansblock="
-- $MISSION_DIR/answers.json   (the captain's answer resolving the prior reconciliation question — treat it as DECIDED)"
-
-  local odir; odir="$(mktemp -d)"
-  emit_event tests_reconcile_start implement "reconciling parent ($parent) tests the bug's change invalidates"
-  spawn_worker reconcile-tests "$STAGES_DIR/reconcile-tests.md" repo-write "$odir" \
-"## Read these artifacts (your ONLY inputs)
-- $prd   (THIS bug's PRD — its intent AND its Out-of-Scope section, a hard constraint)$tblock$ansblock
-
-## The parent mission
-$parent (the mission this bug was logged against — adapt ONLY its test suites listed above, nothing else)"
-
-  if [ ! -f "$odir/result.json" ]; then
-    rm -rf "$odir"
-    die "the test-reconciliation worker produced no result.json — Stage stopped."
-  fi
-  local result="$odir/result.json"
-  local decision; decision="$(json_str "$result" decision)"
-
-  case "$decision" in
-    defer)
-      # Beyond the parent suite OR a genuine design ambiguity — raise the awaiting-
-      # human gate (same shape as validate-pause) and STOP. Make NO test edits.
-      local q; q="$(json_str "$result" question)"
-      [ -n "$q" ] || q="Test reconciliation needs your decision before this bug can proceed."
-      local qf; qf="$(mktemp)"; printf '%s\n' "$q" >"$qf"
-      write_pending "$qf" "reconcile-tests"
-      rm -f "$qf"
-      state_set_raw awaitingHuman true
-      state_set_str pendingQuestion "$q"
-      gh_relabel "lcars:implement lcars:awaiting-human" ""
-      emit_event tests_reconcile_deferred implement "test reconciliation deferred to you: $q"
-      notify_gate awaiting-human "Test reconciliation needs your call: $q"
-      rm -rf "$odir"
-      echo "IMPLEMENT: test reconciliation deferred — awaiting-human."
-      echo "  $q"
-      echo "  Answer with \`lcars respond $MISSION_ID\`."
-      exit 0 ;;
-    reconciled)
-      # Auto-apply: the worker already edited the parent tests in place. Log WHAT it
-      # changed to BOTH the UI (event) AND the GitHub issue (comment) — the audit
-      # trail. Parse the "changed" array jq-free: pair each "file"/"change" line.
-      # Pair each "file" with its "change", whether they sit on the SAME line
-      # ({ "file":…, "change":… }) or on separate lines. Collect both key streams
-      # in encounter order, then zip them — jq-free, same spirit as the rest.
-      local lines; lines="$(awk '
-        function val(s,    v) { v=s; sub(/.*:[[:space:]]*"/,"",v); sub(/".*/,"",v); return v }
-        {
-          line=$0
-          while (match(line, /"file"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
-            seg=substr(line, RSTART, RLENGTH); files[++nf]=val(seg)
-            line=substr(line, RSTART+RLENGTH)
-          }
-          line=$0
-          while (match(line, /"change"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
-            seg=substr(line, RSTART, RLENGTH); changes[++nc]=val(seg)
-            line=substr(line, RSTART+RLENGTH)
-          }
-        }
-        END { for (i=1;i<=nf;i++) printf "%s: %s\n", files[i], (i<=nc?changes[i]:"") }
-      ' "$result")"
-      local n; n="$(printf '%s\n' "$lines" | grep -c .)"
-      [ "$n" -gt 0 ] || n=0
-      emit_event tests_reconciled implement "adapted $n test(s): $(printf '%s' "$lines" | tr '\n' '; ')" \
-        "reconciled=$n"
-      # Post a living GitHub issue comment listing each test changed + why (best-
-      # effort, via the host adapter — the same path other stages comment through).
-      local issue; issue="$(json_raw "$STATE" githubIssue)"
-      case "$issue" in
-        ''|null) : ;;
-        *)
-          local hdr items body
-          hdr="$(printf 'LCARS test reconciliation (logged bug %s)\n\nAdapted %s existing test(s) from parent mission %s whose assertions this bug stated change invalidated:\n' "$MISSION_ID" "$n" "$parent")"
-          items="$(printf '%s\n' "$lines" | sed '/^$/d; s/^/- /')"
-          body="$hdr
-$items"
-          if ! host issue-comment "$issue" --body "$body"; then
-            echo "  could not post the reconciliation comment to #$issue — record it by hand."
+    # S111 3′: apply a declared setup manifest when the worker emitted one AND
+    # the evidence gate is open (no evidence → ignored; attempt 1 always naked).
+    # An applied-but-still-dead runner is genuinely incurable → park (env idiom).
+    if [ -f "$odir/test-setup.json" ]; then
+      if [ -n "${LCARS_SETUP_EVIDENCE:-}" ]; then
+        if apply_declared_setup "$odir/test-setup.json" "$odir/setup" "$pf_pkg"; then
+          [ -n "$SETUP_NOTE" ] && printf '  ⚠ declared setup applied with a note: %s\n' "$SETUP_NOTE" >&2
+          if runner_preflight_env_failure "$pf_dir"; then
+            rm -rf "$odir"
+            impl_park_env_cannot_test "$TICKET" \
+"Ticket $TICKET is blocked: the declared test setup was APPLIED (files + install) but the runner STILL cannot launch in ${pf_pkg:-<root>}. Setup note: ${SETUP_NOTE:-none}
+Runner said after the setup:
+$(printf '%s' "$PREFLIGHT_OUT" | tail -10)"
           fi
-          ;;
-      esac
-      rm -rf "$odir"
-      echo "IMPLEMENT: reconciled $n existing parent test(s)."
-      while IFS= read -r l; do [ -n "$l" ] && echo "  • $l"; done <<EOF
-$lines
-EOF
-      ;;
-    *)
-      # noop (or an unrecognised decision treated conservatively as noop): nothing
-      # to reconcile. Record it so a re-entered Implement skips this step.
-      emit_event tests_reconcile_noop implement "nothing to reconcile — the bug adds behaviour / contradicts no existing parent test"
-      rm -rf "$odir"
-      echo "IMPLEMENT: no existing parent tests to reconcile."
-      ;;
-  esac
-  return 0
-}
+          printf '  ✓ declared setup applied — the runner now launches in %s (the proof gates demand the honest flip-flop next)\n' "${pf_pkg:-<root>}" >&2
+        else
+          printf '  ⚠ declared setup REJECTED: %s — continuing without it\n' "$SETUP_NOTE" >&2
+          emit_event test_setup_rejected implement \
+            "declared setup rejected: $SETUP_NOTE" "ticket=$TICKET"
+        fi
+      else
+        printf '  ⚠ a test-setup.json was provided WITHOUT an observed infra gap — ignored (setup is invited only after the harness itself hits the failure; attempt 1 always runs naked)\n' >&2
+      fi
+    fi
 
-# --- subcommand: reconcile-tests (independently driveable + testable) -------
-cmd_reconcile_tests() {
-  locate_mission "$MISSION_ID"
-  require_stage implement
-  require_worker
-  reconcile_tests
+    # --- THE PROOF GATES (S132), in order ------------------------------------
+    local rf="$odir/result.json"
+    if [ ! -f "$rf" ]; then
+      _tdd_reject result missing \
+"the worker produced no result.json in its scratch output directory — the harness reads ONLY that file. Worker output tail:
+$(cat "$odir/.worker.out" "$odir/.worker.err" 2>/dev/null | tail -10)"
+      continue
+    fi
+    # The gates read tickets/<id>/result.json — persist it BEFORE gating (it is
+    # removed again on any rejection so a bounced session never reads as green).
+    mkdir -p "$tdir"; cp "$rf" "$tdir/result.json"
+
+    local gerr=""
+    if ! gerr="$(proof_validate_result "$tdir/result.json" "$TICKET" 2>&1)"; then
+      _tdd_reject result-v2 FAIL "$gerr"; continue
+    fi
+    if [ "$(json_raw "$tdir/result.json" passed)" = "false" ]; then
+      _tdd_reject worker-report not-green \
+"the worker itself reports the ticket is NOT green after $(json_raw "$tdir/result.json" attempts) iteration(s): $(json_str "$tdir/result.json" summary)"
+      continue
+    fi
+    if ! gerr="$(declared_edits_guard "$TICKET" "$parent_sha" "$REPO_ROOT" 2>&1)"; then
+      _tdd_reject declared-edits FAIL "$gerr"; continue
+    fi
+    if ! gerr="$(proof_quality_floor "$TICKET" "$parent_sha" "$REPO_ROOT" 2>&1)"; then
+      _tdd_reject quality-floor FAIL "$gerr"; continue
+    fi
+    # flip-flop: rc 0 pass/skip, 1 fail, 2 inconclusive (never a pass). Runs in
+    # a subshell (output captured for the signal); its events + flip-flop.json
+    # land on disk either way, and the json carries both legs' rc + tails.
+    local ffrc=0 ffout=""
+    ffout="$(flip_flop_gate "$TICKET" "$parent_sha" "$REPO_ROOT" 2>&1)" || ffrc=$?
+    [ -n "$ffout" ] && printf '%s\n' "$ffout"
+    if [ "$ffrc" -ne 0 ]; then
+      local ffv=FAIL; [ "$ffrc" = 2 ] && ffv=INCONCLUSIVE
+      _tdd_reject flip-flop "$ffv" \
+"$ffout
+$(cat "$tdir/flip-flop.json" 2>/dev/null)"
+      continue
+    fi
+
+    # --- ALL GATES PASS — persist through the EXISTING flow ------------------
+    # Record the proof-time test hashes (the declared-edits-aware drift baseline
+    # for post-commit / pre-merge), then commit + post-commit-verify + green +
+    # issue close via impl-save-result, byte-compatible with the old flow.
+    proof_snapshot_tests "$TICKET" "$REPO_ROOT"
+    local src_rc=0 srout=""
+    srout="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" impl-save-result \
+      --mission "$MISSION_ID" --ticket "$TICKET" --result "$rf" 2>&1)" || src_rc=$?
+    [ -n "$srout" ] && printf '%s\n' "$srout"
+    if [ "$src_rc" -eq 0 ]; then
+      rm -f "$sigfile"
+      rm -rf "$odir"
+      isolated_line "implement($TICKET)" 1
+      exit 0
+    fi
+    # The committed state did not verify (post-commit red / env / undeclared
+    # drift). Bounce with the save flow's own verdict as the signal.
+    _tdd_reject post-commit FAIL "$(printf '%s' "$srout" | tail -20)"
+    continue
+  done
+
+  # --- EXHAUSTION: park awaiting-human, NEVER die ----------------------------
+  # The same gate shape as validate-pause / the old 5-attempt flag: pending.json
+  # (BUG-027 structured fields), awaitingHuman + label overlay, ticket_flagged.
+  # `lcars respond` records the answer; a re-run resumes with it (answers.json).
+  local lastsig=""; [ -f "$sigfile" ] && lastsig="$(cat "$sigfile")"
+  local q; q="$(mktemp)"
+  printf 'Ticket %s was rejected by the proof gates in %s consecutive TDD session(s). Last gate verdict:\n%s\n' \
+    "$TICKET" "$sessions" "${lastsig:-no gate signal captured}" >"$q"
+  LCARS_PENDING_HUMAN_SUMMARY="Ticket $TICKET could not prove its work after $sessions session(s) — the last gate verdict is quoted below. Reply with direction (what to fix, rescope, or drop the ticket) and re-run." \
+  LCARS_PENDING_ESCALATION_TYPE="cap" \
+  LCARS_PENDING_TECHNICAL_DETAIL="${lastsig:-no gate signal captured}" \
+    write_pending "$q" "implement"
+  rm -f "$q"
+  state_set_raw awaitingHuman true
+  state_set_str pendingQuestion "Ticket $TICKET failed its proof gates after $sessions session(s) — needs a human."
+  gh_relabel "lcars:awaiting-human" ""
+  emit_event ticket_flagged implement \
+    "ticket $TICKET flagged after $sessions TDD session(s) — last gate verdict: ${last_verdict:-unknown}" \
+    "ticket=$TICKET" "attempts=$sessions"
+  echo "IMPLEMENT: ticket flagged — $TICKET"
+  echo "  $TICKET was bounced by the proof gates $sessions time(s) (the $MAX_WORKER_TRIES-session cap)."
+  echo "  Last gate verdict: ${last_verdict:-unknown}"
+  echo "  Stage: implement (awaiting-human). Resolve with \`lcars respond $MISSION_ID\`."
+  [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   exit 0
 }
 
+# === Test reconciliation: RETIRED (S133) ===================================
+# BUG-058's reconcile_tests pre-step (a cold worker adapting the PARENT
+# mission's locked tests a logged bug's change invalidates) is DELETED with the
+# standoff: the unified TDD worker may itself adapt a contradictory parent test
+# — the immutable-tests lock no longer forbids it — and MUST declare each such
+# edit in result.json testEdits with a reason (enforced by declared_edits_guard,
+# recorded to test-edits.json, audited by the pre-merge drift check).
+
 # === Stage driver: Implement (the whole stage) =============================
 # The token-free wave loop. It processes the waves in order and, within a wave,
-# builds every pending ticket through `implement-ticket` (the cold adversarial
-# pair), then advances to Verify once every ticket is green. It composes the
-# already-tested impl-* subcommands and adds NO new Stage logic — it only
-# sequences them, the same way the auto-advance driver sequences whole Stages.
-# A ticket that flags the human (the 5-attempt cap → awaiting-human) stops the
-# loop at the gate; a hard worker failure stops the Stage non-zero.
+# builds every pending ticket through `implement-ticket` (the cold unified TDD
+# worker + proof gates), then advances to Verify once every ticket is green. It
+# composes the already-tested impl-* subcommands and adds NO new Stage logic —
+# it only sequences them, the same way the auto-advance driver sequences Stages.
+# A ticket that flags the human (the session-cap park → awaiting-human) stops
+# the loop at the gate; a hard worker failure stops the Stage non-zero.
 cmd_implement() {
   locate_mission "$MISSION_ID"
   require_stage implement
   require_worker
 
-  # BUG-058: for a LOGGED BUG, reconcile the parent mission's existing tests the
-  # bug's change invalidates BEFORE the bug's own Test Writer / Implementer run.
-  # No-op (and untouched argv) for a top-level mission. May exit 0 here if it
-  # raises an awaiting-human gate (a genuine design ambiguity / beyond-parent scope).
-  reconcile_tests
+  # (S133: the BUG-058 reconcile_tests pre-step for logged bugs is retired — the
+  # unified TDD worker adapts a contradictory parent test itself, DECLARED in
+  # result.json testEdits and enforced by declared_edits_guard.)
 
   # Branch-CREATION contamination guard (BUG: concurrent-mission cross-birth).
   # Implement is the first stage to touch git; the mission branch may not exist
@@ -8742,10 +8033,7 @@ cmd_implement() {
       local wt_base; wt_base="$MISSION_DIR/worktrees"
       local jobs; jobs="$(mktemp)"; : >"$jobs"
       for t in $pending; do
-        # S102: also drop a stale .test-commit-sha so this FRESH build's Phase 1 writes
-        # its own (a REUSE/rebuild build skips Phase 1 and never reaches here).
-        rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" \
-              "$(ticket_dir "$t")/.test-commit-sha" 2>/dev/null
+        rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" 2>/dev/null
         printf 'LCARS_TICKET_WT_BASE=%q LCARS_TICKET_BRANCH=%q bash %q implement-ticket --mission %q --ticket %q\n' \
           "$wt_base" "$branch" "$SELF" "$MISSION_ID" "$t" >>"$jobs"
       done
@@ -8781,21 +8069,8 @@ cmd_implement() {
       for t in $pending; do
         local brc; brc="$(cat "$(ticket_dir "$t")/.build-rc" 2>/dev/null || echo 1)"
         if [ "$brc" != "0" ]; then hard_fail="$t"; break; fi
-        # S102 (tests ride along): the ticket's LOCKED TEST was committed in Phase 1 on
-        # the worktree's detached HEAD (its own commit, recorded to .test-commit-sha).
-        # Cherry-pick it onto the real mission branch FIRST — BEFORE the impl commit —
-        # so history reads test-commit → impl-commit and the test rides into the PR.
-        # It is a NEW, unique co-located file, so it lands independently (no conflict);
-        # a rare failure is best-effort (the impl replay + rebuild path still runs, and
-        # the gates fall back to overlaying the mirror). On the REUSE/rebuild path Phase 1
-        # was skipped so there is no fresh .test-commit-sha — correct, because the test
-        # commit already landed here in this first pass, before the conflicting impl.
-        local tsha; tsha="$(cat "$(ticket_dir "$t")/.test-commit-sha" 2>/dev/null || true)"
-        if [ -n "$tsha" ]; then
-          replay_ticket_commit "$branch" "$tsha" "$t" \
-            || emit_event ticket_test_replay_conflict implement \
-                 "ticket $t's locked-test commit did not cherry-pick cleanly; the gate will overlay the mirror" "ticket=$t"
-        fi
+        # (S133: the separate locked-test commit replay is retired — the ticket's
+        # tests ride in its ONE commit below.)
         local sha; sha="$(cat "$(ticket_dir "$t")/.commit-sha" 2>/dev/null || true)"
         # No commit (a flagged ticket, or a green ticket with no file changes) →
         # nothing to replay.
@@ -9109,9 +8384,9 @@ _replay_ticket_commit_locked() { # branch  sha  ticket
 }
 
 # Rebuild ONE ticket serially when its concurrent (frozen-base) commit could not
-# cherry-pick — the same-file conflict fix. The ticket's locked tests are already
-# on disk (tickets/<id>/tests + .sha256), so only the Implementer re-runs, and it
-# re-runs inside a FRESH worktree that make_ticket_worktree cuts off the CURRENT
+# cherry-pick — the same-file conflict fix. S133: the whole unified TDD worker
+# re-runs (no stale-contract reuse — the S132 gates re-prove on the new tip), and
+# it re-runs inside a FRESH worktree that make_ticket_worktree cuts off the CURRENT
 # mission-branch tip (which now carries the prior tickets' commits) — so its edits
 # compose on top of them exactly like the old serial in-tree path, with no merge.
 # On green it writes a NEW .commit-sha (a commit whose parent IS the current tip),
@@ -9126,7 +8401,7 @@ rebuild_ticket_on_tip() { # base-dir  branch  ticket
   rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" 2>/dev/null
   local irc=0
   LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
-  LCARS_TICKET_WT_BASE="$base" LCARS_TICKET_BRANCH="$branch" LCARS_REUSE_TESTS=1 \
+  LCARS_TICKET_WT_BASE="$base" LCARS_TICKET_BRANCH="$branch" \
     bash "$SELF" implement-ticket --mission "$MISSION_ID" --ticket "$t" || irc=$?
   # A flag (5-attempt cap) set awaitingHuman in shared state — let the caller route
   # it to the gate. A hard failure (no result) returns non-zero with no .commit-sha.
@@ -9987,7 +9262,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary|open-pr|research|validate|estimate|plan|plan-review|implement|implement-ticket|reconcile-tests|drive|emit-event|native-scope)
+  gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-result|impl-status|impl-advance|verify-summary|open-pr|research|validate|estimate|plan|plan-review|implement|implement-ticket|drive|emit-event)
     [ -n "$MISSION_ID" ] || die "no mission id — pass --mission <id>." ;;
 esac
 
@@ -10000,8 +9275,6 @@ case "$SUB" in
   plan-save)        cmd_plan_save ;;
   review-save)      cmd_review_save ;;
   schedule)         cmd_schedule ;;
-  impl-save-tests)  cmd_impl_save_tests ;;
-  native-scope)     cmd_native_scope ;;
   impl-save-result) cmd_impl_save_result ;;
   impl-status)      cmd_impl_status ;;
   impl-advance)     cmd_impl_advance ;;
@@ -10019,11 +9292,6 @@ case "$SUB" in
   plan-review)      cmd_plan_review ;;
   implement)        cmd_implement ;;
   implement-ticket) cmd_implement_ticket ;;
-  # BUG-058: reconcile the parent mission's existing tests a logged bug's change
-  # invalidates, before the bug's own Test Writer/Implementer run. No-op on a
-  # top-level mission. Independently driveable + testable; cmd_implement also
-  # calls reconcile_tests() directly up front.
-  reconcile-tests)  cmd_reconcile_tests ;;
   # One research agent, spawned as a capped fan-out job (run_capped). Stateless:
   # its ONLY inputs are $LCARS_RA_DIR (where to write) and $LCARS_RA_Q (the one
   # question). No --mission — research_agent_worker reaches no mission artifacts.
@@ -10224,11 +9492,6 @@ case "$SUB" in
   worker-empty-detect-test)
     if worker_produced_nothing "${LCARS_TEST_OUTDIR:-}"; then exit 0; else exit 1; fi
     ;;
-  # S99 test hook: pure self-smoke verdict — runner output on stdin, rc via env.
-  self-smoke-verdict-test)
-    _ss_in="$(cat)"
-    self_smoke_verdict "${LCARS_SS_RC:-0}" "$_ss_in"
-    printf '\n'; exit 0 ;;
   # S99 test hook: portable hard timeout — runs $LCARS_HT_CMD under $LCARS_HT_SECS,
   # prints RC=<rc> (124 = timed out+killed). Offline, free.
   run-hard-timeout-test)
@@ -10325,12 +9588,38 @@ FSG_EOF
   test-path-for-test)
     test_path_for "${LCARS_TPF_CONV:-co-located}" "${LCARS_TPF_TARGET:-}"
     printf '\n'; exit 0 ;;
-  # S101 test hook: run tests_unchanged for a ticket against the IN-TREE files under
-  # $REPO_ROOT and print its rc (0 = unchanged, 1 = tampered/missing). Lets the fast
-  # test prove a post-snapshot edit to the ridden-along in-tree test is still caught.
-  tests-unchanged-test)
+  # S133 test hook: declared-edits-aware drift over a ticket's proof-time test
+  # snapshot (0 = clean or declared; 1 = UNDECLARED drift, rels echoed).
+  proof-drift-test)
     locate_mission "$MISSION_ID"
-    __tu_rc=0; tests_unchanged "$TICKET" || __tu_rc=$?
-    printf 'TURC=%s\n' "$__tu_rc"; exit 0 ;;
-  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-tests|impl-save-result|impl-status|impl-advance|verify-summary." ;;
+    __pd_rc=0; __pd_out="$(proof_drift_declared_ok "$TICKET" "${POSARG:-$REPO_ROOT}")" || __pd_rc=$?
+    [ -n "$__pd_out" ] && printf '%s\n' "$__pd_out"
+    printf 'PDRC=%s\n' "$__pd_rc"; exit 0 ;;
+  # S132 test hooks: the STANDALONE proof-of-work gates (no live implement path
+  # calls these — the path flips in S133). Each drives the REAL gate function
+  # against a mission fixture and prints its rc as a parseable token, so the
+  # flip-flop / declared-edits / quality-floor / v2-result contracts are
+  # exercised offline + token-free. Inert for every real subcommand.
+  flip-flop-gate-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh flip-flop-gate-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"
+    [ -n "$RC_SHA" ] || die "flip-flop-gate-test needs --sha <parent-sha> (the parent commit is the snapshot)."
+    __ff_rc=0; flip_flop_gate "$TICKET" "$RC_SHA" "${POSARG:-$REPO_ROOT}" || __ff_rc=$?
+    printf 'FFRC=%s\n' "$__ff_rc"; exit 0 ;;
+  declared-edits-guard-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh declared-edits-guard-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"
+    [ -n "$RC_SHA" ] || die "declared-edits-guard-test needs --sha <parent-sha>."
+    __de_rc=0; declared_edits_guard "$TICKET" "$RC_SHA" "${POSARG:-$REPO_ROOT}" || __de_rc=$?
+    printf 'DERC=%s\n' "$__de_rc"; exit 0 ;;
+  proof-validate-result-test)
+    __pv_rc=0; proof_validate_result "$RESULT" "$TICKET" || __pv_rc=$?
+    printf 'PVRC=%s\n' "$__pv_rc"; exit 0 ;;
+  proof-quality-floor-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh proof-quality-floor-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"
+    [ -n "$RC_SHA" ] || die "proof-quality-floor-test needs --sha <parent-sha>."
+    __qf_rc=0; proof_quality_floor "$TICKET" "$RC_SHA" "${POSARG:-$REPO_ROOT}" || __qf_rc=$?
+    printf 'QFRC=%s\n' "$__qf_rc"; exit 0 ;;
+  ''|*) die "unknown subcommand '${SUB:-}'. Usage: run.sh drive --mission <id> [--step], or a single Stage. Drivers: research|validate|plan|plan-review|implement|implement-ticket|drive. Persistence: gate|save|validate-pause|validate-advance|plan-save|review-save|schedule|impl-save-result|impl-status|impl-advance|verify-summary." ;;
 esac

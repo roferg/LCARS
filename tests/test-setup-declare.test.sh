@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# Fast, SCOPED test for S111 Phase 3′ — EVIDENCE-GATED DECLARED TEST SETUP.
+# Fast, SCOPED test for S111 Phase 3′ — EVIDENCE-GATED DECLARED TEST SETUP —
+# RETARGETED to the S133 unified TDD worker.
 #
-# The behaviour: when the runner PREFLIGHT proves the ticket's target package
-# cannot run tests (env-cannot-run) while the repo root CAN, the Test Writer is
-# INVITED — in its prompt — to declare the missing test infrastructure alongside
-# its tests: a `setup/` scratch dir of NEW package-relative files (e.g. a vitest
-# config) plus `test-setup.json` naming the package, the observed gap, and an
-# install command. The harness (never the worker) APPLIES it in the ticket's
-# tree, re-probes, and only then runs the normal self-smoke + red gate — so the
-# 127→red transition proves the declared setup actually works. Without evidence
-# a manifest is IGNORED (attempt-1 always runs naked); an applied-but-still-dead
-# setup parks awaiting-human; on ticket green the verified facts are recorded to
-# the repo's test landscape. provision_worktree re-applies the install command
-# in every fresh gate worktree so post-commit/full-suite judge the same env.
+# The behaviour (semantics byte-preserved, re-addressed): when the runner
+# PREFLIGHT proves the ticket's target package cannot run tests (env-cannot-run)
+# while the repo elsewhere CAN, the unified worker is INVITED — in its prompt —
+# to declare the missing test infrastructure alongside its work: a `setup/`
+# scratch dir of NEW package-relative files plus `test-setup.json` naming the
+# package, the observed gap, and an install command. The HARNESS (never the
+# worker) applies it, re-probes, and only then runs the proof gates — so the
+# 127→red-on-parent transition proves the declared setup actually works.
+# Without evidence a manifest is IGNORED (attempt-1 always runs naked); an
+# applied-but-still-dead setup parks awaiting-human; the whitelist (ADD-only,
+# never src/, ≤4 files, package-manager installCommand) is unchanged. The S131
+# placement contract now states that the worker authors tests IN-TREE at the
+# repo's detected convention (no harness relocation any more).
 #
-# Zero tokens: fake probe-based testCommands + a scripted stub worker.
+# Zero tokens: fake probe-based testCommands + a scripted stub worker + a real
+# tiny node:test file for the flip-flop legs. Safe to run directly.
 set -u
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,13 +31,14 @@ bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
 
 # --- fixture: monorepo-ish repo with pkgA (no runner until "installed") ------
 # testCommand `bash <repo>/probe.sh` (cwd = the package): 127s until the cwd
-# holds .runner-installed; after install it is a healthy REACTIVE runner.
+# holds .runner-installed; after install it is a REAL node:test runner.
 new_repo() { # -> echoes repo dir
   local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '# ctx\n' > "$repo/CONTEXT.md"
   mkdir -p "$repo/pkgA"
   printf '{ "name": "pkgA" }\n' > "$repo/pkgA/package.json"
-  printf 'export function hint() {}\n' > "$repo/pkgA/game.js"
+  printf 'exports.hint = () => null;\n' > "$repo/pkgA/game.js"
   ( cd "$repo" && git add -A && git commit -qm init )
   cat > "$repo/probe.sh" <<'SH'
 #!/usr/bin/env bash
@@ -42,10 +46,10 @@ if [ ! -f ".runner-installed" ]; then
   echo "sh: vitest: command not found"
   exit 127
 fi
-files="$(find "${LCARS_TESTS_DIR:-}" -type f -name '*.test.*' 2>/dev/null)"
-if [ -z "$files" ]; then echo "no test files found"; exit 0; fi
-echo "AssertionError: expected hint overlay, got none"
-exit 1
+t="${LCARS_TESTS_DIR:-}"
+if [ -d "$t" ]; then set -- "$t"/*.test.js; else set -- "$t"; fi
+if [ ! -e "${1:-/nonexistent}" ]; then echo "no test files found"; exit 0; fi
+node --test "$@"
 SH
   mkdir -p "$repo/.git/lcars/missions/test-001/tickets/t-001" \
            "$repo/.git/lcars/missions/test-001/manifests"
@@ -54,7 +58,7 @@ SH
 JSON
   cat > "$repo/.git/lcars/missions/test-001/approved-plan.json" <<'JSON'
 { "tickets": [ { "id": "t-001", "title": "hint overlay", "description": "d",
-                 "acceptanceCriteria": ["overlay exists"] } ] }
+                 "acceptanceCriteria": ["hint text exists"] } ] }
 JSON
   cat > "$repo/.git/lcars/missions/test-001/manifests/t-001.md" <<'MD'
 ## Relevant files
@@ -63,9 +67,9 @@ MD
   echo "$repo"
 }
 
-# A scripted stub worker: on a TEST-WRITER spawn it creates tests (+ optionally
-# the declared setup) in $LCARS_WORK_OUT; other roles produce nothing. Its
-# behaviour is keyed by $STUB_MODE (exported by each case).
+# A scripted stub worker: the unified TDD worker writes its test + impl IN-TREE
+# (cwd) and result.json v2 into $LCARS_WORK_OUT; optionally the declared setup
+# (keyed by $STUB_MODE).
 make_worker() { # -> echoes stub path
   local stub="$TMPROOT/worker.sh"
   cat > "$stub" <<'SH'
@@ -75,11 +79,18 @@ out="${LCARS_WORK_OUT:-}"
 [ -n "${STUB_PROMPT_LOG:-}" ] && printf '%s\n' "$prompt" >> "$STUB_PROMPT_LOG"
 [ -n "$out" ] || exit 0
 case "${LCARS_WORKER_ROLE:-}" in
-  implement-test-writer)
-    cat > "$out/tests/t-001.test.js" <<'TS'
-import { hint } from './game';
-test('overlay', () => { expect(hint()).toBe('Arrows / WASD to move'); });
-TS
+  implement-tdd)
+    cat > pkgA/hint.test.js <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { hint } = require('./game.js');
+test('overlay hint', () => { assert.strictEqual(hint(), 'Arrows / WASD to move'); });
+JS
+    printf "exports.hint = () => 'Arrows / WASD to move';\n" > pkgA/game.js
+    cat > "$out/result.json" <<'JSON'
+{ "ticketId": "t-001", "passed": true, "attempts": 1, "summary": "hint wired",
+  "newTests": ["pkgA/hint.test.js"], "testEdits": [], "flipFlop": "expected" }
+JSON
     if [ "${STUB_MODE:-}" = "declare-setup" ]; then
       mkdir -p "$out/setup"
       printf 'export default { test: {} }\n' > "$out/setup/vitest.config.js"
@@ -98,50 +109,60 @@ JSON
     fi
     ;;
 esac
+echo "stub done"
 exit 0
 SH
   chmod +x "$stub"
   echo "$stub"
 }
 
+# a hermetic pnpm stub so setup_ensure_runner's forced relink never reaches a
+# real pnpm; `pnpm install` drops a relink marker at the cwd.
+mkdir -p "$TMPROOT/bin"
+cat > "$TMPROOT/bin/pnpm" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = "install" ] && touch "$PWD/.pnpm-relinked"
+exit 0
+SH
+chmod +x "$TMPROOT/bin/pnpm"
+
 run_ticket() { # repo extra-env... -> RC + OUT (env pairs as later args)
   local repo="$1"; shift
   OUT="$( cd "$repo" && env "$@" \
+            PATH="$TMPROOT/bin:$PATH" \
             LCARS_TEST_CMD="bash $repo/probe.sh" \
             LCARS_GH_BIN=true LCARS_GIT_BIN=git \
             LCARS_WORKER_BIN="$WORKER" LCARS_WORKER_CLI=claude \
-            LCARS_EMPTY_WORKER_TRIES=1 LCARS_WORKER_TRIES=2 \
+            LCARS_EMPTY_WORKER_TRIES=1 LCARS_WORKER_TRIES=1 \
             LCARS_SETUP_INSTALL_ALLOW_RE='^bash ' \
             bash "$SCRIPT" implement-ticket --mission test-001 --ticket t-001 2>&1 )"
   RC=$?
 }
 
 WORKER="$(make_worker)"
+MISS() { echo "$1/.git/lcars/missions/test-001"; }
 
-# === G1: dead pkg + live root → the Test Writer prompt INVITES a declared setup
+# === G1: dead pkg + live root → the unified worker's prompt INVITES a setup ==
 repo="$(new_repo)"
 touch "$repo/.runner-installed"     # ROOT alive; pkgA stays dead
 PLOG="$TMPROOT/g1-prompts.txt"; : > "$PLOG"
 run_ticket "$repo" STUB_MODE= STUB_PROMPT_LOG="$PLOG"
-if grep -q "test-setup.json" "$PLOG"; then
-  ok "G1. dead-pkg preflight INVITES the declared setup in the Test-Writer prompt"
+if grep -q "test-setup.json" "$PLOG" && grep -q "DECLARED TEST SETUP" "$PLOG"; then
+  ok "G1. dead-pkg preflight INVITES the declared setup in the worker prompt"
 else
   bad "G1. no setup invitation in the prompt (rc=$RC: $(printf '%s' "$OUT" | tail -3))"
 fi
 
 # === G1-PC (S131): the invitation states the PLACEMENT CONTRACT ==============
-# (caught live 2026-07-09: the writer authored a vitest config with
-# include: tests/** — reasonable from its seat, where tests live in a tests/
-# scratch dir — but S101 relocated the test to the repo's co-located convention,
-# so the config collected ZERO tests and three blind retries hit the same trap.
-# The invitation must say WHERE the tests will land and that any declared runner
-# config MUST collect from there.)
+# Re-addressed: the worker authors IN-TREE itself now, so the contract names the
+# repo's detected convention + a concrete in-tree path, and warns off narrowing
+# `include` — same trap, same wording intent.
 if grep -q "PLACEMENT CONTRACT" "$PLOG" \
    && grep -q "co-located" "$PLOG" \
    && grep -q "pkgA/game.test.js" "$PLOG"; then
-  ok "G1-PC-a. invitation names the detected convention + a concrete placed path"
+  ok "G1-PC-a. invitation names the detected convention + a concrete in-tree path"
 else
-  bad "G1-PC-a. placement contract (convention + placed example) missing from the invitation"
+  bad "G1-PC-a. placement contract (convention + in-tree example) missing from the invitation"
 fi
 if grep -q 'do NOT narrow `include`' "$PLOG"; then
   ok "G1-PC-b. invitation says the safest config does not narrow include"
@@ -150,9 +171,6 @@ else
 fi
 
 # === G1b: root ALSO dead, but a SIBLING package declares a runner → invite ===
-# (the pnpm-monorepo reality: the workspace root has no runner in .bin, yet
-# sibling packages test fine — the invite must key off sibling runner decls,
-# not a root probe.)
 repo="$(new_repo)"
 mkdir -p "$repo/pkgB"
 printf '{ "name": "pkgB", "devDependencies": { "vitest": "^1.6.0" } }\n' > "$repo/pkgB/package.json"
@@ -168,7 +186,7 @@ fi
 repo="$(new_repo)"
 PLOG="$TMPROOT/g1c-prompts.txt"; : > "$PLOG"
 run_ticket "$repo" STUB_MODE= STUB_PROMPT_LOG="$PLOG"
-state="$repo/.git/lcars/missions/test-001/state.json"
+state="$(MISS "$repo")/state.json"
 if grep -q '"awaitingHuman": *true' "$state" && ! grep -q "test-setup.json" "$PLOG"; then
   ok "G1c. runner-less everywhere → parked, no invite (setup can't fix repo-wide provisioning)"
 else
@@ -176,8 +194,6 @@ else
 fi
 
 # === G1d: repo_tests_elsewhere works FROM A TICKET WORKTREE UNDER .git/ ======
-# (caught live: a bare '*/.git/*' find filter excluded every file of a worktree
-# that lives at .git/lcars/missions/<id>/worktrees/<t>, blinding the scan.)
 LIBW="$(mktemp "$TMPROOT/libw.XXXX")"
 sed -n '/^rg_signature() {/,/^}/p' "$SCRIPT" >"$LIBW"
 sed -n '/^red_gate_env_failure() {/,/^}/p' "$SCRIPT" >>"$LIBW"
@@ -206,15 +222,14 @@ else
   fi
 fi
 
-# === G2: declared setup is APPLIED, gate goes 127→red, tests saved ===========
+# === G2: declared setup APPLIED, proof gates go 127→flip-flop, ticket green ==
 repo="$(new_repo)"
 touch "$repo/.runner-installed"     # root alive
 cat > "$repo/install-fake.sh" <<'SH'
 #!/usr/bin/env bash
 touch .runner-installed
 SH
-STUB_MODE=declare-setup run_ticket "$repo" STUB_MODE=declare-setup \
-  STUB_INSTALL="$repo/install-fake.sh"
+run_ticket "$repo" STUB_MODE=declare-setup STUB_INSTALL="$repo/install-fake.sh"
 if [ -f "$repo/pkgA/vitest.config.js" ]; then
   ok "G2a. declared setup file landed in the package"
 else
@@ -225,13 +240,14 @@ if [ -f "$repo/pkgA/.runner-installed" ]; then
 else
   bad "G2b. installCommand did not run"
 fi
-if [ -d "$repo/.git/lcars/missions/test-001/tickets/t-001/tests" ] \
-   && [ -n "$(find "$repo/.git/lcars/missions/test-001/tickets/t-001/tests" -type f 2>/dev/null)" ]; then
-  ok "G2c. red gate passed after setup — tests locked (127→red proven)"
+rj="$(MISS "$repo")/tickets/t-001/result.json"
+if [ "$RC" -eq 0 ] && [ -f "$rj" ] && grep -q '"passed": *true' "$rj" \
+   && grep -q '"type":"flip_flop_pass"' "$(MISS "$repo")/events.jsonl"; then
+  ok "G2c. proof gates passed after the setup (127→red-on-parent proven) — ticket green"
 else
-  bad "G2c. tests not locked after setup (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
+  bad "G2c. ticket not green after setup (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
 fi
-if [ -f "$repo/.git/lcars/missions/test-001/test-setup-applied.json" ]; then
+if [ -f "$(MISS "$repo")/test-setup-applied.json" ]; then
   ok "G2d. applied setup recorded at mission level"
 else
   bad "G2d. no mission-level applied-setup record"
@@ -240,16 +256,22 @@ fi
 # === G3: NO evidence (healthy pkg runner) → a manifest is IGNORED ============
 repo="$(new_repo)"
 touch "$repo/.runner-installed" "$repo/pkgA/.runner-installed"   # both alive
+( cd "$repo" && git add -f .runner-installed pkgA/.runner-installed >/dev/null 2>&1 \
+  && git commit -qm markers )   # committed → the parent scratch is alive too
 cat > "$repo/install-fake.sh" <<'SH'
 #!/usr/bin/env bash
 touch .runner-installed
 SH
-STUB_MODE=declare-setup run_ticket "$repo" STUB_MODE=declare-setup \
-  STUB_INSTALL="$repo/install-fake.sh"
+run_ticket "$repo" STUB_MODE=declare-setup STUB_INSTALL="$repo/install-fake.sh"
 if [ ! -f "$repo/pkgA/vitest.config.js" ]; then
-  ok "G3. healthy runner → unsolicited manifest ignored (attempt-1 runs naked)"
+  ok "G3a. healthy runner → unsolicited manifest ignored (attempt-1 runs naked)"
 else
-  bad "G3. unsolicited manifest was applied without evidence"
+  bad "G3a. unsolicited manifest was applied without evidence"
+fi
+if [ "$RC" -eq 0 ] && grep -q '"type":"ticket_green"' "$(MISS "$repo")/events.jsonl"; then
+  ok "G3b. the ticket still proves out normally without the setup"
+else
+  bad "G3b. healthy-runner flow broke (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
 fi
 
 # === G4: a setup file targeting src/ is REJECTED =============================
@@ -259,8 +281,7 @@ cat > "$repo/install-fake.sh" <<'SH'
 #!/usr/bin/env bash
 touch .runner-installed
 SH
-STUB_MODE=declare-bad-path run_ticket "$repo" STUB_MODE=declare-bad-path \
-  STUB_INSTALL="$repo/install-fake.sh"
+run_ticket "$repo" STUB_MODE=declare-bad-path STUB_INSTALL="$repo/install-fake.sh"
 if [ ! -f "$repo/pkgA/src/game.js" ]; then
   ok "G4a. src/ setup file NOT applied (whitelist held)"
 else
@@ -279,50 +300,57 @@ cat > "$repo/install-fake.sh" <<'SH'
 #!/usr/bin/env bash
 exit 0
 SH
-STUB_MODE=declare-setup run_ticket "$repo" STUB_MODE=declare-setup \
-  STUB_INSTALL="$repo/install-fake.sh"
-state="$repo/.git/lcars/missions/test-001/state.json"
+run_ticket "$repo" STUB_MODE=declare-setup STUB_INSTALL="$repo/install-fake.sh"
+state="$(MISS "$repo")/state.json"
 if grep -q '"awaitingHuman": *true' "$state"; then
   ok "G5a. still-dead runner after setup → parked awaiting-human"
 else
   bad "G5a. no park after failed setup (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
 fi
-if grep -qi "setup" "$repo/.git/lcars/missions/test-001/pending.json" 2>/dev/null; then
+if grep -qi "setup" "$(MISS "$repo")/pending.json" 2>/dev/null; then
   ok "G5b. the pending question names the tried setup"
 else
   bad "G5b. pending question does not mention the setup attempt"
 fi
 
 # === G7: pnpm virtual-store failure self-heals (pnpm install → retry once) ===
-# (caught live: pnpm refuses `add` in a worktree with symlinked node_modules
-# until the tree is re-linked with `pnpm install`.)
 repo="$(new_repo)"
 touch "$repo/.runner-installed"
-mkdir -p "$repo/bin"
-cat > "$repo/bin/pnpm" <<'SH'
-#!/usr/bin/env bash
-# stub pnpm: `pnpm install` re-links the tree (drops the marker the declared
-# install needs); anything else no-ops.
-[ "$1" = "install" ] && touch "$PWD/.pnpm-relinked"
-exit 0
-SH
-chmod +x "$repo/bin/pnpm"
 cat > "$repo/install-fake.sh" <<'SH'
 #!/usr/bin/env bash
-# declared install: fails with pnpm's virtual-store complaint until the tree
-# has been re-linked, then succeeds and installs the runner.
-if [ ! -f "$(git rev-parse --show-toplevel 2>/dev/null || echo .)/.pnpm-relinked" ] && [ ! -f "../.pnpm-relinked" ] && [ ! -f ".pnpm-relinked" ]; then
+if [ ! -f ".pnpm-relinked" ] && [ ! -f "../.pnpm-relinked" ]; then
   echo 'ERR_PNPM: pnpm now wants to use the virtual store — reinstall with "pnpm install".'
   exit 1
 fi
 touch .runner-installed
 SH
-STUB_MODE=declare-setup run_ticket "$repo" STUB_MODE=declare-setup \
-  STUB_INSTALL="$repo/install-fake.sh" PATH="$repo/bin:$PATH"
+run_ticket "$repo" STUB_MODE=declare-setup STUB_INSTALL="$repo/install-fake.sh"
 if [ -f "$repo/pkgA/.runner-installed" ]; then
   ok "G7. virtual-store failure healed (pnpm install → declared install retried OK)"
 else
   bad "G7. virtual-store heal did not cure the install (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
+fi
+
+# === G9: an install that EXITS 0 but cures nothing → forced relink heal ======
+repo="$(new_repo)"
+touch "$repo/.runner-installed"
+cat > "$repo/install-fake.sh" <<'SH'
+#!/usr/bin/env bash
+if [ -f ".pnpm-relinked" ] || [ -f "../.pnpm-relinked" ]; then
+  touch .runner-installed
+fi
+exit 0
+SH
+run_ticket "$repo" STUB_MODE=declare-setup STUB_INSTALL="$repo/install-fake.sh"
+if [ -f "$repo/pkgA/.runner-installed" ]; then
+  ok "G9a. silent no-op install → forced relink heal cures the runner"
+else
+  bad "G9a. still-dead-after-exit-0 install not healed (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
+fi
+if [ "$RC" -eq 0 ] && grep -q '"type":"ticket_green"' "$(MISS "$repo")/events.jsonl"; then
+  ok "G9b. gates proceeded to green after the forced relink"
+else
+  bad "G9b. ticket not green after forced relink (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
 fi
 
 # === G6: provision_worktree re-applies the recorded installCommand ===========
@@ -361,128 +389,6 @@ SH
   else
     bad "G6. installCommand not re-applied in a fresh worktree"
   fi
-fi
-
-# === G9: an install that EXITS 0 but cures nothing → forced relink heal ======
-# (caught live: the bug-child's worker declared plain `pnpm install`, which
-# no-ops through the provisioning's SYMLINKED node_modules — exit 0, runner
-# still dead, and the failure-triggered heal never fired.)
-repo="$(new_repo)"
-touch "$repo/.runner-installed"
-mkdir -p "$repo/bin"
-cat > "$repo/bin/pnpm" <<'SH'
-#!/usr/bin/env bash
-[ "$1" = "install" ] && touch "$PWD/.pnpm-relinked"
-exit 0
-SH
-chmod +x "$repo/bin/pnpm"
-cat > "$repo/install-fake.sh" <<'SH'
-#!/usr/bin/env bash
-# Succeeds (exit 0) but only actually installs once the tree was re-linked —
-# the silent-no-op-through-symlinks shape.
-if [ -f ".pnpm-relinked" ] || [ -f "../.pnpm-relinked" ]; then
-  touch .runner-installed
-fi
-exit 0
-SH
-STUB_MODE=declare-setup run_ticket "$repo" STUB_MODE=declare-setup \
-  STUB_INSTALL="$repo/install-fake.sh" PATH="$repo/bin:$PATH"
-if [ -f "$repo/pkgA/.runner-installed" ]; then
-  ok "G9a. silent no-op install → forced relink heal cures the runner"
-else
-  bad "G9a. still-dead-after-exit-0 install not healed (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
-fi
-if [ -d "$repo/.git/lcars/missions/test-001/tickets/t-001/tests" ] \
-   && [ -n "$(find "$repo/.git/lcars/missions/test-001/tickets/t-001/tests" -type f 2>/dev/null)" ]; then
-  ok "G9b. gate proceeded to a locked red after the forced relink"
-else
-  bad "G9b. tests not locked after forced relink (rc=$RC: $(printf '%s' "$OUT" | tail -4))"
-fi
-
-# === G8: a fully-greenfield test lands INSIDE the target package =============
-# (caught live: stem matches no manifest entry / no existing file → the old
-# fallback placed the test at REPO-ROOT src/, outside the package the gate runs
-# from → vitest discovered zero tests forever.)
-repo="$(new_repo)"
-touch "$repo/.runner-installed" "$repo/pkgA/.runner-installed"
-tdirG8="$repo/_t8"; mkdir -p "$tdirG8"
-cat > "$tdirG8/hint-overlay.test.ts" <<'TS'
-import { showHint } from './hint-overlay';
-test('overlay', () => { expect(showHint()).toBe(true); });
-TS
-sdirG8="$repo/_s8"; mkdir -p "$sdirG8"
-printf 'export function showHint() {}\n' > "$sdirG8/hint-overlay.ts"
-OUT="$( cd "$repo" && LCARS_TEST_CMD="bash $repo/probe.sh" \
-          LCARS_GH_BIN=true LCARS_GIT_BIN=git \
-          bash "$SCRIPT" impl-save-tests --mission test-001 --ticket t-001 \
-          --tests "$tdirG8" --stubs "$sdirG8" 2>&1 )"
-RC=$?
-placed="$(find "$repo/pkgA" -name 'hint-overlay.test.ts' 2>/dev/null | head -1)"
-stray="$(find "$repo/src" -name 'hint-overlay.test.ts' 2>/dev/null | head -1)"
-if [ "$RC" -eq 0 ] && [ -n "$placed" ] && [ -z "$stray" ]; then
-  ok "G8. greenfield test placed inside the target package (never repo-root src/)"
-else
-  bad "G8. greenfield placement (rc=$RC placed='$placed' stray='$stray': $(printf '%s' "$OUT" | tail -3))"
-fi
-
-# === G10 (S131): setup applied but the runner COLLECTS ZERO tests forever ====
-# (the live 2026-07-09 demo shape: declared vitest config with include: tests/**,
-# test relocated co-located → "No test files found" on every attempt. The bounce
-# must name the include/placement mismatch — quoting the runner's include:/filter:
-# lines and the placed in-tree relpath — and exhaustion must classify as the NEW
-# test-infra-mismatch category naming the package, NOT over-broad-slice.)
-repo="$(new_repo)"
-touch "$repo/.runner-installed"     # root alive; pkgA dead until installed
-cat > "$repo/probe-zero.sh" <<'SH'
-#!/usr/bin/env bash
-if [ ! -f ".runner-installed" ]; then
-  echo "sh: vitest: command not found"
-  exit 127
-fi
-# post-install: the authored config's include never matches the placed test
-echo " RUN  v1.6.1 $PWD"
-echo "filter:  ${LCARS_TESTS_DIR:-}"
-echo "include: tests/**/*.test.{js,mjs,ts}"
-echo "No test files found, exiting with code 1"
-exit 1
-SH
-cat > "$repo/install-fake.sh" <<'SH'
-#!/usr/bin/env bash
-touch .runner-installed
-SH
-PLOG="$TMPROOT/g10-prompts.txt"; : > "$PLOG"
-OUT="$( cd "$repo" && env STUB_MODE=declare-setup STUB_PROMPT_LOG="$PLOG" \
-          STUB_INSTALL="$repo/install-fake.sh" \
-          LCARS_TEST_CMD="bash $repo/probe-zero.sh" \
-          LCARS_GH_BIN=true LCARS_GIT_BIN=git \
-          LCARS_WORKER_BIN="$WORKER" LCARS_WORKER_CLI=claude \
-          LCARS_EMPTY_WORKER_TRIES=1 LCARS_WORKER_TRIES=2 \
-          LCARS_SETUP_INSTALL_ALLOW_RE='^bash ' \
-          bash "$SCRIPT" implement-ticket --mission test-001 --ticket t-001 2>&1 )"
-RC=$?
-sig="$repo/.git/lcars/missions/test-001/tickets/t-001/red-gate-signal.txt"
-if [ -f "$sig" ] && grep -q "MISMATCH" "$sig" \
-   && grep -q "include: tests/\*\*/\*.test.{js,mjs,ts}" "$sig" \
-   && grep -q "pkgA/t-001.test.js" "$sig"; then
-  ok "G10a. zero-collect bounce names the include/placement mismatch (include line + placed relpath)"
-else
-  bad "G10a. bounce does not name the mismatch (sig=$(cat "$sig" 2>/dev/null | head -4))"
-fi
-if grep -q "MISMATCH" "$PLOG"; then
-  ok "G10b. the retry prompt carries the mismatch feedback (no more blind retries)"
-else
-  bad "G10b. retry prompt lacks the mismatch feedback"
-fi
-flog="$repo/.git/lcars/missions/test-001/implement-failure.log"
-if [ -f "$flog" ] && grep -q "test-infra-mismatch" "$flog" && grep -q "pkgA" "$flog"; then
-  ok "G10c. exhaustion classifies as test-infra-mismatch and names the package"
-else
-  bad "G10c. exhaustion category wrong (log=$(cat "$flog" 2>/dev/null))"
-fi
-if [ -f "$flog" ] && ! grep -q "over-broad-slice" "$flog"; then
-  ok "G10d. NOT misclassified as over-broad-slice"
-else
-  bad "G10d. still reads as over-broad-slice"
 fi
 
 echo
