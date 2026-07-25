@@ -196,7 +196,11 @@ it stays up for that terminal and stops when you close it (or Ctrl-C). From ther
 you drive the whole idea → merged PR loop without leaving the page:
 
 - **File a Mission.** Type your idea into the board; the live Align console
-  **grills you** until the spec is sharp, then files the Mission as a card.
+  **grills you** until the spec is sharp, then files the Mission as a card. In a
+  hurry? **Park** it instead — engine + idea, one click, no grill — and it lands
+  as a *◇ STANDBY — AWAITING ALIGNMENT* card in the Align column; hit **Start
+  Alignment** on it later to run the same grill (seeded with your idea) and the
+  card swaps in place to a normal aligned Mission.
 - **Watch it drive.** Each Mission is a card in its Stage column, carrying one
   **cost pill** and two **difficulty pills** (reasoning + implementation), with
   nested ticket rows and live Implement wave/ticket progress streamed over SSE.
@@ -347,7 +351,7 @@ CLI. The older per-stage verbs still work as power entry points.
 | `lcars init` | One-time per-repo setup (local config + GitHub labels). Safe to re-run — it **preserves** your config customizations, only filling in anything missing. |
 | `lcars update` | Bring an already-initialized repo up to date after a `git pull`: adds any new LCARS labels and config keys, **never** clobbering your customizations or touching `missions/`, and re-stamps the repo's `lcarsVersion`. A clean no-op when nothing's changed. |
 | `lcars version` | Show the version picture — the **running** version (this LCARS clone's `VERSION`), the source clone's path + git state, and, inside an initialized repo, its stamped `lcarsVersion` with a verdict (**current** / **needs `lcars update`** / unknown). Read-only, no network fetch. |
-| `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. |
+| `lcars file` | File a new Mission from a free-form idea; runs Align to a PRD. `lcars file --park "<idea>" [--engine claude\|copilot]` instead **parks** it — Mission + issue created instantly in a pre-PRD standby state (no grill, no PRD, no estimate), dropped in the Align column *awaiting alignment* and never runnable until aligned; `lcars file <id>` later runs the seeded grill and completes it in place, landing exactly where a grill-first filing would. |
 | `lcars log` | Log one or more bugs against an active Mission in free-form language; files a Mission per bug that enters at **Research in a grounding mode** — anchoring the free-form symptom to the parent's existing code so the fix modifies the real feature rather than a duplicate — then flows the full pipeline to Verify (only Align is skipped), and links them. Each logged bug gets its own dynamic estimate (cost + reasoning/implementation difficulty + per-stage model recommendation, now **including** the Research/Validate Stages) in a Launch-style review panel, with a plain-language per-bug model override. |
 | `lcars resolve-logs <parent>` | Drive **every** bug logged against a Mission to its Verify gate in a sensible, worker-chosen order, then raise **one** consolidated re-verify gate on the parent instead of one per bug. |
 | `lcars launch <mission> [hint]` | **Run the Mission's app so you can SEE it during Verify** (the board's ⚡ RUN/STOP does the same). Checks the branch into a disposable detached worktree, spawns a `launch`-role cold worker that *discovers* how to start the app (never starts it itself), then runs the command detached — the harness owns the process group, records `launch.json` for the CLI and the board, and `--stop` kills the group and prunes the worktree. The optional hint picks the target in a multi-app repo ("the example game"); each Mission gets its **own** instance, so two builds can run side by side. Your own checkout is never touched. |

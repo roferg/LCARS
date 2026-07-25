@@ -4,6 +4,41 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.10 — 2026-07-25
+
+The Park & Align round (S136–137) — a backlog-fast capture lane for `lcars
+file`. An idea can now be **parked** with just an engine and the raw text: the
+Mission and its GitHub issue are created instantly in a new pre-PRD **standby
+state**, dropped in the Align column *awaiting alignment*, and the Align grill
+runs later, on demand — from the CLI or one click on the board. Backlog fast;
+grill when ready.
+
+- **The parked state + verbs (S136).** `lcars file --park "<idea>" [--engine
+  claude|copilot]` mints the mission dir + issue with `prdPending: true` (no
+  grill, no PRD, no type, no estimate; labels `lcars:mission`+`lcars:align`
+  only). `lcars file <id>` resumes: it runs the warm grill seeded from the
+  captured `idea.md`, then `lcars file --complete <id> --prd <path>` validates
+  the PRD, writes it, derives type/title, retitles + re-bodies the issue **in
+  place** with a type label added, runs the estimator, and clears `prdPending`
+  **last** (a failed issue update leaves the Mission parked and exits non-zero so
+  a re-run retries — nothing partial). The result is byte-equivalent to a
+  grill-first filing, `idea.md` the only extra artifact. Every "align ⇒ PRD
+  exists" consumer is guarded: the driver/Research refuse a parked Mission with
+  an actionable align hint (never a stack trace), the bare-`lcars` resolver
+  offers parked Missions as a distinct *awaiting alignment* group but never
+  auto-drives them, `lcars status` shows a ◇ standby row, and the comment-mirror
+  does not drift. Grill-first `lcars file` is byte-identical.
+- **Viewscreen quick-park (S137).** A **Park** affordance in the File console
+  (engine + idea + optional pasted images) files instantly via `POST /api/park`;
+  parked Missions render in the Align column with a themed *◇ STANDBY — AWAITING
+  ALIGNMENT* badge and a **START ALIGNMENT** action (never a runnable Start). It
+  opens the existing warm grill seeded from the parked idea, completing via
+  `file.sh --complete <id>` so the card swaps standby → aligned in place on the
+  SSE push (estimate pills appearing as usual). The board payload is additive
+  (`prdPending` only when parked — old cards byte-identical); read-only builds
+  403 the park + parked-align-start endpoints and hide the affordances. Full CLI
+  parity — every button maps to a `lcars file` capability.
+
 ## 2026.7.9 — 2026-07-24
 
 The Unified TDD Implementer round (S132–135) — retire the adversarial Test
