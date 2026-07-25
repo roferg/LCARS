@@ -236,6 +236,35 @@ class LocalAdapterTest(unittest.TestCase):
         m = self._by_id(self._board(), "m-noeng")
         self.assertIsNone(m["engine"])
 
+    # ── Park & Align (S137): the additive `prdPending` standby field ──
+    def test_parked_mission_card_carries_prd_pending(self):
+        """A PARKED mission (state.json.prdPending:true, no estimate.json) yields
+        a card with prdPending:true, sitting in the align column, with NO estimate
+        cost pill (it has no estimate yet)."""
+        fx.plant_parked(self.tmp, "m-park", issue=200)
+        board = self._board()
+        self.assertEqual([m["id"] for m in board["columns"]["align"]], ["m-park"])
+        m = self._by_id(board, "m-park")
+        self.assertTrue(m.get("prdPending"))
+        self.assertEqual(m["stage"], "align")
+        # a parked mission has no estimate → no cost pill (no estimate pills).
+        self.assertIsNone(m["pills"].get("cost"))
+        self.assertIsNone(m["pills"].get("reasoning"))
+        self.assertIsNone(m["pills"].get("implementation"))
+
+    def test_parked_mission_surfaces_engine_chip(self):
+        fx.plant_parked(self.tmp, "m-park", issue=200, worker_bin="copilot")
+        m = self._by_id(self._board(), "m-park")
+        self.assertEqual(m["engine"], "copilot")
+        self.assertTrue(m.get("prdPending"))
+
+    def test_non_parked_card_omits_prd_pending_byte_identical(self):
+        """The additive field is ABSENT (not false) on every non-parked card, so
+        the existing card payload is byte-identical."""
+        fx.plant_simple(self.tmp, "m-001", stage="align", issue=142)
+        m = self._by_id(self._board(), "m-001")
+        self.assertNotIn("prdPending", m)
+
     # ── S73: the `queued` flag (resolve-logs scheduled-but-not-started) ──
     def test_queued_true_when_scheduled_not_started(self):
         """A logged-bug child scheduled in a resolve-logs batch but not yet

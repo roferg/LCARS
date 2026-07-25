@@ -212,6 +212,31 @@ def plant_simple(root, mid, *, stage="align", issue=142,
     return d
 
 
+def plant_parked(root, mid, *, issue=142, title="Add a dark mode toggle",
+                 idea="Add a dark mode toggle to the settings screen",
+                 worker_bin=None, attachments=None):
+    """Park & Align (S137): a PARKED mission — filed pre-PRD via `lcars file
+    --park`. state.json is the parked shape: stage align, prdPending:true, NO
+    `type` (unknown until the grill), and there is NO estimate.json (no estimate
+    until alignment). idea.md holds the verbatim capture. Mirrors file.sh do_park.
+    """
+    d = mission_dir(root, mid)
+    state = {
+        "id": mid, "title": title, "stage": "align", "prdPending": True,
+        "created": "2026-07-24T10:00:00Z", "model": "claude",
+        "githubIssue": issue, "branch": "lcars/%s" % mid, "base": "main",
+    }
+    if worker_bin is not None:
+        state["workerBin"] = worker_bin
+    if attachments:
+        state["attachments"] = list(attachments)
+    write_json(os.path.join(d, "state.json"), state)
+    write(os.path.join(d, "idea.md"),
+          idea + ("" if idea.endswith("\n") else "\n"))
+    # NO estimate.json — a parked mission has no estimate.
+    return d
+
+
 def plant_gated(root, mid, *, resume_stage="align", inflight_stage="research",
                 issue=143, title="Gated mission",
                 question="Global vs per-course leaderboard?"):

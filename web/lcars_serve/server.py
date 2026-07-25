@@ -201,10 +201,17 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
                 return actions.update()
             # POST /api/align/start            — open an Align grilling session
             # POST /api/align/<sid>/answer     — answer + run the next turn
+            # POST /api/park — file a PARKED mission (pre-PRD standby, S137). The
+            # read-only build has actions=None, so do_POST already 403'd above.
+            if path == "/api/park":
+                return actions.park_mission(idea=body.get("idea"),
+                                            engine=body.get("engine"),
+                                            images=self._images(body))
             if path == "/api/align/start":
                 return actions.align_start(idea=body.get("idea"),
                                            engine=body.get("engine"),
-                                           images=self._images(body))
+                                           images=self._images(body),
+                                           mission_id=body.get("missionId"))
             if path.startswith("/api/align/"):
                 rest = path[len("/api/align/"):]
                 parts = [p for p in rest.split("/") if p != ""]

@@ -407,6 +407,13 @@ function cardNode(m) {
     if (m.pills && m.pills.cost) pills.appendChild(pillNode(m.pills.cost, "cost"));
     // S113: an awaiting verify mission still shows its ACTUAL spend beside EST.
     if (m.pills) { var aw = pillNode(m.pills.actual, "actual"); if (aw) pills.appendChild(aw); }
+  } else if (m.prdPending) {
+    // Park & Align (S137): a PARKED mission is pre-PRD standby — filed via
+    // `lcars file --park`, no grill run yet, so it has NO estimate. Show a
+    // themed ship-status STANDBY badge (Trek voice) INSTEAD of estimate pills;
+    // the estimate pills appear once the alignment grill completes and the
+    // estimator runs (the SSE refresh swaps in the normal aligned card).
+    pills.appendChild(el("span", "pill standby", "◇ STANDBY · AWAITING ALIGNMENT"));
   } else if (m.pills) {
     var c = pillNode(m.pills.cost, "cost"); if (c) pills.appendChild(c);
     // S113: ACTUAL usage pill (present only for verify/done missions with usage).
@@ -660,6 +667,15 @@ function cardControls(m) {
     ctrl.appendChild(applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/pause", {},
         ctrl, "Holding station…");
+    })));
+  } else if (m.prdPending) {
+    // Park & Align (S137): a PARKED mission has NO PRD, so it must NEVER be
+    // runnable — a plain "▶ Start" launches a RUN via the Launch panel. Offer
+    // "▹ START ALIGNMENT" instead: it opens the warm grill console seeded from
+    // the parked mission (align_start with its missionId); on grill completion
+    // the SSE refresh swaps this standby card for a normal aligned card.
+    ctrl.appendChild(applyWriteState(btn("▹ START ALIGNMENT", "go", function () {
+      startAlignment(m.id);
     })));
   } else {
     // align (and any pre-run stage): Start launches the run via the Launch panel
@@ -1159,6 +1175,25 @@ function openFile() {
   var ideaImgs = attachImagePaster(idea, function (msg) { showErr(err, msg); });
 
   m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  // Park & Align (S137): the backlog-fast lane. "◇ Park — align later" files the
+  // idea INSTANTLY as a pre-PRD STANDBY mission (POST /api/park → file.sh --park)
+  // — NO grill opens. The parked card lands on the board (SSE nudges it); the
+  // captain aligns it later from the card's START ALIGNMENT. Gated through
+  // applyWriteState so a view-only board disables it.
+  var park = applyWriteState(btn("◇ Park — align later", null, function () {
+    var text = idea.value.trim();
+    if (!text) { showErr(err, "Describe the idea first."); return; }
+    park.disabled = true; park.textContent = "Parking…";
+    err.hidden = true;
+    postWrite("/api/park",
+      { idea: text, engine: chosen.engine, images: ideaImgs.payload() },
+      function () { closeOverlay(); refresh(); },
+      function (msg) {
+        park.disabled = false; park.textContent = "◇ Park — align later";
+        showErr(err, msg);
+      });
+  }));
+  m.foot.appendChild(park);
   // "File & Begin Alignment" opens the interactive Align grilling console
   // (S70-B) — the structured one-question-at-a-time interview, not a
   // straight-to-skeleton create. The mission lands in Align when the console
@@ -1193,10 +1228,27 @@ function openFile() {
    + .progress-line), the PRD assembling LIVE on the RIGHT (.prd-doc). Each
    answer POSTs to /api/align/<sid>/answer; the server spawns the next worker
    turn. On `done` file.sh has already run server-side and the board refreshes. */
-function openAlignConsole(idea, engine, images, onStartError) {
-  postWrite("/api/align/start", { idea: idea, engine: engine, images: images },
+function openAlignConsole(idea, engine, images, onStartError, missionId) {
+  // Park & Align (S137): with `missionId` this is the grill-COMPLETION of an
+  // already-parked mission — the server seeds the session from its idea.md +
+  // engine + parked attachments, so the body carries only the id. Otherwise it's
+  // a fresh File-console grill (idea/engine/images), byte-identical to before.
+  var body = missionId
+    ? { missionId: missionId }
+    : { idea: idea, engine: engine, images: images };
+  postWrite("/api/align/start", body,
     function (state) { renderAlignConsole(state); },
     function (msg) { if (onStartError) onStartError(msg); });
+}
+
+/* Park & Align (S137): open the warm Align grill for a PARKED mission (the
+   card's START ALIGNMENT). The server seeds it from the parked idea/engine/
+   attachments; on completion it dispatches `file.sh --complete <id>` and the
+   board refresh swaps the standby card for a normal aligned card. */
+function startAlignment(missionId) {
+  openAlignConsole(null, null, null, function (msg) {
+    setStatus(msg || "Could not open the alignment console.");
+  }, missionId);
 }
 
 function renderAlignConsole(state) {

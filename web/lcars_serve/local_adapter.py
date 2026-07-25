@@ -430,6 +430,15 @@ class LocalAdapter(object):
         # otherwise, so a pre-S133 / multi-ticket mission's card is byte-identical.
         if contract_proof is not None:
             card["contractProof"] = contract_proof
+        # Park & Align (S137): additive — a PARKED mission (filed pre-PRD via
+        # `lcars file --park`) carries state.json.prdPending:true; surface it as
+        # `prdPending` so the board renders the ◇ STANDBY badge + START ALIGNMENT
+        # control (a parked mission has no PRD, so it must never be runnable) and
+        # suppresses the estimate pills (it has no estimate.json). ABSENT (not
+        # false) for every non-parked mission, so every existing card payload is
+        # BYTE-IDENTICAL. The github adapter never reads this local-only field.
+        if _truthy(state.get("prdPending")):
+            card["prdPending"] = True
         return card
 
     def _activity(self, d):

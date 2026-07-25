@@ -209,6 +209,14 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 @keyframes queuedpulse{0%,100%{opacity:.7}50%{opacity:1}}
 @media (prefers-reduced-motion:reduce){.pill.queued{animation:none;opacity:.9}}
 .pill.stage{background:var(--lcars-violet,#9977ff);border-color:var(--lcars-violet,#9977ff);color:#fff}
+/* Park & Align (S137): the "◇ STANDBY · AWAITING ALIGNMENT" badge on a PARKED
+   mission (filed pre-PRD via `lcars file --park`). A calm holodeck-standby tone
+   — dim gold outline, gentle breathing pulse — reading as "on standby, awaiting
+   your order", distinct from the violet queue and the red awaiting-you urgency. */
+.pill.standby{background:rgba(255,221,68,.10);border-color:var(--lcars-gold,#ffdd44);
+  color:var(--lcars-gold,#ffdd44);animation:standbypulse 2.8s ease-in-out infinite}
+@keyframes standbypulse{0%,100%{opacity:.66}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.pill.standby{animation:none;opacity:.9}}
 .pill.go{background:var(--lcars-teal);border-color:var(--lcars-teal);color:var(--lcars-text-on-color)}
 /* S110: the inline ■ stop control tucked INSIDE the ● APP LIVE pill — a small,
    dark, unobtrusive affordance that stands the running app down from the board.
