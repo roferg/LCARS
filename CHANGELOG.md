@@ -38,6 +38,22 @@ grill when ready.
   (`prdPending` only when parked — old cards byte-identical); read-only builds
   403 the park + parked-align-start endpoints and hide the affordances. Full CLI
   parity — every button maps to a `lcars file` capability.
+- **Viewscreen alignment UX (S137 follow-ups, from live captain testing).** The
+  detail modal mirrors the card for a parked Mission (▹ START ALIGNMENT, never a
+  runnable Start) and shows an *◇ STANDBY — AWAITING ALIGNMENT* panel instead of
+  a placeholder PRD; **Mission Log is Verify-only** (it belongs at the demo-day
+  checkpoint). START ALIGNMENT gains a persistent animated **scanning band** +
+  a click-guard (no duplicate grill sessions), and closing an unrelated overlay
+  mid-scan no longer aborts it. In the File console **Park is the default
+  primary** (`◇ File to Backlog`), with *File & Begin Alignment* secondary.
+- **Resume mid-grill + backgroundable finalize (in-session).** Closing the Align
+  console mid-grill now **preserves** the warm session: the card + detail flip to
+  **▹ RESUME ALIGN** (surfaced on both `/api/board` and `/api/mission/<id>` via an
+  additive `alignResume` overlay, so it survives a page reload) and a new `GET
+  /api/align/<sid>` reopens the interview at its current question. Closing during
+  the closing-turn estimate shows a **◐ FINALIZING & COSTING…** band and the card
+  swaps to aligned on its own when `file.sh --complete` finishes. In-memory only
+  (a daemon restart drops an in-progress grill; the Mission simply stays parked).
 
 ## 2026.7.9 — 2026-07-24
 

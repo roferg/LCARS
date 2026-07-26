@@ -111,6 +111,22 @@ class ParkDetailRenderTest(unittest.TestCase):
         self.assertNotIn("Mission Log", texts,
                          "a parked (align) mission must not show Mission Log")
 
+    # ── a parked mission's detail shows AWAITING ALIGNMENT, not a fake PRD ──
+    def test_parked_detail_hides_prd_shows_awaiting_alignment(self):
+        _, texts = _texts(PARKED)
+        joined = " || ".join(texts)
+        self.assertIn("AWAITING ALIGNMENT", joined.upper(),
+                      "a parked mission's detail must show the awaiting-alignment panel")
+        self.assertNotIn("Acceptance criteria", joined,
+                         "no PRD acceptance-criteria section before the grill runs")
+        self.assertNotIn("works end to end", joined,
+                         "no placeholder acceptance criterion before alignment")
+
+    def test_aligned_detail_still_shows_prd(self):
+        _, texts = _texts(ALIGNED)
+        self.assertIn("Acceptance criteria", " || ".join(texts),
+                      "a non-parked mission still shows its PRD acceptance criteria")
+
     def test_mission_log_hidden_for_logged_bug_child_even_at_verify(self):
         bug = _mission(id="m-bug", stage="verify", type="bug", parentMission="m-1")
         _, texts = _texts(bug)
@@ -173,11 +189,60 @@ class ParkDetailRenderTest(unittest.TestCase):
         self.assertNotIn("/api/align/sid-stale/cancel", res["fetches"],
                          "an unrelated close must NOT reap the in-flight session")
 
-    # ── BUG-3: closing the CONSOLE itself still cancels its session ─────────
-    def test_close_cancels_align_session(self):
-        res = _run(PARKED, mode="cancel-close")
-        self.assertIn("/api/align/abc/cancel", res["fetches"],
-                      "closing the console must POST cancel for its session")
+    # ── F2: closing the CONSOLE mid-grill KEEPS the session (resume) ────────
+    def test_close_keeps_session_and_marks_resumable(self):
+        res = _run(PARKED, mode="close-keeps")
+        # the warm session is NOT reaped — no /cancel POST.
+        self.assertFalse([u for u in res["fetches"] if u.endswith("/cancel")],
+                         "closing mid-grill must NOT cancel the warm session")
+        # and the parked mission is marked resumable so the card flips to RESUME.
+        self.assertIn(PARKED["id"], res["resumable"],
+                      "closing mid-grill must mark the mission RESUMABLE")
+
+    # ── F1: FINALIZING band + disabled control on the card ─────────────────
+    def test_card_finalizing_shows_disabled_control_and_band(self):
+        res = _run(PARKED, mode="card-finalizing")
+        buttons = [n for n in _flatten(res.get("overlay")) if n.get("tag") == "button"]
+        fin = [n for n in buttons if "FINALIZING" in n.get("text", "").upper()]
+        self.assertTrue(fin and all(n["disabled"] for n in fin),
+                        "a finalizing card must render a disabled FINALIZING control")
+        btexts = " || ".join(n.get("text", "") for n in buttons).upper()
+        self.assertNotIn("START ALIGNMENT", btexts)
+        self.assertNotIn("RESUME ALIGN", btexts)
+        bands = [n for n in _flatten(res.get("overlay"))
+                 if "lcars-running" in n.get("cls", "")]
+        self.assertTrue(bands, "a finalizing card must render the .lcars-running band")
+
+    # ── F2: RESUME ALIGN control (payload flag OR client flag) ─────────────
+    def test_card_resume_from_payload_flag(self):
+        m = _mission(id="m-park", stage="align", prdPending=True,
+                     alignResume={"sid": "sid-payload"},
+                     pills={"cost": None, "reasoning": None, "implementation": None})
+        res = _run(m, mode="card")
+        texts = " || ".join(n.get("text", "") for n in _flatten(res.get("overlay")))
+        self.assertIn("RESUME ALIGN", texts.upper(),
+                      "a card carrying m.alignResume must offer RESUME ALIGN")
+        self.assertNotIn("START ALIGNMENT", texts.upper())
+
+    def test_card_resume_from_client_flag(self):
+        res = _run(PARKED, mode="card-resume-client")
+        texts = " || ".join(n.get("text", "") for n in _flatten(res.get("overlay")))
+        self.assertIn("RESUME ALIGN", texts.upper(),
+                      "a client RESUMABLE flag must offer RESUME ALIGN")
+        self.assertNotIn("START ALIGNMENT", texts.upper())
+
+    def test_card_no_resume_flag_shows_start_alignment(self):
+        res = _run(PARKED, mode="card")
+        texts = " || ".join(n.get("text", "") for n in _flatten(res.get("overlay")))
+        self.assertIn("START ALIGNMENT", texts.upper())
+        self.assertNotIn("RESUME ALIGN", texts.upper())
+
+    def test_resume_gets_session_and_opens_console(self):
+        res = _run(PARKED, mode="resume")
+        self.assertIn("/api/align/sid-resume", res["fetches"],
+                      "RESUME ALIGN must GET the session's open turn")
+        self.assertEqual(res["opened"], 1,
+                         "resume must reopen the console at the returned question")
 
     # ── FIX-C: Park is the DEFAULT primary in the File-New-Mission modal ────
     def test_file_modal_park_is_primary_align_is_secondary(self):

@@ -7,17 +7,24 @@
  * argv[3]: mode —
  *   "detail"          renderDetail(mi) → project the overlay grid (BUG-1/BUG-2).
  *   "detail-aligning" as "detail" but with isAligning(id) forced true (BUG-3 guard).
+ *   "card"            cardNode(mi) — reads mi.alignResume for the RESUME affordance.
  *   "card-aligning"   cardNode(mi) with isAligning(id) forced true (BUG-3 guard).
- *   "cancel-close"    renderAlignConsole({sessionId,status:question}) then
- *                     closeOverlay() → assert a POST /api/align/<sid>/cancel fired.
+ *   "card-finalizing" cardNode(mi) with isFinalizing(id) forced true (F1 band+guard).
+ *   "card-resume-client" cardNode(mi) with a client RESUMABLE[id] set (F2 RESUME).
+ *   "close-keeps"     renderAlignConsole({...}, false, id) then closeOverlay() → F2:
+ *                     assert NO /cancel POST and RESUMABLE[id] is set.
+ *   "resume"          resumeAlignment(id, sid) with a canned question turn → F2:
+ *                     assert a GET /api/align/<sid> and the console opens.
+ *   "cancel-during-scan" beginAlignment(id); closeOverlay() → isAligning stays set.
  *   "stale-open"      beginAlignment(id); closeOverlay() BEFORE the in-flight
- *                     /api/align/start resolves; then let it resolve → assert NO
- *                     console opened and a cancel fired for the returned sid.
+ *                     /api/align/start resolves; then let it resolve → console opens,
+ *                     no /cancel.
  * argv[4]: optional "readonly" → writesActive=false before rendering.
  *
- * Output (stdout): JSON { overlay, fetches, opened } where `overlay` is the projected
- * captured DOM (or null), `fetches` the ordered list of POST URLs, `opened` the count
- * of showOverlay calls. Mirrors board_card_harness.js projection.
+ * Output (stdout): JSON { overlay, fetches, opened, aligning, resumable } where
+ * `overlay` is the projected captured DOM (or null), `fetches` the ordered list of
+ * request URLs, `opened` the count of showOverlay calls, `resumable` the RESUMABLE
+ * keys. Mirrors board_card_harness.js projection.
  */
 const fs = require("fs");
 const path = require("path");
@@ -65,8 +72,10 @@ const fetchCalls = [];
 function fetchStub(url) {
   fetchCalls.push(String(url));
   var next = fetchStub._next || { ok: true, state: {} };
+  var status = fetchStub._status || 200;
   return Promise.resolve({
-    status: 200,
+    status: status,
+    ok: status >= 200 && status < 300,
     json: function () { return Promise.resolve(next); },
   });
 }
@@ -131,11 +140,33 @@ async function main() {
   if (mode === "detail" || mode === "detail-aligning") {
     if (mode === "detail-aligning") sandbox.ALIGNING[String(mission.id)] = 1;
     sandbox.renderDetail(mission);
-  } else if (mode === "card" || mode === "card-aligning") {
+  } else if (mode === "card" || mode === "card-aligning"
+             || mode === "card-finalizing" || mode === "card-resume-client") {
     if (mode === "card-aligning") sandbox.ALIGNING[String(mission.id)] = 1;
+    if (mode === "card-finalizing") sandbox.FINALIZING[String(mission.id)] = 1;
+    if (mode === "card-resume-client") {
+      sandbox.RESUMABLE[String(mission.id)] = "sid-client";
+    }
     captured.node = sandbox.cardNode(mission); // cardNode returns the node directly
   } else if (mode === "file") {
     sandbox.openFile(); // builds the File-New-Mission modal → showOverlay captures it
+  } else if (mode === "close-keeps") {
+    // F2: closing a mid-grill console KEEPS the warm session (no /cancel) and marks
+    // the parked mission RESUMABLE.
+    sandbox.renderAlignConsole({
+      sessionId: "abc", status: "question",
+      question: { text: "What matters most?", choices: ["a", "b"] }, prd: "",
+    }, false, mission.id);
+    sandbox.closeOverlay();
+    await flush();
+  } else if (mode === "resume") {
+    // F2: RESUME ALIGN GETs the session's open turn and reopens the console.
+    fetchStub._next = {
+      sessionId: "sid-resume", status: "question",
+      question: { text: "Where were we?", choices: ["x", "y"] }, prd: "# PRD",
+    };
+    sandbox.resumeAlignment(mission.id, "sid-resume");
+    await flush(); await flush();
   } else if (mode === "cancel-during-scan") {
     // Dismissing an UNRELATED overlay DURING the in-flight /api/align/start POST
     // must NOT abort the scan — isAligning stays set (the console opens when the
@@ -144,13 +175,6 @@ async function main() {
     sandbox.beginAlignment(mission.id);
     sandbox.closeOverlay();
     aligningAfter = sandbox.isAligning(mission.id);
-  } else if (mode === "cancel-close") {
-    sandbox.renderAlignConsole({
-      sessionId: "abc", status: "question",
-      question: { text: "What matters most?", choices: ["a", "b"] }, prd: "",
-    });
-    sandbox.closeOverlay();
-    await flush();
   } else if (mode === "stale-open") {
     // An unrelated close during the in-flight POST must NOT abort: the console
     // still opens when the response resolves, and the session is NOT reaped.
@@ -165,6 +189,7 @@ async function main() {
     fetches: fetchCalls,
     opened: captured.count,
     aligning: aligningAfter,
+    resumable: Object.keys(sandbox.RESUMABLE || {}),
   }));
 }
 

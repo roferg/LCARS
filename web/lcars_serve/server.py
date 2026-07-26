@@ -129,7 +129,26 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
                 detail = adapter.mission(mid)
                 if detail is None:
                     return self._error(404, "no such mission")
+                # Park & Align (F2): mirror the board's alignResume overlay onto the
+                # detail payload so the DETAIL modal shows ▹ RESUME ALIGN too (it never
+                # runs through align_overlay). Additive; never raises into the response.
+                if actions is not None:
+                    try:
+                        detail = actions.align_overlay_mission(detail)
+                    except Exception:
+                        pass
                 return self._json(detail)
+            # GET /api/align/<sid> — the open turn of a live Align session, for RESUME
+            # (Park & Align F2). Local write board only: a read-only build has
+            # actions=None, so this falls through to _static (a 404) — the resume
+            # affordance is never offered there.
+            if path.startswith("/api/align/") and actions is not None:
+                sid = path[len("/api/align/"):].strip("/")
+                if sid and "/" not in sid:
+                    try:
+                        return self._json(actions.align_state(sid))
+                    except _ActionError as exc:
+                        return self._error(exc.status, exc.message)
             if path == "/api/events":
                 return self._sse()
             return self._static(path)
@@ -144,6 +163,15 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
             raises; a failure here degrades to the plain board.
             """
             board = adapter.board()
+            # Park & Align (F2): stamp `alignResume` onto cards with a live grill
+            # session so RESUME ALIGN survives a page reload. Additive + in-memory;
+            # a read-only build has actions=None → no overlay (correct). Never raises
+            # into the board response.
+            if actions is not None:
+                try:
+                    board = actions.align_overlay(board)
+                except Exception:
+                    pass
             if version_provider is not None:
                 try:
                     # version_provider may be a bare callable OR a VersionChecker

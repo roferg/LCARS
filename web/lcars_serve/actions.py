@@ -460,7 +460,8 @@ class _AlignSession(object):
     """
 
     __slots__ = ("idea", "engine", "transcript", "prd", "done",
-                 "worker_sid", "started", "image_paths", "mission_id")
+                 "worker_sid", "started", "image_paths", "mission_id",
+                 "last_question")
 
     def __init__(self, idea, engine, mission_id=None):
         self.idea = idea
@@ -479,6 +480,12 @@ class _AlignSession(object):
         # first turn and RESUMED on every later turn.
         self.worker_sid = str(uuid.uuid4())
         self.started = False
+        # Park & Align (F2 — resume mid-grill): the FULL open question dict of the
+        # turn currently awaiting an answer (text + choices + recommended + closing).
+        # Stored so GET /api/align/<sid> can restore the console at the exact question
+        # — choice buttons and all — when the captain reopens a backgrounded grill.
+        # In-memory only (dies with the daemon); None until the first question turn.
+        self.last_question = None
         # S91 — every image the captain has pasted across this grill's turns,
         # staged on disk under repo_root. Accumulated (not reset per turn) so
         # claude can Read an earlier turn's image if a later turn references it;
@@ -771,6 +778,9 @@ class Actions(object):
         if q.get("text"):
             q["text"] = _strip_inlined_prd(q["text"], sess.prd)
         sess.transcript.append({"question": q.get("text", ""), "answer": None})
+        # Park & Align (F2): remember the full open question so a backgrounded grill
+        # can be RESUMED at this exact turn (choices included) via GET /api/align/<sid>.
+        sess.last_question = q
         return {"sessionId": sid, "status": "question",
                 "question": q, "prd": sess.prd}
 
@@ -914,6 +924,97 @@ class Actions(object):
         if sess is not None:
             self._reap_session_images(sess)
         return {"sessionId": sid, "status": "cancelled"}
+
+    def align_state(self, sid):
+        """GET /api/align/<sid> — the session's current OPEN turn, for RESUME.
+
+        Park & Align (F2 — resume mid-grill): the captain backgrounded an Align
+        console; this returns the same {sessionId, status:"question", question, prd}
+        shape a turn returns, restoring the console at the exact open question (choice
+        buttons and all) when they reopen it. The stored `last_question` is the full
+        question dict; if the session somehow has none yet, fall back to the last
+        transcript question text. Unknown/aged-out sid → 404 (the client falls back to
+        a fresh grill). In-memory only — a daemon restart drops every session.
+        """
+        with self._align_lock:
+            sess = self._align.get(sid)
+        if sess is None:
+            raise ActionError(404, "no such align session: %s" % sid)
+        q = sess.last_question
+        if not q:
+            text = ""
+            if sess.transcript:
+                text = sess.transcript[-1].get("question") or ""
+            q = {"text": text}
+        return {"sessionId": sid, "status": "question",
+                "question": q, "prd": sess.prd}
+
+    def align_overlay(self, board):
+        """Additively mark parked cards that have a LIVE resumable align session.
+
+        Park & Align (F2): so RESUME ALIGN survives a page reload (a fresh tab has no
+        client-side RESUMABLE map), stamp `card["alignResume"] = {"sid": <sid>}` onto
+        the board card of every mission that owns a live, un-done grill session. Purely
+        in-memory and ADDITIVE — a board with no live sessions is returned byte-for-byte
+        unchanged. This overlay does NOT move `adapter.fingerprint()`, so it never
+        drives an SSE push (correct — the client marks its own close instantly; the
+        safety poll re-fetches /api/board for other tabs / after a reload).
+
+        A read-only / github build constructs the daemon with actions=None, so this is
+        never reached there — the resume affordance is a local-write-board feature only.
+        """
+        if not isinstance(board, dict):
+            return board
+        cols = board.get("columns")
+        if not isinstance(cols, dict):
+            return board
+        with self._align_lock:
+            # one live session per mission expected; last wins on the odd duplicate.
+            # Only advertise RESUME once the session has a CONCRETE open question to
+            # restore (last_question set). A freshly-created session whose opening
+            # worker turn is still in flight has no question yet — offering RESUME then
+            # reopens an empty console ("What would you like to refine?" fallback), so
+            # it stays scanning/parked until the first question lands.
+            by_mission = {}
+            for sid, sess in self._align.items():
+                if sess.mission_id and not sess.done and sess.last_question:
+                    by_mission[sess.mission_id] = sid
+        if not by_mission:
+            return board  # no live sessions → byte-identical board.
+        for col in cols.values():
+            if not isinstance(col, list):
+                continue
+            for card in col:
+                if isinstance(card, dict) and card.get("id") in by_mission:
+                    card["alignResume"] = {"sid": by_mission[card["id"]]}
+        return board
+
+    def align_session_sid(self, mission_id):
+        """The live, un-done grill session id for a mission, or None (Park & Align F2)."""
+        if not mission_id:
+            return None
+        with self._align_lock:
+            for sid, sess in self._align.items():
+                # match align_overlay: only resumable once a real question exists.
+                if (sess.mission_id == mission_id and not sess.done
+                        and sess.last_question):
+                    return sid
+        return None
+
+    def align_overlay_mission(self, mission):
+        """Stamp `alignResume` onto a SINGLE mission-DETAIL dict (Park & Align F2).
+
+        The `/api/mission/<id>` detail payload must mirror the board card so the DETAIL
+        modal shows ▹ RESUME ALIGN too — not just the card. Without this the detail
+        (which never runs through `align_overlay`) falls back to the client-only
+        RESUMABLE map, which is empty after a page reload. Additive + in-memory: a
+        mission with no live session is returned unchanged.
+        """
+        if isinstance(mission, dict):
+            sid = self.align_session_sid(mission.get("id"))
+            if sid:
+                mission["alignResume"] = {"sid": sid}
+        return mission
 
     def _build_align_prompt(self, sess, opening=True):
         """Assemble the worker prompt for ONE turn.

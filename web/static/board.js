@@ -179,6 +179,54 @@ function isAligning(id) {
   return id != null && !!ALIGNING[String(id)];
 }
 
+/* Park & Align (F1 — background the final estimate): optimistic "finalizing" set.
+   Answering the CLOSING grill turn runs the cold-opus estimator + file.sh --complete
+   server-side INSIDE that answer POST (~1–2 min). The captain may close/navigate while
+   it runs — closing does NOT abort the in-flight fetch — so the parked card shows an
+   animated "◐ FINALIZING & COSTING…" band + a disabled control until the server
+   finishes and the board refresh swaps in the aligned card. In-memory only; mirrors
+   ALIGNING. A 5-min safety timeout re-arms a wedged card. Caveat (v1): fully closing
+   the browser TAB may interrupt the in-flight finalize — documented, not handled. */
+var FINALIZING = Object.create(null);
+var FINALIZING_TIMEOUT_MS = 300000;
+
+function markFinalizing(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (FINALIZING[key]) clearTimeout(FINALIZING[key]);
+  FINALIZING[key] = setTimeout(function () { clearFinalizing(key); refresh(); },
+    FINALIZING_TIMEOUT_MS);
+}
+function clearFinalizing(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (FINALIZING[key]) { clearTimeout(FINALIZING[key]); delete FINALIZING[key]; }
+}
+function isFinalizing(id) {
+  return id != null && !!FINALIZING[String(id)];
+}
+
+/* Park & Align (F2 — resume mid-grill): the client-side resumable map {missionId: sid}.
+   Closing an Align console mid-grill KEEPS the warm session (no /cancel) and marks its
+   parked mission resumable so the card flips to "▹ RESUME ALIGN" instantly. A card can
+   ALSO carry the server's `m.alignResume` (the board overlay) so RESUME survives a page
+   reload — resumableSid()/isResumable() read both. In-memory (dies with the tab). */
+var RESUMABLE = Object.create(null);
+function markResumable(id, sid) {
+  if (id != null && sid) RESUMABLE[String(id)] = sid;
+}
+function clearResumable(id) {
+  if (id != null) delete RESUMABLE[String(id)];
+}
+function resumableSid(m) {
+  if (!m || m.id == null) return null;
+  var client = RESUMABLE[String(m.id)];
+  if (client) return client;
+  if (m.alignResume && m.alignResume.sid) return m.alignResume.sid;
+  return null;
+}
+function isResumable(m) { return !!resumableSid(m); }
+
 /* BUG-3: the single in-flight START-ALIGNMENT open ({id}). Closing/cancelling the
    BUG-3: a one-shot "on next overlay close" callback — null for ordinary modals,
    set by renderAlignConsole to POST cancel its warm align session on ✕/backdrop/
@@ -186,6 +234,12 @@ function isAligning(id) {
    in-flight START-ALIGNMENT open — the click-guard (isAligning) already prevents
    duplicate spawns, so the console simply opens when its worker turn returns. */
 var onOverlayClose = null;
+
+/* F1: is the Align grilling console currently the open overlay? Set when
+   renderAlignConsole shows it, cleared in closeOverlay. The finalize-done path reads
+   it to decide modal-vs-silent: if the captain backgrounded the console, skip the
+   "Alignment Reached" modal and let the board refresh show the aligned card. */
+var alignConsoleOpen = false;
 
 /* FIX-A: the last board payload render() drew, cached so the aligning flow can force
    an INSTANT client-only repaint. Parking/aligning changes no server state, so no SSE
@@ -563,6 +617,11 @@ function cardNode(m) {
   // && !paused; optimistic-start counts). Suppressed while pausing/paused so a
   // halting card never shows motion. Client-side animation only.
   if (isInFlight(m)) card.appendChild(runningPulse(stageLabel(m.stage), m.liveness));
+  // F1: a parked mission whose closing turn is FINALIZING server-side (estimate +
+  // file.sh --complete) gets an animated "◐ Finalizing & costing…" band the whole
+  // time — even after the captain backgrounds the console — until the board refresh
+  // swaps in the aligned card. Precedence: finalizing > scanning.
+  else if (isFinalizing(m.id)) card.appendChild(finalizingPulse());
   // FIX-A: a parked mission mid-scan (START ALIGNMENT clicked, warm grill opening)
   // gets the SAME persistent animated band — rendered on every repaint while
   // isAligning so the motion survives board rebuilds until the console opens.
@@ -725,7 +784,7 @@ function cardControls(m) {
     // the SSE refresh swaps this standby card for a normal aligned card. BUG-3:
     // startAlignmentControl renders the disabled "⊹ Scanning…" busy-guard while
     // the open is in flight so a repaint can't offer a re-click (double-spawn).
-    ctrl.appendChild(startAlignmentControl(m.id));
+    ctrl.appendChild(startAlignmentControl(m));
   } else {
     // align (and any pre-run stage): Start launches the run via the Launch panel
     ctrl.appendChild(applyWriteState(btn("▶ Start", "go", function () {
@@ -997,12 +1056,12 @@ function closeOverlay() {
   overlay().hidden = true;
   overlayBody().innerHTML = "";
   clearDetailTimers(); // UX-32: never leak the live active-time tick interval.
-  // BUG-3: fire (and clear) the one-shot close hook — set by renderAlignConsole to
-  // cancel its warm align session on ✕ / backdrop click / Esc. Closing an UNRELATED
-  // overlay (e.g. the detail modal opened mid-scan) leaves the in-flight alignment
-  // untouched: the click-guard (isAligning) already prevents duplicate spawns, so the
-  // console opens when the worker turn returns regardless of other overlay activity —
-  // only closing the CONSOLE itself reaps its session.
+  alignConsoleOpen = false; // F1: the console (if it was open) is now dismissed.
+  // Fire (and clear) the one-shot close hook — set by renderAlignConsole. F2: closing
+  // the CONSOLE mid-grill KEEPS the warm session (no /cancel) and marks its parked
+  // mission RESUMABLE so the card flips to ▹ RESUME ALIGN. Closing an UNRELATED overlay
+  // (e.g. the detail modal opened mid-scan) has no hook set, so the in-flight alignment
+  // is untouched — the click-guard (isAligning) already prevents duplicate spawns.
   var hook = onOverlayClose; onOverlayClose = null;
   if (hook) hook();
 }
@@ -1307,8 +1366,10 @@ function openAlignConsole(idea, engine, images, onStartError, missionId) {
       if (missionId) { clearAligning(missionId); repaintBoard(); } // FIX-A: drop band.
       // `completing` = this grill is aligning an ALREADY-PARKED mission (missionId)
       // in place, not filing a brand-new one — so the hand-off copy reads
-      // "aligning mission", never "creating mission".
-      renderAlignConsole(state, !!missionId);
+      // "aligning mission", never "creating mission". F1/F2: missionId is threaded
+      // through so the submit handler can markFinalizing and the close hook can mark
+      // the mission resumable.
+      renderAlignConsole(state, !!missionId, missionId);
     },
     function (msg) {
       // BUG-3: the open failed — drop the busy-guard so the card/detail re-arm.
@@ -1327,16 +1388,32 @@ function startAlignment(missionId) {
   }, missionId);
 }
 
-/* BUG-3: the START ALIGNMENT affordance shared by the board card control and the
-   detail header (DRY). While isAligning(id) it renders a DISABLED "⊹ Scanning…"
-   pill so a repaint (SSE) can't offer a re-click; otherwise the live
-   "▹ START ALIGNMENT" button that arms the busy-guard and opens the warm grill. */
-function startAlignmentControl(id) {
+/* The START/RESUME ALIGNMENT affordance shared by the board card control and the
+   detail header (DRY). Takes the card object `m` so it can read the server's resume
+   flag (m.alignResume). Precedence (highest first):
+     • F1 finalizing  → DISABLED "◐ FINALIZING & COSTING…" (never clickable).
+     • BUG-3 scanning → DISABLED "⊹ Scanning…" (open in flight; no re-click).
+     • F2 resumable   → clickable "▹ RESUME ALIGN" (reopen the warm grill mid-question).
+     • default        → clickable "▹ START ALIGNMENT". */
+function startAlignmentControl(m) {
+  var id = m && m.id;
+  if (isFinalizing(id)) {
+    var fin = btn("◐ FINALIZING & COSTING…", "go", null);
+    fin.disabled = true;
+    fin.title = "Finalizing the PRD and estimating cost…";
+    return fin;
+  }
   if (isAligning(id)) {
     var busy = btn("⊹ Scanning…", "go", null);
     busy.disabled = true;
     busy.title = "Opening the alignment console…";
     return busy;
+  }
+  if (isResumable(m)) {
+    var sid = resumableSid(m);
+    return applyWriteState(btn("▹ RESUME ALIGN", "go", function () {
+      resumeAlignment(id, sid);
+    }));
   }
   return applyWriteState(btn("▹ START ALIGNMENT", "go", function () {
     beginAlignment(id);
@@ -1355,21 +1432,44 @@ function beginAlignment(id) {
   startAlignment(id);
 }
 
-/* BUG-3: best-effort, idempotent reap of a warm align session (server route
-   POST /api/align/<sid>/cancel already exists). Network / HTTP errors are ignored
-   — cancelling is a courtesy, never a blocker. */
-function cancelAlignSession(sid) {
-  if (!sid) return;
-  postWrite("/api/align/" + enc(sid) + "/cancel", {},
-    function () {}, function () {});
+/* F2: reopen a backgrounded Align grill at its current question. GET the session's
+   open turn and render the console (completing=true so the hand-off copy reads
+   "aligning", and missionId threaded for finalize/close bookkeeping). If the warm
+   session has aged out (404 — daemon restart or a very old session), drop the
+   resumable flag and fall back to a fresh START ALIGNMENT so the captain is never
+   stuck on a dead RESUME button. */
+function resumeAlignment(missionId, sid) {
+  if (!sid) { startAlignment(missionId); return; }
+  fetch("/api/align/" + enc(sid), { headers: { "Accept": "application/json" } })
+    .then(function (r) {
+      if (r.ok) return r.json();
+      if (r.status === 404) {
+        clearResumable(missionId); repaintBoard();
+        startAlignment(missionId);
+      }
+      return null;
+    })
+    .then(function (state) {
+      if (!state) return;
+      renderAlignConsole(state, true, missionId);
+    })
+    .catch(function () {
+      setStatus("Could not reach the alignment console.");
+    });
 }
 
-function renderAlignConsole(state, completing) {
+function renderAlignConsole(state, completing, missionId) {
   // `completing` (Park & Align): true when this grill is ALIGNING an already-
   // parked mission in place (vs filing a brand-new one) — drives the closing-turn
   // hand-off copy below so a parked mission never reads "creating mission".
+  // `missionId` (F1/F2): the parked mission being aligned — threaded so the submit
+  // handler can markFinalizing on the closing turn and the close hook can mark the
+  // mission RESUMABLE. Absent for a fresh File-console grill (no card yet).
   // a session that resolved in one shot (trivial mission) → straight to done.
   if (state.status === "done") { renderAlignDone(state); return; }
+  // F2: the console is (re)opening for this mission — it is ACTIVE again, so drop any
+  // resumable flag and repaint the card away from ▹ RESUME ALIGN.
+  if (missionId) { clearResumable(missionId); repaintBoard(); }
 
   var m = modal("⊹ Alignment Console", { wide: true, headClass: "teal" });
   var pane = el("div", "twopane");
@@ -1470,6 +1570,12 @@ function renderAlignConsole(state, completing) {
     var answer = free.value.trim() || picked.val || "";
     submit.disabled = true; submit.textContent = "Working…";
     err.hidden = true;
+    // F1: answering the CLOSING turn runs the estimate + file.sh --complete
+    // server-side inside this POST. Mark the parked mission FINALIZING now so — if the
+    // captain backgrounds the console — the card shows the "◐ Finalizing & costing…"
+    // band with a disabled control until the server finishes. No-op without a
+    // missionId (a fresh File-console grill has no card to badge).
+    if (closing.val && missionId) { markFinalizing(missionId); repaintBoard(); }
     // UX-2: the worker turn (and, on the final answer, the file.sh hand-off)
     // runs server-side within this POST. Show the themed working indicator the
     // whole time; it clears on the next question, on done, or on error.
@@ -1489,6 +1595,16 @@ function renderAlignConsole(state, completing) {
         busy.hidden = true;
         freeImgs.clear();   // attached images consumed by this turn
         if (st.status === "done") {
+          // F1: the finalize completed server-side — drop the FINALIZING band (the
+          // board refresh from postWrite already shows the aligned card).
+          if (missionId) clearFinalizing(missionId);
+          if (!alignConsoleOpen) {
+            // F1: the captain BACKGROUNDED the console mid-finalize — don't pop the
+            // success modal over the board; the refresh already swapped in the
+            // aligned card. Just repaint so the card drops its finalizing band.
+            repaintBoard();
+            return;
+          }
           // explicit, labelled hand-off state before the board refresh swaps in
           // the new Align card and the confirmation modal. UX-7: the captain's
           // subspace/transmission metaphor for the Align→file hand-off.
@@ -1507,11 +1623,21 @@ function renderAlignConsole(state, completing) {
       });
   };
 
-  // BUG-3: dismissing this console (✕ / backdrop click / Esc — all route through
-  // closeOverlay) must reap the warm align session server-side so an orphaned
-  // worker turn can't return later and flash as a stray modal. The hook is a
-  // one-shot; closeOverlay fires-and-clears it.
-  onOverlayClose = function () { cancelAlignSession(sid); };
+  // F2: dismissing this console (✕ / backdrop click / Esc — all route through
+  // closeOverlay) KEEPS the warm worker session so the captain can RESUME at this
+  // exact question — it no longer POSTs /cancel. For a parked mission (missionId) we
+  // mark it RESUMABLE and repaint so its card flips to ▹ RESUME ALIGN instantly. If
+  // the mission is FINALIZING (the captain closed while the closing turn estimates),
+  // leave that alone — F1 owns the card's band and the mission is completing, not
+  // resumable. A fresh File-console grill (no missionId) has no card; its warm
+  // session simply lingers in memory (ages out on its own — v1 in-memory only).
+  onOverlayClose = function () {
+    if (!missionId || !sid) return;
+    if (isFinalizing(missionId)) return;
+    markResumable(missionId, sid);
+    repaintBoard();
+  };
+  alignConsoleOpen = true; // F1: the console is now the open overlay.
   showOverlay(m.wrap);
   paintQuestion(state);
 }
@@ -2662,7 +2788,7 @@ function renderDetail(mi) {
     // runnable — the plain "▶ Start" below launches a RUN via the Launch panel.
     // Mirror the card control (▹ START ALIGNMENT) instead; startAlignmentControl
     // shares the BUG-3 busy-guard so this detail button also disables on click.
-    actions.appendChild(startAlignmentControl(mi.id));
+    actions.appendChild(startAlignmentControl(mi));
   } else {
     // align (and any pre-run stage): Start launches the run via the Launch panel.
     actions.appendChild(applyWriteState(btn("▶ Start", "go", function () { openLaunch(mi.id); })));
@@ -3240,6 +3366,20 @@ function headlineFor(ev) {
 }
 
 function detailTabs(mi) {
+  // Park & Align: a PARKED mission has no PRD/ADRs/tickets yet — the grill hasn't
+  // run. Showing the PRD tabs (with the "The behaviour described in the PRD works
+  // end to end" placeholder criterion) reads as if a spec exists. Instead show a
+  // themed standby panel so the detail honestly says the mission is awaiting Align.
+  if (mi.prdPending) {
+    var pend = el("div", "tabs");
+    pend.appendChild(el("div", "mock-cap", "◇ STANDBY — AWAITING ALIGNMENT"));
+    var msg = el("p"); msg.style.fontSize = "13px"; msg.style.opacity = "0.8";
+    msg.textContent = "No PRD yet — this mission is parked. Run the Align grill to "
+      + "define its spec; the PRD, ADRs and tickets appear here once it is aligned.";
+    pend.appendChild(msg);
+    return pend;
+  }
+
   var tabs = el("div", "tabs");
   var bar = el("div", "tabbar");
   var paneHost = el("div");
@@ -3767,6 +3907,16 @@ function workingNode(labelText) {
    repaint while isAligning(id) is true (card render), so no repaint can wipe it. */
 function scanningPulse() {
   var w = workingNode("⊹ Scanning the codebase…");
+  w.className += " lcars-running";
+  return w;
+}
+
+/* F1: the PERSISTENT animated band shown on a parked card while the CLOSING turn
+   finalizes server-side (estimate + file.sh --complete) — including after the captain
+   backgrounds the console — until the board refresh swaps in the aligned card. Same
+   animated bars as scanningPulse (.lcars-running); label is the finalizing phase. */
+function finalizingPulse() {
+  var w = workingNode("◐ Finalizing & costing…");
   w.className += " lcars-running";
   return w;
 }
