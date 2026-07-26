@@ -608,5 +608,37 @@ check "14b. the record provisioning saw carried the captain's hint as its target
   "[ \"\$(json_field \"$PROV14\" target)\" = 'the m14 app' ]"
 ( cd "$R14" && LCARS_WORKER_BIN="$W14" bash "$LAUNCH_SH" m14 --stop >/dev/null 2>&1 )
 
+# =====================================================================
+# 15. RE-LAUNCH WHILE RUNNING: a second `lcars launch <mission>` while the first
+#     app is STILL up must GROUP-KILL the prior recorded pid before re-spawning,
+#     so the previous process is never orphaned. The old flow overwrote
+#     launch.json's pid with the new one, leaving the first pid leaked (a later
+#     --stop killed only the new pid). Regression-locks the shared re-launch
+#     guard on the mission path.
+# =====================================================================
+R15="$(make_repo m15)"
+APP15="$TMPROOT/app15.sh"; make_app "$APP15"
+W15="$(claude_stub_path)"; make_ready_worker "$W15" "$APP15" "m15 dev server" "" "lcars launch m15 --stop"
+LJ15="$R15/.git/lcars/missions/m15/launch.json"
+( cd "$R15" && LCARS_WORKER_BIN="$W15" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m15 >/dev/null 2>&1 )
+PID15a="$(json_num "$LJ15" pid)"
+[ -n "$PID15a" ] && LAUNCHED_PIDS+=("$PID15a")
+check "15a. first mission launch records a live pid" \
+  "[ -n \"$PID15a\" ] && kill -0 \"$PID15a\" 2>/dev/null"
+# re-launch while the first app is STILL running (worktree reused)
+( cd "$R15" && LCARS_WORKER_BIN="$W15" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m15 >/dev/null 2>&1 )
+PID15b="$(json_num "$LJ15" pid)"
+[ -n "$PID15b" ] && LAUNCHED_PIDS+=("$PID15b")
+nap 0.5
+check "15b. the re-launch recorded a NEW pid (distinct from the first)" \
+  "[ -n \"$PID15b\" ] && [ \"$PID15b\" != \"$PID15a\" ]"
+check "15c. the first pid was KILLED by the re-launch (no orphan)" \
+  "! kill -0 \"$PID15a\" 2>/dev/null"
+check "15d. the second pid is alive + launch.json status=running" \
+  "kill -0 \"$PID15b\" 2>/dev/null && [ \"\$(json_field \"$LJ15\" status)\" = running ]"
+( cd "$R15" && LCARS_WORKER_BIN="$W15" bash "$LAUNCH_SH" m15 --stop >/dev/null 2>&1 )
+nap 0.4
+check "15e. after --stop the second pid is dead too" "! kill -0 \"$PID15b\" 2>/dev/null"
+
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

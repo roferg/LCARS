@@ -1,6 +1,6 @@
 ---
 name: lcars-launch
-description: Get an LCARS Mission's app running locally so the captain can view it during Verify. `lcars launch <mission> [hint]` checks the mission's branch out into a disposable DETACHED git worktree, spawns a `launch`-role cold worker that DISCOVERS how to start the app (it never starts it itself), then the skill launches that command detached — owning the whole process group — writes a launch.json record both the CLI and the viewscreen daemon read, and prints an LCARS-voice readout naming the target, URL, and how to stop it. `lcars launch <mission> --stop` kills the process group and prunes the worktree. Failures are plain English, never a raw stack trace. Use when the captain runs `lcars launch`, asks to run / open / preview / see a mission's app while reviewing it, or wants to stop a launched app.
+description: Get an LCARS Mission's app running locally so the captain can view it during Verify. `lcars launch <mission> [hint]` checks the mission's branch out into a disposable DETACHED git worktree, spawns a `launch`-role cold worker that DISCOVERS how to start the app (it never starts it itself), then the skill launches that command detached — owning the whole process group — writes a launch.json record both the CLI and the viewscreen daemon read, and prints an LCARS-voice readout naming the target, URL, and how to stop it. `lcars launch <mission> --stop` kills the process group and prunes the worktree. `lcars launch --main [hint]` deploys the LOCAL default-branch HEAD (whatever is already merged — no fetch) through the same pipeline, with `--main --stop` to tear it down. Failures are plain English, never a raw stack trace. Use when the captain runs `lcars launch`, asks to run / open / preview / see a mission's app while reviewing it, wants to deploy/run local main, or wants to stop a launched app.
 ---
 
 # lcars launch
@@ -15,7 +15,32 @@ captain is sitting on changes.
 lcars launch lcars-20260705-001                 # run the mission's app
 lcars launch lcars-20260705-001 "the game"       # a hint steers WHICH app runs
 lcars launch lcars-20260705-001 --stop           # stop it + clean up
+
+lcars launch --main                              # deploy the LOCAL main HEAD
+lcars launch --main "the game"                    # same, with a WHICH-app hint
+lcars launch --main --stop                        # stop the main deploy + clean up
 ```
+
+## `--main` — deploy what's already merged
+
+`lcars launch --main [hint]` runs the **local default-branch HEAD** — whatever is
+already merged on this machine — through the *exact same* launch pipeline a
+mission uses. It is a target-resolution seam, not new machinery: nothing about the
+discover→launch-detached→settle→stop flow changes.
+
+- **No network, ever.** The SHA is a **local** `rev-parse` — there is no `fetch`
+  or `pull`. You deploy the HEAD you have, not the remote's.
+- **Which branch.** `mainBranch` in `.git/lcars/config.json` if set, else local
+  `main`, else local `master`; otherwise a legible refusal asking you to set
+  `mainBranch`.
+- **State + worktree.** Records live in `.git/lcars/main/` (no mission dir), and
+  the disposable DETACHED worktree lands at the reserved path
+  `.git/lcars/launch/@main`. `@main` is reserved — a mission literally named
+  `@main` is rejected, and `--main` refuses a mission id (`lcars launch --main m1`
+  is an error; run one form or the other).
+- **Record.** The `running` `launch.json` adds `branch` and a short `sha` on the
+  main path only; the readout names `<branch> @ <sha>` and the stand-down hint is
+  `lcars launch --main --stop`. The per-mission `launch.json` is unchanged.
 
 You (Claude) generally don't need to do any natural-language work here — hand the
 captain's words straight to `launch.sh`. If the captain named *which* app or a
@@ -104,6 +129,8 @@ Never a raw stack trace, and never a bare command as the primary line (UX-33):
 ```bash
 bash ~/.claude/skills/lcars-launch/launch.sh <mission> [hint]
 bash ~/.claude/skills/lcars-launch/launch.sh <mission> --stop
+bash ~/.claude/skills/lcars-launch/launch.sh --main [hint]
+bash ~/.claude/skills/lcars-launch/launch.sh --main --stop
 ```
 
 Dependencies are taken via env so tests can stub them: `LCARS_GIT_BIN` (git),
@@ -117,6 +144,7 @@ dies anywhere in it is caught as failed), `LCARS_NOW` (the `startedAt` stamp).
 
 The logic lives in `launch.sh` next to this file, and the `launch` worker toolset
 is one arm in `skills/lcars-run/worker-adapter.sh`. Behaviour is covered by
-`tests/lcars-launch.test.sh` (and the `launch`-role fences by
+`tests/lcars-launch.test.sh`, the `--main` deploy seam by
+`tests/deploy-main.test.sh` (and the `launch`-role fences by
 `tests/worker-adapter.test.sh`). Edit the repo copy under `skills/`, not
 `~/.claude/`; `./install.sh` symlinks it in. Keep those tests green.
