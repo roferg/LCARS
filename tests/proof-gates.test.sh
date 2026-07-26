@@ -638,6 +638,81 @@ no_scratch_left "$repo" && ok "K4. scratch pruned on the multi-dir pass path" \
                         || bad "K4. scratch worktree leaked (multi-dir)"
 
 # ==========================================================================
+# L. ruby (S145): native rspec isolation — greenfield load-red on parent is
+#    PROOF (not swallowed as zero-collect), and a zero-example spec reads
+#    INCONCLUSIVE, never a pass.
+# ==========================================================================
+echo "== L. ruby: rspec native flip-flop (greenfield red + zero-collect) =="
+# rspec is often installed under the user gem bin, off the default PATH.
+if ! command -v rspec >/dev/null 2>&1; then
+  for d in "$HOME/.gem/ruby"/*/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done
+  export PATH
+fi
+if ! have rspec || ! ruby -e 'require "rspec"' >/dev/null 2>&1; then
+  skip "RUBY: rspec not usable — SKIPPING the ruby native flip-flop proof LOUDLY"
+else
+  # H1. greenfield: a new spec require_relative's a NEW lib file. On the parent
+  # scratch that file is absent → LoadError (a real red, resolution kind); on tip
+  # it exists → green. rspec ALSO prints "0 examples" on the LoadError — the gate
+  # must NOT read that as zero-collect, or this legit red becomes inconclusive.
+  repo="$(mktemp -d "$TMPROOT/rb.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  mkdir -p "$repo/lib" "$repo/spec"
+  printf 'module Existing; end\n' > "$repo/lib/existing.rb"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  cat > "$repo/spec/mul_spec.rb" <<'RB'
+require_relative "../lib/mul"
+RSpec.describe "mul" do
+  it "multiplies" do
+    expect(Mul.call(2, 3)).to eq(6)
+  end
+end
+RB
+  cat > "$repo/lib/mul.rb" <<'RB'
+module Mul
+  def self.call(a, b); a * b; end
+end
+RB
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_STACK=ruby
+  [ "$FFRC" = 0 ] && ok "L1. ruby greenfield spec (LoadError on parent) → flip-flop PASS" \
+                  || bad "L1. ruby greenfield should PASS, not be swallowed (FFRC=$FFRC: $OUT)"
+  ffj="$(TD "$repo")/flip-flop.json"
+  grep -Eq '"kind": "(missing-new-module|bad-import-path)"' "$ffj" 2>/dev/null \
+    && ok "L2. parent-leg red kind recorded as a resolution red (not zero-collect)" \
+    || bad "L2. expected a resolution kind ($(cat "$ffj" 2>/dev/null))"
+  grep -q '"type":"flip_flop_pass"' "$(EV "$repo")" 2>/dev/null \
+    && ok "L3. flip_flop_pass event emitted for the ruby ticket" \
+    || bad "L3. flip_flop_pass event missing (ruby)"
+  no_scratch_left "$repo" \
+    && ok "L4. ruby scratch worktree pruned" \
+    || bad "L4. ruby scratch worktree leaked"
+
+  # H5. zero-collect: a new spec with NO examples runs green (exit 0) on tip but
+  # collects nothing → INCONCLUSIVE (rc 2), never a pass.
+  repo2="$(mktemp -d "$TMPROOT/rbz.XXXX")"
+  ( cd "$repo2" && git init -q && git config user.email t@t && git config user.name t )
+  mkdir -p "$repo2/lib" "$repo2/spec"
+  printf 'module Existing; end\n' > "$repo2/lib/existing.rb"
+  ( cd "$repo2" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo2"
+  P2="$(head_sha "$repo2")"
+  cat > "$repo2/spec/empty_spec.rb" <<'RB'
+RSpec.describe "nothing" do
+end
+RB
+  commit_all "$repo2"
+  ff_gate "$repo2" "$P2" LCARS_STACK=ruby
+  [ "$FFRC" = 2 ] && ok "L5. zero-example ruby spec on TIP → INCONCLUSIVE (rc 2), never a pass" \
+                  || bad "L5. zero-example spec should be inconclusive (FFRC=$FFRC: $OUT)"
+  no_scratch_left "$repo2" \
+    && ok "L6. ruby scratch pruned on the inconclusive path" \
+    || bad "L6. ruby scratch leaked on inconclusive"
+fi
+
+# ==========================================================================
 echo
 printf 'proof-gates: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

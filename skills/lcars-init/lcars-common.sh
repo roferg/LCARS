@@ -286,6 +286,7 @@ detect_worktree_setup_cmd() {
 #   package.json                                 → js
 #   *.csproj / *.sln                             → dotnet
 #   pom.xml / build.gradle / build.gradle.kts    → jvm
+#   Gemfile / *.gemspec / Rakefile / config.ru   → ruby
 #
 # Several DISTINCT stacks present   → ambiguous(<comma-list, in detection order>)
 # NONE present                      → unknown
@@ -318,6 +319,16 @@ detect_stack() {
     [ -e "$f" ] && { matched=1; break; }
   done
   [ "$matched" -eq 1 ] && candidates="$candidates jvm"
+
+  # ruby (S145) — Gemfile / *.gemspec / Rakefile / config.ru (nullglob-safe probe;
+  # an unmatched *.gemspec glob stays literal under bash-3.2, so the -e guard keeps
+  # it from false-positiving). A spec/ or test/ dir is runner evidence (seed side),
+  # never a stack marker on its own.
+  matched=0
+  for f in "$TOPLEVEL"/Gemfile "$TOPLEVEL"/*.gemspec "$TOPLEVEL"/Rakefile "$TOPLEVEL"/config.ru; do
+    [ -e "$f" ] && { matched=1; break; }
+  done
+  [ "$matched" -eq 1 ] && candidates="$candidates ruby"
 
   # Strip the leading space and split on whitespace to count distinct stacks.
   # shellcheck disable=SC2086

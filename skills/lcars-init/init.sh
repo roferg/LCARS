@@ -153,6 +153,27 @@ detect_test_cmd() {
     echo 'pytest ${LCARS_TESTS_DIR:-.}'; return; fi
   if [ -f "$TOPLEVEL/Cargo.toml" ]; then echo "cargo test"; return; fi
   if [ -f "$TOPLEVEL/go.mod" ]; then echo "go test ./..."; return; fi
+  # Ruby (S145): pick the runner from the layout. rspec when the Gemfile names it
+  # or a spec/ dir exists; minitest via `rake test` when a test/ dir + Rakefile are
+  # present. A Gemfile prefixes `bundle exec`. When BOTH an rspec (spec/) and a
+  # minitest (test/ + Rakefile) layout are present WITHOUT a decisive Gemfile rspec
+  # signal, the runner is internally AMBIGUOUS: emit NO command (the caller warns,
+  # naming both) rather than guess. A gem library with only a *.gemspec/Rakefile and
+  # no spec//test/ also emits nothing. Reached only for a single-stack ruby repo.
+  if [ -f "$TOPLEVEL/Gemfile" ] || [ -f "$TOPLEVEL/Rakefile" ] || [ -f "$TOPLEVEL/config.ru" ] \
+     || [ -d "$TOPLEVEL/spec" ] || ls "$TOPLEVEL"/*.gemspec >/dev/null 2>&1; then
+    local rb_prefix="" rb_rspec=0 rb_mini=0 rb_gem_rspec=0
+    [ -f "$TOPLEVEL/Gemfile" ] && rb_prefix="bundle exec "
+    { [ -f "$TOPLEVEL/Gemfile" ] && grep -q 'rspec' "$TOPLEVEL/Gemfile"; } && rb_gem_rspec=1
+    { [ "$rb_gem_rspec" = 1 ] || [ -d "$TOPLEVEL/spec" ]; } && rb_rspec=1
+    { [ -d "$TOPLEVEL/test" ] && [ -f "$TOPLEVEL/Rakefile" ]; } && rb_mini=1
+    # A Gemfile explicitly naming rspec is decisive even if a test/ dir also exists.
+    [ "$rb_gem_rspec" = 1 ] && rb_mini=0
+    if [ "$rb_rspec" = 1 ] && [ "$rb_mini" = 1 ]; then echo ""; return; fi
+    if [ "$rb_rspec" = 1 ]; then echo "${rb_prefix}rspec"; return; fi
+    if [ "$rb_mini" = 1 ];  then echo "${rb_prefix}rake test"; return; fi
+    echo ""; return
+  fi
   if [ -f "$TOPLEVEL/Makefile" ] && grep -q '^test:' "$TOPLEVEL/Makefile"; then echo "make test"; return; fi
   # A bash test runner (LCARS dogfoods its own tests/run.sh). It already resolves
   # a positional dir / $LCARS_TESTS_DIR (BUG-009), so scope it to the quarantined
@@ -233,10 +254,20 @@ else
       printf '    Set testCommand in .git/lcars/config.json to the runner for the stack you\n' >&2
       printf '    want the Implement red gate to use (honouring "$LCARS_TESTS_DIR").\n' >&2
       ;;
+    ruby)
+      # S145: ruby stack detected but the runner could not be resolved — either an
+      # rspec (spec/) AND a minitest (test/ + Rakefile) layout both look possible
+      # (no decisive Gemfile rspec signal), or neither could be pinned (e.g. a bare
+      # gem with only a *.gemspec). Name both candidate runners; never guess.
+      printf '  ⚠ ruby stack detected but the test runner is ambiguous — no testCommand seeded.\n' >&2
+      printf '    An rspec (spec/) and a minitest (test/ + Rakefile) layout both look possible,\n' >&2
+      printf '    or neither could be resolved. Set testCommand in .git/lcars/config.json to the\n' >&2
+      printf '    runner you want (e.g. "bundle exec rspec" or "bundle exec rake test").\n' >&2
+      ;;
     unknown)
       printf '  ⚠ no known stack detected (no Cargo.toml/go.mod/pyproject.toml/setup.py/\n' >&2
-      printf '    package.json/*.csproj/*.sln/pom.xml/build.gradle) — no testCommand seeded.\n' >&2
-      printf '    The Implement red gate needs one; set testCommand in\n' >&2
+      printf '    package.json/*.csproj/*.sln/pom.xml/build.gradle/Gemfile/*.gemspec) — no\n' >&2
+      printf '    testCommand seeded. The Implement red gate needs one; set testCommand in\n' >&2
       printf '    .git/lcars/config.json (honouring "$LCARS_TESTS_DIR") to enable it.\n' >&2
       ;;
   esac

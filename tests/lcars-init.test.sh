@@ -731,6 +731,95 @@ export GH_EXISTING="$repoGradle/existing"; : >"$GH_EXISTING"
 check "S105 init (jvm/gradle): stack is 'jvm'" \
   "grep -q '\"stack\": *\"jvm\"' '$repoGradle/.git/lcars/config.json'"
 
+# --- Session 145: ruby stack arm (rspec / minitest) -------------------------
+# helper: run init in $1 with stubs, echoing nothing (config assertions follow).
+s145_run() { # repo-dir
+  make_claude_stub "$1/claude"; make_gh_stub "$1/gh"
+  export GH_LOG="$1/gh.log"; : >"$GH_LOG"
+  export GH_EXISTING="$1/existing"; : >"$GH_EXISTING"
+  ( cd "$1" && LCARS_CLAUDE_BIN="$1/claude" LCARS_GH_BIN="$1/gh" bash "$SCRIPT" >out.txt 2>&1 )
+}
+s145_tc() { # config-path → the read-back testCommand
+  ( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_config_get "$1" testCommand )
+}
+
+# (R1) rspec: Gemfile names rspec + spec/ → stack ruby, testCommand "bundle exec rspec"
+repoRb1="$(new_repo)"
+printf 'source "https://rubygems.org"\ngem "rspec"\n' >"$repoRb1/Gemfile"
+mkdir -p "$repoRb1/spec"
+s145_run "$repoRb1"
+cfgRb1="$repoRb1/.git/lcars/config.json"
+check "S145 init (rspec): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb1'"
+check "S145 init (rspec): testCommand is 'bundle exec rspec'" \
+  "[ \"\$(s145_tc '$cfgRb1')\" = 'bundle exec rspec' ]"
+check "S145 init (rspec): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgRb1'"
+
+# (R2) minitest: test/ + Rakefile + Gemfile (no rspec) → 'bundle exec rake test'
+repoRb2="$(new_repo)"
+printf 'source "https://rubygems.org"\ngem "minitest"\n' >"$repoRb2/Gemfile"
+printf 'task :test\n' >"$repoRb2/Rakefile"
+mkdir -p "$repoRb2/test"
+s145_run "$repoRb2"
+cfgRb2="$repoRb2/.git/lcars/config.json"
+check "S145 init (minitest): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb2'"
+check "S145 init (minitest): testCommand is 'bundle exec rake test'" \
+  "[ \"\$(s145_tc '$cfgRb2')\" = 'bundle exec rake test' ]"
+
+# (R3) Gemfile-LESS ruby (Rakefile only) → stack ruby, rake test (no bundle prefix)
+repoRb3="$(new_repo)"
+printf 'task :test\n' >"$repoRb3/Rakefile"
+mkdir -p "$repoRb3/test"
+s145_run "$repoRb3"
+cfgRb3="$repoRb3/.git/lcars/config.json"
+check "S145 init (gemfile-less minitest): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb3'"
+check "S145 init (gemfile-less minitest): testCommand is bare 'rake test' (no bundle exec)" \
+  "[ \"\$(s145_tc '$cfgRb3')\" = 'rake test' ]"
+
+# (R4) gemspec-only gem library → stack ruby, NO testCommand (null), no crash
+repoRb4="$(new_repo)"
+printf 'Gem::Specification.new\n' >"$repoRb4/mygem.gemspec"
+s145_run "$repoRb4"
+cfgRb4="$repoRb4/.git/lcars/config.json"
+check "S145 init (gemspec-only): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb4'"
+check "S145 init (gemspec-only): testCommand is null (runner unresolved)" \
+  "grep -q '\"testCommand\": *null' '$cfgRb4'"
+check "S145 init (gemspec-only): warns naming BOTH rspec and minitest candidates" \
+  "grep -qi 'rspec' '$repoRb4/out.txt' && grep -qi 'minitest\\|rake test' '$repoRb4/out.txt'"
+check "S145 init (gemspec-only): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgRb4'"
+
+# (R5) INTERNALLY-ambiguous: spec/ AND test/+Rakefile, Gemfile does NOT name rspec
+#      → stack ruby, NO testCommand, warning names both runners.
+repoRb5="$(new_repo)"
+printf 'source "https://rubygems.org"\n' >"$repoRb5/Gemfile"
+printf 'task :test\n' >"$repoRb5/Rakefile"
+mkdir -p "$repoRb5/spec" "$repoRb5/test"
+s145_run "$repoRb5"
+cfgRb5="$repoRb5/.git/lcars/config.json"
+check "S145 init (rspec+minitest ambiguous): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb5'"
+check "S145 init (rspec+minitest ambiguous): NO testCommand guessed (null)" \
+  "grep -q '\"testCommand\": *null' '$cfgRb5'"
+
+# (R6) ruby + js mixed → ambiguous(js,ruby), no testCommand, warns both stacks
+repoRbJs="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoRbJs/package.json"
+printf 'source "https://rubygems.org"\ngem "rspec"\n' >"$repoRbJs/Gemfile"
+mkdir -p "$repoRbJs/spec"
+s145_run "$repoRbJs"
+cfgRbJs="$repoRbJs/.git/lcars/config.json"
+check "S145 init (ruby+js): stack is ambiguous(js,ruby)" \
+  "grep -q '\"stack\": *\"ambiguous(js,ruby)\"' '$cfgRbJs'"
+check "S145 init (ruby+js): NO testCommand (null, not a silent 'npm test')" \
+  "grep -q '\"testCommand\": *null' '$cfgRbJs'"
+check "S145 init (ruby+js): the warning NAMES both js and ruby" \
+  "grep -qi '\\bjs\\b' '$repoRbJs/out.txt' && grep -qi 'ruby' '$repoRbJs/out.txt'"
+
 # (7) AMBIGUOUS: Cargo.toml + package.json → stack ambiguous(rust,js), NO
 #     testCommand seeded, warning NAMES BOTH candidate stacks.
 repoAmb="$(new_repo)"

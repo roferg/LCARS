@@ -2190,11 +2190,13 @@ resolve_stack() {
 # A NATIVE-isolation stack is one whose runner cannot be pointed at an external
 # tests dir (compiled per-crate/package) — it needs the per-runner scoped
 # invocation + file-absence probe instead of the $LCARS_TESTS_DIR path.
-stack_is_native() { case "$(resolve_stack)" in rust|go) return 0 ;; *) return 1 ;; esac }
+stack_is_native() { case "$(resolve_stack)" in rust|go|ruby) return 0 ;; *) return 1 ;; esac }
 
-# The runner binary a native stack's scoped invocation needs on PATH.
+# The runner binary a native stack's scoped invocation needs on PATH. (S145: ruby
+# is interpreter-driven for BOTH runners — rspec loads under ruby, minitest is
+# `ruby -Itest` — so the always-present interpreter is the honest bin here.)
 native_runner_bin() { # stack
-  case "$1" in rust) printf 'cargo' ;; go) printf 'go' ;; *) printf '' ;; esac
+  case "$1" in rust) printf 'cargo' ;; go) printf 'go' ;; ruby) printf 'ruby' ;; *) printf '' ;; esac
 }
 
 # (S133: native_dest_rel — the native staged-test destination mapper — is
@@ -2239,6 +2241,30 @@ native_scoped_cmd() { # stack   (relpaths on stdin)
       [ -n "$names" ] || { printf ''; return 0; }
       printf "go test -run '^(%s)\$'" "$names"
       ;;
+    ruby)
+      # S145: rspec/minitest are scoped by EXPLICIT FILE ARGUMENT — pass ONLY the
+      # ticket's staged spec/test file(s), so no sibling suite runs (the S106 per-
+      # stack isolation invariant). rspec takes files directly; minitest is driven
+      # by requiring each file under `ruby -Itest`. rspec wins when both kinds are
+      # staged. Runners are invoked DIRECTLY (no `bundle exec`) so the gate runs
+      # offline; a *_spec.rb / *_test.rb name is the runnable-target signal (an
+      # empty/no-example file still runs and lands as zero-collect → INCONCLUSIVE).
+      local rb_specs="" rb_tests=""
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        case "${rel##*/}" in
+          *_spec.rb) rb_specs="$rb_specs $rel" ;;
+          *_test.rb) rb_tests="$rb_tests $rel" ;;
+        esac
+      done
+      if [ -n "$rb_specs" ]; then
+        printf 'rspec%s' "$rb_specs"
+      elif [ -n "$rb_tests" ]; then
+        printf "ruby -Itest -e 'ARGV.each { |f| require File.expand_path(f) }'%s" "$rb_tests"
+      else
+        printf ''
+      fi
+      ;;
     *) printf '' ;;
   esac
 }
@@ -2266,7 +2292,13 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # e.g. "cannot find package" mid-diff can never false-match — mirroring the env
       # arm's line-start discipline. Missing-package is RESOLUTION (a type/syntax
       # error is compile, in the `compile` arm below).
-      printf '%s' 'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve|\.go:[0-9]+:[0-9]+: (cannot find package|no required module provides package|cannot find module providing package)|^go: .*cannot find module providing package' ;;
+      # S145 RUBY: a load/name resolution failure. `cannot load such file -- ` is
+      # ruby's require diagnostic (rspec + minitest both print it, `-- ` separator
+      # anchors it so an app string merely mentioning the phrase can't false-fire);
+      # `uninitialized constant ` / `NameError:` are ruby's unresolved-symbol reds
+      # (a greenfield spec referencing a not-yet-defined class). These count as
+      # RESOLUTION (a syntax error is compile, in the arm below).
+      printf '%s' 'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve|\.go:[0-9]+:[0-9]+: (cannot find package|no required module provides package|cannot find module providing package)|^go: .*cannot find module providing package|cannot load such file -- |uninitialized constant |NameError:' ;;
     compile)
       # JS/TS + Python forms (byte-identical to pre-S104), then S104 RUST / GO / DOTNET
       # / JVM compile failures. Every new arm is ANCHORED the way each toolchain prints
@@ -2277,7 +2309,11 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # `^> Task :compile… FAILED` (compile-scoped, so a `:test FAILED` red is untouched)
       # — so an assertion diff that QUOTES a compile phrase, or a genuine cargo/go/junit
       # assertion red, stays a valid fail-first and never trips this detector.
-      printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)|^error\[E[0-9]+\]|^error: could not compile |\.go:[0-9]+:[0-9]+: (undefined:|syntax error)|\([0-9]+,[0-9]+\): error CS[0-9]+|^Build FAILED|\.java:[0-9]+: error:|^error: cannot find symbol|\[ERROR\] COMPILATION ERROR|^> Task :compile[A-Za-z]* FAILED' ;;
+      # S145 RUBY: the interpreter's own `file.rb:LINE: syntax error,` prefix — a
+      # parse failure the ruby/rspec/minitest process prints BEFORE any example
+      # runs. Anchored to the `.rb:N:` diagnostic prefix so an app/assertion string
+      # containing "syntax error," can never trip it (mirroring the go/dotnet arms).
+      printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)|^error\[E[0-9]+\]|^error: could not compile |\.go:[0-9]+:[0-9]+: (undefined:|syntax error)|\([0-9]+,[0-9]+\): error CS[0-9]+|^Build FAILED|\.java:[0-9]+: error:|^error: cannot find symbol|\[ERROR\] COMPILATION ERROR|^> Task :compile[A-Za-z]* FAILED|\.rb:[0-9]+: syntax error,' ;;
     env)
       # S111: `^npm (error|ERR!) could not determine executable to run` is npx's
       # own no-binary diagnostic (`npx vitest` in a package without vitest) —
@@ -2292,14 +2328,30 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # this arm never feeds a red-gate verdict, so it cannot accept a red the gate
       # would reject; it only lets classify_impl_failure NAME a genuine cross-stack
       # assertion red instead of the generic over-broad-slice).
-      printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]|panicked at|--- FAIL:|test result: FAILED' ;;
+      # S145 RUBY (classify-only): rspec's `Failure/Error:` marker + its `Failed
+      # examples:` footer; minitest's `  N) Failure:` / `N) Error:` block; a
+      # summary line naming a NON-ZERO failure/error count (`[1-9][0-9]* failures?`
+      # — the `[1-9]` guard means a healthy `0 failures` pass line never matches);
+      # and minitest's `Expectation failed`.
+      printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]|panicked at|--- FAIL:|test result: FAILED|Failure/Error|Failed examples:|[0-9]+\) (Failure|Error):|[1-9][0-9]* (failures|errors)\b|Expectation failed' ;;
     zerotests)
       # S99 — the runner FINISHED but collected/ran ZERO tests. CLASSIFY-ONLY (the
       # self-smoke's zero-tests verdict + classify_impl_failure); NEVER consulted by
       # red_gate_ok's verdicts. TIGHT on purpose: it must NOT match a healthy red
       # suite that happens to print "0 passed" — only the runner's own "no tests
       # collected / ran" phrasings.
-      printf '%s' 'No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items' ;;
+      # S145 RUBY: rspec's `0 examples, 0 failures` and minitest's `0 runs, 0
+      # assertions`. TWO hazards are anchored out:
+      #  • the S106 SUBSTRING hazard — a healthy `10 examples`/`10 runs` CONTAINS
+      #    `0 examples`/`0 runs`; the `(^|[^0-9])` guard requires the count to be a
+      #    STANDALONE zero, so a 10-example suite is never flagged.
+      #  • rspec ALSO prints `0 examples, 0 failures, N error occurred…` on a
+      #    LoadError (a legitimate greenfield fail-on-parent, exit 1). The `$`
+      #    end-anchor on `0 failures` matches ONLY the true-zero summary line, NOT
+      #    the load-error line (which has `, N error…` after it) — so a real red is
+      #    never swallowed as zero-collect. `No examples found` is deliberately NOT
+      #    matched for the same reason (rspec prints it on a LoadError too).
+      printf '%s' 'No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items|(^|[^0-9])0 examples, 0 failures$|(^|[^0-9])0 runs, 0 assertions' ;;
     hang)
       # A suite that HUNG and never settled under the hard timeout. CLASSIFY-ONLY
       # (classify_impl_failure at exhaustion); NEVER consulted by a gate verdict.
@@ -3165,11 +3217,13 @@ proof_is_test_path() { # relpath → 0 if test-classified
   case "$p" in
     */__tests__/*|__tests__/*)          return 0 ;;
     tests/*|*/tests/*|test/*|*/test/*)  return 0 ;;
+    spec/*|*/spec/*)                     return 0 ;;  # S145: ruby rspec layout
   esac
   case "$b" in
     *.test.*|*.spec.*)   return 0 ;;
     test_*.py|*_test.py) return 0 ;;
     *_test.go)           return 0 ;;
+    *_spec.rb|*_test.rb) return 0 ;;  # S145: ruby rspec / minitest
   esac
   return 1
 }
@@ -3279,6 +3333,9 @@ proof_native_run_dir() { # stack leg-root first-rel → abs run dir
         case "$d" in */*) d="${d%/*}" ;; *) d="" ;; esac
       done
       printf '%s' "$root" ;;
+    # S145: ruby runs from the repo/Gemfile root so `.rspec`, spec_helper, and the
+    # test/ load path (`-Itest`) resolve; the staged relpaths stay repo-root-relative.
+    ruby) printf '%s' "$root" ;;
     *)    printf '%s' "$root" ;;
   esac
 }
@@ -3468,7 +3525,7 @@ FF_STAGE_EOF
   fi
   if proof_zero_collected "$par_out"; then
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
-      "the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' exits 0) — red-on-parent is unproven, and inconclusive is never a pass" "$rels"
+      "the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass" "$rels"
     return $?
   fi
   if [ "$FF_PAR_RC" -eq 0 ]; then

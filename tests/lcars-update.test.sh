@@ -425,6 +425,55 @@ check "S105 update: a captain-pinned stack is left untouched (no clobber)" \
 check "S105 update: reports 'nothing to update' when stack already present + current" \
   "grep -qi 'nothing to update' '$repoS105c/outS105c.txt'"
 
+# --- Session 145: ruby stack never-clobbers a hand-set testCommand ----------
+# A pre-S105 config (no `stack`) in a ruby repo (Gemfile + spec/) with a captain-
+# set testCommand. update must BACKFILL stack=ruby but leave the testCommand
+# byte-for-byte — MISSING-only seeding, never overwrite a present command.
+repoS145="$(new_repo)"
+init_repo "$repoS145"
+printf 'source "https://rubygems.org"\ngem "rspec"\n' >"$repoS145/Gemfile"
+mkdir -p "$repoS145/spec"
+cfgS145="$repoS145/.git/lcars/config.json"
+cat >"$cfgS145" <<'JSON'
+{
+  "model": "captain-chosen-model",
+  "projectName": "myrubyproj",
+  "contextFile": null,
+  "testCommand": "bundle exec rspec --my-flags spec/only",
+  "worktreeSetupCommand": null,
+  "comprehensionBudget": 1200,
+  "lcarsVersion": "2099.1.1",
+  "created": "2020-02-02T00:00:00Z"
+}
+JSON
+export GH_LOG="$repoS145/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoS145/existing"
+cat >"$GH_EXISTING" <<'EOF'
+lcars:align
+lcars:research
+lcars:validate
+lcars:plan
+lcars:plan-review
+lcars:schedule
+lcars:implement
+lcars:verify
+lcars:done
+lcars:feature
+lcars:bug
+lcars:paused
+lcars:awaiting-human
+lcars:linked
+lcars:mission
+lcars:ticket
+EOF
+( cd "$repoS145" && LCARS_VERSION="2099.1.1" LCARS_GH_BIN="$repoS145/gh" bash "$SCRIPT" >outS145.txt 2>&1 )
+check "S145 update: backfills stack=ruby for a Gemfile+spec repo" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgS145'"
+check "S145 update: preserves the captain's hand-set ruby testCommand byte-for-byte (never-clobber)" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgS145' testCommand )\" = 'bundle exec rspec --my-flags spec/only' ]"
+check "S145 update: backfilled config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgS145'"
+
 # ==========================================================================
 echo
 printf 'lcars update: %d passed, %d failed\n' "$pass" "$fail"
