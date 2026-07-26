@@ -128,6 +128,23 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
   letter-spacing:.14em;color:var(--lcars-text-on-color);
   background:var(--lcars-teal);padding:4px 10px;border-radius:11px}
 .topbar .conn.stale{background:var(--lcars-red);color:#fff}
+/* S139: the local main-deploy band — sits in the top band beside ▸ Deploy Main.
+   Ship-status voice (● MAIN LIVE / ◐ DEPLOYING…), never a CI widget. */
+.topbar .main-deploy{display:flex;align-items:center;gap:8px;
+  font-family:var(--font-display);font-size:11px;letter-spacing:.12em}
+.topbar .main-deploy .deploy-pill{padding:4px 10px;border-radius:11px;
+  color:var(--lcars-text-on-color);text-transform:uppercase;white-space:nowrap}
+.topbar .main-deploy .deploy-pill.live{background:var(--lcars-teal);
+  color:var(--lcars-black,#030608);font-weight:700}
+.topbar .main-deploy .deploy-pill.live .sha{opacity:.72;font-weight:400}
+.topbar .main-deploy .deploy-pill.deploying{background:var(--lcars-pink,#c9c);
+  color:var(--lcars-black,#030608)}
+.topbar .main-deploy .deploy-pill.failed{background:var(--lcars-red);color:#fff;
+  text-transform:none;letter-spacing:normal;max-width:320px;overflow:hidden;
+  text-overflow:ellipsis}
+.topbar .main-deploy .deploy-url{color:var(--lcars-black,#030608);
+  font-weight:600;text-decoration:underline;max-width:220px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
 
 /* ── S130 version UPDATE banner ──────────────────────────────────────────────
    A themed LCARS pill-band that drops in at the top of the framed content when

@@ -47,10 +47,39 @@ class LocalAdapter(object):
         return board.assemble(cards, meta=self._meta())
 
     def _meta(self):
-        return {
+        meta = {
             "repo": _repo_identity(self.repo_root, self._git_url_reader),
             "adapter": "local",
             "mode": "read-only" if self.read_only else "read-write",
+        }
+        # S139: the local main-deploy record `lcars launch --main` writes into
+        # `.git/lcars/main/launch.json`. It's an ad-hoc deploy, NOT a mission, so
+        # it's purely ADDITIVE: present ⇒ a small `mainLaunch`
+        # {status,target,url,sha,branch,message} rides meta so the topbar band can
+        # show ◐ DEPLOYING → ● MAIN LIVE → failed with the branch/sha + a Stop
+        # affordance; ABSENT (no file / unparseable) ⇒ NO `mainLaunch` key at all,
+        # so meta is byte-identical to before this round. The github adapter's
+        # _meta never reads local files, so its shape is unchanged.
+        ml = self._main_launch()
+        if ml is not None:
+            meta["mainLaunch"] = ml
+        return meta
+
+    def _main_launch(self):
+        """The local main-deploy record → the additive meta.mainLaunch payload,
+        or None (absent/unparseable). Reads `.git/lcars/main/launch.json` — the
+        `--main` analog of a mission's launch.json."""
+        p = os.path.join(self.repo_root, ".git", "lcars", "main", "launch.json")
+        lj = _load_json(p)
+        if not isinstance(lj, dict):
+            return None
+        return {
+            "status": lj.get("status"),
+            "target": lj.get("target"),
+            "url": lj.get("url"),
+            "sha": lj.get("sha"),
+            "branch": lj.get("branch"),
+            "message": lj.get("message"),
         }
 
     def mission(self, mid):
@@ -74,21 +103,39 @@ class LocalAdapter(object):
         return card
 
     def fingerprint(self):
-        """A cheap state-change signature: max mtime over every mission file.
+        """A cheap state-change signature: max mtime over every mission file
+        AND the main-deploy record.
 
         The live channel polls this; it changes the instant any state.json /
-        pending.json / events.jsonl / etc. is rewritten by the harness.
+        pending.json / events.jsonl / etc. is rewritten by the harness. S139:
+        it also folds in `.git/lcars/main/launch.json` (the `--main` deploy
+        record) so a `POST /api/deploy/main` (or /stop) moves it — otherwise a
+        PASSIVE second browser's deploy band never gets an SSE `update`. The
+        main record is checked even when there is NO missions dir (a deploy is
+        repo-level, not tied to a mission), so the empty-missions short-circuit
+        can't hide it.
         """
         latest = 0.0
-        if not os.path.isdir(self.missions_dir):
-            return "0"
+        seen = False
         for d in self._mission_dirs():
             for fn in os.listdir(d):
                 try:
                     latest = max(latest, os.path.getmtime(os.path.join(d, fn)))
+                    seen = True
                 except OSError:
                     pass
-        return "%.6f" % latest
+        # S139: the main-deploy record — same path _main_launch() reads. A
+        # missing file contributes nothing (mirrors the mission-file loop).
+        main_launch = os.path.join(
+            self.repo_root, ".git", "lcars", "main", "launch.json")
+        try:
+            latest = max(latest, os.path.getmtime(main_launch))
+            seen = True
+        except OSError:
+            pass
+        # Preserve the "0" sentinel only for the truly-empty case: no mission
+        # files AND no main record.
+        return "%.6f" % latest if seen else "0"
 
     # -- internals ------------------------------------------------------------
     def _mission_dirs(self):

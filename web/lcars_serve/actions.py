@@ -1354,6 +1354,87 @@ class Actions(object):
         except (OSError, ValueError):
             return None
 
+    # -- S139: deploy the LOCAL main HEAD (daemon-owned lifecycle) ---------------
+    def deploy_main(self, hint=None):
+        """POST /api/deploy/main — deploy the local default-branch HEAD.
+
+        The WEB face of `lcars launch --main` (S138): dispatches
+        `lcars launch --main [hint]` BLOCKING — launch.sh resolves the local main
+        branch tip (NO fetch, ever), checks it out DETACHED, discovers how to
+        start the app, spawns it into its OWN process group, and writes
+        `.git/lcars/main/launch.json` (status running|failed) BEFORE returning —
+        so on return the terminal state is already on disk. A running record
+        carries a numeric `pgid` (== the app pid); we track it under the RESERVED
+        key "@main" so the daemon can group-kill the deploy on Stop / shutdown
+        (the app is NOT our child).
+
+        Unlike launch(), there is NO mission: NO _require_mission, and NO
+        _persisted_worker_bin (the main deploy has no state.json — the skill
+        resolves its own engine, so we pass no LCARS_WORKER_BIN). A FAILED deploy
+        leaves a readable status=failed record whose message rides the board's
+        additive `meta.mainLaunch`, rather than a 502 + stack (UX-33).
+        """
+        # In-flight guard (mirror launch()): a second POST arriving WHILE the
+        # first deploy is still spinning up is an idempotent no-op — return the
+        # (now "launching") board WITHOUT a duplicate dispatch. The check-and-add
+        # is a SINGLE locked critical section so two threads can't both pass.
+        with self._launches_lock:
+            if "@main" in self._launching:
+                return {"board": self._reader.board()}
+            self._launching.add("@main")
+        try:
+            args = ["--main"]
+            h = (hint or "").strip()
+            if h:
+                args += h.split()
+            try:
+                self._run("launch", args)
+            except ActionError:
+                # A discovery/liveness failure exits non-zero AND writes a failed
+                # main/launch.json. If that readable record is present, swallow
+                # the exit and surface the message via the board; otherwise
+                # re-raise (a genuine dispatch error with no record to show).
+                if not isinstance(self._read_main_launch_json(), dict):
+                    raise
+            rec = self._read_main_launch_json()
+            if isinstance(rec, dict) and rec.get("status") == "running":
+                pgid = rec.get("pgid")
+                if isinstance(pgid, int) and pgid > 0:
+                    with self._launches_lock:
+                        self._launches["@main"] = pgid
+            return {"board": self._reader.board()}
+        finally:
+            with self._launches_lock:
+                self._launching.discard("@main")
+
+    def deploy_main_stop(self):
+        """POST /api/deploy/main/stop — stop the running main deploy.
+
+        Dispatches `lcars launch --main --stop`, which group-kills the deploy's
+        process group and prunes the @main worktree, then drops the "@main" entry
+        from the tracking table. Idempotent: a double-stop is a clean no-op (the
+        skill's --stop is itself idempotent, and popping an absent key is
+        harmless)."""
+        try:
+            self._run("launch", ["--main", "--stop"])
+        finally:
+            with self._launches_lock:
+                self._launches.pop("@main", None)
+        return {"board": self._reader.board()}
+
+    def _read_main_launch_json(self):
+        """The local main deploy's launch.json as a dict, or None.
+
+        The main-deploy record lives BESIDE the missions dir — at
+        `.git/lcars/main/launch.json` — not under a mission (the analog of
+        `_read_launch_json(mid)` for the `--main` target)."""
+        p = os.path.join(self.repo_root, ".git", "lcars", "main", "launch.json")
+        try:
+            with open(p) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
     def pause(self, mid):
         """POST /api/mission/<id>/pause."""
         self._require_mission(mid)

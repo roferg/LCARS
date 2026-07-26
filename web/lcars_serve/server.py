@@ -235,6 +235,13 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
                 return actions.park_mission(idea=body.get("idea"),
                                             engine=body.get("engine"),
                                             images=self._images(body))
+            # POST /api/deploy/main[/stop] — deploy the LOCAL main HEAD, and stop
+            # it (S139). NON-mission verbs (like /api/park): the read-only build
+            # has actions=None, so do_POST already 403'd above.
+            if path == "/api/deploy/main":
+                return actions.deploy_main(hint=body.get("hint"))
+            if path == "/api/deploy/main/stop":
+                return actions.deploy_main_stop()
             if path == "/api/align/start":
                 return actions.align_start(idea=body.get("idea"),
                                            engine=body.get("engine"),
