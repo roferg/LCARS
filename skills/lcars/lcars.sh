@@ -71,16 +71,23 @@ MISSIONS_DIR="${GIT_DIR:+$GIT_DIR/lcars/missions}"
 # drivable = a Mission the loop can advance (stage not done)
 pending=0
 drivable=0
+parked=0
 if [ -n "$MISSIONS_DIR" ] && [ -d "$MISSIONS_DIR" ]; then
   shopt -s nullglob
   for s in "$MISSIONS_DIR"/*/state.json; do
     stage="$(json_str "$s" stage)"
     awaiting="$(sed -n 's/.*"awaitingHuman"[[:space:]]*:[[:space:]]*\([a-z]*\).*/\1/p' "$s" | head -1)"
     paused="$(sed -n 's/.*"paused"[[:space:]]*:[[:space:]]*\([a-z]*\).*/\1/p' "$s" | head -1)"
+    prdpending="$(sed -n 's/.*"prdPending"[[:space:]]*:[[:space:]]*\([a-z]*\).*/\1/p' "$s" | head -1)"
     # A paused Mission (ADR-005) is neither pending nor drivable: the driver
     # would just halt at the next boundary, so bare `lcars` must not auto-pick it.
     if [ "$paused" = "true" ]; then
       :
+    # A PARKED Mission (prdPending) awaits ALIGNMENT — it is NOT drivable (no PRD)
+    # and NOT a pending decision. Counted on its own so bare `lcars` OFFERS it for
+    # grilling but NEVER auto-drives it.
+    elif [ "$prdpending" = "true" ]; then
+      parked=$((parked + 1))
     elif [ "$awaiting" = "true" ] || [ "$stage" = "verify" ]; then
       pending=$((pending + 1))
     elif [ "$stage" != "done" ]; then
@@ -108,7 +115,16 @@ if [ -n "$SELECTOR" ]; then
        done
        echo "ROUTE: picker"
        exit 2 ;;
-    *) die "no active mission matches \"$SELECTOR\"." ;;
+    *) # Not a drivable mission. It might be PARKED (awaiting alignment) — those
+       # are deliberately kept out of the active/drivable set, so name the align
+       # command rather than a bare "no match".
+       pout="$(bash "$RESOLVE" --scope parked --id "$SELECTOR" 2>/dev/null)"; prc=$?
+       if [ "$prc" -eq 0 ]; then
+         printf '%s is parked awaiting alignment — run `lcars file %s` to align it.\n' "$pout" "$pout"
+         echo "ROUTE: align-offer"
+         exit 0
+       fi
+       die "no active mission matches \"$SELECTOR\"." ;;
   esac
 fi
 
@@ -145,7 +161,32 @@ if [ "$drivable" -gt 0 ]; then
   esac
 fi
 
-# 3. Nothing filed — enter the file flow (Claude runs the Align conversation).
+# 3. Parked missions await alignment — OFFER them for grilling, never drive.
+# Nothing is pending and nothing is drivable, but one or more missions are parked
+# (prdPending). Bare `lcars` surfaces them as the "awaiting alignment" group and
+# tells the captain how to grill each — it does NOT auto-drive any (the driver
+# never runs a PRD-less mission).
+if [ "$parked" -gt 0 ]; then
+  if [ "$parked" -eq 1 ]; then
+    echo "1 mission awaiting alignment:"
+  else
+    printf '%s missions awaiting alignment:\n' "$parked"
+  fi
+  out="$(bash "$RESOLVE" --scope parked)"; rc=$?
+  # 0 = single id (print it); 2 = table (already tab-separated); 3 = none (shouldn't happen)
+  case "$rc" in
+    0) st="$(json_str "$MISSIONS_DIR/$out/state.json" title)"
+       printf '  %s  %s  (◇ standby)\n' "$out" "$st" ;;
+    2) printf '%s\n' "$out" | while IFS=$'\t' read -r id title stage note; do
+         printf '  %s  %s  (◇ %s)\n' "$id" "$title" "$note"
+       done ;;
+  esac
+  echo "Run \`lcars file <id>\` to align one (the Align grill), then it flows the pipeline."
+  echo "ROUTE: align-offer"
+  exit 0
+fi
+
+# 4. Nothing filed — enter the file flow (Claude runs the Align conversation).
 echo "No missions found — filing a new one."
 echo "ROUTE: file"
 exit 0

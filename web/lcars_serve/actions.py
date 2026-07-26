@@ -460,11 +460,18 @@ class _AlignSession(object):
     """
 
     __slots__ = ("idea", "engine", "transcript", "prd", "done",
-                 "worker_sid", "started", "image_paths")
+                 "worker_sid", "started", "image_paths", "mission_id",
+                 "last_question")
 
-    def __init__(self, idea, engine):
+    def __init__(self, idea, engine, mission_id=None):
         self.idea = idea
         self.engine = engine
+        # Park & Align (S137): when this grill completes the alignment of an
+        # ALREADY-PARKED mission (filed pre-PRD via `lcars file --park`), its id
+        # is carried here so the done branch dispatches `file.sh --complete <id>`
+        # (grill-completion IN PLACE) instead of a fresh `--prd` filing. None ⇒ a
+        # normal File-console grill that files a brand-new mission (unchanged).
+        self.mission_id = mission_id
         self.transcript = []   # list of {"question":..., "answer":...}
         self.prd = ""
         self.done = False
@@ -473,6 +480,12 @@ class _AlignSession(object):
         # first turn and RESUMED on every later turn.
         self.worker_sid = str(uuid.uuid4())
         self.started = False
+        # Park & Align (F2 — resume mid-grill): the FULL open question dict of the
+        # turn currently awaiting an answer (text + choices + recommended + closing).
+        # Stored so GET /api/align/<sid> can restore the console at the exact question
+        # — choice buttons and all — when the captain reopens a backgrounded grill.
+        # In-memory only (dies with the daemon); None until the first question turn.
+        self.last_question = None
         # S91 — every image the captain has pasted across this grill's turns,
         # staged on disk under repo_root. Accumulated (not reset per turn) so
         # claude can Read an earlier turn's image if a later turn references it;
@@ -585,8 +598,50 @@ class Actions(object):
                     pass
         return {"board": self._reader.board()}
 
+    # -- Park & Align (S137): file a PARKED mission (pre-PRD standby) ------------
+    def park_mission(self, idea, engine=None, images=None):
+        """POST /api/park — file a PARKED mission from a free-form idea.
+
+        The backlog-fast lane (S136): dispatch `file.sh --park` to mint a mission
+        instantly with just the idea — NO grill, NO PRD, NO estimate — parked at
+        align with state.json.prdPending:true. The captain aligns it later (the
+        card's START ALIGNMENT → the warm grill → `file.sh --complete <id>`), or
+        via `lcars file <id>` on the CLI (identical path, S136).
+
+        Unlike file_mission (which threads the engine via $LCARS_WORKER_BIN),
+        `file.sh --park` takes the engine as the `--engine <claude|copilot>` flag
+        (matching do_park's contract). `images` (S92) are staged under repo_root
+        and threaded as repeated `--attach <path>` exactly like file_mission, then
+        the temp copies are reaped once file.sh has copied them into the mission's
+        attachments/ dir. Returns the freshly-assembled board state so the parked
+        card lands on the board (SSE also nudges it).
+        """
+        idea = (idea or "").strip()
+        if not idea:
+            raise ActionError(400, "missing required field: idea")
+        eng = (engine or "").strip()
+        # write the idea to a tmp file so multi-line ideas survive intact
+        # (file.sh --idea <file> reads the verbatim capture; a positional would
+        # word-split on whitespace).
+        idea_path = self._tmp_prd(idea + "\n")
+        staged = self._stage_images(images)
+        args = ["--park", "--idea", idea_path]
+        if eng:
+            args += ["--engine", eng]
+        for p in staged:
+            args += ["--attach", p]
+        try:
+            self._run("file", args)
+        finally:
+            for p in [idea_path] + staged:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        return {"board": self._reader.board()}
+
     # -- the interactive Align grilling console (S70-B) --------------------------
-    def align_start(self, idea, engine=None, images=None):
+    def align_start(self, idea, engine=None, images=None, mission_id=None):
         """POST /api/align/start — open a multi-turn Align session.
 
         OPENS ONE warm, resumable worker session (BUG-B) driving the existing
@@ -596,17 +651,42 @@ class Actions(object):
         The session's worker UUID is minted on the _AlignSession and reused on
         every /answer (no per-question cold respawn, no transcript re-feed) so the
         UI Align is the SAME warm interview the CLI runs.
+
+        Park & Align (S137): with `mission_id` set, this is the grill-completion
+        of an ALREADY-PARKED mission (`lcars file --park`). The session is SEEDED
+        from that mission's idea.md text + engine (state.json.workerBin, unless
+        overridden) + parked attachments, `mission_id` is carried on the session,
+        and the done branch dispatches `file.sh --complete <id>` IN PLACE (not a
+        fresh filing). A normal (no mission_id) call is BYTE-IDENTICAL to today.
         """
+        mid = (mission_id or "").strip() or None
+        seed_paths = []
+        if mid:
+            # the parked mission must exist (404 otherwise) and still be parked.
+            self._require_mission(mid)
+            idea = self._parked_idea(mid) or (idea or "")
+            # engine: an explicit picker wins, else the parked mission's persisted
+            # engine (workerBin), so the grill runs on the CLI the captain chose
+            # at park time.
+            engine = (engine or "").strip() or self._persisted_worker_bin(mid)
+            # the parked mission's DURABLE attachments seed the OPENING turn so the
+            # grill can see the screenshots the captain parked. They are NOT added
+            # to sess.image_paths (which is reaped on done) — they are permanent
+            # mission files, and file.sh --complete re-lists them from disk.
+            seed_paths = self._parked_attachment_paths(mid)
         idea = (idea or "").strip()
         if not idea:
             raise ActionError(400, "missing required field: idea")
         sid = uuid.uuid4().hex[:12]
-        sess = _AlignSession(idea=idea, engine=(engine or "").strip() or None)
+        sess = _AlignSession(idea=idea, engine=(engine or "").strip() or None,
+                             mission_id=mid)
         with self._align_lock:
             self._align[sid] = sess
-        # the captain may paste an image on the File idea box (this first turn).
+        # the captain may paste an image on the File idea box (this first turn);
+        # these ride sess.image_paths (reaped on done). Parked seed attachments are
+        # passed to THIS turn's worker call too, but not accumulated for reaping.
         turn_paths = self._stage_session_images(sess, images)
-        return self._align_turn(sid, sess, image_paths=turn_paths)
+        return self._align_turn(sid, sess, image_paths=seed_paths + turn_paths)
 
     def align_answer(self, sid, answer, images=None):
         """POST /api/align/<sid>/answer — record the answer, run the next turn.
@@ -666,8 +746,17 @@ class Actions(object):
             # DURABLE mission attachments: thread them to file.sh BEFORE they are
             # reaped just below (the reap removes the temp staged copies once
             # file.sh has copied them into the mission's attachments/ dir).
-            board = self._file_from_align(turn, engine=sess.engine,
-                                          image_paths=sess.image_paths)
+            #
+            # Park & Align (S137): a parked mission (sess.mission_id set) completes
+            # its alignment IN PLACE via `file.sh --complete <id>`; a fresh grill
+            # files a brand-new mission via `file.sh --prd` (unchanged).
+            if sess.mission_id:
+                board = self._complete_from_align(
+                    sess.mission_id, turn, engine=sess.engine,
+                    image_paths=sess.image_paths)
+            else:
+                board = self._file_from_align(turn, engine=sess.engine,
+                                              image_paths=sess.image_paths)
             self._reap_session_images(sess)
             with self._align_lock:
                 self._align.pop(sid, None)
@@ -689,6 +778,9 @@ class Actions(object):
         if q.get("text"):
             q["text"] = _strip_inlined_prd(q["text"], sess.prd)
         sess.transcript.append({"question": q.get("text", ""), "answer": None})
+        # Park & Align (F2): remember the full open question so a backgrounded grill
+        # can be RESUMED at this exact turn (choices included) via GET /api/align/<sid>.
+        sess.last_question = q
         return {"sessionId": sid, "status": "question",
                 "question": q, "prd": sess.prd}
 
@@ -739,6 +831,84 @@ class Actions(object):
                         pass
         return self._reader.board()
 
+    def _complete_from_align(self, mid, turn, engine=None, image_paths=None):
+        """Park & Align (S137): COMPLETE a parked mission's alignment via
+        `file.sh --complete <id> --prd <path>` (ADR-002 dispatch).
+
+        Mirrors `_file_from_align` but grill-completes IN PLACE: the mission
+        already exists (parked, prdPending:true), so file.sh --complete validates
+        the PRD, writes prd.md, derives type/title, retitles + re-bodies the
+        issue, runs the estimator, and clears prdPending — landing byte-equivalent
+        to a grill-first filing. `engine`/`adr`/`modelOverride` thread exactly as
+        the fresh-filing path. Parked attachments are re-listed by file.sh from
+        the mission's attachments/ dir; `image_paths` here are any grill-turn
+        images (harmless additive `--attach`), reaped by the caller."""
+        prd = (turn.get("prd") or "").strip()
+        if not prd:
+            raise ActionError(502, "the Align worker returned done with no PRD")
+        prd_path = self._tmp_prd(prd + "\n")
+        adr_path = None
+        adr = (turn.get("adr") or "").strip()
+        if adr and adr.lower() != "null":
+            adr_path = self._tmp_prd(adr + "\n")
+        args = ["--complete", mid, "--prd", prd_path]
+        if adr_path:
+            args += ["--adr", adr_path]
+        ov = (turn.get("modelOverride") or "").strip()
+        if ov and ov.lower() != "null":
+            args += ["--model-override", ov]
+        for p in (image_paths or []):
+            if p:
+                args += ["--attach", p]
+        env_extra = {}
+        eng = (engine or "").strip()
+        if eng:
+            env_extra["LCARS_WORKER_BIN"] = eng
+        try:
+            self._run("file", args, env_extra=env_extra)
+        finally:
+            for p in (prd_path, adr_path):
+                if p:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+        return self._reader.board()
+
+    def _parked_idea(self, mid):
+        """Park & Align (S137): the verbatim idea captured at park time (idea.md).
+
+        Returns the file's text (stripped), or "" when absent — the caller falls
+        back to any idea passed in the request body so a seed failure degrades to
+        the old behaviour rather than crashing."""
+        p = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                         "idea.md")
+        try:
+            with open(p, encoding="utf-8") as fh:
+                return fh.read().strip()
+        except OSError:
+            return ""
+
+    def _parked_attachment_paths(self, mid):
+        """Park & Align (S137): the ABS paths of a parked mission's DURABLE
+        attachments (state.json.attachments, relative to the mission dir).
+
+        Used to SEED the opening grill turn so the worker sees the parked
+        screenshots. These are permanent mission files — the caller must NOT add
+        them to a grill session's reap list. Missing entries are skipped."""
+        mdir = os.path.join(self.repo_root, ".git", "lcars", "missions", mid)
+        sp = os.path.join(mdir, "state.json")
+        rels = _read_json_key(sp, "attachments")
+        out = []
+        if isinstance(rels, list):
+            for rel in rels:
+                if not isinstance(rel, str) or not rel.strip():
+                    continue
+                ap = os.path.join(mdir, rel)
+                if os.path.isfile(ap):
+                    out.append(ap)
+        return out
+
     def align_cancel(self, sid):
         """POST /api/align/<sid>/cancel — reap a live Align console.
 
@@ -754,6 +924,97 @@ class Actions(object):
         if sess is not None:
             self._reap_session_images(sess)
         return {"sessionId": sid, "status": "cancelled"}
+
+    def align_state(self, sid):
+        """GET /api/align/<sid> — the session's current OPEN turn, for RESUME.
+
+        Park & Align (F2 — resume mid-grill): the captain backgrounded an Align
+        console; this returns the same {sessionId, status:"question", question, prd}
+        shape a turn returns, restoring the console at the exact open question (choice
+        buttons and all) when they reopen it. The stored `last_question` is the full
+        question dict; if the session somehow has none yet, fall back to the last
+        transcript question text. Unknown/aged-out sid → 404 (the client falls back to
+        a fresh grill). In-memory only — a daemon restart drops every session.
+        """
+        with self._align_lock:
+            sess = self._align.get(sid)
+        if sess is None:
+            raise ActionError(404, "no such align session: %s" % sid)
+        q = sess.last_question
+        if not q:
+            text = ""
+            if sess.transcript:
+                text = sess.transcript[-1].get("question") or ""
+            q = {"text": text}
+        return {"sessionId": sid, "status": "question",
+                "question": q, "prd": sess.prd}
+
+    def align_overlay(self, board):
+        """Additively mark parked cards that have a LIVE resumable align session.
+
+        Park & Align (F2): so RESUME ALIGN survives a page reload (a fresh tab has no
+        client-side RESUMABLE map), stamp `card["alignResume"] = {"sid": <sid>}` onto
+        the board card of every mission that owns a live, un-done grill session. Purely
+        in-memory and ADDITIVE — a board with no live sessions is returned byte-for-byte
+        unchanged. This overlay does NOT move `adapter.fingerprint()`, so it never
+        drives an SSE push (correct — the client marks its own close instantly; the
+        safety poll re-fetches /api/board for other tabs / after a reload).
+
+        A read-only / github build constructs the daemon with actions=None, so this is
+        never reached there — the resume affordance is a local-write-board feature only.
+        """
+        if not isinstance(board, dict):
+            return board
+        cols = board.get("columns")
+        if not isinstance(cols, dict):
+            return board
+        with self._align_lock:
+            # one live session per mission expected; last wins on the odd duplicate.
+            # Only advertise RESUME once the session has a CONCRETE open question to
+            # restore (last_question set). A freshly-created session whose opening
+            # worker turn is still in flight has no question yet — offering RESUME then
+            # reopens an empty console ("What would you like to refine?" fallback), so
+            # it stays scanning/parked until the first question lands.
+            by_mission = {}
+            for sid, sess in self._align.items():
+                if sess.mission_id and not sess.done and sess.last_question:
+                    by_mission[sess.mission_id] = sid
+        if not by_mission:
+            return board  # no live sessions → byte-identical board.
+        for col in cols.values():
+            if not isinstance(col, list):
+                continue
+            for card in col:
+                if isinstance(card, dict) and card.get("id") in by_mission:
+                    card["alignResume"] = {"sid": by_mission[card["id"]]}
+        return board
+
+    def align_session_sid(self, mission_id):
+        """The live, un-done grill session id for a mission, or None (Park & Align F2)."""
+        if not mission_id:
+            return None
+        with self._align_lock:
+            for sid, sess in self._align.items():
+                # match align_overlay: only resumable once a real question exists.
+                if (sess.mission_id == mission_id and not sess.done
+                        and sess.last_question):
+                    return sid
+        return None
+
+    def align_overlay_mission(self, mission):
+        """Stamp `alignResume` onto a SINGLE mission-DETAIL dict (Park & Align F2).
+
+        The `/api/mission/<id>` detail payload must mirror the board card so the DETAIL
+        modal shows ▹ RESUME ALIGN too — not just the card. Without this the detail
+        (which never runs through `align_overlay`) falls back to the client-only
+        RESUMABLE map, which is empty after a page reload. Additive + in-memory: a
+        mission with no live session is returned unchanged.
+        """
+        if isinstance(mission, dict):
+            sid = self.align_session_sid(mission.get("id"))
+            if sid:
+                mission["alignResume"] = {"sid": sid}
+        return mission
 
     def _build_align_prompt(self, sess, opening=True):
         """Assemble the worker prompt for ONE turn.

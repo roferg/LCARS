@@ -14,9 +14,12 @@
 #   • sourced            →  defines `lcars_resolve` for in-process use
 #
 # Scope decides the candidate set:
-#   active   missions whose stage is not "done"        (the drivable set)
+#   active   missions whose stage is not "done" AND not parked (the drivable set;
+#            a parked/prdPending mission has no PRD, so it is never drivable)
 #   pending  missions awaiting a human: awaitingHuman, or parked at "verify"
 #            (the inbox set — escalations + the Verify ship/send-back gate)
+#   parked   the "awaiting alignment" group — prdPending missions ONLY, offered
+#            for grilling (`lcars file <id>`) but NEVER auto-driven
 #
 # Exit codes (so callers can branch without parsing prose):
 #   0  resolved      → the single mission id on stdout
@@ -89,6 +92,7 @@ lcars_resolve() {
     title="$(_lr_json_str "$s" title)"
     stage="$(_lr_json_str "$s" stage)"
     awaiting="$(_lr_json_raw "$s" awaitingHuman)"
+    parked="$(_lr_json_raw "$s" prdPending)"
 
     # A parked Mission's state.json.stage is the resume pointer (e.g. "align");
     # pending.json holds the true in-flight stage (e.g. "research"), matching the
@@ -101,6 +105,9 @@ lcars_resolve() {
     note=""
     case "$scope" in
       pending)
+        # Parked missions await ALIGNMENT (a grill), not a decision — they are
+        # NOT part of the inbox/pending set.
+        [ "$parked" = "true" ] && continue
         if [ "$awaiting" = "true" ]; then
           note="$(_lr_json_str "$s" pendingQuestion)"; [ -n "$note" ] || note="awaiting your answer"
         elif [ "$stage" = "verify" ]; then
@@ -109,8 +116,17 @@ lcars_resolve() {
           continue
         fi
         ;;
+      parked)
+        # The "awaiting alignment" group — parked (prdPending) missions ONLY.
+        # OFFERED for grilling, never auto-driven.
+        [ "$parked" = "true" ] || continue
+        note="awaiting alignment"
+        ;;
       active|*)
         [ "$stage" = "done" ] && continue
+        # A parked mission is NOT drivable (no PRD yet) — the driver never runs a
+        # PRD-less mission, so it must never appear in the active/drivable set.
+        [ "$parked" = "true" ] && continue
         note="$stage"
         ;;
     esac

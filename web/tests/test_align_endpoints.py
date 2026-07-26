@@ -1063,6 +1063,140 @@ class ImageGuardTest(AlignBase):
         self.assertEqual(self._argvs(), [])
 
 
+class AlignResumeTest(AlignBase):
+    """Park & Align (F2 — resume mid-grill): GET /api/align/<sid> restores a
+    backgrounded grill at its current open question (choices included), and the
+    board overlay stamps `alignResume` onto the parked mission's card so RESUME
+    survives a page reload. In-memory only (dies with the daemon)."""
+
+    def _get(self, path, timeout=10):
+        url = "http://127.0.0.1:%d%s" % (self.port, path)
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status, json.loads(r.read())
+
+    def _two_questions(self):
+        self._set_turns(
+            {"status": "question",
+             "question": {"text": "Q1 global or per-course?",
+                          "choices": ["Per-course", "Global"],
+                          "recommended": "Per-course"},
+             "prd": "# Mission: G\n\n**Type:** feature\n"},
+            {"status": "question",
+             "question": {"text": "Q2 how is XP awarded?",
+                          "choices": ["On completion", "Per action"],
+                          "recommended": "On completion"},
+             "prd": "# Mission: G\n\n**Type:** feature\n**Goal:** ...\n"},
+        )
+
+    def test_align_state_returns_stored_last_question_and_prd(self):
+        self._two_questions()
+        _, start = self._post("/api/align/start", {"idea": "Gamify the site"})
+        sid = start["state"]["sessionId"]
+        # advance one turn so the OPEN question is Q2 (with its choices).
+        self._post("/api/align/%s/answer" % sid, {"answer": "Per-course"})
+        status, state = self._get("/api/align/%s" % sid)
+        self.assertEqual(status, 200)
+        self.assertEqual(state["status"], "question")
+        # the FULL question comes back — text + choices, so resume restores buttons.
+        self.assertEqual(state["question"]["text"], "Q2 how is XP awarded?")
+        self.assertEqual(state["question"]["choices"],
+                         ["On completion", "Per action"])
+        self.assertIn("Goal", state["prd"])  # the live partial PRD.
+        # GET is a READ — it must NOT reap the session (a later answer still works).
+        self.assertIn(sid, self.actions._align)
+
+    def test_align_state_unknown_sid_is_404(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._get("/api/align/no-such-session")
+        self.assertEqual(cm.exception.code, 404)
+
+    def test_actions_align_state_direct_unknown_sid_raises(self):
+        from lcars_serve.actions import ActionError
+        with self.assertRaises(ActionError) as cm:
+            self.actions.align_state("nope")
+        self.assertEqual(cm.exception.status, 404)
+
+    def _live_session(self, mission_id="m-001"):
+        """A resumable session — one with a concrete open question stored."""
+        from lcars_serve.actions import _AlignSession
+        sess = _AlignSession(idea="x", engine=None, mission_id=mission_id)
+        sess.last_question = {"text": "Q1?", "choices": ["a", "b"]}
+        return sess
+
+    def test_align_overlay_stamps_resume_on_parked_card(self):
+        sid = "sess-xyz"
+        self.actions._align[sid] = self._live_session("m-001")
+        board = {"columns": {"align": [{"id": "m-001"}, {"id": "m-002"}]}}
+        out = self.actions.align_overlay(board)
+        self.assertEqual(out["columns"]["align"][0].get("alignResume"),
+                         {"sid": sid})
+        # the OTHER card (no live session) is untouched.
+        self.assertNotIn("alignResume", out["columns"]["align"][1])
+
+    def test_align_overlay_no_sessions_is_byte_identical(self):
+        board = {"columns": {"align": [{"id": "m-001"}]}}
+        before = json.dumps(board, sort_keys=True)
+        out = self.actions.align_overlay(board)
+        self.assertEqual(json.dumps(out, sort_keys=True), before,
+                         "no live sessions → the board is returned unchanged")
+
+    def test_align_overlay_skips_done_session(self):
+        from lcars_serve.actions import _AlignSession
+        sess = _AlignSession(idea="x", engine=None, mission_id="m-001")
+        sess.done = True
+        self.actions._align["done-sid"] = sess
+        board = {"columns": {"align": [{"id": "m-001"}]}}
+        out = self.actions.align_overlay(board)
+        self.assertNotIn("alignResume", out["columns"]["align"][0],
+                         "a done session must not stamp a resume flag")
+
+    def test_align_overlay_skips_session_with_no_question_yet(self):
+        # A freshly-created session (opening turn still in flight, last_question None)
+        # is NOT advertised as resumable — else RESUME reopens an empty console.
+        from lcars_serve.actions import _AlignSession
+        self.actions._align["fresh"] = _AlignSession(
+            idea="x", engine=None, mission_id="m-001")  # no last_question
+        board = {"columns": {"align": [{"id": "m-001"}]}}
+        out = self.actions.align_overlay(board)
+        self.assertNotIn("alignResume", out["columns"]["align"][0],
+                         "a session with no open question yet must not offer RESUME")
+        self.assertIsNone(self.actions.align_session_sid("m-001"))
+
+    def test_board_endpoint_carries_align_overlay(self):
+        # end-to-end: a live parked session shows up on GET /api/board.
+        self.actions._align["live-1"] = self._live_session("m-001")
+        _, board = self._get("/api/board")
+        cards = []
+        for col in board.get("columns", {}).values():
+            cards.extend(col)
+        m1 = [c for c in cards if c.get("id") == "m-001"]
+        self.assertTrue(m1, "m-001 must be on the board")
+        self.assertEqual(m1[0].get("alignResume"), {"sid": "live-1"})
+
+    def test_align_overlay_mission_stamps_single_detail(self):
+        self.actions._align["sess-d"] = self._live_session("m-001")
+        out = self.actions.align_overlay_mission({"id": "m-001"})
+        self.assertEqual(out.get("alignResume"), {"sid": "sess-d"})
+        # a mission with no live session is returned unchanged.
+        self.assertNotIn("alignResume",
+                         self.actions.align_overlay_mission({"id": "m-999"}))
+
+    def test_mission_detail_endpoint_carries_align_overlay(self):
+        # The captain's bug: the CARD showed RESUME but the DETAIL modal didn't,
+        # because /api/mission/<id> never ran through the overlay. Now it does.
+        self.actions._align["live-d"] = self._live_session("m-001")
+        _, detail = self._get("/api/mission/m-001")
+        self.assertEqual(detail.get("id"), "m-001")
+        self.assertEqual(detail.get("alignResume"), {"sid": "live-d"},
+                         "the detail payload must mirror the board's alignResume "
+                         "so the DETAIL modal shows RESUME ALIGN")
+
+    def test_mission_detail_endpoint_no_session_has_no_resume(self):
+        _, detail = self._get("/api/mission/m-001")
+        self.assertNotIn("alignResume", detail,
+                         "no live session → the detail payload is unchanged")
+
+
 def _plant_bug(root, mid, *, parent, issue, stage="plan"):
     d = fx.mission_dir(root, mid)
     fx.write_json(os.path.join(d, "state.json"), {

@@ -14,6 +14,67 @@ Run `lcars init` first if `.git/lcars/` does not exist — `file.sh` will create
 the `missions/` dir if needed, but a repo without the LCARS labels can't be
 issue-labelled properly.
 
+## Two lanes: grill-first (default) and Park & Align
+
+There are two ways to file:
+
+1. **Grill-first (default).** The captain has time to think now: run the full
+   Align interview below (STEP 1–5), producing a PRD, then `file.sh --prd …`.
+   This is the flow the rest of this guide documents and it is unchanged.
+2. **Park & Align (fast capture).** The captain wants to dump an idea into the
+   backlog and grill it later. **Skip the interview entirely** and park it:
+
+   ```bash
+   bash ~/.claude/skills/lcars-file/file.sh --park "<the idea, verbatim>" [--engine claude|copilot]
+   ```
+
+   That mints the mission, writes `idea.md`, opens the GitHub issue at **Align**
+   with a `◇ STANDBY — awaiting alignment` note (labels `lcars:align` +
+   `lcars:mission` only — **no** type label yet, because the type comes from the
+   grill), and marks it `"prdPending": true` in `state.json`. **No PRD, no
+   estimate, no ADR.** A parked mission is **not runnable**: `lcars run` refuses
+   it and the bare-`lcars` driver offers it for alignment but never auto-drives
+   it. Attachments are allowed (`--attach <path>`, repeatable) and staged exactly
+   as at grill-first file time — a pasted screenshot is often the whole idea. The
+   idea may also come from a file with `--idea <path>`.
+
+### Resuming a parked mission — run the grill later
+
+When the captain is ready to align a parked mission, they run:
+
+```bash
+lcars file <mission-id>
+```
+
+This is the **resume path**. Detect it: if the argument resolves to a mission
+whose `state.json` has `"prdPending": true`, you (Claude):
+
+1. **Seed the grill from `idea.md`** (and any staged `attachments/`). Read
+   `.git/lcars/missions/<id>/idea.md` and treat it as the captured idea for STEP
+   1 — do **not** ask the captain to re-describe it.
+2. Run the **normal Align interview** (STEP 2 below) — the relentless
+   one-question-at-a-time grill, seeded with that idea. The warm-Align machinery
+   is reused as-is; the mission's persisted `workerBin` (from `--engine`) governs
+   the engine.
+3. On the captain's closing confirmation, instead of `--prd`, complete the parked
+   mission in place:
+
+   ```bash
+   bash ~/.claude/skills/lcars-file/file.sh --complete <id> --prd "$prd" [--adr "$adr"] [--model-override '<scope>:<tier>']
+   ```
+
+   `--complete` validates the PRD with the **same gates** as grill-first, writes
+   `prd.md`, derives the title + type, **updates the GitHub issue in place**
+   (retitle, replace the body with the PRD summary exactly as a grill-first issue
+   renders it, add the `lcars:<type>` label), runs the estimator, and clears
+   `prdPending` — landing byte-for-byte where a grill-first filing lands (the only
+   extra artifact is `idea.md`). It is idempotent: a partial failure (e.g. the
+   issue edit fails) leaves the mission parked so a re-run retries cleanly.
+
+If `lcars file <id>` names a mission that is **not** parked (already aligned),
+say so cleanly — "mission `<id>` is already aligned; run `lcars run <id>` to
+advance it" — and do not re-grill.
+
 ## STEP 1 — Capture
 
 Ask the captain for a free-form description of the idea. One open prompt:

@@ -40,6 +40,448 @@ FILE_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$FILE_SKILL_DIR/../lcars-version/check.sh}"
 [ -f "$VERSION_CHECK" ] && bash "$VERSION_CHECK" ask || true
 
+# ==========================================================================
+# Park & Align helpers (S136). Defined here so the --park / --complete dispatch
+# below can call them. None runs at source time.
+# ==========================================================================
+
+# Tiny jq-free JSON readers over a state.json file (same style as status.sh).
+_fj_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
+_fj_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
+
+# _lcars_dirs — resolve GIT_DIR / LCARS_DIR / MISSIONS_DIR / CONFIG (mirrors the
+# grill-first inline resolution). Ensures missions/ exists.
+_lcars_dirs() {
+  GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" \
+    || die "not inside a git repository — run this from a repo root."
+  case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
+  LCARS_DIR="$GIT_DIR/lcars"
+  MISSIONS_DIR="$LCARS_DIR/missions"
+  CONFIG="$LCARS_DIR/config.json"
+  mkdir -p "$MISSIONS_DIR"
+}
+
+# _resolve_model — config.json wins, else $LCARS_MODEL, else claude-sonnet
+# (identical resolution to grill-first). Echoes the model string.
+_resolve_model() {
+  local m=""
+  [ -f "$CONFIG" ] && m="$(sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONFIG" | head -1)"
+  [ -n "$m" ] || m="${LCARS_MODEL:-claude-sonnet}"
+  printf '%s' "$m"
+}
+
+# _mint_id — the per-day sequenced mission id under $MISSIONS_DIR. Echoes it.
+_mint_id() {
+  local max=0 d n
+  shopt -s nullglob
+  for d in "$MISSIONS_DIR"/lcars-"$DATE"-*; do
+    n="$((10#${d##*-}))"
+    [ "$n" -gt "$max" ] && max="$n"
+  done
+  shopt -u nullglob
+  printf 'lcars-%s-%03d' "$DATE" "$((max + 1))"
+}
+
+# _make_branch <id> — create the Mission's own branch lcars/<id> off the current
+# branch (best-effort, mirrors grill-first). Sets BRANCH / BASE / BRANCH_NOTE.
+_make_branch() {
+  BRANCH="lcars/$1"
+  BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  case "$BASE" in ''|HEAD) BASE="main" ;; esac
+  BRANCH_NOTE=""
+  if "$GIT_BIN" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+    if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      BRANCH_NOTE="  ⚠ branch $BRANCH already exists — reusing it."
+    elif ! "$GIT_BIN" branch "$BRANCH" >/dev/null 2>&1; then
+      BRANCH_NOTE="  ⚠ could not create branch $BRANCH — create it before Implement."
+    fi
+  else
+    BRANCH_NOTE="  ⚠ repo has no commits yet — branch $BRANCH not created; Implement will create it on first commit."
+  fi
+}
+
+# _validate_prd <prd-path> — every required section present (same gates as
+# grill-first, :121+). Dies on the first missing one, writing NOTHING.
+_validate_prd() {
+  local p="$1"
+  grep -q '^# Mission:'                  "$p" || die "PRD is missing the 'Mission title' section — Align must produce it before filing."
+  grep -q '\*\*Type:\*\*'                "$p" || die "PRD is missing the 'Type' section — Align must produce it before filing."
+  grep -q '\*\*Goal:\*\*'                "$p" || die "PRD is missing the 'Goal' section — Align must produce it before filing."
+  grep -q '\*\*Acceptance Criteria:\*\*' "$p" || die "PRD is missing the 'Acceptance Criteria' section — Align must produce it before filing."
+  grep -q '\*\*Out of Scope:\*\*'        "$p" || die "PRD is missing the 'Out of Scope' section — Align must produce it before filing."
+  grep -q '\*\*Constraints:\*\*'         "$p" || die "PRD is missing the 'Constraints' section — Align must produce it before filing."
+}
+
+# _validate_adr <adr-path> — shape-check (same gates as grill-first).
+_validate_adr() {
+  local a="$1"
+  grep -q '\*\*Context:\*\*'                  "$a" || die "ADR is missing the 'Context' section — each ADR needs Context / Decision / Alternatives considered / Consequences."
+  grep -q '\*\*Decision:\*\*'                 "$a" || die "ADR is missing the 'Decision' section — each ADR needs Context / Decision / Alternatives considered / Consequences."
+  grep -q '\*\*Alternatives considered:\*\*'  "$a" || die "ADR is missing the 'Alternatives considered' section — each ADR needs Context / Decision / Alternatives considered / Consequences."
+  grep -q '\*\*Consequences:\*\*'             "$a" || die "ADR is missing the 'Consequences' section — each ADR needs Context / Decision / Alternatives considered / Consequences."
+}
+
+# --------------------------------------------------------------------------
+# do_park — file a mission from just the idea (no grill, no PRD, no estimate).
+# --------------------------------------------------------------------------
+do_park() {
+  # Resolve the idea text: --idea <file> wins, else the positional text.
+  local idea=""
+  if [ -n "$IDEA_SRC" ]; then
+    [ -f "$IDEA_SRC" ] || die "idea file not found: $IDEA_SRC"
+    idea="$(cat "$IDEA_SRC")"
+  elif [ "${#POSITIONAL[@]}" -gt 0 ]; then
+    idea="${POSITIONAL[*]}"
+  fi
+  [ -n "$idea" ] || die "no idea given — pass the idea text (or --idea <file>) to park a mission."
+
+  # Optional engine → the parked mission's workerBin. Validate BEFORE any write
+  # so a bogus engine stops parking with nothing partial (engines-separate-paths).
+  if [ -n "$ENGINE" ]; then
+    case "$ENGINE" in
+      claude|copilot) : ;;
+      *) die "unknown engine '$ENGINE' — use 'claude' or 'copilot'." ;;
+    esac
+  fi
+
+  # Attachments (S92) — each must exist, checked BEFORE anything is written.
+  if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
+    local a
+    for a in "${ATTACHMENTS[@]}"; do
+      [ -n "$a" ] || die "empty --attach path given."
+      [ -f "$a" ] || die "attachment file not found: $a"
+    done
+  fi
+
+  _lcars_dirs
+  local ID; ID="$(_mint_id)"
+  local MISSION_DIR="$MISSIONS_DIR/$ID"
+  mkdir -p "$MISSION_DIR"
+
+  _make_branch "$ID"
+
+  # idea.md — the verbatim capture (the whole point of the fast lane).
+  printf '%s\n' "$idea" >"$MISSION_DIR/idea.md"
+
+  # Stage durable attachments exactly as S92 (into attachments/attachment-NN.ext),
+  # collecting the relative paths for state.json. No prd.md exists yet, so — unlike
+  # grill-first — there is no "## Attached images" section to append here; the
+  # --complete step re-lists them into prd.md when the PRD is written.
+  local ATTACH_RELS=()
+  if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
+    mkdir -p "$MISSION_DIR/attachments"
+    local an=0 asrc aext arel
+    for asrc in "${ATTACHMENTS[@]}"; do
+      an=$((an + 1)); aext=""
+      case "$asrc" in *.*) aext=".${asrc##*.}" ;; esac
+      arel="$(printf 'attachments/attachment-%02d%s' "$an" "$aext")"
+      cp "$asrc" "$MISSION_DIR/$arel"
+      ATTACH_RELS+=("$arel")
+    done
+  fi
+
+  local MODEL; MODEL="$(_resolve_model)"
+
+  # workerBin: --engine wins, else the daemon-threaded $LCARS_WORKER_BIN, else none.
+  local WB="$ENGINE"; [ -n "$WB" ] || WB="${LCARS_WORKER_BIN:-}"
+  local WORKER_BIN_LINE=""
+  if [ -n "$WB" ]; then
+    local wb_json="${WB//\\/\\\\}"; wb_json="${wb_json//\"/\\\"}"
+    WORKER_BIN_LINE="  \"workerBin\": \"$wb_json\","
+  fi
+
+  local ATTACH_LINE=""
+  if [ "${#ATTACH_RELS[@]}" -gt 0 ]; then
+    local attach_items="" arel
+    for arel in "${ATTACH_RELS[@]}"; do
+      [ -n "$attach_items" ] && attach_items="$attach_items, "
+      attach_items="$attach_items\"$arel\""
+    done
+    ATTACH_LINE="  \"attachments\": [$attach_items],"
+  fi
+
+  # The issue title = the first idea line, hard-truncated to ~70 chars.
+  local first_line title_json
+  first_line="$(printf '%s' "$idea" | head -1)"
+  local PTITLE="${first_line:0:70}"
+  title_json="${PTITLE//\\/\\\\}"; title_json="${title_json//\"/\\\"}"
+
+  # write_park_state <issue-or-null> — a parked state.json: stage align +
+  # "prdPending": true (the pre-PRD marker). No `type` (unknown until the grill).
+  write_park_state() {
+    {
+      printf '{\n'
+      printf '  "id": "%s",\n' "$ID"
+      printf '  "title": "%s",\n' "$title_json"
+      printf '  "stage": "align",\n'
+      printf '  "prdPending": true,\n'
+      printf '  "created": "%s",\n' "$NOW"
+      printf '  "model": "%s",\n' "$MODEL"
+      [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
+      [ -n "$ATTACH_LINE" ] && printf '%s\n' "$ATTACH_LINE"
+      printf '  "githubIssue": %s,\n' "${1:-null}"
+      printf '  "branch": "%s",\n' "$BRANCH"
+      printf '  "base": "%s"\n' "$BASE"
+      printf '}\n'
+    } >"$MISSION_DIR/state.json"
+  }
+  write_park_state null
+
+  # Open the GitHub issue — labels lcars:align + lcars:mission ONLY (NO type
+  # label; type is unknown until the grill). Body = the idea + a standby note.
+  local ISSUE="" GH_NOTE=""
+  if command -v "$GH_BIN" >/dev/null 2>&1; then
+    local BODY_TMP; BODY_TMP="$(mktemp "$MISSION_DIR/.issue-body.XXXXXX")"
+    {
+      printf '%s\n' "$idea"
+      printf '\n---\n\n'
+      printf '_◇ STANDBY — parked awaiting alignment. Run `lcars file %s` to run the Align grill and complete this mission._\n' "$ID"
+    } >"$BODY_TMP"
+    local url
+    url="$("$GH_BIN" issue create \
+            --title "$PTITLE" \
+            --body-file "$BODY_TMP" \
+            --label "lcars:align,lcars:mission" 2>/dev/null)"
+    rm -f "$BODY_TMP"
+    local num="${url##*/}"
+    case "$num" in
+      ''|*[!0-9]*) GH_NOTE="  ⚠ gh issue create failed — mission parked locally; re-run after fixing gh." ;;
+      *) ISSUE="$num" ;;
+    esac
+  else
+    GH_NOTE="  ⚠ gh CLI not found — mission parked locally without a GitHub issue."
+  fi
+  write_park_state "${ISSUE:-null}"
+
+  local issue_line="(none — parked locally only)"
+  [ -n "$ISSUE" ] && issue_line="#$ISSUE"
+  [ -n "$GH_NOTE" ] && echo "$GH_NOTE"
+  [ -n "$BRANCH_NOTE" ] && echo "$BRANCH_NOTE"
+  echo "  Mission parked: $ID"
+  echo "  GitHub issue:   $issue_line"
+  echo "  Branch:         $BRANCH (off $BASE)"
+  echo "  Stage:          align  ◇ STANDBY — awaiting alignment"
+  echo "  Next:           run \`lcars file $ID\` to align it (the Align grill), then it flows the pipeline"
+  return 0
+}
+
+# --------------------------------------------------------------------------
+# do_complete — the grill-completion verb for a parked mission. Validates the
+# PRD (same gates), writes prd.md, derives type/title, clears prdPending, runs
+# the estimator, and updates the issue IN PLACE — landing byte-equivalent to a
+# grill-first filing (the only extra artifact is idea.md).
+# --------------------------------------------------------------------------
+do_complete() {
+  local ID="$COMPLETE_ID"
+  [ -n "$ID" ] || die "no mission id — usage: lcars file --complete <id> --prd <path>."
+  [ -n "$PRD_SRC" ] || die "no PRD given — pass --prd <path> to complete the alignment."
+  [ -f "$PRD_SRC" ] || die "PRD file not found: $PRD_SRC"
+
+  # Validate the model override up front (same rules as grill-first) so a bad
+  # value stops BEFORE anything is written.
+  local OV_SCOPE="" OV_TIER=""
+  if [ -n "$MODEL_OVERRIDE" ]; then
+    case "$MODEL_OVERRIDE" in
+      *:*) : ;;
+      *) die "malformed --model-override '$MODEL_OVERRIDE' — expected <scope>:<tier> (e.g. all:opus)." ;;
+    esac
+    OV_SCOPE="${MODEL_OVERRIDE%%:*}"; OV_TIER="${MODEL_OVERRIDE#*:}"
+    case "$OV_SCOPE" in all|reasoning|implementation) : ;; *) die "invalid --model-override scope '$OV_SCOPE' — must be one of: all, reasoning, implementation." ;; esac
+    case "$OV_TIER" in sonnet|opus) : ;; *) die "invalid --model-override tier '$OV_TIER' — must be one of: sonnet, opus." ;; esac
+  fi
+
+  _lcars_dirs
+  local MISSION_DIR="$MISSIONS_DIR/$ID"
+  local STATE="$MISSION_DIR/state.json"
+  [ -d "$MISSION_DIR" ] || die "no mission '$ID' under .git/lcars/missions/ — check the id (or park one with \`lcars file --park\`)."
+  [ -f "$STATE" ]       || die "mission '$ID' has no state.json — its state is corrupt."
+
+  # Only a PARKED mission can be completed. A non-parked mission is already
+  # aligned — say so cleanly (the resume path's clean message).
+  local pend; pend="$(_fj_raw "$STATE" prdPending)"
+  [ "$pend" = "true" ] || die "mission '$ID' is already aligned — nothing to complete (run \`lcars run $ID\` to advance it)."
+
+  # Validate the PRD (and ADR when given) BEFORE any write — a bad PRD leaves the
+  # mission untouched: no prd.md, prdPending still true (nothing partial).
+  _validate_prd "$PRD_SRC"
+  if [ -n "$ADR_SRC" ]; then
+    [ -f "$ADR_SRC" ] || die "ADR file not found: $ADR_SRC"
+    _validate_adr "$ADR_SRC"
+  fi
+
+  # Derive title + type from the PRD (source of truth), same as grill-first.
+  local TITLE TYPE
+  TITLE="$(sed -n 's/^# Mission:[[:space:]]*//p' "$PRD_SRC" | head -1)"
+  [ -n "$TITLE" ] || die "could not read the Mission title from the PRD."
+  TYPE="$(sed -n 's/.*\*\*Type:\*\*[[:space:]]*//p' "$PRD_SRC" | head -1 | tr 'A-Z' 'a-z' | tr -cd 'a-z')"
+  case "$TYPE" in feature|bug) : ;; *) die "PRD Type must be 'feature' or 'bug' (got: '${TYPE:-empty}')." ;; esac
+
+  # Preserve the parked mission's durable fields so the final state.json is
+  # byte-equivalent to a grill-first filing of the same PRD.
+  local CREATED MODEL BRANCH BASE WB ISSUE
+  CREATED="$(_fj_str "$STATE" created)"
+  MODEL="$(_fj_str "$STATE" model)"
+  BRANCH="$(_fj_str "$STATE" branch)"
+  BASE="$(_fj_str "$STATE" base)"
+  WB="$(_fj_str "$STATE" workerBin)"
+  ISSUE="$(_fj_raw "$STATE" githubIssue)"; case "$ISSUE" in null) ISSUE="" ;; esac
+
+  # Reconstruct the staged attachments (S92) from the attachments/ dir, in order,
+  # so prd.md gets the same "## Attached images" section a grill-first --attach
+  # filing produces AND state.json carries the same array.
+  local ATTACH_RELS=()
+  if [ -d "$MISSION_DIR/attachments" ]; then
+    shopt -s nullglob
+    local f
+    for f in "$MISSION_DIR/attachments"/attachment-*; do
+      ATTACH_RELS+=("attachments/$(basename "$f")")
+    done
+    shopt -u nullglob
+  fi
+
+  # --- write prd.md (+ the attachments section, mirroring grill-first) --------
+  cat "$PRD_SRC" >"$MISSION_DIR/prd.md"
+  if [ "${#ATTACH_RELS[@]}" -gt 0 ]; then
+    local arel
+    {
+      printf '\n## Attached images\n\n'
+      for arel in "${ATTACH_RELS[@]}"; do printf -- '- %s\n' "$arel"; done
+    } >>"$MISSION_DIR/prd.md"
+  fi
+  # adr.md (complex mission) — persisted the same way grill-first does.
+  [ -n "$ADR_SRC" ] && cat "$ADR_SRC" >"$MISSION_DIR/adr.md"
+
+  # --- run the end-of-Align estimator (same timing contract: before the issue
+  # body render) -------------------------------------------------------------
+  local EST_NOTE=""
+  if [ -f "$RUN_BIN" ]; then
+    if bash "$RUN_BIN" estimate --mission "$ID" >/dev/null 2>&1 \
+         && [ -f "$MISSION_DIR/estimate.json" ]; then
+      :
+    else
+      EST_NOTE="  ⚠ estimator unavailable — mission aligned with default per-stage models."
+    fi
+  else
+    EST_NOTE="  ⚠ estimator driver not found ($RUN_BIN) — mission aligned with default per-stage models."
+  fi
+  local EST_ISSUE=""
+  if [ -f "$RUN_BIN" ] && [ -f "$MISSION_DIR/estimate.json" ]; then
+    EST_ISSUE="$(bash "$RUN_BIN" render-estimate --mission "$ID" --surface issue 2>/dev/null)"
+  fi
+
+  # --- compose the issue body: prd → adr → Estimate (exactly grill-first) -----
+  local BODY_FILE="$MISSION_DIR/prd.md" BODY_TMP=""
+  if [ -f "$MISSION_DIR/adr.md" ] || [ -n "$EST_ISSUE" ]; then
+    BODY_TMP="$(mktemp "$MISSION_DIR/.issue-body.XXXXXX")"
+    {
+      cat "$MISSION_DIR/prd.md"
+      if [ -f "$MISSION_DIR/adr.md" ]; then printf '\n\n---\n\n'; cat "$MISSION_DIR/adr.md"; fi
+      if [ -n "$EST_ISSUE" ]; then printf '\n\n---\n\n'; printf '%s\n' "$EST_ISSUE"; fi
+    } >"$BODY_TMP"
+    BODY_FILE="$BODY_TMP"
+  fi
+
+  # --- update the issue IN PLACE (retitle, re-body, add the type label) -------
+  # prdPending is cleared LAST (below), so if this fails the mission stays parked
+  # and a re-run retries the issue update — idempotent.
+  local GH_NOTE="" GH_FAILED=0
+  if command -v "$GH_BIN" >/dev/null 2>&1; then
+    if [ -n "$ISSUE" ]; then
+      "$GH_BIN" issue edit "$ISSUE" \
+        --title "$TITLE" \
+        --body-file "$BODY_FILE" \
+        --add-label "lcars:$TYPE" >/dev/null 2>&1 \
+        || { GH_FAILED=1; GH_NOTE="  ⚠ gh issue edit failed — mission left PARKED (NOT aligned). Re-run \`lcars file --complete $ID --prd <path>\` after fixing gh."; }
+    else
+      # No issue was opened at park time (gh was down) — create it now, grill-first
+      # style (all three labels).
+      local url num
+      url="$("$GH_BIN" issue create --title "$TITLE" --body-file "$BODY_FILE" \
+              --label "lcars:align,lcars:$TYPE,lcars:mission" 2>/dev/null)"
+      num="${url##*/}"
+      case "$num" in
+        ''|*[!0-9]*) GH_FAILED=1; GH_NOTE="  ⚠ gh issue create failed — mission left PARKED (NOT aligned). Re-run \`lcars file --complete $ID --prd <path>\` after fixing gh." ;;
+        *) ISSUE="$num" ;;
+      esac
+    fi
+  else
+    GH_NOTE="  ⚠ gh CLI not found — align recorded locally without updating a GitHub issue."
+  fi
+  [ -n "$BODY_TMP" ] && rm -f "$BODY_TMP"
+
+  # --- DEFECT-1 guard: a gh issue UPDATE failure leaves the mission PARKED -----
+  # We have NOT written the final (prdPending-cleared) state.json yet, so state
+  # is still in its parked shape — "prdPending": true, no `type` — and the mission
+  # stays runnable-blocked. Bail out NON-ZERO with the re-run instruction rather
+  # than clearing prdPending: otherwise local state would read "aligned" while the
+  # GitHub issue is permanently drifted (stale title/body, no type label), and the
+  # "already aligned" guard would refuse every retry. A later
+  # `lcars file --complete` re-enters here (prdPending still true, so that guard
+  # does NOT trip), regenerates prd.md / estimate.json idempotently, and cleanly
+  # RETRIES the issue update — clearing prdPending only once it succeeds. (A gh
+  # that is simply absent is NOT a failure: it degrades to a local align, exit 0,
+  # exactly like grill-first.)
+  if [ "$GH_FAILED" -eq 1 ]; then
+    printf '%s\n' "$GH_NOTE" >&2
+    return 1
+  fi
+
+  # --- write the FINAL state.json (grill-first shape; NO prdPending) ----------
+  # This clears prdPending — the LAST write, so a failure above leaves the mission
+  # parked for a clean re-run.
+  local title_json="${TITLE//\\/\\\\}"; title_json="${title_json//\"/\\\"}"
+  local OVERRIDE_LINE=""
+  [ -n "$OV_SCOPE" ] && OVERRIDE_LINE="  \"modelOverride\": { \"scope\": \"$OV_SCOPE\", \"tier\": \"$OV_TIER\" },"
+  local WORKER_BIN_LINE=""
+  if [ -n "$WB" ]; then
+    local wb_json="${WB//\\/\\\\}"; wb_json="${wb_json//\"/\\\"}"
+    WORKER_BIN_LINE="  \"workerBin\": \"$wb_json\","
+  fi
+  local ATTACH_LINE=""
+  if [ "${#ATTACH_RELS[@]}" -gt 0 ]; then
+    local attach_items="" arel
+    for arel in "${ATTACH_RELS[@]}"; do
+      [ -n "$attach_items" ] && attach_items="$attach_items, "
+      attach_items="$attach_items\"$arel\""
+    done
+    ATTACH_LINE="  \"attachments\": [$attach_items],"
+  fi
+  {
+    printf '{\n'
+    printf '  "id": "%s",\n' "$ID"
+    printf '  "type": "%s",\n' "$TYPE"
+    printf '  "title": "%s",\n' "$title_json"
+    printf '  "stage": "align",\n'
+    printf '  "created": "%s",\n' "$CREATED"
+    printf '  "model": "%s",\n' "$MODEL"
+    [ -n "$OVERRIDE_LINE" ] && printf '%s\n' "$OVERRIDE_LINE"
+    [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
+    [ -n "$ATTACH_LINE" ] && printf '%s\n' "$ATTACH_LINE"
+    printf '  "githubIssue": %s,\n' "${ISSUE:-null}"
+    printf '  "branch": "%s",\n' "$BRANCH"
+    printf '  "base": "%s"\n' "$BASE"
+    printf '}\n'
+  } >"$STATE"
+
+  # CLI estimate readout (same as grill-first).
+  local EST_CLI=""
+  if [ -f "$RUN_BIN" ] && [ -f "$MISSION_DIR/estimate.json" ]; then
+    EST_CLI="$(bash "$RUN_BIN" render-estimate --mission "$ID" --surface cli 2>/dev/null)"
+  fi
+
+  local issue_line="(none — recorded locally only)"
+  [ -n "$ISSUE" ] && issue_line="#$ISSUE"
+  [ -n "$GH_NOTE" ] && echo "$GH_NOTE"
+  [ -n "$EST_NOTE" ] && echo "$EST_NOTE"
+  echo "  Mission aligned: $ID"
+  echo "  GitHub issue:    $issue_line"
+  echo "  Type:            $TYPE"
+  echo "  Stage:           align  (PRD written — ready for Research)"
+  [ -n "$EST_CLI" ] && printf '%s\n' "$EST_CLI"
+  echo "  Next:            run \`lcars run $ID\` to continue"
+  return 0
+}
+
 # --- args -----------------------------------------------------------------
 # --prd is REQUIRED. --adr is OPTIONAL: Align passes it ONLY for a complex
 # Mission (an engineering ADR set); a trivial Mission ships no adr.md at all.
@@ -54,8 +496,27 @@ MODEL_OVERRIDE=""
 # under a stable name, referenced by RELATIVE path in prd.md, and recorded in
 # state.json — so a cold Stage worker can later READ it by path. Repeatable.
 ATTACHMENTS=()
+# --- Park & Align (S136) --------------------------------------------------
+# A NEW pre-PRD lane. `lcars file --park "<idea>" [--engine …]` files a mission
+# instantly with just the idea (no grill, no PRD, no estimate), parked at align
+# with "prdPending": true; `lcars file --complete <id> --prd <path>` later runs
+# the grill-completion (validate PRD, retitle+re-body the issue in place, add the
+# type label, clear prdPending, estimate) — landing exactly where a grill-first
+# filing lands. Absent both flags, this script is BYTE-IDENTICAL to grill-first.
+MODE=""            # "" (grill-first) | park | complete
+COMPLETE_ID=""     # the mission id for --complete
+IDEA_SRC=""        # --idea <file> (verbatim idea capture)
+ENGINE=""          # --engine claude|copilot (parked mission's workerBin)
+POSITIONAL=()      # bare args = the park idea text
 while [ $# -gt 0 ]; do
   case "$1" in
+    --park)  MODE="park"; shift ;;
+    --complete)   MODE="complete"; COMPLETE_ID="${2:-}"; shift 2 ;;
+    --complete=*) MODE="complete"; COMPLETE_ID="${1#--complete=}"; shift ;;
+    --idea)   IDEA_SRC="${2:-}"; shift 2 ;;
+    --idea=*) IDEA_SRC="${1#--idea=}"; shift ;;
+    --engine)   ENGINE="${2:-}"; shift 2 ;;
+    --engine=*) ENGINE="${1#--engine=}"; shift ;;
     --prd)   PRD_SRC="${2:-}"; shift 2 ;;
     --prd=*) PRD_SRC="${1#--prd=}"; shift ;;
     --adr)   ADR_SRC="${2:-}"; shift 2 ;;
@@ -64,9 +525,23 @@ while [ $# -gt 0 ]; do
     --model-override=*) MODEL_OVERRIDE="${1#--model-override=}"; shift ;;
     --attach)   ATTACHMENTS+=("${2:-}"); shift 2 ;;
     --attach=*) ATTACHMENTS+=("${1#--attach=}"); shift ;;
-    *)       die "unknown argument: $1" ;;
+    --*)     die "unknown argument: $1" ;;
+    *)       POSITIONAL+=("$1"); shift ;;
   esac
 done
+
+# Dispatch the two new lanes BEFORE the grill-first checks. Each owns its whole
+# flow and exits; the grill-first path below runs only when neither flag is set,
+# so its behaviour is unchanged (byte-identical).
+if [ "$MODE" = "park" ]; then
+  do_park
+  exit $?
+elif [ "$MODE" = "complete" ]; then
+  do_complete
+  exit $?
+fi
+# Grill-first: a bare positional argument is not accepted (only --prd drives it).
+[ "${#POSITIONAL[@]}" -eq 0 ] || die "unexpected argument: ${POSITIONAL[0]} (grill-first filing takes --prd)."
 
 [ -n "$PRD_SRC" ] || die "no PRD given — pass --prd <path> to a PRD file."
 [ -f "$PRD_SRC" ] || die "PRD file not found: $PRD_SRC"

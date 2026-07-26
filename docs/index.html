@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:2366681a7b9c93849f7d2ca3ac4021500ea5682d6f14e39185e09d2026d5928a -->
-<!-- lcars-docs-src: vision.md sha256:e8957bd4cabbafceff172422f76531703cef1c802e258175056eb0e372a307c1 -->
+<!-- lcars-docs-src: README.md sha256:1d890f80b8bc271d1322c6d43acd96a4044e4ed30768f62ff8493dfe6f16fa4f -->
+<!-- lcars-docs-src: vision.md sha256:c9a3bede048ac7aa83fd707480a8b51e0466297fed104eec79efe59a180d4252 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -388,7 +388,12 @@ lcars-viewscreen --open   # launch the board and open it in your browser</pre>
         <ul>
           <li><strong>File a Mission.</strong> Type your idea into the board; the
           live Align console <strong>grills you</strong> until the spec is sharp,
-          then files the Mission as a card.</li>
+          then files the Mission as a card. In a hurry? <strong>Park</strong> it
+          instead — engine + idea, one click, no grill — and it lands as a
+          <em>◇ STANDBY — AWAITING ALIGNMENT</em> card in the Align column; hit
+          <strong>Start Alignment</strong> on it later to run the same grill
+          (seeded with your idea) and the card swaps in place to a normal aligned
+          Mission.</li>
           <li><strong>Watch it drive.</strong> Each Mission is a card in its Stage
           column, carrying one <strong>cost pill</strong> and two
           <strong>difficulty pills</strong> (reasoning + implementation), with
@@ -620,7 +625,12 @@ flowchart LR
         <div class="control-card">
           <div class="control-cmd">lcars file</div>
           <div class="control-desc">File a new Mission from a free-form idea; runs
-          Align to a PRD.</div>
+          Align to a PRD. <code>lcars file --park "&lt;idea&gt;"</code> instead
+          <strong>parks</strong> it — Mission + issue created instantly in a
+          pre-PRD standby state (no grill, no PRD, no estimate), dropped in the
+          Align column <em>awaiting alignment</em> and never runnable until
+          aligned; <code>lcars file &lt;id&gt;</code> later runs the seeded grill
+          and completes it in place.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars log</div>
