@@ -97,6 +97,9 @@ if (typeof sandbox.renderMainDeploy !== "function") {
 
 const meta = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 if (process.argv[3] === "readonly") sandbox.writesActive = false;
+// "stopping" → simulate a stop already in flight (■ STOP clicked): the running
+// band must render a disabled ◐ STOPPING… segment, not a clickable STOP.
+if (process.argv[3] === "stopping") sandbox.mainDeployStopping = true;
 
 sandbox.renderMainDeploy(meta);
 
@@ -112,6 +115,9 @@ function project(n) {
 }
 process.stdout.write(JSON.stringify({
   mainDeploy: project(REGISTRY.mainDeploy),
+  // the ▸ Deploy Main button's display: "" when shown, "none" when the live
+  // status has replaced it in-place (active deploy).
+  deployMainBtnDisplay: REGISTRY.deployMainBtn.style.display || "",
   chrome: {
     fileBtn: !!REGISTRY.fileBtn,
     conn: !!REGISTRY.conn,

@@ -483,6 +483,46 @@ class DeployBandRenderTest(unittest.TestCase):
                             for n in _flatten(out["mainDeploy"]))
         self.assertIn("no dev script found", texts)
 
+    # -- captain UX ruling: the ▸ Deploy Main button and the live status are
+    #    MUTUALLY EXCLUSIVE — an active deploy REPLACES the button in place.
+    def test_running_hides_deploy_main_button(self):
+        out = _render_band({"mainLaunch": {"status": "running", "sha": "abc1234",
+                                           "url": "http://localhost:9940"}})
+        self.assertEqual(out["deployMainBtnDisplay"], "none")
+
+    def test_launching_hides_deploy_main_button(self):
+        out = _render_band({"mainLaunch": {"status": "launching"}})
+        self.assertEqual(out["deployMainBtnDisplay"], "none")
+
+    def test_absent_shows_deploy_main_button(self):
+        out = _render_band({"repo": "acme/repo", "adapter": "local",
+                            "mode": "read-write"})
+        self.assertEqual(out["deployMainBtnDisplay"], "")
+
+    def test_stopped_shows_deploy_main_button(self):
+        out = _render_band({"mainLaunch": {"status": "stopped", "sha": "abc1234"}})
+        self.assertEqual(out["deployMainBtnDisplay"], "")
+
+    def test_failed_shows_deploy_main_button_for_retry(self):
+        out = _render_band({"mainLaunch": {"status": "failed",
+                                           "message": "no dev script found"}})
+        self.assertEqual(out["deployMainBtnDisplay"], "")
+
+    def test_stopping_in_flight_shows_disabled_stopping_not_clickable_stop(self):
+        # ■ STOP already clicked → a re-render (SSE/refresh) during the blocking
+        # stop must show a disabled ◐ STOPPING… segment, not a fresh clickable
+        # STOP — so a second click can't land.
+        out = _render_band({"mainLaunch": {"status": "running", "sha": "abc1234",
+                                           "url": "http://localhost:9940"}},
+                           mode="stopping")
+        nodes = _flatten(out["mainDeploy"])
+        texts = " || ".join(n.get("text", "") for n in nodes)
+        classes = " ".join(n.get("cls", "") for n in nodes)
+        self.assertIn("STOPPING", texts.upper())
+        self.assertIn("deploy-stopping", classes)
+        # the clickable ■ STOP label is gone (it was a <button>, now a span)
+        self.assertNotIn("■ STOP", texts)
+
     def test_readonly_disables_stop(self):
         out = _render_band({"mainLaunch": {"status": "running", "sha": "abc1234",
                                            "url": "http://localhost:9940"}},

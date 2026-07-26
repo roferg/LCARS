@@ -132,8 +132,28 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
    Ship-status voice (● MAIN LIVE / ◐ DEPLOYING…), never a CI widget. */
 .topbar .main-deploy{display:flex;align-items:center;gap:8px;
   font-family:var(--font-display);font-size:11px;letter-spacing:.12em}
-.topbar .main-deploy .deploy-pill{padding:4px 10px;border-radius:11px;
+.topbar .main-deploy .deploy-pill{padding:4px 10px;border-radius:12px;
+  border:1px solid transparent;font-size:10px;
   color:var(--lcars-text-on-color);text-transform:uppercase;white-space:nowrap}
+/* ● MAIN LIVE + ■ STOP as ONE integrated segmented capsule: the wrapper carries
+   the rounded ends and clips the two square-edged segments so they fuse into a
+   single pill (teal status | maroon stop), no gap. */
+.topbar .main-deploy .deploy-live{display:inline-flex;align-items:stretch;
+  border-radius:12px;overflow:hidden}
+.topbar .main-deploy .deploy-live .deploy-pill.live{border-radius:0;border:0;
+  display:inline-flex;align-items:center}
+.topbar .main-deploy .deploy-live .btn.danger.deploy-stop{border-radius:0;
+  border:0;margin:0;display:inline-flex;align-items:center}
+/* ◐ STOPPING… — the in-flight, non-clickable stop segment (a span, not a
+   button): same maroon capsule, visibly dimmed, default cursor. */
+.topbar .main-deploy .deploy-stopping{opacity:.72;cursor:default}
+/* ■ STOP sits ON the yellow band, so the base .btn.danger (transparent bg, pink
+   text) reads as near-invisible yellow-on-yellow. It needs a SOLID contrasting
+   segment: a dark MAROON, white text — unmistakably a stop control, calmer than
+   bright red against the yellow (captain UX ruling). */
+.topbar .main-deploy .btn.danger{background:#7a1f2b;color:#fff;
+  border-color:#7a1f2b;font-weight:700}
+.topbar .main-deploy .btn.danger:hover{background:#8f2634}
 .topbar .main-deploy .deploy-pill.live{background:var(--lcars-teal);
   color:var(--lcars-black,#030608);font-weight:700}
 .topbar .main-deploy .deploy-pill.live .sha{opacity:.72;font-weight:400}

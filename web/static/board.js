@@ -907,12 +907,30 @@ function render(board) {
      running   → ● MAIN LIVE + short sha + clickable url + ■ STOP (confirmless);
      failed    → a themed plain-English message (▸ Deploy Main is the retry).
    Star Trek voice, never a CI widget. Depends only on the board shape. */
+// Client-side transient: set the instant ■ STOP is clicked, so every re-render
+// (SSE tick, refresh) during the BLOCKING stop shows a disabled ◐ STOPPING…
+// instead of recreating a fresh, clickable STOP — you can't smack stop twice.
+// It clears itself the moment the board leaves the running state (stopped/
+// absent/failed) or the stop request errors.
+var mainDeployStopping = false;
 function renderMainDeploy(meta) {
   var host = document.getElementById("mainDeploy");
   if (!host) return;
   host.innerHTML = "";
   var ml = meta && meta.mainLaunch;
   var status = ml && ml.status;
+  // Once the deploy is no longer running, the stop has landed (or never was) —
+  // drop the transient so a future deploy's STOP is clickable again.
+  if (status !== "running") mainDeployStopping = false;
+  // The ▸ Deploy Main button and the live status are MUTUALLY EXCLUSIVE: while a
+  // deploy is spinning up or live, the status pill REPLACES the button in place
+  // (captain UX ruling) — you don't deploy what's already deployed. Any other
+  // state (absent / stopped / failed) shows the button so you can (re)deploy /
+  // retry. Toggling display keeps the button's band slot, so the status pill
+  // lands exactly where the button was.
+  var mainBtn = document.getElementById("deployMainBtn");
+  var active = status === "launching" || status === "running";
+  if (mainBtn) mainBtn.style.display = active ? "none" : "";
   // absent / stopped ⇒ nothing beside the button (byte-identical to today).
   if (!ml || !status || status === "stopped") return;
   if (status === "launching") {
@@ -920,10 +938,39 @@ function renderMainDeploy(meta) {
     return;
   }
   if (status === "running") {
+    // ● MAIN LIVE and ■ STOP are ONE integrated segmented capsule (captain UX
+    // ruling): the teal status segment + a fused maroon STOP on its right edge,
+    // sharing the pill's rounded ends (the .deploy-live wrapper clips them).
+    var seg = el("span", "deploy-live");
     var live = el("span", "deploy-pill live");
     live.appendChild(document.createTextNode("● MAIN LIVE"));
     if (ml.sha) live.appendChild(el("span", "sha", " " + ml.sha));
-    host.appendChild(live);
+    seg.appendChild(live);
+    if (mainDeployStopping) {
+      // stop already in flight — a disabled STOPPING… segment, NOT a button, so
+      // it survives re-renders and can't be clicked again.
+      var stopping = el("span", "btn danger deploy-stop deploy-stopping",
+                        "◐ STOPPING…");
+      seg.appendChild(stopping);
+    } else {
+      // ■ STOP is cheap/reversible → confirmless; a view-only build disables it
+      // via applyWriteState. First click flips to STOPPING… immediately (a
+      // re-render honours mainDeployStopping) so a second click can't land.
+      var stop = applyWriteState(btn("■ STOP", "danger", function () {
+        mainDeployStopping = true;
+        renderMainDeploy(meta);
+        postWrite("/api/deploy/main/stop", {},
+          function () { /* SSE/refresh will show the stopped board */ },
+          function (msg) {
+            mainDeployStopping = false;
+            renderMainDeploy(meta);
+            setStatus(msg);
+          });
+      }));
+      stop.classList.add("deploy-stop");
+      seg.appendChild(stop);
+    }
+    host.appendChild(seg);
     if (ml.url) {
       var a = el("a", "deploy-url");
       a.href = ml.url; a.target = "_blank"; a.rel = "noopener";
@@ -931,13 +978,6 @@ function renderMainDeploy(meta) {
       a.addEventListener("click", function (e) { e.stopPropagation(); });
       host.appendChild(a);
     }
-    // ■ STOP is cheap/reversible → confirmless (fire + refresh); a view-only
-    // build disables it via applyWriteState.
-    var stop = applyWriteState(btn("■ STOP", "danger", function () {
-      stop.disabled = true;
-      dispatchCard("/api/deploy/main/stop", {});
-    }));
-    host.appendChild(stop);
     return;
   }
   // failed (or any other terminal): surface the plain-English message; the
@@ -967,14 +1007,14 @@ function openDeployMain() {
   var busy = workingNode("Bringing main online…"); busy.hidden = true;
   m.body.appendChild(busy);
   m.foot.appendChild(btn("Cancel", null, closeOverlay));
-  var go = applyWriteState(btn("▸ Deploy ▸", "go", function () {
+  var go = applyWriteState(btn("▸ Deploy", "go", function () {
     var h = (hint.value || "").trim();
     go.disabled = true; go.textContent = "Deploying…";
     err.hidden = true; busy.hidden = false;
     postWrite("/api/deploy/main", { hint: h },
       function () { closeOverlay(); refresh(); },
       function (msg) {
-        go.disabled = false; go.textContent = "▸ Deploy ▸";
+        go.disabled = false; go.textContent = "▸ Deploy";
         busy.hidden = true; showErr(err, msg);
       });
   }));
