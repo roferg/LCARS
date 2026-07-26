@@ -1,6 +1,6 @@
 ---
 name: lcars-update
-description: Bring an already-initialized LCARS repo up to the current schema without clobbering the captain's customizations. Creates any MISSING GitHub labels and adds any MISSING config.json keys with their defaults, while preserving every existing value (customized testCommand / model / comprehensionBudget) and leaving missions/ untouched. Also migrates a stale LCARS-generated copy-based vitest testCommand (the incompatible `.lcars-tests` copy-staging form) to the in-place equivalent, preserving its runner flags and any leading `cd`. Use when the user runs `lcars update`, asks to refresh / upgrade / sync an existing LCARS setup after pulling new versions, or wants new labels/config keys added without re-initializing.
+description: Bring an already-initialized LCARS repo up to the current schema without clobbering the captain's customizations. Creates any MISSING GitHub labels and adds any MISSING config.json keys with their defaults, while preserving every existing value (customized testCommand / model / comprehensionBudget) and leaving missions/ untouched. Also migrates a stale LCARS-generated copy-based vitest testCommand (the incompatible `.lcars-tests` copy-staging form) to the in-place equivalent, preserving its runner flags and any leading `cd`. Additionally carries the S146 test-readiness verbs — the ONE sanctioned testCommand writers: `--test-command '<cmd>'` (manual set), `--probe-tests` (one bounded suite run reporting pass/fail/zero-collected/timeout), and `--fix-tests` (the one-click repair: detected suggestion or a read-only discovery worker, then set + probe + verdict). Use when the user runs `lcars update`, asks to refresh / upgrade / sync an existing LCARS setup after pulling new versions, wants new labels/config keys added without re-initializing, or wants the repo's test systems set, probed, or repaired (TEST SYSTEMS OFFLINE).
 ---
 
 # lcars update
@@ -49,6 +49,35 @@ Show its output to the user. It looks like:
   ✓ nothing to update — labels and config are already current.
   missions/ untouched.
 ```
+
+## Test-readiness verbs (S146)
+
+`lcars update` also carries the repo's test-systems repair surface. The shared
+verdict (computed once, in `skills/lcars-init/lcars-common.sh`, and consulted
+by `lcars status`, init/update readouts, and the viewscreen banner) reads:
+**ready** (testCommand set, runner resolves) · **missing** (no command, a
+detected candidate exists) · **broken** (command set, runner not found) ·
+**unknown** (no command, nothing detectable — a *greenfield* repo, which is
+expected status, never an alarm). These flags are the ONE sanctioned way
+`testCommand` is ever written — plain `update` still never touches it:
+
+```bash
+bash ~/.claude/skills/lcars-update/update.sh --test-command 'npm test'  # manual set + re-verdict
+bash ~/.claude/skills/lcars-update/update.sh --probe-tests   # one bounded run: pass/fail/zero-collected/timeout
+bash ~/.claude/skills/lcars-update/update.sh --fix-tests     # one-click: suggest-or-discover → set → probe → verdict
+```
+
+- `--probe-tests` is bounded by `LCARS_PROBE_TIMEOUT` (default 120s) and is
+  captain-triggered only. A run that collects ZERO tests is reported as its own
+  honest outcome, never a pass.
+- `--fix-tests` spawns a read-only discovery worker (the lcars-launch pattern,
+  engine `$LCARS_WORKER_BIN` → config `workerBin` → claude) ONLY when detection
+  has no candidate. A failed/garbage discovery leaves the config untouched; on
+  a greenfield repo "nothing found" is the expected bootstrap outcome (exit 0).
+  A probe failure after a set reports "SET BUT UNVERIFIED", never ready.
+- The viewscreen's `POST /api/config/{test-command,probe-tests,fix-tests}`
+  endpoints dispatch these exact verbs (the daemon never rewrites config in
+  Python).
 
 ## Notes & failure modes
 

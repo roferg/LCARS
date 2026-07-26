@@ -86,103 +86,10 @@ PROJECT_NAME="$(basename "$TOPLEVEL")"
 # hand) it falls back to the whole suite. The captain can override it in
 # config.json or per-run via $LCARS_TEST_CMD. Null when nothing is detected — the
 # red gate then warns and skips (the pre-existing degradation), it does not block.
-# The vitest test command must RELATIVIZE $LCARS_TESTS_DIR to the runner's cwd:
-# vitest's positional test filter is matched RELATIVE to the package root the
-# runner runs from, but the Implement gates export $LCARS_TESTS_DIR as an ABSOLUTE
-# path (and, for a monorepo, the gate cd's into the touched package). Stripping a
-# leading "$PWD/" turns the absolute quarantine path into the package-relative
-# positional vitest expects, so the staged tests are discovered & filtered; unset
-# (a human running it by hand) it falls back to the whole suite. This abs-positional
-# bug bites BOTH single-package AND monorepo vitest, so both emit this form.
-VITEST_RELATIVIZING_CMD='npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
-
-# detect_workspace_runner — name the local test runner a monorepo actually uses, so
-# the workspace fallback emits a runner-SCOPED command instead of a bare `npm test`
-# fan-out across every package. Inspects (in order) a runner config at the workspace
-# root (vitest.config.*/jest.config.*), the pnpm lockfile, then every sub-package's
-# package.json devDependencies. Echoes vitest|jest|mocha (empty when none found).
-detect_workspace_runner() {
-  local r
-  for r in vitest jest mocha; do
-    ls "$TOPLEVEL/$r.config".* >/dev/null 2>&1 && { echo "$r"; return; }
-  done
-  for r in vitest jest mocha; do
-    grep -qs -- "$r" "$TOPLEVEL/pnpm-lock.yaml" 2>/dev/null && { echo "$r"; return; }
-  done
-  for r in vitest jest mocha; do
-    grep -rqs --include='package.json' --exclude-dir='node_modules' -- "\"$r\"" "$TOPLEVEL" 2>/dev/null \
-      && { echo "$r"; return; }
-  done
-  echo ""
-}
-
-detect_test_cmd() {
-  if [ -f "$TOPLEVEL/package.json" ] && grep -q '"test"[[:space:]]*:' "$TOPLEVEL/package.json"; then
-    # Monorepo (a pnpm workspace, or a "workspaces" field): a bare `npm test` /
-    # `pnpm -r test` here FANS OUT across every package, so the red gate can never
-    # scope itself to the touched package's quarantined tests. Prefer a command
-    # scoped to the local runner that STILL honours $LCARS_TESTS_DIR — LCARS points
-    # the var at the touched package (it knows it from the plan/manifests). When the
-    # root "test" script doesn't name the runner, DETECT it from the sub-packages
-    # (lockfile / config / devDependencies) rather than emitting a fan-out.
-    if [ -f "$TOPLEVEL/pnpm-workspace.yaml" ] || grep -q '"workspaces"[[:space:]]*:' "$TOPLEVEL/package.json"; then
-      local script runner
-      script="$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)"
-      case "$script" in
-        *vitest*) echo "$VITEST_RELATIVIZING_CMD";              return ;;
-        *jest*)   echo 'npx jest ${LCARS_TESTS_DIR:-}';         return ;;
-        *mocha*)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';        return ;;
-        *)
-          runner="$(detect_workspace_runner)"
-          case "$runner" in
-            vitest) echo "$VITEST_RELATIVIZING_CMD";            return ;;
-            jest)   echo 'npx jest ${LCARS_TESTS_DIR:-}';       return ;;
-            mocha)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';      return ;;
-            *)      echo 'npm test -- ${LCARS_TESTS_DIR:-}';    return ;;
-          esac ;;
-      esac
-    fi
-    # Single package: a vitest runner needs the RELATIVIZING positional (same abs-
-    # path bug as the monorepo); jest/mocha/other keep the `npm test --` positional
-    # default (empty runs the suite).
-    case "$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)" in
-      *vitest*) echo "$VITEST_RELATIVIZING_CMD"; return ;;
-    esac
-    echo 'npm test -- ${LCARS_TESTS_DIR:-}'; return; fi
-  if [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ]; then
-    echo 'pytest ${LCARS_TESTS_DIR:-.}'; return; fi
-  if [ -f "$TOPLEVEL/Cargo.toml" ]; then echo "cargo test"; return; fi
-  if [ -f "$TOPLEVEL/go.mod" ]; then echo "go test ./..."; return; fi
-  # Ruby (S145): pick the runner from the layout. rspec when the Gemfile names it
-  # or a spec/ dir exists; minitest via `rake test` when a test/ dir + Rakefile are
-  # present. A Gemfile prefixes `bundle exec`. When BOTH an rspec (spec/) and a
-  # minitest (test/ + Rakefile) layout are present WITHOUT a decisive Gemfile rspec
-  # signal, the runner is internally AMBIGUOUS: emit NO command (the caller warns,
-  # naming both) rather than guess. A gem library with only a *.gemspec/Rakefile and
-  # no spec//test/ also emits nothing. Reached only for a single-stack ruby repo.
-  if [ -f "$TOPLEVEL/Gemfile" ] || [ -f "$TOPLEVEL/Rakefile" ] || [ -f "$TOPLEVEL/config.ru" ] \
-     || [ -d "$TOPLEVEL/spec" ] || ls "$TOPLEVEL"/*.gemspec >/dev/null 2>&1; then
-    local rb_prefix="" rb_rspec=0 rb_mini=0 rb_gem_rspec=0
-    [ -f "$TOPLEVEL/Gemfile" ] && rb_prefix="bundle exec "
-    { [ -f "$TOPLEVEL/Gemfile" ] && grep -q 'rspec' "$TOPLEVEL/Gemfile"; } && rb_gem_rspec=1
-    { [ "$rb_gem_rspec" = 1 ] || [ -d "$TOPLEVEL/spec" ]; } && rb_rspec=1
-    { [ -d "$TOPLEVEL/test" ] && [ -f "$TOPLEVEL/Rakefile" ]; } && rb_mini=1
-    # A Gemfile explicitly naming rspec is decisive even if a test/ dir also exists.
-    [ "$rb_gem_rspec" = 1 ] && rb_mini=0
-    if [ "$rb_rspec" = 1 ] && [ "$rb_mini" = 1 ]; then echo ""; return; fi
-    if [ "$rb_rspec" = 1 ]; then echo "${rb_prefix}rspec"; return; fi
-    if [ "$rb_mini" = 1 ];  then echo "${rb_prefix}rake test"; return; fi
-    echo ""; return
-  fi
-  if [ -f "$TOPLEVEL/Makefile" ] && grep -q '^test:' "$TOPLEVEL/Makefile"; then echo "make test"; return; fi
-  # A bash test runner (LCARS dogfoods its own tests/run.sh). It already resolves
-  # a positional dir / $LCARS_TESTS_DIR (BUG-009), so scope it to the quarantined
-  # tests when the var is set, else the whole `tests` dir for a human. Checked LAST
-  # so a real ecosystem (npm/pytest/…) always wins when both are present.
-  if [ -f "$TOPLEVEL/tests/run.sh" ]; then
-    echo 'bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'; return; fi
-  echo ""
-}
+# S146: VITEST_RELATIVIZING_CMD, detect_workspace_runner and detect_test_cmd
+# MOVED to lcars-common.sh (sourced above) so the shared test-readiness verdict
+# — computed by init, update, status AND the viewscreen daemon — consults the
+# SAME detector this seeding path uses. Behaviour is byte-identical.
 
 # runner_is_local_dep — 0 if the test command's runner resolves ONLY from a
 # project-local location (node_modules/.bin or a venv) rather than a binary
@@ -264,12 +171,12 @@ else
       printf '    or neither could be resolved. Set testCommand in .git/lcars/config.json to the\n' >&2
       printf '    runner you want (e.g. "bundle exec rspec" or "bundle exec rake test").\n' >&2
       ;;
-    unknown)
-      printf '  ⚠ no known stack detected (no Cargo.toml/go.mod/pyproject.toml/setup.py/\n' >&2
-      printf '    package.json/*.csproj/*.sln/pom.xml/build.gradle/Gemfile/*.gemspec) — no\n' >&2
-      printf '    testCommand seeded. The Implement red gate needs one; set testCommand in\n' >&2
-      printf '    .git/lcars/config.json (honouring "$LCARS_TESTS_DIR") to enable it.\n' >&2
-      ;;
+    # unknown (greenfield): NO warning here — a repo with no stack markers and
+    # no detectable runner is EXPECTED, never an alarm (captain ruling, S146).
+    # The shared bootstrap verdict line at the end of the readout
+    # (lcars_readiness_line: "◇ NO TEST SYSTEMS FOUND — …") is the ONE calm
+    # status for this case; anything actionable goes through
+    # `lcars update --fix-tests`, never a hand-edit-config.json lecture.
   esac
 fi
 
@@ -407,4 +314,10 @@ if [ "$GH_OK" -eq 1 ]; then
 else
   echo "  ⚠ gh CLI not found — skipped GitHub label setup. Install gh and re-run to finish."
 fi
+# S146: the ONE test-readiness verdict line (shared with update/status/board).
+# Silent when ready; repair voice for broken/missing; bootstrap voice for a
+# greenfield repo (unknown) — status, never an alarm.
+lcars_test_readiness "$CONFIG"
+READINESS_LINE="$(lcars_readiness_line)"
+[ -n "$READINESS_LINE" ] && echo "  $READINESS_LINE"
 echo "  LCARS ready — run \`lcars file\` to start your first Mission."

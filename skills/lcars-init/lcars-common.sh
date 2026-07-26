@@ -272,6 +272,108 @@ detect_worktree_setup_cmd() {
 }
 
 # ---------------------------------------------------------------------------
+# TEST-COMMAND DETECTION (S146: moved here from init.sh so the readiness
+# verdict below — shared by init, update, status AND the viewscreen daemon —
+# can consult the SAME detector. Byte-identical logic; init.sh still calls it.)
+# ---------------------------------------------------------------------------
+# The Implement red gate (BUG-007) runs testCommand to prove the fail-first
+# suite FAILS before the Implementer runs — scoped to $LCARS_TESTS_DIR. We emit
+# a $LCARS_TESTS_DIR-honouring default per ecosystem. Reads $TOPLEVEL from the
+# caller's environment. Empty when nothing can be detected.
+# The vitest test command must RELATIVIZE $LCARS_TESTS_DIR to the runner's cwd
+# (vitest's positional filter is package-root-relative; the gate exports an
+# ABSOLUTE path) — stripping a leading "$PWD/" turns it package-relative.
+VITEST_RELATIVIZING_CMD='npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+
+# detect_workspace_runner — name the local test runner a monorepo actually uses,
+# so the workspace fallback emits a runner-SCOPED command instead of a bare
+# `npm test` fan-out. Inspects (in order) a runner config at the workspace root,
+# the pnpm lockfile, then every sub-package's package.json devDependencies.
+# Echoes vitest|jest|mocha (empty when none found).
+detect_workspace_runner() {
+  local r
+  for r in vitest jest mocha; do
+    ls "$TOPLEVEL/$r.config".* >/dev/null 2>&1 && { echo "$r"; return; }
+  done
+  for r in vitest jest mocha; do
+    grep -qs -- "$r" "$TOPLEVEL/pnpm-lock.yaml" 2>/dev/null && { echo "$r"; return; }
+  done
+  for r in vitest jest mocha; do
+    grep -rqs --include='package.json' --exclude-dir='node_modules' -- "\"$r\"" "$TOPLEVEL" 2>/dev/null \
+      && { echo "$r"; return; }
+  done
+  echo ""
+}
+
+detect_test_cmd() {
+  if [ -f "$TOPLEVEL/package.json" ] && grep -q '"test"[[:space:]]*:' "$TOPLEVEL/package.json"; then
+    # Monorepo (a pnpm workspace, or a "workspaces" field): a bare `npm test` /
+    # `pnpm -r test` here FANS OUT across every package, so the red gate can never
+    # scope itself to the touched package's quarantined tests. Prefer a command
+    # scoped to the local runner that STILL honours $LCARS_TESTS_DIR — LCARS points
+    # the var at the touched package (it knows it from the plan/manifests). When the
+    # root "test" script doesn't name the runner, DETECT it from the sub-packages
+    # (lockfile / config / devDependencies) rather than emitting a fan-out.
+    if [ -f "$TOPLEVEL/pnpm-workspace.yaml" ] || grep -q '"workspaces"[[:space:]]*:' "$TOPLEVEL/package.json"; then
+      local script runner
+      script="$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)"
+      case "$script" in
+        *vitest*) echo "$VITEST_RELATIVIZING_CMD";              return ;;
+        *jest*)   echo 'npx jest ${LCARS_TESTS_DIR:-}';         return ;;
+        *mocha*)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';        return ;;
+        *)
+          runner="$(detect_workspace_runner)"
+          case "$runner" in
+            vitest) echo "$VITEST_RELATIVIZING_CMD";            return ;;
+            jest)   echo 'npx jest ${LCARS_TESTS_DIR:-}';       return ;;
+            mocha)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';      return ;;
+            *)      echo 'npm test -- ${LCARS_TESTS_DIR:-}';    return ;;
+          esac ;;
+      esac
+    fi
+    # Single package: a vitest runner needs the RELATIVIZING positional (same abs-
+    # path bug as the monorepo); jest/mocha/other keep the `npm test --` positional
+    # default (empty runs the suite).
+    case "$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)" in
+      *vitest*) echo "$VITEST_RELATIVIZING_CMD"; return ;;
+    esac
+    echo 'npm test -- ${LCARS_TESTS_DIR:-}'; return; fi
+  if [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ]; then
+    echo 'pytest ${LCARS_TESTS_DIR:-.}'; return; fi
+  if [ -f "$TOPLEVEL/Cargo.toml" ]; then echo "cargo test"; return; fi
+  if [ -f "$TOPLEVEL/go.mod" ]; then echo "go test ./..."; return; fi
+  # Ruby (S145): pick the runner from the layout. rspec when the Gemfile names it
+  # or a spec/ dir exists; minitest via `rake test` when a test/ dir + Rakefile are
+  # present. A Gemfile prefixes `bundle exec`. When BOTH an rspec (spec/) and a
+  # minitest (test/ + Rakefile) layout are present WITHOUT a decisive Gemfile rspec
+  # signal, the runner is internally AMBIGUOUS: emit NO command (the caller warns,
+  # naming both) rather than guess. A gem library with only a *.gemspec/Rakefile and
+  # no spec//test/ also emits nothing. Reached only for a single-stack ruby repo.
+  if [ -f "$TOPLEVEL/Gemfile" ] || [ -f "$TOPLEVEL/Rakefile" ] || [ -f "$TOPLEVEL/config.ru" ] \
+     || [ -d "$TOPLEVEL/spec" ] || ls "$TOPLEVEL"/*.gemspec >/dev/null 2>&1; then
+    local rb_prefix="" rb_rspec=0 rb_mini=0 rb_gem_rspec=0
+    [ -f "$TOPLEVEL/Gemfile" ] && rb_prefix="bundle exec "
+    { [ -f "$TOPLEVEL/Gemfile" ] && grep -q 'rspec' "$TOPLEVEL/Gemfile"; } && rb_gem_rspec=1
+    { [ "$rb_gem_rspec" = 1 ] || [ -d "$TOPLEVEL/spec" ]; } && rb_rspec=1
+    { [ -d "$TOPLEVEL/test" ] && [ -f "$TOPLEVEL/Rakefile" ]; } && rb_mini=1
+    # A Gemfile explicitly naming rspec is decisive even if a test/ dir also exists.
+    [ "$rb_gem_rspec" = 1 ] && rb_mini=0
+    if [ "$rb_rspec" = 1 ] && [ "$rb_mini" = 1 ]; then echo ""; return; fi
+    if [ "$rb_rspec" = 1 ]; then echo "${rb_prefix}rspec"; return; fi
+    if [ "$rb_mini" = 1 ];  then echo "${rb_prefix}rake test"; return; fi
+    echo ""; return
+  fi
+  if [ -f "$TOPLEVEL/Makefile" ] && grep -q '^test:' "$TOPLEVEL/Makefile"; then echo "make test"; return; fi
+  # A bash test runner (LCARS dogfoods its own tests/run.sh). It already resolves
+  # a positional dir / $LCARS_TESTS_DIR (BUG-009), so scope it to the quarantined
+  # tests when the var is set, else the whole `tests` dir for a human. Checked LAST
+  # so a real ecosystem (npm/pytest/…) always wins when both are present.
+  if [ -f "$TOPLEVEL/tests/run.sh" ]; then
+    echo 'bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'; return; fi
+  echo ""
+}
+
+# ---------------------------------------------------------------------------
 # STACK DETECTION (S105 — multi-stack breadth)
 # ---------------------------------------------------------------------------
 # detect_stack — inspect the repo's TOP LEVEL for language/build markers and echo
@@ -338,4 +440,125 @@ detect_stack() {
     1) echo "$1" ;;
     *) echo "ambiguous($(echo "$candidates" | sed 's/^ *//; s/ /,/g'))" ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# TEST READINESS — the ONE verdict (S146)
+# ---------------------------------------------------------------------------
+# lcars_test_readiness — compute the repo's test-readiness verdict, CHEAP by
+# construction: no test run, no network, no worker. The four states:
+#
+#   ready    testCommand set AND its first token resolves via `command -v`
+#   missing  testCommand null/absent, detection has a candidate (suggestion)
+#   broken   testCommand set but its first token does NOT resolve
+#   unknown  testCommand null/absent AND no candidate (stack unknown/ambiguous,
+#            or a detected stack whose runner can't be pinned) — the greenfield
+#            state: EXPECTED, not an alarm.
+#
+# Shared by `lcars init`/`lcars update`/`lcars status` (they source this file)
+# and by the viewscreen daemon (via skills/lcars-init/readiness.sh), so CLI and
+# board can never disagree. It NEVER writes anything — the sanctioned writers
+# are `lcars update --test-command|--fix-tests` alone.
+#
+# Args: $1 = path to config.json. Reads $TOPLEVEL (repo root) for detection and
+# for resolving a relative runner path. Sets, for the caller:
+#   LCARS_TESTREADY_STATUS      ready|missing|broken|unknown
+#   LCARS_TESTREADY_TESTCMD     the stored testCommand ("" when null/absent)
+#   LCARS_TESTREADY_SUGGESTION  the detected candidate ("" unless status=missing)
+lcars_test_readiness() {
+  local config="$1"
+  LCARS_TESTREADY_STATUS=""
+  LCARS_TESTREADY_TESTCMD=""
+  LCARS_TESTREADY_SUGGESTION=""
+
+  local tc=""
+  [ -f "$config" ] && tc="$(lcars_config_get "$config" testCommand)"
+
+  if [ -n "$tc" ]; then
+    LCARS_TESTREADY_TESTCMD="$tc"
+    # First token of the command (no glob expansion — `read` splits safely).
+    local first rest
+    read -r first rest <<EOF2
+$tc
+EOF2
+    # Resolve from the repo root so a relative runner (node_modules/.bin/…)
+    # resolves the way the gate would run it.
+    if ( cd "${TOPLEVEL:-.}" 2>/dev/null && command -v "$first" >/dev/null 2>&1 ); then
+      LCARS_TESTREADY_STATUS="ready"
+    else
+      LCARS_TESTREADY_STATUS="broken"
+    fi
+    return 0
+  fi
+
+  # No command stored: does detection have a candidate? Mirror init's seeding
+  # rule EXACTLY (S105): only an AMBIGUOUS multi-stack repo refuses to guess;
+  # an unknown stack still consults detect_test_cmd (Makefile / tests/run.sh
+  # repos have a perfectly detectable runner without a stack id).
+  local stack cand=""
+  stack="$(detect_stack)"
+  case "$stack" in
+    ambiguous*) cand="" ;;
+    *)          cand="$(detect_test_cmd)" ;;
+  esac
+  if [ -n "$cand" ]; then
+    LCARS_TESTREADY_STATUS="missing"
+    LCARS_TESTREADY_SUGGESTION="$cand"
+  else
+    LCARS_TESTREADY_STATUS="unknown"
+  fi
+  return 0
+}
+
+# lcars_readiness_line — render the ONE human status line for the verdict the
+# globals above carry. Ship-status voice (never a config lecture):
+#   ready    → EMPTY (ready repos are silent everywhere — zero chrome drift)
+#   broken/  → the REPAIR voice: ⚠ TEST SYSTEMS OFFLINE + the one-click fix verb
+#   missing
+#   unknown  → the BOOTSTRAP voice: a greenfield repo is EXPECTED, not an alarm —
+#              reads as status, never an action item.
+# The two unready voices must NEVER blur (captain ruling, S146).
+lcars_readiness_line() {
+  case "${LCARS_TESTREADY_STATUS:-}" in
+    broken)
+      printf '⚠ TEST SYSTEMS OFFLINE — testCommand runner "%s" not operational; missions cannot be proof-gated. Repair: lcars update --fix-tests\n' \
+        "$(printf '%s' "$LCARS_TESTREADY_TESTCMD" | awk '{print $1}')"
+      ;;
+    missing)
+      printf '⚠ TEST SYSTEMS OFFLINE — no test command configured (detected candidate: %s); missions cannot be proof-gated. Repair: lcars update --fix-tests\n' \
+        "$LCARS_TESTREADY_SUGGESTION"
+      ;;
+    unknown)
+      printf '◇ NO TEST SYSTEMS FOUND — a greenfield repo; the first mission%s engineering crew will establish them.\n' "'s"
+      ;;
+    *) : ;;  # ready (or uncomputed) → silent
+  esac
+}
+
+# lcars_config_set_or_add_string — the sanctioned-writer primitive: overwrite a
+# top-level string key IN PLACE (lcars_config_set_string), or — when the key is
+# absent from an older config — INSERT it as the first key after the opening
+# brace. Line-oriented and jq-free like its siblings; every other line is
+# preserved byte-for-byte.
+lcars_config_set_or_add_string() {
+  local config="$1" key="$2" value="$3"
+  [ -f "$config" ] || return 1
+  if lcars_config_has_key "$config" "$key"; then
+    lcars_config_set_string "$config" "$key" "$value"
+    return $?
+  fi
+  local esc; esc="$(lcars_json_escape "$value")"
+  local tmp="$config.tmp.$$" line inserted=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line"
+    if [ "$inserted" -eq 0 ]; then
+      case "$line" in
+        '{'*)
+          printf '  "%s": "%s",\n' "$key" "$esc"
+          inserted=1
+          ;;
+      esac
+    fi
+  done <"$config" >"$tmp"
+  mv "$tmp" "$config"
 }

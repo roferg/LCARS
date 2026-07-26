@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+# readiness.sh — report the repo's test-readiness verdict (S146).
+#
+# A THIN, read-only wrapper over the ONE shared verdict in lcars-common.sh
+# (lcars_test_readiness), so every surface — `lcars status`, the init/update
+# readouts, and the viewscreen daemon's meta.testReadiness — computes readiness
+# from the SAME code and can never disagree. CHEAP by construction: no test run,
+# no network, no worker; it inspects config.json + the top-level stack markers
+# only. It writes NOTHING.
+#
+# Usage:
+#   readiness.sh            print the ONE human status line (EMPTY when ready)
+#   readiness.sh --line     same as above, explicit
+#   readiness.sh --json     print {"status","suggestion","testCommand"} —
+#                           status ∈ ready|missing|broken|unknown; suggestion /
+#                           testCommand are null when absent. The daemon parses
+#                           this and OMITS meta.testReadiness when ready.
+#
+# Exit 0 always (it is a report, never a gate).
+set -uo pipefail
+
+MODE="line"
+case "${1:-}" in
+  --json) MODE="json" ;;
+  --line|'') MODE="line" ;;
+  *) printf 'lcars readiness: unknown option "%s" — use --line or --json.\n' "$1" >&2; exit 1 ;;
+esac
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/lcars-common.sh"
+
+# --- locate the repo (same resolution init/update use) ---------------------
+GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" || GIT_DIR=""
+if [ -z "$GIT_DIR" ]; then
+  # not a git repo — nothing to report on; stay silent (a report, not a gate).
+  [ "$MODE" = "json" ] && printf '{"status":"unknown","suggestion":null,"testCommand":null}\n'
+  exit 0
+fi
+case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
+TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)" || TOPLEVEL="$PWD"
+CONFIG="$GIT_DIR/lcars/config.json"
+
+lcars_test_readiness "$CONFIG"
+
+if [ "$MODE" = "json" ]; then
+  sug='null'
+  [ -n "$LCARS_TESTREADY_SUGGESTION" ] \
+    && sug="\"$(lcars_json_escape "$LCARS_TESTREADY_SUGGESTION")\""
+  tc='null'
+  [ -n "$LCARS_TESTREADY_TESTCMD" ] \
+    && tc="\"$(lcars_json_escape "$LCARS_TESTREADY_TESTCMD")\""
+  printf '{"status":"%s","suggestion":%s,"testCommand":%s}\n' \
+    "$LCARS_TESTREADY_STATUS" "$sug" "$tc"
+else
+  lcars_readiness_line
+fi
+exit 0

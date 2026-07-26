@@ -469,6 +469,58 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .modal-foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 18px;
   border-top:1px solid var(--lcars-border);background:var(--lcars-card);flex:0 0 auto}
 
+/* ── S146 test-readiness banner (its OWN strip below the band — the version-
+   banner placement idiom). Two voices, never blurred: `.repair` (broken /
+   missing testCommand — TEST SYSTEMS OFFLINE, an amber alert with the ⚡ FIX
+   action) and `.bootstrap` (a greenfield repo — a calm status strip, no alarm,
+   no action item). Hidden entirely on a ready repo (zero chrome drift). ── */
+.readiness-banner{margin:18px 28px 6px}
+.readiness-banner .rb-band{display:flex;align-items:center;gap:14px;
+  padding:9px 16px 9px 18px;border-radius:var(--lcars-radius,18px);
+  font-family:var(--font-display);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--lcars-black,#030608);
+  background:var(--lcars-amber);
+  box-shadow:0 0 0 1px rgba(0,0,0,.15) inset}
+.readiness-banner .rb-band.bootstrap{background:transparent;
+  color:var(--lcars-blue,#4499ff);
+  box-shadow:0 0 0 1px var(--lcars-border,rgba(68,153,255,.35)) inset}
+.readiness-banner .rb-band.rb-busy{background:var(--lcars-blue,#4499ff);color:#03131f}
+.readiness-banner .rb-band.rb-done{background:var(--lcars-teal,#00ccaa);color:#03131f}
+.readiness-banner .rb-msg{font-size:15px;font-weight:700}
+.readiness-banner .rb-sub{font-size:11px;letter-spacing:.1em;opacity:.75;
+  font-weight:400;text-transform:none}
+.readiness-banner .rb-btn{flex:0 0 auto;margin-left:auto;
+  font-family:var(--font-display);letter-spacing:.14em;text-transform:uppercase;
+  background:var(--lcars-black,#030608);color:var(--lcars-amber);
+  border:none;border-radius:14px;padding:6px 16px;cursor:pointer}
+.readiness-banner .rb-btn:disabled{opacity:.5;cursor:default}
+.readiness-banner .rb-reason{font-family:var(--font-display);font-size:11px;
+  letter-spacing:.08em;text-transform:none;opacity:.9;flex:0 1 auto;
+  max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* The File-console inline warning (S146): the same two voices, rendered ABOVE
+   the idea box. One themed line + ⚡ FIX + the manual-override input; filing /
+   parking are NEVER blocked by it. */
+.file-readiness{margin-bottom:16px;padding:10px 14px;
+  border-radius:var(--lcars-radius,14px);
+  box-shadow:0 0 0 1px rgba(0,0,0,.15) inset}
+.file-readiness.repair{background:rgba(255,153,0,.12);
+  box-shadow:0 0 0 1px var(--lcars-amber) inset}
+.file-readiness.bootstrap{box-shadow:0 0 0 1px var(--lcars-border,rgba(68,153,255,.35)) inset}
+.file-readiness.online{box-shadow:0 0 0 1px var(--lcars-teal,#00ccaa) inset}
+.file-readiness .fr-line{font-family:var(--font-display);font-size:13px;
+  letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px}
+.file-readiness.repair .fr-line{color:var(--lcars-amber)}
+.file-readiness.bootstrap .fr-line{color:var(--lcars-blue,#4499ff)}
+.file-readiness.online .fr-line{color:var(--lcars-teal,#00ccaa);margin-bottom:0}
+.file-readiness .fr-row{display:flex;gap:8px;align-items:center}
+.file-readiness .fr-row input{flex:1 1 auto;background:var(--lcars-black);
+  border:1px solid var(--lcars-border);color:var(--lcars-text,#eee);
+  border-radius:8px;padding:6px 10px;font-family:var(--font-mono,monospace);
+  font-size:12px}
+.file-readiness .fr-report{font-size:12px;color:#ff8a96;margin-top:8px;
+  white-space:pre-wrap}
+
 /* ── form fields (mock .field) ── */
 .field{margin-bottom:16px}
 .field label{display:block;font-family:var(--font-display);text-transform:uppercase;

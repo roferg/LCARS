@@ -894,6 +894,13 @@ function render(board) {
   renderMeta(board.meta);
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
+  renderTestReadiness(board.meta && board.meta.testReadiness);
+  // S146: an open File console's inline readiness block re-verdicts LIVE off
+  // every render (SSE included) — the warning clears in place, the typed idea
+  // survives (the hook repaints only its own block, never the console).
+  if (fileReadinessSync) {
+    fileReadinessSync(board.meta && board.meta.testReadiness);
+  }
 }
 
 /* S139: the local main-deploy band. Renders the deploy status FROM
@@ -1137,6 +1144,176 @@ function renderVersionBanner(version) {
   host.appendChild(band);
 }
 
+/* ════════════════ S146: TEST-READINESS (banner + File-console fix) ════════
+   Driven purely by the ADDITIVE board.meta.testReadiness block
+   ({status: missing|broken|unknown, suggestion, testCommand}) — ABSENT on a
+   ready repo, so a ready board renders byte-identically to before this round.
+   Two voices, never blurred (captain ruling):
+     repair    (broken/missing) — "⚠ TEST SYSTEMS OFFLINE" + the ⚡ FIX action;
+     bootstrap (unknown)        — a greenfield repo reads as calm STATUS
+                                  ("the first mission's engineering crew will
+                                  establish them"), never an action item.
+   The fix is ONE POST (/api/config/fix-tests → update.sh --fix-tests:
+   suggest-or-discover → set → probe → verdict). Filing/parking are NEVER
+   blocked by any readiness state. */
+function readinessCopy(tr) {
+  if (tr && tr.status === "unknown") {
+    return {
+      voice: "bootstrap",
+      line: "◇ NO TEST SYSTEMS FOUND — the first mission's engineering crew "
+          + "will establish them.",
+      sub: "",
+    };
+  }
+  var sub = "";
+  if (tr && tr.status === "broken" && tr.testCommand) {
+    sub = "configured runner not found: " + tr.testCommand;
+  } else if (tr && tr.status === "missing" && tr.suggestion) {
+    sub = "detected candidate: " + tr.suggestion;
+  } else if (tr && tr.status === "missing") {
+    sub = "no test command configured";
+  }
+  return {
+    voice: "repair",
+    line: "⚠ TEST SYSTEMS OFFLINE — missions cannot be proof-gated.",
+    sub: sub,
+  };
+}
+
+/* The band-level strip: its OWN row below the top band (the version-banner
+   placement idiom — never inside the topbar button cluster, so it coexists
+   with the Deploy Main control). View-only builds show the STATUS without the
+   FIX affordance. */
+var readinessBusy = false; // transient: a banner ⚡ FIX is in flight
+function renderTestReadiness(tr) {
+  var host = document.getElementById("readinessBanner");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!tr || !tr.status) { host.hidden = true; return; }
+  host.hidden = false;
+
+  var copy = readinessCopy(tr);
+  var band = el("div", "rb-band " + copy.voice);
+  band.appendChild(el("span", "rb-msg", copy.line));
+  if (copy.sub) band.appendChild(el("span", "rb-sub", copy.sub));
+
+  // The repair voice carries the one-click fix; the bootstrap voice is pure
+  // status (never an action item), and a view-only build hides the affordance.
+  if (copy.voice === "repair" && writesActive !== false) {
+    var reason = el("span", "rb-reason");
+    var b = btn("⚡ FIX TEST SYSTEMS", "go rb-btn", function () {
+      if (readinessBusy) return;
+      readinessBusy = true;
+      b.disabled = true;
+      b.textContent = "◐ REPAIRING TEST SYSTEMS…";
+      band.classList.add("rb-busy");
+      reason.textContent = "";
+      postWrite("/api/config/fix-tests", {}, function () {
+        // Success: the settled return + SSE re-render clear the banner (the
+        // fresh meta has no testReadiness). Flash the done state meanwhile.
+        readinessBusy = false;
+        band.classList.remove("rb-busy");
+        band.classList.add("rb-done");
+        b.textContent = "✓ TEST SYSTEMS ONLINE";
+      }, function (msg) {
+        // Failure: plain-English report inline; the button re-arms.
+        readinessBusy = false;
+        band.classList.remove("rb-busy");
+        b.disabled = false;
+        b.textContent = "⚡ FIX TEST SYSTEMS";
+        reason.textContent = msg;
+      });
+    });
+    if (readinessBusy) { b.disabled = true; b.textContent = "◐ REPAIRING TEST SYSTEMS…"; }
+    band.appendChild(reason);
+    band.appendChild(b);
+  }
+  host.appendChild(band);
+}
+
+/* S146: the File-console inline warning — rendered ABOVE the idea box when the
+   repo is unready. One themed line + ⚡ FIX TEST SYSTEMS (one POST walks
+   suggest-or-discover → set → probe server-side) + an editable command input
+   as the manual OVERRIDE. Success re-verdicts live (the settled return AND the
+   SSE re-render both repaint this block in place) — the console never closes,
+   the typed idea is never touched. A failed fix reports plainly and leaves the
+   input ready. Filing/parking proceed regardless. Read-only builds render the
+   status line only (no affordances). */
+var fileReadinessSync = null; // live re-verdict hook while the console is open
+function fileReadinessBlock(tr) {
+  var wrap = el("div", "file-readiness");
+
+  function paint(cur) {
+    wrap.innerHTML = "";
+    if (!cur || !cur.status) {
+      // The systems came online while the console was open — the warning
+      // clears IN PLACE (teal confirmation), console + idea untouched.
+      wrap.className = "file-readiness online";
+      wrap.appendChild(el("div", "fr-line",
+        "✓ TEST SYSTEMS ONLINE — missions will be proof-gated."));
+      return;
+    }
+    var copy = readinessCopy(cur);
+    wrap.className = "file-readiness " + copy.voice;
+    wrap.appendChild(el("div", "fr-line",
+      copy.line + (copy.sub ? " · " + copy.sub : "")));
+    if (writesActive === false) return; // view-only: status only
+
+    var row = el("div", "fr-row");
+    var report = el("div", "fr-report");
+    report.hidden = true;
+    var input = el("input");
+    input.type = "text";
+    input.placeholder = "Manual override — the exact command that runs the suite";
+    input.value = cur.suggestion || cur.testCommand || "";
+
+    var fix, set;
+    function busy(b, label) {
+      fix.disabled = true; set.disabled = true;
+      b.textContent = label;
+      report.hidden = true;
+    }
+    function rearm() {
+      fix.disabled = false; set.disabled = false;
+      fix.textContent = "⚡ FIX TEST SYSTEMS";
+      set.textContent = "SET";
+    }
+    function onDone(state) {
+      var fresh = state && state.board && state.board.meta
+        && state.board.meta.testReadiness;
+      paint(fresh || null);
+    }
+    function onFail(msg) {
+      rearm();
+      report.hidden = false;
+      report.textContent = msg; // plain report; the input stays ready
+    }
+    fix = applyWriteState(btn("⚡ FIX TEST SYSTEMS", "go", function () {
+      busy(fix, "◐ REPAIRING…");
+      postWrite("/api/config/fix-tests", {}, onDone, onFail);
+    }));
+    set = applyWriteState(btn("SET", null, function () {
+      var v = (input.value || "").trim();
+      if (!v) {
+        report.hidden = false;
+        report.textContent = "Type the command first.";
+        return;
+      }
+      busy(set, "◐ SETTING…");
+      postWrite("/api/config/test-command", { testCommand: v }, onDone, onFail);
+    }));
+    row.appendChild(fix);
+    row.appendChild(input);
+    row.appendChild(set);
+    wrap.appendChild(row);
+    wrap.appendChild(report);
+  }
+
+  paint(tr);
+  fileReadinessSync = function (fresh) { paint(fresh || null); };
+  return wrap;
+}
+
 /* S70-A: render "which repo am I attached to" + adapter/mode hint in the topbar.
    Depends only on the board shape (board.meta), updated on every live render. */
 function renderMeta(meta) {
@@ -1184,6 +1361,7 @@ function closeOverlay() {
   overlay().hidden = true;
   overlayBody().innerHTML = "";
   clearDetailTimers(); // UX-32: never leak the live active-time tick interval.
+  fileReadinessSync = null; // S146: drop the File-console re-verdict hook.
   alignConsoleOpen = false; // F1: the console (if it was open) is now dismissed.
   // Fire (and clear) the one-shot close hook — set by renderAlignConsole. F2: closing
   // the CONSOLE mid-grill KEEPS the warm session (no /cancel) and marks its parked
@@ -1391,6 +1569,12 @@ function attachImagePaster(textarea, onError) {
 /* ════════════════ SCREEN: FILE A MISSION (#file) ════════════════ */
 function openFile() {
   var m = modal("▦ File New Mission");
+  // S146: when the repo's test systems are unready, the console opens with the
+  // readiness warning ABOVE the idea box — one themed line, the one-click
+  // ⚡ FIX, and the manual-override input. A READY repo appends NOTHING here,
+  // so its console is byte-identical to before this round. Never blocks filing.
+  var tr0 = LAST_BOARD && LAST_BOARD.meta && LAST_BOARD.meta.testReadiness;
+  if (tr0) m.body.appendChild(fileReadinessBlock(tr0));
   var idea = el("textarea"); idea.rows = 4;
   idea.placeholder = "What do you want to build, improve, or fix?";
   m.body.appendChild(field("The idea — what do you want to build, improve, or fix?", idea));

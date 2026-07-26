@@ -25,6 +25,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 die() { printf 'lcars update: %s\n' "$1" >&2; exit 1; }
 
+# --- S146: argument parse — the test-readiness verbs ------------------------
+# `lcars update` grew the SANCTIONED testCommand writers (config is otherwise
+# never clobbered — MISSING-only seeding stands for every key):
+#   --test-command '<cmd>'   manual set: validate, write, re-verdict, print
+#   --probe-tests            run the stored command ONCE, bounded; report
+#                            pass / fail / zero-collected / timeout
+#   --fix-tests              the one-click repair: suggestion → set (no worker);
+#                            none → a read-only discovery worker proposes one;
+#                            then set + probe in this SAME invocation
+# A verb invocation runs ONLY the verb (no label sync, no version stamp).
+VERB=""
+VERB_CMD=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --test-command)   VERB="set"; shift; VERB_CMD="${1:-}"; [ $# -gt 0 ] && shift ;;
+    --test-command=*) VERB="set"; VERB_CMD="${1#--test-command=}"; shift ;;
+    --probe-tests)    VERB="probe"; shift ;;
+    --fix-tests)      VERB="fix"; shift ;;
+    *) die "unknown option \"$1\" — usage: lcars update [--test-command '<cmd>' | --probe-tests | --fix-tests]" ;;
+  esac
+done
+
 # --- the running LCARS version (what update stamps the repo current to) ----
 # VERSION ships in the repo root (../.. from this skill dir; -P resolves the
 # install symlink to the physical checkout). LCARS_VERSION wins so tests can pin
@@ -123,6 +145,203 @@ CONFIG="$LCARS_DIR/config.json"
 # --- must already be initialized -----------------------------------------
 if [ ! -d "$LCARS_DIR" ]; then
   die "this repo is not initialized for LCARS — run \`lcars init\` first."
+fi
+
+# ===========================================================================
+# S146 TEST-READINESS VERBS — the sanctioned testCommand writers + the probe.
+# Dispatched BEFORE the label/config/version flow: a verb invocation does ONLY
+# its verb. Everything below is skipped on the verb path.
+# ===========================================================================
+
+# run_probe <cmd> — run the test command ONCE from the repo root, BOUNDED by
+# $LCARS_PROBE_TIMEOUT (default 120s; perl's alarm survives exec, so the timer
+# rides into the spawned bash). Sets PROBE_OUTCOME (pass|fail|zero-collected|
+# timeout), PROBE_RC, and PROBE_OUT (captured-output file). Zero-collected is
+# its OWN honest outcome, never a pass — the signature REUSES the rg_signature
+# `zerotests` + proof_zero_collected phrasings from skills/lcars-run/run.sh
+# (keep the two in step).
+PROBE_TIMEOUT="${LCARS_PROBE_TIMEOUT:-120}"
+run_probe() {
+  local cmd="$1"
+  PROBE_OUT="$(mktemp "${TMPDIR:-/tmp}/lcars-probe.XXXXXX")"
+  ( cd "$TOPLEVEL" && perl -e 'alarm shift; exec @ARGV or exit 127' \
+      "$PROBE_TIMEOUT" bash -c "$cmd" ) >"$PROBE_OUT" 2>&1
+  PROBE_RC=$?
+  local zero='No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items|(^|[^0-9])0 examples, 0 failures$|(^|[^0-9])0 runs, 0 assertions|no tests to run|test result: ok\. 0 passed'
+  if [ "$PROBE_RC" -eq 142 ]; then          # 128 + SIGALRM(14): the alarm fired
+    PROBE_OUTCOME="timeout"
+  elif grep -Eq "$zero" "$PROBE_OUT"; then  # runner finished but ran NOTHING
+    PROBE_OUTCOME="zero-collected"
+  elif [ "$PROBE_RC" -eq 0 ]; then
+    PROBE_OUTCOME="pass"
+  else
+    PROBE_OUTCOME="fail"
+  fi
+}
+
+# report_probe — the ship-status readout for the last run_probe.
+report_probe() {
+  case "$PROBE_OUTCOME" in
+    pass)
+      echo "  ✓ PROBE COMPLETE — test systems responding: the suite ran and passed." ;;
+    fail)
+      echo "  ✗ PROBE FAILED — the suite ran but reported failures (exit $PROBE_RC)."
+      tail -n 5 "$PROBE_OUT" 2>/dev/null | sed 's/^/      /' ;;
+    zero-collected)
+      echo "  ⚠ PROBE INCONCLUSIVE — the runner started but collected ZERO tests."
+      echo "    That is not a pass: the command may be scoped to the wrong place." ;;
+    timeout)
+      echo "  ⚠ PROBE TIMED OUT — no verdict within ${PROBE_TIMEOUT}s; the suite never settled." ;;
+  esac
+}
+
+# print_verdict — re-verdict from the config on disk and print ONE line.
+# The verb paths DO confirm ready (that is their whole point); the passive
+# readouts (plain update/init/status) stay silent on ready.
+print_verdict() {
+  lcars_test_readiness "$CONFIG"
+  if [ "$LCARS_TESTREADY_STATUS" = "ready" ]; then
+    echo "  ✓ TEST SYSTEMS ONLINE — missions will be proof-gated with: $LCARS_TESTREADY_TESTCMD"
+  else
+    echo "  $(lcars_readiness_line)"
+  fi
+}
+
+# set_test_command <cmd> — the ONE sanctioned write of config.testCommand.
+set_test_command() {
+  lcars_config_set_or_add_string "$CONFIG" testCommand "$1" \
+    || die "could not write .git/lcars/config.json — check permissions and re-run."
+}
+
+# run_discovery — spawn ONE read-only test-discovery worker (the lcars-launch
+# discovery pattern: the worker INSPECTS and proposes; this skill executes).
+# Engine: $LCARS_WORKER_BIN → config workerBin → claude. Toolset role `launch`
+# (Read/Grep/Glob/Bash — NO Write/Edit, the read fence) via the worker-adapter;
+# the worker writes its {testCommand, rationale, status, message} proposal to
+# $LCARS_DISCOVERY_JSON and nothing else. Sets DISC_CMD / DISC_RATIONALE /
+# DISC_MSG; returns non-zero when no usable proposal came back (config is then
+# left UNTOUCHED by the caller).
+WORKER_ADAPTER="${LCARS_WORKER_ADAPTER:-$SCRIPT_DIR/../lcars-run/worker-adapter.sh}"
+run_discovery() {
+  DISC_CMD=""; DISC_RATIONALE=""; DISC_MSG=""
+  local wb="${LCARS_WORKER_BIN:-}"
+  [ -n "$wb" ] || wb="$(lcars_config_get "$CONFIG" workerBin)"
+  [ -n "$wb" ] || wb="claude"
+  local cli; cli="$(basename "$wb")"
+  local outdir="$LCARS_DIR/.fixtests-work"
+  mkdir -p "$outdir"
+  local disc="$LCARS_DIR/test-discovery.json"
+  rm -f "$disc"
+
+  # Assemble with `read -d ''` (NOT $(cat <<EOF)): parens in a heredoc inside a
+  # command substitution trip bash 3.2's parser (same guard as launch.sh).
+  local PROMPT
+  IFS= read -r -d '' PROMPT <<EOF || true
+You are the LCARS test-systems engineer. The repo checkout is at:
+  $TOPLEVEL
+DISCOVER the exact shell command that runs this repo's test suite. Do NOT run
+the suite yourself beyond cheap inspection, and do NOT modify any file in the
+checkout — inspection only. Read package manifests / Makefiles / gemfiles /
+build files / READMEs as needed. Prefer a command that honours the
+LCARS_TESTS_DIR environment variable when set (run only that dir), falling back
+to the whole suite when unset.
+
+Then write a JSON object to EXACTLY this path (and print nothing):
+  $disc
+with these fields:
+  "testCommand"  the exact shell command that runs the tests
+  "rationale"    one short sentence on why this is the right command
+  "status"       "ready"
+
+If this repo genuinely has NO test infrastructure at all, instead write
+"status": "failed" and a "message" field saying plainly that no test systems
+exist yet. Never guess a command you are unsure of.
+EOF
+
+  LCARS_DISCOVERY_JSON="$disc" LCARS_WORKER_BIN="$wb" \
+    bash "$WORKER_ADAPTER" spawn "$cli" launch "$outdir" "$PROMPT" || true
+
+  if [ ! -f "$disc" ]; then
+    DISC_MSG="the discovery crew reported nothing back"
+    return 1
+  fi
+  local st; st="$(lcars_config_get "$disc" status)"
+  DISC_CMD="$(lcars_config_get "$disc" testCommand)"
+  DISC_RATIONALE="$(lcars_config_get "$disc" rationale)"
+  DISC_MSG="$(lcars_config_get "$disc" message)"
+  DISC_CMD="$(printf '%s' "$DISC_CMD" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  if [ "$st" != "ready" ] || [ -z "$DISC_CMD" ]; then
+    [ -n "$DISC_MSG" ] || DISC_MSG="the discovery crew could not propose a test command"
+    return 1
+  fi
+  return 0
+}
+
+if [ -n "$VERB" ]; then
+  case "$VERB" in
+    set)
+      CMD="$(printf '%s' "$VERB_CMD" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      [ -n "$CMD" ] || die "an empty test command powers nothing — give the exact command that runs this repo's suite, e.g. lcars update --test-command 'npm test'."
+      set_test_command "$CMD"
+      echo "  ✓ testCommand set: $CMD"
+      print_verdict
+      exit 0
+      ;;
+
+    probe)
+      TC="$(lcars_config_get "$CONFIG" testCommand)"
+      [ -n "$TC" ] || die "no testCommand configured — nothing to probe. Set one with \`lcars update --test-command '<cmd>'\` or repair with \`lcars update --fix-tests\`."
+      echo "  ▸ probing test systems: $TC"
+      run_probe "$TC"
+      report_probe
+      [ "$PROBE_OUTCOME" = "pass" ] && exit 0
+      exit 1
+      ;;
+
+    fix)
+      lcars_test_readiness "$CONFIG"
+      ORIG_STATUS="$LCARS_TESTREADY_STATUS"
+      if [ "$ORIG_STATUS" = "ready" ]; then
+        echo "  ✓ TEST SYSTEMS ONLINE — nothing to repair (testCommand: $LCARS_TESTREADY_TESTCMD)."
+        exit 0
+      fi
+      NEWCMD=""
+      if [ -n "$LCARS_TESTREADY_SUGGESTION" ]; then
+        # Detection already has the answer — no worker, no spend.
+        NEWCMD="$LCARS_TESTREADY_SUGGESTION"
+        echo "  ▸ detection has a candidate — no discovery crew needed."
+      else
+        echo "  ▸ dispatching a discovery crew to survey the test systems…"
+        if ! run_discovery; then
+          if [ "$ORIG_STATUS" = "unknown" ]; then
+            # GREENFIELD (captain ruling): no infra found AND discovery honestly
+            # found nothing — this is EXPECTED status, not an error. Config
+            # untouched; filing missions is unaffected.
+            echo "  ◇ NO TEST SYSTEMS FOUND — discovery confirms a greenfield repo."
+            echo "    The first mission's engineering crew will establish them; filing is unaffected."
+            exit 0
+          fi
+          echo "  ✗ REPAIR INCOMPLETE — $DISC_MSG."
+          echo "    Config untouched. Set the command yourself with:"
+          echo "    lcars update --test-command '<cmd>'"
+          exit 1
+        fi
+        NEWCMD="$DISC_CMD"
+        [ -n "$DISC_RATIONALE" ] && echo "    crew's rationale: $DISC_RATIONALE"
+      fi
+      set_test_command "$NEWCMD"
+      echo "  ✓ testCommand set: $NEWCMD"
+      echo "  ▸ probing test systems…"
+      run_probe "$NEWCMD"
+      report_probe
+      if [ "$PROBE_OUTCOME" = "pass" ]; then
+        print_verdict
+        exit 0
+      fi
+      echo "  ⚠ TEST SYSTEMS SET BUT UNVERIFIED — the command is configured, but the probe reported ${PROBE_OUTCOME}; not declaring ready."
+      exit 1
+      ;;
+  esac
 fi
 
 # --- GITHUB: create only the MISSING labels -------------------------------
@@ -243,4 +462,13 @@ fi
 if [ "$changed" -eq 0 ]; then
   echo "  ✓ nothing to update — labels and config are already current."
 fi
+
+# S146: the ONE test-readiness verdict line (shared with init/status/board).
+# Silent when ready; repair voice for broken/missing; bootstrap voice for a
+# greenfield repo. Reported only — the update flow never writes testCommand
+# (MISSING-only seeding stands); `--fix-tests` is the sanctioned repair.
+lcars_test_readiness "$CONFIG"
+READINESS_LINE="$(lcars_readiness_line)"
+[ -n "$READINESS_LINE" ] && echo "  $READINESS_LINE"
+
 echo "  missions/ untouched."

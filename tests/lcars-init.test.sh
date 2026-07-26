@@ -852,8 +852,8 @@ check "S105 init (unknown): stack is 'unknown'" \
   "grep -q '\"stack\": *\"unknown\"' '$cfgUnk'"
 check "S105 init (unknown): testCommand is null" \
   "grep -q '\"testCommand\": *null' '$cfgUnk'"
-check "S105 init (unknown): warns that no known stack was detected" \
-  "grep -qi 'no known stack\\|no.*stack.*detected' '$repoUnk/outUnk.txt'"
+check "S146 init (unknown/greenfield): ONE calm bootstrap status — no ⚠ config lecture" \
+  "grep -qi 'engineering crew' '$repoUnk/outUnk.txt' && ! grep -q '⚠' '$repoUnk/outUnk.txt'"
 
 # (9) a bash tests/run.sh repo has NO stack marker (unknown) but STILL keeps its
 #     detected bash testCommand — byte-equivalence with pre-S105 (no suppression).

@@ -12,6 +12,8 @@ shape in board.py. It MUST reproduce status.sh's gate/in-flight rule exactly:
 
 stdlib only; no model/gh/git invoked.
 """
+import glob
+import hashlib
 import json
 import os
 import re
@@ -21,10 +23,42 @@ import time
 from . import board
 
 
+# --- S146-D2: the bounded detection-marker set ------------------------------
+# The readiness verdict (readiness.sh → lcars_test_readiness) depends on the
+# repo's TOP-LEVEL stack/runner markers as well as config.json, so the
+# adapter's memo/fingerprint must move when any of these appears, changes, or
+# vanishes — otherwise the board's verdict goes stale against the CLI's the
+# moment (say) a Makefile lands. This ONE list clearly MIRRORS the detector in
+# skills/lcars-init/lcars-common.sh (detect_stack + detect_test_cmd +
+# detect_workspace_runner): keep it in step with those functions. Bounded and
+# cheap by construction — a fixed number of os.stat calls plus three top-level
+# globs per check; the readiness SHELL-OUT still runs only when this signature
+# (or config.json's mtime) actually changed.
+_DETECT_MARKER_FILES = (
+    # js (detect_stack: package.json; detect_test_cmd: pnpm-workspace.yaml;
+    # detect_workspace_runner: pnpm-lock.yaml)
+    "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml",
+    # python
+    "pyproject.toml", "setup.py", "pytest.ini", "tox.ini",
+    # rust / go
+    "Cargo.toml", "go.mod",
+    # jvm
+    "pom.xml", "build.gradle", "build.gradle.kts",
+    # ruby (S145)
+    "Gemfile", "Rakefile", "config.ru",
+    # generic runners, checked last by detect_test_cmd
+    "Makefile", os.path.join("tests", "run.sh"),
+)
+_DETECT_MARKER_GLOBS = ("*.gemspec", "*.csproj", "*.sln")
+# spec/ + test/ dir EXISTENCE is ruby runner evidence (detect_test_cmd S145).
+_DETECT_MARKER_DIRS = ("spec", "test")
+
+
 class LocalAdapter(object):
     name = "local"
 
-    def __init__(self, repo_root, read_only=False, git_url_reader=None):
+    def __init__(self, repo_root, read_only=False, git_url_reader=None,
+                 readiness_script=None):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
@@ -35,6 +69,14 @@ class LocalAdapter(object):
         # is injectable so tests stub it (no real git / network); None → the
         # default shell-git reader.
         self._git_url_reader = git_url_reader
+        # S146: the shared test-readiness helper (skills/lcars-init/readiness.sh
+        # — the ONE verdict the CLI surfaces also use; the daemon SHELLS it, it
+        # never reimplements the verdict in Python). Injectable for tests; None
+        # → env $LCARS_READINESS_SCRIPT → this clone's in-repo copy → the
+        # installed symlink under ~/.claude. Memoized on config.json's mtime so
+        # a board render costs one subprocess only when the config moved.
+        self._readiness_script = readiness_script
+        self._readiness_memo = None   # (config_mtime, payload-or-None)
 
     # -- the public surface ---------------------------------------------------
     def board(self):
@@ -63,7 +105,102 @@ class LocalAdapter(object):
         ml = self._main_launch()
         if ml is not None:
             meta["mainLaunch"] = ml
+        # S146: the additive test-readiness block. Present ONLY when the repo is
+        # NOT ready ({status, suggestion, testCommand}); a READY repo carries NO
+        # `testReadiness` key at all, so its meta — and every old payload — is
+        # byte-identical to before this round. Never raises into the board.
+        tr = self._test_readiness()
+        if tr is not None:
+            meta["testReadiness"] = tr
         return meta
+
+    def _resolve_readiness_script(self):
+        """The readiness helper path: injected → env → in-repo → installed."""
+        if self._readiness_script:
+            return self._readiness_script
+        env = os.environ.get("LCARS_READINESS_SCRIPT")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-init", "readiness.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        return os.path.join(home, ".claude", "skills", "lcars-init",
+                            "readiness.sh")
+
+    def _detect_signature(self):
+        """(existence, mtime) over the bounded detection-marker set.
+
+        S146-D2: the hashable state the readiness verdict can depend on beyond
+        config.json — folded into the memo key (so a marker landing/vanishing
+        re-verdicts on the NEXT board) and into fingerprint() (so SSE pushes an
+        update to passive browsers). Pure os.stat/isdir + three top-level
+        globs; never shells anything.
+        """
+        sig = []
+        root = self.repo_root
+        for name in _DETECT_MARKER_FILES:
+            try:
+                sig.append((name, os.path.getmtime(os.path.join(root, name))))
+            except OSError:
+                sig.append((name, None))
+        for pat in _DETECT_MARKER_GLOBS:
+            for p in sorted(glob.glob(os.path.join(glob.escape(root), pat))):
+                try:
+                    sig.append((os.path.basename(p), os.path.getmtime(p)))
+                except OSError:
+                    pass
+        for d in _DETECT_MARKER_DIRS:
+            sig.append((d + "/", os.path.isdir(os.path.join(root, d))))
+        return tuple(sig)
+
+    def _test_readiness(self):
+        """The additive meta.testReadiness payload, or None (ready / degraded).
+
+        Shells `readiness.sh --json` (the ONE shared verdict — ADR-002: the
+        daemon dispatches, it never reimplements config logic in Python) with
+        the board's repo as cwd. Cheap by construction server-side too: the
+        result is memoized on config.json's mtime, so the subprocess runs only
+        when the config actually moved. ANY failure — script missing, bad JSON,
+        non-zero exit — degrades to None (no block), never into the response.
+        """
+        # Readiness is a property of an INITIALIZED repo: `lcars init` always
+        # writes config.json, so its absence means "not an LCARS repo (yet)" —
+        # report nothing (and keep pre-init/legacy fixtures byte-identical).
+        config = os.path.join(self.repo_root, ".git", "lcars", "config.json")
+        if not os.path.isfile(config):
+            return None
+        try:
+            mtime = os.path.getmtime(config)
+        except OSError:
+            mtime = 0.0
+        # S146-D2: the memo key folds the detection-marker signature alongside
+        # config.json's mtime — the verdict depends on BOTH (a Makefile landing
+        # flips the CLI's verdict with config.json untouched, and the board
+        # must agree on the next render). Stat-cheap; the shell-out below still
+        # runs only when this key actually moved.
+        key = (mtime, self._detect_signature())
+        if self._readiness_memo is not None and self._readiness_memo[0] == key:
+            return self._readiness_memo[1]
+        payload = None
+        script = self._resolve_readiness_script()
+        try:
+            proc = subprocess.run(
+                ["bash", script, "--json"], cwd=self.repo_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=10)
+            blk = json.loads((proc.stdout or b"").decode("utf-8", "replace"))
+            if isinstance(blk, dict) and blk.get("status") \
+                    and blk.get("status") != "ready":
+                payload = {"status": blk.get("status"),
+                           "suggestion": blk.get("suggestion"),
+                           "testCommand": blk.get("testCommand")}
+        except Exception:
+            payload = None
+        self._readiness_memo = (key, payload)
+        return payload
 
     def _main_launch(self):
         """The local main-deploy record → the additive meta.mainLaunch payload,
@@ -133,6 +270,27 @@ class LocalAdapter(object):
             seen = True
         except OSError:
             pass
+        # S146: fold in config.json — a sanctioned testCommand write (the
+        # --test-command / --fix-tests verbs) must move the fingerprint so SSE
+        # pushes ONE update and every open board (incl. the File console's
+        # inline warning) re-verdicts live. Missing file contributes nothing.
+        config = os.path.join(self.repo_root, ".git", "lcars", "config.json")
+        try:
+            latest = max(latest, os.path.getmtime(config))
+            seen = True
+        except OSError:
+            pass
+        # S146-D2: for an INITIALIZED repo (config.json present — same gate as
+        # _test_readiness) fold in a digest of the detection-marker signature,
+        # so a stack/runner marker appearing, changing, or VANISHING (a max-
+        # mtime fold could never see a deletion) moves the fingerprint and SSE
+        # pushes an update — passive browsers re-fetch and the memo above
+        # re-verdicts. An uninitialized/legacy repo skips this entirely, so its
+        # fingerprint (including the "0" sentinel) stays byte-identical.
+        if os.path.isfile(config):
+            digest = hashlib.md5(
+                repr(self._detect_signature()).encode("utf-8")).hexdigest()[:12]
+            return ("%.6f" % latest if seen else "0") + "|" + digest
         # Preserve the "0" sentinel only for the truly-empty case: no mission
         # files AND no main record.
         return "%.6f" % latest if seen else "0"

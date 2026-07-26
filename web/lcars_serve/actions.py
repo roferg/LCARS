@@ -58,6 +58,10 @@ SCRIPT_ENV = {
     "launch": "LCARS_LAUNCH_SCRIPT",
     # S130: the shared version helper the /api/update button shells (check.sh).
     "version_check": "LCARS_VERSION_CHECK_BIN",
+    # S146: `lcars update` — the /api/config/* endpoints shell its test-
+    # readiness verbs (--test-command / --probe-tests / --fix-tests). The CLI
+    # verbs stay the ONE sanctioned config writer; the daemon only dispatches.
+    "update": "LCARS_UPDATE_SCRIPT",
 }
 
 
@@ -1655,6 +1659,55 @@ class Actions(object):
         out = (proc.stdout or b"").decode("utf-8", "replace").strip()
         return {"update": out, "board": self._reader.board()}
 
+    # -- S146: test-readiness config actions (/api/config/*) -------------------
+    # Each shells the matching `lcars update` verb — the ONE sanctioned
+    # testCommand writer (ADR-002: dispatch, never reimplement config logic in
+    # Python). Blocking on purpose: set is instant, probe is bounded by
+    # $LCARS_PROBE_TIMEOUT, and fix's discovery worker is a single one-shot
+    # turn — the File console's ⚡ FIX shows a busy state while this runs. A
+    # non-zero exit surfaces the script's OWN legible report as the error
+    # message (plain English on the board, never a stack trace / raw exit code).
+    def set_test_command(self, test_command):
+        """POST /api/config/test-command — the manual override setter."""
+        cmd = (test_command or "").strip()
+        if not cmd:
+            raise ActionError(400, "an empty test command powers nothing — "
+                              "type the exact command that runs this repo's "
+                              "suite.")
+        return self._config_verb(["--test-command", cmd])
+
+    def probe_tests(self):
+        """POST /api/config/probe-tests — one bounded run of the stored
+        command. Captain-triggered only; nothing runs it automatically."""
+        return self._config_verb(["--probe-tests"])
+
+    def fix_tests(self):
+        """POST /api/config/fix-tests — the ONE-CLICK repair: suggest-or-
+        discover → set → probe → verdict, all inside one CLI invocation."""
+        return self._config_verb(["--fix-tests"])
+
+    def _config_verb(self, args):
+        """Shared dispatch for the config verbs: run `update.sh <args>`
+        blocking, return {output, board} on success, raise the script's own
+        plain-English report on failure."""
+        cmd, env = self._resolve_run("update", args, None)
+        try:
+            proc = subprocess.run(cmd, cwd=self.repo_root, env=env,
+                                  stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT)
+        except OSError as exc:
+            raise ActionError(502, "could not reach the update skill: %s" % exc)
+        out = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        if proc.returncode != 0:
+            # The verbs print ship-status lines (⚠ SET BUT UNVERIFIED, ✗ REPAIR
+            # INCOMPLETE, …) — surface THOSE, verbatim, as the board message.
+            raise ActionError(502, out or "the test-systems repair failed with "
+                              "no report — check the daemon log.")
+        # the fresh board carries the re-verdicted meta.testReadiness (or its
+        # absence, when the repair brought the systems online).
+        return {"output": out, "board": self._reader.board()}
+
     def log_preview(self, mid, text=None, images=None):
         """POST /api/mission/<id>/log — preview the N child bug missions.
 
@@ -2279,6 +2332,8 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
             home, ".claude/skills/lcars-launch/launch.sh"),
         "version_check": os.path.join(
             home, ".claude/skills/lcars-version/check.sh"),
+        # S146: the update skill carries the sanctioned test-readiness verbs.
+        "update": os.path.join(home, ".claude/skills/lcars-update/update.sh"),
     }
     scripts = {}
     for key, default in default_dir.items():

@@ -61,6 +61,13 @@
          the banner WITHOUT the ENGAGE UPDATE button (read-safe info only). -->
     <div class="version-banner" id="versionBanner" hidden></div>
 
+    <!-- S146 test-readiness banner: its OWN strip below the band (the version-
+         banner placement idiom — NEVER inside the topbar button cluster, so it
+         coexists with the Deploy Main control). Filled by board.js from
+         board.meta.testReadiness; ABSENT meta ⇒ hidden and the board is
+         byte-identical to a ready repo today. -->
+    <div class="readiness-banner" id="readinessBanner" hidden></div>
+
     <div class="board-wrap">
       <div class="board" id="board"><!-- columns + cards injected by board.js --></div>
     </div>
