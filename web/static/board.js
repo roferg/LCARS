@@ -150,6 +150,51 @@ function isStarting(id) {
   return id != null && !!STARTING[String(id)];
 }
 
+/* Park & Align (S137 / BUG-3): optimistic "aligning" set. START ALIGNMENT fires a
+   warm-grill POST (/api/align/start) that only RENDERS when the worker turn returns
+   — seconds later. With no guard the live button stays clickable and gives no
+   feedback, so a frustrated captain clicks it repeatedly and each click spawns a
+   NEW server-side _AlignSession that later "flashes" as a stray console. On the
+   click we mark the mission id "aligning": both the card control and the detail
+   header then render a DISABLED "⊹ Scanning…" affordance across every repaint (SSE
+   included) so a re-click is impossible until the console actually opens
+   (clearAligning on success) or the open errors / is superseded. Mirrors the
+   STARTING pattern (UX-17); a safety timeout re-arms a wedged card. */
+var ALIGNING = Object.create(null);
+var ALIGNING_TIMEOUT_MS = 60000;
+
+function markAligning(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (ALIGNING[key]) clearTimeout(ALIGNING[key]);
+  ALIGNING[key] = setTimeout(function () { clearAligning(key); refresh(); },
+    ALIGNING_TIMEOUT_MS);
+}
+function clearAligning(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (ALIGNING[key]) { clearTimeout(ALIGNING[key]); delete ALIGNING[key]; }
+}
+function isAligning(id) {
+  return id != null && !!ALIGNING[String(id)];
+}
+
+/* BUG-3: the single in-flight START-ALIGNMENT open ({id}). Closing/cancelling the
+   BUG-3: a one-shot "on next overlay close" callback — null for ordinary modals,
+   set by renderAlignConsole to POST cancel its warm align session on ✕/backdrop/
+   Esc (all route through closeOverlay). Closing an unrelated overlay never aborts an
+   in-flight START-ALIGNMENT open — the click-guard (isAligning) already prevents
+   duplicate spawns, so the console simply opens when its worker turn returns. */
+var onOverlayClose = null;
+
+/* FIX-A: the last board payload render() drew, cached so the aligning flow can force
+   an INSTANT client-only repaint. Parking/aligning changes no server state, so no SSE
+   tick is guaranteed — without this the persistent scanning band would only appear (or
+   clear) on the next unrelated refresh. render() only rebuilds #board (never an open
+   overlay), so re-rendering while a modal is up is safe. */
+var LAST_BOARD = null;
+function repaintBoard() { if (LAST_BOARD) render(LAST_BOARD); }
+
 /* BUG-044: optimistic "merging" set. After BUG-040 made the Merge (approve)
    click fire-and-forget, the card keeps rendering the clickable "✓ Review PR ▸"
    for ~2-3s until the next refresh/SSE delivers the real reconcileStatus that
@@ -518,6 +563,10 @@ function cardNode(m) {
   // && !paused; optimistic-start counts). Suppressed while pausing/paused so a
   // halting card never shows motion. Client-side animation only.
   if (isInFlight(m)) card.appendChild(runningPulse(stageLabel(m.stage), m.liveness));
+  // FIX-A: a parked mission mid-scan (START ALIGNMENT clicked, warm grill opening)
+  // gets the SAME persistent animated band — rendered on every repaint while
+  // isAligning so the motion survives board rebuilds until the console opens.
+  else if (isAligning(m.id)) card.appendChild(scanningPulse());
 
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
   card.appendChild(cardControls(m));
@@ -673,10 +722,10 @@ function cardControls(m) {
     // runnable — a plain "▶ Start" launches a RUN via the Launch panel. Offer
     // "▹ START ALIGNMENT" instead: it opens the warm grill console seeded from
     // the parked mission (align_start with its missionId); on grill completion
-    // the SSE refresh swaps this standby card for a normal aligned card.
-    ctrl.appendChild(applyWriteState(btn("▹ START ALIGNMENT", "go", function () {
-      startAlignment(m.id);
-    })));
+    // the SSE refresh swaps this standby card for a normal aligned card. BUG-3:
+    // startAlignmentControl renders the disabled "⊹ Scanning…" busy-guard while
+    // the open is in flight so a repaint can't offer a re-click (double-spawn).
+    ctrl.appendChild(startAlignmentControl(m.id));
   } else {
     // align (and any pre-run stage): Start launches the run via the Launch panel
     ctrl.appendChild(applyWriteState(btn("▶ Start", "go", function () {
@@ -764,6 +813,7 @@ function isRunningStage(stage) {
 }
 
 function render(board) {
+  LAST_BOARD = board; // FIX-A: cache for forced client-only repaints (scanning band).
   indexIssues(board); // UX-28: refresh the id→issue index for parent resolution.
   var root = document.getElementById("board");
   root.innerHTML = "";
@@ -947,6 +997,14 @@ function closeOverlay() {
   overlay().hidden = true;
   overlayBody().innerHTML = "";
   clearDetailTimers(); // UX-32: never leak the live active-time tick interval.
+  // BUG-3: fire (and clear) the one-shot close hook — set by renderAlignConsole to
+  // cancel its warm align session on ✕ / backdrop click / Esc. Closing an UNRELATED
+  // overlay (e.g. the detail modal opened mid-scan) leaves the in-flight alignment
+  // untouched: the click-guard (isAligning) already prevents duplicate spawns, so the
+  // console opens when the worker turn returns regardless of other overlay activity —
+  // only closing the CONSOLE itself reaps its session.
+  var hook = onOverlayClose; onOverlayClose = null;
+  if (hook) hook();
 }
 
 // click on the dimmed backdrop (outside the modal stage content) dismisses.
@@ -1175,49 +1233,51 @@ function openFile() {
   var ideaImgs = attachImagePaster(idea, function (msg) { showErr(err, msg); });
 
   m.foot.appendChild(btn("Cancel", null, closeOverlay));
-  // Park & Align (S137): the backlog-fast lane. "◇ Park — align later" files the
-  // idea INSTANTLY as a pre-PRD STANDBY mission (POST /api/park → file.sh --park)
-  // — NO grill opens. The parked card lands on the board (SSE nudges it); the
-  // captain aligns it later from the card's START ALIGNMENT. Gated through
+  // Park & Align (S137 / FIX-C): PARK is now the DEFAULT primary action (captain
+  // ruling). "◇ File to Backlog ▸" files the idea INSTANTLY as a pre-PRD STANDBY
+  // mission (POST /api/park → file.sh --park) — NO grill opens. The parked card
+  // lands on the board (SSE nudges it); the captain aligns it later from the
+  // card's START ALIGNMENT. It is the SOLE teal button in this modal, but SAME
+  // size as the others (class "go", not "go big" — captain ruling). Gated through
   // applyWriteState so a view-only board disables it.
-  var park = applyWriteState(btn("◇ Park — align later", null, function () {
+  var park = applyWriteState(btn("◇ File to Backlog ▸", "go", function () {
     var text = idea.value.trim();
     if (!text) { showErr(err, "Describe the idea first."); return; }
-    park.disabled = true; park.textContent = "Parking…";
+    park.disabled = true; park.textContent = "Filing…";
     err.hidden = true;
     postWrite("/api/park",
       { idea: text, engine: chosen.engine, images: ideaImgs.payload() },
       function () { closeOverlay(); refresh(); },
       function (msg) {
-        park.disabled = false; park.textContent = "◇ Park — align later";
+        park.disabled = false; park.textContent = "◇ File to Backlog ▸";
         showErr(err, msg);
       });
   }));
-  m.foot.appendChild(park);
-  // "File & Begin Alignment" opens the interactive Align grilling console
-  // (S70-B) — the structured one-question-at-a-time interview, not a
-  // straight-to-skeleton create. The mission lands in Align when the console
-  // completes and file.sh runs.
-  // UX-2: opening the Align console spawns a worker turn (several seconds) — show
-  // the themed working indicator inline while it is in flight; it clears on both
-  // success (console replaces the modal) and error.
-  // UX-7: Trek-themed loading copy for the Align-open worker turn (POST
-  // /api/align/start) — "Scanning the codebase…".
+  // "File & Begin Alignment" is now the SECONDARY (plain, non-teal) option — it
+  // opens the interactive Align grilling console (S70-B), the structured
+  // one-question-at-a-time interview, not a straight-to-skeleton create. The
+  // mission lands in Align when the console completes and file.sh runs.
+  // UX-2/UX-7: opening the console spawns a worker turn (several seconds) — show
+  // the themed "Scanning the codebase…" indicator inline while it is in flight;
+  // it clears on success (console replaces the modal) and on error.
   var fileBusy = workingNode("Scanning the codebase…"); fileBusy.hidden = true;
   m.body.appendChild(fileBusy);
 
-  var go = applyWriteState(btn("File & Begin Alignment ▸", "go big", function () {
+  var go = applyWriteState(btn("File & Begin Alignment", null, function () {
     var text = idea.value.trim();
     if (!text) { showErr(err, "Describe the idea first."); return; }
     go.disabled = true; go.textContent = "Scanning…";
     err.hidden = true; fileBusy.hidden = false;
     openAlignConsole(text, chosen.engine, ideaImgs.payload(), function (msg) {
-      go.disabled = false; go.textContent = "File & Begin Alignment ▸";
+      go.disabled = false; go.textContent = "File & Begin Alignment";
       fileBusy.hidden = true;
       showErr(err, msg);
     });
   }));
+  // Footer order (primary rightmost, per the modal convention):
+  // [Cancel] [File & Begin Alignment (secondary)] [◇ File to Backlog ▸ (primary)].
   m.foot.appendChild(go);
+  m.foot.appendChild(park);
   showOverlay(m.wrap);
   idea.focus();
 }
@@ -1237,8 +1297,24 @@ function openAlignConsole(idea, engine, images, onStartError, missionId) {
     ? { missionId: missionId }
     : { idea: idea, engine: engine, images: images };
   postWrite("/api/align/start", body,
-    function (state) { renderAlignConsole(state); },
-    function (msg) { if (onStartError) onStartError(msg); });
+    function (state) {
+      // BUG-3: the console is opening — re-arm the START ALIGNMENT control (the
+      // busy-guard's job is done) and drop the scanning band. renderAlignConsole
+      // itself is engine-agnostic and never sees the missionId, so we clear here on
+      // its behalf. The console opens whether or not the captain closed an unrelated
+      // overlay during this in-flight POST — they clicked START ALIGNMENT; honoring
+      // it (rather than aborting on a stray close) is the intent.
+      if (missionId) { clearAligning(missionId); repaintBoard(); } // FIX-A: drop band.
+      // `completing` = this grill is aligning an ALREADY-PARKED mission (missionId)
+      // in place, not filing a brand-new one — so the hand-off copy reads
+      // "aligning mission", never "creating mission".
+      renderAlignConsole(state, !!missionId);
+    },
+    function (msg) {
+      // BUG-3: the open failed — drop the busy-guard so the card/detail re-arm.
+      if (missionId) { clearAligning(missionId); repaintBoard(); } // FIX-A: drop band.
+      if (onStartError) onStartError(msg);
+    });
 }
 
 /* Park & Align (S137): open the warm Align grill for a PARKED mission (the
@@ -1251,7 +1327,47 @@ function startAlignment(missionId) {
   }, missionId);
 }
 
-function renderAlignConsole(state) {
+/* BUG-3: the START ALIGNMENT affordance shared by the board card control and the
+   detail header (DRY). While isAligning(id) it renders a DISABLED "⊹ Scanning…"
+   pill so a repaint (SSE) can't offer a re-click; otherwise the live
+   "▹ START ALIGNMENT" button that arms the busy-guard and opens the warm grill. */
+function startAlignmentControl(id) {
+  if (isAligning(id)) {
+    var busy = btn("⊹ Scanning…", "go", null);
+    busy.disabled = true;
+    busy.title = "Opening the alignment console…";
+    return busy;
+  }
+  return applyWriteState(btn("▹ START ALIGNMENT", "go", function () {
+    beginAlignment(id);
+  }));
+}
+
+/* BUG-3: arm the click-guard + busy feedback, then open the warm grill. markAligning
+   flips every repaint of this card/detail to the disabled "⊹ Scanning…" control (so
+   repeated clicks can't spawn duplicate sessions); FIX-A forces an INSTANT client-only
+   repaint so the PERSISTENT animated scanning band (scanningPulse, keyed on isAligning)
+   appears the moment of the click — parking/aligning changes no server state, so no SSE
+   tick is guaranteed. */
+function beginAlignment(id) {
+  markAligning(id);
+  repaintBoard(); // FIX-A: draw the scanning band now, not only on the next SSE tick.
+  startAlignment(id);
+}
+
+/* BUG-3: best-effort, idempotent reap of a warm align session (server route
+   POST /api/align/<sid>/cancel already exists). Network / HTTP errors are ignored
+   — cancelling is a courtesy, never a blocker. */
+function cancelAlignSession(sid) {
+  if (!sid) return;
+  postWrite("/api/align/" + enc(sid) + "/cancel", {},
+    function () {}, function () {});
+}
+
+function renderAlignConsole(state, completing) {
+  // `completing` (Park & Align): true when this grill is ALIGNING an already-
+  // parked mission in place (vs filing a brand-new one) — drives the closing-turn
+  // hand-off copy below so a parked mission never reads "creating mission".
   // a session that resolved in one shot (trivial mission) → straight to done.
   if (state.status === "done") { renderAlignDone(state); return; }
 
@@ -1358,11 +1474,13 @@ function renderAlignConsole(state) {
     // runs server-side within this POST. Show the themed working indicator the
     // whole time; it clears on the next question, on done, or on error.
     // BUG-015: when the captain is answering the CLOSING turn, this POST runs the
-    // slow cold-opus estimate + mission creation — show a DISTINCT loading copy so
-    // it reads as progress ("estimating & creating mission"), not a stuck grill
-    // spinner. Otherwise it's a normal between-questions grill turn.
+    // slow cold-opus estimate + mission file/complete — show a DISTINCT loading copy
+    // so it reads as progress, not a stuck grill spinner. Otherwise it's a normal
+    // between-questions grill turn. Park & Align: a parked mission already EXISTS, so
+    // it's being ALIGNED in place, never "created".
     busy.querySelector(".lcars-working-label").textContent = closing.val
-      ? "Estimating cost & creating mission…"
+      ? (completing ? "Estimating cost & aligning mission…"
+                    : "Estimating cost & creating mission…")
       : "Formulating the next inquiry…";
     busy.hidden = false;
     postWrite("/api/align/" + enc(sid) + "/answer",
@@ -1389,6 +1507,11 @@ function renderAlignConsole(state) {
       });
   };
 
+  // BUG-3: dismissing this console (✕ / backdrop click / Esc — all route through
+  // closeOverlay) must reap the warm align session server-side so an orphaned
+  // worker turn can't return later and flash as a stray modal. The hook is a
+  // one-shot; closeOverlay fires-and-clears it.
+  onOverlayClose = function () { cancelAlignSession(sid); };
   showOverlay(m.wrap);
   paintQuestion(state);
 }
@@ -1396,6 +1519,9 @@ function renderAlignConsole(state) {
 /* Alignment reached: file.sh has already run server-side and the board has
    refreshed (the new card sits in Align). Show a brief confirmation. */
 function renderAlignDone(state) {
+  // BUG-3: the align completed server-side (file.sh ran) — there is no warm
+  // session left to reap, so drop any close hook the console had set.
+  onOverlayClose = null;
   var m = modal("⊹ Alignment Reached", { headClass: "teal" });
   m.body.appendChild(noteEl(
     "Alignment reached — the mission is filed and now sits in the " +
@@ -2531,16 +2657,24 @@ function renderDetail(mi) {
       dpause.disabled = true; dpause.title = "Engaging the driver…";
     }
     actions.appendChild(dpause);
+  } else if (mi.prdPending) {
+    // Park & Align (S137 / BUG-1): a PARKED mission has NO PRD, so it is NEVER
+    // runnable — the plain "▶ Start" below launches a RUN via the Launch panel.
+    // Mirror the card control (▹ START ALIGNMENT) instead; startAlignmentControl
+    // shares the BUG-3 busy-guard so this detail button also disables on click.
+    actions.appendChild(startAlignmentControl(mi.id));
   } else {
     // align (and any pre-run stage): Start launches the run via the Launch panel.
     actions.appendChild(applyWriteState(btn("▶ Start", "go", function () { openLaunch(mi.id); })));
   }
-  // Mission Log is available at every stage (not on terminal Done missions).
+  // Mission Log is VERIFY-ONLY (captain ruling): a mission cannot be logged
+  // against until it reaches Verify — every earlier stage (align incl. parked,
+  // research, validate, plan, implement) and terminal Done must NOT show it.
   // BUG-046: a logged-bug CHILD (type=="bug" && parentMission set, the isLogBug
   // predicate that gates the rest of the logged-bug chrome) is itself a bug entry
   // — you cannot log bugs AGAINST a logged bug. So the button renders for
   // top-level missions only, never for a bug child.
-  if (mi.stage !== "done" && !isLogBug(mi)) {
+  if (mi.stage === "verify" && !isLogBug(mi)) {
     actions.appendChild(applyWriteState(btn("Mission Log", null, function () { openLog(mi.id); })));
   }
   row1.appendChild(actions);
@@ -3626,6 +3760,17 @@ function workingNode(labelText) {
    adding the .lcars-running modifier for the running tint, plus a stage-aware
    themed label so a silent stage still reads as in motion. role=status / aria-
    live carry the state to assistive tech (not colour alone). */
+/* FIX-A: the PERSISTENT animated band shown on a parked card from the START
+   ALIGNMENT click until the warm grill console opens. Same animated bars as
+   runningPulse (.lcars-running), so the scan reads as live motion the whole time
+   instead of flashing once and dying to a static grey button. Re-rendered on every
+   repaint while isAligning(id) is true (card render), so no repaint can wipe it. */
+function scanningPulse() {
+  var w = workingNode("⊹ Scanning the codebase…");
+  w.className += " lcars-running";
+  return w;
+}
+
 function runningPulse(label, liveness) {
   var base = RUNNING_COPY[label] || ("Underway · " + (label || "running") + "…");
   // S114: a REAL liveness tail derived from the worker's output activity (present
