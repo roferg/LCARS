@@ -69,16 +69,20 @@ nap() { perl -e 'select(undef,undef,undef,'"${1:-0.3}"')' 2>/dev/null || true; }
 
 # --- args -----------------------------------------------------------------
 # lcars launch <mission> [hint words…] [--stop]
+# lcars launch --main [hint words…] [--stop]      (deploy the LOCAL main HEAD)
 MISSION=""
 HINT=""
 STOP=0
+MAIN=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --main) MAIN=1; shift ;;
     --stop) STOP=1; shift ;;
     --) shift ;;
-    --*) die "unknown option \"$1\" — usage: lcars launch <mission> [hint] [--stop]." ;;
+    --*) die "unknown option \"$1\" — usage: lcars launch <mission> [hint] [--stop], or lcars launch --main [hint] [--stop]." ;;
     *)
-      if [ -z "$MISSION" ]; then
+      # In --main mode there is no mission slot — every positional is a hint word.
+      if [ "$MAIN" -eq 0 ] && [ -z "$MISSION" ]; then
         MISSION="$1"
       elif [ -z "$HINT" ]; then
         HINT="$1"
@@ -88,8 +92,6 @@ while [ $# -gt 0 ]; do
       shift ;;
   esac
 done
-
-[ -n "$MISSION" ] || die "name a mission to launch — e.g. \`lcars launch <mission-id>\`."
 
 # --- locate the repo + the mission dir ------------------------------------
 GIT_DIR="$("$GIT_BIN" rev-parse --git-dir 2>/dev/null)" \
@@ -103,13 +105,57 @@ GIT_DIR="$(cd "$GIT_DIR" 2>/dev/null && pwd -P)" || die "cannot resolve the git 
 LCARS_DIR="$GIT_DIR/lcars"
 LCARS_CFG="$LCARS_DIR/config.json"
 MISSIONS_DIR="$LCARS_DIR/missions"
-MDIR="$MISSIONS_DIR/$MISSION"
-STATE="$MDIR/state.json"
-[ -d "$MDIR" ] || die "no mission \"$MISSION\" here — check the id, or file it first."
-[ -f "$STATE" ] || die "mission \"$MISSION\" looks incomplete (no state.json) — re-file it before launching."
 
-# Per-mission artifacts.
-WT="$LCARS_DIR/launch/$MISSION"          # the disposable detached worktree
+# --- resolve the TARGET: a mission, or the local main deploy (--main) -------
+# This is the ONE seam --main adds. Everything downstream is target-agnostic: it
+# works off MDIR (state home), WT (disposable worktree), BRANCH, and (below) a
+# resolved SHA — whether those describe a mission or the local main deploy. No
+# code path is forked; only these four handles are set differently up here.
+if [ "$MAIN" -eq 1 ]; then
+  # --main takes NO mission id. Catch the two ways one slips in: a positional
+  # parsed as a mission BEFORE --main (`lcars launch m1 --main`), or a hint word
+  # that actually names an existing mission (`lcars launch --main m1`).
+  [ -z "$MISSION" ] \
+    || die "\`--main\` deploys the local main branch and takes no mission id — run \`lcars launch $MISSION\` for that mission, or \`lcars launch --main\` for the deploy."
+  _h1="${HINT%% *}"
+  if [ -n "$_h1" ] && [ -d "$MISSIONS_DIR/$_h1" ]; then
+    die "\"$_h1\" is a mission, not a hint — drop \`--main\` to launch it (\`lcars launch $_h1\`), or reword your hint."
+  fi
+
+  # Resolve the local default branch — NO fetch, EVER (the same local rev-parse
+  # the mission path uses). Preference: config mainBranch → local main → master.
+  BRANCH=""
+  [ -f "$LCARS_CFG" ] && BRANCH="$(json_str "$LCARS_CFG" mainBranch)"
+  case "$BRANCH" in ''|null) BRANCH="" ;; esac
+  if [ -z "$BRANCH" ]; then
+    if "$GIT_BIN" rev-parse --verify --quiet refs/heads/main >/dev/null 2>&1; then
+      BRANCH="main"
+    elif "$GIT_BIN" rev-parse --verify --quiet refs/heads/master >/dev/null 2>&1; then
+      BRANCH="master"
+    else
+      die "no main/master branch — set mainBranch in .git/lcars/config.json"
+    fi
+  fi
+
+  # State home for the deploy: holds launch.json + launch-discovery.json ONLY —
+  # no mission dir, no state.json. The worktree uses the RESERVED @main path.
+  MDIR="$LCARS_DIR/main"
+  STATE=""                                 # there is no state.json for a deploy
+  mkdir -p "$MDIR"
+  WT="$LCARS_DIR/launch/@main"             # reserved path for the main worktree
+else
+  [ -n "$MISSION" ] \
+    || die "name a mission to launch — e.g. \`lcars launch <mission-id>\` — or deploy the local main HEAD with \`lcars launch --main\`."
+  [ "$MISSION" = "@main" ] \
+    && die "\"@main\" is reserved for the main deploy — run \`lcars launch --main\` instead."
+  MDIR="$MISSIONS_DIR/$MISSION"
+  STATE="$MDIR/state.json"
+  [ -d "$MDIR" ] || die "no mission \"$MISSION\" here — check the id, or file it first."
+  [ -f "$STATE" ] || die "mission \"$MISSION\" looks incomplete (no state.json) — re-file it before launching."
+  WT="$LCARS_DIR/launch/$MISSION"          # the disposable detached worktree
+  BRANCH="$(json_str "$STATE" branch)"
+fi
+
 LAUNCH_JSON="$MDIR/launch.json"          # the record both CLI + daemon read
 # S111 (RUN-button flash fix): the discovery worker gets its OWN answer file —
 # it must NEVER write the shared launch.json directly. Its {status:"ready"}
@@ -129,8 +175,6 @@ commit_launch_json() { # (json on stdin)
 }
 LOG="$MDIR/launch.log"                   # the app's captured stdout+stderr
 OUTDIR="$MDIR/.launch-work"              # the worker's answer channel
-
-BRANCH="$(json_str "$STATE" branch)"
 
 # --- provision a freshly-created launch worktree --------------------------
 # A disposable DETACHED worktree checks out the mission's CONTENT but has no
@@ -165,31 +209,43 @@ remove_worktree() {
   rm -rf "$WT" 2>/dev/null || true
 }
 
-# =====================================================================
-# --stop : kill the process group + prune the worktree. Idempotent.
-# =====================================================================
-if [ "$STOP" -eq 1 ]; then
-  pid=""; pgid=""
+# --- group-kill whatever process a PRIOR launch.json recorded -------------
+# Reads pid/pgid from $LAUNCH_JSON and group-kills TERM → grace → KILL, exactly
+# as the --stop block always has. Shared by BOTH --stop AND the re-launch guard
+# below: re-launching into a (reused) worktree must first reap the process the
+# LAST launch left running, or overwriting launch.json's pid orphans it.
+# NO-OP SAFE: a fresh launch (no launch.json) or a prior stopped/failed record
+# (those writers OMIT pid/pgid) yields empty → kills NOTHING, never errors; an
+# already-dead recorded pid → the kills are harmless no-ops. Best-effort
+# throughout. Does NOT touch the worktree — --stop prunes separately, and a
+# re-launch REUSES it.
+kill_recorded_launch() {
+  local pid="" pgid=""
   if [ -f "$LAUNCH_JSON" ]; then
     pid="$(json_raw "$LAUNCH_JSON" pid)"
     pgid="$(json_raw "$LAUNCH_JSON" pgid)"
   fi
   case "$pgid" in ''|null) pgid="" ;; esac
   case "$pid"  in ''|null) pid=""  ;; esac
+  [ -n "$pgid" ] || [ -n "$pid" ] || return 0
 
-  if [ -n "$pgid" ] || [ -n "$pid" ]; then
-    # Kill the whole GROUP first (negative pgid), so a dev server's children die
-    # with it; fall back to the bare pid. Grace, then SIGKILL the group.
-    [ -n "$pgid" ] && kill -TERM -"$pgid" 2>/dev/null || true
-    [ -n "$pid" ]  && kill -TERM "$pid"  2>/dev/null || true
-    nap 0.4
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      [ -n "$pgid" ] && kill -KILL -"$pgid" 2>/dev/null || true
-      kill -KILL "$pid" 2>/dev/null || true
-      nap 0.2
-    fi
+  # Kill the whole GROUP first (negative pgid), so a dev server's children die
+  # with it; fall back to the bare pid. Grace, then SIGKILL the group.
+  [ -n "$pgid" ] && kill -TERM -"$pgid" 2>/dev/null || true
+  [ -n "$pid" ]  && kill -TERM "$pid"  2>/dev/null || true
+  nap 0.4
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    [ -n "$pgid" ] && kill -KILL -"$pgid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+    nap 0.2
   fi
+}
 
+# =====================================================================
+# --stop : kill the process group + prune the worktree. Idempotent.
+# =====================================================================
+if [ "$STOP" -eq 1 ]; then
+  kill_recorded_launch          # group-kill the recorded process (TERM→grace→KILL)
   remove_worktree
 
   # Refresh the record to status=stopped, preserving what we can read.
@@ -208,7 +264,11 @@ if [ "$STOP" -eq 1 ]; then
     } | commit_launch_json
   fi
 
-  printf 'LCARS — mission app offline. The %s viewer has been powered down.\n' "$MISSION"
+  if [ "$MAIN" -eq 1 ]; then
+    printf 'LCARS — main deploy offline. The %s viewer has been powered down.\n' "${BRANCH:-main}"
+  else
+    printf 'LCARS — mission app offline. The %s viewer has been powered down.\n' "$MISSION"
+  fi
   exit 0
 fi
 
@@ -216,14 +276,37 @@ fi
 # launch : discover → check out → run detached → record → readout
 # =====================================================================
 
+# --- re-launch guard: reap the PRIOR launch's process FIRST ---------------
+# If an app from a previous launch is still running, its pid/pgid live in the
+# CURRENT $LAUNCH_JSON. Group-kill it NOW — this MUST happen before the early
+# `launching` write below (commit_launch_json), which OVERWRITES $LAUNCH_JSON and
+# destroys that pid/pgid. Skipping this orphans the old process (a later --stop,
+# reading only the new pid, could never reap it). $LAUNCH_JSON derives from $MDIR
+# — already set by the target-resolution seam — so this is uniform for --main and
+# missions. A fresh/stopped/failed record carries no pid/pgid → clean no-op. The
+# worktree is left intact: a re-launch REUSES it (idempotent `worktree add`).
+kill_recorded_launch
+
 # --- resolve the branch tip SHA -------------------------------------------
 [ -n "$BRANCH" ] \
   || die "mission \"$MISSION\" has no branch yet — run the mission before launching its app."
 SHA="$("$GIT_BIN" rev-parse --verify --quiet "$BRANCH^{commit}" 2>/dev/null)"
 [ -n "$SHA" ] \
   || SHA="$("$GIT_BIN" rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}" 2>/dev/null)"
-[ -n "$SHA" ] \
-  || die "the mission's branch \"$BRANCH\" doesn't exist here — run the mission first, or fetch its branch."
+if [ -z "$SHA" ]; then
+  if [ "$MAIN" -eq 1 ]; then
+    die "the \"$BRANCH\" branch doesn't exist here — check mainBranch in .git/lcars/config.json."
+  else
+    die "the mission's branch \"$BRANCH\" doesn't exist here — run the mission first, or fetch its branch."
+  fi
+fi
+# The main deploy records its human branch name + a short SHA (additive fields on
+# the main path ONLY — the per-mission launch.json stays byte-identical to today).
+SHA_SHORT=""
+if [ "$MAIN" -eq 1 ]; then
+  SHA_SHORT="$("$GIT_BIN" rev-parse --short "$SHA" 2>/dev/null)"
+  [ -n "$SHA_SHORT" ] || SHA_SHORT="$(printf '%s' "$SHA" | cut -c1-12)"
+fi
 
 # --- persist the `launching` record IMMEDIATELY, before the SLOW pre-flight --
 # Write it at the VERY TOP of the launch flow — BEFORE `git worktree add --detach`
@@ -274,7 +357,12 @@ provision_worktree "$WT" || :
 
 # --- resolve the engine + spawn the launch-role discovery worker ----------
 WORKER_BIN="${LCARS_WORKER_BIN:-}"
-[ -n "$WORKER_BIN" ] || WORKER_BIN="$(json_str "$STATE" workerBin)"
+# The main deploy has NO state.json, so only consult it when it exists (reading an
+# empty $STATE path with the jq-free sed reader would stall). Fallback chain is
+# otherwise unchanged: env → state workerBin → claude.
+if [ -z "$WORKER_BIN" ] && [ -n "$STATE" ] && [ -f "$STATE" ]; then
+  WORKER_BIN="$(json_str "$STATE" workerBin)"
+fi
 [ -n "$WORKER_BIN" ] || WORKER_BIN="claude"
 CLI="$(basename "$WORKER_BIN")"
 
@@ -294,7 +382,11 @@ mkdir -p "$OUTDIR"
 # target to pin. The captain's hint still WINS over this default. Any failure —
 # no base, detached head, git error, or an empty diff — yields NO section, so the
 # no-context prompt stays byte-for-byte today's (do not regress that path).
-BASE="$(json_str "$STATE" base)"
+# The main deploy has no base (no state.json), so there is nothing to diff — BASE
+# stays empty and the no-context prompt path (today's byte-identical default) is
+# taken, exactly as a mission with no recorded base.
+BASE=""
+[ -n "$STATE" ] && [ -f "$STATE" ] && BASE="$(json_str "$STATE" base)"
 TOUCHED_BLOCK=""
 if [ -n "$BASE" ]; then
   _mb="$("$GIT_BIN" merge-base "$BASE" "$BRANCH" 2>/dev/null)"
@@ -460,6 +552,10 @@ fi
 {
   printf '{\n'
   printf '  "status": "running",\n'
+  if [ "$MAIN" -eq 1 ]; then
+    printf '  "branch": "%s",\n' "$(json_esc "$BRANCH")"
+    printf '  "sha": "%s",\n'    "$(json_esc "$SHA_SHORT")"
+  fi
   printf '  "target": "%s",\n'    "$(json_esc "$TARGET")"
   printf '  "url": "%s",\n'       "$(json_esc "$URL")"
   printf '  "howToStop": "%s",\n' "$(json_esc "$HOWSTOP")"
@@ -475,8 +571,20 @@ fi
 } | commit_launch_json
 
 # --- LCARS-voice readout --------------------------------------------------
-printf 'LCARS — mission app online. The %s is on the viewscreen.\n' "${TARGET:-app}"
+if [ "$MAIN" -eq 1 ]; then
+  printf 'LCARS — main deploy online. The %s is on the viewscreen (%s @ %s).\n' \
+    "${TARGET:-app}" "$BRANCH" "${SHA_SHORT:-$SHA}"
+else
+  printf 'LCARS — mission app online. The %s is on the viewscreen.\n' "${TARGET:-app}"
+fi
 [ -n "$URL" ] && printf '  On screen:  %s\n' "$URL"
-printf '  To stand down:  %s\n' "${HOWSTOP:-lcars launch $MISSION --stop}"
+if [ "$MAIN" -eq 1 ]; then
+  # NB: keep this default apostrophe-free — an apostrophe in a ${VAR:-default}
+  # default trips bash 3.2's parser (see the same guard in write_failed above).
+  main_stop="lcars launch --main --stop"
+  printf '  To stand down:  %s\n' "${HOWSTOP:-$main_stop}"
+else
+  printf '  To stand down:  %s\n' "${HOWSTOP:-lcars launch $MISSION --stop}"
+fi
 printf '  Log:  %s\n' "$LOG"
 exit 0

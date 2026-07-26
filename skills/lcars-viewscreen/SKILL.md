@@ -29,12 +29,19 @@ lcars-viewscreen
 
 > **From either CLI.** `lcars-viewscreen` (alias `lcars-serve`) is a real command
 > on your `PATH` — `./install.sh` drops a wrapper into `~/.local/bin` that execs
-> the repo's `viewscreen.sh` by absolute path. The **same** command works under
-> **Claude Code and Copilot** with no `~/.claude` (or `~/.copilot`) path: an agent
-> just runs it via its shell (under Claude Code the captain can use the
-> `! lcars-viewscreen --open` shell prefix). The daemon runs in the **foreground**
-> and is **session-bound** — it stays up for that terminal session and closing the
+> the repo's `viewscreen.sh` by absolute path, with no `~/.claude` (or
+> `~/.copilot`) path. The daemon runs in the **foreground** and is
+> **session-bound** — it stays up for that terminal session and closing the
 > session stops the board. There is no separate stop command.
+>
+> **Run it from a plain terminal, NOT from inside a Claude Code / Copilot
+> session.** An agent session is sandboxed, so the board would load but DEPLOY
+> MAIN / `lcars launch` can't reach the desktop windowing session to actually
+> start an app (mach_port 1100). So when `viewscreen.sh` detects an agent session
+> (`CLAUDECODE=1`, or Copilot's `COPILOT_RUN_APP=1` / `COPILOT_CLI_BINARY_VERSION`)
+> it **refuses to launch and prints a copy-paste `cd … && lcars-viewscreen --open`
+> to run in a real terminal**, unless `LCARS_VIEWSCREEN_ALLOW_AI=1` is set (the
+> bypass tests/automation use to boot a headless daemon deliberately).
 
 This launches a **Python-3-stdlib-only** `http.server` daemon (no pip, no npm, no
 build step — ADR-007) bound to `127.0.0.1:8765` by default, serving:

@@ -176,24 +176,34 @@ they run in different places:
   on your `PATH`** that `./install.sh` installs to `~/.local/bin`. Run it in **any
   plain terminal** — you do **not** need Claude Code or Copilot open.
 
-So, inside **any repo** you want to ship work in:
+So, inside **the repo you want to ship work in** — ⚠️ **`cd` into that repo
+first.** Everything below acts on the repo you're currently in: `lcars init`
+scaffolds *its* `.git/lcars/`, and every Mission files issues against *its*
+GitHub repo. Run this in **your** project, **not** the LCARS repo (do that and
+you'll open a pile of issues against LCARS by mistake):
 
 ```bash
-# 1. In your agent (Claude Code or Copilot), inside the repo:
+# 1. In your agent (Claude Code or Copilot), cd into YOUR project first:
+cd ~/path/to/your-project
 lcars init                # one-time per-repo setup: .git/lcars/ + GitHub labels
 
-# 2. Then in any plain terminal — no agent needed:
+# 2. Then in a plain terminal (NOT the agent) — same repo:
+cd ~/path/to/your-project
 lcars-viewscreen --open   # launch the board and open it in your browser
 ```
 
 `lcars-viewscreen --open` starts a Python-3-stdlib-only daemon (no pip / npm /
 build step), boots it on a free local port, and opens the kanban board in your
 browser. Because it's a real command on your `PATH` (alias `lcars-serve`), the
-**same invocation works from any shell** — a bare terminal, a Claude Code
-session, or a Copilot session — and the daemon itself spawns no model workers, so
-watching the board costs nothing. It runs in the foreground and is **session-bound**:
-it stays up for that terminal and stops when you close it (or Ctrl-C). From there
-you drive the whole idea → merged PR loop without leaving the page:
+**same invocation works from any shell** — and the daemon itself spawns no model
+workers, so watching the board costs nothing. **Start it from a plain terminal,
+not from inside a Claude Code / Copilot session:** an agent session is sandboxed,
+so the board would load but its DEPLOY MAIN / `lcars launch` buttons couldn't
+reach your desktop to actually start an app — so if you run it there, LCARS stops
+and hands you a copy-paste command to run in a real terminal instead. It runs in
+the foreground and is **session-bound**: it stays up for that terminal and stops
+when you close it (or Ctrl-C). From there you drive the whole idea → merged PR
+loop without leaving the page:
 
 - **File a Mission.** Type your idea into the board; the live Align console
   **grills you** until the spec is sharp, then files the Mission as a card. In a
@@ -234,6 +244,7 @@ underneath. The CLI is the equivalent power path, handy in a headless shell, ove
 SSH, or when you want to script LCARS:
 
 ```bash
+cd ~/path/to/your-project   # ⚠️ the repo you want to ship in — NOT the LCARS repo
 lcars init            # one-time per-repo setup: .git/lcars/ + GitHub labels
 lcars file            # file your first Mission — describe the idea, get grilled, get a PRD
 lcars                 # do the right thing: with the mission filed, it drives it forward

@@ -66,6 +66,48 @@ check "SKILL.md documents the on-PATH lcars-viewscreen command" \
 check "SKILL.md documents the lcars-serve alias" \
   "qgrep -q 'lcars-serve' < \"$SKILL_MD\""
 
+# --- AI-session guard: refuse to start from inside Claude Code / Copilot ------
+# Starting the board from a sandboxed AI session gives a half-working board
+# (DEPLOY MAIN + `lcars launch` can't reach the desktop session). viewscreen.sh
+# must STOP with copy-paste guidance instead. A python STUB stands in so a broken
+# guard can't hang on a real serving daemon — it just proves the daemon WAS
+# reached. LCARS_VERSION_CHECK_BIN is pointed at nothing so the bypass paths
+# don't touch the interactive version check.
+GUARD_STUB="$TMPROOT/pystub"
+cat >"$GUARD_STUB" <<'EOF'
+#!/usr/bin/env bash
+echo "STUB-DAEMON-REACHED"
+EOF
+chmod +x "$GUARD_STUB"
+GENV="LCARS_PYTHON_BIN=$GUARD_STUB LCARS_WEB_DIR=$WEB_DIR LCARS_VERSION_CHECK_BIN=/nonexistent/x"
+
+# Claude Code session (CLAUDECODE=1), no override → REFUSE, daemon NOT reached.
+gout="$(env $GENV CLAUDECODE=1 LCARS_VIEWSCREEN_ALLOW_AI= bash "$SERVE" --open 2>&1)"; grc=$?
+check "AI-guard (claude): non-zero exit"             "[ $grc -ne 0 ]"
+check "AI-guard (claude): did NOT reach the daemon"  "! printf '%s' \"\$gout\" | qgrep -q 'STUB-DAEMON-REACHED'"
+check "AI-guard (claude): copy-paste cd + command"   "printf '%s' \"\$gout\" | qgrep -q 'cd .* && lcars-viewscreen --open'"
+check "AI-guard (claude): explains the why (sandbox)" "printf '%s' \"\$gout\" | qgrep -qi 'sandbox'"
+check "AI-guard (claude): tells you to open a Terminal" "printf '%s' \"\$gout\" | qgrep -qi 'Terminal'"
+
+# Copilot session marker → same refusal (CLAUDECODE unset).
+cout="$(env -u CLAUDECODE $GENV COPILOT_RUN_APP=1 LCARS_VIEWSCREEN_ALLOW_AI= bash "$SERVE" 2>&1)"; crc=$?
+check "AI-guard (copilot): non-zero exit"            "[ $crc -ne 0 ]"
+check "AI-guard (copilot): copy-paste command"       "printf '%s' \"\$cout\" | qgrep -q 'lcars-viewscreen --open'"
+
+# Override bypasses the guard even inside an AI session → daemon reached.
+bout="$(env $GENV CLAUDECODE=1 LCARS_VIEWSCREEN_ALLOW_AI=1 bash "$SERVE" 2>&1)"
+check "AI-guard: LCARS_VIEWSCREEN_ALLOW_AI=1 bypasses → daemon reached" \
+  "printf '%s' \"\$bout\" | qgrep -q 'STUB-DAEMON-REACHED'"
+
+# Clean env (no AI markers), no override → NO guard, daemon reached.
+nout="$(env -u CLAUDECODE -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION $GENV LCARS_VIEWSCREEN_ALLOW_AI= bash "$SERVE" 2>&1)"
+check "no AI session → no guard, daemon reached"     "printf '%s' \"\$nout\" | qgrep -q 'STUB-DAEMON-REACHED'"
+
+# The REAL daemon boots below run under CLAUDECODE=1 in dev; they are legitimate
+# programmatic launches, so bypass the guard for them (the guard tests above ran
+# with an explicit empty override, so they were unaffected by this export).
+export LCARS_VIEWSCREEN_ALLOW_AI=1
+
 # --- preflight: python3 present? (the daemon is python-stdlib-only) ----------
 PY_BIN="${LCARS_PYTHON_BIN:-python3}"
 if ! command -v "$PY_BIN" >/dev/null 2>&1; then

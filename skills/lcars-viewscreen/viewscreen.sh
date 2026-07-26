@@ -55,6 +55,42 @@ command -v "$PY_BIN" >/dev/null 2>&1 \
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 [ -n "$REPO_ROOT" ] || REPO_ROOT="$PWD"
 
+# --- guard: don't start the board from INSIDE a sandboxed AI session ----------
+# When this runs inside a Claude Code (CLAUDECODE=1) or GitHub Copilot
+# (COPILOT_RUN_APP=1 / COPILOT_CLI_BINARY_VERSION) session, that session is
+# sandboxed: the board itself would load, but DEPLOY MAIN and `lcars launch`
+# can't reach macOS's windowing session from here, so starting any app fails
+# (mach_port 1100). Rather than launch a half-working board, we STOP and hand the
+# human a copy-paste command to run in a real terminal. Automation that genuinely
+# wants a headless daemon here sets LCARS_VIEWSCREEN_ALLOW_AI=1 to bypass.
+_ai_session() {
+  [ "${CLAUDECODE:-}" = "1" ] && { printf 'Claude Code'; return 0; }
+  { [ "${COPILOT_RUN_APP:-}" = "1" ] || [ -n "${COPILOT_CLI_BINARY_VERSION:-}" ]; } \
+    && { printf 'Copilot'; return 0; }
+  return 1
+}
+if [ "${LCARS_VIEWSCREEN_ALLOW_AI:-}" != "1" ] && _AI="$(_ai_session)"; then
+  cat <<EOF
+LCARS viewscreen — NOT started (you're inside a $_AI session).
+
+Why: a $_AI session is sandboxed, so the board would load but the DEPLOY MAIN
+button and \`lcars launch\` can't reach the macOS desktop session from here —
+starting any app fails. The board must run from a normal terminal that owns a
+real desktop session.
+
+▶ Open a new Terminal window and paste this:
+
+    cd "$REPO_ROOT" && lcars-viewscreen --open
+
+That boots the board in your browser with deploy + launch fully working.
+Stop it later with Ctrl-C in that terminal.
+
+(Headless automation that really wants the daemon here: set
+LCARS_VIEWSCREEN_ALLOW_AI=1 to bypass this.)
+EOF
+  exit 3
+fi
+
 # --- version check + ask-to-update (interactive; S129) ---------------------
 # The launcher is a REAL terminal before the daemon detaches, so it CAN ask.
 # Run the throttled check in ASK mode against the repo we are about to serve,

@@ -892,7 +892,135 @@ function render(board) {
   var n = (board.missions || []).length;
   setStatus(n + " active mission" + (n === 1 ? "" : "s"));
   renderMeta(board.meta);
+  renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
+}
+
+/* S139: the local main-deploy band. Renders the deploy status FROM
+   board.meta.mainLaunch into the topbar #mainDeploy host on EVERY render, so SSE
+   keeps every browser in sync (the ▸ Deploy Main POST's settled return drives the
+   immediate flip). The ▸ Deploy Main button is a static topbar control (always
+   present, opens the deploy modal); this host shows the LIVE state beside it,
+   mirroring the per-mission launchAffordance state machine:
+     absent / none / stopped → empty host (just the ▸ Deploy Main button);
+     launching → a busy ◐ DEPLOYING… pill;
+     running   → ● MAIN LIVE + short sha + clickable url + ■ STOP (confirmless);
+     failed    → a themed plain-English message (▸ Deploy Main is the retry).
+   Star Trek voice, never a CI widget. Depends only on the board shape. */
+// Client-side transient: set the instant ■ STOP is clicked, so every re-render
+// (SSE tick, refresh) during the BLOCKING stop shows a disabled ◐ STOPPING…
+// instead of recreating a fresh, clickable STOP — you can't smack stop twice.
+// It clears itself the moment the board leaves the running state (stopped/
+// absent/failed) or the stop request errors.
+var mainDeployStopping = false;
+function renderMainDeploy(meta) {
+  var host = document.getElementById("mainDeploy");
+  if (!host) return;
+  host.innerHTML = "";
+  var ml = meta && meta.mainLaunch;
+  var status = ml && ml.status;
+  // Once the deploy is no longer running, the stop has landed (or never was) —
+  // drop the transient so a future deploy's STOP is clickable again.
+  if (status !== "running") mainDeployStopping = false;
+  // The ▸ Deploy Main button and the live status are MUTUALLY EXCLUSIVE: while a
+  // deploy is spinning up or live, the status pill REPLACES the button in place
+  // (captain UX ruling) — you don't deploy what's already deployed. Any other
+  // state (absent / stopped / failed) shows the button so you can (re)deploy /
+  // retry. Toggling display keeps the button's band slot, so the status pill
+  // lands exactly where the button was.
+  var mainBtn = document.getElementById("deployMainBtn");
+  var active = status === "launching" || status === "running";
+  if (mainBtn) mainBtn.style.display = active ? "none" : "";
+  // absent / stopped ⇒ nothing beside the button (byte-identical to today).
+  if (!ml || !status || status === "stopped") return;
+  if (status === "launching") {
+    host.appendChild(el("span", "deploy-pill deploying", "◐ DEPLOYING…"));
+    return;
+  }
+  if (status === "running") {
+    // ● MAIN LIVE and ■ STOP are ONE integrated segmented capsule (captain UX
+    // ruling): the teal status segment + a fused maroon STOP on its right edge,
+    // sharing the pill's rounded ends (the .deploy-live wrapper clips them).
+    var seg = el("span", "deploy-live");
+    var live = el("span", "deploy-pill live");
+    live.appendChild(document.createTextNode("● MAIN LIVE"));
+    if (ml.sha) live.appendChild(el("span", "sha", " " + ml.sha));
+    seg.appendChild(live);
+    if (mainDeployStopping) {
+      // stop already in flight — a disabled STOPPING… segment, NOT a button, so
+      // it survives re-renders and can't be clicked again.
+      var stopping = el("span", "btn danger deploy-stop deploy-stopping",
+                        "◐ STOPPING…");
+      seg.appendChild(stopping);
+    } else {
+      // ■ STOP is cheap/reversible → confirmless; a view-only build disables it
+      // via applyWriteState. First click flips to STOPPING… immediately (a
+      // re-render honours mainDeployStopping) so a second click can't land.
+      var stop = applyWriteState(btn("■ STOP", "danger", function () {
+        mainDeployStopping = true;
+        renderMainDeploy(meta);
+        postWrite("/api/deploy/main/stop", {},
+          function () { /* SSE/refresh will show the stopped board */ },
+          function (msg) {
+            mainDeployStopping = false;
+            renderMainDeploy(meta);
+            setStatus(msg);
+          });
+      }));
+      stop.classList.add("deploy-stop");
+      seg.appendChild(stop);
+    }
+    host.appendChild(seg);
+    if (ml.url) {
+      var a = el("a", "deploy-url");
+      a.href = ml.url; a.target = "_blank"; a.rel = "noopener";
+      a.textContent = ml.url;
+      a.addEventListener("click", function (e) { e.stopPropagation(); });
+      host.appendChild(a);
+    }
+    return;
+  }
+  // failed (or any other terminal): surface the plain-English message; the
+  // ▸ Deploy Main button is the retry affordance.
+  var msg = (ml && ml.message) || "the main deploy failed.";
+  host.appendChild(el("span", "deploy-pill failed", "⚠ " + msg));
+}
+
+/* S139: the ▸ Deploy Main modal — an optional-instructions input + a DEPLOY
+   action that POSTs /api/deploy/main {hint}. Mirrors the launchAffordance hint
+   idiom; the band (renderMainDeploy) then flips to ◐ DEPLOYING… → ● MAIN LIVE on
+   the settled return / SSE. CLI parity (ADR-002): nothing here that
+   `lcars launch --main` doesn't already do. */
+function openDeployMain() {
+  var m = modal("▸ Deploy Main");
+  var intro = el("div", "dim");
+  intro.style.cssText = "margin-bottom:10px;font-size:13px;line-height:1.4";
+  intro.textContent = "Bring the local main HEAD onto the viewscreen — the "
+    + "build already merged on this machine (no fetch).";
+  m.body.appendChild(intro);
+  var hint = el("input", "launch-hint"); hint.type = "text";
+  hint.placeholder =
+    "Optional — name the app or its directory (e.g. “the game in web/”)";
+  hint.style.cssText = "width:100%;box-sizing:border-box";
+  m.body.appendChild(field("Instructions (optional)", hint));
+  var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
+  var busy = workingNode("Bringing main online…"); busy.hidden = true;
+  m.body.appendChild(busy);
+  m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  var go = applyWriteState(btn("▸ Deploy", "go", function () {
+    var h = (hint.value || "").trim();
+    go.disabled = true; go.textContent = "Deploying…";
+    err.hidden = true; busy.hidden = false;
+    postWrite("/api/deploy/main", { hint: h },
+      function () { closeOverlay(); refresh(); },
+      function (msg) {
+        go.disabled = false; go.textContent = "▸ Deploy";
+        busy.hidden = true; showErr(err, msg);
+      });
+  }));
+  m.foot.appendChild(go);
+  showOverlay(m.wrap);
+  hint.focus();
 }
 
 /* S130: the version UPDATE banner. Driven purely by the ADDITIVE
@@ -1137,6 +1265,11 @@ function markViewOnly() {
   // disable any write controls already on screen.
   var btns = document.querySelectorAll(".board .btn.go, .board .btn.warn, .board .btn.danger");
   btns.forEach(function (b) { applyWriteState(b); });
+  // S139: the topbar ▸ Deploy Main button lives outside .board — disable it too
+  // on a view-only build (the STOP button in the band is re-created per render,
+  // so applyWriteState already governs it).
+  var dm = document.getElementById("deployMainBtn");
+  if (dm) applyWriteState(dm);
 }
 
 /* Probe the write layer once at boot with a harmless OPTIONS-like POST? The
@@ -4295,6 +4428,10 @@ function brandPADD() {
 
 /* ════════════════ boot ════════════════ */
 document.getElementById("fileBtn").addEventListener("click", openFile);
+/* S139: the ▸ Deploy Main button, wired next to the File control. Defensive: a
+   build without the button (older index.html) simply skips the wiring. */
+var deployMainBtn = document.getElementById("deployMainBtn");
+if (deployMainBtn) deployMainBtn.addEventListener("click", openDeployMain);
 brandPADD();
 refresh();
 connect();
