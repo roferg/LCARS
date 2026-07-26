@@ -4,6 +4,44 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.11 — 2026-07-26
+
+The Deploy Main round (S138–139) — deploy **what's already merged**. Until now
+the only way to run a repo's app from LCARS was per-mission (`lcars launch
+<mission>`); reviewing "current" meant leaving LCARS to start the app by hand.
+Now a **DEPLOY MAIN** control runs the local `main` HEAD — no fetch, no pull,
+whatever is committed on the machine — through the exact same launch pipeline,
+from both the CLI and a top-band button on the viewscreen.
+
+- **`lcars launch --main [hint]` / `--main --stop` (S138).** A target-resolution
+  seam on the existing launch pipeline (≈90% reuse): the local default branch
+  (config `mainBranch` → `main` → `master`) is resolved by a **local**
+  `rev-parse` (never a network fetch), checked out DETACHED into a disposable
+  `.git/lcars/launch/@main` worktree, discovered + launched detached with a
+  group-killable pgid — exactly as a mission launch. State lives under
+  `.git/lcars/main/`; the record adds `branch` + a short `sha` on the main path
+  only (the per-mission `launch.json` is byte-identical). `--main` is mutually
+  exclusive with a mission id, and `@main` is reserved.
+- **DEPLOY MAIN band control + daemon endpoints (S139).** A `▸ Deploy Main`
+  button in the yellow band opens a small console (optional instructions) and
+  deploys via the daemon; the band flips to `● MAIN LIVE` — short sha, clickable
+  URL, and an integrated `■ STOP` — synced to every browser over SSE. New
+  `POST /api/deploy/main` + `/stop` (read-only builds 403 both); an additive
+  `meta.mainLaunch` payload rides the board only when a deploy exists (absent ⇒
+  byte-identical). The deploy's pgid joins the daemon's shutdown group-kill.
+- **Redeploy no longer orphans (both paths).** A relaunch while an app was still
+  running used to spawn a new process and leak the old one (a pre-existing bug on
+  the mission path too); the stop kill sequence is now applied before every
+  relaunch, so the prior process is reaped first.
+- **AI-session guard on the viewscreen.** Starting the board from inside a
+  sandboxed Claude Code / Copilot session gives a half-working board (DEPLOY
+  MAIN / launch can't reach the desktop). `viewscreen.sh` now refuses and prints
+  a copy-paste `cd <repo> && lcars-viewscreen --open` to run in a real terminal
+  (bypass with `LCARS_VIEWSCREEN_ALLOW_AI=1`).
+- **Docs.** README quick-start now `cd`s into *your* project first (everything
+  acts on the repo you're in — not the LCARS repo); the SSE fingerprint watches
+  the main-deploy record so a deploy/stop pushes live to passive browsers.
+
 ## 2026.7.10 — 2026-07-25
 
 The Park & Align round (S136–137) — a backlog-fast capture lane for `lcars
