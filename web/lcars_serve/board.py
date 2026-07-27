@@ -340,7 +340,46 @@ _MODEL_STAGE_LABELS = {
 }
 
 
-def model_mix_from_estimate(estimate, engine=None):
+# The per-(cli, tier) alias defaults — the SHAPE-layer mirror of run.sh's
+# `alias_for_tier`. copilot is OPUS-SAFE by default (its create-tool cannot
+# overwrite on a non-opus tier, so Implement breaks); claude's tiers pass through.
+# Kept beside effective_tier so the two move together.
+DEFAULT_MODEL_ALIASES = {
+    "claude":  {"sonnet": "sonnet",           "opus": "opus"},
+    "copilot": {"sonnet": "claude-opus-4.8",  "opus": "claude-opus-4.8"},
+}
+
+
+def effective_tier(cli, tier, model_aliases=None):
+    """The tier that will ACTUALLY run for (cli, logical tier) — the viewport's
+    mirror of run.sh's `effective_tier_for_cli` (S147 round 2).
+
+    The board used to hard-code "copilot ⇒ opus". That was right for the default
+    but became a DIVERGENCE the moment the CLI learned to honour a repo's
+    `modelAliases.<cli>.<tier>` override: the same mission then read Sonnet in
+    the terminal and Opus on the board. The UI is a viewport, never a
+    reimplementation, so resolve exactly the way the harness does — take the
+    repo's alias override when present, fall back to the shipped default, and
+    classify the resulting model string back to a tier.
+    """
+    tier = str(tier or "").strip().lower()
+    cli = str(cli or "").strip().lower()
+    override = ((model_aliases or {}).get(cli) or {}).get(tier)
+    alias = override if isinstance(override, str) and override.strip() else \
+        (DEFAULT_MODEL_ALIASES.get(cli) or {}).get(tier)
+    if not alias:
+        return tier            # unknown cli/tier: nothing better to claim
+    a = alias.strip().lower()
+    if "opus" in a:
+        return "opus"
+    if "sonnet" in a:
+        return "sonnet"
+    if "haiku" in a:
+        return "haiku"
+    return tier
+
+
+def model_mix_from_estimate(estimate, engine=None, model_aliases=None):
     """Build `[{stage, tier, why}]` from estimate.json. None when absent.
 
     Returns None (not []) when there is no `models` map, so the front end shows
@@ -373,11 +412,13 @@ def model_mix_from_estimate(estimate, engine=None):
     # Engine selection by basename (mirrors _session_args / alias_for_tier): the
     # value may be a bare id ("copilot") or a path ("/usr/bin/copilot").
     _eng = str(engine or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-    is_copilot = "copilot" in _eng
+    _cli = "copilot" if "copilot" in _eng else "claude"
 
     def _tier(val):
-        # S78: a copilot mission is opus-safe — force every row to opus.
-        return "opus" if is_copilot else str(val).strip().lower()
+        # S147 round 2: resolve through the SAME policy the harness uses (alias
+        # defaults + the repo's modelAliases override) instead of hard-coding
+        # "copilot ⇒ opus", so the board and the CLI can never disagree.
+        return effective_tier(_cli, val, model_aliases)
 
     rows = []
     # Keep the canonical stage order; tolerate extra/missing keys gracefully.

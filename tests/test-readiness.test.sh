@@ -717,6 +717,33 @@ for st in rust:Cargo.toml go:go.mod; do
   check "6. init(${st%%:*}): pre-147 output UNCHANGED (alarm ledgered, not silenced)" \
     "grep -q 'does not reference' '$repoS1b/outS1b.txt'"
 done
+# S1d (S147 DEFECT-5): a BARE `dotnet test` — no project argument — is the SAME
+# native-isolation runner and must be suppressed too. The original shape test
+# stripped the prefix "dotnet test " WITH A TRAILING SPACE, which cannot match a
+# command that ends right after "test", so the bare form slipped through and
+# printed all 7 lines of the false alarm. A captain who sets `dotnet test` at the
+# solution root (the most obvious command there is) got the noise.
+repoS1d="$(new_repo)"
+make_gh_stub "$repoS1d/gh"; make_claude_stub "$repoS1d/claude"
+: >"$repoS1d/Demo.sln"; mk_csproj "$repoS1d/tests/App.Tests" App.Tests
+( cd "$repoS1d" && LCARS_TEST_CMD='dotnet test' LCARS_CLAUDE_BIN="$repoS1d/claude" \
+    LCARS_GH_BIN="$repoS1d/gh" bash "$INIT" >outS1d.txt 2>&1 )
+check "6. init(bare 'dotnet test'): NO false \$LCARS_TESTS_DIR alarm" \
+  "! grep -q 'does not reference' '$repoS1d/outS1d.txt'"
+
+# S1e: the suppression must not over-reach into commands that merely BEGIN with
+# the token "dotnet" — `dotnet-coverage`, `dotnet testfoo`, `dotnet run` are not
+# the native-isolation runner and keep the warning.
+for badcmd in 'dotnet run' 'dotnet-coverage collect dotnet test' 'dotnet testify'; do
+  repoS1e="$(new_repo)"
+  make_gh_stub "$repoS1e/gh"; make_claude_stub "$repoS1e/claude"
+  : >"$repoS1e/Demo.sln"; mk_csproj "$repoS1e/tests/App.Tests" App.Tests
+  ( cd "$repoS1e" && LCARS_TEST_CMD="$badcmd" LCARS_CLAUDE_BIN="$repoS1e/claude" \
+      LCARS_GH_BIN="$repoS1e/gh" bash "$INIT" >outS1e.txt 2>&1 )
+  check "6. init('$badcmd'): NOT a dotnet-test shape — alarm PRESERVED" \
+    "grep -q 'does not reference' '$repoS1e/outS1e.txt'"
+done
+
 # …and it STAYS loud where it is true: a generic runner that ignores the var.
 repoS1c="$(new_repo)"
 make_gh_stub "$repoS1c/gh"; make_claude_stub "$repoS1c/claude"

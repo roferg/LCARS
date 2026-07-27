@@ -67,8 +67,9 @@ echo "render-estimate (session 61)"
 [ -f "$RUN" ] || { echo "run.sh not found at $RUN"; exit 1; }
 
 # A mixed-tier fixture: research/implement opus, the rest sonnet. The cost.test.sh
-# hand-calc applies (claude low≈3.618 high≈7.236; copilot low=198 high=396,
-# overage low=7.92 high=15.84).
+# hand-calc applies — claude low≈3.618 high≈7.236 (its tiers round-trip), and
+# copilot low=270 high=540, overage low=10.80 high=21.60 (S147 DEFECT-3: copilot
+# pins every stage to opus, so its whole fixture bills at the opus multiplier).
 EST='{
   "schemaVersion": 3,
   "reasoningCriticality": "high",
@@ -134,14 +135,18 @@ check "2e. cli surface is two-space indented" \
 r3="$(new_repo_with_estimate "$EST" ', "copilotBilling": "legacy"')"
 iss3="$(render "$r3" issue COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
 cli3="$(render "$r3" cli COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
-check "3a. issue surface shows premium requests (198/396)" \
-  "printf '%s' \"\$iss3\" | grep -q '198' && printf '%s' \"\$iss3\" | grep -q '396'"
+# S147 DEFECT-3: copilot pins EVERY stage to opus (alias_for_tier), so the whole
+# fixture bills at the opus multiplier — 270/540 requests, $10.80/$21.60 overage.
+# The old 198/396 figures priced sonnet legs that this engine never runs. See the
+# hand-calc note in tests/cost.test.sh.
+check "3a. issue surface shows premium requests (270/540)" \
+  "printf '%s' \"\$iss3\" | grep -q '270' && printf '%s' \"\$iss3\" | grep -q '540'"
 check "3b. issue surface mentions premium requests" \
   "printf '%s' \"\$iss3\" | grep -qi 'premium'"
-check "3c. issue surface shows the \$ overage band (7.92/15.84)" \
-  "printf '%s' \"\$iss3\" | grep -q '7.92' && printf '%s' \"\$iss3\" | grep -q '15.84'"
-check "3d. cli surface shows premium requests (198/396)" \
-  "printf '%s' \"\$cli3\" | grep -q '198' && printf '%s' \"\$cli3\" | grep -q '396'"
+check "3c. issue surface shows the \$ overage band (10.80/21.60)" \
+  "printf '%s' \"\$iss3\" | grep -q '10.80' && printf '%s' \"\$iss3\" | grep -q '21.60'"
+check "3d. cli surface shows premium requests (270/540)" \
+  "printf '%s' \"\$cli3\" | grep -q '270' && printf '%s' \"\$cli3\" | grep -q '540'"
 check "3e. cli surface mentions premium reqs" \
   "printf '%s' \"\$cli3\" | grep -qi 'premium'"
 
@@ -212,6 +217,69 @@ check "6d. no override ⇒ issue surface has no override note" \
   "! printf '%s' \"\$iss6d\" | grep -qi 'override'"
 check "6d. no override ⇒ cli surface has no override note" \
   "! printf '%s' \"\$cli6d\" | grep -qi 'override'"
+
+# === Behavior 7: the readout tells the truth about COPILOT models (S147 D3) ===
+# alias_for_tier maps BOTH copilot tiers to claude-opus-4.8 (the `create`-tool
+# safety pin — correct, and unchanged). But the readout kept printing the
+# estimator's LOGICAL tier, so a copilot captain was told "implement=Sonnet"
+# while all five stages actually resolved opus. The model readout must report
+# what will ACTUALLY run. This changes REPORTING only — never the choice.
+
+# 7a. copilot: the fixture's sonnet stages all really run opus, so the readout
+#     must not claim Sonnet anywhere.
+r7="$(new_repo_with_estimate "$EST")"
+cli7="$(render "$r7" cli COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
+iss7="$(render "$r7" issue COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
+check "7a. copilot cli readout never claims Sonnet (every stage resolves opus)" \
+  "! printf '%s' \"\$cli7\" | grep -qi 'Sonnet'"
+check "7a. copilot cli readout still names the stages" \
+  "printf '%s' \"\$cli7\" | grep -qi 'implement'"
+check "7b. copilot issue table maps the sonnet-tier Validate stage to Opus" \
+  "printf '%s' \"\$iss7\" | grep -q '| Validate | Opus |'"
+check "7b. copilot issue table has NO Sonnet row" \
+  "! printf '%s' \"\$iss7\" | grep -q '| Sonnet |'"
+
+# 7c. claude is UNTOUCHED — the mixed fixture still reads Sonnet AND Opus.
+#     (engines-separate-paths: fixing copilot's readout must not move claude's.)
+cli7c="$(render "$r7" cli CLAUDECODE=1)"
+iss7c="$(render "$r7" issue CLAUDECODE=1)"
+check "7c. claude cli readout STILL shows both Sonnet and Opus (unchanged)" \
+  "printf '%s' \"\$cli7c\" | grep -qi 'Sonnet' && printf '%s' \"\$cli7c\" | grep -qi 'Opus'"
+check "7c. claude issue table STILL has a Sonnet row (unchanged)" \
+  "printf '%s' \"\$iss7c\" | grep -q '| Sonnet |'"
+
+# 7d. a repo that overrides modelAliases.copilot.sonnet back to a real Sonnet
+#     model gets a readout that says Sonnet — the report follows the SAME
+#     resolution the spawn does, rather than hardcoding "copilot ⇒ opus" twice.
+r7d="$(new_repo_with_estimate "$EST" ', "modelAliases": { "copilot": { "sonnet": "claude-sonnet-4.6" } }')"
+cli7d="$(render "$r7d" cli COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
+check "7d. copilot + modelAliases override ⇒ readout honours it (Sonnet returns)" \
+  "printf '%s' \"\$cli7d\" | grep -qi 'Sonnet'"
+
+# === Behavior 8: the OVERRIDE note must tell the truth too (S147 round-2) =====
+# override_note printed the captain's LOGICAL tier, so on copilot a
+# `--model-override all:sonnet` rendered "Override: (override: Sonnet, whole
+# run)" immediately above "Models: …=Opus/Opus". The pin has no effect on
+# copilot (alias_for_tier maps both tiers to claude-opus-4.8); a readout that
+# claims it took is exactly the dishonesty D3 set out to remove.
+
+# 8a. copilot + all:sonnet override ⇒ the note must NOT claim Sonnet.
+r8="$(new_repo_with_estimate "$EST")"; set_state_override "$r8" all sonnet
+cli8="$(render "$r8" cli COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
+iss8="$(render "$r8" issue COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
+check "8a. copilot override note does NOT claim the Sonnet pin took" \
+  "! printf '%s' \"\$cli8\" | grep -qi 'Sonnet'"
+check "8a. copilot override note still SHOWS an override happened" \
+  "printf '%s' \"\$cli8\" | grep -qi 'override'"
+check "8a. copilot issue override note does NOT claim Sonnet" \
+  "! printf '%s' \"\$iss8\" | grep -qi 'Sonnet'"
+check "8a. the note and the model mix AGREE (both Opus)" \
+  "printf '%s' \"\$cli8\" | grep -qi 'Opus'"
+
+# 8b. claude + all:sonnet ⇒ unchanged, the pin genuinely takes.
+cli8b="$(render "$r8" cli CLAUDECODE=1)"
+check "8b. claude override note still reads Sonnet (pin really applies)" \
+  "printf '%s' \"\$cli8b\" | grep -qi 'override' && printf '%s' \"\$cli8b\" | grep -qi 'Sonnet'"
 
 echo "render-estimate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

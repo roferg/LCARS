@@ -70,6 +70,55 @@ _resolve_model() {
   printf '%s' "$m"
 }
 
+# --- the engine pin: ONE validation + ONE precedence, shared by BOTH lanes ----
+# `--engine claude|copilot` is the captain's EXPLICIT engine choice; it is the
+# strongest signal there is, so it must beat the daemon-threaded
+# $LCARS_WORKER_BIN, and a value that is neither engine must stop the filing
+# before anything is written. Both lanes (grill-first --prd AND --park/--complete)
+# call these two helpers — factored so the lanes cannot drift apart again, which
+# is exactly how --engine came to be silently ignored on the --prd lane (a
+# mission the captain pinned to copilot then billed real spend on claude).
+
+# _validate_engine — die unless $ENGINE is empty or a known engine. Call this
+# BEFORE any write so a bogus engine leaves nothing partial behind.
+_validate_engine() {
+  [ -n "$ENGINE" ] || return 0
+  case "$ENGINE" in
+    claude|copilot) return 0 ;;
+    *) die "unknown engine '$ENGINE' — use 'claude' or 'copilot'." ;;
+  esac
+}
+
+# _resolve_worker_bin [fallback] — echo the engine to persist as state.json's
+# `workerBin`, in ONE precedence order used by ALL THREE lanes:
+#     --engine  >  $LCARS_WORKER_BIN  >  <fallback>  >  nothing
+# Empty result ⇒ the caller writes NO key, so host-detect stays in charge and a
+# no-engine state.json is byte-identical to before.
+#
+# The optional fallback is what --complete carries forward from the PARKED
+# mission's state.json. It sits BELOW both explicit signals on purpose: the
+# viewscreen lets a captain pick an engine at START ALIGNMENT and runs the GRILL
+# on it, then threads that pick to `file.sh --complete` as $LCARS_WORKER_BIN. If
+# the parked value won, the grill and the pipeline would run on DIFFERENT
+# engines — the one thing the engines-separate-paths rule forbids — and the
+# captain's most recent, most explicit choice would be silently dropped.
+_resolve_worker_bin() { # [fallback]
+  if   [ -n "$ENGINE" ];                 then printf '%s' "$ENGINE"
+  elif [ -n "${LCARS_WORKER_BIN:-}" ];   then printf '%s' "$LCARS_WORKER_BIN"
+  else                                        printf '%s' "${1:-}"
+  fi
+}
+
+# _worker_bin_line <worker-bin> — the optional state.json line for `workerBin`,
+# JSON-escaped so an odd engine string can never break the JSON. Empty input ⇒
+# empty output ⇒ no key at all.
+_worker_bin_line() {
+  local wb="$1"
+  [ -n "$wb" ] || { printf ''; return 0; }
+  local wb_json="${wb//\\/\\\\}"; wb_json="${wb_json//\"/\\\"}"
+  printf '  "workerBin": "%s",' "$wb_json"
+}
+
 # _mint_id — the per-day sequenced mission id under $MISSIONS_DIR. Echoes it.
 _mint_id() {
   local max=0 d n
@@ -137,12 +186,7 @@ do_park() {
 
   # Optional engine → the parked mission's workerBin. Validate BEFORE any write
   # so a bogus engine stops parking with nothing partial (engines-separate-paths).
-  if [ -n "$ENGINE" ]; then
-    case "$ENGINE" in
-      claude|copilot) : ;;
-      *) die "unknown engine '$ENGINE' — use 'claude' or 'copilot'." ;;
-    esac
-  fi
+  _validate_engine
 
   # Attachments (S92) — each must exist, checked BEFORE anything is written.
   if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
@@ -183,12 +227,8 @@ do_park() {
   local MODEL; MODEL="$(_resolve_model)"
 
   # workerBin: --engine wins, else the daemon-threaded $LCARS_WORKER_BIN, else none.
-  local WB="$ENGINE"; [ -n "$WB" ] || WB="${LCARS_WORKER_BIN:-}"
-  local WORKER_BIN_LINE=""
-  if [ -n "$WB" ]; then
-    local wb_json="${WB//\\/\\\\}"; wb_json="${wb_json//\"/\\\"}"
-    WORKER_BIN_LINE="  \"workerBin\": \"$wb_json\","
-  fi
+  local WB; WB="$(_resolve_worker_bin)"
+  local WORKER_BIN_LINE; WORKER_BIN_LINE="$(_worker_bin_line "$WB")"
 
   local ATTACH_LINE=""
   if [ "${#ATTACH_RELS[@]}" -gt 0 ]; then
@@ -277,6 +317,11 @@ do_complete() {
   [ -n "$PRD_SRC" ] || die "no PRD given — pass --prd <path> to complete the alignment."
   [ -f "$PRD_SRC" ] || die "PRD file not found: $PRD_SRC"
 
+  # The SAME engine gate the other two lanes run, BEFORE any write, so a bogus
+  # engine leaves the mission parked with nothing partial (S147 round-2 D3 — this
+  # lane was skipping it entirely and exiting 0 on a bogus engine).
+  _validate_engine
+
   # Validate the model override up front (same rules as grill-first) so a bad
   # value stops BEFORE anything is written.
   local OV_SCOPE="" OV_TIER=""
@@ -323,7 +368,11 @@ do_complete() {
   MODEL="$(_fj_str "$STATE" model)"
   BRANCH="$(_fj_str "$STATE" branch)"
   BASE="$(_fj_str "$STATE" base)"
-  WB="$(_fj_str "$STATE" workerBin)"
+  # The engine: an explicit --engine or a daemon-threaded $LCARS_WORKER_BIN (the
+  # viewscreen's START ALIGNMENT picker) WINS over the parked value, which is the
+  # fallback. Same helper, same order, as the park and grill-first lanes — so the
+  # engine the grill just ran on is the engine the pipeline gets.
+  WB="$(_resolve_worker_bin "$(_fj_str "$STATE" workerBin)")"
   ISSUE="$(_fj_raw "$STATE" githubIssue)"; case "$ISSUE" in null) ISSUE="" ;; esac
 
   # Reconstruct the staged attachments (S92) from the attachments/ dir, in order,
@@ -432,11 +481,10 @@ do_complete() {
   local title_json="${TITLE//\\/\\\\}"; title_json="${title_json//\"/\\\"}"
   local OVERRIDE_LINE=""
   [ -n "$OV_SCOPE" ] && OVERRIDE_LINE="  \"modelOverride\": { \"scope\": \"$OV_SCOPE\", \"tier\": \"$OV_TIER\" },"
-  local WORKER_BIN_LINE=""
-  if [ -n "$WB" ]; then
-    local wb_json="${WB//\\/\\\\}"; wb_json="${wb_json//\"/\\\"}"
-    WORKER_BIN_LINE="  \"workerBin\": \"$wb_json\","
-  fi
+  # The engine carried forward from the parked state.json (do_park already applied
+  # the --engine > $LCARS_WORKER_BIN precedence at park time — completing an
+  # already-parked mission does NOT re-decide its engine).
+  local WORKER_BIN_LINE; WORKER_BIN_LINE="$(_worker_bin_line "$WB")"
   local ATTACH_LINE=""
   if [ "${#ATTACH_RELS[@]}" -gt 0 ]; then
     local attach_items="" arel
@@ -568,6 +616,15 @@ if [ -n "$MODEL_OVERRIDE" ]; then
     *) die "invalid --model-override tier '$OV_TIER' — must be one of: sonnet, opus." ;;
   esac
 fi
+
+# --- validate the engine pin (S147 DEFECT-1) -------------------------------
+# Same shared gate the park lane runs, and for the same reason: a bogus --engine
+# must stop the filing BEFORE anything is written. Previously the --prd lane
+# never looked at --engine at all, so `--engine totally-bogus` filed happily and
+# `--engine copilot` filed a mission with NO workerBin that then ran on the
+# host-detected engine — real spend on an engine the captain did not pick.
+_validate_engine
+
 # --adr is optional, but if given it must point at a real file.
 if [ -n "$ADR_SRC" ]; then
   [ -f "$ADR_SRC" ] || die "ADR file not found: $ADR_SRC"
@@ -727,18 +784,14 @@ OVERRIDE_LINE=""
 if [ -n "$OV_SCOPE" ]; then
   OVERRIDE_LINE="  \"modelOverride\": { \"scope\": \"$OV_SCOPE\", \"tier\": \"$OV_TIER\" },"
 fi
-# The chosen engine (S67). When the captain picks an engine in the File modal the
-# daemon threads it to file.sh as $LCARS_WORKER_BIN. Persist it as state.json's
-# `workerBin` so the board can show it and `lcars run` can be fed it on Start —
-# the engine survives file→persist→start→run. Empty/unset ⇒ no field (no
-# regression / host-detect stays in charge). JSON-escape the value so an odd
-# engine string can never break the JSON.
-WORKER_BIN_LINE=""
-if [ -n "${LCARS_WORKER_BIN:-}" ]; then
-  wb_json="${LCARS_WORKER_BIN//\\/\\\\}"
-  wb_json="${wb_json//\"/\\\"}"
-  WORKER_BIN_LINE="  \"workerBin\": \"$wb_json\","
-fi
+# The chosen engine (S67, precedence fixed S147). When the captain picks an engine
+# in the File modal the daemon threads it to file.sh as $LCARS_WORKER_BIN; an
+# explicit `--engine` on the command line is stronger still and wins over it.
+# Persist the winner as state.json's `workerBin` so the board can show it and
+# `lcars run` can be fed it on Start — the engine survives file→persist→start→run.
+# Neither set ⇒ no field (no regression / host-detect stays in charge). The shared
+# helpers below are the SAME ones do_park uses, so the two lanes cannot drift.
+WORKER_BIN_LINE="$(_worker_bin_line "$(_resolve_worker_bin)")"
 # The durable attachments array (S92), emitted only when ≥1 attachment was staged
 # — mirroring the OVERRIDE_LINE / WORKER_BIN_LINE optional-line pattern so a
 # no-attachment mission's state.json is byte-identical (no attachments key). Each

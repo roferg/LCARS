@@ -484,14 +484,16 @@ prdP="$repoP/prd.md"; write_prd "$prdP"
   LCARS_WORKER_CLI=copilot LCARS_RUN_BIN="$RICH_STUB" \
     LCARS_GH_BIN="$repoP/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdP" >outP.txt 2>&1
 )
-check "10d. copilot DEFAULT issue body shows usage \$ band (3.6/7.2)" \
-  "grep -q '3.6' '$GH_BODY' && grep -q '7.2' '$GH_BODY'"
+# S147 DEFECT-3: copilot pins every stage to opus (alias_for_tier), so the band
+# is now costed at opus rates — 4.23/8.46 where it used to under-report 3.6/7.2.
+check "10d. copilot DEFAULT issue body shows usage \$ band (4.2/8.4)" \
+  "grep -q '4.2' '$GH_BODY' && grep -q '8.4' '$GH_BODY'"
 check "10d. copilot DEFAULT issue body mentions GitHub AI Credits" \
   "grep -qi 'AI Credits' '$GH_BODY'"
 check "10d. copilot DEFAULT issue body is NOT premium requests" \
   "! grep -qi 'premium' '$GH_BODY'"
 check "10d. copilot DEFAULT CLI readout shows usage \$ band" \
-  "grep -q '3.6' '$repoP/outP.txt'"
+  "grep -q '4.2' '$repoP/outP.txt'"
 unset GH_BODY
 
 # 10f. Copilot active, LEGACY billing (config copilotBilling=legacy): the old
@@ -507,12 +509,13 @@ prdL="$repoL/prd.md"; write_prd "$prdL"
   LCARS_WORKER_CLI=copilot LCARS_RUN_BIN="$RICH_STUB" \
     LCARS_GH_BIN="$repoL/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdL" >outL.txt 2>&1
 )
-check "10f. copilot LEGACY issue body shows premium requests (198/396)" \
-  "grep -q '198' '$GH_BODY' && grep -q '396' '$GH_BODY'"
+# S147 DEFECT-3: all-opus multiplier ⇒ 270/540, not the old mixed-tier 198/396.
+check "10f. copilot LEGACY issue body shows premium requests (270/540)" \
+  "grep -q '270' '$GH_BODY' && grep -q '540' '$GH_BODY'"
 check "10f. copilot LEGACY issue body mentions premium requests" \
   "grep -qi 'premium' '$GH_BODY'"
 check "10f. copilot LEGACY CLI readout shows premium requests" \
-  "grep -qi 'premium' '$repoL/outL.txt' && grep -q '198' '$repoL/outL.txt'"
+  "grep -qi 'premium' '$repoL/outL.txt' && grep -q '270' '$repoL/outL.txt'"
 unset GH_BODY
 
 # 10e. complex Mission (adr present) + estimate present ⇒ body order is
@@ -744,6 +747,90 @@ rcAT4=0
 check "13d. missing attachment ⇒ non-zero exit" "[ '$rcAT4' -ne 0 ]"
 check "13d. missing attachment ⇒ no mission written" \
   "[ ! -d '$repoAT4/.git/lcars/missions/lcars-20260530-001' ]"
+
+# --- Behaviour 14: --engine on the GRILL-FIRST (--prd) lane (S147 DEFECT-1) --
+# `--engine claude|copilot` is the captain's EXPLICIT engine pin. It was honoured
+# only on the park lane (do_park), and silently ignored on the grill-first --prd
+# lane — so `lcars file --prd X --engine copilot` filed a mission with NO
+# workerBin and it then ran on the host-detected engine (real billed spend on the
+# wrong engine), while a bogus engine filed successfully instead of dying. Both
+# lanes must now share ONE validation + ONE precedence rule:
+#   --engine wins > $LCARS_WORKER_BIN > (nothing ⇒ no workerBin key)
+# and a bogus --engine dies BEFORE anything is written, on BOTH lanes.
+
+# 14a. --prd + --engine copilot ⇒ state.json carries workerBin=copilot.
+repoEN="$(new_repo)"; make_gh_stub "$repoEN/gh"
+export GH_LOG="$repoEN/gh.log"; : >"$GH_LOG"
+prdEN="$repoEN/prd.md"; write_prd "$prdEN"
+rcEN=0
+(
+  cd "$repoEN"
+  unset LCARS_WORKER_BIN
+  LCARS_GH_BIN="$repoEN/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdEN" --engine copilot >outEN.txt 2>&1
+) || rcEN=$?
+MEN="$repoEN/.git/lcars/missions/lcars-20260530-001/state.json"
+check "14a. --prd --engine copilot exits clean" "[ '$rcEN' -eq 0 ]"
+check "14a. --prd --engine copilot persists workerBin=copilot" \
+  "[ -f '$MEN' ] && cat '$MEN' | qgrep -q '\"workerBin\": *\"copilot\"'"
+check "14a. state.json is valid JSON (--engine set)" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$MEN'"
+
+# 14b. --engine BEATS a conflicting $LCARS_WORKER_BIN (explicit > threaded).
+repoEN2="$(new_repo)"; make_gh_stub "$repoEN2/gh"
+export GH_LOG="$repoEN2/gh.log"; : >"$GH_LOG"
+prdEN2="$repoEN2/prd.md"; write_prd "$prdEN2"
+(
+  cd "$repoEN2"
+  LCARS_WORKER_BIN=claude LCARS_GH_BIN="$repoEN2/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdEN2" --engine copilot >outEN2.txt 2>&1
+)
+MEN2="$repoEN2/.git/lcars/missions/lcars-20260530-001/state.json"
+check "14b. --engine copilot beats LCARS_WORKER_BIN=claude" \
+  "[ -f '$MEN2' ] && cat '$MEN2' | qgrep -q '\"workerBin\": *\"copilot\"'"
+
+# 14c. a bogus --engine is REJECTED on the --prd lane, nothing written.
+repoEN3="$(new_repo)"; make_gh_stub "$repoEN3/gh"
+export GH_LOG="$repoEN3/gh.log"; : >"$GH_LOG"
+prdEN3="$repoEN3/prd.md"; write_prd "$prdEN3"
+rcEN3=0
+(
+  cd "$repoEN3"
+  LCARS_GH_BIN="$repoEN3/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdEN3" --engine totally-bogus >outEN3.txt 2>&1
+) || rcEN3=$?
+check "14c. bogus --engine on --prd ⇒ non-zero exit" "[ '$rcEN3' -ne 0 ]"
+check "14c. bogus --engine on --prd ⇒ names the engine in the error" \
+  "grep -q \"unknown engine 'totally-bogus'\" '$repoEN3/outEN3.txt'"
+check "14c. bogus --engine on --prd ⇒ no mission written" \
+  "[ ! -d '$repoEN3/.git/lcars/missions/lcars-20260530-001' ]"
+
+# 14d. no --engine and no $LCARS_WORKER_BIN ⇒ still NO workerBin key (unchanged).
+repoEN4="$(new_repo)"; make_gh_stub "$repoEN4/gh"
+export GH_LOG="$repoEN4/gh.log"; : >"$GH_LOG"
+prdEN4="$repoEN4/prd.md"; write_prd "$prdEN4"
+(
+  cd "$repoEN4"
+  unset LCARS_WORKER_BIN
+  LCARS_GH_BIN="$repoEN4/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdEN4" >outEN4.txt 2>&1
+)
+MEN4="$repoEN4/.git/lcars/missions/lcars-20260530-001/state.json"
+check "14d. no engine at all ⇒ no workerBin key" \
+  "[ -f '$MEN4' ] && ! cat '$MEN4' | qgrep -q 'workerBin'"
+
+# 14e. --engine claude is accepted too (both valid values, not just copilot).
+repoEN5="$(new_repo)"; make_gh_stub "$repoEN5/gh"
+export GH_LOG="$repoEN5/gh.log"; : >"$GH_LOG"
+prdEN5="$repoEN5/prd.md"; write_prd "$prdEN5"
+(
+  cd "$repoEN5"
+  LCARS_WORKER_BIN=copilot LCARS_GH_BIN="$repoEN5/gh" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --prd "$prdEN5" --engine claude >outEN5.txt 2>&1
+)
+MEN5="$repoEN5/.git/lcars/missions/lcars-20260530-001/state.json"
+check "14e. --engine claude beats LCARS_WORKER_BIN=copilot" \
+  "[ -f '$MEN5' ] && cat '$MEN5' | qgrep -q '\"workerBin\": *\"claude\"'"
 
 # ==========================================================================
 [ "$fail" -eq 0 ]

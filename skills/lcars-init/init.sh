@@ -161,7 +161,18 @@ if [ -n "$TEST_CMD" ]; then
   case "$TEST_CMD" in
     *LCARS_TESTS_DIR*) : ;;  # honours it — nothing to flag
     *)
-      if [ "dotnet test ${TEST_CMD#dotnet test }" = "$TEST_CMD" ] \
+      # The `dotnet test` shape, matched DIRECTLY rather than by prefix-strip.
+      # The old form was `[ "dotnet test ${TEST_CMD#dotnet test }" = "$TEST_CMD" ]`,
+      # which strips the prefix "dotnet test " WITH A TRAILING SPACE — a pattern a
+      # BARE `dotnet test` (nothing after "test") can never match, so the most
+      # obvious solution-root command a C# captain can write fell through and got
+      # all 7 lines of false alarm (S147 DEFECT-5). Both arms below are anchored,
+      # so `dotnet run` / `dotnet testify` / `dotnet-coverage …` still warn.
+      __dn_test_shape=0
+      case "$TEST_CMD" in
+        "dotnet test"|"dotnet test "*) __dn_test_shape=1 ;;
+      esac
+      if [ "$__dn_test_shape" = 1 ] \
          && stack_uses_native_isolation "$STACK"; then : ; else
       printf '  ⚠ testCommand "%s" does not reference $LCARS_TESTS_DIR.\n' "$TEST_CMD" >&2
       printf '    The Implement red gate runs it with $LCARS_TESTS_DIR pointing at the\n' >&2

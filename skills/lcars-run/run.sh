@@ -3889,14 +3889,106 @@ proof_zero_collected() { # runner-output → 0 if zero tests were collected/ran
   printf '%s' "$1" | grep -Eq 'no tests to run|test result: ok\. 0 passed'
 }
 
+# WHAT the leg was doing when the clock ran out (S147 DEFECT-4).
+#
+# The gate timeout exists to bound a suite that NEVER SETTLES, and the old
+# message said exactly that — unconditionally. But a leg can also run out of
+# clock while it is still FETCHING OR COMPILING DEPENDENCIES: the first `dotnet
+# test` on a machine with a cold NuGet cache downloads its whole package graph
+# before a single test runs. Those two are opposite problems with opposite fixes
+# (a hang is a bug in the ticket's tests; a slow restore just needs a warmer
+# cache or a bigger budget), and blaming the suite for a slow restore is the
+# false-park this round exists to avoid.
+#
+# The discrimination is EVIDENCE-BASED, read off the runner's own captured
+# output — never a guess. Three honest states:
+#   * it announced restore/download/compile work and never reached test
+#     execution  → report the dependency phase;
+#   * it reached test execution and then stopped producing  → a hang, as before;
+#   * it produced nothing to go on  → say that, and name both possibilities.
+# The bound itself is UNCHANGED: the runner is still group-killed at $gsecs, on
+# every path. This only changes what the captain is TOLD about the kill.
+#
+# TWO RULES KEEP IT HONEST (learned the hard way — the first cut broke both):
+#
+#   1. EXECUTION EVIDENCE WINS, ALWAYS. If anything in the buffer shows a test
+#      actually running, this is a hang — no matter what else the buffer holds.
+#      The first cut matched a bare `Downloading ` anywhere, so a genuine
+#      never-settling test that printed "Downloading rate-table.json from the
+#      fixture server" was absolved as a cold-cache restore ("the tests
+#      themselves are not implicated") while the SAME buffer carried node's own
+#      `✖ … (4874ms)` / `ℹ cancelled 1`. Telling a captain to warm the cache and
+#      raise the timeout just makes them wait longer for the same hang. So
+#      `started_re` is deliberately BROAD across runners (a per-test duration in
+#      parentheses is enough), and it is tested FIRST.
+#   2. A DEPENDENCY VERDICT NEEDS A REAL PACKAGE-MANAGER BANNER, AND IT MUST BE
+#      THE LAST THING SEEN. The tokens are shaped like what package managers
+#      actually print (`Downloading <pkg> <version>`, `go: downloading`,
+#      `Compiling <crate> v1.2`), not bare English words an application logs, and
+#      they only count in the TAIL — a restore that finished long ago is not what
+#      the clock ran out on.
+#
+# Anything else is UNDETERMINED, and says so. Honest ambiguity is acceptable; a
+# confident wrong classification is not.
+proof_timeout_cause() { # runner-output → the cause clause
+  local out="$1"
+  # Evidence that a TEST ACTUALLY RAN, across the runners LCARS drives. Broad on
+  # purpose: a false "hang" only costs the captain a second look, whereas a false
+  # "cold cache" sends them away from a real bug.
+  local started_re='Starting test execution|Test run for |VSTest version|^(Passed|Failed|Skipped)!|test result:|^[[:space:]]*running [0-9]+ test|^=== RUN|^--- (PASS|FAIL|SKIP)|^(ok|FAIL|PASS)[[:space:]]|[0-9]+ examples?, [0-9]+ failure|^[[:space:]]*ℹ (tests|pass|fail|cancelled|suites)|^[[:space:]]*(✔|✖|✓|×|✗)[[:space:]]|^# Subtest|^TAP version|Test Files |^Tests[[:space:]]|^(PASS|FAIL)[[:space:]]|RUN  v|collected [0-9]+ item|test session starts|[0-9]+ (passed|failed|passing|failing)|\([0-9]+(\.[0-9]+)?[[:space:]]*m?s\)'
+  # Real package-manager restore banners ONLY — each carries a package/version or
+  # a tool-specific prefix, so an application's own "Downloading report.csv" or
+  # "Building index" cannot trip it.
+  local dep_re='Determining projects to restore|Restoring packages|Restored .*\.(cs|fs|vb)proj|^[[:space:]]*Downloading [^[:space:]]+ [0-9]+\.[0-9]|go: downloading |Updating crates\.io index|^[[:space:]]*Downloaded [0-9]+ crate|^[[:space:]]*Compiling [^[:space:]]+ v[0-9]|^[[:space:]]*Fetching (gem|source|https?://)|^[[:space:]]*Installing [^[:space:]]+ [0-9]+\.[0-9]|Resolving dependencies|added [0-9]+ packages|Bundle complete'
+
+  # RULE 1 — execution evidence anywhere in the buffer settles it.
+  if printf '%s' "$out" | grep -Eq "$started_re"; then
+    printf 'the suite STARTED running and then stopped producing output — a suite that never settles cannot prove anything. Look for a hang in the tests themselves (an unresolved promise, an awaited mock, a blocked I/O wait); raising LCARS_GATE_TIMEOUT will only make the wait longer.'
+    return 0
+  fi
+  # RULE 2 — a restore banner, and it has to be what the clock ran out ON.
+  local tail_lines; tail_lines="$(printf '%s' "$out" | grep . | tail -5)"
+  if printf '%s' "$tail_lines" | grep -Eq "$dep_re"; then
+    printf 'the leg was still RESOLVING/BUILDING DEPENDENCIES and never reached test execution — this is a cold-cache first run, NOT a hung suite. Warm the cache once (e.g. run the stack'"'"'s restore/build in the repo) or raise LCARS_GATE_TIMEOUT for this repo; the tests themselves are not implicated.'
+    return 0
+  fi
+  printf 'the leg produced nothing the harness recognised as either test execution or dependency resolution, so the cause is undetermined — it may be a hung suite OR a slow first-run dependency restore. Re-run the recorded command by hand (see this leg'"'"'s "cmd") to see which; raise LCARS_GATE_TIMEOUT if it is simply slow.'
+}
+
+# Single-quote a string for safe re-use in a shell (S147 round 2). The recorded
+# gate command is meant to be PASTED, so every interpolated path/scope/command
+# has to survive spaces, quotes, `$`, backticks and backslashes verbatim. Single
+# quotes suppress all expansion; the only character needing care is `'` itself,
+# closed and re-opened around an escaped one ('\'').
+proof_shq() { # string → '…' safe for a shell
+  local s="$1"
+  # The quote characters come from ANSI-C literals, NOT from backslash escapes
+  # inside a double-quoted replacement: `"${s//\'/\'\\\'\'}"` LOOKS right and is
+  # not — bash re-processes the replacement, and the result mangles every
+  # apostrophe (a path like /Users/o'brien produced an unpasteable string). With
+  # both sides held in plain variables there is no second round of processing.
+  local sq=$'\047'                # '
+  local rep=$'\047\134\047\047'   # '\''  — close, escaped quote, reopen
+  s="${s//$sq/$rep}"
+  printf '%s%s%s' "$sq" "$s" "$sq"
+}
+
 # Run the ticket's tests SCOPED, per stack, from a given tree root (either the
 # tip worktree or the parent scratch worktree). Sets PROOF_LEG_RC + PROOF_LEG_OUT.
 # rc 96/97 are local sentinels for "cannot even construct the run" (no
 # testCommand / no runnable native target) — the caller renders INCONCLUSIVE.
-PROOF_LEG_RC=0; PROOF_LEG_OUT=""
+# PROOF_LEG_CMD (S147 DEFECT-2) — the command this leg ACTUALLY executed, as a
+# reader could paste it into a shell. rc + a 20-line tail can never show whether
+# the run was scoped: on dotnet the `--filter` and the unscoped invocation print
+# BYTE-IDENTICAL output, so a captain auditing flip-flop.json had no way to tell
+# the gate really narrowed the run and had to reconstruct the command by hand.
+# Recording it makes the gate self-evidencing. It is the real string (filter
+# terms, per-project `cd` legs, the LCARS_TESTS_DIR scope and the cwd), NOT a
+# label — a pretty summary would re-open exactly the gap this closes.
+PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
 proof_scoped_leg_run() { # leg-root rels(newline)
   local root="$1" rels="$2" first cmd run_dir rc=0 out
-  PROOF_LEG_RC=0; PROOF_LEG_OUT=""
+  PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
   first="$(printf '%s\n' "$rels" | grep . | head -1)"
   local stack; stack="$(resolve_stack)"
   # S133/DEFECT-2: both flip-flop legs run under a PORTABLE hard timeout so a
@@ -3919,6 +4011,10 @@ proof_scoped_leg_run() { # leg-root rels(newline)
       return 0
     fi
     run_dir="$(proof_native_run_dir "$stack" "$root" "$first")"
+    # The native cmd is a self-contained shell string with no dependence on env
+    # the gate sets, so `cd <dir> && <cmd>` re-runs faithfully as-is; only the
+    # directory needs quoting (a repo path may contain a space).
+    PROOF_LEG_CMD="cd $(proof_shq "$run_dir") && $cmd"
     ( cd "$run_dir" && run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
   else
     # js/py: the S87 dir-scoped run — LCARS_TESTS_DIR points at the single file
@@ -3933,12 +4029,26 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     local pkg; pkg="$(package_of_relpath "$first" "$root")"
     run_dir="$root${pkg:+/$pkg}"
     local scope; scope="$(intree_scope_for "$root" "$rels")"
+    # The js/py lane scopes via the LCARS_TESTS_DIR the testCommand interpolates,
+    # so the env assignment is PART of the command a reader would have to re-run.
+    #
+    # IT MUST BE RECORDED AS THE GATE ACTUALLY RUNS IT — `bash -c <cmd>` with the
+    # variable in the child's ENVIRONMENT — not as the bare prefix form
+    # `LCARS_TESTS_DIR=<scope> <cmd>`. An assignment prefix does NOT affect
+    # `$LCARS_TESTS_DIR` references on the same command line: a pasting shell
+    # expands them BEFORE the prefix takes effect, to EMPTY, so the runner gets no
+    # path and silently runs the WHOLE suite. (On a compound testCommand the
+    # prefix binds only to the first element, which is worse still.) That made the
+    # artifact assert the OPPOSITE of what the gate did — a scoped green recorded
+    # as a command that re-runs red on unrelated tests. Quoting `$cmd` and handing
+    # it to `bash -c` is what the line below genuinely executes.
+    PROOF_LEG_CMD="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$cmd")"
     ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
   fi
   out="$(cat "$gof" 2>/dev/null)"; rm -f "$gof"
   if [ "$rc" = 124 ]; then
     PROOF_LEG_RC=98
-    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout (LCARS_GATE_TIMEOUT) and was terminated — a suite that never settles cannot prove anything.
+    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout (LCARS_GATE_TIMEOUT) and was terminated — $(proof_timeout_cause "$out")
 ${out}"
     return 0
   fi
@@ -4024,8 +4134,12 @@ proof_parent_red_kind() { # runner-out files-written → kind token
 }
 
 # flip-flop.json writer + the single finish point (event + verdict rc).
-FF_TIP_RC=null; FF_TIP_TAIL=""; FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""
-_ff_reset() { FF_TIP_RC=null; FF_TIP_TAIL=""; FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; }
+FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
+FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
+_ff_reset() {
+  FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
+  FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
+}
 _ff_write_json() { # file ticket parent verdict reason rels
   local f="$1" t="$2" p="$3" v="$4" r="$5" rels="$6" files="" sep="" rel
   while IFS= read -r rel; do
@@ -4041,8 +4155,14 @@ FFJ_EOF
     printf '  "verdict": "%s",\n'   "$(json_escape "$v")"
     printf '  "reason": "%s",\n'    "$(json_escape "$r")"
     printf '  "testFiles": [%s],\n' "$files"
-    printf '  "tip": { "rc": %s, "tail": "%s" },\n' "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_TAIL:-}")"
-    printf '  "parent": { "rc": %s, "kind": "%s", "tail": "%s" }\n' "${FF_PAR_RC:-null}" "$(json_escape "${FF_PAR_KIND:-}")" "$(json_escape "${FF_PAR_TAIL:-}")"
+    # `cmd` is ADDITIVE (S147 DEFECT-2) — every pre-existing field keeps its name,
+    # position and meaning, so the CLI verify readout and the board's
+    # local_adapter._ticket_proof (both read only verdict/reason/kind) are
+    # untouched. json_escape handles the quotes and `$` the command carries.
+    printf '  "tip": { "rc": %s, "cmd": "%s", "tail": "%s" },\n' \
+      "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_CMD:-}")" "$(json_escape "${FF_TIP_TAIL:-}")"
+    printf '  "parent": { "rc": %s, "kind": "%s", "cmd": "%s", "tail": "%s" }\n' \
+      "${FF_PAR_RC:-null}" "$(json_escape "${FF_PAR_KIND:-}")" "$(json_escape "${FF_PAR_CMD:-}")" "$(json_escape "${FF_PAR_TAIL:-}")"
     echo '}'
   } >"$f"
 }
@@ -4110,6 +4230,7 @@ flip_flop_gate() { # ticket parent-sha worktree
   # --- TIP leg: the implemented tree must be GREEN on the ticket's tests -----
   proof_scoped_leg_run "$wt" "$rels"
   FF_TIP_RC="$PROOF_LEG_RC"
+  FF_TIP_CMD="$PROOF_LEG_CMD"
   FF_TIP_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
   if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ] || [ "$PROOF_LEG_RC" = 98 ]; then
     local tipreason="$PROOF_LEG_OUT"
@@ -4183,6 +4304,7 @@ $rels
 FF_STAGE_EOF
   proof_scoped_leg_run "$scratch" "$rels"
   FF_PAR_RC="$PROOF_LEG_RC"
+  FF_PAR_CMD="$PROOF_LEG_CMD"
   FF_PAR_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
   local par_out="$PROOF_LEG_OUT"
   # PRUNE FIRST — on every verdict path (behavior: pruned on success AND failure).
@@ -4190,7 +4312,13 @@ FF_STAGE_EOF
 
   if [ "$FF_PAR_RC" = 96 ] || [ "$FF_PAR_RC" = 97 ] || [ "$FF_PAR_RC" = 98 ]; then
     local parreason="$par_out"
-    [ "$FF_PAR_RC" = 98 ] && parreason="the PARENT leg's $par_out"
+    # On a PARENT-leg timeout the cause clause invites the captain to re-run the
+    # recorded command — but proof_prune_scratch has ALREADY removed the scratch
+    # worktree that command cd's into (pruning on every verdict path is a tested
+    # invariant we keep: leaking a worktree per timeout is the worse failure), so
+    # say plainly that the path is gone and how to put it back.
+    [ "$FF_PAR_RC" = 98 ] && parreason="the PARENT leg's $par_out
+NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's recorded \`cmd\` cd's into no longer exists — re-cut it first with \`git worktree add --detach <that path> $parent\`, then paste the command."
     _ff_finish "$t" "$parent" "$ffj" inconclusive "$parreason" "$rels"; return $?
   fi
   if proof_zero_collected "$par_out"; then
@@ -6440,6 +6568,40 @@ alias_for_tier() { # cli tier → flag string (stdout; may be empty)
   esac
 }
 
+# The tier that will ACTUALLY RUN for (cli, logical tier) — the honest answer to
+# "what model does this stage get?" (S147 DEFECT-3).
+#
+# WHY THIS EXISTS. The estimator writes a LOGICAL tier per stage, and every
+# captain-facing surface printed that tier verbatim. On copilot that is a LIE:
+# alias_for_tier pins BOTH tiers to claude-opus-4.8 (the `create`-tool safety
+# policy above — correct, and NOT changed by this function), so a copilot
+# captain was shown "implement=Sonnet" while all five stages resolved opus, and
+# the cost band was priced at sonnet rates for an opus run. This is a REPORTING
+# fix only: nothing here influences which model is spawned.
+#
+# It derives the answer FROM alias_for_tier rather than re-stating the policy, so
+# there is still exactly ONE home for "copilot is opus-safe by default" and the
+# two can never drift. That also means a repo's `modelAliases.<cli>.<tier>`
+# override is honoured here for free — a repo that maps copilot's sonnet tier
+# back to a real Sonnet model gets a readout that says Sonnet.
+#
+# ENGINES STAY SEPARATE: claude's arm resolves 'sonnet'→"sonnet"/'opus'→"opus",
+# so claude surfaces are byte-identical to before. No engine learns about the
+# other; each is classified through its own alias arm.
+effective_tier_for_cli() { # cli logical-tier → the tier that really runs
+  local cli="$1" tier="$2" m
+  m="$(alias_for_tier "$cli" "$tier")"
+  # No mapping at all ⇒ the legacy no-`--model` argv: the CLI's own default runs
+  # and we have nothing better to claim than the logical tier.
+  [ -n "$m" ] || { printf '%s' "$tier"; return 0; }
+  case "$m" in
+    *opus*)   printf 'opus' ;;
+    *sonnet*) printf 'sonnet' ;;
+    *haiku*)  printf 'haiku' ;;
+    *)        printf '%s' "$tier" ;;   # an unrecognised alias: don't invent a tier
+  esac
+}
+
 # Is STAGE KEY inside the captain override's SCOPE? The two axes:
 #   reasoning      = research, validate, plan, planReview
 #   implementation = implement, verify
@@ -7570,9 +7732,15 @@ estimate_active_stages() { # estimate-json → space-separated stage keys (in or
 cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
   local est="$1" scope="$2"
   local stages; stages="$(estimate_active_stages "$est")"
+  # S147 DEFECT-3: price the tier that ACTUALLY RUNS, not the estimator's logical
+  # tier. On copilot every stage resolves to opus, so a sonnet-tier estimate was
+  # being billed at sonnet rates for an opus run — the band read low by design.
+  # cli is derived from the pricing scope's first segment ("copilot.usage" →
+  # copilot, "claude" → claude), which is the same engine the caller resolved.
   local usd_low=0 usd_high=0 k tier inr outr tlo thi
+  local pcli="${scope%%.*}"
   for k in $stages; do
-    tier="$(json_scoped_str "$est" "models.$k")"
+    tier="$(effective_tier_for_cli "$pcli" "$(json_scoped_str "$est" "models.$k")")"
     inr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.inputPerMTok")"
     outr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.outputPerMTok")"
     [ -n "$inr" ] && [ -n "$outr" ] || return 1
@@ -7644,7 +7812,8 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
     local unavailable="" pr_low=0 pr_high=0 k tier mult rlo rhi
     local overage; overage="$(json_scoped_num "$pricing" "copilot.legacy.overagePerRequest")"
     for k in $stages; do
-      tier="$(json_scoped_str "$est" "models.$k")"
+      # S147 DEFECT-3: the multiplier must follow the tier that ACTUALLY runs.
+      tier="$(effective_tier_for_cli copilot "$(json_scoped_str "$est" "models.$k")")"
       mult="$(json_scoped_num "$pricing" "copilot.legacy.$tier.premiumRequestMultiplier")"
       [ -n "$mult" ] || { unavailable=1; break; }
       rlo="$(json_scoped_num "$est" "requestEstimates.$k.low")";  [ -n "$rlo" ] || rlo=0
@@ -7677,10 +7846,11 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
     printf '  }'
     return 0
   fi
-  # Claude (default / unit "usd").
+  # Claude (default / unit "usd"). effective_tier_for_cli round-trips claude's
+  # tiers unchanged, so this branch's numbers are byte-identical to before.
   local usd_low=0 usd_high=0 k tier inr outr tlo thi
   for k in $stages; do
-    tier="$(json_scoped_str "$est" "models.$k")"
+    tier="$(effective_tier_for_cli claude "$(json_scoped_str "$est" "models.$k")")"
     inr="$(json_scoped_num "$pricing" "claude.$tier.inputPerMTok")"
     outr="$(json_scoped_num "$pricing" "claude.$tier.outputPerMTok")"
     [ -n "$inr" ] && [ -n "$outr" ] || continue
@@ -7837,6 +8007,14 @@ tier_display() { # tier → Tier
 # Pretty a criticality ("low"/"medium"/"high") in UPPER case for the readout.
 crit_display() { printf '%s' "$1" | tr 'a-z' 'A-Z'; }
 
+# The display name of the model a STAGE will actually run under the active CLI
+# (S147 DEFECT-3). Every captain-facing model readout goes through here, so the
+# estimator's logical tier can never again be shown as if it were the truth on an
+# engine that remaps it. claude round-trips unchanged.
+stage_tier_display() { # estimate-json cli stage-key → "Opus" | "Sonnet" | …
+  tier_display "$(effective_tier_for_cli "$2" "$(json_scoped_str "$1" "models.$3")")"
+}
+
 # Unescape a JSON string's paragraph breaks (\n\n) and newlines so the rationale
 # reads as prose in the rendered surfaces. $2 = join string for blank lines.
 rationale_unescape() { # escaped-string join → prose
@@ -7921,10 +8099,17 @@ render_cost_issue() { # cost-json cli → markdown bullet text
 #   all            → "(override: Opus, whole run)"
 #   reasoning      → "(override: Sonnet, reasoning)"
 #   implementation → "(override: Opus, implementation)"
-override_note() { # → "(override: …)" or empty
+# S147 round-2: takes the ACTIVE CLI so the note reports the tier that will
+# really run. It printed the captain's LOGICAL tier, so on copilot an
+# `all:sonnet` pin rendered "(override: Sonnet, whole run)" directly above a
+# model mix of Opus/Opus — claiming a pin that alias_for_tier had already
+# flattened. The note may say an override happened; it must not misreport what
+# the override produced.
+override_note() { # cli → "(override: …)" or empty
   local ov; ov="$(active_model_override)"
   [ -n "$ov" ] || return 0
   local scope="${ov%%:*}" tier="${ov#*:}" where
+  tier="$(effective_tier_for_cli "${1:-claude}" "$tier")"
   case "$scope" in
     all)            where="whole run" ;;
     reasoning)      where="reasoning" ;;
@@ -7941,7 +8126,7 @@ render_estimate_issue() { # estimate-json cli cost-json → markdown
   rc="$(json_scoped_str "$est" reasoningCriticality)"; [ -n "$rc" ] || rc="?"
   ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
   printf '## Estimate\n\n'
-  local ovn; ovn="$(override_note)"
+  local ovn; ovn="$(override_note "$cli")"
   [ -n "$ovn" ] && printf '**Model override:** %s — the captain pinned the model mix; the per-stage table below shows the estimator'\''s original choice.\n\n' "$ovn"
   printf '**Criticality:** reasoning = %s · implementation = %s\n\n' \
     "$(crit_display "$rc")" "$(crit_display "$ic")"
@@ -7959,7 +8144,7 @@ render_estimate_issue() { # estimate-json cli cost-json → markdown
       verify)     label="Verify" ;;
       *)          label="$k" ;;
     esac
-    printf '| %s | %s |\n' "$label" "$(tier_display "$(json_scoped_str "$est" "models.$k")")"
+    printf '| %s | %s |\n' "$label" "$(stage_tier_display "$est" "$cli" "$k")"
   done
   printf '\n**Estimated cost:** %s\n\n' "$(render_cost_issue "$costfile" "$cli")"
   local rationale; rationale="$(json_scoped_str "$est" rationale)"
@@ -7978,14 +8163,14 @@ render_estimate_cli() { # estimate-json cli cost-json → indented text
   ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
   printf '  Estimate: reasoning=%s implementation=%s  (cost %s)\n' \
     "$(crit_display "$rc")" "$(crit_display "$ic")" "$(render_cost_compact "$costfile" "$cli")"
-  local ovn; ovn="$(override_note)"
+  local ovn; ovn="$(override_note "$cli")"
   [ -n "$ovn" ] && printf '  Override: %s — model mix pinned by the captain (table below = estimator default)\n' "$ovn"
   # One-line model mix.
   printf '  Models:   research/validate=%s · plan/plan-review=%s · implement=%s · verify=%s\n' \
-    "$(tier_display "$(json_scoped_str "$est" models.research)")/$(tier_display "$(json_scoped_str "$est" models.validate)")" \
-    "$(tier_display "$(json_scoped_str "$est" models.plan)")/$(tier_display "$(json_scoped_str "$est" models.planReview)")" \
-    "$(tier_display "$(json_scoped_str "$est" models.implement)")" \
-    "$(tier_display "$(json_scoped_str "$est" models.verify)")"
+    "$(stage_tier_display "$est" "$cli" research)/$(stage_tier_display "$est" "$cli" validate)" \
+    "$(stage_tier_display "$est" "$cli" plan)/$(stage_tier_display "$est" "$cli" planReview)" \
+    "$(stage_tier_display "$est" "$cli" implement)" \
+    "$(stage_tier_display "$est" "$cli" verify)"
   local rationale; rationale="$(json_scoped_str "$est" rationale)"
   if [ -n "$rationale" ]; then
     # First paragraph only on the readout, kept to one line.

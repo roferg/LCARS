@@ -216,12 +216,141 @@ fi
 grep -q 'src/calc.test.js' "$ffj" 2>/dev/null \
   && ok "B2b. flip-flop.json names the ticket's test file" \
   || bad "B2b. flip-flop.json should list src/calc.test.js"
+# S147 DEFECT-2: the artifact must SELF-EVIDENCE the scoping — record the actual
+# command each leg ran. Without it a captain auditing the gate cannot tell from
+# the artifact whether the scoping was applied at all (on dotnet the scoped and
+# unscoped invocations print byte-identical output), and has to reconstruct and
+# re-run the command by hand to prove it.
+python3 - "$ffj" <<'PY' && ok "B2c. flip-flop.json records the command BOTH legs ran" \
+                        || bad "B2c. flip-flop.json should record tip.cmd + parent.cmd ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+pc = d.get("parent", {}).get("cmd") or ""
+sys.exit(0 if (tc.strip() and pc.strip()) else 1)
+PY
+python3 - "$ffj" <<'PY' && ok "B2d. the staged/generic leg's recorded cmd names the scope it ran under" \
+                        || bad "B2d. generic leg cmd should carry the LCARS_TESTS_DIR scope ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+# the js/py lane scopes via LCARS_TESTS_DIR — the record must show it, else the
+# reader cannot tell a scoped run from a whole-suite run.
+sys.exit(0 if "LCARS_TESTS_DIR=" in tc and "calc.test.js" in tc else 1)
+PY
+
 grep -q '"type":"flip_flop_pass"' "$(EV "$repo")" 2>/dev/null \
   && ok "B3. flip_flop_pass event emitted" \
   || bad "B3. flip_flop_pass event missing from events.jsonl"
 no_scratch_left "$repo" \
   && ok "B4. parent scratch worktree pruned after PASS" \
   || bad "B4. scratch worktree leaked after pass"
+
+# --------------------------------------------------------------------------
+# B5 (S147 round-2 D1). THE RE-RUN TEST. Presence of a substring in `cmd` is
+# NOT correctness — the whole point of recording the command is that a captain
+# can PASTE IT and reproduce the gate's scoped result. So paste it.
+#
+# The trap this catches: `LCARS_TESTS_DIR=<scope> <cmd>` records an assignment
+# PREFIX, but a pasting shell expands the `$LCARS_TESTS_DIR` inside <cmd>
+# BEFORE the prefix takes effect — to EMPTY. The recorded string then runs the
+# runner with no path argument, i.e. the WHOLE suite, and on a compound
+# testCommand the prefix binds only to the first element anyway. The repo below
+# carries a pre-existing RED test that the ticket never touches, so an unscoped
+# re-run goes RED while the gate went GREEN — the artifact would be telling the
+# captain the exact opposite of what the gate did.
+repo="$(new_js_repo)"
+# a RED test that predates the ticket and is NOT in its diff — the gate must
+# never run it, and a faithful re-run must not either.
+printf 'const { test } = require("node:test");\nconst assert = require("node:assert");\ntest("decoy is red", () => { assert.strictEqual(1, 2); });\n' \
+  > "$repo/src/other.test.js"
+( cd "$repo" && git add -A && git commit -qm decoy )
+P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+[ "$FFRC" = 0 ] && ok "B5a. gate PASSES while a pre-existing red test sits beside the ticket" \
+                || bad "B5a. gate should scope past the decoy red (FFRC=$FFRC: $OUT)"
+ffj="$(TD "$repo")/flip-flop.json"
+TIPCMD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tip"]["cmd"])' "$ffj" 2>/dev/null)"
+prc=0
+( cd / && bash -c "$TIPCMD" ) >/dev/null 2>&1 || prc=$?
+[ "$prc" = 0 ] \
+  && ok "B5b. RE-RUNNING the recorded tip cmd reproduces the gate's GREEN (rc 0)" \
+  || bad "B5b. recorded tip cmd re-ran to rc=$prc, NOT the gate's pass — the artifact lies about the scoping. cmd: $TIPCMD"
+# …and it must have been the SCOPE that kept it green, not luck: the decoy must
+# not appear in the re-run's output at all.
+POUT="$( cd / && bash -c "$TIPCMD" 2>&1 )" || :
+printf '%s' "$POUT" | grep -q 'other.test.js' \
+  && bad "B5c. the re-run executed the decoy test — the recorded cmd is NOT scoped" \
+  || ok "B5c. the re-run never touched the decoy — the recorded cmd is genuinely scoped"
+
+# B5d. the same faithfulness on a COMPOUND testCommand, where an assignment
+# prefix binds only to the FIRST element of the list.
+repo="$(new_js_repo)"
+printf 'const { test } = require("node:test");\nconst assert = require("node:assert");\ntest("decoy is red", () => { assert.strictEqual(1, 2); });\n' \
+  > "$repo/src/other.test.js"
+( cd "$repo" && git add -A && git commit -qm decoy )
+P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+COMPOUND='grep -q "exports.mul" src/calc.js || { echo "missing impl" >&2; exit 9; }; node --test $LCARS_TESTS_DIR'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$COMPOUND"
+[ "$FFRC" = 0 ] && ok "B5d. gate PASSES on a compound testCommand" \
+                || bad "B5d. compound testCommand should pass (FFRC=$FFRC: $OUT)"
+ffj="$(TD "$repo")/flip-flop.json"
+TIPCMD2="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tip"]["cmd"])' "$ffj" 2>/dev/null)"
+prc2=0
+( cd / && bash -c "$TIPCMD2" ) >/dev/null 2>&1 || prc2=$?
+[ "$prc2" = 0 ] \
+  && ok "B5e. RE-RUNNING the recorded COMPOUND cmd reproduces the gate's GREEN" \
+  || bad "B5e. recorded compound cmd re-ran to rc=$prc2, not the gate's pass. cmd: $TIPCMD2"
+
+# B5g. proof_shq is the quoting the whole re-run contract rests on, so round-trip
+# it directly against the characters a real repo path / testCommand can contain.
+# The first cut escaped apostrophes through a double-quoted replacement, which
+# bash re-processes — every `'` came out mangled and the command was unpasteable
+# (a path like /Users/o'brien). Asserted here so it cannot regress silently.
+SHQLIB="$TMPROOT/shq.sh"
+sed -n "/^proof_shq() {/,/^}/p" "$SCRIPT" > "$SHQLIB"
+shq_rt() { # string → 0 if proof_shq round-trips it exactly
+  bash -c '. "$1"; s="$2"; q="$(proof_shq "$s")"; got="$(eval "printf %s $q")"; [ "$got" = "$s" ]' \
+    _ "$SHQLIB" "$1" 2>/dev/null
+}
+shq_fails=0
+for s in "plain" "with space" "it's" 'has "quotes"' 'dollar $HOME' 'back`tick`' \
+         'back\slash' "tab	here" "uni✖code" "two''quotes" '$(rm -rf /)' ';| &&' \
+         "/Users/o'brien/my repo"; do
+  shq_rt "$s" || { shq_fails=$((shq_fails + 1)); printf '      ↳ shq mangled: [%s]\n' "$s"; }
+done
+[ "$shq_fails" -eq 0 ] \
+  && ok "B5g. proof_shq round-trips every shell-hostile character" \
+  || bad "B5g. proof_shq mangled $shq_fails input(s) — recorded commands are not pasteable"
+
+# B5f (SMELL 7). A repo path containing a SPACE must still yield a pasteable
+# recorded command — an unquoted `cd` splits the path and the paste dies.
+repo="$(mktemp -d "$TMPROOT/js sp.XXXX")"
+( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+printf '{ "name": "fix", "private": true }\n' > "$repo/package.json"
+mkdir -p "$repo/src"
+printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+( cd "$repo" && git add -A && git commit -qm parent )
+scaffold_mission "$repo"
+P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+TIPCMD3="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tip"]["cmd"])' "$ffj" 2>/dev/null)"
+if [ "$FFRC" = 0 ] && [ -n "$TIPCMD3" ]; then
+  prc3=0; ( cd / && bash -c "$TIPCMD3" ) >/dev/null 2>&1 || prc3=$?
+  [ "$prc3" = 0 ] \
+    && ok "B5f. a repo path WITH A SPACE still yields a pasteable recorded cmd" \
+    || bad "B5f. spaced-path cmd re-ran to rc=$prc3 — the cd path is not quoted. cmd: $TIPCMD3"
+else
+  # the gate itself cannot survive a spaced path (LEDGERED, pre-existing) — the
+  # recording contract is still asserted below on the quoting alone.
+  printf '%s' "$TIPCMD3" | grep -Eq "cd ('|\")" \
+    && ok "B5f. spaced-path cd is SHELL-QUOTED in the record (gate itself ledgered)" \
+    || bad "B5f. spaced-path cd must be shell-quoted ($TIPCMD3)"
+fi
 
 # ==========================================================================
 # C. test-after cheat → FAIL (behavior 2) + prune on failure (behavior 9)
@@ -590,6 +719,122 @@ pgrep -f 'sleep 693' >/dev/null 2>&1 \
   && bad "J8. a runaway parent-leg runner (sleep 693) survived the group-kill" \
   || ok "J8. the parent-leg hung runner's process group was reaped (no orphan)"
 
+# J9-J12 (S147 DEFECT-4): the timeout message must NAME THE REAL CAUSE. The
+# timeout exists to bound a suite that never settles, but a leg can also run out
+# of clock while still fetching/compiling dependencies — a first run on a cold
+# package cache. Those are opposite problems with opposite fixes (a hang is a bug
+# in the tests; a slow restore just needs a warmer cache or a bigger budget), and
+# the old single sentence — "a suite that never settles cannot prove anything" —
+# asserted the first no matter which had happened. A captain who hits it must be
+# able to tell which one it was WITHOUT re-running anything.
+
+# J9. killed while still resolving/downloading dependencies ⇒ says so, and does
+#     NOT assert the suite hung.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+RCMD='echo "Determining projects to restore..."; echo "Downloading xunit 2.9.2"; sleep 694'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$RCMD" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$FFRC" = 2 ] && ok "J9. a restore-phase timeout is still INCONCLUSIVE (rc 2)" \
+                || bad "J9. restore-phase timeout should be inconclusive (FFRC=$FFRC)"
+grep -qi 'depend' "$ffj" 2>/dev/null \
+  && ok "J10. the reason names DEPENDENCY resolution as the observed phase" \
+  || bad "J10. restore-phase timeout should name dependencies ($(cat "$ffj" 2>/dev/null))"
+grep -qi 'never settles' "$ffj" 2>/dev/null \
+  && bad "J10b. a restore-phase timeout must NOT assert the suite never settled" \
+  || ok "J10b. a restore-phase timeout does not mis-blame the suite"
+
+# J11. a leg that reached test EXECUTION and then stalled is still called a hang
+#      — the discrimination must not soften the real hang case.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+HCMD2='echo "Starting test execution, please wait..."; sleep 695'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$HCMD2" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -qi 'never settles' "$ffj" 2>/dev/null \
+  && ok "J11. a stall AFTER tests started still reads as a hung suite" \
+  || bad "J11. post-start stall should still name a hang ($(cat "$ffj" 2>/dev/null))"
+
+# J12. every timeout message must name the knob, whichever cause it reports.
+grep -q 'LCARS_GATE_TIMEOUT' "$ffj" 2>/dev/null \
+  && ok "J12. the timeout message names LCARS_GATE_TIMEOUT" \
+  || bad "J12. timeout message should name the LCARS_GATE_TIMEOUT knob"
+pgrep -f 'sleep 694' >/dev/null 2>&1 || pgrep -f 'sleep 695' >/dev/null 2>&1 \
+  && bad "J13. a runaway runner survived the group-kill (J9/J11)" \
+  || ok "J13. both cause-discrimination legs were still group-killed (bound intact)"
+
+# J14-J17 (S147 round-2 D2): the cause classifier must NEVER absolve the suite
+# against output that shows a test EXECUTING. The first cut matched bare tokens
+# like "Downloading " anywhere in the buffer, so a genuine never-settling test
+# that happened to print "Downloading rate-table.json from the fixture server"
+# was reported as a cold-cache restore — "the tests themselves are not
+# implicated" — while the SAME buffer carried node's own `✖ … (4874ms)`,
+# `ℹ tests 1`, `ℹ cancelled 1`. The harness held the falsifying evidence and
+# still told the captain to warm the cache and raise the timeout, which only
+# makes them wait longer for the same hang. Confident-and-wrong is the failure
+# mode; honest ambiguity is acceptable.
+
+# J14. a hanging test whose OWN STDOUT contains a dep-ish word, with real
+#      test-execution evidence in the buffer ⇒ HANG, never "not implicated".
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+DECOY='echo "Downloading rate-table.json from the fixture server"; echo "✖ src/calc.test.js (4874.773166ms)"; echo "ℹ tests 1"; echo "ℹ cancelled 1"; sleep 696'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$DECOY" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -qi 'not implicated\|cold-cache' "$ffj" 2>/dev/null \
+  && bad "J14. a HANGING test was absolved as a cold-cache restore ($(grep -o '"reason": "[^"]*"' "$ffj" 2>/dev/null | head -c 400))" \
+  || ok "J14. a test's own 'Downloading …' line no longer absolves a hang"
+grep -qi 'never settles\|STARTED running' "$ffj" 2>/dev/null \
+  && ok "J15. the reason names the hang the evidence actually shows" \
+  || bad "J15. buffer showed a test executing — reason must call it a hang ($(grep -o '"reason": "[^"]*"' "$ffj" 2>/dev/null | head -c 400))"
+
+# J16. a test printing a dep-ish word with NO execution evidence at all must not
+#      be confidently called a cold restore either — ambiguity is the honest read.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+VAGUE='echo "Downloading rate-table.json from the fixture server"; sleep 697'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$VAGUE" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -qi 'not implicated' "$ffj" 2>/dev/null \
+  && bad "J16. an app's own download line must not be read as a package restore" \
+  || ok "J16. a non-restore 'Downloading' line does not assert a cold cache"
+
+# J17. a REAL restore banner (package + version, the shape a package manager
+#      prints) with no execution evidence still classifies as the restore phase —
+#      the useful half of the discrimination must survive the tightening.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+REST='echo "  Determining projects to restore..."; echo "  Downloading xunit 2.9.2"; sleep 698'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$REST" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -qi 'depend' "$ffj" 2>/dev/null \
+  && ok "J17. a genuine restore banner still reads as the dependency phase" \
+  || bad "J17. real restore output must still be recognised ($(grep -o '"reason": "[^"]*"' "$ffj" 2>/dev/null | head -c 400))"
+
+# J18/J19 (MINOR 1 + MINOR 2) on one PARENT-leg timeout whose output exists but
+# matches no known marker. MINOR 1: the undetermined wording must not claim the
+# leg "produced no output" when it plainly produced some. MINOR 2: the parent
+# scratch worktree is pruned before the verdict, so inviting the captain to
+# re-run the recorded command points at a directory that no longer exists.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+: > "$repo/tip-marker"
+PCMD='if [ -f tip-marker ]; then node --test $LCARS_TESTS_DIR; else echo "some output"; sleep 699; fi'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$PCMD" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -q 'produced no output' "$ffj" 2>/dev/null \
+  && bad "J18. must not claim 'produced no output' when output existed" \
+  || ok "J18. the undetermined branch does not overclaim about missing output"
+grep -q 'nothing the harness recognised' "$ffj" 2>/dev/null \
+  && ok "J18b. it says nothing was RECOGNISED, which is what actually happened" \
+  || bad "J18b. expected the 'nothing the harness recognised' wording"
+grep -qi 'pruned\|no longer exists\|re-cut' "$ffj" 2>/dev/null \
+  && ok "J19. a PARENT-leg timeout says its scratch worktree is gone" \
+  || bad "J19. parent timeout must warn the scratch is pruned ($(grep -o '"reason": "[^"]*"' "$ffj" 2>/dev/null | head -c 500))"
+pgrep -f 'sleep 696' >/dev/null 2>&1 || pgrep -f 'sleep 699' >/dev/null 2>&1 \
+  && bad "J20. a runaway runner survived the group-kill (J14/J19)" \
+  || ok "J20. the D2 legs were still group-killed (bound intact)"
+
 # ==========================================================================
 # K. multi-dir ticket (DEFECT-3): the flip-flop legs must collect tests SPANNING
 #    two directories — intree_scope_for's common-ancestor arm, live but untested.
@@ -689,6 +934,17 @@ RB
   no_scratch_left "$repo" \
     && ok "L4. ruby scratch worktree pruned" \
     || bad "L4. ruby scratch worktree leaked"
+  # S147 DEFECT-2: the ruby leg must record its SCOPED rspec invocation, so the
+  # artifact itself proves the run was narrowed to the ticket's spec file.
+  python3 - "$ffj" <<'PY' && ok "L4b. flip-flop.json records the scoped rspec command for BOTH legs" \
+                          || bad "L4b. ruby legs should record their rspec cmd ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+pc = d.get("parent", {}).get("cmd") or ""
+sys.exit(0 if ("rspec" in tc and "mul_spec.rb" in tc
+               and "rspec" in pc and "mul_spec.rb" in pc) else 1)
+PY
 
   # H5. zero-collect: a new spec with NO examples runs green (exit 0) on tip but
   # collects nothing → INCONCLUSIVE (rc 2), never a pass.
@@ -804,6 +1060,32 @@ CS
   no_scratch_left "$repo" \
     && ok "M4. dotnet scratch worktree pruned on the PASS path" \
     || bad "M4. dotnet scratch worktree leaked"
+  # S147 DEFECT-2 — THE CASE THAT MOTIVATED THIS. On dotnet the scoped
+  # (`--filter …`) and unscoped invocations produce BYTE-IDENTICAL output, so
+  # rc + a 20-line tail can NEVER show a reader whether the filter was applied.
+  # The capstone captain had to dig `native_scoped_cmd` out of run.sh and re-run
+  # it by hand to prove the scoping was real. Recording the actual command makes
+  # the gate self-evidencing: the --filter terms are right there in the artifact.
+  python3 - "$ffj" <<'PY' && ok "M4b. flip-flop.json records each dotnet leg's --filter terms" \
+                          || bad "M4b. dotnet legs should record their --filter cmd ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+pc = d.get("parent", {}).get("cmd") or ""
+for c in (tc, pc):
+    if "dotnet test" not in c or "--filter" not in c or "Mul" not in c:
+        sys.exit(1)
+sys.exit(0)
+PY
+  # The recorded string must be the REAL command, not a pretty label: the
+  # per-project `cd` leg the dotnet runner needs has to be visible too.
+  python3 - "$ffj" <<'PY' && ok "M4c. the recorded dotnet cmd carries its per-project leg" \
+                          || bad "M4c. dotnet cmd should show the per-project invocation"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+sys.exit(0 if ("App.Tests" in tc and "cd " in tc) else 1)
+PY
 
   # M5. THE SILENT-GREEN TRAP through the real gate: a staged class with NO
   # [Fact] makes the filter match nothing — `dotnet test` exits 0 — so the TIP

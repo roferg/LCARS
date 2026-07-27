@@ -101,8 +101,37 @@ class LocalAdapter(object):
         # a board render costs one subprocess only when the config moved.
         self._readiness_script = readiness_script
         self._readiness_memo = None   # (config_mtime, payload-or-None)
+        self._aliases_memo = None     # (config_mtime, modelAliases-dict)
 
     # -- the public surface ---------------------------------------------------
+    def _model_aliases(self):
+        """The repo's `modelAliases` map from config.json ({} when absent).
+
+        S147 round 2: the shape layer resolves a stage's DISPLAYED tier through
+        the same policy run.sh's `alias_for_tier` uses, and that policy is
+        config-overridable per (cli, tier). Read here rather than in board.py so
+        the shape layer stays free of filesystem knowledge.
+
+        MEMOIZED on config.json's mtime, exactly like `_readiness_memo`: `_card`
+        runs once per mission, so an un-memoized read would re-parse config.json
+        N times per board render just to answer the same question. Keying on
+        mtime keeps a mid-session `modelAliases` edit visible on the next render.
+        """
+        config = os.path.join(self.repo_root, ".git", "lcars", "config.json")
+        try:
+            mtime = os.path.getmtime(config)
+        except OSError:
+            mtime = None
+        if self._aliases_memo is not None and self._aliases_memo[0] == mtime:
+            return self._aliases_memo[1]
+        aliases = {}
+        if mtime is not None:
+            cfg = _load_json(config)
+            if isinstance(cfg, dict) and isinstance(cfg.get("modelAliases"), dict):
+                aliases = cfg["modelAliases"]
+        self._aliases_memo = (mtime, aliases)
+        return aliases
+
     def board(self):
         cards = [self._card(d) for d in self._mission_dirs()]
         cards = [c for c in cards if c is not None]
@@ -439,7 +468,12 @@ class LocalAdapter(object):
         # estimate scores all six stages and the table shows Research + Validate
         # too; the old is_bug row-drop is gone (a real fast-track bug's estimate
         # simply omits those keys, so no empty rows). See board.model_mix_from_estimate.
-        model_mix = board.model_mix_from_estimate(est, engine=engine)
+        # S147 round 2: hand the repo's `modelAliases` to the shape layer so the
+        # displayed tier resolves through the SAME policy run.sh uses. Without it
+        # the board hard-coded "copilot ⇒ opus" and disagreed with the CLI on any
+        # repo that overrode modelAliases.copilot.<tier>.
+        model_mix = board.model_mix_from_estimate(
+            est, engine=engine, model_aliases=self._model_aliases())
 
         # Mission-log-grounding round: a logged bug runs Research in a scoped
         # GROUNDING mode (run.sh cmd_research short-circuits to
