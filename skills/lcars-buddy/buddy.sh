@@ -52,7 +52,44 @@ if ! is_lcars_checkout "$REPO"; then
 fi
 
 # --- tiny JSON readers (mirror status.sh) ---------------------------------
-json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" 2>/dev/null | head -1; }
+# json_str reads the string body up to the closing quote, treating a
+# backslash-escaped quote (\") as part of the value rather than its end, and
+# decodes the common JSON escapes on the way out. This is not a corner case for
+# buddy: S148 makes every testCommand LCARS seeds QUOTE its $LCARS_TESTS_DIR
+# scope, so a correctly-configured config.json ALWAYS carries \" — and the old
+# naive [^"]* sed reader printed a TRUNCATED command, i.e. it misreported the
+# one value a captain runs buddy to check. A mission title containing a quote
+# truncated the same way. POSIX awk only (no jq, no GNU-isms) so it runs on BSD
+# awk; kept byte-identical to skills/lcars-status/status.sh so the two readers
+# can never disagree — which is what this comment claimed all along.
+json_str() { # file key
+  [ -f "$1" ] || return 0
+  awk -v k="$2" '
+    done { next }
+    {
+      tok = "\"" k "\""
+      p = index($0, tok)
+      if (p == 0) next
+      rest = substr($0, p + length(tok))
+      if (match(rest, /^[ \t]*:[ \t]*"/) == 0) next   # not "key": "…", keep looking
+      rest = substr(rest, RLENGTH + 1)                # now at the value body
+      out = ""; i = 1; n = length(rest)
+      while (i <= n) {
+        c = substr(rest, i, 1)
+        if (c == "\\") {                              # an escape sequence
+          e = substr(rest, i + 1, 1)
+          if      (e == "n") out = out "\n"
+          else if (e == "t") out = out "\t"
+          else               out = out e              # \" \\ \/ … → the bare char
+          i += 2; continue
+        }
+        if (c == "\"") break                          # unescaped quote ends the value
+        out = out c; i += 1
+      }
+      print out; done = 1
+    }
+  ' "$1" 2>/dev/null
+}
 json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" 2>/dev/null | head -1; }
 
 hr() { printf -- '────────────────────────────────────────────────────────\n'; }
