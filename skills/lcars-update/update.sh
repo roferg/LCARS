@@ -130,6 +130,58 @@ migrate_stale_testcommand() {
   MIGRATED_TESTCOMMAND=1
 }
 
+# --- MIGRATION: UNQUOTED $LCARS_TESTS_DIR scope -> quoted (S148) -------------
+# Every seeded testCommand interpolates $LCARS_TESTS_DIR as the positional scope,
+# and the Implement gates export it as an ABSOLUTE path. Seeded UNQUOTED, that
+# path WORD-SPLITS on IFS whitespace the moment the repo is checked out somewhere
+# containing a space or a tab — the runner is handed two half-paths, finds
+# neither, and the flip-flop proof gate FALSE-FAILS a perfectly honest ticket
+# purely because of WHERE the repo lives (bouncing it to a fresh worker up to 3
+# times, then parking it awaiting-human). lcars-common.sh now seeds the quoted
+# shapes; this migration repairs the ALREADY-PERSISTED strings, which no amount
+# of re-seeding would ever reach (config is merge-only: a present key is kept).
+#
+# NEVER-CLOBBER IS ABSOLUTE, and here that is enforced the strictest way there
+# is: a WHOLE-STRING, byte-for-byte equality against a table of the exact shapes
+# LCARS itself seeded. No prefix match, no substring match, no normalization. A
+# command the captain hand-wrote or customised — `npm test -- ${LCARS_TESTS_DIR:-}
+# --coverage`, `cd pkg && npm test -- ${LCARS_TESTS_DIR:-}`, even the same command
+# with two spaces in it — does not byte-match, so it is not ours and it is not
+# touched. Anything unrecognised is the captain's, full stop.
+#
+# Each replacement is the SAME command with the scope quoted; the shape used is
+# decided by the arm's default (see the S148 note in lcars-common.sh): a NON-EMPTY
+# default takes `"${LCARS_TESTS_DIR:-<default>}"`, an EMPTY one takes
+# `${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}` so "no scope ⇒ no argument" survives
+# byte-for-byte rather than becoming "no scope ⇒ one EMPTY argument".
+#
+# Sets MIGRATED_TESTCOMMAND_QUOTING=1 when it rewrote the value.
+migrate_unquoted_testcommand_scope() {
+  local config="$1"
+  MIGRATED_TESTCOMMAND_QUOTING=0
+  [ -f "$config" ] || return 0
+
+  local tc; tc="$(lcars_config_get "$config" testCommand)"
+  [ -n "$tc" ] || return 0
+
+  local newtc=""
+  case "$tc" in
+    'npm test -- ${LCARS_TESTS_DIR:-}')
+      newtc='npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}' ;;
+    'npx jest ${LCARS_TESTS_DIR:-}')
+      newtc='npx jest ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}' ;;
+    'npx mocha ${LCARS_TESTS_DIR:-}')
+      newtc='npx mocha ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}' ;;
+    'pytest ${LCARS_TESTS_DIR:-.}')
+      newtc='pytest "${LCARS_TESTS_DIR:-.}"' ;;
+    *) return 0 ;;                 # not a shape LCARS seeded — the captain's.
+  esac
+
+  [ "$newtc" = "$tc" ] && return 0
+  lcars_config_set_string "$config" testCommand "$newtc"
+  MIGRATED_TESTCOMMAND_QUOTING=1
+}
+
 # --- locate the repo ------------------------------------------------------
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" \
   || die "not inside a git repository — run this from a repo root."
@@ -472,9 +524,12 @@ created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
 CONFIG_ADDED="$LCARS_CONFIG_ADDED_KEYS"
 
-# Targeted schema migration: rewrite a stale copy-based vitest testCommand to the
-# in-place form (S101). Runs AFTER the merge so it rewrites the preserved value.
+# Targeted schema migrations, in order. Both run AFTER the merge so they rewrite
+# the PRESERVED value, and both are fingerprint-gated so an unrecognised command
+# is never touched. They are disjoint by construction: S101 owns the multi-clause
+# .lcars-tests copy-staging form, S148 the four bare seeded one-liners.
 migrate_stale_testcommand "$CONFIG"
+migrate_unquoted_testcommand_scope "$CONFIG"
 
 # Force the version stamp CURRENT (the one deliberate overwrite update owns). The
 # merge preserves an existing stamp, so refresh it to the running version here.
@@ -515,6 +570,13 @@ fi
 if [ "${MIGRATED_TESTCOMMAND:-0}" -eq 1 ]; then
   changed=1
   echo "  ✓ testCommand migrated to in-place form (S101: co-located tests run in place; old .lcars-tests copy form is incompatible)"
+fi
+
+if [ "${MIGRATED_TESTCOMMAND_QUOTING:-0}" -eq 1 ]; then
+  changed=1
+  echo "  ✓ testCommand migrated to a QUOTED \$LCARS_TESTS_DIR scope (S148: unquoted, the"
+  echo "    scope word-split at any repo path containing a space or tab, and the Implement"
+  echo "    proof gate false-failed honest tickets). Now: $(lcars_config_get "$CONFIG" testCommand)"
 fi
 
 if [ "$VERSION_STAMPED" -eq 1 ]; then

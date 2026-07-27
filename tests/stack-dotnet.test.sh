@@ -213,12 +213,12 @@ R="$TMPROOT/vendor-js"; mkdir -p "$R"
 printf '{ "scripts": { "test": "jest" } }\n' >"$R/package.json"
 mk_vendor "$R/vendor/sample" Demo
 S="$(TOPLEVEL="$R" detect_stack)"; CMD="$(TOPLEVEL="$R" detect_test_cmd)"
-{ [ "$S" = js ] && [ "$CMD" = 'npm test -- ${LCARS_TESTS_DIR:-}' ]; } \
+{ [ "$S" = js ] && [ "$CMD" = 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}' ]; } \
   && ok "1k. js + a vendored NON-test csproj stays js and keeps its seed" \
   || bad "1k. N2 REGRESSION: js repo became [$S] with cmd [$CMD]"
 R="$TMPROOT/vendor-py"; mkdir -p "$R"; : >"$R/pyproject.toml"; mk_vendor "$R/tools" x
 S="$(TOPLEVEL="$R" detect_stack)"; CMD="$(TOPLEVEL="$R" detect_test_cmd)"
-{ [ "$S" = python ] && [ "$CMD" = 'pytest ${LCARS_TESTS_DIR:-.}' ]; } \
+{ [ "$S" = python ] && [ "$CMD" = 'pytest "${LCARS_TESTS_DIR:-.}"' ]; } \
   && ok "1k'. python + tools/x.csproj stays python and keeps its seed" \
   || bad "1k'. N2 REGRESSION: python repo became [$S] with cmd [$CMD]"
 R="$TMPROOT/vendor-rs"; mkdir -p "$R"; printf '[package]\nname="x"\n' >"$R/Cargo.toml"
@@ -268,13 +268,15 @@ CMD="$(TOPLEVEL="$R" detect_test_cmd)"
 
 # ============================================================================
 # 2. NO PRE-147 DRIFT — every other stack's seed is byte-identical
+#    (S148 quoted the $LCARS_TESTS_DIR scope in the js/python seeds; the
+#     invocations are otherwise unchanged, and the natives are untouched)
 # ============================================================================
 R="$TMPROOT/drift-js"; mkdir -p "$R"
 printf '{ "scripts": { "test": "jest" } }\n' >"$R/package.json"
-[ "$(TOPLEVEL="$R" detect_test_cmd)" = 'npm test -- ${LCARS_TESTS_DIR:-}' ] \
+[ "$(TOPLEVEL="$R" detect_test_cmd)" = 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}' ] \
   && ok "2a. js seed unchanged" || bad "2a. js seed DRIFTED"
 R="$TMPROOT/drift-py"; mkdir -p "$R"; : >"$R/pyproject.toml"
-[ "$(TOPLEVEL="$R" detect_test_cmd)" = 'pytest ${LCARS_TESTS_DIR:-.}' ] \
+[ "$(TOPLEVEL="$R" detect_test_cmd)" = 'pytest "${LCARS_TESTS_DIR:-.}"' ] \
   && ok "2b. python seed unchanged" || bad "2b. python seed DRIFTED"
 R="$TMPROOT/drift-rs"; mkdir -p "$R"; : >"$R/Cargo.toml"
 [ "$(TOPLEVEL="$R" detect_test_cmd)" = 'cargo test' ] \

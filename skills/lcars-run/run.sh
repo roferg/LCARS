@@ -3973,10 +3973,42 @@ proof_shq() { # string → '…' safe for a shell
   printf '%s%s%s' "$sq" "$s" "$sq"
 }
 
+# GLOB METACHARACTERS IN THE SCOPE (S148 GUARD, generic lane only). Since Node
+# 22, `node --test <path>` treats its positional as a GLOB PATTERN, so the
+# ABSOLUTE scope — which carries the checkout's own path — is re-interpreted by
+# the runner. This is NOT a quoting bug: the shell delivers the right bytes and
+# the runner re-globs them, and glob-ESCAPING here would corrupt the path for
+# every runner that takes it literally (pytest and rspec both do). Observed on
+# node v25.6.1, one directory per character:
+#   `*`  EXPANDS across siblings — the leg silently runs test files the ticket
+#        never touched. Not merely a false fail: a ride-along in a glob-matched
+#        sibling can supply the PARENT leg's red, turning a test-after cheat the
+#        gate correctly FAILS into a recorded PASS (constructed and observed).
+#   `?`  same expansion, one character wide.
+#   `[`  a CLOSED class (`br[a-c]k`) matched a SIBLING instead of the real
+#        directory — one test collected, from the wrong repo, with no sign of it.
+#   `{`  `{a,b}` brace-expands identically.
+#   `\`  is glob-UNESCAPED → "Could not find '<path>'" while the file plainly
+#        exists → a false fail on honest work.
+# A lone `[` / `{` (unclosed, or no comma) is literal TODAY, but whether it opens
+# a class is the runner's own parsing state — so we refuse the OPENER rather than
+# re-implement its parser and be silently wrong. Everything else a real machine
+# actually has in a path — space, tab, `'`, `"`, `$`, backtick, `;`, `#`, `~`,
+# `+`, parens, `&`, `=`, `!`, unicode — is verified LITERAL and must keep running
+# (tests O5); each character here is a repo shape LCARS refuses.
+proof_scope_glob_char() { # abs-scope → the first glob metachar in it ("" = safe)
+  local s="$1" c
+  for c in '*' '?' '[' '{' '\'; do
+    case "$s" in *"$c"*) printf '%s' "$c"; return 0 ;; esac
+  done
+  printf ''
+}
+
 # Run the ticket's tests SCOPED, per stack, from a given tree root (either the
 # tip worktree or the parent scratch worktree). Sets PROOF_LEG_RC + PROOF_LEG_OUT.
 # rc 96/97 are local sentinels for "cannot even construct the run" (no
-# testCommand / no runnable native target) — the caller renders INCONCLUSIVE.
+# testCommand / no runnable native target / a scope the runner would re-glob) —
+# the caller renders INCONCLUSIVE.
 # PROOF_LEG_CMD (S147 DEFECT-2) — the command this leg ACTUALLY executed, as a
 # reader could paste it into a shell. rc + a 20-line tail can never show whether
 # the run was scoped: on dotnet the `--filter` and the unscoped invocation print
@@ -4029,6 +4061,30 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     local pkg; pkg="$(package_of_relpath "$first" "$root")"
     run_dir="$root${pkg:+/$pkg}"
     local scope; scope="$(intree_scope_for "$root" "$rels")"
+    # S148 GUARD — a scope the runner would re-interpret as a glob PATTERN (see
+    # proof_scope_glob_char). Refuse the leg rather than run it: unrun is
+    # INCONCLUSIVE, whereas running it is either a mystery red or a widened run
+    # whose green (or whose parent-leg red) came from a file the ticket never
+    # touched. Native lanes are immune — no repo path enters their command.
+    local gch; gch="$(proof_scope_glob_char "$scope")"
+    if [ -n "$gch" ]; then
+      rm -f "$gof"
+      PROOF_LEG_RC=96
+      PROOF_LEG_OUT="proof-gate: the path this leg must hand the test runner contains \`$gch\`, which the runner re-interprets as a GLOB PATTERN instead of a literal path (scope: $scope) — the run would either find nothing or silently widen to files the ticket never touched, so it was NOT run. Nothing is wrong with the ticket: it is WHERE the repo lives. Move or rename the checkout to a path free of \` * ? [ { \\ \` and re-run."
+      return 0
+    fi
+    # S148 — WHITESPACE IN THE CHECKOUT PATH. $scope is ABSOLUTE, so it carries
+    # the repo's path, and everything on this lane hands it over quoted: the
+    # `LCARS_TESTS_DIR="$scope"` assignment below, the proof_shq-quoted record,
+    # and (since S148) the SEEDED testCommand's own interpolation of it. Before
+    # that last one was quoted, a repo living at `…/sp test` word-split the scope
+    # inside the testCommand — the runner got `…/sp` and `test/…`, the TIP leg
+    # went red, and the gate FALSE-FAILED honest tickets by location alone.
+    #
+    # THE SEPARATE BOUND, now GUARDED just below: quoting delivers the scope
+    # byte-correct, but the RUNNER may re-interpret it — `node --test <path>`
+    # takes its positional as a glob pattern. That is not fixable by quoting or
+    # by escaping, so the guard refuses those repo shapes instead of running them.
     # The js/py lane scopes via the LCARS_TESTS_DIR the testCommand interpolates,
     # so the env assignment is PART of the command a reader would have to re-run.
     #

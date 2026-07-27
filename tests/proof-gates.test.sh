@@ -1527,6 +1527,364 @@ CS
 fi
 
 # ==========================================================================
+# N (S148). THE REPO LIVES AT A PATH CONTAINING WHITESPACE.
+#
+# The seeded testCommands hand the gate's scope over through $LCARS_TESTS_DIR.
+# Interpolated UNQUOTED, that scope WORD-SPLITS as soon as the checkout path
+# contains a space/tab: the runner gets two half-paths, finds neither, and the
+# TIP leg goes red — so the gate FALSE-FAILS a perfectly honest ticket purely
+# because of WHERE the repo lives, bouncing it to a fresh worker (≤3 sessions)
+# and then parking it awaiting-human.
+#
+# These are END-TO-END drives, not string assertions, and the command they drive
+# is the one `lcars init` ACTUALLY SEEDS — asked of the real detector, never a
+# copy — so the section fails against an unquoted seeder and passes against a
+# quoted one.
+#
+# Every drive plants a pre-existing RED DECOY test beside the ticket's, outside
+# its diff. A green here therefore proves TWO things at once: the command stopped
+# erroring AND the scoping still holds. If the fix had merely widened the run,
+# the decoy would fail the leg.
+# ==========================================================================
+echo "== N. whitespace in the repo path (S148) =="
+
+seeded_cmd_for() { # repo-dir → the testCommand `lcars init` would seed there
+  ( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; TOPLEVEL="$1" detect_test_cmd )
+}
+
+WS_SPACE='ws space'
+WS_TAB="$(printf 'ws\ttab')"
+
+ws_js_repo() { # container-name → repo dir (parent commit: src + RED decoy)
+  local repo="$TMPROOT/$1/repo"
+  mkdir -p "$repo/src"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '{ "name": "fix", "private": true, "scripts": { "test": "node --test" } }\n' > "$repo/package.json"
+  printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+  cat > "$repo/src/other.test.js" <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+test('DECOY must never run', () => { assert.strictEqual(1, 2); });
+JS
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  printf '%s' "$repo"
+}
+
+ws_py_repo() { # container-name → repo dir (parent commit: src + RED decoy)
+  local repo="$TMPROOT/$1/repo"
+  mkdir -p "$repo/src"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '[tool.pytest.ini_options]\n' > "$repo/pyproject.toml"
+  printf 'def add(a, b):\n    return a + b\n' > "$repo/src/calc.py"
+  printf 'def test_decoy_must_never_run():\n    assert 1 == 2\n' > "$repo/src/test_decoy.py"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  printf '%s' "$repo"
+}
+
+# --- N1/N2: js at a SPACED path, driven by the SEEDED command ---------------
+repo="$(ws_js_repo "$WS_SPACE")"; P="$(head_sha "$repo")"
+WS_JS_CMD="$(seeded_cmd_for "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$WS_JS_CMD"
+[ "$FFRC" = 0 ] \
+  && ok "N1. js repo at a SPACED path → flip-flop PASS with the seeded command ($WS_JS_CMD)" \
+  || bad "N1. FALSE FAIL at a spaced path (FFRC=$FFRC): $OUT"
+ffj="$(TD "$repo")/flip-flop.json"
+python3 - "$ffj" <<'PY' && ok "N2. the DECOY never ran — the scope still narrowed to the ticket's test" \
+                        || bad "N2. decoy ran / tip did not run exactly the ticket's test ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tail = (d.get("tip", {}).get("tail") or "")
+sys.exit(0 if ("DECOY" not in tail and "mul multiplies" in tail and "tests 1" in tail) else 1)
+PY
+no_scratch_left "$repo" && ok "N2b. scratch pruned (spaced path)" \
+                        || bad "N2b. scratch leaked at a spaced path"
+
+# --- N3: THE PASTE-BACK. The recorded cmd must reproduce the verdict ---------
+# Recording a command is only worth something if it re-runs faithfully. Paste
+# tip.cmd back into a shell: it must go GREEN and must still not touch the decoy.
+WS_TIPCMD="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["tip"]["cmd"])' "$ffj" 2>/dev/null)"
+WS_RERUN_RC=0
+WS_RERUN_OUT="$(bash -c "$WS_TIPCMD" 2>&1)" || WS_RERUN_RC=$?
+[ "$WS_RERUN_RC" = 0 ] \
+  && ok "N3a. the recorded tip.cmd re-runs GREEN when pasted back (spaced path)" \
+  || bad "N3a. recorded cmd does not reproduce the verdict (rc=$WS_RERUN_RC): $WS_RERUN_OUT"
+case "$WS_RERUN_OUT" in
+  *DECOY*) bad "N3b. the pasted-back command widened the run — it hit the decoy" ;;
+  *)       ok  "N3b. the pasted-back command never touches the decoy either" ;;
+esac
+
+# --- N4: a TAB in the path (the same word-splitting class) ------------------
+repo="$(ws_js_repo "$WS_TAB")"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$(seeded_cmd_for "$repo")"
+[ "$FFRC" = 0 ] \
+  && ok "N4. js repo at a TABBED path → flip-flop PASS" \
+  || bad "N4. FALSE FAIL at a tabbed path (FFRC=$FFRC): $OUT"
+
+# --- N5: THE GATE STILL FAILS WHEN IT SHOULD, at a spaced path --------------
+# A fix that makes everything pass is worse than the bug. The test-after cheat
+# (green on BOTH legs) must still be caught at a whitespace path.
+repo="$(ws_js_repo "$WS_SPACE/cheat")"; P="$(head_sha "$repo")"
+write_cheat_js_tip "$repo"
+write_result "$(TD "$repo")" '["src/calc.test.js"]' '[]' expected
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$(seeded_cmd_for "$repo")"
+[ "$FFRC" = 1 ] \
+  && ok "N5. test-after cheat at a SPACED path is still caught (rc 1, not a false green)" \
+  || bad "N5. the cheat should still FAIL at a spaced path (FFRC=$FFRC): $OUT"
+# …and for the RIGHT reason. Pre-fix this same rc 1 came from a SPLIT PATH the
+# runner could not open — the correct verdict reached by the wrong road. The
+# recorded reason must name the parent leg going green, i.e. the actual cheat.
+ffj="$(TD "$repo")/flip-flop.json"
+python3 - "$ffj" <<'PY' && ok "N5b. the cheat FAILS for the right reason (parent leg GREEN), not a broken path" \
+                        || bad "N5b. cheat's recorded reason is not the parent-green cheat ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+reason = (d.get("reason") or "")
+par = d.get("parent", {}) or {}
+sys.exit(0 if (par.get("rc") == 0 and "PASS on the PARENT" in reason) else 1)
+PY
+
+# --- N6: python at a SPACED path, driven by the SEEDED pytest command -------
+if ! have pytest && ! python3 -c 'import pytest' >/dev/null 2>&1; then
+  skip "PYTHON: pytest not installed — SKIPPING the spaced-path python drive LOUDLY"
+else
+  have pytest && WS_PYBIN=pytest || WS_PYBIN='python3 -m pytest'
+  repo="$(ws_py_repo "$WS_SPACE/py")"; P="$(head_sha "$repo")"
+  # The seeded shape, with whatever pytest entry point exists here.
+  WS_PY_CMD="$(seeded_cmd_for "$repo")"
+  WS_PY_CMD="$WS_PYBIN${WS_PY_CMD#pytest}"
+  cat > "$repo/src/test_calc.py" <<'PY'
+import calc
+
+
+def test_mul_multiplies():
+    assert calc.mul(2, 3) == 6
+PY
+  printf 'def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n' > "$repo/src/calc.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$WS_PY_CMD"
+  [ "$FFRC" = 0 ] \
+    && ok "N6. python repo at a SPACED path → flip-flop PASS with the seeded command ($WS_PY_CMD)" \
+    || bad "N6. FALSE FAIL at a spaced path, python (FFRC=$FFRC): $OUT"
+  ffj="$(TD "$repo")/flip-flop.json"
+  python3 - "$ffj" <<'PY' && ok "N7. python DECOY never ran — the pytest scope still narrowed" \
+                          || bad "N7. python decoy ran / wrong collection ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tail = (d.get("tip", {}).get("tail") or "")
+sys.exit(0 if ("decoy" not in tail and "1 passed" in tail) else 1)
+PY
+  no_scratch_left "$repo" && ok "N7b. scratch pruned (python, spaced path)" \
+                          || bad "N7b. scratch leaked (python, spaced path)"
+
+  # N7c: intree_scope_for's COMMON-ANCESTOR arm at a spaced path. A ticket whose
+  # tests span two dirs resolves the scope to their shared parent — a DIRECTORY
+  # carrying the whitespace, which the runner must still receive whole. The decoy
+  # sits OUTSIDE that ancestor, so it must still not run.
+  repo="$(ws_py_repo "$WS_SPACE/pyspan")"
+  rm -f "$repo/src/test_decoy.py"
+  mkdir -p "$repo/src/a" "$repo/src/b" "$repo/other"
+  printf 'def test_decoy_must_never_run():\n    assert 1 == 2\n' > "$repo/other/test_decoy.py"
+  # The subject modules EXIST on the parent but lack the ticket's functions, so
+  # the parent leg is a clean runtime red (2 collected, 2 failed) rather than an
+  # import-time collection error — this case is about the SCOPE, not about how
+  # pytest reports a greenfield module.
+  printf 'def existing():\n    return None\n' > "$repo/src/a/mod_a.py"
+  printf 'def existing():\n    return None\n' > "$repo/src/b/mod_b.py"
+  ( cd "$repo" && git add -A && git commit -qm decoy-moved )
+  P="$(head_sha "$repo")"
+  printf 'def existing():\n    return None\n\n\ndef up(s):\n    return str(s).upper()\n' > "$repo/src/a/mod_a.py"
+  printf 'import mod_a\n\n\ndef test_up_upcases():\n    assert mod_a.up("hi") == "HI"\n' > "$repo/src/a/test_up.py"
+  printf 'def existing():\n    return None\n\n\ndef down(s):\n    return str(s).lower()\n' > "$repo/src/b/mod_b.py"
+  printf 'import mod_b\n\n\ndef test_down_downcases():\n    assert mod_b.down("HI") == "hi"\n' > "$repo/src/b/test_down.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$WS_PY_CMD"
+  [ "$FFRC" = 0 ] \
+    && ok "N7c. multi-dir ticket at a SPACED path → common-ancestor scope survives whole" \
+    || bad "N7c. common-ancestor scope broke at a spaced path (FFRC=$FFRC): $OUT"
+  ffj="$(TD "$repo")/flip-flop.json"
+  python3 - "$ffj" <<'PY' && ok "N7d. both spanning tests ran, and the out-of-scope decoy did not" \
+                          || bad "N7d. wrong collection for the spanning ticket ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tail = (d.get("tip", {}).get("tail") or "")
+sys.exit(0 if ("decoy" not in tail and "2 passed" in tail) else 1)
+PY
+fi
+
+# --- N8: a NATIVE stack at a spaced path — no regression --------------------
+# The native lanes (rust/go/ruby/dotnet) scope with relative, already-quoted
+# arguments rather than $LCARS_TESTS_DIR, so they were never expected to break.
+# VERIFY that rather than assume it.
+if ! command -v rspec >/dev/null 2>&1; then
+  for d in "$HOME/.gem/ruby"/*/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done
+  export PATH
+fi
+if ! have rspec || ! ruby -e 'require "rspec"' >/dev/null 2>&1; then
+  skip "RUBY: rspec not usable — SKIPPING the spaced-path native drive LOUDLY"
+else
+  repo="$TMPROOT/$WS_SPACE/rb/repo"
+  mkdir -p "$repo/lib" "$repo/spec"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf 'module Existing; end\n' > "$repo/lib/existing.rb"
+  cat > "$repo/spec/decoy_spec.rb" <<'RB'
+RSpec.describe "DECOY" do
+  it "must never run" do
+    expect(1).to eq(2)
+  end
+end
+RB
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  cat > "$repo/spec/mul_spec.rb" <<'RB'
+require_relative "../lib/mul"
+RSpec.describe "mul" do
+  it "multiplies" do
+    expect(Mul.call(2, 3)).to eq(6)
+  end
+end
+RB
+  printf 'module Mul\n  def self.call(a, b); a * b; end\nend\n' > "$repo/lib/mul.rb"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_STACK=ruby
+  [ "$FFRC" = 0 ] \
+    && ok "N8. ruby (native lane) at a SPACED path → flip-flop PASS (no regression)" \
+    || bad "N8. native lane broke at a spaced path (FFRC=$FFRC): $OUT"
+  ffj="$(TD "$repo")/flip-flop.json"
+  python3 - "$ffj" <<'PY' && ok "N9. ruby DECOY never ran at the spaced path (native scoping holds)" \
+                          || bad "N9. ruby decoy ran ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tail = (d.get("tip", {}).get("tail") or "")
+sys.exit(0 if ("DECOY" not in tail and "1 example, 0 failures" in tail) else 1)
+PY
+fi
+
+# ==========================================================================
+# O (S148). THE REPO LIVES AT A PATH CONTAINING A GLOB METACHARACTER.
+#
+# Sibling class to N, and NOT a quoting bug — the shell delivers the scope
+# byte-perfect and the RUNNER re-globs it. Since Node 22, `node --test <path>`
+# treats its positional as a GLOB PATTERN, so an absolute scope carrying the
+# checkout's own path is re-interpreted. Observed on node v25.6.1:
+#   `\`  → glob-unescaped → "Could not find '<path>'" while the file exists → a
+#          FALSE FAIL on honest work;
+#   `*`  → EXPANDS across sibling directories → the leg runs test files the
+#          ticket never touched. That is not merely a false fail: it is a FALSE
+#          PROOF. Constructed and observed — a test-after cheat (green on BOTH
+#          legs, correctly FAILED by the gate) is recorded as a PASS as soon as a
+#          ride-along in a glob-matched sibling supplies the parent-leg red. O3
+#          below is that experiment, kept as a regression.
+#   `?`  → same single-char expansion, same widening;
+#   `[`  → a CLOSED class (`br[a-c]k`) matched a sibling INSTEAD of the real dir —
+#          one test collected, from the wrong repo, silently. (A lone unclosed `[`
+#          is literal today, but closure is runner-internal parsing state, so the
+#          opener is what we refuse.)
+#   `{`  → `{a,b}` brace-expands the same way (a lone `{` is literal today — same
+#          reasoning as `[`).
+# No quoting can fix this, and glob-ESCAPING the scope would corrupt it for every
+# runner that takes the path literally (pytest and rspec both do). So the generic
+# lane REFUSES to run: INCONCLUSIVE, naming the real cause, per GUARD 1's
+# principle — never toward a pass, never toward a baffling red.
+#
+# THE OVER-PARK SIDE IS THE HARDER HALF. Every character guarded is a repo shape
+# LCARS will not run, so O5 drives the whole ordinary-punctuation set end-to-end
+# and requires a normal GREEN. Parking those would be a worse bug than the one
+# this closes.
+# ==========================================================================
+echo "== O. glob metacharacters in the repo path (S148) =="
+
+gl_drive() { # container-name → sets FFRC/OUT for an HONEST js ticket at that path
+  repo="$(ws_js_repo "$1")"; P="$(head_sha "$repo")"
+  write_honest_js_tip "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$(seeded_cmd_for "$repo")"
+}
+
+# --- O1/O2: `*` → parked, with an honest, actionable message ----------------
+gl_drive 'gl*ob'
+[ "$FFRC" = 2 ] \
+  && ok "O1. repo path containing '*' → INCONCLUSIVE (rc 2), never a pass and never a mystery red" \
+  || bad "O1. a '*' in the repo path must park the leg (FFRC=$FFRC): $OUT"
+ffj="$(TD "$repo")/flip-flop.json"
+python3 - "$ffj" <<'PY' && ok "O2. the reason names the offending character, blames the LOCATION, and says what to do" \
+                        || bad "O2. unhelpful park message ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = (d.get("reason") or "")
+low = r.lower()
+sys.exit(0 if (d.get("verdict") == "inconclusive"
+               and "*" in r
+               and "glob" in low
+               and ("move" in low or "rename" in low)) else 1)
+PY
+
+# --- O3: THE FALSE-PROOF REGRESSION -----------------------------------------
+# The cheat below is green on BOTH legs and MUST fail the gate. Pre-guard, a
+# ride-along test in a sibling directory that the `re*po` glob also matches
+# supplied the parent-leg red and the gate recorded verdict "pass" — a silent
+# green sourced from a file the ticket never touched. The guard must make that
+# unreachable, and must not reach it by luck: rc 2 (refused), not rc 0.
+GLB="$TMPROOT/fp"
+mkdir -p "$GLB"
+repo="$GLB/re*po"; mkdir -p "$repo/src"
+( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+printf '{ "name": "fix", "private": true, "scripts": { "test": "node --test" } }\n' > "$repo/package.json"
+printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+( cd "$repo" && git add -A && git commit -qm parent )
+scaffold_mission "$repo"
+P="$(head_sha "$repo")"
+write_cheat_js_tip "$repo"
+write_result "$(TD "$repo")" '["src/calc.test.js"]' '[]' expected
+# the ride-along: a FAILING test the ticket never touched, in a sibling checkout,
+# at exactly the path the PARENT leg's widened glob reaches.
+GLD="$GLB/reXXpo/.git/lcars/missions/m-001/proof-worktrees/t-001-parent/src"
+mkdir -p "$GLD"
+cat > "$GLD/calc.test.js" <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+test('RIDEALONG the ticket never touched', () => { assert.strictEqual(1, 2); });
+JS
+ff_gate "$repo" "$P" LCARS_TEST_CMD='node --test $LCARS_TESTS_DIR'
+[ "$FFRC" = 2 ] \
+  && ok "O3. a ride-along in a glob-matched SIBLING can no longer manufacture the parent-leg red (no false PROOF)" \
+  || bad "O3. FALSE PROOF reachable — the cheat scored FFRC=$FFRC off a file it never touched: $OUT"
+
+# --- O4: the rest of the refused set ----------------------------------------
+gl_drive 'back\slash'
+[ "$FFRC" = 2 ] \
+  && ok "O4a. repo path containing '\\' → INCONCLUSIVE, not the runner's baffling \"Could not find\" red" \
+  || bad "O4a. a '\\' in the repo path must park the leg (FFRC=$FFRC): $OUT"
+python3 - "$(TD "$repo")/flip-flop.json" <<'PY' && ok "O4b. the '\\' park names that character too" \
+                        || bad "O4b. the backslash park does not name the character ($FFRC)"
+import json, sys
+r = (json.load(open(sys.argv[1])).get("reason") or "")
+sys.exit(0 if "\\" in r and "glob" in r.lower() else 1)
+PY
+for ch in 'qu?st' 'br[ack' 'br{ace'; do
+  gl_drive "$ch"
+  [ "$FFRC" = 2 ] \
+    && ok "O4c. repo path '$ch' → INCONCLUSIVE" \
+    || bad "O4c. '$ch' must park the leg (FFRC=$FFRC): $OUT"
+done
+
+# --- O5: THE OVER-PARK REGRESSION -------------------------------------------
+# Ordinary punctuation that a real machine really has in its paths. Every one of
+# these is verified LITERAL to the runner, so every one must still drive a normal
+# flip-flop PASS. (Space and tab — the S148 quoting fix — are re-proven here as
+# well as in N, because parking them would silently undo that fix.)
+for ch in 'plain' 'sp ace' "$(printf 'ta\tb')" "o'brien" 'sa"y' 'a$b' 'a`b' 'a;b' \
+          'a#b' 'a~b' 'a+b' 'a(b)c' 'répö-日本' 'a&b' 'a=b' 'a!b'; do
+  gl_drive "ok/$ch"
+  [ "$FFRC" = 0 ] \
+    && ok "O5. ordinary path '$ch' still runs normally (flip-flop PASS)" \
+    || bad "O5. OVER-PARK: '$ch' is literal to the runner and must not be refused (FFRC=$FFRC): $OUT"
+done
+
+# ==========================================================================
 echo
 printf 'proof-gates: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

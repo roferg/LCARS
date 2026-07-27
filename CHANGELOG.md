@@ -4,6 +4,78 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.12 — 2026-07-27
+
+The Stack Readiness round (S145–147) — **Ruby becomes a first-class stack, the
+"no test command" state becomes legible and fixable in one click, and dotnet's
+gate legs stop being able to green on nothing.** Two live missions were then
+driven end to end on real repos to prove it, which surfaced a further set of
+fixes carried in the same PR.
+
+- **The Ruby arm (S145).** Ruby is a supported stack across four seams:
+  `detect_stack` markers (Gemfile / *.gemspec / Rakefile / config.ru),
+  bundler-aware rspec-vs-minitest seeding, anchored Ruby classifier phrasings,
+  and native rspec isolation with ruby as its OWN case (`rust|go` was never
+  widened). Ruby joins the zero-collected guard family on day one: a greenfield
+  `LoadError` (`0 examples, 0 failures, 1 error occurred outside of examples`,
+  exit 1) stays a REAL red rather than being swallowed as zero-collect, and the
+  `10 examples` / `0 examples` substring hazard is word-boundary anchored.
+- **A legible, one-click-fixable test story (S146).** One shared 4-state verdict
+  (`readiness.sh --json|--line`, consumed by both CLI and daemon) surfaces on
+  `init` / `update` / `status`, on a board banner, and in the File console as
+  **⚡ FIX TEST SYSTEMS** — suggest-or-discover → set → probe in a single action,
+  with typing a command as the manual override, never the primary path. CLI
+  parity via `lcars update --fix-tests` / `--test-command` / `--probe-tests`.
+  A greenfield repo gets a calm bootstrap voice; a broken one gets a repair
+  voice; the two never blur. Filing is never blocked — readiness warns and
+  offers the fix, because the gates are the enforcement point.
+- **dotnet gate-leg hardening (S147).** C# repos now seed `dotnet test <proj>`
+  (including the canonical layout where the test project sits below the repo
+  root), stage specs INSIDE the discovered test project, and scope each leg by
+  declared-class FQN. Observed on a real SDK, not assumed: a `--filter` matching
+  nothing, an empty test project, and an all-skipped run **all exit 0** — three
+  silent-green paths, all now INCONCLUSIVE. VSTest filters on class FQN, never
+  filename, so filter terms are namespace-qualified and dot-terminated (`~` is a
+  substring match). Sub-top-level markers count only when they are real test
+  systems, so a vendored `.csproj` cannot hijack a js/python/rust repo.
+- **Two structural guards, because the source scan was wrong four times.** The
+  round found four generations of the same silent green — BOM-stripped
+  namespaces, two classes on one line, multi-line strings desyncing brace depth,
+  and `#if`-guarded types. Rather than patch a fifth, the design stopped
+  trusting the scan: **GUARD 1 refuses to name what it cannot name** (an
+  unqualified, generic, or nested type parks the staged set) and **GUARD 2**
+  requires the tip leg to collect at least `count([Fact]) + count([Theory])`.
+  GUARD 2's real bound is stated in-code: its floor shares a scanner with the
+  filter it checks, which is precisely why known-unnameable shapes are refused
+  outright instead of left to a count.
+- **Proven live, on real repos.** Two missions were driven Align→Verify
+  hands-off with live workers — a C# mission and a Ruby mission — each landing a
+  correct PR on the first attempt with zero human gates. What they found is
+  fixed here: `lcars file --engine` was **silently ignored** on the grill-first
+  and `--complete` lanes (a mission pinned to copilot ran on billed claude);
+  `flip-flop.json` recorded no leg **command**, so a captain could not tell from
+  the artifact whether scoping was ever applied; the copilot model readout said
+  Sonnet while every tier resolves to Opus — and priced it at Sonnet rates, so
+  the copilot cost band moves up; and the gate-timeout message could tell a
+  captain "the tests themselves are not implicated" about a genuinely hung suite.
+- **Repos with a space in their path no longer fail their own gate.** The seeded
+  test commands interpolated `${LCARS_TESTS_DIR}` unquoted, so a checkout at
+  `~/My Projects/thing` word-split the scope and false-FAILED honest work —
+  bouncing it to a fresh worker and then parking it. Quoted at the seeder, with
+  a migration for already-initialised repos that rewrites only the exact shapes
+  LCARS itself seeded (never a hand-written command).
+- **A silent green closed, found while fixing the above.** Since Node ≥22,
+  `node --test` re-interprets its positional as a GLOB rather than a path. When
+  a glob metacharacter sits in the scope path, the leg collects SIBLING test
+  files the ticket never touched — on BOTH legs — so a ticket whose staged test
+  is a pure cheat, or which declares no tests at all, could be certified PROVEN
+  on red supplied by a file outside its own `testFiles`. Reproduced end to end
+  for `*`, `?` and a closed `[…]` class. The scope is now refused outright when
+  it carries a glob metacharacter (`*` `?` `[` `{` `\`), rendering INCONCLUSIVE
+  with the real cause named — the same refuse-what-you-cannot-scope principle as
+  GUARD 1. Runner-specific (pytest, rspec and mocha take the path literally);
+  jest's regex positional is ledgered as an unexplored neighbour.
+
 ## 2026.7.11 — 2026-07-26
 
 The Deploy Main round (S138–139) — deploy **what's already merged**. Until now

@@ -284,6 +284,28 @@ detect_worktree_setup_cmd() {
 # (vitest's positional filter is package-root-relative; the gate exports an
 # ABSOLUTE path) — stripping a leading "$PWD/" turns it package-relative.
 VITEST_RELATIVIZING_CMD='npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
+#
+# S148 — QUOTE THE SCOPE. Every seeded command interpolates $LCARS_TESTS_DIR as
+# the positional scope, and the gate exports it as an ABSOLUTE path. Interpolated
+# UNQUOTED, that path WORD-SPLITS on IFS whitespace the moment the repo is checked
+# out somewhere containing a space or a tab: `node --test ${LCARS_TESTS_DIR:-}`
+# with a scope of `/x/sp test/src/calc.test.js` hands the runner TWO arguments,
+# `/x/sp` and `test/src/calc.test.js`, and the flip-flop proof gate then FALSE-
+# FAILS a perfectly honest ticket purely because of WHERE the repo lives (which
+# bounces it to a fresh worker up to 3 times and then parks it awaiting-human).
+#
+# The two quoting shapes below are NOT interchangeable, and which one an arm takes
+# is decided by its DEFAULT, not by taste:
+#   `"${LCARS_TESTS_DIR:-<default>}"`   when the default is NON-EMPTY (pytest's
+#       `.`, the bash runner's `tests`) — always exactly one argument either way.
+#   `${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}`  when the default is EMPTY. Writing
+#       `"${LCARS_TESTS_DIR:-}"` here would quote it but ALSO hand the runner an
+#       EMPTY positional argument when the scope is unset — a different run (mocha
+#       errors on it, npm forwards it to the script), i.e. a behaviour change
+#       smuggled in under a quoting fix. `:+` keeps "no scope ⇒ no argument"
+#       byte-for-byte and is the idiom VITEST_RELATIVIZING_CMD above already uses.
+# Every seeded command is otherwise unchanged; the only delta is the quoting.
+# `lcars update` migrates the already-persisted unquoted strings (update.sh).
 
 # detect_workspace_runner — name the local test runner a monorepo actually uses,
 # so the workspace fallback emits a runner-SCOPED command instead of a bare
@@ -426,15 +448,15 @@ _dtc_js() {
       script="$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)"
       case "$script" in
         *vitest*) echo "$VITEST_RELATIVIZING_CMD";              return ;;
-        *jest*)   echo 'npx jest ${LCARS_TESTS_DIR:-}';         return ;;
-        *mocha*)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';        return ;;
+        *jest*)   echo 'npx jest ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}';         return ;;
+        *mocha*)  echo 'npx mocha ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}';        return ;;
         *)
           runner="$(detect_workspace_runner)"
           case "$runner" in
             vitest) echo "$VITEST_RELATIVIZING_CMD";            return ;;
-            jest)   echo 'npx jest ${LCARS_TESTS_DIR:-}';       return ;;
-            mocha)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';      return ;;
-            *)      echo 'npm test -- ${LCARS_TESTS_DIR:-}';    return ;;
+            jest)   echo 'npx jest ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}';       return ;;
+            mocha)  echo 'npx mocha ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}';      return ;;
+            *)      echo 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}';    return ;;
           esac ;;
       esac
     fi
@@ -444,12 +466,12 @@ _dtc_js() {
     case "$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)" in
       *vitest*) echo "$VITEST_RELATIVIZING_CMD"; return ;;
     esac
-    echo 'npm test -- ${LCARS_TESTS_DIR:-}'; return 0
+    echo 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}'; return 0
 }
 
 _dtc_python() {
   [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ] || return 1
-  echo 'pytest ${LCARS_TESTS_DIR:-.}'
+  echo 'pytest "${LCARS_TESTS_DIR:-.}"'
 }
 
 _dtc_rust() { [ -f "$TOPLEVEL/Cargo.toml" ] || return 1; echo "cargo test"; }

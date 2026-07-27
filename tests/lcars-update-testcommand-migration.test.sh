@@ -224,6 +224,99 @@ got="$(cfg_get "$cfg" testCommand)"
 check "6. no-cd stale form migrates with no cd prefix" \
   "[ \"\$got\" = \"\$NOCD_TARGET\" ]"
 
+# ===========================================================================
+# Session 148: the UNQUOTED-SCOPE migration.
+#
+# Every seeded testCommand hands the Implement proof gates their scope through
+# $LCARS_TESTS_DIR. Seeded UNQUOTED, that scope WORD-SPLITS the moment the repo
+# lives at a path containing whitespace, and the flip-flop gate FALSE-FAILS an
+# honest ticket purely because of where the repo is checked out. Quoting the
+# seeder only helps repos initialised from now on — every ALREADY-INITIALISED
+# repo carries the unquoted string in .git/lcars/config.json and stays broken.
+# So `lcars update` migrates it, on exactly the same never-clobber terms as the
+# S101 migration above: ONLY a command that BYTE-MATCHES a shape LCARS itself
+# seeded is rewritten. A hand-written or customised command — even one that
+# merely looks similar — is NEVER touched.
+# ===========================================================================
+
+# The exact shapes LCARS seeded (pre-S148) → the exact shapes it seeds now.
+S148_OLD_NPM='npm test -- ${LCARS_TESTS_DIR:-}'
+S148_NEW_NPM='npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}'
+S148_OLD_JEST='npx jest ${LCARS_TESTS_DIR:-}'
+S148_NEW_JEST='npx jest ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}'
+S148_OLD_MOCHA='npx mocha ${LCARS_TESTS_DIR:-}'
+S148_NEW_MOCHA='npx mocha ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}'
+S148_OLD_PYTEST='pytest ${LCARS_TESTS_DIR:-.}'
+S148_NEW_PYTEST='pytest "${LCARS_TESTS_DIR:-.}"'
+
+# --- Case 7: each seeded unquoted shape migrates to its quoted equivalent ----
+mig_case() { # n old new
+  local n="$1"
+  MIG_OLD="$2"; MIG_NEW="$3"
+  repo="$(new_repo)"; init_repo "$repo"; cfg="$repo/.git/lcars/config.json"
+  write_cfg "$cfg" "$MIG_OLD"
+  run_update "$repo"
+  MIG_GOT="$(cfg_get "$cfg" testCommand)"
+  check "7.$n seeded '$MIG_OLD' → quoted scope" '[ "$MIG_GOT" = "$MIG_NEW" ]'
+  check "7.$n the migration is reported" \
+    "grep -qi 'testCommand migrated' '$repo/out.txt'"
+  check "7.$n config remains VALID JSON" \
+    "python3 -c 'import json,sys;json.load(open(sys.argv[1]))' '$cfg'"
+  check "7.$n other keys preserved (model, worktreeSetupCommand, created)" \
+    "grep -q '\"model\": *\"captain-chosen-model\"' '$cfg' \
+     && grep -q 'my-bespoke-provision --offline' '$cfg' \
+     && grep -q '\"created\": *\"2019-09-09T00:00:00Z\"' '$cfg'"
+  # The point of the rewrite: the scope must now survive whitespace intact.
+  check "7.$n the migrated command hands a SPACED scope over as ONE argument" \
+    '[ "$( LCARS_TESTS_DIR="/tmp/sp test/a.js" bash -c "printf %s\\\\000 $MIG_GOT" | tr -cd "\000" | wc -c | tr -d " " )" \
+     = "$( LCARS_TESTS_DIR="/tmp/sptest/a.js"  bash -c "printf %s\\\\000 $MIG_GOT" | tr -cd "\000" | wc -c | tr -d " " )" ]'
+}
+mig_case 1 "$S148_OLD_NPM"    "$S148_NEW_NPM"
+mig_case 2 "$S148_OLD_JEST"   "$S148_NEW_JEST"
+mig_case 3 "$S148_OLD_MOCHA"  "$S148_NEW_MOCHA"
+mig_case 4 "$S148_OLD_PYTEST" "$S148_NEW_PYTEST"
+
+# --- Case 8: NEVER-CLOBBER — a hand-written lookalike is left byte-identical --
+# Each of these CONTAINS the seeded fragment but is not a seeded command. The
+# captain owns them; the migration must not touch a single byte.
+never_clobber() { # n cmd
+  NC_CMD="$2"
+  repo="$(new_repo)"; init_repo "$repo"; cfg="$repo/.git/lcars/config.json"
+  write_cfg "$cfg" "$NC_CMD"
+  run_update "$repo"
+  NC_GOT="$(cfg_get "$cfg" testCommand)"
+  check "8.$1 never-clobber: '$NC_CMD' left byte-identical" '[ "$NC_GOT" = "$NC_CMD" ]'
+  check "8.$1 never-clobber: no migration reported" \
+    "! grep -qi 'testCommand migrated' '$repo/out.txt'"
+}
+never_clobber 1 'npm test -- ${LCARS_TESTS_DIR:-} --coverage'
+never_clobber 2 'cd packages/editor && npm test -- ${LCARS_TESTS_DIR:-}'
+never_clobber 3 'pytest ${LCARS_TESTS_DIR:-.} -q'
+never_clobber 4 'pytest -x ${LCARS_TESTS_DIR:-.}'
+never_clobber 5 'custom-runner ${LCARS_TESTS_DIR:-.}'
+never_clobber 6 'npx jest ${LCARS_TESTS_DIR:-} --runInBand'
+never_clobber 7 'npm test -- ${LCARS_TESTS_DIR:-tests}'
+never_clobber 8 'npm  test -- ${LCARS_TESTS_DIR:-}'
+
+# --- Case 9: IDEMPOTENT — the already-quoted form survives two updates -------
+repo="$(new_repo)"; init_repo "$repo"; cfg="$repo/.git/lcars/config.json"
+write_cfg "$cfg" "$S148_NEW_NPM"
+run_update "$repo"; run_update "$repo"
+S148_GOT="$(cfg_get "$cfg" testCommand)"
+check "9. already-quoted testCommand UNCHANGED after two updates" \
+  '[ "$S148_GOT" = "$S148_NEW_NPM" ]'
+check "9. no migration fired on the already-quoted form" \
+  "! grep -qi 'testCommand migrated' '$repo/out.txt'"
+
+# --- Case 10: the S101 migration still owns the .lcars-tests form ------------
+# Both migrations run on the same path; neither may swallow the other's case.
+repo="$(new_repo)"; init_repo "$repo"; cfg="$repo/.git/lcars/config.json"
+write_cfg "$cfg" "$STALE"
+run_update "$repo"
+got="$(cfg_get "$cfg" testCommand)"
+check "10. the S101 copy-staging migration is unaffected by the S148 one" \
+  "[ \"\$got\" = \"\$TARGET\" ]"
+
 echo
 printf 'lcars update testCommand migration: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
