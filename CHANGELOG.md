@@ -4,6 +4,35 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.13 — 2026-07-27
+
+**`lcars buddy` stops misreporting the config it exists to show you.**
+
+- **The truncated testCommand.** buddy's `json_str` carried the comment "mirror
+  status.sh" but had drifted to the old naive sed reader whose value class is
+  `[^"]*` — it ends the value at the FIRST escaped quote. That is not an exotic
+  input for this reader: S148 makes every `testCommand` LCARS itself seeds QUOTE
+  its `$LCARS_TESTS_DIR` scope, so a correctly-configured `config.json` always
+  stores `\"`. The brief therefore printed a truncated command
+  (`npx vitest run ${LCARS_TESTS_DIR:+\`) for a repo whose config was perfectly
+  fine — misreporting the one value a captain runs buddy to verify, and reading
+  as if the config had been mangled. `worktreeSetupCommand` (whose JS seed is
+  built almost entirely of quoted shell) and any mission `title` containing a
+  quote truncated the same way.
+
+  `json_str` is now status.sh's escape-aware POSIX-awk reader, which treats
+  `\"` as part of the value and decodes the common escapes on the way out —
+  making the "mirror status.sh" comment true rather than aspirational, so the
+  two readers cannot disagree about the same file. Display-only and read-only:
+  buddy changes nothing, and no gate, stage or driver behaviour is touched.
+  `json_raw` is unchanged (bare tokens carry no quotes to escape).
+
+Verified by three regression cases in the scoped suite — a quoted
+`testCommand`, a quoted `worktreeSetupCommand`, and a mission title containing
+a quote, each asserted to render IN FULL with the expected value held in a file
+so the harness's `eval` never re-expands the `$` and `"` it is made of.
+lcars-buddy 17.
+
 ## 2026.7.12 — 2026-07-27
 
 The Stack Readiness round (S145–147) — **Ruby becomes a first-class stack, the

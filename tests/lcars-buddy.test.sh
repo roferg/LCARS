@@ -132,6 +132,48 @@ check "3. surfaces recent mission events (the failing breadcrumb)" \
 check "3. surfaces the current repo's worktreeSetupCommand/testCommand config" \
   "qgrep -qi 'testCommand' '$out3'"
 
+# --- 3b. a config/state value carrying ESCAPED QUOTES renders IN FULL ------
+# buddy's json_str claimed to "mirror status.sh" but had drifted to the old
+# naive sed reader whose value class is [^"]* — it stops at the FIRST escaped
+# quote. That is not an exotic input: S148 makes every testCommand LCARS itself
+# seeds QUOTE its $LCARS_TESTS_DIR scope, so a correctly-configured repo always
+# stores \" in config.json. The brief then printed a TRUNCATED command — the
+# exact value a captain runs buddy to verify — reading as if the config were
+# mangled when it was fine. Same class for a mission title containing a quote.
+# Expected values live in files so `check`'s eval never re-expands the $ and "
+# they are made of.
+work3b="$(mktemp -d "$TMPROOT/work3b.XXXX")"
+mkdir -p "$work3b/.git/lcars/missions/lcars-20260627-003"
+cat >"$work3b/.git/lcars/config.json" <<'JSON'
+{
+  "testCommand": "npx vitest run ${LCARS_TESTS_DIR:+\"${LCARS_TESTS_DIR#\"$PWD/\"}\"}",
+  "worktreeSetupCommand": "if [ -d \"$MAIN/node_modules\" ]; then ln -snf \"$MAIN/node_modules\" node_modules; else npm ci; fi",
+  "model": "sonnet"
+}
+JSON
+cat >"$work3b/.git/lcars/missions/lcars-20260627-003/state.json" <<'JSON'
+{
+  "id": "lcars-20260627-003",
+  "title": "a mission that says \"hello\" mid-sentence",
+  "stage": "implement",
+  "created": "2026-06-27T10:00:00Z",
+  "githubIssue": 7,
+  "awaitingHuman": false
+}
+JSON
+printf '%s\n' 'npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}' >"$TMPROOT/exp-tc.txt"
+printf '%s\n' 'if [ -d "$MAIN/node_modules" ]; then ln -snf "$MAIN/node_modules" node_modules; else npm ci; fi' >"$TMPROOT/exp-ws.txt"
+printf '%s\n' 'a mission that says "hello" mid-sentence' >"$TMPROOT/exp-title.txt"
+out3b="$TMPROOT/out3b.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$work3b" \
+  LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$out3b" 2>&1
+check "3b. renders a QUOTED testCommand in full (not cut at the first escaped quote)" \
+  "grep -qFf '$TMPROOT/exp-tc.txt' '$out3b'"
+check "3b. renders a QUOTED worktreeSetupCommand in full" \
+  "grep -qFf '$TMPROOT/exp-ws.txt' '$out3b'"
+check "3b. renders a mission title containing quotes in full" \
+  "grep -qFf '$TMPROOT/exp-title.txt' '$out3b'"
+
 # --- 4. flags an awaiting-human mission -----------------------------------
 work4="$(new_repo_with_mission lcars-20260627-002 implement true)"
 out4="$TMPROOT/out4.txt"
