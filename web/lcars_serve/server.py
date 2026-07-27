@@ -17,6 +17,9 @@ with 403. Each write shells out to the matching `lcars` skill (ADR-002):
   POST /api/align/<sid>/answer           next interview turn      → worker turn
   POST /api/align/<sid>/cancel           reap the Align session   → no spend
                                          (on done → file.sh)
+  POST /api/config/test-command          set testCommand         → update.sh --test-command
+  POST /api/config/probe-tests           one bounded suite probe → update.sh --probe-tests
+  POST /api/config/fix-tests             one-click test repair   → update.sh --fix-tests
   POST /api/mission                      file an idea            → file.sh
   POST /api/mission/<id>/start           drive the run (+override)→ run.sh drive
   POST /api/mission/<id>/pause           pause                   → pause.sh
@@ -242,6 +245,18 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
                 return actions.deploy_main(hint=body.get("hint"))
             if path == "/api/deploy/main/stop":
                 return actions.deploy_main_stop()
+            # S146 — the test-readiness repair endpoints. NON-mission, repo-
+            # level verbs (like /api/park): each dispatches the matching
+            # `lcars update` verb via the SCRIPT_ENV seam (the CLI stays the
+            # ONE sanctioned config writer). Blocking; the read-only build has
+            # actions=None, so do_POST already 403'd above and the board hides
+            # the affordances.
+            if path == "/api/config/fix-tests":
+                return actions.fix_tests()
+            if path == "/api/config/test-command":
+                return actions.set_test_command(body.get("testCommand"))
+            if path == "/api/config/probe-tests":
+                return actions.probe_tests()
             if path == "/api/align/start":
                 return actions.align_start(idea=body.get("idea"),
                                            engine=body.get("engine"),

@@ -1075,6 +1075,40 @@ class LocalAdapterTest(unittest.TestCase):
                          "a copilot mission's displayed mix must be opus-safe "
                          "on EVERY row, got %r" % tiers)
 
+    # ── S147 round-2 SMELL 8: the board must DERIVE the per-engine tier from the
+    # same policy the harness uses (alias_for_tier + config.json modelAliases),
+    # not hard-code "copilot ⇒ opus". Once run.sh's readout learned to honour
+    # `modelAliases.copilot.sonnet`, a board that still forced opus disagreed
+    # with the CLI about the very same mission — and the UI is a viewport, never
+    # a reimplementation. ──
+    def test_copilot_mix_honours_model_aliases_override(self):
+        os.makedirs(os.path.join(self.tmp, ".git", "lcars"), exist_ok=True)
+        fx.write_json(os.path.join(self.tmp, ".git", "lcars", "config.json"),
+                      {"model": "claude-sonnet", "projectName": "r",
+                       "contextFile": None,
+                       "modelAliases": {"copilot": {"sonnet": "claude-sonnet-4.6"}}})
+        fx.plant_simple(self.tmp, "m-copov", stage="plan",
+                        worker_bin="copilot",
+                        estimate=fx.ESTIMATE_COPILOT_USAGE)
+        m = self._by_id(self._board(), "m-copov")
+        tiers = {r["tier"] for r in m["modelMix"]}
+        self.assertEqual(tiers, {"sonnet"},
+                         "with modelAliases.copilot.sonnet mapped back to a real "
+                         "Sonnet model the board must say sonnet (the CLI does), "
+                         "got %r" % tiers)
+
+    def test_copilot_mix_still_opus_by_default(self):
+        # …and with NO override the opus-safe default is unchanged.
+        os.makedirs(os.path.join(self.tmp, ".git", "lcars"), exist_ok=True)
+        fx.write_json(os.path.join(self.tmp, ".git", "lcars", "config.json"),
+                      {"model": "claude-sonnet", "projectName": "r",
+                       "contextFile": None})
+        fx.plant_simple(self.tmp, "m-copdef", stage="plan",
+                        worker_bin="copilot",
+                        estimate=fx.ESTIMATE_COPILOT_USAGE)
+        m = self._by_id(self._board(), "m-copdef")
+        self.assertEqual({r["tier"] for r in m["modelMix"]}, {"opus"})
+
     def test_claude_mission_mix_keeps_estimate_tiers(self):
         # the SAME sonnet-heavy estimate on a claude engine keeps its tiers.
         fx.plant_simple(self.tmp, "m-cla", stage="plan",

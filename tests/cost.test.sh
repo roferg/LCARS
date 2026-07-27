@@ -59,6 +59,33 @@ cost_run() { # repo  [extra env...]
       -u LCARS_WORKER_BIN -u LCARS_WORKER_MODEL -u LCARS_WORKER_CLI \
       "$@" bash "$RUN" cost --mission "$MID" 2>/dev/null )
 }
+# cost_field <cost-output> <dotted.path> → the value AT THAT PATH, or "" .
+# S147 round 2 (SMELL 9): the copilot assertions used to be bare
+# `grep -q '270'` against the whole blob, which passes if 270 appears ANYWHERE —
+# in a different field, inside a longer number, or in the cli banner. Presence is
+# not correctness. Parse the JSON and read the field the number is supposed to be
+# in. (The `cost` subcommand prints a `COST cli=…` banner line first, so the JSON
+# starts at the first `{`.)
+cost_field() { # cost-output dotted.path
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import json, sys
+raw = sys.stdin.read()
+i = raw.find("{")
+if i < 0:
+    sys.exit(0)
+try:
+    d = json.loads(raw[i:])
+except Exception:
+    sys.exit(0)
+cur = d
+for k in sys.argv[1].split("."):
+    if not isinstance(cur, dict) or k not in cur:
+        sys.exit(0)
+    cur = cur[k]
+print("" if cur is None else cur)
+' "$2"
+}
+
 # Pull a nested number from the printed cost JSON block. Reuses run.sh's own
 # scoped reader would require sourcing; here just grep the flat-ish print.
 num() { sed -En "s/.*\"$1\"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p" | head -1; }
@@ -83,12 +110,21 @@ echo "cost — CLI-aware mission cost (session 60)"
 # HIGH tokens (2x low across the board):
 #   total high = 7.236
 #
-# Hand-calc for COPILOT (Σ requests × tier multiplier; opus=27 sonnet=9):
-#   requestEstimates low: research=2(opus) validate=1 plan=1 planReview=1
-#                         implement=4(opus) verify=1
-#   opus low = (2+4)*27 = 162 ; sonnet low = (1+1+1+1)*9 = 36 ; total low = 198
-#   high (2x): opus=(4+8)*27=324 ; sonnet=(2+2+2+2)*9=72 ; total high = 396
-#   usdOverage low = 198*0.04 = 7.92 ; high = 396*0.04 = 15.84
+# Hand-calc for COPILOT (Σ requests × tier multiplier; opus=27 sonnet=9).
+#
+# S147 DEFECT-3 MOVED THESE NUMBERS, AND THAT IS THE POINT. Copilot's
+# alias_for_tier pins BOTH logical tiers to claude-opus-4.8 (the `create`-tool
+# safety policy), so a "sonnet" stage on copilot has ALWAYS actually run opus.
+# The cost was nevertheless billed at the SONNET multiplier, which is why a live
+# copilot mission came in at $2.99 gross against a $0.42–$1.25 estimate. Costing
+# now follows effective_tier_for_cli — the tier that really runs — so every stage
+# here bills at the opus multiplier:
+#   requestEstimates low: research=2 validate=1 plan=1 planReview=1
+#                         implement=4 verify=1  → Σ = 10
+#   low  = 10 * 27 = 270 ;  high (2x) = 20 * 27 = 540
+#   usdOverage low = 270*0.04 = 10.80 ; high = 540*0.04 = 21.60
+# The OLD mixed-tier figures (198/396, $7.92/$15.84) described a run that never
+# happened on this engine. Claude's arm is unaffected (its tiers round-trip).
 EST='{
   "schemaVersion": 3,
   "reasoningCriticality": "high",
@@ -133,17 +169,23 @@ r2="$(new_repo_with_estimate "$EST" "$LEGACY_CFG")"
 out2="$(cost_run "$r2" COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
 check "2a. copilot cli field" "printf '%s' \"\$out2\" | grep -q '\"cli\": *\"copilot\"'"
 check "2b. copilot unit=premiumRequests" "printf '%s' \"\$out2\" | grep -q '\"unit\": *\"premiumRequests\"'"
-# premiumRequests.low=198 high=396 ; usdOverage.low=7.92 high=15.84
-check "2c. copilot premiumRequests.low=198" \
-  "printf '%s' \"\$out2\" | grep -q '198'"
-check "2d. copilot premiumRequests.high=396" \
-  "printf '%s' \"\$out2\" | grep -q '396'"
-check "2e. copilot usdOverage.low=7.92" \
-  "printf '%s' \"\$out2\" | grep -q '7.92'"
-check "2f. copilot usdOverage.high=15.84" \
-  "printf '%s' \"\$out2\" | grep -q '15.84'"
+# premiumRequests.low=270 high=540 ; usdOverage.low=10.8 high=21.6
+# (every stage bills opus — see the S147 DEFECT-3 note in the hand-calc above)
+# Asserted BY FIELD (SMELL 9) — a number in the right place, not just present.
+check "2c. copilot premiumRequests.low=270" \
+  "[ \"\$(cost_field \"\$out2\" premiumRequests.low)\" = '270' ]"
+check "2d. copilot premiumRequests.high=540" \
+  "[ \"\$(cost_field \"\$out2\" premiumRequests.high)\" = '540' ]"
+check "2e. copilot usdOverage.low=10.8" \
+  "awk -v v=\"\$(cost_field \"\$out2\" usdOverage.low)\" 'BEGIN{exit !(v>10.79 && v<10.81)}'"
+check "2f. copilot usdOverage.high=21.6" \
+  "awk -v v=\"\$(cost_field \"\$out2\" usdOverage.high)\" 'BEGIN{exit !(v>21.59 && v<21.61)}'"
+check "2g. copilot NEVER bills a stage at the sonnet multiplier (opus-pinned)" \
+  "[ \"\$(cost_field \"\$out2\" premiumRequests.low)\" != '198' ]"
 
-# === Behavior 3: switching a stage sonnet→opus raises BOTH figures ============
+# === Behavior 3: switching a stage sonnet→opus raises the CLAUDE figure =======
+# (S147 DEFECT-3: it is a no-op on copilot, which pins every stage to opus — see
+# 3b below. The tier axis is now asserted on the engine that actually has one.)
 # Same as EST but plan flipped to opus (was sonnet).
 EST_PLAN_OPUS="$(printf '%s' "$EST" | sed 's/"plan":"sonnet"/"plan":"opus"/')"
 r3="$(new_repo_with_estimate "$EST_PLAN_OPUS" "$LEGACY_CFG")"
@@ -152,9 +194,14 @@ lo3="$(printf '%s' "$out3c" | sed -En 's/.*"low"[[:space:]]*:[[:space:]]*([0-9.]
 check "3a. claude $ rises when plan→opus" \
   "awk -v a='$lo1' -v b='$lo3' 'BEGIN{exit !(b>a)}'"
 out3p="$(cost_run "$r3" COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
-# new premiumRequests.low: plan moves from sonnet(9) to opus(27): +1*18 = 216
-check "3b. copilot premium-requests rise when plan→opus (198→216)" \
-  "printf '%s' \"\$out3p\" | grep -q '216'"
+# S147 DEFECT-3: on COPILOT the estimator's per-stage tier does NOT move the
+# cost, because the engine pins every stage to opus anyway. Flipping plan
+# sonnet→opus is therefore a NO-OP on copilot (270 before and after) — the
+# honest reading, where the old fixture's 198→216 rise described a sonnet leg
+# that never ran. Claude (3a, just above) still responds to the tier, which is
+# the axis that assertion exists to protect.
+check "3b. copilot premium-requests are tier-INVARIANT (opus-pinned): still 270" \
+  "[ \"\$(cost_field \"\$out3p\" premiumRequests.low)\" = '270' ]"
 
 # === Behavior 4: unit/cli fields track the active CLI =========================
 check "4a. claude→usd"            "printf '%s' \"\$out1\" | grep -q '\"unit\": *\"usd\"'"

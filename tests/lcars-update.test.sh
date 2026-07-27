@@ -425,6 +425,124 @@ check "S105 update: a captain-pinned stack is left untouched (no clobber)" \
 check "S105 update: reports 'nothing to update' when stack already present + current" \
   "grep -qi 'nothing to update' '$repoS105c/outS105c.txt'"
 
+# --- Session 145: ruby stack never-clobbers a hand-set testCommand ----------
+# A pre-S105 config (no `stack`) in a ruby repo (Gemfile + spec/) with a captain-
+# set testCommand. update must BACKFILL stack=ruby but leave the testCommand
+# byte-for-byte — MISSING-only seeding, never overwrite a present command.
+repoS145="$(new_repo)"
+init_repo "$repoS145"
+printf 'source "https://rubygems.org"\ngem "rspec"\n' >"$repoS145/Gemfile"
+mkdir -p "$repoS145/spec"
+cfgS145="$repoS145/.git/lcars/config.json"
+cat >"$cfgS145" <<'JSON'
+{
+  "model": "captain-chosen-model",
+  "projectName": "myrubyproj",
+  "contextFile": null,
+  "testCommand": "bundle exec rspec --my-flags spec/only",
+  "worktreeSetupCommand": null,
+  "comprehensionBudget": 1200,
+  "lcarsVersion": "2099.1.1",
+  "created": "2020-02-02T00:00:00Z"
+}
+JSON
+export GH_LOG="$repoS145/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoS145/existing"
+cat >"$GH_EXISTING" <<'EOF'
+lcars:align
+lcars:research
+lcars:validate
+lcars:plan
+lcars:plan-review
+lcars:schedule
+lcars:implement
+lcars:verify
+lcars:done
+lcars:feature
+lcars:bug
+lcars:paused
+lcars:awaiting-human
+lcars:linked
+lcars:mission
+lcars:ticket
+EOF
+( cd "$repoS145" && LCARS_VERSION="2099.1.1" LCARS_GH_BIN="$repoS145/gh" bash "$SCRIPT" >outS145.txt 2>&1 )
+check "S145 update: backfills stack=ruby for a Gemfile+spec repo" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgS145'"
+check "S145 update: preserves the captain's hand-set ruby testCommand byte-for-byte (never-clobber)" \
+  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgS145' testCommand )\" = 'bundle exec rspec --my-flags spec/only' ]"
+check "S145 update: backfilled config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgS145'"
+
+# --- Session 148: an already-initialised repo is REPAIRED, not left broken ---
+# Quoting the seeder only helps repos initialised from now on. A repo initialised
+# EARLIER carries the unquoted seeded testCommand in .git/lcars/config.json and
+# stays broken — its Implement flip-flop gate FALSE-FAILS honest tickets as soon
+# as the checkout path contains whitespace. A plain `lcars update` must repair
+# exactly that persisted string, and — never-clobber being absolute — must leave
+# a hand-written command that merely LOOKS similar completely alone.
+s148_repo() { # testCommand → repo dir with a pre-S148 config carrying it
+  local repo; repo="$(new_repo)"
+  init_repo "$repo"
+  printf '{ "scripts": { "test": "jest" } }\n' >"$repo/package.json"
+  local esc
+  esc="$( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_json_escape "$1" )"
+  cat >"$repo/.git/lcars/config.json" <<JSON
+{
+  "model": "captain-chosen-model",
+  "projectName": "myproj",
+  "contextFile": null,
+  "stack": "js",
+  "testCommand": "$esc",
+  "worktreeSetupCommand": null,
+  "comprehensionBudget": 1200,
+  "lcarsVersion": "2099.1.1",
+  "created": "2020-02-02T00:00:00Z"
+}
+JSON
+  export GH_LOG="$repo/gh.log"; : >"$GH_LOG"
+  export GH_EXISTING="$repo/existing"
+  cat >"$GH_EXISTING" <<'EOF'
+lcars:align
+lcars:research
+lcars:validate
+lcars:plan
+lcars:plan-review
+lcars:schedule
+lcars:implement
+lcars:verify
+lcars:done
+lcars:feature
+lcars:bug
+lcars:paused
+lcars:awaiting-human
+lcars:linked
+lcars:mission
+lcars:ticket
+EOF
+  ( cd "$repo" && LCARS_VERSION="2099.1.1" LCARS_GH_BIN="$repo/gh" bash "$SCRIPT" >out148.txt 2>&1 )
+  printf '%s' "$repo"
+}
+S148_SEEDED='npm test -- ${LCARS_TESTS_DIR:-}'
+S148_QUOTED='npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}'
+S148_HAND='npm test -- ${LCARS_TESTS_DIR:-} --coverage'
+
+repoS148="$(s148_repo "$S148_SEEDED")"
+S148_GOT="$( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_config_get "$repoS148/.git/lcars/config.json" testCommand )"
+check "S148 update: repairs the persisted UNQUOTED seeded testCommand" \
+  '[ "$S148_GOT" = "$S148_QUOTED" ]'
+check "S148 update: config.json stays VALID JSON after the repair" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$repoS148/.git/lcars/config.json'"
+check "S148 update: the repair is reported to the captain" \
+  "grep -qi 'testCommand migrated' '$repoS148/out148.txt'"
+
+repoS148b="$(s148_repo "$S148_HAND")"
+S148_GOT_B="$( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_config_get "$repoS148b/.git/lcars/config.json" testCommand )"
+check "S148 update: NEVER-CLOBBER — a hand-written lookalike is left byte-for-byte" \
+  '[ "$S148_GOT_B" = "$S148_HAND" ]'
+check "S148 update: no repair reported for a hand-written command" \
+  "! grep -qi 'testCommand migrated' '$repoS148b/out148.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars update: %d passed, %d failed\n' "$pass" "$fail"

@@ -493,7 +493,8 @@ check "S85 init (monorepo): config.json is VALID JSON" \
   "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgMono'"
 
 # (2) A single-package npm repo is UNCHANGED from today (no regression): the bare
-#     `npm test -- ${LCARS_TESTS_DIR:-}` default is preserved verbatim.
+#     `npm test -- <scope>` default is preserved verbatim (S148 quoted its
+#     scope; the invocation is otherwise byte-identical).
 repoSingle="$(new_repo)"
 printf '{ "scripts": { "test": "jest" } }\n' >"$repoSingle/package.json"
 printf '{}\n' >"$repoSingle/package-lock.json"
@@ -502,8 +503,10 @@ export GH_LOG="$repoSingle/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoSingle/existing"; : >"$GH_EXISTING"
 ( cd "$repoSingle" && LCARS_CLAUDE_BIN="$repoSingle/claude" LCARS_GH_BIN="$repoSingle/gh" bash "$SCRIPT" >outSingle.txt 2>&1 )
 cfgSingle="$repoSingle/.git/lcars/config.json"
-check "S85 init (single-package npm): testCommand is the UNCHANGED 'npm test --' default" \
-  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgSingle' testCommand )\" = 'npm test -- \${LCARS_TESTS_DIR:-}' ]"
+S85_NPM_WANT='npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}'
+S85_NPM_GOT="$( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_config_get "$cfgSingle" testCommand )"
+check "S85 init (single-package npm): testCommand is the UNCHANGED 'npm test --' default (S148: scope quoted)" \
+  '[ "$S85_NPM_GOT" = "$S85_NPM_WANT" ]'
 
 # (3) A local-dep runner (pytest, resolvable only from a venv) with a NULL
 #     worktreeSetupCommand (Python has no auto-provision default) warns LOUD:
@@ -602,8 +605,10 @@ export GH_LOG="$repoPY/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoPY/existing"; : >"$GH_EXISTING"
 ( cd "$repoPY" && LCARS_CLAUDE_BIN="$repoPY/claude" LCARS_GH_BIN="$repoPY/gh" bash "$SCRIPT" >outPY.txt 2>&1 )
 cfgPY="$repoPY/.git/lcars/config.json"
-check "S87 init (pytest unchanged): testCommand is the pytest default" \
-  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgPY' testCommand )\" = 'pytest \${LCARS_TESTS_DIR:-.}' ]"
+S87_PY_WANT='pytest "${LCARS_TESTS_DIR:-.}"'
+S87_PY_GOT="$( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_config_get "$cfgPY" testCommand )"
+check "S87 init (pytest unchanged): testCommand is the pytest default (S148: scope quoted)" \
+  '[ "$S87_PY_GOT" = "$S87_PY_WANT" ]'
 
 # (5) .git/info/exclude lists the __lcarsq__ globs so a gate's in-package
 #     quarantine can never be git-added into a ticket commit.
@@ -661,8 +666,10 @@ export GH_EXISTING="$repoPy105/existing"; : >"$GH_EXISTING"
 cfgPy105="$repoPy105/.git/lcars/config.json"
 check "S105 init (python): stack is 'python'" \
   "grep -q '\"stack\": *\"python\"' '$cfgPy105'"
-check "S105 init (python): testCommand still the pytest default (byte-equivalent)" \
-  "[ \"\$( . '$REPO_ROOT/skills/lcars-init/lcars-common.sh'; lcars_config_get '$cfgPy105' testCommand )\" = 'pytest \${LCARS_TESTS_DIR:-.}' ]"
+S105_PY_WANT='pytest "${LCARS_TESTS_DIR:-.}"'
+S105_PY_GOT="$( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_config_get "$cfgPy105" testCommand )"
+check "S105 init (python): testCommand still the pytest default (S148: scope quoted)" \
+  '[ "$S105_PY_GOT" = "$S105_PY_WANT" ]'
 
 # setup.py is also a python signal
 repoPy2="$(new_repo)"
@@ -731,6 +738,95 @@ export GH_EXISTING="$repoGradle/existing"; : >"$GH_EXISTING"
 check "S105 init (jvm/gradle): stack is 'jvm'" \
   "grep -q '\"stack\": *\"jvm\"' '$repoGradle/.git/lcars/config.json'"
 
+# --- Session 145: ruby stack arm (rspec / minitest) -------------------------
+# helper: run init in $1 with stubs, echoing nothing (config assertions follow).
+s145_run() { # repo-dir
+  make_claude_stub "$1/claude"; make_gh_stub "$1/gh"
+  export GH_LOG="$1/gh.log"; : >"$GH_LOG"
+  export GH_EXISTING="$1/existing"; : >"$GH_EXISTING"
+  ( cd "$1" && LCARS_CLAUDE_BIN="$1/claude" LCARS_GH_BIN="$1/gh" bash "$SCRIPT" >out.txt 2>&1 )
+}
+s145_tc() { # config-path → the read-back testCommand
+  ( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_config_get "$1" testCommand )
+}
+
+# (R1) rspec: Gemfile names rspec + spec/ → stack ruby, testCommand "bundle exec rspec"
+repoRb1="$(new_repo)"
+printf 'source "https://rubygems.org"\ngem "rspec"\n' >"$repoRb1/Gemfile"
+mkdir -p "$repoRb1/spec"
+s145_run "$repoRb1"
+cfgRb1="$repoRb1/.git/lcars/config.json"
+check "S145 init (rspec): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb1'"
+check "S145 init (rspec): testCommand is 'bundle exec rspec'" \
+  "[ \"\$(s145_tc '$cfgRb1')\" = 'bundle exec rspec' ]"
+check "S145 init (rspec): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgRb1'"
+
+# (R2) minitest: test/ + Rakefile + Gemfile (no rspec) → 'bundle exec rake test'
+repoRb2="$(new_repo)"
+printf 'source "https://rubygems.org"\ngem "minitest"\n' >"$repoRb2/Gemfile"
+printf 'task :test\n' >"$repoRb2/Rakefile"
+mkdir -p "$repoRb2/test"
+s145_run "$repoRb2"
+cfgRb2="$repoRb2/.git/lcars/config.json"
+check "S145 init (minitest): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb2'"
+check "S145 init (minitest): testCommand is 'bundle exec rake test'" \
+  "[ \"\$(s145_tc '$cfgRb2')\" = 'bundle exec rake test' ]"
+
+# (R3) Gemfile-LESS ruby (Rakefile only) → stack ruby, rake test (no bundle prefix)
+repoRb3="$(new_repo)"
+printf 'task :test\n' >"$repoRb3/Rakefile"
+mkdir -p "$repoRb3/test"
+s145_run "$repoRb3"
+cfgRb3="$repoRb3/.git/lcars/config.json"
+check "S145 init (gemfile-less minitest): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb3'"
+check "S145 init (gemfile-less minitest): testCommand is bare 'rake test' (no bundle exec)" \
+  "[ \"\$(s145_tc '$cfgRb3')\" = 'rake test' ]"
+
+# (R4) gemspec-only gem library → stack ruby, NO testCommand (null), no crash
+repoRb4="$(new_repo)"
+printf 'Gem::Specification.new\n' >"$repoRb4/mygem.gemspec"
+s145_run "$repoRb4"
+cfgRb4="$repoRb4/.git/lcars/config.json"
+check "S145 init (gemspec-only): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb4'"
+check "S145 init (gemspec-only): testCommand is null (runner unresolved)" \
+  "grep -q '\"testCommand\": *null' '$cfgRb4'"
+check "S145 init (gemspec-only): warns naming BOTH rspec and minitest candidates" \
+  "grep -qi 'rspec' '$repoRb4/out.txt' && grep -qi 'minitest\\|rake test' '$repoRb4/out.txt'"
+check "S145 init (gemspec-only): config.json is VALID JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$cfgRb4'"
+
+# (R5) INTERNALLY-ambiguous: spec/ AND test/+Rakefile, Gemfile does NOT name rspec
+#      → stack ruby, NO testCommand, warning names both runners.
+repoRb5="$(new_repo)"
+printf 'source "https://rubygems.org"\n' >"$repoRb5/Gemfile"
+printf 'task :test\n' >"$repoRb5/Rakefile"
+mkdir -p "$repoRb5/spec" "$repoRb5/test"
+s145_run "$repoRb5"
+cfgRb5="$repoRb5/.git/lcars/config.json"
+check "S145 init (rspec+minitest ambiguous): stack is 'ruby'" \
+  "grep -q '\"stack\": *\"ruby\"' '$cfgRb5'"
+check "S145 init (rspec+minitest ambiguous): NO testCommand guessed (null)" \
+  "grep -q '\"testCommand\": *null' '$cfgRb5'"
+
+# (R6) ruby + js mixed → ambiguous(js,ruby), no testCommand, warns both stacks
+repoRbJs="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoRbJs/package.json"
+printf 'source "https://rubygems.org"\ngem "rspec"\n' >"$repoRbJs/Gemfile"
+mkdir -p "$repoRbJs/spec"
+s145_run "$repoRbJs"
+cfgRbJs="$repoRbJs/.git/lcars/config.json"
+check "S145 init (ruby+js): stack is ambiguous(js,ruby)" \
+  "grep -q '\"stack\": *\"ambiguous(js,ruby)\"' '$cfgRbJs'"
+check "S145 init (ruby+js): NO testCommand (null, not a silent 'npm test')" \
+  "grep -q '\"testCommand\": *null' '$cfgRbJs'"
+check "S145 init (ruby+js): the warning NAMES both js and ruby" \
+  "grep -qi '\\bjs\\b' '$repoRbJs/out.txt' && grep -qi 'ruby' '$repoRbJs/out.txt'"
+
 # (7) AMBIGUOUS: Cargo.toml + package.json → stack ambiguous(rust,js), NO
 #     testCommand seeded, warning NAMES BOTH candidate stacks.
 repoAmb="$(new_repo)"
@@ -763,8 +859,8 @@ check "S105 init (unknown): stack is 'unknown'" \
   "grep -q '\"stack\": *\"unknown\"' '$cfgUnk'"
 check "S105 init (unknown): testCommand is null" \
   "grep -q '\"testCommand\": *null' '$cfgUnk'"
-check "S105 init (unknown): warns that no known stack was detected" \
-  "grep -qi 'no known stack\\|no.*stack.*detected' '$repoUnk/outUnk.txt'"
+check "S146 init (unknown/greenfield): ONE calm bootstrap status — no ⚠ config lecture" \
+  "grep -qi 'engineering crew' '$repoUnk/outUnk.txt' && ! grep -q '⚠' '$repoUnk/outUnk.txt'"
 
 # (9) a bash tests/run.sh repo has NO stack marker (unknown) but STILL keeps its
 #     detected bash testCommand — byte-equivalence with pre-S105 (no suppression).
@@ -784,6 +880,136 @@ check "S105 init (bash-runner): testCommand PRESERVED as the bash runner (byte-e
 # (10) banner reports the detected stack
 check "S105 init: the readiness banner reports the detected stack" \
   "grep -qi 'stack: *rust' '$repoRust/outRust.txt'"
+
+# ==========================================================================
+# Session 148: the SEEDED testCommand must survive a WHITESPACE repo path.
+#
+# Every seeded shape hands the Implement proof gates their scope through
+# $LCARS_TESTS_DIR. Interpolated UNQUOTED, the scope WORD-SPLITS the moment the
+# repo lives at a path containing a space/tab/newline — the runner is handed two
+# half-paths, cannot find either, and the flip-flop gate FALSE-FAILS a perfectly
+# honest ticket purely because of where the repo is checked out (which bounces it
+# to a fresh worker up to 3 times and then parks it awaiting-human).
+#
+# The contract asserted here is about ARGV, not about the string: whatever the
+# seeded shape is, the runner must receive the scope as EXACTLY ONE argument,
+# byte-identical to $LCARS_TESTS_DIR — and, when the scope is UNSET, must receive
+# NO extra (empty) argument, because an empty positional is a different run.
+# `bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"` has always been quoted; it is
+# the model the other arms are held to.
+
+# The probe is deliberately RUNNER-FREE: substituting `printf` for the command
+# name makes the shell itself report how the seeded string words out, so the same
+# assertion works for every arm (npm/npx/pytest/bash/…) without stubbing a binary
+# per runner — and cannot be fooled by a runner that tolerates a split path.
+cmd_words() { # cmd [scope] → each expanded word on its own line
+  if [ "$#" -ge 2 ]; then
+    ( LCARS_TESTS_DIR="$2" bash -c "printf '%s\n' $1" ) 2>/dev/null
+  else
+    ( bash -c "printf '%s\n' $1" ) 2>/dev/null
+  fi
+}
+cmd_argc() { # cmd [scope] → how many words it expands to (NUL-counted, so a
+             # newline INSIDE one argument is not miscounted as two)
+  local n
+  if [ "$#" -ge 2 ]; then
+    n="$( ( LCARS_TESTS_DIR="$2" bash -c "printf '%s\000' $1" ) 2>/dev/null | tr -cd '\000' | wc -c )"
+  else
+    n="$( ( bash -c "printf '%s\000' $1" ) 2>/dev/null | tr -cd '\000' | wc -c )"
+  fi
+  printf '%s' "$n" | tr -d ' '
+}
+# The scope shapes that break an unquoted interpolation: IFS whitespace.
+SP_SCOPE='/tmp/sp test/src/calc.test.js'
+TAB_SCOPE="$(printf '/tmp/sp\ttest/src/calc.test.js')"
+NL_SCOPE="$(printf '/tmp/sp\ntest/src/calc.test.js')"
+PLAIN_SCOPE='/tmp/sptest/src/calc.test.js'
+
+# The seeded shape per stack, asked of the REAL detector (never a copy of the
+# string): whatever detect_test_cmd emits for that repo layout IS what is tested.
+seeded_cmd_for() { # repo-dir → the command lcars init would seed
+  ( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; TOPLEVEL="$1" detect_test_cmd )
+}
+
+# NB: the seeded command is handed to `check` through a VARIABLE, never
+# interpolated into the assertion string — `check` evals its argument, and a
+# literal `${LCARS_TESTS_DIR:-.}` (or an embedded `"`) would be expanded/broken
+# by that eval before the probe ever saw it. Single-quoted assertions here.
+ws_case() { # label repo-dir expected-argc-when-scoped expected-argc-when-unset
+  local label="$1"
+  WS_CMD="$(seeded_cmd_for "$2")"; WS_ARGC="$3"; WS_UNSET_ARGC="$4"
+  check "S148 seed ($label): a SPACED scope survives as ONE argument" \
+    '[ "$(cmd_argc "$WS_CMD" "$SP_SCOPE")" = "$WS_ARGC" ] && [ "$(cmd_words "$WS_CMD" "$SP_SCOPE" | tail -1)" = "$SP_SCOPE" ]'
+  check "S148 seed ($label): a TABBED scope survives as ONE argument" \
+    '[ "$(cmd_argc "$WS_CMD" "$TAB_SCOPE")" = "$WS_ARGC" ] && [ "$(cmd_words "$WS_CMD" "$TAB_SCOPE" | tail -1)" = "$TAB_SCOPE" ]'
+  check "S148 seed ($label): a NEWLINE in the scope survives as ONE argument" \
+    '[ "$(cmd_argc "$WS_CMD" "$NL_SCOPE")" = "$WS_ARGC" ]'
+  check "S148 seed ($label): an UNSET scope is byte-for-byte the pre-fix behaviour" \
+    '[ "$(cmd_argc "$WS_CMD")" = "$WS_UNSET_ARGC" ]'
+}
+
+# --- (a) single-package npm (`npm test -- <scope>`) ------------------------
+repoWS1="$(new_repo)"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoWS1/package.json"
+ws_case "npm single-package" "$repoWS1" 4 3
+
+# --- (b) monorepo jest (`npx jest <scope>`) --------------------------------
+repoWS2="$(new_repo)"
+printf '{ "workspaces": ["packages/*"], "scripts": { "test": "jest" } }\n' >"$repoWS2/package.json"
+WS_JEST="$(seeded_cmd_for "$repoWS2")"
+check "S148 seed (monorepo jest): the seeded command really is the jest arm" \
+  'printf "%s" "$WS_JEST" | grep -q jest'
+ws_case "monorepo jest" "$repoWS2" 3 2
+
+# --- (c) monorepo mocha (`npx mocha <scope>`) ------------------------------
+repoWS3="$(new_repo)"
+printf '{ "workspaces": ["packages/*"], "scripts": { "test": "mocha" } }\n' >"$repoWS3/package.json"
+ws_case "monorepo mocha" "$repoWS3" 3 2
+
+# --- (d) monorepo, runner not named in the root script → `npm test -- <scope>`
+repoWS4="$(new_repo)"
+printf '{ "workspaces": ["packages/*"], "scripts": { "test": "run-all" } }\n' >"$repoWS4/package.json"
+ws_case "monorepo fallback" "$repoWS4" 4 3
+
+# --- (e) python (`pytest <scope>`), incl. the `.` default ------------------
+repoWS5="$(new_repo)"
+printf '[tool.pytest]\n' >"$repoWS5/pyproject.toml"
+ws_case "pytest" "$repoWS5" 2 2
+WS_PY="$(seeded_cmd_for "$repoWS5")"
+check "S148 seed (pytest): an UNSET scope still defaults to exactly one '.' argument" \
+  '[ "$(cmd_words "$WS_PY" | tail -1)" = "." ]'
+
+# --- (f) the bash runner arm — the pre-existing MODEL, must not regress ----
+repoWS6="$(new_repo)"
+mkdir -p "$repoWS6/tests"
+printf '#!/usr/bin/env bash\necho runner\n' >"$repoWS6/tests/run.sh"
+WS_BASH="$(seeded_cmd_for "$repoWS6")"
+WS_BASH_WANT='bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'
+check "S148 seed (bash runner): the already-quoted model arm is unchanged" \
+  '[ "$WS_BASH" = "$WS_BASH_WANT" ]'
+ws_case "bash runner" "$repoWS6" 3 3
+
+# --- (g) the STRUCTURAL backstop over EVERY seed literal in the seeder ------
+# So a NEW arm cannot quietly reintroduce the defect: harvest every single-quoted
+# command literal in lcars-common.sh that interpolates the scope, and require its
+# word count to be IDENTICAL for a spaced scope and an unspaced one. A quoted
+# interpolation is invariant; an unquoted one is not.
+WS_SEEDS="$(grep -oE "'[^']*LCARS_TESTS_DIR[^']*'" "$REPO_ROOT/skills/lcars-init/lcars-common.sh" \
+            | sed -E "s/^'//; s/'\$//" | sort -u)"
+check "S148 seed: the structural sweep actually found seed literals to check" \
+  "[ \"\$(printf '%s\n' \"\$WS_SEEDS\" | grep -c . )\" -ge 4 ]"
+ws_bad=0; ws_n=0
+while IFS= read -r ws_seed; do
+  [ -n "$ws_seed" ] || continue
+  ws_n=$((ws_n + 1))
+  if [ "$(cmd_argc "$ws_seed" "$SP_SCOPE")" != "$(cmd_argc "$ws_seed" "$PLAIN_SCOPE")" ]; then
+    ws_bad=$((ws_bad + 1)); printf '       unquoted seed literal: %s\n' "$ws_seed"
+  fi
+done <<WS_EOF
+$WS_SEEDS
+WS_EOF
+check "S148 seed: EVERY seed literal ($ws_n) words out identically for a spaced and an unspaced scope" \
+  "[ '$ws_bad' -eq 0 ]"
 
 # ==========================================================================
 echo

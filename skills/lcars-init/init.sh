@@ -86,82 +86,10 @@ PROJECT_NAME="$(basename "$TOPLEVEL")"
 # hand) it falls back to the whole suite. The captain can override it in
 # config.json or per-run via $LCARS_TEST_CMD. Null when nothing is detected — the
 # red gate then warns and skips (the pre-existing degradation), it does not block.
-# The vitest test command must RELATIVIZE $LCARS_TESTS_DIR to the runner's cwd:
-# vitest's positional test filter is matched RELATIVE to the package root the
-# runner runs from, but the Implement gates export $LCARS_TESTS_DIR as an ABSOLUTE
-# path (and, for a monorepo, the gate cd's into the touched package). Stripping a
-# leading "$PWD/" turns the absolute quarantine path into the package-relative
-# positional vitest expects, so the staged tests are discovered & filtered; unset
-# (a human running it by hand) it falls back to the whole suite. This abs-positional
-# bug bites BOTH single-package AND monorepo vitest, so both emit this form.
-VITEST_RELATIVIZING_CMD='npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}'
-
-# detect_workspace_runner — name the local test runner a monorepo actually uses, so
-# the workspace fallback emits a runner-SCOPED command instead of a bare `npm test`
-# fan-out across every package. Inspects (in order) a runner config at the workspace
-# root (vitest.config.*/jest.config.*), the pnpm lockfile, then every sub-package's
-# package.json devDependencies. Echoes vitest|jest|mocha (empty when none found).
-detect_workspace_runner() {
-  local r
-  for r in vitest jest mocha; do
-    ls "$TOPLEVEL/$r.config".* >/dev/null 2>&1 && { echo "$r"; return; }
-  done
-  for r in vitest jest mocha; do
-    grep -qs -- "$r" "$TOPLEVEL/pnpm-lock.yaml" 2>/dev/null && { echo "$r"; return; }
-  done
-  for r in vitest jest mocha; do
-    grep -rqs --include='package.json' --exclude-dir='node_modules' -- "\"$r\"" "$TOPLEVEL" 2>/dev/null \
-      && { echo "$r"; return; }
-  done
-  echo ""
-}
-
-detect_test_cmd() {
-  if [ -f "$TOPLEVEL/package.json" ] && grep -q '"test"[[:space:]]*:' "$TOPLEVEL/package.json"; then
-    # Monorepo (a pnpm workspace, or a "workspaces" field): a bare `npm test` /
-    # `pnpm -r test` here FANS OUT across every package, so the red gate can never
-    # scope itself to the touched package's quarantined tests. Prefer a command
-    # scoped to the local runner that STILL honours $LCARS_TESTS_DIR — LCARS points
-    # the var at the touched package (it knows it from the plan/manifests). When the
-    # root "test" script doesn't name the runner, DETECT it from the sub-packages
-    # (lockfile / config / devDependencies) rather than emitting a fan-out.
-    if [ -f "$TOPLEVEL/pnpm-workspace.yaml" ] || grep -q '"workspaces"[[:space:]]*:' "$TOPLEVEL/package.json"; then
-      local script runner
-      script="$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)"
-      case "$script" in
-        *vitest*) echo "$VITEST_RELATIVIZING_CMD";              return ;;
-        *jest*)   echo 'npx jest ${LCARS_TESTS_DIR:-}';         return ;;
-        *mocha*)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';        return ;;
-        *)
-          runner="$(detect_workspace_runner)"
-          case "$runner" in
-            vitest) echo "$VITEST_RELATIVIZING_CMD";            return ;;
-            jest)   echo 'npx jest ${LCARS_TESTS_DIR:-}';       return ;;
-            mocha)  echo 'npx mocha ${LCARS_TESTS_DIR:-}';      return ;;
-            *)      echo 'npm test -- ${LCARS_TESTS_DIR:-}';    return ;;
-          esac ;;
-      esac
-    fi
-    # Single package: a vitest runner needs the RELATIVIZING positional (same abs-
-    # path bug as the monorepo); jest/mocha/other keep the `npm test --` positional
-    # default (empty runs the suite).
-    case "$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)" in
-      *vitest*) echo "$VITEST_RELATIVIZING_CMD"; return ;;
-    esac
-    echo 'npm test -- ${LCARS_TESTS_DIR:-}'; return; fi
-  if [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ]; then
-    echo 'pytest ${LCARS_TESTS_DIR:-.}'; return; fi
-  if [ -f "$TOPLEVEL/Cargo.toml" ]; then echo "cargo test"; return; fi
-  if [ -f "$TOPLEVEL/go.mod" ]; then echo "go test ./..."; return; fi
-  if [ -f "$TOPLEVEL/Makefile" ] && grep -q '^test:' "$TOPLEVEL/Makefile"; then echo "make test"; return; fi
-  # A bash test runner (LCARS dogfoods its own tests/run.sh). It already resolves
-  # a positional dir / $LCARS_TESTS_DIR (BUG-009), so scope it to the quarantined
-  # tests when the var is set, else the whole `tests` dir for a human. Checked LAST
-  # so a real ecosystem (npm/pytest/…) always wins when both are present.
-  if [ -f "$TOPLEVEL/tests/run.sh" ]; then
-    echo 'bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'; return; fi
-  echo ""
-}
+# S146: VITEST_RELATIVIZING_CMD, detect_workspace_runner and detect_test_cmd
+# MOVED to lcars-common.sh (sourced above) so the shared test-readiness verdict
+# — computed by init, update, status AND the viewscreen daemon — consults the
+# SAME detector this seeding path uses. Behaviour is byte-identical.
 
 # runner_is_local_dep — 0 if the test command's runner resolves ONLY from a
 # project-local location (node_modules/.bin or a venv) rather than a binary
@@ -207,9 +135,45 @@ if [ -n "$TEST_CMD" ]; then
   # the repo's EXISTING suite, so a green result proves nothing and the gate must
   # reject it. Warn the captain at init time rather than letting it silently stall
   # Implement later. (cargo/go/make defaults can't be auto-scoped to a dir.)
+  #
+  # S147: SUPPRESSED for the seeded `dotnet test <proj>` command. The warning is
+  # factually FALSE for a NATIVE-ISOLATION runner (stack_uses_native_isolation /
+  # stack_is_native in run.sh): those never take the quarantine path at all —
+  # their gate legs are scoped by the runner's OWN flags (`dotnet test --filter`,
+  # `cargo test --test`, `go test -run`, an explicit spec file) — so "the red
+  # gate will reject every quarantined suite" describes something that cannot
+  # happen. Before S147 a dotnet repo seeded no command, so the alarm never fired
+  # for it; the new seed made 7 lines of false alarm the FIRST thing a C# captain
+  # sees, which is a defect this session introduced and must not ship.
+  #
+  # The test is on the SEEDED COMMAND'S SHAPE, not on the stack. Gating on
+  # `$STACK = dotnet` was wrong: a repo with a top-level bare `App.csproj` AND a
+  # Makefile `test:` target seeds `make test` — a directory-oriented runner that
+  # genuinely DOES need $LCARS_TESTS_DIR — and silencing the correct warning
+  # there took away something HEAD raised.
+  #
+  # LEDGERED, deliberately not fixed here: rust/go/ruby carry the same false
+  # alarm on their own seeds. Silencing them would change init output that
+  # predates this round and that this round's regression contract byte-compares
+  # against pre-S147 — the brief's own instruction is to stop rather than fight
+  # that lock. Same one-line cure (add their seeded command shapes here)
+  # whenever a round is chartered to move those stacks' output.
   case "$TEST_CMD" in
     *LCARS_TESTS_DIR*) : ;;  # honours it — nothing to flag
     *)
+      # The `dotnet test` shape, matched DIRECTLY rather than by prefix-strip.
+      # The old form was `[ "dotnet test ${TEST_CMD#dotnet test }" = "$TEST_CMD" ]`,
+      # which strips the prefix "dotnet test " WITH A TRAILING SPACE — a pattern a
+      # BARE `dotnet test` (nothing after "test") can never match, so the most
+      # obvious solution-root command a C# captain can write fell through and got
+      # all 7 lines of false alarm (S147 DEFECT-5). Both arms below are anchored,
+      # so `dotnet run` / `dotnet testify` / `dotnet-coverage …` still warn.
+      __dn_test_shape=0
+      case "$TEST_CMD" in
+        "dotnet test"|"dotnet test "*) __dn_test_shape=1 ;;
+      esac
+      if [ "$__dn_test_shape" = 1 ] \
+         && stack_uses_native_isolation "$STACK"; then : ; else
       printf '  ⚠ testCommand "%s" does not reference $LCARS_TESTS_DIR.\n' "$TEST_CMD" >&2
       printf '    The Implement red gate runs it with $LCARS_TESTS_DIR pointing at the\n' >&2
       printf '    quarantined fail-first tests; if the command ignores that var it will run\n' >&2
@@ -217,6 +181,7 @@ if [ -n "$TEST_CMD" ]; then
       printf '    quarantined suite (a green-on-nothing result proves nothing). Edit\n' >&2
       printf '    testCommand in .git/lcars/config.json to run ONLY "$LCARS_TESTS_DIR" when\n' >&2
       printf '    it is set (e.g. pytest "${LCARS_TESTS_DIR:-.}").\n' >&2
+      fi
       ;;
   esac
 else
@@ -233,12 +198,43 @@ else
       printf '    Set testCommand in .git/lcars/config.json to the runner for the stack you\n' >&2
       printf '    want the Implement red gate to use (honouring "$LCARS_TESTS_DIR").\n' >&2
       ;;
-    unknown)
-      printf '  ⚠ no known stack detected (no Cargo.toml/go.mod/pyproject.toml/setup.py/\n' >&2
-      printf '    package.json/*.csproj/*.sln/pom.xml/build.gradle) — no testCommand seeded.\n' >&2
-      printf '    The Implement red gate needs one; set testCommand in\n' >&2
-      printf '    .git/lcars/config.json (honouring "$LCARS_TESTS_DIR") to enable it.\n' >&2
+    dotnet)
+      # S147: a dotnet repo whose TEST PROJECT could not be pinned. Either
+      # SEVERAL projects look like test projects (name them all — the S105
+      # idiom — and let the captain choose) or none does.
+      dn_projs="$(detect_dotnet_test_projects | tr '\n' ' ')"
+      if [ -n "${dn_projs// /}" ]; then
+        # ONE recommended verb per readout: the shared verdict line printed a few
+        # lines below already points at `lcars update --fix-tests` (which, on this
+        # verdict, PRESENTS these candidates to pick from and spends nothing).
+        # Naming `--test-command` here too gave the captain two different answers
+        # to the same question on one screen; it stays the manual override,
+        # documented on the fix path itself rather than competing with it.
+        printf '  ⚠ dotnet stack detected but SEVERAL test projects are present — no testCommand seeded.\n' >&2
+        printf '    Candidates: %s\n' "$dn_projs" >&2
+        printf '    LCARS will not choose which project the Implement gates run.\n' >&2
+      else
+        printf '  ⚠ dotnet stack detected but no test project was found — no testCommand seeded.\n' >&2
+        printf '    A test project is a *.csproj referencing Microsoft.NET.Test.Sdk (what\n' >&2
+        printf '    `dotnet new xunit` scaffolds). Add one, then re-run `lcars update`.\n' >&2
+      fi
       ;;
+    ruby)
+      # S145: ruby stack detected but the runner could not be resolved — either an
+      # rspec (spec/) AND a minitest (test/ + Rakefile) layout both look possible
+      # (no decisive Gemfile rspec signal), or neither could be pinned (e.g. a bare
+      # gem with only a *.gemspec). Name both candidate runners; never guess.
+      printf '  ⚠ ruby stack detected but the test runner is ambiguous — no testCommand seeded.\n' >&2
+      printf '    An rspec (spec/) and a minitest (test/ + Rakefile) layout both look possible,\n' >&2
+      printf '    or neither could be resolved. Set testCommand in .git/lcars/config.json to the\n' >&2
+      printf '    runner you want (e.g. "bundle exec rspec" or "bundle exec rake test").\n' >&2
+      ;;
+    # unknown (greenfield): NO warning here — a repo with no stack markers and
+    # no detectable runner is EXPECTED, never an alarm (captain ruling, S146).
+    # The shared bootstrap verdict line at the end of the readout
+    # (lcars_readiness_line: "◇ NO TEST SYSTEMS FOUND — …") is the ONE calm
+    # status for this case; anything actionable goes through
+    # `lcars update --fix-tests`, never a hand-edit-config.json lecture.
   esac
 fi
 
@@ -376,4 +372,10 @@ if [ "$GH_OK" -eq 1 ]; then
 else
   echo "  ⚠ gh CLI not found — skipped GitHub label setup. Install gh and re-run to finish."
 fi
+# S146: the ONE test-readiness verdict line (shared with update/status/board).
+# Silent when ready; repair voice for broken/missing; bootstrap voice for a
+# greenfield repo (unknown) — status, never an alarm.
+lcars_test_readiness "$CONFIG"
+READINESS_LINE="$(lcars_readiness_line)"
+[ -n "$READINESS_LINE" ] && echo "  $READINESS_LINE"
 echo "  LCARS ready — run \`lcars file\` to start your first Mission."

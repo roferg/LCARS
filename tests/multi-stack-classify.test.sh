@@ -36,6 +36,9 @@ sed -n '/^red_gate_env_failure() {/,/^}/p'        "$SCRIPT" >>"$LIB"
 compile()    { red_gate_compile_failure    "$1"; }   # rc 0 = compile/load failure
 resolution() { red_gate_resolution_failure "$1"; }   # rc 0 = module-resolution failure
 env_fail()   { red_gate_env_failure        "$1"; }   # rc 0 = runner could not launch
+# S145: the assertion + zerotests arms are consulted directly (classify-only).
+assertion()  { printf '%s' "$1" | grep -Eq "$(rg_signature assertion)"; }
+zerotests()  { printf '%s' "$1" | grep -Eq "$(rg_signature zerotests)"; }
 
 # === REAL runner-output fixtures (as the tools actually print) ==============
 
@@ -134,6 +137,87 @@ compile 'Cannot find module ../src/foo' && ok "6a. JS 'Cannot find module' → c
   || bad "6a. JS 'Cannot find module' regressed"
 compile 'AssertionError: expected 3 to be 4' && bad "6b. plain assertion falsely matched compile" \
   || ok "6b. plain 'expected 3 to be 4' → valid red (unchanged)"
+
+# === S145 RUBY signatures (rspec + minitest, as the tools actually print) =====
+echo "S145 ruby — rspec / minitest signatures"
+
+# rspec LoadError — a require of a not-yet-created module (greenfield red). The
+# ruby backtrace lines (which carry apostrophes/backticks) are elided; the
+# classification-relevant lines are kept verbatim.
+RUBY_LOADERR='An error occurred while loading ./spec/thing_spec.rb.
+Failure/Error: require_relative "../lib/thing"
+
+LoadError:
+  cannot load such file -- /repo/lib/thing
+No examples found.
+
+0 examples, 0 failures, 1 error occurred outside of examples'
+
+# rspec unresolved constant (NameError) — a class referenced before it exists.
+RUBY_NAMEERR='Failure/Error: expect(Widget.new.render).to eq("x")
+
+     NameError:
+       uninitialized constant Widget'
+
+# ruby syntax error (interpreter prefix).
+RUBY_SYNTAX='spec/thing_spec.rb:4: syntax error, unexpected end-of-input'
+
+# rspec genuine assertion red.
+RSPEC_ASSERT='Failure/Error: expect(1 + 1).to eq(3)
+
+       expected: 3
+            got: 2
+1 example, 1 failure
+
+Failed examples:'
+
+# minitest genuine assertion red.
+MINITEST_ASSERT='  1) Failure:
+FTest#test_adds [test/f_test.rb:3]:
+Expected: 3
+  Actual: 2
+
+1 runs, 1 assertions, 1 failures, 0 errors, 0 skips'
+
+# 7. resolution: LoadError + NameError → resolution-failure.
+resolution "$RUBY_LOADERR" && ok "7a. rspec LoadError → resolution-failure" \
+  || bad "7a. rspec LoadError not detected as resolution"
+resolution "$RUBY_NAMEERR" && ok "7b. rspec 'uninitialized constant' → resolution-failure" \
+  || bad "7b. rspec NameError not detected as resolution"
+
+# 8. compile: ruby syntax error → compile-failure (interpreter '.rb:N: syntax error,').
+compile "$RUBY_SYNTAX" && ok "8. ruby syntax error → compile-failure" \
+  || bad "8. ruby syntax error not detected as compile-failure"
+
+# 9. assertion arm NAMES a genuine rspec / minitest red (classify-only).
+assertion "$RSPEC_ASSERT"    && ok "9a. rspec assertion red → assertion arm" \
+  || bad "9a. rspec assertion red not named by assertion arm"
+assertion "$MINITEST_ASSERT" && ok "9b. minitest assertion red → assertion arm" \
+  || bad "9b. minitest assertion red not named by assertion arm"
+
+# 10. zerotests: true-zero → zerotests; a healthy 10-example/10-run does NOT match.
+zerotests 'Finished in 0.001s
+0 examples, 0 failures' && ok "10a. rspec '0 examples, 0 failures' → zerotests" \
+  || bad "10a. rspec zero not detected"
+zerotests '10 examples, 0 failures' && bad "10b. '10 examples' FALSELY matched zerotests (substring hazard)" \
+  || ok "10b. '10 examples, 0 failures' → NOT zerotests (hazard guarded)"
+zerotests '0 runs, 0 assertions, 0 failures, 0 errors, 0 skips' && ok "10c. minitest '0 runs, 0 assertions' → zerotests" \
+  || bad "10c. minitest zero not detected"
+zerotests '10 runs, 10 assertions, 0 failures, 0 errors, 0 skips' && bad "10d. '10 runs' FALSELY matched zerotests (substring hazard)" \
+  || ok "10d. '10 runs' → NOT zerotests (hazard guarded)"
+# The LoadError red must NOT read as zero-collect (else a greenfield parent-red is swallowed).
+zerotests "$RUBY_LOADERR" && bad "10e. rspec LoadError red FALSELY matched zerotests (greenfield red swallowed)" \
+  || ok "10e. rspec LoadError red → NOT zerotests (real red survives)"
+
+# 11. no-false-fire: an assertion/app string that QUOTES a ruby phrase stays a
+#     valid red (not compile, not resolution).
+compile 'Expected output to include "syntax error, unexpected token" but it did not' \
+  && bad "11a. quoted 'syntax error,' FALSELY matched compile" \
+  || ok "11a. quoted 'syntax error,' (no .rb: prefix) → valid red"
+# A string with the phrase but WITHOUT the "-- " require separator must not fire.
+resolution 'the message was cannot load such file for the user' \
+  && bad "11b. 'cannot load such file' without '-- ' FALSELY matched resolution" \
+  || ok "11b. 'cannot load such file' without '-- ' separator → not resolution"
 
 echo
 printf 'multi-stack-classify: %d passed, %d failed\n' "$PASS" "$FAIL"

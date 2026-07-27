@@ -2190,11 +2190,437 @@ resolve_stack() {
 # A NATIVE-isolation stack is one whose runner cannot be pointed at an external
 # tests dir (compiled per-crate/package) — it needs the per-runner scoped
 # invocation + file-absence probe instead of the $LCARS_TESTS_DIR path.
-stack_is_native() { case "$(resolve_stack)" in rust|go) return 0 ;; *) return 1 ;; esac }
+# (S147: dotnet joins with its OWN case — `dotnet test` is PROJECT-oriented, not
+# directory-oriented: it compiles the whole test project, so pointing it at an
+# external $LCARS_TESTS_DIR quarantine silently runs the project's own suite (or
+# nothing at all). Its scope is expressed as `--filter FullyQualifiedName~…`
+# instead. This is NOT a blind widening of rust|go: each stack's semantics were
+# checked against the real toolchain before it was added.)
+stack_is_native() { case "$(resolve_stack)" in rust|go|ruby|dotnet) return 0 ;; *) return 1 ;; esac }
 
-# The runner binary a native stack's scoped invocation needs on PATH.
-native_runner_bin() { # stack
-  case "$1" in rust) printf 'cargo' ;; go) printf 'go' ;; *) printf '' ;; esac
+# (S147/S3: `native_runner_bin` — a stack→binary map — is REMOVED. It never had a
+# production caller; the scoped invocations name their own runner inline, and the
+# only thing keeping it alive was a test asserting on it. Dead code with
+# ceremonial coverage reads as a seam that exists, so it is gone rather than
+# wired somewhere it was never needed. tests/stack-dotnet.test.sh 3b guards that
+# it stays gone.)
+
+# --- S147: the dotnet scoping primitives -----------------------------------
+# native_dotnet_project_for — the TEST PROJECT that encloses a staged file: walk
+# UP from the file's directory to the nearest ancestor holding a *.csproj and
+# echo that csproj's path RELATIVE TO the leg root. Empty when none encloses it
+# — which the caller turns into a legible INCONCLUSIVE (the compiler would never
+# see a loose .cs outside a project, so it could only ever collect nothing; the
+# S87 in-package lesson, in C# form).
+native_dotnet_project_for() { # leg-root relpath → rel csproj path ("" = none)
+  local root="$1" d="${2%/*}" f
+  [ "$d" = "$2" ] && d=""
+  while :; do
+    for f in "$root${d:+/$d}"/*.csproj; do
+      [ -e "$f" ] && { printf '%s%s' "${d:+$d/}" "${f##*/}"; return 0; }
+    done
+    [ -n "$d" ] || break
+    case "$d" in */*) d="${d%/*}" ;; *) d="" ;; esac
+  done
+  printf ''
+}
+
+# native_dotnet_test_fqns — the FULLY-QUALIFIED test class names a staged .cs
+# declares, one per line. VSTest's FullyQualifiedName is `Namespace.Class.Method`
+# (OBSERVED via `dotnet test --list-tests`, SDK 10.0.107) — the FILE NAME never
+# appears in it, so the filter MUST be built from the declared classes, exactly
+# as the go leg builds `-run` from the declared Test funcs.
+#
+# Two things the first cut got wrong, both proven against the real SDK:
+#   • BOM. `dotnet new xunit` writes every .cs with a UTF-8 BOM (EF BB BF)
+#     before `namespace X;` — verified with xxd. A `^[[:space:]]*namespace` scan
+#     therefore matched NOTHING on a real template file and silently dropped the
+#     namespace, collapsing the filter to a bare class name (a CONTAINS match),
+#     which let unrelated same-named classes ride along. The BOM is stripped
+#     from line 1 here, and CR line endings are stripped from every line.
+#   • ONE namespace per file. A file may declare several (sequential or nested
+#     braced blocks); taking only the first mis-qualified every class under the
+#     rest, so a staged FAILING test in the second namespace was never selected
+#     and the leg passed without ever running it. Namespaces are now resolved
+#     PER CLASS by tracking brace depth.
+#   • ONE MATCH PER LINE. Pattern-matching the `class` keyword once per line
+#     (the historical version of this note; see the scanner below)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS IS STILL A SOURCE SCAN, AND WHY THAT IS NOW SAFE (S147 round 3)
+#
+# This function produced FOUR silent greens across three rounds (second
+# namespace dropped, second class on a line dropped, `record`/`struct` dropped,
+# multi-line string desyncing brace depth). We spiked making the SDK
+# authoritative instead — `dotnet test <proj> --list-tests` reports the true
+# VSTest renderings (records, `Ns.GenCases`1`, `Ns.Outer+Inner`, theory
+# expansion) and would get every one of those right by construction. It is NOT
+# adopted, for two measured reasons:
+#
+#   1. It cannot serve the PARENT leg. That leg is SUPPOSED not to compile —
+#      that is the flip-flop's proof of red-on-parent — and `--list-tests` on a
+#      non-compiling tree exits 1 and discovers ZERO tests (observed).
+#   2. `--list-tests` reports FQNs, never SOURCE FILES. Something must still
+#      decide which discovered tests belong to the staged file, so a source scan
+#      remains in the loop and the "unrecognised declaration keyword ⇒ dropped
+#      class" mechanism survives. The one variant that removes the scan
+#      entirely — discovering with the staged file present and again with it
+#      removed, and diffing — is fully sound but costs TWO EXTRA BUILDS per
+#      ticket (4.86s vs 1.82s on a fixture whose build is 1.4s).
+#
+# So the scan stays, and the SAFETY moves to two structural guards that do not
+# depend on it being right (both below, and in flip_flop_gate):
+#   GUARD 1  native_scoped_cmd refuses to emit an UNQUALIFIED filter term. A
+#            dropped class is a silent green; a bogus extra term is only a
+#            zero-collect. The failure direction is always INCONCLUSIVE.
+#   GUARD 2  flip_flop_gate cross-checks the tests VSTest actually collected
+#            against the count this file DECLARES. A scan that drops a
+#            declaration under-runs, and the shortfall parks the ticket.
+# A parser bug can therefore cost a false INCONCLUSIVE; it can no longer
+# certify a test that never ran.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#   • (historical) ONE MATCH PER LINE. Pattern-matching the `class` keyword once
+#     dropped the SECOND class on a line that declares two — never filtered,
+#     never run, still recorded proven. That is the same outcome as the
+#     one-namespace bug reached through a different trigger, so the cure is
+#     structural rather than another pattern: the file is now SCANNED
+#     left-to-right, one token at a time, instead of regex-probed per line.
+#
+# The scanner walks characters, so it also gets the things a line regex cannot:
+# string and CHAR literals are skipped before brace counting (a `'}'` literal
+# used to desync the depth tracker and emit a BARE, unqualified term — exactly
+# the contains-match collision the dot-terminated filter closed), `//` comments
+# end the line only when they are not inside a literal, and `/* … */` comments
+# are skipped including across lines (a file of commented-out classes must
+# declare NO test class and read INCONCLUSIVE, not conjure phantom targets).
+#
+# Handles the file-scoped (`namespace X;`), braced (`namespace X { … }`) and
+# nested-braced forms, several of each per file or per line; a class with no
+# namespace yields the bare name (also the observed FQN shape).
+#
+# KNOWN LIMITS — recorded deliberately, in two groups.
+#
+# REFUSED OUTRIGHT (GUARD 1's principle: never emit a term we already know
+# cannot work). These used to be emitted-and-hoped-for, with GUARD 2 as the net;
+# that was not safe enough, because GUARD 2's aggregate slack can absorb them:
+#   • a GENERIC test class — VSTest renders it ``Ns.GenCases`1``, so a
+#     `~Ns.GenCases.` term selects nothing;
+#   • a test class NESTED inside another type — VSTest renders it
+#     `Ns.Outer+Inner`, so neither `~Ns.Inner.` nor `~Ns.Outer.` selects it.
+# Either one, IN A FILE THAT DECLARES TESTS ON IT, refuses the whole leg with a
+# reason naming the type. Nested/generic HELPER types with no tests are ignored
+# entirely — they are routine in C# test files and must not park a good ticket.
+# "Declares tests" is answered by the pp-BLIND counter (`nseen`), NOT the floor:
+# a bad-shape type whose every attribute sits inside `#if` is still a test class
+# the SDK discovers, and asking the pp-aware counter made it invisible to BOTH
+# guards. Keep those two counters distinct — that composition was a live silent
+# green, not a hypothetical.
+#
+# The refusal is per-FILE, not per-type: ONE unnameable test type parks the whole
+# staged set for that ticket, including the types the filter could have named.
+# That is the correct direction — a partial selection reported as proof is the
+# exact failure this gate exists to prevent, and there is no honest way to
+# certify "these three ran, that one could not" as a pass. A captain reading the
+# park message sees the type that caused it; moving that one type to a top-level
+# non-generic class clears the whole file.
+#
+# LEFT TO GUARD 2 (under-select or over-declare; the shortfall parks the ticket):
+#   • an ABSTRACT test class is named fine by the scan but never discovered by
+#     the SDK, so its declared tests go unrun and the shortfall catches it. This
+#     is GUARD 2's remaining LIVE job: eight exotic shapes were probed against
+#     `--list-tests` on SDK 10.0.107 — static class, static method, private
+#     method, generic method, no-public-ctor, throwing-ctor, ctor-with-args are
+#     all DISCOVERED; `abstract` was the ONLY scan-names-but-SDK-skips shape
+#     found. Recorded so a future round does not re-derive it.
+#   • an INTERFACE-declared test is dropped from the filter (interfaces are not
+#     a type keyword here) but its `[Fact]` IS counted by the census, so the
+#     shortfall is caught — same family, just rarer.
+#   • PREPROCESSOR bodies are not counted at all (see `pp` below), so a test
+#     inside an ENABLED `#if NET10_0` under-declares. Under-counting is the safe
+#     direction: only a shortfall against the observed count is a defect.
+#     NOTE FOR WHOEVER READS THIS NEXT: `#if` / `#else` / `#elif` skip EVERY
+#     branch, including the one that really compiles. That is DELIBERATE, not an
+#     oversight. Evaluating the conditions to count only the live branch would
+#     make the floor exact — and would immediately re-introduce the false-park it
+#     replaced, because the harness cannot know the defined symbols of the build
+#     (TargetFramework, Debug/Release, custom constants). Do not "fix" it.
+#
+# The SDK's `--list-tests` renders every one of these correctly and is the fix if
+# a real ticket ever needs one of these shapes to actually RUN (see the spike
+# note above for why it is not the default).
+native_dotnet_scan() { # file → "F<Namespace.Type>" lines, then one "A<count>"
+  local f="$1" bom
+  [ -f "$f" ] || { printf 'A0\n'; return 0; }
+  bom="$(printf '\357\273\277')"
+  LC_ALL=C awk -v bom="$bom" '
+    function nsprefix(   i, p) {
+      if (filens != "") return filens "."
+      p = ""
+      for (i = 1; i <= depth; i++) if (nsname[i] != "") p = p nsname[i] "."
+      return p
+    }
+    function ident(s, n,   nm) {          # read an identifier at GI, advance GI
+      nm = ""
+      while (GI <= n && substr(s, GI, 1) ~ /[A-Za-z0-9_]/) { nm = nm substr(s, GI, 1); GI++ }
+      return nm
+    }
+    function skipsp(s, n) { while (GI <= n && substr(s, GI, 1) ~ /[ \t]/) GI++ }
+    # The last significant char before `pos` on this line — used to tell a type
+    # DECLARATION from a generic CONSTRAINT (`where T : class`), where the same
+    # keyword follows a `:` or `,`.
+    function prevsig(s, pos,   k, c) {
+      k = pos - 1
+      while (k >= 1) {
+        c = substr(s, k, 1)
+        if (c == " " || c == "\t") { k--; continue }
+        return c
+      }
+      return ""
+    }
+    # Record a type declaration. `bad` marks a shape the --filter CANNOT name:
+    # generic (VSTest renders `Ns.C`1`) or nested in another type (`Ns.Outer+In`).
+    # A nameable type is emitted now; a bad one is held until its scope closes,
+    # and only reported if it turned out to DECLARE TESTS — nested/generic helper
+    # types (fixtures, builders, data holders) are routine in C# test files and
+    # must never park a good ticket.
+    function decl(fq, bad) {
+      pendname = fq; pendbad = bad; pendtype = 1
+      if (!bad && pp == 0) print "F" fq
+    }
+    function intype(   i) {
+      for (i = 1; i <= depth; i++) if (istype[i]) return 1
+      return 0
+    }
+    # Consume one LINE token by token. `inblock`, `strmode` and `rawq` persist
+    # ACROSS lines, so a multi-line /* … */, a verbatim @"…" and a raw """…"""
+    # all stay swallowed until they really close.
+    function scan(s,   n, c, c2, w, nm, j, r) {
+      n = length(s); GI = 1
+      while (GI <= n) {
+        if (inblock) {                                  # inside /* … */
+          j = index(substr(s, GI), "*/")
+          if (j == 0) return
+          GI = GI + j + 1; inblock = 0
+          continue
+        }
+        if (strmode == "verbatim") {                    # inside @"…"
+          while (GI <= n) {
+            if (substr(s, GI, 1) == "\"") {
+              if (substr(s, GI + 1, 1) == "\"") { GI += 2; continue }  # "" escape
+              GI++; strmode = ""; break
+            }
+            GI++
+          }
+          if (strmode == "verbatim") return
+          continue
+        }
+        if (strmode == "raw") {                         # inside """…"""
+          while (GI <= n) {
+            if (substr(s, GI, 1) == "\"") {
+              r = 0
+              while (GI + r <= n && substr(s, GI + r, 1) == "\"") r++
+              GI += r
+              if (r >= rawq) { strmode = ""; break }
+              continue
+            }
+            GI++
+          }
+          if (strmode == "raw") return
+          continue
+        }
+        c = substr(s, GI, 1)
+        if (c == "/") {
+          c2 = substr(s, GI + 1, 1)
+          if (c2 == "/") return                         # line comment
+          if (c2 == "*") { inblock = 1; GI += 2; continue }
+          GI++; continue
+        }
+        # `@"…"` / `$@"…"` open a VERBATIM string (may span lines, "" escapes).
+        if (c == "@" || c == "$") {
+          j = GI; r = 0
+          while (j <= n && (substr(s, j, 1) == "@" || substr(s, j, 1) == "$")) {
+            if (substr(s, j, 1) == "@") r = 1
+            j++
+          }
+          if (substr(s, j, 1) == "\"" && r) { GI = j + 1; strmode = "verbatim"; continue }
+          GI = j; continue
+        }
+        if (c == "\"") {
+          r = 0
+          while (GI + r <= n && substr(s, GI + r, 1) == "\"") r++
+          if (r >= 3) { rawq = r; GI += r; strmode = "raw"; continue }   # raw string
+          GI++
+          while (GI <= n) {
+            c = substr(s, GI, 1)
+            if (c == "\\") { GI += 2; continue }
+            if (c == "\"") { GI++; break }
+            GI++
+          }
+          continue
+        }
+        if (c == "'"'"'") {                             # char literal
+          GI++
+          while (GI <= n) {
+            c = substr(s, GI, 1)
+            if (c == "\\") { GI += 2; continue }
+            if (c == "'"'"'") { GI++; break }
+            GI++
+          }
+          continue
+        }
+        if (c == "[") { attr++; GI++; continue }
+        if (c == "]") { if (attr > 0) attr--; GI++; continue }
+        if (c == "{") {
+          depth++
+          nsname[depth] = pend; pend = ""
+          istype[depth] = pendtype; tname[depth] = pendname
+          # The carve-out watermark is the pp-BLIND counter (see nseen).
+          tbad[depth] = pendbad; tmark[depth] = nseen
+          pendtype = 0; pendname = ""; pendbad = 0
+          GI++; continue
+        }
+        if (c == "}") {
+          if (depth > 0) {
+            # An unnameable type that actually DECLARED tests is reported here —
+            # at scope close, when we know whether its body held any. No `pp`
+            # condition: a bad type whose CLOSING BRACE happens to land inside an
+            # open `#if` is still a bad type, and suppressing the report there
+            # would hide it from both guards.
+            if (istype[depth] && tbad[depth] && nseen > tmark[depth])
+              print "U" tname[depth]
+            nsname[depth] = ""; istype[depth] = 0; tname[depth] = ""; tbad[depth] = 0
+            depth--
+          }
+          GI++; continue
+        }
+        if (c ~ /[A-Za-z_]/) {
+          pc = prevsig(s, GI)
+          w = ident(s, n)
+          # Inside [ … ]: the TEST-ATTRIBUTE census (guard 2). Only attributes
+          # that yield AT LEAST one discovered test are counted — [Fact] and
+          # [Test]/[TestMethod] yield exactly one, [Theory] yields one or more.
+          # Data-row attributes ([InlineData]/[MemberData]/[TestCase]/[DataRow])
+          # are deliberately NOT counted: they can only push the OBSERVED count
+          # above the floor, never below it.
+          # `pp > 0` = inside a #if block. Its body may or may not compile, so it
+          # is NOT counted and NOT emitted. Under-counting is the SAFE direction
+          # by design (only a SHORTFALL against the observed count is a defect),
+          # whereas over-counting parks a legitimate green run — and `#if DEBUG`
+          # / `#if NET8_0` / `#if WINDOWS` around a test is routine C#.
+          if (attr > 0) {
+            if (w == "Fact" || w == "Theory" || w == "Test" || w == "TestMethod") {
+              # TWO counters, deliberately different, because the two questions
+              # are different:
+              #   nseen — EVERY test attribute, #if or not. Answers "does this
+              #     type declare tests?" for the R1 carve-out. It must be
+              #     pp-BLIND: a bad-shape type whose every attribute is
+              #     #if-guarded is still a test class the SDK will discover
+              #     (dotnet test defaults to Debug), and a pp-aware count made
+              #     it look test-free — refused by nothing, emitted by nothing,
+              #     counted by nothing. Invisible to both guards.
+              #   nattr — only what is OUTSIDE #if. The GUARD 2 floor, where
+              #     under-counting is the safe direction (R2).
+              nseen++
+              if (pp == 0) nattr++
+            }
+            continue
+          }
+          if (w == "namespace") {
+            skipsp(s, n)
+            nm = ""
+            while (GI <= n && substr(s, GI, 1) ~ /[A-Za-z0-9_.]/) { nm = nm substr(s, GI, 1); GI++ }
+            if (nm != "") {
+              skipsp(s, n)
+              # `namespace X;` is file-scoped; `namespace X {` binds to the
+              # next opening brace.
+              if (substr(s, GI, 1) == ";") { filens = nm; pend = ""; GI++ }
+              else                         { pend = nm }
+            }
+            continue
+          }
+          # A TEST TYPE can be declared with any of these. `record` may be
+          # followed by `class` or `struct` before the name.
+          if (w == "record" || w == "class" || w == "struct") {
+            # A generic CONSTRAINT (`where T : class`, `where U : struct`) uses
+            # the same keyword but always follows a `:` or `,`. It declares
+            # nothing — reading it as a declaration used to emit a bogus term
+            # named after whatever came next (e.g. a second `where`).
+            if ((w == "class" || w == "struct") && (pc == ":" || pc == ",")) continue
+            skipsp(s, n)
+            nm = ident(s, n)
+            if (w == "record" && (nm == "class" || nm == "struct")) {
+              skipsp(s, n); nm = ident(s, n)
+            }
+            # `where T : class` at a line start has no name after it — nothing.
+            if (nm == "") continue
+            skipsp(s, n)
+            # A `<` here means a GENERIC type: VSTest renders it `Ns.C`1`, which
+            # this filter cannot name.
+            decl(nsprefix() nm, (substr(s, GI, 1) == "<" || intype()) ? 1 : 0)
+            continue
+          }
+          continue
+        }
+        GI++
+      }
+    }
+    BEGIN { depth = 0; filens = ""; pend = ""; inblock = 0; strmode = ""
+            attr = 0; nattr = 0; nseen = 0; pp = 0
+            pendtype = 0; pendname = ""; pendbad = 0 }
+    {
+      if (NR == 1 && substr($0, 1, 3) == bom) $0 = substr($0, 4)
+      sub(/\r$/, "")
+      # PREPROCESSOR directives are line-oriented and can never be code. Only
+      # honoured outside a block comment / multi-line string, so a `#` at the
+      # start of a line INSIDE one of those cannot fake a directive.
+      if (inblock == 0 && strmode == "" && $0 ~ /^[ \t]*#/) {
+        if      ($0 ~ /^[ \t]*#[ \t]*if/)    pp++
+        else if ($0 ~ /^[ \t]*#[ \t]*endif/) { if (pp > 0) pp-- }
+        next
+      }
+      scan($0)
+    }
+    END { print "A" nattr }
+  ' "$f" 2>/dev/null
+}
+
+# The declared types, fully qualified — the basis for the --filter terms.
+native_dotnet_test_fqns() { # file → one Namespace.Type per line
+  native_dotnet_scan "$1" | sed -n 's/^F//p'
+}
+
+# Types this file declares that DO declare tests and that the --filter provably
+# CANNOT select: generic (`Ns.C`1`) and nested-in-a-type (`Ns.Outer+Inner`).
+# The caller refuses to build a command at all when this is non-empty — GUARD 1's
+# principle, extended from "no unqualified term" to "no term we already know is
+# unselectable". The alternative (emit them and let GUARD 2 catch the shortfall)
+# is not safe enough: GUARD 2 compares AGGREGATE sums, and a [Theory] contributes
+# 1 to the floor but N to the observed count, so the N-1 slack is a budget a
+# dropped class can hide inside — an observed silent green, not a theory.
+native_dotnet_unnameable() { # file → one Namespace.Type per line
+  native_dotnet_scan "$1" | sed -n 's/^U//p'
+}
+
+# GUARD 2's declared-test floor for one staged file: how many tests it promises.
+# Sound because each counted attribute yields AT LEAST one discovered test
+# (measured against SDK 10.0.107: [Fact] ⇒ 1, [Fact(Skip)] ⇒ 1, [Theory]+2
+# InlineData ⇒ 2, [Theory]+MemberData(3) ⇒ 3, [Theory]+MemberData(0) ⇒ 1 failing
+# "no data" test). Exact equality would be WRONG — theories expand.
+native_dotnet_declared_tests() { # file → integer
+  local n
+  n="$(native_dotnet_scan "$1" | sed -n 's/^A//p' | tail -1)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# How many tests VSTest actually COLLECTED, summed across every project's
+# summary line (a multi-project leg emits one each). 0 when no summary appeared.
+proof_dotnet_collected_count() { # runner-output → integer
+  printf '%s\n' "$1" \
+    | grep -E '^(Passed|Failed|Skipped)! +- +Failed: +[0-9]+, +Passed: +[0-9]+' \
+    | sed -E 's/.*Total: +([0-9]+).*/\1/' \
+    | awk '{ s += $1 } END { print s + 0 }'
 }
 
 # (S133: native_dest_rel — the native staged-test destination mapper — is
@@ -2239,7 +2665,168 @@ native_scoped_cmd() { # stack   (relpaths on stdin)
       [ -n "$names" ] || { printf ''; return 0; }
       printf "go test -run '^(%s)\$'" "$names"
       ;;
+    ruby)
+      # S145: rspec/minitest are scoped by EXPLICIT FILE ARGUMENT — pass ONLY the
+      # ticket's staged spec/test file(s), so no sibling suite runs (the S106 per-
+      # stack isolation invariant). rspec takes files directly; minitest is driven
+      # by requiring each file under `ruby -Itest`. rspec wins when both kinds are
+      # staged. Runners are invoked DIRECTLY (no `bundle exec`) so the gate runs
+      # offline; a *_spec.rb / *_test.rb name is the runnable-target signal (an
+      # empty/no-example file still runs and lands as zero-collect → INCONCLUSIVE).
+      local rb_specs="" rb_tests=""
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        case "${rel##*/}" in
+          *_spec.rb) rb_specs="$rb_specs $rel" ;;
+          *_test.rb) rb_tests="$rb_tests $rel" ;;
+        esac
+      done
+      if [ -n "$rb_specs" ]; then
+        printf 'rspec%s' "$rb_specs"
+      elif [ -n "$rb_tests" ]; then
+        printf "ruby -Itest -e 'ARGV.each { |f| require File.expand_path(f) }'%s" "$rb_tests"
+      else
+        printf ''
+      fi
+      ;;
+    dotnet)
+      # S147: scope = ONE LEG PER TEST PROJECT —
+      #   ( cd <projdir> && dotnet test <proj.csproj> --filter "<OR of FQNs>" )
+      # chained so EVERY leg runs and a failure in ANY of them fails the command.
+      # Emitted relative to the LEG ROOT (proof_native_run_dir returns the root
+      # for dotnet), each leg cd-ing into its own project directory.
+      #
+      # Why per-project (the D3 defect): taking the project from the FIRST staged
+      # .cs while OR-ing the FQNs of ALL of them meant a second test project was
+      # never built or run, yet flip-flop.json recorded its file as PROVEN — a
+      # staged test that must fail could pass the gate without ever executing.
+      # Nothing is ever recorded as proven that was not executed, so a staged
+      # file that resolves to NO project, or a project that contributes no
+      # runnable class, yields an EMPTY command (the caller renders INCONCLUSIVE)
+      # rather than a partial run.
+      #
+      # Why each filter term ENDS in a `.` (the D2 defect): VSTest's `~` is a
+      # CONTAINS match, so `~A.B.Widget` also selects `A.B.WidgetExtra`
+      # (OBSERVED: it rode along and failed the leg on SDK 10.0.107). The `=`
+      # operator IS exact but matches the FULL `Namespace.Class.Method` name, so
+      # it cannot scope a whole class — there is no exact CLASS operator.
+      # Appending the method separator makes the CONTAINS match exact at the
+      # class boundary: `~A.B.Widget.` selects `A.B.Widget.Case` and excludes
+      # `A.B.WidgetExtra.Case` (verified both ways against the real SDK).
+      #
+      # Sibling tests still COMPILE (the project builds as a unit — that is what
+      # makes the staged file visible at all) but are NOT RUN.
+      local dn_rels="" dn_projs="" dn_pr dn_dir dn_base dn_filter dn_legs="" fq
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        case "${rel##*/}" in *.cs) : ;; *) continue ;; esac
+        dn_rels="$dn_rels$rel
+"
+      done
+      [ -n "$dn_rels" ] || { printf ''; return 0; }
+      # Unique enclosing projects, in first-seen order. ANY unenclosed file
+      # aborts the whole construction — never half-prove a staged set.
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        dn_pr="$(native_dotnet_project_for "$REPO_ROOT" "$rel")"
+        [ -n "$dn_pr" ] || { printf ''; return 0; }
+        printf '%s' "$dn_projs" | grep -Fxq "$dn_pr" && continue
+        dn_projs="$dn_projs$dn_pr
+"
+      done <<DN_RELS
+$dn_rels
+DN_RELS
+      while IFS= read -r dn_pr; do
+        [ -n "$dn_pr" ] || continue
+        dn_dir="${dn_pr%/*}"; [ "$dn_dir" = "$dn_pr" ] && dn_dir="."
+        dn_base="${dn_pr##*/}"
+        dn_filter=""
+        while IFS= read -r rel; do
+          [ -n "$rel" ] || continue
+          [ "$(native_dotnet_project_for "$REPO_ROOT" "$rel")" = "$dn_pr" ] || continue
+          # GUARD 1, extended: a staged file that declares TESTS on a shape the
+          # filter cannot name (generic / nested-in-a-type) is refused OUTRIGHT.
+          # Emitting the terms we CAN name would run a partial selection and call
+          # it proof — which is exactly the silent green the Theory-slack exploit
+          # produced. Refuse the whole command; the caller renders INCONCLUSIVE.
+          [ -n "$(native_dotnet_unnameable "$REPO_ROOT/$rel")" ] && { printf ''; return 0; }
+          for fq in $(native_dotnet_test_fqns "$REPO_ROOT/$rel"); do
+            # GUARD 1: never emit an UNQUALIFIED term. A bare `~Widget.` is a
+            # CONTAINS match against every namespace in the assembly, so a
+            # scanner bug that loses the namespace turns into a ride-along on
+            # somebody else's test — the exact shape the dot-terminated,
+            # namespace-qualified filter closed. Refusing to build the command
+            # makes that INCONCLUSIVE instead: dropping a class is a silent
+            # green, an extra term is only a zero-collect, so the failure
+            # direction must always be inconclusive, never pass.
+            case "$fq" in *.*) : ;; *) printf ''; return 0 ;; esac
+            dn_filter="${dn_filter:+$dn_filter|}FullyQualifiedName~$fq."
+          done
+        done <<DN_R2
+$dn_rels
+DN_R2
+        # A project whose staged files declare no class cannot be scoped at all —
+        # running the OTHER projects would report its files as proven.
+        [ -n "$dn_filter" ] || { printf ''; return 0; }
+        dn_legs="$dn_legs( cd \"$dn_dir\" && dotnet test \"$dn_base\" --filter \"$dn_filter\" ) || _lq=\$?; "
+      done <<DN_PROJS
+$dn_projs
+DN_PROJS
+      [ -n "$dn_legs" ] || { printf ''; return 0; }
+      printf '_lq=0; %sexit $_lq' "$dn_legs"
+      ;;
     *) printf '' ;;
+  esac
+}
+
+# The honest reason a native stack could NOT construct a scoped invocation —
+# rendered as the leg's INCONCLUSIVE message (never a green, never a raw
+# toolchain trace). rust/go/ruby keep their pre-147 wording byte-for-byte; only
+# dotnet, whose failure has two genuinely different causes, discriminates.
+native_no_target_reason() { # stack leg-root rels(newline or single) → message
+  case "$1" in
+    dotnet)
+      # Name the file that actually blocked the construction — with staged files
+      # spanning several projects, the FIRST one is often fine and a LATER one is
+      # the reason there is no runnable scope.
+      local dn_rel dn_orphan=""
+      while IFS= read -r dn_rel; do
+        [ -n "$dn_rel" ] || continue
+        case "${dn_rel##*/}" in *.cs) : ;; *) continue ;; esac
+        if [ -z "$(native_dotnet_project_for "$2" "$dn_rel")" ]; then
+          dn_orphan="$dn_rel"; break
+        fi
+      done <<DN_NTR
+$3
+DN_NTR
+      # GUARD 1's own reasons: a declared type that could not be namespace-
+      # qualified, or one whose SHAPE the filter cannot name at all. Each is
+      # distinct from "no test class" so the readout says what to change.
+      local dn_bare="" dn_fq dn_unname=""
+      while IFS= read -r dn_rel; do
+        [ -n "$dn_rel" ] || continue
+        case "${dn_rel##*/}" in *.cs) : ;; *) continue ;; esac
+        [ -n "$dn_unname" ] || dn_unname="$(native_dotnet_unnameable "$2/$dn_rel" | head -1)"
+        for dn_fq in $(native_dotnet_test_fqns "$2/$dn_rel"); do
+          case "$dn_fq" in *.*) : ;; *) dn_bare="$dn_fq"; break ;; esac
+        done
+        [ -n "$dn_bare" ] && break
+      done <<DN_BARE
+$3
+DN_BARE
+      if [ -n "$dn_orphan" ]; then
+        printf "proof-gate: no .csproj test project encloses the ticket's C# test file %s — dotnet test compiles per PROJECT, so a loose .cs outside one can never be discovered. Move the test inside the test project (a *.csproj referencing Microsoft.NET.Test.Sdk) and re-run." "$dn_orphan"
+      elif [ -n "$dn_unname" ]; then
+        printf "proof-gate: the ticket's dotnet test type \`%s\` is GENERIC or NESTED inside another type, and VSTest names those \`Ns.Type\`1\` / \`Ns.Outer+Inner\` — shapes this harness cannot select with --filter. Running only the types it CAN name would certify the ticket on tests that never executed, so the whole leg is refused. Move the test into a top-level, non-generic class and re-run." "$dn_unname"
+      elif [ -n "$dn_bare" ]; then
+        printf "proof-gate: the ticket's dotnet test type \`%s\` has no namespace, so the scoped invocation could only be built as an unqualified substring filter — which would also select same-named tests elsewhere in the assembly. Declare the test class inside a namespace and re-run." "$dn_bare"
+      else
+        printf "proof-gate: the ticket's dotnet test file(s) declare no test class — the --filter scoped invocation cannot be constructed."
+      fi
+      ;;
+    *)
+      printf "proof-gate: the ticket's %s test file(s) declare no runnable test target — the scoped invocation cannot be constructed." "$1"
+      ;;
   esac
 }
 # (S133: red_gate_native — the pre-implementation native red gate — is retired
@@ -2266,7 +2853,13 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # e.g. "cannot find package" mid-diff can never false-match — mirroring the env
       # arm's line-start discipline. Missing-package is RESOLUTION (a type/syntax
       # error is compile, in the `compile` arm below).
-      printf '%s' 'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve|\.go:[0-9]+:[0-9]+: (cannot find package|no required module provides package|cannot find module providing package)|^go: .*cannot find module providing package' ;;
+      # S145 RUBY: a load/name resolution failure. `cannot load such file -- ` is
+      # ruby's require diagnostic (rspec + minitest both print it, `-- ` separator
+      # anchors it so an app string merely mentioning the phrase can't false-fire);
+      # `uninitialized constant ` / `NameError:` are ruby's unresolved-symbol reds
+      # (a greenfield spec referencing a not-yet-defined class). These count as
+      # RESOLUTION (a syntax error is compile, in the arm below).
+      printf '%s' 'Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNSUPPORTED_DIR_IMPORT|Failed to load url|Failed to resolve import|Failed to resolve entry|Does the file exist\?|Rollup failed to resolve|\.go:[0-9]+:[0-9]+: (cannot find package|no required module provides package|cannot find module providing package)|^go: .*cannot find module providing package|cannot load such file -- |uninitialized constant |NameError:' ;;
     compile)
       # JS/TS + Python forms (byte-identical to pre-S104), then S104 RUST / GO / DOTNET
       # / JVM compile failures. Every new arm is ANCHORED the way each toolchain prints
@@ -2277,7 +2870,11 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # `^> Task :compile… FAILED` (compile-scoped, so a `:test FAILED` red is untouched)
       # — so an assertion diff that QUOTES a compile phrase, or a genuine cargo/go/junit
       # assertion red, stays a valid fail-first and never trips this detector.
-      printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)|^error\[E[0-9]+\]|^error: could not compile |\.go:[0-9]+:[0-9]+: (undefined:|syntax error)|\([0-9]+,[0-9]+\): error CS[0-9]+|^Build FAILED|\.java:[0-9]+: error:|^error: cannot find symbol|\[ERROR\] COMPILATION ERROR|^> Task :compile[A-Za-z]* FAILED' ;;
+      # S145 RUBY: the interpreter's own `file.rb:LINE: syntax error,` prefix — a
+      # parse failure the ruby/rspec/minitest process prints BEFORE any example
+      # runs. Anchored to the `.rb:N:` diagnostic prefix so an app/assertion string
+      # containing "syntax error," can never trip it (mirroring the go/dotnet arms).
+      printf '%s' 'SyntaxError|Unexpected (token|identifier|end of input|string)|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM|ERR_UNKNOWN_FILE_EXTENSION|is not defined|ParseError|Parse error|cannot parse|invalid syntax|IndentationError|unexpected EOF|compilation (failed|error)|^error\[E[0-9]+\]|^error: could not compile |\.go:[0-9]+:[0-9]+: (undefined:|syntax error)|\([0-9]+,[0-9]+\): error CS[0-9]+|^Build FAILED|\.java:[0-9]+: error:|^error: cannot find symbol|\[ERROR\] COMPILATION ERROR|^> Task :compile[A-Za-z]* FAILED|\.rb:[0-9]+: syntax error,' ;;
     env)
       # S111: `^npm (error|ERR!) could not determine executable to run` is npx's
       # own no-binary diagnostic (`npx vitest` in a package without vitest) —
@@ -2292,14 +2889,68 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       # this arm never feeds a red-gate verdict, so it cannot accept a red the gate
       # would reject; it only lets classify_impl_failure NAME a genuine cross-stack
       # assertion red instead of the generic over-broad-slice).
-      printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]|panicked at|--- FAIL:|test result: FAILED' ;;
+      # S145 RUBY (classify-only): rspec's `Failure/Error:` marker + its `Failed
+      # examples:` footer; minitest's `  N) Failure:` / `N) Error:` block; a
+      # summary line naming a NON-ZERO failure/error count (`[1-9][0-9]* failures?`
+      # — the `[1-9]` guard means a healthy `0 failures` pass line never matches);
+      # and minitest's `Expectation failed`.
+      # S147 DOTNET (classify-only): the three .NET frameworks, each anchored the
+      # way the runner ACTUALLY prints it (all four forms captured from SDK
+      # 10.0.107 in-session, never copied from a doc):
+      #  • `^Failed! +- +Failed: +[1-9]` — VSTest's summary line, emitted by
+      #    xUnit, NUnit AND MSTest alike. The `[1-9]` guard means the healthy
+      #    `Failed:     0` summary of a PASSING run can never match, and the
+      #    line-start anchor keeps a quoted copy inside app output from firing.
+      #  • `^\[xUnit\.net .*\[FAIL\]` — xUnit's own diagnostic line for a FAILING
+      #    case. Anchored on the `[FAIL]` form, NOT the bare `[xUnit.net ` prefix:
+      #    xUnit prints the SAME prefix for `[SKIP]`, so the prefix alone made a
+      #    fully GREEN run that merely skipped a case classify as a test failure
+      #    (`… MixedCases.SkipMe [SKIP]` under a `Passed!` summary).
+      #  • `Assert\.[A-Za-z]+\(\) Failure` (xUnit: `Assert.Equal() Failure:`) and
+      #    `Assert\.[A-Za-z]+ failed\.` (MSTest: `Assert.AreEqual failed.`),
+      #    anchored to the runner's own leading indentation.
+      #  • `^[[:space:]]+But was:` — NUnit's constraint-failure second line.
+      printf '%s' 'AssertionError|assert(ion)?[[:space:]_-]*(error|failed)|expected .+ (to|toBe|toEqual|to be|to equal|to have|to contain|to match)|[0-9]+ (failed|failing)|Tests?:.*(failed|fail)|✗|✕|●[[:space:]]|^[[:space:]]*FAIL[[:space:]]|panicked at|--- FAIL:|test result: FAILED|Failure/Error|Failed examples:|[0-9]+\) (Failure|Error):|[1-9][0-9]* (failures|errors)\b|Expectation failed|^Failed! +- +Failed: +[1-9]|^\[xUnit\.net .*\[FAIL\]|^[[:space:]]+Assert\.[A-Za-z]+\(\) Failure|^[[:space:]]+Assert\.[A-Za-z]+ failed\.|^[[:space:]]+But was:[[:space:]]' ;;
     zerotests)
       # S99 — the runner FINISHED but collected/ran ZERO tests. CLASSIFY-ONLY (the
       # self-smoke's zero-tests verdict + classify_impl_failure); NEVER consulted by
       # red_gate_ok's verdicts. TIGHT on purpose: it must NOT match a healthy red
       # suite that happens to print "0 passed" — only the runner's own "no tests
       # collected / ran" phrasings.
-      printf '%s' 'No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items' ;;
+      # S145 RUBY: rspec's `0 examples, 0 failures` and minitest's `0 runs, 0
+      # assertions`. TWO hazards are anchored out:
+      #  • the S106 SUBSTRING hazard — a healthy `10 examples`/`10 runs` CONTAINS
+      #    `0 examples`/`0 runs`; the `(^|[^0-9])` guard requires the count to be a
+      #    STANDALONE zero, so a 10-example suite is never flagged.
+      #  • rspec ALSO prints `0 examples, 0 failures, N error occurred…` on a
+      #    LoadError (a legitimate greenfield fail-on-parent, exit 1). The `$`
+      #    end-anchor on `0 failures` matches ONLY the true-zero summary line, NOT
+      #    the load-error line (which has `, N error…` after it) — so a real red is
+      #    never swallowed as zero-collect. `No examples found` is deliberately NOT
+      #    matched for the same reason (rspec prints it on a LoadError too).
+      # S147 DOTNET — the open silent-green trap, closed. THREE phrasings, all
+      # OBSERVED on SDK 10.0.107, all exiting **0**:
+      #  • `--filter` matched nothing → "No test matches the given testcase
+      #    filter `…` in <dll>";
+      #  • a test project with no test methods → "No test is available in
+      #    <dll>. Make sure that test discoverer & executors are registered…";
+      #  • every discovered case SKIPPED (`[Fact(Skip="…")]`) → VSTest's summary
+      #    "Skipped! - Failed:     0, Passed:     0, Skipped:     1, Total: 1…".
+      #    This third one prints NEITHER "no test" phrase — the tests exist and
+      #    were discovered, they just never EXECUTED — so it was the remaining
+      #    dotnet green-on-nothing hole (rust's `#[ignore]` equivalent,
+      #    `test result: ok. 0 passed`, was already in the family). The arm keys
+      #    on the NUMBERS, not the banner word: zero failed AND zero passed on a
+      #    VSTest summary line = nothing ran. A mixed run (`Passed: 1, Skipped:
+      #    1`) really did execute a test and stays a legitimate pass.
+      # ANCHORING (S4, corrected): these are anchored at COLUMN 0 because that is
+      # where VSTest prints them, which is a REAL narrowing — prose or app output
+      # that quotes a phrase mid-line cannot fire. It is NOT a guarantee that app
+      # output can never fire: a program that prints one of these lines flush at
+      # column 0 (a test-runner wrapper echoing its child's output, say) WILL
+      # match — exactly the same strength, and the same accepted residual risk,
+      # as every other member of this family.
+      printf '%s' 'No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items|(^|[^0-9])0 examples, 0 failures$|(^|[^0-9])0 runs, 0 assertions|^No test matches the given testcase filter .*\.dll|^No test is available in .*\.dll|^(Passed|Failed|Skipped)! +- +Failed: +0, +Passed: +0,' ;;
     hang)
       # A suite that HUNG and never settled under the hard timeout. CLASSIFY-ONLY
       # (classify_impl_failure at exhaustion); NEVER consulted by a gate verdict.
@@ -3162,14 +3813,40 @@ suite_has_assertions() { # tests-dir
 # under tests/ only means the worker must declare touching it, never a false pass.
 proof_is_test_path() { # relpath → 0 if test-classified
   local p="$1" b; b="${p##*/}"
+  # S147 dotnet: `dotnet build` writes GENERATED .cs (AssemblyInfo, GlobalUsings)
+  # into obj/ and bin/ INSIDE the test project — i.e. under a `tests/` or
+  # `*Tests/` path the rules below would classify as authored tests, which would
+  # stage build output into the parent leg as if the ticket had written it.
+  # Checked FIRST, and gated on the `.cs` extension so this can never change the
+  # classification of any other stack's path (js/python/rust/go/ruby/jvm are
+  # byte-identical by construction).
+  case "$p" in
+    *.cs)
+      case "$p" in obj/*|*/obj/*|bin/*|*/bin/*) return 1 ;; esac ;;
+  esac
   case "$p" in
     */__tests__/*|__tests__/*)          return 0 ;;
     tests/*|*/tests/*|test/*|*/test/*)  return 0 ;;
+    spec/*|*/spec/*)                     return 0 ;;  # S145: ruby rspec layout
   esac
   case "$b" in
     *.test.*|*.spec.*)   return 0 ;;
     test_*.py|*_test.py) return 0 ;;
     *_test.go)           return 0 ;;
+    *_spec.rb|*_test.rb) return 0 ;;  # S145: ruby rspec / minitest
+  esac
+  # S147 dotnet: C# has no `_test.cs` convention — tests live in a project named
+  # `<Thing>.Tests` (what `dotnet new xunit` scaffolds) with files like
+  # `UnitTest1.cs` / `WidgetTests.cs`. Gated on the `.cs` extension so this arm
+  # can NEVER reclassify a path in any other stack (js/python/rust/go/ruby/jvm
+  # behaviour is byte-identical by construction).
+  case "$p" in
+    *.cs)
+      case "$p" in *Tests/*|*Test/*|*Tests.*/*) return 0 ;; esac
+      case "$b" in
+        *Test.cs|*Tests.cs|Test*.cs|*Test[0-9]*.cs|*Tests[0-9]*.cs) return 0 ;;
+      esac
+      ;;
   esac
   return 1
 }
@@ -3206,17 +3883,144 @@ proof_test_rels_in_diff() { # parent-sha worktree [existing|all] → relpaths
 # stay byte-identical (this session touches no live verdict).
 proof_zero_collected() { # runner-output → 0 if zero tests were collected/ran
   suite_collected_zero_tests "$1" && return 0
+  # S147: the dotnet pair rides the SHARED `zerotests` arm above (they are real
+  # runner phrasings, useful to the live classifier too), so nothing extra is
+  # needed here — go's/cargo's exit-0 forms stay local as before.
   printf '%s' "$1" | grep -Eq 'no tests to run|test result: ok\. 0 passed'
+}
+
+# WHAT the leg was doing when the clock ran out (S147 DEFECT-4).
+#
+# The gate timeout exists to bound a suite that NEVER SETTLES, and the old
+# message said exactly that — unconditionally. But a leg can also run out of
+# clock while it is still FETCHING OR COMPILING DEPENDENCIES: the first `dotnet
+# test` on a machine with a cold NuGet cache downloads its whole package graph
+# before a single test runs. Those two are opposite problems with opposite fixes
+# (a hang is a bug in the ticket's tests; a slow restore just needs a warmer
+# cache or a bigger budget), and blaming the suite for a slow restore is the
+# false-park this round exists to avoid.
+#
+# The discrimination is EVIDENCE-BASED, read off the runner's own captured
+# output — never a guess. Three honest states:
+#   * it announced restore/download/compile work and never reached test
+#     execution  → report the dependency phase;
+#   * it reached test execution and then stopped producing  → a hang, as before;
+#   * it produced nothing to go on  → say that, and name both possibilities.
+# The bound itself is UNCHANGED: the runner is still group-killed at $gsecs, on
+# every path. This only changes what the captain is TOLD about the kill.
+#
+# TWO RULES KEEP IT HONEST (learned the hard way — the first cut broke both):
+#
+#   1. EXECUTION EVIDENCE WINS, ALWAYS. If anything in the buffer shows a test
+#      actually running, this is a hang — no matter what else the buffer holds.
+#      The first cut matched a bare `Downloading ` anywhere, so a genuine
+#      never-settling test that printed "Downloading rate-table.json from the
+#      fixture server" was absolved as a cold-cache restore ("the tests
+#      themselves are not implicated") while the SAME buffer carried node's own
+#      `✖ … (4874ms)` / `ℹ cancelled 1`. Telling a captain to warm the cache and
+#      raise the timeout just makes them wait longer for the same hang. So
+#      `started_re` is deliberately BROAD across runners (a per-test duration in
+#      parentheses is enough), and it is tested FIRST.
+#   2. A DEPENDENCY VERDICT NEEDS A REAL PACKAGE-MANAGER BANNER, AND IT MUST BE
+#      THE LAST THING SEEN. The tokens are shaped like what package managers
+#      actually print (`Downloading <pkg> <version>`, `go: downloading`,
+#      `Compiling <crate> v1.2`), not bare English words an application logs, and
+#      they only count in the TAIL — a restore that finished long ago is not what
+#      the clock ran out on.
+#
+# Anything else is UNDETERMINED, and says so. Honest ambiguity is acceptable; a
+# confident wrong classification is not.
+proof_timeout_cause() { # runner-output → the cause clause
+  local out="$1"
+  # Evidence that a TEST ACTUALLY RAN, across the runners LCARS drives. Broad on
+  # purpose: a false "hang" only costs the captain a second look, whereas a false
+  # "cold cache" sends them away from a real bug.
+  local started_re='Starting test execution|Test run for |VSTest version|^(Passed|Failed|Skipped)!|test result:|^[[:space:]]*running [0-9]+ test|^=== RUN|^--- (PASS|FAIL|SKIP)|^(ok|FAIL|PASS)[[:space:]]|[0-9]+ examples?, [0-9]+ failure|^[[:space:]]*ℹ (tests|pass|fail|cancelled|suites)|^[[:space:]]*(✔|✖|✓|×|✗)[[:space:]]|^# Subtest|^TAP version|Test Files |^Tests[[:space:]]|^(PASS|FAIL)[[:space:]]|RUN  v|collected [0-9]+ item|test session starts|[0-9]+ (passed|failed|passing|failing)|\([0-9]+(\.[0-9]+)?[[:space:]]*m?s\)'
+  # Real package-manager restore banners ONLY — each carries a package/version or
+  # a tool-specific prefix, so an application's own "Downloading report.csv" or
+  # "Building index" cannot trip it.
+  local dep_re='Determining projects to restore|Restoring packages|Restored .*\.(cs|fs|vb)proj|^[[:space:]]*Downloading [^[:space:]]+ [0-9]+\.[0-9]|go: downloading |Updating crates\.io index|^[[:space:]]*Downloaded [0-9]+ crate|^[[:space:]]*Compiling [^[:space:]]+ v[0-9]|^[[:space:]]*Fetching (gem|source|https?://)|^[[:space:]]*Installing [^[:space:]]+ [0-9]+\.[0-9]|Resolving dependencies|added [0-9]+ packages|Bundle complete'
+
+  # RULE 1 — execution evidence anywhere in the buffer settles it.
+  if printf '%s' "$out" | grep -Eq "$started_re"; then
+    printf 'the suite STARTED running and then stopped producing output — a suite that never settles cannot prove anything. Look for a hang in the tests themselves (an unresolved promise, an awaited mock, a blocked I/O wait); raising LCARS_GATE_TIMEOUT will only make the wait longer.'
+    return 0
+  fi
+  # RULE 2 — a restore banner, and it has to be what the clock ran out ON.
+  local tail_lines; tail_lines="$(printf '%s' "$out" | grep . | tail -5)"
+  if printf '%s' "$tail_lines" | grep -Eq "$dep_re"; then
+    printf 'the leg was still RESOLVING/BUILDING DEPENDENCIES and never reached test execution — this is a cold-cache first run, NOT a hung suite. Warm the cache once (e.g. run the stack'"'"'s restore/build in the repo) or raise LCARS_GATE_TIMEOUT for this repo; the tests themselves are not implicated.'
+    return 0
+  fi
+  printf 'the leg produced nothing the harness recognised as either test execution or dependency resolution, so the cause is undetermined — it may be a hung suite OR a slow first-run dependency restore. Re-run the recorded command by hand (see this leg'"'"'s "cmd") to see which; raise LCARS_GATE_TIMEOUT if it is simply slow.'
+}
+
+# Single-quote a string for safe re-use in a shell (S147 round 2). The recorded
+# gate command is meant to be PASTED, so every interpolated path/scope/command
+# has to survive spaces, quotes, `$`, backticks and backslashes verbatim. Single
+# quotes suppress all expansion; the only character needing care is `'` itself,
+# closed and re-opened around an escaped one ('\'').
+proof_shq() { # string → '…' safe for a shell
+  local s="$1"
+  # The quote characters come from ANSI-C literals, NOT from backslash escapes
+  # inside a double-quoted replacement: `"${s//\'/\'\\\'\'}"` LOOKS right and is
+  # not — bash re-processes the replacement, and the result mangles every
+  # apostrophe (a path like /Users/o'brien produced an unpasteable string). With
+  # both sides held in plain variables there is no second round of processing.
+  local sq=$'\047'                # '
+  local rep=$'\047\134\047\047'   # '\''  — close, escaped quote, reopen
+  s="${s//$sq/$rep}"
+  printf '%s%s%s' "$sq" "$s" "$sq"
+}
+
+# GLOB METACHARACTERS IN THE SCOPE (S148 GUARD, generic lane only). Since Node
+# 22, `node --test <path>` treats its positional as a GLOB PATTERN, so the
+# ABSOLUTE scope — which carries the checkout's own path — is re-interpreted by
+# the runner. This is NOT a quoting bug: the shell delivers the right bytes and
+# the runner re-globs them, and glob-ESCAPING here would corrupt the path for
+# every runner that takes it literally (pytest and rspec both do). Observed on
+# node v25.6.1, one directory per character:
+#   `*`  EXPANDS across siblings — the leg silently runs test files the ticket
+#        never touched. Not merely a false fail: a ride-along in a glob-matched
+#        sibling can supply the PARENT leg's red, turning a test-after cheat the
+#        gate correctly FAILS into a recorded PASS (constructed and observed).
+#   `?`  same expansion, one character wide.
+#   `[`  a CLOSED class (`br[a-c]k`) matched a SIBLING instead of the real
+#        directory — one test collected, from the wrong repo, with no sign of it.
+#   `{`  `{a,b}` brace-expands identically.
+#   `\`  is glob-UNESCAPED → "Could not find '<path>'" while the file plainly
+#        exists → a false fail on honest work.
+# A lone `[` / `{` (unclosed, or no comma) is literal TODAY, but whether it opens
+# a class is the runner's own parsing state — so we refuse the OPENER rather than
+# re-implement its parser and be silently wrong. Everything else a real machine
+# actually has in a path — space, tab, `'`, `"`, `$`, backtick, `;`, `#`, `~`,
+# `+`, parens, `&`, `=`, `!`, unicode — is verified LITERAL and must keep running
+# (tests O5); each character here is a repo shape LCARS refuses.
+proof_scope_glob_char() { # abs-scope → the first glob metachar in it ("" = safe)
+  local s="$1" c
+  for c in '*' '?' '[' '{' '\'; do
+    case "$s" in *"$c"*) printf '%s' "$c"; return 0 ;; esac
+  done
+  printf ''
 }
 
 # Run the ticket's tests SCOPED, per stack, from a given tree root (either the
 # tip worktree or the parent scratch worktree). Sets PROOF_LEG_RC + PROOF_LEG_OUT.
 # rc 96/97 are local sentinels for "cannot even construct the run" (no
-# testCommand / no runnable native target) — the caller renders INCONCLUSIVE.
-PROOF_LEG_RC=0; PROOF_LEG_OUT=""
+# testCommand / no runnable native target / a scope the runner would re-glob) —
+# the caller renders INCONCLUSIVE.
+# PROOF_LEG_CMD (S147 DEFECT-2) — the command this leg ACTUALLY executed, as a
+# reader could paste it into a shell. rc + a 20-line tail can never show whether
+# the run was scoped: on dotnet the `--filter` and the unscoped invocation print
+# BYTE-IDENTICAL output, so a captain auditing flip-flop.json had no way to tell
+# the gate really narrowed the run and had to reconstruct the command by hand.
+# Recording it makes the gate self-evidencing. It is the real string (filter
+# terms, per-project `cd` legs, the LCARS_TESTS_DIR scope and the cwd), NOT a
+# label — a pretty summary would re-open exactly the gap this closes.
+PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
 proof_scoped_leg_run() { # leg-root rels(newline)
   local root="$1" rels="$2" first cmd run_dir rc=0 out
-  PROOF_LEG_RC=0; PROOF_LEG_OUT=""
+  PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
   first="$(printf '%s\n' "$rels" | grep . | head -1)"
   local stack; stack="$(resolve_stack)"
   # S133/DEFECT-2: both flip-flop legs run under a PORTABLE hard timeout so a
@@ -3235,10 +4039,14 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     if [ -z "$cmd" ]; then
       rm -f "$gof"
       PROOF_LEG_RC=97
-      PROOF_LEG_OUT="proof-gate: the ticket's $stack test file(s) declare no runnable test target — the scoped invocation cannot be constructed."
+      PROOF_LEG_OUT="$(native_no_target_reason "$stack" "$root" "$rels")"
       return 0
     fi
     run_dir="$(proof_native_run_dir "$stack" "$root" "$first")"
+    # The native cmd is a self-contained shell string with no dependence on env
+    # the gate sets, so `cd <dir> && <cmd>` re-runs faithfully as-is; only the
+    # directory needs quoting (a repo path may contain a space).
+    PROOF_LEG_CMD="cd $(proof_shq "$run_dir") && $cmd"
     ( cd "$run_dir" && run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
   else
     # js/py: the S87 dir-scoped run — LCARS_TESTS_DIR points at the single file
@@ -3253,12 +4061,50 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     local pkg; pkg="$(package_of_relpath "$first" "$root")"
     run_dir="$root${pkg:+/$pkg}"
     local scope; scope="$(intree_scope_for "$root" "$rels")"
+    # S148 GUARD — a scope the runner would re-interpret as a glob PATTERN (see
+    # proof_scope_glob_char). Refuse the leg rather than run it: unrun is
+    # INCONCLUSIVE, whereas running it is either a mystery red or a widened run
+    # whose green (or whose parent-leg red) came from a file the ticket never
+    # touched. Native lanes are immune — no repo path enters their command.
+    local gch; gch="$(proof_scope_glob_char "$scope")"
+    if [ -n "$gch" ]; then
+      rm -f "$gof"
+      PROOF_LEG_RC=96
+      PROOF_LEG_OUT="proof-gate: the path this leg must hand the test runner contains \`$gch\`, which the runner re-interprets as a GLOB PATTERN instead of a literal path (scope: $scope) — the run would either find nothing or silently widen to files the ticket never touched, so it was NOT run. Nothing is wrong with the ticket: it is WHERE the repo lives. Move or rename the checkout to a path free of \` * ? [ { \\ \` and re-run."
+      return 0
+    fi
+    # S148 — WHITESPACE IN THE CHECKOUT PATH. $scope is ABSOLUTE, so it carries
+    # the repo's path, and everything on this lane hands it over quoted: the
+    # `LCARS_TESTS_DIR="$scope"` assignment below, the proof_shq-quoted record,
+    # and (since S148) the SEEDED testCommand's own interpolation of it. Before
+    # that last one was quoted, a repo living at `…/sp test` word-split the scope
+    # inside the testCommand — the runner got `…/sp` and `test/…`, the TIP leg
+    # went red, and the gate FALSE-FAILED honest tickets by location alone.
+    #
+    # THE SEPARATE BOUND, now GUARDED just below: quoting delivers the scope
+    # byte-correct, but the RUNNER may re-interpret it — `node --test <path>`
+    # takes its positional as a glob pattern. That is not fixable by quoting or
+    # by escaping, so the guard refuses those repo shapes instead of running them.
+    # The js/py lane scopes via the LCARS_TESTS_DIR the testCommand interpolates,
+    # so the env assignment is PART of the command a reader would have to re-run.
+    #
+    # IT MUST BE RECORDED AS THE GATE ACTUALLY RUNS IT — `bash -c <cmd>` with the
+    # variable in the child's ENVIRONMENT — not as the bare prefix form
+    # `LCARS_TESTS_DIR=<scope> <cmd>`. An assignment prefix does NOT affect
+    # `$LCARS_TESTS_DIR` references on the same command line: a pasting shell
+    # expands them BEFORE the prefix takes effect, to EMPTY, so the runner gets no
+    # path and silently runs the WHOLE suite. (On a compound testCommand the
+    # prefix binds only to the first element, which is worse still.) That made the
+    # artifact assert the OPPOSITE of what the gate did — a scoped green recorded
+    # as a command that re-runs red on unrelated tests. Quoting `$cmd` and handing
+    # it to `bash -c` is what the line below genuinely executes.
+    PROOF_LEG_CMD="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$cmd")"
     ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
   fi
   out="$(cat "$gof" 2>/dev/null)"; rm -f "$gof"
   if [ "$rc" = 124 ]; then
     PROOF_LEG_RC=98
-    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout (LCARS_GATE_TIMEOUT) and was terminated — a suite that never settles cannot prove anything.
+    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout (LCARS_GATE_TIMEOUT) and was terminated — $(proof_timeout_cause "$out")
 ${out}"
     return 0
   fi
@@ -3279,6 +4125,14 @@ proof_native_run_dir() { # stack leg-root first-rel → abs run dir
         case "$d" in */*) d="${d%/*}" ;; *) d="" ;; esac
       done
       printf '%s' "$root" ;;
+    # S145: ruby runs from the repo/Gemfile root so `.rspec`, spec_helper, and the
+    # test/ load path (`-Itest`) resolve; the staged relpaths stay repo-root-relative.
+    ruby) printf '%s' "$root" ;;
+    # S147: dotnet runs from the LEG ROOT. Staged files can span SEVERAL test
+    # projects, so the scoped command carries one `( cd <projdir> && dotnet test
+    # <proj> … )` leg per project — the cwd it needs is the root those relative
+    # project dirs are expressed against, not any single project's directory.
+    dotnet) printf '%s' "$root" ;;
     *)    printf '%s' "$root" ;;
   esac
 }
@@ -3336,8 +4190,12 @@ proof_parent_red_kind() { # runner-out files-written → kind token
 }
 
 # flip-flop.json writer + the single finish point (event + verdict rc).
-FF_TIP_RC=null; FF_TIP_TAIL=""; FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""
-_ff_reset() { FF_TIP_RC=null; FF_TIP_TAIL=""; FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; }
+FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
+FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
+_ff_reset() {
+  FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
+  FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
+}
 _ff_write_json() { # file ticket parent verdict reason rels
   local f="$1" t="$2" p="$3" v="$4" r="$5" rels="$6" files="" sep="" rel
   while IFS= read -r rel; do
@@ -3353,8 +4211,14 @@ FFJ_EOF
     printf '  "verdict": "%s",\n'   "$(json_escape "$v")"
     printf '  "reason": "%s",\n'    "$(json_escape "$r")"
     printf '  "testFiles": [%s],\n' "$files"
-    printf '  "tip": { "rc": %s, "tail": "%s" },\n' "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_TAIL:-}")"
-    printf '  "parent": { "rc": %s, "kind": "%s", "tail": "%s" }\n' "${FF_PAR_RC:-null}" "$(json_escape "${FF_PAR_KIND:-}")" "$(json_escape "${FF_PAR_TAIL:-}")"
+    # `cmd` is ADDITIVE (S147 DEFECT-2) — every pre-existing field keeps its name,
+    # position and meaning, so the CLI verify readout and the board's
+    # local_adapter._ticket_proof (both read only verdict/reason/kind) are
+    # untouched. json_escape handles the quotes and `$` the command carries.
+    printf '  "tip": { "rc": %s, "cmd": "%s", "tail": "%s" },\n' \
+      "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_CMD:-}")" "$(json_escape "${FF_TIP_TAIL:-}")"
+    printf '  "parent": { "rc": %s, "kind": "%s", "cmd": "%s", "tail": "%s" }\n' \
+      "${FF_PAR_RC:-null}" "$(json_escape "${FF_PAR_KIND:-}")" "$(json_escape "${FF_PAR_CMD:-}")" "$(json_escape "${FF_PAR_TAIL:-}")"
     echo '}'
   } >"$f"
 }
@@ -3422,6 +4286,7 @@ flip_flop_gate() { # ticket parent-sha worktree
   # --- TIP leg: the implemented tree must be GREEN on the ticket's tests -----
   proof_scoped_leg_run "$wt" "$rels"
   FF_TIP_RC="$PROOF_LEG_RC"
+  FF_TIP_CMD="$PROOF_LEG_CMD"
   FF_TIP_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
   if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ] || [ "$PROOF_LEG_RC" = 98 ]; then
     local tipreason="$PROOF_LEG_OUT"
@@ -3432,6 +4297,45 @@ flip_flop_gate() { # ticket parent-sha worktree
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
       "the TIP leg collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap)" "$rels"
     return $?
+  fi
+  # GUARD 2 (S147 round 3): did everything the staged file PROMISED actually
+  # run? The dotnet filter is built from a source scan, and every silent green
+  # this gate has ever produced on dotnet had the same shape — the scan lost a
+  # declaration, so a test the ticket wrote was never selected, never executed,
+  # and still recorded as proven. This check does not care WHICH term the scan
+  # emitted: it compares the tests VSTest collected against the count the staged
+  # file declares, and a shortfall parks the ticket. Costs no extra run.
+  # The relation is an INEQUALITY on purpose — a [Theory] expands to N cases, so
+  # collected is normally GREATER than declared; only LESS is a defect.
+  #
+  # THE REAL BOUND, stated honestly (an earlier version of this comment claimed
+  # "parser-independent", which OVERCLAIMS): the floor is produced by the SAME
+  # scanner that builds the filter, so the two numbers are CORRELATED. A scan bug
+  # that hides a class AND its attributes together lowers the floor by exactly
+  # what it removes from the run, and cancels out. Worse, a [Theory] contributes
+  # 1 to the floor but N to the observed count, so that N-1 slack is spare budget
+  # a cancelled-out drop can hide inside — an OBSERVED silent green, not a
+  # theoretical one. That is why the shapes we already KNOW are unselectable
+  # (generic, nested, unqualified) are refused outright at command-build time by
+  # GUARD 1 instead of being left to this check. GUARD 2 is the backstop for
+  # unknown-unknowns — a type shape nobody has thought of yet — where the same
+  # slack still exists but there is nothing more specific to say.
+  if [ "$(resolve_stack)" = dotnet ]; then
+    local dn_declared=0 dn_collected dn_one dn_rel2
+    while IFS= read -r dn_rel2; do
+      [ -n "$dn_rel2" ] || continue
+      case "${dn_rel2##*/}" in *.cs) : ;; *) continue ;; esac
+      dn_one="$(native_dotnet_declared_tests "$wt/$dn_rel2")"
+      dn_declared=$((dn_declared + dn_one))
+    done <<FF_DECL
+$rels
+FF_DECL
+    dn_collected="$(proof_dotnet_collected_count "$PROOF_LEG_OUT")"
+    if [ "$dn_declared" -gt 0 ] && [ "$dn_collected" -lt "$dn_declared" ]; then
+      _ff_finish "$t" "$parent" "$ffj" inconclusive \
+        "the TIP leg collected $dn_collected test(s) but the ticket's C# test file(s) declare $dn_declared — something the ticket wrote was never run, so the green cannot be trusted (a test type the harness could not name for --filter, e.g. a generic or nested class, or one the runner would not discover)" "$rels"
+      return $?
+    fi
   fi
   if [ "$FF_TIP_RC" -ne 0 ]; then
     _ff_finish "$t" "$parent" "$ffj" fail \
@@ -3456,6 +4360,7 @@ $rels
 FF_STAGE_EOF
   proof_scoped_leg_run "$scratch" "$rels"
   FF_PAR_RC="$PROOF_LEG_RC"
+  FF_PAR_CMD="$PROOF_LEG_CMD"
   FF_PAR_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
   local par_out="$PROOF_LEG_OUT"
   # PRUNE FIRST — on every verdict path (behavior: pruned on success AND failure).
@@ -3463,12 +4368,18 @@ FF_STAGE_EOF
 
   if [ "$FF_PAR_RC" = 96 ] || [ "$FF_PAR_RC" = 97 ] || [ "$FF_PAR_RC" = 98 ]; then
     local parreason="$par_out"
-    [ "$FF_PAR_RC" = 98 ] && parreason="the PARENT leg's $par_out"
+    # On a PARENT-leg timeout the cause clause invites the captain to re-run the
+    # recorded command — but proof_prune_scratch has ALREADY removed the scratch
+    # worktree that command cd's into (pruning on every verdict path is a tested
+    # invariant we keep: leaking a worktree per timeout is the worse failure), so
+    # say plainly that the path is gone and how to put it back.
+    [ "$FF_PAR_RC" = 98 ] && parreason="the PARENT leg's $par_out
+NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's recorded \`cmd\` cd's into no longer exists — re-cut it first with \`git worktree add --detach <that path> $parent\`, then paste the command."
     _ff_finish "$t" "$parent" "$ffj" inconclusive "$parreason" "$rels"; return $?
   fi
   if proof_zero_collected "$par_out"; then
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
-      "the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' exits 0) — red-on-parent is unproven, and inconclusive is never a pass" "$rels"
+      "the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass" "$rels"
     return $?
   fi
   if [ "$FF_PAR_RC" -eq 0 ]; then
@@ -5713,6 +6624,40 @@ alias_for_tier() { # cli tier → flag string (stdout; may be empty)
   esac
 }
 
+# The tier that will ACTUALLY RUN for (cli, logical tier) — the honest answer to
+# "what model does this stage get?" (S147 DEFECT-3).
+#
+# WHY THIS EXISTS. The estimator writes a LOGICAL tier per stage, and every
+# captain-facing surface printed that tier verbatim. On copilot that is a LIE:
+# alias_for_tier pins BOTH tiers to claude-opus-4.8 (the `create`-tool safety
+# policy above — correct, and NOT changed by this function), so a copilot
+# captain was shown "implement=Sonnet" while all five stages resolved opus, and
+# the cost band was priced at sonnet rates for an opus run. This is a REPORTING
+# fix only: nothing here influences which model is spawned.
+#
+# It derives the answer FROM alias_for_tier rather than re-stating the policy, so
+# there is still exactly ONE home for "copilot is opus-safe by default" and the
+# two can never drift. That also means a repo's `modelAliases.<cli>.<tier>`
+# override is honoured here for free — a repo that maps copilot's sonnet tier
+# back to a real Sonnet model gets a readout that says Sonnet.
+#
+# ENGINES STAY SEPARATE: claude's arm resolves 'sonnet'→"sonnet"/'opus'→"opus",
+# so claude surfaces are byte-identical to before. No engine learns about the
+# other; each is classified through its own alias arm.
+effective_tier_for_cli() { # cli logical-tier → the tier that really runs
+  local cli="$1" tier="$2" m
+  m="$(alias_for_tier "$cli" "$tier")"
+  # No mapping at all ⇒ the legacy no-`--model` argv: the CLI's own default runs
+  # and we have nothing better to claim than the logical tier.
+  [ -n "$m" ] || { printf '%s' "$tier"; return 0; }
+  case "$m" in
+    *opus*)   printf 'opus' ;;
+    *sonnet*) printf 'sonnet' ;;
+    *haiku*)  printf 'haiku' ;;
+    *)        printf '%s' "$tier" ;;   # an unrecognised alias: don't invent a tier
+  esac
+}
+
 # Is STAGE KEY inside the captain override's SCOPE? The two axes:
 #   reasoning      = research, validate, plan, planReview
 #   implementation = implement, verify
@@ -6843,9 +7788,15 @@ estimate_active_stages() { # estimate-json → space-separated stage keys (in or
 cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
   local est="$1" scope="$2"
   local stages; stages="$(estimate_active_stages "$est")"
+  # S147 DEFECT-3: price the tier that ACTUALLY RUNS, not the estimator's logical
+  # tier. On copilot every stage resolves to opus, so a sonnet-tier estimate was
+  # being billed at sonnet rates for an opus run — the band read low by design.
+  # cli is derived from the pricing scope's first segment ("copilot.usage" →
+  # copilot, "claude" → claude), which is the same engine the caller resolved.
   local usd_low=0 usd_high=0 k tier inr outr tlo thi
+  local pcli="${scope%%.*}"
   for k in $stages; do
-    tier="$(json_scoped_str "$est" "models.$k")"
+    tier="$(effective_tier_for_cli "$pcli" "$(json_scoped_str "$est" "models.$k")")"
     inr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.inputPerMTok")"
     outr="$(json_scoped_num "$PRICING_FILE" "$scope.$tier.outputPerMTok")"
     [ -n "$inr" ] && [ -n "$outr" ] || return 1
@@ -6917,7 +7868,8 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
     local unavailable="" pr_low=0 pr_high=0 k tier mult rlo rhi
     local overage; overage="$(json_scoped_num "$pricing" "copilot.legacy.overagePerRequest")"
     for k in $stages; do
-      tier="$(json_scoped_str "$est" "models.$k")"
+      # S147 DEFECT-3: the multiplier must follow the tier that ACTUALLY runs.
+      tier="$(effective_tier_for_cli copilot "$(json_scoped_str "$est" "models.$k")")"
       mult="$(json_scoped_num "$pricing" "copilot.legacy.$tier.premiumRequestMultiplier")"
       [ -n "$mult" ] || { unavailable=1; break; }
       rlo="$(json_scoped_num "$est" "requestEstimates.$k.low")";  [ -n "$rlo" ] || rlo=0
@@ -6950,10 +7902,11 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
     printf '  }'
     return 0
   fi
-  # Claude (default / unit "usd").
+  # Claude (default / unit "usd"). effective_tier_for_cli round-trips claude's
+  # tiers unchanged, so this branch's numbers are byte-identical to before.
   local usd_low=0 usd_high=0 k tier inr outr tlo thi
   for k in $stages; do
-    tier="$(json_scoped_str "$est" "models.$k")"
+    tier="$(effective_tier_for_cli claude "$(json_scoped_str "$est" "models.$k")")"
     inr="$(json_scoped_num "$pricing" "claude.$tier.inputPerMTok")"
     outr="$(json_scoped_num "$pricing" "claude.$tier.outputPerMTok")"
     [ -n "$inr" ] && [ -n "$outr" ] || continue
@@ -7110,6 +8063,14 @@ tier_display() { # tier → Tier
 # Pretty a criticality ("low"/"medium"/"high") in UPPER case for the readout.
 crit_display() { printf '%s' "$1" | tr 'a-z' 'A-Z'; }
 
+# The display name of the model a STAGE will actually run under the active CLI
+# (S147 DEFECT-3). Every captain-facing model readout goes through here, so the
+# estimator's logical tier can never again be shown as if it were the truth on an
+# engine that remaps it. claude round-trips unchanged.
+stage_tier_display() { # estimate-json cli stage-key → "Opus" | "Sonnet" | …
+  tier_display "$(effective_tier_for_cli "$2" "$(json_scoped_str "$1" "models.$3")")"
+}
+
 # Unescape a JSON string's paragraph breaks (\n\n) and newlines so the rationale
 # reads as prose in the rendered surfaces. $2 = join string for blank lines.
 rationale_unescape() { # escaped-string join → prose
@@ -7194,10 +8155,17 @@ render_cost_issue() { # cost-json cli → markdown bullet text
 #   all            → "(override: Opus, whole run)"
 #   reasoning      → "(override: Sonnet, reasoning)"
 #   implementation → "(override: Opus, implementation)"
-override_note() { # → "(override: …)" or empty
+# S147 round-2: takes the ACTIVE CLI so the note reports the tier that will
+# really run. It printed the captain's LOGICAL tier, so on copilot an
+# `all:sonnet` pin rendered "(override: Sonnet, whole run)" directly above a
+# model mix of Opus/Opus — claiming a pin that alias_for_tier had already
+# flattened. The note may say an override happened; it must not misreport what
+# the override produced.
+override_note() { # cli → "(override: …)" or empty
   local ov; ov="$(active_model_override)"
   [ -n "$ov" ] || return 0
   local scope="${ov%%:*}" tier="${ov#*:}" where
+  tier="$(effective_tier_for_cli "${1:-claude}" "$tier")"
   case "$scope" in
     all)            where="whole run" ;;
     reasoning)      where="reasoning" ;;
@@ -7214,7 +8182,7 @@ render_estimate_issue() { # estimate-json cli cost-json → markdown
   rc="$(json_scoped_str "$est" reasoningCriticality)"; [ -n "$rc" ] || rc="?"
   ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
   printf '## Estimate\n\n'
-  local ovn; ovn="$(override_note)"
+  local ovn; ovn="$(override_note "$cli")"
   [ -n "$ovn" ] && printf '**Model override:** %s — the captain pinned the model mix; the per-stage table below shows the estimator'\''s original choice.\n\n' "$ovn"
   printf '**Criticality:** reasoning = %s · implementation = %s\n\n' \
     "$(crit_display "$rc")" "$(crit_display "$ic")"
@@ -7232,7 +8200,7 @@ render_estimate_issue() { # estimate-json cli cost-json → markdown
       verify)     label="Verify" ;;
       *)          label="$k" ;;
     esac
-    printf '| %s | %s |\n' "$label" "$(tier_display "$(json_scoped_str "$est" "models.$k")")"
+    printf '| %s | %s |\n' "$label" "$(stage_tier_display "$est" "$cli" "$k")"
   done
   printf '\n**Estimated cost:** %s\n\n' "$(render_cost_issue "$costfile" "$cli")"
   local rationale; rationale="$(json_scoped_str "$est" rationale)"
@@ -7251,14 +8219,14 @@ render_estimate_cli() { # estimate-json cli cost-json → indented text
   ic="$(json_scoped_str "$est" implCriticality)"; [ -n "$ic" ] || ic="?"
   printf '  Estimate: reasoning=%s implementation=%s  (cost %s)\n' \
     "$(crit_display "$rc")" "$(crit_display "$ic")" "$(render_cost_compact "$costfile" "$cli")"
-  local ovn; ovn="$(override_note)"
+  local ovn; ovn="$(override_note "$cli")"
   [ -n "$ovn" ] && printf '  Override: %s — model mix pinned by the captain (table below = estimator default)\n' "$ovn"
   # One-line model mix.
   printf '  Models:   research/validate=%s · plan/plan-review=%s · implement=%s · verify=%s\n' \
-    "$(tier_display "$(json_scoped_str "$est" models.research)")/$(tier_display "$(json_scoped_str "$est" models.validate)")" \
-    "$(tier_display "$(json_scoped_str "$est" models.plan)")/$(tier_display "$(json_scoped_str "$est" models.planReview)")" \
-    "$(tier_display "$(json_scoped_str "$est" models.implement)")" \
-    "$(tier_display "$(json_scoped_str "$est" models.verify)")"
+    "$(stage_tier_display "$est" "$cli" research)/$(stage_tier_display "$est" "$cli" validate)" \
+    "$(stage_tier_display "$est" "$cli" plan)/$(stage_tier_display "$est" "$cli" planReview)" \
+    "$(stage_tier_display "$est" "$cli" implement)" \
+    "$(stage_tier_display "$est" "$cli" verify)"
   local rationale; rationale="$(json_scoped_str "$est" rationale)"
   if [ -n "$rationale" ]; then
     # First paragraph only on the readout, kept to one line.

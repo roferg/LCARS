@@ -216,12 +216,141 @@ fi
 grep -q 'src/calc.test.js' "$ffj" 2>/dev/null \
   && ok "B2b. flip-flop.json names the ticket's test file" \
   || bad "B2b. flip-flop.json should list src/calc.test.js"
+# S147 DEFECT-2: the artifact must SELF-EVIDENCE the scoping — record the actual
+# command each leg ran. Without it a captain auditing the gate cannot tell from
+# the artifact whether the scoping was applied at all (on dotnet the scoped and
+# unscoped invocations print byte-identical output), and has to reconstruct and
+# re-run the command by hand to prove it.
+python3 - "$ffj" <<'PY' && ok "B2c. flip-flop.json records the command BOTH legs ran" \
+                        || bad "B2c. flip-flop.json should record tip.cmd + parent.cmd ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+pc = d.get("parent", {}).get("cmd") or ""
+sys.exit(0 if (tc.strip() and pc.strip()) else 1)
+PY
+python3 - "$ffj" <<'PY' && ok "B2d. the staged/generic leg's recorded cmd names the scope it ran under" \
+                        || bad "B2d. generic leg cmd should carry the LCARS_TESTS_DIR scope ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+# the js/py lane scopes via LCARS_TESTS_DIR — the record must show it, else the
+# reader cannot tell a scoped run from a whole-suite run.
+sys.exit(0 if "LCARS_TESTS_DIR=" in tc and "calc.test.js" in tc else 1)
+PY
+
 grep -q '"type":"flip_flop_pass"' "$(EV "$repo")" 2>/dev/null \
   && ok "B3. flip_flop_pass event emitted" \
   || bad "B3. flip_flop_pass event missing from events.jsonl"
 no_scratch_left "$repo" \
   && ok "B4. parent scratch worktree pruned after PASS" \
   || bad "B4. scratch worktree leaked after pass"
+
+# --------------------------------------------------------------------------
+# B5 (S147 round-2 D1). THE RE-RUN TEST. Presence of a substring in `cmd` is
+# NOT correctness — the whole point of recording the command is that a captain
+# can PASTE IT and reproduce the gate's scoped result. So paste it.
+#
+# The trap this catches: `LCARS_TESTS_DIR=<scope> <cmd>` records an assignment
+# PREFIX, but a pasting shell expands the `$LCARS_TESTS_DIR` inside <cmd>
+# BEFORE the prefix takes effect — to EMPTY. The recorded string then runs the
+# runner with no path argument, i.e. the WHOLE suite, and on a compound
+# testCommand the prefix binds only to the first element anyway. The repo below
+# carries a pre-existing RED test that the ticket never touches, so an unscoped
+# re-run goes RED while the gate went GREEN — the artifact would be telling the
+# captain the exact opposite of what the gate did.
+repo="$(new_js_repo)"
+# a RED test that predates the ticket and is NOT in its diff — the gate must
+# never run it, and a faithful re-run must not either.
+printf 'const { test } = require("node:test");\nconst assert = require("node:assert");\ntest("decoy is red", () => { assert.strictEqual(1, 2); });\n' \
+  > "$repo/src/other.test.js"
+( cd "$repo" && git add -A && git commit -qm decoy )
+P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+[ "$FFRC" = 0 ] && ok "B5a. gate PASSES while a pre-existing red test sits beside the ticket" \
+                || bad "B5a. gate should scope past the decoy red (FFRC=$FFRC: $OUT)"
+ffj="$(TD "$repo")/flip-flop.json"
+TIPCMD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tip"]["cmd"])' "$ffj" 2>/dev/null)"
+prc=0
+( cd / && bash -c "$TIPCMD" ) >/dev/null 2>&1 || prc=$?
+[ "$prc" = 0 ] \
+  && ok "B5b. RE-RUNNING the recorded tip cmd reproduces the gate's GREEN (rc 0)" \
+  || bad "B5b. recorded tip cmd re-ran to rc=$prc, NOT the gate's pass — the artifact lies about the scoping. cmd: $TIPCMD"
+# …and it must have been the SCOPE that kept it green, not luck: the decoy must
+# not appear in the re-run's output at all.
+POUT="$( cd / && bash -c "$TIPCMD" 2>&1 )" || :
+printf '%s' "$POUT" | grep -q 'other.test.js' \
+  && bad "B5c. the re-run executed the decoy test — the recorded cmd is NOT scoped" \
+  || ok "B5c. the re-run never touched the decoy — the recorded cmd is genuinely scoped"
+
+# B5d. the same faithfulness on a COMPOUND testCommand, where an assignment
+# prefix binds only to the FIRST element of the list.
+repo="$(new_js_repo)"
+printf 'const { test } = require("node:test");\nconst assert = require("node:assert");\ntest("decoy is red", () => { assert.strictEqual(1, 2); });\n' \
+  > "$repo/src/other.test.js"
+( cd "$repo" && git add -A && git commit -qm decoy )
+P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+COMPOUND='grep -q "exports.mul" src/calc.js || { echo "missing impl" >&2; exit 9; }; node --test $LCARS_TESTS_DIR'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$COMPOUND"
+[ "$FFRC" = 0 ] && ok "B5d. gate PASSES on a compound testCommand" \
+                || bad "B5d. compound testCommand should pass (FFRC=$FFRC: $OUT)"
+ffj="$(TD "$repo")/flip-flop.json"
+TIPCMD2="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tip"]["cmd"])' "$ffj" 2>/dev/null)"
+prc2=0
+( cd / && bash -c "$TIPCMD2" ) >/dev/null 2>&1 || prc2=$?
+[ "$prc2" = 0 ] \
+  && ok "B5e. RE-RUNNING the recorded COMPOUND cmd reproduces the gate's GREEN" \
+  || bad "B5e. recorded compound cmd re-ran to rc=$prc2, not the gate's pass. cmd: $TIPCMD2"
+
+# B5g. proof_shq is the quoting the whole re-run contract rests on, so round-trip
+# it directly against the characters a real repo path / testCommand can contain.
+# The first cut escaped apostrophes through a double-quoted replacement, which
+# bash re-processes — every `'` came out mangled and the command was unpasteable
+# (a path like /Users/o'brien). Asserted here so it cannot regress silently.
+SHQLIB="$TMPROOT/shq.sh"
+sed -n "/^proof_shq() {/,/^}/p" "$SCRIPT" > "$SHQLIB"
+shq_rt() { # string → 0 if proof_shq round-trips it exactly
+  bash -c '. "$1"; s="$2"; q="$(proof_shq "$s")"; got="$(eval "printf %s $q")"; [ "$got" = "$s" ]' \
+    _ "$SHQLIB" "$1" 2>/dev/null
+}
+shq_fails=0
+for s in "plain" "with space" "it's" 'has "quotes"' 'dollar $HOME' 'back`tick`' \
+         'back\slash' "tab	here" "uni✖code" "two''quotes" '$(rm -rf /)' ';| &&' \
+         "/Users/o'brien/my repo"; do
+  shq_rt "$s" || { shq_fails=$((shq_fails + 1)); printf '      ↳ shq mangled: [%s]\n' "$s"; }
+done
+[ "$shq_fails" -eq 0 ] \
+  && ok "B5g. proof_shq round-trips every shell-hostile character" \
+  || bad "B5g. proof_shq mangled $shq_fails input(s) — recorded commands are not pasteable"
+
+# B5f (SMELL 7). A repo path containing a SPACE must still yield a pasteable
+# recorded command — an unquoted `cd` splits the path and the paste dies.
+repo="$(mktemp -d "$TMPROOT/js sp.XXXX")"
+( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+printf '{ "name": "fix", "private": true }\n' > "$repo/package.json"
+mkdir -p "$repo/src"
+printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+( cd "$repo" && git add -A && git commit -qm parent )
+scaffold_mission "$repo"
+P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+TIPCMD3="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tip"]["cmd"])' "$ffj" 2>/dev/null)"
+if [ "$FFRC" = 0 ] && [ -n "$TIPCMD3" ]; then
+  prc3=0; ( cd / && bash -c "$TIPCMD3" ) >/dev/null 2>&1 || prc3=$?
+  [ "$prc3" = 0 ] \
+    && ok "B5f. a repo path WITH A SPACE still yields a pasteable recorded cmd" \
+    || bad "B5f. spaced-path cmd re-ran to rc=$prc3 — the cd path is not quoted. cmd: $TIPCMD3"
+else
+  # the gate itself cannot survive a spaced path (LEDGERED, pre-existing) — the
+  # recording contract is still asserted below on the quoting alone.
+  printf '%s' "$TIPCMD3" | grep -Eq "cd ('|\")" \
+    && ok "B5f. spaced-path cd is SHELL-QUOTED in the record (gate itself ledgered)" \
+    || bad "B5f. spaced-path cd must be shell-quoted ($TIPCMD3)"
+fi
 
 # ==========================================================================
 # C. test-after cheat → FAIL (behavior 2) + prune on failure (behavior 9)
@@ -590,6 +719,122 @@ pgrep -f 'sleep 693' >/dev/null 2>&1 \
   && bad "J8. a runaway parent-leg runner (sleep 693) survived the group-kill" \
   || ok "J8. the parent-leg hung runner's process group was reaped (no orphan)"
 
+# J9-J12 (S147 DEFECT-4): the timeout message must NAME THE REAL CAUSE. The
+# timeout exists to bound a suite that never settles, but a leg can also run out
+# of clock while still fetching/compiling dependencies — a first run on a cold
+# package cache. Those are opposite problems with opposite fixes (a hang is a bug
+# in the tests; a slow restore just needs a warmer cache or a bigger budget), and
+# the old single sentence — "a suite that never settles cannot prove anything" —
+# asserted the first no matter which had happened. A captain who hits it must be
+# able to tell which one it was WITHOUT re-running anything.
+
+# J9. killed while still resolving/downloading dependencies ⇒ says so, and does
+#     NOT assert the suite hung.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+RCMD='echo "Determining projects to restore..."; echo "Downloading xunit 2.9.2"; sleep 694'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$RCMD" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$FFRC" = 2 ] && ok "J9. a restore-phase timeout is still INCONCLUSIVE (rc 2)" \
+                || bad "J9. restore-phase timeout should be inconclusive (FFRC=$FFRC)"
+grep -qi 'depend' "$ffj" 2>/dev/null \
+  && ok "J10. the reason names DEPENDENCY resolution as the observed phase" \
+  || bad "J10. restore-phase timeout should name dependencies ($(cat "$ffj" 2>/dev/null))"
+grep -qi 'never settles' "$ffj" 2>/dev/null \
+  && bad "J10b. a restore-phase timeout must NOT assert the suite never settled" \
+  || ok "J10b. a restore-phase timeout does not mis-blame the suite"
+
+# J11. a leg that reached test EXECUTION and then stalled is still called a hang
+#      — the discrimination must not soften the real hang case.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+HCMD2='echo "Starting test execution, please wait..."; sleep 695'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$HCMD2" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -qi 'never settles' "$ffj" 2>/dev/null \
+  && ok "J11. a stall AFTER tests started still reads as a hung suite" \
+  || bad "J11. post-start stall should still name a hang ($(cat "$ffj" 2>/dev/null))"
+
+# J12. every timeout message must name the knob, whichever cause it reports.
+grep -q 'LCARS_GATE_TIMEOUT' "$ffj" 2>/dev/null \
+  && ok "J12. the timeout message names LCARS_GATE_TIMEOUT" \
+  || bad "J12. timeout message should name the LCARS_GATE_TIMEOUT knob"
+pgrep -f 'sleep 694' >/dev/null 2>&1 || pgrep -f 'sleep 695' >/dev/null 2>&1 \
+  && bad "J13. a runaway runner survived the group-kill (J9/J11)" \
+  || ok "J13. both cause-discrimination legs were still group-killed (bound intact)"
+
+# J14-J17 (S147 round-2 D2): the cause classifier must NEVER absolve the suite
+# against output that shows a test EXECUTING. The first cut matched bare tokens
+# like "Downloading " anywhere in the buffer, so a genuine never-settling test
+# that happened to print "Downloading rate-table.json from the fixture server"
+# was reported as a cold-cache restore — "the tests themselves are not
+# implicated" — while the SAME buffer carried node's own `✖ … (4874ms)`,
+# `ℹ tests 1`, `ℹ cancelled 1`. The harness held the falsifying evidence and
+# still told the captain to warm the cache and raise the timeout, which only
+# makes them wait longer for the same hang. Confident-and-wrong is the failure
+# mode; honest ambiguity is acceptable.
+
+# J14. a hanging test whose OWN STDOUT contains a dep-ish word, with real
+#      test-execution evidence in the buffer ⇒ HANG, never "not implicated".
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+DECOY='echo "Downloading rate-table.json from the fixture server"; echo "✖ src/calc.test.js (4874.773166ms)"; echo "ℹ tests 1"; echo "ℹ cancelled 1"; sleep 696'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$DECOY" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -qi 'not implicated\|cold-cache' "$ffj" 2>/dev/null \
+  && bad "J14. a HANGING test was absolved as a cold-cache restore ($(grep -o '"reason": "[^"]*"' "$ffj" 2>/dev/null | head -c 400))" \
+  || ok "J14. a test's own 'Downloading …' line no longer absolves a hang"
+grep -qi 'never settles\|STARTED running' "$ffj" 2>/dev/null \
+  && ok "J15. the reason names the hang the evidence actually shows" \
+  || bad "J15. buffer showed a test executing — reason must call it a hang ($(grep -o '"reason": "[^"]*"' "$ffj" 2>/dev/null | head -c 400))"
+
+# J16. a test printing a dep-ish word with NO execution evidence at all must not
+#      be confidently called a cold restore either — ambiguity is the honest read.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+VAGUE='echo "Downloading rate-table.json from the fixture server"; sleep 697'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$VAGUE" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -qi 'not implicated' "$ffj" 2>/dev/null \
+  && bad "J16. an app's own download line must not be read as a package restore" \
+  || ok "J16. a non-restore 'Downloading' line does not assert a cold cache"
+
+# J17. a REAL restore banner (package + version, the shape a package manager
+#      prints) with no execution evidence still classifies as the restore phase —
+#      the useful half of the discrimination must survive the tightening.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+REST='echo "  Determining projects to restore..."; echo "  Downloading xunit 2.9.2"; sleep 698'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$REST" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -qi 'depend' "$ffj" 2>/dev/null \
+  && ok "J17. a genuine restore banner still reads as the dependency phase" \
+  || bad "J17. real restore output must still be recognised ($(grep -o '"reason": "[^"]*"' "$ffj" 2>/dev/null | head -c 400))"
+
+# J18/J19 (MINOR 1 + MINOR 2) on one PARENT-leg timeout whose output exists but
+# matches no known marker. MINOR 1: the undetermined wording must not claim the
+# leg "produced no output" when it plainly produced some. MINOR 2: the parent
+# scratch worktree is pruned before the verdict, so inviting the captain to
+# re-run the recorded command points at a directory that no longer exists.
+repo="$(new_js_repo)"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+: > "$repo/tip-marker"
+PCMD='if [ -f tip-marker ]; then node --test $LCARS_TESTS_DIR; else echo "some output"; sleep 699; fi'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$PCMD" LCARS_GATE_TIMEOUT=2
+ffj="$(TD "$repo")/flip-flop.json"
+grep -q 'produced no output' "$ffj" 2>/dev/null \
+  && bad "J18. must not claim 'produced no output' when output existed" \
+  || ok "J18. the undetermined branch does not overclaim about missing output"
+grep -q 'nothing the harness recognised' "$ffj" 2>/dev/null \
+  && ok "J18b. it says nothing was RECOGNISED, which is what actually happened" \
+  || bad "J18b. expected the 'nothing the harness recognised' wording"
+grep -qi 'pruned\|no longer exists\|re-cut' "$ffj" 2>/dev/null \
+  && ok "J19. a PARENT-leg timeout says its scratch worktree is gone" \
+  || bad "J19. parent timeout must warn the scratch is pruned ($(grep -o '"reason": "[^"]*"' "$ffj" 2>/dev/null | head -c 500))"
+pgrep -f 'sleep 696' >/dev/null 2>&1 || pgrep -f 'sleep 699' >/dev/null 2>&1 \
+  && bad "J20. a runaway runner survived the group-kill (J14/J19)" \
+  || ok "J20. the D2 legs were still group-killed (bound intact)"
+
 # ==========================================================================
 # K. multi-dir ticket (DEFECT-3): the flip-flop legs must collect tests SPANNING
 #    two directories — intree_scope_for's common-ancestor arm, live but untested.
@@ -636,6 +881,1008 @@ else
 fi
 no_scratch_left "$repo" && ok "K4. scratch pruned on the multi-dir pass path" \
                         || bad "K4. scratch worktree leaked (multi-dir)"
+
+# ==========================================================================
+# L. ruby (S145): native rspec isolation — greenfield load-red on parent is
+#    PROOF (not swallowed as zero-collect), and a zero-example spec reads
+#    INCONCLUSIVE, never a pass.
+# ==========================================================================
+echo "== L. ruby: rspec native flip-flop (greenfield red + zero-collect) =="
+# rspec is often installed under the user gem bin, off the default PATH.
+if ! command -v rspec >/dev/null 2>&1; then
+  for d in "$HOME/.gem/ruby"/*/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done
+  export PATH
+fi
+if ! have rspec || ! ruby -e 'require "rspec"' >/dev/null 2>&1; then
+  skip "RUBY: rspec not usable — SKIPPING the ruby native flip-flop proof LOUDLY"
+else
+  # H1. greenfield: a new spec require_relative's a NEW lib file. On the parent
+  # scratch that file is absent → LoadError (a real red, resolution kind); on tip
+  # it exists → green. rspec ALSO prints "0 examples" on the LoadError — the gate
+  # must NOT read that as zero-collect, or this legit red becomes inconclusive.
+  repo="$(mktemp -d "$TMPROOT/rb.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  mkdir -p "$repo/lib" "$repo/spec"
+  printf 'module Existing; end\n' > "$repo/lib/existing.rb"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  cat > "$repo/spec/mul_spec.rb" <<'RB'
+require_relative "../lib/mul"
+RSpec.describe "mul" do
+  it "multiplies" do
+    expect(Mul.call(2, 3)).to eq(6)
+  end
+end
+RB
+  cat > "$repo/lib/mul.rb" <<'RB'
+module Mul
+  def self.call(a, b); a * b; end
+end
+RB
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_STACK=ruby
+  [ "$FFRC" = 0 ] && ok "L1. ruby greenfield spec (LoadError on parent) → flip-flop PASS" \
+                  || bad "L1. ruby greenfield should PASS, not be swallowed (FFRC=$FFRC: $OUT)"
+  ffj="$(TD "$repo")/flip-flop.json"
+  grep -Eq '"kind": "(missing-new-module|bad-import-path)"' "$ffj" 2>/dev/null \
+    && ok "L2. parent-leg red kind recorded as a resolution red (not zero-collect)" \
+    || bad "L2. expected a resolution kind ($(cat "$ffj" 2>/dev/null))"
+  grep -q '"type":"flip_flop_pass"' "$(EV "$repo")" 2>/dev/null \
+    && ok "L3. flip_flop_pass event emitted for the ruby ticket" \
+    || bad "L3. flip_flop_pass event missing (ruby)"
+  no_scratch_left "$repo" \
+    && ok "L4. ruby scratch worktree pruned" \
+    || bad "L4. ruby scratch worktree leaked"
+  # S147 DEFECT-2: the ruby leg must record its SCOPED rspec invocation, so the
+  # artifact itself proves the run was narrowed to the ticket's spec file.
+  python3 - "$ffj" <<'PY' && ok "L4b. flip-flop.json records the scoped rspec command for BOTH legs" \
+                          || bad "L4b. ruby legs should record their rspec cmd ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+pc = d.get("parent", {}).get("cmd") or ""
+sys.exit(0 if ("rspec" in tc and "mul_spec.rb" in tc
+               and "rspec" in pc and "mul_spec.rb" in pc) else 1)
+PY
+
+  # H5. zero-collect: a new spec with NO examples runs green (exit 0) on tip but
+  # collects nothing → INCONCLUSIVE (rc 2), never a pass.
+  repo2="$(mktemp -d "$TMPROOT/rbz.XXXX")"
+  ( cd "$repo2" && git init -q && git config user.email t@t && git config user.name t )
+  mkdir -p "$repo2/lib" "$repo2/spec"
+  printf 'module Existing; end\n' > "$repo2/lib/existing.rb"
+  ( cd "$repo2" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo2"
+  P2="$(head_sha "$repo2")"
+  cat > "$repo2/spec/empty_spec.rb" <<'RB'
+RSpec.describe "nothing" do
+end
+RB
+  commit_all "$repo2"
+  ff_gate "$repo2" "$P2" LCARS_STACK=ruby
+  [ "$FFRC" = 2 ] && ok "L5. zero-example ruby spec on TIP → INCONCLUSIVE (rc 2), never a pass" \
+                  || bad "L5. zero-example spec should be inconclusive (FFRC=$FFRC: $OUT)"
+  no_scratch_left "$repo2" \
+    && ok "L6. ruby scratch pruned on the inconclusive path" \
+    || bad "L6. ruby scratch leaked on inconclusive"
+fi
+
+# ==========================================================================
+# M. dotnet (S147): native --filter isolation END TO END through the real
+#    gate. Proves (a) a greenfield C# test whose subject does not exist on the
+#    parent is a REAL red (CS0246 compile), not a swallowed zero-collect;
+#    (b) a test class with no [Fact] exits 0 under the filter — VSTest's
+#    silent-green trap — and must read INCONCLUSIVE; (c) the scratch worktree
+#    is pruned on BOTH the pass and the inconclusive exit path (staging
+#    hygiene, identical to the go/ruby legs).
+# ==========================================================================
+echo "== M. dotnet: dotnet test --filter native flip-flop (greenfield red + zero-collect) =="
+if ! have dotnet || [ -z "$(dotnet --list-sdks 2>/dev/null)" ]; then
+  skip "DOTNET: no usable SDK — SKIPPING the dotnet native flip-flop proof LOUDLY"
+else
+  export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
+  # M1. greenfield: the staged test calls a NEW class. On the parent scratch
+  # that class does not exist → CS0246, a real compile red; on tip it does →
+  # green. dotnet's zero phrasings must NOT swallow that red.
+  # The realistic C# layout the seeder targets: src/App (the subject, a class
+  # library) + tests/App.Tests (the test project, referencing it). The staged
+  # test lives in the TEST project; the subject does NOT — so only the test is
+  # staged into the parent leg, exactly as a real ticket behaves.
+  dn_scaffold() { # repo-dir
+    local r="$1"
+    mkdir -p "$r/src/App" "$r/tests/App.Tests"
+    printf 'bin/\nobj/\n' > "$r/.gitignore"
+    cat > "$r/src/App/App.csproj" <<'XML'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>
+XML
+    printf 'namespace App;\npublic static class Existing { public static int Zero() => 0; }\n' \
+      > "$r/src/App/Existing.cs"
+    cat > "$r/tests/App.Tests/App.Tests.csproj" <<'XML'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+  <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../../src/App/App.csproj" /></ItemGroup>
+</Project>
+XML
+    # a pre-existing sibling test so the project is never empty on the parent
+    cat > "$r/tests/App.Tests/SiblingTests.cs" <<'CS'
+namespace App.Tests;
+public class SiblingCases { [Fact] public void Sib() { Assert.True(true); } }
+CS
+  }
+  repo="$(mktemp -d "$TMPROOT/dn.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  cat > "$repo/tests/App.Tests/MulTests.cs" <<'CS'
+namespace App.Tests.Staged;
+public class MulCases
+{
+    [Fact] public void Multiplies() { Assert.Equal(6, App.Mul.Call(2, 3)); }
+}
+CS
+  cat > "$repo/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_STACK=dotnet
+  [ "$FFRC" = 0 ] && ok "M1. dotnet greenfield test (CS0246 on parent) → flip-flop PASS" \
+                  || bad "M1. dotnet greenfield should PASS, not be swallowed (FFRC=$FFRC: $OUT)"
+  ffj="$(TD "$repo")/flip-flop.json"
+  grep -q '"kind": "compile-failure"' "$ffj" 2>/dev/null \
+    && ok "M2. parent-leg red kind recorded as a compile red (not zero-collect)" \
+    || bad "M2. expected compile-failure kind ($(cat "$ffj" 2>/dev/null))"
+  # only the TEST file is staged — the subject in src/App is never a test path
+  grep -q '"testFiles": \["tests/App.Tests/MulTests.cs"\]' "$ffj" 2>/dev/null \
+    && ok "M2'. only the test file was staged (the src/ subject is not a test path)" \
+    || bad "M2'. unexpected staged test set ($(grep testFiles "$ffj" 2>/dev/null))"
+  grep -q 'Sib' "$ffj" 2>/dev/null \
+    && bad "M3. the pre-existing sibling test RAN — the filter did not scope the leg" \
+    || ok "M3. the pre-existing sibling test never ran (filter scoped both legs)"
+  no_scratch_left "$repo" \
+    && ok "M4. dotnet scratch worktree pruned on the PASS path" \
+    || bad "M4. dotnet scratch worktree leaked"
+  # S147 DEFECT-2 — THE CASE THAT MOTIVATED THIS. On dotnet the scoped
+  # (`--filter …`) and unscoped invocations produce BYTE-IDENTICAL output, so
+  # rc + a 20-line tail can NEVER show a reader whether the filter was applied.
+  # The capstone captain had to dig `native_scoped_cmd` out of run.sh and re-run
+  # it by hand to prove the scoping was real. Recording the actual command makes
+  # the gate self-evidencing: the --filter terms are right there in the artifact.
+  python3 - "$ffj" <<'PY' && ok "M4b. flip-flop.json records each dotnet leg's --filter terms" \
+                          || bad "M4b. dotnet legs should record their --filter cmd ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+pc = d.get("parent", {}).get("cmd") or ""
+for c in (tc, pc):
+    if "dotnet test" not in c or "--filter" not in c or "Mul" not in c:
+        sys.exit(1)
+sys.exit(0)
+PY
+  # The recorded string must be the REAL command, not a pretty label: the
+  # per-project `cd` leg the dotnet runner needs has to be visible too.
+  python3 - "$ffj" <<'PY' && ok "M4c. the recorded dotnet cmd carries its per-project leg" \
+                          || bad "M4c. dotnet cmd should show the per-project invocation"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tc = d.get("tip", {}).get("cmd") or ""
+sys.exit(0 if ("App.Tests" in tc and "cd " in tc) else 1)
+PY
+
+  # M5. THE SILENT-GREEN TRAP through the real gate: a staged class with NO
+  # [Fact] makes the filter match nothing — `dotnet test` exits 0 — so the TIP
+  # leg looks green while proving nothing. It must read INCONCLUSIVE (rc 2).
+  repo2="$(mktemp -d "$TMPROOT/dnz.XXXX")"
+  ( cd "$repo2" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo2"
+  ( cd "$repo2" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo2"
+  P2="$(head_sha "$repo2")"
+  cat > "$repo2/tests/App.Tests/EmptyTests.cs" <<'CS'
+namespace App.Tests.Staged;
+public class EmptyCases { public void NotATest() { } }
+CS
+  commit_all "$repo2"
+  ff_gate "$repo2" "$P2" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M5. no-[Fact] dotnet class on TIP → INCONCLUSIVE (rc 2), never a pass" \
+    || bad "M5. zero-match dotnet filter should be inconclusive (FFRC=$FFRC: $OUT)"
+  no_scratch_left "$repo2" \
+    && ok "M6. dotnet scratch pruned on the inconclusive path" \
+    || bad "M6. dotnet scratch leaked on inconclusive"
+
+  # M7. THE ALL-SKIPPED SILENT GREEN, through the real gate (D1). Unlike M5 the
+  # staged class IS discovered — `[Fact(Skip="wip")]` — so VSTest prints neither
+  # "no test matches" nor "no test is available"; it prints a `Skipped!` summary
+  # with Passed: 0 and exits 0. The TIP leg therefore looked GREEN while running
+  # nothing, and with a parent leg red for unrelated (compile) reasons the gate
+  # read a clean flip-flop and PASSED a ticket that proved nothing.
+  repo3="$(mktemp -d "$TMPROOT/dnskip.XXXX")"
+  ( cd "$repo3" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo3"
+  ( cd "$repo3" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo3"
+  P3="$(head_sha "$repo3")"
+  cat > "$repo3/tests/App.Tests/SkipTests.cs" <<'CS'
+namespace App.Tests.Staged;
+public class SkipCases
+{
+    [Fact(Skip = "wip")] public void NeverRuns() { Assert.Equal(6, App.Mul.Call(2, 3)); }
+}
+CS
+  cat > "$repo3/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo3"
+  ff_gate "$repo3" "$P3" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M7. an ALL-SKIPPED staged class → INCONCLUSIVE (rc 2), never a pass" \
+    || bad "M7. SILENT GREEN: all-skipped dotnet leg gave FFRC=$FFRC: $OUT"
+  grep -q 'ZERO tests' "$(TD "$repo3")/flip-flop.json" 2>/dev/null \
+    && ok "M7'. the recorded reason names the zero-collect, not a fake green" \
+    || bad "M7'. flip-flop.json should record the zero-collect reason"
+  no_scratch_left "$repo3" || bad "M7''. scratch leaked on the all-skipped path"
+
+  # M8. TWO TEST PROJECTS (D3). Staged files land in BOTH; the SECOND project's
+  # staged test must FAIL on tip. Taking the project from the first staged .cs
+  # while OR-ing every FQN meant the second project was never built or run — the
+  # gate PASSED and flip-flop.json recorded BOTH files as proven.
+  repo4="$(mktemp -d "$TMPROOT/dn2p.XXXX")"
+  ( cd "$repo4" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo4"
+  # a SECOND test project beside the first
+  mkdir -p "$repo4/tests/Other.Tests"
+  sed 's#\.\./\.\./src/App/App\.csproj#../../src/App/App.csproj#' \
+    "$repo4/tests/App.Tests/App.Tests.csproj" > "$repo4/tests/Other.Tests/Other.Tests.csproj"
+  cat > "$repo4/tests/Other.Tests/OtherSibling.cs" <<'CS'
+namespace Other.Tests;
+public class OtherSiblingCases { [Fact] public void OS() { Assert.True(true); } }
+CS
+  ( cd "$repo4" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo4"
+  P4="$(head_sha "$repo4")"
+  cat > "$repo4/tests/App.Tests/FirstTests.cs" <<'CS'
+namespace App.Tests.Staged;
+public class FirstCases { [Fact] public void Ok() { Assert.Equal(6, App.Mul.Call(2, 3)); } }
+CS
+  # the SECOND project's staged test is deliberately WRONG — it must fail on tip
+  cat > "$repo4/tests/Other.Tests/SecondTests.cs" <<'CS'
+namespace Other.Tests.Staged;
+public class SecondCases { [Fact] public void Wrong() { Assert.Equal(7, App.Mul.Call(2, 3)); } }
+CS
+  cat > "$repo4/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo4"
+  ff_gate "$repo4" "$P4" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M8. a RED staged test in the SECOND project fails the gate (it really ran)" \
+    || bad "M8. SILENT PASS: the second test project was never executed: $OUT"
+  grep -q 'SecondCases' "$(TD "$repo4")/flip-flop.json" 2>/dev/null \
+    && ok "M8'. the second project's test appears in the recorded leg output (it ran)" \
+    || bad "M8'. no trace of the second project in flip-flop.json: $(cat "$(TD "$repo4")/flip-flop.json" 2>/dev/null)"
+  no_scratch_left "$repo4" || bad "M8''. scratch leaked on the two-project path"
+
+  # M9. TWO TEST CLASSES ON ONE LINE, through the real gate. A scanner that
+  # matched the `class` keyword once per line dropped the SECOND class: it never
+  # entered the filter, never ran, and was still recorded proven. Here the second
+  # class asserts 999 == 6 — if it runs, the gate MUST NOT pass.
+  repo5="$(mktemp -d "$TMPROOT/dn1l.XXXX")"
+  ( cd "$repo5" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo5"
+  ( cd "$repo5" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo5"
+  P5="$(head_sha "$repo5")"
+  cat > "$repo5/tests/App.Tests/OneLineTests.cs" <<'CS'
+namespace App.Tests.OneLine;
+public class AlphaCases { [Fact] public void X() { Assert.Equal(6, App.Mul.Call(2, 3)); } } public class BetaCases { [Fact] public void Y() { Assert.Equal(999, App.Mul.Call(2, 3)); } }
+CS
+  cat > "$repo5/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo5"
+  ff_gate "$repo5" "$P5" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M9. a SECOND class on the same line really runs (its red fails the gate)" \
+    || bad "M9. SILENT PASS: the second one-line class was never run: $OUT"
+  grep -q 'BetaCases' "$(TD "$repo5")/flip-flop.json" 2>/dev/null \
+    && ok "M9'. the second one-line class appears in the recorded leg output" \
+    || bad "M9'. no trace of BetaCases in flip-flop.json"
+  no_scratch_left "$repo5" || bad "M9''. scratch leaked on the one-line path"
+
+  # M10. A `record` TEST CLASS, through the real gate (N3). The scanner knew
+  # only the literal `class` keyword, so an xUnit record test class was dropped
+  # from the filter — never run, still recorded proven. The SDK's own discovery
+  # lists these as real tests, so there is nothing exotic about them.
+  repo6="$(mktemp -d "$TMPROOT/dnrec.XXXX")"
+  ( cd "$repo6" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo6"
+  ( cd "$repo6" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo6"
+  P6="$(head_sha "$repo6")"
+  cat > "$repo6/tests/App.Tests/RecordTests.cs" <<'CS'
+namespace App.Tests.Rec;
+public record RecordCases { [Fact] public void MustFail() { Assert.Equal(999, App.Mul.Call(2, 3)); } }
+CS
+  cat > "$repo6/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo6"
+  ff_gate "$repo6" "$P6" LCARS_STACK=dotnet
+  # rc 1 specifically — the record test RAN and was RED. rc 2 would mean the
+  # scan produced no target at all, which is the pre-fix behaviour once the
+  # record keyword is unknown: safe, but not proof that records work.
+  [ "$FFRC" = 1 ] \
+    && ok "M10. a record test class really RUNS (rc 1 = its red, not rc 2 = no target)" \
+    || bad "M10. the record test class did not run (FFRC=$FFRC): $OUT"
+  grep -q 'RecordCases' "$(TD "$repo6")/flip-flop.json" 2>/dev/null \
+    && ok "M10'. the record test appears in the recorded leg output" \
+    || bad "M10'. no trace of RecordCases in flip-flop.json"
+  no_scratch_left "$repo6" || bad "M10''. scratch leaked on the record path"
+
+  # M11. A MULTI-LINE VERBATIM STRING, through the real gate (N4). Its body was
+  # scanned as code, so a net-negative brace run inside it popped the namespace
+  # depth and the NEXT class came out BARE — an unqualified contains-term that
+  # rode along on a pre-existing test elsewhere in the assembly and let a staged
+  # file with NO test of its own read as a pass.
+  repo7="$(mktemp -d "$TMPROOT/dnraw.XXXX")"
+  ( cd "$repo7" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo7"
+  # a pre-existing test elsewhere, with the name a bare term would collide with
+  cat > "$repo7/tests/App.Tests/ElsewhereTests.cs" <<'CS'
+namespace App.Tests.Elsewhere;
+public class VictimCases { [Fact] public void PreExisting() { Assert.True(true); } }
+CS
+  ( cd "$repo7" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo7"
+  P7="$(head_sha "$repo7")"
+  cat > "$repo7/tests/App.Tests/RawTests.cs" <<'CS'
+namespace App.Tests.Raw
+{
+    public class RawCases
+    {
+        const string Fixture = @"
+json-ish payload with closing braces: } } }
+";
+    }
+    public class VictimCases { }
+}
+CS
+  commit_all "$repo7"
+  ff_gate "$repo7" "$P7" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M11. a staged file with NO test of its own ⇒ INCONCLUSIVE, no ride-along" \
+    || bad "M11. SILENT PASS via a bare contains-term (FFRC=$FFRC): $OUT"
+  grep -q 'PreExisting' "$(TD "$repo7")/flip-flop.json" 2>/dev/null \
+    && bad "M11'. a PRE-EXISTING test elsewhere rode along on the staged file" \
+    || ok "M11'. the pre-existing test elsewhere never ran"
+  no_scratch_left "$repo7" || bad "M11''. scratch leaked on the verbatim-string path"
+
+  # M12. GUARD 2 through the real gate: a staged file declaring TWO tests where
+  # the harness can only NAME one of them for --filter. A generic test class is
+  # rendered `Ns.GenCases`1` by VSTest, so the scan's `~Ns.GenCases.` term
+  # selects NOTHING — one test runs, one silently does not. Before the guard the
+  # leg was green (the one test that ran passed) and the ticket was certified on
+  # a test that never executed. The count cross-check parks it instead.
+  repo8="$(mktemp -d "$TMPROOT/dncnt.XXXX")"
+  ( cd "$repo8" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo8"
+  ( cd "$repo8" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo8"
+  P8="$(head_sha "$repo8")"
+  cat > "$repo8/tests/App.Tests/CountTests.cs" <<'CS'
+namespace App.Tests.Cnt;
+public class RunsCases { [Fact] public void Runs() { Assert.Equal(6, App.Mul.Call(2, 3)); } }
+public class NeverCases<T> { [Fact] public void NeverRuns() { Assert.Equal(6, App.Mul.Call(2, 3)); } }
+CS
+  cat > "$repo8/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo8"
+  ff_gate "$repo8" "$P8" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M12. a GENERIC test class ⇒ INCONCLUSIVE, never a partial-run pass" \
+    || bad "M12. SILENT PASS: an unrunnable declared test was certified (FFRC=$FFRC): $OUT"
+  grep -q 'NeverCases' "$(TD "$repo8")/flip-flop.json" 2>/dev/null \
+    && ok "M12'. the recorded reason NAMES the type it refused to run" \
+    || bad "M12'. flip-flop.json should name the refused type"
+  # …and guard 2 must NOT false-fire on a THEORY, which legitimately expands to
+  # MORE collected tests than declared attributes.
+  repo9="$(mktemp -d "$TMPROOT/dnthy.XXXX")"
+  ( cd "$repo9" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo9"
+  ( cd "$repo9" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo9"
+  P9="$(head_sha "$repo9")"
+  cat > "$repo9/tests/App.Tests/TheoryTests.cs" <<'CS'
+namespace App.Tests.Thy;
+public class ThyCases
+{
+    [Theory] [InlineData(2, 3, 6)] [InlineData(4, 5, 20)] [InlineData(0, 9, 0)]
+    public void Multiplies(int a, int b, int want) { Assert.Equal(want, App.Mul.Call(a, b)); }
+    [Fact] public void Simple() { Assert.Equal(6, App.Mul.Call(2, 3)); }
+}
+CS
+  cat > "$repo9/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo9"
+  ff_gate "$repo9" "$P9" LCARS_STACK=dotnet
+  [ "$FFRC" = 0 ] \
+    && ok "M12''. a [Theory] expanding to 3 cases still PASSES (guard 2 is an inequality)" \
+    || bad "M12''. guard 2 false-fired on a legitimate theory (FFRC=$FFRC): $OUT"
+  no_scratch_left "$repo9" || bad "M12'''. scratch leaked on the theory path"
+
+  # M13. THE THEORY-MASK EXPLOIT (R1) — the regression lock for why the
+  # unnameable shapes are REFUSED rather than left to GUARD 2. A [Theory]
+  # contributes 1 to the declared floor but N to the observed count, and that
+  # N-1 slack is exactly enough to hide three dropped nested classes: declared=4,
+  # collected=4, every number checks out, and three tests asserting 999 == 6
+  # never ran. GUARD 2 alone cannot see this; refusing the nested types can.
+  repo10="$(mktemp -d "$TMPROOT/dnmask.XXXX")"
+  ( cd "$repo10" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo10"
+  ( cd "$repo10" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo10"
+  P10="$(head_sha "$repo10")"
+  cat > "$repo10/tests/App.Tests/MaskTests.cs" <<'CS'
+namespace App.Tests.Mask2;
+public class ThyCases { [Theory][InlineData(1)][InlineData(2)][InlineData(3)][InlineData(4)] public void Expands(int x) { Assert.Equal(6, App.Mul.Call(2,3)); } }
+public class Outer {
+  public class A1Cases { [Fact] public void F1() { Assert.Equal(999, App.Mul.Call(2,3)); } }
+  public class A2Cases { [Fact] public void F2() { Assert.Equal(999, App.Mul.Call(2,3)); } }
+  public class A3Cases { [Fact] public void F3() { Assert.Equal(999, App.Mul.Call(2,3)); } }
+}
+CS
+  cat > "$repo10/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo10"
+  ff_gate "$repo10" "$P10" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M13. the THEORY-MASK exploit cannot reach a pass (nested tests refused)" \
+    || bad "M13. SILENT PASS: 3 nested tests hid in the theory's slack: $OUT"
+  no_scratch_left "$repo10" || bad "M13'. scratch leaked on the theory-mask path"
+
+  # M14. A [Fact] inside a DISABLED #if must not park a legitimate green run
+  # (R2). `#if DEBUG` / `#if NET8_0` / `#if WINDOWS` around a test is routine
+  # C#, and over-counting the floor bounces a CORRECT ticket to a fresh worker
+  # up to three times before parking it awaiting-human.
+  repo11="$(mktemp -d "$TMPROOT/dnpp.XXXX")"
+  ( cd "$repo11" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo11"
+  ( cd "$repo11" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo11"
+  P11="$(head_sha "$repo11")"
+  cat > "$repo11/tests/App.Tests/PPTests.cs" <<'CS'
+namespace App.Tests.PP;
+public class PPCases {
+#if NEVER_DEFINED
+    [Fact] public void Disabled() { Assert.True(false); }
+#endif
+    [Fact] public void Enabled() { Assert.Equal(6, App.Mul.Call(2,3)); }
+}
+CS
+  cat > "$repo11/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo11"
+  ff_gate "$repo11" "$P11" LCARS_STACK=dotnet
+  [ "$FFRC" = 0 ] \
+    && ok "M14. a test inside a DISABLED #if leaves a legitimate green GREEN" \
+    || bad "M14. FALSE PARK: #if-disabled test bounced a correct ticket (FFRC=$FFRC): $OUT"
+  no_scratch_left "$repo11" || bad "M14'. scratch leaked on the #if path"
+
+  # M15. GUARD 2 still backstops the UNKNOWN-UNKNOWNS. An ABSTRACT test class is
+  # a shape the scan happily names (it is neither generic nor nested) but xUnit
+  # never discovers directly — verified against the SDK: `--list-tests` lists the
+  # concrete class only. Declared 2, collected 1 ⇒ the shortfall parks it.
+  repo12="$(mktemp -d "$TMPROOT/dnabs.XXXX")"
+  ( cd "$repo12" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo12"
+  ( cd "$repo12" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo12"
+  P12="$(head_sha "$repo12")"
+  cat > "$repo12/tests/App.Tests/AbsTests.cs" <<'CS'
+namespace App.Tests.Abs;
+public abstract class NeverDiscovered { [Fact] public void NeverRuns() { Assert.Equal(999, App.Mul.Call(2,3)); } }
+public class RunsCases { [Fact] public void Runs() { Assert.Equal(6, App.Mul.Call(2,3)); } }
+CS
+  cat > "$repo12/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo12"
+  ff_gate "$repo12" "$P12" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M15. GUARD 2 still catches an unknown-unknown (abstract class ⇒ shortfall)" \
+    || bad "M15. SILENT PASS: an undiscoverable declared test was certified (FFRC=$FFRC): $OUT"
+  grep -q 'declare 2' "$(TD "$repo12")/flip-flop.json" 2>/dev/null \
+    && ok "M15'. …and the reason names the collected/declared shortfall" \
+    || bad "M15'. flip-flop.json should name the shortfall"
+  no_scratch_left "$repo12" || bad "M15''. scratch leaked on the abstract path"
+
+  # M16. THE COMPOSITION BUG (D1) — a defect in neither guard alone. The R1
+  # carve-out only refuses a bad-shape type that DECLARED tests, and the R2 fix
+  # stopped counting attributes inside `#if`. Compose them and a nested (or
+  # generic) type whose every attribute is #if-guarded looks TEST-FREE: nothing
+  # refuses it, nothing emits it, nothing counts it — invisible to both guards,
+  # while `dotnet test` (which defaults to Debug, so DEBUG is defined) really
+  # does discover `…Outer+InnerCases.MustFail`. A test class wholly guarded by
+  # `#if NET8_0` / `#if !NETFRAMEWORK` is ordinary in multi-targeted C#.
+  repo13="$(mktemp -d "$TMPROOT/dnnif.XXXX")"
+  ( cd "$repo13" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo13"
+  ( cd "$repo13" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo13"
+  P13="$(head_sha "$repo13")"
+  cat > "$repo13/tests/App.Tests/NestIfTests.cs" <<'CS'
+namespace App.Tests.NestIf;
+public class Outer {
+    public class InnerCases {
+#if DEBUG
+        [Fact] public void MustFail() { Assert.Equal(999, App.Mul.Call(2,3)); }
+#endif
+    }
+}
+public class NormalCases { [Fact] public void Ok() { Assert.Equal(6, App.Mul.Call(2,3)); } }
+CS
+  cat > "$repo13/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo13"
+  ff_gate "$repo13" "$P13" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M16. a NESTED type whose only [Fact] is #if-guarded cannot reach a pass" \
+    || bad "M16. SILENT PASS: #if-guarded nested test invisible to both guards: $OUT"
+  no_scratch_left "$repo13" || bad "M16'. scratch leaked on the nested-#if path"
+
+  # M16''. the GENERIC variant of the same composition.
+  repo14="$(mktemp -d "$TMPROOT/dngif.XXXX")"
+  ( cd "$repo14" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo14"
+  ( cd "$repo14" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo14"
+  P14="$(head_sha "$repo14")"
+  cat > "$repo14/tests/App.Tests/GenIfTests.cs" <<'CS'
+namespace App.Tests.GenIf;
+public class GenCases<T> {
+#if DEBUG
+    [Fact] public void MustFail() { Assert.Equal(999, App.Mul.Call(2,3)); }
+#endif
+}
+public class NormalCases { [Fact] public void Ok() { Assert.Equal(6, App.Mul.Call(2,3)); } }
+CS
+  cat > "$repo14/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo14"
+  ff_gate "$repo14" "$P14" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M16''. …and the GENERIC variant cannot either" \
+    || bad "M16''. SILENT PASS: #if-guarded generic test invisible to both guards: $OUT"
+  no_scratch_left "$repo14" || bad "M16'''. scratch leaked on the generic-#if path"
+
+  # M17. THE CARVE-OUT MUST SURVIVE the D1 cure — do not trade D1 back for R2.
+  # A file with real tests plus PURE helper types (nested, generic, and one whose
+  # body is entirely #if-guarded) must still PASS: helpers declare no tests, so
+  # nothing may refuse on their account.
+  repo15="$(mktemp -d "$TMPROOT/dnhelp.XXXX")"
+  ( cd "$repo15" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo15"
+  ( cd "$repo15" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo15"
+  P15="$(head_sha "$repo15")"
+  cat > "$repo15/tests/App.Tests/HelperTests.cs" <<'CS'
+namespace App.Tests.Help;
+public class HelpCases
+{
+    [Fact] public void Ok() { Assert.Equal(6, App.Mul.Call(2,3)); }
+    private class Fixture {
+#if DEBUG
+        public int Seed;
+#endif
+    }
+    private sealed class Builder<T> { public T V; }
+}
+CS
+  cat > "$repo15/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo15"
+  ff_gate "$repo15" "$P15" LCARS_STACK=dotnet
+  [ "$FFRC" = 0 ] \
+    && ok "M17. nested/generic HELPER types still leave a legitimate green GREEN" \
+    || bad "M17. FALSE PARK: the D1 cure broke the helper carve-out (FFRC=$FFRC): $OUT"
+  no_scratch_left "$repo15" || bad "M17'. scratch leaked on the helper path"
+fi
+
+# ==========================================================================
+# N (S148). THE REPO LIVES AT A PATH CONTAINING WHITESPACE.
+#
+# The seeded testCommands hand the gate's scope over through $LCARS_TESTS_DIR.
+# Interpolated UNQUOTED, that scope WORD-SPLITS as soon as the checkout path
+# contains a space/tab: the runner gets two half-paths, finds neither, and the
+# TIP leg goes red — so the gate FALSE-FAILS a perfectly honest ticket purely
+# because of WHERE the repo lives, bouncing it to a fresh worker (≤3 sessions)
+# and then parking it awaiting-human.
+#
+# These are END-TO-END drives, not string assertions, and the command they drive
+# is the one `lcars init` ACTUALLY SEEDS — asked of the real detector, never a
+# copy — so the section fails against an unquoted seeder and passes against a
+# quoted one.
+#
+# Every drive plants a pre-existing RED DECOY test beside the ticket's, outside
+# its diff. A green here therefore proves TWO things at once: the command stopped
+# erroring AND the scoping still holds. If the fix had merely widened the run,
+# the decoy would fail the leg.
+# ==========================================================================
+echo "== N. whitespace in the repo path (S148) =="
+
+seeded_cmd_for() { # repo-dir → the testCommand `lcars init` would seed there
+  ( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; TOPLEVEL="$1" detect_test_cmd )
+}
+
+WS_SPACE='ws space'
+WS_TAB="$(printf 'ws\ttab')"
+
+ws_js_repo() { # container-name → repo dir (parent commit: src + RED decoy)
+  local repo="$TMPROOT/$1/repo"
+  mkdir -p "$repo/src"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '{ "name": "fix", "private": true, "scripts": { "test": "node --test" } }\n' > "$repo/package.json"
+  printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+  cat > "$repo/src/other.test.js" <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+test('DECOY must never run', () => { assert.strictEqual(1, 2); });
+JS
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  printf '%s' "$repo"
+}
+
+ws_py_repo() { # container-name → repo dir (parent commit: src + RED decoy)
+  local repo="$TMPROOT/$1/repo"
+  mkdir -p "$repo/src"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '[tool.pytest.ini_options]\n' > "$repo/pyproject.toml"
+  printf 'def add(a, b):\n    return a + b\n' > "$repo/src/calc.py"
+  printf 'def test_decoy_must_never_run():\n    assert 1 == 2\n' > "$repo/src/test_decoy.py"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  printf '%s' "$repo"
+}
+
+# --- N1/N2: js at a SPACED path, driven by the SEEDED command ---------------
+repo="$(ws_js_repo "$WS_SPACE")"; P="$(head_sha "$repo")"
+WS_JS_CMD="$(seeded_cmd_for "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$WS_JS_CMD"
+[ "$FFRC" = 0 ] \
+  && ok "N1. js repo at a SPACED path → flip-flop PASS with the seeded command ($WS_JS_CMD)" \
+  || bad "N1. FALSE FAIL at a spaced path (FFRC=$FFRC): $OUT"
+ffj="$(TD "$repo")/flip-flop.json"
+python3 - "$ffj" <<'PY' && ok "N2. the DECOY never ran — the scope still narrowed to the ticket's test" \
+                        || bad "N2. decoy ran / tip did not run exactly the ticket's test ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tail = (d.get("tip", {}).get("tail") or "")
+sys.exit(0 if ("DECOY" not in tail and "mul multiplies" in tail and "tests 1" in tail) else 1)
+PY
+no_scratch_left "$repo" && ok "N2b. scratch pruned (spaced path)" \
+                        || bad "N2b. scratch leaked at a spaced path"
+
+# --- N3: THE PASTE-BACK. The recorded cmd must reproduce the verdict ---------
+# Recording a command is only worth something if it re-runs faithfully. Paste
+# tip.cmd back into a shell: it must go GREEN and must still not touch the decoy.
+WS_TIPCMD="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["tip"]["cmd"])' "$ffj" 2>/dev/null)"
+WS_RERUN_RC=0
+WS_RERUN_OUT="$(bash -c "$WS_TIPCMD" 2>&1)" || WS_RERUN_RC=$?
+[ "$WS_RERUN_RC" = 0 ] \
+  && ok "N3a. the recorded tip.cmd re-runs GREEN when pasted back (spaced path)" \
+  || bad "N3a. recorded cmd does not reproduce the verdict (rc=$WS_RERUN_RC): $WS_RERUN_OUT"
+case "$WS_RERUN_OUT" in
+  *DECOY*) bad "N3b. the pasted-back command widened the run — it hit the decoy" ;;
+  *)       ok  "N3b. the pasted-back command never touches the decoy either" ;;
+esac
+
+# --- N4: a TAB in the path (the same word-splitting class) ------------------
+repo="$(ws_js_repo "$WS_TAB")"; P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$(seeded_cmd_for "$repo")"
+[ "$FFRC" = 0 ] \
+  && ok "N4. js repo at a TABBED path → flip-flop PASS" \
+  || bad "N4. FALSE FAIL at a tabbed path (FFRC=$FFRC): $OUT"
+
+# --- N5: THE GATE STILL FAILS WHEN IT SHOULD, at a spaced path --------------
+# A fix that makes everything pass is worse than the bug. The test-after cheat
+# (green on BOTH legs) must still be caught at a whitespace path.
+repo="$(ws_js_repo "$WS_SPACE/cheat")"; P="$(head_sha "$repo")"
+write_cheat_js_tip "$repo"
+write_result "$(TD "$repo")" '["src/calc.test.js"]' '[]' expected
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$(seeded_cmd_for "$repo")"
+[ "$FFRC" = 1 ] \
+  && ok "N5. test-after cheat at a SPACED path is still caught (rc 1, not a false green)" \
+  || bad "N5. the cheat should still FAIL at a spaced path (FFRC=$FFRC): $OUT"
+# …and for the RIGHT reason. Pre-fix this same rc 1 came from a SPLIT PATH the
+# runner could not open — the correct verdict reached by the wrong road. The
+# recorded reason must name the parent leg going green, i.e. the actual cheat.
+ffj="$(TD "$repo")/flip-flop.json"
+python3 - "$ffj" <<'PY' && ok "N5b. the cheat FAILS for the right reason (parent leg GREEN), not a broken path" \
+                        || bad "N5b. cheat's recorded reason is not the parent-green cheat ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+reason = (d.get("reason") or "")
+par = d.get("parent", {}) or {}
+sys.exit(0 if (par.get("rc") == 0 and "PASS on the PARENT" in reason) else 1)
+PY
+
+# --- N6: python at a SPACED path, driven by the SEEDED pytest command -------
+if ! have pytest && ! python3 -c 'import pytest' >/dev/null 2>&1; then
+  skip "PYTHON: pytest not installed — SKIPPING the spaced-path python drive LOUDLY"
+else
+  have pytest && WS_PYBIN=pytest || WS_PYBIN='python3 -m pytest'
+  repo="$(ws_py_repo "$WS_SPACE/py")"; P="$(head_sha "$repo")"
+  # The seeded shape, with whatever pytest entry point exists here.
+  WS_PY_CMD="$(seeded_cmd_for "$repo")"
+  WS_PY_CMD="$WS_PYBIN${WS_PY_CMD#pytest}"
+  cat > "$repo/src/test_calc.py" <<'PY'
+import calc
+
+
+def test_mul_multiplies():
+    assert calc.mul(2, 3) == 6
+PY
+  printf 'def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n' > "$repo/src/calc.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$WS_PY_CMD"
+  [ "$FFRC" = 0 ] \
+    && ok "N6. python repo at a SPACED path → flip-flop PASS with the seeded command ($WS_PY_CMD)" \
+    || bad "N6. FALSE FAIL at a spaced path, python (FFRC=$FFRC): $OUT"
+  ffj="$(TD "$repo")/flip-flop.json"
+  python3 - "$ffj" <<'PY' && ok "N7. python DECOY never ran — the pytest scope still narrowed" \
+                          || bad "N7. python decoy ran / wrong collection ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tail = (d.get("tip", {}).get("tail") or "")
+sys.exit(0 if ("decoy" not in tail and "1 passed" in tail) else 1)
+PY
+  no_scratch_left "$repo" && ok "N7b. scratch pruned (python, spaced path)" \
+                          || bad "N7b. scratch leaked (python, spaced path)"
+
+  # N7c: intree_scope_for's COMMON-ANCESTOR arm at a spaced path. A ticket whose
+  # tests span two dirs resolves the scope to their shared parent — a DIRECTORY
+  # carrying the whitespace, which the runner must still receive whole. The decoy
+  # sits OUTSIDE that ancestor, so it must still not run.
+  repo="$(ws_py_repo "$WS_SPACE/pyspan")"
+  rm -f "$repo/src/test_decoy.py"
+  mkdir -p "$repo/src/a" "$repo/src/b" "$repo/other"
+  printf 'def test_decoy_must_never_run():\n    assert 1 == 2\n' > "$repo/other/test_decoy.py"
+  # The subject modules EXIST on the parent but lack the ticket's functions, so
+  # the parent leg is a clean runtime red (2 collected, 2 failed) rather than an
+  # import-time collection error — this case is about the SCOPE, not about how
+  # pytest reports a greenfield module.
+  printf 'def existing():\n    return None\n' > "$repo/src/a/mod_a.py"
+  printf 'def existing():\n    return None\n' > "$repo/src/b/mod_b.py"
+  ( cd "$repo" && git add -A && git commit -qm decoy-moved )
+  P="$(head_sha "$repo")"
+  printf 'def existing():\n    return None\n\n\ndef up(s):\n    return str(s).upper()\n' > "$repo/src/a/mod_a.py"
+  printf 'import mod_a\n\n\ndef test_up_upcases():\n    assert mod_a.up("hi") == "HI"\n' > "$repo/src/a/test_up.py"
+  printf 'def existing():\n    return None\n\n\ndef down(s):\n    return str(s).lower()\n' > "$repo/src/b/mod_b.py"
+  printf 'import mod_b\n\n\ndef test_down_downcases():\n    assert mod_b.down("HI") == "hi"\n' > "$repo/src/b/test_down.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$WS_PY_CMD"
+  [ "$FFRC" = 0 ] \
+    && ok "N7c. multi-dir ticket at a SPACED path → common-ancestor scope survives whole" \
+    || bad "N7c. common-ancestor scope broke at a spaced path (FFRC=$FFRC): $OUT"
+  ffj="$(TD "$repo")/flip-flop.json"
+  python3 - "$ffj" <<'PY' && ok "N7d. both spanning tests ran, and the out-of-scope decoy did not" \
+                          || bad "N7d. wrong collection for the spanning ticket ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tail = (d.get("tip", {}).get("tail") or "")
+sys.exit(0 if ("decoy" not in tail and "2 passed" in tail) else 1)
+PY
+fi
+
+# --- N8: a NATIVE stack at a spaced path — no regression --------------------
+# The native lanes (rust/go/ruby/dotnet) scope with relative, already-quoted
+# arguments rather than $LCARS_TESTS_DIR, so they were never expected to break.
+# VERIFY that rather than assume it.
+if ! command -v rspec >/dev/null 2>&1; then
+  for d in "$HOME/.gem/ruby"/*/bin; do [ -d "$d" ] && PATH="$d:$PATH"; done
+  export PATH
+fi
+if ! have rspec || ! ruby -e 'require "rspec"' >/dev/null 2>&1; then
+  skip "RUBY: rspec not usable — SKIPPING the spaced-path native drive LOUDLY"
+else
+  repo="$TMPROOT/$WS_SPACE/rb/repo"
+  mkdir -p "$repo/lib" "$repo/spec"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf 'module Existing; end\n' > "$repo/lib/existing.rb"
+  cat > "$repo/spec/decoy_spec.rb" <<'RB'
+RSpec.describe "DECOY" do
+  it "must never run" do
+    expect(1).to eq(2)
+  end
+end
+RB
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  cat > "$repo/spec/mul_spec.rb" <<'RB'
+require_relative "../lib/mul"
+RSpec.describe "mul" do
+  it "multiplies" do
+    expect(Mul.call(2, 3)).to eq(6)
+  end
+end
+RB
+  printf 'module Mul\n  def self.call(a, b); a * b; end\nend\n' > "$repo/lib/mul.rb"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_STACK=ruby
+  [ "$FFRC" = 0 ] \
+    && ok "N8. ruby (native lane) at a SPACED path → flip-flop PASS (no regression)" \
+    || bad "N8. native lane broke at a spaced path (FFRC=$FFRC): $OUT"
+  ffj="$(TD "$repo")/flip-flop.json"
+  python3 - "$ffj" <<'PY' && ok "N9. ruby DECOY never ran at the spaced path (native scoping holds)" \
+                          || bad "N9. ruby decoy ran ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+tail = (d.get("tip", {}).get("tail") or "")
+sys.exit(0 if ("DECOY" not in tail and "1 example, 0 failures" in tail) else 1)
+PY
+fi
+
+# ==========================================================================
+# O (S148). THE REPO LIVES AT A PATH CONTAINING A GLOB METACHARACTER.
+#
+# Sibling class to N, and NOT a quoting bug — the shell delivers the scope
+# byte-perfect and the RUNNER re-globs it. Since Node 22, `node --test <path>`
+# treats its positional as a GLOB PATTERN, so an absolute scope carrying the
+# checkout's own path is re-interpreted. Observed on node v25.6.1:
+#   `\`  → glob-unescaped → "Could not find '<path>'" while the file exists → a
+#          FALSE FAIL on honest work;
+#   `*`  → EXPANDS across sibling directories → the leg runs test files the
+#          ticket never touched. That is not merely a false fail: it is a FALSE
+#          PROOF. Constructed and observed — a test-after cheat (green on BOTH
+#          legs, correctly FAILED by the gate) is recorded as a PASS as soon as a
+#          ride-along in a glob-matched sibling supplies the parent-leg red. O3
+#          below is that experiment, kept as a regression.
+#   `?`  → same single-char expansion, same widening;
+#   `[`  → a CLOSED class (`br[a-c]k`) matched a sibling INSTEAD of the real dir —
+#          one test collected, from the wrong repo, silently. (A lone unclosed `[`
+#          is literal today, but closure is runner-internal parsing state, so the
+#          opener is what we refuse.)
+#   `{`  → `{a,b}` brace-expands the same way (a lone `{` is literal today — same
+#          reasoning as `[`).
+# No quoting can fix this, and glob-ESCAPING the scope would corrupt it for every
+# runner that takes the path literally (pytest and rspec both do). So the generic
+# lane REFUSES to run: INCONCLUSIVE, naming the real cause, per GUARD 1's
+# principle — never toward a pass, never toward a baffling red.
+#
+# THE OVER-PARK SIDE IS THE HARDER HALF. Every character guarded is a repo shape
+# LCARS will not run, so O5 drives the whole ordinary-punctuation set end-to-end
+# and requires a normal GREEN. Parking those would be a worse bug than the one
+# this closes.
+# ==========================================================================
+echo "== O. glob metacharacters in the repo path (S148) =="
+
+gl_drive() { # container-name → sets FFRC/OUT for an HONEST js ticket at that path
+  repo="$(ws_js_repo "$1")"; P="$(head_sha "$repo")"
+  write_honest_js_tip "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$(seeded_cmd_for "$repo")"
+}
+
+# --- O1/O2: `*` → parked, with an honest, actionable message ----------------
+gl_drive 'gl*ob'
+[ "$FFRC" = 2 ] \
+  && ok "O1. repo path containing '*' → INCONCLUSIVE (rc 2), never a pass and never a mystery red" \
+  || bad "O1. a '*' in the repo path must park the leg (FFRC=$FFRC): $OUT"
+ffj="$(TD "$repo")/flip-flop.json"
+python3 - "$ffj" <<'PY' && ok "O2. the reason names the offending character, blames the LOCATION, and says what to do" \
+                        || bad "O2. unhelpful park message ($(cat "$ffj" 2>/dev/null))"
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = (d.get("reason") or "")
+low = r.lower()
+sys.exit(0 if (d.get("verdict") == "inconclusive"
+               and "*" in r
+               and "glob" in low
+               and ("move" in low or "rename" in low)) else 1)
+PY
+
+# --- O3: THE FALSE-PROOF REGRESSION -----------------------------------------
+# The cheat below is green on BOTH legs and MUST fail the gate. Pre-guard, a
+# ride-along test in a sibling directory that the `re*po` glob also matches
+# supplied the parent-leg red and the gate recorded verdict "pass" — a silent
+# green sourced from a file the ticket never touched. The guard must make that
+# unreachable, and must not reach it by luck: rc 2 (refused), not rc 0.
+GLB="$TMPROOT/fp"
+mkdir -p "$GLB"
+repo="$GLB/re*po"; mkdir -p "$repo/src"
+( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+printf '{ "name": "fix", "private": true, "scripts": { "test": "node --test" } }\n' > "$repo/package.json"
+printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+( cd "$repo" && git add -A && git commit -qm parent )
+scaffold_mission "$repo"
+P="$(head_sha "$repo")"
+write_cheat_js_tip "$repo"
+write_result "$(TD "$repo")" '["src/calc.test.js"]' '[]' expected
+# the ride-along: a FAILING test the ticket never touched, in a sibling checkout,
+# at exactly the path the PARENT leg's widened glob reaches.
+GLD="$GLB/reXXpo/.git/lcars/missions/m-001/proof-worktrees/t-001-parent/src"
+mkdir -p "$GLD"
+cat > "$GLD/calc.test.js" <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+test('RIDEALONG the ticket never touched', () => { assert.strictEqual(1, 2); });
+JS
+ff_gate "$repo" "$P" LCARS_TEST_CMD='node --test $LCARS_TESTS_DIR'
+[ "$FFRC" = 2 ] \
+  && ok "O3. a ride-along in a glob-matched SIBLING can no longer manufacture the parent-leg red (no false PROOF)" \
+  || bad "O3. FALSE PROOF reachable — the cheat scored FFRC=$FFRC off a file it never touched: $OUT"
+
+# --- O4: the rest of the refused set ----------------------------------------
+gl_drive 'back\slash'
+[ "$FFRC" = 2 ] \
+  && ok "O4a. repo path containing '\\' → INCONCLUSIVE, not the runner's baffling \"Could not find\" red" \
+  || bad "O4a. a '\\' in the repo path must park the leg (FFRC=$FFRC): $OUT"
+python3 - "$(TD "$repo")/flip-flop.json" <<'PY' && ok "O4b. the '\\' park names that character too" \
+                        || bad "O4b. the backslash park does not name the character ($FFRC)"
+import json, sys
+r = (json.load(open(sys.argv[1])).get("reason") or "")
+sys.exit(0 if "\\" in r and "glob" in r.lower() else 1)
+PY
+for ch in 'qu?st' 'br[ack' 'br{ace'; do
+  gl_drive "$ch"
+  [ "$FFRC" = 2 ] \
+    && ok "O4c. repo path '$ch' → INCONCLUSIVE" \
+    || bad "O4c. '$ch' must park the leg (FFRC=$FFRC): $OUT"
+done
+
+# --- O5: THE OVER-PARK REGRESSION -------------------------------------------
+# Ordinary punctuation that a real machine really has in its paths. Every one of
+# these is verified LITERAL to the runner, so every one must still drive a normal
+# flip-flop PASS. (Space and tab — the S148 quoting fix — are re-proven here as
+# well as in N, because parking them would silently undo that fix.)
+for ch in 'plain' 'sp ace' "$(printf 'ta\tb')" "o'brien" 'sa"y' 'a$b' 'a`b' 'a;b' \
+          'a#b' 'a~b' 'a+b' 'a(b)c' 'répö-日本' 'a&b' 'a=b' 'a!b'; do
+  gl_drive "ok/$ch"
+  [ "$FFRC" = 0 ] \
+    && ok "O5. ordinary path '$ch' still runs normally (flip-flop PASS)" \
+    || bad "O5. OVER-PARK: '$ch' is literal to the runner and must not be refused (FFRC=$FFRC): $OUT"
+done
 
 # ==========================================================================
 echo

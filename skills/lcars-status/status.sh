@@ -65,6 +65,25 @@ if [ -z "$LCARS_DIR" ] || [ ! -d "$LCARS_DIR" ]; then
   exit 0
 fi
 
+# --- S146: the ONE repo-level test-readiness header line --------------------
+# Snapshot mode only. Computed by the SHARED verdict in lcars-common.sh (the
+# same one init/update/the board use), so this view can never disagree with
+# them. Silent when ready — a ready board is byte-identical to before. Repair
+# voice (⚠ TEST SYSTEMS OFFLINE + the fix verb) for broken/missing; bootstrap
+# voice for a greenfield repo (status, never an alarm). Purely a header — it
+# never gates: filing/running missions proceeds regardless.
+if [ "$MODE" = "snapshot" ]; then
+  COMMON_LIB="${LCARS_COMMON_LIB:-$(dirname "$0")/../lcars-init/lcars-common.sh}"
+  if [ -f "$COMMON_LIB" ]; then
+    TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)" || TOPLEVEL="$PWD"
+    # shellcheck source=skills/lcars-init/lcars-common.sh
+    . "$COMMON_LIB"
+    lcars_test_readiness "$LCARS_DIR/config.json"
+    READINESS_LINE="$(lcars_readiness_line)"
+    [ -n "$READINESS_LINE" ] && printf '%s\n' "$READINESS_LINE"
+  fi
+fi
+
 # --- gather missions ------------------------------------------------------
 # A "mission" is any subdirectory of missions/ holding a state.json. Dirs
 # without one (half-written, manually poked) are skipped silently.

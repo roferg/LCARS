@@ -469,6 +469,85 @@ rc6=0
 ) || rc6=$?
 check "6. grill-first rejects a bare positional idea" "[ '$rc6' -ne 0 ]"
 
+# --- Behaviour 8: the engine pin on the --complete lane (S147 round-2 D3) -----
+# The park lane and the grill-first lane share one validation and one precedence
+# rule; --complete was left out of both. It took its engine ONLY from the parked
+# state.json, so `--engine` and $LCARS_WORKER_BIN were silently dropped and a
+# bogus engine exited 0.
+#
+# This is not a CLI-only nicety. The viewscreen's START ALIGNMENT flow lets an
+# explicit engine picker beat the parked engine for the GRILL (actions.py
+# align_start) and then threads that choice to `file.sh --complete` as
+# $LCARS_WORKER_BIN (_complete_from_align) — which do_complete ignored. A captain
+# who parked an idea and then picked copilot got a grill on copilot and a
+# pipeline on the parked/host-detected engine: the original money bug on a third
+# lane, and a violation of "never decouple the grill engine from the pipeline
+# engine". The most recent explicit choice must win, on BOTH surfaces.
+mk_parked() { # repo-var-name [park-engine] → echoes repo path, parks mission 001
+  local eng="${1:-}" repo; repo="$(new_repo)"; make_gh_stub "$repo/gh"
+  local args=(--park "An idea to complete later")
+  [ -n "$eng" ] && args+=(--engine "$eng")
+  ( cd "$repo" && GH_LOG="$repo/gh.log" LCARS_GH_BIN="$repo/gh" LCARS_DATE="20260530" \
+      bash "$FILE_SCRIPT" "${args[@]}" >/dev/null 2>&1 )
+  printf '%s' "$repo"
+}
+CM="lcars-20260530-001"
+
+# 8a. a bogus --engine on --complete is REJECTED, and the mission stays PARKED.
+r8a="$(mk_parked)"; prd8a="$r8a/prd.md"; write_prd "$prd8a"
+rc8a=0
+( cd "$r8a" && GH_LOG="$r8a/gh.log" LCARS_GH_BIN="$r8a/gh" \
+    bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8a" --engine totally-bogus >o.txt 2>&1 ) || rc8a=$?
+check "8a. bogus --engine on --complete ⇒ non-zero exit" "[ '$rc8a' -ne 0 ]"
+check "8a. bogus --engine on --complete ⇒ names the engine" \
+  "grep -q \"unknown engine 'totally-bogus'\" '$r8a/o.txt'"
+check "8a. bogus --engine on --complete ⇒ mission LEFT PARKED (nothing partial)" \
+  "grep -q '\"prdPending\": *true' '$r8a/.git/lcars/missions/$CM/state.json'"
+check "8a. bogus --engine on --complete ⇒ no prd.md written" \
+  "[ ! -f '$r8a/.git/lcars/missions/$CM/prd.md' ]"
+
+# 8b. --engine on --complete is HONOURED when the mission parked with none.
+r8b="$(mk_parked)"; prd8b="$r8b/prd.md"; write_prd "$prd8b"
+( cd "$r8b" && GH_LOG="$r8b/gh.log" LCARS_GH_BIN="$r8b/gh" \
+    bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8b" --engine copilot >o.txt 2>&1 )
+check "8b. --complete --engine copilot persists workerBin=copilot" \
+  "grep -q '\"workerBin\": *\"copilot\"' '$r8b/.git/lcars/missions/$CM/state.json'"
+
+# 8c. THE VIEWSCREEN CASE: parked on claude, captain picks copilot at START
+#     ALIGNMENT ⇒ the daemon threads $LCARS_WORKER_BIN=copilot ⇒ the PIPELINE
+#     must run copilot too, not the parked claude.
+r8c="$(mk_parked claude)"; prd8c="$r8c/prd.md"; write_prd "$prd8c"
+check "8c. (precondition) parked mission recorded workerBin=claude" \
+  "grep -q '\"workerBin\": *\"claude\"' '$r8c/.git/lcars/missions/$CM/state.json'"
+( cd "$r8c" && GH_LOG="$r8c/gh.log" LCARS_WORKER_BIN=copilot LCARS_GH_BIN="$r8c/gh" \
+    bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8c" >o.txt 2>&1 )
+check "8c. an explicit picker engine BEATS the parked engine on --complete" \
+  "grep -q '\"workerBin\": *\"copilot\"' '$r8c/.git/lcars/missions/$CM/state.json'"
+
+# 8d. --engine beats $LCARS_WORKER_BIN on --complete too (same order as the
+#     other two lanes).
+r8d="$(mk_parked claude)"; prd8d="$r8d/prd.md"; write_prd "$prd8d"
+( cd "$r8d" && GH_LOG="$r8d/gh.log" LCARS_WORKER_BIN=claude LCARS_GH_BIN="$r8d/gh" \
+    bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8d" --engine copilot >o.txt 2>&1 )
+check "8d. --engine beats \$LCARS_WORKER_BIN on --complete" \
+  "grep -q '\"workerBin\": *\"copilot\"' '$r8d/.git/lcars/missions/$CM/state.json'"
+
+# 8e. NO REGRESSION: with neither signal, the PARKED engine is still carried
+#     forward untouched (the S136 behaviour the byte-identity test locks).
+r8e="$(mk_parked copilot)"; prd8e="$r8e/prd.md"; write_prd "$prd8e"
+( cd "$r8e" && GH_LOG="$r8e/gh.log" LCARS_GH_BIN="$r8e/gh" \
+    bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8e" >o.txt 2>&1 )
+check "8e. no explicit engine ⇒ the parked engine is preserved" \
+  "grep -q '\"workerBin\": *\"copilot\"' '$r8e/.git/lcars/missions/$CM/state.json'"
+
+# 8f. NO REGRESSION: parked with nothing and completed with nothing ⇒ still NO
+#     workerBin key at all (host-detect stays in charge).
+r8f="$(mk_parked)"; prd8f="$r8f/prd.md"; write_prd "$prd8f"
+( cd "$r8f" && GH_LOG="$r8f/gh.log" LCARS_GH_BIN="$r8f/gh" \
+    bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8f" >o.txt 2>&1 )
+check "8f. no engine anywhere ⇒ completed state.json has no workerBin key" \
+  "! grep -q 'workerBin' '$r8f/.git/lcars/missions/$CM/state.json'"
+
 # ==========================================================================
 echo
 printf 'park-file: %d passed, %d failed\n' "$pass" "$fail"
