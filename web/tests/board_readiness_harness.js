@@ -212,6 +212,27 @@ function out(obj) { process.stdout.write(JSON.stringify(obj)); }
     return;
   }
 
+  // S147/D8: the AMBIGUOUS state offers a PICK, not a repair — clicking a
+  // candidate must set that exact command (zero tokens), never dispatch the
+  // discovery worker behind /api/config/fix-tests.
+  if (mode === "bannerpick") {
+    sandbox.renderTestReadiness(tr);
+    FETCH_CALLS.length = 0;
+    CURRENT_BOARD = boardWith(null);
+    const pick = findNode(REGISTRY.readinessBanner, function (n) {
+      return n.tag === "button" && /USE/.test(n._text || "");
+    });
+    if (!pick) {
+      out({ error: "candidate button not found",
+            banner: project(REGISTRY.readinessBanner) });
+      process.exit(2);
+    }
+    click(pick);
+    await drain();
+    out({ banner: project(REGISTRY.readinessBanner), fetches: FETCH_CALLS });
+    return;
+  }
+
   // every file* mode opens the console over a board carrying (or not) the block.
   CURRENT_BOARD = boardWith(tr);
   sandbox.LAST_BOARD = boardWith(tr);
@@ -245,6 +266,23 @@ function out(obj) { process.stdout.write(JSON.stringify(obj)); }
       process.exit(2);
     }
     click(fixBtn);
+    await drain();
+    out({ overlay: project(overlayBody),
+          idea: ideaBox ? ideaBox.value : null,
+          fetches: FETCH_CALLS });
+    return;
+  }
+
+  if (mode === "filepick") {
+    CURRENT_BOARD = boardWith(null);
+    const pick = findNode(overlayBody, function (n) {
+      return n.tag === "button" && /USE/.test(n._text || "");
+    });
+    if (!pick) {
+      out({ error: "candidate button not found", overlay: project(overlayBody) });
+      process.exit(2);
+    }
+    click(pick);
     await drain();
     out({ overlay: project(overlayBody),
           idea: ideaBox ? ideaBox.value : null,

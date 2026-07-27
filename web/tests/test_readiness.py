@@ -64,6 +64,21 @@ BROKEN = {"status": "broken", "suggestion": None,
           "testCommand": "gulp-legacy test"}
 UNKNOWN = {"status": "unknown", "suggestion": None, "testCommand": None}
 READY = {"status": "ready", "suggestion": None, "testCommand": "make test"}
+# S147 (carried S146 defect): a repo with SEVERAL stacks — real test systems,
+# just more than one — is NOT greenfield. It gets its own CHOOSE voice, and
+# `candidates` carries the pickable commands so choosing costs ZERO tokens
+# (the old ⚡ FIX here dispatched a PAID discovery worker to choose, which is
+# exactly what the "LCARS will not choose for you" line promised it would not).
+AMBIGUOUS = {"status": "ambiguous", "suggestion": None, "testCommand": None,
+             "stacks": "rust,js",
+             "candidates": ["cargo test", "npm test -- ${LCARS_TESTS_DIR:-}"]}
+# the same verdict reached through ONE stack that cannot pin its runner — a
+# dotnet repo with two test projects (D6).
+AMBIGUOUS_DOTNET = {
+    "status": "ambiguous", "suggestion": None, "testCommand": None,
+    "stacks": "tests/A.Tests/A.Tests.csproj,tests/B.Tests/B.Tests.csproj",
+    "candidates": ["dotnet test tests/A.Tests/A.Tests.csproj",
+                   "dotnet test tests/B.Tests/B.Tests.csproj"]}
 
 
 class TestMetaTestReadiness(unittest.TestCase):
@@ -112,6 +127,22 @@ class TestMetaTestReadiness(unittest.TestCase):
         meta = self._meta(UNKNOWN)
         self.assertEqual(meta["testReadiness"]["status"], "unknown")
         self.assertIsNone(meta["testReadiness"]["suggestion"])
+        # S147: `stacks`/`candidates` ride ONLY the ambiguous verdict — every
+        # other payload stays byte-identical to S146.
+        self.assertNotIn("stacks", meta["testReadiness"])
+        self.assertNotIn("candidates", meta["testReadiness"])
+
+    def test_ambiguous_forwards_the_candidate_stacks(self):
+        meta = self._meta(AMBIGUOUS)
+        self.assertEqual(meta["testReadiness"], dict(AMBIGUOUS))
+
+    def test_ambiguous_forwards_the_pickable_candidate_commands(self):
+        # Without these the board can only offer ⚡ FIX, which for this state
+        # dispatches a paid discovery worker to make the choice LCARS just
+        # said it would not make.
+        meta = self._meta(AMBIGUOUS_DOTNET)
+        self.assertEqual(meta["testReadiness"]["candidates"],
+                         AMBIGUOUS_DOTNET["candidates"])
 
     def test_helper_garbage_degrades_to_absent(self):
         path = os.path.join(self.tmp, "garbage.sh")
@@ -215,6 +246,32 @@ class TestBoardVerdictStaleness(unittest.TestCase):
             self.adapter.board()["meta"]["testReadiness"]["status"], "unknown")
         self.assertNotEqual(fp_with, self.adapter.fingerprint(),
                             "a marker vanishing must move the fingerprint too")
+
+    def test_nested_dotnet_project_moves_the_fingerprint(self):
+        # S147/D5: `dotnet new xunit -o MyApp.Tests` writes the ONLY project one
+        # directory down with no root solution. detect_stack now sees that
+        # (bounded recursion), so the board's marker memo has to see it too —
+        # otherwise a C# repo's verdict goes stale against the CLI's, which is
+        # exactly the divergence the S146 D2 contract forbids.
+        before = self.adapter.fingerprint()
+        d = os.path.join(self.tmp, "MyApp.Tests")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "MyApp.Tests.csproj"), "w") as fh:
+            fh.write('<Project Sdk="Microsoft.NET.Sdk"></Project>\n')
+        self.assertNotEqual(before, self.adapter.fingerprint(),
+                            "a csproj one directory down is a detection "
+                            "marker for the CLI, so it must move the memo")
+
+    def test_dotnet_build_output_is_not_a_marker(self):
+        # obj/ carries a copy of the csproj on every build; counting it would
+        # re-verdict (and re-shell) on every compile.
+        d = os.path.join(self.tmp, "App", "obj", "Debug")
+        os.makedirs(d, exist_ok=True)
+        before = self.adapter.fingerprint()
+        with open(os.path.join(d, "App.csproj"), "w") as fh:
+            fh.write('<Project Sdk="Microsoft.NET.Sdk"></Project>\n')
+        self.assertEqual(before, self.adapter.fingerprint(),
+                         "obj/ build output must not be a detection marker")
 
     def test_no_change_requests_do_not_reshell(self):
         for _ in range(5):
@@ -475,6 +532,64 @@ class TestBannerRender(unittest.TestCase):
         # the two voices must never blur.
         repair = _texts(_run_harness("banner", BROKEN)["banner"])
         self.assertNotEqual(txt, repair)
+
+    def test_ambiguous_is_never_the_greenfield_bootstrap_voice(self):
+        # S147: the defect this closes — an ambiguous repo WITH test infra used
+        # to render "NO TEST SYSTEMS FOUND / the crew will establish them",
+        # which is false. It must read as a choice the captain has to make.
+        res = _run_harness("banner", AMBIGUOUS)
+        txt = _texts(res["banner"])
+        self.assertNotIn("engineering crew", txt)
+        self.assertNotIn("NO TEST SYSTEMS FOUND", txt)
+        self.assertIn("MULTIPLE TEST SYSTEMS DETECTED", txt)
+        self.assertIn("rust,js", txt)
+        # …while still differing from BOTH neighbouring voices.
+        self.assertNotEqual(txt, _texts(_run_harness("banner", UNKNOWN)["banner"]))
+        self.assertNotEqual(txt, _texts(_run_harness("banner", BROKEN)["banner"]))
+
+    def test_ambiguous_offers_a_pick_not_the_worker_dispatching_fix(self):
+        # S147/D8: ⚡ FIX on this state posts /api/config/fix-tests, which
+        # hires a PAID discovery crew to choose. The affordance has to MATCH
+        # the promise: show the detected candidates and let the captain pick.
+        txt = _texts(_run_harness("banner", AMBIGUOUS_DOTNET)["banner"])
+        self.assertNotIn("⚡ FIX TEST SYSTEMS", txt)
+        for cand in AMBIGUOUS_DOTNET["candidates"]:
+            self.assertIn(cand, txt)
+
+    def test_ambiguous_pick_sets_that_exact_command_and_spends_nothing(self):
+        res = _run_harness("bannerpick", AMBIGUOUS_DOTNET)
+        posts = [f for f in res["fetches"] if f["method"] == "POST"]
+        self.assertEqual(len(posts), 1, posts)
+        self.assertEqual(posts[0]["url"], "/api/config/test-command")
+        self.assertEqual(json.loads(posts[0]["body"])["testCommand"],
+                         AMBIGUOUS_DOTNET["candidates"][0])
+        self.assertNotIn("/api/config/fix-tests",
+                         [f["url"] for f in res["fetches"]])
+
+    def test_ambiguous_file_console_uses_the_choose_voice_too(self):
+        # CLI/board/File-console must all agree (the ADR-002 parity rule).
+        ov = _run_harness("file", AMBIGUOUS)["overlay"]
+        txt = _texts(_find_cls(ov, "file-readiness")[0])
+        self.assertIn("MULTIPLE TEST SYSTEMS DETECTED", txt)
+        self.assertNotIn("engineering crew", txt)
+        self.assertNotIn("⚡ FIX TEST SYSTEMS", txt)
+        for cand in AMBIGUOUS["candidates"]:
+            self.assertIn(cand, txt)
+
+    def test_ambiguous_file_console_pick_sets_the_command_no_worker(self):
+        res = _run_harness("filepick", AMBIGUOUS_DOTNET)
+        posts = [f for f in res["fetches"] if f["method"] == "POST"]
+        self.assertEqual([p["url"] for p in posts], ["/api/config/test-command"])
+        self.assertEqual(json.loads(posts[0]["body"])["testCommand"],
+                         AMBIGUOUS_DOTNET["candidates"][0])
+        # the typed idea is never touched by a readiness action
+        self.assertEqual(res["idea"], "my precious idea")
+
+    def test_ambiguous_readonly_shows_the_choice_without_the_affordance(self):
+        txt = _texts(_run_harness("banner", AMBIGUOUS_DOTNET,
+                                  readonly=True)["banner"])
+        self.assertIn("MULTIPLE TEST SYSTEMS DETECTED", txt)
+        self.assertNotIn("USE", txt)
 
     def test_readonly_hides_the_fix_affordance_keeps_the_status(self):
         res = _run_harness("banner", BROKEN, readonly=True)

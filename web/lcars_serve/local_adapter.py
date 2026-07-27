@@ -49,7 +49,31 @@ _DETECT_MARKER_FILES = (
     # generic runners, checked last by detect_test_cmd
     "Makefile", os.path.join("tests", "run.sh"),
 )
-_DETECT_MARKER_GLOBS = ("*.gemspec", "*.csproj", "*.sln")
+# S147: `.slnx` is .NET 10's default solution format — a marker like `.sln`.
+_DETECT_MARKER_GLOBS = ("*.gemspec", "*.csproj", "*.sln", "*.slnx")
+# S147: detect_stack's dotnet marker probe is bounded-RECURSIVE (see
+# detect_dotnet_markers / DOTNET_MARKER_MAXDEPTH in lcars-common.sh), because
+# `dotnet new xunit -o MyApp.Tests` puts the only project one directory down
+# with no root solution. The memo has to see the same files or the board's
+# verdict goes stale against the CLI's. Depth-explicit glob patterns (cheap,
+# no os.walk) mirroring maxdepth 3; `bin`/`obj`/`.git`/`node_modules` segments
+# are dropped exactly as the shell prunes them (a build leaves a csproj copy
+# under obj/, and counting it would re-verdict on every compile).
+#
+# Below the top level the CLI counts a project only when it is a TEST project
+# (Test.Sdk reference, or the *Tests* naming convention) — a vendored sample or
+# a tools/ helper must not flip a js/python/rust repo. Nested SOLUTIONS do not
+# count for it at all, so they are not tracked here either. The remaining
+# difference is deliberate: telling a test project from a plain one needs the
+# file's CONTENTS, which a stat-cheap fingerprint will not read, so this stays a
+# SUPERSET over nested *.csproj. A superset can only cause one extra re-verdict
+# (the shell-out then returns the same answer); it can never leave the board
+# stale, which is the direction the S146 D2 contract cares about.
+_DETECT_MARKER_RGLOBS = tuple(
+    os.path.join(*(["*"] * d + ["*.csproj"]))
+    for d in (1, 2)
+)
+_DETECT_MARKER_PRUNE = ("bin", "obj", ".git", "node_modules")
 # spec/ + test/ dir EXISTENCE is ruby runner evidence (detect_test_cmd S145).
 _DETECT_MARKER_DIRS = ("spec", "test")
 
@@ -152,6 +176,15 @@ class LocalAdapter(object):
                     sig.append((os.path.basename(p), os.path.getmtime(p)))
                 except OSError:
                     pass
+        for pat in _DETECT_MARKER_RGLOBS:
+            for p in sorted(glob.glob(os.path.join(glob.escape(root), pat))):
+                rel = os.path.relpath(p, root)
+                if any(seg in _DETECT_MARKER_PRUNE for seg in rel.split(os.sep)):
+                    continue
+                try:
+                    sig.append((rel, os.path.getmtime(p)))
+                except OSError:
+                    pass
         for d in _DETECT_MARKER_DIRS:
             sig.append((d + "/", os.path.isdir(os.path.join(root, d))))
         return tuple(sig)
@@ -197,6 +230,19 @@ class LocalAdapter(object):
                 payload = {"status": blk.get("status"),
                            "suggestion": blk.get("suggestion"),
                            "testCommand": blk.get("testCommand")}
+                # S147: `stacks` names the candidates behind an AMBIGUOUS
+                # verdict so the board speaks the same CHOOSE voice the CLI
+                # line does, and `candidates` carries the PICKABLE commands so
+                # the board can offer the choice directly — the ⚡ FIX walk on
+                # this state dispatches a paid discovery worker to make the very
+                # choice LCARS just said it would not make. Forwarded ONLY when
+                # the helper set them, so the missing/broken/unknown payloads
+                # stay byte-identical to S146.
+                if blk.get("stacks"):
+                    payload["stacks"] = blk.get("stacks")
+                if isinstance(blk.get("candidates"), list) and blk["candidates"]:
+                    payload["candidates"] = [
+                        c for c in blk["candidates"] if isinstance(c, str)]
         except Exception:
             payload = None
         self._readiness_memo = (key, payload)

@@ -167,9 +167,23 @@ run_probe() {
   ( cd "$TOPLEVEL" && perl -e 'alarm shift; exec @ARGV or exit 127' \
       "$PROBE_TIMEOUT" bash -c "$cmd" ) >"$PROBE_OUT" 2>&1
   PROBE_RC=$?
-  local zero='No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items|(^|[^0-9])0 examples, 0 failures$|(^|[^0-9])0 runs, 0 assertions|no tests to run|test result: ok\. 0 passed'
+  # S147: THREE VSTest phrasings, all exiting 0 (observed, SDK 10.0.107) — a
+  # filter that matches nothing, a test project with no test methods, and a run
+  # whose every discovered case was SKIPPED (`[Fact(Skip=…)]`), which prints
+  # neither "no test" phrase and used to read here as "the suite ran and passed".
+  # They are the dotnet green-on-nothing trap, so the probe names them too; the
+  # skipped form keys on the NUMBERS (zero failed AND zero passed) so a real
+  # 1-passed/1-skipped run stays a pass. Keep in step with rg_signature
+  # `zerotests` + proof_zero_collected in skills/lcars-run/run.sh.
+  local zero='No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items|(^|[^0-9])0 examples, 0 failures$|(^|[^0-9])0 runs, 0 assertions|no tests to run|test result: ok\. 0 passed|^No test matches the given testcase filter .*\.dll|^No test is available in .*\.dll|^(Passed|Failed|Skipped)! +- +Failed: +0, +Passed: +0,'
+  # S147: MSBuild never even REACHED a test run — the project/solution the
+  # command names is not there. Reporting that as "the suite ran but reported
+  # failures" sends the captain hunting a test failure that does not exist.
+  local cantrun='^MSBUILD : error MSB100[39]:'
   if [ "$PROBE_RC" -eq 142 ]; then          # 128 + SIGALRM(14): the alarm fired
     PROBE_OUTCOME="timeout"
+  elif grep -Eq "$cantrun" "$PROBE_OUT"; then
+    PROBE_OUTCOME="cannot-run"
   elif grep -Eq "$zero" "$PROBE_OUT"; then  # runner finished but ran NOTHING
     PROBE_OUTCOME="zero-collected"
   elif [ "$PROBE_RC" -eq 0 ]; then
@@ -190,6 +204,10 @@ report_probe() {
     zero-collected)
       echo "  ⚠ PROBE INCONCLUSIVE — the runner started but collected ZERO tests."
       echo "    That is not a pass: the command may be scoped to the wrong place." ;;
+    cannot-run)
+      echo "  ⚠ PROBE COULD NOT RUN — the command never reached a test run: the"
+      echo "    project or solution it names could not be loaded (exit $PROBE_RC)."
+      tail -n 5 "$PROBE_OUT" 2>/dev/null | sed 's/^/      /' ;;
     timeout)
       echo "  ⚠ PROBE TIMED OUT — no verdict within ${PROBE_TIMEOUT}s; the suite never settled." ;;
   esac
@@ -304,6 +322,52 @@ if [ -n "$VERB" ]; then
       if [ "$ORIG_STATUS" = "ready" ]; then
         echo "  ✓ TEST SYSTEMS ONLINE — nothing to repair (testCommand: $LCARS_TESTREADY_TESTCMD)."
         exit 0
+      fi
+      # S147/D8: AMBIGUOUS is a CHOICE, and the verdict line promises "LCARS will
+      # not choose for you". Falling through to run_discovery broke that promise
+      # twice over — it hired a PAID crew, and the crew's whole job was to choose.
+      # The repair here is to SHOW the detected candidates: interactively the
+      # captain picks one and it is set + probed in this same invocation;
+      # non-interactively they are printed with the exact command to run. Either
+      # way, ZERO tokens — no worker is ever spawned for this state.
+      if [ "$ORIG_STATUS" = "ambiguous" ]; then
+        echo "  ⚠ MULTIPLE TEST SYSTEMS DETECTED (${LCARS_TESTREADY_STACKS}) — this repo already"
+        echo "    has test systems; LCARS will not choose between them for you."
+        if [ -z "$LCARS_TESTREADY_CANDIDATES" ]; then
+          echo "    Select one with:"
+          echo "    lcars update --test-command '<the command for the system you want>'"
+          exit 1
+        fi
+        AMB_N=0
+        while IFS= read -r AMB_C; do
+          [ -n "$AMB_C" ] || continue
+          AMB_N=$((AMB_N + 1))
+          printf '      [%d] %s\n' "$AMB_N" "$AMB_C"
+        done <<AMB_EOF
+$LCARS_TESTREADY_CANDIDATES
+AMB_EOF
+        if [ ! -t 0 ]; then
+          echo "    Select one with:"
+          echo "    lcars update --test-command '<one of the above>'"
+          exit 1
+        fi
+        printf '    Which do the Implement gates run? [1-%d, or blank to cancel] ' "$AMB_N"
+        read -r AMB_PICK || AMB_PICK=""
+        case "$AMB_PICK" in
+          ''|*[!0-9]*) echo "  ◇ NO SELECTION MADE — config untouched."; exit 1 ;;
+        esac
+        if [ "$AMB_PICK" -lt 1 ] || [ "$AMB_PICK" -gt "$AMB_N" ]; then
+          echo "  ◇ NO SELECTION MADE — config untouched."; exit 1
+        fi
+        NEWCMD="$(printf '%s' "$LCARS_TESTREADY_CANDIDATES" | grep . | sed -n "${AMB_PICK}p")"
+        set_test_command "$NEWCMD"
+        echo "  ✓ testCommand set: $NEWCMD"
+        echo "  ▸ probing test systems…"
+        run_probe "$NEWCMD"
+        report_probe
+        if [ "$PROBE_OUTCOME" = "pass" ]; then print_verdict; exit 0; fi
+        echo "  ⚠ TEST SYSTEMS SET BUT UNVERIFIED — the command is configured, but the probe reported ${PROBE_OUTCOME}; not declaring ready."
+        exit 1
       fi
       NEWCMD=""
       if [ -n "$LCARS_TESTREADY_SUGGESTION" ]; then

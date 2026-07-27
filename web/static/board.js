@@ -1165,6 +1165,25 @@ function readinessCopy(tr) {
       sub: "",
     };
   }
+  /* S147: AMBIGUOUS is its own voice — a THIRD state, never blurred into the
+     other two. This repo is NOT greenfield: it HAS test systems, several of
+     them, and LCARS refuses to choose. Telling the captain "the crew will
+     establish them" would be a lie on a repo that already has real test
+     infrastructure. It carries the repair voice's styling (a captain CAN
+     resolve it) but a different AFFORDANCE: `choices` are the detected
+     candidate commands, rendered as one-click picks. ⚡ FIX is deliberately
+     NOT offered here — on this state it posts /api/config/fix-tests, which
+     dispatches a PAID discovery worker to make the very choice the line just
+     said LCARS would not make. */
+  if (tr && tr.status === "ambiguous") {
+    return {
+      voice: "repair",
+      line: "⚠ MULTIPLE TEST SYSTEMS DETECTED — LCARS will not choose for you; "
+          + "missions cannot be proof-gated until one is selected.",
+      sub: tr.stacks ? "candidates: " + tr.stacks : "",
+      choices: (tr.candidates && tr.candidates.length) ? tr.candidates : null,
+    };
+  }
   var sub = "";
   if (tr && tr.status === "broken" && tr.testCommand) {
     sub = "configured runner not found: " + tr.testCommand;
@@ -1199,6 +1218,37 @@ function renderTestReadiness(tr) {
 
   // The repair voice carries the one-click fix; the bootstrap voice is pure
   // status (never an action item), and a view-only build hides the affordance.
+  // AMBIGUOUS carries picks instead: choosing is the repair, and it costs
+  // nothing (one /api/config/test-command POST, the sanctioned setter).
+  if (copy.choices && writesActive !== false) {
+    var creason = el("span", "rb-reason");
+    band.appendChild(creason);
+    copy.choices.forEach(function (cmd) {
+      var cb = btn("▸ USE: " + cmd, "go rb-btn", function () {
+        if (readinessBusy) return;
+        readinessBusy = true;
+        cb.disabled = true;
+        cb.textContent = "◐ SETTING…";
+        band.classList.add("rb-busy");
+        creason.textContent = "";
+        postWrite("/api/config/test-command", { testCommand: cmd }, function () {
+          readinessBusy = false;
+          band.classList.remove("rb-busy");
+          band.classList.add("rb-done");
+          cb.textContent = "✓ TEST SYSTEMS ONLINE";
+        }, function (msg) {
+          readinessBusy = false;
+          band.classList.remove("rb-busy");
+          cb.disabled = false;
+          cb.textContent = "▸ USE: " + cmd;
+          creason.textContent = msg;
+        });
+      });
+      band.appendChild(cb);
+    });
+    host.appendChild(band);
+    return;
+  }
   if (copy.voice === "repair" && writesActive !== false) {
     var reason = el("span", "rb-reason");
     var b = btn("⚡ FIX TEST SYSTEMS", "go rb-btn", function () {
@@ -1288,6 +1338,28 @@ function fileReadinessBlock(tr) {
       report.hidden = false;
       report.textContent = msg; // plain report; the input stays ready
     }
+    // S147: on the AMBIGUOUS verdict the repair IS the choice, so the console
+    // offers one pick per detected candidate instead of ⚡ FIX (which would
+    // dispatch a paid discovery worker to choose). The manual override input
+    // stays exactly where it is — typing a command is still the escape hatch.
+    if (copy.choices) {
+      copy.choices.forEach(function (cmd) {
+        var cb = applyWriteState(btn("▸ USE: " + cmd, "go", function () {
+          cb.disabled = true;
+          cb.textContent = "◐ SETTING…";
+          report.hidden = true;
+          postWrite("/api/config/test-command", { testCommand: cmd },
+            onDone,
+            function (msg) {
+              cb.disabled = false;
+              cb.textContent = "▸ USE: " + cmd;
+              report.hidden = false;
+              report.textContent = msg;
+            });
+        }));
+        row.appendChild(cb);
+      });
+    }
     fix = applyWriteState(btn("⚡ FIX TEST SYSTEMS", "go", function () {
       busy(fix, "◐ REPAIRING…");
       postWrite("/api/config/fix-tests", {}, onDone, onFail);
@@ -1302,7 +1374,7 @@ function fileReadinessBlock(tr) {
       busy(set, "◐ SETTING…");
       postWrite("/api/config/test-command", { testCommand: v }, onDone, onFail);
     }));
-    row.appendChild(fix);
+    if (!copy.choices) row.appendChild(fix);
     row.appendChild(input);
     row.appendChild(set);
     wrap.appendChild(row);

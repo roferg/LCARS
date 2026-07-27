@@ -157,14 +157,25 @@ check "1. unknown: bootstrap line is NOT an alarm (no OFFLINE, no ⚠)" \
 check "1. the two unready voices differ (repair ≠ bootstrap)" \
   "! cmp -s '$repoB/l.txt' '$repoU/l.txt'"
 
-# ambiguous stack (rust + js) — no candidate ⇒ unknown, never a guessed pick.
+# ambiguous stack (rust + js) — several REAL test systems, so LCARS refuses to
+# guess. S147 gave this its own verdict: S146 folded it into `unknown`, which
+# made every surface promise a greenfield bootstrap on a repo that already has
+# test infrastructure. The never-guess invariant is unchanged (no suggestion).
 repoA="$(new_repo)"
 write_config "$repoA" 'null'
 printf '[package]\nname="x"\n' >"$repoA/Cargo.toml"
 printf '{ "scripts": { "test": "jest" } }\n' >"$repoA/package.json"
-( cd "$repoA" && bash "$READINESS" --json >j.txt 2>&1 )
-check "1. ambiguous stack: verdict is unknown (no guessed suggestion)" \
-  "grep -q '\"status\":\"unknown\"' '$repoA/j.txt'"
+( cd "$repoA" && bash "$READINESS" --json >j.txt 2>&1; bash "$READINESS" --line >l.txt 2>&1 )
+check "1. ambiguous stack: verdict is 'ambiguous', NOT the greenfield unknown" \
+  "grep -q '\"status\":\"ambiguous\"' '$repoA/j.txt'"
+check "1. ambiguous stack: still NO guessed suggestion (never picks for you)" \
+  "grep -q '\"suggestion\":null' '$repoA/j.txt'"
+check "1. ambiguous stack: names the candidate stacks for the board" \
+  "grep -q '\"stacks\":\"rust,js\"' '$repoA/j.txt'"
+check "1. ambiguous stack: the LINE is the choose voice, never the crew line" \
+  "grep -q 'MULTIPLE TEST SYSTEMS DETECTED' '$repoA/l.txt' && ! grep -qi 'engineering crew' '$repoA/l.txt'"
+check "1. ambiguous stack: its line differs from BOTH neighbouring voices" \
+  "! cmp -s '$repoA/l.txt' '$repoU/l.txt' && ! cmp -s '$repoA/l.txt' '$repoB/l.txt'"
 
 # ==========================================================================
 # 2. --test-command : the sanctioned manual setter
@@ -264,6 +275,48 @@ rcP4=0
 check "3. probe timeout: exits non-zero"      "[ '$rcP4' -ne 0 ]"
 check "3. probe timeout: reports the bound (never settled)" \
   "grep -qi 'TIMED OUT' '$repoP4/outP4.txt'"
+
+# D1 (probe leg): an ALL-SKIPPED VSTest suite exits 0 while executing NOTHING.
+# The probe called that "the suite ran and passed" — the exact green-on-nothing
+# lie the gate's guard exists to stop, on the surface the captain reads FIRST.
+# Phrasing OBSERVED verbatim from SDK 10.0.107 (`[Fact(Skip="wip")]`).
+repoP3b="$(new_repo)"
+write_config "$repoP3b" '"printf %s\\\\n \"Skipped! - Failed:     0, Passed:     0, Skipped:     1, Total:     1, Duration: 1 ms - App.Tests.dll (net10.0)\""'
+rcP3b=0
+( cd "$repoP3b" && bash "$UPDATE" --probe-tests >outP3b.txt 2>&1 ) || rcP3b=$?
+check "3. probe all-skipped: exits non-zero (zero tests EXECUTED is not a pass)" \
+  "[ '$rcP3b' -ne 0 ]"
+check "3. probe all-skipped: reads INCONCLUSIVE, never 'ran and passed'" \
+  "grep -qi 'ZERO tests' '$repoP3b/outP3b.txt' && ! grep -qi 'ran and passed' '$repoP3b/outP3b.txt'"
+# …and it must NOT over-fire: 1 passed + 1 skipped really did run a test.
+repoP3c="$(new_repo)"
+write_config "$repoP3c" '"printf %s\\\\n \"Passed!  - Failed:     0, Passed:     1, Skipped:     1, Total:     2, Duration: 22 ms - App.Tests.dll (net10.0)\""'
+rcP3c=0
+( cd "$repoP3c" && bash "$UPDATE" --probe-tests >outP3c.txt 2>&1 ) || rcP3c=$?
+check "3. probe mixed skip+pass: still a PASS (the guard does not over-fire)" \
+  "[ '$rcP3c' -eq 0 ] && grep -qi 'ran and passed' '$repoP3c/outP3c.txt'"
+
+# S5: the configured project is GONE. MSBuild never reaches a test run at all
+# (MSB1009/MSB1003, exit 1) — reporting "the suite ran but reported failures"
+# sends the captain hunting a test failure that does not exist.
+repoP6="$(new_repo)"
+write_config "$repoP6" '"printf %s\\\\n \"MSBUILD : error MSB1009: Project file does not exist.\" \"Switch: Missing.Tests.csproj\"; exit 1"'
+rcP6=0
+( cd "$repoP6" && bash "$UPDATE" --probe-tests >outP6.txt 2>&1 ) || rcP6=$?
+check "3. probe missing project: exits non-zero" "[ '$rcP6' -ne 0 ]"
+check "3. probe missing project: reads COULD NOT RUN, not a failure report" \
+  "grep -qi 'COULD NOT RUN' '$repoP6/outP6.txt' && ! grep -qi 'reported failures' '$repoP6/outP6.txt'"
+check "3. probe missing project: still shows the runner's own words" \
+  "grep -q 'MSB1009' '$repoP6/outP6.txt'"
+repoP7="$(new_repo)"
+write_config "$repoP7" '"printf %s\\\\n \"MSBUILD : error MSB1003: Specify a project or solution file. The current working directory does not contain a project or solution file.\"; exit 1"'
+rcP7=0
+( cd "$repoP7" && bash "$UPDATE" --probe-tests >outP7.txt 2>&1 ) || rcP7=$?
+check "3. probe with no project at all (MSB1003): also COULD NOT RUN" \
+  "[ '$rcP7' -ne 0 ] && grep -qi 'COULD NOT RUN' '$repoP7/outP7.txt'"
+# a REAL test failure must still read as a failure report (no over-fire).
+check "3. a real red still reads as 'reported failures' (S5 does not over-fire)" \
+  "grep -qi 'reported failures' '$repoP2/outP2.txt'"
 
 # no testCommand → legible refusal.
 repoP5="$(new_repo)"
@@ -473,6 +526,32 @@ printf '{ "scripts": { "test": "jest" } }\n' >"$repoH8/package.json"
 ( cd "$repoH8" && LCARS_CLAUDE_BIN="$repoH8/claude" LCARS_GH_BIN="$repoH8/gh" bash "$INIT" >outH8.txt 2>&1 )
 check "5. init(ambiguous stack): the S105 warning naming candidates is PRESERVED" \
   "grep -q 'multiple stacks detected' '$repoH8/outH8.txt' && grep -qi 'rust' '$repoH8/outH8.txt'"
+# S147 (carried S146 defect): this fixture is a Rust crate PLUS a JS package with
+# a REAL jest test script — it HAS test systems. Mapping it to `unknown` made
+# every surface speak the GREENFIELD bootstrap voice ("the first mission's
+# engineering crew will establish them"), which is simply false here and blurs
+# the round's invariant that the bootstrap and repair voices never mix. It now
+# has its OWN honest verdict: several test systems, LCARS will not choose.
+check "5. init(ambiguous stack): NEVER the greenfield bootstrap voice" \
+  "! grep -qi 'engineering crew' '$repoH8/outH8.txt'"
+check "5. init(ambiguous stack): NEVER 'NO TEST SYSTEMS FOUND' (it HAS them)" \
+  "! grep -q 'NO TEST SYSTEMS FOUND' '$repoH8/outH8.txt'"
+check "5. init(ambiguous stack): reads as a CHOICE the captain must make" \
+  "grep -q 'MULTIPLE TEST SYSTEMS DETECTED' '$repoH8/outH8.txt'"
+check "5. init(ambiguous stack): names the candidates on the verdict line" \
+  "grep -q 'MULTIPLE TEST SYSTEMS DETECTED (rust,js)' '$repoH8/outH8.txt'"
+check "5. init(ambiguous stack): points at the SAME one-click fix affordance" \
+  "grep -q 'lcars update --fix-tests' '$repoH8/outH8.txt'"
+# …and the shared verdict the BOARD reads agrees with the CLI (the D2 contract).
+readiness_json="$( cd "$repoH8" && bash "$READINESS" --json )"
+check "5. readiness --json(ambiguous): status is its own state, not 'unknown'" \
+  "printf '%s' '$readiness_json' | grep -q '\"status\":\"ambiguous\"'"
+check "5. readiness --json(ambiguous): carries the candidate stacks for the board" \
+  "printf '%s' '$readiness_json' | grep -q '\"stacks\":\"rust,js\"'"
+# a GREENFIELD repo still reports unknown — the two states stay distinct.
+readiness_json_gf="$( cd "$repoH6" && bash "$READINESS" --json )"
+check "5. readiness --json(greenfield): still 'unknown' (states never blur)" \
+  "printf '%s' '$readiness_json_gf' | grep -q '\"status\":\"unknown\"'"
 
 repoH7="$(new_repo)"
 make_gh_stub "$repoH7/gh"; make_claude_stub "$repoH7/claude"
@@ -480,6 +559,211 @@ printf 'test:\n\t@echo ok\n' >"$repoH7/Makefile"
 ( cd "$repoH7" && LCARS_CLAUDE_BIN="$repoH7/claude" LCARS_GH_BIN="$repoH7/gh" bash "$INIT" >outH7.txt 2>&1 )
 check "5. init(make repo, runner resolves): silent — no OFFLINE, no crew line" \
   "! grep -q 'TEST SYSTEMS OFFLINE' '$repoH7/outH7.txt' && ! grep -qi 'engineering crew' '$repoH7/outH7.txt'"
+
+# ==========================================================================
+# 6. AMBIGUOUS WITHIN ONE STACK (D6) + the fix affordance that keeps its
+#    promise (D8). Zero tokens: the worker stub here is POISON — spawning it
+#    fails the run loudly.
+# ==========================================================================
+# A POISON worker: if the fix path ever hires a discovery crew for a state it
+# claimed it would not choose for, this records the argv AND exits non-zero.
+make_poison_worker() { # cli argvfile → echoes the worker path
+  local d; d="$(mktemp -d "$TMPROOT/poison.XXXX")"
+  cat >"$d/$1" <<EOF
+#!/usr/bin/env bash
+printf 'POISON WORKER SPAWNED — a PAID discovery crew was hired\n' >>"$2"
+for a in "\$@"; do printf 'argv:%s\n' "\$a" >>"$2"; done
+exit 3
+EOF
+  chmod +x "$d/$1"
+  printf '%s/%s\n' "$d" "$1"
+}
+
+mk_csproj() { # dir name  — a minimal xunit-shaped TEST project
+  mkdir -p "$1"
+  { echo '<Project Sdk="Microsoft.NET.Sdk">'
+    echo '  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>'
+    echo '  <ItemGroup>'
+    echo '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />'
+    echo '  </ItemGroup>'
+    echo '</Project>'
+  } >"$1/$2.csproj"
+}
+
+# D6. A dotnet repo with TWO test projects warned and NAMED both — then the very
+# next line declared the repo greenfield ("◇ NO TEST SYSTEMS FOUND — a greenfield
+# repo") and readiness --json said `unknown`. Same lie the carried fix was
+# chartered to kill, reached through the multi-PROJECT path instead of the
+# multi-STACK one. It is a CHOICE, not an empty repo.
+repoD6="$(new_repo)"
+make_gh_stub "$repoD6/gh"; make_claude_stub "$repoD6/claude"
+: >"$repoD6/Demo.sln"
+mk_csproj "$repoD6/tests/A.Tests" A.Tests
+mk_csproj "$repoD6/tests/B.Tests" B.Tests
+( cd "$repoD6" && LCARS_CLAUDE_BIN="$repoD6/claude" LCARS_GH_BIN="$repoD6/gh" bash "$INIT" >outD6.txt 2>&1 )
+check "6. init(two dotnet test projects): still WARNS and names both candidates" \
+  "grep -qi 'SEVERAL test projects' '$repoD6/outD6.txt' && grep -q 'A.Tests.csproj' '$repoD6/outD6.txt' && grep -q 'B.Tests.csproj' '$repoD6/outD6.txt'"
+check "6. init(two dotnet test projects): NEVER declares the repo greenfield" \
+  "! grep -q 'NO TEST SYSTEMS FOUND' '$repoD6/outD6.txt' && ! grep -qi 'engineering crew' '$repoD6/outD6.txt'"
+check "6. init(two dotnet test projects): reads as a CHOICE" \
+  "grep -q 'MULTIPLE TEST SYSTEMS DETECTED' '$repoD6/outD6.txt'"
+# Smell 5: ONE recommended verb per screen. The warning used to point at
+# `lcars update --test-command "…"` while the verdict line two lines later
+# pointed at `lcars update --fix-tests` — two different answers to the same
+# question, in the same readout. `--fix-tests` is the one-click path this round
+# is built around (and on this verdict it now PRESENTS the candidates, spending
+# nothing); `--test-command` stays the documented manual override.
+check "6. init(two dotnet test projects): recommends ONE verb, and it is --fix-tests" \
+  "grep -q -- '--fix-tests' '$repoD6/outD6.txt' && ! grep -q -- '--test-command' '$repoD6/outD6.txt'"
+jsonD6="$( cd "$repoD6" && bash "$READINESS" --json )"
+check "6. readiness --json: status is 'ambiguous', not 'unknown'" \
+  "printf '%s' '$jsonD6' | grep -q '\"status\":\"ambiguous\"'"
+check "6. readiness --json: surfaces BOTH candidate projects for the board" \
+  "printf '%s' '$jsonD6' | grep -q 'A.Tests.csproj' && printf '%s' '$jsonD6' | grep -q 'B.Tests.csproj'"
+check "6. readiness --json: carries pickable candidate COMMANDS" \
+  "printf '%s' '$jsonD6' | grep -q '\"candidates\":\[' && printf '%s' '$jsonD6' | grep -q 'dotnet test tests/A.Tests/A.Tests.csproj'"
+check "6. readiness --json: still NO guessed suggestion (never picks for you)" \
+  "printf '%s' '$jsonD6' | grep -q '\"suggestion\":null'"
+check "6. readiness --json: valid JSON" \
+  "printf '%s' '$jsonD6' | python3 -c 'import json,sys; json.load(sys.stdin)'"
+# ONE dotnet test project is NOT ambiguous — it seeds and reads ready/missing.
+repoD6b="$(new_repo)"
+: >"$repoD6b/Demo.sln"; mk_csproj "$repoD6b/tests/A.Tests" A.Tests
+write_config "$repoD6b" 'null'
+jsonD6b="$( cd "$repoD6b" && bash "$READINESS" --json )"
+check "6. one dotnet test project: 'missing' with a suggestion, NOT ambiguous" \
+  "printf '%s' '$jsonD6b' | grep -q '\"status\":\"missing\"' && printf '%s' '$jsonD6b' | grep -q 'dotnet test tests/A.Tests/A.Tests.csproj'"
+
+# N2 (full-init level): a vendored C# sample or a `tools/` helper is a *.csproj,
+# NOT a test system. The depth-3 marker scan counted any csproj, so a healthy
+# js/python/rust repo flipped to `ambiguous` and LOST its working seed — and the
+# readout contradicted itself, offering one candidate while insisting it would
+# not choose between them. Locked here at the INIT surface (the function-level
+# lock lives in tests/stack-dotnet.test.sh 1k…): a vendored project must change
+# neither the seeded command nor a single line of the readout.
+mk_vendor_csproj() { # dir name — a plain, NON-test csproj
+  mkdir -p "$1"
+  { echo '<Project Sdk="Microsoft.NET.Sdk">'
+    echo '  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>'
+    echo '</Project>'
+  } >"$1/$2.csproj"
+}
+for poly in "js:package.json:vendor/sample:Demo" \
+            "py:pyproject.toml:tools:x" \
+            "rust:Cargo.toml:bindings/csharp:Y"; do
+  pk="${poly%%:*}"; rest="${poly#*:}"
+  marker="${rest%%:*}"; rest="${rest#*:}"
+  vdir="${rest%%:*}"; vname="${rest##*:}"
+  repoN2="$(new_repo)"; repoN2v="$(new_repo)"
+  for r in "$repoN2" "$repoN2v"; do
+    make_gh_stub "$r/gh"; make_claude_stub "$r/claude"
+    case "$pk" in
+      js)   printf '{ "scripts": { "test": "jest" } }\n' >"$r/$marker" ;;
+      rust) printf '[package]\nname="x"\n' >"$r/$marker" ;;
+      *)    : >"$r/$marker" ;;
+    esac
+  done
+  mk_vendor_csproj "$repoN2v/$vdir" "$vname"
+  for r in "$repoN2" "$repoN2v"; do
+    ( cd "$r" && LCARS_VERSION=9.9.9 LCARS_CLAUDE_BIN="$r/claude" LCARS_GH_BIN="$r/gh" \
+        bash "$INIT" >outN2.txt 2>&1 )
+  done
+  check "6. init($pk + a vendored NON-test csproj): readout byte-identical" \
+    "diff <(sed 's#$repoN2v#R#g' '$repoN2v/outN2.txt') <(sed 's#$repoN2#R#g' '$repoN2/outN2.txt') >/dev/null"
+  check "6. init($pk + a vendored NON-test csproj): seed + stack unchanged" \
+    "diff <(grep -E '\"stack\"|\"testCommand\"' '$repoN2v/.git/lcars/config.json') <(grep -E '\"stack\"|\"testCommand\"' '$repoN2/.git/lcars/config.json') >/dev/null"
+  check "6. init($pk + vendored csproj): never claims MULTIPLE TEST SYSTEMS" \
+    "! grep -q 'MULTIPLE TEST SYSTEMS' '$repoN2v/outN2.txt'"
+done
+
+# S1: the $LCARS_TESTS_DIR alarm is FALSE for a native-isolation stack. Those
+# stacks (rust/go/ruby/dotnet) never take the quarantine path at all — their gate
+# legs are scoped by the runner's own flags (`cargo test --test`, `go test -run`,
+# an explicit spec file, `dotnet test --filter`) — so telling a C# captain that
+# "the red gate will reject every quarantined suite" is both untrue and the first
+# thing they see. It must stay LOUD for the stacks it IS true of.
+repoS1="$(new_repo)"
+make_gh_stub "$repoS1/gh"; make_claude_stub "$repoS1/claude"
+: >"$repoS1/Demo.sln"; mk_csproj "$repoS1/tests/App.Tests" App.Tests
+( cd "$repoS1" && LCARS_CLAUDE_BIN="$repoS1/claude" LCARS_GH_BIN="$repoS1/gh" bash "$INIT" >outS1.txt 2>&1 )
+check "6. init(dotnet): seeds the dotnet test command" \
+  "grep -q 'dotnet test tests/App.Tests/App.Tests.csproj' '$repoS1/.git/lcars/config.json'"
+check "6. init(dotnet): NO false \$LCARS_TESTS_DIR alarm (native isolation)" \
+  "! grep -q 'does not reference' '$repoS1/outS1.txt'"
+# N5: the suppression must key on the SEEDED COMMAND'S SHAPE, not on the stack.
+# A repo with a top-level bare `App.csproj` AND a Makefile `test:` target is
+# stack=dotnet but seeds `make test` — a DIRECTORY-oriented runner that really
+# does need $LCARS_TESTS_DIR. Gating on the stack silenced a correct warning
+# that HEAD raised.
+repoN5="$(new_repo)"
+make_gh_stub "$repoN5/gh"; make_claude_stub "$repoN5/claude"
+{ echo '<Project Sdk="Microsoft.NET.Sdk">'; echo '</Project>'; } >"$repoN5/App.csproj"
+printf 'test:\n\t@echo ok\n' >"$repoN5/Makefile"
+( cd "$repoN5" && LCARS_CLAUDE_BIN="$repoN5/claude" LCARS_GH_BIN="$repoN5/gh" bash "$INIT" >outN5.txt 2>&1 )
+check "6. init(dotnet marker + Makefile): still seeds 'make test'" \
+  "grep -q '\"testCommand\": \"make test\"' '$repoN5/.git/lcars/config.json'"
+check "6. init(dotnet marker + Makefile): the \$LCARS_TESTS_DIR alarm is RESTORED" \
+  "grep -q 'does not reference' '$repoN5/outN5.txt'"
+# LEDGERED (not fixed this round): rust/go carry the SAME false alarm, but their
+# init output predates S147 and the round's regression contract byte-compares it
+# against pre-S147 — so it is deliberately left ALONE, and pinned here so the
+# ledger is visible rather than folklore. Flip these two assertions the day a
+# round is chartered to move those stacks' output.
+for st in rust:Cargo.toml go:go.mod; do
+  repoS1b="$(new_repo)"
+  make_gh_stub "$repoS1b/gh"; make_claude_stub "$repoS1b/claude"
+  printf 'x\n' >"$repoS1b/${st#*:}"
+  ( cd "$repoS1b" && LCARS_CLAUDE_BIN="$repoS1b/claude" LCARS_GH_BIN="$repoS1b/gh" bash "$INIT" >outS1b.txt 2>&1 )
+  check "6. init(${st%%:*}): pre-147 output UNCHANGED (alarm ledgered, not silenced)" \
+    "grep -q 'does not reference' '$repoS1b/outS1b.txt'"
+done
+# …and it STAYS loud where it is true: a generic runner that ignores the var.
+repoS1c="$(new_repo)"
+make_gh_stub "$repoS1c/gh"; make_claude_stub "$repoS1c/claude"
+( cd "$repoS1c" && LCARS_TEST_CMD='make check' LCARS_CLAUDE_BIN="$repoS1c/claude" LCARS_GH_BIN="$repoS1c/gh" bash "$INIT" >outS1c.txt 2>&1 )
+check "6. init(generic dir-ignoring command): the alarm is PRESERVED" \
+  "grep -q 'does not reference' '$repoS1c/outS1c.txt'"
+
+# D8. `--fix-tests` promised "Select: lcars update --fix-tests" on the ambiguous
+# verdict, then fell through to run_discovery and hired a PAID worker to choose —
+# the exact thing the voice said LCARS would not do. It must present the
+# candidates instead, spending nothing.
+repoD8="$(new_repo)"
+write_config "$repoD8" 'null'
+: >"$repoD8/Demo.sln"
+mk_csproj "$repoD8/tests/A.Tests" A.Tests
+mk_csproj "$repoD8/tests/B.Tests" B.Tests
+argvD8="$repoD8/worker-argv.txt"
+wkD8="$(make_poison_worker claude "$argvD8")"
+cfgD8_before="$(md5f "$repoD8/.git/lcars/config.json")"
+rcD8=0
+( cd "$repoD8" && LCARS_WORKER_BIN="$wkD8" bash "$UPDATE" --fix-tests >outD8.txt 2>&1 ) || rcD8=$?
+check "8. fix(ambiguous): NO discovery worker was hired (zero spend)" \
+  "[ ! -f '$argvD8' ]"
+check "8. fix(ambiguous): presents the detected candidates to pick from" \
+  "grep -q 'dotnet test tests/A.Tests/A.Tests.csproj' '$repoD8/outD8.txt' && grep -q 'dotnet test tests/B.Tests/B.Tests.csproj' '$repoD8/outD8.txt'"
+check "8. fix(ambiguous): tells the captain exactly how to select one" \
+  "grep -q 'lcars update --test-command' '$repoD8/outD8.txt'"
+check "8. fix(ambiguous): config UNTOUCHED (it never chose for the captain)" \
+  "[ \"\$(md5f '$repoD8/.git/lcars/config.json')\" = '$cfgD8_before' ]"
+check "8. fix(ambiguous): never claims ONLINE, never the greenfield voice" \
+  "! grep -q 'TEST SYSTEMS ONLINE' '$repoD8/outD8.txt' && ! grep -qi 'engineering crew' '$repoD8/outD8.txt'"
+# the multi-STACK ambiguity takes the SAME no-worker path, with real commands.
+repoD8b="$(new_repo)"
+write_config "$repoD8b" 'null'
+printf '[package]\nname="x"\n' >"$repoD8b/Cargo.toml"
+printf '{ "scripts": { "test": "jest" } }\n' >"$repoD8b/package.json"
+argvD8b="$repoD8b/worker-argv.txt"
+wkD8b="$(make_poison_worker claude "$argvD8b")"
+rcD8b=0
+( cd "$repoD8b" && LCARS_WORKER_BIN="$wkD8b" bash "$UPDATE" --fix-tests >outD8b.txt 2>&1 ) || rcD8b=$?
+check "8. fix(multi-stack ambiguous): NO discovery worker was hired" \
+  "[ ! -f '$argvD8b' ]"
+check "8. fix(multi-stack ambiguous): offers a real command per candidate stack" \
+  "grep -q 'cargo test' '$repoD8b/outD8b.txt' && grep -q 'npm test' '$repoD8b/outD8b.txt'"
+# a MISSING (unambiguous) repo still takes the S146 suggestion path untouched.
+check "8. missing/suggestion path is untouched (still sets + probes, no worker)" \
+  "grep -q 'TEST SYSTEMS ONLINE' '$repoF1/outF1.txt' && [ ! -s '$argvF1' ]"
 
 # ==========================================================================
 echo

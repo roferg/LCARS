@@ -135,9 +135,34 @@ if [ -n "$TEST_CMD" ]; then
   # the repo's EXISTING suite, so a green result proves nothing and the gate must
   # reject it. Warn the captain at init time rather than letting it silently stall
   # Implement later. (cargo/go/make defaults can't be auto-scoped to a dir.)
+  #
+  # S147: SUPPRESSED for the seeded `dotnet test <proj>` command. The warning is
+  # factually FALSE for a NATIVE-ISOLATION runner (stack_uses_native_isolation /
+  # stack_is_native in run.sh): those never take the quarantine path at all —
+  # their gate legs are scoped by the runner's OWN flags (`dotnet test --filter`,
+  # `cargo test --test`, `go test -run`, an explicit spec file) — so "the red
+  # gate will reject every quarantined suite" describes something that cannot
+  # happen. Before S147 a dotnet repo seeded no command, so the alarm never fired
+  # for it; the new seed made 7 lines of false alarm the FIRST thing a C# captain
+  # sees, which is a defect this session introduced and must not ship.
+  #
+  # The test is on the SEEDED COMMAND'S SHAPE, not on the stack. Gating on
+  # `$STACK = dotnet` was wrong: a repo with a top-level bare `App.csproj` AND a
+  # Makefile `test:` target seeds `make test` — a directory-oriented runner that
+  # genuinely DOES need $LCARS_TESTS_DIR — and silencing the correct warning
+  # there took away something HEAD raised.
+  #
+  # LEDGERED, deliberately not fixed here: rust/go/ruby carry the same false
+  # alarm on their own seeds. Silencing them would change init output that
+  # predates this round and that this round's regression contract byte-compares
+  # against pre-S147 — the brief's own instruction is to stop rather than fight
+  # that lock. Same one-line cure (add their seeded command shapes here)
+  # whenever a round is chartered to move those stacks' output.
   case "$TEST_CMD" in
     *LCARS_TESTS_DIR*) : ;;  # honours it — nothing to flag
     *)
+      if [ "dotnet test ${TEST_CMD#dotnet test }" = "$TEST_CMD" ] \
+         && stack_uses_native_isolation "$STACK"; then : ; else
       printf '  ⚠ testCommand "%s" does not reference $LCARS_TESTS_DIR.\n' "$TEST_CMD" >&2
       printf '    The Implement red gate runs it with $LCARS_TESTS_DIR pointing at the\n' >&2
       printf '    quarantined fail-first tests; if the command ignores that var it will run\n' >&2
@@ -145,6 +170,7 @@ if [ -n "$TEST_CMD" ]; then
       printf '    quarantined suite (a green-on-nothing result proves nothing). Edit\n' >&2
       printf '    testCommand in .git/lcars/config.json to run ONLY "$LCARS_TESTS_DIR" when\n' >&2
       printf '    it is set (e.g. pytest "${LCARS_TESTS_DIR:-.}").\n' >&2
+      fi
       ;;
   esac
 else
@@ -160,6 +186,27 @@ else
       printf '    present (it would pick one by precedence and silently ignore the others).\n' >&2
       printf '    Set testCommand in .git/lcars/config.json to the runner for the stack you\n' >&2
       printf '    want the Implement red gate to use (honouring "$LCARS_TESTS_DIR").\n' >&2
+      ;;
+    dotnet)
+      # S147: a dotnet repo whose TEST PROJECT could not be pinned. Either
+      # SEVERAL projects look like test projects (name them all — the S105
+      # idiom — and let the captain choose) or none does.
+      dn_projs="$(detect_dotnet_test_projects | tr '\n' ' ')"
+      if [ -n "${dn_projs// /}" ]; then
+        # ONE recommended verb per readout: the shared verdict line printed a few
+        # lines below already points at `lcars update --fix-tests` (which, on this
+        # verdict, PRESENTS these candidates to pick from and spends nothing).
+        # Naming `--test-command` here too gave the captain two different answers
+        # to the same question on one screen; it stays the manual override,
+        # documented on the fix path itself rather than competing with it.
+        printf '  ⚠ dotnet stack detected but SEVERAL test projects are present — no testCommand seeded.\n' >&2
+        printf '    Candidates: %s\n' "$dn_projs" >&2
+        printf '    LCARS will not choose which project the Implement gates run.\n' >&2
+      else
+        printf '  ⚠ dotnet stack detected but no test project was found — no testCommand seeded.\n' >&2
+        printf '    A test project is a *.csproj referencing Microsoft.NET.Test.Sdk (what\n' >&2
+        printf '    `dotnet new xunit` scaffolds). Add one, then re-run `lcars update`.\n' >&2
+      fi
       ;;
     ruby)
       # S145: ruby stack detected but the runner could not be resolved — either an

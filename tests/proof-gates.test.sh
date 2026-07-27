@@ -713,6 +713,538 @@ RB
 fi
 
 # ==========================================================================
+# M. dotnet (S147): native --filter isolation END TO END through the real
+#    gate. Proves (a) a greenfield C# test whose subject does not exist on the
+#    parent is a REAL red (CS0246 compile), not a swallowed zero-collect;
+#    (b) a test class with no [Fact] exits 0 under the filter — VSTest's
+#    silent-green trap — and must read INCONCLUSIVE; (c) the scratch worktree
+#    is pruned on BOTH the pass and the inconclusive exit path (staging
+#    hygiene, identical to the go/ruby legs).
+# ==========================================================================
+echo "== M. dotnet: dotnet test --filter native flip-flop (greenfield red + zero-collect) =="
+if ! have dotnet || [ -z "$(dotnet --list-sdks 2>/dev/null)" ]; then
+  skip "DOTNET: no usable SDK — SKIPPING the dotnet native flip-flop proof LOUDLY"
+else
+  export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
+  # M1. greenfield: the staged test calls a NEW class. On the parent scratch
+  # that class does not exist → CS0246, a real compile red; on tip it does →
+  # green. dotnet's zero phrasings must NOT swallow that red.
+  # The realistic C# layout the seeder targets: src/App (the subject, a class
+  # library) + tests/App.Tests (the test project, referencing it). The staged
+  # test lives in the TEST project; the subject does NOT — so only the test is
+  # staged into the parent leg, exactly as a real ticket behaves.
+  dn_scaffold() { # repo-dir
+    local r="$1"
+    mkdir -p "$r/src/App" "$r/tests/App.Tests"
+    printf 'bin/\nobj/\n' > "$r/.gitignore"
+    cat > "$r/src/App/App.csproj" <<'XML'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>
+XML
+    printf 'namespace App;\npublic static class Existing { public static int Zero() => 0; }\n' \
+      > "$r/src/App/Existing.cs"
+    cat > "$r/tests/App.Tests/App.Tests.csproj" <<'XML'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+  <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../../src/App/App.csproj" /></ItemGroup>
+</Project>
+XML
+    # a pre-existing sibling test so the project is never empty on the parent
+    cat > "$r/tests/App.Tests/SiblingTests.cs" <<'CS'
+namespace App.Tests;
+public class SiblingCases { [Fact] public void Sib() { Assert.True(true); } }
+CS
+  }
+  repo="$(mktemp -d "$TMPROOT/dn.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  cat > "$repo/tests/App.Tests/MulTests.cs" <<'CS'
+namespace App.Tests.Staged;
+public class MulCases
+{
+    [Fact] public void Multiplies() { Assert.Equal(6, App.Mul.Call(2, 3)); }
+}
+CS
+  cat > "$repo/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_STACK=dotnet
+  [ "$FFRC" = 0 ] && ok "M1. dotnet greenfield test (CS0246 on parent) → flip-flop PASS" \
+                  || bad "M1. dotnet greenfield should PASS, not be swallowed (FFRC=$FFRC: $OUT)"
+  ffj="$(TD "$repo")/flip-flop.json"
+  grep -q '"kind": "compile-failure"' "$ffj" 2>/dev/null \
+    && ok "M2. parent-leg red kind recorded as a compile red (not zero-collect)" \
+    || bad "M2. expected compile-failure kind ($(cat "$ffj" 2>/dev/null))"
+  # only the TEST file is staged — the subject in src/App is never a test path
+  grep -q '"testFiles": \["tests/App.Tests/MulTests.cs"\]' "$ffj" 2>/dev/null \
+    && ok "M2'. only the test file was staged (the src/ subject is not a test path)" \
+    || bad "M2'. unexpected staged test set ($(grep testFiles "$ffj" 2>/dev/null))"
+  grep -q 'Sib' "$ffj" 2>/dev/null \
+    && bad "M3. the pre-existing sibling test RAN — the filter did not scope the leg" \
+    || ok "M3. the pre-existing sibling test never ran (filter scoped both legs)"
+  no_scratch_left "$repo" \
+    && ok "M4. dotnet scratch worktree pruned on the PASS path" \
+    || bad "M4. dotnet scratch worktree leaked"
+
+  # M5. THE SILENT-GREEN TRAP through the real gate: a staged class with NO
+  # [Fact] makes the filter match nothing — `dotnet test` exits 0 — so the TIP
+  # leg looks green while proving nothing. It must read INCONCLUSIVE (rc 2).
+  repo2="$(mktemp -d "$TMPROOT/dnz.XXXX")"
+  ( cd "$repo2" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo2"
+  ( cd "$repo2" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo2"
+  P2="$(head_sha "$repo2")"
+  cat > "$repo2/tests/App.Tests/EmptyTests.cs" <<'CS'
+namespace App.Tests.Staged;
+public class EmptyCases { public void NotATest() { } }
+CS
+  commit_all "$repo2"
+  ff_gate "$repo2" "$P2" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M5. no-[Fact] dotnet class on TIP → INCONCLUSIVE (rc 2), never a pass" \
+    || bad "M5. zero-match dotnet filter should be inconclusive (FFRC=$FFRC: $OUT)"
+  no_scratch_left "$repo2" \
+    && ok "M6. dotnet scratch pruned on the inconclusive path" \
+    || bad "M6. dotnet scratch leaked on inconclusive"
+
+  # M7. THE ALL-SKIPPED SILENT GREEN, through the real gate (D1). Unlike M5 the
+  # staged class IS discovered — `[Fact(Skip="wip")]` — so VSTest prints neither
+  # "no test matches" nor "no test is available"; it prints a `Skipped!` summary
+  # with Passed: 0 and exits 0. The TIP leg therefore looked GREEN while running
+  # nothing, and with a parent leg red for unrelated (compile) reasons the gate
+  # read a clean flip-flop and PASSED a ticket that proved nothing.
+  repo3="$(mktemp -d "$TMPROOT/dnskip.XXXX")"
+  ( cd "$repo3" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo3"
+  ( cd "$repo3" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo3"
+  P3="$(head_sha "$repo3")"
+  cat > "$repo3/tests/App.Tests/SkipTests.cs" <<'CS'
+namespace App.Tests.Staged;
+public class SkipCases
+{
+    [Fact(Skip = "wip")] public void NeverRuns() { Assert.Equal(6, App.Mul.Call(2, 3)); }
+}
+CS
+  cat > "$repo3/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo3"
+  ff_gate "$repo3" "$P3" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M7. an ALL-SKIPPED staged class → INCONCLUSIVE (rc 2), never a pass" \
+    || bad "M7. SILENT GREEN: all-skipped dotnet leg gave FFRC=$FFRC: $OUT"
+  grep -q 'ZERO tests' "$(TD "$repo3")/flip-flop.json" 2>/dev/null \
+    && ok "M7'. the recorded reason names the zero-collect, not a fake green" \
+    || bad "M7'. flip-flop.json should record the zero-collect reason"
+  no_scratch_left "$repo3" || bad "M7''. scratch leaked on the all-skipped path"
+
+  # M8. TWO TEST PROJECTS (D3). Staged files land in BOTH; the SECOND project's
+  # staged test must FAIL on tip. Taking the project from the first staged .cs
+  # while OR-ing every FQN meant the second project was never built or run — the
+  # gate PASSED and flip-flop.json recorded BOTH files as proven.
+  repo4="$(mktemp -d "$TMPROOT/dn2p.XXXX")"
+  ( cd "$repo4" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo4"
+  # a SECOND test project beside the first
+  mkdir -p "$repo4/tests/Other.Tests"
+  sed 's#\.\./\.\./src/App/App\.csproj#../../src/App/App.csproj#' \
+    "$repo4/tests/App.Tests/App.Tests.csproj" > "$repo4/tests/Other.Tests/Other.Tests.csproj"
+  cat > "$repo4/tests/Other.Tests/OtherSibling.cs" <<'CS'
+namespace Other.Tests;
+public class OtherSiblingCases { [Fact] public void OS() { Assert.True(true); } }
+CS
+  ( cd "$repo4" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo4"
+  P4="$(head_sha "$repo4")"
+  cat > "$repo4/tests/App.Tests/FirstTests.cs" <<'CS'
+namespace App.Tests.Staged;
+public class FirstCases { [Fact] public void Ok() { Assert.Equal(6, App.Mul.Call(2, 3)); } }
+CS
+  # the SECOND project's staged test is deliberately WRONG — it must fail on tip
+  cat > "$repo4/tests/Other.Tests/SecondTests.cs" <<'CS'
+namespace Other.Tests.Staged;
+public class SecondCases { [Fact] public void Wrong() { Assert.Equal(7, App.Mul.Call(2, 3)); } }
+CS
+  cat > "$repo4/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo4"
+  ff_gate "$repo4" "$P4" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M8. a RED staged test in the SECOND project fails the gate (it really ran)" \
+    || bad "M8. SILENT PASS: the second test project was never executed: $OUT"
+  grep -q 'SecondCases' "$(TD "$repo4")/flip-flop.json" 2>/dev/null \
+    && ok "M8'. the second project's test appears in the recorded leg output (it ran)" \
+    || bad "M8'. no trace of the second project in flip-flop.json: $(cat "$(TD "$repo4")/flip-flop.json" 2>/dev/null)"
+  no_scratch_left "$repo4" || bad "M8''. scratch leaked on the two-project path"
+
+  # M9. TWO TEST CLASSES ON ONE LINE, through the real gate. A scanner that
+  # matched the `class` keyword once per line dropped the SECOND class: it never
+  # entered the filter, never ran, and was still recorded proven. Here the second
+  # class asserts 999 == 6 — if it runs, the gate MUST NOT pass.
+  repo5="$(mktemp -d "$TMPROOT/dn1l.XXXX")"
+  ( cd "$repo5" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo5"
+  ( cd "$repo5" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo5"
+  P5="$(head_sha "$repo5")"
+  cat > "$repo5/tests/App.Tests/OneLineTests.cs" <<'CS'
+namespace App.Tests.OneLine;
+public class AlphaCases { [Fact] public void X() { Assert.Equal(6, App.Mul.Call(2, 3)); } } public class BetaCases { [Fact] public void Y() { Assert.Equal(999, App.Mul.Call(2, 3)); } }
+CS
+  cat > "$repo5/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo5"
+  ff_gate "$repo5" "$P5" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M9. a SECOND class on the same line really runs (its red fails the gate)" \
+    || bad "M9. SILENT PASS: the second one-line class was never run: $OUT"
+  grep -q 'BetaCases' "$(TD "$repo5")/flip-flop.json" 2>/dev/null \
+    && ok "M9'. the second one-line class appears in the recorded leg output" \
+    || bad "M9'. no trace of BetaCases in flip-flop.json"
+  no_scratch_left "$repo5" || bad "M9''. scratch leaked on the one-line path"
+
+  # M10. A `record` TEST CLASS, through the real gate (N3). The scanner knew
+  # only the literal `class` keyword, so an xUnit record test class was dropped
+  # from the filter — never run, still recorded proven. The SDK's own discovery
+  # lists these as real tests, so there is nothing exotic about them.
+  repo6="$(mktemp -d "$TMPROOT/dnrec.XXXX")"
+  ( cd "$repo6" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo6"
+  ( cd "$repo6" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo6"
+  P6="$(head_sha "$repo6")"
+  cat > "$repo6/tests/App.Tests/RecordTests.cs" <<'CS'
+namespace App.Tests.Rec;
+public record RecordCases { [Fact] public void MustFail() { Assert.Equal(999, App.Mul.Call(2, 3)); } }
+CS
+  cat > "$repo6/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo6"
+  ff_gate "$repo6" "$P6" LCARS_STACK=dotnet
+  # rc 1 specifically — the record test RAN and was RED. rc 2 would mean the
+  # scan produced no target at all, which is the pre-fix behaviour once the
+  # record keyword is unknown: safe, but not proof that records work.
+  [ "$FFRC" = 1 ] \
+    && ok "M10. a record test class really RUNS (rc 1 = its red, not rc 2 = no target)" \
+    || bad "M10. the record test class did not run (FFRC=$FFRC): $OUT"
+  grep -q 'RecordCases' "$(TD "$repo6")/flip-flop.json" 2>/dev/null \
+    && ok "M10'. the record test appears in the recorded leg output" \
+    || bad "M10'. no trace of RecordCases in flip-flop.json"
+  no_scratch_left "$repo6" || bad "M10''. scratch leaked on the record path"
+
+  # M11. A MULTI-LINE VERBATIM STRING, through the real gate (N4). Its body was
+  # scanned as code, so a net-negative brace run inside it popped the namespace
+  # depth and the NEXT class came out BARE — an unqualified contains-term that
+  # rode along on a pre-existing test elsewhere in the assembly and let a staged
+  # file with NO test of its own read as a pass.
+  repo7="$(mktemp -d "$TMPROOT/dnraw.XXXX")"
+  ( cd "$repo7" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo7"
+  # a pre-existing test elsewhere, with the name a bare term would collide with
+  cat > "$repo7/tests/App.Tests/ElsewhereTests.cs" <<'CS'
+namespace App.Tests.Elsewhere;
+public class VictimCases { [Fact] public void PreExisting() { Assert.True(true); } }
+CS
+  ( cd "$repo7" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo7"
+  P7="$(head_sha "$repo7")"
+  cat > "$repo7/tests/App.Tests/RawTests.cs" <<'CS'
+namespace App.Tests.Raw
+{
+    public class RawCases
+    {
+        const string Fixture = @"
+json-ish payload with closing braces: } } }
+";
+    }
+    public class VictimCases { }
+}
+CS
+  commit_all "$repo7"
+  ff_gate "$repo7" "$P7" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M11. a staged file with NO test of its own ⇒ INCONCLUSIVE, no ride-along" \
+    || bad "M11. SILENT PASS via a bare contains-term (FFRC=$FFRC): $OUT"
+  grep -q 'PreExisting' "$(TD "$repo7")/flip-flop.json" 2>/dev/null \
+    && bad "M11'. a PRE-EXISTING test elsewhere rode along on the staged file" \
+    || ok "M11'. the pre-existing test elsewhere never ran"
+  no_scratch_left "$repo7" || bad "M11''. scratch leaked on the verbatim-string path"
+
+  # M12. GUARD 2 through the real gate: a staged file declaring TWO tests where
+  # the harness can only NAME one of them for --filter. A generic test class is
+  # rendered `Ns.GenCases`1` by VSTest, so the scan's `~Ns.GenCases.` term
+  # selects NOTHING — one test runs, one silently does not. Before the guard the
+  # leg was green (the one test that ran passed) and the ticket was certified on
+  # a test that never executed. The count cross-check parks it instead.
+  repo8="$(mktemp -d "$TMPROOT/dncnt.XXXX")"
+  ( cd "$repo8" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo8"
+  ( cd "$repo8" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo8"
+  P8="$(head_sha "$repo8")"
+  cat > "$repo8/tests/App.Tests/CountTests.cs" <<'CS'
+namespace App.Tests.Cnt;
+public class RunsCases { [Fact] public void Runs() { Assert.Equal(6, App.Mul.Call(2, 3)); } }
+public class NeverCases<T> { [Fact] public void NeverRuns() { Assert.Equal(6, App.Mul.Call(2, 3)); } }
+CS
+  cat > "$repo8/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo8"
+  ff_gate "$repo8" "$P8" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M12. a GENERIC test class ⇒ INCONCLUSIVE, never a partial-run pass" \
+    || bad "M12. SILENT PASS: an unrunnable declared test was certified (FFRC=$FFRC): $OUT"
+  grep -q 'NeverCases' "$(TD "$repo8")/flip-flop.json" 2>/dev/null \
+    && ok "M12'. the recorded reason NAMES the type it refused to run" \
+    || bad "M12'. flip-flop.json should name the refused type"
+  # …and guard 2 must NOT false-fire on a THEORY, which legitimately expands to
+  # MORE collected tests than declared attributes.
+  repo9="$(mktemp -d "$TMPROOT/dnthy.XXXX")"
+  ( cd "$repo9" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo9"
+  ( cd "$repo9" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo9"
+  P9="$(head_sha "$repo9")"
+  cat > "$repo9/tests/App.Tests/TheoryTests.cs" <<'CS'
+namespace App.Tests.Thy;
+public class ThyCases
+{
+    [Theory] [InlineData(2, 3, 6)] [InlineData(4, 5, 20)] [InlineData(0, 9, 0)]
+    public void Multiplies(int a, int b, int want) { Assert.Equal(want, App.Mul.Call(a, b)); }
+    [Fact] public void Simple() { Assert.Equal(6, App.Mul.Call(2, 3)); }
+}
+CS
+  cat > "$repo9/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo9"
+  ff_gate "$repo9" "$P9" LCARS_STACK=dotnet
+  [ "$FFRC" = 0 ] \
+    && ok "M12''. a [Theory] expanding to 3 cases still PASSES (guard 2 is an inequality)" \
+    || bad "M12''. guard 2 false-fired on a legitimate theory (FFRC=$FFRC): $OUT"
+  no_scratch_left "$repo9" || bad "M12'''. scratch leaked on the theory path"
+
+  # M13. THE THEORY-MASK EXPLOIT (R1) — the regression lock for why the
+  # unnameable shapes are REFUSED rather than left to GUARD 2. A [Theory]
+  # contributes 1 to the declared floor but N to the observed count, and that
+  # N-1 slack is exactly enough to hide three dropped nested classes: declared=4,
+  # collected=4, every number checks out, and three tests asserting 999 == 6
+  # never ran. GUARD 2 alone cannot see this; refusing the nested types can.
+  repo10="$(mktemp -d "$TMPROOT/dnmask.XXXX")"
+  ( cd "$repo10" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo10"
+  ( cd "$repo10" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo10"
+  P10="$(head_sha "$repo10")"
+  cat > "$repo10/tests/App.Tests/MaskTests.cs" <<'CS'
+namespace App.Tests.Mask2;
+public class ThyCases { [Theory][InlineData(1)][InlineData(2)][InlineData(3)][InlineData(4)] public void Expands(int x) { Assert.Equal(6, App.Mul.Call(2,3)); } }
+public class Outer {
+  public class A1Cases { [Fact] public void F1() { Assert.Equal(999, App.Mul.Call(2,3)); } }
+  public class A2Cases { [Fact] public void F2() { Assert.Equal(999, App.Mul.Call(2,3)); } }
+  public class A3Cases { [Fact] public void F3() { Assert.Equal(999, App.Mul.Call(2,3)); } }
+}
+CS
+  cat > "$repo10/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo10"
+  ff_gate "$repo10" "$P10" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M13. the THEORY-MASK exploit cannot reach a pass (nested tests refused)" \
+    || bad "M13. SILENT PASS: 3 nested tests hid in the theory's slack: $OUT"
+  no_scratch_left "$repo10" || bad "M13'. scratch leaked on the theory-mask path"
+
+  # M14. A [Fact] inside a DISABLED #if must not park a legitimate green run
+  # (R2). `#if DEBUG` / `#if NET8_0` / `#if WINDOWS` around a test is routine
+  # C#, and over-counting the floor bounces a CORRECT ticket to a fresh worker
+  # up to three times before parking it awaiting-human.
+  repo11="$(mktemp -d "$TMPROOT/dnpp.XXXX")"
+  ( cd "$repo11" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo11"
+  ( cd "$repo11" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo11"
+  P11="$(head_sha "$repo11")"
+  cat > "$repo11/tests/App.Tests/PPTests.cs" <<'CS'
+namespace App.Tests.PP;
+public class PPCases {
+#if NEVER_DEFINED
+    [Fact] public void Disabled() { Assert.True(false); }
+#endif
+    [Fact] public void Enabled() { Assert.Equal(6, App.Mul.Call(2,3)); }
+}
+CS
+  cat > "$repo11/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo11"
+  ff_gate "$repo11" "$P11" LCARS_STACK=dotnet
+  [ "$FFRC" = 0 ] \
+    && ok "M14. a test inside a DISABLED #if leaves a legitimate green GREEN" \
+    || bad "M14. FALSE PARK: #if-disabled test bounced a correct ticket (FFRC=$FFRC): $OUT"
+  no_scratch_left "$repo11" || bad "M14'. scratch leaked on the #if path"
+
+  # M15. GUARD 2 still backstops the UNKNOWN-UNKNOWNS. An ABSTRACT test class is
+  # a shape the scan happily names (it is neither generic nor nested) but xUnit
+  # never discovers directly — verified against the SDK: `--list-tests` lists the
+  # concrete class only. Declared 2, collected 1 ⇒ the shortfall parks it.
+  repo12="$(mktemp -d "$TMPROOT/dnabs.XXXX")"
+  ( cd "$repo12" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo12"
+  ( cd "$repo12" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo12"
+  P12="$(head_sha "$repo12")"
+  cat > "$repo12/tests/App.Tests/AbsTests.cs" <<'CS'
+namespace App.Tests.Abs;
+public abstract class NeverDiscovered { [Fact] public void NeverRuns() { Assert.Equal(999, App.Mul.Call(2,3)); } }
+public class RunsCases { [Fact] public void Runs() { Assert.Equal(6, App.Mul.Call(2,3)); } }
+CS
+  cat > "$repo12/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo12"
+  ff_gate "$repo12" "$P12" LCARS_STACK=dotnet
+  [ "$FFRC" = 2 ] \
+    && ok "M15. GUARD 2 still catches an unknown-unknown (abstract class ⇒ shortfall)" \
+    || bad "M15. SILENT PASS: an undiscoverable declared test was certified (FFRC=$FFRC): $OUT"
+  grep -q 'declare 2' "$(TD "$repo12")/flip-flop.json" 2>/dev/null \
+    && ok "M15'. …and the reason names the collected/declared shortfall" \
+    || bad "M15'. flip-flop.json should name the shortfall"
+  no_scratch_left "$repo12" || bad "M15''. scratch leaked on the abstract path"
+
+  # M16. THE COMPOSITION BUG (D1) — a defect in neither guard alone. The R1
+  # carve-out only refuses a bad-shape type that DECLARED tests, and the R2 fix
+  # stopped counting attributes inside `#if`. Compose them and a nested (or
+  # generic) type whose every attribute is #if-guarded looks TEST-FREE: nothing
+  # refuses it, nothing emits it, nothing counts it — invisible to both guards,
+  # while `dotnet test` (which defaults to Debug, so DEBUG is defined) really
+  # does discover `…Outer+InnerCases.MustFail`. A test class wholly guarded by
+  # `#if NET8_0` / `#if !NETFRAMEWORK` is ordinary in multi-targeted C#.
+  repo13="$(mktemp -d "$TMPROOT/dnnif.XXXX")"
+  ( cd "$repo13" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo13"
+  ( cd "$repo13" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo13"
+  P13="$(head_sha "$repo13")"
+  cat > "$repo13/tests/App.Tests/NestIfTests.cs" <<'CS'
+namespace App.Tests.NestIf;
+public class Outer {
+    public class InnerCases {
+#if DEBUG
+        [Fact] public void MustFail() { Assert.Equal(999, App.Mul.Call(2,3)); }
+#endif
+    }
+}
+public class NormalCases { [Fact] public void Ok() { Assert.Equal(6, App.Mul.Call(2,3)); } }
+CS
+  cat > "$repo13/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo13"
+  ff_gate "$repo13" "$P13" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M16. a NESTED type whose only [Fact] is #if-guarded cannot reach a pass" \
+    || bad "M16. SILENT PASS: #if-guarded nested test invisible to both guards: $OUT"
+  no_scratch_left "$repo13" || bad "M16'. scratch leaked on the nested-#if path"
+
+  # M16''. the GENERIC variant of the same composition.
+  repo14="$(mktemp -d "$TMPROOT/dngif.XXXX")"
+  ( cd "$repo14" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo14"
+  ( cd "$repo14" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo14"
+  P14="$(head_sha "$repo14")"
+  cat > "$repo14/tests/App.Tests/GenIfTests.cs" <<'CS'
+namespace App.Tests.GenIf;
+public class GenCases<T> {
+#if DEBUG
+    [Fact] public void MustFail() { Assert.Equal(999, App.Mul.Call(2,3)); }
+#endif
+}
+public class NormalCases { [Fact] public void Ok() { Assert.Equal(6, App.Mul.Call(2,3)); } }
+CS
+  cat > "$repo14/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo14"
+  ff_gate "$repo14" "$P14" LCARS_STACK=dotnet
+  [ "$FFRC" != 0 ] \
+    && ok "M16''. …and the GENERIC variant cannot either" \
+    || bad "M16''. SILENT PASS: #if-guarded generic test invisible to both guards: $OUT"
+  no_scratch_left "$repo14" || bad "M16'''. scratch leaked on the generic-#if path"
+
+  # M17. THE CARVE-OUT MUST SURVIVE the D1 cure — do not trade D1 back for R2.
+  # A file with real tests plus PURE helper types (nested, generic, and one whose
+  # body is entirely #if-guarded) must still PASS: helpers declare no tests, so
+  # nothing may refuse on their account.
+  repo15="$(mktemp -d "$TMPROOT/dnhelp.XXXX")"
+  ( cd "$repo15" && git init -q && git config user.email t@t && git config user.name t )
+  dn_scaffold "$repo15"
+  ( cd "$repo15" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo15"
+  P15="$(head_sha "$repo15")"
+  cat > "$repo15/tests/App.Tests/HelperTests.cs" <<'CS'
+namespace App.Tests.Help;
+public class HelpCases
+{
+    [Fact] public void Ok() { Assert.Equal(6, App.Mul.Call(2,3)); }
+    private class Fixture {
+#if DEBUG
+        public int Seed;
+#endif
+    }
+    private sealed class Builder<T> { public T V; }
+}
+CS
+  cat > "$repo15/src/App/Mul.cs" <<'CS'
+namespace App;
+public static class Mul { public static int Call(int a, int b) => a * b; }
+CS
+  commit_all "$repo15"
+  ff_gate "$repo15" "$P15" LCARS_STACK=dotnet
+  [ "$FFRC" = 0 ] \
+    && ok "M17. nested/generic HELPER types still leave a legitimate green GREEN" \
+    || bad "M17. FALSE PARK: the D1 cure broke the helper carve-out (FFRC=$FFRC): $OUT"
+  no_scratch_left "$repo15" || bad "M17'. scratch leaked on the helper path"
+fi
+
+# ==========================================================================
 echo
 printf 'proof-gates: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

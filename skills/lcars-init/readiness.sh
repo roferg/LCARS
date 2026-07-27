@@ -50,8 +50,28 @@ if [ "$MODE" = "json" ]; then
   tc='null'
   [ -n "$LCARS_TESTREADY_TESTCMD" ] \
     && tc="\"$(lcars_json_escape "$LCARS_TESTREADY_TESTCMD")\""
-  printf '{"status":"%s","suggestion":%s,"testCommand":%s}\n' \
-    "$LCARS_TESTREADY_STATUS" "$sug" "$tc"
+  # S147: `stacks` names the candidates behind an `ambiguous` verdict so the
+  # board can speak the same CHOOSE voice the CLI line does, and `candidates`
+  # carries the PICKABLE commands so the board's fix affordance can offer a
+  # choice instead of dispatching a paid discovery worker. Both null for every
+  # other status — the daemon only forwards them when set, so missing/broken/
+  # unknown payloads stay byte-identical to S146.
+  st='null'
+  [ -n "${LCARS_TESTREADY_STACKS:-}" ] \
+    && st="\"$(lcars_json_escape "$LCARS_TESTREADY_STACKS")\""
+  cands='null'
+  if [ -n "${LCARS_TESTREADY_CANDIDATES:-}" ]; then
+    cands='['; sep=''
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      cands="$cands$sep\"$(lcars_json_escape "$c")\""; sep=','
+    done <<CANDS
+$LCARS_TESTREADY_CANDIDATES
+CANDS
+    cands="$cands]"
+  fi
+  printf '{"status":"%s","suggestion":%s,"testCommand":%s,"stacks":%s,"candidates":%s}\n' \
+    "$LCARS_TESTREADY_STATUS" "$sug" "$tc" "$st" "$cands"
 else
   lcars_readiness_line
 fi
