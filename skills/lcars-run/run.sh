@@ -6201,6 +6201,128 @@ reconcile_retest_env_escalate() { # failed-ids  captured-output
   printf 'RECONCILE: env-blocked — merged %s cleanly but the retest could not run (worktree not provisioned); set worktreeSetupCommand and re-run.\n' "$BASE"
 }
 
+# reconcile_unpushed_count <branch> — how many commits <branch> has that
+# origin/<branch> does not. 0 when there is no remote branch to compare against,
+# or when the count cannot be determined — "0" always means "nothing provably at
+# risk", so a failure to measure can never authorise a destructive reset.
+reconcile_unpushed_count() { # branch → count
+  local b="${1:-}" n
+  [ -n "$b" ] || { printf '0'; return 0; }
+  "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$b" || { printf '0'; return 0; }
+  n="$("$GIT_BIN" rev-list --count "origin/$b..$b" 2>/dev/null)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# reconcile_unpushed_work_count <branch> — of those local-only commits, how many
+# are LCARS TICKET WORK.
+#
+# This is the distinction that decides whether the branch may be reset, and it
+# has to be exactly right in BOTH directions:
+#
+#   • A dead reconcile attempt is what BUG-077 was written for. Reconcile builds
+#     its attempt with `git merge --no-edit "$base_ref"`, so the artifact left on
+#     a killed retry is a MERGE (or a hand-made resolution) — it carries no
+#     ticket signature, is genuinely disposable, and still resets exactly as
+#     before.
+#   • A ticket commit is authored by commit_ticket, which always writes the
+#     subject "lcars(<mission-id>) t-NNN: …". A logged bug's fix is cherry-picked
+#     onto the parent branch and the cherry-pick PRESERVES that subject, so the
+#     fixes that were destroyed in the field are precisely the commits this
+#     recognises.
+#
+# Keying on LCARS's own commit-message contract (rather than on merge-ness) means
+# no existing BUG-077 assertion changes meaning: a non-ticket local-only commit
+# is still discarded, a ticket commit never is.
+reconcile_unpushed_work_count() { # branch → count
+  local b="${1:-}" n
+  [ -n "$b" ] || { printf '0'; return 0; }
+  "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$b" || { printf '0'; return 0; }
+  n="$("$GIT_BIN" log --format=%s "origin/$b..$b" 2>/dev/null | grep -c '^lcars(')"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# reconcile_sync_local_branch <branch> — bring the LOCAL branch into agreement
+# with the remote PR head WITHOUT ever destroying committed work.
+#
+# BUG-077 introduced a blunt `git branch -f "$BRANCH" "origin/$BRANCH"` here so a
+# killed/retried reconcile could not leave the local tip diverged and jam the
+# eventual push. That is right when the local-only commits are a dead attempt's
+# merge commit. It is catastrophic when they are real work — and it destroyed
+# real work in the field.
+#
+# MISSION-LOG BUG FIXES ARE EXACTLY THAT WORK. A logged bug never opens its own
+# PR: its fix is cherry-picked onto the PARENT's branch and rides the parent's
+# PR (see fold_one_child in skills/lcars-resolve-logs). Until the parent next
+# pushes, those commits exist ONLY locally. Observed live (DX-Scorecard,
+# 2026-07-28): three gate-verified bug fixes were cherry-picked onto the parent
+# branch, the parent re-entered reconcile 109 seconds later because main had
+# moved 8 commits ahead, and the reset moved the branch back to the remote head
+# — which was precisely the chain's base. All three commits became unreachable
+# in one command. The reconcile then re-tested the PARENT's ticket, went green
+# (the bug fixes' own tests had been discarded along with their code, so nothing
+# was left to fail), and the PR merged carrying none of it. Silently.
+#
+# THE RULE: divergence is resolved by PUBLISHING local work, not by deleting it.
+#   local has commits the remote lacks → PUSH them. Divergence is genuinely gone
+#                                        (local == remote) and nothing is lost.
+#   the push fails                     → leave the branch ALONE and say so; a
+#                                        jammed push is recoverable, deleted
+#                                        commits are not.
+#   nothing local-only                 → reset exactly as BUG-077 intended.
+#
+# Best-effort throughout: never aborts the caller.
+reconcile_sync_local_branch() { # branch
+  local b="${1:-}"
+  [ -n "$b" ] || return 0
+  "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$b" || return 0
+  local local_tip remote_tip
+  local_tip="$("$GIT_BIN" rev-parse "$b" 2>/dev/null)"
+  remote_tip="$("$GIT_BIN" rev-parse "origin/$b" 2>/dev/null)"
+  [ -n "$remote_tip" ] || return 0
+  [ "$local_tip" = "$remote_tip" ] && return 0
+
+  local unpushed work
+  unpushed="$(reconcile_unpushed_count "$b")"
+  work="$(reconcile_unpushed_work_count "$b")"
+  if [ "$work" -gt 0 ]; then
+    if "$GIT_BIN" push origin "$b" >/dev/null 2>&1; then
+      emit_event reconcile_local_commits_pushed verify \
+        "re-entry: '$b' carried $work ticket commit(s) (of $unpushed local-only) the remote had never seen — a logged bug's fix rides the parent's PR and is local-only until this push. PUSHED them instead of resetting, so divergence is resolved with nothing discarded"
+    else
+      emit_event reconcile_reset_skipped verify \
+        "re-entry: '$b' carries $work local-only ticket commit(s) and they could NOT be pushed — REFUSING to reset to the remote head, because that would delete committed, gate-verified work (this is how three mission-log fixes were lost). Proceeding from the local tip; push '$b' by hand, then re-run."
+    fi
+    return 0
+  fi
+
+  # Nothing local-only to lose → the BUG-077 reset, behaviour unchanged.
+  # S111 (root-tree sovereignty): NEVER detach the captain's checkout to free the
+  # ref. A holder is either a stale LCARS worktree (prune + retry) or the
+  # CAPTAIN's own checkout — in that case SKIP with a loud event rather than
+  # yanking their HEAD out from under them.
+  if "$GIT_BIN" branch -f "$b" "origin/$b" >/dev/null 2>&1; then
+    emit_event reconcile_reset verify \
+      "re-entry: reset local '$b' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) before re-merging — avoids divergence (no local-only commits to lose)"
+    return 0
+  fi
+  "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+  if "$GIT_BIN" branch -f "$b" "origin/$b" >/dev/null 2>&1; then
+    emit_event reconcile_reset verify \
+      "re-entry: reset local '$b' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) after pruning a stale worktree"
+    return 0
+  fi
+  local rr_holder
+  rr_holder="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
+    | awk -v bb="branch refs/heads/$b" '
+        /^worktree /{p=substr($0,10)}
+        $0==bb{print p; exit}' )"
+  emit_event reconcile_reset_skipped verify \
+    "re-entry: could NOT reset '$b' to the remote PR head — the branch is checked out at ${rr_holder:-an unknown worktree} (likely your own checkout). Proceeding from the local tip; if approve later rejects the push as non-fast-forward, switch that checkout off the branch and re-run."
+  return 0
+}
+
 # The reconcile gate. Echoes a RECONCILE: line and returns:
 #   0  ("RECONCILE: ok")          → not ahead, or clean+green → caller proceeds to
 #                                    open the PR. The merge (if any) is already on
@@ -6243,34 +6365,8 @@ reconcile_gate() {
   local pr_for_reset; pr_for_reset="$(json_str "$STATE" prUrl)"
   case "$pr_for_reset" in http*|*/pull/*) : ;; *) pr_for_reset="" ;; esac
   if [ -n "$pr_for_reset" ] \
-     && "$GIT_BIN" fetch origin "$BRANCH" --quiet 2>/dev/null \
-     && "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
-    local local_tip remote_tip
-    local_tip="$("$GIT_BIN" rev-parse "$BRANCH" 2>/dev/null)"
-    remote_tip="$("$GIT_BIN" rev-parse "origin/$BRANCH" 2>/dev/null)"
-    if [ -n "$remote_tip" ] && [ "$local_tip" != "$remote_tip" ]; then
-      # S111 (root-tree sovereignty): NEVER detach the captain's checkout to free
-      # the ref. LCARS itself no longer parks any tree on the mission branch, so a
-      # holder is either a stale LCARS worktree (prune + retry) or the CAPTAIN's
-      # own checkout — in that case SKIP the reset with a loud event rather than
-      # yanking their HEAD out from under them.
-      if "$GIT_BIN" branch -f "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1; then
-        emit_event reconcile_reset verify "re-entry: reset local '$BRANCH' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) before re-merging — avoids divergence"
-      else
-        "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
-        if "$GIT_BIN" branch -f "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1; then
-          emit_event reconcile_reset verify "re-entry: reset local '$BRANCH' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) after pruning a stale worktree"
-        else
-          local rr_holder
-          rr_holder="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
-            | awk -v b="branch refs/heads/$BRANCH" '
-                /^worktree /{p=substr($0,10)}
-                $0==b{print p; exit}' )"
-          emit_event reconcile_reset_skipped verify \
-            "re-entry: could NOT reset '$BRANCH' to the remote PR head — the branch is checked out at ${rr_holder:-an unknown worktree} (likely your own checkout). Proceeding from the local tip; if approve later rejects the push as non-fast-forward, switch that checkout off the branch and re-run."
-        fi
-      fi
-    fi
+     && "$GIT_BIN" fetch origin "$BRANCH" --quiet 2>/dev/null; then
+    reconcile_sync_local_branch "$BRANCH"
   fi
 
   # (a) main-ahead check. Best-effort; any unresolvable/non-numeric → not-ahead.

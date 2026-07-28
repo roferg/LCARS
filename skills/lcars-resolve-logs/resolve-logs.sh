@@ -341,20 +341,66 @@ clear_queued()  { state_del     "$MISSIONS_DIR/$1/state.json" queued; }
 # (log.sh records the parent branch for a pre-merge child), so the parent's PR
 # carries it. We only flip the stage + board label here. A child must never be
 # left orphaned at Verify after acceptance. NEVER calls `gh pr create`.
+# child_recorded_a_commit <bug-id> — did this bug's Implement actually produce a
+# commit? A green ticket with no file changes records no .commit-sha and has
+# nothing to verify, so it must never be refused below.
+child_recorded_a_commit() { # bug-id
+  local f
+  for f in "$MISSIONS_DIR/$1"/tickets/*/.commit-sha; do
+    [ -s "$f" ] && return 0
+  done
+  return 1
+}
+
+# child_fix_on_branch <bug-id> <branch> — is this bug's fix ACTUALLY on the
+# parent branch?
+#
+# Matching the recorded worktree sha would be WRONG: cmd_implement CHERRY-PICKS
+# that commit onto the mission branch, so the branch carries a DIFFERENT sha with
+# the same message (in the real incident the worktree sha was ec85424 while the
+# branch carried b75400b). A cherry-pick PRESERVES the subject, so the reliable
+# signal is the "lcars(<bug-id>) …" prefix commit_ticket writes.
+#
+# Returns 0 (present) when the branch cannot be resolved at all — an unverifiable
+# state must never become a refusal, or a local-only / branch-less mission would
+# be blocked from completing.
+child_fix_on_branch() { # bug-id branch
+  local bid="$1" branch="$2"
+  [ -n "$branch" ] || return 0
+  "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch" || return 0
+  "$GIT_BIN" log --format=%s "$branch" 2>/dev/null | grep -qF "lcars($bid)"
+}
+
 # fold_one_child — the per-bug fold-to-Done step, shared by the bulk and the
 # single-bug (BUG-032) complete paths so the fold logic is authored ONCE. Given a
 # child bug id whose stage is verify, flips it to done on disk and moves its board
 # column (clear stage labels, apply lcars:done) WITHOUT opening a per-bug PR — the
-# parent's PR carries the fix. Echoes nothing; returns 0 if it folded the child, 1
-# if the child was not at verify (skipped). Never rewrites the child's branch.
+# parent's PR carries the fix. Echoes nothing. Never rewrites the child's branch.
+#
+# Returns: 0 folded · 1 not at verify (skipped) · 2 REFUSED — the fix is not on
+# the parent branch.
+#
+# THE PREMISE IS NOW CHECKED. This function used to assert that the fix "already
+# lives on the parent branch" and flip the stage regardless. When that premise
+# was false the bug went to Done with a green board and no fix anywhere — which
+# is precisely how three DX-Scorecard fixes vanished on 2026-07-28 (a reconcile
+# re-entry reset the parent branch out from under them, and the fold then marked
+# all three Done). The reconcile fix removes that cause; verifying here closes
+# the CLASS, so any future cause is a loud refusal at the moment of decision
+# rather than a silent loss discovered days later.
 fold_one_child() { # bug-id
-  local bid="$1" cstate stage cissue
+  local bid="$1" cstate stage cissue cbranch
   cstate="$MISSIONS_DIR/$bid/state.json"
   [ -f "$cstate" ] || return 1
   stage="$(json_str "$cstate" stage)"
   # Only fold children that reached their Verify gate. A child still mid-flight
   # (escalated / earlier stage) is left untouched — it is not "resolved" yet.
   [ "$stage" = "verify" ] || return 1
+  # REFUSE to call it Done when its fix is not where the whole model says it is.
+  cbranch="$(json_str "$cstate" branch)"
+  if child_recorded_a_commit "$bid" && ! child_fix_on_branch "$bid" "$cbranch"; then
+    return 2
+  fi
   # Move the child to Done on disk — stage flips to done, branch is preserved
   # (the fix stays folded onto the parent branch; we never rewrite it here).
   state_set_str "$cstate" stage done
@@ -524,7 +570,11 @@ cmd_complete_single() { # bug-id
   [ "$cparent" = "$PARENT_ID" ] \
     || die "$bid is not linked to parent $PARENT_ID (parentMission=$cparent)."
 
-  if ! fold_one_child "$bid"; then
+  fold_one_child "$bid"; fold_rc=$?
+  if [ "$fold_rc" -eq 2 ]; then
+    die "$bid reached Verify but its fix is NOT on the parent branch '$(json_str "$MISSIONS_DIR/$bid/state.json" branch)' — REFUSING to mark it Done, because that would report a fix that does not exist. A logged bug's fix rides the parent's PR, so it must be present on that branch. Re-run the bug (\`lcars run $bid\`) to rebuild it, or restore the commit if the branch was reset."
+  fi
+  if [ "$fold_rc" -ne 0 ]; then
     echo "lcars resolve-logs: $bid is not at a Verify gate (stage is '$(json_str "$MISSIONS_DIR/$bid/state.json" stage)') — nothing to complete for it."
     exit 0
   fi
@@ -629,9 +679,24 @@ cmd_complete() {
   fi
 
   # Push landed (or there is no remote to ship to) — fold the verified children.
+  # A child whose fix is NOT on the parent branch is REFUSED (rc 2), never folded:
+  # marking it Done would report a fix that does not exist. Its siblings still
+  # fold — their work is real and must not be held hostage — but the refusal is
+  # loud and the command exits non-zero.
+  local fold_refused=""
   for bid in "${fold_ids[@]}"; do
-    fold_one_child "$bid" && folded=$((folded + 1))
+    fold_one_child "$bid"; fold_rc=$?
+    case "$fold_rc" in
+      0) folded=$((folded + 1)) ;;
+      2) fold_refused="${fold_refused:+$fold_refused }$bid" ;;
+    esac
   done
+  if [ -n "$fold_refused" ]; then
+    printf 'lcars resolve-logs: REFUSED to mark these logged bug(s) Done — their fixes are NOT on the parent branch: %s\n' "$fold_refused" >&2
+    printf '  A logged bug'\''s fix rides the parent'\''s PR, so it must be present on that branch. Marking them Done would report fixes that do not exist.\n' >&2
+    printf '  Re-run each (`lcars run <id>`) to rebuild the fix, or restore the commits if the branch was reset. %d sibling(s) folded normally.\n' "$folded" >&2
+    exit 1
+  fi
 
   if [ "$folded" -eq 0 ]; then
     echo "lcars resolve-logs: no child bug at Verify to fold into $PARENT_ID — nothing to complete."
