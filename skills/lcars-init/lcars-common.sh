@@ -252,18 +252,28 @@ detect_worktree_setup_cmd() {
   # JS/TS: symlink the main checkout's node_modules (root + every pnpm workspace
   # package's own, which nests its .bin), else an offline lockfile-frozen install.
   if [ -f "$TOPLEVEL/package.json" ]; then
-    local install
+    local install lock
     if [ -f "$TOPLEVEL/pnpm-lock.yaml" ] || [ -f "$TOPLEVEL/pnpm-workspace.yaml" ]; then
       install='pnpm install --frozen-lockfile --prefer-offline --silent'
+      lock='pnpm-lock.yaml'
     elif [ -f "$TOPLEVEL/yarn.lock" ]; then
       install='yarn install --immutable'
+      lock='yarn.lock'
     else
       install='npm ci'
+      lock='package-lock.json'
     fi
+    # THE LOCKFILE GUARD comes first: reusing the main checkout's node_modules is
+    # only correct while this worktree wants the SAME dependencies. A ticket that
+    # changes the lockfile makes the shared install the WRONG set by definition,
+    # and symlinking it would test the ticket against packages its own commit
+    # replaced — a failure no committed change could ever repair, which then reads
+    # downstream as "the implementation is not present". Diverged ⇒ real install.
+    #
     # find symlinks EVERY node_modules that is not nested inside another one
     # (-prune halts the descent at each match), recreating its path relative to
     # the main checkout inside the worktree. Generic across npm/yarn/pnpm.
-    printf '%s\n' 'MAIN="$(git rev-parse --path-format=absolute --git-common-dir)"; MAIN="${MAIN%/.git}"; if [ -d "$MAIN/node_modules" ]; then find "$MAIN" -path "$MAIN/.git" -prune -o -name node_modules -type d -prune -print | while IFS= read -r nm; do rel="${nm#$MAIN/}"; mkdir -p "$(dirname "$rel")"; ln -snf "$nm" "$rel"; done; else '"$install"'; fi'
+    printf '%s\n' 'MAIN="$(git rev-parse --path-format=absolute --git-common-dir)"; MAIN="${MAIN%/.git}"; if [ -d "$MAIN/node_modules" ] && [ -f '"$lock"' ] && [ -f "$MAIN/'"$lock"'" ] && ! cmp -s '"$lock"' "$MAIN/'"$lock"'"; then '"$install"'; elif [ -d "$MAIN/node_modules" ]; then find "$MAIN" -path "$MAIN/.git" -prune -o -name node_modules -type d -prune -print | while IFS= read -r nm; do rel="${nm#$MAIN/}"; mkdir -p "$(dirname "$rel")"; ln -snf "$nm" "$rel"; done; else '"$install"'; fi'
     return
   fi
   # Python and everything else: no single offline-safe string we can guarantee —
@@ -627,6 +637,73 @@ detect_stack() {
     0) echo "unknown" ;;
     1) echo "$1" ;;
     *) echo "ambiguous($(echo "$candidates" | sed 's/^ *//; s/ /,/g'))" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# TEST PROBE — the ONE live run (shared by `lcars update` and `lcars init`)
+# ---------------------------------------------------------------------------
+# lcars_test_readiness (below) is CHEAP: it never runs anything, so "ready"
+# means the COMMAND resolves, not that the SUITE works. This is the other half
+# — an actual bounded run — for the one-off callers that can afford it.
+
+# run_probe <cmd> — run the test command ONCE from the repo root, BOUNDED by
+# $LCARS_PROBE_TIMEOUT (default 120s; perl's alarm survives exec, so the timer
+# rides into the spawned bash). Sets PROBE_OUTCOME (pass|fail|zero-collected|
+# timeout), PROBE_RC, and PROBE_OUT (captured-output file). Zero-collected is
+# its OWN honest outcome, never a pass — the signature REUSES the rg_signature
+# `zerotests` + proof_zero_collected phrasings from skills/lcars-run/run.sh
+# (keep the two in step).
+PROBE_TIMEOUT="${LCARS_PROBE_TIMEOUT:-120}"
+run_probe() {
+  local cmd="$1"
+  PROBE_OUT="$(mktemp "${TMPDIR:-/tmp}/lcars-probe.XXXXXX")"
+  ( cd "$TOPLEVEL" && perl -e 'alarm shift; exec @ARGV or exit 127' \
+      "$PROBE_TIMEOUT" bash -c "$cmd" ) >"$PROBE_OUT" 2>&1
+  PROBE_RC=$?
+  # S147: THREE VSTest phrasings, all exiting 0 (observed, SDK 10.0.107) — a
+  # filter that matches nothing, a test project with no test methods, and a run
+  # whose every discovered case was SKIPPED (`[Fact(Skip=…)]`), which prints
+  # neither "no test" phrase and used to read here as "the suite ran and passed".
+  # They are the dotnet green-on-nothing trap, so the probe names them too; the
+  # skipped form keys on the NUMBERS (zero failed AND zero passed) so a real
+  # 1-passed/1-skipped run stays a pass. Keep in step with rg_signature
+  # `zerotests` + proof_zero_collected in skills/lcars-run/run.sh.
+  local zero='No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items|(^|[^0-9])0 examples, 0 failures$|(^|[^0-9])0 runs, 0 assertions|no tests to run|test result: ok\. 0 passed|^No test matches the given testcase filter .*\.dll|^No test is available in .*\.dll|^(Passed|Failed|Skipped)! +- +Failed: +0, +Passed: +0,'
+  # S147: MSBuild never even REACHED a test run — the project/solution the
+  # command names is not there. Reporting that as "the suite ran but reported
+  # failures" sends the captain hunting a test failure that does not exist.
+  local cantrun='^MSBUILD : error MSB100[39]:'
+  if [ "$PROBE_RC" -eq 142 ]; then          # 128 + SIGALRM(14): the alarm fired
+    PROBE_OUTCOME="timeout"
+  elif grep -Eq "$cantrun" "$PROBE_OUT"; then
+    PROBE_OUTCOME="cannot-run"
+  elif grep -Eq "$zero" "$PROBE_OUT"; then  # runner finished but ran NOTHING
+    PROBE_OUTCOME="zero-collected"
+  elif [ "$PROBE_RC" -eq 0 ]; then
+    PROBE_OUTCOME="pass"
+  else
+    PROBE_OUTCOME="fail"
+  fi
+}
+
+# report_probe — the ship-status readout for the last run_probe.
+report_probe() {
+  case "$PROBE_OUTCOME" in
+    pass)
+      echo "  ✓ PROBE COMPLETE — test systems responding: the suite ran and passed." ;;
+    fail)
+      echo "  ✗ PROBE FAILED — the suite ran but reported failures (exit $PROBE_RC)."
+      tail -n 5 "$PROBE_OUT" 2>/dev/null | sed 's/^/      /' ;;
+    zero-collected)
+      echo "  ⚠ PROBE INCONCLUSIVE — the runner started but collected ZERO tests."
+      echo "    That is not a pass: the command may be scoped to the wrong place." ;;
+    cannot-run)
+      echo "  ⚠ PROBE COULD NOT RUN — the command never reached a test run: the"
+      echo "    project or solution it names could not be loaded (exit $PROBE_RC)."
+      tail -n 5 "$PROBE_OUT" 2>/dev/null | sed 's/^/      /' ;;
+    timeout)
+      echo "  ⚠ PROBE TIMED OUT — no verdict within ${PROBE_TIMEOUT}s; the suite never settled." ;;
   esac
 }
 

@@ -4658,6 +4658,47 @@ stray_edit_note() { # → wrong-tree note (empty when clean / non-isolated / unk
     "$main" "${br:-?}" "$status"
 }
 
+# stale_dep_env_reason — evidence that a gate worktree's installed dependencies
+# are NOT the ones its own committed lockfile asks for. Echoes a human reason, or
+# nothing when there is no such evidence.
+#
+# The companion to red_gate_env_failure, which keys on the runner failing to
+# START (command-not-found class). This is the case where the runner starts
+# perfectly and still cannot be believed: worktreeSetupCommand provisions a gate
+# worktree by SYMLINKING the main checkout's node_modules, which is correct right
+# up until a ticket CHANGES dependencies. Then the shared install is the wrong
+# set by definition, the ticket's committed lockfile fix cannot take effect, and
+# the red that follows gets reported as "the implementation is NOT present on the
+# committed branch" — an accusation about code, for an environment fault. No
+# committed change can ever clear it, so the ticket burns its whole retry budget.
+#
+# CONSERVATIVE: reports only on POSITIVE evidence — deps shared by symlink from
+# ANOTHER checkout, AND a lockfile that differs from that checkout's. A worktree
+# that owns its node_modules is by definition testing its own dependencies, and
+# an ABSENT node_modules is red_gate_env_failure's business. With no evidence it
+# stays silent, so a genuinely missing implementation keeps its correct wording.
+stale_dep_env_reason() { # worktree → reason (empty ⇒ no evidence of staleness)
+  local wt="${1:-}" lock target main
+  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  # Only decidable when the deps are SHARED in from somewhere else.
+  [ -L "$wt/node_modules" ] || return 0
+  target="$( cd "$wt" 2>/dev/null && readlink node_modules 2>/dev/null )" || return 0
+  [ -n "$target" ] || return 0
+  case "$target" in /*) : ;; *) target="$wt/$target" ;; esac
+  main="${target%/node_modules}"
+  [ -d "$main" ] || return 0
+  [ "$main" = "$wt" ] && return 0
+  for lock in package-lock.json pnpm-lock.yaml yarn.lock; do
+    if [ -f "$wt/$lock" ] && [ -f "$main/$lock" ] \
+       && ! cmp -s "$wt/$lock" "$main/$lock"; then
+      printf 'this worktree'\''s %s differs from the shared install it was given (symlinked from %s), so the suite ran against the WRONG dependency set' \
+        "$lock" "$main"
+      return 0
+    fi
+  done
+  return 0
+}
+
 POST_COMMIT_SIGNAL=""   # caller may point this at a file to capture the failure detail
 post_commit_gate() { # ticket
   local t="$1" cmd; cmd="$(resolve_test_cmd)"
@@ -4781,6 +4822,22 @@ PC_RELS_EOF
     local edetail="POST-COMMIT GATE — environment not provisioned — the test runner could not start in the gate worktree (missing node_modules/venv or an absent test binary); set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`). This is NOT a missing implementation. Command run: $cmd."
     printf '  ✗ %s\n' "$edetail" >&2
     [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$edetail" >"$POST_COMMIT_SIGNAL"
+    return 3
+  fi
+
+  # STALE-ENV (companion to the startup check above): the runner STARTED, so the
+  # env is "provisioned" — but it was handed a shared install that does not match
+  # this worktree's own committed lockfile. The code may be perfectly present;
+  # it was simply tested against the dependencies its own commit replaced. Blaming
+  # the implementation here is not just unhelpful, it is unfixable: no committed
+  # change can alter what the gate symlinks in, so the ticket bounces to a fresh
+  # worker until its retry budget is gone. Same DISTINCT code (3) as the startup
+  # failure, so the call site already routes it as an environment fault.
+  local stale; stale="$(stale_dep_env_reason "$wt")"
+  if [ -n "$stale" ]; then
+    local sdetail="POST-COMMIT GATE — STALE DEPENDENCY ENVIRONMENT — ticket $t's suite is RED, but $stale. This is NOT a missing implementation and NO committed change can fix it: the gate reuses the main checkout's installed deps, so a ticket that changes dependencies must have them installed. Repair the provisioning with \`lcars update\` (its worktreeSetupCommand migration reinstalls on a lockfile divergence). Command run: $cmd."
+    printf '  ✗ %s\n' "$sdetail" >&2
+    [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$sdetail" >"$POST_COMMIT_SIGNAL"
     return 3
   fi
 
@@ -5112,6 +5169,7 @@ RT_RELS_EOF
 FULL_SUITE_SIGNAL=""   # caller may point this at a file to capture the regression detail
 full_suite_gate() { # ordered ticketId...
   local cmd; cmd="$(resolve_test_cmd)"
+  FULL_SUITE_STALE_ENV=""   # reset per call — never inherit a prior gate's verdict
   if [ -z "$cmd" ]; then
     # NO RUNNER: the same documented degradation as the red gate. We cannot
     # re-check earlier tickets for regressions, so we SKIP LOUD — never a false
@@ -5150,6 +5208,9 @@ full_suite_gate() { # ordered ticketId...
     # tip via the shared helper, so relative-to-self target resolution behaves as
     # it did at green-time.
     RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" "$@" || regressed="$RETEST_FAILED"
+    # Read the dependency-environment evidence BEFORE the worktree is torn down —
+    # the classification below runs after this block, when the path is gone.
+    FULL_SUITE_STALE_ENV="$(stale_dep_env_reason "$wt")"
     # Clean up the worktree on EVERY exit path — never leak into the captain's
     # `git worktree list` or working tree. Mirrors cleanup_ticket_worktrees.
     "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
@@ -5183,6 +5244,22 @@ full_suite_gate() { # ordered ticketId...
       [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$edetail" >"$FULL_SUITE_SIGNAL"
       return 1
     fi
+  fi
+
+  # STALE-ENV (same fault, same reasoning as the post-commit gate): the runner
+  # started fine but was handed a shared install that does not match this
+  # worktree's committed lockfile, so "these suites regressed" names the wrong
+  # culprit — the earlier tickets did not regress, they were re-run against the
+  # wrong dependency set. Diagnosis only; the gate still fails.
+  if [ -n "${FULL_SUITE_STALE_ENV:-}" ]; then
+    local sdetail="FULL-SUITE GATE — STALE DEPENDENCY ENVIRONMENT — the re-run went RED, but ${FULL_SUITE_STALE_ENV}. These suites did NOT necessarily regress: they were re-run against dependencies this branch's own lockfile replaced. Repair the provisioning with \`lcars update\` (its worktreeSetupCommand migration reinstalls on a lockfile divergence), then re-run. Command run: $cmd."
+    emit_event ticket_env_unprovisioned implement \
+      "full-suite gate — stale dependency environment (the gate worktree's lockfile differs from the shared install it was symlinked); repair with \`lcars update\`" \
+      "" || :
+    rm -rf "$cap" 2>/dev/null
+    printf '  ✗ %s\n' "$sdetail" >&2
+    [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$sdetail" >"$FULL_SUITE_SIGNAL"
+    return 1
   fi
 
   local detail="FULL-SUITE GATE — these earlier ticket suite(s) no longer pass against the fully-built repo: ${regressed}. Each was green when built, so a LATER ticket's produced code REGRESSED its locked contract. The Mission is NOT shippable until the regression is resolved (fix the later ticket or re-open the regressed ticket). Command run: $cmd."
