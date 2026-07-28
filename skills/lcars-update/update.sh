@@ -546,7 +546,7 @@ changed=0
 if [ "$GH_OK" -eq 1 ]; then
   if [ "$LABELS_CREATED" -gt 0 ]; then
     changed=1
-    where="${GH_REPO:+ on github.com/$GH_REPO}"
+    where="${GH_REPO:+ on $(lcars_gh_web_host)/$GH_REPO}"
     echo "  ✓ $LABELS_CREATED label(s) created$where: $LABELS_CREATED_NAMES"
     echo "    ($LABELS_SKIPPED already present)"
   fi
