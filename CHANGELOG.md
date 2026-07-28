@@ -4,6 +4,86 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.14 — 2026-07-27
+
+**Two silent-failure fixes from one live greenfield mission** — a multi-session
+ticket no longer loses every commit but its last, and a mission can no longer be
+re-homed onto a different (billed) engine just by resuming it from another
+terminal. Both were invisible while they happened; both were found by driving a
+real mission rather than by reading the code.
+
+### Multi-session tickets keep all their work
+
+- **The defect.** A bounced ticket re-enters the SAME per-ticket worktree with
+  the prior session's commit as HEAD — `_tdd_reject` clears `result.json` and the
+  output dir, never the tree. So session N committed ON TOP of session N-1, while
+  `commit_ticket` recorded a SINGLE `.commit-sha` via `rev-parse HEAD`: the LAST
+  commit only. The wave-end replay cherry-picks exactly that one commit (S133:
+  "the ticket's tests ride in its ONE commit"), so sessions 1..N-1 were dropped
+  on the floor.
+
+  It failed SILENTLY, which is the worst part: every gate — flip-flop,
+  declared-edits, quality floor, post-commit — runs against the worktree, where
+  the full tree exists. All of them were green and all of them were right. The
+  loss happened after the last gate, at replay, with nothing left to re-verify
+  the branch.
+
+  Observed live: a Vite+React scaffold ticket took 4 sessions. Session 3
+  committed the whole app (13 files); session 4 added only `package-lock.json`.
+  The mission branch received the lockfile alone — no `src/`, no `vite.config.ts`,
+  no `package.json` — and a sibling ticket's stub `package.json` then replayed on
+  top of the hole. The wave read as fully green.
+
+- **The fix.** `commit_ticket` pins the wave base to `.commit-base` on a ticket's
+  first session, then SOFT-resets to it before each later session's commit. A soft
+  reset moves HEAD only — index and worktree untouched — so the recorded commit
+  always carries the ticket's CUMULATIVE diff vs the base. `.commit-sha` keeps
+  naming exactly one commit, so the replay, cherry-pick-conflict and
+  serial-rebuild paths (all of which already assume one commit per ticket) are
+  untouched. `.commit-base` is cleared everywhere `.commit-sha` is, so a serial
+  rebuild re-pins against its own base. The single-session path is byte-identical.
+
+Verified by a new scoped suite, `tests/replay-multisession.test.sh` (13), driving
+the REAL `commit_ticket` through a new inert `commit-ticket-test` hook: two
+sessions in one worktree must leave `.commit-sha` rooted AT the wave base with
+the cumulative patch, and an actual cherry-pick of it must land every session's
+files on the mission branch. Asserted against the commit's own PATCH, not its
+tree — a tree diff passes even for the broken stacked-commit shape. Red on 5
+before the fix. Regression: proof-gates 154, unified-implementer 37.
+
+### A mission's recorded engine now outranks host auto-detection
+
+- **The defect.** `resolve_worker_bin`'s precedence ran `$LCARS_WORKER_BIN` >
+  `config.json workerBin` > **host-CLI auto-detect** > claude — it never read the
+  engine the mission itself recorded in `state.json`. So the engine was
+  re-DECIDED from the ambient terminal on every invocation. A mission filed and
+  driven under Copilot, then RESUMED from a Claude Code session (`CLAUDECODE=1`),
+  silently moved onto billed claude mid-flight with its `workerBin: copilot` pin
+  sitting right there being ignored.
+
+  Observed live: 7 workers and **$11.39** billed to the wrong engine after a
+  resume from the wrong terminal. Nothing warned — the SPEND was the only
+  symptom, and it only surfaced because someone read the per-engine cost split.
+  That is precisely why auto-detection must never outrank an explicit record.
+
+- **The fix.** The mission's `state.json` `workerBin` is consulted BEFORE host
+  detection. Deliberate operator acts still win — `$LCARS_WORKER_BIN` and
+  `config.json workerBin` both outrank the mission pin, so a mission can still be
+  moved on purpose — but a guess drawn from whichever terminal happens to be
+  driving no longer silently overrides what the mission recorded. A mission with
+  no recorded engine falls through to detection unchanged, and the new source is
+  reported as `binsrc=mission` in the resolution log. Several callers set
+  `MISSION_DIR` but not `STATE`, so the state path is derived defensively and the
+  resolver stays silent when there is no mission at all.
+
+Verified by 6 new cases in `tests/worker-resolve.test.sh` (29): a copilot-pinned
+mission resolved from a CLAUDE host yields copilot via `binsrc=mission` and does
+NOT re-home; `config.json` and `$LCARS_WORKER_BIN` both still outrank the pin;
+and an unpinned mission still falls through to detection. `resolve-worker` grew
+`--mission <id>` so the pin participates, mirroring how the real spawn paths set
+`MISSION_DIR`. (5f/5i in that suite fail on `main` too — a pre-existing
+adapter-argv issue, untouched here.)
+
 ## 2026.7.13 — 2026-07-27
 
 **`lcars buddy` stops misreporting the config it exists to show you.**

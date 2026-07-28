@@ -2044,6 +2044,37 @@ commit_ticket() { # ticket  summary
     fi
   fi
 
+  # MULTI-SESSION TICKETS (worktree mode). A bounced ticket re-enters the SAME
+  # worktree with the prior session's commit as HEAD — `_tdd_reject` clears
+  # result.json and the output dir, never the tree. Committing naively here would
+  # STACK a second commit, and `.commit-sha` (a SINGLE sha, written below) would
+  # then name only the last session's slice. The wave-end replay cherry-picks that
+  # ONE commit (see cmd_implement: "the parent cherry-picks those in plan order";
+  # S133: "the ticket's tests ride in its ONE commit"), so sessions 1..N-1 would be
+  # dropped SILENTLY — every gate stays green because every gate runs against this
+  # worktree, where the full tree exists. Observed live: a 4-session scaffold
+  # ticket landed on the mission branch as a lone package-lock.json, the other 13
+  # files gone.
+  #
+  # So: pin the wave base on the first session, and collapse any prior session
+  # commits with a SOFT reset before each later one. A soft reset moves HEAD only
+  # — index and worktree are untouched — so the commit below carries the ticket's
+  # CUMULATIVE diff vs the base, and the existing single-commit replay lands all
+  # of it with no change to the conflict / serial-rebuild paths that already
+  # assume one commit per ticket. The single-session path is byte-identical: the
+  # base is recorded, no reset fires, and the commit's parent is the base as before.
+  if [ -n "${LCARS_TICKET_WORKTREE:-}" ]; then
+    local basef; basef="$(ticket_dir "$1")/.commit-base"
+    if [ -s "$basef" ]; then
+      local wbase; wbase="$(cat "$basef" 2>/dev/null)"
+      if [ -n "$wbase" ] && [ "$("$GIT_BIN" rev-parse HEAD 2>/dev/null)" != "$wbase" ]; then
+        "$GIT_BIN" reset --soft "$wbase" >/dev/null 2>&1 || :
+      fi
+    else
+      "$GIT_BIN" rev-parse HEAD >"$basef" 2>/dev/null || :
+    fi
+  fi
+
   # Belt-and-braces: ensure the scratch globs are in .git/info/exclude before we
   # stage, so even a future `git add`/`status` ignores them (idempotent; `lcars
   # init` does this too, but a mission created without init — e.g. via `lcars log`
@@ -5294,7 +5325,7 @@ self_heal_full_suite() { # reason  ordered ticketId...
     # an undeclared weakening of the regressed test is still blocked by the
     # declared-edits guard + the pre-merge drift check).
     local irc=0
-    rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null
+    rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" "$(ticket_dir "$regressor")/.commit-base" 2>/dev/null
     LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
     LCARS_TICKET_WT_BASE="$wt_base" LCARS_TICKET_BRANCH="$branch" \
     LCARS_SELFHEAL_FEEDBACK="$(cat "$SELFHEAL_LAST_REASON")" \
@@ -6517,6 +6548,7 @@ cmd_reconcile() {
 # owns cli-SPECIFIC flag emission, run.sh owns host detection + precedence.
 #
 #   bin precedence  : $LCARS_WORKER_BIN  >  config.json workerBin
+#                     >  the MISSION's recorded workerBin (state.json)
 #                     >  host-CLI auto-detect (env marker) >  claude (default)
 #   model precedence: $LCARS_WORKER_MODEL > config.json workerModel > unset
 #
@@ -6553,6 +6585,26 @@ resolve_worker_bin() {
   [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgbin="$(json_str "$LCARS_CFG" workerBin)"
   if [ -n "$cfgbin" ]; then
     WORKER_BIN="$cfgbin"; WORKER_BIN_SRC="config"; return 0
+  fi
+  # THE MISSION'S OWN PIN — ahead of host detection. A mission records the engine
+  # it was filed with in state.json (`lcars file --engine copilot` → workerBin).
+  # Until now the resolver never read it, so the engine was re-DECIDED from the
+  # ambient terminal on every invocation: a mission filed and driven under Copilot
+  # that was later RESUMED from a Claude Code session (CLAUDECODE=1) silently
+  # re-homed onto billed claude mid-flight, with the pin sitting right there in
+  # state.json being ignored. Observed live: 7 workers and $11.39 billed to the
+  # wrong engine after a resume from the wrong terminal, with no warning — the
+  # spend is the ONLY symptom, which is why detection must never outrank an
+  # explicit record. An explicitly recorded engine beats a guess; env and config
+  # (both deliberate operator acts) still outrank the mission, so an operator can
+  # still move a mission on purpose. Several callers set MISSION_DIR but not STATE,
+  # so derive the path defensively and stay silent when there is no mission.
+  local statef="${STATE:-}"
+  [ -n "$statef" ] || { [ -n "${MISSION_DIR:-}" ] && statef="$MISSION_DIR/state.json"; }
+  local misbin=""
+  [ -n "$statef" ] && [ -f "$statef" ] && misbin="$(json_str "$statef" workerBin)"
+  if [ -n "$misbin" ]; then
+    WORKER_BIN="$misbin"; WORKER_BIN_SRC="mission"; return 0
   fi
   local detected; detected="$(detect_host_cli)"
   if [ -n "$detected" ]; then
@@ -6811,6 +6863,9 @@ cmd_resolve_worker() {
   if [ -n "$gitdir" ]; then
     case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
     LCARS_CFG="$gitdir/lcars/config.json"
+    # Mirror the real call sites (spawn paths set MISSION_DIR the same way) so
+    # `--mission <id>` makes the mission's own pin participate in resolution.
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
   fi
   resolve_worker
   printf 'WORKER-RESOLVED bin=%s binsrc=%s model=%s modelsrc=%s\n' \
@@ -9014,7 +9069,7 @@ cmd_implement() {
       local wt_base; wt_base="$MISSION_DIR/worktrees"
       local jobs; jobs="$(mktemp)"; : >"$jobs"
       for t in $pending; do
-        rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" 2>/dev/null
+        rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" "$(ticket_dir "$t")/.commit-base" 2>/dev/null
         printf 'LCARS_TICKET_WT_BASE=%q LCARS_TICKET_BRANCH=%q bash %q implement-ticket --mission %q --ticket %q\n' \
           "$wt_base" "$branch" "$SELF" "$MISSION_ID" "$t" >>"$jobs"
       done
@@ -9379,7 +9434,7 @@ _replay_ticket_commit_locked() { # branch  sha  ticket
 rebuild_ticket_on_tip() { # base-dir  branch  ticket
   local base="$1" branch="$2" t="$3"
   # Drop the stale concurrent outcome so we read the rebuild's fresh result.
-  rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" 2>/dev/null
+  rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" "$(ticket_dir "$t")/.commit-base" 2>/dev/null
   local irc=0
   LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
   LCARS_TICKET_WT_BASE="$base" LCARS_TICKET_BRANCH="$branch" \
@@ -10599,6 +10654,17 @@ FSG_EOF
   proof-validate-result-test)
     __pv_rc=0; proof_validate_result "$RESULT" "$TICKET" || __pv_rc=$?
     printf 'PVRC=%s\n' "$__pv_rc"; exit 0 ;;
+  # Drives the REAL commit_ticket in WORKTREE mode ($LCARS_TICKET_WORKTREE set by
+  # the caller), so the multi-session cumulative-commit contract can be exercised
+  # offline + token-free: N sessions in one worktree must leave .commit-sha naming
+  # ONE commit carrying the ticket's WHOLE diff vs the wave base. Inert for every
+  # real subcommand.
+  commit-ticket-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh commit-ticket-test --mission <id> --ticket <t> [summary]"
+    __ct_rc=0; commit_ticket "$TICKET" "${POSARG:-test session}" || __ct_rc=$?
+    [ -n "${COMMIT_NOTE:-}" ] && printf '%s\n' "$COMMIT_NOTE"
+    printf 'CTRC=%s\n' "$__ct_rc"; exit 0 ;;
   proof-quality-floor-test)
     locate_mission "$MISSION_ID"
     [ -n "$TICKET" ] || die "usage: run.sh proof-quality-floor-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"
