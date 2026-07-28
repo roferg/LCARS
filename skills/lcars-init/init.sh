@@ -378,4 +378,32 @@ fi
 lcars_test_readiness "$CONFIG"
 READINESS_LINE="$(lcars_readiness_line)"
 [ -n "$READINESS_LINE" ] && echo "  $READINESS_LINE"
+
+# THE INIT PROBE — prove the suite RUNS, don't just prove the command resolves.
+#
+# lcars_test_readiness is cheap by construction: "ready" means the testCommand's
+# first token is on PATH. That is a claim about the COMMAND, not the SUITE, and
+# the gap is not theoretical — a repo pinned vitest 4 against vite 5 (needs
+# vite >= 6), so every suite died at import and collected ZERO tests while `npx`
+# resolved perfectly. init declared it mission-ready and the breakage surfaced
+# days later inside a Mission, misread as a code defect.
+#
+# init is a ONE-TIME setup action, so unlike status/board it can afford a single
+# bounded run. Probe ONLY the `ready` verdict: that is the one state that can
+# lie. broken/missing/unknown/ambiguous already tell the truth and have their
+# own voice above.
+#
+# A red suite NEVER blocks setup — init's other side effects (config, labels)
+# are done and correct, and a repo whose tests are red is a normal place to
+# start work. We just refuse to call it verified.
+if [ "${LCARS_TESTREADY_STATUS:-}" = "ready" ] && [ -z "${LCARS_INIT_SKIP_PROBE:-}" ]; then
+  echo "  … probing test systems ($LCARS_TESTREADY_TESTCMD)"
+  run_probe "$LCARS_TESTREADY_TESTCMD"
+  report_probe
+  case "$PROBE_OUTCOME" in
+    pass) echo "  ✓ TEST SYSTEMS ONLINE — verified by a live run; missions will be proof-gated with: $LCARS_TESTREADY_TESTCMD" ;;
+    *)    echo "    Missions are proof-gated on this command, so fix it before relying on the"
+          echo "    Implement gates: \`lcars update --fix-tests\` repairs the common causes." ;;
+  esac
+fi
 echo "  LCARS ready — run \`lcars file\` to start your first Mission."

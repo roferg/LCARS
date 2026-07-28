@@ -182,6 +182,52 @@ migrate_unquoted_testcommand_scope() {
   MIGRATED_TESTCOMMAND_QUOTING=1
 }
 
+# --- MIGRATION: un-guarded symlink worktreeSetupCommand -> lockfile-guarded --
+#
+# The JS default provisions a Stage worktree by SYMLINKING the main checkout's
+# node_modules. That is right until a ticket CHANGES dependencies: the shared
+# install is then the WRONG set, the ticket's own committed lockfile fix can
+# never take effect, and — because the runner still STARTS — the gate reads the
+# resulting red as "the implementation is not present on the committed branch".
+# Observed in the field: a ticket that repaired an unrunnable suite by pinning
+# vitest was rejected three times for a defect that was never in its code.
+#
+# Fixing detect_worktree_setup_cmd only helps repos initialized from now on, so
+# repair the ALREADY-PERSISTED string here — the same job S101/S148 do for
+# testCommand.
+#
+# FINGERPRINT-GATED, like its siblings: we rewrite only a command carrying
+# LCARS's own symlink signature (`ln -snf "$nm" "$rel"`) that LACKS the guard.
+# A captain's hand-written command has neither and is never touched. The
+# replacement is REGENERATED from detect_worktree_setup_cmd rather than
+# string-patched, so this migration cannot drift from the seed it repairs to.
+#
+# Sets MIGRATED_WORKTREE_SETUP=1 when it rewrote the value.
+migrate_symlink_worktree_setup() {
+  local config="$1"
+  MIGRATED_WORKTREE_SETUP=0
+  [ -f "$config" ] || return 0
+
+  local wc; wc="$(lcars_config_get "$config" worktreeSetupCommand)"
+  [ -n "$wc" ] || return 0
+
+  # Ours? (the seeded symlink loop) — otherwise the captain's, leave it.
+  case "$wc" in
+    *'ln -snf "$nm" "$rel"'*) : ;;
+    *) return 0 ;;
+  esac
+  # Already guarded ⇒ nothing to do (keeps this idempotent).
+  case "$wc" in
+    *'cmp -s'*) return 0 ;;
+  esac
+
+  local new; new="$(detect_worktree_setup_cmd)"
+  [ -n "$new" ] || return 0          # no safe default for this repo — leave it.
+  [ "$new" = "$wc" ] && return 0
+  lcars_config_set_string "$config" worktreeSetupCommand "$new"
+  MIGRATED_WORKTREE_SETUP=1
+}
+
 # --- locate the repo ------------------------------------------------------
 GIT_DIR="$(git rev-parse --git-dir 2>/dev/null)" \
   || die "not inside a git repository — run this from a repo root."
@@ -205,65 +251,10 @@ fi
 # its verb. Everything below is skipped on the verb path.
 # ===========================================================================
 
-# run_probe <cmd> — run the test command ONCE from the repo root, BOUNDED by
-# $LCARS_PROBE_TIMEOUT (default 120s; perl's alarm survives exec, so the timer
-# rides into the spawned bash). Sets PROBE_OUTCOME (pass|fail|zero-collected|
-# timeout), PROBE_RC, and PROBE_OUT (captured-output file). Zero-collected is
-# its OWN honest outcome, never a pass — the signature REUSES the rg_signature
-# `zerotests` + proof_zero_collected phrasings from skills/lcars-run/run.sh
-# (keep the two in step).
-PROBE_TIMEOUT="${LCARS_PROBE_TIMEOUT:-120}"
-run_probe() {
-  local cmd="$1"
-  PROBE_OUT="$(mktemp "${TMPDIR:-/tmp}/lcars-probe.XXXXXX")"
-  ( cd "$TOPLEVEL" && perl -e 'alarm shift; exec @ARGV or exit 127' \
-      "$PROBE_TIMEOUT" bash -c "$cmd" ) >"$PROBE_OUT" 2>&1
-  PROBE_RC=$?
-  # S147: THREE VSTest phrasings, all exiting 0 (observed, SDK 10.0.107) — a
-  # filter that matches nothing, a test project with no test methods, and a run
-  # whose every discovered case was SKIPPED (`[Fact(Skip=…)]`), which prints
-  # neither "no test" phrase and used to read here as "the suite ran and passed".
-  # They are the dotnet green-on-nothing trap, so the probe names them too; the
-  # skipped form keys on the NUMBERS (zero failed AND zero passed) so a real
-  # 1-passed/1-skipped run stays a pass. Keep in step with rg_signature
-  # `zerotests` + proof_zero_collected in skills/lcars-run/run.sh.
-  local zero='No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items|(^|[^0-9])0 examples, 0 failures$|(^|[^0-9])0 runs, 0 assertions|no tests to run|test result: ok\. 0 passed|^No test matches the given testcase filter .*\.dll|^No test is available in .*\.dll|^(Passed|Failed|Skipped)! +- +Failed: +0, +Passed: +0,'
-  # S147: MSBuild never even REACHED a test run — the project/solution the
-  # command names is not there. Reporting that as "the suite ran but reported
-  # failures" sends the captain hunting a test failure that does not exist.
-  local cantrun='^MSBUILD : error MSB100[39]:'
-  if [ "$PROBE_RC" -eq 142 ]; then          # 128 + SIGALRM(14): the alarm fired
-    PROBE_OUTCOME="timeout"
-  elif grep -Eq "$cantrun" "$PROBE_OUT"; then
-    PROBE_OUTCOME="cannot-run"
-  elif grep -Eq "$zero" "$PROBE_OUT"; then  # runner finished but ran NOTHING
-    PROBE_OUTCOME="zero-collected"
-  elif [ "$PROBE_RC" -eq 0 ]; then
-    PROBE_OUTCOME="pass"
-  else
-    PROBE_OUTCOME="fail"
-  fi
-}
-
-# report_probe — the ship-status readout for the last run_probe.
-report_probe() {
-  case "$PROBE_OUTCOME" in
-    pass)
-      echo "  ✓ PROBE COMPLETE — test systems responding: the suite ran and passed." ;;
-    fail)
-      echo "  ✗ PROBE FAILED — the suite ran but reported failures (exit $PROBE_RC)."
-      tail -n 5 "$PROBE_OUT" 2>/dev/null | sed 's/^/      /' ;;
-    zero-collected)
-      echo "  ⚠ PROBE INCONCLUSIVE — the runner started but collected ZERO tests."
-      echo "    That is not a pass: the command may be scoped to the wrong place." ;;
-    cannot-run)
-      echo "  ⚠ PROBE COULD NOT RUN — the command never reached a test run: the"
-      echo "    project or solution it names could not be loaded (exit $PROBE_RC)."
-      tail -n 5 "$PROBE_OUT" 2>/dev/null | sed 's/^/      /' ;;
-    timeout)
-      echo "  ⚠ PROBE TIMED OUT — no verdict within ${PROBE_TIMEOUT}s; the suite never settled." ;;
-  esac
-}
+# run_probe / report_probe MOVED to skills/lcars-init/lcars-common.sh (sourced
+# above) so `lcars init` can run the SAME probe at setup time. `lcars update`
+# calls them unchanged; keeping one copy means the two can never disagree about
+# what counts as a pass, a zero-collect, or a timeout.
 
 # print_verdict — re-verdict from the config on disk and print ONE line.
 # The verb paths DO confirm ready (that is their whole point); the passive
@@ -530,6 +521,7 @@ CONFIG_ADDED="$LCARS_CONFIG_ADDED_KEYS"
 # .lcars-tests copy-staging form, S148 the four bare seeded one-liners.
 migrate_stale_testcommand "$CONFIG"
 migrate_unquoted_testcommand_scope "$CONFIG"
+migrate_symlink_worktree_setup "$CONFIG"
 
 # Force the version stamp CURRENT (the one deliberate overwrite update owns). The
 # merge preserves an existing stamp, so refresh it to the running version here.
@@ -577,6 +569,14 @@ if [ "${MIGRATED_TESTCOMMAND_QUOTING:-0}" -eq 1 ]; then
   echo "  ✓ testCommand migrated to a QUOTED \$LCARS_TESTS_DIR scope (S148: unquoted, the"
   echo "    scope word-split at any repo path containing a space or tab, and the Implement"
   echo "    proof gate false-failed honest tickets). Now: $(lcars_config_get "$CONFIG" testCommand)"
+fi
+
+if [ "${MIGRATED_WORKTREE_SETUP:-0}" -eq 1 ]; then
+  changed=1
+  echo "  ✓ worktree setup migrated to a LOCKFILE-GUARDED form: it now reinstalls when a"
+  echo "    Mission's lockfile differs from the main checkout's, instead of symlinking the"
+  echo "    wrong dependency set (which made a ticket's own dependency fix un-appliable and"
+  echo "    surfaced as \"the implementation is not present on the committed branch\")."
 fi
 
 if [ "$VERSION_STAMPED" -eq 1 ]; then

@@ -4,6 +4,54 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.16 — 2026-07-28
+
+The Honest Environment round — **stop blaming the code for a stale toolchain,
+and stop calling a repo mission-ready before anything has run.** One field
+failure produced all three fixes. A Mission's ticket correctly diagnosed that
+its repo's suite could never run (vitest 4 pinned against vite 5, which needs
+vite >= 6) and committed the fix. The gate symlinked the main checkout's
+`node_modules` — still holding vitest 4 — so the suite died at import anyway,
+and the gate reported *"the implementation is NOT present on the committed
+branch"*. No committed change could ever have cleared it. Three TDD sessions
+were spent re-solving a solved problem, and `lcars init` had cheerfully
+declared the repo ready in the first place.
+
+- **Provisioning honours the lockfile.** The seeded JS `worktreeSetupCommand`
+  reused the main checkout's `node_modules` whenever it existed — right up until
+  a ticket CHANGED dependencies, at which point the shared install is the wrong
+  set by definition and the ticket's own lockfile fix can never take effect. It
+  now compares the worktree's lockfile against the main checkout's and does a
+  real install when they diverge, keeping the fast symlink path (~0.07s) when
+  they match. Covers npm / pnpm / yarn.
+
+- **Existing repos are repaired, not just new ones.** `lcars update` gains a
+  fingerprint-gated migration that rewrites LCARS's own un-guarded symlink
+  command in place, alongside the S101/S148 `testCommand` migrations. It matches
+  only a command carrying our symlink signature that lacks the guard, and
+  regenerates the replacement from `detect_worktree_setup_cmd` so it cannot
+  drift from the seed. A captain's hand-written command is never touched.
+
+- **The gates name the real fault.** `red_gate_env_failure` only catches a
+  runner that fails to START; here the runner started perfectly and simply had
+  the wrong packages. The new `stale_dep_env_reason` is its state-based
+  companion: when a gate worktree's deps are shared in by symlink AND its
+  committed lockfile differs from that checkout's, both the post-commit and
+  full-suite gates now report a STALE DEPENDENCY ENVIRONMENT — naming the repair
+  — instead of accusing the implementation of being absent or earlier tickets of
+  regressing. Conservative by construction: it speaks only on positive evidence,
+  so a genuinely missing implementation keeps its existing wording.
+
+- **`lcars init` proves the suite runs.** `lcars_test_readiness` is cheap by
+  design (status and the board call it constantly), so "ready" only ever meant
+  *the command's first token resolves* — a claim about the command, not the
+  suite. init is a one-time action and can afford more, so it now runs the
+  seeded command ONCE through the same bounded probe `lcars update --fix-tests`
+  already used (moved into `lcars-common.sh` so the two can never disagree about
+  what counts as a pass, a zero-collect, or a timeout). It probes only the
+  `ready` verdict — the one state that can lie — reports honestly, and never
+  blocks setup on a red suite. `LCARS_INIT_SKIP_PROBE=1` opts out.
+
 ## 2026.7.15 — 2026-07-28
 
 The Hotkeys & Help round (S140–141) — **drive the bridge from the keyboard, and
