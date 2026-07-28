@@ -487,6 +487,66 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .modal-foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 18px;
   border-top:1px solid var(--lcars-border);background:var(--lcars-card);flex:0 0 auto}
 
+/* ── S141 the ? console: COMMAND DECK + ORIENTATION ──────────────────────────
+   One modal on the shared scaffold above — the .modal-body it inherits owns the
+   single scroll, so both sections read as one continuous briefing. Nothing here
+   introduces a new overlay/positioning system. */
+.help-btn{min-width:26px;text-align:center;font-size:12px;line-height:1;
+  padding:4px 9px}
+.help-console .help-sec{margin-bottom:22px}
+.help-console .help-sec:last-child{margin-bottom:0}
+.help-console h4{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.18em;color:var(--lcars-amber);margin:0 0 8px}
+.help-console .help-lead,
+.help-console .orient-intro{color:var(--lcars-text-dim);margin:0 0 14px;
+  line-height:1.55}
+/* the cheatsheet: a keycap gutter + the binding's own action line */
+.help-console .keyrow{display:flex;gap:14px;align-items:baseline;
+  padding:5px 0;border-bottom:1px solid var(--lcars-border)}
+.help-console .keyrow:last-child{border-bottom:none}
+/* D-D: the gutter has to hold the WIDEST cap set the deck prints on ONE line, or
+   that row stands twice as tall as the rest and the deck loses its rhythm. At
+   --font-mono 12px the Enter + Space row measures ~114px, so the old fixed 110px
+   wrapped it (66px against 36px everywhere else). Two changes, not one:
+     • flex-wrap:nowrap — a keycap gutter must NEVER break onto a second line.
+       That break IS the defect; forbidding it caps every row at one line height
+       whatever a future binding prints.
+     • min-width, not a fixed basis — 168px clears today's widest row with about
+       another keycap of headroom, and `flex:0 0 auto` lets an unusually wide
+       future set widen its own gutter rather than wrap. The trade is that such a
+       row's label would sit further right than its neighbours': a nudge out of
+       alignment, never a row of a different height. */
+.help-console .keycaps{flex:0 0 auto;min-width:168px;display:flex;gap:5px;
+  flex-wrap:nowrap}
+.help-console .keylabel{color:var(--lcars-text-bright);line-height:1.45}
+/* The keycap is the ONE place on the board where the glyph itself is the
+   instruction — it tells you which key to press — so it does not wear
+   var(--font-display). Antonio is a condensed display face whose lowercase `l`
+   is a bare vertical stroke, indistinguishable from I, | and 1 at 11px; the
+   cheatsheet's `l` row failed at its only job. var(--font-mono) is already in
+   the LCARS token set (the card's mission number wears it) and its `l` carries a
+   tail, so every cap is unmistakable. The amber pill, border and radius are
+   untouched — the caps stay a matched set and the console still reads LCARS. */
+.help-console kbd{font-family:var(--font-mono);font-size:12px;
+  letter-spacing:.04em;padding:2px 7px;border-radius:9px;
+  border:1px solid var(--lcars-amber);color:var(--lcars-amber);
+  background:var(--lcars-card-alt);white-space:nowrap}
+/* the briefing: numbered steps, each a title line + a paragraph */
+.help-console .orient-step{margin-bottom:14px}
+.help-console .step-title{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.12em;font-size:11px;color:var(--lcars-teal);margin-bottom:3px}
+.help-console .step-body{color:var(--lcars-text-bright);line-height:1.55}
+.help-console .help-viewonly{margin-top:16px;padding:8px 12px;border-radius:6px;
+  color:var(--lcars-amber);background:rgba(255,153,0,.10);
+  border-left:3px solid var(--lcars-amber);line-height:1.5}
+
+/* ── S141 first-run state: shown ONLY while the board holds zero Missions ── */
+.board-empty{margin:18px 28px 6px;padding:14px 18px;border-radius:8px;
+  background:var(--lcars-card);border-left:4px solid var(--lcars-amber)}
+.board-empty .be-title{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.18em;color:var(--lcars-amber);margin-bottom:4px}
+.board-empty .be-body{color:var(--lcars-text-dim);line-height:1.5}
+
 /* ── S146 test-readiness banner (its OWN strip below the band — the version-
    banner placement idiom). Two voices, never blurred: `.repair` (broken /
    missing testCommand — TEST SYSTEMS OFFLINE, an amber alert with the ⚡ FIX

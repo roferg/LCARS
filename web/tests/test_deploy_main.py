@@ -72,13 +72,38 @@ def _deploy_stub(record_path, *, spawn_real=False, fail=False):
         # setsid THEN touch a ready-file, so we only record the pgid once the
         # child is genuinely the leader of its own process group (PGID==PID) —
         # otherwise a killpg(pid) racing an unfinished setsid would miss it.
+        #
+        # The wait MUST sleep. A bare `for _ in $(seq 1 200); do [ -e "$rdy" ] &&
+        # break; done` is 200 stat()s in well under a millisecond — routinely
+        # finished before the forked perl has even been scheduled to call
+        # setsid(). It then fell through WITHOUT the ready file and recorded
+        # `pgid=$!` anyway, violating the very invariant the comment above states.
+        # When it lost that race os.killpg raised ProcessLookupError, the daemon
+        # swallowed it, and the shutdown/stop tests failed accusing PRODUCTION
+        # code of orphaning a deploy this fixture never group-leadered
+        # (reproduced 1-in-12 under parallel load on identical code).
+        # 200 × 10ms bounds the wait at ~2s, and a timeout now fails LOUDLY
+        # rather than certifying a pgid it never confirmed.
         write_body = (
             '  rdy="$(mktemp)"; rm -f "$rdy"\n'
             "  perl -e 'use POSIX qw(setsid); eval { setsid(); }; "
             "my $r=shift @ARGV; open(my $f,\">\",$r); close $f; exec @ARGV' "
             '-- "$rdy" sleep 300 >/dev/null 2>&1 &\n'
             '  pid=$!\n'
-            '  for _ in $(seq 1 200); do [ -e "$rdy" ] && break; done\n'
+            '  led=""\n'
+            '  for _ in $(seq 1 200); do\n'
+            '    if [ -e "$rdy" ]; then led=1; break; fi\n'
+            '    sleep 0.01\n'
+            '  done\n'
+            '  rm -f "$rdy"\n'
+            '  if [ -z "$led" ]; then\n'
+            '    kill "$pid" 2>/dev/null || true\n'
+            '    echo "deploy stub: child never became its own process-group '
+            'leader within 2s — refusing to record an uncertified pgid" >&2\n'
+            '    printf \'{"status":"failed","target":"","url":"","message":'
+            '"stub: setsid handshake timed out"}\\n\' > "$lj"\n'
+            '    exit 1\n'
+            '  fi\n'
             '  printf \'{"status":"running","branch":"main","sha":"abc1234",'
             '"target":"main deploy","url":"http://localhost:9940",'
             '"howToStop":"stop it from the board","command":"sleep 300",'

@@ -937,6 +937,7 @@ function render(board) {
   restoreCardFocus(keepFocus); // S140: keyboard focus survives the rebuild.
   var n = (board.missions || []).length;
   setStatus(n + " active mission" + (n === 1 ? "" : "s"));
+  renderEmptyState(n); // S141: a cold board teaches itself (the ? mention).
   renderMeta(board.meta);
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
@@ -1470,12 +1471,98 @@ function overlayBody() { return document.getElementById("overlayBody"); }
 
 function showOverlay(node) {
   var body = overlayBody();
-  body.innerHTML = "";
+  // D8: help RAISES over whatever is on the stage — the console underneath stays
+  // in the document (coverConsole hid it) so its live loops keep running, and the
+  // help console is simply appended alongside. Every OTHER console REPLACES the
+  // stage, which also retires a pending cover: whatever help was holding is gone
+  // for good, so a later close can never conjure it back over its replacement.
+  if (!isHelpNode(node)) {
+    coveredConsole = null;
+    body.innerHTML = "";
+  }
   body.appendChild(node);
   overlay().hidden = false;
 }
 
+/* ── D8/D-A: HELP IS A COVER, NOT A REPLACEMENT (one deep) ──────────────────
+   `?` is S140's ONE overlaySafe binding, on purpose: a captain lost inside
+   another console is invited to press it. Raising the help console through
+   showOverlay() alone therefore DESTROYED what it was raised over — `f`, half
+   an idea typed, `?`, Esc landed on the board with the idea gone.
+
+   So the open path COVERS instead. It covers IN PLACE: the console underneath
+   never moves, it is only hidden (board.css gives `[hidden]` display:none), and
+   the close path un-hides it. Nothing is detached, re-rendered or re-fetched, so
+   a textarea's text, the engine picker's chosen option and every console-scoped
+   global ride through untouched — the covered console is not being CLOSED, it is
+   being covered.
+
+   D-A is why "in place" and not "lifted out and put back". Live loops inside a
+   console self-cancel when they find themselves off the document —
+   `if (!document.body.contains(node)) { clearInterval(timer); return; }` guards
+   the mission detail's Active tick and the Verify launch poll, and re-attaching
+   the nodes restarts nothing. Detaching therefore froze a running mission's clock
+   for ever and stranded a mid-launch panel on "Launching the app…". A HIDDEN
+   element is still document.body.contains(...), so every such guard keeps
+   passing and the whole class of defect goes — including loops not written yet.
+
+   One deep is all it takes: help cannot be raised over help. */
+var coveredConsole = null; // {nodes, focus} — what the help console sits on
+
+function isHelpNode(node) {
+  return !!(node && node.classList && node.classList.contains("help-console"));
+}
+
+function helpConsoleOpen() {
+  return !overlay().hidden && !!overlayBody().querySelector(".help-console");
+}
+
+/* Hide the console currently on the stage, where it stands. Returns null when the
+   stage is empty (help opened from the bare board covers nothing). */
+function coverConsole() {
+  if (overlay().hidden) return null;
+  var body = overlayBody();
+  // The captain's PLACE in that console — a focused control inside it — is part
+  // of intact: a browser blurs the active element the moment it stops being
+  // rendered, so remember it and hand it back on the way out (S140's whole point
+  // is a keyboard captain).
+  var was = document.activeElement;
+  var focus = (was && was !== document.body && body.contains(was)) ? was : null;
+  var kept = [];
+  for (var i = 0; i < body.children.length; i++) {
+    var child = body.children[i];
+    child.hidden = true;
+    kept.push(child);
+  }
+  return kept.length ? { nodes: kept, focus: focus } : null;
+}
+
+/* Show it again, exactly where it never stopped being. True when a console was
+   restored, which is closeOverlay()'s signal that this close was a dismissal of
+   the COVER, not of the overlay. */
+function uncoverConsole() {
+  if (!coveredConsole) return false;
+  var saved = coveredConsole;
+  coveredConsole = null;
+  var body = overlayBody();
+  // Drop ONLY the help console — the nodes under it are untouched, so nothing
+  // that was running stops and nothing has to be restarted.
+  var help = body.querySelector(".help-console");
+  if (help && help.parentNode) help.parentNode.removeChild(help);
+  for (var i = 0; i < saved.nodes.length; i++) saved.nodes[i].hidden = false;
+  overlay().hidden = false;
+  if (saved.focus && saved.focus.focus) saved.focus.focus();
+  return true;
+}
+
 function closeOverlay() {
+  // D8: closing the help console raised OVER another console gives that console
+  // back and stops here — every console-scoped global (onOverlayClose,
+  // fileReadinessSync, alignConsoleOpen, the detail's live tick timers) is left
+  // untouched because the console underneath never closed. Every close route
+  // (Escape, the head's ✕, the footer Close, the backdrop) reaches this one
+  // function, so they all restore identically.
+  if (uncoverConsole()) return;
   overlay().hidden = true;
   overlayBody().innerHTML = "";
   clearDetailTimers(); // UX-32: never leak the live active-time tick interval.
@@ -1612,13 +1699,8 @@ function clickBandControl(id) {
   return true;
 }
 
-/* S141 replaces this with the real ? console — the command-deck cheatsheet
-   generated by iterating KEY_BINDINGS, plus the orientation briefing. This
-   session binds the key and keeps it harmless: one status line, no overlay,
-   no write. */
-function openHelp() {
-  setStatus("⌨ COMMAND DECK — the help console arrives with the ? console.");
-}
+/* S141 — the ? console. Defined below, next to the ORIENTATION briefing it
+   renders; declared here only so the binding table can reference it. */
 
 /* ── THE BINDING TABLE ────────────────────────────────────────────────────────
    ONE structure, and the single source of truth for the command deck. S141
@@ -1637,8 +1719,12 @@ var KEY_BINDINGS = [
   { id: "file", keys: ["f"], on: ["f"], scope: "global",
     label: "Open the File Mission console",
     run: function () { return clickBandControl("fileBtn"); } },
+  // OPENS the ▸ Deploy Main console; the deploy itself is that console's own
+  // ▸ Deploy button. S141 renders these labels VERBATIM, so a label that said
+  // "Deploy the local main build" would ship as a lie in the help console —
+  // the key deploys nothing on its own.
   { id: "deploy", keys: ["d"], on: ["d"], scope: "global",
-    label: "Deploy the local main build",
+    label: "Open the main-deploy console",
     run: function () { return clickBandControl("deployMainBtn"); } },
   { id: "nav-column", keys: ["↑", "↓"], on: ["arrowup", "arrowdown"],
     scope: "board", label: "Move between missions in a column",
@@ -1665,8 +1751,16 @@ var KEY_BINDINGS = [
       openDetail(card.getAttribute("data-mid"));
       return true;
     } },
+  // Same honesty bar as `d` — and D-C: the label must be true of BOTH card states,
+  // because one key resolves data-act=start on whichever card holds focus and the
+  // two states put different buttons (and different consoles) there. A HOLDING
+  // card's ▶ Start opens the ▶ Launch Mission console (model mix + override box,
+  // nothing runs until its ▶ Start Run); a STANDBY card's ▹ START ALIGNMENT opens
+  // the ⊹ Alignment Console instead. Naming either one would ship as a lie on the
+  // other card, so the label names neither: whichever start console the focused
+  // mission offers, the key opens it and never engages a drive by itself.
   { id: "start", keys: ["s"], on: ["s"], scope: "card", acts: ["start"],
-    label: "Start the focused mission",
+    label: "Open the focused mission's start console",
     run: cardActRunner(["start"]) },
   { id: "pause", keys: ["p"], on: ["p"], scope: "card", acts: ["pause", "resume"],
     label: "Pause or resume the focused mission",
@@ -1731,6 +1825,252 @@ function restoreCardFocus(mid) {
   var sel = '.board .card[data-mid="' + String(mid).replace(/["\\]/g, "\\$&") + '"]';
   var card = document.querySelector(sel);
   if (card) card.focus();
+}
+
+/* ════════════════ S141 — THE ? CONSOLE ════════════════
+   One modal, two sections, one scroll, reachable two ways (the band's ? button
+   and the S140 ? key — the sanctioned overlaySafe exception, so a captain lost
+   inside another console can still ask). Esc closes it through the EXISTING
+   overlay listener; nothing here handles Escape.
+
+     COMMAND DECK — the keyboard cheatsheet, GENERATED by iterating KEY_BINDINGS.
+       There is no second list, so the deck cannot drift from the bindings: add a
+       binding to the table and its row appears here with no other edit.
+     ORIENTATION — the getting-started briefing, rendered from the declared
+       ORIENTATION_BRIEFING structure below rather than assembled from scattered
+       string concatenation, so it reads like a document under review and every
+       control it names can be walked by a test.
+
+   The console is READ-ONLY by nature: it opens no write path and touches no
+   endpoint, which is why the band's ? button is the one control not gated
+   through applyWriteState. On a view-only board it adds ONE line saying the
+   commands it describes are inert here — the named controls are still on screen
+   (disabled, not absent), so the briefing never points at nothing. */
+
+/* Each step names the on-screen controls it refers to, and DECLARES each one:
+   the label as printed in the copy, the selector that resolves it, and the
+   surface it lives on (band / board / file-console / align-console /
+   verify-console). test_help_console.py walks every reference against the real
+   surface built by the shipping code — a primer that stops matching the product
+   turns the suite red. */
+var ORIENTATION_BRIEFING = {
+  deckIntro: "Every key acts on the board itself. Typing in a console always "
+    + "wins the keystroke, and ⌘ / ⌃ / ⌥ chords stay with your browser.",
+  intro: "This board is the bridge. Each card is a Mission — one idea under "
+    + "way, travelling left to right from the first interview to a merged pull "
+    + "request. The ship drives itself between the columns and stops for you at "
+    + "the gates.",
+  columns: ["Align", "Research", "Validate", "Plan", "Plan Review", "Schedule",
+            "Implement", "Verify", "Done"],
+  // D-B: honest about what a view-only build ACTUALLY does, MEASURED rather than
+  // assumed — the first two attempts at this line were both wrong because they
+  // were reasoned about instead of checked. markViewOnly() disables
+  // #deployMainBtn plus every `.board .btn.go/.warn/.danger`, and those ARE the
+  // console openers: of the six consoles this briefing names, exactly ONE still
+  // opens — ▦ File Mission (#fileBtn lives outside .board and writes nothing by
+  // itself; its foot buttons are the gated controls). ▹ START ALIGNMENT, ▶ Start,
+  // Answer ▸, ✓ Review PR ▸ and ▸ Deploy Main are all dead where they stand, so
+  // their consoles never open at all. ⏸ Pause / ▶ Resume are likewise inert.
+  // So the line promises the File console and the reading, names nothing it
+  // cannot deliver, and says plainly that the rest is disabled on the spot.
+  // ViewOnlyOpenersMeasuredTest re-measures all of this against a real read-only
+  // board, so a third wrong wording cannot ship.
+  viewOnly: "This board is VIEW-ONLY. Read the board and every Mission freely — "
+    + "this reference and the ▦ File Mission console still open, but nothing "
+    + "commits from here. Every other write control is disabled where it "
+    + "stands, so the console behind it never opens.",
+  steps: [
+    {
+      id: "file",
+      title: "1 · File a Mission",
+      body: "▦ File Mission in the top band opens the console. Describe the "
+        + "idea in plain language — a feature, a change, a fault. Under it, "
+        + "Engine picks which CLI flies the Mission; it is set to Claude unless "
+        + "you say otherwise. ◇ File to Backlog ▸ puts it on the board as "
+        + "standby: filed, not yet interviewed. File & Begin Alignment starts "
+        + "the interview now.",
+      refs: [
+        { label: "▦ File Mission", selector: "#fileBtn", surface: "band" },
+        // The console's third control, between the idea box and the foot
+        // buttons — named so the step leaves nothing on that surface unaccounted
+        // for. It resolves through the same `.field label` idiom the Align step
+        // uses (the field carries no id of its own).
+        { label: "Engine", selector: ".field label", surface: "file-console" },
+        { label: "◇ File to Backlog ▸", selector: ".modal-foot .btn",
+          surface: "file-console" },
+        { label: "File & Begin Alignment", selector: ".modal-foot .btn",
+          surface: "file-console" },
+      ],
+    },
+    {
+      id: "align",
+      title: "2 · Answer the Align grill",
+      body: "Alignment is an interview, not a form: one question at a time, "
+        + "each with a recommended answer you can take or override under Your "
+        + "answer. The PRD assembles beside the questions as you go. A standby "
+        + "card waits in Align until you press ▹ START ALIGNMENT on it. When "
+        + "the questions stop the Mission is filed, and its card settles in "
+        + "Align with the cost and difficulty of the work read off against it.",
+      refs: [
+        { label: "▹ START ALIGNMENT", selector: '[data-act="start"]',
+          surface: "board" },
+        { label: "Your answer", selector: ".field label",
+          surface: "align-console" },
+      ],
+    },
+    {
+      id: "stages",
+      title: "3 · Watch the stages advance",
+      body: "▶ Start on a Mission that is holding opens the launch console — "
+        + "the model assigned to each stage, and an override box if you want to "
+        + "steer that in plain language. ▶ Start Run engages the drive, and "
+        + "from there the Mission walks the columns on its own: Align, "
+        + "Research, Validate, Plan, Plan Review, Schedule, Implement, Verify, "
+        + "Done. ⏸ Pause halts it at the next safe boundary and ▶ Resume "
+        + "re-engages. A card under way pulses. Open any card for the full "
+        + "readout.",
+      refs: [
+        { label: "▶ Start", selector: '[data-act="start"]', surface: "board" },
+        // The console standing between ▶ Start and the drive. Naming it is the
+        // point: the button on the card opens a screen, and the drive is only
+        // spawned by THIS control inside it.
+        { label: "▶ Start Run", selector: ".modal-foot .btn.go",
+          surface: "launch-console" },
+        { label: "⏸ Pause", selector: '[data-act="pause"]', surface: "board" },
+        { label: "▶ Resume", selector: '[data-act="resume"]', surface: "board" },
+      ],
+    },
+    {
+      id: "hails",
+      title: "4 · Answer when the ship hails you",
+      body: "A stage that cannot decide alone stops and asks — a change of "
+        + "scope, a slice it cannot draw, a ticket it could not finish. That "
+        + "card turns red and offers Answer ▸. Answer it and the Mission "
+        + "resumes from exactly where it stopped.",
+      refs: [
+        { label: "Answer ▸", selector: '[data-act="answer"]', surface: "board" },
+      ],
+    },
+    {
+      id: "verify",
+      title: "5 · Review at Verify",
+      // The three parts of the review are NOT all unconditional, and the copy
+      // must not pretend otherwise. Acceptance criteria always render; "what
+      // was built" only when the mission carries tickets or a contract proof;
+      // the EST → ACTUAL line only once usage has been recorded against the run
+      // (costCompareLine returns null without mi.pills.actual). All three
+      // renderings are real and a captain meets each of them.
+      body: "Verify is yours. ✓ Review PR ▸ opens the review. The acceptance "
+        + "criteria are always there to tick off; beneath them the console adds "
+        + "what was built once the run has tickets to show for it, and the "
+        + "estimate against what it actually cost once the run has been costed. "
+        + "⚡ RUN stands the Mission's app up locally so you can look at the "
+        + "real thing first. ✓ Merge PR ships it; ↩ Send Back… returns the "
+        + "Mission to Align with your note.",
+      refs: [
+        { label: "✓ Review PR ▸", selector: '[data-act="verify"]',
+          surface: "board" },
+        { label: "⚡ RUN", selector: '[data-act="launch"]',
+          surface: "verify-console" },
+        { label: "✓ Merge PR", selector: '[data-act="merge"]',
+          surface: "verify-console" },
+        { label: "↩ Send Back…", selector: '[data-act="send-back"]',
+          surface: "verify-console" },
+      ],
+    },
+    {
+      id: "deploy",
+      title: "6 · Deploy main",
+      body: "▸ Deploy Main in the top band stands up this repo's local main "
+        + "build — the ship as it already sails, not a Mission branch — so you "
+        + "can see what is live before you judge what is coming.",
+      refs: [
+        { label: "▸ Deploy Main", selector: "#deployMainBtn", surface: "band" },
+      ],
+    },
+  ],
+};
+
+/* One <kbd> per keycap + the binding's own label. Nothing about a row is written
+   by hand: both halves come straight off the KEY_BINDINGS entry. */
+function keyRow(binding) {
+  var row = el("div", "keyrow");
+  var caps = el("div", "keycaps");
+  (binding.keys || []).forEach(function (cap) {
+    caps.appendChild(el("kbd", null, cap));
+  });
+  row.appendChild(caps);
+  row.appendChild(el("div", "keylabel", binding.label || ""));
+  return row;
+}
+
+function commandDeckSection() {
+  var sec = el("section", "help-sec");
+  sec.setAttribute("id", "help-deck");
+  sec.appendChild(el("h4", null, "COMMAND DECK"));
+  sec.appendChild(el("p", "help-lead", ORIENTATION_BRIEFING.deckIntro));
+  var deck = el("div", "keydeck");
+  KEY_BINDINGS.forEach(function (b) { deck.appendChild(keyRow(b)); });
+  sec.appendChild(deck);
+  return sec;
+}
+
+function orientationSection() {
+  var sec = el("section", "help-sec");
+  sec.setAttribute("id", "help-orientation");
+  sec.appendChild(el("h4", null, "ORIENTATION"));
+  sec.appendChild(el("p", "orient-intro", ORIENTATION_BRIEFING.intro));
+  ORIENTATION_BRIEFING.steps.forEach(function (step) {
+    var s = el("div", "orient-step");
+    s.setAttribute("data-step", step.id);
+    s.appendChild(el("div", "step-title", step.title));
+    s.appendChild(el("div", "step-body", step.body));
+    sec.appendChild(s);
+  });
+  // The ONE difference a view-only build makes. A read-write board appends
+  // nothing here, so its console is byte-identical to a board that never heard
+  // of view-only.
+  if (writesActive === false) {
+    sec.appendChild(el("div", "help-viewonly", ORIENTATION_BRIEFING.viewOnly));
+  }
+  return sec;
+}
+
+function openHelp() {
+  // ▤ (U+25A4), not ⌨ (U+2328): every other console title in the product wears a
+  // flat geometric glyph from the same family (▦ ▸ ✓ ▶ ⊹ ⌖), and U+2328 has no
+  // such form — it falls through to the system EMOJI font and renders as a
+  // photorealistic PC keyboard, the only pictorial glyph anywhere on the bridge.
+  // D8: one deep. Help over help would either stack a second console or drop
+  // the console the first help is holding — pressing ? again is a no-op that
+  // leaves the cover, and what it covers, exactly as they are.
+  if (helpConsoleOpen()) return true;
+  // Lift whatever console is on the stage BEFORE showOverlay() clears it; Esc
+  // (or any other close route) puts it back, live and intact.
+  coveredConsole = coverConsole();
+  var m = modal("▤ Bridge Reference — Command Deck & Orientation", { wide: true });
+  m.wrap.className += " help-console";
+  m.body.appendChild(commandDeckSection());
+  m.body.appendChild(orientationSection());
+  m.foot.appendChild(btn("Close", null, closeOverlay));
+  showOverlay(m.wrap);
+  return true;
+}
+
+/* First-run discoverability. A board holding zero Missions says what to do and
+   names the ? console; the moment a Mission lands the host hides again and the
+   board is byte-identical to before this round. No pulse, no nag, no dismissal
+   state to remember. */
+function renderEmptyState(count) {
+  var host = document.getElementById("boardEmpty");
+  if (!host) return;
+  host.innerHTML = "";
+  if (count > 0) { host.hidden = true; return; }
+  host.hidden = false;
+  host.appendChild(el("div", "be-title", "NO MISSIONS ON THE BOARD"));
+  host.appendChild(el("div", "be-body",
+    "File the first one with ▦ File Mission in the top band — "
+    + "or press ? for orientation."));
 }
 
 function enc(s) { return encodeURIComponent(s); }
@@ -4997,6 +5337,11 @@ document.getElementById("fileBtn").addEventListener("click", openFile);
    build without the button (older index.html) simply skips the wiring. */
 var deployMainBtn = document.getElementById("deployMainBtn");
 if (deployMainBtn) deployMainBtn.addEventListener("click", openDeployMain);
+/* S141: the band's ? control, opening the very console the ? key opens. It is
+   deliberately NOT run through applyWriteState — help is read-only, and a
+   view-only board needs it most. Defensive like the deploy wiring above. */
+var helpBtn = document.getElementById("helpBtn");
+if (helpBtn) helpBtn.addEventListener("click", openHelp);
 brandPADD();
 refresh();
 connect();
