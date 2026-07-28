@@ -363,7 +363,7 @@ echo "  ✓ config.json written  (stack: $PERSISTED_STACK, model: $PERSISTED_MOD
 echo "  ✓ Claude CLI verified  ($CLAUDE_VERSION)"
 if [ "$GH_OK" -eq 1 ]; then
   total=$((LABELS_CREATED + LABELS_SKIPPED))
-  where="${GH_REPO:+ on github.com/$GH_REPO}"
+  where="${GH_REPO:+ on $(lcars_gh_web_host)/$GH_REPO}"
   if [ "$LABELS_SKIPPED" -gt 0 ]; then
     echo "  ✓ $LABELS_CREATED labels created, $LABELS_SKIPPED already present ($total total)$where"
   else

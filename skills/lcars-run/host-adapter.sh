@@ -61,6 +61,49 @@ GH_BIN="${LCARS_GH_BIN:-gh}"
 
 die() { printf 'host-adapter: %s\n' "$1" >&2; exit 1; }
 
+# --- GitHub Enterprise: pin the host for `gh api` ---------------------------
+#
+# `gh issue` / `gh pr` resolve the forge host from the repo's own remote, so they
+# already work on an enterprise host. `gh api` does NOT — it targets the DEFAULT
+# host and only substitutes `{owner}/{repo}` from the cwd repo. On a *.ghe.com
+# repo that silently talks to github.com:
+#
+#   $ gh api "repos/{owner}/{repo}"
+#   {"message":"Not Found","documentation_url":"https://docs.github.com/..."}
+#
+# — a 404 from *docs.github.com*, with a perfectly valid enterprise login present.
+# Every api-backed op (the S65 living stage comments, sub-issue linking) therefore
+# failed invisibly on enterprise, because they all discard stderr.
+#
+# gh_hostname echoes the host to pin, or NOTHING when the default is already
+# right. Returning empty for github.com is deliberate: the argv then stays
+# byte-for-byte what it has always been, so the adapter's regression locks in
+# tests/host-adapter.test.sh keep their meaning and github.com users see no
+# change whatsoever.
+gh_hostname() {
+  if [ -n "${LCARS_GH_HOST:-}" ]; then printf '%s' "$LCARS_GH_HOST"; return 0; fi
+  local url h
+  url="$("${LCARS_GIT_BIN:-git}" remote get-url origin 2>/dev/null)" || return 0
+  [ -n "$url" ] || return 0
+  h="${url#*://}"    # drop scheme (https://, ssh://, git://)
+  h="${h#*@}"        # drop user@ (scp-style git@host:owner/repo)
+  h="${h%%/*}"       # drop the path
+  h="${h%%:*}"       # drop :port, and the scp-style ":owner/repo"
+  case "$h" in ''|github.com) return 0 ;; esac
+  printf '%s' "$h"
+}
+
+# gh_api — `gh api`, host-pinned when this repo is not on github.com. Every api
+# call in this adapter goes through here so a new op cannot forget the host.
+gh_api() {
+  local h; h="$(gh_hostname)"
+  if [ -n "$h" ]; then
+    "$GH_BIN" api --hostname "$h" "$@"
+  else
+    "$GH_BIN" api "$@"
+  fi
+}
+
 # Append `Closes #<n>` directives to a PR body. GitHub and GitLab both honour
 # this in a PR/MR description, so the merge→close tie is host-portable rather
 # than gh-only. With no issues the body is returned byte-for-byte unchanged.
@@ -135,7 +178,7 @@ github_issue_comment_create() { # <n>   (body on stdin)
   [ -n "$issue" ] || die "issue-comment-create: missing issue number"
   command -v "$GH_BIN" >/dev/null 2>&1 || return 0
   local out id
-  out="$("$GH_BIN" api --method POST \
+  out="$(gh_api --method POST \
         "repos/{owner}/{repo}/issues/$issue/comments" -F body=@- 2>/dev/null)" || return 0
   # Parse the comment's own "id":<n> from the response, jq-free. The real gh
   # response is a SINGLE line carrying several "id" fields (the comment id FIRST,
@@ -156,7 +199,7 @@ github_issue_comment_edit() { # <comment-id>   (body on stdin)
   local cid="${1:-}"
   [ -n "$cid" ] || die "issue-comment-edit: missing comment id"
   command -v "$GH_BIN" >/dev/null 2>&1 || return 1
-  "$GH_BIN" api --method PATCH \
+  gh_api --method PATCH \
     "repos/{owner}/{repo}/issues/comments/$cid" -F body=@- >/dev/null 2>&1
   return $?
 }
@@ -220,12 +263,12 @@ github_link_subissue() { # <parent_number> <child_number>
   command -v "$GH_BIN" >/dev/null 2>&1 || return 1
   # Native GitHub sub-issue linking takes the child's DATABASE id, NOT its issue
   # number. Resolve it; {owner}/{repo} are substituted by gh from the cwd repo.
-  id="$("$GH_BIN" api "repos/{owner}/{repo}/issues/$child" --jq .id 2>/dev/null)"
+  id="$(gh_api "repos/{owner}/{repo}/issues/$child" --jq .id 2>/dev/null)"
   [ -n "$id" ] || return 1
   # POST the link. CRITICAL: sub_issue_id MUST be a TYPED integer — use `-F`
   # (capital F = typed). `-f` would send a STRING and the API returns HTTP 422
   # ("not of type integer"). Never regress this to `-f`.
-  "$GH_BIN" api --method POST "repos/{owner}/{repo}/issues/$parent/sub_issues" \
+  gh_api --method POST "repos/{owner}/{repo}/issues/$parent/sub_issues" \
     -F sub_issue_id="$id" >/dev/null 2>&1
   rc=$?
   return $rc

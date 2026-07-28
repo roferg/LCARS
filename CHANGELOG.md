@@ -4,6 +4,43 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.17 — 2026-07-28
+
+GitHub Enterprise support — **LCARS worked on `github.com` and quietly half-worked
+everywhere else.** On a `*.ghe.com` (or any self-hosted) repo, issues never
+received their per-stage detail comments and ticket sub-issues were never nested,
+with no error anywhere to explain why.
+
+The cause is a split in `gh` itself: `gh issue` / `gh pr` resolve the forge host
+from the repo's own remote, so they work on enterprise with no configuration —
+but `gh api` does **not**. It targets the default host and only substitutes
+`{owner}/{repo}` from the cwd repo. Verified against a real enterprise repo:
+
+```
+$ gh api "repos/{owner}/{repo}"
+{"message":"Not Found","documentation_url":"https://docs.github.com/..."}
+```
+
+A 404 from *docs.github.com* — the call went to github.com — while `gh auth
+status` showed a valid enterprise login the whole time. Every api-backed op
+discards stderr, so the failure was completely invisible.
+
+- **`gh api` is now host-pinned.** `host-adapter.sh` derives the host from the
+  repo's origin remote and passes `--hostname` to every api call, routed through
+  one `gh_api` wrapper so a future op cannot forget it. This repairs the S65
+  living per-stage comments and native sub-issue linking on enterprise. Handles
+  https, ssh, scp-style (`git@host:owner/repo`) and `host:port` remotes;
+  `LCARS_GH_HOST` overrides.
+
+- **github.com is byte-for-byte unchanged.** The helper returns EMPTY for
+  github.com and for a repo with no origin, so no `--hostname` is added and the
+  argv stays exactly what it has always been — the adapter's regression locks in
+  `tests/host-adapter.test.sh` keep their meaning (56 green, untouched).
+
+- **Readout links name the real host.** `lcars init` / `lcars update` printed a
+  hardcoded `on github.com/<owner>/<repo>`, which on enterprise links to a repo
+  that does not exist. Both now use the shared `lcars_gh_web_host`.
+
 ## 2026.7.16 — 2026-07-28
 
 The Honest Environment round — **stop blaming the code for a stale toolchain,

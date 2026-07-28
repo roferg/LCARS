@@ -105,6 +105,35 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# FORGE HOST (GitHub Enterprise support)
+# ---------------------------------------------------------------------------
+# lcars_gh_web_host — the host to put in a link the captain will CLICK, derived
+# from the repo's own origin remote. Falls back to github.com when there is no
+# remote or it cannot be parsed, so a repo with no origin reads exactly as it
+# always did.
+#
+# init/update used to print a hardcoded "on github.com/<owner>/<repo>", which on
+# an enterprise repo links to a repository that does not exist. Unlike the
+# adapter's gh_hostname (which returns EMPTY for github.com so the `gh api` argv
+# stays byte-for-byte historic), this one ALWAYS yields a host — it is for
+# display, where "github.com" is the right thing to actually print.
+#
+# LCARS_GH_HOST overrides, matching the adapter.
+lcars_gh_web_host() {
+  if [ -n "${LCARS_GH_HOST:-}" ]; then printf '%s' "$LCARS_GH_HOST"; return 0; fi
+  local url h
+  url="$("${LCARS_GIT_BIN:-git}" remote get-url origin 2>/dev/null)" \
+    || { printf 'github.com'; return 0; }
+  [ -n "$url" ] || { printf 'github.com'; return 0; }
+  h="${url#*://}"    # drop scheme (https://, ssh://, git://)
+  h="${h#*@}"        # drop user@ (scp-style git@host:owner/repo)
+  h="${h%%/*}"       # drop the path
+  h="${h%%:*}"       # drop :port, and the scp-style ":owner/repo"
+  [ -n "$h" ] || h="github.com"
+  printf '%s' "$h"
+}
+
+# ---------------------------------------------------------------------------
 # MERGE-PRESERVING CONFIG WRITE
 # ---------------------------------------------------------------------------
 # config.json is written by MERGE, never by clobber: existing values for keys
