@@ -6548,6 +6548,7 @@ cmd_reconcile() {
 # owns cli-SPECIFIC flag emission, run.sh owns host detection + precedence.
 #
 #   bin precedence  : $LCARS_WORKER_BIN  >  config.json workerBin
+#                     >  the MISSION's recorded workerBin (state.json)
 #                     >  host-CLI auto-detect (env marker) >  claude (default)
 #   model precedence: $LCARS_WORKER_MODEL > config.json workerModel > unset
 #
@@ -6584,6 +6585,26 @@ resolve_worker_bin() {
   [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfgbin="$(json_str "$LCARS_CFG" workerBin)"
   if [ -n "$cfgbin" ]; then
     WORKER_BIN="$cfgbin"; WORKER_BIN_SRC="config"; return 0
+  fi
+  # THE MISSION'S OWN PIN — ahead of host detection. A mission records the engine
+  # it was filed with in state.json (`lcars file --engine copilot` → workerBin).
+  # Until now the resolver never read it, so the engine was re-DECIDED from the
+  # ambient terminal on every invocation: a mission filed and driven under Copilot
+  # that was later RESUMED from a Claude Code session (CLAUDECODE=1) silently
+  # re-homed onto billed claude mid-flight, with the pin sitting right there in
+  # state.json being ignored. Observed live: 7 workers and $11.39 billed to the
+  # wrong engine after a resume from the wrong terminal, with no warning — the
+  # spend is the ONLY symptom, which is why detection must never outrank an
+  # explicit record. An explicitly recorded engine beats a guess; env and config
+  # (both deliberate operator acts) still outrank the mission, so an operator can
+  # still move a mission on purpose. Several callers set MISSION_DIR but not STATE,
+  # so derive the path defensively and stay silent when there is no mission.
+  local statef="${STATE:-}"
+  [ -n "$statef" ] || { [ -n "${MISSION_DIR:-}" ] && statef="$MISSION_DIR/state.json"; }
+  local misbin=""
+  [ -n "$statef" ] && [ -f "$statef" ] && misbin="$(json_str "$statef" workerBin)"
+  if [ -n "$misbin" ]; then
+    WORKER_BIN="$misbin"; WORKER_BIN_SRC="mission"; return 0
   fi
   local detected; detected="$(detect_host_cli)"
   if [ -n "$detected" ]; then
@@ -6842,6 +6863,9 @@ cmd_resolve_worker() {
   if [ -n "$gitdir" ]; then
     case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
     LCARS_CFG="$gitdir/lcars/config.json"
+    # Mirror the real call sites (spawn paths set MISSION_DIR the same way) so
+    # `--mission <id>` makes the mission's own pin participate in resolution.
+    [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
   fi
   resolve_worker
   printf 'WORKER-RESOLVED bin=%s binsrc=%s model=%s modelsrc=%s\n' \

@@ -6,8 +6,13 @@ counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
 ## 2026.7.14 — 2026-07-27
 
-**A multi-session ticket no longer loses every commit but its last.** Silent
-work loss, found on a live greenfield mission.
+**Two silent-failure fixes from one live greenfield mission** — a multi-session
+ticket no longer loses every commit but its last, and a mission can no longer be
+re-homed onto a different (billed) engine just by resuming it from another
+terminal. Both were invisible while they happened; both were found by driving a
+real mission rather than by reading the code.
+
+### Multi-session tickets keep all their work
 
 - **The defect.** A bounced ticket re-enters the SAME per-ticket worktree with
   the prior session's commit as HEAD — `_tdd_reject` clears `result.json` and the
@@ -45,6 +50,39 @@ the cumulative patch, and an actual cherry-pick of it must land every session's
 files on the mission branch. Asserted against the commit's own PATCH, not its
 tree — a tree diff passes even for the broken stacked-commit shape. Red on 5
 before the fix. Regression: proof-gates 154, unified-implementer 37.
+
+### A mission's recorded engine now outranks host auto-detection
+
+- **The defect.** `resolve_worker_bin`'s precedence ran `$LCARS_WORKER_BIN` >
+  `config.json workerBin` > **host-CLI auto-detect** > claude — it never read the
+  engine the mission itself recorded in `state.json`. So the engine was
+  re-DECIDED from the ambient terminal on every invocation. A mission filed and
+  driven under Copilot, then RESUMED from a Claude Code session (`CLAUDECODE=1`),
+  silently moved onto billed claude mid-flight with its `workerBin: copilot` pin
+  sitting right there being ignored.
+
+  Observed live: 7 workers and **$11.39** billed to the wrong engine after a
+  resume from the wrong terminal. Nothing warned — the SPEND was the only
+  symptom, and it only surfaced because someone read the per-engine cost split.
+  That is precisely why auto-detection must never outrank an explicit record.
+
+- **The fix.** The mission's `state.json` `workerBin` is consulted BEFORE host
+  detection. Deliberate operator acts still win — `$LCARS_WORKER_BIN` and
+  `config.json workerBin` both outrank the mission pin, so a mission can still be
+  moved on purpose — but a guess drawn from whichever terminal happens to be
+  driving no longer silently overrides what the mission recorded. A mission with
+  no recorded engine falls through to detection unchanged, and the new source is
+  reported as `binsrc=mission` in the resolution log. Several callers set
+  `MISSION_DIR` but not `STATE`, so the state path is derived defensively and the
+  resolver stays silent when there is no mission at all.
+
+Verified by 6 new cases in `tests/worker-resolve.test.sh` (29): a copilot-pinned
+mission resolved from a CLAUDE host yields copilot via `binsrc=mission` and does
+NOT re-home; `config.json` and `$LCARS_WORKER_BIN` both still outrank the pin;
+and an unpinned mission still falls through to detection. `resolve-worker` grew
+`--mission <id>` so the pin participates, mirroring how the real spawn paths set
+`MISSION_DIR`. (5f/5i in that suite fail on `main` too — a pre-existing
+adapter-argv issue, untouched here.)
 
 ## 2026.7.13 — 2026-07-27
 

@@ -111,6 +111,55 @@ check "3e. COPILOT_CLI_BINARY_VERSION marker ⇒ copilot" \
 check "3f. copilot version-marker source = detected" \
   "printf '%s' \"\$out3v\" | qgrep -q 'binsrc=detected'"
 
+# --- 3g. THE MISSION'S OWN PIN BEATS HOST DETECTION --------------------------
+# A mission records the engine it was filed with (`lcars file --engine copilot`)
+# in state.json. The resolver used to skip straight from config to host
+# auto-detect, so the engine was re-DECIDED from the ambient terminal on every
+# invocation: a copilot mission RESUMED from a Claude Code session (CLAUDECODE=1)
+# silently re-homed onto billed claude mid-flight, pin ignored. Observed live —
+# 7 workers, $11.39 on the wrong engine, and the SPEND was the only symptom.
+# An explicitly recorded engine must beat a guess.
+make_mission() { # repo  id  workerBin
+  mkdir -p "$1/.git/lcars/missions/$2"
+  printf '{ "id":"%s","stage":"implement","workerBin":"%s" }\n' "$2" "$3" \
+    >"$1/.git/lcars/missions/$2/state.json"
+}
+resolve_mission_in() { # repo  mission-id  [env...]
+  local repo="$1" mid="$2"; shift 2
+  ( cd "$repo" && env -u CLAUDECODE \
+      -u COPILOT_CLI -u COPILOT_RUN_APP -u COPILOT_CLI_BINARY_VERSION \
+      -u LCARS_WORKER_BIN -u LCARS_WORKER_MODEL -u LCARS_WORKER_CLI \
+      "$@" bash "$RUN" resolve-worker --mission "$mid" 2>&1 )
+}
+
+r3m="$(make_repo)"                       # NO config workerBin
+make_mission "$r3m" m-pin copilot
+out3m="$(resolve_mission_in "$r3m" m-pin CLAUDECODE=1)"
+check "3g. a copilot-pinned mission resolved from a CLAUDE host ⇒ copilot" \
+  "printf '%s' \"\$out3m\" | qgrep -q 'bin=copilot'"
+check "3h. the winning source is the mission pin, not detection" \
+  "printf '%s' \"\$out3m\" | qgrep -q 'binsrc=mission'"
+check "3i. it did NOT silently re-home onto the host cli" \
+  "! printf '%s' \"\$out3m\" | qgrep -q 'bin=claude'"
+
+# Deliberate operator acts still outrank the mission's pin (env > config > mission).
+r3mc="$(make_repo '{"workerBin": "config-bin"}')"
+make_mission "$r3mc" m-pin copilot
+out3mc="$(resolve_mission_in "$r3mc" m-pin CLAUDECODE=1)"
+check "3j. config.json still OUTRANKS the mission pin" \
+  "printf '%s' \"\$out3mc\" | qgrep -q 'bin=config-bin' && printf '%s' \"\$out3mc\" | qgrep -q 'binsrc=config'"
+out3me="$(resolve_mission_in "$r3m" m-pin CLAUDECODE=1 LCARS_WORKER_BIN=/usr/bin/explicit-bin)"
+check "3k. \$LCARS_WORKER_BIN still OUTRANKS the mission pin" \
+  "printf '%s' \"\$out3me\" | qgrep -q 'binsrc=env'"
+
+# A mission with NO recorded engine must fall through to detection UNCHANGED.
+r3mn="$(make_repo)"
+mkdir -p "$r3mn/.git/lcars/missions/m-nopin"
+printf '{ "id":"m-nopin","stage":"implement" }\n' >"$r3mn/.git/lcars/missions/m-nopin/state.json"
+out3mn="$(resolve_mission_in "$r3mn" m-nopin COPILOT_RUN_APP=1)"
+check "3l. a mission with no pin still falls through to host detection" \
+  "printf '%s' \"\$out3mn\" | qgrep -q 'binsrc=detected'"
+
 # --- 4. nothing at all → claude default (NO marker set) -----------------------
 r4="$(make_repo)"
 out4="$(resolve_in "$r4")"   # CLAUDECODE/COPILOT_CLI scrubbed by resolve_in
