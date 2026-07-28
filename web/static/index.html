@@ -42,6 +42,7 @@
     <div class="main-deploy" id="mainDeploy" title="local main deploy"></div>
     <button class="btn go" id="deployMainBtn" type="button">▸ Deploy Main</button>
     <button class="btn go" id="fileBtn" type="button">▦ File Mission</button>
+    <button class="btn help-btn" id="helpBtn" type="button" title="Help — press ?">?</button>
     <div class="conn" id="conn" title="live channel">● LIVE</div>
   </div>
 
@@ -67,6 +68,12 @@
          board.meta.testReadiness; ABSENT meta ⇒ hidden and the board is
          byte-identical to a ready repo today. -->
     <div class="readiness-banner" id="readinessBanner" hidden></div>
+
+    <!-- S141 first-run state: shown by board.js ONLY while the board holds zero
+         missions, and hidden the moment the first one lands. It names the ▦ File
+         Mission control and the ? console so a cold board teaches itself. No
+         pulse, no nag, nothing persistent. -->
+    <div class="board-empty" id="boardEmpty" hidden></div>
 
     <div class="board-wrap">
       <div class="board" id="board"><!-- columns + cards injected by board.js --></div>

@@ -383,6 +383,24 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .card.running{border-left-color:var(--lcars-teal);animation:card-running 2.4s ease-in-out infinite}
 @keyframes card-running{0%,100%{box-shadow:0 0 0 0 rgba(0,204,170,0)}50%{box-shadow:0 0 0 2px rgba(0,204,170,.28)}}
 @media (prefers-reduced-motion:reduce){.card.running{animation:none;box-shadow:0 0 0 1px rgba(0,204,170,.3)}}
+/* ── S140 keyboard command deck: the focus ring ──────────────────────────────
+   Cards are keyboard focus targets (role=button + tabindex=0). `:focus-visible`
+   means the ring appears for KEYBOARD focus only and never after a mouse click,
+   so the mouse-driven board looks exactly as it did before this round.
+   `outline` is used deliberately: it is painted outside the box model, so it can
+   NEVER shift layout — and the -3px offset draws it just inside the card edge so
+   a column's scroll clipping can't shave it. The amber reads unmistakably on the
+   dark board, and it is drawn ON TOP of every card state (awaiting red, paused
+   blue, running teal) because those tint the LEFT border, which we don't touch.
+   ONE honest caveat about the cascade: on a RUNNING card the box-shadow below
+   does NOT win. .card.running carries the `card-running` keyframe animation,
+   which animates box-shadow, and an animated value beats a normal declaration
+   at ANY specificity. That is why the ring is carried by `outline`: outline is
+   untouched by every card state, so the amber ring renders identically on a
+   running card — only the soft shadow behind it yields to the teal pulse. */
+.card:focus{outline:none}
+.card:focus-visible{outline:2px solid var(--lcars-amber);outline-offset:-3px;
+  box-shadow:0 0 0 1px rgba(255,170,0,.55),0 8px 22px rgba(0,0,0,.55)}
 .card .no{font-family:var(--font-mono);font-size:10px;color:var(--lcars-text-dim);letter-spacing:.08em}
 /* Mission-log-grounding: the scoped "grounding" descriptor on a Research-stage
    logged bug — a touch brighter than the plain .no line so it reads as a badge. */
@@ -469,6 +487,66 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .modal-foot{display:flex;gap:10px;justify-content:flex-end;padding:14px 18px;
   border-top:1px solid var(--lcars-border);background:var(--lcars-card);flex:0 0 auto}
 
+/* ── S141 the ? console: COMMAND DECK + ORIENTATION ──────────────────────────
+   One modal on the shared scaffold above — the .modal-body it inherits owns the
+   single scroll, so both sections read as one continuous briefing. Nothing here
+   introduces a new overlay/positioning system. */
+.help-btn{min-width:26px;text-align:center;font-size:12px;line-height:1;
+  padding:4px 9px}
+.help-console .help-sec{margin-bottom:22px}
+.help-console .help-sec:last-child{margin-bottom:0}
+.help-console h4{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.18em;color:var(--lcars-amber);margin:0 0 8px}
+.help-console .help-lead,
+.help-console .orient-intro{color:var(--lcars-text-dim);margin:0 0 14px;
+  line-height:1.55}
+/* the cheatsheet: a keycap gutter + the binding's own action line */
+.help-console .keyrow{display:flex;gap:14px;align-items:baseline;
+  padding:5px 0;border-bottom:1px solid var(--lcars-border)}
+.help-console .keyrow:last-child{border-bottom:none}
+/* D-D: the gutter has to hold the WIDEST cap set the deck prints on ONE line, or
+   that row stands twice as tall as the rest and the deck loses its rhythm. At
+   --font-mono 12px the Enter + Space row measures ~114px, so the old fixed 110px
+   wrapped it (66px against 36px everywhere else). Two changes, not one:
+     • flex-wrap:nowrap — a keycap gutter must NEVER break onto a second line.
+       That break IS the defect; forbidding it caps every row at one line height
+       whatever a future binding prints.
+     • min-width, not a fixed basis — 168px clears today's widest row with about
+       another keycap of headroom, and `flex:0 0 auto` lets an unusually wide
+       future set widen its own gutter rather than wrap. The trade is that such a
+       row's label would sit further right than its neighbours': a nudge out of
+       alignment, never a row of a different height. */
+.help-console .keycaps{flex:0 0 auto;min-width:168px;display:flex;gap:5px;
+  flex-wrap:nowrap}
+.help-console .keylabel{color:var(--lcars-text-bright);line-height:1.45}
+/* The keycap is the ONE place on the board where the glyph itself is the
+   instruction — it tells you which key to press — so it does not wear
+   var(--font-display). Antonio is a condensed display face whose lowercase `l`
+   is a bare vertical stroke, indistinguishable from I, | and 1 at 11px; the
+   cheatsheet's `l` row failed at its only job. var(--font-mono) is already in
+   the LCARS token set (the card's mission number wears it) and its `l` carries a
+   tail, so every cap is unmistakable. The amber pill, border and radius are
+   untouched — the caps stay a matched set and the console still reads LCARS. */
+.help-console kbd{font-family:var(--font-mono);font-size:12px;
+  letter-spacing:.04em;padding:2px 7px;border-radius:9px;
+  border:1px solid var(--lcars-amber);color:var(--lcars-amber);
+  background:var(--lcars-card-alt);white-space:nowrap}
+/* the briefing: numbered steps, each a title line + a paragraph */
+.help-console .orient-step{margin-bottom:14px}
+.help-console .step-title{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.12em;font-size:11px;color:var(--lcars-teal);margin-bottom:3px}
+.help-console .step-body{color:var(--lcars-text-bright);line-height:1.55}
+.help-console .help-viewonly{margin-top:16px;padding:8px 12px;border-radius:6px;
+  color:var(--lcars-amber);background:rgba(255,153,0,.10);
+  border-left:3px solid var(--lcars-amber);line-height:1.5}
+
+/* ── S141 first-run state: shown ONLY while the board holds zero Missions ── */
+.board-empty{margin:18px 28px 6px;padding:14px 18px;border-radius:8px;
+  background:var(--lcars-card);border-left:4px solid var(--lcars-amber)}
+.board-empty .be-title{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.18em;color:var(--lcars-amber);margin-bottom:4px}
+.board-empty .be-body{color:var(--lcars-text-dim);line-height:1.5}
+
 /* ── S146 test-readiness banner (its OWN strip below the band — the version-
    banner placement idiom). Two voices, never blurred: `.repair` (broken /
    missing testCommand — TEST SYSTEMS OFFLINE, an amber alert with the ⚡ FIX
@@ -539,6 +617,10 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .img-chip-x{cursor:pointer;color:var(--lcars-peach);font-weight:700;
   padding:0 2px;border-radius:50%}
 .img-chip-x:hover{color:#ff8a96}
+/* S140: the ✕ is keyboard-operable (role=button + tabindex), so it owes a
+   visible focus state — the card ring's amber outline, at chip scale. */
+.img-chip-x:focus{outline:none}
+.img-chip-x:focus-visible{outline:2px solid var(--lcars-amber);outline-offset:1px}
 
 /* ── choice opts (mock .choice .opt .rec) ──
    UX-35: selected-state clarity. Applies everywhere .opt renders (the File-modal
@@ -558,6 +640,11 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   background:transparent;color:var(--lcars-text);cursor:pointer;
   transition:background .15s,color .15s,border-color .15s}
 .choice .opt:hover{border-color:var(--lcars-border-bright);color:var(--lcars-text)}
+/* S140: the engine picker is keyboard-operable, so a Tab stop must be visible.
+   Same amber outline as the card ring; offset OUTSIDE the pill so it reads
+   against both the unselected (transparent) and selected (amber-filled) chrome. */
+.choice .opt:focus{outline:none}
+.choice .opt:focus-visible{outline:2px solid var(--lcars-amber);outline-offset:2px}
 /* recommended: a small low-key inline tag, distinct from selection. Renders on
    an UNSELECTED option without changing its muted chrome. */
 .choice .opt.rec::after{content:'REC';margin-left:8px;font-family:var(--font-display);
