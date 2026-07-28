@@ -450,6 +450,42 @@ function applyWriteState(button) {
   return button;
 }
 
+/* S140 — machine-readable identity for an EXISTING control, so the keyboard
+   command deck can resolve and `.click()` the very same button the mouse would.
+   ATTRIBUTE-ONLY: it changes nothing about how a control looks, gates, or
+   behaves — which is precisely what makes a hotkey gated identically to its
+   button (an absent or disabled control is a silent no-op). */
+function act(name, node) {
+  if (node) node.setAttribute("data-act", name);
+  return node;
+}
+
+/* S140 — a SPAN rendered as a control (the File console's engine picker, the
+   pasted-image ✕) is unreachable by keyboard: no tab stop, no activation key.
+   This is the card focus model applied to one node — role="button" + tabindex=0
+   (so Tab lands on it and board.css's amber :focus-visible ring shows it) plus
+   the WAI-ARIA button pattern's two activation keys.
+
+   ATTRIBUTE + KEY ONLY: Enter/Space `.click()` the very node the mouse clicks,
+   so the control's own handler is the single implementation — no second code
+   path, no new write path, nothing about the click flow changes. Modifier chords
+   stay with the browser, and every OTHER key (Escape above all) keeps bubbling
+   to the global listeners; only the key we consumed stops here, which is what
+   keeps the command deck from ALSO acting on an activation. */
+function keyActivable(node) {
+  if (!node) return node;
+  node.setAttribute("role", "button");
+  node.setAttribute("tabindex", "0");
+  node.addEventListener("keydown", function (e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    e.stopPropagation();
+    node.click();
+  });
+  return node;
+}
+
 /* ════════════════ CARD RENDER ════════════════ */
 function cardNode(m) {
   var rs = runState(m); // UX-17/20/21: derived run/pause lifecycle (one source).
@@ -470,7 +506,14 @@ function cardNode(m) {
   if (isInFlight(m)) card.className += " running";
   // UX-10/UX-16: id handle so a closed modal (Start) can stamp a transient busy
   // animation onto this card (showCardBusy).
-  if (m.id != null) card.setAttribute("data-mid", String(m.id));
+  if (m.id != null) {
+    card.setAttribute("data-mid", String(m.id));
+    // S140: the card is the keyboard command deck's focus target. role/tabindex
+    // put it in the tab order and make Enter-to-open read correctly to assistive
+    // tech; the whole card was already click-to-open, so this is attribute-only.
+    card.setAttribute("role", "button");
+    card.setAttribute("tabindex", "0");
+  }
 
   // Engine watermark (Copilot / Claude) in the top-right corner. Decorative,
   // semi-transparent; null when the engine is unknown.
@@ -534,7 +577,7 @@ function cardNode(m) {
     // stopPropagation again FIRST for good measure so stopping never also opens
     // the detail dialog.
     var livePill = el("span", "pill go", "● APP LIVE ");
-    var stop = btn("■", "pill-stop", function (e) {
+    var stop = act("launch-stop", btn("■", "pill-stop", function (e) {
       if (e) e.stopPropagation();
       // Optimistically disable so a double-click can't fire the stop twice; the
       // board's SSE re-render drops the whole pill once launch.status flips off
@@ -548,7 +591,7 @@ function cardNode(m) {
           stop.disabled = false;
           stop.title = msg || "Stop failed — try again";
         });
-    });
+    }));
     stop.title = "Stop the app";
     applyWriteState(stop); // view-only boards disable it (and set the view-only title)
     livePill.appendChild(stop);
@@ -661,9 +704,9 @@ function cardControls(m) {
     if (isMerging(m.id)) { ctrl.appendChild(mergeBusyBtn()); return ctrl; }
     // BUG-070: capture the button so the click disables it immediately (mirror
     // the Merge button, BUG-044) — no double-fire of the reapprove dispatch.
-    var reBtn = applyWriteState(btn("✓ Reapprove ▸", "go", function () {
+    var reBtn = act("reapprove", applyWriteState(btn("✓ Reapprove ▸", "go", function () {
       doReapprove(m.id, ctrl, reBtn, m.reconcileStatus);
-    }));
+    })));
     ctrl.appendChild(reBtn);
     return ctrl;
   }
@@ -680,9 +723,9 @@ function cardControls(m) {
     clearMergingOnState(m);
     if (isMerging(m.id)) { ctrl.appendChild(mergeBusyBtn()); return ctrl; }
     // BUG-070: same optimistic disable as the Reapprove gate above.
-    var retryBtn = applyWriteState(btn("↻ Retry merge ▸", "danger", function () {
+    var retryBtn = act("retry-merge", applyWriteState(btn("↻ Retry merge ▸", "danger", function () {
       doReapprove(m.id, ctrl, retryBtn, m.reconcileStatus);
-    }));
+    })));
     ctrl.appendChild(retryBtn);
     return ctrl;
   }
@@ -691,9 +734,9 @@ function cardControls(m) {
     // "Review PR". Label its action so it reads as a design decision (the dialog
     // — openRespond/openVerify gate — presents the question text). Suppress Merge.
     var alabel = isReconcileEscalated(m) ? "◆ Make the call ▸" : "Answer ▸";
-    ctrl.appendChild(applyWriteState(btn(alabel, "danger", function () {
+    ctrl.appendChild(act("answer", applyWriteState(btn(alabel, "danger", function () {
       openRespond(m.id);
-    })));
+    }))));
     return ctrl;
   }
   if (m.stage === "done") {
@@ -711,29 +754,29 @@ function cardControls(m) {
     // Verify/Review PR action.
     var aff = verifyAffordance(m);
     if (aff.kind !== "action") {
-      var gated = btn(aff.label, aff.cls, null);
+      var gated = act("verify", btn(aff.label, aff.cls, null));
       gated.disabled = !!aff.disabled;
       if (aff.title) gated.title = aff.title;
       ctrl.appendChild(gated);
       return ctrl;
     }
-    ctrl.appendChild(applyWriteState(btn(aff.label, aff.cls, function () {
+    ctrl.appendChild(act("verify", applyWriteState(btn(aff.label, aff.cls, function () {
       openVerify(m.id);
-    })));
+    }))));
   } else if (rs === "paused") {
     // UX-22: RESUME stays at FULL prominence on a dimmed card — the .pause-action
     // class excludes it from the .paused dim overlay.
-    var resume = applyWriteState(btn("▶ Resume", "go", function () {
+    var resume = act("resume", applyWriteState(btn("▶ Resume", "go", function () {
       dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/resume", {},
         ctrl, "Re-engaging warp core…");
-    }));
+    })));
     resume.className += " pause-action";
     ctrl.appendChild(resume);
   } else if (rs === "pausing") {
     // UX-21: pause requested but a driver is still live — it will stop at the
     // next safe boundary. No Pause (already requested) and no Resume yet (still
     // running); show a disabled, full-contrast "Pausing…" affordance.
-    var pausing = btn("◐ Pausing…", "warn pause-action", null);
+    var pausing = act("pause", btn("◐ Pausing…", "warn pause-action", null));
     pausing.disabled = true;
     pausing.title = "Pause requested — stopping at the next safe boundary.";
     ctrl.appendChild(pausing);
@@ -742,10 +785,10 @@ function cardControls(m) {
     // UX-17: while OPTIMISTICALLY starting (clicked Start, running not yet true)
     // the Pause button stays disabled so the captain can't pause a half-spawned
     // driver; it enables once the real running flag arrives.
-    var pause = applyWriteState(btn("⏸ Pause", "warn", function () {
+    var pause = act("pause", applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/pause", {},
         ctrl, "Holding station…");
-    }));
+    })));
     if (!m.running && isStarting(m.id)) {
       pause.disabled = true;
       pause.title = "Engaging the driver…";
@@ -760,7 +803,7 @@ function cardControls(m) {
     // launch that RACES the batch driver for the same mission (two drivers, lock
     // contention). Show a disabled "Queued…" affordance instead — mirrors the
     // non-actionable `pausing` pattern above.
-    var queuedAff = btn("◷ Queued…", "warn", null);
+    var queuedAff = act("start", btn("◷ Queued…", "warn", null));
     queuedAff.disabled = true;
     queuedAff.title =
       "Scheduled in a resolve-logs batch — it starts automatically when its turn comes.";
@@ -772,10 +815,10 @@ function cardControls(m) {
     // Without that gate a logged bug fast-tracked to plan but FILED-but-HELD at
     // estimate-review (only estimate.json, no events) keyed off the STAGE alone
     // and wrongly showed Pause; it must show Start until the run is dispatched.
-    ctrl.appendChild(applyWriteState(btn("⏸ Pause", "warn", function () {
+    ctrl.appendChild(act("pause", applyWriteState(btn("⏸ Pause", "warn", function () {
       dispatchCardBusy(m.id, "/api/mission/" + enc(m.id) + "/pause", {},
         ctrl, "Holding station…");
-    })));
+    }))));
   } else if (m.prdPending) {
     // Park & Align (S137): a PARKED mission has NO PRD, so it must NEVER be
     // runnable — a plain "▶ Start" launches a RUN via the Launch panel. Offer
@@ -787,9 +830,9 @@ function cardControls(m) {
     ctrl.appendChild(startAlignmentControl(m));
   } else {
     // align (and any pre-run stage): Start launches the run via the Launch panel
-    ctrl.appendChild(applyWriteState(btn("▶ Start", "go", function () {
+    ctrl.appendChild(act("start", applyWriteState(btn("▶ Start", "go", function () {
       openLaunch(m.id);
-    })));
+    }))));
   }
   return ctrl;
 }
@@ -872,6 +915,8 @@ function isRunningStage(stage) {
 }
 
 function render(board) {
+  // S140: a full rebuild would drop the keyboard focus — note which card has it.
+  var keepFocus = focusedMissionId();
   LAST_BOARD = board; // FIX-A: cache for forced client-only repaints (scanning band).
   indexIssues(board); // UX-28: refresh the id→issue index for parent resolution.
   var root = document.getElementById("board");
@@ -889,6 +934,7 @@ function render(board) {
     col.appendChild(body);
     root.appendChild(col);
   });
+  restoreCardFocus(keepFocus); // S140: keyboard focus survives the rebuild.
   var n = (board.missions || []).length;
   setStatus(n + " active mission" + (n === 1 ? "" : "s"));
   renderMeta(board.meta);
@@ -1452,6 +1498,241 @@ document.addEventListener("keydown", function (e) {
   if (e.key === "Escape" && !overlay().hidden) closeOverlay();
 });
 
+/* ════════════════ S140 — THE KEYBOARD COMMAND DECK ════════════════
+   The board is drivable without a mouse: arrows walk the card focus, Enter opens
+   the focused mission, and single letters fire that mission's REAL controls or
+   the global consoles.
+
+   The safety property that makes this cheap: an action key NEVER calls a handler
+   and NEVER opens a write path of its own. It resolves the focused card from
+   `document.activeElement.closest('[data-mid]')`, querySelectors the card's own
+   control by its `data-act` identity, and `.click()`s that element. A hotkey is
+   therefore gated IDENTICALLY to the button it triggers — an absent control is a
+   no-op, and a disabled one (applyWriteState on a view-only board, a busy
+   affordance mid-dispatch) dispatches nothing at all. Read-only stays read-only
+   by construction, not by a parallel check that could drift.
+
+   Escape is NOT ours: the listener directly above owns it, and nothing here
+   matches it, so it is never double-handled. */
+
+/* GUARD 1's predicate — a typing target must always win the keystroke, so the
+   File console's idea box and the Align answer field behave like text fields. */
+function isTypingTarget(node) {
+  if (!node) return false;
+  var tag = node.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || node.isContentEditable === true;
+}
+
+function focusedCard() {
+  var a = document.activeElement;
+  return (a && a.closest) ? a.closest(".card[data-mid]") : null;
+}
+
+/* Column-relative navigation walks the RENDERED column containers by DOM
+   structure — never a hardcoded stage list — so a re-shaped board (the multi-repo
+   round) inherits this unchanged. */
+function boardColumns() {
+  return Array.prototype.slice.call(document.querySelectorAll(".board .col"));
+}
+function columnCards(col) {
+  return Array.prototype.slice.call(col.querySelectorAll(".card[data-mid]"))
+    .filter(function (c) {
+      // Skip a collapsed card. A DOM without layout (the test harness) reports no
+      // rects API at all — treat those as visible rather than as an empty board.
+      return typeof c.getClientRects !== "function" || c.getClientRects().length > 0;
+    });
+}
+function focusFirstCard() {
+  var cols = boardColumns();
+  for (var i = 0; i < cols.length; i++) {
+    var cards = columnCards(cols[i]);
+    if (cards.length) { cards[0].focus(); return true; }
+  }
+  return false;
+}
+/* ↑ / ↓ — previous/next card in the SAME column, clamped at both ends (a hold
+   never runs the focus off the board). */
+function navColumn(step) {
+  var cur = focusedCard();
+  if (!cur) return focusFirstCard();
+  var col = cur.closest(".col");
+  if (!col) return false;
+  var cards = columnCards(col);
+  var idx = cards.indexOf(cur);
+  if (idx === -1) return false;
+  cards[Math.max(0, Math.min(idx + step, cards.length - 1))].focus();
+  return true;
+}
+/* ← / → — the nearest card in the adjacent NON-EMPTY column (empty columns are
+   skipped over, not stopped at; a shorter column clamps to its last card). */
+function navAcross(step) {
+  var cur = focusedCard();
+  if (!cur) return focusFirstCard();
+  var col = cur.closest(".col");
+  if (!col) return false;
+  var cols = boardColumns();
+  var here = cols.indexOf(col);
+  if (here === -1) return false;
+  var idx = columnCards(col).indexOf(cur);
+  for (var j = here + step; j >= 0 && j < cols.length; j += step) {
+    var cards = columnCards(cols[j]);
+    if (!cards.length) continue;
+    cards[Math.max(0, Math.min(idx, cards.length - 1))].focus();
+    return true;
+  }
+  return false;
+}
+
+/* The whole of action dispatch. `acts` is a preference order — the first control
+   the focused card actually renders wins (a card shows either Pause or Resume,
+   never both). Returns false when the card has no such control, so the key falls
+   through to the browser untouched. */
+function clickCardAct(acts) {
+  var card = focusedCard();
+  if (!card) return false;
+  for (var i = 0; i < acts.length; i++) {
+    var target = card.querySelector('[data-act="' + acts[i] + '"]');
+    if (target) { target.click(); return true; }
+  }
+  return false;
+}
+function cardActRunner(acts) {
+  return function () { return clickCardAct(acts); };
+}
+
+/* A band console key clicks the band's own button — same gating, and a build
+   without that button (or one whose button is swapped out for a live status, as
+   ▸ Deploy Main is during a deploy) is a silent no-op. */
+function clickBandControl(id) {
+  var b = document.getElementById(id);
+  if (!b) return false;
+  if (b.disabled) return false;
+  if (b.style && b.style.display === "none") return false;
+  b.click();
+  return true;
+}
+
+/* S141 replaces this with the real ? console — the command-deck cheatsheet
+   generated by iterating KEY_BINDINGS, plus the orientation briefing. This
+   session binds the key and keeps it harmless: one status line, no overlay,
+   no write. */
+function openHelp() {
+  setStatus("⌨ COMMAND DECK — the help console arrives with the ? console.");
+}
+
+/* ── THE BINDING TABLE ────────────────────────────────────────────────────────
+   ONE structure, and the single source of truth for the command deck. S141
+   renders the ? cheatsheet by ITERATING it, so a binding added here shows up in
+   the help console with no extra work and the two can never drift.
+     keys  — the keycaps to print, in order (human-readable, not DOM key values)
+     on    — the LOWERCASED e.key values that trigger it ([] ⇒ documented but
+             handled elsewhere, as Escape is)
+     scope — "global" | "board" | "card": what the binding acts on
+     overlaySafe — may fire while a console is open (GUARD 2's only exception)
+     label — the cheatsheet's action line */
+var KEY_BINDINGS = [
+  { id: "help", keys: ["?"], on: ["?"], scope: "global", overlaySafe: true,
+    label: "Open the help console",
+    run: function () { openHelp(); return true; } },
+  { id: "file", keys: ["f"], on: ["f"], scope: "global",
+    label: "Open the File Mission console",
+    run: function () { return clickBandControl("fileBtn"); } },
+  { id: "deploy", keys: ["d"], on: ["d"], scope: "global",
+    label: "Deploy the local main build",
+    run: function () { return clickBandControl("deployMainBtn"); } },
+  { id: "nav-column", keys: ["↑", "↓"], on: ["arrowup", "arrowdown"],
+    scope: "board", label: "Move between missions in a column",
+    run: function (e) { return navColumn(e.key === "ArrowDown" ? 1 : -1); } },
+  { id: "nav-across", keys: ["←", "→"], on: ["arrowleft", "arrowright"],
+    scope: "board", label: "Move between columns",
+    run: function (e) { return navAcross(e.key === "ArrowRight" ? 1 : -1); } },
+  // Enter AND Space: a card announces role="button", and the WAI-ARIA button
+  // pattern owes BOTH keys. Space is safe to claim because `run` returns false
+  // in every case where the key isn't actually activating a card — no card
+  // focused, or a real BUTTON/A holding the focus — and the listener only
+  // preventDefault()s a run that returned true. So Space still scrolls the page
+  // off the board, still activates a focused button, and (GUARD 1) still types
+  // a space inside the File console's idea box.
+  { id: "open", keys: ["Enter", "Space"], on: ["enter", " "], scope: "card",
+    label: "Open the focused mission",
+    run: function () {
+      // A focused BUTTON or link activates itself on Enter/Space — leave that to
+      // the browser rather than opening the detail behind the control's action.
+      var a = document.activeElement;
+      if (a && (a.tagName === "BUTTON" || a.tagName === "A")) return false;
+      var card = focusedCard();
+      if (!card) return false;
+      openDetail(card.getAttribute("data-mid"));
+      return true;
+    } },
+  { id: "start", keys: ["s"], on: ["s"], scope: "card", acts: ["start"],
+    label: "Start the focused mission",
+    run: cardActRunner(["start"]) },
+  { id: "pause", keys: ["p"], on: ["p"], scope: "card", acts: ["pause", "resume"],
+    label: "Pause or resume the focused mission",
+    run: cardActRunner(["pause", "resume"]) },
+  { id: "verify", keys: ["v"], on: ["v"], scope: "card", acts: ["verify"],
+    label: "Open Verify for the focused mission",
+    run: cardActRunner(["verify"]) },
+  // STAND-DOWN ONLY, and the label says so. The ⚡ RUN control (data-act=launch)
+  // is built exclusively by launchAffordance(), which is appended into OVERLAY
+  // bodies — never onto a board card. clickCardAct only ever searches INSIDE the
+  // focused card, so naming "launch" here would be unreachable code, and inside
+  // the detail (where ⚡ RUN does exist) GUARD 2 correctly blocks `l` anyway.
+  // Since S141 renders these labels VERBATIM into the cheatsheet, a label
+  // promising to start an app would ship as a lie in the help console.
+  { id: "launch", keys: ["l"], on: ["l"], scope: "card",
+    acts: ["launch-stop"],
+    label: "Stand down the focused mission's live app",
+    run: cardActRunner(["launch-stop"]) },
+  // Documented here so the cheatsheet is complete, but deliberately UNBOUND:
+  // the Escape listener above owns it and must not be double-handled.
+  { id: "close", keys: ["Esc"], on: [], scope: "global",
+    label: "Close the open console", run: null },
+];
+
+function hotkeyBindingFor(key) {
+  for (var i = 0; i < KEY_BINDINGS.length; i++) {
+    var b = KEY_BINDINGS[i];
+    if (b.on && b.on.indexOf(key) !== -1) return b;
+  }
+  return null;
+}
+
+document.addEventListener("keydown", function (e) {
+  // GUARD 3 — modifier chords belong to the browser and the OS (⌘S, ⌥→, ^C).
+  // Shift is NOT a bail: `?` is Shift+/ on most layouts.
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  // GUARD 4 — key auto-repeat. A HELD key streams keydown events where a mouse
+  // cannot repeat; each would .click() again, and the write handlers POST
+  // without a synchronous in-flight guard. One keystroke = one action.
+  if (e.repeat) return;
+  var binding = hotkeyBindingFor(String(e.key || "").toLowerCase());
+  // Cheap bail before any DOM traversal — most keystrokes are not ours.
+  if (!binding || typeof binding.run !== "function") return;
+  // GUARD 1 — never hijack typing.
+  if (isTypingTarget(document.activeElement)) return;
+  // GUARD 2 — an open console owns the keyboard; only `?` may act over it.
+  if (!overlay().hidden && !binding.overlaySafe) return;
+  if (binding.run(e) !== false) e.preventDefault();
+});
+
+/* S140: render() blows the board away and rebuilds it, which would drop the
+   keyboard focus to <body> mid-drive (an SSE tick or the 4s safety poll is
+   enough). Remember which mission held it and put it back if that card survived
+   the rebuild; a card that is gone simply loses focus — never a guess at a
+   neighbour, which would silently re-aim the next action key. */
+function focusedMissionId() {
+  var card = focusedCard();
+  return card ? card.getAttribute("data-mid") : null;
+}
+function restoreCardFocus(mid) {
+  if (mid == null) return;
+  var sel = '.board .card[data-mid="' + String(mid).replace(/["\\]/g, "\\$&") + '"]';
+  var card = document.querySelector(sel);
+  if (card) card.focus();
+}
+
 function enc(s) { return encodeURIComponent(s); }
 
 /* A reusable LCARS modal scaffold. headClass tints the header (red/teal/pink). */
@@ -1566,8 +1847,11 @@ function attachImagePaster(textarea, onError) {
     imgs.forEach(function (img, i) {
       var chip = el("span", "img-chip");
       chip.appendChild(el("span", "img-chip-name", "[Image #" + (i + 1) + "]"));
-      var x = el("span", "img-chip-x", "✕");
+      // S140 fix: the ✕ is the console's other span-as-control — same treatment,
+      // so an attached image can be dropped without reaching for the mouse.
+      var x = keyActivable(el("span", "img-chip-x", "✕"));
       x.title = "Remove this image";
+      x.setAttribute("aria-label", "Remove this image");
       x.addEventListener("click", function (e) {
         e.stopPropagation();
         imgs.splice(i, 1); repaint();
@@ -1659,14 +1943,22 @@ function openFile() {
   engineWrap.appendChild(label("Engine — which CLI drives this mission?"));
   var choice = el("div", "choice");
   var chosen = { engine: "claude" };
-  var optClaude = el("span", "opt", "⬡ Claude");
-  var optCopilot = el("span", "opt", "⬡ Copilot");
+  // S140 fix: the picker is keyboard-operable (Tab to it, Enter/Space selects).
+  // Attribute + keydown only — the click path and what it does are untouched.
+  var optClaude = keyActivable(el("span", "opt", "⬡ Claude"));
+  var optCopilot = keyActivable(el("span", "opt", "⬡ Copilot"));
   function pick(engine, node) {
     chosen.engine = engine;
-    [optClaude, optCopilot].forEach(function (o) { o.classList.remove("sel"); });
+    [optClaude, optCopilot].forEach(function (o) {
+      o.classList.remove("sel");
+      o.setAttribute("aria-pressed", "false");
+    });
     node.classList.add("sel");
+    node.setAttribute("aria-pressed", "true");
   }
   optClaude.classList.add("sel");
+  optClaude.setAttribute("aria-pressed", "true");
+  optCopilot.setAttribute("aria-pressed", "false");
   optClaude.addEventListener("click", function () { pick("claude", optClaude); });
   optCopilot.addEventListener("click", function () { pick("copilot", optCopilot); });
   choice.appendChild(optClaude); choice.appendChild(optCopilot);
@@ -1787,26 +2079,26 @@ function startAlignment(missionId) {
 function startAlignmentControl(m) {
   var id = m && m.id;
   if (isFinalizing(id)) {
-    var fin = btn("◐ FINALIZING & COSTING…", "go", null);
+    var fin = act("start", btn("◐ FINALIZING & COSTING…", "go", null));
     fin.disabled = true;
     fin.title = "Finalizing the PRD and estimating cost…";
     return fin;
   }
   if (isAligning(id)) {
-    var busy = btn("⊹ Scanning…", "go", null);
+    var busy = act("start", btn("⊹ Scanning…", "go", null));
     busy.disabled = true;
     busy.title = "Opening the alignment console…";
     return busy;
   }
   if (isResumable(m)) {
     var sid = resumableSid(m);
-    return applyWriteState(btn("▹ RESUME ALIGN", "go", function () {
+    return act("start", applyWriteState(btn("▹ RESUME ALIGN", "go", function () {
       resumeAlignment(id, sid);
-    }));
+    })));
   }
-  return applyWriteState(btn("▹ START ALIGNMENT", "go", function () {
+  return act("start", applyWriteState(btn("▹ START ALIGNMENT", "go", function () {
     beginAlignment(id);
-  }));
+  })));
 }
 
 /* BUG-3: arm the click-guard + busy feedback, then open the warm grill. markAligning
@@ -1918,6 +2210,23 @@ function renderAlignConsole(state, completing, missionId) {
     count.textContent = "Question " + asked;
     qtext.textContent = q.text || "What would you like to refine?";
     choices.innerHTML = ""; picked.val = null; free.value = ""; err.hidden = true;
+    // S140 fix: the answer options are the SAME span-as-control idiom as the File
+    // console's engine picker, and this console is one screen on from "File &
+    // Begin Alignment" — so a captain filing from the keyboard hits it. One place
+    // writes/clears the selection, so the announced state (aria-pressed) can
+    // never drift from the .sel chrome.
+    function clearOptSel() {
+      Array.prototype.forEach.call(choices.children, function (o) {
+        o.classList.remove("sel");
+        o.setAttribute("aria-pressed", "false");
+      });
+    }
+    function selectOpt(node, val) {
+      clearOptSel();
+      node.classList.add("sel");
+      node.setAttribute("aria-pressed", "true");
+      picked.val = val;
+    }
     (q.choices || []).forEach(function (c) {
       var isRec = (q.recommended != null && c === q.recommended);
       // Dedupe the "recommended" indicator (S67): some workers (Copilot) bake
@@ -1927,20 +2236,20 @@ function renderAlignConsole(state, completing, missionId) {
       // the pill is the sole indicator and stays. Net: exactly one per option.
       var textHasRec = /\(\s*recommended\s*\)/i.test(c);
       var cls = "opt" + (isRec ? " rec" + (textHasRec ? " no-pill" : "") : "");
-      var opt = el("span", cls, c);
+      // keyActivable: Tab reaches the option, Enter/Space picks it — the same
+      // node the mouse clicks, so there is one handler and one behaviour.
+      var opt = keyActivable(el("span", cls, c));
+      opt.setAttribute("aria-pressed", "false");
       opt.addEventListener("click", function () {
-        Array.prototype.forEach.call(choices.children, function (o) {
-          o.classList.remove("sel"); });
-        opt.classList.add("sel"); picked.val = c; free.value = "";
+        selectOpt(opt, c); free.value = "";
       });
       choices.appendChild(opt);
-      if (isRec) { opt.classList.add("sel"); picked.val = c; }
+      if (isRec) selectOpt(opt, c);
     });
     // a free-form answer overrides any picked choice.
     free.addEventListener("input", function () {
       if (free.value.trim()) {
-        Array.prototype.forEach.call(choices.children, function (o) {
-          o.classList.remove("sel"); });
+        clearOptSel();
         picked.val = null;
       }
     });
@@ -2358,7 +2667,7 @@ function openReverifyGate(mi) {
   fbWrap.appendChild(field("Feedback for send-back", fb));
   m.body.appendChild(fbWrap);
 
-  var sendBack = applyWriteState(btn("↩ Send Back…", "danger", function () {
+  var sendBack = act("send-back", applyWriteState(btn("↩ Send Back…", "danger", function () {
     if (fbWrap.hidden) { fbWrap.hidden = false; fb.focus(); return; }
     var note = fb.value.trim();
     if (!note) { showErr(err, "Send-back needs a feedback note."); return; }
@@ -2367,8 +2676,8 @@ function openReverifyGate(mi) {
       { decision: "send-back", feedback: note },
       function () { closeOverlay(); },
       function (msg) { sendBack.disabled = false; showErr(err, msg); });
-  }));
-  var accept = applyWriteState(btn("✓ Accept the Fixes", "go big", function () {
+  })));
+  var accept = act("accept", applyWriteState(btn("✓ Accept the Fixes", "go big", function () {
     accept.disabled = true; accept.textContent = "Accepting…";
     // the re-verify gate is answered via /respond; an explicit accept note is
     // recorded against the gate. Friendly, never CLI.
@@ -2379,7 +2688,7 @@ function openReverifyGate(mi) {
         accept.disabled = false; accept.textContent = "✓ Accept the Fixes";
         showErr(err, msg);
       });
-  }));
+  })));
   m.foot.appendChild(sendBack);
   m.foot.appendChild(accept);
   showOverlay(m.wrap);
@@ -2530,7 +2839,7 @@ function launchAffordance(mi) {
         line.appendChild(a);
       }
       wrap.appendChild(line);
-      var stop = applyWriteState(btn("■ STOP", "danger", function () {
+      var stop = act("launch-stop", applyWriteState(btn("■ STOP", "danger", function () {
         err.hidden = true; busy.hidden = false;
         busyLabel(busy, "Standing the app down…");
         stop.disabled = true;
@@ -2539,7 +2848,7 @@ function launchAffordance(mi) {
           function (msg) {
             busy.hidden = true; stop.disabled = false; showErr(err, msg);
           });
-      }));
+      })));
       wrap.appendChild(stop);
     } else {
       // S110: only surface the failure banner as immediate feedback for a launch
@@ -2554,7 +2863,7 @@ function launchAffordance(mi) {
         "Optional — name the app or its directory (e.g. “the game in web/”)";
       hint.style.cssText = "width:100%;box-sizing:border-box;margin-bottom:8px";
       wrap.appendChild(hint);
-      var run = applyWriteState(btn("⚡ RUN", "go", function () {
+      var run = act("launch", applyWriteState(btn("⚡ RUN", "go", function () {
         var h = (hint.value || "").trim();
         // S110: mark this mission launching SYNCHRONOUSLY, before anything async,
         // so a card closed and reopened in the window before the POST lands still
@@ -2579,7 +2888,7 @@ function launchAffordance(mi) {
             var e2 = wrap.querySelector(".errline");
             if (e2) showErr(e2, msg);
           });
-      }));
+      })));
       wrap.appendChild(run);
     }
   }
@@ -2712,7 +3021,7 @@ function openVerify(id) {
     fbWrap.appendChild(field("Feedback for send-back", fb));
     m.body.appendChild(fbWrap);
 
-    var sendBack = applyWriteState(btn("↩ Send Back…", "danger", function () {
+    var sendBack = act("send-back", applyWriteState(btn("↩ Send Back…", "danger", function () {
       if (fbWrap.hidden) { fbWrap.hidden = false; fb.focus(); return; }
       var note = fb.value.trim();
       if (!note) { showErr(err, "Send-back needs a feedback note."); return; }
@@ -2721,7 +3030,7 @@ function openVerify(id) {
         { decision: "send-back", feedback: note },
         function () { closeOverlay(); },
         function (msg) { sendBack.disabled = false; showErr(err, msg); });
-    }));
+    })));
     // BUG-039: a self-heal (merge/reconcile) is IN FLIGHT — no merge is possible.
     // Replace the primary action with a disabled "Merge heal in progress…"
     // affordance and drop Send Back (the heal owns the branch right now).
@@ -2765,7 +3074,7 @@ function openVerify(id) {
     //     gracefully when no PR is open yet.
     var mergeLabel = isBugChild ? "✓ Verify" : "✓ Merge PR";
     var busyLabel = isBugChild ? "Verifying…" : "Merging PR…";
-    var merge = applyWriteState(btn(mergeLabel, "go big", function () {
+    var merge = act("merge", applyWriteState(btn(mergeLabel, "go big", function () {
       // BUG-040: the Merge dispatch is fire-and-forget server-side and returns
       // promptly — close the dialog on a successful dispatch and let the board
       // (SSE/refresh) reflect the evolving state (reconciling → escalated → done).
@@ -2779,7 +3088,7 @@ function openVerify(id) {
       postWrite("/api/mission/" + enc(id) + "/verify", { decision: "approve" },
         function () { closeOverlay(); },
         function (msg) { clearMerging(id); merge.disabled = false; merge.textContent = mergeLabel; showErr(err, msg); });
-    }));
+    })));
     if (!isBugChild && !inReview) {
       merge.disabled = true;
       merge.title = "No open PR to merge yet — re-run the mission so Verify opens one.";
