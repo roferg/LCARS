@@ -2044,6 +2044,37 @@ commit_ticket() { # ticket  summary
     fi
   fi
 
+  # MULTI-SESSION TICKETS (worktree mode). A bounced ticket re-enters the SAME
+  # worktree with the prior session's commit as HEAD — `_tdd_reject` clears
+  # result.json and the output dir, never the tree. Committing naively here would
+  # STACK a second commit, and `.commit-sha` (a SINGLE sha, written below) would
+  # then name only the last session's slice. The wave-end replay cherry-picks that
+  # ONE commit (see cmd_implement: "the parent cherry-picks those in plan order";
+  # S133: "the ticket's tests ride in its ONE commit"), so sessions 1..N-1 would be
+  # dropped SILENTLY — every gate stays green because every gate runs against this
+  # worktree, where the full tree exists. Observed live: a 4-session scaffold
+  # ticket landed on the mission branch as a lone package-lock.json, the other 13
+  # files gone.
+  #
+  # So: pin the wave base on the first session, and collapse any prior session
+  # commits with a SOFT reset before each later one. A soft reset moves HEAD only
+  # — index and worktree are untouched — so the commit below carries the ticket's
+  # CUMULATIVE diff vs the base, and the existing single-commit replay lands all
+  # of it with no change to the conflict / serial-rebuild paths that already
+  # assume one commit per ticket. The single-session path is byte-identical: the
+  # base is recorded, no reset fires, and the commit's parent is the base as before.
+  if [ -n "${LCARS_TICKET_WORKTREE:-}" ]; then
+    local basef; basef="$(ticket_dir "$1")/.commit-base"
+    if [ -s "$basef" ]; then
+      local wbase; wbase="$(cat "$basef" 2>/dev/null)"
+      if [ -n "$wbase" ] && [ "$("$GIT_BIN" rev-parse HEAD 2>/dev/null)" != "$wbase" ]; then
+        "$GIT_BIN" reset --soft "$wbase" >/dev/null 2>&1 || :
+      fi
+    else
+      "$GIT_BIN" rev-parse HEAD >"$basef" 2>/dev/null || :
+    fi
+  fi
+
   # Belt-and-braces: ensure the scratch globs are in .git/info/exclude before we
   # stage, so even a future `git add`/`status` ignores them (idempotent; `lcars
   # init` does this too, but a mission created without init — e.g. via `lcars log`
@@ -5294,7 +5325,7 @@ self_heal_full_suite() { # reason  ordered ticketId...
     # an undeclared weakening of the regressed test is still blocked by the
     # declared-edits guard + the pre-merge drift check).
     local irc=0
-    rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null
+    rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" "$(ticket_dir "$regressor")/.commit-base" 2>/dev/null
     LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
     LCARS_TICKET_WT_BASE="$wt_base" LCARS_TICKET_BRANCH="$branch" \
     LCARS_SELFHEAL_FEEDBACK="$(cat "$SELFHEAL_LAST_REASON")" \
@@ -9014,7 +9045,7 @@ cmd_implement() {
       local wt_base; wt_base="$MISSION_DIR/worktrees"
       local jobs; jobs="$(mktemp)"; : >"$jobs"
       for t in $pending; do
-        rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" 2>/dev/null
+        rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" "$(ticket_dir "$t")/.commit-base" 2>/dev/null
         printf 'LCARS_TICKET_WT_BASE=%q LCARS_TICKET_BRANCH=%q bash %q implement-ticket --mission %q --ticket %q\n' \
           "$wt_base" "$branch" "$SELF" "$MISSION_ID" "$t" >>"$jobs"
       done
@@ -9379,7 +9410,7 @@ _replay_ticket_commit_locked() { # branch  sha  ticket
 rebuild_ticket_on_tip() { # base-dir  branch  ticket
   local base="$1" branch="$2" t="$3"
   # Drop the stale concurrent outcome so we read the rebuild's fresh result.
-  rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" 2>/dev/null
+  rm -f "$(ticket_dir "$t")/.build-rc" "$(ticket_dir "$t")/.commit-sha" "$(ticket_dir "$t")/.commit-base" 2>/dev/null
   local irc=0
   LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
   LCARS_TICKET_WT_BASE="$base" LCARS_TICKET_BRANCH="$branch" \
@@ -10599,6 +10630,17 @@ FSG_EOF
   proof-validate-result-test)
     __pv_rc=0; proof_validate_result "$RESULT" "$TICKET" || __pv_rc=$?
     printf 'PVRC=%s\n' "$__pv_rc"; exit 0 ;;
+  # Drives the REAL commit_ticket in WORKTREE mode ($LCARS_TICKET_WORKTREE set by
+  # the caller), so the multi-session cumulative-commit contract can be exercised
+  # offline + token-free: N sessions in one worktree must leave .commit-sha naming
+  # ONE commit carrying the ticket's WHOLE diff vs the wave base. Inert for every
+  # real subcommand.
+  commit-ticket-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh commit-ticket-test --mission <id> --ticket <t> [summary]"
+    __ct_rc=0; commit_ticket "$TICKET" "${POSARG:-test session}" || __ct_rc=$?
+    [ -n "${COMMIT_NOTE:-}" ] && printf '%s\n' "$COMMIT_NOTE"
+    printf 'CTRC=%s\n' "$__ct_rc"; exit 0 ;;
   proof-quality-floor-test)
     locate_mission "$MISSION_ID"
     [ -n "$TICKET" ] || die "usage: run.sh proof-quality-floor-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"

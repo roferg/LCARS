@@ -4,6 +4,48 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.14 — 2026-07-27
+
+**A multi-session ticket no longer loses every commit but its last.** Silent
+work loss, found on a live greenfield mission.
+
+- **The defect.** A bounced ticket re-enters the SAME per-ticket worktree with
+  the prior session's commit as HEAD — `_tdd_reject` clears `result.json` and the
+  output dir, never the tree. So session N committed ON TOP of session N-1, while
+  `commit_ticket` recorded a SINGLE `.commit-sha` via `rev-parse HEAD`: the LAST
+  commit only. The wave-end replay cherry-picks exactly that one commit (S133:
+  "the ticket's tests ride in its ONE commit"), so sessions 1..N-1 were dropped
+  on the floor.
+
+  It failed SILENTLY, which is the worst part: every gate — flip-flop,
+  declared-edits, quality floor, post-commit — runs against the worktree, where
+  the full tree exists. All of them were green and all of them were right. The
+  loss happened after the last gate, at replay, with nothing left to re-verify
+  the branch.
+
+  Observed live: a Vite+React scaffold ticket took 4 sessions. Session 3
+  committed the whole app (13 files); session 4 added only `package-lock.json`.
+  The mission branch received the lockfile alone — no `src/`, no `vite.config.ts`,
+  no `package.json` — and a sibling ticket's stub `package.json` then replayed on
+  top of the hole. The wave read as fully green.
+
+- **The fix.** `commit_ticket` pins the wave base to `.commit-base` on a ticket's
+  first session, then SOFT-resets to it before each later session's commit. A soft
+  reset moves HEAD only — index and worktree untouched — so the recorded commit
+  always carries the ticket's CUMULATIVE diff vs the base. `.commit-sha` keeps
+  naming exactly one commit, so the replay, cherry-pick-conflict and
+  serial-rebuild paths (all of which already assume one commit per ticket) are
+  untouched. `.commit-base` is cleared everywhere `.commit-sha` is, so a serial
+  rebuild re-pins against its own base. The single-session path is byte-identical.
+
+Verified by a new scoped suite, `tests/replay-multisession.test.sh` (13), driving
+the REAL `commit_ticket` through a new inert `commit-ticket-test` hook: two
+sessions in one worktree must leave `.commit-sha` rooted AT the wave base with
+the cumulative patch, and an actual cherry-pick of it must land every session's
+files on the mission branch. Asserted against the commit's own PATCH, not its
+tree — a tree diff passes even for the broken stacked-commit shape. Red on 5
+before the fix. Regression: proof-gates 154, unified-implementer 37.
+
 ## 2026.7.13 — 2026-07-27
 
 **`lcars buddy` stops misreporting the config it exists to show you.**
