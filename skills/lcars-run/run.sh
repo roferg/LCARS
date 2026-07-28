@@ -1034,6 +1034,16 @@ validate_plan_json() { # file
         if ($0 !~ /\]/) in_ac=1     # array opens here, closes on a later line
       }
       else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
+      # S156: `establishesSharedInfrastructure` is OPTIONAL — absent must stay
+      # valid (in-flight missions and every pre-S156 plan). When PRESENT it must
+      # be a boolean: the Schedule stage groups on it, so a mistyped value would
+      # silently mis-schedule the whole plan.
+      else if (key=="establishesSharedInfrastructure") {
+        v=$0; sub(/.*"establishesSharedInfrastructure"[[:space:]]*:[[:space:]]*/, "", v)
+        gsub(/[ ,]/, "", v)
+        if (v!="true" && v!="false" && v!="\"true\"" && v!="\"false\"")
+          fail("ticket " (tickets+1) " (" id ") has a non-boolean \"establishesSharedInfrastructure\": " v " — use true or false.")
+      }
     }
     # DESIGN NOTE (Session 31): the three estimate fields are a SHAPE contract,
     # not a SIZE policy. We require all three to be present, but we deliberately
@@ -1087,6 +1097,17 @@ cmd_plan_save() {
 
   echo "PLAN: advanced"
   echo "  Wrote plan.json."
+  # S156: say it at the EARLIEST point a human or Plan Review can act on it. A
+  # plan that declares `establishesSharedInfrastructure` on NO ticket leaves
+  # Schedule reading ticket text instead, which only catches a ticket that names
+  # a config file — so an unnamed scaffold ticket would share wave 1 with the
+  # tickets that build on it. Not a gate: the plan is saved either way.
+  local ndecl ntk
+  ndecl="$(parse_plan_table "$MISSION_DIR/plan.json" 2>/dev/null | awk -F'\t' '$7!=""{n++} END{print n+0}')"
+  ntk="$(parse_plan_table "$MISSION_DIR/plan.json" 2>/dev/null | grep -c .)"
+  if [ "${ndecl:-0}" -eq 0 ] && [ "${ntk:-0}" -gt 0 ]; then
+    echo "  ⚠ no ticket declares establishesSharedInfrastructure — Plan Review should ask for it. Without it, Schedule falls back to reading ticket text and only isolates a ticket that NAMES a build/test config file."
+  fi
   echo "  Stage:  plan-review"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   exit 0
@@ -1211,19 +1232,39 @@ cmd_review_save() {
 # changes nothing (no waves.json, no issues, no stage move). On success it writes
 # waves.json — [ { wave, tickets:[ { id, issue } ] } ] — and moves the stage +
 # label schedule → implement, keeping the on-disk stage and the board in step.
+#
+# S156: one ADDITIONAL, deterministic grouping rule sits on top of the graph — a
+# ticket that ESTABLISHES SHARED BUILD/TEST INFRASTRUCTURE rides ALONE in its
+# wave and acts as a barrier in plan order, so nothing that will build against
+# that infrastructure can be its blind sibling. The call is the ticket's own
+# DECLARED `establishesSharedInfrastructure`, with a heuristic backstop only when
+# the field is absent (see classify_infra_ticket). Such a wave carries an
+# additive "reason" in waves.json (and a line in the readout) that says which of
+# the two decided it. Ticket isolation itself is unchanged.
 
 # --- parse approved-plan.json into a tab-separated ticket table -------------
-# One line per ticket: id \t title \t description \t criteria \t deps
+# One line per ticket:
+#   id \t title \t description \t criteria \t deps \t rationale \t infraFlag
 # criteria items are joined with " | " and deps with spaces — both are inline
 # single-line arrays in the canonical shape, so no field ever spans lines. Same
 # jq-free, line-oriented parse as validate_plan_json.
+#
+# Fields 6–7 are S156 additions, APPENDED so every existing consumer is
+# unaffected (they read $1..$5, or `read id title desc crit deps` where the last
+# variable absorbs the tail):
+#   rationale  — the planner's *why*; the sentence most likely to say "this
+#                establishes the shared test infrastructure", and previously
+#                dropped on the floor.
+#   infraFlag  — the ticket's DECLARED `establishesSharedInfrastructure`
+#                ("true"/"false"), or EMPTY when the ticket does not declare it.
+#                Empty is the signal to fall back to the heuristic backstop.
 parse_plan_table() { # file
   awk '
     function flush() {
       if (id=="") return
-      printf "%s\t%s\t%s\t%s\t%s\n", id, title, desc, crit, deps
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, title, desc, crit, deps, rat, infra
     }
-    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; desc=""; crit=""; deps=""; next }
+    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; desc=""; crit=""; deps=""; rat=""; infra=""; next }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ { if (inobj) flush(); inobj=0; next }
     inobj {
       n=split($0, a, "\"")             # inside-quote contents land at even indices
@@ -1232,8 +1273,16 @@ parse_plan_table() { # file
       if (key=="id") id=a[4]
       else if (key=="title") title=a[4]
       else if (key=="description") desc=a[4]
+      else if (key=="rationale") rat=a[4]
       else if (key=="acceptanceCriteria") { c=""; for (i=4;i<n;i+=2) if (a[i]!="") c=(c==""?a[i]:c" | "a[i]); crit=c }
       else if (key=="dependencies")       { d=""; for (i=4;i<n;i+=2) if (a[i]!="") d=(d==""?a[i]:d" "a[i]); deps=d }
+      # A BARE boolean has no quoted value, so read the raw token after the
+      # colon (and tolerate a quoted "true"/"false" from a sloppy worker).
+      else if (key=="establishesSharedInfrastructure") {
+        v=$0; sub(/.*"establishesSharedInfrastructure"[[:space:]]*:[[:space:]]*/, "", v)
+        gsub(/[ ,"]/, "", v)
+        if (v=="true" || v=="false") infra=v
+      }
     }
   ' "$1"
 }
@@ -1271,28 +1320,301 @@ $(printf '%s' "$crit" | awk -F' \\| ' '{ for (i=1;i<=NF;i++) printf "- %s\n", $i
   printf '%s' "$block"
 }
 
+# === is this ticket INFRASTRUCTURE-ESTABLISHING? (S156) =====================
+# Why any of this exists (ground truth, mission lcars-20260727-001, 2026-07-27):
+# wave 1 held BOTH t-001 (Vite + React + TS scaffold) and t-012 (docs + a vitest
+# suite), because t-012 declared no CODE dependency on t-001 — but it depended
+# totally on the TEST INFRASTRUCTURE t-001 was creating. Siblings in a wave are
+# blind to each other by design, so t-012 authored its test against a base with
+# no Vite config; t-001's vite.config.ts then made that file throw at import
+# time and its 13 tests silently stopped running for eleven more tickets.
+#
+# ONE MECHANISM, plus a deliberately narrow safety net:
+#
+#   1. DECLARED — THE MECHANISM. The Plan worker sets
+#      `establishesSharedInfrastructure` on the ticket (see stages/plan.md), and
+#      Plan Review audits it (see stages/plan-review.md) the same way it audits
+#      dependencies. When the field is present the harness OBEYS it — true
+#      isolates, false never does, and no prose is inspected at all. This is not
+#      a new LLM call, a new stage, or a new worker: it is one more declared
+#      field on an artifact the planner already writes, read exactly the way
+#      `dependencies` is.
+#
+#   2. BACKSTOP — a narrow, HIGH-PRECISION net for plans whose worker omitted
+#      the field (an older plan, a mission already in flight). It is NOT a
+#      classifier and does not try to be one.
+#
+# WHY THE BACKSTOP IS THIS SMALL — measured, not assumed. An earlier version of
+# it also matched infrastructure PHRASES ("the test runner", "the package
+# layout", "install pytest", scaffold/bootstrap wording). An adversarial tester
+# took its own 14-item corpus, reworded each item preserving meaning, and recall
+# fell from 14/14 to 5/14 ("Add the CI workflow that runs the tests on every
+# push" caught, "Add the GitHub Actions job that runs the unit tests on push"
+# missed); on 50 unseen tickets it scored 13/23 infra caught, 18/25 ordinary
+# clean. Prose matching does not generalise — it recognises the sentences it was
+# fitted to — and it was wrong in BOTH directions, so those signals were deleted
+# rather than widened again.
+#
+# WHAT THE BACKSTOP DOES NOT CATCH — state this plainly, it is the trade:
+# ANY infrastructure ticket that never names a config file. "Create the Django
+# project and its settings module", "Stand up the test runner", "Install RSpec
+# and a first spec", "Migrate the existing Jest suites onto Vitest", "Add the
+# GitHub Actions job that runs the unit tests" — all MISSED, by design.
+# tests/wave-isolation.test.sh encodes those as explicit KNOWN-MISS assertions
+# so the file documents the real recall instead of flattering it. That is
+# acceptable ONLY because the declared field is the mechanism and Plan Review
+# audits it; the Schedule readout says out loud when a plan declared nothing, so
+# a captain can see they are running on the net rather than the mechanism.
+#
+# THE ONE RESIDUAL FALSE-POSITIVE CLASS — a repo whose SUBJECT MATTER is build
+# configuration. The backstop cannot tell "this ticket CHANGES vite.config" from
+# "this ticket adds a FEATURE that reads vite.config", so a dependency scanner, a
+# language server, a CI dashboard or a template gallery trips it: "Add Gemfile
+# support to the audit tool", "Add tsconfig support to the language server",
+# "Convert the uploaded pom.xml into the internal model", "Add the .csproj upload
+# endpoint", "Add the diff viewer for lockfile changes", "Add the CI status
+# column". LCARS itself is such a repo. Declaring
+# `establishesSharedInfrastructure` makes the class vanish entirely, because the
+# text is then never read; and the cost while undeclared is WALL-CLOCK ONLY —
+# extra one-ticket waves, never wrong code, never a skipped ticket.
+#
+# Both paths are deterministic — no LLM call at Schedule time.
+
+# --- the backstop's vocabulary ----------------------------------------------
+# Everything here is exercised by the corpora in tests/wave-isolation.test.sh.
+#
+# BLOCK — a LINE framed as a negation ("no changes to go.mod are needed", "it
+# does not introduce tsconfig changes"), as reuse of something that already
+# exists ("uses the existing spec_helper"), or as a documentation/link reference
+# ("add a Gemfile entry note in the contributing guide") contributes NO signal.
+# Blocking is per LINE, so a ticket's other lines can still fire.
+#
+# ANCHORED, like every other pattern here. Unanchored, these fragments swallowed
+# genuine infrastructure lines through unrelated substrings — measured:
+# "guide" ⊂ styleguide/guidelines and "display" ⊂ displays killed
+# "Add vite.config.ts as described in the styleguide.", "Create tsconfig per our
+# guidelines." and "Create pytest.ini; the runner displays progress." All three
+# classify again; each is a regression case in tests/wave-isolation.test.sh.
+#
+# It still costs recall on purpose — a genuine infrastructure line that says
+# "existing" ("add vite.config.ts to the existing repo") is swallowed — which is
+# the right direction for a net that must never serialise a plan on a false
+# positive.
+INFRA_BLOCK_PHRASE_RE='no (change|changes|new|modification)|not (change|changes|modify|touch|add|need|introduce|create|use|require)|none of|rather than|without (changing|changed|modifying|modify|adding|add)|already|existing|unchanged|re-?uses?|documented|document the|guides?|readme|changelog|note in|badge|link the|links? to|mentions?|mentioned|lists|is listed|equals|field of|refer to|references the|reads? the|read from|displays? the|shows? the'
+INFRA_BLOCK_RE="(^|[^a-z0-9-])($INFRA_BLOCK_PHRASE_RE)([^a-z0-9-]|\$)"
+# VERB — the imperative verbs plan.md mandates, plus their -s forms (a rationale
+# is written in the third person: "this ticket also creates vitest.config.ts").
+# CREATE verbs stand up something new; CHANGE verbs restructure something shared
+# that already exists. `port` is
+# deliberately ABSENT: it is a noun far more often than a verb in ticket text
+# ("reads the port from package.json", "display the port the dev server bound,
+# from vite.config") and both of those are ordinary product work.
+INFRA_CREATE_VERB_RE='add(s)?|creat(e|es)|introduc(e|es)|install(s)?|set(s)? ?up|stand(s)? ?up|initiali[sz]e(s)?|scaffold(s)?|bootstrap(s)?|generat(e|es)|establish(es)?|wir(e|es) up|lay(s)? out|configur(e|es)'
+INFRA_CHANGE_VERB_RE='migrat(e|es)|upgrad(e|es)|restructur(e|es)|replac(e|es)|switch(es)?|convert(s)?|rework(s)?|consolidat(e|es)|extract(s)?'
+INFRA_VERB_RE="\\b($INFRA_CREATE_VERB_RE|$INFRA_CHANGE_VERB_RE)\\b"
+# FILE — shared build/test config files across every stack LCARS supports
+# (js/ts, python, rust, go, dotnet, ruby, jvm) plus CI. Two lists because the
+# boundary rules differ: a NAME must not be a substring of a longer identifier
+# ("django.models" must not match `go.mod`), while an EXTENSION legitimately
+# follows one ("Web.csproj"). EVERY pattern that survives in this file is
+# boundary-anchored — the unanchored object lists that let "repo" match "report"
+# and "cli" match "client" were deleted with the rest of the phrase matching.
+INFRA_FILE_NAME_RE='package\.json|package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb|npm-shrinkwrap\.json|vite\.config|vitest\.config|vitest\.setup|jest\.config|jest\.setup|webpack\.config|rollup\.config|esbuild\.config|next\.config|babel\.config|karma\.conf|setuptests|test-setup|setup-tests|setupfiles|tests?/setup\.|tsconfig|pytest\.ini|conftest\.py|pyproject\.toml|setup\.cfg|tox\.ini|requirements\.txt|pipfile|poetry\.lock|cargo\.toml|cargo\.lock|go\.mod|go\.sum|directory\.build\.props|nuget\.config|gemfile|spec_helper|rails_helper|pom\.xml|build\.gradle|settings\.gradle|gradle\.properties|\.github/workflows'
+INFRA_FILE_EXT_RE='\.csproj|\.sln|\.babelrc|\.rspec'
+# Both boundaries for a NAME; only a trailing one for an EXTENSION.
+INFRA_FILE_RE="((^|[^a-z0-9.-])($INFRA_FILE_NAME_RE)|($INFRA_FILE_EXT_RE))([^a-z0-9-]|\$)"
+
+# infra_heuristic — THE WHOLE BACKSTOP, one signal: a shared build/test config
+# FILE named on an unblocked line that also carries a create/change verb. Echoes
+# the file it matched (evidence for the reason string) and returns 0. This is an
+# inference from text, never a fact: callers must word it as one.
+infra_heuristic() { # declared-text -> echoes the matched config file; rc 0 = looks infra
+  local text lines m
+  text="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+  lines="$(printf '%s\n' "$text" | grep -Ev "$INFRA_BLOCK_RE")"
+  [ -n "$lines" ] || return 1
+  m="$(printf '%s\n' "$lines" | grep -E "$INFRA_VERB_RE" | grep -Eo "$INFRA_FILE_RE" | head -n 1)"
+  [ -n "$m" ] || return 1
+  # trim the boundary characters the anchored pattern captures
+  printf '%s' "$m" | sed 's/^[^a-z0-9._/]*//; s/[^a-z0-9_]*$//'
+}
+
+# The text the backstop reads from a plan-table line: title, description, each
+# acceptance criterion on its own line, and the RATIONALE (where a planner most
+# naturally explains what a ticket stands up).
+ticket_declared_text() { # plan-table-line
+  printf '%s\n%s\n%s\n%s' \
+    "$(printf '%s' "$1" | cut -f2)" \
+    "$(printf '%s' "$1" | cut -f3)" \
+    "$(printf '%s' "$1" | cut -f4 | tr '|' '\n')" \
+    "$(printf '%s' "$1" | cut -f6)"
+}
+
+# classify_infra_ticket — the ONE entry point. Given a plan-table LINE, echo
+#   "declared\t<flag-text>"   the ticket declared establishesSharedInfrastructure
+#   "inferred\t<config-file>" the field was absent and the backstop fired
+# and return 0 when the ticket is infrastructure-establishing; 1 otherwise
+# (including an explicit `false`, which is obeyed WITHOUT consulting the prose).
+classify_infra_ticket() { # plan-table-line
+  local line="$1" flag m
+  flag="$(printf '%s' "$line" | cut -f7)"
+  case "$flag" in
+    true)  printf 'declared\testablishesSharedInfrastructure: true'; return 0 ;;
+    false) return 1 ;;
+  esac
+  m="$(infra_heuristic "$(ticket_declared_text "$line")")" || return 1
+  printf 'inferred\t%s' "$m"
+}
+
+# infra_scan — ONE pass over the plan table producing the provenance of every
+# ticket, so Schedule can both group AND tell the captain how each call was made:
+#   id \t declared-true  \t (empty)
+#   id \t declared-false \t <config file the backstop WOULD have matched, if any>
+#   id \t inferred       \t <config file matched>
+#   id \t none           \t (empty)
+# `declared-false` with evidence is a CONTRADICTION: the plan overrules the text.
+# The planner's call still wins — Schedule only says so out loud.
+infra_scan() { # table-file
+  local line id flag m
+  while IFS= read -r line; do
+    id="$(printf '%s' "$line" | cut -f1)"
+    [ -n "$id" ] || continue
+    flag="$(printf '%s' "$line" | cut -f7)"
+    if [ "$flag" = "true" ]; then
+      printf '%s\tdeclared-true\t\n' "$id"
+      continue
+    fi
+    m="$(infra_heuristic "$(ticket_declared_text "$line")")" || m=""
+    if [ "$flag" = "false" ]; then
+      printf '%s\tdeclared-false\t%s\n' "$id" "$m"
+    elif [ -n "$m" ]; then
+      printf '%s\tinferred\t%s\n' "$id" "$m"
+    else
+      printf '%s\tnone\t\n' "$id"
+    fi
+  done <"$1"
+}
+
+# The classification of ONE ticket of the plan table, by id (rc 1 = not infra).
+ticket_infra_signal() { # table-file  ticket-id
+  local line; line="$(awk -F'\t' -v want="$2" '$1==want{print; exit}' "$1")"
+  [ -n "$line" ] || return 1
+  classify_infra_ticket "$line"
+}
+
+# Every infrastructure-establishing ticket id, space-separated, in plan order —
+# read off the infra_scan output so the table is classified exactly once. This
+# is what compute_waves isolates.
+infra_ids_from_scan() { # scan-file
+  awk -F'\t' '$2=="declared-true" || $2=="inferred" { printf "%s ", $1 }' "$1" | sed 's/ *$//'
+}
+
 # --- group tickets into waves; detect cycles --------------------------------
 # Reads the ticket table (id in field 1, deps in field 5) and prints one line
 # per wave: "<wave-number> <id> <id> …", tickets in plan order. On a cycle — a
 # round that can place no ticket while some remain — prints a clear error naming
 # the stuck tickets to stderr and exits non-zero, so the caller changes nothing.
-compute_waves() { # table-file
-  awk -F'\t' '
+#
+# $2 (optional) is the space-separated list of INFRASTRUCTURE-ESTABLISHING
+# ticket ids (see classify_infra_ticket). Each such ticket is a BARRIER in plan
+# order:
+#   • it rides ALONE in its wave — a wave that already holds tickets never
+#     absorbs it, and it never absorbs a sibling;
+#   • no ticket AFTER it in plan order may share that wave or land in an earlier
+#     one, so every later ticket builds AGAINST the infrastructure, not beside it;
+#   • tickets BEFORE it in plan order keep the early wave they already had.
+# With an EMPTY list this is byte-for-byte the pre-S156 layered Kahn — the
+# no-infra plan's waves.json is unchanged.
+#
+# DEPENDENCIES ALWAYS WIN, and the ONLY way they win is by NARROW relaxation. A
+# plan whose infra ticket depends on a ticket ordered AFTER it cannot satisfy the
+# barrier and the dependency at once; when the barrier empties a round, the round
+# is retried admitting ONLY the still-unplaced tickets in the transitive
+# dependency closure of THE ONE infra ticket that blocked it — the first unplaced
+# infra ticket in plan order, which is where the strict pass breaks (`clo` exists
+# for exactly this). An unrelated later ticket with no dependencies never gets in
+# that way.
+#
+# It CAN still end up ahead of a LATER barrier, and that is graph-forced, not a
+# leak: with two infra tickets, a ticket admitted as the FIRST one's dependency
+# is already placed when the SECOND one is isolated, and it may sit later in plan
+# order than the second. No wave layout satisfies both barriers and both
+# dependency edges. The emitted reason discloses it — that ticket is named as
+# having built earlier WITHOUT being called a dependency (see
+# wave_isolation_reason, which checks every dependency claim against the graph).
+#
+# The cycle path stays reserved for a REAL dependency cycle — the narrowed round
+# still places nothing only when nothing is ready at all.
+compute_waves() { # table-file [infra-ids]
+  awk -F'\t' -v infra_list="${2:-}" '
+    BEGIN { ni=split(infra_list, ia, " "); for (i=1;i<=ni;i++) if (ia[i]!="") isinfra[ia[i]]=1 }
     { order[++count]=$1; depstr[$1]=$5 }
     END {
       for (k=1;k<=count;k++) {
-        id=order[k]; nd=split(depstr[id], dd, " "); ndep[id]=0
+        id=order[k]; idx[id]=k; nd=split(depstr[id], dd, " "); ndep[id]=0
         for (j=1;j<=nd;j++) if (dd[j]!="") { ndep[id]++; dep[id, ndep[id]]=dd[j] }
+      }
+      # Transitive dependency closure of each infra ticket (fixpoint; N is tiny).
+      # Used by the NARROWED relaxation below, and nowhere else.
+      for (k=1;k<=count;k++) {
+        b=order[k]; if (!isinfra[b]) continue
+        for (i=1;i<=ndep[b];i++) clo[b, dep[b,i]]=1
+        changed=1
+        while (changed) {
+          changed=0
+          for (j=1;j<=count;j++) {
+            m=order[j]
+            if (!((b SUBSEP m) in clo)) continue
+            for (i=1;i<=ndep[m];i++)
+              if (!((b SUBSEP dep[m,i]) in clo)) { clo[b, dep[m,i]]=1; changed=1 }
+          }
+        }
       }
       placed=0; wave=0
       while (placed < count) {
-        wave++; wc=0
-        for (k=1;k<=count;k++) {
-          id=order[k]
-          if (done[id]) continue
-          ready=1
-          for (i=1;i<=ndep[id];i++) if (!done[dep[id,i]]) { ready=0; break }
-          if (ready) ready_id[++wc]=id
+        wave++
+        # relax=0: the barrier holds. relax=1: retried ONLY when the barrier
+        # emptied the round, and then ONLY for the unplaced dependency closure of
+        # the SINGLE infra ticket that blocked it (the first unplaced one).
+        for (relax=0; relax<=1; relax++) {
+          if (relax) {
+            # ONE blocked infra ticket broke the strict round: the FIRST unplaced
+            # infra ticket in plan order (that is where the strict pass breaks).
+            # Admit ONLY its own unplaced dependency closure. A UNION over every
+            # blocked infra ticket would let a ticket needed by a LATER infra
+            # ticket sail past an EARLIER barrier — an unjustified breach.
+            delete allow
+            for (k=1;k<=count;k++) {
+              b=order[k]
+              if (done[b] || !isinfra[b]) continue
+              bready=1
+              for (i=1;i<=ndep[b];i++) if (!done[dep[b,i]]) { bready=0; break }
+              if (!bready)
+                for (j=1;j<=count;j++) {
+                  m=order[j]
+                  if (!done[m] && ((b SUBSEP m) in clo)) allow[m]=1
+                }
+              break
+            }
+          }
+          wc=0
+          for (k=1;k<=count;k++) {
+            id=order[k]
+            if (done[id]) continue
+            if (relax && !(id in allow)) continue
+            ready=1
+            for (i=1;i<=ndep[id];i++) if (!done[dep[id,i]]) { ready=0; break }
+            blocked = (!ready || floor[id] > wave)
+            if (isinfra[id]) {
+              if (blocked) { if (relax) continue; else break }
+              if (wc > 0) break          # this wave has started — infra waits
+              ready_id[++wc]=id
+              break                      # …and once placed, rides alone
+            }
+            if (blocked) continue
+            ready_id[++wc]=id
+          }
+          if (wc > 0) break
         }
         if (wc==0) {
           msg="lcars run: circular dependency detected among the remaining tickets:"
@@ -1304,6 +1626,16 @@ compute_waves() { # table-file
         for (i=1;i<=wc;i++) line=line " " ready_id[i]
         print line
         for (i=1;i<=wc;i++) { done[ready_id[i]]=1; placed++ }
+        # A lone infra ticket raises the floor for EVERY later-in-plan-order
+        # ticket: they cannot share this wave and (being unplaced) cannot have
+        # landed in an earlier one. No closure exemption is needed here — a
+        # closure member ordered after the infra ticket is already `done` by the
+        # time the infra ticket can be placed at all.
+        if (wc==1 && isinfra[ready_id[1]]) {
+          b=ready_id[1]
+          for (j=idx[b]+1; j<=count; j++)
+            if (floor[order[j]] < wave+1) floor[order[j]]=wave+1
+        }
       }
     }
   ' "$1"
@@ -1340,18 +1672,28 @@ create_issue() { # id  type  table-file
 }
 
 # --- render waves.json from the wave/id/issue assignments --------------------
-# Input lines: "<wave>\t<id>\t<issue>" in wave then plan order. Emits the
-# canonical waves.json — an array of { wave, tickets:[ { id, issue } ] }.
+# Input lines: "<wave>\t<id>\t<issue>[\t<reason>]" in wave then plan order. Emits
+# the canonical waves.json — an array of { wave, tickets:[ { id, issue } ] }.
+#
+# S156: a wave the infra-ticket barrier ISOLATED also carries a human-readable
+# `"reason"` naming the ticket and why it rides alone. ADDITIVE and ABSENT when
+# the wave was not isolated (the house convention, cf. meta.testReadiness), so a
+# plan with no infrastructure ticket emits byte-identical waves.json. The reason
+# sits between "wave" and "tickets" and contains no quotes, so every jq-free
+# line-oriented reader (parse_waves_table, ticket_issue, render.sh's
+# read_waves_totals, local_adapter.py) parses it unchanged.
 emit_waves_json() { # assignments-file
   awk -F'\t' '
     { w=$1; if (!(w in seen)) { seen[w]=1; worder[++nw]=w }
-      cnt[w]++; tid[w, cnt[w]]=$2; tiss[w, cnt[w]]=$3 }
+      cnt[w]++; tid[w, cnt[w]]=$2; tiss[w, cnt[w]]=$3
+      if (NF >= 4 && $4 != "" && !(w in reason)) reason[w]=$4 }
     END {
       print "["
       for (x=1;x<=nw;x++) {
         w=worder[x]
         print "  {"
         printf "    \"wave\": %s,\n", w
+        if (w in reason) printf "    \"reason\": \"%s\",\n", reason[w]
         print "    \"tickets\": ["
         for (y=1;y<=cnt[w];y++) {
           print "      {"
@@ -1365,6 +1707,81 @@ emit_waves_json() { # assignments-file
       print "]"
     }
   ' "$1"
+}
+
+# --- a ticket's TRANSITIVE declared dependencies (space-separated) -----------
+# The reason string must never claim a dependency the graph does not have, so
+# every "it depends on X" clause is checked against this.
+ticket_dep_closure() { # table-file ticket-id
+  awk -F'\t' -v want="$2" '
+    { order[++n]=$1; deps[$1]=$5 }
+    END {
+      nd=split(deps[want], d, " ")
+      for (i=1;i<=nd;i++) if (d[i]!="") clo[d[i]]=1
+      changed=1
+      while (changed) {
+        changed=0
+        for (k=1;k<=n;k++) {
+          m=order[k]; if (!(m in clo)) continue
+          nd=split(deps[m], d, " ")
+          for (i=1;i<=nd;i++) if (d[i]!="" && !(d[i] in clo)) { clo[d[i]]=1; changed=1 }
+        }
+      }
+      for (k=1;k<=n;k++) if (order[k] in clo) printf "%s ", order[k]
+    }
+  ' "$1" | sed 's/ *$//'
+}
+
+# Tickets placed BEFORE an isolated ticket's wave that come AFTER it in plan
+# order — the ones that did NOT build against this infrastructure. Echoes two
+# TAB-separated groups: the isolated ticket's own (transitive) DEPENDENCIES,
+# which had to build first, and any OTHER ticket the graph forced ahead of it
+# (an earlier infra ticket's dependency chain can do this when the plan cannot
+# satisfy every barrier at once). The split matters: only the first group may be
+# described as a dependency.
+wave_preceders() { # wavemap-file table-file ticket-id infra-wave
+  local wavemap="$1" table="$2" id="$3" iw="$4" idx all closure deps="" others="" p
+  idx="$(awk -F'\t' -v want="$id" '$1==want{print NR; exit}' "$table")"
+  [ -n "$idx" ] || { printf '\t'; return 0; }
+  all="$(awk -v iw="$iw" -v idx="$idx" -v table="$table" '
+    BEGIN { n=0; while ((getline l < table) > 0) { n++; split(l, f, "\t"); ord[f[1]]=n } }
+    ($1+0 < iw) { for (i=2; i<=NF; i++) if (ord[$i] > idx) printf "%s ", $i }
+  ' "$wavemap" | sed 's/ *$//')"
+  closure=" $(ticket_dep_closure "$table" "$id") "
+  for p in $all; do
+    case "$closure" in
+      *" $p "*) deps="${deps:+$deps }$p" ;;
+      *)        others="${others:+$others }$p" ;;
+    esac
+  done
+  printf '%s\t%s' "$deps" "$others"
+}
+
+# --- the human-readable reason a wave was isolated --------------------------
+# Says exactly what the harness KNOWS, and nothing it cannot check. A DECLARED
+# flag is stated as fact; a BACKSTOP match is stated as the inference it is, with
+# the config file it matched and the missing declaration named. Any ticket that
+# built BEFORE this one despite coming later in the plan is named — as a
+# DEPENDENCY only when the graph says so, and otherwise as what it actually is.
+# $5 set to "lone" words it for a single-ticket plan, where there is no "later".
+wave_isolation_reason() { # table-file ticket-id [dep-preceders] [other-preceders] [lone]
+  local table="$1" id="$2" deps="${3:-}" others="${4:-}" lone="${5:-}" cls kind evidence head tail
+  cls="$(ticket_infra_signal "$table" "$id")" || return 1
+  kind="$(printf '%s' "$cls" | cut -f1)"
+  evidence="$(printf '%s' "$cls" | cut -f2)"
+  if [ "$kind" = "declared" ]; then
+    head="$id declares $evidence"
+  else
+    head="$id has no establishesSharedInfrastructure flag; the harness INFERRED shared build/test infrastructure because its text changes a shared config file ($evidence)"
+  fi
+  if [ "$lone" = "lone" ]; then
+    tail="it is this Mission's only ticket, so it already builds alone"
+  else
+    tail="isolated into a wave of its own so later tickets build against it"
+  fi
+  [ -n "$deps" ] && tail="$tail (except $deps, which it depends on and which therefore had to build first)"
+  [ -n "$others" ] && tail="$tail; NOTE $others built earlier despite coming later in the plan — the graph forced it ahead, so it did NOT build against this infrastructure"
+  printf '%s — %s' "$head" "$tail" | tr -d '"\\' | tr '\n\t' '  '
 }
 
 # --- subcommand: schedule ---------------------------------------------------
@@ -1381,11 +1798,22 @@ cmd_schedule() {
   parse_plan_table "$plan" >"$table"
   [ -s "$table" ] || { rm -f "$table"; die "approved-plan.json has no tickets — nothing to schedule."; }
 
+  # S156: classify the INFRASTRUCTURE-ESTABLISHING tickets first — the ticket's
+  # DECLARED `establishesSharedInfrastructure` where it has one, else the narrow
+  # backstop (see classify_infra_ticket). No LLM call either way. compute_waves
+  # isolates each one into a wave of its own, so nothing that will build against
+  # the shared build/test config can be its blind sibling. With no such ticket
+  # the list is empty and the wave layout is byte-identical to before. The scan
+  # ALSO carries the provenance the readout reports — how each call was made.
+  local scan; scan="$(mktemp)"
+  infra_scan "$table" >"$scan"
+  local infra_ids; infra_ids="$(infra_ids_from_scan "$scan")"
+
   # Build the waves first; a cycle stops us before any issue is created or any
   # state changes (compute_waves has already named the stuck tickets).
   local wavemap; wavemap="$(mktemp)"
-  if ! compute_waves "$table" >"$wavemap"; then
-    rm -f "$table" "$wavemap"
+  if ! compute_waves "$table" "$infra_ids" >"$wavemap"; then
+    rm -f "$table" "$wavemap" "$scan"
     exit 1
   fi
 
@@ -1397,28 +1825,38 @@ cmd_schedule() {
   # NOT closed on green (it closes on PR merge, in lcars-approve). Ticket count
   # is the number of rows in $table (one row per ticket).
   local assign; assign="$(mktemp)"
-  local nwaves=0 ntickets=0 nissues=0 wnum ids id num
+  local nwaves=0 ntickets=0 nissues=0 nisolated=0 wnum ids id num
+  local ISOLATED_NOTE=""
   local ticket_count; ticket_count="$(grep -c . "$table")"
   if [ "$ticket_count" -le 1 ]; then
     # The lone ticket id is the single row's first field; its wave is whatever
     # compute_waves placed it in (always 1 with ≤1 ticket, but read it rather
     # than assume).
-    local lone_id lone_wave parent
+    local lone_id lone_wave parent lone_reason=""
     lone_id="$(awk -F'\t' 'NF{print $1; exit}' "$table")"
     lone_wave="$(awk 'NF{print $1; exit}' "$wavemap")"; lone_wave="${lone_wave:-1}"
     parent="$(json_raw "$STATE" githubIssue)"
     nwaves=1; ntickets=1
+    # The lone ticket is classified too, so the captain reads the SAME story on a
+    # one-ticket plan as on a twelve-ticket one — worded honestly (there is no
+    # "later ticket" here to protect).
+    lone_reason="$(wave_isolation_reason "$table" "$lone_id" "" "" lone)" || lone_reason=""
+    if [ -n "$lone_reason" ]; then
+      ISOLATED_NOTE="    wave $lone_wave — $lone_reason
+"
+      nisolated=1
+    fi
     case "$parent" in
       ''|null)
         # Degraded path: no issue on file. Keep TODAY's behaviour — issue: null
         # plus the existing warning. NEVER fabricate an issue; the fast-path is
         # about not creating a REDUNDANT one, never about inventing one.
-        printf '%s\t%s\t%s\n' "$lone_wave" "$lone_id" "" >>"$assign"
+        printf '%s\t%s\t%s\t%s\n' "$lone_wave" "$lone_id" "" "$lone_reason" >>"$assign"
         RELABEL_NOTE="  ⚠ no githubIssue on file — wrote issue: null for $lone_id (local-only mission)."
         ;;
       *)
         # Reuse the Mission's own issue; open NO sub-issue (nissues stays 0).
-        printf '%s\t%s\t%s\n' "$lone_wave" "$lone_id" "$parent" >>"$assign"
+        printf '%s\t%s\t%s\t%s\n' "$lone_wave" "$lone_id" "$parent" "$lone_reason" >>"$assign"
         ;;
     esac
   else
@@ -1431,11 +1869,30 @@ cmd_schedule() {
     while read -r wnum ids; do
       [ -n "$wnum" ] || continue
       nwaves=$((nwaves + 1))
+      # S156: a wave holding exactly ONE ticket that is infrastructure-
+      # establishing was ISOLATED by the barrier — say so, in waves.json and in
+      # the readout, so a one-ticket wave explains itself. Any other wave gets
+      # no reason at all (additive-absent).
+      local wave_reason="" preceders="" pre_deps="" pre_other=""
+      if [ "$(printf '%s\n' $ids | grep -c .)" = "1" ]; then
+        # Tickets that built BEFORE this one despite coming later in the plan,
+        # split by whether the GRAPH actually makes them its dependencies — the
+        # reason string may only call the first group dependencies.
+        preceders="$(wave_preceders "$wavemap" "$table" "$ids" "$wnum")"
+        pre_deps="$(printf '%s' "$preceders" | cut -f1)"
+        pre_other="$(printf '%s' "$preceders" | cut -f2)"
+        wave_reason="$(wave_isolation_reason "$table" "$ids" "$pre_deps" "$pre_other")" || wave_reason=""
+      fi
+      if [ -n "$wave_reason" ]; then
+        ISOLATED_NOTE="${ISOLATED_NOTE}    wave $wnum — $wave_reason
+"
+        nisolated=$((nisolated + 1))
+      fi
       for id in $ids; do
         ntickets=$((ntickets + 1))
         num="$(create_issue "$id" "$type" "$table")"
         [ -n "$num" ] && nissues=$((nissues + 1))
-        printf '%s\t%s\t%s\n' "$wnum" "$id" "$num" >>"$assign"
+        printf '%s\t%s\t%s\t%s\n' "$wnum" "$id" "$num" "$wave_reason" >>"$assign"
         # Nest the new child under the Mission — best-effort, ENTIRELY through
         # the host adapter (no direct gh/REST here) so it stays host-agnostic.
         # Guards: skip a child we failed to create (empty num); skip when there
@@ -1457,10 +1914,45 @@ cmd_schedule() {
   set_stage "implement"
   gh_relabel "lcars:implement" "lcars:schedule"
 
-  rm -f "$table" "$wavemap" "$assign"
+  # --- PROVENANCE (S156 fix round 2) ---------------------------------------
+  # ALWAYS reported, on every path including the boring one. Without it the
+  # captain cannot tell "the planner decided nothing is infrastructure" from
+  # "nobody declared anything and the harness guessed" — and those two states
+  # schedule identically while carrying completely different risk. Read off the
+  # single infra_scan pass; this is a readout, never a gate.
+  local n_true n_false n_inferred n_none n_declared contradictions
+  n_true="$(awk -F'\t' '$2=="declared-true"{n++} END{print n+0}' "$scan")"
+  n_false="$(awk -F'\t' '$2=="declared-false"{n++} END{print n+0}' "$scan")"
+  n_inferred="$(awk -F'\t' '$2=="inferred"{n++} END{print n+0}' "$scan")"
+  n_none="$(awk -F'\t' '$2=="none"{n++} END{print n+0}' "$scan")"
+  n_declared=$((n_true + n_false))
+  # A `false` declaration over text the backstop WOULD have matched. The
+  # planner's call wins — we only say so out loud, once per ticket.
+  contradictions="$(awk -F'\t' '$2=="declared-false" && $3!="" {
+      printf "  %s declares establishesSharedInfrastructure: false, overriding a config-file match (%s) — the plan'"'"'s call wins, so it shares its wave.\n", $1, $3 }' "$scan")"
+
+  rm -f "$table" "$wavemap" "$assign" "$scan"
 
   echo "SCHEDULE: advanced"
   echo "  Grouped $ntickets ticket(s) into $nwaves wave(s); opened $nissues sub-issue(s)."
+  if [ "$n_declared" -eq 0 ]; then
+    echo "  ⚠ NO ticket declared establishesSharedInfrastructure — the harness fell back to reading ticket text, which only catches a ticket that NAMES a build/test config file. An infrastructure ticket phrased any other way did NOT get a wave of its own. Ask Plan to declare the field."
+  elif [ "$n_declared" -eq "$ticket_count" ]; then
+    echo "  Infrastructure: all $ticket_count ticket(s) declared establishesSharedInfrastructure ($n_true true, $n_false false)."
+  else
+    echo "  Infrastructure: $n_declared of $ticket_count ticket(s) declared establishesSharedInfrastructure ($n_true true, $n_false false); $((n_inferred + n_none)) undeclared, read from ticket text instead ($n_inferred matched a config file)."
+  fi
+  [ -n "$contradictions" ] && printf '%s\n' "$contradictions"
+  if [ "$nisolated" -gt 0 ]; then
+    if [ "$ticket_count" -le 1 ]; then
+      echo "  Infrastructure ticket (a one-ticket plan has nothing to isolate it from):"
+    elif [ "$nisolated" -eq 1 ]; then
+      echo "  Isolated 1 infrastructure ticket into a wave of its own:"
+    else
+      echo "  Isolated $nisolated infrastructure tickets into waves of their own:"
+    fi
+    printf '%s' "$ISOLATED_NOTE"
+  fi
   echo "  Wrote waves.json."
   echo "  Stage:  implement"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"

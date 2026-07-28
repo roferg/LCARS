@@ -313,12 +313,71 @@ bash ~/.claude/skills/lcars-run/run.sh schedule --mission <id>
    every ticket with no dependencies; wave *N* is every remaining ticket whose
    dependencies all sit in earlier waves (see CONTEXT.md → *Wave*). Tickets in a
    wave are mutually independent and so implementable in parallel.
-3. **Creates one GitHub sub-issue per ticket**, titled with the ticket title and
+3. **Isolates every infrastructure-establishing ticket** into a wave of its own.
+   Such a ticket rides ALONE in its wave, and every ticket after it in plan order
+   lands in a LATER wave, so later tickets build AGAINST the shared build/test
+   infrastructure instead of beside it. Siblings in a wave are blind to each
+   other: a docs ticket that authored a test against a base with no Vite config
+   once had that test permanently broken by its own wave-mate's `vite.config.ts`,
+   and eleven tickets built on top before anything noticed.
+
+   The classification is **DECLARED, not guessed**: the Plan worker sets
+   `establishesSharedInfrastructure` on each ticket (`stages/plan.md`) and Plan
+   Review audits it (`stages/plan-review.md`). Schedule OBEYS the flag — `true`
+   isolates, `false` never does, and no prose is inspected. **This is the
+   mechanism.**
+
+   Only when the field is ABSENT (an older plan, a mission already in flight)
+   does a narrow **backstop** read the ticket's title, description, acceptance
+   criteria and rationale. It has exactly ONE signal: a build/test **config
+   filename** named on a line that also carries a create/change verb, ignoring
+   negations, "existing"/"already" framing, and documentation references.
+   **What it does NOT catch: any infrastructure ticket that never names a config
+   file** — "Create the Django project and its settings module", "Stand up the
+   test runner", "Add the GitHub Actions job that runs the unit tests",
+   "Migrate the existing Jest suites onto Vitest" are all missed, deliberately.
+   An earlier version also matched infrastructure phrasing; measured against a
+   reworded corpus its recall fell from 14/14 to 5/14, and it scored 13/23 on
+   unseen tickets while misfiring on ordinary work — so the phrase matching was
+   deleted rather than widened. `tests/wave-isolation.test.sh` encodes those
+   misses as explicit KNOWN-MISS assertions, including the phrasing coin-flip:
+   the ground-truth scaffold ticket written as "Create the project scaffold —
+   package.json, vite.config.ts and tsconfig.json" is isolated, while the same
+   ticket written as "Create the app entry and wire the dev/build/test scripts"
+   is not.
+
+   **The one residual false positive: a repo whose subject matter IS build
+   configuration.** The backstop cannot distinguish "this ticket changes
+   `vite.config`" from "this ticket adds a feature that reads `vite.config`", so
+   a dependency scanner, a language server, a CI dashboard or a template gallery
+   will see tickets like "Add Gemfile support to the audit tool" or "Add the
+   .csproj upload endpoint" inferred as infrastructure. LCARS itself is such a
+   repo. Declaring the field removes the class completely — the text is then
+   never read — and while undeclared the cost is **wall-clock only**: extra
+   one-ticket waves, never wrong code. Always declare the field.
+
+   **Provenance is always in the readout** — how many tickets declared the flag,
+   how many were read from text, and a plain warning when NOTHING was declared,
+   so you can tell "the planner decided" from "the harness guessed". A `false`
+   that contradicts a config-file match is honoured (the plan's call wins) and
+   reported in one line. `plan-save` raises the same warning earlier, where Plan
+   Review can still act on it.
+
+   Dependencies always win. A ticket never lands before one of its declared
+   dependencies. When an infra ticket depends on a ticket ordered AFTER it, only
+   that ticket's OWN unplaced dependencies are allowed past its barrier. Two
+   such infra tickets can still force a third ticket ahead of the second
+   barrier — the plan cannot satisfy both — and when that happens the reason
+   string says so explicitly instead of calling it a dependency. Every
+   "which it depends on" clause is checked against the dependency graph.
+4. **Creates one GitHub sub-issue per ticket**, titled with the ticket title and
    bodied with its description plus an **Acceptance Criteria** list, labelled
    `lcars:implement,lcars:<type>` (the Mission's type — `feature`/`bug`).
-4. **Writes `waves.json`** — an array of `{ wave, tickets:[ { id, issue } ] }`,
-   each ticket carrying the number of the sub-issue just opened for it.
-5. **Advances** the stage to `implement` and moves the Mission's own issue label
+5. **Writes `waves.json`** — an array of `{ wave, tickets:[ { id, issue } ] }`,
+   each ticket carrying the number of the sub-issue just opened for it. An
+   isolated wave also carries an additive `"reason"` string; a wave that was not
+   isolated has no `reason` key at all.
+6. **Advances** the stage to `implement` and moves the Mission's own issue label
    `lcars:schedule` → `lcars:implement`.
 
 On success it prints:
@@ -328,6 +387,34 @@ SCHEDULE: advanced
   Grouped 4 ticket(s) into 2 wave(s); opened 4 sub-issue(s).
   Wrote waves.json.
   Stage:  implement
+```
+
+…and, when a wave was isolated, names it and why — stating whether the ticket
+DECLARED the flag or the backstop inferred it:
+
+```
+SCHEDULE: advanced
+  Grouped 12 ticket(s) into 8 wave(s); opened 12 sub-issue(s).
+  Isolated 1 infrastructure ticket into a wave of its own:
+    wave 1 — t-001 declares establishesSharedInfrastructure: true — isolated into a wave of its own so later tickets build against it
+  Wrote waves.json.
+  Stage:  implement
+```
+
+When the flag was absent, the same line reads as the inference it is, and names
+the config file it matched:
+
+```
+    wave 1 — t-001 has no establishesSharedInfrastructure flag; the harness INFERRED shared build/test infrastructure because its text changes a shared config file (vite.config) — isolated into a wave of its own so later tickets build against it
+```
+
+The provenance line is printed on EVERY run, including a plan with no
+infrastructure at all:
+
+```
+  Infrastructure: all 4 ticket(s) declared establishesSharedInfrastructure (1 true, 3 false).
+  ⚠ NO ticket declared establishesSharedInfrastructure — the harness fell back to reading ticket text, which only catches a ticket that NAMES a build/test config file. …
+  t-001 declares establishesSharedInfrastructure: false, overriding a config-file match (package.json) — the plan's call wins, so it shares its wave.
 ```
 
 ### STEP 2 — Circular dependencies stop the Stage
@@ -599,6 +686,7 @@ trust the board to show exactly where every Mission is.
   approved-plan.json    ← copy of plan.json once Plan Review passes (→ Schedule)
   plan-review-<n>.json  ← the reviewer's verdict for failed round n (Plan Review)
   waves.json            ← the wave graph: [ { wave, tickets:[ { id, issue } ] } ] (Schedule → Implement)
+                          an ISOLATED wave also carries "reason" (additive; absent otherwise)
   tickets/
     <ticket-id>/
       result.json         ← v2: { ticketId, passed, attempts, summary, newTests, testEdits, flipFlop } (Implement)
@@ -667,9 +755,12 @@ working tree changes.
   `planReviewRound` persists across the loop-back to Plan; the third failure
   parks the card at the awaiting-human gate (stage stays `plan-review`) for the
   captain to override or redirect, rather than bouncing Plan again.
-- **Schedule is mechanical — don't reason over it.** The wave grouping and
-  sub-issue creation are deterministic; never spawn an LLM to "decide" the
-  waves. Just run `schedule` and report. A canonical `approved-plan.json` is
+- **Schedule is mechanical — don't reason over it.** The wave grouping, the
+  infrastructure-ticket isolation, and the sub-issue creation are all
+  deterministic; never spawn an LLM at Schedule time to "decide" the waves or to
+  classify a ticket as infrastructure. The infrastructure call is made UPSTREAM,
+  by the Plan worker declaring `establishesSharedInfrastructure` and Plan Review
+  auditing it. Just run `schedule` and report. A canonical `approved-plan.json` is
   acyclic (deps were validated at `plan-save`), so a reported cycle is a
   planning bug to surface, not something Schedule can retry away.
 - **Schedule degrades gracefully without gh.** If `gh` is missing or a create
