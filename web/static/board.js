@@ -2865,6 +2865,19 @@ function whyCopyForGate(type) {
       return "Why you’re seeing this — the harness hit its automatic-retry limit " +
         "on this step and needs your call before it tries again. Answer below " +
         "and the mission resumes from where it stopped.";
+    case "environment":
+      // S157 × #93. The full-suite gate could not re-run the suites against a
+      // trustworthy dependency environment (the worktree was symlinked to a
+      // shared install its own lockfile had replaced). NOT a code problem, and
+      // the harness deliberately dispatched NO worker — no edit to any ticket
+      // clears a stale toolchain. This wording tracks what the CLI prints for the
+      // same gate (escalate_full_suite_regression’s environment branch); the two
+      // surfaces must not invent separate stories for one event.
+      return "Why you’re seeing this — your TOOLCHAIN is stale, not your code. " +
+        "The tests were re-run against dependencies this branch’s own lockfile " +
+        "replaced, so the harness cannot tell whether anything regressed — and no " +
+        "ticket is implicated. Nothing here is a decision about the work: repair " +
+        "the provisioning (`lcars update`) and run the mission again.";
     case "scope":
       return "Why you’re seeing this — a stage escalated a strategic/scope call. " +
         "Answer below and the mission resumes from where it stopped.";

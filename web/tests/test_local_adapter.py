@@ -102,6 +102,28 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertIn("#47", m["gate"]["humanSummary"])
         self.assertIn("FULL-SUITE GATE", m["gate"]["technicalDetail"])
 
+    def test_gate_envelope_carries_the_environment_type(self):
+        # S157 x #93: a full-suite failure diagnosed as a STALE DEPENDENCY
+        # ENVIRONMENT is a toolchain fault — it attributes to no ticket and
+        # dispatches no worker — so the harness writes escalationType
+        # "environment" rather than "regression". The adapter must pass the new
+        # value through verbatim; the board keys its "why you're seeing this"
+        # copy off it (web/tests/test_gate_copy.py pins that copy).
+        d = fx.plant_gated(self.tmp, "m-env", resume_stage="align",
+                           inflight_stage="implement")
+        pending = json.load(open(os.path.join(d, "pending.json")))
+        pending.update({
+            "humanSummary": "The test suite could not be re-run against a "
+                            "trustworthy dependency environment ...",
+            "escalationType": "environment",
+            "technicalDetail": "FULL-SUITE GATE - STALE DEPENDENCY ENVIRONMENT",
+        })
+        fx.write_json(os.path.join(d, "pending.json"), pending)
+        m = self._by_id(self._board(), "m-env")
+        self.assertIsNotNone(m["gate"])
+        self.assertEqual(m["gate"]["escalationType"], "environment")
+        self.assertIn("STALE DEPENDENCY ENVIRONMENT", m["gate"]["technicalDetail"])
+
     def test_gate_none_when_no_envelope_fields(self):
         # a plain pre-harness pending.json (no new fields) → gate is None so the
         # renderer degrades to the bare question text.
