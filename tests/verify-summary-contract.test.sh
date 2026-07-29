@@ -145,6 +145,36 @@ make_gh_stub "$repo2/gh"; run_summary "$repo2"
 check "2. no CONTRACT AMENDMENTS rows (block collapses)" "! grep -qF 'src/legacy.test.ts' '$OUT'"
 check "2. exactly one quiet 'no ... contract' line" "[ \"\$(grep -ci 'no .*contract\|contract .*none' '$OUT')\" -eq 1 ]"
 
+# ── 5. S157: a certified REPAIR of a pre-existing test is SURFACED ───────────
+# The harness deliberately does NOT try to prove a repair was honest — that guard
+# was built, broken by five successive reviewers, and ruled out. So Verify must
+# put the repair in front of the human at the gate they already stop at, name the
+# file, and say plainly what was and was not established.
+repo5="$(new_repo proof)"
+m5="$repo5/.git/lcars/missions/$MID"
+cat >"$m5/tickets/t-002/flip-flop.json" <<'EOF'
+{ "ticketId": "t-002", "parentSha": "abc", "verdict": "pass",
+  "reason": "tests GREEN on tip, RED on parent",
+  "testFiles": ["src/legacy.test.ts"],
+  "parentLeg": { "ran": true, "mode": "parent-own", "repairPathRefused": "",
+                 "sources": [ { "path": "src/legacy.test.ts", "source": "parent-own" } ] },
+  "executed": { "parent": "3", "tip": "3", "runner": "node", "checked": true } }
+EOF
+make_gh_stub "$repo5/gh"; run_summary "$repo5"
+check "5. exits 0" "[ '$RC' -eq 0 ]"
+check "5. renders a REPAIRED PRE-EXISTING TESTS block" "grep -q 'REPAIRED PRE-EXISTING TESTS' '$OUT'"
+check "5. names the repaired file" "grep -qF 'src/legacy.test.ts' '$OUT'"
+check "5. names the ticket that repaired it" "grep -q 't-002 . src/legacy.test.ts' '$OUT'"
+check "5. states what WAS established (already failing at the parent)" \
+  "grep -qi 'already FAILING at the parent' '$OUT'"
+check "5. states what was NOT established (removal is unverified)" \
+  "grep -qi 'does NOT verify that nothing was removed' '$OUT'"
+
+# ── 6. a mission with NO repair says nothing about repairs ───────────────────
+repo6="$(new_repo proof)"; make_gh_stub "$repo6/gh"; run_summary "$repo6"
+check "6. no repair block when no file was parent-own" "! grep -q 'REPAIRED PRE-EXISTING TESTS' '$OUT'"
+check "6. and the pre-existing amendments block is untouched" "grep -qi 'CONTRACT AMENDMENTS' '$OUT'"
+
 # ── 3. flip-flop N/A → chip N/A + reason shown ───────────────────────────────
 repo3="$(new_repo proof)"; add_na_ticket "$repo3"; make_gh_stub "$repo3/gh"; run_summary "$repo3"
 check "3. flip-flop N/A chip present" "grep -qi 'N/A' '$OUT'"

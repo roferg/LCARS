@@ -500,9 +500,19 @@ around them (see vision.md → *Implement*):
 - **Quality floor** — ≥1 new/changed asserting test, unless the result declares
   `flipFlop: "not-applicable"` with a reason.
 - **Flip-flop** — the ticket's tests must be **GREEN on the tip** and **RED on
-  the parent commit** (same tests staged into a scratch worktree at the parent
-  sha). Zero-collected legs are INCONCLUSIVE, never a pass. Verdict + both
-  legs' runner tails land in `tickets/<id>/flip-flop.json`.
+  the parent commit** (a scratch worktree at the parent sha). A test file that is
+  NEW at the parent is staged into it; one that ALREADY EXISTED there runs the
+  **parent's own committed copy**, so an honest REPAIR of a test that was already
+  broken is provable, while weakening a test that passed on the parent still
+  fails (S157). On the repair path one source-blind check applies: the
+  RUNNER must not execute fewer tests on the tip than on the parent (tests that
+  actually ran, and only when one runner parsed both legs). It is vacuous when
+  the parent's copy was dead at import — it executed nothing — so Verify lists
+  every repaired file for the human rather than the harness claiming the edit was
+  honest. A diff touching ANY non-test path stages every file, as before, and says
+  which path did it. Zero-collected legs are INCONCLUSIVE, never a pass. Verdict, both legs'
+  runner tails, and the per-file source provenance (`parentLeg`) land in
+  `tickets/<id>/flip-flop.json`.
 
 On a full pass the driver commits the ticket (tests + code in one commit),
 re-verifies against the committed state (post-commit gate), and prints
