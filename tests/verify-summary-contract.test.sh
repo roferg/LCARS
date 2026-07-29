@@ -169,6 +169,11 @@ check "5. states what WAS established (already failing at the parent)" \
   "grep -qi 'already FAILING at the parent' '$OUT'"
 check "5. states what was NOT established (removal is unverified)" \
   "grep -qi 'does NOT verify that nothing was removed' '$OUT'"
+# S157 (live nit): a repair declares its work in testEdits, not newTests, so the
+# chip used to read "0 new/changed test(s)" next to a PROVEN verdict and a
+# REPAIRED block — as if the ticket had touched no tests at all.
+check "5. the new/changed count includes the repaired file (not 0)" \
+  "! grep -q 't-002 .* 0 new/changed test' '$OUT'"
 
 # ── 6. a mission with NO repair says nothing about repairs ───────────────────
 repo6="$(new_repo proof)"; make_gh_stub "$repo6/gh"; run_summary "$repo6"

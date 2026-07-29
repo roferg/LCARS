@@ -2557,6 +2557,7 @@ while IFS='|' read -r label want line; do
 done <<'CASES'
 vitest ran 2 of 3|vitest 3| Tests  1 failed | 2 passed (3)
 vitest all skipped|vitest 0| Tests  3 skipped (3)
+vitest import-death|vitest 0| Tests  no tests
 jest ran 3|jest 3|Tests:       1 failed, 2 passed, 3 total
 jest all skipped|jest 0|Tests:       3 skipped, 3 total
 rspec all pending|rspec 0|3 examples, 0 failures, 3 pending
@@ -3067,6 +3068,195 @@ JSON
     && ok "V4. an unresolvable-owner regression still yields a healable pick (not conflated)" \
     || bad "V4. the unresolved-owner path broke: '$SHR_ID'/'$SHR_BASIS'"
 fi
+
+# ==========================================================================
+# W. THE HARNESS'S OWN PROVISIONING ARTIFACTS ARE NOT WORKER CHANGES
+#
+# Found by the first LIVE drive (roferg/lcars-outwork, pnpm + Vitest, real
+# copilot workers). LCARS's own worktreeSetupCommand SYMLINKS node_modules into
+# each ticket worktree. A `.gitignore` entry of `node_modules/` — with the
+# trailing slash, the near-universal convention — is a DIRECTORY-ONLY pattern
+# that does NOT match a symlink, so git reports the link as untracked:
+#
+#   $ printf 'node_modules/\n' > .gitignore; ln -s /tmp node_modules
+#   $ git ls-files --others --exclude-standard
+#   node_modules            <-- not ignored, because it is a symlink
+#
+# The eligibility check therefore saw three symlinks as worker-authored non-test
+# changes, called the diff mixed, and refused the repair path — for a worker diff
+# that was ONE line in ONE test file. The live session only certified because the
+# worker hand-edited .git/info/exclude to neutralise an artifact LCARS created.
+# The harness was treating its own provisioning as if the worker wrote it.
+# ==========================================================================
+echo "== W. provisioning artifacts vs worker changes (live-drive blocker) =="
+
+w_repo() { # → plain repo with src/calc.js and a mission (section-local)
+  local repo; repo="$(mktemp -d "$TMPROOT/w.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '{ "name": "fix", "private": true }\n' > "$repo/package.json"
+  mkdir -p "$repo/src" "$repo/tests"
+  printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+
+prov_repo() { # → repo in the LIVE shape: node_modules/ ignored, symlinks present
+  local repo; repo="$(mktemp -d "$TMPROOT/prov.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '{ "name": "fix", "private": true }\n' > "$repo/package.json"
+  printf 'node_modules/\n' > "$repo/.gitignore"
+  mkdir -p "$repo/src" "$repo/tests" "$repo/packages/app" "$repo/packages/core" "$repo/docs"
+  printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+  printf '# ADR\n\nDecision: keep it.\n' > "$repo/docs/ADR.md"
+  # the pre-existing test, BROKEN at the parent exactly as the live seed was
+  cat > "$repo/tests/docs.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+const fs = require('node:fs');
+const repoRoot = '/nonexistent-live-root/';
+test('the ADR is on disk', () => {
+  assert.ok(fs.readFileSync(repoRoot + 'docs/ADR.md', 'utf8').includes('Decision'));
+});
+JS
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+# The provisioning LCARS itself performs, at the moment it performs it: the
+# worktreeSetupCommand runs when the worktree is PROVISIONED — after the ticket's
+# commit, just before the gate — so the links are never committed. Calling this
+# after commit_all is what makes the fixture faithful; creating them earlier
+# would let `git add -A` track them, which is not the live shape.
+provision_links() { # repo — symlink node_modules at the root and per package
+  mkdir -p "$1/.store"
+  ln -s "$1/.store" "$1/node_modules"
+  ln -s "$1/.store" "$1/packages/app/node_modules"
+  ln -s "$1/.store" "$1/packages/core/node_modules"
+}
+
+# --- W1: THE LIVE SHAPE — one test-file line, certified on the FIRST attempt --
+repo="$(prov_repo)"; P="$(head_sha "$repo")"
+sed -i.bak "s|'/nonexistent-live-root/'|process.cwd() + '/'|" "$repo/tests/docs.test.js"
+rm -f "$repo/tests/docs.test.js.bak"
+commit_all "$repo"
+provision_links "$repo"
+# git must really be reporting the symlinks as untracked, or the fixture is not
+# reproducing the defect and everything below would pass vacuously.
+[ -n "$( cd "$repo" && git ls-files --others --exclude-standard | grep '^node_modules$' )" ] \
+  && ok "W1a. fixture is faithful: git reports the ignored-by-pattern symlink as untracked" \
+  || bad "W1a. fixture does not reproduce the defect (no untracked node_modules symlink)"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$(ff_mode "$ffj")" = parent-own ] \
+  && ok "W1b. the repair path is AVAILABLE — provisioning symlinks are not worker changes" \
+  || bad "W1b. expected mode=parent-own (got '$(ff_mode "$ffj")'): $(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')"
+[ -z "$(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" ] \
+  && ok "W1c. and nothing is recorded as having withdrawn it" \
+  || bad "W1c. spurious withdrawal: $(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')"
+[ "$FFRC" = 0 ] \
+  && ok "W1d. so the honest repair is CERTIFIED on the first attempt (rc 0)" \
+  || bad "W1d. the live blocker is still present (FFRC=$FFRC): $OUT"
+case "$(ff_reason "$ffj")" in
+  *node_modules*) bad "W1e. a provisioning artifact is still named in the verdict: $(ff_reason "$ffj")" ;;
+  *) ok "W1e. and no provisioning artifact is named anywhere in the verdict" ;;
+esac
+
+# --- W4/W5: two fidelity nits the live captain raised -----------------------
+# W4: a parent leg that died at IMPORT recorded `assertion-red`. Nothing ran, so
+# no assertion failed — the recorded evidence said something untrue about how the
+# parent failed. Discriminated now on the executed count, which is already read.
+repo="$(w_repo)"
+cat > "$repo/tests/imp.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+const { nope } = require('../src/missing.js');
+test('a', () => { assert.ok(nope); });
+JS
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+cat > "$repo/tests/imp.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+test('a', () => { assert.ok(true); });
+JS
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$FFRC" = 0 ] && ok "W4a. an import-dead parent still certifies the repair" \
+                || bad "W4a. import-dead repair failed (FFRC=$FFRC: $OUT)"
+case "$(ff_field "$ffj" 'd["parent"]["kind"]')" in
+  assertion-red) bad "W4b. a leg that ran NOTHING is still recorded as an assertion failure" ;;
+  collection-red) ok "W4b. it is recorded as collection-red — nothing ran, so no assertion failed" ;;
+  *) ok "W4b. recorded as '$(ff_field "$ffj" 'd["parent"]["kind"]')' — not the false assertion-red" ;;
+esac
+# W4b passes here via the RESOLUTION arm (node reports `Cannot find module`),
+# which is more specific and rightly keeps precedence. The live case was vitest,
+# whose import-death prints a file-level failure and `Tests  no tests` — no
+# resolution phrase, so it landed on `assertion-red`. Note node counts an
+# import-dead FILE as one failing test (executed 1), so that shape cannot
+# exercise the new arm; this drives the runner phrasing that actually did.
+repo="$(w_repo)"
+cat > "$repo/tests/vt.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+test('a', () => { assert.ok(true); });
+JS
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+cat > "$repo/tests/vt.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+test('a', () => { assert.ok(true); });
+test('b', () => { assert.ok(true); });
+JS
+commit_all "$repo"
+: > "$repo/tip-marker"
+# The tip prints a healthy vitest summary; the parent scratch (no marker) prints
+# the live import-death shape — a failing FILE and no tests collected.
+VT_CMD='if [ -f tip-marker ]; then printf " Test Files  1 passed (1)\n      Tests  2 passed (2)\n"; else printf "Error: ENOENT: no such file or directory\n Test Files  1 failed (1)\n      Tests  no tests\n"; exit 1; fi'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$VT_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+case "$(ff_field "$ffj" 'd["parent"]["kind"]')" in
+  collection-red)
+    ok "W4c. a red leg that EXECUTED NOTHING is collection-red, not assertion-red" ;;
+  *) bad "W4c. expected collection-red, got '$(ff_field "$ffj" 'd["parent"]["kind"]')'" ;;
+esac
+
+# --- W2: THE NEGATIVE CONTROL — a real non-test change still refuses ---------
+# The mixed-diff rule must not be weakened. A `vite.config.ts` is neither product
+# source nor a test, and a config exactly like it caused the original incident.
+repo="$(prov_repo)"; P="$(head_sha "$repo")"
+sed -i.bak "s|'/nonexistent-live-root/'|process.cwd() + '/'|" "$repo/tests/docs.test.js"
+rm -f "$repo/tests/docs.test.js.bak"
+printf 'export default { base: "/x/" }\n' > "$repo/vite.config.ts"
+commit_all "$repo"
+provision_links "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$(ff_mode "$ffj")" = staged ] \
+  && ok "W2a. a genuine non-test change STILL withdraws the repair path" \
+  || bad "W2a. the mixed-diff rule was weakened (mode='$(ff_mode "$ffj")')"
+case "$(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" in
+  *"vite.config.ts"*) ok "W2b. and the refusal names the real path that caused it" ;;
+  *) bad "W2b. refusal should name vite.config.ts: $(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" ;;
+esac
+case "$(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" in
+  *node_modules*) bad "W2c. the refusal also names provisioning noise: $(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" ;;
+  *) ok "W2c. naming ONLY the worker's own change, not the harness's symlinks" ;;
+esac
+
+# --- W3: a real product-source change is unaffected -------------------------
+repo="$(prov_repo)"; P="$(head_sha "$repo")"
+sed -i.bak "s|'/nonexistent-live-root/'|process.cwd() + '/'|" "$repo/tests/docs.test.js"
+rm -f "$repo/tests/docs.test.js.bak"
+printf 'exports.add = (a, b) => a + b;\nexports.sub = (a, b) => a - b;\n' > "$repo/src/calc.js"
+commit_all "$repo"
+provision_links "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$(ff_mode "$ffj")" = staged ] \
+  && ok "W3. a src/ change still takes the normal gate, symlinks or not" \
+  || bad "W3. src change did not withdraw the repair path (mode='$(ff_mode "$ffj")')"
 
 # ==========================================================================
 echo

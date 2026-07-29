@@ -4389,6 +4389,40 @@ proof_diff_paths() { # parent-sha worktree → one relpath per line (sorted, uni
   } | grep . | LC_ALL=C sort -u
 }
 
+# S157 (live-drive blocker): is this path something THE HARNESS provisioned into
+# the worktree, rather than something the worker wrote?
+#
+# LCARS's own `worktreeSetupCommand` SYMLINKS the dependency directory into each
+# ticket worktree. A `.gitignore` entry of `node_modules/` — with the trailing
+# slash, the near-universal convention — is a DIRECTORY-ONLY pattern, and git
+# does not apply it to a SYMLINK. So `ls-files --others --exclude-standard`
+# reports the link as an untracked path, and the repair-eligibility check read
+# the harness's own provisioning as a worker-authored non-test change. Observed
+# live on a pnpm monorepo: three symlinks turned a one-line test fix into a
+# "mixed diff", and the session only certified because the worker hand-edited
+# .git/info/exclude to neutralise an artifact LCARS had created.
+#
+# THE RULE IS GENERAL, NOT A DEPENDENCY-DIRECTORY LIST: an UNTRACKED SYMLINK in
+# the worktree is provisioning, not authorship. A worker writing a test or a
+# source file produces a regular file; the harness is the only thing here that
+# creates links. That keeps it stack-agnostic — node_modules, .venv, vendor,
+# target, whatever a repo's setup command links — with nothing to rot.
+#
+# WHAT IT DOES NOT COVER, stated plainly: a setup command that COPIES or really
+# INSTALLS a dependency tree produces regular files, not links. Those are correctly
+# ignored by the same `node_modules/` pattern (it does match directories), so the
+# defect does not arise there — but a repo that does not ignore its dependency
+# directory at all will still see them, and that is a repo-hygiene problem this
+# cannot and should not paper over. A TRACKED symlink is likewise never skipped:
+# if a symlink is committed, changing it is a real change to the repo.
+proof_is_provisioning_artifact() { # relpath worktree → 0 when harness-provisioned
+  local p="$1" wt="$2"
+  [ -L "$wt/$p" ] || return 1
+  # Tracked ⇒ it is part of the repo and any change to it is the worker's.
+  "$GIT_BIN" -C "$wt" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 && return 1
+  return 0
+}
+
 # The diff's TEST-classified paths. mode "existing" keeps only files present in
 # the worktree (the runnable set); default "all" includes deletions (the
 # declared-edits set — a deleted test is an edit).
@@ -4709,6 +4743,19 @@ proof_parent_red_kind() { # runner-out files-written → kind token
     return 0
   fi
   if red_gate_compile_failure "$out"; then printf 'compile-failure'; return 0; fi
+  # S157 (live-drive fidelity nit): a parent leg that died at IMPORT/collection —
+  # the file threw before registering a test — was recorded as `assertion-red`,
+  # because a runner reporting "1 failed" for the FILE matches the assertion
+  # signature. No assertion failed; nothing ran. Discriminate on the evidence
+  # already collected: a red leg that EXECUTED ZERO tests is a collection
+  # failure. Placed AFTER compile/resolution so those keep precedence (they are
+  # more specific about the same zero-execution situation), and it changes only
+  # the recorded KIND — the verdict is unaffected, since only `env-failure`
+  # changes a verdict.
+  local _ec; _ec="$(proof_executed_count "$out")"
+  if [ -n "$_ec" ] && [ "${_ec##* }" = 0 ]; then
+    printf 'collection-red'; return 0
+  fi
   if printf '%s' "$out" | grep -Eq "$(rg_signature assertion)"; then
     printf 'assertion-red'; return 0
   fi
@@ -4881,8 +4928,15 @@ f = re.search(r"^[^\n]*?\bfail (\d+)\s*$", out, re.M)
 if p and f:
     print("node %d" % (int(p.group(1)) + int(f.group(1)))); sys.exit(0)
 
-# vitest — ` Tests  1 failed | 2 passed (3)` / ` Tests  3 skipped (3)`
+# vitest — ` Tests  1 failed | 2 passed (3)` / ` Tests  3 skipped (3)`, and
+# ` Tests  no tests` for a file that died at IMPORT (nothing was registered, so
+# there is no `(N)` at all). That last form is what the live 2026-07-28 drive
+# produced; reading it as UNKNOWN left an import-death indistinguishable from a
+# real assertion failure. It is zero, and saying so is what lets the kind be
+# recorded honestly.
 m = re.search(r"^\s*Tests\s+(.*)$", out, re.M)
+if m and re.search(r"\bno tests\b", m.group(1)):
+    print("vitest 0"); sys.exit(0)
 if m and re.search(r"\(\d+\)\s*$", m.group(1)):
     seg = m.group(1)
     ran = sum(int(v) for v, k in re.findall(r"(\d+) (passed|failed)", seg))
@@ -4994,7 +5048,7 @@ FFS_EOF
     # no reader ever has to infer the parent leg's source from the verdict wording.
     # `repairPathRefused` (S157 P4) is the reason the repair path was WITHDRAWN
     # for a ticket that did edit a pre-existing test file — non-test paths in the
-    # diff, or names the harness could not read. Empty string when the repair
+    # diff. Empty string when the repair
     # path was available, or when no repair was ever in question.
     printf '  "parentLeg": { "ran": %s, "mode": "%s", "repairPathRefused": "%s", "sources": [%s] },\n' \
       "$FF_PAR_RAN" "$(json_escape "$FF_PAR_MODE")" "$(json_escape "$FF_PAR_REFUSED")" "$srcs"
@@ -5070,11 +5124,19 @@ flip_flop_gate() { # ticket parent-sha worktree
   fi
 
   # Non-test paths the change wrote — feeds the greenfield discrimination
-  # (missing-new-module vs bad-import-path) exactly as classify_impl_failure does.
+  # (missing-new-module vs bad-import-path) exactly as classify_impl_failure does,
+  # and decides repair eligibility below.
+  #
+  # The provisioning filter is applied HERE and ONLY here, because this is where
+  # eligibility is decided. proof_diff_paths, the declared-edits guard and the
+  # quality floor are deliberately left seeing the raw diff: a worker that
+  # genuinely commits a dependency tree is a different problem, and it must not
+  # become invisible to the guards whose job is to notice it.
   local changed_src="" p
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     proof_is_test_path "$p" && continue
+    proof_is_provisioning_artifact "$p" "$wt" && continue
     changed_src="$changed_src$p
 "
   done < <(proof_diff_paths "$parent" "$wt")
@@ -6609,9 +6671,14 @@ for tid in ids:
     edits = te if isinstance(te, list) else (
         (res.get("testEdits") if isinstance(res, dict) else []) or [])
     edits = [e for e in edits if isinstance(e, dict) and e.get("path")]
+    # S157: "new/changed" must count CHANGED files too. A repair declares its work
+    # in testEdits, not newTests, so a repair-only ticket used to read
+    # "0 new/changed test(s)" beside a PROVEN chip — which looks like a ticket
+    # that touched no tests at all, next to a REPAIRED block saying it did.
     new = 0
     if isinstance(res, dict) and isinstance(res.get("newTests"), list):
         new = len([p for p in res["newTests"] if isinstance(p, str) and p])
+    new += len({e["path"] for e in edits if e.get("path")})
     decl = res.get("flipFlop") if isinstance(res, dict) else None
     ffv = ff.get("verdict") if isinstance(ff, dict) else None
     if decl == "not-applicable" or ffv == "skipped":
