@@ -4,6 +4,159 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.18 — 2026-07-28
+
+The reconcile re-entry no longer destroys committed work — **the worst defect
+found so far, because it deleted verified code and reported success.**
+
+BUG-077 made a reconcile re-entry reset the local mission branch to the remote
+PR head before re-merging, so a killed/retried reconcile could not leave the tip
+diverged and jam the push:
+
+```sh
+git branch -f "$BRANCH" "origin/$BRANCH"
+```
+
+Right when the local-only commits are a dead attempt's merge commit. Catastrophic
+when they are real work — and **mission-log bug fixes are exactly that work.** A
+logged bug never opens its own PR: its fix is cherry-picked onto the *parent's*
+branch and rides the parent's PR, so until the parent next pushes it exists only
+locally.
+
+Observed live (DX-Scorecard, 2026-07-28). Three gate-verified bug fixes were
+cherry-picked onto the parent branch; 109 seconds after the last one, the parent
+re-entered reconcile because main had moved 8 commits ahead:
+
+```
+b75400b (bug 005)   1785267868
+a2509a8 (bug 006)   1785268473
+cddf9b4 (bug 007)   1785269867
+RESET -> 091fbb7    1785269976
+```
+
+The reset moved the branch back to the remote head — precisely the chain's base.
+All three commits became unreachable in one command. The reconcile then re-tested
+the *parent's* ticket, went green (the bug fixes' own tests had been discarded
+along with their code, so nothing was left to fail), and the PR merged carrying
+none of it. No error was raised anywhere; the loss was found days later, by hand.
+
+- **Divergence is now resolved by PUBLISHING, not deleting.** When the local
+  branch holds TICKET WORK the remote has never seen,
+  `reconcile_sync_local_branch` pushes it — divergence is genuinely gone
+  (local == remote) and nothing is lost.
+
+- **BUG-077's own case is untouched.** The decision keys on LCARS's own commit
+  contract rather than on "is there anything local": `commit_ticket` always
+  writes `lcars(<mission-id>) t-NNN: …`, and a cherry-pick preserves that
+  subject, so a logged bug's fix is always recognised. A dead reconcile attempt
+  is built with `git merge --no-edit` and carries no such subject, so it is
+  still discarded exactly as before. `run.sh` has precisely two commit sites,
+  one of each kind, so the partition is exhaustive by construction.
+
+- **A failed push refuses rather than falls back.** If the work cannot be
+  published, the branch is left alone with a loud event naming it. A jammed
+  push is recoverable; deleted commits are not.
+
+- **Measurement failure can never authorise a reset.** The counters return 0
+  only for "nothing provably at risk"; an unresolvable or non-numeric count is
+  treated as unsafe, not as permission.
+
+- **The fold now verifies its own premise.** `fold_one_child` marked a logged
+  bug Done on the stated assumption that "its fix already lives on the parent
+  branch" — and never checked. That is what turned the branch reset into a
+  green board with no fix anywhere. It now confirms the fix is actually on the
+  parent branch (by the same preserved `lcars(<bug-id>)` subject) and REFUSES
+  with a distinct code otherwise: the bug stays at Verify, its siblings still
+  fold, and the command exits non-zero naming what was refused. A bug whose
+  ticket recorded no commit has nothing to verify and folds as before, so
+  no-op fixes are never false-refused. This closes the CLASS — any future cause
+  (a force-push, a botched cherry-pick) is now a loud refusal at the moment of
+  decision instead of a silent loss found days later.
+## 2026.7.17 — 2026-07-28
+
+GitHub Enterprise support — **LCARS worked on `github.com` and quietly half-worked
+everywhere else.** On a `*.ghe.com` (or any self-hosted) repo, issues never
+received their per-stage detail comments and ticket sub-issues were never nested,
+with no error anywhere to explain why.
+
+The cause is a split in `gh` itself: `gh issue` / `gh pr` resolve the forge host
+from the repo's own remote, so they work on enterprise with no configuration —
+but `gh api` does **not**. It targets the default host and only substitutes
+`{owner}/{repo}` from the cwd repo. Verified against a real enterprise repo:
+
+```
+$ gh api "repos/{owner}/{repo}"
+{"message":"Not Found","documentation_url":"https://docs.github.com/..."}
+```
+
+A 404 from *docs.github.com* — the call went to github.com — while `gh auth
+status` showed a valid enterprise login the whole time. Every api-backed op
+discards stderr, so the failure was completely invisible.
+
+- **`gh api` is now host-pinned.** `host-adapter.sh` derives the host from the
+  repo's origin remote and passes `--hostname` to every api call, routed through
+  one `gh_api` wrapper so a future op cannot forget it. This repairs the S65
+  living per-stage comments and native sub-issue linking on enterprise. Handles
+  https, ssh, scp-style (`git@host:owner/repo`) and `host:port` remotes;
+  `LCARS_GH_HOST` overrides.
+
+- **github.com is byte-for-byte unchanged.** The helper returns EMPTY for
+  github.com and for a repo with no origin, so no `--hostname` is added and the
+  argv stays exactly what it has always been — the adapter's regression locks in
+  `tests/host-adapter.test.sh` keep their meaning (56 green, untouched).
+
+- **Readout links name the real host.** `lcars init` / `lcars update` printed a
+  hardcoded `on github.com/<owner>/<repo>`, which on enterprise links to a repo
+  that does not exist. Both now use the shared `lcars_gh_web_host`.
+
+## 2026.7.16 — 2026-07-28
+
+The Honest Environment round — **stop blaming the code for a stale toolchain,
+and stop calling a repo mission-ready before anything has run.** One field
+failure produced all three fixes. A Mission's ticket correctly diagnosed that
+its repo's suite could never run (vitest 4 pinned against vite 5, which needs
+vite >= 6) and committed the fix. The gate symlinked the main checkout's
+`node_modules` — still holding vitest 4 — so the suite died at import anyway,
+and the gate reported *"the implementation is NOT present on the committed
+branch"*. No committed change could ever have cleared it. Three TDD sessions
+were spent re-solving a solved problem, and `lcars init` had cheerfully
+declared the repo ready in the first place.
+
+- **Provisioning honours the lockfile.** The seeded JS `worktreeSetupCommand`
+  reused the main checkout's `node_modules` whenever it existed — right up until
+  a ticket CHANGED dependencies, at which point the shared install is the wrong
+  set by definition and the ticket's own lockfile fix can never take effect. It
+  now compares the worktree's lockfile against the main checkout's and does a
+  real install when they diverge, keeping the fast symlink path (~0.07s) when
+  they match. Covers npm / pnpm / yarn.
+
+- **Existing repos are repaired, not just new ones.** `lcars update` gains a
+  fingerprint-gated migration that rewrites LCARS's own un-guarded symlink
+  command in place, alongside the S101/S148 `testCommand` migrations. It matches
+  only a command carrying our symlink signature that lacks the guard, and
+  regenerates the replacement from `detect_worktree_setup_cmd` so it cannot
+  drift from the seed. A captain's hand-written command is never touched.
+
+- **The gates name the real fault.** `red_gate_env_failure` only catches a
+  runner that fails to START; here the runner started perfectly and simply had
+  the wrong packages. The new `stale_dep_env_reason` is its state-based
+  companion: when a gate worktree's deps are shared in by symlink AND its
+  committed lockfile differs from that checkout's, both the post-commit and
+  full-suite gates now report a STALE DEPENDENCY ENVIRONMENT — naming the repair
+  — instead of accusing the implementation of being absent or earlier tickets of
+  regressing. Conservative by construction: it speaks only on positive evidence,
+  so a genuinely missing implementation keeps its existing wording.
+
+- **`lcars init` proves the suite runs.** `lcars_test_readiness` is cheap by
+  design (status and the board call it constantly), so "ready" only ever meant
+  *the command's first token resolves* — a claim about the command, not the
+  suite. init is a one-time action and can afford more, so it now runs the
+  seeded command ONCE through the same bounded probe `lcars update --fix-tests`
+  already used (moved into `lcars-common.sh` so the two can never disagree about
+  what counts as a pass, a zero-collect, or a timeout). It probes only the
+  `ready` verdict — the one state that can lie — reports honestly, and never
+  blocks setup on a red suite. `LCARS_INIT_SKIP_PROBE=1` opts out.
+
 ## 2026.7.15 — 2026-07-28
 
 The Hotkeys & Help round (S140–141) — **drive the bridge from the keyboard, and

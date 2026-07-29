@@ -5516,6 +5516,47 @@ stray_edit_note() { # → wrong-tree note (empty when clean / non-isolated / unk
     "$main" "${br:-?}" "$status"
 }
 
+# stale_dep_env_reason — evidence that a gate worktree's installed dependencies
+# are NOT the ones its own committed lockfile asks for. Echoes a human reason, or
+# nothing when there is no such evidence.
+#
+# The companion to red_gate_env_failure, which keys on the runner failing to
+# START (command-not-found class). This is the case where the runner starts
+# perfectly and still cannot be believed: worktreeSetupCommand provisions a gate
+# worktree by SYMLINKING the main checkout's node_modules, which is correct right
+# up until a ticket CHANGES dependencies. Then the shared install is the wrong
+# set by definition, the ticket's committed lockfile fix cannot take effect, and
+# the red that follows gets reported as "the implementation is NOT present on the
+# committed branch" — an accusation about code, for an environment fault. No
+# committed change can ever clear it, so the ticket burns its whole retry budget.
+#
+# CONSERVATIVE: reports only on POSITIVE evidence — deps shared by symlink from
+# ANOTHER checkout, AND a lockfile that differs from that checkout's. A worktree
+# that owns its node_modules is by definition testing its own dependencies, and
+# an ABSENT node_modules is red_gate_env_failure's business. With no evidence it
+# stays silent, so a genuinely missing implementation keeps its correct wording.
+stale_dep_env_reason() { # worktree → reason (empty ⇒ no evidence of staleness)
+  local wt="${1:-}" lock target main
+  [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  # Only decidable when the deps are SHARED in from somewhere else.
+  [ -L "$wt/node_modules" ] || return 0
+  target="$( cd "$wt" 2>/dev/null && readlink node_modules 2>/dev/null )" || return 0
+  [ -n "$target" ] || return 0
+  case "$target" in /*) : ;; *) target="$wt/$target" ;; esac
+  main="${target%/node_modules}"
+  [ -d "$main" ] || return 0
+  [ "$main" = "$wt" ] && return 0
+  for lock in package-lock.json pnpm-lock.yaml yarn.lock; do
+    if [ -f "$wt/$lock" ] && [ -f "$main/$lock" ] \
+       && ! cmp -s "$wt/$lock" "$main/$lock"; then
+      printf 'this worktree'\''s %s differs from the shared install it was given (symlinked from %s), so the suite ran against the WRONG dependency set' \
+        "$lock" "$main"
+      return 0
+    fi
+  done
+  return 0
+}
+
 POST_COMMIT_SIGNAL=""   # caller may point this at a file to capture the failure detail
 post_commit_gate() { # ticket
   local t="$1" cmd; cmd="$(resolve_test_cmd)"
@@ -5639,6 +5680,22 @@ PC_RELS_EOF
     local edetail="POST-COMMIT GATE — environment not provisioned — the test runner could not start in the gate worktree (missing node_modules/venv or an absent test binary); set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`). This is NOT a missing implementation. Command run: $cmd."
     printf '  ✗ %s\n' "$edetail" >&2
     [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$edetail" >"$POST_COMMIT_SIGNAL"
+    return 3
+  fi
+
+  # STALE-ENV (companion to the startup check above): the runner STARTED, so the
+  # env is "provisioned" — but it was handed a shared install that does not match
+  # this worktree's own committed lockfile. The code may be perfectly present;
+  # it was simply tested against the dependencies its own commit replaced. Blaming
+  # the implementation here is not just unhelpful, it is unfixable: no committed
+  # change can alter what the gate symlinks in, so the ticket bounces to a fresh
+  # worker until its retry budget is gone. Same DISTINCT code (3) as the startup
+  # failure, so the call site already routes it as an environment fault.
+  local stale; stale="$(stale_dep_env_reason "$wt")"
+  if [ -n "$stale" ]; then
+    local sdetail="POST-COMMIT GATE — STALE DEPENDENCY ENVIRONMENT — ticket $t's suite is RED, but $stale. This is NOT a missing implementation and NO committed change can fix it: the gate reuses the main checkout's installed deps, so a ticket that changes dependencies must have them installed. Repair the provisioning with \`lcars update\` (its worktreeSetupCommand migration reinstalls on a lockfile divergence). Command run: $cmd."
+    printf '  ✗ %s\n' "$sdetail" >&2
+    [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$sdetail" >"$POST_COMMIT_SIGNAL"
     return 3
   fi
 
@@ -5977,6 +6034,7 @@ FULL_SUITE_REGRESSED=""
 full_suite_gate() { # ordered ticketId...
   FULL_SUITE_REGRESSED=""
   local cmd; cmd="$(resolve_test_cmd)"
+  FULL_SUITE_STALE_ENV=""   # reset per call — never inherit a prior gate's verdict
   if [ -z "$cmd" ]; then
     # NO RUNNER: the same documented degradation as the red gate. We cannot
     # re-check earlier tickets for regressions, so we SKIP LOUD — never a false
@@ -6015,6 +6073,9 @@ full_suite_gate() { # ordered ticketId...
     # tip via the shared helper, so relative-to-self target resolution behaves as
     # it did at green-time.
     RETEST_CAPTURE="$cap" retest_ticket_suites "$wt" "$cmd" "$@" || regressed="$RETEST_FAILED"
+    # Read the dependency-environment evidence BEFORE the worktree is torn down —
+    # the classification below runs after this block, when the path is gone.
+    FULL_SUITE_STALE_ENV="$(stale_dep_env_reason "$wt")"
     # Clean up the worktree on EVERY exit path — never leak into the captain's
     # `git worktree list` or working tree. Mirrors cleanup_ticket_worktrees.
     "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
@@ -6048,6 +6109,28 @@ full_suite_gate() { # ordered ticketId...
       [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$edetail" >"$FULL_SUITE_SIGNAL"
       return 1
     fi
+  fi
+
+  # STALE-ENV (same fault, same reasoning as the post-commit gate): the runner
+  # started fine but was handed a shared install that does not match this
+  # worktree's committed lockfile, so "these suites regressed" names the wrong
+  # culprit — the earlier tickets did not regress, they were re-run against the
+  # wrong dependency set. Diagnosis only; the gate still fails.
+  #
+  # ORDERING IS LOAD-BEARING (S157 × #93 merge seam). This block returns BEFORE
+  # FULL_SUITE_REGRESSED is set, so a stale-dependency failure attributes to NO
+  # ticket and self-heal dispatches nobody. Moving the assignment above this
+  # early return would hand a worker a ticket to "fix" for a break that is a
+  # toolchain fault — the false-premise reconcile both changes exist to end.
+  if [ -n "${FULL_SUITE_STALE_ENV:-}" ]; then
+    local sdetail="FULL-SUITE GATE — STALE DEPENDENCY ENVIRONMENT — the re-run went RED, but ${FULL_SUITE_STALE_ENV}. These suites did NOT necessarily regress: they were re-run against dependencies this branch's own lockfile replaced. Repair the provisioning with \`lcars update\` (its worktreeSetupCommand migration reinstalls on a lockfile divergence), then re-run. Command run: $cmd."
+    emit_event ticket_env_unprovisioned implement \
+      "full-suite gate — stale dependency environment (the gate worktree's lockfile differs from the shared install it was symlinked); repair with \`lcars update\`" \
+      "" || :
+    rm -rf "$cap" 2>/dev/null
+    printf '  ✗ %s\n' "$sdetail" >&2
+    [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$sdetail" >"$FULL_SUITE_SIGNAL"
+    return 1
   fi
 
   # S157: the ids are recorded for attribution BEFORE the prose is built, so the
@@ -7147,6 +7230,128 @@ reconcile_retest_env_escalate() { # failed-ids  captured-output
   printf 'RECONCILE: env-blocked — merged %s cleanly but the retest could not run (worktree not provisioned); set worktreeSetupCommand and re-run.\n' "$BASE"
 }
 
+# reconcile_unpushed_count <branch> — how many commits <branch> has that
+# origin/<branch> does not. 0 when there is no remote branch to compare against,
+# or when the count cannot be determined — "0" always means "nothing provably at
+# risk", so a failure to measure can never authorise a destructive reset.
+reconcile_unpushed_count() { # branch → count
+  local b="${1:-}" n
+  [ -n "$b" ] || { printf '0'; return 0; }
+  "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$b" || { printf '0'; return 0; }
+  n="$("$GIT_BIN" rev-list --count "origin/$b..$b" 2>/dev/null)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# reconcile_unpushed_work_count <branch> — of those local-only commits, how many
+# are LCARS TICKET WORK.
+#
+# This is the distinction that decides whether the branch may be reset, and it
+# has to be exactly right in BOTH directions:
+#
+#   • A dead reconcile attempt is what BUG-077 was written for. Reconcile builds
+#     its attempt with `git merge --no-edit "$base_ref"`, so the artifact left on
+#     a killed retry is a MERGE (or a hand-made resolution) — it carries no
+#     ticket signature, is genuinely disposable, and still resets exactly as
+#     before.
+#   • A ticket commit is authored by commit_ticket, which always writes the
+#     subject "lcars(<mission-id>) t-NNN: …". A logged bug's fix is cherry-picked
+#     onto the parent branch and the cherry-pick PRESERVES that subject, so the
+#     fixes that were destroyed in the field are precisely the commits this
+#     recognises.
+#
+# Keying on LCARS's own commit-message contract (rather than on merge-ness) means
+# no existing BUG-077 assertion changes meaning: a non-ticket local-only commit
+# is still discarded, a ticket commit never is.
+reconcile_unpushed_work_count() { # branch → count
+  local b="${1:-}" n
+  [ -n "$b" ] || { printf '0'; return 0; }
+  "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$b" || { printf '0'; return 0; }
+  n="$("$GIT_BIN" log --format=%s "origin/$b..$b" 2>/dev/null | grep -c '^lcars(')"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s' "$n"
+}
+
+# reconcile_sync_local_branch <branch> — bring the LOCAL branch into agreement
+# with the remote PR head WITHOUT ever destroying committed work.
+#
+# BUG-077 introduced a blunt `git branch -f "$BRANCH" "origin/$BRANCH"` here so a
+# killed/retried reconcile could not leave the local tip diverged and jam the
+# eventual push. That is right when the local-only commits are a dead attempt's
+# merge commit. It is catastrophic when they are real work — and it destroyed
+# real work in the field.
+#
+# MISSION-LOG BUG FIXES ARE EXACTLY THAT WORK. A logged bug never opens its own
+# PR: its fix is cherry-picked onto the PARENT's branch and rides the parent's
+# PR (see fold_one_child in skills/lcars-resolve-logs). Until the parent next
+# pushes, those commits exist ONLY locally. Observed live (DX-Scorecard,
+# 2026-07-28): three gate-verified bug fixes were cherry-picked onto the parent
+# branch, the parent re-entered reconcile 109 seconds later because main had
+# moved 8 commits ahead, and the reset moved the branch back to the remote head
+# — which was precisely the chain's base. All three commits became unreachable
+# in one command. The reconcile then re-tested the PARENT's ticket, went green
+# (the bug fixes' own tests had been discarded along with their code, so nothing
+# was left to fail), and the PR merged carrying none of it. Silently.
+#
+# THE RULE: divergence is resolved by PUBLISHING local work, not by deleting it.
+#   local has commits the remote lacks → PUSH them. Divergence is genuinely gone
+#                                        (local == remote) and nothing is lost.
+#   the push fails                     → leave the branch ALONE and say so; a
+#                                        jammed push is recoverable, deleted
+#                                        commits are not.
+#   nothing local-only                 → reset exactly as BUG-077 intended.
+#
+# Best-effort throughout: never aborts the caller.
+reconcile_sync_local_branch() { # branch
+  local b="${1:-}"
+  [ -n "$b" ] || return 0
+  "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$b" || return 0
+  local local_tip remote_tip
+  local_tip="$("$GIT_BIN" rev-parse "$b" 2>/dev/null)"
+  remote_tip="$("$GIT_BIN" rev-parse "origin/$b" 2>/dev/null)"
+  [ -n "$remote_tip" ] || return 0
+  [ "$local_tip" = "$remote_tip" ] && return 0
+
+  local unpushed work
+  unpushed="$(reconcile_unpushed_count "$b")"
+  work="$(reconcile_unpushed_work_count "$b")"
+  if [ "$work" -gt 0 ]; then
+    if "$GIT_BIN" push origin "$b" >/dev/null 2>&1; then
+      emit_event reconcile_local_commits_pushed verify \
+        "re-entry: '$b' carried $work ticket commit(s) (of $unpushed local-only) the remote had never seen — a logged bug's fix rides the parent's PR and is local-only until this push. PUSHED them instead of resetting, so divergence is resolved with nothing discarded"
+    else
+      emit_event reconcile_reset_skipped verify \
+        "re-entry: '$b' carries $work local-only ticket commit(s) and they could NOT be pushed — REFUSING to reset to the remote head, because that would delete committed, gate-verified work (this is how three mission-log fixes were lost). Proceeding from the local tip; push '$b' by hand, then re-run."
+    fi
+    return 0
+  fi
+
+  # Nothing local-only to lose → the BUG-077 reset, behaviour unchanged.
+  # S111 (root-tree sovereignty): NEVER detach the captain's checkout to free the
+  # ref. A holder is either a stale LCARS worktree (prune + retry) or the
+  # CAPTAIN's own checkout — in that case SKIP with a loud event rather than
+  # yanking their HEAD out from under them.
+  if "$GIT_BIN" branch -f "$b" "origin/$b" >/dev/null 2>&1; then
+    emit_event reconcile_reset verify \
+      "re-entry: reset local '$b' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) before re-merging — avoids divergence (no local-only commits to lose)"
+    return 0
+  fi
+  "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+  if "$GIT_BIN" branch -f "$b" "origin/$b" >/dev/null 2>&1; then
+    emit_event reconcile_reset verify \
+      "re-entry: reset local '$b' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) after pruning a stale worktree"
+    return 0
+  fi
+  local rr_holder
+  rr_holder="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
+    | awk -v bb="branch refs/heads/$b" '
+        /^worktree /{p=substr($0,10)}
+        $0==bb{print p; exit}' )"
+  emit_event reconcile_reset_skipped verify \
+    "re-entry: could NOT reset '$b' to the remote PR head — the branch is checked out at ${rr_holder:-an unknown worktree} (likely your own checkout). Proceeding from the local tip; if approve later rejects the push as non-fast-forward, switch that checkout off the branch and re-run."
+  return 0
+}
+
 # The reconcile gate. Echoes a RECONCILE: line and returns:
 #   0  ("RECONCILE: ok")          → not ahead, or clean+green → caller proceeds to
 #                                    open the PR. The merge (if any) is already on
@@ -7189,34 +7394,8 @@ reconcile_gate() {
   local pr_for_reset; pr_for_reset="$(json_str "$STATE" prUrl)"
   case "$pr_for_reset" in http*|*/pull/*) : ;; *) pr_for_reset="" ;; esac
   if [ -n "$pr_for_reset" ] \
-     && "$GIT_BIN" fetch origin "$BRANCH" --quiet 2>/dev/null \
-     && "$GIT_BIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
-    local local_tip remote_tip
-    local_tip="$("$GIT_BIN" rev-parse "$BRANCH" 2>/dev/null)"
-    remote_tip="$("$GIT_BIN" rev-parse "origin/$BRANCH" 2>/dev/null)"
-    if [ -n "$remote_tip" ] && [ "$local_tip" != "$remote_tip" ]; then
-      # S111 (root-tree sovereignty): NEVER detach the captain's checkout to free
-      # the ref. LCARS itself no longer parks any tree on the mission branch, so a
-      # holder is either a stale LCARS worktree (prune + retry) or the CAPTAIN's
-      # own checkout — in that case SKIP the reset with a loud event rather than
-      # yanking their HEAD out from under them.
-      if "$GIT_BIN" branch -f "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1; then
-        emit_event reconcile_reset verify "re-entry: reset local '$BRANCH' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) before re-merging — avoids divergence"
-      else
-        "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
-        if "$GIT_BIN" branch -f "$BRANCH" "origin/$BRANCH" >/dev/null 2>&1; then
-          emit_event reconcile_reset verify "re-entry: reset local '$BRANCH' to the remote PR head ($(printf '%s' "$remote_tip" | cut -c1-7)) after pruning a stale worktree"
-        else
-          local rr_holder
-          rr_holder="$( cd "$REPO_ROOT" && "$GIT_BIN" worktree list --porcelain 2>/dev/null \
-            | awk -v b="branch refs/heads/$BRANCH" '
-                /^worktree /{p=substr($0,10)}
-                $0==b{print p; exit}' )"
-          emit_event reconcile_reset_skipped verify \
-            "re-entry: could NOT reset '$BRANCH' to the remote PR head — the branch is checked out at ${rr_holder:-an unknown worktree} (likely your own checkout). Proceeding from the local tip; if approve later rejects the push as non-fast-forward, switch that checkout off the branch and re-run."
-        fi
-      fi
-    fi
+     && "$GIT_BIN" fetch origin "$BRANCH" --quiet 2>/dev/null; then
+    reconcile_sync_local_branch "$BRANCH"
   fi
 
   # (a) main-ahead check. Best-effort; any unresolvable/non-numeric → not-ahead.
