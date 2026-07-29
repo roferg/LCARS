@@ -4,6 +4,130 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.19 — 2026-07-29
+
+Wave isolation and provable repairs (S156–S157). Two defects from one dead
+mission: `lcars-20260727-001` landed all 12 tickets, then burned 8 worker
+sessions, 2 self-heal rounds, 3 flip-flop rejections and 8 gate bounces on ONE
+ticket and never reached Verify. It was ended by hand.
+
+### Infrastructure tickets get their own wave (S156)
+
+Wave 1 held both the Vite/React/TS scaffold and a docs ticket. Siblings in a
+wave build against the same frozen base, blind to each other, so the docs test
+resolved the repo root with `fileURLToPath(new URL('..', import.meta.url))` —
+correct against a repo with no Vite config. The scaffold then landed
+`vite.config.ts`, Vite rewrote `import.meta.url` to a served URL, and the file
+threw at import. Its 13 tests never ran again, and nothing noticed for eleven
+more tickets.
+
+A ticket that establishes shared infrastructure now schedules into its own wave.
+Classification is **declared**, not guessed: a per-ticket
+`establishesSharedInfrastructure` flag that Plan sets and Plan Review audits both
+ways. The text heuristic that preceded it was demoted to a narrow backstop after
+the tester reworded its own corpus preserving meaning and recall fell 14/14 to
+5/14 — proof it was matching sentences, not concepts. Undeclared, a plan is still
+a coin flip on phrasing, so Plan Review is load-bearing here; that limit is
+recorded as a test pair rather than hidden.
+
+### An honest test repair can finally be certified (S157)
+
+Every worker must prove its work: its test is run against the code as it was
+before, and must fail there. Correct for a NEW test — and wrong for REPAIRING a
+pre-existing broken one, because the harness ran the worker's *fixed* file
+against parent code, where it passed. Red-on-parent was unprovable by
+construction, so a correct fix was rejected forever. That is what killed the
+mission above: the reconcile worker diagnosed the bug accurately, fixed it
+minimally, declared the edit honestly, and was rejected three times.
+
+A test file that already existed at the parent is now judged against the
+**parent's own committed copy**. Red-on-parent then means the file was genuinely
+broken before. New files keep byte-identical staged behaviour; any non-test path
+in the diff routes the ticket to the normal gate and names the paths that did it,
+so a worker is never told its broken test "passes on the parent" with no
+explanation. The acceptance bar is unmoved: weakening a test that PASSED on the
+parent still yields no red and still fails.
+
+### Self-heal names the ticket that authored the failing suite
+
+It named the last ticket to land. In the live incident that was t-011, for a
+break whose test file t-012 wrote — so a worker was handed a brief for a ticket
+unrelated to the failure. It now names the **authoring** ticket, re-picked each
+self-heal round from that round's failing set, and says plainly when ownership
+cannot be resolved instead of guessing. The old copy asserting "a LATER ticket's
+produced code REGRESSED its locked contract" is gone: the gate never established
+that, and the confident wrong premise cost real sessions.
+
+### The anti-gutting guard was retired, deliberately
+
+Allowing a worker to edit an already-broken test opens a door: delete the failing
+test instead of fixing it, and the evidence looks identical. Four successive
+guards were built to close it — file existence, line counts, regex name sets, a
+character-level lexer — and five adversarial review rounds beat each one at a new
+token: `test.skip`, commented-out padding, apostrophes truncating names, names
+read out of string literals, `describe.skip`, multi-line templates, ruby
+`=begin`, a regex literal containing `/*`, `it.each` tables. Round five then
+caught the guard **false-failing an honest repair** that dropped a dead
+`require` — re-creating the very loop this work exists to end.
+
+So the ~1,000 lines of source parsing were deleted for one source-blind check —
+the runner may not execute fewer tests than before — and repairs are made
+**visible** instead: Verify lists every repaired file for human review, and the
+declared-edits contract already forces a reason for each. The remaining check is
+called a screen, not a proof, everywhere it is described, and its blind spots are
+stated plainly: when the parent's copy is dead at import it executes nothing, so
+the comparison proves nothing there. Five residuals are each pinned as a live
+assertion, so closing one is a deliberate visible change.
+
+### The defect no scoped test could find
+
+Verification by live drive, with real workers, found what five rounds of fixtures
+could not. `lcars init` seeds a `worktreeSetupCommand` that SYMLINKS
+`node_modules` into each ticket worktree — and `node_modules/`, the near-universal
+gitignore pattern, is directory-only, so it does not match a symlink:
+
+```sh
+printf 'node_modules/\n' > .gitignore; ln -s /tmp node_modules
+git ls-files --others --exclude-standard   # -> node_modules
+```
+
+The gate counted the harness's own provisioning artifacts as worker-authored
+non-test paths, declared the diff mixed, and refused the repair path — on a ticket
+whose real diff was one line in one test file. The repair path was effectively
+unreachable on any standard JS repo. In the drive it only recovered because the
+worker diagnosed the harness bug and hand-edited `.git/info/exclude`. An untracked
+symlink is now recognised as provisioning, not authorship, at the point
+eligibility is decided; the declared-edits guard and quality floor still see the
+raw diff, so a worker that genuinely commits a dependency tree stays visible.
+
+### Never self-heal an environment fault
+
+Merging `main` mid-round (2026.7.16–2026.7.18) put this work in the same function
+as the new stale-dependency classifier. Resolved by ordering — the environment
+diagnosis returns before attribution, so a toolchain fault names no ticket — and
+pinning that seam then exposed a further gap: self-heal still fell back to the
+last-built ticket and spent worker sessions trying to edit code for a broken
+toolchain. It now skips entirely on an environment fault and parks the human with
+an actionable diagnosis naming `lcars update`. The board grew matching copy: a
+stale toolchain is not a decision the operator is being asked to make.
+
+### Proven live
+
+Three drives with real workers, on top of the scoped suites: an honest repair of
+a collection-red pre-existing test certified on the **first attempt**; a genuine
+cross-ticket break attributed to the **authoring** ticket while the reconcile
+worker kept the innocent change intact; and an ordinary feature mission running
+Align to Verify hands-off, three tickets, each green on its first session.
+
+### Also
+
+`lcars-run.test.sh` was measured rather than assumed: it is **effectively 100%
+stubbed and costs nothing to run** — 52 minutes of wall clock but ~3.5 minutes of
+CPU, the rest hang-guard polling. Its 248 failures are byte-identical on this
+branch and on `main`, all stale fixtures predating the S132–135 unified worker.
+The BUG-029 self-heal assertions are unreachable on their own fixture, which
+writes `tests.sha256` where the code reads `proof-tests.sha256`.
+
 ## 2026.7.18 — 2026-07-28
 
 The reconcile re-entry no longer destroys committed work — **the worst defect
