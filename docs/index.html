@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:1d890f80b8bc271d1322c6d43acd96a4044e4ed30768f62ff8493dfe6f16fa4f -->
-<!-- lcars-docs-src: vision.md sha256:c9a3bede048ac7aa83fd707480a8b51e0466297fed104eec79efe59a180d4252 -->
+<!-- lcars-docs-src: README.md sha256:f140289b9a8a5808605e9de8c14ecd3295c0a0b2ec97dd79f0a6c06a3f17cfd8 -->
+<!-- lcars-docs-src: vision.md sha256:b24ed9980889b6b7e6229e513e4d4c2997bb27ceecec4f05ed9655f05812d956 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -365,24 +365,36 @@ cd lcars
         you do <strong>not</strong> need Claude Code or Copilot open.</li>
       </ul>
 
-      <p>So, inside <strong>any repo</strong> you want to ship work in:</p>
+      <p>So, inside <strong>the repo you want to ship work in</strong> —
+      &#9888;&#65039; <strong><code>cd</code> into that repo first.</strong> Everything below
+      acts on the repo you're currently in: <code>lcars init</code> scaffolds
+      <em>its</em> <code>.git/lcars/</code>, and every Mission files issues against
+      <em>its</em> GitHub repo. Run this in <strong>your</strong> project,
+      <strong>not</strong> the LCARS repo (do that and you'll open a pile of issues
+      against LCARS by mistake):</p>
 
-      <pre># 1. In your agent (Claude Code or Copilot), inside the repo:
+      <pre># 1. In your agent (Claude Code or Copilot), cd into YOUR project first:
+cd ~/path/to/your-project
 lcars init                # one-time per-repo setup: .git/lcars/ + GitHub labels
 
-# 2. Then in any plain terminal — no agent needed:
+# 2. Then in a plain terminal (NOT the agent) — same repo:
+cd ~/path/to/your-project
 lcars-viewscreen --open   # launch the board and open it in your browser</pre>
 
       <p><code>lcars-viewscreen --open</code> starts a Python-3-stdlib-only daemon
       (no pip / npm / build step), boots it on a free local port, and opens the
       kanban board in your browser. Because it's a real command on your
       <code>PATH</code> (alias <code>lcars-serve</code>), the <strong>same
-      invocation works from any shell</strong> — a bare terminal, a Claude Code
-      session, or a Copilot session — and the daemon spawns no model workers, so
-      watching the board costs nothing. It runs in the foreground and is
-      <strong>session-bound</strong>: it stays up for that terminal and stops when
-      you close it (or Ctrl-C). From there you drive the whole idea → merged PR
-      loop without leaving the page:</p>
+      invocation works from any shell</strong> — and the daemon spawns no model
+      workers, so watching the board costs nothing. <strong>Start it from a plain
+      terminal, not from inside a Claude Code / Copilot session:</strong> an agent
+      session is sandboxed, so the board would load but its DEPLOY MAIN /
+      <code>lcars launch</code> buttons couldn't reach your desktop to actually
+      start an app — so if you run it there, LCARS stops and hands you a
+      copy-paste command to run in a real terminal instead. It runs in the
+      foreground and is <strong>session-bound</strong>: it stays up for that
+      terminal and stops when you close it (or Ctrl-C). From there you drive the
+      whole idea → merged PR loop without leaving the page:</p>
 
       <div class="mission-card">
         <ul>
@@ -969,9 +981,18 @@ lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
           <div class="control-cmd">Flip-flop gate</div>
           <div class="control-desc">The ticket's new/changed tests must
           <strong>fail on the parent commit and pass on the tip</strong> — run
-          scoped in a scratch worktree at the parent. Order-independent and
-          mechanical, it proves the tests test <em>the change</em>. Zero tests
-          collected on either leg is <em>inconclusive, never a pass</em>.</div>
+          scoped in a scratch worktree at the parent. A test file <strong>new at
+          the parent</strong> is staged in, so its red proves the test depends on
+          the change; one that <strong>already existed</strong> runs the parent's
+          <strong>own copy</strong>, so its red proves that file was already
+          failing — which is what makes an honest <strong>repair</strong>
+          provable. One source-blind check guards that path: the runner must
+          not execute fewer tests on the tip than on the parent. It is vacuous
+          when the parent's copy was dead at import (it executed nothing), so the
+          harness does not claim a repair removed nothing &mdash; it lists every
+          repaired file at Verify for the human instead. A leg whose runner
+          announces it collected nothing is <em>inconclusive, never a
+          pass</em>.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">Declared-edits contract</div>

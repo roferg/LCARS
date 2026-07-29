@@ -79,6 +79,72 @@ it is drawn where it is. The ticket is the only thing the Implement stage
 receives; a slice without its rationale is how the Implementer builds the wrong
 thing.
 
+## Declare shared infrastructure — `establishesSharedInfrastructure`
+
+Every ticket carries a boolean **`establishesSharedInfrastructure`**. Set it
+`true` when the ticket CREATES OR CHANGES infrastructure that OTHER tickets will
+build on top of:
+
+- the package manager / manifest / lockfile (`package.json`, `pyproject.toml`,
+  `Cargo.toml`, `go.mod`, `*.csproj`, `Gemfile`, `pom.xml`, `build.gradle`, …),
+- the **test runner** and its config or global setup file (`vitest.config`,
+  `jest.config`, `pytest.ini`, `conftest.py`, `.rspec`/`spec_helper`,
+  `setupTests`, …),
+- the build/compiler config (`vite.config`, `webpack.config`, `tsconfig`, …),
+- a CI workflow that runs the tests,
+- or the initial project/package/module/workspace layout of a greenfield repo.
+
+Set it `false` for everything else — including a ticket that merely ADDS TESTS
+for a feature. Using the runner is not establishing it.
+
+**The three cases people get wrong — rulings, do not re-judge them:**
+
+- **Lint / format config** (`.eslintrc`, `prettier`, `ruff.toml`, `rubocop.yml`)
+  → `false`, UNLESS the same ticket also wires lint into the test command or CI
+  test job (then `true`). Lint alone does not change what a later ticket's tests
+  run under, and isolating it costs a wave for nothing.
+- **Container / environment files** (`Dockerfile`, `docker-compose.yml`,
+  `devcontainer.json`, `.tool-versions`, `.nvmrc`) → `true` when tests or the
+  build run inside that image or under that toolchain version; `false` when the
+  file only affects deployment or a developer's convenience. If you cannot tell,
+  choose `true`: a wasted wave is cheaper than the blind-sibling failure.
+- **Shared test-helper modules** (a `tests/helpers/*` factory, a fixtures module,
+  a custom render/`renderWithProviders`) → `true` when the ticket CREATES the
+  shared helper other tickets will import; `false` when it merely uses or
+  extends one that already exists. Creating the helper is establishing shared
+  test infrastructure even though no config file is touched.
+
+**Why it matters.** Tickets in the same wave are built in parallel and are BLIND
+to each other. Schedule puts every `true` ticket ALONE in its wave and pushes
+every later ticket into a LATER wave, so they build AGAINST the infrastructure
+instead of beside it. Getting this wrong is expensive in both directions: a
+missed `true` reproduces a real, costly failure, and a spurious `true`
+serialises the whole plan.
+
+*Worked example — the failure this prevents.* A greenfield mission had:
+
+```json
+{ "id": "t-001", "title": "Scaffold the Vite + React + TypeScript app",
+  "establishesSharedInfrastructure": true }
+{ "id": "t-012", "title": "Author the ADR and backlog docs",
+  "establishesSharedInfrastructure": false }
+```
+
+`t-012` writes docs plus a test that asserts they exist — it is NOT
+infrastructure, even though it authors a test file. `t-001` creates
+`vite.config.ts` — it IS. They declared no dependency on each other, so they
+landed in wave 1 together; `t-012`'s test resolved the repo root in a way that
+`t-001`'s new Vite config broke at import time, and its 13 tests silently
+stopped running for eleven more tickets. Declaring the flag is what keeps them
+apart.
+
+If you omit the field, the harness falls back to a narrow safety net that only
+recognises a ticket NAMING a build/test config file (`vite.config`,
+`pytest.ini`, `go.mod`, …). A scaffold ticket phrased any other way — "Create
+the Django project and its settings module", "Stand up the test runner" — is
+simply MISSED, and lands in wave 1 beside the tickets that build on it. That is
+the failure above. **Always declare the field on every ticket.**
+
 If a reviewer-objections file is listed under "Read these artifacts" (a Plan
 Review loop-back), **revise** the plan to resolve every objection — re-slice
 oversized or horizontal tickets, fix dependency edges — rather than re-emitting
@@ -139,7 +205,8 @@ reply without the file counts as no output and FAILS the stage.
 
 `plan.json` must contain the whole list as a JSON array in this **canonical
 shape** — one field per line, with `acceptanceCriteria` and `dependencies` as
-inline single-line arrays:
+inline single-line arrays, and `establishesSharedInfrastructure` as a bare
+boolean (`true`/`false`, never a string):
 
 ```json
 [
@@ -152,6 +219,7 @@ inline single-line arrays:
     "estimatedTestLoc": 80,
     "estimatedNewLoc": 120,
     "dependencies": [],
+    "establishesSharedInfrastructure": false,
     "rationale": "The token plumbing is the foundation every later slice paints on; isolating it keeps the toggle slice small."
   }
 ]

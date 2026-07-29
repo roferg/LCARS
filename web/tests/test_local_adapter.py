@@ -102,6 +102,28 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertIn("#47", m["gate"]["humanSummary"])
         self.assertIn("FULL-SUITE GATE", m["gate"]["technicalDetail"])
 
+    def test_gate_envelope_carries_the_environment_type(self):
+        # S157 x #93: a full-suite failure diagnosed as a STALE DEPENDENCY
+        # ENVIRONMENT is a toolchain fault — it attributes to no ticket and
+        # dispatches no worker — so the harness writes escalationType
+        # "environment" rather than "regression". The adapter must pass the new
+        # value through verbatim; the board keys its "why you're seeing this"
+        # copy off it (web/tests/test_gate_copy.py pins that copy).
+        d = fx.plant_gated(self.tmp, "m-env", resume_stage="align",
+                           inflight_stage="implement")
+        pending = json.load(open(os.path.join(d, "pending.json")))
+        pending.update({
+            "humanSummary": "The test suite could not be re-run against a "
+                            "trustworthy dependency environment ...",
+            "escalationType": "environment",
+            "technicalDetail": "FULL-SUITE GATE - STALE DEPENDENCY ENVIRONMENT",
+        })
+        fx.write_json(os.path.join(d, "pending.json"), pending)
+        m = self._by_id(self._board(), "m-env")
+        self.assertIsNotNone(m["gate"])
+        self.assertEqual(m["gate"]["escalationType"], "environment")
+        self.assertIn("STALE DEPENDENCY ENVIRONMENT", m["gate"]["technicalDetail"])
+
     def test_gate_none_when_no_envelope_fields(self):
         # a plain pre-harness pending.json (no new fields) → gate is None so the
         # renderer degrades to the bare question text.
@@ -1351,6 +1373,68 @@ class ActiveSecondsOnMissionTest(unittest.TestCase):
         # the anchor is the wall-clock `now` at shape-build time.
         self.assertGreaterEqual(detail["activeSecondsAt"], before)
         self.assertLessEqual(detail["activeSecondsAt"], after)
+
+
+class WaveIsolationReasonTest(unittest.TestCase):
+    """S156: a wave the Schedule stage ISOLATED (a lone infrastructure-
+    establishing ticket) carries an ADDITIVE `reason` in waves.json. The adapter
+    must read that file exactly as before — the extra key changes no ticket row,
+    no progress count, and never leaks into a ticket id."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    ISOLATED = [
+        {"wave": 1,
+         "reason": ("t-001 establishes shared build/test infrastructure "
+                    "(vite.config) — isolated so later tickets build against it"),
+         "tickets": [{"id": "t-001", "issue": 101}]},
+        {"wave": 2, "tickets": [{"id": "t-012", "issue": 102}]},
+    ]
+    PLAN = [
+        {"id": "t-001", "title": "Scaffold the app",
+         "acceptanceCriteria": ["builds"], "dependencies": []},
+        {"id": "t-012", "title": "Author the docs",
+         "acceptanceCriteria": ["docs exist"], "dependencies": []},
+    ]
+
+    def _card(self, mid):
+        for m in LocalAdapter(self.tmp).board()["missions"]:
+            if m["id"] == mid:
+                return m
+        raise AssertionError("mission %s not in board" % mid)
+
+    def _plant(self, mid="m-iso"):
+        fx.plant_simple(self.tmp, mid, stage="implement", issue=42)
+        d = fx.mission_dir(self.tmp, mid)
+        fx.write_json(os.path.join(d, "plan.json"), self.PLAN)
+        fx.write_json(os.path.join(d, "approved-plan.json"), self.PLAN)
+        fx.write_json(os.path.join(d, "waves.json"), self.ISOLATED)
+        fx.write_jsonl(os.path.join(d, "events.jsonl"), [
+            {"ts": 100, "mission": mid, "stage": "implement",
+             "type": "wave_start", "detail": "wave 1", "data": {"wave": 1}},
+        ])
+        return mid
+
+    def test_ticket_rows_ignore_the_reason(self):
+        mid = self._plant()
+        card = self._card(mid)
+        self.assertEqual([t["id"] for t in card["tickets"]], ["t-001", "t-012"])
+        self.assertEqual([t["issue"] for t in card["tickets"]], [101, 102])
+
+    def test_progress_counts_are_unchanged(self):
+        mid = self._plant()
+        card = self._card(mid)
+        prog = card["progress"]
+        self.assertEqual(prog["wavesTotal"], 2)
+        self.assertEqual(prog["ticketsTotal"], 2)
+        self.assertEqual(prog["wave"], 1)
+
+    def test_reason_never_becomes_a_ticket(self):
+        mid = self._plant()
+        detail = LocalAdapter(self.tmp).mission(mid)
+        blob = json.dumps(detail)
+        self.assertNotIn("establishes shared", blob)
 
 
 if __name__ == "__main__":

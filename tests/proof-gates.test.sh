@@ -9,10 +9,12 @@
 #
 #   flip_flop_gate <ticket> <parent-sha> <worktree>
 #       TIP leg: scoped run of the ticket's new/changed tests must be GREEN.
-#       PARENT leg: scratch worktree at <parent-sha>, SAME tests staged in,
-#       scoped run must be RED (a compile/resolution red from the change's new
-#       symbols COUNTS, kind recorded). ZERO tests collected on either leg =
-#       INCONCLUSIVE, never a pass (the S85/S106 green-on-nothing trap).
+#       PARENT leg: scratch worktree at <parent-sha>, scoped run must be RED (a
+#       compile/resolution red from the change's new symbols COUNTS, kind
+#       recorded). S157: a test file NEW at the parent is STAGED IN; one that
+#       ALREADY EXISTED there runs the PARENT'S OWN copy (so an honest repair is
+#       provable), and on that path the file may not SHRINK. ZERO tests collected
+#       on either leg = INCONCLUSIVE, never a pass (the green-on-nothing trap).
 #       Artifacts: tickets/<id>/flip-flop.json + flip_flop_pass/fail/
 #       inconclusive/skipped events. Scratch worktree pruned on EVERY path.
 #   declared_edits_guard <ticket> <parent-sha> <worktree>
@@ -123,6 +125,35 @@ no_scratch_left() { # repo → 0 if the parent scratch worktree is fully pruned
   [ ! -e "$1/.git/lcars/missions/m-001/proof-worktrees/t-001-parent" ] \
     && ! ( cd "$1" && git worktree list 2>/dev/null | grep -q 'proof-worktrees' )
 }
+
+# --- S157 provenance readers ------------------------------------------------
+# flip-flop.json records WHICH COPY of each test file the parent leg ran, so no
+# reader has to infer it from the verdict prose. These pull it back out.
+ff_field() { # flip-flop.json  python-expr over `d` → the value, "" on any error
+  python3 - "$1" "$2" 2>/dev/null <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+try:
+    sys.stdout.write(str(eval(sys.argv[2], {}, {"d": d})))
+except Exception:
+    sys.exit(1)
+PY
+}
+ff_mode()   { ff_field "$1" 'd["parentLeg"]["mode"]'; }
+ff_ran()    { ff_field "$1" 'd["parentLeg"]["ran"]'; }
+ff_reason() { ff_field "$1" 'd["reason"]'; }
+ff_source_of() { # flip-flop.json rel → the recorded source for that path
+  ff_field "$1" '[s["source"] for s in d["parentLeg"]["sources"] if s["path"]=="'"$2"'"][0]'
+}
+
+# The PRE-S157 green-parent rejection sentence, verbatim. Pinned as a constant
+# because the NEW-test path must stay BYTE-IDENTICAL: if a future change reworded
+# it (or routed a new test down the repair path), these assertions fail loudly
+# rather than the difference being noticed by nobody.
+LEGACY_GREEN_PARENT_REASON="the ticket's tests PASS on the PARENT commit — red-on-parent is not proven (a test that asserts pre-existing behavior is not proof of work)"
 
 # ==========================================================================
 # A. result.json v2 validation (behavior 7)
@@ -245,6 +276,22 @@ grep -q '"type":"flip_flop_pass"' "$(EV "$repo")" 2>/dev/null \
 no_scratch_left "$repo" \
   && ok "B4. parent scratch worktree pruned after PASS" \
   || bad "B4. scratch worktree leaked after pass"
+# S157: this ticket's test file is NEW at the parent (and it changes product
+# source too), so the parent leg STAGES it in — today's behaviour, recorded.
+[ "$(ff_mode "$ffj")" = staged ] \
+  && ok "B6a. parent leg recorded mode 'staged' for a NEW test file" \
+  || bad "B6a. expected parentLeg.mode=staged (got '$(ff_mode "$ffj")')"
+[ "$(ff_source_of "$ffj" src/calc.test.js)" = staged ] \
+  && ok "B6b. per-file provenance records src/calc.test.js as staged" \
+  || bad "B6b. expected source=staged for src/calc.test.js"
+[ "$(ff_ran "$ffj")" = True ] \
+  && ok "B6c. parentLeg.ran records that the parent leg actually executed" \
+  || bad "B6c. expected parentLeg.ran=true (got '$(ff_ran "$ffj")')"
+case "$(ff_reason "$ffj")" in
+  "tests GREEN on tip, RED on parent (exit"*"— a compile/resolution red from the change's new symbols counts as proof)")
+    ok "B6d. NEW-test PASS reason is the pre-S157 sentence, unchanged" ;;
+  *) bad "B6d. new-test pass reason changed: $(ff_reason "$ffj")" ;;
+esac
 
 # --------------------------------------------------------------------------
 # B5 (S147 round-2 D1). THE RE-RUN TEST. Presence of a substring in `cmd` is
@@ -371,6 +418,16 @@ grep -q '"type":"flip_flop_fail"' "$(EV "$repo")" 2>/dev/null \
 no_scratch_left "$repo" \
   && ok "C4. parent scratch worktree pruned after FAIL" \
   || bad "C4. scratch worktree leaked after fail"
+# S157 REGRESSION GUARD. This cheat's diff is TEST-ONLY (it writes no product
+# source), which is the same shape as a repair — but the file is NEW at the
+# parent, so it must still be STAGED IN and rejected with the pre-S157 sentence,
+# word for word. This is the case most at risk of being swept into the repair path.
+[ "$(ff_mode "$ffj")" = staged ] \
+  && ok "C5a. a NEW test file in a test-ONLY diff is still staged into the parent" \
+  || bad "C5a. expected parentLeg.mode=staged (got '$(ff_mode "$ffj")')"
+[ "$(ff_reason "$ffj")" = "$LEGACY_GREEN_PARENT_REASON" ] \
+  && ok "C5b. the staged-path rejection reason is byte-identical to pre-S157" \
+  || bad "C5b. staged rejection reason changed: $(ff_reason "$ffj")"
 
 # ==========================================================================
 # D. zero-collected → INCONCLUSIVE, never a pass (behavior 4)
@@ -1883,6 +1940,1323 @@ for ch in 'plain' 'sp ace' "$(printf 'ta\tb')" "o'brien" 'sa"y' 'a$b' 'a`b' 'a;b
     && ok "O5. ordinary path '$ch' still runs normally (flip-flop PASS)" \
     || bad "O5. OVER-PARK: '$ch' is literal to the runner and must not be refused (FFRC=$FFRC): $OUT"
 done
+
+# ==========================================================================
+# P. S157 — THE PARENT-LEG SOURCE RULE (provable repairs)
+#
+# GROUND TRUTH (live mission lcars-20260727-001, 2026-07-27). A sibling ticket
+# landed a vite.config that broke how an EXISTING test file resolved the repo
+# root; the file threw at import and its 13 tests stopped running. Self-heal
+# produced the correct, honestly-declared one-line repair — and flip_flop_gate
+# rejected it three times, because the parent leg copied the ticket's FIXED file
+# into the parent worktree, where the docs it asserts about were already correct.
+# Both legs green. Red-on-parent was unprovable BY CONSTRUCTION for any repair.
+#
+# THE RULE: a test file that already existed at the parent runs the PARENT'S OWN
+# committed copy. The cheat still dies because you can only repair what was
+# broken — see P2, which is the acceptance bar for the whole session.
+# ==========================================================================
+echo "== P. parent-leg source rule / provable repairs (S157) =="
+
+# The test file at the centre of the fixture: it reads a doc off disk through a
+# repo-root expression. Pass the BROKEN expression to reproduce the 2026-07-27
+# shape (it throws before asserting), or the working one for a green file. The
+# ASSERTION is identical in both — only the resolution differs, exactly like the
+# real repair (`fileURLToPath(new URL('..', import.meta.url))` → `process.cwd()`).
+docs_test() { # root-expr
+  cat <<JS
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const repoRoot = $1;
+test('the ADR is on disk', () => {
+  assert.ok(fs.readFileSync(repoRoot + 'docs/ADR.md', 'utf8').includes('Decision'));
+});
+JS
+}
+BROKEN_ROOT="'/nonexistent-lcars-s157-root/'"
+WORKING_ROOT="process.cwd() + '/'"
+
+repair_repo() { # parent-root-expr → repo dir (the test file is COMMITTED at the parent)
+  local repo; repo="$(mktemp -d "$TMPROOT/rep.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '{ "name": "fix", "private": true }\n' > "$repo/package.json"
+  mkdir -p "$repo/src" "$repo/docs" "$repo/tests"
+  printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+  printf '# ADR-001\n\nDecision: keep it.\n' > "$repo/docs/ADR.md"
+  docs_test "$1" > "$repo/tests/docs.test.js"
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+
+# --- P1: THE HONEST REPAIR -> PASS -----------------------------------------
+# Pre-existing test file, genuinely BROKEN on the parent, fixed on the tip, no
+# product source touched. Before S157 this was the 3-rejection / 8-session loop.
+repo="$(repair_repo "$BROKEN_ROOT")"; P="$(head_sha "$repo")"
+docs_test "$WORKING_ROOT" > "$repo/tests/docs.test.js"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$FFRC" = 0 ] && ok "P1a. honest repair of a pre-existing BROKEN test → flip-flop PASS" \
+                || bad "P1a. honest repair should pass (FFRC=$FFRC: $OUT)"
+grep -q '"verdict": "pass"' "$ffj" 2>/dev/null \
+  && ok "P1b. flip-flop.json records verdict pass for the repair" \
+  || bad "P1b. expected verdict pass ($(cat "$ffj" 2>/dev/null))"
+[ "$(ff_mode "$ffj")" = parent-own ] \
+  && ok "P1c. parent leg recorded mode 'parent-own' (it ran the parent's copy)" \
+  || bad "P1c. expected parentLeg.mode=parent-own (got '$(ff_mode "$ffj")')"
+[ "$(ff_source_of "$ffj" tests/docs.test.js)" = parent-own ] \
+  && ok "P1d. per-file provenance records tests/docs.test.js as parent-own" \
+  || bad "P1d. expected source=parent-own for tests/docs.test.js"
+# The PASS reason must be a LEDGER, not a verdict on intent. An earlier cut said
+# "so this is a certified REPAIR" — and printed that identical sentence over a
+# gutting and over a deletion (both now rejected by R, but the copy was wrong
+# regardless: the gate cannot see intent).
+case "$(ff_reason "$ffj")" in
+  *"ESTABLISHED:"*"parent's OWN committed copy"*"NOT established:"*)
+    ok "P1e. the PASS reason separates what was ESTABLISHED from what was not" ;;
+  *) bad "P1e. repair pass reason does not ledger its facts: $(ff_reason "$ffj")" ;;
+esac
+case "$(ff_reason "$ffj")" in
+  *"certified REPAIR"*)
+    bad "P1f. the reason still claims to certify intent: $(ff_reason "$ffj")" ;;
+  *"never the ticket's edited one"*)
+    ok "P1f. it names which copy ran and claims nothing about intent" ;;
+  *) bad "P1f. reason should name which copy ran: $(ff_reason "$ffj")" ;;
+esac
+no_scratch_left "$repo" \
+  && ok "P1g. scratch worktree pruned after the repair PASS" \
+  || bad "P1g. scratch worktree leaked after the repair pass"
+
+# --- P2: THE CHEAT MUST STILL DIE ------------------------------------------
+# THE ACCEPTANCE BAR. The pre-existing file PASSES on the parent; the worker
+# guts the assertion so it passes on the tip too. The parent's own copy is green,
+# so no red exists to prove anything, and the ticket is rejected — with a reason
+# that describes THIS failure (nothing was broken), not the new-test one.
+repo="$(repair_repo "$WORKING_ROOT")"; P="$(head_sha "$repo")"
+# The weakening keeps the file the SAME SIZE (same test count, same assertion
+# lines) so it slips past the D1 shrink guard and is judged by the parent leg
+# itself — which is the branch under test here. R1 covers the shrinking variant.
+cat > "$repo/tests/docs.test.js" <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const repoRoot = process.cwd() + '/';
+test('the ADR is on disk', () => {
+  assert.ok(true || fs.existsSync(repoRoot + 'docs/ADR.md'));
+});
+JS
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+CHEAT_OUT="$OUT"
+[ "$FFRC" = 1 ] && ok "P2a. WEAKENING an existing PASSING test → flip-flop FAIL (rc 1)" \
+                || bad "P2a. THE CHEAT MUST DIE — expected rc 1 (FFRC=$FFRC: $OUT)"
+grep -q '"verdict": "fail"' "$ffj" 2>/dev/null \
+  && ok "P2b. flip-flop.json records verdict fail for the weakened test" \
+  || bad "P2b. expected verdict fail ($(cat "$ffj" 2>/dev/null))"
+case "$(ff_reason "$ffj")" in
+  *"PARENT'S OWN copy"*"PASSES on the parent commit"*"no repair to make"*)
+    ok "P2c. the rejection reason is ACCURATE for the repair path" ;;
+  *) bad "P2c. cheat rejection reason is wrong/borrowed: $(ff_reason "$ffj")" ;;
+esac
+case "$(ff_reason "$ffj")" in
+  *"asserts pre-existing behavior"*)
+    bad "P2d. the repair path must NOT reuse the new-test wording: $(ff_reason "$ffj")" ;;
+  *) ok "P2d. it does NOT reuse the new-test 'asserts pre-existing behavior' wording" ;;
+esac
+[ "$(ff_mode "$ffj")" = parent-own ] \
+  && ok "P2e. provenance shows the parent's own copy was what ran" \
+  || bad "P2e. expected parentLeg.mode=parent-own (got '$(ff_mode "$ffj")')"
+grep -q '"type":"flip_flop_fail"' "$(EV "$repo")" 2>/dev/null \
+  && ok "P2f. flip_flop_fail event emitted for the cheat" \
+  || bad "P2f. flip_flop_fail event missing for the cheat"
+no_scratch_left "$repo" \
+  && ok "P2g. scratch worktree pruned after the cheat FAIL" \
+  || bad "P2g. scratch worktree leaked after the cheat fail"
+# The OTHER shape of the same cheat — gutting rather than weakening in place — is
+# rejected too, one gate earlier (the D1 guard, before either leg runs). Both
+# doors on a PASSING pre-existing file, pinned together.
+repo="$(repair_repo "$WORKING_ROOT")"; P="$(head_sha "$repo")"
+cat > "$repo/tests/docs.test.js" <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+test('the ADR is on disk', () => { assert.ok(true); });
+JS
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+[ "$FFRC" = 1 ] && ok "P2h. GUTTING a passing pre-existing test is rejected as well" \
+                || bad "P2h. the gutting variant of the cheat survived (FFRC=$FFRC: $OUT)"
+
+# --- P3: MIXED DIFF (repair + product source) -> THE NORMAL GATE ------------
+# A repair is TEST-INFRASTRUCTURE ONLY. The same honest repair, but the ticket
+# also edits product source: every file is staged as before, so the FIXED copy
+# runs at the parent, passes there, and the ticket is rejected with the pre-S157
+# sentence. Intended: product behaviour never rides in under "I only fixed a test".
+repo="$(repair_repo "$BROKEN_ROOT")"; P="$(head_sha "$repo")"
+docs_test "$WORKING_ROOT" > "$repo/tests/docs.test.js"
+printf 'exports.add = (a, b) => a + b;\nexports.sub = (a, b) => a - b;\n' > "$repo/src/calc.js"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$(ff_mode "$ffj")" = staged ] \
+  && ok "P3a. a diff that also touches product source takes the NORMAL (staged) gate" \
+  || bad "P3a. expected parentLeg.mode=staged for a mixed diff (got '$(ff_mode "$ffj")')"
+[ "$(ff_source_of "$ffj" tests/docs.test.js)" = staged ] \
+  && ok "P3b. the pre-existing test file is staged when product source moved too" \
+  || bad "P3b. expected source=staged for tests/docs.test.js in a mixed diff"
+[ "$FFRC" = 1 ] && ok "P3c. mixed diff → the normal gate's verdict (rc 1 here)" \
+                || bad "P3c. expected the normal gate verdict (FFRC=$FFRC: $OUT)"
+# The legacy sentence must still OPEN the rejection byte for byte — but on its
+# own it reads as "your genuinely-broken test passes on the parent", which is the
+# unexitable-loop shape this session exists to kill. A clause naming what
+# disabled the repair path is appended (S157 P4).
+case "$(ff_reason "$ffj")" in
+  "$LEGACY_GREEN_PARENT_REASON"*)
+    ok "P3d. the pre-S157 rejection wording still OPENS it, byte for byte" ;;
+  *) bad "P3d. mixed diff lost the legacy opening: $(ff_reason "$ffj")" ;;
+esac
+case "$(ff_reason "$ffj")" in
+  *"REPAIR path was not available"*"src/calc.js"*)
+    ok "P3e. and it says the repair path was withdrawn, naming the path that did it" ;;
+  *) bad "P3e. no explanation of the lost repair path: $(ff_reason "$ffj")" ;;
+esac
+[ -n "$(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" ] \
+  && ok "P3f. flip-flop.json records repairPathRefused as durable provenance" \
+  || bad "P3f. parentLeg.repairPathRefused should carry the reason"
+
+# --- P4: BOTH KINDS IN ONE TEST-ONLY DIFF (mixed sources) -------------------
+# The ticket repairs the broken pre-existing file AND adds a new test file. Each
+# file takes its own source; the reason states the bound (the red is the run's,
+# not attributed to one file).
+repo="$(repair_repo "$BROKEN_ROOT")"; P="$(head_sha "$repo")"
+docs_test "$WORKING_ROOT" > "$repo/tests/docs.test.js"
+cat > "$repo/tests/extra.test.js" <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { add } = require('../src/calc.js');
+test('add adds', () => { assert.strictEqual(add(2, 2), 4); });
+JS
+commit_all "$repo"
+# Two files → intree_scope_for's common-ancestor arm hands the runner the `tests`
+# DIR, and `node --test <dir>` does not recurse (see K) — the find form stands in
+# for a real js runner's directory collection on BOTH legs.
+ff_gate "$repo" "$P" LCARS_TEST_CMD='node --test $(find "$LCARS_TESTS_DIR" -name "*.test.js")'
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$(ff_mode "$ffj")" = mixed ] \
+  && ok "P4a. per-file sources: repaired file parent-own, new file staged (mode mixed)" \
+  || bad "P4a. expected parentLeg.mode=mixed (got '$(ff_mode "$ffj")')"
+[ "$(ff_source_of "$ffj" tests/docs.test.js)" = parent-own ] \
+  && [ "$(ff_source_of "$ffj" tests/extra.test.js)" = staged ] \
+  && ok "P4b. each file's provenance is recorded individually" \
+  || bad "P4b. wrong per-file sources ($(cat "$ffj" 2>/dev/null))"
+[ "$FFRC" = 0 ] && ok "P4c. the repair's red on the parent still certifies the ticket" \
+                || bad "P4c. expected pass (FFRC=$FFRC: $OUT)"
+case "$(ff_reason "$ffj")" in
+  *"did not attribute it to one file"*)
+    ok "P4d. the reason states the real bound instead of overclaiming per-file proof" ;;
+  *) bad "P4d. mixed pass reason should state its bound: $(ff_reason "$ffj")" ;;
+esac
+
+# --- P5: PROVENANCE IS ALWAYS PRINTED, INCLUDING WHEN THE LEG NEVER RAN -----
+# The tip is still broken, so the gate fails before the parent leg. The record
+# must still say which copy WOULD have run, and say plainly that it did not run.
+repo="$(repair_repo "$BROKEN_ROOT")"; P="$(head_sha "$repo")"
+docs_test "'/still-broken-lcars-s157/'" > "$repo/tests/docs.test.js"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$FFRC" = 1 ] && ok "P5a. a still-red TIP fails, repair path or not" \
+                || bad "P5a. expected the tip-red fail (FFRC=$FFRC: $OUT)"
+[ "$(ff_ran "$ffj")" = False ] \
+  && ok "P5b. parentLeg.ran=false when the gate finished before the parent leg" \
+  || bad "P5b. expected parentLeg.ran=false (got '$(ff_ran "$ffj")')"
+[ "$(ff_source_of "$ffj" tests/docs.test.js)" = parent-own ] \
+  && ok "P5c. the source it WOULD have used is still recorded" \
+  || bad "P5c. provenance missing on the early-exit path ($(cat "$ffj" 2>/dev/null))"
+
+# --- P6: THE OTHER GATES STILL APPLY TO A REPAIR ---------------------------
+# S157 changed where the flip-flop reads its evidence — nothing else. A repair is
+# still an EDIT of an existing test file, so it must be declared, and it still
+# has to assert something.
+repo="$(repair_repo "$BROKEN_ROOT")"; P="$(head_sha "$repo")"
+docs_test "$WORKING_ROOT" > "$repo/tests/docs.test.js"
+commit_all "$repo"
+write_result "$(TD "$repo")" '[]' '[]' expected
+de_guard "$repo" "$P"
+[ "$DERC" = 1 ] && ok "P6a. an UNDECLARED repair is still rejected by the declared-edits guard" \
+                || bad "P6a. undeclared repair should fail the guard (DERC=$DERC: $OUT)"
+write_result "$(TD "$repo")" '[]' \
+  '[{ "path": "tests/docs.test.js", "reason": "repo-root resolution broke; no assertion weakened" }]' expected
+de_guard "$repo" "$P"
+[ "$DERC" = 0 ] && ok "P6b. a DECLARED repair passes the declared-edits guard" \
+                || bad "P6b. declared repair should pass (DERC=$DERC: $OUT)"
+q_floor "$repo" "$P"
+[ "$QFRC" = 0 ] && ok "P6c. the quality floor still runs over the repaired file" \
+                || bad "P6c. quality floor should pass for the repair (QFRC=$QFRC: $OUT)"
+
+# ==========================================================================
+# T. S157 — THE REPAIR PATH ON A NON-NODE STACK (go)
+#
+# Every other end-to-end fixture here is node. This drives the parent-own leg
+# through go's real toolchain, so the claim that a repair is certifiable outside
+# js rests on more than one runner.
+# ==========================================================================
+echo "== T. repair path end-to-end on go =="
+if ! have go; then
+  skip "GO: go not installed — SKIPPING the non-node repair-path drive LOUDLY"
+else
+  new_go_repair_repo() { # → repo whose committed TestPrecise FAILS at the parent
+    local repo; repo="$(mktemp -d "$TMPROOT/gorep.XXXX")"
+    ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+    printf 'module fix\n\ngo 1.21\n' > "$repo/go.mod"
+    printf 'package fix\n\nfunc Add(a, b float64) float64 { return a + b }\n' > "$repo/math.go"
+    cat > "$repo/math_test.go" <<'GO'
+package fix
+
+import "testing"
+
+func TestAdds(t *testing.T) {
+	if Add(1, 1) != 2 {
+		t.Fatal("adds is wrong")
+	}
+}
+
+func TestPrecise(t *testing.T) {
+	if Add(0.1, 0.2) != 0.3 {
+		t.Fatal("precise is wrong")
+	}
+}
+GO
+    ( cd "$repo" && git add -A && git commit -qm parent )
+    scaffold_mission "$repo"
+    echo "$repo"
+  }
+  # T1: the honest go repair — fix HOW the test compares, keep both test names.
+  repo="$(new_go_repair_repo)"; P="$(head_sha "$repo")"
+  cat > "$repo/math_test.go" <<'GO'
+package fix
+
+import (
+	"math"
+	"testing"
+)
+
+func TestAdds(t *testing.T) {
+	if Add(1, 1) != 2 {
+		t.Fatal("adds is wrong")
+	}
+}
+
+func TestPrecise(t *testing.T) {
+	if math.Abs(Add(0.1, 0.2)-0.3) > 1e-9 {
+		t.Fatal("precise is wrong")
+	}
+}
+GO
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_STACK=go
+  ffj="$(TD "$repo")/flip-flop.json"
+  [ "$FFRC" = 0 ] && ok "T1a. go: an honest repair of a pre-existing failing test PASSES" \
+                  || bad "T1a. go honest repair should pass (FFRC=$FFRC: $OUT)"
+  [ "$(ff_mode "$ffj")" = parent-own ] \
+    && ok "T1b. go: it went down the parent-own path, not the staged one" \
+    || bad "T1b. expected mode=parent-own on go (got '$(ff_mode "$ffj")')"
+fi
+
+# ==========================================================================
+# U. S157 — THE ONE ANTI-GUTTING CHECK, AND WHAT IT CANNOT SEE
+#
+# The source-reading guard that used to live here (name sets, skip markers, an
+# assertion floor, and a character-level lexer under them) was broken at a new
+# token by five successive reviewers and was false-failing honest repairs. The
+# captain ruled it out. What remains reads NO source: the two runners report how
+# many tests each leg executed, and the tip may not execute fewer than the
+# parent. Its blind spots are pinned below rather than described.
+# ==========================================================================
+echo "== U. the runner-count check + its pinned blind spots (S157) =="
+
+lex_repo() { # → repo with src/calc.js exporting add() and docs()
+  local repo; repo="$(mktemp -d "$TMPROOT/lex.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '{ "name": "fix", "private": true }\n' > "$repo/package.json"
+  mkdir -p "$repo/src" "$repo/tests"
+  printf 'exports.add = (a, b) => a + b;\nexports.docs = () => "Decision";\n' > "$repo/src/calc.js"
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+
+# --- U5: THE RUNNER-COUNT CHECK -- the one non-source mechanism -------------
+# `describe.skip` disables every test inside it while each `it(...)` is still
+# declared, by name, on both sides: four characters of diff, invisible to any
+# name set. The runners see it instantly (3 executed → 0).
+u5_repo() { # → repo whose committed suite has one FAILING test inside a describe
+  local repo; repo="$(lex_repo)"
+  cat > "$repo/tests/blk.test.js" <<'JS'
+const { describe, it } = require('node:test');
+const assert = require('node:assert');
+const { add } = require('../src/calc.js');
+describe('calc', () => {
+  it('a', () => { assert.strictEqual(add(1, 1), 2); });
+  it('b', () => { assert.strictEqual(add(0.1, 0.2), 0.3); });
+  it('c', () => { assert.strictEqual(add(2, 2), 4); });
+});
+JS
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  echo "$repo"
+}
+U5_FIXED='const { describe, it } = require("node:test");
+const assert = require("node:assert");
+const { add } = require("../src/calc.js");
+describe("calc", () => {
+  it("a", () => { assert.strictEqual(add(1, 1), 2); });
+  it("b", () => { assert.ok(Math.abs(add(0.1, 0.2) - 0.3) < 1e-9); });
+  it("c", () => { assert.strictEqual(add(2, 2), 4); });
+});
+'
+# U5a: the honest repair of that same file must still pass, counts equal.
+repo="$(u5_repo)"; P="$(head_sha "$repo")"
+printf '%s' "$U5_FIXED" > "$repo/tests/blk.test.js"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$FFRC" = 0 ] && ok "U5a. the honest repair passes — the runner executed as many tests as before" \
+                || bad "U5a. runner-count check false-failed an honest repair (FFRC=$FFRC: $OUT)"
+if [ "$(ff_field "$ffj" 'd["executed"]["parent"]')" = 3 ] \
+   && [ "$(ff_field "$ffj" 'd["executed"]["tip"]')" = 3 ]; then
+  ok "U5b. and both counts are recorded as provenance (3 → 3)"
+else
+  bad "U5b. executed counts not recorded: $(ff_field "$ffj" 'd["executed"]')"
+fi
+# U5c: describe.skip — the source is identical apart from four characters, so
+# nothing that reads it can tell the two apart. The runners can: 3 → 0.
+repo="$(u5_repo)"; P="$(head_sha "$repo")"
+printf '%s' "$U5_FIXED" | sed 's/^describe(/describe.skip(/' > "$repo/tests/blk.test.js"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$FFRC" = 1 ] && ok "U5c. describe.skip around the whole block → FAIL" \
+                || bad "U5c. describe.skip was certified (FFRC=$FFRC: $OUT)"
+case "$(ff_reason "$ffj")" in
+  *"RUNNER executed FEWER tests on the tip than on the parent"*)
+    ok "U5d. and the reason quotes the two counts — no source claim is made" ;;
+  *) bad "U5d. wrong rejection for describe.skip: $(ff_reason "$ffj")" ;;
+esac
+# U5e: the same trick with an if(false) wrapper — also a count drop.
+repo="$(u5_repo)"; P="$(head_sha "$repo")"
+printf '%s' "$U5_FIXED" | sed 's/^describe(/if (false) describe(/' > "$repo/tests/blk.test.js"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$FFRC" = 1 ] && ok "U5e. a block hidden behind if (false) is caught the same way" \
+                || bad "U5e. if(false) block was certified (FFRC=$FFRC: $OUT)"
+case "$(ff_reason "$ffj")" in
+  *"RUNNER executed FEWER tests on the tip than on the parent"*)
+    ok "U5e2. and that reason quotes the two counts, not a source claim" ;;
+  *) bad "U5e2. if(false) should be a count rejection: $(ff_reason "$ffj")" ;;
+esac
+# U5f: an early return inside the block.
+repo="$(u5_repo)"; P="$(head_sha "$repo")"
+printf '%s' "$U5_FIXED" | sed 's|^  it("a"|  return;\n  it("a"|' > "$repo/tests/blk.test.js"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+[ "$FFRC" = 1 ] && ok "U5f. an early return that skips the rest of a block is caught too" \
+                || bad "U5f. early-return block was certified (FFRC=$FFRC: $OUT)"
+
+# --- U6/U7: the runner check's OWN blind spots, pinned ----------------------
+# U6: KNOWN LIMIT — a parent copy DEAD AT IMPORT executes nothing, so
+# `tip < parent` can never fire. That is the flagship ground-truth class (a
+# config change made the file throw before registering anything), i.e. the check
+# is vacuous exactly where it would be most wanted; there the source name-set is
+# the only guard. Pinned so the asymmetry is on the record.
+repo="$(lex_repo)"
+cat > "$repo/tests/imp.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+const { nope } = require('../src/missing.js');
+test('a', () => { assert.ok(nope); });
+test('b', () => { assert.ok(true); });
+JS
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+cat > "$repo/tests/imp.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+test('a', () => { assert.ok(true); });
+test('b', () => { assert.ok(true); });
+JS
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+if [ "$FFRC" = 0 ] && [ "$(ff_field "$ffj" 'd["executed"]["parent"]')" -le 1 ]; then
+  ok "U6. KNOWN LIMIT: a parent dead at import executes ~nothing — the count check is VACUOUS there"
+else
+  bad "U6. KNOWN LIMIT changed — import-dead parent now FFRC=$FFRC exec=$(ff_field "$ffj" 'd["executed"]["parent"]'); update the ledger deliberately"
+fi
+
+# U7: KNOWN LIMIT — a runner whose output carries no count. go prints `ok pkg`,
+# so the check is UNAVAILABLE there and only the source rules apply. Recorded in
+# the artifact as checked:false rather than silently assumed to have passed.
+if ! have go; then
+  skip "GO: go not installed — SKIPPING the no-count-available pin"
+else
+  repo="$(mktemp -d "$TMPROOT/gou7.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf 'module fix\n\ngo 1.21\n' > "$repo/go.mod"
+  printf 'package fix\n\nfunc Add(a, b float64) float64 { return a + b }\n' > "$repo/math.go"
+  cat > "$repo/math_test.go" <<'GO'
+package fix
+
+import "testing"
+
+func TestAdds(t *testing.T) {
+	if Add(1, 1) != 2 {
+		t.Fatal("adds is wrong")
+	}
+}
+
+func TestPrecise(t *testing.T) {
+	if Add(0.1, 0.2) != 0.3 {
+		t.Fatal("precise is wrong")
+	}
+}
+GO
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  P="$(head_sha "$repo")"
+  cat > "$repo/math_test.go" <<'GO'
+package fix
+
+import (
+	"math"
+	"testing"
+)
+
+func TestAdds(t *testing.T) {
+	if Add(1, 1) != 2 {
+		t.Fatal("adds is wrong")
+	}
+}
+
+func TestPrecise(t *testing.T) {
+	if math.Abs(Add(0.1, 0.2)-0.3) > 1e-9 {
+		t.Fatal("precise is wrong")
+	}
+}
+GO
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_STACK=go
+  ffj="$(TD "$repo")/flip-flop.json"
+  [ "$FFRC" = 0 ] && ok "U7a. go: the honest repair still passes with no count available" \
+                  || bad "U7a. go repair failed (FFRC=$FFRC: $OUT)"
+  [ "$(ff_field "$ffj" 'd["executed"]["checked"]')" = False ] \
+    && ok "U7b. KNOWN LIMIT: go carries no count — the check is recorded as NOT made" \
+    || bad "U7b. expected executed.checked=false on go (got $(ff_field "$ffj" 'd["executed"]'))"
+fi
+
+# --- U14–U16: the other residuals of the TRIMMED gate, pinned ---------------
+# The source-reading guard is gone, so these are simply true now. Each is a
+# passing assertion of CURRENT behaviour, so it fails loudly if that changes.
+
+# U14: KNOWN LIMIT — a test that keeps its name AND its place in the run while
+# checking less. The runner still executes it, so the count holds; nothing reads
+# the source any more. This is the shape the deleted guard chased for five
+# rounds; the protection now is the declared edit and the human at Verify.
+repo="$(lex_repo)"
+cat > "$repo/tests/hollow.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+const { add } = require('../src/calc.js');
+function checkAll() {
+  assert.strictEqual(add(1, 1), 2);
+  assert.strictEqual(add(0.1, 0.2), 0.3);
+}
+test('everything', () => { checkAll(); });
+JS
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+cat > "$repo/tests/hollow.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+const { add } = require('../src/calc.js');
+function checkAll() {
+  assert.strictEqual(add(1, 1), 2);
+  assert.strictEqual(add(0.1, 0.2), 0.3);
+}
+test('everything', () => { assert.ok(true); });
+JS
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+[ "$FFRC" = 0 ] \
+  && ok "U14. KNOWN LIMIT: a test that keeps its name and still RUNS, checking less, is NOT caught" \
+  || bad "U14. KNOWN LIMIT changed — hollowed test now FFRC=$FFRC; update the ledger deliberately"
+
+# U15: KNOWN LIMIT — a repair-only ticket satisfies this gate with no feature
+# work of its own. Inherent to the carve-out; whether a ticket did its JOB is the
+# acceptance criteria, Verify and the full-suite gate, never this gate.
+repo="$(lex_repo)"
+cat > "$repo/tests/legacy.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+test('legacy', () => { assert.strictEqual(process.env.LCARS_NOPE_XYZ, 'set'); });
+JS
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+cat > "$repo/tests/legacy.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+test('legacy', () => { assert.strictEqual(process.env.LCARS_NOPE_XYZ || 'set', 'set'); });
+JS
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+[ "$FFRC" = 0 ] \
+  && ok "U15. KNOWN LIMIT: a repair-only ticket satisfies flip-flop with no feature work" \
+  || bad "U15. KNOWN LIMIT changed — repair-only now FFRC=$FFRC; update the ledger deliberately"
+
+# U16: KNOWN LIMIT — renaming a whole test file makes the new path new-at-the-
+# parent, so the ticket is STAGED and never reaches the repair path at all.
+repo="$(lex_repo)"
+cat > "$repo/tests/a.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+const { add } = require('../src/calc.js');
+test('broken', () => { assert.strictEqual(add(0.1, 0.2), 0.3); });
+test('valuable', () => { assert.strictEqual(add(1, 1), 2); });
+JS
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+rm "$repo/tests/a.test.js"
+cat > "$repo/tests/renamed.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+const { add } = require('../src/calc.js');
+test('valuable', () => { assert.strictEqual(add(1, 1), 2); });
+JS
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD='node --test $(find "$LCARS_TESTS_DIR" -name "*.test.js")'
+ffj="$(TD "$repo")/flip-flop.json"
+if [ "$(ff_mode "$ffj")" = staged ] && [ "$FFRC" = 1 ]; then
+  ok "U16. KNOWN LIMIT: a renamed test file is STAGED — it never reaches the repair path"
+else
+  bad "U16. KNOWN LIMIT changed — rename now mode=$(ff_mode "$ffj") FFRC=$FFRC; update the ledger deliberately"
+fi
+
+# --- U13: the runner-count reader, per runner grammar -----------------------
+# EXECUTED, not COLLECTED. vitest/jest/VSTest totals include skipped tests, so
+# reading the total made the check vacuous on three of seven runners. NOTE these
+# are DOCUMENTED summary formats fed to the pure reader — only the node arm is
+# additionally exercised against a live runner (U5).
+exec_of() { EXEC_OUT="$(printf '%s\n' "$1" | bash "$SCRIPT" executed-count-test 2>&1)"; }
+while IFS='|' read -r label want line; do
+  [ -n "$label" ] || continue
+  exec_of "$line"
+  [ "$EXEC_OUT" = "$want" ] \
+    && ok "U13. $label → $want" \
+    || bad "U13. $label expected '$want', got '$EXEC_OUT'"
+done <<'CASES'
+vitest ran 2 of 3|vitest 3| Tests  1 failed | 2 passed (3)
+vitest all skipped|vitest 0| Tests  3 skipped (3)
+vitest import-death|vitest 0| Tests  no tests
+jest ran 3|jest 3|Tests:       1 failed, 2 passed, 3 total
+jest all skipped|jest 0|Tests:       3 skipped, 3 total
+rspec all pending|rspec 0|3 examples, 0 failures, 3 pending
+minitest all skipped|minitest 0|3 runs, 6 assertions, 0 failures, 0 errors, 3 skips
+vstest ran 3|vstest 3|Failed: 1, Passed: 2, Skipped: 0, Total: 3
+vstest all skipped|vstest 0|Failed: 0, Passed: 0, Skipped: 3, Total: 3
+CASES
+exec_of "ok  	fix	0.2s"
+[ -z "$EXEC_OUT" ] \
+  && ok "U13b. a runner with no executed figure yields nothing (the check is skipped, not assumed)" \
+  || bad "U13b. go output produced a count: '$EXEC_OUT'"
+
+# --- U8: the two provenance-only exit paths, now pinned (C4) ----------------
+# Every other exit path asserts its provenance; these two only wrote it.
+repo="$(lex_repo)"
+printf 'const { test } = require("node:test");\ntest("x", () => {});\n' > "$repo/tests/na.test.js"
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+printf 'const { test } = require("node:test");\ntest("x", () => {});\ntest("y", () => {});\n' > "$repo/tests/na.test.js"
+commit_all "$repo"
+write_result "$(TD "$repo")" '[]' '[]' not-applicable "pure config"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+if [ "$FFRC" = 0 ] && [ "$(ff_mode "$ffj")" = none ] && [ "$(ff_ran "$ffj")" = False ] \
+   && [ "$(ff_field "$ffj" 'd["executed"]["checked"]')" = False ]; then
+  ok "U8a. a declared not-applicable skip records complete, honest provenance"
+else
+  bad "U8a. not-applicable provenance wrong: mode=$(ff_mode "$ffj") ran=$(ff_ran "$ffj") exec=$(ff_field "$ffj" 'd["executed"]')"
+fi
+repo="$(lex_repo)"
+printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+printf 'exports.add = (a, b) => a + b;\nexports.sub = (a, b) => a - b;\n' > "$repo/src/calc.js"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+if [ "$FFRC" = 2 ] && [ "$(ff_mode "$ffj")" = none ]; then
+  ok "U8b. a diff with NO test file is inconclusive, with provenance saying nothing ran"
+else
+  bad "U8b. no-test-file path: FFRC=$FFRC mode=$(ff_mode "$ffj")"
+fi
+
+# ==========================================================================
+# Q. S157 — HONEST REGRESSOR ATTRIBUTION
+#
+# GROUND TRUTH: the same mission attributed a regression in t-012's test file to
+# t-011, whose only distinction was landing last, and handed a worker a reconcile
+# brief built on a false premise. The gate already knows who OWNS a failing suite
+# — retest_ticket_suites re-runs each ticket's OWN recorded tests.
+# ==========================================================================
+echo "== Q. regressor attribution (S157) =="
+
+sh_regressor() { # failing ordered → sets SHR_ID + SHR_BASIS
+  local line
+  line="$( env LCARS_SHR_FAILING="$1" LCARS_SHR_ORDERED="$2" \
+           bash "$SCRIPT" selfheal-regressor-test 2>&1 | head -1 )"
+  SHR_ID="$(printf '%s' "$line" | cut -f1)"
+  SHR_BASIS="$(printf '%s' "$line" | cut -f2)"
+}
+sh_note() { # id basis → sets NOTE
+  NOTE="$( env LCARS_SHR_ID="$1" LCARS_SHR_BASIS="$2" \
+           bash "$SCRIPT" selfheal-attribution-test 2>&1 )"
+}
+
+# Q1: THE LIVE SHAPE. t-012 (wave 1) authored the failing file; t-011 landed last.
+sh_regressor "t-012" "t-001 t-012 t-002 t-011"
+[ "$SHR_ID" = t-012 ] && [ "$SHR_BASIS" = authored-failing-suite ] \
+  && ok "Q1. the AUTHOR of the failing suite is chosen, not the last ticket to land" \
+  || bad "Q1. expected t-012/authored-failing-suite (got '$SHR_ID'/'$SHR_BASIS')"
+
+# Q2: several failing suites → the EARLIEST in plan order, and the failing list's
+# own order is irrelevant (it is passed reversed here).
+sh_regressor "t-003 t-002" "t-001 t-002 t-003"
+[ "$SHR_ID" = t-002 ] && [ "$SHR_BASIS" = authored-failing-suite ] \
+  && ok "Q2a. several failing suites → the earliest in WAVE order (deterministic)" \
+  || bad "Q2a. expected t-002 (got '$SHR_ID'/'$SHR_BASIS')"
+sh_regressor "t-002 t-003" "t-001 t-002 t-003"
+[ "$SHR_ID" = t-002 ] \
+  && ok "Q2b. same answer whichever order the failing ids arrive in" \
+  || bad "Q2b. attribution is order-dependent (got '$SHR_ID')"
+
+# Q3: ownership UNRESOLVED — say so plainly; the last-built ticket is labelled as
+# exactly that, never as a culprit.
+sh_regressor "" "t-001 t-002 t-003"
+[ "$SHR_ID" = t-003 ] && [ "$SHR_BASIS" = unresolved-last-built ] \
+  && ok "Q3a. with no owner resolvable the basis is unresolved-last-built" \
+  || bad "Q3a. expected t-003/unresolved-last-built (got '$SHR_ID'/'$SHR_BASIS')"
+sh_note t-003 unresolved-last-built
+case "$NOTE" in
+  *"UNRESOLVED"*"could NOT determine"*"NOT a proven culprit"*)
+    ok "Q3b. the brief SAYS SO — no guessed culprit" ;;
+  *) bad "Q3b. unresolved brief must state it plainly: $NOTE" ;;
+esac
+
+# Q4: nothing to pick from at all.
+sh_regressor "" ""
+[ -z "$SHR_ID" ] && [ "$SHR_BASIS" = none ] \
+  && ok "Q4. no tickets at all → basis 'none', no invented id" \
+  || bad "Q4. expected empty/none (got '$SHR_ID'/'$SHR_BASIS')"
+
+# Q5: a failing id outside the ordered list is still honest ownership.
+sh_regressor "t-099" "t-001 t-002"
+[ "$SHR_ID" = t-099 ] && [ "$SHR_BASIS" = authored-failing-suite ] \
+  && ok "Q5. a failing id missing from plan order is still attributed to its author" \
+  || bad "Q5. expected t-099/authored-failing-suite (got '$SHR_ID'/'$SHR_BASIS')"
+
+# Q6: the AUTHORED brief must not overclaim — owning the broken test is not proof
+# of having caused the break.
+sh_note t-012 authored-failing-suite
+case "$NOTE" in
+  *"AUTHORED the failing test"*"NOT proof"*)
+    ok "Q6. the authored brief states ownership WITHOUT claiming fault" ;;
+  *) bad "Q6. authored brief overclaims or omits the bound: $NOTE" ;;
+esac
+
+# --- Q6b/Q6c (D9/D10): hostile and malformed inputs -------------------------
+# The id lists are split on whitespace ON PURPOSE, but they must NOT be
+# glob-expanded: a `*` in a failing list used to return a FILENAME from the CWD
+# as the culprit ticket.
+( cd "$REPO_ROOT" && env LCARS_SHR_FAILING='*' LCARS_SHR_ORDERED='t-001 t-002' \
+    bash "$SCRIPT" selfheal-regressor-test 2>&1 | head -1 ) > "$TMPROOT/glob.out"
+case "$(cat "$TMPROOT/glob.out")" in
+  '*'*) ok "Q6b. a glob in the failing list is NOT expanded against the cwd" ;;
+  *) bad "Q6b. glob expansion leaked a filename into the pick: $(cat "$TMPROOT/glob.out")" ;;
+esac
+# The note must degrade legibly on inputs the picker never emits, rather than
+# dropping the id it is holding or printing a sentence with a hole in it.
+sh_note t-007 bogus-basis
+case "$NOTE" in
+  *UNRECOGNISED*t-007*UNVERIFIED*) ok "Q6c. an unknown basis still names the id, flagged UNVERIFIED" ;;
+  *) bad "Q6c. unknown basis dropped the id or invented a claim: $NOTE" ;;
+esac
+sh_note "" authored-failing-suite
+case "$NOTE" in
+  *"could not name any ticket"*) ok "Q6d. an empty id degrades to 'no ticket resolved', not a garbled sentence" ;;
+  *) bad "Q6d. empty id produced a malformed brief: $NOTE" ;;
+esac
+
+# --- Q7: END-TO-END through the REAL full-suite gate ------------------------
+# Not the pure picker this time: the actual gate re-runs each ticket's recorded
+# suite, records the ids it attributed the regression to, and the pick follows
+# from that. Three tickets; the MIDDLE one's suite is the broken one, and the
+# last one is green — pre-S157 the reconcile went to the last one regardless.
+fs_repo() { # → repo dir with 3 ticket suites, t-002's failing
+  local repo; repo="$(mktemp -d "$TMPROOT/fs.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '{ "name": "fs", "private": true }\n' > "$repo/package.json"
+  mkdir -p "$repo/tests" "$repo/.git/lcars/missions/m-001/tickets"
+  # state.json WITHOUT a branch → the gate's documented in-tree retest path.
+  printf '{ "id":"m-001","type":"feature","title":"t","stage":"implement" }\n' \
+    > "$repo/.git/lcars/missions/m-001/state.json"
+  # Canonical (line-oriented) waves.json — parse_waves_table reads one "wave" /
+  # "id" per line, exactly as the Schedule stage emits it.
+  cat > "$repo/.git/lcars/missions/m-001/waves.json" <<'JSON'
+{
+  "waves": [
+    { "wave": 1,
+      "tickets": [
+        { "id": "t-001", "issue": null },
+        { "id": "t-002", "issue": null }
+      ] },
+    { "wave": 2,
+      "tickets": [
+        { "id": "t-003", "issue": null }
+      ] }
+  ]
+}
+JSON
+  local i
+  for i in 001 002 003; do
+    mkdir -p "$repo/.git/lcars/missions/m-001/tickets/t-$i"
+    if [ "$i" = 002 ]; then
+      printf 'const { test } = require("node:test");\nconst assert = require("node:assert");\ntest("t-%s", () => { assert.strictEqual(1, 2); });\n' "$i" \
+        > "$repo/tests/t-$i.test.js"
+    else
+      printf 'const { test } = require("node:test");\nconst assert = require("node:assert");\ntest("t-%s", () => { assert.ok(true); });\n' "$i" \
+        > "$repo/tests/t-$i.test.js"
+    fi
+    # the proof-time snapshot the gate re-runs from (hash must match in-tree)
+    printf '%s  tests/t-%s.test.js\n' \
+      "$(shasum -a 256 "$repo/tests/t-$i.test.js" | awk '{print $1}')" "$i" \
+      > "$repo/.git/lcars/missions/m-001/tickets/t-$i/proof-tests.sha256"
+  done
+  ( cd "$repo" && git add -A && git commit -qm base )
+  echo "$repo"
+}
+if ! have shasum; then
+  skip "Q7: shasum absent — SKIPPING the end-to-end full-suite attribution drive"
+else
+  repo="$(fs_repo)"
+  OUT="$( cd "$repo" && env LCARS_GH_BIN=true LCARS_GIT_BIN=git LCARS_TEST_CMD="$NODE_CMD" \
+          bash "$SCRIPT" full-suite-gate-test --mission m-001 2>&1 )"
+  FSRC="$(printf '%s\n' "$OUT" | sed -n 's/^FSRC=//p' | tail -1)"
+  FSREG="$(printf '%s\n' "$OUT" | sed -n 's/^FSREG=//p' | tail -1)"
+  FSPICK="$(printf '%s\n' "$OUT" | sed -n 's/^FSPICK=//p' | tail -1)"
+  [ "$FSRC" = 1 ] && ok "Q7a. the full-suite gate fails on the broken suite" \
+                  || bad "Q7a. expected FSRC=1 (got '$FSRC': $OUT)"
+  [ "$FSREG" = t-002 ] \
+    && ok "Q7b. the gate records the OWNER of the failing suite (t-002)" \
+    || bad "Q7b. expected FSREG=t-002 (got '$FSREG': $OUT)"
+  [ "$FSPICK" = "t-002|authored-failing-suite" ] \
+    && ok "Q7c. self-heal would be handed t-002 — NOT t-003, the last built" \
+    || bad "Q7c. expected t-002|authored-failing-suite (got '$FSPICK')"
+  case "$OUT" in
+    *"a LATER ticket's produced code REGRESSED"*)
+      bad "Q7d. the regression detail still asserts an unproven premise: $OUT" ;;
+    *"WHICH change is NOT established by this gate"*)
+      ok "Q7d. the human-facing detail states what is proven, and what is not" ;;
+    *) bad "Q7d. the regression detail's premise copy is missing: $OUT" ;;
+  esac
+fi
+
+# --- Q8: THE WIRING, through the REAL self-heal loop (stub worker, 0 tokens) --
+# Q7 exercises the picker; this exercises the PRODUCTION LINE — impl-advance →
+# full_suite_gate → self_heal_full_suite → the reconcile brief actually handed to
+# a worker. It also pins the per-round refresh: the fixture's failing set CHANGES
+# between rounds (t-002's suite is repaired by the stub, which flips a phase file
+# that makes t-003's suite start failing), so a regressor picked ONCE before the
+# loop would name t-002 in round 2 above a failure belonging to t-003 — measured,
+# not assumed: with the pick hoisted out of the loop this fixture emits
+# "ATTRIBUTION: t-002" in BOTH rounds.
+echo "== Q8. self-heal attribution end-to-end (stub worker) =="
+if ! have shasum; then
+  skip "Q8: shasum absent — SKIPPING the end-to-end self-heal drive"
+else
+  e2e="$(mktemp -d "$TMPROOT/e2e.XXXX")"; MID=m-001
+  m="$e2e/.git/lcars/missions/$MID"
+  ( cd "$e2e" && git init -q -b main && git config user.email t@t && git config user.name t )
+  mkdir -p "$m/tickets" "$e2e/tests"
+  printf '# ctx\n' > "$e2e/CONTEXT.md"          # pre-seed context → no context-pack spawn
+  printf '{ "name":"e", "private":true }\n' > "$e2e/package.json"
+  cat > "$m/state.json" <<EOF
+{ "id":"$MID","type":"feature","title":"t","stage":"implement","githubIssue":42,"branch":"lcars/$MID","base":"main" }
+EOF
+  cat > "$m/waves.json" <<'JSON'
+{
+  "waves": [
+    { "wave": 1,
+      "tickets": [
+        { "id": "t-001", "issue": 101 },
+        { "id": "t-002", "issue": 102 }
+      ] },
+    { "wave": 2,
+      "tickets": [
+        { "id": "t-003", "issue": 103 }
+      ] }
+  ]
+}
+JSON
+  cat > "$m/approved-plan.json" <<'JSON'
+{ "tickets": [
+  { "id": "t-001", "title": "one",   "description": "d", "acceptanceCriteria": ["a"], "rationale": "r" },
+  { "id": "t-002", "title": "two",   "description": "d", "acceptanceCriteria": ["a"], "rationale": "r" },
+  { "id": "t-003", "title": "three", "description": "d", "acceptanceCriteria": ["a"], "rationale": "r" } ] }
+JSON
+  for i in 001 002 003; do
+    mkdir -p "$m/tickets/t-$i"
+    if [ "$i" = 002 ]; then
+      printf 'const { test }=require("node:test");const a=require("node:assert");\ntest("t2",()=>{a.strictEqual(1,2);});\n' > "$e2e/tests/t-$i.test.js"
+    else
+      printf 'const { test }=require("node:test");const a=require("node:assert");\ntest("t%s",()=>{a.ok(true);});\n' "$i" > "$e2e/tests/t-$i.test.js"
+    fi
+    printf '%s  tests/t-%s.test.js\n' \
+      "$(shasum -a 256 "$e2e/tests/t-$i.test.js" | awk '{print $1}')" "$i" \
+      > "$m/tickets/t-$i/proof-tests.sha256"
+    cat > "$m/tickets/t-$i/result.json" <<JSON
+{ "ticketId": "t-$i", "passed": true, "attempts": 1, "summary": "s", "newTests": ["tests/t-$i.test.js"], "testEdits": [], "flipFlop": "expected" }
+JSON
+  done
+  ( cd "$e2e" && git add -A && git commit -qm base && git branch "lcars/$MID" )
+
+  E2E_PHASE="$e2e/PHASE2"
+  # The stub does an HONEST repair of t-002's pre-existing test (same test count,
+  # declared) — which is exactly what the S157 parent-own path is for — and then
+  # flips the phase file so the NEXT gate run fails on t-003 instead.
+  cat > "$e2e/worker" <<'STUB'
+#!/usr/bin/env bash
+prompt=""; while [ $# -gt 0 ]; do case "$1" in -p) prompt="${2:-}"; shift 2 ;; *) shift ;; esac; done
+printf '%s\n' "$prompt" | grep -o 'ATTRIBUTION: [^ ]*' | head -1 >> "$WLOG"
+[ "${LCARS_WORKER_ROLE:-}" = implement-tdd ] || exit 0
+printf 'const { test }=require("node:test");const a=require("node:assert");\ntest("t2",()=>{a.strictEqual(1,1);});\n' > tests/t-002.test.js
+cat > "${LCARS_WORK_OUT:?}/result.json" <<JSON
+{ "ticketId": "t-002", "passed": true, "attempts": 1, "summary": "repair",
+  "newTests": [], "testEdits": [{ "path": "tests/t-002.test.js", "reason": "the assertion was inverted; restored" }],
+  "flipFlop": "expected" }
+JSON
+: > "$PHASE"
+exit 0
+STUB
+  chmod +x "$e2e/worker"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$e2e/gh"; chmod +x "$e2e/gh"
+  : > "$e2e/worker.log"
+  E2E_CMD='if [ -f '"$E2E_PHASE"' ] && printf %s "$LCARS_TESTS_DIR" | grep -q t-003; then exit 1; fi; if [ -d "$LCARS_TESTS_DIR" ]; then node --test "$LCARS_TESTS_DIR"/*.test.js; else node --test "$LCARS_TESTS_DIR"; fi'
+  E2E_OUT="$( cd "$e2e" && env WLOG="$e2e/worker.log" PHASE="$E2E_PHASE" \
+      LCARS_SELFHEAL_CAP=2 LCARS_WORKER_BIN="$e2e/worker" LCARS_WORKER_CLI=claude \
+      LCARS_TEST_CMD="$E2E_CMD" LCARS_GH_BIN="$e2e/gh" LCARS_NOTIFY=true \
+      bash "$SCRIPT" impl-advance --mission "$MID" 2>&1 )"
+  E2E_EV="$m/events.jsonl"
+  # The gate must have named the AUTHOR of each round's failing suite.
+  if printf '%s' "$E2E_OUT" | grep -q 'fully-built repo: t-002' \
+     && printf '%s' "$E2E_OUT" | grep -q 'fully-built repo: t-003'; then
+    ok "Q8a. the fixture really did change owners between rounds (t-002 then t-003)"
+  else
+    bad "Q8a. fixture did not produce two different failing owners: $(printf '%s' "$E2E_OUT" | grep -o 'fully-built repo: t-00[0-9]' | tr '\n' ' ')"
+  fi
+  grep -q '"type":"selfheal_attribution".*round 1.*attributed to t-002 (authored-failing-suite)' "$E2E_EV" 2>/dev/null \
+    && ok "Q8b. round 1's reconcile went to t-002 — the AUTHOR, not t-003 the last built" \
+    || bad "Q8b. round 1 attribution wrong: $(grep -o 'attributed to [^"]*' "$E2E_EV" 2>/dev/null | tr '\n' ' ')"
+  grep -q '"type":"selfheal_attribution".*round 2.*attributed to t-003 (authored-failing-suite)' "$E2E_EV" 2>/dev/null \
+    && ok "Q8c. round 2 RE-PICKED from that round's failing set (t-003), not round 1's" \
+    || bad "Q8c. round 2 attribution is stale: $(grep -o 'attributed to [^"]*' "$E2E_EV" 2>/dev/null | tr '\n' ' ')"
+  # The brief the WORKER actually received — the production string, not a helper.
+  grep -q 'ATTRIBUTION: t-003' "$e2e/worker.log" 2>/dev/null \
+    && ok "Q8d. the worker's own prompt carried the CURRENT round's attribution" \
+    || bad "Q8d. worker prompt attribution: $(sort -u "$e2e/worker.log" 2>/dev/null | tr '\n' ' ')"
+  # D5: the escalation's culprit and its victims must come from the same round.
+  if printf '%s' "$E2E_OUT" | grep -q 'no longer passes on the branch — .*t-003.*attempt went to .*t-003'; then
+    ok "Q8e. the human escalation names one consistent round (culprit == the failing owner)"
+  else
+    bad "Q8e. escalation culprit/victims diverge: $(printf '%s' "$E2E_OUT" | grep -o 'A test that was green[^.]*\.[^.]*\.' | head -1)"
+  fi
+fi
+
+# ==========================================================================
+# V. THE S157 × #93 MERGE SEAM — a toolchain fault accuses no ticket
+#
+# #93 taught full_suite_gate to recognise a STALE DEPENDENCY ENVIRONMENT: the
+# gate worktree was symlinked to a shared node_modules that no longer matches
+# the branch's own committed lockfile, so every suite re-ran against the wrong
+# packages. That is a toolchain fault, and no earlier ticket regressed anything.
+# S157 taught the same function to record WHICH tickets' suites failed, in
+# $FULL_SUITE_REGRESSED, which self-heal reads to choose who gets the reconcile.
+#
+# Neither change knew about the other. They agree only because the stale-env
+# block returns BEFORE the assignment — pinned as ORDERING in
+# tests/gate-stale-env-classify.test.sh section 9 (that suite owns the classifier
+# and its wiring assertions, and is deliberately pure-filesystem so it cannot
+# drive a gate). This section owns the BEHAVIOURAL half, because it already has
+# the mission fixtures and the full-suite-gate hook.
+# ==========================================================================
+echo "== V. stale dependency environment × regressor attribution (merge seam) =="
+
+stale_seam_repo() { # symlink-shared-deps? → repo dir (t-002's suite is the red one)
+  local shared="$1" repo mm
+  repo="$(mktemp -d "$TMPROOT/seam.XXXX")"; mm="$repo/.git/lcars/missions/m-001"
+  ( cd "$repo" && git init -q -b main && git config user.email t@t && git config user.name t )
+  mkdir -p "$mm/tickets" "$repo/tests" "$repo/node_modules"
+  printf '{ "name":"e", "private":true }\n' > "$repo/package.json"
+  cat > "$mm/state.json" <<'JSON'
+{ "id":"m-001","type":"feature","title":"t","stage":"implement","githubIssue":42,
+  "branch":"lcars/m-001","base":"main" }
+JSON
+  cat > "$mm/waves.json" <<'JSON'
+{
+  "waves": [
+    { "wave": 1,
+      "tickets": [
+        { "id": "t-001", "issue": 101 },
+        { "id": "t-002", "issue": 102 }
+      ] },
+    { "wave": 2,
+      "tickets": [
+        { "id": "t-003", "issue": 103 }
+      ] }
+  ]
+}
+JSON
+  local i
+  for i in 001 002 003; do
+    mkdir -p "$mm/tickets/t-$i"
+    if [ "$i" = 002 ]; then
+      printf 'const { test }=require("node:test");const a=require("node:assert");\ntest("t2",()=>{a.strictEqual(1,2);});\n' > "$repo/tests/t-$i.test.js"
+    else
+      printf 'const { test }=require("node:test");const a=require("node:assert");\ntest("t%s",()=>{a.ok(true);});\n' "$i" > "$repo/tests/t-$i.test.js"
+    fi
+    printf '%s  tests/t-%s.test.js\n' \
+      "$(shasum -a 256 "$repo/tests/t-$i.test.js" | awk '{print $1}')" "$i" \
+      > "$mm/tickets/t-$i/proof-tests.sha256"
+    cat > "$mm/tickets/t-$i/result.json" <<JSON
+{ "ticketId": "t-$i", "passed": true, "attempts": 1, "summary": "s",
+  "newTests": ["tests/t-$i.test.js"], "testEdits": [], "flipFlop": "expected" }
+JSON
+  done
+  # The lockfile the BRANCH commits — this is what the gate worktree carries.
+  printf 'FEATURE\n' > "$repo/package-lock.json"
+  ( cd "$repo" && git add -A && git commit -qm base && git branch lcars/m-001 )
+  # …and the DIFFERENT one in the shared checkout the deps are symlinked from.
+  # That divergence IS the stale-dependency evidence. With `shared` off, the
+  # worktree gets its own node_modules and there is no evidence at all.
+  [ "$shared" = shared ] && printf 'MAIN\n' > "$repo/package-lock.json"
+  echo "$repo"
+}
+seam_gate() { # repo setup-cmd → SEAM_RC / SEAM_REG / SEAM_PICK / SEAM_SIG
+  local repo="$1" setup="$2" out
+  out="$( cd "$repo" && env LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+          LCARS_TEST_CMD="$NODE_CMD" LCARS_WORKTREE_SETUP_CMD="$setup" \
+          LCARS_FS_SIGNAL_OUT="$repo/sig.txt" \
+          bash "$SCRIPT" full-suite-gate-test --mission m-001 2>&1 )"
+  SEAM_RC="$(printf '%s\n' "$out"   | sed -n 's/^FSRC=//p'   | tail -1)"
+  SEAM_REG="$(printf '%s\n' "$out"  | sed -n 's/^FSREG=//p'  | tail -1)"
+  SEAM_PICK="$(printf '%s\n' "$out" | sed -n 's/^FSPICK=//p' | tail -1)"
+  SEAM_SIG="$(cat "$repo/sig.txt" 2>/dev/null)"
+}
+
+if ! have shasum; then
+  skip "SEAM: shasum absent — SKIPPING the stale-env × attribution drive"
+else
+  # --- V1: a stale dependency environment accuses NOBODY --------------------
+  repo="$(stale_seam_repo shared)"
+  seam_gate "$repo" "ln -sfn '$repo/node_modules' node_modules"
+  [ "$SEAM_RC" = 1 ] \
+    && ok "V1a. the gate still FAILS on a stale dependency environment (rc 1)" \
+    || bad "V1a. expected FSRC=1 (got '$SEAM_RC')"
+  case "$SEAM_SIG" in
+    *"STALE DEPENDENCY ENVIRONMENT"*)
+      ok "V1b. and reports it as a toolchain fault, not a regression" ;;
+    *) bad "V1b. expected the stale-env diagnosis, got: $(printf '%s' "$SEAM_SIG" | cut -c1-140)" ;;
+  esac
+  [ -z "$SEAM_REG" ] \
+    && ok "V1c. FULL_SUITE_REGRESSED is EMPTY — no ticket is attributed the break" \
+    || bad "V1c. a toolchain fault attributed tickets: '$SEAM_REG'"
+  case "$SEAM_SIG" in
+    *t-001*|*t-002*|*t-003*) bad "V1d. the signal names a ticket for a toolchain fault: $SEAM_SIG" ;;
+    *) ok "V1d. and the signal names no ticket at all" ;;
+  esac
+  case "$SEAM_PICK" in
+    *authored-failing-suite*)
+      bad "V1e. a toolchain fault produced an AUTHORED attribution: $SEAM_PICK" ;;
+    *) ok "V1e. so nothing can be picked as the author of a failing suite" ;;
+  esac
+
+  # --- V2: the genuine regression is UNAFFECTED by any of this --------------
+  # Same fixture, same red suite — but the worktree owns its dependencies, so
+  # there is no staleness evidence and the ordinary attribution must run.
+  repo="$(stale_seam_repo owned)"
+  seam_gate "$repo" "mkdir -p node_modules"
+  [ "$SEAM_RC" = 1 ] && [ "$SEAM_REG" = t-002 ] \
+    && ok "V2a. a real regression with no stale evidence still attributes to t-002" \
+    || bad "V2a. expected FSRC=1 FSREG=t-002 (got '$SEAM_RC' / '$SEAM_REG')"
+  [ "$SEAM_PICK" = "t-002|authored-failing-suite" ] \
+    && ok "V2b. and self-heal is still handed the AUTHORING ticket, not the last built" \
+    || bad "V2b. expected t-002|authored-failing-suite (got '$SEAM_PICK')"
+  case "$SEAM_SIG" in
+    *"STALE DEPENDENCY ENVIRONMENT"*)
+      bad "V2c. a genuine regression was misreported as a toolchain fault" ;;
+    *"no longer pass against the fully-built repo: t-002"*)
+      ok "V2c. and the detail is the ordinary regression wording, naming t-002" ;;
+    *) bad "V2c. unexpected detail: $(printf '%s' "$SEAM_SIG" | cut -c1-140)" ;;
+  esac
+
+  # --- V3: an ENVIRONMENT FAULT dispatches NO worker at all ------------------
+  # This was a KNOWN GAP one commit ago: the gate attributed nothing, but
+  # selfheal_regressor fell back to the LAST-BUILT ticket and self-heal spent
+  # worker sessions on a toolchain fault — sessions that cannot possibly clear a
+  # stale environment, which is the exact failure #93 exists to end. Now the
+  # self-heal loop is skipped outright and the mission escalates with the
+  # diagnosis the gate already produced.
+  #
+  # Driven end-to-end through the REAL impl-advance with a stub worker that
+  # simply records that it ran, so "no worker was dispatched" is measured, not
+  # inferred from a code path.
+  v3="$(stale_seam_repo shared)"
+  printf '#!/usr/bin/env bash\nprintf "DISPATCHED role=%%s\\n" "${LCARS_WORKER_ROLE:-}" >> "$WLOG"\nexit 0\n' > "$v3/worker"
+  chmod +x "$v3/worker"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$v3/gh"; chmod +x "$v3/gh"
+  : > "$v3/worker.log"
+  cat > "$v3/.git/lcars/missions/m-001/approved-plan.json" <<'JSON'
+{ "tickets": [ { "id": "t-001", "title": "one", "description": "d", "acceptanceCriteria": ["a"], "rationale": "r" },
+               { "id": "t-002", "title": "two", "description": "d", "acceptanceCriteria": ["a"], "rationale": "r" },
+               { "id": "t-003", "title": "three", "description": "d", "acceptanceCriteria": ["a"], "rationale": "r" } ] }
+JSON
+  V3_OUT="$( cd "$v3" && env WLOG="$v3/worker.log" LCARS_SELFHEAL_CAP=3 \
+      LCARS_WORKER_BIN="$v3/worker" LCARS_WORKER_CLI=claude \
+      LCARS_TEST_CMD="$NODE_CMD" LCARS_WORKTREE_SETUP_CMD="ln -sfn '$v3/node_modules' node_modules" \
+      LCARS_GH_BIN="$v3/gh" LCARS_NOTIFY=true \
+      bash "$SCRIPT" impl-advance --mission m-001 2>&1 )"
+  V3_EV="$v3/.git/lcars/missions/m-001/events.jsonl"
+  [ ! -s "$v3/worker.log" ] \
+    && ok "V3a. an environment fault dispatches NO worker (the log is empty)" \
+    || bad "V3a. a worker ran on a toolchain fault: $(cat "$v3/worker.log")"
+  grep -q '"type":"selfheal_skipped"' "$V3_EV" 2>/dev/null \
+    && ok "V3b. and the skip is recorded as an event, not silent" \
+    || bad "V3b. no selfheal_skipped event: $(grep -o '"type":"selfheal[a-z_]*"' "$V3_EV" 2>/dev/null | tr '\n' ' ')"
+  grep -q '"type":"selfheal_attribution"' "$V3_EV" 2>/dev/null \
+    && bad "V3c. a ticket was attributed the break on a toolchain fault" \
+    || ok "V3c. no ticket is attributed — the self-heal loop never starts"
+  case "$V3_OUT" in
+    *"TOOLCHAIN fault, not broken code"*"lcars update"*)
+      ok "V3d. the human is parked with an ACTIONABLE toolchain diagnosis" ;;
+    *) bad "V3d. escalation copy misleads: $(printf '%s' "$V3_OUT" | grep -i 'IMPLEMENT:' | head -1)" ;;
+  esac
+  case "$V3_OUT" in
+    *"self-heal exhausted"*)
+      bad "V3e. it claims self-heal was exhausted when it never ran: $V3_OUT" ;;
+    *) ok "V3e. and it does not claim a self-heal that never ran was exhausted" ;;
+  esac
+  grep -q '"awaitingHuman": *true' "$v3/.git/lcars/missions/m-001/state.json" 2>/dev/null \
+    && ok "V3f. the mission is parked for the human, not advanced" \
+    || bad "V3f. mission not parked: $(cat "$v3/.git/lcars/missions/m-001/state.json" 2>/dev/null | tr -d '\n' | cut -c1-120)"
+
+  # V4: the OTHER empty-set case is untouched. A regression whose OWNER cannot be
+  # resolved leaves the failing set empty too, and must still reach the healer on
+  # its `unresolved-last-built` basis — the fix keys on the environment FAULT,
+  # not on emptiness, so the two stay distinguishable (see also Q3a).
+  sh_regressor "" "t-001 t-002 t-003"
+  [ "$SHR_ID" = t-003 ] && [ "$SHR_BASIS" = unresolved-last-built ] \
+    && ok "V4. an unresolvable-owner regression still yields a healable pick (not conflated)" \
+    || bad "V4. the unresolved-owner path broke: '$SHR_ID'/'$SHR_BASIS'"
+fi
+
+# ==========================================================================
+# W. THE HARNESS'S OWN PROVISIONING ARTIFACTS ARE NOT WORKER CHANGES
+#
+# Found by the first LIVE drive (roferg/lcars-outwork, pnpm + Vitest, real
+# copilot workers). LCARS's own worktreeSetupCommand SYMLINKS node_modules into
+# each ticket worktree. A `.gitignore` entry of `node_modules/` — with the
+# trailing slash, the near-universal convention — is a DIRECTORY-ONLY pattern
+# that does NOT match a symlink, so git reports the link as untracked:
+#
+#   $ printf 'node_modules/\n' > .gitignore; ln -s /tmp node_modules
+#   $ git ls-files --others --exclude-standard
+#   node_modules            <-- not ignored, because it is a symlink
+#
+# The eligibility check therefore saw three symlinks as worker-authored non-test
+# changes, called the diff mixed, and refused the repair path — for a worker diff
+# that was ONE line in ONE test file. The live session only certified because the
+# worker hand-edited .git/info/exclude to neutralise an artifact LCARS created.
+# The harness was treating its own provisioning as if the worker wrote it.
+# ==========================================================================
+echo "== W. provisioning artifacts vs worker changes (live-drive blocker) =="
+
+w_repo() { # → plain repo with src/calc.js and a mission (section-local)
+  local repo; repo="$(mktemp -d "$TMPROOT/w.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '{ "name": "fix", "private": true }\n' > "$repo/package.json"
+  mkdir -p "$repo/src" "$repo/tests"
+  printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+
+prov_repo() { # → repo in the LIVE shape: node_modules/ ignored, symlinks present
+  local repo; repo="$(mktemp -d "$TMPROOT/prov.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  printf '{ "name": "fix", "private": true }\n' > "$repo/package.json"
+  printf 'node_modules/\n' > "$repo/.gitignore"
+  mkdir -p "$repo/src" "$repo/tests" "$repo/packages/app" "$repo/packages/core" "$repo/docs"
+  printf 'exports.add = (a, b) => a + b;\n' > "$repo/src/calc.js"
+  printf '# ADR\n\nDecision: keep it.\n' > "$repo/docs/ADR.md"
+  # the pre-existing test, BROKEN at the parent exactly as the live seed was
+  cat > "$repo/tests/docs.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+const fs = require('node:fs');
+const repoRoot = '/nonexistent-live-root/';
+test('the ADR is on disk', () => {
+  assert.ok(fs.readFileSync(repoRoot + 'docs/ADR.md', 'utf8').includes('Decision'));
+});
+JS
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+# The provisioning LCARS itself performs, at the moment it performs it: the
+# worktreeSetupCommand runs when the worktree is PROVISIONED — after the ticket's
+# commit, just before the gate — so the links are never committed. Calling this
+# after commit_all is what makes the fixture faithful; creating them earlier
+# would let `git add -A` track them, which is not the live shape.
+provision_links() { # repo — symlink node_modules at the root and per package
+  mkdir -p "$1/.store"
+  ln -s "$1/.store" "$1/node_modules"
+  ln -s "$1/.store" "$1/packages/app/node_modules"
+  ln -s "$1/.store" "$1/packages/core/node_modules"
+}
+
+# --- W1: THE LIVE SHAPE — one test-file line, certified on the FIRST attempt --
+repo="$(prov_repo)"; P="$(head_sha "$repo")"
+sed -i.bak "s|'/nonexistent-live-root/'|process.cwd() + '/'|" "$repo/tests/docs.test.js"
+rm -f "$repo/tests/docs.test.js.bak"
+commit_all "$repo"
+provision_links "$repo"
+# git must really be reporting the symlinks as untracked, or the fixture is not
+# reproducing the defect and everything below would pass vacuously.
+[ -n "$( cd "$repo" && git ls-files --others --exclude-standard | grep '^node_modules$' )" ] \
+  && ok "W1a. fixture is faithful: git reports the ignored-by-pattern symlink as untracked" \
+  || bad "W1a. fixture does not reproduce the defect (no untracked node_modules symlink)"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$(ff_mode "$ffj")" = parent-own ] \
+  && ok "W1b. the repair path is AVAILABLE — provisioning symlinks are not worker changes" \
+  || bad "W1b. expected mode=parent-own (got '$(ff_mode "$ffj")'): $(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')"
+[ -z "$(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" ] \
+  && ok "W1c. and nothing is recorded as having withdrawn it" \
+  || bad "W1c. spurious withdrawal: $(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')"
+[ "$FFRC" = 0 ] \
+  && ok "W1d. so the honest repair is CERTIFIED on the first attempt (rc 0)" \
+  || bad "W1d. the live blocker is still present (FFRC=$FFRC): $OUT"
+case "$(ff_reason "$ffj")" in
+  *node_modules*) bad "W1e. a provisioning artifact is still named in the verdict: $(ff_reason "$ffj")" ;;
+  *) ok "W1e. and no provisioning artifact is named anywhere in the verdict" ;;
+esac
+
+# --- W4/W5: two fidelity nits the live captain raised -----------------------
+# W4: a parent leg that died at IMPORT recorded `assertion-red`. Nothing ran, so
+# no assertion failed — the recorded evidence said something untrue about how the
+# parent failed. Discriminated now on the executed count, which is already read.
+repo="$(w_repo)"
+cat > "$repo/tests/imp.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+const { nope } = require('../src/missing.js');
+test('a', () => { assert.ok(nope); });
+JS
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+cat > "$repo/tests/imp.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+test('a', () => { assert.ok(true); });
+JS
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$FFRC" = 0 ] && ok "W4a. an import-dead parent still certifies the repair" \
+                || bad "W4a. import-dead repair failed (FFRC=$FFRC: $OUT)"
+case "$(ff_field "$ffj" 'd["parent"]["kind"]')" in
+  assertion-red) bad "W4b. a leg that ran NOTHING is still recorded as an assertion failure" ;;
+  collection-red) ok "W4b. it is recorded as collection-red — nothing ran, so no assertion failed" ;;
+  *) ok "W4b. recorded as '$(ff_field "$ffj" 'd["parent"]["kind"]')' — not the false assertion-red" ;;
+esac
+# W4b passes here via the RESOLUTION arm (node reports `Cannot find module`),
+# which is more specific and rightly keeps precedence. The live case was vitest,
+# whose import-death prints a file-level failure and `Tests  no tests` — no
+# resolution phrase, so it landed on `assertion-red`. Note node counts an
+# import-dead FILE as one failing test (executed 1), so that shape cannot
+# exercise the new arm; this drives the runner phrasing that actually did.
+repo="$(w_repo)"
+cat > "$repo/tests/vt.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+test('a', () => { assert.ok(true); });
+JS
+( cd "$repo" && git add -A && git commit -qm parent )
+P="$(head_sha "$repo")"
+cat > "$repo/tests/vt.test.js" <<'JS'
+const assert = require('node:assert');
+const { test } = require('node:test');
+test('a', () => { assert.ok(true); });
+test('b', () => { assert.ok(true); });
+JS
+commit_all "$repo"
+: > "$repo/tip-marker"
+# The tip prints a healthy vitest summary; the parent scratch (no marker) prints
+# the live import-death shape — a failing FILE and no tests collected.
+VT_CMD='if [ -f tip-marker ]; then printf " Test Files  1 passed (1)\n      Tests  2 passed (2)\n"; else printf "Error: ENOENT: no such file or directory\n Test Files  1 failed (1)\n      Tests  no tests\n"; exit 1; fi'
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$VT_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+case "$(ff_field "$ffj" 'd["parent"]["kind"]')" in
+  collection-red)
+    ok "W4c. a red leg that EXECUTED NOTHING is collection-red, not assertion-red" ;;
+  *) bad "W4c. expected collection-red, got '$(ff_field "$ffj" 'd["parent"]["kind"]')'" ;;
+esac
+
+# --- W2: THE NEGATIVE CONTROL — a real non-test change still refuses ---------
+# The mixed-diff rule must not be weakened. A `vite.config.ts` is neither product
+# source nor a test, and a config exactly like it caused the original incident.
+repo="$(prov_repo)"; P="$(head_sha "$repo")"
+sed -i.bak "s|'/nonexistent-live-root/'|process.cwd() + '/'|" "$repo/tests/docs.test.js"
+rm -f "$repo/tests/docs.test.js.bak"
+printf 'export default { base: "/x/" }\n' > "$repo/vite.config.ts"
+commit_all "$repo"
+provision_links "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$(ff_mode "$ffj")" = staged ] \
+  && ok "W2a. a genuine non-test change STILL withdraws the repair path" \
+  || bad "W2a. the mixed-diff rule was weakened (mode='$(ff_mode "$ffj")')"
+case "$(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" in
+  *"vite.config.ts"*) ok "W2b. and the refusal names the real path that caused it" ;;
+  *) bad "W2b. refusal should name vite.config.ts: $(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" ;;
+esac
+case "$(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" in
+  *node_modules*) bad "W2c. the refusal also names provisioning noise: $(ff_field "$ffj" 'd["parentLeg"]["repairPathRefused"]')" ;;
+  *) ok "W2c. naming ONLY the worker's own change, not the harness's symlinks" ;;
+esac
+
+# --- W3: a real product-source change is unaffected -------------------------
+repo="$(prov_repo)"; P="$(head_sha "$repo")"
+sed -i.bak "s|'/nonexistent-live-root/'|process.cwd() + '/'|" "$repo/tests/docs.test.js"
+rm -f "$repo/tests/docs.test.js.bak"
+printf 'exports.add = (a, b) => a + b;\nexports.sub = (a, b) => a - b;\n' > "$repo/src/calc.js"
+commit_all "$repo"
+provision_links "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$NODE_CMD"
+ffj="$(TD "$repo")/flip-flop.json"
+[ "$(ff_mode "$ffj")" = staged ] \
+  && ok "W3. a src/ change still takes the normal gate, symlinks or not" \
+  || bad "W3. src change did not withdraw the repair path (mode='$(ff_mode "$ffj")')"
 
 # ==========================================================================
 echo

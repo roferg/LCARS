@@ -44,12 +44,37 @@ After you finish, the harness verifies your work mechanically. Know the gates:
 
 1. **Flip-flop**: your new/changed tests must be **GREEN on your finished tree**
    and **RED on the parent commit** (the tree as it stood before your ticket).
-   The harness literally checks out the parent in a scratch worktree, stages
-   your tests into it, and runs them there — a test that also passes WITHOUT
-   your change proves nothing and **fails the ticket**. (A test that cannot even
-   compile/resolve on the parent because it imports your new module COUNTS as
-   red — that is fine.) So: write tests that genuinely depend on the behaviour
-   you are adding.
+   The harness checks out the parent in a scratch worktree and runs them there.
+   Which copy of each test file it runs depends on the file:
+   - a test file that is **NEW at the parent** is staged into that worktree — a
+     test that also passes WITHOUT your change proves nothing and **fails the
+     ticket**. (A test that cannot even compile/resolve on the parent because it
+     imports your new module COUNTS as red — that is fine.) So: write tests that
+     genuinely depend on the behaviour you are adding.
+   - a test file that **already existed at the parent** runs the **parent's own
+     committed copy**, not your edited one. So a genuine REPAIR of a test that
+     was already broken on the parent — a test whose *asserted behaviour was
+     always right* but that stopped running (a path/config/import break another
+     ticket introduced) — is provable: the parent's copy is red, yours is green.
+     Fix it honestly and declare it. The flip side: if the parent's copy PASSES,
+     there was nothing to repair, and weakening or gutting it fails the ticket.
+   - **on that repair path, repair the body and keep the tests.** One mechanical
+     check applies: the RUNNER must not execute fewer tests on your tree than on
+     the parent, so disabling a block (`describe.skip`, an `if (false)`, an early
+     `return`) fails even though every test is still written down. You may freely
+     restructure — removing an import your fix made dead, merging two assertions,
+     renaming a test — none of that is held against you. But understand what is
+     NOT checked: when the parent's copy was dead at import it executed nothing,
+     so the count proves nothing there, and the harness does not read your file to
+     work out whether you dropped a test. Instead **every repaired file is listed
+     for the human at Verify, with your declared reason beside it** — deleting
+     coverage will be seen, by a person, with the diff open. If a test genuinely
+     cannot be made to pass, say so and let the ticket park; do not skip it.
+   - **a diff that touches ANY non-test path takes the first rule for every
+     file** — a repair is test-infrastructure ONLY. That includes build/test
+     config and even a README: if your diff has one, your edited test file is
+     staged into the parent as usual and the rejection will name the paths that
+     caused it. Land a genuine repair on its own ticket.
 2. **Declared edits**: every test file your diff touches (adds, edits,
    **deletions and renames included**) must be declared in `result.json` —
    new files in `newTests`, changes to PRE-EXISTING test files in `testEdits`

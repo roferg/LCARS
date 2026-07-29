@@ -1034,6 +1034,16 @@ validate_plan_json() { # file
         if ($0 !~ /\]/) in_ac=1     # array opens here, closes on a later line
       }
       else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
+      # S156: `establishesSharedInfrastructure` is OPTIONAL — absent must stay
+      # valid (in-flight missions and every pre-S156 plan). When PRESENT it must
+      # be a boolean: the Schedule stage groups on it, so a mistyped value would
+      # silently mis-schedule the whole plan.
+      else if (key=="establishesSharedInfrastructure") {
+        v=$0; sub(/.*"establishesSharedInfrastructure"[[:space:]]*:[[:space:]]*/, "", v)
+        gsub(/[ ,]/, "", v)
+        if (v!="true" && v!="false" && v!="\"true\"" && v!="\"false\"")
+          fail("ticket " (tickets+1) " (" id ") has a non-boolean \"establishesSharedInfrastructure\": " v " — use true or false.")
+      }
     }
     # DESIGN NOTE (Session 31): the three estimate fields are a SHAPE contract,
     # not a SIZE policy. We require all three to be present, but we deliberately
@@ -1087,6 +1097,17 @@ cmd_plan_save() {
 
   echo "PLAN: advanced"
   echo "  Wrote plan.json."
+  # S156: say it at the EARLIEST point a human or Plan Review can act on it. A
+  # plan that declares `establishesSharedInfrastructure` on NO ticket leaves
+  # Schedule reading ticket text instead, which only catches a ticket that names
+  # a config file — so an unnamed scaffold ticket would share wave 1 with the
+  # tickets that build on it. Not a gate: the plan is saved either way.
+  local ndecl ntk
+  ndecl="$(parse_plan_table "$MISSION_DIR/plan.json" 2>/dev/null | awk -F'\t' '$7!=""{n++} END{print n+0}')"
+  ntk="$(parse_plan_table "$MISSION_DIR/plan.json" 2>/dev/null | grep -c .)"
+  if [ "${ndecl:-0}" -eq 0 ] && [ "${ntk:-0}" -gt 0 ]; then
+    echo "  ⚠ no ticket declares establishesSharedInfrastructure — Plan Review should ask for it. Without it, Schedule falls back to reading ticket text and only isolates a ticket that NAMES a build/test config file."
+  fi
   echo "  Stage:  plan-review"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
   exit 0
@@ -1211,19 +1232,39 @@ cmd_review_save() {
 # changes nothing (no waves.json, no issues, no stage move). On success it writes
 # waves.json — [ { wave, tickets:[ { id, issue } ] } ] — and moves the stage +
 # label schedule → implement, keeping the on-disk stage and the board in step.
+#
+# S156: one ADDITIONAL, deterministic grouping rule sits on top of the graph — a
+# ticket that ESTABLISHES SHARED BUILD/TEST INFRASTRUCTURE rides ALONE in its
+# wave and acts as a barrier in plan order, so nothing that will build against
+# that infrastructure can be its blind sibling. The call is the ticket's own
+# DECLARED `establishesSharedInfrastructure`, with a heuristic backstop only when
+# the field is absent (see classify_infra_ticket). Such a wave carries an
+# additive "reason" in waves.json (and a line in the readout) that says which of
+# the two decided it. Ticket isolation itself is unchanged.
 
 # --- parse approved-plan.json into a tab-separated ticket table -------------
-# One line per ticket: id \t title \t description \t criteria \t deps
+# One line per ticket:
+#   id \t title \t description \t criteria \t deps \t rationale \t infraFlag
 # criteria items are joined with " | " and deps with spaces — both are inline
 # single-line arrays in the canonical shape, so no field ever spans lines. Same
 # jq-free, line-oriented parse as validate_plan_json.
+#
+# Fields 6–7 are S156 additions, APPENDED so every existing consumer is
+# unaffected (they read $1..$5, or `read id title desc crit deps` where the last
+# variable absorbs the tail):
+#   rationale  — the planner's *why*; the sentence most likely to say "this
+#                establishes the shared test infrastructure", and previously
+#                dropped on the floor.
+#   infraFlag  — the ticket's DECLARED `establishesSharedInfrastructure`
+#                ("true"/"false"), or EMPTY when the ticket does not declare it.
+#                Empty is the signal to fall back to the heuristic backstop.
 parse_plan_table() { # file
   awk '
     function flush() {
       if (id=="") return
-      printf "%s\t%s\t%s\t%s\t%s\n", id, title, desc, crit, deps
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, title, desc, crit, deps, rat, infra
     }
-    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; desc=""; crit=""; deps=""; next }
+    /^[[:space:]]*\{[[:space:]]*$/ { inobj=1; id=""; title=""; desc=""; crit=""; deps=""; rat=""; infra=""; next }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ { if (inobj) flush(); inobj=0; next }
     inobj {
       n=split($0, a, "\"")             # inside-quote contents land at even indices
@@ -1232,8 +1273,16 @@ parse_plan_table() { # file
       if (key=="id") id=a[4]
       else if (key=="title") title=a[4]
       else if (key=="description") desc=a[4]
+      else if (key=="rationale") rat=a[4]
       else if (key=="acceptanceCriteria") { c=""; for (i=4;i<n;i+=2) if (a[i]!="") c=(c==""?a[i]:c" | "a[i]); crit=c }
       else if (key=="dependencies")       { d=""; for (i=4;i<n;i+=2) if (a[i]!="") d=(d==""?a[i]:d" "a[i]); deps=d }
+      # A BARE boolean has no quoted value, so read the raw token after the
+      # colon (and tolerate a quoted "true"/"false" from a sloppy worker).
+      else if (key=="establishesSharedInfrastructure") {
+        v=$0; sub(/.*"establishesSharedInfrastructure"[[:space:]]*:[[:space:]]*/, "", v)
+        gsub(/[ ,"]/, "", v)
+        if (v=="true" || v=="false") infra=v
+      }
     }
   ' "$1"
 }
@@ -1271,28 +1320,301 @@ $(printf '%s' "$crit" | awk -F' \\| ' '{ for (i=1;i<=NF;i++) printf "- %s\n", $i
   printf '%s' "$block"
 }
 
+# === is this ticket INFRASTRUCTURE-ESTABLISHING? (S156) =====================
+# Why any of this exists (ground truth, mission lcars-20260727-001, 2026-07-27):
+# wave 1 held BOTH t-001 (Vite + React + TS scaffold) and t-012 (docs + a vitest
+# suite), because t-012 declared no CODE dependency on t-001 — but it depended
+# totally on the TEST INFRASTRUCTURE t-001 was creating. Siblings in a wave are
+# blind to each other by design, so t-012 authored its test against a base with
+# no Vite config; t-001's vite.config.ts then made that file throw at import
+# time and its 13 tests silently stopped running for eleven more tickets.
+#
+# ONE MECHANISM, plus a deliberately narrow safety net:
+#
+#   1. DECLARED — THE MECHANISM. The Plan worker sets
+#      `establishesSharedInfrastructure` on the ticket (see stages/plan.md), and
+#      Plan Review audits it (see stages/plan-review.md) the same way it audits
+#      dependencies. When the field is present the harness OBEYS it — true
+#      isolates, false never does, and no prose is inspected at all. This is not
+#      a new LLM call, a new stage, or a new worker: it is one more declared
+#      field on an artifact the planner already writes, read exactly the way
+#      `dependencies` is.
+#
+#   2. BACKSTOP — a narrow, HIGH-PRECISION net for plans whose worker omitted
+#      the field (an older plan, a mission already in flight). It is NOT a
+#      classifier and does not try to be one.
+#
+# WHY THE BACKSTOP IS THIS SMALL — measured, not assumed. An earlier version of
+# it also matched infrastructure PHRASES ("the test runner", "the package
+# layout", "install pytest", scaffold/bootstrap wording). An adversarial tester
+# took its own 14-item corpus, reworded each item preserving meaning, and recall
+# fell from 14/14 to 5/14 ("Add the CI workflow that runs the tests on every
+# push" caught, "Add the GitHub Actions job that runs the unit tests on push"
+# missed); on 50 unseen tickets it scored 13/23 infra caught, 18/25 ordinary
+# clean. Prose matching does not generalise — it recognises the sentences it was
+# fitted to — and it was wrong in BOTH directions, so those signals were deleted
+# rather than widened again.
+#
+# WHAT THE BACKSTOP DOES NOT CATCH — state this plainly, it is the trade:
+# ANY infrastructure ticket that never names a config file. "Create the Django
+# project and its settings module", "Stand up the test runner", "Install RSpec
+# and a first spec", "Migrate the existing Jest suites onto Vitest", "Add the
+# GitHub Actions job that runs the unit tests" — all MISSED, by design.
+# tests/wave-isolation.test.sh encodes those as explicit KNOWN-MISS assertions
+# so the file documents the real recall instead of flattering it. That is
+# acceptable ONLY because the declared field is the mechanism and Plan Review
+# audits it; the Schedule readout says out loud when a plan declared nothing, so
+# a captain can see they are running on the net rather than the mechanism.
+#
+# THE ONE RESIDUAL FALSE-POSITIVE CLASS — a repo whose SUBJECT MATTER is build
+# configuration. The backstop cannot tell "this ticket CHANGES vite.config" from
+# "this ticket adds a FEATURE that reads vite.config", so a dependency scanner, a
+# language server, a CI dashboard or a template gallery trips it: "Add Gemfile
+# support to the audit tool", "Add tsconfig support to the language server",
+# "Convert the uploaded pom.xml into the internal model", "Add the .csproj upload
+# endpoint", "Add the diff viewer for lockfile changes", "Add the CI status
+# column". LCARS itself is such a repo. Declaring
+# `establishesSharedInfrastructure` makes the class vanish entirely, because the
+# text is then never read; and the cost while undeclared is WALL-CLOCK ONLY —
+# extra one-ticket waves, never wrong code, never a skipped ticket.
+#
+# Both paths are deterministic — no LLM call at Schedule time.
+
+# --- the backstop's vocabulary ----------------------------------------------
+# Everything here is exercised by the corpora in tests/wave-isolation.test.sh.
+#
+# BLOCK — a LINE framed as a negation ("no changes to go.mod are needed", "it
+# does not introduce tsconfig changes"), as reuse of something that already
+# exists ("uses the existing spec_helper"), or as a documentation/link reference
+# ("add a Gemfile entry note in the contributing guide") contributes NO signal.
+# Blocking is per LINE, so a ticket's other lines can still fire.
+#
+# ANCHORED, like every other pattern here. Unanchored, these fragments swallowed
+# genuine infrastructure lines through unrelated substrings — measured:
+# "guide" ⊂ styleguide/guidelines and "display" ⊂ displays killed
+# "Add vite.config.ts as described in the styleguide.", "Create tsconfig per our
+# guidelines." and "Create pytest.ini; the runner displays progress." All three
+# classify again; each is a regression case in tests/wave-isolation.test.sh.
+#
+# It still costs recall on purpose — a genuine infrastructure line that says
+# "existing" ("add vite.config.ts to the existing repo") is swallowed — which is
+# the right direction for a net that must never serialise a plan on a false
+# positive.
+INFRA_BLOCK_PHRASE_RE='no (change|changes|new|modification)|not (change|changes|modify|touch|add|need|introduce|create|use|require)|none of|rather than|without (changing|changed|modifying|modify|adding|add)|already|existing|unchanged|re-?uses?|documented|document the|guides?|readme|changelog|note in|badge|link the|links? to|mentions?|mentioned|lists|is listed|equals|field of|refer to|references the|reads? the|read from|displays? the|shows? the'
+INFRA_BLOCK_RE="(^|[^a-z0-9-])($INFRA_BLOCK_PHRASE_RE)([^a-z0-9-]|\$)"
+# VERB — the imperative verbs plan.md mandates, plus their -s forms (a rationale
+# is written in the third person: "this ticket also creates vitest.config.ts").
+# CREATE verbs stand up something new; CHANGE verbs restructure something shared
+# that already exists. `port` is
+# deliberately ABSENT: it is a noun far more often than a verb in ticket text
+# ("reads the port from package.json", "display the port the dev server bound,
+# from vite.config") and both of those are ordinary product work.
+INFRA_CREATE_VERB_RE='add(s)?|creat(e|es)|introduc(e|es)|install(s)?|set(s)? ?up|stand(s)? ?up|initiali[sz]e(s)?|scaffold(s)?|bootstrap(s)?|generat(e|es)|establish(es)?|wir(e|es) up|lay(s)? out|configur(e|es)'
+INFRA_CHANGE_VERB_RE='migrat(e|es)|upgrad(e|es)|restructur(e|es)|replac(e|es)|switch(es)?|convert(s)?|rework(s)?|consolidat(e|es)|extract(s)?'
+INFRA_VERB_RE="\\b($INFRA_CREATE_VERB_RE|$INFRA_CHANGE_VERB_RE)\\b"
+# FILE — shared build/test config files across every stack LCARS supports
+# (js/ts, python, rust, go, dotnet, ruby, jvm) plus CI. Two lists because the
+# boundary rules differ: a NAME must not be a substring of a longer identifier
+# ("django.models" must not match `go.mod`), while an EXTENSION legitimately
+# follows one ("Web.csproj"). EVERY pattern that survives in this file is
+# boundary-anchored — the unanchored object lists that let "repo" match "report"
+# and "cli" match "client" were deleted with the rest of the phrase matching.
+INFRA_FILE_NAME_RE='package\.json|package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb|npm-shrinkwrap\.json|vite\.config|vitest\.config|vitest\.setup|jest\.config|jest\.setup|webpack\.config|rollup\.config|esbuild\.config|next\.config|babel\.config|karma\.conf|setuptests|test-setup|setup-tests|setupfiles|tests?/setup\.|tsconfig|pytest\.ini|conftest\.py|pyproject\.toml|setup\.cfg|tox\.ini|requirements\.txt|pipfile|poetry\.lock|cargo\.toml|cargo\.lock|go\.mod|go\.sum|directory\.build\.props|nuget\.config|gemfile|spec_helper|rails_helper|pom\.xml|build\.gradle|settings\.gradle|gradle\.properties|\.github/workflows'
+INFRA_FILE_EXT_RE='\.csproj|\.sln|\.babelrc|\.rspec'
+# Both boundaries for a NAME; only a trailing one for an EXTENSION.
+INFRA_FILE_RE="((^|[^a-z0-9.-])($INFRA_FILE_NAME_RE)|($INFRA_FILE_EXT_RE))([^a-z0-9-]|\$)"
+
+# infra_heuristic — THE WHOLE BACKSTOP, one signal: a shared build/test config
+# FILE named on an unblocked line that also carries a create/change verb. Echoes
+# the file it matched (evidence for the reason string) and returns 0. This is an
+# inference from text, never a fact: callers must word it as one.
+infra_heuristic() { # declared-text -> echoes the matched config file; rc 0 = looks infra
+  local text lines m
+  text="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+  lines="$(printf '%s\n' "$text" | grep -Ev "$INFRA_BLOCK_RE")"
+  [ -n "$lines" ] || return 1
+  m="$(printf '%s\n' "$lines" | grep -E "$INFRA_VERB_RE" | grep -Eo "$INFRA_FILE_RE" | head -n 1)"
+  [ -n "$m" ] || return 1
+  # trim the boundary characters the anchored pattern captures
+  printf '%s' "$m" | sed 's/^[^a-z0-9._/]*//; s/[^a-z0-9_]*$//'
+}
+
+# The text the backstop reads from a plan-table line: title, description, each
+# acceptance criterion on its own line, and the RATIONALE (where a planner most
+# naturally explains what a ticket stands up).
+ticket_declared_text() { # plan-table-line
+  printf '%s\n%s\n%s\n%s' \
+    "$(printf '%s' "$1" | cut -f2)" \
+    "$(printf '%s' "$1" | cut -f3)" \
+    "$(printf '%s' "$1" | cut -f4 | tr '|' '\n')" \
+    "$(printf '%s' "$1" | cut -f6)"
+}
+
+# classify_infra_ticket — the ONE entry point. Given a plan-table LINE, echo
+#   "declared\t<flag-text>"   the ticket declared establishesSharedInfrastructure
+#   "inferred\t<config-file>" the field was absent and the backstop fired
+# and return 0 when the ticket is infrastructure-establishing; 1 otherwise
+# (including an explicit `false`, which is obeyed WITHOUT consulting the prose).
+classify_infra_ticket() { # plan-table-line
+  local line="$1" flag m
+  flag="$(printf '%s' "$line" | cut -f7)"
+  case "$flag" in
+    true)  printf 'declared\testablishesSharedInfrastructure: true'; return 0 ;;
+    false) return 1 ;;
+  esac
+  m="$(infra_heuristic "$(ticket_declared_text "$line")")" || return 1
+  printf 'inferred\t%s' "$m"
+}
+
+# infra_scan — ONE pass over the plan table producing the provenance of every
+# ticket, so Schedule can both group AND tell the captain how each call was made:
+#   id \t declared-true  \t (empty)
+#   id \t declared-false \t <config file the backstop WOULD have matched, if any>
+#   id \t inferred       \t <config file matched>
+#   id \t none           \t (empty)
+# `declared-false` with evidence is a CONTRADICTION: the plan overrules the text.
+# The planner's call still wins — Schedule only says so out loud.
+infra_scan() { # table-file
+  local line id flag m
+  while IFS= read -r line; do
+    id="$(printf '%s' "$line" | cut -f1)"
+    [ -n "$id" ] || continue
+    flag="$(printf '%s' "$line" | cut -f7)"
+    if [ "$flag" = "true" ]; then
+      printf '%s\tdeclared-true\t\n' "$id"
+      continue
+    fi
+    m="$(infra_heuristic "$(ticket_declared_text "$line")")" || m=""
+    if [ "$flag" = "false" ]; then
+      printf '%s\tdeclared-false\t%s\n' "$id" "$m"
+    elif [ -n "$m" ]; then
+      printf '%s\tinferred\t%s\n' "$id" "$m"
+    else
+      printf '%s\tnone\t\n' "$id"
+    fi
+  done <"$1"
+}
+
+# The classification of ONE ticket of the plan table, by id (rc 1 = not infra).
+ticket_infra_signal() { # table-file  ticket-id
+  local line; line="$(awk -F'\t' -v want="$2" '$1==want{print; exit}' "$1")"
+  [ -n "$line" ] || return 1
+  classify_infra_ticket "$line"
+}
+
+# Every infrastructure-establishing ticket id, space-separated, in plan order —
+# read off the infra_scan output so the table is classified exactly once. This
+# is what compute_waves isolates.
+infra_ids_from_scan() { # scan-file
+  awk -F'\t' '$2=="declared-true" || $2=="inferred" { printf "%s ", $1 }' "$1" | sed 's/ *$//'
+}
+
 # --- group tickets into waves; detect cycles --------------------------------
 # Reads the ticket table (id in field 1, deps in field 5) and prints one line
 # per wave: "<wave-number> <id> <id> …", tickets in plan order. On a cycle — a
 # round that can place no ticket while some remain — prints a clear error naming
 # the stuck tickets to stderr and exits non-zero, so the caller changes nothing.
-compute_waves() { # table-file
-  awk -F'\t' '
+#
+# $2 (optional) is the space-separated list of INFRASTRUCTURE-ESTABLISHING
+# ticket ids (see classify_infra_ticket). Each such ticket is a BARRIER in plan
+# order:
+#   • it rides ALONE in its wave — a wave that already holds tickets never
+#     absorbs it, and it never absorbs a sibling;
+#   • no ticket AFTER it in plan order may share that wave or land in an earlier
+#     one, so every later ticket builds AGAINST the infrastructure, not beside it;
+#   • tickets BEFORE it in plan order keep the early wave they already had.
+# With an EMPTY list this is byte-for-byte the pre-S156 layered Kahn — the
+# no-infra plan's waves.json is unchanged.
+#
+# DEPENDENCIES ALWAYS WIN, and the ONLY way they win is by NARROW relaxation. A
+# plan whose infra ticket depends on a ticket ordered AFTER it cannot satisfy the
+# barrier and the dependency at once; when the barrier empties a round, the round
+# is retried admitting ONLY the still-unplaced tickets in the transitive
+# dependency closure of THE ONE infra ticket that blocked it — the first unplaced
+# infra ticket in plan order, which is where the strict pass breaks (`clo` exists
+# for exactly this). An unrelated later ticket with no dependencies never gets in
+# that way.
+#
+# It CAN still end up ahead of a LATER barrier, and that is graph-forced, not a
+# leak: with two infra tickets, a ticket admitted as the FIRST one's dependency
+# is already placed when the SECOND one is isolated, and it may sit later in plan
+# order than the second. No wave layout satisfies both barriers and both
+# dependency edges. The emitted reason discloses it — that ticket is named as
+# having built earlier WITHOUT being called a dependency (see
+# wave_isolation_reason, which checks every dependency claim against the graph).
+#
+# The cycle path stays reserved for a REAL dependency cycle — the narrowed round
+# still places nothing only when nothing is ready at all.
+compute_waves() { # table-file [infra-ids]
+  awk -F'\t' -v infra_list="${2:-}" '
+    BEGIN { ni=split(infra_list, ia, " "); for (i=1;i<=ni;i++) if (ia[i]!="") isinfra[ia[i]]=1 }
     { order[++count]=$1; depstr[$1]=$5 }
     END {
       for (k=1;k<=count;k++) {
-        id=order[k]; nd=split(depstr[id], dd, " "); ndep[id]=0
+        id=order[k]; idx[id]=k; nd=split(depstr[id], dd, " "); ndep[id]=0
         for (j=1;j<=nd;j++) if (dd[j]!="") { ndep[id]++; dep[id, ndep[id]]=dd[j] }
+      }
+      # Transitive dependency closure of each infra ticket (fixpoint; N is tiny).
+      # Used by the NARROWED relaxation below, and nowhere else.
+      for (k=1;k<=count;k++) {
+        b=order[k]; if (!isinfra[b]) continue
+        for (i=1;i<=ndep[b];i++) clo[b, dep[b,i]]=1
+        changed=1
+        while (changed) {
+          changed=0
+          for (j=1;j<=count;j++) {
+            m=order[j]
+            if (!((b SUBSEP m) in clo)) continue
+            for (i=1;i<=ndep[m];i++)
+              if (!((b SUBSEP dep[m,i]) in clo)) { clo[b, dep[m,i]]=1; changed=1 }
+          }
+        }
       }
       placed=0; wave=0
       while (placed < count) {
-        wave++; wc=0
-        for (k=1;k<=count;k++) {
-          id=order[k]
-          if (done[id]) continue
-          ready=1
-          for (i=1;i<=ndep[id];i++) if (!done[dep[id,i]]) { ready=0; break }
-          if (ready) ready_id[++wc]=id
+        wave++
+        # relax=0: the barrier holds. relax=1: retried ONLY when the barrier
+        # emptied the round, and then ONLY for the unplaced dependency closure of
+        # the SINGLE infra ticket that blocked it (the first unplaced one).
+        for (relax=0; relax<=1; relax++) {
+          if (relax) {
+            # ONE blocked infra ticket broke the strict round: the FIRST unplaced
+            # infra ticket in plan order (that is where the strict pass breaks).
+            # Admit ONLY its own unplaced dependency closure. A UNION over every
+            # blocked infra ticket would let a ticket needed by a LATER infra
+            # ticket sail past an EARLIER barrier — an unjustified breach.
+            delete allow
+            for (k=1;k<=count;k++) {
+              b=order[k]
+              if (done[b] || !isinfra[b]) continue
+              bready=1
+              for (i=1;i<=ndep[b];i++) if (!done[dep[b,i]]) { bready=0; break }
+              if (!bready)
+                for (j=1;j<=count;j++) {
+                  m=order[j]
+                  if (!done[m] && ((b SUBSEP m) in clo)) allow[m]=1
+                }
+              break
+            }
+          }
+          wc=0
+          for (k=1;k<=count;k++) {
+            id=order[k]
+            if (done[id]) continue
+            if (relax && !(id in allow)) continue
+            ready=1
+            for (i=1;i<=ndep[id];i++) if (!done[dep[id,i]]) { ready=0; break }
+            blocked = (!ready || floor[id] > wave)
+            if (isinfra[id]) {
+              if (blocked) { if (relax) continue; else break }
+              if (wc > 0) break          # this wave has started — infra waits
+              ready_id[++wc]=id
+              break                      # …and once placed, rides alone
+            }
+            if (blocked) continue
+            ready_id[++wc]=id
+          }
+          if (wc > 0) break
         }
         if (wc==0) {
           msg="lcars run: circular dependency detected among the remaining tickets:"
@@ -1304,6 +1626,16 @@ compute_waves() { # table-file
         for (i=1;i<=wc;i++) line=line " " ready_id[i]
         print line
         for (i=1;i<=wc;i++) { done[ready_id[i]]=1; placed++ }
+        # A lone infra ticket raises the floor for EVERY later-in-plan-order
+        # ticket: they cannot share this wave and (being unplaced) cannot have
+        # landed in an earlier one. No closure exemption is needed here — a
+        # closure member ordered after the infra ticket is already `done` by the
+        # time the infra ticket can be placed at all.
+        if (wc==1 && isinfra[ready_id[1]]) {
+          b=ready_id[1]
+          for (j=idx[b]+1; j<=count; j++)
+            if (floor[order[j]] < wave+1) floor[order[j]]=wave+1
+        }
       }
     }
   ' "$1"
@@ -1340,18 +1672,28 @@ create_issue() { # id  type  table-file
 }
 
 # --- render waves.json from the wave/id/issue assignments --------------------
-# Input lines: "<wave>\t<id>\t<issue>" in wave then plan order. Emits the
-# canonical waves.json — an array of { wave, tickets:[ { id, issue } ] }.
+# Input lines: "<wave>\t<id>\t<issue>[\t<reason>]" in wave then plan order. Emits
+# the canonical waves.json — an array of { wave, tickets:[ { id, issue } ] }.
+#
+# S156: a wave the infra-ticket barrier ISOLATED also carries a human-readable
+# `"reason"` naming the ticket and why it rides alone. ADDITIVE and ABSENT when
+# the wave was not isolated (the house convention, cf. meta.testReadiness), so a
+# plan with no infrastructure ticket emits byte-identical waves.json. The reason
+# sits between "wave" and "tickets" and contains no quotes, so every jq-free
+# line-oriented reader (parse_waves_table, ticket_issue, render.sh's
+# read_waves_totals, local_adapter.py) parses it unchanged.
 emit_waves_json() { # assignments-file
   awk -F'\t' '
     { w=$1; if (!(w in seen)) { seen[w]=1; worder[++nw]=w }
-      cnt[w]++; tid[w, cnt[w]]=$2; tiss[w, cnt[w]]=$3 }
+      cnt[w]++; tid[w, cnt[w]]=$2; tiss[w, cnt[w]]=$3
+      if (NF >= 4 && $4 != "" && !(w in reason)) reason[w]=$4 }
     END {
       print "["
       for (x=1;x<=nw;x++) {
         w=worder[x]
         print "  {"
         printf "    \"wave\": %s,\n", w
+        if (w in reason) printf "    \"reason\": \"%s\",\n", reason[w]
         print "    \"tickets\": ["
         for (y=1;y<=cnt[w];y++) {
           print "      {"
@@ -1365,6 +1707,81 @@ emit_waves_json() { # assignments-file
       print "]"
     }
   ' "$1"
+}
+
+# --- a ticket's TRANSITIVE declared dependencies (space-separated) -----------
+# The reason string must never claim a dependency the graph does not have, so
+# every "it depends on X" clause is checked against this.
+ticket_dep_closure() { # table-file ticket-id
+  awk -F'\t' -v want="$2" '
+    { order[++n]=$1; deps[$1]=$5 }
+    END {
+      nd=split(deps[want], d, " ")
+      for (i=1;i<=nd;i++) if (d[i]!="") clo[d[i]]=1
+      changed=1
+      while (changed) {
+        changed=0
+        for (k=1;k<=n;k++) {
+          m=order[k]; if (!(m in clo)) continue
+          nd=split(deps[m], d, " ")
+          for (i=1;i<=nd;i++) if (d[i]!="" && !(d[i] in clo)) { clo[d[i]]=1; changed=1 }
+        }
+      }
+      for (k=1;k<=n;k++) if (order[k] in clo) printf "%s ", order[k]
+    }
+  ' "$1" | sed 's/ *$//'
+}
+
+# Tickets placed BEFORE an isolated ticket's wave that come AFTER it in plan
+# order — the ones that did NOT build against this infrastructure. Echoes two
+# TAB-separated groups: the isolated ticket's own (transitive) DEPENDENCIES,
+# which had to build first, and any OTHER ticket the graph forced ahead of it
+# (an earlier infra ticket's dependency chain can do this when the plan cannot
+# satisfy every barrier at once). The split matters: only the first group may be
+# described as a dependency.
+wave_preceders() { # wavemap-file table-file ticket-id infra-wave
+  local wavemap="$1" table="$2" id="$3" iw="$4" idx all closure deps="" others="" p
+  idx="$(awk -F'\t' -v want="$id" '$1==want{print NR; exit}' "$table")"
+  [ -n "$idx" ] || { printf '\t'; return 0; }
+  all="$(awk -v iw="$iw" -v idx="$idx" -v table="$table" '
+    BEGIN { n=0; while ((getline l < table) > 0) { n++; split(l, f, "\t"); ord[f[1]]=n } }
+    ($1+0 < iw) { for (i=2; i<=NF; i++) if (ord[$i] > idx) printf "%s ", $i }
+  ' "$wavemap" | sed 's/ *$//')"
+  closure=" $(ticket_dep_closure "$table" "$id") "
+  for p in $all; do
+    case "$closure" in
+      *" $p "*) deps="${deps:+$deps }$p" ;;
+      *)        others="${others:+$others }$p" ;;
+    esac
+  done
+  printf '%s\t%s' "$deps" "$others"
+}
+
+# --- the human-readable reason a wave was isolated --------------------------
+# Says exactly what the harness KNOWS, and nothing it cannot check. A DECLARED
+# flag is stated as fact; a BACKSTOP match is stated as the inference it is, with
+# the config file it matched and the missing declaration named. Any ticket that
+# built BEFORE this one despite coming later in the plan is named — as a
+# DEPENDENCY only when the graph says so, and otherwise as what it actually is.
+# $5 set to "lone" words it for a single-ticket plan, where there is no "later".
+wave_isolation_reason() { # table-file ticket-id [dep-preceders] [other-preceders] [lone]
+  local table="$1" id="$2" deps="${3:-}" others="${4:-}" lone="${5:-}" cls kind evidence head tail
+  cls="$(ticket_infra_signal "$table" "$id")" || return 1
+  kind="$(printf '%s' "$cls" | cut -f1)"
+  evidence="$(printf '%s' "$cls" | cut -f2)"
+  if [ "$kind" = "declared" ]; then
+    head="$id declares $evidence"
+  else
+    head="$id has no establishesSharedInfrastructure flag; the harness INFERRED shared build/test infrastructure because its text changes a shared config file ($evidence)"
+  fi
+  if [ "$lone" = "lone" ]; then
+    tail="it is this Mission's only ticket, so it already builds alone"
+  else
+    tail="isolated into a wave of its own so later tickets build against it"
+  fi
+  [ -n "$deps" ] && tail="$tail (except $deps, which it depends on and which therefore had to build first)"
+  [ -n "$others" ] && tail="$tail; NOTE $others built earlier despite coming later in the plan — the graph forced it ahead, so it did NOT build against this infrastructure"
+  printf '%s — %s' "$head" "$tail" | tr -d '"\\' | tr '\n\t' '  '
 }
 
 # --- subcommand: schedule ---------------------------------------------------
@@ -1381,11 +1798,22 @@ cmd_schedule() {
   parse_plan_table "$plan" >"$table"
   [ -s "$table" ] || { rm -f "$table"; die "approved-plan.json has no tickets — nothing to schedule."; }
 
+  # S156: classify the INFRASTRUCTURE-ESTABLISHING tickets first — the ticket's
+  # DECLARED `establishesSharedInfrastructure` where it has one, else the narrow
+  # backstop (see classify_infra_ticket). No LLM call either way. compute_waves
+  # isolates each one into a wave of its own, so nothing that will build against
+  # the shared build/test config can be its blind sibling. With no such ticket
+  # the list is empty and the wave layout is byte-identical to before. The scan
+  # ALSO carries the provenance the readout reports — how each call was made.
+  local scan; scan="$(mktemp)"
+  infra_scan "$table" >"$scan"
+  local infra_ids; infra_ids="$(infra_ids_from_scan "$scan")"
+
   # Build the waves first; a cycle stops us before any issue is created or any
   # state changes (compute_waves has already named the stuck tickets).
   local wavemap; wavemap="$(mktemp)"
-  if ! compute_waves "$table" >"$wavemap"; then
-    rm -f "$table" "$wavemap"
+  if ! compute_waves "$table" "$infra_ids" >"$wavemap"; then
+    rm -f "$table" "$wavemap" "$scan"
     exit 1
   fi
 
@@ -1397,28 +1825,38 @@ cmd_schedule() {
   # NOT closed on green (it closes on PR merge, in lcars-approve). Ticket count
   # is the number of rows in $table (one row per ticket).
   local assign; assign="$(mktemp)"
-  local nwaves=0 ntickets=0 nissues=0 wnum ids id num
+  local nwaves=0 ntickets=0 nissues=0 nisolated=0 wnum ids id num
+  local ISOLATED_NOTE=""
   local ticket_count; ticket_count="$(grep -c . "$table")"
   if [ "$ticket_count" -le 1 ]; then
     # The lone ticket id is the single row's first field; its wave is whatever
     # compute_waves placed it in (always 1 with ≤1 ticket, but read it rather
     # than assume).
-    local lone_id lone_wave parent
+    local lone_id lone_wave parent lone_reason=""
     lone_id="$(awk -F'\t' 'NF{print $1; exit}' "$table")"
     lone_wave="$(awk 'NF{print $1; exit}' "$wavemap")"; lone_wave="${lone_wave:-1}"
     parent="$(json_raw "$STATE" githubIssue)"
     nwaves=1; ntickets=1
+    # The lone ticket is classified too, so the captain reads the SAME story on a
+    # one-ticket plan as on a twelve-ticket one — worded honestly (there is no
+    # "later ticket" here to protect).
+    lone_reason="$(wave_isolation_reason "$table" "$lone_id" "" "" lone)" || lone_reason=""
+    if [ -n "$lone_reason" ]; then
+      ISOLATED_NOTE="    wave $lone_wave — $lone_reason
+"
+      nisolated=1
+    fi
     case "$parent" in
       ''|null)
         # Degraded path: no issue on file. Keep TODAY's behaviour — issue: null
         # plus the existing warning. NEVER fabricate an issue; the fast-path is
         # about not creating a REDUNDANT one, never about inventing one.
-        printf '%s\t%s\t%s\n' "$lone_wave" "$lone_id" "" >>"$assign"
+        printf '%s\t%s\t%s\t%s\n' "$lone_wave" "$lone_id" "" "$lone_reason" >>"$assign"
         RELABEL_NOTE="  ⚠ no githubIssue on file — wrote issue: null for $lone_id (local-only mission)."
         ;;
       *)
         # Reuse the Mission's own issue; open NO sub-issue (nissues stays 0).
-        printf '%s\t%s\t%s\n' "$lone_wave" "$lone_id" "$parent" >>"$assign"
+        printf '%s\t%s\t%s\t%s\n' "$lone_wave" "$lone_id" "$parent" "$lone_reason" >>"$assign"
         ;;
     esac
   else
@@ -1431,11 +1869,30 @@ cmd_schedule() {
     while read -r wnum ids; do
       [ -n "$wnum" ] || continue
       nwaves=$((nwaves + 1))
+      # S156: a wave holding exactly ONE ticket that is infrastructure-
+      # establishing was ISOLATED by the barrier — say so, in waves.json and in
+      # the readout, so a one-ticket wave explains itself. Any other wave gets
+      # no reason at all (additive-absent).
+      local wave_reason="" preceders="" pre_deps="" pre_other=""
+      if [ "$(printf '%s\n' $ids | grep -c .)" = "1" ]; then
+        # Tickets that built BEFORE this one despite coming later in the plan,
+        # split by whether the GRAPH actually makes them its dependencies — the
+        # reason string may only call the first group dependencies.
+        preceders="$(wave_preceders "$wavemap" "$table" "$ids" "$wnum")"
+        pre_deps="$(printf '%s' "$preceders" | cut -f1)"
+        pre_other="$(printf '%s' "$preceders" | cut -f2)"
+        wave_reason="$(wave_isolation_reason "$table" "$ids" "$pre_deps" "$pre_other")" || wave_reason=""
+      fi
+      if [ -n "$wave_reason" ]; then
+        ISOLATED_NOTE="${ISOLATED_NOTE}    wave $wnum — $wave_reason
+"
+        nisolated=$((nisolated + 1))
+      fi
       for id in $ids; do
         ntickets=$((ntickets + 1))
         num="$(create_issue "$id" "$type" "$table")"
         [ -n "$num" ] && nissues=$((nissues + 1))
-        printf '%s\t%s\t%s\n' "$wnum" "$id" "$num" >>"$assign"
+        printf '%s\t%s\t%s\t%s\n' "$wnum" "$id" "$num" "$wave_reason" >>"$assign"
         # Nest the new child under the Mission — best-effort, ENTIRELY through
         # the host adapter (no direct gh/REST here) so it stays host-agnostic.
         # Guards: skip a child we failed to create (empty num); skip when there
@@ -1457,10 +1914,45 @@ cmd_schedule() {
   set_stage "implement"
   gh_relabel "lcars:implement" "lcars:schedule"
 
-  rm -f "$table" "$wavemap" "$assign"
+  # --- PROVENANCE (S156 fix round 2) ---------------------------------------
+  # ALWAYS reported, on every path including the boring one. Without it the
+  # captain cannot tell "the planner decided nothing is infrastructure" from
+  # "nobody declared anything and the harness guessed" — and those two states
+  # schedule identically while carrying completely different risk. Read off the
+  # single infra_scan pass; this is a readout, never a gate.
+  local n_true n_false n_inferred n_none n_declared contradictions
+  n_true="$(awk -F'\t' '$2=="declared-true"{n++} END{print n+0}' "$scan")"
+  n_false="$(awk -F'\t' '$2=="declared-false"{n++} END{print n+0}' "$scan")"
+  n_inferred="$(awk -F'\t' '$2=="inferred"{n++} END{print n+0}' "$scan")"
+  n_none="$(awk -F'\t' '$2=="none"{n++} END{print n+0}' "$scan")"
+  n_declared=$((n_true + n_false))
+  # A `false` declaration over text the backstop WOULD have matched. The
+  # planner's call wins — we only say so out loud, once per ticket.
+  contradictions="$(awk -F'\t' '$2=="declared-false" && $3!="" {
+      printf "  %s declares establishesSharedInfrastructure: false, overriding a config-file match (%s) — the plan'"'"'s call wins, so it shares its wave.\n", $1, $3 }' "$scan")"
+
+  rm -f "$table" "$wavemap" "$assign" "$scan"
 
   echo "SCHEDULE: advanced"
   echo "  Grouped $ntickets ticket(s) into $nwaves wave(s); opened $nissues sub-issue(s)."
+  if [ "$n_declared" -eq 0 ]; then
+    echo "  ⚠ NO ticket declared establishesSharedInfrastructure — the harness fell back to reading ticket text, which only catches a ticket that NAMES a build/test config file. An infrastructure ticket phrased any other way did NOT get a wave of its own. Ask Plan to declare the field."
+  elif [ "$n_declared" -eq "$ticket_count" ]; then
+    echo "  Infrastructure: all $ticket_count ticket(s) declared establishesSharedInfrastructure ($n_true true, $n_false false)."
+  else
+    echo "  Infrastructure: $n_declared of $ticket_count ticket(s) declared establishesSharedInfrastructure ($n_true true, $n_false false); $((n_inferred + n_none)) undeclared, read from ticket text instead ($n_inferred matched a config file)."
+  fi
+  [ -n "$contradictions" ] && printf '%s\n' "$contradictions"
+  if [ "$nisolated" -gt 0 ]; then
+    if [ "$ticket_count" -le 1 ]; then
+      echo "  Infrastructure ticket (a one-ticket plan has nothing to isolate it from):"
+    elif [ "$nisolated" -eq 1 ]; then
+      echo "  Isolated 1 infrastructure ticket into a wave of its own:"
+    else
+      echo "  Isolated $nisolated infrastructure tickets into waves of their own:"
+    fi
+    printf '%s' "$ISOLATED_NOTE"
+  fi
   echo "  Wrote waves.json."
   echo "  Stage:  implement"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
@@ -3822,7 +4314,10 @@ suite_has_assertions() { # tests-dir
 #
 #   flip_flop_gate       TIP leg green + PARENT leg red on the ticket's own
 #                        new/changed tests (scratch worktree at the parent sha,
-#                        S87-provisioned, SAME tests staged in, S106-scoped run).
+#                        S87-provisioned, S106-scoped run). S157: a test file that
+#                        is NEW at the parent is STAGED IN; one that already
+#                        existed there runs the PARENT'S OWN copy, so an honest
+#                        repair can be certified (see proof_parent_sources).
 #   declared_edits_guard every test-classified path in the diff must be declared
 #                        (result.json newTests ∪ testEdits[].path); deletions count.
 #   proof_validate_result the v2 result shape (v1 rejects legibly — no dual-shape).
@@ -3892,6 +4387,40 @@ proof_diff_paths() { # parent-sha worktree → one relpath per line (sorted, uni
     "$GIT_BIN" -C "$wt" diff --no-renames --name-only "$parent" -- 2>/dev/null
     "$GIT_BIN" -C "$wt" ls-files --others --exclude-standard 2>/dev/null
   } | grep . | LC_ALL=C sort -u
+}
+
+# S157 (live-drive blocker): is this path something THE HARNESS provisioned into
+# the worktree, rather than something the worker wrote?
+#
+# LCARS's own `worktreeSetupCommand` SYMLINKS the dependency directory into each
+# ticket worktree. A `.gitignore` entry of `node_modules/` — with the trailing
+# slash, the near-universal convention — is a DIRECTORY-ONLY pattern, and git
+# does not apply it to a SYMLINK. So `ls-files --others --exclude-standard`
+# reports the link as an untracked path, and the repair-eligibility check read
+# the harness's own provisioning as a worker-authored non-test change. Observed
+# live on a pnpm monorepo: three symlinks turned a one-line test fix into a
+# "mixed diff", and the session only certified because the worker hand-edited
+# .git/info/exclude to neutralise an artifact LCARS had created.
+#
+# THE RULE IS GENERAL, NOT A DEPENDENCY-DIRECTORY LIST: an UNTRACKED SYMLINK in
+# the worktree is provisioning, not authorship. A worker writing a test or a
+# source file produces a regular file; the harness is the only thing here that
+# creates links. That keeps it stack-agnostic — node_modules, .venv, vendor,
+# target, whatever a repo's setup command links — with nothing to rot.
+#
+# WHAT IT DOES NOT COVER, stated plainly: a setup command that COPIES or really
+# INSTALLS a dependency tree produces regular files, not links. Those are correctly
+# ignored by the same `node_modules/` pattern (it does match directories), so the
+# defect does not arise there — but a repo that does not ignore its dependency
+# directory at all will still see them, and that is a repo-hygiene problem this
+# cannot and should not paper over. A TRACKED symlink is likewise never skipped:
+# if a symlink is committed, changing it is a real change to the repo.
+proof_is_provisioning_artifact() { # relpath worktree → 0 when harness-provisioned
+  local p="$1" wt="$2"
+  [ -L "$wt/$p" ] || return 1
+  # Tracked ⇒ it is part of the repo and any change to it is the worker's.
+  "$GIT_BIN" -C "$wt" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 && return 1
+  return 0
 }
 
 # The diff's TEST-classified paths. mode "existing" keeps only files present in
@@ -4214,18 +4743,277 @@ proof_parent_red_kind() { # runner-out files-written → kind token
     return 0
   fi
   if red_gate_compile_failure "$out"; then printf 'compile-failure'; return 0; fi
+  # S157 (live-drive fidelity nit): a parent leg that died at IMPORT/collection —
+  # the file threw before registering a test — was recorded as `assertion-red`,
+  # because a runner reporting "1 failed" for the FILE matches the assertion
+  # signature. No assertion failed; nothing ran. Discriminate on the evidence
+  # already collected: a red leg that EXECUTED ZERO tests is a collection
+  # failure. Placed AFTER compile/resolution so those keep precedence (they are
+  # more specific about the same zero-execution situation), and it changes only
+  # the recorded KIND — the verdict is unaffected, since only `env-failure`
+  # changes a verdict.
+  local _ec; _ec="$(proof_executed_count "$out")"
+  if [ -n "$_ec" ] && [ "${_ec##* }" = 0 ]; then
+    printf 'collection-red'; return 0
+  fi
   if printf '%s' "$out" | grep -Eq "$(rg_signature assertion)"; then
     printf 'assertion-red'; return 0
   fi
   printf 'runner-red'
 }
 
+# S157: WHICH COPY of a test file the PARENT leg runs — the per-file decision,
+# and the PROVENANCE recorded for it.
+#
+# THE BUG THIS FIXES (live mission lcars-20260727-001, 2026-07-27): the parent
+# leg used to copy the TIP's copy of every changed test file into the scratch
+# worktree. For a test file that is NEW at the parent that is exactly right — the
+# behaviour it asserts does not exist yet, so it goes red. For a test file that
+# ALREADY EXISTED at the parent it runs the ticket's *fixed* file against parent
+# code, which means an honest REPAIR of a test that was genuinely broken on the
+# parent (but whose asserted behaviour was already correct) goes GREEN on both
+# legs and is rejected. That mission burned 3 rejections / 8 worker sessions on a
+# correct, honestly-declared fix.
+#
+# THE RULE: a test file that exists at the parent sha runs the PARENT'S OWN
+# COMMITTED COPY (the scratch worktree is already at the parent, so the fix is
+# simply: do not overwrite it). A red then means "this file was genuinely failing
+# before this ticket" — real evidence, honestly obtained.
+#
+# WHAT THE RULE STOPS, AND WHAT IT DOES NOT — read this before trusting it.
+#
+# It stops exactly one cheat, and it stops it structurally: WEAKENING AN EXISTING
+# *PASSING* TEST. That file's parent copy PASSES, so no red exists and the ticket
+# is rejected. That is the captain-level acceptance bar and it needs no help.
+#
+# It does NOT, on its own, stop a worker from GUTTING a pre-existing test file
+# that happened to be red on the parent for any reason. Five rounds of
+# adversarial review went into a source-reading guard for that — line counts,
+# then regex names, then a character-level lexer — and every round a fresh
+# reviewer broke the new version at a new token (an apostrophe in a name, a name
+# inside a string, a regex literal containing `/*`, a wrapped declaration,
+# `describe.skip`, `it.each` tables). Worse, its FALSE-FAILS re-created the very
+# loop this session exists to kill: the last one rejected an honest repair with a
+# message naming a "deleted test" that had never existed. THE CAPTAIN RULED IT
+# OUT. Deciding from source whether coverage was removed is an arms race against
+# language parsing, and this harness is not going to win it.
+#
+# WHAT REMAINS IN ITS PLACE IS ONE SOURCE-BLIND CHECK AND A HUMAN. The runners
+# themselves report how many tests each leg executed, and the tip may not execute
+# fewer than the parent (proof_executed_count). And every test file the ticket
+# touched is already DECLARED with a reason (declared_edits_guard), so Verify
+# lists the repair for the human at the gate they already stop at.
+#
+# THE VACUITY THAT MUST NOT BE BURIED: when the parent's copy was DEAD AT IMPORT
+# it executed nothing, so "the tip executed fewer" can never fire — and that is
+# precisely the flagship class this whole stage exists for (a config change made
+# the file throw before registering a single test). For that case there is NO
+# mechanical protection against a gutted repair at all: the declared edit and the
+# human at Verify are the whole of it. The captain approved this trade with that
+# fact on the table.
+#
+# EXISTENCE IS DECIDED FROM GIT AT THE PARENT SHA (`git cat-file -e <sha>:<rel>`),
+# never from the filesystem: the scratch worktree is provisioned (node_modules,
+# build output) and the tip worktree is the ticket's, so neither is authority on
+# what the parent commit actually contained.
+#
+# A DIFF WITH ANY NON-TEST PATH TAKES THE NORMAL GATE. A repair is
+# TEST-INFRASTRUCTURE ONLY. If the ticket's diff touches ANY non-test path, every
+# file is staged as before — otherwise a ticket could ship behaviour under cover
+# of "I was only fixing the test". Note the rule is NON-TEST, not "product
+# source": a `vite.config.ts` is neither product source nor a test, and a config
+# exactly like it caused the 2026-07-27 break, so it must count. The cost is that
+# an honest repair carrying a README line also loses the path — which is why the
+# refusal NAMES the offending paths (proof_repair_unavailable) instead of leaving
+# the worker with a rejection that reads as "your broken test passes on the
+# parent". `has_src` is that switch, and it is whole-ticket on purpose.
+#
+# THE RESIDUALS, each pinned as a KNOWN-LIMIT assertion in
+# tests/proof-gates.test.sh so a comfortable silence cannot set in:
+#   * A PARENT COPY DEAD AT IMPORT executes nothing, so the runner-count check is
+#     VACUOUS for the flagship ground-truth class (proof-gates U6).
+#   * A RUNNER WHOSE OUTPUT CARRIES NO EXECUTED COUNT (go's default, cargo), or
+#     two legs parsed by different runner grammars, makes that check UNAVAILABLE
+#     — recorded as `executed.checked:false`, never assumed (proof-gates U7).
+#   * A TEST THAT KEEPS ITS NAME AND ITS PLACE IN THE RUN while checking less
+#     (assertions orphaned in an uncalled helper, a case table emptied) changes
+#     no count and is not caught (proof-gates U14).
+#   * A REPAIR-ONLY TICKET satisfies this gate with no feature work of its own;
+#     whether a ticket did its JOB is the acceptance criteria, Verify and the
+#     full-suite gate, never this gate (proof-gates U15).
+#   * A WHOLE TEST FILE RENAMED is new-at-the-parent, so the ticket is STAGED and
+#     never reaches the repair path at all (proof-gates U16).
+proof_parent_sources() { # parent-sha worktree rels has_src(0|1) → "<source>\t<rel>" lines
+  local parent="$1" wt="$2" rels="$3" has_src="$4" rel
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if [ "$has_src" = 1 ]; then printf 'staged\t%s\n' "$rel"; continue; fi
+    if "$GIT_BIN" -C "$wt" cat-file -e "$parent:$rel" 2>/dev/null; then
+      printf 'parent-own\t%s\n' "$rel"
+    else
+      printf 'staged\t%s\n' "$rel"
+    fi
+  done <<PS_EOF
+$rels
+PS_EOF
+}
+
+# The whole-leg mode from the per-file sources: staged | parent-own | mixed
+# (mixed = some of each, i.e. a test-only diff that both repairs an existing file
+# and adds a new one). "none" when there are no test files at all.
+proof_parent_leg_mode() { # sources → mode token
+  local s="$1" nstaged nown
+  nstaged="$(printf '%s\n' "$s" | grep -c '^staged	' || true)"
+  nown="$(printf '%s\n' "$s" | grep -c '^parent-own	' || true)"
+  if   [ "$nstaged" -gt 0 ] && [ "$nown" -gt 0 ]; then printf 'mixed'
+  elif [ "$nown"    -gt 0 ];                     then printf 'parent-own'
+  elif [ "$nstaged" -gt 0 ];                     then printf 'staged'
+  else                                                printf 'none'
+  fi
+}
+
+# === S157: THE ONE ANTI-GUTTING CHECK — WHAT THE RUNNERS ACTUALLY EXECUTED ====
+# This reads NO SOURCE. Both legs already run, so it asks each runner how many
+# tests it executed and refuses when the TIP executed FEWER than the PARENT did.
+# It is the only anti-gutting check that survives: the source-reading guard it
+# replaces was broken at a new token by five successive reviewers and was
+# false-failing honest repairs, and the captain ruled it out.
+#
+# It catches a block that is never reached — hidden behind an `if (false)`, an
+# early `return`, a `describe.skip` — where every test is still written down and
+# no amount of source reading distinguishes the tip from the parent.
+#
+# IT COUNTS TESTS THAT RAN, not tests that were collected: vitest, jest and
+# VSTest all report skipped tests inside their totals, so every arm sums
+# passed+failed (or subtracts pending/skips). The two legs are compared ONLY when
+# the same runner arm parsed both — two grammars mean two different notions of
+# "a test", and comparing them would invent a shortfall out of nothing.
+#
+# THE VACUITY, stated plainly because the captain approved the trade with it on
+# the table: WHEN THE PARENT'S COPY IS DEAD AT IMPORT IT EXECUTES NOTHING, so
+# `tip < parent` can never fire — and that is exactly the flagship ground-truth
+# class this stage exists for (a config change made the file throw before
+# registering a single test). For that case this check proves nothing, and the
+# declared edit plus the human at Verify are the whole of the protection.
+#
+# It cannot false-fail an honest repair: dropping a dead import, merging two
+# assertions and re-wrapping a declaration all leave the executed count equal.
+#
+# STACKS IT CAN READ: node:test, vitest, jest, pytest, rspec/minitest, and the
+# .NET VSTest summary. go's default output carries no count (it prints `ok pkg`),
+# and cargo's is not parsed here — for those the check reports UNKNOWN and is
+# SKIPPED, which is recorded in flip-flop.json rather than silently assumed.
+# VERIFICATION HONESTY: only the node arm is exercised against a LIVE runner
+# (proof-gates U5); the other six are pinned against their DOCUMENTED summary
+# lines through the pure reader (proof-gates U13), because those runners are not
+# installed in the environment this was built in.
+proof_executed_count() { # runner-output → "<runner> <executed>", or empty when unreadable
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re, sys
+out = sys.stdin.read()
+
+# EXECUTED, not COLLECTED. E2: the first cut read each runner\x27s TOTAL, and on
+# vitest, jest and VSTest that total INCLUDES skipped tests — so a whole block
+# disabled with `describe.skip` reported the same number on both legs and the
+# check never fired, on the very stack (vitest) that motivated this session.
+# Every arm below sums the tests that actually RAN.
+#
+# The RUNNER TOKEN is returned with the number (F6): the two legs are only
+# compared when the SAME arm parsed both, so a parent read by one runner\x27s
+# grammar can never be compared against a tip read by another\x27s.
+
+# node:test — `pass N` / `fail N` summary lines
+p = re.search(r"^[^\n]*?\bpass (\d+)\s*$", out, re.M)
+f = re.search(r"^[^\n]*?\bfail (\d+)\s*$", out, re.M)
+if p and f:
+    print("node %d" % (int(p.group(1)) + int(f.group(1)))); sys.exit(0)
+
+# vitest — ` Tests  1 failed | 2 passed (3)` / ` Tests  3 skipped (3)`, and
+# ` Tests  no tests` for a file that died at IMPORT (nothing was registered, so
+# there is no `(N)` at all). That last form is what the live 2026-07-28 drive
+# produced; reading it as UNKNOWN left an import-death indistinguishable from a
+# real assertion failure. It is zero, and saying so is what lets the kind be
+# recorded honestly.
+m = re.search(r"^\s*Tests\s+(.*)$", out, re.M)
+if m and re.search(r"\bno tests\b", m.group(1)):
+    print("vitest 0"); sys.exit(0)
+if m and re.search(r"\(\d+\)\s*$", m.group(1)):
+    seg = m.group(1)
+    ran = sum(int(v) for v, k in re.findall(r"(\d+) (passed|failed)", seg))
+    print("vitest %d" % ran); sys.exit(0)
+
+# jest — `Tests:  1 failed, 2 passed, 3 total` / `Tests: 3 skipped, 3 total`
+m = re.search(r"^\s*Tests:\s+(.*?\d+ total)", out, re.M)
+if m:
+    ran = sum(int(v) for v, k in re.findall(r"(\d+) (passed|failed)", m.group(1)))
+    print("jest %d" % ran); sys.exit(0)
+
+# pytest — `3 passed, 1 failed in 0.05s`. `error` is deliberately NOT summed: a
+# single test can be reported as both failed and error, and inflating the PARENT
+# is the direction that invents a false shortfall.
+if re.search(r"=+ .*(passed|failed|error)", out):
+    ran = sum(int(v) for v in re.findall(r"(\d+) (?:passed|failed)\b", out))
+    print("pytest %d" % ran); sys.exit(0)
+
+# rspec — `3 examples, 0 failures, 3 pending`: examples counts pending too.
+m = re.search(r"(\d+) examples?, (\d+) failures?(?:, (\d+) pending)?", out)
+if m:
+    print("rspec %d" % (int(m.group(1)) - int(m.group(3) or 0))); sys.exit(0)
+
+# minitest — `3 runs, 0 assertions, 0 failures, 0 errors, 3 skips`
+m = re.search(r"(\d+) runs?, \d+ assertions?(?:.*?(\d+) skips?)?", out)
+if m:
+    print("minitest %d" % (int(m.group(1)) - int(m.group(2) or 0))); sys.exit(0)
+
+# dotnet VSTest — `Failed: 1, Passed: 2, Skipped: 0, Total: 3`
+mf = re.search(r"\bFailed:\s*(\d+)", out)
+mp = re.search(r"\bPassed:\s*(\d+)", out)
+if mf and mp:
+    print("vstest %d" % (int(mf.group(1)) + int(mp.group(1)))); sys.exit(0)
+' 2>/dev/null
+}
+
+# S157 (trimmed): the REPAIR PATH IS WITHDRAWN when the ticket's diff touches any
+# NON-TEST path. That routing is spec, not a heuristic — a repair is
+# test-infrastructure only, and a `vite.config.ts` (neither product source nor a
+# test) is exactly what broke the live mission, so "non-test" is deliberately
+# broader than "product source". The cost is that an honest repair carrying a
+# README line also loses the path, which is why the refusal NAMES the offending
+# paths instead of leaving the worker with a rejection that reads as "your
+# broken test passes on the parent".
+proof_repair_unavailable() { # changed_src → reason on stdout, rc 1 when withdrawn
+  local nonsrc; nonsrc="$(printf '%s' "$1" | grep . | tr '\n' ' ')"; nonsrc="${nonsrc% }"
+  [ -n "$nonsrc" ] || return 0
+  printf 'NOTE — the REPAIR path was not available for this ticket: its diff also changes non-test path(s) (%s), so every test file was staged into the parent as usual, including the pre-existing one(s) you edited. A repair is certified only for a diff that touches test files ALONE. If you are genuinely repairing a broken test, land that on its own ticket; if you are changing behaviour, your tests must go red on the parent on their own merits.' "$nonsrc"
+  return 1
+}
+
 # flip-flop.json writer + the single finish point (event + verdict rc).
 FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
 FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
+# S157 provenance: which copy of each test file the parent leg uses, the whole-leg
+# mode, and whether the leg actually executed. ALWAYS written to flip-flop.json —
+# a reader must never have to INFER which copy was run from the verdict wording.
+FF_PAR_SOURCES=""; FF_PAR_MODE="none"; FF_PAR_RAN=false
+# S157 P4: why the REPAIR path was withdrawn, when a pre-existing test file was
+# edited but the ticket was routed to the staged path anyway. Empty when the
+# repair path was available, or when no repair was ever in question.
+FF_PAR_REFUSED=""
+# S157 C2: what each leg's RUNNER reported it executed. "" = the runner's output
+# carried no count this reader understands, in which case the check is SKIPPED
+# and recorded as such — never assumed to have passed.
+FF_TIP_EXEC=""; FF_PAR_EXEC=""
 _ff_reset() {
   FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
   FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
+  FF_PAR_SOURCES=""; FF_PAR_MODE="none"; FF_PAR_RAN=false
+  FF_PAR_REFUSED=""
+  FF_TIP_EXEC=""; FF_PAR_EXEC=""
+}
+# The rels carrying a given source, space-separated (for the verdict wording).
+_ff_rels_with_source() { # source-token
+  printf '%s\n' "$FF_PAR_SOURCES" \
+    | awk -F'\t' -v k="$1" '$1==k { printf "%s%s", sep, $2; sep=" " } END { print "" }'
 }
 _ff_write_json() { # file ticket parent verdict reason rels
   local f="$1" t="$2" p="$3" v="$4" r="$5" rels="$6" files="" sep="" rel
@@ -4235,6 +5023,14 @@ _ff_write_json() { # file ticket parent verdict reason rels
   done <<FFJ_EOF
 $rels
 FFJ_EOF
+  local srcs="" ssep="" ssrc srel
+  while IFS=$'\t' read -r ssrc srel; do
+    [ -n "$srel" ] || continue
+    srcs="$srcs$ssep{ \"path\": \"$(json_escape "$srel")\", \"source\": \"$(json_escape "$ssrc")\" }"
+    ssep=", "
+  done <<FFS_EOF
+$FF_PAR_SOURCES
+FFS_EOF
   {
     echo '{'
     printf '  "ticketId": "%s",\n'  "$(json_escape "$t")"
@@ -4242,6 +5038,29 @@ FFJ_EOF
     printf '  "verdict": "%s",\n'   "$(json_escape "$v")"
     printf '  "reason": "%s",\n'    "$(json_escape "$r")"
     printf '  "testFiles": [%s],\n' "$files"
+    # S157 PROVENANCE, ADDITIVE and ALWAYS printed. `source` per file is which
+    # copy the parent leg uses: "parent-own" (the file existed at parentSha, so
+    # the parent's OWN committed copy ran — a red proves the file was already
+    # broken there) or "staged" (the file is NEW at the parent, OR the ticket also
+    # changed product source, so the tip's copy was copied in — today's behaviour).
+    # `ran` says whether the parent leg actually executed; when it is false these
+    # are the sources it WOULD have used (the gate finished earlier). Recorded so
+    # no reader ever has to infer the parent leg's source from the verdict wording.
+    # `repairPathRefused` (S157 P4) is the reason the repair path was WITHDRAWN
+    # for a ticket that did edit a pre-existing test file — non-test paths in the
+    # diff. Empty string when the repair
+    # path was available, or when no repair was ever in question.
+    printf '  "parentLeg": { "ran": %s, "mode": "%s", "repairPathRefused": "%s", "sources": [%s] },\n' \
+      "$FF_PAR_RAN" "$(json_escape "$FF_PAR_MODE")" "$(json_escape "$FF_PAR_REFUSED")" "$srcs"
+    # S157 C2 provenance: the executed-test counts the two runners reported, and
+    # whether the comparison could be made at all. "" means the runner printed no
+    # count this reader understands — recorded, so a skipped check is visible
+    # rather than mistaken for a passed one.
+    printf '  "executed": { "parent": "%s", "tip": "%s", "runner": "%s", "checked": %s },\n' \
+      "$(json_escape "${FF_PAR_EXEC##* }")" "$(json_escape "${FF_TIP_EXEC##* }")" \
+      "$(json_escape "${FF_TIP_EXEC%% *}")" \
+      "$( [ -n "$FF_PAR_EXEC" ] && [ -n "$FF_TIP_EXEC" ] \
+          && [ "${FF_PAR_EXEC%% *}" = "${FF_TIP_EXEC%% *}" ] && printf true || printf false )"
     # `cmd` is ADDITIVE (S147 DEFECT-2) — every pre-existing field keeps its name,
     # position and meaning, so the CLI verify readout and the board's
     # local_adapter._ticket_proof (both read only verdict/reason/kind) are
@@ -4305,20 +5124,53 @@ flip_flop_gate() { # ticket parent-sha worktree
   fi
 
   # Non-test paths the change wrote — feeds the greenfield discrimination
-  # (missing-new-module vs bad-import-path) exactly as classify_impl_failure does.
+  # (missing-new-module vs bad-import-path) exactly as classify_impl_failure does,
+  # and decides repair eligibility below.
+  #
+  # The provisioning filter is applied HERE and ONLY here, because this is where
+  # eligibility is decided. proof_diff_paths, the declared-edits guard and the
+  # quality floor are deliberately left seeing the raw diff: a worker that
+  # genuinely commits a dependency tree is a different problem, and it must not
+  # become invisible to the guards whose job is to notice it.
   local changed_src="" p
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     proof_is_test_path "$p" && continue
+    proof_is_provisioning_artifact "$p" "$wt" && continue
     changed_src="$changed_src$p
 "
   done < <(proof_diff_paths "$parent" "$wt")
+
+  # S157: decide the parent leg's PER-FILE SOURCE now — it is a pure git question
+  # (did this path exist at $parent?) plus the whole-ticket mixed-diff switch, so
+  # it is known on every exit path, including the ones that never reach the parent
+  # leg. See proof_parent_sources for the rule and why the cheat still dies.
+  # The candidate sources are computed with has_src=0 FIRST, so the harness knows
+  # whether a repair was even in question before deciding to withdraw the path —
+  # that is what lets the refusal NAME the paths that disabled it.
+  FF_PAR_SOURCES="$(proof_parent_sources "$parent" "$wt" "$rels" 0)"
+  FF_PAR_MODE="$(proof_parent_leg_mode "$FF_PAR_SOURCES")"
+  FF_PAR_REFUSED=""
+  case "$FF_PAR_MODE" in
+    parent-own|mixed)
+      # A diff with any NON-TEST path withdraws the repair path and falls back to
+      # STAGING everything — exactly pre-S157 mechanics — carrying the reason into
+      # the verdict instead of leaving a worker to guess why its genuinely-broken
+      # test was judged against its own fixed copy.
+      if FF_PAR_REFUSED="$(proof_repair_unavailable "$changed_src")"; then
+        FF_PAR_REFUSED=""
+      else
+        FF_PAR_SOURCES="$(proof_parent_sources "$parent" "$wt" "$rels" 1)"
+        FF_PAR_MODE="$(proof_parent_leg_mode "$FF_PAR_SOURCES")"
+      fi ;;
+  esac
 
   # --- TIP leg: the implemented tree must be GREEN on the ticket's tests -----
   proof_scoped_leg_run "$wt" "$rels"
   FF_TIP_RC="$PROOF_LEG_RC"
   FF_TIP_CMD="$PROOF_LEG_CMD"
   FF_TIP_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
+  FF_TIP_EXEC="$(proof_executed_count "$PROOF_LEG_OUT")"
   if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ] || [ "$PROOF_LEG_RC" = 98 ]; then
     local tipreason="$PROOF_LEG_OUT"
     [ "$PROOF_LEG_RC" = 98 ] && tipreason="the TIP leg's $PROOF_LEG_OUT"
@@ -4374,25 +5226,36 @@ FF_DECL
     return $?
   fi
 
-  # --- PARENT leg: same tests staged into a scratch worktree at the parent ---
+  # --- PARENT leg: a scratch worktree at the parent, each test file run from
+  # the source proof_parent_sources decided — the tip's copy STAGED IN for a file
+  # that is new at the parent (or when the diff also touches product source), the
+  # PARENT'S OWN committed copy left in place for a file that already existed.
   local scratch; scratch="$(proof_parent_scratch "$wt" "$parent" "$t")"
   if [ -z "$scratch" ]; then
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
       "could not cut the parent scratch worktree at $parent — the parent leg never ran" "$rels"
     return $?
   fi
-  local rel
-  while IFS= read -r rel; do
+  local rel ffsrc
+  while IFS=$'\t' read -r ffsrc rel; do
     [ -n "$rel" ] || continue
+    # parent-own: the scratch is ALREADY at $parent, so the file is there in its
+    # committed form. Copying the tip's copy over it is precisely the bug.
+    [ "$ffsrc" = staged ] || continue
     mkdir -p "$scratch/$(dirname "$rel")" 2>/dev/null || :
     cp "$wt/$rel" "$scratch/$rel" 2>/dev/null || :
   done <<FF_STAGE_EOF
-$rels
+$FF_PAR_SOURCES
 FF_STAGE_EOF
   proof_scoped_leg_run "$scratch" "$rels"
+  # `ran` is the honest fact, not "we got this far": 96/97 are the sentinels for
+  # "the run could not even be CONSTRUCTED" (no testCommand, no native target, a
+  # scope the runner would re-glob), so no runner started on the parent.
+  case "$PROOF_LEG_RC" in 96|97) : ;; *) FF_PAR_RAN=true ;; esac
   FF_PAR_RC="$PROOF_LEG_RC"
   FF_PAR_CMD="$PROOF_LEG_CMD"
   FF_PAR_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
+  FF_PAR_EXEC="$(proof_executed_count "$PROOF_LEG_OUT")"
   local par_out="$PROOF_LEG_OUT"
   # PRUNE FIRST — on every verdict path (behavior: pruned on success AND failure).
   proof_prune_scratch "$wt" "$scratch"
@@ -4413,9 +5276,31 @@ NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's r
       "the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass" "$rels"
     return $?
   fi
+  # THE GREEN PARENT = NO PROOF. The wording states what was ACTUALLY proven, per
+  # source mode — the S157 repair path rejects for a DIFFERENT reason than the
+  # staged path, and reusing the staged sentence would describe work that did not
+  # happen. The `staged` sentence is byte-identical to pre-S157 on purpose: that
+  # is the unchanged new-test path.
   if [ "$FF_PAR_RC" -eq 0 ]; then
-    _ff_finish "$t" "$parent" "$ffj" fail \
-      "the ticket's tests PASS on the PARENT commit — red-on-parent is not proven (a test that asserts pre-existing behavior is not proof of work)" "$rels"
+    local greenreason
+    case "$FF_PAR_MODE" in
+      parent-own)
+        greenreason="the PARENT'S OWN copy of the ticket's pre-existing test file(s) PASSES on the parent commit ($(_ff_rels_with_source parent-own)) — nothing there was broken, so there was no repair to make and no red to prove work (rewriting or weakening a test that already passed is not proof)" ;;
+      mixed)
+        greenreason="the PARENT leg is GREEN both ways — the parent's OWN copy of the pre-existing test file(s) passes there ($(_ff_rels_with_source parent-own): nothing was broken to repair) and the ticket's NEW test file(s) staged into the parent pass too ($(_ff_rels_with_source staged): they assert pre-existing behavior). Neither half produces the red that proves work" ;;
+      *)
+        greenreason="the ticket's tests PASS on the PARENT commit — red-on-parent is not proven (a test that asserts pre-existing behavior is not proof of work)" ;;
+    esac
+    # S157 P4: when a pre-existing test file WAS edited and the repair path was
+    # withdrawn, the sentence above is true but useless on its own — it reads as
+    # "your genuinely-broken test passes on the parent". Say what disabled the
+    # path. The clause is APPENDED, so the legacy sentence stays byte-identical
+    # as the opening (and never appears at all on the new-test path, where no
+    # repair was in question and $FF_PAR_REFUSED is empty).
+    [ -n "$FF_PAR_REFUSED" ] && greenreason="$greenreason
+
+$FF_PAR_REFUSED"
+    _ff_finish "$t" "$parent" "$ffj" fail "$greenreason" "$rels"
     return $?
   fi
   FF_PAR_KIND="$(proof_parent_red_kind "$par_out" "$changed_src")"
@@ -4424,8 +5309,43 @@ NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's r
       "the PARENT leg's runner could not start in the scratch worktree (env failure, exit $FF_PAR_RC) — a dead runner is not a red" "$rels"
     return $?
   fi
-  _ff_finish "$t" "$parent" "$ffj" pass \
-    "tests GREEN on tip, RED on parent (exit $FF_PAR_RC, $FF_PAR_KIND — a compile/resolution red from the change's new symbols counts as proof)" "$rels"
+  # S157: THE ONE ANTI-GUTTING CHECK. Both legs have now run, so ask the two
+  # RUNNERS how many tests each executed and refuse when the tip executed fewer.
+  # Source-blind on purpose. Only on the parent-own path — a new test file has no
+  # parent-side count to compare with. Vacuous when the parent copy was dead at
+  # import (it executed nothing); see the block comment on proof_executed_count.
+  case "$FF_PAR_MODE" in
+    parent-own|mixed)
+      # F6: compare only when the SAME runner arm parsed both legs. Two different
+      # grammars produce two different meanings of "a test", and comparing them
+      # would invent a shortfall out of nothing. Fail-closed by SKIPPING (the
+      # check is recorded as not made), never by assuming it passed.
+      local pruntag="${FF_PAR_EXEC%% *}" truntag="${FF_TIP_EXEC%% *}"
+      local parn="${FF_PAR_EXEC##* }" tipn="${FF_TIP_EXEC##* }"
+      if [ -n "$FF_PAR_EXEC" ] && [ -n "$FF_TIP_EXEC" ] && [ "$pruntag" = "$truntag" ] \
+         && [ "$tipn" -lt "$parn" ]; then
+        _ff_finish "$t" "$parent" "$ffj" fail \
+          "the ticket claims a REPAIR, but the RUNNER executed FEWER tests on the tip than on the parent ($parn → $tipn). Whatever the source says, tests that used to run no longer do — a disabled block (\`describe.skip\`, an \`if (false)\`, an early return) hides tests that are still written down. This count comes from the runners themselves, not from reading your file. Make the missing tests run again." "$rels"
+        return $?
+      fi ;;
+  esac
+
+  # THE RED = PROOF. Again per mode, and stating the REAL bound: the leg runs the
+  # ticket's test files together, so a red proves THAT RUN was failing on the
+  # parent — it is not attributed to an individual file when there is more than one.
+  local passreason
+  case "$FF_PAR_MODE" in
+    parent-own)
+      # D2: state the facts established, nothing about intent. The gate proved
+      # three things and no more — parent copy red, tip copy green, file did not
+      # shrink. It cannot see whether the assertions still MEAN the same thing.
+      passreason="tests GREEN on tip, RED on parent (exit $FF_PAR_RC, $FF_PAR_KIND). ESTABLISHED: the parent leg ran the parent's OWN committed copy of $(_ff_rels_with_source parent-own) — never the ticket's edited one — that copy FAILED at the parent while the ticket's copy passes at the tip, and — where both legs were read by the same runner — the tip executed at least as many tests as the parent (${FF_PAR_EXEC##* } → ${FF_TIP_EXEC##* }, via ${FF_TIP_EXEC%% *}). NOT established: that a test which survived still checks anything, or that no test was REMOVED. Note especially: if the parent's copy was dead at import it executed nothing, so the count comparison proves nothing here and the declared edit plus your review at Verify are the only protection. The harness does not read the test source to decide any of this" ;;
+    mixed)
+      passreason="tests GREEN on tip, RED on parent (exit $FF_PAR_RC, $FF_PAR_KIND) — the parent leg ran the parent's OWN copy of the pre-existing test file(s) ($(_ff_rels_with_source parent-own)), run from the parent's own committed copy, together with the ticket's new file(s) staged in ($(_ff_rels_with_source staged)). The red is from that run as a whole; the harness did not attribute it to one file" ;;
+    *)
+      passreason="tests GREEN on tip, RED on parent (exit $FF_PAR_RC, $FF_PAR_KIND — a compile/resolution red from the change's new symbols counts as proof)" ;;
+  esac
+  _ff_finish "$t" "$parent" "$ffj" pass "$passreason" "$rels"
 }
 
 # result.json's declared test paths: newTests ∪ testEdits[].path, one per line.
@@ -5167,7 +6087,22 @@ RT_RELS_EOF
 }
 
 FULL_SUITE_SIGNAL=""   # caller may point this at a file to capture the regression detail
+# S157: the ticket ids whose OWN recorded suites failed in the LAST full_suite_gate
+# run — i.e. the tickets that AUTHORED the failing tests. Empty on a pass, and
+# empty on the env-unprovisioned path (a runner that never started attributes
+# nothing to anybody). Read by self_heal_full_suite / escalate_full_suite_regression
+# through selfheal_regressor; never inferred from the reason prose.
+FULL_SUITE_REGRESSED=""
+# S157 × #93: the gate failed for an ENVIRONMENT reason — a stale dependency
+# environment or an unprovisioned one — so NO ticket can be attributed the break
+# and no worker edit can clear it. Distinct from "the list happens to be empty":
+# a regression whose owner could not be resolved would leave the list empty too,
+# and that case must still reach self-heal on its `unresolved-last-built` basis.
+# This flag is the FACT; the empty list is its consequence.
+FULL_SUITE_ENV_FAULT=""
 full_suite_gate() { # ordered ticketId...
+  FULL_SUITE_REGRESSED=""
+  FULL_SUITE_ENV_FAULT=""
   local cmd; cmd="$(resolve_test_cmd)"
   FULL_SUITE_STALE_ENV=""   # reset per call — never inherit a prior gate's verdict
   if [ -z "$cmd" ]; then
@@ -5239,6 +6174,7 @@ full_suite_gate() { # ordered ticketId...
       local edetail="FULL-SUITE GATE — environment not provisioned — the test runner could not start in the gate worktree (missing node_modules/venv or an absent test binary), so earlier ticket suite(s) could not be re-run against the fully-built repo. This is NOT a cross-ticket regression. Set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`). Command run: $cmd."
       emit_event ticket_env_unprovisioned implement \
         "full-suite gate — environment not provisioned (the test runner could not start in the gate worktree); set worktreeSetupCommand in .git/lcars/config.json" || :
+      FULL_SUITE_ENV_FAULT="unprovisioned"
       rm -rf "$cap" 2>/dev/null
       printf '  ✗ %s\n' "$edetail" >&2
       [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$edetail" >"$FULL_SUITE_SIGNAL"
@@ -5251,18 +6187,36 @@ full_suite_gate() { # ordered ticketId...
   # worktree's committed lockfile, so "these suites regressed" names the wrong
   # culprit — the earlier tickets did not regress, they were re-run against the
   # wrong dependency set. Diagnosis only; the gate still fails.
+  #
+  # ORDERING IS LOAD-BEARING (S157 × #93 merge seam). This block returns BEFORE
+  # FULL_SUITE_REGRESSED is set, so a stale-dependency failure attributes to NO
+  # ticket and self-heal dispatches nobody. Moving the assignment above this
+  # early return would hand a worker a ticket to "fix" for a break that is a
+  # toolchain fault — the false-premise reconcile both changes exist to end.
   if [ -n "${FULL_SUITE_STALE_ENV:-}" ]; then
     local sdetail="FULL-SUITE GATE — STALE DEPENDENCY ENVIRONMENT — the re-run went RED, but ${FULL_SUITE_STALE_ENV}. These suites did NOT necessarily regress: they were re-run against dependencies this branch's own lockfile replaced. Repair the provisioning with \`lcars update\` (its worktreeSetupCommand migration reinstalls on a lockfile divergence), then re-run. Command run: $cmd."
     emit_event ticket_env_unprovisioned implement \
       "full-suite gate — stale dependency environment (the gate worktree's lockfile differs from the shared install it was symlinked); repair with \`lcars update\`" \
       "" || :
+    FULL_SUITE_ENV_FAULT="stale-deps"
     rm -rf "$cap" 2>/dev/null
     printf '  ✗ %s\n' "$sdetail" >&2
     [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$sdetail" >"$FULL_SUITE_SIGNAL"
     return 1
   fi
 
-  local detail="FULL-SUITE GATE — these earlier ticket suite(s) no longer pass against the fully-built repo: ${regressed}. Each was green when built, so a LATER ticket's produced code REGRESSED its locked contract. The Mission is NOT shippable until the regression is resolved (fix the later ticket or re-open the regressed ticket). Command run: $cmd."
+  # S157: the ids are recorded for attribution BEFORE the prose is built, so the
+  # consumer reads a list, not a sentence. (The reason string still carries them
+  # in the same phrase — escalate_full_suite_regression's sed still matches.)
+  FULL_SUITE_REGRESSED="$regressed"
+  # S157 — THE PREMISE HAD TO GO. The old copy asserted "a LATER ticket's produced
+  # code REGRESSED its locked contract". This gate does not prove that: it proves
+  # each named ticket's OWN tests, green when that ticket was built, no longer
+  # pass on the assembled branch. A same-wave sibling (blind by design), an
+  # interaction between two changes each built in isolation, or a later ticket are
+  # all consistent with the same evidence — and in the 2026-07-27 mission the
+  # confident wrong premise sent a worker to the wrong ticket for 8 sessions.
+  local detail="FULL-SUITE GATE — these ticket suite(s) no longer pass against the fully-built repo: ${regressed}. Each is named because ITS OWN recorded tests were re-run and failed, and each was green when its own ticket was built — so something that landed since has broken it. WHICH change is NOT established by this gate (a later ticket, a same-wave sibling built blind to it, or an interaction between changes are all consistent with this evidence). The Mission is NOT shippable until it is resolved. Command run: $cmd."
   # Harness-gap detection (BUG-019): if any captured failing-suite output mentions a
   # TypeError / undefined-method surface, this is very likely an INCOMPLETE per-ticket
   # MOCK (an earlier ticket's headless browser/host double lacks a method a later
@@ -5326,27 +6280,135 @@ ticket_title() { # plan.json  ticketId
 # "regression", and the verbatim raw reason as technicalDetail (where t-XXX may
 # remain). The existing question text is preserved for back-compat. Reached only
 # AFTER self-heal exhausts its cap (genuinely irreducible).
+# --- S157: WHICH TICKET a full-suite regression is handed to ----------------
+# The old rule was "the latest one built (last in plan order)" — a GUESS. In the
+# 2026-07-27 mission it handed a reconcile brief for a break in t-012's test file
+# to t-011, whose only distinction was landing last; the worker spent 8 sessions
+# on a premise that was simply false.
+#
+# The gate already knows better: retest_ticket_suites re-runs EACH ticket's OWN
+# recorded test files and records the ids whose runs failed, so a failing id IS
+# the ticket that authored the failing suite. That is the ownership fact, and it
+# is all we claim — authoring the broken test is NOT the same as having caused
+# the break (the cause may be another ticket's code the test now runs against),
+# which is why the brief says so out loud.
+#
+# THE TIE-BREAK, when several tickets' suites fail: take the one that comes
+# FIRST IN `$ordered`. That list is built by cmd_impl_advance from waves.json, so
+# it is WAVE order — which since S156 (this same branch, infrastructure tickets
+# pulled into their own wave) is deliberately NOT the same as plan order; do not
+# describe it as plan order. The choice is a pure function of (failing set, wave
+# order): same inputs, same answer, no round number in it. It is re-evaluated
+# every self-heal round against THAT round's failing set (see
+# self_heal_full_suite), so if a heal clears one owner and exposes another, the
+# next round follows the evidence instead of grinding the first ticket. The
+# earliest-wave owner is preferred because a later wave's failure is more often
+# downstream of it than the reverse.
+#
+# Prints "<ticketId>\t<basis>"; basis is one of:
+#   authored-failing-suite  — this ticket's own recorded tests are the failing ones
+#   unresolved-last-built   — NO failing suite could be attributed to a ticket, so
+#                             this is merely the last ticket built, NOT a culprit
+#   none                    — nothing to pick from at all
+#
+# GLOBBING IS DISABLED while the id lists are split (S157 D9). The inputs are
+# whitespace-separated ticket ids and word-splitting IS wanted, but pathname
+# expansion is not: with `set -f` off, a stray `*` in a failing list expanded
+# against the CWD and the function returned a FILENAME as the culprit id.
+selfheal_regressor() { # failing-ids  ordered-ids → "<id>\t<basis>"
+  local failing="$1" ordered="$2" id f last="" out=""
+  local noglob=0; case "$-" in *f*) noglob=1 ;; esac
+  set -f
+  for id in $ordered; do
+    for f in $failing; do
+      [ "$id" = "$f" ] && { out="$id	authored-failing-suite"; break; }
+    done
+    [ -n "$out" ] && break
+  done
+  # A failing id the ordered list does not contain is still honest ownership.
+  if [ -z "$out" ]; then
+    for f in $failing; do out="$f	authored-failing-suite"; break; done
+  fi
+  if [ -z "$out" ]; then
+    for last in $ordered; do :; done
+    [ -n "$last" ] && out="$last	unresolved-last-built"
+  fi
+  [ "$noglob" = 1 ] || set +f
+  [ -n "$out" ] || out="	none"
+  printf '%s\n' "$out"
+}
+
+# The premise line that opens the reconcile brief / the human escalation. Says
+# EXACTLY what the harness knows, and — when it knows nothing — says that plainly
+# instead of dressing the last-built ticket up as a culprit.
+#
+# S157 D10: it must not garble on inputs it should never receive. An EMPTY id
+# cannot be dressed in a sentence about "%s's tests" (that printed "` AUTHORED
+# the failing test(s) … and 's did not pass`"), and an unknown basis must not
+# silently DROP an id the caller is holding — both degrade to naming what is
+# actually known.
+selfheal_attribution_note() { # regressor basis
+  local id="${1:-}" basis="${2:-}"
+  if [ -z "$id" ]; then
+    printf 'ATTRIBUTION: UNRESOLVED — the harness could not name any ticket for this regression (no ticket id was resolved). Treat the failure output below as the only evidence.\n'
+    return 0
+  fi
+  case "$basis" in
+    authored-failing-suite)
+      printf 'ATTRIBUTION: %s AUTHORED the failing test(s) — the full-suite gate re-ran every ticket'"'"'s own recorded tests and %s'"'"'s did not pass. That is ownership of the broken suite, NOT proof that %s'"'"'s own code is at fault: the break may come from another change the test now runs against. Diagnose from the failure output before assuming.\n' "$id" "$id" "$id" ;;
+    unresolved-last-built)
+      printf 'ATTRIBUTION: UNRESOLVED — the harness could NOT determine which ticket owns the failing test(s) (no failing suite was attributed to a ticket). %s is simply the LAST ticket built; it is NOT a proven culprit and may have nothing to do with the failure. Treat the failure output below as the only evidence.\n' "$id" ;;
+    *)
+      printf 'ATTRIBUTION: UNRECOGNISED BASIS "%s" — the harness selected %s but cannot say on what grounds, so treat that id as UNVERIFIED and the failure output below as the only evidence.\n' "$basis" "$id" ;;
+  esac
+}
+
 escalate_full_suite_regression() { # reason  ordered ticketId...
   local reason="$1"; shift
   local ordered="$*"
-  # The regressing (just-built, latest-in-plan-order) ticket and, when the gate
-  # named the regressed earlier suites, those tickets — translated to issue #s.
-  local regressor=""; for regressor in $ordered; do :; done   # last id in plan order
+  # S157: the ticket to name is the one that AUTHORED the failing suite (or, when
+  # ownership could not be resolved, the last built — labelled as exactly that).
+  # Prefer the pick self-heal already made so the escalation and the reconcile
+  # briefs cannot disagree about who was worked on. Since D3 that pick is the
+  # LAST round's, made from the same gate run that produced `$reason` — so the
+  # culprit named below and the victims sed'd out of the reason are from one
+  # round, not two (they used to be able to diverge).
+  local regressor="${SELFHEAL_REGRESSOR:-}" basis="${SELFHEAL_REGRESSOR_BASIS:-}" pick
+  if [ -z "$regressor" ]; then
+    pick="$(selfheal_regressor "${FULL_SUITE_REGRESSED:-}" "$ordered")"
+    regressor="${pick%%$'\t'*}"; basis="${pick#*$'\t'}"; basis="${basis%%$'\n'*}"
+  fi
   local regressed_ids; regressed_ids="$(printf '%s\n' "$reason" \
     | sed -n 's/.*no longer pass against the fully-built repo: \([^.]*\)\..*/\1/p' | head -1)"
   local victims; victims="$(tickets_to_issues $regressed_ids)"
   local culprit; culprit="$(tickets_to_issues "$regressor")"
   local summary
-  if [ -n "$victims" ]; then
-    summary="Two changes conflict — the fix for $culprit re-broke a test from $victims. Reply with how to reconcile them, send the mission back to re-fix, or drop one."
+  # S157 × #93: AN ENVIRONMENT FAULT READS AS ONE. The generic "a change conflicts
+  # with the rest of the branch" copy is actively misleading for a toolchain
+  # fault — it points a human at code when the repair is provisioning, and it
+  # claims the harness "could not auto-reconcile" something it deliberately never
+  # tried. Say plainly what it is, and name the repair the gate already
+  # identified. This branch is FIRST so neither of the regression phrasings below
+  # can capture the case.
+  if [ "$basis" = environment-fault ] || [ -n "${FULL_SUITE_ENV_FAULT:-}" ]; then
+    summary="The test suite could not be re-run against a trustworthy dependency environment, so the harness cannot tell whether anything regressed — this is a TOOLCHAIN fault, not broken code, and no ticket is implicated. No worker was dispatched, because no edit to any ticket can clear a stale toolchain: repair the provisioning (\`lcars update\` reinstalls when a worktree's lockfile diverges from the shared install), then run the mission again. The full diagnosis is below."
+  # S157: no "the fix for X re-broke a test from Y" — that named a cause the gate
+  # never established. Say what happened, who owns the broken test, and what the
+  # harness tried.
+  elif [ -n "$victims" ] && [ "$basis" = authored-failing-suite ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. The harness's last reconcile attempt went to $culprit (the ticket that wrote a failing test) and did not clear it, and it has NOT established which change caused the break. Reply with how to reconcile, send the mission back to re-fix, or drop one."
+  elif [ -n "$victims" ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. The harness could not work out which ticket owns the failing test, and its reconcile attempts did not clear it. Reply with how to reconcile, send the mission back to re-fix, or drop one."
   else
     summary="A change conflicts with the rest of the branch and the harness could not auto-reconcile it. Reply with how to reconcile, or send the mission back to re-fix."
   fi
 
   local q; q="$(mktemp)"
   printf '%s\n' "$reason" >"$q"
+  local esctype="regression"
+  [ "$basis" = environment-fault ] || [ -n "${FULL_SUITE_ENV_FAULT:-}" ] && esctype="environment"
   LCARS_PENDING_HUMAN_SUMMARY="$summary" \
-  LCARS_PENDING_ESCALATION_TYPE="regression" \
+  LCARS_PENDING_ESCALATION_TYPE="$esctype" \
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
@@ -5356,17 +6418,22 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   # the parked card sits squarely in the Implement column (mirror validate-pause).
   gh_relabel "lcars:implement lcars:awaiting-human" ""
 
-  emit_event gate implement "full-suite regression — self-heal exhausted, awaiting your answer: $summary" \
+  local what="full-suite regression — self-heal exhausted"
+  if [ "$esctype" = environment ]; then
+    what="full-suite gate — environment fault, self-heal SKIPPED (no ticket to dispatch)"
+  fi
+  emit_event gate implement "$what, awaiting your answer: $summary" \
     "phase=full-suite-gate"
 
-  echo "IMPLEMENT: full-suite regression — self-heal exhausted, flagged the human"
+  echo "IMPLEMENT: $what, flagged the human"
   printf '%s\n' "$summary"
   echo "  Stage: implement (awaiting-human). Resolve with \`lcars respond $MISSION_ID\`."
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
 }
 
 # --- BUG-029: self-heal a full-suite regression before escalating -----------
-# Auto-iterate the regressing (latest-in-plan-order) ticket's unified TDD worker
+# Auto-iterate the regressing ticket's unified TDD worker (S157: the ticket that
+# AUTHORED the failing suite — see selfheal_regressor — not the last one built)
 # with a harness-authored reconcile instruction, re-running the full-suite gate
 # after each attempt, up to a cap. Reuses the EXISTING implement-ticket
 # re-dispatch path (S133: the fresh worker re-proves the S132 gates on the
@@ -5376,24 +6443,63 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
 SELFHEAL_CAP="${LCARS_SELFHEAL_CAP:-3}"
 case "$SELFHEAL_CAP" in ''|*[!0-9]*) SELFHEAL_CAP=3 ;; esac
 SELFHEAL_LAST_REASON=""
+SELFHEAL_REGRESSOR=""        # S157: the ticket self-heal chose, and WHY it chose it
+SELFHEAL_REGRESSOR_BASIS=""
 self_heal_full_suite() { # reason  ordered ticketId...
   local reason="$1"; shift
   local ordered="$*"
   SELFHEAL_LAST_REASON="$MISSION_DIR/selfheal-last-reason.txt"
   printf '%s\n' "$reason" >"$SELFHEAL_LAST_REASON"
 
-  # The regressing ticket is the latest one built (last in plan order).
-  local regressor=""; for regressor in $ordered; do :; done
-  [ -n "$regressor" ] || return 1
+  # S157 × #93: AN ENVIRONMENT FAULT IS NOT SELF-HEALABLE. When the gate reached
+  # a stale-dependency or unprovisioned-environment diagnosis it attributed the
+  # break to NO ticket, because none is responsible — the suites were re-run
+  # against the wrong dependency set. Dispatching a worker there cannot succeed:
+  # no edit to any ticket clears a stale toolchain, so every session is spent
+  # re-solving a solved problem, which is the exact failure #93 exists to end.
+  # Escalate immediately with the diagnosis the gate already produced (it names
+  # `lcars update` as the repair) instead of burning the cap first.
+  #
+  # KEYED ON THE FAULT, NOT ON EMPTINESS. A regression whose OWNER could not be
+  # resolved also leaves the failing set empty, and that case must still reach
+  # selfheal_regressor and heal on its `unresolved-last-built` basis. The two are
+  # different facts and are tested as different cases (proof-gates Q3a vs V3).
+  if [ -n "${FULL_SUITE_ENV_FAULT:-}" ]; then
+    SELFHEAL_REGRESSOR=""; SELFHEAL_REGRESSOR_BASIS="environment-fault"
+    emit_event selfheal_skipped implement \
+      "self-heal SKIPPED — the full-suite gate diagnosed an environment fault (${FULL_SUITE_ENV_FAULT}), which attributes to no ticket and no worker edit can clear; escalating with the diagnosis" \
+      "fault=${FULL_SUITE_ENV_FAULT}" || :
+    return 1
+  fi
+
+  # S157: hand the reconcile to the ticket that AUTHORED the failing suite, not to
+  # whoever landed last. `failing` starts from the gate run that just failed and is
+  # REFRESHED at the bottom of every round from that round's own gate run.
+  local failing="${FULL_SUITE_REGRESSED:-}"
 
   # Resolve the worktree base + branch the same way cmd_implement's rebuild does so
   # the re-dispatched implementer composes on the CURRENT mission-branch tip.
   local branch; branch="$(json_str "$STATE" branch)"
   local wt_base="$MISSION_DIR/selfheal-wt"
 
-  local round=0 fssig
+  local round=0 fssig regressor basis pick attribution
   while [ "$round" -lt "$SELFHEAL_CAP" ]; do
     round=$((round + 1))
+    # S157 D3: RE-PICK EVERY ROUND, from THIS round's failing set. Both halves of
+    # the brief have to come from the same round: the reason below is rewritten
+    # each iteration, so a regressor (and an attribution line) fixed before the
+    # loop would, from round 2 on, name one ticket above a failure belonging to
+    # another — the exact wrong-premise handoff this session exists to kill. It
+    # also means a heal that clears one owner's suite and exposes a second moves
+    # the next round's work to that second owner instead of grinding the first.
+    pick="$(selfheal_regressor "$failing" "$ordered")"
+    regressor="${pick%%$'\t'*}"; basis="${pick#*$'\t'}"
+    SELFHEAL_REGRESSOR="$regressor"; SELFHEAL_REGRESSOR_BASIS="$basis"
+    [ -n "$regressor" ] || return 1
+    attribution="$(selfheal_attribution_note "$regressor" "$basis")"
+    emit_event selfheal_attribution implement \
+      "round $round: full-suite regression attributed to $regressor ($basis)" \
+      "ticket=$regressor" "round=$round" || :
     emit_event selfheal implement "self-heal round $round/$SELFHEAL_CAP — re-running $regressor's implementer to reconcile the regression" \
       "ticket=$regressor" "round=$round"
 
@@ -5405,7 +6511,8 @@ self_heal_full_suite() { # reason  ordered ticketId...
     rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" "$(ticket_dir "$regressor")/.commit-base" 2>/dev/null
     LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
     LCARS_TICKET_WT_BASE="$wt_base" LCARS_TICKET_BRANCH="$branch" \
-    LCARS_SELFHEAL_FEEDBACK="$(cat "$SELFHEAL_LAST_REASON")" \
+    LCARS_SELFHEAL_FEEDBACK="$attribution
+$(cat "$SELFHEAL_LAST_REASON")" \
       bash "$SELF" implement-ticket --mission "$MISSION_ID" --ticket "$regressor" >/dev/null 2>&1 || irc=$?
 
     # A flagged ticket (its own session cap) set awaitingHuman in shared state —
@@ -5440,6 +6547,9 @@ self_heal_full_suite() { # reason  ordered ticketId...
     fi
     [ -f "$fssig" ] && cp "$fssig" "$SELFHEAL_LAST_REASON"
     rm -f "$fssig"
+    # S157 D3: the reason and the attribution must stay in step — refresh the
+    # failing set from the gate run that produced the reason just stored.
+    failing="${FULL_SUITE_REGRESSED:-}"
   done
 
   emit_event selfheal_exhausted implement "self-heal exhausted $SELFHEAL_CAP round(s) — regression is irreducible, escalating" \
@@ -5483,13 +6593,14 @@ EOF
     [ -f "$fssig" ] && reason="$(cat "$fssig")"
     rm -f "$fssig"
 
-    # BUG-029: SELF-HEAL BEFORE escalating. A full-suite regression is a
-    # MECHANICALLY-RECONCILABLE failure — a later ticket's change broke an earlier
-    # ticket's locked contract — exactly the kind of fix an implementer can be told
-    # to make (the captain otherwise hand-types "reconcile so test T passes; don't
-    # touch the locked contract"). So auto-iterate the implementer of the regressing
-    # (just-built, latest-in-plan-order) ticket with that harness-authored feedback,
-    # re-run the full-suite gate, and only escalate to the human AFTER the cap. This
+    # BUG-029: SELF-HEAL BEFORE escalating. A full-suite regression is usually a
+    # MECHANICALLY-RECONCILABLE failure — a test that was green when its ticket was
+    # built no longer passes on the assembled branch — exactly the kind of fix an
+    # implementer can be told to make (the captain otherwise hand-types "reconcile
+    # so test T passes; don't touch the locked contract"). So auto-iterate the
+    # implementer of the ticket that AUTHORED the failing suite (S157 — the gate
+    # names it; the old rule guessed the last-built one) with that harness-authored
+    # feedback, re-run the full-suite gate, and escalate only AFTER the cap. This
     # reuses the SAME implement-ticket re-dispatch machinery the S76 reconcile /
     # same-file rebuild already drive (S133: the fresh unified worker re-proves
     # the gates; an undeclared test weakening is still blocked). The full-suite
@@ -5560,9 +6671,14 @@ for tid in ids:
     edits = te if isinstance(te, list) else (
         (res.get("testEdits") if isinstance(res, dict) else []) or [])
     edits = [e for e in edits if isinstance(e, dict) and e.get("path")]
+    # S157: "new/changed" must count CHANGED files too. A repair declares its work
+    # in testEdits, not newTests, so a repair-only ticket used to read
+    # "0 new/changed test(s)" beside a PROVEN chip — which looks like a ticket
+    # that touched no tests at all, next to a REPAIRED block saying it did.
     new = 0
     if isinstance(res, dict) and isinstance(res.get("newTests"), list):
         new = len([p for p in res["newTests"] if isinstance(p, str) and p])
+    new += len({e["path"] for e in edits if e.get("path")})
     decl = res.get("flipFlop") if isinstance(res, dict) else None
     ffv = ff.get("verdict") if isinstance(ff, dict) else None
     if decl == "not-applicable" or ffv == "skipped":
@@ -5576,7 +6692,20 @@ for tid in ids:
         reason = (ff.get("reason") if isinstance(ff, dict) else "") or ""
     else:
         verdict, reason = None, ""
-    rows.append((tid, {"new": new, "edits": edits, "verdict": verdict, "reason": reason}))
+    # S157: was this ticket certified as a REPAIR of a pre-existing test — i.e.
+    # did the parent leg run the parent's OWN committed copy of some file? The
+    # harness deliberately does NOT try to prove such an edit was honest (that
+    # guard was tried, broken five times, and ruled out), so the human has to see
+    # it. flip-flop.json records the per-file provenance; anything sourced
+    # "parent-own" is a repair, and the file is named below.
+    repaired = []
+    pleg = ff.get("parentLeg") if isinstance(ff, dict) else None
+    if isinstance(pleg, dict):
+        for srow in (pleg.get("sources") or []):
+            if isinstance(srow, dict) and srow.get("source") == "parent-own" and srow.get("path"):
+                repaired.append(srow["path"])
+    rows.append((tid, {"new": new, "edits": edits, "verdict": verdict,
+                       "reason": reason, "repaired": repaired}))
 if not proofed:
     sys.exit(0)                                       # byte-identical: print nothing
 out = ["  Proof of work:"]
@@ -5588,6 +6717,19 @@ for tid, p in rows:
         chip += " (%s)" % p["reason"]
     glyph = "✓" if p["verdict"] == "PROVEN" else "-"
     out.append("    %s %s -- %s · %d new/changed test(s)" % (glyph, tid, chip, p["new"]))
+# S157: REPAIRS OF PRE-EXISTING TESTS, called out for the human. A repair is
+# certified as "this file was already failing at the parent and passes now" — the
+# harness does not, and no longer tries to, establish that nothing was quietly
+# removed while it was being fixed. So the reviewer is told exactly which
+# pre-existing test files a ticket rewrote, and pointed at the diff.
+repairs = [(tid, path) for tid, p in rows if p for path in p.get("repaired") or []]
+if repairs:
+    out.append("  REPAIRED PRE-EXISTING TESTS (review these diffs):")
+    for tid, path in repairs:
+        out.append("    ⟲ %s · %s" % (tid, path))
+    out.append("      These files were already FAILING at the parent commit and pass now.")
+    out.append("      The harness checked the runner did not execute fewer tests than before,")
+    out.append("      but it does NOT verify that nothing was removed while they were fixed.")
 amend = [(tid, e) for tid, p in rows if p for e in p["edits"]]
 if amend:
     out.append("  CONTRACT AMENDMENTS (declared test edits):")
@@ -10765,6 +11907,12 @@ FSG_EOF
     __fsg_rc=0
     FULL_SUITE_SIGNAL="$__fsg_sig" full_suite_gate $__fsg_ordered || __fsg_rc=$?
     printf 'FSRC=%s\n' "$__fsg_rc"
+    # S157 (additive — FSRC keeps its name, value and position): the ids the gate
+    # attributed the regression to, and the pick self-heal would hand the
+    # reconcile to, so the gate→attribution plumbing is provable without
+    # dispatching a (billable) worker.
+    printf 'FSREG=%s\n' "$FULL_SUITE_REGRESSED"
+    printf 'FSPICK=%s\n' "$(selfheal_regressor "$FULL_SUITE_REGRESSED" "$__fsg_ordered" | tr '\t' '|')"
     exit 0 ;;
   # S92 test hook: exercise attachments_extra_block in ISOLATION. MISSION_DIR is
   # taken straight from $LCARS_ATT_TEST_DIR (no locate_mission, no worker spawn),
@@ -10838,6 +11986,22 @@ FSG_EOF
     __ct_rc=0; commit_ticket "$TICKET" "${POSARG:-test session}" || __ct_rc=$?
     [ -n "${COMMIT_NOTE:-}" ] && printf '%s\n' "$COMMIT_NOTE"
     printf 'CTRC=%s\n' "$__ct_rc"; exit 0 ;;
+  # S157 test hooks: the PURE regressor-attribution pair. Failing ids via
+  # $LCARS_SHR_FAILING, plan order via $LCARS_SHR_ORDERED. `selfheal-regressor-test`
+  # echoes "<id>\t<basis>"; `selfheal-attribution-test` echoes the premise line the
+  # reconcile brief opens with, for the id/basis in $LCARS_SHR_ID/$LCARS_SHR_BASIS.
+  # Pure string work — no mission, no worker, no git. Inert for real subcommands.
+  selfheal-regressor-test)
+    selfheal_regressor "${LCARS_SHR_FAILING:-}" "${LCARS_SHR_ORDERED:-}"
+    exit 0 ;;
+  selfheal-attribution-test)
+    selfheal_attribution_note "${LCARS_SHR_ID:-}" "${LCARS_SHR_BASIS:-}"
+    exit 0 ;;
+  # S157 C2 test hook: the PURE runner-count reader. Runner output on stdin;
+  # prints the executed-test count, or nothing when it cannot read one.
+  executed-count-test)
+    printf '%s\n' "$(proof_executed_count "$(cat)")"
+    exit 0 ;;
   proof-quality-floor-test)
     locate_mission "$MISSION_ID"
     [ -n "$TICKET" ] || die "usage: run.sh proof-quality-floor-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"

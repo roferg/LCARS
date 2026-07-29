@@ -62,6 +62,25 @@ Audit **every** ticket against the criteria below:
 - **Testability** — at least one clear, observable acceptance criterion?
 - **Dependencies** — does every id in `dependencies` reference another ticket in
   this same plan?
+- **Shared infrastructure** — is each ticket's `establishesSharedInfrastructure`
+  flag CORRECT? It must be `true` exactly when the ticket creates or changes
+  something later tickets build on: the package manifest / lockfile, the test
+  runner or its config / global setup file, the build or compiler config, a CI
+  workflow that runs the tests, or the initial project/package/module/workspace
+  layout. It must be `false` for ordinary product work — **including a ticket
+  that merely ADDS TESTS for a feature**; using the runner is not establishing
+  it. A ticket that mentions a config file only in passing ("the footer shows
+  the version from package.json") is `false`.
+  Object on BOTH errors, and say which way:
+  - a **missed** `true` is the expensive one — Schedule would let that ticket
+    share a wave with tickets that build against it, and same-wave tickets are
+    blind to each other (this is a real, costly failure: a docs ticket's test
+    was permanently broken by a wave-mate's new `vite.config.ts`, and nothing
+    noticed for eleven tickets);
+  - a **spurious** `true` serialises the plan — that ticket, and everything
+    after it, gets a wave of its own.
+  A ticket with the field ABSENT is also an objection: say so and ask the
+  planner to declare it, because the harness then has to guess from prose.
 
 ## Output — file FIRST
 

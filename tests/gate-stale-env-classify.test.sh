@@ -145,5 +145,39 @@ FS_REMOVE="$(awk -v s="$FS_START" 'NR>s && /worktree remove --force "\$wt"/ {pri
 check "8c. the evidence is read BEFORE the worktree is removed" \
   '[ -n "$FS_CALL" ] && [ -n "$FS_REMOVE" ] && [ "$FS_CALL" -lt "$FS_REMOVE" ]'
 
+# --- 9. WIRING: the S157 x #93 MERGE SEAM — ordering is the whole invariant ---
+# #93 says a stale dependency environment is a TOOLCHAIN fault, so no ticket may
+# be accused. S157 says a real regression must be attributed to the ticket that
+# AUTHORED the failing suite, via $FULL_SUITE_REGRESSED, which self-heal reads to
+# pick who gets the reconcile. Neither change knew about the other, and the two
+# only agree because of ORDER: the stale-env block returns BEFORE
+# FULL_SUITE_REGRESSED is assigned, so a toolchain fault attributes to nobody.
+#
+# Hoisting that assignment above the early return would compile, pass every other
+# test in this file and in proof-gates, and silently hand a worker a ticket to
+# "fix" for a broken toolchain — the false-premise reconcile BOTH changes exist
+# to end. So it is pinned as ordering, exactly like 7b/8b/8c above.
+# (The behavioural half of this seam — that the signal names no ticket, and that
+# a genuine regression is unaffected — lives in tests/proof-gates.test.sh
+# section V, which owns the mission fixtures and the full_suite_gate hook.)
+FS_END="$(awk -v s="$FS_START" 'NR>s && /^\}/ {print NR; exit}' "$RUN_SH")"
+FS_RESET="$(awk -v s="$FS_START" -v e="$FS_END" 'NR>s && NR<e && /^  FULL_SUITE_REGRESSED=""/ {print NR; exit}' "$RUN_SH")"
+FS_STALE_IF="$(awk -v s="$FS_START" -v e="$FS_END" 'NR>s && NR<e && /if \[ -n "\$\{FULL_SUITE_STALE_ENV/ {print NR; exit}' "$RUN_SH")"
+FS_STALE_RET="$(awk -v s="${FS_STALE_IF:-0}" -v e="$FS_END" 'NR>s && NR<e && /^    return 1$/ {print NR; exit}' "$RUN_SH")"
+FS_ASSIGN="$(awk -v s="$FS_START" -v e="$FS_END" 'NR>s && NR<e && /^  FULL_SUITE_REGRESSED="\$regressed"/ {print NR; exit}' "$RUN_SH")"
+
+check "9a. full_suite_gate resets FULL_SUITE_REGRESSED at entry (no inherited verdict)" \
+  '[ -n "$FS_RESET" ] && [ -n "$FS_STALE_IF" ] && [ "$FS_RESET" -lt "$FS_STALE_IF" ]'
+check "9b. the stale-env block exists and RETURNS rather than falling through" \
+  '[ -n "$FS_STALE_IF" ] && [ -n "$FS_STALE_RET" ] && [ "$FS_STALE_RET" -gt "$FS_STALE_IF" ]'
+check "9c. it returns BEFORE FULL_SUITE_REGRESSED is assigned (a stale env accuses no ticket)" \
+  '[ -n "$FS_STALE_RET" ] && [ -n "$FS_ASSIGN" ] && [ "$FS_STALE_RET" -lt "$FS_ASSIGN" ]'
+check "9d. and the classifier is READ before the block that consumes it" \
+  '[ -n "$FS_CALL" ] && [ -n "$FS_STALE_IF" ] && [ "$FS_CALL" -lt "$FS_STALE_IF" ]'
+# The attribution the assignment feeds must still be downstream of the accusation
+# wording, i.e. the ids are recorded for a consumer, not parsed back out of prose.
+check "9e. the assignment precedes the regression detail it attributes" \
+  '[ -n "$FS_ASSIGN" ] && [ -n "$FS_ACCUSE" ] && [ "$FS_ASSIGN" -lt "$FS_ACCUSE" ]'
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
