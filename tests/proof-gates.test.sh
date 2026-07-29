@@ -3008,19 +3008,64 @@ else
     *) bad "V2c. unexpected detail: $(printf '%s' "$SEAM_SIG" | cut -c1-140)" ;;
   esac
 
-  # --- V3: KNOWN GAP — the empty set does NOT stop the self-heal dispatch ---
-  # Requirement as briefed was "picks nothing, so no worker is dispatched". That
-  # is NOT what the code does, and this pins the truth rather than the wish:
-  # selfheal_regressor falls back to the LAST-BUILT ticket with basis
-  # `unresolved-last-built`, so self_heal_full_suite still spends a worker on a
-  # toolchain fault — a session that cannot possibly clear a stale environment.
-  # The brief it carries is honest (it says the ticket is NOT a proven culprit),
-  # so this is wasted work rather than a false accusation. Pinned so that closing
-  # it is a deliberate, visible change and not a silent drift.
+  # --- V3: an ENVIRONMENT FAULT dispatches NO worker at all ------------------
+  # This was a KNOWN GAP one commit ago: the gate attributed nothing, but
+  # selfheal_regressor fell back to the LAST-BUILT ticket and self-heal spent
+  # worker sessions on a toolchain fault — sessions that cannot possibly clear a
+  # stale environment, which is the exact failure #93 exists to end. Now the
+  # self-heal loop is skipped outright and the mission escalates with the
+  # diagnosis the gate already produced.
+  #
+  # Driven end-to-end through the REAL impl-advance with a stub worker that
+  # simply records that it ran, so "no worker was dispatched" is measured, not
+  # inferred from a code path.
+  v3="$(stale_seam_repo shared)"
+  printf '#!/usr/bin/env bash\nprintf "DISPATCHED role=%%s\\n" "${LCARS_WORKER_ROLE:-}" >> "$WLOG"\nexit 0\n' > "$v3/worker"
+  chmod +x "$v3/worker"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$v3/gh"; chmod +x "$v3/gh"
+  : > "$v3/worker.log"
+  cat > "$v3/.git/lcars/missions/m-001/approved-plan.json" <<'JSON'
+{ "tickets": [ { "id": "t-001", "title": "one", "description": "d", "acceptanceCriteria": ["a"], "rationale": "r" },
+               { "id": "t-002", "title": "two", "description": "d", "acceptanceCriteria": ["a"], "rationale": "r" },
+               { "id": "t-003", "title": "three", "description": "d", "acceptanceCriteria": ["a"], "rationale": "r" } ] }
+JSON
+  V3_OUT="$( cd "$v3" && env WLOG="$v3/worker.log" LCARS_SELFHEAL_CAP=3 \
+      LCARS_WORKER_BIN="$v3/worker" LCARS_WORKER_CLI=claude \
+      LCARS_TEST_CMD="$NODE_CMD" LCARS_WORKTREE_SETUP_CMD="ln -sfn '$v3/node_modules' node_modules" \
+      LCARS_GH_BIN="$v3/gh" LCARS_NOTIFY=true \
+      bash "$SCRIPT" impl-advance --mission m-001 2>&1 )"
+  V3_EV="$v3/.git/lcars/missions/m-001/events.jsonl"
+  [ ! -s "$v3/worker.log" ] \
+    && ok "V3a. an environment fault dispatches NO worker (the log is empty)" \
+    || bad "V3a. a worker ran on a toolchain fault: $(cat "$v3/worker.log")"
+  grep -q '"type":"selfheal_skipped"' "$V3_EV" 2>/dev/null \
+    && ok "V3b. and the skip is recorded as an event, not silent" \
+    || bad "V3b. no selfheal_skipped event: $(grep -o '"type":"selfheal[a-z_]*"' "$V3_EV" 2>/dev/null | tr '\n' ' ')"
+  grep -q '"type":"selfheal_attribution"' "$V3_EV" 2>/dev/null \
+    && bad "V3c. a ticket was attributed the break on a toolchain fault" \
+    || ok "V3c. no ticket is attributed — the self-heal loop never starts"
+  case "$V3_OUT" in
+    *"TOOLCHAIN fault, not broken code"*"lcars update"*)
+      ok "V3d. the human is parked with an ACTIONABLE toolchain diagnosis" ;;
+    *) bad "V3d. escalation copy misleads: $(printf '%s' "$V3_OUT" | grep -i 'IMPLEMENT:' | head -1)" ;;
+  esac
+  case "$V3_OUT" in
+    *"self-heal exhausted"*)
+      bad "V3e. it claims self-heal was exhausted when it never ran: $V3_OUT" ;;
+    *) ok "V3e. and it does not claim a self-heal that never ran was exhausted" ;;
+  esac
+  grep -q '"awaitingHuman": *true' "$v3/.git/lcars/missions/m-001/state.json" 2>/dev/null \
+    && ok "V3f. the mission is parked for the human, not advanced" \
+    || bad "V3f. mission not parked: $(cat "$v3/.git/lcars/missions/m-001/state.json" 2>/dev/null | tr -d '\n' | cut -c1-120)"
+
+  # V4: the OTHER empty-set case is untouched. A regression whose OWNER cannot be
+  # resolved leaves the failing set empty too, and must still reach the healer on
+  # its `unresolved-last-built` basis — the fix keys on the environment FAULT,
+  # not on emptiness, so the two stay distinguishable (see also Q3a).
   sh_regressor "" "t-001 t-002 t-003"
   [ "$SHR_ID" = t-003 ] && [ "$SHR_BASIS" = unresolved-last-built ] \
-    && ok "V3. KNOWN GAP: an empty failing set still yields the last-built ticket, so self-heal runs" \
-    || bad "V3. KNOWN GAP changed — empty set now gives '$SHR_ID'/'$SHR_BASIS'; update the ledger deliberately"
+    && ok "V4. an unresolvable-owner regression still yields a healable pick (not conflated)" \
+    || bad "V4. the unresolved-owner path broke: '$SHR_ID'/'$SHR_BASIS'"
 fi
 
 # ==========================================================================

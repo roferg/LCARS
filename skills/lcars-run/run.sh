@@ -6031,8 +6031,16 @@ FULL_SUITE_SIGNAL=""   # caller may point this at a file to capture the regressi
 # nothing to anybody). Read by self_heal_full_suite / escalate_full_suite_regression
 # through selfheal_regressor; never inferred from the reason prose.
 FULL_SUITE_REGRESSED=""
+# S157 × #93: the gate failed for an ENVIRONMENT reason — a stale dependency
+# environment or an unprovisioned one — so NO ticket can be attributed the break
+# and no worker edit can clear it. Distinct from "the list happens to be empty":
+# a regression whose owner could not be resolved would leave the list empty too,
+# and that case must still reach self-heal on its `unresolved-last-built` basis.
+# This flag is the FACT; the empty list is its consequence.
+FULL_SUITE_ENV_FAULT=""
 full_suite_gate() { # ordered ticketId...
   FULL_SUITE_REGRESSED=""
+  FULL_SUITE_ENV_FAULT=""
   local cmd; cmd="$(resolve_test_cmd)"
   FULL_SUITE_STALE_ENV=""   # reset per call — never inherit a prior gate's verdict
   if [ -z "$cmd" ]; then
@@ -6104,6 +6112,7 @@ full_suite_gate() { # ordered ticketId...
       local edetail="FULL-SUITE GATE — environment not provisioned — the test runner could not start in the gate worktree (missing node_modules/venv or an absent test binary), so earlier ticket suite(s) could not be re-run against the fully-built repo. This is NOT a cross-ticket regression. Set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`). Command run: $cmd."
       emit_event ticket_env_unprovisioned implement \
         "full-suite gate — environment not provisioned (the test runner could not start in the gate worktree); set worktreeSetupCommand in .git/lcars/config.json" || :
+      FULL_SUITE_ENV_FAULT="unprovisioned"
       rm -rf "$cap" 2>/dev/null
       printf '  ✗ %s\n' "$edetail" >&2
       [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$edetail" >"$FULL_SUITE_SIGNAL"
@@ -6127,6 +6136,7 @@ full_suite_gate() { # ordered ticketId...
     emit_event ticket_env_unprovisioned implement \
       "full-suite gate — stale dependency environment (the gate worktree's lockfile differs from the shared install it was symlinked); repair with \`lcars update\`" \
       "" || :
+    FULL_SUITE_ENV_FAULT="stale-deps"
     rm -rf "$cap" 2>/dev/null
     printf '  ✗ %s\n' "$sdetail" >&2
     [ -n "$FULL_SUITE_SIGNAL" ] && printf '%s\n' "$sdetail" >"$FULL_SUITE_SIGNAL"
@@ -6311,10 +6321,19 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   local victims; victims="$(tickets_to_issues $regressed_ids)"
   local culprit; culprit="$(tickets_to_issues "$regressor")"
   local summary
+  # S157 × #93: AN ENVIRONMENT FAULT READS AS ONE. The generic "a change conflicts
+  # with the rest of the branch" copy is actively misleading for a toolchain
+  # fault — it points a human at code when the repair is provisioning, and it
+  # claims the harness "could not auto-reconcile" something it deliberately never
+  # tried. Say plainly what it is, and name the repair the gate already
+  # identified. This branch is FIRST so neither of the regression phrasings below
+  # can capture the case.
+  if [ "$basis" = environment-fault ] || [ -n "${FULL_SUITE_ENV_FAULT:-}" ]; then
+    summary="The test suite could not be re-run against a trustworthy dependency environment, so the harness cannot tell whether anything regressed — this is a TOOLCHAIN fault, not broken code, and no ticket is implicated. No worker was dispatched, because no edit to any ticket can clear a stale toolchain: repair the provisioning (\`lcars update\` reinstalls when a worktree's lockfile diverges from the shared install), then run the mission again. The full diagnosis is below."
   # S157: no "the fix for X re-broke a test from Y" — that named a cause the gate
   # never established. Say what happened, who owns the broken test, and what the
   # harness tried.
-  if [ -n "$victims" ] && [ "$basis" = authored-failing-suite ]; then
+  elif [ -n "$victims" ] && [ "$basis" = authored-failing-suite ]; then
     summary="A test that was green when it was built no longer passes on the branch — $victims. The harness's last reconcile attempt went to $culprit (the ticket that wrote a failing test) and did not clear it, and it has NOT established which change caused the break. Reply with how to reconcile, send the mission back to re-fix, or drop one."
   elif [ -n "$victims" ]; then
     summary="A test that was green when it was built no longer passes on the branch — $victims. The harness could not work out which ticket owns the failing test, and its reconcile attempts did not clear it. Reply with how to reconcile, send the mission back to re-fix, or drop one."
@@ -6324,8 +6343,10 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
 
   local q; q="$(mktemp)"
   printf '%s\n' "$reason" >"$q"
+  local esctype="regression"
+  [ "$basis" = environment-fault ] || [ -n "${FULL_SUITE_ENV_FAULT:-}" ] && esctype="environment"
   LCARS_PENDING_HUMAN_SUMMARY="$summary" \
-  LCARS_PENDING_ESCALATION_TYPE="regression" \
+  LCARS_PENDING_ESCALATION_TYPE="$esctype" \
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
@@ -6335,10 +6356,14 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   # the parked card sits squarely in the Implement column (mirror validate-pause).
   gh_relabel "lcars:implement lcars:awaiting-human" ""
 
-  emit_event gate implement "full-suite regression — self-heal exhausted, awaiting your answer: $summary" \
+  local what="full-suite regression — self-heal exhausted"
+  if [ "$esctype" = environment ]; then
+    what="full-suite gate — environment fault, self-heal SKIPPED (no ticket to dispatch)"
+  fi
+  emit_event gate implement "$what, awaiting your answer: $summary" \
     "phase=full-suite-gate"
 
-  echo "IMPLEMENT: full-suite regression — self-heal exhausted, flagged the human"
+  echo "IMPLEMENT: $what, flagged the human"
   printf '%s\n' "$summary"
   echo "  Stage: implement (awaiting-human). Resolve with \`lcars respond $MISSION_ID\`."
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
@@ -6363,6 +6388,27 @@ self_heal_full_suite() { # reason  ordered ticketId...
   local ordered="$*"
   SELFHEAL_LAST_REASON="$MISSION_DIR/selfheal-last-reason.txt"
   printf '%s\n' "$reason" >"$SELFHEAL_LAST_REASON"
+
+  # S157 × #93: AN ENVIRONMENT FAULT IS NOT SELF-HEALABLE. When the gate reached
+  # a stale-dependency or unprovisioned-environment diagnosis it attributed the
+  # break to NO ticket, because none is responsible — the suites were re-run
+  # against the wrong dependency set. Dispatching a worker there cannot succeed:
+  # no edit to any ticket clears a stale toolchain, so every session is spent
+  # re-solving a solved problem, which is the exact failure #93 exists to end.
+  # Escalate immediately with the diagnosis the gate already produced (it names
+  # `lcars update` as the repair) instead of burning the cap first.
+  #
+  # KEYED ON THE FAULT, NOT ON EMPTINESS. A regression whose OWNER could not be
+  # resolved also leaves the failing set empty, and that case must still reach
+  # selfheal_regressor and heal on its `unresolved-last-built` basis. The two are
+  # different facts and are tested as different cases (proof-gates Q3a vs V3).
+  if [ -n "${FULL_SUITE_ENV_FAULT:-}" ]; then
+    SELFHEAL_REGRESSOR=""; SELFHEAL_REGRESSOR_BASIS="environment-fault"
+    emit_event selfheal_skipped implement \
+      "self-heal SKIPPED — the full-suite gate diagnosed an environment fault (${FULL_SUITE_ENV_FAULT}), which attributes to no ticket and no worker edit can clear; escalating with the diagnosis" \
+      "fault=${FULL_SUITE_ENV_FAULT}" || :
+    return 1
+  fi
 
   # S157: hand the reconcile to the ticket that AUTHORED the failing suite, not to
   # whoever landed last. `failing` starts from the gate run that just failed and is
