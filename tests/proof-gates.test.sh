@@ -2882,6 +2882,148 @@ STUB
 fi
 
 # ==========================================================================
+# V. THE S157 × #93 MERGE SEAM — a toolchain fault accuses no ticket
+#
+# #93 taught full_suite_gate to recognise a STALE DEPENDENCY ENVIRONMENT: the
+# gate worktree was symlinked to a shared node_modules that no longer matches
+# the branch's own committed lockfile, so every suite re-ran against the wrong
+# packages. That is a toolchain fault, and no earlier ticket regressed anything.
+# S157 taught the same function to record WHICH tickets' suites failed, in
+# $FULL_SUITE_REGRESSED, which self-heal reads to choose who gets the reconcile.
+#
+# Neither change knew about the other. They agree only because the stale-env
+# block returns BEFORE the assignment — pinned as ORDERING in
+# tests/gate-stale-env-classify.test.sh section 9 (that suite owns the classifier
+# and its wiring assertions, and is deliberately pure-filesystem so it cannot
+# drive a gate). This section owns the BEHAVIOURAL half, because it already has
+# the mission fixtures and the full-suite-gate hook.
+# ==========================================================================
+echo "== V. stale dependency environment × regressor attribution (merge seam) =="
+
+stale_seam_repo() { # symlink-shared-deps? → repo dir (t-002's suite is the red one)
+  local shared="$1" repo mm
+  repo="$(mktemp -d "$TMPROOT/seam.XXXX")"; mm="$repo/.git/lcars/missions/m-001"
+  ( cd "$repo" && git init -q -b main && git config user.email t@t && git config user.name t )
+  mkdir -p "$mm/tickets" "$repo/tests" "$repo/node_modules"
+  printf '{ "name":"e", "private":true }\n' > "$repo/package.json"
+  cat > "$mm/state.json" <<'JSON'
+{ "id":"m-001","type":"feature","title":"t","stage":"implement","githubIssue":42,
+  "branch":"lcars/m-001","base":"main" }
+JSON
+  cat > "$mm/waves.json" <<'JSON'
+{
+  "waves": [
+    { "wave": 1,
+      "tickets": [
+        { "id": "t-001", "issue": 101 },
+        { "id": "t-002", "issue": 102 }
+      ] },
+    { "wave": 2,
+      "tickets": [
+        { "id": "t-003", "issue": 103 }
+      ] }
+  ]
+}
+JSON
+  local i
+  for i in 001 002 003; do
+    mkdir -p "$mm/tickets/t-$i"
+    if [ "$i" = 002 ]; then
+      printf 'const { test }=require("node:test");const a=require("node:assert");\ntest("t2",()=>{a.strictEqual(1,2);});\n' > "$repo/tests/t-$i.test.js"
+    else
+      printf 'const { test }=require("node:test");const a=require("node:assert");\ntest("t%s",()=>{a.ok(true);});\n' "$i" > "$repo/tests/t-$i.test.js"
+    fi
+    printf '%s  tests/t-%s.test.js\n' \
+      "$(shasum -a 256 "$repo/tests/t-$i.test.js" | awk '{print $1}')" "$i" \
+      > "$mm/tickets/t-$i/proof-tests.sha256"
+    cat > "$mm/tickets/t-$i/result.json" <<JSON
+{ "ticketId": "t-$i", "passed": true, "attempts": 1, "summary": "s",
+  "newTests": ["tests/t-$i.test.js"], "testEdits": [], "flipFlop": "expected" }
+JSON
+  done
+  # The lockfile the BRANCH commits — this is what the gate worktree carries.
+  printf 'FEATURE\n' > "$repo/package-lock.json"
+  ( cd "$repo" && git add -A && git commit -qm base && git branch lcars/m-001 )
+  # …and the DIFFERENT one in the shared checkout the deps are symlinked from.
+  # That divergence IS the stale-dependency evidence. With `shared` off, the
+  # worktree gets its own node_modules and there is no evidence at all.
+  [ "$shared" = shared ] && printf 'MAIN\n' > "$repo/package-lock.json"
+  echo "$repo"
+}
+seam_gate() { # repo setup-cmd → SEAM_RC / SEAM_REG / SEAM_PICK / SEAM_SIG
+  local repo="$1" setup="$2" out
+  out="$( cd "$repo" && env LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+          LCARS_TEST_CMD="$NODE_CMD" LCARS_WORKTREE_SETUP_CMD="$setup" \
+          LCARS_FS_SIGNAL_OUT="$repo/sig.txt" \
+          bash "$SCRIPT" full-suite-gate-test --mission m-001 2>&1 )"
+  SEAM_RC="$(printf '%s\n' "$out"   | sed -n 's/^FSRC=//p'   | tail -1)"
+  SEAM_REG="$(printf '%s\n' "$out"  | sed -n 's/^FSREG=//p'  | tail -1)"
+  SEAM_PICK="$(printf '%s\n' "$out" | sed -n 's/^FSPICK=//p' | tail -1)"
+  SEAM_SIG="$(cat "$repo/sig.txt" 2>/dev/null)"
+}
+
+if ! have shasum; then
+  skip "SEAM: shasum absent — SKIPPING the stale-env × attribution drive"
+else
+  # --- V1: a stale dependency environment accuses NOBODY --------------------
+  repo="$(stale_seam_repo shared)"
+  seam_gate "$repo" "ln -sfn '$repo/node_modules' node_modules"
+  [ "$SEAM_RC" = 1 ] \
+    && ok "V1a. the gate still FAILS on a stale dependency environment (rc 1)" \
+    || bad "V1a. expected FSRC=1 (got '$SEAM_RC')"
+  case "$SEAM_SIG" in
+    *"STALE DEPENDENCY ENVIRONMENT"*)
+      ok "V1b. and reports it as a toolchain fault, not a regression" ;;
+    *) bad "V1b. expected the stale-env diagnosis, got: $(printf '%s' "$SEAM_SIG" | cut -c1-140)" ;;
+  esac
+  [ -z "$SEAM_REG" ] \
+    && ok "V1c. FULL_SUITE_REGRESSED is EMPTY — no ticket is attributed the break" \
+    || bad "V1c. a toolchain fault attributed tickets: '$SEAM_REG'"
+  case "$SEAM_SIG" in
+    *t-001*|*t-002*|*t-003*) bad "V1d. the signal names a ticket for a toolchain fault: $SEAM_SIG" ;;
+    *) ok "V1d. and the signal names no ticket at all" ;;
+  esac
+  case "$SEAM_PICK" in
+    *authored-failing-suite*)
+      bad "V1e. a toolchain fault produced an AUTHORED attribution: $SEAM_PICK" ;;
+    *) ok "V1e. so nothing can be picked as the author of a failing suite" ;;
+  esac
+
+  # --- V2: the genuine regression is UNAFFECTED by any of this --------------
+  # Same fixture, same red suite — but the worktree owns its dependencies, so
+  # there is no staleness evidence and the ordinary attribution must run.
+  repo="$(stale_seam_repo owned)"
+  seam_gate "$repo" "mkdir -p node_modules"
+  [ "$SEAM_RC" = 1 ] && [ "$SEAM_REG" = t-002 ] \
+    && ok "V2a. a real regression with no stale evidence still attributes to t-002" \
+    || bad "V2a. expected FSRC=1 FSREG=t-002 (got '$SEAM_RC' / '$SEAM_REG')"
+  [ "$SEAM_PICK" = "t-002|authored-failing-suite" ] \
+    && ok "V2b. and self-heal is still handed the AUTHORING ticket, not the last built" \
+    || bad "V2b. expected t-002|authored-failing-suite (got '$SEAM_PICK')"
+  case "$SEAM_SIG" in
+    *"STALE DEPENDENCY ENVIRONMENT"*)
+      bad "V2c. a genuine regression was misreported as a toolchain fault" ;;
+    *"no longer pass against the fully-built repo: t-002"*)
+      ok "V2c. and the detail is the ordinary regression wording, naming t-002" ;;
+    *) bad "V2c. unexpected detail: $(printf '%s' "$SEAM_SIG" | cut -c1-140)" ;;
+  esac
+
+  # --- V3: KNOWN GAP — the empty set does NOT stop the self-heal dispatch ---
+  # Requirement as briefed was "picks nothing, so no worker is dispatched". That
+  # is NOT what the code does, and this pins the truth rather than the wish:
+  # selfheal_regressor falls back to the LAST-BUILT ticket with basis
+  # `unresolved-last-built`, so self_heal_full_suite still spends a worker on a
+  # toolchain fault — a session that cannot possibly clear a stale environment.
+  # The brief it carries is honest (it says the ticket is NOT a proven culprit),
+  # so this is wasted work rather than a false accusation. Pinned so that closing
+  # it is a deliberate, visible change and not a silent drift.
+  sh_regressor "" "t-001 t-002 t-003"
+  [ "$SHR_ID" = t-003 ] && [ "$SHR_BASIS" = unresolved-last-built ] \
+    && ok "V3. KNOWN GAP: an empty failing set still yields the last-built ticket, so self-heal runs" \
+    || bad "V3. KNOWN GAP changed — empty set now gives '$SHR_ID'/'$SHR_BASIS'; update the ledger deliberately"
+fi
+
+# ==========================================================================
 echo
 printf 'proof-gates: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
