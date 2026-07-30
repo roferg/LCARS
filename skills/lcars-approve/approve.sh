@@ -30,6 +30,11 @@ HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
 # The sibling run.sh — its `reconcile` subcommand is the S76 self-heal engine the
 # merge gate runs BEFORE merging (BUG-037). Override the path for tests.
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SELF_DIR/../lcars-run/run.sh}"
+# The sibling resolve-logs — it OWNS the logged-bug fold (fold_one_child) and its
+# premise check. approve dispatches to it rather than reimplementing the fold, so
+# the "is the fix actually on the parent branch?" guard has exactly one home.
+# Override the path for tests.
+RESOLVE_LOGS_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SELF_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
 die() { printf 'lcars approve: %s\n' "$1" >&2; exit 1; }
@@ -106,6 +111,86 @@ emit_event() { # type stage detail
   detail="$(json_escape "${3:-}")"; mid="$(json_escape "${MISSION_ID:-}")"
   printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"}\n' \
     "$ts" "$mid" "$stage" "$type" "$detail" >>"$MISSION_DIR/events.jsonl"
+}
+
+# --- folded logged-bug children: close them out as part of the parent's ship --
+#
+# A Mission-Log bug child folds its fix onto the PARENT's branch and gets NO PR of
+# its own (run.sh's cmd_open_pr skips it deliberately), so the ONLY thing that can
+# mark it Done is the fold. Before this, the fold was reachable from exactly one
+# place — accepting the parent's consolidated re-verify gate (respond.sh →
+# resolve-logs complete). Merging the parent here therefore STRANDED every child:
+# this block's `state_del awaitingHuman/pendingQuestion` destroyed the gate that
+# was the only route to the fold, `set_stage done` then put the parent outside
+# resolve-logs' reach entirely (its active_table skips done missions), and approve
+# itself refuses a child directly (no PR of its own). Four real bug missions sat at
+# verify with their fixes already merged into main (DX-Scorecard, 2026-07-29).
+#
+# So the parent's merge IS the children's ship signal, and it must fold them. We
+# dispatch per child to `resolve-logs complete --bug`, which:
+#   • runs fold_one_child, keeping its PREMISE CHECK — the 2026-07-28 fix for the
+#     opposite failure, where cards read Done while the code had vanished. A child
+#     whose fix is NOT on the parent branch is REFUSED and stays at verify. Both
+#     directions have to hold at once, so the check keeps its single home.
+#   • is exempt from the bulk path's completeness guard (which would refuse the
+#     WHOLE batch over one mid-flight sibling and re-raise a gate on a mission we
+#     are about to mark done), and pushes nothing — approve already pushed+merged.
+#
+# STRICTLY best-effort and never fatal: the merge has already landed, so a refusal
+# must not turn a shipped parent into a failed approve. It is reported LOUDLY
+# instead, and a mid-flight child is named too — merging the parent leaves that
+# child's fix outside the PR, which the captain needs to know.
+fold_logged_children() {
+  local cstate bid stage verified="" midflight="" out rc missions_dir
+  missions_dir="$(dirname "$MISSION_DIR")"
+  for cstate in "$missions_dir"/*/state.json; do
+    [ -f "$cstate" ] || continue
+    [ "$(json_str "$cstate" parentMission)" = "$MISSION_ID" ] || continue
+    [ "$(json_str "$cstate" type)" = "bug" ] || continue
+    bid="$(json_str "$cstate" id)"
+    [ -n "$bid" ] || bid="$(basename "$(dirname "$cstate")")"
+    stage="$(json_str "$cstate" stage)"
+    case "$stage" in
+      verify) verified="${verified}${bid}"$'\n' ;;
+      done)   : ;;
+      *)      midflight="${midflight}${bid} (stage ${stage:-unknown})"$'\n' ;;
+    esac
+  done
+
+  [ -n "$verified$midflight" ] || return 0   # no logged bugs — nothing to say.
+
+  if [ -n "$verified" ] && [ ! -f "$RESOLVE_LOGS_SCRIPT" ]; then
+    echo "  ⚠ logged bug(s) folded onto this Mission could not be closed out —" >&2
+    echo "    resolve-logs not found at $RESOLVE_LOGS_SCRIPT. Fold them by hand." >&2
+    return 0
+  fi
+
+  local folded=0 refused=""
+  while IFS= read -r bid; do
+    [ -n "$bid" ] || continue
+    out=""; rc=0
+    out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
+             bash "$RESOLVE_LOGS_SCRIPT" complete \
+             --parent "$MISSION_ID" --bug "$bid" 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      folded=$((folded + 1))
+      echo "  Folded logged bug: $bid → done"
+    else
+      refused="${refused}${bid}"$'\n'
+      echo "  ⚠ REFUSED to close out logged bug $bid:" >&2
+      printf '%s\n' "$out" | sed 's/^/      /' >&2
+    fi
+  done <<<"$verified"
+
+  if [ -n "$midflight" ]; then
+    echo "  ⚠ logged bug(s) still mid-flight — their fixes are NOT in this PR:" >&2
+    printf '%s' "$midflight" | sed 's/^/      • /' >&2
+    echo "    Drive them (\`lcars run <id>\`); they now need folding by hand," >&2
+    echo "    because this Mission is done and resolve-logs only resolves an" >&2
+    echo "    active parent." >&2
+  fi
+  [ "$folded" -gt 0 ] && echo "  Logged bugs closed out: $folded"
+  return 0
 }
 
 # --- gh relabel: best-effort, never blocks the local stage change ----------
@@ -304,7 +389,13 @@ do_merge() {
     die "$note"
   fi
 
-  # Merge landed — clear the reconcile gate state and flip the Mission to Done.
+  # Merge landed. Close out any logged-bug children FIRST — while this Mission is
+  # still at verify with its consolidated gate intact, because resolve-logs can
+  # only resolve an ACTIVE parent (its active_table skips done). Once set_stage
+  # below runs, the fold is unreachable forever.
+  fold_logged_children
+
+  # Then clear the reconcile gate state and flip the Mission to Done.
   state_del reconcileStatus
   state_del reconcileNote
   state_del reconcileMergeSha

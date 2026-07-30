@@ -1167,6 +1167,102 @@ check "13h. missing-branch + NO origin FOLDS the batch to Done (escape hatch int
 check "13h. missing-branch + NO origin attempts ZERO pushes" \
   "[ ! -s '$repo13h/push.log' ]"
 
+# --- Behaviour 14: the fold's PREMISE CHECK, both directions -----------------
+#
+# The 2026-07-28 fix made fold_one_child verify that a logged bug's fix is ACTUALLY
+# on the parent branch before calling it Done (three DX-Scorecard fixes had vanished
+# while the board read green). It shipped with NO test: nothing in this suite ever
+# planted a `.commit-sha`, so `child_recorded_a_commit` was always false and the
+# check never ran. Every existing fold test passes it vacuously.
+#
+# It was inverted. `child_fix_on_branch` piped `git log` into `grep -q`; under this
+# script's `set -o pipefail`, grep -q exits on first match, git dies of SIGPIPE, and
+# pipefail returns 141 — so the ONE case that matters (the fix IS on the branch)
+# reported "not on branch" and every legitimate fold was REFUSED with a false alarm
+# about missing code.
+#
+# So: exercise the check for real, in both directions.
+new_repo_premise() { # <bug-fix-on-parent-branch: yes|no>
+  local onbranch="$1" repo; repo="$(mktemp -d "$TMPROOT/repoP.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init )
+  # a REAL parent branch ref, carrying the parent's ticket commit — and, when the
+  # case calls for it, the child's fix commit with its `lcars(<bug-id>)` subject.
+  ( cd "$repo" && git checkout -q -b "lcars/lcars-20260601-001" \
+      && echo a >a.txt && git add -A \
+      && git commit -q -m "lcars(lcars-20260601-001) t-001: parent work" )
+  if [ "$onbranch" = "yes" ]; then
+    ( cd "$repo" && echo b >b.txt && git add -A \
+        && git commit -q -m "lcars(lcars-20260601-002) t-001: the logged bug fix" )
+  fi
+  ( cd "$repo" && git checkout -q master 2>/dev/null || git checkout -q main )
+  mkdir -p "$repo/.git/lcars/missions"
+  printf '{ "model": "claude-sonnet" }\n' >"$repo/.git/lcars/config.json"
+  local p="$repo/.git/lcars/missions/lcars-20260601-001"
+  mkdir -p "$p"
+  cat >"$p/state.json" <<'EOF'
+{
+  "id": "lcars-20260601-001",
+  "type": "feature",
+  "title": "Add gamification",
+  "stage": "verify",
+  "awaitingHuman": true,
+  "githubIssue": 42,
+  "branch": "lcars/lcars-20260601-001",
+  "base": "main"
+}
+EOF
+  printf '{ "stage": "verify", "questions": ["re-verify"] }\n' >"$p/pending.json"
+  # the child: at verify, folded onto the PARENT branch, and it RECORDED a commit —
+  # so the premise check actually runs for it.
+  local c="$repo/.git/lcars/missions/lcars-20260601-002"
+  mkdir -p "$c/tickets/t-001"
+  echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >"$c/tickets/t-001/.commit-sha"
+  cat >"$c/state.json" <<'EOF'
+{
+  "id": "lcars-20260601-002",
+  "type": "bug",
+  "title": "Logged bug one",
+  "stage": "verify",
+  "githubIssue": 51,
+  "parentMission": "lcars-20260601-001",
+  "parentIssue": 42,
+  "branch": "lcars/lcars-20260601-001",
+  "base": "lcars/lcars-20260601-001"
+}
+EOF
+  echo "$repo"
+}
+
+# 14a. the fix IS on the parent branch → the fold must go through.
+repo14a="$(new_repo_premise yes)"
+make_gh_stub "$repo14a/gh"; export GH_LOG="$repo14a/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+rc14a=0
+( cd "$repo14a" && LCARS_GH_BIN="$repo14a/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_NOTIFY_NO_DESKTOP=1 bash "$SCRIPT" complete --parent "$PARENT" \
+    --bug lcars-20260601-002 >out.txt 2>&1 ) || rc14a=$?
+check "14a. a child whose fix IS on the parent branch folds to done" \
+  "qgrep '\"stage\": *\"done\"' '$repo14a/.git/lcars/missions/lcars-20260601-002/state.json'"
+check "14a. exits zero (no false refusal)" "[ '$rc14a' -eq 0 ]"
+check "14a. says nothing about a missing fix" \
+  "! qgrep -i 'NOT on the parent branch' '$repo14a/out.txt'"
+
+# 14b. the fix is NOT on the parent branch → REFUSE, and never mark it Done.
+repo14b="$(new_repo_premise no)"
+make_gh_stub "$repo14b/gh"; export GH_LOG="$repo14b/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+rc14b=0
+( cd "$repo14b" && LCARS_GH_BIN="$repo14b/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_NOTIFY_NO_DESKTOP=1 bash "$SCRIPT" complete --parent "$PARENT" \
+    --bug lcars-20260601-002 >out.txt 2>&1 ) || rc14b=$?
+check "14b. a child whose fix is NOT on the branch is REFUSED (non-zero)" \
+  "[ '$rc14b' -ne 0 ]"
+check "14b. it STAYS at verify — never a false Done" \
+  "qgrep '\"stage\": *\"verify\"' '$repo14b/.git/lcars/missions/lcars-20260601-002/state.json'"
+check "14b. the refusal explains that the fix is not on the parent branch" \
+  "qgrep -i 'NOT on the parent branch' '$repo14b/out.txt'"
+check "14b. applies no lcars:done label to the refused child" \
+  "! qgrep 'add-label lcars:done' '$repo14b/gh.log'"
+
 # ==========================================================================
 echo
 printf 'lcars resolve-logs: %d passed, %d failed\n' "$pass" "$fail"

@@ -364,11 +364,20 @@ child_recorded_a_commit() { # bug-id
 # Returns 0 (present) when the branch cannot be resolved at all — an unverifiable
 # state must never become a refusal, or a local-only / branch-less mission would
 # be blocked from completing.
+# NEVER pipe git into `grep -q` here. This script runs under `set -o pipefail`, and
+# `grep -q` exits the instant it matches — which closes the pipe under git, so git
+# dies of SIGPIPE (141) and pipefail hands that 141 back as the function's status.
+# The result was inverted on the ONE case that matters: a fix that IS on the branch
+# reported "not on branch", so fold_one_child REFUSED every legitimate fold with
+# "its fix is NOT on the parent branch" — a false alarm about vanished code, on
+# work that was sitting right there. Capture first, match with a here-string: no
+# pipe, no SIGPIPE, same subjects-only fixed-string semantics.
 child_fix_on_branch() { # bug-id branch
-  local bid="$1" branch="$2"
+  local bid="$1" branch="$2" subjects
   [ -n "$branch" ] || return 0
   "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch" || return 0
-  "$GIT_BIN" log --format=%s "$branch" 2>/dev/null | grep -qF "lcars($bid)"
+  subjects="$("$GIT_BIN" log --format=%s "$branch" 2>/dev/null)" || return 0
+  grep -qF "lcars($bid)" <<<"$subjects"
 }
 
 # fold_one_child — the per-bug fold-to-Done step, shared by the bulk and the
