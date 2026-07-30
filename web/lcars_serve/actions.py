@@ -196,27 +196,32 @@ _PROCEED_ANSWER = ("(no additional input — accept your recommendation and "
                    "proceed)")
 
 
-def _extract_json(text):
-    """Pull the single JSON object the worker printed.
+# The keys that mark a parsed object as a WORKER TURN rather than incidental
+# JSON on stdout (a tool argument, a config blob a tool echoed, …). The Align
+# grill emits status/question/prd/adr; the Mission-Log split emits bugs.
+_TURN_KEYS = ("status", "question", "prd", "adr", "bugs")
 
-    Workers sometimes wrap output in a ```json fence or emit leading debug; be
-    forgiving — find the first balanced top-level {...} and parse it. Returns the
-    dict, or None if nothing parseable is found.
+
+def _json_objects(text):
+    """Every top-level JSON OBJECT in `text` that parses, in order of appearance.
+
+    Both the fenced form (```json { … } ```) and bare balanced brace spans are
+    collected. A span that does not parse is skipped and the scan resumes at the
+    next `{`; a span that DOES parse is consumed whole (the scan resumes after
+    it) so nested objects are never double-reported.
     """
-    if not text:
-        return None
-    text = text.strip()
-    # strip a ```json ... ``` fence if present.
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fence:
+    found = []
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL):
         try:
-            return json.loads(fence.group(1))
+            obj = json.loads(m.group(1))
         except ValueError:
-            pass
-    # otherwise scan for the first balanced brace span.
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
     start = text.find("{")
     while start != -1:
         depth = 0
+        end = -1
         for i in range(start, len(text)):
             c = text[i]
             if c == "{":
@@ -224,13 +229,47 @@ def _extract_json(text):
             elif c == "}":
                 depth -= 1
                 if depth == 0:
-                    blob = text[start:i + 1]
-                    try:
-                        return json.loads(blob)
-                    except ValueError:
-                        break
-        start = text.find("{", start + 1)
-    return None
+                    end = i
+                    break
+        if end == -1:
+            break  # unbalanced tail — nothing further can close.
+        try:
+            obj = json.loads(text[start:end + 1])
+        except ValueError:
+            start = text.find("{", start + 1)
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
+        start = text.find("{", end + 1)
+    return found
+
+
+def _extract_json(text):
+    """Pull the worker's TURN object out of its stdout.
+
+    Workers wrap output in a ```json fence, emit leading debug — and, when their
+    tools-denied posture slips, print TOOL ACTIVITY around the turn. That last
+    case is why this cannot simply take the first balanced `{...}` that parses
+    (BUG — the Align console blanked mid-interview, 2026-07-29): a copilot
+    continuation turn that used its builtin `view` tool printed the tool's own
+    argument object — `{"path": "..."}`, perfectly valid JSON — ahead of the real
+    turn. Taking that first blob yielded a turn with no `question` and no `prd`,
+    which the console rendered as an empty, unrecoverable grill.
+
+    So: collect EVERY parseable top-level object, and prefer the LAST one that
+    carries turn keys. The turn is the worker's final message, so the last
+    turn-shaped object is the turn; tool noise is never turn-shaped. With no
+    turn-shaped candidate at all, fall back to the first parseable object (the
+    long-standing behaviour) and let the caller judge it. Returns the dict, or
+    None if nothing parseable is found.
+    """
+    if not text:
+        return None
+    found = _json_objects(text.strip())
+    if not found:
+        return None
+    turns = [o for o in found if any(k in o for k in _TURN_KEYS)]
+    return turns[-1] if turns else found[0]
 
 
 # BUG-072: markers that signal a PRD body has begun inside a question's text.
@@ -781,6 +820,19 @@ class Actions(object):
         # question text, keeping only the lead-in (the PRD stays in sess.prd).
         if q.get("text"):
             q["text"] = _strip_inlined_prd(q["text"], sess.prd)
+        # A question with no text is DEAD ON SCREEN: the console renders its
+        # "What would you like to refine?" fallback over an empty PRD panel, with
+        # no error to say the turn was lost — and the falsy question it records
+        # also strips the mission's RESUME ALIGN affordance (align_overlay needs a
+        # truthy last_question). Never ship one. Raising HERE, before the session
+        # is mutated, leaves the grill exactly as it was: the console shows the
+        # error and re-arms Submit, the previous question and the assembled PRD
+        # survive, and the captain simply answers again.
+        if not (q.get("text") or "").strip():
+            raise ActionError(
+                502, "the Align worker's reply could not be read as a question "
+                "(engine=%s) — the grill is unchanged; answer again to retry."
+                % (sess.engine or self.worker_bin or "default"))
         sess.transcript.append({"question": q.get("text", ""), "answer": None})
         # Park & Align (F2): remember the full open question so a backgrounded grill
         # can be RESUMED at this exact turn (choices included) via GET /api/align/<sid>.
