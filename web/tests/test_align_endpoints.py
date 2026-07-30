@@ -585,6 +585,173 @@ class AlignWarmSessionTest(AlignBase):
         self.assertEqual(cm.exception.code, 404)
 
 
+class AlignToolNoiseTest(AlignBase):
+    """BUG — the grill console blanked mid-interview (DX-Scorecard, 2026-07-29).
+
+    A copilot Align turn is supposed to be a PURE REASONING turn that prints ONE
+    JSON object. On the field mission the OPENING turn did exactly that (0 tool
+    calls) but the CONTINUATION turn used copilot's builtin `view` tool ten times
+    — its tools-denied posture (`--available-tools=`) did not hold — so its stdout
+    carried tool activity BEFORE the real turn. `_extract_json` took the FIRST
+    balanced `{...}` it could parse, which was a tool ARGUMENT object
+    (`{"path": "..."}`), so the daemon shipped a turn with `question == {}`:
+      • the console rendered its "What would you like to refine?" fallback with an
+        empty PRD panel and NO error — a dead console the captain kept typing into;
+      • `sess.last_question` became `{}` (falsy), so `align_overlay` stopped
+        advertising RESUME ALIGN and the mission lost its way back in.
+
+    The daemon must read the worker's ACTUAL turn out of noisy stdout, and must
+    never hand the console a question it cannot render.
+    """
+
+    def _set_raw_turns(self, *blobs):
+        """Canned turns as RAW STDOUT text (not json.dumps'd), so a test can
+        reproduce a turn whose stdout carries tool noise around the JSON."""
+        with open(self.turns_path, "w") as fh:
+            for i, b in enumerate(blobs):
+                if i:
+                    fh.write("===TURN===\n")
+                fh.write(b.rstrip("\n") + "\n")
+
+    # the real shape of the field failure: copilot renders each builtin tool call
+    # to stdout, and its argument blob is itself a balanced, parseable JSON object.
+    TOOL_NOISE = (
+        '● view {"path":"fbd0bc0450062fdf63e4ec389d8cf1b3ad5d2e667ac4ef60"}\n'
+        '  └ read 4491 bytes\n'
+        '● view {"path":"src/data/config.json","command":"view"}\n'
+        '  └ read 812 bytes\n'
+    )
+
+    def test_tool_noise_before_the_turn_does_not_blank_the_console(self):
+        q1 = json.dumps({
+            "status": "question",
+            "question": {"text": "Nested buckets or flat metrics?",
+                         "choices": ["Nested", "Flat"],
+                         "recommended": "Nested"},
+            "prd": "# Mission: MBR Platform\n\n**Type:** feature\n",
+        })
+        # turn 2: the worker reasoned WITH TOOLS, so its stdout carries tool
+        # argument objects ahead of the real turn.
+        turn2 = json.dumps({
+            "status": "question",
+            "question": {"text": "Roster-only config.json, or full shape?",
+                         "choices": ["Roster-only", "Full shape"],
+                         "recommended": "Roster-only"},
+            "prd": "# Mission: MBR Platform\n\n**Type:** feature\n"
+                   "**Goal:** the sharpened goal\n",
+        })
+        self._set_raw_turns(q1, self.TOOL_NOISE + turn2)
+
+        _, start = self._post("/api/align/start", {"idea": "MBR platform"})
+        sid = start["state"]["sessionId"]
+        self.assertEqual(start["state"]["question"]["text"],
+                         "Nested buckets or flat metrics?")
+
+        status, body = self._post("/api/align/%s/answer" % sid,
+                                  {"answer": "Nested"})
+        self.assertEqual(status, 200)
+        st = body["state"]
+        # the REAL turn is what reaches the console — not the tool-argument blob.
+        self.assertEqual(st["status"], "question")
+        self.assertEqual(st["question"]["text"],
+                         "Roster-only config.json, or full shape?")
+        self.assertEqual(st["question"]["choices"], ["Roster-only", "Full shape"])
+        # …and the live PRD panel keeps building instead of going blank.
+        self.assertIn("**Goal:** the sharpened goal", st["prd"])
+
+    def test_tool_noise_leaves_the_mission_resumable(self):
+        """The mission must keep its RESUME ALIGN way back in: a turn read out of
+        noisy stdout still records a CONCRETE open question, so `align_overlay`
+        keeps advertising the live session (it requires a truthy last_question)."""
+        q1 = json.dumps({
+            "status": "question",
+            "question": {"text": "Nested buckets or flat metrics?"},
+            "prd": "# Mission: MBR Platform\n",
+        })
+        turn2 = json.dumps({
+            "status": "question",
+            "question": {"text": "Roster-only config.json, or full shape?"},
+            "prd": "# Mission: MBR Platform\n**Goal:** sharpened\n",
+        })
+        self._set_raw_turns(q1, self.TOOL_NOISE + turn2)
+        _, start = self._post("/api/align/start", {"idea": "MBR platform"})
+        sid = start["state"]["sessionId"]
+        self._post("/api/align/%s/answer" % sid, {"answer": "Nested"})
+        sess = self.actions._align[sid]
+        self.assertTrue(sess.last_question,
+                        "a parsed turn must leave a truthy last_question so the "
+                        "board keeps advertising RESUME ALIGN")
+        self.assertEqual(sess.last_question.get("text"),
+                         "Roster-only config.json, or full shape?")
+
+    def test_unreadable_turn_is_an_error_not_a_blank_console(self):
+        """When NO turn can be read out of the worker's stdout, the console must
+        SAY so (502 → the error line + a re-armed Submit) rather than render an
+        empty question with an empty PRD and leave the captain typing into a
+        console that is already dead."""
+        q1 = json.dumps({
+            "status": "question",
+            "question": {"text": "Nested buckets or flat metrics?"},
+            "prd": "# Mission: MBR Platform\n",
+        })
+        # stdout with ONLY tool noise — the worker never printed a turn.
+        self._set_raw_turns(q1, self.TOOL_NOISE)
+        _, start = self._post("/api/align/start", {"idea": "MBR platform"})
+        sid = start["state"]["sessionId"]
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post("/api/align/%s/answer" % sid, {"answer": "Nested"})
+        self.assertEqual(cm.exception.code, 502)
+
+        # the session SURVIVES the bad turn at its previous question, so the
+        # captain can simply answer again (and RESUME ALIGN still works).
+        sess = self.actions._align[sid]
+        self.assertEqual(sess.last_question.get("text"),
+                         "Nested buckets or flat metrics?")
+        self.assertIn("# Mission: MBR Platform", sess.prd)
+
+    def test_turn_without_a_question_is_an_error_not_a_blank_console(self):
+        """A turn that parses but carries no usable question is equally dead on
+        screen — reject it at the seam instead of shipping `question: {}`."""
+        q1 = json.dumps({
+            "status": "question",
+            "question": {"text": "Nested buckets or flat metrics?"},
+            "prd": "# Mission: MBR Platform\n",
+        })
+        self._set_raw_turns(q1, json.dumps({"status": "question",
+                                            "question": {"text": "   "}}))
+        _, start = self._post("/api/align/start", {"idea": "MBR platform"})
+        sid = start["state"]["sessionId"]
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post("/api/align/%s/answer" % sid, {"answer": "Nested"})
+        self.assertEqual(cm.exception.code, 502)
+        # the previous question is intact — the console is answerable again.
+        sess = self.actions._align[sid]
+        self.assertEqual(sess.last_question.get("text"),
+                         "Nested buckets or flat metrics?")
+
+    def test_done_turn_is_still_read_out_of_noisy_stdout(self):
+        """The closing turn files the mission — it must survive tool noise too,
+        or the grill dies at the finish line."""
+        q1 = json.dumps({
+            "status": "question",
+            "question": {"text": "Nested buckets or flat metrics?"},
+            "prd": "# Mission: MBR Platform\n",
+        })
+        done = json.dumps({
+            "status": "done",
+            "prd": "# Mission: MBR Platform\n\n**Type:** feature\n",
+        })
+        self._set_raw_turns(q1, self.TOOL_NOISE + done)
+        _, start = self._post("/api/align/start", {"idea": "MBR platform"})
+        sid = start["state"]["sessionId"]
+        status, body = self._post("/api/align/%s/answer" % sid,
+                                  {"answer": "Nested"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"]["status"], "done")
+        # file.sh ran with the assembled PRD.
+        self.assertIn("# Mission: MBR Platform", self._record("file"))
+
+
 def _copilot_worker_stub(turns_path, prompt_log, argv_log=None):
     """Same recording worker stub as `_worker_stub`, but its FILENAME contains
     "copilot" so `_session_args` selects the copilot branch (engine selection is

@@ -4,6 +4,73 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.7.20 — 2026-07-29
+
+Three defects found on ONE real mission — `lcars-20260729-001`, a 12-ticket
+DX-Scorecard feature that ran 2h14m unattended and shipped with 4 logged bug
+fixes. Each defect sat at a different seam, and each was invisible: none produced
+an error, and two were actively reassuring while broken.
+
+- **The Align console blanked mid-interview.** The captain answered question one
+  and the grill repainted its "What would you like to refine?" fallback over an
+  empty PRD panel, with no error and no way back in. The worker was fine — both
+  turns emitted well-formed JSON. The daemon misread the second one. The grill's
+  tools-denied posture (`--available-tools=`) no longer holds on a copilot
+  continuation turn: the opening turn made 0 tool calls and parsed cleanly, the
+  turn after the answer made 10 builtin `view` calls, so its stdout carried tool
+  activity ahead of the real turn. `_extract_json` took the FIRST balanced `{...}`
+  that parsed — a tool ARGUMENT object, `{"path":"…"}`, perfectly valid JSON —
+  producing a turn with no question and no PRD. It now collects every parseable
+  top-level object and returns the LAST one carrying turn keys: the turn is the
+  worker's final message, and tool noise is never turn-shaped. `_align_turn`
+  additionally refuses to ship a question it cannot render, raising 502 BEFORE
+  mutating the session so the console shows an error with Submit re-armed and the
+  previous question, transcript and PRD all survive.
+
+- **Approving a parent stranded its logged bug children.** A logged bug folds its
+  fix onto the parent's branch and gets NO PR of its own, so the only thing that
+  can mark it Done is the fold — reachable from exactly one place: accepting the
+  parent's consolidated re-verify gate. Merging the parent destroyed that route.
+  approve's merge-success block deletes `awaitingHuman`/`pendingQuestion` (the
+  gate), then `set_stage done` puts the parent outside resolve-logs' reach
+  entirely (its `active_table` skips done missions), while approve refuses a child
+  directly for having no PR. Review the PR, merge it, and four bug cards are
+  orphaned at verify with their fixes already in `main` — with no way back. approve
+  now folds them as part of the merge, before the parent goes done, dispatching per
+  child to `resolve-logs complete --bug` so the fold keeps one home. Best-effort
+  and never fatal (the merge has landed; a refusal must not fail a shipped parent),
+  and a still-mid-flight child is named too — merging the parent leaves its fix out
+  of the PR.
+
+- **The fold's premise check was inverted — and had never run.** 2026.7.18 taught
+  `fold_one_child` to verify a bug's fix is actually on the parent branch before
+  calling it Done, closing the class where cards read Done while the code had
+  vanished. `child_fix_on_branch` piped `git log` into `grep -q`; the script runs
+  under `set -o pipefail`, and `grep -q` exits the instant it matches, so git dies
+  of SIGPIPE and pipefail returns 141. The result was inverted on the ONE case that
+  matters: a fix that IS on the branch reported "not on branch", so every
+  legitimate fold was REFUSED with a false alarm about missing code. It shipped
+  undetected because nothing in the suite ever planted a `.commit-sha` —
+  `child_recorded_a_commit` was always false, the check never ran, and every
+  existing fold test passed it vacuously. Now capture-then-match with a
+  here-string: no pipe, no SIGPIPE, same subjects-only fixed-string semantics.
+  Behaviour 14 gives it its first real coverage, in both directions.
+
+- **Both fold directions are now proven together.** The two fold defects are exact
+  inverses — 2026-07-28 was green cards with no code, 2026-07-29 was merged code
+  with stranded cards — so they are tested as a pair and driven as a pair: a
+  stand-in-captain proof drive runs a real mission and a real logged bug end to
+  end on real workers, with a local bare `origin` whose `pr-merge` genuinely
+  fast-forwards `main`, then asserts BOTH that the bug's commit is on merged main
+  AND that its card reads done.
+
+- **Known, unfixed:** copilot's grill no longer honours `--available-tools=`
+  (builtin tools execute; custom MCP servers boot every turn, ~13s each), and the
+  cost estimator undercalled a 12-ticket mission ~6× ($4.86–$25.47 estimated vs
+  $150.07 actual). An automated drive against a fresh repo also blocks on the
+  interactive `RUN lcars update? [y/N]` prompt until its config carries an
+  `lcarsVersion` stamp.
+
 ## 2026.7.19 — 2026-07-29
 
 Wave isolation and provable repairs (S156–S157). Two defects from one dead

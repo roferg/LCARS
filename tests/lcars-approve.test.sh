@@ -687,6 +687,143 @@ check "nff. stays at verify (no false done)" \
 check "nff. keeps awaitingHuman true (gate stays visible)" \
   "grep -q '\"awaitingHuman\": *true' '$sNFF'"
 
+# --- Behaviour FOLD: approving the parent CLOSES OUT its folded bug children --
+#
+# BUG (DX-Scorecard, 2026-07-29): a Mission-Log bug child folds its fix onto the
+# PARENT's branch and gets NO PR of its own, so the ONLY path that marks it Done
+# is accepting the parent's consolidated re-verify gate (respond.sh → resolve-logs
+# complete). `lcars approve <parent>` merged the parent's PR, DELETED that gate
+# (state_del awaitingHuman/pendingQuestion) and marked the parent done — folding
+# nothing. The children were then unreachable forever: approve refuses them (no
+# PR of their own) and resolve-logs can no longer resolve a `done` parent (its
+# active_table skips done missions). Four real bug missions stranded at verify
+# with their fixes already merged in main.
+#
+# approve must therefore fold the verified children as part of the merge — and it
+# must do so through resolve-logs, which owns the fold and its PREMISE CHECK. That
+# check is the 2026-07-28 fix for the OPPOSITE failure (cards read Done while the
+# code was gone); both directions have to hold at once.
+
+# A parent at verify with an open PR + three linked bug children. The children are
+# SIBLING ids (lcars-<date>-002/003/004), exactly as `lcars log` files them — never
+# suffixes of the parent id, which would collide with resolve-logs' substring parent
+# matcher and make this fixture test the matcher instead of the fold.
+#   BUG_OK   → fix commit IS on the parent branch  → must fold to done
+#   BUG_GONE → NO commit on the parent branch      → must be REFUSED (premise check)
+#   BUG_WIP  → stage plan                          → must be untouched
+BUG_OK="lcars-20260530-002"
+BUG_GONE="lcars-20260530-003"
+BUG_WIP="lcars-20260530-004"
+new_repo_with_folded_children() {
+  local repo; repo="$(mktemp -d "$TMPROOT/repofold.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init )
+  local base; base="$(cd "$repo" && git rev-parse --abbrev-ref HEAD)"
+  # the parent branch carries the parent's ticket AND the real child's fix
+  # (subject prefix `lcars(<id>)` — the signal child_fix_on_branch greps for).
+  ( cd "$repo" && git checkout -q -b "lcars/$MID" \
+      && printf 'export const theme = "dark";\n' >theme.js \
+      && git add -A && git commit -q -m "lcars($MID) t-001" \
+      && printf 'export const gap = 18;\n' >gap.js \
+      && git add -A && git commit -q -m "lcars($BUG_OK) t-001: spacing fix" \
+      && git checkout -q "$base" )
+  local m="$repo/.git/lcars/missions/$MID"
+  mkdir -p "$m"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add dark mode",
+  "stage": "verify",
+  "review": "open",
+  "prUrl": "https://github.com/acme/repo/pull/77",
+  "prNumber": 77,
+  "awaitingHuman": true,
+  "pendingQuestion": "3 logged bugs folded onto this Mission — re-inspect, then accept.",
+  "created": "2026-05-30T10:00:00Z",
+  "model": "claude-sonnet",
+  "githubIssue": 42,
+  "branch": "lcars/$MID",
+  "base": "$base"
+}
+EOF
+  # the consolidated re-verify gate resolve-logs raises on the parent.
+  printf '{"question":"3 logged bugs folded — accept?"}\n' >"$m/pending.json"
+
+  local bid stage
+  for spec in "$BUG_OK:verify:91" "$BUG_GONE:verify:92" "$BUG_WIP:plan:93"; do
+    bid="${spec%%:*}"; stage="$(echo "$spec" | cut -d: -f2)"
+    local issue; issue="${spec##*:}"
+    local c="$repo/.git/lcars/missions/$bid"
+    mkdir -p "$c/tickets/t-001"
+    # every child recorded a commit, so the premise check actually runs for each
+    # (a child with no recorded commit folds unchecked by design).
+    echo "deadbeef" >"$c/tickets/t-001/.commit-sha"
+    cat >"$c/state.json" <<EOF
+{
+  "id": "$bid",
+  "type": "bug",
+  "title": "logged bug $bid",
+  "stage": "$stage",
+  "parentMission": "$MID",
+  "parentIssue": 42,
+  "created": "2026-05-30T11:00:00Z",
+  "githubIssue": $issue,
+  "branch": "lcars/$MID",
+  "base": "lcars/$MID"
+}
+EOF
+  done
+  echo "$repo"
+}
+
+repoFD="$(new_repo_with_folded_children)"; make_gh_stub "$repoFD/gh"
+make_reconcile_stub "$repoFD/recon.sh" 0
+export GH_LOG="$repoFD/gh.log"; : >"$GH_LOG"
+export RECON_LOG="$repoFD/recon.log"; : >"$RECON_LOG"
+rcFD=0
+( cd "$repoFD" && LCARS_GH_BIN="$repoFD/gh" LCARS_RUN_SCRIPT="$repoFD/recon.sh" \
+    RECON_LOG="$repoFD/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>err.txt ) || rcFD=$?
+sFD="$(state_of "$repoFD")"
+cFD() { echo "$repoFD/.git/lcars/missions/$1/state.json"; }
+
+check "fold. the parent still merges and reaches done" \
+  "grep -q '\"stage\": *\"done\"' '$sFD'"
+check "fold. a verified child whose fix IS on the parent branch is folded to done" \
+  "grep -q '\"stage\": *\"done\"' '$(cFD "$BUG_OK")'"
+check "fold. the folded child gets lcars:done on its own issue" \
+  "grep -q 'add-label lcars:done' '$GH_LOG' && grep -q 'issue edit 91' '$GH_LOG'"
+check "fold. a verified child whose fix is NOT on the branch is REFUSED, not folded" \
+  "grep -q '\"stage\": *\"verify\"' '$(cFD "$BUG_GONE")'"
+check "fold. the refusal is reported, naming the child" \
+  "cat '$repoFD/out.txt' '$repoFD/err.txt' | qgrep -q '$BUG_GONE'"
+check "fold. a child still mid-flight is left untouched" \
+  "grep -q '\"stage\": *\"plan\"' '$(cFD "$BUG_WIP")'"
+check "fold. approve still exits 0 — the merge landed, the parent ships" \
+  "[ '$rcFD' -eq 0 ]"
+
+# The captain must be able to SEE what happened without reading state.json.
+check "fold. names the folded child in the output" \
+  "qgrep -q 'Folded logged bug: $BUG_OK' <'$repoFD/out.txt'"
+check "fold. warns that the mid-flight child's fix is NOT in this PR" \
+  "qgrep -q '$BUG_WIP' <'$repoFD/err.txt'"
+
+# --- Behaviour FOLD-2: no children ⇒ byte-identical to today ------------------
+# A plain feature mission with no logged bugs must not gain any fold chatter.
+repoND="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoND/gh"
+make_reconcile_stub "$repoND/recon.sh" 0
+export GH_LOG="$repoND/gh.log"; : >"$GH_LOG"
+export RECON_LOG="$repoND/recon.log"; : >"$RECON_LOG"
+rcND=0
+( cd "$repoND" && LCARS_GH_BIN="$repoND/gh" LCARS_RUN_SCRIPT="$repoND/recon.sh" \
+    RECON_LOG="$repoND/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>err.txt ) || rcND=$?
+check "fold2. a mission with no logged bugs approves exactly as before" \
+  "[ '$rcND' -eq 0 ] && grep -q '\"stage\": *\"done\"' '$(state_of "$repoND")'"
+check "fold2. prints no fold line when there is nothing to fold" \
+  "! qgrep -qi 'logged bug' <'$repoND/out.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars approve: %d passed, %d failed\n' "$pass" "$fail"
