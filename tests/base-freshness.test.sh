@@ -478,7 +478,13 @@ check "11. ensure_base_current returns 0 outside a git repo" "[ '$RC11c' -eq 0 ]
 # a guard that only reads the entry point would let a destructive verb hide one
 # function away.
 BODY11="$TMPROOT/base-freshness.body"
-sed -n '/^# BASE FRESHNESS (S158)/,/^# MERGE-PRESERVING CONFIG WRITE/p' "$COMMON" >"$BODY11"
+# `git -C <dir> <verb>` is NORMALISED to `git <verb>` before the verbs are read.
+# S159 runs one fast-forward inside another worktree (`"$g" -C "$wt" merge
+# --ff-only`), and to the raw extractor that reads as the verb `-` — a ref-moving
+# command the guard would have counted as nothing at all. Normalising closes that
+# hole rather than opening one.
+sed -n '/^# BASE FRESHNESS (S158)/,/^# MERGE-PRESERVING CONFIG WRITE/p' "$COMMON" \
+  | sed 's/"\$g" -C "\$wt" /"$g" /g' >"$BODY11"
 VERBS11="$(grep -oE '"\$g" [a-z-]+' "$BODY11" | sed 's/.*" //' | sort -u | tr '\n' ' ')"
 check "11. the extracted function body is non-trivial" "[ \"\$(wc -l <'$BODY11' | tr -d ' ')\" -gt 40 ]"
 check "11. some git verbs were actually found (the extraction works)" \
@@ -496,7 +502,24 @@ check "11. some git verbs were actually found (the extraction works)" \
 # git refuses outright unless the move is a fast-forward. So the honest assertion
 # is not "never merge" but "never merge WITHOUT --ff-only", plus the outright ban
 # on every verb that can rewrite or discard.
-for v in reset checkout switch stash clean push rebase branch commit; do
+#
+# S159, captain ruling 2026-07-31 — why `branch` left this list, in the same
+# terms `merge` did. The property was never "one ref-moving command"; it was
+# "every ref-moving command is one git REFUSES unless it is a fast-forward". The
+# drive-time mission-branch advance adds a second such command,
+# `git branch -f <mb> <base-sha>`, for the one case a merge cannot serve: a branch
+# that is not checked out anywhere has no working tree to fast-forward IN. That
+# call is not guarded by git — `branch -f` will happily rewind a branch — so the
+# LOSSLESSNESS is proved by the code before it runs (`rev-list --count
+# <base>..<mb>` must be exactly 0, i.e. the branch is already an ancestor of the
+# base), and that proof is asserted where a source grep cannot lie about it:
+# BEHAVIOURALLY, in tests/drive-base-recheck.test.sh behaviour 13, against a real
+# branch carrying a real commit that must still exist afterwards.
+#
+# So this guard keeps the half a grep CAN carry: the outright-destructive verbs
+# stay banned, and the two ref-movers may appear in no other shape than
+# `merge --ff-only` and `branch -f`.
+for v in reset checkout switch stash clean push rebase commit; do
   check "11. the helper never invokes 'git $v'" \
     "case \" \$VERBS11 \" in *' $v '*) false ;; *) true ;; esac"
 done
@@ -504,8 +527,12 @@ check "11. 'merge-base' is still matched exactly, never as 'merge'" \
   "case \" \$VERBS11 \" in *' merge-base '*) true ;; *) false ;; esac"
 check "11. every 'git merge' invocation is fast-forward-only (never a bare merge)" \
   "[ \"\$(grep -cE '\"[\$]g\" merge ' '$BODY11')\" = \"\$(grep -cE '\"[\$]g\" merge --ff-only ' '$BODY11')\" ]"
-check "11. there is exactly ONE ref-moving invocation, and it is merge --ff-only" \
-  "[ \"\$(grep -cE '\"[\$]g\" (merge|pull|reset|rebase|update-ref|branch) ' '$BODY11')\" = '1' ] && grep -q '\"[\$]g\" merge --ff-only' '$BODY11'"
+check "11. every 'git branch' invocation is the forced fast-forward, never a bare one" \
+  "[ \"\$(grep -cE '\"[\$]g\" branch ' '$BODY11')\" = \"\$(grep -cE '\"[\$]g\" branch -f ' '$BODY11')\" ]"
+check "11. the ONLY ref-moving verbs are merge and branch" \
+  "[ \"\$(grep -cE '\"[\$]g\" (merge|pull|reset|rebase|update-ref|branch) ' '$BODY11')\" = \"\$(grep -cE '\"[\$]g\" (merge --ff-only|branch -f) ' '$BODY11')\" ]"
+check "11. …and both shapes are really present (the guard is not vacuous)" \
+  "grep -q '\"[\$]g\" merge --ff-only' '$BODY11' && grep -q '\"[\$]g\" branch -f' '$BODY11'"
 # …and the ref-moving step is NEVER bounded: a kill is the only thing that can
 # leave a half-written tree, and there is nothing left to kill (round 2, D1).
 check "11. the fast-forward is never run through the bounded (killable) runner" \
@@ -1742,21 +1769,21 @@ check "44. …and the quoted path is shown exactly as 'ls' shows it" \
   "grep -Fq 'build/quo\"te.txt' '$TMPROOT/rend44b.txt'"
 
 # --- Behaviour 45 (R5 D2): a comment may not assert a consumer that is unbuilt -
-# The source claimed state.json is "the record … that `lcars run`'s re-check
-# reads". Nothing reads `baseFreshness` anywhere: S159 (the drive-time re-check)
-# and S160 (the board badge) are UNBUILT. file.sh gets this right — "Today
-# `lcars file` is its only consumer" — and this round has paid repeatedly for
-# prose claiming more than the machine does. A comment is not exempt.
+# The source once claimed state.json is "the record … that `lcars run`'s re-check
+# reads" while nothing read `baseFreshness` anywhere. S159 BUILT that reader, so
+# the claim is now true — and the check flips with it rather than being deleted:
+# the file list must match the consumers that actually exist, and the prose must
+# still name S160 (the board badge) as the one that does NOT.
 READERS45="$TMPROOT/readers45.txt"
 grep -rl 'baseFreshness' "$REPO_ROOT/skills" >"$READERS45" 2>/dev/null
-check "45. the only files mentioning baseFreshness are its writer and its doc" \
-  "! grep -v -e 'lcars-init/lcars-common.sh\$' -e 'lcars-file/SKILL.md\$' '$READERS45' | grep -q ."
-check "45. …so no comment claims lcars run's re-check reads it today" \
-  "! grep -q \"re-check reads\" '$COMMON'"
-check "45. …and the unbuilt sessions are NAMED rather than asserted as present" \
-  "grep -q 'S159' '$COMMON' && grep -q 'S160' '$COMMON'"
-check "45. file.sh's honest phrasing (the model for it) is untouched" \
-  "grep -q 'Today .lcars file. is its only consumer' '$REPO_ROOT/skills/lcars-file/file.sh'"
+check "45. the only files mentioning baseFreshness are its writer, its reader and their docs" \
+  "! grep -v -e 'lcars-init/lcars-common.sh\$' -e 'lcars-file/SKILL.md\$' -e 'lcars-run/run.sh\$' -e 'lcars-run/SKILL.md\$' '$READERS45' | grep -q ."
+check "45. …and the drive-time reader (S159) really is one of them" \
+  "grep -q 'lcars-run/run.sh\$' '$READERS45'"
+check "45. …and the STILL-unbuilt session is NAMED rather than asserted as present" \
+  "grep -q 'S160' '$COMMON'"
+check "45. …and no comment claims the board badge exists yet" \
+  "! grep -rq 'baseFreshness' '$REPO_ROOT/web'"
 
 # --- Behaviour 46 (R5 D3): the cross-reference between the two docs is TRUE ---
 # SKILL.md said its sacred-clone verb list is "the same verb list `CONTEXT.md`
@@ -1786,12 +1813,16 @@ SETS32="$TMPROOT/base-set-calls"
 grep -oE '_lcars_base_set [a-z-]+ [0-9]' "$BODY11" >"$SETS32"
 check "32. every outcome really does go through _lcars_base_set" \
   "[ \"\$(wc -l <'$SETS32' | tr -d ' ')\" -ge 10 ]"
-check "32. …and every verdict it can ever emit is one of the four" \
-  "! awk '{print \$2}' '$SETS32' | grep -qvE '^(current|updated|stale|unknown)\$'"
+# S159 added `child-base` — the ONE name this vocabulary has gained since the
+# consolidation, and it is not a shade of staleness: it is the guard declining to
+# have an opinion because the base is another Mission's branch. The declaration
+# moves from four names to five; it does NOT become open-ended.
+check "32. …and every verdict it can ever emit is one of the five" \
+  "! awk '{print \$2}' '$SETS32' | grep -qvE '^(current|updated|stale|unknown|child-base)\$'"
 check "32. …and every one of them carries an EXPLICIT loudness (0 or 1)" \
   "! awk '{print \$3}' '$SETS32' | grep -qvE '^[01]\$'"
-check "32. all four verdicts are actually reachable (none is dead vocabulary)" \
-  "for v in current updated stale unknown; do awk '{print \$2}' '$SETS32' | grep -qx \"\$v\" || exit 1; done"
+check "32. all five verdicts are actually reachable (none is dead vocabulary)" \
+  "for v in current updated stale unknown child-base; do awk '{print \$2}' '$SETS32' | grep -qx \"\$v\" || exit 1; done"
 # Loudness must not be inferable from the verdict: `unknown` has to appear BOTH
 # quiet (the everyday no-remote repo) and loud (an unreachable origin), or a
 # consumer would be free to derive the badge from the verdict and be right by

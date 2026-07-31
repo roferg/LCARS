@@ -184,6 +184,15 @@ lcars_gh_web_host() {
 #             to wait for, no resolvable trunk, no such local branch, guard off,
 #             or not a git repo at all.
 #
+# S159 ADDS EXACTLY ONE MORE, AND IT IS NOT A SHADE OF STALENESS:
+#
+#   child-base  the base is ANOTHER MISSION's branch, so the question does not
+#               apply. A logged bug's base is its parent's `lcars/<parent-id>`
+#               branch: "bring it up to date from origin" would mean moving the
+#               fix onto code it was never written against — the exact "fix the
+#               bug child by rebasing it onto main" hazard. The guard takes no
+#               network call and moves no ref; it says so and stops.
+#
 # LOUDNESS IS CARRIED, NOT DERIVED: `unknown` covers both the silent everyday
 # no-remote case and the loud unreachable one, so which outcomes shout is its own
 # field, set with the verdict and never inferred from it. "Badge or no badge" is
@@ -219,6 +228,27 @@ lcars_gh_web_host() {
 # sentence that does not vary cannot describe the wrong situation.
 LCARS_BASE_IMPACT="a Stage reasons about the tree it is handed — an out-of-date one makes it confidently wrong about code that already exists."
 
+# lcars_base_is_mission_branch <name> — is this branch name an LCARS MISSION
+# branch rather than a trunk or topic branch?
+#
+# THE RULE IS THE `lcars/` NAMESPACE, and it is complete because LCARS mints
+# mission branches in exactly ONE shape and nowhere else: `lcars/<mission-id>`
+# (skills/lcars-file/file.sh `BRANCH="lcars/$ID"`, and skills/lcars-log/log.sh,
+# which bases each bug child on its parent's branch — `lcars/<parent-id>` — or
+# falls back to that literal name). Nothing else in LCARS creates a branch a
+# Mission can be based on.
+#
+# Deliberately ONE rule, not two. A second, weaker heuristic (scan the missions
+# on disk for one that claims this branch) would answer the same question a
+# different way, and two answers is one more surface that can disagree — the
+# S158 lesson about name count applies just as much to detection rules.
+lcars_base_is_mission_branch() {
+  case "${1:-}" in
+    lcars/?*) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
 # _lcars_base_git — the git binary, env-injected so tests can stub it.
 _lcars_base_git() { printf '%s' "${LCARS_GIT_BIN:-${GIT_BIN:-git}}"; }
 
@@ -237,10 +267,10 @@ _lcars_base_count() {
 # byte went into state.json verbatim: a gitignored collider named
 # `dist/ctl<0x01>name.txt` produced a record `python3 -m json.tool` refused
 # ("Invalid control character at: line 9 column 282"). state.json is the record
-# SKILL.md documents as consumable, and that S159's drive-time re-check and
-# S160's board badge are specified to read once they are built — today `lcars
-# file` writes it and nothing reads it. It must ALWAYS parse, whatever byte a
-# captain happens to have in a filename. Round 4, D2.
+# SKILL.md documents as consumable. `lcars file` writes it and S159's drive-time
+# re-check (`cmd_drive` in skills/lcars-run/run.sh) both READS and REWRITES it;
+# S160's board badge is specified to read it and is not built yet. It must ALWAYS
+# parse, whatever byte a captain happens to have in a filename. Round 4, D2.
 
 # _lcars_base_visible <string> — make control characters VISIBLE, and touch
 # NOTHING else. This is the DISPLAY escaper, and it is deliberately not
@@ -565,6 +595,13 @@ lcars_base_report() {
     [ "$LCARS_BASE_VERDICT" = "updated" ] && \
       printf '  ✓ base %s fast-forwarded %s commit(s) from origin.\n' \
         "$LCARS_BASE_BRANCH" "${LCARS_BASE_BEHIND:-?}"
+    # S159 — a skipped check still says it skipped. `child-base` is not a warning
+    # (it is the CORRECT state for every logged bug), so it gets one quiet line
+    # rather than the ⚠ block: silence here would read as "checked, all fine",
+    # which is a different claim from "did not check, and here is why".
+    [ "$LCARS_BASE_VERDICT" = "child-base" ] && \
+      printf '  ⊘ base %s is a Mission branch — left exactly as it is (nothing fetched, nothing moved).\n' \
+        "$LCARS_BASE_BRANCH"
     return 0
   fi
   printf '\n'
@@ -667,6 +704,243 @@ lcars_base_branch_note() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# THE DRIVE-TIME MISSION-BRANCH ADVANCE (S159, captain ruling 2026-07-31)
+# ---------------------------------------------------------------------------
+# BRINGING THE BASE UP TO DATE IS NOT THE GOAL. `mission_branch_block` in
+# skills/lcars-run/run.sh pins every Research / Validate / Plan / Plan Review
+# worker to `lcars/<id>` and tells it, in those words, to IGNORE the ambient
+# checkout — so a drive that fast-forwards `main` and leaves the mission branch on
+# its filing-time tip still hands every Stage the stale tree. The captain's ruling
+# is that the drive must move the MISSION BRANCH too.
+#
+# IT MOVES IT ONLY WHEN THAT IS LOSSLESS: zero commits of its own relative to the
+# base (`git rev-list --count <base>..<mb>` = 0), which is exactly the case S158's
+# own file-time reporter already describes as "a fast-forward: no commits of its
+# own, so nothing is lost". One commit of its own and the branch is left where it
+# is, with the loud ⚠ block and its `git rebase` fix — forcing the pointer there
+# would DESTROY work that exists nowhere else.
+#
+# FILE TIME IS UNCHANGED. `lcars_base_branch_note` above is the file-time voice
+# and keeps every word of it: at filing, "a branch cut at an older commit was cut
+# there on purpose" (S158), so it reports and offers `git branch -f` as a CHOICE.
+# The drive-time voice is `lcars_base_branch_note_drive`, a SEPARATE function, for
+# the reason the two must not blur: once LCARS really does move the branch, the
+# file-time sentence "LCARS never moves a branch that may already carry work" is
+# false of a drive, and its `git branch -f` Fix line is an instruction to do a
+# thing already done. Two situations, two functions, no shared prose.
+#
+# THREE LANES, AND THE LANE IS DECIDED BY WHERE THE BRANCH IS CHECKED OUT —
+# `git worktree list --porcelain`, never a guess:
+#
+#   not checked out anywhere       `git branch -f <mb> <base-sha>`. A pure pointer
+#                                  move; given ahead == 0 it is a fast-forward by
+#                                  construction, and it touches no working tree.
+#   checked out, tree CLEAN        `git -C <worktree> merge --ff-only <base-sha>`.
+#                                  `git branch -f` FAILS outright on a checked-out
+#                                  branch ("cannot force update the branch …
+#                                  checked out at …"), including in a worktree
+#                                  whose directory is gone. A real fast-forward in
+#                                  place is the only move that works, and it
+#                                  leaves that checkout on the SAME branch — no
+#                                  checkout, no detach, no HEAD relocation.
+#   checked out, tree DIRTY        REFUSE. S158's doctrine is absolute: LCARS
+#                                  never writes into a dirty tree. Say which
+#                                  checkout, what kind of dirt, and give the one
+#                                  command that clears it.
+#
+# `git merge --ff-only` will HAPPILY run in a dirty tree when the incoming commits
+# do not touch the modified files — verified — so the dirty refusal is LCARS's own
+# check, not something git can be relied on to make for it.
+#
+# A `child-base` Mission is out of scope by the same ruling: a logged bug's base is
+# its parent's branch, LCARS takes no position on it, and the parent's branch is
+# never moved. `drive_base_recheck` does not call this at all for that verdict.
+#
+# Exported globals (deliberately NOT part of the verdict vocabulary — the verdict
+# stays the five names, and "did the mission branch move" is a different question
+# with its own field, `missionBranchAtBase`):
+#     LCARS_MB_MOVE     moved | refused | ''   ('' = nothing to decide)
+#     LCARS_MB_BEHIND   commits the base has that the mission branch does not
+#     LCARS_MB_AHEAD    commits of its own — the number that decides losslessness
+#     LCARS_MB_REASON   one sentence naming what actually happened
+#     LCARS_MB_FIX      ONE runnable command (may be empty), gloss after 3 spaces
+#     LCARS_MB_WT       the checkout it found, when there was one
+
+# _lcars_base_worktree_of <branch> — the worktree path where refs/heads/<branch> is
+# checked out, or EMPTY. Sets LCARS_MB_WT.
+#
+# `git worktree list --porcelain` is asked, not guessed: the ambient tree and every
+# linked mission worktree appear in the same list, so "checked out in the captain's
+# own clone" and "checked out in a mission worktree" are one lane, decided by one
+# question. `-z` is used because a worktree path may contain any byte — a newline
+# included — and the line format would split one path into two records; the line
+# format is the fallback for a git too old for `-z`.
+_lcars_base_worktree_of() {
+  local g want rec path="" hits=0
+  g="$(_lcars_base_git)"
+  LCARS_MB_WT=""
+  [ -n "${1:-}" ] || return 0
+  want="branch refs/heads/$1"
+  while IFS= read -r -d '' rec; do
+    hits=$((hits + 1))
+    case "$rec" in
+      "worktree "*) path="${rec#worktree }" ;;
+    esac
+    [ "$rec" = "$want" ] && LCARS_MB_WT="$path"
+  done < <("$g" worktree list --porcelain -z 2>/dev/null)
+  [ "$hits" -gt 0 ] && return 0
+  path=""
+  while IFS= read -r rec; do
+    case "$rec" in
+      "worktree "*) path="${rec#worktree }" ;;
+    esac
+    [ "$rec" = "$want" ] && LCARS_MB_WT="$path"
+  done < <("$g" worktree list --porcelain 2>/dev/null)
+  return 0
+}
+
+# lcars_base_advance_mission_branch <mission-branch> <base> — the move itself.
+# ALWAYS returns 0: like everything else in this guard it is best-effort and never
+# the thing that stops a drive.
+lcars_base_advance_mission_branch() {
+  local g mb="${1:-}" base="${2:-}" tip basesha behind ahead wt dirty out rc q stashargs clob
+  g="$(_lcars_base_git)"
+  LCARS_MB_MOVE=""; LCARS_MB_BEHIND=""; LCARS_MB_AHEAD=""
+  LCARS_MB_REASON=""; LCARS_MB_FIX=""; LCARS_MB_WT=""
+  [ -n "$mb" ] && [ -n "$base" ] || return 0
+  # A Mission whose branch IS the base has nothing to reconcile.
+  [ "$mb" != "$base" ] || return 0
+  tip="$("$g" rev-parse --verify -q "refs/heads/$mb" 2>/dev/null)" || tip=""
+  basesha="$("$g" rev-parse --verify -q "refs/heads/$base" 2>/dev/null)" || basesha=""
+  # No branch (an empty repo) or no local base: `ensure_base_current`'s own
+  # warnings already cover those, and a second one would be noise.
+  [ -n "$tip" ] && [ -n "$basesha" ] || return 0
+
+  behind="$(_lcars_base_count "$tip" "$basesha")"
+  # EMPTY means NOT MEASURED, and the whole record's doctrine is that an
+  # unmeasured number is never substituted with a reassuring one. Say nothing.
+  case "$behind" in ''|*[!0-9]*) return 0 ;; esac
+  LCARS_MB_BEHIND="$behind"
+  # Already contains the base — the ordinary in-flight state. Nothing to do.
+  [ "$behind" = "0" ] && return 0
+
+  ahead="$(_lcars_base_count "$basesha" "$tip")"
+  case "$ahead" in
+    ''|*[!0-9]*)
+      LCARS_MB_MOVE="refused"
+      LCARS_MB_REASON="'$mb' is $behind commit(s) behind '$base', but LCARS could not measure how many commits of its own it carries — and it only fast-forwards a mission branch when that is provably lossless, so nothing was moved."
+      return 0 ;;
+  esac
+  LCARS_MB_AHEAD="$ahead"
+
+  # --- lane 0: the branch carries WORK. Never move it. ---------------------
+  if [ "$ahead" != "0" ]; then
+    local hb; hb="$("$g" symbolic-ref -q --short HEAD 2>/dev/null)" || hb=""
+    LCARS_MB_MOVE="refused"
+    LCARS_MB_REASON="'$mb' carries $ahead commit(s) of its own. LCARS fast-forwards a mission branch onto its base ONLY when that is lossless — no commits of its own — and forcing this pointer would DESTROY those $ahead commit(s), so nothing was moved."
+    LCARS_MB_FIX="git rebase $base $mb   (rebase, and do NOT force it. It leaves you on $mb: git checkout ${hb:--} brings you back)"
+    return 0
+  fi
+
+  # --- from here the move is LOSSLESS: `$mb` is an ancestor of `$base`. ----
+  _lcars_base_worktree_of "$mb"
+  wt="$LCARS_MB_WT"
+
+  # --- lane 1: not checked out anywhere → a pure pointer fast-forward ------
+  if [ -z "$wt" ]; then
+    rc=0; out="$("$g" branch -f "$mb" "$basesha" 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      LCARS_MB_MOVE="moved"
+      LCARS_MB_REASON="It carried no commits of its own and is not checked out anywhere, so its branch pointer was fast-forwarded onto '$base' — nothing was lost and no working tree was written to."
+    else
+      # No Fix line: the only command that would clear this is the one that just
+      # failed, and a Fix that cannot succeed is not a Fix (S158, seven of them).
+      LCARS_MB_MOVE="refused"
+      LCARS_MB_REASON="'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but git refused to move it: $(printf '%s' "$out" | head -1)"
+    fi
+    return 0
+  fi
+
+  q="$(_lcars_base_render_paths "$wt")"
+
+  # --- the checkout is registered but GONE (a removed worktree dir). -------
+  # `git branch -f` refuses for THIS branch even then ("cannot force update the
+  # branch … checked out at …"), and `git -C` cannot run there at all — verified.
+  if [ ! -d "$wt" ] || ! "$g" -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
+    LCARS_MB_MOVE="refused"
+    LCARS_MB_REASON="'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but git still has it registered as checked out at $q — a directory that is no longer there — and it refuses to move a checked-out branch, so nothing was moved."
+    LCARS_MB_FIX="git worktree prune   (drops the dead registration; the next drive then fast-forwards $mb for you)"
+    return 0
+  fi
+
+  # --- lane 2: checked out with a DIRTY tree → refuse ----------------------
+  # `git merge --ff-only` really does run in a dirty tree when the incoming
+  # commits happen not to touch the modified files, so this refusal is LCARS's,
+  # not git's. The captain's uncommitted work is never a thing a drive writes over.
+  dirty="$("$g" -C "$wt" status --porcelain 2>/dev/null)"
+  if [ -n "$dirty" ]; then
+    _lcars_base_dirt "$dirty"
+    stashargs="${LCARS_BASE_DIRT_STASH#git }"
+    LCARS_MB_MOVE="refused"
+    LCARS_MB_REASON="'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but it is checked out at $q whose working tree has ${LCARS_BASE_DIRT_DESC:-uncommitted change(s)} — LCARS never writes into a dirty tree, so your uncommitted work is untouched and the branch was left where it was."
+    LCARS_MB_FIX="git -C $q $stashargs && git -C $q merge --ff-only $base   (your work is stashed, not lost — git -C $q stash pop restores it)"
+    return 0
+  fi
+
+  # --- would the fast-forward EAT an untracked/gitignored file? ------------
+  # Same bar as the base's own step 8: `git status` reads clean with a gitignored
+  # build artifact sitting there, and a fast-forward LCARS chose is held higher
+  # than one the captain typed. The helper judges the tree it is standing in.
+  clob="$( cd "$wt" 2>/dev/null && _lcars_base_clobber_paths "$tip" "$basesha" )"
+  if [ -n "$clob" ]; then
+    LCARS_MB_MOVE="refused"
+    LCARS_MB_REASON="'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but fast-forwarding it in its checkout at $q would OVERWRITE local file(s) git is not tracking, whose content differs from the incoming one — so nothing was moved and your file(s) are intact: $(_lcars_base_render_paths "$clob")"
+    LCARS_MB_FIX="move or delete those file(s), then   git -C $q merge --ff-only $base"
+    return 0
+  fi
+
+  # --- lane 3: checked out and CLEAN → advance it in place ----------------
+  rc=0; out="$("$g" -C "$wt" merge --ff-only "$basesha" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    LCARS_MB_MOVE="moved"
+    LCARS_MB_REASON="It carried no commits of its own and is checked out at $q with a clean tree, so it was fast-forwarded there — nothing was lost, that checkout is still on $mb, and no HEAD was moved."
+  else
+    LCARS_MB_MOVE="refused"
+    LCARS_MB_REASON="'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but the local fast-forward in its checkout at $q failed ($(printf '%s' "$out" | head -1)) — the ref was not moved and nothing was written."
+  fi
+  return 0
+}
+
+# lcars_base_branch_note_drive — the DRIVE-TIME voice, and ONLY that. It reports
+# what `lcars_base_advance_mission_branch` just did; it decides nothing itself, so
+# the words and the git operation cannot drift apart. Style follows
+# `lcars_base_report` (one long line per field) rather than the file-time note's
+# hand-wrapped prose — deliberately, so the two are not mistakable for each other
+# and so every `Fix:` is one copyable command with its gloss after three spaces.
+lcars_base_branch_note_drive() {
+  [ "${LCARS_BASE_QUIET:-0}" = "1" ] && return 0
+  local mb="${1:-}" base="${2:-}"
+  case "${LCARS_MB_MOVE:-}" in
+    moved)
+      printf '  ✓ MISSION BRANCH — %s fast-forwarded %s commit(s) onto %s.\n' \
+        "$mb" "${LCARS_MB_BEHIND:-?}" "$base"
+      printf '    %s\n' "$LCARS_MB_REASON"
+      ;;
+    refused)
+      printf '\n'
+      printf '  ⚠ MISSION BRANCH — %s is %s commit(s) behind %s, and LCARS did not move it\n' \
+        "$mb" "${LCARS_MB_BEHIND:-?}" "$base"
+      printf '    Why:    %s\n' "$LCARS_MB_REASON"
+      [ -n "${LCARS_MB_FIX:-}" ] && printf '    Fix:    %s\n' "$LCARS_MB_FIX"
+      printf '    Means:  every Stage in this drive reads %s, so it will reason about that older tree.\n' "$mb"
+      printf '    Impact: %s\n' "$LCARS_BASE_IMPACT"
+      printf '\n'
+      ;;
+  esac
+  return 0
+}
+
 # lcars_base_state_line [mission-branch] — the ONE-LINE state.json field (with its
 # trailing comma), or nothing when no check has run. One line on purpose: run.sh's
 # state_set_*/state_del editors are line-oriented, so a multi-line object would not
@@ -730,6 +1004,20 @@ ensure_base_current() {
   # 0 — not a git repo at all. The caller already handles this; stay silent.
   if ! "$g" rev-parse --git-dir >/dev/null 2>&1; then
     _lcars_base_set unknown 0 "not inside a git repository — nothing to check."
+    lcars_base_report
+    return 0
+  fi
+
+  # 0b — the base is ANOTHER MISSION's branch (S159). Checked before ANY network
+  #      call and before any ref is looked at, because there is no version of
+  #      this question worth asking: a logged bug is based on its parent's
+  #      `lcars/<parent-id>` branch, and origin's trunk is not what that branch
+  #      is supposed to contain. Bringing it "up to date" would move the fix onto
+  #      code it was never written against — the failure this lane exists to
+  #      prevent. Take no network call, move no ref, and say so.
+  if lcars_base_is_mission_branch "$base"; then
+    _lcars_base_set child-base 0 \
+      "'$base' is an LCARS Mission branch, not a trunk — this Mission is based on another Mission's work (a logged bug's fix belongs on its parent's branch), so there is nothing to bring down from origin. Nothing was fetched and no ref was moved."
     lcars_base_report
     return 0
   fi

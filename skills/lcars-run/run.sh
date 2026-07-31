@@ -10886,6 +10886,117 @@ drive_print_summary() { # accumulated-lines
   printf '%s\n' "$SEP"
 }
 
+# === S159 — the DRIVE-TIME base re-check ====================================
+# Filing and starting are separate moments. S158 brings the base up to date when
+# the Mission is FILED; a Mission parked overnight — or filed now and driven
+# tomorrow — still enters Research against whatever the base was at filing time.
+# DX-Scorecard's lcars-20260730-001 was filed at 16:00 and driven later, and
+# Research truthfully reported that a file "does not exist" because in THAT tree
+# it did not.
+#
+# So the drive re-asks the question ONCE, at the top, before the stage loop
+# spawns anything. The DOCTRINE IS S158'S, UNCHANGED: it never blocks the drive
+# (every path returns 0), never writes into a dirty tree, never resets/forces/
+# stashes/checks out, and always says what it did. There is ONE implementation of
+# that judgement — `ensure_base_current` in lcars-common.sh — and this consumes
+# it; nothing about freshness is re-decided here.
+#
+# It writes back the REFRESHED `state.json.baseFreshness` record (same shape, new
+# verdict + checkedAt) and — only when the drive really did begin against a base
+# that was BEHIND — one `base_stale` event on the Mission timeline, so the board's
+# activity feed and `lcars status` can show it.
+#
+# AND IT MOVES THE MISSION'S OWN BRANCH (captain ruling 2026-07-31), because the
+# base moving is not what a Stage reads. See `lcars_base_advance_mission_branch`
+# in lcars-common.sh for the three lanes and the losslessness rule.
+
+# Load the shared guard LAZILY, and only for the driver. run.sh is re-entered as
+# a subprocess for every Stage and every ticket; sourcing a second library into
+# all of them to serve one caller is blast radius for nothing. Best-effort: a
+# missing lib degrades the drive to exactly its pre-S159 behaviour.
+drive_load_base_lib() {
+  command -v ensure_base_current >/dev/null 2>&1 && return 0
+  local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+  [ -f "$lib" ] || return 1
+  # shellcheck source=../lcars-init/lcars-common.sh
+  . "$lib" || return 1
+  command -v ensure_base_current >/dev/null 2>&1
+}
+
+# Persist the refreshed record. state.json's editors are LINE-oriented, and
+# `lcars_base_state_line` emits the whole record on ONE line for exactly that
+# reason (S158), so the update is: drop the old line, insert the new one after
+# the opening brace. Nothing else in the file is touched.
+drive_persist_base_freshness() { # mission-branch
+  local line
+  line="$(lcars_base_state_line "${1:-}")" || return 0
+  [ -n "$line" ] || return 0
+  state_del baseFreshness
+  local tmp; tmp="$(mktemp)"
+  LCARS_BF_LINE="$line" awk 'NR==1{print; print ENVIRON["LCARS_BF_LINE"]; next} {print}' \
+    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+}
+
+# The ONE new event kind. It fires when the drive BEGAN against a base that was
+# genuinely behind — whether or not LCARS could fix it — and never on a verdict
+# that measured nothing (`unknown`, `child-base`): claiming staleness that was
+# never established is the one lie a consumer cannot detect, the same doctrine
+# that makes `behindBy` null rather than a reassuring 0.
+#
+# IDEMPOTENCE IS A FINGERPRINT, NOT A FLAG. The event carries `key` =
+# verdict:behindBy:baseSha, and an identical key already in events.jsonl means
+# this exact fact is already on the timeline — so a re-drive of an unchanged
+# Mission adds nothing. A base that has since moved (or been fixed) has a
+# different key and is a genuinely new fact, so it still gets logged.
+drive_emit_base_stale() { # stage-at-drive-start
+  local v="${LCARS_BASE_VERDICT:-}" n="${LCARS_BASE_BEHIND:-}" b="${LCARS_BASE_BRANCH:-}"
+  case "$v" in updated|stale) : ;; *) return 0 ;; esac
+  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
+  local key detail
+  key="$v:$n:${LCARS_BASE_SHA:-}"
+  event_seen base_stale "\"key\":\"$key\"" && return 0
+  if [ "$v" = "updated" ]; then
+    detail="this drive began against a stale base — '$b' was $n commit(s) behind origin, and LCARS fast-forwarded it before the first Stage ran"
+  else
+    detail="this drive began against a stale base — '$b' is $n commit(s) behind origin and LCARS could not bring it up to date: ${LCARS_BASE_REASON:-no reason recorded}"
+  fi
+  emit_event base_stale "${1:-}" "$detail" \
+    behindBy="$n" verdict="$v" base="$b" key="$key"
+}
+
+# The whole re-check, in caller order. Runs ONCE per drive.
+drive_base_recheck() {
+  drive_load_base_lib || return 0
+  local base branch stage
+  base="$(json_str "$STATE" base)"
+  branch="$(json_str "$STATE" branch)"
+  stage="$(json_str "$STATE" stage)"
+  # No recorded base ⇒ nothing to check. Inventing one ("probably main") is the
+  # substitution S158 refuses everywhere else in this record.
+  [ -n "$base" ] || return 0
+  ensure_base_current "$base"
+  # THE MISSION'S OWN BRANCH IS THE ONE THAT DECIDES WHAT A STAGE READS, and it is
+  # a separate fact from the BASE's freshness. `mission_branch_block` (this file,
+  # ~line 574) pins every Research / Validate / Plan / Plan Review worker to
+  # `lcars/<id>` and tells it to IGNORE the ambient checkout — so fast-forwarding
+  # only the base leaves every Stage reasoning about the filing-time tree, which is
+  # the whole failure S159 exists to close. The drive therefore advances the
+  # mission branch too, but ONLY when that is LOSSLESS (no commits of its own);
+  # one commit of its own and it is left alone with the loud ⚠ block and a rebase.
+  #
+  # NOT for a `child-base` Mission: a logged bug's base is its parent's branch,
+  # LCARS takes no position on it, and the parent's branch is never moved.
+  if [ "${LCARS_BASE_VERDICT:-}" != "child-base" ]; then
+    lcars_base_advance_mission_branch "$branch" "$base" || true
+    lcars_base_branch_note_drive "$branch" "$base" || true
+  fi
+  # Persisted AFTER the advance, so `missionBranchAtBase` records what the branch
+  # really is now — never a move that did not happen.
+  drive_persist_base_freshness "$branch"
+  drive_emit_base_stale "$stage"
+  return 0
+}
+
 # --- the PR merge-state poll: "merged" iff the host says state MERGED OR
 # mergedAt is a non-null value. gh absent/failing → echoes nothing → not merged
 # (best-effort: a transient failure just keeps the Mission in review, never a
@@ -11397,6 +11508,13 @@ cmd_drive() {
   # without ever stopping. Fully guarded + kill-switch aware.
   local version_check="${LCARS_VERSION_CHECK_BIN:-$SKILL_DIR/../lcars-version/check.sh}"
   [ -f "$version_check" ] && bash "$version_check" warn </dev/null || true
+
+  # BASE FRESHNESS (S159) — re-ask the question S158 asked at filing time, ONCE,
+  # here: after the driver lock (so two drives can never fetch/fast-forward the
+  # same base at once) and BEFORE the stage loop (so it is once per drive, not
+  # once per Stage, and so the first Stage worker is spawned into the tree it
+  # produced). It never blocks — see drive_base_recheck.
+  drive_base_recheck
 
   local summary=""
   while :; do

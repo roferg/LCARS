@@ -42,9 +42,9 @@ VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$FILE_SKILL_DIR/../lcars-version/check
 
 # --- shared helpers: the base-freshness guard (S158) ------------------------
 # `ensure_base_current` + its state-line writer live in the shared lib so that
-# when `lcars run` grows its start-time re-check (S159) and the board grows its
-# badge (S160), all three consume the SAME verdict machinery — one
-# implementation, one vocabulary. Today `lcars file` is its only consumer.
+# `lcars run`'s start-time re-check (S159, now built) and the board's badge
+# (S160, not yet) consume the SAME verdict machinery — one implementation, one
+# vocabulary. Today `lcars file` and `lcars run` are its consumers.
 # Sourcing is best-effort: if the lib is missing, filing degrades to exactly its
 # pre-S158 behaviour rather than failing.
 LCARS_COMMON_LIB="${LCARS_COMMON_LIB:-$FILE_SKILL_DIR/../lcars-init/lcars-common.sh}"
