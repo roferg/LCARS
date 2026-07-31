@@ -197,6 +197,13 @@ a Stage ever prints `⚠ NOT ISOLATED` the driver stops loudly — there is no
 worker binary; tell the captain to set `$LCARS_WORKER_BIN` (e.g. `claude`). Do
 **not** substitute your own session for a worker.
 
+Each front-half Stage line also carries a **`⌂ <branch> @ <sha>`** marker — the
+tree that Stage actually read. Relay it: it is the captain's only sight of which
+code their Research/Validate/Plan reasoned about, and the question every
+surprising Stage result starts with. A line with **no** `⌂` means that Mission
+has no branch of its own and the Stage read the ambient checkout — say that
+plainly rather than filling in a branch name.
+
 ### The one thing you do *before* the driver: the interactive Align re-entry
 
 The driver cannot run Align — it is a human grilling session, not automatable.

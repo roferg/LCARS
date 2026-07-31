@@ -471,8 +471,15 @@ check "2. local main was not moved" "[ \"\$(sha '$r2' refs/heads/main)\" = '$BEF
 check "2. verdict is 'current'" \
   "[ \"\$(sf '$M2/state.json' baseFreshness.verdict)\" = 'current' ]"
 check "2. nothing loud was printed" "! grep -q 'BASE FRESHNESS' '$r2.drive.out'"
+# The two drives run in two SEPARATE fixture repos, so their commit ids differ by
+# construction — and since S166 each stage line ends with the tree the Stage read
+# (`⌂ <branch> @ <sha>`). That field is repo truth, not guard behaviour, so it is
+# normalised on BOTH sides exactly as the guard's own ⟳ line is dropped. Every
+# other byte must still match, which is what this check has always been about.
+# Only the ⌂ marker's sha is normalised — a sha anywhere else must still match.
+norm_drive() { grep -v 'base freshness' "$1" | sed '/⌂/s/@ [0-9a-f][0-9a-f]*$/@ <sha>/'; }
 check "2. the drive is byte-identical to a guard-off drive (bar the ⟳ line)" \
-  "diff <(grep -v 'base freshness' '$r2.drive.out') '$r2b.drive.out' >/dev/null"
+  "diff <(norm_drive '$r2.drive.out') <(norm_drive '$r2b.drive.out') >/dev/null"
 check "2. both drives reached the same stage" \
   "[ \"\$(sf '$M2/state.json' stage)\" = \"\$(sf '$M2B/state.json' stage)\" ]"
 
