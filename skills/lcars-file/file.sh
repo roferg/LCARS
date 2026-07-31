@@ -40,6 +40,92 @@ FILE_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$FILE_SKILL_DIR/../lcars-version/check.sh}"
 [ -f "$VERSION_CHECK" ] && bash "$VERSION_CHECK" ask || true
 
+# --- shared helpers: the base-freshness guard (S158) ------------------------
+# `ensure_base_current` + its state-line writer live in the shared lib so that
+# when `lcars run` grows its start-time re-check (S159) and the board grows its
+# badge (S160), all three consume the SAME verdict machinery — one
+# implementation, one vocabulary. Today `lcars file` is its only consumer.
+# Sourcing is best-effort: if the lib is missing, filing degrades to exactly its
+# pre-S158 behaviour rather than failing.
+LCARS_COMMON_LIB="${LCARS_COMMON_LIB:-$FILE_SKILL_DIR/../lcars-init/lcars-common.sh}"
+if [ -f "$LCARS_COMMON_LIB" ]; then
+  # shellcheck source=../lcars-init/lcars-common.sh
+  . "$LCARS_COMMON_LIB"
+fi
+if ! command -v ensure_base_current >/dev/null 2>&1; then
+  ensure_base_current() {
+    LCARS_BASE_VERDICT=""; LCARS_BASE_BEHIND=""; LCARS_BASE_AHEAD=""
+    LCARS_BASE_SHA=""; LCARS_BASE_CHECKED_AT=""
+    return 0
+  }
+  lcars_base_state_line() { printf ''; }
+  lcars_base_branch_note() { printf ''; }
+fi
+
+# _append_branch_note — fold the mission-branch truth (S158 round 1, D6) into
+# BRANCH_NOTE, the readout line that already reports what happened to
+# `lcars/<id>`. Keeping them together is the point: "✓ filed against the CURRENT
+# tree" printed directly above "⚠ branch already exists — reusing it" was two
+# adjacent lines contradicting each other.
+_append_branch_note() {
+  local n; n="$(lcars_base_branch_note "$BRANCH" "$BASE" "${BRANCH_ORIGIN:-}")"
+  [ -n "$n" ] || return 0
+  if [ -n "${BRANCH_NOTE:-}" ]; then
+    BRANCH_NOTE="$BRANCH_NOTE
+$n"
+  else
+    BRANCH_NOTE="$n"
+  fi
+  return 0
+}
+
+# _print_note <note> — echo a branch/base note, restoring the blank line that
+# closes the ⚠ MISSION BRANCH block. The block ends in a trailing newline that
+# `$(…)` strips, so it butted straight against `Mission filed:` while the BASE
+# FRESHNESS block (printed directly, not captured) kept its spacing — two blocks
+# of the same weight looking different for no reason (round 2, promoted copy f).
+_print_note() {
+  [ -n "${1:-}" ] || return 0
+  printf '%s\n' "$1"
+  case "$1" in *'MISSION BRANCH'*) printf '\n' ;; esac
+  return 0
+}
+
+# _branch_source_desc — what `lcars/<id>` was ACTUALLY cut from, for the readout's
+# `(off …)`. Round 2, D3: the line printed `(off $BASE)` unconditionally, so a
+# mission filed from a detached HEAD claimed to be off `main` when it was cut from
+# a commit `main` does not even contain. `git branch <name>` takes its start point
+# from HEAD, so HEAD is the answer — and a REUSED branch was not cut by this
+# filing at all, so it gets its own honest wording.
+#
+# Round 4, D1 (cosmetic): in a repo with NO COMMITS nothing was cut from
+# anything, and `$BASE` there is the literal-`main` fallback (`rev-parse
+# --abbrev-ref HEAD` fails on an unborn HEAD) — so the readout printed
+# `(off main)` two lines under "repo has no commits yet — branch … not created",
+# naming a local branch that exists nowhere. `symbolic-ref --short HEAD` answers
+# on an unborn HEAD, so name the branch the captain is really on and say it has
+# no commits yet.
+_branch_source_desc() {
+  local hb sha
+  if ! "$GIT_BIN" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+    hb="$("$GIT_BIN" symbolic-ref -q --short HEAD 2>/dev/null)" || hb=""
+    [ -n "$hb" ] && { printf '%s — no commits yet' "$hb"; return 0; }
+  fi
+  case "${BRANCH_ORIGIN:-}" in
+    reused)
+      sha="$("$GIT_BIN" rev-parse --short "refs/heads/$BRANCH" 2>/dev/null)"
+      [ -n "$sha" ] && { printf 'existing branch at %s' "$sha"; return 0; }
+      ;;
+    new)
+      hb="$("$GIT_BIN" symbolic-ref -q --short HEAD 2>/dev/null)" || hb=""
+      [ -n "$hb" ] && { printf '%s' "$hb"; return 0; }
+      sha="$("$GIT_BIN" rev-parse --short HEAD 2>/dev/null)"
+      [ -n "$sha" ] && { printf 'detached HEAD %s' "$sha"; return 0; }
+      ;;
+  esac
+  printf '%s' "$BASE"
+}
+
 # ==========================================================================
 # Park & Align helpers (S136). Defined here so the --park / --complete dispatch
 # below can call them. None runs at source time.
@@ -137,16 +223,31 @@ _make_branch() {
   BRANCH="lcars/$1"
   BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   case "$BASE" in ''|HEAD) BASE="main" ;; esac
+  # S158 — bring BASE up to date BEFORE the branch is cut, so lcars/<id> starts
+  # from the tree the rest of the world sees rather than a stale local ref. Never
+  # blocks, never touches a dirty tree, and prints its own reason when it refuses.
+  # BASEFRESH_LINE (the state.json record) is set below, once the branch exists —
+  # identical to the grill-first lane.
+  ensure_base_current "$BASE"
   BRANCH_NOTE=""
+  BRANCH_ORIGIN=""   # reused | new | "" (none created) — round 2, D3
   if "$GIT_BIN" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
     if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
       BRANCH_NOTE="  ⚠ branch $BRANCH already exists — reusing it."
+      BRANCH_ORIGIN="reused"
     elif ! "$GIT_BIN" branch "$BRANCH" >/dev/null 2>&1; then
       BRANCH_NOTE="  ⚠ could not create branch $BRANCH — create it before Implement."
+    else
+      BRANCH_ORIGIN="new"
     fi
   else
     BRANCH_NOTE="  ⚠ repo has no commits yet — branch $BRANCH not created; Implement will create it on first commit."
   fi
+  BRANCH_SOURCE="$(_branch_source_desc)"
+  # The state line and the mission-branch truth are both decided AFTER the branch
+  # exists — they are claims about THIS mission, not about the base (D6).
+  _append_branch_note
+  BASEFRESH_LINE="$(lcars_base_state_line "$BRANCH")"
 }
 
 # _validate_prd <prd-path> — every required section present (same gates as
@@ -259,6 +360,7 @@ do_park() {
       printf '  "model": "%s",\n' "$MODEL"
       [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
       [ -n "$ATTACH_LINE" ] && printf '%s\n' "$ATTACH_LINE"
+      [ -n "${BASEFRESH_LINE:-}" ] && printf '%s\n' "$BASEFRESH_LINE"
       printf '  "githubIssue": %s,\n' "${1:-null}"
       printf '  "branch": "%s",\n' "$BRANCH"
       printf '  "base": "%s"\n' "$BASE"
@@ -296,10 +398,10 @@ do_park() {
   local issue_line="(none — parked locally only)"
   [ -n "$ISSUE" ] && issue_line="#$ISSUE"
   [ -n "$GH_NOTE" ] && echo "$GH_NOTE"
-  [ -n "$BRANCH_NOTE" ] && echo "$BRANCH_NOTE"
+  _print_note "${BRANCH_NOTE:-}"
   echo "  Mission parked: $ID"
   echo "  GitHub issue:   $issue_line"
-  echo "  Branch:         $BRANCH (off $BASE)"
+  echo "  Branch:         $BRANCH (off ${BRANCH_SOURCE:-$BASE})"
   echo "  Stage:          align  ◇ STANDBY — awaiting alignment"
   echo "  Next:           run \`lcars file $ID\` to align it (the Align grill), then it flows the pipeline"
   return 0
@@ -374,6 +476,20 @@ do_complete() {
   # engine the grill just ran on is the engine the pipeline gets.
   WB="$(_resolve_worker_bin "$(_fj_str "$STATE" workerBin)")"
   ISSUE="$(_fj_raw "$STATE" githubIssue)"; case "$ISSUE" in null) ISSUE="" ;; esac
+  # The base-freshness record is RE-DECIDED here (S158 round 1, D3). Park exists
+  # precisely so an idea can sit in the backlog while origin moves on, so carrying
+  # the park-time verdict forward means a mission asserting `"verdict": "updated"`
+  # — whose own copy reads "filed against the CURRENT tree" — at the exact moment
+  # the pipeline starts against a base that is behind. An expired claim is worse
+  # than no claim. The mission BRANCH was cut at park time and is NOT re-cut or
+  # moved; if it now lags the freshened base, lcars_base_branch_note says so out
+  # loud with the command that fixes it.
+  local BASEFRESH_LINE BRANCH_LAG
+  ensure_base_current "$BASE"
+  # The branch was cut at PARK time, so it pre-exists this run — say that,
+  # never "cut from HEAD" (round 2, D3).
+  BRANCH_LAG="$(lcars_base_branch_note "$BRANCH" "$BASE" reused)"
+  BASEFRESH_LINE="$(lcars_base_state_line "$BRANCH")"
 
   # Reconstruct the staged attachments (S92) from the attachments/ dir, in order,
   # so prd.md gets the same "## Attached images" section a grill-first --attach
@@ -505,6 +621,7 @@ do_complete() {
     [ -n "$OVERRIDE_LINE" ] && printf '%s\n' "$OVERRIDE_LINE"
     [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
     [ -n "$ATTACH_LINE" ] && printf '%s\n' "$ATTACH_LINE"
+    [ -n "$BASEFRESH_LINE" ] && printf '%s\n' "$BASEFRESH_LINE"
     printf '  "githubIssue": %s,\n' "${ISSUE:-null}"
     printf '  "branch": "%s",\n' "$BRANCH"
     printf '  "base": "%s"\n' "$BASE"
@@ -521,6 +638,7 @@ do_complete() {
   [ -n "$ISSUE" ] && issue_line="#$ISSUE"
   [ -n "$GH_NOTE" ] && echo "$GH_NOTE"
   [ -n "$EST_NOTE" ] && echo "$EST_NOTE"
+  _print_note "${BRANCH_LAG:-}"
   echo "  Mission aligned: $ID"
   echo "  GitHub issue:    $issue_line"
   echo "  Type:            $TYPE"
@@ -715,16 +833,32 @@ mkdir -p "$MISSION_DIR"
 BRANCH="lcars/$ID"
 BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
 case "$BASE" in ''|HEAD) BASE="main" ;; esac
+# S158 — bring BASE up to date BEFORE the branch is cut. This is the whole point:
+# `lcars/<id>` must start from the tree the rest of the world sees, or every
+# downstream Stage reasons about code that no longer exists. The guard never
+# blocks filing, never touches a dirty tree, and prints its own legible reason
+# whenever it refuses. BASEFRESH_LINE is the record write_state persists.
+ensure_base_current "$BASE"
 BRANCH_NOTE=""
+BRANCH_ORIGIN=""   # reused | new | "" (none created) — round 2, D3
 if "$GIT_BIN" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
   if "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
     BRANCH_NOTE="  ⚠ branch $BRANCH already exists — reusing it."
+    BRANCH_ORIGIN="reused"
   elif ! "$GIT_BIN" branch "$BRANCH" >/dev/null 2>&1; then
     BRANCH_NOTE="  ⚠ could not create branch $BRANCH — create it before Implement."
+  else
+    BRANCH_ORIGIN="new"
   fi
 else
   BRANCH_NOTE="  ⚠ repo has no commits yet — branch $BRANCH not created; Implement will create it on first commit."
 fi
+BRANCH_SOURCE="$(_branch_source_desc)"
+# Both of these are claims about THIS MISSION's branch, so they are decided AFTER
+# it exists: whether the ✓ "cut from the CURRENT tree" line is even true, and
+# whether state.json may say the mission sits on baseSha (S158 round 1, D6).
+_append_branch_note
+BASEFRESH_LINE="$(lcars_base_state_line "$BRANCH")"
 
 # --- write prd.md ---------------------------------------------------------
 cat "$PRD_SRC" >"$MISSION_DIR/prd.md"
@@ -817,6 +951,7 @@ write_state() { # issue-json (a number or the literal `null`)
     [ -n "$OVERRIDE_LINE" ] && printf '%s\n' "$OVERRIDE_LINE"
     [ -n "$WORKER_BIN_LINE" ] && printf '%s\n' "$WORKER_BIN_LINE"
     [ -n "$ATTACH_LINE" ] && printf '%s\n' "$ATTACH_LINE"
+    [ -n "$BASEFRESH_LINE" ] && printf '%s\n' "$BASEFRESH_LINE"
     printf '  "githubIssue": %s,\n' "${1:-null}"
     printf '  "branch": "%s",\n' "$BRANCH"
     printf '  "base": "%s"\n' "$BASE"
@@ -926,10 +1061,10 @@ fi
 
 [ -n "$GH_NOTE" ] && echo "$GH_NOTE"
 [ -n "$EST_NOTE" ] && echo "$EST_NOTE"
-[ -n "$BRANCH_NOTE" ] && echo "$BRANCH_NOTE"
+_print_note "${BRANCH_NOTE:-}"
 echo "  Mission filed: $ID"
 echo "  GitHub issue:  $issue_line"
-echo "  Branch:        $BRANCH (off $BASE)"
+echo "  Branch:        $BRANCH (off ${BRANCH_SOURCE:-$BASE})"
 echo "  Stage:         align"
 # The estimate readout (S61): the compact Estimate summary + model mix + rationale,
 # in the active CLI's native cost unit. Empty when no estimate.json was produced.
