@@ -356,6 +356,18 @@ def _route_images(image_refs, n):
 #      surface an error instead of running on a wrong/default model.
 _VALID_SCOPES = ("all", "reasoning", "implementation")
 _VALID_TIERS = ("sonnet", "opus")
+
+# S161 fix round 3 (R2) — how a retired Mission-Log session ended, in words. Only
+# ever reached for a sid the daemon RECORDED retiring: the point of the ledger is
+# that an unknown sid gets no story at all (see _missing_log_session_message).
+_LOG_RETIRED_COPY = {
+    "replaced": "was replaced by a newer preview",
+    "discarded": "was discarded",
+    "driven": "was consumed by the captain's Go",
+}
+# How many retirements to remember. A courtesy for stale clients, so forgetting the
+# oldest just softens a message — nothing depends on it.
+_LOG_RETIRED_MAX = 64
 _STRUCTURED_OVERRIDE = re.compile(
     r"^(all|reasoning|implementation):(sonnet|opus)$", re.IGNORECASE)
 
@@ -536,6 +548,127 @@ class _AlignSession(object):
         self.image_paths = []
 
 
+class _LogSession(object):
+    """S161 — in-memory state for ONE Mission-Log authoring flow, keyed by sid.
+
+    The DAEMON's answer to the console-is-a-trap bug: before S161 the authored
+    bug PRDs lived only in `board.js` openLog's `var authored = {...}`, arrived
+    ONLY on the Preview response and were sent ONLY by the File POST. Closing the
+    console between the two threw them away, so the captain had to re-run — and
+    re-pay for — the split worker. Holding them here means Preview → (close) →
+    reopen → File costs nothing extra.
+
+    Deliberately the SAME v1 contract as `_AlignSession`: stdlib only, lives in
+    the daemon process, dies with it. No persistence, no TTL — the durable-v2
+    story is a separate, later piece of work for BOTH consoles at once.
+
+    Fields
+    ------
+    parent : the parent Mission id the bugs are logged against.
+    prds : the authored bug PRD bodies, in split order (the thing that used to
+        evaporate). Paired POSITIONALLY with `overrides` and `image_refs`.
+    children : the preview rows (title/prd/images/imageRefs) the console renders.
+    image_refs / overrides : the per-bug explicit image refs and the captain's
+        per-bug model steers, positional with `prds`.
+    images : the RAW `{name,type,dataB64}` pastes from the report box, held in
+        memory (NOT staged on disk). Filing re-stages them through the SAME
+        `_file_children(images=...)` path the legacy body uses, so the log.sh
+        dispatch is identical — and a previewed-but-never-filed session leaks no
+        file into the repo (the S91 no-leak invariant the preview already holds).
+    status : "previewed" → "filing" → "filed" | "partial" | "failed".
+        DECIDED BY A POST-CONDITION CHECK, never by log.sh's exit code (D1 —
+        `log.sh` runs `file_one_bug` inside a command substitution, so its `die`
+        exits only the SUBSHELL and a batch that filed NOTHING still exits 0):
+          filed    every authored bug is on disk.
+          partial  SOME are. Not `filed` — the batch as requested did not happen,
+                   and `error` names what landed and what did not.
+          failed   none are.
+    error : on "partial"/"failed", the plain-English shortfall + the script's own
+        reason (never a stack).
+    filed_map : per authored bug (positional with `prds`), the child mission id it
+        became — or None while it is not on disk. THE recovery ledger (N1): the
+        difference between "which bugs exist" and "which authored text is still
+        only held here" is exactly this list, so a `partial` can hand back the
+        words of the bugs that did not land instead of losing them. Filled in from
+        the measured before/after delta around each log.sh call, so an earlier
+        report's children can never be miscounted as this batch's.
+    overrides_report : the per-bug resolved/errored steer report from filing.
+
+    Three counts, three names (D2 + N1). `bug_count` is how many bugs the batch
+    IS; `filed_count` how many of them reached disk; `unfiled_count` how many are
+    still only held here. They are reported under those exact names on the session
+    payload (and the first two on the board stamp), so a card can never say 2 while
+    the truth on disk is 0. There is deliberately NO `count` — a name that means
+    "authored bugs" at one status and "filed children" at another IS the defect.
+    """
+
+    __slots__ = ("parent", "prds", "children", "image_refs", "overrides",
+                 "images", "status", "error", "overrides_report", "filed_map")
+
+    def __init__(self, parent, prds, children=None, image_refs=None,
+                 overrides=None, images=None):
+        self.parent = parent
+        self.prds = list(prds or [])
+        self.children = list(children or [])
+        self.image_refs = list(image_refs or [])
+        self.overrides = list(overrides or [])
+        self.images = list(images or [])
+        self.status = "previewed"
+        self.error = None
+        self.overrides_report = []
+        self.filed_map = [None] * len(self.prds)
+
+    @property
+    def bug_count(self):
+        """How many bugs this batch is (the authored PRDs)."""
+        return len(self.prds)
+
+    @property
+    def filed_ids(self):
+        """The child mission ids this batch has on disk, in authored order."""
+        return [c for c in self.filed_map if c]
+
+    @property
+    def filed_count(self):
+        """How many of them are on disk right now."""
+        return len(self.filed_ids)
+
+    @property
+    def unfiled_indices(self):
+        """The authored bugs that are NOT on disk — what a File still has to do."""
+        return [i for i in range(len(self.prds))
+                if i >= len(self.filed_map) or not self.filed_map[i]]
+
+    @property
+    def unfiled_count(self):
+        return len(self.unfiled_indices)
+
+    def unfiled_rows(self):
+        """The AUTHORED ROWS (title + full PRD text + image refs) not on disk.
+
+        N1 — the recovery surface. A `partial` used to report only the children
+        that landed, so the split worker's words for the bug that did NOT land
+        existed nowhere a client could reach: the console's advice ("log the ones
+        that failed as a new report") meant retyping the bug and paying for a
+        second ~25s split. These rows are that text, carried on every session
+        response, so a reopened console can rebuild it — or File can retry it.
+        """
+        rows = []
+        for i in self.unfiled_indices:
+            row = dict(self.children[i]) if i < len(self.children) else {}
+            row["index"] = i
+            row["prd"] = self.prds[i]
+            if not row.get("title"):
+                row["title"] = _prd_title(self.prds[i]) or "Untitled bug"
+            rows.append(row)
+        return rows
+
+    def stamp(self, sid):
+        """The `logFiling` shape — the ONE readout both surfaces publish (D2)."""
+        return {"sessionId": sid, "status": self.status,
+                "bugCount": self.bug_count, "filedCount": self.filed_count}
+
+
 class Actions(object):
     """Dispatch operator actions to the LCARS skill scripts.
 
@@ -568,6 +701,18 @@ class Actions(object):
         # active Align grillings, keyed by sessionId (in-memory; ADR-006 local).
         self._align = {}
         self._align_lock = threading.Lock()
+        # S161: active Mission-Log authoring sessions, keyed by sessionId. Same
+        # in-memory / dies-with-the-daemon contract as `_align` above; one live
+        # session per parent mission (a fresh preview replaces the old one).
+        self._log_sessions = {}
+        self._log_lock = threading.Lock()
+        # S161 fix round 3 (R2): sids this daemon HAS held and how each one ended
+        # ({sid: {"parent","reason","by"}}, insertion-ordered, capped). Without it
+        # an unknown sid could only be GUESSED at, and the guess on offer — "it was
+        # replaced by a newer preview" — is a claim about a session the daemon may
+        # never have seen. Remembering the retirement is what makes "replaced"
+        # sayable exactly when it is true, and nothing more.
+        self._log_retired = {}
         # S109: the DAEMON OWNS launched-app lifecycles. Each `lcars launch` setsids
         # its app into its OWN process group (PGID == app pid) and RETURNS — so the
         # app is NOT a child of anything the daemon waited on; to kill it we must
@@ -1764,7 +1909,7 @@ class Actions(object):
         # absence, when the repair brought the systems online).
         return {"output": out, "board": self._reader.board()}
 
-    def log_preview(self, mid, text=None, images=None):
+    def log_preview(self, mid, text=None, images=None, discard_unfiled=False):
         """POST /api/mission/<id>/log — preview the N child bug missions.
 
         Two modes:
@@ -1775,6 +1920,12 @@ class Actions(object):
           • no text → READ-ONLY preview of the bug missions ALREADY linked to this
             parent (state.json.parentMission == mid). Keeps the S68 behaviour so
             the board can show an already-filed batch with no worker spend.
+
+        R1 — an AUTHORING preview replaces the parent's live session, so it can
+        destroy authored text the daemon is the only copy of. `_guard_stranded_
+        preview` decides whether it is allowed to; `discard_unfiled` is the
+        captain saying "yes, throw the leftover away" on purpose. The read-only
+        mode authors nothing and replaces nothing, so it is never guarded.
         """
         self._require_mission(mid)
         text = (text or "").strip()
@@ -1782,7 +1933,80 @@ class Actions(object):
             children = self._linked_children(mid)
             return {"children": children, "count": len(children),
                     "parent": mid, "authored": False}
+        # BEFORE the worker: a refusal that had already spent the ~25s split would
+        # be its own version of this defect.
+        self._guard_stranded_preview(mid, discard_unfiled)
         return self._log_author(mid, text, images=images)
+
+    def _guard_stranded_preview(self, mid, discard_unfiled=False):
+        """Refuse a re-preview that would SILENTLY destroy held authored text (R1).
+
+        The defect: at `partial` the daemon held the authored PRD of a bug that
+        never reached disk — the last copy of a ~25s split the captain had already
+        paid for — and a brand-new preview replaced the session and dropped it,
+        with no warning anywhere. "Discard Unfiled" beside it warned; the door that
+        actually lost the text did not.
+
+        So the loss becomes INTENTIONAL instead of incidental, and it is decided
+        HERE rather than in the console, because a client can always be bypassed
+        (the tester reached this by posting straight at the HTTP API):
+
+          previewed          replace, silently — nothing is stranded. The captain
+                             is re-splitting an un-committed report and is paying
+                             for that split on purpose; this is the ordinary case
+                             and it must not grow a confirmation.
+          filed              replace, silently — every authored bug is on disk, so
+                             the session holds no text that only exists here.
+          partial | failed   REFUSED while any authored bug is still unfiled,
+                             naming the bugs at stake and both ways forward (File
+                             them, or discard them deliberately). `discard_unfiled`
+                             is that deliberate choice arriving, and passes.
+          filing             REFUSED outright — the same one refusal `log_discard`
+                             makes. A filing thread is mid-flight and settles onto
+                             THIS sid; replacing the session now would orphan it and
+                             hide the work the parent card is advertising.
+
+        Raises ActionError(409); returns None when the preview may proceed.
+
+        Known narrow window, deliberately left open: the check runs BEFORE the split
+        worker (a refusal must not cost a ~25s turn), so a File that turns the same
+        parent's session `partial` DURING those seconds is not seen, and the swap in
+        `_new_log_session` still replaces it. It needs a File and a Preview racing on
+        one parent, and either resolution there loses one of two paid-for splits, so
+        closing it is its own design decision rather than a tightening.
+        """
+        with self._log_lock:
+            _sid, sess = self._live_log_session(mid)
+            if sess is None:
+                return
+            if sess.status == "filing":
+                raise ActionError(
+                    409, "these logged bugs are being filed right now — wait for "
+                         "the filing to finish before previewing a new report")
+            if sess.status == "previewed" or not sess.unfiled_indices:
+                return
+            if discard_unfiled:
+                return
+            titles = [(r.get("title") or "Untitled bug")
+                      for r in sess.unfiled_rows()]
+        raise ActionError(409, self._stranded_preview_message(titles))
+
+    @staticmethod
+    def _stranded_preview_message(titles):
+        """Why a re-preview was refused: what is at stake, and both ways out."""
+        n = len(titles)
+        shown = titles[:3]
+        named = ", ".join('"%s"' % t for t in shown)
+        if n > len(shown):
+            named += " and %d more" % (n - len(shown))
+        return ("this mission-log session still holds %d authored bug%s that never "
+                "reached disk (%s) — a new preview would throw that text away, and "
+                "the split worker that wrote it has already been paid for. File the "
+                "%d remaining bug%s to keep %s, or discard the unfiled text "
+                "deliberately (\"Discard Unfiled\", or re-send this preview with "
+                "discardUnfiled)."
+                % (n, "" if n == 1 else "s", named, n, "" if n == 1 else "s",
+                   "it" if n == 1 else "them"))
 
     def _log_author(self, parent, text, images=None):
         """Author N bug PRDs from a free-form report via one worker turn.
@@ -1851,11 +2075,20 @@ class Actions(object):
                              # the EXPLICIT refs — round-tripped to /log/file so
                              # _file_children recomputes the SAME union at filing.
                              "imageRefs": explicit[i]})
+        # S161 — the DAEMON now owns these authored PRDs. Mint a session holding
+        # them (plus the per-bug refs, the blank steers, and the raw pastes) so a
+        # console closed between Preview and File loses NOTHING: reopening restores
+        # from `GET .../log/session` and filing needs only the sessionId. Purely
+        # ADDITIVE to the response — an older client that ignores `sessionId` still
+        # posts the full prds body and takes the unchanged legacy path.
+        sid = self._new_log_session(
+            parent, prds, children=children, image_refs=explicit,
+            overrides=[""] * len(prds), images=images)
         return {"children": children, "count": len(children),
-                "parent": parent, "authored": True}
+                "parent": parent, "authored": True, "sessionId": sid}
 
     def _file_children(self, mid, prds, overrides, env_extra, images=None,
-                       image_refs=None):
+                       image_refs=None, output=None):
         """Persist one linked bug Mission per PRD via log.sh (blocking).
 
         Each PRD is paired POSITIONALLY with its captain override (S74). The
@@ -1869,6 +2102,11 @@ class Actions(object):
         flag and is reported with an error (never silent-drop). No-op for no prds.
 
         Returns a per-PRD override report [{index, raw, resolved, label, error}].
+
+        `output` — pass a LIST to collect log.sh's combined stdout+stderr. D1: the
+        script prints its per-bug validation refusals and then exits 0 anyway, so
+        those lines are the only place its own reason for filing nothing survives.
+        Default None keeps the legacy call sites byte-identical.
         """
         prds = list(prds or [])
         overrides = list(overrides or [])
@@ -1915,7 +2153,10 @@ class Actions(object):
                                "resolved": resolved,
                                "label": _override_label(resolved),
                                "error": None})
-            self._run("log", args, env_extra=env_extra)
+            proc = self._run("log", args, env_extra=env_extra)
+            if output is not None:
+                output.append((getattr(proc, "stdout", b"") or b"")
+                              .decode("utf-8", "replace"))
         finally:
             for p in tmp + staged:
                 try:
@@ -1925,7 +2166,7 @@ class Actions(object):
         return report
 
     def log_file(self, mid, prds=None, overrides=None, images=None,
-                 image_refs=None):
+                 image_refs=None, session_id=None):
         """POST /api/mission/<id>/log/file — file authored bugs, return enriched.
 
         The file-then-review-then-run flow (S74): the captain's confirm step FILES
@@ -1934,27 +2175,607 @@ class Actions(object):
         their cost/difficulty pills + suggested model mix so the review panel can
         show each bug's estimate and the captain can re-steer before Run Fixes. It
         does NOT dispatch resolve-logs — "Run Fixes" (log_run) does that.
+
+        TWO forms, and they are deliberately different in shape:
+
+        * `session_id` (S161, the one the board uses now) — the authored PRDs are
+          already held by the daemon, so the body carries only the sid (plus any
+          edited per-bug steers). The file+estimate work is DISPATCHED onto a
+          worker thread and this returns PROMPTLY with status "filing"; the
+          session then walks to "filed" or "failed" and
+          `GET .../log/session` (or the board's `logFiling` stamp) carries it.
+        * `prds` in the body (the pre-S161 legacy form) — UNCHANGED and
+          byte-identical: it BLOCKS until every child is filed and estimated and
+          returns exactly the keys it always did. An older client keeps working.
+
+        Neither form ever dispatches resolve-logs (BUG-059's hold).
         """
+        if session_id:
+            return self._log_file_session(mid, session_id, overrides=overrides)
         self._require_mission(mid)
         engine = self._persisted_worker_bin(mid)
         env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
         prds = [p for p in (prds or []) if isinstance(p, str) and p.strip()]
         report = self._file_children(mid, prds, overrides, env_extra,
                                      images=images, image_refs=image_refs)
-        children = self._linked_children(mid)
-        # map the per-PRD override report onto the freshly-filed child ids (same
-        # positional order) so the review panel can echo each resolved steer /
-        # surface a normalization error (S74 follow-up; never silent-drop).
+        children, resolved = self._map_override_report(mid, report)
+        return {"children": children, "count": len(children),
+                "parent": mid, "filed": True, "overrides": resolved}
+
+    def _map_override_report(self, mid, report, children=None, child_ids=None):
+        """Map the per-PRD override report onto the freshly-filed child ids.
+
+        Same positional order, so the review panel can echo each resolved steer /
+        surface a normalization error (S74 follow-up; never silent-drop). Shared by
+        the legacy blocking file path and the S161 session filing thread so the two
+        can never drift.
+
+        `children` — pass THIS batch's children to map against those alone.
+        Omitted (and no `child_ids`) ⇒ every linked child, the legacy behaviour.
+        `child_ids` — the ATTRIBUTED child id per dispatched PRD (or None where the
+        bug did not land). The session path passes this: positional indexing into
+        "whatever landed" silently mis-attributes a steer as soon as one bug of the
+        batch fails, and after a retry the dispatch is a SUBSET of the batch.
+        """
+        if children is None and child_ids is None:
+            children = self._linked_children(mid)
         resolved = []
-        for r in report:
+        for r in (report or []):
             idx = r.get("index")
-            cid = children[idx]["id"] if (idx is not None
-                                          and idx < len(children)) else None
+            if child_ids is not None:
+                cid = (child_ids[idx] if (idx is not None
+                                          and idx < len(child_ids)) else None)
+            else:
+                cid = children[idx]["id"] if (idx is not None
+                                              and idx < len(children)) else None
             resolved.append({"id": cid, "raw": r.get("raw"),
                              "resolved": r.get("resolved"),
                              "label": r.get("label"), "error": r.get("error")})
-        return {"children": children, "count": len(children),
-                "parent": mid, "filed": True, "overrides": resolved}
+        return (children if children is not None else []), resolved
+
+    # ── S161: the daemon-side Mission-Log session ─────────────────────────────
+    def _new_log_session(self, parent, prds, children=None, image_refs=None,
+                         overrides=None, images=None):
+        """Mint a `_LogSession` for `parent` and return its sid.
+
+        ONE live session per parent mission: a fresh authoring preview REPLACES
+        the previous one (the captain re-split the report — the old PRDs are the
+        ones they just discarded), so the board can never carry two competing
+        `logFiling` stamps for the same card.
+        """
+        sid = uuid.uuid4().hex[:12]
+        sess = _LogSession(parent, prds, children=children,
+                           image_refs=image_refs, overrides=overrides,
+                           images=images)
+        with self._log_lock:
+            for old, s in list(self._log_sessions.items()):
+                if s.parent == parent:
+                    del self._log_sessions[old]
+                    # R2: remember that THIS sid was the one replaced, so a client
+                    # still holding it can be told so truthfully — and an sid we
+                    # never saw cannot be told the same story.
+                    self._retire_log_session(old, parent, "replaced")
+            self._log_sessions[sid] = sess
+        return sid
+
+    def _retire_log_session(self, sid, parent, reason):
+        """Record HOW a session this daemon held ended (R2). Call under the lock.
+
+        The only reason `_missing_log_session_message` can say "replaced" without
+        inventing anything. Bounded (oldest entry falls off) — it is a courtesy
+        ledger for stale clients, not state anything depends on, so forgetting the
+        distant past just degrades a message back to "not one I am holding".
+
+        Deliberately records the reason and NOT which sid superseded this one: the
+        message names what is live NOW, which is both the actionable fact and one
+        this cannot go stale about.
+        """
+        self._log_retired[sid] = {"parent": parent, "reason": reason}
+        while len(self._log_retired) > _LOG_RETIRED_MAX:
+            self._log_retired.pop(next(iter(self._log_retired)))
+
+    def _drop_log_session(self, parent, keep_unfiled=False):
+        """Consume (drop) the live session for `parent` — the explicit Go ran.
+
+        Once resolve-logs is driving the batch the authored PRDs are spent: the
+        bugs are real Missions on the board with their own cards. Dropping the
+        session clears the `logFiling` stamp, so the parent card stops advertising
+        a filing that is already history.
+
+        `keep_unfiled` (N1) — EXCEPT when some of the batch never reached disk. The
+        Go drives the children that landed; this session is still the only copy of
+        the authored text of the ones that did not, so consuming it here would
+        destroy exactly what S161 exists to protect. Such a session is kept (its
+        status still reads `partial`, which is true) until the captain discards it.
+        """
+        with self._log_lock:
+            for sid, s in list(self._log_sessions.items()):
+                if s.parent != parent:
+                    continue
+                if keep_unfiled and s.prds and s.unfiled_indices:
+                    continue
+                del self._log_sessions[sid]
+                self._retire_log_session(sid, parent, "driven")
+
+    def _log_file_session(self, mid, sid, overrides=None):
+        """File the bugs a `_LogSession` holds that are NOT on disk yet.
+
+        The estimator runs once per child inside log.sh, which is the long step
+        (BUG-G's lesson on the run side). Holding the POST for it is what made the
+        console feel like a trap, so the work goes onto a daemon thread and the
+        POST returns the accepted "filing" status immediately. Re-posting while a
+        dispatch is already in flight is an IDEMPOTENT no-op — never a second
+        log.sh (that would duplicate every bug child and re-spend the estimator).
+
+        ONE RULE decides what a File does (N1): it dispatches exactly the authored
+        bugs that are not on disk. From `previewed`/`failed` that is all of them;
+        from `partial` it is the missing ones ONLY — so a shortfall is RETRYABLE
+        rather than a dead end, and the children that already landed can never be
+        duplicated. Nothing left to file ⇒ a refusal, because the next step from a
+        complete batch is the captain's Go.
+        """
+        self._require_mission(mid)
+        with self._log_lock:
+            sess = self._log_sessions.get(sid)
+            if sess is None:
+                # D4: say only what is KNOWN. The old copy blamed a daemon restart
+                # for every miss, which was flatly false for the common case — a
+                # second Preview REPLACES the session, so the console's old sid is
+                # stale while the daemon has been up the whole time.
+                raise ActionError(404, self._missing_log_session_message(mid, sid))
+            if sess.parent != mid:
+                raise ActionError(
+                    409, "mission-log session %s belongs to %s, not %s"
+                    % (sid, sess.parent, mid))
+            # The captain may have edited the per-bug steers in the console since
+            # the preview; those ride the file POST and land on the session — but
+            # ONLY when the list is parallel to the authored batch. At `partial` the
+            # console's steer inputs are indexed by the children that LANDED, so
+            # adopting such a list would silently move a steer onto another bug.
+            if isinstance(overrides, list) and len(overrides) == len(sess.prds):
+                sess.overrides = [o if isinstance(o, str) else ""
+                                  for o in overrides]
+            if sess.status == "filing":
+                return self._log_dispatch_payload(mid, sid, sess)
+            if not sess.prds:
+                raise ActionError(
+                    400, "this mission-log session holds no authored bug PRDs "
+                         "to file")
+            pending = sess.unfiled_indices
+            if not pending:
+                # every authored bug is on disk. Re-running log.sh over them would
+                # duplicate every child and re-spend the estimator.
+                raise ActionError(
+                    409, "these logged bugs are already filed — the next step is "
+                         "the captain's Go")
+            sess.status = "filing"
+            sess.error = None
+            args = (mid, sid) + self._log_pass_args(sess, pending)
+            # snapshot the response BEFORE the thread can move the status, so the
+            # POST always reports the dispatch it just accepted (never a racy
+            # "filed" that depends on how fast log.sh happened to be).
+            payload = self._log_dispatch_payload(mid, sid, sess)
+        threading.Thread(target=self._log_file_worker, args=args,
+                         daemon=True).start()
+        return payload
+
+    @staticmethod
+    def _log_pass_args(sess, pending):
+        """The (indices, prds, overrides, image_refs, images) for ONE filing pass.
+
+        A FIRST pass covers the whole batch, and hands the session's images and
+        per-bug refs over VERBATIM so the log.sh argv is exactly what the legacy
+        prds-in-body dispatch builds.
+
+        A RETRY covers a SUBSET, which means the images have to be re-routed as
+        well: `_route_images` treats an image referenced by none of the bugs it is
+        given as ORPHANED and attaches it to every one of them, so an image tied
+        only to an already-filed bug would otherwise land on the retried ones. We
+        resolve each retried bug's FINAL image set (explicit ∪ orphaned — the one
+        routing formula) from the ORIGINAL refs, keep only those images, renumber
+        them, and hand each bug its own set explicitly. Same attachments per bug,
+        nothing borrowed from a bug that is not in this pass.
+        """
+        idx = list(pending)
+        prds = [sess.prds[i] for i in idx]
+        steers = [sess.overrides[i] if i < len(sess.overrides) else ""
+                  for i in idx]
+        if len(idx) == len(sess.prds):
+            return idx, prds, steers, list(sess.image_refs), list(sess.images)
+        refs = [(sess.image_refs[i] if i < len(sess.image_refs) else None)
+                for i in range(len(sess.prds))]
+        _orphaned, _explicit, union = _route_images(refs, len(sess.images))
+        keep = sorted(set(k for i in idx for k in union[i]))
+        pos = dict((k, j + 1) for j, k in enumerate(keep))
+        return (idx, prds, steers,
+                [[pos[k] for k in union[i]] for i in idx],
+                [sess.images[k - 1] for k in keep])
+
+    @staticmethod
+    def _log_dispatch_payload(mid, sid, sess):
+        """The accepted-dispatch response for a file-by-sessionId POST.
+
+        No `count` (N2): a key that means "authored bugs" here and "filed children"
+        on the next response is the lie itself. The three self-describing counts —
+        and `unfiled`, the authored text of what is still missing — are the payload.
+        """
+        return {"sessionId": sid, "parent": mid, "status": sess.status,
+                "authored": True, "filed": False,
+                "children": [dict(c) for c in sess.children],
+                "bugCount": sess.bug_count, "filedCount": sess.filed_count,
+                "unfiled": sess.unfiled_rows(),
+                "unfiledCount": sess.unfiled_count}
+
+    @staticmethod
+    def _attribute_landed(indices, prds, landed):
+        """{authored index -> child id} for the bugs this pass put on disk.
+
+        The measured delta says HOW MANY landed; this says WHICH — the difference
+        between reporting a shortfall and being able to hand back the right bug's
+        authored text (N1), and between echoing a steer on the right child and the
+        wrong one.
+
+        Title first: log.sh derives each child's title from its PRD's `# Mission:`
+        line (`_prd_title` reads the same line), so that is a real identity, not a
+        guess. Whatever is left over is then filled in POSITIONALLY, so the
+        attribution always accounts for every landed child and can never contradict
+        `filedCount` — a title the script rewrote degrades the choice of which bug
+        is unfiled, never the count of what exists.
+        """
+        remaining = list(landed)
+        out = {}
+        for pos, i in enumerate(indices):
+            title = _prd_title(prds[pos]) if pos < len(prds) else None
+            if not title:
+                continue
+            for c in remaining:
+                if (c.get("title") or "") == title:
+                    out[i] = c["id"]
+                    remaining.remove(c)
+                    break
+        for i in indices:
+            if i in out or not remaining:
+                continue
+            out[i] = remaining.pop(0)["id"]
+        return out
+
+    def _log_file_worker(self, mid, sid, indices, prds, overrides, image_refs,
+                         images):
+        """The dispatched filing: log.sh per bug (estimator included), then mark.
+
+        BUG-059's HOLD LIVES HERE: this NEVER dispatches resolve-logs. Reaching
+        "filed" is the end of the road until the captain's explicit Go posts to
+        /log/run.
+
+        D1 — THE STATUS IS A MEASUREMENT, NOT A REPORT. `log.sh` cannot be trusted
+        to tell us whether it worked: `file_one_bug` runs inside a command
+        substitution, so its `die` exits the SUBSHELL and the batch still ends
+        `exit 0` having filed nothing (it even prints ``Run `lcars run ` to begin``
+        with an EMPTY id). So we do not ask the script — we count the linked bug
+        children on disk BEFORE and AFTER, and the delta decides:
+
+            every authored bug landed → filed
+            some landed               → partial   (NEVER `filed`)
+            none landed               → failed
+
+        A non-zero exit is folded into the SAME check, because a script that dies
+        halfway has still put children on disk. Whatever we end up saying, a human
+        reading the status is never misled about what exists.
+
+        `indices` are the AUTHORED positions this pass is filing (all of them on a
+        first pass; only the missing ones on a retry — N1), so what landed is
+        attributed back onto the session's `filed_map` and the status is recomputed
+        for the WHOLE batch: a retry that fills the last gap reads `filed`.
+        """
+        engine = self._persisted_worker_bin(mid)
+        env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+        before = set(c["id"] for c in self._linked_children(mid))
+        said = []
+        report, fault = [], None
+        try:
+            report = self._file_children(mid, prds, overrides, env_extra,
+                                         images=images, image_refs=image_refs,
+                                         output=said)
+        except ActionError as exc:
+            fault = exc.message
+        except Exception as exc:   # never leak a traceback into the console
+            fault = "filing the logged bugs failed: %s" % exc
+        # ── the post-condition check ─────────────────────────────────────────
+        landed = [c for c in self._linked_children(mid)
+                  if c["id"] not in before]
+        attributed = self._attribute_landed(indices, prds, landed)
+        try:
+            _c, resolved = self._map_override_report(
+                mid, report,
+                child_ids=[attributed.get(i) for i in indices])
+        except Exception:
+            resolved = []
+        self._settle_log_session(sid, attributed, resolved, said, fault)
+
+    def _settle_log_session(self, sid, attributed, resolved, said, fault):
+        """Merge ONE filing pass into the session and re-measure its status.
+
+        The status describes the WHOLE batch, never one pass: after a retry that
+        files the last missing bug the session reads `filed`, and after one that
+        files none of them it stays `partial` with the shortfall restated. The
+        per-bug steer report is merged by child id, so an earlier pass's entries
+        survive a retry instead of being replaced by the subset's.
+        """
+        with self._log_lock:
+            sess = self._log_sessions.get(sid)
+            if sess is None:
+                return
+            for i, cid in attributed.items():
+                while len(sess.filed_map) <= i:
+                    sess.filed_map.append(None)
+                sess.filed_map[i] = cid
+            if resolved:
+                fresh = set(r.get("id") for r in resolved if r.get("id"))
+                sess.overrides_report = [
+                    r for r in sess.overrides_report if r.get("id") not in fresh
+                ] + list(resolved)
+            filed = sess.filed_ids
+            if not sess.unfiled_indices:
+                sess.status, sess.error = "filed", None
+                return
+            sess.status = "partial" if filed else "failed"
+            sess.error = self._log_shortfall_message(sess.bug_count, filed,
+                                                    said, fault)
+
+    @staticmethod
+    def _log_shortfall_message(want, filed_ids, said, fault):
+        """Plain English for a batch that did not fully land (D1 + N1).
+
+        Names the shortfall FIRST — how many were asked for, how many are on disk,
+        and which ones — then says the missing bugs' authored text is STILL HELD
+        (round 1 sent the captain off to "log the ones that failed as a new report",
+        which meant retyping a bug and paying for a second split worker, and it said
+        so while quietly discarding that very text), then appends whatever reason the
+        script itself gave, since that is the only place a swallowed `die` survives.
+        Never a stack trace.
+        """
+        if filed_ids:
+            head = ("only %d of %d authored bug%s filed (%s) — %d did not reach "
+                    "disk; their authored text is still held, so File again "
+                    "retries just those (no second split)"
+                    % (len(filed_ids), want, "" if want == 1 else "s",
+                       ", ".join(filed_ids), want - len(filed_ids)))
+        else:
+            head = ("nothing was filed — none of the %d authored bug%s reached "
+                    "disk; the authored text is still held, so File again retries "
+                    "them (no second split)" % (want, "" if want == 1 else "s"))
+        reason = Actions._log_fault_reason(said, fault)
+        return "%s. %s" % (head, reason) if reason else head + "."
+
+    @staticmethod
+    def _log_fault_reason(said, fault):
+        """The script's OWN words for why, from its combined output (D1).
+
+        log.sh's swallowed refusals are printed, not returned, so its stdout+stderr
+        is the only witness. Prefer its `lcars log:` / `log.sh:` lines, then a
+        non-zero exit's message, then the last thing it said at all.
+        """
+        blob = "\n".join([s for s in (said or []) if s])
+        lines = [ln.strip() for ln in blob.splitlines() if ln.strip()]
+        spoke = [ln for ln in lines
+                 if ln.startswith("lcars log:") or ln.startswith("log.sh:")]
+        if spoke:
+            return " ".join(spoke[:3])
+        if fault:
+            return fault
+        return lines[-1] if lines else ""
+
+    def _missing_log_session_message(self, mid, sid):
+        """Why a sid is unknown — told apart, not guessed (D4, then R2).
+
+        Call under `_log_lock` (it reads `_live_log_session` + `_log_retired`).
+
+        D4 killed the invented "the daemon was restarted". R2 is the SAME class one
+        door along: with a live session for the parent, EVERY unknown sid was told
+        it "was replaced by a newer preview" — including a sid that never existed,
+        which the daemon cannot possibly know was replaced (the tester posted
+        `deadbeefcafe` and was told a story about it). A reason is only stated when
+        the retirement ledger actually recorded it:
+
+          in the ledger      say how it ended — replaced / discarded / consumed by
+                             the Go. Knowable, because we wrote it down.
+          not in the ledger  say only that it is not a session we hold, plus what
+                             IS live (or that nothing is). No reason offered.
+
+        Either way the remedy follows from what is true, which is the part D4 got
+        right and this keeps.
+        """
+        live_sid, live = self._live_log_session(mid)
+        known = self._log_retired.get(sid)
+        if known is not None and known.get("parent") != mid:
+            known = None          # a sid from another parent's flow proves nothing
+        if live is not None:
+            tail = (" — the live one for %s is %s; reopen the Mission Log to pick "
+                    "up the current one" % (mid, live_sid))
+        else:
+            tail = (" — nothing is being held for %s now; preview the report again"
+                    % mid)
+        if known is not None:
+            how = _LOG_RETIRED_COPY.get(known.get("reason"),
+                                        "is no longer being held")
+            return "mission-log session %s %s%s" % (sid, how, tail)
+        if live is not None:
+            return ("mission-log session %s is not one this daemon is holding%s"
+                    % (sid, tail))
+        return ("no live mission-log session %s for %s — nothing is being held "
+                "for it; preview the report again" % (sid, mid))
+
+    def log_discard(self, mid):
+        """POST /api/mission/<id>/log/discard — throw away a live log session.
+
+        D3 — Align's `POST /api/align/<sid>/cancel` parity for the Mission Log. A
+        previewed-then-abandoned session used to stamp `logFiling` on the parent
+        card until the daemon restarted, with no way to clear it; once S162 renders
+        that stamp as a band, an abandoned preview would read as a filing
+        permanently in flight. So the console dismisses its session explicitly.
+
+        IDEMPOTENT and never a 404 (Align answers 200 for a bogus sid too), so a
+        stale card can always clear itself — including for a mission that no longer
+        exists. Dispatches nothing and touches no filed work: it drops a session,
+        not the bug missions a session already put on disk.
+
+        A `partial` is discardable too (N1) — that is how the captain says "I am
+        done with the leftover". It is the only way to clear the card once the Go
+        has driven what landed, since the Go deliberately KEEPS a session that still
+        holds unfiled authored text. The console labels that dismissal for what it
+        destroys ("Discard Unfiled"), because it is the last copy of those words.
+
+        The ONE refusal: while a filing is actually IN FLIGHT, since clearing the
+        band then would hide the very thing the band exists to show.
+        """
+        with self._log_lock:
+            sid, sess = self._live_log_session(mid)
+            if sess is not None and sess.status == "filing":
+                raise ActionError(
+                    409, "these logged bugs are being filed right now — wait for "
+                         "the filing to finish before discarding it")
+            if sid is not None:
+                del self._log_sessions[sid]
+                self._retire_log_session(sid, mid, "discarded")
+        return {"parent": mid, "sessionId": sid, "status": "discarded"}
+
+    def log_session_state(self, mid):
+        """GET /api/mission/<id>/log/session — restore a reopened console.
+
+        Mirrors `align_state`: the captain backgrounded the Mission-Log console,
+        and this hands back EXACTLY what they left — the authored bugs while the
+        session is `previewed`/`filing`/`failed`, and the children that actually
+        landed, with their estimate pills, once it is `filed`/`partial`. Read-only:
+        it dispatches nothing.
+
+        A mission with no live session 404s (the console then opens fresh).
+        `filed` is reported ONLY when the post-condition check found every authored
+        bug on disk — a mid-flight session reads `filing`, and a short one reads
+        `partial` (with `filed: false`), never `filed` (D1).
+
+        Counts (D2 + N2): `bugCount` = how many bugs the batch is, `filedCount` =
+        how many of them are on disk, `unfiledCount` = how many are not — three
+        names, three meanings, the first two identical to what the board stamp
+        publishes, so the card and the console can never contradict each other.
+        There is NO `count`: it equalled `bugCount` at four statuses and
+        `filedCount` at `partial` (because `children` itself changes meaning once
+        only part of a batch lands), and one key that means two things IS the defect.
+        `/log/session` is new in S161, so nothing depended on it — the pre-S161
+        `/log` and `/log/file` payloads keep their own `count` untouched.
+
+        `unfiled` (N1) — the authored rows, WITH their full PRD text, of every bug
+        that is not on disk. Present at every status and always meaning that one
+        thing. This is what makes a shortfall recoverable: the split worker's words
+        for the bug that failed are still here, so the console can show them and
+        File can retry just those, instead of the captain retyping the bug and
+        paying for a second ~25s split.
+        """
+        self._require_mission(mid)
+        with self._log_lock:
+            sid, sess = self._live_log_session(mid)
+            if sess is None:
+                raise ActionError(404, "no mission-log session for %s" % mid)
+            status, error = sess.status, sess.error
+            children = [dict(c) for c in sess.children]
+            report = list(sess.overrides_report)
+            steers = list(sess.overrides)
+            bug_count, filed_ids = sess.bug_count, list(sess.filed_ids)
+            unfiled = sess.unfiled_rows()
+        counts = {"bugCount": bug_count, "filedCount": len(filed_ids),
+                  "unfiled": unfiled, "unfiledCount": len(unfiled)}
+        if status in ("filed", "partial"):
+            # THIS batch's children only (the measured delta), so a parent that
+            # already carried bug children from an earlier report can't inflate it.
+            by_id = dict((c["id"], c) for c in self._linked_children(mid))
+            landed = [by_id[i] for i in filed_ids if i in by_id]
+            out = {"sessionId": sid, "parent": mid, "status": status,
+                   "authored": False, "filed": status == "filed",
+                   "children": landed, "overrides": report}
+            out.update(counts)
+            if status == "partial":
+                out["error"] = error or (
+                    "only %d of %d authored bugs filed — the rest are still held "
+                    "here" % (len(filed_ids), bug_count))
+            return out
+        out = {"sessionId": sid, "parent": mid, "status": status,
+               "authored": True, "filed": False,
+               "children": children, "steers": steers}
+        out.update(counts)
+        if status == "failed":
+            out["error"] = error or "filing the logged bugs failed"
+        return out
+
+    def _live_log_session(self, mid):
+        """(sid, session) for `mid`, or (None, None). Call under `_log_lock`."""
+        found = (None, None)
+        for sid, s in self._log_sessions.items():
+            if s.parent == mid:
+                found = (sid, s)
+        return found
+
+    def _log_stamps(self):
+        """{parent id -> the `logFiling` stamp} for every live log session.
+
+        D2: the stamp is built by `_LogSession.stamp`, the ONE place the readout is
+        shaped, so the card cannot drift from what `log_session_state` reports.
+        """
+        out = {}
+        with self._log_lock:
+            for sid, s in self._log_sessions.items():
+                out[s.parent] = s.stamp(sid)
+        return out
+
+    def log_overlay(self, board):
+        """Additively stamp `logFiling` on the parent card of a live log session.
+
+        The `align_overlay` shape, for the Mission-Log half: so a filing survives a
+        page reload (a fresh tab has no client state), stamp
+        `card["logFiling"] = {"sessionId","status","bugCount","filedCount"}` onto the PARENT
+        mission's board card while its session is live and un-consumed. Purely
+        in-memory and ADDITIVE — with no live session the board is returned
+        byte-for-byte unchanged. It does NOT move `adapter.fingerprint()`, so it
+        never drives an SSE push; the safety poll picks it up.
+
+        A read-only / github build constructs the daemon with actions=None, so this
+        is never reached there — the parent card is never stamped.
+        """
+        if not isinstance(board, dict):
+            return board
+        cols = board.get("columns")
+        if not isinstance(cols, dict):
+            return board
+        stamps = self._log_stamps()
+        if not stamps:
+            return board          # no live sessions → byte-identical board.
+        for col in cols.values():
+            if not isinstance(col, list):
+                continue
+            for card in col:
+                if isinstance(card, dict) and card.get("id") in stamps:
+                    card["logFiling"] = stamps[card["id"]]
+        return board
+
+    def log_overlay_mission(self, mission):
+        """Stamp `logFiling` onto a SINGLE mission-DETAIL dict.
+
+        The detail payload must mirror the board card (the `align_overlay_mission`
+        lesson: the detail modal never runs through the board overlay, so without
+        this it falls back to client state that is empty after a reload). Additive
+        + in-memory: a mission with no live session is returned unchanged.
+
+        Same `_LogSession.stamp` shape as the board card, by construction (D2).
+        """
+        if not isinstance(mission, dict):
+            return mission
+        mid = mission.get("id")
+        if not mid:
+            return mission
+        with self._log_lock:
+            sid, sess = self._live_log_session(mid)
+            if sess is None:
+                return mission
+            mission["logFiling"] = sess.stamp(sid)
+        return mission
 
     def log_run(self, mid, prds=None, overrides=None, confirm=False,
                 images=None, image_refs=None):
@@ -2029,6 +2850,13 @@ class Actions(object):
         # are filed; the board/SSE then carries the wave progress. The engine env
         # (BUG-D) is preserved — _spawn carries env_extra exactly as _run did.
         self._spawn("resolve", ["--parent", mid], env_extra=env_extra)
+        # S161: the explicit Go CONSUMES the authoring session — the bugs are real
+        # Missions being driven now, so the parent card must stop advertising a
+        # filing. (Reached only on the Go paths; the file-then-hold branch above
+        # returns before this and deliberately leaves the session live.) N1: a
+        # session still holding bugs that never reached disk is KEPT — the Go drives
+        # what landed, and dropping it would destroy the rest's authored text.
+        self._drop_log_session(mid, keep_unfiled=True)
         state = self._mission_state(mid)
         # carry the resolved/erroring per-bug steers so the UI can echo them
         # (S74 follow-up: a steer that couldn't be normalized rides as an error

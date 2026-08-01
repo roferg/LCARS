@@ -3656,6 +3656,12 @@ function openLog(id) {
     var preview = el("div");
     m.body.appendChild(preview);
 
+    // S161 fix round 2 (N1) — the RECOVERY panel: the authored text of the bugs a
+    // filing did NOT get onto disk. Empty (and hidden) unless the daemon reports a
+    // shortfall it is still holding text for.
+    var recover = el("div"); recover.hidden = true;
+    m.body.appendChild(recover);
+
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
     // S91: paste/drop an image into the bug-report box → a "[Image #N]" chip; it
@@ -3669,15 +3675,314 @@ function openLog(id) {
     var busy = workingNode("Working…"); busy.hidden = true;
     m.body.appendChild(busy);
 
-    // holds the AUTHORED bug PRDs from the last preview + the captain's per-bug
-    // override inputs (S74) so they survive Preview → File → Run. `filed` flips
-    // true once /log/file has persisted the bugs (then "Run Fixes" only resolves).
-    var authored = { prds: null, overrides: [], filed: false };
+    // Mirrors the DAEMON's session (S161) for this console's lifetime: the
+    // authored bug PRDs, the captain's per-bug override inputs (S74), and the
+    // `sessionId` that lets the daemon file them. Pre-S161 these PRDs lived ONLY
+    // here, so closing the console between Preview and File threw them away and
+    // the captain had to re-run (and re-pay for) the split worker. Now the daemon
+    // holds them and this is a cache: `restoreLogSession()` below rebuilds it from
+    // GET /api/mission/<id>/log/session whenever the console is reopened.
+    var authored = { prds: null, overrides: [], filed: false, sessionId: null,
+                     // the daemon's session status, mirrored so the footer can
+                     // tell "nothing landed yet" (discardable) from "bugs are on
+                     // disk" (keep it — the card should keep saying so).
+                     status: null,
+                     // S161 fix round 3 (R1): how many authored bugs the daemon is
+                     // still holding UNFILED, and their titles — what a re-preview
+                     // would destroy, so the console can name it before it happens.
+                     unfiled: 0, unfiledTitles: [] };
+    var fileLabel = "File";
+    /* The retry control's SEMANTIC name — what File MEANS for the session this
+       console is holding right now ("File" for a fresh split, "File N Remaining"
+       for a shortfall retry). Kept beside the button and written only by
+       `setFileLabel`, because the DOM text is not a safe source for copy that
+       names the control: it goes transient during a dispatch ("Filing…") and, if
+       a state change forgets to relabel, stale. */
+    var fileName = fileLabel;
+    var LOG_POLL_MS = 900;
+    var pollTimer = null;
 
-    m.foot.appendChild(btn("Cancel", null, closeOverlay));
+    function busyLabel(text) {
+      busy.querySelector(".lcars-working-label").textContent = text;
+    }
+
+    function consoleLive() {
+      // the overlay body is emptied on close, detaching this modal — stop then.
+      return document.body.contains(m.wrap);
+    }
+
+    function stopPoll() {
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    }
+
+    /* Re-arm a footer control after a dispatch settles. Goes back through
+       applyWriteState so a VIEW-ONLY board keeps it disabled — clearing
+       `disabled` blindly would hand a read-only board a live write button. */
+    function rearm(button, label) {
+      button.disabled = false;
+      button.textContent = label;
+      return applyWriteState(button);
+    }
+
+    /* Re-arm the File control AND record what it now means. Every state that
+       settles the File control goes through here, so the button and the copy that
+       names it can never drift apart. */
+    function setFileLabel(label) {
+      fileName = label;
+      return rearm(file, label);
+    }
+
+    /* While the daemon is filing (the estimator runs per bug — the long step) the
+       console follows the session rather than holding a POST open. The captain may
+       close the console at any point; the poll simply stops and the parent card's
+       `logFiling` stamp carries the truth. */
+    function pollSession() {
+      stopPoll();
+      if (!consoleLive()) return;
+      pollTimer = setTimeout(function () {
+        pollTimer = null;
+        if (!consoleLive()) return;
+        fetchLogSession(id, function (s) {
+          if (!consoleLive()) return;
+          // no session any more — it was discarded, replaced by a newer preview,
+          // or the daemon went away. We can't tell which from here, so we don't
+          // claim to: just stop showing an in-flight filing.
+          if (!s) { busy.hidden = true; return; }
+          if (s.status === "filing") { pollSession(); return; }
+          adoptSession(s);
+        }, pollSession);
+      }, LOG_POLL_MS);
+    }
+
+    /* Render the console FROM a daemon session payload — the one function both
+       the restore-on-reopen path and the file-dispatch path go through, so a
+       reopened console and a live one can never disagree. */
+    function adoptSession(s) {
+      if (!s) return;
+      authored.sessionId = s.sessionId || null;
+      authored.status = s.status || null;
+      // R1: mirror what the daemon still holds unfiled, so the Preview control can
+      // say what a re-split would throw away instead of doing it quietly.
+      authored.unfiled = (s.unfiled || []).length;
+      authored.unfiledTitles = (s.unfiled || []).map(function (u) {
+        return u.title || "Untitled bug";
+      });
+      disarmDiscard();
+      var kids = s.children || [];
+      // `filed` = the daemon's post-condition check found EVERY authored bug on
+      // disk. `partial` = only some of them did (S161 fix D1) — the batch as
+      // requested did NOT happen, so it is deliberately NOT `filed`: the children
+      // that landed are real and reviewable (Go can drive them), the shortfall is
+      // stated instead of swallowed, and File becomes a RETRY of the bugs that are
+      // missing (S161 fix round 2 / N1 — the daemon files only those, so the
+      // children that landed can never be duplicated).
+      if (s.status === "filed" || s.status === "partial") {
+        stopPoll();
+        authored.prds = null;          // the bugs exist now; Go only resolves
+        authored.filed = true;
+        authored.resolved = indexOverrides(s.overrides);
+        busy.hidden = true;
+        run.hidden = false;
+        rearm(prev, "Preview");
+        renderLogPreview(preview, s, idLabel(mi), authored);
+        // N1: at `partial` the bugs that did NOT land are still held by the
+        // daemon, so show their authored text (nothing the split worker wrote is
+        // lost) and turn File into a RETRY of exactly those. Before this fix File
+        // sat hidden-but-enabled at `partial`, offering an action whose only
+        // possible outcome was a 409, while the missing bug's PRD was gone.
+        var left = (s.status === "partial")
+          ? ((s.unfiled || []).length || Math.max(0, (s.bugCount || 0) -
+                                                     (s.filedCount || 0)))
+          : 0;
+        renderLogUnfiled(recover, s.status === "partial" ? s.unfiled : null);
+        file.hidden = !left;
+        setFileLabel(left ? "File " + left + " Remaining" : fileLabel);
+        if (s.status === "partial") {
+          showErr(err, s.error || "Some of the logged bugs did not file — the " +
+                                  "ones below are on disk; the rest are still " +
+                                  "held here, so File again retries just those.");
+        }
+        markDismissState();
+        return;
+      }
+      authored.prds = kids.map(function (c) { return c.prd; });
+      authored.imageRefs = kids.map(function (c) { return c.imageRefs || []; });
+      authored.overrides = (s.steers && s.steers.length)
+        ? s.steers.slice() : kids.map(function () { return ""; });
+      authored.filed = false;
+      run.hidden = true;
+      if (s.status === "filing") {
+        busyLabel("Filing bugs and estimating each fix…");
+        busy.hidden = false;
+        // "Filing…" is TRANSIENT progress text, not the control's name — leave
+        // `fileName` alone so any copy that names the retry keeps naming it.
+        file.hidden = false; file.disabled = true; file.textContent = "Filing…";
+        renderLogPreview(preview, s, idLabel(mi), authored);
+        renderLogUnfiled(recover, null);
+        markDismissState();
+        pollSession();
+        return;
+      }
+      // previewed | failed — the authored bugs are STILL held by the daemon, so
+      // File is armed again and a retry costs no second split worker turn.
+      stopPoll();
+      busy.hidden = true;
+      file.hidden = !kids.length;
+      setFileLabel(fileLabel);
+      renderLogPreview(preview, s, idLabel(mi), authored);
+      // N1: at `failed` nothing reached disk, so every authored bug is recoverable
+      // text — show it (the preview list carries titles only, and the captain has
+      // to see what log.sh refused in order to fix it).
+      renderLogUnfiled(recover, s.status === "failed" ? s.unfiled : null);
+      if (s.status === "failed") {
+        showErr(err, s.error || "Filing the logged bugs failed — try again.");
+      }
+      markDismissState();
+    }
+
+    /* ── S161 fix round 3 (R1): Preview must not quietly destroy held text ────
+       At `partial` the footer read [Discard Unfiled] [Preview] [File 1 Remaining]:
+       the one control that WARNED was the deliberate escape hatch, and the one that
+       actually lost the captain's ~25s split — Preview, which replaces the session
+       and with it the authored text of every bug that never reached disk — carried
+       no warning and not even a tooltip.
+
+       The DAEMON is the guard (it refuses such a preview outright; a client can
+       always be bypassed, and the tester reached this by posting straight at the
+       API). This half makes the choice legible rather than surprising: the first
+       click ARMS the discard, relabelling itself to name what it would cost, and
+       only the second click sends `discardUnfiled` — the same explicit consent the
+       daemon requires. With nothing stranded (`previewed`, or a fully `filed`
+       batch) Preview is exactly what it always was: one click, no ceremony. */
+    var discardArmed = false;
+    var PREVIEW_TITLE = "Split the report above into bug missions — one worker " +
+      "turn, replacing whatever this console is currently holding";
+
+    /* How many authored bugs a re-split would destroy the only copy of. */
+    function strandedCount() {
+      if (!authored.sessionId) return 0;
+      if (authored.status !== "partial" && authored.status !== "failed") return 0;
+      return authored.unfiled || 0;
+    }
+
+    function strandedNames() {
+      var t = (authored.unfiledTitles || []).slice(0, 3).map(function (n) {
+        return "“" + n + "”";
+      });
+      var rest = (authored.unfiledTitles || []).length - t.length;
+      return t.join(", ") + (rest > 0 ? " and " + rest + " more" : "");
+    }
+
+    function armDiscard(n) {
+      discardArmed = true;
+      rearm(prev, "Preview & Discard " + n + " Unfiled");
+      prev.title = "Click again to re-split the report and THROW AWAY the " +
+        "authored text of the " + n + " bug" + (n === 1 ? "" : "s") +
+        " that never filed";
+      showErr(err, "Preview would re-split the report and throw away the " +
+        "authored text of " + n + " bug" + (n === 1 ? "" : "s") +
+        " that never reached disk (" + strandedNames() + ") — that split is " +
+        // name the retry control by the label it is CARRYING for this session
+        // ("File" at `failed`, "File N Remaining" at `partial`) — copy that
+        // guesses eventually lies about the UI it points at. Read it from
+        // `fileName`, not from the DOM: the button's text goes transient while a
+        // file dispatch is in flight, and a warning that says “Filing…” keeps
+        // your bugs names a control that does not exist.
+        "already paid for. “" + (fileName || fileLabel) + "” keeps " +
+        (n === 1 ? "it" : "them") + "; click Preview again to discard " +
+        (n === 1 ? "it" : "them") + " and re-split.");
+    }
+
+    function disarmDiscard() {
+      discardArmed = false;
+      rearm(prev, "Preview");
+      prev.title = PREVIEW_TITLE;
+    }
+
+    /* ── S161 fix D3: the abandoned-preview escape hatch ──────────────────────
+       A live session stamps `logFiling` on the parent card, and before this there
+       was no way to clear it — the endpoints the captain would reach for
+       (log/cancel, log/discard, log/close) all 404'd, so an abandoned preview sat
+       on the card until the daemon restarted.
+
+       The parity we copy is Align's, and Align's is deliberate in BOTH halves:
+       `POST /api/align/<sid>/cancel` exists, and yet dismissing the grill console
+       (✕ / Esc / backdrop) does NOT call it — F2 keeps the warm session so the
+       card can offer RESUME. Same split here, for a stronger reason: the whole
+       point of S161 is that closing this console no longer throws the authored
+       PRDs away, so auto-discarding on dismissal would re-open the exact trap the
+       session was built to close (and re-charge the captain for the split worker).
+
+       So the DISCARD is an explicit control — the footer button, which relabels
+       itself to say what it now does — and ✕/Esc/backdrop still background the
+       console. While a filing is in flight, and once every authored bug is on
+       disk, the footer offers no discard at all: that state is news the parent card
+       should keep telling until the captain's Go consumes it.
+
+       N1 adds `partial` to the discardable set, and it is the sharpest case: some
+       bugs landed and the rest exist ONLY as the text this session holds. The Go
+       deliberately keeps such a session alive (driving what landed must not destroy
+       the rest), so this is the only way to clear the card — and the label says what
+       it throws away rather than pretending to be a plain Close. */
+    function discardable() {
+      // Never on a view-only build: the discard is a WRITE, so a board that 403s
+      // writes must neither offer it nor advertise it. (A read-only build can hold
+      // no session either — belt and braces, and it keeps the label honest.)
+      return writesActive !== false && !!authored.sessionId &&
+        (authored.status === "previewed" || authored.status === "failed" ||
+         authored.status === "partial");
+    }
+
+    /* Label the footer's dismissal for what it will ACTUALLY do from here. */
+    function markDismissState() {
+      if (!discardable()) {
+        dismiss.textContent = "Close";
+        dismiss.title = "Close this console — the Mission Log keeps its place";
+      } else if (authored.status === "partial") {
+        dismiss.textContent = "Discard Unfiled";
+        dismiss.title = "Throw away the authored text of the bugs that did not " +
+          "file and clear this mission's card — the bugs that DID file are kept";
+      } else {
+        dismiss.textContent = "Discard Preview";
+        dismiss.title =
+          "Throw away the authored bugs and clear this mission's card";
+      }
+    }
+
+    function dismissConsole() {
+      // Discard from a state the captain can still throw away (previewed/failed —
+      // nothing landed — or partial, where only the leftover text is lost);
+      // otherwise just close. postWrite refreshes the board, which is what drops
+      // the card's stamp.
+      if (discardable()) {
+        postWrite("/api/mission/" + enc(id) + "/log/discard", {},
+                  function () {}, function (msg) { setStatus(msg); });
+      }
+      closeOverlay();
+    }
+
+    /* On open: if the daemon is holding a session for this parent, pick it up
+       exactly where the captain left it (S161). No session ⇒ a fresh console. */
+    function restoreLogSession() {
+      fetchLogSession(id, function (s) {
+        if (s && consoleLive()) adoptSession(s);
+      });
+    }
+
+    // NOT applyWriteState'd: dismissing a console is not a write, and a view-only
+    // board (which can hold no session, so never takes the discard branch) must
+    // always be able to close what it opened.
+    var dismiss = btn("Close", null, dismissConsole);
+    dismiss.title = "Close this console — the Mission Log keeps its place";
+    m.foot.appendChild(dismiss);
     var prev = applyWriteState(btn("Preview", null, function () {
       // BUG-024: ignore re-clicks while the split/estimate request is pending.
       if (prev.disabled) { return; }
+      // R1: an AUTHORING re-split (there is text in the box) that would destroy
+      // authored bugs the daemon still holds unfiled asks first — once. An empty
+      // box is the read-only linked-children view, which destroys nothing.
+      var stranded = report.value.trim() ? strandedCount() : 0;
+      if (stranded && !discardArmed) { armDiscard(stranded); return; }
       prev.disabled = true; prev.textContent = "Splitting…";
       err.hidden = true;
       // UX-25: themed working copy for the split worker turn.
@@ -3686,13 +3991,25 @@ function openLog(id) {
       busy.hidden = false;
       // free-form text → AUTHORING preview; empty → read-only linked children.
       postWrite("/api/mission/" + enc(id) + "/log",
-        { text: report.value.trim(), images: reportImgs.payload() },
+        // R1: `discardUnfiled` is the captain's confirmation, and it only ever
+        // rides a click they armed. Without it the daemon refuses any preview that
+        // would destroy authored text it is still holding unfiled.
+        { text: report.value.trim(), images: reportImgs.payload(),
+          discardUnfiled: discardArmed },
         function (state) {
           busy.hidden = true;
           // S92: keep the pasted screenshots alive past Preview — they must ride
           // the /log/file body too so they become DURABLE attachments on every
           // filed bug. They are cleared only after a successful File (below).
-          prev.disabled = false; prev.textContent = "Preview";
+          // The fresh split has its own (empty) unfiled ledger, so the armed
+          // discard is spent — disarm through applyWriteState, never a bare
+          // `disabled = false` (a prior round shipped that bug).
+          authored.unfiled = 0; authored.unfiledTitles = [];
+          disarmDiscard();
+          // S161: the daemon minted a session holding these authored PRDs. Keep
+          // its id — File now posts only the sid, and closing the console no
+          // longer discards the split (reopening restores from the session).
+          authored.sessionId = (state && state.sessionId) || null;
           authored.prds = state && state.authored
             ? (state.children || []).map(function (c) { return c.prd; })
             : null;
@@ -3706,16 +4023,46 @@ function openLog(id) {
           authored.overrides = (state && state.children || [])
             .map(function (c) { return c.override || ""; });
           authored.filed = !!(state && (state.filed || !state.authored));
+          // S161 fix D3: a fresh authoring preview IS a discardable session — mark
+          // it so the footer offers the escape hatch (and so a later dismissal can
+          // tell "nothing landed" apart from "bugs are on disk").
+          authored.status = authored.sessionId ? "previewed" : null;
+          markDismissState();
           renderLogPreview(preview, state, idLabel(mi), authored);
+          // a fresh split supersedes any earlier shortfall — clear its recovery
+          // panel so old unfiled text can't read as this preview's.
+          renderLogUnfiled(recover, null);
           // Reveal File only when this preview AUTHORED ≥1 bug to file. Stays
           // hidden for the read-only linked-children view and for a 0-bug split.
           file.hidden = !(state && state.authored && (state.children || []).length);
+          // S161 fix round 4: and RELABEL it for the session that now exists. A
+          // re-preview confirmed from `partial` left the retry label behind —
+          // "File 1 Remaining" still sitting on a button that would file all 3
+          // bugs of the fresh split. Through setFileLabel → rearm →
+          // applyWriteState, never a bare textContent/disabled assignment, so a
+          // view-only board stays inert.
+          setFileLabel(fileLabel);
         },
         function (msg) {
           busy.hidden = true;
-          prev.disabled = false; prev.textContent = "Preview"; showErr(err, msg);
+          // the split did not happen, so nothing was destroyed and nothing was
+          // superseded: go back to a plain, un-armed Preview (via applyWriteState —
+          // never a bare `disabled = false`) and show the daemon's own words. If
+          // this was the R1 refusal, the message names the bugs at stake.
+          disarmDiscard();
+          showErr(err, msg);
+          // R1: the daemon is the guard, so a console whose picture of the session
+          // is stale (it thinks nothing is stranded; the daemon knows better) would
+          // otherwise re-post the same refused preview for ever. No split happened,
+          // so whatever the daemon holds is still the truth — go and ask it, which
+          // re-arms the confirmation from FACT rather than from parsing this
+          // sentence.
+          if (authored.sessionId) restoreLogSession();
         });
     }));
+    // R1: say what Preview does, from the first paint. Its silence next to a
+    // neighbour that warned was part of why the destructive click read as harmless.
+    prev.title = PREVIEW_TITLE;
     // S74 / BUG-059: the captain reviews each bug's ESTIMATE (cost + difficulty
     // pills + suggested model) and can STEER the model BEFORE anything runs. We
     // FILE the authored bugs first (so log.sh runs the estimator + persists each
@@ -3730,18 +4077,42 @@ function openLog(id) {
       // disable + show a loading state, and re-enable only on success OR error.
       if (file.disabled) { return; }   // already pending — ignore the click
       err.hidden = true;
-      busy.querySelector(".lcars-working-label").textContent =
-        "Filing bugs and estimating each fix…";
+      busyLabel("Filing bugs and estimating each fix…");
       busy.hidden = false;
       file.disabled = true;
-      var fileLabel = file.textContent;
+      // transient progress text only — `fileName` keeps the control's NAME, so the
+      // re-preview warning can still point at it while this POST is in flight.
       file.textContent = "Filing…";
-      postWrite("/api/mission/" + enc(id) + "/log/file",
-        { prds: authored.prds || [], overrides: authored.overrides || [],
-          imageRefs: authored.imageRefs || [],  // per-bug routing
-          images: reportImgs.payload() },   // S92: durable attachments on file
+      // S161: with a daemon session the body carries ONLY the sid (+ the steers
+      // the captain may have edited) — the PRDs, per-bug image refs and pasted
+      // screenshots already live server-side, and the POST DISPATCHES rather than
+      // holding for the estimator. Without one (no session is being held for this
+      // console) fall back to the unchanged legacy prds-in-body form.
+      // N1: from `partial` this is a RETRY of the bugs that never reached disk, and
+      // `authored.overrides` is then indexed by the children that LANDED — sending
+      // it would ask the daemon to re-index the captain's steers onto other bugs.
+      // Send the sid alone; the session's own steers still ride the dispatch.
+      var payload = authored.sessionId
+        ? (authored.status === "partial"
+            ? { sessionId: authored.sessionId }
+            : { sessionId: authored.sessionId,
+                overrides: authored.overrides || [] })
+        : { prds: authored.prds || [], overrides: authored.overrides || [],
+            imageRefs: authored.imageRefs || [],  // per-bug routing
+            images: reportImgs.payload() };  // S92: durable attachments on file
+      postWrite("/api/mission/" + enc(id) + "/log/file", payload,
         function (state) {
-          busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
+          if (state && state.status) {
+            // the daemon accepted the dispatch and is filing. The console follows
+            // the session (and the captain may close it — the parent card carries
+            // the status). Attachments now belong to the session, so drop the
+            // client chips.
+            reportImgs.clear();
+            adoptSession(state);
+            return;
+          }
+          // legacy blocking response — unchanged from pre-S161.
+          busy.hidden = true; setFileLabel(fileLabel);
           reportImgs.clear();          // attachments now persisted on each bug
           authored.prds = null;        // bugs are filed now — Run only resolves
           authored.filed = true;
@@ -3752,10 +4123,14 @@ function openLog(id) {
           // them — a steer that couldn't be normalized shows its error, not a
           // silent drop onto the default model.
           authored.resolved = indexOverrides(state && state.overrides);
+          // the legacy path mints no session, so there is nothing to discard.
+          authored.status = null;
+          markDismissState();
           renderLogPreview(preview, state, idLabel(mi), authored);
+          renderLogUnfiled(recover, null);
         },
         function (msg) {
-          busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
+          busy.hidden = true; setFileLabel(fileLabel);
           showErr(err, msg);
         });
     }));
@@ -3797,6 +4172,55 @@ function openLog(id) {
     m.foot.appendChild(run);
     showOverlay(m.wrap);
     report.focus();
+    // S161: pick up a session the daemon is already holding for this parent, so
+    // reopening a closed console restores the authored bugs (or an in-flight
+    // filing) instead of starting over on a fresh split worker turn.
+    restoreLogSession();
+  });
+}
+
+/* ════════ S161 fix round 2 (N1): the RECOVERY panel ════════
+   The authored text of the logged bugs that did NOT reach disk.
+
+   The Mission-Log split worker costs a real ~25s billable turn, which is the whole
+   reason the daemon holds its output. Round 1 made a shortfall HONEST ("only 1 of 2
+   authored bugs filed") and then dropped the missing bug's PRD on the floor: the
+   session reported the filed child only, the temp file named in the error was
+   already unlinked, and the advice — "log the ones that failed as a new report" —
+   meant retyping the bug and paying for a second split. This panel is the other
+   half of the cure: the daemon carries those authored rows on every session
+   response (`unfiled`), and here they are, in full, selectable.
+
+   Read-only by construction: text to copy and a File that retries, no edit-and-
+   resubmit path (the daemon owns the words, so there is nothing here to save). */
+function renderLogUnfiled(host, unfiled) {
+  host.innerHTML = "";
+  var rows = (unfiled || []).filter(function (u) { return u && u.prd; });
+  if (!rows.length) { host.hidden = true; return; }
+  host.hidden = false;
+  var h = el("h4"); h.style.margin = "12px 0 6px";
+  h.textContent = rows.length + " authored bug" + (rows.length === 1 ? "" : "s") +
+    " did NOT file — the text is still here";
+  host.appendChild(h);
+  // Two honest routes, because there is NO edit-in-place here (the daemon owns the
+  // words): File again fixes a transient fault; a PRD the script itself refused has
+  // to be copied out and re-authored. Promising an edit this panel cannot do would
+  // be the same class of lie as the count that started this round.
+  host.appendChild(noteEl(
+    "Nothing the split worker wrote was lost. If the fault was transient, File " +
+    "again — it re-files only these, and costs no second split. If the bug PRD " +
+    "itself was refused, copy the text below into a new report and fix it there."));
+  rows.forEach(function (u) {
+    var card = el("div", "card child"); card.style.cursor = "default";
+    card.appendChild(el("div", "no", "↳ not filed"));
+    card.appendChild(el("div", "ttl", "Bug · " + (u.title || "Untitled bug")));
+    var body = el("textarea");
+    body.rows = 6;
+    body.readOnly = true;
+    body.value = u.prd;
+    body.title = "The authored bug PRD, exactly as the split worker wrote it";
+    card.appendChild(body);
+    host.appendChild(card);
   });
 }
 
@@ -5480,6 +5904,21 @@ function fetchMission(id, cb, onErr) {
       if (typeof onErr === "function") { onErr(); return; }
       setStatus("mission unavailable");
     });
+}
+
+/* S161 — the live daemon-side Mission-Log session for a parent mission.
+   GET /api/mission/<id>/log/session; 404 (the normal case — no session) calls
+   back with null so the console just opens fresh. Read-only: it dispatches
+   nothing, so polling it is free. */
+function fetchLogSession(id, cb, onErr) {
+  fetch("/api/mission/" + enc(id) + "/log/session")
+    .then(function (r) {
+      if (r.status === 404) return null;   // no live session — open fresh
+      if (!r.ok) throw new Error("log session unavailable");
+      return r.json();
+    })
+    .then(function (s) { if (cb) cb(s); })
+    .catch(function () { if (onErr) onErr(); });
 }
 
 /* ════════════════ live channel ════════════════ */

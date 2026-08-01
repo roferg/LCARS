@@ -31,7 +31,23 @@ with 403. Each write shells out to the matching `lcars` skill (ADR-002):
   POST /api/mission/<id>/verify          approve | send-back     → approve|feedback.sh
   POST /api/mission/<id>/reapprove       merge-only after a heal → approve.sh --reapprove
   POST /api/mission/<id>/log             preview/author child bugs→ worker | (read)
-  POST /api/mission/<id>/log/file        file logged bugs (+estimate), return review → log.sh
+                                         an AUTHORING preview also mints the S161
+                                         daemon-side session and returns sessionId.
+                                         409s when it would destroy authored bugs a
+                                         live session never got onto disk, unless
+                                         the body says `discardUnfiled` (R1)
+  POST /api/mission/<id>/log/file        file logged bugs (+estimate) → log.sh.
+                                         With `sessionId` it DISPATCHES and returns
+                                         promptly (status filing→filed/failed);
+                                         with `prds` in the body it BLOCKS and
+                                         returns the review (the legacy form)
+  GET  /api/mission/<id>/log/session     restore a reopened Mission-Log console
+                                         (S161; status + children + estimates +
+                                         the authored text of anything unfiled)
+  POST /api/mission/<id>/log/discard     throw away an authoring session the
+                                         captain is done with — abandoned, or a
+                                         partial's unfiled leftover — so its card
+                                         stamp clears (S161; Align /cancel parity)
   POST /api/mission/<id>/log/run         drive ALREADY-FILED logged bugs (the
                                          explicit Go) → resolve-logs.sh. Posting
                                          prds WITHOUT confirm:true is gated — it
@@ -130,6 +146,27 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
             path = self.path.split("?", 1)[0]
             if path == "/api/board":
                 return self._json(self._board_with_version())
+            # GET /api/mission/<id>/log/session — the live Mission-Log authoring
+            # session, for RESTORING a reopened console (S161). Must be matched
+            # BEFORE the mission-detail route below, which would otherwise read
+            # "<id>/log/session" as a mission id — and did, answering "no such
+            # mission" about a mission sitting right there on the board (N3). It is
+            # the SESSION route, not the mission, that is write-board-only: a
+            # read-only build (actions=None) holds no sessions, and now SAYS that.
+            if (path.startswith("/api/mission/")
+                    and path.endswith("/log/session")):
+                mid = path[len("/api/mission/"):-len("/log/session")]
+                if mid and "/" not in mid:
+                    if actions is None:
+                        if adapter.mission(mid) is None:
+                            return self._error(404, "no such mission")
+                        return self._error(
+                            404, "no mission-log session for %s — this board is "
+                                 "read-only, so it holds none" % mid)
+                    try:
+                        return self._json(actions.log_session_state(mid))
+                    except _ActionError as exc:
+                        return self._error(exc.status, exc.message)
             if path.startswith("/api/mission/"):
                 mid = path[len("/api/mission/"):]
                 detail = adapter.mission(mid)
@@ -141,6 +178,12 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
                 if actions is not None:
                     try:
                         detail = actions.align_overlay_mission(detail)
+                    except Exception:
+                        pass
+                    # S161: same mirror for a live Mission-Log filing session, so
+                    # the detail modal can show the ◐ FILING band the card shows.
+                    try:
+                        detail = actions.log_overlay_mission(detail)
                     except Exception:
                         pass
                 return self._json(detail)
@@ -199,6 +242,15 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
             if actions is not None:
                 try:
                     board = actions.align_overlay(board)
+                except Exception:
+                    pass
+                # S161: stamp `logFiling` on the parent card of a live Mission-Log
+                # authoring/filing session, so the captain can close the console
+                # and watch the card instead. Additive + in-memory; a read-only
+                # build (actions=None) is never stamped. Never raises into the
+                # board response.
+                try:
+                    board = actions.log_overlay(board)
                 except Exception:
                     pass
             if version_provider is not None:
@@ -337,13 +389,27 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
             if verb == "launch/stop":
                 return actions.launch_stop(mid)
             if verb == "log":
-                return actions.log_preview(mid, text=body.get("text"),
-                                           images=self._images(body))
+                # S161 fix round 3 (R1): `discardUnfiled` is the captain's explicit
+                # "yes, throw away the authored bugs this session never got onto
+                # disk". Absent, a preview that WOULD destroy such text is refused
+                # by the daemon rather than performed — the console asks first.
+                return actions.log_preview(
+                    mid, text=body.get("text"), images=self._images(body),
+                    discard_unfiled=bool(body.get("discardUnfiled")))
             if verb == "log/file":
+                # S161: `sessionId` files the bugs the DAEMON already holds (and
+                # returns promptly); the prds-in-body form is the unchanged legacy
+                # path. sessionId wins when both are present.
                 return actions.log_file(mid, prds=body.get("prds"),
                                         overrides=body.get("overrides"),
                                         images=self._images(body),
-                                        image_refs=body.get("imageRefs"))
+                                        image_refs=body.get("imageRefs"),
+                                        session_id=body.get("sessionId"))
+            if verb == "log/discard":
+                # S161 D3 — Align's /cancel parity: throw away an ABANDONED
+                # authoring session so its `logFiling` stamp stops sitting on the
+                # parent card. Idempotent; refuses only mid-filing.
+                return actions.log_discard(mid)
             if verb == "log/run":
                 return actions.log_run(mid, prds=body.get("prds"),
                                        overrides=body.get("overrides"),
