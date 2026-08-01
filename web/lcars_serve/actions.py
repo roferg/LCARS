@@ -664,9 +664,19 @@ class _LogSession(object):
         return rows
 
     def stamp(self, sid):
-        """The `logFiling` shape — the ONE readout both surfaces publish (D2)."""
-        return {"sessionId": sid, "status": self.status,
-                "bugCount": self.bug_count, "filedCount": self.filed_count}
+        """The `logFiling` shape — the ONE readout both surfaces publish (D2).
+
+        S162 adds `error`, and only where there IS one — a shortfall or a refusal.
+        The card is the surface a captain who closed the console is left with, so
+        "some of your bugs did not file" has to arrive with the reason attached;
+        the client cannot know it and must not invent one. Condition-gated, so a
+        `previewed`/`filing`/`filed` stamp is byte-identical to its S161 self.
+        """
+        out = {"sessionId": sid, "status": self.status,
+               "bugCount": self.bug_count, "filedCount": self.filed_count}
+        if self.error:
+            out["error"] = str(self.error)
+        return out
 
 
 class Actions(object):

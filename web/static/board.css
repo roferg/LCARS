@@ -336,6 +336,33 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
    + bold (an attention/error state, never silence). */
 .card .reconcile-status.escalated{color:#ff8a96}
 .card .reconcile-status.failed{color:#ff8a96;font-weight:700}
+/* S162 — a mission-log filing that ended badly, on the parent card (and mirrored
+   in the detail header). The captain may have closed the console on dispatch, so
+   this is the surface that has to say a shortfall happened; it reuses the
+   reconcile-status idiom deliberately — same size, same rhythm, same meaning
+   ("something about this mission needs your eyes"). `partial` reads amber (some
+   bugs really landed and are reviewable); `failed` reads red (nothing did).
+   Neither is ever a silent clear.
+
+   The BASE rule carries the WEIGHT, not just `.failed`. Every state this line
+   can show is a state in which the captain has lost some of the bugs they
+   authored, and losing half of them is not a lighter event than losing all of
+   them — so a status that only adds a hue still reads at full urgency, and a
+   future terminal sibling cannot arrive quietly by forgetting a modifier. This
+   line is also NOT emitted with `.no` (see logFilingNote): that class is the
+   muted metadata idiom, it ties this selector on specificity and wins on source
+   order, and it was silently erasing the amber below. */
+.card .log-filing-status,
+.det-head .log-filing-status{color:var(--lcars-amber);font-weight:700;
+  font-family:var(--font-display);letter-spacing:.08em;margin-top:7px;
+  font-size:10px}
+.card .log-filing-status.failed,
+.det-head .log-filing-status.failed{color:#ff8a96}
+/* the daemon's own reason, verbatim — quieter than the status line and wrapping,
+   because log.sh's refusals are full sentences. */
+.card .log-filing-detail,
+.det-head .log-filing-detail{color:var(--lcars-text);font-size:10px;
+  margin-top:3px;line-height:1.35;opacity:.92}
 /* BUG-067 — the persisted human-readable reconcile summary (reconcileNote): the
    green re-test count for a reapprove gate, or the failure reason for
    merge-failed. Quieter than the status line, wraps so a multi-line summary

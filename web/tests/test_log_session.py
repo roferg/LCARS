@@ -680,6 +680,52 @@ class FailedFileTest(LogSessionBase):
         self.assertEqual(self.actions._log_sessions[sid].status, "previewed")
 
 
+# ── S162: the stamp carries the REASON a filing ended badly ─────────────────
+class StampCarriesTheFailureReasonTest(LogSessionBase):
+    """S162 — a captain who clicked "File & Cost" and closed the console has the
+    parent CARD and nothing else. A shortfall or a refusal therefore has to reach
+    that card WITH its reason: the client knows it dispatched a filing, it cannot
+    know how log.sh got on, and it must not invent a cause. So the stamp carries
+    `error` — and only when there is one, so a healthy session's stamp is
+    byte-identical to its S161 self.
+    """
+
+    def test_a_failed_stamp_carries_the_scripts_own_reason(self):
+        sid = self._preview(BUG_MALFORMED)["sessionId"]
+        self._post("/api/mission/m-001/log/file", {"sessionId": sid})
+        sess = self._await_status("/api/mission/m-001/log/session", "failed")
+        stamp = self._stamp()
+        self.assertEqual(stamp["status"], "failed")
+        self.assertTrue(stamp.get("error"), "the card must be told why")
+        # …and it is the SAME words the session reports — one source, no drift.
+        self.assertEqual(stamp["error"], sess["error"])
+
+    def test_a_partial_stamp_carries_the_shortfall(self):
+        sid = self._preview(BUG_A, BUG_MALFORMED)["sessionId"]
+        self._post("/api/mission/m-001/log/file", {"sessionId": sid})
+        sess = self._await_status("/api/mission/m-001/log/session", "partial")
+        stamp = self._stamp()
+        self.assertEqual((stamp["bugCount"], stamp["filedCount"]), (2, 1))
+        self.assertEqual(stamp["error"], sess["error"])
+
+    def test_a_healthy_stamp_is_byte_identical_to_its_s161_self(self):
+        """No error, no key: the additive-payload invariant, inside the stamp."""
+        sid = self._preview(BUG_A)["sessionId"]
+        self.assertEqual(sorted(self._stamp().keys()),
+                         ["bugCount", "filedCount", "sessionId", "status"])
+        self._post("/api/mission/m-001/log/file", {"sessionId": sid})
+        self._await_status("/api/mission/m-001/log/session", "filed")
+        self.assertEqual(sorted(self._stamp().keys()),
+                         ["bugCount", "filedCount", "sessionId", "status"])
+
+    def test_the_detail_stamp_says_the_same_thing(self):
+        sid = self._preview(BUG_MALFORMED)["sessionId"]
+        self._post("/api/mission/m-001/log/file", {"sessionId": sid})
+        self._await_status("/api/mission/m-001/log/session", "failed")
+        _s, detail = self._get("/api/mission/m-001")
+        self.assertEqual(detail["logFiling"], self._stamp())
+
+
 # ── D1: the STATUS IS DECIDED BY WHAT LANDED, never by log.sh's exit code ────
 class NothingFiledPostConditionTest(LogSessionBase):
     """S161 fix round 1, D1 (HIGH) — a batch that filed NOTHING said `filed`.
@@ -1229,8 +1275,18 @@ class LogCountHonestyTest(LogSessionBase):
         sid = self._preview(BUG_A, BUG_MALFORMED)["sessionId"]
         self._post("/api/mission/m-001/log/file", {"sessionId": sid})
         self._await_status("/api/mission/m-001/log/session", "partial")
-        self.assertEqual(self._stamp(), {"sessionId": sid, "status": "partial",
-                                         "bugCount": 2, "filedCount": 1})
+        stamp = self._stamp()
+        # the two honest counts, and no ambiguous `count` — the D2 contract.
+        self.assertEqual((stamp["sessionId"], stamp["status"],
+                          stamp["bugCount"], stamp["filedCount"]),
+                         (sid, "partial", 2, 1))
+        self.assertNotIn("count", stamp)
+        # S162 rides one more key HERE and only here: the reason a shortfall
+        # happened, because the card is now a surface the captain reads instead
+        # of the console (see StampCarriesTheFailureReasonTest for its contract).
+        self.assertEqual(sorted(stamp.keys()),
+                         ["bugCount", "error", "filedCount", "sessionId",
+                          "status"])
 
     def test_the_session_route_carries_no_count_key_at_any_status(self):
         """S161 fix round 2, N2 — round 1 kept `count` on the session payload as a

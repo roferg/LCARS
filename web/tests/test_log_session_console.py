@@ -11,6 +11,12 @@ a scripted daemon, and asserts the console:
   * reveals "Go ▸" only once the bugs are filed, and NEVER auto-dispatches it
     (BUG-059's hold, client side);
   * disables its write controls on a view-only build.
+
+S162 changed one thing here and left the rest: the File control is now
+"File & Cost" and CLOSES the console on dispatch, handing the captain the parent
+card's ◐ FILING & COSTING band (LogConsoleFileAndCostTest). Everything above still
+holds — reopening restores the very session it left, in flight or finished, so
+closing became the default rather than a risk.
 """
 import json
 import os
@@ -22,6 +28,12 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 HARNESS = os.path.join(HERE, "board_logsession_harness.js")
 NODE = shutil.which("node")
+
+# S162 — the File control's name. It DISPATCHES the filing (the estimator runs
+# once per bug, server-side) and hands the captain the parent card, so the label
+# says what the click costs them. Named once here, because these tests both find
+# the control by it and assert it.
+FILE_LABEL = "File & Cost"
 
 MISSION = {"id": "m-001", "issue": 142, "stage": "verify", "type": "feature",
            "title": "Add Gamification to Course Site"}
@@ -112,7 +124,7 @@ class LogConsoleRestoreTest(unittest.TestCase):
     def test_no_session_opens_a_fresh_console(self):
         res = _drive("open", {"mission": MISSION, "session": None})
         self.assertIsNotNone(_button(res, "Preview"))
-        self.assertTrue(_button(res, "File")["hidden"],
+        self.assertTrue(_button(res, FILE_LABEL)["hidden"],
                         "with nothing authored, File stays hidden")
         self.assertTrue(_button(res, "Go ▸")["hidden"])
 
@@ -128,9 +140,9 @@ class LogConsoleRestoreTest(unittest.TestCase):
         self.assertIn("XP not awarded on video completion", texts)
         self.assertIn("Leaderboard flicker", texts)
         self.assertIn("Preview — 2 bug missions detected", texts)
-        self.assertFalse(_button(res, "File")["hidden"],
+        self.assertFalse(_button(res, FILE_LABEL)["hidden"],
                          "the restored console must offer File")
-        self.assertFalse(_button(res, "File")["disabled"])
+        self.assertFalse(_button(res, FILE_LABEL)["disabled"])
         self.assertTrue(_button(res, "Go ▸")["hidden"],
                         "nothing is filed yet — no Go")
         posts = [f for f in res["fetches"] if f["method"] == "POST"]
@@ -158,7 +170,7 @@ class LogConsoleRestoreTest(unittest.TestCase):
         self.assertIn("Review — 1 bug mission filed", texts)
         self.assertFalse(_button(res, "Go ▸")["hidden"],
                          "filed bugs are reviewable — Go is offered")
-        self.assertTrue(_button(res, "File")["hidden"])
+        self.assertTrue(_button(res, FILE_LABEL)["hidden"])
         # BUG-059, client side: reopening a FILED console must not run anything.
         posts = [f for f in res["fetches"] if f["method"] == "POST"]
         self.assertEqual(posts, [])
@@ -171,9 +183,9 @@ class LogConsoleRestoreTest(unittest.TestCase):
             "children": [PREVIEW_CHILD_A], "steers": [""]}})
         texts = " | ".join(_texts(res))
         self.assertIn("missing its Goal section", texts)
-        self.assertFalse(_button(res, "File")["hidden"],
+        self.assertFalse(_button(res, FILE_LABEL)["hidden"],
                          "a failed file must be retryable for free")
-        self.assertFalse(_button(res, "File")["disabled"])
+        self.assertFalse(_button(res, FILE_LABEL)["disabled"])
         self.assertTrue(_button(res, "Go ▸")["hidden"])
 
 
@@ -195,15 +207,18 @@ class LogConsoleFileTest(unittest.TestCase):
                          "the PRDs live on the daemon now — don't ship them back")
         self.assertIn("overrides", body)
 
-    def test_file_leaves_the_console_showing_the_in_flight_filing(self):
+    def test_file_and_cost_dispatches_marks_filing_and_closes(self):
+        """S162 — the close-on-dispatch pattern `Go ▸` already used. S161 made the
+        POST return in ~2ms instead of holding for the estimator; this is what
+        that seam was for. The console goes, the parent card takes over."""
         res = _drive("clickFile", {"mission": MISSION, "session": self.SESSION})
-        self.assertFalse(res["closed"],
-                         "S161 keeps the console open; S162 owns close-on-dispatch")
-        f = _button(res, "Filing…")
-        self.assertIsNotNone(f)
-        self.assertTrue(f["disabled"], "a second click must not re-file")
-        # and it did NOT jump to the filed review, nor run anything.
-        self.assertTrue(_button(res, "Go ▸")["hidden"])
+        self.assertTrue(res["closed"], "the captain is handed the card, not a wait")
+        self.assertTrue(res["filing"],
+                        "and the parent mission is marked filing, so the band is "
+                        "already on the card when the overlay disappears")
+        self.assertTrue(res["status"],
+                        "with a word on the status line — the console it "
+                        "replaced is gone, so silence would be the whole defect")
         runs = [f for f in res["fetches"] if f["url"].endswith("/log/run")]
         self.assertEqual(runs, [], "BUG-059: filing never auto-runs the fixes")
 
@@ -222,6 +237,76 @@ class LogConsoleFileTest(unittest.TestCase):
         self.assertNotIn("sessionId", body)
         self.assertIn("prds", body)
         self.assertIn("imageRefs", body)   # per-bug routing rides the body too
+
+
+@unittest.skipIf(NODE is None, "node is required to run the board.js harness")
+class LogConsoleFileAndCostTest(unittest.TestCase):
+    """S162 — "File & Cost" is a DISPATCH the captain can walk away from.
+
+    S161 put the authored PRDs on the daemon and made `/log/file` return in ~2ms
+    instead of holding ~7s for the estimator. This is what that bought: the click
+    marks the parent mission filing, closes the console, and lets the card's
+    ◐ FILING & COSTING… band carry the rest. Closing is now the DEFAULT, not a
+    risk — but the console is still whole for a captain who reopens it.
+    """
+
+    SESSION = {"sessionId": "abc123", "parent": "m-001", "status": "previewed",
+               "authored": True, "filed": False, "bugCount": 2, "filedCount": 0,
+               "children": [PREVIEW_CHILD_A, PREVIEW_CHILD_B],
+               "steers": ["", ""]}
+
+    def test_the_control_says_what_the_click_costs(self):
+        res = _drive("open", {"mission": MISSION, "session": self.SESSION})
+        f = _foot_file(res)
+        self.assertEqual(f["text"], FILE_LABEL)
+        self.assertFalse(f["hidden"])
+        self.assertTrue(f["title"], "and says what it will do")
+
+    def test_the_partial_retry_also_hands_over_the_card(self):
+        """The retry is the same control under another name — it must background
+        identically, or the one path a captain reaches while something has already
+        gone wrong is the one that chains them to the desk."""
+        res = _drive("clickFilePos",
+                     {"mission": MISSION,
+                      "session": LogConsolePartialTest.PARTIAL})
+        self.assertTrue(res["closed"])
+        self.assertTrue(res["filing"])
+        posts = [f for f in res["fetches"] if f["url"].endswith("/log/file")]
+        self.assertEqual(posts[0]["body"], {"sessionId": "abc123"},
+                         "and still retries ONLY the bugs that are missing")
+
+    def test_a_refused_dispatch_drops_the_band_and_says_so(self):
+        """Nothing is filing, because the daemon never accepted it. Leaving the
+        optimistic band up would have the card claim work that does not exist —
+        the same lie class as a `filed` with nothing on disk, only client-side."""
+        res = _drive("clickFile", {"mission": MISSION, "session": self.SESSION,
+                                   "fileError": "that session was replaced"})
+        self.assertTrue(res["closed"])
+        self.assertFalse(res["filing"], "the flag must not outlive the refusal")
+        self.assertIn("replaced", res["status"],
+                      "and the daemon's reason must reach the captain on the "
+                      "only surface still open")
+
+    def test_the_legacy_no_session_path_is_untouched(self):
+        """With no daemon session there is nothing durable to watch: the legacy
+        prds-in-body POST HOLDS for the estimator, so closing the console would
+        strand the captain with no band and no console. That path keeps its
+        pre-S162 behaviour exactly — inline spinner, console open."""
+        res = _drive("clickFile", {
+            "mission": MISSION, "session": None,
+            "fileResponse": {"children": [FILED_CHILD_A], "count": 1,
+                             "parent": "m-001", "filed": True, "overrides": []}})
+        self.assertFalse(res["closed"], "no session ⇒ no close-on-dispatch")
+        self.assertFalse(res["filing"], "and nothing to put a band on")
+        self.assertFalse(_button(res, "Go ▸")["hidden"],
+                         "it still lands on the filed review, as it always did")
+
+    def test_a_view_only_console_never_dispatches(self):
+        res = _drive("clickFile", {"mission": MISSION, "session": self.SESSION},
+                     readonly=True)
+        self.assertFalse(res["filing"])
+        self.assertEqual([f for f in res["fetches"] if f["method"] == "POST"], [],
+                         "a disabled control must post nothing")
 
 
 @unittest.skipIf(NODE is None, "node is required to run the board.js harness")
@@ -573,7 +658,7 @@ class LogConsoleRePreviewRelabelTest(unittest.TestCase):
         self.assertNotIn("Remaining", f["text"],
                          "the retry label belonged to the session the captain "
                          "just discarded — it must not name this one")
-        self.assertEqual(f["text"], "File",
+        self.assertEqual(f["text"], FILE_LABEL,
                          "a fresh preview's File is the plain File control")
 
     def test_the_relabel_routes_through_the_write_gate(self):
@@ -618,7 +703,7 @@ class LogConsoleViewOnlyTest(unittest.TestCase):
     def test_view_only_disables_every_write_control(self):
         res = _drive("open", {"mission": MISSION,
                               "session": self.VIEW_ONLY_SESSION}, readonly=True)
-        for label in ("Preview", "File", "Go ▸"):
+        for label in ("Preview", FILE_LABEL, "Go ▸"):
             b = _button(res, label)
             self.assertIsNotNone(b, "%s must still exist" % label)
             self.assertTrue(b["disabled"],

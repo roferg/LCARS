@@ -152,6 +152,12 @@ function fetchStub(url, opts) {
     return json(200, INPUT.session);
   }
   if (url === "/api/mission/" + MID + "/log/file") {
+    // S162: `fileError` ⇒ the daemon REFUSES the dispatch. The console has
+    // already closed by then, so what the client does with that refusal (drop
+    // the optimistic band, say so on the only surface left) is the assertion.
+    if (INPUT.fileError) {
+      return json(409, { ok: false, error: String(INPUT.fileError) });
+    }
     const state = INPUT.fileResponse || {
       sessionId: (INPUT.session && INPUT.session.sessionId) || "sid",
       parent: MID, status: "filing", authored: true, filed: false,
@@ -264,7 +270,9 @@ const mode = process.argv[2];
       (n.children || []).forEach(walk);
     })(captured.node);
   }
-  if (mode === "clickFile") { click(captured.node, "File"); await drain(); }
+  // S162 renamed the control to "File & Cost" — it now DISPATCHES the filing and
+  // hands the captain the parent card, so its name says what it costs them.
+  if (mode === "clickFile") { click(captured.node, "File & Cost"); await drain(); }
   else if (mode === "clickFilePos") {
     // footer order is [dismiss, Preview, File, Go ▸] — take File by index so its
     // label stays a subject of the assertions.
@@ -328,6 +336,10 @@ const mode = process.argv[2];
     fetches: FETCH_CALLS,
     closed: !!captured.closed,
     status: captured.status || "",
+    // S162: whether the console marked its PARENT mission "filing" — the client
+    // half of the card band, and the thing that makes closing the console safe.
+    filing: typeof sandbox.isFiling === "function" ? !!sandbox.isFiling(MID)
+                                                   : null,
     // the footer's dismissal control, projected by POSITION so its label is a
     // subject of the assertions rather than the way we find it.
     dismiss: { text: d._text || "", title: d.title || "" },

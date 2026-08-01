@@ -206,6 +206,91 @@ function isFinalizing(id) {
   return id != null && !!FINALIZING[String(id)];
 }
 
+/* S162 (backgroundable mission-log filing): the optimistic "filing" set — the
+   Mission-Log twin of FINALIZING. "File & Cost" DISPATCHES the S161
+   file-by-sessionId POST and CLOSES the console, so from that instant the PARENT
+   CARD is the only surface telling the captain anything. This map is the fast
+   half of that promise: it flips the card to the disabled "◐ FILING & COSTING…"
+   control + the persistent animated band on the click itself, with no round trip
+   and no SSE tick. The DURABLE half is the daemon's `logFiling` stamp, which a
+   reloaded tab reads instead (exactly the alignResume split).
+
+   It is deliberately NOT FINALIZING with a second meaning. A parked mission can
+   be finalizing an Align turn while a verify mission files logged bugs, and one
+   card can legitimately be doing BOTH — sharing a map would let either state
+   clear the other's band, and would make "is this mission busy?" a question with
+   two different right answers. One map per meaning (the S161-D2 lesson about two
+   meanings under one key, applied to state rather than copy).
+
+   The timeout is the estimator's scale, not the network's: filing runs the cost
+   estimator once PER logged bug, so a big batch is minutes. It is only a
+   backstop for a card whose daemon went away mid-flight — the server stamp
+   settles the normal case (clearFilingOnState). */
+var FILING = Object.create(null);
+var FILING_TIMEOUT_MS = 600000;
+
+function markFiling(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (FILING[key]) clearTimeout(FILING[key]);
+  FILING[key] = setTimeout(function () { clearFiling(key); refresh(); },
+    FILING_TIMEOUT_MS);
+}
+function clearFiling(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (FILING[key]) { clearTimeout(FILING[key]); delete FILING[key]; }
+}
+function isFiling(id) {
+  return id != null && !!FILING[String(id)];
+}
+
+/* S162 — the statuses a `logFiling` stamp can END on. `filed` is the clean one;
+   `partial` and `failed` are outcomes the captain has to see (see logFilingNote).
+   `previewed` and `filing` are deliberately absent: they are both live. */
+var LOG_FILING_TERMINAL = ["filed", "partial", "failed"];
+
+/* S162 — the ONE reading of a card's mission-log filing state. The band, the
+   control and the failure note all derive from this, so no two surfaces can
+   describe the same session differently (the S161-D2 lesson: one builder, or the
+   card and the console eventually contradict each other).
+
+   `filing` is the union of the two halves: the client map (instant, this tab
+   only) OR the server stamp (durable, survives a reload). Everything else comes
+   from the stamp alone — the client knows it dispatched a filing, it does not
+   know how the daemon got on, so it never guesses counts or reasons. */
+function logFilingState(m) {
+  var stamp = (m && m.logFiling && typeof m.logFiling === "object")
+    ? m.logFiling : null;
+  var status = (stamp && typeof stamp.status === "string") ? stamp.status : "";
+  var num = function (v) { return typeof v === "number" ? v : null; };
+  return {
+    stamp: stamp,
+    status: status,
+    filing: !!(m && isFiling(m.id)) || status === "filing",
+    terminal: LOG_FILING_TERMINAL.indexOf(status) !== -1,
+    bugCount: stamp ? num(stamp.bugCount) : null,
+    filedCount: stamp ? num(stamp.filedCount) : null,
+    // the daemon's own words for a shortfall/failure. Never synthesised here.
+    error: (stamp && stamp.error) ? String(stamp.error) : ""
+  };
+}
+
+/* S162 — drop the optimistic flag once the SERVER has settled this filing.
+
+   Only on a TERMINAL status, or on the stamp vanishing altogether (the session
+   was discarded, or the captain's Go consumed it — either way there is nothing
+   left to be filing). NOT on "anything that isn't `filing`": the board cached at
+   the moment of the click still carries the session's PRE-dispatch `previewed`
+   stamp, so that rule would wipe the band one frame after drawing it — the
+   BUG-078 sticky-optimism lesson, which is precisely the flicker this band
+   exists to remove. Mirrors clearMergingOnState. */
+function clearFilingOnState(m) {
+  if (!m || m.id == null || !isFiling(m.id)) return;
+  var st = logFilingState(m);
+  if (!st.stamp || st.terminal) clearFiling(m.id);
+}
+
 /* Park & Align (F2 — resume mid-grill): the client-side resumable map {missionId: sid}.
    Closing an Align console mid-grill KEEPS the warm session (no /cancel) and marks its
    parked mission resumable so the card flips to "▹ RESUME ALIGN" instantly. A card can
@@ -489,6 +574,10 @@ function keyActivable(node) {
 /* ════════════════ CARD RENDER ════════════════ */
 function cardNode(m) {
   var rs = runState(m); // UX-17/20/21: derived run/pause lifecycle (one source).
+  // S162: reconcile the optimistic "filing" flag with what the server now says,
+  // BEFORE anything reads it — so the band, the control and the failure note all
+  // render off one settled answer within a single card build.
+  clearFilingOnState(m);
   var card = el("div", "card");
   if (m.awaiting) card.className += " awaiting";
   // UX-21/UX-22: paused AND pausing both carry the .paused chrome (dimmed body),
@@ -647,6 +736,14 @@ function cardNode(m) {
     }
   }
 
+  // S162: a mission-log filing that ended in a shortfall or a refusal. The
+  // captain may have closed the console on dispatch, so the card is the surface
+  // that has to say so — never a band that simply stops. Condition-gated on a
+  // terminal-but-not-clean session (logFilingNote returns null otherwise), so a
+  // card with no live log session is byte-identical to before this round.
+  var lfNote = logFilingNote(m);
+  if (lfNote) card.appendChild(lfNote);
+
   if (m.progress) {
     var prog = el("div", "progress");
     var bar = el("div", "bar");
@@ -676,6 +773,12 @@ function cardNode(m) {
   // gets the SAME persistent animated band — rendered on every repaint while
   // isAligning so the motion survives board rebuilds until the console opens.
   else if (isAligning(m.id)) card.appendChild(scanningPulse());
+  // S162: the mission-log filing band is deliberately OUTSIDE that chain. Those
+  // three are one mission's own state (it is either running, finalizing its
+  // Align, or opening a grill); a log filing is work on that mission's CHILDREN,
+  // on its own clock, and a card can honestly be doing both at once. Chaining it
+  // would make one of the two states silently invisible.
+  if (logFilingState(m).filing) card.appendChild(filingPulse());
 
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
   card.appendChild(cardControls(m));
@@ -692,6 +795,14 @@ function cardNode(m) {
    gets a themed client-side pulse so a long silent stage never reads as stuck. */
 function cardControls(m) {
   var ctrl = el("div", "card-ctrl");
+  // S162: the disabled ◐ FILING & COSTING… affordance, rendered BEFORE the
+  // stage-appropriate control and never INSTEAD of it — a log filing is news
+  // about this mission's children, so the mission's own action (verify gate,
+  // Pause, START ALIGNMENT…) is untouched. Every branch below appends to this
+  // same host, so both survive whichever one runs. Absent with no filing in
+  // flight, which is what keeps an unaffected card byte-identical.
+  var lfCtrl = logFilingControl(m);
+  if (lfCtrl) ctrl.appendChild(lfCtrl);
   // BUG-067: the reapprove gate. The heal converged green and the engine STOPPED
   // here (awaiting-human, reconcileStatus == awaiting-reapprove) instead of
   // auto-merging. Render a CLEAR, PERSISTENT "Reapprove ▸" action so the captain
@@ -3691,10 +3802,14 @@ function openLog(id) {
                      // still holding UNFILED, and their titles — what a re-preview
                      // would destroy, so the console can name it before it happens.
                      unfiled: 0, unfiledTitles: [] };
-    var fileLabel = "File";
+    // S162: the control's name. It DISPATCHES the filing — the estimator runs
+    // once per logged bug, server-side — and hands the captain the parent card,
+    // so the name says what the click is going to cost them rather than just
+    // "File". The retry label ("File N Remaining") is built from the same word.
+    var fileLabel = "File & Cost";
     /* The retry control's SEMANTIC name — what File MEANS for the session this
-       console is holding right now ("File" for a fresh split, "File N Remaining"
-       for a shortfall retry). Kept beside the button and written only by
+       console is holding right now ("File & Cost" for a fresh split, "File N
+       Remaining" for a shortfall retry). Kept beside the button and written only by
        `setFileLabel`, because the DOM text is not a safe source for copy that
        names the control: it goes transient during a dispatch ("Filing…") and, if
        a state change forgets to relabel, stale. */
@@ -3725,11 +3840,27 @@ function openLog(id) {
     }
 
     /* Re-arm the File control AND record what it now means. Every state that
-       settles the File control goes through here, so the button and the copy that
-       names it can never drift apart. */
+       settles the File control goes through here, so the button, its tooltip and
+       the copy that names it can never drift apart. */
     function setFileLabel(label) {
       fileName = label;
+      // BEFORE rearm: applyWriteState (inside it) overwrites the title with the
+      // view-only reason, and on a read-only board that message must win.
+      file.title = fileTitle();
       return rearm(file, label);
+    }
+
+    /* S162 — what File & Cost will actually DO, from the state of this console.
+       With a daemon session it dispatches and hands over the card; without one
+       (a restart dropped the session) the legacy POST holds until every estimate
+       is in. Two behaviours, so two sentences — a single tooltip would be a lie
+       half the time. */
+    function fileTitle() {
+      return authored.sessionId
+        ? ("File the logged bugs and run the cost estimator on each one. This " +
+           "dispatches — you can close this console and watch the mission card.")
+        : ("File the logged bugs and run the cost estimator on each one. This " +
+           "holds here until every estimate is in.");
     }
 
     /* While the daemon is filing (the estimator runs per bug — the long step) the
@@ -3883,7 +4014,7 @@ function openLog(id) {
         "authored text of " + n + " bug" + (n === 1 ? "" : "s") +
         " that never reached disk (" + strandedNames() + ") — that split is " +
         // name the retry control by the label it is CARRYING for this session
-        // ("File" at `failed`, "File N Remaining" at `partial`) — copy that
+        // ("File & Cost" at `failed`, "File N Remaining" at `partial`) — copy that
         // guesses eventually lies about the UI it points at. Read it from
         // `fileName`, not from the DOM: the button's text goes transient while a
         // file dispatch is in flight, and a warning that says “Filing…” keeps
@@ -4069,7 +4200,7 @@ function openLog(id) {
     // estimate.json) and re-render the panel with the per-bug estimate + override
     // box — then we HOLD. Filing NEVER auto-proceeds into the fix; only the
     // explicit "Go" (revealed after File) resolves the already-filed batch.
-    var file = applyWriteState(btn("File", null, function () {
+    var file = applyWriteState(btn(fileLabel, null, function () {
       // BUG-024: the File/preview control kicks off the async estimate (log.sh
       // runs the estimator on every child). It MUST NOT be re-clickable while the
       // request is in flight — a second click re-triggers the estimate (duplicate
@@ -4077,12 +4208,6 @@ function openLog(id) {
       // disable + show a loading state, and re-enable only on success OR error.
       if (file.disabled) { return; }   // already pending — ignore the click
       err.hidden = true;
-      busyLabel("Filing bugs and estimating each fix…");
-      busy.hidden = false;
-      file.disabled = true;
-      // transient progress text only — `fileName` keeps the control's NAME, so the
-      // re-preview warning can still point at it while this POST is in flight.
-      file.textContent = "Filing…";
       // S161: with a daemon session the body carries ONLY the sid (+ the steers
       // the captain may have edited) — the PRDs, per-bug image refs and pasted
       // screenshots already live server-side, and the POST DISPATCHES rather than
@@ -4092,21 +4217,65 @@ function openLog(id) {
       // `authored.overrides` is then indexed by the children that LANDED — sending
       // it would ask the daemon to re-index the captain's steers onto other bugs.
       // Send the sid alone; the session's own steers still ride the dispatch.
-      var payload = authored.sessionId
-        ? (authored.status === "partial"
-            ? { sessionId: authored.sessionId }
-            : { sessionId: authored.sessionId,
-                overrides: authored.overrides || [] })
-        : { prds: authored.prds || [], overrides: authored.overrides || [],
-            imageRefs: authored.imageRefs || [],  // per-bug routing
-            images: reportImgs.payload() };  // S92: durable attachments on file
+      if (authored.sessionId) {
+        /* ── S162: File & Cost is a dispatch the captain can walk away from ──
+           The estimator runs once per logged bug server-side; S161 made this POST
+           return in ~2ms rather than hold for it, and this is what that seam was
+           for. Mark the parent mission filing, CLOSE the console, and force an
+           instant repaint so the ◐ FILING & COSTING… band is already on the card
+           as the overlay disappears — the same close-on-dispatch shape `Go ▸`
+           uses, and the same optimistic-flag-then-repaint shape START ALIGNMENT
+           uses (no server state changes on the click, so no SSE tick is
+           guaranteed).
+
+           Closing is the DEFAULT, not a requirement: reopening the console
+           restores this very session from the daemon (restoreLogSession), so a
+           captain who prefers to watch the estimates land can simply reopen — and
+           one who stays sees the console close and the card take over. */
+        var payload = authored.status === "partial"
+          ? { sessionId: authored.sessionId }
+          : { sessionId: authored.sessionId,
+              overrides: authored.overrides || [] };
+        markFiling(id);
+        closeOverlay();
+        repaintBoard();
+        // The console is already gone by the time this lands, so the copy points
+        // at where the truth now LIVES rather than at a dialog that no longer
+        // exists ("you can close this" would be describing a closed window).
+        setStatus("Filing the logged bugs and costing each fix — the mission " +
+                  "card will say when it is done.");
+        postWrite("/api/mission/" + enc(id) + "/log/file", payload,
+          function () { /* the parent card's logFiling stamp carries it now */ },
+          function (msg) {
+            // The daemon REFUSED the dispatch, so nothing is filing. Drop the
+            // optimistic band rather than leave the card claiming work that was
+            // never accepted, and say why on the only surface left — the console
+            // that would have shown it is already gone.
+            clearFiling(id);
+            repaintBoard();
+            setStatus(msg);
+            refresh();
+          });
+        return;
+      }
+      busyLabel("Filing bugs and estimating each fix…");
+      busy.hidden = false;
+      file.disabled = true;
+      // transient progress text only — `fileName` keeps the control's NAME, so the
+      // re-preview warning can still point at it while this POST is in flight.
+      file.textContent = "Filing…";
+      // The LEGACY prds-in-body form, unchanged from pre-S161 — and deliberately
+      // NOT backgrounded: with no daemon session this POST holds for the whole
+      // estimator run and there is no `logFiling` stamp for a card to read, so
+      // closing the console would strand the captain with no surface at all.
+      var payload = { prds: authored.prds || [], overrides: authored.overrides || [],
+                      imageRefs: authored.imageRefs || [],  // per-bug routing
+                      images: reportImgs.payload() };  // S92: durable attachments
       postWrite("/api/mission/" + enc(id) + "/log/file", payload,
         function (state) {
           if (state && state.status) {
-            // the daemon accepted the dispatch and is filing. The console follows
-            // the session (and the captain may close it — the parent card carries
-            // the status). Attachments now belong to the session, so drop the
-            // client chips.
+            // A daemon session appeared under a console that had none (a restart
+            // race). Follow it rather than pretend the legacy response shape.
             reportImgs.clear();
             adoptSession(state);
             return;
@@ -4165,6 +4334,10 @@ function openLog(id) {
           setStatus(msg); refresh();
         });
     }));
+    // S162: seed the control's name AND its tooltip through the SAME writer every
+    // later state uses, so the first paint cannot be the one state that describes
+    // itself differently (and so the seeding still routes through the write gate).
+    setFileLabel(fileLabel);
     file.hidden = true;    // revealed only after a Preview that splits ≥1 bug
     run.hidden = true;     // revealed once the bugs are filed for review
     m.foot.appendChild(prev);
@@ -4470,6 +4643,17 @@ function renderDetail(mi) {
   if (mi.stage === "verify" && !isLogBug(mi)) {
     actions.appendChild(applyWriteState(btn("Mission Log", null, function () { openLog(mi.id); })));
   }
+  // S162: mirror the card's filing affordance here too — the detail NEVER runs
+  // through the board's card builder (the align_overlay_mission lesson), so a
+  // surface left out of this goes silent at exactly the moment the captain clicks
+  // the card to look closer. Built by the same function as the card's, so the two
+  // cannot word it differently, and placed beside Mission Log because that is the
+  // console it is telling you about — the mission's own primary action keeps its
+  // place at the head of the row. (cardNode reconciles the optimistic flag for the
+  // board; a detail opened straight from a link needs it done here too.)
+  clearFilingOnState(mi);
+  var dFiling = logFilingControl(mi);
+  if (dFiling) actions.appendChild(dFiling);
   row1.appendChild(actions);
   head.appendChild(row1);
 
@@ -4478,6 +4662,13 @@ function renderDetail(mi) {
   // when they click the badge's card. Absent entirely for a healthy base.
   var bfBlock = baseFreshnessBlock(mi.baseFreshness, "det-basefresh");
   if (bfBlock) head.appendChild(bfBlock);
+
+  // S162: and the card's band / failure state, so the detail tells the same
+  // story. Both are condition-gated (null with no live session), so a mission
+  // that never logged a bug opens byte-identically to before this round.
+  if (logFilingState(mi).filing) head.appendChild(filingPulse());
+  var dNote = logFilingNote(mi);
+  if (dNote) head.appendChild(dNote);
 
   // UX-31: a STAGE-INDEPENDENT active-time readout in the detail header, so the
   // total stays visible at Verify and Done (where there is no in-flight block).
@@ -5592,6 +5783,95 @@ function finalizingPulse() {
   var w = workingNode("◐ Finalizing & costing…");
   w.className += " lcars-running";
   return w;
+}
+
+/* ════════ S162 — the mission-log filing surface (card + detail) ════════
+   Three nodes, one state reading (logFilingState), one set of strings. Every
+   piece of copy about a log filing is built HERE: nothing anywhere reads a label
+   back out of the DOM to describe this state (S161's re-preview warning did, and
+   ended up telling the captain that a control called "Filing…" was the one
+   holding their bugs). All three return null / draw nothing unless their exact
+   condition holds, so a card with no live session is byte-identical to pre-S162. */
+var FILING_CONTROL_LABEL = "◐ FILING & COSTING…";
+var FILING_BAND_LABEL = "◐ Filing bugs & costing each fix…";
+var FILING_CONTROL_TITLE =
+  "Filing the logged bugs and running the cost estimator on each one — you can " +
+  "leave this; the card will say when it is done.";
+/* True by construction while a session is live: the daemon holds the authored
+   text of every bug that is not on disk (S161/N1), so reopening the console
+   recovers it and File re-files only what is missing — no second split worker. */
+var FILING_RECOVERY_HINT =
+  "Open the Mission Log — the bugs that did not file are still held there.";
+
+/* The DISABLED "◐ FILING & COSTING…" affordance. Mirrors the F1 finalizing
+   control exactly: born disabled, wired to nothing, and carrying the `.btn.go`
+   chrome that markViewOnly() sweeps, so a view-only board cannot end up holding
+   a live-looking one. Never re-armed — the only thing that clears it is the
+   filing ending (there is no "cancel a filing" and this must not imply one). */
+function logFilingControl(m) {
+  if (!logFilingState(m).filing) return null;
+  var b = act("log-filing", btn(FILING_CONTROL_LABEL, "go", null));
+  b.disabled = true;
+  b.title = FILING_CONTROL_TITLE;
+  return b;
+}
+
+/* The PERSISTENT animated band, drawn on every repaint while the filing is live
+   — the same bars as scanningPulse/finalizingPulse, so a backgrounded filing
+   reads as live motion rather than a static grey button. */
+function filingPulse() {
+  var w = workingNode(FILING_BAND_LABEL);
+  w.className += " lcars-running";
+  return w;
+}
+
+/* The counts, in ONE sentence fragment built in ONE place — `filedCount` and
+   `bugCount` are the daemon's two self-describing names (S161-D2), and this is
+   the only place they are turned into prose. Empty when the stamp is missing
+   either: a card that cannot count must not print a number. */
+function logFilingCounts(st) {
+  if (st.bugCount == null || st.filedCount == null) return "";
+  return st.filedCount + " of " + st.bugCount + " filed";
+}
+
+/* The card/detail state for a filing that ENDED BADLY.
+
+   This is the half that makes closing the console safe. The captain dispatched a
+   filing and walked away; if a shortfall or a refusal just made the band stop
+   animating, they would be left believing bugs exist that do not. So a `partial`
+   or a `failed` replaces the band with a legible, persistent state that names
+   what happened — the count from the stamp, and the daemon's own reason
+   verbatim. A clean `filed` renders nothing (the bugs are simply there, awaiting
+   the captain's Go — the follow-through control for that is S163's). */
+function logFilingNote(m) {
+  var st = logFilingState(m);
+  if (st.filing || !st.terminal || st.status === "filed") return null;
+  var counts = logFilingCounts(st);
+  var head = st.status === "partial"
+    ? ("● only " + (counts || "some logged bugs filed"))
+    : ("✖ logging the bugs failed" + (counts ? " — " + counts : ""));
+  var host = el("div", "log-filing-note");
+  // `failed` (nothing landed) reads as the attention state; `partial` as the
+  // amber "look at this" — some bugs really are on disk and reviewable.
+  //
+  // NOT a `.no` line, and that omission is load-bearing. `.no` means "a muted
+  // metadata number" (the `#142 · lcars:verify` line), and `.card .no` ties
+  // `.card .log-filing-status` on specificity while sitting LATER in board.css —
+  // so carrying both handed this line the metadata grey and threw the amber away
+  // before it ever reached the screen. `.failed` survived only by accident, on a
+  // second colour at a higher specificity. `.log-filing-status` already sets the
+  // font, size and letter-spacing it was borrowing, so `.no` contributed nothing
+  // here but the colour that defeated it. Measured, not argued, in
+  // FilingStatusStyleTest.
+  var line = el("div", "log-filing-status" +
+    (st.status === "failed" ? " failed" : ""), head);
+  line.title = FILING_RECOVERY_HINT;
+  host.appendChild(line);
+  // The reason, exactly as the daemon stated it. Absent when it gave none —
+  // an empty line beats an invented cause (S160/S161: never claim what the code
+  // cannot know).
+  if (st.error) host.appendChild(el("div", "log-filing-detail", st.error));
+  return host;
 }
 
 function runningPulse(label, liveness) {
