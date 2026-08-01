@@ -1158,7 +1158,11 @@ class Actions(object):
                     + "\n".join(image_paths))
         own_outdir = outdir is None
         if own_outdir:
-            outdir = tempfile.mkdtemp(prefix="lcars-worker-", dir=self.repo_root)
+            # Same rule as `_tmp_prd`/`_stage_image`: an LCARS-owned directory in
+            # the captain's working tree is dirt the freshness guard will blame
+            # on them, so it lives under `.git/` where git cannot see it.
+            outdir = tempfile.mkdtemp(prefix="lcars-worker-",
+                                      dir=self._scratch_dir())
         env = dict(os.environ)
         if self.gh_bin:
             env["LCARS_GH_BIN"] = self.gh_bin
@@ -2254,9 +2258,56 @@ class Actions(object):
             first = first[:69].rstrip() + "..."
         return first or "New mission"
 
+    # ── S160 fix-loop: LCARS's own scratch NEVER lands in the working tree ────
+    # The daemon materialises the captain's idea, their pasted images and a
+    # worker output dir as files on disk before it dispatches. Those used to be
+    # written into the REPO ROOT, and the consequence was not cosmetic: the
+    # base-freshness guard reads `git status --porcelain`, counted LCARS's own
+    # `lcars-prd-<rand>.md` as the captain's untracked work, refused the
+    # fast-forward it was standing right in front of, and stamped a permanent
+    # `loud: true` record telling a pristine clone it was dirty — while the
+    # Mission really was cut from the stale base. The same class S157 found: the
+    # harness's own provisioning artifacts are never the user's changes.
+    #
+    # THE CURE IS THE LOCATION, NOT A RULE ABOUT NAMES. Under `.git/` the
+    # scratch is invisible to `git status` BY CONSTRUCTION — there is no ignore
+    # list to keep in sync with the filenames, no "take the reading before you
+    # write" ordering for a future writer to forget, and no filename special
+    # case for the guard to get wrong. It is also exactly where CLAUDE.md says
+    # per-repo LCARS state belongs, for the same stated reason: the target
+    # repo's working tree stays clean.
+    #
+    # It stays INSIDE the repo directory, so everything that made repo_root the
+    # original choice still holds — a worker sandboxed to the repo can still
+    # read the staged image by absolute path (copilot `--attachment`, claude's
+    # Read tool), which a system tempdir would have broken.
+    def _scratch_dir(self):
+        """LCARS's own per-repo scratch space, created on demand."""
+        d = os.path.join(self._git_dir(), "lcars", "tmp")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _git_dir(self):
+        """This repo's git directory. Normally `<repo_root>/.git`; in a LINKED
+        WORKTREE that path is a FILE holding `gitdir: <real path>`, and writing
+        scratch "into" it would fail — so the pointer is followed."""
+        p = os.path.join(self.repo_root, ".git")
+        if os.path.isfile(p):
+            try:
+                with open(p) as fh:
+                    for line in fh:
+                        if line.startswith("gitdir:"):
+                            g = line.split(":", 1)[1].strip()
+                            if not os.path.isabs(g):
+                                g = os.path.join(self.repo_root, g)
+                            return os.path.normpath(g)
+            except OSError:
+                pass
+        return p
+
     def _tmp_prd(self, content):
         fd, path = tempfile.mkstemp(prefix="lcars-prd-", suffix=".md",
-                                    dir=self.repo_root)
+                                    dir=self._scratch_dir())
         with os.fdopen(fd, "w") as fh:
             fh.write(content)
         return path
@@ -2266,14 +2317,14 @@ class Actions(object):
     # reply, or the Mission-Log box; it rides the existing write body as
     # `images:[{name,type,dataB64}]`. We DECODE the base64 with the stdlib
     # `base64` module (NO Pillow/PIL — we never inspect or re-encode the pixels,
-    # we just write the bytes) and stage each under repo_root, MIRRORING
+    # we just write the bytes) and stage each in the scratch dir, MIRRORING
     # `_tmp_prd`, so the worker can reach it: copilot via `--attachment <path>`,
     # claude via its Read tool on the abs path. The server has already enforced
     # the content-type allow-list (415) and the body cap (413) before we get here.
     def _stage_image(self, content_type, data_b64):
-        """Decode one base64 image and stage it under repo_root; return the abs
-        path. The suffix follows the (already allow-listed) content type so the
-        worker's image loader recognises it. Caller owns cleanup."""
+        """Decode one base64 image and stage it in `_scratch_dir()`; return the
+        abs path. The suffix follows the (already allow-listed) content type so
+        the worker's image loader recognises it. Caller owns cleanup."""
         suffix = _IMAGE_SUFFIX.get((content_type or "").strip().lower(), ".png")
         try:
             raw = base64.b64decode((data_b64 or "").encode("ascii"),
@@ -2281,7 +2332,7 @@ class Actions(object):
         except (binascii.Error, ValueError, UnicodeEncodeError):
             raise ActionError(400, "image data is not valid base64")
         fd, path = tempfile.mkstemp(prefix="lcars-img-", suffix=suffix,
-                                    dir=self.repo_root)
+                                    dir=self._scratch_dir())
         with os.fdopen(fd, "wb") as fh:
             fh.write(raw)
         return path

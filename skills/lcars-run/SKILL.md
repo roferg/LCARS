@@ -117,6 +117,7 @@ branch cut at an older commit was cut there on purpose.
 
 The verdict is recorded on the Mission as `state.json.baseFreshness`
 (`verdict` ∈ `current | updated | stale | unknown | child-base`, plus `reason`,
+`fix` (one runnable command or nothing), `fixNote`, `blocker`,
 `behindBy`, `baseSha`, `checkedAt`, and `missionBranchAtBase` — `true` only when
 `lcars/<id>` really does contain the base tip, so a move that did not happen is
 never reported as one). A drive that *began* against a base that was

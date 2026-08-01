@@ -600,6 +600,13 @@ function cardNode(m) {
     // Informational only — matches the dialog, which offers STOP only once running.
     pills.appendChild(el("span", "pill", "▶ LAUNCHING…"));
   }
+  // S160: the base-freshness badge. Additive and condition-gated — the adapter
+  // sends `baseFreshness` ONLY for a record the guard carried LOUD, so a card
+  // with a healthy (or quietly-handled) base is byte-identical to before this
+  // round. It rides the pill row rather than a band of its own: it is a
+  // property OF this Mission (the tree it was cut from), not of the board.
+  var bfp = baseFreshnessPill(m.baseFreshness);
+  if (bfp) pills.appendChild(bfp);
   card.appendChild(pills);
 
   // UX-21/UX-22: a high-contrast status label for paused/pausing. It carries the
@@ -1430,6 +1437,179 @@ function fileReadinessBlock(tr) {
 
   paint(tr);
   fileReadinessSync = function (fresh) { paint(fresh || null); };
+  return wrap;
+}
+
+/* ════════════════ S160: BASE FRESHNESS ═══════════════════════════════════
+   S158 (file time) and S159 (drive time) already decide whether the branch a
+   Mission is cut from is the tree the rest of the world sees — and both print
+   their verdict to STDOUT, which the daemon swallows. A captain filing from
+   this board never saw a word of it. This is that verdict, on the board.
+
+   TWO RULES GOVERN EVERYTHING BELOW.
+
+   1. GATED ON `loud`, NEVER ON THE VERDICT NAME. The vocabulary is five words
+      (current / updated / stale / unknown / child-base) and `unknown` covers
+      BOTH the silent everyday no-remote repo and the loud unreachable-origin
+      one. Any allowlist of verdict names is therefore wrong about one of them,
+      always — which is exactly why S158 made loudness a CARRIED field. The
+      adapter already dropped every quiet record, so `m.baseFreshness` present
+      IS the condition; nothing here re-judges it.
+
+   2. THE COPY COMES FROM THE RECORD. The guard wrote one honest sentence
+      naming what happened (`reason`), the exact command that clears it (`fix`),
+      the prose beside it (`fixNote`) and WHAT is blocking (`blocker`). We
+      DISPLAY those. We do not compose a second opinion about git state here,
+      because two opinions is one more surface that can be wrong.
+
+   3. THE HEADLINE NAMES WHAT IS BLOCKING, NOT THE COMMIT COUNT. A dirty tree
+      that is also 1 behind used to render `⚠ BASE · 1 BEHIND` — and "1 behind"
+      is precisely the state the captain was ruled safe to ignore, while the
+      dirty tree that actually STOPPED the fast-forward appeared only in the
+      body. So the badge leads with the record's carried `blocker` and appends
+      the distance after it: the blocking thing first, the measurement second,
+      neither invented here. A record with no blocker (nothing is blocking) or
+      an unrecognised one falls back to the distance, so an older record — or a
+      lane a future LCARS adds — still renders something true.
+
+   `behindBy` may be null (never measured): a rendered "0 BEHIND" from a check
+   that measured nothing is the one lie a consumer cannot detect, so null reads
+   as an absence, not a zero.
+
+   AMBER, and NEVER A MODAL. Filing is never blocked by any of this — warn
+   loudly, file anyway. */
+
+/* blocker token → the two words the badge leads with. The tokens are the
+   guard's (skills/lcars-init/lcars-common.sh); this map only spells them for a
+   human. Anything not listed falls through to the distance — a badge that
+   guessed at an unknown token would be inventing the one thing rule 2 forbids. */
+var BASE_BLOCKER_LABEL = {
+  "dirty-tree": "DIRTY TREE",
+  "diverged": "DIVERGED",
+  "not-checked-out": "NOT CHECKED OUT",
+  "untracked-clobber": "WOULD OVERWRITE",
+  "merge-refused": "MERGE REFUSED",
+  "behind-trunk": "BEHIND TRUNK",
+  "unreachable": "ORIGIN UNREACHABLE",
+  /* NOT a shade of "unreachable": origin answered a ref listing instantly and
+     LCARS killed its own bounded fetch at its own deadline. Telling a captain
+     their reachable origin is unreachable is the copy-that-lies class, and this
+     lane is the one that still carries a runnable `fix`. */
+  "fetch-timeout": "FETCH TIMED OUT",
+  /* The token is deliberately generic (one lane covers rebase / merge /
+     cherry-pick / revert / bisect) and so is its headline — WHICH operation is
+     in the record's own sentence, where the guard wrote it. */
+  "operation-in-progress": "UNFINISHED GIT OPERATION",
+};
+
+function baseFreshnessCopy(bf) {
+  if (!bf) return null;
+  var v = bf.verdict || "";
+  var n = bf.behindBy;
+  var measured = (typeof n === "number");
+  var blocked = BASE_BLOCKER_LABEL[bf.blocker || ""] || "";
+  var badge;
+  if (v === "child-base") {
+    /* Not a fault, and not this Mission's to answer for: its base IS another
+       Mission's branch. The guard carries this quiet, so it should never reach
+       here — but if it ever does, the word must not be "stale". */
+    badge = "◇ BASE · PARENT MISSION";
+  } else if (blocked) {
+    /* The blocking condition leads; the distance rides behind it when it was
+       really measured (an unreachable origin measured nothing). */
+    badge = "⚠ BASE · " + blocked + (measured ? " · " + n + " BEHIND" : "");
+  } else if (v === "unknown") {
+    badge = "⚠ BASE UNVERIFIED";
+  } else if (v === "stale") {
+    badge = measured ? ("⚠ BASE · " + n + " BEHIND") : "⚠ BASE STALE";
+  } else {
+    badge = "⚠ BASE · " + String(v).toUpperCase();
+  }
+  return { badge: badge, reason: bf.reason || "", fix: bf.fix || "",
+           note: bf.fixNote || "" };
+}
+
+/* The compact card badge: one pill, the record's sentence as its tooltip. */
+function baseFreshnessPill(bf) {
+  var copy = baseFreshnessCopy(bf);
+  if (!copy) return null;
+  var pill = el("span", "pill basefresh", copy.badge);
+  /* The long form lives in the detail; on the card the reason is the hover, so
+     the badge is never the only thing the captain gets. `Fix:` labels ONLY a
+     runnable command — the guidance beside it gets its own unlabelled line, for
+     the same reason the detail block does (see baseFreshnessBlock). */
+  pill.title = copy.reason
+    + (copy.fix ? "\n\nFix: " + copy.fix : "")
+    + (copy.note ? "\n\n" + copy.note : "");
+  return pill;
+}
+
+/* The long form: the badge, the guard's sentence, and its command. Used by the
+   mission detail and by the File console's pre-flight line — ONE builder, so
+   the two can never describe the same record differently. */
+function baseFreshnessBlock(bf, cls) {
+  var copy = baseFreshnessCopy(bf);
+  if (!copy) return null;
+  var wrap = el("div", cls);
+  wrap.appendChild(el("div", "bf-head", copy.badge));
+  if (copy.reason) wrap.appendChild(el("div", "bf-why", copy.reason));
+  /* No empty Fix row: some conditions genuinely have no command that would
+     clear them (origin has to come back first), and an empty "Fix:" label
+     invites the captain to look for one that isn't there.
+
+     AND `Fix:` LABELS A COMMAND, NOTHING ELSE. A tester pasted two of these
+     into a shell — `git stash -u   (or commit your work)   then   git pull
+     --ff-only origin main` gave `syntax error near unexpected token '('`, and
+     `reach origin first (VPN / network / auth) — then …` was not a command at
+     all. The guard now keeps `fix` to one runnable line and puts the
+     alternative, the caveat and the manual step in `fixNote`, which renders
+     UNLABELLED below it: prose that is never dressed as something to run. */
+  if (copy.fix) wrap.appendChild(el("div", "bf-fix", "Fix: " + copy.fix));
+  if (copy.note) wrap.appendChild(el("div", "bf-note", copy.note));
+  return wrap;
+}
+
+/* The File-console PRE-FLIGHT line. The whole point of the session: a stale or
+   dirty base is named on the console the Mission is filed from, not discovered
+   afterwards in stdout nobody reads.
+
+   ASYNCHRONOUS AND NON-BLOCKING BY DESIGN. The block is appended EMPTY and
+   HIDDEN the instant the console opens, so the captain can start typing at
+   once; GET /api/base-freshness (a read — the reporter behind it never moves a
+   ref) fills it in when it answers. A quiet verdict, a null answer, or a failed
+   request all leave it hidden — silence is the correct output for "nothing for
+   you to do here", and a console that shrugged at the captain because a check
+   timed out would be worse than one that never checked.
+
+   AND IT IS MOUNTED BELOW THE IDEA FIELD (S160 round 2, D4). Above it, the
+   block's late arrival REFLOWED the field the captain was already typing into:
+   measured against a real GitHub remote the console was interactive at 37ms and
+   the block landed at 1.3–1.8s, moving the textarea's top 131px → 300px in one
+   frame — 16.3s against a slow origin. Focus and typed text survived, but the
+   field jumped out from under a captain mid-sentence. Reserving the height was
+   the alternative and it is worse: the block is ABSENT entirely on the common
+   quiet path, so a reservation is a permanent empty gap on every healthy repo.
+   Below the field, the block pushes only the engine picker and the footer —
+   nothing anyone is typing into — and the overlay is top-anchored
+   (`align-items:flex-start`), so the textarea cannot be shifted from beneath.
+   It is still on the console, still before the captain commits to filing. */
+function fileBaseFreshnessBlock() {
+  var wrap = el("div", "file-basefresh");
+  wrap.hidden = true;
+  fetch("/api/base-freshness")
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var bf = d && d.baseFreshness;
+      /* `loud` is re-checked here only because this endpoint reports on the
+         REPO (no Mission has been filed yet), so unlike the card payload the
+         quiet records were never filtered out upstream. */
+      if (!bf || !bf.loud) return;
+      var block = baseFreshnessBlock(bf, "bf-body");
+      if (!block) return;
+      wrap.appendChild(block);
+      wrap.hidden = false;
+    })
+    .catch(function () { /* a check that could not run says nothing */ });
   return wrap;
 }
 
@@ -2274,6 +2454,18 @@ function openFile() {
   var idea = el("textarea"); idea.rows = 4;
   idea.placeholder = "What do you want to build, improve, or fix?";
   m.body.appendChild(field("The idea — what do you want to build, improve, or fix?", idea));
+  // S160: the base-freshness PRE-FLIGHT. It goes in EMPTY and HIDDEN and fills
+  // itself in when the read answers, so it never delays the console by a
+  // millisecond and never becomes a wall between the captain and filing. A
+  // healthy base adds NOTHING here.
+  //
+  // BELOW the idea field, not above it (round 2, D4): the check answers 1.3s+
+  // after the console is interactive, and mounted above it shoved the textarea
+  // down 169px mid-sentence. Everything it can push now — the engine picker and
+  // the footer — is something nobody is typing into. The readiness block above
+  // stays above: it is rendered from board state ALREADY IN HAND, so it is
+  // there in the first frame and moves nothing.
+  m.body.appendChild(fileBaseFreshnessBlock());
 
   // UX-1: the Repository field is removed from the File modal — the viewscreen
   // is per-repo this iteration, so a chooseable repo is useless. The server
@@ -3856,6 +4048,12 @@ function renderDetail(mi) {
   }
   row1.appendChild(actions);
   head.appendChild(row1);
+
+  // S160: the card badge's long form — the guard's own sentence and the exact
+  // command that clears it, directly under the header where the captain lands
+  // when they click the badge's card. Absent entirely for a healthy base.
+  var bfBlock = baseFreshnessBlock(mi.baseFreshness, "det-basefresh");
+  if (bfBlock) head.appendChild(bfBlock);
 
   // UX-31: a STAGE-INDEPENDENT active-time readout in the detail header, so the
   // total stays visible at Verify and Done (where there is no in-flight block).

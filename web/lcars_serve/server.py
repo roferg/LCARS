@@ -5,6 +5,9 @@ Serves (READ — always available, adapter-neutral; ADR-003):
   GET /<asset>              static front-end assets (board.js, lcars.css, …)
   GET /api/board            the full adapter-neutral board JSON (board.py shape)
   GET /api/mission/<id>     mission detail incl. the activity feed
+  GET /api/base-freshness   this repo's live base-freshness verdict (S160) —
+                            read-only, adapter-optional (404 when the adapter
+                            cannot see a local checkout)
   GET /api/events           a live channel (Server-Sent Events) that pushes ONE
                             update whenever mission state changes on disk
 
@@ -152,6 +155,29 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
                         return self._json(actions.align_state(sid))
                     except _ActionError as exc:
                         return self._error(exc.status, exc.message)
+            # GET /api/base-freshness — this repo's live base-freshness verdict
+            # (S160). A READ: the File console asks it BEFORE the captain has
+            # typed a word, so a stale or dirty base is named before the idea is,
+            # and the reporter behind it is read-only by construction (it never
+            # moves a ref — see skills/lcars-init/base-freshness.sh).
+            #
+            # NOT gated on `actions`. This is not a write, so it answers on a
+            # `--read-only` LOCAL board too — a captain looking at a view-only
+            # board still gets the truth about the checkout it is attached to.
+            # An adapter that cannot see a local checkout (the GitHub one) has no
+            # such method and 404s cleanly; a reporter failure answers `null`,
+            # never a 500 (the console then simply says nothing).
+            if path == "/api/base-freshness":
+                reader = getattr(adapter, "base_freshness", None)
+                if not callable(reader):
+                    return self._error(
+                        404, "this board cannot read base freshness (it is not "
+                             "attached to a local checkout)")
+                try:
+                    rec = reader()
+                except Exception:
+                    rec = None
+                return self._json({"baseFreshness": rec})
             if path == "/api/events":
                 return self._sse()
             return self._static(path)

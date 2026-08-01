@@ -11204,7 +11204,15 @@ drive_base_recheck() {
   #
   # NOT for a `child-base` Mission: a logged bug's base is its parent's branch,
   # LCARS takes no position on it, and the parent's branch is never moved.
-  if [ "${LCARS_BASE_VERDICT:-}" != "child-base" ]; then
+  #
+  # NOR while git is MID-OPERATION (S160 round 2). An unfinished rebase / merge /
+  # cherry-pick / revert / bisect means the base ref is where the operation will
+  # move it FROM, so "fast-forward the mission branch onto the base" would aim at
+  # a commit that is about to stop existing — and the base's own verdict already
+  # says nothing was measured. The guard carries that as one blocker token, so
+  # this reads the record rather than re-deciding it.
+  if [ "${LCARS_BASE_VERDICT:-}" != "child-base" ] \
+     && [ "${LCARS_BASE_BLOCKER:-}" != "operation-in-progress" ]; then
     lcars_base_advance_mission_branch "$branch" "$base" || true
     lcars_base_branch_note_drive "$branch" "$base" || true
   fi

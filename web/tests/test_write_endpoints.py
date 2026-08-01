@@ -668,8 +668,14 @@ class MissionFileTest(WriteEndpointBase):
         self.assertEqual(status, 200)
         rec = self._record("file")
         self.assertIn("--attach", rec)
-        # the threaded path is a staged lcars-img-* file under repo_root.
+        # the threaded path is a staged lcars-img-* file...
         self.assertIn("lcars-img-", rec)
+        # ...and it lives under .git/, NOT in the working tree. S160 fix-loop:
+        # LCARS staging its own scratch in the captain's tree made the
+        # base-freshness guard read `?? lcars-prd-....md` as the captain's
+        # untracked work, refuse the fast-forward, and stamp a false "dirty
+        # tree" alarm on a pristine clone.
+        self.assertIn(os.path.join(".git", "lcars", "tmp"), rec)
 
     def test_file_without_image_threads_no_attach(self):
         """Regression: a no-image file call is byte-identical (no --attach)."""
@@ -679,11 +685,24 @@ class MissionFileTest(WriteEndpointBase):
 
     def test_file_with_image_reaps_staged_temp(self):
         """The staged temp copy is reaped after file.sh has copied it in (the
-        record stub is a no-op cp, so nothing should leak under repo_root)."""
+        record stub is a no-op cp, so nothing should leak in the scratch dir)."""
         import glob
         self._post("/api/mission",
                    {"idea": "x", "images": [_img()]})
-        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-img-*")), [])
+        self.assertEqual(
+            glob.glob(os.path.join(self.tmp, ".git", "lcars", "tmp", "*")), [])
+
+    def test_file_leaves_nothing_in_the_working_tree(self):
+        """S160 fix-loop, the whole point: whatever the daemon stages for its own
+        use — the temp PRD, a pasted image, a worker out-dir — must be invisible
+        to `git status`, because the base-freshness guard reads exactly that and
+        will otherwise blame LCARS's provisioning on the captain."""
+        import glob
+        self._post("/api/mission",
+                   {"idea": "Add a dark mode toggle", "images": [_img()]})
+        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-*")), [])
+        prd_arg = self._record("file")
+        self.assertIn(os.path.join(".git", "lcars", "tmp"), prd_arg)
 
 
 class LogTest(WriteEndpointBase):
@@ -792,6 +811,7 @@ class LogTest(WriteEndpointBase):
         self.assertIn("--parent m-001", log_rec)
         self.assertIn("--attach", log_rec)
         self.assertIn("lcars-img-", log_rec)
+        self.assertIn(os.path.join(".git", "lcars", "tmp"), log_rec)
 
     def test_log_file_without_image_threads_no_attach(self):
         """Regression: a no-image log_file is byte-identical (no --attach)."""
@@ -804,7 +824,9 @@ class LogTest(WriteEndpointBase):
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
         actions.log_file("m-001", prds=["# Bug: a\n\nbody a"],
                          overrides=[""], images=[_img()])
-        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-img-*")), [])
+        self.assertEqual(
+            glob.glob(os.path.join(self.tmp, ".git", "lcars", "tmp", "*")), [])
+        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-*")), [])
 
     def test_log_run_threads_per_bug_overrides_to_log(self):
         """The explicit one-shot file & run path (confirm=True) must also carry

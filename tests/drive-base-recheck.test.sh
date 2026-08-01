@@ -341,7 +341,13 @@ echo "drive-time base re-check (S159)"
 # S158's ruling stands: four verdicts plus a reason sentence. S159 is allowed
 # `child-base` and nothing else, so the guard is held to that declaration here —
 # the same way S158's behaviour 32 holds its own source to its own.
-VERDICTS_IN_SOURCE="$(grep -oE '_lcars_base_set [a-z-]+' "$COMMON" | awk '{print $2}' | sort -u | tr '\n' ' ')"
+# BOTH recorders are scanned. S160 round 2 added `_lcars_base_set_after_attempt`
+# (the setter with no `fix` slot, for an outcome LCARS reached by trying and
+# failing), and a declaration check that inspects only one of the two would go on
+# passing while a sixth verdict walked in through the other — the "flattering
+# number" this round exists to distrust.
+VERDICTS_IN_SOURCE="$(grep -oE '_lcars_base_set(_after_attempt)? [a-z-]+' "$COMMON" \
+  | awk '{print $2}' | sort -u | tr '\n' ' ')"
 check "0. the guard sets ONLY the five sanctioned verdicts" \
   "[ \"\$VERDICTS_IN_SOURCE\" = 'child-base current stale unknown updated ' ]"
 check "0. lcars-common.sh defines the mission-branch test" \
@@ -957,6 +963,116 @@ check "19. …running it succeeds" "[ '$FIX13_RC' = '0' ]"
 adv "$r13" "lcars/$MID" main
 check "19. …and the very next drive then fast-forwards it, exactly as promised" \
   "[ \"\$(sha '$r13' 'refs/heads/lcars/$MID')\" = \"\$(sha '$r13' refs/heads/main)\" ] && grep -q '✓ MISSION BRANCH' '$r13.adv.out'"
+
+# --- Behaviour 20: a drive taken MID-OPERATION moves nothing ---------------
+# S160 round 2, D2. A tester pasted the `diverged` fix (`git pull --rebase origin
+# main`), hit a conflict — the COMMON outcome for a diverged branch — and worked
+# on from there. Mid-rebase, `refs/heads/main` is where the operation will move
+# it FROM: fast-forwarding the mission branch onto it would aim at a commit that
+# is about to stop existing, and the base's own verdict already says nothing was
+# measured. So the drive reads that blocker and declines to move any ref.
+r14="$(make_fixture d14)"
+prd14="$TMPROOT/prd14.md"; write_prd "$prd14"
+file_mission "$r14" --prd "$prd14"
+advance_origin d14 1
+( cd "$r14" && mkdir -p src && printf 'captain line\n' >>src/real-view.txt \
+    && git add -A && git commit -q -m "the captain's own commit" ) >/dev/null 2>&1
+( cd "$r14" && git pull --rebase origin main ) >"$r14.rebase.out" 2>&1
+BEFORE_MB14="$(sha "$r14" "refs/heads/lcars/$MID")"
+BEFORE_MAIN14="$(sha "$r14" refs/heads/main)"
+check "20. the fixture really is mid-rebase" \
+  "( cd '$r14' && [ -e \"\$(git rev-parse --git-path rebase-merge)\" ] )"
+drive "$r14" "$MID" --step
+M14="$(mdir "$r14")"
+check "20. the drive records the unfinished operation, not a staleness verdict" \
+  "[ \"\$(sf '$M14/state.json' baseFreshness.blocker)\" = 'operation-in-progress' ]"
+check "20. …as 'unknown' — nothing could honestly be measured" \
+  "[ \"\$(sf '$M14/state.json' baseFreshness.verdict)\" = 'unknown' ]"
+# JSON null — `sf` renders it "None". NOT a sha: naming a commit the Mission was
+# not cut from is the permanent wrong provenance record D2 is about.
+check "20. …with a NULL baseSha, never a commit the Mission was not cut from" \
+  "[ \"\$(sf '$M14/state.json' baseFreshness.baseSha)\" = 'None' ]"
+check "20. the MISSION BRANCH was not moved" \
+  "[ \"\$(sha '$r14' 'refs/heads/lcars/$MID')\" = '$BEFORE_MB14' ]"
+check "20. the base was not moved either" \
+  "[ \"\$(sha '$r14' refs/heads/main)\" = '$BEFORE_MAIN14' ]"
+check "20. and no MISSION BRANCH claim of either voice is printed" \
+  "! grep -q 'MISSION BRANCH' '$r14.drive.out'"
+check "20. the unfinished rebase is exactly where the captain left it" \
+  "( cd '$r14' && [ -e \"\$(git rev-parse --git-path rebase-merge)\" ] )"
+check "20. no base_stale event claims a staleness that was never measured" \
+  "[ \"\$(ev_count '$M14/events.jsonl' base_stale)\" = '0' ]"
+
+# --- Behaviour 21: a refused MISSION BRANCH still leaves a way forward -----
+# S160 round 3, D1. A tester's mission branch was checked out CLEAN and 2 behind
+# — the lane that normally advances in place (behaviour 11) — but the repo had
+# `merge.verifySignatures=true`, so git refused the local fast-forward. LCARS
+# recorded that honestly through the recorder with no `fix` slot (round 2's cure
+# for offering back an operation it had already watched fail) and the captain
+# read `Why:` / `Means:` / `Impact:` and NOTHING ELSE: a correct diagnosis with
+# no hint that clearing git's objection was theirs to do.
+#
+# The base's own step-9 sibling has carried exactly those words as a `fixNote`
+# since round 2. This lane just never got them. The cure is structural — the
+# recorder writes the note — so no future refusal lane can ship the dead end by
+# forgetting.
+r15="$(make_fixture d15)"; prd15="$TMPROOT/prd15.md"; write_prd "$prd15"
+file_mission "$r15" --prd "$prd15"
+M15="$(mdir "$r15")"; MB15="lcars/$MID"
+WT15="$TMPROOT/d15.wt"
+git -C "$r15" worktree add -q "$WT15" "$MB15" 2>/dev/null
+advance_origin d15 2
+# THE BASE IS BROUGHT UP FIRST, BEFORE the config lands. `merge.verifySignatures`
+# refuses EVERY unsigned fast-forward in this clone, the base's own included —
+# and a base that never moves leaves the mission branch level with it, so the
+# mission-branch lane would not run at all and the fixture would prove nothing.
+# The situation being reproduced is a CURRENT base with a mission branch behind
+# it, which is behaviour 11's lane exactly.
+( cd "$r15" && git fetch -q origin main && git merge -q --ff-only origin/main ) >/dev/null 2>&1
+BEFORE_MB15="$(sha "$r15" "refs/heads/$MB15")"
+ORIGIN_TIP15="$(sha "$TMPROOT/d15.git" refs/heads/main)"
+# The tester's own configuration. It lives in the clone's config file, which a
+# linked worktree shares — so the merge attempted INSIDE the worktree is the one
+# it refuses.
+( cd "$r15" && git config merge.verifySignatures true ) >/dev/null 2>&1
+check "21. the base is already CURRENT — only the mission branch is behind" \
+  "[ \"\$(sha '$r15' refs/heads/main)\" = '$ORIGIN_TIP15' ] \
+   && [ \"\$(git -C '$r15' rev-list --count '$MB15..main')\" = '2' ]"
+check "21. the mission branch is checked out CLEAN — behaviour 11's lane" \
+  "[ \"\$(git -C '$WT15' symbolic-ref --short HEAD)\" = '$MB15' ] \
+   && [ -z \"\$(git -C '$WT15' status --porcelain)\" ]"
+drive "$r15" "$MID" --step
+check "21. the drive exits 0 (a refusal never blocks)" "[ \"\$(cat '$r15.drive.rc')\" = '0' ]"
+check "21. the mission branch was NOT moved" \
+  "[ \"\$(sha '$r15' 'refs/heads/$MB15')\" = '$BEFORE_MB15' ]"
+check "21. the refusal is LOUD" "grep -q '⚠ MISSION BRANCH' '$r15.drive.out'"
+check "21. git really did refuse the fast-forward (the lane is the one we mean)" \
+  "grep -A6 '⚠ MISSION BRANCH' '$r15.drive.out' | grep -qi 'signature'"
+# THE DEFECT, stated as the assertion. No `Fix:` — the merge LCARS just ran is
+# not its own remedy — but a `Note:` the captain can act on. Every assertion is
+# scoped to the MISSION BRANCH block: the BASE's own step-9 lane says nearly the
+# same words, and an unscoped grep would pass on the sibling that was never
+# broken.
+check "21. NO Fix: is offered — the refused merge is not its own remedy" \
+  "! grep -A6 '⚠ MISSION BRANCH' '$r15.drive.out' | grep -q 'Fix:'"
+check "21. …but the way forward SURVIVES, as an unlabelled Note" \
+  "grep -A6 '⚠ MISSION BRANCH' '$r15.drive.out' | grep -q 'Note:'"
+check "21. …in the base lane's own voice: clear what git objected to" \
+  "grep -A6 '⚠ MISSION BRANCH' '$r15.drive.out' | grep -q 'Clear whatever git objected to'"
+check "21. …and it says plainly that no command exists here" \
+  "grep -A6 '⚠ MISSION BRANCH' '$r15.drive.out' | grep -q 'there is no command LCARS can offer'"
+check "21. …naming the branch that will then fast-forward" \
+  "grep -A6 '⚠ MISSION BRANCH' '$r15.drive.out' | grep -q '$MB15 fast-forwards on the next drive'"
+check "21. it does NOT claim a move" "! grep -q '✓ MISSION BRANCH' '$r15.drive.out'"
+check "21. missionBranchAtBase is FALSE — no move is reported that did not happen" \
+  "[ \"\$(sf '$M15/state.json' baseFreshness.missionBranchAtBase)\" = 'False' ]"
+# And the note is TRUE, not just present: clear git's objection and the very
+# next drive really does fast-forward it — the promise the words make, measured.
+( cd "$r15" && git config --unset merge.verifySignatures ) >/dev/null 2>&1
+adv "$r15" "$MB15" main
+check "21. …and clearing the objection makes the promise come true" \
+  "[ \"\$(sha '$r15' 'refs/heads/$MB15')\" = \"\$(sha '$r15' refs/heads/main)\" ] \
+   && grep -q '✓ MISSION BRANCH' '$r15.adv.out'"
 
 # ==========================================================================
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

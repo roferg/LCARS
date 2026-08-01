@@ -82,7 +82,7 @@ class LocalAdapter(object):
     name = "local"
 
     def __init__(self, repo_root, read_only=False, git_url_reader=None,
-                 readiness_script=None):
+                 readiness_script=None, base_freshness_script=None):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
@@ -102,6 +102,15 @@ class LocalAdapter(object):
         self._readiness_script = readiness_script
         self._readiness_memo = None   # (config_mtime, payload-or-None)
         self._aliases_memo = None     # (config_mtime, modelAliases-dict)
+        # S160: the shared base-freshness reporter
+        # (skills/lcars-init/base-freshness.sh — the read-only sibling of
+        # readiness.sh over the SAME guard `lcars file` and `lcars run` use; the
+        # daemon SHELLS it, it never reimplements the verdict in Python).
+        # DELIBERATELY NOT memoized and DELIBERATELY not folded into board()/
+        # _meta(): it takes a bounded `git fetch`, and a Kanban board that
+        # re-renders on every SSE push must never trigger network I/O. It is
+        # asked once, by its own endpoint, when the File console opens.
+        self._base_freshness_script = base_freshness_script
 
     # -- the public surface ---------------------------------------------------
     def _model_aliases(self):
@@ -182,6 +191,64 @@ class LocalAdapter(object):
         home = os.environ.get("HOME", os.path.expanduser("~"))
         return os.path.join(home, ".claude", "skills", "lcars-init",
                             "readiness.sh")
+
+    def _resolve_base_freshness_script(self):
+        """The base-freshness reporter path: injected → env → in-repo → installed.
+
+        Mirrors _resolve_readiness_script exactly — same four rungs, same order.
+        """
+        if self._base_freshness_script:
+            return self._base_freshness_script
+        env = os.environ.get("LCARS_BASE_FRESHNESS_SCRIPT")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-init", "base-freshness.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        return os.path.join(home, ".claude", "skills", "lcars-init",
+                            "base-freshness.sh")
+
+    def base_freshness(self):
+        """This repo's LIVE base-freshness record, or None. A READ, never a write.
+
+        Shells `base-freshness.sh --json` (the ONE shared verdict — ADR-002: the
+        daemon dispatches, it never reimplements the decision in Python) with the
+        board's repo as cwd, and returns the record verbatim:
+
+            {verdict, loud, reason, fix, fixNote, blocker, behindBy, aheadBy,
+             baseSha, checkedAt, missionBranchAtBase}
+
+        The reporter is read-only BY CONSTRUCTION (it sets
+        LCARS_BASE_CHECK_ONLY=1 itself); the pin is repeated in this env for the
+        same reason the CLI repeats it — the daemon inherits the captain's whole
+        environment, and a board render must never be able to fast-forward the
+        captain's checkout as a side effect.
+
+        The timeout is generous because the guard's own bounded `git fetch`
+        (LCARS_BASE_FETCH_TIMEOUT_SECS, 8s by default) may run twice — the base
+        and then origin's trunk. ANY failure — missing script, bad JSON, non-zero
+        exit, slow origin — degrades to None (the console simply says nothing),
+        never into the response.
+        """
+        script = self._resolve_base_freshness_script()
+        env = dict(os.environ)
+        env["LCARS_BASE_CHECK_ONLY"] = "1"
+        try:
+            proc = subprocess.run(
+                ["bash", script, "--json"], cwd=self.repo_root, env=env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=45)
+            if proc.returncode != 0:
+                return None
+            rec = json.loads((proc.stdout or b"").decode("utf-8", "replace"))
+        except Exception:
+            return None
+        if not isinstance(rec, dict) or not rec.get("verdict"):
+            return None
+        return rec
 
     def _detect_signature(self):
         """(existence, mtime) over the bounded detection-marker set.
@@ -724,6 +791,19 @@ class LocalAdapter(object):
         # BYTE-IDENTICAL. The github adapter never reads this local-only field.
         if _truthy(state.get("prdPending")):
             card["prdPending"] = True
+        # S160: the base-freshness badge. `lcars file` (S158) and `lcars run`
+        # (S159) both stamp state.json.baseFreshness; both print their warning to
+        # STDOUT, which the daemon swallows — so a captain filing from the board
+        # never saw it. Surface it here, gated on the record's CARRIED `loud`.
+        #
+        # GATED ON `loud`, NEVER ON THE VERDICT NAME. `unknown` covers BOTH the
+        # silent everyday no-remote repo and the loud unreachable-origin one, so
+        # a verdict allowlist is provably wrong about one of them — which is
+        # precisely why S158 made loudness its own field. ABSENT (not null) when
+        # quiet, so an unaffected board is BYTE-IDENTICAL to pre-S160.
+        bf = _base_freshness(state.get("baseFreshness"))
+        if bf is not None:
+            card["baseFreshness"] = bf
         return card
 
     def _activity(self, d):
@@ -1033,6 +1113,36 @@ def _load_jsonl(path):
 
 def _truthy(v):
     return v is True or (isinstance(v, str) and v.strip().lower() == "true")
+
+
+_BASE_FRESHNESS_KEYS = ("verdict", "loud", "reason", "fix", "fixNote",
+                        "blocker", "behindBy", "aheadBy", "baseSha",
+                        "checkedAt", "missionBranchAtBase")
+
+
+def _base_freshness(rec):
+    """state.json.baseFreshness → the additive card block, or None when quiet.
+
+    The gate is the record's CARRIED `loud`, never its verdict name (see _card).
+
+    Fields pass through VERBATIM. The guard already wrote one honest sentence
+    naming what happened (`reason`), the exact command that clears it (`fix` —
+    ONE runnable line or nothing, since S158 caught seven that could not
+    succeed and a tester later pasted two more that were not commands at all),
+    the prose beside it (`fixNote`), and WHAT is blocking (`blocker`, which the
+    badge headline is built from — a headline derived from `behindBy` names the
+    benign half of a dirty-and-behind base). The board's job is to DISPLAY
+    those, not to compose a second opinion about git state from the numbers. In
+    particular `behindBy`/`aheadBy` stay None when
+    staleness was never measured: `0` is reserved for a measured zero, and a
+    reassuring zero from a check that measured nothing is the one lie a consumer
+    cannot detect.
+
+    A shapeless record never raises: `.get` fills the missing keys with None.
+    """
+    if not isinstance(rec, dict) or not _truthy(rec.get("loud")):
+        return None
+    return {k: rec.get(k) for k in _BASE_FRESHNESS_KEYS}
 
 
 # --- S67 BUG-A: live driver detection (the `running` flag) -------------------

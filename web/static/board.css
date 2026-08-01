@@ -599,6 +599,45 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .file-readiness .fr-report{font-size:12px;color:#ff8a96;margin-top:8px;
   white-space:pre-wrap}
 
+/* ── S160 base freshness: the guard's verdict, made visible ──────────────────
+   AMBER (the board's one warning colour) and NEVER a modal — filing is never
+   blocked by any of this. Three surfaces, one voice:
+     .pill.basefresh   the compact card badge (the record's sentence is its
+                       title attribute, so a glance gets the headline and a
+                       hover gets the reason);
+     .det-basefresh    the long form under the mission-detail header;
+     .file-basefresh   the File-console PRE-FLIGHT line, above the idea box.
+   All three are ABSENT unless the guard carried the verdict LOUD, so a healthy
+   base leaves every one of these surfaces byte-identical to pre-S160. */
+.pill.basefresh{background:rgba(255,153,0,.16);border-color:var(--lcars-amber);
+  color:var(--lcars-amber)}
+/* This is the one pill whose text is a HEADLINE rather than a token — it names
+   what is blocking AND the distance ("BASE · NOT CHECKED OUT · 19 BEHIND"), so
+   it can outgrow a card. Let it wrap inside the card rather than push the card
+   open: a headline the captain cannot read is no headline. */
+.card .pill.basefresh{white-space:normal;max-width:100%}
+.det-basefresh,.file-basefresh{margin-bottom:14px;padding:10px 14px;
+  border-radius:var(--lcars-radius,14px);background:rgba(255,153,0,.12);
+  box-shadow:0 0 0 1px var(--lcars-amber) inset}
+.file-basefresh{margin-bottom:16px}
+.det-basefresh .bf-head,.file-basefresh .bf-head{font-family:var(--font-display);
+  font-size:13px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--lcars-amber);margin-bottom:6px}
+/* The reason and the fix are the GUARD's words, so they wear the reading face,
+   not the display face: they are sentences and shell commands to be read
+   carefully, not labels to be scanned. */
+.det-basefresh .bf-why,.file-basefresh .bf-why{color:var(--lcars-text-bright);
+  line-height:1.5;font-size:13px}
+.det-basefresh .bf-fix,.file-basefresh .bf-fix{margin-top:6px;
+  font-family:var(--font-mono,monospace);font-size:12px;
+  color:var(--lcars-text,#eee);white-space:pre-wrap;word-break:break-word}
+/* The NOTE is prose, and must never be mistaken for the command above it —
+   `Fix:` labels one runnable line, and a tester who pastes the wrong row gets
+   `syntax error near unexpected token '('`. So it wears the READING face, is
+   dimmer, and carries no label at all. */
+.det-basefresh .bf-note,.file-basefresh .bf-note{margin-top:6px;
+  font-size:12px;line-height:1.5;color:var(--lcars-text,#eee);opacity:.75}
+
 /* ── form fields (mock .field) ── */
 .field{margin-bottom:16px}
 .field label{display:block;font-family:var(--font-display);text-transform:uppercase;

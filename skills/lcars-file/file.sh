@@ -42,9 +42,10 @@ VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$FILE_SKILL_DIR/../lcars-version/check
 
 # --- shared helpers: the base-freshness guard (S158) ------------------------
 # `ensure_base_current` + its state-line writer live in the shared lib so that
-# `lcars run`'s start-time re-check (S159, now built) and the board's badge
-# (S160, not yet) consume the SAME verdict machinery — one implementation, one
-# vocabulary. Today `lcars file` and `lcars run` are its consumers.
+# `lcars run`'s start-time re-check (S159) and the viewscreen's badge +
+# File-console pre-flight (S160, via skills/lcars-init/base-freshness.sh)
+# consume the SAME verdict machinery — one implementation, one vocabulary. All
+# three are built; `lcars file`, `lcars run` and the board are its consumers.
 # Sourcing is best-effort: if the lib is missing, filing degrades to exactly its
 # pre-S158 behaviour rather than failing.
 LCARS_COMMON_LIB="${LCARS_COMMON_LIB:-$FILE_SKILL_DIR/../lcars-init/lcars-common.sh}"
@@ -60,6 +61,15 @@ if ! command -v ensure_base_current >/dev/null 2>&1; then
   }
   lcars_base_state_line() { printf ''; }
   lcars_base_branch_note() { printf ''; }
+fi
+if ! command -v lcars_base_current_branch >/dev/null 2>&1; then
+  # The lib is missing, so filing degrades to exactly its pre-S158 behaviour —
+  # including the base resolution, which is the pre-S158 lines verbatim.
+  lcars_base_current_branch() {
+    local b; b="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    case "$b" in ''|HEAD) b="main" ;; esac
+    printf '%s' "$b"
+  }
 fi
 
 # _append_branch_note — fold the mission-branch truth (S158 round 1, D6) into
@@ -221,8 +231,11 @@ _mint_id() {
 # branch (best-effort, mirrors grill-first). Sets BRANCH / BASE / BRANCH_NOTE.
 _make_branch() {
   BRANCH="lcars/$1"
-  BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  case "$BASE" in ''|HEAD) BASE="main" ;; esac
+  # S160 — resolved through the SHARED helper, not a local copy of the same three
+  # lines: the board's pre-flight check reports on the base a filing WOULD use,
+  # and if the two resolutions could drift the console would confidently describe
+  # the freshness of a branch the captain is not filing against.
+  BASE="$(lcars_base_current_branch)"
   # S158 — bring BASE up to date BEFORE the branch is cut, so lcars/<id> starts
   # from the tree the rest of the world sees rather than a stale local ref. Never
   # blocks, never touches a dirty tree, and prints its own reason when it refuses.
@@ -831,8 +844,10 @@ mkdir -p "$MISSION_DIR"
 # commits (nothing to branch from) just gets a warning, and Implement creates
 # the branch on first commit.
 BRANCH="lcars/$ID"
-BASE="$("$GIT_BIN" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-case "$BASE" in ''|HEAD) BASE="main" ;; esac
+# S160 — the SHARED base resolution (see _make_branch): one function, so the
+# board's pre-flight line and this filing can never disagree about which branch
+# the Mission is cut from.
+BASE="$(lcars_base_current_branch)"
 # S158 — bring BASE up to date BEFORE the branch is cut. This is the whole point:
 # `lcars/<id>` must start from the tree the rest of the world sees, or every
 # downstream Stage reasons about code that no longer exists. The guard never

@@ -198,11 +198,52 @@ lcars_gh_web_host() {
 # field, set with the verdict and never inferred from it. "Badge or no badge" is
 # that one field.
 #
+# S160 ADDS ONE MODE, AND NO NEW NAMES. `LCARS_BASE_CHECK_ONLY=1` makes the guard
+# ASK WITHOUT ANSWERING: it measures exactly as before and then declines the one
+# step that writes — the local fast-forward in step 9. The board's File console
+# runs this BEFORE the captain has typed a word, and a question whose asking
+# fast-forwards the captain's checkout is not a question. Every lane a captain
+# must ACT on already returns before step 9, so check-only changes the outcome of
+# precisely one lane: the clean, fast-forwardable base, which reports `stale` and
+# QUIETLY — filing is itself the fix there, and a warning whose only remedy is
+# the action you were already taking is the trap S158 spent a round removing.
+# `updated` therefore cannot be reached in this mode at all: that word means a
+# ref moved, and nothing moved.
+#
 # Exported globals — the record a caller persists (see lcars_base_state_line):
 #     LCARS_BASE_VERDICT      current | updated | stale | unknown
 #     LCARS_BASE_LOUD         1 when this outcome prints the ⚠ block, else 0
 #     LCARS_BASE_REASON       one sentence naming what actually happened
-#     LCARS_BASE_FIX          the exact command that fixes it (may be empty)
+#     LCARS_BASE_FIX          ONE RUNNABLE COMMAND LINE, or NOTHING. Never prose,
+#                             never two commands joined by the word "then", never
+#                             a parenthetical. It is labelled `Fix:` on the CLI
+#                             and on the board, and a tester who pastes it into a
+#                             shell must get the condition cleared — not `bash:
+#                             syntax error near unexpected token '('` (which is
+#                             what `git stash -u   (or commit your work)   then
+#                             git pull --ff-only origin main` really did, exit 2).
+#                             When no command can succeed from here — an origin
+#                             that has to come back first, a file the captain has
+#                             to move themselves — this is EMPTY and the guidance
+#                             lives in LCARS_BASE_FIXNOTE, which is never labelled
+#                             as a command. S158 caught seven unrunnable fixes by
+#                             executing them; the cure is that `fix` no longer has
+#                             room for anything that is not a command.
+#     LCARS_BASE_FIXNOTE      the prose that used to be smuggled into `fix` after
+#                             three spaces: the alternative, the caveat, the
+#                             manual step. Displayed beside the fix, never as one.
+#     LCARS_BASE_BLOCKER      WHAT actually stopped LCARS from bringing the base
+#                             up to date, as one short token (see the list below),
+#                             or empty when nothing is blocking. It exists because
+#                             a headline derived from `behindBy` names the benign
+#                             half: "1 behind" is the state the captain was ruled
+#                             safe to ignore, while the dirty tree that STOPPED
+#                             the fast-forward showed up only in the body.
+#                             CARRIED, NOT DERIVED — for the same reason `loud`
+#                             is: a consumer re-deciding this from the reason
+#                             prose is a second opinion that can disagree. It is
+#                             written on the SAME call as the sentence that
+#                             describes it, so the two cannot drift.
 #     LCARS_BASE_BEHIND       commits origin has that the base does not, measured
 #                             PRE-pull. EMPTY = NOT MEASURED, persisted as JSON
 #                             `null`; `0` is reserved for a measured zero, because
@@ -220,6 +261,66 @@ lcars_gh_web_host() {
 #     LCARS_BASE_CHECKED_AT   ISO stamp (honours $LCARS_NOW so callers can pin it)
 #     LCARS_BASE_BRANCH       the base branch it was asked about
 #     LCARS_BASE_TRUNK        origin's default branch, when one was resolved
+#
+# THE BLOCKER TOKENS, and there are no others. Each is a two-word summary of the
+# ONE sentence it is written beside — it is not a second vocabulary competing
+# with the verdict (S158's "the name count IS the lying surface" ruling), it is a
+# handle on a sentence that already exists:
+#
+#   dirty-tree         the working tree has uncommitted work, and LCARS never
+#                      writes into one
+#   diverged           the base has commits origin does not AND is behind — no
+#                      fast-forward exists
+#   not-checked-out    HEAD is somewhere else, and LCARS will not check out a
+#                      branch to move it
+#   untracked-clobber  fast-forwarding would overwrite untracked local file(s)
+#   merge-refused      git itself refused the purely local fast-forward
+#   behind-trunk       an unpushed topic branch behind the trunk it was cut from;
+#                      merging a trunk into it is a real merge, which is forbidden
+#   unreachable        origin never answered, so nothing could be measured at all
+#   fetch-timeout      origin ANSWERED a ref listing instantly, but the fetch ran
+#                      past the bound LCARS is willing to make the captain wait,
+#                      so nothing could be measured. A SEPARATE token from
+#                      `unreachable` because they are separate situations: there
+#                      the remote failed on its merits and no command run from
+#                      this repo clears it (empty `fix`); here LCARS killed its
+#                      OWN bounded fetch at its OWN deadline, and the captain's
+#                      unbounded run of that same fetch really can succeed —
+#                      which is exactly why this lane still carries one. Collapse
+#                      the two and the badge tells a reachable origin it is
+#                      unreachable while offering it a command.
+#   operation-in-progress
+#                      git itself is mid-operation here (an unfinished rebase,
+#                      merge, cherry-pick, revert or bisect), so HEAD and the
+#                      base ref are BOTH somewhere they will not stay
+#
+# S160 ROUND 2 — THE OPERATION LCARS ALREADY RAN IS NEVER THE FIX.
+#
+# A tester set `merge.verifySignatures=true`, filed, and pasted the offered fix.
+# It answered `fatal: Commit 79ce589 does not have a GPG signature.` — BYTE-
+# IDENTICAL to the failure LCARS had captured into its own `reason` one second
+# earlier. The guard had run `git merge --ff-only <sha>`, watched git refuse it,
+# quoted the refusal, and then offered THE SAME OPERATION as the remedy.
+#
+# The rule that closes it is general, not a `merge-refused` special case: when
+# LCARS has ALREADY ATTEMPTED an operation and captured its failure, that same
+# operation is never the `fix` — repeating it only reproduces the refusal.
+#
+# AND IT IS STRUCTURAL, because a rule that lives in a comment is a rule the next
+# lane forgets. `_lcars_base_set_after_attempt` (below) is `_lcars_base_set` with
+# the `fix` SLOT REMOVED, and every lane that reports a failed attempt records
+# through it — so "attempted, failed, and offered anyway" is not a thing this
+# file can express. Its mission-branch sibling is `_lcars_mb_refused_after_attempt`.
+#
+# ONE LANE IS DELIBERATELY NOT ONE OF THESE, and the boundary is worth naming:
+# the BOUNDED fetch that times out (step 3) still offers `git fetch origin
+# <base>`. Nothing refused that operation on its merits — LCARS killed its own
+# fetch at its own deadline, and the captain's unbounded run of it is a
+# different operation that really can succeed. The rule is about an operation
+# that RAN TO COMPLETION AND WAS REFUSED, not one LCARS abandoned. That lane
+# carries its own blocker token, `fetch-timeout`, for the same reason: the
+# distinction between "the remote failed" and "LCARS gave up waiting" is
+# load-bearing, and it is what decides whether a `fix` exists at all.
 
 # The ONE consequence sentence, printed under every ⚠ block. It is a CONSTANT on
 # purpose: the per-verdict `Means:` prose it replaces is exactly where the copy
@@ -249,6 +350,27 @@ lcars_base_is_mission_branch() {
   esac
 }
 
+# lcars_base_current_branch — the branch a Mission filed RIGHT NOW would be cut
+# from: the checked-out branch, or the literal `main` when there isn't one.
+#
+# THIS IS A SHARED FUNCTION FOR ONE REASON. `lcars file` decides the base; the
+# board's pre-flight check reports on the base. If those were two copies of the
+# same three lines, the console could confidently describe the freshness of a
+# branch the captain is not about to file against — a warning about the wrong
+# thing, which is worse than no warning. One resolution, one answer.
+#
+# The `main` fallback is file.sh's own, kept verbatim: `rev-parse --abbrev-ref
+# HEAD` answers the literal string "HEAD" on a detached HEAD (never empty), so
+# both that and the empty answer fall back. It is a fallback, not a claim — when
+# it is wrong, `ensure_base_current` says so loudly ("there is no local branch
+# named 'main' to check").
+lcars_base_current_branch() {
+  local g b; g="$(_lcars_base_git)"
+  b="$("$g" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  case "$b" in ''|HEAD) b="main" ;; esac
+  printf '%s' "$b"
+}
+
 # _lcars_base_git — the git binary, env-injected so tests can stub it.
 _lcars_base_git() { printf '%s' "${LCARS_GIT_BIN:-${GIT_BIN:-git}}"; }
 
@@ -267,10 +389,11 @@ _lcars_base_count() {
 # byte went into state.json verbatim: a gitignored collider named
 # `dist/ctl<0x01>name.txt` produced a record `python3 -m json.tool` refused
 # ("Invalid control character at: line 9 column 282"). state.json is the record
-# SKILL.md documents as consumable. `lcars file` writes it and S159's drive-time
-# re-check (`cmd_drive` in skills/lcars-run/run.sh) both READS and REWRITES it;
-# S160's board badge is specified to read it and is not built yet. It must ALWAYS
-# parse, whatever byte a captain happens to have in a filename. Round 4, D2.
+# SKILL.md documents as consumable. `lcars file` writes it, S159's drive-time
+# re-check (`cmd_drive` in skills/lcars-run/run.sh) both READS and REWRITES it,
+# and S160's board badge (`LocalAdapter._card` in web/lcars_serve/) reads it to
+# decide whether a Mission's card carries the ⚠ BASE pill. It must ALWAYS parse,
+# whatever byte a captain happens to have in a filename. Round 4, D2.
 
 # _lcars_base_visible <string> — make control characters VISIBLE, and touch
 # NOTHING else. This is the DISPLAY escaper, and it is deliberately not
@@ -396,9 +519,18 @@ _lcars_base_envp() {
 # call, so a slow remote reads as a slow remote and not as a hang. Every bounded
 # call announces itself, so the stated bound is the truth about the call the
 # captain is waiting on rather than about only the first of several.
+#
+# IT GOES TO STDERR, AND THAT IS THE POINT (S160 round 3, D3). This is PROGRESS,
+# not the verdict: `base-freshness.sh --line` documents its stdout as "the human
+# ⚠ block, EMPTY when all is well", and on a clean, current repo the only thing
+# on stdout was this ⟳ line — so a consumer testing emptiness read "all is well"
+# as "something to say". On stderr the captain waiting at an interactive prompt
+# still sees it (both fds land on the same terminal), while stdout carries the
+# verdict and nothing else. It also puts the line out of reach of a `$(…)`
+# capture, the failure mode the trunk resolver's own comment describes below.
 _lcars_base_announce() {
   [ "${LCARS_BASE_QUIET:-0}" = "1" ] && return 0
-  printf '  ⟳ base freshness — %s (up to %ss)…\n' "$1" "$(_lcars_base_fetch_secs)"
+  printf '  ⟳ base freshness — %s (up to %ss)…\n' "$1" "$(_lcars_base_fetch_secs)" >&2
   return 0
 }
 
@@ -561,9 +693,125 @@ EOF
   return 0
 }
 
-# _lcars_base_set <verdict> <loud> <reason> [fix] — record the outcome + resolve
-# the base's post-attempt sha. Deliberately does NOT touch LCARS_BASE_BEHIND /
-# LCARS_BASE_AHEAD, which callers set before calling when they measured them.
+# _lcars_base_dirty_fix <base> — the ONE runnable line that clears a dirty tree
+# blocking a fast-forward: stash (the form `_lcars_base_dirt` chose) AND THEN
+# pull. `&&` because it must survive being pasted verbatim; the old string joined
+# the two with the English word "then" and a parenthetical alternative, which a
+# tester pasted into bash and got `syntax error near unexpected token '('`,
+# exit 2. The alternative ("or commit your work") is real advice and still
+# shipped — as LCARS_BASE_FIXNOTE, which nothing labels `Fix:`.
+_lcars_base_dirty_fix() {
+  printf '%s && git pull --ff-only origin %s' \
+    "${LCARS_BASE_DIRT_STASH:-git stash}" "${1:-main}"
+}
+
+# The note that rides with it, everywhere the dirty-tree fix appears.
+LCARS_BASE_DIRT_NOTE="You can commit your work instead of stashing — either clears the block; 'git stash pop' brings a stash back afterwards."
+
+# ---------------------------------------------------------------------------
+# AN UNFINISHED GIT OPERATION (S160 round 2, D2)
+# ---------------------------------------------------------------------------
+# THE DEFECT. A tester pasted the `diverged` fix (`git pull --rebase origin
+# main`), hit a conflict — the COMMON outcome for a diverged branch — and filed
+# from there. The record LCARS stamped said `stale`, "a fast-forward is
+# impossible, so nothing was moved", and named `baseSha: 1d12dd5` while the
+# Mission's branch was cut from 79ce589. Every one of those is a statement about
+# a repo that was mid-surgery: HEAD detached, `README.md` unmerged,
+# `.git/rebase-merge` sitting right there. It re-offered the same rebase, which
+# now `fatal`s ("there is already a rebase-merge directory"), and the MISSION
+# BRANCH block raised a "1 commit behind" alarm the graph disproved.
+#
+# AN UNFINISHED OPERATION IS THE SINGLE MOST IMPORTANT FACT ABOUT A REPO, and
+# every number measured around it is a measurement of a transient: `refs/heads/
+# <base>` is where the rebase will move it FROM, not where it will end up, and
+# HEAD is a replay position that exists for the next few seconds. So the guard
+# detects it FIRST, takes no network call, measures nothing, moves nothing, and
+# says plainly what git is in the middle of. Filing is still never blocked.
+#
+# `git rev-parse --git-path`, NEVER "$PWD/.git/<name>". A LINKED WORKTREE's git
+# dir is `<main>/.git/worktrees/<name>/`, so a rebase started in one of LCARS's
+# own mission worktrees leaves `…/worktrees/<name>/rebase-merge` and a hard-coded
+# `.git/` check is blind to exactly the trees LCARS creates. `--git-path` answers
+# correctly from a subdirectory and from a linked worktree alike — asked, never
+# assumed. (It is also why this cannot be a `[ -e .git/… ]` one-liner: see the
+# S158 `core.quotePath` lesson about path checks that silently never fire.)
+#
+# Sets LCARS_BASE_INFLIGHT to the operation's name, or EMPTY when none is in
+# progress; and LCARS_BASE_INFLIGHT_UNMERGED to the count of unmerged paths.
+_lcars_base_inflight() {
+  local g p
+  g="$(_lcars_base_git)"
+  LCARS_BASE_INFLIGHT=""
+  LCARS_BASE_INFLIGHT_UNMERGED=0
+  # Order is by how much it changes what the repo IS: a rebase/merge/cherry-pick
+  # /revert has a pending commit to land, a bisect merely parks HEAD somewhere
+  # old — but that "somewhere old" is what a Mission would be cut from, so it
+  # counts too. `rebase-merge` and `rebase-apply` are the two rebase backends.
+  for p in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG; do
+    if [ -e "$("$g" rev-parse --git-path "$p" 2>/dev/null)" ]; then
+      case "$p" in
+        rebase-merge) LCARS_BASE_INFLIGHT="rebase" ;;
+        rebase-apply)
+          # `git am` and a rebase on the apply backend SHARE this directory, and
+          # they do not share their commands: telling an `am` captain to run
+          # `git rebase --continue` is the copy-that-lies-about-git class this
+          # round is closing. `applying` is git's own marker for the am case.
+          if [ -e "$("$g" rev-parse --git-path rebase-apply/applying 2>/dev/null)" ]; then
+            LCARS_BASE_INFLIGHT="am"
+          else
+            LCARS_BASE_INFLIGHT="rebase"
+          fi ;;
+        MERGE_HEAD)       LCARS_BASE_INFLIGHT="merge" ;;
+        CHERRY_PICK_HEAD) LCARS_BASE_INFLIGHT="cherry-pick" ;;
+        REVERT_HEAD)      LCARS_BASE_INFLIGHT="revert" ;;
+        BISECT_LOG)       LCARS_BASE_INFLIGHT="bisect" ;;
+      esac
+      break
+    fi
+  done
+  [ -n "$LCARS_BASE_INFLIGHT" ] || return 0
+  # Count only — never a path test, so `core.quotePath`'s C-quoting cannot make
+  # this quietly answer "none" (the S158 gotcha that defeated a `[ -e ]` check).
+  local n
+  n="$("$g" diff --name-only --diff-filter=U 2>/dev/null | grep -c . )"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  LCARS_BASE_INFLIGHT_UNMERGED="$n"
+  return 0
+}
+
+# _lcars_base_inflight_note <operation> — the guidance beside an unfinished
+# operation. Only the bisect lane gets a `fix`, and the split is the fix
+# contract, not squeamishness: `git bisect reset` is ONE runnable line that
+# really does clear the condition and loses no work. Finishing a conflicted
+# rebase/merge/cherry-pick/revert is NOT one command — the conflict has to be
+# resolved by hand first, `--continue` errors while paths are unmerged, and
+# `--abort` throws away resolution work already done. LCARS cannot know which
+# the captain wants, so it names both and offers neither as `Fix:`.
+_lcars_base_inflight_note() {
+  case "$1" in
+    bisect)
+      printf 'that ends the bisect and puts HEAD back on the branch you started it from; nothing in your working tree is lost. Finish bisecting first if you are mid-hunt.' ;;
+    rebase)
+      printf "only you can decide how this ends: resolve the conflicted path(s), 'git add' them and 'git rebase --continue', or 'git rebase --abort' to put the branch back exactly where it started. Either one clears this." ;;
+    merge)
+      printf "only you can decide how this ends: resolve the conflicted path(s), 'git add' them and 'git merge --continue', or 'git merge --abort' to put the branch back exactly where it started. Either one clears this." ;;
+    *)
+      printf "only you can decide how this ends: resolve the conflicted path(s), 'git add' them and 'git %s --continue', or 'git %s --abort' to put the branch back exactly where it started. Either one clears this." "$1" "$1" ;;
+  esac
+}
+
+# _lcars_base_set <verdict> <loud> <reason> [fix] [blocker] [note] — record the
+# outcome + resolve the base's post-attempt sha. Deliberately does NOT touch
+# LCARS_BASE_BEHIND / LCARS_BASE_AHEAD, which callers set before calling when
+# they measured them.
+#
+# `blocker` and `note` are positional on THIS call on purpose. They could have
+# been assignments the lanes make on their own lines, but then a lane could set a
+# blocker that describes a different sentence from the one it passes here, and a
+# headline that contradicts its own body is exactly the failure they exist to
+# fix. Passed here, they are written in the same breath as the reason, and
+# UNSET when a lane does not pass them — a lane that forgets says nothing rather
+# than inheriting the previous lane's words.
 #
 # `baseSha` is the BASE BRANCH's sha or NOTHING. It used to fall back to HEAD,
 # which meant a detached HEAD with no local `main` recorded a real-looking sha for
@@ -577,7 +825,51 @@ _lcars_base_set() {
   LCARS_BASE_LOUD="$2"
   LCARS_BASE_REASON="$3"
   LCARS_BASE_FIX="${4:-}"
+  LCARS_BASE_BLOCKER="${5:-}"
+  LCARS_BASE_FIXNOTE="${6:-}"
   LCARS_BASE_SHA="$("$g" rev-parse --verify -q "refs/heads/$LCARS_BASE_BRANCH" 2>/dev/null)" || LCARS_BASE_SHA=""
+  return 0
+}
+
+# _lcars_base_set_after_attempt <verdict> <loud> <reason> [blocker] [note] — the
+# recorder for an outcome LCARS reached BY TRYING AND FAILING.
+#
+# It is `_lcars_base_set` WITH THE `fix` SLOT REMOVED, and the removal IS the
+# feature. See "THE OPERATION LCARS ALREADY RAN IS NEVER THE FIX" at the top of
+# this file: a lane that ran `git merge --ff-only`, watched git refuse it and
+# quoted the refusal used to offer that same merge back as the remedy, and a
+# tester pasted it and got the identical `fatal:` a second time. Making the rule
+# a comment beside each lane is what let it happen once already (two other lanes
+# carry that comment and honour it); making the recorder for this SITUATION
+# incapable of carrying a command means no future lane can get it wrong.
+#
+# The guidance still ships — as `note`, which nothing anywhere labels `Fix:`.
+_lcars_base_set_after_attempt() {
+  _lcars_base_set "$1" "$2" "$3" "" "${4:-}" "${5:-}"
+}
+
+# _lcars_mb_refused_after_attempt <reason> [note] — the same rule, for the
+# MISSION BRANCH record. `lcars_base_advance_mission_branch` really runs `git
+# branch -f` / `git merge --ff-only` and sometimes watches git refuse them; those
+# lanes get a reason and NO fix, by construction rather than by remembering to.
+#
+# AND A WAY FORWARD, ALSO BY CONSTRUCTION (S160 round 3, D1). Removing the `fix`
+# slot removed the wrong answer and left NO answer: a tester on the checked-out
+# merge-refused lane read `Why:` / `Means:` / `Impact:` and nothing else — an
+# honest diagnosis with no hint that clearing git's objection is theirs to do.
+# The base's own sibling lane (step 9) has carried those words as a `fixNote`
+# since round 2; here the recorder WRITES them, so a lane cannot ship the dead
+# end by omission. A lane with better words passes its own; none can pass none.
+_lcars_mb_refused_after_attempt() {
+  local note="${2:-}"
+  # Deliberately does not name the operation: which one git refused is already in
+  # the reason, in git's own words, and a note that guesses at it is a second
+  # account that can disagree with the first.
+  [ -n "$note" ] || note="git refused this itself, so there is no command LCARS can offer: running the same operation again only repeats the refusal. Clear whatever git objected to — its own words are in the reason above — and the branch fast-forwards on the next drive."
+  LCARS_MB_MOVE="refused"
+  LCARS_MB_REASON="$1"
+  LCARS_MB_FIX=""
+  LCARS_MB_NOTE="$note"
   return 0
 }
 
@@ -621,7 +913,11 @@ lcars_base_report() {
       "$LCARS_BASE_BRANCH" "$LCARS_BASE_VERDICT"
   fi
   printf '    Why:    %s\n' "$LCARS_BASE_REASON"
+  # `Fix:` labels a COMMAND and nothing else — one line, pasteable verbatim. The
+  # prose that used to ride along after three spaces gets its own `Note:` row, so
+  # a captain who copies the Fix line copies something that runs.
   [ -n "${LCARS_BASE_FIX:-}" ] && printf '    Fix:    %s\n' "$LCARS_BASE_FIX"
+  [ -n "${LCARS_BASE_FIXNOTE:-}" ] && printf '    Note:   %s\n' "$LCARS_BASE_FIXNOTE"
   printf '    Impact: %s\n' "$LCARS_BASE_IMPACT"
   printf '\n'
   return 0
@@ -637,7 +933,7 @@ lcars_base_report() {
 # a detached HEAD; an empty `how` claims neither.
 lcars_base_branch_note() {
   [ "${LCARS_BASE_QUIET:-0}" = "1" ] && return 0
-  local g mb="${1:-}" base="${2:-${LCARS_BASE_BRANCH:-}}" how="${3:-}" tip basesha behind ahead tipshort hb
+  local g mb="${1:-}" base="${2:-${LCARS_BASE_BRANCH:-}}" how="${3:-}" tip basesha behind ahead tipshort hb origintip missing
   g="$(_lcars_base_git)"
   [ -n "$mb" ] && [ -n "$base" ] || return 0
   tip="$("$g" rev-parse --verify -q "refs/heads/$mb" 2>/dev/null)" || tip=""
@@ -652,6 +948,29 @@ lcars_base_branch_note() {
     [ "${LCARS_BASE_VERDICT:-}" = "updated" ] \
       && printf '  ✓ %s is cut from the CURRENT tree.\n' "$mb"
     return 0
+  fi
+  # THE ALARM MUST SURVIVE THE GRAPH (S160 round 2, D2). A tester's mission
+  # branch sat EXACTLY on origin/main — behind 0, ahead 0, the freshest base
+  # there is — and this block still shouted "is 1 commit(s) behind main" and
+  # "will reason about that older tree", because local `main` had diverged and
+  # carried a commit of its own. Permanently written, and false.
+  #
+  # So ask the mission branch the SAME question the whole guard asks the base:
+  # is it MISSING something ORIGIN has? (step 5a: an ahead-only base is
+  # `current`, because missing nothing is the entire test.) Measured, never
+  # assumed — `_lcars_base_count` is right here. If origin/<base> is not known
+  # locally there is nothing to measure against and the old ⚠ stands unchanged.
+  origintip="$("$g" rev-parse --verify -q "refs/remotes/origin/$base" 2>/dev/null)" || origintip=""
+  if [ -n "$origintip" ]; then
+    missing="$(_lcars_base_count "$tip" "$origintip")"
+    if [ "${missing:-x}" = "0" ]; then
+      # It contains everything the rest of the world can see. That is not a
+      # warning — but it is not silence either: it IS behind the local base, and
+      # a captain who put commits on `$base` deliberately should read that here.
+      printf "  ✓ %s is %s commit(s) behind local '%s', but contains everything on origin/%s — no Stage will read an older shared tree.\n" \
+        "$mb" "$behind" "$base" "$base"
+      return 0
+    fi
   fi
   ahead="$(_lcars_base_count "$basesha" "$tip")"
   tipshort="$("$g" rev-parse --short "$tip" 2>/dev/null)"
@@ -765,6 +1084,11 @@ lcars_base_branch_note() {
 #     LCARS_MB_AHEAD    commits of its own — the number that decides losslessness
 #     LCARS_MB_REASON   one sentence naming what actually happened
 #     LCARS_MB_FIX      ONE runnable command (may be empty), gloss after 3 spaces
+#     LCARS_MB_NOTE     the way forward when NO command exists — displayed as an
+#                       unlabelled `Note:` row, never as a `Fix:`. The sibling of
+#                       LCARS_BASE_FIXNOTE, and for the same reason: a lane that
+#                       cannot offer a command must still leave the captain
+#                       somewhere to go (S160 round 3, D1).
 #     LCARS_MB_WT       the checkout it found, when there was one
 
 # _lcars_base_worktree_of <branch> — the worktree path where refs/heads/<branch> is
@@ -807,7 +1131,7 @@ lcars_base_advance_mission_branch() {
   local g mb="${1:-}" base="${2:-}" tip basesha behind ahead wt dirty out rc q stashargs clob
   g="$(_lcars_base_git)"
   LCARS_MB_MOVE=""; LCARS_MB_BEHIND=""; LCARS_MB_AHEAD=""
-  LCARS_MB_REASON=""; LCARS_MB_FIX=""; LCARS_MB_WT=""
+  LCARS_MB_REASON=""; LCARS_MB_FIX=""; LCARS_MB_NOTE=""; LCARS_MB_WT=""
   [ -n "$mb" ] && [ -n "$base" ] || return 0
   # A Mission whose branch IS the base has nothing to reconcile.
   [ "$mb" != "$base" ] || return 0
@@ -856,8 +1180,12 @@ lcars_base_advance_mission_branch() {
     else
       # No Fix line: the only command that would clear this is the one that just
       # failed, and a Fix that cannot succeed is not a Fix (S158, seven of them).
-      LCARS_MB_MOVE="refused"
-      LCARS_MB_REASON="'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but git refused to move it: $(printf '%s' "$out" | head -1)"
+      # Recorded through the setter that HAS no fix slot, so it stays that way —
+      # and that setter supplies the way forward, so "no command" never means
+      # "no way out" (S160 round 3, D1).
+      _lcars_mb_refused_after_attempt \
+        "'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but git refused to move it: $(printf '%s' "$out" | head -1)" \
+        "git refused to move the branch pointer itself, so there is no command LCARS can offer: running the same move again only repeats the refusal. Clear whatever git objected to — its own words are in the reason above — and $mb fast-forwards on the next drive."
     fi
     return 0
   fi
@@ -906,8 +1234,13 @@ lcars_base_advance_mission_branch() {
     LCARS_MB_MOVE="moved"
     LCARS_MB_REASON="It carried no commits of its own and is checked out at $q with a clean tree, so it was fast-forwarded there — nothing was lost, that checkout is still on $mb, and no HEAD was moved."
   else
-    LCARS_MB_MOVE="refused"
-    LCARS_MB_REASON="'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but the local fast-forward in its checkout at $q failed ($(printf '%s' "$out" | head -1)) — the ref was not moved and nothing was written."
+    # Same rule, same recorder: LCARS ran this merge and git refused it, so the
+    # merge is not on offer as the remedy for its own refusal — and the way
+    # forward rides along as the recorder's note, so the block is a diagnosis
+    # WITH an exit rather than a dead end (S160 round 3, D1).
+    _lcars_mb_refused_after_attempt \
+      "'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but the local fast-forward in its checkout at $q failed ($(printf '%s' "$out" | head -1)) — the ref was not moved and nothing was written." \
+      "git refused this merge itself, so there is no command LCARS can offer: running the same merge again only repeats the refusal. Clear whatever git objected to — its own words are in the reason above — and $mb fast-forwards on the next drive."
   fi
   return 0
 }
@@ -933,6 +1266,11 @@ lcars_base_branch_note_drive() {
         "$mb" "${LCARS_MB_BEHIND:-?}" "$base"
       printf '    Why:    %s\n' "$LCARS_MB_REASON"
       [ -n "${LCARS_MB_FIX:-}" ] && printf '    Fix:    %s\n' "$LCARS_MB_FIX"
+      # `Note:` is the row for a lane with no command — the same split
+      # `lcars_base_report` makes, so a captain reading either block learns the
+      # same thing: `Fix:` is always pasteable, and guidance is never dressed as
+      # a command. A refused lane always has one of the two.
+      [ -n "${LCARS_MB_NOTE:-}" ] && printf '    Note:   %s\n' "$LCARS_MB_NOTE"
       printf '    Means:  every Stage in this drive reads %s, so it will reason about that older tree.\n' "$mb"
       printf '    Impact: %s\n' "$LCARS_BASE_IMPACT"
       printf '\n'
@@ -941,15 +1279,24 @@ lcars_base_branch_note_drive() {
   return 0
 }
 
-# lcars_base_state_line [mission-branch] — the ONE-LINE state.json field (with its
-# trailing comma), or nothing when no check has run. One line on purpose: run.sh's
-# state_set_*/state_del editors are line-oriented, so a multi-line object would not
-# survive a later stage's write. `behindBy` is `null` unless staleness was really
-# measured. `missionBranchAtBase` answers what `baseSha` alone cannot — baseSha is
-# the BASE's sha, and a reused `lcars/<id>` may not be on it — and is `null` when
-# no mission branch was named. An unknown sha is `null` too: an empty string is a
-# value a consumer cannot tell from a real one.
-lcars_base_state_line() {
+# lcars_base_state_json [mission-branch] — the RECORD itself, as one JSON object
+# on one line, or nothing when no check has run.
+#
+# S160 lifted this out of lcars_base_state_line because the record now has TWO
+# consumers: a Mission's state.json (via the line below) and the viewscreen's
+# read-only reporter, which hands the same object to the board so the badge can
+# carry the guard's OWN `reason` and `fix` rather than composing a second
+# sentence about git state. Two printf statements would be two vocabularies, and
+# the badge would eventually describe a condition the mission file denies.
+#
+# `behindBy` is `null` unless staleness was really measured — `0` is reserved for
+# a measured zero, because a reassuring zero from a check that measured nothing
+# is the one lie a consumer cannot detect. `missionBranchAtBase` answers what
+# `baseSha` alone cannot (baseSha is the BASE's sha, and a reused `lcars/<id>`
+# may not be on it) and is `null` when no mission branch was named. An unknown
+# sha is `null` too: an empty string is a value a consumer cannot tell from a
+# real one.
+lcars_base_state_json() {
   [ -n "${LCARS_BASE_VERDICT:-}" ] || return 0
   local behind="${LCARS_BASE_BEHIND:-}" ahead="${LCARS_BASE_AHEAD:-}" atbase="null" mb="${1:-}" g tip shaj="null" loud="false"
   case "$behind" in ''|*[!0-9]*) behind="null" ;; esac
@@ -963,10 +1310,22 @@ lcars_base_state_line() {
   fi
   [ -n "${LCARS_BASE_SHA:-}" ] && shaj="\"$LCARS_BASE_SHA\""
   [ "${LCARS_BASE_LOUD:-0}" = "1" ] && loud="true"
-  printf '  "baseFreshness": { "verdict": "%s", "loud": %s, "reason": "%s", "fix": "%s", "behindBy": %s, "aheadBy": %s, "baseSha": %s, "checkedAt": "%s", "missionBranchAtBase": %s },' \
+  printf '{ "verdict": "%s", "loud": %s, "reason": "%s", "fix": "%s", "fixNote": "%s", "blocker": "%s", "behindBy": %s, "aheadBy": %s, "baseSha": %s, "checkedAt": "%s", "missionBranchAtBase": %s }' \
     "$LCARS_BASE_VERDICT" "$loud" \
     "$(lcars_json_escape "${LCARS_BASE_REASON:-}")" "$(lcars_json_escape "${LCARS_BASE_FIX:-}")" \
+    "$(lcars_json_escape "${LCARS_BASE_FIXNOTE:-}")" "$(lcars_json_escape "${LCARS_BASE_BLOCKER:-}")" \
     "$behind" "$ahead" "$shaj" "${LCARS_BASE_CHECKED_AT:-}" "$atbase"
+  return 0
+}
+
+# lcars_base_state_line [mission-branch] — the ONE-LINE state.json field (with its
+# trailing comma), or nothing when no check has run. One line on purpose: run.sh's
+# state_set_*/state_del editors are line-oriented, so a multi-line object would not
+# survive a later stage's write. It is the object above, wrapped — nothing else.
+lcars_base_state_line() {
+  local obj; obj="$(lcars_base_state_json "${1:-}")"
+  [ -n "$obj" ] || return 0
+  printf '  "baseFreshness": %s,' "$obj"
   return 0
 }
 
@@ -974,7 +1333,7 @@ lcars_base_state_line() {
 ensure_base_current() {
   local base="${1:-main}"
   local g dirty n remote_sha local_sha head_branch head_desc ahead behind
-  local trunk trunk_sha frc clob first fsecs how mergeout nofix unborn
+  local trunk trunk_sha frc clob first fsecs how mergeout nofix nonote unborn
   local remote_missing=0 probe_alive="" probe_trunk="" probe_ran=0
   g="$(_lcars_base_git)"
   fsecs="$(_lcars_base_fetch_secs)"
@@ -988,6 +1347,8 @@ ensure_base_current() {
   LCARS_BASE_SHA=""
   LCARS_BASE_REASON=""
   LCARS_BASE_FIX=""
+  LCARS_BASE_FIXNOTE=""
+  LCARS_BASE_BLOCKER=""
   LCARS_BASE_TRUNK=""
   LCARS_BASE_CHECKED_AT="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)}"
 
@@ -1004,6 +1365,54 @@ ensure_base_current() {
   # 0 — not a git repo at all. The caller already handles this; stay silent.
   if ! "$g" rev-parse --git-dir >/dev/null 2>&1; then
     _lcars_base_set unknown 0 "not inside a git repository — nothing to check."
+    lcars_base_report
+    return 0
+  fi
+
+  # 0a — git is MID-OPERATION here (S160 round 2). Checked before the child-base
+  #      lane, before any network call and before a single ref is measured,
+  #      because an unfinished rebase/merge/cherry-pick/revert/bisect is the one
+  #      fact that makes every other measurement a measurement of a transient:
+  #      `refs/heads/<base>` is where the operation will move it FROM, and HEAD
+  #      is a replay position. The observed record said `stale`, "a fast-forward
+  #      is impossible, so nothing was moved", and named a `baseSha` the Mission
+  #      was NOT cut from — three claims about a repo in the middle of a rebase.
+  #
+  #      `unknown` and LOUD: freshness genuinely could NOT be determined, and
+  #      this is not a state to discover afterwards. behindBy/aheadBy stay
+  #      UNMEASURED (null) — the doctrine that a reassuring number from a check
+  #      that measured nothing is the one lie a consumer cannot detect.
+  _lcars_base_inflight
+  if [ -n "${LCARS_BASE_INFLIGHT:-}" ]; then
+    local op where unm short hb2 opfix
+    op="$LCARS_BASE_INFLIGHT"
+    # The ONLY unfinished operation with a one-line, lossless end. See
+    # `_lcars_base_inflight_note` for why the others have no command at all.
+    opfix=""
+    [ "$op" = "bisect" ] && opfix="git bisect reset"
+    hb2="$("$g" symbolic-ref -q --short HEAD 2>/dev/null)" || hb2=""
+    if [ -n "$hb2" ]; then
+      where="on '$hb2'"
+    else
+      short="$("$g" rev-parse --short HEAD 2>/dev/null)" || short=""
+      if [ -n "$short" ]; then where="with HEAD detached at $short"; else where="with a detached HEAD"; fi
+    fi
+    unm=""
+    [ "${LCARS_BASE_INFLIGHT_UNMERGED:-0}" -gt 0 ] 2>/dev/null && \
+      unm=", and $LCARS_BASE_INFLIGHT_UNMERGED path(s) are still unmerged"
+    # NOT "nothing was moved" — that sentence describes a settled repo, and this
+    # one is mid-operation. What LCARS did is all LCARS may claim.
+    _lcars_base_set unknown 1 \
+      "an unfinished git $op is in progress here, $where$unm — the refs are mid-move, so LCARS measured nothing against origin and did nothing of its own. Finish or abandon the $op and the check runs normally again." \
+      "$opfix" \
+      "operation-in-progress" \
+      "$(_lcars_base_inflight_note "$op")"
+    # baseSha is NULL here, deliberately. The record's own doctrine is that it
+    # never substitutes a real-looking value a consumer cannot check: mid-rebase,
+    # `refs/heads/<base>` is a commit the Mission is NOT cut from, and stamping
+    # it made a PERMANENT, wrong provenance record. "Could not be determined" is
+    # the only honest answer while the operation is unfinished.
+    LCARS_BASE_SHA=""
     lcars_base_report
     return 0
   fi
@@ -1072,12 +1481,28 @@ ensure_base_current() {
       # this "unreachable" was false.
       first="fetching origin/$base timed out after ${fsecs}s (set LCARS_BASE_FETCH_TIMEOUT_SECS to change that), but origin ANSWERED a plain ref listing straight away — it is reachable, just slower than LCARS is willing to make you wait, so '$base' was not measured."
       if [ -n "$dirty" ]; then
+        # Origin IS reachable here (it answered instantly), so a pull really can
+        # succeed — the fix is one runnable line, and the timeout advice is the
+        # note beside it.
+        #
+        # THE BLOCKER IS THE TIMEOUT, NOT THE DIRT (S160 round 3, D2). The tree
+        # really is dirty, but a "DIRTY TREE" headline would name a condition
+        # that is present and is not the reason — nothing was measured at all,
+        # because the fetch ran long. Naming the fetch is what makes the badge
+        # agree with the sentence under it. Leaving it EMPTY, which is what this
+        # lane used to do, was the other half of the same problem: it fell back
+        # to the generic ⚠ BASE UNVERIFIED and named nothing at all, while its
+        # `unreachable` sibling named itself.
         _lcars_base_set unknown 1 \
           "the working tree has $n, and $first Nothing was written to your tree." \
-          "$LCARS_BASE_DIRT_STASH   (or commit your work)   then   git pull --ff-only origin $base   — or raise LCARS_BASE_FETCH_TIMEOUT_SECS and re-file"
+          "$(_lcars_base_dirty_fix "$base")" \
+          "fetch-timeout" \
+          "$LCARS_BASE_DIRT_NOTE Origin is reachable, just slow — raising LCARS_BASE_FETCH_TIMEOUT_SECS and re-filing works too."
       else
         _lcars_base_set unknown 1 "$first" \
-          "git fetch origin $base   (or raise LCARS_BASE_FETCH_TIMEOUT_SECS and re-file)"
+          "git fetch origin $base" \
+          "fetch-timeout" \
+          "origin is reachable, just slower than LCARS waits — raising LCARS_BASE_FETCH_TIMEOUT_SECS and re-filing works too."
       fi
     else
       if [ "$frc" -eq 124 ]; then
@@ -1089,13 +1514,20 @@ ensure_base_current() {
         # The old fix was `git stash … then git pull`, and a tester verified the
         # pull fails from here ("Please make sure you have the correct access
         # rights"). A fix that cannot succeed is not a fix — origin has to come
-        # back first, and the copy must say so.
+        # back first. So there is NO `fix` on this lane at all: no command run
+        # from this repo clears an unreachable origin, and offering one anyway is
+        # what got seven fix strings caught in S158. The route back lives in the
+        # note, where nothing labels it a command.
         _lcars_base_set unknown 1 \
           "the working tree has $n, and $first Nothing was written to your tree, and until origin answers no command can bring '$base' up to date." \
-          "reach origin first (VPN / network / auth) — then   $LCARS_BASE_DIRT_STASH   (or commit your work)   then   git pull --ff-only origin $base"
+          "" \
+          "unreachable" \
+          "reach origin first (VPN / network / auth); once it answers, '$(_lcars_base_dirty_fix "$base")' brings '$base' up to date. $LCARS_BASE_DIRT_NOTE"
       else
         _lcars_base_set unknown 1 "$first" \
-          "reach origin first (VPN / network / auth) — then   git fetch origin $base"
+          "" \
+          "unreachable" \
+          "reach origin first (VPN / network / auth); once it answers, 'git fetch origin $base' measures '$base' again."
       fi
     fi
     lcars_base_report
@@ -1136,9 +1568,11 @@ ensure_base_current() {
       # ("Cannot determine remote HEAD"). What actually ends this condition is
       # giving origin a branch to be measured against.
       if [ -n "$("$g" rev-parse --verify -q "refs/heads/$base" 2>/dev/null)" ]; then
-        nofix="git push -u origin $base   (origin has no branch to measure '$base' against — pushing it gives LCARS one)"
+        nofix="git push -u origin $base"
+        nonote="origin has no branch to measure '$base' against — pushing it gives LCARS one."
       elif "$g" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-        nofix="git branch $base && git push -u origin $base   (neither this repo nor origin has a '$base' branch yet)"
+        nofix="git branch $base && git push -u origin $base"
+        nonote="neither this repo nor origin has a '$base' branch yet."
       else
         # NO COMMITS AT ALL. `$base` is not to be trusted here: `git rev-parse
         # --abbrev-ref HEAD` FAILS on an unborn HEAD, so file.sh falls back to
@@ -1148,13 +1582,17 @@ ensure_base_current() {
         # errored outright ("error: src refspec main does not match any").
         # `symbolic-ref --short HEAD` DOES answer on an unborn HEAD: it is the
         # honest name of the branch the captain is already on. Round 4, D1.
+        # And there is no COMMAND here at all: "make your first commit" is not
+        # one, and a bare `git push` from a repo with no commits errors out
+        # ("src refspec … does not match any"). Empty fix, honest note.
         unborn="$("$g" symbolic-ref -q --short HEAD 2>/dev/null)" || unborn=""
         [ -n "$unborn" ] || unborn="$base"
-        nofix="make your first commit, then   git push -u origin $unborn   (this repo has no commits and origin has no branches)"
+        nofix=""
+        nonote="this repo has no commits and origin has no branches — make your first commit, then 'git push -u origin $unborn' gives LCARS something to measure."
       fi
       _lcars_base_set unknown 1 \
         "origin has no '$base' branch, and origin's DEFAULT branch could not be resolved either — so LCARS could not measure whether '$base' is out of date at all." \
-        "$nofix"
+        "$nofix" "" "$nonote"
       lcars_base_report
       return 0
     fi
@@ -1177,7 +1615,9 @@ ensure_base_current() {
     fi
     _lcars_base_set stale 1 \
       "origin has no '$base' branch, so LCARS measured against origin/$trunk: '$base' is $behind commit(s) behind it. LCARS will not merge a trunk into a topic branch — that is a real merge, not a fast-forward — so nothing was moved." \
-      "git merge origin/$trunk   (or git rebase origin/$trunk), then re-file"
+      "git merge origin/$trunk" \
+      "behind-trunk" \
+      "'git rebase origin/$trunk' is the other way to do it; either way, re-file afterwards."
     lcars_base_report
     return 0
   fi
@@ -1224,7 +1664,9 @@ ensure_base_current() {
   if ! "$g" merge-base --is-ancestor "$local_sha" "$remote_sha" >/dev/null 2>&1; then
     _lcars_base_set stale 1 \
       "local '$base' has $ahead commit(s) origin does not and is $behind commit(s) behind origin — a fast-forward is impossible, so nothing was moved." \
-      "git pull --rebase origin $base   (or reconcile '$base' by hand), then re-file"
+      "git pull --rebase origin $base" \
+      "diverged" \
+      "reconciling '$base' by hand works just as well; either way, re-file afterwards."
     lcars_base_report
     return 0
   fi
@@ -1234,7 +1676,9 @@ ensure_base_current() {
   if [ -n "$dirty" ]; then
     _lcars_base_set stale 1 \
       "the working tree has $n — LCARS never writes into a dirty tree, so your own uncommitted work was not touched and '$base' was left $behind commit(s) behind origin." \
-      "$LCARS_BASE_DIRT_STASH   (or commit your work)   then   git pull --ff-only origin $base"
+      "$(_lcars_base_dirty_fix "$base")" \
+      "dirty-tree" \
+      "$LCARS_BASE_DIRT_NOTE"
     lcars_base_report
     return 0
   fi
@@ -1249,7 +1693,8 @@ ensure_base_current() {
     if [ -n "$head_branch" ]; then head_desc="'$head_branch'"; else head_desc="a detached commit"; fi
     _lcars_base_set stale 1 \
       "local '$base' is $behind commit(s) behind origin, but HEAD is on $head_desc — LCARS will not check out another branch, so nothing was moved." \
-      "git checkout $base && git pull --ff-only origin $base"
+      "git checkout $base && git pull --ff-only origin $base" \
+      "not-checked-out"
     lcars_base_report
     return 0
   fi
@@ -1263,7 +1708,28 @@ ensure_base_current() {
   if [ -n "$clob" ]; then
     _lcars_base_set stale 1 \
       "'$base' is $behind commit(s) behind origin, but fast-forwarding it would OVERWRITE local file(s) git is not tracking, whose content differs from the incoming one — so nothing was moved and your file(s) are intact: $(_lcars_base_render_paths "$clob")" \
-      "move or delete those file(s), then   git pull --ff-only origin $base"
+      "" \
+      "untracked-clobber" \
+      "no command can decide this for you: move or delete those file(s), then 'git pull --ff-only origin $base' brings '$base' up to date."
+    lcars_base_report
+    return 0
+  fi
+
+  # 8b — CHECK-ONLY (S160): stop here. Everything above only MEASURED; step 9 is
+  #      the one step that writes, and this mode exists so the board can ask the
+  #      question before the captain has typed a word without the asking of it
+  #      moving their refs. THE CAPTAIN'S CLONE IS SACRED applies hardest to a
+  #      write nobody requested.
+  #
+  #      `stale` and DELIBERATELY QUIET. Stale in the only sense the vocabulary
+  #      has — behind, and not brought up to date. Quiet because every lane a
+  #      captain must act on has already returned loud above, and this is the one
+  #      lane where their next action, filing, IS the fix. Shouting here would be
+  #      a warning whose only remedy is the thing they were already doing — the
+  #      "re-file reproduces the identical warning forever" trap (see 5a).
+  if [ "${LCARS_BASE_CHECK_ONLY:-0}" = "1" ]; then
+    _lcars_base_set stale 0 \
+      "local '$base' is $behind commit(s) behind origin and fast-forwards cleanly, but this was a READ-ONLY check — nothing was moved. Filing a Mission brings '$base' up to date first."
     lcars_base_report
     return 0
   fi
@@ -1279,9 +1745,15 @@ ensure_base_current() {
   else
     how="$(printf '%s' "$mergeout" | head -1)"
     [ -n "$how" ] || how="git gave no reason"
-    _lcars_base_set stale 1 \
+    # NO `fix`, and the recorder is the one that CANNOT carry one. LCARS just
+    # ran this merge and git refused it on its merits; offering `git merge
+    # --ff-only origin/<base>` back was offering the captain the failure it had
+    # already captured one line above — a tester pasted it and got the identical
+    # `fatal: Commit … does not have a GPG signature.`, still 2 behind.
+    _lcars_base_set_after_attempt stale 1 \
       "'$base' is $behind commit(s) behind origin and the LOCAL fast-forward onto the already-fetched origin/$base failed ($how) — the ref was not moved and your tree was not written to." \
-      "git merge --ff-only origin/$base   (local only — origin has already been fetched)"
+      "merge-refused" \
+      "git refused this merge itself, so there is no command LCARS can offer: running the same merge again only repeats the refusal. Clear whatever git objected to — its own words are in the reason above — and '$base' fast-forwards on the next filing."
   fi
   lcars_base_report
   return 0

@@ -383,8 +383,9 @@ Show the captain its output verbatim:
   adr.md        ← the engineering ADRs (COMPLEX Missions only; absent for trivial work)
   estimate.json ← the end-of-Align estimate (per-stage model map; OPTIONAL, see below)
   state.json    ← { id, type, title, stage: "align", created, model, githubIssue, branch, base,
-                    baseFreshness{verdict, loud, reason, fix, behindBy, aheadBy,
-                    baseSha, checkedAt, missionBranchAtBase}[, modelOverride] }
+                    baseFreshness{verdict, loud, reason, fix, fixNote, blocker,
+                    behindBy, aheadBy, baseSha, checkedAt,
+                    missionBranchAtBase}[, modelOverride] }
 ```
 
 At the end of filing, `file.sh` runs the lcars-run estimator
@@ -425,7 +426,36 @@ The situation behind the verdict is **not** encoded in a name — it lives in
 `reason` (one honest sentence: which of dirty tree / diverged / would clobber an
 ignored file / not checked out / refused fast-forward / behind the trunk / no
 remote / unreachable / too slow / no resolvable trunk / no such local branch /
-switched off) and in `fix` (the exact command, empty when there is none).
+switched off) and in `fix` (**ONE runnable command line, or nothing** — it is
+labelled `Fix:` on both surfaces, so it must survive being pasted into a shell;
+the alternative, the caveat and any manual step live beside it in `fixNote`,
+which nothing ever labels as a command). `blocker` names what actually stopped
+LCARS (`dirty-tree`, `diverged`, `not-checked-out`, `untracked-clobber`,
+`merge-refused`, `behind-trunk`, `unreachable`, `fetch-timeout`,
+`operation-in-progress`), and the board's badge headline is built from it — a
+headline derived from `behindBy` names the benign half of a base that is both
+dirty and behind. `unreachable` and `fetch-timeout` are deliberately separate:
+the first means origin failed on its merits (no command clears it from here),
+the second that origin answered instantly and LCARS gave up waiting on its own
+bounded fetch (the captain's unbounded run of it really can succeed, so that
+lane carries a `fix`).
+
+**The operation LCARS already ran is never the `fix`.** When the guard has
+ATTEMPTED something and captured its failure — git refusing the purely local
+fast-forward, for instance — that same operation is not offered back as the
+remedy: re-running it only reproduces the refusal. Those lanes carry an EMPTY
+`fix` and put the way forward in `fixNote`. (A bounded fetch LCARS killed at its
+own deadline is not one of these: the captain's unbounded run of it really can
+succeed.)
+
+**An unfinished git operation is the first fact, and it stops the check.** With a
+rebase / merge / cherry-pick / revert / `am` / bisect in progress — detected via
+`git rev-parse --git-path`, so a linked worktree's `.git/worktrees/<n>/` is seen
+too — the verdict is a LOUD `unknown` with `blocker: operation-in-progress`,
+`behindBy`/`aheadBy` `null`, and **`baseSha` `null`**: mid-operation the base ref
+is where the operation will move it FROM, and stamping it names a commit the
+Mission was not cut from — a permanent, wrong provenance record. Nothing is
+fetched and no ref is moved; filing is still never blocked.
 Whether an outcome **shouts** is carried separately in `loud`, never derived
 from the verdict — `unknown` covers both the silent everyday no-remote case and
 a loud unreachable origin, so a consumer deciding "badge or no badge" reads that
@@ -434,7 +464,9 @@ one field.
 ```json
 "baseFreshness": { "verdict": "stale", "loud": true,
                    "reason": "the working tree has 1 unstaged change(s) and 1 untracked file(s) — LCARS never writes into a dirty tree, so your own uncommitted work was not touched and 'main' was left 3 commit(s) behind origin.",
-                   "fix": "git stash -u   (or commit your work)   then   git pull --ff-only origin main",
+                   "fix": "git stash -u && git pull --ff-only origin main",
+                   "fixNote": "You can commit your work instead of stashing — either clears the block; 'git stash pop' brings a stash back afterwards.",
+                   "blocker": "dirty-tree",
                    "behindBy": 3, "aheadBy": 0, "baseSha": "…", "checkedAt": "…",
                    "missionBranchAtBase": true }
 ```
@@ -506,6 +538,18 @@ when there is no such branch.
   that is said out loud with the command that fixes it.
 - Kill switch: `LCARS_BASE_FRESHNESS=0` (zero network, verdict `unknown` with a
   `reason` naming the switch, and silent).
+- **The record has consumers beyond the readout.** `lcars run` re-checks and
+  REWRITES it at drive time (S159), and the viewscreen reads it to decide whether
+  a Mission's card carries the ⚠ BASE badge (S160) — gating on the carried `loud`
+  field, never on the verdict name. Those surfaces DISPLAY this record's `reason`
+  and `fix`; they compose no sentence of their own about git state.
+- **Asking without answering.** `LCARS_BASE_CHECK_ONLY=1` runs every measurement
+  and declines the one step that writes (the local fast-forward), so the board's
+  File console can report freshness BEFORE the captain types a word without the
+  asking of it moving their refs. `skills/lcars-init/base-freshness.sh --json` is
+  that mode, read-only by construction — it sets the flag itself, so an inherited
+  environment cannot re-arm the ref move. It can never report `updated`: that
+  word means a ref moved, and nothing moved.
 
 ## Notes & failure modes
 

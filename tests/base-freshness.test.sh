@@ -396,8 +396,14 @@ for pair in "$M1|updated|int" "$M2|stale(dirty)|int" "$M3|stale(diverged)|int" "
   d="$(printf '%s' "$pair" | cut -d'|' -f1)"
   v="$(printf '%s' "$pair" | cut -d'|' -f2)"
   k="$(printf '%s' "$pair" | cut -d'|' -f3)"
-  check "8. $v: baseFreshness has exactly the nine documented keys" \
-    "python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))[\"baseFreshness\"]; sys.exit(0 if set(f)=={\"verdict\",\"loud\",\"reason\",\"fix\",\"behindBy\",\"aheadBy\",\"baseSha\",\"checkedAt\",\"missionBranchAtBase\"} else 1)' '$d/state.json'"
+  check "8. $v: baseFreshness has exactly the eleven documented keys" \
+    "python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))[\"baseFreshness\"]; sys.exit(0 if set(f)=={\"verdict\",\"loud\",\"reason\",\"fix\",\"fixNote\",\"blocker\",\"behindBy\",\"aheadBy\",\"baseSha\",\"checkedAt\",\"missionBranchAtBase\"} else 1)' '$d/state.json'"
+  # `fix` is a COMMAND or NOTHING — never prose, on any lane. A tester pasted
+  # two of the old strings into a shell and got `syntax error near unexpected
+  # token '('` (exit 2) and, on the unreachable lane, something that was not a
+  # command at all. The prose they hid now lives in `fixNote`.
+  check "8. $v: fix is one pasteable command, or empty" \
+    "python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))[\"baseFreshness\"][\"fix\"]; sys.exit(1 if f and (\"   \" in f or \"(\" in f or \" then \" in f) else 0)' '$d/state.json'"
   # The vocabulary is FOUR words and nothing else may leak into the record.
   check "8. $v: the verdict is one of the four" \
     "case \"\$(sf '$d/state.json' baseFreshness.verdict)\" in current|updated|stale|unknown) true ;; *) false ;; esac"
@@ -1512,15 +1518,26 @@ file_mission "$r40" --prd "$prd40"
 M40="$(mdir "$r40")"
 check "40. filing succeeds with no commits and an empty origin" \
   "[ \"\$(cat '$r40.rc')\" = '0' ]"
+# THE ADVICE IS TWO FIELDS NOW. `fix` is a command that clears the condition
+# when pasted — and on THIS lane no such command exists, because the captain has
+# to make the first commit themselves before any push can succeed. So the fix is
+# EMPTY (a `Fix:` label on "make your first commit" is the exact lie S160's
+# tester caught) and the route lives in `fixNote`. The DEFECT this behaviour
+# exists for — naming `main`, a branch git will never create here — is unchanged:
+# it is asserted against the advice the captain actually reads.
 FIX40="$(sf "$M40/state.json" baseFreshness.fix)"
-check "40. the fix names the branch git will really create" \
-  "case \"\$FIX40\" in *'origin master'*) true ;; *) false ;; esac"
+NOTE40="$(sf "$M40/state.json" baseFreshness.fixNote)"
+ADVICE40="$FIX40 $NOTE40"
+check "40. no command is offered — none can succeed before the first commit" \
+  "[ -z \"\$FIX40\" ]"
+check "40. the advice names the branch git will really create" \
+  "case \"\$ADVICE40\" in *'origin master'*) true ;; *) false ;; esac"
 check "40. …and never the invented 'main', which cannot be pushed" \
-  "case \"\$FIX40\" in *'origin main'*) false ;; *) true ;; esac"
-# Obey the printed fix VERBATIM on a pristine copy: the captain's own first
+  "case \"\$ADVICE40\" in *'origin main'*) false ;; *) true ;; esac"
+# Obey the printed advice VERBATIM on a pristine copy: the captain's own first
 # commit, then the push command exactly as printed.
-PUSH40="$(printf '%s' "$FIX40" | grep -oE 'git push -u origin [^ ]+' | head -1)"
-check "40. the fix really does carry a push command to run" "[ -n \"\$PUSH40\" ]"
+PUSH40="$(printf '%s' "$ADVICE40" | grep -oE 'git push -u origin [^ '"'"']+' | head -1)"
+check "40. the advice really does carry a push command to run" "[ -n \"\$PUSH40\" ]"
 FIXRC40=0
 (
   cd "$R40FIX" && echo hi >README.md && git add -A \
@@ -1770,20 +1787,30 @@ check "44. …and the quoted path is shown exactly as 'ls' shows it" \
 
 # --- Behaviour 45 (R5 D2): a comment may not assert a consumer that is unbuilt -
 # The source once claimed state.json is "the record … that `lcars run`'s re-check
-# reads" while nothing read `baseFreshness` anywhere. S159 BUILT that reader, so
-# the claim is now true — and the check flips with it rather than being deleted:
-# the file list must match the consumers that actually exist, and the prose must
-# still name S160 (the board badge) as the one that does NOT.
+# reads" while nothing read `baseFreshness` anywhere. S159 BUILT that reader and
+# S160 built the board's; the check FLIPS with each of them rather than being
+# deleted — the file list must always match the consumers that actually exist,
+# in both directions, so the prose can neither over- nor under-claim.
 READERS45="$TMPROOT/readers45.txt"
 grep -rl 'baseFreshness' "$REPO_ROOT/skills" >"$READERS45" 2>/dev/null
-check "45. the only files mentioning baseFreshness are its writer, its reader and their docs" \
-  "! grep -v -e 'lcars-init/lcars-common.sh\$' -e 'lcars-file/SKILL.md\$' -e 'lcars-run/run.sh\$' -e 'lcars-run/SKILL.md\$' '$READERS45' | grep -q ."
+check "45. the only files mentioning baseFreshness are its writer, its readers and their docs" \
+  "! grep -v -e 'lcars-init/lcars-common.sh\$' -e 'lcars-file/SKILL.md\$' -e 'lcars-run/run.sh\$' -e 'lcars-run/SKILL.md\$' -e 'lcars-viewscreen/SKILL.md\$' '$READERS45' | grep -q ."
 check "45. …and the drive-time reader (S159) really is one of them" \
   "grep -q 'lcars-run/run.sh\$' '$READERS45'"
-check "45. …and the STILL-unbuilt session is NAMED rather than asserted as present" \
-  "grep -q 'S160' '$COMMON'"
-check "45. …and no comment claims the board badge exists yet" \
-  "! grep -rq 'baseFreshness' '$REPO_ROOT/web'"
+# S160 built the board badge. The claim that it does not exist would now be the
+# false one, so what is pinned is the reverse: the daemon really does read the
+# record, and it does so in the ADAPTER (the shape layer) — not in the server,
+# and not by re-deciding the verdict in Python.
+check "45. …and the board badge (S160) really reads the record" \
+  "grep -q 'baseFreshness' '$REPO_ROOT/web/lcars_serve/local_adapter.py'"
+check "45. …and the front end renders from that same key" \
+  "grep -q 'baseFreshness' '$REPO_ROOT/web/static/board.js'"
+# The daemon SHELLS the shared verdict (ADR-002) rather than reimplementing it:
+# no Python anywhere may decide staleness for itself.
+check "45. …by SHELLING the shared reporter, never re-deciding in Python" \
+  "grep -q 'base-freshness.sh' '$REPO_ROOT/web/lcars_serve/local_adapter.py'"
+check "45. …and no Python file runs a git rev-list/merge-base of its own" \
+  "! grep -rn -e 'rev-list' -e 'merge-base' '$REPO_ROOT/web/lcars_serve' | grep -q ."
 
 # --- Behaviour 46 (R5 D3): the cross-reference between the two docs is TRUE ---
 # SKILL.md said its sacred-clone verb list is "the same verb list `CONTEXT.md`

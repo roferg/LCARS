@@ -1038,8 +1038,21 @@ def _img(data=_IMG_BYTES, ctype="image/png", name="shot.png"):
 
 
 def _staged_imgs(root):
-    """Every image the daemon has staged under repo_root (lcars-img-*)."""
-    return sorted(glob.glob(os.path.join(root, "lcars-img-*")))
+    """Every image the daemon has staged (lcars-img-*).
+
+    S160 fix-loop: the scratch lives under `.git/lcars/tmp/`, NOT in the working
+    tree. It used to sit in the repo root, where the base-freshness guard's
+    `git status --porcelain` counted LCARS's own staging as the captain's
+    untracked work and refused the fast-forward it was about to make.
+    """
+    return sorted(glob.glob(
+        os.path.join(root, ".git", "lcars", "tmp", "lcars-img-*")))
+
+
+def _tree_scratch(root):
+    """Anything LCARS has left lying in the WORKING TREE. Must always be empty:
+    a harness artifact in the captain's tree is dirt the guard blames on them."""
+    return sorted(glob.glob(os.path.join(root, "lcars-*")))
 
 
 class ImagePasteGrillTest(AlignBase):
@@ -1059,9 +1072,12 @@ class ImagePasteGrillTest(AlignBase):
         status, _ = self._post("/api/align/start",
                                {"idea": "fix this", "images": [_img()]})
         self.assertEqual(status, 200)
-        # exactly ONE real file staged under repo_root; bytes match the input.
+        # exactly ONE real file staged; bytes match the input.
         staged = _staged_imgs(self.tmp)
         self.assertEqual(len(staged), 1)
+        # …and it is NOT in the working tree: LCARS's own staging must never
+        # read as the captain's untracked work (S160 fix-loop).
+        self.assertEqual(_tree_scratch(self.tmp), [])
         with open(staged[0], "rb") as fh:
             self.assertEqual(fh.read(), _IMG_BYTES)
         # claude REFERENCES the abs path in the prompt text (Read-tool hand-off).

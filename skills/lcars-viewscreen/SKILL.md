@@ -55,9 +55,59 @@ build step — ADR-007) bound to `127.0.0.1:8765` by default, serving:
   never forked.
 - `GET /api/board` — the full **adapter-neutral board JSON**.
 - `GET /api/mission/<id>` — mission detail including the **activity feed**.
+- `GET /api/base-freshness` — this repo's **live base-freshness verdict** (S160),
+  the record `skills/lcars-init/base-freshness.sh --json` prints. **A read**: the
+  reporter behind it is read-only by construction (it measures, and never moves a
+  ref), so it answers on a `--read-only` board too. An adapter with no local
+  checkout to look at (the GitHub one) has no such reader and returns `404`; a
+  reporter failure answers `{"baseFreshness": null}`, never a 500. Deliberately
+  **not** folded into `/api/board`: it takes a bounded `git fetch`, and a board
+  that re-renders on every SSE push must never do network I/O.
 - `GET /api/events` — a **live channel** (Server-Sent Events) that pushes exactly
   one update whenever Mission state changes on disk, so the board re-renders
   itself live.
+
+#### Base freshness on the board (S160)
+
+`lcars file` and `lcars run` decide whether the branch a Mission is cut from is
+the tree the rest of the world sees, and record the verdict on the Mission as
+`state.json.baseFreshness` — but both print their warning to **stdout**, which
+the daemon swallows, so a captain filing from the board never saw it. Two
+surfaces fix that, and both are **additive and condition-gated**:
+
+- a compact amber **⚠ BASE** pill on the Mission card (with the long form under
+  the detail header), present ONLY when the record's carried `loud` is true;
+- a **PRE-FLIGHT line** above the idea box in the File console, so a stale or
+  dirty base is named **before** the idea is typed. It loads asynchronously and
+  never blocks or walls off filing (**warn loudly, file anyway**).
+
+Both are gated on the record's `loud` field and **never on the verdict name**:
+`unknown` covers both the silent everyday no-remote repo and a loud unreachable
+origin, so an allowlist of verdict names is provably wrong about one of them.
+Both display the guard's own `reason` and `fix` verbatim rather than composing a
+second sentence about git state, and `behindBy: null` (never measured) renders
+as an absence — never as a reassuring `0`. A board with no loud record is
+**byte-identical** to before S160.
+
+The **headline names what is BLOCKING**, built from the record's carried
+`blocker` (`⚠ BASE · DIRTY TREE · 1 BEHIND`), never from the commit count alone:
+"1 behind" is the state a captain is ruled safe to ignore, so a dirty-and-behind
+base whose headline said only that hid the half that actually stopped the
+fast-forward. An unrecognised blocker token falls back to the distance rather
+than rendering a raw token. And **`Fix:` labels a command and only a command** —
+one runnable line, pasteable verbatim; the record's `fixNote` (the alternative,
+the caveat, the manual step) renders below it UNLABELLED, because prose dressed
+as a command is prose a captain pastes into a shell. Some lanes have NO command
+at all — an origin that has to come back first, a merge git itself refused, an
+unfinished rebase only the captain can end — and those render guidance with
+nothing labelled `Fix:`.
+
+The File console's pre-flight line mounts **below the idea field**. It answers
+asynchronously (1.3–1.8s against a real remote, 16s against a slow one) while the
+console is interactive at ~37ms, and above the field its arrival shoved the
+textarea down 169px under a captain mid-sentence. Reserving the height instead
+would leave a permanent empty gap on every healthy repo, where the block is
+absent entirely.
 
 ### Operator actions (write layer — LOCAL adapter only)
 
