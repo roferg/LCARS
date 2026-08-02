@@ -34,6 +34,7 @@
 #   LCARS_GIT_BIN     the git binary               (default: git)
 #   LCARS_NOTIFY      the notify hook              (default: ../lcars-run/notify.sh)
 #   LCARS_RUN_SCRIPT  the `lcars run` driver       (default: ../lcars-run/run.sh)
+#   LCARS_HOST_ADAPTER the forge adapter           (default: ../lcars-run/host-adapter.sh)
 #
 set -uo pipefail
 
@@ -46,6 +47,13 @@ WORKER_BIN="${LCARS_WORKER_BIN:-}"
 NOTIFY_BIN="${LCARS_NOTIFY:-$SKILL_DIR/../lcars-run/notify.sh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+
+# The host-integration adapter — the ONE place that speaks to a forge. It lives in
+# the sibling lcars-run skill dir; $LCARS_HOST_ADAPTER overrides that path so
+# tests and drives can stub the forge at the seam LCARS already owns. Same shape
+# as approve.sh / log.sh / feedback.sh.
+HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/../lcars-run/host-adapter.sh}"
+host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
 die() { printf 'lcars resolve-logs: %s\n' "$1" >&2; exit 1; }
 
@@ -384,7 +392,8 @@ child_fix_on_branch() { # bug-id branch
 # single-bug (BUG-032) complete paths so the fold logic is authored ONCE. Given a
 # child bug id whose stage is verify, flips it to done on disk and moves its board
 # column (clear stage labels, apply lcars:done) WITHOUT opening a per-bug PR — the
-# parent's PR carries the fix. Echoes nothing. Never rewrites the child's branch.
+# parent's PR carries the fix. Echoes nothing on stdout (only a best-effort
+# forge-failure note on stderr). Never rewrites the child's branch.
 #
 # Returns: 0 folded · 1 not at verify (skipped) · 2 REFUSED — the fix is not on
 # the parent branch.
@@ -415,6 +424,24 @@ fold_one_child() { # bug-id
   state_set_str "$cstate" stage done
   # Board: clear the stage labels, apply lcars:done — same column move approve
   # makes, but WITHOUT a PR (the parent's PR carries the fix). Best-effort.
+  #
+  # …and then CLOSE the issue (S165). A logged-bug child is NOT a ticket
+  # sub-issue: it is a separate Mission linked by `lcars:linked`, so open_pr()
+  # never puts it in the PR's `Closes` list and GitHub never auto-closes it on
+  # merge. Relabelling and stopping is exactly how seven DX-Scorecard bug issues
+  # (#78–84) stayed OPEN carrying `lcars:done` after PR #77 merged all 14 of
+  # their commits. The close rides the host adapter — the ONE forge seam — rather
+  # than the direct $GH_BIN above.
+  #
+  # ORDER MATTERS: relabel first, close second. The column move is what the board
+  # reads; closing first would briefly show a closed card still sitting in Verify.
+  #
+  # STRICTLY best-effort, exactly like the relabel: a forge hiccup leaves a
+  # legible note on stderr and the fold still returns 0. A logged bug whose fix is
+  # really on the parent branch must never be held hostage to a failed API call.
+  # Idempotent by construction: `gh issue close` on an already-closed issue warns
+  # and exits 0, and a re-fold never reaches here at all (a done child is not at
+  # verify, so fold_one_child returns 1 above).
   cissue="$(json_raw "$cstate" githubIssue)"
   case "$cissue" in
     ''|null) : ;;
@@ -423,6 +450,11 @@ fold_one_child() { # bug-id
            --add-label "lcars:done" \
            --remove-label "lcars:verify" \
            --remove-label "lcars:awaiting-human" >/dev/null 2>&1 || true
+         # No pipes here on purpose — this function has already been broken once
+         # by SIGPIPE under `set -o pipefail` (see child_fix_on_branch above).
+         host issue-close "$cissue" >/dev/null 2>&1 \
+           || printf '  ⚠ folded %s but could not close its issue #%s — close it by hand.\n' \
+                "$bid" "$cissue" >&2
        fi ;;
   esac
   return 0

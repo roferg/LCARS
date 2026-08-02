@@ -809,6 +809,45 @@ check "fold. names the folded child in the output" \
 check "fold. warns that the mid-flight child's fix is NOT in this PR" \
   "qgrep -q '$BUG_WIP' <'$repoFD/err.txt'"
 
+# S165 — the fold must also CLOSE the child's issue. A logged-bug child is not a
+# ticket sub-issue, so it never lands in the PR's `Closes` list and GitHub never
+# auto-closes it on merge: relabelling it `lcars:done` and leaving it OPEN is how
+# seven DX-Scorecard bug issues (#78–84) sat open forever after PR #77 merged.
+# approve is the SECOND caller of fold_one_child (via resolve-logs complete
+# --bug), so the close has to fire from here too, not just the resolve-logs CLI.
+check "fold. the folded child's issue is CLOSED, not merely relabelled" \
+  "grep -q 'issue close 91' '$GH_LOG'"
+check "fold. the REFUSED child's issue is NOT closed (no fix ⇒ no close)" \
+  "! grep -q 'issue close 92' '$GH_LOG'"
+check "fold. the mid-flight child's issue is NOT closed" \
+  "! grep -q 'issue close 93' '$GH_LOG'"
+check "fold. the PARENT's issue is NOT closed by the fold (it rides the PR's Closes)" \
+  "! grep -q 'issue close 42' '$GH_LOG'"
+
+# …and a close the forge refuses must never turn a landed merge into a failure.
+make_gh_stub_close_fail() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "close" ]; then exit 1; fi
+exit 0
+EOF
+  chmod +x "$1"
+}
+repoFC="$(new_repo_with_folded_children)"; make_gh_stub_close_fail "$repoFC/gh"
+make_reconcile_stub "$repoFC/recon.sh" 0
+export GH_LOG="$repoFC/gh.log"; : >"$GH_LOG"
+export RECON_LOG="$repoFC/recon.log"; : >"$RECON_LOG"
+rcFC=0
+( cd "$repoFC" && LCARS_GH_BIN="$repoFC/gh" LCARS_RUN_SCRIPT="$repoFC/recon.sh" \
+    RECON_LOG="$repoFC/recon.log" bash "$SCRIPT" \
+    --mission "$MID" >out.txt 2>err.txt ) || rcFC=$?
+check "foldC. a failed issue close does NOT fail the approve" "[ '$rcFC' -eq 0 ]"
+check "foldC. the child is still folded to done" \
+  "grep -q '\"stage\": *\"done\"' '$repoFC/.git/lcars/missions/$BUG_OK/state.json'"
+check "foldC. the captain sees a legible note about the issue it could not close" \
+  "cat '$repoFC/out.txt' '$repoFC/err.txt' | qgrep -qi 'could not close.*91'"
+
 # --- Behaviour FOLD-2: no children ⇒ byte-identical to today ------------------
 # A plain feature mission with no logged bugs must not gain any fold chatter.
 repoND="$(new_repo_with_open_pr_mission)"; make_gh_stub "$repoND/gh"

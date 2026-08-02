@@ -410,6 +410,256 @@ rc8b=0
 check "8b. a plain escalation answer still exits 0 with the hook present" "[ '$rc8b' -eq 0 ]"
 check "8b. no PR is opened on a plain escalation answer" \
   "! grep -q 'pr create' '$repo8b/gh.log'"
+check "8b. …and it claims NO fold (nothing was folded — say nothing)" \
+  "! grep -qi 'folded' '$repo8b/out8b.txt'"
+
+# --- Behaviour 8c (S165): the fold's best-effort ⚠ notes REACH the captain ----
+# `lcars respond` is the PRIMARY fold surface — the consolidated re-verify gate's
+# own text tells the captain to accept it with `lcars answer respond --mission
+# <parent> --answer …`, and `lcars answer` + the viewscreen's respond endpoint
+# both route here. The S165 close is strictly best-effort: when the forge refuses
+# `issue-close` the fold still succeeds and resolve-logs prints
+#   ⚠ folded <bid> but could not close its issue #<n> — close it by hand.
+# respond ran that fold with BOTH streams sent to /dev/null, so the captain was
+# told nothing at all: two children went Done, two issues stayed OPEN on the
+# forge, and not one word surfaced. approve.sh got exactly this fix; this is the
+# same cure on the surface the gate actually points at.
+#
+# host-adapter stub (same shape as tests/lcars-resolve-logs.test.sh): records
+# every op; $HOST_RC forces a forge failure.
+make_host_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "host $*" >>"$HOST_LOG"
+exit "${HOST_RC:-0}"
+EOF
+  chmod +x "$1"
+}
+
+repo8c="$(new_repo_with_reverify_gate)"
+make_gh_stub "$repo8c/gh"; make_host_stub "$repo8c/host"
+export GH_LOG="$repo8c/gh.log"; : >"$GH_LOG"
+export HOST_LOG="$repo8c/host.log"; : >"$HOST_LOG"
+rc8c=0
+(
+  cd "$repo8c"
+  LCARS_GH_BIN="$repo8c/gh" LCARS_GIT_BIN="$(command -v git)" \
+  LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_LOGS_SCRIPT" \
+  LCARS_HOST_ADAPTER="$repo8c/host" HOST_RC=1 LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Looks good, ship it." >out8c.txt 2>&1
+) || rc8c=$?
+check "8c. a failed child close is non-fatal — respond still exits 0" \
+  "[ '$rc8c' -eq 0 ]"
+check "8c. both children are still folded to Done despite the failed closes" \
+  "grep -q '\"stage\": *\"done\"' '$repo8c/.git/lcars/missions/lcars-20260530-002/state.json' && grep -q '\"stage\": *\"done\"' '$repo8c/.git/lcars/missions/lcars-20260530-003/state.json'"
+check "8c. the close WAS attempted through the host adapter" \
+  "grep -q 'host issue-close 52' '$repo8c/host.log'"
+check "8c. the captain is TOLD child 002's issue #52 is still open" \
+  "grep -q 'could not close its issue #52' '$repo8c/out8c.txt'"
+check "8c. …and about child 003's issue #53 too (every failure, not just one)" \
+  "grep -q 'could not close its issue #53' '$repo8c/out8c.txt'"
+check "8c. the note tells them what to do about it" \
+  "grep -q 'close it by hand' '$repo8c/out8c.txt'"
+
+# --- Behaviour 8d (S165): the SUCCESS readout is honest too ------------------
+# With the closes landing there must be NO warning — and the readout must say a
+# fold happened, naming how many bugs rode the parent's PR to Done. Silence on
+# success is the other half of the same defect: the captain was told nothing
+# either way.
+repo8d="$(new_repo_with_reverify_gate)"
+make_gh_stub "$repo8d/gh"; make_host_stub "$repo8d/host"
+export GH_LOG="$repo8d/gh.log"; : >"$GH_LOG"
+export HOST_LOG="$repo8d/host.log"; : >"$HOST_LOG"
+rc8d=0
+(
+  cd "$repo8d"
+  LCARS_GH_BIN="$repo8d/gh" LCARS_GIT_BIN="$(command -v git)" \
+  LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_LOGS_SCRIPT" \
+  LCARS_HOST_ADAPTER="$repo8d/host" HOST_RC=0 LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Looks good, ship it." >out8d.txt 2>&1
+) || rc8d=$?
+check "8d. accepting with the closes landing exits 0" "[ '$rc8d' -eq 0 ]"
+check "8d. both children's issues are closed" \
+  "grep -q 'host issue-close 52' '$repo8d/host.log' && grep -q 'host issue-close 53' '$repo8d/host.log'"
+check "8d. NO close warning is shown when nothing failed" \
+  "! grep -qi 'could not close' '$repo8d/out8d.txt'"
+check "8d. the readout tells the captain the logged bugs were folded" \
+  "grep -qi 'folded 2 logged bugs' '$repo8d/out8d.txt'"
+check "8d. the ordinary respond readout is still intact" \
+  "grep -q 'RESPOND: answered $MID' '$repo8d/out8d.txt'"
+
+# --- Behaviour 8e/8f/8g (S165 fix round 2): a REFUSED fold is not silent -----
+#
+# The loudest case was the silent one. When a child's fix is NOT on the parent
+# branch, fold_one_child REFUSES it (the 2026-07-28 premise check) and
+# cmd_complete prints a refusal on stderr and exits 1 BEFORE its `Folded N …`
+# line. Round 1 filtered the fold's output for the `⚠` glyph and a `^Folded`
+# line — the bulk refusal carries NEITHER, so accepting a batch where one bug's
+# fix had vanished produced a respond readout with ZERO bytes on stderr and not
+# a word about the refusal or about the siblings that DID fold. Meanwhile
+# `lcars approve` says both. Two doors into the same fold disagreeing about the
+# loudest case is the green-board/no-code class.
+#
+# A REAL git repo here (not the empty init the other fixtures use): the premise
+# check resolves the parent branch ref and reads its commit subjects, so a
+# branchless fixture passes the check vacuously and proves nothing.
+new_repo_with_partial_batch() { # <partial|allbad> -> repo path
+  local mode="$1" repo seq d
+  repo="$(mktemp -d "$TMPROOT/repoPB.XXXX")"
+  (
+    cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
+      && git commit -q --allow-empty -m init \
+      && git checkout -q -b "lcars/$MID" \
+      && git commit -q --allow-empty -m "lcars($MID) t-001: parent work"
+    if [ "$mode" = partial ]; then
+      git commit -q --allow-empty -m "lcars(lcars-20260530-002) t-001: bug 002 fix"
+      git commit -q --allow-empty -m "lcars(lcars-20260530-003) t-001: bug 003 fix"
+    fi
+    # NEVER a commit for 004 — its fix is not on the parent branch. That is the case.
+  )
+  local m="$repo/.git/lcars/missions/$MID"; mkdir -p "$m"
+  cat >"$m/state.json" <<EOF
+{
+  "id": "$MID",
+  "type": "feature",
+  "title": "Add gamification",
+  "stage": "verify",
+  "githubIssue": 42,
+  "branch": "lcars/$MID",
+  "base": "main",
+  "awaitingHuman": true,
+  "pendingQuestion": "Logged bugs resolved and waiting on their Verify gates — ready for you to re-verify."
+}
+EOF
+  printf '{ "stage": "verify", "questions": ["re-verify"] }\n' >"$m/pending.json"
+  local seqs="004"
+  [ "$mode" = partial ] && seqs="002 003 004"
+  for seq in $seqs; do
+    d="$repo/.git/lcars/missions/lcars-20260530-$seq"
+    mkdir -p "$d/tickets/t-001"
+    # a RECORDED commit — without it child_recorded_a_commit is false and the
+    # premise check never runs, so the refusal never happens.
+    echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" >"$d/tickets/t-001/.commit-sha"
+    cat >"$d/state.json" <<EOF
+{
+  "id": "lcars-20260530-$seq",
+  "type": "bug",
+  "title": "Logged bug $seq",
+  "stage": "verify",
+  "githubIssue": $((50 + 10#$seq)),
+  "parentMission": "$MID",
+  "parentIssue": 42,
+  "branch": "lcars/$MID",
+  "base": "lcars/$MID"
+}
+EOF
+  done
+  echo "$repo"
+}
+
+# 8e. THE PARTIAL BATCH: two bugs whose fixes are on the branch, one whose fix is
+# not. Both halves must reach the captain — what folded AND what was refused.
+repo8e="$(new_repo_with_partial_batch partial)"
+make_gh_stub "$repo8e/gh"; make_host_stub "$repo8e/host"
+export GH_LOG="$repo8e/gh.log"; : >"$GH_LOG"
+export HOST_LOG="$repo8e/host.log"; : >"$HOST_LOG"
+rc8e=0
+(
+  cd "$repo8e"
+  LCARS_GH_BIN="$repo8e/gh" LCARS_GIT_BIN="$(command -v git)" \
+  LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_LOGS_SCRIPT" \
+  LCARS_HOST_ADAPTER="$repo8e/host" HOST_RC=0 LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Looks good, ship it." \
+      >out8e.stdout 2>out8e.stderr
+) || rc8e=$?
+cat "$repo8e/out8e.stdout" "$repo8e/out8e.stderr" >"$repo8e/out8e.txt"
+check "8e. a refused fold is still non-fatal — respond exits 0" "[ '$rc8e' -eq 0 ]"
+check "8e. the two real fixes ARE folded to done" \
+  "grep -q '\"stage\": *\"done\"' '$repo8e/.git/lcars/missions/lcars-20260530-002/state.json' && grep -q '\"stage\": *\"done\"' '$repo8e/.git/lcars/missions/lcars-20260530-003/state.json'"
+check "8e. the bug whose fix is NOT on the branch stays at verify (no false Done)" \
+  "grep -q '\"stage\": *\"verify\"' '$repo8e/.git/lcars/missions/lcars-20260530-004/state.json'"
+check "8e. the refused child's issue is NEVER closed" \
+  "! grep -q 'issue-close 54' '$repo8e/host.log'"
+check "8e. THE CAPTAIN IS TOLD a bug was REFUSED" \
+  "grep -qi 'refused' '$repo8e/out8e.txt'"
+check "8e. …naming the refused bug" \
+  "grep -q 'lcars-20260530-004' '$repo8e/out8e.txt'"
+check "8e. …and why — its fix is not on the parent branch" \
+  "grep -qi 'NOT on the parent branch' '$repo8e/out8e.txt'"
+check "8e. THE OTHER HALF: the captain also learns the siblings folded" \
+  "grep -qi '2 sibling' '$repo8e/out8e.txt'"
+check "8e. the refusal rides STDERR (a warning), never the stdout readout" \
+  "grep -qi 'refused' '$repo8e/out8e.stderr' && ! grep -qi 'refused' '$repo8e/out8e.stdout'"
+check "8e. the ordinary respond readout is still intact" \
+  "grep -q 'RESPOND: answered $MID' '$repo8e/out8e.txt'"
+
+# 8e2. BOTH kinds of bad news at once: a sibling folds but its issue-close FAILS
+# (a ⚠ note) while another bug is REFUSED (a non-zero fold). The two captures are
+# different mechanisms — neither may swallow the other.
+repo8e2="$(new_repo_with_partial_batch partial)"
+make_gh_stub "$repo8e2/gh"; make_host_stub "$repo8e2/host"
+export GH_LOG="$repo8e2/gh.log"; : >"$GH_LOG"
+export HOST_LOG="$repo8e2/host.log"; : >"$HOST_LOG"
+rc8e2=0
+(
+  cd "$repo8e2"
+  LCARS_GH_BIN="$repo8e2/gh" LCARS_GIT_BIN="$(command -v git)" \
+  LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_LOGS_SCRIPT" \
+  LCARS_HOST_ADAPTER="$repo8e2/host" HOST_RC=1 LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Ship it." >out8e2.txt 2>&1
+) || rc8e2=$?
+check "8e2. a failed close AND a refusal together are still non-fatal" \
+  "[ '$rc8e2' -eq 0 ]"
+check "8e2. the failed-close ⚠ note survives alongside the refusal" \
+  "grep -q 'could not close its issue #52' '$repo8e2/out8e2.txt'"
+check "8e2. …and the refusal survives alongside the ⚠ note" \
+  "grep -qi 'NOT on the parent branch' '$repo8e2/out8e2.txt' && grep -q 'lcars-20260530-004' '$repo8e2/out8e2.txt'"
+
+# 8f. FULLY REFUSED: the only bug's fix is not on the branch. Nothing folds, and
+# the captain must still hear about it.
+repo8f="$(new_repo_with_partial_batch allbad)"
+make_gh_stub "$repo8f/gh"; make_host_stub "$repo8f/host"
+export GH_LOG="$repo8f/gh.log"; : >"$GH_LOG"
+export HOST_LOG="$repo8f/host.log"; : >"$HOST_LOG"
+rc8f=0
+(
+  cd "$repo8f"
+  LCARS_GH_BIN="$repo8f/gh" LCARS_GIT_BIN="$(command -v git)" \
+  LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_LOGS_SCRIPT" \
+  LCARS_HOST_ADAPTER="$repo8f/host" HOST_RC=0 LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Ship it." >out8f.txt 2>&1
+) || rc8f=$?
+check "8f. a fully-refused fold is still non-fatal — respond exits 0" "[ '$rc8f' -eq 0 ]"
+check "8f. nothing is folded — the bug stays at verify" \
+  "grep -q '\"stage\": *\"verify\"' '$repo8f/.git/lcars/missions/lcars-20260530-004/state.json'"
+check "8f. the captain is told it was REFUSED, naming the bug" \
+  "grep -qi 'refused' '$repo8f/out8f.txt' && grep -q 'lcars-20260530-004' '$repo8f/out8f.txt'"
+check "8f. …and it claims NO fold happened" \
+  "! grep -qi 'Folded 1 logged bug into' '$repo8f/out8f.txt'"
+
+# 8g. ANTI-LYING: a fold that is a clean NO-OP (every linked bug already done)
+# must still say NOTHING about folding — no invented summary, no stray warning.
+repo8g="$(new_repo_with_reverify_gate)"
+make_gh_stub "$repo8g/gh"; make_host_stub "$repo8g/host"
+export GH_LOG="$repo8g/gh.log"; : >"$GH_LOG"
+export HOST_LOG="$repo8g/host.log"; : >"$HOST_LOG"
+for seq in 002 003; do
+  s8g="$repo8g/.git/lcars/missions/lcars-20260530-$seq/state.json"
+  sed 's/"stage": "verify"/"stage": "done"/' "$s8g" >"$s8g.t" && mv "$s8g.t" "$s8g"
+done
+rc8g=0
+(
+  cd "$repo8g"
+  LCARS_GH_BIN="$repo8g/gh" LCARS_GIT_BIN="$(command -v git)" \
+  LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_LOGS_SCRIPT" \
+  LCARS_HOST_ADAPTER="$repo8g/host" HOST_RC=0 LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" answer --mission "$MID" --answer "Ship it." >out8g.txt 2>&1
+) || rc8g=$?
+check "8g. a clean no-op fold exits 0" "[ '$rc8g' -eq 0 ]"
+check "8g. …and claims NO fold (nothing was folded — say nothing)" \
+  "! grep -qi 'folded' '$repo8g/out8g.txt'"
+check "8g. …and raises no warning of any kind" \
+  "! grep -q '⚠' '$repo8g/out8g.txt' && ! grep -qi 'refused' '$repo8g/out8g.txt'"
 
 # --- Behaviour 9 (BUG-043/055): answering a RECONCILE design gate is SPECIFIC --
 # A reconcile design gate is marked with a dedicated marker file

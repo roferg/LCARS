@@ -175,6 +175,12 @@ fold_logged_children() {
     if [ "$rc" -eq 0 ]; then
       folded=$((folded + 1))
       echo "  Folded logged bug: $bid → done"
+      # A SUCCESSFUL fold can still carry a best-effort warning (S165: the child's
+      # issue was relabelled but the close did not land). `out` is otherwise
+      # discarded on rc 0, so that note would die here — pass the ⚠ lines through
+      # or the captain is told "folded" and never learns an issue is still open.
+      # Here-string, never a pipe: approve runs under `set -o pipefail`.
+      grep '⚠' <<<"$out" >&2 || true
     else
       refused="${refused}${bid}"$'\n'
       echo "  ⚠ REFUSED to close out logged bug $bid:" >&2
