@@ -12,10 +12,11 @@
 #
 # The flow:
 #   1. resolve the mission → its branch (state.json) → the branch-tip SHA
-#   2. `git worktree add --detach` that SHA into a DISPOSABLE worktree. DETACHED is
-#      critical: a branch checkout HOLDS the ref and blocks the Implement replay
-#      gate from landing fixes on that branch; detached checks out the CONTENT
-#      without holding the ref. Idempotent — reuse an existing worktree.
+#   2. `git worktree add --detach` that SHA into a DISPOSABLE worktree BESIDE the
+#      repo (never inside `.git/` — see the S167 note at the launch-root block).
+#      DETACHED is critical: a branch checkout HOLDS the ref and blocks the
+#      Implement replay gate from landing fixes on that branch; detached checks out
+#      the CONTENT without holding the ref. Idempotent — reuse an existing worktree.
 #   3. spawn the `launch`-role worker (engine from state.json workerBin, or
 #      $LCARS_WORKER_BIN) via the worker-adapter. It inspects the checkout and
 #      writes launch.json {target,command,cwd,url,howToStop,status=ready|failed}.
@@ -38,6 +39,7 @@
 #   LCARS_WORKER_BIN      the cold-worker CLI          (default: state workerBin → claude)
 #   LCARS_WORKER_ADAPTER  the worker-adapter path      (default: ../lcars-run/worker-adapter.sh)
 #   LCARS_LAUNCH_SETTLE   liveness poll WINDOW seconds  (default: 4, may be fractional)
+#   LCARS_LAUNCH_ROOT     deploy-checkout root         (default: <repo-parent>/.lcars-launch/<repo>)
 #   LCARS_NOW             ISO startedAt stamp          (default: now, UTC)
 #
 set -uo pipefail
@@ -106,6 +108,63 @@ LCARS_DIR="$GIT_DIR/lcars"
 LCARS_CFG="$LCARS_DIR/config.json"
 MISSIONS_DIR="$LCARS_DIR/missions"
 
+# --- S167: where a DEPLOY CHECKOUT lives — OUTSIDE `.git/` ------------------
+# Deploys used to be cut at `$LCARS_DIR/launch/<key>`, i.e. inside the repo's own
+# `.git/`. Vite's default `server.watch.ignored` contains `**/.git/**`, so the
+# whole deploy matched an ignore pattern and chokidar watched NOTHING: the dev
+# server booted, served pages, and then never saw another change — no HMR, no
+# `import.meta.glob` re-evaluation, no re-read of data files. Every watcher-based
+# tool (webpack, nodemon, Tailwind JIT, `tsc --watch`) is affected identically.
+# MEASURED on DX-Scorecard 2026-07-31, same commit, two locations, one
+# `data/snapshots/*.json` added while the server ran: inside `.git/` the served
+# glob stayed at 1 entry indefinitely; outside it reached 2 within 5 seconds. Only
+# the path differed. That made a deploy MISLEADING rather than merely limited — it
+# looks like a working app, so a fix whose effect depends on reading changed files
+# back reads as STILL BROKEN when it is in fact correct (two correctly-fixed bug
+# missions, lcars-20260801-004 and -006, both presented as failures).
+#
+# So the CHECKOUT moves to a sibling of the repo, keyed by the repo's CANONICAL
+# parent + basename:   <repo-parent>/.lcars-launch/<repo-name>/<mission|@main>
+#   • OUTSIDE `.git/`  — file watchers work.
+#   • OUTSIDE the repo — a full second copy of the repo INSIDE it gets swept up by
+#     the PARENT's own test globs and watchers (vitest's default `include` would
+#     collect the deploy's test files as if they were the captain's), and
+#     `.git/info/exclude` does not stop a glob. Outside is the only safe shape.
+#   • Keyed by the CANONICAL repo path (`pwd -P`), so two repos sharing a basename
+#     under different parents can never fold together, and a symlinked route to one
+#     repo always resolves to that repo's single root.
+# STATE does NOT move. launch.json, launch-discovery.json, launch.log and every
+# mission artifact stay under `.git/lcars` — the board's SSE fingerprint reads
+# their mtimes. Only the disposable checkout relocates. (Likewise out of scope:
+# run.sh's front-half `stage-tree` worktrees stay under `.git/lcars` — those five
+# Stages are read-only and never run the repo.)
+REPO_TOP="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)"
+[ -n "$REPO_TOP" ] || REPO_TOP="$(dirname "$GIT_DIR")"
+REPO_TOP="$(cd "$REPO_TOP" 2>/dev/null && pwd -P)" \
+  || die "cannot resolve this repository's root directory."
+LAUNCH_ROOT="${LCARS_LAUNCH_ROOT:-$(dirname "$REPO_TOP")/.lcars-launch/$(basename "$REPO_TOP")}"
+# Belt and braces: refuse legibly rather than hand back a deploy that silently
+# cannot see its own writes. TWO different causes reach this one guard, and each
+# has a DIFFERENT fix — so each gets its own message. Saying "run from the repo's
+# own checkout" to someone who set $LCARS_LAUNCH_ROOT is a dead end: they already
+# are, and the message never names the thing they'd have to change.
+case "/$LAUNCH_ROOT/" in
+  */.git/*)
+    if [ -n "${LCARS_LAUNCH_ROOT:-}" ]; then
+      # The override is what put it there. Name the variable — it is the one
+      # thing the operator can change.
+      die "can't deploy into a .git directory — \$LCARS_LAUNCH_ROOT is set to \"$LCARS_LAUNCH_ROOT\", which is inside one. File watchers ignore .git, so the app there could never see its own changes. Point LCARS_LAUNCH_ROOT at a directory outside any .git, or unset it to use the default beside the repo."
+    fi
+    # No override: the root was DERIVED from a repo that itself lives under a
+    # `.git/` — e.g. invoked from inside one of run.sh's stage-tree worktrees.
+    # Here, moving to the real checkout genuinely is the fix.
+    die "can't place the deploy outside .git from here — \"$LAUNCH_ROOT\" is itself inside a .git directory. Run \`lcars launch\` from the repo's own checkout."
+    ;;
+esac
+# The PRE-S167 location. A captain mid-round may still have a deploy checked out
+# here; it is migrated away (removed + pruned) on the next launch or stop.
+OLD_LAUNCH_ROOT="$LCARS_DIR/launch"
+
 # --- resolve the TARGET: a mission, or the local main deploy (--main) -------
 # This is the ONE seam --main adds. Everything downstream is target-agnostic: it
 # works off MDIR (state home), WT (disposable worktree), BRANCH, and (below) a
@@ -142,7 +201,8 @@ if [ "$MAIN" -eq 1 ]; then
   MDIR="$LCARS_DIR/main"
   STATE=""                                 # there is no state.json for a deploy
   mkdir -p "$MDIR"
-  WT="$LCARS_DIR/launch/@main"             # reserved path for the main worktree
+  WT="$LAUNCH_ROOT/@main"                  # reserved key for the main deploy
+  OLD_WT="$OLD_LAUNCH_ROOT/@main"          # its pre-S167 in-`.git/` location
 else
   [ -n "$MISSION" ] \
     || die "name a mission to launch — e.g. \`lcars launch <mission-id>\` — or deploy the local main HEAD with \`lcars launch --main\`."
@@ -152,7 +212,8 @@ else
   STATE="$MDIR/state.json"
   [ -d "$MDIR" ] || die "no mission \"$MISSION\" here — check the id, or file it first."
   [ -f "$STATE" ] || die "mission \"$MISSION\" looks incomplete (no state.json) — re-file it before launching."
-  WT="$LCARS_DIR/launch/$MISSION"          # the disposable detached worktree
+  WT="$LAUNCH_ROOT/$MISSION"               # the disposable detached worktree
+  OLD_WT="$OLD_LAUNCH_ROOT/$MISSION"       # its pre-S167 in-`.git/` location
   BRANCH="$(json_str "$STATE" branch)"
 fi
 
@@ -203,10 +264,40 @@ provision_worktree() { # worktree-path → 0 (no-op or success), else the comman
 }
 
 # --- worktree teardown (shared by --stop and a clean re-launch) -----------
-remove_worktree() {
-  "$GIT_BIN" worktree remove --force "$WT" >/dev/null 2>&1 || true
+# Takes an OPTIONAL path so the S167 migration can tear down the legacy in-`.git/`
+# location with the same three-step (remove → prune → rm -rf); with no argument it
+# behaves exactly as it always has, on $WT. A leaked REGISTRATION is not cosmetic:
+# a later `worktree add` at that path trips over it, so the prune is as important
+# as the removal.
+remove_worktree() { # [path] — defaults to $WT
+  local wt="${1:-$WT}"
+  [ -n "$wt" ] || return 0
+  "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || true
   "$GIT_BIN" worktree prune >/dev/null 2>&1 || true
-  rm -rf "$WT" 2>/dev/null || true
+  rm -rf "$wt" 2>/dev/null || true
+  # Now that deploys live OUTSIDE the repo, leave no empty scaffolding behind in
+  # the captain's directory. `rmdir` only succeeds on an EMPTY directory, so a
+  # SIBLING mission's live deploy keeps the shared root alive — this can never
+  # disturb another deploy. Best-effort; never fails the teardown.
+  rmdir "$(dirname "$wt")" 2>/dev/null || true
+  rmdir "$(dirname "$(dirname "$wt")")" 2>/dev/null || true
+}
+
+# --- S167 migration: clear a PRE-S167 deploy from the old in-`.git/` path --
+# A captain mid-round may already have a deploy checked out at
+# `.git/lcars/launch/<key>`. Remove + prune it before the new one is cut, so he
+# never ends up with TWO checkouts of one mission, and never a stale registration.
+# Cooperates with (never duplicates) the existing pid reaping: kill_recorded_launch
+# runs FIRST on both the launch and the --stop path and group-kills whatever the
+# last launch recorded — so by the time this runs, nothing is serving the old
+# directory it tears down. Clean no-op when the old path was never used.
+migrate_legacy_worktree() {
+  [ -n "${OLD_WT:-}" ] || return 0
+  [ "$OLD_WT" != "$WT" ] || return 0
+  if [ -e "$OLD_WT" ] \
+     || "$GIT_BIN" worktree list --porcelain 2>/dev/null | grep -qxF "worktree $OLD_WT"; then
+    remove_worktree "$OLD_WT"
+  fi
 }
 
 # --- group-kill whatever process a PRIOR launch.json recorded -------------
@@ -247,6 +338,9 @@ kill_recorded_launch() {
 if [ "$STOP" -eq 1 ]; then
   kill_recorded_launch          # group-kill the recorded process (TERM→grace→KILL)
   remove_worktree
+  # A captain who STOPS (rather than re-launches) right after upgrading past S167
+  # must not be left with the legacy in-`.git/` checkout and its registration.
+  migrate_legacy_worktree
 
   # Refresh the record to status=stopped, preserving what we can read.
   if [ -f "$LAUNCH_JSON" ]; then
@@ -287,6 +381,11 @@ fi
 # worktree is left intact: a re-launch REUSES it (idempotent `worktree add`).
 kill_recorded_launch
 
+# ...and only THEN clear any pre-S167 deploy still sitting inside `.git/`. Order
+# matters: the process that was serving the old checkout is reaped by the call
+# above, so this tears down a directory nothing is reading.
+migrate_legacy_worktree
+
 # --- resolve the branch tip SHA -------------------------------------------
 [ -n "$BRANCH" ] \
   || die "mission \"$MISSION\" has no branch yet — run the mission before launching its app."
@@ -307,6 +406,19 @@ if [ "$MAIN" -eq 1 ]; then
   SHA_SHORT="$("$GIT_BIN" rev-parse --short "$SHA" 2>/dev/null)"
   [ -n "$SHA_SHORT" ] || SHA_SHORT="$(printf '%s' "$SHA" | cut -c1-12)"
 fi
+
+# --- make sure the out-of-`.git/` deploy area is usable, BEFORE anything is
+# --- written --------------------------------------------------------------
+# Deploys now live beside the repo, so a repo whose PARENT directory is not
+# writable (a read-only mount, a locked-down /Volumes path) cannot host one. Fail
+# FAST and legibly HERE — before the first launch.json write below — so a refusal
+# leaves no half-made record for the board to render and nothing on disk to clean
+# up. Plain English, naming what to try (UX-33), never a raw mkdir error.
+if [ ! -d "$LAUNCH_ROOT" ] && ! mkdir -p "$LAUNCH_ROOT" 2>/dev/null; then
+  die "couldn't create the deploy area at \"$LAUNCH_ROOT\" — LCARS keeps deploys beside the repo, outside .git/, so the app's file watcher works. Make \"$(dirname "$(dirname "$LAUNCH_ROOT")")\" writable, or point \$LCARS_LAUNCH_ROOT at a directory you can write."
+fi
+[ -w "$LAUNCH_ROOT" ] \
+  || die "the deploy area \"$LAUNCH_ROOT\" isn't writable — LCARS keeps deploys beside the repo, outside .git/, so the app's file watcher works. Fix its permissions, or point \$LCARS_LAUNCH_ROOT at a directory you can write."
 
 # --- persist the `launching` record IMMEDIATELY, before the SLOW pre-flight --
 # Write it at the VERY TOP of the launch flow — BEFORE `git worktree add --detach`

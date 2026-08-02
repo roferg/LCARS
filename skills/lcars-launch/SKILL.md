@@ -34,8 +34,8 @@ discover→launch-detached→settle→stop flow changes.
   `main`, else local `master`; otherwise a legible refusal asking you to set
   `mainBranch`.
 - **State + worktree.** Records live in `.git/lcars/main/` (no mission dir), and
-  the disposable DETACHED worktree lands at the reserved path
-  `.git/lcars/launch/@main`. `@main` is reserved — a mission literally named
+  the disposable DETACHED worktree lands at the reserved `@main` key of the deploy
+  root — `<repo-parent>/.lcars-launch/<repo>/@main`. `@main` is reserved — a mission literally named
   `@main` is rejected, and `--main` refuses a mission id (`lcars launch --main m1`
   is an error; run one form or the other).
 - **Record.** The `running` `launch.json` adds `branch` and a short `sha` on the
@@ -51,7 +51,8 @@ directory (a repo can host more than one), pass that as the free-form **hint**.
 1. **Resolve** the mission → its branch (`state.json.branch`) → the branch-tip
    SHA.
 2. **Check out** that SHA into a **disposable DETACHED worktree** at
-   `.git/lcars/launch/<mission>`. *Detached is deliberate:* a normal branch
+   `<repo-parent>/.lcars-launch/<repo>/<mission>` — a **sibling of the repo**, see
+   *Where a deploy lives* below. *Detached is deliberate:* a normal branch
    checkout **holds** the branch ref and would block the Implement replay gate
    from landing fixes on that branch. A detached checkout gives the same code
    **without** holding the ref. Idempotent — an existing worktree is reused.
@@ -96,7 +97,7 @@ Written to `.git/lcars/missions/<mission>/launch.json`:
   "howToStop": "Ctrl-C in the window, or lcars launch <id> --stop",
   "command":   "npm run dev",
   "cwd":       "example-game",
-  "worktree":  "/abs/.git/lcars/launch/<id>",
+  "worktree":  "/abs/<repo-parent>/.lcars-launch/<repo>/<id>",
   "log":       "/abs/.git/lcars/missions/<id>/launch.log",
   "startedAt": "2026-07-05T12:00:00Z",
   "pid":       12345,
@@ -112,6 +113,36 @@ augments it with `pid`, `pgid`, `log`, `startedAt`, `worktree` and flips
 daemon (a later session) reads `status`, `target`, `url`, and `message`, so those
 always persist.
 
+## Where a deploy lives — beside the repo, never inside `.git/`
+
+The disposable checkout is cut at **`<repo-parent>/.lcars-launch/<repo-name>/<key>`**
+(`<key>` = the mission id, or `@main`) — a *sibling* of the repo. Two things make
+that the only workable shape:
+
+- **Not inside `.git/`.** Vite's default `server.watch.ignored` contains
+  `**/.git/**`, so a deploy under `.git/lcars/launch/…` had its file watcher
+  switched off permanently: the dev server booted, served pages, and then never
+  saw another change — no HMR, no `import.meta.glob` re-evaluation, no re-read of
+  data files. Every watcher-based tool (webpack, nodemon, Tailwind JIT,
+  `tsc --watch`) failed identically. Measured on the same commit with one file
+  added while the server ran: inside `.git/` the served glob stayed at **1** entry
+  indefinitely; outside it reached **2** within 5 seconds. That made a deploy
+  *misleading*, not merely limited — a correct fix that reads changed files back
+  read as still broken.
+- **Not inside the repo either.** A full second copy of the repo *within* the repo
+  is picked up by the parent's own test globs and watchers (vitest's default
+  `include` would collect the deploy's test files as if they were the captain's);
+  `.git/info/exclude` does not stop a glob.
+
+The root is keyed by the repo's **canonical** parent + basename, so two repos that
+share a basename under different parents can never fold together. **State does not
+move**: `launch.json`, `launch-discovery.json`, `launch.log` and every mission
+artifact stay under `.git/lcars` — only the checkout relocates. A deploy still
+sitting at the pre-S167 `.git/lcars/launch/<key>` path is **migrated** (removed +
+pruned) on the next launch or `--stop`, so no mission ends up with two checkouts
+or a stale `git worktree list` row. If the repo's parent directory isn't writable,
+`lcars launch` refuses in plain English (`$LCARS_LAUNCH_ROOT` overrides the root).
+
 ## Failure is always plain English
 
 Never a raw stack trace, and never a bare command as the primary line (UX-33):
@@ -123,6 +154,12 @@ Never a raw stack trace, and never a bare command as the primary line (UX-33):
   `"the app exited immediately — <tail of the log>"`.
 - **Unknown mission / no branch yet** → a clean refusal naming the problem (run
   the mission first).
+- **The deploy root would land inside a `.git/`** → refused either way (watchers
+  ignore `.git`), but the message names the cause that actually applies: if
+  `$LCARS_LAUNCH_ROOT` is what put it there it says so and tells you to repoint or
+  unset it; if the root was *derived* from a checkout that itself lives under a
+  `.git/` it tells you to run from the repo's own checkout. Naming the wrong one
+  is a dead end — the operator can only fix the cause they own.
 
 ## Invoking the script
 
@@ -138,7 +175,9 @@ Dependencies are taken via env so tests can stub them: `LCARS_GIT_BIN` (git),
 then `claude`), `LCARS_WORKER_ADAPTER` (the worker-adapter path),
 `LCARS_LAUNCH_SETTLE` (the liveness poll WINDOW in seconds, default 4 — the app
 must stay alive across the whole window to count as running; a dev server that
-dies anywhere in it is caught as failed), `LCARS_NOW` (the `startedAt` stamp).
+dies anywhere in it is caught as failed), `LCARS_LAUNCH_ROOT` (the deploy-checkout
+root; defaults to `<repo-parent>/.lcars-launch/<repo>`), `LCARS_NOW` (the
+`startedAt` stamp).
 
 ## Implementation
 

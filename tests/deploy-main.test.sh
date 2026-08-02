@@ -15,8 +15,9 @@
 #      hint words pass through exactly as the mission form does.
 #   2. target resolution with NO fetch, ever: config mainBranch → local main →
 #      local master → legible die. Proven by a git-argv log with no fetch/pull.
-#   3. state home ($LCARS_DIR/main) + reserved worktree ($LCARS_DIR/launch/@main),
-#      landing DETACHED at the resolved SHA — no missions dir / state.json needed.
+#   3. state home ($LCARS_DIR/main) + the reserved @main worktree key — since S167
+#      cut OUTSIDE `.git/` at <repo-parent>/.lcars-launch/<repo>/@main — landing
+#      DETACHED at the resolved SHA; no missions dir / state.json needed.
 #   4. launch.json additive fields (branch, sha) on the main path ONLY.
 #   5. hint → discovery worker, no-context (empty TOUCHED) prompt preserved.
 #   6. --main --stop: group-kill + prune, idempotent, trek-voice readout.
@@ -165,6 +166,24 @@ EOF
 json_field() { sed -En "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" "$1" | head -1; }
 json_num()   { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
 
+# --- S167: the deploy CHECKOUT lives OUTSIDE `.git/` ---------------------------
+# The reserved @main key moved from `.git/lcars/launch/@main` to a sibling of the
+# repo, because a worktree inside `.git/` matches Vite's default
+# `server.watch.ignored` (`**/.git/**`) and every file watcher is therefore off.
+# The deploy's STATE (.git/lcars/main/launch.json) did NOT move.
+wt_path() { # repo-root key
+  local r; r="$(cd "$1" && pwd -P)"
+  printf '%s/.lcars-launch/%s/%s\n' "$(dirname "$r")" "$(basename "$r")" "$2"
+}
+wt_registered() { # repo-root wt-path
+  (cd "$1" && git worktree list --porcelain 2>/dev/null | grep -qxF "worktree $2")
+}
+wt_detached() { # repo-root wt-path
+  (cd "$1" && git worktree list --porcelain 2>/dev/null \
+    | awk -v p="worktree $2" '$0==p{f=1;next} f&&/^$/{exit} f&&/^detached$/{print "yes";exit}') \
+    | grep -q yes
+}
+
 echo "lcars launch --main — deploy the local main HEAD (session 138)"
 
 # =====================================================================
@@ -244,7 +263,7 @@ W2b="$(claude_stub_path)"; make_ready_worker "$W2b" "$APP2b" "release app" "" ""
 LJ2b="$R2b/.git/lcars/main/launch.json"
 PID2b="$(json_num "$LJ2b" pid)"
 [ -n "$PID2b" ] && LAUNCHED_PIDS+=("$PID2b")
-WT2b="$R2b/.git/lcars/launch/@main"
+WT2b="$(wt_path "$R2b" @main)"
 REL_SHA="$(cd "$R2b" && git rev-parse release)"
 WT2b_SHA="$(cd "$R2b" && git -C "$WT2b" rev-parse HEAD 2>/dev/null)"
 check "2b. config mainBranch=release → launch.json branch is release" \
@@ -286,15 +305,15 @@ MAIN_SHA3="$(cd "$R3" && git rev-parse main)"
 LJ3="$R3/.git/lcars/main/launch.json"
 PID3="$(json_num "$LJ3" pid)"
 [ -n "$PID3" ] && LAUNCHED_PIDS+=("$PID3")
-WT3="$R3/.git/lcars/launch/@main"
+WT3="$(wt_path "$R3" @main)"
 check "3a. the deploy's launch.json lives at .git/lcars/main/launch.json" \
   "[ -f \"$LJ3\" ]"
 check "3b. NO missions dir was created for a pure --main deploy" \
   "[ ! -d \"$R3/.git/lcars/missions\" ]"
-check "3c. a git worktree was created at .git/lcars/launch/@main" \
-  "(cd \"$R3\" && git worktree list --porcelain | grep -Eq 'lcars/launch/@main\$')"
+check "3c. a git worktree was created at the sibling deploy root (outside .git)" \
+  "wt_registered \"$R3\" \"$WT3\" && ! printf '%s' \"$WT3\" | grep -q '/\\.git/'"
 check "3d. that worktree is DETACHED (holds no branch ref)" \
-  "(cd \"$R3\" && git worktree list --porcelain | awk '/lcars\\/launch\\/@main\$/{f=1;next} f&&/^detached\$/{print;exit}' | grep -q detached)"
+  "wt_detached \"$R3\" \"$WT3\""
 WT3_SHA="$(cd "$R3" && git -C "$WT3" rev-parse HEAD 2>/dev/null)"
 check "3e. the worktree is checked out at the local main HEAD sha" \
   "[ \"$WT3_SHA\" = \"$MAIN_SHA3\" ]"
@@ -385,8 +404,8 @@ OUT6stop="$( cd "$R6" && LCARS_WORKER_BIN="$W6" bash "$LAUNCH_SH" --main --stop 
 nap 0.4
 check "6c. --main --stop killed the app pid" "! kill -0 \"$PID6\" 2>/dev/null"
 check "6d. --main --stop set status=stopped" "[ \"\$(json_field \"$LJ6\" status)\" = stopped ]"
-check "6e. --main --stop pruned the @main worktree" \
-  "! (cd \"$R6\" && git worktree list --porcelain | grep -Eq 'lcars/launch/@main\$')"
+check "6e. --main --stop pruned the @main worktree (no dir, no stale row)" \
+  "! wt_registered \"$R6\" \"\$(wt_path \"$R6\" @main)\" && [ ! -d \"\$(wt_path \"$R6\" @main)\" ]"
 check "6f. --main --stop readout is trek-voice, references no mission id" \
   "printf '%s' \"\$OUT6stop\" | grep -qi 'main deploy offline'"
 # 6g. idempotent: stopping again when nothing runs is a clean no-op (exit 0).
@@ -403,7 +422,7 @@ check "6h. a failed main launch → exit non-zero" "[ \"$RC6h\" != 0 ]"
 check "6h2. a failed main launch → status=failed (not a stale running)" \
   "[ \"\$(json_field \"$LJ6h\" status)\" = failed ]"
 check "6h3. a failed main launch pruned its @main worktree" \
-  "! (cd \"$R6h\" && git worktree list --porcelain | grep -Eq 'lcars/launch/@main\$')"
+  "! wt_registered \"$R6h\" \"\$(wt_path \"$R6h\" @main)\" && [ ! -d \"\$(wt_path \"$R6h\" @main)\" ]"
 check "6h4. a failed main launch → plain-English message (not a stack trace)" \
   "printf '%s' \"\$OUT6h\" | grep -qi 'exited immediately'"
 
@@ -441,7 +460,7 @@ NEW_SHA8="$(cd "$R8" && git rev-parse main)"
 ( cd "$R8" && LCARS_WORKER_BIN="$W8" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" --main >/dev/null 2>&1 )
 LJ8="$R8/.git/lcars/main/launch.json"
 PID8b="$(json_num "$LJ8" pid)"; [ -n "$PID8b" ] && LAUNCHED_PIDS+=("$PID8b")
-WT8="$R8/.git/lcars/launch/@main"
+WT8="$(wt_path "$R8" @main)"
 WT8_SHA="$(cd "$R8" && git -C "$WT8" rev-parse HEAD 2>/dev/null)"
 NEW_SHORT8="$(cd "$R8" && git rev-parse --short main)"
 LJ8_SHA="$(json_field "$LJ8" sha)"
@@ -452,6 +471,35 @@ check "8b. a re-deploy after a new main commit checks out the NEW sha" \
 check "8c. the re-deployed launch.json records the NEW short sha" \
   "[ \"$LJ8_SHA\" = \"$NEW_SHORT8\" ]"
 ( cd "$R8" && LCARS_WORKER_BIN="$W8" bash "$LAUNCH_SH" --main --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 9. S167 — the @main deploy moved OUT of `.git/`, and a captain who already had
+#    one at the legacy in-`.git/` path is MIGRATED, not stranded: the old checkout
+#    is removed + pruned before the new one is cut, so he never ends up with two
+#    @main checkouts or a stale `git worktree list` row.
+# =====================================================================
+R9="$(make_main_repo)"
+APP9="$TMPROOT/app9.sh"; make_app "$APP9"
+W9="$(claude_stub_path)"; make_ready_worker "$W9" "$APP9" "main app" "" ""
+OLD9="$(cd "$R9" && pwd -P)/.git/lcars/launch/@main"
+SHA9="$(cd "$R9" && git rev-parse main)"
+mkdir -p "$(dirname "$OLD9")"
+( cd "$R9" && git worktree add --detach "$OLD9" "$SHA9" >/dev/null 2>&1 )
+check "9a. (setup) a legacy in-.git @main worktree really is registered" \
+  "(cd \"$R9\" && git worktree list --porcelain | grep -qxF \"worktree $OLD9\")"
+( cd "$R9" && LCARS_WORKER_BIN="$W9" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" --main >/dev/null 2>&1 )
+LJ9="$R9/.git/lcars/main/launch.json"
+PID9="$(json_num "$LJ9" pid)"; [ -n "$PID9" ] && LAUNCHED_PIDS+=("$PID9")
+WT9="$(wt_path "$R9" @main)"
+check "9b. the legacy in-.git @main worktree was pruned and removed" \
+  "! (cd \"$R9\" && git worktree list --porcelain | grep -qxF \"worktree $OLD9\") && [ ! -d \"$OLD9\" ]"
+check "9c. the new @main deploy is registered outside .git and really checked out" \
+  "wt_registered \"$R9\" \"$WT9\" && [ -f \"$WT9/README.md\" ]"
+check "9d. the deploy's STATE stayed under .git/lcars/main" \
+  "[ -f \"$LJ9\" ] && [ \"\$(json_field \"$LJ9\" status)\" = running ]"
+check "9e. the recorded worktree path carries no .git component" \
+  "! printf '%s' \"\$(json_field \"$LJ9\" worktree)\" | grep -q '/\\.git/'"
+( cd "$R9" && LCARS_WORKER_BIN="$W9" bash "$LAUNCH_SH" --main --stop >/dev/null 2>&1 )
 
 echo "lcars launch --main: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

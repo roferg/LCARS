@@ -33,6 +33,11 @@ ADAPTER="$REPO_ROOT/skills/lcars-run/worker-adapter.sh"
 pass=0
 fail=0
 TMPROOT="$(mktemp -d)"
+# The CANONICAL form of $TMPROOT (macOS mktemp hands back /var/... which is a
+# symlink to /private/var/...). launch.sh canonicalizes every path it builds with
+# `pwd -P`, and `git worktree list` reports realpaths, so every expectation in
+# this suite must be built from the canonical root or exact-string matches fail.
+TMPROOT_P="$(cd "$TMPROOT" && pwd -P)"
 trap 'stop_all; rm -rf "$TMPROOT"' EXIT
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -55,9 +60,9 @@ stop_all() {
 # --- a throwaway git repo with one mission --------------------------------
 # Prints the repo root on stdout. Creates a `lcars/<id>` branch one commit ahead
 # of the trunk, and a mission dir whose state.json points at that branch.
-make_repo() { # id [workerBin]
-  local id="$1" wb="${2:-}"
-  local root; root="$(mktemp -d "$TMPROOT/repo.XXXX")"
+make_repo() { # id [workerBin] [root]
+  local id="$1" wb="${2:-}" root="${3:-}"
+  if [ -n "$root" ]; then mkdir -p "$root"; else root="$(mktemp -d "$TMPROOT/repo.XXXX")"; fi
   (
     cd "$root"
     git init -q
@@ -202,6 +207,33 @@ EOF
 json_field() { sed -En "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\".*/\1/p" "$1" | head -1; }
 json_num()   { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
 
+# --- S167: where a deploy worktree is EXPECTED to live -------------------------
+# Deploys are cut OUTSIDE `.git/` — a sibling of the repo, keyed by the repo's
+# canonical parent + basename:  <repo-parent>/.lcars-launch/<repo-name>/<key>
+# (key = the mission id, or the reserved "@main"). Inside `.git/` a deploy is
+# invisible to every watcher-based dev tool (Vite/chokidar ignores `**/.git/**`
+# by default), so the app can never observe its own writes.
+wt_path() { # repo-root key  → the absolute, canonical expected worktree path
+  local r; r="$(cd "$1" && pwd -P)"
+  printf '%s/.lcars-launch/%s/%s\n' "$(dirname "$r")" "$(basename "$r")" "$2"
+}
+# Is EXACTLY this path registered as a worktree of this repo?
+wt_registered() { # repo-root wt-path
+  (cd "$1" && git worktree list --porcelain 2>/dev/null | grep -qxF "worktree $2")
+}
+# How MANY worktree rows point at this path (proves "no second cut" / no dupes)?
+wt_rows() { # repo-root wt-path
+  (cd "$1" && git worktree list --porcelain 2>/dev/null | grep -cxF "worktree $2")
+}
+# Is that registered worktree DETACHED (holding no branch ref)?
+wt_detached() { # repo-root wt-path
+  (cd "$1" && git worktree list --porcelain 2>/dev/null \
+    | awk -v p="worktree $2" '$0==p{f=1;next} f&&/^$/{exit} f&&/^detached$/{print "yes";exit}') \
+    | grep -q yes
+}
+# Does a path contain a `.git` component anywhere? (the whole point of S167)
+has_dotgit_component() { case "/$1/" in */.git/*) return 0 ;; *) return 1 ;; esac; }
+
 echo "lcars launch — get a mission's app running for Verify (session 108)"
 
 # =====================================================================
@@ -212,17 +244,17 @@ APP1="$TMPROOT/app1.sh"; make_app "$APP1"
 W1="$(claude_stub_path)"; make_ready_worker "$W1" "$APP1" "m1 dev server" "http://localhost:5173" "Ctrl-C in the window, or lcars launch m1 --stop"
 BEFORE_HEAD="$(cd "$R1" && git rev-parse --abbrev-ref HEAD)"
 ( cd "$R1" && LCARS_WORKER_BIN="$W1" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m1 >/dev/null 2>&1 )
-WT1="$R1/.git/lcars/launch/m1"
+WT1="$(wt_path "$R1" m1)"
 PID1="$(json_num "$R1/.git/lcars/missions/m1/launch.json" pid)"
 [ -n "$PID1" ] && LAUNCHED_PIDS+=("$PID1")
 AFTER_HEAD="$(cd "$R1" && git rev-parse --abbrev-ref HEAD)"
 
-# git worktree list reports the REALPATH (macOS /var → /private/var), so match the
-# path by suffix rather than exact string.
-check "1a. a git worktree was created at .git/lcars/launch/m1" \
-  "(cd \"$R1\" && git worktree list --porcelain | grep -Eq 'lcars/launch/m1\$')"
+# git worktree list reports the REALPATH (macOS /var → /private/var); wt_path
+# canonicalizes the same way, so these are exact-string matches.
+check "1a. a git worktree was created at the sibling deploy root (outside .git)" \
+  "wt_registered \"$R1\" \"$WT1\""
 check "1b. that worktree is DETACHED (holds no branch ref)" \
-  "(cd \"$R1\" && git worktree list --porcelain | awk '/lcars\\/launch\\/m1\$/{f=1;next} f&&/^detached\$/{print;exit}' | grep -q detached)"
+  "wt_detached \"$R1\" \"$WT1\""
 check "1c. the captain's own checkout is untouched (still on trunk)" \
   "[ \"$BEFORE_HEAD\" = trunk ] && [ \"$AFTER_HEAD\" = trunk ]"
 check "1d. the worktree checkout is at the mission branch TIP (has app.txt)" \
@@ -294,9 +326,9 @@ nap 0.4
 CHILD4="$(cat "$CHILDPID" 2>/dev/null)"
 check "4a. after launch the app pid is alive" "kill -0 \"$PID4\" 2>/dev/null"
 check "4b. after launch its child (same group) is alive" "[ -n \"$CHILD4\" ] && kill -0 \"$CHILD4\" 2>/dev/null"
-WT4="$R4/.git/lcars/launch/m4"
+WT4="$(wt_path "$R4" m4)"
 check "4c. the launch worktree exists before stop" \
-  "(cd \"$R4\" && git worktree list --porcelain | grep -Eq 'lcars/launch/m4\$')"
+  "wt_registered \"$R4\" \"$WT4\""
 
 # stop
 ( cd "$R4" && LCARS_WORKER_BIN="$W4" bash "$LAUNCH_SH" m4 --stop >/dev/null 2>&1 )
@@ -305,7 +337,7 @@ check "4d. --stop killed the app pid" "! kill -0 \"$PID4\" 2>/dev/null"
 check "4e. --stop killed the CHILD too (whole process group reaped)" "! kill -0 \"$CHILD4\" 2>/dev/null"
 check "4f. --stop set status=stopped" "[ \"\$(json_field \"$LJ4\" status)\" = stopped ]"
 check "4g. --stop pruned the launch worktree" \
-  "! (cd \"$R4\" && git worktree list --porcelain | grep -Eq 'lcars/launch/m4\$')"
+  "! wt_registered \"$R4\" \"$WT4\""
 
 # re-launch works again
 rm -f "$CHILDPID"
@@ -317,7 +349,7 @@ PID4b="$(json_num "$LJ4" pid)"
 check "4h. a subsequent launch after stop works (status=running again)" \
   "[ \"\$(json_field \"$LJ4\" status)\" = running ] && kill -0 \"$PID4b\" 2>/dev/null"
 check "4i. the worktree is back after re-launch" \
-  "(cd \"$R4\" && git worktree list --porcelain | grep -Eq 'lcars/launch/m4\$')"
+  "wt_registered \"$R4\" \"$WT4\""
 ( cd "$R4" && LCARS_WORKER_BIN="$W4b" bash "$LAUNCH_SH" m4 --stop >/dev/null 2>&1 )
 
 # =====================================================================
@@ -396,7 +428,7 @@ check "7c. mid-window death → no live pid recorded" \
 check "7d. mid-window death → a plain-English message (not a stack trace)" \
   "printf '%s' \"\$OUT7\" | grep -qiE 'exited|startup'"
 check "7e. the failed launch pruned its disposable worktree (no stray dir)" \
-  "! (cd \"$R7\" && git worktree list --porcelain | grep -Eq 'lcars/launch/m7\$')"
+  "! wt_registered \"$R7\" \"\$(wt_path \"$R7\" m7)\" && [ ! -d \"\$(wt_path \"$R7\" m7)\" ]"
 
 # 7f/g. A survivor (alive past the window) still passes cleanly, with a live pid,
 #       in bounded time — the poll loop must not delay or fail a healthy app.
@@ -431,7 +463,7 @@ APP8="$TMPROOT/app8.sh"; make_app "$APP8"
 W8="$(claude_stub_path)"; make_ready_worker "$W8" "$APP8" "m8 dev server" "" "lcars launch m8 --stop"
 ( cd "$R8" && LCARS_WORKTREE_SETUP_CMD='touch .provisioned' \
     LCARS_WORKER_BIN="$W8" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m8 >/dev/null 2>&1 )
-WT8="$R8/.git/lcars/launch/m8"
+WT8="$(wt_path "$R8" m8)"
 PID8="$(json_num "$R8/.git/lcars/missions/m8/launch.json" pid)"
 [ -n "$PID8" ] && LAUNCHED_PIDS+=("$PID8")
 check "8a. worktreeSetupCommand ran with the worktree as CWD (sentinel inside wt)" \
@@ -639,6 +671,265 @@ check "15d. the second pid is alive + launch.json status=running" \
 ( cd "$R15" && LCARS_WORKER_BIN="$W15" bash "$LAUNCH_SH" m15 --stop >/dev/null 2>&1 )
 nap 0.4
 check "15e. after --stop the second pid is dead too" "! kill -0 \"$PID15b\" 2>/dev/null"
+
+# =====================================================================
+# 16. S167 — THE DEPLOY WORKTREE LIVES OUTSIDE `.git/`.
+#     Vite's default `server.watch.ignored` contains `**/.git/**`, so a deploy cut
+#     at `.git/lcars/launch/<id>` has its file watcher switched off permanently:
+#     the server boots, serves, and then never sees another change (no HMR, no
+#     `import.meta.glob` re-evaluation). MEASURED on DX-Scorecard 2026-07-31 —
+#     same commit, two locations, one file added while the server ran: inside
+#     `.git/` the glob stayed at 1 entry indefinitely, outside it reached 2 within
+#     5s. Every watcher-based tool (webpack, nodemon, Tailwind JIT, tsc --watch)
+#     fails identically. A deploy that cannot see its own writes is not merely
+#     limited — it makes a CORRECT fix read as broken.
+#     These cases pin the PATH; the tester proves the watcher for real.
+# =====================================================================
+R16="$(make_repo m16)"
+APP16="$TMPROOT/app16.sh"; make_app "$APP16"
+W16="$(claude_stub_path)"; make_ready_worker "$W16" "$APP16" "m16 dev server" "" "lcars launch m16 --stop"
+( cd "$R16" && LCARS_WORKER_BIN="$W16" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m16 >/dev/null 2>&1 )
+LJ16="$R16/.git/lcars/missions/m16/launch.json"
+PID16="$(json_num "$LJ16" pid)"
+[ -n "$PID16" ] && LAUNCHED_PIDS+=("$PID16")
+WT16="$(wt_path "$R16" m16)"
+WT16_REC="$(json_field "$LJ16" worktree)"
+
+check "16a. the mission deploy's worktree path contains NO .git component" \
+  "! has_dotgit_component \"$WT16_REC\""
+check "16b. it is registered at <repo-parent>/.lcars-launch/<repo>/<mission>" \
+  "wt_registered \"$R16\" \"$WT16\""
+check "16c. launch.json records that same out-of-.git worktree path" \
+  "[ \"$WT16_REC\" = \"$WT16\" ]"
+check "16d. the out-of-.git checkout is a REAL checkout at the branch tip" \
+  "[ -f \"$WT16/app.txt\" ]"
+check "16e. it is still DETACHED (does not hold the mission branch ref)" \
+  "wt_detached \"$R16\" \"$WT16\""
+# STATE did NOT move with the checkout — the board's SSE fingerprint reads these.
+check "16f. launch.json still lives under .git/lcars (state did not move)" \
+  "[ -f \"$R16/.git/lcars/missions/m16/launch.json\" ]"
+check "16g. launch-discovery.json still lives under .git/lcars" \
+  "[ -f \"$R16/.git/lcars/missions/m16/launch-discovery.json\" ]"
+check "16h. the deploy root is NOT nested inside the repo (vitest/globs can't see it)" \
+  "case \"$WT16\" in \"$(cd "$R16" && pwd -P)\"/*) false ;; *) true ;; esac"
+
+# --stop removes the directory AND leaves no stale registration row.
+( cd "$R16" && LCARS_WORKER_BIN="$W16" bash "$LAUNCH_SH" m16 --stop >/dev/null 2>&1 )
+check "16i. --stop removed the out-of-.git worktree directory" "[ ! -d \"$WT16\" ]"
+check "16j. --stop left NO stale git worktree registration" \
+  "! wt_registered \"$R16\" \"$WT16\" && ! (cd \"$R16\" && git worktree list --porcelain | grep -q 'm16\$')"
+
+# =====================================================================
+# 17. The --main deploy moves too, to the reserved @main key under the same root.
+# =====================================================================
+R17="$(make_repo m17)"
+( cd "$R17" && git checkout -qb main trunk )       # give it a real main branch
+APP17="$TMPROOT/app17.sh"; make_app "$APP17"
+W17="$(claude_stub_path)"; make_ready_worker "$W17" "$APP17" "main deploy" "" "lcars launch --main --stop"
+( cd "$R17" && LCARS_WORKER_BIN="$W17" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" --main >/dev/null 2>&1 )
+LJ17="$R17/.git/lcars/main/launch.json"
+PID17="$(json_num "$LJ17" pid)"
+[ -n "$PID17" ] && LAUNCHED_PIDS+=("$PID17")
+WT17="$(wt_path "$R17" @main)"
+check "17a. the --main deploy's worktree path contains NO .git component" \
+  "! has_dotgit_component \"\$(json_field \"$LJ17\" worktree)\""
+check "17b. the --main deploy sits at the reserved @main key outside .git" \
+  "wt_registered \"$R17\" \"$WT17\""
+check "17c. the --main deploy's STATE still lives at .git/lcars/main/launch.json" \
+  "[ -f \"$LJ17\" ]"
+( cd "$R17" && LCARS_WORKER_BIN="$W17" bash "$LAUNCH_SH" --main --stop >/dev/null 2>&1 )
+check "17d. --main --stop removed the out-of-.git @main directory + registration" \
+  "[ ! -d \"$WT17\" ] && ! wt_registered \"$R17\" \"$WT17\""
+
+# =====================================================================
+# 18. COLLISION SAFETY: two repos with the SAME basename under DIFFERENT parents
+#     must not share a launch root. The key is the repo's CANONICAL parent dir, so
+#     the two roots are structurally distinct and neither deploy can see (or tear
+#     down) the other's.
+# =====================================================================
+mkdir -p "$TMPROOT/pa" "$TMPROOT/pb"
+R18a="$(make_repo m18 "" "$TMPROOT/pa/samename")"
+R18b="$(make_repo m18 "" "$TMPROOT/pb/samename")"
+APP18="$TMPROOT/app18.sh"; make_app "$APP18"
+W18="$(claude_stub_path)"; make_ready_worker "$W18" "$APP18" "twin dev server" "" "stop"
+( cd "$R18a" && LCARS_WORKER_BIN="$W18" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m18 >/dev/null 2>&1 )
+( cd "$R18b" && LCARS_WORKER_BIN="$W18" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m18 >/dev/null 2>&1 )
+PID18a="$(json_num "$R18a/.git/lcars/missions/m18/launch.json" pid)"; [ -n "$PID18a" ] && LAUNCHED_PIDS+=("$PID18a")
+PID18b="$(json_num "$R18b/.git/lcars/missions/m18/launch.json" pid)"; [ -n "$PID18b" ] && LAUNCHED_PIDS+=("$PID18b")
+WT18a="$(wt_path "$R18a" m18)"; WT18b="$(wt_path "$R18b" m18)"
+check "18a. same-basename repos in different parents get DIFFERENT launch roots" \
+  "[ \"$WT18a\" != \"$WT18b\" ]"
+check "18b. both twins have their own live worktree" \
+  "wt_registered \"$R18a\" \"$WT18a\" && wt_registered \"$R18b\" \"$WT18b\""
+check "18c. neither twin's launch root is a parent of the other's" \
+  "case \"$WT18b\" in \"$(dirname "$WT18a")\"/*) false ;; *) true ;; esac"
+# Stopping one twin must not disturb the other.
+( cd "$R18a" && LCARS_WORKER_BIN="$W18" bash "$LAUNCH_SH" m18 --stop >/dev/null 2>&1 )
+nap 0.4
+check "18d. stopping twin A leaves twin B's worktree + pid untouched" \
+  "[ ! -d \"$WT18a\" ] && [ -d \"$WT18b\" ] && kill -0 \"$PID18b\" 2>/dev/null"
+( cd "$R18b" && LCARS_WORKER_BIN="$W18" bash "$LAUNCH_SH" m18 --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 19. IDEMPOTENT RE-LAUNCH: a second launch REUSES the worktree at the new path —
+#     it does not cut a second one. Proof: a sentinel dropped into the checkout
+#     survives (a fresh cut would have wiped it) and exactly ONE registration row
+#     points at the path.
+# =====================================================================
+R19="$(make_repo m19)"
+APP19="$TMPROOT/app19.sh"; make_app "$APP19"
+W19="$(claude_stub_path)"; make_ready_worker "$W19" "$APP19" "m19 dev server" "" "stop"
+( cd "$R19" && LCARS_WORKER_BIN="$W19" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m19 >/dev/null 2>&1 )
+WT19="$(wt_path "$R19" m19)"
+PID19a="$(json_num "$R19/.git/lcars/missions/m19/launch.json" pid)"; [ -n "$PID19a" ] && LAUNCHED_PIDS+=("$PID19a")
+printf 'reuse me\n' > "$WT19/.reuse-sentinel"
+( cd "$R19" && LCARS_WORKER_BIN="$W19" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m19 >/dev/null 2>&1 )
+PID19b="$(json_num "$R19/.git/lcars/missions/m19/launch.json" pid)"; [ -n "$PID19b" ] && LAUNCHED_PIDS+=("$PID19b")
+check "19a. re-launch REUSED the existing worktree (sentinel survived)" \
+  "[ -f \"$WT19/.reuse-sentinel\" ]"
+check "19b. exactly ONE worktree row points at the deploy path (no second cut)" \
+  "[ \"\$(wt_rows \"$R19\" \"$WT19\")\" = 1 ]"
+( cd "$R19" && LCARS_WORKER_BIN="$W19" bash "$LAUNCH_SH" m19 --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 20. MIGRATION, not stranding. A captain mid-round may already have a deploy at
+#     the OLD in-`.git` path. The next launch must REMOVE + PRUNE it before cutting
+#     the new one — never leave two checkouts of one mission, and never leave a
+#     live server pointing at a directory that has been torn down (so the migration
+#     must cooperate with the existing re-launch pid kill, which runs first).
+# =====================================================================
+R20="$(make_repo m20)"
+APP20="$TMPROOT/app20.sh"; make_app "$APP20"
+W20="$(claude_stub_path)"; make_ready_worker "$W20" "$APP20" "m20 dev server" "" "stop"
+OLD20="$(cd "$R20" && pwd -P)/.git/lcars/launch/m20"
+SHA20="$(cd "$R20" && git rev-parse "lcars/m20")"
+mkdir -p "$(dirname "$OLD20")"
+( cd "$R20" && git worktree add --detach "$OLD20" "$SHA20" >/dev/null 2>&1 )
+# A LIVE server pointing at the old checkout, recorded exactly as a real launch
+# would have recorded it (pid + pgid in the mission's launch.json).
+perl -e 'select(undef,undef,undef,30)' & OLDPID20=$!
+LAUNCHED_PIDS+=("$OLDPID20")
+mkdir -p "$R20/.git/lcars/missions/m20"
+printf '{\n  "status": "running",\n  "worktree": "%s",\n  "pid": %s,\n  "pgid": %s\n}\n' \
+  "$OLD20" "$OLDPID20" "$OLDPID20" > "$R20/.git/lcars/missions/m20/launch.json"
+check "20a. (setup) the legacy in-.git worktree really is registered" \
+  "(cd \"$R20\" && git worktree list --porcelain | grep -qxF \"worktree $OLD20\")"
+( cd "$R20" && LCARS_WORKER_BIN="$W20" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m20 >/dev/null 2>&1 )
+WT20="$(wt_path "$R20" m20)"
+PID20="$(json_num "$R20/.git/lcars/missions/m20/launch.json" pid)"; [ -n "$PID20" ] && LAUNCHED_PIDS+=("$PID20")
+nap 0.4
+check "20b. the legacy in-.git worktree was PRUNED from git worktree list" \
+  "! (cd \"$R20\" && git worktree list --porcelain | grep -qxF \"worktree $OLD20\")"
+check "20c. the legacy in-.git directory was REMOVED (no second checkout)" \
+  "[ ! -d \"$OLD20\" ]"
+check "20d. the new out-of-.git worktree was cut and is registered" \
+  "wt_registered \"$R20\" \"$WT20\" && [ -f \"$WT20/app.txt\" ]"
+check "20e. the server that pointed at the torn-down old path was reaped" \
+  "! kill -0 \"$OLDPID20\" 2>/dev/null"
+check "20f. the re-launched app is alive at the NEW path" \
+  "kill -0 \"$PID20\" 2>/dev/null"
+( cd "$R20" && LCARS_WORKER_BIN="$W20" bash "$LAUNCH_SH" m20 --stop >/dev/null 2>&1 )
+
+# 20g. --stop also clears a legacy in-.git worktree, so a captain who stops
+#      (rather than re-launches) after upgrading is not left with a stale row.
+R20b="$(make_repo m20b)"
+OLD20b="$(cd "$R20b" && pwd -P)/.git/lcars/launch/m20b"
+SHA20b="$(cd "$R20b" && git rev-parse "lcars/m20b")"
+mkdir -p "$(dirname "$OLD20b")"
+( cd "$R20b" && git worktree add --detach "$OLD20b" "$SHA20b" >/dev/null 2>&1 )
+( cd "$R20b" && LCARS_WORKER_BIN="$W20" bash "$LAUNCH_SH" m20b --stop >/dev/null 2>&1 )
+check "20g. --stop prunes a legacy in-.git worktree too (no stale row, no dir)" \
+  "! (cd \"$R20b\" && git worktree list --porcelain | grep -qxF \"worktree $OLD20b\") && [ ! -d \"$OLD20b\" ]"
+
+# =====================================================================
+# 21. TEARDOWN ISOLATION within ONE repo: two missions deployed side by side under
+#     the same launch root; stopping one must not disturb the other's checkout,
+#     registration or process.
+# =====================================================================
+R21="$(make_repo m21a)"
+# a second mission in the SAME repo
+( cd "$R21" && git checkout -qb "lcars/m21b" trunk && printf 'b\n' > b.txt \
+    && git add . && git commit -qm "m21b work" && git checkout -q trunk )
+M21B="$R21/.git/lcars/missions/m21b"; mkdir -p "$M21B"
+printf '{\n  "id": "m21b",\n  "stage": "verify",\n  "branch": "lcars/m21b",\n  "base": "trunk"\n}\n' > "$M21B/state.json"
+APP21="$TMPROOT/app21.sh"; make_app "$APP21"
+W21="$(claude_stub_path)"; make_ready_worker "$W21" "$APP21" "sibling dev server" "" "stop"
+( cd "$R21" && LCARS_WORKER_BIN="$W21" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m21a >/dev/null 2>&1 )
+( cd "$R21" && LCARS_WORKER_BIN="$W21" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m21b >/dev/null 2>&1 )
+WT21A="$(wt_path "$R21" m21a)"; WT21B="$(wt_path "$R21" m21b)"
+PID21A="$(json_num "$R21/.git/lcars/missions/m21a/launch.json" pid)"; [ -n "$PID21A" ] && LAUNCHED_PIDS+=("$PID21A")
+PID21B="$(json_num "$R21/.git/lcars/missions/m21b/launch.json" pid)"; [ -n "$PID21B" ] && LAUNCHED_PIDS+=("$PID21B")
+check "21a. two missions of one repo get sibling deploys under the same root" \
+  "wt_registered \"$R21\" \"$WT21A\" && wt_registered \"$R21\" \"$WT21B\" && [ \"\$(dirname \"$WT21A\")\" = \"\$(dirname \"$WT21B\")\" ]"
+( cd "$R21" && LCARS_WORKER_BIN="$W21" bash "$LAUNCH_SH" m21a --stop >/dev/null 2>&1 )
+nap 0.4
+check "21b. stopping m21a removed ONLY its own worktree" \
+  "[ ! -d \"$WT21A\" ] && ! wt_registered \"$R21\" \"$WT21A\""
+check "21c. m21b's worktree, registration and process are untouched" \
+  "[ -d \"$WT21B\" ] && wt_registered \"$R21\" \"$WT21B\" && kill -0 \"$PID21B\" 2>/dev/null"
+( cd "$R21" && LCARS_WORKER_BIN="$W21" bash "$LAUNCH_SH" m21b --stop >/dev/null 2>&1 )
+check "21d. after both stops the shared launch root is left clean (no orphan dirs)" \
+  "[ ! -d \"$WT21A\" ] && [ ! -d \"$WT21B\" ]"
+
+# =====================================================================
+# 22. UNWRITABLE PARENT → a plain-English refusal naming the deploy area, never a
+#     crash or a half-made worktree. (UX-33: name what went wrong + what to try.)
+# =====================================================================
+R22="$(make_repo m22 "" "$TMPROOT/ro22/repo")"
+APP22="$TMPROOT/app22.sh"; make_app "$APP22"
+W22="$(claude_stub_path)"; make_ready_worker "$W22" "$APP22" "m22 dev server" "" "stop"
+chmod a-w "$TMPROOT/ro22"
+OUT22="$( cd "$R22" && LCARS_WORKER_BIN="$W22" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m22 2>&1 )"; RC22=$?
+chmod u+w "$TMPROOT/ro22"
+check "22a. an unwritable repo parent → exit non-zero" "[ \"$RC22\" != 0 ]"
+check "22b. the refusal is plain English naming the deploy area (no stack trace)" \
+  "printf '%s' \"\$OUT22\" | grep -qi 'deploy' && printf '%s' \"\$OUT22\" | grep -qiE 'writ|permission'"
+check "22c. nothing was launched (no running record)" \
+  "[ \"\$(json_field \"$R22/.git/lcars/missions/m22/launch.json\" status)\" != running ]"
+
+# =====================================================================
+# 23. THE IN-`.git/` REFUSAL NAMES THE CAUSE THAT ACTUALLY APPLIES.
+#     Two different causes reach the same guard, and each has a DIFFERENT fix:
+#       (a) $LCARS_LAUNCH_ROOT was set and is what put the root under `.git/` —
+#           the operator's fix is to change or unset that variable. Telling them
+#           to "run from the repo's own checkout" is a dead end: they already are.
+#       (b) the root was DERIVED (no override) from a repo that itself lives under
+#           a `.git/` — e.g. invoked inside one of run.sh's stage-tree worktrees.
+#           THEN "run from the repo's own checkout" is the right advice.
+#     The refusal itself is correct in both cases and must stay: a deploy under
+#     `.git/` is invisible to every watcher-based dev tool.
+# =====================================================================
+# 23a–c. CAUSE (a): the override put it there.
+R23="$(make_repo m23)"
+W23="$(claude_stub_path)"; make_ready_worker "$W23" "/bin/true" "m23 dev server" "" "stop"
+BAD_ROOT23="$R23/.git/lcars/launch-red"
+OUT23="$( cd "$R23" && LCARS_LAUNCH_ROOT="$BAD_ROOT23" LCARS_WORKER_BIN="$W23" LCARS_LAUNCH_SETTLE=0.6 \
+  bash "$LAUNCH_SH" m23 the app 2>&1 )"; RC23=$?
+check "23a. an override pointing under .git/ is still REFUSED (non-zero)" "[ \"$RC23\" != 0 ]"
+check "23b. the refusal NAMES \$LCARS_LAUNCH_ROOT as the cause and how to fix it" \
+  "printf '%s' \"\$OUT23\" | grep -q 'LCARS_LAUNCH_ROOT' \
+   && printf '%s' \"\$OUT23\" | grep -qiE 'unset|point it|change it'"
+check "23c. it does NOT hand back the dead-end 'run from the repo's own checkout'" \
+  "! printf '%s' \"\$OUT23\" | grep -qi \"repo's own checkout\""
+check "23d. nothing was deployed under .git/ (the guard held)" \
+  "[ ! -d \"$BAD_ROOT23\" ]"
+
+# 23e–g. CAUSE (b): no override — the repo itself sits under a `.git/`, so the
+# DERIVED root does too. Staged the way it actually happens: a checkout living
+# inside another tree's `.git/` (run.sh cuts its stage-trees at `.git/lcars/...`).
+R23B="$(make_repo m23b "" "$TMPROOT/host23/.git/lcars/stage-tree/repo")"
+W23B="$(claude_stub_path)"; make_ready_worker "$W23B" "/bin/true" "m23b dev server" "" "stop"
+OUT23B="$( cd "$R23B" && LCARS_WORKER_BIN="$W23B" LCARS_LAUNCH_SETTLE=0.6 \
+  bash "$LAUNCH_SH" m23b 2>&1 )"; RC23B=$?
+check "23e. a DERIVED root under .git/ is refused (non-zero)" "[ \"$RC23B\" != 0 ]"
+check "23f. that refusal keeps the checkout advice, which IS the fix here" \
+  "printf '%s' \"\$OUT23B\" | grep -qi \"repo's own checkout\""
+check "23g. and it does NOT blame an env var the operator never set" \
+  "! printf '%s' \"\$OUT23B\" | grep -q 'LCARS_LAUNCH_ROOT'"
+# Both messages stay plain English — they say what is wrong, not how it failed.
+check "23h. both refusals are plain English (no stack trace / shell noise)" \
+  "! printf '%s' \"\$OUT23\" | grep -qE 'line [0-9]+:|Traceback|command not found' \
+   && ! printf '%s' \"\$OUT23B\" | grep -qE 'line [0-9]+:|Traceback|command not found'"
 
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
