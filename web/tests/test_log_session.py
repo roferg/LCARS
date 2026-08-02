@@ -88,7 +88,7 @@ exit 0
 
 
 def _log_sh_stub(record_path, root, est_path, slow_flag, fail_flag,
-                 seq_file=None, refuse_flag=None):
+                 seq_file=None, refuse_flag=None, pause_flag=None):
     """A log.sh stand-in that behaves like the real one where it matters.
 
     * records the argv it saw (so the dispatch can be asserted byte-for-byte);
@@ -112,6 +112,12 @@ def _log_sh_stub(record_path, root, est_path, slow_flag, fail_flag,
       that filed nothing as `filed` (D1);
     * sleeps while `slow_flag` exists (so a test can prove the file POST returns
       BEFORE the estimator finishes);
+    * S163 fix round 4 (D4): sleeps AFTER planting each bug while `pause_flag`
+      exists, so a filing can be observed HALF DONE — one child on disk, one
+      still owed. `slow_flag` sleeps before planting anything, which can only
+      produce "nothing landed yet"; the defect D4 is about is a batch caught
+      mid-flight with SOME of it on disk. Absent flag ⇒ no sleep at all, so every
+      pre-round-4 drive runs byte-identically;
     * exits non-zero while `fail_flag` exists (the failed-file path).
     """
     fd, path = tempfile.mkstemp(suffix=".sh")
@@ -159,6 +165,8 @@ while [ $i -lt ${#args[@]} ]; do
  "branch":"lcars/m-bug$n","base":"main"}
 EOF
     cp "ESTPATH" "$d/estimate.json"
+    echo "$n" > "SEQFILE"
+    if [ -f "PAUSEFLAG" ]; then sleep "$(cat PAUSEFLAG)"; fi
     continue
   fi
   i=$((i+1))
@@ -169,6 +177,7 @@ exit 0
         "ESTPATH", est_path).replace("SLOWFLAG", slow_flag).replace(
         "FAILFLAG", fail_flag).replace(
         "SEQFILE", seq_file or (record_path + ".seq")).replace(
+        "PAUSEFLAG", pause_flag or (record_path + ".pause")).replace(
         "REFUSEFLAG", refuse_flag or (record_path + ".refuse"))
     with open(path, "w") as fh:
         fh.write(script)
@@ -200,6 +209,9 @@ class LogSessionBase(unittest.TestCase):
         # + the stub's persistent child-id counter, so a RETRY invocation cannot
         # collide with the children the first pass planted.
         self.refuse_flag = os.path.join(self.tmp, "REFUSE")
+        # S163 fix round 4 (D4): the per-bug stagger, so a filing can be caught
+        # HALF done. Off unless a test writes it.
+        self.pause_flag = os.path.join(self.tmp, "PAUSE")
         self.seq_file = os.path.join(self.tmp, "SEQ")
         self.est_path = os.path.join(self.tmp, "estimate.json")
         with open(self.est_path, "w") as fh:
@@ -212,7 +224,8 @@ class LogSessionBase(unittest.TestCase):
             "log": _log_sh_stub(self.records["log"], self.tmp, self.est_path,
                                 self.slow_flag, self.fail_flag,
                                 seq_file=self.seq_file,
-                                refuse_flag=self.refuse_flag),
+                                refuse_flag=self.refuse_flag,
+                                pause_flag=self.pause_flag),
             "resolve": _plain_stub(self.records["resolve"]),
             "file": _plain_stub(self.records["file"]),
         }
@@ -331,6 +344,15 @@ class LogSessionBase(unittest.TestCase):
         if os.path.exists(self.refuse_flag):
             os.unlink(self.refuse_flag)
 
+    def _pause(self, seconds):
+        """Make the stub sleep `seconds` AFTER each bug it plants (D4)."""
+        with open(self.pause_flag, "w") as fh:
+            fh.write(str(seconds))
+
+    def _unpause(self):
+        if os.path.exists(self.pause_flag):
+            os.unlink(self.pause_flag)
+
     def _post_err(self, path, obj=None):
         """POST expecting a refusal; returns (code, error message)."""
         try:
@@ -367,8 +389,14 @@ class PreviewCreatesSessionTest(LogSessionBase):
         self.assertEqual(status, 200)
         st = resp["state"]
         self.assertNotIn("sessionId", st)
+        # S163 fix round 3 adds `waiting`/`waitingCount` here — ADDITIVELY, and
+        # for a reason this payload owns: it is also the daemon-restart fallback
+        # the "Fix Filed Bugs" review is rebuilt from, and that review must be
+        # the list `Go ▸` will drive. `children`/`count` keep their S68 meaning
+        # byte-for-byte, which is the invariant this test is really about.
         self.assertEqual(sorted(st.keys()),
-                         ["authored", "children", "count", "parent"])
+                         ["authored", "children", "count", "parent",
+                          "waiting", "waitingCount"])
         self.assertEqual(self.actions._log_sessions, {})
 
     def test_second_preview_replaces_the_parents_session(self):
@@ -599,8 +627,13 @@ class LogOverlayTest(LogSessionBase):
         # D2: two counts, two self-describing names — `bugCount` is how many bugs
         # this batch is, `filedCount` how many of them are on disk (0 until the
         # filing lands). The old ambiguous `count` is gone.
+        # S163 fix round 3: `waitingCount` — bugs waiting to be fixed on the
+        # MISSION, across every report — rides the stamp too. It is a fourth,
+        # differently-named fact, deliberately NOT a redefinition of the two
+        # batch counts this test exists to pin.
         self.assertEqual(stamp, {"sessionId": sid, "status": "previewed",
-                                 "bugCount": 2, "filedCount": 0})
+                                 "bugCount": 2, "filedCount": 0,
+                                 "waitingCount": 0})
         # only the parent is stamped.
         others = [c for c in self._cards(board) if c["id"] != "m-001"]
         self.assertTrue(all("logFiling" not in c for c in others))
@@ -711,12 +744,15 @@ class StampCarriesTheFailureReasonTest(LogSessionBase):
     def test_a_healthy_stamp_is_byte_identical_to_its_s161_self(self):
         """No error, no key: the additive-payload invariant, inside the stamp."""
         sid = self._preview(BUG_A)["sessionId"]
-        self.assertEqual(sorted(self._stamp().keys()),
-                         ["bugCount", "filedCount", "sessionId", "status"])
+        # S163 fix round 3 adds `waitingCount` unconditionally; what this test
+        # pins is that `error` appears ONLY when there is one, which is what
+        # "byte-identical to its S161 self" was always about.
+        healthy = ["bugCount", "filedCount", "sessionId", "status",
+                   "waitingCount"]
+        self.assertEqual(sorted(self._stamp().keys()), healthy)
         self._post("/api/mission/m-001/log/file", {"sessionId": sid})
         self._await_status("/api/mission/m-001/log/session", "filed")
-        self.assertEqual(sorted(self._stamp().keys()),
-                         ["bugCount", "filedCount", "sessionId", "status"])
+        self.assertEqual(sorted(self._stamp().keys()), healthy)
 
     def test_the_detail_stamp_says_the_same_thing(self):
         sid = self._preview(BUG_MALFORMED)["sessionId"]
@@ -1243,22 +1279,29 @@ class LogCountHonestyTest(LogSessionBase):
         self.assertNotIn("count", stamp,
                          "`count` meant two different things — it is gone")
         self.assertEqual(sorted(stamp.keys()),
-                         ["bugCount", "filedCount", "sessionId", "status"])
+                         ["bugCount", "filedCount", "sessionId", "status",
+                          "waitingCount"])
 
     def test_both_surfaces_agree_from_preview_through_filed(self):
         sid = self._preview(BUG_A, BUG_B)["sessionId"]
         stamp = self._stamp()
         sess = self._session()
         self.assertEqual(stamp, {"sessionId": sid, "status": "previewed",
-                                 "bugCount": 2, "filedCount": 0})
+                                 "bugCount": 2, "filedCount": 0,
+                                 "waitingCount": 0})
         self.assertEqual((sess["bugCount"], sess["filedCount"]), (2, 0))
         self._post("/api/mission/m-001/log/file", {"sessionId": sid})
         self._await_status("/api/mission/m-001/log/session", "filed")
         stamp = self._stamp()
         sess = self._session()
+        # S163 fix round 3: once the two bugs are on disk they are two bugs
+        # WAITING to be fixed, and the card and the console say so together —
+        # which is the agreement this test is named for, one fact wider.
         self.assertEqual(stamp, {"sessionId": sid, "status": "filed",
-                                 "bugCount": 2, "filedCount": 2})
+                                 "bugCount": 2, "filedCount": 2,
+                                 "waitingCount": 2})
         self.assertEqual((sess["bugCount"], sess["filedCount"]), (2, 2))
+        self.assertEqual(sess["waitingCount"], 2)
 
     def test_a_batch_that_filed_nothing_says_zero_on_the_card_too(self):
         """The tester's exact contradiction: card `count: 2` vs 0 bugs on disk."""
@@ -1286,7 +1329,7 @@ class LogCountHonestyTest(LogSessionBase):
         # of the console (see StampCarriesTheFailureReasonTest for its contract).
         self.assertEqual(sorted(stamp.keys()),
                          ["bugCount", "error", "filedCount", "sessionId",
-                          "status"])
+                          "status", "waitingCount"])
 
     def test_the_session_route_carries_no_count_key_at_any_status(self):
         """S161 fix round 2, N2 — round 1 kept `count` on the session payload as a

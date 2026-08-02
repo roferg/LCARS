@@ -34,7 +34,7 @@ from tests import _fixtures as fx  # noqa: E402
 from lcars_serve.local_adapter import LocalAdapter  # noqa: E402
 from lcars_serve.github_adapter import GitHubAdapter  # noqa: E402
 from lcars_serve.server import make_server  # noqa: E402
-from lcars_serve.actions import Actions  # noqa: E402
+from lcars_serve.actions import Actions, ActionError  # noqa: E402
 
 
 def _record_stub(record_path):
@@ -941,27 +941,37 @@ class LogTest(WriteEndpointBase):
                          {"scope": "reasoning", "tier": "opus"})
 
     def test_log_run_unparseable_override_surfaces_error_no_silent_drop(self):
-        """Unparseable input + worker returns 'null' ⇒ the response carries a
-        normalization ERROR and the child's modelOverride is NOT set to a wrong
-        value (never silent-drop onto the default model)."""
+        """Unparseable input + worker returns 'null' ⇒ never a silent drop onto
+        the default model.
+
+        S163 fix round 4 (D1) STRENGTHENS this. The S74 contract was "report the
+        normalization error on the response and carry on", and the round-4 tester
+        measured what that was worth on the Go path: the console is already
+        closed by the time the response lands, so the error reached nobody, the
+        raw words survived nowhere, and the bug ran on the default model anyway —
+        exactly the outcome the assertion below was written to prevent.
+
+        So on the Go path the dispatch is now REFUSED. The child's
+        `modelOverride` is still not stamped with a wrong value (the original
+        assertion, unchanged), the error still names the raw steer (unchanged),
+        and the batch does not run behind the captain's back (new)."""
         import json
         fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
         _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
                    estimate=fx.ESTIMATE_CLAUDE)
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
         actions._worker_turn = lambda *a, **k: "null"
-        result = actions.log_run("m-001", prds=[], overrides=["asdf qwer zzz"])
+        with self.assertRaises(ActionError) as caught:
+            actions.log_run("m-001", prds=[], overrides=["asdf qwer zzz"])
+        self.assertEqual(caught.exception.status, 400)
+        self.assertIn("m-bug1", caught.exception.message)
+        self.assertIn("asdf qwer zzz", caught.exception.message)
         # NO modelOverride was written (no wrong/default value stamped).
         p = os.path.join(fx.mission_dir(self.tmp, "m-bug1"), "state.json")
         with open(p) as fh:
             self.assertNotIn("modelOverride", json.load(fh))
-        # the error is surfaced per child so the panel can show it.
-        r0 = result["overrides"][0]
-        self.assertEqual(r0.get("id"), "m-bug1")
-        self.assertIsNone(r0.get("resolved"))
-        self.assertTrue(r0.get("error"),
-                        "an unparseable override must carry a normalization error")
-        self.assertIn("asdf qwer zzz", r0["error"])
+        # ...and nothing was dispatched over the top of the dropped instruction.
+        self.assertNotIn("--parent m-001", self._record("resolve"))
 
     def test_log_file_normalizes_plain_language_before_log_sh(self):
         """File-time path: a plain-language override must be NORMALIZED to

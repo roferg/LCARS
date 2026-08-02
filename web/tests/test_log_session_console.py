@@ -167,7 +167,13 @@ class LogConsoleRestoreTest(unittest.TestCase):
             "authored": False, "filed": True,
             "children": [FILED_CHILD_A], "overrides": []}})
         texts = " | ".join(_texts(res))
-        self.assertIn("Review — 1 bug mission filed", texts)
+        # S163 fix round 3 rewords the review's tail: the panel is now scoped to
+        # the MISSION (every bug still waiting to be fixed, whatever report it
+        # came from) rather than to the batch, and its whole promise is that this
+        # list is what `Go ▸` will run. Every row in it is still filed — the old
+        # word was not false — but "waiting to be fixed" is the fact the captain
+        # is being asked to act on.
+        self.assertIn("Review — 1 bug mission waiting to be fixed", texts)
         self.assertFalse(_button(res, "Go ▸")["hidden"],
                          "filed bugs are reviewable — Go is offered")
         self.assertTrue(_button(res, FILE_LABEL)["hidden"])

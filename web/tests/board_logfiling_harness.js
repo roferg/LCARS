@@ -17,12 +17,25 @@
  *      the same fixture through a pristine pre-S162 checkout and compare the two
  *      projections byte-for-byte (the additive-payload invariant).
  *
+ * S163 adds two more inputs, for the "Fix Filed Bugs" follow-through:
+ *
+ *   3. `children` — the parent's LINKED BUG CHILDREN, fed through the REAL
+ *      `indexIssues({missions})` so `CHILDREN_BY_PARENT` (and therefore
+ *      `isResolvingLocked` / the daemon-restart fallback) is built the way a
+ *      board render builds it, not by poking the index. Absent ⇒ the index is
+ *      left exactly as S162 left it (empty), so every S162 drive is unchanged.
+ *   4. `markLogRun` — the client-side "the captain's Go is dispatched" flag, set
+ *      through the shipping `markLogRun(id)` entry point (same contract as
+ *      markFiling above: a truthy timer handle is required).
+ *
  * argv[2]: mode — "card" (cardNode(m)) | "detail" (renderDetail(m)).
- * argv[3]: a JSON file: {"mission": {...},
- *                        "markFiling": bool, "markFinalizing": bool}
+ * argv[3]: a JSON file: {"mission": {...}, "children": [...],
+ *                        "markFiling": bool, "markFinalizing": bool,
+ *                        "markLogRun": bool}
  * argv[4]: optional "readonly" → writesActive=false before rendering.
  *
- * Output (stdout): {"node": <projection>, "filing": bool, "finalizing": bool}.
+ * Output (stdout): {"node": <projection>, "filing": bool, "finalizing": bool,
+ *                   "logRun": bool}.
  * The projection carries tag/cls/text/title/hidden/disabled/clickable/children —
  * everything a card can differ by, because it doubles as the byte-identity
  * comparison surface (a field left out of it is a field a regression can hide in).
@@ -141,6 +154,22 @@ if (INPUT.markFiling) {
   sandbox.markFiling(mission.id);
 }
 if (INPUT.markFinalizing) sandbox.markFinalizing(mission.id);
+// S163: a pre-163 board.js has no markLogRun — loud, exactly like markFiling.
+if (INPUT.markLogRun) {
+  if (typeof sandbox.markLogRun !== "function") {
+    process.stderr.write("markLogRun is not defined\n");
+    process.exit(2);
+  }
+  sandbox.markLogRun(mission.id);
+}
+// S163: build the board's parent→children index through the REAL indexer, so a
+// drive that needs linked bug children gets the same CHILDREN_BY_PARENT a render
+// would produce. Only when the drive asks for it (S162's fixtures pass none, so
+// their index stays empty and their projections are untouched).
+if (INPUT.children) {
+  sandbox.indexIssues({ missions: [mission].concat(INPUT.children),
+                        meta: INPUT.adapter ? { adapter: INPUT.adapter } : {} });
+}
 
 if (mode === "detail") sandbox.renderDetail(mission);
 else captured.node = sandbox.cardNode(mission);
@@ -165,4 +194,6 @@ process.stdout.write(JSON.stringify({
     ? !!sandbox.isFiling(mission.id) : null,
   finalizing: typeof sandbox.isFinalizing === "function"
     ? !!sandbox.isFinalizing(mission.id) : null,
+  logRun: typeof sandbox.isLogRunDispatched === "function"
+    ? !!sandbox.isLogRunDispatched(mission.id) : null,
 }));

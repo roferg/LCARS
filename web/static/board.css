@@ -469,6 +469,19 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
 .legend .viewonly{color:var(--lcars-amber)}
 .dim{color:var(--lcars-text-dim)}
+/* S163 fix round 6 (D4) — a VERDICT in the status line.
+   On the modal-closing paths (File & Cost refused, the Go's "…but N steers were
+   not applied") the console is gone by the time the daemon answers, so this line
+   is the ONLY carrier — and it was `.dim`: #50688a on #030608, 3.6:1 at 12px, in
+   the same row as the legend swatches, with no error colour anywhere.
+   `writeStatus` swaps the class rather than adding one, so `.dim` is not on the
+   element at all when a verdict is showing: nothing to out-specify and nothing
+   to lose a source-order race to. That mattered here — S162's amber lost exactly
+   such a race to `.card .no` and read as muted grey while its test was green. */
+.legend .status-verdict{color:var(--lcars-amber);font-size:13px;
+  letter-spacing:.02em}
+.legend .status-verdict.err{color:#ff8a96}
+.legend .status-verdict.ok{color:var(--lcars-teal)}
 
 /* ── buttons (mock .btn / .go / .warn / .danger / .big) ── */
 .btn{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;font-size:10px;

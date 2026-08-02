@@ -28,7 +28,7 @@ import webbrowser
 from .local_adapter import LocalAdapter
 from .github_adapter import GitHubAdapter
 from .server import make_server
-from .actions import build_actions
+from .actions import build_actions, LogFacts
 from .version_check import VersionChecker
 
 
@@ -60,6 +60,25 @@ def build_adapter(kind, repo_root, gh_bin, repo, read_only=False):
     # the local adapter is told whether the write layer is active so meta.mode
     # reflects the daemon's true read/write posture (S70-A).
     return LocalAdapter(repo_root, read_only=read_only)
+
+
+def build_log_facts(kind, repo_root):
+    """The READ-ONLY Mission-Log durable-facts reader, or None (S163 r4, D3).
+
+    Wired for the LOCAL adapter only. Round 3 made "this parent's Go was
+    dispatched" and "this batch left a bug unfiled" durable files under
+    `.git/lcars/missions/<id>/`, so a board with no write layer can read them and
+    tell the same story as the read-write board about the same repo.
+
+    The GITHUB adapter gets NOTHING here, deliberately: it reads issues + labels
+    over the network and cannot see a local `.git/lcars/` at all. Round 1 already
+    refused a children-derived reading on `meta.adapter === "github"` for exactly
+    this reason — a view that starts claiming facts it has no access to is worse
+    than one that says less.
+    """
+    if kind != "local":
+        return None
+    return LogFacts(repo_root)
 
 
 def should_open(open_flag, env=None):
@@ -137,9 +156,16 @@ def main(argv=None):
             check_script=resolve_check_script(),
             gh_bin=args.gh_bin)
 
+    # S163 fix round 4 (D3): the view-only LOCAL board reads the durable
+    # Mission-Log records so it stops contradicting the read-write board about
+    # the same repo. Only used when there is no write layer (see make_server).
+    log_facts = None if actions is not None else build_log_facts(args.adapter,
+                                                                 args.repo_root)
+
     httpd = make_server(adapter, host=args.host, port=args.port,
                         poll_interval=args.poll_interval, actions=actions,
-                        version_provider=version_provider)
+                        version_provider=version_provider,
+                        log_facts=log_facts)
     bound = httpd.server_address
     url = "http://%s:%d/" % (bound[0], bound[1])
     mode = "read-only" if actions is None else "read+write"
