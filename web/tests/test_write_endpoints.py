@@ -14,6 +14,7 @@ stdlib only; the daemon runs on an ephemeral localhost port inside the test.
 import base64
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -218,10 +219,45 @@ def _launch_stub(record_path, *, spawn_real=False, fail=False):
             '  exit 1\n'
         )
     elif spawn_real:
+        # pre-165 Fix A — the SAME setsid handshake test_deploy_main.py has carried since
+        # S141 (114 consecutive clean runs after it landed), ported here because
+        # this stub still had the un-handshaked form and it is what made
+        # test_daemon_shutdown_kills_a_still_running_launch flake ~1 full
+        # web-suite run in 5. setsid FIRST, THEN touch a ready-file, and only
+        # record the pgid once the child is genuinely the leader of its own
+        # process group (PGID==PID) — otherwise a killpg(pid) racing an
+        # unfinished setsid targets a group the app is not in, the sleep
+        # survives, and the failure is reported against PRODUCTION code that
+        # orphaned nothing.
+        #
+        # The wait MUST sleep. A bare `for _ in $(seq 1 200); do [ -e "$rdy" ]
+        # && break; done` is 200 stat()s in well under a millisecond — routinely
+        # finished before the forked perl has even been scheduled to call
+        # setsid() (measured: setsid lands 10–266 ms after `pid=$!`). It then
+        # fell through WITHOUT the ready file and recorded `pgid=$!` anyway,
+        # violating the very invariant it claims. 200 × 10 ms bounds the wait at
+        # ~2 s, and a timeout now fails LOUDLY rather than certifying a pgid it
+        # never confirmed.
         write_body = (
-            "  perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- "
-            "sleep 300 >/dev/null 2>&1 &\n"
+            '  rdy="$(mktemp)"; rm -f "$rdy"\n'
+            "  perl -e 'use POSIX qw(setsid); eval { setsid(); }; "
+            "my $r=shift @ARGV; open(my $f,\">\",$r); close $f; exec @ARGV' "
+            '-- "$rdy" sleep 300 >/dev/null 2>&1 &\n'
             '  pid=$!\n'
+            '  led=""\n'
+            '  for _ in $(seq 1 200); do\n'
+            '    if [ -e "$rdy" ]; then led=1; break; fi\n'
+            '    sleep 0.01\n'
+            '  done\n'
+            '  rm -f "$rdy"\n'
+            '  if [ -z "$led" ]; then\n'
+            '    kill "$pid" 2>/dev/null || true\n'
+            '    echo "launch stub: child never became its own process-group '
+            'leader within 2s — refusing to record an uncertified pgid" >&2\n'
+            '    printf \'{"status":"failed","target":"","url":"","message":'
+            '"stub: setsid handshake timed out"}\\n\' > "$lj"\n'
+            '    exit 1\n'
+            '  fi\n'
             '  printf \'{"status":"running","target":"fake app",'
             '"url":"http://localhost:9931",'
             '"howToStop":"stop it from the board","command":"sleep 300",'
@@ -1525,6 +1561,45 @@ class LaunchEndpointTest(WriteEndpointBase):
         rec = self._record("launch")
         self.assertIn("--stop", rec)
         self.assertIn("m-001", rec)
+
+    def test_launch_stub_never_records_a_pgid_it_has_not_certified(self):
+        """The fixture's OWN invariant, asserted instead of assumed (pre-165 Fix A).
+
+        `_launch_stub(spawn_real=True)` used to background a setsid'ing perl and
+        record `pgid=$!` on the very next line, with no handshake. `setsid()`
+        was MEASURED landing 10–266 ms after that line (n=120, p50 12.7 ms), so
+        the record was ALWAYS written before the child led its own group — and
+        whenever the child was still unscheduled when the daemon's killpg fired,
+        the group-kill went to the STUB's group, the sleep survived, and the
+        shutdown test failed while accusing production code of orphaning an app
+        the fixture had never group-leadered (~1 full web-suite run in 5).
+
+        So: run the stub the way the daemon does, and at the instant its record
+        exists demand that the recorded pgid IS the child's real process group.
+        Ten spawns, because a race that is only usually lost is still a lie."""
+        stub = _launch_stub(self.records["launch"], spawn_real=True)
+        pids = []
+        try:
+            for i in range(10):
+                mid = "cert-%d" % i
+                subprocess.run(["/bin/bash", stub, mid], cwd=self.tmp,
+                               check=True, timeout=30,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+                with open(self._mission_launch_json(mid)) as fh:
+                    rec = json.load(fh)
+                pids.append(rec["pid"])
+                self.assertEqual(
+                    os.getpgid(rec["pid"]), rec["pgid"],
+                    "spawn %d: the stub recorded a pgid the child does not "
+                    "have — a killpg of it would miss the app entirely" % i)
+        finally:
+            for pid in pids:
+                for killer in (os.killpg, os.kill):
+                    try:
+                        killer(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
 
     def test_daemon_shutdown_kills_a_still_running_launch(self):
         """The daemon OWNS the launch: a fake app started via launch survives in

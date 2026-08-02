@@ -1440,6 +1440,24 @@ class Actions(LogFacts):
         # normal stop signal). atexit won't fire on a bare SIGTERM, so install a
         # handler that reaps launches then chains any prior handler. Best-effort:
         # a restricted environment (no signal on this thread) must not break init.
+        #
+        # pre-165 Fix A — THE HANDLER MUST ALSO TERMINATE, or installing it DISABLES the
+        # signal. At daemon start `prev` is SIG_DFL, which is neither callable
+        # nor chainable, so the original handler reaped the launches and simply
+        # RETURNED — and returning from a Python signal handler resumes the
+        # interrupted call, so `serve_forever()` carried straight on. `kill
+        # <daemon-pid>` did nothing; only `kill -9` stopped the board, and every
+        # session leaked an orphaned daemon holding its port. Installing a
+        # handler had converted SIGTERM from "terminate" into "reap the launches
+        # and keep running".
+        #
+        # So: reap, then either hand over to a REAL prior handler (it owns the
+        # exit — that was, and stays, the contract for an embedder that wanted
+        # SIGTERM) or restore the DEFAULT disposition and re-raise to ourselves,
+        # so the process dies by the conventional signal with the conventional
+        # status. Not os._exit(): the re-raise keeps the exit status honest
+        # (128+15) for anything waiting on the daemon. The OS releases the bound
+        # port either way, so a restart binds it again immediately.
         atexit.register(self.shutdown_launches)
         try:
             prev = signal.getsignal(signal.SIGTERM)
@@ -1450,7 +1468,13 @@ class Actions(LogFacts):
                 finally:
                     if callable(_prev) and _prev not in (
                             signal.SIG_DFL, signal.SIG_IGN):
+                        # someone else already owned SIGTERM (including an
+                        # earlier Actions in this process, which chains on to
+                        # ITS predecessor — a finite nesting, never recursion).
                         _prev(signum, frame)
+                    else:
+                        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                        os.kill(os.getpid(), signal.SIGTERM)
             signal.signal(signal.SIGTERM, _on_sigterm)
         except (ValueError, OSError, RuntimeError):
             # e.g. not on the main thread — the atexit hook still covers a clean
