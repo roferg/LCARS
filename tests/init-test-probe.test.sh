@@ -27,6 +27,7 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_INIT_SCRIPT:-$REPO_ROOT/skills/lcars-init/init.sh}"
+COMMON="${LCARS_COMMON_SH:-$REPO_ROOT/skills/lcars-init/lcars-common.sh}"
 
 pass=0
 fail=0
@@ -129,6 +130,150 @@ check "4b. the timeout is reported honestly" \
 R5="$(new_repo pass)"; run_init "$R5" LCARS_INIT_SKIP_PROBE=1
 check "5. LCARS_INIT_SKIP_PROBE=1 runs no suite" \
   '[ ! -s "$R5/npx.calls" ]'
+
+# --- 6. node --test's OWN zero-collect shape ------------------------------
+# S168, measured live: a JS repo whose package.json is
+#   {"scripts": {"test": "node --test"}}
+# and which has NO test files at all. Node's built-in runner does not print any
+# of the phrasings the `zero` signature knew ("No test files found", "collected
+# 0 items", …). It prints its own counter block and EXITS 0:
+#
+#   ℹ tests 0
+#   ℹ suites 0
+#   ℹ pass 0
+#   ℹ fail 0
+#
+# so init certified "TEST SYSTEMS ONLINE" on a repo with zero tests — a silent
+# green on exactly the greenfield case.
+#
+# These drive the REAL detector (the shared run_probe in lcars-common.sh), not
+# a copy of its regex: run_probe is handed a command that replays the runner's
+# byte-for-byte output and exit code.
+probe_outcome() { # <output> <exit-code> → the resulting PROBE_OUTCOME
+  local out="$1" rc="$2" d
+  d="$(mktemp -d "$TMPROOT/probe.XXXX")"
+  printf '%s' "$out" >"$d/out.txt"
+  ( . "$COMMON"
+    TOPLEVEL="$d"
+    run_probe "cat '$d/out.txt'; exit $rc" >/dev/null 2>&1
+    printf '%s' "$PROBE_OUTCOME" )
+}
+
+# The three real `node --test` summaries, captured from node v25 (non-TTY).
+NODE_ZERO='ℹ tests 0
+ℹ suites 0
+ℹ pass 0
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8.519167
+'
+NODE_PASS='✔ a (0.873958ms)
+✔ b (0.083958ms)
+✔ c (0.102417ms)
+✔ d (0.071250ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 115.587958
+'
+NODE_FAIL='ℹ tests 6
+ℹ suites 0
+ℹ pass 4
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 93.409125
+'
+
+check "6a. node --test collecting NOTHING (exit 0) is zero-collected, not a pass" \
+  '[ "$(probe_outcome "$NODE_ZERO" 0)" = zero-collected ]'
+# THE regression that matters most: a healthy Node repo must stay initialisable.
+# Its summary is full of standalone zeros (fail 0, cancelled 0, skipped 0,
+# todo 0, suites 0) — only the `tests` counter distinguishes the two.
+check "6b. node --test with 4 PASSING tests is still a pass" \
+  '[ "$(probe_outcome "$NODE_PASS" 0)" = pass ]'
+check "6c. node --test with 2 FAILING tests is still a fail" \
+  '[ "$(probe_outcome "$NODE_FAIL" 1)" = fail ]'
+# The substring hazard, stated explicitly: `tests 10` / `tests 01` contain
+# `tests 0` and must never be read as zero-collected.
+check "6d. a 10-test node run is not mistaken for zero-collected" \
+  '[ "$(probe_outcome "ℹ tests 10
+ℹ pass 10
+ℹ fail 0
+" 0)" = pass ]'
+
+# --- 7. the pre-existing runners classify EXACTLY as before ----------------
+check "7a. vitest zero-collect still zero-collected" \
+  '[ "$(probe_outcome "No test files found, exiting with code 1
+" 1)" = zero-collected ]'
+check "7b. vitest green still a pass" \
+  '[ "$(probe_outcome "Test Files  3 passed (3)
+     Tests  8 passed (8)
+" 0)" = pass ]'
+check "7c. pytest zero-collect still zero-collected" \
+  '[ "$(probe_outcome "collected 0 items
+
+no tests ran in 0.01s
+" 5)" = zero-collected ]'
+check "7d. pytest green still a pass" \
+  '[ "$(probe_outcome "collected 12 items
+
+tests/test_a.py ............                                     [100%]
+
+12 passed in 0.05s
+" 0)" = pass ]'
+
+# --- 8. end-to-end: `lcars init` on the real greenfield node repo ----------
+# The live repro, driven through init itself rather than the probe alone.
+new_node_repo() { # $1 = pass|zero
+  local mode="$1" repo
+  repo="$(mktemp -d "$TMPROOT/noderepo.XXXX")"
+  (
+    cd "$repo" && git init -q && git config user.email t@t && git config user.name t
+    printf '{\n  "name": "x",\n  "scripts": { "test": "node --test" }\n}\n' >package.json
+    printf 'lock\n' >package-lock.json
+  )
+  mkdir -p "$repo/bin"
+  cat >"$repo/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+echo "2.0.44 (Claude Code)"
+EOF
+  cat >"$repo/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then echo "owner/repo"; exit 0; fi
+exit 0
+EOF
+  # `npm test` on this repo shells out to node --test; replay its real output.
+  cat >"$repo/bin/npm" <<EOF
+#!/usr/bin/env bash
+echo "npm \$*" >>"$repo/npm.calls"
+case "$mode" in
+  zero) printf '%s' '$NODE_ZERO'; exit 0 ;;
+  pass) printf '%s' '$NODE_PASS'; exit 0 ;;
+esac
+EOF
+  chmod +x "$repo/bin/claude" "$repo/bin/gh" "$repo/bin/npm"
+  : >"$repo/npm.calls"
+  echo "$repo"
+}
+
+R6="$(new_node_repo zero)"; run_init "$R6"
+check "8a. the node suite was actually RUN" '[ -s "$R6/npm.calls" ]'
+check "8b. a zero-test node repo is NOT certified online" \
+  '! grep -q "TEST SYSTEMS ONLINE" "$R6/out.txt"'
+check "8c. init says the runner collected ZERO tests" \
+  'grep -qiE "PROBE INCONCLUSIVE|collected ZERO" "$R6/out.txt"'
+
+R7="$(new_node_repo pass)"; run_init "$R7"
+check "8d. a HEALTHY node repo is still certified online" \
+  'grep -q "TEST SYSTEMS ONLINE" "$R7/out.txt"'
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

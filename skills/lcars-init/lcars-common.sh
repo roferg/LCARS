@@ -2323,7 +2323,21 @@ run_probe() {
   # skipped form keys on the NUMBERS (zero failed AND zero passed) so a real
   # 1-passed/1-skipped run stays a pass. Keep in step with rg_signature
   # `zerotests` + proof_zero_collected in skills/lcars-run/run.sh.
-  local zero='No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items|(^|[^0-9])0 examples, 0 failures$|(^|[^0-9])0 runs, 0 assertions|no tests to run|test result: ok\. 0 passed|^No test matches the given testcase filter .*\.dll|^No test is available in .*\.dll|^(Passed|Failed|Skipped)! +- +Failed: +0, +Passed: +0,'
+  #
+  # S168 NODE'S BUILT-IN RUNNER — measured live on a greenfield repo whose
+  # package.json is {"scripts":{"test":"node --test"}} with no test files. It
+  # prints NONE of the phrasings above; it prints its own counter block and
+  # EXITS 0 (`ℹ tests 0` / `ℹ suites 0` / `ℹ pass 0` / `ℹ fail 0` …), so init
+  # certified "TEST SYSTEMS ONLINE" on a repo with zero tests. The arm below
+  # keys on the `tests` COUNTER alone, and is anchored at BOTH ends so it can
+  # never fire on a healthy run:
+  #  • `^[^0-9A-Za-z]*` — everything before `tests` must be non-alphanumeric,
+  #    so it matches node's multi-byte `ℹ ` prefix (and TAP's `# `) while
+  #    `subtests 0` cannot match. The other counters are different WORDS, so a
+  #    green run's `fail 0` / `suites 0` / `skipped 0` / `todo 0` are untouched.
+  #  • `0[[:space:]]*$` — the count must be a STANDALONE zero (the S106
+  #    substring hazard): `tests 10`, `tests 01` and `tests 4` all miss.
+  local zero='No test files found|No test suite found in|No tests found|no tests ran|Ran 0 tests|collected 0 items|(^|[^0-9])0 examples, 0 failures$|(^|[^0-9])0 runs, 0 assertions|no tests to run|test result: ok\. 0 passed|^No test matches the given testcase filter .*\.dll|^No test is available in .*\.dll|^(Passed|Failed|Skipped)! +- +Failed: +0, +Passed: +0,|^[^0-9A-Za-z]*tests 0[[:space:]]*$'
   # S147: MSBuild never even REACHED a test run — the project/solution the
   # command names is not there. Reporting that as "the suite ran but reported
   # failures" sends the captain hunting a test failure that does not exist.

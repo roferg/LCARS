@@ -52,6 +52,11 @@
 #                           Planted as a STUB reporter the daemon shells for
 #                           GET /api/base-freshness, so the pre-flight can be
 #                           driven at a chosen repo state without one existing.
+#   LCARS_BROWSER_LEGEND_CHECK    (S168) path to an expectation JSON. Makes the
+#                           driver MEASURE the board's bottom legend swatches —
+#                           resolved background colour, real box, contrast
+#                           against what is behind them. Unset = the rig behaves
+#                           exactly as it did before.
 #   LCARS_BROWSER_CONSOLE_CHECK   (S164) path to an expectation JSON. Makes the
 #                           driver open the File console and MEASURE its
 #                           pre-flight line in the real cascade. Unset = the rig
@@ -364,6 +369,12 @@ note "chrome:    devtools :$DEV_PORT (pid $CHROME_PID)"
 
 # ── drive it ────────────────────────────────────────────────────────────────
 DRIVE_ARGS=()
+if [ -n "${LCARS_BROWSER_LEGEND_CHECK:-}" ]; then
+  [ -f "$LCARS_BROWSER_LEGEND_CHECK" ] || \
+    skip "LCARS_BROWSER_LEGEND_CHECK points at no file: $LCARS_BROWSER_LEGEND_CHECK"
+  DRIVE_ARGS+=(--legend-check "$LCARS_BROWSER_LEGEND_CHECK")
+  note "legend:    the bottom legend's colour swatches will be measured too"
+fi
 if [ -n "${LCARS_BROWSER_CONSOLE_CHECK:-}" ]; then
   [ -f "$LCARS_BROWSER_CONSOLE_CHECK" ] || \
     skip "LCARS_BROWSER_CONSOLE_CHECK points at no file: $LCARS_BROWSER_CONSOLE_CHECK"
@@ -378,6 +389,7 @@ SHIM_CALLS=$(wc -l <"$OUT/worker-shim.log" 2>/dev/null | tr -d ' ')
 printf '\n'
 note "worker shim invocations: ${SHIM_CALLS:-0} (expected 0 — this rig only GETs)"
 printf 'screenshot: %s/board.png\n' "$OUT"
+[ -f "$OUT/legend.png" ] && printf 'screenshot: %s/legend.png  (the legend, close-up)\n' "$OUT"
 [ -f "$OUT/file-console.png" ] && printf 'screenshot: %s/file-console.png  (the File console)\n' "$OUT"
 note "result:     $OUT/result.json"
 case "$RC" in

@@ -81,7 +81,13 @@
 
     <div class="legend">
       <span><i style="background:var(--lcars-red)"></i> Awaiting you</span>
-      <span><i style="background:var(--lcars-pink)"></i> Child bug mission</span>
+      <!-- --lcars-pink is the ONE accent this board uses that docs/lcars.css does
+           not define, so the fallback is load-bearing, not belt-and-braces: with
+           it omitted the declaration was invalid at computed-value time and this
+           chip painted nothing at all while keeping a perfect 12x12 box (S168,
+           measured in Chrome). Every other pink in board.css already carries the
+           same #ff66aa fallback. Proven by tests/drives/browser/legend-swatches.sh. -->
+      <span><i style="background:var(--lcars-pink,#ff66aa)"></i> Child bug mission</span>
       <span><i style="background:var(--lcars-teal)"></i> Ticket green</span>
       <span class="dim" id="status">loading…</span>
       <span class="dim viewonly" id="viewonly" hidden>● VIEW-ONLY — writes disabled</span>

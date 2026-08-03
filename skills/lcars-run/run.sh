@@ -889,9 +889,16 @@ gh_relabel() { # "add labels…"  "remove labels…"
 }
 
 # --- advance Research: stage pointer → validate, label align → validate -----
+# The remove-list carries lcars:research as well as lcars:align because Research
+# now applies its own IN-FLIGHT label while it runs (see cmd_research) — the card
+# has to leave the Research column when it lands in Validate. Removing a label
+# that is not present is a no-op for `gh issue edit`, exactly as with the
+# lcars:awaiting-human entries the other advances carry, so the paths that reach
+# here without an in-flight apply (a bare `save` / `gate` invocation) are
+# unchanged.
 advance() {
   set_stage "validate"
-  gh_relabel "lcars:validate" "lcars:align"
+  gh_relabel "lcars:validate" "lcars:align lcars:research"
 }
 
 # --- subcommand: gate ------------------------------------------------------
@@ -8686,6 +8693,27 @@ cmd_research() {
   require_stage align
   require_worker
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md — Align has not produced a PRD for '$MISSION_ID'."
+
+  # IN-FLIGHT STAGE LABEL (CLAUDE.md build item #11). Every other Stage gets its
+  # board label from the transition INTO it, because its label matches the stage
+  # POINTER. Research is the one Stage whose pointer never says "research" — it
+  # runs while the pointer is still "align" and only moves at advance() — so no
+  # transition ever applied lcars:research and the Research column was
+  # permanently empty. The only writer was the >20-question escalation in
+  # cmd_gate, i.e. a card could only reach Research by getting STUCK there.
+  #
+  # Apply it HERE, the moment Research actually starts. This sits ABOVE the
+  # grounding short-circuit on purpose: a logged bug's grounding Research is
+  # still Research and belongs on the same generic card (build item #18).
+  # advance() drops it again on the way to Validate; the escalation's own
+  # relabel re-asserts the same label, so that path is byte-identical.
+  #
+  # Best-effort like every relabel — gh_relabel never fails a Stage, it only
+  # leaves a note. Surface the note NOW rather than at exit, because this
+  # command's later exits happen inside the `gate` / `save` subprocesses, which
+  # carry their own note; clearing it keeps it from being reprinted downstream.
+  gh_relabel "lcars:research" "lcars:align"
+  if [ -n "$RELABEL_NOTE" ]; then echo "$RELABEL_NOTE"; RELABEL_NOTE=""; fi
 
   # GROUNDING MODE (logged bug). A bug filed via `lcars log` carries origin=="log"
   # (fallback type=="bug") and enters the pipeline at Research NOT to generate open

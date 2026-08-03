@@ -93,6 +93,65 @@ reuse them: `LCARS_BROWSER_BASEFRESH` (a record to serve) and
 `LCARS_BROWSER_CONSOLE_CHECK` (an expectation file). Neither is set by default,
 and with both unset `smoke.sh` runs exactly the code it ran before S164.
 
+## The third rig: `legend-swatches.sh` (S168)
+
+```bash
+bash tests/drives/browser/legend-swatches.sh              # the product
+bash tests/drives/browser/legend-swatches.sh --calibrate   # the RED CONTROLS
+bash tests/drives/browser/legend-swatches.sh --all         # both
+```
+
+The board's bottom legend teaches its colour language — a red chip for *Awaiting
+you*, pink for *Child bug mission*, teal for *Ticket green*. Measured in Chrome
+on 2026-08-02, **the pink chip was not there**: the label sat beside empty space.
+`index.html` declared it `background:var(--lcars-pink)` with no fallback, and
+nothing in this repo defines `--lcars-pink`, so the declaration was invalid at
+computed-value time and the background fell back to `transparent`.
+
+This is the *purest* case for the rig, and worth stating precisely, because the
+broken chip had **everything a non-browser test can look at**:
+
+| what a harness could check | broken chip |
+|---|---|
+| the element is in the DOM | ✓ |
+| it has the right class and the right `style` attribute | ✓ |
+| the CSS rule sizing it exists | ✓ |
+| a real, laid-out, non-zero bounding box | ✓ — a perfect 12×12 |
+| **it paints anything at all** | **✗** |
+
+`.legend i` is sized by `board.css` and coloured inline, so an unresolved token
+costs the chip its paint and nothing else. Even `smoke.sh`'s own visibility
+predicate — box, `display`, `visibility`, `opacity` — passes it. Only the
+**resolved background colour, with its alpha** can see this, which is what the
+check reads off the live node, composited over the first genuinely opaque
+surface behind it.
+
+All **three** chips are measured, not just the broken one: the two healthy
+neighbours are an in-run positive control, so "the pink one failed" cannot be
+waved away as the rig misreading colours. The run also reports the tokens as
+`:root` really resolved them — the product run measured
+`{"--lcars-red":"#ff3344", "--lcars-pink":"", "--lcars-teal":"#00ccaa"}`, which
+is the asymmetry itself, measured rather than argued.
+
+`--calibrate` patches a **copy** of `web/` four ways and requires the check to go
+red on each: the chip **removed**, its fallback **taken back off** (the S168 bug
+verbatim), the chip **camouflaged** — opaque, and exactly the colour of the
+surface behind it — and the chip painted in the **wrong hue**. The last two exist
+because the first two fail early, and an assertion no control exercises is one
+nobody has shown can fire. The camouflage control repaints the *legend's* own
+surface rather than the chip, because the chip's colour is an inline style that
+no selector can outrank; that makes it usefully targeted — the pink chip vanishes
+while red and teal stay visible.
+
+The deliverable is `legend.png`, a **3× close-up clip** of the legend strip. The
+chips are 12px squares at the foot of a 4000px-wide `board.png`, where a reader
+genuinely cannot tell a blank one from a dark one — and evidence nobody can read
+is not evidence. The numbers are `legend-check.json`.
+
+The seam is one more `smoke.sh` env var, `LCARS_BROWSER_LEGEND_CHECK` (an
+expectation file naming the labels, their hues and a contrast floor). Unset by
+default; with it unset `smoke.sh` runs exactly the code it ran before S168.
+
 ## Exit codes
 
 | code | meaning |
@@ -119,6 +178,8 @@ Each run gets its own directory (`mktemp -d`, or `LCARS_BROWSER_OUT`):
 | file | what it is |
 |---|---|
 | `board.png` | **the screenshot** — the whole board, all Stage columns |
+| `legend.png` | (with `LCARS_BROWSER_LEGEND_CHECK`) a 3× close-up of the legend strip |
+| `legend-check.json` | (ditto) every swatch's resolved colour, box, backdrop and contrast |
 | `result.json` | card count, column count, status line, card text, page errors, Chrome version |
 | `daemon.log` | the daemon's stderr, including the URL it bound |
 | `chrome.log` | Chrome's stderr |

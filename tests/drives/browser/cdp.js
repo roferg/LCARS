@@ -24,7 +24,18 @@
  *
  * Usage (smoke.sh's business, not yours):
  *   node cdp.js --devtools-port N --url URL --out DIR [--expect N] [--timeout MS]
- *              [--console-check FILE]
+ *              [--legend-check FILE] [--console-check FILE]
+ *
+ * --legend-check (S168) is an OPTIONAL act, and the default path is untouched
+ * without it. It MEASURES the board's bottom legend swatches — the little 12px
+ * colour chips beside "Awaiting you", "Child bug mission", "Ticket green". They
+ * are sized by board.css and coloured by an inline `background:var(--lcars-…)`,
+ * so a swatch whose token never resolves keeps a perfect 12×12 box and paints
+ * NOTHING: transparent, invisible, and utterly undetectable by any assertion
+ * about markup or CSS rules. Measured 2026-08-02 in Chrome: `--lcars-pink` was
+ * defined nowhere, and the "Child bug mission" chip was blank on the real board
+ * while its two neighbours showed. So this reads the RESOLVED background colour
+ * off the live element and composites it against what is actually behind it.
  *
  * --console-check (S164) is the OPTIONAL second act, and the default path is
  * untouched without it. It clicks the board's File button, waits for the File
@@ -63,6 +74,7 @@ const OUT = arg("out");
 const EXPECT = parseInt(arg("expect", "1"), 10);
 const TIMEOUT = parseInt(arg("timeout", "30000"), 10);
 const CONSOLE_CHECK_FILE = arg("console-check", "");
+const LEGEND_CHECK_FILE = arg("legend-check", "");
 
 if (!DEVTOOLS_PORT || !URL_ || !OUT) {
   // 77, not 2: a mis-invoked driver is the harness's problem, and smoke.sh must
@@ -182,6 +194,145 @@ const PROBE = `(function () {
     bodyText: (document.body.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 400)
   };
 })()`;
+
+/* ── S168: the bottom legend's colour swatches, MEASURED ────────────────────
+ *
+ * Runs inside the page. The defect class here is narrower and nastier than a
+ * blank board: `.legend i` is given `width:12px;height:12px` by board.css and
+ * its colour by an INLINE `background:var(--lcars-x)` in index.html. When the
+ * token behind that var does not exist the declaration is invalid at computed-
+ * value time, the background falls back to `transparent`, and the element keeps
+ * a flawless 12×12 laid-out box while painting nothing at all.
+ *
+ * So no assertion about the element, the attribute or the stylesheet can see
+ * this. Only the RESOLVED background colour can — read off the live node, with
+ * its alpha, composited over the first genuinely opaque surface behind it. A
+ * chip painted in the page's own background colour is just as blank to a reader
+ * as one painted in nothing, which is why the contrast against that backdrop is
+ * measured rather than the alpha alone. */
+const LEGEND_PROBE = `(function () {
+  function rgb(s) {
+    var m = String(s || "").match(/rgba?\\(([^)]+)\\)/);
+    if (!m) return null;
+    var p = m[1].split(",").map(function (x) { return parseFloat(x); });
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  }
+  function lum(c) {
+    function ch(v) { v /= 255; return v <= 0.03928 ? v / 12.92
+                                : Math.pow((v + 0.055) / 1.055, 2.4); }
+    return 0.2126 * ch(c.r) + 0.7152 * ch(c.g) + 0.0722 * ch(c.b);
+  }
+  function over(fg, bg, alpha) {
+    return { r: fg.r * alpha + bg.r * (1 - alpha),
+             g: fg.g * alpha + bg.g * (1 - alpha),
+             b: fg.b * alpha + bg.b * (1 - alpha), a: 1 };
+  }
+  function backdrop(node) {   // the first really-opaque surface BEHIND the chip
+    for (var n = node; n; n = n.parentElement) {
+      var c = rgb(getComputedStyle(n).backgroundColor);
+      if (c && c.a >= 0.999) return c;
+    }
+    var b = rgb(getComputedStyle(document.body).backgroundColor);
+    return (b && b.a >= 0.999) ? b : { r: 0, g: 0, b: 0, a: 1 };
+  }
+  function vis(el) {
+    var r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.display !== "none" &&
+           s.visibility !== "hidden" && parseFloat(s.opacity || "1") > 0.01;
+  }
+  var legend = document.querySelector(".legend");
+  var out = { present: !!legend, swatches: [] };
+  if (!legend) return out;
+  var lr = legend.getBoundingClientRect();
+  out.legendBox = { x: lr.left + window.scrollX, y: lr.top + window.scrollY,
+                    w: lr.width, h: lr.height };
+  out.legendVisible = vis(legend);
+  out.tokens = {};
+  var ds = getComputedStyle(document.documentElement);
+  ["--lcars-red", "--lcars-pink", "--lcars-teal"].forEach(function (t) {
+    out.tokens[t] = (ds.getPropertyValue(t) || "").trim();
+  });
+  Array.prototype.slice.call(legend.querySelectorAll("i")).forEach(function (i) {
+    var s = getComputedStyle(i), r = i.getBoundingClientRect();
+    var own = rgb(s.backgroundColor) || { r: 0, g: 0, b: 0, a: 0 };
+    var bg = backdrop(i.parentElement || legend);
+    var op = parseFloat(s.opacity || "1");
+    var seen = over(own, bg, own.a * op);
+    var l1 = lum(seen), l2 = lum(bg);
+    out.swatches.push({
+      label: ((i.parentElement || i).textContent || "").replace(/\\s+/g, " ").trim(),
+      declared: i.getAttribute("style") || "",
+      visible: vis(i),
+      box: { w: r.width, h: r.height, top: r.top, left: r.left },
+      background: s.backgroundColor,
+      backgroundImage: s.backgroundImage,
+      rgb: own, opacity: s.opacity, backdrop: bg, composited: seen,
+      contrast: (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+    });
+  });
+  return out;
+})()`;
+
+/* The verdicts. Every one is about a MEASURED value; not one of them asks
+ * whether a rule, an attribute or a class exists — that is precisely the kind
+ * of assertion that sat green beside this bug. Returns failures (empty = pass). */
+function judgeLegend(p, want) {
+  const bad = [];
+  const need = want.swatches || [];
+  const minContrast = want.minContrast || 1.25;
+  if (!p.present) {
+    bad.push("no .legend element in the real DOM");
+    return bad;
+  }
+  if (!p.legendVisible) bad.push("the legend has no laid-out box: " + JSON.stringify(p.legendBox));
+  // Named hues, decided on the colour the browser actually resolved. LCARS's
+  // pink (#ff66aa), red (#ff3344) and teal (#00ccaa) are separable by ordering
+  // alone, so a swatch that paints but paints the WRONG colour is caught too.
+  const hues = {
+    pink: (c) => c.r > 180 && c.b > 120 && c.b > c.g && c.r > c.b,
+    red:  (c) => c.r > 150 && c.r > c.g && c.r > c.b && c.b < 120,
+    teal: (c) => c.g > c.r && c.b > c.r,
+  };
+  need.forEach((w) => {
+    const found = (p.swatches || []).filter(
+      (s) => s.label.indexOf(w.label) !== -1);
+    if (!found.length) {
+      bad.push("no legend swatch labelled " + JSON.stringify(w.label) +
+               " — labels seen: " + JSON.stringify((p.swatches || []).map((s) => s.label)));
+      return;
+    }
+    const s = found[0];
+    const who = JSON.stringify(w.label);
+    if (!s.visible || !(s.box.w > 0 && s.box.h > 0)) {
+      bad.push("the " + who + " swatch has no real bounding box: " + JSON.stringify(s.box));
+      return;
+    }
+    // THE ONE THAT CATCHES IT. An unresolved var() leaves the box perfect and
+    // the paint transparent, so the alpha of the resolved background is the
+    // whole ballgame.
+    if (!(s.rgb.a >= 0.99)) {
+      bad.push("the " + who + " swatch paints NOTHING: background resolved to " +
+               s.background + " (alpha " + s.rgb.a + ") on a " +
+               Math.round(s.box.w) + "×" + Math.round(s.box.h) + "px box. Its " +
+               "declaration is " + JSON.stringify(s.declared) + " — an undefined " +
+               "custom property makes that invalid at computed-value time.");
+      return;
+    }
+    // Opaque, but is it DISTINGUISHABLE from what is behind it? A chip painted
+    // in the board's own background is blank to a reader all the same.
+    if (!(s.contrast >= minContrast)) {
+      bad.push("the " + who + " swatch is indistinguishable from the surface " +
+               "behind it: " + s.background + " on " + JSON.stringify(s.backdrop) +
+               " = " + s.contrast.toFixed(2) + ":1 (floor " + minContrast + ":1)");
+      return;
+    }
+    if (w.hue && hues[w.hue] && !hues[w.hue](s.rgb)) {
+      bad.push("the " + who + " swatch resolved to the wrong colour for a " +
+               w.hue + " chip: " + s.background);
+    }
+  });
+  return bad;
+}
 
 /* ── S164: the File console's base-freshness pre-flight, MEASURED ───────────
  *
@@ -424,7 +575,55 @@ async function main() {
     cdp.pageErrors.push("screenshot failed: " + e.message);
   }
 
-  // ── ACT TWO (optional, --console-check): the File console's pre-flight ────
+  // ── ACT TWO (optional, --legend-check): the bottom legend's swatches ──────
+  // Only when asked for. Runs BEFORE the console act deliberately — that one
+  // opens a modal over the board, and a chip measured from under an overlay is
+  // not the chip the captain looks at.
+  let legendCheck = null;
+  if (LEGEND_CHECK_FILE && ok) {
+    let want = {};
+    try {
+      want = JSON.parse(fs.readFileSync(LEGEND_CHECK_FILE, "utf8"));
+    } catch (e) {
+      throw new InfraError("could not read --legend-check file " +
+        LEGEND_CHECK_FILE + ": " + e.message);
+    }
+    // Back to a captain-sized window: the board screenshot above widened the
+    // viewport to the column strip's scroll extent, and nobody reads a legend
+    // at 4000px.
+    await cdp.send("Emulation.setDeviceMetricsOverride",
+      { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sessionId);
+    await sleep(200);
+    const r = await cdp.send("Runtime.evaluate",
+      { expression: LEGEND_PROBE, returnByValue: true }, sessionId);
+    const probe = (r && r.result && r.result.value) || { present: false, swatches: [] };
+    // A CLOSE-UP is the deliverable here. The swatches are 12px chips at the
+    // bottom of a 4000px-wide board — in board.png a reader cannot tell a blank
+    // one from a dark one, and evidence nobody can read is not evidence.
+    let lshot = "";
+    try {
+      const clipOpts = { format: "png", captureBeyondViewport: true };
+      if (probe.legendBox && probe.legendBox.w > 0 && probe.legendBox.h > 0) {
+        clipOpts.clip = {
+          x: Math.max(0, probe.legendBox.x - 12), y: Math.max(0, probe.legendBox.y - 12),
+          width: Math.min(probe.legendBox.w + 24, 1440),
+          height: probe.legendBox.h + 24, scale: 3,
+        };
+      }
+      const png = await cdp.send("Page.captureScreenshot", clipOpts, sessionId);
+      lshot = path.join(OUT, "legend.png");
+      fs.writeFileSync(lshot, Buffer.from(png.data, "base64"));
+    } catch (e) {
+      cdp.pageErrors.push("legend screenshot failed: " + e.message);
+    }
+    const failures = judgeLegend(probe, want);
+    legendCheck = { want: want, measured: probe, failures: failures,
+                    screenshot: lshot, ok: failures.length === 0 };
+    fs.writeFileSync(path.join(OUT, "legend-check.json"),
+      JSON.stringify(legendCheck, null, 2) + "\n");
+  }
+
+  // ── ACT THREE (optional, --console-check): the File console's pre-flight ──
   // Only when asked for; without the flag not one line of this runs and the
   // default rig is exactly what it was.
   let consoleCheck = null;
@@ -510,6 +709,7 @@ async function main() {
     chrome: verInfo.Browser,
     url: URL_,
     screenshot: shot,
+    legendCheck: legendCheck,
     consoleCheck: consoleCheck,
   };
   fs.writeFileSync(path.join(OUT, "result.json"), JSON.stringify(result, null, 2) + "\n");
@@ -559,6 +759,21 @@ async function main() {
       cdp.pageErrors.slice(0, 8).forEach((e) => console.error("      " + e));
     }
   }
+  if (legendCheck) {
+    if (legendCheck.ok) {
+      console.log("  legend: every named swatch PAINTS in the real DOM —");
+      (legendCheck.measured.swatches || []).forEach((s) => {
+        console.log("    " + JSON.stringify(s.label) + ": " + s.background +
+          " on a " + Math.round(s.box.w) + "×" + Math.round(s.box.h) + "px box, " +
+          s.contrast.toFixed(1) + ":1 against " + JSON.stringify(s.backdrop));
+      });
+    } else {
+      console.error("\x1b[31m  A LEGEND SWATCH IS NOT ON THE SCREEN IN A REAL BROWSER.\x1b[0m");
+      legendCheck.failures.forEach((f) => console.error("    ✗ " + f));
+      console.error("    tokens on :root: " + JSON.stringify(legendCheck.measured.tokens));
+      console.error("    screenshot: " + legendCheck.screenshot);
+    }
+  }
   if (consoleCheck) {
     const q = (consoleCheck.measured && consoleCheck.measured.quiet) || null;
     if (consoleCheck.ok) {
@@ -576,6 +791,7 @@ async function main() {
     }
   }
   if (!ok) return EXIT_NOT_PAINTED;
+  if (legendCheck && !legendCheck.ok) return EXIT_NOT_PAINTED;
   if (consoleCheck && !consoleCheck.ok) return EXIT_NOT_PAINTED;
   return servedComplete ? EXIT_PAINTED : EXIT_DEGRADED;
 }
