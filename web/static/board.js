@@ -41,6 +41,49 @@ var versionBannerDismissed = false;
 // even when the per-mission payload doesn't echo the repo. May stay null.
 var detailRepo = null;
 
+/* S168: the FORGE HOST the board is attached to (board.meta.ghHost), captured on
+   every render beside detailRepo. The captain works in *.ghe.com repos, and both
+   issue links below used to concatenate a literal "https://github.com/" — so
+   every link went to a github.com repository that does not exist and had to be
+   hand-edited after the click.
+
+   The daemon sends a BARE HOST and only when it is NOT github.com (see
+   local_adapter.gh_host: `gh_hostname` returns empty there on purpose, so a
+   github.com payload is byte-identical to before). Absent/null therefore means
+   "github.com", which is what ghIssueUrl falls back to. May stay null. */
+var boardGhHost = null;
+
+/* A DNS hostname and nothing else — no scheme, no path, no port, no space. The
+   daemon already refuses anything else, but this value is spliced into a URL the
+   captain CLICKS, and a guard that only exists upstream is not a guard here. */
+var GH_HOST_RE = /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
+
+/* Capture "which forge, which repo" off a board payload. Called at the TOP of
+   render(), BEFORE any card is built, and again from renderMeta.
+
+   The ordering is load-bearing, and getting it wrong was a real defect measured
+   in Chrome on 2026-08-03: renderMeta ran at the END of render(), so on the
+   FIRST paint of a fresh page `detailRepo` was still null while the cards were
+   being built, and a logged bug's "⊗ BUG · child of #<n>" badge rendered as a
+   plain <span> instead of a link to the parent issue. It only became a link if
+   some later re-render happened to come along. */
+function captureForgeIdentity(meta) {
+  // UX-14: the repo the detail "View on GitHub" link is built from.
+  detailRepo = (meta && meta.repo) || null;
+  // S168: …and the forge HOST those links must point at. Reassigned on EVERY
+  // render, so a payload that stops carrying it reverts to github.com rather
+  // than leaving a stale enterprise host on the page.
+  boardGhHost = (meta && typeof meta.ghHost === "string") ? meta.ghHost : null;
+}
+
+/* THE one place the board builds a link to an issue. The scheme is pinned HERE,
+   never sent by the daemon, so nothing arriving over the wire can become it. */
+function ghIssueUrl(repo, issue) {
+  var host = (typeof boardGhHost === "string" && GH_HOST_RE.test(boardGhHost))
+    ? boardGhHost : "github.com";
+  return "https://" + host + "/" + repo + "/issues/" + issue;
+}
+
 /* UX-28: a board-wide index of mission-id → its GitHub issue number, captured on
    every render. A logged bug carries `parentMission` (a mission id); to render
    the "child of #<parentIssue>" badge + GitHub link we resolve that id to its
@@ -1409,7 +1452,7 @@ function logBugBadge(m) {
   // a link only when we can build a GitHub url (repo + numeric parent issue).
   if (detailRepo && ref.issue) {
     var a = el("a", "logbug-badge", txt);
-    a.href = "https://github.com/" + detailRepo + "/issues/" + ref.issue;
+    a.href = ghIssueUrl(detailRepo, ref.issue);
     a.target = "_blank"; a.rel = "noopener";
     a.title = "logged bug — open the parent mission issue";
     a.addEventListener("click", function (e) { e.stopPropagation(); });
@@ -1430,6 +1473,10 @@ function render(board) {
   var keepFocus = focusedMissionId();
   LAST_BOARD = board; // FIX-A: cache for forced client-only repaints (scanning band).
   indexIssues(board); // UX-28: refresh the id→issue index for parent resolution.
+  // BEFORE a single card is built: cardNode → logBugBadge needs the repo + forge
+  // host to make its badge a LINK. renderMeta below sets the same two, but it
+  // runs after this loop, which on a first paint left the badge a dead <span>.
+  captureForgeIdentity(board.meta);
   var root = document.getElementById("board");
   root.innerHTML = "";
   STAGE_META.forEach(function (meta) {
@@ -2163,8 +2210,10 @@ function fileBaseFreshnessBlock() {
 /* S70-A: render "which repo am I attached to" + adapter/mode hint in the topbar.
    Depends only on the board shape (board.meta), updated on every live render. */
 function renderMeta(meta) {
-  // capture the attached repo for the detail "View on GitHub" link (UX-14).
-  detailRepo = (meta && meta.repo) || null;
+  // capture the attached repo + forge host for the board's GitHub links. render()
+  // already did this before it built the cards (it has to — see
+  // captureForgeIdentity); repeated here so renderMeta stays correct on its own.
+  captureForgeIdentity(meta);
   var host = document.getElementById("repoMeta");
   if (!host) return;
   host.innerHTML = "";
@@ -5481,7 +5530,7 @@ function renderDetail(mi) {
   var ghRepo = mi.repo || (mi.meta && mi.meta.repo) || detailRepo;
   if (ghRepo && mi.issue) {
     var gh = el("a", "btn", "↗ View on GitHub");
-    gh.href = "https://github.com/" + ghRepo + "/issues/" + mi.issue;
+    gh.href = ghIssueUrl(ghRepo, mi.issue);
     gh.target = "_blank"; gh.rel = "noopener";
     gh.addEventListener("click", function (e) { e.stopPropagation(); });
     actions.appendChild(gh);

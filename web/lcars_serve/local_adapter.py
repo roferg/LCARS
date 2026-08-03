@@ -77,12 +77,24 @@ _DETECT_MARKER_PRUNE = ("bin", "obj", ".git", "node_modules")
 # spec/ + test/ dir EXISTENCE is ruby runner evidence (detect_test_cmd S145).
 _DETECT_MARKER_DIRS = ("spec", "test")
 
+# S168 — a DNS hostname and nothing else. Labels of alphanumerics and hyphens,
+# dot-separated, no scheme, no path, no port, no whitespace. Anything else is
+# refused outright (see LocalAdapter.gh_host).
+_HOSTNAME_RE = re.compile(
+    r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$")
+
+# The "not asked yet" sentinel for the gh_host memo. Distinct from "" because ""
+# is a real, cacheable answer (github.com) — the common one, in fact.
+_UNRESOLVED = object()
+
 
 class LocalAdapter(object):
     name = "local"
 
     def __init__(self, repo_root, read_only=False, git_url_reader=None,
-                 readiness_script=None, base_freshness_script=None):
+                 readiness_script=None, base_freshness_script=None,
+                 host_adapter_script=None):
         # repo_root is the working tree; mission state lives under .git/lcars.
         self.repo_root = repo_root
         self.missions_dir = os.path.join(repo_root, ".git", "lcars", "missions")
@@ -111,6 +123,19 @@ class LocalAdapter(object):
         # re-renders on every SSE push must never trigger network I/O. It is
         # asked once, by its own endpoint, when the File console opens.
         self._base_freshness_script = base_freshness_script
+        # S168: the shared FORGE-HOST resolver (skills/lcars-run/host-adapter.sh
+        # `gh-host` → gh_hostname — the same derivation `gh api --hostname` is
+        # pinned with). The daemon SHELLS it and never re-derives the host in
+        # Python: LCARS already carries the scar of that choice (the zero-collect
+        # phrase list exists in two implementations and they have drifted, so one
+        # surface is honest and the other is blind). Injectable for tests.
+        #
+        # Resolved ONCE for the daemon's life — see gh_host(). `_UNRESOLVED` is a
+        # sentinel rather than None/"" because the EMPTY answer (github.com, the
+        # common case) must be cached too, or a github.com daemon would shell out
+        # on every render forever.
+        self._host_adapter_script = host_adapter_script
+        self._gh_host_memo = _UNRESOLVED
 
     # -- the public surface ---------------------------------------------------
     def _model_aliases(self):
@@ -174,7 +199,79 @@ class LocalAdapter(object):
         tr = self._test_readiness()
         if tr is not None:
             meta["testReadiness"] = tr
+        # S168: the FORGE HOST this repo lives on, for the board's "view on
+        # GitHub" links. Purely ADDITIVE and present ONLY on a non-github.com
+        # host: `gh_hostname` returns EMPTY for github.com (and for a repo with
+        # no origin) BY DESIGN, so those boards carry no `ghHost` key at all and
+        # their payload is byte-identical to before this round — which matters,
+        # because that is every other user's board. A BARE HOST, never a URL: the
+        # front end pins the `https://` scheme itself, so no value arriving from
+        # here can ever become the scheme.
+        gh = self.gh_host()
+        if gh:
+            meta["ghHost"] = gh
         return meta
+
+    def _resolve_host_adapter_script(self):
+        """The host adapter path: injected → env → in-repo → installed.
+
+        Mirrors _resolve_readiness_script exactly, and honours the SAME
+        `LCARS_HOST_ADAPTER` env var the shell callers already use to point at a
+        stubbed adapter — one override, both layers.
+        """
+        if self._host_adapter_script:
+            return self._host_adapter_script
+        env = os.environ.get("LCARS_HOST_ADAPTER")
+        if env:
+            return env
+        here = os.path.dirname(os.path.abspath(__file__))
+        in_repo = os.path.normpath(os.path.join(
+            here, "..", "..", "skills", "lcars-run", "host-adapter.sh"))
+        if os.path.isfile(in_repo):
+            return in_repo
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        return os.path.join(home, ".claude", "skills", "lcars-run",
+                            "host-adapter.sh")
+
+    def gh_host(self):
+        """The forge host this repo lives on, or "" for github.com / no remote.
+
+        Shells `host-adapter.sh gh-host` (ADR-002: the daemon dispatches to the
+        skill; it never re-derives the host in Python) with the board's repo as
+        cwd. A pure read of the origin remote — no gh, no network, no spend.
+
+        RESOLVED ONCE, for the daemon's whole life. The server's poll loop ticks
+        about once a second and `_meta()` runs on every board build, so anything
+        less than a permanent memo would be a subprocess storm. The origin remote
+        does not change under a running daemon; if it ever did, the daemon is
+        restarted with it. `__main__.build_adapter` warms this at startup so the
+        very first board render costs nothing either.
+
+        ANY failure — script missing, non-zero exit, a value that is not a
+        hostname — degrades to "", which is exactly today's behaviour (the front
+        end falls back to github.com). Never a broken link, never a raise.
+        """
+        if self._gh_host_memo is not _UNRESOLVED:
+            return self._gh_host_memo
+        host = ""
+        script = self._resolve_host_adapter_script()
+        try:
+            proc = subprocess.run(
+                ["bash", script, "gh-host"], cwd=self.repo_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=10)
+            if proc.returncode == 0:
+                host = (proc.stdout or b"").decode("utf-8", "replace").strip()
+        except Exception:
+            host = ""
+        # Defence in depth. The shell strips scheme, user@, path and port, so a
+        # real remote cannot produce anything else — but this value is spliced
+        # into a URL the captain clicks, and "it cannot happen upstream" is not a
+        # guarantee downstream. A hostname, or nothing.
+        if not _HOSTNAME_RE.match(host):
+            host = ""
+        self._gh_host_memo = host
+        return host
 
     def _resolve_readiness_script(self):
         """The readiness helper path: injected → env → in-repo → installed."""

@@ -4,6 +4,60 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.8.2 — 2026-08-03
+
+**"View on GitHub" now opens the forge the repo is actually on.** Captain-
+reported: earlier work taught the harness to talk to GitHub Enterprise, so stage
+comments and mission-log issues land correctly on a `*.ghe.com` host — but the
+viewscreen's links still string-concatenated `https://github.com/`, so every
+click landed on the wrong forge and had to be hand-edited.
+
+- The two link sites (`board.js`, the card's linked-ref badge and the mission
+  detail's View-on-GitHub) now build their URL through one helper fed by the
+  repo's real forge host. The host comes from the SINGLE existing
+  implementation — `host-adapter.sh`'s `gh_hostname`, exposed as a new `gh-host`
+  op — rather than a second copy in Python. That was deliberate: this release
+  also ships alongside a ledgered bug caused by exactly that pattern (the
+  zero-collect phrase list is duplicated between `lcars-init` and `run.sh` and
+  has since drifted, leaving one surface honest and the other blind).
+- **Resolved ONCE per daemon lifetime**, warmed at startup and memoized —
+  including the empty answer, or every github.com daemon would shell out
+  forever. Measured from outside with a logging `git` shim: a board left open
+  60s makes exactly **1** `git remote get-url` call on the branch vs 0 on main,
+  with the pre-existing per-tick repo-name lookup unchanged at 17 either way.
+- **github.com users pay nothing.** The board payload is byte-identical to the
+  previous release — verified by running identical fixtures through both
+  daemons and comparing bytes (4683 for a github.com repo, 4682 for a repo with
+  no remote), with `meta` carrying no new key at all.
+- Generic host resolution, not a `.ghe.com` special case: a self-hosted GHES on
+  `github.internal.acme.com` works, as do scp-style `git@host:owner/repo`,
+  `ssh://` with a port, `git://`, uppercase hosts, and trailing slashes. A repo
+  with no origin — or no git at all — still renders today's links rather than a
+  broken one.
+- Fixed alongside, because it made the first link unmeasurable: the logged-bug
+  badge rendered as a dead `<span>` on FIRST paint and only became a link if a
+  later re-render happened along, because the repo identity was captured at the
+  END of `render()`, after the cards were built.
+
+Proven in real headed Chrome against a real daemon reading a real git remote,
+reading the anchor's RESOLVED href — plus four red controls, including one that
+silences the daemon while leaving the front end perfect, which is the failure no
+Node DOM harness can see. Rig committed at `tests/drives/browser/ghe-links.sh`.
+
+**Known and NOT fixed in this release** (found by the session's own tester,
+shipped knowingly):
+
+- **The GitHub adapter still links to github.com.** The fix landed on the local
+  adapter only; `--adapter github` / `LCARS_SERVE_ADAPTER=github` — the
+  view-only mode the viewscreen SKILL.md advertises as the hosted board — never
+  gained the host. Not the default path, but it is exactly where an enterprise
+  user would point a shared board.
+- **A stale host survives `git remote set-url` on a running daemon.** The repo
+  name is re-read every poll while the host is cached for the daemon's life, so
+  changing the remote under an open board yields a HYBRID url — new repo, old
+  host — pointing at neither. Restarting the daemon clears it. Fix is to cache
+  both or neither.
+
 ## 2026.8.1 — 2026-08-02
 
 The **quality-of-life round** (sessions 158–167): base freshness, backgroundable

@@ -152,6 +152,63 @@ The seam is one more `smoke.sh` env var, `LCARS_BROWSER_LEGEND_CHECK` (an
 expectation file naming the labels, their hues and a contrast floor). Unset by
 default; with it unset `smoke.sh` runs exactly the code it ran before S168.
 
+## The fourth rig: `ghe-links.sh` (S168)
+
+```bash
+bash tests/drives/browser/ghe-links.sh              # the product (4 scenarios)
+bash tests/drives/browser/ghe-links.sh --calibrate   # the RED CONTROLS
+bash tests/drives/browser/ghe-links.sh --all         # both
+```
+
+The captain's repos live on a GitHub **Enterprise** host. The board's two issue
+links — the `↗ View on GitHub` button in a mission's detail overlay, and the
+`⊗ BUG · child of #<n>` badge on a logged bug's card — both built their URL by
+concatenating a literal `https://github.com/`, so every link opened a github.com
+repository that does not exist and the host had to be hand-edited after every
+click.
+
+**Why this one needs a browser even though the front-end change is trivial.**
+The fix is only real if the *daemon* delivers `meta.ghHost` to the live page, and
+every harness under `web/tests/` calls the builders itself — so all of them stay
+green against a daemon that sends nothing at all. The rig's second red control is
+exactly that: front end perfect, daemon silenced. It goes red here and nowhere
+else.
+
+So the verdict is the **resolved `href` property** read off the live anchor —
+the URL a click would actually open — against a real daemon reading a real git
+remote. Four scenarios, each a real `git init` with a real origin:
+
+| scenario | origin | links must resolve to |
+|---|---|---|
+| enterprise | `https://github.ghe.com/…` | `github.ghe.com` |
+| github.com | `https://github.com/…` | `github.com` — **the one that must never break** |
+| no-remote | *(a real repo, no origin)* | `github.com`, and no broken link |
+| scp-style | `git@github.ghe.com:owner/repo` | `github.ghe.com` |
+
+Entirely offline: which forge a repo lives on is a question about its origin
+**URL**, and naming a remote never contacts it. No network, no GitHub account,
+no spend.
+
+`--calibrate` patches a copy of `web/` four ways and requires a red on each: the
+front end **hardcoding github.com again** (the bug verbatim), the **daemon going
+silent** while the front end stays perfect, the daemon sending the **wrong**
+host, and **github.com broken for everyone else** (run against the github.com
+scenario, so the regression guard is shown to have teeth rather than asserted to).
+
+Three more `smoke.sh` seams, all unset by default: `LCARS_BROWSER_ORIGIN` (make
+the fixture a real git repo with that origin, or `-` for one with none),
+`LCARS_BROWSER_LOGBUG=1` (plant the logged-bug child card that carries the second
+link) and `LCARS_BROWSER_GHLINK_CHECK` (the expectation file). The deliverable is
+`gh-links.png`; the numbers are `ghlink-check.json`.
+
+**What it caught beyond the reported bug**: measured 2026-08-03, the logged-bug
+badge rendered as a dead `<span>` on a *first* paint — `renderMeta` ran at the
+END of `render()`, after the cards were built, so `detailRepo` was still null
+while `cardNode` was deciding whether the badge could be a link at all. Only a
+later re-render made it one. A node harness could not see it either, until it was
+changed to read the badge **render built** instead of calling `logBugBadge`
+itself with the globals already populated.
+
 ## Exit codes
 
 | code | meaning |

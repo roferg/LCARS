@@ -163,5 +163,62 @@ check "10c. init.sh no longer hardcodes the github.com readout host" \
 check "10d. update.sh no longer hardcodes it either" \
   '! grep -q "on github.com/\$GH_REPO" "$REPO_ROOT/skills/lcars-update/update.sh"'
 
+# --- 7. the `gh-host` op: gh_hostname, ASKABLE from outside bash -----------
+# S168: the VIEWSCREEN's "view on GitHub" links string-concatenated
+# "https://github.com/", so on an enterprise repo every link the captain clicked
+# landed on a github.com repository that does not exist and had to be hand-edited.
+# The daemon must not re-derive the host in Python — LCARS already carries a
+# drifted-duplicate-list scar from exactly that (the zero-collect phrase list
+# lives in two places and one is now blind). So gh_hostname is exposed as an op
+# and the daemon SHELLS it (ADR-002: the board dispatches to the skill).
+#
+# Same contract as the internal helper, deliberately: EMPTY for github.com, so
+# the daemon's payload can omit the field entirely and a github.com board stays
+# byte-identical.
+gh_host_of() {  # $1 = repo dir; echoes the op's stdout verbatim
+  ( cd "$1" && bash "$ADAPTER" gh-host ) 2>/dev/null
+}
+check "11a. gh-host echoes the enterprise host" \
+  '[ "$(gh_host_of "$R1")" = "github.ghe.com" ]'
+check "11b. gh-host echoes NOTHING for github.com (the byte-identity contract)" \
+  '[ -z "$(gh_host_of "$R4")" ]'
+check "11c. gh-host echoes nothing for a repo with no origin" \
+  '[ -z "$(gh_host_of "$R6")" ]'
+check "11d. gh-host parses an scp-style enterprise remote" \
+  '[ "$(gh_host_of "$R7")" = "github.ghe.com" ]'
+check "11e. gh-host drops a :port" \
+  '[ "$(gh_host_of "$R8")" = "git.internal.corp" ]'
+check "11f. gh-host exits 0 even where there is no forge host" \
+  '( cd "$R6" && bash "$ADAPTER" gh-host >/dev/null 2>&1 )'
+R10="$(new_repo_with_remote "$GHE")"
+check "11g. LCARS_GH_HOST overrides gh-host too" \
+  '[ "$( ( cd "$R10" && LCARS_GH_HOST=other.example.com bash "$ADAPTER" gh-host ) )" = "other.example.com" ]'
+check "11h. gh-host does not need gh installed (it is a git question)" \
+  '[ "$( ( cd "$R1" && PATH=/usr/bin:/bin LCARS_GH_BIN=/nonexistent/gh bash "$ADAPTER" gh-host ) )" = "github.ghe.com" ]'
+
+# --- 8. DRIFT LOCK: the two host derivations must agree --------------------
+# gh_hostname (host-adapter.sh, for `gh api --hostname`) and lcars_gh_web_host
+# (lcars-common.sh, for a link the captain CLICKS) carry the same four stripping
+# rules in two files. Their contracts differ ONLY at the github.com/no-remote
+# default: the adapter says "" (leave the argv historic), the display helper says
+# "github.com" (that IS the right thing to print). Everywhere else they must
+# produce the SAME string, or the CLI readout and the board link will one day
+# name different hosts. A comment cannot enforce that; this table can.
+drift=0
+for u in "https://github.ghe.com/acme/widgets" \
+         "git@github.ghe.com:acme/widgets.git" \
+         "ssh://git@git.internal.corp:8443/acme/widgets.git" \
+         "https://github.com/acme/widgets" \
+         "git@github.com:acme/widgets.git" \
+         ""; do
+  RD="$(new_repo_with_remote "$u")"
+  a="$(gh_host_of "$RD")"
+  b="$(cd "$RD" && lcars_gh_web_host)"
+  [ -z "$a" ] && a="github.com"      # the ONE deliberate difference
+  [ "$a" = "$b" ] || { drift=1; printf '    drift on %s: adapter=%s common=%s\n' "${u:-<none>}" "$a" "$b"; }
+done
+check "12. gh_hostname and lcars_gh_web_host agree on every remote shape" \
+  '[ "$drift" -eq 0 ]'
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

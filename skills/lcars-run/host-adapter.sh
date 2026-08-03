@@ -44,6 +44,20 @@
 #     pr-view       [--number <n>|--head <branch>]        → echoes `state\t<S>` +
 #     (pr-status)                                            `mergedAt\t<v>` lines
 #     pr-close      [--number <n>|--head <branch>]        → closes (no merge)
+#     gh-host                                             → echoes the forge host
+#                                                            this repo lives on,
+#                                                            or NOTHING on
+#                                                            github.com / no
+#                                                            remote (S168). A
+#                                                            pure READ of the
+#                                                            origin remote — no
+#                                                            gh, no network — so
+#                                                            a non-bash caller
+#                                                            (the viewscreen
+#                                                            daemon) can ask THIS
+#                                                            implementation
+#                                                            instead of growing
+#                                                            a second one.
 #
 # Best-effort, jq-free, pure where possible. "Best-effort" means a forge failure
 # NEVER aborts the CALLER's process — the adapter does not `die`/`exit` on a forge
@@ -398,5 +412,6 @@ case "$OP" in
   pr-merge)      github_pr_merge      "$@" ;;
   pr-view|pr-status) github_pr_view   "$@" ;;
   pr-close)      github_pr_close      "$@" ;;
+  gh-host)       gh_hostname; exit 0 ;;
   *) die "unknown op '$OP'." ;;
 esac

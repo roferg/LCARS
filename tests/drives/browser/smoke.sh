@@ -57,6 +57,18 @@
 #                           resolved background colour, real box, contrast
 #                           against what is behind them. Unset = the rig behaves
 #                           exactly as it did before.
+#   LCARS_BROWSER_ORIGIN    (S168) make the fixture a REAL git repo with this
+#                           origin remote (or "-" for a real repo with none).
+#                           The daemon reads it to decide which FORGE the board's
+#                           "view on GitHub" links point at. Offline: naming a
+#                           remote never contacts it. Unset = not a git repo, as
+#                           before.
+#   LCARS_BROWSER_LOGBUG=1  (S168) plant a third mission — a LOGGED BUG child —
+#                           whose card carries the board's OTHER GitHub link.
+#                           Changes the fixture's card count; set EXPECT to 3.
+#   LCARS_BROWSER_GHLINK_CHECK    (S168) path to an expectation JSON. Makes the
+#                           driver read the RESOLVED href off every GitHub link
+#                           in the live DOM (board card badge + detail header).
 #   LCARS_BROWSER_CONSOLE_CHECK   (S164) path to an expectation JSON. Makes the
 #                           driver open the File console and MEASURE its
 #                           pre-flight line in the real cascade. Unset = the rig
@@ -210,6 +222,30 @@ export PATH="$OUT/shim:$PATH"
 
 # ── a fixture board on disk: two missions, no git, no gh, no model ──────────
 FIXTURE="$OUT/fixture"
+mkdir -p "$FIXTURE"
+
+# S168: the fixture is normally NOT a git repo at all (nothing here needs one).
+# LCARS_BROWSER_ORIGIN makes it a REAL one with a REAL origin remote, which is
+# what the daemon reads to decide which FORGE its "view on GitHub" links point
+# at. Naming a remote never contacts it, so this stays entirely offline — the
+# whole enterprise-host question is answerable with no network and no account.
+#   <url>  a real git repo whose origin is that url
+#   -      a real git repo with NO origin remote (the degenerate case)
+#   unset  today's behaviour exactly: not a git repo at all
+FIX_ORIGIN="${LCARS_BROWSER_ORIGIN:-}"
+if [ -n "$FIX_ORIGIN" ]; then
+  ( cd "$FIXTURE" && git init -q . && git config user.email t@t &&
+    git config user.name t ) >/dev/null 2>&1 ||
+    skip "could not git init the fixture at $FIXTURE"
+  if [ "$FIX_ORIGIN" != "-" ]; then
+    ( cd "$FIXTURE" && git remote add origin "$FIX_ORIGIN" ) >/dev/null 2>&1 ||
+      skip "could not set the fixture's origin to $FIX_ORIGIN"
+    note "fixture:   origin $FIX_ORIGIN"
+  else
+    note "fixture:   a real git repo with NO origin remote"
+  fi
+fi
+
 mkdir -p "$FIXTURE/.git/lcars/missions"
 cat >"$FIXTURE/.git/lcars/config.json" <<EOF
 {"lcarsVersion": "$(cat "$REPO/VERSION" 2>/dev/null || echo 0.0.0)",
@@ -226,6 +262,22 @@ EOF
 }
 plant_mission "lcars-20260802-001" 4101 "Smoke: a mission in flight" "implement"
 plant_mission "lcars-20260802-002" 4102 "Smoke: a mission awaiting review" "verify"
+
+# S168: a LOGGED BUG child, only when asked for. Its card carries the second of
+# the board's two GitHub links — the "⊗ BUG · child of #<parent>" badge, which
+# links to the PARENT's issue. Off by default (it would change the fixture's
+# mission count, and every other caller's LCARS_BROWSER_EXPECT with it).
+if [ "${LCARS_BROWSER_LOGBUG:-}" = "1" ]; then
+  LB="$FIXTURE/.git/lcars/missions/lcars-20260802-003"
+  mkdir -p "$LB"
+  cat >"$LB/state.json" <<EOF
+{"id": "lcars-20260802-003", "type": "bug", "title": "Smoke: a logged bug",
+ "stage": "implement", "created": "2026-08-02T11:00:00Z", "model": "claude",
+ "githubIssue": 4103, "branch": "lcars/lcars-20260802-003", "base": "main",
+ "linked": true, "parentMission": "lcars-20260802-001"}
+EOF
+  note "fixture:   + a logged-bug child card (its badge links to the parent issue)"
+fi
 
 # ── S164: a STUB base-freshness reporter, when one is asked for ─────────────
 # The daemon shells the SHARED reporter (skills/lcars-init/base-freshness.sh)
@@ -381,6 +433,12 @@ if [ -n "${LCARS_BROWSER_CONSOLE_CHECK:-}" ]; then
   DRIVE_ARGS+=(--console-check "$LCARS_BROWSER_CONSOLE_CHECK")
   note "console:   the File console pre-flight will be measured too"
 fi
+if [ -n "${LCARS_BROWSER_GHLINK_CHECK:-}" ]; then
+  [ -f "$LCARS_BROWSER_GHLINK_CHECK" ] || \
+    skip "LCARS_BROWSER_GHLINK_CHECK points at no file: $LCARS_BROWSER_GHLINK_CHECK"
+  DRIVE_ARGS+=(--ghlink-check "$LCARS_BROWSER_GHLINK_CHECK")
+  note "ghlinks:   the board's GitHub links will be read off the live DOM"
+fi
 "$NODE_BIN" "$HERE/cdp.js" --devtools-port "$DEV_PORT" --url "$BOARD_URL" \
   --out "$OUT" --expect "$EXPECT" --timeout "$TIMEOUT_MS" "${DRIVE_ARGS[@]+"${DRIVE_ARGS[@]}"}"
 RC=$?
@@ -390,6 +448,7 @@ printf '\n'
 note "worker shim invocations: ${SHIM_CALLS:-0} (expected 0 — this rig only GETs)"
 printf 'screenshot: %s/board.png\n' "$OUT"
 [ -f "$OUT/legend.png" ] && printf 'screenshot: %s/legend.png  (the legend, close-up)\n' "$OUT"
+[ -f "$OUT/gh-links.png" ] && printf 'screenshot: %s/gh-links.png  (the detail overlay + its GitHub link)\n' "$OUT"
 [ -f "$OUT/file-console.png" ] && printf 'screenshot: %s/file-console.png  (the File console)\n' "$OUT"
 note "result:     $OUT/result.json"
 case "$RC" in
