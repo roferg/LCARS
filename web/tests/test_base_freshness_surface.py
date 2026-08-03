@@ -156,6 +156,27 @@ IN_PROGRESS = {
     "behindBy": None, "aheadBy": None, "baseSha": None,
     "checkedAt": "2026-07-31T09:00:00Z", "missionBranchAtBase": None,
 }
+# S164 — the ORDINARY case, and the most common one there is: local 'main' is a
+# few commits behind origin and fast-forwards cleanly, but the reporter behind
+# GET /api/base-freshness is a READ (LCARS_BASE_CHECK_ONLY=1), so nothing was
+# moved. The guard carries this QUIET on purpose (lcars-common.sh step 8b): the
+# captain's next action — filing — IS the fix, and shouting a warning whose only
+# remedy is the thing they were already doing is the "re-file reproduces the
+# identical warning forever" trap.
+#
+# Quiet is not the same as SILENT, though. Measured on a real fixture one commit
+# behind origin, the File console said nothing at all, and the captain ruled that
+# he wants to be TOLD — calmly. Reassurance, not a warning: no amber, no badge,
+# no command, no call to action.
+STALE_QUIET = {
+    "verdict": "stale", "loud": False,
+    "reason": "local 'main' is 1 commit(s) behind origin and fast-forwards "
+              "cleanly, but this was a READ-ONLY check — nothing was moved. "
+              "Filing a Mission brings 'main' up to date first.",
+    "fix": "", "fixNote": "", "blocker": "",
+    "behindBy": 1, "aheadBy": 0, "baseSha": "ccc3333",
+    "checkedAt": "2026-08-02T09:00:00Z", "missionBranchAtBase": None,
+}
 # A logged bug: its base IS its parent's branch. LCARS takes no position.
 CHILD_BASE = {
     "verdict": "child-base", "loud": False,
@@ -908,6 +929,89 @@ class TestFileConsolePreflight(unittest.TestCase):
                 line = self._line(self._console(rec))
                 self.assertTrue(line is None or line["hidden"],
                                 "a quiet verdict must not decorate the console")
+
+    # ── S164: QUIET IS NOT SILENT ─────────────────────────────────────────
+    # The captain, filing from a checkout one commit behind origin, saw an empty
+    # console: `loud` was false so the pre-flight rendered nothing. His ruling —
+    # tell me, quietly. One calm informational line saying he is behind and that
+    # filing brings him up to date. Explicitly NOT a warning.
+
+    def test_a_quiet_but_BEHIND_base_says_so_CALMLY(self):
+        line = self._line(self._console(STALE_QUIET))
+        self.assertIsNotNone(line, "a captain 1 commit behind was told nothing")
+        self.assertFalse(line["hidden"])
+        blob = " ".join(_texts(line))
+        self.assertIn(STALE_QUIET["reason"], blob,
+                      "the line must be the GUARD's own words, not a second "
+                      "freshness vocabulary invented in the front end")
+
+    def test_the_quiet_line_wears_NO_WARNING_TREATMENT(self):
+        """Reassurance, not an alarm. No ⚠ badge, no `Fix:` row, and the wrapper
+        is marked `quiet` so the amber panel styling cannot reach it. (The
+        COLOUR itself is not provable here — a node harness cannot resolve a
+        cascade; that is what tests/drives/browser/basefresh-quiet.sh is for.)"""
+        line = self._line(self._console(STALE_QUIET))
+        self.assertTrue(_has_class(line, "quiet"),
+                        "the quiet line must be marked so the amber panel "
+                        "styling cannot apply to it: %r" % (line["cls"],))
+        self.assertIsNone(_find(line, lambda n: _has_class(n, "bf-head")),
+                          "a ⚠ badge is an alarm, and this is not one")
+        self.assertIsNone(_find(line, lambda n: _has_class(n, "bf-fix")),
+                          "a Fix: row is a call to action, and this is not one")
+        blob = " ".join(_texts(line))
+        self.assertNotIn("⚠", blob)
+        self.assertNotIn("Fix:", blob)
+
+    def test_the_quiet_line_is_ONE_LINE(self):
+        line = self._line(self._console(STALE_QUIET))
+        self.assertEqual(len(_texts(line)), 1,
+                         "one calm line, not a block: %r" % (_texts(line),))
+
+    def test_a_LOUD_record_is_untouched_by_the_quiet_lane(self):
+        """Purely additive: the loud treatment is byte-for-byte what it was."""
+        line = self._line(self._console(STALE_DIRTY))
+        self.assertFalse(_has_class(line, "quiet"))
+        self.assertIsNotNone(_find(line, lambda n: _has_class(n, "bf-body")))
+        self.assertIsNotNone(_find(line, lambda n: _has_class(n, "bf-head")))
+        self.assertIsNotNone(_find(line, lambda n: _has_class(n, "bf-fix")))
+
+    def test_a_measured_ZERO_behind_is_still_silent(self):
+        """`current` is not news. Nothing to say, so nothing is said."""
+        self.assertTrue(self._line(self._console(CURRENT)) is None
+                        or self._line(self._console(CURRENT))["hidden"])
+
+    def test_a_never_MEASURED_distance_is_still_silent(self):
+        """`behindBy: null` means the check measured nothing — and a line about
+        being behind, drawn from a measurement that never happened, is the
+        reassuring lie `null` exists to prevent."""
+        for rec in (UNKNOWN_QUIET, CHILD_BASE):
+            with self.subTest(verdict=rec["verdict"]):
+                line = self._line(self._console(rec))
+                self.assertTrue(line is None or line["hidden"])
+
+    def test_a_base_ALREADY_BROUGHT_UP_TO_DATE_is_silent(self):
+        """`updated` carries the distance it MOVED (behindBy: 19), not a
+        distance the captain is still at — so "you are behind, filing fixes it"
+        would be false there. It cannot arrive through this endpoint anyway
+        (the reporter pins LCARS_BASE_CHECK_ONLY=1 and never moves a ref), but
+        the harness can hand it over, and the console must not invent news."""
+        line = self._line(self._console(UPDATED))
+        self.assertTrue(line is None or line["hidden"])
+
+    def test_the_quiet_line_sits_BELOW_the_idea_box_too(self):
+        """Same mount point as the loud one — it is the same wrapper — so the
+        S160 round-2 anti-reflow ruling covers it without a second rule."""
+        out = self._console(STALE_QUIET)
+        flat = self._flat(out)
+        idx_line = next(i for i, n in enumerate(flat)
+                        if _has_class(n, "file-basefresh"))
+        idx_idea = next(i for i, n in enumerate(flat) if n["tag"] == "textarea")
+        self.assertGreater(idx_line, idx_idea)
+
+    def test_filing_is_NEVER_blocked_by_the_quiet_line_either(self):
+        out = self._console(STALE_QUIET)
+        for b in _find_all(out["node"], lambda n: n["tag"] == "button"):
+            self.assertFalse(b["disabled"], "%r was disabled" % b["text"])
 
     def test_the_LOUD_unknown_still_shows_although_it_shares_a_verdict(self):
         """The allowlist trap again, on the console this time."""

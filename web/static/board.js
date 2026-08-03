@@ -2079,6 +2079,39 @@ function baseFreshnessBlock(bf, cls) {
   return wrap;
 }
 
+/* S164 — THE QUIET LINE. Behind, and nothing for the captain to do about it.
+   The commonest state there is: local 'main' is a few commits behind origin and
+   fast-forwards cleanly, so the guard records it `stale` and DELIBERATELY QUIET
+   (lcars-common.sh step 8b) — the captain's next action, filing, IS the fix, and
+   a warning whose only remedy is the thing they were already doing reproduces
+   itself forever. Quiet, though, is not SILENT: filing one commit behind, the
+   console said nothing at all, and the captain ruled he wants to be told.
+
+   So this is REASSURANCE, and it is built to be unmistakable from the warning
+   above it: no ⚠ badge, no `Fix:` command, no amber — the wrapper is marked
+   `quiet` and the CSS strips the amber panel from it, one muted line of the
+   guard's OWN reason and nothing else.
+
+   The gate is `behindBy` — a MEASURED distance greater than zero. Not a verdict
+   allowlist: `loud` is a carried field precisely because two records can share a
+   verdict and mean opposite things (S158), and `behindBy: null` means the check
+   measured nothing, which is exactly the reassuring-zero lie the guard refuses
+   to tell. `updated` is the one exclusion, and it is a MEASUREMENT question, not
+   a vocabulary one: its `behindBy` is the distance LCARS already MOVED, not one
+   the captain is still at, so "filing brings it up to date" would be false. It
+   cannot reach this console anyway — the reporter behind /api/base-freshness
+   pins LCARS_BASE_CHECK_ONLY=1 and never moves a ref — but a surface that would
+   invent news if it ever did is a surface waiting to lie. */
+function baseFreshnessQuietLine(bf) {
+  if (!bf || typeof bf.behindBy !== "number" || bf.behindBy <= 0) return null;
+  if (bf.verdict === "updated") return null;
+  var copy = baseFreshnessCopy(bf);
+  if (!copy || !copy.reason) return null;
+  /* copy.reason, not a sentence of our own: ONE voice for the base's state
+     across the pill, the detail block and this line (see baseFreshnessCopy). */
+  return el("div", "bf-quiet", copy.reason);
+}
+
 /* The File-console PRE-FLIGHT line. The whole point of the session: a stale or
    dirty base is named on the console the Mission is filed from, not discovered
    afterwards in stdout nobody reads.
@@ -2110,12 +2143,16 @@ function fileBaseFreshnessBlock() {
     .then(function (r) { return r.json(); })
     .then(function (d) {
       var bf = d && d.baseFreshness;
-      /* `loud` is re-checked here only because this endpoint reports on the
-         REPO (no Mission has been filed yet), so unlike the card payload the
-         quiet records were never filtered out upstream. */
-      if (!bf || !bf.loud) return;
-      var block = baseFreshnessBlock(bf, "bf-body");
+      /* `loud` is read here only because this endpoint reports on the REPO (no
+         Mission has been filed yet), so unlike the card payload the quiet
+         records were never filtered out upstream. It picks the TREATMENT now
+         rather than deciding whether to speak at all: loud → the warning block,
+         unchanged; quiet-but-behind → the calm line (S164). */
+      if (!bf) return;
+      var block = bf.loud ? baseFreshnessBlock(bf, "bf-body")
+                          : baseFreshnessQuietLine(bf);
       if (!block) return;
+      if (!bf.loud) wrap.className = "file-basefresh quiet";
       wrap.appendChild(block);
       wrap.hidden = false;
     })

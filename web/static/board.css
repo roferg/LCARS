@@ -678,6 +678,24 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .det-basefresh .bf-note,.file-basefresh .bf-note{margin-top:6px;
   font-size:12px;line-height:1.5;color:var(--lcars-text,#eee);opacity:.75}
 
+/* ── S164: the QUIET pre-flight line — reassurance, never a warning ──────────
+   The captain is a commit or two behind and filing will bring him up to date.
+   He asked to be TOLD, not WARNED, so this must be unmistakable from the amber
+   block above: NO panel, NO ring, NO amber, no badge and no command. It is
+   metadata — the guard's own sentence in the reading face, dimmed.
+
+   BOTH declarations are needed and both are DELIBERATELY more specific than the
+   rule they undo: `.det-basefresh,.file-basefresh` (0,1,0) paints the amber
+   panel, and a same-specificity override would be decided by source ORDER
+   alone — which is how S162 shipped an amber warning that rendered as muted
+   metadata. `.file-basefresh.quiet` is (0,2,0) and wins on specificity, wherever
+   it sits in the file. Proved by resolving the real cascade in a real browser
+   (tests/drives/browser/basefresh-quiet.sh), never by the rule existing. */
+.file-basefresh.quiet{background:none;box-shadow:none;padding:0;
+  margin-bottom:16px}
+.file-basefresh.quiet .bf-quiet{font-size:12px;line-height:1.5;
+  color:var(--lcars-text,#eee);opacity:.8}
+
 /* ── form fields (mock .field) ── */
 .field{margin-bottom:16px}
 .field label{display:block;font-family:var(--font-display);text-transform:uppercase;

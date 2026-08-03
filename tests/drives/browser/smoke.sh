@@ -48,6 +48,14 @@
 #   LCARS_BROWSER_HEADED=1  run a visible Chrome window instead of headless
 #   LCARS_BROWSER_TIMEOUT   ms to wait for the paint (default 30000, min 2000 —
 #                           below that nothing could be proven, so it is a skip)
+#   LCARS_BROWSER_BASEFRESH       (S164) path to a base-freshness record JSON.
+#                           Planted as a STUB reporter the daemon shells for
+#                           GET /api/base-freshness, so the pre-flight can be
+#                           driven at a chosen repo state without one existing.
+#   LCARS_BROWSER_CONSOLE_CHECK   (S164) path to an expectation JSON. Makes the
+#                           driver open the File console and MEASURE its
+#                           pre-flight line in the real cascade. Unset = the rig
+#                           behaves exactly as it did before.
 # ============================================================================
 set -uo pipefail
 
@@ -214,6 +222,27 @@ EOF
 plant_mission "lcars-20260802-001" 4101 "Smoke: a mission in flight" "implement"
 plant_mission "lcars-20260802-002" 4102 "Smoke: a mission awaiting review" "verify"
 
+# ── S164: a STUB base-freshness reporter, when one is asked for ─────────────
+# The daemon shells the SHARED reporter (skills/lcars-init/base-freshness.sh)
+# for GET /api/base-freshness and resolves it injected → LCARS_BASE_FRESHNESS_
+# SCRIPT → in-repo → installed (local_adapter._resolve_base_freshness_script).
+# Pointing that env at a stub is how a given repo STATE — one commit behind, a
+# dirty tree, an unreachable origin — is put in front of a real browser without
+# constructing the git situation that produces it. The record is the guard's
+# own JSON either way; nothing here re-words a verdict.
+BASEFRESH_REC="${LCARS_BROWSER_BASEFRESH:-}"
+if [ -n "$BASEFRESH_REC" ]; then
+  [ -f "$BASEFRESH_REC" ] || skip "LCARS_BROWSER_BASEFRESH points at no file: $BASEFRESH_REC"
+  cp "$BASEFRESH_REC" "$OUT/basefresh-record.json"
+  cat >"$OUT/basefresh-stub.sh" <<EOF
+#!/usr/bin/env bash
+cat "$OUT/basefresh-record.json"
+EOF
+  chmod +x "$OUT/basefresh-stub.sh"
+  export LCARS_BASE_FRESHNESS_SCRIPT="$OUT/basefresh-stub.sh"
+  note "basefresh: stub reporter serving $BASEFRESH_REC"
+fi
+
 # ── the daemon, on a FREE port (--port 0), against the fixture ──────────────
 # --port 0 means the kernel picks; two runs back to back cannot collide, and the
 # daemon prints the port it actually got.
@@ -334,14 +363,22 @@ fi
 note "chrome:    devtools :$DEV_PORT (pid $CHROME_PID)"
 
 # ── drive it ────────────────────────────────────────────────────────────────
+DRIVE_ARGS=()
+if [ -n "${LCARS_BROWSER_CONSOLE_CHECK:-}" ]; then
+  [ -f "$LCARS_BROWSER_CONSOLE_CHECK" ] || \
+    skip "LCARS_BROWSER_CONSOLE_CHECK points at no file: $LCARS_BROWSER_CONSOLE_CHECK"
+  DRIVE_ARGS+=(--console-check "$LCARS_BROWSER_CONSOLE_CHECK")
+  note "console:   the File console pre-flight will be measured too"
+fi
 "$NODE_BIN" "$HERE/cdp.js" --devtools-port "$DEV_PORT" --url "$BOARD_URL" \
-  --out "$OUT" --expect "$EXPECT" --timeout "$TIMEOUT_MS"
+  --out "$OUT" --expect "$EXPECT" --timeout "$TIMEOUT_MS" "${DRIVE_ARGS[@]+"${DRIVE_ARGS[@]}"}"
 RC=$?
 
 SHIM_CALLS=$(wc -l <"$OUT/worker-shim.log" 2>/dev/null | tr -d ' ')
 printf '\n'
 note "worker shim invocations: ${SHIM_CALLS:-0} (expected 0 — this rig only GETs)"
 printf 'screenshot: %s/board.png\n' "$OUT"
+[ -f "$OUT/file-console.png" ] && printf 'screenshot: %s/file-console.png  (the File console)\n' "$OUT"
 note "result:     $OUT/result.json"
 case "$RC" in
   0)

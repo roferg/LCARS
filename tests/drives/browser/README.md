@@ -56,6 +56,43 @@ It is also **not** a replacement for `web/tests/board_boot_harness.js` — that
 node harness is cheap, runs in the default suite, and goes red on the same cut.
 Keep both: the node one for every commit, this one for every visual session.
 
+## The second rig: `basefresh-quiet.sh` (S164)
+
+```bash
+bash tests/drives/browser/basefresh-quiet.sh              # the product
+bash tests/drives/browser/basefresh-quiet.sh --calibrate   # the RED CONTROLS
+bash tests/drives/browser/basefresh-quiet.sh --all         # both
+```
+
+`smoke.sh` is one click deep: it proves the board paints and nothing more. This
+one goes one click further, at *one* thing — the File console's base-freshness
+pre-flight — and it is the template for any future "does this actually reach the
+screen" question:
+
+1. it plants a **base-freshness record** (`LCARS_BROWSER_BASEFRESH`) as a stub
+   reporter, so a repo state — one commit behind, dirty, unreachable origin —
+   can be put in front of real Chrome without constructing the git situation;
+2. it clicks **File** and waits for the (asynchronous) pre-flight;
+3. it **measures** the line: a real non-zero bounding box, the colour the
+   cascade actually resolved, and that colour composited over whatever is really
+   painted behind it, as a contrast ratio. Never "the CSS rule exists" — S162
+   shipped an amber warning that rendered as muted metadata with exactly that
+   assertion green beside it;
+4. `--calibrate` patches a **copy** of `web/` four ways and requires the check to
+   go red on each: the line **absent**, the line **dressed as the warning**, the
+   line **with its quiet styling stripped** (amber panel, amber text) and the
+   line **muted into unreadability**. The last two exist because the first two
+   fail early, and an assertion no control ever exercises is an assertion nobody
+   has shown can go red.
+
+The screenshot is `file-console.png`; the numbers are `console-check.json`.
+**Open the screenshot** — it still only proves what it measured.
+
+Both seams are plain `smoke.sh` env vars, so any other console question can
+reuse them: `LCARS_BROWSER_BASEFRESH` (a record to serve) and
+`LCARS_BROWSER_CONSOLE_CHECK` (an expectation file). Neither is set by default,
+and with both unset `smoke.sh` runs exactly the code it ran before S164.
+
 ## Exit codes
 
 | code | meaning |
@@ -124,6 +161,8 @@ prunes older sibling dirs from its own `mktemp` namespace, keeping the newest 5
 | `LCARS_BROWSER_EXPECT` | `2` (the fixture's mission count) | visible cards required |
 | `LCARS_BROWSER_HEADED=1` | *(headless)* | watch it happen in a real window |
 | `LCARS_BROWSER_TIMEOUT` | `30000` | ms to wait for the paint. **Minimum 2000** — below that nothing could be proven, so it is a loud skip, never a verdict |
+| `LCARS_BROWSER_BASEFRESH` | *(unset)* | path to a base-freshness record JSON, planted as the stub reporter behind `GET /api/base-freshness` |
+| `LCARS_BROWSER_CONSOLE_CHECK` | *(unset)* | path to an expectation JSON — makes the driver open the File console and **measure** its pre-flight line |
 
 ### The seam serves the *whole* app
 
