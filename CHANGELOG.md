@@ -4,6 +4,86 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.8.1 — 2026-08-02
+
+The **quality-of-life round** (sessions 158–167): base freshness, backgroundable
+bug filing from the board, and a capstone that drove the whole round for real.
+Ten sessions on one branch, closed by a live drive on a real private GitHub repo
+with live workers — which is how most of what follows was found rather than
+assumed.
+
+- **A Mission filed from a stale checkout now reasons about the fresh tree.**
+  `ensure_base_current()` brings the Mission's base branch up to date before
+  filing and records an honest freshness verdict; a re-check runs again at drive
+  time. It NEVER blocks filing, never touches a dirty tree, and never resets,
+  force-updates, stashes or checks out anything — a mission branch is left
+  exactly as it is (`⊘ base … is a Mission branch`). Proven on a fixture whose
+  local `main` was one commit behind the commit that added the file the Mission
+  targeted: the reflog shows one ref move and the mission branch parented on the
+  fresh tip.
+
+- **The freshness verdict reached the surface Missions are actually filed from.**
+  The guard printed to stdout, which a captain filing from the board never sees.
+  A card badge, a detail line and a File-console pre-flight now carry it, backed
+  by a read-only `GET /api/base-freshness` that measures without moving a ref.
+  Gated on the record's CARRIED `loud` flag, never on a verdict allowlist —
+  `unknown` is both the silent no-remote case and the loud unreachable one, so an
+  allowlist provably cannot tell them apart. **Capstone amendment:** a base that
+  is behind but fast-forwards cleanly is no longer silent — `loud` now picks the
+  TREATMENT rather than deciding whether to speak, so that case gets one calm,
+  muted line ("1 commit behind … filing brings it up to date first") while the
+  loud cases keep their warning treatment byte-identically.
+
+- **The front-half Stages read the Mission's code structurally, not by request.**
+  Research, Validate, Plan and Plan Review resolved paths against the captain's
+  ambient checkout; the "read the Mission's branch" pin was a sentence in a
+  prompt, and a live worker was MEASURED ignoring it. Each now runs in a DETACHED
+  worktree at the Mission's branch sha. **A prose pin is not a mechanism.**
+
+- **Filing bugs from the board no longer dies with the dialog.** The Mission Log
+  console's File & Cost is backgroundable: the daemon owns the filing session, the
+  parent card carries a ◐ FILING & COSTING band, and closing the window mid-flight
+  leaves the work running. A "Fix Filed Bugs" control then opens the review and
+  dispatches the SAME endpoint the Go button always did — no second filing path,
+  and BUG-059's hold stands (filing never auto-proceeds into running).
+
+- **A folded bug's GitHub issue now CLOSES.** Previously a folded child was
+  relabelled `lcars:done` and left open — the shape seen on DX-Scorecard PR #77,
+  where seven children stayed open. The cure keys off the fold's EXIT STATUS, not
+  the refusal wording. Verified on real GitHub issues, on the harder REFUSAL path
+  (a bug correctly found not to reproduce still closes out).
+
+- **A deploy is no longer blind to its own writes.** Every `lcars launch` checkout
+  was cut inside the repo's `.git/`, which Vite's default `server.watch.ignored`
+  (`**/.git/**`) makes chokidar ignore wholesale: the dev server booted, served
+  pages, and never saw another change. The checkout now lands beside the repo,
+  keyed by canonical path; mission state stays under `.git/lcars`. Judged on the
+  RUNNING SERVER, never the path — outside `.git/` the served glob went 2→3 in
+  45ms; under it, still 2 at 60s.
+
+- **The Research column is no longer always empty.** `lcars:research` was applied
+  in exactly ONE place — inside the >20-question escalation branch — so a Mission
+  actually running Research still read `lcars:align`. The cause is structural:
+  `research` is the only `lcars:*` stage label with no `set_stage`, so the pointer
+  stays `align` for the whole Stage. Fixed label-only; grounding-mode Research on
+  logged bugs gets it too.
+
+- **`lcars init` no longer certifies a zero-test repo as online.** `node --test`
+  with no test files exits 0 printing `tests 0`, and init reported "TEST SYSTEMS
+  ONLINE — verified by a live run". The zero-collect guard knew six runners'
+  phrasings but not Node's own. The new pattern is anchored at both ends so a
+  healthy run's `tests 12`, `fail 0` and `suites 0` cannot match it.
+
+- **The "Child bug mission" legend swatch paints.** `docs/lcars.css` never defined
+  `--lcars-pink`, and this was the one use site without the `#ff66aa` fallback, so
+  the declaration was invalid at computed-value time — alpha 0 on a perfect 12×12
+  box with element, class, style attribute, CSS rule and layout all present.
+
+Rigs committed rather than discarded, under `tests/drives/`: a real-Chrome board
+smoke, the base-freshness quiet-line check, the legend-swatch check (each with red
+controls that genuinely fail when the feature is removed), and a deploy-watcher
+drive that keeps a deliberate under-`.git/` RED CONTROL.
+
 ## 2026.7.20 — 2026-07-29
 
 Three defects found on ONE real mission — `lcars-20260729-001`, a 12-ticket

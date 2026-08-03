@@ -51,9 +51,20 @@ var ISSUE_BY_ID = Object.create(null);
    A parent whose resolve-logs batch is in flight (children exist that are NOT all
    at verify) must lock its Verify actions; we derive that from this index. */
 var CHILDREN_BY_PARENT = Object.create(null);
+/* S163: which READ ADAPTER served this board (`board.meta.adapter`, ADR-003 —
+   "local" | "github"). Captured here because one S163 rule depends on a card
+   field the two adapters do not mean the same thing by: the github adapter
+   cannot see LOCAL events.jsonl, the driver lock or state.json, so it publishes
+   `dispatched`/`queued`/`running` as hardcoded `false` PLACEHOLDERS (its own
+   comments say so — "present, non-crashing, False"). Reading those as a
+   measurement on a forge board would let a card claim a batch has never been
+   driven when nothing there can know. `board.py` always fills this in (it
+   defaults to "local"), so in the product it is never unknown. */
+var BOARD_ADAPTER = null;
 function indexIssues(board) {
   ISSUE_BY_ID = Object.create(null);
   CHILDREN_BY_PARENT = Object.create(null);
+  BOARD_ADAPTER = (board && board.meta && board.meta.adapter) || null;
   (board.missions || []).forEach(function (m) {
     if (!m || m.id == null) return;
     ISSUE_BY_ID[String(m.id)] = m.issue || null;
@@ -75,6 +86,35 @@ function resolvingChildren(parentId) {
   var kids = CHILDREN_BY_PARENT[String(parentId)] || [];
   return kids.filter(function (c) {
     return c && (c.stage || "").toLowerCase() !== "done";
+  });
+}
+/* ── S163 fix round 7 (D2): the CLIENT's copy of `_waiting_children` ─────────
+   The bugs on this parent still waiting to be fixed — the review panel's rows,
+   and (because `Go ▸` spawns `resolve-logs --parent`) what the click will drive.
+
+   It exists because the card had been counting for itself with a DIFFERENT
+   rule. `resolvingChildren` excludes only `done`, so a child at `verify` — the
+   consolidated re-verify gate, i.e. work already finished — was still in the
+   card's count while the daemon's `_waiting_children` had long since dropped
+   it. The round-7 tester drove one of two filed bugs to `verify` by hand (the
+   recovery round 6's own bound prescribes) and read three numbers off one repo
+   at one instant: card 2, panel 1, Go 1.
+
+   The daemon's `waitingCount` is still the reading wherever it is published —
+   this is the fallback for a payload that carries none — so what matters here
+   is that the two rules AGREE. The exclusions are `_waiting_children`'s, in its
+   order, and any change there has to be mirrored here:
+
+     done / verify    the fix has landed, or is at its gate.
+     queued / running a driver already has it; re-offering invites a second.
+
+   The one exclusion it cannot mirror is "a Go already took this bug", which
+   lives in the daemon's dispatch record — and does not need mirroring, because
+   `logFixState` returns early on `m.logDispatch` before it ever gets here. */
+function waitingChildren(parentId) {
+  return resolvingChildren(parentId).filter(function (c) {
+    return (c.stage || "").toLowerCase() !== "verify"
+      && !c.queued && !c.running;
   });
 }
 function isResolvingLocked(m) {
@@ -204,6 +244,428 @@ function clearFinalizing(id) {
 }
 function isFinalizing(id) {
   return id != null && !!FINALIZING[String(id)];
+}
+
+/* S162 (backgroundable mission-log filing): the optimistic "filing" set — the
+   Mission-Log twin of FINALIZING. "File & Cost" DISPATCHES the S161
+   file-by-sessionId POST and CLOSES the console, so from that instant the PARENT
+   CARD is the only surface telling the captain anything. This map is the fast
+   half of that promise: it flips the card to the disabled "◐ FILING & COSTING…"
+   control + the persistent animated band on the click itself, with no round trip
+   and no SSE tick. The DURABLE half is the daemon's `logFiling` stamp, which a
+   reloaded tab reads instead (exactly the alignResume split).
+
+   It is deliberately NOT FINALIZING with a second meaning. A parked mission can
+   be finalizing an Align turn while a verify mission files logged bugs, and one
+   card can legitimately be doing BOTH — sharing a map would let either state
+   clear the other's band, and would make "is this mission busy?" a question with
+   two different right answers. One map per meaning (the S161-D2 lesson about two
+   meanings under one key, applied to state rather than copy).
+
+   The timeout is the estimator's scale, not the network's: filing runs the cost
+   estimator once PER logged bug, so a big batch is minutes. It is only a
+   backstop for a card whose daemon went away mid-flight — the server stamp
+   settles the normal case (clearFilingOnState). */
+var FILING = Object.create(null);
+var FILING_TIMEOUT_MS = 600000;
+
+function markFiling(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (FILING[key]) clearTimeout(FILING[key]);
+  FILING[key] = setTimeout(function () { clearFiling(key); refresh(); },
+    FILING_TIMEOUT_MS);
+}
+function clearFiling(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (FILING[key]) { clearTimeout(FILING[key]); delete FILING[key]; }
+}
+function isFiling(id) {
+  return id != null && !!FILING[String(id)];
+}
+
+/* S162 — the statuses a `logFiling` stamp can END on. `filed` is the clean one;
+   `partial` and `failed` are outcomes the captain has to see (see logFilingNote).
+   `previewed` and `filing` are deliberately absent: they are both live. */
+var LOG_FILING_TERMINAL = ["filed", "partial", "failed"];
+
+/* S162 — the ONE reading of a card's mission-log filing state. The band, the
+   control and the failure note all derive from this, so no two surfaces can
+   describe the same session differently (the S161-D2 lesson: one builder, or the
+   card and the console eventually contradict each other).
+
+   `filing` is the union of the two halves: the client map (instant, this tab
+   only) OR the server stamp (durable, survives a reload). Everything else comes
+   from the stamp alone — the client knows it dispatched a filing, it does not
+   know how the daemon got on, so it never guesses counts or reasons. */
+function logFilingState(m) {
+  var stamp = (m && m.logFiling && typeof m.logFiling === "object")
+    ? m.logFiling : null;
+  var status = (stamp && typeof stamp.status === "string") ? stamp.status : "";
+  var num = function (v) { return typeof v === "number" ? v : null; };
+  return {
+    stamp: stamp,
+    status: status,
+    filing: !!(m && isFiling(m.id)) || status === "filing",
+    terminal: LOG_FILING_TERMINAL.indexOf(status) !== -1,
+    bugCount: stamp ? num(stamp.bugCount) : null,
+    filedCount: stamp ? num(stamp.filedCount) : null,
+    // S163 fix round 3: bugs waiting to be fixed on the MISSION, across every
+    // report — the review panel's length and what `Go ▸` will drive. Absent on a
+    // pre-round-3 stamp, and `null` there rather than 0, so "the daemon did not
+    // say" is never read as "none".
+    waitingCount: stamp ? num(stamp.waitingCount) : null,
+    // the daemon's own words for a shortfall/failure. Never synthesised here.
+    error: (stamp && stamp.error) ? String(stamp.error) : ""
+  };
+}
+
+/* S162 — drop the optimistic flag once the SERVER has settled this filing.
+
+   Only on a TERMINAL status, or on the stamp vanishing altogether (the session
+   was discarded, or the captain's Go consumed it — either way there is nothing
+   left to be filing). NOT on "anything that isn't `filing`": the board cached at
+   the moment of the click still carries the session's PRE-dispatch `previewed`
+   stamp, so that rule would wipe the band one frame after drawing it — the
+   BUG-078 sticky-optimism lesson, which is precisely the flicker this band
+   exists to remove. Mirrors clearMergingOnState. */
+function clearFilingOnState(m) {
+  if (!m || m.id == null || !isFiling(m.id)) return;
+  var st = logFilingState(m);
+  if (!st.stamp || st.terminal) clearFiling(m.id);
+}
+
+/* S163 (the "Fix Filed Bugs" follow-through): the optimistic "the captain's Go
+   is dispatched" set — the third map in this family, and the same split as the
+   other two (client map for the instant, server stamp for the durable).
+
+   Why a flag is needed at all: the Go's own effects are ASYNC. `log_run` spawns
+   resolve-logs fire-and-forget and returns, and it is resolve-logs — seconds
+   later — that stamps each child `queued`. In that gap the board still looks
+   exactly like the PRE-Go board (children filed, none driven), which is the one
+   picture that must not re-offer the dispatch. This flag closes it for the tab
+   that clicked; `m.logDispatch` (the daemon's additive stamp) closes it for a tab
+   that reloaded.
+
+   The timeout is the dispatch's scale, not a batch's: resolve-logs only has to
+   BOOT and schedule, not finish. Two minutes is a backstop for a spawn that died
+   without ever touching a child — after it the card falls back to what disk says,
+   which is the honest answer when nothing else is known. */
+var LOGRUN = Object.create(null);
+var LOGRUN_TIMEOUT_MS = 120000;
+
+/* S163 fix round 4 (D1) — the steers a REFUSED Go handed back.
+
+   `Go ▸` closes the console optimistically (BUG-G: the dispatch is
+   fire-and-forget and the POST returns in milliseconds), so a refusal arrives
+   with nowhere to land. The refusal is the honest answer — a steer the daemon
+   could not resolve must not run the bug on a model the captain did not choose —
+   but a refusal that also EATS the instruction is the same loss as the silent
+   drop it replaced, one click later.
+
+   So the typed map is parked here, keyed by parent mission, and the next
+   `openLog` for that parent seeds its boxes from it. One reopen (the ⚙ control
+   is right there on the card) and the words are back, editable, with the
+   daemon's reason echoed beside the bug they belong to. Consumed on read: it is
+   a hand-off between two consoles, not a second source of truth. */
+var PENDING_STEERS = Object.create(null);
+function stashSteers(id, steers) {
+  if (id == null || !steers) return;
+  var any = false;
+  for (var k in steers) { if (steers[k]) { any = true; break; } }
+  if (any) PENDING_STEERS[String(id)] = steers;
+}
+function takeSteers(id) {
+  if (id == null) return null;
+  var key = String(id), held = PENDING_STEERS[key];
+  delete PENDING_STEERS[key];
+  return held || null;
+}
+/* S163 fix round 5 (D1): a REFUSAL now reopens the review by itself, so the
+   opening console can no longer be the thing that consumes the stash — a
+   captain who closes that reopened console and comes back through the card's
+   ⚙ control would find their words gone, which is the loss the stash exists to
+   prevent. The console PEEKS; only a Go the daemon ACCEPTED consumes
+   (`takeSteers`, in the success callback), because only then are the words
+   spent. A later Go re-stashes whatever is in the boxes anyway, so the held map
+   can never go stale. */
+function peekSteers(id) {
+  if (id == null) return null;
+  return PENDING_STEERS[String(id)] || null;
+}
+
+function markLogRun(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (LOGRUN[key]) clearTimeout(LOGRUN[key]);
+  LOGRUN[key] = setTimeout(function () { clearLogRun(key); refresh(); },
+    LOGRUN_TIMEOUT_MS);
+}
+function clearLogRun(id) {
+  if (id == null) return;
+  var key = String(id);
+  if (LOGRUN[key]) { clearTimeout(LOGRUN[key]); delete LOGRUN[key]; }
+}
+function isLogRunDispatched(id) {
+  return id != null && !!LOGRUN[String(id)];
+}
+
+/* Drop the optimistic flag once the SERVER shows the dispatch really happened —
+   the daemon's own `logDispatch` stamp, or a child a DRIVER has visibly touched
+   (queued / running), or no non-done children left at all.
+
+   Every one of those keeps the control hidden by itself, so this can never
+   flicker the control back: it hands over from one suppressing reason to
+   another, exactly as clearFilingOnState hands the band over to the stamp.
+
+   S163 fix round 1 (D1): `dispatched` used to be in that list and had to come
+   OUT — it is `bool(events) || running` on the adapter, and the File & Cost
+   estimator writes `worker_usage` events onto every child at filing time, so it
+   is true on a batch nothing has ever driven. Reading it here was the same
+   mistake as reading it in logFixState, one handover earlier: the very first
+   repaint after the Go (which runs off the CACHED, pre-Go board) would have
+   seen "moved", dropped the flag, and put the control back under the captain's
+   cursor with resolve-logs already booting. */
+function clearLogRunOnState(m) {
+  if (!m || m.id == null || !isLogRunDispatched(m.id)) return;
+  if (m.logDispatch) { clearLogRun(m.id); return; }
+  var kids = resolvingChildren(m.id);
+  if (!kids.length) { clearLogRun(m.id); return; }
+  var moved = kids.some(function (c) {
+    return c && (c.queued || c.running);
+  });
+  if (moved) clearLogRun(m.id);
+}
+
+/* ── S163: is this parent's logged-bug batch FILED BUT NOT DISPATCHED? ────────
+   The ONE reading behind the card control, the detail control and their copy.
+
+   This is the window BUG-059 creates and nothing used to serve. Filing runs the
+   estimator on each bug and then STOPS, deliberately, so the captain can review
+   every cost/difficulty pill and steer a model before anything runs. A captain
+   who closed the console lands in that window with the review un-taken — and the
+   card's only control was S77's DISABLED "◐ resolving N logged bugs…", which is
+   derived from "the parent has linked, non-done, non-verify children" and is
+   therefore true the instant filing completes, while nothing is running and
+   nothing will run. A dead end that describes work in flight.
+
+   Telling the two apart cannot be done from the children's EXISTENCE — both
+   states have non-done, non-verify children. So it is measured, in this order:
+
+     isLogRunDispatched   this tab clicked Go. Instant, no round trip.
+     m.logDispatch        a Go for this parent HAS been dispatched (additive
+                          stamp; the daemon holds it in memory AND writes it to
+                          `<parent>/log-dispatch.json`, so it survives the
+                          daemon — see _mark_log_dispatched). Outranked by a
+                          live session, so a fresh report re-opens the review.
+     logFiling status     the daemon's live session. `filed` and `partial` are
+                          the window; the Go CONSUMES the session, so such a
+                          stamp still on the card is positive evidence no Go has
+                          been taken. `filing`/`previewed` belong to S162's band.
+     the children         no session and no dispatch record — the daemon
+                          restarted and its memory went with it, but the bugs are
+                          real linked children on disk. A batch NO DRIVER has
+                          ever touched is filed-but-idle. One child moving
+                          withdraws it — the batch is running, whatever the rest
+                          read.
+
+   S163 fix round 1 (D1) — what "no driver has touched it" is allowed to mean.
+   That last branch shipped reading `!c.dispatched && !c.queued && !c.running`
+   and was therefore DEAD CODE in production: `dispatched` is
+   `bool(events) || running` on the LocalAdapter, and File & Cost runs the
+   estimator on every bug it files, whose worker logs a `worker_usage` event
+   onto that child before the captain sees a single pill. So every filed child
+   is `dispatched` from birth, the branch never fired, and a daemon restart —
+   the exact case it existed for — dropped the captain back into S77's disabled
+   lock with no route to the review at all (and since S162 File & Cost ALWAYS
+   closes the console, this control is the only route there is).
+
+   The two signals that survive are the ones a DRIVER produces: resolve-logs
+   stamps `queued` on every bug it schedules, and `running` is a live driver
+   lock. `dispatched` is the ESTIMATOR's footprint and answers a different
+   question (BUG-062: "should this card read Start or Pause?"), which is why it
+   is left exactly as it is rather than redefined.
+
+   ── S163 fix round 2 (D1): a `partial` is IN this window ──────────────────
+   The first cut keyed on a clean `filed` only, reasoning that a shortfall was
+   S162's story to tell and that two statements on one card would confuse. The
+   tester measured what that cost: a batch of 3 with 2 really filed showed the
+   pre-S163 disabled "◐ resolving 2 logged bugs…" on card AND detail, with no
+   dispatch record, nothing running and nothing that ever would.
+
+   And the product contradicted ITSELF about it. `kill -9` the daemon, relaunch,
+   change nothing on disk — the live `partial` session is simply gone — and the
+   children fallback below rendered "⚙ FIX 2 FILED BUGS", live. One repo state,
+   two answers, decided by how long the daemon had been up. That is the sharpest
+   evidence the exclusion was wrong, and `test_the_live_session_and_the_
+   restarted_daemon_agree` pins it so it cannot come back.
+
+   So the gate is a MEASUREMENT, not a status name: `filedCount >= 1` — there is
+   something filed to fix. That reading also settles `failed` without a special
+   case, since `_settle_log_session` defines it as "none landed" (`partial if
+   filed else failed`), so its count is 0 and it is refused here; were a future
+   daemon ever to leave children on disk under a `failed`, the captain would get
+   the way forward rather than the lock, which is the safe direction.
+
+   What the widening must NOT do is bury the shortfall — S161 made "the unfiled
+   text is preserved verbatim and can be retried" a ship-blocker-grade promise.
+   Three things keep it: `shortfall` puts BOTH numbers in the label ("FIX 2 OF 3
+   FILED BUGS", never a bare "2"), the tooltip says the missing bugs are still
+   held and retryable, and S162's note is left exactly where it was so the
+   daemon's own reason stays on the card underneath.
+
+   Returns {ready, count, shortfall, source, sessionId}; `ready:false` means
+   every other surface behaves exactly as it did before this session. */
+/* How many of the LATEST batch never reached disk — 0 when nothing was lost, or
+   when the daemon did not give both numbers (never inferred from the children,
+   which cannot see a bug that was refused before it ever existed). One reader,
+   because two call sites now need the same sentence. */
+function logBatchShortfall(st) {
+  return (st.status !== "filed" && st.bugCount != null && st.filedCount != null)
+    ? Math.max(0, st.bugCount - st.filedCount) : 0;
+}
+
+function logFixState(m) {
+  var none = { ready: false, count: null, shortfall: 0, source: null,
+               sessionId: null, resume: false };
+  if (!m || m.id == null) return none;
+  // you cannot log bugs against a logged bug (BUG-046), so a bug child is never
+  // the parent of a filed batch.
+  if (isLogBug(m)) return none;
+  if (isLogRunDispatched(m.id)) return none;
+  /* S163 fix round 7 (D3): a dispatch suppresses the way forward only while the
+     drive it records EXISTS. Round 6 suppressed on the record's mere presence,
+     and the tester found what that costs when the resolve-logs dies: a card and
+     a detail both showing a permanently disabled "◐ RESOLVING 3 LOGGED BUGS…",
+     no affordance anywhere, and a 409 whose advice named an event that could not
+     occur. The daemon now MEASURES the resolver process and marks a record it
+     cannot evidence `stale` (see `_resolver_alive`), so a card that has stopped
+     being able to prove a drive stops claiming one — and offers the resume
+     instead. A live drive is untouched: `stale` is absent and this still
+     returns. */
+  var dispatch = (m.logDispatch && typeof m.logDispatch === "object")
+    ? m.logDispatch : null;
+  if (dispatch && !dispatch.stale) return none;
+  var st = logFilingState(m);
+  // a filing still in flight is S162's story — there is nothing to review yet.
+  if (st.filing) return none;
+  /* ── S163 fix round 3 (D1 + D2): the daemon's own count of WAITING bugs ────
+     `waitingCount` is "how many bugs on this MISSION are still waiting to be
+     fixed", across every report — the length of the review panel and, because
+     `Go ▸` spawns `resolve-logs --parent`, exactly what the click will drive.
+     It outranks the batch measurements below wherever the daemon publishes it,
+     and it cures two measured defects at once:
+
+       D2  the count SHRANK. A parent holding two undispatched bugs got a
+           second, 1-bug report; `filedCount` described that batch, so the card
+           read "⚙ FIX 1 FILED BUG" while three bugs waited and the Go ran all
+           three.
+       D1  an un-filed second report HID the first. A `previewed`/`failed`
+           stamp returned none here, so two bugs sitting on disk lost their only
+           route to the review — and the only way back was `Discard Preview`,
+           which destroys the unfiled bugs' authored text.
+
+     A stamp with no `waitingCount` is a pre-round-3 shape (or a hand-built
+     fixture); everything below is unchanged for it. */
+  /* S163 fix round 7 (D2): the MISSION-level count, published on every parent
+     card that has bugs waiting — session or no session, read-write board or
+     view-only. It outranks the session stamp's copy of the same number (they
+     come from the same `_waiting_children` call, so they cannot disagree; this
+     just makes which one is read unambiguous) and, more importantly, it is
+     present in the case that broke: a clean `filed` batch leaves no durable
+     record, so a restarted daemon published nothing and the card fell through
+     to counting children with a looser rule than the daemon's. */
+  var pub = typeof m.logWaitingCount === "number" ? m.logWaitingCount : null;
+  if (pub != null && pub > 0) {
+    return { ready: true, count: pub, shortfall: logBatchShortfall(st),
+             source: st.stamp ? "session" : "children",
+             sessionId: (st.stamp && st.stamp.sessionId) || null,
+             // S163 fix round 7 (D3): a run over bugs a DEAD drive already took
+             // is a resume, and the daemon will only grant it as one — so the
+             // control has to know, and its Go has to say so on the wire.
+             resume: !!dispatch };
+  }
+  if (pub === 0) return none;   // the daemon measured, and nothing is waiting.
+  if (st.stamp && st.waitingCount != null) {
+    if (st.waitingCount > 0) {
+      return { ready: true, count: st.waitingCount,
+               // the shortfall is still THIS BATCH's fact, so it is still read
+               // from this batch's two numbers. n + shortfall then reads as
+               // "bugs authored against this mission and not yet fixed", of
+               // which n are on disk — true in the one-report case the label
+               // was written for and true beside older waiting bugs too.
+               shortfall: logBatchShortfall(st),
+               source: "session", sessionId: st.stamp.sessionId || null,
+               resume: !!dispatch };
+    }
+    // waitingCount === 0 — nothing on this mission is waiting. Fall through: the
+    // children measurement below says the same thing and refuses too, and a
+    // `failed` stamp must still not speak for children it never touched.
+  }
+  if (st.stamp && st.terminal) {
+    // How many bugs THIS batch got onto disk. At `filed` the three sources
+    // agree, so the old precedence stands. At `partial` `bugCount` is the WHOLE
+    // batch — using it would be the exact overstatement this fix exists to
+    // prevent — so only the measured `filedCount`, or the children, may answer.
+    var n = st.filedCount != null ? st.filedCount
+          : (st.status === "filed" && st.bugCount != null
+              ? st.bugCount : resolvingChildren(m.id).length);
+    if (n) {
+      // ...and how many did NOT land. Stated only when BOTH numbers are the
+      // daemon's (never inferred from the children, which cannot see a bug that
+      // was refused before it ever existed).
+      var missing = logBatchShortfall(st);
+      return { ready: true, count: n, shortfall: missing, source: "session",
+               sessionId: st.stamp.sessionId || null, resume: !!dispatch };
+    }
+    // n === 0 — this batch put NOTHING on disk (`failed`, by the daemon's own
+    // definition). S163 fix round 2, the third face of D1, measured live on the
+    // real daemon after the first two were cured: a parent holding a
+    // filed-but-never-dispatched batch showed "⚙ FIX 4 FILED BUGS", then a
+    // SECOND report whose bugs were all refused flipped the same card back to
+    // the disabled "◐ resolving 4 logged bugs…" — with those four children
+    // untouched throughout, and a restart flipping it straight back again.
+    //
+    // A stamp is authoritative about the batch IT describes. One that landed
+    // nothing describes nothing on disk, so it must not speak for what was
+    // already there: fall through to the children measurement, which is exactly
+    // what a restarted daemon reads. S162's failure note still renders beside
+    // whatever that says, so the refusal is reported either way.
+  } else if (st.stamp) {
+    // `previewed` on a PRE-round-3 stamp — a live console is authoring against
+    // this parent and the daemon has not told us what is waiting. Reached only
+    // for a stamp with no `waitingCount` (the branch above answers otherwise),
+    // so this is the old bound preserved for the old shape, not a live rule:
+    // round 3 measured that this branch could bury bugs already on disk (D1).
+    return none;
+  }
+  // ...but ONLY where those fields are measurements. On a github board they are
+  // hardcoded placeholders (see BOARD_ADAPTER), so "no driver has ever touched
+  // this batch" is a thing that view cannot establish — and a card must not
+  // state what it cannot know. There the S77 lock, which needs only the
+  // children's stages, keeps the card.
+  if (BOARD_ADAPTER === "github") return none;
+  /* S163 fix round 7 (D2): the SAME measurement the daemon takes — see
+     `waitingChildren`. `resolvingChildren` was the wrong list here (it keeps a
+     child parked at its `verify` gate), which is how the card came to promise
+     two bugs over a panel of one. A batch where a driver has visibly touched
+     something still withdraws the control outright rather than counting the
+     remainder: that batch is in flight, and offering a partial re-run of it is
+     the double dispatch this round spent two rounds closing. */
+  var kids = waitingChildren(m.id);
+  if (!kids.length) return none;
+  var touched = resolvingChildren(m.id).some(function (c) {
+    return c && (c.queued || c.running);
+  });
+  if (touched) return none;
+  // shortfall 0, and that is not a claim that nothing was lost — it is the
+  // absence of one. With the session gone the daemon cannot know a third bug was
+  // ever authored, so the card counts what it can see and says no more (the
+  // S160/S161 rule: never state what the code cannot know). This is also exactly
+  // why the agreement test compares the VERDICT, not the wording.
+  return { ready: true, count: kids.length, shortfall: 0, source: "children",
+           sessionId: null, resume: !!dispatch };
 }
 
 /* Park & Align (F2 — resume mid-grill): the client-side resumable map {missionId: sid}.
@@ -489,6 +951,13 @@ function keyActivable(node) {
 /* ════════════════ CARD RENDER ════════════════ */
 function cardNode(m) {
   var rs = runState(m); // UX-17/20/21: derived run/pause lifecycle (one source).
+  // S162: reconcile the optimistic "filing" flag with what the server now says,
+  // BEFORE anything reads it — so the band, the control and the failure note all
+  // render off one settled answer within a single card build.
+  clearFilingOnState(m);
+  // S163: and the same for the optimistic "the Go is dispatched" flag, so the
+  // control, the S77 lock and the copy are all decided from one settled answer.
+  clearLogRunOnState(m);
   var card = el("div", "card");
   if (m.awaiting) card.className += " awaiting";
   // UX-21/UX-22: paused AND pausing both carry the .paused chrome (dimmed body),
@@ -600,6 +1069,13 @@ function cardNode(m) {
     // Informational only — matches the dialog, which offers STOP only once running.
     pills.appendChild(el("span", "pill", "▶ LAUNCHING…"));
   }
+  // S160: the base-freshness badge. Additive and condition-gated — the adapter
+  // sends `baseFreshness` ONLY for a record the guard carried LOUD, so a card
+  // with a healthy (or quietly-handled) base is byte-identical to before this
+  // round. It rides the pill row rather than a band of its own: it is a
+  // property OF this Mission (the tree it was cut from), not of the board.
+  var bfp = baseFreshnessPill(m.baseFreshness);
+  if (bfp) pills.appendChild(bfp);
   card.appendChild(pills);
 
   // UX-21/UX-22: a high-contrast status label for paused/pausing. It carries the
@@ -640,6 +1116,14 @@ function cardNode(m) {
     }
   }
 
+  // S162: a mission-log filing that ended in a shortfall or a refusal. The
+  // captain may have closed the console on dispatch, so the card is the surface
+  // that has to say so — never a band that simply stops. Condition-gated on a
+  // terminal-but-not-clean session (logFilingNote returns null otherwise), so a
+  // card with no live log session is byte-identical to before this round.
+  var lfNote = logFilingNote(m);
+  if (lfNote) card.appendChild(lfNote);
+
   if (m.progress) {
     var prog = el("div", "progress");
     var bar = el("div", "bar");
@@ -669,6 +1153,12 @@ function cardNode(m) {
   // gets the SAME persistent animated band — rendered on every repaint while
   // isAligning so the motion survives board rebuilds until the console opens.
   else if (isAligning(m.id)) card.appendChild(scanningPulse());
+  // S162: the mission-log filing band is deliberately OUTSIDE that chain. Those
+  // three are one mission's own state (it is either running, finalizing its
+  // Align, or opening a grill); a log filing is work on that mission's CHILDREN,
+  // on its own clock, and a card can honestly be doing both at once. Chaining it
+  // would make one of the two states silently invisible.
+  if (logFilingState(m).filing) card.appendChild(filingPulse());
 
   // ── inline controls (mock #card .card-ctrl): stage-appropriate write actions
   card.appendChild(cardControls(m));
@@ -685,6 +1175,14 @@ function cardNode(m) {
    gets a themed client-side pulse so a long silent stage never reads as stuck. */
 function cardControls(m) {
   var ctrl = el("div", "card-ctrl");
+  // S162: the disabled ◐ FILING & COSTING… affordance, rendered BEFORE the
+  // stage-appropriate control and never INSTEAD of it — a log filing is news
+  // about this mission's children, so the mission's own action (verify gate,
+  // Pause, START ALIGNMENT…) is untouched. Every branch below appends to this
+  // same host, so both survive whichever one runs. Absent with no filing in
+  // flight, which is what keeps an unaffected card byte-identical.
+  var lfCtrl = logFilingControl(m);
+  if (lfCtrl) ctrl.appendChild(lfCtrl);
   // BUG-067: the reapprove gate. The heal converged green and the engine STOPPED
   // here (awaiting-human, reconcileStatus == awaiting-reapprove) instead of
   // auto-merging. Render a CLEAR, PERSISTENT "Reapprove ▸" action so the captain
@@ -753,6 +1251,19 @@ function cardControls(m) {
     // disabled "Merge heal in progress…", no openVerify. Otherwise the live
     // Verify/Review PR action.
     var aff = verifyAffordance(m);
+    // S163: the one gated kind that is nonetheless LIVE. It is not the mission's
+    // own Verify action (Merge/Accept stay suppressed — there are unfixed bugs
+    // filed against this mission), it is the way forward for its logged-bug
+    // batch: reopen the cost review the captain skipped by closing the console.
+    if (aff.kind === "fix-filed") {
+      ctrl.appendChild(fixFiledControl(m, aff));
+      return ctrl;
+    }
+    // S163 fix round 2 (D2): a gated kind that deliberately draws NOTHING —
+    // the filing window, whose one honest statement (◐ FILING & COSTING…) was
+    // already appended above by logFilingControl. Returning here rather than
+    // falling through is what keeps the card from carrying both.
+    if (aff.suppress) return ctrl;
     if (aff.kind !== "action") {
       var gated = act("verify", btn(aff.label, aff.cls, null));
       gated.disabled = !!aff.disabled;
@@ -936,7 +1447,10 @@ function render(board) {
   });
   restoreCardFocus(keepFocus); // S140: keyboard focus survives the rebuild.
   var n = (board.missions || []).length;
-  setStatus(n + " active mission" + (n === 1 ? "" : "s"));
+  // S163 fix round 5: the ROUTINE line. It describes the board, so it yields to
+  // a verdict an action has just reported — this write is what erased a refusal
+  // 33 ms after it appeared.
+  setIdleStatus(n + " active mission" + (n === 1 ? "" : "s"));
   renderEmptyState(n); // S141: a cold board teaches itself (the ? mention).
   renderMeta(board.meta);
   renderMainDeploy(board.meta);
@@ -1018,7 +1532,10 @@ function renderMainDeploy(meta) {
           function (msg) {
             mainDeployStopping = false;
             renderMainDeploy(meta);
-            setStatus(msg);
+            // S163 fix round 5: a VERDICT — the band reverts to ■ STOP on the
+            // line above, so without this the screen shows a deploy still
+            // running and no word of the stop that was refused.
+            setVerdict(msg, "err");
           });
       }));
       stop.classList.add("deploy-stop");
@@ -1433,6 +1950,216 @@ function fileReadinessBlock(tr) {
   return wrap;
 }
 
+/* ════════════════ S160: BASE FRESHNESS ═══════════════════════════════════
+   S158 (file time) and S159 (drive time) already decide whether the branch a
+   Mission is cut from is the tree the rest of the world sees — and both print
+   their verdict to STDOUT, which the daemon swallows. A captain filing from
+   this board never saw a word of it. This is that verdict, on the board.
+
+   TWO RULES GOVERN EVERYTHING BELOW.
+
+   1. GATED ON `loud`, NEVER ON THE VERDICT NAME. The vocabulary is five words
+      (current / updated / stale / unknown / child-base) and `unknown` covers
+      BOTH the silent everyday no-remote repo and the loud unreachable-origin
+      one. Any allowlist of verdict names is therefore wrong about one of them,
+      always — which is exactly why S158 made loudness a CARRIED field. The
+      adapter already dropped every quiet record, so `m.baseFreshness` present
+      IS the condition; nothing here re-judges it.
+
+   2. THE COPY COMES FROM THE RECORD. The guard wrote one honest sentence
+      naming what happened (`reason`), the exact command that clears it (`fix`),
+      the prose beside it (`fixNote`) and WHAT is blocking (`blocker`). We
+      DISPLAY those. We do not compose a second opinion about git state here,
+      because two opinions is one more surface that can be wrong.
+
+   3. THE HEADLINE NAMES WHAT IS BLOCKING, NOT THE COMMIT COUNT. A dirty tree
+      that is also 1 behind used to render `⚠ BASE · 1 BEHIND` — and "1 behind"
+      is precisely the state the captain was ruled safe to ignore, while the
+      dirty tree that actually STOPPED the fast-forward appeared only in the
+      body. So the badge leads with the record's carried `blocker` and appends
+      the distance after it: the blocking thing first, the measurement second,
+      neither invented here. A record with no blocker (nothing is blocking) or
+      an unrecognised one falls back to the distance, so an older record — or a
+      lane a future LCARS adds — still renders something true.
+
+   `behindBy` may be null (never measured): a rendered "0 BEHIND" from a check
+   that measured nothing is the one lie a consumer cannot detect, so null reads
+   as an absence, not a zero.
+
+   AMBER, and NEVER A MODAL. Filing is never blocked by any of this — warn
+   loudly, file anyway. */
+
+/* blocker token → the two words the badge leads with. The tokens are the
+   guard's (skills/lcars-init/lcars-common.sh); this map only spells them for a
+   human. Anything not listed falls through to the distance — a badge that
+   guessed at an unknown token would be inventing the one thing rule 2 forbids. */
+var BASE_BLOCKER_LABEL = {
+  "dirty-tree": "DIRTY TREE",
+  "diverged": "DIVERGED",
+  "not-checked-out": "NOT CHECKED OUT",
+  "untracked-clobber": "WOULD OVERWRITE",
+  "merge-refused": "MERGE REFUSED",
+  "behind-trunk": "BEHIND TRUNK",
+  "unreachable": "ORIGIN UNREACHABLE",
+  /* NOT a shade of "unreachable": origin answered a ref listing instantly and
+     LCARS killed its own bounded fetch at its own deadline. Telling a captain
+     their reachable origin is unreachable is the copy-that-lies class, and this
+     lane is the one that still carries a runnable `fix`. */
+  "fetch-timeout": "FETCH TIMED OUT",
+  /* The token is deliberately generic (one lane covers rebase / merge /
+     cherry-pick / revert / bisect) and so is its headline — WHICH operation is
+     in the record's own sentence, where the guard wrote it. */
+  "operation-in-progress": "UNFINISHED GIT OPERATION",
+};
+
+function baseFreshnessCopy(bf) {
+  if (!bf) return null;
+  var v = bf.verdict || "";
+  var n = bf.behindBy;
+  var measured = (typeof n === "number");
+  var blocked = BASE_BLOCKER_LABEL[bf.blocker || ""] || "";
+  var badge;
+  if (v === "child-base") {
+    /* Not a fault, and not this Mission's to answer for: its base IS another
+       Mission's branch. The guard carries this quiet, so it should never reach
+       here — but if it ever does, the word must not be "stale". */
+    badge = "◇ BASE · PARENT MISSION";
+  } else if (blocked) {
+    /* The blocking condition leads; the distance rides behind it when it was
+       really measured (an unreachable origin measured nothing). */
+    badge = "⚠ BASE · " + blocked + (measured ? " · " + n + " BEHIND" : "");
+  } else if (v === "unknown") {
+    badge = "⚠ BASE UNVERIFIED";
+  } else if (v === "stale") {
+    badge = measured ? ("⚠ BASE · " + n + " BEHIND") : "⚠ BASE STALE";
+  } else {
+    badge = "⚠ BASE · " + String(v).toUpperCase();
+  }
+  return { badge: badge, reason: bf.reason || "", fix: bf.fix || "",
+           note: bf.fixNote || "" };
+}
+
+/* The compact card badge: one pill, the record's sentence as its tooltip. */
+function baseFreshnessPill(bf) {
+  var copy = baseFreshnessCopy(bf);
+  if (!copy) return null;
+  var pill = el("span", "pill basefresh", copy.badge);
+  /* The long form lives in the detail; on the card the reason is the hover, so
+     the badge is never the only thing the captain gets. `Fix:` labels ONLY a
+     runnable command — the guidance beside it gets its own unlabelled line, for
+     the same reason the detail block does (see baseFreshnessBlock). */
+  pill.title = copy.reason
+    + (copy.fix ? "\n\nFix: " + copy.fix : "")
+    + (copy.note ? "\n\n" + copy.note : "");
+  return pill;
+}
+
+/* The long form: the badge, the guard's sentence, and its command. Used by the
+   mission detail and by the File console's pre-flight line — ONE builder, so
+   the two can never describe the same record differently. */
+function baseFreshnessBlock(bf, cls) {
+  var copy = baseFreshnessCopy(bf);
+  if (!copy) return null;
+  var wrap = el("div", cls);
+  wrap.appendChild(el("div", "bf-head", copy.badge));
+  if (copy.reason) wrap.appendChild(el("div", "bf-why", copy.reason));
+  /* No empty Fix row: some conditions genuinely have no command that would
+     clear them (origin has to come back first), and an empty "Fix:" label
+     invites the captain to look for one that isn't there.
+
+     AND `Fix:` LABELS A COMMAND, NOTHING ELSE. A tester pasted two of these
+     into a shell — `git stash -u   (or commit your work)   then   git pull
+     --ff-only origin main` gave `syntax error near unexpected token '('`, and
+     `reach origin first (VPN / network / auth) — then …` was not a command at
+     all. The guard now keeps `fix` to one runnable line and puts the
+     alternative, the caveat and the manual step in `fixNote`, which renders
+     UNLABELLED below it: prose that is never dressed as something to run. */
+  if (copy.fix) wrap.appendChild(el("div", "bf-fix", "Fix: " + copy.fix));
+  if (copy.note) wrap.appendChild(el("div", "bf-note", copy.note));
+  return wrap;
+}
+
+/* S164 — THE QUIET LINE. Behind, and nothing for the captain to do about it.
+   The commonest state there is: local 'main' is a few commits behind origin and
+   fast-forwards cleanly, so the guard records it `stale` and DELIBERATELY QUIET
+   (lcars-common.sh step 8b) — the captain's next action, filing, IS the fix, and
+   a warning whose only remedy is the thing they were already doing reproduces
+   itself forever. Quiet, though, is not SILENT: filing one commit behind, the
+   console said nothing at all, and the captain ruled he wants to be told.
+
+   So this is REASSURANCE, and it is built to be unmistakable from the warning
+   above it: no ⚠ badge, no `Fix:` command, no amber — the wrapper is marked
+   `quiet` and the CSS strips the amber panel from it, one muted line of the
+   guard's OWN reason and nothing else.
+
+   The gate is `behindBy` — a MEASURED distance greater than zero. Not a verdict
+   allowlist: `loud` is a carried field precisely because two records can share a
+   verdict and mean opposite things (S158), and `behindBy: null` means the check
+   measured nothing, which is exactly the reassuring-zero lie the guard refuses
+   to tell. `updated` is the one exclusion, and it is a MEASUREMENT question, not
+   a vocabulary one: its `behindBy` is the distance LCARS already MOVED, not one
+   the captain is still at, so "filing brings it up to date" would be false. It
+   cannot reach this console anyway — the reporter behind /api/base-freshness
+   pins LCARS_BASE_CHECK_ONLY=1 and never moves a ref — but a surface that would
+   invent news if it ever did is a surface waiting to lie. */
+function baseFreshnessQuietLine(bf) {
+  if (!bf || typeof bf.behindBy !== "number" || bf.behindBy <= 0) return null;
+  if (bf.verdict === "updated") return null;
+  var copy = baseFreshnessCopy(bf);
+  if (!copy || !copy.reason) return null;
+  /* copy.reason, not a sentence of our own: ONE voice for the base's state
+     across the pill, the detail block and this line (see baseFreshnessCopy). */
+  return el("div", "bf-quiet", copy.reason);
+}
+
+/* The File-console PRE-FLIGHT line. The whole point of the session: a stale or
+   dirty base is named on the console the Mission is filed from, not discovered
+   afterwards in stdout nobody reads.
+
+   ASYNCHRONOUS AND NON-BLOCKING BY DESIGN. The block is appended EMPTY and
+   HIDDEN the instant the console opens, so the captain can start typing at
+   once; GET /api/base-freshness (a read — the reporter behind it never moves a
+   ref) fills it in when it answers. A quiet verdict, a null answer, or a failed
+   request all leave it hidden — silence is the correct output for "nothing for
+   you to do here", and a console that shrugged at the captain because a check
+   timed out would be worse than one that never checked.
+
+   AND IT IS MOUNTED BELOW THE IDEA FIELD (S160 round 2, D4). Above it, the
+   block's late arrival REFLOWED the field the captain was already typing into:
+   measured against a real GitHub remote the console was interactive at 37ms and
+   the block landed at 1.3–1.8s, moving the textarea's top 131px → 300px in one
+   frame — 16.3s against a slow origin. Focus and typed text survived, but the
+   field jumped out from under a captain mid-sentence. Reserving the height was
+   the alternative and it is worse: the block is ABSENT entirely on the common
+   quiet path, so a reservation is a permanent empty gap on every healthy repo.
+   Below the field, the block pushes only the engine picker and the footer —
+   nothing anyone is typing into — and the overlay is top-anchored
+   (`align-items:flex-start`), so the textarea cannot be shifted from beneath.
+   It is still on the console, still before the captain commits to filing. */
+function fileBaseFreshnessBlock() {
+  var wrap = el("div", "file-basefresh");
+  wrap.hidden = true;
+  fetch("/api/base-freshness")
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var bf = d && d.baseFreshness;
+      /* `loud` is read here only because this endpoint reports on the REPO (no
+         Mission has been filed yet), so unlike the card payload the quiet
+         records were never filtered out upstream. It picks the TREATMENT now
+         rather than deciding whether to speak at all: loud → the warning block,
+         unchanged; quiet-but-behind → the calm line (S164). */
+      if (!bf) return;
+      var block = bf.loud ? baseFreshnessBlock(bf, "bf-body")
+                          : baseFreshnessQuietLine(bf);
+      if (!block) return;
+      if (!bf.loud) wrap.className = "file-basefresh quiet";
+      wrap.appendChild(block);
+      wrap.hidden = false;
+    })
+    .catch(function () { /* a check that could not run says nothing */ });
+  return wrap;
+}
+
 /* S70-A: render "which repo am I attached to" + adapter/mode hint in the topbar.
    Depends only on the board shape (board.meta), updated on every live render. */
 function renderMeta(meta) {
@@ -1454,14 +2181,144 @@ function renderMeta(meta) {
   host.appendChild(hint);
 }
 
-function setStatus(t) {
+/* ── S163 fix round 5 (D1): the status line has TWO kinds of writer ───────────
+ *
+ * The tester pressed Go on a batch carrying an unusable model steer, the daemon
+ * refused it correctly, and the screen said the opposite. Sampling #status every
+ * 15 ms:
+ *
+ *     +  16ms  Fixes dispatched — child bug missions are being driven…
+ *     +  66ms  the logged bugs were NOT dispatched — …
+ *     +  99ms  16 active missions
+ *
+ * The verdict — the one frame that told the captain the run had not happened —
+ * lived 33 ms. What erased it was not a competing action: it was `render()`
+ * writing its routine "N active missions" line, which every write triggers via
+ * `postWrite → refresh → render`. Any action that reports an outcome and then
+ * refreshes was racing its own repaint, and the repaint always won.
+ *
+ * So the two writers are now told apart AT THE CAUSE, rather than by timing:
+ *
+ *   setStatus(t)      an ACTION speaking. Supersedes whatever was there,
+ *                     including a live verdict — newer news wins. Unchanged for
+ *                     every existing caller: it writes, exactly as before.
+ *   setVerdict(t)     an action's OUTCOME — refused, dispatched, applied-but.
+ *                     Sticky: it is what the captain came back to read, so it
+ *                     stays until another ACTION has something to say.
+ *   setIdleStatus(t)  the ROUTINE repaint describing the board. Yields to a
+ *                     live verdict; otherwise identical to before.
+ *
+ * Nothing here is on a timer. A timer would only have widened the 33 ms window,
+ * and a walk-away feature's verdict must not have a lifetime measured in frames.
+ */
+/* ── S163 fix round 6 (D2 + D4): the two things round 5 left ──────────────────
+ *
+ * D2 — STICKY AGAINST THE REPAINT, NEVER AGAINST THE CAPTAIN. Round 5 put the
+ * clear in `postWrite`, so only a WRITE could retire a verdict. The captain's
+ * next move very often is not a write: the tester left a refusal about mission
+ * -003 on screen, opened a DIFFERENT mission's Mission Log, previewed and
+ * discarded it, and -003's refusal was still there at every one of 100 seconds
+ * of samples. True sentence, wrong moment — and the next thing they did read as
+ * having produced it.
+ *
+ * So opening a console retires the last outcome too (`retireVerdict`, called
+ * from `openLog`/`openDetail`): a write and a console are the two ways a captain
+ * starts anything. Deliberately NOT a timer — this is a walk-away feature, and a
+ * verdict that expires on elapsed seconds expires precisely for the captain who
+ * was not at the desk to read it. Time is not evidence; an action is.
+ *
+ * D4 — AND IT HAS TO BE LEGIBLE WHERE IT LANDS. On the modal-closing paths
+ * (`File & Cost` refused, the Go's "…but N steers were not applied") the console
+ * is gone by the time the daemon answers, so `#status` is the ONLY carrier — and
+ * it rendered in `.dim`, #50688a on #030608, 3.6:1 at 12px, with no state class
+ * at all. `writeStatus` therefore owns the class list as well as the text: one
+ * writer, so a verdict can never arrive dressed as the routine line. The colour
+ * is proved by resolving the real cascade in the tests, never by the rule
+ * existing — this round has already shipped one amber rule that lost. */
+var STATUS_VERDICT = null;
+var STATUS_VERDICT_KIND = null;
+/* The last routine line the board wrote, so retiring a verdict can put the
+   screen back rather than leaving stale words up until the next repaint. */
+var STATUS_IDLE = null;
+
+function writeStatus(t, cls) {
   var s = document.getElementById("status");
-  if (s) s.textContent = t;
+  if (!s) return;
+  s.textContent = t;
+  s.className = cls || "dim";
 }
 
+function setStatus(t) {
+  STATUS_VERDICT = null;   // an action is speaking; the old verdict is history
+  STATUS_VERDICT_KIND = null;
+  writeStatus(t);
+}
+
+/* The outcome of a completed action — kept on screen through every routine
+   repaint that follows it (S163 fix round 5).
+
+   Sticky against the REPAINT, never against the captain: `postWrite` drops the
+   held verdict the instant another write is dispatched, so an outcome can never
+   sit over an action it is not about. That matters most for the dispatches that
+   report no copy of their own (Start, pause/resume, discard, reapprove) — with
+   nothing else to clear it, a refusal from five minutes ago would still be on
+   screen, which is the same lie in the other direction. */
+function setVerdict(t, kind) {
+  STATUS_VERDICT = t;
+  STATUS_VERDICT_KIND = kind || null;
+  writeStatus(t, verdictClass(kind));
+}
+/* The class list a verdict wears. `status-verdict` alone is the neutral,
+   prominent one (an outcome worth reading — amber); `err` says the thing did
+   not happen; `ok` says it did. All three beat `.dim` because `.dim` is simply
+   not on the element — a source-order or specificity win over it would be the
+   same fragile arrangement that let `.card .no` mute S162's amber. */
+function verdictClass(kind) {
+  if (kind === "err") return "status-verdict err";
+  if (kind === "ok") return "status-verdict ok";
+  return "status-verdict";
+}
+function clearVerdict() { STATUS_VERDICT = null; STATUS_VERDICT_KIND = null; }
+
+/* The captain has started something else — a console, not a write (postWrite
+   has its own clear). Drop the held outcome AND put the routine line back,
+   because what the captain reads is the screen, not the variable: a console
+   opens without a repaint, so a clear that only moved the flag would leave the
+   stale sentence up until the next poll. */
+function retireVerdict() {
+  if (STATUS_VERDICT == null) return;
+  clearVerdict();
+  if (STATUS_IDLE != null) writeStatus(STATUS_IDLE);
+}
+
+/* What the board holds, written on every render. It DESCRIBES; it never
+   reports. A live verdict outranks it — and is re-asserted rather than merely
+   skipped, so a verdict survives even a repaint that wrote first. */
+function setIdleStatus(t) {
+  STATUS_IDLE = t;
+  if (STATUS_VERDICT == null) writeStatus(t);
+  else writeStatus(STATUS_VERDICT, verdictClass(STATUS_VERDICT_KIND));
+}
+
+/* ── THE PAINT PATH. Every card the captain ever sees comes through this. ────
+   S163 fix round 7 (D1): the `.then(render)` below was DELETED by round 5 while
+   the comment beneath it was being written, and the shipping board went
+   permanently blank — a healthy daemon, eight 200s in thirty seconds, SSE
+   ● LIVE, zero JS errors, zero cards, `#status` frozen on "loading…". 1137 unit
+   tests stayed green throughout, because every one of them calls render() by
+   hand and none had ever asked the app to paint itself.
+
+   Two lessons, both cheap to keep: a comment goes ABOVE the line it explains,
+   never in place of it; and `tests/test_board_boot_paints.py` now boots this
+   file the way a browser does and fails if this chain is broken anywhere. */
 function refresh() {
   return fetch("/api/board").then(function (r) { return r.json(); })
     .then(render)
+    // Deliberately setStatus, NOT setVerdict (round 5). This is the READ path
+    // failing: an ambient condition, not an action's outcome. It must be
+    // replaceable by the next successful render (which writes through
+    // setIdleStatus), or a board that came back would keep reporting itself
+    // unavailable for ever — the same lie this round exists to kill, inverted.
     .catch(function () { setStatus("board unavailable"); });
 }
 
@@ -2097,6 +2954,10 @@ function modal(title, opts) {
    the board into view-only mode and surfaces it without breaking the read path.
    onResult(state) is called with the success `state` object. */
 function postWrite(path, payload, onResult, onError) {
+  // S163 fix round 5: a new write supersedes the previous action's verdict.
+  // This is the ONLY thing that clears it for the dispatches that report no
+  // copy of their own, and it is why their refusals can safely be verdicts.
+  clearVerdict();
   return fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2125,7 +2986,10 @@ function postWrite(path, payload, onResult, onError) {
 /* A bare card-level dispatch (pause/resume): no modal, just fire + refresh. */
 function dispatchCard(path, payload) {
   postWrite(path, payload, function () {}, function (msg) {
-    setStatus(msg);
+    // S163 fix round 5: a VERDICT. There is no modal and no card copy for a
+    // pause/resume that was refused — this line is the whole report, and the
+    // next SSE tick would otherwise wipe it before it could be read.
+    setVerdict(msg, "err");
   });
 }
 
@@ -2274,6 +3138,18 @@ function openFile() {
   var idea = el("textarea"); idea.rows = 4;
   idea.placeholder = "What do you want to build, improve, or fix?";
   m.body.appendChild(field("The idea — what do you want to build, improve, or fix?", idea));
+  // S160: the base-freshness PRE-FLIGHT. It goes in EMPTY and HIDDEN and fills
+  // itself in when the read answers, so it never delays the console by a
+  // millisecond and never becomes a wall between the captain and filing. A
+  // healthy base adds NOTHING here.
+  //
+  // BELOW the idea field, not above it (round 2, D4): the check answers 1.3s+
+  // after the console is interactive, and mounted above it shoved the textarea
+  // down 169px mid-sentence. Everything it can push now — the engine picker and
+  // the footer — is something nobody is typing into. The readiness block above
+  // stays above: it is rendered from board state ALREADY IN HAND, so it is
+  // there in the first frame and moves nothing.
+  m.body.appendChild(fileBaseFreshnessBlock());
 
   // UX-1: the Repository field is removed from the File modal — the viewscreen
   // is per-repo this iteration, so a chooseable repo is useless. The server
@@ -2404,6 +3280,12 @@ function openAlignConsole(idea, engine, images, onStartError, missionId) {
    attachments; on completion it dispatches `file.sh --complete <id>` and the
    board refresh swaps the standby card for a normal aligned card. */
 function startAlignment(missionId) {
+  // S163 fix round 5 — left as setStatus, on purpose. The align console does
+  // NOT dispatch through `postWrite`, so nothing in this flow would ever clear a
+  // sticky verdict: a captain who retried and got the console open would be
+  // reading "could not open the alignment console" over an open console. Making
+  // this legible needs the align flow to report its own success first, which is
+  // a different session's change. Ledgered, not silently converted.
   openAlignConsole(null, null, null, function (msg) {
     setStatus(msg || "Could not open the alignment console.");
   }, missionId);
@@ -2475,6 +3357,9 @@ function resumeAlignment(missionId, sid) {
       renderAlignConsole(state, true, missionId);
     })
     .catch(function () {
+      // S163 fix round 5 — setStatus, same reason as startAlignment above: this
+      // flow has no `postWrite` to clear a verdict, so a sticky one could sit
+      // over a console that opened fine on the retry.
       setStatus("Could not reach the alignment console.");
     });
 }
@@ -2801,7 +3686,10 @@ function openLaunch(id) {
         function () { /* board/SSE refresh shows the running state */ },
         function (msg) {
           // a failed start: drop the optimistic flag so Start returns.
-          clearStarting(id); setStatus(msg); refresh();
+          // S163 fix round 5: a VERDICT — the modal closed on dispatch, so this
+          // is the captain's only account of a start that did not happen, and
+          // the `refresh()` on this very line used to erase it.
+          clearStarting(id); setVerdict(msg, "err"); refresh();
         });
     }));
     m.foot.appendChild(go);
@@ -3453,7 +4341,20 @@ function openVerify(id) {
 }
 
 /* ════════════════ SCREEN: MISSION LOG (#log) ════════════════ */
-function openLog(id) {
+/* `opts.fix` (S163) — this console was opened by the card's "⚙ FIX N FILED BUGS"
+   control rather than by the Mission Log button, i.e. the captain is coming BACK
+   to a batch that is already filed. Exactly one behaviour changes: when the
+   daemon is holding no session (it restarted), the console loads the read-only
+   view of the bugs already linked to this parent instead of opening blank. Same
+   console, same restore, same Go — one option, no second flow. */
+function openLog(id, opts) {
+  opts = opts || {};
+  /* S163 fix round 6 (D2): opening a console is the captain starting something
+     else, so the last action's outcome stops being the news — EXCEPT when this
+     open IS that action's continuation. A refused Go reopens the review and
+     hands its own reason in through `opts.error`; retiring the verdict there
+     would delete round 5's cure while curing round 6's defect. */
+  if (!opts.error) retireVerdict();
   fetchMission(id, function (mi) {
     var m = modal("⌖ Mission Log — against " + idLabel(mi), { wide: true, headClass: "pink" });
 
@@ -3461,8 +4362,35 @@ function openLog(id) {
     report.placeholder = "Describe the bug(s) — one or many; we’ll split them.";
     m.body.appendChild(field("What went wrong? (one or many — we’ll split them)", report));
 
+    /* S163 fix round 3 (D1) — the WAITING-BUGS review, its own panel.
+
+       The bugs on this mission that are still waiting to be fixed, with their
+       cost pills and their per-bug steer boxes: the captain's ruling, "show me
+       everything that will run". At `filed`/`partial` the daemon's own children
+       list already IS that list, so `preview` below renders it and this stays
+       empty. It earns its own node for the OTHER statuses — a second report
+       mid-author, or one that filed nothing — where the console has two true
+       things to say at once and must not choose between them:
+
+         • these N bugs are waiting to be fixed  (this panel, + a live Go)
+         • these M bugs' text never filed        (`recover` below, + File)
+
+       That was D1: clicking "⚙ FIX 2 FILED BUGS" landed in the failed report's
+       console — no pills, no steers, a Go that could only refuse — and the only
+       exit was `Discard Preview`, which throws the unfiled text away. Neither
+       fact may cost the other, so both are on screen. It sits ABOVE the
+       authoring preview because the captain arrived here for the review. */
+    var fixPanel = el("div"); fixPanel.hidden = true;
+    m.body.appendChild(fixPanel);
+
     var preview = el("div");
     m.body.appendChild(preview);
+
+    // S161 fix round 2 (N1) — the RECOVERY panel: the authored text of the bugs a
+    // filing did NOT get onto disk. Empty (and hidden) unless the daemon reports a
+    // shortfall it is still holding text for.
+    var recover = el("div"); recover.hidden = true;
+    m.body.appendChild(recover);
 
     var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
 
@@ -3477,30 +4405,447 @@ function openLog(id) {
     var busy = workingNode("Working…"); busy.hidden = true;
     m.body.appendChild(busy);
 
-    // holds the AUTHORED bug PRDs from the last preview + the captain's per-bug
-    // override inputs (S74) so they survive Preview → File → Run. `filed` flips
-    // true once /log/file has persisted the bugs (then "Run Fixes" only resolves).
-    var authored = { prds: null, overrides: [], filed: false };
+    // Mirrors the DAEMON's session (S161) for this console's lifetime: the
+    // authored bug PRDs, the captain's per-bug override inputs (S74), and the
+    // `sessionId` that lets the daemon file them. Pre-S161 these PRDs lived ONLY
+    // here, so closing the console between Preview and File threw them away and
+    // the captain had to re-run (and re-pay for) the split worker. Now the daemon
+    // holds them and this is a cache: `restoreLogSession()` below rebuilds it from
+    // GET /api/mission/<id>/log/session whenever the console is reopened.
+    var authored = { prds: null, overrides: [], filed: false, sessionId: null,
+                     // S163 fix round 3 (D2): the post-File steers, KEYED BY THE
+                     // BUG'S MISSION ID. They used to be a positional list that
+                     // the daemon re-paired against a DIFFERENT list, which is
+                     // how "all:opus" typed against the third bug was written
+                     // onto the first — a bug that was never on screen. An id
+                     // cannot slide onto its neighbour. (`overrides` stays the
+                     // positional FILE-time array, where the bugs have no ids
+                     // yet and position is all there is.)
+                     // S163 fix round 4 (D1): pre-seeded with whatever a
+                     // REFUSED Go handed back for this parent, so reopening the
+                     // review restores the captain's own words rather than
+                     // asking them to remember what they typed. S163 fix round
+                     // 5: PEEKED, not consumed — the refusal reopens this
+                     // console itself now, and closing that reopened console
+                     // must not be what loses the words.
+                     steers: peekSteers(id) || {},
+                     // how many bugs on this mission are waiting to be fixed —
+                     // what Go will drive, even when this console is also
+                     // holding an un-filed report.
+                     waiting: 0,
+                     // the daemon's session status, mirrored so the footer can
+                     // tell "nothing landed yet" (discardable) from "bugs are on
+                     // disk" (keep it — the card should keep saying so).
+                     status: null,
+                     // S161 fix round 3 (R1): how many authored bugs the daemon is
+                     // still holding UNFILED, and their titles — what a re-preview
+                     // would destroy, so the console can name it before it happens.
+                     unfiled: 0, unfiledTitles: [] };
+    // S162: the control's name. It DISPATCHES the filing — the estimator runs
+    // once per logged bug, server-side — and hands the captain the parent card,
+    // so the name says what the click is going to cost them rather than just
+    // "File". The retry label ("File N Remaining") is built from the same word.
+    var fileLabel = "File & Cost";
+    /* The retry control's SEMANTIC name — what File MEANS for the session this
+       console is holding right now ("File & Cost" for a fresh split, "File N
+       Remaining" for a shortfall retry). Kept beside the button and written only by
+       `setFileLabel`, because the DOM text is not a safe source for copy that
+       names the control: it goes transient during a dispatch ("Filing…") and, if
+       a state change forgets to relabel, stale. */
+    var fileName = fileLabel;
+    var LOG_POLL_MS = 900;
+    var pollTimer = null;
 
-    m.foot.appendChild(btn("Cancel", null, closeOverlay));
-    var prev = applyWriteState(btn("Preview", null, function () {
+    function busyLabel(text) {
+      busy.querySelector(".lcars-working-label").textContent = text;
+    }
+
+    function consoleLive() {
+      // the overlay body is emptied on close, detaching this modal — stop then.
+      return document.body.contains(m.wrap);
+    }
+
+    function stopPoll() {
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    }
+
+    /* Re-arm a footer control after a dispatch settles. Goes back through
+       applyWriteState so a VIEW-ONLY board keeps it disabled — clearing
+       `disabled` blindly would hand a read-only board a live write button. */
+    function rearm(button, label) {
+      button.disabled = false;
+      button.textContent = label;
+      return applyWriteState(button);
+    }
+
+    /* Re-arm the File control AND record what it now means. Every state that
+       settles the File control goes through here, so the button, its tooltip and
+       the copy that names it can never drift apart. */
+    function setFileLabel(label) {
+      fileName = label;
+      // BEFORE rearm: applyWriteState (inside it) overwrites the title with the
+      // view-only reason, and on a read-only board that message must win.
+      file.title = fileTitle();
+      return rearm(file, label);
+    }
+
+    /* S162 — what File & Cost will actually DO, from the state of this console.
+       With a daemon session it dispatches and hands over the card; without one
+       (a restart dropped the session) the legacy POST holds until every estimate
+       is in. Two behaviours, so two sentences — a single tooltip would be a lie
+       half the time. */
+    function fileTitle() {
+      return authored.sessionId
+        ? ("File the logged bugs and run the cost estimator on each one. This " +
+           "dispatches — you can close this console and watch the mission card.")
+        : ("File the logged bugs and run the cost estimator on each one. This " +
+           "holds here until every estimate is in.");
+    }
+
+    /* While the daemon is filing (the estimator runs per bug — the long step) the
+       console follows the session rather than holding a POST open. The captain may
+       close the console at any point; the poll simply stops and the parent card's
+       `logFiling` stamp carries the truth. */
+    function pollSession() {
+      stopPoll();
+      if (!consoleLive()) return;
+      pollTimer = setTimeout(function () {
+        pollTimer = null;
+        if (!consoleLive()) return;
+        fetchLogSession(id, function (s) {
+          if (!consoleLive()) return;
+          // no session any more — it was discarded, replaced by a newer preview,
+          // or the daemon went away. We can't tell which from here, so we don't
+          // claim to: just stop showing an in-flight filing.
+          if (!s) { busy.hidden = true; return; }
+          if (s.status === "filing") { pollSession(); return; }
+          adoptSession(s);
+        }, pollSession);
+      }, LOG_POLL_MS);
+    }
+
+    /* Render the console FROM a daemon session payload — the one function both
+       the restore-on-reopen path and the file-dispatch path go through, so a
+       reopened console and a live one can never disagree. */
+    function adoptSession(s) {
+      if (!s) return;
+      authored.sessionId = s.sessionId || null;
+      authored.status = s.status || null;
+      // S163 fix round 3: how many bugs this MISSION has waiting, from the
+      // daemon. Drives the Go's arming in every state, so a console holding an
+      // un-filed report still offers to run the bugs that are already on disk.
+      authored.waiting = (s.waiting || []).length ||
+        (typeof s.waitingCount === "number" ? s.waitingCount : 0);
+      // R1: mirror what the daemon still holds unfiled, so the Preview control can
+      // say what a re-split would throw away instead of doing it quietly.
+      authored.unfiled = (s.unfiled || []).length;
+      authored.unfiledTitles = (s.unfiled || []).map(function (u) {
+        return u.title || "Untitled bug";
+      });
+      disarmDiscard();
+      var kids = s.children || [];
+      // `filed` = the daemon's post-condition check found EVERY authored bug on
+      // disk. `partial` = only some of them did (S161 fix D1) — the batch as
+      // requested did NOT happen, so it is deliberately NOT `filed`: the children
+      // that landed are real and reviewable (Go can drive them), the shortfall is
+      // stated instead of swallowed, and File becomes a RETRY of the bugs that are
+      // missing (S161 fix round 2 / N1 — the daemon files only those, so the
+      // children that landed can never be duplicated).
+      if (s.status === "filed" || s.status === "partial") {
+        stopPoll();
+        authored.prds = null;          // the bugs exist now; Go only resolves
+        authored.filed = true;
+        authored.resolved = indexOverrides(s.overrides);
+        busy.hidden = true;
+        // S163 fix round 6 (ledger): a Go over an EMPTY review is a control
+        // whose only possible outcome is a refusal. The tester reached one by
+        // filing a report that detected no bugs — "Review — 0 bug missions
+        // waiting to be fixed", with Go ▸ live above it. The panel IS the
+        // promise about what Go runs, so an empty panel offers no Go.
+        run.hidden = !(s.children || []).length;
+        rearm(prev, "Preview");
+        // the daemon's `children` here IS the waiting list (S163 fix round 3),
+        // so the main panel is the review and `fixPanel` has nothing to add.
+        renderLogFixReview(fixPanel, null, idLabel(mi), authored);
+        renderLogPreview(preview, s, idLabel(mi), authored);
+        // N1: at `partial` the bugs that did NOT land are still held by the
+        // daemon, so show their authored text (nothing the split worker wrote is
+        // lost) and turn File into a RETRY of exactly those. Before this fix File
+        // sat hidden-but-enabled at `partial`, offering an action whose only
+        // possible outcome was a 409, while the missing bug's PRD was gone.
+        var left = (s.status === "partial")
+          ? ((s.unfiled || []).length || Math.max(0, (s.bugCount || 0) -
+                                                     (s.filedCount || 0)))
+          : 0;
+        renderLogUnfiled(recover, s.status === "partial" ? s.unfiled : null);
+        file.hidden = !left;
+        setFileLabel(left ? "File " + left + " Remaining" : fileLabel);
+        if (s.status === "partial") {
+          showErr(err, s.error || "Some of the logged bugs did not file — the " +
+                                  "ones below are on disk; the rest are still " +
+                                  "held here, so File again retries just those.");
+        }
+        markDismissState();
+        return;
+      }
+      authored.prds = kids.map(function (c) { return c.prd; });
+      authored.imageRefs = kids.map(function (c) { return c.imageRefs || []; });
+      authored.overrides = (s.steers && s.steers.length)
+        ? s.steers.slice() : kids.map(function () { return ""; });
+      authored.filed = false;
+      // S163 fix round 3 (D1): the authoring statuses. The bugs already waiting
+      // on this mission are real and reviewable whatever this report is doing,
+      // so the review panel + Go come from `waiting`, not from `filed`.
+      renderLogFixReview(fixPanel, s.waiting, idLabel(mi), authored);
+      run.hidden = !authored.waiting;
+      if (s.status === "filing") {
+        busyLabel("Filing bugs and estimating each fix…");
+        busy.hidden = false;
+        // "Filing…" is TRANSIENT progress text, not the control's name — leave
+        // `fileName` alone so any copy that names the retry keeps naming it.
+        file.hidden = false; file.disabled = true; file.textContent = "Filing…";
+        renderLogPreview(preview, s, idLabel(mi), authored);
+        renderLogUnfiled(recover, null);
+        markDismissState();
+        pollSession();
+        return;
+      }
+      // previewed | failed — the authored bugs are STILL held by the daemon, so
+      // File is armed again and a retry costs no second split worker turn.
+      stopPoll();
+      busy.hidden = true;
+      file.hidden = !kids.length;
+      setFileLabel(fileLabel);
+      renderLogPreview(preview, s, idLabel(mi), authored);
+      // N1: at `failed` nothing reached disk, so every authored bug is recoverable
+      // text — show it (the preview list carries titles only, and the captain has
+      // to see what log.sh refused in order to fix it).
+      renderLogUnfiled(recover, s.status === "failed" ? s.unfiled : null);
+      if (s.status === "failed") {
+        showErr(err, s.error || "Filing the logged bugs failed — try again.");
+      }
+      markDismissState();
+    }
+
+    /* ── S161 fix round 3 (R1): Preview must not quietly destroy held text ────
+       At `partial` the footer read [Discard Unfiled] [Preview] [File 1 Remaining]:
+       the one control that WARNED was the deliberate escape hatch, and the one that
+       actually lost the captain's ~25s split — Preview, which replaces the session
+       and with it the authored text of every bug that never reached disk — carried
+       no warning and not even a tooltip.
+
+       The DAEMON is the guard (it refuses such a preview outright; a client can
+       always be bypassed, and the tester reached this by posting straight at the
+       API). This half makes the choice legible rather than surprising: the first
+       click ARMS the discard, relabelling itself to name what it would cost, and
+       only the second click sends `discardUnfiled` — the same explicit consent the
+       daemon requires. With nothing stranded (`previewed`, or a fully `filed`
+       batch) Preview is exactly what it always was: one click, no ceremony. */
+    var discardArmed = false;
+    var PREVIEW_TITLE = "Split the report above into bug missions — one worker " +
+      "turn, replacing whatever this console is currently holding";
+
+    /* How many authored bugs a re-split would destroy the only copy of. */
+    function strandedCount() {
+      if (!authored.sessionId) return 0;
+      if (authored.status !== "partial" && authored.status !== "failed") return 0;
+      return authored.unfiled || 0;
+    }
+
+    function strandedNames() {
+      var t = (authored.unfiledTitles || []).slice(0, 3).map(function (n) {
+        return "“" + n + "”";
+      });
+      var rest = (authored.unfiledTitles || []).length - t.length;
+      return t.join(", ") + (rest > 0 ? " and " + rest + " more" : "");
+    }
+
+    function armDiscard(n) {
+      discardArmed = true;
+      rearm(prev, "Preview & Discard " + n + " Unfiled");
+      prev.title = "Click again to re-split the report and THROW AWAY the " +
+        "authored text of the " + n + " bug" + (n === 1 ? "" : "s") +
+        " that never filed";
+      showErr(err, "Preview would re-split the report and throw away the " +
+        "authored text of " + n + " bug" + (n === 1 ? "" : "s") +
+        " that never reached disk (" + strandedNames() + ") — that split is " +
+        // name the retry control by the label it is CARRYING for this session
+        // ("File & Cost" at `failed`, "File N Remaining" at `partial`) — copy that
+        // guesses eventually lies about the UI it points at. Read it from
+        // `fileName`, not from the DOM: the button's text goes transient while a
+        // file dispatch is in flight, and a warning that says “Filing…” keeps
+        // your bugs names a control that does not exist.
+        "already paid for. “" + (fileName || fileLabel) + "” keeps " +
+        (n === 1 ? "it" : "them") + "; click Preview again to discard " +
+        (n === 1 ? "it" : "them") + " and re-split.");
+    }
+
+    function disarmDiscard() {
+      discardArmed = false;
+      rearm(prev, "Preview");
+      prev.title = PREVIEW_TITLE;
+    }
+
+    /* ── S161 fix D3: the abandoned-preview escape hatch ──────────────────────
+       A live session stamps `logFiling` on the parent card, and before this there
+       was no way to clear it — the endpoints the captain would reach for
+       (log/cancel, log/discard, log/close) all 404'd, so an abandoned preview sat
+       on the card until the daemon restarted.
+
+       The parity we copy is Align's, and Align's is deliberate in BOTH halves:
+       `POST /api/align/<sid>/cancel` exists, and yet dismissing the grill console
+       (✕ / Esc / backdrop) does NOT call it — F2 keeps the warm session so the
+       card can offer RESUME. Same split here, for a stronger reason: the whole
+       point of S161 is that closing this console no longer throws the authored
+       PRDs away, so auto-discarding on dismissal would re-open the exact trap the
+       session was built to close (and re-charge the captain for the split worker).
+
+       So the DISCARD is an explicit control — the footer button, which relabels
+       itself to say what it now does — and ✕/Esc/backdrop still background the
+       console. While a filing is in flight, and once every authored bug is on
+       disk, the footer offers no discard at all: that state is news the parent card
+       should keep telling until the captain's Go consumes it.
+
+       N1 adds `partial` to the discardable set, and it is the sharpest case: some
+       bugs landed and the rest exist ONLY as the text this session holds. The Go
+       deliberately keeps such a session alive (driving what landed must not destroy
+       the rest), so this is the only way to clear the card — and the label says what
+       it throws away rather than pretending to be a plain Close. */
+    function discardable() {
+      // Never on a view-only build: the discard is a WRITE, so a board that 403s
+      // writes must neither offer it nor advertise it. (A read-only build can hold
+      // no session either — belt and braces, and it keeps the label honest.)
+      return writesActive !== false && !!authored.sessionId &&
+        (authored.status === "previewed" || authored.status === "failed" ||
+         authored.status === "partial");
+    }
+
+    /* Label the footer's dismissal for what it will ACTUALLY do from here. */
+    function markDismissState() {
+      if (!discardable()) {
+        dismiss.textContent = "Close";
+        dismiss.title = "Close this console — the Mission Log keeps its place";
+      } else if (authored.status === "partial") {
+        dismiss.textContent = "Discard Unfiled";
+        dismiss.title = "Throw away the authored text of the bugs that did not " +
+          "file and clear this mission's card — the bugs that DID file are kept";
+      } else {
+        dismiss.textContent = "Discard Preview";
+        dismiss.title =
+          "Throw away the authored bugs and clear this mission's card";
+      }
+    }
+
+    function dismissConsole() {
+      // Discard from a state the captain can still throw away (previewed/failed —
+      // nothing landed — or partial, where only the leftover text is lost);
+      // otherwise just close. postWrite refreshes the board, which is what drops
+      // the card's stamp.
+      if (discardable()) {
+        postWrite("/api/mission/" + enc(id) + "/log/discard", {},
+                  // S163 fix round 5: a VERDICT — the console is closed on the
+                  // next line whether the discard worked or not, so a refusal
+                  // has nowhere else to be said.
+                  function () {}, function (msg) { setVerdict(msg, "err"); });
+      }
+      closeOverlay();
+    }
+
+    /* On open: if the daemon is holding a session for this parent, pick it up
+       exactly where the captain left it (S161). No session ⇒ a fresh console.
+
+       S163 — EXCEPT when the card sent us here to fix an already-filed batch. The
+       daemon's session is in-memory (it dies with the daemon), and the bugs are
+       real linked children on disk that outlive it, so "no session" there does
+       NOT mean "nothing to review": it means the memory went and the work did
+       not. Falling back to the READ-ONLY linked-children preview rebuilds the
+       review from disk and arms Go. It is the same empty-box Preview a captain
+       can click by hand — it authors nothing, files nothing and mints no session,
+       so it can never re-file the batch or re-charge the split worker.
+
+       S163 fix round 1 (D2) — and the same is true when the captain arrives by
+       the OTHER door. After a restart the detail's Mission-Log button is the
+       route a captain reaches for by habit, and it opened a BLANK console: no
+       mention of the bug already filed, no costs, no children, and a `Go ▸`
+       that could only refuse. Nothing there was false, but nothing there was
+       useful either, and it was the last route back.
+
+       So the fallback is keyed on the STATE, not on which button was pressed:
+       `logFixState(mi).ready` is precisely "this parent has a filed batch no
+       Go has been taken for", the same reading the card's control renders
+       from. `opts.fix` stays because the card can send us here in the seconds
+       before the board's own children index catches up. A parent with no filed
+       batch is untouched — the plain console still opens blank, and still
+       posts nothing. */
+    function restoreLogSession() {
+      // Read the state ONCE, before the async GET, so the fallback decision and
+      // the card's control are answering from the same board snapshot.
+      var filedBatch = logFixState(mi).ready;
+      fetchLogSession(id, function (s) {
+        if (!consoleLive()) return;
+        if (s) { adoptSession(s); return; }
+        if (opts.fix || filedBatch) runPreview();
+      }, function () {
+        // ...and the same on a GET that FAILED rather than 404'd. "Never a dead
+        // button" has to hold for every way the session can be unreachable, not
+        // just the tidy one — and what disk says is the truth in both cases.
+        if ((opts.fix || filedBatch) && consoleLive()) runPreview();
+      });
+    }
+
+    // NOT applyWriteState'd: dismissing a console is not a write, and a view-only
+    // board (which can hold no session, so never takes the discard branch) must
+    // always be able to close what it opened.
+    var dismiss = btn("Close", null, dismissConsole);
+    dismiss.title = "Close this console — the Mission Log keeps its place";
+    m.foot.appendChild(dismiss);
+    /* The Preview dispatch, lifted out of the button so S163's restore fallback
+       can reach it. ONE implementation, so the card's "Fix Filed Bugs" route and
+       the captain's own empty-box Preview click are the same code — a second
+       copy is how a fallback path quietly grows different rules. */
+    function runPreview() {
       // BUG-024: ignore re-clicks while the split/estimate request is pending.
       if (prev.disabled) { return; }
-      prev.disabled = true; prev.textContent = "Splitting…";
+      // R1: an AUTHORING re-split (there is text in the box) that would destroy
+      // authored bugs the daemon still holds unfiled asks first — once. An empty
+      // box is the read-only linked-children view, which destroys nothing.
+      var stranded = report.value.trim() ? strandedCount() : 0;
+      if (stranded && !discardArmed) { armDiscard(stranded); return; }
+      // S163: an EMPTY box is not a split — it is the read-only view of the bugs
+      // already linked to this parent, and it spends no worker turn. Saying
+      // "Splitting the report into bugs…" over it describes work that is not
+      // happening (and, on the Fix Filed Bugs route, work the captain never
+      // asked for). Two behaviours, two sentences.
+      var authoring = !!report.value.trim();
+      prev.disabled = true;
+      prev.textContent = authoring ? "Splitting…" : "Loading…";
       err.hidden = true;
       // UX-25: themed working copy for the split worker turn.
-      busy.querySelector(".lcars-working-label").textContent =
-        "Splitting the report into bugs…";
+      busy.querySelector(".lcars-working-label").textContent = authoring
+        ? "Splitting the report into bugs…"
+        : "Loading the bugs already filed against this mission…";
       busy.hidden = false;
       // free-form text → AUTHORING preview; empty → read-only linked children.
       postWrite("/api/mission/" + enc(id) + "/log",
-        { text: report.value.trim(), images: reportImgs.payload() },
+        // R1: `discardUnfiled` is the captain's confirmation, and it only ever
+        // rides a click they armed. Without it the daemon refuses any preview that
+        // would destroy authored text it is still holding unfiled.
+        { text: report.value.trim(), images: reportImgs.payload(),
+          discardUnfiled: discardArmed },
         function (state) {
           busy.hidden = true;
           // S92: keep the pasted screenshots alive past Preview — they must ride
           // the /log/file body too so they become DURABLE attachments on every
           // filed bug. They are cleared only after a successful File (below).
-          prev.disabled = false; prev.textContent = "Preview";
+          // The fresh split has its own (empty) unfiled ledger, so the armed
+          // discard is spent — disarm through applyWriteState, never a bare
+          // `disabled = false` (a prior round shipped that bug).
+          authored.unfiled = 0; authored.unfiledTitles = [];
+          disarmDiscard();
+          // S161: the daemon minted a session holding these authored PRDs. Keep
+          // its id — File now posts only the sid, and closing the console no
+          // longer discards the split (reopening restores from the session).
+          authored.sessionId = (state && state.sessionId) || null;
           authored.prds = state && state.authored
             ? (state.children || []).map(function (c) { return c.prd; })
             : null;
@@ -3514,23 +4859,76 @@ function openLog(id) {
           authored.overrides = (state && state.children || [])
             .map(function (c) { return c.override || ""; });
           authored.filed = !!(state && (state.filed || !state.authored));
-          renderLogPreview(preview, state, idLabel(mi), authored);
+          // S163: reveal Go for the READ-ONLY linked-children view. That view IS
+          // a cost review — it renders each already-filed bug with its estimate
+          // pills and its S74 steer box — and it shipped with no way to act on
+          // it: `run` stayed hidden, so the one route back to an already-filed
+          // batch (reopen the console, Preview an empty box) ended in a panel
+          // that could only be closed. It is also the daemon-restart fallback the
+          // card's "Fix Filed Bugs" lands on, which must never be a dead panel.
+          // An AUTHORING preview keeps Go hidden: nothing is on disk yet, and the
+          // File step (and BUG-059's hold) comes first.
+          run.hidden = !(authored.filed &&
+                         ((state && state.children) || []).length);
+          // S161 fix D3: a fresh authoring preview IS a discardable session — mark
+          // it so the footer offers the escape hatch (and so a later dismissal can
+          // tell "nothing landed" apart from "bugs are on disk").
+          authored.status = authored.sessionId ? "previewed" : null;
+          markDismissState();
+          // S163 fix round 3: on the READ-ONLY route (the daemon-restart
+          // fallback the card's control lands on) the panel is the WAITING
+          // bugs — the list Go will drive — not every child ever linked. A bug
+          // already fixed and parked at the consolidated gate is not something
+          // to re-run, and showing it would break the review's one promise.
+          var shown = state;
+          if (state && !state.authored && state.waiting) {
+            shown = { parent: state.parent, authored: false, filed: true,
+                      children: state.waiting };
+            authored.waiting = state.waiting.length;
+          }
+          renderLogPreview(preview, shown, idLabel(mi), authored);
+          // a fresh split supersedes any earlier shortfall — clear its recovery
+          // panel so old unfiled text can't read as this preview's.
+          renderLogUnfiled(recover, null);
           // Reveal File only when this preview AUTHORED ≥1 bug to file. Stays
           // hidden for the read-only linked-children view and for a 0-bug split.
           file.hidden = !(state && state.authored && (state.children || []).length);
+          // S161 fix round 4: and RELABEL it for the session that now exists. A
+          // re-preview confirmed from `partial` left the retry label behind —
+          // "File 1 Remaining" still sitting on a button that would file all 3
+          // bugs of the fresh split. Through setFileLabel → rearm →
+          // applyWriteState, never a bare textContent/disabled assignment, so a
+          // view-only board stays inert.
+          setFileLabel(fileLabel);
         },
         function (msg) {
           busy.hidden = true;
-          prev.disabled = false; prev.textContent = "Preview"; showErr(err, msg);
+          // the split did not happen, so nothing was destroyed and nothing was
+          // superseded: go back to a plain, un-armed Preview (via applyWriteState —
+          // never a bare `disabled = false`) and show the daemon's own words. If
+          // this was the R1 refusal, the message names the bugs at stake.
+          disarmDiscard();
+          showErr(err, msg);
+          // R1: the daemon is the guard, so a console whose picture of the session
+          // is stale (it thinks nothing is stranded; the daemon knows better) would
+          // otherwise re-post the same refused preview for ever. No split happened,
+          // so whatever the daemon holds is still the truth — go and ask it, which
+          // re-arms the confirmation from FACT rather than from parsing this
+          // sentence.
+          if (authored.sessionId) restoreLogSession();
         });
-    }));
+    }
+    var prev = applyWriteState(btn("Preview", null, runPreview));
+    // R1: say what Preview does, from the first paint. Its silence next to a
+    // neighbour that warned was part of why the destructive click read as harmless.
+    prev.title = PREVIEW_TITLE;
     // S74 / BUG-059: the captain reviews each bug's ESTIMATE (cost + difficulty
     // pills + suggested model) and can STEER the model BEFORE anything runs. We
     // FILE the authored bugs first (so log.sh runs the estimator + persists each
     // estimate.json) and re-render the panel with the per-bug estimate + override
     // box — then we HOLD. Filing NEVER auto-proceeds into the fix; only the
     // explicit "Go" (revealed after File) resolves the already-filed batch.
-    var file = applyWriteState(btn("File", null, function () {
+    var file = applyWriteState(btn(fileLabel, null, function () {
       // BUG-024: the File/preview control kicks off the async estimate (log.sh
       // runs the estimator on every child). It MUST NOT be re-clickable while the
       // request is in flight — a second click re-triggers the estimate (duplicate
@@ -3538,18 +4936,86 @@ function openLog(id) {
       // disable + show a loading state, and re-enable only on success OR error.
       if (file.disabled) { return; }   // already pending — ignore the click
       err.hidden = true;
-      busy.querySelector(".lcars-working-label").textContent =
-        "Filing bugs and estimating each fix…";
+      // S161: with a daemon session the body carries ONLY the sid (+ the steers
+      // the captain may have edited) — the PRDs, per-bug image refs and pasted
+      // screenshots already live server-side, and the POST DISPATCHES rather than
+      // holding for the estimator. Without one (no session is being held for this
+      // console) fall back to the unchanged legacy prds-in-body form.
+      // N1: from `partial` this is a RETRY of the bugs that never reached disk, and
+      // `authored.overrides` is then indexed by the children that LANDED — sending
+      // it would ask the daemon to re-index the captain's steers onto other bugs.
+      // Send the sid alone; the session's own steers still ride the dispatch.
+      if (authored.sessionId) {
+        /* ── S162: File & Cost is a dispatch the captain can walk away from ──
+           The estimator runs once per logged bug server-side; S161 made this POST
+           return in ~2ms rather than hold for it, and this is what that seam was
+           for. Mark the parent mission filing, CLOSE the console, and force an
+           instant repaint so the ◐ FILING & COSTING… band is already on the card
+           as the overlay disappears — the same close-on-dispatch shape `Go ▸`
+           uses, and the same optimistic-flag-then-repaint shape START ALIGNMENT
+           uses (no server state changes on the click, so no SSE tick is
+           guaranteed).
+
+           Closing is the DEFAULT, not a requirement: reopening the console
+           restores this very session from the daemon (restoreLogSession), so a
+           captain who prefers to watch the estimates land can simply reopen — and
+           one who stays sees the console close and the card take over. */
+        var payload = authored.status === "partial"
+          ? { sessionId: authored.sessionId }
+          : { sessionId: authored.sessionId,
+              overrides: authored.overrides || [] };
+        markFiling(id);
+        closeOverlay();
+        repaintBoard();
+        // The console is already gone by the time this lands, so the copy points
+        // at where the truth now LIVES rather than at a dialog that no longer
+        // exists ("you can close this" would be describing a closed window).
+        setStatus("Filing the logged bugs and costing each fix — the mission " +
+                  "card will say when it is done.");
+        postWrite("/api/mission/" + enc(id) + "/log/file", payload,
+          function () { /* the parent card's logFiling stamp carries it now */ },
+          function (msg) {
+            // The daemon REFUSED the dispatch, so nothing is filing. Drop the
+            // optimistic band rather than leave the card claiming work that was
+            // never accepted, and say why on the only surface left — the console
+            // that would have shown it is already gone.
+            //
+            // S163 fix round 5: a VERDICT. This is the Go's defect one control
+            // over — same optimistic close, same "only surface left", same
+            // `setStatus` + `refresh()` pair that erased the reason ~30 ms
+            // later. The console is gone, so an erased line here leaves the
+            // captain with NO account of a filing that never happened.
+            clearFiling(id);
+            repaintBoard();
+            setVerdict(msg, "err");
+            refresh();
+          });
+        return;
+      }
+      busyLabel("Filing bugs and estimating each fix…");
       busy.hidden = false;
       file.disabled = true;
-      var fileLabel = file.textContent;
+      // transient progress text only — `fileName` keeps the control's NAME, so the
+      // re-preview warning can still point at it while this POST is in flight.
       file.textContent = "Filing…";
-      postWrite("/api/mission/" + enc(id) + "/log/file",
-        { prds: authored.prds || [], overrides: authored.overrides || [],
-          imageRefs: authored.imageRefs || [],  // per-bug routing
-          images: reportImgs.payload() },   // S92: durable attachments on file
+      // The LEGACY prds-in-body form, unchanged from pre-S161 — and deliberately
+      // NOT backgrounded: with no daemon session this POST holds for the whole
+      // estimator run and there is no `logFiling` stamp for a card to read, so
+      // closing the console would strand the captain with no surface at all.
+      var payload = { prds: authored.prds || [], overrides: authored.overrides || [],
+                      imageRefs: authored.imageRefs || [],  // per-bug routing
+                      images: reportImgs.payload() };  // S92: durable attachments
+      postWrite("/api/mission/" + enc(id) + "/log/file", payload,
         function (state) {
-          busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
+          if (state && state.status) {
+            // A daemon session appeared under a console that had none (a restart
+            // race). Follow it rather than pretend the legacy response shape.
+            reportImgs.clear();
+            adoptSession(state);
+            return;
+          }
+          // legacy blocking response — unchanged from pre-S161.
+          busy.hidden = true; setFileLabel(fileLabel);
           reportImgs.clear();          // attachments now persisted on each bug
           authored.prds = null;        // bugs are filed now — Run only resolves
           authored.filed = true;
@@ -3560,10 +5026,14 @@ function openLog(id) {
           // them — a steer that couldn't be normalized shows its error, not a
           // silent drop onto the default model.
           authored.resolved = indexOverrides(state && state.overrides);
+          // the legacy path mints no session, so there is nothing to discard.
+          authored.status = null;
+          markDismissState();
           renderLogPreview(preview, state, idLabel(mi), authored);
+          renderLogUnfiled(recover, null);
         },
         function (msg) {
-          busy.hidden = true; file.disabled = false; file.textContent = fileLabel;
+          busy.hidden = true; setFileLabel(fileLabel);
           showErr(err, msg);
         });
     }));
@@ -3575,7 +5045,12 @@ function openLog(id) {
       // cost review (the combined path is the daemon's confirm:true power path,
       // not the UI default). If the bugs somehow aren't filed yet, refuse rather
       // than auto-proceed.
-      if (!authored.filed) {
+      // S163 fix round 3 (D1): `authored.waiting` is the OTHER way this can be
+      // legitimate — a console holding an un-filed report on a mission that
+      // already has filed bugs waiting. The tester's exact dead end: the panel
+      // above listed two reviewable bugs and this refused with "Click File
+      // first", whose only remedy destroyed the un-filed text.
+      if (!authored.filed && !authored.waiting) {
         showErr(err, "Click File first to estimate each fix, then Go to run.");
         return;
       }
@@ -3587,25 +5062,210 @@ function openLog(id) {
       // breakdown, so on the resolve-already-filed path we send the edited
       // overrides — the backend (_apply_child_overrides) persists each onto its
       // already-filed child's state.json before dispatching the batch.
-      var payload = { overrides: authored.overrides || [] };  // resolve filed
+      // S163 fix round 3 (D2): KEYED BY MISSION ID. A positional list was
+      // re-paired by the daemon against a different list of children, which is
+      // how a steer typed against the third bug was written onto the first.
+      var payload = { overrides: authored.steers || {} };     // resolve filed
+      /* S163 fix round 7 (D3): if this parent is carrying a dispatch the daemon
+         has marked STALE — a Go was taken and the resolve-logs driving it is
+         gone — then this click is a RESUME, and it has to say so or the daemon
+         refuses it (correctly: an un-flagged Go over a standing record is the
+         double dispatch). Read off the mission the console was opened for, so
+         the flag can only ever be set where the card was already showing the
+         resume control. Same endpoint, same spawn — never a second path. */
+      if (mi && mi.logDispatch && mi.logDispatch.stale) payload.resume = true;
+      // S163 fix round 4 (D1): park the typed steers BEFORE the console goes,
+      // so a refusal has something to hand back. Cleared the moment the daemon
+      // accepts the dispatch — a successful Go consumed them.
+      stashSteers(id, payload.overrides);
+      // S163: the batch is dispatched from this instant, so the card's
+      // "⚙ FIX N FILED BUGS" must go with the console — the review is taken and
+      // re-offering it would invite a SECOND resolve-logs driver over the same
+      // children. The daemon's effects are async (resolve-logs stamps `queued`
+      // seconds later), so this optimistic flag covers the gap for this tab and
+      // the daemon's `logDispatch` stamp covers a reloaded one. Repaint at once
+      // for the same reason START ALIGNMENT does: no server state changed on the
+      // click, so no SSE tick is guaranteed.
+      markLogRun(id);
       closeOverlay();
-      setStatus("Fixes dispatched — child bug missions are being driven…");
+      repaintBoard();
+      /* S163 fix round 5 (D1): this line used to read "Fixes dispatched — child
+         bug missions are being driven…", set HERE — before the POST had
+         resolved. On a Go the daemon refused, that sentence was simply false,
+         and it is the first thing a walk-away captain reads before leaving.
+
+         An in-flight line may only describe the REQUEST. The claim that
+         anything is being driven now waits for the daemon to say so, in the
+         success callback, where it is a verdict rather than a guess. (The
+         optimistic CARD flag above is a different thing and stays: it hides a
+         control to prevent a second dispatch, and it is dropped again below if
+         the Go is refused — it asserts nothing to the captain.) */
+      setStatus("Asking the daemon to run the filed bugs — nothing is "
+                + "driving yet.");
       postWrite("/api/mission/" + enc(id) + "/log/run", payload,
-        function () { /* board/SSE refresh shows the new child cards */ },
+        function (state) {
+          /* board/SSE refresh shows the new child cards. S163 fix round 4 (D1):
+             a verdict the daemon reported but did NOT block on — today only a
+             steer naming a bug that is not waiting on this mission — has no
+             console left to appear in, so it is said on the surface that is
+             still here. Never invented: only the daemon's own words. */
+          takeSteers(id);
+          var bad = ((state && state.overrides) || []).filter(function (o) {
+            return o && o.error;
+          });
+          /* S163 fix round 5 (D1): BOTH of these are verdicts, and both used to
+             be erased ~30 ms later by the repaint `postWrite` fires before this
+             callback runs. The "…but N model steers were not applied" one is
+             the more expensive loss: the dispatch really happened, so nothing
+             else on the board will ever mention the steer that did not. */
+          if (bad.length) {
+            setVerdict("Fixes dispatched — but " + bad.length + " model steer"
+              + (bad.length === 1 ? " was" : "s were") + " not applied: "
+              + bad.map(function (o) { return o.error; }).join("; "));
+          } else {
+            setVerdict("Fixes dispatched — child bug missions are being driven…",
+                       "ok");
+          }
+        },
         function (msg) {
           // a failed dispatch: surface it in the status line (the modal is gone)
           // and refresh so the board reconciles. The spinner already cleared.
-          setStatus(msg); refresh();
+          // S163: and DROP the optimistic flag — nothing is being driven, so the
+          // card must go back to offering the review rather than hiding it
+          // behind a dispatch that never happened.
+          clearLogRun(id);
+          // S163 fix round 5 (D1): a VERDICT, not a status. The daemon's
+          // sentence names each bug and the words it could not use, and it is
+          // the only account of what just happened — `refresh()` on the next
+          // line is precisely what used to wipe it.
+          setVerdict(msg, "err"); refresh();
+          /* …and put the REVIEW back in front of the captain. The reason is
+             legible on the status line either way, but the console is where it
+             is ACTIONABLE: the per-bug row carries the daemon's reason beside
+             the box holding the captain's own words (handed back by
+             `stashSteers` above), so the steer can be edited and Go pressed
+             again without remembering anything.
+
+             Reopening is the difference between "the run did not happen" and
+             "the run did not happen, and here is where to fix it". A captain
+             who has to KNOW to reopen the review learns nothing by looking.
+
+             Not on a view-only board: the write gate has just refused, and
+             re-opening a console whose every control is disabled would only
+             restate the banner. */
+          if (writesActive) openLog(id, { fix: true, error: msg });
         });
     }));
+    // S162: seed the control's name AND its tooltip through the SAME writer every
+    // later state uses, so the first paint cannot be the one state that describes
+    // itself differently (and so the seeding still routes through the write gate).
+    setFileLabel(fileLabel);
     file.hidden = true;    // revealed only after a Preview that splits ≥1 bug
     run.hidden = true;     // revealed once the bugs are filed for review
     m.foot.appendChild(prev);
     m.foot.appendChild(file);
     m.foot.appendChild(run);
+    // S163 fix round 5 (D1): the console was OPENED BY A REFUSAL — carry the
+    // daemon's own sentence into it, so the reason sits inside the review it
+    // belongs to and not only on the status line behind it. Never invented and
+    // never re-worded: the string the daemon refused with.
+    if (opts.error) showErr(err, opts.error);
     showOverlay(m.wrap);
     report.focus();
+    // S161: pick up a session the daemon is already holding for this parent, so
+    // reopening a closed console restores the authored bugs (or an in-flight
+    // filing) instead of starting over on a fresh split worker turn.
+    restoreLogSession();
   });
+}
+
+/* ════════ S161 fix round 2 (N1): the RECOVERY panel ════════
+   The authored text of the logged bugs that did NOT reach disk.
+
+   The Mission-Log split worker costs a real ~25s billable turn, which is the whole
+   reason the daemon holds its output. Round 1 made a shortfall HONEST ("only 1 of 2
+   authored bugs filed") and then dropped the missing bug's PRD on the floor: the
+   session reported the filed child only, the temp file named in the error was
+   already unlinked, and the advice — "log the ones that failed as a new report" —
+   meant retyping the bug and paying for a second split. This panel is the other
+   half of the cure: the daemon carries those authored rows on every session
+   response (`unfiled`), and here they are, in full, selectable.
+
+   Read-only by construction: text to copy and a File that retries, no edit-and-
+   resubmit path (the daemon owns the words, so there is nothing here to save). */
+function renderLogUnfiled(host, unfiled) {
+  host.innerHTML = "";
+  var rows = (unfiled || []).filter(function (u) { return u && u.prd; });
+  if (!rows.length) { host.hidden = true; return; }
+  host.hidden = false;
+  var h = el("h4"); h.style.margin = "12px 0 6px";
+  h.textContent = rows.length + " authored bug" + (rows.length === 1 ? "" : "s") +
+    " did NOT file — the text is still here";
+  host.appendChild(h);
+  // Two honest routes, because there is NO edit-in-place here (the daemon owns the
+  // words): File again fixes a transient fault; a PRD the script itself refused has
+  // to be copied out and re-authored. Promising an edit this panel cannot do would
+  // be the same class of lie as the count that started this round.
+  host.appendChild(noteEl(
+    "Nothing the split worker wrote was lost. If the fault was transient, File " +
+    "again — it re-files only these, and costs no second split. If the bug PRD " +
+    "itself was refused, copy the text below into a new report and fix it there."));
+  rows.forEach(function (u) {
+    var card = el("div", "card child"); card.style.cursor = "default";
+    card.appendChild(el("div", "no", "↳ not filed"));
+    card.appendChild(el("div", "ttl", "Bug · " + (u.title || "Untitled bug")));
+    var body = el("textarea");
+    body.rows = 6;
+    body.readOnly = true;
+    body.value = u.prd;
+    body.title = "The authored bug PRD, exactly as the split worker wrote it";
+    card.appendChild(body);
+    host.appendChild(card);
+  });
+}
+
+/* ════════ S163 fix round 3 (D1): the WAITING-BUGS review, as its own panel ════
+   The captain's ruling in one function: "show me everything that will run".
+   `waiting` is the daemon's list of every bug on this mission still waiting to
+   be fixed — the same list `Go ▸` drives, because `resolve-logs --parent` takes
+   a parent and drives all of it to one consolidated gate.
+
+   It DELEGATES to renderLogPreview rather than drawing its own cards: the pills,
+   the model mix and the S74 steer box are one implementation, so this panel and
+   the post-File review can never grow different rules (the second-copy trap this
+   file has been bitten by before). Empty/absent ⇒ the panel hides, which is what
+   the `filed`/`partial` statuses want — there the daemon's own `children` list
+   already IS the waiting list. */
+function renderLogFixReview(host, waiting, parentLabel, authored) {
+  var rows = waiting || [];
+  if (!rows.length) { host.innerHTML = ""; host.hidden = true; return; }
+  host.hidden = false;
+  renderLogPreview(host, { parent: null, authored: false, filed: true,
+                           children: rows }, parentLabel, authored);
+  // Said once, at the top, because this panel appears BESIDE an un-filed report
+  // and the captain has to know which of the two `Go ▸` acts on.
+  host.insertBefore(
+    noteEl("These are already filed and estimated. Go ▸ runs all of them — the " +
+           "report below is separate, and File & Cost is what files it."),
+    host.children[1] || null);
+}
+
+/* Record one bug's steer on the keyed map — INCLUDING an empty one.
+
+   S163 fix round 6 (D1). This used to DELETE a blank rather than send "", on the
+   reasoning that "the daemon skips blanks either way" and an empty entry per
+   untouched bug is noise in a log. The first clause was true and was the defect:
+   because a blank never reached the wire, an emptied box was indistinguishable
+   from a bug the captain had not touched, so there was no way to say "this bug
+   has no steer any more". The tester deleted an unusable steer, pressed Go, and
+   watched the panel hand the deleted words back and the next Go re-send them.
+
+   Every box the panel renders now rides the dispatch, empty ones included, which
+   is what makes the payload a faithful record of the panel rather than a partial
+   one — "what you see is exactly what Go runs", on the wire. The daemon reads a
+   blank against a bug it is showing as a retraction (`_apply_child_overrides`). */
+function setSteer(authored, id, raw) {
+  authored.steers[id] = (raw || "").trim();
 }
 
 function renderLogPreview(host, state, parentLabel, authored) {
@@ -3614,10 +5274,23 @@ function renderLogPreview(host, state, parentLabel, authored) {
   var authoredNew = state && state.authored;
   var filed = state && (state.filed || (!authoredNew && children.length));
   var h = el("h4"); h.style.margin = "4px 0 8px";
-  h.textContent = (filed ? "Review — " : "Preview — ") +
-    ((state && state.count) || children.length) +
+  // S163 fix round 3: the review's tail says WAITING TO BE FIXED, not "filed".
+  // Every bug in it is filed, so the old word was not false — but the panel is
+  // now scoped to the mission rather than to one batch, and its whole promise is
+  // that this list is what the Go will run. The heading is where that promise is
+  // either kept or quietly narrowed.
+  /* S163 fix round 7 (D2): the heading counts THE LIST UNDER IT, full stop.
+     It used to prefer `state.count`, which every producer computes as
+     `len(children)` — every producer except the read-only preview, where
+     `children` is every linked bug and the panel renders `waiting`. A count
+     that describes a different list from the one beneath it is the same shape
+     as the `count` key S161's D2 deleted for meaning two things; the fix is the
+     same one, moved to the reader that could still pick the wrong list.
+     Counting `children.length` makes overstating structurally impossible: the
+     number and the rows are now one expression apart. */
+  h.textContent = (filed ? "Review — " : "Preview — ") + children.length +
     " bug mission" + (children.length === 1 ? "" : "s") +
-    (authoredNew ? " detected" : filed ? " filed" : " linked");
+    (authoredNew ? " detected" : filed ? " waiting to be fixed" : " linked");
   host.appendChild(h);
   if (!children.length) {
     host.appendChild(noteEl(
@@ -3667,14 +5340,38 @@ function renderLogPreview(host, state, parentLabel, authored) {
       // Fixes; each value is collected into authored.overrides[i] and threaded to
       // its child via the /log/run payload (→ _file_children persists
       // state.json.modelOverride). Pre-fill with any already-persisted override.
+      // S163 fix round 3 (D2): the box is bound to THIS BUG'S MISSION ID, not to
+      // its row number. The steers used to be collected into a positional array
+      // that the daemon re-paired against a different list, so a steer could —
+      // and did — land on a bug that was never on screen. `c.id` is present for
+      // every row this branch renders (it only runs post-File), so there is no
+      // slot left for a position to be guessed from.
+      // The daemon's own verdict on this bug's last steer (resolved label, or a
+      // normalization error). Read BEFORE the box is built, because S163 fix
+      // round 4 (D1) makes an ERRORED verdict re-seed the box: the captain's raw
+      // words are the thing to edit, and after a refused Go on another tab (or a
+      // reload) they exist nowhere else. Only on an error — a steer that
+      // RESOLVED is still pre-filled from `c.override`, its persisted form.
+      var srvOv = (authored && authored.resolved && authored.resolved[c.id]) || null;
       var ov = el("input");
       ov.placeholder =
         "Override (optional) — e.g. \"use Opus\" · \"keep it cheap\" · all:opus";
-      ov.value = (authored && authored.overrides && authored.overrides[i]) ||
-        c.override || "";
+      /* S163 fix round 6 (D1): a steer the client is HOLDING for this bug wins
+         outright, even when it is empty. The old expression used `||`, so an
+         emptied box fell through to the server's errored verdict and the
+         captain's deletion was undone on the very next repaint — the refusal
+         then went on naming a steer that no longer existed anywhere but here.
+         The daemon drops that verdict on the clearing Go, so this is the second
+         of two locks on the same door; it is here because the box must be right
+         on the repaint that happens BEFORE the Go, too. */
+      var held = (authored && authored.steers &&
+                  Object.prototype.hasOwnProperty.call(authored.steers, c.id))
+        ? authored.steers[c.id] : null;
+      ov.value = held != null ? held
+        : ((srvOv && srvOv.error && srvOv.raw) || c.override || "");
       if (authored) {
-        if (!authored.overrides) authored.overrides = [];
-        authored.overrides[i] = ov.value.trim();
+        if (!authored.steers) authored.steers = {};
+        setSteer(authored, c.id, ov.value);
       }
       card.appendChild(field("Model override (optional)", ov));
       // S74 follow-up: an LCARS-styled confirmation line that echoes the RESOLVED
@@ -3685,7 +5382,6 @@ function renderLogPreview(host, state, parentLabel, authored) {
       // cases instantly so plain language is never silently dropped on-screen).
       var steer = el("div", "steer-echo"); steer.hidden = true;
       card.appendChild(steer);
-      var srvOv = (authored && authored.resolved && authored.resolved[c.id]) || null;
       var echoSteer = function (rawVal) {
         var raw = (rawVal || "").trim();
         if (!raw) {
@@ -3701,18 +5397,37 @@ function renderLogPreview(host, state, parentLabel, authored) {
         if (r) {
           steer.hidden = false; steer.className = "steer-echo ok";
           steer.textContent = raw + " → " + overrideLabel(r);
+        } else if (unsupportedTier(raw)) {
+          /* S163 fix round 4 (D1): a model LCARS has no tier for. The tester
+             typed "use haiku", was told "model intent resolved when filed", and
+             the steer was dropped on the floor. It is knowable from the word, so
+             it is said from the word — now, in red, naming the choices. */
+          steer.hidden = false; steer.className = "steer-echo err";
+          steer.textContent = "⚠ “" + unsupportedTier(raw) + "” is not a model "
+            + "tier LCARS can pick — choose Opus or Sonnet.";
         } else if (srvOv && srvOv.error) {
           steer.hidden = false; steer.className = "steer-echo err";
           steer.textContent = "⚠ " + srvOv.error;
         } else {
-          // tier-less plain language: the bounded worker resolves it at File/Run.
+          /* Tier-less plain language ("be really thorough on this one"): the
+             bounded worker gets ONE go at it when Go is pressed.
+
+             S163 fix round 4 (D1) — the copy. This line used to read "model
+             intent resolved when filed", which was false twice over on the
+             surface it appears on: this IS the post-filing review, so there is
+             no later "when filed" moment, and nothing was ever going to resolve
+             it — the daemon dropped it silently and dispatched anyway. What it
+             says now is the whole truth of what happens next: the resolution is
+             attempted at Go, and a Go that cannot resolve it REFUSES rather than
+             running the bug on a model the captain did not choose. */
           steer.hidden = false; steer.className = "steer-echo pending";
-          steer.textContent = "“" + raw + "” — model intent resolved when filed.";
+          steer.textContent = "“" + raw + "” — no model tier recognised yet. "
+            + "Go resolves it, and refuses the run if it cannot.";
         }
       };
       ov.addEventListener("input", function () {
-        if (!authored.overrides) authored.overrides = [];
-        authored.overrides[i] = ov.value.trim();
+        if (!authored.steers) authored.steers = {};
+        setSteer(authored, c.id, ov.value);
         echoSteer(ov.value);
       });
       echoSteer(ov.value);   // initial echo (pre-filled / server-resolved value)
@@ -3726,6 +5441,10 @@ function renderLogPreview(host, state, parentLabel, authored) {
 
 /* ════════════════ SCREEN: MISSION DETAIL (#detail) — two-pane ════════════════ */
 function openDetail(id) {
+  // S163 fix round 6 (D2): the other door a captain opens onto a mission. Same
+  // rule as openLog — reading a card is starting something else, and the last
+  // action's verdict must stop speaking over it.
+  retireVerdict();
   fetchMission(id, function (mi) { renderDetail(mi); });
 }
 
@@ -3733,6 +5452,11 @@ function renderDetail(mi) {
   // UX-32: clear any prior live-tick timers before rebuilding the detail so a
   // re-render (or re-open) never stacks intervals.
   clearDetailTimers();
+  // S163: settle the optimistic Go flag BEFORE the header's action row is built
+  // — verifyAffordance reads it, and S162's own clearFilingOnState below runs
+  // after the row for a control that is appended after it. A detail opened
+  // straight from a link never went through cardNode, so it must be done here.
+  clearLogRunOnState(mi);
   var grid = el("div", "detail-grid");
 
   // ── header: tag, title, pills, stage pill, header actions ──
@@ -3800,7 +5524,17 @@ function renderDetail(mi) {
     // optimistic merge flag drops once the real reconcile state arrives.
     clearMergingOnState(mi);
     var daff = verifyAffordance(mi);
-    if (daff.kind !== "action") {
+    // S163: mirror the card — the detail is where the captain lands when they
+    // click the card to look closer, and it is built by a different function, so
+    // a control left out of here goes silent at exactly that moment. Same
+    // builder, so the two cannot word it differently.
+    if (daff.kind === "fix-filed") {
+      actions.appendChild(fixFiledControl(mi, daff));
+    } else if (daff.suppress) {
+      // S163 fix round 2 (D2): the filing window — nothing here, because
+      // logFilingControl below adds the one statement this window gets. Same
+      // decision as the card's, from the same affordance.
+    } else if (daff.kind !== "action") {
       var dgated = btn(daff.label, daff.cls, null);
       dgated.disabled = !!daff.disabled;
       if (daff.title) dgated.title = daff.title;
@@ -3854,8 +5588,32 @@ function renderDetail(mi) {
   if (mi.stage === "verify" && !isLogBug(mi)) {
     actions.appendChild(applyWriteState(btn("Mission Log", null, function () { openLog(mi.id); })));
   }
+  // S162: mirror the card's filing affordance here too — the detail NEVER runs
+  // through the board's card builder (the align_overlay_mission lesson), so a
+  // surface left out of this goes silent at exactly the moment the captain clicks
+  // the card to look closer. Built by the same function as the card's, so the two
+  // cannot word it differently, and placed beside Mission Log because that is the
+  // console it is telling you about — the mission's own primary action keeps its
+  // place at the head of the row. (cardNode reconciles the optimistic flag for the
+  // board; a detail opened straight from a link needs it done here too.)
+  clearFilingOnState(mi);
+  var dFiling = logFilingControl(mi);
+  if (dFiling) actions.appendChild(dFiling);
   row1.appendChild(actions);
   head.appendChild(row1);
+
+  // S160: the card badge's long form — the guard's own sentence and the exact
+  // command that clears it, directly under the header where the captain lands
+  // when they click the badge's card. Absent entirely for a healthy base.
+  var bfBlock = baseFreshnessBlock(mi.baseFreshness, "det-basefresh");
+  if (bfBlock) head.appendChild(bfBlock);
+
+  // S162: and the card's band / failure state, so the detail tells the same
+  // story. Both are condition-gated (null with no live session), so a mission
+  // that never logged a bug opens byte-identically to before this round.
+  if (logFilingState(mi).filing) head.appendChild(filingPulse());
+  var dNote = logFilingNote(mi);
+  if (dNote) head.appendChild(dNote);
 
   // UX-31: a STAGE-INDEPENDENT active-time readout in the detail header, so the
   // total stays visible at Verify and Done (where there is no in-flight block).
@@ -4796,6 +6554,19 @@ function previewOverride(raw) {
     scope = "implementation";
   return { scope: scope, tier: tier };
 }
+/* S163 fix round 4 (D1): the models LCARS has NO tier for — the client mirror of
+   the daemon's `unsupported_tier`. `haiku` is a real model and a reasonable
+   thing for a captain to type; what it is not is one of the two tiers LCARS
+   chooses between, and that is knowable from the word alone. Knowing it HERE is
+   what lets the console refuse before Go rather than accept, post, and have the
+   daemon refuse — the tester's "refused loudly BEFORE Go, if that is knowable".
+   Returns the offending word, or null. */
+function unsupportedTier(raw) {
+  if (!raw) return null;
+  var m = /\b(haiku|gpt|gpt-?[0-9.]+|o[134](?:-mini)?|gemini|grok|llama|mistral|deepseek|qwen|codex)\b/i
+    .exec(String(raw));
+  return m ? m[0] : null;
+}
 function indexOverrides(list) {
   var by = {};
   (list || []).forEach(function (o) { if (o && o.id) by[o.id] = o; });
@@ -4972,6 +6743,173 @@ function finalizingPulse() {
   return w;
 }
 
+/* ════════ S162 — the mission-log filing surface (card + detail) ════════
+   Three nodes, one state reading (logFilingState), one set of strings. Every
+   piece of copy about a log filing is built HERE: nothing anywhere reads a label
+   back out of the DOM to describe this state (S161's re-preview warning did, and
+   ended up telling the captain that a control called "Filing…" was the one
+   holding their bugs). All three return null / draw nothing unless their exact
+   condition holds, so a card with no live session is byte-identical to pre-S162. */
+var FILING_CONTROL_LABEL = "◐ FILING & COSTING…";
+var FILING_BAND_LABEL = "◐ Filing bugs & costing each fix…";
+var FILING_CONTROL_TITLE =
+  "Filing the logged bugs and running the cost estimator on each one — you can " +
+  "leave this; the card will say when it is done.";
+/* True by construction while a session is live: the daemon holds the authored
+   text of every bug that is not on disk (S161/N1), so reopening the console
+   recovers it and File re-files only what is missing — no second split worker. */
+var FILING_RECOVERY_HINT =
+  "Open the Mission Log — the bugs that did not file are still held there.";
+
+/* The DISABLED "◐ FILING & COSTING…" affordance. Mirrors the F1 finalizing
+   control exactly: born disabled, wired to nothing, and carrying the `.btn.go`
+   chrome that markViewOnly() sweeps, so a view-only board cannot end up holding
+   a live-looking one. Never re-armed — the only thing that clears it is the
+   filing ending (there is no "cancel a filing" and this must not imply one). */
+function logFilingControl(m) {
+  if (!logFilingState(m).filing) return null;
+  var b = act("log-filing", btn(FILING_CONTROL_LABEL, "go", null));
+  b.disabled = true;
+  b.title = FILING_CONTROL_TITLE;
+  return b;
+}
+
+/* The PERSISTENT animated band, drawn on every repaint while the filing is live
+   — the same bars as scanningPulse/finalizingPulse, so a backgrounded filing
+   reads as live motion rather than a static grey button. */
+function filingPulse() {
+  var w = workingNode(FILING_BAND_LABEL);
+  w.className += " lcars-running";
+  return w;
+}
+
+/* The counts, in ONE sentence fragment built in ONE place — `filedCount` and
+   `bugCount` are the daemon's two self-describing names (S161-D2), and this is
+   the only place they are turned into prose. Empty when the stamp is missing
+   either: a card that cannot count must not print a number. */
+function logFilingCounts(st) {
+  if (st.bugCount == null || st.filedCount == null) return "";
+  return st.filedCount + " of " + st.bugCount + " filed";
+}
+
+/* The card/detail state for a filing that ENDED BADLY.
+
+   This is the half that makes closing the console safe. The captain dispatched a
+   filing and walked away; if a shortfall or a refusal just made the band stop
+   animating, they would be left believing bugs exist that do not. So a `partial`
+   or a `failed` replaces the band with a legible, persistent state that names
+   what happened — the count from the stamp, and the daemon's own reason
+   verbatim. A clean `filed` renders nothing (the bugs are simply there, awaiting
+   the captain's Go — the follow-through control for that is S163's). */
+function logFilingNote(m) {
+  var st = logFilingState(m);
+  if (st.filing || !st.terminal || st.status === "filed") return null;
+  var counts = logFilingCounts(st);
+  var head = st.status === "partial"
+    ? ("● only " + (counts || "some logged bugs filed"))
+    : ("✖ logging the bugs failed" + (counts ? " — " + counts : ""));
+  var host = el("div", "log-filing-note");
+  // `failed` (nothing landed) reads as the attention state; `partial` as the
+  // amber "look at this" — some bugs really are on disk and reviewable.
+  //
+  // NOT a `.no` line, and that omission is load-bearing. `.no` means "a muted
+  // metadata number" (the `#142 · lcars:verify` line), and `.card .no` ties
+  // `.card .log-filing-status` on specificity while sitting LATER in board.css —
+  // so carrying both handed this line the metadata grey and threw the amber away
+  // before it ever reached the screen. `.failed` survived only by accident, on a
+  // second colour at a higher specificity. `.log-filing-status` already sets the
+  // font, size and letter-spacing it was borrowing, so `.no` contributed nothing
+  // here but the colour that defeated it. Measured, not argued, in
+  // FilingStatusStyleTest.
+  var line = el("div", "log-filing-status" +
+    (st.status === "failed" ? " failed" : ""), head);
+  line.title = FILING_RECOVERY_HINT;
+  host.appendChild(line);
+  // The reason, exactly as the daemon stated it. Absent when it gave none —
+  // an empty line beats an invented cause (S160/S161: never claim what the code
+  // cannot know).
+  if (st.error) host.appendChild(el("div", "log-filing-detail", st.error));
+  return host;
+}
+
+/* ════════ S163 — the "Fix Filed Bugs" follow-through (card + detail) ════════
+   One label builder, one tooltip, built HERE beside S162's strings for the same
+   reason: every sentence about a mission's logged-bug batch comes from one place,
+   so the card and the detail cannot word the same state differently.
+
+   The count is in the LABEL, not just the tooltip: "Fix Filed Bugs" alone reads
+   as a mode, and the number is the fact that makes the click a decision (four
+   bugs is four cost estimates the captain is about to approve at once). */
+/* S163 fix round 2 (D1): `shortfall` is how many of the batch never reached
+   disk. With one, the label carries BOTH numbers — "⚙ FIX 2 OF 3 FILED BUGS".
+   A bare "FIX 2 FILED BUGS" over a 3-bug batch would be true and misleading in
+   the same breath: the count is the fact that makes the click a decision, and a
+   captain approving 2 estimates has to know they asked for 3. The total is
+   rebuilt from the two measurements (n + shortfall) rather than passed
+   separately, so the two halves of the sentence cannot drift.
+
+   S163 fix round 3 restates what the two numbers MEAN without touching the
+   words: `n` is now every bug waiting to be fixed on the mission (the captain's
+   ruling), and `shortfall` is still the latest batch's un-filed text. So the
+   label reads "of the N+S bugs authored against this mission and not yet fixed,
+   N are on disk and S never filed" — the one-report case D4 asks for ("1 OF 2")
+   is unchanged, and it stays true when older waiting bugs sit beside it. */
+/* S163 fix round 7 (D3): `resume` names what the click really is when a Go has
+   already been taken over these bugs and the drive that took them is gone. "FIX"
+   would read as "nothing has happened yet", which is the one thing that is not
+   true here — and the captain needs to know a previous run went missing rather
+   than discover it from a duplicate branch later. Same stem (`⚙ FIX `) so every
+   surface that finds this control by its shape still finds it. */
+function fixFiledLabel(n, shortfall, resume) {
+  var head = "⚙ FIX " + n +
+    (shortfall ? " OF " + (n + shortfall) : "") +
+    " FILED BUG" + (n === 1 && !shortfall ? "" : "S");
+  return resume ? head + " AGAIN" : head;
+}
+/* Says what the click OPENS, not what it runs — because it opens the review and
+   dispatches nothing. That distinction IS BUG-059's hold, so the copy carries it.
+
+   S163 fix round 2: with a shortfall it also carries S161's promise. The captain
+   must not have to count cards to discover a bug never filed, and must not be
+   left thinking the text of it is gone — the console this opens is still holding
+   it and File retries exactly those. (S162's note says the same underneath, in
+   the daemon's own words; this is the half that travels with the button.) */
+/* S163 fix round 3 (D1): the tooltip promised "the bugs already filed" and, in
+   the state the tester hit, delivered a failed report's console instead. It now
+   describes what the click really opens under the captain's ruling — EVERY bug
+   on this mission still waiting to be fixed, which is also exactly what the Go
+   will run — so the sentence and the panel say the same thing. */
+var FIX_FILED_TITLE =
+  "Reopen the Mission Log at the cost review for every bug still waiting to be " +
+  "fixed on this mission — check each estimate, steer any model, then Go to run " +
+  "them all. Nothing runs until you do.";
+/* S163 fix round 7 (D3): the resume's own sentence. It has to say the two things
+   the card cannot show — that a run WAS dispatched, and that the thing which was
+   running it is not running any more — or "AGAIN" is a mystery. */
+var FIX_RESUME_TITLE =
+  "A run was dispatched for these bugs, but the resolve-logs driving it is no " +
+  "longer running and they never reached the consolidated re-verify gate. " +
+  "Nothing is in flight. Reopen the cost review and Go to run them again.";
+function fixFiledTitle(shortfall, resume) {
+  if (resume) return FIX_RESUME_TITLE;
+  if (!shortfall) return FIX_FILED_TITLE;
+  return FIX_FILED_TITLE + " " + shortfall + " bug" +
+    (shortfall === 1 ? "" : "s") + " did NOT file — the authored text is still " +
+    "held in that console, and File retries just " +
+    (shortfall === 1 ? "it" : "them") + ".";
+}
+
+/* The LIVE control, built once for both surfaces (the card's inline controls and
+   the detail's action row). The title is set BEFORE applyWriteState so a
+   view-only board's own reason wins — the S161 setFileLabel lesson, which is the
+   difference between a disabled button that explains itself and one that lies
+   about what it would do. */
+function fixFiledControl(m, aff) {
+  var b = btn(aff.label, aff.cls, function () { openLog(m.id, { fix: true }); });
+  b.title = aff.title;
+  return act("fix-filed", applyWriteState(b));
+}
+
 function runningPulse(label, liveness) {
   var base = RUNNING_COPY[label] || ("Underway · " + (label || "running") + "…");
   // S114: a REAL liveness tail derived from the worker's output activity (present
@@ -5078,6 +7016,45 @@ function verifyAffordance(m) {
     return { kind: "escalated", label: "◆ Make the call ▸", cls: "danger" };
   }
   if (isResolvingLocked(m)) {
+    // S163: the FILED-BUT-NOT-DISPATCHED window. The predicate above is
+    // deliberately UNCHANGED — it also suppresses this parent's Merge/Accept,
+    // and suppressing them while bugs are filed against the mission is right in
+    // both windows. What changes is only the CONTROL and its COPY: here the lock
+    // would be a disabled sentence about work in flight when BUG-059 has parked
+    // the children and nothing runs without the captain's Go. So this window
+    // gets the way FORWARD instead — the same suppression, an honest button.
+    // The instant the Go is dispatched logFixState goes not-ready and the lock
+    // below returns, now telling the truth (see logFixState).
+    var fix = logFixState(m);
+    if (fix.ready) {
+      return {
+        kind: "fix-filed",
+        label: fixFiledLabel(fix.count, fix.shortfall, fix.resume),
+        cls: "go", count: fix.count, shortfall: fix.shortfall,
+        resume: fix.resume,
+        title: fixFiledTitle(fix.shortfall, fix.resume),
+      };
+    }
+    // S163 fix round 2 (D2) — the FILING window says ONE thing, not two.
+    //
+    // Measured by the tester through the whole ~60s filing of a 3-bug batch, on
+    // card AND detail, with the daemon's own stamp reading `filedCount: 0`:
+    //     ◐ FILING & COSTING…[DISABLED]   ◐ resolving 3 logged bugs…[DISABLED]
+    // Nothing was resolving. It is D1's lie again from the same cause — S77's
+    // lock is derived from the children EXISTING, and filing is precisely the
+    // window in which they appear one at a time while nothing drives any of
+    // them. (A/B'd against board.js at S162: pre-existing, not introduced here.)
+    //
+    // The honest statement already exists and is rendered by BOTH surfaces from
+    // one builder (logFilingControl, beside this one on the card and in the
+    // detail's action row), so this returns a SUPPRESSED affordance rather than
+    // a second sentence: the predicate still runs, the parent's Merge/Accept
+    // stay gated exactly as before, and the only thing that changes is that the
+    // duplicate control is not drawn. It comes back the instant the filing ends
+    // (test_the_lock_returns_the_moment_the_filing_ends).
+    if (logFilingState(m).filing) {
+      return { kind: "log-filing", suppress: true };
+    }
     var pend = resolvingChildren(m.id);
     return {
       kind: "resolving",
@@ -5195,7 +7172,10 @@ function dispatchCardBusy(id, path, payload, host, label) {
   busy.className += " lcars-running";
   if (host) { host.innerHTML = ""; host.appendChild(busy); }
   postWrite(path, payload, function () { /* board refresh re-renders the card */ },
-    function (msg) { setStatus(msg); refresh(); });
+    // S163 fix round 5: a VERDICT — the busy animation is replaced by the
+    // repaint on this same line, so without it the refusal leaves no trace at
+    // all and the card simply looks as though nothing was ever clicked.
+    function (msg) { setVerdict(msg, "err"); refresh(); });
 }
 
 /* BUG-067 / BUG-065: dispatch the Reapprove (merge-only) path. The engine runs
@@ -5225,7 +7205,10 @@ function doReapprove(id, host, button, fromStatus) {
     function (msg) {
       clearMerging(id);
       if (button) { button.disabled = false; }
-      setStatus(msg); refresh();
+      // S163 fix round 5: a VERDICT — a merge that was refused is exactly the
+      // outcome a captain must not have to guess at, and clearing the optimistic
+      // "merging…" state makes the card look untouched once the line is gone.
+      setVerdict(msg, "err"); refresh();
     });
 }
 
@@ -5280,8 +7263,26 @@ function fetchMission(id, cb, onErr) {
       // getting stuck on a transient state (e.g. launchAffordance's "checking")
       // when the fetch fails; the default keeps the historic status message.
       if (typeof onErr === "function") { onErr(); return; }
+      // S163 fix round 5 — setStatus by choice: a failed READ, like "board
+      // unavailable" above. Nothing was dispatched, so there is no outcome to
+      // preserve, and it must yield to the next successful render.
       setStatus("mission unavailable");
     });
+}
+
+/* S161 — the live daemon-side Mission-Log session for a parent mission.
+   GET /api/mission/<id>/log/session; 404 (the normal case — no session) calls
+   back with null so the console just opens fresh. Read-only: it dispatches
+   nothing, so polling it is free. */
+function fetchLogSession(id, cb, onErr) {
+  fetch("/api/mission/" + enc(id) + "/log/session")
+    .then(function (r) {
+      if (r.status === 404) return null;   // no live session — open fresh
+      if (!r.ok) throw new Error("log session unavailable");
+      return r.json();
+    })
+    .then(function (s) { if (cb) cb(s); })
+    .catch(function () { if (onErr) onErr(); });
 }
 
 /* ════════════════ live channel ════════════════ */

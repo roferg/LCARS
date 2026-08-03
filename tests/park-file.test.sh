@@ -90,10 +90,18 @@ EOF
 
 # A git repo with .git/lcars/ scaffolded + an initial commit (so a mission can
 # branch off it), matching how `lcars file` runs in a real repo.
+#
+# The initial commit's author/committer identity AND dates are PINNED, so every
+# fixture repo's HEAD sha is byte-identical. The byte-equivalence checks below
+# (park→complete vs grill-first) compare whole state.json files, and since S158
+# those record the base branch's sha — an unpinned `git commit` would give two
+# otherwise-identical fixtures two different shas and fail the diff for a reason
+# that has nothing to do with the two lanes drifting apart.
 new_repo() {
   local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXX")"
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t \
-      && git commit -q --allow-empty -m init )
+      && GIT_AUTHOR_DATE="2026-05-30T00:00:00Z" GIT_COMMITTER_DATE="2026-05-30T00:00:00Z" \
+         git commit -q --allow-empty -m init )
   mkdir -p "$repo/.git/lcars/missions"
   cat >"$repo/.git/lcars/config.json" <<'EOF'
 { "model": "claude-sonnet", "projectName": "repo", "contextFile": null, "created": "2026-05-30T00:00:00Z" }

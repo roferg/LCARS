@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# ZERO-SPEND PATH SHIM for the OTHER engine. See shim/claude for why both names
+# must be shimmed: the drive cannot know which one a given resolution path will
+# pick, so it pins every name that could be picked. If only one were shimmed, a
+# mission whose state.json said `copilot` would spend real money on a drive whose
+# whole point is a file watcher.
+# Logs the same columns as shim/claude, including whether the argv carried
+# `--model` — see there for why the drive must be able to answer that from its own
+# artifacts.
+LOG="${LCARS_DRIVE_SHIM_LOG:-/dev/null}"
+model=no
+for a in "$@"; do case "$a" in --model|--model=*) model=yes ;; esac; done
+printf '%s\tcopilot\targc=%s\tmodel=%s\n' "$(date +%s)" "$#" "$model" >> "$LOG"
+if [ -n "${LCARS_LAUNCH_JSON:-}" ]; then
+  mkdir -p "$(dirname "$LCARS_LAUNCH_JSON")"
+  cat > "$LCARS_LAUNCH_JSON" <<JSON
+{
+  "target": "deploy-watcher fixture app",
+  "command": "${LCARS_TEST_APP_CMD:-echo no-cmd}",
+  "cwd": ".",
+  "url": "${LCARS_TEST_APP_URL:-}",
+  "howToStop": "lcars launch <mission> --stop",
+  "status": "ready"
+}
+JSON
+fi
+exit 0

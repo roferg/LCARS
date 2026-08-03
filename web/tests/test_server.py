@@ -486,7 +486,13 @@ class FrontEndAssetsTest(unittest.TestCase):
         # the detail header must call the SHARED helper (not a bare btn("✓ Verify")).
         idx_actions = js.find("var actions = el(\"div\", \"det-actions\")")
         self.assertNotEqual(idx_actions, -1, "detail header det-actions block missing")
-        header = js[idx_actions:idx_actions + 3200]
+        # S163 widened the window (3200 → 4200): the slice length is an arbitrary
+        # "far enough to cover the branch" number, not a contract, and the
+        # fix-filed branch this session inserted just ahead of the gated one
+        # pushed `daff.kind !== "action"` past the old edge. The anchor
+        # (idx_actions) is what makes this test meaningful; the length only has to
+        # reach the end of the verify branch.
+        header = js[idx_actions:idx_actions + 4200]
         # the header verify branch routes through the shared affordance decision.
         self.assertIn("verifyAffordance(mi)", header)
         # and gates exactly like the card: a non-action kind renders disabled.

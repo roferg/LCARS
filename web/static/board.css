@@ -336,6 +336,33 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
    + bold (an attention/error state, never silence). */
 .card .reconcile-status.escalated{color:#ff8a96}
 .card .reconcile-status.failed{color:#ff8a96;font-weight:700}
+/* S162 — a mission-log filing that ended badly, on the parent card (and mirrored
+   in the detail header). The captain may have closed the console on dispatch, so
+   this is the surface that has to say a shortfall happened; it reuses the
+   reconcile-status idiom deliberately — same size, same rhythm, same meaning
+   ("something about this mission needs your eyes"). `partial` reads amber (some
+   bugs really landed and are reviewable); `failed` reads red (nothing did).
+   Neither is ever a silent clear.
+
+   The BASE rule carries the WEIGHT, not just `.failed`. Every state this line
+   can show is a state in which the captain has lost some of the bugs they
+   authored, and losing half of them is not a lighter event than losing all of
+   them — so a status that only adds a hue still reads at full urgency, and a
+   future terminal sibling cannot arrive quietly by forgetting a modifier. This
+   line is also NOT emitted with `.no` (see logFilingNote): that class is the
+   muted metadata idiom, it ties this selector on specificity and wins on source
+   order, and it was silently erasing the amber below. */
+.card .log-filing-status,
+.det-head .log-filing-status{color:var(--lcars-amber);font-weight:700;
+  font-family:var(--font-display);letter-spacing:.08em;margin-top:7px;
+  font-size:10px}
+.card .log-filing-status.failed,
+.det-head .log-filing-status.failed{color:#ff8a96}
+/* the daemon's own reason, verbatim — quieter than the status line and wrapping,
+   because log.sh's refusals are full sentences. */
+.card .log-filing-detail,
+.det-head .log-filing-detail{color:var(--lcars-text);font-size:10px;
+  margin-top:3px;line-height:1.35;opacity:.92}
 /* BUG-067 — the persisted human-readable reconcile summary (reconcileNote): the
    green re-test count for a reapprove gate, or the failure reason for
    merge-failed. Quieter than the status line, wraps so a multi-line summary
@@ -442,6 +469,19 @@ a.logbug-badge:hover{filter:brightness(1.08)}
 .legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
 .legend .viewonly{color:var(--lcars-amber)}
 .dim{color:var(--lcars-text-dim)}
+/* S163 fix round 6 (D4) — a VERDICT in the status line.
+   On the modal-closing paths (File & Cost refused, the Go's "…but N steers were
+   not applied") the console is gone by the time the daemon answers, so this line
+   is the ONLY carrier — and it was `.dim`: #50688a on #030608, 3.6:1 at 12px, in
+   the same row as the legend swatches, with no error colour anywhere.
+   `writeStatus` swaps the class rather than adding one, so `.dim` is not on the
+   element at all when a verdict is showing: nothing to out-specify and nothing
+   to lose a source-order race to. That mattered here — S162's amber lost exactly
+   such a race to `.card .no` and read as muted grey while its test was green. */
+.legend .status-verdict{color:var(--lcars-amber);font-size:13px;
+  letter-spacing:.02em}
+.legend .status-verdict.err{color:#ff8a96}
+.legend .status-verdict.ok{color:var(--lcars-teal)}
 
 /* ── buttons (mock .btn / .go / .warn / .danger / .big) ── */
 .btn{font-family:var(--font-display);text-transform:uppercase;letter-spacing:.1em;font-size:10px;
@@ -598,6 +638,63 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   font-size:12px}
 .file-readiness .fr-report{font-size:12px;color:#ff8a96;margin-top:8px;
   white-space:pre-wrap}
+
+/* ── S160 base freshness: the guard's verdict, made visible ──────────────────
+   AMBER (the board's one warning colour) and NEVER a modal — filing is never
+   blocked by any of this. Three surfaces, one voice:
+     .pill.basefresh   the compact card badge (the record's sentence is its
+                       title attribute, so a glance gets the headline and a
+                       hover gets the reason);
+     .det-basefresh    the long form under the mission-detail header;
+     .file-basefresh   the File-console PRE-FLIGHT line, above the idea box.
+   All three are ABSENT unless the guard carried the verdict LOUD, so a healthy
+   base leaves every one of these surfaces byte-identical to pre-S160. */
+.pill.basefresh{background:rgba(255,153,0,.16);border-color:var(--lcars-amber);
+  color:var(--lcars-amber)}
+/* This is the one pill whose text is a HEADLINE rather than a token — it names
+   what is blocking AND the distance ("BASE · NOT CHECKED OUT · 19 BEHIND"), so
+   it can outgrow a card. Let it wrap inside the card rather than push the card
+   open: a headline the captain cannot read is no headline. */
+.card .pill.basefresh{white-space:normal;max-width:100%}
+.det-basefresh,.file-basefresh{margin-bottom:14px;padding:10px 14px;
+  border-radius:var(--lcars-radius,14px);background:rgba(255,153,0,.12);
+  box-shadow:0 0 0 1px var(--lcars-amber) inset}
+.file-basefresh{margin-bottom:16px}
+.det-basefresh .bf-head,.file-basefresh .bf-head{font-family:var(--font-display);
+  font-size:13px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--lcars-amber);margin-bottom:6px}
+/* The reason and the fix are the GUARD's words, so they wear the reading face,
+   not the display face: they are sentences and shell commands to be read
+   carefully, not labels to be scanned. */
+.det-basefresh .bf-why,.file-basefresh .bf-why{color:var(--lcars-text-bright);
+  line-height:1.5;font-size:13px}
+.det-basefresh .bf-fix,.file-basefresh .bf-fix{margin-top:6px;
+  font-family:var(--font-mono,monospace);font-size:12px;
+  color:var(--lcars-text,#eee);white-space:pre-wrap;word-break:break-word}
+/* The NOTE is prose, and must never be mistaken for the command above it —
+   `Fix:` labels one runnable line, and a tester who pastes the wrong row gets
+   `syntax error near unexpected token '('`. So it wears the READING face, is
+   dimmer, and carries no label at all. */
+.det-basefresh .bf-note,.file-basefresh .bf-note{margin-top:6px;
+  font-size:12px;line-height:1.5;color:var(--lcars-text,#eee);opacity:.75}
+
+/* ── S164: the QUIET pre-flight line — reassurance, never a warning ──────────
+   The captain is a commit or two behind and filing will bring him up to date.
+   He asked to be TOLD, not WARNED, so this must be unmistakable from the amber
+   block above: NO panel, NO ring, NO amber, no badge and no command. It is
+   metadata — the guard's own sentence in the reading face, dimmed.
+
+   BOTH declarations are needed and both are DELIBERATELY more specific than the
+   rule they undo: `.det-basefresh,.file-basefresh` (0,1,0) paints the amber
+   panel, and a same-specificity override would be decided by source ORDER
+   alone — which is how S162 shipped an amber warning that rendered as muted
+   metadata. `.file-basefresh.quiet` is (0,2,0) and wins on specificity, wherever
+   it sits in the file. Proved by resolving the real cascade in a real browser
+   (tests/drives/browser/basefresh-quiet.sh), never by the rule existing. */
+.file-basefresh.quiet{background:none;box-shadow:none;padding:0;
+  margin-bottom:16px}
+.file-basefresh.quiet .bf-quiet{font-size:12px;line-height:1.5;
+  color:var(--lcars-text,#eee);opacity:.8}
 
 /* ── form fields (mock .field) ── */
 .field{margin-bottom:16px}

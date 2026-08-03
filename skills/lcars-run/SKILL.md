@@ -83,6 +83,47 @@ The `drive` loop reads `state.json`, sequences the per-Stage advances below
 stage-by-stage summary and the reason it stopped. Auto mode and `--step` share
 the **exact same** per-Stage code path — the only difference is the loop.
 
+### Before the first Stage: the base-freshness re-check (S159)
+
+Every `drive` — auto or `--step` — re-asks the question `lcars file` asked when
+the Mission was filed: **is the base branch still current?** Filing and starting
+are different moments, and a Mission driven the next morning otherwise reasons
+about last night's tree.
+
+The check runs once per drive, after the driver lock and *before* any Stage
+worker is spawned, through the same `ensure_base_current` guard `lcars file`
+uses. It **never blocks the drive** and it holds the captain's clone sacred: it
+may fast-forward the base only when that branch is checked out and the tree is
+clean, and it never resets, forces, stashes, cleans, rebases, or checks anything
+out. What it does, it prints:
+
+| what you see | what happened |
+|---|---|
+| *(nothing)* | the base already contained everything origin has |
+| `✓ base main fast-forwarded N commit(s) from origin.` | the base was behind and LCARS brought it current |
+| `⚠ BASE FRESHNESS …` | the base is behind and LCARS could **not** fix it (dirty tree, diverged, …) — the block names why, and the exact command that clears it |
+| `⊘ base lcars/<id> is a Mission branch …` | the base is another Mission's branch (a logged bug's parent), so there is nothing to bring down from origin and nothing was touched |
+| `✓ MISSION BRANCH — lcars/<id> fast-forwarded N commit(s) onto main.` | the Mission's own branch carried no commits of its own, so the drive brought it onto the refreshed base too |
+| `⚠ MISSION BRANCH …` | the Mission's branch is behind and the drive did **not** move it — it carries commits of its own (forcing it would destroy them), or its checkout is dirty, or a local file would be overwritten. The block names which, and the one command that clears it |
+
+**Why the Mission branch matters more than the base.** Every read-only Stage is
+pinned to `lcars/<id>` and told to ignore the ambient checkout, so bringing only
+the base current would still hand each Stage the filing-time tree. The drive
+therefore fast-forwards `lcars/<id>` as well — but ONLY when that is lossless (no
+commits of its own), by a pointer move when it is not checked out and by a real
+`--ff-only` inside its own checkout when it is, never into a dirty tree and never
+by a checkout, reset or force. `lcars file` does none of this: at file time a
+branch cut at an older commit was cut there on purpose.
+
+The verdict is recorded on the Mission as `state.json.baseFreshness`
+(`verdict` ∈ `current | updated | stale | unknown | child-base`, plus `reason`,
+`fix` (one runnable command or nothing), `fixNote`, `blocker`,
+`behindBy`, `baseSha`, `checkedAt`, and `missionBranchAtBase` — `true` only when
+`lcars/<id>` really does contain the base tip, so a move that did not happen is
+never reported as one). A drive that *began* against a base that was
+genuinely behind also logs one `base_stale` event to the Mission timeline; an
+unchanged re-drive logs nothing new.
+
 ### Auto-advance with the foreground per-Stage loop (the portable default)
 
 A full `drive` can run for many minutes (Research → … → Implement), so two naive
@@ -156,6 +197,13 @@ The summary marks each headless Stage `⊘ isolated` (the cold-worker handoff). 
 a Stage ever prints `⚠ NOT ISOLATED` the driver stops loudly — there is no
 worker binary; tell the captain to set `$LCARS_WORKER_BIN` (e.g. `claude`). Do
 **not** substitute your own session for a worker.
+
+Each front-half Stage line also carries a **`⌂ <branch> @ <sha>`** marker — the
+tree that Stage actually read. Relay it: it is the captain's only sight of which
+code their Research/Validate/Plan reasoned about, and the question every
+surprising Stage result starts with. A line with **no** `⌂` means that Mission
+has no branch of its own and the Stage read the ambient checkout — say that
+plainly rather than filling in a branch name.
 
 ### The one thing you do *before* the driver: the interactive Align re-entry
 
@@ -706,13 +754,14 @@ trust the board to show exactly where every Mission is.
       gate-signal.txt     ← the last gate rejection fed to the next session (bounce loop)
   pending.json          ← scope/objection/flagged-ticket questions, while paused at the human gate only
   feedback.md           ← the captain's Verify feedback, accumulated (written by `lcars feedback`; read by the Align re-entry)
-  state.json            ← stage pointer + branch/base; + planReviewRound, awaitingHuman/pendingQuestion while paused
+  state.json            ← stage pointer + branch/base; baseFreshness (refreshed each drive); + planReviewRound, awaitingHuman/pendingQuestion while paused
 ```
 
-All LCARS state stays inside `.git/`. The **one** thing Implement writes to the
-git history proper is the Mission's branch: each green ticket's produced files
-are committed to `lcars/<id>` (never to the base branch). Nothing else in the
-working tree changes.
+All LCARS state stays inside `.git/`. Implement writes to the git history proper
+in exactly one place: each green ticket's produced files are committed to
+`lcars/<id>`, never to the base branch. The **only** other refs a drive moves are
+the base branch and `lcars/<id>` itself, and only as the base-freshness re-check
+below describes — fast-forwards of a clean tree, never anything else.
 
 ## Notes & failure modes
 

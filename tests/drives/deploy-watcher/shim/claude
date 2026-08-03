@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# ZERO-SPEND PATH SHIM — stands in for the real `claude` CLI.
+#
+# It lives in a directory this drive PREPENDS to $PATH, so ANY route that ends in
+# executing the bare name `claude` lands here instead of the real binary. That
+# matters because launch.sh resolves its engine from THREE places with a different
+# winner per path — $LCARS_WORKER_BIN, the mission's persisted state.json
+# `workerBin`, and its own `claude` fallback — so pinning the env var alone has
+# been MEASURED losing to a persisted state.json and spawning a real billable
+# worker. PATH is the one seam all three go through.
+#
+# Its job is the launch worker's job: write the DISCOVERY record naming how to run
+# the app. The drive supplies the command/url via env because the port is picked
+# at runtime.
+#
+# The log line records whether the argv carried `--model`, because "would this
+# have billed, and at what tier?" must be answerable from the drive's OWN
+# artifacts by a session that inherits it. `--model` is the tell that a specific
+# (possibly premium) model was being selected; the `launch` role passes none, so
+# the honest expected answer is 0 — and the drive can now say so itself rather
+# than leaving a successor to go and read launch.sh.
+LOG="${LCARS_DRIVE_SHIM_LOG:-/dev/null}"
+model=no
+for a in "$@"; do case "$a" in --model|--model=*) model=yes ;; esac; done
+printf '%s\tclaude\targc=%s\tmodel=%s\n' "$(date +%s)" "$#" "$model" >> "$LOG"
+if [ -n "${LCARS_LAUNCH_JSON:-}" ]; then
+  mkdir -p "$(dirname "$LCARS_LAUNCH_JSON")"
+  cat > "$LCARS_LAUNCH_JSON" <<JSON
+{
+  "target": "deploy-watcher fixture app",
+  "command": "${LCARS_TEST_APP_CMD:-echo no-cmd}",
+  "cwd": ".",
+  "url": "${LCARS_TEST_APP_URL:-}",
+  "howToStop": "lcars launch <mission> --stop",
+  "status": "ready"
+}
+JSON
+fi
+exit 0

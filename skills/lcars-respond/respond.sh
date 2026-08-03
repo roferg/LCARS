@@ -288,12 +288,59 @@ cmd_answer() {
   # Delegated to resolve-logs (it owns the fold) and STRICTLY best-effort — it is
   # a clean no-op for an ordinary escalation (no verified linked children), so it
   # never affects a non-logged-bug answer. Never blocks clearing the gate.
-  FOLD_NOTE=""
+  #
+  # Best-effort does NOT mean silent (S165). The fold can succeed while a piece of
+  # it fails — a child folded to Done whose issue the forge refused to close leaves
+  # resolve-logs printing "⚠ folded <bid> but could not close its issue #<n> — close
+  # it by hand." Both streams used to go to /dev/null here, so on the surface the
+  # gate's own text points the captain at (`lcars answer respond --mission …`, and
+  # the viewscreen's respond endpoint behind it) that note died: children went Done,
+  # their issues stayed OPEN, and nothing was said. Capture the output, pass the ⚠
+  # lines through, and quote the fold's OWN summary line so the success case is not
+  # silent either — never a canned claim, so an ordinary escalation (a clean no-op)
+  # still says nothing about bugs it did not fold.
+  #
+  # No pipes anywhere below: this runs under `set -o pipefail`, and a pipe into an
+  # early-exiting reader already broke this fold path once via SIGPIPE (see
+  # child_fix_on_branch in resolve-logs.sh). Here-strings only.
+  #
+  # …and the LOUDEST case was the silent one (S165 fix round 2). A child whose fix
+  # is NOT on the parent branch is REFUSED by the fold's premise check, and
+  # cmd_complete then prints its refusal on stderr and exits NON-ZERO *before* the
+  # `Folded N …` line. That refusal carries no `⚠` glyph, so neither filter above
+  # matched it: accepting a batch where one bug's fix had vanished printed the
+  # ordinary readout and ZERO bytes of stderr — no refusal, and no word about the
+  # siblings that DID fold — while `lcars approve` said both. So key the second
+  # filter off the fold's EXIT STATUS, not off a glyph: a non-zero fold means
+  # resolve-logs declined to complete something and everything it said explains
+  # why, so quote that whole block. Its own words already carry both halves
+  # ("… NOT on the parent branch: <id>" and "N sibling(s) folded normally"), so
+  # nothing here is invented — on rc 0 the ⚠-only filter is unchanged and a clean
+  # no-op still says nothing.
+  FOLD_NOTE=""; FOLD_WARN=""
   if [ -f "$RESOLVE_LOGS_SCRIPT" ]; then
-    if LCARS_GH_BIN="$GH_BIN" bash "$RESOLVE_LOGS_SCRIPT" complete --parent "$MISSION_ID" \
-         >/dev/null 2>&1; then
-      FOLD_NOTE="  Folded any resolved logged bugs into this Mission's Done (they ride its PR)."
+    # rc is deliberately still ignored for CONTROL FLOW, exactly as before: the gate
+    # is already cleared and a fold failure re-raises the gate in STATE, never by
+    # blocking the answer. We only read it to decide how much to say.
+    FOLD_RC=0
+    FOLD_OUT="$(LCARS_GH_BIN="$GH_BIN" bash "$RESOLVE_LOGS_SCRIPT" complete \
+                  --parent "$MISSION_ID" 2>&1)" || FOLD_RC=$?
+    FOLD_WARN="$(grep '⚠' <<<"$FOLD_OUT")" || true
+    if [ "$FOLD_RC" -ne 0 ]; then
+      # The diagnostic block runs from resolve-logs' own first `lcars resolve-logs:`
+      # line to the end of its output (its trailing detail lines are indented and
+      # carry no anchor of their own). A ⚠ note from a sibling that folded fine is
+      # printed BEFORE that block, so the two captures never overlap.
+      FOLD_REFUSAL="$(awk '/^lcars resolve-logs: /{ blk=1 } blk { print }' \
+                        <<<"$FOLD_OUT")" || true
+      if [ -n "$FOLD_REFUSAL" ] && [ -n "$FOLD_WARN" ]; then
+        FOLD_WARN="$FOLD_WARN
+$FOLD_REFUSAL"
+      elif [ -n "$FOLD_REFUSAL" ]; then
+        FOLD_WARN="$FOLD_REFUSAL"
+      fi
     fi
+    FOLD_NOTE="$(awk '/^Folded /{ print "  " $0; exit }' <<<"$FOLD_OUT")" || true
   fi
 
   echo "RESPOND: answered $MISSION_ID"
@@ -302,6 +349,9 @@ cmd_answer() {
   echo "  Run \`lcars run $MISSION_ID\` to resume $stage — it will consume your answer, not re-ask."
   [ -n "$RECONCILE_NOTE" ] && echo "$RECONCILE_NOTE"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+  [ -n "$FOLD_NOTE" ] && echo "$FOLD_NOTE"
+  # Warnings last and on stderr, after the readout they qualify.
+  [ -n "$FOLD_WARN" ] && printf '%s\n' "$FOLD_WARN" >&2
   exit 0
 }
 

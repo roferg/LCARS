@@ -1263,6 +1263,176 @@ check "14b. the refusal explains that the fix is not on the parent branch" \
 check "14b. applies no lcars:done label to the refused child" \
   "! qgrep 'add-label lcars:done' '$repo14b/gh.log'"
 
+# --- Behaviour 15 (S165): a folded child's ISSUE IS CLOSED -------------------
+#
+# BUG (DX-Scorecard, 2026-07-30): mission lcars-20260730-005 merged as PR #77 with
+# SEVEN logged-bug children. All 14 commits reached origin/main, the parent issue
+# #69 closed — and all seven bug issues (#78–84) stayed OPEN, each correctly
+# carrying `lcars:done`. The labels are the proof this is not a forge problem: the
+# relabel landed perfectly. Nothing anywhere CLOSES a folded child.
+#
+# Two mechanisms combined. `open_pr()` builds the PR's `Closes` list from the
+# parent plus the TICKET sub-issues Schedule opened — a logged-bug child is a
+# separate Mission linked by `lcars:linked`, so it never lands in the PR body and
+# GitHub never auto-closes it on merge. And fold_one_child relabelled the child's
+# issue and stopped. `host-adapter.sh` has had the `issue-close` verb all along;
+# it was simply never called for a folded child.
+#
+# So: the fold closes the child's issue, through the HOST ADAPTER (the one forge
+# seam), best-effort and never fatal, and NEVER for a child the premise check
+# refused.
+#
+# host-adapter stub: records every op, and mimics real `gh issue close` on an
+# already-closed issue (warn on stderr, exit 0 — cli/cli returns nil there).
+# $HOST_RC forces a forge failure.
+make_host_stub() {
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+echo "host $*" >>"$HOST_LOG"
+op="${1:-}"; shift 2>/dev/null || true
+if [ "$op" = "issue-close" ]; then
+  n="${1:-}"; cl="${HOST_LOG}.closed"
+  if grep -qxF "$n" "$cl" 2>/dev/null; then
+    echo "! Issue #$n is already closed" >&2
+    exit 0
+  fi
+  echo "$n" >>"$cl"
+fi
+exit "${HOST_RC:-0}"
+EOF
+  chmod +x "$1"
+}
+
+# 15a. the bulk fold closes every folded child's issue — after the relabel,
+# through the adapter, and never the parent's own issue.
+# ONE combined log (HOST_LOG == GH_LOG) so relabel-then-close ordering is provable.
+repo15="$(new_repo_with_linked_bugs 2)"
+make_gh_stub "$repo15/gh"; make_host_stub "$repo15/host"
+export GH_LOG="$repo15/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export HOST_LOG="$repo15/gh.log"
+for seq in 002 003; do
+  s15="$repo15/.git/lcars/missions/lcars-20260601-$seq/state.json"
+  sed 's/"stage": "plan"/"stage": "verify"/' "$s15" >"$s15.t" && mv "$s15.t" "$s15"
+done
+rc15=0
+( cd "$repo15" && LCARS_GH_BIN="$repo15/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_HOST_ADAPTER="$repo15/host" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" >out15.txt 2>&1 ) || rc15=$?
+check "15a. the bulk complete still exits zero" "[ '$rc15' -eq 0 ]"
+check "15a. folded child #51's issue is CLOSED" \
+  "qgrep 'host issue-close 51' '$repo15/gh.log'"
+check "15a. folded child #52's issue is CLOSED" \
+  "qgrep 'host issue-close 52' '$repo15/gh.log'"
+check "15a. the close goes through the HOST ADAPTER, never a raw \$GH_BIN close" \
+  "! qgrep 'gh issue close' '$repo15/gh.log'"
+check "15a. the relabel is kept on its existing path (close does not replace it)" \
+  "qgrep 'gh issue edit 51 .*add-label lcars:done' '$repo15/gh.log'"
+check "15a. the close comes AFTER the relabel for that child" \
+  "[ \"\$(grep -n 'issue edit 51' '$repo15/gh.log' | head -1 | cut -d: -f1)\" -lt \"\$(grep -n 'issue-close 51' '$repo15/gh.log' | head -1 | cut -d: -f1)\" ]"
+check "15a(7). the PARENT's own issue #42 is NOT closed by the fold (it rides the PR)" \
+  "! qgrep 'issue-close 42' '$repo15/gh.log'"
+
+# 15b. a close FAILURE is non-fatal: the fold still succeeds, with a legible note.
+# A logged bug whose fix is really on the branch is never held hostage to a hiccup.
+repo15f="$(new_repo_with_linked_bugs 1)"
+make_gh_stub "$repo15f/gh"; make_host_stub "$repo15f/host"
+export GH_LOG="$repo15f/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export HOST_LOG="$repo15f/host.log"; : >"$HOST_LOG"
+s15f="$repo15f/.git/lcars/missions/lcars-20260601-002/state.json"
+sed 's/"stage": "plan"/"stage": "verify"/' "$s15f" >"$s15f.t" && mv "$s15f.t" "$s15f"
+rc15f=0
+( cd "$repo15f" && LCARS_GH_BIN="$repo15f/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_HOST_ADAPTER="$repo15f/host" HOST_RC=1 LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug lcars-20260601-002 \
+    >out15f.txt 2>&1 ) || rc15f=$?
+check "15b. a FAILED close is non-fatal — the fold still exits zero" \
+  "[ '$rc15f' -eq 0 ]"
+check "15b. the child is still folded to done despite the failed close" \
+  "qgrep '\"stage\": *\"done\"' '$s15f'"
+check "15b. a failed close leaves a legible note naming the issue" \
+  "qgrep -i 'could not close.*#?51' '$repo15f/out15f.txt'"
+
+# 15c. idempotent: an ALREADY-CLOSED issue is a clean no-op, and a re-run of the
+# fold does not thrash the issue with a second close.
+repo15i="$(new_repo_with_linked_bugs 1)"
+make_gh_stub "$repo15i/gh"; make_host_stub "$repo15i/host"
+export GH_LOG="$repo15i/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export HOST_LOG="$repo15i/host.log"; : >"$HOST_LOG"
+echo 51 >"$HOST_LOG.closed"          # the issue is ALREADY closed on the forge
+s15i="$repo15i/.git/lcars/missions/lcars-20260601-002/state.json"
+sed 's/"stage": "plan"/"stage": "verify"/' "$s15i" >"$s15i.t" && mv "$s15i.t" "$s15i"
+rc15i=0
+( cd "$repo15i" && LCARS_GH_BIN="$repo15i/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_HOST_ADAPTER="$repo15i/host" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug lcars-20260601-002 \
+    >out15i.txt 2>&1 ) || rc15i=$?
+check "15c. closing an ALREADY-CLOSED issue exits zero" "[ '$rc15i' -eq 0 ]"
+check "15c. …and reports no failure" \
+  "! qgrep -i 'could not close' '$repo15i/out15i.txt'"
+rc15j=0
+( cd "$repo15i" && LCARS_GH_BIN="$repo15i/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_HOST_ADAPTER="$repo15i/host" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug lcars-20260601-002 \
+    >out15j.txt 2>&1 ) || rc15j=$?
+check "15c. re-folding an already-done child exits zero" "[ '$rc15j' -eq 0 ]"
+check "15c. …and makes NO second close call (no thrash)" \
+  "[ \"\$(grep -c 'issue-close 51' '$repo15i/host.log')\" -eq 1 ]"
+
+# 15d. a child with NO githubIssue (local-only mission) folds fine and attempts
+# no close at all — the same guard the relabel already has.
+repo15n="$(new_repo_with_linked_bugs 1)"
+make_gh_stub "$repo15n/gh"; make_host_stub "$repo15n/host"
+export GH_LOG="$repo15n/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export HOST_LOG="$repo15n/host.log"; : >"$HOST_LOG"
+s15n="$repo15n/.git/lcars/missions/lcars-20260601-002/state.json"
+sed -e 's/"stage": "plan"/"stage": "verify"/' -e 's/"githubIssue": 51/"githubIssue": null/' \
+  "$s15n" >"$s15n.t" && mv "$s15n.t" "$s15n"
+rc15n=0
+( cd "$repo15n" && LCARS_GH_BIN="$repo15n/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_HOST_ADAPTER="$repo15n/host" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug lcars-20260601-002 \
+    >out15n.txt 2>&1 ) || rc15n=$?
+check "15d. a child with NO githubIssue still folds to done" \
+  "[ '$rc15n' -eq 0 ] && qgrep '\"stage\": *\"done\"' '$s15n'"
+check "15d. …and attempts no close whatsoever" \
+  "! qgrep 'issue-close' '$repo15n/host.log'"
+check "15d. …and reports no close failure" \
+  "! qgrep -i 'could not close' '$repo15n/out15n.txt'"
+
+# 15e. a REFUSED fold (the premise check: the fix is NOT on the parent branch)
+# closes NOTHING. Closing an issue whose fix does not exist is exactly the
+# "green board, no code" failure 2026.7.18 closed.
+repo15r="$(new_repo_premise no)"
+make_gh_stub "$repo15r/gh"; make_host_stub "$repo15r/host"
+export GH_LOG="$repo15r/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+export HOST_LOG="$repo15r/host.log"; : >"$HOST_LOG"
+rc15r=0
+( cd "$repo15r" && LCARS_GH_BIN="$repo15r/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_HOST_ADAPTER="$repo15r/host" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug lcars-20260601-002 \
+    >out15r.txt 2>&1 ) || rc15r=$?
+check "15e. a refused fold is still non-zero (premise check intact)" \
+  "[ '$rc15r' -ne 0 ]"
+check "15e. a REFUSED child's issue is NEVER closed" \
+  "! qgrep 'issue-close' '$repo15r/host.log'"
+check "15e. the refused child stays at verify with its issue open" \
+  "qgrep '\"stage\": *\"verify\"' '$repo15r/.git/lcars/missions/lcars-20260601-002/state.json'"
+
+# 15f. the fold's close survives a real host-adapter that is simply MISSING —
+# it must note it, not abort the fold.
+repo15m="$(new_repo_with_linked_bugs 1)"
+make_gh_stub "$repo15m/gh"
+export GH_LOG="$repo15m/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+s15m="$repo15m/.git/lcars/missions/lcars-20260601-002/state.json"
+sed 's/"stage": "plan"/"stage": "verify"/' "$s15m" >"$s15m.t" && mv "$s15m.t" "$s15m"
+rc15m=0
+( cd "$repo15m" && LCARS_GH_BIN="$repo15m/gh" LCARS_GIT_BIN="$(command -v git)" \
+    LCARS_HOST_ADAPTER="$repo15m/no-such-adapter.sh" LCARS_NOTIFY_NO_DESKTOP=1 \
+    bash "$SCRIPT" complete --parent "$PARENT" --bug lcars-20260601-002 \
+    >out15m.txt 2>&1 ) || rc15m=$?
+check "15f. a missing host adapter does not abort the fold" \
+  "[ '$rc15m' -eq 0 ] && qgrep '\"stage\": *\"done\"' '$s15m'"
+
 # ==========================================================================
 echo
 printf 'lcars resolve-logs: %d passed, %d failed\n' "$pass" "$fail"

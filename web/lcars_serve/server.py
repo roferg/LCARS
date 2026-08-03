@@ -5,6 +5,9 @@ Serves (READ — always available, adapter-neutral; ADR-003):
   GET /<asset>              static front-end assets (board.js, lcars.css, …)
   GET /api/board            the full adapter-neutral board JSON (board.py shape)
   GET /api/mission/<id>     mission detail incl. the activity feed
+  GET /api/base-freshness   this repo's live base-freshness verdict (S160) —
+                            read-only, adapter-optional (404 when the adapter
+                            cannot see a local checkout)
   GET /api/events           a live channel (Server-Sent Events) that pushes ONE
                             update whenever mission state changes on disk
 
@@ -28,7 +31,23 @@ with 403. Each write shells out to the matching `lcars` skill (ADR-002):
   POST /api/mission/<id>/verify          approve | send-back     → approve|feedback.sh
   POST /api/mission/<id>/reapprove       merge-only after a heal → approve.sh --reapprove
   POST /api/mission/<id>/log             preview/author child bugs→ worker | (read)
-  POST /api/mission/<id>/log/file        file logged bugs (+estimate), return review → log.sh
+                                         an AUTHORING preview also mints the S161
+                                         daemon-side session and returns sessionId.
+                                         409s when it would destroy authored bugs a
+                                         live session never got onto disk, unless
+                                         the body says `discardUnfiled` (R1)
+  POST /api/mission/<id>/log/file        file logged bugs (+estimate) → log.sh.
+                                         With `sessionId` it DISPATCHES and returns
+                                         promptly (status filing→filed/failed);
+                                         with `prds` in the body it BLOCKS and
+                                         returns the review (the legacy form)
+  GET  /api/mission/<id>/log/session     restore a reopened Mission-Log console
+                                         (S161; status + children + estimates +
+                                         the authored text of anything unfiled)
+  POST /api/mission/<id>/log/discard     throw away an authoring session the
+                                         captain is done with — abandoned, or a
+                                         partial's unfiled leftover — so its card
+                                         stamp clears (S161; Align /cancel parity)
   POST /api/mission/<id>/log/run         drive ALREADY-FILED logged bugs (the
                                          explicit Go) → resolve-logs.sh. Posting
                                          prds WITHOUT confirm:true is gated — it
@@ -84,12 +103,21 @@ _ALLOWED_IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
 
 
 def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0,
-                actions=None, version_provider=None):
+                actions=None, version_provider=None, log_facts=None):
     """Build (do not start) the daemon bound to `adapter`. Caller serves it.
 
     `actions` is the optional LOCAL-BRIDGE write layer (an actions.Actions). When
     None the daemon is READ-ONLY — every write returns 403 (the github/view-only
     shape). When present, the POST endpoints dispatch to the `lcars` skills.
+
+    `log_facts` (S163 fix round 4, D3) is the optional READ-ONLY Mission-Log
+    durable-facts reader (an actions.LogFacts). It is used ONLY when `actions` is
+    None — a view-only LOCAL board — so that the dispatch and shortfall records
+    sitting in `.git/lcars/missions/<id>/` reach the card there too. Round 3 made
+    those facts durable files; reading a file needs no write layer, and without
+    this the two boards told different stories about the same repo at the same
+    instant. Never wired for the GITHUB adapter, which cannot see a local
+    `.git/lcars/` at all (see `__main__.build_log_facts`).
 
     `version_provider` (S130) is an optional zero-arg callable returning the
     additive `meta.version` block (or None when the install is current). It is
@@ -98,7 +126,8 @@ def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0,
     shows on BOTH the local and github/view-only builds (the UPDATE BUTTON is
     LOCAL-only — it POSTs /api/update, which the read-only 403 guard blocks).
     """
-    handler = _build_handler(adapter, poll_interval, actions, version_provider)
+    handler = _build_handler(adapter, poll_interval, actions, version_provider,
+                             log_facts)
 
     class _Server(ThreadingHTTPServer):
         daemon_threads = True
@@ -115,7 +144,14 @@ def make_server(adapter, host="127.0.0.1", port=8765, poll_interval=1.0,
     return httpd
 
 
-def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
+def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
+                   log_facts=None):
+    # S163 fix round 4 (D3): the ONE overlay source for this daemon. A write
+    # board overlays from its live sessions (richer, and the durable records are
+    # folded into it); a view-only LOCAL board overlays from the durable records
+    # alone. Both expose the same three method names, so the GET path below has
+    # one branch rather than two stories.
+    overlay = actions if actions is not None else log_facts
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -127,6 +163,34 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
             path = self.path.split("?", 1)[0]
             if path == "/api/board":
                 return self._json(self._board_with_version())
+            # GET /api/mission/<id>/log/session — the live Mission-Log authoring
+            # session, for RESTORING a reopened console (S161). Must be matched
+            # BEFORE the mission-detail route below, which would otherwise read
+            # "<id>/log/session" as a mission id — and did, answering "no such
+            # mission" about a mission sitting right there on the board (N3). It is
+            # the SESSION route, not the mission, that is write-board-only: a
+            # read-only build (actions=None) holds no sessions, and now SAYS that.
+            if (path.startswith("/api/mission/")
+                    and path.endswith("/log/session")):
+                mid = path[len("/api/mission/"):-len("/log/session")]
+                if mid and "/" not in mid:
+                    if overlay is None:
+                        if adapter.mission(mid) is None:
+                            return self._error(404, "no such mission")
+                        return self._error(
+                            404, "no mission-log session for %s — this board is "
+                                 "read-only, so it holds none" % mid)
+                    if actions is None and adapter.mission(mid) is None:
+                        return self._error(404, "no such mission")
+                    # S163 fix round 4 (D3): on a view-only LOCAL board this is
+                    # `LogFacts.log_session_state`, which answers from the durable
+                    # record on disk instead of asserting there is nothing to say
+                    # while a shortfall sits right there. Still a read: it opens
+                    # one file.
+                    try:
+                        return self._json(overlay.log_session_state(mid))
+                    except _ActionError as exc:
+                        return self._error(exc.status, exc.message)
             if path.startswith("/api/mission/"):
                 mid = path[len("/api/mission/"):]
                 detail = adapter.mission(mid)
@@ -138,6 +202,20 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
                 if actions is not None:
                     try:
                         detail = actions.align_overlay_mission(detail)
+                    except Exception:
+                        pass
+                    # S161: same mirror for a live Mission-Log filing session, so
+                    # the detail modal can show the ◐ FILING band the card shows.
+                    try:
+                        detail = actions.log_overlay_mission(detail)
+                    except Exception:
+                        pass
+                elif log_facts is not None:
+                    # S163 fix round 4 (D3): a view-only LOCAL board mirrors the
+                    # DURABLE half onto the detail for the same reason — a card
+                    # and its detail disagreeing is the defect, on either board.
+                    try:
+                        detail = log_facts.log_overlay_mission(detail)
                     except Exception:
                         pass
                 return self._json(detail)
@@ -152,6 +230,29 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
                         return self._json(actions.align_state(sid))
                     except _ActionError as exc:
                         return self._error(exc.status, exc.message)
+            # GET /api/base-freshness — this repo's live base-freshness verdict
+            # (S160). A READ: the File console asks it BEFORE the captain has
+            # typed a word, so a stale or dirty base is named before the idea is,
+            # and the reporter behind it is read-only by construction (it never
+            # moves a ref — see skills/lcars-init/base-freshness.sh).
+            #
+            # NOT gated on `actions`. This is not a write, so it answers on a
+            # `--read-only` LOCAL board too — a captain looking at a view-only
+            # board still gets the truth about the checkout it is attached to.
+            # An adapter that cannot see a local checkout (the GitHub one) has no
+            # such method and 404s cleanly; a reporter failure answers `null`,
+            # never a 500 (the console then simply says nothing).
+            if path == "/api/base-freshness":
+                reader = getattr(adapter, "base_freshness", None)
+                if not callable(reader):
+                    return self._error(
+                        404, "this board cannot read base freshness (it is not "
+                             "attached to a local checkout)")
+                try:
+                    rec = reader()
+                except Exception:
+                    rec = None
+                return self._json({"baseFreshness": rec})
             if path == "/api/events":
                 return self._sse()
             return self._static(path)
@@ -173,6 +274,25 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
             if actions is not None:
                 try:
                     board = actions.align_overlay(board)
+                except Exception:
+                    pass
+                # S161: stamp `logFiling` on the parent card of a live Mission-Log
+                # authoring/filing session, so the captain can close the console
+                # and watch the card instead. Additive + in-memory; a read-only
+                # build (actions=None) is never stamped. Never raises into the
+                # board response.
+                try:
+                    board = actions.log_overlay(board)
+                except Exception:
+                    pass
+            elif log_facts is not None:
+                # S163 fix round 4 (D3): the view-only LOCAL board's half of the
+                # same stamp — read from `<mission>/log-dispatch.json` and
+                # `<mission>/log-shortfall.json`, never from memory it does not
+                # have. Additive on the same terms: a repo with no log activity
+                # is returned byte-for-byte unchanged.
+                try:
+                    board = log_facts.log_overlay(board)
                 except Exception:
                     pass
             if version_provider is not None:
@@ -311,19 +431,38 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None):
             if verb == "launch/stop":
                 return actions.launch_stop(mid)
             if verb == "log":
-                return actions.log_preview(mid, text=body.get("text"),
-                                           images=self._images(body))
+                # S161 fix round 3 (R1): `discardUnfiled` is the captain's explicit
+                # "yes, throw away the authored bugs this session never got onto
+                # disk". Absent, a preview that WOULD destroy such text is refused
+                # by the daemon rather than performed — the console asks first.
+                return actions.log_preview(
+                    mid, text=body.get("text"), images=self._images(body),
+                    discard_unfiled=bool(body.get("discardUnfiled")))
             if verb == "log/file":
+                # S161: `sessionId` files the bugs the DAEMON already holds (and
+                # returns promptly); the prds-in-body form is the unchanged legacy
+                # path. sessionId wins when both are present.
                 return actions.log_file(mid, prds=body.get("prds"),
                                         overrides=body.get("overrides"),
                                         images=self._images(body),
-                                        image_refs=body.get("imageRefs"))
+                                        image_refs=body.get("imageRefs"),
+                                        session_id=body.get("sessionId"))
+            if verb == "log/discard":
+                # S161 D3 — Align's /cancel parity: throw away an ABANDONED
+                # authoring session so its `logFiling` stamp stops sitting on the
+                # parent card. Idempotent; refuses only mid-filing.
+                return actions.log_discard(mid)
             if verb == "log/run":
+                # S163 fix round 7 (D3): `resume` is the captain's "that drive
+                # is gone, run these again" — the SAME endpoint and the same
+                # resolve-logs spawn (no second dispatch path), granted only
+                # where the daemon can see the resolver is not running.
                 return actions.log_run(mid, prds=body.get("prds"),
                                        overrides=body.get("overrides"),
                                        confirm=bool(body.get("confirm")),
                                        images=self._images(body),
-                                       image_refs=body.get("imageRefs"))
+                                       image_refs=body.get("imageRefs"),
+                                       resume=bool(body.get("resume")))
             raise _ActionError(404, "no such action: %s" % verb)
 
         def _read_json_body(self):

@@ -14,6 +14,7 @@ stdlib only; the daemon runs on an ephemeral localhost port inside the test.
 import base64
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,7 @@ from tests import _fixtures as fx  # noqa: E402
 from lcars_serve.local_adapter import LocalAdapter  # noqa: E402
 from lcars_serve.github_adapter import GitHubAdapter  # noqa: E402
 from lcars_serve.server import make_server  # noqa: E402
-from lcars_serve.actions import Actions  # noqa: E402
+from lcars_serve.actions import Actions, ActionError  # noqa: E402
 
 
 def _record_stub(record_path):
@@ -218,10 +219,45 @@ def _launch_stub(record_path, *, spawn_real=False, fail=False):
             '  exit 1\n'
         )
     elif spawn_real:
+        # pre-165 Fix A — the SAME setsid handshake test_deploy_main.py has carried since
+        # S141 (114 consecutive clean runs after it landed), ported here because
+        # this stub still had the un-handshaked form and it is what made
+        # test_daemon_shutdown_kills_a_still_running_launch flake ~1 full
+        # web-suite run in 5. setsid FIRST, THEN touch a ready-file, and only
+        # record the pgid once the child is genuinely the leader of its own
+        # process group (PGID==PID) — otherwise a killpg(pid) racing an
+        # unfinished setsid targets a group the app is not in, the sleep
+        # survives, and the failure is reported against PRODUCTION code that
+        # orphaned nothing.
+        #
+        # The wait MUST sleep. A bare `for _ in $(seq 1 200); do [ -e "$rdy" ]
+        # && break; done` is 200 stat()s in well under a millisecond — routinely
+        # finished before the forked perl has even been scheduled to call
+        # setsid() (measured: setsid lands 10–266 ms after `pid=$!`). It then
+        # fell through WITHOUT the ready file and recorded `pgid=$!` anyway,
+        # violating the very invariant it claims. 200 × 10 ms bounds the wait at
+        # ~2 s, and a timeout now fails LOUDLY rather than certifying a pgid it
+        # never confirmed.
         write_body = (
-            "  perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- "
-            "sleep 300 >/dev/null 2>&1 &\n"
+            '  rdy="$(mktemp)"; rm -f "$rdy"\n'
+            "  perl -e 'use POSIX qw(setsid); eval { setsid(); }; "
+            "my $r=shift @ARGV; open(my $f,\">\",$r); close $f; exec @ARGV' "
+            '-- "$rdy" sleep 300 >/dev/null 2>&1 &\n'
             '  pid=$!\n'
+            '  led=""\n'
+            '  for _ in $(seq 1 200); do\n'
+            '    if [ -e "$rdy" ]; then led=1; break; fi\n'
+            '    sleep 0.01\n'
+            '  done\n'
+            '  rm -f "$rdy"\n'
+            '  if [ -z "$led" ]; then\n'
+            '    kill "$pid" 2>/dev/null || true\n'
+            '    echo "launch stub: child never became its own process-group '
+            'leader within 2s — refusing to record an uncertified pgid" >&2\n'
+            '    printf \'{"status":"failed","target":"","url":"","message":'
+            '"stub: setsid handshake timed out"}\\n\' > "$lj"\n'
+            '    exit 1\n'
+            '  fi\n'
             '  printf \'{"status":"running","target":"fake app",'
             '"url":"http://localhost:9931",'
             '"howToStop":"stop it from the board","command":"sleep 300",'
@@ -668,8 +704,14 @@ class MissionFileTest(WriteEndpointBase):
         self.assertEqual(status, 200)
         rec = self._record("file")
         self.assertIn("--attach", rec)
-        # the threaded path is a staged lcars-img-* file under repo_root.
+        # the threaded path is a staged lcars-img-* file...
         self.assertIn("lcars-img-", rec)
+        # ...and it lives under .git/, NOT in the working tree. S160 fix-loop:
+        # LCARS staging its own scratch in the captain's tree made the
+        # base-freshness guard read `?? lcars-prd-....md` as the captain's
+        # untracked work, refuse the fast-forward, and stamp a false "dirty
+        # tree" alarm on a pristine clone.
+        self.assertIn(os.path.join(".git", "lcars", "tmp"), rec)
 
     def test_file_without_image_threads_no_attach(self):
         """Regression: a no-image file call is byte-identical (no --attach)."""
@@ -679,11 +721,24 @@ class MissionFileTest(WriteEndpointBase):
 
     def test_file_with_image_reaps_staged_temp(self):
         """The staged temp copy is reaped after file.sh has copied it in (the
-        record stub is a no-op cp, so nothing should leak under repo_root)."""
+        record stub is a no-op cp, so nothing should leak in the scratch dir)."""
         import glob
         self._post("/api/mission",
                    {"idea": "x", "images": [_img()]})
-        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-img-*")), [])
+        self.assertEqual(
+            glob.glob(os.path.join(self.tmp, ".git", "lcars", "tmp", "*")), [])
+
+    def test_file_leaves_nothing_in_the_working_tree(self):
+        """S160 fix-loop, the whole point: whatever the daemon stages for its own
+        use — the temp PRD, a pasted image, a worker out-dir — must be invisible
+        to `git status`, because the base-freshness guard reads exactly that and
+        will otherwise blame LCARS's provisioning on the captain."""
+        import glob
+        self._post("/api/mission",
+                   {"idea": "Add a dark mode toggle", "images": [_img()]})
+        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-*")), [])
+        prd_arg = self._record("file")
+        self.assertIn(os.path.join(".git", "lcars", "tmp"), prd_arg)
 
 
 class LogTest(WriteEndpointBase):
@@ -792,6 +847,7 @@ class LogTest(WriteEndpointBase):
         self.assertIn("--parent m-001", log_rec)
         self.assertIn("--attach", log_rec)
         self.assertIn("lcars-img-", log_rec)
+        self.assertIn(os.path.join(".git", "lcars", "tmp"), log_rec)
 
     def test_log_file_without_image_threads_no_attach(self):
         """Regression: a no-image log_file is byte-identical (no --attach)."""
@@ -804,7 +860,9 @@ class LogTest(WriteEndpointBase):
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
         actions.log_file("m-001", prds=["# Bug: a\n\nbody a"],
                          overrides=[""], images=[_img()])
-        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-img-*")), [])
+        self.assertEqual(
+            glob.glob(os.path.join(self.tmp, ".git", "lcars", "tmp", "*")), [])
+        self.assertEqual(glob.glob(os.path.join(self.tmp, "lcars-*")), [])
 
     def test_log_run_threads_per_bug_overrides_to_log(self):
         """The explicit one-shot file & run path (confirm=True) must also carry
@@ -919,27 +977,37 @@ class LogTest(WriteEndpointBase):
                          {"scope": "reasoning", "tier": "opus"})
 
     def test_log_run_unparseable_override_surfaces_error_no_silent_drop(self):
-        """Unparseable input + worker returns 'null' ⇒ the response carries a
-        normalization ERROR and the child's modelOverride is NOT set to a wrong
-        value (never silent-drop onto the default model)."""
+        """Unparseable input + worker returns 'null' ⇒ never a silent drop onto
+        the default model.
+
+        S163 fix round 4 (D1) STRENGTHENS this. The S74 contract was "report the
+        normalization error on the response and carry on", and the round-4 tester
+        measured what that was worth on the Go path: the console is already
+        closed by the time the response lands, so the error reached nobody, the
+        raw words survived nowhere, and the bug ran on the default model anyway —
+        exactly the outcome the assertion below was written to prevent.
+
+        So on the Go path the dispatch is now REFUSED. The child's
+        `modelOverride` is still not stamped with a wrong value (the original
+        assertion, unchanged), the error still names the raw steer (unchanged),
+        and the batch does not run behind the captain's back (new)."""
         import json
         fx.plant_simple(self.tmp, "m-001", stage="verify", issue=142)
         _plant_bug(self.tmp, "m-bug1", parent="m-001", issue=201, stage="plan",
                    estimate=fx.ESTIMATE_CLAUDE)
         actions = Actions(repo_root=self.tmp, scripts=self.scripts)
         actions._worker_turn = lambda *a, **k: "null"
-        result = actions.log_run("m-001", prds=[], overrides=["asdf qwer zzz"])
+        with self.assertRaises(ActionError) as caught:
+            actions.log_run("m-001", prds=[], overrides=["asdf qwer zzz"])
+        self.assertEqual(caught.exception.status, 400)
+        self.assertIn("m-bug1", caught.exception.message)
+        self.assertIn("asdf qwer zzz", caught.exception.message)
         # NO modelOverride was written (no wrong/default value stamped).
         p = os.path.join(fx.mission_dir(self.tmp, "m-bug1"), "state.json")
         with open(p) as fh:
             self.assertNotIn("modelOverride", json.load(fh))
-        # the error is surfaced per child so the panel can show it.
-        r0 = result["overrides"][0]
-        self.assertEqual(r0.get("id"), "m-bug1")
-        self.assertIsNone(r0.get("resolved"))
-        self.assertTrue(r0.get("error"),
-                        "an unparseable override must carry a normalization error")
-        self.assertIn("asdf qwer zzz", r0["error"])
+        # ...and nothing was dispatched over the top of the dropped instruction.
+        self.assertNotIn("--parent m-001", self._record("resolve"))
 
     def test_log_file_normalizes_plain_language_before_log_sh(self):
         """File-time path: a plain-language override must be NORMALIZED to
@@ -1493,6 +1561,45 @@ class LaunchEndpointTest(WriteEndpointBase):
         rec = self._record("launch")
         self.assertIn("--stop", rec)
         self.assertIn("m-001", rec)
+
+    def test_launch_stub_never_records_a_pgid_it_has_not_certified(self):
+        """The fixture's OWN invariant, asserted instead of assumed (pre-165 Fix A).
+
+        `_launch_stub(spawn_real=True)` used to background a setsid'ing perl and
+        record `pgid=$!` on the very next line, with no handshake. `setsid()`
+        was MEASURED landing 10–266 ms after that line (n=120, p50 12.7 ms), so
+        the record was ALWAYS written before the child led its own group — and
+        whenever the child was still unscheduled when the daemon's killpg fired,
+        the group-kill went to the STUB's group, the sleep survived, and the
+        shutdown test failed while accusing production code of orphaning an app
+        the fixture had never group-leadered (~1 full web-suite run in 5).
+
+        So: run the stub the way the daemon does, and at the instant its record
+        exists demand that the recorded pgid IS the child's real process group.
+        Ten spawns, because a race that is only usually lost is still a lie."""
+        stub = _launch_stub(self.records["launch"], spawn_real=True)
+        pids = []
+        try:
+            for i in range(10):
+                mid = "cert-%d" % i
+                subprocess.run(["/bin/bash", stub, mid], cwd=self.tmp,
+                               check=True, timeout=30,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+                with open(self._mission_launch_json(mid)) as fh:
+                    rec = json.load(fh)
+                pids.append(rec["pid"])
+                self.assertEqual(
+                    os.getpgid(rec["pid"]), rec["pgid"],
+                    "spawn %d: the stub recorded a pgid the child does not "
+                    "have — a killpg of it would miss the app entirely" % i)
+        finally:
+            for pid in pids:
+                for killer in (os.killpg, os.kill):
+                    try:
+                        killer(pid, signal.SIGKILL)
+                    except OSError:
+                        pass
 
     def test_daemon_shutdown_kills_a_still_running_launch(self):
         """The daemon OWNS the launch: a fake app started via launch survives in

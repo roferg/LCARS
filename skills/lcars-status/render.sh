@@ -87,6 +87,11 @@ render_human() {
       printf '    ✓ %s' "$detail" ;;
     ticket_flagged)
       printf '    ⚑ %s' "$detail" ;;
+    base_stale)
+      # S159 — this drive began against a base that was behind origin. It gets
+      # the same ⟳ the guard prints on the CLI, so the timeline reads the way the
+      # drive did; the detail already carries the distance and what was done.
+      printf '⟳ %s' "$detail" ;;
     gate)
       printf '⏸ %s' "$detail" ;;
     error)

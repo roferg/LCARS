@@ -29,6 +29,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 
 from .local_adapter import LocalAdapter
@@ -356,6 +357,57 @@ def _route_images(image_refs, n):
 #      surface an error instead of running on a wrong/default model.
 _VALID_SCOPES = ("all", "reasoning", "implementation")
 _VALID_TIERS = ("sonnet", "opus")
+
+# S161 fix round 3 (R2) — how a retired Mission-Log session ended, in words. Only
+# ever reached for a sid the daemon RECORDED retiring: the point of the ledger is
+# that an unknown sid gets no story at all (see _missing_log_session_message).
+_LOG_RETIRED_COPY = {
+    "replaced": "was replaced by a newer preview",
+    "discarded": "was discarded",
+    "driven": "was consumed by the captain's Go",
+}
+# How many retirements to remember. A courtesy for stale clients, so forgetting the
+# oldest just softens a message — nothing depends on it.
+_LOG_RETIRED_MAX = 64
+# S163 fix round 1 (D1): the DURABLE "this parent's logged-bug Go was
+# dispatched" record, written into the PARENT mission's own directory under
+# `.git/lcars/missions/<id>/`. It lives there for the same reason every other
+# piece of mission state does (CLAUDE.md: inside `.git/`, so the target repo's
+# working tree stays clean and git never tracks it), and next to the mission it
+# is about so it is discoverable by anyone reading that mission.
+_LOG_DISPATCH_FILE = "log-dispatch.json"
+# S163 fix round 3 (D4) — the DURABLE SHORTFALL, beside the dispatch record and
+# for the same reason. CAPTAIN'S RULING (2026-08-01): "save it to disk".
+#
+# A `partial` lived only in daemon memory: `kill -9`, relaunch, and a batch where
+# 1 of 2 bugs was dropped became indistinguishable from a clean 1-bug batch — the
+# card lost the "of 2", `/log/session` 404'd, and the authored text of the bug
+# that never filed (a ~25s split the captain had already paid for) was gone.
+# S161 made "the unfiled text is preserved verbatim and can be retried" a
+# ship-blocker-grade promise; without this file the promise lasted exactly as
+# long as the process.
+#
+# DELIBERATELY NARROW. What is written is the SHORTFALL FACT — the two counts,
+# which child ids landed, and the unfiled rows' authored text — not the session.
+# Durable sessions (the v2 story for BOTH consoles at once) stay out of scope.
+_LOG_SHORTFALL_FILE = "log-shortfall.json"
+# S163 fix round 4 (D4) — what a restarted daemon is allowed to say about a
+# filing it did not do. Names the two counts FIRST (the card's "1 of 2"), then
+# why they are what they are, then S161's still-standing promise about the text.
+# It deliberately does NOT claim the missing bugs failed: the orphaned `log.sh`
+# may still be running, and `_reconcile_interrupted` re-measures until it is not.
+_INTERRUPTED_FILING_COPY = (
+    "the board restarted while these bugs were being filed — %d of %d authored "
+    "bug%s are on disk and %d %s not confirmed; that filing's own daemon is "
+    "gone, so their authored text is still held here and File again retries "
+    "just those (no second split).")
+# ("is"/"are" for the un-confirmed count — a sentence that says "1 are" is a
+#  small lie in the same family as the big ones this round is about.)
+
+
+def _utc_now_iso():
+    """The stamp format the skills write (`date -u +%Y-%m-%dT%H:%M:%SZ`)."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 _STRUCTURED_OVERRIDE = re.compile(
     r"^(all|reasoning|implementation):(sonnet|opus)$", re.IGNORECASE)
 
@@ -467,8 +519,40 @@ def normalize_override(raw, worker=None):
     return _parse_scope_tier(reply)
 
 
+# S163 fix round 4 (D1) — model families LCARS has no tier for.
+#
+# The tester typed "use haiku" and the daemon spent a worker turn discovering it
+# could not resolve it, then dropped it silently. `haiku` is a real model and a
+# perfectly reasonable thing for a captain to ask for; what it is not is one of
+# the two tiers LCARS chooses between. That is knowable from the word alone, so
+# it is answered from the word alone — deterministically, with a message that
+# says WHICH word and WHAT the choices are, and without paying for a turn that
+# could only ever come back empty.
+_UNSUPPORTED_TIER = re.compile(
+    r"\b(haiku|gpt|gpt-?[0-9.]+|o[134](?:-mini)?|gemini|grok|llama|mistral|"
+    r"deepseek|qwen|codex)\b", re.IGNORECASE)
+
+
+def unsupported_tier(raw):
+    """The model name in `raw` that LCARS cannot pick, or None.
+
+    Only consulted for a steer nothing else resolved — a steer that names both
+    ("opus, not haiku") has already been answered by the deterministic parse,
+    and second-guessing a resolution is how a working instruction gets refused.
+    """
+    if not isinstance(raw, str):
+        return None
+    m = _UNSUPPORTED_TIER.search(raw)
+    return m.group(0) if m else None
+
+
 def _override_error(raw):
     """The human-facing message when a steer can't be normalized (never drop)."""
+    named = unsupported_tier(raw)
+    if named:
+        return ("%r is not a model tier LCARS can choose — it picks between "
+                "Opus (higher quality) and Sonnet (cheaper), so try e.g. "
+                "\"use Opus\" or \"keep it cheap\"" % named)
     return ("couldn't understand the model steer %r — try e.g. \"use Opus\" "
             "or \"keep it cheap\"" % (raw or "").strip())
 
@@ -536,7 +620,734 @@ class _AlignSession(object):
         self.image_paths = []
 
 
-class Actions(object):
+class _LogSession(object):
+    """S161 — in-memory state for ONE Mission-Log authoring flow, keyed by sid.
+
+    The DAEMON's answer to the console-is-a-trap bug: before S161 the authored
+    bug PRDs lived only in `board.js` openLog's `var authored = {...}`, arrived
+    ONLY on the Preview response and were sent ONLY by the File POST. Closing the
+    console between the two threw them away, so the captain had to re-run — and
+    re-pay for — the split worker. Holding them here means Preview → (close) →
+    reopen → File costs nothing extra.
+
+    Deliberately the SAME v1 contract as `_AlignSession`: stdlib only, lives in
+    the daemon process, dies with it. No persistence, no TTL — the durable-v2
+    story is a separate, later piece of work for BOTH consoles at once.
+
+    Fields
+    ------
+    parent : the parent Mission id the bugs are logged against.
+    prds : the authored bug PRD bodies, in split order (the thing that used to
+        evaporate). Paired POSITIONALLY with `overrides` and `image_refs`.
+    children : the preview rows (title/prd/images/imageRefs) the console renders.
+    image_refs / overrides : the per-bug explicit image refs and the captain's
+        per-bug model steers, positional with `prds`.
+    images : the RAW `{name,type,dataB64}` pastes from the report box, held in
+        memory (NOT staged on disk). Filing re-stages them through the SAME
+        `_file_children(images=...)` path the legacy body uses, so the log.sh
+        dispatch is identical — and a previewed-but-never-filed session leaks no
+        file into the repo (the S91 no-leak invariant the preview already holds).
+    status : "previewed" → "filing" → "filed" | "partial" | "failed".
+        DECIDED BY A POST-CONDITION CHECK, never by log.sh's exit code (D1 —
+        `log.sh` runs `file_one_bug` inside a command substitution, so its `die`
+        exits only the SUBSHELL and a batch that filed NOTHING still exits 0):
+          filed    every authored bug is on disk.
+          partial  SOME are. Not `filed` — the batch as requested did not happen,
+                   and `error` names what landed and what did not.
+          failed   none are.
+    error : on "partial"/"failed", the plain-English shortfall + the script's own
+        reason (never a stack).
+    filed_map : per authored bug (positional with `prds`), the child mission id it
+        became — or None while it is not on disk. THE recovery ledger (N1): the
+        difference between "which bugs exist" and "which authored text is still
+        only held here" is exactly this list, so a `partial` can hand back the
+        words of the bugs that did not land instead of losing them. Filled in from
+        the measured before/after delta around each log.sh call, so an earlier
+        report's children can never be miscounted as this batch's.
+    overrides_report : the per-bug resolved/errored steer report from filing.
+
+    Three counts, three names (D2 + N1). `bug_count` is how many bugs the batch
+    IS; `filed_count` how many of them reached disk; `unfiled_count` how many are
+    still only held here. They are reported under those exact names on the session
+    payload (and the first two on the board stamp), so a card can never say 2 while
+    the truth on disk is 0. There is deliberately NO `count` — a name that means
+    "authored bugs" at one status and "filed children" at another IS the defect.
+    """
+
+    # S163 fix round 4 (D4) — two fields that exist ONLY for a filing this
+    # daemon did not finish. `interrupted` marks a session rebuilt from a durable
+    # record that was still `filing` when it was written (i.e. the daemon that
+    # was doing the filing died); `before_ids` is the set of linked children that
+    # existed when that filing STARTED, which is the same before/after delta
+    # `_log_file_worker` measures — so a restarted daemon can measure what the
+    # ORPHANED log.sh landed afterwards instead of guessing.
+    __slots__ = ("parent", "prds", "children", "image_refs", "overrides",
+                 "images", "status", "error", "overrides_report", "filed_map",
+                 "interrupted", "before_ids")
+
+    def __init__(self, parent, prds, children=None, image_refs=None,
+                 overrides=None, images=None):
+        self.parent = parent
+        self.prds = list(prds or [])
+        self.children = list(children or [])
+        self.image_refs = list(image_refs or [])
+        self.overrides = list(overrides or [])
+        self.images = list(images or [])
+        self.status = "previewed"
+        self.error = None
+        self.overrides_report = []
+        self.filed_map = [None] * len(self.prds)
+        self.interrupted = False
+        self.before_ids = None
+
+    @property
+    def bug_count(self):
+        """How many bugs this batch is (the authored PRDs)."""
+        return len(self.prds)
+
+    @property
+    def filed_ids(self):
+        """The child mission ids this batch has on disk, in authored order."""
+        return [c for c in self.filed_map if c]
+
+    @property
+    def filed_count(self):
+        """How many of them are on disk right now."""
+        return len(self.filed_ids)
+
+    @property
+    def unfiled_indices(self):
+        """The authored bugs that are NOT on disk — what a File still has to do."""
+        return [i for i in range(len(self.prds))
+                if i >= len(self.filed_map) or not self.filed_map[i]]
+
+    @property
+    def unfiled_count(self):
+        return len(self.unfiled_indices)
+
+    def unfiled_rows(self):
+        """The AUTHORED ROWS (title + full PRD text + image refs) not on disk.
+
+        N1 — the recovery surface. A `partial` used to report only the children
+        that landed, so the split worker's words for the bug that did NOT land
+        existed nowhere a client could reach: the console's advice ("log the ones
+        that failed as a new report") meant retyping the bug and paying for a
+        second ~25s split. These rows are that text, carried on every session
+        response, so a reopened console can rebuild it — or File can retry it.
+        """
+        rows = []
+        for i in self.unfiled_indices:
+            row = dict(self.children[i]) if i < len(self.children) else {}
+            row["index"] = i
+            row["prd"] = self.prds[i]
+            if not row.get("title"):
+                row["title"] = _prd_title(self.prds[i]) or "Untitled bug"
+            rows.append(row)
+        return rows
+
+    def stamp(self, sid):
+        """The `logFiling` shape — the ONE readout both surfaces publish (D2).
+
+        S162 adds `error`, and only where there IS one — a shortfall or a refusal.
+        The card is the surface a captain who closed the console is left with, so
+        "some of your bugs did not file" has to arrive with the reason attached;
+        the client cannot know it and must not invent one. Condition-gated, so a
+        `previewed`/`filing`/`filed` stamp is byte-identical to its S161 self.
+        """
+        out = {"sessionId": sid, "status": self.status,
+               "bugCount": self.bug_count, "filedCount": self.filed_count}
+        if self.error:
+            out["error"] = str(self.error)
+        return out
+
+
+def _session_from_log_record(rec):
+    """(sid, `_LogSession`) rebuilt from ONE durable Mission-Log record.
+
+    S163 fix round 3 wrote `<mission>/log-shortfall.json`; round 4 also writes it
+    when a filing STARTS (D4) and reads it from a board with no write layer at
+    all (D3). Three call sites, one rebuild — because the moment there are two,
+    the read-only board and the restarted daemon start telling slightly
+    different stories about the same file, which is the class of defect this
+    whole round is about.
+
+    Returns (None, None) for a record too damaged to mean anything: the point of
+    the file is to carry a fact, and half a fact is not one.
+
+    Reusing the ORIGINAL sid matters twice over: a client still holding it is not
+    told a story about a replaced session, and `_log_dispatch_stamps`' "is this
+    the session my Go consumed?" test still answers correctly across a restart.
+    """
+    if not isinstance(rec, dict):
+        return None, None
+    sid = rec.get("sessionId") or uuid.uuid4().hex[:12]
+    try:
+        n = int(rec.get("bugCount") or 0)
+    except (TypeError, ValueError):
+        return None, None
+    rows = [r for r in rec.get("unfiled") or [] if isinstance(r, dict)]
+    if n <= 0 or not rows:
+        return None, None
+    prds, children = [""] * n, [{} for _ in range(n)]
+    for r in rows:
+        try:
+            i = int(r.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < n:
+            prds[i] = r.get("prd") or ""
+            children[i] = {"title": r.get("title") or "Untitled bug",
+                           "imageRefs": r.get("imageRefs") or []}
+    sess = _LogSession(rec.get("parent"), prds, children=children)
+    for k, cid in (rec.get("filed") or {}).items():
+        try:
+            i = int(k)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < n:
+            sess.filed_map[i] = cid
+    sess.status = rec.get("status") or "partial"
+    sess.error = rec.get("error")
+    # D4: a record still saying `filing` was written by a daemon that never got
+    # to settle it. `before` is the linked-children snapshot that filing started
+    # from, kept so the reconciliation later can be a MEASUREMENT rather than an
+    # inference. `interrupted` is deliberately not persisted as its own flag —
+    # "the record still says filing" IS the flag, and one fact beats two.
+    if sess.status == "filing" or rec.get("interrupted"):
+        sess.interrupted = True
+        before = rec.get("before")
+        sess.before_ids = set(before) if isinstance(before, list) else set()
+    return sid, sess
+
+
+class LogFacts(object):
+    """The DURABLE Mission-Log facts, read straight off disk. Never a write.
+
+    S163 fix round 4 (D3). S161/S162 built `logFiling` and `logDispatch` out of
+    IN-MEMORY sessions, and a view-only board is constructed with `actions=None`
+    — a DELIBERATE decision, and the right one while the state was in memory: a
+    board with no write layer has no sessions to publish, so publishing nothing
+    was exactly honest.
+
+    Round 3 changed the premise. The dispatch record (`log-dispatch.json`) and
+    the shortfall (`log-shortfall.json`) are now FILES under
+    `.git/lcars/missions/<id>/`, and reading a file needs no write capability at
+    all. Without this class the tester's two boards disagreed about the same
+    repo at the same instant: a dispatched batch read "⚙ FIX 4 FILED BUGS" (work
+    waiting) on the view-only board while it was already running, and two
+    shortfalls were invisible there.
+
+    So the read-only LOCAL board gets the durable half — and only the durable
+    half. Two bounds, stated rather than hidden:
+
+      • a live, never-filed PREVIEW is in-memory by construction. A read-only
+        board cannot see one, so it goes on reporting the last durable dispatch
+        where a read-write daemon would let the fresh preview outrank it. It is
+        reporting what the disk says, which is the most it can know.
+      • the GITHUB adapter is not wired to this at all (`build_log_facts`). It
+        cannot see a local `.git/lcars/`, and a board claiming durable facts it
+        has no access to is round 1's refused children-reading again.
+
+    `Actions` INHERITS from this: the disk readers, `_linked_children` and
+    `_waiting_children` are the same code on both boards by construction, and
+    the richer in-memory overlays simply override the three public methods.
+    """
+
+    def __init__(self, repo_root, reader=None):
+        self.repo_root = repo_root
+        self._reader = reader if reader is not None else LocalAdapter(repo_root)
+
+    # ── where mission state lives ────────────────────────────────────────────
+    def _missions_dir(self):
+        """`.git/lcars/missions` — where ALL per-repo mission state lives
+        (CLAUDE.md). The one place the path is spelled out."""
+        return os.path.join(self.repo_root, ".git", "lcars", "missions")
+
+    def _linked_children(self, parent):
+        out = []
+        missions_dir = self._missions_dir()
+        if not os.path.isdir(missions_dir):
+            return out
+        for name in sorted(os.listdir(missions_dir)):
+            sp = os.path.join(missions_dir, name, "state.json")
+            if not os.path.isfile(sp):
+                continue
+            card = self._reader.mission(name)
+            if card is None:
+                continue
+            # read parentMission straight off disk (not part of the card shape).
+            pm = _read_json_key(sp, "parentMission")
+            if pm == parent:
+                # S74: a logged bug is a Mission whose estimate is computed from
+                # its bug PRD — surface the SAME estimator readout the board card
+                # and Launch panel show (ONE cost pill, TWO difficulty pills, the
+                # per-stage model mix) so the Mission-Log review panel can render
+                # each bug with its suggested model + cost/difficulty, REUSING the
+                # card shape (card already carries `pills`/`modelMix` off the
+                # child's estimate.json via the LocalAdapter). Plus the persisted
+                # captain override so the panel can pre-fill its steer field.
+                child = {"id": card["id"], "issue": card.get("issue"),
+                         "title": card.get("title"), "stage": card.get("stage"),
+                         "type": card.get("type"),
+                         "pills": card.get("pills"),
+                         "modelMix": card.get("modelMix"),
+                         # S163 fix round 3: the two signals a DRIVER produces,
+                         # carried so `_waiting_children` can tell a bug nothing
+                         # has started from one resolve-logs already scheduled.
+                         # (`dispatched` is deliberately NOT here — it is the
+                         # ESTIMATOR's footprint and is true from birth; see
+                         # `_mark_log_dispatched`.)
+                         "queued": bool(card.get("queued")),
+                         "running": bool(card.get("running"))}
+                ov = _read_json_key(sp, "modelOverride")
+                if isinstance(ov, dict) and ov.get("scope") and ov.get("tier"):
+                    child["override"] = "%s:%s" % (ov["scope"], ov["tier"])
+                out.append(child)
+        return out
+
+    # ── S163 fix round 3 — "show me everything that will run" ────────────────
+    #
+    # CAPTAIN'S RULING (2026-08-01), and it REVERSES a deliberate decision taken
+    # one session earlier on this same unmerged branch. S161 filtered the review
+    # panel to `filed_ids` — "THIS batch's children only (the measured delta), so
+    # a parent that already carried bug children from an earlier report can't
+    # inflate it" — which was the right defence against a lying COUNT and the
+    # wrong defence against a lying REVIEW. `Go ▸` has ALWAYS spawned
+    # `resolve-logs --parent <mid>`, which takes a parent and drives all of it to
+    # one consolidated gate. So on a parent holding two reports the panel showed
+    # list A while the dispatch acted on list B, and the round-3 tester measured
+    # the consequences: a card counting 1 while 3 bugs waited, a review that
+    # showed one of the three, a steer typed against the third written onto the
+    # first, and a Go that ran all three anyway.
+    #
+    # The panel now lists every bug on the mission still waiting to be fixed,
+    # whatever report it came from. What the captain sees is exactly what Go
+    # runs. S161's inflated-count risk is answered by making the count HONEST for
+    # the new meaning — `waitingCount`, "N bugs waiting to be fixed on this
+    # mission", a differently-named fact beside the batch's own `bugCount` /
+    # `filedCount`, which keep meaning exactly what they meant — rather than by
+    # hiding bugs the Go is going to drive regardless.
+    def _waiting_children(self, parent):
+        """Every logged bug on `parent` still WAITING to be fixed.
+
+        The review panel's list, the card's count and (by construction, since
+        resolve-logs is parent-scoped) what the Go will drive.
+
+        Excluded, and only these:
+          done / verify   the fix has landed — `verify` is the consolidated
+                          re-verify gate, i.e. work already done, and it is the
+                          same boundary `isResolvingLocked` uses on the client.
+          queued/running  a driver has it. Those are the signals resolve-logs and
+                          the run lock produce; re-offering such a bug for review
+                          would invite a second driver over it.
+          already dispatched  a Go has taken this bug (S163 fix round 6, D3).
+
+        That last one is the round-6 correction, and it exists because the two
+        signals above are produced by the DRIVER — seconds to minutes after the
+        Go — while the window this whole session is about is the gap before the
+        driver has touched anything. The round-6 tester dispatched two bugs,
+        logged a third against the same parent, and got all three back in the
+        panel with a Go that ran them: `queued`/`running` were both still false
+        on bugs a resolve-logs was already driving, and the only durable
+        evidence that a Go had happened was being discarded by the fresh
+        preview. The record now names the children it covered, and this is where
+        that fact is spent.
+        """
+        # S163 fix round 7 (D3): a dispatch subtracts its children only while it
+        # is a drive that EXISTS. Round 6 subtracted unconditionally, so a
+        # resolver that died mid-batch left its bugs permanently invisible to the
+        # review — which is what made the card's dead end total: the panel had
+        # nothing in it, the count was 0, and the only control said work was in
+        # flight. When the record is stale those bugs are waiting again, because
+        # a resume is going to run them and the panel's one promise is that it
+        # lists what runs.
+        driven = (set() if self._log_dispatch_is_stale(parent)
+                  else self._dispatched_child_ids(parent))
+        out = []
+        for c in self._linked_children(parent):
+            stage = str(c.get("stage") or "").lower()
+            if stage in ("done", "verify"):
+                continue
+            if c.get("queued") or c.get("running"):
+                continue
+            if c.get("id") in driven:
+                continue
+            out.append(c)
+        return out
+
+    # ── S163 fix round 7 (D2) — the ONE count, published for EVERY parent ────
+    def _waiting_counts(self):
+        """{parent id -> N} for every parent with at least one waiting bug.
+
+        The round-7 tester read card 2 / panel 1 / Go 1 off one repo at one
+        instant, having driven one of two filed bugs to `verify` by hand. Two
+        things had to be true at once for that: the client was counting for
+        itself with a looser rule (cured in `waitingChildren`), and it was
+        counting AT ALL — because the daemon published `waitingCount` only on a
+        live session's stamp, and a clean `filed` batch leaves no durable
+        record, so a restarted daemon published nothing and the card had no
+        choice.
+
+        So the measurement now rides EVERY parent card that has waiting bugs,
+        session or no session, on both boards. It is the same
+        `_waiting_children` call the review panel and the Go make — one
+        function, three surfaces, so they cannot drift apart again.
+
+        Additive by construction: a parent with nothing waiting is absent from
+        this map and its card is untouched, so a repo that never logged a bug
+        still renders byte-identically to pre-158.
+        """
+        out = {}
+        for parent in self._log_parent_ids():
+            n = len(self._waiting_children(parent))
+            if n:
+                out[parent] = n
+        return out
+
+    def _log_parent_ids(self):
+        """Every mission id named as a `parentMission` by something on disk.
+
+        One listdir + one small key read per mission, and only then do we pay
+        for `_waiting_children` — which is itself a full scan, so asking it
+        about every mission on the board would be quadratic for no reason. A
+        parent nothing points at can have nothing waiting.
+        """
+        out = set()
+        missions = self._missions_dir()
+        try:
+            names = os.listdir(missions)
+        except OSError:
+            return out
+        for name in names:
+            sp = os.path.join(missions, name, "state.json")
+            if not os.path.isfile(sp):
+                continue
+            pm = _read_json_key(sp, "parentMission")
+            if pm:
+                out.add(pm)
+        return out
+
+    def _stamp_waiting(self, board_or_card, counts=None):
+        """Write `logWaitingCount` onto one card dict, if it has bugs waiting.
+
+        Deliberately a separate top-level key rather than another field inside
+        `logFiling`: the stamp describes a SESSION (S161's D2 rule — one place
+        shapes that readout), and "how many bugs are waiting on this mission" is
+        a fact about the mission that outlives every session it was measured
+        during. Naming it apart is what lets the client read exactly one number.
+        """
+        if not isinstance(board_or_card, dict):
+            return board_or_card
+        mid = board_or_card.get("id")
+        if not mid:
+            return board_or_card
+        if counts is None:
+            counts = self._waiting_counts()
+        if mid in counts:
+            board_or_card["logWaitingCount"] = counts[mid]
+        return board_or_card
+
+    # ── S163 fix round 6 (D3) — what a Go TOOK, and whether it is still going ──
+    def _dispatched_child_ids(self, parent):
+        """The child bug missions some Go on `parent` has already dispatched.
+
+        Cumulative across Gos (`_mark_log_dispatched` unions), so a second,
+        legitimate Go for a newly-logged bug cannot make the daemon forget what
+        the first one took. An old record with no `dispatched` key names none —
+        it predates the field, and inventing members for it would be worse than
+        the empty set (`_live_log_dispatch` covers that case the safe way).
+        """
+        rec = self._read_log_dispatch(parent)
+        if not isinstance(rec, dict):
+            return set()
+        ids = rec.get("dispatched")
+        return set(str(i) for i in ids) if isinstance(ids, list) else set()
+
+    def _resolver_alive(self, rec):
+        """Is the resolve-logs process this record names STILL RUNNING?
+
+        S163 fix round 7 (D3). Round 6 answered "is a drive live?" from the
+        CHILDREN's stages, and wrote its own price down: a resolver that dies
+        mid-batch leaves them short of `verify` for ever, so the card asserted a
+        drive in flight when there was none and the 409 pointed at a gate that
+        could never be reached. A claim about right now has to be checked
+        against right now, and there is exactly one authority on whether a
+        process is running.
+
+        Returns True (alive), False (provably gone), or None (this record cannot
+        be checked — a pre-round-7 record with no `pid`). `None` is a real third
+        answer and is treated as "not evidenced", not as "alive": a card that
+        cannot evidence a drive must not assert one, which is the whole finding.
+        The other direction is guarded elsewhere — the resume path re-checks and
+        refuses on True, so an unevidenced record can never dispatch over a live
+        drive it merely failed to recognise.
+
+        Known bound, stated rather than hidden: after a daemon restart all we
+        have is a pid, and a pid can be reused by an unrelated process. That
+        would read as "still running" — the safe direction (it keeps the round-6
+        refusal), and vanishingly unlikely inside one batch's life.
+        """
+        pid = rec.get("pid") if isinstance(rec, dict) else None
+        if not isinstance(pid, int) or pid <= 0:
+            return None
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False            # ESRCH — gone.
+        except PermissionError:
+            return True             # EPERM — alive, owned by someone else.
+        except OSError:
+            return None
+        return True
+
+    def _log_dispatch_is_stale(self, parent, rec=None):
+        """Does `parent` hold a dispatch record whose drive is NOT running?
+
+        Both halves must be true: the resolver is not evidenced as alive AND the
+        batch has not reached its gate. A finished drive is not stale — it is
+        finished, and `_live_log_dispatch` already returns None for it, which is
+        what re-arms an ordinary Go for whatever was logged since.
+        """
+        if rec is None:
+            rec = self._read_log_dispatch(parent)
+        if not isinstance(rec, dict):
+            return False
+        if self._resolver_alive(rec) is True:
+            return False
+        return self._batch_short_of_its_gate(parent, rec)
+
+    def _batch_short_of_its_gate(self, parent, rec):
+        """Has any child this dispatch took NOT reached `verify`/`done` yet?
+
+        Round 6's reading, lifted out unchanged so the liveness question and the
+        progress question are asked separately and can be reasoned about apart.
+        """
+        ids = self._dispatched_child_ids(parent)
+        kids = self._linked_children(parent)
+        if not ids:
+            ids = set(c["id"] for c in kids)
+        stages = dict((c["id"], str(c.get("stage") or "").lower()) for c in kids)
+        for cid in ids:
+            stage = stages.get(cid)
+            if stage is None:
+                continue            # a child that has vanished is not waited on
+            if stage not in ("verify", "done"):
+                return True
+        return False
+
+    def _live_log_dispatch(self, parent):
+        """The dispatch record for `parent` IF the drive it records is STILL ON.
+
+        The round-3 mark answered "has a Go been taken?" and was spent by the
+        next preview, which is how a new report re-armed the Go over a batch
+        mid-drive. This answers the question that actually matters — "is a
+        resolve-logs still working on this parent?" — and it is a MEASUREMENT,
+        not a mark: a drive is over when every child it took has reached its
+        `verify` gate (the consolidated re-verify gate resolve-logs raises) or
+        `done`. Nothing a later preview does can change that answer.
+
+        A child that has vanished is not something to wait for. A record naming
+        no children at all (pre-round-6) falls back to the same reading over
+        every linked child, which errs towards "still going" — the safe
+        direction, since the other way round is the double dispatch.
+
+        S163 fix round 7 (D3) — what this NO LONGER claims. It used to read the
+        children alone, and round 6 wrote the price down: "a resolve-logs that
+        dies mid-batch leaves its children short of verify and the Go stays
+        refused until they are driven by hand". The tester paid it and returned
+        the finding this round is about — a card asserting a drive that did not
+        exist, with the only stated route forward an event that could not occur.
+
+        So the progress reading is now ANDed with a liveness reading
+        (`_resolver_alive`): a batch short of its gate is a live drive only while
+        the process driving it is actually there. When it is not, this returns
+        None and `_log_dispatch_is_stale` returns True — which is what puts an
+        honest, working control back on the card. The plain Go is still refused
+        (`log_run` keeps its own guard on the RECORD, not on this), so nothing
+        round 6 built is loosened by accident; the resume is the one deliberate
+        door, and it re-checks liveness before it opens.
+        """
+        rec = self._read_log_dispatch(parent)
+        if not isinstance(rec, dict):
+            return None
+        if not self._batch_short_of_its_gate(parent, rec):
+            return None
+        if self._resolver_alive(rec) is False:
+            return None             # provably gone — see _log_dispatch_is_stale
+        return rec
+
+    # ── the durable DISPATCH record ──────────────────────────────────────────
+    def _log_dispatch_path(self, parent):
+        return os.path.join(self._missions_dir(), parent, _LOG_DISPATCH_FILE)
+
+    def _read_log_dispatch(self, parent):
+        """The durable dispatch record for `parent`, or None. Never raises —
+        an unreadable/garbled record is simply not a record."""
+        try:
+            with open(self._log_dispatch_path(parent)) as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(rec, dict) or rec.get("status") != "dispatched":
+            return None
+        return rec
+
+    def _disk_log_dispatches(self):
+        """{parent id -> record} for every durable dispatch record on disk.
+
+        One listdir + one small read per mission that HAS a record, on a board
+        that already stats every mission dir to build a card.
+        """
+        out = {}
+        missions = self._missions_dir()
+        try:
+            names = os.listdir(missions)
+        except OSError:
+            return out
+        for name in names:
+            if not os.path.isfile(os.path.join(missions, name,
+                                               _LOG_DISPATCH_FILE)):
+                continue
+            rec = self._read_log_dispatch(name)
+            if rec is not None:
+                out[name] = rec
+        return out
+
+    # ── the durable FILING/SHORTFALL record ──────────────────────────────────
+    def _log_shortfall_path(self, parent):
+        return os.path.join(self._missions_dir(), parent, _LOG_SHORTFALL_FILE)
+
+    def _disk_log_shortfalls(self):
+        """{parent id -> record} for every durable filing record on disk."""
+        out = {}
+        missions = self._missions_dir()
+        try:
+            names = os.listdir(missions)
+        except OSError:
+            return out
+        for name in names:
+            p = os.path.join(missions, name, _LOG_SHORTFALL_FILE)
+            if not os.path.isfile(p):
+                continue
+            try:
+                with open(p) as fh:
+                    rec = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            if isinstance(rec, dict) and rec.get("unfiled"):
+                out[name] = rec
+        return out
+
+    # ── the read-only overlays (the write board overrides all three) ─────────
+    def _durable_stamps(self):
+        """{parent id -> the `logFiling` stamp} from the durable records.
+
+        Shaped by `_LogSession.stamp` — the ONE place the readout is built (the
+        S161-D2 rule) — plus `waitingCount`, so a view-only card and a
+        read-write card carry byte-identical keys off the same disk state.
+        """
+        out = {}
+        for parent, rec in self._disk_log_shortfalls().items():
+            sid, sess = _session_from_log_record(rec)
+            if sess is None:
+                continue
+            stamp = sess.stamp(sid)
+            stamp["waitingCount"] = len(self._waiting_children(parent))
+            out[parent] = stamp
+        return out
+
+    def log_overlay(self, board):
+        """Stamp the DURABLE `logFiling`/`logDispatch` facts onto board cards.
+
+        Same additive contract as the write board's overlay: with nothing on
+        disk the board is returned byte-for-byte unchanged, so a repo that never
+        logged a bug renders exactly as it did before this round.
+        """
+        if not isinstance(board, dict):
+            return board
+        cols = board.get("columns")
+        if not isinstance(cols, dict):
+            return board
+        stamps = self._durable_stamps()
+        marks = self._disk_log_dispatches()
+        # S163 fix round 7 (D2): the waiting count rides the card whether or not
+        # a record exists — a clean `filed` batch leaves none, and that is
+        # exactly the case where the client was left counting for itself.
+        waiting = self._waiting_counts()
+        if not stamps and not marks and not waiting:
+            return board
+        for col in cols.values():
+            if not isinstance(col, list):
+                continue
+            for card in col:
+                if not isinstance(card, dict):
+                    continue
+                if card.get("id") in stamps:
+                    card["logFiling"] = stamps[card["id"]]
+                if card.get("id") in marks:
+                    # S163 fix round 7 (D3): the same liveness flag the
+                    # read-write board publishes, from the same reader on the
+                    # same disk — a view-only board that went on claiming a dead
+                    # drive would be the round-2 "one repo, two answers" defect
+                    # wearing a different hat.
+                    mark = dict(marks[card["id"]])
+                    if self._log_dispatch_is_stale(card["id"], mark):
+                        mark["stale"] = True
+                    card["logDispatch"] = mark
+                self._stamp_waiting(card, waiting)
+        return board
+
+    def log_overlay_mission(self, mission):
+        """The same two stamps on a mission DETAIL dict — because the detail
+        never runs through the board overlay (the `align_overlay_mission`
+        lesson), and a card and its detail disagreeing is the very defect."""
+        if not isinstance(mission, dict):
+            return mission
+        mid = mission.get("id")
+        if not mid:
+            return mission
+        stamp = self._durable_stamps().get(mid)
+        if stamp is not None:
+            mission["logFiling"] = stamp
+        mark = self._disk_log_dispatches().get(mid)
+        if mark is not None:
+            mark = dict(mark)
+            if self._log_dispatch_is_stale(mid, mark):
+                mark["stale"] = True
+            mission["logDispatch"] = mark
+        # the detail must count the same bugs the card does, or D2 simply moves
+        # one click deeper (the `align_overlay_mission` lesson again).
+        return self._stamp_waiting(mission)
+
+    def log_session_state(self, mid):
+        """GET .../log/session on a board with NO write layer.
+
+        There is no session here and there never will be — but the durable
+        record holds the same facts the console would restore from, so answering
+        with them beats "this board is read-only, so it holds none" while a
+        shortfall sits on disk. Read-only by construction: it opens one file.
+        """
+        rec = self._disk_log_shortfalls().get(mid)
+        sid, sess = _session_from_log_record(rec) if rec else (None, None)
+        if sess is None:
+            raise ActionError(
+                404, "no mission-log session for %s — this board is read-only, "
+                     "so it holds none" % mid)
+        waiting = self._waiting_children(mid)
+        out = {"sessionId": sid, "parent": mid, "status": sess.status,
+               "authored": False, "filed": False,
+               "children": waiting, "overrides": [],
+               "bugCount": sess.bug_count, "filedCount": sess.filed_count,
+               "unfiled": sess.unfiled_rows(),
+               "unfiledCount": sess.unfiled_count,
+               "waiting": waiting, "waitingCount": len(waiting),
+               "readOnly": True}
+        if sess.error:
+            out["error"] = sess.error
+        return out
+
+
+class Actions(LogFacts):
     """Dispatch operator actions to the LCARS skill scripts.
 
     Parameters
@@ -556,7 +1367,10 @@ class Actions(object):
 
     def __init__(self, repo_root, scripts, worker_bin=None, gh_bin=None,
                  check_script=None):
-        self.repo_root = repo_root
+        # S163 fix round 4 (D3): the durable-facts reader is now the BASE, so
+        # `_linked_children`, `_waiting_children` and the two on-disk record
+        # readers are literally the same code the view-only board runs.
+        LogFacts.__init__(self, repo_root)
         self.scripts = dict(scripts or {})
         self.worker_bin = worker_bin
         self.gh_bin = gh_bin
@@ -564,10 +1378,48 @@ class Actions(object):
         # /api/update button shells in `update` mode. Falls back to a `scripts`
         # entry so a directly-constructed Actions can still wire it.
         self.check_script = check_script or self.scripts.get("version_check")
-        self._reader = LocalAdapter(repo_root)
         # active Align grillings, keyed by sessionId (in-memory; ADR-006 local).
         self._align = {}
         self._align_lock = threading.Lock()
+        # S161: active Mission-Log authoring sessions, keyed by sessionId. Same
+        # in-memory / dies-with-the-daemon contract as `_align` above; one live
+        # session per parent mission (a fresh preview replaces the old one).
+        self._log_sessions = {}
+        self._log_lock = threading.Lock()
+        # S163: parents whose filed batch the captain's Go HAS dispatched, as
+        # {parent id -> {"sessionId", "status"}}. Not a session and not a ledger —
+        # a single fact the card needs and cannot derive: `log_run` spawns
+        # resolve-logs fire-and-forget, and it is resolve-logs (seconds later)
+        # that marks the children `queued`, so in between the board looks
+        # identical to the pre-Go board. Same in-memory contract as the sessions;
+        # cleared by a fresh preview for that parent. See `_log_dispatch_stamps`.
+        self._log_dispatched = {}
+        # S163 fix round 4 (D2): parents whose Go is being dispatched RIGHT NOW —
+        # the in-flight half of the same fact. `_log_dispatched` is only true
+        # after the spawn; this covers the window between the request winning the
+        # race and the record existing, which is precisely where five concurrent
+        # Gos all passed round 3's check.
+        self._log_dispatching = set()
+        # S163 fix round 7 (D3): {parent id -> the resolve-logs Popen handle}.
+        # NOT a record — the record is on disk and carries the pid. This exists
+        # only so THIS daemon can `poll()` the child it spawned rather than
+        # signalling a zombie it never reaped, which would report a finished
+        # drive as running for as long as the daemon lives. Bounded by the number
+        # of parents that have ever been dispatched in one daemon's life.
+        self._log_procs = {}
+        # S163 fix round 3 (D4): have the durable SHORTFALL records on disk been
+        # read back into `_log_sessions` yet? Done ONCE, lazily, on the first
+        # surface that needs a session — nothing else in the product writes those
+        # files, so after the first scan memory is authoritative and a per-board
+        # re-scan would only cost a listdir to learn nothing.
+        self._log_rehydrated = False
+        # S161 fix round 3 (R2): sids this daemon HAS held and how each one ended
+        # ({sid: {"parent","reason","by"}}, insertion-ordered, capped). Without it
+        # an unknown sid could only be GUESSED at, and the guess on offer — "it was
+        # replaced by a newer preview" — is a claim about a session the daemon may
+        # never have seen. Remembering the retirement is what makes "replaced"
+        # sayable exactly when it is true, and nothing more.
+        self._log_retired = {}
         # S109: the DAEMON OWNS launched-app lifecycles. Each `lcars launch` setsids
         # its app into its OWN process group (PGID == app pid) and RETURNS — so the
         # app is NOT a child of anything the daemon waited on; to kill it we must
@@ -588,6 +1440,24 @@ class Actions(object):
         # normal stop signal). atexit won't fire on a bare SIGTERM, so install a
         # handler that reaps launches then chains any prior handler. Best-effort:
         # a restricted environment (no signal on this thread) must not break init.
+        #
+        # pre-165 Fix A — THE HANDLER MUST ALSO TERMINATE, or installing it DISABLES the
+        # signal. At daemon start `prev` is SIG_DFL, which is neither callable
+        # nor chainable, so the original handler reaped the launches and simply
+        # RETURNED — and returning from a Python signal handler resumes the
+        # interrupted call, so `serve_forever()` carried straight on. `kill
+        # <daemon-pid>` did nothing; only `kill -9` stopped the board, and every
+        # session leaked an orphaned daemon holding its port. Installing a
+        # handler had converted SIGTERM from "terminate" into "reap the launches
+        # and keep running".
+        #
+        # So: reap, then either hand over to a REAL prior handler (it owns the
+        # exit — that was, and stays, the contract for an embedder that wanted
+        # SIGTERM) or restore the DEFAULT disposition and re-raise to ourselves,
+        # so the process dies by the conventional signal with the conventional
+        # status. Not os._exit(): the re-raise keeps the exit status honest
+        # (128+15) for anything waiting on the daemon. The OS releases the bound
+        # port either way, so a restart binds it again immediately.
         atexit.register(self.shutdown_launches)
         try:
             prev = signal.getsignal(signal.SIGTERM)
@@ -598,7 +1468,13 @@ class Actions(object):
                 finally:
                     if callable(_prev) and _prev not in (
                             signal.SIG_DFL, signal.SIG_IGN):
+                        # someone else already owned SIGTERM (including an
+                        # earlier Actions in this process, which chains on to
+                        # ITS predecessor — a finite nesting, never recursion).
                         _prev(signum, frame)
+                    else:
+                        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+                        os.kill(os.getpid(), signal.SIGTERM)
             signal.signal(signal.SIGTERM, _on_sigterm)
         except (ValueError, OSError, RuntimeError):
             # e.g. not on the main thread — the atexit hook still covers a clean
@@ -1158,7 +2034,11 @@ class Actions(object):
                     + "\n".join(image_paths))
         own_outdir = outdir is None
         if own_outdir:
-            outdir = tempfile.mkdtemp(prefix="lcars-worker-", dir=self.repo_root)
+            # Same rule as `_tmp_prd`/`_stage_image`: an LCARS-owned directory in
+            # the captain's working tree is dirt the freshness guard will blame
+            # on them, so it lives under `.git/` where git cannot see it.
+            outdir = tempfile.mkdtemp(prefix="lcars-worker-",
+                                      dir=self._scratch_dir())
         env = dict(os.environ)
         if self.gh_bin:
             env["LCARS_GH_BIN"] = self.gh_bin
@@ -1760,7 +2640,7 @@ class Actions(object):
         # absence, when the repair brought the systems online).
         return {"output": out, "board": self._reader.board()}
 
-    def log_preview(self, mid, text=None, images=None):
+    def log_preview(self, mid, text=None, images=None, discard_unfiled=False):
         """POST /api/mission/<id>/log — preview the N child bug missions.
 
         Two modes:
@@ -1771,14 +2651,103 @@ class Actions(object):
           • no text → READ-ONLY preview of the bug missions ALREADY linked to this
             parent (state.json.parentMission == mid). Keeps the S68 behaviour so
             the board can show an already-filed batch with no worker spend.
+
+        R1 — an AUTHORING preview replaces the parent's live session, so it can
+        destroy authored text the daemon is the only copy of. `_guard_stranded_
+        preview` decides whether it is allowed to; `discard_unfiled` is the
+        captain saying "yes, throw the leftover away" on purpose. The read-only
+        mode authors nothing and replaces nothing, so it is never guarded.
         """
         self._require_mission(mid)
         text = (text or "").strip()
         if not text:
             children = self._linked_children(mid)
+            waiting = self._waiting_children(mid)
+            # S163 fix round 3: `children` keeps its S68 meaning (every bug
+            # linked to this parent) so nothing that reads it changes; `waiting`
+            # is added beside it because this response is ALSO the daemon-restart
+            # fallback the "Fix Filed Bugs" review is rebuilt from, and there the
+            # panel must be the list `Go ▸` will actually drive.
             return {"children": children, "count": len(children),
-                    "parent": mid, "authored": False}
+                    "parent": mid, "authored": False,
+                    "waiting": waiting, "waitingCount": len(waiting)}
+        # BEFORE the worker: a refusal that had already spent the ~25s split would
+        # be its own version of this defect.
+        self._guard_stranded_preview(mid, discard_unfiled)
         return self._log_author(mid, text, images=images)
+
+    def _guard_stranded_preview(self, mid, discard_unfiled=False):
+        """Refuse a re-preview that would SILENTLY destroy held authored text (R1).
+
+        The defect: at `partial` the daemon held the authored PRD of a bug that
+        never reached disk — the last copy of a ~25s split the captain had already
+        paid for — and a brand-new preview replaced the session and dropped it,
+        with no warning anywhere. "Discard Unfiled" beside it warned; the door that
+        actually lost the text did not.
+
+        So the loss becomes INTENTIONAL instead of incidental, and it is decided
+        HERE rather than in the console, because a client can always be bypassed
+        (the tester reached this by posting straight at the HTTP API):
+
+          previewed          replace, silently — nothing is stranded. The captain
+                             is re-splitting an un-committed report and is paying
+                             for that split on purpose; this is the ordinary case
+                             and it must not grow a confirmation.
+          filed              replace, silently — every authored bug is on disk, so
+                             the session holds no text that only exists here.
+          partial | failed   REFUSED while any authored bug is still unfiled,
+                             naming the bugs at stake and both ways forward (File
+                             them, or discard them deliberately). `discard_unfiled`
+                             is that deliberate choice arriving, and passes.
+          filing             REFUSED outright — the same one refusal `log_discard`
+                             makes. A filing thread is mid-flight and settles onto
+                             THIS sid; replacing the session now would orphan it and
+                             hide the work the parent card is advertising.
+
+        Raises ActionError(409); returns None when the preview may proceed.
+
+        Known narrow window, deliberately left open: the check runs BEFORE the split
+        worker (a refusal must not cost a ~25s turn), so a File that turns the same
+        parent's session `partial` DURING those seconds is not seen, and the swap in
+        `_new_log_session` still replaces it. It needs a File and a Preview racing on
+        one parent, and either resolution there loses one of two paid-for splits, so
+        closing it is its own design decision rather than a tightening.
+        """
+        # S163 fix round 3 (D4): a shortfall that survived a restart is text this
+        # guard exists to protect, so it must be in memory before we decide.
+        self._rehydrate_log_sessions()
+        with self._log_lock:
+            _sid, sess = self._live_log_session(mid)
+            if sess is None:
+                return
+            if sess.status == "filing":
+                raise ActionError(
+                    409, "these logged bugs are being filed right now — wait for "
+                         "the filing to finish before previewing a new report")
+            if sess.status == "previewed" or not sess.unfiled_indices:
+                return
+            if discard_unfiled:
+                return
+            titles = [(r.get("title") or "Untitled bug")
+                      for r in sess.unfiled_rows()]
+        raise ActionError(409, self._stranded_preview_message(titles))
+
+    @staticmethod
+    def _stranded_preview_message(titles):
+        """Why a re-preview was refused: what is at stake, and both ways out."""
+        n = len(titles)
+        shown = titles[:3]
+        named = ", ".join('"%s"' % t for t in shown)
+        if n > len(shown):
+            named += " and %d more" % (n - len(shown))
+        return ("this mission-log session still holds %d authored bug%s that never "
+                "reached disk (%s) — a new preview would throw that text away, and "
+                "the split worker that wrote it has already been paid for. File the "
+                "%d remaining bug%s to keep %s, or discard the unfiled text "
+                "deliberately (\"Discard Unfiled\", or re-send this preview with "
+                "discardUnfiled)."
+                % (n, "" if n == 1 else "s", named, n, "" if n == 1 else "s",
+                   "it" if n == 1 else "them"))
 
     def _log_author(self, parent, text, images=None):
         """Author N bug PRDs from a free-form report via one worker turn.
@@ -1847,11 +2816,20 @@ class Actions(object):
                              # the EXPLICIT refs — round-tripped to /log/file so
                              # _file_children recomputes the SAME union at filing.
                              "imageRefs": explicit[i]})
+        # S161 — the DAEMON now owns these authored PRDs. Mint a session holding
+        # them (plus the per-bug refs, the blank steers, and the raw pastes) so a
+        # console closed between Preview and File loses NOTHING: reopening restores
+        # from `GET .../log/session` and filing needs only the sessionId. Purely
+        # ADDITIVE to the response — an older client that ignores `sessionId` still
+        # posts the full prds body and takes the unchanged legacy path.
+        sid = self._new_log_session(
+            parent, prds, children=children, image_refs=explicit,
+            overrides=[""] * len(prds), images=images)
         return {"children": children, "count": len(children),
-                "parent": parent, "authored": True}
+                "parent": parent, "authored": True, "sessionId": sid}
 
     def _file_children(self, mid, prds, overrides, env_extra, images=None,
-                       image_refs=None):
+                       image_refs=None, output=None):
         """Persist one linked bug Mission per PRD via log.sh (blocking).
 
         Each PRD is paired POSITIONALLY with its captain override (S74). The
@@ -1865,6 +2843,11 @@ class Actions(object):
         flag and is reported with an error (never silent-drop). No-op for no prds.
 
         Returns a per-PRD override report [{index, raw, resolved, label, error}].
+
+        `output` — pass a LIST to collect log.sh's combined stdout+stderr. D1: the
+        script prints its per-bug validation refusals and then exits 0 anyway, so
+        those lines are the only place its own reason for filing nothing survives.
+        Default None keeps the legacy call sites byte-identical.
         """
         prds = list(prds or [])
         overrides = list(overrides or [])
@@ -1911,7 +2894,10 @@ class Actions(object):
                                "resolved": resolved,
                                "label": _override_label(resolved),
                                "error": None})
-            self._run("log", args, env_extra=env_extra)
+            proc = self._run("log", args, env_extra=env_extra)
+            if output is not None:
+                output.append((getattr(proc, "stdout", b"") or b"")
+                              .decode("utf-8", "replace"))
         finally:
             for p in tmp + staged:
                 try:
@@ -1921,7 +2907,7 @@ class Actions(object):
         return report
 
     def log_file(self, mid, prds=None, overrides=None, images=None,
-                 image_refs=None):
+                 image_refs=None, session_id=None):
         """POST /api/mission/<id>/log/file — file authored bugs, return enriched.
 
         The file-then-review-then-run flow (S74): the captain's confirm step FILES
@@ -1930,30 +2916,1134 @@ class Actions(object):
         their cost/difficulty pills + suggested model mix so the review panel can
         show each bug's estimate and the captain can re-steer before Run Fixes. It
         does NOT dispatch resolve-logs — "Run Fixes" (log_run) does that.
+
+        TWO forms, and they are deliberately different in shape:
+
+        * `session_id` (S161, the one the board uses now) — the authored PRDs are
+          already held by the daemon, so the body carries only the sid (plus any
+          edited per-bug steers). The file+estimate work is DISPATCHED onto a
+          worker thread and this returns PROMPTLY with status "filing"; the
+          session then walks to "filed" or "failed" and
+          `GET .../log/session` (or the board's `logFiling` stamp) carries it.
+        * `prds` in the body (the pre-S161 legacy form) — UNCHANGED and
+          byte-identical: it BLOCKS until every child is filed and estimated and
+          returns exactly the keys it always did. An older client keeps working.
+
+        Neither form ever dispatches resolve-logs (BUG-059's hold).
         """
+        if session_id:
+            return self._log_file_session(mid, session_id, overrides=overrides)
         self._require_mission(mid)
         engine = self._persisted_worker_bin(mid)
         env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
         prds = [p for p in (prds or []) if isinstance(p, str) and p.strip()]
         report = self._file_children(mid, prds, overrides, env_extra,
                                      images=images, image_refs=image_refs)
-        children = self._linked_children(mid)
-        # map the per-PRD override report onto the freshly-filed child ids (same
-        # positional order) so the review panel can echo each resolved steer /
-        # surface a normalization error (S74 follow-up; never silent-drop).
-        resolved = []
-        for r in report:
-            idx = r.get("index")
-            cid = children[idx]["id"] if (idx is not None
-                                          and idx < len(children)) else None
-            resolved.append({"id": cid, "raw": r.get("raw"),
-                             "resolved": r.get("resolved"),
-                             "label": r.get("label"), "error": r.get("error")})
+        children, resolved = self._map_override_report(mid, report)
         return {"children": children, "count": len(children),
                 "parent": mid, "filed": True, "overrides": resolved}
 
+    def _map_override_report(self, mid, report, children=None, child_ids=None):
+        """Map the per-PRD override report onto the freshly-filed child ids.
+
+        Same positional order, so the review panel can echo each resolved steer /
+        surface a normalization error (S74 follow-up; never silent-drop). Shared by
+        the legacy blocking file path and the S161 session filing thread so the two
+        can never drift.
+
+        `children` — pass THIS batch's children to map against those alone.
+        Omitted (and no `child_ids`) ⇒ every linked child, the legacy behaviour.
+        `child_ids` — the ATTRIBUTED child id per dispatched PRD (or None where the
+        bug did not land). The session path passes this: positional indexing into
+        "whatever landed" silently mis-attributes a steer as soon as one bug of the
+        batch fails, and after a retry the dispatch is a SUBSET of the batch.
+        """
+        if children is None and child_ids is None:
+            children = self._linked_children(mid)
+        resolved = []
+        for r in (report or []):
+            idx = r.get("index")
+            if child_ids is not None:
+                cid = (child_ids[idx] if (idx is not None
+                                          and idx < len(child_ids)) else None)
+            else:
+                cid = children[idx]["id"] if (idx is not None
+                                              and idx < len(children)) else None
+            resolved.append({"id": cid, "raw": r.get("raw"),
+                             "resolved": r.get("resolved"),
+                             "label": r.get("label"), "error": r.get("error")})
+        return (children if children is not None else []), resolved
+
+    # ── S161: the daemon-side Mission-Log session ─────────────────────────────
+    def _new_log_session(self, parent, prds, children=None, image_refs=None,
+                         overrides=None, images=None):
+        """Mint a `_LogSession` for `parent` and return its sid.
+
+        ONE live session per parent mission: a fresh authoring preview REPLACES
+        the previous one (the captain re-split the report — the old PRDs are the
+        ones they just discarded), so the board can never carry two competing
+        `logFiling` stamps for the same card.
+        """
+        sid = uuid.uuid4().hex[:12]
+        sess = _LogSession(parent, prds, children=children,
+                           image_refs=image_refs, overrides=overrides,
+                           images=images)
+        with self._log_lock:
+            for old, s in list(self._log_sessions.items()):
+                if s.parent == parent:
+                    del self._log_sessions[old]
+                    # R2: remember that THIS sid was the one replaced, so a client
+                    # still holding it can be told so truthfully — and an sid we
+                    # never saw cannot be told the same story.
+                    self._retire_log_session(old, parent, "replaced")
+            self._log_sessions[sid] = sess
+            # S163: a fresh report against this parent is a NEW batch, so any
+            # "the Go for the last one is dispatched" mark is spent. Dropping it
+            # here (rather than letting the live session merely out-rank it) keeps
+            # ONE answer per parent instead of two competing ones.
+            # S163 fix round 6 (D3) — the mark is NO LONGER SPENT HERE.
+            #
+            # It used to be, and round 3 said why: "a fresh preview spends the
+            # mark, so a NEW report re-arms the Go — this closes the repeat, not
+            # the road." The round-6 tester measured what that road led to. A
+            # parent with two bugs mid-drive, one more bug logged against it,
+            # and the Go answered 200 over all three — a SECOND
+            # `resolve-logs --parent` racing the first over the same children
+            # and the same branch. Logging a report is not evidence that a drive
+            # has ended; only the drive ending is. So the record stays, and
+            # `_live_log_dispatch` decides when it stops meaning anything.
+        # ...and the same for a durable shortfall the replaced session was the
+        # only holder of (S163 fix round 3, D4). Reaching here means
+        # `_guard_stranded_preview` already made that loss the captain's explicit
+        # choice, so the record must not outlive the text it describes.
+        self._clear_log_shortfall(parent)
+        return sid
+
+    def _retire_log_session(self, sid, parent, reason):
+        """Record HOW a session this daemon held ended (R2). Call under the lock.
+
+        The only reason `_missing_log_session_message` can say "replaced" without
+        inventing anything. Bounded (oldest entry falls off) — it is a courtesy
+        ledger for stale clients, not state anything depends on, so forgetting the
+        distant past just degrades a message back to "not one I am holding".
+
+        Deliberately records the reason and NOT which sid superseded this one: the
+        message names what is live NOW, which is both the actionable fact and one
+        this cannot go stale about.
+        """
+        self._log_retired[sid] = {"parent": parent, "reason": reason}
+        while len(self._log_retired) > _LOG_RETIRED_MAX:
+            self._log_retired.pop(next(iter(self._log_retired)))
+
+    def _drop_log_session(self, parent, keep_unfiled=False):
+        """Consume (drop) the live session for `parent` — the explicit Go ran.
+
+        Once resolve-logs is driving the batch the authored PRDs are spent: the
+        bugs are real Missions on the board with their own cards. Dropping the
+        session clears the `logFiling` stamp, so the parent card stops advertising
+        a filing that is already history.
+
+        `keep_unfiled` (N1) — EXCEPT when some of the batch never reached disk. The
+        Go drives the children that landed; this session is still the only copy of
+        the authored text of the ones that did not, so consuming it here would
+        destroy exactly what S161 exists to protect. Such a session is kept (its
+        status still reads `partial`, which is true) until the captain discards it.
+        """
+        with self._log_lock:
+            for sid, s in list(self._log_sessions.items()):
+                if s.parent != parent:
+                    continue
+                if keep_unfiled and s.prds and s.unfiled_indices:
+                    continue
+                del self._log_sessions[sid]
+                self._retire_log_session(sid, parent, "driven")
+
+    def _mark_log_dispatched(self, parent, sid=None, proc=None):
+        """S163 — record that `parent`'s logged-bug Go HAS been dispatched.
+
+        The one fact the parent card cannot derive for itself. Between the Go and
+        resolve-logs stamping the children `queued` the board is byte-identical to
+        the pre-Go board: filed children, none driven. Without this, a tab
+        reloaded in that window would render the "⚙ FIX N FILED BUGS" control
+        again and invite a SECOND resolve-logs driver over the same children.
+
+        S163 fix round 1 (D1) — the record is now written to DISK as well as
+        held in memory, because in-memory was exactly the failing case. The
+        original reasoning ("a restart may drop it; by then the children's own
+        `dispatched` flag says the same thing") was wrong on its second clause:
+        `local_adapter._card` computes `dispatched = bool(events) or running`,
+        and the File & Cost step runs `run.sh estimate` on each bug, whose
+        `usage_capture` hook appends a `worker_usage` event to that child. Every
+        filed child is `dispatched: True` from birth, so it never distinguished
+        anything — and a restarted daemon put the captain straight back in the
+        pre-S163 dead end. The tester MEASURED that; see the fix-round tests.
+
+        So the record lives next to the mission it is about
+        (`<mission>/log-dispatch.json`, inside `.git/lcars/` where all mission
+        state lives and nothing tracks it), and both halves carry the SAME dict
+        so memory and disk can never disagree about what was said.
+
+        Known bound, stated rather than hidden: this records the daemon's
+        DISPATCH, not resolve-logs' successful boot. A spawn that dies before
+        touching a child leaves a record of a batch nothing is driving, and the
+        card keeps S77's lock until the captain previews a new report. That is
+        the same bound the in-memory mark had within a daemon's life, and it is
+        the safe direction — the other way round re-offers a Go over a batch
+        that may already be mid-drive.
+        """
+        # S163 fix round 2 — what `sessionId: null` MEANS, said out loud.
+        #
+        # The tester read a record with a null sessionId and could not join it to
+        # anything, which looks like a dropped field. It is not: a Go taken
+        # through the DISK FALLBACK (the daemon restarted, its in-memory session
+        # went with it, and the review was rebuilt from the linked children) has
+        # no session to name, and inventing one would be worse than the null.
+        # So the record states its PROVENANCE instead — the true fact that was
+        # missing — and the null stops reading as an omission. Diagnostic only,
+        # exactly like `children` below: nothing decides on it.
+        rec = {"sessionId": sid, "status": "dispatched",
+               "source": "session" if sid else "children",
+               "at": _utc_now_iso(),
+               # diagnostic, deliberately NOT part of the decision: the control
+               # is suppressed by the record's EXISTENCE, never by matching
+               # children against it. A batch dispatched, then added to, is
+               # still a batch in flight, and re-offering a Go over it is the
+               # double-dispatch this record exists to prevent.
+               "children": [c["id"] for c in self._linked_children(parent)],
+               # S163 fix round 6 (D3) — LOAD-BEARING, unlike `children` above.
+               # The child bug missions THIS Go covered, unioned with everything
+               # earlier Gos on this parent took. `_waiting_children` subtracts
+               # it (so a dispatched bug is never re-offered) and
+               # `_live_log_dispatch` measures its stages (so the Go re-arms
+               # when the batch reaches its gate, not when a new report
+               # arrives). The union is the part that took a tester to find: a
+               # second Go for a newly-logged bug used to overwrite the record,
+               # and with it the only evidence of what the first Go was driving.
+               "dispatched": sorted(
+                   self._dispatched_child_ids(parent)
+                   | set(c["id"] for c in self._waiting_children(parent)))}
+        # S163 fix round 7 (D3) — the field that makes "a drive is running" a
+        # question with an answer. Everything else in this record describes what
+        # was TRUE AT DISPATCH; a card that claims a drive is in flight is making
+        # a claim about NOW, and the round-7 tester found the gap between them:
+        # a resolver that exited instantly left a permanently disabled
+        # "◐ RESOLVING 3 LOGGED BUGS…" over three bugs nothing was driving, and a
+        # 409 whose only advice was to wait for a gate that could never arrive.
+        # With the pid on disk a RESTARTED daemon can ask the OS too.
+        if proc is not None and getattr(proc, "pid", None):
+            rec["pid"] = int(proc.pid)
+        with self._log_lock:
+            self._log_dispatched[parent] = rec
+            if proc is not None:
+                self._log_procs[parent] = proc
+        try:
+            path = self._log_dispatch_path(parent)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(rec, fh)
+            os.replace(tmp, path)
+        except OSError:
+            # telemetry-grade: a repo we cannot write leaves the in-memory mark
+            # doing what it always did. Never fail a dispatch that succeeded.
+            pass
+
+    def _resolver_alive(self, rec):
+        """`LogFacts._resolver_alive`, but ask the HANDLE first.
+
+        S163 fix round 7 (D3). The resolver is this daemon's own detached child
+        and is deliberately never waited on, so once it exits it lingers as a
+        zombie and `os.kill(pid, 0)` keeps returning success — the pid check
+        that is right for a restarted daemon is exactly wrong for the one that
+        did the spawning. `Popen.poll()` reaps and answers truthfully, so the
+        board a captain is actually looking at gets the honest reading.
+
+        Falls through to the pid check for a record this daemon did not make
+        (it restarted, or a view-only board is reading the same disk).
+        """
+        # Deliberately NOT taken under `_log_lock` — the same rule, and the same
+        # reason, as `_read_log_dispatch` right below: these readers are called
+        # BOTH from inside the lock (`_log_dispatch_stamps_locked` marks a stale
+        # record while holding it; the Go's guard asks under it) and from
+        # outside, and `threading.Lock` is not reentrant. Measured, in a real
+        # browser against a real daemon: taking it here wedged `/api/board`
+        # permanently the moment a dispatch record existed. Iterating a dict of
+        # Popen handles needs no lock to be safe here.
+        pid = rec.get("pid") if isinstance(rec, dict) else None
+        if pid:
+            for proc in list(self._log_procs.values()):
+                if getattr(proc, "pid", None) == pid:
+                    return proc.poll() is None
+        return LogFacts._resolver_alive(self, rec)
+
+    def _read_log_dispatch(self, parent):
+        """The dispatch record — this daemon's own memory FIRST, then disk.
+
+        `LogFacts` reads only the file, which is all a view-only board has. A
+        write board also holds the record it just made, and `_mark_log_dispatched`
+        writes the disk copy best-effort (a repo it cannot write degrades to
+        memory, deliberately). Overriding here is what keeps the round-6 readers
+        — `_waiting_children` and `_live_log_dispatch`, both defined on the base
+        so BOTH boards run the same code — correct on a daemon whose disk write
+        failed, without either of them knowing there are two stores.
+
+        Deliberately NOT taken under `_log_lock`: these readers are called from
+        inside the lock (the Go's guard) and from outside it (every board
+        build), and `dict.get` needs no lock to be safe here.
+        """
+        rec = self._log_dispatched.get(parent)
+        if isinstance(rec, dict) and rec.get("status") == "dispatched":
+            return rec
+        return LogFacts._read_log_dispatch(self, parent)
+
+    def _log_dispatch_stamps(self):
+        """{parent id -> the `logDispatch` stamp} for every dispatched batch.
+
+        Memory first, then the durable records on disk (S163 fix round 1 — the
+        stamp has to survive the restart it exists to describe). They carry the
+        same dict, so the merge order only matters for a record this daemon has
+        already rewritten.
+
+        A parent holding a NEWER live session is excluded — from BOTH sources:
+        that session is the more recent, more detailed fact, and it is what lets
+        a captain log a new report against a parent whose last batch was
+        dispatched (the fresh preview outranks the old record without erasing
+        it).
+
+        S163 fix round 3 (D3) — "newer" is the whole correction. The rule used to
+        be "any live session at all", and the Go on a PARTIAL deliberately KEEPS
+        its session (N1: it holds the only copy of the unfiled bug's authored
+        text). So the retained session hid the mark of the Go that had just
+        consumed it: the card went on offering "⚙ FIX 1 OF 2 FILED BUGS" while
+        resolve-logs was already driving the batch, and a restarted daemon —
+        same disk, no memory — read "◐ resolving 1 logged bug…". One repo state,
+        two answers, decided by how long the daemon had been up.
+
+        The record already names the session it consumed, so the comparison is
+        exact: a live session whose sid IS the recorded one is that consumed
+        session and the dispatch wins; any other session is a genuinely new batch
+        and outranks the record as before. (A record whose `sessionId` is null
+        came from the disk-fallback Go and has no session to match, so any live
+        session is by definition newer — the old behaviour, unchanged.)
+        """
+        with self._log_lock:
+            return self._log_dispatch_stamps_locked()
+
+    def _log_dispatch_stamps_locked(self):
+        """`_log_dispatch_stamps` with `_log_lock` ALREADY HELD.
+
+        S163 fix round 4 (D2) — the split exists so the Go's refusal can be
+        decided inside the same lock acquisition that claims the dispatch.
+        `threading.Lock` is not reentrant, so a guard that called the public
+        method under the lock would deadlock; and a guard that called it OUTSIDE
+        the lock is check-then-act, which is the defect: five simultaneous Gos
+        all passed the check and spawned five resolve-logs drivers over the same
+        parent (staggered by 100 ms it was correct, which is how it survived a
+        round). The disk read stays inside — it is a listdir over the mission
+        dirs the board already stats, and correctness outranks lock duration on
+        a path taken once per batch.
+        """
+        live = dict((s.parent, sid)
+                    for sid, s in self._log_sessions.items())
+        marks = dict((p, dict(v)) for p, v in self._log_dispatched.items())
+        for parent, rec in self._disk_log_dispatches().items():
+            marks.setdefault(parent, rec)
+        out = {}
+        for p, v in marks.items():
+            if p not in live or (v.get("sessionId") is not None
+                                 and v.get("sessionId") == live[p]):
+                out[p] = v
+            elif self._live_log_dispatch(p) is not None:
+                # S163 fix round 6 (D3) — a LIVE drive out-ranks any session.
+                #
+                # "A newer session is the more recent, more detailed fact" holds
+                # for a batch that has finished; it is false while resolve-logs
+                # is still working. The tester logged a bug against a parent
+                # mid-drive and the fresh preview hid the mark, so the card
+                # re-offered "⚙ FIX N FILED BUGS" over bugs already being
+                # driven and the Go spawned a second driver. A settled record
+                # still yields to the new session exactly as it did — this
+                # clause only ever fires while a drive is genuinely on.
+                out[p] = v
+        # S163 fix round 7 (D3): say, on the stamp, whether the drive it records
+        # is still there. The client renders `◐ RESOLVING N…` off this stamp's
+        # mere presence, so without the flag the card asserts a running drive on
+        # the strength of a record — a claim about the past standing in for a
+        # claim about the present, which is exactly what the tester caught.
+        for p, v in out.items():
+            if self._log_dispatch_is_stale(p, v):
+                v["stale"] = True
+        return out
+
+    # ── S163 fix round 3 (D4) — the DURABLE SHORTFALL ────────────────────────
+    # (its path + the disk reader live on `LogFacts`, the base a view-only board
+    # runs too — S163 fix round 4 D3.)
+    def _write_log_shortfall(self, sid, sess, before=None):
+        """Persist (or clear) `sess`'s shortfall beside its parent mission.
+
+        Written whenever a settled batch left authored text un-filed; DELETED the
+        moment nothing is missing, so a completed retry cannot leave a stale
+        record telling a restarted daemon a bug is still owed.
+
+        What goes in is the minimum a restart needs to keep S161's promise:
+          bugCount / filedCount   the two numbers the card says ("1 of 2")
+          filed                   {authored index -> child id}, so the counts can
+                                  be rebuilt without guessing which slots landed
+          unfiled                 the authored ROWS — title + full PRD text —
+                                  i.e. the ~25s split the captain already paid
+                                  for, which is the whole point
+          sessionId               the ORIGINAL sid, so the rehydrated session is
+                                  the same session by name. That is what keeps
+                                  `_log_dispatch_stamps`' "is this the session my
+                                  Go consumed?" comparison working across a
+                                  restart (D3) instead of re-opening the review.
+
+        S163 fix round 4 (D4) — WRITTEN WHEN THE FILING STARTS TOO, not only
+        when it settles. The tester `kill -9`'d the daemon 8 s into a 2-bug
+        filing and restarted: with nothing on disk yet, the restarted daemon
+        could only count the children it happened to find, so a 2-bug report
+        rendered as a settled `⚙ FIX 1 FILED BUG` — and a Go in that window
+        would have dispatched the batch with the second bug's cost review never
+        shown, which is the one thing this session exists to prevent. So the
+        fact "a filing of N bugs started" is recorded BEFORE it starts (status
+        `filing`), with `before` — the linked children that already existed —
+        so a restarted daemon can MEASURE what the orphaned log.sh landed
+        afterwards rather than infer completeness.
+
+        Never raises: a repo we cannot write degrades to the pre-S163 behaviour
+        (memory only), which is what it always did.
+        """
+        path = self._log_shortfall_path(sess.parent)
+        if not sess.unfiled_indices or not sess.prds:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return
+        rec = {"parent": sess.parent, "sessionId": sid, "status": sess.status,
+               "bugCount": sess.bug_count, "filedCount": sess.filed_count,
+               "error": sess.error, "at": _utc_now_iso(),
+               "filed": dict((str(i), c)
+                             for i, c in enumerate(sess.filed_map) if c),
+               "unfiled": sess.unfiled_rows()}
+        # Only meaningful while the record says `filing`; carried then so the
+        # reconciliation after a restart is the SAME before/after delta the
+        # filing itself measures (`_log_file_worker`), never a title guess over
+        # every child the parent has ever had.
+        if before is not None:
+            rec["before"] = sorted(before)
+            # ...and say so in a word, because after the first reconciliation the
+            # status is `partial`/`failed` and `status == "filing"` would no
+            # longer identify it. One flag, one meaning: this filing has no
+            # daemon behind it and its outcome is still being measured.
+            rec["interrupted"] = True
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(rec, fh)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def _clear_log_shortfall(self, parent):
+        try:
+            os.unlink(self._log_shortfall_path(parent))
+        except OSError:
+            pass
+
+    def _rehydrate_log_sessions(self):
+        """Read the durable filing records back into `_log_sessions`. Once.
+
+        The narrowness is deliberate and worth stating, because the next session
+        will be tempted to read this as durable-sessions-v2: what comes back is a
+        session that holds the SHORTFALL and nothing else — the unfiled bugs'
+        text in their original authored slots, the ids of the ones that landed,
+        the status and the error. No images, no per-bug steers, no PRDs of the
+        bugs that filed. It exists so that after a restart the card can still say
+        "1 of 2 filed", the console can still show the words the split worker
+        wrote, and File can still retry exactly the missing bug — which is the
+        promise S161 made and the ruling that sent it to disk.
+
+        S163 fix round 4 (D4) — a record still reading `filing` is a filing this
+        daemon did NOT do and cannot finish: the process that was doing it is
+        gone. Such a record is RECONCILED against disk on the way in (below) and
+        then settled to `partial`/`failed` with an error that says the filing was
+        interrupted, so it can never re-read as a clean, complete batch.
+        """
+        if self._log_rehydrated:
+            return
+        # set FIRST: a scan that raises must not re-run on every board build.
+        self._log_rehydrated = True
+        for parent, rec in self._disk_log_shortfalls().items():
+            sid, sess = _session_from_log_record(rec)
+            if sess is None:
+                continue
+            with self._log_lock:
+                if any(s.parent == parent for s in self._log_sessions.values()):
+                    continue          # this daemon already holds a live one
+                self._log_sessions[sid] = sess
+            if sess.interrupted:
+                self._reconcile_interrupted(sid, sess)
+
+    def _reconcile_interrupted(self, sid, sess):
+        """Settle an INTERRUPTED filing against what is actually on disk (D4).
+
+        The orphaned `log.sh` outlives the daemon that spawned it — the tester
+        measured the second bug landing 35 s after the restart — so "what did
+        that filing achieve?" is a question only disk can answer, and it answers
+        it differently as time passes. This is the SAME measurement
+        `_log_file_worker` takes at the end of a filing it owned: everything
+        linked to the parent that was not there when the filing started is what
+        this filing landed, and `_attribute_landed` says which authored bug each
+        one is (title first, then positionally).
+
+        Bounded by construction: it runs only while a session carries
+        `interrupted` AND still has unfiled bugs, and the moment the last one is
+        accounted for the record is deleted and the session settles `filed` —
+        which is what stops a retry from duplicating a bug that simply arrived
+        late.
+        """
+        with self._log_lock:
+            if not sess.interrupted or not sess.unfiled_indices:
+                return
+            before = sess.before_ids or set()
+            pending = list(sess.unfiled_indices)
+            prds = [sess.prds[i] for i in pending]
+            claimed = set(sess.filed_ids)
+        landed = [c for c in self._linked_children(sess.parent)
+                  if c["id"] not in before and c["id"] not in claimed]
+        attributed = self._attribute_landed(pending, prds, landed)
+        with self._log_lock:
+            for i, cid in attributed.items():
+                while len(sess.filed_map) <= i:
+                    sess.filed_map.append(None)
+                sess.filed_map[i] = cid
+            if not sess.unfiled_indices:
+                sess.status, sess.error = "filed", None
+                sess.interrupted = False
+            else:
+                sess.status = "partial" if sess.filed_ids else "failed"
+                sess.error = _INTERRUPTED_FILING_COPY % (
+                    sess.filed_count, sess.bug_count,
+                    "" if sess.bug_count == 1 else "s",
+                    sess.unfiled_count,
+                    "is" if sess.unfiled_count == 1 else "are")
+        # Outside the lock (file I/O). A batch the orphan completed clears the
+        # record; one it did not rewrites it with the reconciled truth — still
+        # carrying `before`, so a SECOND restart re-measures rather than
+        # freezing today's answer into the file.
+        self._write_log_shortfall(
+            sid, sess, before=(sess.before_ids if sess.interrupted else None))
+        if not sess.interrupted and not sess.unfiled_indices:
+            # nothing is owed: the session has no story left to tell, and
+            # leaving it would keep a `filed` stamp on a card whose children
+            # already say the same thing.
+            with self._log_lock:
+                if self._log_sessions.get(sid) is sess:
+                    del self._log_sessions[sid]
+
+    def _log_file_session(self, mid, sid, overrides=None):
+        """File the bugs a `_LogSession` holds that are NOT on disk yet.
+
+        The estimator runs once per child inside log.sh, which is the long step
+        (BUG-G's lesson on the run side). Holding the POST for it is what made the
+        console feel like a trap, so the work goes onto a daemon thread and the
+        POST returns the accepted "filing" status immediately. Re-posting while a
+        dispatch is already in flight is an IDEMPOTENT no-op — never a second
+        log.sh (that would duplicate every bug child and re-spend the estimator).
+
+        ONE RULE decides what a File does (N1): it dispatches exactly the authored
+        bugs that are not on disk. From `previewed`/`failed` that is all of them;
+        from `partial` it is the missing ones ONLY — so a shortfall is RETRYABLE
+        rather than a dead end, and the children that already landed can never be
+        duplicated. Nothing left to file ⇒ a refusal, because the next step from a
+        complete batch is the captain's Go.
+        """
+        self._require_mission(mid)
+        # S163 fix round 3 (D4): a retry may be the FIRST thing a restarted
+        # daemon is asked to do (the console got its sid from /log/session).
+        self._rehydrate_log_sessions()
+        with self._log_lock:
+            sess = self._log_sessions.get(sid)
+            if sess is None:
+                # D4: say only what is KNOWN. The old copy blamed a daemon restart
+                # for every miss, which was flatly false for the common case — a
+                # second Preview REPLACES the session, so the console's old sid is
+                # stale while the daemon has been up the whole time.
+                raise ActionError(404, self._missing_log_session_message(mid, sid))
+            if sess.parent != mid:
+                raise ActionError(
+                    409, "mission-log session %s belongs to %s, not %s"
+                    % (sid, sess.parent, mid))
+            # The captain may have edited the per-bug steers in the console since
+            # the preview; those ride the file POST and land on the session — but
+            # ONLY when the list is parallel to the authored batch. At `partial` the
+            # console's steer inputs are indexed by the children that LANDED, so
+            # adopting such a list would silently move a steer onto another bug.
+            if isinstance(overrides, list) and len(overrides) == len(sess.prds):
+                sess.overrides = [o if isinstance(o, str) else ""
+                                  for o in overrides]
+            if sess.status == "filing":
+                return self._log_dispatch_payload(mid, sid, sess)
+            if not sess.prds:
+                raise ActionError(
+                    400, "this mission-log session holds no authored bug PRDs "
+                         "to file")
+            pending = sess.unfiled_indices
+            if not pending:
+                # every authored bug is on disk. Re-running log.sh over them would
+                # duplicate every child and re-spend the estimator.
+                raise ActionError(
+                    409, "these logged bugs are already filed — the next step is "
+                         "the captain's Go")
+            sess.status = "filing"
+            sess.error = None
+            # S163 fix round 4 (D4): a retry re-arms the measurement. Whatever
+            # an earlier interrupted pass concluded, THIS pass is one this daemon
+            # owns and will settle itself.
+            sess.interrupted = False
+            sess.before_ids = None
+            args = (mid, sid) + self._log_pass_args(sess, pending)
+            # snapshot the response BEFORE the thread can move the status, so the
+            # POST always reports the dispatch it just accepted (never a racy
+            # "filed" that depends on how fast log.sh happened to be).
+            payload = self._log_dispatch_payload(mid, sid, sess)
+        # S163 fix round 4 (D4) — RECORD THE START, then start. The snapshot of
+        # what is already linked to the parent is taken here, once, and handed to
+        # BOTH the durable record and the worker, so "what did this filing land?"
+        # is the same question with the same baseline whether it is answered by
+        # the daemon that ran it or by one that booted afterwards.
+        before = set(c["id"] for c in self._linked_children(mid))
+        self._write_log_shortfall(sid, sess, before=before)
+        threading.Thread(target=self._log_file_worker, args=args + (before,),
+                         daemon=True).start()
+        return payload
+
+    @staticmethod
+    def _log_pass_args(sess, pending):
+        """The (indices, prds, overrides, image_refs, images) for ONE filing pass.
+
+        A FIRST pass covers the whole batch, and hands the session's images and
+        per-bug refs over VERBATIM so the log.sh argv is exactly what the legacy
+        prds-in-body dispatch builds.
+
+        A RETRY covers a SUBSET, which means the images have to be re-routed as
+        well: `_route_images` treats an image referenced by none of the bugs it is
+        given as ORPHANED and attaches it to every one of them, so an image tied
+        only to an already-filed bug would otherwise land on the retried ones. We
+        resolve each retried bug's FINAL image set (explicit ∪ orphaned — the one
+        routing formula) from the ORIGINAL refs, keep only those images, renumber
+        them, and hand each bug its own set explicitly. Same attachments per bug,
+        nothing borrowed from a bug that is not in this pass.
+        """
+        idx = list(pending)
+        prds = [sess.prds[i] for i in idx]
+        steers = [sess.overrides[i] if i < len(sess.overrides) else ""
+                  for i in idx]
+        if len(idx) == len(sess.prds):
+            return idx, prds, steers, list(sess.image_refs), list(sess.images)
+        refs = [(sess.image_refs[i] if i < len(sess.image_refs) else None)
+                for i in range(len(sess.prds))]
+        _orphaned, _explicit, union = _route_images(refs, len(sess.images))
+        keep = sorted(set(k for i in idx for k in union[i]))
+        pos = dict((k, j + 1) for j, k in enumerate(keep))
+        return (idx, prds, steers,
+                [[pos[k] for k in union[i]] for i in idx],
+                [sess.images[k - 1] for k in keep])
+
+    @staticmethod
+    def _log_dispatch_payload(mid, sid, sess):
+        """The accepted-dispatch response for a file-by-sessionId POST.
+
+        No `count` (N2): a key that means "authored bugs" here and "filed children"
+        on the next response is the lie itself. The three self-describing counts —
+        and `unfiled`, the authored text of what is still missing — are the payload.
+        """
+        return {"sessionId": sid, "parent": mid, "status": sess.status,
+                "authored": True, "filed": False,
+                "children": [dict(c) for c in sess.children],
+                "bugCount": sess.bug_count, "filedCount": sess.filed_count,
+                "unfiled": sess.unfiled_rows(),
+                "unfiledCount": sess.unfiled_count}
+
+    @staticmethod
+    def _attribute_landed(indices, prds, landed):
+        """{authored index -> child id} for the bugs this pass put on disk.
+
+        The measured delta says HOW MANY landed; this says WHICH — the difference
+        between reporting a shortfall and being able to hand back the right bug's
+        authored text (N1), and between echoing a steer on the right child and the
+        wrong one.
+
+        Title first: log.sh derives each child's title from its PRD's `# Mission:`
+        line (`_prd_title` reads the same line), so that is a real identity, not a
+        guess. Whatever is left over is then filled in POSITIONALLY, so the
+        attribution always accounts for every landed child and can never contradict
+        `filedCount` — a title the script rewrote degrades the choice of which bug
+        is unfiled, never the count of what exists.
+        """
+        remaining = list(landed)
+        out = {}
+        for pos, i in enumerate(indices):
+            title = _prd_title(prds[pos]) if pos < len(prds) else None
+            if not title:
+                continue
+            for c in remaining:
+                if (c.get("title") or "") == title:
+                    out[i] = c["id"]
+                    remaining.remove(c)
+                    break
+        for i in indices:
+            if i in out or not remaining:
+                continue
+            out[i] = remaining.pop(0)["id"]
+        return out
+
+    def _log_file_worker(self, mid, sid, indices, prds, overrides, image_refs,
+                         images, before=None):
+        """The dispatched filing: log.sh per bug (estimator included), then mark.
+
+        BUG-059's HOLD LIVES HERE: this NEVER dispatches resolve-logs. Reaching
+        "filed" is the end of the road until the captain's explicit Go posts to
+        /log/run.
+
+        D1 — THE STATUS IS A MEASUREMENT, NOT A REPORT. `log.sh` cannot be trusted
+        to tell us whether it worked: `file_one_bug` runs inside a command
+        substitution, so its `die` exits the SUBSHELL and the batch still ends
+        `exit 0` having filed nothing (it even prints ``Run `lcars run ` to begin``
+        with an EMPTY id). So we do not ask the script — we count the linked bug
+        children on disk BEFORE and AFTER, and the delta decides:
+
+            every authored bug landed → filed
+            some landed               → partial   (NEVER `filed`)
+            none landed               → failed
+
+        A non-zero exit is folded into the SAME check, because a script that dies
+        halfway has still put children on disk. Whatever we end up saying, a human
+        reading the status is never misled about what exists.
+
+        `indices` are the AUTHORED positions this pass is filing (all of them on a
+        first pass; only the missing ones on a retry — N1), so what landed is
+        attributed back onto the session's `filed_map` and the status is recomputed
+        for the WHOLE batch: a retry that fills the last gap reads `filed`.
+        """
+        engine = self._persisted_worker_bin(mid)
+        env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+        # S163 fix round 4 (D4): the caller took this snapshot when it wrote the
+        # in-flight record, so the durable baseline and this one are the same
+        # measurement. Re-taken here only for a direct call with none supplied.
+        if before is None:
+            before = set(c["id"] for c in self._linked_children(mid))
+        said = []
+        report, fault = [], None
+        try:
+            report = self._file_children(mid, prds, overrides, env_extra,
+                                         images=images, image_refs=image_refs,
+                                         output=said)
+        except ActionError as exc:
+            fault = exc.message
+        except Exception as exc:   # never leak a traceback into the console
+            fault = "filing the logged bugs failed: %s" % exc
+        # ── the post-condition check ─────────────────────────────────────────
+        landed = [c for c in self._linked_children(mid)
+                  if c["id"] not in before]
+        attributed = self._attribute_landed(indices, prds, landed)
+        try:
+            _c, resolved = self._map_override_report(
+                mid, report,
+                child_ids=[attributed.get(i) for i in indices])
+        except Exception:
+            resolved = []
+        self._settle_log_session(sid, attributed, resolved, said, fault)
+
+    def _settle_log_session(self, sid, attributed, resolved, said, fault):
+        """Merge ONE filing pass into the session and re-measure its status.
+
+        The status describes the WHOLE batch, never one pass: after a retry that
+        files the last missing bug the session reads `filed`, and after one that
+        files none of them it stays `partial` with the shortfall restated. The
+        per-bug steer report is merged by child id, so an earlier pass's entries
+        survive a retry instead of being replaced by the subset's.
+        """
+        with self._log_lock:
+            sess = self._log_sessions.get(sid)
+            if sess is None:
+                return
+            for i, cid in attributed.items():
+                while len(sess.filed_map) <= i:
+                    sess.filed_map.append(None)
+                sess.filed_map[i] = cid
+            if resolved:
+                fresh = set(r.get("id") for r in resolved if r.get("id"))
+                sess.overrides_report = [
+                    r for r in sess.overrides_report if r.get("id") not in fresh
+                ] + list(resolved)
+            filed = sess.filed_ids
+            if not sess.unfiled_indices:
+                sess.status, sess.error = "filed", None
+            else:
+                sess.status = "partial" if filed else "failed"
+                sess.error = self._log_shortfall_message(sess.bug_count, filed,
+                                                        said, fault)
+        # S163 fix round 3 (D4): the settled shortfall goes to DISK, outside the
+        # lock (it is file I/O). Written here rather than at the call sites so
+        # every path that can settle a session — first pass, retry, the retry
+        # that completes the batch — updates (or clears) the record by
+        # construction. `_write_log_shortfall` deletes it when nothing is
+        # missing, so a completed batch leaves no stale claim behind.
+        self._write_log_shortfall(sid, sess)
+
+    @staticmethod
+    def _log_shortfall_message(want, filed_ids, said, fault):
+        """Plain English for a batch that did not fully land (D1 + N1).
+
+        Names the shortfall FIRST — how many were asked for, how many are on disk,
+        and which ones — then says the missing bugs' authored text is STILL HELD
+        (round 1 sent the captain off to "log the ones that failed as a new report",
+        which meant retyping a bug and paying for a second split worker, and it said
+        so while quietly discarding that very text), then appends whatever reason the
+        script itself gave, since that is the only place a swallowed `die` survives.
+        Never a stack trace.
+        """
+        if filed_ids:
+            head = ("only %d of %d authored bug%s filed (%s) — %d did not reach "
+                    "disk; their authored text is still held, so File again "
+                    "retries just those (no second split)"
+                    % (len(filed_ids), want, "" if want == 1 else "s",
+                       ", ".join(filed_ids), want - len(filed_ids)))
+        else:
+            head = ("nothing was filed — none of the %d authored bug%s reached "
+                    "disk; the authored text is still held, so File again retries "
+                    "them (no second split)" % (want, "" if want == 1 else "s"))
+        reason = Actions._log_fault_reason(said, fault)
+        return "%s. %s" % (head, reason) if reason else head + "."
+
+    @staticmethod
+    def _log_fault_reason(said, fault):
+        """The script's OWN words for why, from its combined output (D1).
+
+        log.sh's swallowed refusals are printed, not returned, so its stdout+stderr
+        is the only witness. Prefer its `lcars log:` / `log.sh:` lines, then a
+        non-zero exit's message, then the last thing it said at all.
+        """
+        blob = "\n".join([s for s in (said or []) if s])
+        lines = [ln.strip() for ln in blob.splitlines() if ln.strip()]
+        spoke = [ln for ln in lines
+                 if ln.startswith("lcars log:") or ln.startswith("log.sh:")]
+        if spoke:
+            return " ".join(spoke[:3])
+        if fault:
+            return fault
+        return lines[-1] if lines else ""
+
+    def _missing_log_session_message(self, mid, sid):
+        """Why a sid is unknown — told apart, not guessed (D4, then R2).
+
+        Call under `_log_lock` (it reads `_live_log_session` + `_log_retired`).
+
+        D4 killed the invented "the daemon was restarted". R2 is the SAME class one
+        door along: with a live session for the parent, EVERY unknown sid was told
+        it "was replaced by a newer preview" — including a sid that never existed,
+        which the daemon cannot possibly know was replaced (the tester posted
+        `deadbeefcafe` and was told a story about it). A reason is only stated when
+        the retirement ledger actually recorded it:
+
+          in the ledger      say how it ended — replaced / discarded / consumed by
+                             the Go. Knowable, because we wrote it down.
+          not in the ledger  say only that it is not a session we hold, plus what
+                             IS live (or that nothing is). No reason offered.
+
+        Either way the remedy follows from what is true, which is the part D4 got
+        right and this keeps.
+        """
+        live_sid, live = self._live_log_session(mid)
+        known = self._log_retired.get(sid)
+        if known is not None and known.get("parent") != mid:
+            known = None          # a sid from another parent's flow proves nothing
+        if live is not None:
+            tail = (" — the live one for %s is %s; reopen the Mission Log to pick "
+                    "up the current one" % (mid, live_sid))
+        else:
+            tail = (" — nothing is being held for %s now; preview the report again"
+                    % mid)
+        if known is not None:
+            how = _LOG_RETIRED_COPY.get(known.get("reason"),
+                                        "is no longer being held")
+            return "mission-log session %s %s%s" % (sid, how, tail)
+        if live is not None:
+            return ("mission-log session %s is not one this daemon is holding%s"
+                    % (sid, tail))
+        return ("no live mission-log session %s for %s — nothing is being held "
+                "for it; preview the report again" % (sid, mid))
+
+    def log_discard(self, mid):
+        """POST /api/mission/<id>/log/discard — throw away a live log session.
+
+        D3 — Align's `POST /api/align/<sid>/cancel` parity for the Mission Log. A
+        previewed-then-abandoned session used to stamp `logFiling` on the parent
+        card until the daemon restarted, with no way to clear it; once S162 renders
+        that stamp as a band, an abandoned preview would read as a filing
+        permanently in flight. So the console dismisses its session explicitly.
+
+        IDEMPOTENT and never a 404 (Align answers 200 for a bogus sid too), so a
+        stale card can always clear itself — including for a mission that no longer
+        exists. Dispatches nothing and touches no filed work: it drops a session,
+        not the bug missions a session already put on disk.
+
+        A `partial` is discardable too (N1) — that is how the captain says "I am
+        done with the leftover". It is the only way to clear the card once the Go
+        has driven what landed, since the Go deliberately KEEPS a session that still
+        holds unfiled authored text. The console labels that dismissal for what it
+        destroys ("Discard Unfiled"), because it is the last copy of those words.
+
+        The ONE refusal: while a filing is actually IN FLIGHT, since clearing the
+        band then would hide the very thing the band exists to show.
+        """
+        self._rehydrate_log_sessions()
+        with self._log_lock:
+            sid, sess = self._live_log_session(mid)
+            if sess is not None and sess.status == "filing":
+                raise ActionError(
+                    409, "these logged bugs are being filed right now — wait for "
+                         "the filing to finish before discarding it")
+            if sid is not None:
+                del self._log_sessions[sid]
+                self._retire_log_session(sid, mid, "discarded")
+        # S163 fix round 3 (D4): "I am done with the leftover" has to reach DISK
+        # too, or the next restart would rehydrate the shortfall the captain just
+        # threw away and the card would resurrect a note about it.
+        self._clear_log_shortfall(mid)
+        return {"parent": mid, "sessionId": sid, "status": "discarded"}
+
+    def log_session_state(self, mid):
+        """GET /api/mission/<id>/log/session — restore a reopened console.
+
+        Mirrors `align_state`: the captain backgrounded the Mission-Log console,
+        and this hands back EXACTLY what they left — the authored bugs while the
+        session is `previewed`/`filing`/`failed`, and the children that actually
+        landed, with their estimate pills, once it is `filed`/`partial`. Read-only:
+        it dispatches nothing.
+
+        A mission with no live session 404s (the console then opens fresh).
+        `filed` is reported ONLY when the post-condition check found every authored
+        bug on disk — a mid-flight session reads `filing`, and a short one reads
+        `partial` (with `filed: false`), never `filed` (D1).
+
+        Counts (D2 + N2): `bugCount` = how many bugs the batch is, `filedCount` =
+        how many of them are on disk, `unfiledCount` = how many are not — three
+        names, three meanings, the first two identical to what the board stamp
+        publishes, so the card and the console can never contradict each other.
+        S163 fix round 3 adds a FOURTH, deliberately named apart from all of
+        them: `waitingCount` = how many bugs are waiting to be fixed on this
+        MISSION, across every report. That is the review panel's length and the
+        card's count; the batch's own three are untouched, so a shortfall is
+        still told exactly as it was.
+        There is NO `count`: it equalled `bugCount` at four statuses and
+        `filedCount` at `partial` (because `children` itself changes meaning once
+        only part of a batch lands), and one key that means two things IS the defect.
+        `/log/session` is new in S161, so nothing depended on it — the pre-S161
+        `/log` and `/log/file` payloads keep their own `count` untouched.
+
+        `unfiled` (N1) — the authored rows, WITH their full PRD text, of every bug
+        that is not on disk. Present at every status and always meaning that one
+        thing. This is what makes a shortfall recoverable: the split worker's words
+        for the bug that failed are still here, so the console can show them and
+        File can retry just those, instead of the captain retyping the bug and
+        paying for a second ~25s split.
+        """
+        self._require_mission(mid)
+        # S163 fix round 3 (D4): a restarted daemon still has a shortfall to
+        # report — read the durable records back before deciding there is no
+        # session (idempotent, and a no-op after the first call).
+        self._rehydrate_log_sessions()
+        with self._log_lock:
+            sid, sess = self._live_log_session(mid)
+            if sess is None:
+                raise ActionError(404, "no mission-log session for %s" % mid)
+            status, error = sess.status, sess.error
+            children = [dict(c) for c in sess.children]
+            report = list(sess.overrides_report)
+            steers = list(sess.overrides)
+            bug_count, filed_ids = sess.bug_count, list(sess.filed_ids)
+            unfiled = sess.unfiled_rows()
+        # S163 fix round 3 — THE REVIEW IS THE MISSION, NOT THE BATCH. Present at
+        # EVERY status, always meaning the one thing: the bugs on this mission
+        # still waiting to be fixed, which is exactly what `Go ▸` will drive
+        # (see `_waiting_children`). Carried alongside the authoring payload too,
+        # because a second report being authored must not HIDE the bugs an
+        # earlier one already put on disk — D1: the captain clicked "⚙ FIX 2
+        # FILED BUGS" and landed in a failed session's console with no pills, no
+        # steer boxes and a Go that could only refuse, whose only exit destroyed
+        # the unfiled text. Both facts are real; neither may erase the other.
+        waiting = self._waiting_children(mid)
+        counts = {"bugCount": bug_count, "filedCount": len(filed_ids),
+                  "unfiled": unfiled, "unfiledCount": len(unfiled),
+                  "waiting": waiting, "waitingCount": len(waiting)}
+        if status in ("filed", "partial"):
+            out = {"sessionId": sid, "parent": mid, "status": status,
+                   "authored": False, "filed": status == "filed",
+                   # the review list IS the waiting list here — at these statuses
+                   # this batch's children are part of it, and so is anything an
+                   # earlier report left undispatched.
+                   "children": waiting, "overrides": report}
+            out.update(counts)
+            if status == "partial":
+                out["error"] = error or (
+                    "only %d of %d authored bugs filed — the rest are still held "
+                    "here" % (len(filed_ids), bug_count))
+            return out
+        # S163 fix round 4 (D1): `overrides` rides at EVERY status now, not just
+        # the two that show a filed batch. A Go is legitimate from a `failed`
+        # session too (round 3: the panel lists every waiting bug, whatever
+        # report it came from), so a Go REFUSED there has verdicts to echo — and
+        # this was the one branch that dropped them, measured on the live daemon.
+        out = {"sessionId": sid, "parent": mid, "status": status,
+               "authored": True, "filed": False,
+               "children": children, "steers": steers, "overrides": report}
+        out.update(counts)
+        if status == "failed":
+            out["error"] = error or "filing the logged bugs failed"
+        return out
+
+    def _live_log_session(self, mid):
+        """(sid, session) for `mid`, or (None, None). Call under `_log_lock`."""
+        found = (None, None)
+        for sid, s in self._log_sessions.items():
+            if s.parent == mid:
+                found = (sid, s)
+        return found
+
+    def _log_stamp_for(self, mid, sid, sess):
+        """The `logFiling` stamp for one session, plus S163's `waitingCount`.
+
+        The session cannot count the mission's waiting bugs (it knows only its
+        own batch), and the card must not be handed a number the console does
+        not publish — so the one extra field is added HERE, in the single place
+        both surfaces go through, exactly as `_LogSession.stamp` is the single
+        place the rest of the readout is shaped (S161 D2).
+        """
+        out = sess.stamp(sid)
+        out["waitingCount"] = len(self._waiting_children(mid))
+        return out
+
+    def _log_stamps(self):
+        """{parent id -> the `logFiling` stamp} for every live log session.
+
+        D2: the stamp is built by `_LogSession.stamp`, the ONE place the readout is
+        shaped, so the card cannot drift from what `log_session_state` reports.
+        """
+        # S163 fix round 3 (D4): a durable shortfall becomes a session on the
+        # first board build after a restart, so the card keeps saying "1 of 2".
+        self._rehydrate_log_sessions()
+        out = {}
+        with self._log_lock:
+            live = list(self._log_sessions.items())
+        # S163 fix round 4 (D4): an INTERRUPTED filing is re-measured on every
+        # board build until it settles. The orphaned `log.sh` genuinely does land
+        # its remaining bugs (35 s later, in the tester's run), and a card frozen
+        # on the first answer would go on offering a retry of a bug that had
+        # already arrived — the one way this cure could create a duplicate.
+        # Costs one `_linked_children` scan, and only while something is unsettled.
+        for sid, sess in live:
+            if sess.interrupted:
+                self._reconcile_interrupted(sid, sess)
+        with self._log_lock:
+            live = list(self._log_sessions.items())
+        for sid, s in live:
+            out[s.parent] = self._log_stamp_for(s.parent, sid, s)
+        return out
+
+    def log_overlay(self, board):
+        """Additively stamp `logFiling` on the parent card of a live log session.
+
+        The `align_overlay` shape, for the Mission-Log half: so a filing survives a
+        page reload (a fresh tab has no client state), stamp
+        `card["logFiling"] = {"sessionId","status","bugCount","filedCount"}` onto the PARENT
+        mission's board card while its session is live and un-consumed. Purely
+        in-memory and ADDITIVE — with no live session the board is returned
+        byte-for-byte unchanged. It does NOT move `adapter.fingerprint()`, so it
+        never drives an SSE push; the safety poll picks it up.
+
+        A read-only / github build constructs the daemon with actions=None, so this
+        is never reached there — the parent card is never stamped.
+        """
+        if not isinstance(board, dict):
+            return board
+        cols = board.get("columns")
+        if not isinstance(cols, dict):
+            return board
+        stamps = self._log_stamps()
+        # S163: the second, mutually exclusive stamp — a batch whose Go this
+        # daemon has already dispatched (see _mark_log_dispatched). Same additive
+        # contract: nothing live and nothing dispatched ⇒ the board is returned
+        # byte-for-byte unchanged.
+        marks = self._log_dispatch_stamps()
+        # S163 fix round 7 (D2): and the mission-level waiting count, published
+        # for every parent that has one — the read-write board and the view-only
+        # board take the SAME measurement from the SAME function (`LogFacts.
+        # _waiting_counts`), which is what makes "card, panel and Go are one
+        # reading" a property of the code rather than of three call sites
+        # agreeing by luck.
+        waiting = self._waiting_counts()
+        if not stamps and not marks and not waiting:
+            return board          # no live sessions → byte-identical board.
+        for col in cols.values():
+            if not isinstance(col, list):
+                continue
+            for card in col:
+                if not isinstance(card, dict):
+                    continue
+                self._stamp_waiting(card, waiting)
+                # S163 fix round 3 (D3): two INDEPENDENT ifs, not an elif. After
+                # a Go on a partial both facts are true at once and the card
+                # needs both — `logDispatch` withdraws the Fix control and
+                # restores the honest "◐ resolving N…", `logFiling` keeps S162's
+                # "only 1 of 2 filed" note underneath it. The elif made the card
+                # pick one, and it picked the one that hid the dispatch.
+                # `_log_dispatch_stamps` decides WHICH marks survive a live
+                # session, so this can never resurrect a spent record.
+                if card.get("id") in stamps:
+                    card["logFiling"] = stamps[card["id"]]
+                if card.get("id") in marks:
+                    card["logDispatch"] = marks[card["id"]]
+        return board
+
+    def log_overlay_mission(self, mission):
+        """Stamp `logFiling` onto a SINGLE mission-DETAIL dict.
+
+        The detail payload must mirror the board card (the `align_overlay_mission`
+        lesson: the detail modal never runs through the board overlay, so without
+        this it falls back to client state that is empty after a reload). Additive
+        + in-memory: a mission with no live session is returned unchanged.
+
+        Same `_LogSession.stamp` shape as the board card, by construction (D2).
+        """
+        if not isinstance(mission, dict):
+            return mission
+        mid = mission.get("id")
+        if not mid:
+            return mission
+        # S163 fix round 3 (D4): the same durable-shortfall read the card gets.
+        self._rehydrate_log_sessions()
+        with self._log_lock:
+            sid, sess = self._live_log_session(mid)
+        if sess is not None:
+            mission["logFiling"] = self._log_stamp_for(mid, sid, sess)
+        # S163: same two-stamp rule as the board card, so the detail and the card
+        # cannot disagree about whether the Go has been taken — and, since fix
+        # round 3, the SAME "does a live session outrank this record?" rule,
+        # taken from the one place that decides it. Reading `_log_dispatched`
+        # directly here is what let the detail keep a mark the board had
+        # (correctly) dropped, and vice versa.
+        mark = self._log_dispatch_stamps().get(mid)
+        if mark is not None:
+            mission["logDispatch"] = dict(mark)
+        # S163 fix round 7 (D2): the card counts it, so the detail counts it —
+        # from the same call, so the two doors onto a mission cannot show
+        # different numbers.
+        return self._stamp_waiting(mission)
+
     def log_run(self, mid, prds=None, overrides=None, confirm=False,
-                images=None, image_refs=None):
+                images=None, image_refs=None, resume=False):
         """POST /api/mission/<id>/log/run — file authored bugs, then resolve.
 
         BUG-059 — the human cost-review GATE. Filing a logged bug computes its cost
@@ -1974,10 +4064,111 @@ class Actions(object):
           • `prds` supplied AND `confirm` ⇒ the explicit one-shot "file & go" power
             path: file the children then dispatch in one call.
 
-        The captain overrides (S74) pair positionally with the prds and are
-        persisted by log.sh.
+        The captain overrides (S74) pair positionally with the prds at FILE time
+        (the bugs have no ids yet, so position is all there is) and are persisted
+        by log.sh. On the Go path they are KEYED BY CHILD MISSION ID — see
+        `_override_pairs` for why that changed in S163 fix round 3.
         """
         self._require_mission(mid)
+        # S163 fix round 3 (D3) — ONE Go per batch, and say so.
+        #
+        # The tester pressed Go twice on an already-dispatched parent and got
+        # `ok:true` both times, with the durable record's timestamp quietly
+        # rewritten. No duplicate driver appeared (resolve-logs' own lock caught
+        # it) but the daemon had agreed to something it did not do, which is the
+        # same class of lie the rest of this round is about. The mark is spent by
+        # a fresh preview (`_new_log_session`), so a NEW report re-arms the Go —
+        # this closes the repeat, not the road.
+        #
+        # S163 fix round 4 (D2) — ...and the refusal is now ATOMIC. Round 3's
+        # version read the persisted record, which `_mark_log_dispatched` only
+        # writes AFTER the spawn, so at true simultaneity every request passed:
+        # the tester fired five Gos at once and got `200 200 200 200 200` and
+        # FIVE resolve-logs drivers racing over the same bug missions and the
+        # same parent branch. The winner is now decided BEFORE any spawn, by
+        # claiming `mid` in `_log_dispatching` inside the one lock acquisition
+        # that also tests the record — so a loser cannot slip between the test
+        # and the claim. The claim is released in the `finally` below; by then
+        # the winner's durable record exists and refuses the next Go on its own.
+        #
+        # S163 fix round 6 (D3) — ...and the question changed. Round 3/4 asked
+        # `_log_dispatch_stamps_locked`, which applies the DISPLAY rule "a newer
+        # session out-ranks the record" — so a captain who logged one more bug
+        # against a parent mid-drive was answered "no dispatch here", got a 200,
+        # and got a second resolve-logs over the first one's children. The guard
+        # now asks the only question that can be answered honestly: is a drive
+        # on this parent STILL RUNNING? (`_live_log_dispatch` — measured from
+        # the dispatched children's own stages, not from a mark a preview can
+        # spend.) A batch that has reached its consolidated gate re-arms the Go
+        # for whatever was logged since, which is the road round 3 wanted to
+        # keep open, opened at the moment it is actually safe.
+        #
+        # S163 fix round 7 (D3) — ...and the refusal grew a DOOR. Round 6's price
+        # was written down and then paid: a resolve-logs that dies mid-batch
+        # leaves its children short of `verify`, so the guard below refused for
+        # ever and its advice ("it becomes runnable as soon as this batch reaches
+        # its gate") named an event that could not occur. `resume=True` is the
+        # captain saying "that drive is gone; run these again" — and it is not
+        # taken on trust: it is granted only where the daemon can SEE the drive
+        # is not running (`_log_dispatch_is_stale`, which is false whenever the
+        # resolver process answers), so it can never become the double dispatch
+        # in disguise. The un-flagged Go is refused exactly as it was; what
+        # changed is that its message now names something that can be done.
+        claimed = False
+        if not prds:
+            with self._log_lock:
+                stale = self._log_dispatch_is_stale(mid)
+                if mid in self._log_dispatching:
+                    raise ActionError(
+                        409, "a run on %s is being dispatched right now — wait "
+                             "for it to land, then read the card." % mid)
+                if resume and not stale:
+                    # the captain asked to re-run a drive the daemon can still
+                    # see. Refuse in the words of what is actually true.
+                    raise ActionError(
+                        409, "resolve-logs is still running on %s — there is "
+                             "nothing to resume. It is taking the logged bugs "
+                             "to the consolidated re-verify gate; the card will "
+                             "offer the Go again when it gets there." % mid)
+                if not resume and self._live_log_dispatch(mid) is not None:
+                    raise ActionError(
+                        409, "the logged bugs on %s are already being driven — "
+                             "resolve-logs is taking them to the consolidated "
+                             "re-verify gate, and a second run would drive the "
+                             "same bugs on the same branch. Anything logged "
+                             "since is filed and waiting; it becomes runnable "
+                             "as soon as this batch reaches its gate — or, if "
+                             "that drive is no longer running, use the card's "
+                             "resume control to run these bugs again." % mid)
+                if not resume and stale:
+                    # a record stands over a drive that is gone. Say so, and name
+                    # the control that fixes it rather than a gate that cannot
+                    # arrive. (The card offers exactly this control; a plain Go
+                    # reaching here came from an older tab or a scripted client.)
+                    raise ActionError(
+                        409, "a run was dispatched on %s but the resolve-logs "
+                             "driving it is no longer running, and its bugs "
+                             "never reached the consolidated re-verify gate. "
+                             "Nothing is in flight — use the card's resume "
+                             "control (or post this run with resume:true) to "
+                             "run them again." % mid)
+                self._log_dispatching.add(mid)
+                claimed = True
+        try:
+            return self._log_run_claimed(mid, prds, overrides, confirm,
+                                         images, image_refs)
+        finally:
+            if claimed:
+                with self._log_lock:
+                    self._log_dispatching.discard(mid)
+
+    def _log_run_claimed(self, mid, prds, overrides, confirm, images,
+                         image_refs):
+        """The body of `log_run`, with this parent's dispatch already claimed.
+
+        Split out purely so the claim can be released by ONE `finally` no matter
+        which of the many returns/raises below fires (S163 fix round 4, D2).
+        """
         # BUG-C: the child bug missions inherit the PARENT's persisted engine.
         # Setting LCARS_WORKER_BIN on the log.sh dispatch makes file/log.sh persist
         # workerBin=<parent engine> on each child; setting it on resolve-logs drives
@@ -2003,7 +4194,38 @@ class Actions(object):
         # (active_model_override) reads. With prds present the steers already rode
         # log.sh, so this is skipped to avoid double-applying.
         if not prds:
-            apply_report = self._apply_child_overrides(mid, overrides)
+            apply_report, blocked = self._apply_child_overrides(mid, overrides)
+            # ── S163 fix round 4 (D1): NEVER accepted-then-dropped ────────────
+            #
+            # The tester typed four overrides into a 4-bug review and pressed
+            # Go. Two resolved. Two — "use haiku" and "be really thorough on
+            # this one" — were accepted, echoed as pending, posted, and then
+            # dropped: `modelOverride` null on disk, the raw words nowhere under
+            # `.git/lcars/`, and the batch dispatched anyway. The captain's
+            # instruction was gone and their bug ran on the default model.
+            #
+            # The unknown-BUG-ID case (below, and untouched) can be reported and
+            # waved through, because a steer for a bug the Go is not running
+            # cannot send anything to the wrong model. A steer for a bug the Go
+            # IS about to run has no such escape: after the dispatch there is no
+            # console left to report into and the bug is already moving. So the
+            # dispatch is REFUSED. Nothing spawns, no record is written, and the
+            # message names each bug and each reason.
+            #
+            # The verdicts are merged onto the live session FIRST, so a reopened
+            # console echoes the error against the right bug through the same
+            # `overrides` channel the File step already uses — the captain's
+            # words come back editable rather than remembered.
+            self._merge_override_report(mid, apply_report)
+            if blocked:
+                raise ActionError(
+                    400, "the logged bugs were NOT dispatched — %s. Fix or "
+                         "clear %s in the review and press Go again; nothing "
+                         "has been run and nothing has been changed."
+                         % ("; ".join("%s: %s" % (r["id"], r["error"])
+                                      for r in blocked),
+                            "that steer" if len(blocked) == 1
+                            else "those steers"))
         else:
             # map the per-PRD file-time report onto the now-filed child ids so the
             # response shape matches the no-prds (apply) path.
@@ -2024,7 +4246,26 @@ class Actions(object):
         # (_spawn = detached Popen) so the POST returns PROMPTLY after the children
         # are filed; the board/SSE then carries the wave progress. The engine env
         # (BUG-D) is preserved — _spawn carries env_extra exactly as _run did.
-        self._spawn("resolve", ["--parent", mid], env_extra=env_extra)
+        # S163 fix round 7 (D3): keep the handle. A card that says a drive is
+        # running has to be able to prove it, and the pid alone cannot inside
+        # THIS daemon's life — the resolver is our own detached child, never
+        # waited on, so after it exits it stays a zombie and `os.kill(pid, 0)`
+        # goes on succeeding. `Popen.poll()` reaps it and answers honestly.
+        proc = self._spawn("resolve", ["--parent", mid], env_extra=env_extra)
+        # S161: the explicit Go CONSUMES the authoring session — the bugs are real
+        # Missions being driven now, so the parent card must stop advertising a
+        # filing. (Reached only on the Go paths; the file-then-hold branch above
+        # returns before this and deliberately leaves the session live.) N1: a
+        # session still holding bugs that never reached disk is KEPT — the Go drives
+        # what landed, and dropping it would destroy the rest's authored text.
+        with self._log_lock:
+            live_sid, _live = self._live_log_session(mid)
+        self._drop_log_session(mid, keep_unfiled=True)
+        # S163: and RECORD that this daemon dispatched the Go, so a card rendered
+        # by a tab that never clicked (a reload) does not re-offer a review that
+        # has already been taken. Written AFTER the spawn, so it can never claim a
+        # dispatch that did not happen.
+        self._mark_log_dispatched(mid, live_sid, proc=proc)
         state = self._mission_state(mid)
         # carry the resolved/erroring per-bug steers so the UI can echo them
         # (S74 follow-up: a steer that couldn't be normalized rides as an error
@@ -2129,7 +4370,7 @@ class Actions(object):
                     pass
 
     def _require_mission(self, mid):
-        d = os.path.join(self.repo_root, ".git", "lcars", "missions", mid)
+        d = os.path.join(self._missions_dir(), mid)
         if not (mid and os.path.isfile(os.path.join(d, "state.json"))):
             raise ActionError(404, "no such mission: %s" % mid)
 
@@ -2140,40 +4381,6 @@ class Actions(object):
             # fall back to the whole board so the caller always gets fresh state.
             return {"board": self._reader.board()}
         return {"mission": detail}
-
-    def _linked_children(self, parent):
-        out = []
-        missions_dir = os.path.join(self.repo_root, ".git", "lcars", "missions")
-        if not os.path.isdir(missions_dir):
-            return out
-        for name in sorted(os.listdir(missions_dir)):
-            sp = os.path.join(missions_dir, name, "state.json")
-            if not os.path.isfile(sp):
-                continue
-            card = self._reader.mission(name)
-            if card is None:
-                continue
-            # read parentMission straight off disk (not part of the card shape).
-            pm = _read_json_key(sp, "parentMission")
-            if pm == parent:
-                # S74: a logged bug is a Mission whose estimate is computed from
-                # its bug PRD — surface the SAME estimator readout the board card
-                # and Launch panel show (ONE cost pill, TWO difficulty pills, the
-                # per-stage model mix) so the Mission-Log review panel can render
-                # each bug with its suggested model + cost/difficulty, REUSING the
-                # card shape (card already carries `pills`/`modelMix` off the
-                # child's estimate.json via the LocalAdapter). Plus the persisted
-                # captain override so the panel can pre-fill its steer field.
-                child = {"id": card["id"], "issue": card.get("issue"),
-                         "title": card.get("title"), "stage": card.get("stage"),
-                         "type": card.get("type"),
-                         "pills": card.get("pills"),
-                         "modelMix": card.get("modelMix")}
-                ov = _read_json_key(sp, "modelOverride")
-                if isinstance(ov, dict) and ov.get("scope") and ov.get("tier"):
-                    child["override"] = "%s:%s" % (ov["scope"], ov["tier"])
-                out.append(child)
-        return out
 
     def _normalize_override(self, raw, parent):
         """Normalize one free-form per-bug steer, reusing the daemon worker seam.
@@ -2186,51 +4393,204 @@ class Actions(object):
         engine = self._persisted_worker_bin(parent)
 
         def _worker(text):
+            # S163 fix round 4 (D1): a steer naming a model LCARS has no tier for
+            # is settled by the word, not by a turn. The bounded fallback is for
+            # the plain-language long tail ("keep it cheap"), not for teaching a
+            # worker that `haiku` is not on the menu.
+            if unsupported_tier(text):
+                return ""
             prompt = _OVERRIDE_FALLBACK_PROMPT + text + "\n"
             return self._worker_turn(prompt, engine=engine)
 
         return normalize_override(raw, worker=_worker)
 
+    @staticmethod
+    def _override_pairs(overrides, panel):
+        """(child id, raw steer) pairs from whatever shape the client sent.
+
+        S163 fix round 3 (D2) — THE STEER IS TIED TO THE BUG, NOT TO A SLOT.
+
+        Until this round the post-File steers were a LIST, paired positionally
+        against `_linked_children(parent)` — every child of the parent, sorted by
+        mission directory name — while the review panel rendered a different,
+        batch-filtered list. On a parent holding two reports the tester typed
+        `all:opus` into the only box on screen ("second report bug three") and
+        the daemon wrote it onto "first report bug one", a bug that had never
+        been displayed. Neither list was wrong on its own; pairing two different
+        lists by INDEX is what made a steer land on a stranger.
+
+        So the wire shape is now KEYED, and the key is the child's mission id:
+
+            {"m-bug3": "all:opus"}            preferred (what the console sends)
+            [{"id": "m-bug3", "steer": ...}]  the same thing, as rows
+            ["all:opus", ""]                  LEGACY positional
+
+        The legacy list is kept because it is the shape `log.sh` is handed at
+        FILE time (where the bugs have no ids yet, so position is all there is)
+        and because an older client may still post one. It now pairs against the
+        PANEL — the waiting children — so even a positional client is aligned
+        with the rows a captain can actually see.
+
+        Returns `(pairs, keyed)`: [(id_or_None, raw)] plus whether the client
+        addressed its bugs BY NAME. A keyed entry whose id is not on the panel
+        comes back with the id it named, so the caller can REPORT it rather than
+        drop it (S161 fixed the positional version of that silent drop once
+        already; a keyed scheme must make it impossible, not merely unlikely).
+
+        S163 fix round 6 (D1) — `keyed` exists because an EMPTY steer means two
+        different things in the two shapes, and only one of them can be a
+        retraction. In a keyed map the console sends one entry per box it
+        rendered, so `""` is the captain having emptied that box. In the legacy
+        positional list — the shape `log.sh` is handed at FILE time, where the
+        bugs have no ids yet — a blank has only ever meant "no steer for this
+        slot". One flag, decided at the one place that can see the shape.
+        """
+        if isinstance(overrides, dict):
+            return [(str(k), v) for k, v in overrides.items()], True
+        pairs = []
+        rows = list(overrides or [])
+        if rows and all(isinstance(r, dict) for r in rows):
+            for r in rows:
+                pairs.append((r.get("id"),
+                              r.get("steer", r.get("raw", r.get("override")))))
+            return pairs, True
+        for i, raw in enumerate(rows):
+            pairs.append((panel[i]["id"] if i < len(panel) else None, raw))
+        return pairs, False
+
     def _apply_child_overrides(self, parent, overrides):
         """Persist the post-File per-bug overrides onto ALREADY-FILED children.
 
-        Pairs each override POSITIONALLY with the linked children in the SAME
-        order the review panel renders them (_linked_children → sorted by mission
-        dir name). Each non-blank steer is NORMALIZED to {scope,tier} (passthrough
-        structured → deterministic parse → bounded worker fallback; S74 follow-up)
-        and written to the child's state.json.modelOverride — the lever run.sh's
-        active_model_override reads, so resolve-logs drives that child on the
-        chosen model with zero skill changes.
+        Each steer is matched to its bug BY MISSION ID (see `_override_pairs`),
+        normalized to {scope,tier} (passthrough structured → deterministic parse
+        → bounded worker fallback; S74 follow-up) and written to that child's
+        state.json.modelOverride — the lever run.sh's active_model_override
+        reads, so resolve-logs drives that child on the chosen model with zero
+        skill changes.
 
-        Returns a per-child report [{id, raw, resolved, label, error}] so the
-        caller can echo the resolved steer / surface a normalization error.
-        Blank entries are SKIPPED (no clobber of an earlier File-time steer);
-        an UNPARSEABLE entry is reported with an `error` and NOT persisted — never
-        a silent drop onto the default model.
+        Returns `(report, blocked)`:
+          report   [{id, raw, resolved, label, error}] so the caller can echo the
+                   resolved steer / surface a normalization error.
+          blocked  the subset of `report` that failed to resolve FOR A BUG THIS
+                   MISSION IS ABOUT TO RUN — the caller's cue to refuse the Go.
+
+        Blank entries are SKIPPED (no clobber of an earlier File-time steer); a
+        steer naming a bug that is not waiting on this mission is reported and
+        NOT persisted — never a silent write onto somebody else's bug.
+
+        S163 fix round 4 (D1) — RESOLVE EVERYTHING, THEN WRITE, AND ONLY IF
+        NOTHING IS BLOCKED. The first cut of the refusal resolved and wrote in
+        one pass, so a good steer typed beside a bad one was already persisted
+        by the time the bad one was reached — and the refusal then said "nothing
+        has been changed", which was the very kind of sentence this round exists
+        to delete. Measured on the live daemon before it shipped. One worker pass
+        either way (the resolutions are computed once and only then committed),
+        so the honesty costs nothing.
         """
-        overrides = list(overrides or [])
         report = []
         if not overrides:
-            return report
-        children = self._linked_children(parent)
-        for i, child in enumerate(children):
-            if i >= len(overrides):
-                break
-            ov = overrides[i]
+            return report, []
+        panel = self._waiting_children(parent)
+        known = set(c["id"] for c in panel)
+        pairs, keyed = self._override_pairs(overrides, panel)
+        for cid, ov in pairs:
             if not (isinstance(ov, str) and ov.strip()):
+                # ── S163 fix round 6 (D1): CLEARING A STEER MEANS CLEARING IT ──
+                #
+                # A blank used to be skipped outright, which made an emptied box
+                # indistinguishable from a bug the captain never touched — so a
+                # steer the daemon had recorded (and echoed back into the box)
+                # could not be taken away. The tester deleted an unusable steer,
+                # pressed Go, watched the refusal correctly stop naming that bug
+                # — and then watched the panel put the deleted words straight
+                # back and the next Go re-send them. There was no way to return
+                # a bug to "no steer" at all.
+                #
+                # So a blank against a bug ON THE PANEL, in a payload that named
+                # its bugs (see `_override_pairs`), is an instruction: retract
+                # everything recorded about this bug — the verdict the console
+                # echoes AND the `modelOverride` on disk. It carries no error,
+                # so it can never block the Go; it is the edit that UNBLOCKS one.
+                #
+                # A blank in the legacy positional list, or against a bug this
+                # payload never showed, still means nothing at all.
+                if keyed and cid in known:
+                    report.append({"id": cid, "raw": "", "resolved": None,
+                                   "label": None, "error": None,
+                                   "cleared": True})
                 continue
-            resolved = self._normalize_override(ov, parent)
+            raw = ov.strip()
+            if cid is None or cid not in known:
+                report.append({
+                    "id": cid, "raw": raw, "resolved": None, "label": None,
+                    "error": ("no logged bug %s is waiting to be fixed on this "
+                              "mission — the steer was not applied"
+                              % (cid if cid else "(unnamed)"))})
+                continue
+            resolved = self._normalize_override(raw, parent)
             if resolved is None:
-                report.append({"id": child["id"], "raw": ov.strip(),
+                report.append({"id": cid, "raw": raw,
                                "resolved": None, "label": None,
                                "error": _override_error(ov)})
                 continue
-            self._write_child_override(
-                child["id"], resolved["scope"], resolved["tier"])
-            report.append({"id": child["id"], "raw": ov.strip(),
-                           "resolved": resolved,
+            report.append({"id": cid, "raw": raw, "resolved": resolved,
                            "label": _override_label(resolved), "error": None})
-        return report
+        blocked = [r for r in report if r.get("error") and r.get("id") in known]
+        if blocked:
+            # Nothing is committed. The caller refuses the dispatch, and the
+            # promise it makes while doing so — "nothing has been run and
+            # nothing has been changed" — is then literally true.
+            return report, blocked
+        for r in report:
+            if r.get("cleared"):
+                self._clear_child_override(r["id"])
+            elif r.get("resolved"):
+                self._write_child_override(r["id"], r["resolved"]["scope"],
+                                           r["resolved"]["tier"])
+        return report, []
+
+    def _merge_override_report(self, parent, report):
+        """Keep a Go's per-bug steer verdicts on the parent's live session (D1).
+
+        `_settle_log_session` already merges the FILE step's verdicts by child id
+        so a reopened console can echo each resolved label / normalization error
+        beside its bug. A Go-time verdict had nowhere to live: it rode the HTTP
+        response of a POST whose client had already closed the console, so an
+        error the daemon correctly produced was never seen by anyone.
+
+        Same merge, same key, so the console needs no new channel: reopening
+        after a refused Go shows the red line against the bug it belongs to, with
+        the captain's own words in `raw`.
+
+        A parent with no live session (the daemon restarted and the review was
+        rebuilt from the linked children) has nowhere to keep it — there the
+        refusal message is the whole report. Stated, not hidden.
+        """
+        rows = [r for r in (report or []) if r.get("id")]
+        # S163 fix round 6 (D1): a CLEARED bug leaves no verdict behind. The
+        # merge below replaces a bug's row; a clear must DELETE it, because the
+        # console re-seeds an emptied box from exactly this channel and "the
+        # panel must never show a steer the last Go did not send". Computed
+        # BEFORE the empty-check: a Go whose only edit was a clear still has
+        # something to say to the session, and it is a removal.
+        dropped = set(r["id"] for r in rows if r.get("cleared"))
+        rows = [r for r in rows if not r.get("cleared")]
+        if not rows and not dropped:
+            return
+        # A daemon that has just booted has not read its durable records yet
+        # (the scan is lazy — first surface that needs a session). Without this,
+        # the FIRST Go after a restart merged its verdicts into nothing and the
+        # reason vanished: measured live on the round-4 fixture, where the very
+        # console the captain would reopen is the rehydrated one.
+        self._rehydrate_log_sessions()
+        with self._log_lock:
+            _sid, sess = self._live_log_session(parent)
+            if sess is None:
+                return
+            fresh = set(r["id"] for r in rows) | dropped
+            sess.overrides_report = [
+                r for r in sess.overrides_report if r.get("id") not in fresh
+            ] + [dict(r) for r in rows]
 
     def _write_child_override(self, mid, scope, tier):
         sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
@@ -2247,6 +4607,30 @@ class Actions(object):
             json.dump(state, fh, indent=2)
             fh.write("\n")
 
+    def _clear_child_override(self, mid):
+        """Retract a bug's persisted steer (S163 fix round 6, D1).
+
+        The mirror of `_write_child_override`, onto the same lever run.sh's
+        `active_model_override` reads. Dropping only the console's verdict would
+        have left the box re-filling from `c.override` on the next repaint and
+        the bug still running on a model the captain had retracted — the same
+        defect one surface deeper. A child with no override is a clean no-op, so
+        clearing an already-clear bug rewrites nothing.
+        """
+        sp = os.path.join(self.repo_root, ".git", "lcars", "missions", mid,
+                          "state.json")
+        try:
+            with open(sp) as fh:
+                state = json.load(fh)
+        except (OSError, ValueError):
+            return
+        if not isinstance(state, dict) or state.get("modelOverride") is None:
+            return
+        state.pop("modelOverride", None)
+        with open(sp, "w") as fh:
+            json.dump(state, fh, indent=2)
+            fh.write("\n")
+
     @staticmethod
     def _title_from_idea(idea):
         first = idea.splitlines()[0].strip() if idea else "New mission"
@@ -2254,9 +4638,56 @@ class Actions(object):
             first = first[:69].rstrip() + "..."
         return first or "New mission"
 
+    # ── S160 fix-loop: LCARS's own scratch NEVER lands in the working tree ────
+    # The daemon materialises the captain's idea, their pasted images and a
+    # worker output dir as files on disk before it dispatches. Those used to be
+    # written into the REPO ROOT, and the consequence was not cosmetic: the
+    # base-freshness guard reads `git status --porcelain`, counted LCARS's own
+    # `lcars-prd-<rand>.md` as the captain's untracked work, refused the
+    # fast-forward it was standing right in front of, and stamped a permanent
+    # `loud: true` record telling a pristine clone it was dirty — while the
+    # Mission really was cut from the stale base. The same class S157 found: the
+    # harness's own provisioning artifacts are never the user's changes.
+    #
+    # THE CURE IS THE LOCATION, NOT A RULE ABOUT NAMES. Under `.git/` the
+    # scratch is invisible to `git status` BY CONSTRUCTION — there is no ignore
+    # list to keep in sync with the filenames, no "take the reading before you
+    # write" ordering for a future writer to forget, and no filename special
+    # case for the guard to get wrong. It is also exactly where CLAUDE.md says
+    # per-repo LCARS state belongs, for the same stated reason: the target
+    # repo's working tree stays clean.
+    #
+    # It stays INSIDE the repo directory, so everything that made repo_root the
+    # original choice still holds — a worker sandboxed to the repo can still
+    # read the staged image by absolute path (copilot `--attachment`, claude's
+    # Read tool), which a system tempdir would have broken.
+    def _scratch_dir(self):
+        """LCARS's own per-repo scratch space, created on demand."""
+        d = os.path.join(self._git_dir(), "lcars", "tmp")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _git_dir(self):
+        """This repo's git directory. Normally `<repo_root>/.git`; in a LINKED
+        WORKTREE that path is a FILE holding `gitdir: <real path>`, and writing
+        scratch "into" it would fail — so the pointer is followed."""
+        p = os.path.join(self.repo_root, ".git")
+        if os.path.isfile(p):
+            try:
+                with open(p) as fh:
+                    for line in fh:
+                        if line.startswith("gitdir:"):
+                            g = line.split(":", 1)[1].strip()
+                            if not os.path.isabs(g):
+                                g = os.path.join(self.repo_root, g)
+                            return os.path.normpath(g)
+            except OSError:
+                pass
+        return p
+
     def _tmp_prd(self, content):
         fd, path = tempfile.mkstemp(prefix="lcars-prd-", suffix=".md",
-                                    dir=self.repo_root)
+                                    dir=self._scratch_dir())
         with os.fdopen(fd, "w") as fh:
             fh.write(content)
         return path
@@ -2266,14 +4697,14 @@ class Actions(object):
     # reply, or the Mission-Log box; it rides the existing write body as
     # `images:[{name,type,dataB64}]`. We DECODE the base64 with the stdlib
     # `base64` module (NO Pillow/PIL — we never inspect or re-encode the pixels,
-    # we just write the bytes) and stage each under repo_root, MIRRORING
+    # we just write the bytes) and stage each in the scratch dir, MIRRORING
     # `_tmp_prd`, so the worker can reach it: copilot via `--attachment <path>`,
     # claude via its Read tool on the abs path. The server has already enforced
     # the content-type allow-list (415) and the body cap (413) before we get here.
     def _stage_image(self, content_type, data_b64):
-        """Decode one base64 image and stage it under repo_root; return the abs
-        path. The suffix follows the (already allow-listed) content type so the
-        worker's image loader recognises it. Caller owns cleanup."""
+        """Decode one base64 image and stage it in `_scratch_dir()`; return the
+        abs path. The suffix follows the (already allow-listed) content type so
+        the worker's image loader recognises it. Caller owns cleanup."""
         suffix = _IMAGE_SUFFIX.get((content_type or "").strip().lower(), ".png")
         try:
             raw = base64.b64decode((data_b64 or "").encode("ascii"),
@@ -2281,7 +4712,7 @@ class Actions(object):
         except (binascii.Error, ValueError, UnicodeEncodeError):
             raise ActionError(400, "image data is not valid base64")
         fd, path = tempfile.mkstemp(prefix="lcars-img-", suffix=suffix,
-                                    dir=self.repo_root)
+                                    dir=self._scratch_dir())
         with os.fdopen(fd, "wb") as fh:
             fh.write(raw)
         return path

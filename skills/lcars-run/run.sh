@@ -62,6 +62,12 @@ TEST_CMD_ENV="${LCARS_TEST_CMD:-}"
 SELF="${BASH_SOURCE[0]}"
 # The skill's own directory, and the per-Stage worker prompt templates under it.
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+# ABSOLUTE from here on. `$0` is whatever the caller typed, which may be relative
+# to the caller's cwd — and a Stage that moves its cwd (S166: the front half now
+# runs inside the Mission's own worktree) would then re-invoke a path that no
+# longer resolves. Absolutising once, here, is cheaper than remembering it at
+# every `bash "$SELF" …` site.
+SELF="$SKILL_DIR/$(basename "$SELF")"
 STAGES_DIR="$SKILL_DIR/stages"
 # The SINGLE source of truth for billing data (Claude $/MTok per tier; Copilot
 # premium-request multipliers + overage). NO prices/multipliers are hardcoded in
@@ -446,7 +452,12 @@ locate_mission() {
 # pack location) for the caller.
 context_paths() {
   local gitdir
-  gitdir="$("$GIT_BIN" rev-parse --git-dir 2>/dev/null)" \
+  # --git-common-dir, NOT --git-dir, for the same reason locate_mission uses it:
+  # from inside a `git worktree` the plain --git-dir is that worktree's private
+  # `.git/worktrees/<name>` dir, so the generated pack would resolve to a path
+  # that has never existed — and a MISSING pack is not a no-op here, it SPAWNS a
+  # cold worker to regenerate one. Every caller wants the SHARED pack.
+  gitdir="$("$GIT_BIN" rev-parse --git-common-dir 2>/dev/null)" \
     || die "not inside a git repository — run this from a repo root."
   case "$gitdir" in /*) : ;; *) gitdir="$PWD/$gitdir" ;; esac
   CONTEXT_GITDIR="$gitdir"
@@ -582,6 +593,136 @@ repository, inspect THAT branch (e.g. `git show %s:<path>`, `git log %s`)
 — it holds the implementation this Mission is reasoning about. The working-tree
 checkout may be on an UNRELATED branch; IGNORE it and its history. Do not draw
 conclusions from, or defer to, any other Mission'\''s branch or commits.' "$b" "$b" "$b"
+}
+
+# === The front half reads the Mission's own code (S166) =====================
+#
+# WHY THIS EXISTS. `mission_branch_block` above is PROSE, and prose is a request.
+# S159's live Copilot drive measured what a real worker does with it: the worker
+# read the sentence, SAID "The working tree may be unrelated. Let me check the
+# mission branch content via git." — and then ran `view` on the working-tree path
+# anyway. It never issued a single git command for the whole Stage. That drive
+# came out right only because the base fast-forward had rewritten the checked-out
+# tree on disk, and the checkout happened to be sitting on the base.
+#
+# So the guarantee LCARS actually shipped was "you are safe as long as the repo is
+# on the Mission's base or its own branch when the Stage runs" — an unwritten rule
+# the captain can violate by doing nothing more sinister than `git switch`. It has
+# fired twice: the DX-Scorecard staleness failure that opened this round, and the
+# S93 leak where a bug filed while the tree sat on a SIBLING Mission's branch had
+# its Validator read THAT branch and conclude the feature was already fixed.
+#
+# The cure is not a better sentence. It is to make the Mission's code the only
+# code in front of the worker: cut a disposable worktree at the Mission's branch
+# and spawn the Stage there. Where the captain's checkout sits then stops
+# mattering, because the worker cannot see it.
+#
+# DETACHED, NOT ATTACHED — the deliberate call. `git worktree add <path> <branch>`
+# holds the ref, and git refuses one branch in two worktrees. Implement's reconcile
+# gate cuts an ATTACHED worktree on the mission branch (see cmd_reconcile), and
+# `replay_ticket_commit` checks that branch out in $REPO_ROOT itself; either would
+# be BLOCKED by a front-half worktree still holding it, and a leaked one would
+# block them forever. A detached checkout at the branch's sha has the identical
+# TREE and holds no ref at all, so it can never contend. It is also the right shape
+# on the merits: these four Stages are read-only (repo-read toolsets) and never
+# commit, so a writable ref buys them nothing. `lcars launch` reached the same
+# conclusion for the same reason — this reuses its pattern, it does not invent one.
+#
+# PROVISIONING: NONE, DELIBERATELY. `provision_worktree` exists for the gates,
+# which must RUN the repo's test command and therefore need node_modules et al.
+# Nothing in the front half executes the repo: the workers read. Installing deps
+# here would buy nothing and cost twice — a full install per Stage, and a tree
+# full of gitignored artifacts, which is precisely the seam that produced S157's
+# false gate failure (LCARS's own node_modules symlink got counted as worker
+# changes). If a future front-half Stage ever needs to RUN the repo, it should
+# call the existing `provision_worktree` rather than grow a second install path.
+
+# Where this Mission's disposable front-half checkout lives: a sibling of
+# `launch/` under the SHARED .git/lcars, one per Mission (the four Stages are
+# strictly sequential within a Mission, so one is enough) and deliberately NOT
+# under $MISSION_DIR. Two reasons: nothing here is a Mission artifact and nothing
+# should ever read it as one; and the board's SSE fingerprint is the max mtime of
+# the files IN each mission dir, so a whole repo checked out there would bump the
+# fingerprint on every cut and tear-down — churn for no new information.
+front_half_wt_path() { printf '%s/stage-tree/%s' "$(dirname "$LCARS_CFG")" "$MISSION_ID"; }
+
+# Set by enter_mission_worktree, read by leave_mission_worktree. Empty means this
+# process owns no worktree and cleanup is a no-op.
+FRONT_HALF_WT=""
+# The cwd we were invoked in, so cleanup can step OUT of a tree before removing it.
+FRONT_HALF_HOME="$PWD"
+
+# Remove + prune this process's worktree. Armed on EXIT/INT/TERM the moment one is
+# cut, so it runs on EVERY path out — the clean `exit 0`, a `die`, a watchdog kill.
+# A leaked worktree is not cosmetic: it survives as a registration that later
+# `worktree add`s trip over, which is how gates have been blocked before.
+leave_mission_worktree() {
+  [ -n "$FRONT_HALF_WT" ] || return 0
+  local wt="$FRONT_HALF_WT"; FRONT_HALF_WT=""
+  # Step out first — git will not remove the tree you are standing in, and the
+  # rm -rf fallback would leave the shell in a deleted directory.
+  cd "$FRONT_HALF_HOME" 2>/dev/null || cd / 2>/dev/null || :
+  "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+  # Tidy the container when it empties; a concurrent Mission's tree keeps it.
+  rmdir "$(dirname "$wt")" >/dev/null 2>&1 || :
+  return 0
+}
+
+# Cut the worktree at <ref> and MOVE THIS PROCESS INTO IT, so every worker this
+# Stage spawns inherits it as cwd. <ref> is the branch the caller has already
+# resolved as "the Mission's code" — the same branch its prose block names, so
+# structure and prose can never disagree.
+#
+# NO RECORDED BRANCH ⇒ NO WORKTREE. A Mission whose branch ref does not exist
+# (an unborn HEAD, a branch-less local mission) has no code of its own that is
+# distinct from the ambient checkout, so there is nothing to isolate and we say
+# so out loud rather than pretending.
+#
+# A FAILED CUT IS FATAL, NOT A FALLBACK. Carrying on in the ambient tree is
+# exactly the defect this closes, and it would be invisible — the Stage would go
+# green having reasoned about someone else's code. S111 settled this doctrine for
+# Implement's worktree ("REFUSING the in-tree fallback"); the front half gets the
+# same answer, with the same actionable message.
+enter_mission_worktree() { # <ref> <stage-label>
+  local ref="$1" stage="${2:-}"
+  if [ -z "$ref" ] || ! "$GIT_BIN" show-ref --verify --quiet "refs/heads/$ref"; then
+    printf '  ⌂ no branch of its own — this Stage reads the checkout it was run from.\n'
+    return 0
+  fi
+  local wt; wt="$(front_half_wt_path)"
+  if ! mkdir -p "$(dirname "$wt")" 2>/dev/null; then
+    die "cannot create $(dirname "$wt") to hold this Stage's checkout of '$ref' (path blocked by a file?) — Stage stopped. LCARS will not read a Stage's code out of whatever tree happens to be checked out."
+  fi
+  # Start from a clean slate: a previous Stage that was killed hard (watchdog,
+  # SIGKILL) can leave both the dir and its registration behind.
+  "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || :
+  rm -rf "$wt"
+  local add_err=""
+  if ! add_err="$("$GIT_BIN" worktree add -q --detach "$wt" "$ref" 2>&1 >/dev/null)"; then
+    # The dominant cause is a STALE registration — a worktree dir deleted without
+    # a prune. Prune and retry once; only a second failure is terminal.
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+    rm -rf "$wt"
+    if ! add_err="$("$GIT_BIN" worktree add -q --detach "$wt" "$ref" 2>&1 >/dev/null)"; then
+      rm -rf "$wt"
+      die "could not check out '$ref' into $wt (git: $(printf '%s' "$add_err" | tr '\n' ' ')) — Stage stopped, no advance. This Stage must read THIS Mission's code, and falling back to the ambient checkout would let it reason about whatever branch you happen to be on. Free or prune stale worktrees (\`git worktree list\`, \`git worktree prune\`) and re-run."
+    fi
+  fi
+  FRONT_HALF_WT="$wt"
+  trap 'leave_mission_worktree' EXIT INT TERM
+  cd "$wt" || die "could not enter $wt — Stage stopped."
+  # $REPO_ROOT is what the rest of this process means by "the repository".
+  REPO_ROOT="$wt"
+  # OUT-OF-WORKTREE INPUT READ GRANTS — the same seam Implement uses (S76). Every
+  # artifact this Stage feeds its worker (prd.md, research/*.json, plan.json, the
+  # context pack, attachments) lives under the shared .git/lcars, which is OUTSIDE
+  # the worktree; a CLI with a hard path sandbox (copilot) could otherwise read
+  # none of them. READ-only, and a tidy superset — it widens nothing else.
+  export LCARS_WORKER_INPUT_DIRS="$(dirname "$LCARS_CFG")"
+  printf '  ⌂ mission tree — %s reads '"'"'%s'"'"' @ %s in an isolated worktree (your checkout is untouched)\n' \
+    "${stage:-this Stage}" "$ref" "$("$GIT_BIN" -C "$wt" rev-parse --short HEAD 2>/dev/null)"
+  return 0
 }
 
 # === Per-wave repo map (pure bash, token-free, CLI-neutral) =================
@@ -748,9 +889,16 @@ gh_relabel() { # "add labels…"  "remove labels…"
 }
 
 # --- advance Research: stage pointer → validate, label align → validate -----
+# The remove-list carries lcars:research as well as lcars:align because Research
+# now applies its own IN-FLIGHT label while it runs (see cmd_research) — the card
+# has to leave the Research column when it lands in Validate. Removing a label
+# that is not present is a no-op for `gh issue edit`, exactly as with the
+# lcars:awaiting-human entries the other advances carry, so the paths that reach
+# here without an in-flight apply (a bare `save` / `gate` invocation) are
+# unchanged.
 advance() {
   set_stage "validate"
-  gh_relabel "lcars:validate" "lcars:align"
+  gh_relabel "lcars:validate" "lcars:align lcars:research"
 }
 
 # --- subcommand: gate ------------------------------------------------------
@@ -8546,6 +8694,27 @@ cmd_research() {
   require_worker
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md — Align has not produced a PRD for '$MISSION_ID'."
 
+  # IN-FLIGHT STAGE LABEL (CLAUDE.md build item #11). Every other Stage gets its
+  # board label from the transition INTO it, because its label matches the stage
+  # POINTER. Research is the one Stage whose pointer never says "research" — it
+  # runs while the pointer is still "align" and only moves at advance() — so no
+  # transition ever applied lcars:research and the Research column was
+  # permanently empty. The only writer was the >20-question escalation in
+  # cmd_gate, i.e. a card could only reach Research by getting STUCK there.
+  #
+  # Apply it HERE, the moment Research actually starts. This sits ABOVE the
+  # grounding short-circuit on purpose: a logged bug's grounding Research is
+  # still Research and belongs on the same generic card (build item #18).
+  # advance() drops it again on the way to Validate; the escalation's own
+  # relabel re-asserts the same label, so that path is byte-identical.
+  #
+  # Best-effort like every relabel — gh_relabel never fails a Stage, it only
+  # leaves a note. Surface the note NOW rather than at exit, because this
+  # command's later exits happen inside the `gate` / `save` subprocesses, which
+  # carry their own note; clearing it keeps it from being reprinted downstream.
+  gh_relabel "lcars:research" "lcars:align"
+  if [ -n "$RELABEL_NOTE" ]; then echo "$RELABEL_NOTE"; RELABEL_NOTE=""; fi
+
   # GROUNDING MODE (logged bug). A bug filed via `lcars log` carries origin=="log"
   # (fallback type=="bug") and enters the pipeline at Research NOT to generate open
   # questions, but to ANCHOR the reported symptom to the EXISTING code the feature
@@ -8566,6 +8735,12 @@ cmd_research() {
   # rewrites prd.md on the host CLI FIRST, then runs this driver. So Research
   # always reads the current prd.md; the presence of feedback.md is not a guard
   # here (the re-grill leaves it in place as durable history).
+
+  # S166 — MOVE INTO THE MISSION'S OWN CODE before anything is spawned. Every
+  # worker below (the question generator AND the per-question fan-out agents,
+  # which are subprocesses of this one) inherits this cwd, so the ambient
+  # checkout stops being an input to Research at all.
+  enter_mission_worktree "$(json_str "$STATE" branch)" research
 
   # STEP 1 — question-generator worker → questions.txt
   local qdir="" tries=0
@@ -8693,6 +8868,23 @@ The existing feature's code was delivered on branch \`$parent_branch\`. Inspect
 the actual implementation there (read-only) to confirm the real targets — do not
 guess from the plan alone."
   fi
+
+  # S166 — GROUNDING WAS THE THINNEST SPOT, which is backwards. A logged bug's
+  # entire job is reasoning about code that already exists, yet the parent's
+  # ARTIFACTS arrived reliably (read off disk, by absolute path) while the parent's
+  # DELIVERED CODE arrived as the same sentence every other Stage got. So the
+  # worker that most needs the real implementation was the one most likely to
+  # anchor on whatever tree it woke up in — and anchoring on the wrong tree is how
+  # a bug fix builds a parallel dead control beside the real one.
+  #
+  # The ref is the PARENT's branch (just resolved above for the prose block), not
+  # this bug's own: the delivered code is the parent's. When the parent is
+  # pre-merge these are literally the same branch — `lcars log` accumulates the fix
+  # onto it — and when it is not, the parent's is still the tree the symptom was
+  # reported against. Taken BEFORE `context_extra_block` for the same ordering
+  # reason as cmd_validate.
+  enter_mission_worktree "$parent_branch" research-grounding
+
   # S92 attachments ride into grounding too: a logged bug's screenshot is often
   # THE symptom — the grounding worker must see it like every other cold stage.
   extra="$extra$(context_extra_block)$(attachments_extra_block)"
@@ -8752,6 +8944,15 @@ cmd_validate() {
   [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
     && die "mission is awaiting a human answer — run \`lcars respond $MISSION_ID\` first; the Validator does not re-run until the gate clears."
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md."
+
+  # S166 — make the branch pin STRUCTURAL, and do it BEFORE `extra` is assembled.
+  # This is the S93 leak's home Stage: a Validator standing in a sibling Mission's
+  # checkout is what decided a bug was "already fixed" and overrode a correct
+  # grounding. Order matters — `context_extra_block` below resolves CONTEXT.md
+  # relative to the repo we are standing in, and a path into the AMBIENT checkout
+  # is both the wrong Mission's facts and (under a path-sandboxed CLI) unreadable
+  # from here. Resolved after the move, it names this Mission's own copy.
+  enter_mission_worktree "$(json_str "$STATE" branch)" validate
 
   # Zero findings is a VALID Validate input. A 0-question Research (unambiguous
   # PRD) advances align→validate via the gate's "skip" path WITHOUT creating a
@@ -9646,6 +9847,11 @@ cmd_plan() {
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md."
   [ -f "$MISSION_DIR/validated-plan.md" ] || die "no validated-plan.md — Validate has not run."
 
+  # S166 — structural pin, before `extra` (see cmd_validate for the ordering
+  # reason). A Planner slicing against the wrong tree names files that do not
+  # exist in the tree Implement will actually build in.
+  enter_mission_worktree "$(json_str "$STATE" branch)" plan
+
   # comprehensionBudget is a PLANNING TARGET (sum of read+test+new), not a hard
   # cap — see validate_plan_json's design note. Read it from config, default 1200.
   local budget; budget="$(json_raw "$LCARS_CFG" comprehensionBudget)"; budget="${budget:-1200}"
@@ -9714,6 +9920,12 @@ cmd_plan_review() {
   [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
     && die "mission is awaiting a human answer — run \`lcars respond $MISSION_ID\` first; the reviewer does not re-run until the gate clears."
   [ -f "$MISSION_DIR/plan.json" ] || die "no plan.json — Plan has not run."
+
+  # S166 — structural pin, before `extra` (see cmd_validate for the ordering
+  # reason). The reviewer audits tickets AGAINST the code they claim to touch;
+  # the wrong tree turns a correct ticket into a phantom-file objection, or waves
+  # a real one through.
+  enter_mission_worktree "$(json_str "$STATE" branch)" plan-review
 
   # comprehensionBudget is the size yardstick the reviewer applies — a PLANNING
   # TARGET, not a hard cap (see validate_plan_json's design note). Default 1200.
@@ -10869,21 +11081,174 @@ drive_detail() { # stage  stage-output
   esac
 }
 
+# WHICH TREE DID THAT STAGE READ? (S166) The Stage answers that on its own stdout,
+# in a full sentence — and the driver captures its stdout and re-emits only the one
+# synthesized line below, so the captain on the DOCUMENTED path (`lcars run`) was
+# the one person never told. Lift the branch@sha out and hang it on the summary
+# line as a marker: the same move `⊘ isolated` already makes on `isolated_line`'s
+# sentence, so the drive readout stays one tidy line per Stage instead of a
+# firehose of Stage output.
+#
+# NO SENTENCE ⇒ NO MARKER. A Mission with no branch of its own cuts no tree and
+# says so; synthesizing a plausible-looking branch@sha for it would be the exact
+# lie S159 was about — a marker asserting what it never measured. Same rule if the
+# sentence is ever reworded past recognition: say nothing rather than guess.
+drive_tree_marker() { # stage-output → "   ⌂ <branch> @ <sha>" | ""
+  local line q="'" b s
+  line="$(printf '%s' "$1" | grep -m1 '⌂ mission tree' 2>/dev/null)" || return 0
+  [ -n "$line" ] || return 0
+  b="${line#*reads $q}"; b="${b%%$q*}"
+  s="${line#*$q @ }";    s="${s%% *}"
+  [ -n "$b" ] && [ -n "$s" ] && printf '   ⌂ %s @ %s' "$b" "$s"
+  return 0
+}
+
 # --- one summary line for a Stage that just ran ------------------------------
 drive_line() { # stage  stage-output  ok|paused
+  # The tree is worth naming on BOTH outcomes: an escalated Stage read a tree too,
+  # and "which code was it looking at when it asked me this?" is the first thing
+  # the answer depends on.
+  local tree; tree="$(drive_tree_marker "$2")"
   if [ "$3" = paused ]; then
-    printf '%-12s ⏸  escalated — awaiting your answer' "$1"
+    printf '%-12s ⏸  escalated — awaiting your answer%s' "$1" "$tree"
     return
   fi
   local detail iso=""
   detail="$(drive_detail "$1" "$2")"
-  printf '%s' "$2" | grep -q 'isolated' && iso="   ⊘ isolated"
-  printf '%-12s ✓  %s%s' "$1" "${detail:-advanced}" "$iso"
+  # ANCHOR ON THE MARKER, NEVER THE WORD. The only thing that proves a Stage ran
+  # cold is the line `isolated_line` prints — `⊘ isolated — <stage> ran in N cold
+  # worker(s) via <bin>` — and it prints it only after a worker really spawned.
+  # The bare word "isolated" is reachable from PROSE: S166's ⌂ tree sentence says
+  # "in an isolated worktree", and Schedule's wave reason says "isolated into a
+  # wave of its own". Matching the word let either sentence certify a Stage all
+  # by itself, which is precisely the masquerade `require_worker` refuses to
+  # allow. Match the glyph+word pair, so the marker stays evidence.
+  printf '%s' "$2" | grep -q '⊘ isolated' && iso="   ⊘ isolated"
+  printf '%-12s ✓  %s%s%s' "$1" "${detail:-advanced}" "$iso" "$tree"
 }
 
 drive_print_summary() { # accumulated-lines
   [ -n "$1" ] && printf '%s\n' "$1"
   printf '%s\n' "$SEP"
+}
+
+# === S159 — the DRIVE-TIME base re-check ====================================
+# Filing and starting are separate moments. S158 brings the base up to date when
+# the Mission is FILED; a Mission parked overnight — or filed now and driven
+# tomorrow — still enters Research against whatever the base was at filing time.
+# DX-Scorecard's lcars-20260730-001 was filed at 16:00 and driven later, and
+# Research truthfully reported that a file "does not exist" because in THAT tree
+# it did not.
+#
+# So the drive re-asks the question ONCE, at the top, before the stage loop
+# spawns anything. The DOCTRINE IS S158'S, UNCHANGED: it never blocks the drive
+# (every path returns 0), never writes into a dirty tree, never resets/forces/
+# stashes/checks out, and always says what it did. There is ONE implementation of
+# that judgement — `ensure_base_current` in lcars-common.sh — and this consumes
+# it; nothing about freshness is re-decided here.
+#
+# It writes back the REFRESHED `state.json.baseFreshness` record (same shape, new
+# verdict + checkedAt) and — only when the drive really did begin against a base
+# that was BEHIND — one `base_stale` event on the Mission timeline, so the board's
+# activity feed and `lcars status` can show it.
+#
+# AND IT MOVES THE MISSION'S OWN BRANCH (captain ruling 2026-07-31), because the
+# base moving is not what a Stage reads. See `lcars_base_advance_mission_branch`
+# in lcars-common.sh for the three lanes and the losslessness rule.
+
+# Load the shared guard LAZILY, and only for the driver. run.sh is re-entered as
+# a subprocess for every Stage and every ticket; sourcing a second library into
+# all of them to serve one caller is blast radius for nothing. Best-effort: a
+# missing lib degrades the drive to exactly its pre-S159 behaviour.
+drive_load_base_lib() {
+  command -v ensure_base_current >/dev/null 2>&1 && return 0
+  local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+  [ -f "$lib" ] || return 1
+  # shellcheck source=../lcars-init/lcars-common.sh
+  . "$lib" || return 1
+  command -v ensure_base_current >/dev/null 2>&1
+}
+
+# Persist the refreshed record. state.json's editors are LINE-oriented, and
+# `lcars_base_state_line` emits the whole record on ONE line for exactly that
+# reason (S158), so the update is: drop the old line, insert the new one after
+# the opening brace. Nothing else in the file is touched.
+drive_persist_base_freshness() { # mission-branch
+  local line
+  line="$(lcars_base_state_line "${1:-}")" || return 0
+  [ -n "$line" ] || return 0
+  state_del baseFreshness
+  local tmp; tmp="$(mktemp)"
+  LCARS_BF_LINE="$line" awk 'NR==1{print; print ENVIRON["LCARS_BF_LINE"]; next} {print}' \
+    "$STATE" >"$tmp" && mv "$tmp" "$STATE"
+}
+
+# The ONE new event kind. It fires when the drive BEGAN against a base that was
+# genuinely behind — whether or not LCARS could fix it — and never on a verdict
+# that measured nothing (`unknown`, `child-base`): claiming staleness that was
+# never established is the one lie a consumer cannot detect, the same doctrine
+# that makes `behindBy` null rather than a reassuring 0.
+#
+# IDEMPOTENCE IS A FINGERPRINT, NOT A FLAG. The event carries `key` =
+# verdict:behindBy:baseSha, and an identical key already in events.jsonl means
+# this exact fact is already on the timeline — so a re-drive of an unchanged
+# Mission adds nothing. A base that has since moved (or been fixed) has a
+# different key and is a genuinely new fact, so it still gets logged.
+drive_emit_base_stale() { # stage-at-drive-start
+  local v="${LCARS_BASE_VERDICT:-}" n="${LCARS_BASE_BEHIND:-}" b="${LCARS_BASE_BRANCH:-}"
+  case "$v" in updated|stale) : ;; *) return 0 ;; esac
+  case "$n" in ''|0|*[!0-9]*) return 0 ;; esac
+  local key detail
+  key="$v:$n:${LCARS_BASE_SHA:-}"
+  event_seen base_stale "\"key\":\"$key\"" && return 0
+  if [ "$v" = "updated" ]; then
+    detail="this drive began against a stale base — '$b' was $n commit(s) behind origin, and LCARS fast-forwarded it before the first Stage ran"
+  else
+    detail="this drive began against a stale base — '$b' is $n commit(s) behind origin and LCARS could not bring it up to date: ${LCARS_BASE_REASON:-no reason recorded}"
+  fi
+  emit_event base_stale "${1:-}" "$detail" \
+    behindBy="$n" verdict="$v" base="$b" key="$key"
+}
+
+# The whole re-check, in caller order. Runs ONCE per drive.
+drive_base_recheck() {
+  drive_load_base_lib || return 0
+  local base branch stage
+  base="$(json_str "$STATE" base)"
+  branch="$(json_str "$STATE" branch)"
+  stage="$(json_str "$STATE" stage)"
+  # No recorded base ⇒ nothing to check. Inventing one ("probably main") is the
+  # substitution S158 refuses everywhere else in this record.
+  [ -n "$base" ] || return 0
+  ensure_base_current "$base"
+  # THE MISSION'S OWN BRANCH IS THE ONE THAT DECIDES WHAT A STAGE READS, and it is
+  # a separate fact from the BASE's freshness. `mission_branch_block` (this file,
+  # ~line 574) pins every Research / Validate / Plan / Plan Review worker to
+  # `lcars/<id>` and tells it to IGNORE the ambient checkout — so fast-forwarding
+  # only the base leaves every Stage reasoning about the filing-time tree, which is
+  # the whole failure S159 exists to close. The drive therefore advances the
+  # mission branch too, but ONLY when that is LOSSLESS (no commits of its own);
+  # one commit of its own and it is left alone with the loud ⚠ block and a rebase.
+  #
+  # NOT for a `child-base` Mission: a logged bug's base is its parent's branch,
+  # LCARS takes no position on it, and the parent's branch is never moved.
+  #
+  # NOR while git is MID-OPERATION (S160 round 2). An unfinished rebase / merge /
+  # cherry-pick / revert / bisect means the base ref is where the operation will
+  # move it FROM, so "fast-forward the mission branch onto the base" would aim at
+  # a commit that is about to stop existing — and the base's own verdict already
+  # says nothing was measured. The guard carries that as one blocker token, so
+  # this reads the record rather than re-deciding it.
+  if [ "${LCARS_BASE_VERDICT:-}" != "child-base" ] \
+     && [ "${LCARS_BASE_BLOCKER:-}" != "operation-in-progress" ]; then
+    lcars_base_advance_mission_branch "$branch" "$base" || true
+    lcars_base_branch_note_drive "$branch" "$base" || true
+  fi
+  # Persisted AFTER the advance, so `missionBranchAtBase` records what the branch
+  # really is now — never a move that did not happen.
+  drive_persist_base_freshness "$branch"
+  drive_emit_base_stale "$stage"
+  return 0
 }
 
 # --- the PR merge-state poll: "merged" iff the host says state MERGED OR
@@ -11397,6 +11762,13 @@ cmd_drive() {
   # without ever stopping. Fully guarded + kill-switch aware.
   local version_check="${LCARS_VERSION_CHECK_BIN:-$SKILL_DIR/../lcars-version/check.sh}"
   [ -f "$version_check" ] && bash "$version_check" warn </dev/null || true
+
+  # BASE FRESHNESS (S159) — re-ask the question S158 asked at filing time, ONCE,
+  # here: after the driver lock (so two drives can never fetch/fast-forward the
+  # same base at once) and BEFORE the stage loop (so it is once per drive, not
+  # once per Stage, and so the first Stage worker is spawned into the tree it
+  # produced). It never blocks — see drive_base_recheck.
+  drive_base_recheck
 
   local summary=""
   while :; do
@@ -11996,6 +12368,16 @@ FSG_EOF
     exit 0 ;;
   selfheal-attribution-test)
     selfheal_attribution_note "${LCARS_SHR_ID:-}" "${LCARS_SHR_BASIS:-}"
+    exit 0 ;;
+  # S166 test hook: the PURE drive summary line. Stage output on stdin, the Stage
+  # name as the positional, the outcome in $LCARS_DL_OUTCOME (ok|paused). Lets a
+  # test hand `drive_line` an output shape the real Stages do not currently
+  # produce — the whole point of a guard is what it does with the case that has
+  # not happened yet. No mission, no worker, no git.
+  drive-line-test)
+    MISSION_DIR="${MISSION_DIR:-/nonexistent}"
+    drive_line "${POSARG:-validate}" "$(cat)" "${LCARS_DL_OUTCOME:-ok}"
+    printf '\n'
     exit 0 ;;
   # S157 C2 test hook: the PURE runner-count reader. Runner output on stdin;
   # prints the executed-test count, or nothing when it cannot read one.
