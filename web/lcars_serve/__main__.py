@@ -59,7 +59,14 @@ def build_adapter(kind, repo_root, gh_bin, repo, read_only=False):
         return GitHubAdapter(gh_bin=gh_bin, repo=repo)
     # the local adapter is told whether the write layer is active so meta.mode
     # reflects the daemon's true read/write posture (S70-A).
-    return LocalAdapter(repo_root, read_only=read_only)
+    adapter = LocalAdapter(repo_root, read_only=read_only)
+    # S168: resolve the forge host ONCE, HERE, at startup — not on a board build
+    # and never on a poll tick (the server polls ~1/s). It is a subprocess, and
+    # the origin remote cannot change under a running daemon. The call caches
+    # inside the adapter, so this is purely "pay for it before anyone is
+    # waiting"; a failure is already swallowed into "" by gh_host itself.
+    adapter.gh_host()
+    return adapter
 
 
 def build_log_facts(kind, repo_root):

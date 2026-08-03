@@ -75,6 +75,7 @@ const EXPECT = parseInt(arg("expect", "1"), 10);
 const TIMEOUT = parseInt(arg("timeout", "30000"), 10);
 const CONSOLE_CHECK_FILE = arg("console-check", "");
 const LEGEND_CHECK_FILE = arg("legend-check", "");
+const GHLINK_CHECK_FILE = arg("ghlink-check", "");
 
 if (!DEVTOOLS_PORT || !URL_ || !OUT) {
   // 77, not 2: a mis-invoked driver is the harness's problem, and smoke.sh must
@@ -418,6 +419,109 @@ const CONSOLE_PROBE = `(function () {
   return out;
 })()`;
 
+/* ── S168: the board's "view on GitHub" LINKS, as the browser resolved them ──
+ *
+ * The captain's repos live on a GitHub ENTERPRISE host. Both of the board's
+ * issue links concatenated a literal "https://github.com/", so every one of
+ * them opened a github.com repository that does not exist and had to be
+ * hand-edited after the click.
+ *
+ * What makes this worth a real browser rather than a node harness: the fix is
+ * only real if the DAEMON actually delivers `meta.ghHost` to the live page.
+ * Every harness under web/tests/ calls the builders itself, so all of them stay
+ * green against a daemon that sends nothing — which is precisely how a blank
+ * board survived 1,162 green tests for three fix rounds (S163).
+ *
+ * So this reads the anchor's `href` PROPERTY off the live DOM. That is the
+ * resolved, absolute URL the browser would actually navigate to — not the
+ * attribute, not a string the page was built from. Two links are measured: the
+ * ⊗ BUG badge on a logged-bug CARD, and the ↗ View on GitHub button in a
+ * mission's DETAIL overlay. */
+const GHLINK_PROBE = `(function () {
+  function vis(el) {
+    var r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.display !== "none" &&
+           s.visibility !== "hidden" && parseFloat(s.opacity || "1") > 0.01;
+  }
+  function read(a, where) {
+    var r = a.getBoundingClientRect();
+    return {
+      where: where,
+      text: (a.innerText || a.textContent || "").replace(/\\s+/g, " ").trim(),
+      href: a.href,                 // RESOLVED — what a click would open
+      hrefAttr: a.getAttribute("href"),
+      host: (function () { try { return new URL(a.href).host; }
+                           catch (e) { return ""; } })(),
+      protocol: (function () { try { return new URL(a.href).protocol; }
+                               catch (e) { return ""; } })(),
+      visible: vis(a),
+      box: { w: r.width, h: r.height },
+      target: a.getAttribute("target") || "",
+      rel: a.getAttribute("rel") || "",
+    };
+  }
+  var out = { links: [], detailOpen: !!document.querySelector(".det-actions"),
+              cards: document.querySelectorAll(".card").length,
+              // Diagnostic, not a verdict: a badge that rendered as a <span>
+              // instead of an <a> is a link that is not there at all, and the
+              // failure message should say which of the two happened.
+              badgeTags: Array.prototype.slice
+                .call(document.querySelectorAll(".logbug-badge"))
+                .map(function (n) { return n.tagName; }) };
+  Array.prototype.slice.call(document.querySelectorAll("a.logbug-badge"))
+    .forEach(function (a) { out.links.push(read(a, "card-logbug-badge")); });
+  Array.prototype.slice.call(document.querySelectorAll(".det-actions a"))
+    .forEach(function (a) {
+      if (/github/i.test(a.textContent || "")) out.links.push(read(a, "detail-header"));
+    });
+  return out;
+})()`;
+
+/* The verdicts. Everything asserted is something MEASURED off the live node —
+ * the resolved href and the host the browser parsed out of it. */
+function judgeGhLinks(p, want) {
+  const bad = [];
+  const wantHost = want.host || "github.com";
+  const places = want.places || ["card-logbug-badge", "detail-header"];
+  if (!p.links.length) {
+    bad.push("NO GitHub link anywhere in the live DOM — the board rendered " +
+             p.cards + " card(s) and a detail overlay was " +
+             (p.detailOpen ? "open" : "NOT open"));
+    return bad;
+  }
+  places.forEach((place) => {
+    const found = p.links.filter((l) => l.where === place);
+    if (!found.length) {
+      bad.push("no GitHub link at " + JSON.stringify(place) + " — measured: " +
+               JSON.stringify(p.links.map((l) => l.where)) +
+               "; .logbug-badge nodes rendered as " +
+               JSON.stringify(p.badgeTags || []));
+      return;
+    }
+    found.forEach((l) => {
+      if (l.host !== wantHost) {
+        bad.push(place + ": the link the captain would CLICK resolves to host " +
+                 JSON.stringify(l.host) + ", not " + JSON.stringify(wantHost) +
+                 " — " + JSON.stringify(l.href));
+      }
+      if (l.protocol !== "https:") {
+        bad.push(place + ": the link is not https (" + l.protocol + "): " +
+                 JSON.stringify(l.href));
+      }
+      if (want.path && l.href.indexOf(want.path) === -1) {
+        bad.push(place + ": the link does not carry " + JSON.stringify(want.path) +
+                 " — " + JSON.stringify(l.href));
+      }
+      if (!l.visible || !(l.box.w > 0 && l.box.h > 0)) {
+        bad.push(place + ": the link has no laid-out box (" +
+                 JSON.stringify(l.box) + ") — a link nobody can click is not " +
+                 "a link the host is fixed on");
+      }
+    });
+  });
+  return bad;
+}
+
 /* The verdicts. Every one of them is about something MEASURED above; none of
  * them asks whether a CSS rule exists. Returns a list of failures (empty = pass). */
 function judgeConsole(p, want) {
@@ -623,6 +727,79 @@ async function main() {
       JSON.stringify(legendCheck, null, 2) + "\n");
   }
 
+  // ── ACT TWO-AND-A-HALF (optional, --ghlink-check): the GitHub links ──────
+  // Only when asked for. Runs BEFORE the console act, which opens a modal over
+  // the board; it closes its own overlay afterwards so that act is undisturbed.
+  let ghLinkCheck = null;
+  if (GHLINK_CHECK_FILE && ok) {
+    let want = {};
+    try {
+      want = JSON.parse(fs.readFileSync(GHLINK_CHECK_FILE, "utf8"));
+    } catch (e) {
+      throw new InfraError("could not read --ghlink-check file " +
+        GHLINK_CHECK_FILE + ": " + e.message);
+    }
+    await cdp.send("Emulation.setDeviceMetricsOverride",
+      { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sessionId);
+    await sleep(200);
+    // Open a mission's DETAIL overlay — that is where the ↗ View on GitHub
+    // button lives. The card badge is already on the board and needs no click.
+    const clicked = await cdp.send("Runtime.evaluate", {
+      expression: `(function () {
+        var sel = ${JSON.stringify(want.mission || "")};
+        var card = sel ? document.querySelector('.card[data-mid="' + sel + '"]')
+                       : document.querySelector('.card');
+        if (!card) return "no card to open (looked for " + (sel || "any") + ")";
+        card.click();
+        return "";
+      })()`, returnByValue: true }, sessionId);
+    const clickErr = (clicked && clicked.result && clicked.result.value) || "";
+    // The overlay fills in from GET /api/mission/<id>, so poll on the observed
+    // signal with a deadline. Never a sleep-and-hope.
+    let probe = { links: [], detailOpen: false, cards: 0 };
+    const gDeadline = Date.now() + Math.max(5000, Math.min(TIMEOUT, 20000));
+    while (Date.now() < gDeadline) {
+      const r = await cdp.send("Runtime.evaluate",
+        { expression: GHLINK_PROBE, returnByValue: true }, sessionId);
+      if (r && r.result && r.result.value) {
+        probe = r.result.value;
+        if (probe.detailOpen) break;
+      }
+      await sleep(200);
+    }
+    // What the daemon actually put on the wire, for the readout. NOT what the
+    // verdict is made of — the verdict is the resolved href above.
+    try {
+      const w = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          try { return JSON.stringify({ ghHost: (LAST_BOARD && LAST_BOARD.meta &&
+            LAST_BOARD.meta.ghHost) || null, repo: (LAST_BOARD && LAST_BOARD.meta &&
+            LAST_BOARD.meta.repo) || null }); } catch (e) { return "{}"; }
+        })()`, returnByValue: true }, sessionId);
+      probe.payloadMeta = JSON.parse((w && w.result && w.result.value) || "{}");
+    } catch (e) { probe.payloadMeta = null; }
+    let gshot = "";
+    try {
+      const png = await cdp.send("Page.captureScreenshot",
+        { format: "png", captureBeyondViewport: true }, sessionId);
+      gshot = path.join(OUT, "gh-links.png");
+      fs.writeFileSync(gshot, Buffer.from(png.data, "base64"));
+    } catch (e) {
+      cdp.pageErrors.push("gh-links screenshot failed: " + e.message);
+    }
+    const failures = clickErr ? [clickErr].concat(judgeGhLinks(probe, want))
+                              : judgeGhLinks(probe, want);
+    ghLinkCheck = { want: want, measured: probe, failures: failures,
+                    screenshot: gshot, ok: failures.length === 0 };
+    fs.writeFileSync(path.join(OUT, "ghlink-check.json"),
+      JSON.stringify(ghLinkCheck, null, 2) + "\n");
+    // Put the board back the way we found it for whatever act runs next.
+    await cdp.send("Runtime.evaluate", {
+      expression: `(function () { try { closeOverlay(); } catch (e) {} })()`,
+      returnByValue: true }, sessionId);
+    await sleep(200);
+  }
+
   // ── ACT THREE (optional, --console-check): the File console's pre-flight ──
   // Only when asked for; without the flag not one line of this runs and the
   // default rig is exactly what it was.
@@ -710,6 +887,7 @@ async function main() {
     url: URL_,
     screenshot: shot,
     legendCheck: legendCheck,
+    ghLinkCheck: ghLinkCheck,
     consoleCheck: consoleCheck,
   };
   fs.writeFileSync(path.join(OUT, "result.json"), JSON.stringify(result, null, 2) + "\n");
@@ -774,6 +952,25 @@ async function main() {
       console.error("    screenshot: " + legendCheck.screenshot);
     }
   }
+  if (ghLinkCheck) {
+    if (ghLinkCheck.ok) {
+      console.log("  github links: every measured link RESOLVES to " +
+        JSON.stringify(ghLinkCheck.want.host || "github.com") + " —");
+      (ghLinkCheck.measured.links || []).forEach((l) => {
+        console.log("    " + l.where + ": " + l.href);
+      });
+      console.log("    board payload meta: " +
+        JSON.stringify(ghLinkCheck.measured.payloadMeta));
+    } else {
+      console.error("\x1b[31m  A \"VIEW ON GITHUB\" LINK POINTS AT THE WRONG FORGE.\x1b[0m");
+      ghLinkCheck.failures.forEach((f) => console.error("    ✗ " + f));
+      console.error("    measured: " +
+        JSON.stringify(ghLinkCheck.measured.links));
+      console.error("    board payload meta: " +
+        JSON.stringify(ghLinkCheck.measured.payloadMeta));
+      console.error("    screenshot: " + ghLinkCheck.screenshot);
+    }
+  }
   if (consoleCheck) {
     const q = (consoleCheck.measured && consoleCheck.measured.quiet) || null;
     if (consoleCheck.ok) {
@@ -792,6 +989,7 @@ async function main() {
   }
   if (!ok) return EXIT_NOT_PAINTED;
   if (legendCheck && !legendCheck.ok) return EXIT_NOT_PAINTED;
+  if (ghLinkCheck && !ghLinkCheck.ok) return EXIT_NOT_PAINTED;
   if (consoleCheck && !consoleCheck.ok) return EXIT_NOT_PAINTED;
   return servedComplete ? EXIT_PAINTED : EXIT_DEGRADED;
 }
