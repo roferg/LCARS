@@ -392,6 +392,28 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 if len(parts) == 2 and parts[1] == "cancel":
                     return actions.align_cancel(parts[0])
                 raise _ActionError(404, "no such align endpoint: %s" % path)
+            # POST /api/holodeck/start        — open a holodeck PROGRAM (S124)
+            # POST /api/holodeck/<sid>/say    — one warm chat turn
+            # POST /api/holodeck/<sid>/end    — close the program
+            # The holodeck is a LOCAL-adapter surface like the Align family: a
+            # read-only / github build has actions=None, so do_POST already
+            # 403'd above and the board hides the affordance entirely.
+            if path == "/api/holodeck/start":
+                return actions.holodeck_start(repo=body.get("repo"),
+                                              program=body.get("program"),
+                                              engine=body.get("engine"),
+                                              mode=body.get("mode", "design"),
+                                              images=self._images(body))
+            if path.startswith("/api/holodeck/"):
+                rest = path[len("/api/holodeck/"):]
+                parts = [p for p in rest.split("/") if p != ""]
+                if len(parts) == 2 and parts[1] == "say":
+                    return actions.holodeck_say(parts[0],
+                                                text=body.get("text"),
+                                                images=self._images(body))
+                if len(parts) == 2 and parts[1] == "end":
+                    return actions.holodeck_end(parts[0])
+                raise _ActionError(404, "no such holodeck endpoint: %s" % path)
             # POST /api/mission  — file a new mission
             if path == "/api/mission":
                 return actions.file_mission(

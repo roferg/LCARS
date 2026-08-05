@@ -1,0 +1,29 @@
+#!/bin/bash
+# LCARS holodeck argv shim — copilot. See ./claude and ./README.md.
+#
+#   export LCARS_SHIM_LOG=/tmp/shim-copilot.log
+#   export LCARS_HOLODECK_REAL_COPILOT=/opt/homebrew/bin/copilot   # optional
+set -u
+LOG="${LCARS_SHIM_LOG:-/tmp/lcars-holodeck-shim.log}"
+REAL="${LCARS_HOLODECK_REAL_COPILOT:-}"
+if [ -z "$REAL" ]; then
+  self_dir="$(cd "$(dirname "$0")" && pwd)"
+  while IFS= read -r cand; do
+    case "$(cd "$(dirname "$cand")" && pwd)" in
+      "$self_dir") continue ;;
+      *) REAL="$cand"; break ;;
+    esac
+  done < <(type -pa copilot 2>/dev/null)
+fi
+{
+  printf 'TIME: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'ARGV: %s\n' "$*"
+  printf 'CWD:  %s\n' "$PWD"
+  printf 'REAL: %s\n' "${REAL:-<not found>}"
+  printf -- '---\n'
+} >> "$LOG" 2>/dev/null
+if [ -z "$REAL" ]; then
+  echo "holodeck-shim: no real copilot found (set \$LCARS_HOLODECK_REAL_COPILOT)" >&2
+  exit 127
+fi
+exec "$REAL" "$@"

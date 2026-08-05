@@ -620,6 +620,599 @@ class _AlignSession(object):
         self.image_paths = []
 
 
+# ══ S124 — THE HOLODECK SEAM ═══════════════════════════════════════════════
+# A SECOND conversational worker posture, sitting beside the Align grill and
+# sharing NONE of its argv. The grill is a pure-reasoning, tools-DENIED turn; a
+# holodeck turn WRITES mockup files. Everything below is the S124 spike record
+# (18 live turns across both engines, 2026-08-04) expressed as code — the align
+# machinery (`_session_args`, `_worker_turn`) is COPIED in shape and never
+# mutated, so the grill's behaviour stays byte-identical.
+#
+# THE ONE RULE THAT IS NOT NEGOTIABLE: **no `bash` tool, ever.** The S72
+# bash-dump ("copilot emits its reply via the bash tool, stdout is prose-only,
+# the daemon 502s") was never caused by tools in general — it was caused by
+# `bash` specifically being available as a reply channel. With bash denied and
+# write tools granted, BOTH engines returned clean parseable prose on every one
+# of the spike's 18 turns. `_assert_no_bash` below enforces that at the argv,
+# not in a comment.
+
+# Per (engine family, mode) → the exact tool surface. Two modes:
+#   design    — WRITE posture, cwd = the program dir inside the sidecar.
+#   grounding — READ-ONLY posture (D12), cwd = the TARGET repo. The DAEMON
+#               writes basis.md; the worker is denied every write channel.
+#
+# WHAT THESE FLAGS ACTUALLY DO — measured against the live binaries 2026-08-04,
+# after the round-0 comment here claimed a guarantee the flags did not deliver:
+#
+#   copilot `--available-tools` IS a restriction. The engine's own preamble
+#       lists everything else — `bash, create, edit` included — as *Disabled*.
+#       Plus `--add-dir` is a real per-path sandbox grant. Nothing more needed.
+#
+#   claude `--allowedTools` is a PRE-APPROVAL list, NOT a restriction, and
+#       `--dangerously-skip-permissions` waives whatever is left to ask about.
+#       MEASURED: `--allowedTools Read,Grep,Glob --dangerously-skip-permissions`
+#       → claude CREATED A FILE. Omitting Write/Edit fences nothing.
+#       `--disallowedTools` is the flag that actually refuses. MEASURED: adding
+#       `--disallowedTools Write,Edit,Bash,NotebookEdit` to that same argv →
+#       "BLOCKED — I have no file-writing capability… no Write tool and no
+#       Bash/shell tool available (confirmed via ToolSearch and by delegating to
+#       a subagent, which hit the same restriction)", and no file was created.
+#
+# So each claude posture carries BOTH lists: the allow list says what it may
+# reach for, the DENY list is the part that stops it. That is also what turns
+# `_assert_no_bash` from a comment about the S72 reply channel into a mechanism:
+# before this, denying `bash` meant only that the daemon never NAMED it, while
+# the worker had a shell regardless.
+_HOLODECK_TOOLS = {
+    ("claude", "design"): "Read,Grep,Glob,Write,Edit",
+    ("claude", "grounding"): "Read,Grep,Glob",
+    # `edit` is REQUIRED in the copilot design set, not optional: copilot's
+    # `create` CANNOT overwrite an existing file (measured on CLI 1.0.79-1 — a
+    # hard `Path already exists` tool error, zero bytes changed), and turn 2 of
+    # any design chat IS an overwrite. Without `edit` the channel is one-shot
+    # per path and the engine degrades to the fenced-block fallback.
+    ("copilot", "design"): "view,grep,glob,create,edit",
+    ("copilot", "grounding"): "view,grep,glob",
+}
+
+# claude only (see above): what `--disallowedTools` refuses. The DESIGN room
+# keeps Write/Edit — building the mockup is its whole job — and loses the shell,
+# which closes the S72 reply-channel class on claude too. GROUNDING loses every
+# write channel the CLI has, because it runs in the captain's real project.
+_HOLODECK_DENY = {
+    ("claude", "design"): "Bash,NotebookEdit",
+    ("claude", "grounding"): "Write,Edit,Bash,NotebookEdit",
+}
+
+_HOLODECK_MODES = ("design", "grounding")
+
+# copilot's MCP-discipline flags. Without them copilot re-boots its builtin MCP
+# servers and re-reads custom instructions on EVERY warm turn (26s → 13s
+# measured at S72, re-confirmed in the S124 spike). A chat room cannot afford it.
+_COPILOT_DISCIPLINE = ("--allow-all-tools", "--no-ask-user",
+                       "--disable-builtin-mcps", "--no-custom-instructions")
+
+
+def _is_copilot(bin_):
+    return "copilot" in os.path.basename(bin_ or "").lower()
+
+
+def _holodeck_model(engine):
+    """The holodeck's per-engine model tier.
+
+    The holodeck is the CHEAP room, so this deliberately follows the same
+    per-engine DEFAULT the Align grill uses (`_grill_model`) rather than reading
+    a mission estimate — but it is its OWN function, because the two are free to
+    diverge and a later session dropping copilot to `claude-sonnet-4.6` must not
+    silently re-tier every grill in the product.
+
+    claude  → "sonnet"           (the captain's pre-authorized S124 tier)
+    copilot → "claude-opus-4.8"  (free; kept for output quality)
+
+    NB the spike REFUTED the old justification for the copilot opus pin: on CLI
+    1.0.79-1 `claude-sonnet-4.6` created AND edited files fine, and `create`
+    cannot overwrite on opus either. The pin is a quality choice now, not a
+    capability one.
+    """
+    return "claude-opus-4.8" if _is_copilot(engine) else "sonnet"
+
+
+def _assert_no_bash(cmd):
+    """Refuse any holodeck argv that does not actually deny the worker a shell.
+
+    This is the S72 root-cause guard, enforced at the ONE place every holodeck
+    turn passes through, and it has TWO halves — because on claude the first
+    half alone proves nothing:
+
+      1. no GRANT list names a shell. Every token is inspected EXCEPT the binary
+         path (which may live under a .../bin/bash-shaped path), the prompt body
+         (which may legitimately *discuss* bash) and the DENY list (where naming
+         `Bash` is the point), split on the separators a tool list can use so
+         `--available-tools view,bash` is caught as surely as a bare `Bash`.
+
+      2. a claude argv MUST also carry a `--disallowedTools` that names `Bash`.
+         Round 0 had only half 1, which is satisfied by an argv that hands the
+         worker a shell anyway: `--allowedTools` is a pre-approval list and
+         `--dangerously-skip-permissions` waives the rest. Half 2 is the half
+         that makes this function a mechanism instead of a naming convention.
+
+         It is keyed off the ENGINE (copilot / not-copilot), never off the
+         PRESENCE of `--allowedTools` (D3, round 1). Keyed off the flag, a later
+         session dropping `--allowedTools` from the claude argv for an unrelated
+         reason would have retired the requirement silently — the guard would
+         stop guarding with nobody editing it. copilot is exempt because
+         `--available-tools` IS a restriction there and the CLI has no
+         `--disallowedTools` to carry.
+
+    What it still cannot prove: that the CLI honours the flag. That was measured
+    by hand (see the `_HOLODECK_TOOLS` block); no argv check can see it.
+    """
+    denied = ""
+    grants = []
+    skip_next = False
+    for i, tok in enumerate(cmd):
+        if i == 0:
+            continue
+        tok = str(tok)
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in ("-p", "--disallowedTools"):
+            if tok == "--disallowedTools" and i + 1 < len(cmd):
+                denied = str(cmd[i + 1])
+            skip_next = True
+            continue
+        if tok.startswith("--disallowedTools="):
+            denied = tok.split("=", 1)[1]
+            continue
+        grants.append(tok)
+    for tok in grants:
+        for piece in tok.replace("=", ",").replace(" ", ",").split(","):
+            if piece.strip().lower() == "bash":
+                raise ActionError(
+                    500, "refused to spawn a holodeck turn with a shell tool — "
+                    "the holodeck never gets `bash` (that was the S72 reply-"
+                    "channel failure, and a chat room has no business running "
+                    "commands)")
+    if not _is_copilot(cmd[0] if cmd else ""):
+        if "bash" not in [p.strip().lower() for p in denied.split(",")]:
+            raise ActionError(
+                500, "refused to spawn a holodeck turn that does not DENY the "
+                "shell — on claude `--allowedTools` only pre-approves and "
+                "`--dangerously-skip-permissions` waives the rest, so a "
+                "`--disallowedTools` naming Bash is the only thing that "
+                "actually takes it away")
+
+
+def _slug(name):
+    """A filesystem-safe program directory name, derived from the program name.
+
+    Lowercase, non-alphanumerics collapsed to `-`, trimmed, capped. Never empty
+    (falls back to "program") and never a path (no separators survive), so a
+    program called `../../etc` cannot become one.
+    """
+    s = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    return (s[:48] or "program")
+
+
+# ── reply parsing: NEVER assume stdout starts at byte 0 ──────────────────────
+# Measured in the spike: claude prefixes a `Warning: no stdin data received in
+# 3s…` line unless stdin is DEVNULL (we DO pass DEVNULL — this is belt and
+# braces for a version that warns anyway); copilot emits a ~30-line
+# `Disabled tools:` preamble on EVERY turn (`--disable-builtin-mcps` does NOT
+# suppress it) plus a `Changes / duration / AI Credits / Tokens / Resume`
+# footer. The footer's credit figure is CUMULATIVE PER SESSION, not per turn —
+# do not read it as a per-turn cost.
+#
+# The cleaned text is what the captain sees and what `basis.md` is written from.
+# The RAW text is kept on the payload and is what the fenced-block parser reads,
+# so noise can never hide a file block.
+_NOISE_LINE = re.compile(
+    r"^\s*Warning:\s*no stdin data received\b.*$", re.IGNORECASE)
+
+# THE PREAMBLE, as captured (copilot CLI 1.0.79-1, 2026-08-04):
+#
+#     ● Disabled tools: Kusto-acr, Kusto-advisor, Kusto-aks, Kusto-appconfig,
+#       Kusto-applicationinsights, Kusto-appservice, …           (~35 rows)
+#       workiq-search_paths, workiq-update_entity, write_agent
+#
+# The list starts INLINE on the head line, after a `●` bullet. Round 0 matched
+# `^\s*Disabled tools:\s*$` — a bare head line with the list beneath it — which
+# is a shape copilot has never emitted, so the whole cleaner was a NO-OP on real
+# output and the tool dump went into `basis.md`.
+_DISABLED_TOOLS_HEAD = re.compile(
+    r"^\s*(?:[●•*]\s*)?Disabled tools:", re.IGNORECASE)
+
+# THE FOOTER, as captured — COLUMN-ALIGNED, NO COLONS, values at column 12:
+#
+#     Changes    +27 -0
+#     AI Credits 7.86 (29s)
+#     Tokens     ↑ 16.6k (7.9k cached, 8.7k written) • ↓ 811 (36 reasoning)
+#     Resume     copilot --resume=a3a5ad9b-…
+#
+# Round 0 required colons (`AI Credits:`, `Tokens:`, `Resume:\s`), so every
+# pattern missed every real line. Note `AI Credits` is padded with a SINGLE
+# space, so a `\s{2,}` rule misses that row too.
+#
+# The key must NOT be followed by a colon: that is what separates the footer
+# from the shape MEASURED being eaten on claude — an ordinary sentence beginning
+# `Tokens:` / `Total duration:` / `Resume:` as the LAST line of a short reply,
+# which the turn prompt ("REPLY SHORT: a sentence or two") makes near-inevitable.
+_FOOTER_ROW = re.compile(r"^(Changes|AI Credits|Tokens|Resume)(?!:)\s+\S")
+# `Resume` is always the LAST line of the block. Requiring it anchors the cut to
+# a real footer rather than to any line that happens to start with a footer word.
+_FOOTER_LAST = re.compile(r"^Resume(?!:)\s+\S")
+
+
+def _cut_footer(lines):
+    """Drop copilot's trailing `Changes / AI Credits / Tokens / Resume` block.
+
+    Walks BACKWARDS and cuts ONLY a complete, contiguous, trailing footer: the
+    last non-blank line must be the `Resume` row, and at least two footer rows
+    must run up to it. Anything else — a footer-shaped sentence anywhere, a lone
+    `Changes` line, a reply that merely ends on the word Resume — is left
+    exactly as the model wrote it. A cleaner that silently deletes what the
+    model said is worse than no cleaner at all.
+    """
+    i = len(lines)
+    while i > 0 and not lines[i - 1].strip():
+        i -= 1
+    if i == 0 or not _FOOTER_LAST.match(lines[i - 1]):
+        return lines
+    cut = i - 1
+    rows = 1
+    j = i - 1
+    while j > 0:
+        prev = lines[j - 1]
+        if not prev.strip():
+            j -= 1
+            continue
+        if _FOOTER_ROW.match(prev):
+            cut = j - 1
+            rows += 1
+            j -= 1
+            continue
+        break
+    return lines[:cut] if rows >= 2 else lines
+
+
+def _clean_reply(raw):
+    """Strip the per-engine stdout noise from a holodeck turn's reply.
+
+    Two things only: claude's stdin warning + copilot's `Disabled tools`
+    preamble, and copilot's trailing credit footer. Copilot's per-tool activity
+    lines (`● Create mockup.html +27`) are KEPT — they are the engine's own
+    short account of what it did, and a rule that eats lines starting with `●`
+    is a rule that eats prose starting with a bullet.
+    """
+    lines = (raw or "").replace("\r\n", "\n").split("\n")
+    out = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if _NOISE_LINE.match(line):
+            i += 1
+            continue
+        if _DISABLED_TOOLS_HEAD.match(line):
+            # consume the head (the list starts ON it) plus its indented
+            # continuation rows. A blank line or an unindented line ends it.
+            i += 1
+            while i < n and lines[i].strip() and lines[i][:1] in (" ", "\t"):
+                i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(_cut_footer(out)).strip("\n")
+
+
+# ── the fenced-block fallback (a DEGRADATION PATH, not the default) ──────────
+# Both engines write natively (spike record). But when a write tool cannot do
+# the job — measured: copilot's `create` refusing to overwrite on turn 2 — the
+# engine degrades ON ITS OWN, emitting the complete file as a fenced block and
+# asking for an edit tool. Rather than lose that turn, the DAEMON writes those
+# blocks, producing the SAME `filesChanged` contract as a native write.
+#
+# THE BLOCK FORMAT (documented in the turn prompt, parsed here):
+#
+#     ```file:relative/path.html
+#     …complete file content…
+#     ```
+#
+# The language hint may precede it (```html file:mockup.html), and `path=` /
+# `file=` are accepted spellings. A fence with NO declared path is ordinary
+# markdown and writes NOTHING — the holodeck never invents a filename.
+_FENCE_OPEN_DECLARED = re.compile(
+    r"^```[ \t]*(?:([A-Za-z0-9_.+-]+)[ \t]+)?(?:file|path)[ \t]*[:=][ \t]*"
+    r"[\"']?([^\"'\r\n]+?)[\"']?[ \t]*$")
+_FENCE_ANY = re.compile(r"^```")
+_FENCE_CLOSE = re.compile(r"^```[ \t]*$")
+
+
+def _parse_file_blocks(raw):
+    """Pull declared file blocks out of a reply.
+
+    Returns (blocks, bad) where `blocks` is [(relpath, content)] in order and
+    `bad` is the declared paths that were REFUSED as unsafe (absolute, or
+    escaping the program dir via `..`). Undeclared fences are skipped whole, so
+    a declared block nested inside a plain markdown fence is not harvested.
+    """
+    lines = (raw or "").replace("\r\n", "\n").split("\n")
+    blocks = []
+    bad = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if not _FENCE_ANY.match(line):
+            i += 1
+            continue
+        m = _FENCE_OPEN_DECLARED.match(line)
+        body = []
+        i += 1
+        while i < n and not _FENCE_CLOSE.match(lines[i]):
+            body.append(lines[i])
+            i += 1
+        i += 1  # step past the closing fence (or off the end)
+        if not m:
+            continue
+        declared = (m.group(2) or "").strip()
+        rel = _safe_rel(declared)
+        if rel is None:
+            bad.append(declared)
+            continue
+        content = "\n".join(body)
+        if content and not content.endswith("\n"):
+            content += "\n"
+        blocks.append((rel, content))
+    return blocks, bad
+
+
+def _safe_rel(declared):
+    """Normalize a declared block path to a program-dir-relative path, or None.
+
+    Absolute paths and anything that climbs out with `..` are REFUSED — a
+    fenced block is a fallback write channel, not a way around the fence."""
+    p = (declared or "").strip().strip("\"'")
+    if not p or os.path.isabs(p) or p.startswith("~"):
+        return None
+    norm = os.path.normpath(p)
+    if norm.startswith("..") or os.path.isabs(norm) or norm == ".":
+        return None
+    return norm
+
+
+# ── the post-turn filesystem audit: the ONLY real fence on claude ────────────
+# Measured in the spike: `claude -p` has NO per-path sandbox. Given ONE ordinary
+# sentence of authorization ("I own that repo and I'm authorizing it") it wrote
+# into a DIFFERENT git repo by absolute path, no error and no prompt. Its
+# refusals, when they came, proved nothing about the fence. So the fence is a
+# before/after walk of real bytes on disk, and the model's own account of what
+# it wrote is never consulted.
+#
+# copilot IS sandboxed (cwd + `--add-dir` grants), but `--add-dir` grants WRITE,
+# not just read — which is exactly why grounding never grants the target repo.
+def _audit_snapshot(root, skip=(), max_files=20000):
+    """Walk `root` recording path → (size, mtime_ns, inode).
+
+    STAT-ONLY, and deliberately so. The first cut hashed every file's contents;
+    MEASURED on a real 9,420-file project that cost **66 seconds per walk** —
+    two walks a turn, so over two minutes of pure overhead on a chat that is
+    supposed to be the cheap, fast room. Stat-only is 0.2s for the same tree
+    (300x), and size+mtime_ns moves on every real write, which is the thing
+    being detected.
+
+    What that trades away, stated plainly: a process that wrote a file AND
+    restored its original size and nanosecond mtime would slip past. That is a
+    deliberate cover-up, not the failure this fence exists for — the failure is
+    a well-meaning model writing a good file in the wrong place, which always
+    moves the mtime.
+
+    `.git` is skipped: it is git's own bookkeeping, not the captain's files, and
+    it churns on every commit the holodeck itself makes. Symlinked directories
+    are not descended (their targets are audited by whoever owns them).
+
+    Returns (snapshot, complete). `complete` is False when the walk hit
+    `max_files` — a truncated audit is REPORTED, never quietly passed off as a
+    clean one.
+    """
+    snap = {}
+    if not root or not os.path.isdir(root):
+        return snap, True
+    skip_real = set(os.path.realpath(s) for s in skip if s)
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            it = os.scandir(d)
+        except OSError:
+            continue
+        with it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name == ".git":
+                            continue
+                        if os.path.realpath(entry.path) in skip_real:
+                            continue
+                        stack.append(entry.path)
+                        continue
+                    if len(snap) >= max_files:
+                        return snap, False
+                    st = entry.stat(follow_symlinks=False)
+                    snap[entry.path] = (st.st_size, st.st_mtime_ns, st.st_ino)
+                except OSError:
+                    continue
+    return snap, True
+
+
+# ── stopping a turn that is not coming back ──────────────────────────────────
+# A holodeck turn had no timeout and no cancel: `POST /end` returned ok while
+# the worker stayed alive and kept writing into the sidecar of a session that no
+# longer existed, and the `/say` that started it hung forever. Both cures need
+# the same primitive — kill the process GROUP, because killing the worker alone
+# leaves the children that are doing the writing.
+def _kill_process_group(proc):
+    """SIGKILL a worker and everything it spawned. True if there was one alive.
+
+    Falls back to killing just the process when the group is gone (or when the
+    platform has no process groups). Never raises: this runs on the way out of a
+    turn and on `end`, and neither may fail because of a reaping race.
+    """
+    if proc is None or proc.poll() is not None:
+        return False
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        return True
+    except (OSError, AttributeError):
+        try:
+            proc.kill()
+            return True
+        except OSError:
+            return False
+
+
+def _audit_incomplete_message(repo_cap=None, sidecar_cap=None):
+    """What a captain is told when a post-turn audit walk could not finish.
+
+    Pass the cap of whichever walk truncated; `None` means that walk completed.
+
+    THE TWO WALKS FAIL DIFFERENTLY AND THE COPY MUST NOT CONFLATE THEM (D1,
+    round 1). Losing the walk over the captain's project costs the STRAY check —
+    LCARS can no longer promise nothing was written outside the holodeck — and
+    says nothing at all about the turn's own output, which is walked under its
+    own separate bound and committed either way. Round 1 printed ONE sentence
+    for both, and it ended "everything the turn wrote in the holodeck is
+    listed" — which was the exact opposite of what happened when the same cap
+    truncated the sidecar walk and `filesChanged` came back empty.
+    """
+    parts = []
+    if repo_cap is not None:
+        parts.append("LCARS could not fully check your project for stray "
+                     "writes this turn — it stopped after %d %s, so it cannot "
+                     "promise nothing was written outside the holodeck."
+                     % (repo_cap, "file" if repo_cap == 1 else "files"))
+    if sidecar_cap is None:
+        parts.append("Your program's own files are listed and saved.")
+    else:
+        parts.append("The holodeck's own room holds more than %d %s, so this "
+                     "turn's file list may be short — anything missing from it "
+                     "is still on disk in the program's room."
+                     % (sidecar_cap, "file" if sidecar_cap == 1 else "files"))
+    if repo_cap is not None:
+        parts.append("Raise $LCARS_HOLODECK_AUDIT_MAX_FILES to check the whole "
+                     "project.")
+    if sidecar_cap is not None:
+        parts.append("Raise $LCARS_HOLODECK_SIDECAR_MAX_FILES to walk the whole "
+                     "sidecar.")
+    return " ".join(parts)
+
+
+def _duration_words(seconds):
+    """A duration rendered in the unit that does not round the difference away.
+
+    Round 1 used `"%.0f minutes" % (limit / 60.0)`, so a 90-second limit and a
+    150-second limit BOTH printed as "2 minutes" — two settings a captain would
+    have chosen for different reasons, read back as the same sentence.
+    """
+    secs = int(round(float(seconds)))
+    if secs < 120:
+        return "%d %s" % (secs, "second" if secs == 1 else "seconds")
+    mins = secs / 60.0
+    if abs(mins - round(mins)) < 0.005:
+        return "%d minutes" % int(round(mins))
+    return "%.1f minutes" % mins
+
+
+def _stopped_turn_error(bin_, limit, timed_out, changed):
+    """(status, message) for a turn LCARS stopped — timeout or `end`.
+
+    Leads with what survived, says plainly that the turn did not finish, and
+    never leaves the captain (or S125's browser) waiting on a spinner.
+    """
+    kept = ("" if not changed else
+            " The %d file(s) it had already written are saved and committed."
+            % len({c["path"] for c in changed}))
+    if not timed_out:
+        return (409, "you closed this program while a turn was running, so "
+                     "LCARS stopped the worker.%s" % kept)
+    return (504, "the holodeck turn ran for %s without finishing, so LCARS "
+                 "stopped the %s worker. Your program is safe and the chat is "
+                 "still running — say it again to retry, or raise "
+                 "$LCARS_HOLODECK_TURN_TIMEOUT if this program's turns really "
+                 "do take that long.%s"
+                 % (_duration_words(limit), os.path.basename(bin_), kept))
+
+
+def _audit_diff(before, after):
+    """[(abs path, status)] for every add/modify/delete between two snapshots."""
+    rows = []
+    for p, meta in sorted(after.items()):
+        old = before.get(p)
+        if old is None:
+            rows.append((p, "added"))
+        elif old != meta:
+            rows.append((p, "modified"))
+    for p in sorted(before):
+        if p not in after:
+            rows.append((p, "deleted"))
+    return rows
+
+
+class _HolodeckSession(object):
+    """In-memory state for ONE holodeck PROGRAM, keyed by sessionId.
+
+    Deliberately the same v1 contract as `_AlignSession`: stdlib only, lives in
+    the daemon process, dies with it (durable programs are S126). What it adds
+    over the grill session is everything the holodeck's fence needs —
+
+    sidecar_dir : the sidecar git repo (`<reponame>-holodeck`). THE FENCE: any
+        write landing outside this tree is refused and surfaced, whatever the
+        engine claims it did.
+    program_dir : `<sidecar>/<slug>` — this program's own room, and the turn's
+        cwd + the only `--add-dir` grant copilot receives. Per-program so two
+        programs cannot collide on `mockup.html`.
+    target_repo : the captain's real project. Audited every turn (it is the
+        thing the sidecar exists to protect) and, in GROUNDING mode only, the
+        turn's read-only cwd.
+    mode : "design" (write posture) or "grounding" (read-only, D12).
+    files_changed : every sidecar-relative path this program has touched, in
+        first-touch order — the program's own manifest.
+
+    `worker_sid` + `started` are the same warm-session idiom as the grill: turn 1
+    OPENS the conversation by uuid, every later turn RESUMES it, and the daemon
+    re-feeds no transcript.
+    """
+
+    __slots__ = ("program", "engine", "mode", "sidecar_dir", "program_dir",
+                 "target_repo", "worker_sid", "started", "turns",
+                 "files_changed", "done", "last_reply", "proc", "turn_settled")
+
+    def __init__(self, program, engine, mode, sidecar_dir, program_dir,
+                 target_repo):
+        self.program = program
+        self.engine = engine
+        self.mode = mode
+        self.sidecar_dir = sidecar_dir
+        self.program_dir = program_dir
+        self.target_repo = target_repo
+        self.worker_sid = str(uuid.uuid4())
+        self.started = False
+        self.turns = []          # [{"text": <captain>, "reply": <cleaned>}]
+        self.files_changed = []  # sidecar-relative paths, first-touch order
+        self.done = False
+        self.last_reply = ""
+        # the worker process WHILE a turn is in flight, so `end` can actually
+        # stop it (and its whole process group) instead of returning ok while it
+        # keeps running and writing. None between turns.
+        self.proc = None
+        # SET whenever no turn is in flight — and set again as soon as an
+        # in-flight turn's audit AND commit have landed. `end` waits on it so
+        # its file list and the turn's own answer describe the same bytes (D2).
+        self.turn_settled = threading.Event()
+        self.turn_settled.set()
+
+
 class _LogSession(object):
     """S161 — in-memory state for ONE Mission-Log authoring flow, keyed by sid.
 
@@ -1366,7 +1959,7 @@ class Actions(LogFacts):
     """
 
     def __init__(self, repo_root, scripts, worker_bin=None, gh_bin=None,
-                 check_script=None):
+                 check_script=None, holodeck_root=None, git_bin=None):
         # S163 fix round 4 (D3): the durable-facts reader is now the BASE, so
         # `_linked_children`, `_waiting_children` and the two on-disk record
         # readers are literally the same code the view-only board runs.
@@ -1381,6 +1974,19 @@ class Actions(LogFacts):
         # active Align grillings, keyed by sessionId (in-memory; ADR-006 local).
         self._align = {}
         self._align_lock = threading.Lock()
+        # S124 — active HOLODECK programs, keyed by sessionId. Same in-memory /
+        # dies-with-the-daemon contract as `_align` (durable programs are S126).
+        self._holodeck = {}
+        self._holodeck_lock = threading.Lock()
+        # S124 — the two injectable seams the holodeck adds. BOTH default from
+        # the environment so a test (and an alternative install) can point them
+        # somewhere harmless: `holodeck_root` is the directory the sidecar repo
+        # is created IN (default: beside the target repo), `git_bin` is the git
+        # used to init/commit it. Tests inject a tmpdir root so nothing can ever
+        # reach the captain's real ~/Projects.
+        self.holodeck_root = (holodeck_root
+                              or os.environ.get("LCARS_HOLODECK_ROOT") or "")
+        self.git_bin = (git_bin or os.environ.get("LCARS_GIT_BIN") or "git")
         # S161: active Mission-Log authoring sessions, keyed by sessionId. Same
         # in-memory / dies-with-the-daemon contract as `_align` above; one live
         # session per parent mission (a fresh preview replaces the old one).
@@ -2098,6 +2704,719 @@ class Actions(LogFacts):
         # claude (and the default): space-form args.
         return (["--session-id", session_id] if opening
                 else ["--resume", session_id])
+
+    # ══ S124 — THE HOLODECK ════════════════════════════════════════════════
+    # `/api/holodeck/start|say|end`: warm, resumable, cheap chat turns that
+    # write mockup files into a SIDECAR git repo. It mirrors the Align family's
+    # SHAPE and shares none of its argv (see the module block above). Three
+    # invariants hold here and are worth stating where they are enforced:
+    #   • the holodeck never spawns a Stage and never writes mission state;
+    #   • writes go ONLY inside the sidecar — proven by a post-turn filesystem
+    #     audit, never by the model's account of what it did;
+    #   • the Align grill's tools-denied warm turn is untouched.
+
+    def holodeck_start(self, repo=None, program=None, engine=None,
+                       mode="design", images=None):
+        """POST /api/holodeck/start — open a holodeck PROGRAM.
+
+        `program` is the subject being designed (D8) and names the program's own
+        room inside the sidecar. `repo` is the target project (default: this
+        daemon's repo) — it names the sidecar and is the read-only cwd of a
+        GROUNDING pass. `engine` picks the CLI; `mode` picks the posture:
+
+          design    (default) — opens the room and SPENDS NOTHING. The warm
+              worker session is opened by the FIRST `say`, so a captain who
+              opens a program and walks away has paid for nothing.
+          grounding (D12) — runs ONE cheap read-only pass over the target repo
+              right now and writes `basis.md` from the reply. It is a SEPARATE
+              session from the design chat by design: the two postures have
+              different tools AND different cwds, and resuming one warm session
+              across that switch is a behaviour no spike has measured.
+        """
+        if images:
+            # The image-paste road (S91/S92) is measured on both engines, but
+            # threading it through a HOLODECK turn is untested here — say so
+            # rather than accept the paste and silently drop it.
+            raise ActionError(
+                400, "the holodeck cannot take pasted images yet — start the "
+                "program without one and describe what you want in words")
+        program = (program or "").strip()
+        if not program:
+            raise ActionError(400, "missing required field: program")
+        mode = (mode or "design").strip().lower()
+        if mode not in _HOLODECK_MODES:
+            raise ActionError(
+                400, "unknown holodeck mode %r — it is either \"design\" (chat "
+                "and build the mockup) or \"grounding\" (one read-only look at "
+                "the project first)" % mode)
+        target = os.path.abspath((repo or "").strip() or self.repo_root)
+        if not os.path.isdir(target):
+            raise ActionError(404, "no such repo: %s" % target)
+        # THE ENGINE IS CHECKED BEFORE ANYTHING IS CREATED. Round 0 built the
+        # sidecar git repo and the program's room, answered 200 with
+        # `"engine": null`, and only failed on the first `say` — leaving a
+        # directory tree behind for a program that could never have run.
+        self._resolve_holodeck_engine(engine)
+        sidecar = self._ensure_sidecar(target)
+        program_dir = os.path.join(sidecar, _slug(program))
+        try:
+            os.makedirs(program_dir, exist_ok=True)
+        except OSError as exc:
+            raise ActionError(502, "could not create the program's room in the "
+                                   "holodeck sidecar: %s" % exc)
+        sid = uuid.uuid4().hex[:12]
+        sess = _HolodeckSession(program=program,
+                                engine=(engine or "").strip() or None,
+                                mode=mode, sidecar_dir=sidecar,
+                                program_dir=program_dir, target_repo=target)
+        with self._holodeck_lock:
+            self._holodeck[sid] = sess
+        if mode == "grounding":
+            # The opening grounding pass IS a turn, and must be counted as one.
+            # Round 0 ran it without recording it, so the sidecar got two
+            # commits both labelled `turn 1` and the first follow-up filed
+            # itself under `## Follow-up (turn 1)`.
+            sess.turns.append({"text": None, "reply": None})
+            return self._run_turn(sid, sess, self._build_holodeck_prompt(
+                sess, text=None, opening=True))
+        payload = self._holodeck_meta(sid, sess)
+        payload.update({"status": "standing-by", "reply": "", "raw": "",
+                        "filesChanged": []})
+        return payload
+
+    def holodeck_say(self, sid, text, images=None):
+        """POST /api/holodeck/<sid>/say — one warm chat turn.
+
+        The FIRST say OPENS the warm worker session (`--session-id <uuid>`);
+        every later one RESUMES it (`--resume <uuid>`) and feeds JUST what the
+        captain typed — the prior context lives in the session, so the daemon
+        re-feeds no transcript (the same economics as the Align grill).
+        """
+        if images:
+            raise ActionError(
+                400, "the holodeck cannot take pasted images yet — describe "
+                "what you want in words")
+        with self._holodeck_lock:
+            sess = self._holodeck.get(sid)
+        if sess is None:
+            raise ActionError(404, "no such holodeck program: %s" % sid)
+        text = (text or "").strip()
+        if not text:
+            raise ActionError(400, "missing required field: text")
+        opening = not sess.started
+        prompt = self._build_holodeck_prompt(sess, text=text, opening=opening)
+        sess.turns.append({"text": text, "reply": None})
+        return self._run_turn(sid, sess, prompt)
+
+    def holodeck_end(self, sid):
+        """POST /api/holodeck/<sid>/end — close the program.
+
+        Drops the in-memory session (and with it the warm worker conversation)
+        and STOPS A TURN THAT IS STILL RUNNING — the whole process group, so a
+        worker's own children go with it. Round 0 returned `{"ok": true}` while
+        the process stayed alive and kept writing into the sidecar of a session
+        that no longer existed, and the `/say` that started it hung forever.
+
+        The FILES ARE NOT TOUCHED: they are the captain's design archive, they
+        live in his own git repo, and they outlive both the program and this
+        daemon (D6). Idempotent-ish: a second end 404s, like a second cancel.
+
+        It also WAITS for a turn it stopped to finish its audit and its commit
+        before answering, so the file list `end` prints and the one that turn's
+        own reply prints describe the same bytes (D2).
+        """
+        with self._holodeck_lock:
+            sess = self._holodeck.pop(sid, None)
+        if sess is None:
+            raise ActionError(404, "no such holodeck program: %s" % sid)
+        sess.done = True
+        stopped = _kill_process_group(sess.proc)
+        # `end` MUST NOT UNDER-REPORT (D2, round 1). A stopped turn does its
+        # audit and its commit AFTER the kill lands, so answering immediately
+        # printed a confident `files: []` about work that was on disk — and
+        # committed — a second later. `end` is the surface a captain who walked
+        # away is left with, so it waits for the turn to settle; and when it
+        # cannot, it SAYS its list may be short instead of passing an empty one
+        # off as the whole truth.
+        settled = sess.turn_settled.wait(self._end_settle_timeout())
+        payload = self._holodeck_meta(sid, sess)
+        payload.update({"status": "ended", "files": list(sess.files_changed),
+                        "turns": len(sess.turns), "stoppedTurn": stopped,
+                        "filesSettled": settled})
+        if not settled:
+            payload["warning"] = {
+                "kind": "end-audit-pending",
+                "message": ("LCARS stopped a turn that was still running and "
+                            "its file check had not finished in time, so this "
+                            "list may be missing files that turn had already "
+                            "written. Nothing is lost — they are on disk in "
+                            "the program's room at %s." % sess.program_dir),
+            }
+        return payload
+
+    # ── the seam itself ────────────────────────────────────────────────────
+    def _holodeck_meta(self, sid, sess):
+        return {"sessionId": sid, "program": sess.program, "mode": sess.mode,
+                "sidecar": sess.sidecar_dir, "programDir": sess.program_dir,
+                "engine": sess.engine or self.worker_bin,
+                "turnCount": len(sess.turns)}
+
+    @staticmethod
+    def _holodeck_args(bin_, mode, session_id, opening, grant_dir):
+        """The per-engine holodeck argv (the S124 spike record, as code).
+
+        A COPY of `_session_args`' shape, never a call into it: the grill's warm
+        turn is tools-DENIED and must stay byte-identical, and the two postures
+        share only the idea of a resumable uuid.
+        """
+        tools = _HOLODECK_TOOLS[("copilot" if _is_copilot(bin_) else "claude",
+                                 mode)]
+        if _is_copilot(bin_):
+            # copilot is a REAL sandbox: cwd plus `--add-dir` grants, and
+            # nothing else. Since `--add-dir` grants WRITE (measured), the ONLY
+            # grant is the program's room — and a GROUNDING turn gets none at
+            # all, so it structurally cannot write to the captain's project.
+            args = [("--session-id=%s" if opening else "--resume=%s")
+                    % session_id, "--available-tools", tools]
+            args += list(_COPILOT_DISCIPLINE)
+            if mode == "design" and grant_dir:
+                args += ["--add-dir", grant_dir]
+            return args
+        # claude: space-form session flags, and NO per-path sandbox exists —
+        # `--add-dir` is not a claude flag and is never passed, so WHERE it may
+        # write is fenced only by the prompt contract plus the post-turn audit.
+        # WHAT it may use is fenced by `--disallowedTools`, which is the half
+        # `--allowedTools` cannot do (it only pre-approves).
+        args = (["--session-id", session_id] if opening
+                else ["--resume", session_id])
+        args += ["--allowedTools", tools,
+                 "--disallowedTools", _HOLODECK_DENY[("claude", mode)],
+                 "--output-format", "text",
+                 "--dangerously-skip-permissions"]
+        return args
+
+    def _run_turn(self, sid, sess, prompt):
+        """Run one turn with the session marked UNSETTLED for its duration.
+
+        The event is the handshake `end` waits on (D2, round 1). `holodeck_end`
+        popped the session and built its payload from `sess.files_changed`
+        BEFORE the in-flight turn's audit had run, so it answered `files: []`
+        about a turn whose own 409 — a second later, about the same bytes —
+        correctly reported one file saved and committed.
+
+        Cleared before the turn and set in a `finally`, so EVERY exit path
+        (payload, ActionError, unexpected exception) releases it and no `end`
+        can be left waiting on a turn that already died.
+        """
+        sess.turn_settled.clear()
+        try:
+            return self._holodeck_turn(sid, sess, prompt)
+        finally:
+            sess.turn_settled.set()
+
+    def _end_settle_timeout(self):
+        """How long `end` waits for an in-flight turn's audit + commit to land
+        before answering anyway (and saying its list may be short).
+
+        Injectable via `$LCARS_HOLODECK_END_SETTLE_TIMEOUT` (seconds). By the
+        time this is waited on, the worker has already been SIGKILLed and all
+        that remains is a stat-only walk plus a git commit — so the default is a
+        ceiling nobody should reach, not an expected wait.
+        """
+        raw = os.environ.get("LCARS_HOLODECK_END_SETTLE_TIMEOUT")
+        try:
+            val = 20.0 if raw in (None, "") else float(raw)
+        except ValueError:
+            val = 20.0
+        return max(0.0, val)
+
+    def _holodeck_turn(self, sid, sess, prompt):
+        """Run ONE holodeck turn and shape its response.
+
+        The order matters and is the whole fence: snapshot → spawn → apply any
+        fenced-block fallback → snapshot → diff. Everything the payload says
+        about files comes from that diff of real bytes on disk.
+
+        A turn that LCARS STOPS — its own timeout, or the captain closing the
+        program while it ran — still goes through the audit and still commits
+        whatever landed, then ends as an error rather than a spinner.
+        """
+        bin_ = sess.engine or self.worker_bin
+        if not bin_:
+            raise ActionError(
+                502, "no worker engine configured ($LCARS_WORKER_BIN) — the "
+                "holodeck has nothing to talk to")
+        opening = not sess.started
+        cwd = sess.program_dir if sess.mode == "design" else sess.target_repo
+        cmd = ([bin_, "-p", prompt]
+               + self._holodeck_args(bin_, sess.mode, sess.worker_sid, opening,
+                                     sess.program_dir)
+               + ["--model", _holodeck_model(bin_)])
+        # THE S72 GUARD, at the one place every holodeck turn passes through.
+        _assert_no_bash(cmd)
+
+        # TWO BOUNDS, NOT ONE (D1). The project cap bounds the STRAY check; the
+        # sidecar — the program's own room — has its own, so a cap chosen for
+        # somebody's monorepo can never truncate the audit of this turn's own
+        # output and drop it out of `filesChanged` (and out of the commit).
+        cap = self._audit_cap()
+        side_cap = self._sidecar_audit_cap()
+        before_side, ok_a = _audit_snapshot(sess.sidecar_dir,
+                                            max_files=side_cap)
+        before_repo, ok_b = _audit_snapshot(sess.target_repo,
+                                            skip=[sess.sidecar_dir],
+                                            max_files=cap)
+        env = dict(os.environ)
+        limit = self._turn_timeout()
+        try:
+            # `start_new_session` puts the worker in its OWN process group, so a
+            # timeout or an `end` can take down the worker AND anything it
+            # spawned. Without it, killing the worker leaves its children
+            # running — and they are what keep writing into the sidecar.
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env,
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    start_new_session=True)
+        except OSError as exc:
+            raise ActionError(502, "the holodeck worker failed to start: %s"
+                              % exc)
+        # the warm conversation is open from here on, whatever the turn returned
+        # — a later turn must RESUME it, never re-open the same uuid.
+        sess.started = True
+        sess.proc = proc
+        timed_out = False
+        try:
+            out, _err = proc.communicate(timeout=limit)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _kill_process_group(proc)
+            try:
+                out, _err = proc.communicate(timeout=15)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                out = b""
+        finally:
+            sess.proc = None
+        raw = (out or b"").decode("utf-8", "replace")
+        reply = _clean_reply(raw)
+
+        # A STOPPED TURN IS NOT A TURN. Its stdout is truncated mid-stream, so
+        # neither the fenced-block fallback nor the basis is written from it —
+        # but whatever it had already put on disk is audited and committed
+        # below, because those bytes are the captain's.
+        stopped = timed_out or sess.done
+        # the fenced-block FALLBACK (a degradation path, not the default), and
+        # a DESIGN-mode affordance only: a grounding turn's one output is the
+        # basis, so a file block in a read-only reply is not a write channel the
+        # daemon should honour.
+        blocks, bad_blocks = ([], [])
+        if sess.mode == "design" and not stopped:
+            blocks, bad_blocks = _parse_file_blocks(raw)
+            for rel, content in blocks:
+                self._write_block(sess, rel, content)
+        # GROUNDING (D12): the worker has NO write tool at all, so the DAEMON
+        # writes the basis — and ONLY on the opening pass (see `_write_basis`).
+        if sess.mode == "grounding" and reply and not stopped:
+            self._write_basis(sess, reply, opening=opening)
+
+        after_side, ok_c = _audit_snapshot(sess.sidecar_dir, max_files=side_cap)
+        after_repo, ok_d = _audit_snapshot(sess.target_repo,
+                                           skip=[sess.sidecar_dir],
+                                           max_files=cap)
+        repo_complete = ok_b and ok_d
+        side_complete = ok_a and ok_c
+        audit_complete = repo_complete and side_complete
+
+        changed = []
+        for path, status in _audit_diff(before_side, after_side):
+            rel = os.path.relpath(path, sess.sidecar_dir)
+            changed.append({"path": rel, "status": status})
+            if rel not in sess.files_changed:
+                sess.files_changed.append(rel)
+        strays = [p for p, _ in _audit_diff(before_repo, after_repo)]
+
+        sess.last_reply = reply
+        if sess.turns and sess.turns[-1].get("reply") is None:
+            sess.turns[-1]["reply"] = reply
+
+        payload = self._holodeck_meta(sid, sess)
+        payload.update({"reply": reply, "raw": raw, "filesChanged": changed,
+                        "auditComplete": audit_complete,
+                        "exitCode": proc.returncode})
+        # A DEGRADED FENCE IS NEVER A SILENT PASS (round 0 shipped
+        # `auditComplete: false` as a bare boolean under a normal `status: "ok"`
+        # — a state in which a stray write is simply not detected, and nothing
+        # said so). It is a first-class, human-legible surface AND a status a
+        # consumer that only knows "ok" cannot mistake for a clean turn.
+        warning = None if audit_complete else {
+            "kind": "audit-incomplete",
+            # each walk speaks for ITSELF: the message names the check that
+            # actually degraded and claims nothing about the other one.
+            "message": _audit_incomplete_message(
+                None if repo_complete else cap,
+                None if side_complete else side_cap),
+        }
+        payload["warning"] = warning
+        # A STRAY CHANGE OUTRANKS EVERY OTHER OUTCOME. Even a turn that died or
+        # said nothing must surface a file that changed in the captain's project.
+        if strays or bad_blocks:
+            payload["status"] = "refused"
+            payload["refused"] = {
+                "paths": strays + list(bad_blocks),
+                "message": self._write_refused_message(sess, strays, bad_blocks,
+                                                       warning),
+            }
+            self._sidecar_commit(sess, changed)
+            return payload
+        if stopped:
+            # a turn LCARS stopped: keep what landed, then say plainly that the
+            # turn did not finish. Never an endless spinner (S125 puts a browser
+            # in front of this) and never a silent success.
+            self._sidecar_commit(sess, changed)
+            raise ActionError(*_stopped_turn_error(bin_, limit, timed_out,
+                                                   changed))
+        if changed:
+            # Work landed. Keep it, whatever the exit code said.
+            payload["status"] = "unverified" if warning else "ok"
+            self._sidecar_commit(sess, changed)
+            return payload
+        # Nothing changed and nothing to keep. HOLODECK OFFLINE (D7): lead with
+        # what survived, then say what happened. Reporting either of these as
+        # success is how a captain waits for a mockup that is never coming.
+        if proc.returncode != 0:
+            last = (raw.strip().splitlines() or [""])[-1].strip()
+            raise ActionError(
+                502, "the holodeck worker stopped mid-turn (%s exited %d) — "
+                     "your program is safe, every earlier turn is committed, "
+                     "and the chat is still running; say it again to retry.%s"
+                     % (os.path.basename(bin_), proc.returncode,
+                        (" It said: %s" % last) if last else ""))
+        if not reply:
+            raise ActionError(
+                502, "the holodeck worker returned nothing this turn (engine=%s)"
+                     " — your program is safe and the chat is still running; "
+                     "say it again to retry." % os.path.basename(bin_))
+        payload["status"] = "unverified" if warning else "ok"
+        return payload
+
+    def _turn_timeout(self):
+        """How long ONE holodeck turn may run before LCARS stops it.
+
+        Injectable via `$LCARS_HOLODECK_TURN_TIMEOUT` (seconds). The default is
+        deliberately generous: the longest REAL turn measured in the S124 drives
+        was 9m49s (a copilot design turn that hit a refusal and retried), so a
+        limit near that would kill good work. 20 minutes is "this is not coming
+        back", not "this is slow".
+        """
+        try:
+            return max(1.0, float(os.environ.get(
+                "LCARS_HOLODECK_TURN_TIMEOUT") or 1200))
+        except ValueError:
+            return 1200.0
+
+    @staticmethod
+    def _write_refused_message(sess, strays, bad_blocks, warning=None):
+        """The banner for a turn LCARS could not certify, in LCARS voice (D7).
+
+        Leads with the two questions a person actually has — did I lose my work,
+        is it still running — then names the exact paths.
+
+        IT REPORTS, IT DOES NOT ACCUSE. The detection is a before/after walk of
+        the whole project across the turn, so it sees a CHANGE, never an author:
+        the captain's editor autosaving, a linter, a running dev server, or an
+        `npm install` in the very project being designed for all look exactly
+        like a worker writing where it shouldn't. Round 0 said "A turn wrote
+        outside the holodeck… LCARS did not put them there", which was measured
+        false — a control write from a separate shell produced it. Say what
+        changed, say what LCARS can and cannot tell, and let the captain judge.
+
+        Nothing is deleted either way: removing files from the captain's real
+        project is a bigger hazard than an unwanted one sitting there.
+        """
+        parts = ["Your program is safe — everything in the holodeck sidecar is "
+                 "intact%s."
+                 % ("" if sess.done else " and the chat is still running")]
+        if strays:
+            parts.append(
+                "While that turn was running, %d file(s) changed in your "
+                "project, outside the holodeck: %s. The holodeck writes only "
+                "inside %s, so nothing that changed out there is part of your "
+                "program. LCARS watches the files, not who touched them — it "
+                "cannot tell whether the holodeck went outside its room or "
+                "something else on your machine did (an editor saving, a "
+                "linter, a dev server, an install). Nothing has been changed "
+                "or removed: take a look and decide."
+                % (len(strays), ", ".join(strays), sess.sidecar_dir))
+        if bad_blocks:
+            parts.append(
+                "The turn also asked LCARS to write outside the program's room "
+                "(%s); those were refused and nothing was written."
+                % ", ".join(bad_blocks))
+        if warning:
+            parts.append(warning["message"])
+        return " ".join(parts)
+
+    def _write_block(self, sess, rel, content):
+        """Write ONE fenced fallback block into the program's room.
+
+        Skipped when the file already holds exactly this content, so an engine
+        that wrote natively AND echoed the file back does not show up as a
+        second, phantom change."""
+        path = os.path.join(sess.program_dir, rel)
+        real = os.path.realpath(path)
+        room = os.path.realpath(sess.program_dir)
+        if real != room and not real.startswith(room + os.sep):
+            # belt and braces: `_safe_rel` already refused this shape.
+            return
+        try:
+            if os.path.exists(path):
+                with open(path) as fh:
+                    if fh.read() == content:
+                        return
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(path, "w") as fh:
+                fh.write(content)
+        except OSError as exc:
+            raise ActionError(502, "could not write the mockup file %s: %s"
+                              % (rel, exc))
+
+    def _write_basis(self, sess, reply, opening=True):
+        """D12 — the DAEMON writes `basis.md` from the OPENING grounding pass.
+
+        Only the opening pass. Round 0 appended EVERY grounding reply, so a
+        refusal — real text, no grounding content in it — became a permanent
+        `## Follow-up` section of the captain's durable design archive. The
+        daemon cannot tell a grounding answer from conversation about one, and a
+        classifier that guesses is worse than a rule that doesn't: later turns
+        are chat, the captain reads them in the reply, and the archive keeps the
+        grounding it was made of. Re-grounding the same program rewrites it (the
+        sidecar is a git repo — the previous basis is a commit away).
+        """
+        if not opening:
+            return
+        path = os.path.join(sess.program_dir, "basis.md")
+        try:
+            with open(path, "w") as fh:
+                fh.write("# Design basis — %s\n\n"
+                         "What the holodeck found by reading %s, read-only. "
+                         "Correct anything wrong here: it is what the mockup "
+                         "is built from.\n\n%s\n"
+                         % (sess.program, sess.target_repo, reply))
+        except OSError as exc:
+            raise ActionError(502, "could not write the grounding basis: %s"
+                              % exc)
+
+    def _resolve_holodeck_engine(self, engine):
+        """The CLI a program will run on, resolved BEFORE anything is created.
+
+        A start with no engine (or one that is not on this machine) can never
+        run a single turn, so it fails here — with a message that says what to
+        do — instead of building a sidecar git repo and a program room and then
+        502-ing on the first `say`.
+        """
+        bin_ = (engine or "").strip() or (self.worker_bin or "").strip()
+        if not bin_:
+            raise ActionError(
+                502, "the holodeck has no worker engine to talk to — no engine "
+                "was chosen for this program and the daemon was started "
+                "without one ($LCARS_WORKER_BIN). Pick an engine when you open "
+                "the program, or restart the viewscreen with one.")
+        if not shutil.which(bin_):
+            raise ActionError(
+                502, "the holodeck cannot run %s — it is not an executable on "
+                "this machine. Check the engine you picked, or the daemon's "
+                "$LCARS_WORKER_BIN." % bin_)
+        return bin_
+
+    def _audit_cap(self):
+        """How many files the walk over the CAPTAIN'S PROJECT will look at
+        before reporting itself INCOMPLETE. A truncated audit is surfaced
+        (`auditComplete: false`), never passed off as a clean one.
+
+        THIS CAP IS THE TARGET REPO'S ALONE (D1, round 1). It exists because a
+        captain's project can be tens of thousands of files; feeding it to the
+        SIDECAR walk as well meant a low cap silently dropped the turn's OWN
+        output from `filesChanged` — and, since `_sidecar_commit` no-ops on an
+        empty list, left the captain's mockup uncommitted, under a warning that
+        said everything the turn wrote was listed."""
+        try:
+            return max(1, int(os.environ.get(
+                "LCARS_HOLODECK_AUDIT_MAX_FILES") or 20000))
+        except ValueError:
+            return 20000
+
+    def _sidecar_audit_cap(self):
+        """The SEPARATE bound on the walk over the holodeck sidecar.
+
+        The sidecar is the program's own small room — a README and a handful of
+        mockups — not the captain's project, so it gets its own knob
+        (`$LCARS_HOLODECK_SIDECAR_MAX_FILES`) and a bound set to protect a walk
+        over somebody's monorepo can never truncate the audit of the turn's own
+        work. A bound remains (an unbounded walk is a hang waiting to happen),
+        but when THIS one truncates the captain is told THAT, not the other
+        thing."""
+        try:
+            return max(1, int(os.environ.get(
+                "LCARS_HOLODECK_SIDECAR_MAX_FILES") or 20000))
+        except ValueError:
+            return 20000
+
+    # ── the sidecar ────────────────────────────────────────────────────────
+    def _holodeck_root_dir(self, repo):
+        """Where sidecars live: `$LCARS_HOLODECK_ROOT` (injected — tests point
+        it at a tmpdir) or, by default, BESIDE the target repo, which is where
+        the captain already keeps his projects (D6)."""
+        root = (self.holodeck_root or "").strip()
+        if not root:
+            root = os.path.dirname(os.path.abspath(repo.rstrip(os.sep)))
+        return os.path.abspath(root)
+
+    def _sidecar_path(self, repo):
+        """`<root>/<reponame>-holodeck`, refusing anything that would land
+        outside the root (the injected root is a fence too)."""
+        root = self._holodeck_root_dir(repo)
+        name = os.path.basename(os.path.abspath(repo.rstrip(os.sep)))
+        if not name or name in (".", ".."):
+            raise ActionError(400, "could not work out a holodeck name for %s"
+                              % repo)
+        side = os.path.abspath(os.path.join(root, name + "-holodeck"))
+        if os.path.dirname(side) != root:
+            raise ActionError(500, "refused to put a holodeck sidecar outside "
+                                   "%s" % root)
+        return side
+
+    def _ensure_sidecar(self, repo):
+        """Create the sidecar git repo if it isn't there. IDEMPOTENT: an
+        existing sidecar is returned untouched — never re-inited, never
+        re-committed over."""
+        side = self._sidecar_path(repo)
+        try:
+            os.makedirs(side, exist_ok=True)
+        except OSError as exc:
+            raise ActionError(502, "could not create the holodeck sidecar at "
+                                   "%s: %s" % (side, exc))
+        if os.path.isdir(os.path.join(side, ".git")):
+            return side
+        readme = os.path.join(side, "README.md")
+        try:
+            if not os.path.exists(readme):
+                with open(readme, "w") as fh:
+                    fh.write(
+                        "# %s — the holodeck sidecar\n\n"
+                        "Design work for `%s`: mockups, concept notes and the "
+                        "grounding basis, one directory per program.\n\n"
+                        "This is a normal local git repo and it is YOURS. "
+                        "Nothing here is shipping code, nothing here is pushed "
+                        "anywhere unless you push it, and LCARS never writes "
+                        "outside this directory.\n"
+                        % (os.path.basename(side), os.path.abspath(repo)))
+        except OSError as exc:
+            raise ActionError(502, "could not seed the holodeck sidecar: %s"
+                              % exc)
+        self._git(side, ["init", "-q"], "start the holodeck sidecar's git repo")
+        self._git(side, ["add", "-A"], "stage the holodeck sidecar")
+        self._git(side, ["commit", "-q", "--no-gpg-sign", "-m",
+                         "holodeck: sidecar created"],
+                  "make the holodeck sidecar's first commit")
+        return side
+
+    def _git(self, cwd, args, what):
+        """Run git in `cwd` with an LCARS identity, so a sidecar commit works on
+        a machine with no global git identity configured."""
+        cmd = [self.git_bin, "-C", cwd,
+               "-c", "user.name=LCARS Holodeck",
+               "-c", "user.email=holodeck@lcars.local",
+               "-c", "commit.gpgsign=false"] + list(args)
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT)
+        except OSError as exc:
+            raise ActionError(502, "could not %s (is git installed?): %s"
+                              % (what, exc))
+        if proc.returncode != 0:
+            said = (proc.stdout or b"").decode("utf-8", "replace").strip()
+            last = said.splitlines()[-1].strip() if said else ""
+            raise ActionError(502, "could not %s: %s"
+                              % (what, last or "git exited %d"
+                                 % proc.returncode))
+        return proc
+
+    def _sidecar_commit(self, sess, changed):
+        """Commit this turn's files. BEST-EFFORT by design: the captain's design
+        work is already on disk, and a git hiccup must never turn a good turn
+        into an error. It is what makes "every turn is committed" (D7) true."""
+        if not changed:
+            return
+        try:
+            self._git(sess.sidecar_dir, ["add", "-A"], "stage the turn")
+            self._git(sess.sidecar_dir,
+                      ["commit", "-q", "--no-gpg-sign", "-m",
+                       "holodeck(%s): turn %d" % (sess.program,
+                                                  max(1, len(sess.turns)))],
+                      "commit the turn")
+        except ActionError:
+            pass
+
+    # ── the turn prompt ────────────────────────────────────────────────────
+    def _build_holodeck_prompt(self, sess, text=None, opening=True):
+        """Assemble ONE turn's prompt.
+
+        OPENING turn: the full envelope (who you are, where you may write, the
+        output contract). CONTINUATION: just what the captain said — the warm
+        session already holds the rest, which is the whole cost win."""
+        if sess.mode == "grounding":
+            if not opening:
+                return ("The captain asks: %s\n\nAnswer from what you can READ "
+                        "in this repository. You have no write tool; reply in "
+                        "markdown." % (text or ""))
+            return (
+                "You are the LCARS HOLODECK, grounding a new design program "
+                "called %r in an EXISTING project.\n\n"
+                "Read this repository (your working directory) and report the "
+                "design language it ALREADY has: colour tokens with their "
+                "actual values, the type scale, spacing and radius, and the "
+                "shape of its existing components. Report REAL values you read "
+                "in the files — never plausible-looking ones — and name the "
+                "file each came from.\n\n"
+                "Say what you did NOT find as clearly as what you did (\"no "
+                "light theme — the project is dark-only today\"); that half is "
+                "often the more useful one.\n\n"
+                "You are READ-ONLY: you have no write tool and you must not "
+                "attempt to change one byte of this project. Reply with the "
+                "basis as markdown — LCARS saves your reply as the program's "
+                "basis.md." % sess.program)
+        if not opening:
+            return ("The captain says: %s\n\nMake the change, then reply in a "
+                    "sentence or two saying what you did." % (text or ""))
+        return (
+            "You are the LCARS HOLODECK: a fast, cheap design room where the "
+            "captain talks and you build a mockup as you go. This is a "
+            "CONVERSATION, not a harness task — no plans, no tickets, no tests.\n\n"
+            "THE PROGRAM: %s\n\n"
+            "WHERE YOU WORK: your working directory, %s, is the program's own "
+            "room inside the captain's holodeck sidecar. You may create and "
+            "edit files THERE and nowhere else. Never write to the project "
+            "being designed for, never write anywhere by absolute path, and "
+            "never write outside this directory even if asked to — LCARS "
+            "audits the filesystem after every turn and shows the captain any "
+            "write that escapes.\n\n"
+            "WHAT YOU BUILD: `mockup.html` — ONE self-contained HTML file, "
+            "inline CSS and JS, no build step and no external dependencies "
+            "beyond web fonts. Open it with a short comment saying it is a "
+            "VISUAL REFERENCE and not shipping code, with fake internals. "
+            "Revise that same file on later turns rather than making a new one.\n\n"
+            "IF A WRITE TOOL FAILS you: do not give up the turn. Emit the "
+            "COMPLETE file in a fenced block whose info string declares the "
+            "path, and LCARS will write it for you:\n"
+            "```file:mockup.html\n<!doctype html> ...\n```\n"
+            "The path is relative to your working directory. A fence with no "
+            "declared path is treated as ordinary markdown and written nowhere.\n\n"
+            "REPLY SHORT: a sentence or two on what you changed and what you "
+            "want decided next. The captain reads the mockup, not your prose.\n\n"
+            "The captain says: %s" % (sess.program, sess.program_dir,
+                                      text or "Start us off."))
 
     def start(self, mid, override=None):
         """POST /api/mission/<id>/start — drive the run, FIRE-AND-FORGET.
@@ -4823,4 +6142,8 @@ def build_actions(repo_root, worker_bin=None, gh_bin=None, env=None):
         scripts[key] = env.get(SCRIPT_ENV[key], default)
     return Actions(repo_root=repo_root, scripts=scripts,
                    worker_bin=worker_bin, gh_bin=gh_bin,
-                   check_script=scripts.get("version_check"))
+                   check_script=scripts.get("version_check"),
+                   # S124 — the holodeck's two seams. Empty/unset leaves the
+                   # defaults in charge (sidecar beside the repo, plain `git`).
+                   holodeck_root=env.get("LCARS_HOLODECK_ROOT"),
+                   git_bin=env.get("LCARS_GIT_BIN"))
