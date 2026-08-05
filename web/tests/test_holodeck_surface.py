@@ -1206,6 +1206,29 @@ class ReplyNeverLosesTextTest(unittest.TestCase):
                 self.assertIn(bare.replace("**", ""), painted,
                               "%s lost: %r" % (name, line))
 
+    def test_a_fences_declared_filename_reaches_the_screen(self):
+        """S126 (#8). The turn prompt asks for ```file:<path> when a write tool
+        fails, and the DAEMON writes those blocks — so the info string names the
+        file the captain is looking at. The render dropped it, leaving a bare
+        slab of HTML with nothing saying which file it became."""
+        out = self._reply("Here you go.\n\n"
+                          "```html file:mockup.html\n<nav class=\"rail\"></nav>\n```\n")
+        self.assertEqual(out["fenceInfos"], ["html file:mockup.html"])
+        self.assertIn("mockup.html", out["replyAllText"])
+        # and the block itself is untouched — the label is added, nothing moved.
+        self.assertEqual(out["preTexts"], ["<nav class=\"rail\"></nav>"])
+
+    def test_a_fence_with_no_info_string_gets_no_empty_label(self):
+        out = self._reply("Here you go.\n\n```\n<nav></nav>\n```\n")
+        self.assertEqual(out["fenceInfos"], [])
+        self.assertEqual(out["preTexts"], ["<nav></nav>"])
+
+    def test_the_fence_label_is_a_text_node_like_everything_else(self):
+        out = self._reply("```<img src=x onerror=alert(1)>\nhi\n```\n")
+        self.assertEqual(out["replyInnerHtmlCalls"], 0)
+        self.assertEqual(out["fenceInfos"], ["<img src=x onerror=alert(1)>"])
+        self.assertNotIn("img", out["replyTags"])
+
     def test_folded_activity_is_still_never_written_as_html(self):
         out = self._reply("● Read <img src=x onerror=alert(1)>/evil.txt\n")
         self.assertEqual(out["replyInnerHtmlCalls"], 0)
@@ -1298,6 +1321,395 @@ class ProgramListIsLegibleTest(unittest.TestCase):
         self.assertEqual(out["bannerClass"], "holo-banner note")
         self.assertEqual(out["text"], msg)
         self.assertNotEqual(out["label"], "HOLODECK OFFLINE")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S126 — THE DECK'S HALF OF DURABLE PROGRAMS
+#
+# The daemon now reads the sidecar, so the program list has two kinds of card:
+# a LIVE conversation and a room ON DISK the daemon has never held. The second
+# kind is the whole point of the session, and the honesty bar is specific: it
+# must never read as a resumed session, because it is not one.
+# ════════════════════════════════════════════════════════════════════════════
+DISK_PROG = {"sessionId": None, "onDisk": True, "program": "Tile picker",
+             "room": "tile-picker", "status": "draft", "turnCount": 7,
+             "previewFile": "mockup.html", "sidecarName": "groutwork-holodeck",
+             "commits": 14, "engine": "/usr/bin/claude",
+             "programDir": "/tmp/x/tile-picker", "conceptFile": "concept.md",
+             "openedAt": 1, "lastTouched": 1, "turns": []}
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class DurableDeckTest(unittest.TestCase):
+    def test_a_room_on_disk_is_listed_beside_the_live_conversations(self):
+        out = _harness({"act": "deck", "programs": [PROG, DISK_PROG],
+                        "activeId": "s1"})
+        self.assertIn("Tile picker", out["listNames"])
+        self.assertIn("Light / dark theme toggle", out["listNames"])
+
+    def test_the_list_says_when_each_program_was_last_WORKED(self):
+        """D8 — "which one was that" is the question a captain asks days later,
+        and a bare relative time answers a different one."""
+        out = _harness({"act": "deck", "programs": [PROG, DISK_PROG],
+                        "activeId": "s1"})
+        joined = " ".join(out["listMeta"])
+        self.assertIn("last worked", joined.lower())
+        # old work falls back to a stardate rather than "20,000 days ago".
+        self.assertIn("stardate", joined.lower())
+
+    def test_a_room_on_disk_says_it_is_not_a_running_conversation(self):
+        out = _harness({"act": "deck", "programs": [PROG, DISK_PROG],
+                        "activeId": "s1"})
+        rows = {r["name"]: r for r in out["listRows"]}
+        self.assertTrue(rows["Tile picker"]["onDisk"])
+        self.assertFalse(rows["Light / dark theme toggle"]["onDisk"])
+
+    def test_clicking_a_room_on_disk_asks_the_daemon_to_reopen_it(self):
+        out = _harness({"act": "openDisk", "programs": [PROG, DISK_PROG],
+                        "activeId": "s1", "room": "tile-picker"})
+        self.assertEqual(out["path"], "/api/holodeck/open")
+        self.assertEqual(out["body"], {"room": "tile-picker"})
+
+    def test_a_reopened_program_is_announced_as_a_FRESH_worker(self):
+        """S125's finding #2 in a new place. The deck adds no words of its own
+        (the one-voice rule) — it renders the daemon's account, which says
+        `fresh`, and it must never print or imply a session id."""
+        msg = ("Picked this program back up from its room on disk. The "
+               "conversation that built it is over — the claude that answers "
+               "your next turn is a fresh one, handed the whole transcript "
+               "(7 turns) as context.")
+        out = _harness({"act": "state", "kind": "restart", "message": msg})
+        self.assertEqual(out["text"], msg)
+        self.assertNotEqual(out["label"], "HOLODECK OFFLINE")
+        self.assertNotIn("resumed", (out["label"] or "").lower())
+        self.assertNotIn("resumed", out["text"].lower())
+
+    def test_a_program_can_be_deleted_and_the_deck_says_it_is_recoverable(self):
+        out = _harness({"act": "deleteProgram", "programs": [PROG, DISK_PROG],
+                        "activeId": "s1", "room": "tile-picker"})
+        # it CONFIRMS first — and the confirmation's whole job is to say the
+        # archive keeps it, so the answer is not frightening.
+        self.assertIn("tile-picker", out["confirmText"])
+        low = out["confirmText"].lower()
+        self.assertTrue("git" in low or "history" in low, out["confirmText"])
+        self.assertEqual(out["path"], "/api/holodeck/delete")
+        self.assertEqual(out["body"], {"room": "tile-picker"})
+
+    def test_the_confirmation_does_not_promise_more_than_delete_can_do(self):
+        """FIX ROUND 3, defect 1. The daemon's reply used to promise a recovery
+        that did not exist; this dialog made the same promise one step earlier,
+        flatly and in advance — "nothing is destroyed". It now describes the
+        mechanism: the program is recorded FIRST, and if it cannot be recorded
+        nothing is removed."""
+        out = _harness({"act": "deleteProgram", "programs": [PROG, DISK_PROG],
+                        "activeId": "s1", "room": "tile-picker",
+                        "stopAtConfirm": True})
+        text = out["confirmText"]
+        low = text.lower()
+        self.assertNotIn("nothing is destroyed", low, text)
+        # it says the recording happens BEFORE the room goes…
+        self.assertIn("first", low, text)
+        # …and what happens when that cannot be done.
+        self.assertTrue("refus" in low or "will not" in low, text)
+
+    def test_nothing_is_deleted_until_the_confirmation_is_taken(self):
+        out = _harness({"act": "deleteProgram", "programs": [PROG, DISK_PROG],
+                        "activeId": "s1", "room": "tile-picker",
+                        "stopAtConfirm": True})
+        self.assertIsNone(out["path"])
+
+    def test_the_concept_doc_is_readable_when_the_program_has_one(self):
+        """The same argument that made `basis.md` a link in S125: a document
+        that is handed to a Mission and that the captain cannot open is one he
+        cannot correct."""
+        out = _harness({"act": "deck",
+                        "programs": [dict(PROG, conceptFile="concept.md")],
+                        "activeId": "s1"})
+        self.assertEqual(out["intentTag"], "a")
+        self.assertEqual(out["intentHref"], "/api/holodeck/s1/preview/concept.md")
+
+    def test_with_no_concept_doc_the_intent_control_says_why_not(self):
+        out = _harness({"act": "deck", "programs": [dict(PROG,
+                                                         conceptFile=None)],
+                        "activeId": "s1"})
+        self.assertEqual(out["intentTag"], "span")
+        reason = out["intentReason"].lower()
+        self.assertIn("concept.md", reason)
+        # and it no longer claims the holodeck does not write one — it does.
+        self.assertNotIn("not writing concept.md", reason)
+
+    def test_the_intent_reason_covers_an_EMPTY_concept_doc_too(self):
+        """FIX ROUND 2 — `conceptFile` is now null for an EMPTY concept.md as
+        well as a missing one (a control that opens a blank tab is worse than
+        no control). So this sentence is read by a captain who may be looking
+        at a concept.md in his own room: it must not tell him the file is not
+        there."""
+        out = _harness({"act": "deck", "programs": [dict(PROG,
+                                                         conceptFile=None)],
+                        "activeId": "s1"})
+        low = out["intentReason"].lower()
+        self.assertNotIn("has no concept.md", low)
+        self.assertNotIn("does not exist", low)
+
+    def test_a_turn_that_moved_the_mockup_without_a_concept_doc_says_so(self):
+        out = _harness({"act": "conceptAudit", "programs": [PROG],
+                        "activeId": "s1",
+                        "conceptAudit": {
+                            "status": "missing", "file": "concept.md",
+                            "message": "The mockup changed but this program "
+                                       "still has no concept.md."}})
+        self.assertIn("concept.md", out["conceptNote"])
+        self.assertIn("no concept.md", out["conceptNote"])
+
+    def test_a_clean_concept_audit_puts_no_warning_on_the_turn(self):
+        out = _harness({"act": "conceptAudit", "programs": [PROG],
+                        "activeId": "s1",
+                        "conceptAudit": {"status": "ok", "file": "concept.md",
+                                         "updated": True,
+                                         "message": "concept.md was updated."}})
+        self.assertEqual(out["conceptNote"], "")
+
+    def test_no_dead_controls_ship_on_the_deck_with_disk_programs(self):
+        out = _harness({"act": "deck", "programs": [PROG, DISK_PROG],
+                        "activeId": "s1"})
+        for ctl in out["controls"]:
+            self.assertTrue(
+                ctl["wired"] or (ctl["disabled"] and ctl["reason"]),
+                "dead control: %r" % ctl["label"])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 2 · DEFECT 5 — ONE VOICE, ABOUT THE SAME FACT
+#
+# On a program picked back up the header showed `WARM · CLAUDE` two inches
+# under a banner saying the conversation is over and the next worker is a fresh
+# one. "Warm" is the exact word for the thing that did NOT survive. The pill
+# was ASSERTING warmth; the daemon has always KNOWN it (`sess.started` — the
+# same evidence N4's cure is keyed off), and now says so on the payload.
+# ════════════════════════════════════════════════════════════════════════════
+@unittest.skipIf(NODE is None, "node not installed")
+class WarmPillTellsTheTruthTest(unittest.TestCase):
+    def test_a_warm_program_still_says_warm(self):
+        out = _harness({"act": "deck", "programs": [dict(PROG, warm=True)],
+                        "activeId": "s1"})
+        self.assertIn("WARM", out["headPill"].upper())
+        self.assertIn("CLAUDE", out["headPill"].upper())
+
+    def test_a_program_picked_back_up_does_NOT_claim_to_be_warm(self):
+        out = _harness({"act": "deck",
+                        "programs": [dict(PROG, warm=False, restarted=True)],
+                        "activeId": "s1"})
+        self.assertNotIn("WARM", out["headPill"].upper())
+        # it still names the engine — that half was never in doubt.
+        self.assertIn("CLAUDE", out["headPill"].upper())
+        # and it says what IS true, rather than going silent.
+        self.assertTrue(out["headPillReason"], out)
+
+    def test_a_program_that_has_not_spoken_yet_does_not_claim_to_be_warm(self):
+        out = _harness({"act": "deck",
+                        "programs": [dict(PROG, warm=False, turns=[])],
+                        "activeId": "s1"})
+        self.assertNotIn("WARM", out["headPill"].upper())
+
+    def test_the_pill_does_not_restate_the_restart_banner_in_its_own_words(self):
+        """ONE VOICE (fix round 3). The banner is the whole account of a warm
+        restart — the conversation is over, the next worker is fresh, and it is
+        handed the transcript as context. The pill's tooltip said that last
+        part again, in different words, two inches below it. The tooltip's job
+        is the PILL's own fact: whether a session is open."""
+        out = _harness({"act": "deck",
+                        "programs": [dict(PROG, warm=False, restarted=True)],
+                        "activeId": "s1"})
+        reason = out["headPillReason"]
+        low = reason.lower()
+        self.assertTrue(reason, out)
+        for echoed in ("transcript", "context", "spent"):
+            self.assertNotIn(echoed, low, reason)
+        # it still says the one thing the pill is about.
+        self.assertIn("session", low, reason)
+
+    def test_the_first_turn_that_opens_the_session_turns_the_pill_warm(self):
+        """The daemon answers `warm` on the turn payload, so the pill must not
+        wait for the next poll to stop contradicting the screen."""
+        out = _harness({"act": "sayWarning", "programs": [dict(PROG,
+                                                               warm=False)],
+                        "activeId": "s1", "status": "ok", "warm": True})
+        self.assertIn("WARM", out["headPill"].upper())
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 5 — THE DECK'S HALF OF "WHICH ENGINE BUILT THIS"
+#
+# `holoOpen` posted `{room}` and nothing else, so the daemon had only its own
+# default to fall back on. The deck now relays the engine it was HANDED for
+# that program — never one it picked — and the pill says plainly when the
+# record does not name one, instead of letting the default read as the answer.
+# ════════════════════════════════════════════════════════════════════════════
+@unittest.skipIf(NODE is None, "node not installed")
+class DeckRelaysTheRecordedEngineTest(unittest.TestCase):
+    def test_reopening_sends_the_engine_the_program_was_built_on(self):
+        prog = dict(DISK_PROG, engine="/usr/bin/copilot", engineRecorded=True)
+        out = _harness({"act": "openDisk", "programs": [PROG, prog],
+                        "activeId": "s1", "room": "tile-picker"})
+        self.assertEqual(out["path"], "/api/holodeck/open")
+        self.assertEqual(out["body"], {"room": "tile-picker",
+                                       "engine": "/usr/bin/copilot"})
+
+    def test_a_record_that_names_no_engine_sends_none(self):
+        """It relays a FACT or nothing. Sending the default here would make the
+        deck a second source of truth for the engine, and an explicit engine
+        outranks the record — so this would silently pin the wrong CLI."""
+        prog = dict(DISK_PROG, engineRecorded=False)
+        out = _harness({"act": "openDisk", "programs": [PROG, prog],
+                        "activeId": "s1", "room": "tile-picker"})
+        self.assertEqual(out["body"], {"room": "tile-picker"})
+
+    def test_the_pill_says_the_program_was_designed_on_this_engine(self):
+        out = _harness({"act": "deck",
+                        "programs": [dict(PROG, engineRecorded=True)],
+                        "activeId": "s1"})
+        self.assertIn("CLAUDE", out["headPill"].upper())
+        self.assertIn("designed on", out["headPillReason"].lower(),
+                      out["headPillReason"])
+
+    def test_the_pill_never_claims_an_engine_the_record_does_not_name(self):
+        """HONEST DEGRADATION. Every program built before this round has no
+        engine in its record; "designed on claude" would be an invention."""
+        out = _harness({"act": "deck",
+                        "programs": [dict(PROG, engineRecorded=False)],
+                        "activeId": "s1"})
+        reason = out["headPillReason"]
+        low = reason.lower()
+        # the CLAIM, in the exact words the recorded branch uses, is absent…
+        self.assertNotIn("it is the engine this program was designed on", low,
+                         reason)
+        # …and what replaces it is the plain fact that nobody knows.
+        self.assertTrue("does not say" in low or "not recorded" in low, reason)
+        # it still names what WILL answer — going silent is its own dishonesty.
+        self.assertIn("CLAUDE", out["headPill"].upper())
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 5 — COPILOT'S FAILED TOOL BLOCK, IN THE CHAT
+#
+# `HOLO_TOOL_LINE` matched `[●⏺◆]`, so the `✗` head copilot really printed
+# rendered as a design decision in the middle of the captain's conversation.
+# The chat FOLDS (one click restores it); nothing here can delete a character.
+# ════════════════════════════════════════════════════════════════════════════
+@unittest.skipIf(NODE is None, "node not installed")
+class FailedToolBlockFoldsTest(unittest.TestCase):
+    REPLY = ("I'll add a Density toggle chip.\n\n"
+             "✗ Edit mockup.html\n"
+             "  └ Multiple matches found\n\n"
+             "I added a `.compact` class on the board.")
+
+    def _out(self):
+        prog = dict(PROG, turns=[{"text": "compact it", "reply": self.REPLY}])
+        return _harness({"act": "deck", "programs": [prog], "activeId": "s1"})
+
+    def test_a_failed_tool_block_is_not_shown_as_a_design_decision(self):
+        out = self._out()
+        self.assertNotIn("✗ Edit mockup.html", out["replyText"])
+        # (the backticks are rendered as inline code, so the projection has
+        # the words without them)
+        self.assertIn(".compact class on the board", out["replyText"])
+
+    def test_it_is_folded_and_never_deleted(self):
+        out = self._out()
+        self.assertIn("✗ Edit mockup.html",
+                      "\n".join(out["traceBlocks"]))
+        self.assertIn("Multiple matches found", out["replyAllText"])
+
+    def test_a_failed_shaped_sentence_is_still_prose(self):
+        """The recognizer's own rule is unchanged: a tool VERB and an
+        ARGUMENT-shaped tail. `✗ Delete the old rail` is a sentence."""
+        prog = dict(PROG, turns=[{"text": "x", "reply":
+                                  "✗ Delete the old rail it never shipped"}])
+        out = _harness({"act": "deck", "programs": [prog], "activeId": "s1"})
+        self.assertIn("✗ Delete the old rail", out["replyText"])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 2 · DEFECT 6 — THE MORNING STATE
+#
+# Yesterday's program is in the list on the left and the whole main area reads
+# HOLODECK / PROGRAM STANDING BY / "Describe a screen…" / ＋ NEW PROGRAM.
+# Nothing tells the captain to click the program on the left, and the one
+# prominent button is the wrong move: under the same name it triggers the
+# room-reuse disclosure, under a different one it splits his work in two.
+#
+# THE GUARD IS CORRECT AND UNTOUCHED — it deliberately auto-selects only a LIVE
+# program, because auto-selecting an archived one hands him a composer that
+# 404s. The gap is the copy.
+# ════════════════════════════════════════════════════════════════════════════
+@unittest.skipIf(NODE is None, "node not installed")
+class MorningStateTest(unittest.TestCase):
+    def test_with_programs_waiting_the_deck_says_to_pick_one_up(self):
+        out = _harness({"act": "deck", "programs": [DISK_PROG],
+                        "activeId": None})
+        low = out["emptyText"].lower()
+        self.assertIn("left", low, out["emptyText"])
+        self.assertTrue("pick" in low or "click" in low, out["emptyText"])
+        # it no longer opens with the words for a deck that has never been used.
+        self.assertNotIn("describe a screen", low)
+
+    def test_it_says_what_the_one_prominent_button_would_actually_do(self):
+        out = _harness({"act": "deck", "programs": [DISK_PROG],
+                        "activeId": None})
+        low = out["emptyText"].lower()
+        self.assertIn("new program", low)
+        # the two outcomes he cannot see coming, in his words.
+        self.assertIn("same name", low)
+        self.assertTrue("different name" in low or "new name" in low, low)
+
+    def test_a_deck_that_has_never_been_used_keeps_its_opening_words(self):
+        """The control: the first-run empty state is D6's and is unchanged."""
+        out = _harness({"act": "deck", "programs": [], "activeId": None})
+        low = out["emptyText"].lower()
+        self.assertIn("describe a screen", low)
+        self.assertIn("program standing by", low)
+        self.assertNotIn("on the left", low)
+
+    def test_the_new_program_control_is_still_there_and_still_works(self):
+        """The cure is copy. The control the captain reaches for on a deck with
+        programs on it must not have moved or gone dead."""
+        out = _harness({"act": "deck", "programs": [DISK_PROG],
+                        "activeId": None})
+        labels = [c["label"] for c in out["emptyControls"]]
+        self.assertTrue(any("New Program" in l for l in labels), labels)
+        for ctl in out["emptyControls"]:
+            self.assertTrue(ctl["wired"] or (ctl["disabled"] and ctl["reason"]),
+                            "dead control: %r" % ctl["label"])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class RefusedTurnStillReportsTheTranscriptTest(unittest.TestCase):
+    """FIX ROUND 2 — `refused` outranks every other status and the deck renders
+    that branch alone, so a turn that was refused AND lost its transcript said
+    nothing about the transcript. The daemon composes one account (it already
+    appends rather than overwrites on the warning path); this proves the deck
+    puts the whole of it on the screen."""
+
+    REFUSAL = (
+        "Your program is safe — everything in the holodeck sidecar is intact "
+        "and the chat is still running. While that turn was running, 1 file(s) "
+        "changed in your project, outside the holodeck: /Users/x/g/src/theme.css. "
+        "LCARS watches the files, not who touched them. LCARS could not append "
+        "this turn's exchange to transcript.md — the written record of the "
+        "conversation is missing this turn.")
+
+    def test_the_captain_learns_his_conversation_was_not_recorded(self):
+        out = _harness({"act": "sayWarning", "programs": [PROG],
+                        "activeId": "s1", "status": "refused",
+                        "refused": {"message": self.REFUSAL,
+                                    "paths": ["/Users/x/g/src/theme.css"]},
+                        "warning": {"kind": "transcript-unwritten",
+                                    "message": "unused — refused outranks it"}})
+        self.assertEqual(out["bannerKind"], "refused")
+        self.assertIn("transcript.md", out["text"])
+        self.assertIn("/Users/x/g/src/theme.css", out["text"])
+        # …once. One account, from one place.
+        self.assertEqual(out["text"].count("transcript.md"), 1, out["text"])
 
 
 @unittest.skipIf(NODE is None, "node not installed")

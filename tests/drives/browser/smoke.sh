@@ -30,8 +30,10 @@
 # worker and is worth investigating.
 #
 # EXIT: 0 painted · 1 did not paint (a real failure) · 3 painted but the app was
-# served INCOMPLETE (a stylesheet 404'd — you are looking at a phantom) · 77
-# SKIPPED / infrastructure, loudly, with the reason named. 77 is never a pass.
+# served INCOMPLETE (a stylesheet 404'd — you are looking at a phantom) · 4 the
+# board painted but the HOLODECK check failed (only possible under
+# LCARS_BROWSER_HOLODECK_CHECK, and it says WHY) · 77 SKIPPED / infrastructure,
+# loudly, with the reason named. 77 is never a pass.
 #
 # Exit 1 is an ACCUSATION AGAINST THE BOARD, so nothing that is the rig's own
 # problem is allowed to leave through it. A rig whose whole purpose is to stop
@@ -150,15 +152,33 @@ cleanup() {
     [ "$alive" -eq 0 ] && break
     sleep 0.1; waited=$((waited + 1))
   done
-  for pid in "$CHROME_PID" "$DAEMON_PID"; do
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      printf '  WARNING: pid %s ignored SIGTERM — SIGKILLing it. If this is the\n' "$pid"
-      printf '           daemon, that is a REGRESSION of the 78450eb signal fix.\n'
-      kill -9 "$pid" 2>/dev/null
-    fi
-  done
+  # …and it NAMES WHICH PROCESS (fix round 1b). The old message said "if this is
+  # the daemon, that is a REGRESSION" and left the reader to match a bare pid
+  # against pids.json — so it printed twice during a calibration run and was read
+  # by nobody. Both of those were CHROME, which is routine: headless Chrome's
+  # launcher regularly outlives a SIGTERM while its zygote children go down.
+  # A regression detector nobody reads is not a detector, so the two cases are
+  # now different messages, and only the daemon's is loud.
+  local daemon_ignored_sigterm=0
+  if [ -n "$CHROME_PID" ] && kill -0 "$CHROME_PID" 2>/dev/null; then
+    printf '  note: chrome (pid %s) outlived SIGTERM — SIGKILLing it. Routine for\n' "$CHROME_PID"
+    printf '        headless Chrome, and nothing to do with the daemon signal fix.\n'
+    kill -9 "$CHROME_PID" 2>/dev/null
+  fi
+  if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    printf '\033[31m  THE DAEMON (pid %s) IGNORED SIGTERM\033[0m — SIGKILLing it. That is a\n' "$DAEMON_PID"
+    printf '  REGRESSION of the 78450eb signal fix, and this run fails on it.\n'
+    kill -9 "$DAEMON_PID" 2>/dev/null
+    daemon_ignored_sigterm=1
+  fi
   wait 2>/dev/null
   record_pids
+  # A run that passed only because nobody read its own teardown is not a pass.
+  # `exit` is what actually sets the status from inside an EXIT trap — a `return`
+  # here is discarded, which is half of why this warning was survivable.
+  if [ "$daemon_ignored_sigterm" -eq 1 ] && [ "$rc" -eq 0 ]; then
+    exit 1
+  fi
   return $rc
 }
 trap cleanup EXIT INT TERM
@@ -480,6 +500,15 @@ case "$RC" in
   3)
     printf '\033[31mSERVED INCOMPLETE\033[0m — the board painted, but not with the app it ships\n'
     printf '        with. The screenshot is a picture of a PHANTOM, not of the product.\n' ;;
+  4)
+    # The board painted; the HOLODECK check is what failed, and cdp.js has just
+    # printed each ✗ reason above. Saying "the board did not paint" here — which
+    # is what the default branch used to do, two lines under this rig's own
+    # "real Chrome painted N card node(s)" — is the exact lie this rig exists to
+    # stop anyone telling.
+    printf '\033[31mTHE HOLODECK IS WRONG\033[0m — the board painted fine; the deck did not\n'
+    printf '        measure up. The reasons are printed above, in full in\n'
+    printf '        %s/holodeck-check.json. Open %s/holodeck.png.\n' "$OUT" "$OUT" ;;
   77)
     # The driver could not reach a browser at all. That is the rig's failure and
     # it exits as one — this rig exists to stop harness trouble being reported as

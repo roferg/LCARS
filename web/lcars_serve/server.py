@@ -430,6 +430,17 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                                               engine=body.get("engine"),
                                               mode=body.get("mode", "design"),
                                               images=self._images(body))
+            # S126 — durable programs. Both are keyed by ROOM, not by session
+            # id, because the whole point is that they work on a program THIS
+            # daemon has never held: `open` warm-restarts one from disk, and
+            # `delete` git-rm's it so the archive keeps the history. Declared
+            # ABOVE the `<sid>/<verb>` matcher so a room can never be mistaken
+            # for a session id.
+            if path == "/api/holodeck/open":
+                return actions.holodeck_open(room=body.get("room"),
+                                             engine=body.get("engine"))
+            if path == "/api/holodeck/delete":
+                return actions.holodeck_delete(room=body.get("room"))
             if path.startswith("/api/holodeck/"):
                 rest = path[len("/api/holodeck/"):]
                 parts = [p for p in rest.split("/") if p != ""]

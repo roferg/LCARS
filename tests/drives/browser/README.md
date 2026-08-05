@@ -93,7 +93,7 @@ reuse them: `LCARS_BROWSER_BASEFRESH` (a record to serve) and
 `LCARS_BROWSER_CONSOLE_CHECK` (an expectation file). Neither is set by default,
 and with both unset `smoke.sh` runs exactly the code it ran before S164.
 
-## The holodeck rig: `holodeck.sh` (S125)
+## The holodeck rig: `holodeck.sh` (S125/S126)
 
 ```bash
 bash tests/drives/browser/holodeck.sh              # the product
@@ -101,11 +101,23 @@ bash tests/drives/browser/holodeck.sh --calibrate  # the RED CONTROLS
 bash tests/drives/browser/holodeck.sh --all        # both
 ```
 
-**Zero tokens.** The program is opened in DESIGN mode, which spawns no worker at
-all (`actions.holodeck_start` opens the room; the first `say` is what opens a
-warm session), and the sidecar plus its `mockup.html` are *planted* by the rig —
-nothing is generated. The `claude`/`copilot` on PATH are still smoke.sh's
-logging shims and the run reports 0 invocations.
+**Zero tokens — but not "no worker".** This paragraph used to say the program is
+opened in DESIGN mode and spawns no worker at all; that stopped being true the
+moment the rig grew a journey, and a rig description that flatters the rig is
+how a blind check survives. What actually happens: the rig opens the program in
+**GROUNDING** mode and then drives **three design turns**, each a genuine
+`POST /api/holodeck/<sid>/say` that spawns a worker process. That worker is a
+**scripted Python stub** the rig writes — it branches on the *tool posture* it is
+handed (a `--disallowedTools` naming `Write` means grounding), kills its first
+design turn the way a real engine dies at startup, and writes `mockup.html` into
+its cwd. **No engine is ever contacted and no token is ever spent**: the
+`claude`/`copilot` on PATH are smoke.sh's logging shims and the run reports 0
+invocations of them. The planted sidecar is a fixture: one room (`nav-rail`)
+with a `mockup.html` **and a `transcript.md`** — the record that makes a
+directory in the sidecar a *program* at all (fix round 2: the sidecar is the
+captain's own archive, so a folder he drops in it is not a program and is never
+listed, opened or `git rm`'d as one). It stands in for yesterday's work: the
+archived card the morning-state and warm-restart checks below are about.
 
 The holodeck **replaces the board inside the same LCARS frame** (D1), and it does
 that with **one CSS class on `<body>`** — `body.on-deck` — chosen because
@@ -143,15 +155,115 @@ rendered as two bare text runs jammed together — `⬡ Preview▤ Intent` — b
 the `.pv-toggle` / `.pvt-b` rules had never been written. Every unit test was
 green; the picture was not.
 
-**The eight red controls** (`--calibrate`) each patch a *copy* of `web/` and each
+**The fourteen red controls** (`--calibrate`) each patch a *copy* of `web/` and each
 must make the run fail: `--holo-grid` deleted (the deck paints transparent while
 every box stays perfect), the `body.on-deck` hiding rules neutered (the board
 still laid out under the deck), the preview pane `display:none` (present in
 markup, not on the screen), `allow-same-origin` added back beside
 `allow-scripts`, the viewport pin removed (`deck-grows`), the grounding posture
 never handing over (`grounding-sticks`), round 1's prose-eating cleaner restored
-(`trace-eats-prose`), and — fix round 3 — `retry-is-a-dead-end`. All eight went
-red on 2026-08-05.
+(`trace-eats-prose`), and — fix round 3 — `retry-is-a-dead-end`. Those eight went
+red on 2026-08-05, though what "went red" meant at the time is the subject of
+*A non-zero exit is not a control going red* below.
+
+**S126 added the last three**, all of them failure-path claims that were
+unit-test-only until now — and S125 proved *twice* that a unit test can be green
+while the product is wrong:
+
+- `n5-exit-code-in-banner` — round 1's banner restored, printing
+  `(claude exited -9)`. A number that answers neither of the two questions a
+  captain has (what it stopped, how to try again) and that he cannot act on.
+- `retry-doubles-the-line` — the **daemon's** retry dedupe removed, so the
+  captain reads himself saying the dead turn's line twice. Broken in the daemon
+  rather than the deck on purpose: the daemon's turn list is what the deck
+  re-reads after every settled turn, so a client-only break heals itself on the
+  next refresh and the control would flicker green.
+- `two-voices-in-the-banner` — round 1's client-authored banner copy restored.
+  It repeats the daemon's own sentences *and* re-asserts the authorship claim
+  ("nothing out there has been changed or removed by LCARS") that the daemon had
+  just been cured of — a claim the audit cannot make, because it watches files,
+  not who touched them.
+
+All three read the banner raised by the **noisily** dying worker (stderr +
+non-zero exit). A silently dying stub emits a shape the real world never
+produces and hides the whole class.
+
+**S126 fix round 2 added two more, and two new measurements to go with them.**
+Both defects are *copy on a screen*, which is the one thing a node harness with
+no CSS can be greenest about:
+
+- `morning-points-nowhere` — the deck's opening pane as it was. The rig now
+  measures that pane **before it opens anything**, which is the screen a captain
+  gets every morning: yesterday's program sits in the list on the left, nothing
+  is selected (correctly — the auto-select deliberately picks up only a *live*
+  program, since an archived one would hand him a composer that 404s), and the
+  main area read `PROGRAM STANDING BY / "Describe a screen…"` over one prominent
+  `＋ NEW PROGRAM` — pointing at nothing, and at the one action that either lands
+  in the room-reuse disclosure or splits his work in two. The check fails if the
+  pane never mentions the list, or offers the button with no word of what it
+  does to a program that already exists. **A run in which no program row was on
+  the deck fails as "PROVED NOTHING" rather than passing.**
+- `warm-pill-lies` — the chat header's engine pill asserting `WARM` again. At
+  the end of the journey the rig clicks the **archived** room (a real
+  `POST /api/holodeck/open`; no worker, no tokens) and reads the daemon's
+  warm-restart banner and the pill **off the same painted screen**: the banner
+  says the conversation that built the program is over and the worker answering
+  the next turn is a fresh one, and the pill two inches below it said `WARM ·
+  CLAUDE`. The defect exists only as a *contradiction*, so only a rig that reads
+  both strings at once can see it. It writes `holodeck-warm-restart.png`.
+
+`$LCARS_HOLODECK_VARIANTS` calibrates a **subset** (space-separated names), for
+re-proving the controls a fix round just added without paying for fourteen full
+browser runs. The default is all of them, and a round is not calibrated until
+the default has been run.
+
+### A non-zero exit is not a control going red (fix round 1b)
+
+`--calibrate` used to accept **any** failure from a variant as proof that the
+control worked. It printed *"CALIBRATED — every control went red. The check can
+see."* over runs in which **eleven of twelve** variants had failed on the
+harness's own `THE N4 CHECK PROVED NOTHING` line and on nothing else — no `N5:`
+failure and no N6 duplicate-line failure occurred anywhere in two full runs. The
+three controls S126 added had gone red on plumbing, not on the defects they
+inject, and three of the round's four deliverables were proven by nothing.
+
+The mechanism was the rig's own memory. The scripted worker's only state is
+`$out/holo-rig-state` — a `design-turns` counter that decides which design turn
+dies — and nothing ever cleared it. `$out` is routinely **reused**
+(`LCARS_BROWSER_HOLODECK_OUT` at a fixed dir is how you keep the artifacts), so
+the second run into a dir began with the counter past zero, **the first design
+turn no longer died**, no `HOLODECK OFFLINE` banner ever appeared, and the whole
+N4/N5/N6/one-voice half of the check measured an empty room while still exiting
+non-zero. `run_once` now wipes that state (and the worker log) before every
+single run, so a re-run is a *run*, not a continuation.
+
+And the summary can no longer lie about it. Every variant is judged off its own
+`holodeck-check.json`, not off its exit code:
+
+- its **precondition** must have fired — `n4.died`, i.e. the scripted worker's
+  first design turn actually died and the banner actually appeared. Any
+  `… CHECK PROVED NOTHING` failure is the harness saying it could not look, and
+  is never counted as a control going red. `grounding-sticks` is the one
+  exemption, by construction: it stops the posture handing over, so no design
+  turn is ever spawned and there is no turn left to kill;
+- and the run must have failed **on the sentence that names what that variant
+  breaks** (`variant_signature`), so a control that goes red for someone else's
+  reason is reported as proving nothing.
+
+Anything short of both is loud, categorised (`N CONTROL(S) WENT RED WITHOUT
+PROVING ANYTHING`) and non-zero.
+
+**Fix round 3 — no second exemption was added.** `--calibrate` could not run
+green on a clean tree: `retry-is-a-dead-end` breaks the retry by construction,
+so the design-turn loop ended with `flowErr` set, the warm-restart leg was
+gated on `!flowErr` and never ran, and its `THE WARM-RESTART CHECK PROVED
+NOTHING` line failed the precondition of a control that HAD gone red for its
+own reason. The cure is in `cdp.js`, not in the judge: that leg's precondition
+is now the **deck being painted**, which is what clicking an archived room
+actually depends on — a dead design turn does not stop it. It also records the
+banner text *before* the click and waits for a different one, so it can never
+report the leftover `HOLODECK OFFLINE` banner as the restart's. When the leg
+genuinely cannot look, `want.restart` is null and the blind line still fires.
 
 `retry-is-a-dead-end` is the first control for a **failure path**. The rig's
 scripted worker kills the first design turn the way a real engine dies at
@@ -291,10 +403,18 @@ itself with the globals already populated.
 | `0` | the board painted, with its full stylesheet. **Now look at the screenshot.** |
 | `1` | it did not paint — a real failure. The screenshot is a picture of exactly what the browser saw. |
 | `3` | it painted, but was **served incomplete** — a same-origin stylesheet did not load, so the screenshot is a picture of a *phantom*, not of the product. |
+| `4` | the board painted; the **holodeck check** failed. Only possible under `LCARS_BROWSER_HOLODECK_CHECK`, and `cdp.js` prints each `✗ <reason>` plus the precondition. |
 | `77` | **SKIPPED / INFRASTRUCTURE**, loudly, with the reason named. Never a pass. |
 
 A rig that quietly succeeds when it did nothing is the same disease as the blank
 board, so a skip is never `0`.
+
+`4` exists because `1` used to carry the holodeck's failures too, and smoke.sh
+then fell through to its default and printed **"BLANK / WRONG — the board did not
+paint"** two lines under this rig's own *"real Chrome painted 2 card node(s), 9
+column(s)"*. The reason was sitting in `holodeck-check.json` and never reached
+the operator. This repo burned three hours once on a board that "looked blank";
+a rig set up to tell that exact lie on purpose is worse than no rig.
 
 **And `1` is an accusation against the product, so nothing that is the rig's own
 problem may leave through it.** No Chrome, no node, no python3, Chrome never

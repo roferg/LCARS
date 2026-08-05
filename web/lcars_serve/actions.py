@@ -796,6 +796,189 @@ def _slug(name):
     return (s[:48] or "program")
 
 
+# ── S126: the program's own record, on disk ─────────────────────────────────
+# THE ROOM IS THE ARCHIVE. S124 already gave every program a room at
+# `<sidecar>/<slug>/` and S125 already committed it once per turn; what was
+# missing is the CONVERSATION — so a room on disk was a mockup nobody could
+# read the reasoning for, and a daemon restart threw the reasoning away.
+#
+# Deliberate divergence from the S126 brief: the room stays at
+# `<sidecar>/<slug>/` and is NOT moved to `<sidecar>/programs/<slug>/`. The
+# brief predates S125, which shipped the room, the jailed preview route and the
+# committed browser rig against that layout; moving it would break all three to
+# buy nothing.
+_TRANSCRIPT = "transcript.md"
+_CONCEPT = "concept.md"
+
+# The entry delimiter, written AND parsed here. The parse is best-effort and for
+# DISPLAY only — the file itself is the record, and nothing below ever rewrites
+# a line the model wrote. A reply that itself contains a line reading
+# `## Turn <n> ·` would split oddly on the way back; the sequence check makes
+# that need the exact next number, and the cost is a cosmetically split card,
+# never a lost character.
+_TURN_HEAD = re.compile(r"^## Turn (\d+) ·", re.MULTILINE)
+
+# ── FIX ROUND 5: the engine, recorded where the NAME is recorded ─────────────
+# A program did not remember which CLI built it. `holodeck_open` took `engine`
+# from the caller and fell back to the daemon's default, the deck posted no
+# engine at all, and nothing on disk held one — so a restart re-pointed a
+# program at whatever the viewscreen happened to be started with. Measured
+# live: a program designed entirely on claude reopened on copilot, and the next
+# turn really ran there.
+#
+# The cheap direction is the one that costs: a program built on FREE copilot
+# silently reopening on BILLED claude, in the room whose whole stated posture
+# is "this is the cheap one".
+#
+# It goes in `transcript.md`'s header, beside the `# ` name heading — the ONE
+# durable home a program's identity already has, written at the same moment by
+# the same function and read back by the same parser. No sidecar json, no
+# per-room metadata file: a second place to look is how the engine came to
+# arrive from three sources with a different winner per path.
+_ENGINE_LINE = re.compile(r"^_Engine: `([^`\n]+)`", re.MULTILINE)
+
+
+def _transcript_header(program, engine=None):
+    out = ["# %s\n\n" % (program or "Untitled program")]
+    if engine:
+        out.append("_Engine: `%s`_ — the CLI this program was designed on. "
+                   "LCARS picks it back up on the same one.\n\n" % engine)
+    out.append("The holodeck's record of this program: one entry per turn, in "
+               "the order it happened, appended by LCARS as it happens. The "
+               "mockup is the picture; this is the conversation that produced "
+               "it, and it is what a later session is handed when the program "
+               "is picked back up.\n")
+    return "".join(out)
+
+
+def _transcript_entry(n, text, reply, files, grounding=False):
+    """ONE turn, as it goes into `transcript.md`. Nothing is summarised away."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    out = ["\n## Turn %d · %s\n" % (n, stamp)]
+    if grounding and not text:
+        out.append("\n_The opening grounding pass — one read-only look at the "
+                   "project._\n")
+    elif text:
+        out.append("\n**Captain:** %s\n" % text)
+    if reply:
+        out.append("\n**Holodeck:** %s\n" % reply)
+    if files:
+        out.append("\n_Files this turn: %s_\n" % ", ".join(files))
+    return "".join(out)
+
+
+def _parse_transcript(text):
+    """(program name, [{text, reply}], engine) read out of a `transcript.md`.
+
+    Tolerant on purpose: a file it cannot make sense of yields whatever it
+    could, never an exception — the captain's archive must open even if a
+    future format change made half of it unfamiliar. A record with no engine
+    line (every program written before fix round 5 has none) answers "" and is
+    handled as UNKNOWN by the caller, never as the default.
+    """
+    text = (text or "").replace("\r\n", "\n")
+    name = ""
+    for line in text.split("\n"):
+        if line.startswith("# "):
+            name = line[2:].strip()
+            break
+        if line.startswith("## "):
+            break
+    # THE HEADER ONLY. A reply that happens to contain an `_Engine: `…`_` line
+    # is the captain being quoted at, and repointing his program at it would be
+    # the model choosing what it runs on.
+    head = re.split(r"^## ", text, maxsplit=1, flags=re.MULTILINE)[0]
+    em = _ENGINE_LINE.search(head)
+    engine = em.group(1).strip() if em else ""
+    turns = []
+    heads = [m for m in _TURN_HEAD.finditer(text)]
+    for i, m in enumerate(heads):
+        # only a properly sequenced head opens a turn (see `_TURN_HEAD`).
+        try:
+            if int(m.group(1)) != len(turns) + 1:
+                continue
+        except ValueError:                       # pragma: no cover - defensive
+            continue
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        block = text[m.end():end]
+        said = None
+        reply = None
+        cm = re.search(r"^\*\*Captain:\*\* ", block, re.MULTILINE)
+        hm = re.search(r"^\*\*Holodeck:\*\* ", block, re.MULTILINE)
+        if cm:
+            stop = hm.start() if (hm and hm.start() > cm.end()) else len(block)
+            said = block[cm.end():stop].strip()
+        if hm:
+            tail = block[hm.end():]
+            tail = re.split(r"\n_Files this turn: ", tail)[0]
+            reply = tail.strip()
+        turns.append({"text": said, "reply": reply})
+    return name, turns, engine
+
+
+def _turn_summary(text, grounding=False):
+    """The one-line turn summary that becomes the commit message.
+
+    A commit log reading `turn 1 / turn 2 / turn 3` is a serial number, not a
+    story — `git log --oneline` over the sidecar is meant to BE the program's
+    audit trail (D7's "every turn is committed" made legible).
+    """
+    if grounding and not text:
+        return "grounding pass"
+    line = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not line:
+        return "opening turn"
+    return line[:72] + ("…" if len(line) > 72 else "")
+
+
+# ── S126 (#3): the concept-doc contract, as the turn prompt states it ───────
+# The markdown half of the output. It is the thing a Mission's Align is handed
+# at S127, so its shape is DECLARED here rather than left to whatever the model
+# felt like writing — and two of its sections exist because of specific captain
+# rulings:
+#
+#   WHAT IT MUST DO (D14). The captain states functional requirements OUT LOUD
+#       while designing pixels ("it remembers what you picked", "no flash of the
+#       wrong theme"). Un-captured, they died in the transcript and Align was
+#       handed "a light/dark theme toggle". Captured IN HIS OWN WORDS and
+#       attributed to the turn, they are a brief. Behaviour only — visual
+#       decisions are in the mockup, which is the whole reason for having one.
+#
+#   DECLARED FLOW (D4, captain ruling 2026-08-04). Screens and transitions are
+#       NAMED, never inferred from the markup: inference over prose drifts
+#       silently and flatters itself (the S156 lesson), and a declaration is
+#       DRIVABLE — the browser walker can walk it against the mock to generate
+#       the per-screen stills and to catch a concept doc that has drifted from
+#       its own mockup. Kept small enough for a person to write by hand.
+_CONCEPT_CONTRACT = """
+ALSO KEEP `concept.md` CURRENT, in the same room, updated in the same turn you
+change the mockup. It is the WRITTEN half of this design and it is what a real
+Mission is handed later; the mockup carries the look, this carries the meaning.
+Sections:
+
+  # <the program>
+  ## The problem — what the captain is trying to solve, in two or three lines.
+  ## Decisions — what has been SETTLED, each with the turn it was settled on.
+  ## Open questions — what is still undecided. Raise these in the chat too.
+  ## WHAT IT MUST DO — BEHAVIOUR ONLY (visual choices live in the mockup).
+     Three buckets, kept apart:
+       1. Requirements — stated behaviour, numbered, in the captain's OWN WORDS,
+          each attributed to the turn it was said in.
+       2. Implied by the mockup, not yet settled — behaviour the mockup suggests
+          that nobody has actually stated. Write each as a QUESTION, and ASK it
+          in the chat: a sentence now is cheaper than a ticket later.
+       3. Out of scope — what he explicitly ruled out, kept so nobody builds it
+          back by accident.
+     Never invent a requirement he did not say.
+  ## DECLARED FLOW — name the screens and the transitions between them, one per
+     line, small enough to write by hand:
+       `board` → click `.card` → `detail` → Esc → `board`, scroll preserved
+     A screen the mockup has but this section does not name is invisible to
+     everything downstream, so declare every one.
+  ## Hand-off summary — one paragraph a Mission can open with.
+"""
+
+
 def _norm_name(name):
     """A program name as a PERSON reads it, for the collision check (round 2).
 
@@ -924,6 +1107,168 @@ def _clean_reply(raw):
         out.append(line)
         i += 1
     return "\n".join(_cut_footer(out)).strip("\n")
+
+
+# ── S126 (#6): what goes ON DISK is prose ────────────────────────────────────
+# `_clean_reply` above is the CHAT's cleaner and deliberately keeps the engine's
+# per-tool activity lines: the deck FOLDS them (`holoSegments`), so a wrong call
+# there costs a click and never a character. A FILE cannot fold. `basis.md` and
+# `transcript.md` are durable content — read by a person, replayed verbatim into
+# a warm restart's opening prompt, and handed to Align at S127 — and a
+# `└ 3 files found` in either is a durable instruction to nobody.
+#
+# ── THE RULE, IN ONE SENTENCE ───────────────────────────────────────────────
+# The record may keep a line the captain did not write, but it may never lose a
+# line he did — so when the structure is not unmistakably the CLI's own, KEEP.
+#
+# ── FIX ROUND 4: STOP GUESSING (the captain's word) ─────────────────────────
+# Rounds 1, 1a and 3 all shipped ONE recognizer that decided which lines were
+# machine plumbing from their SHAPE — did the tail look like an argument, did
+# the bullet carry a sentence, did the `└` row carry a count. Each round
+# narrowed the question and each round lost prose. A LIVE DRIVE ON BOTH REAL
+# ENGINES (2026-08-05) measured that rule wrong in BOTH DIRECTIONS at once. The
+# raw replies it produced are committed verbatim under
+# `web/tests/fixtures/s126-live/`; re-measure there and never invent a fixture,
+# because inventing the corpus is precisely how the old rule came to model a
+# copilot version that no longer exists.
+#
+#   · CLAUDE EMITS NO TOOL TRACE AT ALL in this posture. Measured across a
+#     107-line grounding pass and four design turns: the daemon's `raw` is
+#     byte-identical to its `reply` and to what belongs on disk
+#     (`claude-grounding-reply.txt`, `claude-diagram-reply.txt`,
+#     `claude-checklist-reply.txt`). So every deletion the recognizer made on a
+#     claude reply was PURE SUBTRACTION and could never have been a gain — and
+#     it made them. Asked for a five-line next-turn checklist "one `●` per
+#     line, verb then the file, nothing else", claude wrote
+#         ● Read mockup.html / ● Measure mockup.html / ● Update mockup.html
+#         ● Update concept.md / ● Preview mockup.html
+#     and THREE of the five were deleted off the captain's transcript, silently.
+#
+#   · COPILOT'S CLI HAS CHANGED SHAPE since the S125 fixture was captured. It
+#     now prints multi-row tool BLOCKS the one-line `●` rule never saw, so
+#     58 of the 193 lines of a real grounding `basis.md` were leftover plumbing
+#     (`/ Search (glob)`, `  │ "web/**/*.css"`, `  └ 18 files found`) — and the
+#     run also ENDED on the `│` row, letting the `└` beneath it through too.
+#
+# So the shape-guessing recognizer is GONE, not narrowed: `_TRACE_LINE`,
+# `_is_trace_line`, `_is_bare_tool_line`, `_is_result_row` and their token
+# regexes went with it. What replaces it asks nothing about prose at all —
+# it is PER-ENGINE handling of deterministic CLI output:
+#
+#   claude  → STRIP NOTHING. This is measured, not assumed; do not "restore"
+#             a regex here. If claude ever starts emitting trace, the failure
+#             is leftover noise in a file (an annoyance) and not a deleted
+#             design decision (unrecoverable) — that asymmetry is the whole
+#             reason this is shaped the way it is.
+#   copilot → remove its tool blocks BY THEIR STRUCTURE (below). Anything that
+#             does not match the CLI's own block structure is prose, and is
+#             kept.
+#
+# The engine comes from the session, through the SAME resolution every other
+# per-engine decision in the holodeck uses (`_is_copilot`, `sess.engine or
+# self.worker_bin`). There is no second source of truth for it, and an engine
+# nobody has measured falls to the claude side — the safe direction.
+#
+# This DIVERGES from the surface's `holoSegments`, which still folds on the
+# looser rule. That asymmetry is the point and it runs the safe way: the chat
+# folds (one click restores the text, which never left the DOM) while the file
+# DELETES, so the file is held to the stricter standard.
+
+# ── copilot's tool block, exactly as its CLI prints it ───────────────────────
+# Lifted byte for byte off `copilot-grounding-reply.txt`,
+# `copilot-turn-raw.txt` and `copilot-failed-edit-reply.txt`. THREE FORMS ARE
+# CAPTURED; this comment claims nothing about a fourth. Round 4's version of it
+# asserted "TWO FORMS AND NO THIRD", which was FALSE — a live drive printed the
+# third (form 3 below) the same week, and the code was reading as authority on
+# a thing nobody had measured. Every form here is a fixture you can open.
+#
+#   (1) a head bullet, its argument rows, and the result row that CLOSES it.
+#       The continuation rows are indented EXACTLY two spaces, and searches
+#       use a `/` bullet instead of `●`. Verbatim, both forms:
+#
+#           ● Read board.css                   / Search (glob)
+#           ␣␣│ web/static/board.css           ␣␣│ "docs/**/*.css"
+#           ␣␣└ L1:200 (200 lines read)        ␣␣└ 1 file found
+#
+#       The `└` row is REQUIRED. A head the CLI never closed is a captain
+#       writing, whatever verb he opened with, and it is kept — that
+#       requirement is what lets this be structural instead of clever.
+#
+#   (2) a write's one-line activity row, which has no continuation rows at all
+#       and ends in the CLI's own diff counters:
+#           ● Edit mockup.html +8 -6      ● Create mockup.html +27
+#
+#   (3) a FAILED tool block. Same structure as (1) with a `✗` bullet for its
+#       head, captured verbatim on a live drive in
+#       `copilot-failed-edit-reply.txt` and found sitting in a real
+#       `transcript.md`, rendered to the captain as a design decision:
+#
+#           ✗ Edit mockup.html
+#           ␣␣└ Multiple matches found
+#
+#       It is folded into (1) rather than given a recognizer of its own: same
+#       verb list, same indented rows, same REQUIRED `└` close. `✗ Delete the
+#       old rail (it never shipped)` has no closing row and is a captain
+#       writing, so it survives — that requirement is the whole guarantee.
+#
+# A FENCE IS THE CAPTAIN QUOTING, NOT THE CLI SPEAKING, so nothing inside one is
+# touched. Measured: both engines put their ASCII diagrams in fences, and
+# copilot's own fenced diagram draws rows at the very indent its argument rows
+# use. This is not a second recognizer — it is the same parser reading the one
+# piece of markdown structure that says "these bytes are content".
+_COPILOT_BLOCK_HEAD = re.compile(
+    r"^[●✗] (?:List directory|Read|Create|Edit|Write|Delete|Fetch|Task)\b"
+    r"|^/ Search \((?:glob|grep)\)\s*$")
+_COPILOT_ARG_ROW = re.compile(r"^  │ \S")
+_COPILOT_RESULT_ROW = re.compile(r"^  └ \S")
+_COPILOT_WRITE_ROW = re.compile(r"^● (?:Create|Edit|Write) \S+(?: [+-]\d+)+$")
+
+
+def _strip_copilot_tool_blocks(lines):
+    """Copilot's tool blocks removed from `lines`; everything else returned
+    byte for byte, in order."""
+    out = []
+    i = 0
+    n = len(lines)
+    fenced = False
+    while i < n:
+        line = lines[i]
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            out.append(line)
+            i += 1
+            continue
+        if fenced:
+            out.append(line)
+            i += 1
+            continue
+        if _COPILOT_WRITE_ROW.match(line):
+            i += 1
+            continue
+        if _COPILOT_BLOCK_HEAD.match(line):
+            j = i + 1
+            while j < n and _COPILOT_ARG_ROW.match(lines[j]):
+                j += 1
+            if j < n and _COPILOT_RESULT_ROW.match(lines[j]):
+                i = j + 1        # head + its argument rows + the closing row
+                continue
+        out.append(line)
+        i += 1
+    return out
+
+
+def _strip_tool_trace(text, engine=None):
+    """The engine's tool trace, removed from text about to become a FILE.
+
+    `engine` is the CLI that produced `text` — the session's own, resolved the
+    way every other per-engine decision here resolves it. Only copilot prints a
+    trace to remove; on claude, and on any engine nobody has measured, this
+    returns the text unchanged.
+    """
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    if _is_copilot(engine):
+        lines = _strip_copilot_tool_blocks(lines)
+    return "\n".join(lines).strip("\n")
 
 
 # ── the fenced-block fallback (a DEGRADATION PATH, not the default) ──────────
@@ -1238,15 +1583,21 @@ class _HolodeckSession(object):
     re-feeds no transcript.
     """
 
-    __slots__ = ("program", "engine", "mode", "grounded", "sidecar_dir",
-                 "program_dir", "target_repo", "worker_sid", "started", "turns",
-                 "files_changed", "done", "last_reply", "proc", "turn_settled",
-                 "opened_at", "last_touched")
+    __slots__ = ("program", "engine", "engine_recorded", "mode", "grounded",
+                 "sidecar_dir", "program_dir", "target_repo", "worker_sid",
+                 "started", "turns", "files_changed", "done", "last_reply",
+                 "proc", "turn_settled", "opened_at", "last_touched", "busy",
+                 "restarted")
 
     def __init__(self, program, engine, mode, sidecar_dir, program_dir,
-                 target_repo):
+                 target_repo, engine_recorded=False):
         self.program = program
         self.engine = engine
+        # S126 FIX ROUND 5 — is `engine` a FACT out of this program's own
+        # record, or merely what is running right now? The surface may say
+        # "designed on copilot" only for the first, and every program written
+        # before round 5 is the second.
+        self.engine_recorded = bool(engine_recorded)
         self.mode = mode
         # S125 fix round 1 — `mode` is the posture the NEXT turn runs in, and it
         # MOVES: a grounded program runs its one read-only pass and then spends
@@ -1279,6 +1630,19 @@ class _HolodeckSession(object):
         # turn; a program opened and never spoken to reads from `opened_at`.
         self.opened_at = time.time()
         self.last_touched = self.opened_at
+        # S126 — THE SERVER-SIDE TURN CLAIM. The deck guards overlapping sends
+        # with `HOLO.busy`, which is a courtesy, not a fence: two `/say` calls
+        # from two tabs (or a curl) both spawned a worker on the SAME warm
+        # session id, the second overwrote `proc` so `end` could no longer stop
+        # the first, and — now that every turn commits the room — two turns
+        # would be staging one working tree at once. Claimed and released under
+        # `_holodeck_lock`, so the check and the claim are one operation.
+        self.busy = False
+        # S126 — this session was REBUILT from the room on disk (a warm
+        # restart), so its opening prompt replays `transcript.md` and the
+        # surface says plainly that the worker is a fresh one carrying the
+        # history. It is NOT a resumed session and nothing may imply it is.
+        self.restarted = False
 
 
 class _LogSession(object):
@@ -2042,10 +2406,20 @@ class Actions(LogFacts):
         # active Align grillings, keyed by sessionId (in-memory; ADR-006 local).
         self._align = {}
         self._align_lock = threading.Lock()
-        # S124 — active HOLODECK programs, keyed by sessionId. Same in-memory /
-        # dies-with-the-daemon contract as `_align` (durable programs are S126).
+        # S124 — active HOLODECK programs, keyed by sessionId. The in-memory
+        # dict is now a CACHE of live conversations, not the record: S126 put
+        # the record in the sidecar itself, so `holodeck_list` reads the disk
+        # and a restart loses the warm worker session, never the program.
         self._holodeck = {}
         self._holodeck_lock = threading.Lock()
+        # S126 — ONE git working tree per sidecar, and `git add -A` + `commit`
+        # is not re-entrant against it: two turns landing together raced on
+        # `index.lock`, and a commit that fails is swallowed by `_sidecar_commit`
+        # (best-effort by design) — so the LOSS was silent. Two programs may
+        # still run at once; only the commit is serialised, keyed by sidecar
+        # path so two different sidecars never wait on each other.
+        self._sidecar_locks = {}
+        self._sidecar_locks_lock = threading.Lock()
         # S124 — the two injectable seams the holodeck adds. BOTH default from
         # the environment so a test (and an alternative install) can point them
         # somewhere harmless: `holodeck_root` is the directory the sidecar repo
@@ -2824,7 +3198,7 @@ class Actions(LogFacts):
         # sidecar git repo and the program's room, answered 200 with
         # `"engine": null`, and only failed on the first `say` — leaving a
         # directory tree behind for a program that could never have run.
-        self._resolve_holodeck_engine(engine)
+        bin_ = self._resolve_holodeck_engine(engine)
         sidecar = self._ensure_sidecar(target)
         program_dir = os.path.join(sidecar, _slug(program))
         # ONE ROOM, ONE PROGRAM (fix round 1). Two starts with the same name
@@ -2862,11 +3236,39 @@ class Actions(LogFacts):
         except OSError as exc:
             raise ActionError(502, "could not create the program's room in the "
                                    "holodeck sidecar: %s" % exc)
+        # THE NAME HE TYPED IS RECORDED NOW, NOT ON THE FIRST TURN (fix round
+        # 2). Same place as the engine check, and for the same reason: a room
+        # LCARS cannot write the program's own record into cannot hold a mockup
+        # either, so it is refused here rather than answered 200 and discovered
+        # later with the name already gone.
+        # ROUND 5 — AND THE ENGINE IT IS BEING BUILT ON, in the same line of the
+        # same file. `bin_` is what a turn will actually spawn, so what is
+        # recorded and what runs are one value, resolved once.
+        #
+        # THE SAME RULE HERE AS ON REOPEN, deliberately. A start ADOPTS a room
+        # that already holds work (disclosed above), and that room's record
+        # already names an engine — `_ensure_transcript` never rewrites it. So
+        # without this, starting into a reused copilot room on a claude default
+        # ran claude under a record saying copilot, and the next restart moved
+        # it back: the same silent switch, one room over.
+        bin_, recorded = self._program_engine(program_dir, engine)
+        if self._ensure_transcript(program_dir, program, bin_):
+            raise ActionError(
+                502, "the program's room was created but LCARS could not write "
+                "its record (transcript.md) into it, so nothing about this "
+                "program — starting with the name you just typed — would be "
+                "saved. Check %s is writable, then start it again."
+                % program_dir)
+        # A FRESH RECORD NOW NAMES EXACTLY THIS ENGINE, so ask the file rather
+        # than assume: `engineRecorded` means "this program's own record says
+        # so", and only the file can answer that.
+        if not recorded:
+            recorded = (self._recorded_engine(program_dir) == bin_)
         sid = uuid.uuid4().hex[:12]
-        sess = _HolodeckSession(program=program,
-                                engine=(engine or "").strip() or None,
+        sess = _HolodeckSession(program=program, engine=bin_,
                                 mode=mode, sidecar_dir=sidecar,
-                                program_dir=program_dir, target_repo=target)
+                                program_dir=program_dir, target_repo=target,
+                                engine_recorded=recorded)
         with self._holodeck_lock:
             self._holodeck[sid] = sess
         if mode == "grounding":
@@ -2893,7 +3295,8 @@ class Actions(LogFacts):
                 self._switch_to_design(sess)
         payload = self._holodeck_meta(sid, sess)
         payload.update({"status": "standing-by", "reply": "", "raw": "",
-                        "filesChanged": []})
+                        "filesChanged": [],
+                        "conceptAudit": self._concept_audit(sess, [])})
         if reuse:
             payload["roomNotice"] = {"kind": "room-reused", "message": reuse}
         return payload
@@ -2952,8 +3355,18 @@ class Actions(LogFacts):
         text = (text or "").strip()
         if not text:
             raise ActionError(400, "missing required field: text")
-        opening = not sess.started
-        prompt = self._build_holodeck_prompt(sess, text=text, opening=opening)
+        # S126 (#5) — CLAIM THE TURN BEFORE TOUCHING THE SESSION. The claim must
+        # come before `sess.turns` is mutated: a refused racing `/say` that had
+        # already appended its line would leave a phantom unanswered turn in the
+        # transcript pane for a turn that never ran.
+        self._claim_turn(sess)
+        try:
+            opening = not sess.started
+            prompt = self._build_holodeck_prompt(sess, text=text,
+                                                 opening=opening)
+        except BaseException:
+            self._release_turn(sess)
+            raise
         # A RETRY IS THE SAME LINE, SAID ONCE (round 2). The captain types a
         # line, the turn dies, he presses RETRY TURN — and the transcript showed
         # him saying it twice, because both sides appended a turn. A last turn
@@ -2970,7 +3383,7 @@ class Actions(LogFacts):
             last.pop("failed", None)
         else:
             sess.turns.append({"text": text, "reply": None})
-        return self._run_turn(sid, sess, prompt)
+        return self._run_turn(sid, sess, prompt, claimed=True)
 
     def holodeck_end(self, sid):
         """POST /api/holodeck/<sid>/end — close the program.
@@ -3018,6 +3431,324 @@ class Actions(LogFacts):
             }
         return payload
 
+    # ══ S126 — DURABLE PROGRAMS: reopen and delete ═════════════════════════
+    def _room_dir(self, sidecar, room):
+        """Resolve a room NAME to its directory inside the sidecar, or refuse.
+
+        A room is ONE path segment. Everything else — a separator, `..`, an
+        absolute path, a dotfile (`.git` is the sidecar's own bookkeeping, not a
+        program) — is refused by inspection, and the resolved path is then
+        realpath-checked against the sidecar so a symlinked room cannot point
+        `delete` at the captain's project.
+        """
+        r = str(room or "").strip()
+        if not r:
+            raise ActionError(400, "missing required field: room")
+        if ("\x00" in r or "/" in r or "\\" in r or r.startswith(".")
+                or r in (".", "..")):
+            raise ActionError(403, "%r is not a program in this holodeck" % r)
+        d = os.path.join(sidecar, r)
+        real = os.path.realpath(d)
+        if os.path.dirname(real) != os.path.realpath(sidecar):
+            raise ActionError(403, "%r is not a program in this holodeck" % r)
+        if not os.path.isdir(real):
+            raise ActionError(
+                404, "the holodeck has no program in a room called %r. Open the "
+                "program list to see what is in this sidecar." % r)
+        # …AND IT IS ONE OF LCARS'S OWN PROGRAMS (fix round 2, defect 7). The
+        # sidecar is the captain's archive and he is told so; a folder he put
+        # there is not a program and must never be openable — or, far worse,
+        # `git rm`-able — from the deck.
+        if not self._is_program_room(real):
+            raise ActionError(
+                403, "%r is a folder in this holodeck's archive, but it is not "
+                "a program — it holds no transcript.md. LCARS only opens and "
+                "removes the programs it made; anything else you keep in the "
+                "archive is yours and is left alone." % r)
+        return d
+
+    def _existing_sidecar(self):
+        """The sidecar, WITHOUT creating it. `open`/`delete` are operations on
+        an archive that already exists; bootstrapping one to answer "no such
+        program" would leave a git repo behind for a typo."""
+        side = self._sidecar_path(self.repo_root)
+        if not os.path.isdir(side):
+            raise ActionError(404, "this project has no holodeck sidecar yet — "
+                                   "start a program and one is created.")
+        return side
+
+    def _live_for_room(self, program_dir):
+        """(sid, sess) for a live session holding this room, or (None, None)."""
+        want = os.path.realpath(program_dir)
+        with self._holodeck_lock:
+            for sid, sess in self._holodeck.items():
+                if os.path.realpath(sess.program_dir) == want:
+                    return sid, sess
+        return None, None
+
+    def holodeck_open(self, room=None, engine=None):
+        """POST /api/holodeck/open — pick a program back up from disk.
+
+        THIS IS A WARM RESTART, NOT A RESUMED SESSION, and the payload says so
+        in those words. The warm worker conversation died with whatever daemon
+        (or CLI) held it; what survived is the room — the mockup, `basis.md`,
+        `concept.md` and `transcript.md`. So a FRESH session-id is minted and
+        the transcript is replayed into its opening prompt as context.
+
+        Claiming otherwise would be S125's finding #2 in a new place: there, a
+        non-empty `reply` was taken as proof a session existed and `RETRY TURN`
+        `--resume`d an id the CLI had never created — a permanent dead end under
+        a banner promising the chat was still running. A session id printed here
+        would be exactly as unfounded.
+        """
+        sidecar = self._existing_sidecar()
+        program_dir = self._room_dir(sidecar, room)
+        sid, sess = self._live_for_room(program_dir)
+        if sess is not None:
+            # ALREADY OPEN. Hand back the live conversation rather than minting
+            # a second session onto one room — two cards, one `mockup.html`.
+            meta = self._holodeck_meta(sid, sess)
+            meta["turns"] = [{"text": t.get("text"), "reply": t.get("reply")}
+                             for t in sess.turns]
+            return meta
+        # ROUND 5 — THE ENGINE COMES FROM THE PROGRAM, not from whatever this
+        # daemon was started with. See `_program_engine` for the rule.
+        bin_, recorded = self._program_engine(program_dir, engine)
+        name, turns = "", []
+        try:
+            with open(os.path.join(program_dir, _TRANSCRIPT)) as fh:
+                name, turns, _eng = _parse_transcript(fh.read())
+        except (OSError, ValueError):
+            pass
+        room_name = os.path.basename(program_dir)
+        if not name:
+            name = room_name.replace("-", " ").strip() or room_name
+        sid = uuid.uuid4().hex[:12]
+        sess = _HolodeckSession(program=name, engine=bin_,
+                                mode="design", sidecar_dir=sidecar,
+                                program_dir=program_dir,
+                                target_repo=os.path.abspath(self.repo_root),
+                                engine_recorded=recorded)
+        sess.turns = turns
+        sess.grounded = bool(self._basis_file_in(program_dir))
+        sess.restarted = True
+        # "LAST WORKED" IS A FACT ABOUT DESIGN WORK, and opening a program is
+        # not work. Taking the clock from the room keeps the list's recency line
+        # true after a restart instead of stamping everything "now".
+        when = self._room_mtime(program_dir)
+        if when:
+            sess.opened_at = when
+            sess.last_touched = when
+        with self._holodeck_lock:
+            self._holodeck[sid] = sess
+        meta = self._holodeck_meta(sid, sess)
+        meta["turns"] = [{"text": t.get("text"), "reply": t.get("reply")}
+                         for t in sess.turns]
+        # ROUND 5 — AND WHERE THAT ENGINE CAME FROM. The banner already named
+        # the CLI that answers the next turn, and on a real drive it named the
+        # wrong one honestly: it was reporting the daemon's default. Naming the
+        # SOURCE is what makes the sentence checkable — and a program whose
+        # record predates round 5 gets told exactly that, rather than having
+        # the default read as its own history.
+        if recorded:
+            provenance = (" It is the engine this program was designed on — "
+                          "its own record says so.")
+        else:
+            provenance = (" This program's record does not say which engine it "
+                          "was designed on, so it is running on this "
+                          "viewscreen's default.")
+        meta["warmRestart"] = {
+            "kind": "warm-restart",
+            "message": (
+                "Picked this program back up from its room on disk. The "
+                "conversation that built it is over — the %s that answers your "
+                "next turn is a fresh one, handed the whole transcript (%d turn"
+                "%s) as context. It knows what you decided; it remembers "
+                "nothing itself. Nothing was lost: every turn is in "
+                "transcript.md and the mockup is exactly as you left it.%s"
+                % (os.path.basename(bin_), len(turns),
+                   "" if len(turns) == 1 else "s", provenance)),
+        }
+        meta["status"] = "standing-by"
+        meta["reply"] = ""
+        meta["filesChanged"] = []
+        return meta
+
+    def _room_in_history(self, sidecar, room_name):
+        """HEAD's sha if THIS ROOM is in HEAD's tree — otherwise "".
+
+        The only evidence `recoverable` is allowed to be read off. Fix round 2
+        read it off `committed`, which was true whenever the commit succeeded —
+        and `git add -A` made it succeed on somebody ELSE's untracked files
+        while the room itself had never been recorded at all.
+        """
+        try:
+            proc = subprocess.run([self.git_bin, "-C", sidecar, "ls-tree",
+                                   "--name-only", "HEAD", "--", room_name],
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL)
+            if proc.returncode != 0 or not (proc.stdout or b"").strip():
+                return ""
+            head = subprocess.run([self.git_bin, "-C", sidecar, "rev-parse",
+                                   "HEAD"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL)
+            if head.returncode != 0:
+                return ""
+            return (head.stdout or b"").decode("utf-8", "replace").strip()
+        except OSError:
+            return ""
+
+    def holodeck_delete(self, room=None):
+        """POST /api/holodeck/delete — remove a program, KEEPING its history.
+
+        `git rm` + a commit, never an `rm -rf`: the sidecar is a git repo
+        precisely so that the answer to "I deleted the wrong one" is a checkout
+        rather than an apology. The reply names the commit and the exact command
+        that brings it back.
+
+        FIX ROUND 3, DEFECT 1 — AND IT IS RECORDED BEFORE IT IS REMOVED.
+        `git rm --ignore-unmatch` does nothing at all to an UNTRACKED room, and
+        `shutil.rmtree` below then destroyed it; the `git add -A` afterwards
+        swept up unrelated untracked files so the commit succeeded anyway, and
+        the reply promised a checkout that answered `pathspec … did not match
+        any file(s) known to git`. Round 2 made that the ORDINARY case rather
+        than an edge: `_ensure_transcript` puts the program's record in the room
+        the moment it is named and `_is_program_room` makes such a room
+        deletable, so every program whose first turn has not landed — including
+        the dead-first-turn one that cure was written for — was deletable and
+        uncommitted.
+
+        So the program is committed into the archive FIRST, its own room and
+        nothing else, and the removal only happens once THIS ROOM is provably in
+        history. If it cannot be recorded, nothing is removed and the captain is
+        told so plainly. LCARS never destroys a program while calling it
+        recoverable.
+        """
+        sidecar = self._existing_sidecar()
+        program_dir = self._room_dir(sidecar, room)
+        room_name = os.path.basename(program_dir)
+        # THE BUSY CHECK AND THE CLOSE ARE ONE OPERATION, under the same lock
+        # the turn claim uses. Checked and then popped in two steps, a turn
+        # starting in between would be writing into a room this method is about
+        # to `git rm` — which is the same "a smaller window is not a guard"
+        # mistake the client-side `HOLO.busy` made.
+        want = os.path.realpath(program_dir)
+        sid, sess = None, None
+        with self._holodeck_lock:
+            for k, s in self._holodeck.items():
+                if os.path.realpath(s.program_dir) == want:
+                    sid, sess = k, s
+                    break
+            if sess is not None:
+                if sess.busy:
+                    raise ActionError(
+                        409, "that program has a turn running right now, and "
+                        "deleting its room out from under a worker that is "
+                        "writing into it is how work gets lost. Wait for the "
+                        "turn to come back, or press End Program to stop it, "
+                        "then delete.")
+                # claimed, so nothing can start a turn on it from here on.
+                sess.busy = True
+        name = sess.program if sess is not None else ""
+        if not name:
+            try:
+                with open(os.path.join(program_dir, _TRANSCRIPT)) as fh:
+                    name = _parse_transcript(fh.read())[0]
+            except (OSError, ValueError):
+                name = ""
+        name = name or room_name
+        # ── RECORDED FIRST, REMOVED SECOND ──────────────────────────────────
+        # ONLY THIS ROOM IS STAGED. The captain's own files in the archive are
+        # his (his ruling), and leaning on them is precisely how the old commit
+        # "succeeded" over a room git had never heard of.
+        with self._sidecar_git_lock(sidecar):
+            try:
+                self._git(sidecar, ["add", "-A", "--", room_name],
+                          "record the program before removing it")
+                # nothing to stage means it is already recorded, and `commit`
+                # says so by failing — which is the same answer.
+                self._git(sidecar,
+                          ["commit", "-q", "--no-gpg-sign", "-m",
+                           "holodeck(%s): recorded the program before deleting "
+                           "it" % name],
+                          "record the program before removing it")
+            except ActionError:
+                pass
+            base = self._room_in_history(sidecar, room_name)
+        if not base:
+            # NOT DESTROYED. The room is untouched and the program is still
+            # openable; the captain decides what to do with something LCARS
+            # cannot promise to bring back.
+            if sess is not None:
+                sess.busy = False
+            raise ActionError(
+                502, "LCARS could not record %s in the holodeck archive's git "
+                "history, so removing it now would destroy it for good — and it "
+                "will not do that while telling you it is recoverable. NOTHING "
+                "HAS BEEN REMOVED: the program is still in its room at %s. Copy "
+                "that folder somewhere safe (or fix git in the archive), then "
+                "delete it again." % (room_name, program_dir))
+        if sess is not None:
+            with self._holodeck_lock:
+                self._holodeck.pop(sid, None)
+            sess.done = True
+            _kill_process_group(sess.proc)
+        committed = True
+        with self._sidecar_git_lock(sidecar):
+            try:
+                self._git(sidecar,
+                          ["rm", "-r", "-q", "--ignore-unmatch", "--",
+                           room_name],
+                          "remove the program from the holodeck archive")
+            except ActionError:
+                committed = False
+            if os.path.isdir(program_dir):
+                # whatever git did not track (a turn whose commit failed) still
+                # has to leave the working tree, or the room reappears in the
+                # list a second later.
+                shutil.rmtree(program_dir, ignore_errors=True)
+            try:
+                self._git(sidecar, ["add", "-A", "--", room_name],
+                          "stage the deletion")
+            except ActionError:
+                pass
+            try:
+                self._git(sidecar, ["commit", "-q", "--no-gpg-sign", "-m",
+                                    "holodeck(%s): deleted the program — its "
+                                    "history is kept" % name],
+                          "commit the deletion")
+            except ActionError:
+                committed = False
+            sha = ""
+            try:
+                proc = subprocess.run([self.git_bin, "-C", sidecar, "rev-parse",
+                                       "HEAD"], stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL)
+                if proc.returncode == 0:
+                    sha = (proc.stdout or b"").decode("utf-8", "replace").strip()
+            except OSError:
+                sha = ""
+        # `base` is the commit that PROVABLY holds this room — checked above,
+        # by name, before a byte of it was removed. It is the sha the command
+        # names, and it is the same command whether or not the removal itself
+        # was committed.
+        recover = ("`git -C %s checkout %s -- %s` brings every file of it back "
+                   "exactly as it was." % (sidecar, base[:7], room_name))
+        if committed:
+            message = ("Deleted %s from the deck. It is not gone: LCARS "
+                       "recorded the whole program in the archive's git history "
+                       "before removing it, so %s" % (room_name, recover))
+        else:
+            message = ("Removed %s from the deck. Git could not commit the "
+                       "removal itself, so the archive still shows it as "
+                       "deleted-but-uncommitted — but the program WAS recorded "
+                       "first, so %s" % (room_name, recover))
+        return {"deleted": room_name, "program": name, "commit": sha,
+                "committed": committed, "recoverable": True,
+                "sidecar": sidecar,
+                "commits": self._sidecar_commit_count(sidecar),
+                "message": message}
+
     # ── the seam itself ────────────────────────────────────────────────────
     @staticmethod
     def _switch_to_design(sess):
@@ -3056,12 +3787,42 @@ class Actions(LogFacts):
     def _basis_file(self, sess):
         """`basis.md` if this program actually has one on disk (D12: the header
         links to it). Never a name the surface would then 404 on."""
+        return self._basis_file_in(sess.program_dir)
+
+    @staticmethod
+    def _basis_file_in(program_dir):
+        """The same question asked of a ROOM rather than a live session — S126's
+        list reads rooms off disk, and a second copy of this rule is exactly how
+        a live card and a restarted one start disagreeing."""
         try:
-            if os.path.isfile(os.path.join(sess.program_dir, "basis.md")):
+            if os.path.isfile(os.path.join(program_dir, "basis.md")):
                 return "basis.md"
         except OSError:
             pass
         return None
+
+    @classmethod
+    def _concept_file_in(cls, program_dir):
+        """`concept.md` if this program has one WITH SOMETHING IN IT, else None.
+
+        FIX ROUND 2. This key is what makes the deck's ▤ Intent control
+        openable, and it was keyed off existence alone — so on the very turn
+        the audit correctly reported "there is a file in the room with nothing
+        in it", the control opened that blank file in a new tab. Same rule as
+        `_basis_file_in`: never a name the surface then shows nothing for.
+        The audit is unchanged; it reports the file's existence and its
+        emptiness as the separate facts they are.
+        """
+        path = os.path.join(program_dir, _CONCEPT)
+        try:
+            if not os.path.isfile(path):
+                return None
+            with open(path) as fh:
+                if not fh.read().strip():
+                    return None
+        except OSError:
+            return None
+        return _CONCEPT
 
     def _holodeck_meta(self, sid, sess):
         # S125 additions are all ADDITIVE (D2/D3/D6/D8): `previewFile` is what
@@ -3076,6 +3837,18 @@ class Actions(LogFacts):
                 # carry it — it moves to "design" after the opening pass.
                 "grounded": bool(sess.grounded),
                 "basisFile": self._basis_file(sess),
+                # S126 — this program has a live conversation, so it is not one
+                # of the rooms the list read off disk.
+                "onDisk": False,
+                "restarted": bool(sess.restarted),
+                # S126 FIX ROUND 2 — IS THERE A WARM WORKER SESSION TO RESUME?
+                # `sess.started` is the daemon's own answer (the same evidence
+                # N4's cure is keyed off: files or a clean exit, never a
+                # reply), and the deck's `WARM · <engine>` pill was ASSERTING
+                # it — two inches under the banner saying the warm conversation
+                # died with the daemon that held it. One voice, one fact.
+                "warm": bool(sess.started),
+                "conceptFile": self._concept_file_in(sess.program_dir),
                 "sidecar": sess.sidecar_dir, "programDir": sess.program_dir,
                 # THE DISCRIMINATOR (round 2). Two names that read the same —
                 # a homoglyph, a name the collision check cannot honestly
@@ -3083,6 +3856,9 @@ class Actions(LogFacts):
                 # lets the program list show a captain which card is which.
                 "room": os.path.basename(sess.program_dir),
                 "engine": sess.engine or self.worker_bin,
+                # ROUND 5 — WHERE THAT ENGINE CAME FROM. The surface may say a
+                # program was DESIGNED on an engine only when this is true.
+                "engineRecorded": bool(sess.engine_recorded),
                 "turnCount": len(sess.turns),
                 "status": "draft",
                 "previewFile": self._preview_file(sess),
@@ -3107,15 +3883,21 @@ class Actions(LogFacts):
     _PREVIEW_PREFERRED = "mockup.html"
 
     def _preview_file(self, sess):
+        return self._preview_file_in(sess.program_dir)
+
+    @classmethod
+    def _preview_file_in(cls, program_dir):
+        """The preview choice, asked of a ROOM. One rule, used by both the live
+        session and S126's on-disk listing."""
         try:
-            names = sorted(os.listdir(sess.program_dir))
+            names = sorted(os.listdir(program_dir))
         except OSError:
             return None
-        if self._PREVIEW_PREFERRED in names:
-            return self._PREVIEW_PREFERRED
+        if cls._PREVIEW_PREFERRED in names:
+            return cls._PREVIEW_PREFERRED
         for name in names:
             if name.lower().endswith((".html", ".htm")):
-                if os.path.isfile(os.path.join(sess.program_dir, name)):
+                if os.path.isfile(os.path.join(program_dir, name)):
                     return name
         return None
 
@@ -3138,21 +3920,154 @@ class Actions(LogFacts):
         except ValueError:
             return 0
 
-    def holodeck_list(self):
-        """GET /api/holodeck — every program this daemon is holding.
+    # ── S126 (#2): the rooms on disk ───────────────────────────────────────
+    # The sidecar IS the archive, so the program list is a read of the disk with
+    # the live conversations laid over it — not the other way round. Before
+    # this, `holodeck_list` returned only `_HolodeckSession`s, so a daemon
+    # restart emptied a list whose contents had never left the filesystem.
+    @staticmethod
+    def _room_mtime(program_dir):
+        """When this program was last WORKED, from the room itself.
 
-        IN-MEMORY, and honestly so: these are the live `_HolodeckSession`s, so a
-        daemon restart empties the list (durable programs are S126). Every entry
-        is `draft` — the sent/done lifecycle is S126/S127 — which is why the
-        surface's filter chips filter but do not TRANSITION anything.
+        Reopening a program does NOT move this: "last worked" is a fact about
+        design work, and resetting it on a mere open is how a list of twelve
+        programs stops being able to answer "which one was that".
+        """
+        newest = 0.0
+        try:
+            newest = os.path.getmtime(program_dir)
+        except OSError:
+            return 0.0
+        try:
+            for entry in os.scandir(program_dir):
+                try:
+                    newest = max(newest, entry.stat().st_mtime)
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        return newest
+
+    def _disk_program(self, sidecar, room, commits=None):
+        """One room on disk, in the SAME shape `_holodeck_meta` produces — plus
+        `onDisk`, and a `sessionId` of None because there honestly isn't one.
+
+        `commits` is passed in by `_disk_programs` because it is a property of
+        the SIDECAR, not of the room: counted per room it is one `git rev-list`
+        subprocess per program on every listing, for the same number every time.
+        """
+        program_dir = os.path.join(sidecar, room)
+        name, turns, recorded_engine = "", [], ""
+        try:
+            with open(os.path.join(program_dir, _TRANSCRIPT)) as fh:
+                name, turns, recorded_engine = _parse_transcript(fh.read())
+        except (OSError, ValueError):
+            pass
+        if not name:
+            # LAST RESORT ONLY (fix round 2). Every program's record is opened
+            # with its name at the moment the captain types it, so this is
+            # reached only by a transcript whose heading is gone — the slug is
+            # LOSSY and reading a name back out of it is defect 4 itself.
+            name = room.replace("-", " ").strip() or room
+        when = self._room_mtime(program_dir)
+        # ROUND 5 — THE ENGINE THIS PROGRAM WAS BUILT ON, when its own record
+        # names one. The listing used to answer the daemon's default for every
+        # room in the archive, which is how a claude-built program came to read
+        # `engine: /opt/homebrew/bin/copilot` after a restart. It is NOT
+        # resolved here (a listing must not 502 over an engine that is no
+        # longer installed) — reopening does that, and says so.
+        engine = recorded_engine or (self.worker_bin or "").strip()
+        return {
+            "sessionId": None, "onDisk": True, "program": name,
+            "mode": "design", "grounded": bool(self._basis_file_in(program_dir)),
+            "basisFile": self._basis_file_in(program_dir),
+            # a room on disk is by definition not a conversation, so there is
+            # nothing warm about it.
+            "warm": False,
+            "sidecar": sidecar, "programDir": program_dir, "room": room,
+            "engine": engine, "engineRecorded": bool(recorded_engine),
+            "turnCount": len(turns), "status": "draft",
+            "previewFile": self._preview_file_in(program_dir),
+            "conceptFile": self._concept_file_in(program_dir),
+            "sidecarName": os.path.basename(sidecar),
+            "commits": (self._sidecar_commit_count(sidecar)
+                        if commits is None else commits),
+            "openedAt": when, "lastTouched": when,
+            "turns": turns,
+        }
+
+    @staticmethod
+    def _is_program_room(program_dir):
+        """Is this directory one of the HOLODECK'S OWN programs?
+
+        FIX ROUND 2, defect 7. The answer used to be "it is a directory", and
+        the sidecar is advertised to the captain as HIS archive — a git repo
+        beside his project that he can back up and keep things in. So a dropped
+        `screenshots-i-saved/` was listed as a program called `screenshots i
+        saved` with 0 turns and a working ⌫ DELETE that `git rm`'d it.
+
+        A program is a room with the program's own record in it. That record is
+        written the moment the captain names the program (`_ensure_transcript`)
+        and is never removed while the program exists, so this is one question
+        with one answer — not a guess about what the folder might contain.
+        """
+        try:
+            return os.path.isfile(os.path.join(program_dir, _TRANSCRIPT))
+        except OSError:                          # pragma: no cover - defensive
+            return False
+
+    def _disk_programs(self, sidecar):
+        out = []
+        if not sidecar or not os.path.isdir(sidecar):
+            return out
+        try:
+            names = sorted(os.listdir(sidecar))
+        except OSError:
+            return out
+        commits = self._sidecar_commit_count(sidecar)
+        for name in names:
+            if name.startswith("."):      # `.git` and friends are not programs
+                continue
+            path = os.path.join(sidecar, name)
+            if not os.path.isdir(path):
+                continue
+            # THE CAPTAIN'S OWN FOLDERS ARE HIS. Anything in the archive that
+            # is not a program is left alone and never listed as one.
+            if not self._is_program_room(path):
+                continue
+            out.append(self._disk_program(sidecar, name, commits=commits))
+        return out
+
+    def holodeck_list(self):
+        """GET /api/holodeck — every program in this repo's holodeck.
+
+        THE DISK IS THE LIST; the live `_HolodeckSession`s are laid over it, so
+        a program that this daemon never opened still appears, with its turn
+        count read out of its own transcript. Every entry is `draft` — the
+        sent/done lifecycle is S127 — which is why the surface's filter chips
+        filter but do not TRANSITION anything.
         """
         with self._holodeck_lock:
             items = list(self._holodeck.items())
         out = []
+        live_rooms = set()
         for sid, sess in items:
             meta = self._holodeck_meta(sid, sess)
             meta["turns"] = [{"text": t.get("text"), "reply": t.get("reply")}
                              for t in sess.turns]
+            meta["onDisk"] = False
+            out.append(meta)
+            live_rooms.add(os.path.realpath(sess.program_dir))
+        try:
+            sidecar_now = self._sidecar_path(self.repo_root)
+        except ActionError:
+            sidecar_now = ""
+        for meta in self._disk_programs(sidecar_now):
+            # A LIVE PROGRAM IS LISTED ONCE. Its room is on disk too, and a
+            # second card for it would be two cards a captain cannot tell apart
+            # — one of which cannot be typed into.
+            if os.path.realpath(meta["programDir"]) in live_rooms:
+                continue
             out.append(meta)
         out.sort(key=lambda m: m.get("lastTouched") or 0, reverse=True)
         # THE HEADER IS WHAT THE SURFACE NEEDS BEFORE A PROGRAM EXISTS, and both
@@ -3318,7 +4233,44 @@ class Actions(LogFacts):
                  "--dangerously-skip-permissions"]
         return args
 
-    def _run_turn(self, sid, sess, prompt):
+    # ── S126: one turn at a time, per program, enforced HERE ───────────────
+    # The deck's `HOLO.busy` is a courtesy that only binds the tab it runs in.
+    # Two overlapping `/say` on one program both spawned a worker on the SAME
+    # warm session id; the second overwrote `sess.proc`, so `end` could no
+    # longer stop the first and could report a settled file list about a turn
+    # that was still writing. Now that every turn also commits the room, the two
+    # would additionally be staging one working tree at once.
+    #
+    # The check and the claim are ONE operation under `_holodeck_lock` — a
+    # `if busy: … ; busy = True` outside a lock is not a guard, it is a smaller
+    # window.
+    def _claim_turn(self, sess):
+        with self._holodeck_lock:
+            if sess.busy:
+                raise ActionError(
+                    409,
+                    "this program is already working on a turn — the holodeck "
+                    "runs one at a time in a room, because two turns would be "
+                    "writing the same files. Nothing was lost: what you just "
+                    "typed has not been sent. Wait for the reply, or press End "
+                    "Program to stop the turn that is running, then say it "
+                    "again.")
+            sess.busy = True
+
+    def _release_turn(self, sess):
+        with self._holodeck_lock:
+            sess.busy = False
+
+    def _sidecar_git_lock(self, sidecar):
+        key = os.path.realpath(sidecar or "")
+        with self._sidecar_locks_lock:
+            lock = self._sidecar_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._sidecar_locks[key] = lock
+            return lock
+
+    def _run_turn(self, sid, sess, prompt, claimed=False):
         """Run one turn with the session marked UNSETTLED for its duration.
 
         The event is the handshake `end` waits on (D2, round 1). `holodeck_end`
@@ -3331,6 +4283,8 @@ class Actions(LogFacts):
         (payload, ActionError, unexpected exception) releases it and no `end`
         can be left waiting on a turn that already died.
         """
+        if not claimed:
+            self._claim_turn(sess)
         sess.turn_settled.clear()
         sess.last_touched = time.time()   # S125 (D8): the list's recency clock
         try:
@@ -3345,6 +4299,10 @@ class Actions(LogFacts):
         finally:
             sess.last_touched = time.time()
             sess.turn_settled.set()
+            # ALWAYS, on every exit path. A claim that leaks on the error path
+            # bricks the program permanently, which is the dead-end class S125's
+            # N4 fix existed to close.
+            self._release_turn(sess)
 
     def _end_settle_timeout(self):
         """How long `end` waits for an in-flight turn's audit + commit to land
@@ -3521,6 +4479,13 @@ class Actions(LogFacts):
                 None if side_complete else side_cap),
         }
         payload["warning"] = warning
+        # S126 (#3) — the concept-doc audit. ALWAYS present on a turn payload,
+        # with the outcome named, so "the daemon audits concept.md" is a state
+        # the surface can render rather than a silent pass. It never writes the
+        # file it is auditing: an audit that manufactures its own clean result
+        # certifies nothing (and the hand-off would then carry a document no
+        # human ever agreed with).
+        payload["conceptAudit"] = self._concept_audit(sess, changed)
         # A STRAY CHANGE OUTRANKS EVERY OTHER OUTCOME. Even a turn that died or
         # said nothing must surface a file that changed in the captain's project.
         if strays or bad_blocks:
@@ -3564,6 +4529,9 @@ class Actions(LogFacts):
                     "hand; say it again and ask for the file to be written "
                     "into the program's room."),
             }
+            # The turn still HAPPENED, and the archive is the record of what
+            # happened — including the turn where the engine could not write.
+            self._commit_turn(sess, changed, payload)
             return payload
         # Nothing changed and nothing to keep. HOLODECK OFFLINE (D7): lead with
         # what survived, then say what happened. Reporting either of these as
@@ -3588,17 +4556,243 @@ class Actions(LogFacts):
                      " — your program is safe and the chat is still running; "
                      "say it again to retry." % os.path.basename(bin_))
         payload["status"] = "unverified" if warning else "ok"
+        # A CONVERSATIONAL TURN IS STILL A TURN. It changed no file, so before
+        # S126 it was committed nowhere and lived only in daemon memory — and
+        # the sentence a decision was actually made in is usually one of these.
+        self._commit_turn(sess, changed, payload)
         return payload
 
     def _commit_turn(self, sess, changed, payload):
-        """Commit the turn, then RE-READ the commit count into the payload.
+        """Record the turn in `transcript.md`, commit the room, then RE-READ the
+        commit count into the payload.
 
         `_holodeck_meta` runs before the commit exists, so a turn that made the
         sidecar's second commit answered `commits: 1` — the footer self-corrected
         on the next poll, which meant the payload was quietly wrong and only a
         consumer that polled ever saw the truth."""
+        failed = self._append_transcript(sess, changed)
         self._sidecar_commit(sess, changed)
         payload["commits"] = self._sidecar_commit_count(sess.sidecar_dir)
+        if failed:
+            self._surface_transcript_failure(payload)
+
+    # ── FIX ROUND 1a — a transcript that could NOT be written SAYS SO ───────
+    def _surface_transcript_failure(self, payload):
+        """The one path where "your work is on disk" is not true.
+
+        The append stays best-effort — a filesystem hiccup must never throw
+        away a mockup that landed — but best-effort is not the same as SILENT,
+        and round 1 returned a flat `ok` for a turn whose conversation was
+        never recorded. The captain would find that out at S127's hand-off,
+        with nothing to do about it.
+
+        It never OVERWRITES a warning that is already there (a truncated audit
+        is its own fact); it appends, so both are told under one banner.
+        """
+        # TRUE ON EVERY PATH IT CAN REACH, including a conversational turn that
+        # wrote no file at all — "this turn's mockup is saved" would be a lie
+        # about one of those.
+        note = ("The mockup and everything else this program has written are "
+                "safe and committed, but LCARS could not append this turn's "
+                "exchange to transcript.md — the written record of the "
+                "conversation is missing this turn. Check the program's room "
+                "is writable; saying it again will record the turn from here.")
+        warn = payload.get("warning")
+        if warn:
+            warn["message"] = "%s %s" % (warn.get("message", "").strip(), note)
+        else:
+            payload["warning"] = {"kind": "transcript-unwritten",
+                                  "message": note}
+        # AND ON THE ONE PATH THAT OUTRANKS THE WARNING (fix round 2). `refused`
+        # is a whole account of its own and the deck renders that branch ALONE,
+        # so a turn that was refused AND lost its transcript said nothing about
+        # the transcript — the captain would never learn his conversation was
+        # not recorded. Appended for the same reason the warning is: one banner,
+        # both facts, one voice.
+        ref = payload.get("refused")
+        if ref:
+            ref["message"] = "%s %s" % (ref.get("message", "").strip(), note)
+        payload["transcriptWritten"] = False
+        # `refused` already outranks everything and says its own thing; every
+        # other status has just claimed more than it can.
+        if payload.get("status") in (None, "ok"):
+            payload["status"] = "unverified"
+
+    # ── S126 (#1): the transcript ──────────────────────────────────────────
+    @staticmethod
+    def _ensure_transcript(program_dir, program, engine=None):
+        """Open the program's record with the NAME THE CAPTAIN TYPED — and, as
+        of fix round 5, the ENGINE IT IS BEING BUILT ON.
+
+        FIX ROUND 2, defect 4. `transcript.md`'s `# ` heading was already the
+        one durable home a program's name had — it was simply written on the
+        FIRST TURN, so until a turn landed the only thing on disk was the room,
+        and a room is a SLUG. A restart therefore read `Ensuite Floor Picker`
+        back as `ensuite floor picker`, `holodeck_open` adopted that as the
+        real name, and from the next turn on it was cemented: the transcript
+        header, every commit message, and the delete confirmation. Any program
+        whose first turn had not landed lost its name — including one whose
+        first turn DIED, the most ordinary failure this product has.
+
+        No second source of truth is introduced: the same file, the same
+        heading, the same reader (`_parse_transcript`), written at the moment
+        the name exists. `_append_transcript` only writes the header when the
+        file is FRESH, so the first turn appends under this one.
+
+        ROUND 5 puts the engine here for exactly the same reason and at exactly
+        the same moment. A program whose FIRST TURN DIED — the most ordinary
+        failure this product has — still knows what it was opened on, and a
+        restart therefore cannot re-point it at the daemon's default.
+
+        Returns True if it could not be written.
+        """
+        path = os.path.join(program_dir, _TRANSCRIPT)
+        try:
+            # "x" — an existing record is never rewritten. A re-created name
+            # ADOPTS its old room (see `_room_already_holds_work`), and that
+            # room's transcript is the earlier program's own history.
+            with open(path, "x") as fh:
+                fh.write(_transcript_header(program, engine))
+        except FileExistsError:
+            # a real record already there is exactly right; anything ELSE
+            # sitting on that path (a directory, say) means the room cannot
+            # hold one, and saying so beats discovering it a turn later.
+            return not os.path.isfile(path)
+        except OSError:
+            return True
+        return False
+
+    def _append_transcript(self, sess, changed):
+        """Append THIS turn's exchange to the program's `transcript.md`.
+
+        Called only from the paths where a turn actually LANDED. A turn that
+        died raises before this, so the retry — which reuses the same pending
+        turn record (S125's N6 rule) — writes the captain's line exactly once.
+        A file this appended twice would be a durable version of the defect S125
+        cured in memory.
+
+        Best-effort like the commit it precedes: the design work is already on
+        disk and a filesystem hiccup must never turn a good turn into an error.
+        It RETURNS whether the append failed (fix round 1a) so the caller can
+        say so — best-effort, but never silent.
+        """
+        if not sess.turns:
+            return False
+        turn = sess.turns[-1]
+        text = turn.get("text")
+        # S126 (#6) — THE FILE GETS THE PROSE. The chat keeps the trace and
+        # folds it; the durable record does not carry it, because this file is
+        # replayed into the next worker's prompt and handed to Align. The
+        # captain's own line is never touched by anything.
+        reply = _strip_tool_trace(turn.get("reply"),
+                                  sess.engine or self.worker_bin)
+        grounding = (sess.mode == "grounding")
+        room = os.path.basename(sess.program_dir)
+        files = []
+        for c in (changed or []):
+            rel = c["path"] if isinstance(c, dict) else str(c)
+            # FIX ROUND 4 — ONLY THIS PROGRAM'S OWN ROOM. `changed` is a diff of
+            # the WHOLE sidecar, so with two programs open at once the other
+            # room's writes land in this turn's snapshot window. Measured live:
+            # the Theme Switcher's record permanently read `_Files this turn:
+            # command-palette/basis.md, command-palette/transcript.md,
+            # concept.md, mockup.html_` — two of those are another program's.
+            # Nothing on disk was wrong (the commit is scoped, `git add --
+            # <room>`); the durable record simply lied about who did what. This
+            # is the SAME scoping the commit already uses, so the line names
+            # exactly what the commit beneath it holds.
+            if not rel.startswith(room + "/"):
+                continue
+            rel = rel[len(room) + 1:]
+            if rel and rel not in files:
+                files.append(rel)
+        path = os.path.join(sess.program_dir, _TRANSCRIPT)
+        try:
+            fresh = not os.path.exists(path)
+            with open(path, "a") as fh:
+                if fresh:
+                    fh.write(_transcript_header(sess.program,
+                                                sess.engine
+                                                or self.worker_bin))
+                fh.write(_transcript_entry(len(sess.turns), text, reply, files,
+                                           grounding=grounding))
+        except OSError:
+            return True
+        return False
+
+    # ── S126 (#3): the concept-doc audit ───────────────────────────────────
+    def _concept_audit(self, sess, changed):
+        """Did this turn leave the program's written half in a legible state?
+
+        The rule is deliberately narrow, because a check that fires on every
+        turn is a check people learn to ignore: a turn that CHANGED THE MOCKUP
+        must leave a `concept.md` in the room WITH SOMETHING IN IT (fix round
+        1a — an empty one used to pass). Whether it also changed on this
+        turn is REPORTED as a fact (`updated`) and is not a failure — a colour
+        tweak needs no new prose, and calling that "stale" would be noise.
+        """
+        room = os.path.basename(sess.program_dir)
+        touched = []
+        for c in (changed or []):
+            rel = c["path"] if isinstance(c, dict) else str(c)
+            if rel == room or rel.startswith(room + "/"):
+                touched.append(rel[len(room) + 1:] if rel != room else "")
+        mockup_moved = any(t.lower().endswith((".html", ".htm"))
+                           for t in touched)
+        updated = _CONCEPT in touched
+        # FIX ROUND 1a — EXISTENCE IS TOO LOW A BAR. A zero-byte `concept.md`
+        # audited `ok`, under "concept.md was updated alongside the mockup" —
+        # and that file is what S127 hands to Align. `exists` still reports the
+        # plain fact (the file IS there); `has_words` is what the audit judges.
+        exists = False
+        has_words = False
+        try:
+            cpath = os.path.join(sess.program_dir, _CONCEPT)
+            exists = os.path.isfile(cpath)
+            if exists:
+                with open(cpath) as fh:
+                    has_words = bool(fh.read().strip())
+        except OSError:
+            pass
+        if sess.mode != "design":
+            return {"file": _CONCEPT, "status": "not-applicable",
+                    "exists": exists, "updated": False,
+                    "message": "A grounding pass builds no mockup, so there is "
+                               "nothing for the concept doc to describe yet."}
+        if not mockup_moved:
+            return {"file": _CONCEPT, "status": "not-applicable",
+                    "exists": exists, "updated": updated,
+                    "message": "The mockup did not change this turn."}
+        if not has_words:
+            # ONE STATUS FOR BOTH, on purpose: an empty file and no file are
+            # the same thing to the captain and to Align, and `missing` is the
+            # only status the deck renders the notice for. The MESSAGE tells
+            # the two apart, because "still has no concept.md" would be a lie
+            # about a file he can see in the room.
+            return {
+                "file": _CONCEPT, "status": "missing", "exists": exists,
+                "empty": exists, "updated": False,
+                "message": (
+                    ("The mockup changed and this program's concept.md is "
+                     "empty — there is a file in the room with nothing in it."
+                     if exists else
+                     "The mockup changed but this program still has no "
+                     "concept.md.")
+                    + " That file is the written half of the design — "
+                    "the problem, the decisions, the open questions, what it "
+                    "must do, and the declared flow of its screens — and it is "
+                    "what a Mission is handed at the end. LCARS will not write "
+                    "it for you: ask for it in the chat and the holodeck will "
+                    "keep it current from here."),
+            }
+        return {
+            "file": _CONCEPT, "status": "ok", "exists": True, "empty": False,
+            "updated": updated,
+            "message": ("concept.md was updated alongside the mockup."
+                        if updated else
+                        "concept.md is in the program's room; this turn did "
+                        "not change it."),
+        }
 
     def _turn_timeout(self):
         """How long ONE holodeck turn may run before LCARS stops it.
@@ -3698,13 +4892,23 @@ class Actions(LogFacts):
         if not opening:
             return
         path = os.path.join(sess.program_dir, "basis.md")
+        # S126 (#6) — the engine's tool trace is plumbing, and this file is the
+        # design's foundation: it is linked from D12's chip, read by the
+        # captain, and quoted into every design turn's prompt.
+        #
+        # `or reply` is the one place the strip YIELDS. A basis the recognizer
+        # emptied is far likelier to be a misclassification than a grounding
+        # pass that genuinely reported nothing, and an empty `basis.md` breaks
+        # the chip and hands the design turns nothing at all. A wrong call must
+        # cost a click, never the content.
+        body = _strip_tool_trace(reply, sess.engine or self.worker_bin) or reply
         try:
             with open(path, "w") as fh:
                 fh.write("# Design basis — %s\n\n"
                          "What the holodeck found by reading %s, read-only. "
                          "Correct anything wrong here: it is what the mockup "
                          "is built from.\n\n%s\n"
-                         % (sess.program, sess.target_repo, reply))
+                         % (sess.program, sess.target_repo, body))
         except OSError as exc:
             raise ActionError(502, "could not write the grounding basis: %s"
                               % exc)
@@ -3737,6 +4941,46 @@ class Actions(LogFacts):
                 "this machine. Check the engine you picked, or the daemon's "
                 "$LCARS_WORKER_BIN." % bin_)
         return bin_
+
+    @staticmethod
+    def _recorded_engine(program_dir):
+        """The engine THIS PROGRAM'S OWN RECORD names, or "" if it names none.
+
+        One read of the one file. A record written before fix round 5 has no
+        engine line, and "" means UNKNOWN — never the default, which is the
+        substitution the whole bug was made of."""
+        try:
+            with open(os.path.join(program_dir, _TRANSCRIPT)) as fh:
+                return _parse_transcript(fh.read())[2]
+        except (OSError, ValueError):
+            return ""
+
+    def _program_engine(self, program_dir, engine=None):
+        """THE RESOLUTION RULE, in one sentence: an engine the caller asked for
+        outright wins; otherwise the engine RECORDED for this program; and only
+        when neither exists does the daemon's own default apply.
+
+        Returns (bin, recorded) — `recorded` says the answer came out of the
+        program's record, which is the only case the surface may describe as
+        what the program was DESIGNED on.
+        """
+        asked = (engine or "").strip()
+        if asked:
+            return self._resolve_holodeck_engine(asked), False
+        found = self._recorded_engine(program_dir)
+        if found:
+            # NEVER QUIETLY MOVED. Falling back to the default here is the bug
+            # itself, so an engine that is no longer on this machine is said
+            # out loud with the two things that actually fix it.
+            if not shutil.which(found):
+                raise ActionError(
+                    502, "this program's own record says it was designed on %s,"
+                    " and that is not an executable on this machine. LCARS will"
+                    " not quietly move a program to a different engine — "
+                    "install it, or reopen the program naming the engine you "
+                    "want it to run on." % found)
+            return found, True
+        return self._resolve_holodeck_engine(None), False
 
     def _audit_cap(self):
         """How many files the walk over the CAPTAIN'S PROJECT will look at
@@ -3852,18 +5096,50 @@ class Actions(LogFacts):
         return proc
 
     def _sidecar_commit(self, sess, changed):
-        """Commit this turn's files. BEST-EFFORT by design: the captain's design
-        work is already on disk, and a git hiccup must never turn a good turn
-        into an error. It is what makes "every turn is committed" (D7) true."""
-        if not changed:
-            return
+        """Commit this turn. BEST-EFFORT by design: the captain's design work is
+        already on disk, and a git hiccup must never turn a good turn into an
+        error. It is what makes "every turn is committed" (D7) true.
+
+        S126 changed two things here.
+
+        1. NO EARLY RETURN ON AN EMPTY FILE LIST. A turn that only answered a
+           question changed nothing the worker wrote — but it still appended the
+           exchange to `transcript.md`, and it is usually the turn a decision
+           was actually made in. Committing only file-writing turns left the
+           conversation out of the archive that exists to hold it.
+
+        2. THE MESSAGE IS THE TURN'S SUMMARY, not `turn 3`. `git log --oneline`
+           over the sidecar is meant to BE the program's audit trail; a column
+           of serial numbers is not one.
+
+        S126 FIX ROUND 3 — LEAVE THE CAPTAIN'S FILES ALONE (his ruling). The
+        staging was `git add -A` over the WHOLE sidecar, so a turn commit read
+        `holodeck(Ensuite Floor Picker): turn 4 — Tighten it.` over a
+        `notes/roadmap.md` he had dropped in the archive and over a SECOND
+        program's `transcript.md`. The round's headline claim is that this log
+        IS the program's audit trail; a log that attributes his own files to a
+        design turn he never made is not one. Staging is the program's OWN ROOM
+        and nothing else: his files stay untracked, in his repo, and he commits
+        them when he wants.
+
+        Serialised per sidecar: `add` + `commit` share one index, and two
+        programs landing together raced on `index.lock` — a failure this method
+        swallows by design, so the lost commit was silent.
+        """
+        n = max(1, len(sess.turns))
+        turn = sess.turns[-1] if sess.turns else {}
+        summary = _turn_summary(turn.get("text"),
+                                grounding=(sess.mode == "grounding"))
+        room = os.path.basename(os.path.normpath(sess.program_dir))
         try:
-            self._git(sess.sidecar_dir, ["add", "-A"], "stage the turn")
-            self._git(sess.sidecar_dir,
-                      ["commit", "-q", "--no-gpg-sign", "-m",
-                       "holodeck(%s): turn %d" % (sess.program,
-                                                  max(1, len(sess.turns)))],
-                      "commit the turn")
+            with self._sidecar_git_lock(sess.sidecar_dir):
+                self._git(sess.sidecar_dir, ["add", "-A", "--", room],
+                          "stage the turn")
+                self._git(sess.sidecar_dir,
+                          ["commit", "-q", "--no-gpg-sign", "-m",
+                           "holodeck(%s): turn %d — %s"
+                           % (sess.program, n, summary)],
+                          "commit the turn")
         except ActionError:
             pass
 
@@ -3921,12 +5197,61 @@ class Actions(LogFacts):
             "```file:mockup.html\n<!doctype html> ...\n```\n"
             "The path is relative to your working directory. A fence with no "
             "declared path is treated as ordinary markdown and written nowhere.\n\n"
+            "%s\n\n"
             "REPLY SHORT: a sentence or two on what you changed and what you "
             "want decided next. The captain reads the mockup, not your prose."
-            "%s\n\n"
+            "%s%s\n\n"
             "The captain says: %s" % (sess.program, sess.program_dir,
+                                      _CONCEPT_CONTRACT,
                                       self._basis_clause(sess),
+                                      self._replay_clause(sess),
                                       text or "Start us off."))
+
+    def _replay_clause(self, sess):
+        """S126 (#2) — what a WARM RESTART hands its fresh worker.
+
+        A rebuilt program's worker is not the one that built it and has no
+        memory of a single turn, so the opening prompt carries the record. It is
+        BOUNDED and says so when it truncates: a design chat that ran all
+        afternoon must not turn its next opening turn into a prompt the size of
+        a stylesheet, and silently dropping the front of a transcript would be
+        the archive lying about itself.
+        """
+        if not sess.restarted:
+            return ""
+        path = os.path.join(sess.program_dir, _TRANSCRIPT)
+        try:
+            with open(path) as fh:
+                body = fh.read()
+        except OSError:
+            body = ""
+        if not body.strip():
+            return ("\n\nYOU ARE PICKING THIS PROGRAM BACK UP. It already has a "
+                    "room on disk (the files beside you) but no transcript, so "
+                    "there is no conversation to read — look at what is there "
+                    "and carry on from it. You are a FRESH session: nothing "
+                    "about this program is in your memory.")
+        cap = self._replay_cap()
+        cut = ""
+        if len(body) > cap:
+            body = body[-cap:]
+            cut = ("\n\n(Only the most recent part of the transcript is quoted "
+                   "here — read `transcript.md` in your working directory for "
+                   "all of it.)")
+        return ("\n\nWHAT HAS HAPPENED SO FAR — you are picking this program "
+                "back up, and you are a FRESH session: none of this is in your "
+                "memory, so read it. The whole record is `transcript.md` in "
+                "your working directory, and every file it mentions is already "
+                "on disk beside you. Carry on from where it stops; do not start "
+                "the mockup over.%s\n\n%s" % (cut, body.strip()))
+
+    @staticmethod
+    def _replay_cap():
+        try:
+            return max(500, int(os.environ.get(
+                "LCARS_HOLODECK_REPLAY_MAX_CHARS") or 16000))
+        except ValueError:
+            return 16000
 
     def _basis_clause(self, sess):
         """The grounded program's opening design turn must be TOLD what the

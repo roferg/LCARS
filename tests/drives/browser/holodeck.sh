@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# S125 — THE HOLODECK, IN A REAL BROWSER.
+# S125/S126 — THE HOLODECK, IN A REAL BROWSER.
 #
 #   bash tests/drives/browser/holodeck.sh              # the product
 #   bash tests/drives/browser/holodeck.sh --calibrate  # the RED CONTROLS
@@ -25,20 +25,44 @@
 # can assert that class is set and learn NOTHING about whether the board went
 # away; none of them has any CSS at all. This is the half that looks.
 #
-# ZERO TOKENS. The program is opened in DESIGN mode, which spawns no worker
-# (actions.holodeck_start opens the room; the first `say` is what opens a warm
-# session), and the only claude/copilot on PATH are smoke.sh's logging shims.
-# The sidecar and its mockup.html are PLANTED here, so nothing is generated.
+# ZERO TOKENS — BUT NOT NO WORKER (corrected S126; this header was stale from
+# the moment the rig grew a journey). The rig DOES drive real turns: a GROUNDING
+# pass and three DESIGN turns, each a genuine POST that spawns a worker. That
+# worker is a SCRIPTED PYTHON STUB written by this file — it branches on the
+# tool posture it is handed, kills its first design turn the way a real engine
+# dies at startup, and writes mockup.html into its cwd. No engine is ever
+# contacted and no token is ever spent; the only claude/copilot on PATH are
+# smoke.sh's logging shims and the run reports 0 invocations of them.
+# (The planted sidecar's one room is a fixture: a mockup.html AND a
+# transcript.md — the record that makes a directory in the sidecar a PROGRAM at
+# all. It stands in for yesterday's work, which is what the morning-state and
+# warm-restart checks are about.)
 #
 # THE RED CONTROLS are the point of --calibrate: a check that cannot go red is
-# decoration. EIGHT variants each patch a COPY of web/ and each MUST make the
+# decoration. FOURTEEN variants each patch a COPY of web/ and each MUST make the
 # run fail — the deck's accent token deleted (paints nothing, keeps every box),
 # the board left visible under the deck (the replacement silently not
 # happening), the preview pane not laid out, `allow-same-origin` added back
 # beside `allow-scripts` (the sandbox reduced to decoration), the viewport pin
 # removed, the grounding posture never handing over, a cleaner eating the
-# captain's own prose, and (fix round 3) RETRY TURN put back on the road to a
-# ghost session. This repo's own web/ is never touched.
+# captain's own prose, (fix round 3) RETRY TURN put back on the road to a ghost
+# session, and — S126 — the banner printing a raw exit code (N5), the retry
+# writing the captain's line twice (N6), and a second client-authored voice in
+# the banner re-asserting an authorship claim, plus a fenced block's declared
+# filename dropped from the render, and — fix round 2 — the morning state
+# pointing at nothing while a program waits in the list, and the chat header's
+# pill claiming WARM under the banner saying the conversation is over. This
+# repo's own web/ is never touched. `$LCARS_HOLODECK_VARIANTS` runs a SUBSET.
+#
+# AND A NON-ZERO EXIT IS NOT A CONTROL GOING RED (fix round 1b). Each variant is
+# judged off its own holodeck-check.json: its PRECONDITION must have fired (the
+# scripted worker's first design turn actually died and the HOLODECK OFFLINE
+# banner actually appeared — the half of the journey N4/N5/N6/one-voice all hang
+# off) and the run must have failed ON THE SENTENCE THAT NAMES WHAT IT BREAKS.
+# Anything else is loud and non-zero. Without that, a stale rig-state counter
+# made the dead turn stop happening and eleven of twelve controls "went red" on
+# the harness's own "THE N4 CHECK PROVED NOTHING" line while the summary printed
+# "every control went red".
 #
 # EXIT: 0 proven · 1 the product (or, under --calibrate, the CHECK) is wrong ·
 #       77 skipped / infrastructure — loudly, and never a pass.
@@ -174,12 +198,19 @@ if opening is False and sid not in _opened():
     sys.exit(1)
 
 if not grounding and _bump("design-turns") == 0:
-    # THE FIRST DESIGN TURN DIES — noisily, at startup, before the CLI has
+    # THE FIRST DESIGN TURN DIES — NOISILY, at startup, before the CLI has
     # opened anything. `sid` is deliberately NOT remembered: nothing exists to
     # resume. This is a bad token / expired auth / rate limit, the three most
-    # ordinary engine failures there are, and the daemon merges stderr into
-    # stdout so it arrives with a perfectly non-empty reply.
-    sys.stdout.write("Error: authentication failed\n")
+    # ordinary engine failures there are.
+    #
+    # IT WRITES TO **stderr** AND EXITS NON-ZERO, which is what a real CLI does
+    # and what S125's finding #2 was about: the daemon merges stderr into
+    # stdout, so a dead engine arrives with a perfectly non-empty reply. A stub
+    # that dies SILENTLY produces a shape the real world never emits and hides
+    # this entire class — it hid N4 for a whole round, and N5/N6/one-voice all
+    # hang off this same banner.
+    sys.stderr.write("Error: authentication failed\n")
+    sys.stderr.flush()
     sys.exit(1)
 _remember(sid)
 
@@ -222,7 +253,16 @@ for n in range(1, 26):
                "product rather than a stranger's panel." % n)
     out.append("")
 out += ["- collapsed, 56px", "- expanded, 216px", "",
-        "| token | value |", "| --- | --- |", "| accent | #2de3c7 |", ""]
+        "| token | value |", "| --- | --- |", "| accent | #2de3c7 |", "",
+        # S126 (#8) — A FENCE THAT DECLARES ITS FILE. The turn prompt asks for
+        # exactly this shape when a write tool fails the engine, and the DAEMON
+        # writes the block; the info string is the only thing on screen saying
+        # WHICH FILE the slab below became, and the render dropped it.
+        # `notes.md` rather than `mockup.html` on purpose — this must not fight
+        # the native write the stub already did, or the preview pane is proving
+        # something else. LAST, so it lands in the transcript's scrolled-to
+        # position and is in the screenshot a human opens.
+        "```file:notes.md", "Swatch labels live in tokens.css.", "```", ""]
 sys.stdout.write("\n".join(out) + "\n")
 STUB
   chmod +x "$1/claude"
@@ -244,6 +284,21 @@ plant_sidecar() {   # $1 = the run's artifact dir (smoke.sh's OUT)
 # fixture-holodeck — planted by tests/drives/browser/holodeck.sh
 Not a captain's archive. A fixture.
 MD
+  # THE PROGRAM'S OWN RECORD (fix round 2). A room is a PROGRAM because it
+  # carries `transcript.md` — that is where the name the captain typed lives,
+  # and it is what keeps the deck from listing every folder in the captain's
+  # archive as a program. A planted room without one is a planted folder.
+  cat >"$side/$SLUG/transcript.md" <<'TR'
+# Nav rail
+
+The holodeck's record of this program.
+
+## Turn 1 · 2026-08-05T09:00:00Z
+
+**Captain:** Draft a nav rail.
+
+**Holodeck:** Planted by the rig — first pass is up.
+TR
   cat >"$side/$SLUG/mockup.html" <<'MOCK'
 <!DOCTYPE html>
 <!-- VISUAL REFERENCE ONLY — a rig fixture standing in for a model-written
@@ -284,6 +339,21 @@ MOCK
 run_once() {   # $1 = label, $2 = web dir, $3 = artifact dir
   local label="$1" web="$2" out="$3"
   mkdir -p "$out"
+  # ── THE STUB'S MEMORY IS PER-RUN, AND MUST BE WIPED BEFORE EVERY RUN ───────
+  # (fix round 1b — the finding that made this session's own evidence false.)
+  # The scripted worker's only memory is `$out/holo-rig-state`: a `design-turns`
+  # counter that decides WHICH design turn dies, and the list of session ids it
+  # has opened. `$out` is routinely REUSED — LCARS_BROWSER_HOLODECK_OUT pointed
+  # at a fixed dir is how anyone re-runs a calibration and keeps the artifacts —
+  # and nothing here ever cleared that state. So the SECOND run into a given dir
+  # started with the counter already past zero, THE FIRST DESIGN TURN NO LONGER
+  # DIED, and the entire N4/N5/N6/one-voice half of the check measured a journey
+  # with no death: every one of those controls then "went red" on the harness's
+  # own "THE N4 CHECK PROVED NOTHING" line rather than on the defect it injects,
+  # and --calibrate printed "every control went red" over four worthless proofs.
+  # A stale counter is not a fixture; it is a memory of a different run.
+  rm -rf "$out/holo-rig-state"
+  rm -f  "$out/holo-worker.log"
   local root; root="$(plant_sidecar "$out")"
   local worker; worker="$(write_worker "$out/holo-bin")"
   say "── $label"
@@ -401,6 +471,123 @@ assert old in s, "the N4 control could not find the line it breaks"
 open(p, "w").write(s.replace(old, new))
 PY
       ;;
+    n5-exit-code-in-banner)
+      # S126's RED CONTROL FOR N5 — round 1's banner, restored. It printed
+      # "(claude exited -9)": a number that answers neither of the two questions
+      # a captain actually has (what it stopped, and how to try again) and that
+      # he cannot act on. The cure was unit-test-only until now, and a unit test
+      # cannot see whether the number reaches the screen.
+      "${LCARS_PYTHON_BIN:-python3}" - "$dest/lcars_serve/actions.py" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = ('                     "running; say it again to retry.%s"\n'
+       '                     % (os.path.basename(bin_),')
+new = ('                     "running; say it again to retry. (%s exited %d)%s"\n'
+       '                     % (os.path.basename(bin_), os.path.basename(bin_),\n'
+       '                        proc.returncode,')
+assert old in s, "the N5 control could not find the banner it breaks"
+open(p, "w").write(s.replace(old, new))
+PY
+      ;;
+    retry-doubles-the-line)
+      # S126's RED CONTROL FOR N6 — the daemon's dedupe, removed. A retry is the
+      # SAME line: the captain typed it once, the turn died, he pressed RETRY.
+      # Round 1 appended a second turn on both sides and he read himself saying
+      # it twice. Broken in the DAEMON on purpose: its turn list is what the
+      # deck re-reads after every settled turn, so a client-only break would
+      # heal itself on the next refresh and the control would flicker green.
+      #
+      # The worker that raises this path dies NOISILY (stderr + non-zero) — a
+      # SILENT stub is the shape that hid this whole class for a round.
+      "${LCARS_PYTHON_BIN:-python3}" - "$dest/lcars_serve/actions.py" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '        if last and last.get("text") == text and last.get("failed"):'
+new = '        if False and last and last.get("text") == text and last.get("failed"):'
+assert old in s, "the N6 control could not find the dedupe it breaks"
+open(p, "w").write(s.replace(old, new))
+PY
+      ;;
+    two-voices-in-the-banner)
+      # S126's RED CONTROL FOR THE ONE-VOICE RULE — round 1's client-authored
+      # banner copy, restored verbatim in spirit: it repeats the daemon's own
+      # sentences AND re-asserts the authorship claim the daemon had just been
+      # cured of ("nothing out there has been changed") — a claim the audit
+      # cannot make, because it watches files, not who touched them.
+      cat >>"$js" <<'JS'
+
+/* RED CONTROL (holodeck.sh --calibrate): round 1's SECOND VOICE. */
+holoBannerNode = (function (orig) {
+  return function () {
+    var n = orig.apply(this, arguments);
+    if (n) {
+      n.appendChild(el("span", "bt",
+        "Your program is safe and the chat is still running. The holodeck "
+        + "never touches your project, and nothing out there has been changed "
+        + "or removed by LCARS."));
+    }
+    return n;
+  };
+})(holoBannerNode);
+JS
+      ;;
+    fence-loses-its-filename)
+      # S126's RED CONTROL FOR #8 — the info string dropped again. The block
+      # still renders perfectly; nothing on the screen says which file it is.
+      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '      if (info) body.appendChild(el("div", "fence-info", info));\n'
+assert old in s, "the fence-info control could not find the line it breaks"
+open(p, "w").write(s.replace(old, ""))
+PY
+      ;;
+    morning-points-nowhere)
+      # FIX ROUND 2'S RED CONTROL FOR DEFECT 6 — the opening pane's copy, as it
+      # was. Every box stays exactly where it is and the deck paints perfectly;
+      # the captain is simply told to describe a screen, over one prominent
+      # ＋ NEW PROGRAM, while yesterday's program sits in the list beside it
+      # unmentioned. If this control passes, the morning-state check is reading
+      # a pane it cannot actually judge.
+      cat >>"$js" <<'JS'
+
+/* RED CONTROL (holodeck.sh --calibrate): the pre-fix opening pane. */
+holoEmptyDeck = function () {
+  var e = el("div", "holo-empty");
+  e.appendChild(el("div", "arch", "Holodeck"));
+  e.appendChild(el("div", "sub", "Program standing by"));
+  e.appendChild(el("p", null,
+    "Describe a screen, a component, or a whole flow and I will build it as a "
+    + "live mockup you can look at. We iterate here — cheaply, no missions, no "
+    + "branches — until it looks right."));
+  e.appendChild(applyWriteState(holoBtn("＋ New Program", "go big",
+                                        openNewProgram)));
+  var where = el("div", "where");
+  where.appendChild(document.createTextNode("Files land in "));
+  where.appendChild(el("b", null, HOLO.sidecarDisplay || HOLO.sidecarName
+    || (holoRepoName() + "-holodeck")));
+  where.appendChild(document.createTextNode(
+    " — a separate repo beside this one, never inside your project. "
+    + "It is local git, pushed only if you ask."));
+  e.appendChild(where);
+  return e;
+};
+JS
+      ;;
+    warm-pill-lies)
+      # FIX ROUND 2'S RED CONTROL FOR DEFECT 5 — the pill asserting WARM again.
+      # Nothing else moves: the banner under it still says the conversation is
+      # over and the next worker is fresh, which is the whole point — the defect
+      # is a CONTRADICTION on one screen, and only a rig that reads both strings
+      # off the same painted deck can see it.
+      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = "  var warm = !!p.warm;"
+assert old in s, "the warm-pill control could not find the line it breaks"
+open(p, "w").write(s.replace(old, "  var warm = true;"))
+PY
+      ;;
     grounding-sticks)
       # THE CRITICAL DEFECT, restored: the posture never leaves "grounding", so
       # every turn after the opening pass keeps read-only tools and the
@@ -420,7 +607,112 @@ PY
   esac
 }
 
-VARIANTS="no-accent board-stays flat-preview sandbox-decoration deck-grows grounding-sticks trace-eats-prose retry-is-a-dead-end"
+# `$LCARS_HOLODECK_VARIANTS` calibrates a SUBSET — for re-proving the controls a
+# fix round just added without paying for fourteen full browser runs. The
+# default is every one of them, and a round is not calibrated until the default
+# has been run.
+VARIANTS="${LCARS_HOLODECK_VARIANTS:-no-accent board-stays flat-preview sandbox-decoration deck-grows grounding-sticks trace-eats-prose retry-is-a-dead-end n5-exit-code-in-banner retry-doubles-the-line two-voices-in-the-banner fence-loses-its-filename morning-points-nowhere warm-pill-lies}"
+
+# ── WHAT EACH CONTROL OWNS (fix round 1b) ───────────────────────────────────
+# A NON-ZERO EXIT IS NOT A CONTROL GOING RED. Every variant here breaks ONE
+# thing, and the only evidence that the check can see that thing is that the run
+# failed ON THE SENTENCE THAT NAMES IT. Until this table existed, --calibrate
+# accepted any failure at all — so when the rig's own precondition stopped
+# firing, eleven of twelve controls "went red" on the harness's "THE N4 CHECK
+# PROVED NOTHING" line, the summary printed "every control went red", and three
+# of this session's four deliverables were proven by nothing whatsoever.
+variant_signature() {   # $1 = variant → the failure text that control OWNS
+  case "$1" in
+    no-accent)                 echo "--holo-grid resolves to nothing" ;;
+    board-stays)               echo "still visible on the deck" ;;
+    flat-preview)              echo "pane preview is 0px wide" ;;
+    sandbox-decoration)        echo "THE SANDBOX IS DECORATION" ;;
+    deck-grows)                echo "THE PAGE SCROLLS ON THE DECK" ;;
+    grounding-sticks)          echo "THE RECOMMENDED PATH WROTE NO MOCKUP" ;;
+    trace-eats-prose)          echo "THE CHAT DELETED WHAT THE MODEL WROTE" ;;
+    retry-is-a-dead-end)       echo "RETRY TURN IS A DEAD END (N4)" ;;
+    n5-exit-code-in-banner)    echo "N5: the HOLODECK OFFLINE banner leaks a raw exit code" ;;
+    retry-doubles-the-line)    echo "N6: the captain's line is on the deck TWICE" ;;
+    two-voices-in-the-banner)  echo "TWO VOICES IN THE BANNER" ;;
+    fence-loses-its-filename)  echo "A FENCE'S DECLARED FILENAME NEVER REACHED THE SCREEN" ;;
+    morning-points-nowhere)    echo "THE MORNING STATE POINTS AT NOTHING" ;;
+    warm-pill-lies)            echo "THE SCREEN SAYS TWO THINGS AT ONCE" ;;
+    *)                         echo "" ;;
+  esac
+}
+
+# THE PRECONDITION. Four of these controls (N4, N5, N6, one-voice) can only be
+# seen at all if the scripted worker's FIRST DESIGN TURN ACTUALLY DIED and the
+# HOLODECK OFFLINE banner actually appeared. If it did not, those controls
+# measured an empty room — which is exactly what happened, silently, for two
+# whole calibration runs. Every variant must face that dead turn.
+#
+# `grounding-sticks` is the ONE honest exemption, and it is exempt by
+# construction rather than by convenience: it stops the posture ever handing
+# over, so NO design turn is ever spawned and there is no turn left to kill. Its
+# own signature (the recommended path wrote no mockup) is what proves it fired.
+variant_needs_dead_turn() {   # $1 = variant → 0 if the dead first turn must fire
+  case "$1" in
+    grounding-sticks) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Judge one control off its MEASUREMENTS, never off its exit code. Prints the
+# reason it went red (or why it proved nothing) and returns 0 only when the
+# control is honest.
+judge_control() {   # $1 = variant, $2 = its artifact dir
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2/holodeck-check.json" \
+      "$(variant_signature "$1")" \
+      "$(variant_needs_dead_turn "$1" && echo yes || echo no)" <<'PY'
+import json, sys
+name, path, sig, needs_dead = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "yes"
+try:
+    with open(path) as fh:
+        d = json.load(fh)
+except Exception as e:
+    print("    NOTHING WAS MEASURED: could not read %s (%s) — this control "
+          "exited non-zero without ever judging the deck." % (path, e))
+    sys.exit(1)
+failures = d.get("failures") or []
+n4 = (d.get("want") or {}).get("n4") or {}
+if not failures:
+    print("    THE CONTROL DID NOT GO RED: the run recorded no failures at all.")
+    sys.exit(1)
+# 1. THE PRECONDITION. A "PROVED NOTHING" line is the harness saying it could
+#    not look — it is never a control going red.
+blind = [f for f in failures if "CHECK PROVED NOTHING" in f]
+if not needs_dead:
+    blind = [f for f in blind if "THE N4 CHECK PROVED NOTHING" not in f]
+if blind:
+    print("    PRECONDITION DID NOT FIRE — this control proved NOTHING:")
+    for f in blind:
+        print("      · " + f)
+    sys.exit(1)
+if needs_dead and not n4.get("died"):
+    print("    PRECONDITION DID NOT FIRE: the scripted worker's first design "
+          "turn never died, so the whole N4/N5/N6/one-voice half of the check "
+          "measured an empty room (n4=%s)." % json.dumps(n4))
+    sys.exit(1)
+# 2. AND IT WENT RED FOR ITS OWN REASON.
+if not sig:
+    print("    NO SIGNATURE IS DECLARED FOR %r — add one to variant_signature() "
+          "or this control is only ever proving that something failed." % name)
+    sys.exit(1)
+own = [f for f in failures if sig in f]
+if not own:
+    print("    WENT RED FOR THE WRONG REASON — nothing it failed on names what "
+          "it breaks (%r). What it actually failed on:" % sig)
+    for f in failures:
+        print("      · " + f[:160])
+    sys.exit(1)
+print("    ✓ its own reason: " + own[0][:150])
+if needs_dead:
+    print("      (precondition: the first design turn died, RETRY %s, "
+          "recovered %s)" % (n4.get("retried"), n4.get("recovered")))
+sys.exit(0)
+PY
+}
 
 product_run() {
   run_once "PRODUCT — this repo's web/" "$REPO/web" "$WORK/product"
@@ -443,7 +735,7 @@ calibrate_run() {
   local n=0 v0
   for v0 in $VARIANTS; do n=$((n + 1)); done
   say "── CALIBRATION: $n deliberately broken copies. Each MUST fail."
-  local bad=0 v
+  local bad=0 blind=0 v
   for v in $VARIANTS; do
     make_variant "$v" "$WORK/variant-$v/web"
     run_once "CONTROL: $v (must FAIL)" "$WORK/variant-$v/web" "$WORK/variant-$v/out"
@@ -454,16 +746,32 @@ calibrate_run() {
     elif [ "$rc" -eq 77 ]; then
       printf '\033[33m  ? %s skipped — infrastructure; the control proved nothing.\033[0m\n' "$v"
       bad=$((bad + 1))
-    else
+    elif judge_control "$v" "$WORK/variant-$v/out"; then
       printf '\033[32m  ✓ %s failed, as it must.\033[0m\n' "$v"
+    else
+      # A NON-ZERO EXIT THAT PROVES NOTHING. This is the state the whole round
+      # was reported green from, so it gets its own loud category and its own
+      # non-zero exit: a control that cannot go red is decoration, and a
+      # calibrate run that PRINTS "every control went red" while proving nothing
+      # is worse than no calibrate at all.
+      printf '\033[31m  ✗ %s exited non-zero but PROVED NOTHING (see above).\033[0m\n' "$v"
+      blind=$((blind + 1))
     fi
   done
   printf '\n'
-  if [ "$bad" -eq 0 ]; then
-    printf '\033[32mCALIBRATED\033[0m — every control went red. The check can see.\n'
+  if [ "$bad" -eq 0 ] && [ "$blind" -eq 0 ]; then
+    printf '\033[32mCALIBRATED\033[0m — every control went red FOR ITS OWN REASON, and every\n'
+    printf '        one of them faced the dead first turn it is meant to face. The\n'
+    printf '        check can see.\n'
     return 0
   fi
-  printf '\033[31m%d CONTROL(S) DID NOT GO RED\033[0m — the check is decoration until they do.\n' "$bad"
+  [ "$bad" -gt 0 ] &&
+    printf '\033[31m%d CONTROL(S) DID NOT GO RED\033[0m — the check is decoration until they do.\n' "$bad"
+  [ "$blind" -gt 0 ] &&
+    printf '\033[31m%d CONTROL(S) WENT RED WITHOUT PROVING ANYTHING\033[0m — they failed on a\n' "$blind"
+  [ "$blind" -gt 0 ] &&
+    printf '        precondition the rig never met, or on something other than the\n' &&
+    printf '        defect they inject. Their evidence does not exist.\n'
   return 1
 }
 

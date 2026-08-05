@@ -89,6 +89,14 @@ const deadline = Date.now() + TIMEOUT;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const EXIT_PAINTED = 0, EXIT_NOT_PAINTED = 1, EXIT_DEGRADED = 3, EXIT_INFRA = 77;
+/* S126 fix round 1b — THE HOLODECK CHECK GETS ITS OWN EXIT CODE. It used to
+ * leave by EXIT_NOT_PAINTED, so smoke.sh fell through to its default and printed
+ * "BLANK / WRONG — the board did not paint" two lines under its own report that
+ * real Chrome had painted 2 cards and 9 columns. This repo once burned three
+ * hours on a board that "looked blank"; a rig that tells that exact lie on
+ * purpose is worse than no rig. Only ever produced when --holodeck-check is
+ * given, so no existing caller can see it. */
+const EXIT_HOLODECK = 4;
 
 /* An infrastructure failure is a DIFFERENT KIND of thing from a board failure,
  * so it is a different kind of error and leaves by a different exit code. */
@@ -730,6 +738,35 @@ const HOLODECK_PROBE = `(function () {
       if (!g) return null;
       return { tag: g.tagName.toLowerCase(), href: g.getAttribute("href") };
     })(),
+    /* S126 (#7) — N6, ON THE SCREEN. The captain says a line, the turn dies, he
+       presses RETRY TURN — and it is the SAME line, not a second one. Both the
+       daemon and the deck reuse the pending turn for exactly that reason, and
+       until now the only proof either worked was a unit test. This is what he
+       actually reads. (No backticks in here: this whole probe is a template
+       literal.) */
+    youLines: Array.prototype.slice.call(
+      document.querySelectorAll(".turn.you .body")).map(function (n) {
+        return (n.innerText || "").trim();
+      }),
+    /* S126 (#8) — a fenced block's INFO STRING, on the screen. A new class with
+       a new cascade around it: measured as a REAL BOX, because a CSS rule can
+       test green and never reach the screen (S162). */
+    fenceInfos: Array.prototype.slice.call(
+      document.querySelectorAll(".turn.holo .body .fence-info")).map(function (n) {
+        var b = box(n);
+        var pre = n.nextElementSibling;
+        // the GAP to the block it labels. A caption that renders detached from
+        // its slab reads as unrelated metadata — exactly the S162 defect — so
+        // the cascade is resolved by MEASURING the two boxes, never by
+        // asserting the rule exists.
+        var gap = null;
+        if (pre && pre.tagName.toLowerCase() === "pre") {
+          gap = Math.round(pre.getBoundingClientRect().top
+                           - n.getBoundingClientRect().bottom);
+        }
+        return { text: (n.innerText || "").trim(), visible: !!(b && b.visible),
+                 gapToBlock: gap };
+      }),
     // the reply, RENDERED: no markdown source, no engine tool trace.
     replyText: (function () {
       var bs = document.querySelectorAll(".turn.holo .body");
@@ -894,6 +931,25 @@ function judgeHolodeck(deckM, boardM, want) {
                + "captain's own diagram/notes with nothing to say it did");
       }
     });
+    // 4d. S126 (#8) — THE FENCE'S DECLARED FILENAME IS ON THE SCREEN. The
+    //     scripted reply carries ```file:notes.md; the captain must be able to
+    //     read which file that slab of text became, in a box that exists.
+    const fi = (deckM.fenceInfos || []).filter((x) => /notes\.md/.test(x.text));
+    if (!fi.length) {
+      f.push("A FENCE'S DECLARED FILENAME NEVER REACHED THE SCREEN: the reply "
+             + "declared ```file:notes.md and the chat shows an unlabelled slab "
+             + "with nothing saying which file it is");
+    } else if (!fi[0].visible) {
+      f.push("the fence label naming notes.md is in the DOM with no visible "
+             + "box: " + JSON.stringify(fi[0]));
+    } else if (fi[0].gapToBlock === null || fi[0].gapToBlock > 1) {
+      // MEASURED, not reasoned about: `.turn .body.md>*` gives every direct
+      // child an 8px bottom margin, so a caption styled without cancelling it
+      // floats above the slab and reads as unrelated metadata (the S162 class).
+      f.push("the fence label is detached from the block it names (gap "
+             + fi[0].gapToBlock + "px) — it reads as unrelated metadata rather "
+             + "than as that block's filename");
+    }
     // 4c. N4 — RETRY TURN IS NOT A DEAD END. The rig's worker kills the first
     //     design turn noisily, before its session exists, then answers
     //     normally; the deck's own RETRY control must get the captain moving
@@ -916,17 +972,136 @@ function judgeHolodeck(deckM, boardM, want) {
                + "never came back — the retry resumed a session the CLI never "
                + "created. The banner promised " + JSON.stringify(n4.banner));
       }
+      /* ── S126 (#7): THREE CLAIMS THAT WERE UNIT-TEST-ONLY ─────────────────
+         All three were cured in S125 and proven only in node — and S125 proved
+         TWICE that a unit test can be green while the product is wrong (the
+         renderer that dropped every plain paragraph; the stub that died
+         SILENTLY, a shape the real world never produces). The banner below was
+         raised by a worker that died NOISILY and non-zero, which is the only
+         version of this that can see the defect. */
+      if (n4.died) {
+        const banner = String(n4.banner || "");
+        // ── N5: the banner answers what stopped, that the work is safe, and
+        //    how to try again. A raw exit code / signal number answers none of
+        //    those and is not something a captain can act on.
+        const leaks = [
+          /\bexit(?:ed|\s*code|\s*status)?\b[^.\n]{0,14}?-?\d+/i,
+          /\bsignal\s*(?:number\s*)?-?\d+/i,
+          /\bSIG[A-Z]{3,}\b/,
+          /\breturn\s*code\b/i,
+        ];
+        leaks.forEach((re) => {
+          if (re.test(banner)) {
+            f.push("N5: the HOLODECK OFFLINE banner leaks a raw exit code or "
+                   + "signal number — LCARS internals, not the engine speaking, "
+                   + "and nothing the captain can do anything about: "
+                   + JSON.stringify(banner));
+          }
+        });
+        // ── ONE VOICE: the daemon's message IS the account of what happened.
+        //    Round 1 wrote a second copy on this side, so every failure said
+        //    everything twice — and the client's half re-asserted an AUTHORSHIP
+        //    claim the daemon had just been cured of.
+        ["your program is safe", "the chat is still running",
+         "say it again to retry", "every earlier turn is committed"
+        ].forEach((phrase) => {
+          const n = banner.toLowerCase().split(phrase).length - 1;
+          if (n > 1) {
+            f.push("TWO VOICES IN THE BANNER: " + JSON.stringify(phrase)
+                   + " is printed " + n + " times — the client is writing its "
+                   + "own copy beside the daemon's: " + JSON.stringify(banner));
+          }
+        });
+        if (/never touches your project|nothing out there has been (?:changed|removed)|has not touched anything|LCARS did not (?:change|touch|remove)/i
+            .test(banner)) {
+          f.push("THE BANNER MAKES AN AUTHORSHIP CLAIM: it tells the captain "
+                 + "what LCARS did or did not touch out in his project, which "
+                 + "is precisely what the daemon's audit CANNOT know — it "
+                 + "watches files, not who touched them: "
+                 + JSON.stringify(banner));
+        }
+      }
+      // ── N6: HE SAID IT ONCE. The retried line is the same turn, so no two
+      //    captain bubbles on the deck may read identically.
+      const said = deckM.youLines || [];
+      const seen = {};
+      said.forEach((line) => {
+        if (!line) return;
+        seen[line] = (seen[line] || 0) + 1;
+        if (seen[line] === 2) {
+          f.push("N6: the captain's line is on the deck TWICE — "
+                 + JSON.stringify(line.slice(0, 60))
+                 + " — a retry is the SAME turn said once, not a second one");
+        }
+      });
+      if (!said.length) {
+        f.push("THE N6 CHECK PROVED NOTHING: no captain line is on the deck at "
+               + "all, so nothing was checked for duplication");
+      }
     }
     // 5. two programs cannot share one room.
     if (want.collision) {
-      if (want.collision.programs !== 1) {
-        f.push("a second program with the SAME NAME created a second card ("
+      /* COUNT THE CARDS FOR THAT NAME, not the cards on the deck (S126). The
+         deck now lists rooms READ OFF DISK as well as live sessions, and the
+         rig plants one (`nav-rail`) before the daemon boots — so a total of 2
+         is the correct, healthy answer here and the old total-count assertion
+         failed on a product that was behaving perfectly. What the refusal has
+         to prevent is a SECOND CARD FOR ONE NAME: two rows a captain cannot
+         tell apart, both writing one mockup.html. */
+      if (want.collision.sameName !== 1) {
+        f.push("a second program called "
+               + JSON.stringify(want.collision.name) + " created a second card ("
+               + want.collision.sameName + " of that name, "
                + want.collision.programs + " on the deck) — both writing one "
                + "mockup.html, indistinguishable in the list");
       }
       if (!want.collision.errorText) {
         f.push("the duplicate name was refused with no message the captain "
                + "can read");
+      }
+    }
+    // 6. THE MORNING STATE (fix round 2, defect 6).
+    if (!want.morning || !want.morning.rows) {
+      f.push("THE MORNING-STATE CHECK PROVED NOTHING: the deck's first paint "
+             + "showed no program rows at all, so the screen a captain gets "
+             + "every morning was never on the screen this run");
+    } else {
+      const mt = String(want.morning.text || "");
+      const ml = mt.toLowerCase();
+      if (!want.morning.visible) {
+        f.push("the deck's opening pane is in the DOM with no painted box");
+      }
+      if (ml.indexOf("left") === -1) {
+        f.push("THE MORNING STATE POINTS AT NOTHING: " + want.morning.rows
+               + " program(s) are in the list on the left and the main area "
+               + "never mentions them — " + JSON.stringify(mt.slice(0, 160)));
+      }
+      if (ml.indexOf("same name") === -1) {
+        f.push("the one prominent button (＋ NEW PROGRAM) is offered with no "
+               + "word of what it does to a program that is already there — "
+               + "under the same name it lands in the room-reuse disclosure, "
+               + "under a different one the work is in two places");
+      }
+    }
+    // 7. THE WARM RESTART SAYS ONE THING (fix round 2, defect 5).
+    if (!want.restart || !want.restart.banner) {
+      f.push("THE WARM-RESTART CHECK PROVED NOTHING: clicking the archived "
+             + "room produced no banner, so the pill was never read beside it");
+    } else {
+      const bl = String(want.restart.banner).toLowerCase();
+      const pl = String(want.restart.pill || "").toLowerCase();
+      if (bl.indexOf("fresh") === -1) {
+        f.push("the warm-restart banner does not say the next worker is fresh: "
+               + JSON.stringify(want.restart.banner.slice(0, 160)));
+      }
+      if (!want.restart.pill || !want.restart.pillVisible) {
+        f.push("the chat header has no visible engine pill on a reopened "
+               + "program: " + JSON.stringify(want.restart));
+      } else if (pl.indexOf("warm") !== -1) {
+        f.push("THE SCREEN SAYS TWO THINGS AT ONCE: the banner says the "
+               + "conversation is over and the next worker is fresh, and the "
+               + "pill two inches below it reads "
+               + JSON.stringify(want.restart.pill));
       }
     }
   }
@@ -1239,6 +1414,37 @@ async function main() {
         return "";
       })()`, returnByValue: true }, sessionId);
     let flowErr = (entered && entered.result && entered.result.value) || "";
+    /* 1b. THE MORNING STATE (fix round 2, defect 6) — MEASURED BEFORE ANYTHING
+       IS OPENED, because this is the screen a captain gets every morning: the
+       archive's programs are in the list on the left, nothing is selected (the
+       auto-select deliberately picks up only a LIVE program), and the whole
+       main area used to read PROGRAM STANDING BY / "Describe a screen…" over
+       one prominent ＋ NEW PROGRAM — pointing at nothing, and at the one
+       action that either lands in the room-reuse disclosure or splits his work
+       in two. A node harness has no CSS and cannot see whether that pane is
+       even on the screen; this can. */
+    if (!flowErr) {
+      const mDeadline = Date.now() + 15000;
+      let morning = null;
+      while (Date.now() < mDeadline) {
+        const r = await cdp.send("Runtime.evaluate", {
+          expression: `(function () {
+            var e = document.querySelector('.holo-empty');
+            var rows = document.querySelectorAll('.prog').length;
+            var b = e ? e.getBoundingClientRect() : null;
+            var s = e ? getComputedStyle(e) : null;
+            return { rows: rows,
+                     text: e ? (e.innerText || "").trim() : "",
+                     visible: !!(b && b.width > 0 && b.height > 0 &&
+                                 s.display !== "none" &&
+                                 s.visibility !== "hidden") };
+          })()`, returnByValue: true }, sessionId);
+        morning = (r && r.result && r.result.value) || null;
+        if (morning && morning.rows > 0 && morning.text) break;
+        await sleep(250);
+      }
+      want.morning = morning;
+    }
     // 2. Open a program through the REAL dialog. This is a genuine
     //    POST /api/holodeck/start: it creates the session and adopts the
     //    sidecar the rig planted, and in DESIGN mode it spawns no worker and
@@ -1399,14 +1605,22 @@ async function main() {
         await sleep(2500);
         const col = await cdp.send("Runtime.evaluate", {
           expression: `(function () {
+            var want = ${JSON.stringify(want.groundedProgram || "Tile picker")};
             var err = document.querySelector('.modal .errline');
             var out = { errorText: err && !err.hidden ? (err.innerText||"").trim() : "",
-                        programs: 0 };
+                        name: want, programs: 0, sameName: 0, names: [] };
             var close = Array.prototype.slice.call(
               document.querySelectorAll('.modal [data-ctl], .modal button'))
               .filter(function (n) { return /cancel/i.test((n.textContent||"")); })[0];
             if (close) close.click();
-            out.programs = document.querySelectorAll('.prog').length;
+            var rows = Array.prototype.slice.call(
+              document.querySelectorAll('.prog'));
+            out.programs = rows.length;
+            out.names = rows.map(function (r) {
+              var n = r.querySelector('.pn');
+              return n ? (n.innerText || "").trim() : "";
+            });
+            out.sameName = out.names.filter(function (n) { return n === want; }).length;
             return out;
           })()`, returnByValue: true }, sessionId);
         want.collision = (col && col.result && col.result.value) || null;
@@ -1434,6 +1648,86 @@ async function main() {
       fs.writeFileSync(hshot, Buffer.from(png.data, "base64"));
     } catch (e) {
       cdp.pageErrors.push("holodeck screenshot failed: " + e.message);
+    }
+    /* 3b. THE WARM RESTART, ON ONE SCREEN (fix round 2, defect 5). Clicking a
+       room the daemon is not holding is a real POST /api/holodeck/open — no
+       worker, no tokens — and it puts the daemon's banner ("the conversation
+       that built it is over; the worker that answers your next turn is a fresh
+       one") two inches above the chat header's engine pill, which said
+       `WARM · CLAUDE`. "Warm" is the exact word for the thing that did not
+       survive. Both strings are read TOGETHER, off the same painted screen,
+       because the defect is only visible as a contradiction. It runs after the
+       geometry above is measured, so it disturbs nothing.
+
+       ITS PRECONDITION IS THE DECK BEING UP, NOT A CLEAN JOURNEY (fix round 3).
+       This was gated on `!flowErr`, and `flowErr` is set by the design-turn
+       loop above whenever a turn dies and cannot be recovered — which is
+       exactly what the `retry-is-a-dead-end` control makes happen BY
+       CONSTRUCTION. So under that control this leg never ran, `want.restart`
+       was empty, and the check emitted "THE WARM-RESTART CHECK PROVED NOTHING"
+       — a blind line the judge counts as a failed precondition, so a control
+       that HAD gone red for its own reason ("RETRY TURN IS A DEAD END (N4)")
+       was reported as proving nothing and --calibrate could not run green on a
+       clean tree.
+       Nothing about a dead design turn stops a captain clicking an archived
+       room: the deck is on screen, the room is on disk, and opening it is a
+       plain POST. So the leg runs whenever the deck is painted, which is the
+       condition it actually depends on — and when the deck is NOT painted the
+       blind line is correct and stays. */
+    if (deckM.onDeckClass) {
+      /* WHATEVER BANNER IS ALREADY UP IS NOT THE ONE THIS LEG MEASURES.
+         The loop below used to break the instant a banner and a pill were both
+         non-empty — which, on a journey that ended with HOLODECK OFFLINE on
+         screen, was true on the FIRST poll, before the open POST had even
+         landed. It then read the offline banner and reported that "the
+         warm-restart banner does not say the next worker is fresh": a red line
+         about a screen state the click never produced. So the pre-click text is
+         recorded and the leg waits for a DIFFERENT banner; if none arrives, the
+         measurement is null and the honest "PROVED NOTHING" line fires. On a
+         clean journey there is no banner up, so this changes nothing. */
+      const pre = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var b = document.querySelector('#deckHost .holo-banner');
+          return b ? (b.innerText || "").trim() : "";
+        })()`, returnByValue: true }, sessionId);
+      const bannerBefore = (pre && pre.result && pre.result.value) || "";
+      await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var row = document.querySelector('.prog.ondisk');
+          if (row) row.click();
+        })()`, returnByValue: true }, sessionId);
+      const rDeadline = Date.now() + 20000;
+      let restartM = null;
+      while (Date.now() < rDeadline) {
+        const r = await cdp.send("Runtime.evaluate", {
+          expression: `(function () {
+            // #deckHost, not the document: the view-only banner (#holoRoBanner,
+            // class "holo-banner ro") lives OUTSIDE the deck and earlier in the
+            // markup, and a hidden node's innerText is "" — so a bare
+            // .holo-banner query reads an empty string off the wrong element.
+            var b = document.querySelector('#deckHost .holo-banner');
+            var p = document.querySelector('.chat-head .pill');
+            var pb = p ? p.getBoundingClientRect() : null;
+            return { banner: b ? (b.innerText || "").trim() : "",
+                     pill: p ? (p.innerText || "").trim() : "",
+                     pillVisible: !!(pb && pb.width > 0 && pb.height > 0),
+                     title: document.querySelector('.chat-head .ct')
+                       ? document.querySelector('.chat-head .ct').innerText : "" };
+          })()`, returnByValue: true }, sessionId);
+        restartM = (r && r.result && r.result.value) || null;
+        if (restartM && restartM.banner && restartM.pill
+            && restartM.banner !== bannerBefore) break;
+        await sleep(250);
+      }
+      if (restartM && restartM.banner === bannerBefore) restartM = null;
+      want.restart = restartM;
+      try {
+        const png = await cdp.send("Page.captureScreenshot",
+          { format: "png", captureBeyondViewport: true }, sessionId);
+        const rshot = path.join(OUT, "holodeck-warm-restart.png");
+        fs.writeFileSync(rshot, Buffer.from(png.data, "base64"));
+        want.restartScreenshot = rshot;
+      } catch (e) { /* the deck shot is the one that matters */ }
     }
     // 4. …and back. The board must come back exactly as it was — the whole
     //    point of one control and one frame.
@@ -1606,11 +1900,50 @@ async function main() {
       console.error("    screenshot: " + consoleCheck.screenshot);
     }
   }
+  /* ── S126 fix round 1b: THE HOLODECK CHECK REPORTS ITS OWN REASON ─────────
+     Every other check above prints `✗ <reason>` when it fails; this one printed
+     NOTHING and left by the "did not paint" code, so smoke.sh accused a board
+     that had painted perfectly and the real reason sat unread in
+     holodeck-check.json. The N4/N5/N6 PRECONDITION is printed on the way past
+     too — whether the scripted worker's first design turn actually died is the
+     difference between four proofs and four empty rooms, and it is exactly what
+     nobody could see for two whole calibration runs. */
+  if (holodeckCheck) {
+    const hm = holodeckCheck.measured || {};
+    const hn4 = (holodeckCheck.want && holodeckCheck.want.n4) || null;
+    const precondition = hn4
+      ? (hn4.died
+          ? ("the first design turn DIED as scripted (retry pressed: " +
+             hn4.retried + ", conversation recovered: " + hn4.recovered + ")")
+          : "THE FIRST DESIGN TURN NEVER DIED — the N4/N5/N6/one-voice half of " +
+            "this check measured an empty room")
+      : "the journey was not driven";
+    if (holodeckCheck.ok) {
+      console.log("  holodeck: the deck REPLACED the board in the real DOM — panes " +
+        JSON.stringify(hm.paneClasses) + " at " + JSON.stringify(hm.paneWidths) +
+        "px, preview " + JSON.stringify(hm.iframeSrc) + " sandboxed " +
+        JSON.stringify(hm.iframeSandbox) + ", --holo-grid " +
+        JSON.stringify(hm.holoGrid) + ", " + hm.turnCount + " turn(s)");
+      console.log("    precondition: " + precondition);
+    } else {
+      console.error("\x1b[31m  THE HOLODECK IS WRONG IN A REAL BROWSER.\x1b[0m The board " +
+        "painted; the deck did not measure up:");
+      holodeckCheck.failures.forEach((f) => console.error("    ✗ " + f));
+      console.error("    precondition: " + precondition);
+      console.error("    measured: panes " + JSON.stringify(hm.paneClasses) +
+        " at " + JSON.stringify(hm.paneWidths) + "px, preview " +
+        JSON.stringify(hm.iframeSrc) + ", sandbox " +
+        JSON.stringify(hm.iframeSandbox) + ", --holo-grid " +
+        JSON.stringify(hm.holoGrid));
+      console.error("    full measurements: " + path.join(OUT, "holodeck-check.json"));
+      console.error("    screenshot: " + (holodeckCheck.screenshot || "(none)"));
+    }
+  }
   if (!ok) return EXIT_NOT_PAINTED;
   if (legendCheck && !legendCheck.ok) return EXIT_NOT_PAINTED;
   if (ghLinkCheck && !ghLinkCheck.ok) return EXIT_NOT_PAINTED;
   if (consoleCheck && !consoleCheck.ok) return EXIT_NOT_PAINTED;
-  if (holodeckCheck && !holodeckCheck.ok) return EXIT_NOT_PAINTED;
+  if (holodeckCheck && !holodeckCheck.ok) return EXIT_HOLODECK;
   return servedComplete ? EXIT_PAINTED : EXIT_DEGRADED;
 }
 

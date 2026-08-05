@@ -31,6 +31,8 @@ stdlib only; the daemon runs on an ephemeral localhost port inside the test.
 """
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1334,10 +1336,18 @@ class GroundingAccountingTest(HolodeckBase):
         _, body = self._post("/api/holodeck/%s/say" % sid,
                              {"text": "what about radius?"})
         self.assertEqual(body["state"]["turnCount"], 2, body)
-        # round 0 got TWO commits both labelled `turn 1`.
+        # round 0 got TWO commits both labelled `turn 1`. Since S126 EVERY turn
+        # commits (the exchange goes into transcript.md even when no file was
+        # written) and the message carries the turn's own summary — so the
+        # property to hold is that each commit names its OWN turn number, which
+        # is what round 0 got wrong.
         subjects = [s for s in self._log() if "turn" in s]
-        self.assertEqual(sorted(subjects),
-                         ["holodeck(Nav rail): turn 1"], self._log())
+        self.assertEqual(len(subjects), 2, self._log())
+        nums = sorted(s.split("turn ", 1)[1].split(" ", 1)[0] for s in subjects)
+        self.assertEqual(nums, ["1", "2"], self._log())
+        self.assertTrue(any("grounding" in s for s in subjects), self._log())
+        self.assertTrue(any("what about radius?" in s for s in subjects),
+                        self._log())
 
     def test_a_grounding_follow_up_never_edits_the_durable_basis(self):
         """`basis.md` is the durable grounding artifact. Round 0 appended ANY
@@ -1399,6 +1409,1974 @@ class AlignUntouchedTest(unittest.TestCase):
         args = Actions._session_args("/x/bin/claude", "abc-123", False)
         self.assertEqual(args, ["--resume", "abc-123"])
         self.assertEqual(Actions._session_args("/x/bin/claude", None, True), [])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S126 — DURABLE PROGRAMS
+#
+# Everything below runs against a REAL git repo in a tmpdir (`git_bin` defaults
+# to the real `git`, `holodeck_root` is injected at the sidecar's parent). That
+# is deliberate: half of what this session is about is what the WORKING TREE
+# does under two racing turns, and a stubbed git cannot see a dirty tree.
+# ════════════════════════════════════════════════════════════════════════════
+class DurableBase(HolodeckBase):
+    """Helpers every S126 suite needs: real git reads over the sidecar."""
+
+    def _git(self, *args):
+        proc = subprocess.run([self.git_bin_path(), "-C", self._sidecar()]
+                              + list(args),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        return proc.returncode, (proc.stdout or b"").decode("utf-8", "replace")
+
+    @staticmethod
+    def git_bin_path():
+        return shutil.which("git") or "git"
+
+    def _log(self):
+        _rc, out = self._git("log", "--format=%s")
+        return [l for l in out.splitlines() if l.strip()]
+
+    def _porcelain(self):
+        _rc, out = self._git("status", "--porcelain")
+        return [l for l in out.splitlines() if l.strip()]
+
+    def _room(self, slug="nav-rail"):
+        return os.path.join(self._sidecar(), slug)
+
+    def _transcript(self, slug="nav-rail"):
+        path = os.path.join(self._room(slug), "transcript.md")
+        if not os.path.exists(path):
+            return None
+        with open(path) as fh:
+            return fh.read()
+
+    def _start(self, program="Nav rail", mode="design", engine=None):
+        """`engine` defaults to claude. S126 fix round 4 made the on-disk
+        strip PER-ENGINE, so a suite that only ever starts one CLI proves the
+        rule for one CLI — every trace claim below names the engine it drove."""
+        status, body = self._post("/api/holodeck/start",
+                                  {"program": program, "mode": mode,
+                                   "engine": engine or self.claude_bin})
+        self.assertEqual(status, 200, body)
+        return body["state"]["sessionId"], body["state"]
+
+    def _list(self):
+        url = "http://127.0.0.1:%d/api/holodeck" % self.port
+        with urllib.request.urlopen(url, timeout=20) as r:
+            return json.loads(r.read())
+
+    def _get(self, path):
+        url = "http://127.0.0.1:%d%s" % (self.port, path)
+        with urllib.request.urlopen(url, timeout=20) as r:
+            return json.loads(r.read())
+
+    def _restart_daemon(self):
+        """Stand up a SECOND daemon over the same sidecar root — the honest
+        stand-in for a restart, because it shares nothing in memory.
+
+        Lives here rather than on one suite because a restart is the event
+        EVERY durable claim in S126 is about."""
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(10)
+        self.actions = Actions(repo_root=self.repo, scripts=self.scripts,
+                               worker_bin=self.claude_bin,
+                               holodeck_root=self.holo_root)
+        self.httpd = make_server(self.adapter, host="127.0.0.1", port=0,
+                                 poll_interval=0.05, actions=self.actions)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+
+
+# ── S126 #1 — the program's room IS the record ───────────────────────────────
+class TranscriptOnDiskTest(DurableBase):
+    """Every turn appends the exchange to `transcript.md` and commits the room.
+
+    S125 already committed per turn (`_commit_turn`/`_sidecar_commit`) and the
+    room already existed at `<sidecar>/<slug>/`. What was missing is the thing
+    that makes the archive READABLE and REPLAYABLE: the conversation itself.
+    """
+
+    def test_every_turn_appends_the_exchange_to_the_transcript(self):
+        self._set_turns({"stdout": "First pass is up.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]},
+                        {"stdout": "Made it teal.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>2"}]})
+        sid, _ = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Draft a nav rail"})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Make it teal"})
+        text = self._transcript()
+        self.assertIsNotNone(text, "no transcript.md in the program's room")
+        # both sides of both exchanges, in the order they were said, once each.
+        for fragment in ("Draft a nav rail", "First pass is up.",
+                         "Make it teal", "Made it teal."):
+            self.assertEqual(text.count(fragment), 1,
+                             "%r appears %d times" % (fragment,
+                                                      text.count(fragment)))
+        self.assertLess(text.index("Draft a nav rail"), text.index("Make it teal"))
+        # it names the program, so a room on disk can say what it is.
+        self.assertIn("Nav rail", text)
+
+    def test_each_turn_is_one_commit_whose_message_summarises_it(self):
+        self._set_turns({"stdout": "Up.", "writes": [{"path": "mockup.html",
+                                                      "content": "<h1>1"}]},
+                        {"stdout": "Teal.", "writes": [{"path": "mockup.html",
+                                                        "content": "<h1>2"}]})
+        sid, _ = self._start()
+        before = len(self._log())
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Draft a nav rail"})
+        after_one = self._log()
+        self.assertEqual(len(after_one) - before, 1, after_one)
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Make it teal"})
+        log = self._log()
+        self.assertEqual(len(log) - before, 2, log)
+        # newest first: the message is a SUMMARY of the turn, not a serial number.
+        self.assertIn("Make it teal", log[0])
+        self.assertIn("Draft a nav rail", log[1])
+        for line in log[:2]:
+            self.assertIn("Nav rail", line)
+
+    def test_a_turn_that_wrote_no_file_is_still_recorded_and_committed(self):
+        """A conversational turn changes no mockup — and is still part of the
+        program's story. Before this, `_sidecar_commit` returned early on an
+        empty file list, so the exchange existed only in daemon memory."""
+        self._set_turns({"stdout": "Amber reads warmer than teal here."})
+        sid, _ = self._start()
+        before = len(self._log())
+        status, body = self._post("/api/holodeck/%s/say" % sid,
+                                  {"text": "amber or teal?"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["state"]["status"], "ok")
+        self.assertEqual(len(self._log()) - before, 1)
+        text = self._transcript()
+        self.assertIn("amber or teal?", text)
+        self.assertIn("Amber reads warmer", text)
+
+    def test_the_transcript_is_not_reported_as_a_file_the_worker_changed(self):
+        """`filesChanged` is the WORKER's output, and the transcript is LCARS's
+        own bookkeeping. Mixing them puts a `transcript.md` chip on every turn
+        in the chat and makes the audit read as if the model wrote it."""
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertEqual([c["path"] for c in body["state"]["filesChanged"]],
+                         ["nav-rail/mockup.html"])
+
+    def test_the_sidecar_is_left_clean_after_every_turn(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]},
+                        {"stdout": "Just talking."})
+        sid, _ = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertEqual(self._porcelain(), [])
+        self._post("/api/holodeck/%s/say" % sid, {"text": "and?"})
+        self.assertEqual(self._porcelain(), [])
+
+    def test_a_retried_line_is_written_to_the_transcript_once(self):
+        """S125's N6 rule, carried onto disk: a turn that DIED and was retried
+        is the same turn. A transcript that records the captain saying it twice
+        is a durable version of the defect S125 cured in memory."""
+        self._set_turns({"stdout": "boom", "exit": 1},
+                        {"stdout": "Second time worked.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start()
+        st, _b = self._post_raw("/api/holodeck/%s/say" % sid,
+                                {"text": "Draft a nav rail"})
+        self.assertEqual(st, 502)
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Draft a nav rail"})
+        text = self._transcript()
+        self.assertEqual(text.count("Draft a nav rail"), 1, text)
+        self.assertIn("Second time worked.", text)
+
+    def test_the_grounding_pass_is_recorded_as_the_turn_it_is(self):
+        self._set_turns({"stdout": "Tokens: --lcars-amber #ff9c00 (board.css)"})
+        sid, _ = self._start("Nav rail", mode="grounding")
+        text = self._transcript()
+        self.assertIsNotNone(text)
+        self.assertIn("--lcars-amber", text)
+        self.assertIn("grounding", text.lower())
+        self.assertIn("grounding", self._log()[0].lower())
+
+
+# ── S126 #6 — the engine's tool trace never becomes DURABLE content ──────────
+# The chat pane FOLDS the trace (S125: a misclassification costs a click). A
+# FILE cannot fold, and these two files are read by a person and by the next
+# worker: `transcript.md` is replayed into a warm restart's opening prompt and
+# `basis.md` is what the design turns are built from, so a `└ 3 files found`
+# in either is a durable instruction to nobody.
+#
+# FIX ROUND 4 — THE CORPUS IS THE ENGINES' OWN BYTES, NOT AN INVENTED FIXTURE.
+# Rounds 1–3 all sharpened a recognizer that guessed which lines were plumbing
+# from their SHAPE, and every round's fixtures were written by hand. A live
+# drive on both real CLIs (2026-08-05) measured that rule wrong in BOTH
+# directions, and the raw replies it produced are committed verbatim under
+# `web/tests/fixtures/s126-live/`. Every claim in this section is measured
+# against those bytes: inventing the corpus is exactly how the old rule came to
+# model a copilot version that no longer exists.
+_LIVE_FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "fixtures", "s126-live")
+
+
+def _live(name):
+    with open(os.path.join(_LIVE_FIXTURES, name)) as fh:
+        return fh.read()
+
+
+# ── the KNOWN MISSES, measured — every line here was DESTROYED on a real drive
+# On BOTH engines the captain asked for a terse next-turn checklist in `●`
+# bullets ("verb then the file, nothing else" — his words) and got one. The old
+# rule could not tell that from a tool call, and deleted it off his transcript
+# with nothing on screen saying so.
+#
+# claude wrote five (`claude-checklist-reply.txt`); two survived.
+CLAUDE_CHECKLIST_DESTROYED = ["● Read mockup.html",
+                              "● Update mockup.html",
+                              "● Update concept.md"]
+CLAUDE_CHECKLIST_SURVIVED = ["● Measure mockup.html", "● Preview mockup.html"]
+# copilot wrote three (`copilot-checklist-reply.txt`); one survived.
+COPILOT_CHECKLIST_DESTROYED = ["● Update mockup.html", "● Update concept.md"]
+COPILOT_CHECKLIST_SURVIVED = ["● Verify mockup.html"]
+
+# The prose-shaped bullets from the earlier rounds' hand-written corpus. They
+# are kept because each one is a family the round-1 rule tripped on, and they
+# must still survive — now on BOTH engines, which is the half round 1a's
+# single-engine corpus could not see.
+KNOWN_MISSES = [
+    # (a) a filename in a sentence — the normal way to name a token file
+    "● Read tokens.css before you pick an accent.",
+    # (b) a parenthetical aside
+    "● Move the swatches (they are too tight).",
+    # (c) a quoted label — the normal way to write UI copy
+    '● Write "collapsed" under the rail icon.',
+    # (d) a backticked label
+    "● Edit the label to read `SWATCHES`.",
+    # (e) a filename, then more sentence
+    "● Read board.css and copy the amber into the rail.",
+    # (f) a `+N` token that is a spacing value, not a diff counter
+    "● Delete the +2 spacing rule; it doubles the gap.",
+] + CLAUDE_CHECKLIST_DESTROYED + COPILOT_CHECKLIST_DESTROYED
+
+# What copilot's CLI ACTUALLY prints, lifted byte for byte out of
+# `copilot-grounding-reply.txt`. Two forms and no third: a head bullet with its
+# two-space-indented `│` argument rows and the `└` row that closes the block,
+# and a write's one-line activity row carrying the CLI's diff counters.
+COPILOT_TOOL_BLOCKS = ("● List directory .\n"
+                       "  └ 15 files found\n"
+                       "\n"
+                       "/ Search (glob)\n"
+                       '  │ "web/**/*.{css,scss,html,js,ts,jsx,tsx,vue,svelte}"\n'
+                       "  └ 18 files found\n"
+                       "\n"
+                       "● Read board.css\n"
+                       "  │ web/static/board.css\n"
+                       "  └ L1:200 (200 lines read)\n"
+                       "\n"
+                       "● Edit mockup.html +8 -6\n")
+
+# The shape the old rule modelled — one-line `●` calls with an unindented `└`
+# under them. Kept as CLAUDE_TRACE for the tests that still name it, because
+# the measured claude posture emits NO trace at all and this is now simply
+# text that must survive claude untouched.
+CLAUDE_TRACE = ("● List directory .\n"
+                "└ 3 files found\n"
+                "● Read board.css\n"
+                "  └ 214 lines\n"
+                "● Create mockup.html +68\n")
+
+
+class LiveCorpusTest(DurableBase):
+    """The engines' own bytes, replayed through the stripper.
+
+    This class is the round's floor: if it and the product both go green on
+    invented fixtures but red here, the fixtures were the problem."""
+
+    def _strip(self, text, engine):
+        from lcars_serve.actions import _strip_tool_trace
+        return _strip_tool_trace(text, engine)
+
+    # -- claude: measured to emit NO trace, so the strip is pure subtraction --
+    def test_every_captured_claude_reply_survives_byte_for_byte(self):
+        """MEASURED, not assumed: over a 107-line grounding pass, a turn with
+        an ASCII diagram, and a checklist turn, claude's raw stdout IS what
+        belongs on disk. Any deletion here is a loss and can never be a gain."""
+        for name in ("claude-grounding-reply.txt", "claude-diagram-reply.txt",
+                     "claude-checklist-reply.txt"):
+            text = _live(name)
+            self.assertEqual(self._strip(text, self.claude_bin),
+                             text.strip("\n"), name)
+
+    def test_the_claude_checklist_the_old_rule_destroyed_is_whole(self):
+        text = _live("claude-checklist-reply.txt")
+        got = self._strip(text, self.claude_bin)
+        for line in CLAUDE_CHECKLIST_DESTROYED + CLAUDE_CHECKLIST_SURVIVED:
+            self.assertIn(line, got, line)
+
+    # -- copilot: its CLI changed shape, so the block parser is the cure -----
+    def test_the_copilot_checklist_the_old_rule_destroyed_is_whole(self):
+        text = _live("copilot-checklist-reply.txt")
+        got = self._strip(text, self.copilot_bin)
+        for line in COPILOT_CHECKLIST_DESTROYED + COPILOT_CHECKLIST_SURVIVED:
+            self.assertIn(line, got, line)
+
+    def test_a_real_grounding_basis_has_no_plumbing_left_in_it(self):
+        """THE 58. The old rule saw only the one-line `●` shape, so 58 of the
+        193 lines of a real `basis.md` were leftover CLI rows. Counted, not
+        spot-checked, so a partial cure cannot read as a whole one."""
+        got = self._strip(_live("copilot-grounding-reply.txt"),
+                          self.copilot_bin).split("\n")
+        left = [l for l in got
+                if l.startswith(("● ", "/ ", "  │ ", "  └ "))]
+        self.assertEqual(left, [], "%d CLI rows survived into basis.md" % len(left))
+
+    def test_the_real_grounding_prose_is_all_still_there(self):
+        """The calibration's other half: the same reply's PROSE, byte for
+        byte and in order. Without this, a stripper that ate the whole file
+        would pass the check above."""
+        src = _live("copilot-grounding-reply.txt").split("\n")
+        prose = [l for l in src
+                 if l.strip() and not l.startswith(("● ", "/ ", "  │ ", "  └ "))]
+        got = [l for l in self._strip(_live("copilot-grounding-reply.txt"),
+                                      self.copilot_bin).split("\n") if l.strip()]
+        self.assertEqual(got, prose)
+
+    def test_a_copilot_turn_keeps_its_diagram_and_its_notes(self):
+        """The whole turn, as copilot printed it: nine `● Edit …` activity
+        rows (trace), a fenced ASCII diagram whose rows use the SAME `  │`
+        indent the CLI's argument rows use, and four `●` design notes the
+        captain dictated the style of."""
+        got = self._strip(_live("copilot-turn-raw.txt"), self.copilot_bin)
+        for note in ("● Move the switch (it crowds the version pill at 1280px)",
+                     "● Read board.css before you touch --frame-color",
+                     '● The label reads "AUTO", not "Auto"',
+                     "● Bash the cross-fade — delete it, don't gate it"):
+            self.assertIn(note, got, note)
+        for row in ("  │  <head>",
+                    "  │    │  1. NO-FLASH SCRIPT  (inline, blocking)        │◀──┐   │",
+                    "  └─────────────────────────────────────────────────────────────┘"):
+            self.assertIn(row, got, row)
+        # …and the trace it DID carry is gone. Both halves or neither proves.
+        for gone in ("● Edit mockup.html +8 -6", "● Edit concept.md +9"):
+            self.assertNotIn(gone, got, gone)
+
+    def test_a_pasted_copilot_block_inside_a_fence_is_content(self):
+        """A fence is the captain quoting, not the CLI speaking. Measured in
+        the corpus: copilot's own diagrams arrive fenced and their rows share
+        the continuation indent exactly."""
+        text = ("Here is what it printed at me:\n\n"
+                "```\n" + COPILOT_TOOL_BLOCKS + "```\n\n"
+                "Why is it reading board.css twice?\n")
+        self.assertEqual(self._strip(text, self.copilot_bin), text.strip("\n"))
+
+    def test_only_a_copilot_tool_block_can_ever_be_removed(self):
+        """The GUARANTEE, stated structurally rather than by example. Whatever
+        the input, a line this dropped came out of a run whose LAST row was the
+        CLI's own `  └ ` result row, or was a one-line write activity row
+        ending in diff counters. Nothing else can be lost."""
+        from lcars_serve.actions import (_COPILOT_ARG_ROW, _COPILOT_BLOCK_HEAD,
+                                         _COPILOT_RESULT_ROW,
+                                         _COPILOT_WRITE_ROW)
+        corpus = "\n".join([_live("copilot-grounding-reply.txt"),
+                            _live("copilot-turn-raw.txt"),
+                            _live("copilot-checklist-reply.txt"),
+                            "\n".join(KNOWN_MISSES), CLAUDE_TRACE])
+        kept = set(self._strip(corpus, self.copilot_bin).split("\n"))
+        for line in corpus.split("\n"):
+            if line in kept or not line.strip():
+                continue
+            self.assertTrue(
+                _COPILOT_WRITE_ROW.match(line) or _COPILOT_BLOCK_HEAD.match(line)
+                or _COPILOT_ARG_ROW.match(line) or _COPILOT_RESULT_ROW.match(line),
+                "dropped a line that is not part of a copilot tool block: %r"
+                % line)
+
+    def test_the_known_misses_survive_on_both_engines(self):
+        """The old rule's damage, run through both paths. One engine's corpus
+        proves one engine — round 1a's did, and the copilot half was the half
+        that had rotted."""
+        for engine in (self.claude_bin, self.copilot_bin):
+            for note in KNOWN_MISSES:
+                self.assertEqual(self._strip(note, engine), note,
+                                 "%s: %s" % (os.path.basename(engine), note))
+            block = "\n".join(KNOWN_MISSES)
+            got = self._strip(block, engine)
+            for note in KNOWN_MISSES:
+                self.assertIn(note, got, note)
+
+
+class PersistedProseTest(DurableBase):
+    """What lands on disk is the conversation, not the engine's plumbing."""
+
+    # -- the recognizer itself, on both engines' recorded shapes -------------
+    def test_a_claude_reply_reaches_disk_untouched(self):
+        """THE MEASUREMENT, as a rule: claude emits no tool trace in this
+        posture, so the stripper takes nothing from it. If claude ever starts
+        emitting trace the cost is leftover noise in a file — an annoyance —
+        and never a deleted design decision, which is unrecoverable."""
+        from lcars_serve.actions import _strip_tool_trace
+        text = CLAUDE_TRACE + "\nBuilt the rail.\n"
+        self.assertEqual(_strip_tool_trace(text, self.claude_bin),
+                         text.strip("\n"))
+
+    def test_the_copilot_block_shape_is_recognized_as_trace(self):
+        """`_clean_reply` deliberately KEEPS copilot's per-tool activity line —
+        it is the engine's own account and belongs in the chat. On disk it is
+        plumbing."""
+        from lcars_serve.actions import _clean_reply, _strip_tool_trace
+        raw = (COPILOT_PREAMBLE + COPILOT_ACTIVITY
+               + "The rail is up. Refresh.\n" + COPILOT_FOOTER)
+        chat = _clean_reply(raw)
+        self.assertIn("● Create mockup.html +27", chat)
+        self.assertEqual(_strip_tool_trace(chat, self.copilot_bin),
+                         "The rail is up. Refresh.")
+        self.assertEqual(
+            _strip_tool_trace(COPILOT_TOOL_BLOCKS + "\nThe rail is up.\n",
+                              self.copilot_bin),
+            "The rail is up.")
+
+    def test_an_unknown_engine_is_treated_as_the_safe_one(self):
+        """No engine, or a CLI nobody has measured, strips NOTHING — the same
+        direction the rest of the daemon already defaults in (`_is_copilot`)."""
+        from lcars_serve.actions import _strip_tool_trace
+        text = COPILOT_TOOL_BLOCKS + "\nThe rail is up.\n"
+        for engine in (None, "", "/usr/local/bin/some-new-cli"):
+            self.assertEqual(_strip_tool_trace(text, engine), text.strip("\n"))
+
+    def test_a_captains_ascii_diagram_is_never_touched(self):
+        """S125 fix round 3's defect, as a disk-side regression guard: a
+        continuation glyph standing alone is somebody drawing a box."""
+        from lcars_serve.actions import _strip_tool_trace
+        drawing = ("Here is the shape I have in mind:\n\n"
+                   "┌────────────┐\n"
+                   "│  SWATCHES  │\n"
+                   "├────────────┤\n"
+                   "│  PREVIEW   │\n"
+                   "└────────────┘\n")
+        for engine in (self.claude_bin, self.copilot_bin):
+            self.assertEqual(_strip_tool_trace(drawing, engine),
+                             drawing.rstrip("\n"))
+
+    def test_a_bulleted_design_note_is_prose_not_trace(self):
+        from lcars_serve.actions import _strip_tool_trace
+        for keep in ("● Read the swatch labels before you decide the accent.",
+                     "● Update the radius only if the swatches move.",
+                     "● Create a second state only when he asks for one",
+                     "◆ Move the rail left and the preview grows."):
+            for engine in (self.claude_bin, self.copilot_bin):
+                self.assertEqual(_strip_tool_trace(keep, engine), keep)
+
+    def test_nothing_that_is_not_trace_loses_a_character(self):
+        """The calibration: a known STRIP and a known KEEP, and the kept lines
+        byte-identical. Without both halves a stripper that removes nothing and
+        one that removes everything read exactly the same."""
+        from lcars_serve.actions import _strip_tool_trace
+        prose = ["# Tile picker",
+                 "",
+                 "Built it with **two** states and a `rail` class.",
+                 "",
+                 "│ this line is a drawing, not a tool call",
+                 "",
+                 "- collapsed, 56px",
+                 "- expanded, 216px"]
+        mixed = COPILOT_TOOL_BLOCKS + "\n".join(prose)
+        got = _strip_tool_trace(mixed, self.copilot_bin).split("\n")
+        self.assertEqual([l for l in got if l.strip()],
+                         [l for l in prose if l.strip()])
+        # …and a result row that is NOT under a head of the CLI's own is a
+        # drawing, and is kept.
+        after = "Built the rail.\n  └ this is the bottom of my sketch\n"
+        self.assertEqual(_strip_tool_trace(after, self.copilot_bin),
+                         after.rstrip("\n"))
+
+    # -- and now the two files it is applied to ------------------------------
+    def test_the_transcript_carries_the_prose_and_not_the_trace(self):
+        self._set_turns({"stdout": COPILOT_TOOL_BLOCKS + "\nBuilt the rail.\n",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start(engine=self.copilot_bin)
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Draft a nav rail"})
+        text = self._transcript()
+        self.assertIn("Built the rail.", text)
+        for leak in ("List directory", "15 files found", "Search (glob)",
+                     "L1:200", "Edit mockup.html"):
+            self.assertNotIn(leak, text)
+
+    def test_the_basis_carries_the_prose_and_not_the_trace(self):
+        self._set_turns({"stdout": COPILOT_TOOL_BLOCKS
+                         + "\n## Colour\n\n- `--lcars-amber` #ff9c00\n"})
+        self._start("Nav rail", mode="grounding", engine=self.copilot_bin)
+        with open(os.path.join(self._room(), "basis.md")) as fh:
+            basis = fh.read()
+        self.assertIn("--lcars-amber", basis)
+        for leak in ("List directory", "15 files found", "Search (glob)",
+                     "Edit mockup.html"):
+            self.assertNotIn(leak, basis)
+
+    def test_a_claude_transcript_keeps_every_line_the_model_wrote(self):
+        """The measured half. A claude turn's reply reaches the record whole —
+        including the five-line checklist the old rule took three lines out
+        of."""
+        self._set_turns({"stdout": _live("claude-checklist-reply.txt"),
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Give me a checklist"})
+        text = self._transcript()
+        for line in CLAUDE_CHECKLIST_DESTROYED + CLAUDE_CHECKLIST_SURVIVED:
+            self.assertIn(line, text, line)
+
+    def test_the_chat_still_gets_the_trace_it_folds(self):
+        """The two surfaces are cured in DIFFERENT places on purpose. The chat
+        folds (recoverable by a click); only the FILE strips. A cure in
+        `_clean_reply` would have taken the fold's contents away with it."""
+        self._set_turns({"stdout": COPILOT_TOOL_BLOCKS + "\nBuilt the rail.\n"})
+        sid, _ = self._start(engine=self.copilot_bin)
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertIn("● List directory .", body["state"]["reply"])
+        self.assertIn("  └ 15 files found", body["state"]["reply"])
+
+    def test_a_warm_restart_replays_prose_not_plumbing(self):
+        """The transcript IS the next worker's context section, so trace on
+        disk is trace in the prompt — the durable half of this defect."""
+        self._set_turns({"stdout": COPILOT_TOOL_BLOCKS + "\nBuilt the rail.\n",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]},
+                        {"stdout": "Reopened."})
+        sid, _ = self._start(engine=self.copilot_bin)
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Draft a nav rail"})
+        self._post("/api/holodeck/%s/end" % sid, {})
+        status, body = self._post("/api/holodeck/open",
+                                  {"room": "nav-rail", "engine": self.copilot_bin})
+        self.assertEqual(status, 200, body)
+        sid2 = body["state"]["sessionId"]
+        self._post("/api/holodeck/%s/say" % sid2, {"text": "carry on"})
+        prompt = self._prompts()[-1]
+        self.assertIn("Built the rail.", prompt)
+        for leak in ("List directory", "15 files found", "Edit mockup.html"):
+            self.assertNotIn(leak, prompt)
+
+    def test_a_basis_that_is_ALL_trace_is_kept_whole_rather_than_emptied(self):
+        """The one place the strip yields. An empty `basis.md` breaks D12's
+        chip and hands the design turns nothing; a reply the recognizer ate
+        ENTIRELY is far likelier to be a misclassification than a grounding
+        pass that reported nothing. Keep, and let the captain see it."""
+        self._set_turns({"stdout": COPILOT_TOOL_BLOCKS})
+        self._start("Nav rail", mode="grounding", engine=self.copilot_bin)
+        with open(os.path.join(self._room(), "basis.md")) as fh:
+            basis = fh.read()
+        self.assertIn("List directory", basis)
+
+
+# ── FIX ROUND 4 — THE KNOWN MISSES, ON DISK ──────────────────────────────────
+# The classes above prove the recognizer. These drive the same corpus through
+# the two FILES, because a cure in the helper that never reaches `transcript.md`
+# is not a cure (S156's lesson: encode the KNOWN MISSES or the number lies).
+ENGINE_ACTIVITY_THEN_DRAWING = (
+    "● Create mockup.html +27\n"
+    "│  SWATCHES  │\n"
+    "├────────────┤\n"
+    "│  PREVIEW   │\n"
+    "└────────────┘\n"
+    "\n"
+    + "\n".join(KNOWN_MISSES[:4]) + "\n"
+    "\n"
+    "That is the layout I settled on.\n")
+
+
+class ProseLossKnownMissesTest(DurableBase):
+    """The captain's own words, in the shapes a DESIGN chat actually uses."""
+
+    def test_every_known_miss_survives_byte_for_byte(self):
+        from lcars_serve.actions import _strip_tool_trace
+        for engine in (self.claude_bin, self.copilot_bin):
+            for note in KNOWN_MISSES:
+                self.assertEqual(_strip_tool_trace(note, engine), note, note)
+
+    def test_the_known_misses_survive_inside_a_reply_too(self):
+        """One at a time is the easy case. In a real reply they arrive in a
+        block, directly under the engine's activity line — which is where the
+        run-continuation half of the defect lives."""
+        from lcars_serve.actions import _strip_tool_trace
+        for engine in (self.claude_bin, self.copilot_bin):
+            got = _strip_tool_trace("● Create mockup.html +27\n"
+                                    + "\n".join(KNOWN_MISSES)
+                                    + "\nThat is the layout I settled on.\n",
+                                    engine)
+            for note in KNOWN_MISSES:
+                self.assertIn(note, got, note)
+            self.assertIn("That is the layout I settled on.", got)
+
+    def test_a_drawing_directly_under_an_activity_line_is_kept_whole(self):
+        """The common case, not a rare one: copilot prints
+        `● Create mockup.html +27` immediately above what it has to say."""
+        from lcars_serve.actions import _strip_tool_trace
+        got = _strip_tool_trace(ENGINE_ACTIVITY_THEN_DRAWING, self.copilot_bin)
+        for row in ("│  SWATCHES  │", "├────────────┤", "│  PREVIEW   │",
+                    "└────────────┘"):
+            self.assertIn(row, got, row)
+
+    def test_the_activity_line_is_still_stripped(self):
+        """The calibration's other half. Without a known STRIP beside the
+        known KEEPs, a recognizer that removes nothing reads as a cure."""
+        from lcars_serve.actions import _strip_tool_trace
+        got = _strip_tool_trace(ENGINE_ACTIVITY_THEN_DRAWING, self.copilot_bin)
+        self.assertNotIn("● Create mockup.html +27", got)
+        self.assertEqual(
+            _strip_tool_trace(COPILOT_TOOL_BLOCKS + "\nBuilt it.\n",
+                              self.copilot_bin), "Built it.")
+
+    def test_a_result_row_never_carries_the_run_past_prose(self):
+        """`  └ 15 files found` is the row that CLOSES a block. `└────────┘` is
+        the bottom of a box: it is not the CLI's own row, so nothing after it is
+        swallowed."""
+        from lcars_serve.actions import _strip_tool_trace
+        text = ("● Read board.css\n"
+                "  │ web/static/board.css\n"
+                "  └ L1:200 (200 lines read)\n"
+                "┌────────────┐\n"
+                "│  SWATCHES  │\n"
+                "└────────────┘\n"
+                "Use that grid.\n")
+        got = _strip_tool_trace(text, self.copilot_bin)
+        self.assertNotIn("L1:200", got)
+        for row in ("┌────────────┐", "│  SWATCHES  │", "└────────────┘",
+                    "Use that grid."):
+            self.assertIn(row, got, row)
+
+    def test_a_sentence_bullet_inside_a_proven_run_still_survives(self):
+        """A run does not become a licence to delete the next bullet that
+        happens to start with a verb."""
+        from lcars_serve.actions import _strip_tool_trace
+        got = _strip_tool_trace("● Read board.css\n"
+                                "  │ web/static/board.css\n"
+                                "  └ L1:200 (200 lines read)\n"
+                                "● Move the swatches (they are too tight).\n",
+                                self.copilot_bin)
+        self.assertNotIn("L1:200", got)
+        self.assertIn("● Move the swatches (they are too tight).", got)
+
+    def test_a_sentence_under_a_removed_tool_line_survives(self):
+        """FIX ROUND 3's known miss, carried forward. A ONE-ENTRY file tree is
+        what an engine draws directly under its own `● List directory .`, and
+        that row is exactly where the captain annotates what he found."""
+        from lcars_serve.actions import _strip_tool_trace
+        note = "└ tokens.css — the only file, and the accent lives in it"
+        note2 = "⎿ keep this one; it is the only swatch that reads at 12px"
+        for engine in (self.claude_bin, self.copilot_bin):
+            got = _strip_tool_trace("● List directory .\n" + note + "\n", engine)
+            self.assertIn(note, got, note)
+            got2 = _strip_tool_trace("● Read board.css\n" + note2 + "\n", engine)
+            self.assertIn(note2, got2, note2)
+
+    def test_the_other_bullet_glyphs_are_never_trace(self):
+        """`⏺` and `◆` were inside the old verb rule and are outside the new
+        one entirely: neither CLI prints them, so a line opening with one is
+        somebody writing. Carried forward from the round-1a guarantee corpus,
+        with the two verb-shaped bullets that rule KEPT only by accident."""
+        from lcars_serve.actions import _strip_tool_trace
+        for keep in ("⏺ Read", "◆ Copy the rail into the second state.",
+                     "● Bash npm run build", "● Search for the amber token",
+                     "Plain prose with (parens), a `tick` and board.css in it."):
+            for engine in (self.claude_bin, self.copilot_bin):
+                self.assertEqual(_strip_tool_trace(keep, engine), keep, keep)
+
+    def test_a_head_with_no_result_row_under_it_is_prose(self):
+        """FIX ROUND 4. The `  └ ` row is REQUIRED, and that requirement is what
+        lets the parser be structural instead of clever: a bullet the CLI never
+        closed is a captain writing, whatever verb he opened with."""
+        from lcars_serve.actions import _strip_tool_trace
+        text = ("● Read board.css before you touch --frame-color\n"
+                "  │ it is the only place the gold is spelled out\n")
+        self.assertEqual(_strip_tool_trace(text, self.copilot_bin),
+                         text.rstrip("\n"))
+
+    def test_a_note_ABOVE_a_sketch_row_survives_too(self):
+        """The hole a bare LOOKAHEAD would open. A `└` under a bullet is only a
+        result row when it is the CLI's own — two-space indent, closing a head
+        the CLI printed. The captain's sketch row is neither."""
+        from lcars_serve.actions import _strip_tool_trace
+        text = ("● Move the swatches (they are too tight).\n"
+                "└ and tuck the caption under here\n")
+        for engine in (self.claude_bin, self.copilot_bin):
+            self.assertEqual(_strip_tool_trace(text, engine), text.rstrip("\n"))
+
+    # -- and the same corpus through the two FILES it is applied to ----------
+    def test_the_transcript_keeps_the_known_misses(self):
+        self._set_turns({"stdout": ENGINE_ACTIVITY_THEN_DRAWING,
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start(engine=self.copilot_bin)
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Draw me the layout."})
+        text = self._transcript()
+        for note in KNOWN_MISSES[:4]:
+            self.assertIn(note, text, note)
+        self.assertIn("│  SWATCHES  │", text)
+        self.assertNotIn("● Create mockup.html +27", text)
+
+    def test_the_basis_keeps_the_known_misses(self):
+        self._set_turns({"stdout": "# Basis\n\n"
+                                   + "\n\n".join(KNOWN_MISSES)
+                                   + "\n\nEnd of basis.\n"})
+        self._start("Nav rail", mode="grounding", engine=self.copilot_bin)
+        with open(os.path.join(self._room(), "basis.md")) as fh:
+            basis = fh.read()
+        for note in KNOWN_MISSES:
+            self.assertIn(note, basis, note)
+
+
+# ── FIX ROUND 4 — A PROGRAM'S RECORD NAMES ONLY ITS OWN FILES ────────────────
+# Measured on the live drive, and only reproducible with two programs open at
+# once — which no stubbed round had exercised. The Theme Switcher's
+# `transcript.md` permanently recorded
+#   `_Files this turn: command-palette/basis.md, command-palette/transcript.md,
+#    concept.md, mockup.html_`
+# — two of those belong to the OTHER room. The turn's git commit is correctly
+# scoped (`git add -- <room>`), so nothing on disk was wrong; the durable
+# record simply lied about who did what, forever.
+class TranscriptNamesOnlyItsOwnFilesTest(DurableBase):
+
+    def _files_line(self, slug):
+        text = self._transcript(slug) or ""
+        rows = [l for l in text.split("\n") if l.startswith("_Files this turn:")]
+        return rows[-1] if rows else ""
+
+    def test_a_concurrent_programs_files_never_enter_the_record(self):
+        self._set_turns(
+            {"stdout": "A.", "writes": [{"path": "mockup.html", "content": "a"}]},
+            # B's turn writes into B's room AND, because the audit diffs the
+            # WHOLE sidecar, A's room is in the same snapshot window.
+            {"stdout": "B.", "writes": [{"path": "mockup.html", "content": "b"},
+                                        {"path": "../nav-rail/concept.md",
+                                         "content": "# stolen"}]})
+        sid_a, _ = self._start("Nav rail")
+        sid_b, _ = self._start("Tile picker")
+        self._post("/api/holodeck/%s/say" % sid_a, {"text": "go"})
+        self._post("/api/holodeck/%s/say" % sid_b, {"text": "go"})
+        line = self._files_line("tile-picker")
+        self.assertIn("mockup.html", line)
+        self.assertNotIn("nav-rail", line,
+                         "Tile picker's record claims Nav rail's files: %r"
+                         % line)
+
+    def test_the_programs_own_files_are_all_still_named(self):
+        """The other half: narrowing the list must not start dropping the
+        program's own multi-file turn."""
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"},
+                                    {"path": "assets/rail.svg", "content": "<svg/>"},
+                                    {"path": "concept.md", "content": "# c"}]})
+        sid, _ = self._start("Nav rail")
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        line = self._files_line("nav-rail")
+        for rel in ("mockup.html", "assets/rail.svg", "concept.md"):
+            self.assertIn(rel, line, rel)
+
+
+# ── FIX ROUND 1a — a transcript that could NOT be written says so ────────────
+class TranscriptWriteFailureTest(DurableBase):
+    """The whole promise of this round is "your work is on disk". This is the
+    one path where the conversation is NOT, and round 1 returned `ok`."""
+
+    def _block_the_transcript(self):
+        # a DIRECTORY where the file goes: `open(path, "a")` raises
+        # IsADirectoryError (an OSError) exactly as a full disk or a bad
+        # permission would, with no monkeypatching of the daemon.
+        #
+        # FIX ROUND 2 — the file now EXISTS from the moment the program is
+        # named (defect 4: that heading is where the captain's name lives), so
+        # it is removed first. The blockage this sets up, and every assertion
+        # below it, is unchanged.
+        path = os.path.join(self._room(), "transcript.md")
+        if os.path.isfile(path):
+            os.unlink(path)
+        os.makedirs(path, exist_ok=True)
+
+    def test_a_transcript_that_cannot_be_written_is_not_reported_as_ok(self):
+        self._set_turns({"stdout": "Built the rail.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start()
+        self._block_the_transcript()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        state = body["state"]
+        self.assertNotEqual(state["status"], "ok", state)
+        warn = state.get("warning")
+        self.assertTrue(warn, "a silent transcript failure: %r" % (state,))
+        low = (warn.get("message") or "").lower()
+        # names the file, says the design work itself is safe, and never leaks
+        # a stack trace or a python exception class at the captain.
+        self.assertIn("transcript", low)
+        self.assertIn("mockup", low)
+        for jargon in ("traceback", "oserror", "errno", "isadirectory"):
+            self.assertNotIn(jargon, low, jargon)
+
+    def test_the_turn_still_keeps_the_work_that_did_land(self):
+        """Best-effort stays best-effort: a filesystem hiccup must not throw
+        away a mockup that was written."""
+        self._set_turns({"stdout": "Built the rail.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start()
+        self._block_the_transcript()
+        st, body = self._post_raw("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertEqual(st, 200, body)
+        self.assertTrue(os.path.isfile(os.path.join(self._room(),
+                                                    "mockup.html")))
+
+    def test_a_healthy_turn_carries_no_transcript_warning(self):
+        """The control. Without it, a daemon that warns on EVERY turn would
+        pass the two tests above."""
+        self._set_turns({"stdout": "Built the rail.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertEqual(body["state"]["status"], "ok", body["state"])
+        self.assertIsNone(body["state"].get("warning"))
+
+    # ── FIX ROUND 2 — a turn that was BOTH refused AND unrecorded ────────────
+    # `refused` outranks every other status and the surface renders that branch
+    # alone, so a turn that also lost its transcript said nothing about it: the
+    # captain would never learn his conversation was not recorded. The account
+    # of what happened is composed HERE, in one voice, the way the warning path
+    # already appends rather than overwrites.
+    def test_a_refused_turn_that_also_lost_the_transcript_says_BOTH(self):
+        stray = os.path.join(self.repo, "src", "stolen.html")
+        self._set_turns({"stdout": "Done (I put it in your project).",
+                         "writes": [{"path": stray, "content": "<h1>nope"},
+                                    {"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start()
+        self._block_the_transcript()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        state = body["state"]
+        self.assertEqual(state["status"], "refused", state)
+        msg = state["refused"]["message"]
+        low = msg.lower()
+        # the refusal is still the whole refusal…
+        self.assertIn(stray, msg)
+        self.assertIn("cannot tell", low)
+        # …and the captain is still told the conversation was not recorded.
+        self.assertIn("transcript.md", msg)
+        self.assertFalse(state.get("transcriptWritten", True), state)
+        for jargon in ("traceback", "oserror", "errno", "isadirectory"):
+            self.assertNotIn(jargon, low, jargon)
+
+    def test_a_refused_turn_whose_transcript_WAS_written_says_only_that(self):
+        """The control: the refusal must not grow a transcript sentence when
+        nothing went wrong with the transcript."""
+        stray = os.path.join(self.repo, "src", "stolen.html")
+        self._set_turns({"stdout": "Done (I put it in your project).",
+                         "writes": [{"path": stray, "content": "<h1>nope"},
+                                    {"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        state = body["state"]
+        self.assertEqual(state["status"], "refused", state)
+        self.assertNotIn("transcript.md", state["refused"]["message"])
+
+
+# ── FIX ROUND 1a — an EMPTY concept.md is not a concept doc ──────────────────
+class EmptyConceptDocTest(DurableBase):
+    """S127 hands this file to Align. "It exists" is too low a bar to call ok."""
+
+    def test_a_zero_byte_concept_doc_does_not_audit_ok(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"},
+                                    {"path": "concept.md", "content": ""}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        audit = body["state"]["conceptAudit"]
+        self.assertNotEqual(audit["status"], "ok", audit)
+        # the surface only renders the notice for `missing`, so an empty doc
+        # has to arrive under that status or the captain never sees it.
+        self.assertEqual(audit["status"], "missing", audit)
+        self.assertIn("empty", (audit["message"] or "").lower())
+        # and it does not claim the doc was updated alongside the mockup.
+        self.assertNotIn("was updated alongside", audit["message"])
+
+    def test_a_whitespace_only_concept_doc_does_not_audit_ok(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"},
+                                    {"path": "concept.md", "content": "\n\n  \n"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertEqual(body["state"]["conceptAudit"]["status"], "missing")
+
+    # ── FIX ROUND 2 — and it is not OFFERED as something to read either ─────
+    # `conceptFile` is what makes the deck's ▤ Intent control openable. It was
+    # keyed off existence alone, so on the very turn the audit correctly said
+    # "there is a file in the room with nothing in it" the control opened that
+    # blank file in a new tab. Never a name the surface then shows nothing for
+    # (`basisFile`'s rule, applied to the other document).
+    def test_an_empty_concept_doc_is_not_offered_as_something_to_read(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"},
+                                    {"path": "concept.md", "content": "\n \n"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertIsNone(body["state"]["conceptFile"], body["state"])
+
+    def test_a_real_concept_doc_IS_offered(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"},
+                                    {"path": "concept.md",
+                                     "content": "# Nav rail\n\n## The problem\n"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertEqual(body["state"]["conceptFile"], "concept.md")
+
+    def test_the_listing_off_disk_makes_the_same_call(self):
+        """One rule, both readers — a live card and a restarted one disagreeing
+        about the same file is how the two copies of this question started
+        drifting in the first place."""
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"},
+                                    {"path": "concept.md", "content": ""}]})
+        sid, _ = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self._restart_daemon()
+        self.assertIsNone(self._list()["programs"][0]["conceptFile"])
+        with open(os.path.join(self._room(), "concept.md"), "w") as fh:
+            fh.write("# Nav rail\n")
+        self.assertEqual(self._list()["programs"][0]["conceptFile"],
+                         "concept.md")
+
+    def test_a_concept_doc_with_words_in_it_still_audits_ok(self):
+        """The control: the cure must not condemn a real concept doc."""
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"},
+                                    {"path": "concept.md",
+                                     "content": "# Nav rail\n\n## The problem\n"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        audit = body["state"]["conceptAudit"]
+        self.assertEqual(audit["status"], "ok", audit)
+        self.assertTrue(audit["updated"])
+
+
+# ── S126 #3 — the concept.md contract ────────────────────────────────────────
+class ConceptContractTest(DurableBase):
+    def test_the_opening_design_prompt_states_the_concept_md_contract(self):
+        self._set_turns({"stdout": "Up."})
+        sid, _ = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        prompt = self._prompts()[0]
+        self.assertIn("concept.md", prompt)
+        low = prompt.lower()
+        # D6/D14's sections…
+        for section in ("the problem", "decisions", "open questions",
+                        "hand-off summary"):
+            self.assertIn(section, low, section)
+        # …the intent capture and its THREE buckets, in the captain's own words…
+        self.assertIn("WHAT IT MUST DO", prompt)
+        self.assertIn("out of scope", low)
+        self.assertIn("implied", low)
+        self.assertIn("own words", low)
+        # …and D4's declared flow, with a concrete shape to copy.
+        self.assertIn("DECLARED FLOW", prompt)
+        self.assertIn("→", prompt)
+
+    def test_a_turn_that_changed_the_mockup_without_a_concept_doc_is_audited(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        audit = body["state"].get("conceptAudit")
+        self.assertTrue(audit, "the mockup moved with no concept audit at all")
+        self.assertEqual(audit["status"], "missing")
+        self.assertIn("concept.md", audit["message"])
+        # AND IT DID NOT FABRICATE ONE. An audit that writes the file it is
+        # auditing certifies nothing.
+        self.assertFalse(os.path.exists(os.path.join(self._room(),
+                                                     "concept.md")))
+
+    def test_a_turn_that_kept_the_concept_doc_current_audits_clean(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"},
+                                    {"path": "concept.md",
+                                     "content": "# Nav rail\n\n## The problem\n"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        audit = body["state"]["conceptAudit"]
+        self.assertEqual(audit["status"], "ok")
+        self.assertTrue(audit["updated"])
+
+    def test_a_turn_that_did_not_touch_the_mockup_is_not_audited(self):
+        self._set_turns({"stdout": "Amber reads warmer."})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "?"})
+        self.assertEqual(body["state"]["conceptAudit"]["status"],
+                         "not-applicable")
+
+    def test_a_grounding_pass_is_not_held_to_the_concept_contract(self):
+        self._set_turns({"stdout": "Tokens: --x #fff"})
+        _sid, state = self._start("Nav rail", mode="grounding")
+        self.assertEqual(state["conceptAudit"]["status"], "not-applicable")
+
+
+# ── S126 #5 (S125 ledger) — the concurrency guard lives in the DAEMON ────────
+class TurnConcurrencyTest(DurableBase):
+    """Two overlapping `/say` on ONE program both spawned a worker with
+    `--resume <same uuid>`, the second overwrote `sess.proc`, and `end` could
+    report a settled file list about a live turn. The deck guards this
+    client-side (`HOLO.busy`) only. Persistence raises the stakes: every turn
+    now commits the room, so two racing turns fight over one working tree."""
+
+    def _say_async(self, sid, text, out, key):
+        def run():
+            try:
+                out[key] = self._post_raw("/api/holodeck/%s/say" % sid,
+                                          {"text": text}, timeout=60)
+            except Exception as exc:            # pragma: no cover - diagnostic
+                out[key] = ("EXC", str(exc))
+        t = threading.Thread(target=run)
+        t.start()
+        return t
+
+    def test_a_second_turn_on_one_program_is_refused_while_the_first_runs(self):
+        self._set_turns({"sleep": 2.5, "stdout": "One.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]},
+                        {"stdout": "Two."})
+        sid, _ = self._start()
+        out = {}
+        first = self._say_async(sid, "Draft a nav rail", out, "a")
+        # give the first turn time to be IN FLIGHT (its stub sleeps 2.5s).
+        time.sleep(0.8)
+        st, body = self._post_raw("/api/holodeck/%s/say" % sid,
+                                  {"text": "Make it teal"}, timeout=60)
+        first.join(60)
+        self.assertEqual(st, 409, body)
+        msg = body["error"]
+        self.assertNotIn("Traceback", msg)
+        # LEGIBLE, IN THE CAPTAIN'S LANGUAGE: what is happening, that his line
+        # was not lost, and what to do. No uuid, no `sess.proc`, no lock names.
+        low = msg.lower()
+        self.assertIn("turn", low)
+        for jargon in ("sess.", "lock", "mutex", "thread", "resume"):
+            self.assertNotIn(jargon, low, jargon)
+        # the first turn still landed normally.
+        self.assertEqual(out["a"][0], 200, out["a"])
+        self.assertEqual(out["a"][1]["state"]["status"], "ok")
+
+    def test_the_refused_turn_leaves_no_trace_and_no_dirty_tree(self):
+        self._set_turns({"sleep": 2.5, "stdout": "One.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]},
+                        {"stdout": "Two."})
+        sid, _ = self._start()
+        out = {}
+        first = self._say_async(sid, "Draft a nav rail", out, "a")
+        time.sleep(0.8)
+        self._post_raw("/api/holodeck/%s/say" % sid, {"text": "Make it teal"},
+                       timeout=60)
+        first.join(60)
+        # ONE worker was spawned, not two.
+        self.assertEqual(len(self._calls()), 1, self._calls())
+        text = self._transcript()
+        self.assertNotIn("Make it teal", text)
+        self.assertEqual(self._porcelain(), [])
+        # and the transcript shows the captain saying his line once.
+        _s, one = self._post("/api/holodeck/%s/end" % sid)
+        self.assertEqual(one["state"]["turns"], 1)
+
+    def test_the_guard_releases_when_the_turn_lands(self):
+        self._set_turns({"stdout": "One."}, {"stdout": "Two."})
+        sid, _ = self._start()
+        st1, _b1 = self._post_raw("/api/holodeck/%s/say" % sid, {"text": "a"})
+        st2, _b2 = self._post_raw("/api/holodeck/%s/say" % sid, {"text": "b"})
+        self.assertEqual((st1, st2), (200, 200))
+
+    def test_the_guard_releases_when_the_turn_FAILS(self):
+        """A guard that leaks on the error path bricks the program — which is
+        exactly the dead-end class S125's N4 fix was about."""
+        self._set_turns({"stdout": "boom", "exit": 1}, {"stdout": "Recovered."})
+        sid, _ = self._start()
+        st1, _b1 = self._post_raw("/api/holodeck/%s/say" % sid, {"text": "a"})
+        self.assertEqual(st1, 502)
+        st2, b2 = self._post_raw("/api/holodeck/%s/say" % sid, {"text": "a"})
+        self.assertEqual(st2, 200, b2)
+
+    def test_two_DIFFERENT_programs_may_still_run_at_once(self):
+        """The guard is per PROGRAM. Two rooms are two working directories and
+        the deck is allowed to have two conversations going."""
+        self._set_turns({"sleep": 1.5, "stdout": "One.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]},
+                        {"sleep": 1.5, "stdout": "Two.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>2"}]})
+        sid_a, _ = self._start("Nav rail")
+        sid_b, _ = self._start("Tile picker")
+        out = {}
+        ta = self._say_async(sid_a, "one", out, "a")
+        tb = self._say_async(sid_b, "two", out, "b")
+        ta.join(60)
+        tb.join(60)
+        self.assertEqual(out["a"][0], 200, out["a"])
+        self.assertEqual(out["b"][0], 200, out["b"])
+        # both rooms committed, and the tree is clean — no lost commit from two
+        # `git add -A` runs colliding on one index.
+        self.assertEqual(self._porcelain(), [])
+        self.assertTrue(os.path.exists(os.path.join(self._room("nav-rail"),
+                                                    "mockup.html")))
+        self.assertTrue(os.path.exists(os.path.join(self._room("tile-picker"),
+                                                    "mockup.html")))
+
+
+# ── S126 #2 — resume from disk ───────────────────────────────────────────────
+class ResumeFromDiskTest(DurableBase):
+    """A daemon restart used to lose every program. The rooms were always on
+    disk; nothing read them back."""
+
+    def _worked_program(self):
+        self._set_turns({"stdout": "First pass is up.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]},
+                        {"stdout": "Made it teal.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>2"}]})
+        sid, _ = self._start("Nav rail")
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Draft a nav rail"})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Make it teal"})
+        return sid
+
+    def test_a_program_survives_the_daemon_that_made_it(self):
+        old_sid = self._worked_program()
+        self._restart_daemon()
+        listing = self._list()
+        self.assertEqual(len(listing["programs"]), 1, listing)
+        p = listing["programs"][0]
+        self.assertEqual(p["program"], "Nav rail")
+        self.assertEqual(p["room"], "nav-rail")
+        self.assertEqual(p["turnCount"], 2)
+        self.assertEqual(p["previewFile"], "mockup.html")
+        # HONEST: there is no live session, and the list says so rather than
+        # handing out an id that resolves to nothing.
+        self.assertIsNone(p["sessionId"])
+        self.assertTrue(p["onDisk"])
+        self.assertNotEqual(p.get("sessionId"), old_sid)
+
+    def test_a_live_program_is_listed_once_not_twice(self):
+        self._worked_program()
+        listing = self._list()
+        rooms = [p["room"] for p in listing["programs"]]
+        self.assertEqual(rooms, ["nav-rail"], listing)
+        self.assertTrue(listing["programs"][0]["sessionId"])
+        self.assertFalse(listing["programs"][0]["onDisk"])
+
+    def test_reopening_rebuilds_the_program_with_a_FRESH_worker_session(self):
+        self._worked_program()
+        first_uuid = self._flag_value(self._calls()[0]["argv"], "--session-id")
+        self._restart_daemon()
+        self._set_turns({"stdout": "Picked it back up."})
+        status, body = self._post("/api/holodeck/open", {"room": "nav-rail"})
+        self.assertEqual(status, 200, body)
+        state = body["state"]
+        sid = state["sessionId"]
+        self.assertTrue(sid)
+        self.assertEqual(state["program"], "Nav rail")
+        self.assertEqual(state["turnCount"], 2)
+        self.assertEqual([t["text"] for t in state["turns"]],
+                         ["Draft a nav rail", "Make it teal"])
+        # the next turn OPENS a new worker session — it never resumes an id the
+        # CLI on the other side of a restart has no record of.
+        self._post("/api/holodeck/%s/say" % sid, {"text": "keep going"})
+        last = self._calls()[-1]["argv"]
+        opened = self._flag_value(last, "--session-id")
+        self.assertTrue(opened, last)
+        self.assertNotEqual(opened, first_uuid)
+        self.assertIsNone(self._flag_value(last, "--resume"))
+
+    def test_the_reopened_prompt_carries_the_transcript_as_context(self):
+        self._worked_program()
+        self._restart_daemon()
+        self._set_turns({"stdout": "Picked it back up."})
+        _s, body = self._post("/api/holodeck/open", {"room": "nav-rail"})
+        sid = body["state"]["sessionId"]
+        self._post("/api/holodeck/%s/say" % sid, {"text": "keep going"})
+        prompt = self._prompts()[-1]
+        self.assertIn("Draft a nav rail", prompt)
+        self.assertIn("Made it teal.", prompt)
+        self.assertIn("transcript.md", prompt)
+        # and it TELLS the worker it remembers none of this itself.
+        low = prompt.lower()
+        self.assertIn("fresh", low)
+
+    def test_reopening_never_claims_a_session_that_does_not_exist(self):
+        """S125's finding #2, in a new place: `reply` proved nothing then; a
+        SESSION ID proves nothing here. A warm restart is a fresh worker
+        carrying the history, and saying otherwise is the same dishonesty."""
+        old_sid = self._worked_program()
+        self._restart_daemon()
+        _s, body = self._post("/api/holodeck/open", {"room": "nav-rail"})
+        state = body["state"]
+        note = state.get("warmRestart")
+        self.assertTrue(note, "a rebuilt program said nothing about being one")
+        msg = note["message"]
+        low = msg.lower()
+        self.assertIn("fresh", low)
+        self.assertTrue("transcript" in low or "history" in low, msg)
+        # it never prints an id, and never the dead one.
+        self.assertNotIn(old_sid, msg)
+        self.assertNotIn(state["sessionId"], msg)
+        self.assertNotIn("resumed", low)
+        self.assertTrue(state["warmRestart"])
+        self.assertTrue(state.get("restarted"))
+
+    def test_reopening_a_program_that_is_already_open_returns_the_live_one(self):
+        sid = self._worked_program()
+        _s, body = self._post("/api/holodeck/open", {"room": "nav-rail"})
+        self.assertEqual(body["state"]["sessionId"], sid)
+        # it is NOT a restart — nothing was rebuilt.
+        self.assertFalse(body["state"].get("warmRestart"))
+
+    def test_reopening_an_unknown_room_is_a_readable_404(self):
+        self._worked_program()
+        st, body = self._post_raw("/api/holodeck/open", {"room": "nope"})
+        self.assertEqual(st, 404)
+        self.assertNotIn("Traceback", body["error"])
+
+    def test_a_room_name_cannot_climb_out_of_the_sidecar(self):
+        self._worked_program()
+        for room in ("../target-repo", "/etc", "nav-rail/../..", ".git"):
+            st, body = self._post_raw("/api/holodeck/open", {"room": room})
+            self.assertIn(st, (403, 404), (room, st, body))
+
+    def test_the_grounded_flag_and_basis_survive_a_restart(self):
+        self._set_turns({"stdout": "Tokens: --lcars-amber #ff9c00"},
+                        {"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start("Nav rail", mode="grounding")
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self._restart_daemon()
+        p = self._list()["programs"][0]
+        self.assertTrue(p["grounded"])
+        self.assertEqual(p["basisFile"], "basis.md")
+
+
+# ── S126 #4 — delete keeps the history ───────────────────────────────────────
+class DeleteProgramTest(DurableBase):
+    def _worked_program(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html",
+                                     "content": "<h1>keep me"}]})
+        sid, _ = self._start("Nav rail")
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        return sid
+
+    def test_delete_removes_the_room_and_commits_it(self):
+        self._worked_program()
+        before = len(self._log())
+        status, body = self._post("/api/holodeck/delete", {"room": "nav-rail"})
+        self.assertEqual(status, 200, body)
+        self.assertFalse(os.path.isdir(self._room()))
+        self.assertEqual(len(self._log()) - before, 1)
+        self.assertEqual(self._porcelain(), [])
+        self.assertEqual(self._list()["programs"], [])
+
+    def test_the_deleted_program_is_still_in_the_history(self):
+        self._worked_program()
+        _s, body = self._post("/api/holodeck/delete", {"room": "nav-rail"})
+        sha = body["state"]["commit"]
+        self.assertTrue(sha)
+        rc, out = self._git("show", "%s^:nav-rail/mockup.html" % sha)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("keep me", out)
+        # and the captain is told, in one sentence, how to get it back — naming
+        # the commit that PROVABLY holds the room (fix round 3), which is the
+        # one his checkout has to name, not the one the deletion landed in.
+        msg = body["state"]["message"]
+        self.assertIn("nav-rail", msg)
+        _rc, parent = self._git("rev-parse", "--short=7", "%s^" % sha)
+        self.assertIn(parent.strip(), msg)
+
+    def test_delete_refuses_while_that_program_has_a_turn_in_flight(self):
+        self._set_turns({"sleep": 2.5, "stdout": "One.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start("Nav rail")
+        out = {}
+
+        def run():
+            out["a"] = self._post_raw("/api/holodeck/%s/say" % sid,
+                                      {"text": "go"}, timeout=60)
+        t = threading.Thread(target=run)
+        t.start()
+        time.sleep(0.8)
+        st, body = self._post_raw("/api/holodeck/delete", {"room": "nav-rail"})
+        t.join(60)
+        self.assertEqual(st, 409, body)
+        self.assertTrue(os.path.isdir(self._room()))
+        self.assertNotIn("Traceback", body["error"])
+
+    def test_delete_closes_a_live_but_idle_program_too(self):
+        sid = self._worked_program()
+        st, _b = self._post("/api/holodeck/delete", {"room": "nav-rail"})
+        self.assertEqual(st, 200)
+        st2, _b2 = self._post_raw("/api/holodeck/%s/say" % sid, {"text": "hi"})
+        self.assertEqual(st2, 404)
+
+    def test_deleting_an_unknown_room_is_a_readable_404(self):
+        self._worked_program()
+        st, body = self._post_raw("/api/holodeck/delete", {"room": "nope"})
+        self.assertEqual(st, 404)
+        self.assertNotIn("Traceback", body["error"])
+
+    def test_delete_cannot_be_aimed_outside_the_sidecar(self):
+        self._worked_program()
+        keep = os.path.join(self.repo, "board.css")
+        for room in ("../target-repo", "/etc", "nav-rail/../..", ".git", ""):
+            st, body = self._post_raw("/api/holodeck/delete", {"room": room})
+            self.assertIn(st, (400, 403, 404), (room, st, body))
+        self.assertTrue(os.path.exists(keep))
+        self.assertTrue(os.path.isdir(os.path.join(self._sidecar(), ".git")))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 3 · DEFECT 1 — DELETE NEVER DESTROYS WHAT IT CALLS RECOVERABLE
+#
+# Reproduced twice by the tester. Start a program; its first turn dies (an
+# expired token — the most ordinary failure this product has); delete it.
+# LCARS answered `recoverable: true` and printed
+#
+#     git -C … checkout <sha>^ -- ghost-deck
+#
+# and that exact command answered `pathspec 'ghost-deck' did not match any
+# file(s) known to git`. The room was gone for good.
+#
+# THE MECHANISM: `git rm --ignore-unmatch` silently does NOTHING on an
+# UNTRACKED room; `shutil.rmtree` then destroyed it; and the `git add -A`
+# afterwards swept up UNRELATED untracked files, so the commit succeeded,
+# `committed` came back true, and `recoverable` was read off evidence about
+# somebody else's files.
+#
+# Fix round 2 made this the ORDINARY case rather than an edge: `_ensure_
+# transcript` puts the program's own record in the room the moment it is named,
+# and `_is_program_room` makes such a room deletable. So "deletable but never
+# committed" is now every program whose first turn has not landed — including
+# exactly the dead-first-turn program `_ensure_transcript` was written for.
+#
+# THE BAR: LCARS must never destroy something while promising it is
+# recoverable. Either it is genuinely in the archive's history before the room
+# goes, or the captain is told plainly that this one cannot be brought back and
+# nothing is removed.
+# ════════════════════════════════════════════════════════════════════════════
+class DeleteNeverDestroysWhatItCallsRecoverableTest(DurableBase):
+
+    def _dead_first_turn(self):
+        """The failure the tester drove: the engine dies at startup, so the
+        room and its `transcript.md` exist and NOTHING has been committed."""
+        self._set_turns({"stdout": "Error: authentication failed", "exit": 1})
+        sid, _ = self._start()
+        self._post_raw("/api/holodeck/%s/say" % sid,
+                       {"text": "Draft a nav rail"})
+        return sid
+
+    def _printed_command(self, message):
+        """The command LCARS actually printed, as argv."""
+        found = re.findall(r"`([^`]+)`", message or "")
+        self.assertTrue(found, "the reply printed no command: %r" % message)
+        return shlex.split(found[0])
+
+    def _run_printed_command(self, message):
+        proc = subprocess.run(self._printed_command(message),
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT)
+        return proc.returncode, (proc.stdout or b"").decode("utf-8", "replace")
+
+    def test_the_room_of_a_dead_first_turn_really_is_untracked(self):
+        """The calibration. Without it every test below could be passing on a
+        room git happened to be holding already, and prove nothing."""
+        self._dead_first_turn()
+        self.assertTrue(os.path.isdir(self._room()))
+        self.assertTrue(os.path.isfile(os.path.join(self._room(),
+                                                    "transcript.md")))
+        rc, out = self._git("ls-files", "--error-unmatch", "nav-rail")
+        self.assertNotEqual(rc, 0,
+                            "the room was already tracked, so this suite is "
+                            "not measuring the reported defect: %s" % out)
+
+    def test_the_recovery_command_it_prints_ACTUALLY_BRINGS_IT_BACK(self):
+        self._dead_first_turn()
+        _s, body = self._post("/api/holodeck/delete", {"room": "nav-rail"})
+        state = body["state"]
+        self.assertTrue(state["recoverable"], state)
+        self.assertFalse(os.path.isdir(self._room()))
+        rc, out = self._run_printed_command(state["message"])
+        self.assertEqual(rc, 0, "the command LCARS printed failed: %s" % out)
+        text = self._transcript()
+        self.assertIsNotNone(text, "the command ran but nothing came back")
+        self.assertIn("Nav rail", text)
+
+    def test_it_either_keeps_it_recoverable_or_keeps_it(self):
+        """THE BAR, stated structurally. Whatever the sidecar's state, one of
+        two things is true after a delete: the program is in history and the
+        printed command brings it back, or it is still on disk. There is no
+        third answer in which LCARS destroyed it and said otherwise."""
+        self._dead_first_turn()
+        # the captain's own untracked file, sitting in HIS archive: the thing
+        # `git add -A` used to stage so the delete commit "succeeded".
+        with open(os.path.join(self._sidecar(), "notes-i-keep.txt"), "w") as fh:
+            fh.write("mine\n")
+        _s, body = self._post("/api/holodeck/delete", {"room": "nav-rail"})
+        state = body["state"]
+        if state["recoverable"]:
+            rc, out = self._run_printed_command(state["message"])
+            self.assertEqual(rc, 0, "recoverable: true, and the command it "
+                                    "printed failed: %s" % out)
+            self.assertIsNotNone(self._transcript(),
+                                 "recoverable: true, the command ran, and the "
+                                 "program did not come back")
+        else:
+            self.assertTrue(os.path.isdir(self._room()),
+                            "LCARS destroyed a room it says it cannot bring "
+                            "back: %s" % state.get("message"))
+
+    def test_when_it_cannot_be_recorded_nothing_is_removed(self):
+        """The other half of the bar, taken for real. With git unusable the
+        program CANNOT be put in history — so it is not removed, and the
+        captain is told that in plain English rather than handed a command
+        that will not work."""
+        self._dead_first_turn()
+        self.actions.git_bin = os.path.join(self.repo, "no-such-git")
+        st, body = self._post_raw("/api/holodeck/delete", {"room": "nav-rail"})
+        self.assertEqual(st, 502, body)
+        err = body["error"]
+        self.assertNotIn("Traceback", err)
+        self.assertIn("nav-rail", err)
+        self.assertIn("recoverable", err.lower())
+        # and it is STILL THERE.
+        self.assertTrue(os.path.isdir(self._room()))
+        self.assertIn("Nav rail", self._transcript())
+
+    def test_the_delete_stages_only_this_programs_room(self):
+        """"Leave my files alone." A delete is not an occasion to commit the
+        captain's own archive for him — and leaning on his files is how the
+        old commit "succeeded" over a room it had never recorded."""
+        self._dead_first_turn()
+        mine = os.path.join(self._sidecar(), "notes-i-keep.txt")
+        with open(mine, "w") as fh:
+            fh.write("mine\n")
+        self._post("/api/holodeck/delete", {"room": "nav-rail"})
+        rc, _out = self._git("ls-files", "--error-unmatch", "notes-i-keep.txt")
+        self.assertNotEqual(rc, 0, "the delete committed the captain's own file")
+        self.assertTrue(os.path.isfile(mine))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 3 — "LEAVE MY FILES ALONE" (the captain's ruling)
+#
+# The tester measured a turn commit reading `holodeck(Ensuite Floor Picker —
+# v2 (Deck 5)!): turn 4 — Tighten it.` that recorded a `notes/roadmap.md` he
+# had dropped in the archive AND a SECOND program's `transcript.md`. The
+# round's headline claim is that the sidecar's git log IS the program's audit
+# trail; a log that attributes the captain's own files to a design turn he
+# never made is not one.
+#
+# The ruling, in his words: a turn commits ONLY that program's own room.
+# Anything he drops in the sidecar himself stays untouched and uncommitted —
+# it is his repo and he commits it when he wants.
+# ════════════════════════════════════════════════════════════════════════════
+class TurnCommitsOnlyItsOwnRoomTest(DurableBase):
+
+    def _tracked(self, path):
+        rc, _out = self._git("ls-files", "--error-unmatch", path)
+        return rc == 0
+
+    def test_a_turn_never_commits_the_captains_own_files(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start()
+        os.makedirs(os.path.join(self._sidecar(), "notes"), exist_ok=True)
+        with open(os.path.join(self._sidecar(), "notes", "roadmap.md"), "w") as fh:
+            fh.write("# my roadmap\n")
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertTrue(self._tracked("nav-rail/mockup.html"))
+        self.assertFalse(self._tracked("notes/roadmap.md"),
+                         "the turn commit swept up the captain's own file")
+        # untouched, and still exactly where he put it.
+        with open(os.path.join(self._sidecar(), "notes", "roadmap.md")) as fh:
+            self.assertEqual(fh.read(), "# my roadmap\n")
+
+    def test_a_turn_never_commits_another_programs_room(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]},
+                        {"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>2"}]})
+        sid_a, _ = self._start("Nav rail")
+        sid_b, _ = self._start("Tile picker")
+        # B's room exists and is untracked; A now takes a turn.
+        self._post("/api/holodeck/%s/say" % sid_a, {"text": "go"})
+        self.assertTrue(self._tracked("nav-rail/transcript.md"))
+        self.assertFalse(self._tracked("tile-picker/transcript.md"),
+                         "Nav rail's turn committed Tile picker's room")
+
+    def test_a_turn_commits_everything_the_program_produced(self):
+        """The other half of the narrowing: it must not start dropping the
+        worker's OWN output. A multi-file turn lands whole."""
+        self._set_turns({"stdout": "Tokens: --lcars-amber #ff9c00"},
+                        {"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"},
+                                    {"path": "assets/rail.svg",
+                                     "content": "<svg/>"},
+                                    {"path": "notes.md", "content": "# n"}]})
+        sid, _ = self._start("Nav rail", mode="grounding")
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        for rel in ("nav-rail/mockup.html", "nav-rail/assets/rail.svg",
+                    "nav-rail/notes.md", "nav-rail/transcript.md",
+                    "nav-rail/basis.md"):
+            self.assertTrue(self._tracked(rel), "%s was never committed" % rel)
+        self.assertEqual([p for p in self._porcelain()
+                          if p.split()[-1].startswith("nav-rail")], [])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 2 · DEFECT 4 — THE NAME THE CAPTAIN TYPED IS THE PROGRAM'S NAME
+#
+# Reproduced: start `Ensuite Floor Picker` (design mode — the room is created
+# and nothing is written), restart the daemon, and the list reads `ensuite
+# floor picker`. Say one thing and that name is CEMENTED: the transcript is
+# created with `# ensuite floor picker`, every later commit message reads
+# `holodeck(ensuite floor picker): …`, and so does the delete confirmation.
+#
+# The room slug is DERIVED and LOSSY. The name already had exactly one durable
+# home — `transcript.md`'s `# ` heading — and it was simply written too late,
+# so any program whose first turn had not landed (including one whose first
+# turn DIED, the most ordinary failure this product has) had nowhere to keep
+# the name at all.
+# ════════════════════════════════════════════════════════════════════════════
+class ProgramNameSurvivesTest(DurableBase):
+    NAME = "Ensuite Floor Picker"
+    ROOM = "ensuite-floor-picker"
+
+    def test_the_name_is_on_disk_the_moment_the_captain_types_it(self):
+        self._start(self.NAME)
+        text = self._transcript(self.ROOM)
+        self.assertIsNotNone(text, "the program's room records nothing about "
+                                   "the program until its first turn lands")
+        self.assertTrue(text.startswith("# %s" % self.NAME), text[:80])
+
+    def test_a_program_never_spoken_to_keeps_its_name_across_a_restart(self):
+        self._start(self.NAME)
+        self._restart_daemon()
+        progs = self._list()["programs"]
+        self.assertEqual(len(progs), 1, progs)
+        self.assertEqual(progs[0]["program"], self.NAME)
+        self.assertEqual(progs[0]["room"], self.ROOM)
+        self.assertEqual(progs[0]["turnCount"], 0)
+
+    def test_a_program_whose_first_turn_DIED_keeps_its_name(self):
+        """The ordinary failure: the engine dies at startup, so no turn ever
+        landed and nothing but the room existed to read a name back out of."""
+        self._set_turns({"stdout": "Error: authentication failed", "exit": 1})
+        sid, _ = self._start(self.NAME)
+        st, _b = self._post_raw("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertEqual(st, 502)
+        self._restart_daemon()
+        self.assertEqual(self._list()["programs"][0]["program"], self.NAME)
+
+    def test_reopening_it_does_not_cement_the_slug_into_the_git_log(self):
+        self._start(self.NAME)
+        self._restart_daemon()
+        self._set_turns({"stdout": "Picked it back up.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        _s, body = self._post("/api/holodeck/open", {"room": self.ROOM})
+        self.assertEqual(body["state"]["program"], self.NAME)
+        sid = body["state"]["sessionId"]
+        self._post("/api/holodeck/%s/say" % sid, {"text": "keep going"})
+        text = self._transcript(self.ROOM)
+        self.assertTrue(text.startswith("# %s" % self.NAME), text[:80])
+        self.assertNotIn(self.NAME.lower(), text)
+        self.assertIn(self.NAME, self._log()[0])
+        self.assertNotIn(self.NAME.lower(), self._log()[0])
+
+    def test_the_delete_confirmation_names_the_program_he_typed(self):
+        """Both halves of it: the name the deck puts in the dialog, and the
+        name the commit message carries. (A program never spoken to has
+        nothing committed to remove, so this works one that has.)"""
+        self._set_turns({"stdout": "Up.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start(self.NAME)
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft it"})
+        self._restart_daemon()
+        _s, body = self._post("/api/holodeck/delete", {"room": self.ROOM})
+        self.assertEqual(body["state"]["program"], self.NAME)
+        self.assertIn(self.NAME, self._log()[0])
+        self.assertNotIn(self.NAME.lower(), self._log()[0])
+
+    def test_a_worked_program_still_reads_its_name_from_its_transcript(self):
+        """The control: the header is written ONCE, at naming time, and the
+        first turn must not write a second one or renumber anything."""
+        self._set_turns({"stdout": "Up.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start(self.NAME)
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft it"})
+        text = self._transcript(self.ROOM)
+        self.assertEqual(text.count("# %s" % self.NAME), 1, text)
+        self.assertEqual(text.count("## Turn 1 ·"), 1, text)
+        self.assertIn("draft it", text)
+
+    def test_a_room_LCARS_cannot_write_into_is_refused_before_it_is_adopted(self):
+        """The name has to land somewhere. A room that cannot take the
+        program's own record cannot take a mockup either, so this is refused
+        where the engine check is — before anything is adopted — rather than
+        answering 200 and losing the name silently."""
+        sidecar = self.actions._ensure_sidecar(self.repo)
+        os.makedirs(os.path.join(sidecar, self.ROOM, "transcript.md"))
+        st, body = self._post_raw("/api/holodeck/start",
+                                  {"program": self.NAME,
+                                   "engine": self.claude_bin})
+        self.assertEqual(st, 502, body)
+        low = body["error"].lower()
+        self.assertIn("transcript.md", low)
+        for jargon in ("traceback", "oserror", "errno", "isadirectory"):
+            self.assertNotIn(jargon, low, jargon)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 2 · DEFECT 7 — THE SIDECAR IS THE CAPTAIN'S ARCHIVE
+#
+# LCARS advertises the sidecar to the captain as HIS — a git repo beside his
+# project that he can back up and keep things in — so he will keep things in
+# it. A dropped `screenshots-i-saved/` was listed as a program called
+# `screenshots i saved` with 0 turns and a working ⌫ DELETE that `git rm`'d it.
+# A program is a room with the program's own record in it, not "any directory".
+# ════════════════════════════════════════════════════════════════════════════
+class OnlyProgramsAreProgramsTest(DurableBase):
+    FOLDER = "screenshots-i-saved"
+
+    def _worked_program(self):
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start("Nav rail")
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        return sid
+
+    def _plant_folder(self):
+        d = os.path.join(self._sidecar(), self.FOLDER)
+        os.makedirs(d, exist_ok=True)
+        shot = os.path.join(d, "kitchen.png")
+        with open(shot, "w") as fh:
+            fh.write("not really a png")
+        return d, shot
+
+    def test_a_folder_the_captain_kept_here_is_not_listed_as_a_program(self):
+        self._worked_program()
+        self._plant_folder()
+        self._restart_daemon()
+        rooms = [p["room"] for p in self._list()["programs"]]
+        self.assertEqual(rooms, ["nav-rail"], rooms)
+
+    def test_his_own_folder_cannot_be_deleted_through_the_deck(self):
+        self._worked_program()
+        folder, shot = self._plant_folder()
+        st, body = self._post_raw("/api/holodeck/delete", {"room": self.FOLDER})
+        self.assertIn(st, (403, 404), (st, body))
+        self.assertTrue(os.path.isfile(shot), "LCARS deleted the captain's own "
+                                              "files out of his archive")
+        self.assertNotIn("Traceback", body["error"])
+        self.assertIn(self.FOLDER, body["error"])
+
+    def test_his_own_folder_cannot_be_opened_as_a_program(self):
+        self._worked_program()
+        self._plant_folder()
+        st, body = self._post_raw("/api/holodeck/open", {"room": self.FOLDER})
+        self.assertIn(st, (403, 404), (st, body))
+        self.assertNotIn("Traceback", body["error"])
+
+    def test_a_real_program_is_still_listed_opened_and_deleted(self):
+        """The control: the cure must not make the product's own rooms
+        unreachable."""
+        self._worked_program()
+        self._plant_folder()
+        self._restart_daemon()
+        self.assertEqual(self._list()["programs"][0]["program"], "Nav rail")
+        self._set_turns({"stdout": "Back."})
+        st, _b = self._post("/api/holodeck/open", {"room": "nav-rail"})
+        self.assertEqual(st, 200)
+        st2, _b2 = self._post("/api/holodeck/delete", {"room": "nav-rail"})
+        self.assertEqual(st2, 200)
+        self.assertFalse(os.path.isdir(self._room()))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 2 · DEFECT 5 — "WARM" IS A FACT, NOT A DECORATION
+#
+# The chat header's `WARM · CLAUDE` pill sat two inches under the warm-restart
+# banner saying the conversation is over and the next worker is fresh. "Warm"
+# is the exact word for the thing that did NOT survive. `sess.started` is the
+# daemon's own answer to "is there a worker session to resume" — it is now on
+# the payload so the pill can read it instead of asserting it.
+# ════════════════════════════════════════════════════════════════════════════
+class WarmIsMeasuredTest(DurableBase):
+    def test_a_program_that_has_not_spoken_yet_is_not_warm(self):
+        _sid, state = self._start()
+        self.assertFalse(state["warm"], state)
+
+    def test_a_turn_that_opened_the_session_is_warm(self):
+        self._set_turns({"stdout": "Up.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start()
+        _s, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertTrue(body["state"]["warm"], body["state"])
+
+    def test_a_turn_that_died_before_opening_a_session_is_not_warm(self):
+        """The same evidence S125's N4 cure keyed off: a reply proves nothing,
+        so neither does the pill."""
+        self._set_turns({"stdout": "Error: authentication failed", "exit": 1},
+                        {"stdout": "Second time worked.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>x"}]})
+        sid, _ = self._start()
+        st, _b = self._post_raw("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertEqual(st, 502)
+        self.assertFalse(self._get("/api/holodeck/%s" % sid)["warm"])
+
+    def test_a_program_picked_back_up_is_not_warm_until_it_speaks_again(self):
+        self._set_turns({"stdout": "Up.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self._restart_daemon()
+        self._set_turns({"stdout": "Back.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>2"}]})
+        _s, body = self._post("/api/holodeck/open", {"room": "nav-rail"})
+        state = body["state"]
+        # the banner and the pill must not contradict each other on one screen.
+        self.assertTrue(state["warmRestart"])
+        self.assertFalse(state["warm"], state)
+        _s2, body2 = self._post("/api/holodeck/%s/say" % state["sessionId"],
+                                {"text": "keep going"})
+        self.assertTrue(body2["state"]["warm"])
+
+    def test_a_room_read_off_disk_is_never_warm(self):
+        self._set_turns({"stdout": "Up.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self._restart_daemon()
+        self.assertFalse(self._list()["programs"][0]["warm"])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 5 — A PROGRAM REMEMBERS WHICH ENGINE BUILT IT (the money bug)
+#
+# MEASURED LIVE, not inferred. A program called "Ticket Detail" was designed
+# end to end on claude. After a daemon restart the list read
+# `engine: /opt/homebrew/bin/copilot`, the warm-restart banner told the captain
+# "the copilot that answers your next turn", and the next turn really did run
+# on copilot — its reply carried copilot tool blocks, which claude never emits.
+#
+# The reverse direction is the expensive one and is the reason this was cured
+# rather than ledgered: a program built on FREE copilot silently reopening on
+# BILLED claude, in a room whose whole stated posture is "this is the cheap
+# one". This repo's engine has arrived from three places with a different
+# winner per path before, and it has produced repeated money bugs.
+#
+# The suite drives the REVERSE (copilot-built, claude-default daemon) precisely
+# because that is the direction that spends.
+# ════════════════════════════════════════════════════════════════════════════
+class EngineIsRememberedTest(DurableBase):
+    """The engine that built a program survives the daemon that ran it."""
+
+    def _built_on_copilot(self):
+        """One design turn on copilot, then the daemon dies. The replacement
+        daemon's default is CLAUDE (see `_restart_daemon`), so anything that
+        reads claude back out of this program is the money bug."""
+        self._set_turns({"stdout": "First pass is up.",
+                         "writes": [{"path": "mockup.html",
+                                     "content": "<h1>1"}]})
+        sid, _ = self._start("Ticket detail", engine=self.copilot_bin)
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Draft the detail"})
+        return sid
+
+    # -- the record itself ---------------------------------------------------
+    def test_the_engine_is_recorded_in_the_programs_own_record(self):
+        """THE SAME DURABLE HOME THE NAME HAS. Not a sidecar metadata file —
+        adding a mechanism beside an existing one has already cost this feature
+        two rounds."""
+        self._built_on_copilot()
+        text = self._transcript("ticket-detail")
+        self.assertTrue(text)
+        self.assertIn(os.path.basename(self.copilot_bin), text)
+        # …and NOTHING ELSE ON DISK HOLDS IT. One durable home, the same one
+        # the name has: no sidecar json, no per-room metadata file.
+        room = self._room("ticket-detail")
+        holders = []
+        for name in sorted(os.listdir(room)):
+            path = os.path.join(room, name)
+            if not os.path.isfile(path):
+                continue
+            with open(path, errors="replace") as fh:
+                if self.copilot_bin in fh.read():
+                    holders.append(name)
+        self.assertEqual(holders, ["transcript.md"], sorted(os.listdir(room)))
+
+    def test_the_engine_is_recorded_the_moment_the_program_is_named(self):
+        """A program whose FIRST TURN DIED still knows what it was opened on —
+        the same reason the name is written at start rather than on turn 1."""
+        self._start("Ticket detail", engine=self.copilot_bin)
+        text = self._transcript("ticket-detail")
+        self.assertTrue(text)
+        self.assertIn(os.path.basename(self.copilot_bin), text)
+
+    # -- THE MONEY BUG, in the three places it showed itself ------------------
+    def test_a_copilot_program_reopens_on_copilot_not_the_daemon_default(self):
+        self._built_on_copilot()
+        self._restart_daemon()
+        _s, body = self._post("/api/holodeck/open", {"room": "ticket-detail"})
+        self.assertEqual(body["state"]["engine"], self.copilot_bin,
+                         body["state"])
+
+    def test_the_next_turn_after_a_restart_SPENDS_on_the_engine_it_was_built_on(self):
+        """THE MONEY. Everything above is a readout; this is the invoice."""
+        self._built_on_copilot()
+        self._restart_daemon()
+        self._set_turns({"stdout": "Back."})
+        _s, body = self._post("/api/holodeck/open", {"room": "ticket-detail"})
+        sid = body["state"]["sessionId"]
+        self._post("/api/holodeck/%s/say" % sid, {"text": "keep going"})
+        # the stub records the basename it was invoked as — WHICH CLI RAN.
+        self.assertEqual(self._calls()[-1]["bin"],
+                         os.path.basename(self.copilot_bin), self._calls()[-1])
+
+    def test_the_warm_restart_banner_names_the_engine_that_will_answer(self):
+        self._built_on_copilot()
+        self._restart_daemon()
+        _s, body = self._post("/api/holodeck/open", {"room": "ticket-detail"})
+        msg = body["state"]["warmRestart"]["message"]
+        self.assertIn(os.path.basename(self.copilot_bin), msg)
+        self.assertNotIn(os.path.basename(self.claude_bin), msg)
+
+    def test_the_archive_listing_says_which_engine_built_each_program(self):
+        self._built_on_copilot()
+        self._restart_daemon()
+        p = self._list()["programs"][0]
+        self.assertEqual(p["engine"], self.copilot_bin, p)
+        self.assertTrue(p["engineRecorded"], p)
+
+    def test_a_reopened_copilot_program_still_strips_copilot_trace_on_disk(self):
+        """The engine is not a label — it decides behaviour. Reopened under a
+        claude-default daemon, this program's tool blocks were being written
+        into the captain's own record as prose."""
+        self._built_on_copilot()
+        self._restart_daemon()
+        self._set_turns({"stdout": _live("copilot-failed-edit-reply.txt")})
+        _s, body = self._post("/api/holodeck/open", {"room": "ticket-detail"})
+        sid = body["state"]["sessionId"]
+        self._post("/api/holodeck/%s/say" % sid, {"text": "keep going"})
+        text = self._transcript("ticket-detail")
+        self.assertNotIn("✗ Edit mockup.html", text)
+        self.assertIn("decision T4 in concept.md", text)
+
+    # -- the resolution rule, in the order it is stated ----------------------
+    def test_an_explicit_engine_wins_over_the_recorded_one(self):
+        self._built_on_copilot()
+        self._restart_daemon()
+        _s, body = self._post("/api/holodeck/open",
+                              {"room": "ticket-detail",
+                               "engine": self.claude_bin})
+        self.assertEqual(body["state"]["engine"], self.claude_bin)
+
+    def test_a_record_that_predates_this_falls_back_and_SAYS_it_does_not_know(self):
+        """HONEST DEGRADATION. Every program written before this round has no
+        engine in its record, and "built on claude" would be an invention."""
+        self._built_on_copilot()
+        # A PRE-ROUND-5 RECORD, written out exactly as the old header wrote it:
+        # the name heading, the boilerplate, and the turns. Nothing else.
+        path = os.path.join(self._room("ticket-detail"), "transcript.md")
+        with open(path, "w") as fh:
+            fh.write("# Ticket detail\n\n"
+                     "The holodeck's record of this program: one entry per "
+                     "turn, in the order it happened.\n"
+                     "\n## Turn 1 · 2026-08-05T00:00:00Z\n"
+                     "\n**Captain:** Draft the detail\n"
+                     "\n**Holodeck:** First pass is up.\n")
+        self._restart_daemon()
+        p = self._list()["programs"][0]
+        self.assertEqual(p["engine"], self.claude_bin, p)
+        self.assertFalse(p["engineRecorded"], p)
+        _s, body = self._post("/api/holodeck/open", {"room": "ticket-detail"})
+        state = body["state"]
+        self.assertEqual(state["engine"], self.claude_bin)
+        self.assertFalse(state["engineRecorded"])
+        msg = state["warmRestart"]["message"]
+        self.assertIn(os.path.basename(self.claude_bin), msg)
+        # it never claims the program was BUILT on it.
+        low = msg.lower()
+        self.assertTrue("does not say" in low or "no record" in low
+                        or "not recorded" in low, msg)
+
+    def test_a_live_program_reports_its_engine_as_recorded(self):
+        sid = self._built_on_copilot()
+        state = self._get("/api/holodeck/%s" % sid)
+        self.assertEqual(state["engine"], self.copilot_bin)
+        self.assertTrue(state["engineRecorded"])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIX ROUND 5 — COPILOT'S THIRD BLOCK FORM
+#
+# The comment above `_COPILOT_BLOCK_HEAD` asserted "TWO FORMS AND NO THIRD".
+# A live copilot drive printed a third — the FAILED tool block — and it sat
+# verbatim in a real `transcript.md`, rendered to the captain as prose:
+#
+#     ✗ Edit mockup.html
+#       └ Multiple matches found
+#
+# The bytes are committed at `copilot-failed-edit-reply.txt`.
+# ════════════════════════════════════════════════════════════════════════════
+class CopilotFailedBlockTest(DurableBase):
+    def _strip(self, text, engine):
+        from lcars_serve.actions import _strip_tool_trace
+        return _strip_tool_trace(text, engine)
+
+    def test_the_failed_block_copilot_really_printed_is_not_prose(self):
+        got = self._strip(_live("copilot-failed-edit-reply.txt"),
+                          self.copilot_bin)
+        self.assertNotIn("✗ Edit mockup.html", got)
+        self.assertNotIn("Multiple matches found", got)
+
+    def test_the_prose_of_that_same_turn_is_whole(self):
+        """Both halves or neither proves. These two sentences are the captain's
+        entire turn once the plumbing is out."""
+        got = self._strip(_live("copilot-failed-edit-reply.txt"),
+                          self.copilot_bin)
+        for line in ("I'll add a Density toggle chip so the `.compact` class "
+                     "is reachable, then record the decision.",
+                     "I added a `.compact` class on the board that halves card "
+                     "padding (10px 14px → 5px 7px), reachable via a new "
+                     "Compact chip in the topbar, and recorded it as decision "
+                     "T4 in concept.md. The board now toggles density in place "
+                     "without changing the lanes or the accent-bar motif."):
+            self.assertIn(line, got, line)
+
+    def test_a_failed_head_the_cli_never_closed_is_the_captain_writing(self):
+        """THE SAME STRUCTURAL RULE, not a guess: the `└` row is REQUIRED. A
+        `✗` bullet with no closing row is somebody making a point."""
+        note = "✗ Delete the old rail (it never shipped)."
+        for engine in (self.claude_bin, self.copilot_bin):
+            self.assertEqual(self._strip(note, engine), note,
+                             os.path.basename(engine))
+
+    def test_claude_never_loses_a_failed_shaped_bullet(self):
+        text = _live("copilot-failed-edit-reply.txt")
+        self.assertEqual(self._strip(text, self.claude_bin), text.strip("\n"))
+
+    def test_the_code_no_longer_asserts_a_third_form_cannot_exist(self):
+        """The comment was FALSE and the code was reading as authority. A
+        claim nobody can check is the thing that let this survive a round."""
+        from lcars_serve.actions import _COPILOT_BLOCK_HEAD
+        import lcars_serve.actions as actions
+        with open(actions.__file__.replace(".pyc", ".py")) as fh:
+            src = fh.read()
+        # the assertion itself is gone (it may still be QUOTED as the thing
+        # that was wrong — that is a record, not a claim)…
+        self.assertNotIn("TWO FORMS AND NO THIRD:", src)
+        # …the third form is named with the bytes that prove it…
+        self.assertIn("copilot-failed-edit-reply.txt", src)
+        # …and the parser knows the head copilot actually printed.
+        self.assertTrue(_COPILOT_BLOCK_HEAD.match("✗ Edit mockup.html"))
+
+
+class DurableReadOnlyTest(HolodeckBase):
+    read_only = True
+
+    def test_the_new_write_routes_are_refused_on_a_read_only_daemon(self):
+        for path, body in (("/api/holodeck/open", {"room": "x"}),
+                           ("/api/holodeck/delete", {"room": "x"})):
+            st, resp = self._post_raw(path, body)
+            self.assertEqual(st, 403, path)
+            self.assertIn("read-only", resp["error"])
+        self.assertEqual(os.listdir(self.holo_root), [])
 
 
 if __name__ == "__main__":

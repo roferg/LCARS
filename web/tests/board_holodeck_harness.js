@@ -355,8 +355,31 @@ switch (cfg.act) {
     out.iframeSandbox = frame ? (frame.getAttribute("sandbox") || "") : "";
     out.previewText = txt(one(deck(), ".pv-none"));
     out.emptyText = txt(one(deck(), ".holo-empty"));
+    /* FIX ROUND 2 (defect 6) — the MORNING state is the empty pane with
+     * programs waiting in the list, so its copy and its controls are projected
+     * apart from the programs pane's. */
+    out.emptyControls = controlsIn(one(deck(), ".holo-empty") || stubEl("div"));
+    /* FIX ROUND 2 (defect 5) — the chat header's engine pill. It asserted
+     * `WARM` unconditionally, two inches under a banner saying the warm
+     * conversation is over. */
+    const pill = one(deck(), ".chat-head .pill");
+    out.headPill = pill ? txt(pill) : "";
+    out.headPillReason = pill ? (pill.title || "") : "";
     out.listNames = many(deck(), ".prog .pn").map(txt);
     out.listMeta = many(deck(), ".prog .pm").map(txt);
+    /* S126 — one row per program, LIVE or on disk. `onDisk` is the class the
+     * row carries, so a test can tell the two kinds apart the way a captain
+     * does rather than by re-reading the payload it was handed. */
+    out.listRows = many(deck(), ".prog").map((n) => ({
+      name: txt(one(n, ".pn")),
+      meta: txt(one(n, ".pm")),
+      onDisk: n.classList.contains("ondisk"),
+      controls: controlsIn(n).map((c) => c.label),
+    }));
+    const intent = one(deck(), ".pvt-b.intent");
+    out.intentTag = intent ? intent.tag : null;
+    out.intentHref = intent ? intent.getAttribute("href") : null;
+    out.intentReason = intent ? (intent.getAttribute("data-reason") || "") : "";
     out.sidecarChip = txt(one(deck(), ".sidecar-chip"));
     out.controls = controlsIn(deck());
     const chip = one(deck(), ".ground-chip");
@@ -378,6 +401,11 @@ switch (cfg.act) {
     out.traceSummaries = last
       ? many(last, ".holo-trace").map((n) => txt(one(n, ".ts"))) : [];
     out.replyAllText = last ? txt(last) : "";
+    /* S126 (#8) — a fence's INFO STRING. ```html file:mockup.html declares the
+     * file the block is, and the render dropped it, so the declared filename
+     * never reached the screen at all. */
+    out.fenceInfos = last ? many(last, ".fence-info").map(txt) : [];
+    out.preTexts = last ? many(last, "pre").map(txt) : [];
     out.replyTags = last ? last.children.map((c) => c.tag) : [];
     let htmlSets = 0;
     if (last) {
@@ -477,6 +505,10 @@ switch (cfg.act) {
     const state = { status: cfg.status || "wrote-nothing",
                     warning: cfg.warning || null,
                     sessionId: "s1" };
+    /* FIX ROUND 2 — a REFUSED reply (the branch that outranks the warning),
+     * and the daemon's `warm` fact that the header pill reads. */
+    if (cfg.refused) state.refused = cfg.refused;
+    if (cfg.warm !== undefined) state.warm = cfg.warm;
     const restore = sandbox.fetch;
     sandbox.fetch = function (url, opts) {
       FETCHES.push({ url: url, opts: opts || {} });
@@ -502,6 +534,8 @@ switch (cfg.act) {
     out.bannerClass = b ? b.className : null;
     out.label = b ? txt(one(b, ".bl")).toUpperCase() : null;
     out.text = b ? txt(one(b, ".bt")) : null;
+    const wpill = one(deck(), ".chat-head .pill");
+    out.headPill = wpill ? txt(wpill) : "";
     break;
   }
   /* N6 — RETRY TURN must not make the captain say it twice. Drives the REAL
@@ -527,6 +561,61 @@ switch (cfg.act) {
     out.turnTexts = (prog.turns || []).map((t) => t.text);
     out.saidCount = out.turnTexts.filter((t) => t === said).length;
     out.posts = FETCHES.filter((f) => (f.opts.method || "") === "POST").length;
+    break;
+  }
+  /* S126 — clicking a room the daemon is NOT holding asks it to reopen. */
+  case "openDisk": {
+    sandbox.writesActive = true;
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    FETCHES.length = 0;
+    const row = many(deck(), ".prog")
+      .find((n) => n.classList.contains("ondisk"));
+    if (row) row.click();
+    const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
+    out.path = post ? post.url : null;
+    out.body = post ? JSON.parse(post.opts.body) : null;
+    break;
+  }
+  /* S126 — delete CONFIRMS, then posts. `stopAtConfirm` leaves the dialog
+   * open so a test can prove nothing is deleted by merely asking. */
+  case "deleteProgram": {
+    sandbox.writesActive = true;
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    FETCHES.length = 0;
+    const rows = many(deck(), ".prog");
+    const row = rows.find((n) => {
+      const ctl = many(n, "[data-ctl]")
+        .find((c) => /delete/i.test(c.getAttribute("data-ctl") || ""));
+      return !!ctl && (!cfg.room || txt(one(n, ".pm")).indexOf(cfg.room) !== -1
+                       || rows.length === 1 || n.classList.contains("ondisk"));
+    }) || rows[0];
+    const del = row && many(row, "[data-ctl]")
+      .find((c) => /delete/i.test(c.getAttribute("data-ctl") || ""));
+    if (del) del.click();
+    out.confirmText = txt(REGISTRY.overlayBody);
+    if (!cfg.stopAtConfirm) {
+      const go = many(REGISTRY.overlay, "[data-ctl]")
+        .concat(many(docRoot, "[data-ctl]"))
+        .filter((n) => /delete program/i.test(n.getAttribute("data-ctl") || ""));
+      if (go.length) go[go.length - 1].click();
+    }
+    const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
+    out.path = post ? post.url : null;
+    out.body = post ? JSON.parse(post.opts.body) : null;
+    break;
+  }
+  /* S126 — the concept-doc audit, rendered against the turn it belongs to. */
+  case "conceptAudit": {
+    sandbox.writesActive = true;
+    loadPrograms(cfg);
+    const prog = (sandbox.HOLO.programs || [])[0];
+    const last = prog && prog.turns && prog.turns[prog.turns.length - 1];
+    if (last) last.conceptAudit = cfg.conceptAudit || null;
+    sandbox.renderDeck();
+    const note = many(deck(), ".holo-concept");
+    out.conceptNote = note.length ? txt(note[note.length - 1]) : "";
     break;
   }
   case "viewOnly": {

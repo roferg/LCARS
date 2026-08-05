@@ -1,0 +1,20 @@
+Logging the two new requirements in concept.md (not the mockup, as asked).
+
+● Edit concept.md +4
+
+● Edit concept.md +5
+
+Left the mockup untouched and logged the two new requirements (keyboard/arrow nav + SR announce, iframe-safe) in concept.md as T3.
+
+Next turn:
+
+● Update mockup.html
+● Update concept.md
+● Verify mockup.html
+
+Plan detail for those lines:
+● Update mockup.html — add `role="radiogroup"` + roving tabindex, arrow-key handler, and an `aria-live="polite"` status region
+● Update mockup.html — confirm `localStorage`/`matchMedia` read from the framed `window`, never `window.top`
+● Verify mockup.html — tab in, arrow across all three segments, watch the live region fire
+
+First I'd switch the segments from three buttons to a `radiogroup` with roving tabindex — that single change unlocks both the arrow-key nav and the correct screen-reader semantics.

@@ -7441,6 +7441,11 @@ var HOLO_FILTERS = [["all", "ALL"], ["draft", "DRAFT"], ["sent", "SENT"],
 function deckHost() { return document.getElementById("deckHost"); }
 
 function holoActive() {
+  /* S126 — a program listed FROM DISK has `sessionId: null`, honestly, because
+     no conversation is running for it. Without this guard a null `activeId`
+     would match the first such card and the deck would open a chat pane for a
+     program the daemon is not holding — a composer that 404s on send. */
+  if (!HOLO.activeId) return null;
   for (var i = 0; i < HOLO.programs.length; i++) {
     if (HOLO.programs[i].sessionId === HOLO.activeId) return HOLO.programs[i];
   }
@@ -7535,8 +7540,15 @@ function holoRefresh() {
         HOLO.commits = HOLO.programs[0].commits || 0;
       }
       if (HOLO.activeId && !holoActive()) HOLO.activeId = null;
-      if (!HOLO.activeId && HOLO.programs.length) {
-        HOLO.activeId = HOLO.programs[0].sessionId;
+      if (!HOLO.activeId) {
+        // only a LIVE program can be the active one — a room read off disk has
+        // no session to talk to until it is reopened (S126).
+        for (var i = 0; i < HOLO.programs.length; i++) {
+          if (HOLO.programs[i].sessionId) {
+            HOLO.activeId = HOLO.programs[i].sessionId;
+            break;
+          }
+        }
       }
       renderDeck();
     })
@@ -7604,12 +7616,23 @@ function holoProgramsPane() {
       : "No programs yet. Nothing has been run on this deck."));
   }
   shown.forEach(function (p) {
-    var row = el("div", "prog" + (p.sessionId === HOLO.activeId ? " on" : ""));
+    /* S126 — TWO KINDS OF CARD. A live conversation, and a room read off disk
+       that this daemon has never held. They are marked apart because they
+       behave apart: clicking the first switches the chat to it, clicking the
+       second asks the daemon to pick it back up (a WARM RESTART — a fresh
+       worker handed the transcript, never a resumed session). */
+    var onDisk = !p.sessionId;
+    var row = el("div", "prog" + (p.sessionId && p.sessionId === HOLO.activeId
+                                  ? " on" : "") + (onDisk ? " ondisk" : ""));
     row.appendChild(el("div", "pn", p.program || "Untitled program"));
     var meta = el("div", "pm");
     meta.appendChild(el("span", null, "⬡ " + (p.turnCount || 0) + " turn"
       + ((p.turnCount === 1) ? "" : "s")));
-    meta.appendChild(el("span", null, holoWhen(p.lastTouched)));
+    // D8 — recency is the answer to "which one was that", so it says WHAT the
+    // time refers to. "2 days ago" alone could be when it was opened, listed,
+    // or committed; design work is picked up days later and the question is
+    // always when it was last WORKED ON.
+    meta.appendChild(el("span", null, "last worked " + holoWhen(p.lastTouched)));
     // THE ROOM, so two cards that READ the same are still legible (round 2).
     // The daemon's collision check refuses names that normalize alike, but it
     // does not hunt homoglyphs — "sidebаr" with a Cyrillic а is a name a
@@ -7622,8 +7645,25 @@ function holoProgramsPane() {
     row.appendChild(meta);
     var prow = el("div", "prow");
     prow.appendChild(el("span", "pstat", p.status || "draft"));
+    if (onDisk) {
+      // Said on the card, not only in a class: this program is in the archive
+      // and nothing is talking to it right now.
+      prow.appendChild(el("span", "pdisk", "⌾ in the archive"));
+    }
+    prow.appendChild(el("span", "grow"));
+    /* DELETE IS A GIT OPERATION, and the confirmation says so. The room is
+       `git rm`'d and committed, so the honest word for this is "removed from
+       the deck", not "deleted forever". */
+    prow.appendChild(applyWriteState(holoBtn("⌫ Delete", "small", function () {
+      holoConfirmDelete(p);
+    })));
     row.appendChild(prow);
     keyActivable(holoCtl(row, p.program || "program", function () {
+      if (onDisk) {
+        holoOpen(p.room || holoBase(p.programDir),
+                 p.engineRecorded ? p.engine : null);
+        return;
+      }
       HOLO.activeId = p.sessionId;
       HOLO.banner = null;
       renderDeck();
@@ -7661,12 +7701,35 @@ function holoProgramsPane() {
    place a path is shown. */
 function holoEmptyDeck() {
   var e = el("div", "holo-empty");
+  /* FIX ROUND 2 — THE MORNING STATE. This pane is shown in TWO situations, and
+     until now it said the same thing in both. The second is the one a captain
+     is in every morning: yesterday's programs are in the list on the left,
+     nothing is selected (correctly — the auto-select deliberately picks up only
+     a LIVE program, because handing him an archived one means a composer that
+     404s), and the whole main area said "PROGRAM STANDING BY / Describe a
+     screen…" over one prominent ＋ NEW PROGRAM. Nothing pointed at the list,
+     and the one button was the wrong move: under the same name it lands in the
+     room-reuse disclosure, under a different one his work is in two places.
+     The GUARD is right; this was the copy. */
+  var waiting = (HOLO.programs || []).length;
   e.appendChild(el("div", "arch", "Holodeck"));
-  e.appendChild(el("div", "sub", "Program standing by"));
-  e.appendChild(el("p", null,
-    "Describe a screen, a component, or a whole flow and I will build it as a "
-    + "live mockup you can look at. We iterate here — cheaply, no missions, no "
-    + "branches — until it looks right."));
+  e.appendChild(el("div", "sub", waiting ? "Pick a program back up"
+                                         : "Program standing by"));
+  if (waiting) {
+    e.appendChild(el("p", null,
+      "Your programs are in the list on the left — click one to carry on with "
+      + "it. Nothing was lost when the deck was closed: each program's room "
+      + "still holds its mockup, the whole conversation, and its concept doc."));
+    e.appendChild(el("p", "quiet",
+      "＋ New Program starts a separate one. Under the same name it carries on "
+      + "in that program's room; under a different name you have the same "
+      + "design in two places."));
+  } else {
+    e.appendChild(el("p", null,
+      "Describe a screen, a component, or a whole flow and I will build it as a "
+      + "live mockup you can look at. We iterate here — cheaply, no missions, no "
+      + "branches — until it looks right."));
+  }
   e.appendChild(applyWriteState(holoBtn("＋ New Program", "go big",
                                         openNewProgram)));
   var where = el("div", "where");
@@ -7723,7 +7786,42 @@ function holoChatPane(p) {
     }
   }
   head.appendChild(el("span", "grow"));
-  head.appendChild(el("span", "pill", "WARM · " + holoEngineName(p)));
+  /* FIX ROUND 2 — "WARM" IS A FACT THE DAEMON MEASURES, NOT A DECORATION.
+     On a program picked back up this pill read `WARM · CLAUDE` two inches
+     under the banner saying the conversation that built it is over and the
+     worker answering the next turn is a fresh one — "warm" being the exact
+     word for the thing that did not survive. It is equally untrue on a program
+     that has not spoken yet: a design program spends nothing until the first
+     turn, which is what OPENS the warm session.
+
+     `warm` is `sess.started` — the daemon's own answer to "is there a session
+     to resume", the same evidence S125's N4 cure is keyed off. The pill states
+     it rather than asserting it, and never goes silent about the engine. */
+  var warm = !!p.warm;
+  var pill = el("span", "pill", (warm ? "WARM · " : "FRESH · ")
+               + holoEngineName(p));
+  /* ONE VOICE (fix round 3). The FRESH tooltip used to go on to say the next
+     turn is "handed this program's transcript as context" — the restart
+     banner's own claim, restated two inches below it in different words, and
+     the only second voice left on the deck. It is DELETED rather than
+     rephrased: the tooltip's job is the PILL's fact — whether a worker session
+     is open — and the banner is the whole account of the restart. */
+  pill.title = (warm
+    ? ("The worker session is open, so a follow-up turn resumes it — LCARS "
+       + "re-sends nothing.")
+    : "No worker session is open yet. Your next turn starts one.")
+    /* FIX ROUND 5 — WHERE THE ENGINE IN THE PILL CAME FROM. The pill has
+       always named what will ANSWER, and that stays. What it could not say is
+       whether that is the program's own history or merely what this
+       viewscreen happens to be running — and on a live drive those were
+       different engines, with the wrong one reading as the answer. Every
+       program built before round 5 has no engine in its record, so it is told
+       exactly that rather than handed an invention. */
+    + (p.engineRecorded
+       ? (" It is the engine this program was designed on.")
+       : (" This program's record does not say which engine it was designed "
+          + "on, so it runs on this viewscreen's default."));
+  head.appendChild(pill);
   head.appendChild(applyWriteState(holoBtn("⌫ End Program", null, function () {
     holoEnd(p.sessionId);
   })));
@@ -7752,6 +7850,19 @@ function holoChatPane(p) {
             + (/\.md$/i.test(name) ? " doc" : ""), name));
         });
         h.appendChild(did);
+      }
+      /* S126 — THE CONCEPT-DOC AUDIT, ON THE TURN IT IS ABOUT. The daemon
+         checks that a turn which moved the mockup left a `concept.md` behind,
+         and only the failure is shown: a check that speaks on every turn is a
+         check people stop reading. It is a NOTE beside the turn, not a modal
+         banner — nothing is broken and nothing was lost, there is simply
+         nothing written down yet for the hand-off to carry. The words are the
+         daemon's (the one-voice rule). */
+      if (t.conceptAudit && t.conceptAudit.status === "missing") {
+        var cn = el("div", "holo-concept");
+        cn.appendChild(el("span", "cl", "▤ No concept doc"));
+        cn.appendChild(el("span", "ct3", t.conceptAudit.message || ""));
+        h.appendChild(cn);
       }
       tr.appendChild(h);
     }
@@ -7832,7 +7943,13 @@ function holoChatPane(p) {
 
    The one rule none of this may break: model text still never reaches
    `innerHTML` — every line below becomes a TEXT NODE. */
-var HOLO_TOOL_LINE = /^\s*[●⏺◆]\s*(list directory|read|create|update|edit|write|search|grep|glob|view|bash|fetch|task|delete|move|copy|thinking)\b(.*)$/i;
+/* FIX ROUND 5 — `✗` joins the glyph class. Copilot prints a FAILED tool block
+   with that head (`✗ Edit mockup.html` / `  └ Multiple matches found`, captured
+   at `web/tests/fixtures/s126-live/copilot-failed-edit-reply.txt`), and it was
+   rendering in the middle of the conversation as a design decision. The tail
+   test is UNCHANGED, so `✗ Delete the old rail it never shipped` is still a
+   sentence — and the chat folds rather than deletes either way. */
+var HOLO_TOOL_LINE = /^\s*[●⏺◆✗]\s*(list directory|read|create|update|edit|write|search|grep|glob|view|bash|fetch|task|delete|move|copy|thinking)\b(.*)$/i;
 var HOLO_TRACE_CONT = /^\s*[└⎿├│]/;
 
 /* Does the tail of a `● Verb …` line look like a tool ARGUMENT rather than a
@@ -7953,14 +8070,25 @@ function holoRenderProse(body, lines) {
   while (i < lines.length) {
     var ln = lines[i];
     // fenced code — kept verbatim, in a <pre>, never parsed as markdown.
+    //
+    // S126 (#8) — AND ITS INFO STRING REACHES THE SCREEN. The turn prompt asks
+    // the engine for ```file:<path> whenever a write tool fails it, and the
+    // DAEMON then writes that block: the info string is the only thing saying
+    // WHICH FILE the slab of HTML below became. It was dropped, so the captain
+    // read an unlabelled wall of markup. Printed verbatim — the declaration is
+    // the model's, and LCARS neither reformats nor interprets it here.
     if (/^\s*```/.test(ln)) {
       flush();
+      var info = ln.replace(/^\s*```/, "").trim();
       var buf = [];
       i += 1;
       while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
         buf.push(lines[i]); i += 1;
       }
       i += 1;
+      // a TEXT NODE, like every other thing the model wrote (`el` sets
+      // textContent) — an info string is model-authored text too.
+      if (info) body.appendChild(el("div", "fence-info", info));
       body.appendChild(el("pre", null, buf.join("\n")));
       continue;
     }
@@ -8070,14 +8198,36 @@ function holoPreviewPane(p) {
   holoCtl(pv, "⬡ Preview", null, null);
   pv.setAttribute("data-wired", "1");   // it IS the pane you are looking at
   tog.appendChild(pv);
-  // D14's INTENT panel needs `concept.md`, which the worker does not yet keep —
-  // that is S126. So it is here, visibly OFF, saying why: the alternative is a
-  // toggle that flips to an empty panel and teaches the captain the feature is
-  // broken.
-  var intent = el("span", "pvt-b", "▤ Intent");
-  holoCtl(intent, "▤ Intent", null,
-          "Intent arrives with the concept doc — the holodeck is not writing "
-          + "concept.md yet.");
+  /* D14's INTENT — S126 put `concept.md` in the turn prompt's contract, so the
+     document exists; the PANEL that renders its captured requirements inline
+     does not, and inventing one here would be a second surface beside the file.
+     So this OPENS the concept doc itself, on the same jailed preview route the
+     grounding chip uses, for the same reason S125 gave there: what will be
+     handed to a Mission must be inspectable before it is handed over, or a
+     wrong capture is undiscoverable. With no concept doc yet it is visibly off,
+     saying what is actually true. */
+  var intent;
+  if (p.conceptFile) {
+    intent = el("a", "pvt-b intent", "▤ Intent");
+    intent.setAttribute("href", holoPreviewPath(p, p.conceptFile));
+    intent.setAttribute("target", "_blank");
+    intent.setAttribute("rel", "noopener noreferrer");
+    intent.title = "read concept.md — the written half of this design, and "
+      + "what a Mission is handed at the end";
+    intent.setAttribute("data-ctl", "▤ Intent");
+    intent.setAttribute("data-wired", "1");
+  } else {
+    intent = el("span", "pvt-b intent", "▤ Intent");
+    /* FIX ROUND 2 — the daemon now withholds `conceptFile` for an EMPTY
+       concept.md as well as a missing one, because a control that opens a
+       blank tab is worse than a control that is visibly off. So this sentence
+       is read by a captain who may be looking at a concept.md sitting in his
+       own room, and it must not tell him the file is not there. */
+    holoCtl(intent, "▤ Intent", null,
+            "Nothing has been written into this program's concept.md yet — "
+            + "ask for it in the chat and the holodeck keeps it current from "
+            + "then on.");
+  }
   tog.appendChild(intent);
   head.appendChild(tog);
   head.appendChild(el("span", "grow"));
@@ -8187,10 +8337,18 @@ function holoSay(sid, text) {
       if (cur) {
         cur.previewFile = state.previewFile || cur.previewFile;
         cur.commits = state.commits != null ? state.commits : cur.commits;
+        // S126: `conceptFile` is what makes the ▤ Intent control openable, and
+        // it can appear on any turn — it is the turn the worker first writes
+        // the concept doc on.
+        if (state.conceptFile !== undefined) cur.conceptFile = state.conceptFile;
+        // and the turn that OPENS the warm session is the turn the pill stops
+        // saying FRESH — not the next poll (fix round 2).
+        if (state.warm !== undefined) cur.warm = state.warm;
         var last = (cur.turns || [])[cur.turns.length - 1];
         if (last && last.reply == null) {
           last.reply = state.reply || "";
           last.filesChanged = state.filesChanged || [];
+          last.conceptAudit = state.conceptAudit || null;
         }
       }
       if (state.status === "refused" && state.refused) {
@@ -8228,6 +8386,98 @@ function holoEnd(sid) {
   });
 }
 
+/* ── S126: picking a program back up ───────────────────────────────────────
+   The daemon mints a NEW session and replays `transcript.md` into its opening
+   prompt. The banner is the daemon's own account of that, verbatim (the
+   one-voice rule S125 landed on): it says the worker is a fresh one carrying
+   the history, and this side adds not one word — least of all a session id,
+   which is precisely the kind of unfounded reassurance S125's finding #2 was
+   about. */
+/* FIX ROUND 5 — AND IT SENDS THE ENGINE THE PROGRAM WAS BUILT ON. This posted
+   `{room}` alone, so the daemon had nothing but its own default to fall back
+   on and a program designed on one CLI reopened on another — measured live,
+   and the reverse direction spends real money.
+
+   It relays a FACT or nothing: `engineRecorded` is the daemon's own answer to
+   "does this program's record name an engine", and an explicit engine OUTRANKS
+   the record. Sending the default here would pin the wrong CLI in the one
+   place the rule cannot see it is a guess. */
+function holoOpen(room, engine) {
+  if (!room) return;
+  var body = { room: room };
+  if (engine) body.engine = engine;
+  postWrite("/api/holodeck/open", body, function (state) {
+    HOLO.activeId = state.sessionId;
+    HOLO.banner = null;
+    if (state.warmRestart && state.warmRestart.message) {
+      holoSetBanner("restart", { message: state.warmRestart.message });
+    }
+    holoRefresh();
+  }, function (msg) {
+    holoSetBanner("offline", { message: msg });
+    renderDeck();
+  });
+}
+
+/* ── S126: deleting a program, without deleting the work ──────────────────
+   `git rm` + a commit, so the answer to "I removed the wrong one" is a
+   checkout. The dialog says that BEFORE the button, because a confirmation
+   whose only content is "are you sure?" makes the captain guess at the stakes.
+   The daemon's reply then names the exact commit to check back out.
+
+   FIX ROUND 3, DEFECT 1. This copy read "so nothing is destroyed … all stay in
+   the sidecar's history and can be checked back out" — flatly, in advance, of a
+   room that might never have been committed at all. That is the daemon's own
+   lie one step earlier, and a confirmation is the worst place to tell it: it is
+   the sentence the captain decides on. It now describes the mechanism the
+   daemon actually runs — recorded first, removed second, and refused rather
+   than destroyed if the recording cannot be made. */
+function holoConfirmDelete(p) {
+  var room = p.room || holoBase(p.programDir);
+  // `red` — the tints the modal scaffold actually defines are red/teal/pink
+  // (board.css :504). A headClass with no rule behind it is a header that
+  // silently renders as the default one.
+  // `■` — every CONSOLE TITLE in the product wears a flat, single-colour glyph
+  // from the LCARS geometric family (test_help_console's D7 sweep). This one
+  // shipped as `⌫`, a keyboard-key symbol from a different family entirely. ■
+  // is already the product's HALT mark (■ STOP on the launch band and the
+  // ● APP LIVE pill), which is the right note over a red destructive header.
+  // The BUTTONS keep `⌫`: a control glyph names the gesture (erase), a title
+  // glyph names the console — the deck already opens `⬡ New Program` from a
+  // `＋ New Program` button on exactly that split.
+  var m = modal("■ Remove program", { headClass: "red" });
+  m.body.appendChild(el("p", null,
+    "Remove " + (p.program || room) + " (" + room + ") from the deck?"));
+  m.body.appendChild(el("p", null,
+    "LCARS commits the whole program — the mockup, the transcript, the concept "
+    + "doc — into the sidecar's git history FIRST, and only then removes the "
+    + "room. It will tell you the exact command to check it back out. If it "
+    + "cannot record the program, it refuses and removes nothing."));
+  var err = el("div", "errline"); err.hidden = true;
+  m.body.appendChild(err);
+  var go = applyWriteState(holoBtn("⌫ Delete Program", "danger", function () {
+    go.disabled = true;
+    go.textContent = "Removing…";
+    postWrite("/api/holodeck/delete", { room: room }, function (state) {
+      closeOverlay();
+      if (p.sessionId && HOLO.activeId === p.sessionId) HOLO.activeId = null;
+      if (state && state.message) {
+        holoSetBanner("removed", { message: state.message });
+      }
+      holoRefresh();
+    }, function (msg) {
+      go.disabled = false;
+      go.textContent = "⌫ Delete Program";
+      showErr(err, msg);
+    });
+  }));
+  m.foot.appendChild(el("span", "grow"));
+  m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  m.foot.appendChild(go);
+  showOverlay(m.wrap);
+  return m;
+}
+
 /* ── D7: the failure states, in LCARS voice ────────────────────────────── */
 /* ONE VOICE (fix round 2). The daemon's message is the whole account of what
    happened; this side supplies CHROME — the title, the colour, the RETRY
@@ -8258,6 +8508,12 @@ var HOLO_BANNERS = {
   // it. Nothing to certify, nothing saved.
   "no-write": ["refuse", "Nothing was written"],
   notice:     ["note",   "This room already holds work"],
+  /* S126 — a program picked back up off disk. NOT titled "resumed": the warm
+     worker session died with the daemon that held it and what is running now
+     is a fresh one carrying the transcript. The daemon's message says exactly
+     that; the title must not undo it. */
+  restart:    ["note",   "Picked up where you left off"],
+  removed:    ["note",   "Program removed — the archive kept it"],
 };
 
 /* A daemon `warning.kind` → the banner that tells the truth about it. Anything
