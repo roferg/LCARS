@@ -93,6 +93,81 @@ reuse them: `LCARS_BROWSER_BASEFRESH` (a record to serve) and
 `LCARS_BROWSER_CONSOLE_CHECK` (an expectation file). Neither is set by default,
 and with both unset `smoke.sh` runs exactly the code it ran before S164.
 
+## The holodeck rig: `holodeck.sh` (S125)
+
+```bash
+bash tests/drives/browser/holodeck.sh              # the product
+bash tests/drives/browser/holodeck.sh --calibrate  # the RED CONTROLS
+bash tests/drives/browser/holodeck.sh --all        # both
+```
+
+**Zero tokens.** The program is opened in DESIGN mode, which spawns no worker at
+all (`actions.holodeck_start` opens the room; the first `say` is what opens a
+warm session), and the sidecar plus its `mockup.html` are *planted* by the rig —
+nothing is generated. The `claude`/`copilot` on PATH are still smoke.sh's
+logging shims and the run reports 0 invocations.
+
+The holodeck **replaces the board inside the same LCARS frame** (D1), and it does
+that with **one CSS class on `<body>`** — `body.on-deck` — chosen because
+`render()` rebuilds the board area on every SSE tick and would wipe a JS `hidden`
+flag. That is the whole reason a browser is required here: every node harness
+under `web/tests/` can assert `body.classList.contains("on-deck")` and learn
+*nothing whatsoever* about whether the board actually went away, and none of them
+has any CSS at all.
+
+So the driver clicks the real `⬡ HOLODECK` control, opens a program through the
+real `＋ NEW PROGRAM` dialog (a genuine `POST /api/holodeck/start`), and then
+measures **laid-out boxes**:
+
+- the board's `.col`s, `.board-wrap` and `.legend` measured **gone** on the deck;
+- three panes — `programs · holo-chat · preview` — present, **visible**, in
+  order, each with real width, at roughly the mock's 1.15 : 1 chat:preview;
+- the preview `iframe`'s real box and its `src` on `/api/holodeck/<sid>/preview/…`;
+- its `sandbox` token list: `allow-scripts` **present**, `allow-same-origin`
+  **absent** — the one pairing that decides whether the sandbox is a mechanism or
+  a decoration, since model-written HTML served same-origin could otherwise reach
+  the board's DOM and the daemon's write API;
+- `--holo-grid` resolving to a real colour (the S168 class applied to a surface
+  that is drawn almost entirely in one accent);
+- **that nothing the model wrote was deleted** — the scripted reply carries an
+  ASCII diagram and a `●`-prefixed design note, and both must be on the screen.
+  Fix round 2's cleaner ate exactly those (a captain's `┌────┐` came back as its
+  top edge alone), so the `trace-eats-prose` control restores that filter and
+  must go red;
+- and the **board back** after the same control, now reading `▦ BOARD`.
+
+It writes `holodeck.png` (open it) and `holodeck-back-on-board.png`.
+
+**It earned its place on the first run.** The `⬡ PREVIEW / ▤ INTENT` toggle
+rendered as two bare text runs jammed together — `⬡ Preview▤ Intent` — because
+the `.pv-toggle` / `.pvt-b` rules had never been written. Every unit test was
+green; the picture was not.
+
+**The eight red controls** (`--calibrate`) each patch a *copy* of `web/` and each
+must make the run fail: `--holo-grid` deleted (the deck paints transparent while
+every box stays perfect), the `body.on-deck` hiding rules neutered (the board
+still laid out under the deck), the preview pane `display:none` (present in
+markup, not on the screen), `allow-same-origin` added back beside
+`allow-scripts`, the viewport pin removed (`deck-grows`), the grounding posture
+never handing over (`grounding-sticks`), round 1's prose-eating cleaner restored
+(`trace-eats-prose`), and — fix round 3 — `retry-is-a-dead-end`. All eight went
+red on 2026-08-05.
+
+`retry-is-a-dead-end` is the first control for a **failure path**. The rig's
+scripted worker kills the first design turn the way a real engine dies at
+startup — noisily (`Error: authentication failed`), before the CLI has opened
+its session — and refuses to `--resume` a session it never opened, exactly as
+both real CLIs do. The driver then presses the deck's own `RETRY TURN`, and the
+conversation must come back, which is only possible if the daemon threw the
+unproven session id away and opened a fresh one. The control restores the
+`reply or` clause the daemon used to test "did a session get created" with: a
+dying engine's message reaches the daemon as a perfectly non-empty reply
+(`stderr` is merged into `stdout`), the ghost id is kept, and `RETRY TURN`
+resumes it forever under a banner promising "the chat is still running". N4's
+unit test used a *silent* death and was blind to all of it for a whole round.
+
+---
+
 ## The third rig: `legend-swatches.sh` (S168)
 
 ```bash
@@ -251,6 +326,16 @@ are expected on a healthy run and are not defects:
   precisely to read 400 (write layer active) vs 403 (view-only). See the comment
   above `probeWrites()` in `board.js`.
 - `GET /favicon.ico` → **404** — the daemon serves no favicon.
+
+Two more are expected **only in the holodeck journey, and only because the rig
+provokes them**: the duplicate-name step's `POST /api/holodeck/start` → **409**
+and N4's dead first turn's `POST …/say` → **502**. These are a *budget*, not a
+pattern exemption — each is forgiven once per time the rig actually took that
+step, so a 409 on a run that never drove the collision, or a second 502 (which
+is what a ghost-resuming retry produces), is still unexpected. Before fix round
+3 the 409 was not on the list at all, so every green run — the product and all
+seven controls — ended with `⚠ 1 UNEXPECTED PAGE ERROR(S) ON A GREEN RUN`, which
+is how a warning gets trained out of people.
 
 **Anything outside that pair is printed on stdout — on a green run too**, under
 `⚠ UNEXPECTED PAGE ERROR(S) ON A GREEN RUN`, without turning the run red. It is

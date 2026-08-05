@@ -76,6 +76,7 @@ const TIMEOUT = parseInt(arg("timeout", "30000"), 10);
 const CONSOLE_CHECK_FILE = arg("console-check", "");
 const LEGEND_CHECK_FILE = arg("legend-check", "");
 const GHLINK_CHECK_FILE = arg("ghlink-check", "");
+const HOLODECK_CHECK_FILE = arg("holodeck-check", "");
 
 if (!DEVTOOLS_PORT || !URL_ || !OUT) {
   // 77, not 2: a mis-invoked driver is the harness's problem, and smoke.sh must
@@ -93,6 +94,21 @@ const EXIT_PAINTED = 0, EXIT_NOT_PAINTED = 1, EXIT_DEGRADED = 3, EXIT_INFRA = 77
  * so it is a different kind of error and leaves by a different exit code. */
 class InfraError extends Error {}
 
+/* Failures the RIG ITSELF provoked, counted as it provokes them (fix round 3).
+ *
+ * Two steps of the journey below deliberately drive the product into refusing:
+ * the duplicate-name start (a 409 the daemon is RIGHT to return) and N4's
+ * first turn dying before it opened a session (a 502). Both surface in Chrome
+ * as network errors, and neither was on the benign list — so every run, product
+ * and all seven controls, ended with "⚠ 1 UNEXPECTED PAGE ERROR(S) ON A GREEN
+ * RUN". That warning exists to stop anyone shrugging at console errors, and a
+ * warning that fires on a healthy product is a warning people learn to ignore.
+ *
+ * It is a BUDGET, not a pattern exemption: each is forgiven only if the rig
+ * actually took that step, and only as many times as it took it. A second 409,
+ * or one on a run that never drove the collision, is still unexpected. */
+const RIG_PROVOKED = { duplicateStart: 0, deadFirstTurn: 0 };
+
 /* The two page errors a healthy run always produces. Documented in the README,
  * deliberate, and NOT defects — but everything outside this set is surfaced,
  * including on a green run (an unexpected console error passing silently is the
@@ -100,6 +116,16 @@ class InfraError extends Error {}
 function isBenignPageError(e) {
   if (/\/favicon\.ico/.test(e)) return true;            // the daemon serves none
   if (/\/api\/mission\b/.test(e) && /\b400\b/.test(e)) return true;  // probeWrites()
+  if (RIG_PROVOKED.duplicateStart > 0 &&
+      /\/api\/holodeck\/start\b/.test(e) && /\b409\b/.test(e)) {
+    RIG_PROVOKED.duplicateStart--;                      // the rig's own collision
+    return true;
+  }
+  if (RIG_PROVOKED.deadFirstTurn > 0 &&
+      /\/api\/holodeck\/[^/\s>]+\/say\b/.test(e) && /\b502\b/.test(e)) {
+    RIG_PROVOKED.deadFirstTurn--;                       // the rig's own dead turn
+    return true;
+  }
   return false;
 }
 
@@ -593,6 +619,333 @@ function judgeConsole(p, want) {
   return bad;
 }
 
+
+/* ── S125: THE HOLODECK, MEASURED IN A REAL BROWSER ─────────────────────────
+ *
+ * The deck is the exact shape of defect this rig exists for. It REPLACES the
+ * board inside the same frame, and it does that in CSS off one class on <body>
+ * (`body.on-deck`). A node harness can assert that class all day; only a
+ * browser can answer the question that matters — did the board actually go
+ * away, and did three panes actually arrive with real width on the screen.
+ *
+ * So every claim below is read off LAID-OUT BOXES, never off markup:
+ *   • the board's columns and legend measured GONE (zero box / display:none);
+ *   • the three deck panes measured PRESENT with non-zero width, in the mock's
+ *     left-to-right order, at roughly the mock's chat:preview ratio;
+ *   • the preview iframe's real box, its src (the jailed route) and its
+ *     sandbox token list — with allow-same-origin measured ABSENT, because
+ *     that one flag is the difference between a sandbox and a decoration;
+ *   • the deck's own accent token resolving to a real colour (the S168 lesson:
+ *     an unresolved var paints NOTHING while keeping a perfect box);
+ *   • and, on the way back, the board measured PRESENT again.
+ */
+const HOLODECK_PROBE = `(function () {
+  function box(el) {
+    if (!el) return null;
+    var r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return { w: r.width, h: r.height, display: s.display,
+             visible: r.width > 0 && r.height > 0 && s.display !== "none" &&
+                      s.visibility !== "hidden" &&
+                      parseFloat(s.opacity || "1") > 0.01 };
+  }
+  function anyVisible(sel) {
+    var ns = Array.prototype.slice.call(document.querySelectorAll(sel));
+    return ns.some(function (n) { var b = box(n); return b && b.visible; });
+  }
+  var deck = document.getElementById("deckHost");
+  var view = document.querySelector(".deckview");
+  var panes = view ? Array.prototype.slice.call(view.children) : [];
+  var frame = document.querySelector("#holoPreview");
+  var ds = getComputedStyle(document.documentElement);
+  var bs = getComputedStyle(document.body);
+  return {
+    onDeckClass: document.body.classList.contains("on-deck"),
+    deckBox: box(deck),
+    // THE REPLACEMENT, measured: is any board furniture still on the screen?
+    boardColumnsVisible: anyVisible(".col"),
+    boardWrapVisible: anyVisible(".board-wrap"),
+    legendVisible: anyVisible(".legend"),
+    deckviewClass: view ? view.className : null,
+    paneClasses: panes.map(function (p) {
+      return String(p.className || "").split(/\\s+/)[0];
+    }),
+    paneWidths: panes.map(function (p) { var b = box(p); return b ? Math.round(b.w) : 0; }),
+    panesVisible: panes.map(function (p) { var b = box(p); return !!(b && b.visible); }),
+    programRows: document.querySelectorAll(".prog").length,
+    programRowsVisible: anyVisible(".prog"),
+    composerPresent: !!document.querySelector(".composer textarea"),
+    composerVisible: anyVisible(".composer textarea"),
+    iframeBox: box(frame),
+    iframeSrc: frame ? frame.getAttribute("src") : null,
+    iframeSandbox: frame ? (frame.getAttribute("sandbox") || "") : null,
+    bandLabel: (function () {
+      var b = document.getElementById("holodeckBtn");
+      return b ? (b.textContent || "").trim() : null;
+    })(),
+    bandVisible: anyVisible("#holodeckBtn"),
+    // the deck's own accent. An unresolved custom property paints nothing at
+    // all while every box stays perfect — that is the S168 defect class, and
+    // the deck is drawn almost entirely in this one colour.
+    holoGrid: (bs.getPropertyValue("--holo-grid") || "").trim(),
+    amberToken: (ds.getPropertyValue("--lcars-amber") || "").trim(),
+    emptyStateVisible: anyVisible(".holo-empty"),
+    /* ── S125 FIX ROUND 1: THE DECK IS THE VIEWPORT ────────────────────────
+       Round 0's rig measured pane WIDTHS on a one-turn transcript, so it was
+       structurally blind to the defect that mattered most on screen: the deck
+       GREW. Measured after one long turn — innerHeight 913, .deckview height
+       1897, scrollHeight 1961, overflow-y VISIBLE on the deckview and all
+       three panes. Nothing scrolled internally; the page did, and it carried
+       the composer and the LIVE PREVIEW off the bottom — which is precisely
+       what D2's fixed split exists to prevent ("the preview is the point — it
+       must be permanently visible").
+
+       So these are read off REAL BOX GEOMETRY against the REAL viewport, and
+       the rig now grows the transcript before reading them. A rule-exists
+       assertion passes while the screen is wrong. */
+    viewportH: window.innerHeight,
+    docScrollH: document.documentElement.scrollHeight,
+    deckviewH: view ? Math.round(view.getBoundingClientRect().height) : 0,
+    deckviewOverflowY: view ? getComputedStyle(view).overflowY : null,
+    transcript: (function () {
+      var t = document.querySelector(".transcript");
+      if (!t) return null;
+      var s = getComputedStyle(t);
+      return { overflowY: s.overflowY, clientH: t.clientHeight,
+               scrollH: t.scrollHeight, scrollTop: Math.round(t.scrollTop),
+               bottom: Math.round(t.getBoundingClientRect().bottom) };
+    })(),
+    // "still on screen" is a BOTTOM EDGE inside the viewport, not a box.
+    composerBottom: (function () {
+      var c = document.querySelector(".composer");
+      return c ? Math.round(c.getBoundingClientRect().bottom) : null;
+    })(),
+    previewBottom: (function () {
+      var p = document.querySelector(".preview");
+      return p ? Math.round(p.getBoundingClientRect().bottom) : null;
+    })(),
+    turnCount: document.querySelectorAll(".turn").length,
+    // D12: the chip is a LINK to basis.md, not an inert span.
+    groundChip: (function () {
+      var g = document.querySelector(".ground-chip");
+      if (!g) return null;
+      return { tag: g.tagName.toLowerCase(), href: g.getAttribute("href") };
+    })(),
+    // the reply, RENDERED: no markdown source, no engine tool trace.
+    replyText: (function () {
+      var bs = document.querySelectorAll(".turn.holo .body");
+      var last = bs.length ? bs[bs.length - 1] : null;
+      return last ? (last.innerText || "") : "";
+    })(),
+    bodyText: (document.body.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 600)
+  };
+})()`;
+
+function judgeHolodeck(deckM, boardM, want) {
+  const f = [];
+  want = want || {};
+  // ── on the deck ─────────────────────────────────────────────────────────
+  if (!deckM.onDeckClass) f.push("the ⬡ HOLODECK control did not put the page on the deck");
+  if (!deckM.deckBox || !deckM.deckBox.visible) {
+    f.push("the deck host is not visible (box=" + JSON.stringify(deckM.deckBox) + ")");
+  }
+  // D1 — it REPLACES the board. Measured on the screen, not on a class name.
+  if (deckM.boardColumnsVisible) f.push("board COLUMNS are still visible on the deck");
+  if (deckM.boardWrapVisible) f.push("the board wrap is still visible on the deck");
+  if (deckM.legendVisible) f.push("the board legend is still visible on the deck");
+  if (deckM.bandLabel !== "▦ Board") {
+    f.push("on the deck the band control reads " + JSON.stringify(deckM.bandLabel) +
+           ", not \"▦ Board\"");
+  }
+  if (!deckM.bandVisible) f.push("the band control is not visible on the deck");
+  // D2 — three panes, laid out, in order, with real width.
+  const want3 = ["programs", "holo-chat", "preview"];
+  if (JSON.stringify(deckM.paneClasses) !== JSON.stringify(want3)) {
+    f.push("panes are " + JSON.stringify(deckM.paneClasses) + ", expected " +
+           JSON.stringify(want3));
+  }
+  deckM.paneWidths.forEach((w, i) => {
+    if (w < 80) f.push("pane " + (deckM.paneClasses[i] || i) + " is " + w +
+                       "px wide — it did not lay out");
+  });
+  if (!deckM.panesVisible.every(Boolean)) {
+    f.push("a pane is present but not visible: " + JSON.stringify(deckM.panesVisible));
+  }
+  if (deckM.paneWidths.length === 3) {
+    const ratio = deckM.paneWidths[1] / deckM.paneWidths[2];
+    if (!(ratio > 0.95 && ratio < 1.45)) {
+      f.push("chat:preview is " + ratio.toFixed(2) + ":1 — the mock says ~1.15:1");
+    }
+  }
+  if (!deckM.programRowsVisible) f.push("no program row is visible in the list");
+  if (!deckM.composerVisible) f.push("the chat composer is not visible");
+  // D3 + the security property.
+  if (!deckM.iframeSrc) f.push("no preview iframe on the deck");
+  else if (!/^\/api\/holodeck\/[^/]+\/preview\//.test(deckM.iframeSrc)) {
+    f.push("the preview iframe does not point at the jailed route: " + deckM.iframeSrc);
+  }
+  if (!deckM.iframeBox || !deckM.iframeBox.visible) {
+    f.push("the preview iframe has no visible box: " + JSON.stringify(deckM.iframeBox));
+  }
+  const sb = String(deckM.iframeSandbox || "");
+  if (deckM.iframeSandbox === null) f.push("the preview iframe carries no sandbox attribute");
+  else {
+    if (sb.indexOf("allow-scripts") === -1) {
+      f.push("the preview iframe is not allowed scripts — a self-contained mockup cannot switch its own screens");
+    }
+    if (sb.indexOf("allow-same-origin") !== -1) {
+      f.push("THE SANDBOX IS DECORATION: allow-same-origin is set beside allow-scripts, " +
+             "so model-written HTML can reach the board's DOM and the write API");
+    }
+  }
+  // the accent that draws the whole deck
+  if (!deckM.holoGrid) {
+    f.push("--holo-grid resolves to nothing — the deck's accent paints transparent " +
+           "while every box stays perfect (the S168 class)");
+  }
+  if (want.mockText && String(deckM.bodyText || "").indexOf(want.mockText) === -1) {
+    f.push("the deck does not carry the expected copy " + JSON.stringify(want.mockText));
+  }
+  // ── THE JOURNEY (fix round 1) ───────────────────────────────────────────
+  // Only when the rig drove it: the grounding→design path, a long transcript,
+  // and the collision refusal. Absent, everything above is exactly the round-0
+  // check and the existing calibration controls are unaffected.
+  if (want.journey) {
+    // 1. THE RECOMMENDED PATH PRODUCED A FILE. This one assertion is the whole
+    //    of defect 1: the preview src exists only because mockup.html is on
+    //    disk in the room, which can only happen if the posture switched.
+    if (!deckM.iframeSrc) {
+      f.push("THE RECOMMENDED PATH WROTE NO MOCKUP: after grounding and a design "
+             + "turn the preview is still empty — the grounding posture never "
+             + "handed over to the design one");
+    }
+    // 2. THE DECK IS THE VIEWPORT, under a LONG transcript.
+    const vh = deckM.viewportH || 0;
+    if (deckM.turnCount < 4) {
+      f.push("the transcript is only " + deckM.turnCount + " turns — too short "
+             + "to see the growth defect at all");
+    }
+    if (deckM.docScrollH > vh + 4) {
+      f.push("THE PAGE SCROLLS ON THE DECK: scrollHeight " + deckM.docScrollH
+             + " vs viewport " + vh + " — the deck grew instead of the "
+             + "transcript scrolling, and the composer and preview ride off "
+             + "the bottom with it");
+    }
+    if (deckM.deckviewH > vh + 4) {
+      f.push("the .deckview is " + deckM.deckviewH + "px tall in a " + vh
+             + "px viewport");
+    }
+    if (deckM.composerBottom === null || deckM.composerBottom > vh + 4) {
+      f.push("the composer's bottom edge is at " + deckM.composerBottom
+             + " in a " + vh + "px viewport — you would have to scroll to type");
+    }
+    if (deckM.previewBottom === null || deckM.previewBottom > vh + 4) {
+      f.push("the LIVE PREVIEW's bottom edge is at " + deckM.previewBottom
+             + " in a " + vh + "px viewport — D2 says it must be permanently "
+             + "visible");
+    }
+    const tr = deckM.transcript;
+    if (!tr) f.push("no transcript on the deck");
+    else {
+      if (tr.overflowY !== "auto" && tr.overflowY !== "scroll") {
+        f.push("the transcript does not scroll internally (overflow-y: "
+               + tr.overflowY + ") — so the deck has nowhere to put a long "
+               + "conversation but downwards");
+      }
+      if (tr.scrollH <= tr.clientH) {
+        f.push("the transcript is not actually overflowing (" + tr.scrollH
+               + " vs " + tr.clientH + ") — this run proved nothing about a "
+               + "long conversation");
+      } else if (tr.scrollTop < tr.scrollH - tr.clientH - 40) {
+        f.push("the transcript is not showing the newest turn (scrollTop "
+               + tr.scrollTop + " of " + (tr.scrollH - tr.clientH) + ")");
+      }
+    }
+    // 3. D12's chip is a link to the basis it names.
+    if (!deckM.groundChip) f.push("the grounded program shows no ▣ chip");
+    else if (deckM.groundChip.tag !== "a" || !deckM.groundChip.href) {
+      f.push("the ▣ grounded chip is inert (" + JSON.stringify(deckM.groundChip)
+             + ") — D12 says the header LINKS to basis.md");
+    }
+    // 4. the reply is prose, not markdown source with a tool trace in it.
+    const rt = String(deckM.replyText || "");
+    if (!rt) f.push("the last reply rendered as nothing at all");
+    ["**", "# Tile picker", "| token |"].forEach((leak) => {
+      if (rt.indexOf(leak) !== -1) {
+        f.push("the chat is printing markdown SOURCE: " + JSON.stringify(leak));
+      }
+    });
+    ["List directory", "3 files found", "Create mockup.html"].forEach((leak) => {
+      if (rt.indexOf(leak) !== -1) {
+        f.push("the engine's tool trace leaked into the chat: "
+               + JSON.stringify(leak));
+      }
+    });
+    // 4b. AND NOTHING THE MODEL WROTE WAS DELETED (fix round 2). Round 1's
+    //     cleaner dropped every line opening with a box-drawing glyph, so a
+    //     captain's ASCII diagram came back as its top edge alone — and a
+    //     `●`-prefixed design note vanished entirely. Both are in the scripted
+    //     reply; both must be ON THE SCREEN. This is the half of the reply
+    //     check that looks for what ISN'T there.
+    ["│  SWATCHES  │", "│  PREVIEW   │", "└────────────┘",
+     "swatch labels before you decide"].forEach((gone) => {
+      if (rt.indexOf(gone) === -1) {
+        f.push("THE CHAT DELETED WHAT THE MODEL WROTE: " + JSON.stringify(gone)
+               + " is not on the screen — a cleaner is throwing away the "
+               + "captain's own diagram/notes with nothing to say it did");
+      }
+    });
+    // 4c. N4 — RETRY TURN IS NOT A DEAD END. The rig's worker kills the first
+    //     design turn noisily, before its session exists, then answers
+    //     normally; the deck's own RETRY control must get the captain moving
+    //     again, which is only possible if the daemon threw the unproven
+    //     session id away and OPENED a fresh one. If the retry resumes the
+    //     ghost, the worker refuses it the way both real CLIs do and nothing
+    //     the captain does from the deck can ever recover the program.
+    if (want.deadFirstTurn) {
+      const n4 = want.n4 || {};
+      if (!n4.died) {
+        f.push("THE N4 CHECK PROVED NOTHING: the first design turn was supposed "
+               + "to die before opening a session and no HOLODECK OFFLINE "
+               + "banner with a RETRY control ever appeared");
+      } else if (!n4.retried) {
+        f.push("the turn died and the banner offered no RETRY TURN control at "
+               + "all: " + JSON.stringify(n4.banner));
+      } else if (!n4.recovered) {
+        f.push("RETRY TURN IS A DEAD END (N4): the first turn died before its "
+               + "session existed, RETRY was pressed, and the conversation "
+               + "never came back — the retry resumed a session the CLI never "
+               + "created. The banner promised " + JSON.stringify(n4.banner));
+      }
+    }
+    // 5. two programs cannot share one room.
+    if (want.collision) {
+      if (want.collision.programs !== 1) {
+        f.push("a second program with the SAME NAME created a second card ("
+               + want.collision.programs + " on the deck) — both writing one "
+               + "mockup.html, indistinguishable in the list");
+      }
+      if (!want.collision.errorText) {
+        f.push("the duplicate name was refused with no message the captain "
+               + "can read");
+      }
+    }
+  }
+  // ── back on the board ───────────────────────────────────────────────────
+  if (boardM) {
+    if (boardM.onDeckClass) f.push("▦ BOARD did not leave the deck");
+    if (!boardM.boardColumnsVisible) {
+      f.push("the board did not come back — no visible .col after ▦ BOARD");
+    }
+    if (boardM.deckBox && boardM.deckBox.visible) {
+      f.push("the deck is still visible after ▦ BOARD");
+    }
+    if (boardM.bandLabel !== "⬡ Holodeck") {
+      f.push("back on the board the control reads " + JSON.stringify(boardM.bandLabel));
+    }
+  }
+  return f;
+}
+
 async function main() {
   // Chrome's own handshake: /json/version is only answerable once the browser
   // endpoint is live, so this IS the "browser is ready" signal.
@@ -860,6 +1213,259 @@ async function main() {
       JSON.stringify(consoleCheck, null, 2) + "\n");
   }
 
+
+  // ── ACT FOUR (optional, --holodeck-check): S125's deck, in a real browser ─
+  // Only when asked for; without the flag not one line of this runs and the
+  // default rig is byte-for-byte what it was.
+  let holodeckCheck = null;
+  if (HOLODECK_CHECK_FILE && ok) {
+    let want = {};
+    try {
+      want = JSON.parse(fs.readFileSync(HOLODECK_CHECK_FILE, "utf8"));
+    } catch (e) {
+      throw new InfraError("could not read --holodeck-check file " +
+        HOLODECK_CHECK_FILE + ": " + e.message);
+    }
+    await cdp.send("Emulation.setDeviceMetricsOverride",
+      { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false }, sessionId);
+    await sleep(200);
+    // 1. Enter the deck through the REAL control the captain clicks.
+    const entered = await cdp.send("Runtime.evaluate", {
+      expression: `(function () {
+        var b = document.getElementById("holodeckBtn");
+        if (!b) return "no ⬡ HOLODECK control in the band";
+        if (b.disabled) return "the ⬡ HOLODECK control is disabled";
+        b.click();
+        return "";
+      })()`, returnByValue: true }, sessionId);
+    let flowErr = (entered && entered.result && entered.result.value) || "";
+    // 2. Open a program through the REAL dialog. This is a genuine
+    //    POST /api/holodeck/start: it creates the session and adopts the
+    //    sidecar the rig planted, and in DESIGN mode it spawns no worker and
+    //    spends nothing (holodeck_start opens the room; the first `say` is
+    //    what opens a warm session).
+    if (!flowErr) {
+      const opened = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var add = document.querySelector('.pfoot [data-ctl]') ||
+                    document.querySelector('.holo-empty [data-ctl]');
+          if (!add) return "no ＋ New Program control on the deck";
+          add.click();
+          var name = document.querySelector('[data-holo=program-name]');
+          if (!name) return "the New Program dialog has no name field";
+          name.value = ${JSON.stringify(want.journey
+            ? (want.groundedProgram || "Tile picker")
+            : (want.program || "Nav rail"))};
+          var choice = document.querySelector(
+            ${JSON.stringify(want.journey ? "[data-choice=grounding]"
+                                          : "[data-choice=design]")});
+          if (!choice) return "the dialog offers no such start-from choice";
+          choice.click();
+          var run = Array.prototype.slice.call(
+            document.querySelectorAll('.modal [data-ctl]'))
+            .filter(function (n) { return /run program/i.test(n.getAttribute('data-ctl')||''); })[0];
+          if (!run) return "the dialog has no ⬡ Run Program control";
+          run.click();
+          return "";
+        })()`, returnByValue: true }, sessionId);
+      flowErr = (opened && opened.result && opened.result.value) || "";
+    }
+    /* ── THE JOURNEY (fix round 1) ────────────────────────────────────────
+       Round 0's rig opened a BLANK-DECK program against a planted mockup: it
+       never drove the default path, never spawned a turn, and never grew the
+       transcript — which is why it reported green while the recommended path
+       could not write a file and the deck scrolled the composer off screen.
+       Now it walks the real thing: grounding pass → design turns → a long
+       transcript → a duplicate name. */
+    if (!flowErr && want.journey) {
+      // the grounding pass is a real (stubbed) turn and blocks the POST, so
+      // wait for the program to exist on the deck before typing at it.
+      const gDeadline = Date.now() + 60000;
+      let seen = false;
+      while (Date.now() < gDeadline) {
+        const r = await cdp.send("Runtime.evaluate", {
+          expression: `!!document.querySelector('.transcript')`,
+          returnByValue: true }, sessionId);
+        if (r && r.result && r.result.value) { seen = true; break; }
+        await sleep(300);
+      }
+      if (!seen) flowErr = "the grounding pass never produced a program on the deck";
+      // what the N4 step below measured, reported whether or not it fired.
+      var n4 = { died: false, retried: false, recovered: false, banner: "" };
+      want.n4 = n4;
+      // THE GROUNDING PASS ALREADY LEFT A REPLY ON THE DECK, so `.turn.holo` is
+      // 1 before the first design turn is even typed. Round 1's loop waited for
+      // `>= n + 1` and so was satisfied the instant it looked — it never waited
+      // for a design turn at all, which is why the whole N4 step ran past a
+      // dead first turn without seeing it. Count from where we started.
+      const baseR = await cdp.send("Runtime.evaluate", {
+        expression: `document.querySelectorAll('.turn.holo').length`,
+        returnByValue: true }, sessionId);
+      var turnBase = (baseR && baseR.result && baseR.result.value) || 0;
+      // THREE design turns. Each is a real POST /say through the scripted
+      // worker, and each reply is long — the transcript has to be long or the
+      // growth defect is invisible (exactly round 0's blind spot).
+      for (let n = 0; !flowErr && n < 3; n++) {
+        // the composer is disabled WHILE a turn is in flight, which is correct
+        // — so wait for it rather than calling that a failure.
+        const rDeadline = Date.now() + 60000;
+        while (Date.now() < rDeadline) {
+          const r = await cdp.send("Runtime.evaluate", {
+            expression: `(function () {
+              var s = Array.prototype.slice.call(
+                document.querySelectorAll('.composer [data-ctl]'))
+                .filter(function (b) { return /send/i.test(b.getAttribute('data-ctl')||''); })[0];
+              return !!(s && !s.disabled);
+            })()`, returnByValue: true }, sessionId);
+          if (r && r.result && r.result.value) break;
+          await sleep(300);
+        }
+        const sent = await cdp.send("Runtime.evaluate", {
+          expression: `(function () {
+            var ta = document.querySelector('[data-holo=composer]');
+            if (!ta) return "no composer on the deck";
+            ta.value = ${JSON.stringify("Turn " + (n + 1)
+              + ": show me the tile picker with its swatch grid.")};
+            var send = Array.prototype.slice.call(
+              document.querySelectorAll('.composer [data-ctl]'))
+              .filter(function (b) { return /send/i.test(b.getAttribute('data-ctl')||''); })[0];
+            if (!send) return "no Send control on the composer";
+            if (send.disabled) return "the Send control is disabled";
+            send.click();
+            return "";
+          })()`, returnByValue: true }, sessionId);
+        flowErr = (sent && sent.result && sent.result.value) || "";
+        /* ── N4, IN THE PRODUCT (fix round 3) ────────────────────────────────
+           The scripted worker kills its FIRST design turn the way a real engine
+           dies at startup — noisily (`Error: authentication failed`) and before
+           the CLI has opened its session — and refuses to `--resume` a session
+           it never opened, exactly as both real CLIs do. So the deck's own
+           RETRY TURN control is the only way back, and it only works if the
+           daemon threw the unproven session id away. Round 2's cure kept the id
+           whenever the turn produced a REPLY, and a dying engine's message IS a
+           reply: the program was a permanent dead end under a banner promising
+           "the chat is still running; say it again to retry". This walks it. */
+        const tDeadline = Date.now() + 90000;
+        let turnsNow = 0;
+        while (!flowErr && Date.now() < tDeadline) {
+          const r = await cdp.send("Runtime.evaluate", {
+            expression: `(function(){
+              var b = document.querySelector('.holo-banner.down');
+              var rt = b ? b.querySelector('[data-ctl]') : null;
+              return { turns: document.querySelectorAll('.turn.holo').length,
+                       banner: b ? (b.innerText || "").trim() : "",
+                       retry: !!rt }; })()`,
+            returnByValue: true }, sessionId);
+          const v = (r && r.result && r.result.value) || { turns: 0 };
+          turnsNow = v.turns;
+          if (v.turns >= turnBase + n + 1) break;
+          if (v.retry) {
+            if (n === 0 && !n4.retried) {
+              n4.died = true;
+              n4.banner = v.banner;
+              RIG_PROVOKED.deadFirstTurn++;   // the 502 is this step's doing
+              await cdp.send("Runtime.evaluate", {
+                expression: `(function () {
+                  var b = document.querySelector('.holo-banner.down');
+                  var rt = b ? b.querySelector('[data-ctl]') : null;
+                  if (rt) rt.click();
+                })()`, returnByValue: true }, sessionId);
+              n4.retried = true;
+            } else {
+              flowErr = "a design turn died and the deck could not recover it: "
+                      + v.banner;
+            }
+          }
+          await sleep(300);
+        }
+        if (n === 0) n4.recovered = turnsNow >= turnBase + 1;
+        await sleep(300);
+      }
+      // and the collision: the SAME name again must not make a second card.
+      if (!flowErr) {
+        RIG_PROVOKED.duplicateStart++;   // the 409 below is this line's doing
+        await cdp.send("Runtime.evaluate", {
+          expression: `(function () {
+            var add = document.querySelector('.pfoot [data-ctl]');
+            if (!add) return;
+            add.click();
+            var name = document.querySelector('[data-holo=program-name]');
+            if (name) name.value = ${JSON.stringify(want.groundedProgram || "Tile picker")};
+            var run = Array.prototype.slice.call(
+              document.querySelectorAll('.modal [data-ctl]'))
+              .filter(function (n) { return /run program/i.test(n.getAttribute('data-ctl')||''); })[0];
+            if (run) run.click();
+          })()`, returnByValue: true }, sessionId);
+        await sleep(2500);
+        const col = await cdp.send("Runtime.evaluate", {
+          expression: `(function () {
+            var err = document.querySelector('.modal .errline');
+            var out = { errorText: err && !err.hidden ? (err.innerText||"").trim() : "",
+                        programs: 0 };
+            var close = Array.prototype.slice.call(
+              document.querySelectorAll('.modal [data-ctl], .modal button'))
+              .filter(function (n) { return /cancel/i.test((n.textContent||"")); })[0];
+            if (close) close.click();
+            out.programs = document.querySelectorAll('.prog').length;
+            return out;
+          })()`, returnByValue: true }, sessionId);
+        want.collision = (col && col.result && col.result.value) || null;
+        await sleep(400);
+      }
+    }
+    // 3. Poll the REAL DOM until the three panes and the preview iframe exist.
+    let deckM = { onDeckClass: false, paneClasses: [], paneWidths: [],
+                  panesVisible: [] };
+    const hDeadline = Date.now() + Math.max(5000, Math.min(TIMEOUT, 25000));
+    while (Date.now() < hDeadline) {
+      const r = await cdp.send("Runtime.evaluate",
+        { expression: HOLODECK_PROBE, returnByValue: true }, sessionId);
+      if (r && r.result && r.result.value) {
+        deckM = r.result.value;
+        if (deckM.onDeckClass && deckM.paneClasses.length === 3 && deckM.iframeSrc) break;
+      }
+      await sleep(250);
+    }
+    let hshot = "";
+    try {
+      const png = await cdp.send("Page.captureScreenshot",
+        { format: "png", captureBeyondViewport: true }, sessionId);
+      hshot = path.join(OUT, "holodeck.png");
+      fs.writeFileSync(hshot, Buffer.from(png.data, "base64"));
+    } catch (e) {
+      cdp.pageErrors.push("holodeck screenshot failed: " + e.message);
+    }
+    // 4. …and back. The board must come back exactly as it was — the whole
+    //    point of one control and one frame.
+    let boardM = null;
+    if (!flowErr) {
+      await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var b = document.getElementById("holodeckBtn");
+          if (b) b.click();
+        })()`, returnByValue: true }, sessionId);
+      await sleep(400);
+      const r2 = await cdp.send("Runtime.evaluate",
+        { expression: HOLODECK_PROBE, returnByValue: true }, sessionId);
+      boardM = (r2 && r2.result && r2.result.value) || null;
+      let bshot = "";
+      try {
+        const png = await cdp.send("Page.captureScreenshot",
+          { format: "png", captureBeyondViewport: true }, sessionId);
+        bshot = path.join(OUT, "holodeck-back-on-board.png");
+        fs.writeFileSync(bshot, Buffer.from(png.data, "base64"));
+      } catch (e) { /* the deck shot is the one that matters */ }
+      if (bshot) want.backScreenshot = bshot;
+    }
+    const failures = flowErr ? [flowErr].concat(judgeHolodeck(deckM, boardM, want))
+                             : judgeHolodeck(deckM, boardM, want);
+    holodeckCheck = { want: want, measured: deckM, backOnBoard: boardM,
+                      failures: failures, screenshot: hshot,
+                      ok: failures.length === 0 };
+    fs.writeFileSync(path.join(OUT, "holodeck-check.json"),
+      JSON.stringify(holodeckCheck, null, 2) + "\n");
+  }
+
   // Was the app served WHOLE? A same-origin stylesheet that did not load, or an
   // absent --lcars-* token layer, means the browser was shown a DEGRADED app —
   // and a tester comparing screenshots is then looking at a phantom.
@@ -867,7 +1473,19 @@ async function main() {
   const tokensPresent = !!last.tokenProbe;
   const servedComplete = deadSheets.length === 0 && tokensPresent;
 
+  // snapshot the budget, then filter: what the run FORGAVE is the difference,
+  // and the readout below names only what it actually forgave (a rig run that
+  // never drove the collision must not claim a 409 was expected).
+  const budget = { dup: RIG_PROVOKED.duplicateStart,
+                   dead: RIG_PROVOKED.deadFirstTurn };
   const unexpectedErrors = cdp.pageErrors.filter((e) => !isBenignPageError(e));
+  const benignKinds = ["favicon 404", "probeWrites 400"];
+  if (budget.dup > RIG_PROVOKED.duplicateStart) {
+    benignKinds.push("the rig's own duplicate-name 409");
+  }
+  if (budget.dead > RIG_PROVOKED.deadFirstTurn) {
+    benignKinds.push("the rig's own dead-turn 502");
+  }
 
   const result = {
     ok: ok,
@@ -889,6 +1507,7 @@ async function main() {
     legendCheck: legendCheck,
     ghLinkCheck: ghLinkCheck,
     consoleCheck: consoleCheck,
+    holodeckCheck: holodeckCheck,
   };
   fs.writeFileSync(path.join(OUT, "result.json"), JSON.stringify(result, null, 2) + "\n");
 
@@ -903,8 +1522,8 @@ async function main() {
     // rig exists to remove, and "the README says the list is worth a look" is
     // not the same as telling anyone to look.
     const benignCount = cdp.pageErrors.length - unexpectedErrors.length;
-    console.log("  page errors: " + benignCount + " known-benign (favicon 404, " +
-      "probeWrites 400), " + unexpectedErrors.length + " unexpected");
+    console.log("  page errors: " + benignCount + " known-benign (" +
+      benignKinds.join(", ") + "), " + unexpectedErrors.length + " unexpected");
     if (unexpectedErrors.length) {
       console.log("\x1b[33m  ⚠ " + unexpectedErrors.length + " UNEXPECTED PAGE " +
         "ERROR(S) ON A GREEN RUN — the board painted, but the page is not clean:\x1b[0m");
@@ -991,6 +1610,7 @@ async function main() {
   if (legendCheck && !legendCheck.ok) return EXIT_NOT_PAINTED;
   if (ghLinkCheck && !ghLinkCheck.ok) return EXIT_NOT_PAINTED;
   if (consoleCheck && !consoleCheck.ok) return EXIT_NOT_PAINTED;
+  if (holodeckCheck && !holodeckCheck.ok) return EXIT_NOT_PAINTED;
   return servedComplete ? EXIT_PAINTED : EXIT_DEGRADED;
 }
 

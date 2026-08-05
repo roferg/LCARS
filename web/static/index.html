@@ -41,6 +41,12 @@
          failed) on every render; the button opens the ▸ Deploy Main modal. -->
     <div class="main-deploy" id="mainDeploy" title="local main deploy"></div>
     <button class="btn go" id="deployMainBtn" type="button">▸ Deploy Main</button>
+    <!-- S125 (D1): THE HOLODECK. One control, beside ▦ File Mission, that swaps
+         the board content for the deck IN THIS FRAME — the elbow, the brand and
+         the connection pill stay put. The same control reads ▦ BOARD on the way
+         back; board.js owns the label. Not a tab strip: there are two surfaces,
+         and a tab bar is furniture for a third that does not exist. -->
+    <button class="btn go" id="holodeckBtn" type="button">⬡ Holodeck</button>
     <button class="btn go" id="fileBtn" type="button">▦ File Mission</button>
     <button class="btn help-btn" id="helpBtn" type="button" title="Help — press ?">?</button>
     <div class="conn" id="conn" title="live channel">● LIVE</div>
@@ -74,6 +80,18 @@
          Mission control and the ? console so a cold board teaches itself. No
          pulse, no nag, nothing persistent. -->
     <div class="board-empty" id="boardEmpty" hidden></div>
+
+    <!-- S125 (D7 · VIEW ONLY): on a read-only build the holodeck writes files,
+         so it cannot run — and the reason is SAID, not left to a greyed button
+         nobody can interrogate. Hidden (and the board byte-identical to its
+         pre-S125 self) on every write board. -->
+    <div class="holo-banner ro" id="holoRoBanner" hidden></div>
+
+    <!-- S125 (D1): the holodeck's content area. Empty and hidden until the deck
+         is entered; `body.on-deck` is what hides the board furniture above and
+         below it (a CSS class, because render() rebuilds this area on every SSE
+         tick and would wipe a JS `hidden` flag). -->
+    <div class="deck-host" id="deckHost" hidden></div>
 
     <div class="board-wrap">
       <div class="board" id="board"><!-- columns + cards injected by board.js --></div>

@@ -69,6 +69,13 @@
 #   LCARS_BROWSER_GHLINK_CHECK    (S168) path to an expectation JSON. Makes the
 #                           driver read the RESOLVED href off every GitHub link
 #                           in the live DOM (board card badge + detail header).
+#   LCARS_BROWSER_HOLODECK_CHECK  (S125) path to an expectation JSON. Makes the
+#                           driver CLICK into the holodeck, open a program
+#                           through the real dialog, and MEASURE the deck: the
+#                           board actually gone, three laid-out panes, the
+#                           preview iframe's src and its sandbox flags, and the
+#                           board back after ▦ BOARD. Unset = the rig behaves
+#                           exactly as it did before. See holodeck.sh.
 #   LCARS_BROWSER_CONSOLE_CHECK   (S164) path to an expectation JSON. Makes the
 #                           driver open the File console and MEASURE its
 #                           pre-flight line in the real cascade. Unset = the rig
@@ -220,6 +227,13 @@ done
 : >"$OUT/worker-shim.log"
 export PATH="$OUT/shim:$PATH"
 
+# S125 fix round 1 — a rig that DRIVES A TURN needs a worker that answers.
+# The shim above exists to prove nothing spawns; a drive of the holodeck's
+# grounding→design journey must actually spawn something, so holodeck.sh hands
+# in its own SCRIPTED stub (still zero tokens — a python script, no engine).
+# Unset ⇒ the shim, and every existing rig is byte-for-byte what it was.
+WORKER_BIN="${LCARS_BROWSER_WORKER_BIN:-$OUT/shim/claude}"
+
 # ── a fixture board on disk: two missions, no git, no gh, no model ──────────
 FIXTURE="$OUT/fixture"
 mkdir -p "$FIXTURE"
@@ -310,7 +324,7 @@ fi
 # relative paths are untouched.
 ( cd "$WEB_DIR" && exec env -u LCARS_SERVE_PORT \
     LCARS_SERVE_NO_OPEN=1 LCARS_VERSION_CHECK=0 \
-    LCARS_WORKER_BIN="$OUT/shim/claude" LCARS_GH_BIN="$OUT/shim/claude" \
+    LCARS_WORKER_BIN="$WORKER_BIN" LCARS_GH_BIN="$OUT/shim/claude" \
     "$PY_BIN" -m lcars_serve --port 0 --repo-root "$FIXTURE" ) \
   >"$OUT/daemon.log" 2>&1 &
 DAEMON_PID=$!
@@ -433,6 +447,12 @@ if [ -n "${LCARS_BROWSER_CONSOLE_CHECK:-}" ]; then
   DRIVE_ARGS+=(--console-check "$LCARS_BROWSER_CONSOLE_CHECK")
   note "console:   the File console pre-flight will be measured too"
 fi
+if [ -n "${LCARS_BROWSER_HOLODECK_CHECK:-}" ]; then
+  [ -f "$LCARS_BROWSER_HOLODECK_CHECK" ] || \
+    skip "LCARS_BROWSER_HOLODECK_CHECK points at no file: $LCARS_BROWSER_HOLODECK_CHECK"
+  DRIVE_ARGS+=(--holodeck-check "$LCARS_BROWSER_HOLODECK_CHECK")
+  note "holodeck:  the ⬡ HOLODECK deck will be entered and MEASURED too"
+fi
 if [ -n "${LCARS_BROWSER_GHLINK_CHECK:-}" ]; then
   [ -f "$LCARS_BROWSER_GHLINK_CHECK" ] || \
     skip "LCARS_BROWSER_GHLINK_CHECK points at no file: $LCARS_BROWSER_GHLINK_CHECK"
@@ -450,6 +470,8 @@ printf 'screenshot: %s/board.png\n' "$OUT"
 [ -f "$OUT/legend.png" ] && printf 'screenshot: %s/legend.png  (the legend, close-up)\n' "$OUT"
 [ -f "$OUT/gh-links.png" ] && printf 'screenshot: %s/gh-links.png  (the detail overlay + its GitHub link)\n' "$OUT"
 [ -f "$OUT/file-console.png" ] && printf 'screenshot: %s/file-console.png  (the File console)\n' "$OUT"
+[ -f "$OUT/holodeck.png" ] && printf 'screenshot: %s/holodeck.png  (THE HOLODECK — open this one)\n' "$OUT"
+[ -f "$OUT/holodeck-back-on-board.png" ] && printf 'screenshot: %s/holodeck-back-on-board.png  (the board, after ▦ BOARD)\n' "$OUT"
 note "result:     $OUT/result.json"
 case "$RC" in
   0)

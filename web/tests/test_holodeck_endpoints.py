@@ -468,9 +468,14 @@ class NoBashEverTest(HolodeckBase):
         for engine in (self.claude_bin, self.copilot_bin):
             for mode in ("design", "grounding"):
                 self._set_turns({"stdout": "fine"}, {"stdout": "fine"})
+                # the program name carries the ENGINE as well as the mode: since
+                # S125's fix round, two live programs cannot share one room
+                # (they would write the same mockup.html and show as two
+                # indistinguishable cards), and this loop opens four at once.
                 _, body = self._post("/api/holodeck/start",
-                                     {"program": "P-%s" % mode, "engine": engine,
-                                      "mode": mode})
+                                     {"program": "P-%s-%s"
+                                      % (os.path.basename(engine), mode),
+                                      "engine": engine, "mode": mode})
                 sid = body["state"]["sessionId"]
                 self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
         for call in self._calls():

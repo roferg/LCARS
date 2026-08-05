@@ -30,6 +30,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
 
 from .local_adapter import LocalAdapter
@@ -795,6 +796,25 @@ def _slug(name):
     return (s[:48] or "program")
 
 
+def _norm_name(name):
+    """A program name as a PERSON reads it, for the collision check (round 2).
+
+    `_slug` throws away everything that is not `[a-z0-9]`, so two names a
+    captain cannot tell apart can still slug apart: "Tile picker sidebаr" with a
+    Cyrillic `а` slugs to `tile-picker-sidebr` and opens a second card reading
+    exactly like the first. NFKC + casefold + collapsed whitespace catches the
+    EASY half of that — full-width characters, ligatures, odd spaces, case.
+
+    IT DOES NOT CATCH HOMOGLYPHS, and deliberately does not try: a confusables
+    table is an arms race that ends with a captain refused a name he typed
+    honestly. The other half of the cure is on the surface — the program list
+    names each program's ROOM, so two same-looking cards are legible even when
+    this returns two different strings.
+    """
+    s = unicodedata.normalize("NFKC", str(name or ""))
+    return re.sub(r"\s+", " ", s).strip().casefold()
+
+
 # ── reply parsing: NEVER assume stdout starts at byte 0 ──────────────────────
 # Measured in the spike: claude prefixes a `Warning: no stdin data received in
 # 3s…` line unless stdin is DEVNULL (we DO pass DEVNULL — this is belt and
@@ -966,6 +986,40 @@ def _parse_file_blocks(raw):
             content += "\n"
         blocks.append((rel, content))
     return blocks, bad
+
+
+# The whole-document fences that mean "the engine could not save this".
+# NOT a classifier and not a wording match: the tell is that the reply CONTAINS
+# A WHOLE FILE. When a design turn has write tools, a complete document in the
+# prose and nothing on disk is a turn whose write channel failed, whatever the
+# accompanying sentence said (the measured one was "I can't write files
+# (read-only, no write tool), so here is the complete mockup.html for you to
+# save… Save this as mockup.html at the project root when ready" — and it came
+# back `status: "ok"` with an empty preview).
+_WHOLE_DOC = re.compile(r"<!doctype\s+html|<html[\s>]", re.I)
+
+
+def _reply_carries_an_unsaved_file(raw):
+    """True when a reply's fenced blocks contain a whole HTML document.
+
+    Scans FENCES only — a mockup discussed in prose ("the <html> element") is
+    not a file, and a turn that merely answered a question must stay a clean
+    `ok` (that is the regression this narrowness protects)."""
+    lines = (raw or "").replace("\r\n", "\n").split("\n")
+    i, n = 0, len(lines)
+    while i < n:
+        if not _FENCE_ANY.match(lines[i]):
+            i += 1
+            continue
+        i += 1
+        body = []
+        while i < n and not _FENCE_CLOSE.match(lines[i]):
+            body.append(lines[i])
+            i += 1
+        i += 1
+        if _WHOLE_DOC.search("\n".join(body)):
+            return True
+    return False
 
 
 def _safe_rel(declared):
@@ -1184,15 +1238,24 @@ class _HolodeckSession(object):
     re-feeds no transcript.
     """
 
-    __slots__ = ("program", "engine", "mode", "sidecar_dir", "program_dir",
-                 "target_repo", "worker_sid", "started", "turns",
-                 "files_changed", "done", "last_reply", "proc", "turn_settled")
+    __slots__ = ("program", "engine", "mode", "grounded", "sidecar_dir",
+                 "program_dir", "target_repo", "worker_sid", "started", "turns",
+                 "files_changed", "done", "last_reply", "proc", "turn_settled",
+                 "opened_at", "last_touched")
 
     def __init__(self, program, engine, mode, sidecar_dir, program_dir,
                  target_repo):
         self.program = program
         self.engine = engine
         self.mode = mode
+        # S125 fix round 1 — `mode` is the posture the NEXT turn runs in, and it
+        # MOVES: a grounded program runs its one read-only pass and then spends
+        # the rest of its life in the design posture (see `_switch_to_design`).
+        # `grounded` is the durable fact — that this program's mockup is built
+        # on a basis it read out of the captain's project — and it is what the
+        # header chip and `basis.md` link hang off, so the chip does not vanish
+        # the moment the room becomes writable.
+        self.grounded = (mode == "grounding")
         self.sidecar_dir = sidecar_dir
         self.program_dir = program_dir
         self.target_repo = target_repo
@@ -1211,6 +1274,11 @@ class _HolodeckSession(object):
         # its file list and the turn's own answer describe the same bytes (D2).
         self.turn_settled = threading.Event()
         self.turn_settled.set()
+        # S125 (D8) — the program list shows RECENCY in plain language, so the
+        # two clocks it needs live on the session. `last_touched` moves on every
+        # turn; a program opened and never spoken to reads from `opened_at`.
+        self.opened_at = time.time()
+        self.last_touched = self.opened_at
 
 
 class _LogSession(object):
@@ -2759,6 +2827,36 @@ class Actions(LogFacts):
         self._resolve_holodeck_engine(engine)
         sidecar = self._ensure_sidecar(target)
         program_dir = os.path.join(sidecar, _slug(program))
+        # ONE ROOM, ONE PROGRAM (fix round 1). Two starts with the same name
+        # produced two sessions sharing one `programDir` — both writing the same
+        # `mockup.html`, and two cards in the list a captain cannot tell apart.
+        # Refused in plain English, because the honest answer is that the
+        # program he wants is already open: silently giving the second one a
+        # `-2` room would leave him designing in a room he never asked for.
+        # Round 2 widened this from the ROOM to the NAME AS READ: a name that
+        # normalizes the same is the same program to a captain even when it
+        # slugs differently (see `_norm_name`).
+        with self._holodeck_lock:
+            clash = None
+            for other in self._holodeck.values():
+                same_room = (os.path.abspath(other.program_dir)
+                             == os.path.abspath(program_dir))
+                if same_room or _norm_name(other.program) == _norm_name(program):
+                    clash = other
+                    break
+        if clash is not None:
+            raise ActionError(
+                409, "a program called %r is already open on this deck and it "
+                "is using that room (%s). Switch to it in the program list, or "
+                "start this one under a different name."
+                % (clash.program, os.path.basename(clash.program_dir)))
+        # THE ROOM MAY ALREADY HOLD WORK, and silence about that is the defect
+        # (round 2). End a program and start one with the same name and it
+        # ADOPTS the old room: `turnCount: 0` beside a `previewFile` showing the
+        # previous program's mockup, before a word is typed. Refusing is wrong —
+        # with in-memory programs, ending one would burn its name forever — so
+        # it is DISCLOSED, and continuing in it becomes a choice.
+        reuse = self._room_already_holds_work(program_dir)
         try:
             os.makedirs(program_dir, exist_ok=True)
         except OSError as exc:
@@ -2777,12 +2875,63 @@ class Actions(LogFacts):
             # commits both labelled `turn 1` and the first follow-up filed
             # itself under `## Follow-up (turn 1)`.
             sess.turns.append({"text": None, "reply": None})
-            return self._run_turn(sid, sess, self._build_holodeck_prompt(
-                sess, text=None, opening=True))
+            try:
+                payload = self._run_turn(sid, sess, self._build_holodeck_prompt(
+                    sess, text=None, opening=True))
+                if reuse:
+                    payload["roomNotice"] = {"kind": "room-reused",
+                                             "message": reuse}
+                return payload
+            finally:
+                # THE PASS IS EXACTLY ONE TURN, whatever it returned. Before
+                # this the posture never moved, so every later turn in the
+                # DEFAULT (recommended) path kept the read-only tools and the
+                # captain's project as its cwd — the engine answered "I can't
+                # write files, save this yourself" and the turn returned `ok`.
+                # A failed pass switches too: the captain still gets a room he
+                # can design in, and re-grounding is a new program.
+                self._switch_to_design(sess)
         payload = self._holodeck_meta(sid, sess)
         payload.update({"status": "standing-by", "reply": "", "raw": "",
                         "filesChanged": []})
+        if reuse:
+            payload["roomNotice"] = {"kind": "room-reused", "message": reuse}
         return payload
+
+    @staticmethod
+    def _room_already_holds_work(program_dir):
+        """A plain-English disclosure when a program's room is not empty, or "".
+
+        It says WHAT is in there and HOW MUCH, because "this name is taken" is
+        not what the captain needs to know — he needs to know that the mockup
+        the preview is about to show him is somebody else's, and that his next
+        turn builds on it.
+        """
+        names = []
+        try:
+            for root, dirs, files in os.walk(program_dir):
+                dirs[:] = [d for d in dirs if d != ".git"]
+                for f in sorted(files):
+                    if f.startswith("."):
+                        continue
+                    names.append(os.path.relpath(os.path.join(root, f),
+                                                 program_dir))
+                    if len(names) > 50:
+                        break
+                if len(names) > 50:
+                    break
+        except OSError:
+            return ""
+        if not names:
+            return ""
+        shown = ", ".join(sorted(names)[:3])
+        more = "" if len(names) <= 3 else " and %d more" % (len(names) - 3)
+        return ("This program's room already holds work from an earlier "
+                "program of the same name: %d file(s) — %s%s. Nothing has been "
+                "deleted, and nothing is lost: the preview you are about to see "
+                "is that earlier mockup, and your next turn builds on it. Start "
+                "under a different name if you wanted an empty room."
+                % (len(names), shown, more))
 
     def holodeck_say(self, sid, text, images=None):
         """POST /api/holodeck/<sid>/say — one warm chat turn.
@@ -2805,7 +2954,22 @@ class Actions(LogFacts):
             raise ActionError(400, "missing required field: text")
         opening = not sess.started
         prompt = self._build_holodeck_prompt(sess, text=text, opening=opening)
-        sess.turns.append({"text": text, "reply": None})
+        # A RETRY IS THE SAME LINE, SAID ONCE (round 2). The captain types a
+        # line, the turn dies, he presses RETRY TURN — and the transcript showed
+        # him saying it twice, because both sides appended a turn. A last turn
+        # that FAILED and carries exactly this text IS this turn; it is reused,
+        # not repeated.
+        #
+        # Keyed off the turn's OUTCOME, not off an empty reply: a live drive
+        # found a worker that died with `boom` on stderr, which the daemon
+        # merges into stdout — so the failed turn had a perfectly non-empty
+        # `reply` and the duplicate came straight back.
+        last = sess.turns[-1] if sess.turns else None
+        if last and last.get("text") == text and last.get("failed"):
+            last["reply"] = None
+            last.pop("failed", None)
+        else:
+            sess.turns.append({"text": text, "reply": None})
         return self._run_turn(sid, sess, prompt)
 
     def holodeck_end(self, sid):
@@ -2855,11 +3019,270 @@ class Actions(LogFacts):
         return payload
 
     # ── the seam itself ────────────────────────────────────────────────────
+    @staticmethod
+    def _switch_to_design(sess):
+        """Move a grounded program from its one read-only pass into the design
+        posture — as a FRESH warm session, never as a mutated one.
+
+        S124 made the two postures separate sessions on purpose: they have
+        different tools AND different cwds, and resuming one warm conversation
+        across that switch is a behaviour no spike has measured. So the design
+        chat gets its own session-id and its own opening envelope; the grounding
+        it was made of is on disk beside it as `basis.md`, which the design
+        prompt points at, so nothing is lost by not carrying the conversation.
+        """
+        if sess.mode != "grounding":
+            return
+        sess.mode = "design"
+        sess.worker_sid = str(uuid.uuid4())
+        sess.started = False
+
+    @staticmethod
+    def _display_path(path):
+        """A path as a PERSON reads it: `$HOME` folded back to `~`.
+
+        The daemon does this because only the daemon knows the home directory —
+        the board has none, and D6's empty state is the one place in the whole
+        product that shows a path, so it must be the readable form."""
+        path = str(path or "")
+        if not path:
+            return ""
+        home = os.path.expanduser("~")
+        if home and home != os.sep and (path == home
+                                        or path.startswith(home + os.sep)):
+            return "~" + path[len(home):]
+        return path
+
+    def _basis_file(self, sess):
+        """`basis.md` if this program actually has one on disk (D12: the header
+        links to it). Never a name the surface would then 404 on."""
+        try:
+            if os.path.isfile(os.path.join(sess.program_dir, "basis.md")):
+                return "basis.md"
+        except OSError:
+            pass
+        return None
+
     def _holodeck_meta(self, sid, sess):
+        # S125 additions are all ADDITIVE (D2/D3/D6/D8): `previewFile` is what
+        # the live-preview iframe points at, `sidecarName` + `commits` are the
+        # program list's footer chip, and `lastTouched` is its recency line. The
+        # S124 keys are untouched, so every S124 test reads the same shape.
         return {"sessionId": sid, "program": sess.program, "mode": sess.mode,
+                # `grounded` + `basisFile` are the D12 pair: the chip says this
+                # mockup is built on the project's own language, and the link
+                # is what makes that grounding INSPECTABLE (a grounding you
+                # cannot read is one you cannot correct). `mode` alone could not
+                # carry it — it moves to "design" after the opening pass.
+                "grounded": bool(sess.grounded),
+                "basisFile": self._basis_file(sess),
                 "sidecar": sess.sidecar_dir, "programDir": sess.program_dir,
+                # THE DISCRIMINATOR (round 2). Two names that read the same —
+                # a homoglyph, a name the collision check cannot honestly
+                # refuse — still occupy two different ROOMS, and this is what
+                # lets the program list show a captain which card is which.
+                "room": os.path.basename(sess.program_dir),
                 "engine": sess.engine or self.worker_bin,
-                "turnCount": len(sess.turns)}
+                "turnCount": len(sess.turns),
+                "status": "draft",
+                "previewFile": self._preview_file(sess),
+                "sidecarName": os.path.basename(sess.sidecar_dir),
+                "commits": self._sidecar_commit_count(sess.sidecar_dir),
+                "openedAt": sess.opened_at,
+                "lastTouched": sess.last_touched}
+
+    # ── S125: the surface's three reads (list · preview file · one file) ────
+    #
+    # These are READS, and they are the whole of what the holodeck surface adds
+    # to the daemon's GET side. They never spawn a worker, never write, and are
+    # wired on the LOCAL write board only (`actions is not None`) — a read-only
+    # build holds no sessions, so there is nothing there to serve and the board
+    # hides the affordance entirely (D7's VIEW ONLY).
+
+    # What the preview pane renders, in preference order. `mockup.html` is the
+    # name the turn prompt asks for and the name the hand-off carries (S127), so
+    # it wins outright; any other html in the room is the fallback so a worker
+    # that named it something else still shows SOMETHING rather than an empty
+    # deck that looks broken. None ⇒ the LCARS empty state, never a dead iframe.
+    _PREVIEW_PREFERRED = "mockup.html"
+
+    def _preview_file(self, sess):
+        try:
+            names = sorted(os.listdir(sess.program_dir))
+        except OSError:
+            return None
+        if self._PREVIEW_PREFERRED in names:
+            return self._PREVIEW_PREFERRED
+        for name in names:
+            if name.lower().endswith((".html", ".htm")):
+                if os.path.isfile(os.path.join(sess.program_dir, name)):
+                    return name
+        return None
+
+    def _sidecar_commit_count(self, sidecar):
+        """How many commits the sidecar holds (D6's program-list footer chip).
+
+        Best-effort and never fatal: a sidecar that is somehow not a git repo
+        answers 0 rather than breaking the surface that reports it."""
+        try:
+            proc = subprocess.run([self.git_bin, "-C", sidecar, "rev-list",
+                                   "--count", "HEAD"],
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL)
+        except OSError:
+            return 0
+        if proc.returncode != 0:
+            return 0
+        try:
+            return int((proc.stdout or b"").decode("utf-8", "replace").strip())
+        except ValueError:
+            return 0
+
+    def holodeck_list(self):
+        """GET /api/holodeck — every program this daemon is holding.
+
+        IN-MEMORY, and honestly so: these are the live `_HolodeckSession`s, so a
+        daemon restart empties the list (durable programs are S126). Every entry
+        is `draft` — the sent/done lifecycle is S126/S127 — which is why the
+        surface's filter chips filter but do not TRANSITION anything.
+        """
+        with self._holodeck_lock:
+            items = list(self._holodeck.items())
+        out = []
+        for sid, sess in items:
+            meta = self._holodeck_meta(sid, sess)
+            meta["turns"] = [{"text": t.get("text"), "reply": t.get("reply")}
+                             for t in sess.turns]
+            out.append(meta)
+        out.sort(key=lambda m: m.get("lastTouched") or 0, reverse=True)
+        # THE HEADER IS WHAT THE SURFACE NEEDS BEFORE A PROGRAM EXISTS, and both
+        # halves of it were being invented by the front end until this round:
+        #   • `sidecar` — D6 names the archive's FULL PATH once, in the empty
+        #     state, because the reason for naming it at all is that the captain
+        #     must be able to back it up. A basename is not a location, and the
+        #     board could only ever guess one.
+        #   • `engine`/`model` — the New Program dialog printed a HARDCODED
+        #     "sonnet tier", which is simply false on copilot (`_holodeck_model`
+        #     returns claude-opus-4.8 there). It now reads what will actually
+        #     run, from the same function the spawn uses.
+        engine = (self.worker_bin or "").strip()
+        try:
+            sidecar = self._sidecar_path(self.repo_root)
+        except ActionError:
+            sidecar = ""
+        return {"programs": out,
+                "sidecar": sidecar,
+                "sidecarDisplay": self._display_path(sidecar),
+                "sidecarName": os.path.basename(sidecar) if sidecar else "",
+                "engine": engine,
+                "engineName": os.path.basename(engine) if engine else "",
+                "model": _holodeck_model(engine) if engine else ""}
+
+    def holodeck_state(self, sid):
+        """GET /api/holodeck/<sid> — one program, with its transcript."""
+        with self._holodeck_lock:
+            sess = self._holodeck.get(sid)
+        if sess is None:
+            raise ActionError(404, "no such holodeck program: %s" % sid)
+        meta = self._holodeck_meta(sid, sess)
+        meta["turns"] = [{"text": t.get("text"), "reply": t.get("reply")}
+                         for t in sess.turns]
+        return meta
+
+    # The preview route's jail. It is the ONE place daemon-served bytes come
+    # from a directory a MODEL writes into, so it is written as a fence rather
+    # than as a path join with a check bolted on:
+    #
+    #   • a NUL byte, an absolute path, a drive letter or a `..` SEGMENT is
+    #     refused by inspection, before any filesystem call;
+    #   • the join is then REALPATH'd and re-checked against the realpath of the
+    #     program's room — which is what catches a SYMLINK inside the room
+    #     pointing out of it (the check a normpath-only jail passes);
+    #   • only a regular file is served, by an extension ALLOW-list, and never
+    #     larger than a cap.
+    #
+    # The headers matter as much as the path: the mockup is model-written HTML
+    # served from the daemon's OWN origin, so `server.py` sends it `nosniff` and
+    # a restrictive CSP, and the iframe around it is sandboxed WITHOUT
+    # `allow-same-origin` (see board.js) — which is the half that stops it
+    # reaching the board's DOM or POSTing to the write API.
+    _PREVIEW_TYPES = {
+        ".html": "text/html; charset=utf-8",
+        ".htm": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".md": "text/plain; charset=utf-8",
+        ".txt": "text/plain; charset=utf-8",
+        ".svg": "image/svg+xml",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }
+
+    def _preview_max_bytes(self):
+        try:
+            return max(1, int(os.environ.get(
+                "LCARS_HOLODECK_PREVIEW_MAX_BYTES") or 8 * 1024 * 1024))
+        except ValueError:
+            return 8 * 1024 * 1024
+
+    def holodeck_preview(self, sid, rel):
+        """GET /api/holodeck/<sid>/preview/<path> — ONE file from the room.
+
+        Returns `{"bytes": <bytes>, "contentType": <str>, "path": <rel>}`.
+        Raises ActionError with a READABLE message; never a stack, never a
+        filesystem path the captain did not already know about.
+        """
+        with self._holodeck_lock:
+            sess = self._holodeck.get(sid)
+        if sess is None:
+            raise ActionError(404, "no such holodeck program: %s" % sid)
+        rel = rel or ""
+        if "\x00" in rel:
+            raise ActionError(400, "that is not a file name the holodeck can "
+                                   "serve")
+        # Refuse BEFORE touching the filesystem: absolute, drive-qualified, or
+        # any parent-directory segment. `..` is matched as a SEGMENT, so a file
+        # honestly called `..notes.md` is still servable.
+        if rel.startswith("/") or rel.startswith("\\") or ":" in rel.split("/")[0]:
+            raise ActionError(403, "the holodeck preview only serves files "
+                                   "inside this program's own room")
+        parts = [p for p in rel.replace("\\", "/").split("/") if p not in ("", ".")]
+        if not parts or any(p == ".." for p in parts):
+            raise ActionError(403, "the holodeck preview only serves files "
+                                   "inside this program's own room")
+        room = os.path.realpath(sess.program_dir)
+        target = os.path.realpath(os.path.join(room, *parts))
+        # The realpath re-check: a symlink inside the room that points out of it
+        # normpaths clean and only shows up here.
+        if target != room and not target.startswith(room + os.sep):
+            raise ActionError(403, "the holodeck preview only serves files "
+                                   "inside this program's own room")
+        if not os.path.isfile(target):
+            raise ActionError(404, "the holodeck has no file called %s in this "
+                                   "program yet" % "/".join(parts))
+        ext = os.path.splitext(target)[1].lower()
+        ctype = self._PREVIEW_TYPES.get(ext)
+        if ctype is None:
+            raise ActionError(415, "the holodeck preview does not serve %s "
+                                   "files" % (ext or "extension-less"))
+        cap = self._preview_max_bytes()
+        try:
+            size = os.path.getsize(target)
+        except OSError as exc:
+            raise ActionError(404, "could not read that file: %s" % exc)
+        if size > cap:
+            raise ActionError(413, "that mockup is too large to preview (%d "
+                                   "bytes, limit %d)" % (size, cap))
+        try:
+            with open(target, "rb") as fh:
+                data = fh.read(cap + 1)
+        except OSError as exc:
+            raise ActionError(404, "could not read that file: %s" % exc)
+        return {"bytes": data, "contentType": ctype, "path": "/".join(parts)}
 
     @staticmethod
     def _holodeck_args(bin_, mode, session_id, opening, grant_dir):
@@ -2909,9 +3332,18 @@ class Actions(LogFacts):
         can be left waiting on a turn that already died.
         """
         sess.turn_settled.clear()
+        sess.last_touched = time.time()   # S125 (D8): the list's recency clock
         try:
             return self._holodeck_turn(sid, sess, prompt)
+        except ActionError:
+            # The turn did not land. Mark it, so a RETRY of the same line reuses
+            # this turn instead of writing the captain's words into the
+            # transcript twice (round 2).
+            if sess.turns:
+                sess.turns[-1]["failed"] = True
+            raise
         finally:
+            sess.last_touched = time.time()
             sess.turn_settled.set()
 
     def _end_settle_timeout(self):
@@ -2981,9 +3413,6 @@ class Actions(LogFacts):
         except OSError as exc:
             raise ActionError(502, "the holodeck worker failed to start: %s"
                               % exc)
-        # the warm conversation is open from here on, whatever the turn returned
-        # — a later turn must RESUME it, never re-open the same uuid.
-        sess.started = True
         sess.proc = proc
         timed_out = False
         try:
@@ -3035,6 +3464,41 @@ class Actions(LogFacts):
                 sess.files_changed.append(rel)
         strays = [p for p, _ in _audit_diff(before_repo, after_repo)]
 
+        # A SESSION IS "STARTED" ONLY ONCE ONE PROVABLY EXISTS (round 2). This
+        # used to be set the instant `Popen` returned, which made a RETRY a
+        # PERMANENT DEAD END: if the first turn died before the CLI had opened
+        # its session — a bad flag, no auth, an instant crash — the next turn
+        # `--resume`d an id that never existed, failed for that reason forever,
+        # and the only escape was ending the program. Both real CLIs refuse to
+        # resume an unknown id, so nothing could ever recover it.
+        #
+        # A turn PROVES a session exists by producing FILES or a CLEAN EXIT.
+        #
+        # A REPLY PROVES NOTHING, and round 2 counted it (fix round 3 removed
+        # the `reply or`). The daemon spawns the worker with
+        # `stderr=subprocess.STDOUT`, so an engine that dies at startup —
+        # `Error: authentication failed`, an expired token, a rate limit, the
+        # three most ordinary engine failures there are — comes back with a
+        # perfectly NON-EMPTY reply and a non-zero exit. That kept the id, and
+        # the RETRY TURN control the deck puts right there `--resume`d a session
+        # the CLI never created: a permanent dead end, under a banner promising
+        # "the chat is still running; say it again to retry". N6's own dedupe
+        # rule two hundred lines above is keyed off the turn's OUTCOME for
+        # exactly this reason, measured live (`boom` on stderr).
+        #
+        # The heuristic is wrong in BOTH directions — a worker that HAD opened
+        # its session and was then killed silently re-mints and orphans a live
+        # one — but RE-MINTING IS THE SAFE DIRECTION: a fresh session always
+        # works, resuming a ghost never does. So the cure is to remove the
+        # unreliable evidence, never to add more evidence to the "started" side.
+        # Do not put `reply or` back.
+        if opening:
+            if changed or (proc.returncode == 0 and not timed_out):
+                sess.started = True
+            else:
+                sess.started = False
+                sess.worker_sid = str(uuid.uuid4())
+
         sess.last_reply = reply
         if sess.turns and sess.turns[-1].get("reply") is None:
             sess.turns[-1]["reply"] = reply
@@ -3066,7 +3530,7 @@ class Actions(LogFacts):
                 "message": self._write_refused_message(sess, strays, bad_blocks,
                                                        warning),
             }
-            self._sidecar_commit(sess, changed)
+            self._commit_turn(sess, changed, payload)
             return payload
         if stopped:
             # a turn LCARS stopped: keep what landed, then say plainly that the
@@ -3078,18 +3542,45 @@ class Actions(LogFacts):
         if changed:
             # Work landed. Keep it, whatever the exit code said.
             payload["status"] = "unverified" if warning else "ok"
-            self._sidecar_commit(sess, changed)
+            self._commit_turn(sess, changed, payload)
+            return payload
+        # A TURN THAT COULD NOT WRITE IS NOT A GOOD TURN (fix round 1). The
+        # engine answering with the complete file and an instruction to save it
+        # by hand used to come back `ok`, with an empty preview and no hint that
+        # anything was wrong — the captain sat looking at NOTHING ON THE
+        # HOLODECK YET while the deck said the turn succeeded. It is now a
+        # first-class surfaced state, and LCARS never passes on the engine's
+        # suggestion that the captain save a file into his own project.
+        if sess.mode == "design" and _reply_carries_an_unsaved_file(raw):
+            payload["status"] = "wrote-nothing"
+            payload["warning"] = {
+                "kind": "no-write",
+                "message": (
+                    "That turn answered with the file's contents instead of "
+                    "writing it, so nothing was saved and the preview has not "
+                    "moved. Your program is safe — every earlier turn is "
+                    "committed — and the chat is still running. LCARS will "
+                    "never ask you to save a mockup into your own project by "
+                    "hand; say it again and ask for the file to be written "
+                    "into the program's room."),
+            }
             return payload
         # Nothing changed and nothing to keep. HOLODECK OFFLINE (D7): lead with
         # what survived, then say what happened. Reporting either of these as
         # success is how a captain waits for a mockup that is never coming.
         if proc.returncode != 0:
+            # NO EXIT CODE, NO SIGNAL NUMBER (D7, round 2). Round 1 printed
+            # "(claude exited -9)" in the banner — a number that answers neither
+            # of the two questions a captain has and that he cannot act on. What
+            # it stopped, that his work is safe, and how to try again. The
+            # engine's own last line is kept because it is the engine SPEAKING
+            # ("connection reset by peer"), not LCARS leaking internals.
             last = (raw.strip().splitlines() or [""])[-1].strip()
             raise ActionError(
-                502, "the holodeck worker stopped mid-turn (%s exited %d) — "
-                     "your program is safe, every earlier turn is committed, "
-                     "and the chat is still running; say it again to retry.%s"
-                     % (os.path.basename(bin_), proc.returncode,
+                502, "the %s worker stopped mid-turn — your program is safe, "
+                     "every earlier turn is committed, and the chat is still "
+                     "running; say it again to retry.%s"
+                     % (os.path.basename(bin_),
                         (" It said: %s" % last) if last else ""))
         if not reply:
             raise ActionError(
@@ -3098,6 +3589,16 @@ class Actions(LogFacts):
                      "say it again to retry." % os.path.basename(bin_))
         payload["status"] = "unverified" if warning else "ok"
         return payload
+
+    def _commit_turn(self, sess, changed, payload):
+        """Commit the turn, then RE-READ the commit count into the payload.
+
+        `_holodeck_meta` runs before the commit exists, so a turn that made the
+        sidecar's second commit answered `commits: 1` — the footer self-corrected
+        on the next poll, which meant the payload was quietly wrong and only a
+        consumer that polled ever saw the truth."""
+        self._sidecar_commit(sess, changed)
+        payload["commits"] = self._sidecar_commit_count(sess.sidecar_dir)
 
     def _turn_timeout(self):
         """How long ONE holodeck turn may run before LCARS stops it.
@@ -3219,10 +3720,17 @@ class Actions(LogFacts):
         bin_ = (engine or "").strip() or (self.worker_bin or "").strip()
         if not bin_:
             raise ActionError(
-                502, "the holodeck has no worker engine to talk to — no engine "
-                "was chosen for this program and the daemon was started "
-                "without one ($LCARS_WORKER_BIN). Pick an engine when you open "
-                "the program, or restart the viewscreen with one.")
+                # NEVER AN INSTRUCTION THE SURFACE CANNOT FOLLOW (fix round 1).
+                # This used to say "pick an engine when you open the program" —
+                # the New Program dialog has one field, a name, and no engine
+                # control at all. It now names the only thing that actually
+                # changes this: how the viewscreen was started.
+                502, "the holodeck has no worker engine to talk to — this "
+                "viewscreen was started without one ($LCARS_WORKER_BIN) and "
+                "there is no engine configured for it. Stop it and restart the "
+                "viewscreen with an engine (for example "
+                "`LCARS_WORKER_BIN=copilot lcars viewscreen --open`); the deck "
+                "will run on it from then on.")
         if not shutil.which(bin_):
             raise ActionError(
                 502, "the holodeck cannot run %s — it is not an executable on "
@@ -3414,9 +3922,28 @@ class Actions(LogFacts):
             "The path is relative to your working directory. A fence with no "
             "declared path is treated as ordinary markdown and written nowhere.\n\n"
             "REPLY SHORT: a sentence or two on what you changed and what you "
-            "want decided next. The captain reads the mockup, not your prose.\n\n"
+            "want decided next. The captain reads the mockup, not your prose."
+            "%s\n\n"
             "The captain says: %s" % (sess.program, sess.program_dir,
+                                      self._basis_clause(sess),
                                       text or "Start us off."))
+
+    def _basis_clause(self, sess):
+        """The grounded program's opening design turn must be TOLD what the
+        grounding pass found — otherwise the read-only look at the captain's
+        project buys nothing, because it happened in a session this one never
+        resumes. The basis is on disk in the room; the prompt points at it by
+        name rather than inlining it, so a long basis costs one Read, not one
+        prompt the size of a stylesheet."""
+        if not (sess.grounded and self._basis_file(sess)):
+            return ""
+        return ("\n\nSTART FROM THE GROUNDING: `basis.md`, in your working "
+                "directory, is what LCARS read out of the captain's real "
+                "project — its actual colour tokens, type scale, spacing and "
+                "component shapes. READ IT FIRST and build to it, so this "
+                "arrives looking like it belongs in that product. Where the "
+                "basis says something was NOT found, say what you chose "
+                "instead rather than inventing a token it does not have.")
 
     def start(self, mid, override=None):
         """POST /api/mission/<id>/start — drive the run, FIRE-AND-FORGET.

@@ -212,9 +212,21 @@ class BandButtonTest(unittest.TestCase):
                          "the help button must not wear the write-control class")
 
     def test_the_rest_of_the_band_is_byte_identical(self):
-        """Everything else in the yellow band is untouched by this round."""
+        """Everything else in the yellow band is untouched.
+
+        The BASELINE below is deliberately never edited: it is the band as it
+        stood before S141, and the assertion is that every round since has only
+        ADDED its own control to it. So each later round's control is stripped
+        here by id — S141's `?`, S125's `⬡ HOLODECK` (plus the comment block
+        that documents it) — and what is left must still be the pre-S141 band,
+        byte for byte. A round that MOVED or RE-WORDED an existing control fails
+        this, which is the property worth keeping."""
         stripped = re.sub(r"\n[ ]*<button[^>]*id=\"helpBtn\"[^>]*>[^<]*</button>",
                           "", self.band)
+        stripped = re.sub(r"\n[ ]*<!-- S125 \(D1\).*?-->", "", stripped,
+                          flags=re.S)
+        stripped = re.sub(r"\n[ ]*<button[^>]*id=\"holodeckBtn\"[^>]*>[^<]*</button>",
+                          "", stripped)
         self.assertEqual(stripped, self.BAND_BEFORE_S141)
 
 

@@ -242,6 +242,32 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             # An adapter that cannot see a local checkout (the GitHub one) has no
             # such method and 404s cleanly; a reporter failure answers `null`,
             # never a 500 (the console then simply says nothing).
+            # ── S125 — the HOLODECK surface's reads ────────────────────────
+            # GET /api/holodeck                        the program list
+            # GET /api/holodeck/<sid>                  one program + transcript
+            # GET /api/holodeck/<sid>/preview/<path>   ONE file from that
+            #     program's room, sidecar-JAILED (see actions.holodeck_preview).
+            #
+            # All three are gated on `actions is not None`, exactly like the
+            # Align RESUME read above: a read-only / github build holds no
+            # holodeck sessions, so there is nothing to serve and these fall
+            # through to _static's 404 rather than pretending the surface is
+            # there. Reads only — no holodeck write can be reached over GET.
+            if path.startswith("/api/holodeck") and actions is not None:
+                rest = path[len("/api/holodeck"):]
+                if rest in ("", "/"):
+                    return self._json(actions.holodeck_list())
+                parts = rest.strip("/").split("/")
+                try:
+                    if len(parts) == 1 and parts[0]:
+                        return self._json(actions.holodeck_state(parts[0]))
+                    if len(parts) >= 3 and parts[1] == "preview":
+                        got = actions.holodeck_preview(parts[0],
+                                                       "/".join(parts[2:]))
+                        return self._send_preview(got)
+                except _ActionError as exc:
+                    return self._error(exc.status, exc.message)
+                return self._error(404, "no such holodeck endpoint: %s" % path)
             if path == "/api/base-freshness":
                 reader = getattr(adapter, "base_freshness", None)
                 if not callable(reader):
@@ -574,6 +600,56 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 return self._error(404, "not found")
             ext = os.path.splitext(target)[1]
             return self._send_file(target, ext)
+
+        # -- the holodeck preview: MODEL-WRITTEN bytes, from our own origin ----
+        # Everything under this route was written by a language model into a
+        # directory a language model controls, and it is served from the SAME
+        # ORIGIN as the board. That is the whole reason these headers exist and
+        # why they are not the ones `_send_file` sends:
+        #
+        #   Content-Security-Policy  the mockup may style and script ITSELF and
+        #       nothing else: no network of any kind (`default-src 'none'`,
+        #       `connect-src 'none'`), no plugins, no framing of other pages, and
+        #       `form-action 'none'` so it cannot POST anywhere. `'unsafe-inline'`
+        #       IS granted for script/style because a self-contained single-file
+        #       mockup is inline by definition (ADR-007) — which is exactly why
+        #       the ORIGIN isolation below, not the CSP, is the load-bearing half.
+        #   X-Content-Type-Options: nosniff   a `.md` served as text/plain can
+        #       never be re-read as HTML by a sniffing browser.
+        #   X-Frame-Options / frame-ancestors 'self'   the board may frame it;
+        #       nothing else may.
+        #
+        # THE LOAD-BEARING HALF IS IN THE IFRAME, NOT HERE: board.js renders this
+        # route with `sandbox="allow-scripts"` and DELIBERATELY WITHOUT
+        # `allow-same-origin`, which drops the frame into an opaque origin. That
+        # is what stops model-written script reaching the board's DOM, its
+        # cookies, or POSTing to the daemon's write API. The two flags together
+        # would re-grant everything the sandbox took away, so they are never both
+        # present — see the comment at the iframe.
+        _PREVIEW_CSP = ("default-src 'none'; img-src 'self' data: blob:; "
+                        "style-src 'self' 'unsafe-inline'; "
+                        "script-src 'self' 'unsafe-inline'; "
+                        "font-src 'self' data:; connect-src 'none'; "
+                        "object-src 'none'; base-uri 'none'; "
+                        "form-action 'none'; frame-ancestors 'self'")
+
+        def _send_preview(self, got):
+            body = got["bytes"]
+            self.send_response(200)
+            self.send_header("Content-Type", got["contentType"])
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", self._PREVIEW_CSP)
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            self.send_header("Referrer-Policy", "no-referrer")
+            # A turn rewrites the same path over and over; a cached preview is a
+            # preview of the mockup you already approved (D3).
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            # NO Access-Control-Allow-Origin: unlike the board's own assets this
+            # is untrusted content and nothing off-origin should be able to read
+            # it back.
+            self.end_headers()
+            self.wfile.write(body)
 
         def _send_file(self, target, ext):
             try:
