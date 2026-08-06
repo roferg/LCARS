@@ -556,8 +556,8 @@ context_extra_block() {
 #
 # S127 — THE HEADING NAMES WHAT ACTUALLY ARRIVED. The holodeck hands a Mission a
 # `mockup.html` and a `concept.md` down this SAME road, and heading an HTML
-# mockup "## Attached images" is a lie in the one prompt the cold worker reads
-# most carefully. So the heading adapts:
+# mockup as an *image* is a lie in the one prompt the cold worker reads most
+# carefully. So the heading adapts:
 #
 #   • every attachment is an image  → the pre-S127 string, BYTE FOR BYTE. This
 #     is shared pipeline code and the overwhelming majority of missions are
@@ -572,62 +572,51 @@ context_extra_block() {
 # ignoring the same claim made in ONE place. This is one of those places — the
 # prompt the worker is actually handed — and it is worded so a worker that reads
 # nothing else still knows the mockup is not code.
+#
+# S128 (FL-010) — THE WORDING IS NOT SPELLED HERE. It was, and three other
+# copies of the same sentence in `lcars file` and `lcars log` were missed while
+# the byte-exact suite guarding THIS function stayed green. The classification,
+# the tally, the heading noun and the mockup declaration all now come from the
+# one shared rule in lcars-common.sh (lcars_attach_*), which `lcars file` (both
+# lanes) and `lcars log` derive their prd.md section from too. What stays local
+# is only what is genuinely local to a PROMPT: the parenthetical, and the fact
+# that these are ABSOLUTE paths. Output is byte-identical to S127's on every
+# input.
 attachments_extra_block() {
-  local d="$MISSION_DIR/attachments" f any=0 out="" list="" ext
-  local n_img=0 n_mock=0 n_doc=0 n_other=0
+  local d="$MISSION_DIR/attachments" f out="" list=""
+  local paths=()
   [ -d "$d" ] || return 0
   for f in "$d"/*; do
     [ -f "$f" ] || continue
-    any=1
+    paths+=("$f")
     list="$list
 - $f"
-    ext=""
-    case "$f" in *.*) ext="$(printf '%s' "${f##*.}" | tr '[:upper:]' '[:lower:]')" ;; esac
-    case "$ext" in
-      png|jpg|jpeg|gif|webp|svg|bmp|heic) n_img=$((n_img + 1)) ;;
-      html|htm)                           n_mock=$((n_mock + 1)) ;;
-      md|markdown|txt|rst)                n_doc=$((n_doc + 1)) ;;
-      *)                                  n_other=$((n_other + 1)) ;;
-    esac
   done
-  [ "$any" -eq 1 ] || return 0
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  # Load the shared rule LAZILY, and only once there is something to head.
+  # run.sh is re-entered as a subprocess for every Stage and every ticket, and
+  # the overwhelming majority of missions have no attachments at all — sourcing
+  # a second library into all of them to serve none of them is blast radius for
+  # nothing. (Same reasoning as drive_load_base_lib, below.)
+  if ! command -v lcars_attach_prd_section >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  # The parenthetical is the same on both branches, so it is written ONCE here;
+  # only the noun (images / files) comes from the shared rule.
+  out="
+$(lcars_attach_heading "${paths[@]}") (the captain attached these; view/read them as part of your input)"
   # THE UNCHANGED PATH. Everything that is an image, and nothing that is not.
-  if [ $((n_mock + n_doc + n_other)) -eq 0 ]; then
-    out='
-## Attached images (the captain attached these; view/read them as part of your input)'
+  if lcars_attach_all_images "${paths[@]}"; then
     printf '%s%s' "$out" "$list"
     return 0
   fi
-  # The tally, in plain English. Written inline (no helper function) because a
-  # function defined inside a function in bash is GLOBAL, and run.sh's namespace
-  # is not a place to leak one.
-  local what="" n noun
-  for pair in "$n_img:image:images" "$n_mock:HTML mockup:HTML mockups" \
-              "$n_doc:written document:written documents" \
-              "$n_other:other file:other files"; do
-    n="${pair%%:*}"
-    [ "$n" -eq 0 ] && continue
-    if [ "$n" -eq 1 ]; then
-      noun="${pair#*:}"; noun="${noun%%:*}"
-    else
-      noun="${pair##*:}"
-    fi
-    [ -n "$what" ] && what="$what, "
-    what="$what$n $noun"
-  done
-  out="
-## Attached files (the captain attached these; view/read them as part of your input)
-What arrived: $what. Each is listed below by absolute path — open them."
-  if [ "$n_mock" -gt 0 ]; then
+  out="$out
+What arrived: $(lcars_attach_tally "${paths[@]}"). Each is listed below by absolute path — open them."
+  if lcars_attach_has_mockup "${paths[@]}"; then
     out="$out
-The HTML mockup is a VISUAL REFERENCE ONLY. It defines LOOK AND FLOW — layout,
-colour, spacing, wording, and the transitions between screens — and matching it
-visually is an acceptance criterion of this work. It is NOT an implementation:
-its internals are deliberately fake, hand-written to look right and wired to
-nothing. Do not import it, do not copy its internals as code, do not edit it to
-change behaviour, and never ship it — it is not part of this repository's
-source and it is not a file this work may modify.
-Where the mockup and the brief disagree, the brief wins."
+$(lcars_attach_mockup_note)"
   fi
   printf '%s%s' "$out" "$list"
   return 0

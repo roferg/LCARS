@@ -152,6 +152,31 @@ Never a raw stack trace, and never a bare command as the primary line (UX-33):
   skill surfaces that message and exits non-zero, launching nothing.
 - **The app exits immediately** → `status: "failed"`, message
   `"the app exited immediately — <tail of the log>"`.
+- **Dependency setup went wrong** → the message leads with *that*, not with the
+  symptom three layers downstream. Provisioning (the repo's
+  `worktreeSetupCommand`, or `$LCARS_WORKTREE_SETUP_CMD`) runs with **both streams
+  captured** to `.git/lcars/missions/<id>/launch-provision.log`, and what it said
+  is classified: pnpm **actually refusing** over an out-of-date lockfile (which it
+  is documented to do *while exiting 0*, so the exit code alone is not the signal —
+  but a passing *mention* of `ERR_PNPM_OUTDATED_LOCKFILE` is not a refusal and is
+  never diagnosed as one) is named as the lockfile problem it is; any other
+  non-zero exit is reported with the line that explains it — a line carrying its own
+  error tag (`error:`, `fatal:`, `ERR_…`, `npm ERR!`) wins even when it also talks
+  about warnings, and only failing that is a bare warning excluded rather than
+  dressed up as the reason. When the output genuinely explains nothing the message
+  says so, and it names a `--silent`/`--quiet` flag only when the setup command
+  really carries one. Every one of them names the override you can actually reach:
+  `LCARS_WORKTREE_SETUP_CMD="…" lcars-launch <mission>`. Provisioning stays
+  **best-effort** — a failure is *reported*, never enforced, so it can't refuse a
+  launch that would have worked (deps may already be in a reused worktree). If the
+  app does come up anyway, the readout and the record carry a `provisioning`
+  heads-up rather than passing it off as clean.
+- **A failed launch keeps its checkout.** The disposable worktree is *not* pruned
+  on failure — that directory (a half-provisioned `node_modules`, a missing
+  binary) is the evidence of *why*, and deleting it before anyone reads it is what
+  made this class of failure unreadable. It cannot accumulate: the path is keyed
+  by mission, so a re-launch reuses that same one and `--stop` clears it. Every
+  failure message says where it is and how to clear it.
 - **Unknown mission / no branch yet** → a clean refusal naming the problem (run
   the mission first).
 - **The deploy root would land inside a `.git/`** → refused either way (watchers
@@ -162,6 +187,15 @@ Never a raw stack trace, and never a bare command as the primary line (UX-33):
   is a dead end — the operator can only fix the cause they own.
 
 ## Invoking the script
+
+`install.sh` also drops a real on-PATH **`lcars-launch`** command (beside
+`lcars-viewscreen` / `lcars-serve`), so the environment overrides below can
+actually be set on a launch from any shell:
+
+```bash
+LCARS_WORKTREE_SETUP_CMD='pnpm install --no-frozen-lockfile --prefer-offline' \
+  lcars-launch <mission>
+```
 
 ```bash
 bash ~/.claude/skills/lcars-launch/launch.sh <mission> [hint]
@@ -176,8 +210,9 @@ then `claude`), `LCARS_WORKER_ADAPTER` (the worker-adapter path),
 `LCARS_LAUNCH_SETTLE` (the liveness poll WINDOW in seconds, default 4 — the app
 must stay alive across the whole window to count as running; a dev server that
 dies anywhere in it is caught as failed), `LCARS_LAUNCH_ROOT` (the deploy-checkout
-root; defaults to `<repo-parent>/.lcars-launch/<repo>`), `LCARS_NOW` (the
-`startedAt` stamp).
+root; defaults to `<repo-parent>/.lcars-launch/<repo>`), `LCARS_WORKTREE_SETUP_CMD`
+(the worktree provisioning command; overrides the repo's `worktreeSetupCommand`
+for this run), `LCARS_NOW` (the `startedAt` stamp).
 
 ## Implementation
 

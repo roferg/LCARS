@@ -242,24 +242,98 @@ function isStarting(id) {
    header then render a DISABLED "⊹ Scanning…" affordance across every repaint (SSE
    included) so a re-click is impossible until the console actually opens
    (clearAligning on success) or the open errors / is superseded. Mirrors the
-   STARTING pattern (UX-17); a safety timeout re-arms a wedged card. */
+   STARTING pattern (UX-17).
+
+   S128 / FL-009 — THERE IS NO WALL-CLOCK TIMEOUT HERE, ON PURPOSE. This map
+   used to hold a 60s setTimeout handle that cleared the guard and refresh()ed.
+   On the S127 capstone the captain's opening Align turn took 61s: the timer
+   fired one second before the turn RETURNED, the card re-armed to START
+   ALIGNMENT, and a turn that had already done the work was presented as a
+   failure. He clicked again — which spawned a SECOND real worker (free on
+   copilot, billed on claude). A bigger constant is the same guess with a longer
+   fuse: a holodeck-born mission's opening turn reads a 28KB mockup and a
+   concept doc on top of ~5s of MCP spawn, so every hand-off sits on the
+   threshold, and the next artifact moves it again.
+
+   So the guard's lifetime IS THE REQUEST'S LIFETIME — a fact, not a guess. It
+   is armed on the click and released by exactly one event: the /api/align/start
+   POST settling. Success opens the console (clearAligning in openAlignConsole);
+   an error — including `postWrite`'s .catch, which is the DAEMON DYING mid-turn
+   arriving as a rejected fetch — clears it with a message. That rejection is
+   the safety net, and it is an event rather than a clock, so it cannot fire on
+   a turn that is merely slow.
+
+   What the record holds instead of a handle is `since` — the click's timestamp
+   — so the card can SAY how long the turn has been running (`aligningFor`).
+   Silence is what made the original defect frightening; "⊹ Scanning the
+   codebase… 1m 35s" reads as slow, where a bare spinner reads as broken.
+
+   A page RELOAD during a turn loses this map — it is client memory. That half is
+   the daemon's, and it is now published: see `alignScanState` below. */
 var ALIGNING = Object.create(null);
-var ALIGNING_TIMEOUT_MS = 60000;
 
 function markAligning(id) {
   if (id == null) return;
-  var key = String(id);
-  if (ALIGNING[key]) clearTimeout(ALIGNING[key]);
-  ALIGNING[key] = setTimeout(function () { clearAligning(key); refresh(); },
-    ALIGNING_TIMEOUT_MS);
+  ALIGNING[String(id)] = { since: Date.now() };
 }
 function clearAligning(id) {
   if (id == null) return;
-  var key = String(id);
-  if (ALIGNING[key]) { clearTimeout(ALIGNING[key]); delete ALIGNING[key]; }
+  delete ALIGNING[String(id)];
 }
 function isAligning(id) {
   return id != null && !!ALIGNING[String(id)];
+}
+/* S128/FL-009: seconds the in-flight Align turn has been running, or null when
+   the record carries no start (a forced flag in a test harness). */
+function aligningFor(id) {
+  var rec = id == null ? null : ALIGNING[String(id)];
+  if (!rec || typeof rec !== "object" || !rec.since) return null;
+  return Math.max(0, Math.floor((Date.now() - rec.since) / 1000));
+}
+/* `<base>` plus the elapsed time when we know it. Every scanning surface (the
+   card band, the control, its tooltip) reads through this so they cannot
+   disagree about how long the same turn has been running. */
+function scanningLabel(secs, base) {
+  return secs == null ? base : base + " " + fmtDuration(secs);
+}
+
+/* S128/FL-009 — THE DAEMON'S HALF, which is what closes the KNOWN GAP above.
+
+   `ALIGNING` is this tab's memory. A reload throws it away, and the card used to
+   re-arm to START ALIGNMENT on a turn that was still running — the same lie
+   FL-009 is about, through a different door, with the same second real worker
+   waiting behind the re-click.
+
+   So the daemon publishes the fact (`_align_busy_fields` in actions.py, the
+   `alignBusy` twin of f667ce8's `busy`/`busySince`/`busyFor`) and this reads it.
+   Same split as `logFilingState` next door: the client map is the INSTANT half
+   (no round trip, no SSE tick, and it covers the gap before the first poll), the
+   server stamp is the DURABLE half that survives a reload.
+
+   WHICH WINS. The daemon, on both counts — it is the only one that can see the
+   worker. Its PRESENCE makes the card scan even when this tab has no memory of a
+   click (a reload, a second tab, a POST that came back on a proxy timeout while
+   the turn kept running), and its elapsed seconds are preferred over the local
+   click time because the local time is when we ASKED, not when the turn began.
+   Its ABSENCE, though, clears nothing: a board built a moment before the session
+   registered, or a card off this board entirely, would then re-arm the guard on a
+   live turn — FL-009 again. The guard is still released by exactly one event, the
+   /api/align/start POST settling. The daemon fact is for the case where that
+   memory is GONE, not a replacement for it.
+
+   NOT A NEW WORDING. The label is the one `scanningLabel` already renders, so a
+   reloaded tab and the tab that clicked say the same thing about the same turn. */
+function alignScanState(m) {
+  var stamp = (m && m.alignBusy && typeof m.alignBusy === "object")
+    ? m.alignBusy : null;
+  var srv = (stamp && typeof stamp["for"] === "number")
+    ? Math.max(0, Math.floor(stamp["for"])) : null;
+  var local = aligningFor(m && m.id);
+  return {
+    scanning: !!(m && isAligning(m.id)) || !!stamp,
+    // the daemon's elapsed when it published one; this tab's click otherwise.
+    secs: srv != null ? srv : local
+  };
 }
 
 /* Park & Align (F1 — background the final estimate): optimistic "finalizing" set.
@@ -1195,7 +1269,9 @@ function cardNode(m) {
   // FIX-A: a parked mission mid-scan (START ALIGNMENT clicked, warm grill opening)
   // gets the SAME persistent animated band — rendered on every repaint while
   // isAligning so the motion survives board rebuilds until the console opens.
-  else if (isAligning(m.id)) card.appendChild(scanningPulse());
+  // S128/FL-009: …and on a RELOADED tab the same band comes back off the
+  // daemon's `alignBusy`, so the card a captain returns to still reads as live.
+  else if (alignScanState(m).scanning) card.appendChild(scanningPulse(m));
   // S162: the mission-log filing band is deliberately OUTSIDE that chain. Those
   // three are one mission's own state (it is either running, finalizing its
   // Align, or opening a grill); a log filing is work on that mission's CHILDREN,
@@ -3364,10 +3440,17 @@ function startAlignmentControl(m) {
     fin.title = "Finalizing the PRD and estimating cost…";
     return fin;
   }
-  if (isAligning(id)) {
-    var busy = act("start", btn("⊹ Scanning…", "go", null));
+  // S128/FL-009: "is a turn running?" is answered by this tab's click-guard OR by
+  // the daemon's published fact — the second is what a reloaded tab reads.
+  var scan = alignScanState(m);
+  if (scan.scanning) {
+    // …and the elapsed time rides the label, so a turn that is merely slow says
+    // so rather than sitting silent until something gives up on it.
+    var busy = act("start", btn(scanningLabel(scan.secs, "⊹ Scanning…"), "go",
+                                null));
     busy.disabled = true;
-    busy.title = "Opening the alignment console…";
+    busy.title = scanningLabel(scan.secs, "The alignment turn has been running")
+      + " — the console opens when its first question lands.";
     return busy;
   }
   if (isResumable(m)) {
@@ -6585,7 +6668,27 @@ function field(labelText, control) {
 }
 function label(t) { return el("label", null, t); }
 function noteEl(text, cls) { return el("div", "note" + (cls ? " " + cls : ""), text); }
-function showErr(node, msg) { node.hidden = false; node.textContent = msg; }
+/* S128 fix round 1, D2 — AND IT BRINGS THE LINE INTO VIEW.
+
+   This is the one call every modal in board.js surfaces a failure through, and
+   nine of them append their `.errline` into `.modal-body` — the region that
+   SCROLLS. The tester's filing POST came back 502, this function ran, the line
+   was populated and `hidden:false`… 1,115px below the bottom of the visible
+   body, in a modal whose sticky footer had already reverted the button to
+   "▦ File Mission". A sweep of every error node intersecting the viewport
+   returned []. A real outcome presented as nothing — FL-009's disease one door
+   over.
+
+   Making the line visible and leaving it where the captain is not looking is
+   not reporting. `block:"nearest"` is deliberate: it moves the scroll only when
+   the line is genuinely out of view, so an error already on screen does not
+   yank the page out from under him. Guarded because the node harnesses have no
+   layout and no such method. */
+function showErr(node, msg) {
+  node.hidden = false;
+  node.textContent = msg;
+  if (node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
+}
 
 /* S74 follow-up: the per-bug model steer is NORMALIZED server-side (passthrough
    <scope>:<tier> → deterministic parse → bounded worker fallback → never silent-
@@ -6784,9 +6887,14 @@ function workingNode(labelText) {
    ALIGNMENT click until the warm grill console opens. Same animated bars as
    runningPulse (.lcars-running), so the scan reads as live motion the whole time
    instead of flashing once and dying to a static grey button. Re-rendered on every
-   repaint while isAligning(id) is true (card render), so no repaint can wipe it. */
-function scanningPulse() {
-  var w = workingNode("⊹ Scanning the codebase…");
+   repaint while the scan is in flight (card render), so no repaint can wipe it. */
+function scanningPulse(m) {
+  // S128/FL-009: the band is the surface a captain actually watches, so it
+  // carries the elapsed time of the in-flight turn — this tab's click when it
+  // has one, the daemon's start when it does not (a reload). `m` is optional:
+  // without it (or before the first turn is armed) the label is exactly as it was.
+  var w = workingNode(scanningLabel(alignScanState(m).secs,
+                                    "⊹ Scanning the codebase…"));
   w.className += " lcars-running";
   return w;
 }
@@ -9196,6 +9304,39 @@ function holoPromote(sid) {
   });
 }
 
+/* Which captured requirements do NOT appear in `brief`? (S128, FL-011 c.)
+
+   A SECOND implementation of a rule the daemon also owns, and that is worth
+   saying out loud. The daemon's copy (`_handoff_missing`) is AUTHORITATIVE: it
+   runs at filing time and carries anything missing into the Mission verbatim,
+   so the requirement survives whatever this function decides. This copy exists
+   only so the captain is told BEFORE he clicks, while it is still his call —
+   the alternative was a per-keystroke round trip to the daemon for a hint.
+   Keep the two normalisations the same shape; if they ever disagree the daemon
+   wins and the worst case is a hint that was wrong, never a lost requirement.
+
+   The quoted span is preferred where there is one, because that is the part
+   that is literally his: `**Turn 5:** "It has to remember." — T3` matches a
+   brief that kept the sentence and dropped the bookkeeping around it. */
+function holoNormWords(s) {
+  return String(s == null ? "" : s).toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function holoMissingRequirements(reqs, brief) {
+  var hay = holoNormWords(brief);
+  return (reqs || []).filter(function (r) {
+    var quoted = String(r.text || "").match(/["“][^"“”]+["”]/g) || [];
+    var pick = "";
+    quoted.forEach(function (q) {
+      var inner = q.slice(1, -1);
+      if (inner.length > pick.length) pick = inner;
+    });
+    var needle = holoNormWords(pick || r.text);
+    return !!needle && hay.indexOf(needle) === -1;
+  });
+}
+
 /* The hand-off dialog (mock screen 6, D5/D13/D14/D15). One screen: a REAL
    writing space pre-drafted from the conversation, how much to build, what
    rides along by NAME, and — visible before he sends — exactly how the mission
@@ -9215,6 +9356,7 @@ function openHandoff(seed) {
      mock makes the LOOK cheap to correct; it does nothing for the reasoning,
      and reasoning needs room. Pre-drafted so the page is never blank. */
   var f1 = el("div", "field");
+  f1.setAttribute("data-holo", "handoff-brief-field");
   f1.appendChild(label("Your brief — what you are actually asking for"));
   var brief = el("textarea");
   brief.rows = 8;
@@ -9222,17 +9364,80 @@ function openHandoff(seed) {
   brief.setAttribute("data-holo", "handoff-brief");
   brief.placeholder = "What do you want built, and why this way?";
   f1.appendChild(brief);
-  f1.appendChild(el("span", "hint", seed.summarySource === "Hand-off summary"
-    ? "Pre-drafted from your concept doc's hand-off summary so you are never "
-      + "staring at an empty box. Rewrite it however you like — this is the "
-      + "Mission's opening idea."
+  f1.appendChild(el("span", "hint",
+    seed.summarySource === "WHAT IT MUST DO"
+    ? "Drafted from WHAT IT MUST DO in your concept doc — the things you "
+      + "said in your own words, in the order you said them. Rewrite it "
+      + "however you like; this is the Mission's opening idea."
     : (seed.brief
-       ? "Your concept doc has no hand-off summary yet, so this draft is the "
-         + "closest thing in it. Rewrite it — this is the Mission's opening "
-         + "idea."
+       ? "Your concept doc has not captured any requirements yet, so this "
+         + "draft is the closest thing in it. Rewrite it — this is the "
+         + "Mission's opening idea."
        : "Nothing in the concept doc could be used as a draft, so this one is "
          + "yours to write. It becomes the Mission's opening idea.")));
   m.body.appendChild(f1);
+
+  /* 1b. THE CAPTURED REQUIREMENTS, CHECKED AGAINST WHAT HE JUST WROTE (S128,
+     FL-011 c). On the S127 capstone he asked for a light/dark theme twice, in
+     his own words, and it appeared in neither the filed idea nor the PRD —
+     which then put new colour explicitly OUT OF SCOPE. Nothing said a word.
+
+     This is ADVISORY. The DAEMON is authoritative: it runs the same check at
+     filing time and carries anything missing into the mission verbatim, so a
+     requirement cannot be lost even if this panel is wrong or never rendered.
+     What this adds is that he finds out BEFORE he files, while it is still his
+     call. The match is deliberately literal — a brief that says the same thing
+     in different words reads as missing here, and being noisy is survivable
+     where being silent is not. */
+  var reqs = seed.requirements || [];
+  var missBand = el("div", "handoff-missing");
+  missBand.setAttribute("data-holo", "handoff-missing");
+  missBand.hidden = true;
+  var reqRows = [];
+  if (reqs.length) {
+    var f1b = el("div", "field");
+    f1b.setAttribute("data-holo", "handoff-requirements");
+    f1b.appendChild(label("What you said, in your own words — is it all in "
+                          + "there?"));
+    var list = el("div", "reqs");
+    reqs.forEach(function (r) {
+      var row = el("div", "req");
+      row.setAttribute("data-holo", "handoff-req");
+      var glyph = el("span", "ic", "✓");
+      row.appendChild(glyph);
+      row.appendChild(el("span", "rt", r.text || ""));
+      list.appendChild(row);
+      reqRows.push({ node: row, glyph: glyph, req: r });
+    });
+    f1b.appendChild(list);
+    f1b.appendChild(missBand);
+    m.body.appendChild(f1b);
+  }
+  function syncRequirements() {
+    var missing = holoMissingRequirements(reqs, brief.value);
+    var lost = {};
+    missing.forEach(function (r) { lost[r.id] = true; });
+    reqRows.forEach(function (row) {
+      var bad = !!lost[row.req.id];
+      row.node.setAttribute("data-ok", bad ? "0" : "1");
+      row.node.classList.toggle("miss", bad);
+      row.glyph.textContent = bad ? "⚠" : "✓";
+    });
+    missBand.hidden = !missing.length;
+    missBand.textContent = missing.length
+      ? "⚠ " + missing.length + " thing" + (missing.length === 1 ? "" : "s")
+        + " you said while designing " + (missing.length === 1 ? "is" : "are")
+        + " not in the brief above. "
+        + (missing.length === 1 ? "It" : "They")
+        + " will be carried into the Mission anyway, marked as yours — "
+        + "nothing is dropped silently. Put "
+        + (missing.length === 1 ? "it" : "them")
+        + " back in your own words if that reads better: "
+        + missing.map(function (r) { return r.text; }).join(" · ")
+      : "";
+  }
+  syncRequirements();
+  brief.addEventListener("input", syncRequirements);
 
   /* 2. HOW MUCH TO BUILD (D13). Declared, never inferred: a mockup cannot tell
      you whether its toggle is meant to persist, and a wrong guess is either a
@@ -9302,12 +9507,71 @@ function openHandoff(seed) {
      place the non-shipping declaration appears, which is the S164-measured
      cure rather than a single prose pin. */
   var f4 = el("div", "field");
+  f4.setAttribute("data-holo", "handoff-guidance-field");
   f4.appendChild(label("How the mockup will be read — goes into the Mission"));
   guideBox.textContent = seed.guidance || "";
   guideBox.setAttribute("data-holo", "handoff-guidance");
   f4.appendChild(guideBox);
   m.body.appendChild(f4);
-  m.body.appendChild(err);
+
+  /* 5. THE OPEN QUESTIONS — LAST, deliberately (S128, FL-011 b). The holodeck
+     writes `## Open questions` into the concept doc and on the S127 capstone it
+     was RIGHT: it named all five things the captain objected to at Verify. It
+     was also never read by `promote`, so the five reached the mission as
+     settled decisions he had never made — and every gate downstream honoured
+     them.
+
+     They go here, at the bottom, because this is the last thing he reads with
+     his hand on the button. He is right there, they are short, and answering
+     five questions costs less than one wrong build. Anything he leaves blank
+     rides in marked STILL OPEN — the daemon writes that block, so silence
+     arrives as silence instead of as agreement.
+
+     S128 FIX ROUND 1, D1 — "last in the DOM" was never the same claim as "in
+     front of him", and a browser said so. Measured: this body is 1812px tall,
+     the visible window is 677px at 1440x900 and 443px at 900x640, and this
+     block starts 546–780px BELOW the fold — while ▦ File Mission is laid out
+     and clickable in the sticky footer from first paint. The tester clicked it
+     at scrollTop 0 and filed a mission whose five open questions he had never
+     seen. Nothing on screen said they existed; even this field's own label was
+     546px down.
+
+     The cue that fixes it is in the FOOTER, below — see `qcue`. It stays here,
+     last, because the position is right for the captain who reads the dialog;
+     what was missing is a signal for the one who does not. */
+  var questions = seed.questions || [];
+  var qBoxes = [];
+  var qField = null;
+  if (questions.length) {
+    var f5 = el("div", "field");
+    qField = f5;
+    f5.setAttribute("data-holo", "handoff-questions");
+    f5.appendChild(label("Before you send — " + questions.length
+                         + " open question"
+                         + (questions.length === 1 ? "" : "s")
+                         + " from the design session"));
+    var qlist = el("div", "handoff-questions");
+    questions.forEach(function (q) {
+      var row = el("div", "hq");
+      row.appendChild(el("div", "qt", q.text || ""));
+      var box = el("input");
+      box.type = "text";
+      box.value = "";
+      box.setAttribute("data-holo", "handoff-question");
+      box.setAttribute("data-qid", q.id || "");
+      box.placeholder = "Your answer — or leave blank to send it as open";
+      row.appendChild(box);
+      qlist.appendChild(row);
+      qBoxes.push({ id: q.id, box: box });
+    });
+    f5.appendChild(qlist);
+    f5.appendChild(el("span", "hint",
+      "These came out of designing this, and nobody has settled them. What "
+      + "you answer becomes a requirement, in your words. Anything you leave "
+      + "blank arrives in the Mission marked STILL OPEN and gets asked again "
+      + "— it is never read as a decision you made."));
+    m.body.appendChild(f5);
+  }
 
   var go = applyWriteState(holoBtn("▦ File Mission", "go big", function () {
     var text = String(brief.value || "").trim();
@@ -9315,11 +9579,19 @@ function openHandoff(seed) {
     go.disabled = true;
     go.textContent = "Filing…";
     err.hidden = true;
+    // Only what he actually TYPED. A blank box is not an empty answer — it is
+    // no answer, and it has to reach the Mission as one.
+    var answers = {};
+    qBoxes.forEach(function (q) {
+      var said = String(q.box.value || "").trim();
+      if (said) answers[q.id] = said;
+    });
     postWrite("/api/park", {
       idea: text,
       engine: /copilot/i.test(String(seed.engine || "")) ? "copilot" : "claude",
       holodeck: seed.sessionId,
       holodeckScope: picked.scope,
+      holodeckAnswers: answers,
     }, function () {
       closeOverlay();
       // Back to the BOARD: the card he just filed is there, and driving it is
@@ -9334,6 +9606,79 @@ function openHandoff(seed) {
       showErr(err, msg);
     });
   }));
+  /* ── THE FOOTER IS THE ONLY THING ALWAYS ON SCREEN (S128 fix round 1) ─────
+     `.modal-body` scrolls; `.modal-foot` does not. Everything below therefore
+     rides beside the button rather than at the bottom of an 1812px document the
+     captain has no reason to reach.
+
+     D2 — THE ERROR LINE MOVES HERE. It was appended to `m.body`, so a filing
+     that came back 502 painted its explanation 1,115px out of sight while the
+     button quietly said "▦ File Mission" again. The report of a failure belongs
+     with the control that failed. (`showErr` now also scrolls the line into
+     view, which cures the same class for the eight other dialogs that keep
+     their errline in the scrolling body.)
+
+     D1 — THE OPEN-QUESTIONS CUE. Three fixes were on the table: a count here,
+     auto-scrolling the questions into view on open, or moving them above the
+     scope cards. This is the count, and it is a CONTROL.
+
+     Auto-scroll was rejected: opening the dialog already focuses the brief (the
+     pre-drafted paragraph he is meant to check first), and landing him mid-
+     document with the brief off-screen trades one invisible thing for another.
+     Moving the block up was rejected too: the body is 1812px and the visible
+     window is 443px at 900x640, so "higher" is still below the fold — it would
+     have relocated the defect, not removed it, and it costs the deliberate
+     hand-on-the-button position for the captain who DOES read.
+
+     A footer cue is the only option that holds at every viewport and every
+     scroll position, including the one the tester actually used (scrollTop 0).
+     It does not block the filing — a hard stop at the last click of a design
+     session is the wrong shape, and the daemon carries an unanswered question
+     into the Mission marked STILL OPEN. It makes filing without KNOWING
+     impossible, which is the claim that failed. And it stays honest as he
+     works: the count falls as he answers, and the warning clears when none are
+     left, so it still means something on the day it fires. */
+  var qcue = null;
+  function syncQCue() {
+    if (!qcue) return;
+    var open = 0;
+    qBoxes.forEach(function (q) {
+      if (!String(q.box.value || "").trim()) open += 1;
+    });
+    var n = qBoxes.length;
+    qcue.setAttribute("data-open", String(open));
+    qcue.classList.toggle("open", open > 0);
+    qcue.textContent = open
+      ? "⚠ " + open + " open question" + (open === 1 ? "" : "s")
+        + " unanswered — read " + (open === 1 ? "it" : "them") + " first"
+      : "✓ all " + n + " open question" + (n === 1 ? "" : "s") + " answered";
+    qcue.title = open
+      ? "They came out of designing this and nobody has settled them. Anything "
+        + "left blank is filed marked STILL OPEN — you can send it either way."
+      : "Every open question from the design session has an answer.";
+  }
+  if (qBoxes.length) {
+    qcue = holoBtn("Read the open questions", "qcue", function () {
+      if (qField && qField.scrollIntoView) {
+        qField.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      var first = null;
+      qBoxes.forEach(function (q) {
+        if (!first && !String(q.box.value || "").trim()) first = q.box;
+      });
+      first = first || qBoxes[0].box;
+      if (first && first.focus) first.focus();
+    });
+    qcue.setAttribute("data-holo", "handoff-qcue");
+    qBoxes.forEach(function (q) {
+      q.box.addEventListener("input", syncQCue);
+    });
+    syncQCue();
+  }
+
+  m.foot.className += " handoff-foot";
+  m.foot.appendChild(err);
+  if (qcue) m.foot.appendChild(qcue);
   m.foot.appendChild(el("span", "hint",
     "Files the Mission at Align, on the board, with the artifacts attached."));
   m.foot.appendChild(el("span", "grow"));

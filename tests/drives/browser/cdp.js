@@ -662,7 +662,24 @@ const HOLODECK_PROBE = `(function () {
   }
   var deck = document.getElementById("deckHost");
   var view = document.querySelector(".deckview");
-  var panes = view ? Array.prototype.slice.call(view.children) : [];
+  /* ── S128: PANES vs FURNITURE ──────────────────────────────────────────────
+     The deckview's children are NOT all panes. S127 added two nodes that are
+     deliberately not pane-shaped and were never taught to this check:
+       • \`.deck-split\` — the chat/preview drag handle, a 7px grid gutter;
+       • \`.holo-scrim\` — the program-drawer's click-away, rendered at every
+         width and display:none above the drawer breakpoint.
+     For a whole session this check read those two as PANES and reported the
+     product broken ("pane deck-split is 7px wide — it did not lay out") on a
+     deck that was laying out perfectly. The cure is NOT to widen the pane list
+     — a check that accepts any node at any size is decoration. The furniture is
+     split out here and asserted BELOW, each as itself, with the shape that is
+     correct FOR IT: a thin handle that really did lay out, and a scrim that is
+     really inert while the drawer is shut. Everything else in the deck is still
+     a pane, still measured, still held to a real width. */
+  var kids = view ? Array.prototype.slice.call(view.children) : [];
+  function firstClass(n) { return String(n.className || "").split(/\\s+/)[0]; }
+  var FURNITURE = { "deck-split": 1, "holo-scrim": 1 };
+  var panes = kids.filter(function (p) { return !FURNITURE[firstClass(p)]; });
   var frame = document.querySelector("#holoPreview");
   var ds = getComputedStyle(document.documentElement);
   var bs = getComputedStyle(document.body);
@@ -674,11 +691,52 @@ const HOLODECK_PROBE = `(function () {
     boardWrapVisible: anyVisible(".board-wrap"),
     legendVisible: anyVisible(".legend"),
     deckviewClass: view ? view.className : null,
-    paneClasses: panes.map(function (p) {
-      return String(p.className || "").split(/\\s+/)[0];
-    }),
+    paneClasses: panes.map(firstClass),
     paneWidths: panes.map(function (p) { var b = box(p); return b ? Math.round(b.w) : 0; }),
     panesVisible: panes.map(function (p) { var b = box(p); return !!(b && b.visible); }),
+    // EVERY child of the deck, furniture included and in DOM order. This is
+    // what makes a node the rig has never heard of impossible to ignore: the
+    // pane list above is filtered, so without this a third piece of furniture
+    // could appear tomorrow and be silently dropped — which is precisely the
+    // staleness that left this check dead for a session.
+    deckChildClasses: kids.map(firstClass),
+    // THE DRAG HANDLE (S127), measured as a handle: thin, but really laid out,
+    // really tall enough to grab, and really between the two panes it splits.
+    splitM: (function () {
+      var hs = kids.filter(function (p) { return firstClass(p) === "deck-split"; });
+      if (!hs.length) return null;
+      var h = hs[0], b = box(h), g = box(h.querySelector(".grip"));
+      return { count: hs.length, index: kids.indexOf(h),
+               w: b ? Math.round(b.w) : 0, h: b ? Math.round(b.h) : 0,
+               visible: !!(b && b.visible),
+               cursor: getComputedStyle(h).cursor,
+               gripVisible: !!(g && g.visible) };
+    })(),
+    // THE DRAWER'S CLICK-AWAY (S127). Above the drawer breakpoint the program
+    // list is a real pane, so the scrim must be GONE — a full-bleed overlay
+    // that is merely transparent would swallow every click on the deck.
+    scrimM: (function () {
+      var ss = kids.filter(function (p) { return firstClass(p) === "holo-scrim"; });
+      if (!ss.length) return null;
+      var s = ss[0], b = box(s), cs = getComputedStyle(s);
+      return { count: ss.length, index: kids.indexOf(s),
+               w: b ? Math.round(b.w) : 0, h: b ? Math.round(b.h) : 0,
+               visible: !!(b && b.visible), display: cs.display,
+               opacity: parseFloat(cs.opacity || "1"),
+               pointerEvents: cs.pointerEvents };
+    })(),
+    drawerOpen: view ? /(^|\\s)drawer-open(\\s|$)/.test(view.className) : false,
+    deckviewW: view ? Math.round(view.getBoundingClientRect().width) : 0,
+    // The chat's DECLARED share of (chat + preview) — the deck's own one number
+    // (board.js HOLO_SPLIT_DEFAULT). Read so the ratio below can be judged
+    // against what the product SAYS it does, instead of against a literal the
+    // rig froze at some past ruling.
+    splitDefault: (typeof HOLO_SPLIT_DEFAULT === "number"
+                   ? HOLO_SPLIT_DEFAULT : null),
+    splitStored: (function () {
+      try { return window.localStorage.getItem("lcars-holo-split"); }
+      catch (e) { return null; }
+    })(),
     programRows: document.querySelectorAll(".prog").length,
     programRowsVisible: anyVisible(".prog"),
     composerPresent: !!document.querySelector(".composer textarea"),
@@ -794,7 +852,13 @@ function judgeHolodeck(deckM, boardM, want) {
            ", not \"▦ Board\"");
   }
   if (!deckM.bandVisible) f.push("the band control is not visible on the deck");
-  // D2 — three panes, laid out, in order, with real width.
+  /* D2 — three CONTENT panes, laid out, in order, with real width.
+     `paneClasses` is the deck's children MINUS its furniture (the drag handle
+     and the drawer scrim), each of which is judged separately below against the
+     shape that is right for IT. Nothing here was relaxed by that split: three
+     named panes, in this order, every one of them visible and ≥80px wide, at
+     the mock's ratio — the same claim, now made about the same three nodes it
+     was always about. */
   const want3 = ["programs", "holo-chat", "preview"];
   if (JSON.stringify(deckM.paneClasses) !== JSON.stringify(want3)) {
     f.push("panes are " + JSON.stringify(deckM.paneClasses) + ", expected " +
@@ -807,10 +871,154 @@ function judgeHolodeck(deckM, boardM, want) {
   if (!deckM.panesVisible.every(Boolean)) {
     f.push("a pane is present but not visible: " + JSON.stringify(deckM.panesVisible));
   }
+  /* THE CHAT : PREVIEW SPLIT (rewritten S128 — the old literal was stale).
+     This asked for ~1.15:1 because that is what D2 originally fixed the split
+     at. S127's captain ruling REVERSED that ("the chat takes up a comical
+     amount of room"): the default is now HOLO_SPLIT_DEFAULT = 0.42 — the chat's
+     share of (chat + preview) — behind a drag handle, and 1.15:1 is named in
+     board.js as "the poor starting position the amendment names". The literal
+     could not have been right, and this check never even ran after S127: five
+     children meant `length === 3` was false and the whole assertion was skipped
+     in silence. So it is now made of two claims that a later ruling cannot
+     rot:
+
+       1. THE DECK RENDERS THE SPLIT IT DECLARES. Measured share vs the
+          product's own HOLO_SPLIT_DEFAULT. This is FL-008's class in a
+          browser — declared 0.42, grid resolves the fr against the wrong free
+          space and strands a dead band — and it holds at whatever the captain
+          sets the number to next.
+       2. AND THE PREVIEW IS STILL "THE POINT". The rig owns this one and does
+          NOT read it off the product: the declared default must leave the
+          preview at least as wide as the chat. Change HOLO_SPLIT_DEFAULT back
+          to 1.15:1 and claim 1 alone would happily agree with it. */
   if (deckM.paneWidths.length === 3) {
-    const ratio = deckM.paneWidths[1] / deckM.paneWidths[2];
-    if (!(ratio > 0.95 && ratio < 1.45)) {
-      f.push("chat:preview is " + ratio.toFixed(2) + ":1 — the mock says ~1.15:1");
+    const chat = deckM.paneWidths[1], preview = deckM.paneWidths[2];
+    const span = chat + preview;
+    const share = span > 0 ? chat / span : 0;
+    const declared = typeof deckM.splitDefault === "number" ? deckM.splitDefault : null;
+    if (declared === null) {
+      f.push("the deck declares no HOLO_SPLIT_DEFAULT — the chat:preview split " +
+             "has no stated intention to measure against");
+    } else {
+      if (!(declared <= 0.5)) {
+        f.push("THE PREVIEW IS NO LONGER THE POINT: HOLO_SPLIT_DEFAULT is " +
+               declared + ", so the deck opens with the chat wider than the " +
+               "preview — D2's amendment (S127) says the default must favour " +
+               "the pane the captain came to look at");
+      }
+      if (Math.abs(share - declared) > 0.03) {
+        f.push("THE DECK DOES NOT RENDER THE SPLIT IT DECLARES: chat " + chat +
+               "px / preview " + preview + "px is a " + share.toFixed(3) +
+               " share, declared " + declared + " (persisted split: " +
+               JSON.stringify(deckM.splitStored) + ") — a track resolved " +
+               "against the wrong free space strands a dead band (FL-008)");
+      }
+    }
+    // and the tracks must actually FILL the deck. The dead band above is only
+    // visible as pixels that belong to no pane at all.
+    const gutter = deckM.splitM ? deckM.splitM.w : 0;
+    const tracks = deckM.paneWidths[0] + chat + gutter + preview;
+    if (deckM.deckviewW && Math.abs(deckM.deckviewW - tracks) > 8) {
+      f.push("THE DECK'S TRACKS DO NOT FILL IT: 216+chat+gutter+preview = " +
+             tracks + "px inside a " + deckM.deckviewW + "px deck — " +
+             Math.abs(deckM.deckviewW - tracks) + "px belongs to no pane");
+    }
+  }
+  /* ── S128: THE DECK'S FURNITURE, ASSERTED AS ITSELF ─────────────────────────
+     Two nodes S127 added are NOT panes, and for a session this check called
+     them panes and reported a healthy deck broken. They are not exempt from
+     measurement — they are held to their OWN shape, which is stricter than
+     being on a list of things allowed to be any size.
+
+     FIRST: EVERY child of the deck must be a node this rig knows. The pane list
+     above is filtered, so an unrecognised node would otherwise vanish from it
+     silently — and "the rig quietly stopped looking" is the exact failure that
+     put this repair here. A new node is not a defect and this line does not say
+     it is; it says the rig has never measured it and must be taught what it is
+     FOR before the run can be believed. */
+  const KNOWN_DECK_CHILDREN = ["programs", "holo-chat", "preview", "holo-empty",
+                               "deck-split", "holo-scrim"];
+  const strangers = (deckM.deckChildClasses || []).filter(
+    (c) => KNOWN_DECK_CHILDREN.indexOf(c) === -1);
+  if (strangers.length) {
+    f.push("THE DECK GREW SOMETHING THIS RIG HAS NEVER MEASURED: " +
+           JSON.stringify(strangers) + " (children " +
+           JSON.stringify(deckM.deckChildClasses) + "). Decide what it is — a " +
+           "pane, or furniture — and give it its own assertion. Adding it to " +
+           "KNOWN_DECK_CHILDREN without one turns this check back into " +
+           "decoration.");
+  }
+  // THE DRAG HANDLE. It is thin BY DESIGN — 7px of grid gutter — so the pane
+  // width floor is the wrong question to ask it. The right ones: is there
+  // exactly one, did it actually lay out, is it a gutter rather than a pane or
+  // a hairline, does it run the height of the split, does it sit BETWEEN the
+  // two panes it resizes, and does the pointer say it can be dragged.
+  const sp = deckM.splitM;
+  const kids = deckM.deckChildClasses || [];
+  if (!sp) {
+    f.push("THE CHAT/PREVIEW DRAG HANDLE IS GONE: no .deck-split among the " +
+           "deck's children " + JSON.stringify(kids) + " — the split is not " +
+           "resizable and D2's persisted ratio has no control");
+  } else {
+    if (sp.count !== 1) {
+      f.push("there are " + sp.count + " drag handles on the deck; there is one split");
+    }
+    if (!sp.visible) {
+      f.push("THE DRAG HANDLE DID NOT LAY OUT: " + JSON.stringify(sp) +
+             " — a gutter with no box cannot be grabbed, at any width");
+    }
+    if (!(sp.w >= 3 && sp.w <= 24)) {
+      f.push("the drag handle is " + sp.w + "px wide — it must be a thin " +
+             "gutter (3–24px): under that the cursor cannot find it, over it " +
+             "it is eating one of the panes");
+    }
+    if (!(sp.h >= 120)) {
+      f.push("the drag handle is " + sp.h + "px tall — it must run the height " +
+             "of the split, not sit in it as a dot");
+    }
+    if (!(kids.indexOf("holo-chat") >= 0 && kids.indexOf("preview") >= 0 &&
+          sp.index === kids.indexOf("holo-chat") + 1 &&
+          sp.index === kids.indexOf("preview") - 1)) {
+      f.push("the drag handle is not between the chat and the preview: " +
+             "children " + JSON.stringify(kids) + ", handle at index " + sp.index +
+             " — the 216px program list is not part of this split");
+    }
+    if (sp.cursor !== "col-resize") {
+      f.push("the drag handle's cursor resolves to " + JSON.stringify(sp.cursor) +
+             ", not \"col-resize\" — nothing on screen says it can be dragged");
+    }
+  }
+  // THE DRAWER SCRIM, while the drawer is SHUT — which is the only state this
+  // rig drives (it never narrows the viewport past the drawer breakpoint, and
+  // it never clicks the drawer button). Shut, the correct measurement is a node
+  // with NO box that takes NO clicks: it is a full-bleed, z-index-5 overlay
+  // across the whole deck, so a scrim that merely went transparent would eat
+  // every click on the panes underneath while looking perfect in a screenshot.
+  const sc = deckM.scrimM;
+  if (!sc) {
+    f.push("THE PROGRAM DRAWER'S CLICK-AWAY SCRIM IS GONE: no .holo-scrim " +
+           "among " + JSON.stringify(kids) + " — on a narrow window the drawer " +
+           "can be opened and not dismissed by clicking away from it");
+  } else if (sc.count !== 1) {
+    f.push("there are " + sc.count + " drawer scrims on the deck; there is one drawer");
+  } else if (deckM.drawerOpen) {
+    // The rig does not open the drawer today. If a later leg ever does, the
+    // scrim must be REAL then — measured, not assumed.
+    if (!sc.visible || !(sc.opacity > 0.3) || sc.pointerEvents === "none") {
+      f.push("THE OPEN DRAWER HAS NO SCRIM ON THE SCREEN: " + JSON.stringify(sc) +
+             " — clicking away from an open drawer does not close it");
+    }
+  } else {
+    if (sc.visible || sc.w !== 0 || sc.h !== 0) {
+      f.push("THE SHUT DRAWER'S SCRIM IS LAID OUT OVER THE DECK: " +
+             JSON.stringify(sc) + " — above the drawer breakpoint the program " +
+             "list is a pane, and a full-bleed overlay at z-index 5 takes every " +
+             "click meant for the panes under it");
+    }
+    if (sc.display !== "none" && sc.pointerEvents !== "none") {
+      f.push("the shut drawer's scrim still takes clicks (display " +
+             JSON.stringify(sc.display) + ", pointer-events " +
+             JSON.stringify(sc.pointerEvents) + ")");
     }
   }
   if (!deckM.programRowsVisible) f.push("no program row is visible in the list");
@@ -1629,7 +1837,7 @@ async function main() {
     }
     // 3. Poll the REAL DOM until the three panes and the preview iframe exist.
     let deckM = { onDeckClass: false, paneClasses: [], paneWidths: [],
-                  panesVisible: [] };
+                  panesVisible: [], deckChildClasses: [] };
     const hDeadline = Date.now() + Math.max(5000, Math.min(TIMEOUT, 25000));
     while (Date.now() < hDeadline) {
       const r = await cdp.send("Runtime.evaluate",
@@ -1924,6 +2132,16 @@ async function main() {
         "px, preview " + JSON.stringify(hm.iframeSrc) + " sandboxed " +
         JSON.stringify(hm.iframeSandbox) + ", --holo-grid " +
         JSON.stringify(hm.holoGrid) + ", " + hm.turnCount + " turn(s)");
+      // The furniture is named too, or the readout reads as if the deck had
+      // three children and the next person to change it inherits this same
+      // stale expectation.
+      console.log("    furniture: handle " +
+        (hm.splitM ? hm.splitM.w + "×" + hm.splitM.h + "px at index " + hm.splitM.index
+                   : "(none)") +
+        ", drawer scrim " +
+        (hm.scrimM ? hm.scrimM.display + "/" + hm.scrimM.w + "px (drawer " +
+                     (hm.drawerOpen ? "open" : "shut") + ")" : "(none)") +
+        "; deck children " + JSON.stringify(hm.deckChildClasses));
       console.log("    precondition: " + precondition);
     } else {
       console.error("\x1b[31m  THE HOLODECK IS WRONG IN A REAL BROWSER.\x1b[0m The board " +
@@ -1931,8 +2149,10 @@ async function main() {
       holodeckCheck.failures.forEach((f) => console.error("    ✗ " + f));
       console.error("    precondition: " + precondition);
       console.error("    measured: panes " + JSON.stringify(hm.paneClasses) +
-        " at " + JSON.stringify(hm.paneWidths) + "px, preview " +
-        JSON.stringify(hm.iframeSrc) + ", sandbox " +
+        " at " + JSON.stringify(hm.paneWidths) + "px, deck children " +
+        JSON.stringify(hm.deckChildClasses) + ", handle " +
+        JSON.stringify(hm.splitM) + ", scrim " + JSON.stringify(hm.scrimM) +
+        ", preview " + JSON.stringify(hm.iframeSrc) + ", sandbox " +
         JSON.stringify(hm.iframeSandbox) + ", --holo-grid " +
         JSON.stringify(hm.holoGrid));
       console.error("    full measurements: " + path.join(OUT, "holodeck-check.json"));

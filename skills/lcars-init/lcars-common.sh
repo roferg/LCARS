@@ -134,6 +134,156 @@ lcars_gh_web_host() {
 }
 
 # ---------------------------------------------------------------------------
+# ATTACHMENT WORDING — ONE RULE, EVERY SURFACE (S128 / FL-010)
+# ---------------------------------------------------------------------------
+# A Mission's durable attachments (S92) reach a worker through TWO different
+# doors, and until now each door spelled the same sentence for itself:
+#
+#   • the cold-Stage PROMPT — `attachments_extra_block` in lcars-run/run.sh,
+#     absolute paths, read by Research/Validate/Plan/Implement;
+#   • the mission's own prd.md — written by lcars-file/file.sh (grill-first AND
+#     --complete) and lcars-log/log.sh, relative paths. prd.md is ALSO the
+#     GitHub issue body, so this is the document a human reads too.
+#
+# S127 taught the prompt door to name what actually arrived, because the
+# holodeck hands a Mission a `mockup.html` + a `concept.md` down the SAME road
+# pasted screenshots travel, and heading an HTML mockup "## Attached images" is
+# a lie. It MISSED the other three copies — and the byte-exact suite guarding
+# the one it fixed stayed green the whole time. Fixing a duplicated string in
+# one of its homes and testing that home proves nothing about the others.
+#
+# So the wording lives HERE, once, and every door derives from it. The literal
+# `## Attached images` appears in no other skill source; a fifth copy fails
+# tests/lcars-run-attachments.test.sh the moment it is written.
+#
+# THE IMAGE-ONLY WORDING IS FROZEN. This is shared pipeline code and the
+# overwhelming majority of missions are pasted screenshots; their prompt and
+# their PRD must not move by one character. Both shapes assert it byte-for-byte.
+
+# lcars_attach_kind <path> -> image | mockup | doc | other
+# The single classification. Extension-only on purpose: these files were staged
+# by LCARS itself under attachment-NN.<ext>, so the extension is the evidence.
+lcars_attach_kind() {
+  local ext=""
+  case "$1" in *.*) ext="$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')" ;; esac
+  case "$ext" in
+    png|jpg|jpeg|gif|webp|svg|bmp|heic) printf 'image' ;;
+    html|htm)                           printf 'mockup' ;;
+    md|markdown|txt|rst)                printf 'doc' ;;
+    *)                                  printf 'other' ;;
+  esac
+}
+
+# lcars_attach_all_images <paths...> -> exit 0 when every path is an image.
+# THE frozen-wording switch. No args is NOT "all images" — there is nothing to
+# head at all, and every caller guards on emptiness before asking.
+lcars_attach_all_images() {
+  [ "$#" -gt 0 ] || return 1
+  local p
+  for p in "$@"; do [ "$(lcars_attach_kind "$p")" = image ] || return 1; done
+  return 0
+}
+
+# lcars_attach_heading <paths...> -> "## Attached images" | "## Attached files"
+# The heading STEM only; each surface appends its own parenthetical, of which it
+# has exactly one for both branches.
+lcars_attach_heading() {
+  if lcars_attach_all_images "$@"; then printf '## Attached images'
+  else printf '## Attached files'; fi
+}
+
+# lcars_attach_tally <paths...> -> "1 image, 2 HTML mockups"
+# What arrived, in plain English, in a fixed order so the sentence is stable.
+lcars_attach_tally() {
+  local p k n_img=0 n_mock=0 n_doc=0 n_other=0
+  for p in "$@"; do
+    k="$(lcars_attach_kind "$p")"
+    case "$k" in
+      image)  n_img=$((n_img + 1))   ;;
+      mockup) n_mock=$((n_mock + 1)) ;;
+      doc)    n_doc=$((n_doc + 1))   ;;
+      *)      n_other=$((n_other + 1)) ;;
+    esac
+  done
+  local what="" pair n noun
+  for pair in "$n_img:image:images" "$n_mock:HTML mockup:HTML mockups" \
+              "$n_doc:written document:written documents" \
+              "$n_other:other file:other files"; do
+    n="${pair%%:*}"
+    [ "$n" -eq 0 ] && continue
+    if [ "$n" -eq 1 ]; then
+      noun="${pair#*:}"; noun="${noun%%:*}"
+    else
+      noun="${pair##*:}"
+    fi
+    [ -n "$what" ] && what="$what, "
+    what="$what$n $noun"
+  done
+  printf '%s' "$what"
+}
+
+# lcars_attach_has_mockup <paths...> -> exit 0 when at least one is a mockup.
+lcars_attach_has_mockup() {
+  local p
+  for p in "$@"; do [ "$(lcars_attach_kind "$p")" = mockup ] && return 0; done
+  return 1
+}
+
+# lcars_attach_mockup_note -> the look-and-flow declaration, no trailing newline.
+#
+# It rides with the attachment list rather than living only in the PRD's prose
+# on purpose: S164 measured a live worker correctly refusing a decoy because
+# SEVERAL places it could not miss all said the same thing, and S166 measured a
+# live worker ignoring the same claim made in ONE place.
+#
+# ⚠ THE LAST LINE IS PINNED TO THE DAEMON. `_HANDOFF_PRECEDENCE` in
+# web/lcars_serve/actions.py is the AUTHORITY for that sentence — the daemon is
+# the one voice that says it to the captain (the deck) and to the mission (the
+# filed idea). This is bash and that is Python, so the literal cannot be shared;
+# `tests/lcars-run-attachments.test.sh` section 10 reads the daemon's constant
+# and pins this note's LAST LINE to it byte-for-byte instead. Reword one home
+# without the other and that check fails naming both.
+#
+# It goes on ONE line, unwrapped, so the pin can be byte-exact. Do not re-wrap.
+# S128/FL-011: it used to end "…the brief wins", which a live cold Research
+# worker read as "the brief is EXHAUSTIVE" and used to discard a requirement the
+# mockup carried and the brief had lost. The override survives; the completeness
+# claim is denied in the same sentence so the two can never be separated.
+lcars_attach_mockup_note() {
+  printf '%s' 'The HTML mockup is a VISUAL REFERENCE ONLY. It defines LOOK AND FLOW — layout,
+colour, spacing, wording, and the transitions between screens — and matching it
+visually is an acceptance criterion of this work. It is NOT an implementation:
+its internals are deliberately fake, hand-written to look right and wired to
+nothing. Do not import it, do not copy its internals as code, do not edit it to
+change behaviour, and never ship it — it is not part of this repository'"'"'s
+source and it is not a file this work may modify.
+Where the mockup and the brief disagree, the brief OVERRIDES the mockup. That is a TIE-BREAK, not a claim that the brief is exhaustive — the brief can be missing something the mockup has.'
+}
+
+# lcars_attach_prd_section <relpaths...> -> the whole prd.md section, appended
+# verbatim by lcars file (both lanes) and lcars log.
+#
+# Image-only output is BYTE-IDENTICAL to the pre-S128 string:
+#     \n## Attached images\n\n- <rel>\n…
+# No paths ⇒ nothing at all, so a mission without attachments is untouched.
+lcars_attach_prd_section() {
+  [ "$#" -gt 0 ] || return 0
+  local rel
+  if lcars_attach_all_images "$@"; then
+    printf '\n## Attached images\n\n'
+    for rel in "$@"; do printf -- '- %s\n' "$rel"; done
+    return 0
+  fi
+  printf '\n%s\n\nWhat arrived: %s. Each is listed below by path relative to this mission'"'"'s directory.\n' \
+    "$(lcars_attach_heading "$@")" "$(lcars_attach_tally "$@")"
+  if lcars_attach_has_mockup "$@"; then
+    printf '\n%s\n' "$(lcars_attach_mockup_note)"
+  fi
+  printf '\n'
+  for rel in "$@"; do printf -- '- %s\n' "$rel"; done
+}
+
+# ---------------------------------------------------------------------------
 # BASE FRESHNESS (S158)
 # ---------------------------------------------------------------------------
 # A Mission filed off a base branch that is behind origin makes every downstream

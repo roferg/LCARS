@@ -397,7 +397,14 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                                             images=self._images(body),
                                             holodeck=body.get("holodeck"),
                                             holodeck_scope=body.get(
-                                                "holodeckScope"))
+                                                "holodeckScope"),
+                                            # S128 — `{questionId: answer}`.
+                                            # The ids are the DAEMON's, minted
+                                            # from the concept doc it re-reads
+                                            # here, so an unknown key is simply
+                                            # not a question and is dropped.
+                                            holodeck_answers=body.get(
+                                                "holodeckAnswers"))
             # POST /api/deploy/main[/stop] — deploy the LOCAL main HEAD, and stop
             # it (S139). NON-mission verbs (like /api/park): the read-only build
             # has actions=None, so do_POST already 403'd above.
@@ -425,7 +432,9 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                                            # S127 — a SESSION ID, never a path.
                                            holodeck=body.get("holodeck"),
                                            holodeck_scope=body.get(
-                                               "holodeckScope"))
+                                               "holodeckScope"),
+                                           holodeck_answers=body.get(
+                                               "holodeckAnswers"))
             if path.startswith("/api/align/"):
                 rest = path[len("/api/align/"):]
                 parts = [p for p in rest.split("/") if p != ""]
@@ -490,7 +499,8 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                     mission_type=body.get("type", "feature"),
                     images=self._images(body),
                     holodeck=body.get("holodeck"),
-                    holodeck_scope=body.get("holodeckScope"))
+                    holodeck_scope=body.get("holodeckScope"),
+                    holodeck_answers=body.get("holodeckAnswers"))
             # POST /api/mission/<id>/<verb>[/<sub>]
             if path.startswith("/api/mission/"):
                 rest = path[len("/api/mission/"):]

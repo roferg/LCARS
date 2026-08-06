@@ -235,7 +235,24 @@ commit_launch_json() { # (json on stdin)
   cat > "$tmp" && mv -f "$tmp" "$LAUNCH_JSON"
 }
 LOG="$MDIR/launch.log"                   # the app's captured stdout+stderr
+PROVISION_LOG="$MDIR/launch-provision.log"  # what dependency provisioning SAID
 OUTDIR="$MDIR/.launch-work"              # the worker's answer channel
+
+# Plain-English reason when provisioning looked wrong; EMPTY when it looked fine.
+# Set by classify_provisioning(), read by every failure message and the readout.
+PROVISION_NOTE=""
+# The setup command that actually ran (empty when none was configured). The
+# classifier reads it so command-specific advice is only offered when it is TRUE
+# of the command in front of the captain.
+SETUP_CMD=""
+
+# The command that clears this target's leftovers — quoted in failure messages so
+# a left-behind checkout always comes with the way to get rid of it.
+if [ "$MAIN" -eq 1 ]; then
+  STOP_CMD="lcars launch --main --stop"
+else
+  STOP_CMD="lcars launch $MISSION --stop"
+fi
 
 # --- provision a freshly-created launch worktree --------------------------
 # A disposable DETACHED worktree checks out the mission's CONTENT but has no
@@ -249,8 +266,26 @@ OUTDIR="$MDIR/.launch-work"              # the worker's answer channel
 # a non-zero provisioning exit does NOT abort the launch — the subsequent app-launch
 # surfaces its own human-readable failure if deps truly cannot be provisioned. It is
 # purely additive: it never changes the worktree from its --detach checkout.
+#
+# S128 — provisioning is still BEST-EFFORT, but it is no longer SILENT. What it
+# says is captured to $PROVISION_LOG (which outlives the launch) and classified
+# into $PROVISION_NOTE, so a later failure can name the CAUSE instead of a symptom
+# three layers downstream. MEASURED on groutwork 2026-08-06: a mission that added
+# a dependency provisioned with `pnpm install --frozen-lockfile`, which printed
+# ERR_PNPM_OUTDATED_LOCKFILE, INSTALLED NOTHING, and STILL EXITED 0 — into
+# /dev/null — after which the app died with `electron-vite: command not found` and
+# the failure path pruned the worktree, deleting the evidence.
 provision_worktree() { # worktree-path → 0 (no-op or success), else the command's rc
   local wt="$1" cmd rc=0
+  # A provisioning log from a PRIOR launch must never be cited as THIS launch's
+  # evidence: fail_msg() points at the log on its mere existence, so a repo with no
+  # setup command would send the captain to an unrelated log left behind by an
+  # earlier run that used the $LCARS_WORKTREE_SETUP_CMD override. Clear it FIRST,
+  # before any early return — exactly as `rm -f $LAUNCH_DISCOVERY` does for the
+  # worker's answer channel. Also resets $SETUP_CMD, the string the classifier
+  # consults before it offers command-specific advice.
+  rm -f "$PROVISION_LOG"
+  SETUP_CMD=""
   if [ -n "${LCARS_WORKTREE_SETUP_CMD:-}" ]; then
     cmd="$LCARS_WORKTREE_SETUP_CMD"
   else
@@ -258,9 +293,134 @@ provision_worktree() { # worktree-path → 0 (no-op or success), else the comman
     cmd="$(json_str "$LCARS_CFG" worktreeSetupCommand)"
   fi
   case "$cmd" in ''|null) return 0 ;; esac
-  # Run ONCE with the worktree as CWD; best-effort — swallow a non-zero exit.
-  ( cd "$wt" && bash -c "$cmd" ) >/dev/null 2>&1 || rc=$?
+  SETUP_CMD="$cmd"
+  # Run ONCE with the worktree as CWD, CAPTURING both streams. Still best-effort:
+  # a non-zero exit does NOT abort the launch (deps may already be present in a
+  # reused worktree, and refusing there would break a launch that works today) —
+  # it is REPORTED, not enforced.
+  : > "$PROVISION_LOG"
+  ( cd "$wt" && bash -c "$cmd" ) >"$PROVISION_LOG" 2>&1 || rc=$?
+  classify_provisioning "$rc"
   return "$rc"
+}
+
+# What did provisioning ACTUALLY say? Sets $PROVISION_NOTE to a plain-English
+# reason, or leaves it empty when nothing looked wrong.
+#
+# TWO signals, because the exit code alone is NOT reliable: `pnpm install
+# --frozen-lockfile` is documented to print ERR_PNPM_OUTDATED_LOCKFILE and still
+# exit 0, so the printed error code is matched in its own right. This is
+# deliberately NOT a general "did the install really work" oracle — that is the
+# build gate, and it is not this skill's job.
+#
+# The escape hatch is named on EVERY provisioning failure, because overriding the
+# setup command is the fix whatever the reason.
+SETUP_HATCH="you can override the setup for one run: LCARS_WORKTREE_SETUP_CMD=\"…\" lcars-launch"
+classify_provisioning() { # rc
+  local rc="$1"
+  local why=""
+  local quiet_flag=""
+  [ -f "$PROVISION_LOG" ] || return 0
+  if pnpm_refused_lockfile; then
+    PROVISION_NOTE="dependency setup installed nothing: this branch's lockfile is out of date with its package.json, so the frozen-lockfile install refused (pnpm ERR_PNPM_OUTDATED_LOCKFILE). Fix it by committing an up-to-date lockfile on the branch, or install once without the frozen flag — LCARS_WORKTREE_SETUP_CMD=\"pnpm install --no-frozen-lockfile --prefer-offline\" lcars-launch ${MISSION:---main}"
+  elif [ "$rc" -ne 0 ]; then
+    why="$(provision_why)"
+    PROVISION_NOTE="dependency setup failed (exit $rc)"
+    if [ -n "$why" ]; then
+      PROVISION_NOTE="$PROVISION_NOTE — it said: $why"
+    else
+      # MEASURED on groutwork 2026-08-06 (pnpm 9.0.0): the repo's own setup
+      # command ends in `--silent`, which swallows pnpm's ERR_PNPM_OUTDATED_LOCKFILE
+      # line — the captured log held only a node DeprecationWarning. Say the output
+      # explains nothing rather than dress a warning up as the reason.
+      PROVISION_NOTE="$PROVISION_NOTE and printed nothing that explains why"
+      # …and only blame --silent when the command in front of the captain ACTUALLY
+      # carries it. Offered unconditionally (S128 round 0) it sent a captain whose
+      # command had no such flag hunting for one — a true-sounding instruction about
+      # a thing that is not there. The advice is command-specific, so it is only
+      # given when it is true.
+      # Name the flag that is ACTUALLY there — never a flag it does not carry.
+      case "$SETUP_CMD" in
+        *--silent*) quiet_flag="--silent" ;;
+        *--quiet*)  quiet_flag="--quiet" ;;
+      esac
+      [ -n "$quiet_flag" ] \
+        && PROVISION_NOTE="$PROVISION_NOTE — the setup command runs with $quiet_flag, which hides it; drop that flag to see the reason"
+      # With no such flag there is nothing true to add: fail_msg() already names the
+      # captured log, which is the only honest next step.
+    fi
+    PROVISION_NOTE="$PROVISION_NOTE. Then $SETUP_HATCH ${MISSION:---main}"
+  fi
+  return 0
+}
+
+# Did pnpm ACTUALLY refuse this install over an out-of-date lockfile? Matching the
+# bare error code ANYWHERE in the output (S128 round 0) meant a passing MENTION of
+# it — in a note, a comment, an echoed reminder — produced a confidently specific,
+# entirely invented diagnosis on a launch that WORKED. "Never invent a cause" is
+# this code's contract, so recognise pnpm SAYING it, not the string existing.
+#
+# Deliberately still independent of the exit code: `pnpm install --frozen-lockfile`
+# is documented to print this and exit 0 — that was the original defect. What
+# distinguishes the real thing is SHAPE: pnpm prints the code as the line's own
+# error tag (start of line, optionally behind an `ERROR`/`npm ERR!` prefix), and
+# follows it with the refusal itself.
+pnpm_refused_lockfile() { # → 0 when the log holds a genuine pnpm refusal
+  [ -f "$PROVISION_LOG" ] || return 1
+  grep -Eq '^[[:space:]]*((npm )?ERR!?|ERROR:?)?[[:space:]]*ERR_PNPM_OUTDATED_LOCKFILE' \
+      "$PROVISION_LOG" 2>/dev/null && return 0
+  grep -Eqi 'ERR_PNPM_OUTDATED_LOCKFILE.{0,80}(cannot install|is not up to date|frozen.?lockfile)' \
+      "$PROVISION_LOG" 2>/dev/null
+}
+
+# The line(s) from the provisioning output that actually EXPLAIN a failure — never
+# a warning. A DeprecationWarning that merely contains the word "errors" is not the
+# reason a build failed, and quoting it as one just replaces an old lie with a new
+# one. Empty when the output holds no such line (see the --silent case above).
+#
+# TWO passes, because excluding every line containing "warn" (S128 round 0) threw
+# away the most common way an install or a build announces failure — `error: 12
+# warnings being treated as errors` — and then CLAIMED the output explained
+# nothing, which was false. So PROMOTE real error signals rather than blanket-
+# exclude a substring: a line that opens with its own error tag (`error:`,
+# `fatal:`, `panic:`) or carries an unmistakable error CODE (`ERR_…`, `npm ERR!`)
+# is the reason whatever else it mentions. Only when no such line exists does the
+# broader, warning-excluding vocabulary run — which is what keeps a bare
+# DeprecationWarning from being dressed up as the cause.
+provision_why() {
+  [ -f "$PROVISION_LOG" ] || return 0
+  local strong
+  strong="$(grep -Ei '^[[:space:]]*(error|fatal|panic)[[:space:]:!]|(^|[^[:alnum:]_])(ERR_[A-Z0-9_]+|npm ERR!)' \
+      "$PROVISION_LOG" 2>/dev/null | head -3 | tr '\n' ' ' | sed 's/  */ /g; s/[[:space:]]*$//' | cut -c1-300)"
+  if [ -n "${strong// /}" ]; then printf '%s' "$strong"; return 0; fi
+  grep -Ev -i 'warn' "$PROVISION_LOG" 2>/dev/null \
+    | grep -Ei 'ERR_|error|fail|cannot|could not|unable|not found|no such|missing|refus' \
+    | head -3 | tr '\n' ' ' | sed 's/  */ /g; s/[[:space:]]*$//' | cut -c1-300
+}
+
+# Compose the message a PERSON actually reads for a failed launch: the REAL
+# reason FIRST (a provisioning failure is the cause; the app dying is only its
+# symptom), then where the evidence was left. Plain English throughout (UX-33) —
+# never a raw stack trace, never a bare CLI command as the primary line.
+fail_msg() { # symptom → the full message
+  # NB: two statements, not `local sym="$1" out="$sym"` — bash declares every name
+  # in a single `local` BEFORE assigning, so the second would read an unset sym
+  # and die under `set -u`.
+  # COSMETIC (S128 fix round 1): the four parts used to run together as ONE ~600-
+  # character unwrapped terminal line, so the cause was unreadable at a glance. Each
+  # part now starts on its own line. The separators are newlines EXACTLY where a
+  # space used to be, so write_failed()'s collapse reproduces today's single-line
+  # record byte for byte — which matters because json_esc() does not escape
+  # newlines, and a raw one inside launch.json's "message" would corrupt the record
+  # the board parses.
+  local sym="$1"
+  local out="$sym"
+  local nl='
+'
+  [ -n "$PROVISION_NOTE" ] && out="$PROVISION_NOTE.${nl}The app then failed: $sym"
+  [ -f "$PROVISION_LOG" ] && out="$out${nl}Setup output: $PROVISION_LOG."
+  [ -d "$WT" ] && out="$out${nl}The checkout is left in place at $WT so you can look at it — run \`$STOP_CMD\` to clear it (the next launch reuses it)."
+  printf '%s' "$out"
 }
 
 # --- worktree teardown (shared by --stop and a clean re-launch) -----------
@@ -570,12 +730,22 @@ LCARS_LAUNCH_JSON="$LAUNCH_DISCOVERY" LCARS_WORKER_BIN="$WORKER_BIN" \
 # --- read the discovery result --------------------------------------------
 write_failed() { # message  → persist a status=failed record (no pid)
   local msg="$1"
+  # The message a PERSON reads is wrapped onto several lines (fail_msg); the record
+  # a MACHINE reads must stay one. json_esc() escapes quotes and backslashes but not
+  # newlines, so a raw newline here would emit invalid JSON and truncate the message
+  # for every reader (the board, json_str, `lcars status`). fail_msg breaks exactly
+  # where a space used to be, so collapsing restores today's record byte for byte.
+  msg="$(printf '%s' "$msg" | tr '\n' ' ')"
   {
     printf '{\n'
     printf '  "status": "failed",\n'
     printf '  "target": "%s",\n'    "$(json_esc "${TARGET:-}")"
     printf '  "url": "%s",\n'       "$(json_esc "${URL:-}")"
     printf '  "howToStop": "%s",\n' "$(json_esc "${HOWSTOP:-}")"
+    # Only present when provisioning actually complained — an ordinary launch
+    # record is byte-identical to today's.
+    [ -n "$PROVISION_NOTE" ] \
+      && printf '  "provisioning": "%s",\n' "$(json_esc "$PROVISION_NOTE")"
     printf '  "message": "%s"\n'    "$(json_esc "$msg")"
     printf '}\n'
   } | commit_launch_json
@@ -588,9 +758,14 @@ TARGET=""; CMD=""; CWD=""; URL=""; HOWSTOP=""; DSTATUS=""; WMSG=""
 # says "launching" throughout and is never consulted here.
 if [ ! -f "$LAUNCH_DISCOVERY" ]; then
   TARGET=""; URL=""; HOWSTOP=""
-  write_failed "couldn't work out how to run this app — the inspector reported nothing back. Try naming the app or its directory as a hint."
-  remove_worktree
-  die "couldn't work out how to run this app — the inspector reported nothing back. Try naming the app or its directory as a hint."
+  # S128: the checkout is NOT pruned here (nor on any other failure path below).
+  # Pruning deleted the only evidence of WHY a launch failed — a half-provisioned
+  # node_modules, a missing binary — before anyone could read it. It cannot
+  # accumulate: the path is keyed by mission, so a re-launch reuses this same one
+  # and `--stop` clears it. fail_msg() says both, in the message.
+  msg="$(fail_msg "couldn't work out how to run this app — the inspector reported nothing back. Try naming the app or its directory as a hint.")"
+  write_failed "$msg"
+  die "$msg"
 fi
 DSTATUS="$(json_str "$LAUNCH_DISCOVERY" status)"
 TARGET="$(json_str "$LAUNCH_DISCOVERY" target)"
@@ -606,18 +781,19 @@ if [ "$DSTATUS" = "failed" ] || [ -z "$CMD" ]; then
   msg="$WMSG"
   [ -n "$msg" ] \
     || msg="could not determine how to start this app — no runnable command was found. Try naming the app or its directory as a hint."
+  msg="$(fail_msg "$msg")"
   write_failed "$msg"
-  remove_worktree
   die "$msg"
 fi
 
 # --- launch the discovered command DETACHED (its own process group) --------
 LAUNCH_CWD="$WT"
 case "$CWD" in ''|'.'|'./') : ;; *) LAUNCH_CWD="$WT/$CWD" ;; esac
-[ -d "$LAUNCH_CWD" ] \
-  || { write_failed "the app's directory \"$CWD\" isn't in the checkout — its layout may have changed."; \
-       remove_worktree; \
-       die "the app's directory \"$CWD\" isn't in the checkout — its layout may have changed."; }
+if [ ! -d "$LAUNCH_CWD" ]; then
+  msg="$(fail_msg "the app's directory \"$CWD\" isn't in the checkout — its layout may have changed.")"
+  write_failed "$msg"
+  die "$msg"
+fi
 
 : > "$LOG"
 # macOS has no setsid(1): perl POSIX::setsid makes the child its own session &
@@ -648,10 +824,10 @@ while [ "$k" -lt "$ITERS" ]; do
   k=$((k + 1))
 done
 if [ "$alive" -eq 0 ]; then
-  tail_txt="$(tail -n 5 "$LOG" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
+  tail_txt="$(tail -n 5 "$LOG" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g; s/[[:space:]]*$//')"
   msg="the app exited immediately — ${tail_txt:-no output was captured}"
+  msg="$(fail_msg "$msg")"
   write_failed "$msg"
-  remove_worktree
   die "$msg"
 fi
 
@@ -675,6 +851,11 @@ fi
   printf '  "cwd": "%s",\n'       "$(json_esc "$CWD")"
   printf '  "worktree": "%s",\n'  "$(json_esc "$WT")"
   printf '  "log": "%s",\n'       "$(json_esc "$LOG")"
+  # The app came up DESPITE provisioning complaining (deps may already have been
+  # in a reused worktree). Say so rather than let a half-provisioned app pass as
+  # clean — but never refuse it: best-effort is the contract.
+  [ -n "$PROVISION_NOTE" ] \
+    && printf '  "provisioning": "%s",\n' "$(json_esc "$PROVISION_NOTE")"
   printf '  "startedAt": "%s",\n' "$NOW"
   printf '  "pid": %s,\n'         "$PID"
   printf '  "pgid": %s,\n'        "$PGID"
@@ -699,4 +880,10 @@ else
   printf '  To stand down:  %s\n' "${HOWSTOP:-lcars launch $MISSION --stop}"
 fi
 printf '  Log:  %s\n' "$LOG"
+# The app is up, but provisioning said something was wrong on the way — surface it
+# here rather than leave the captain to discover a half-installed app himself.
+if [ -n "$PROVISION_NOTE" ]; then
+  printf '  ⚠ Heads up — %s.\n' "$PROVISION_NOTE"
+  printf '     Setup output:  %s\n' "$PROVISION_LOG"
+fi
 exit 0

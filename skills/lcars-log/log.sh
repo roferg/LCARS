@@ -56,6 +56,19 @@ SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/../lcars-run/host-adapter.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
+# --- shared helpers: the attachment wording (S128 / FL-010) -----------------
+# A logged bug's prd.md is its GitHub issue body, and a bug filed against a
+# holodeck-born Mission can carry the very `mockup.html` the parent was built
+# from. The heading over that list is NOT spelled here — it comes from the one
+# shared rule in lcars-common.sh that `lcars file` and the cold-Stage prompt
+# block also derive from, so an HTML mockup is never called an image on any
+# surface. Sourced the same way `lcars file` sources it.
+LCARS_COMMON_LIB="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+if [ -f "$LCARS_COMMON_LIB" ]; then
+  # shellcheck source=../lcars-init/lcars-common.sh
+  . "$LCARS_COMMON_LIB"
+fi
+
 die() { printf 'lcars log: %s\n' "$1" >&2; exit 1; }
 
 # --- tiny JSON readers (no jq; same decoding as resolve.sh / status.sh) -----
@@ -327,9 +340,10 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
   # --- stage durable image attachments for THIS bug (S92 + per-bug routing) --
   # This bug's attachment set is GLOBAL_ATTACH ∪ its own PER_BUG_ATTACH, deduped
   # by source path (globals first, then this bug's own, preserving order). Copy
-  # each into attachments/ under a stable name, append a `## Attached images`
-  # section to this bug's prd.md (relative paths), and collect the relative paths
-  # for state.json below. No attachments ⇒ nothing written (byte-identical).
+  # each into attachments/ under a stable name, append the attachments section
+  # to this bug's prd.md (relative paths, wording from the shared rule above),
+  # and collect the relative paths for state.json below. No attachments ⇒
+  # nothing written (byte-identical).
   local attach_srcs=()
   if [ "${#GLOBAL_ATTACH[@]}" -gt 0 ]; then
     local ga
@@ -365,10 +379,7 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
       cp "$asrc" "$mdir/$arel"
       attach_rels+=("$arel")
     done
-    {
-      printf '\n## Attached images\n\n'
-      for arel in "${attach_rels[@]}"; do printf -- '- %s\n' "$arel"; done
-    } >>"$mdir/prd.md"
+    lcars_attach_prd_section "${attach_rels[@]}" >>"$mdir/prd.md"
   fi
 
   # NOTE: a logged bug now ENTERS the pipeline at Research (grounding mode) and

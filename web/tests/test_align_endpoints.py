@@ -20,9 +20,11 @@ import glob
 import http.client
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -1381,6 +1383,156 @@ class AlignResumeTest(AlignBase):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# S128 / FL-009 (the RELOAD half) — THE DAEMON PUBLISHES THE IN-FLIGHT TURN
+#
+# The client half of FL-009 is done: the START ALIGNMENT guard's lifetime is the
+# request's lifetime, released by the /api/align/start POST settling rather than
+# by a 60s clock. But that guard is CLIENT MEMORY. Reload the board mid-scan and
+# it is gone, and the card re-arms to START ALIGNMENT on a turn that is still
+# running — the same lie FL-009 is about, through a different door, and a
+# re-click still spawns a second real worker.
+#
+# `alignResume` cannot close it: it is deliberately withheld until a question
+# exists, so for exactly the duration of the OPENING turn nothing is published.
+#
+# The cure follows f667ce8's in-flight-fact discipline (`busy`/`busySince`/
+# `busyFor` on the holodeck shape): the DAEMON owns "a turn is running" and the
+# surface reads it. `_AlignSession.turn_started` is stamped around the worker
+# call and `align_overlay` / `align_overlay_mission` publish `alignBusy`.
+# ════════════════════════════════════════════════════════════════════════════
+class AlignInFlightOverlayTest(AlignBase):
+    """The `alignBusy` fact: what publishes it, and — the honesty half — what
+    stops publishing it."""
+
+    def _scanning(self, mission_id="m-001", ago=95.0):
+        """A session whose OPENING turn is in flight: no question yet, a start."""
+        from lcars_serve.actions import _AlignSession
+        sess = _AlignSession(idea="x", engine=None, mission_id=mission_id)
+        sess.turn_started = time.time() - ago
+        return sess
+
+    def _board(self, *ids):
+        return {"columns": {"align": [{"id": i} for i in ids]}}
+
+    def test_overlay_publishes_the_in_flight_turn(self):
+        self.actions._align["sess-run"] = self._scanning()
+        out = self.actions.align_overlay(self._board("m-001", "m-002"))
+        busy = out["columns"]["align"][0].get("alignBusy")
+        self.assertIsInstance(busy, dict,
+                              "a reloaded card must be able to read the in-flight "
+                              "turn off the board shape — client memory is gone")
+        self.assertGreaterEqual(busy["for"], 95,
+                                "the elapsed seconds are the daemon's, not a "
+                                "client's guess about when it clicked")
+        self.assertAlmostEqual(busy["since"], time.time() - 95, delta=5)
+        # the OTHER card has no session at all.
+        self.assertNotIn("alignBusy", out["columns"]["align"][1])
+        # and the opening turn still has no question, so RESUME is still withheld.
+        self.assertNotIn("alignResume", out["columns"]["align"][0])
+
+    def test_a_turn_that_is_over_publishes_nothing(self):
+        # THE HONESTY BOUNDARY. `turn_started` is None the moment the worker call
+        # settles, so a turn that DIED stops reading as "still scanning" and the
+        # card honestly re-arms to START ALIGNMENT — there really is nothing
+        # running. A fact that could never be cleared would be a worse lie than
+        # the one it replaced.
+        sess = self._scanning()
+        sess.turn_started = None
+        self.actions._align["sess-dead"] = sess
+        out = self.actions.align_overlay(self._board("m-001"))
+        self.assertNotIn("alignBusy", out["columns"]["align"][0])
+
+    def test_a_landed_question_hands_over_to_resume(self):
+        # Once a question exists the card has something better to say (RESUME
+        # ALIGN), and a continuation turn running under it must not steal that
+        # affordance away. `alignBusy` is the OPENING turn's fact only.
+        sess = self._scanning()
+        sess.last_question = {"text": "Q1?"}
+        self.actions._align["sess-q"] = sess
+        out = self.actions.align_overlay(self._board("m-001"))
+        card = out["columns"]["align"][0]
+        self.assertNotIn("alignBusy", card)
+        self.assertEqual(card.get("alignResume"), {"sid": "sess-q"})
+
+    def test_a_done_session_publishes_nothing(self):
+        sess = self._scanning()
+        sess.done = True
+        self.actions._align["sess-done"] = sess
+        out = self.actions.align_overlay(self._board("m-001"))
+        self.assertNotIn("alignBusy", out["columns"]["align"][0])
+
+    def test_an_idle_board_is_byte_identical(self):
+        # ADDITIVE BY CONSTRUCTION, exactly as `_busy_fields` is: the key is
+        # ABSENT when idle, so every board every earlier test pins is unmoved.
+        board = self._board("m-001")
+        before = json.dumps(board, sort_keys=True)
+        out = self.actions.align_overlay(board)
+        self.assertEqual(json.dumps(out, sort_keys=True), before)
+
+    def test_mission_detail_mirrors_the_in_flight_fact(self):
+        self.actions._align["sess-d"] = self._scanning()
+        out = self.actions.align_overlay_mission({"id": "m-001"})
+        self.assertIsInstance(out.get("alignBusy"), dict,
+                              "the DETAIL modal must mirror the card (the "
+                              "align_overlay_mission lesson)")
+        self.assertNotIn("alignBusy",
+                         self.actions.align_overlay_mission({"id": "m-999"}))
+
+    def test_board_endpoint_carries_it(self):
+        self.actions._align["live-b"] = self._scanning()
+        url = "http://127.0.0.1:%d/api/board" % self.port
+        with urllib.request.urlopen(url, timeout=10) as r:
+            board = json.loads(r.read())
+        cards = []
+        for col in board.get("columns", {}).values():
+            cards.extend(col)
+        m1 = [c for c in cards if c.get("id") == "m-001"]
+        self.assertTrue(m1, "m-001 must be on the board")
+        self.assertIsInstance(m1[0].get("alignBusy"), dict,
+                              "a freshly-loaded tab reads the in-flight turn "
+                              "straight off GET /api/board")
+
+    # ── what OWNS the fact: the worker call itself ─────────────────────────
+    def _observe(self, mission_id="m-001"):
+        return self.actions.align_overlay(
+            self._board(mission_id))["columns"]["align"][0].get("alignBusy")
+
+    def test_the_worker_call_is_what_sets_and_clears_the_fact(self):
+        from lcars_serve.actions import _AlignSession
+        sess = _AlignSession(idea="x", engine=None, mission_id="m-001")
+        self.actions._align["s"] = sess
+        seen = {}
+
+        def fake_turn(*a, **kw):
+            seen["during"] = self._observe()
+            return json.dumps({"status": "question",
+                               "question": {"text": "Q1?"}, "prd": ""})
+
+        self.actions._worker_turn = fake_turn
+        self.actions._align_turn("s", sess)
+        self.assertIsInstance(seen["during"], dict,
+                              "WHILE the worker turn runs, the fact is published")
+        self.assertIsNone(self._observe(),
+                          "…and the turn settling is what withdraws it")
+
+    def test_a_turn_that_dies_stops_reading_as_scanning(self):
+        # The dead-daemon-adjacent case, daemon-side: an engine that blows up
+        # mid-turn must not leave a card insisting it is still scanning forever.
+        from lcars_serve.actions import _AlignSession
+        sess = _AlignSession(idea="x", engine=None, mission_id="m-001")
+        self.actions._align["s"] = sess
+
+        def boom(*a, **kw):
+            raise RuntimeError("the engine died mid-turn")
+
+        self.actions._worker_turn = boom
+        with self.assertRaises(RuntimeError):
+            self.actions._align_turn("s", sess)
+        self.assertIsNone(self._observe(),
+                          "a turn that died is NOT a turn still in flight")
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # S127 BLOCKER — A PARKED MISSION'S NON-IMAGE ATTACHMENTS ARE NOT IMAGES
 #
 # The holodeck hand-off parks a mission whose DURABLE attachments are an HTML
@@ -1533,6 +1685,110 @@ class ImagePathPredicateTest(unittest.TestCase):
         from lcars_serve.actions import _is_image_path
         for name in ("mockup.html", "concept.md", "notes.txt", "a"):
             self.assertFalse(_is_image_path("/x/" + name), name)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S128 · FL-010, THE FIFTH HOME OF "ATTACHED IMAGES"
+#
+# The sibling batch cured four copies of this lie in `skills/` and consolidated
+# them into ONE shared bash rule (`lcars_attach_kind` / `lcars_attach_heading`,
+# skills/lcars-init/lcars-common.sh). The scan that guards those four only
+# covers `skills/`, so it cannot see the fifth: the daemon's own interactive
+# Align turn, which builds the claude prompt's path list under a heading that
+# says "images" whatever actually rides.
+#
+# Different literal, different mechanism, same lie — and this one is on the
+# holodeck's hand-off path, the FIRST thing that reads a program's mockup. (The
+# copilot branch passes `--attachment` per file and spells no noun at all, so it
+# is unaffected and is asserted unchanged below.)
+# ════════════════════════════════════════════════════════════════════════════
+class ClaudePromptNamesWhatRidesTest(AlignBase):
+    COMMON = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))),
+        "skills", "lcars-init", "lcars-common.sh")
+
+    def _turn(self, paths, engine=None):
+        """Drive the ONE seam directly. The endpoint road filters non-images out
+        before they get here (the S127 blocker fix), so the endpoint cannot
+        produce the input this wording is wrong for — the seam can."""
+        self._set_turns({"status": "question",
+                         "question": {"text": "Q?", "recommended": "x"},
+                         "prd": "# Mission: G\n\n**Type:** bug\n"})
+        self.actions._worker_turn("SOME PROMPT",
+                                  engine=engine or self.worker_bin,
+                                  image_paths=paths)
+        return self._prompts()
+
+    def test_a_mockup_is_never_announced_as_an_attached_image(self):
+        prompt = self._turn(["/tmp/a/attachment-01.html"])
+        self.assertNotIn("attached images", prompt.lower(), prompt[-400:])
+        self.assertIn("attached files", prompt.lower())
+        self.assertIn("/tmp/a/attachment-01.html", prompt)
+
+    def test_one_mockup_among_screenshots_still_demotes_the_noun(self):
+        prompt = self._turn(["/tmp/a/attachment-01.png",
+                             "/tmp/a/attachment-02.html"])
+        self.assertNotIn("attached images", prompt.lower(), prompt[-400:])
+        self.assertIn("attached files", prompt.lower())
+
+    def test_an_all_screenshot_turn_still_says_images(self):
+        prompt = self._turn(["/tmp/a/attachment-01.png",
+                             "/tmp/a/attachment-02.jpg"])
+        self.assertIn("attached images", prompt.lower())
+
+    def test_a_turn_with_no_attachments_says_nothing_at_all(self):
+        prompt = self._turn([])
+        self.assertNotIn("attached", prompt.lower())
+
+    def test_the_copilot_branch_still_spells_no_noun(self):
+        copilot = _copilot_worker_stub(self.turns_path, self.prompt_log,
+                                       self.argv_log)
+        prompt = self._turn(["/tmp/a/attachment-01.html"], engine=copilot)
+        self.assertNotIn("attached", prompt.lower())
+        self.assertIn("--attachment", self._argvs()[0])
+
+    def _bash_heading(self, paths):
+        proc = subprocess.run(
+            ["bash", "-c", '. "$1"; lcars_attach_heading "${@:2}"', "_",
+             self.COMMON] + list(paths),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = (proc.stdout or b"").decode().strip().lower()
+        self.assertIn(out, ("## attached images", "## attached files"), out)
+        return out[3:]
+
+    # THE FILE TYPES BOTH SURFACES REALLY MEET: what LCARS itself stages
+    # (`_IMAGE_SUFFIX`) and what a holodeck hand-off parks (mockup + concept).
+    SHARED = [["/x/a.png"], ["/x/a.jpg", "/x/b.jpeg"], ["/x/a.html"],
+              ["/x/a.png", "/x/b.html"], ["/x/a.md"], ["/x/a.png", "/x/b.md"],
+              ["/x/a.gif", "/x/b.webp"], ["/x/a.HTML"], ["/x/a.PNG"],
+              ["/x/a"], ["/x/a.txt", "/x/b.png"], ["/x/a.htm"]]
+    # Where they DO differ, on purpose: bash calls `.svg`/`.bmp`/`.heic` images;
+    # the daemon's image road is the narrower allow-list of what it can actually
+    # stage and pass, so it calls them files. That direction is the safe one and
+    # the assertion below pins it.
+    DIVERGENT = [["/x/a.svg"], ["/x/a.bmp"], ["/x/a.heic"]]
+
+    def test_the_daemon_and_the_shipped_bash_rule_agree_on_every_shared_case(self):
+        """THE DRIFT CATCHER. Two surfaces classify the same files: this daemon,
+        and `lcars_attach_heading` in the skills. They are written in different
+        languages, neither imports the other, and they can absolutely drift —
+        so the agreement is MEASURED against the shipped bash on every file type
+        the hand-off actually carries, not asserted in a comment."""
+        from lcars_serve.actions import _attach_heading
+        self.assertTrue(os.path.isfile(self.COMMON), self.COMMON)
+        for paths in self.SHARED:
+            self.assertEqual(_attach_heading(paths), self._bash_heading(paths),
+                             paths)
+
+    def test_where_they_differ_the_daemon_is_the_stricter_one(self):
+        """The guarantee that survives drift: the daemon may call something a
+        FILE that bash calls an image, and never the other way round. The lie
+        FL-010 is about only has one direction."""
+        from lcars_serve.actions import _attach_heading
+        for paths in self.SHARED + self.DIVERGENT:
+            if self._bash_heading(paths) == "attached files":
+                self.assertEqual(_attach_heading(paths), "attached files", paths)
 
 
 def _plant_bug(root, mid, *, parent, issue, stage="plan"):

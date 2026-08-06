@@ -1978,15 +1978,28 @@ NOT_READY = dict(PROG, handoffReady=False, conceptFile=None, handoffBlocked=(
 SENT = dict(READY, status="sent", lifecycle="sent", missionId="m-014",
             handoffReady=False)
 
+REQ1 = '**Turn 2:** "Cmd-K opens it, Escape closes it."'
+REQ2 = '**Turn 5:** "It has to remember what I ran last time."'
+Q1 = "What belongs in the command list?"
+Q2 = "Should the palette be reachable from a mission card too?"
+BRIEF = ("## What it must do — in your own words\n\n"
+         "1. " + REQ1 + "\n2. " + REQ2)
+
 SEED = {
     "sessionId": "s1", "program": "Command palette", "room": "command-palette",
     "engine": "claude",
-    "brief": "Build a Cmd-K command palette overlay for the board.",
-    "summarySource": "Hand-off summary",
+    "brief": BRIEF,
+    # S128 — the brief is drafted from the section the product MAINTAINS.
+    # This used to read "Hand-off summary", which is the FL-011 defect.
+    "summarySource": "WHAT IT MUST DO",
+    "requirements": [{"id": "r1", "text": REQ1}, {"id": "r2", "text": REQ2}],
+    "questions": [{"id": "q1", "text": Q1}, {"id": "q2", "text": Q2}],
+    "missingRequirements": [],
     "scope": "look+behaviour", "scopeOptions": ["look+behaviour", "look-only"],
     "guidance": ("## How to read the attached mockup\n\n"
                  "- HOW MUCH TO BUILD: look AND behaviour.\n"
-                 "- Where the mockup and the brief disagree, the brief wins.\n"
+                 "- Where the mockup and the brief disagree, the brief "
+                 "OVERRIDES the mockup.\n"
                  "- Matching it visually is an ACCEPTANCE CRITERION.\n"),
     "rides": [{"name": "mockup.html", "what": "the look and the flow"},
               {"name": "concept.md", "what": "decisions and declared flows"}],
@@ -2087,11 +2100,13 @@ class HandoffDialogTest(unittest.TestCase):
         self.assertEqual(out["rides"], ["mockup.html", "concept.md"])
 
     def test_the_guidance_is_shown_VERBATIM_before_he_sends(self):
+        """S128: the pinned sentence changed with `_HANDOFF_PRECEDENCE` (A4a).
+        The old one — "…the brief wins." — is the wording a cold worker read as
+        "the brief is exhaustive" while discarding the captain's theme."""
         out = _harness({"act": "handoffDialog", "seed": SEED,
                         "stopBeforeFile": True})
         self.assertEqual(out["guidance"], SEED["guidance"])
-        self.assertIn("Where the mockup and the brief disagree, the brief wins.",
-                      out["guidance"])
+        self.assertIn("the brief OVERRIDES the mockup", out["guidance"])
 
     def test_the_build_scope_is_a_choice_defaulting_to_look_plus_behaviour(self):
         out = _harness({"act": "handoffDialog", "seed": SEED,
@@ -2134,6 +2149,266 @@ class HandoffDialogTest(unittest.TestCase):
                         "rewrite": "   "})
         self.assertIsNone(out["filePath"], out)
         self.assertIn("brief", out["text"].lower())
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S128 (FL-011) — THE INTENT HAND-OVER, ON THE DECK
+#
+# The daemon half is in `test_holodeck_endpoints.py`. This half is the last
+# screen the captain sees before a design becomes a mission: it has to put the
+# open questions in front of him, and it has to make a dropped requirement
+# impossible to walk past.
+#
+# WHAT IT CANNOT SEE (the S163 lesson, said again): there is no CSS in this
+# process. Every claim below is about which nodes exist and what they say. A
+# warning band rendered in muted grey below the fold, or one that loses a
+# specificity tie to `.hint`, passes all of it — that is `tests/drives/browser/`
+# and the captain's own eyes. "Un-missable" is asserted here as CONTENT and
+# POSITION only.
+# ════════════════════════════════════════════════════════════════════════════
+@unittest.skipIf(NODE is None, "node not installed")
+class HandoffOpenQuestionsDeckTest(unittest.TestCase):
+    """A2 — the five questions that died at the S127 hand-off."""
+
+    def test_every_open_question_is_shown_before_he_files(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertIn(Q1, out["text"])
+        self.assertIn(Q2, out["text"])
+
+    def test_each_question_gets_a_box_he_can_answer_it_in(self):
+        """Answering five questions costs less than one wrong build — but only
+        if he can answer them WITHOUT leaving the dialog."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertEqual([q["qid"] for q in out["questions"]], ["q1", "q2"])
+
+    def test_the_questions_are_the_LAST_thing_before_the_file_button(self):
+        """Position is the whole design: they are what he reads with his hand
+        on the button, not a panel he scrolled past on the way in."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertEqual(out["lastFieldHolo"], "handoff-questions")
+
+    def test_his_answers_ride_with_the_filing_KEYED_BY_THE_DAEMONS_ID(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "answers": {"q1": "Only board verbs."}})
+        self.assertEqual(out["fileBody"]["holodeckAnswers"],
+                         {"q1": "Only board verbs."})
+
+    def test_an_unanswered_question_sends_no_answer_for_itself(self):
+        """Silence must stay silence all the way down. An empty string filed as
+        an "answer" is exactly the settled-by-nobody decision being cured."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "answers": {"q1": "   "}})
+        self.assertEqual(out["fileBody"].get("holodeckAnswers", {}), {})
+
+    def test_the_dialog_SAYS_what_happens_to_one_he_leaves_blank(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        low = out["questionsText"].lower()
+        self.assertIn("open", low)
+        self.assertTrue("blank" in low or "unanswered" in low, low)
+        # …and that it is NOT taken as agreement.
+        self.assertTrue("decision" in low or "settled" in low
+                        or "assume" in low, low)
+
+    def test_a_program_with_no_open_questions_shows_no_empty_panel(self):
+        out = _harness({"act": "handoffDialog",
+                        "seed": dict(SEED, questions=[]),
+                        "stopBeforeFile": True})
+        self.assertEqual(out["questions"], [])
+        self.assertEqual(out["questionsText"], "")
+
+    def test_a_filing_with_no_answers_at_all_sends_no_answers_key(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED})
+        self.assertEqual(out["fileBody"].get("holodeckAnswers", {}), {})
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class HandoffQuestionsReachHimTest(unittest.TestCase):
+    """S128 FIX ROUND 1, D1 — the questions were LAST in the DOM and never on
+    screen. Measured in real Chrome: the modal body is 1812px tall, the visible
+    window is 443–677px depending on viewport, the questions block starts
+    546–780px BELOW the fold, and ▦ File Mission is laid out and clickable in
+    the sticky footer from first paint. The tester clicked it at scrollTop 0 and
+    filed. Nothing on screen said the questions existed.
+
+    The cure is a CUE IN THE STICKY FOOTER — the one region that is on screen at
+    every scroll position and every viewport — beside the button he is about to
+    press, and it is a control that takes him to them. Filing is still allowed
+    (a hard block at the last click of a design session is the wrong shape, and
+    the daemon already carries an unanswered question in marked STILL OPEN).
+    What is no longer possible is filing without KNOWING.
+
+    WHAT THIS CANNOT SEE: there is no CSS here and nothing is laid out. That the
+    footer is sticky, that the cue is legible, and that it is on screen at
+    900x640 is measured only by the browser rig."""
+
+    def test_the_open_questions_are_COUNTED_IN_THE_STICKY_FOOTER(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertIsNotNone(out["qcue"], out["footText"])
+        self.assertTrue(out["qcue"]["inFoot"], out["qcue"])
+        self.assertIn("2", out["qcue"]["text"])
+        self.assertIn("open question", out["qcue"]["text"].lower())
+
+    def test_the_cue_is_a_CONTROL_that_takes_him_to_them(self):
+        """A count he cannot act on is a count he scrolls past. It has to be the
+        way there, not a label about a place he still has to find."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "clickCue": True, "stopBeforeFile": True})
+        self.assertTrue(out["qcue"]["wired"], out["qcue"])
+        self.assertTrue(out["cueFound"])
+        holos = [s["holo"] for s in out["cueScrolled"]]
+        self.assertIn("handoff-questions", holos, out["cueScrolled"])
+        # …and it lands him IN the first one he has not answered.
+        self.assertEqual([f["qid"] for f in out["cueFocused"]], ["q1"],
+                         out["cueFocused"])
+
+    def test_an_UNANSWERED_question_makes_the_cue_a_warning(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertEqual(out["qcue"]["open"], "2", out["qcue"])
+        self.assertIn("open", out["qcue"]["cls"], out["qcue"])
+
+    def test_the_count_FALLS_as_he_answers_them(self):
+        """The control on the warning: a band that never changes is a band he
+        stops reading. It has to still mean something on the day it fires."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "answers": {"q1": "Only board verbs."},
+                        "stopBeforeFile": True})
+        self.assertEqual(out["qcue"]["open"], "1", out["qcue"])
+        self.assertIn("1", out["qcue"]["text"])
+
+    def test_answering_ALL_of_them_clears_the_warning_entirely(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "answers": {"q1": "Only board verbs.", "q2": "Yes."},
+                        "stopBeforeFile": True})
+        self.assertEqual(out["qcue"]["open"], "0", out["qcue"])
+        self.assertNotIn("open", out["qcue"]["cls"], out["qcue"])
+
+    def test_a_program_with_no_open_questions_gets_NO_cue(self):
+        out = _harness({"act": "handoffDialog",
+                        "seed": dict(SEED, questions=[]),
+                        "stopBeforeFile": True})
+        self.assertIsNone(out["qcue"], out["footText"])
+
+    def test_the_cue_does_NOT_block_the_filing(self):
+        """The daemon carries an unanswered question in marked STILL OPEN. A
+        hard stop here would strand him at the last click of a design session,
+        which is exactly the shape the round rejected for the requirements."""
+        out = _harness({"act": "handoffDialog", "seed": SEED})
+        self.assertEqual(out["filePath"], "/api/park")
+
+    def test_the_questions_are_STILL_the_last_field_before_the_button(self):
+        """The cue is an addition, not a move: the questions stay the thing he
+        reads with his hand on the button."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertEqual(out["lastFieldHolo"], "handoff-questions")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class FailedFilingIsVisibleTest(unittest.TestCase):
+    """S128 FIX ROUND 1, D2 — a filing that FAILED reported nothing. Measured:
+    the POST returned 502, `.errline` was populated and `hidden:false` at
+    y=1879 — 1,115px below the bottom of the visible modal body — and a sweep of
+    every .errline/.verdict/.banner intersecting the viewport returned []. The
+    button reverted from "Filing…" to "▦ File Mission" and that was all.
+
+    Two cures. The dialog-local one: the error line lives in the STICKY FOOTER,
+    with the button that failed, so it cannot be scrolled away from. The shared
+    one: `showErr` — which every modal in board.js uses — asks the browser to
+    bring the line into view, so the class is cured for the eight other dialogs
+    that append their errline into the scrolling `.modal-body`."""
+
+    def test_the_error_line_lives_in_the_STICKY_FOOTER_with_the_button(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertIn("modal-foot", out["errParentCls"] or "",
+                      "errline is in %r — the scrolling body" % out["errParentCls"])
+
+    def test_showErr_BRINGS_THE_LINE_INTO_VIEW(self):
+        """The shared half. Driven here through the refusal path (the fetch stub
+        cannot replay a 502), but the function is board.js's ONE error-surfacing
+        call — curing it cures every dialog that has an errline."""
+        out = _harness({"act": "handoffDialog", "seed": dict(SEED, brief=""),
+                        "rewrite": "   "})
+        self.assertTrue(out["errShown"], out)
+        self.assertTrue(out["errScrolled"],
+                        "showErr made the line visible without bringing it "
+                        "into view — exactly the 502 the tester could not see")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class HandoffRequirementGuardTest(unittest.TestCase):
+    """A3 — his own words cannot leave the room without him seeing it go."""
+
+    def test_the_brief_hint_names_the_section_it_was_drafted_from(self):
+        """It used to say "your concept doc's hand-off summary". That sentence
+        was true and the thing it described was stale."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        low = out["text"].lower()
+        self.assertIn("what it must do", low)
+        self.assertNotIn("hand-off summary", low)
+
+    def test_every_captured_requirement_is_listed_beside_the_brief(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertEqual(len(out["reqRows"]), 2, out["reqRows"])
+        self.assertIn("Escape closes it", out["reqRows"][0]["text"])
+        self.assertTrue(all(r["ok"] for r in out["reqRows"]), out["reqRows"])
+
+    def test_a_requirement_he_edits_OUT_is_flagged_where_he_is_looking(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "rewrite": "Cmd-K opens it, Escape closes it.",
+                        "stopBeforeFile": True})
+        rows = out["reqRows"]
+        self.assertTrue(rows[0]["ok"], rows)
+        self.assertFalse(rows[1]["ok"], rows)
+        # the band NAMES it — "something is missing" is not actionable.
+        self.assertIn("remember what I ran last time", out["missingText"])
+        self.assertFalse(out["missingHidden"], out)
+
+    def test_the_flag_CLEARS_when_he_puts_it_back(self):
+        """The control. A band that never goes away is a band he stops seeing,
+        and this one has to still mean something on the day it fires."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "rewrite": "Cmd-K opens it, Escape closes it.",
+                        "then": BRIEF, "stopBeforeFile": True})
+        self.assertTrue(out["missingHidden"], out)
+        self.assertTrue(all(r["ok"] for r in out["reqRows"]), out["reqRows"])
+
+    def test_a_dropped_requirement_does_NOT_block_the_filing(self):
+        """The cure is CARRY, not refuse: the daemon puts it into the mission
+        verbatim. A hard stop here would strand him at the last click of a
+        design session with no way through."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "rewrite": "Cmd-K opens it, Escape closes it."})
+        self.assertEqual(out["filePath"], "/api/park")
+
+    def test_the_surface_SAYS_the_missing_one_is_carried_in_anyway(self):
+        """Otherwise the honest reading of the warning is "you just lost it"."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "rewrite": "Cmd-K opens it, Escape closes it.",
+                        "stopBeforeFile": True})
+        self.assertIn("carried", out["missingText"].lower())
+
+    def test_a_program_with_no_captured_requirements_shows_no_panel(self):
+        out = _harness({"act": "handoffDialog",
+                        "seed": dict(SEED, requirements=[]),
+                        "stopBeforeFile": True})
+        self.assertEqual(out["reqRows"], [])
+        self.assertEqual(out["missingText"], "")
+
+    def test_no_dead_controls_anywhere_in_the_hand_off_dialog(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        for ctl in out["controls"]:
+            self.assertTrue(ctl["wired"] or ctl["disabled"] or ctl["reason"],
+                            "dead control: %r" % ctl["label"])
 
 
 @unittest.skipIf(NODE is None, "node not installed")

@@ -132,8 +132,22 @@ real `＋ NEW PROGRAM` dialog (a genuine `POST /api/holodeck/start`), and then
 measures **laid-out boxes**:
 
 - the board's `.col`s, `.board-wrap` and `.legend` measured **gone** on the deck;
-- three panes — `programs · holo-chat · preview` — present, **visible**, in
-  order, each with real width, at roughly the mock's 1.15 : 1 chat:preview;
+- three **content** panes — `programs · holo-chat · preview` — present,
+  **visible**, in order, each with real width, at roughly the mock's 1.15 : 1
+  chat:preview;
+- the deck's **furniture**, judged separately and to its own shape (S128): the
+  chat/preview drag handle (`.deck-split`) really laid out as a **3–24px**
+  gutter that runs the height of the split, sits **between** the chat and the
+  preview, and reads as draggable (`cursor: col-resize`); and the program
+  drawer's click-away (`.holo-scrim`) measured **gone and click-through** while
+  the drawer is shut — it is a full-bleed `z-index:5` overlay, so a merely
+  transparent one would eat every click on the panes beneath it;
+- **every child of the deck recognised.** The pane list is filtered, so an
+  unrecognised node would otherwise drop out of it silently. This is a
+  staleness alarm, not a defect claim: S127 added the handle and the scrim, the
+  check called them panes, and the rig sat red on `pane deck-split is 7px wide`
+  against a perfectly healthy deck for a whole session. When a new node
+  appears, give it its own assertion — do **not** just add it to the known list;
 - the preview `iframe`'s real box and its `src` on `/api/holodeck/<sid>/preview/…`;
 - its `sandbox` token list: `allow-scripts` **present**, `allow-same-origin`
   **absent** — the one pairing that decides whether the sandbox is a mechanism or

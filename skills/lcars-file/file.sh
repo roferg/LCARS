@@ -323,8 +323,8 @@ do_park() {
 
   # Stage durable attachments exactly as S92 (into attachments/attachment-NN.ext),
   # collecting the relative paths for state.json. No prd.md exists yet, so — unlike
-  # grill-first — there is no "## Attached images" section to append here; the
-  # --complete step re-lists them into prd.md when the PRD is written.
+  # grill-first — there is no attachments section to append here; the --complete
+  # step re-lists them into prd.md when the PRD is written.
   local ATTACH_RELS=()
   if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
     mkdir -p "$MISSION_DIR/attachments"
@@ -505,8 +505,8 @@ do_complete() {
   BASEFRESH_LINE="$(lcars_base_state_line "$BRANCH")"
 
   # Reconstruct the staged attachments (S92) from the attachments/ dir, in order,
-  # so prd.md gets the same "## Attached images" section a grill-first --attach
-  # filing produces AND state.json carries the same array.
+  # so prd.md gets the same attachments section a grill-first --attach filing
+  # produces AND state.json carries the same array.
   local ATTACH_RELS=()
   if [ -d "$MISSION_DIR/attachments" ]; then
     shopt -s nullglob
@@ -520,11 +520,9 @@ do_complete() {
   # --- write prd.md (+ the attachments section, mirroring grill-first) --------
   cat "$PRD_SRC" >"$MISSION_DIR/prd.md"
   if [ "${#ATTACH_RELS[@]}" -gt 0 ]; then
-    local arel
-    {
-      printf '\n## Attached images\n\n'
-      for arel in "${ATTACH_RELS[@]}"; do printf -- '- %s\n' "$arel"; done
-    } >>"$MISSION_DIR/prd.md"
+    # ONE rule, shared with the grill-first lane and with `lcars log` and the
+    # cold-Stage prompt block — see lcars_attach_prd_section in lcars-common.sh.
+    lcars_attach_prd_section "${ATTACH_RELS[@]}" >>"$MISSION_DIR/prd.md"
   fi
   # adr.md (complex mission) — persisted the same way grill-first does.
   [ -n "$ADR_SRC" ] && cat "$ADR_SRC" >"$MISSION_DIR/adr.md"
@@ -880,10 +878,17 @@ cat "$PRD_SRC" >"$MISSION_DIR/prd.md"
 
 # --- stage durable image attachments (S92) --------------------------------
 # Copy each --attach into attachments/ under a stable, deterministic name
-# (attachment-NN.<ext>, NN zero-padded by order, ext from the source), append a
-# `## Attached images` section to prd.md listing each by RELATIVE path, and
-# collect the relative paths for state.json below. mkdir only when ≥1 attach is
-# given; no attachments ⇒ nothing written (byte-identical to before).
+# (attachment-NN.<ext>, NN zero-padded by order, ext from the source), append an
+# attachments section to prd.md listing each by RELATIVE path, and collect the
+# relative paths for state.json below. mkdir only when ≥1 attach is given; no
+# attachments ⇒ nothing written (byte-identical to before).
+#
+# The section's WORDING is not spelled here. prd.md is the mission's own
+# document and its GitHub issue body, and a holodeck hand-off travels this same
+# road carrying a `mockup.html` — so the heading comes from the one shared rule
+# (lcars_attach_prd_section, lcars-init/lcars-common.sh) that the cold-Stage
+# prompt block and `lcars log` also derive from. Image-only output is unchanged
+# byte for byte.
 ATTACH_RELS=()
 if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
   mkdir -p "$MISSION_DIR/attachments"
@@ -896,10 +901,7 @@ if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
     cp "$asrc" "$MISSION_DIR/$arel"
     ATTACH_RELS+=("$arel")
   done
-  {
-    printf '\n## Attached images\n\n'
-    for arel in "${ATTACH_RELS[@]}"; do printf -- '- %s\n' "$arel"; done
-  } >>"$MISSION_DIR/prd.md"
+  lcars_attach_prd_section "${ATTACH_RELS[@]}" >>"$MISSION_DIR/prd.md"
 fi
 
 # --- write adr.md (complex Missions only) ---------------------------------

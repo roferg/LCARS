@@ -29,6 +29,10 @@ function clsList(node) {
   return String(node._cls || "").split(/\s+/).filter(Boolean);
 }
 
+/* every scrollIntoView() / focus() board.js asked for, in order */
+const SCROLLS = [];
+const FOCUSED = [];
+
 /* `children` IS ELEMENTS ONLY — the single most expensive lie a DOM stub can
  * tell. In a real browser `Element.children` is an HTMLCollection of ELEMENT
  * children; text nodes live only in `childNodes`. The first cut of this stub
@@ -123,7 +127,14 @@ function stubEl(tag) {
     (node.listeners[ev] = node.listeners[ev] || []).push(fn);
   };
   node.removeEventListener = function () {};
-  node.focus = function () {};
+  node.focus = function () { FOCUSED.push(node); };
+  /* RECORDED, never simulated. There is no layout in this process, so the ONE
+   * honest thing to assert about "bring it into view" is that board.js asked
+   * the browser to do it, on which node, and with what options. Whether the
+   * pixels moved is `tests/drives/browser/` and only that. */
+  node.scrollIntoView = function (opts) {
+    SCROLLS.push({ node: node, opts: opts || null });
+  };
   node.click = function () {
     const ev = {
       stopPropagation() {}, preventDefault() {}, target: node,
@@ -1022,6 +1033,31 @@ switch (cfg.act) {
     out.rides = many(body, ".ride .nm").map(txt);
     const brief = one(body, "[data-holo=handoff-brief]");
     out.briefValue = brief ? brief.value : null;
+    /* S128 — the intent hand-over. `reqRows` is the captured-requirement
+     * checklist beside the brief, `missing*` the band that fires when one of
+     * his own sentences is not in it, and `questions` the answer boxes. The
+     * live re-check is driven through the REAL `input` listener board.js
+     * registered, never by calling a projection function. */
+    const project128 = () => {
+      out.reqRows = many(body, "[data-holo=handoff-req]").map((n) => ({
+        text: txt(n), ok: n.getAttribute("data-ok") === "1",
+      }));
+      const band = one(body, "[data-holo=handoff-missing]");
+      out.missingText = band && !band.hidden ? txt(band) : "";
+      out.missingHidden = band ? !!band.hidden : true;
+    };
+    project128();
+    const qfield = one(body, "[data-holo=handoff-questions]");
+    out.questionsText = txt(qfield);
+    out.questions = many(body, "[data-holo=handoff-question]").map((n) => ({
+      qid: n.getAttribute("data-qid"), value: n.value,
+    }));
+    // WHICH field is last before the footer — the questions are meant to be
+    // the thing he reads with his hand on the button, and "it exists" is not
+    // that claim.
+    const fields = many(body, ".field");
+    const lastField = fields[fields.length - 1];
+    out.lastFieldHolo = lastField ? lastField.getAttribute("data-holo") : null;
     if (cfg.pickScope) {
       const card = many(body, ".choice-card")
         .find((c) => c.getAttribute("data-choice") === cfg.pickScope);
@@ -1036,7 +1072,57 @@ switch (cfg.act) {
         path: gp.url, body: JSON.parse(gp.opts.body),
       } : null;
     }
-    if (cfg.rewrite !== undefined && brief) brief.value = cfg.rewrite;
+    if (cfg.rewrite !== undefined && brief) {
+      brief.value = cfg.rewrite;
+      brief.fire("input", {});
+      project128();
+    }
+    if (cfg.then !== undefined && brief) {
+      brief.value = cfg.then;
+      brief.fire("input", {});
+      project128();
+    }
+    /* ── S128 fix round 1, D1: the STICKY FOOTER. The questions live at the
+     * bottom of an 1800px scroll and the File button is laid out from first
+     * paint, so "they are in the DOM" was never the claim that mattered. What
+     * is asserted here is what rides in the footer BESIDE that button —
+     * present at every scroll position, at every viewport, in every browser. */
+    const foot = one(body, ".modal-foot");
+    const projectFoot = () => {
+      const cue = foot ? one(foot, "[data-holo=handoff-qcue]") : null;
+      out.footText = txt(foot);
+      out.qcue = cue ? {
+        text: txt(cue),
+        inFoot: !!cue.parent && cue.parent.classList.contains("modal-foot"),
+        wired: cue.getAttribute("data-wired") === "1",
+        open: cue.getAttribute("data-open"),
+        cls: clsList(cue),
+      } : null;
+    };
+    projectFoot();
+    const errNode = one(body, ".errline");
+    out.errParentCls = errNode && errNode.parent
+      ? clsList(errNode.parent).join(" ") : null;
+    Object.keys(cfg.answers || {}).forEach((qid) => {
+      const box = many(body, "[data-holo=handoff-question]")
+        .find((n) => n.getAttribute("data-qid") === qid);
+      if (box) { box.value = cfg.answers[qid]; box.fire("input", {}); }
+    });
+    projectFoot();
+    if (cfg.clickCue) {
+      SCROLLS.length = 0; FOCUSED.length = 0;
+      const cue = foot ? one(foot, "[data-holo=handoff-qcue]") : null;
+      out.cueFound = !!cue;
+      if (cue) cue.click();
+      out.cueScrolled = SCROLLS.map((s) => ({
+        holo: s.node.getAttribute("data-holo"),
+        cls: clsList(s.node), opts: s.opts,
+      }));
+      out.cueFocused = FOCUSED.map((n) => ({
+        holo: n.getAttribute("data-holo"), qid: n.getAttribute("data-qid"),
+      }));
+    }
+    SCROLLS.length = 0;
     FETCHES.length = 0;
     const file = many(REGISTRY.overlay, "[data-ctl]")
       .concat(many(docRoot, "[data-ctl]"))
@@ -1046,6 +1132,11 @@ switch (cfg.act) {
     const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
     out.filePath = post ? post.url : null;
     out.fileBody = post ? JSON.parse(post.opts.body) : null;
+    // A refusal is the one error path this process can DRIVE (the fetch stub
+    // never resolves, so a 502 cannot be replayed here). What it proves is
+    // that showErr asks for the line to be brought into view at all.
+    out.errScrolled = SCROLLS.some((s) => clsList(s.node).indexOf("errline") >= 0);
+    out.errShown = errNode ? !errNode.hidden : null;
     break;
   }
   /* ── S128 — D2's AMENDED chat ⇄ preview split ──────────────────────────

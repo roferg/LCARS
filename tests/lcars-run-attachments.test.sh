@@ -18,6 +18,12 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
 
+# S128 — the load-bearing precedence sentence, READ OUT OF THE DAEMON, which is
+# its authority (see section 10). Every byte-exact assertion below pins against
+# THIS value rather than a copy typed into the test, so a reword lands in one
+# place and the suite still fails loudly for the shell lib until it follows.
+PRECEDENCE="$(cd "$REPO_ROOT/web" 2>/dev/null && python3 -c 'import sys; sys.path.insert(0, "."); from lcars_serve.actions import _HANDOFF_PRECEDENCE as p; sys.stdout.write(p)' 2>/dev/null)"
+
 pass=0
 fail=0
 TMPROOT="$(mktemp -d)"
@@ -93,7 +99,7 @@ check "5. it says the mockup's internals are fake" \
 check "5. it forbids editing/importing/shipping the mockup" \
   "printf '%s' \"\$out4\" | grep -qi 'do not import'"
 check "5. it carries the precedence rule VERBATIM" \
-  "printf '%s' \"\$out4\" | grep -qF 'Where the mockup and the brief disagree, the brief wins.'"
+  "printf '%s' \"\$out4\" | grep -qF \"\$PRECEDENCE\""
 check "5. it still lists the mockup's ABSOLUTE path" \
   "printf '%s' \"\$out4\" | grep -qF '$M4/attachments/attachment-01.html'"
 check "5. it still lists the concept doc's ABSOLUTE path" \
@@ -121,6 +127,99 @@ check "7. no mockup ⇒ no look-and-flow declaration" \
   "! printf '%s' \"\$out6\" | grep -q 'LOOK AND FLOW'"
 check "7. no mockup ⇒ still the adaptive heading + the path" \
   "printf '%s' \"\$out6\" | grep -q '## Attached files' && printf '%s' \"\$out6\" | grep -qF '$M6/attachments/attachment-01.md'"
+
+# ==========================================================================
+# 8. FL-010 — THE ANTI-DRIFT GUARD. THE ONLY CHECK IN THIS FILE THAT WOULD HAVE
+#    CAUGHT THE MISS.
+#
+# S127 made THIS block adaptive and every assertion above went green — while the
+# SAME sentence stayed wrong in three other places (`lcars-file/file.sh` twice,
+# `lcars-log/log.sh` once), each writing "## Attached images" over an HTML
+# mockup into prd.md, the mission's own document and its GitHub issue body.
+# Fixing a duplicated string in one of its homes and testing that home proves
+# nothing about the others.
+#
+# So: the wording lives in ONE rule (lcars_attach_* in
+# skills/lcars-init/lcars-common.sh) and the literal may appear in NO other
+# skill source. A fifth copy fails here the moment it is written.
+# ==========================================================================
+COMMON_LIB="$REPO_ROOT/skills/lcars-init/lcars-common.sh"
+check "8. the shared rule exists in lcars-common.sh" \
+  "[ -f '$COMMON_LIB' ] && grep -q '^lcars_attach_prd_section()' '$COMMON_LIB' && grep -q '^lcars_attach_heading()' '$COMMON_LIB'"
+
+# Every skill source file that still spells the literal heading, minus the one
+# home it is allowed to live in.
+STRAY="$(cd "$REPO_ROOT" && grep -rl -- '## Attached images' skills/ 2>/dev/null \
+          | grep -v '^skills/lcars-init/lcars-common.sh$')"
+check "8. '## Attached images' is spelled in EXACTLY ONE skill source" \
+  "[ -z \"\$STRAY\" ] || { echo \"stray copies: \$STRAY\"; false; }"
+
+# The same guard for the honest heading and for the mockup declaration, so the
+# non-image wording cannot be re-spelled per skill either.
+STRAY_FILES="$(cd "$REPO_ROOT" && grep -rl -- '## Attached files' skills/ 2>/dev/null \
+          | grep -v '^skills/lcars-init/lcars-common.sh$')"
+check "8. '## Attached files' is spelled in EXACTLY ONE skill source" \
+  "[ -z \"\$STRAY_FILES\" ] || { echo \"stray copies: \$STRAY_FILES\"; false; }"
+
+STRAY_DECL="$(cd "$REPO_ROOT" && grep -rl -F -- "$PRECEDENCE" skills/ 2>/dev/null \
+          | grep -v '^skills/lcars-init/lcars-common.sh$')"
+check "8. the mockup declaration is spelled in EXACTLY ONE skill source" \
+  "[ -z \"\$STRAY_DECL\" ] || { echo \"stray copies: \$STRAY_DECL\"; false; }"
+
+# 9. …and the ONE rule agrees with itself across its two shapes: the cold-prompt
+#    block (run.sh) and the prd.md section (file.sh / log.sh) must switch on the
+#    same evidence. Drive the shared helper directly.
+sec_for() { ( . "$COMMON_LIB"; lcars_attach_prd_section "$@" ); }
+secIMG="$(sec_for 'attachments/attachment-01.png')"
+check "9. helper: image-only section is BYTE-IDENTICAL to the pre-S128 string" \
+  "[ \"\$secIMG\" = \"\$(printf '\n## Attached images\n\n- attachments/attachment-01.png\n')\" ]"
+secMOCK="$(sec_for 'attachments/attachment-01.html' 'attachments/attachment-02.md')"
+check "9. helper: a mockup is NOT called an image" \
+  "! printf '%s' \"\$secMOCK\" | grep -q 'Attached images'"
+check "9. helper: the section and the block agree on the noun" \
+  "printf '%s' \"\$secMOCK\" | grep -q '## Attached files' && printf '%s' \"\$out5\" | grep -q '## Attached files'"
+check "9. helper: the section carries the same declaration the block does" \
+  "printf '%s' \"\$secMOCK\" | grep -qF \"\$PRECEDENCE\""
+
+# ==========================================================================
+# 10. S128 (FL-011 / A4a) — THE CROSS-LANGUAGE PIN.
+#
+# The precedence sentence has TWO legitimate homes and they are in different
+# languages, so no constant can be shared:
+#
+#   • the DAEMON — `_HANDOFF_PRECEDENCE`, web/lcars_serve/actions.py. It is the
+#     AUTHORITY ("spelled once, used everywhere"): the deck shows the block
+#     before the captain sends and the daemon appends the same block to the
+#     filed idea, so what he read and what the mission was told cannot differ.
+#   • the SHELL LIB — `lcars_attach_mockup_note`, skills/lcars-init/
+#     lcars-common.sh. `lcars file` and `lcars log` append it to prd.md for
+#     every mockup-bearing mission, with no daemon in the process at all.
+#
+# Section 8's stray-copy scan CANNOT see a disagreement between them: each copy
+# is in its own legitimate home and only the WORDING differs. That is exactly
+# what happened during S128 — the daemon was reworded (the old "the brief wins"
+# was read by a live cold worker as "the brief is EXHAUSTIVE", which is how the
+# captain's theme got discarded on purpose, FL-011) and the shell lib was not,
+# so ONE prd.md carried BOTH spellings and they disagreed.
+#
+# This check reads the daemon's literal out of the daemon itself and pins the
+# shell lib's tail to it byte-for-byte. Reword either home alone and it goes
+# red naming both.
+# ==========================================================================
+check "10. the daemon's _HANDOFF_PRECEDENCE is readable" "[ -n \"\$PRECEDENCE\" ]"
+NOTE="$( . "$COMMON_LIB"; lcars_attach_mockup_note )"
+check "10. the shell lib carries the DAEMON's sentence VERBATIM" \
+  "printf '%s' \"\$NOTE\" | grep -qF \"\$PRECEDENCE\" || { printf 'daemon: %s\nshell : %s\n' \"\$PRECEDENCE\" \"\$(printf '%s' \"\$NOTE\" | tail -n 1)\"; false; }"
+check "10. …as its LAST line — nothing older left below it" \
+  "[ \"\$(printf '%s' \"\$NOTE\" | tail -n 1)\" = \"\$PRECEDENCE\" ]"
+check "10. the shell lib spells the rule exactly ONCE" \
+  "[ \"\$(grep -c 'Where the mockup and the brief disagree' '$COMMON_LIB')\" -eq 1 ]"
+# …and the sentence the daemon publishes must still SAY both halves — an
+# override that is not a completeness claim. A future reword that drops the
+# TIE-BREAK half would keep both homes in perfect agreement about the wrong
+# thing, and check 10 above would stay green.
+check "10. the pinned sentence still denies the EXHAUSTIVE reading" \
+  "printf '%s' \"\$PRECEDENCE\" | grep -qF 'OVERRIDES the mockup' && printf '%s' \"\$PRECEDENCE\" | grep -qF 'not a claim that the brief is exhaustive'"
 
 # ==========================================================================
 echo

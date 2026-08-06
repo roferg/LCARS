@@ -77,6 +77,13 @@ def _mission(**over):
 PARKED = _mission(id="m-park", stage="align", prdPending=True,
                   pills={"cost": None, "reasoning": None, "implementation": None})
 ALIGNED = _mission(id="m-align", stage="align")
+# S128/FL-009 (the reload half): a parked card as a FRESHLY-LOADED tab receives
+# it — the daemon's in-flight align fact on the payload, and nothing at all in
+# the client's ALIGNING map, because this tab never saw the click.
+SCANNING_ON_SERVER = _mission(
+    id="m-park", stage="align", prdPending=True,
+    pills={"cost": None, "reasoning": None, "implementation": None},
+    alignBusy={"since": 1754500000.0, "for": 95.4})
 
 
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")
@@ -188,6 +195,139 @@ class ParkDetailRenderTest(unittest.TestCase):
                          "captain clicked START ALIGNMENT; honor it")
         self.assertNotIn("/api/align/sid-stale/cancel", res["fetches"],
                          "an unrelated close must NOT reap the in-flight session")
+
+    # ── S128 / FL-009: a SLOW turn is not a FAILED turn ────────────────────
+    #
+    # Measured on the S127 capstone (2026-08-06): the captain's opening Align
+    # turn ran 61s; board.js's 60s safety timeout fired at 60s, cleared the
+    # guard and refresh()ed, so the card re-armed to START ALIGNMENT one second
+    # before the turn returned. Success was presented as failure, and the
+    # re-click spawned a SECOND real worker (free on copilot, billed on claude).
+    #
+    # The cure is not a bigger constant — a bigger constant is the same guess
+    # with a longer fuse, and every holodeck hand-off (28KB mockup + concept doc
+    # + ~5s of MCP spawn) sits on the threshold. The guard's lifetime is now the
+    # REQUEST's lifetime: it ends when the turn settles — a fact — and no timer
+    # may end it early.
+    def test_slow_turn_keeps_the_scan_armed_past_the_safety_timeout(self):
+        res = _run(PARKED, mode="scan-outlives-timeout")
+        self.assertEqual(res["aligning"], True,
+                         "FL-009: a turn still in flight must stay 'scanning' — no "
+                         "wall-clock timer may re-arm START ALIGNMENT under it")
+
+    def test_slow_turn_card_still_reads_as_scanning(self):
+        res = _run(PARKED, mode="scan-outlives-timeout")
+        nodes = _flatten(res.get("cardMidFlight"))
+        buttons = [n for n in nodes if n.get("tag") == "button"]
+        btexts = " || ".join(n.get("text", "") for n in buttons).upper()
+        self.assertIn("SCANNING", btexts,
+                      "the card must still show the disabled Scanning affordance")
+        self.assertNotIn("START ALIGNMENT", btexts,
+                         "FL-009: a re-armed START ALIGNMENT here is the defect — it "
+                         "invites a second worker on a turn that is still running")
+        scanning = [n for n in buttons if "Scanning" in n.get("text", "")]
+        self.assertTrue(scanning and all(n["disabled"] for n in scanning),
+                        "the Scanning affordance must stay disabled")
+        bands = [n for n in nodes if "lcars-running" in n.get("cls", "")]
+        self.assertTrue(bands, "the persistent scanning band must survive too")
+
+    def test_slow_turn_discloses_how_long_it_has_been_scanning(self):
+        # The harness back-dates the click by 95s. Silence is what made this
+        # frightening ("something is shaky") — the card must say how long the
+        # turn has been running instead of just insisting it is busy.
+        res = _run(PARKED, mode="scan-outlives-timeout")
+        joined = " || ".join(n.get("text", "")
+                             for n in _flatten(res.get("cardMidFlight")))
+        self.assertIn("1m 35s", joined,
+                      "an in-flight scan must disclose its elapsed time, so a long "
+                      "turn reads as SLOW rather than as broken")
+
+    # ── S128 / FL-009, the RELOAD half: the daemon's fact, not this tab's ──
+    #
+    # Everything above is CLIENT MEMORY (the ALIGNING map). Reload the board
+    # mid-scan and it is gone, and the card re-arms to START ALIGNMENT on a turn
+    # that is still running — the same lie, through a different door, and the
+    # re-click still spawns a second real worker.
+    #
+    # These fixtures carry `alignBusy` and NOTHING in the ALIGNING map: exactly a
+    # freshly-loaded tab reading GET /api/board. The card must read the daemon.
+    def test_a_reloaded_card_still_reads_as_scanning(self):
+        res = _run(SCANNING_ON_SERVER, mode="card")
+        buttons = [n for n in _flatten(res.get("overlay"))
+                   if n.get("tag") == "button"]
+        btexts = " || ".join(n.get("text", "") for n in buttons).upper()
+        self.assertNotIn("START ALIGNMENT", btexts,
+                         "FL-009 (reload): a tab that never saw the click must not "
+                         "re-arm START ALIGNMENT under a running turn")
+        scan = [n for n in buttons if "SCANNING" in n.get("text", "").upper()]
+        self.assertTrue(scan and all(n["disabled"] for n in scan),
+                        "it must show the same DISABLED ⊹ Scanning… control")
+
+    def test_a_reloaded_card_shows_the_daemons_elapsed_time(self):
+        # 95s on the wire → the same "1m 35s" the clicking tab renders from its
+        # own memory. ONE wording, two sources for the same number.
+        res = _run(SCANNING_ON_SERVER, mode="card")
+        joined = " || ".join(n.get("text", "")
+                             for n in _flatten(res.get("overlay")))
+        self.assertIn("1m 35s", joined,
+                      "the elapsed time comes from the daemon — the only surface "
+                      "that knows when a turn a reloaded tab never saw began")
+
+    def test_a_reloaded_card_keeps_the_scanning_band(self):
+        res = _run(SCANNING_ON_SERVER, mode="card")
+        bands = [n for n in _flatten(res.get("overlay"))
+                 if "lcars-running" in n.get("cls", "")]
+        self.assertTrue(bands, "and the persistent animated band with it")
+
+    def test_a_reloaded_detail_mirrors_the_card(self):
+        _, texts = _texts(SCANNING_ON_SERVER, mode="detail")
+        joined = " || ".join(texts)
+        self.assertIn("Scanning", joined)
+        self.assertIn("1m 35s", joined)
+        self.assertNotIn("START ALIGNMENT", joined.upper(),
+                         "the detail modal must not offer what the card refuses")
+
+    def test_the_daemons_fact_outranks_this_tabs_silence(self):
+        # The disagreement case that matters: this tab's POST already came back
+        # (or never happened) while the daemon says the turn is STILL RUNNING —
+        # a proxy timeout, a second tab, a reload. The daemon wins; it is the
+        # only one that can see the worker. (The reverse — client memory with no
+        # published fact — is the plain in-flight case the tests above cover, and
+        # an absent key is NOT evidence the turn died, so it never clears the
+        # guard. Only the POST settling does that.)
+        res = _run(SCANNING_ON_SERVER, mode="card")
+        buttons = [n for n in _flatten(res.get("overlay"))
+                   if n.get("tag") == "button"]
+        self.assertTrue([n for n in buttons
+                         if "SCANNING" in n.get("text", "").upper()])
+
+    def test_a_finished_turn_re_arms_the_card(self):
+        # THE HONESTY BOUNDARY, client-side. No `alignBusy` on the payload means
+        # the daemon is not running a turn, and the card says so — a fact that
+        # could never be withdrawn would be a worse lie than the one it cures.
+        res = _run(PARKED, mode="card")
+        buttons = [n for n in _flatten(res.get("overlay"))
+                   if n.get("tag") == "button"]
+        btexts = " || ".join(n.get("text", "") for n in buttons).upper()
+        self.assertIn("START ALIGNMENT", btexts)
+        self.assertNotIn("SCANNING", btexts)
+
+    def test_slow_turn_fires_exactly_one_start_post(self):
+        res = _run(PARKED, mode="scan-outlives-timeout")
+        starts = [u for u in res["fetches"] if u.endswith("/api/align/start")]
+        self.assertEqual(len(starts), 1,
+                         "exactly one worker turn may be spawned per click")
+
+    def test_the_turn_returning_is_what_ends_the_scan(self):
+        # The other half of the same contract: the guard is not permanent. It is
+        # released by the turn SETTLING (here: the held response landing), which
+        # is also the path a dead daemon takes — postWrite's .catch reports a
+        # network error and clears it. That event, never a clock, ends the scan.
+        res = _run(PARKED, mode="scan-outlives-timeout")
+        self.assertEqual(res["aligningAfterReturn"], False,
+                         "when the worker turn finally returns, the scan ends")
+        self.assertEqual(res["opened"], 1,
+                         "…and the alignment console opens — the turn SUCCEEDED")
 
     # ── F2: closing the CONSOLE mid-grill KEEPS the session (resume) ────────
     def test_close_keeps_session_and_marks_resumable(self):

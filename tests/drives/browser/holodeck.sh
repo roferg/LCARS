@@ -13,7 +13,14 @@
 # Chrome, not off markup:
 #
 #   • the board's columns, wrap and legend measured GONE while on the deck;
-#   • three panes present, VISIBLE, in order, with real widths at ~1.15:1;
+#   • three CONTENT panes present, VISIBLE, in order, with real widths at
+#     ~1.15:1 — and, since S128, the deck's FURNITURE judged separately as
+#     itself: the chat/preview drag handle measured as a laid-out 3–24px gutter
+#     that runs the height of the split and sits BETWEEN those two panes, and
+#     the program-drawer's click-away scrim measured GONE and click-through
+#     while the drawer is shut;
+#   • EVERY child of the deck recognised — an unrecognised node fails the run by
+#     name rather than disappearing out of a filtered list;
 #   • the preview iframe pointing at /api/holodeck/<sid>/preview/…, with a real
 #     box, `allow-scripts` present and `allow-same-origin` ABSENT;
 #   • the deck's accent token resolving to a real colour;
@@ -63,6 +70,22 @@
 # made the dead turn stop happening and eleven of twelve controls "went red" on
 # the harness's own "THE N4 CHECK PROVED NOTHING" line while the summary printed
 # "every control went red".
+#
+# S128 — THE RIG WENT STALE AND NOBODY NOTICED, FOR A WHOLE SESSION. S127 added
+# two nodes to the deckview (`.deck-split`, the chat/preview drag handle, and
+# `.holo-scrim`, the program drawer's click-away). The pane check read the
+# deckview's CHILDREN, so it read those two as panes, and every run since has
+# failed with "pane deck-split is 7px wide — it did not lay out" against a deck
+# that was laying out perfectly. A rig this expensive that is red for a reason
+# nobody acts on provides exactly as much signal as no rig.
+#
+# The cure was NOT to widen the expected pane list — that is the "check that
+# cannot go red" this whole file is built against. The furniture is now split
+# out of the pane list and asserted AS ITSELF, to a shape that is stricter than
+# a size exemption; the pane claim is unchanged and still fails on a pane that
+# does not lay out (`flat-preview` is that control); and the rig now names any
+# child of the deck it has never measured, so the NEXT node to arrive fails the
+# run by name instead of silently falling out of a filtered list.
 #
 # EXIT: 0 proven · 1 the product (or, under --calibrate, the CHECK) is wrong ·
 #       77 skipped / infrastructure — loudly, and never a pass.
