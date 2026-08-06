@@ -553,20 +553,83 @@ context_extra_block() {
 # context_extra_block, but globs the attachments dir directly so it is robust —
 # independent of state.json. Returns EMPTY when the dir is absent or empty, so a
 # no-attachment mission's prompt is byte-identical to before.
+#
+# S127 — THE HEADING NAMES WHAT ACTUALLY ARRIVED. The holodeck hands a Mission a
+# `mockup.html` and a `concept.md` down this SAME road, and heading an HTML
+# mockup "## Attached images" is a lie in the one prompt the cold worker reads
+# most carefully. So the heading adapts:
+#
+#   • every attachment is an image  → the pre-S127 string, BYTE FOR BYTE. This
+#     is shared pipeline code and the overwhelming majority of missions are
+#     pasted screenshots; their prompt must not move by one character (asserted
+#     against the literal string in tests/lcars-run-attachments.test.sh).
+#   • anything else is present      → the block says what arrived, and when one
+#     of them is a MOCKUP it carries the look-and-flow-only declaration WITH IT.
+#
+# The declaration rides here rather than only in the PRD on purpose: S164
+# measured a live worker correctly refusing a decoy because SEVERAL places it
+# could not miss all said the same thing, and S166 measured a live worker
+# ignoring the same claim made in ONE place. This is one of those places — the
+# prompt the worker is actually handed — and it is worded so a worker that reads
+# nothing else still knows the mockup is not code.
 attachments_extra_block() {
-  local d="$MISSION_DIR/attachments" f any=0 out=""
+  local d="$MISSION_DIR/attachments" f any=0 out="" list="" ext
+  local n_img=0 n_mock=0 n_doc=0 n_other=0
   [ -d "$d" ] || return 0
   for f in "$d"/*; do
     [ -f "$f" ] || continue
-    if [ "$any" -eq 0 ]; then
-      out='
-## Attached images (the captain attached these; view/read them as part of your input)'
-      any=1
-    fi
-    out="$out
+    any=1
+    list="$list
 - $f"
+    ext=""
+    case "$f" in *.*) ext="$(printf '%s' "${f##*.}" | tr '[:upper:]' '[:lower:]')" ;; esac
+    case "$ext" in
+      png|jpg|jpeg|gif|webp|svg|bmp|heic) n_img=$((n_img + 1)) ;;
+      html|htm)                           n_mock=$((n_mock + 1)) ;;
+      md|markdown|txt|rst)                n_doc=$((n_doc + 1)) ;;
+      *)                                  n_other=$((n_other + 1)) ;;
+    esac
   done
-  [ "$any" -eq 1 ] && printf '%s' "$out"
+  [ "$any" -eq 1 ] || return 0
+  # THE UNCHANGED PATH. Everything that is an image, and nothing that is not.
+  if [ $((n_mock + n_doc + n_other)) -eq 0 ]; then
+    out='
+## Attached images (the captain attached these; view/read them as part of your input)'
+    printf '%s%s' "$out" "$list"
+    return 0
+  fi
+  # The tally, in plain English. Written inline (no helper function) because a
+  # function defined inside a function in bash is GLOBAL, and run.sh's namespace
+  # is not a place to leak one.
+  local what="" n noun
+  for pair in "$n_img:image:images" "$n_mock:HTML mockup:HTML mockups" \
+              "$n_doc:written document:written documents" \
+              "$n_other:other file:other files"; do
+    n="${pair%%:*}"
+    [ "$n" -eq 0 ] && continue
+    if [ "$n" -eq 1 ]; then
+      noun="${pair#*:}"; noun="${noun%%:*}"
+    else
+      noun="${pair##*:}"
+    fi
+    [ -n "$what" ] && what="$what, "
+    what="$what$n $noun"
+  done
+  out="
+## Attached files (the captain attached these; view/read them as part of your input)
+What arrived: $what. Each is listed below by absolute path — open them."
+  if [ "$n_mock" -gt 0 ]; then
+    out="$out
+The HTML mockup is a VISUAL REFERENCE ONLY. It defines LOOK AND FLOW — layout,
+colour, spacing, wording, and the transitions between screens — and matching it
+visually is an acceptance criterion of this work. It is NOT an implementation:
+its internals are deliberately fake, hand-written to look right and wired to
+nothing. Do not import it, do not copy its internals as code, do not edit it to
+change behaviour, and never ship it — it is not part of this repository's
+source and it is not a file this work may modify.
+Where the mockup and the brief disagree, the brief wins."
+  fi
+  printf '%s%s' "$out" "$list"
   return 0
 }
 

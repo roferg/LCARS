@@ -1529,6 +1529,60 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .choice-card .why{display:block;font-family:var(--font-mono);font-size:10px;
   color:var(--lcars-amber);margin-top:5px;line-height:1.5}
 
+/* ── S127: THE HAND-OFF ─────────────────────────────────────────────────── */
+/* The bar under the whole deck (the mock's placement): sending is an act on
+   the PROGRAM, so it is not tucked inside one of the three panes. `flex:0 0
+   auto` because #deckHost is a column flexbox whose OTHER child (.deckview) is
+   the one that may grow — a bar that flexed would steal the preview's height,
+   which D2 says is the point of the deck. */
+.holo-handoff{flex:0 0 auto;border-top:1px solid var(--lcars-border);
+  background:var(--lcars-surface);padding:11px 16px;display:flex;
+  align-items:center;gap:12px;flex-wrap:wrap}
+.holo-handoff .hint{font-family:var(--font-mono);font-size:10.5px;
+  color:var(--lcars-text-dim);line-height:1.5;flex:1 1 260px;min-width:0}
+.holo-handoff .grow{flex:1 1 auto}
+.holo-handoff .hl{font-family:var(--font-display);font-size:10px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--holo-grid);
+  white-space:nowrap}
+
+/* THE LOCK BAND — it REPLACES the composer, it does not grey it out. A
+   disabled input invites "why can't I type here?"; a band that says what
+   happened and which mission holds it answers that before it is asked. */
+.holo-lock{border-top:1px solid var(--lcars-border);padding:14px 16px;
+  display:flex;flex-direction:column;gap:9px;align-items:flex-start;
+  background:var(--lcars-surface)}
+.holo-lock .lh{display:flex;align-items:center;gap:9px}
+.holo-lock .li{font-size:15px;color:var(--holo-grid);line-height:1}
+.holo-lock .lt{font-family:var(--font-display);font-size:12px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--lcars-text-bright)}
+.holo-lock p{margin:0;font-size:12.5px;line-height:1.6;
+  color:var(--lcars-text-dim);max-width:64ch}
+.holo-lock .btn.small{font-size:9px;letter-spacing:.1em;padding:3px 9px;
+  border-radius:9px}
+/* A SENT program's chip reads in the deck's own accent — it is a state the
+   captain chose, not a warning. */
+.pstat.sent{border-color:var(--holo-grid);color:var(--holo-grid);
+  background:rgba(45,227,199,.10)}
+.prog .prow .pmission{font-family:var(--font-mono);font-size:9px;
+  letter-spacing:.06em;color:var(--holo-grid);white-space:nowrap}
+
+/* The hand-off dialog's own two blocks. `.rides` names WHAT travels; the
+   guidance block is shown VERBATIM (it is `<pre>`) because it is the exact
+   text the Mission is given — reformatting it here would make the two
+   different documents. */
+.rides{display:flex;flex-direction:column;gap:7px}
+.ride{display:flex;align-items:baseline;gap:10px;background:var(--lcars-card);
+  border:1px solid rgba(80,104,138,.25);border-radius:7px;padding:8px 12px}
+.ride .ic{color:var(--holo-grid);width:16px;text-align:center}
+.ride .nm{font-family:var(--font-mono);font-size:12px;
+  color:var(--lcars-text-bright);white-space:nowrap}
+.ride .ds{font-size:11.5px;color:var(--lcars-text-dim);line-height:1.5}
+.handoff-guidance{margin:0;background:var(--lcars-black);
+  border:1px solid rgba(80,104,138,.3);border-radius:8px;padding:11px 13px;
+  font-family:var(--font-mono);font-size:11px;line-height:1.65;
+  color:var(--lcars-text-dim);white-space:pre-wrap;overflow-x:auto;
+  max-height:230px;overflow-y:auto}
+
 @media (max-width:1100px){
   /* Q3 is unruled, so this is the honest minimum rather than an invented
      answer: keep all three panes (the preview is the point — D2) and let the

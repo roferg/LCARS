@@ -589,11 +589,15 @@ class _AlignSession(object):
 
     __slots__ = ("idea", "engine", "transcript", "prd", "done",
                  "worker_sid", "started", "image_paths", "mission_id",
-                 "last_question")
+                 "last_question", "holodeck")
 
-    def __init__(self, idea, engine, mission_id=None):
+    def __init__(self, idea, engine, mission_id=None, holodeck=None):
         self.idea = idea
         self.engine = engine
+        # S127 — the holodeck PROGRAM this grill is aligning, if any. Carried so
+        # the done branch can attach its `mockup.html`/`concept.md` and lock the
+        # program. A SESSION ID, never a path.
+        self.holodeck = holodeck
         # Park & Align (S137): when this grill completes the alignment of an
         # ALREADY-PARKED mission (filed pre-PRD via `lcars file --park`), its id
         # is carried here so the done branch dispatches `file.sh --complete <id>`
@@ -837,6 +841,42 @@ _TURN_HEAD = re.compile(r"^## Turn (\d+) ·", re.MULTILINE)
 # arrive from three sources with a different winner per path.
 _ENGINE_LINE = re.compile(r"^_Engine: `([^`\n]+)`", re.MULTILINE)
 
+# ── S127: the HAND-OFF, recorded in the same one durable home ────────────────
+# D11's lifecycle needs two durable facts about a program: that it was SENT, and
+# WHICH mission holds it. They go exactly where the engine went, for exactly the
+# reason fix round 5 put the engine there — the program's identity already has
+# one durable home, and a second place to look is how a value comes to arrive
+# from three sources with a different winner per path.
+#
+# It is written INTO THE HEADER, above the first turn, and read back from the
+# header only: a reply that quotes this line is the model being quoted at, and
+# taking it as the program's own state would let a turn lock itself. Nothing a
+# model wrote is ever rewritten — the insert lands in the block LCARS itself
+# authored when the program was named.
+_SENT_LINE = re.compile(
+    r"^_Sent to Align: mission `([^`\n]*)`(?: at ([^_\n]*))?.*$", re.MULTILINE)
+
+
+def _sent_header_line(mission_id, when):
+    return ("_Sent to Align: mission `%s` at %s_ — this program was handed "
+            "over and is READ-ONLY. The mission was briefed on the files "
+            "exactly as they were at that moment.\n\n"
+            % (mission_id or "", when))
+
+
+def _parse_sent(text):
+    """`{"missionId":…, "at":…}` if this program's record says it was SENT.
+
+    HEADER ONLY, for the same reason `_parse_transcript` reads the engine from
+    the header only."""
+    text = (text or "").replace("\r\n", "\n")
+    head = re.split(r"^## ", text, maxsplit=1, flags=re.MULTILINE)[0]
+    m = _SENT_LINE.search(head)
+    if not m:
+        return None
+    return {"missionId": (m.group(1) or "").strip(),
+            "at": (m.group(2) or "").strip()}
+
 
 def _transcript_header(program, engine=None):
     out = ["# %s\n\n" % (program or "Untitled program")]
@@ -977,6 +1017,131 @@ Sections:
      everything downstream, so declare every one.
   ## Hand-off summary — one paragraph a Mission can open with.
 """
+
+
+# ── S127: THE HAND-OFF — what a Mission is told the mockup MEANS ────────────
+# The captain's requirement, in his own words, is two obligations pulling in
+# opposite directions: the built product must MATCH the mockup visually, while
+# LCARS must understand the mockup is NOT a working product. Carry only one and
+# the round fails in one of two ways —
+#
+#   Failure 1, the mock is IGNORED. Cured by making visual fidelity an explicit
+#       ACCEPTANCE CRITERION rather than an attachment a worker may look at.
+#       This repo's own board was vendored from `kanban-vision.html` with "high
+#       visual fidelity to the mockup" as the acceptance bar (S67/S68), so the
+#       precedent is that it works when it is GRADED.
+#   Failure 2, the mock is mistaken for THE PRODUCT. The structural half of the
+#       cure is that the mockup never enters the working tree at all (it lives
+#       in the sidecar and in `.git/lcars/missions/<id>/attachments/`). The
+#       DECLARATION below is defence in depth for the day one does: S164
+#       measured a live worker correctly refusing a decoy because SEVERAL
+#       places it could not miss all said the same thing, and S166 measured a
+#       live worker ignoring the same claim made in exactly ONE place.
+#
+# These are the words themselves, held here so the daemon is the one voice that
+# says them: the deck SHOWS this block before the captain sends, and the daemon
+# APPENDS this same block to the filed idea. The browser composes none of it —
+# what he read and what the mission was told cannot drift.
+_HANDOFF_FILES = ("mockup.html", _CONCEPT)
+
+_HANDOFF_SCOPES = ("look+behaviour", "look-only")
+
+# THE LOAD-BEARING SENTENCE (captain ruling, 2026-08-04). It is the one rule
+# that resolves the failure this round manufactures — a worker treating the
+# mockup's fake internals as the specification. Spelled once, used everywhere.
+_HANDOFF_PRECEDENCE = ("Where the mockup and the brief disagree, the brief "
+                       "wins.")
+
+_HANDOFF_COMMON = """\
+- The mockup defines LOOK AND FLOW: layout, colour, spacing, wording, and the \
+transitions between screens. Matching it visually is an ACCEPTANCE CRITERION of \
+this work, not a suggestion.
+- The mockup is NOT an implementation. Its internals are deliberately fake — \
+hand-written to look right and wired to nothing. Nothing in it is code to copy, \
+import, edit or ship.
+- The mockup and the concept doc are REFERENCE ATTACHMENTS. They are not in \
+this repository's working tree and they never enter it; they are not files this \
+work may change, and a bug is never fixed by editing them.
+- What a mockup CANNOT convey is feel — timing, weight, responsiveness. Named \
+values (durations, easings) are in the concept doc; the rest is judged by the \
+captain at the Verify gate."""
+
+_HANDOFF_SCOPE_TEXT = {
+    "look+behaviour": (
+        "- HOW MUCH TO BUILD: look AND behaviour. Build it for real — backend, "
+        "state, persistence, the lot. The mockup says how it LOOKS; the brief "
+        "above says WHAT IT MUST DO. The mockup's own interactions are "
+        "illustrative only.\n- " + _HANDOFF_PRECEDENCE),
+    "look-only": (
+        "- HOW MUCH TO BUILD: look ONLY. This is a reskin — match the mockup "
+        "visually and make NO FUNCTIONAL CHANGE. Same data, same actions, same "
+        "outcomes. \"No functional change\" is a constraint on this work, not a "
+        "preference.\n- " + _HANDOFF_PRECEDENCE),
+}
+
+
+def _handoff_guidance(scope):
+    """The guidance block, for one build scope. Shown on the deck and appended
+    to the filed idea — the same string, from the same place, both times."""
+    return ("## How to read the attached mockup\n\n"
+            + _HANDOFF_SCOPE_TEXT[scope] + "\n" + _HANDOFF_COMMON + "\n")
+
+
+# The concept doc's own headings, as `_CONCEPT_CONTRACT` declares them. The
+# brief is seeded from `## Hand-off summary` — "one paragraph a Mission can open
+# with" is literally what that section is FOR. The fallbacks exist because a
+# concept doc is model-written prose: an absent section must degrade to
+# something the captain can edit, never to an empty box he has to fill from
+# memory, and the surface is told WHICH it got so it can say so.
+_HANDOFF_SECTIONS = ("Hand-off summary", "Handoff summary", "The problem")
+
+
+def _md_section(text, heading):
+    """The body of a `## <heading>` section of a markdown doc, or "".
+
+    Matches the heading loosely (any level, case-insensitive, trailing
+    punctuation ignored) because the section names come back from a language
+    model, and stops at the next heading of the same or a higher level.
+    """
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    want = re.sub(r"[^a-z0-9]+", " ", heading.lower()).strip()
+    out, depth = [], None
+    for line in lines:
+        m = re.match(r"^(#{1,6})\s+(.*?)\s*$", line)
+        if m:
+            level = len(m.group(1))
+            name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
+            if depth is None:
+                if name == want:
+                    depth = level
+                continue
+            if level <= depth:
+                break
+            out.append(line)
+            continue
+        if depth is not None:
+            out.append(line)
+    return "\n".join(out).strip()
+
+
+def _handoff_brief(concept_text):
+    """(brief, which section it came from) — the PRE-DRAFTED writing space.
+
+    D15: it is a writing space, not a title field, and it is pre-drafted from
+    the conversation so the captain never faces an empty page. It is fully
+    rewritable on the deck — this is only the draft.
+    """
+    for heading in _HANDOFF_SECTIONS:
+        body = _md_section(concept_text, heading)
+        if body:
+            return body, heading
+    # Last resort: the first real paragraph of the doc. Never an empty box.
+    for para in re.split(r"\n\s*\n", (concept_text or "").strip()):
+        para = "\n".join(l for l in para.split("\n")
+                         if not l.lstrip().startswith("#")).strip()
+        if para:
+            return para, ""
+    return "", ""
 
 
 def _norm_name(name):
@@ -2531,7 +2696,7 @@ class Actions(LogFacts):
 
     # -- public action surface (one per endpoint) -------------------------------
     def file_mission(self, idea, engine=None, mission_type="feature",
-                     images=None):
+                     images=None, holodeck=None, holodeck_scope=None):
         """POST /api/mission — file a new mission from a free-form idea.
 
         engine selects the worker CLI ($LCARS_WORKER_BIN) for this mission.
@@ -2540,12 +2705,23 @@ class Actions(LogFacts):
         as a DURABLE mission attachment (attachments/ + prd.md ref + state.json).
         The staged temp copies are reaped here once file.sh has copied them in.
         Returns the freshly-assembled board state.
+
+        `holodeck` (S127) is a holodeck PROGRAM's session id — never a path. The
+        daemon resolves that program's room itself and rides its `mockup.html` +
+        `concept.md` down this same `--attach` road, and appends the hand-off
+        guidance to the idea. On success the program is LOCKED (D11).
         """
         idea = (idea or "").strip()
         if not idea:
             raise ActionError(400, "missing required field: idea")
+        holo, handoff = self._handoff_attach(holodeck)
         mtype = "bug" if str(mission_type).strip().lower() == "bug" else "feature"
+        # The TITLE comes from what the CAPTAIN wrote, before the guidance block
+        # is appended — a mission called "How to read the attached mockup" would
+        # be the plumbing naming itself on his board.
         title = self._title_from_idea(idea)
+        if holo is not None:
+            idea = self._handoff_idea(idea, self._handoff_scope(holodeck_scope))
         prd = _PRD_TEMPLATE.format(title=title, type=mtype, idea=idea)
         prd_path = self._tmp_prd(prd)
         staged = self._stage_images(images)
@@ -2553,8 +2729,9 @@ class Actions(LogFacts):
         if engine:
             env_extra["LCARS_WORKER_BIN"] = engine
         args = ["--prd", prd_path]
-        for p in staged:
+        for p in staged + handoff:
             args += ["--attach", p]
+        before = self._mission_ids() if holo is not None else set()
         try:
             self._run("file", args, env_extra=env_extra)
         finally:
@@ -2563,10 +2740,14 @@ class Actions(LogFacts):
                     os.unlink(p)
                 except OSError:
                     pass
-        return {"board": self._reader.board()}
+        out = {"board": self._reader.board()}
+        if holo is not None:
+            out["holodeck"] = self._handoff_record(holo, before)
+        return out
 
     # -- Park & Align (S137): file a PARKED mission (pre-PRD standby) ------------
-    def park_mission(self, idea, engine=None, images=None):
+    def park_mission(self, idea, engine=None, images=None, holodeck=None,
+                     holodeck_scope=None):
         """POST /api/park — file a PARKED mission from a free-form idea.
 
         The backlog-fast lane (S136): dispatch `file.sh --park` to mint a mission
@@ -2586,6 +2767,13 @@ class Actions(LogFacts):
         idea = (idea or "").strip()
         if not idea:
             raise ActionError(400, "missing required field: idea")
+        # S127 — a holodeck hand-off travels this road too, and it is the one
+        # the deck's ▦ FILE MISSION uses: the card lands on the board instantly
+        # with the mockup and the concept doc already in its attachments/, and
+        # the captain drives it from there exactly as he asked for.
+        holo, handoff = self._handoff_attach(holodeck)
+        if holo is not None:
+            idea = self._handoff_idea(idea, self._handoff_scope(holodeck_scope))
         eng = (engine or "").strip()
         # write the idea to a tmp file so multi-line ideas survive intact
         # (file.sh --idea <file> reads the verbatim capture; a positional would
@@ -2595,8 +2783,9 @@ class Actions(LogFacts):
         args = ["--park", "--idea", idea_path]
         if eng:
             args += ["--engine", eng]
-        for p in staged:
+        for p in staged + handoff:
             args += ["--attach", p]
+        before = self._mission_ids() if holo is not None else set()
         try:
             self._run("file", args)
         finally:
@@ -2605,10 +2794,14 @@ class Actions(LogFacts):
                     os.unlink(p)
                 except OSError:
                     pass
-        return {"board": self._reader.board()}
+        out = {"board": self._reader.board()}
+        if holo is not None:
+            out["holodeck"] = self._handoff_record(holo, before)
+        return out
 
     # -- the interactive Align grilling console (S70-B) --------------------------
-    def align_start(self, idea, engine=None, images=None, mission_id=None):
+    def align_start(self, idea, engine=None, images=None, mission_id=None,
+                    holodeck=None, holodeck_scope=None):
         """POST /api/align/start — open a multi-turn Align session.
 
         OPENS ONE warm, resumable worker session (BUG-B) driving the existing
@@ -2644,9 +2837,21 @@ class Actions(LogFacts):
         idea = (idea or "").strip()
         if not idea:
             raise ActionError(400, "missing required field: idea")
+        # S127 — the OTHER hand-off road: grill first, then file. The program is
+        # resolved (and refused if already sent) HERE, before a worker is
+        # spawned, so a locked program cannot burn a grill it can never file.
+        # Its files are attached at the DONE branch, not fed to the grill turns:
+        # the per-turn attachment argv is the IMAGE road (copilot's
+        # `--attachment`), and an HTML mockup is not an image. What the grill
+        # gets is the brief and the guidance, in the idea text.
+        holo_sid = (holodeck or "").strip() or None
+        if holo_sid:
+            holo, _paths = self._handoff_attach(holo_sid)
+            idea = self._handoff_idea(idea,
+                                      self._handoff_scope(holodeck_scope))
         sid = uuid.uuid4().hex[:12]
         sess = _AlignSession(idea=idea, engine=(engine or "").strip() or None,
-                             mission_id=mid)
+                             mission_id=mid, holodeck=holo_sid)
         with self._align_lock:
             self._align[sid] = sess
         # the captain may paste an image on the File idea box (this first turn);
@@ -2717,13 +2922,21 @@ class Actions(LogFacts):
             # Park & Align (S137): a parked mission (sess.mission_id set) completes
             # its alignment IN PLACE via `file.sh --complete <id>`; a fresh grill
             # files a brand-new mission via `file.sh --prd` (unchanged).
+            #
+            # S127 — a holodeck hand-off filed through the GRILL. The program's
+            # files are resolved again HERE (never held as paths across the
+            # grill) and ride the same `--attach` road; the lock lands only
+            # after the dispatch returned.
+            holo, handoff, lost = self._handoff_attach_soft(sess.holodeck)
+            before = self._mission_ids() if holo is not None else set()
             if sess.mission_id:
                 board = self._complete_from_align(
                     sess.mission_id, turn, engine=sess.engine,
-                    image_paths=sess.image_paths)
+                    image_paths=list(sess.image_paths) + handoff)
             else:
-                board = self._file_from_align(turn, engine=sess.engine,
-                                              image_paths=sess.image_paths)
+                board = self._file_from_align(
+                    turn, engine=sess.engine,
+                    image_paths=list(sess.image_paths) + handoff)
             self._reap_session_images(sess)
             with self._align_lock:
                 self._align.pop(sid, None)
@@ -2732,6 +2945,15 @@ class Actions(LogFacts):
             if turn.get("adr"):
                 resp["adr"] = turn["adr"]
             resp["board"] = board
+            if holo is not None:
+                resp["holodeck"] = self._handoff_record(holo, before)
+            elif lost:
+                resp["holodeck"] = {
+                    "status": "draft", "missionId": "", "locked": False,
+                    "warning": ("The mission was filed, but its holodeck "
+                                "program could not be reached, so the mockup "
+                                "and the concept doc did NOT ride along with "
+                                "it: %s" % lost)}
             return resp
         # status == "question" (default): record the open question, return it.
         q = turn.get("question") or {}
@@ -3355,6 +3577,10 @@ class Actions(LogFacts):
         text = (text or "").strip()
         if not text:
             raise ActionError(400, "missing required field: text")
+        # S127 (D11) — A SENT PROGRAM IS READ-ONLY, and this is where that is
+        # enforced. Checked BEFORE the turn is claimed so a locked program never
+        # takes a claim it will not release.
+        self._refuse_if_sent(sess)
         # S126 (#5) — CLAIM THE TURN BEFORE TOUCHING THE SESSION. The claim must
         # come before `sess.turns` is mutated: a refused racing `/say` that had
         # already appended its line would leave a phantom unanswered turn in the
@@ -3430,6 +3656,257 @@ class Actions(LogFacts):
                             "the program's room at %s." % sess.program_dir),
             }
         return payload
+
+    # ══ S127 — THE HAND-OFF: SEND TO ALIGN ═════════════════════════════════
+    # The captain's bar for this round, in his own words: "He never types a file
+    # path, never juggles --attach, never copies a file, and never sees the
+    # plumbing." Everything below is written to that bar, and the security
+    # property it implies is the load-bearing one:
+    #
+    #   THE BROWSER NEVER SENDS A FILESYSTEM PATH. It sends the program's
+    #   SESSION ID — a key into the daemon's own in-memory table — and the
+    #   daemon re-resolves that program's room and expands it to the `--attach`
+    #   arguments itself, through the SAME jail the preview route uses. A path
+    #   in a request body is a path the page (or anything that can reach the
+    #   daemon) gets to choose.
+
+    def _sent_record(self, program_dir):
+        """This program's hand-off record, read off disk, or None."""
+        try:
+            with open(os.path.join(program_dir, _TRANSCRIPT)) as fh:
+                return _parse_sent(fh.read())
+        except (OSError, ValueError):
+            return None
+
+    def _refuse_if_sent(self, sess):
+        """D11's lock, in the captain's language.
+
+        Why a lock and not a mark: the mission received a SNAPSHOT of these
+        exact files. If the mockup keeps moving afterwards, the design on screen
+        and the brief the workers are building to disagree silently, and the
+        disagreement surfaces at Verify as "this doesn't match" with no way to
+        tell which side moved.
+        """
+        rec = self._sent_record(sess.program_dir)
+        if not rec:
+            return
+        mission = rec.get("missionId") or ""
+        named = ("mission %s" % mission) if mission else "a mission"
+        raise ActionError(
+            409, "%s was sent to Align as %s, so this program is locked. It is "
+            "the exact design that mission was briefed on, and changing it now "
+            "would leave the workers building to something you can no longer "
+            "see. ⧉ DUPLICATE TO KEEP DESIGNING is the way on — it is not "
+            "built yet, so for now start a new program under a different name; "
+            "this one stays exactly as it was handed over."
+            % (sess.program or "This program", named))
+
+    def _handoff_files(self, program_dir):
+        """The ABS paths of `mockup.html` + `concept.md` in a program's room.
+
+        Resolved through `_room_file_path` — the preview route's jail — so a
+        symlink inside the room pointing out of the sidecar is refused here for
+        exactly the reason it is refused there. A missing file is a PLAIN
+        refusal naming the file and what to do about it, never a 500.
+        """
+        found, missing = [], []
+        for name in _HANDOFF_FILES:
+            target, _parts = self._room_file_path(program_dir, name)
+            if os.path.isfile(target):
+                found.append(target)
+            else:
+                missing.append(name)
+        if missing:
+            what = " and ".join(missing)
+            raise ActionError(
+                409, "this program has no %s yet, so there is nothing to hand "
+                "over. Ask for it in the chat — the holodeck writes mockup.html "
+                "(the screen) and concept.md (what it must do) into the "
+                "program's room as you design — then send it to Align."
+                % what)
+        return found
+
+    def _handoff_scope(self, scope):
+        scope = (scope or "").strip().lower() or _HANDOFF_SCOPES[0]
+        if scope not in _HANDOFF_SCOPES:
+            raise ActionError(
+                400, "unknown build scope %r — it is either \"look+behaviour\" "
+                "(build it for real) or \"look-only\" (a reskin, no functional "
+                "change)" % scope)
+        return scope
+
+    def holodeck_promote(self, sid, scope=None):
+        """POST /api/holodeck/<sid>/promote — SEND TO ALIGN.
+
+        A READ that returns the pre-seeded hand-off: the brief drafted from the
+        concept doc's `## Hand-off summary`, the build-scope choice (D15), the
+        list of what rides along BY NAME, and the guidance block that goes into
+        the mission verbatim. It spawns no worker, writes no mission state and
+        locks nothing — the lock is a fact about a mission that exists, so it
+        lands when the mission is actually filed (`_holodeck_handed_over`).
+
+        The payload deliberately carries NO PATH. The deck shows names; the
+        daemon holds the paths.
+        """
+        with self._holodeck_lock:
+            sess = self._holodeck.get(sid)
+        if sess is None:
+            raise ActionError(404, "no such holodeck program: %s" % sid)
+        self._refuse_if_sent(sess)
+        scope = self._handoff_scope(scope)
+        paths = self._handoff_files(sess.program_dir)
+        try:
+            with open(paths[1]) as fh:
+                concept = fh.read()
+        except OSError as exc:
+            raise ActionError(
+                502, "LCARS could not read this program's concept.md, so it "
+                "cannot draft the brief: %s" % exc)
+        brief, source = _handoff_brief(concept)
+        return {
+            "sessionId": sid, "program": sess.program,
+            "room": os.path.basename(sess.program_dir),
+            "engine": os.path.basename(sess.engine or self.worker_bin or ""),
+            "brief": brief,
+            # WHICH section the draft came from, so the deck can say so rather
+            # than passing a fallback off as the hand-off summary.
+            "summarySource": source,
+            "scope": scope,
+            "scopeOptions": list(_HANDOFF_SCOPES),
+            "guidance": _handoff_guidance(scope),
+            "rides": [
+                {"name": _HANDOFF_FILES[0],
+                 "what": "the look and the flow — one self-contained file"},
+                {"name": _HANDOFF_FILES[1],
+                 "what": "decisions, declared flows, what it must do"},
+            ],
+        }
+
+    # ── the hand-off, as the File/Park/Align roads consume it ───────────────
+    def _handoff_attach(self, holodeck):
+        """`(session, [abs paths])` for a filing that carries a holodeck program.
+
+        `holodeck` is a SESSION ID and is looked up as one. A crafted value —
+        a traversal, an absolute path, a room name — is simply not a key in the
+        table, so it answers "no such holodeck program" without ever touching
+        the filesystem. There is no branch here that turns a string from the
+        request into a path.
+        """
+        sid = (holodeck or "").strip()
+        if not sid:
+            return None, []
+        with self._holodeck_lock:
+            sess = self._holodeck.get(sid)
+        if sess is None:
+            raise ActionError(404, "no such holodeck program: %s" % sid)
+        self._refuse_if_sent(sess)
+        return sess, self._handoff_files(sess.program_dir)
+
+    def _handoff_attach_soft(self, holodeck):
+        """`(session, [paths], reason)` — the same resolve, but it never raises.
+
+        The GRILL road only. A grill that reaches `done` has produced a PRD
+        that cost real tokens and real minutes of the captain's attention, and
+        it exists nowhere else. If the program went away underneath it (he
+        ended it from the deck mid-interview, the daemon was restarted) then
+        refusing here would throw the PRD away to protect an attachment — the
+        wrong trade both ways round.
+
+        So the mission is filed regardless and the caller SAYS what did not
+        ride, in the response. Nothing is silent, and nothing expensive is lost.
+        """
+        if not (holodeck or "").strip():
+            return None, [], ""
+        try:
+            sess, paths = self._handoff_attach(holodeck)
+            return sess, paths, ""
+        except ActionError as exc:
+            return None, [], exc.message
+
+    @staticmethod
+    def _handoff_idea(idea, scope):
+        """The captain's words PLUS the guidance block — assembled HERE.
+
+        The deck shows the same block before he sends, from the same function,
+        so what he read and what the mission is told cannot drift. It is not
+        composed in the browser for that reason and for one more: a mission
+        filed by anything else (a script, a later CLI verb) gets it too.
+        """
+        return "%s\n\n%s" % (idea, _handoff_guidance(scope))
+
+    def _mission_ids(self):
+        try:
+            return set(os.listdir(self._missions_dir()))
+        except OSError:
+            return set()
+
+    def _handoff_record(self, sess, before):
+        """Lock the program that was just sent, and say which mission holds it.
+
+        Called ONLY after the filing dispatch returned successfully: a lock is
+        the claim that a mission holds this exact design, and if no mission was
+        filed the claim is false — and the captain would be shut out of his
+        program for nothing.
+
+        The mission id is read by DIFFING the missions directory, because
+        file.sh mints it and the daemon's dispatch is fire-and-report, not a
+        conversation. Exactly one new mission is the normal case; anything else
+        records the hand-off WITHOUT a number rather than guessing one.
+        """
+        new = sorted(self._mission_ids() - before)
+        mid = new[0] if len(new) == 1 else ""
+        when = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        locked = self._write_sent_record(sess.program_dir, mid, when)
+        out = {"sessionId": None, "program": sess.program, "status": "sent",
+               "missionId": mid, "locked": locked,
+               "room": os.path.basename(sess.program_dir)}
+        with self._holodeck_lock:
+            for k, s in self._holodeck.items():
+                if s is sess:
+                    out["sessionId"] = k
+                    break
+        if not locked:
+            out["warning"] = (
+                "The mission was filed and it has the mockup and the concept "
+                "doc. LCARS could not write the hand-off into this program's "
+                "record, so the deck will still show it as a draft and it can "
+                "still be edited — which would leave it out of step with what "
+                "the mission was briefed on.")
+        return out
+
+    @staticmethod
+    def _write_sent_record(program_dir, mission_id, when):
+        """Put the hand-off line in `transcript.md`'s HEADER. True on success.
+
+        Best-effort, and the caller SAYS SO when it fails: the mission is
+        already filed by this point, and raising here would fail a request whose
+        real work succeeded. Only the header — the block LCARS itself wrote when
+        the program was named — is touched; not one line a model produced is
+        rewritten or moved.
+        """
+        path = os.path.join(program_dir, _TRANSCRIPT)
+        line = _sent_header_line(mission_id, when)
+        try:
+            with open(path) as fh:
+                text = fh.read()
+        except OSError:
+            return False
+        text = text.replace("\r\n", "\n")
+        parts = re.split(r"(?m)^(## )", text, maxsplit=1)
+        head = parts[0]
+        rest = "".join(parts[1:])
+        if _SENT_LINE.search(head):
+            head = _SENT_LINE.sub(lambda _m: line.rstrip("\n"), head, count=1)
+            if not head.endswith("\n"):
+                head += "\n"
+        else:
+            head = head.rstrip("\n") + "\n\n" + line
+        try:
+            with open(path, "w") as fh:
+                fh.write(head + rest)
+        except OSError:
+            return False
+        return True
 
     # ══ S126 — DURABLE PROGRAMS: reopen and delete ═════════════════════════
     def _room_dir(self, sidecar, room):
@@ -3824,12 +4301,51 @@ class Actions(LogFacts):
             return None
         return _CONCEPT
 
+    # ── S127 (D11 + D5): the two facts the hand-off adds to every card ──────
+    # `status`/`missionId` are the lifecycle; `handoffReady`/`handoffBlocked`
+    # are whether SEND TO ALIGN can fire and, when it cannot, the daemon's OWN
+    # sentence for why. The reason is composed here rather than in the browser
+    # for the one-voice rule: the deck must never invent an explanation for a
+    # refusal it did not make.
+    def _handoff_state(self, program_dir):
+        # `status` AND `lifecycle` carry the same value, deliberately. `status`
+        # is the key S126 shipped and the program list reads — but it is also
+        # the key the TURN payloads use for a turn's outcome ("standing-by",
+        # "ok", "refused", "ended"), and those payloads `update()` over this
+        # meta. So a single-program read (`open`, a turn) would answer
+        # "standing-by" for a program that is LOCKED. `lifecycle` is never
+        # overwritten by anything, and is what a surface should ask.
+        rec = self._sent_record(program_dir)
+        life = "sent" if rec else "draft"
+        out = {"status": life, "lifecycle": life,
+               "missionId": (rec or {}).get("missionId") or "",
+               "sentAt": (rec or {}).get("at") or ""}
+        if rec:
+            out["handoffReady"] = False
+            out["handoffBlocked"] = ""
+            return out
+        missing = []
+        for name in _HANDOFF_FILES:
+            try:
+                target, _p = self._room_file_path(program_dir, name)
+            except ActionError:
+                missing.append(name)
+                continue
+            if not os.path.isfile(target):
+                missing.append(name)
+        out["handoffReady"] = not missing
+        out["handoffBlocked"] = "" if not missing else (
+            "There is no %s in this program's room yet, so there is nothing to "
+            "hand over. Keep designing in the chat — the holodeck writes the "
+            "mockup and the concept doc as you go." % " or ".join(missing))
+        return out
+
     def _holodeck_meta(self, sid, sess):
         # S125 additions are all ADDITIVE (D2/D3/D6/D8): `previewFile` is what
         # the live-preview iframe points at, `sidecarName` + `commits` are the
         # program list's footer chip, and `lastTouched` is its recency line. The
         # S124 keys are untouched, so every S124 test reads the same shape.
-        return {"sessionId": sid, "program": sess.program, "mode": sess.mode,
+        meta = {"sessionId": sid, "program": sess.program, "mode": sess.mode,
                 # `grounded` + `basisFile` are the D12 pair: the chip says this
                 # mockup is built on the project's own language, and the link
                 # is what makes that grounding INSPECTABLE (a grounding you
@@ -3860,12 +4376,17 @@ class Actions(LogFacts):
                 # program was DESIGNED on an engine only when this is true.
                 "engineRecorded": bool(sess.engine_recorded),
                 "turnCount": len(sess.turns),
-                "status": "draft",
+                # S127 (D11) — the lifecycle, read from the program's own
+                # record so a live card and a restarted one cannot disagree.
+                # `done` is NOT set here: it is a fact about the MISSION
+                # merging, and nothing in this round reads that back.
                 "previewFile": self._preview_file(sess),
                 "sidecarName": os.path.basename(sess.sidecar_dir),
                 "commits": self._sidecar_commit_count(sess.sidecar_dir),
                 "openedAt": sess.opened_at,
                 "lastTouched": sess.last_touched}
+        meta.update(self._handoff_state(sess.program_dir))
+        return meta
 
     # ── S125: the surface's three reads (list · preview file · one file) ────
     #
@@ -3977,7 +4498,7 @@ class Actions(LogFacts):
         # resolved here (a listing must not 502 over an engine that is no
         # longer installed) — reopening does that, and says so.
         engine = recorded_engine or (self.worker_bin or "").strip()
-        return {
+        out = {
             "sessionId": None, "onDisk": True, "program": name,
             "mode": "design", "grounded": bool(self._basis_file_in(program_dir)),
             "basisFile": self._basis_file_in(program_dir),
@@ -3986,7 +4507,7 @@ class Actions(LogFacts):
             "warm": False,
             "sidecar": sidecar, "programDir": program_dir, "room": room,
             "engine": engine, "engineRecorded": bool(recorded_engine),
-            "turnCount": len(turns), "status": "draft",
+            "turnCount": len(turns),
             "previewFile": self._preview_file_in(program_dir),
             "conceptFile": self._concept_file_in(program_dir),
             "sidecarName": os.path.basename(sidecar),
@@ -3995,6 +4516,11 @@ class Actions(LogFacts):
             "openedAt": when, "lastTouched": when,
             "turns": turns,
         }
+        # S127 — the SAME lifecycle rule a live card gets, from the same
+        # function reading the same file. Two copies of this is exactly how a
+        # restarted card and a live one start disagreeing about a lock.
+        out.update(self._handoff_state(program_dir))
+        return out
 
     @staticmethod
     def _is_program_room(program_dir):
@@ -4043,9 +4569,13 @@ class Actions(LogFacts):
 
         THE DISK IS THE LIST; the live `_HolodeckSession`s are laid over it, so
         a program that this daemon never opened still appears, with its turn
-        count read out of its own transcript. Every entry is `draft` — the
-        sent/done lifecycle is S127 — which is why the surface's filter chips
-        filter but do not TRANSITION anything.
+        count read out of its own transcript.
+
+        S127 — each entry's `status`/`lifecycle` is now REAL: `draft` until the
+        program is sent to Align, `sent` (with its `missionId`) after, read out
+        of the program's own record so a restart cannot lose it. `done` is not
+        set by anything yet — it is a fact about the MISSION merging, and
+        nothing here reads that back.
         """
         with self._holodeck_lock:
             items = list(self._holodeck.items())
@@ -4144,17 +4674,20 @@ class Actions(LogFacts):
         except ValueError:
             return 8 * 1024 * 1024
 
-    def holodeck_preview(self, sid, rel):
-        """GET /api/holodeck/<sid>/preview/<path> — ONE file from the room.
+    @staticmethod
+    def _room_file_path(program_dir, rel):
+        """THE JAIL, as one function — `(abs path, [segments])` or ActionError.
 
-        Returns `{"bytes": <bytes>, "contentType": <str>, "path": <rel>}`.
-        Raises ActionError with a READABLE message; never a stack, never a
-        filesystem path the captain did not already know about.
+        S127 extracted this from `holodeck_preview` UNCHANGED (same checks, same
+        order, same words) so the hand-off resolves `mockup.html`/`concept.md`
+        through the very same fence rather than growing a second one beside it.
+        Two jails over one directory is two chances to get it wrong, and only
+        one of them would ever be the one under test.
+
+        Existence is NOT checked here: the preview route and the hand-off answer
+        a missing file with completely different sentences, and each says its
+        own.
         """
-        with self._holodeck_lock:
-            sess = self._holodeck.get(sid)
-        if sess is None:
-            raise ActionError(404, "no such holodeck program: %s" % sid)
         rel = rel or ""
         if "\x00" in rel:
             raise ActionError(400, "that is not a file name the holodeck can "
@@ -4169,13 +4702,27 @@ class Actions(LogFacts):
         if not parts or any(p == ".." for p in parts):
             raise ActionError(403, "the holodeck preview only serves files "
                                    "inside this program's own room")
-        room = os.path.realpath(sess.program_dir)
+        room = os.path.realpath(program_dir)
         target = os.path.realpath(os.path.join(room, *parts))
         # The realpath re-check: a symlink inside the room that points out of it
         # normpaths clean and only shows up here.
         if target != room and not target.startswith(room + os.sep):
             raise ActionError(403, "the holodeck preview only serves files "
                                    "inside this program's own room")
+        return target, parts
+
+    def holodeck_preview(self, sid, rel):
+        """GET /api/holodeck/<sid>/preview/<path> — ONE file from the room.
+
+        Returns `{"bytes": <bytes>, "contentType": <str>, "path": <rel>}`.
+        Raises ActionError with a READABLE message; never a stack, never a
+        filesystem path the captain did not already know about.
+        """
+        with self._holodeck_lock:
+            sess = self._holodeck.get(sid)
+        if sess is None:
+            raise ActionError(404, "no such holodeck program: %s" % sid)
+        target, parts = self._room_file_path(sess.program_dir, rel)
         if not os.path.isfile(target):
             raise ActionError(404, "the holodeck has no file called %s in this "
                                    "program yet" % "/".join(parts))

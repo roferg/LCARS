@@ -3372,11 +3372,529 @@ class DurableReadOnlyTest(HolodeckBase):
 
     def test_the_new_write_routes_are_refused_on_a_read_only_daemon(self):
         for path, body in (("/api/holodeck/open", {"room": "x"}),
-                           ("/api/holodeck/delete", {"room": "x"})):
+                           ("/api/holodeck/delete", {"room": "x"}),
+                           # S127 — the hand-off is a WRITE like its siblings.
+                           ("/api/holodeck/abc123/promote", {})):
             st, resp = self._post_raw(path, body)
             self.assertEqual(st, 403, path)
             self.assertIn("read-only", resp["error"])
         self.assertEqual(os.listdir(self.holo_root), [])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S127 — THE HAND-OFF: SEND TO ALIGN
+#
+# The captain's acceptance bar, in his own words: he describes what he wants,
+# the holodeck handles the attachments ITSELF, the File console comes up
+# already good to go, and the card lands on the board. "He never types a file
+# path, never juggles --attach, never copies a file, and never sees the
+# plumbing."
+#
+# The security property that bar implies, and which everything below is really
+# testing: the BROWSER NEVER SENDS A FILESYSTEM PATH. It sends the program's
+# session id and nothing else; the daemon re-resolves that program's room and
+# expands it to `--attach` arguments through the SAME jail `holodeck_preview`
+# uses. A path in the request body would be a path the page could choose.
+# ════════════════════════════════════════════════════════════════════════════
+
+# The file.sh stub the hand-off suites need. The plain `_file_record_stub`
+# records `$*` and exits — enough for "was it called", useless for "what did it
+# actually receive", because the PRD/idea text arrives as a TEMP FILE that the
+# daemon unlinks in a `finally`. This one snapshots the CONTENT of every
+# `--prd`/`--idea`/`--adr` file before returning, and (when asked) MINTS a
+# mission directory so the lifecycle's "record the mission id" claim is tested
+# against a mission that really appeared rather than against a mock.
+_FILE_STUB_SRC = r'''import json, os, sys
+
+CFG = json.loads(open(%(cfg)r).read())
+argv = sys.argv[1:]
+rec = {"argv": argv, "files": {}}
+for i, a in enumerate(argv):
+    if a in ("--prd", "--idea", "--adr") and i + 1 < len(argv):
+        try:
+            with open(argv[i + 1]) as fh:
+                rec["files"][a] = fh.read()
+        except OSError:
+            rec["files"][a] = None
+if CFG.get("mint"):
+    mid = CFG["mint"]
+    d = os.path.join(os.getcwd(), ".git", "lcars", "missions", mid)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "state.json"), "w") as fh:
+        json.dump({"id": mid, "stage": "align", "title": "from the holodeck"}, fh)
+rec["exit"] = int(CFG.get("exit", 0))
+with open(CFG["record"], "a") as fh:
+    fh.write(json.dumps(rec) + "\n")
+sys.exit(int(CFG.get("exit", 0)))
+'''
+
+
+class HandoffBase(DurableBase):
+    """A program whose room holds a real mockup + a real concept doc.
+
+    The fixtures are TRANSCRIBED from the shape a live holodeck turn actually
+    produces (`<sidecar>/command-palette/`, 2026-08-05): the mockup opens with
+    the self-describing "VISUAL REFERENCE ONLY" comment the turn prompt asks
+    for, and the concept doc carries the real section headings — including the
+    `## Hand-off summary` the seeded brief is built from.
+    """
+
+    MOCKUP = ("<!doctype html>\n"
+              "<!--\n"
+              "  VISUAL REFERENCE ONLY — this is a mockup, not shipping code.\n"
+              "-->\n"
+              "<html><body><h1>Command palette</h1></body></html>\n")
+    SUMMARY = ("Build a Cmd-K command palette overlay for the board: a centred "
+               "panel with a search input, a fuzzy-matched command list, and "
+               "the most recently run command pinned alone at the top.")
+    CONCEPT = ("# Command Palette\n\n"
+               "## The problem\n\nThe captain wants a palette.\n\n"
+               "## Decisions\n\n- **Turn 2:** Cmd-K opens it.\n\n"
+               "## Open questions\n\n1. What is the command list?\n\n"
+               "## WHAT IT MUST DO — BEHAVIOUR ONLY\n\n### 1. Requirements\n\n"
+               "- **Turn 2:** \"Cmd-K opens it, Escape closes it.\"\n\n"
+               "## DECLARED FLOW\n\n`board` → `Cmd-K` → `palette open`\n\n"
+               "## Hand-off summary\n\n" + SUMMARY + "\n")
+
+    mint = "m-777"
+    file_exit = 0
+
+    def setUp(self):
+        super(HandoffBase, self).setUp()
+        self.file_cfg = os.path.join(self.tmp, "file-stub-cfg.json")
+        with open(self.file_cfg, "w") as fh:
+            json.dump({"record": self.records["file"], "mint": self.mint,
+                       "exit": self.file_exit}, fh)
+        # The daemon dispatches every skill as `bash <script>` (`_resolve_run`),
+        # so the SCRIPT stays bash and hands off to python for the JSON work —
+        # expressing "snapshot this temp file's contents" in bash quoting is how
+        # a fixture starts lying.
+        py = os.path.join(self.tmp, "file-stub.py")
+        with open(py, "w") as fh:
+            fh.write(_FILE_STUB_SRC % {"cfg": self.file_cfg})
+        with open(self.scripts["file"], "w") as fh:
+            fh.write('#!/usr/bin/env bash\nexec %s %s "$@"\n'
+                     % (shlex.quote(sys.executable), shlex.quote(py)))
+        os.chmod(self.scripts["file"], 0o755)
+
+    # -- helpers -------------------------------------------------------------
+    def _filed(self):
+        """Every recorded file.sh dispatch: {argv, files}."""
+        p = self.records["file"]
+        if not os.path.exists(p):
+            return []
+        out = []
+        with open(p) as fh:
+            for line in fh:
+                if line.strip():
+                    out.append(json.loads(line))
+        return out
+
+    @staticmethod
+    def _attached(rec):
+        argv = rec["argv"]
+        return [argv[i + 1] for i, a in enumerate(argv)
+                if a == "--attach" and i + 1 < len(argv)]
+
+    def _program(self, mockup=True, concept=True):
+        """Open a program and put the hand-off files in its room. The files are
+        written through a real TURN (the stub's `writes`), not planted behind
+        the daemon's back — a hand-off must work on a room the product made."""
+        writes = []
+        if mockup:
+            writes.append({"path": "mockup.html", "content": self.MOCKUP})
+        if concept:
+            writes.append({"path": "concept.md", "content": self.CONCEPT})
+        self._set_turns({"stdout": "Built the palette.", "writes": writes})
+        sid, _ = self._start(program="Command palette")
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft it"})
+        return sid
+
+    def _promote(self, sid, **body):
+        return self._post_raw("/api/holodeck/%s/promote" % sid, body)
+
+
+# ── 1. the SEND TO ALIGN action itself ──────────────────────────────────────
+class PromoteTest(HandoffBase):
+    def test_it_refuses_a_program_with_no_mockup_in_LCARS_voice(self):
+        sid = self._program(mockup=False)
+        st, body = self._promote(sid)
+        self.assertEqual(st, 409, body)
+        msg = body["error"]
+        self.assertIn("mockup.html", msg)
+        # it says what the captain should DO — not just what is wrong.
+        self.assertRegex(msg.lower(), r"ask|describe|chat")
+        for jargon in ("traceback", "oserror", "errno", "none", "exception"):
+            self.assertNotIn(jargon, msg.lower(), jargon)
+
+    def test_it_refuses_a_program_with_no_concept_doc(self):
+        sid = self._program(concept=False)
+        st, body = self._promote(sid)
+        self.assertEqual(st, 409, body)
+        self.assertIn("concept.md", body["error"])
+
+    def test_it_names_BOTH_when_both_are_missing(self):
+        sid = self._program(mockup=False, concept=False)
+        st, body = self._promote(sid)
+        self.assertEqual(st, 409, body)
+        self.assertIn("mockup.html", body["error"])
+        self.assertIn("concept.md", body["error"])
+
+    def test_an_unknown_program_is_a_clean_404(self):
+        st, body = self._promote("nosuchsession")
+        self.assertEqual(st, 404, body)
+        self.assertIn("no such holodeck program", body["error"])
+
+    # -- the payload: a PRE-SEEDED File console ------------------------------
+    def test_the_brief_is_seeded_from_the_concept_hand_off_summary(self):
+        sid = self._program()
+        st, body = self._promote(sid)
+        self.assertEqual(st, 200, body)
+        state = body["state"]
+        self.assertIn(self.SUMMARY, state["brief"])
+        self.assertEqual(state["summarySource"], "Hand-off summary")
+
+    def test_the_guidance_carries_the_precedence_rule_VERBATIM(self):
+        sid = self._program()
+        _st, body = self._promote(sid)
+        self.assertIn(
+            "Where the mockup and the brief disagree, the brief wins.",
+            body["state"]["guidance"])
+
+    def test_the_guidance_says_the_mockup_is_look_and_flow_only_and_fake(self):
+        sid = self._program()
+        _st, body = self._promote(sid)
+        g = body["state"]["guidance"]
+        self.assertIn("look and flow", g.lower())
+        self.assertIn("internals are deliberately fake", g.lower())
+        self.assertIn("not an implementation", g.lower())
+
+    def test_visual_fidelity_arrives_as_an_ACCEPTANCE_CRITERION(self):
+        """S127's Failure 1 is GRADED, not hoped for — the precedent is this
+        repo's own board, vendored from a mockup with 'high visual fidelity'
+        an explicit acceptance bar."""
+        sid = self._program()
+        _st, body = self._promote(sid)
+        self.assertIn("acceptance criterion", body["state"]["guidance"].lower())
+
+    def test_the_default_build_scope_is_look_plus_behaviour(self):
+        sid = self._program()
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["scope"], "look+behaviour")
+        self.assertIn("look-only", body["state"]["scopeOptions"])
+
+    def test_look_only_carries_a_no_functional_change_constraint(self):
+        sid = self._program()
+        _st, body = self._promote(sid, scope="look-only")
+        self.assertEqual(body["state"]["scope"], "look-only")
+        self.assertIn("no functional change",
+                      body["state"]["guidance"].lower())
+
+    def test_look_plus_behaviour_says_the_brief_defines_what_it_must_do(self):
+        sid = self._program()
+        _st, body = self._promote(sid)
+        g = body["state"]["guidance"].lower()
+        self.assertIn("what it must do", g)
+        self.assertNotIn("no functional change", g)
+
+    def test_an_unknown_scope_is_refused_rather_than_silently_defaulted(self):
+        sid = self._program()
+        st, body = self._promote(sid, scope="just-the-vibes")
+        self.assertEqual(st, 400, body)
+        self.assertIn("look-only", body["error"])
+
+    def test_the_payload_lists_what_rides_along_BY_NAME(self):
+        sid = self._program()
+        _st, body = self._promote(sid)
+        self.assertEqual([r["name"] for r in body["state"]["rides"]],
+                         ["mockup.html", "concept.md"])
+
+    def test_the_payload_contains_NO_FILESYSTEM_PATH_AT_ALL(self):
+        """The captain never sees the plumbing — and a path the page can read
+        is a path the page can send back. The whole payload is searched, not
+        one field, because a leak is a leak wherever it lands."""
+        sid = self._program()
+        _st, body = self._promote(sid)
+        blob = json.dumps(body["state"])
+        for leak in (self.tmp, self.holo_root, self._sidecar(), self._room(),
+                     os.sep + "Users", "/tmp/"):
+            self.assertNotIn(leak, blob, leak)
+
+    def test_promote_spawns_no_worker_and_writes_no_mission_state(self):
+        sid = self._program()
+        before = len(self._calls())
+        self._promote(sid)
+        self.assertEqual(len(self._calls()), before)
+        self.assertEqual(self._filed(), [])
+
+
+# ── 2. the attachments ride, and the browser never names a path ─────────────
+class HandoffAttachmentsTest(HandoffBase):
+    def _room_files(self):
+        # realpath'd: the jail resolves symlinks (that IS the check), and on
+        # macOS `/var` is a symlink to `/private/var`.
+        return [os.path.realpath(os.path.join(self._room("command-palette"), n))
+                for n in ("mockup.html", "concept.md")]
+
+    def test_park_attaches_the_mockup_and_the_concept_by_SESSION_ID_alone(self):
+        sid = self._program()
+        st, _body = self._post("/api/park", {"idea": "build the palette",
+                                             "holodeck": sid})
+        self.assertEqual(st, 200)
+        recs = self._filed()
+        self.assertEqual(len(recs), 1, recs)
+        self.assertEqual(self._attached(recs[0]), self._room_files())
+
+    def test_file_mission_attaches_them_too(self):
+        sid = self._program()
+        self._post("/api/mission", {"idea": "build the palette",
+                                    "holodeck": sid})
+        recs = self._filed()
+        self.assertEqual(self._attached(recs[0]), self._room_files())
+
+    def test_the_guidance_reaches_the_filed_text_verbatim(self):
+        """The DAEMON appends it, not the browser: what the console showed and
+        what the mission is told are then the same words by construction."""
+        sid = self._program()
+        self._post("/api/park", {"idea": "build the palette", "holodeck": sid})
+        text = self._filed()[0]["files"]["--idea"]
+        self.assertIn("build the palette", text)
+        self.assertIn("Where the mockup and the brief disagree, the brief wins.",
+                      text)
+        self.assertIn("acceptance criterion", text.lower())
+
+    def test_the_chosen_scope_reaches_the_filed_text(self):
+        sid = self._program()
+        self._post("/api/park", {"idea": "reskin it", "holodeck": sid,
+                                 "holodeckScope": "look-only"})
+        text = self._filed()[0]["files"]["--idea"]
+        self.assertIn("no functional change", text.lower())
+
+    def test_a_mission_with_NO_holodeck_is_completely_unchanged(self):
+        self._post("/api/park", {"idea": "something ordinary"})
+        rec = self._filed()[0]
+        self.assertEqual(self._attached(rec), [])
+        self.assertNotIn("mockup", rec["files"]["--idea"].lower())
+
+    # -- the jail ------------------------------------------------------------
+    def test_a_CRAFTED_program_id_cannot_reach_a_file_outside_the_sidecar(self):
+        """A traversal, an absolute path and a room name are all just strings
+        the page could put in `holodeck`. None of them resolves to anything —
+        the id is a key into the daemon's OWN session table, so nothing the
+        browser types can name a file."""
+        self._program()
+        outside = os.path.join(self.repo, "secret.txt")
+        with open(outside, "w") as fh:
+            fh.write("classified")
+        for crafted in ("../../etc/passwd", "/etc/passwd", outside,
+                        "command-palette", "..", ".", "nav-rail/../../.."):
+            st, body = self._post_raw("/api/park", {"idea": "x",
+                                                    "holodeck": crafted})
+            self.assertEqual(st, 404, "%s → %s" % (crafted, body))
+            self.assertIn("no such holodeck program", body["error"])
+        # …and nothing was filed on any of those attempts.
+        self.assertEqual(self._filed(), [])
+
+    def test_a_SYMLINKED_mockup_pointing_out_of_the_room_is_refused(self):
+        """The realpath re-check `holodeck_preview` already does, reused rather
+        than rewritten: a symlink normpaths clean and only shows up there."""
+        sid = self._program()
+        room = self._room("command-palette")
+        outside = os.path.join(self.repo, "not-a-mockup.html")
+        with open(outside, "w") as fh:
+            fh.write("<h1>the captain's real file")
+        os.unlink(os.path.join(room, "mockup.html"))
+        os.symlink(outside, os.path.join(room, "mockup.html"))
+        st, body = self._promote(sid)
+        self.assertEqual(st, 403, body)
+        self.assertEqual(self._filed(), [])
+        st, body = self._post_raw("/api/park", {"idea": "x", "holodeck": sid})
+        self.assertEqual(st, 403, body)
+        self.assertEqual(self._filed(), [])
+
+    def test_a_SYMLINKED_concept_doc_pointing_out_of_the_room_is_refused(self):
+        sid = self._program()
+        room = self._room("command-palette")
+        outside = os.path.join(self.repo, "elsewhere.md")
+        with open(outside, "w") as fh:
+            fh.write("# not this")
+        os.unlink(os.path.join(room, "concept.md"))
+        os.symlink(outside, os.path.join(room, "concept.md"))
+        st, _body = self._promote(sid)
+        self.assertEqual(st, 403)
+
+
+# ── 3. the program LIFECYCLE: sending LOCKS it (D11) ────────────────────────
+class HandoffLifecycleTest(HandoffBase):
+    def test_a_sent_program_reads_sent_and_carries_its_mission(self):
+        sid = self._program()
+        self.assertEqual(self._get("/api/holodeck/%s" % sid)["status"], "draft")
+        _st, body = self._post("/api/park", {"idea": "go", "holodeck": sid})
+        self.assertEqual(body["state"]["holodeck"]["status"], "sent")
+        self.assertEqual(body["state"]["holodeck"]["missionId"], self.mint)
+        state = self._get("/api/holodeck/%s" % sid)
+        self.assertEqual(state["status"], "sent")
+        self.assertEqual(state["missionId"], self.mint)
+
+    def test_the_lock_SURVIVES_a_daemon_restart(self):
+        sid = self._program()
+        before = sorted(os.listdir(self._room("command-palette")))
+        self._post("/api/park", {"idea": "go", "holodeck": sid})
+        self.assertEqual(sorted(os.listdir(self._room("command-palette"))),
+                         before)
+        self._restart_daemon()
+        rooms = {p["room"]: p for p in self._list()["programs"]}
+        self.assertEqual(rooms["command-palette"]["status"], "sent")
+        self.assertEqual(rooms["command-palette"]["missionId"], self.mint)
+        # …and it is remembered in the ONE durable home the program already
+        # has. No second metadata file — that is the money bug S126 cured.
+        self.assertEqual(sorted(os.listdir(self._room("command-palette"))),
+                         before)
+        self.assertIn("transcript.md", before)
+
+    def test_reopening_a_sent_room_keeps_it_sent(self):
+        sid = self._program()
+        self._post("/api/park", {"idea": "go", "holodeck": sid})
+        self._restart_daemon()
+        _st, body = self._post("/api/holodeck/open", {"room": "command-palette"})
+        # `lifecycle`, not `status`: a reopen payload's `status` is the TURN's
+        # ("standing-by"), which is why the lifecycle has a key of its own.
+        self.assertEqual(body["state"]["lifecycle"], "sent")
+        self.assertEqual(body["state"]["missionId"], self.mint)
+
+    def test_a_sent_program_refuses_further_turns_in_LCARS_language(self):
+        sid = self._program()
+        self._post("/api/park", {"idea": "go", "holodeck": sid})
+        before = len(self._calls())
+        st, body = self._post_raw("/api/holodeck/%s/say" % sid,
+                                  {"text": "make it wider"})
+        self.assertEqual(st, 409, body)
+        msg = body["error"]
+        self.assertIn(self.mint, msg)
+        self.assertIn("DUPLICATE TO KEEP DESIGNING", msg)
+        for jargon in ("traceback", "409", "actionerror"):
+            self.assertNotIn(jargon, msg.lower(), jargon)
+        # and no worker was spawned for the refused turn.
+        self.assertEqual(len(self._calls()), before)
+
+    def test_a_sent_program_cannot_be_sent_twice(self):
+        sid = self._program()
+        self._post("/api/park", {"idea": "go", "holodeck": sid})
+        st, body = self._promote(sid)
+        self.assertEqual(st, 409, body)
+        self.assertIn(self.mint, body["error"])
+
+    def test_a_DRAFT_program_still_takes_turns(self):
+        """The control — without it a daemon that refused every turn would
+        pass the lock test."""
+        sid = self._program()
+        st, body = self._post_raw("/api/holodeck/%s/say" % sid,
+                                  {"text": "make it wider"})
+        self.assertEqual(st, 200, body)
+
+    def test_the_transcript_records_the_hand_off_where_the_ENGINE_is_recorded(self):
+        sid = self._program()
+        self._post("/api/park", {"idea": "go", "holodeck": sid})
+        text = self._transcript("command-palette")
+        self.assertIn(self.mint, text)
+        # the record's HEADER, above the first turn — the same place, and the
+        # same reason, as the engine line.
+        head = text.split("## Turn", 1)[0]
+        self.assertIn(self.mint, head)
+        # nothing a model wrote was rewritten.
+        self.assertIn("**Captain:** draft it", text)
+
+
+class HandoffThroughTheGrillTest(HandoffBase):
+    """The OTHER road: ▹ FILE & BEGIN ALIGNMENT rather than ▦ FILE MISSION.
+
+    Both must carry the artifacts, or one of the two buttons on the console
+    silently drops them — which is the exact shape of a green-but-wrong.
+    """
+
+    def _grill_reply(self, obj):
+        self._set_turns({"stdout": json.dumps(obj)})
+
+    def test_a_grill_started_from_the_holodeck_files_with_the_attachments(self):
+        sid = self._program()
+        self._grill_reply({"status": "done", "prd": "# PRD\n\nbuild it"})
+        st, body = self._post("/api/align/start",
+                              {"idea": "build the palette", "holodeck": sid,
+                               "engine": self.claude_bin})
+        self.assertEqual(st, 200, body)
+        self.assertEqual(body["state"]["status"], "done", body)
+        rec = self._filed()[0]
+        self.assertEqual(
+            self._attached(rec),
+            [os.path.realpath(os.path.join(self._room("command-palette"), n))
+             for n in ("mockup.html", "concept.md")])
+
+    def test_the_grill_is_told_the_guidance_in_its_opening_turn(self):
+        sid = self._program()
+        self._grill_reply({"status": "question",
+                           "question": {"text": "which screens?"}})
+        self._post("/api/align/start",
+                   {"idea": "build the palette", "holodeck": sid,
+                    "engine": self.claude_bin})
+        prompt = self._prompts()[-1]
+        self.assertIn("Where the mockup and the brief disagree, the brief wins.",
+                      prompt)
+
+    def test_it_locks_the_program_when_the_grill_completes(self):
+        sid = self._program()
+        self._grill_reply({"status": "done", "prd": "# PRD\n\nbuild it"})
+        _st, body = self._post("/api/align/start",
+                               {"idea": "build it", "holodeck": sid,
+                                "engine": self.claude_bin})
+        self.assertEqual(body["state"]["holodeck"]["missionId"], self.mint)
+        self.assertEqual(self._get("/api/holodeck/%s" % sid)["status"], "sent")
+
+    def test_a_program_ENDED_mid_grill_still_files_and_SAYS_what_was_lost(self):
+        """A finished grill's PRD cost real tokens and exists nowhere else.
+        Refusing at the done branch to protect an attachment would throw it
+        away — so the mission is filed, and the response says plainly that the
+        artifacts did not ride."""
+        sid = self._program()
+        self._grill_reply({"status": "question",
+                           "question": {"text": "which screens?"}})
+        _st, body = self._post("/api/align/start",
+                               {"idea": "build it", "holodeck": sid,
+                                "engine": self.claude_bin})
+        asid = body["state"]["sessionId"]
+        self._post("/api/holodeck/%s/end" % sid, {})   # he closed the program
+        self._grill_reply({"status": "done", "prd": "# PRD\n\nbuild it"})
+        st, body = self._post("/api/align/%s/answer" % asid, {"answer": "go"})
+        self.assertEqual(st, 200, body)
+        self.assertEqual(len(self._filed()), 1, self._filed())
+        self.assertEqual(self._attached(self._filed()[0]), [])
+        warn = body["state"]["holodeck"]["warning"]
+        self.assertIn("did NOT ride", warn)
+        self.assertFalse(body["state"]["holodeck"]["locked"])
+
+    def test_a_LOCKED_program_is_refused_BEFORE_a_grill_worker_is_spawned(self):
+        sid = self._program()
+        self._post("/api/park", {"idea": "go", "holodeck": sid})
+        before = len(self._calls())
+        st, body = self._post_raw("/api/align/start",
+                                  {"idea": "again", "holodeck": sid,
+                                   "engine": self.claude_bin})
+        self.assertEqual(st, 409, body)
+        self.assertEqual(len(self._calls()), before)
+
+
+class HandoffFailedFilingTest(HandoffBase):
+    file_exit = 1
+
+    def test_a_filing_that_FAILED_leaves_the_program_a_draft(self):
+        """A lock is a claim that a mission holds this exact design. If no
+        mission was filed, the claim is false — and the captain would be locked
+        out of the program for nothing."""
+        sid = self._program()
+        st, body = self._post_raw("/api/park", {"idea": "go", "holodeck": sid})
+        self.assertNotEqual(st, 200, body)
+        self.assertEqual(self._get("/api/holodeck/%s" % sid)["status"], "draft")
+        st, _b = self._post_raw("/api/holodeck/%s/say" % sid, {"text": "more"})
+        self.assertEqual(st, 200)
 
 
 if __name__ == "__main__":

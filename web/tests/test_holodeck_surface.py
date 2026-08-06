@@ -1712,6 +1712,184 @@ class RefusedTurnStillReportsTheTranscriptTest(unittest.TestCase):
         self.assertEqual(out["text"].count("transcript.md"), 1, out["text"])
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# S127 — THE HAND-OFF ON THE DECK
+#
+# What this half can prove: which controls exist, whether each is WIRED or
+# visibly off WITH a reason, what the dialog says, and — the one that matters —
+# exactly what the browser PUTS ON THE WIRE. The last is the security claim of
+# the whole round: the page sends a session id and never a path.
+#
+# What it cannot see (S163's lesson, said again rather than rediscovered): it
+# calls the render functions itself and has no CSS, so a bar painted off-screen
+# or a band the same colour as its background passes every line below.
+# `tests/drives/browser/holodeck.sh` is the other half.
+# ════════════════════════════════════════════════════════════════════════════
+READY = dict(PROG, handoffReady=True, handoffBlocked="", conceptFile="concept.md")
+NOT_READY = dict(PROG, handoffReady=False, conceptFile=None, handoffBlocked=(
+    "There is no concept.md in this program's room yet, so there is nothing "
+    "to hand over."))
+SENT = dict(READY, status="sent", lifecycle="sent", missionId="m-014",
+            handoffReady=False)
+
+SEED = {
+    "sessionId": "s1", "program": "Command palette", "room": "command-palette",
+    "engine": "claude",
+    "brief": "Build a Cmd-K command palette overlay for the board.",
+    "summarySource": "Hand-off summary",
+    "scope": "look+behaviour", "scopeOptions": ["look+behaviour", "look-only"],
+    "guidance": ("## How to read the attached mockup\n\n"
+                 "- HOW MUCH TO BUILD: look AND behaviour.\n"
+                 "- Where the mockup and the brief disagree, the brief wins.\n"
+                 "- Matching it visually is an ACCEPTANCE CRITERION.\n"),
+    "rides": [{"name": "mockup.html", "what": "the look and the flow"},
+              {"name": "concept.md", "what": "decisions and declared flows"}],
+}
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class HandoffDeckTest(unittest.TestCase):
+    def test_a_ready_program_offers_SEND_TO_ALIGN_and_it_is_wired(self):
+        out = _harness({"act": "handoffBar", "programs": [READY],
+                        "activeId": "s1"})
+        self.assertTrue(out["barPresent"])
+        send = [c for c in out["barControls"]
+                if "send to align" in c["label"].lower()]
+        self.assertEqual(len(send), 1, out["barControls"])
+        self.assertTrue(send[0]["wired"], send[0])
+        self.assertFalse(send[0]["disabled"])
+
+    def test_a_program_with_nothing_to_hand_over_is_OFF_WITH_THE_REASON(self):
+        """Never a control that does nothing when you click it — and never a
+        reason this side invented: the sentence is the daemon's."""
+        out = _harness({"act": "handoffBar", "programs": [NOT_READY],
+                        "activeId": "s1"})
+        send = [c for c in out["barControls"]
+                if "send to align" in c["label"].lower()][0]
+        self.assertFalse(send["wired"])
+        self.assertTrue(send["disabled"])
+        self.assertEqual(send["reason"], NOT_READY["handoffBlocked"])
+        self.assertIn("concept.md", out["barText"])
+
+    def test_a_view_only_board_cannot_send(self):
+        out = _harness({"act": "handoffBar", "programs": [READY],
+                        "activeId": "s1", "writes": False})
+        send = [c for c in out["barControls"]
+                if "send to align" in c["label"].lower()][0]
+        self.assertTrue(send["disabled"], send)
+
+    def test_clicking_it_asks_the_daemon_BY_SESSION_ID_AND_SENDS_NO_PATH(self):
+        out = _harness({"act": "sendClick", "programs": [READY],
+                        "activeId": "s1"})
+        self.assertTrue(out["found"])
+        self.assertEqual(out["path"], "/api/holodeck/s1/promote")
+        blob = json.dumps(out["body"] or {})
+        for leak in ("/", "mockup.html", "concept.md", "holodeck"):
+            self.assertNotIn(leak, blob, "%s leaked in %s" % (leak, blob))
+
+    # -- the lock (D11) ------------------------------------------------------
+    def test_a_SENT_program_has_a_lock_band_INSTEAD_of_a_composer(self):
+        """Replaced, not greyed out: a disabled input invites 'why can't I type
+        here?'; a band that says what happened answers it first."""
+        out = _harness({"act": "handoffBar", "programs": [SENT],
+                        "activeId": "s1"})
+        self.assertFalse(out["hasComposer"])
+        self.assertTrue(out["lockPresent"])
+        self.assertIn("m-014", out["lockText"])
+        self.assertIn("read-only", out["lockText"].lower())
+
+    def test_a_sent_program_shows_no_send_control_at_all(self):
+        out = _harness({"act": "handoffBar", "programs": [SENT],
+                        "activeId": "s1"})
+        self.assertEqual([c for c in out["barControls"]
+                          if "send to align" in c["label"].lower()], [])
+        self.assertIn("m-014", out["barText"])
+
+    def test_the_DUPLICATE_hatch_is_named_and_honestly_off(self):
+        """It is the designed escape hatch and it is not built — so it is shown
+        disabled saying exactly that, rather than hidden or dead on click."""
+        out = _harness({"act": "handoffBar", "programs": [SENT],
+                        "activeId": "s1"})
+        dup = [c for c in out["lockControls"]
+               if "duplicate" in c["label"].lower()]
+        self.assertEqual(len(dup), 1, out["lockControls"])
+        self.assertFalse(dup[0]["wired"])
+        self.assertIn("not built yet", dup[0]["reason"].lower())
+
+    def test_the_card_reads_sent_and_carries_its_mission(self):
+        out = _harness({"act": "handoffBar", "programs": [SENT],
+                        "activeId": "s1"})
+        self.assertIn("sent", [s.lower() for s in out["statusChips"]])
+        self.assertIn("▦ m-014", out["missionChips"])
+
+    def test_a_draft_program_still_has_its_composer(self):
+        """The control — without it, a deck that lost the composer entirely
+        would pass the lock test."""
+        out = _harness({"act": "handoffBar", "programs": [READY],
+                        "activeId": "s1"})
+        self.assertTrue(out["hasComposer"])
+        self.assertFalse(out["lockPresent"])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class HandoffDialogTest(unittest.TestCase):
+    def test_it_opens_PRE_SEEDED_so_the_next_action_is_one_click(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertEqual(out["briefValue"], SEED["brief"])
+        self.assertTrue(out["fileFound"])
+        self.assertEqual(out["rides"], ["mockup.html", "concept.md"])
+
+    def test_the_guidance_is_shown_VERBATIM_before_he_sends(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertEqual(out["guidance"], SEED["guidance"])
+        self.assertIn("Where the mockup and the brief disagree, the brief wins.",
+                      out["guidance"])
+
+    def test_the_build_scope_is_a_choice_defaulting_to_look_plus_behaviour(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertEqual(out["choiceIds"], ["look+behaviour", "look-only"])
+        self.assertEqual(out["selected"], "look+behaviour")
+
+    def test_FILE_MISSION_sends_the_brief_the_scope_and_the_SESSION_ID(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "rewrite": "My own words about the palette."})
+        self.assertEqual(out["filePath"], "/api/park")
+        self.assertEqual(out["fileBody"]["idea"],
+                         "My own words about the palette.")
+        self.assertEqual(out["fileBody"]["holodeck"], "s1")
+        self.assertEqual(out["fileBody"]["holodeckScope"], "look+behaviour")
+
+    def test_the_file_body_carries_NO_PATH(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED})
+        blob = json.dumps(out["fileBody"])
+        for leak in ("mockup.html", "concept.md", "/tmp", "holodeck-"):
+            self.assertNotIn(leak, blob, blob)
+
+    def test_picking_look_only_re_asks_the_DAEMON_for_the_guidance(self):
+        """The block is never rewritten on this side: what he reads and what
+        the Mission is given have to be the same words."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "pickScope": "look-only", "stopBeforeFile": True})
+        self.assertEqual(out["selectedAfter"], "look-only")
+        self.assertEqual(out["guidanceRefetch"]["path"],
+                         "/api/holodeck/s1/promote")
+        self.assertEqual(out["guidanceRefetch"]["body"]["scope"], "look-only")
+
+    def test_the_chosen_scope_reaches_the_filing(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "pickScope": "look-only"})
+        self.assertEqual(out["fileBody"]["holodeckScope"], "look-only")
+
+    def test_an_empty_brief_is_refused_without_filing(self):
+        out = _harness({"act": "handoffDialog", "seed": dict(SEED, brief=""),
+                        "rewrite": "   "})
+        self.assertIsNone(out["filePath"], out)
+        self.assertIn("brief", out["text"].lower())
+
+
 @unittest.skipIf(NODE is None, "node not installed")
 class BoardUntouchedTest(unittest.TestCase):
     def test_the_board_renders_normally_while_the_deck_exists(self):

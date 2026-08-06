@@ -381,9 +381,14 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             # POST /api/park — file a PARKED mission (pre-PRD standby, S137). The
             # read-only build has actions=None, so do_POST already 403'd above.
             if path == "/api/park":
+                # `holodeck`/`holodeckScope` (S127): the deck's ▦ FILE MISSION
+                # sends a program's SESSION ID, never a path — see /api/mission.
                 return actions.park_mission(idea=body.get("idea"),
                                             engine=body.get("engine"),
-                                            images=self._images(body))
+                                            images=self._images(body),
+                                            holodeck=body.get("holodeck"),
+                                            holodeck_scope=body.get(
+                                                "holodeckScope"))
             # POST /api/deploy/main[/stop] — deploy the LOCAL main HEAD, and stop
             # it (S139). NON-mission verbs (like /api/park): the read-only build
             # has actions=None, so do_POST already 403'd above.
@@ -407,7 +412,11 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 return actions.align_start(idea=body.get("idea"),
                                            engine=body.get("engine"),
                                            images=self._images(body),
-                                           mission_id=body.get("missionId"))
+                                           mission_id=body.get("missionId"),
+                                           # S127 — a SESSION ID, never a path.
+                                           holodeck=body.get("holodeck"),
+                                           holodeck_scope=body.get(
+                                               "holodeckScope"))
             if path.startswith("/api/align/"):
                 rest = path[len("/api/align/"):]
                 parts = [p for p in rest.split("/") if p != ""]
@@ -450,14 +459,29 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                                                 images=self._images(body))
                 if len(parts) == 2 and parts[1] == "end":
                     return actions.holodeck_end(parts[0])
+                # POST /api/holodeck/<sid>/promote — SEND TO ALIGN (S127). A
+                # WRITE like its siblings (do_POST already 403'd a view-only
+                # build), even though it changes nothing yet: it is the action
+                # that starts a hand-off, and a read-only board must refuse it
+                # by the same door, not by a second rule of its own.
+                if len(parts) == 2 and parts[1] == "promote":
+                    return actions.holodeck_promote(parts[0],
+                                                    scope=body.get("scope"))
                 raise _ActionError(404, "no such holodeck endpoint: %s" % path)
             # POST /api/mission  — file a new mission
+            #
+            # `holodeck` (S127) is a holodeck PROGRAM's SESSION ID, never a
+            # path: the daemon re-resolves that program's room itself and
+            # expands it to the `--attach` arguments. The browser has no way to
+            # name a file here, which is the point.
             if path == "/api/mission":
                 return actions.file_mission(
                     idea=body.get("idea"),
                     engine=body.get("engine"),
                     mission_type=body.get("type", "feature"),
-                    images=self._images(body))
+                    images=self._images(body),
+                    holodeck=body.get("holodeck"),
+                    holodeck_scope=body.get("holodeckScope"))
             # POST /api/mission/<id>/<verb>[/<sub>]
             if path.startswith("/api/mission/"):
                 rest = path[len("/api/mission/"):]

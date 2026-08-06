@@ -7408,18 +7408,20 @@ function brandPADD() {
    turn's `filesChanged` says the file moved (D3), never re-rendered from the
    reply text.
 
-   WHAT IS DELIBERATELY NOT HERE, and why nothing on screen pretends otherwise:
-   durable programs, `concept.md`, the INTENT panel's contents, SEND TO ALIGN,
-   the draft→sent→done transitions and CAPTURE SCREENS are S126/S127. Anything
-   not yet real is ABSENT, or visibly disabled WITH the reason — never a control
-   that does nothing when you click it.
+   S126 added durable programs and the concept doc; S127 added SEND TO ALIGN,
+   the hand-off dialog and the draft→sent lock. WHAT IS STILL DELIBERATELY NOT
+   HERE, and why nothing on screen pretends otherwise: the INTENT panel's inline
+   contents (the ▤ control opens the file instead), CAPTURE SCREENS, ⧉ DUPLICATE
+   TO KEEP DESIGNING, and the `done` state. Anything not yet real is ABSENT, or
+   visibly disabled WITH the reason — never a control that does nothing when you
+   click it.
    ════════════════════════════════════════════════════════════════════════ */
 var HOLO = {
   on: false,            // is the deck showing instead of the board?
   programs: [],         // GET /api/holodeck — the daemon's LIVE sessions
   activeId: null,       // which program the chat + preview are showing
   busy: false,          // a turn is in flight
-  filter: "all",        // D11's chips: they filter; they transition nothing
+  filter: "all",        // D11's chips, over a real draft→sent lifecycle (S127)
   banner: null,         // D7 — {kind, label, text, paths, action}
   nonce: 0,             // the preview's cache-buster; bumped per file change
   sidecarName: null,    // learnt from the first program (D6's footer chip)
@@ -7501,6 +7503,17 @@ function holoBase(p) {
   return i === -1 ? String(p || "") : String(p).slice(i + 1);
 }
 
+/* S127 (D11) — a program's PLACE IN ITS LIFE: draft → sent → done.
+
+   Read from `lifecycle` first and `status` only as the fallback, because
+   `status` carries two different facts on the daemon's side: the program's
+   lifecycle on the list, and a TURN'S OUTCOME ("standing-by", "ok", "refused",
+   "ended") on the payloads that update over it. `lifecycle` is never
+   overwritten, so a locked program cannot read "standing-by" here. */
+function holoLifecycle(p) {
+  return (p && (p.lifecycle || p.status)) || "draft";
+}
+
 /* ── D1: entering and leaving the deck ─────────────────────────────────── */
 /* The board furniture is hidden by ONE class on <body>, never by setting
    `hidden` on each node: render() rebuilds the board area and re-decides those
@@ -7572,12 +7585,44 @@ function renderDeck() {
     view.appendChild(holoEmptyDeck());
   }
   host.appendChild(view);
+  /* S127 — THE HAND-OFF BAR, under everything and always reachable (the mock's
+     own placement). It spans the deck rather than living in one pane because
+     sending is an act on the PROGRAM, not on the chat or the preview. */
+  if (active) host.appendChild(holoHandoffBar(active));
+}
+
+/* ▶ SEND TO ALIGN, and the honest state of it.
+
+   Whether it can fire (`handoffReady`) and the sentence when it cannot
+   (`handoffBlocked`) are BOTH the daemon's: the deck must never invent an
+   explanation for a refusal it did not make. A SENT program gets no button at
+   all — the lock band in the chat pane is the whole account, and a second
+   control repeating it would be a second voice. */
+function holoHandoffBar(p) {
+  var bar = el("div", "holo-handoff");
+  if (holoLifecycle(p) === "sent") {
+    bar.appendChild(el("span", "hl", "⧗ Sent"));
+    bar.appendChild(el("span", "hint", p.missionId
+      ? "This program was handed over as mission " + p.missionId
+        + " and is read-only."
+      : "This program was handed over and is read-only."));
+    return bar;
+  }
+  bar.appendChild(el("span", "hint", p.handoffReady
+    ? "The mockup and the concept doc go with it — you never have to find them."
+    : (p.handoffBlocked || "")));
+  bar.appendChild(el("span", "grow"));
+  var send = holoBtn("▶ Send to Align", "go big", p.handoffReady ? function () {
+    holoPromote(p.sessionId);
+  } : null, p.handoffBlocked || "There is nothing to hand over yet.");
+  bar.appendChild(applyWriteState(send));
+  return bar;
 }
 
 function holoVisiblePrograms() {
   if (HOLO.filter === "all") return HOLO.programs.slice();
   return HOLO.programs.filter(function (p) {
-    return (p.status || "draft") === HOLO.filter;
+    return holoLifecycle(p) === HOLO.filter;
   });
 }
 
@@ -7588,15 +7633,16 @@ function holoProgramsPane() {
   head.appendChild(el("span", null, "Programs"));
   pane.appendChild(head);
 
-  // D11's chips. Counts come from the REAL list, and every program this session
-  // is a draft — which is why SENT and DONE read 0 rather than being hidden:
-  // an honest zero says the lifecycle exists and has not started.
+  // D11's chips. Counts come from the REAL list, over the real lifecycle S127
+  // landed: DRAFT and SENT move as programs are handed over. DONE still reads 0
+  // for every program, because nothing yet reads back whether a mission MERGED
+  // — an honest zero for a state that exists and is not wired.
   var chips = el("div", "pfilter");
   HOLO_FILTERS.forEach(function (f) {
     var key = f[0];
     var n = key === "all" ? HOLO.programs.length
       : HOLO.programs.filter(function (p) {
-          return (p.status || "draft") === key;
+          return holoLifecycle(p) === key;
         }).length;
     var chip = el("span", "fchip" + (HOLO.filter === key ? " on" : ""),
                   f[1] + " " + n);
@@ -7644,7 +7690,15 @@ function holoProgramsPane() {
     }
     row.appendChild(meta);
     var prow = el("div", "prow");
-    prow.appendChild(el("span", "pstat", p.status || "draft"));
+    var life = holoLifecycle(p);
+    prow.appendChild(el("span", "pstat" + (life === "sent" ? " sent" : ""),
+                        life));
+    // S127 (D11) — a SENT program carries its mission number on the card. The
+    // program list is where a captain asks "what happened to that one", and
+    // the honest answer is a mission id he can find on the board.
+    if (life === "sent" && p.missionId) {
+      prow.appendChild(el("span", "pmission", "▦ " + p.missionId));
+    }
     if (onDisk) {
       // Said on the card, not only in a class: this program is in the archive
       // and nothing is talking to it right now.
@@ -7880,6 +7934,42 @@ function holoChatPane(p) {
   // in the document.
   if (typeof setTimeout === "function") {
     setTimeout(function () { tr.scrollTop = tr.scrollHeight; }, 0);
+  }
+
+  /* S127 (D11) — A SENT PROGRAM HAS NO COMPOSER. The band REPLACES it rather
+     than greying it out, on the mock's reasoning: a disabled input invites
+     "why can't I type here?", and a band that says what happened, when, and
+     which mission holds it answers that before it is asked.
+
+     Why locked at all: the mission received a SNAPSHOT of these exact files.
+     If the mockup keeps moving afterwards, the design on screen and the brief
+     the workers are building to disagree silently — and the disagreement
+     surfaces at Verify as "this doesn't match", with no way to tell which side
+     moved. */
+  if (holoLifecycle(p) === "sent") {
+    var lock = el("div", "holo-lock");
+    var lh = el("div", "lh");
+    lh.appendChild(el("span", "li", "⧗"));
+    lh.appendChild(el("span", "lt", "Sent to Align"
+      + (p.missionId ? " · mission " + p.missionId : "")));
+    lock.appendChild(lh);
+    lock.appendChild(el("p", null,
+      "This program is read-only now. The mission was briefed on the mockup "
+      + "and the concept doc exactly as they were when you sent them, so "
+      + "changing them here would leave it building to something you can no "
+      + "longer see. Everything is still readable — the transcript above, the "
+      + "mockup in the preview, and the whole room in your archive."));
+    /* THE ESCAPE HATCH, NAMED HONESTLY. Wanting to carry on after sending is
+       normal — but it is a NEW design, and the mission in flight was briefed
+       on the old one. The control is shown DISABLED with the truth: this
+       session did not build it. A control that did nothing when clicked, or a
+       hatch nobody mentions, would both be worse. */
+    lock.appendChild(applyWriteState(holoBtn(
+      "⧉ Duplicate to keep designing", "small", null,
+      "Not built yet. To carry on from here, start a new program under a "
+      + "different name — this one stays exactly as it was handed over.")));
+    pane.appendChild(lock);
+    return pane;
   }
 
   // the composer. Enter sends, Shift+Enter is a newline — the mock's contract,
@@ -8373,6 +8463,197 @@ function holoSay(sid, text) {
       HOLO.busy = false;
       holoSetBanner("offline", { message: msg, retry: { sid: sid, text: text } });
       renderDeck();
+    });
+}
+
+/* ── S127: SEND TO ALIGN ───────────────────────────────────────────────────
+   Two steps, and the split is the point. `holoPromote` asks the DAEMON for the
+   hand-off — it resolves the program's room, reads its concept doc, drafts the
+   brief and composes the guidance. `openHandoff` renders exactly what came
+   back and posts the captain's brief with the program's SESSION ID.
+
+   THE PATH NEVER COMES NEAR THIS FILE. The board asks for a hand-off by session
+   id and files by session id; the daemon owns every filename in between. That
+   is the captain's bar ("he never types a file path… never sees the plumbing")
+   and it is also the security property: a path this side could read is a path
+   this side could send. */
+function holoPromote(sid) {
+  if (!sid) return;
+  postWrite("/api/holodeck/" + sid + "/promote", {}, function (state) {
+    openHandoff(state);
+  }, function (msg) {
+    holoSetBanner("offline", { message: msg });
+    renderDeck();
+  });
+}
+
+/* The hand-off dialog (mock screen 6, D5/D13/D14/D15). One screen: a REAL
+   writing space pre-drafted from the conversation, how much to build, what
+   rides along by NAME, and — visible before he sends — exactly how the mission
+   will be told to read the mockup. One button: ▦ FILE MISSION. */
+function openHandoff(seed) {
+  var m = modal("▶ Send to Align", { headClass: "teal" });
+  var err = el("div", "errline"); err.hidden = true;
+
+  m.body.appendChild(el("div", "hint",
+    "Sending " + (seed.program || "this program")
+    + ". The mockup and the concept doc go with it — you never have to find "
+    + "them."));
+
+  /* 1. THE BRIEF. A writing space, not a title field (D15): conveying what you
+     mean about a feature with UI is the thing that was hard before the
+     holodeck, and getting it wrong was expensive at whole-mission scale. The
+     mock makes the LOOK cheap to correct; it does nothing for the reasoning,
+     and reasoning needs room. Pre-drafted so the page is never blank. */
+  var f1 = el("div", "field");
+  f1.appendChild(label("Your brief — what you are actually asking for"));
+  var brief = el("textarea");
+  brief.rows = 8;
+  brief.value = seed.brief || "";
+  brief.setAttribute("data-holo", "handoff-brief");
+  brief.placeholder = "What do you want built, and why this way?";
+  f1.appendChild(brief);
+  f1.appendChild(el("span", "hint", seed.summarySource === "Hand-off summary"
+    ? "Pre-drafted from your concept doc's hand-off summary so you are never "
+      + "staring at an empty box. Rewrite it however you like — this is the "
+      + "Mission's opening idea."
+    : (seed.brief
+       ? "Your concept doc has no hand-off summary yet, so this draft is the "
+         + "closest thing in it. Rewrite it — this is the Mission's opening "
+         + "idea."
+       : "Nothing in the concept doc could be used as a draft, so this one is "
+         + "yours to write. It becomes the Mission's opening idea.")));
+  m.body.appendChild(f1);
+
+  /* 2. HOW MUCH TO BUILD (D13). Declared, never inferred: a mockup cannot tell
+     you whether its toggle is meant to persist, and a wrong guess is either a
+     wasted backend or a missing one. Declaring costs one click. */
+  var picked = { scope: seed.scope || "look+behaviour" };
+  var f2 = el("div", "field");
+  f2.appendChild(label("How much of this should be built?"));
+  var choices = el("div", "choices");
+  var SCOPES = [
+    ["look+behaviour", "⚙", "Look and behaviour",
+     "Build it for real — backend, state, persistence, the lot. The mockup "
+     + "says how it looks; your brief says what it must do."],
+    ["look-only", "◐", "Look only",
+     "A reskin. Match the mockup visually and change no behaviour — same "
+     + "data, same actions, same outcomes."],
+  ];
+  var guideBox = el("pre", "handoff-guidance");
+  SCOPES.forEach(function (o) {
+    var card = el("div", "choice-card" + (o[0] === picked.scope ? " sel" : ""));
+    card.appendChild(el("span", "ci", o[1]));
+    var cc = el("span", "cc");
+    cc.appendChild(el("span", "ct2", o[2]));
+    cc.appendChild(el("span", "cd", o[3]));
+    card.appendChild(cc);
+    card.setAttribute("data-choice", o[0]);
+    card.setAttribute("aria-pressed", o[0] === picked.scope ? "true" : "false");
+    keyActivable(holoCtl(card, o[2], function () {
+      picked.scope = o[0];
+      Array.prototype.forEach.call(choices.children, function (c) {
+        c.classList.remove("sel");
+        c.setAttribute("aria-pressed", "false");
+      });
+      card.classList.add("sel");
+      card.setAttribute("aria-pressed", "true");
+      // THE GUIDANCE FOLLOWS THE CHOICE, and it is re-fetched from the DAEMON
+      // rather than assembled here: the block shown and the block filed have to
+      // be the same words, and the only way to guarantee that is for one side
+      // to write them.
+      holoRefreshGuidance(seed, picked.scope, guideBox);
+    }));
+    choices.appendChild(card);
+  });
+  f2.appendChild(choices);
+  m.body.appendChild(f2);
+
+  /* 3. WHAT RIDES ALONG — by NAME. Never a path: he does not need one and
+     should never be shown one. */
+  var f3 = el("div", "field");
+  f3.appendChild(label("What rides along — attached automatically"));
+  var rides = el("div", "rides");
+  (seed.rides || []).forEach(function (r) {
+    var row = el("div", "ride");
+    row.appendChild(el("span", "ic", /\.md$/i.test(r.name) ? "▤" : "⬡"));
+    row.appendChild(el("span", "nm", r.name));
+    row.appendChild(el("span", "ds", r.what || ""));
+    rides.appendChild(row);
+  });
+  f3.appendChild(rides);
+  f3.appendChild(el("span", "hint",
+    "They are copied into the Mission's own attachments and read by every "
+    + "stage. They never enter your repository."));
+  m.body.appendChild(f3);
+
+  /* 4. THE GUIDANCE, MADE VISIBLE (D15). A pasted screenshot arrives with no
+     instructions attached and every downstream stage guesses what it was for.
+     This block is what the holodeck adds — and showing it is also one more
+     place the non-shipping declaration appears, which is the S164-measured
+     cure rather than a single prose pin. */
+  var f4 = el("div", "field");
+  f4.appendChild(label("How the mockup will be read — goes into the Mission"));
+  guideBox.textContent = seed.guidance || "";
+  guideBox.setAttribute("data-holo", "handoff-guidance");
+  f4.appendChild(guideBox);
+  m.body.appendChild(f4);
+  m.body.appendChild(err);
+
+  var go = applyWriteState(holoBtn("▦ File Mission", "go big", function () {
+    var text = String(brief.value || "").trim();
+    if (!text) { showErr(err, "Write the brief first."); return; }
+    go.disabled = true;
+    go.textContent = "Filing…";
+    err.hidden = true;
+    postWrite("/api/park", {
+      idea: text,
+      engine: /copilot/i.test(String(seed.engine || "")) ? "copilot" : "claude",
+      holodeck: seed.sessionId,
+      holodeckScope: picked.scope,
+    }, function () {
+      closeOverlay();
+      // Back to the BOARD: the card he just filed is there, and driving it is
+      // his next move. The deck's own list refreshes behind it so the program
+      // reads `sent` when he comes back.
+      holoSetMode(false);
+      holoRefresh();
+      refresh();
+    }, function (msg) {
+      go.disabled = false;
+      go.textContent = "▦ File Mission";
+      showErr(err, msg);
+    });
+  }));
+  m.foot.appendChild(el("span", "hint",
+    "Files the Mission at Align, on the board, with the artifacts attached."));
+  m.foot.appendChild(el("span", "grow"));
+  m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  m.foot.appendChild(go);
+  showOverlay(m.wrap);
+  if (brief.focus) brief.focus();
+  return m;
+}
+
+/* Re-ask the daemon for the guidance when the build scope changes. The block
+   is never rewritten on this side — one voice, and the words the captain reads
+   are the words the Mission is given. */
+function holoRefreshGuidance(seed, scope, box) {
+  postWrite("/api/holodeck/" + seed.sessionId + "/promote", { scope: scope },
+    function (state) {
+      seed.guidance = state.guidance || seed.guidance;
+      seed.scope = state.scope || scope;
+      box.textContent = seed.guidance || "";
+    }, function (msg) {
+      /* IT SAYS SO. Leaving the previous scope's block on screen would be the
+         one thing this pane exists to prevent — the captain reading one set of
+         instructions while the Mission is given another. The dispatch still
+         sends `holodeckScope`, so the daemon applies what he picked; what is
+         lost is only the preview, and that is what this says. */
+      box.textContent = "LCARS could not fetch the guidance for this choice ("
+        + (msg || "no reason given") + "). The Mission will still be given the "
+        + "guidance for \"" + scope + "\" — this box just cannot show it right "
+        + "now. Pick the other option and back again to retry.";
     });
 }
 

@@ -618,6 +618,85 @@ switch (cfg.act) {
     out.conceptNote = note.length ? txt(note[note.length - 1]) : "";
     break;
   }
+  /* S127 — the hand-off bar under the deck, and the lock band that replaces
+   * the composer once a program has been sent. */
+  case "handoffBar": {
+    sandbox.writesActive = cfg.writes === false ? false : true;
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    const bar = one(deck(), ".holo-handoff");
+    out.barPresent = !!bar;
+    out.barText = txt(bar);
+    out.barControls = bar ? controlsIn(bar) : [];
+    out.hasComposer = !!one(deck(), ".composer textarea");
+    const lock = one(deck(), ".holo-lock");
+    out.lockPresent = !!lock;
+    out.lockText = txt(lock);
+    out.lockControls = lock ? controlsIn(lock) : [];
+    out.statusChips = many(deck(), ".pstat").map(txt);
+    out.missionChips = many(deck(), ".pmission").map(txt);
+    break;
+  }
+  /* Clicking ▶ SEND TO ALIGN must ask the DAEMON for the hand-off — by session
+   * id, and with no path anywhere in the request. */
+  case "sendClick": {
+    sandbox.writesActive = true;
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    FETCHES.length = 0;
+    const ctl = many(deck(), ".holo-handoff [data-ctl]")
+      .find((n) => /send to align/i.test(n.getAttribute("data-ctl") || ""));
+    out.found = !!ctl;
+    if (ctl) ctl.click();
+    const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
+    out.path = post ? post.url : null;
+    out.body = post ? JSON.parse(post.opts.body) : null;
+    break;
+  }
+  /* The hand-off dialog itself, rendered from a daemon payload — then FILED,
+   * so the POST body is what is really asserted. */
+  case "handoffDialog": {
+    sandbox.writesActive = true;
+    FETCHES.length = 0;
+    sandbox.openHandoff(cfg.seed || {});
+    const body = REGISTRY.overlayBody;
+    out.text = txt(body);
+    out.controls = controlsIn(body).concat(controlsIn(REGISTRY.overlay));
+    out.choiceIds = many(body, ".choice-card")
+      .map((c) => c.getAttribute("data-choice"));
+    const sel = many(body, ".choice-card")
+      .find((c) => c.classList.contains("sel"));
+    out.selected = sel ? sel.getAttribute("data-choice") : null;
+    out.guidance = txt(one(body, ".handoff-guidance"));
+    out.rides = many(body, ".ride .nm").map(txt);
+    const brief = one(body, "[data-holo=handoff-brief]");
+    out.briefValue = brief ? brief.value : null;
+    if (cfg.pickScope) {
+      const card = many(body, ".choice-card")
+        .find((c) => c.getAttribute("data-choice") === cfg.pickScope);
+      if (card) card.click();
+      const now = many(body, ".choice-card")
+        .find((c) => c.classList.contains("sel"));
+      out.selectedAfter = now ? now.getAttribute("data-choice") : null;
+      // the scope click re-asks the daemon for the guidance — recorded here so
+      // a test can prove the block is never rewritten on this side.
+      const gp = FETCHES.find((f) => (f.opts.method || "") === "POST");
+      out.guidanceRefetch = gp ? {
+        path: gp.url, body: JSON.parse(gp.opts.body),
+      } : null;
+    }
+    if (cfg.rewrite !== undefined && brief) brief.value = cfg.rewrite;
+    FETCHES.length = 0;
+    const file = many(REGISTRY.overlay, "[data-ctl]")
+      .concat(many(docRoot, "[data-ctl]"))
+      .find((n) => /file mission/i.test(n.getAttribute("data-ctl") || ""));
+    out.fileFound = !!file;
+    if (file && !cfg.stopBeforeFile) file.click();
+    const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
+    out.filePath = post ? post.url : null;
+    out.fileBody = post ? JSON.parse(post.opts.body) : null;
+    break;
+  }
   case "viewOnly": {
     sandbox.writesActive = cfg.writes ? true : false;
     sandbox.applyHolodeckWriteState();
