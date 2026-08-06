@@ -7432,9 +7432,20 @@ var HOLO = {
   //                   shows a LOCATION, and a basename is not one.
   //   engineName/model  what will ACTUALLY run. The dialog printed a hardcoded
   //                   "sonnet tier" that is false on copilot (opus there).
+  //   engine/models   S127. The New Program dialog now PICKS the engine, so it
+  //                   needs two more facts only the daemon has: the daemon's
+  //                   own engine as an INVOCABLE path (`engine`), so choosing
+  //                   the engine it was started with sends that exact binary
+  //                   rather than a bare name that may resolve elsewhere on
+  //                   $PATH; and `models`, the per-engine tier table, so the
+  //                   footer can state the tier of an engine this daemon is
+  //                   NOT running without board.js owning a second copy of
+  //                   `_holodeck_model`.
   sidecarDisplay: "",
+  engine: "",
   engineName: "",
   model: "",
+  models: {},
 };
 
 var HOLO_FILTERS = [["all", "ALL"], ["draft", "DRAFT"], ["sent", "SENT"],
@@ -7545,8 +7556,10 @@ function holoRefresh() {
     .then(function (data) {
       HOLO.programs = (data && data.programs) || [];
       HOLO.sidecarDisplay = (data && data.sidecarDisplay) || "";
+      HOLO.engine = (data && data.engine) || "";
       HOLO.engineName = (data && data.engineName) || "";
       HOLO.model = (data && data.model) || "";
+      HOLO.models = (data && data.models) || {};
       if (data && data.sidecarName) HOLO.sidecarName = data.sidecarName;
       if (HOLO.programs.length) {
         HOLO.sidecarName = HOLO.programs[0].sidecarName;
@@ -8853,6 +8866,56 @@ function applyHolodeckWriteState() {
   if (ro && HOLO.on) holoSetMode(false);
 }
 
+/* ── S127: which engine a NEW program runs on ─────────────────────────────
+   The captain opened the viewscreen with no $LCARS_WORKER_BIN and every
+   program died on a 502 telling him to restart the daemon. The daemon has
+   taken an engine on /api/holodeck/start since S124; nothing in front of him
+   could name one, and he could not run one program on claude and the next on
+   copilot without a restart in between.
+
+   These four are the whole front-end rule, kept out of the dialog body so the
+   dialog reads as a dialog. None of them RESOLVES anything — resolution is the
+   daemon's (`_resolve_holodeck_engine` / `_program_engine`), and adding a
+   second resolver here is how this feature has produced money bugs before. */
+
+/* Which OFFERED engine the daemon itself was started on, or "" for none.
+   `engineName` is a basename (`claude`, `copilot`, and in the wild a wrapper
+   around either), so it is binned the same way the daemon bins it — the
+   contains-"copilot" test in `_is_copilot`. That is a BINNING rule, not the
+   tier table: the tiers arrive from the daemon in `HOLO.models` precisely so
+   this file never carries a second copy of them. */
+function holoDaemonEngine() {
+  var name = String(HOLO.engineName || "").toLowerCase();
+  if (!name) return "";
+  return name.indexOf("copilot") !== -1 ? "copilot" : "claude";
+}
+
+/* THE MONEY DEFAULT. A daemon started with an engine keeps behaving exactly as
+   it does today — its own engine is what sits preselected. With NOTHING
+   configured the preselection is copilot, because the holodeck is explicitly
+   the cheap room: copilot is free for this captain and claude is billed, so
+   the option under his cursor on an unconfigured daemon must not be the one
+   that spends. */
+function holoDefaultEngine() { return holoDaemonEngine() || "copilot"; }
+
+/* What to actually SEND for a picked engine. Picking the engine the daemon was
+   started on sends that daemon's own binary, not the bare name: a wrapper at
+   /opt/…/claude must not silently become whichever `claude` $PATH finds. */
+function holoEngineBin(key) {
+  return (key === holoDaemonEngine() && HOLO.engine) ? HOLO.engine : key;
+}
+
+/* "copilot claude-opus-4.8" — the engine and the tier it will really run at.
+   The tier comes from the daemon's published table; with none published for
+   that engine it names the engine and STOPS. A guess here is the readout-lie
+   class the hardcoded "sonnet tier" already cost this feature once. */
+function holoEngineTier(key) {
+  var mine = key === holoDaemonEngine();
+  var name = (mine && HOLO.engineName) ? HOLO.engineName : key;
+  var model = (HOLO.models || {})[key] || (mine ? (HOLO.model || "") : "");
+  return name + (model ? " " + model : "");
+}
+
 /* ── D12: ＋ NEW PROGRAM asks what, and what from ───────────────────────── */
 /* The one question that decides whether the mock looks like your project or
    like a stranger's product. Declared, never inferred: only the captain knows
@@ -8860,6 +8923,30 @@ function applyHolodeckWriteState() {
 function openNewProgram() {
   var m = modal("⬡ New Program", { headClass: "teal" });
   var err = el("div", "errline"); err.hidden = true;
+
+  /* ONE SENTENCE, ONE FUNCTION (FL-001). The footer hint was assembled once
+     while the dialog was being built and never rebuilt, so it lied in two
+     directions the moment either choice moved:
+       • the tier half read the DAEMON's engine — now the engine is picked
+         right here, so it must follow the pick;
+       • `· read-only` was appended unconditionally, and is simply false on
+         Blank deck, where no pass over the captain's project happens at all.
+     Both halves are DERIVED from (picked engine, picked mode) below, and every
+     control that can change either one calls `paintFoot`. Deliberately NOT a
+     second string beside the old one: S125 lost two fix rounds to exactly that
+     shape, and so did S126's tool-trace stripper. */
+  var footHint = el("span", "hint", "");
+  function footSentence() {
+    // what the START itself does to the captain's project, per mode. Only
+    // `grounding` reads it, so only `grounding` may claim a read-only read.
+    var lead = picked.val === "grounding" ? "One cheap pass"
+             : picked.val === "screenshot" ? "One cheap pass over your screenshot"
+             : "Nothing is read from your project";
+    var parts = [lead, holoEngineTier(chosenEngine.val)];
+    if (picked.val === "grounding") parts.push("read-only");
+    return parts.join(" · ");
+  }
+  function paintFoot() { footHint.textContent = footSentence(); }
 
   var f1 = el("div", "field");
   f1.appendChild(label("What are we designing?"));
@@ -8917,6 +9004,10 @@ function openNewProgram() {
         });
         card.classList.add("sel");
         card.setAttribute("aria-pressed", "true");
+        // FL-001: this handler used to move the `sel` class and nothing else,
+        // which is why the footer sentence was frozen at whatever it read when
+        // the dialog opened — including "read-only" for a Blank deck.
+        paintFoot();
       }));
       card.setAttribute("aria-pressed", key === picked.val ? "true" : "false");
     }
@@ -8924,6 +9015,43 @@ function openNewProgram() {
   });
   f2.appendChild(choices);
   m.body.appendChild(f2);
+
+  /* S127 — THE ENGINE PICKER. Same markup, classes and interaction as the File
+     console's own picker (`.field` / `.choice` / `.opt` / `sel` /
+     aria-pressed / keyActivable): it is the picker the captain already knows,
+     and S140 made that one keyboard-operable — Tab to it, Enter/Space selects
+     — which a new mouse-only picker would quietly regress. */
+  var f3 = el("div", "field");
+  f3.appendChild(label("Engine — which CLI runs this program?"));
+  var echoice = el("div", "choice");
+  var chosenEngine = { val: holoDefaultEngine() };
+  var optClaude = keyActivable(el("span", "opt", "⬡ Claude"));
+  var optCopilot = keyActivable(el("span", "opt", "⬡ Copilot"));
+  function pickEngine(engine, node) {
+    chosenEngine.val = engine;
+    [optClaude, optCopilot].forEach(function (o) {
+      o.classList.remove("sel");
+      o.setAttribute("aria-pressed", "false");
+    });
+    node.classList.add("sel");
+    node.setAttribute("aria-pressed", "true");
+    paintFoot();
+  }
+  optClaude.addEventListener("click", function () {
+    pickEngine("claude", optClaude);
+  });
+  optCopilot.addEventListener("click", function () {
+    pickEngine("copilot", optCopilot);
+  });
+  echoice.appendChild(optClaude); echoice.appendChild(optCopilot);
+  f3.appendChild(echoice);
+  m.body.appendChild(f3);
+  // the INITIAL selection goes through the same one function every later click
+  // does — no second block setting `sel` and aria-pressed by hand, which is
+  // where a picker's default and its clicks drift apart.
+  pickEngine(chosenEngine.val,
+             chosenEngine.val === "copilot" ? optCopilot : optClaude);
+
   m.body.appendChild(err);
   m.body.appendChild(el("div", "hint",
     "Whatever it learns, you can see: a grounding pass writes what it found "
@@ -8935,7 +9063,8 @@ function openNewProgram() {
     if (!nm) { showErr(err, "Say what you are designing first."); return; }
     go.disabled = true;
     go.textContent = "Opening the deck…";
-    postWrite("/api/holodeck/start", { program: nm, mode: picked.val },
+    postWrite("/api/holodeck/start",
+      { program: nm, mode: picked.val, engine: holoEngineBin(chosenEngine.val) },
       function (state) {
         closeOverlay();
         HOLO.activeId = state.sessionId;
@@ -8956,18 +9085,12 @@ function openNewProgram() {
         showErr(err, msg);
       });
   }));
-  // WHAT WILL ACTUALLY RUN, from the daemon's own `_holodeck_model`. This line
-  // used to be the hardcoded string "One cheap pass · sonnet tier · read-only",
-  // which is simply false on copilot (claude-opus-4.8 there) — the readout-lie
-  // class. With nothing known yet it claims no tier at all rather than a
-  // flattering guess.
-  var runs = "One cheap pass";
-  if (HOLO.engineName) {
-    runs += " · " + HOLO.engineName + (HOLO.model ? " " + HOLO.model : "");
-  } else if (HOLO.model) {
-    runs += " · " + HOLO.model;
-  }
-  m.foot.appendChild(el("span", "hint", runs + " · read-only"));
+  // WHAT WILL ACTUALLY RUN — the one sentence `footSentence` derives, already
+  // painted by the initial `pickEngine` above. The tier half comes from the
+  // daemon's own `_holodeck_model` (published per engine), never a copy of it
+  // here: this line was once the hardcoded "One cheap pass · sonnet tier ·
+  // read-only", which is false on copilot AND false on a Blank deck.
+  m.foot.appendChild(footHint);
   m.foot.appendChild(el("span", "grow"));
   m.foot.appendChild(btn("Cancel", null, closeOverlay));
   m.foot.appendChild(go);

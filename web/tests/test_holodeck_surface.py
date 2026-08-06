@@ -604,6 +604,28 @@ class ListHeaderTest(SurfaceBase):
         self.assertEqual(_holodeck_model("/usr/bin/copilot"), "claude-opus-4.8")
         self.assertEqual(_holodeck_model("/usr/bin/claude"), "sonnet")
 
+    def test_the_list_publishes_the_tier_of_EVERY_engine_the_dialog_offers(self):
+        """S127: the New Program dialog PICKS the engine, so the tier it prints
+        follows the pick and not the daemon's own default. The mapping has ONE
+        home — `_holodeck_model` — and is PUBLISHED here rather than copied
+        into board.js, which is how the hardcoded `sonnet tier` lie happened
+        the first time."""
+        from lcars_serve.actions import _holodeck_model
+        _s, body = self._get_json("/api/holodeck")
+        self.assertEqual(body["models"], {"claude": _holodeck_model("claude"),
+                                          "copilot": _holodeck_model("copilot")})
+        # …and it really is the per-engine truth, not the daemon's one tier.
+        self.assertEqual(body["models"]["claude"], "sonnet")
+        self.assertEqual(body["models"]["copilot"], "claude-opus-4.8")
+
+    def test_the_published_tiers_do_not_follow_the_daemons_own_engine(self):
+        """The daemon here runs CLAUDE. If `models` were derived from
+        `self.worker_bin` in any way, copilot's entry would read `sonnet` and
+        the dialog would print a flattering lie the moment copilot is picked."""
+        _s, body = self._get_json("/api/holodeck")
+        self.assertEqual(body["engineName"], "claude")
+        self.assertNotEqual(body["models"]["copilot"], body["models"]["claude"])
+
 
 class CommitCountTest(SurfaceBase):
     def test_the_turn_payload_counts_the_commit_it_just_made(self):
@@ -620,20 +642,48 @@ class CommitCountTest(SurfaceBase):
 
 class NoEngineCopyTest(unittest.TestCase):
     """D7 voice: an error must never tell the captain to do something the
-    surface cannot do. The New Program dialog has ONE field — a name — so
-    "pick an engine when you open the program" was an instruction with no
-    control behind it."""
+    surface cannot do — AND never hide the thing it can.
 
-    def test_the_no_engine_message_describes_something_the_captain_can_do(self):
+    Fix round 1 rewrote this message to name the daemon restart, because the
+    New Program dialog had ONE field (a name) and no engine control at all.
+    S127 gave it one, so "stop the viewscreen and restart it" stopped being the
+    only road and became the WRONG first instruction: it sends the captain to
+    kill his board for something a control in front of him now does."""
+
+    def _msg(self):
         tmp = tempfile.mkdtemp()
         try:
             acts = Actions(repo_root=tmp, scripts={}, worker_bin="")
             with self.assertRaises(Exception) as ctx:
                 acts.holodeck_start(program="x")
+            return str(ctx.exception)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_the_no_engine_message_names_the_picker_the_dialog_now_has(self):
+        msg = self._msg()
+        low = msg.lower()
+        self.assertIn("engine picker", low, msg)
+        self.assertIn("new program", low, msg)
+
+    def test_it_no_longer_sends_him_to_restart_the_board_as_the_only_road(self):
+        msg = self._msg()
+        low = msg.lower()
+        self.assertNotIn("stop it and restart", low, msg)
+        # the daemon-wide default is still A road — it is how every program on
+        # this viewscreen gets an engine without picking one — so it is kept,
+        # second, and still names the variable that sets it.
+        self.assertIn("LCARS_WORKER_BIN", msg)
+
+    def test_an_engine_that_is_not_on_this_machine_still_says_so_plainly(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            acts = Actions(repo_root=tmp, scripts={}, worker_bin="")
+            with self.assertRaises(Exception) as ctx:
+                acts.holodeck_start(program="x", engine="no-such-cli-xyz")
             msg = str(ctx.exception)
-            self.assertIn("LCARS_WORKER_BIN", msg)
-            self.assertNotIn("Pick an engine when you open the program", msg)
-            self.assertIn("restart the viewscreen", msg.lower())
+            self.assertIn("no-such-cli-xyz", msg)
+            self.assertIn("not an executable", msg)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1037,6 +1087,14 @@ class DeckCopyAndChromeTest(unittest.TestCase):
         out = _harness({"act": "newProgram", "engineName": "", "model": ""})
         self.assertNotIn("sonnet", out["footText"].lower())
         self.assertIn("read-only", out["footText"].lower())
+
+    def test_the_dialog_claims_no_tier_when_the_daemon_named_none(self):
+        """S127 keeps fix round 1's rule under a PICKED engine: with no tier
+        published for the engine in hand, the line names the engine and stops.
+        A guess here is the readout-lie class in its purest form."""
+        out = _harness({"act": "newProgram", "engineName": "", "model": ""})
+        self.assertIn("copilot", out["footText"].lower())
+        self.assertNotIn("claude-opus", out["footText"].lower())
 
     def test_the_grounded_chip_opens_the_basis_it_is_named_for(self):
         """D12: "the program header links to it". It was an inert SPAN — the
@@ -1538,6 +1596,158 @@ class WarmPillTellsTheTruthTest(unittest.TestCase):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# S127 — THE ENGINE PICKER IN ⬡ NEW PROGRAM
+#
+# The captain opened the viewscreen with no $LCARS_WORKER_BIN and EVERY program
+# died on a 502 telling him to go and restart the daemon. He could not run one
+# program on claude and the next on copilot without a restart between them —
+# which is the whole holodeck premise ("he never sees the plumbing") failing at
+# the first click. The daemon already took an engine on `/api/holodeck/start`;
+# nothing in front of him could name one.
+#
+# It copies the FILE console's picker exactly — `.choice` / `.opt` / sel /
+# aria-pressed / keyActivable — because that is the picker he already knows,
+# and S140 made it keyboard-operable.
+# ════════════════════════════════════════════════════════════════════════════
+MODELS = {"claude": "sonnet", "copilot": "claude-opus-4.8"}
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class NewProgramEnginePickerTest(unittest.TestCase):
+    def test_the_dialog_offers_both_engines(self):
+        out = _harness({"act": "newProgram"})
+        labels = " ".join(out["engineOpts"]).lower()
+        self.assertIn("claude", labels)
+        self.assertIn("copilot", labels)
+
+    def test_the_picker_is_keyboard_operable_like_the_file_consoles(self):
+        """S140 made every picker a Tab stop that Enter/Space activates. A new
+        picker that is mouse-only is that guarantee regressing."""
+        out = _harness({"act": "newProgram"})
+        self.assertEqual(out["engineRoles"], ["button", "button"])
+        self.assertEqual(out["engineTabIndex"], ["0", "0"])
+        self.assertEqual(sorted(out["enginePressed"]), ["false", "true"])
+
+    def test_it_preselects_the_engine_the_daemon_was_started_with(self):
+        """A daemon started `LCARS_WORKER_BIN=claude` must behave EXACTLY as it
+        does today — the picker is a new freedom, not a new surprise."""
+        for name in ("claude", "copilot"):
+            out = _harness({"act": "newProgram", "engineName": name,
+                            "models": MODELS})
+            self.assertEqual(len(out["engineSel"]), 1, out["engineOpts"])
+            self.assertIn(name, out["engineSel"][0].lower())
+
+    def test_an_unconfigured_daemon_preselects_the_FREE_engine(self):
+        """THE MONEY DEFAULT. The holodeck is explicitly the cheap room; copilot
+        is free for this captain and claude is billed. With nothing configured,
+        the selection sitting under his cursor must not be the one that spends."""
+        out = _harness({"act": "newProgram", "engineName": "", "model": "",
+                        "models": MODELS})
+        self.assertEqual(len(out["engineSel"]), 1)
+        self.assertIn("copilot", out["engineSel"][0].lower())
+
+    def test_the_start_body_carries_the_engine_he_picked(self):
+        for engine in ("claude", "copilot"):
+            out = _harness({"act": "newProgramSubmit", "pick": "grounding",
+                            "engine": engine, "models": MODELS})
+            self.assertEqual(out["path"], "/api/holodeck/start")
+            self.assertEqual(out["body"]["engine"], engine, out["body"])
+            # …and the mode it has always sent is untouched.
+            self.assertEqual(out["body"]["mode"], "grounding")
+
+    def test_the_engine_can_be_picked_without_a_mouse(self):
+        for key in ("Enter", " "):
+            out = _harness({"act": "newProgramSubmit", "pick": "grounding",
+                            "engine": "claude", "viaKey": key,
+                            "models": MODELS})
+            self.assertEqual(out["body"]["engine"], "claude", key)
+
+    def test_a_daemon_default_still_reaches_the_body_untouched(self):
+        """Nothing is picked, the daemon runs claude: the start body says
+        claude. The picker cannot quietly move a configured daemon."""
+        out = _harness({"act": "newProgramSubmit", "pick": "grounding",
+                        "engineName": "claude", "models": MODELS})
+        self.assertEqual(out["body"]["engine"], "claude")
+
+    def test_keeping_the_daemons_engine_sends_the_daemons_OWN_binary(self):
+        """A daemon started `LCARS_WORKER_BIN=/opt/wrap/claude` must behave
+        EXACTLY as it does today. Sending the bare name `claude` would hand the
+        program to whichever claude $PATH happens to find — a different binary,
+        chosen by a control the captain never touched."""
+        out = _harness({"act": "newProgramSubmit", "pick": "grounding",
+                        "engineName": "claude", "engineBin": "/opt/wrap/claude",
+                        "models": MODELS})
+        self.assertEqual(out["body"]["engine"], "/opt/wrap/claude")
+
+    def test_picking_the_OTHER_engine_sends_that_engine_by_name(self):
+        """…and the daemon's binary does NOT follow him to the other engine."""
+        out = _harness({"act": "newProgramSubmit", "pick": "grounding",
+                        "engineName": "claude", "engineBin": "/opt/wrap/claude",
+                        "engine": "copilot", "models": MODELS})
+        self.assertEqual(out["body"]["engine"], "copilot")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class NewProgramFooterIsOneSentenceTest(unittest.TestCase):
+    """FL-001 — the footer hint was assembled ONCE at build time and never
+    rebuilt, so it lied in two directions the moment either choice moved.
+
+    Every assertion here is about the sentence CHANGING. An assertion that only
+    checked the wording of one state is exactly what let FL-001 ship: the line
+    read perfectly true for the option that happened to be selected."""
+
+    def test_the_tier_follows_the_PICKED_engine_not_the_daemons(self):
+        out = _harness({"act": "newProgramFoot", "engineName": "claude",
+                        "model": "sonnet", "models": MODELS,
+                        "clicks": [{"engine": "copilot"}]})
+        first, second = out["foots"][0], out["foots"][1]
+        self.assertNotEqual(first, second, out["foots"])
+        self.assertIn("sonnet", first.lower())
+        self.assertIn("claude-opus-4.8", second)
+        self.assertNotIn("sonnet", second.lower())
+
+    def test_picking_back_returns_the_sentence_it_started_with(self):
+        out = _harness({"act": "newProgramFoot", "engineName": "claude",
+                        "models": MODELS,
+                        "clicks": [{"engine": "copilot"},
+                                   {"engine": "claude"}]})
+        self.assertEqual(out["foots"][0], out["foots"][2], out["foots"])
+        self.assertNotEqual(out["foots"][0], out["foots"][1])
+
+    def test_a_blank_deck_stops_claiming_a_read_only_pass(self):
+        """THE FL-001 DEFECT ITSELF. `· read-only` was appended unconditionally
+        and describes a read that never happens on Blank deck — no pass is made
+        over the captain's project at all."""
+        out = _harness({"act": "newProgramFoot", "models": MODELS,
+                        "engineName": "copilot",
+                        "clicks": [{"mode": "design"}]})
+        grounded, blank = out["foots"][0], out["foots"][1]
+        self.assertNotEqual(grounded, blank, out["foots"])
+        self.assertIn("read-only", grounded.lower())
+        self.assertNotIn("read-only", blank.lower())
+
+    def test_going_back_to_this_projects_look_restores_the_read_only_claim(self):
+        out = _harness({"act": "newProgramFoot", "models": MODELS,
+                        "engineName": "copilot",
+                        "clicks": [{"mode": "design"},
+                                   {"mode": "grounding"}]})
+        self.assertIn("read-only", out["foots"][2].lower())
+        self.assertEqual(out["foots"][0], out["foots"][2], out["foots"])
+
+    def test_mode_and_engine_move_the_SAME_sentence(self):
+        """ONE FUNCTION, ONE SENTENCE. S125 lost two fix rounds to a cure that
+        added a second string beside the first — both rendered, one true."""
+        out = _harness({"act": "newProgramFoot", "models": MODELS,
+                        "engineName": "claude",
+                        "clicks": [{"mode": "design"}, {"engine": "copilot"}]})
+        self.assertEqual(out["footHints"], 1, out["foots"])
+        last = out["foots"][3 - 1]
+        self.assertIn("claude-opus-4.8", last)
+        self.assertNotIn("read-only", last.lower())
+        self.assertEqual(len(set(out["foots"])), 3, out["foots"])
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # FIX ROUND 5 — THE DECK'S HALF OF "WHICH ENGINE BUILT THIS"
 #
 # `holoOpen` posted `{room}` and nothing else, so the daemon had only its own
@@ -1552,6 +1762,18 @@ class DeckRelaysTheRecordedEngineTest(unittest.TestCase):
         out = _harness({"act": "openDisk", "programs": [PROG, prog],
                         "activeId": "s1", "room": "tile-picker"})
         self.assertEqual(out["path"], "/api/holodeck/open")
+        self.assertEqual(out["body"], {"room": "tile-picker",
+                                       "engine": "/usr/bin/copilot"})
+
+    def test_a_reopen_ignores_a_DIFFERING_daemon_default(self):
+        """S127 GUARD. The New Program dialog now carries an engine selection
+        with a default of its own, and a reopen must be blind to it: the record
+        wins. Driven with the daemon's engine set to CLAUDE (billed) and the
+        program built on COPILOT (free) — the direction that spends."""
+        prog = dict(DISK_PROG, engine="/usr/bin/copilot", engineRecorded=True)
+        out = _harness({"act": "openDisk", "programs": [PROG, prog],
+                        "activeId": "s1", "room": "tile-picker",
+                        "engineName": "claude", "models": MODELS})
         self.assertEqual(out["body"], {"room": "tile-picker",
                                        "engine": "/usr/bin/copilot"})
 

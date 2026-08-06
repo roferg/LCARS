@@ -1380,6 +1380,161 @@ class AlignResumeTest(AlignBase):
                          "no live session → the detail payload is unchanged")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# S127 BLOCKER — A PARKED MISSION'S NON-IMAGE ATTACHMENTS ARE NOT IMAGES
+#
+# The holodeck hand-off parks a mission whose DURABLE attachments are an HTML
+# mockup and a markdown concept doc. `align_start` seeded EVERY durable
+# attachment into the opening grill turn, and that seam is the IMAGE road —
+# copilot's `--attachment`. Measured on copilot CLI 1.0.79-4:
+#
+#   --attachment file type not supported (must be an image or native document):
+#   …/attachment-01.html
+#
+# so the opening turn died on spawn and a holodeck-born mission could not be
+# aligned at all. The correct reasoning was already in `align_start`, in the
+# grill-first holodeck branch, which deliberately keeps its files OUT of the
+# per-turn argv and puts the brief in the idea TEXT. It was applied to one road
+# and not the other.
+#
+# The mockup and the concept doc still reach the cold stages by absolute path
+# through `attachments_extra_block` (skills/lcars-run/run.sh) — the road that
+# was actually proven for them. Nothing about state.json or attachments/ moves.
+# ════════════════════════════════════════════════════════════════════════════
+class ParkedSeedIsImagesOnlyTest(AlignBase):
+    QUESTION = {"status": "question",
+                "question": {"text": "Which screens?", "recommended": "both"},
+                "prd": "# Mission: Tile picker\n\n**Type:** feature\n"}
+
+    def _plant(self, mid, rels):
+        """A parked mission whose durable attachments really exist on disk —
+        `_parked_attachment_paths` skips anything that is not a file, so a
+        fixture that only writes state.json proves nothing."""
+        d = fx.plant_parked(self.tmp, mid, issue=201, attachments=rels)
+        for rel in rels:
+            ap = os.path.join(d, rel)
+            os.makedirs(os.path.dirname(ap), exist_ok=True)
+            with open(ap, "wb") as fh:
+                fh.write(b"x")
+        return d
+
+    def _copilot(self):
+        return _copilot_worker_stub(self.turns_path, self.prompt_log,
+                                    self.argv_log)
+
+    # ── copilot: the road that actually died ────────────────────────────────
+    def test_a_mockup_and_a_concept_doc_never_reach_the_attachment_argv(self):
+        self._plant("m-holo", ["attachments/attachment-01.html",
+                               "attachments/attachment-02.md"])
+        self._set_turns(self.QUESTION)
+        status, body = self._post("/api/align/start",
+                                  {"missionId": "m-holo",
+                                   "engine": self._copilot()})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["state"]["status"], "question")
+        argv = self._argvs()[0]
+        # NB the argv holds the whole `-p <prompt>`, and the Align prompt names
+        # plenty of its own `.md` files (SKILL.md, prd.md) — so the assertion is
+        # about the ATTACHMENT flag and these two files by name, not about the
+        # substring ".md" appearing anywhere in a 20KB argv.
+        self.assertNotIn("--attachment", argv, argv[-500:])
+        self.assertNotIn("attachment-01.html", argv)
+        self.assertNotIn("attachment-02.md", argv)
+
+    def test_an_all_image_parked_mission_is_UNCHANGED(self):
+        d = self._plant("m-shots", ["attachments/attachment-01.png",
+                                    "attachments/attachment-02.jpg"])
+        self._set_turns(self.QUESTION)
+        status, _ = self._post("/api/align/start",
+                               {"missionId": "m-shots",
+                                "engine": self._copilot()})
+        self.assertEqual(status, 200)
+        toks = self._argvs()[0].split()
+        want = [os.path.join(d, "attachments/attachment-01.png"),
+                os.path.join(d, "attachments/attachment-02.jpg")]
+        got = [toks[i + 1] for i, t in enumerate(toks) if t == "--attachment"]
+        self.assertEqual(got, want, toks)
+
+    def test_a_mixed_mission_seeds_the_screenshot_and_skips_the_mockup(self):
+        d = self._plant("m-mixed", ["attachments/attachment-01.png",
+                                    "attachments/attachment-02.html",
+                                    "attachments/attachment-03.md"])
+        self._set_turns(self.QUESTION)
+        status, _ = self._post("/api/align/start",
+                               {"missionId": "m-mixed",
+                                "engine": self._copilot()})
+        self.assertEqual(status, 200)
+        toks = self._argvs()[0].split()
+        got = [toks[i + 1] for i, t in enumerate(toks) if t == "--attachment"]
+        self.assertEqual(got,
+                         [os.path.join(d, "attachments/attachment-01.png")],
+                         toks)
+
+    # ── claude: a different mechanism, the same lie ─────────────────────────
+    def test_the_claude_prompt_never_calls_a_mockup_an_attached_image(self):
+        """Claude takes images as ABS PATHS listed under "attached images" in
+        the prompt. Listing an HTML mockup there does not fail on spawn — it
+        does something worse: it tells the grill a design document is a
+        screenshot, and points it at the very file the holodeck branch
+        deliberately keeps out of the conversation."""
+        self._plant("m-holo", ["attachments/attachment-01.html",
+                               "attachments/attachment-02.md"])
+        self._set_turns(self.QUESTION)
+        status, _ = self._post("/api/align/start", {"missionId": "m-holo"})
+        self.assertEqual(status, 200)
+        prompt = self._prompt_turns()[0]
+        self.assertNotIn("attached images", prompt.lower(), prompt[-400:])
+        self.assertNotIn("attachment-01.html", prompt)
+        self.assertNotIn("attachment-02.md", prompt)
+
+    def test_the_claude_prompt_still_lists_a_parked_SCREENSHOT(self):
+        d = self._plant("m-shots", ["attachments/attachment-01.png"])
+        self._set_turns(self.QUESTION)
+        status, _ = self._post("/api/align/start", {"missionId": "m-shots"})
+        self.assertEqual(status, 200)
+        prompt = self._prompt_turns()[0]
+        self.assertIn("attached images", prompt.lower())
+        self.assertIn(os.path.join(d, "attachments/attachment-01.png"), prompt)
+
+    # ── the durable record is untouched ─────────────────────────────────────
+    def test_the_mission_still_RECORDS_every_attachment_it_was_parked_with(self):
+        """The filter is about the per-turn argv ONLY. `state.json` and the
+        attachments/ dir stay complete — they are how the mockup reaches the
+        cold stages (`attachments_extra_block`), which is the road that was
+        proven for it."""
+        self._plant("m-mixed", ["attachments/attachment-01.png",
+                                "attachments/attachment-02.html"])
+        self._set_turns(self.QUESTION)
+        self._post("/api/align/start", {"missionId": "m-mixed"})
+        rels = self.actions._parked_attachment_paths("m-mixed")
+        self.assertEqual([os.path.basename(p) for p in rels],
+                         ["attachment-01.png", "attachment-02.html"])
+
+
+class ImagePathPredicateTest(unittest.TestCase):
+    """The predicate reads BOTH halves of the ONE existing table
+    (`_IMAGE_SUFFIX`: allow-listed content type → staged suffix). No second list
+    of extensions — a second mechanism beside an existing one is what cost S125
+    two fix rounds and killed S126's tool-trace stripper."""
+
+    def test_every_staged_suffix_the_daemon_itself_writes_is_an_image(self):
+        from lcars_serve.actions import _IMAGE_SUFFIX, _is_image_path
+        for suffix in set(_IMAGE_SUFFIX.values()):
+            self.assertTrue(_is_image_path("/x/shot" + suffix), suffix)
+
+    def test_a_jpeg_a_captain_attached_from_the_cli_is_still_an_image(self):
+        """`.jpeg` is never a suffix LCARS writes (it stages `.jpg`), but it is
+        a real screenshot a captain can `--attach`, and its content type is on
+        the same allow-list. Dropping it would be a new bug in the cure."""
+        from lcars_serve.actions import _is_image_path
+        self.assertTrue(_is_image_path("/x/shot.JPEG"))
+
+    def test_the_holodeck_hand_offs_own_file_types_are_not(self):
+        from lcars_serve.actions import _is_image_path
+        for name in ("mockup.html", "concept.md", "notes.txt", "a"):
+            self.assertFalse(_is_image_path("/x/" + name), name)
+
+
 def _plant_bug(root, mid, *, parent, issue, stage="plan"):
     d = fx.mission_dir(root, mid)
     fx.write_json(os.path.join(d, "state.json"), {

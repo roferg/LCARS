@@ -22,6 +22,7 @@ import atexit
 import base64
 import binascii
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -700,6 +701,14 @@ _COPILOT_DISCIPLINE = ("--allow-all-tools", "--no-ask-user",
 
 def _is_copilot(bin_):
     return "copilot" in os.path.basename(bin_ or "").lower()
+
+
+# The engines the New Program dialog offers, in the order it offers them. It is
+# the SAME pair the File console's engine picker has always offered — the two
+# CLIs LCARS drives — and it exists here so the daemon can publish each one's
+# tier (see `models` in the list header) without the front end owning a second
+# copy of `_holodeck_model`'s mapping.
+_HOLODECK_ENGINES = ("claude", "copilot")
 
 
 def _holodeck_model(engine):
@@ -2833,7 +2842,20 @@ class Actions(LogFacts):
             # grill can see the screenshots the captain parked. They are NOT added
             # to sess.image_paths (which is reaped on done) — they are permanent
             # mission files, and file.sh --complete re-lists them from disk.
-            seed_paths = self._parked_attachment_paths(mid)
+            #
+            # IMAGES ONLY (S127 blocker). A holodeck hand-off parks an HTML
+            # mockup and a markdown concept doc alongside any screenshots, and
+            # this seam is the IMAGE road: copilot's `--attachment` REFUSES a
+            # .html outright ("must be an image or native document") so the
+            # opening turn died on spawn and the mission could not be aligned at
+            # all. It is the same reasoning the grill-first holodeck branch
+            # below already applies to its own files — applied here too. The
+            # mockup and the concept doc still reach the cold stages by absolute
+            # path through `attachments_extra_block` (skills/lcars-run/run.sh),
+            # the road that was actually proven for them; state.json and
+            # attachments/ keep the complete record either way.
+            seed_paths = [p for p in self._parked_attachment_paths(mid)
+                          if _is_image_path(p)]
         idea = (idea or "").strip()
         if not idea:
             raise ActionError(400, "missing required field: idea")
@@ -4610,6 +4632,13 @@ class Actions(LogFacts):
         #     "sonnet tier", which is simply false on copilot (`_holodeck_model`
         #     returns claude-opus-4.8 there). It now reads what will actually
         #     run, from the same function the spawn uses.
+        #   • `models` (S127) — the dialog now PICKS the engine, so its footer
+        #     tier follows the pick and not this daemon's default. That needs
+        #     the tier of an engine the daemon is NOT running, and the one way
+        #     that does not end in a second copy of the mapping drifting from
+        #     `_holodeck_model` is to publish the mapping itself. It is derived
+        #     here, per offered engine, from that same function — never from
+        #     `self.worker_bin`, which is what would make copilot read "sonnet".
         engine = (self.worker_bin or "").strip()
         try:
             sidecar = self._sidecar_path(self.repo_root)
@@ -4621,7 +4650,9 @@ class Actions(LogFacts):
                 "sidecarName": os.path.basename(sidecar) if sidecar else "",
                 "engine": engine,
                 "engineName": os.path.basename(engine) if engine else "",
-                "model": _holodeck_model(engine) if engine else ""}
+                "model": _holodeck_model(engine) if engine else "",
+                "models": {name: _holodeck_model(name)
+                           for name in _HOLODECK_ENGINES}}
 
     def holodeck_state(self, sid):
         """GET /api/holodeck/<sid> — one program, with its transcript."""
@@ -5471,17 +5502,23 @@ class Actions(LogFacts):
         bin_ = (engine or "").strip() or (self.worker_bin or "").strip()
         if not bin_:
             raise ActionError(
-                # NEVER AN INSTRUCTION THE SURFACE CANNOT FOLLOW (fix round 1).
-                # This used to say "pick an engine when you open the program" —
-                # the New Program dialog has one field, a name, and no engine
-                # control at all. It now names the only thing that actually
-                # changes this: how the viewscreen was started.
-                502, "the holodeck has no worker engine to talk to — this "
-                "viewscreen was started without one ($LCARS_WORKER_BIN) and "
-                "there is no engine configured for it. Stop it and restart the "
-                "viewscreen with an engine (for example "
-                "`LCARS_WORKER_BIN=copilot lcars viewscreen --open`); the deck "
-                "will run on it from then on.")
+                # NEVER AN INSTRUCTION THE SURFACE CANNOT FOLLOW (fix round 1),
+                # AND NEVER ONE THAT HIDES THE EASY ROAD (S127). Fix round 1
+                # made this name the daemon restart, because the New Program
+                # dialog had one field — a name — and no engine control at all.
+                # S127 gave it an engine picker, so "stop it and restart the
+                # viewscreen" became the WRONG first instruction: it sends the
+                # captain to kill his board for something a control in front of
+                # him now does. The picker leads; the daemon-wide default is
+                # kept second, because it is still how a program gets an engine
+                # without anyone picking one (a reopened program, for instance,
+                # has no dialog to pick in).
+                502, "the holodeck has no engine to run this on — nothing was "
+                "picked for it and this viewscreen has no default engine "
+                "($LCARS_WORKER_BIN is unset). Open it from ⬡ New Program and "
+                "choose one in the engine picker. To give every program on this "
+                "viewscreen the same engine without picking, restart it with "
+                "one: `LCARS_WORKER_BIN=copilot lcars viewscreen --open`.")
         if not shutil.which(bin_):
             raise ActionError(
                 502, "the holodeck cannot run %s — it is not an executable on "
@@ -8478,6 +8515,30 @@ _IMAGE_SUFFIX = {
     "image/gif": ".gif",
     "image/webp": ".webp",
 }
+
+
+def _is_image_path(path):
+    """Is this file one of the image types LCARS accepts?
+
+    S127 BLOCKER. The per-turn worker argv is the IMAGE road — copilot's
+    `--attachment`, claude's "attached images" path list — and the holodeck
+    hand-off parks missions whose durable attachments are an HTML mockup and a
+    markdown concept doc. Seeding those into the opening grill turn killed
+    copilot on spawn ("--attachment file type not supported") and, on claude,
+    told the grill a design document was a screenshot.
+
+    It reads BOTH halves of the ONE table above rather than introducing a
+    second list of extensions: the suffixes LCARS itself stages (its values)
+    and, through `mimetypes`, the content types it allow-lists (its keys). The
+    second half is what keeps a `.jpeg` a captain attached from the CLI an
+    image — LCARS only ever writes `.jpg`, so a values-only test would drop a
+    real screenshot and the cure would carry a bug of its own.
+    """
+    ext = os.path.splitext(path or "")[1].lower()
+    if ext and ext in set(_IMAGE_SUFFIX.values()):
+        return True
+    ctype = (mimetypes.guess_type(path or "")[0] or "").lower()
+    return ctype in _IMAGE_SUFFIX
 
 
 def _grill_model(engine):

@@ -3208,6 +3208,29 @@ class EngineIsRememberedTest(DurableBase):
         self.assertTrue(text)
         self.assertIn(os.path.basename(self.copilot_bin), text)
 
+    # -- S127: THE PICKER'S HALF, at the one moment it applies ----------------
+    def test_the_engine_the_dialog_PICKED_spends_on_that_engine_from_turn_one(self):
+        """S127 put an engine picker in the New Program dialog, and the daemon
+        end of it is this: an engine named in the START body outranks the
+        daemon's own `$LCARS_WORKER_BIN` for the very first turn, not just for
+        the record. The daemon here defaults to CLAUDE (billed); the pick is
+        COPILOT (free), so anything that runs claude is the invoice bug."""
+        self._set_turns({"stdout": "First pass is up."})
+        sid, _ = self._start("Ticket detail", engine=self.copilot_bin)
+        self._post("/api/holodeck/%s/say" % sid, {"text": "Draft the detail"})
+        self.assertEqual(self._calls()[-1]["bin"],
+                         os.path.basename(self.copilot_bin), self._calls()[-1])
+
+    def test_the_picker_sets_the_engine_at_CREATE_time_only(self):
+        """The picker's default must never leak into a REOPEN. A program built
+        on copilot reopens on copilot even though a later start picked claude —
+        the record outranks anything the dialog last had selected."""
+        self._built_on_copilot()
+        self._start("Other program", engine=self.claude_bin)
+        _s, body = self._post("/api/holodeck/open", {"room": "ticket-detail"})
+        self.assertEqual(body["state"]["engine"], self.copilot_bin,
+                         body["state"])
+
     # -- THE MONEY BUG, in the three places it showed itself ------------------
     def test_a_copilot_program_reopens_on_copilot_not_the_daemon_default(self):
         self._built_on_copilot()

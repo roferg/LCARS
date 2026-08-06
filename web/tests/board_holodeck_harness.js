@@ -311,6 +311,7 @@ function loadPrograms(cfg) {
   }
   if (cfg.engineName !== undefined) sandbox.HOLO.engineName = cfg.engineName;
   if (cfg.model !== undefined) sandbox.HOLO.model = cfg.model;
+  if (cfg.models !== undefined) sandbox.HOLO.models = cfg.models;
   if (cfg.filesChanged && cfg.activeId) {
     const p = (cfg.programs || []).find((x) => x.sessionId === cfg.activeId);
     if (p && p.turns && p.turns.length) {
@@ -445,7 +446,11 @@ switch (cfg.act) {
   case "newProgram": {
     sandbox.writesActive = true;
     if (cfg.engineName !== undefined) sandbox.HOLO.engineName = cfg.engineName;
+    /* `engineBin` and not `engine`: in these acts `engine` already names the
+     * option to CLICK, and the daemon's own binary is a different fact. */
+    if (cfg.engineBin !== undefined) sandbox.HOLO.engine = cfg.engineBin;
     if (cfg.model !== undefined) sandbox.HOLO.model = cfg.model;
+    if (cfg.models !== undefined) sandbox.HOLO.models = cfg.models;
     const m = sandbox.openNewProgram();
     out.footText = m && m.foot ? txt(m.foot) : "";
     const body = REGISTRY.overlayBody;
@@ -458,16 +463,79 @@ switch (cfg.act) {
     out.screenshotDisabled = shot ? !!shot.disabled : null;
     out.screenshotReason = shot ? (shot.getAttribute("data-reason") || "") : "";
     out.controls = controlsIn(body);
+    /* S127 — the ENGINE PICKER, projected the way the File console's own
+     * picker is asserted: the option labels, which one carries `sel`, and the
+     * two attributes S140 made load-bearing (role/tabindex for the Tab stop,
+     * aria-pressed for what a screen reader is told). */
+    const opts = many(body, ".opt");
+    out.engineOpts = opts.map(txt);
+    out.engineSel = opts.filter((o) => o.classList.contains("sel")).map(txt);
+    out.enginePressed = opts.map((o) => o.getAttribute("aria-pressed"));
+    out.engineRoles = opts.map((o) => o.getAttribute("role"));
+    out.engineTabIndex = opts.map((o) => o.getAttribute("tabindex"));
+    break;
+  }
+  /* S127 (FL-001) — the footer sentence, over a SEQUENCE of selections. The
+   * old bug was invisible to any single-shot projection: the line read fine
+   * when the dialog opened and never moved again. `foots[0]` is the built
+   * sentence and each later entry is the sentence AFTER one click, so a test
+   * can assert it CHANGED rather than assert one flattering wording. */
+  case "newProgramFoot": {
+    sandbox.writesActive = true;
+    if (cfg.engineName !== undefined) sandbox.HOLO.engineName = cfg.engineName;
+    /* `engineBin` and not `engine`: in these acts `engine` already names the
+     * option to CLICK, and the daemon's own binary is a different fact. */
+    if (cfg.engineBin !== undefined) sandbox.HOLO.engine = cfg.engineBin;
+    if (cfg.model !== undefined) sandbox.HOLO.model = cfg.model;
+    if (cfg.models !== undefined) sandbox.HOLO.models = cfg.models;
+    const m = sandbox.openNewProgram();
+    const body = REGISTRY.overlayBody;
+    out.foots = [txt(m.foot)];
+    (cfg.clicks || []).forEach((c) => {
+      let node = null;
+      if (c.engine) {
+        node = many(body, ".opt")
+          .find((n) => txt(n).toLowerCase().indexOf(c.engine) !== -1);
+      } else if (c.mode) {
+        node = many(body, ".choice-card")
+          .find((n) => n.getAttribute("data-choice") === c.mode);
+      }
+      if (node) node.click();
+      out.foots.push(txt(m.foot));
+    });
+    /* how many hint spans the footer holds. The S125/S126 failure mode this
+     * guards is "cure it by adding a SECOND string beside the first": two
+     * sentences, both shown, only one of them true. */
+    out.footHints = many(m.foot, ".hint").length;
     break;
   }
   case "newProgramSubmit": {
     sandbox.writesActive = true;
     FETCHES.length = 0;
+    if (cfg.engineName !== undefined) sandbox.HOLO.engineName = cfg.engineName;
+    if (cfg.engineBin !== undefined) sandbox.HOLO.engine = cfg.engineBin;
+    if (cfg.models !== undefined) sandbox.HOLO.models = cfg.models;
     sandbox.openNewProgram();
     const body = REGISTRY.overlayBody;
     const card = many(body, ".choice-card")
       .find((c) => c.getAttribute("data-choice") === cfg.pick);
     if (card) card.click();
+    if (cfg.engine) {
+      const opt = many(body, ".opt")
+        .find((n) => txt(n).toLowerCase().indexOf(cfg.engine) !== -1);
+      if (opt) {
+        /* KEYBOARD, not mouse, when the test asks for it — S140's guarantee is
+         * that this picker is operable without one, and only the keydown path
+         * proves it. */
+        if (cfg.viaKey) {
+          (opt.listeners.keydown || []).forEach((fn) => fn({
+            key: cfg.viaKey, preventDefault() {}, stopPropagation() {},
+          }));
+        } else {
+          opt.click();
+        }
+      }
+    }
     const name = one(body, "[data-holo=program-name]");
     if (name) name.value = cfg.program || "Nav rail";
     const run = many(REGISTRY.overlay, "[data-ctl]")
