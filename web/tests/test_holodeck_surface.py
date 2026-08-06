@@ -25,6 +25,7 @@ clicks into the deck, and MEASURES what painted. Run it.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -862,14 +863,23 @@ class DeckRenderTest(unittest.TestCase):
         self.assertTrue(out["deckHiddenOnBoard"])
 
     def test_the_deck_has_three_panes_in_the_mocks_order(self):
+        """The three panes are unchanged and in the mock's order. S128 adds two
+        children between and after them: `deck-split`, D2's amended chat ⇄
+        preview handle (which is a grid COLUMN, hence its place in this list),
+        and `holo-scrim`, Q3's click-away for the program drawer (out of flow —
+        it takes no track)."""
         out = _harness({"act": "deck", "programs": [PROG], "activeId": "s1"})
-        self.assertEqual(out["paneClasses"], ["programs", "holo-chat", "preview"])
+        self.assertEqual(out["paneClasses"],
+                         ["programs", "holo-chat", "deck-split", "preview",
+                          "holo-scrim"])
         self.assertIn("deckview", out["deckviewClass"])
         self.assertNotIn("solo", out["deckviewClass"])
 
     def test_with_no_program_selected_the_deck_is_the_empty_state(self):
         out = _harness({"act": "deck", "programs": [], "activeId": None})
-        self.assertEqual(out["paneClasses"], ["programs", "holo-empty"])
+        # no handle: a solo deck has neither a chat nor a preview to split.
+        self.assertEqual(out["paneClasses"],
+                         ["programs", "holo-empty", "holo-scrim"])
         self.assertIn("solo", out["deckviewClass"])
         # D6: the sidecar path is named ONCE, here, and says what it is.
         self.assertIn("HOLODECK", out["emptyText"].upper())
@@ -2367,6 +2377,548 @@ class IntentIsARealToggleTest(unittest.TestCase):
                         "activeId": "s1"})
         self.assertIn("allow-scripts", out["iframeSandbox"])
         self.assertNotIn("allow-same-origin", out["iframeSandbox"])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class ChatPreviewSplitTest(unittest.TestCase):
+    """S128 — D2 AMENDED 2026-08-05 (captain, S127 live drive): the chat ⇄
+    preview boundary is a PERSISTED DRAG HANDLE.
+
+        "I need some way to resize the chat window to give the mock render more
+         room. This becomes more important if I make the window full screen.
+         Then the chat takes up a comical amount of room."
+
+    `1.15fr : 1fr` grew the chat WITHOUT BOUND — on a 2560px display ~1250px of
+    chat against a ~70-character readable line, every pixel past that spent on
+    the one pane that cannot use it while the preview, which D2 itself calls
+    "the point", starved.
+
+    WHAT THESE TESTS CANNOT PROVE, said here rather than discovered later: this
+    process has NO CSS and lays nothing out. Every assertion below reads a
+    number board.js computed or an attribute it wrote. None of them can tell you
+    a pane got wider, that the handle is visible or grabbable, or that a real
+    pointer drag moves anything. Only headless Chrome, MEASURING the two panes'
+    widths before and after, can say that.
+    """
+
+    def test_the_handle_sits_between_chat_and_preview_and_nowhere_else(self):
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1"})
+        self.assertTrue(out["present"], "no chat ⇄ preview handle on the deck")
+        # The 216px program list is EXPLICITLY not part of this split (D2
+        # amendment, last line) — so there is exactly one handle, and it is
+        # between the chat and the preview.
+        self.assertEqual(out["paneOrder"],
+                         ["programs", "holo-chat", "deck-split", "preview",
+                          "holo-scrim"])
+
+    def test_a_solo_deck_has_no_handle_because_there_is_nothing_to_split(self):
+        out = _harness({"act": "split", "programs": [], "activeId": None})
+        self.assertFalse(out["present"])
+        self.assertNotIn("deck-split", out["paneOrder"])
+
+    def test_the_default_split_favours_the_preview(self):
+        """The one thing inside the ruling that is NOT the handle: the handle
+        needs a starting position, and `1.15 : 1` (chat 53.5%) is a poor one at
+        large widths. A preview-favouring default is permitted and wanted; a
+        CAP on the chat's growth is not, and is asserted absent below."""
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1"})
+        chat = float(out["initial"]["chatFr"].replace("fr", ""))
+        pv = float(out["initial"]["pvFr"].replace("fr", ""))
+        self.assertLess(chat, pv,
+                        "the default split gives the chat %r against the "
+                        "preview's %r — the preview is the point" % (chat, pv))
+        self.assertAlmostEqual(chat + pv, 1.0, places=3)
+        # nothing is persisted until the captain moves it: a default is not a
+        # choice, and writing one would make a later change of default invisible
+        # to every deck that had ever been opened.
+        self.assertIsNone(out["initial"]["stored"])
+
+    def test_a_stored_split_survives_the_reload(self):
+        """The whole reason D2's original reasoning did not survive: 'a decision
+        the captain has to make every session' is answered by persisting it."""
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1",
+                        "storage": {"lcars-holo-split": "0.66"}})
+        self.assertEqual(out["initial"]["chatFr"][:4], "0.66")
+        self.assertEqual(out["initial"]["valueNow"], "66")
+
+    def test_a_corrupt_stored_split_falls_back_instead_of_breaking_the_deck(self):
+        for junk in ("", "banana", "NaN", "-3"):
+            out = _harness({"act": "split", "programs": [PROG], "activeId": "s1",
+                            "storage": {"lcars-holo-split": junk}})
+            chat = float(out["initial"]["chatFr"].replace("fr", ""))
+            self.assertTrue(0.0 < chat < 1.0,
+                            "%r in storage produced %r" % (junk, chat))
+
+    def test_neither_pane_can_be_dragged_to_nothing(self):
+        """…and therefore the handle is reachable again after ANY drag: it is a
+        grid COLUMN between two panes that both keep a floor, not an overlay
+        that can be pushed off the edge."""
+        low = _harness({"act": "split", "programs": [PROG], "activeId": "s1",
+                        "setTo": 0.001})
+        high = _harness({"act": "split", "programs": [PROG], "activeId": "s1",
+                         "setTo": 0.999})
+        lo = float(low["afterSet"]["chatFr"].replace("fr", ""))
+        hi = float(high["afterSet"]["chatFr"].replace("fr", ""))
+        self.assertGreater(lo, 0.05, "the chat can be dragged to nothing")
+        self.assertLess(hi, 0.95, "the preview can be dragged to nothing")
+
+    def test_a_drag_clamps_the_same_way_the_setter_does(self):
+        """The pointermove handler's ARITHMETIC, through the pure function it
+        calls. `holoSplitFromDrag(startChatPx, dx, total)`.
+
+        FIX ROUND 1 rewrote the expectations here in PIXELS. A 1200px span with
+        a 360px preview floor cannot legally go past 0.70 — the old `0.75`
+        assertion was the dead band, written down as if it were correct."""
+        span = 1200
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1",
+                        "drags": [[600, 0, span], [600, 300, span],
+                                  [600, -2000, span], [600, 2000, span]]})
+        self.assertAlmostEqual(out["drags"][0]["frac"], 0.5, places=3)
+        for d in out["drags"]:
+            chat_px = d["frac"] * span
+            self.assertGreaterEqual(round(chat_px, 3), 340)
+            self.assertGreaterEqual(round(span - chat_px, 3), 360)
+        # an unreachable drag lands ON the bound, not short of it — the handle
+        # goes as far as the floors allow and no further.
+        self.assertAlmostEqual(out["drags"][2]["frac"] * span, 341, places=3)
+        self.assertAlmostEqual(span - out["drags"][3]["frac"] * span, 361,
+                               places=3)
+        # …and a 300px pull that is legal is honoured in full.
+        self.assertAlmostEqual(out["drags"][1]["frac"] * span, 839, places=3)
+
+    def test_a_drag_toward_the_preview_leaves_no_dead_band(self):
+        """FIX ROUND 1 — the defect the node harness could not see, MEASURED in
+        headless Chrome against the first cut.
+
+        `minmax(340px, 0.25fr)`: when the fr max resolves BELOW the px min
+        (0.25fr of 1293 = 323 < 340) the chat track correctly clamps to 340 —
+        but grid resolves the preview's 0.75fr against the ORIGINAL free space,
+        not the space the clamp released. The surplus is never redistributed.
+        At viewport 1600 the tracks measured `216px 340px 7px 714.75px` against
+        a 1516px deck: a 238px DEAD BAND on the right.
+
+        The user-visible result was the exact opposite of the request — drag
+        left to give the mock render more room, get a big empty band.
+
+        The cure is to clamp in JS against the LIVE span so no fr track can ever
+        ask for less than its floor. What this test proves is that the numbers
+        handed to the grid are always in range; that the band is gone is a
+        Chrome measurement.
+        """
+        span = 1293  # the measured chat+preview span at viewport 1600
+        out = _harness({"act": "clamp", "cases": [
+            {"f": 0.25, "total": span},
+            {"startChatPx": 543, "dx": -300, "total": span},
+        ]})
+        for case in out["cases"]:
+            self.assertGreaterEqual(round(case["chatPx"], 3), out["chatMinPx"],
+                                    "the chat track asks for %.2fpx against a "
+                                    "%dpx floor — grid clamps it and strands "
+                                    "the surplus" % (case["chatPx"],
+                                                     out["chatMinPx"]))
+            self.assertGreaterEqual(round(case["pvPx"], 3), out["pvMinPx"])
+            self.assertAlmostEqual(case["sum"], 1.0, places=9)
+            self.assertAlmostEqual(case["chatPx"] + case["pvPx"], span,
+                                   places=6,
+                                   msg="the two tracks must account for the "
+                                       "whole span — the leftover IS the dead "
+                                       "band")
+
+    def test_a_drag_toward_the_chat_leaves_no_dead_band_either(self):
+        span = 1293
+        out = _harness({"act": "clamp", "cases": [
+            {"f": 0.97, "total": span},
+            {"startChatPx": 543, "dx": 2000, "total": span},
+        ]})
+        for case in out["cases"]:
+            self.assertGreaterEqual(round(case["pvPx"], 3), out["pvMinPx"],
+                                    "the preview track asks for %.2fpx against "
+                                    "a %dpx floor" % (case["pvPx"],
+                                                      out["pvMinPx"]))
+            self.assertGreaterEqual(round(case["chatPx"], 3), out["chatMinPx"])
+            self.assertAlmostEqual(case["chatPx"] + case["pvPx"], span,
+                                   places=6)
+
+    def test_a_split_stored_on_a_WIDER_window_is_clamped_on_reload(self):
+        """The same bug with NO DRAG AT ALL. A 0.25 the captain set at 2560px is
+        replayed into a 1100px window on the next reload, where 0.25 is below
+        the chat's floor — and the dead band appears on a deck nobody touched.
+        This is why the clamp lives in the setter and the applier, not only in
+        the drag."""
+        narrow = 1009  # the measured chat+preview span at viewport 1100
+        out = _harness({"act": "clamp",
+                        "cases": [{"f": 0.25, "total": narrow}]})
+        case = out["cases"][0]
+        self.assertGreaterEqual(round(case["chatPx"], 3), out["chatMinPx"])
+        self.assertGreaterEqual(round(case["pvPx"], 3), out["pvMinPx"])
+        self.assertAlmostEqual(case["chatPx"] + case["pvPx"], narrow, places=6)
+
+    def test_a_container_too_narrow_for_both_floors_degrades_predictably(self):
+        """Below chat-floor + preview-floor there is NO split that satisfies
+        both, so the bounds collapse. The choice is stated rather than emergent:
+        the span is divided in PROPORTION TO THE TWO FLOORS, so neither pane is
+        singled out to absorb the shortfall, and it is the same number whatever
+        was stored or dragged."""
+        tiny = 500  # narrower than 340 + 360
+        out = _harness({"act": "clamp", "cases": [
+            {"f": 0.05, "total": tiny},
+            {"f": 0.95, "total": tiny},
+            {"f": 0.42, "total": tiny},
+        ]})
+        expect = out["chatMinPx"] / float(out["chatMinPx"] + out["pvMinPx"])
+        for case in out["cases"]:
+            self.assertTrue(case["degraded"],
+                            "%dpx must be reported as the degraded case" % tiny)
+            self.assertAlmostEqual(case["frac"], expect, places=6)
+            self.assertAlmostEqual(case["sum"], 1.0, places=9)
+            self.assertAlmostEqual(case["chatPx"] + case["pvPx"], tiny,
+                                   places=6)
+
+    def test_the_bounds_are_derived_from_the_floors_not_hardcoded(self):
+        out = _harness({"act": "clamp", "cases": [
+            {"f": 0.5, "total": 1293}, {"f": 0.5, "total": 2337}]})
+        for case, total in zip(out["cases"], (1293, 2337)):
+            lo, hi = case["bounds"]
+            self.assertGreaterEqual(lo * total, out["chatMinPx"])
+            self.assertGreaterEqual((1 - hi) * total, out["pvMinPx"])
+            self.assertFalse(case["degraded"])
+        # a wider container permits a narrower chat, which is the whole point:
+        # the bound is a PIXEL floor expressed as a fraction, not a fraction.
+        self.assertLess(out["cases"][1]["bounds"][0],
+                        out["cases"][0]["bounds"][0])
+
+    def test_a_press_arms_the_drag_and_a_release_lets_it_go(self):
+        """The lifecycle, through the REAL pointerdown handler. A drag that
+        never un-registers its listeners is a handle that follows the cursor
+        after you let go — and a drag that persists on every move writes to
+        storage sixty times a second for one decision.
+
+        This proves the WIRING. It cannot prove a browser delivers a pointer
+        event or that any pane moved: the two widths below are told to the
+        stub, not measured."""
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1",
+                        "drag": {"chatPx": 600, "pvPx": 600, "dx": 240}})
+        armed = out["dragArmed"]
+        self.assertEqual(armed["move"], 1, "a press registers no pointermove")
+        self.assertEqual(armed["up"], 1)
+        self.assertEqual(armed["cancel"], 1,
+                         "a cancelled pointer (a system gesture, a lost focus) "
+                         "would leave the drag armed forever")
+        self.assertIn("dragging", armed["viewClass"])
+        # mid-gesture the split MOVES and NOTHING is written…
+        self.assertIsNone(armed["stored"])
+        during = float(out["duringDrag"]["chatFr"].replace("fr", ""))
+        self.assertAlmostEqual(during, 0.70, places=2)
+        self.assertIsNone(out["duringDrag"]["stored"])
+        # …and the release writes once, and lets go.
+        after = out["afterDrag"]
+        self.assertEqual((after["move"], after["up"], after["cancel"]),
+                         (0, 0, 0), "the drag never released the document")
+        self.assertNotIn("dragging", after["viewClass"])
+        self.assertAlmostEqual(float(after["stored"]), during, places=4)
+
+    def test_the_handle_is_keyboard_operable(self):
+        """It is a control, and every other control on this deck is."""
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1",
+                        "keys": ["ArrowRight", "ArrowRight", "ArrowLeft"]})
+        self.assertEqual(out["tabindex"], "0")
+        # the standard window-splitter pattern, so a screen reader says what
+        # this is and where it is rather than "group".
+        self.assertEqual(out["role"], "separator")
+        self.assertEqual(out["orientation"], "vertical")
+        self.assertTrue(out["label"])
+        base = float(out["initial"]["chatFr"].replace("fr", ""))
+        first = float(out["keys"]["ArrowRight"]["chatFr"].replace("fr", ""))
+        self.assertGreater(first, base, "ArrowRight must widen the chat")
+        # …and a nudge PERSISTS, exactly as a drag does. A keyboard user who has
+        # to re-set the split on every reload has an inaccessible control.
+        self.assertIsNotNone(out["keys"]["ArrowRight"]["stored"])
+        self.assertAlmostEqual(float(out["keys"]["ArrowRight"]["stored"]),
+                               first, places=4)
+
+    def test_arrow_keys_move_the_split_in_the_direction_they_point(self):
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1",
+                        "keys": ["ArrowLeft"]})
+        base = float(out["initial"]["chatFr"].replace("fr", ""))
+        left = float(out["keys"]["ArrowLeft"]["chatFr"].replace("fr", ""))
+        self.assertLess(left, base,
+                        "ArrowLeft must give the PREVIEW the room — it is the "
+                        "pane the captain is dragging towards")
+
+    def test_a_double_click_resets_to_the_default(self):
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1",
+                        "storage": {"lcars-holo-split": "0.75"},
+                        "dblclick": True})
+        self.assertEqual(out["initial"]["chatFr"][:4], "0.75")
+        after = float(out["afterDblclick"]["chatFr"].replace("fr", ""))
+        pv = float(out["afterDblclick"]["pvFr"].replace("fr", ""))
+        self.assertLess(after, pv, "the reset must land on the DEFAULT split, "
+                                   "which favours the preview")
+        # and the reset is itself persisted — otherwise a reload undoes it.
+        self.assertAlmostEqual(float(out["afterDblclick"]["stored"]), after,
+                               places=4)
+
+    def test_the_handle_says_what_it_does(self):
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1"})
+        low = out["title"].lower()
+        self.assertTrue(low, "the handle has no tooltip at all")
+        self.assertIn("drag", low)
+        self.assertIn("double", low)
+
+    def test_the_handle_is_not_a_dead_control(self):
+        out = _harness({"act": "split", "programs": [PROG], "activeId": "s1"})
+        for ctl in out["controls"]:
+            self.assertTrue(ctl["wired"] or (ctl["disabled"] and ctl["reason"]),
+                            "dead control: %r" % ctl["label"])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class ProgramDrawerTest(unittest.TestCase):
+    """S128 — Q3, RESOLVED 2026-08-05 (captain, S127 live drive): below the
+    breakpoint the PROGRAM LIST collapses to a drawer. Chat and preview keep the
+    full width; the list is the pane least needed moment-to-moment.
+
+    The PREVIEW never becomes a toggle at any width — D2's "the preview is the
+    point, it must be permanently visible" survives everywhere, and there is a
+    test below that says so.
+
+    WHAT THESE CANNOT PROVE: there is no CSS here, so nothing below can tell you
+    the drawer slides in, that it is on top of the panes, or that it is hidden
+    at all above the breakpoint. They prove the CONTROL exists, is a real
+    button, flips one class, and — the part that matters most — does NOT
+    re-render the deck.
+    """
+
+    def test_a_control_opens_the_drawer_and_it_is_a_real_button(self):
+        out = _harness({"act": "drawer", "programs": [PROG], "activeId": "s1"})
+        self.assertGreaterEqual(out["toggleCount"], 1,
+                                "nothing opens the program drawer")
+        # a real <button> is keyboard-operable by the browser itself. This is
+        # NOT wrapped in keyActivable: on a <button> that idiom fires click
+        # TWICE for one Enter (native + the shim), which on a toggle is a
+        # visible no-op.
+        self.assertEqual(set(out["toggleTags"]), {"button"})
+        self.assertTrue(any("PROGRAM" in t.upper() for t in out["toggleText"]),
+                        "the control must name what it opens: %r"
+                        % (out["toggleText"],))
+        self.assertTrue(out["toggleTitle"])
+
+    def test_the_toggle_states_whether_the_drawer_is_open(self):
+        out = _harness({"act": "drawer", "programs": [PROG], "activeId": "s1"})
+        self.assertEqual(out["expandedBefore"], ["false"])
+        self.assertEqual(out["expandedAfter"], ["true"])
+        self.assertNotIn("drawer-open", out["classBefore"])
+        self.assertIn("drawer-open", out["classAfter"])
+
+    def test_opening_the_drawer_does_not_rebuild_the_deck(self):
+        """The requirement in one assertion: opening the drawer must not lose
+        the deck's state or the chat's SCROLL POSITION. A re-render replaces the
+        transcript node, and a replaced node is a scroll position back at the
+        top. The marker is stamped on the live node and looked for again."""
+        out = _harness({"act": "drawer", "programs": [PROG], "activeId": "s1"})
+        self.assertTrue(out["transcriptSurvived"],
+                        "the toggle re-rendered the deck — the chat's scroll "
+                        "position is gone with it")
+        self.assertTrue(out["previewSurvived"],
+                        "the toggle rebuilt the preview iframe — the mockup "
+                        "reloads under a captain who was reading it")
+        self.assertEqual(out["turnCountAfter"], 4)
+
+    def test_the_scrim_closes_it_because_that_is_the_gesture_people_make(self):
+        out = _harness({"act": "drawer", "programs": [PROG], "activeId": "s1",
+                        "closeByScrim": True})
+        self.assertTrue(out["scrimPresent"])
+        self.assertNotIn("drawer-open", out["classAfterScrim"])
+        self.assertEqual(out["expandedAfterScrim"], ["false"])
+
+    def test_the_empty_deck_can_open_the_drawer_too(self):
+        """The morning state is SOLO — no chat header to hang the control on —
+        and it is exactly the state in which a captain wants the list."""
+        out = _harness({"act": "drawer", "programs": [], "activeId": None})
+        self.assertGreaterEqual(out["toggleCount"], 1)
+        self.assertIn("drawer-open", out["classAfter"])
+
+    def test_the_drawer_toggle_is_not_a_dead_control(self):
+        out = _harness({"act": "drawer", "programs": [PROG], "activeId": "s1"})
+        for ctl in out["controls"]:
+            self.assertTrue(ctl["wired"] or (ctl["disabled"] and ctl["reason"]),
+                            "dead control: %r" % ctl["label"])
+
+
+class DeckLayoutCssTest(unittest.TestCase):
+    """The stylesheet half of S128. A rule-existence check is weak evidence and
+    is said to be: it cannot resolve a media query, cannot lay out a grid, and
+    cannot see a pixel. What it CAN catch is the class of defect that has cost
+    this project rounds before — a rule that was never written, a rule the
+    ruling forbids, and an old rule left behind to fight the new one.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rules, cls.vars = css.load_stylesheets(css.CSS_SHEETS)
+        with open(os.path.join(os.path.dirname(HERE), "static",
+                               "board.css")) as fh:
+            cls.text = fh.read()
+        with open(os.path.join(os.path.dirname(HERE), "static",
+                               "board.js")) as fh:
+            cls.js = fh.read()
+
+    def _rules(self, selector):
+        return [r for r in self.rules
+                if r.selector.replace(" ", "") == selector]
+
+    def _decl(self, rule, prop):
+        for p, v, _imp in rule.decls:
+            if p == prop:
+                return v
+        return None
+
+    def _merged(self, selector, conditional):
+        """Last-wins across every rule for `selector` at the given conditional-
+        ness. A selector legitimately appears in more than one @media block —
+        the drawer's own, and the reduced-motion one — and reading only the last
+        rule would report whichever happened to be written second."""
+        out = {}
+        for r in self._rules(selector):
+            if bool(r.conditional) != bool(conditional):
+                continue
+            for p, v, _imp in r.decls:
+                out[p] = v
+        return out
+
+    def test_the_split_is_a_variable_not_a_hardcoded_ratio(self):
+        base = [r for r in self._rules(".deckview") if not r.conditional]
+        self.assertTrue(base, "no unconditional .deckview rule")
+        cols = self._decl(base[-1], "grid-template-columns")
+        self.assertIn("--holo-chat-fr", cols)
+        self.assertIn("--holo-pv-fr", cols)
+        self.assertNotIn("1.15fr", cols,
+                         "the fixed 1.15 : 1 ratio is still in the sheet")
+
+    def test_both_panes_keep_a_floor(self):
+        base = [r for r in self._rules(".deckview") if not r.conditional]
+        cols = self._decl(base[-1], "grid-template-columns")
+        self.assertEqual(cols.count("minmax("), 2,
+                         "each of chat and preview needs a minmax() floor so "
+                         "neither can be dragged to nothing: %r" % cols)
+
+    def test_the_px_floors_are_ONE_pair_shared_by_the_stylesheet_and_the_js(self):
+        """FIX ROUND 1. The JS clamp and the `minmax()` safety net have to agree
+        on the same two numbers or they fight: a JS floor above the CSS one
+        wastes room, a JS floor BELOW it re-opens the dead band the clamp
+        exists to close. The first cut had a second, different pair for narrow
+        windows — that is exactly the drift this asserts away."""
+        js = self.js
+        chat_min = int(re.search(r"HOLO_CHAT_MIN_PX\s*=\s*(\d+)", js).group(1))
+        pv_min = int(re.search(r"HOLO_PV_MIN_PX\s*=\s*(\d+)", js).group(1))
+        cols = [self._decl(r, "grid-template-columns") for r in
+                self._rules(".deckview")]
+        cols = [c for c in cols if c and "minmax(" in c]
+        self.assertTrue(cols, "no .deckview rule sizes the two fr tracks")
+        for c in cols:
+            mins = re.findall(r"minmax\(var\((--[\w-]+),(\d+)px\)", c)
+            self.assertEqual([m[1] for m in mins],
+                             [str(chat_min), str(pv_min)],
+                             "the stylesheet's floors %r do not match the JS "
+                             "pair (%d, %d): %r" % (mins, chat_min, pv_min, c))
+            # …and both rules must reach for the SAME two variables, so a later
+            # override lands on the JS clamp's numbers too.
+            self.assertEqual([m[0] for m in mins],
+                             ["--holo-chat-min", "--holo-pv-min"])
+
+    def test_the_chat_column_is_NOT_capped(self):
+        """HONOUR THE RULING EXACTLY. The captain chose the handle ALONE,
+        explicitly over an option that ALSO auto-capped the chat's growth: he
+        wants the control, not a rule guessing for him. This test is the guard
+        on that, because a max-width is the obvious thing a later session will
+        'helpfully' add."""
+        for sel in (".deckview", ".holo-chat", ".deckview.holo-chat"):
+            for rule in self._rules(sel):
+                self.assertIsNone(self._decl(rule, "max-width"),
+                                  "%s caps the chat — D2's amendment forbids "
+                                  "it" % sel)
+        base = [r for r in self._rules(".deckview") if not r.conditional]
+        cols = self._decl(base[-1], "grid-template-columns")
+        # a max on the chat track is the same cap wearing a different hat.
+        self.assertNotIn("clamp(", cols)
+        self.assertNotIn("min(", cols)
+
+    def test_solo_still_has_its_own_two_column_rule(self):
+        """`.deckview.solo` has no chat and no preview. The split is carried in
+        custom properties precisely so this rule is never overridden by an
+        inline `grid-template-columns` the JS wrote."""
+        solo = [r for r in self._rules(".deckview.solo") if not r.conditional]
+        self.assertTrue(solo)
+        self.assertEqual(self._decl(solo[-1], "grid-template-columns"),
+                         "216px 1fr")
+
+    def test_the_handle_is_a_real_grabbable_column(self):
+        rule = self._rules(".deck-split")
+        self.assertTrue(rule, "no .deck-split rule in the sheet")
+        self.assertEqual(self._decl(rule[-1], "cursor"), "col-resize")
+        # a pointer drag on a touch/trackpad surface scrolls the page instead
+        # of dragging unless the element opts out.
+        self.assertEqual(self._decl(rule[-1], "touch-action"), "none")
+
+    def test_the_drawer_breakpoint_is_the_one_the_captain_named(self):
+        """~1200px is the captain's approximation. This is the number he
+        changes; it is asserted so a silent drift is a failing test."""
+        self.assertIn("@media (max-width:1199px)", self.text)
+
+    def test_the_old_narrow_rule_is_GONE(self):
+        """The old narrow rule kept all three panes and squeezed the list to
+        170px. It was the honest minimum while Q3 was UNRULED; Q3 now has a
+        ruling, and two answers to the same problem in one sheet is how a layout
+        ends up depending on which one the cascade happened to pick.
+
+        Read off the PARSED rules, not the raw text, so the comment explaining
+        the deletion cannot itself keep this test red."""
+        for rule in self._rules(".deckview"):
+            cols = (self._decl(rule, "grid-template-columns") or "")
+            self.assertNotIn("170px", cols)
+            self.assertNotIn("1.05fr", cols)
+        # exactly one narrow breakpoint for the deck now, and it is the drawer's
+        self.assertNotIn("1100px", self.text.replace("max-width 1100", ""))
+
+    def test_the_drawer_pane_is_lifted_out_of_the_grid(self):
+        drawer = self._merged(".programs", conditional=True)
+        self.assertTrue(drawer, "no conditional .programs rule — the program "
+                                "list never becomes a drawer")
+        self.assertEqual(drawer.get("position"), "absolute")
+        # hidden, not merely translated: an off-screen pane that is still
+        # `visible` is still in the tab order, and Tab walks the captain into a
+        # list he cannot see.
+        self.assertEqual(drawer.get("visibility"), "hidden")
+        opened = self._merged(".deckview.drawer-open.programs", conditional=True)
+        self.assertTrue(opened, "nothing brings the drawer back")
+        self.assertEqual(opened.get("visibility"), "visible")
+        self.assertEqual(opened.get("transform"), "none")
+
+    def test_the_drawer_is_anchored_to_the_deck_it_covers(self):
+        base = [r for r in self._rules(".deckview") if not r.conditional]
+        self.assertEqual(self._decl(base[-1], "position"), "relative",
+                         "an absolutely-positioned drawer on a STATIC parent "
+                         "escapes to the nearest positioned ancestor")
+
+    def test_the_preview_never_becomes_a_toggle_at_any_width(self):
+        """D2 holds everywhere. If a narrow rule ever hides the preview, this
+        is the test that says so."""
+        for rule in self._rules(".preview"):
+            self.assertNotEqual(self._decl(rule, "display"), "none")
+        for sel in (".deckview.drawer-open.preview", ".deckview.preview"):
+            for rule in self._rules(sel):
+                self.assertNotEqual(self._decl(rule, "display"), "none")
+
+    def test_the_drawer_control_is_absent_until_it_is_needed(self):
+        """It is rendered at every width — that is what lets the toggle be a
+        class flip instead of a re-render — so the stylesheet is the only thing
+        keeping it off a wide screen, where the list is already on show."""
+        base = [r for r in self._rules(".holo-drawer-btn") if not r.conditional]
+        self.assertTrue(base)
+        self.assertEqual(self._decl(base[-1], "display"), "none")
+        narrow = [r for r in self._rules(".holo-drawer-btn") if r.conditional]
+        self.assertTrue(narrow, "the control is never shown at any width")
+        self.assertNotEqual(self._decl(narrow[-1], "display"), "none")
 
 
 class EmptyPreviewIsLegibleTest(unittest.TestCase):

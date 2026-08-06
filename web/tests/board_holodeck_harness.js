@@ -40,10 +40,28 @@ function clsList(node) {
 function isElement(n) { return !!(n && n.tag && n.tag.charAt(0) !== "#"); }
 function setCls(node, list) { node._cls = list.join(" "); }
 
+/* A style object that RECORDS custom properties. S128's split lives in two CSS
+ * custom properties on `.deckview` (`--holo-chat-fr` / `--holo-pv-fr`) rather
+ * than an inline `grid-template-columns`, precisely so `.deckview.solo` keeps
+ * its own rule — so `setProperty` is the one write this harness has to see.
+ * It records; it computes NOTHING. No column is ever laid out here. */
+function stubStyle() {
+  const props = {};
+  const style = {
+    _props: props,
+    setProperty(k, v) { props[k] = String(v); },
+    removeProperty(k) { delete props[k]; },
+    getPropertyValue(k) {
+      return Object.prototype.hasOwnProperty.call(props, k) ? props[k] : "";
+    },
+  };
+  return style;
+}
+
 function stubEl(tag) {
   const node = {
     tag: tag || "",
-    style: {},
+    style: stubStyle(),
     attrs: {},
     _kids: [],
     parent: null,
@@ -112,6 +130,20 @@ function stubEl(tag) {
       key: "", shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
     };
     (node.listeners.click || []).forEach((fn) => fn(ev));
+  };
+  /* Fire a NON-click listener (keydown, dblclick, pointerdown). The stub has
+   * no event model, so this is the honest minimum: it calls what board.js
+   * registered, with the fields board.js reads. It proves a handler runs and
+   * what it computes — it can NEVER prove a browser delivers the event. */
+  node.fire = function (ev, init) {
+    const e = Object.assign({
+      stopPropagation() {}, preventDefault() {}, target: node,
+      key: "", clientX: 0, shiftKey: false, ctrlKey: false, metaKey: false,
+      altKey: false, setPointerCapture() {}, releasePointerCapture() {},
+      pointerId: 1,
+    }, init || {});
+    (node.listeners[ev] || []).forEach((fn) => fn(e));
+    return e;
   };
   node.querySelector = function (sel) { return qs(node, sel); };
   node.querySelectorAll = function (sel) { return qsa(node, sel); };
@@ -236,14 +268,35 @@ function fetchStub(url, opts) {
   return p;
 }
 
+/* A REAL in-memory Storage. The other board_* harnesses stub `getItem` to null
+ * forever, which cannot tell a persisted split from a defaulted one — the whole
+ * point of D2's amendment is that the split SURVIVES A RELOAD. Seedable (act
+ * `storage`) and projected back out, so a test reads what board.js wrote. */
+const STORE = {};
+const storageStub = {
+  getItem(k) {
+    return Object.prototype.hasOwnProperty.call(STORE, k) ? STORE[k] : null;
+  },
+  setItem(k, v) { STORE[k] = String(v); },
+  removeItem(k) { delete STORE[k]; },
+};
+
+/* Document-level listeners are RECORDED and callable — a drag registers
+ * `pointermove`/`pointerup` on the document, and a test that cannot reach them
+ * cannot prove the drag is ever released. */
+const DOC_LISTENERS = {};
 const documentStub = {
   getElementById(id) { return REGISTRY[id] || null; },
   querySelector(sel) { return qs(docRoot, sel); },
   querySelectorAll(sel) { return qsa(docRoot, sel); },
   createElement(tag) { return stubEl(tag); },
   createTextNode(t) { const n = stubEl("#text"); n._text = String(t); return n; },
-  addEventListener() {},
-  removeEventListener() {},
+  addEventListener(ev, fn) {
+    (DOC_LISTENERS[ev] = DOC_LISTENERS[ev] || []).push(fn);
+  },
+  removeEventListener(ev, fn) {
+    DOC_LISTENERS[ev] = (DOC_LISTENERS[ev] || []).filter((f) => f !== fn);
+  },
   body: bodyNode,
   documentElement: docRoot,
   activeElement: null,
@@ -251,10 +304,10 @@ const documentStub = {
 
 const sandbox = {
   document: documentStub,
-  window: { open() {}, location: { href: "" } },
+  window: { open() {}, location: { href: "" }, localStorage: storageStub },
   location: { href: "", search: "", pathname: "/" },
   navigator: { userAgent: "node" },
-  localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+  localStorage: storageStub,
   setInterval() { return 0; }, clearInterval() {},
   setTimeout() { return 0; }, clearTimeout() {},
   fetch: fetchStub,
@@ -879,6 +932,168 @@ switch (cfg.act) {
     out.fileBody = post ? JSON.parse(post.opts.body) : null;
     break;
   }
+  /* ── S128 — D2's AMENDED chat ⇄ preview split ──────────────────────────
+   * WHAT THIS CANNOT SEE, said here rather than discovered later: there is no
+   * CSS and no layout in this process. It reads the two custom properties
+   * board.js WRITES and the numbers it computes. It cannot tell you a pane got
+   * wider, that the handle is visible, or that a real pointer drags anything —
+   * only headless Chrome can, and only by measuring the panes. */
+  case "split": {
+    Object.keys(STORE).forEach((k) => delete STORE[k]);
+    Object.keys(cfg.storage || {}).forEach((k) => { STORE[k] = String(cfg.storage[k]); });
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    const view = one(deck(), ".deckview");
+    const handle = one(deck(), ".deck-split");
+    const project = () => ({
+      chatFr: view ? view.style.getPropertyValue("--holo-chat-fr") : "",
+      pvFr: view ? view.style.getPropertyValue("--holo-pv-fr") : "",
+      valueNow: handle ? handle.getAttribute("aria-valuenow") : null,
+      stored: STORE["lcars-holo-split"] === undefined
+        ? null : STORE["lcars-holo-split"],
+    });
+    out.present = !!handle;
+    out.paneOrder = view ? view.children.map((c) => clsList(c)[0]) : [];
+    out.role = handle ? handle.getAttribute("role") : null;
+    out.orientation = handle ? handle.getAttribute("aria-orientation") : null;
+    out.tabindex = handle ? handle.getAttribute("tabindex") : null;
+    out.label = handle ? handle.getAttribute("aria-label") : null;
+    out.valueMin = handle ? handle.getAttribute("aria-valuemin") : null;
+    out.valueMax = handle ? handle.getAttribute("aria-valuemax") : null;
+    out.title = handle ? (handle.title || "") : "";
+    out.controls = controlsIn(view || stubEl("div"));
+    out.initial = project();
+    // the keyboard leg: every key the handle claims, driven through the REAL
+    // listener board.js registered.
+    out.keys = {};
+    (cfg.keys || []).forEach((k) => {
+      if (handle) handle.fire("keydown", { key: k });
+      out.keys[k] = project();
+    });
+    if (cfg.dblclick && handle) { handle.fire("dblclick", {}); }
+    if (cfg.dblclick) out.afterDblclick = project();
+    /* The drag ARITHMETIC, through the pure function the pointermove handler
+     * itself calls. It proves the clamp and the fraction; it proves nothing
+     * about pixels moving. */
+    if (cfg.drags) {
+      out.drags = cfg.drags.map((d) => ({
+        frac: sandbox.holoSplitFromDrag(d[0], d[1], d[2]),
+      }));
+    }
+    /* THE DRAG LIFECYCLE, through the real pointerdown handler. The stub has no
+     * layout, so the two panes are TOLD their widths; everything after that is
+     * board.js's own. What this proves is the wiring — that a press registers a
+     * move and a release, that the release un-registers them, and that storage
+     * is written ONCE at the end rather than on every move. What it cannot
+     * prove is that a browser delivers any of these events, or that a pixel
+     * moved. */
+    if (cfg.drag) {
+      const chat = one(deck(), ".holo-chat");
+      const pv = one(deck(), ".preview");
+      if (chat) chat.offsetWidth = cfg.drag.chatPx;
+      if (pv) pv.offsetWidth = cfg.drag.pvPx;
+      Object.keys(DOC_LISTENERS).forEach((k) => { DOC_LISTENERS[k] = []; });
+      handle.fire("pointerdown", { clientX: 0 });
+      out.dragArmed = {
+        move: (DOC_LISTENERS.pointermove || []).length,
+        up: (DOC_LISTENERS.pointerup || []).length,
+        cancel: (DOC_LISTENERS.pointercancel || []).length,
+        viewClass: view ? view.className : "",
+        stored: STORE["lcars-holo-split"] === undefined
+          ? null : STORE["lcars-holo-split"],
+      };
+      (DOC_LISTENERS.pointermove || []).slice().forEach((fn) => {
+        fn({ clientX: cfg.drag.dx, preventDefault() {} });
+      });
+      out.duringDrag = project();
+      (DOC_LISTENERS.pointerup || []).slice().forEach((fn) => {
+        fn({ clientX: cfg.drag.dx, preventDefault() {} });
+      });
+      out.afterDrag = Object.assign(project(), {
+        move: (DOC_LISTENERS.pointermove || []).length,
+        up: (DOC_LISTENERS.pointerup || []).length,
+        cancel: (DOC_LISTENERS.pointercancel || []).length,
+        viewClass: view ? view.className : "",
+      });
+    }
+    if (cfg.setTo !== undefined) {
+      sandbox.holoSplitSet(cfg.setTo, true);
+      out.afterSet = project();
+    }
+    break;
+  }
+
+  /* ── S128 fix round 1 — THE PIXEL CLAMP ────────────────────────────────
+   * Pure arithmetic only, and deliberately so: the defect this covers was
+   * MEASURED in headless Chrome and is invisible to every DOM assertion in this
+   * file. What is provable here is that the numbers board.js feeds the grid can
+   * never ask a track to resolve below its px floor — which is the condition
+   * that made grid leave a dead band. That the band is actually gone is a
+   * Chrome measurement, not this. */
+  case "clamp": {
+    out.chatMinPx = sandbox.HOLO_CHAT_MIN_PX;
+    out.pvMinPx = sandbox.HOLO_PV_MIN_PX;
+    out.cases = (cfg.cases || []).map((c) => {
+      const frac = c.dx === undefined
+        ? sandbox.holoSplitClamp(c.f, c.total)
+        : sandbox.holoSplitFromDrag(c.startChatPx, c.dx, c.total);
+      return {
+        frac: frac,
+        chatPx: frac * c.total,
+        pvPx: (1 - frac) * c.total,
+        sum: frac + (1 - frac),
+        bounds: sandbox.holoSplitBounds(c.total),
+        degraded: sandbox.holoSplitDegraded(c.total),
+      };
+    });
+    break;
+  }
+
+  /* ── S128 — Q3's PROGRAM-LIST DRAWER ──────────────────────────────────── */
+  case "drawer": {
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    const view = one(deck(), ".deckview");
+    const btns = many(deck(), ".holo-drawer-btn");
+    out.toggleCount = btns.length;
+    out.toggleTags = btns.map((b) => b.tag);
+    out.toggleText = btns.map(txt);
+    out.toggleTitle = btns.length ? (btns[0].title || "") : "";
+    out.controls = controlsIn(view || stubEl("div"));
+    out.expandedBefore = btns.map((b) => b.getAttribute("aria-expanded"));
+    out.classBefore = view ? view.className : "";
+    out.scrimPresent = !!one(deck(), ".holo-scrim");
+    /* THE STATE TEST. Opening the drawer must not lose the deck — so a marker
+     * is stamped on the LIVE transcript node and looked for again afterwards.
+     * If the toggle re-rendered the deck, the node is a different object and
+     * the marker is gone (which is also the chat's scroll position gone). */
+    const tr = one(deck(), ".transcript");
+    if (tr) tr._marker = "s128";
+    const stamped = one(deck(), ".preview");
+    if (stamped) stamped._marker = "s128";
+    if (btns.length) btns[0].click();
+    const view2 = one(deck(), ".deckview");
+    out.classAfter = view2 ? view2.className : "";
+    out.expandedAfter = many(deck(), ".holo-drawer-btn")
+      .map((b) => b.getAttribute("aria-expanded"));
+    const tr2 = one(deck(), ".transcript");
+    out.transcriptSurvived = !!(tr2 && tr2._marker === "s128");
+    const pv2 = one(deck(), ".preview");
+    out.previewSurvived = !!(pv2 && pv2._marker === "s128");
+    out.turnCountAfter = many(deck(), ".turn").length;
+    // …and closing it again, by the scrim rather than the button, because that
+    // is the gesture a captain actually makes.
+    const scrim = one(deck(), ".holo-scrim");
+    if (scrim && cfg.closeByScrim) scrim.click();
+    if (cfg.closeByScrim) {
+      const view3 = one(deck(), ".deckview");
+      out.classAfterScrim = view3 ? view3.className : "";
+      out.expandedAfterScrim = many(deck(), ".holo-drawer-btn")
+        .map((b) => b.getAttribute("aria-expanded"));
+    }
+    break;
+  }
+
   case "viewOnly": {
     sandbox.writesActive = cfg.writes ? true : false;
     sandbox.applyHolodeckWriteState();

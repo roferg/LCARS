@@ -291,10 +291,26 @@ class BannerFrontEndTest(unittest.TestCase):
     def test_banner_has_session_dismiss(self):
         # A ✕ hides the banner for the session only (in-memory flag, not persisted
         # to storage); a refresh reloads board.js and the banner returns.
+        #
+        # NARROWED 2026-08-05 (S128). This used to assert `localStorage` appeared
+        # NOWHERE in board.js — a whole-file ban standing in for a claim about
+        # ONE flag. S128 gives the holodeck's chat ⇄ preview split a persisted
+        # position (D2, amended by the captain: "a decision the captain has to
+        # make every session" is answered by persisting it), which is a
+        # legitimate use of storage the old wording forbade by accident. The
+        # claim this test actually makes is unchanged and is now stated exactly:
+        # the DISMISS FLAG is in memory.
         js = self._text("/board.js")
         self.assertIn("versionBannerDismissed", js)
-        self.assertNotIn("localStorage", js)
         self.assertNotIn("sessionStorage", js)
+        for line in js.splitlines():
+            if "versionBannerDismissed" not in line:
+                continue
+            self.assertNotIn("localStorage", line,
+                             "the dismiss flag is persisted: %r" % line.strip())
+        # …and nothing anywhere stores it under a key of its own.
+        self.assertNotIn("version-banner-dismissed", js)
+        self.assertNotIn("versionBannerDismissed\"", js)
         self.assertIn(".vb-x", self._text("/board.css"))
 
     def test_banner_has_running_and_done_states(self):

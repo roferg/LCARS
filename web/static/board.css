@@ -1196,19 +1196,67 @@ body.on-deck{overflow:hidden}
 body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .topbar .btn.holo-on{background:#0d2b2a;color:var(--holo-grid);border-color:#000}
 
-/* D2 — three panes: PROGRAMS 216px · CHAT · LIVE PREVIEW at ~1.15 : 1.
-   A FIXED split: a drag handle is state to persist, a thing to get wrong on
-   reload, and a decision the captain would have to make every session. */
+/* D2 — three panes: PROGRAMS 216px · CHAT · ⇔ · LIVE PREVIEW.
+   AMENDED 2026-08-05 (captain, S127 live drive): the chat ⇄ preview boundary is
+   a PERSISTED DRAG HANDLE. The old `1.15fr : 1fr` grew the chat WITHOUT BOUND —
+   at full screen on a 2560px display ~1250px of chat against a ~70-character
+   readable line, spent on the one pane that cannot use it while the preview,
+   which D2 itself calls "the point", starved.
+
+   NOTE WHAT IS DELIBERATELY MISSING: there is no `max-width` on the chat
+   column, and no `min()`/`clamp()` in the chat track. The captain chose the
+   handle ALONE, explicitly over an option that ALSO capped the chat's growth —
+   he wants the control, not a rule guessing for him.
+
+   The split arrives as TWO CUSTOM PROPERTIES that board.js writes on this node,
+   never as an inline `grid-template-columns`: an inline value would also
+   override `.deckview.solo` below, which is a deck with no chat and no preview
+   at all. The `minmax()` floors are the other half of "neither pane can be
+   dragged to nothing" — they are what keeps the handle on screen and grabbable
+   after any drag. */
 /* `grid-template-rows:minmax(0,1fr)` is the load-bearing half: a grid's implicit
    row is `auto`, so it sizes to its TALLEST item's content — the row grew with
    the transcript and no `min-height:0` on the panes could stop it. `minmax(0,…)`
    lets the row be shorter than its content, which is what lets the transcript
    scroll instead of the page. */
-.deckview{display:grid;grid-template-columns:216px 1.15fr 1fr;
-  grid-template-rows:minmax(0,1fr);flex:1 1 auto;
+.deckview{display:grid;
+  grid-template-columns:216px
+    minmax(var(--holo-chat-min,340px),var(--holo-chat-fr,0.42fr))
+    var(--holo-gutter,7px)
+    minmax(var(--holo-pv-min,360px),var(--holo-pv-fr,0.58fr));
+  grid-template-rows:minmax(0,1fr);flex:1 1 auto;position:relative;
   min-height:0;min-width:0;overflow:hidden}
 .deckview.solo{grid-template-columns:216px 1fr}
 .deckview > *{min-height:0;overflow:hidden}
+
+/* THE HANDLE. A grid COLUMN rather than an overlay, so it never sits on top of
+   either pane's content and cannot be dragged out from under the cursor.
+   `touch-action:none` is load-bearing on a trackpad/touch surface: without it
+   the browser claims the gesture for scrolling and the handle never moves. */
+.deck-split{background:var(--lcars-surface);cursor:col-resize;display:flex;
+  align-items:center;justify-content:center;padding:0;touch-action:none;
+  border-right:1px solid var(--lcars-border)}
+.deck-split .grip{width:2px;height:34px;border-radius:2px;
+  background:rgba(80,104,138,.55);transition:background .12s ease,height .12s ease}
+.deck-split:hover .grip,.deck-split:focus .grip,
+.deckview.dragging .deck-split .grip{background:var(--holo-grid);height:64px}
+.deck-split:focus-visible{outline:2px solid var(--holo-grid);outline-offset:-2px}
+/* Mid-drag the pointer crosses the transcript and the preview; without this a
+   drag selects text the whole way across. */
+.deckview.dragging{cursor:col-resize;user-select:none}
+@media (prefers-reduced-motion:reduce){.deck-split .grip{transition:none}}
+
+/* Q3's drawer furniture, defined at EVERY width and shown at none of them until
+   the breakpoint rule below turns it on. Rendered always, on purpose: that is
+   what lets opening the drawer be one class flip on the live DOM instead of a
+   re-render — and a re-render is the chat's scroll position and the preview's
+   iframe, gone. */
+.holo-scrim{display:none;position:absolute;inset:0;z-index:5;
+  background:rgba(0,0,0,.55);opacity:0;pointer-events:none;
+  transition:opacity .16s ease}
+.holo-drawer-btn{display:none;font-size:9px;letter-spacing:.1em;padding:3px 9px;
+  border-radius:9px;white-space:nowrap;flex:0 0 auto}
+@media (prefers-reduced-motion:reduce){.holo-scrim{transition:none}}
 
 /* — left: PROGRAMS — */
 .programs{border-right:1px solid var(--lcars-border);display:flex;
@@ -1640,9 +1688,50 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   color:var(--lcars-text-dim);white-space:pre-wrap;overflow-x:auto;
   max-height:230px;overflow-y:auto}
 
-@media (max-width:1100px){
-  /* Q3 is unruled, so this is the honest minimum rather than an invented
-     answer: keep all three panes (the preview is the point — D2) and let the
-     list give up its width first. */
-  .deckview{grid-template-columns:170px 1.05fr 1fr}
+/* Q3 — RESOLVED 2026-08-05 (captain, S127 live drive): below ~1200px the
+   PROGRAM LIST collapses to a DRAWER. Chat and preview keep the full width; the
+   list is the pane least needed moment-to-moment, so it hides behind a control
+   rather than shrinking the two panes the work actually happens in.
+
+   THIS REPLACES the old max-width 1100 rule, which kept all three panes and
+   squeezed the list to 170px. That rule said in its own comment that it was
+   "the honest minimum rather than an invented answer" BECAUSE Q3 WAS UNRULED.
+   Q3 now has a ruling, and leaving both answers in one sheet is how a layout
+   ends up depending on which rule the cascade happened to pick. It is deleted,
+   not narrowed — see the deleted-lines review.
+
+   1199px is the captain's ~1200 made exact — ONE NUMBER, here, to change. It
+   sits just under the common 1280px laptop width, so a full-screen laptop keeps
+   all three panes and only a genuinely narrow or split-screen window drawers.
+
+   THE PREVIEW IS NOT TOUCHED. D2's "the preview is the point, it must be
+   permanently visible" holds at every width — it never becomes a toggle. */
+@media (max-width:1199px){
+  /* the list column is GONE from the track list, not merely hidden: `.programs`
+     goes out of flow below, and a grid whose first track is still 216px would
+     leave the chat sitting in an empty gutter. */
+  /* the SAME two px floors as the wide rule, and as `HOLO_CHAT_MIN_PX` /
+     `HOLO_PV_MIN_PX` in board.js. The first cut used a second, smaller pair
+     here; a JS clamp and a CSS safety net that disagree about the floor is
+     precisely how the dead band comes back at one width and not another. */
+  .deckview{grid-template-columns:
+    minmax(var(--holo-chat-min,340px),var(--holo-chat-fr,0.42fr))
+    var(--holo-gutter,7px)
+    minmax(var(--holo-pv-min,360px),var(--holo-pv-fr,0.58fr))}
+  .deckview.solo{grid-template-columns:1fr}
+  /* absolute, against `.deckview{position:relative}` — a drawer on a STATIC
+     parent escapes to the nearest positioned ancestor and covers the wrong box.
+     `visibility:hidden` and not merely `transform` because an off-screen pane
+     that is still `visible` stays in the TAB ORDER: Tab would walk the captain
+     into a program list he cannot see. */
+  .programs{position:absolute;left:0;top:0;bottom:0;width:min(272px,80vw);
+    z-index:6;transform:translateX(-100%);visibility:hidden;
+    transition:transform .16s ease,visibility .16s ease;
+    border-right:1px solid var(--lcars-border-bright);
+    box-shadow:6px 0 26px rgba(0,0,0,.55)}
+  .deckview.drawer-open .programs{transform:none;visibility:visible}
+  .holo-scrim{display:block}
+  .deckview.drawer-open .holo-scrim{opacity:1;pointer-events:auto}
+  .holo-drawer-btn{display:inline-flex}
 }
+@media (prefers-reduced-motion:reduce){.programs{transition:none}}

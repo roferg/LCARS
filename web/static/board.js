@@ -7422,6 +7422,11 @@ var HOLO = {
   activeId: null,       // which program the chat + preview are showing
   busy: false,          // a turn is in flight
   filter: "all",        // D11's chips, over a real draft→sent lifecycle (S127)
+  // Q3 (S128) — is the PROGRAM DRAWER open? Only meaningful below the
+  // stylesheet's breakpoint, where the list stops being a column. It lives here
+  // and not only as a class because renderDeck rebuilds the deckview on every
+  // turn, and a drawer whose only memory is that node slams shut mid-turn.
+  drawer: false,
   banner: null,         // D7 — {kind, label, text, paths, action}
   nonce: 0,             // the preview's cache-buster; bumped per file change
   sidecarName: null,    // learnt from the first program (D6's footer chip)
@@ -7592,6 +7597,376 @@ function holoRefresh() {
     .catch(function () { /* the deck simply shows what it last knew */ });
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+   D2, AMENDED 2026-08-05 (captain, S127 live drive) — THE CHAT ⇄ PREVIEW SPLIT
+
+     "I need some way to resize the chat window to give the mock render more
+      room. This becomes more important if I make the window full screen. Then
+      the chat takes up a comical amount of room."
+
+   D2 originally fixed the split at `1.15fr : 1fr` and refused a handle: a
+   draggable split is state to persist, a thing to get wrong on reload, and a
+   decision to make every session. That reasoning was not wrong about the costs,
+   it was wrong about the alternative — it compared them against a fixed split
+   that is CORRECT, when the fixed split is wrong at every width except the one
+   it was tuned at. `1.15fr` grows the chat without bound: at full screen on a
+   2560px display that is ~1250px of chat against a natural readable line of ~70
+   characters, every pixel past that spent on the one pane that cannot use it
+   while the preview — which D2 itself calls "the point" — starves. And "a
+   decision every session" is answered by PERSISTING it: he sets it once.
+
+   WHAT IS DELIBERATELY ABSENT. There is no cap on the chat's growth, here or in
+   the stylesheet. The captain chose the handle ALONE, explicitly over an option
+   that also capped the chat automatically. He wants the control, not a rule
+   guessing for him. `test_the_chat_column_is_NOT_capped` is the guard.
+
+   THE ONE NUMBER TO CHANGE is HOLO_SPLIT_DEFAULT. `1.15 : 1` is chat 53.5%,
+   which is the poor starting position the amendment names; a preview-favouring
+   default is inside the ruling and wanted. 0.42 puts the chat at ~510px on a
+   1440px laptop — near the natural readable line — and hands the rest to the
+   render.
+
+   The split rides in TWO CUSTOM PROPERTIES on `.deckview` rather than an inline
+   `grid-template-columns`, because an inline value would also override
+   `.deckview.solo` — a deck with no chat and no preview at all.
+   ════════════════════════════════════════════════════════════════════════ */
+var HOLO_SPLIT_KEY = "lcars-holo-split";
+var HOLO_SPLIT_DEFAULT = 0.42;  // ← the chat's share of (chat + preview)
+
+/* THE TWO PIXEL FLOORS, named once. The stylesheet's `minmax()` mins are
+   `var(--holo-chat-min,340px)` / `var(--holo-pv-min,360px)` and MUST be these
+   same two numbers — `test_the_px_floors_are_ONE_pair_shared_by_the_stylesheet
+   _and_the_js` fails if they drift, because a mismatch is the bug below coming
+   straight back.
+
+   FIX ROUND 1 — WHY THE CLAMP MOVED INTO PIXELS. The first cut left the floors
+   to CSS alone: `minmax(340px, var(--holo-chat-fr))`. Measured in headless
+   Chrome at viewport 1600 (deck 1516, span 1293), a drag to 0.25 produced
+   tracks `216px 340px 7px 714.75px` — a sum of 1278 against 1516, i.e. a 238px
+   DEAD BAND on the right of the deck. When an fr max resolves below the px min,
+   grid clamps that track to the min correctly, but then resolves the OTHER
+   track's fr against the ORIGINAL free space rather than the space the clamp
+   released; the surplus is never redistributed. The user-visible result was the
+   exact opposite of what the captain asked for — he drags left to give the mock
+   render more room and gets an empty band.
+
+   So the fractions handed to the grid are clamped HERE, against the live span,
+   so no fr track is ever asked to resolve below its floor and the pair always
+   consumes the whole span. The `minmax()` mins stay as a safety net for a
+   viewport too narrow for any valid split; the normal path never reaches them.
+
+   This is a MINIMUM-side clamp. It is not, and must not become, a cap on the
+   chat's growth — the captain rejected that explicitly. There is no maximum
+   pixel constant here for exactly that reason. */
+var HOLO_CHAT_MIN_PX = 340;
+var HOLO_PV_MIN_PX = 360;
+
+/* The fraction-space guard, used when nothing has been laid out yet (first
+   paint, a headless harness) and there is no span to measure. */
+var HOLO_SPLIT_MIN = 0.15;
+var HOLO_SPLIT_MAX = 0.85;
+var HOLO_SPLIT_STEP = 0.02;     // one arrow-key nudge
+var HOLO_SPLIT = null;          // in-memory; null = not read from storage yet
+
+/* Is the span too narrow to satisfy BOTH floors? Then no split exists that
+   does, and the bounds below collapse to a single value. */
+function holoSplitDegraded(total) {
+  return !!total && total > 0 && total <= HOLO_CHAT_MIN_PX + HOLO_PV_MIN_PX + 2;
+}
+
+/* [min, max] fraction for a chat+preview span of `total` px, derived from the
+   two floors rather than hardcoded — a wider deck legitimately permits a
+   narrower chat FRACTION, because the bound is a pixel.
+
+   The +1 is a pixel of slack: without it the bound resolves to EXACTLY the
+   floor and `toFixed()`'s rounding can land a hair under it, which is enough to
+   trip the clamp and strand a pixel or two of band.
+
+   `null` when there is nothing to measure — the caller then keeps the
+   fraction-space guard, which is the honest answer rather than an invented
+   one. */
+function holoSplitBounds(total) {
+  if (!total || total <= 0) return null;
+  if (holoSplitDegraded(total)) {
+    /* DEGRADED, and the choice is stated rather than emergent: divide the span
+       in PROPORTION TO THE TWO FLOORS, so neither pane is singled out to absorb
+       the shortfall and the answer is the same whatever was stored or dragged.
+       Both panes end up under their floor — there is no room — and the
+       stylesheet's `minmax()` mins then hold each track at its minimum, so the
+       deck overflows and clips rather than silently hiding one pane. Below this
+       width the three-pane contract simply does not fit. */
+    var f = HOLO_CHAT_MIN_PX / (HOLO_CHAT_MIN_PX + HOLO_PV_MIN_PX);
+    return [f, f];
+  }
+  return [(HOLO_CHAT_MIN_PX + 1) / total, 1 - (HOLO_PV_MIN_PX + 1) / total];
+}
+
+/* The chat+preview span in px, measured off the live deck. `chat.offsetLeft` is
+   the 216px program-list track above the breakpoint and 0 below it (where the
+   list is an out-of-flow drawer), so one read covers both layouts without this
+   file having to know what the stylesheet decided. */
+function holoSplitSpan() {
+  var host = deckHost();
+  var view = host && host.querySelector ? host.querySelector(".deckview") : null;
+  if (!view || !view.querySelector) return 0;
+  var chat = view.querySelector(".holo-chat");
+  var handle = view.querySelector(".deck-split");
+  if (!chat || !handle) return 0;
+  var span = (view.clientWidth || 0) - (chat.offsetLeft || 0)
+             - (handle.offsetWidth || 0);
+  return span > 0 ? span : 0;
+}
+
+/* Storage is OPTIONAL and never fatal: Safari's private mode throws on read,
+   an embedded webview may not have it at all, and a deck that cannot remember
+   its split is still a deck. */
+function holoStore() {
+  try {
+    return (typeof localStorage !== "undefined" && localStorage) || null;
+  } catch (e) { return null; }
+}
+
+/* `total` is optional: with a span it clamps in PIXELS, without one it falls
+   back to the fraction-space guard. */
+function holoSplitClamp(f, total) {
+  f = parseFloat(f);
+  if (!isFinite(f)) f = HOLO_SPLIT_DEFAULT;
+  f = Math.min(HOLO_SPLIT_MAX, Math.max(HOLO_SPLIT_MIN, f));
+  var b = holoSplitBounds(total);
+  if (b) f = Math.min(b[1], Math.max(b[0], f));
+  return f;
+}
+
+function holoSplitGet() {
+  if (HOLO_SPLIT !== null) return HOLO_SPLIT;
+  var raw = null;
+  try {
+    var s = holoStore();
+    if (s) raw = s.getItem(HOLO_SPLIT_KEY);
+  } catch (e) { raw = null; }
+  HOLO_SPLIT = (raw === null || raw === "") ? HOLO_SPLIT_DEFAULT
+                                            : holoSplitClamp(raw);
+  return HOLO_SPLIT;
+}
+
+/* THE CAPTAIN'S PREFERENCE, as opposed to what fits. `holoSplitGet` is the
+   number he chose; `holoSplitEffective` is that number made legal for the width
+   currently on screen. They are kept apart on purpose: a 0.25 set on a 2560px
+   display is legal there and illegal at 1100px, and collapsing the two would
+   mean a window he narrowed for five minutes silently ate the preference. */
+function holoSplitEffective() {
+  return holoSplitClamp(holoSplitGet(), holoSplitSpan());
+}
+
+/* `persist` is false mid-drag and true when the gesture ENDS — a pointermove
+   writes to storage sixty times a second otherwise, for one decision. Every
+   caller is an EXPLICIT gesture, so this one does write the pixel-clamped
+   value: he moved it in this window, at this width. */
+function holoSplitSet(f, persist) {
+  HOLO_SPLIT = holoSplitClamp(f, holoSplitSpan());
+  holoSplitApply();
+  if (persist) {
+    try {
+      var s = holoStore();
+      if (s) s.setItem(HOLO_SPLIT_KEY, String(HOLO_SPLIT));
+    } catch (e) { /* a deck that cannot remember is still a deck */ }
+  }
+  return HOLO_SPLIT;
+}
+
+function holoSplitReset() { return holoSplitSet(HOLO_SPLIT_DEFAULT, true); }
+
+/* The split a drag of `dx` pixels lands on, over a chat+preview span of
+   `total`. PURE, and separate from the pointer plumbing on purpose: a node
+   harness can never deliver a pointer event, but it can prove the arithmetic
+   and the clamp — which is the half that has the off-by-one in it. */
+function holoSplitFromDrag(startChatPx, dx, total) {
+  if (!total) return holoSplitGet();
+  return holoSplitClamp((startChatPx + dx) / total, total);
+}
+
+function holoSplitApply() {
+  var host = deckHost();
+  var view = host && host.querySelector ? host.querySelector(".deckview") : null;
+  if (!view || !view.style || !view.style.setProperty) return;
+  /* the EFFECTIVE split, not the stored one: a value saved on a wider window is
+     replayed into a narrower one on the next reload, and unclamped that reopens
+     the dead band on a deck nobody has touched. The preference is left alone —
+     widen the window again and it comes back. */
+  var f = holoSplitEffective();
+  /* six places, not four: the bounds are pixel-derived, and rounding a bound
+     down by a ten-thousandth is enough to put a track back under its floor. */
+  view.style.setProperty("--holo-chat-fr", f.toFixed(6) + "fr");
+  view.style.setProperty("--holo-pv-fr", (1 - f).toFixed(6) + "fr");
+  var h = view.querySelector(".deck-split");
+  if (h) h.setAttribute("aria-valuenow", String(Math.round(f * 100)));
+}
+
+/* THE HANDLE. A grid COLUMN, not an overlay: it cannot sit on top of either
+   pane's content, and because both panes keep a floor it can never be pushed
+   off the edge — after any drag it is still there to drag back. */
+function holoSplitHandle() {
+  var h = el("div", "deck-split");
+  h.appendChild(el("span", "grip"));
+  /* The standard window-splitter role, so assistive tech says what this is and
+     where it sits instead of "group". NOT keyActivable: that idiom maps
+     Enter/Space onto `click`, and a click is what ENDS a drag — the reset would
+     fire every time the captain let go of the handle. */
+  h.setAttribute("role", "separator");
+  h.setAttribute("aria-orientation", "vertical");
+  h.setAttribute("aria-label", "Chat / preview split");
+  h.setAttribute("aria-valuemin", String(Math.round(HOLO_SPLIT_MIN * 100)));
+  h.setAttribute("aria-valuemax", String(Math.round(HOLO_SPLIT_MAX * 100)));
+  h.setAttribute("tabindex", "0");
+  h.title = "Drag to give the preview more room. Arrow keys nudge it; "
+    + "double-click resets it.";
+  /* It IS wired — three real handlers below — so it says so in the deck's own
+     no-dead-controls vocabulary. It is not wired to `click`, which is why this
+     is stated rather than inferred by holoCtl. */
+  h.setAttribute("data-ctl", "chat / preview split");
+  h.setAttribute("data-wired", "1");
+
+  h.addEventListener("pointerdown", function (e) { holoSplitDrag(e, h); });
+  h.addEventListener("dblclick", function (e) {
+    if (e && e.preventDefault) e.preventDefault();
+    holoSplitReset();
+  });
+  h.addEventListener("keydown", function (e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var d = 0;
+    if (e.key === "ArrowLeft") d = -HOLO_SPLIT_STEP;
+    else if (e.key === "ArrowRight") d = HOLO_SPLIT_STEP;
+    else if (e.key === "Home" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault(); e.stopPropagation();
+      holoSplitReset();
+      return;
+    } else return;
+    e.preventDefault();
+    /* stopPropagation so the deck's global key handling never ALSO acts on a
+       nudge — the same discipline keyActivable applies. */
+    e.stopPropagation();
+    /* a keyboard nudge persists immediately: there is no "gesture end" to wait
+       for, and a keyboard user who re-sets the split on every reload has an
+       inaccessible control. It steps from the EFFECTIVE split — the one on
+       screen — so the first press moves the handle the captain can see rather
+       than a stored value that is currently out of range at this width. */
+    holoSplitSet(holoSplitEffective() + d, true);
+  });
+  return h;
+}
+
+/* The other half of "the bound is a pixel". Narrowing the window can put the
+   stored split out of range without a single gesture, and the deck must
+   re-clamp as it happens rather than at the next reload. Bound once, lazily,
+   because board.js is also loaded by node harnesses with no window events. */
+var HOLO_RESIZE_BOUND = false;
+function holoBindResize() {
+  if (HOLO_RESIZE_BOUND) return;
+  if (typeof window === "undefined" || !window || !window.addEventListener) return;
+  HOLO_RESIZE_BOUND = true;
+  window.addEventListener("resize", function () {
+    if (HOLO.on) holoSplitApply();
+  });
+}
+
+function holoSplitDrag(e, handle) {
+  /* looked up from the host rather than `handle.parentNode`, so the handle can
+     be moved in the tree without silently disabling the drag. */
+  var host = deckHost();
+  var view = host && host.querySelector ? host.querySelector(".deckview") : null;
+  var chat = view && view.querySelector ? view.querySelector(".holo-chat") : null;
+  var pv = view && view.querySelector ? view.querySelector(".preview") : null;
+  if (!chat || !pv) return;
+  /* the span the grid is DIVIDING, not the sum of what the two panes currently
+     occupy. Before the pixel clamp those two differed by exactly the dead band,
+     and a drag that measured the panes would have carried the gap along with
+     it, never able to close it. */
+  var total = holoSplitSpan() || ((chat.offsetWidth || 0) + (pv.offsetWidth || 0));
+  if (!total) return;
+  var startX = e.clientX;
+  var startChat = chat.offsetWidth || 0;
+  if (e.preventDefault) e.preventDefault();
+  if (view.classList) view.classList.add("dragging");
+  /* Pointer capture keeps the drag alive over the IFRAME. Without it the very
+     first pixel of travel puts the pointer inside the sandboxed preview
+     document, which swallows the move events and the handle sticks. */
+  try { if (handle.setPointerCapture) handle.setPointerCapture(e.pointerId); }
+  catch (err) { /* not every pointer type can be captured */ }
+  function move(ev) {
+    holoSplitSet(holoSplitFromDrag(startChat, ev.clientX - startX, total),
+                 false);
+  }
+  function up() {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", up);
+    document.removeEventListener("pointercancel", up);
+    if (view.classList) view.classList.remove("dragging");
+    holoSplitSet(holoSplitGet(), true);   // one write, at the end of the gesture
+  }
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", up);
+  document.addEventListener("pointercancel", up);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Q3, RESOLVED 2026-08-05 (captain, S127 live drive) — THE PROGRAM DRAWER
+
+   Below the breakpoint the PROGRAM LIST collapses to a drawer; chat and preview
+   keep the full width. The list is the pane least needed moment-to-moment, so
+   it hides behind a control rather than shrinking the two panes the work
+   actually happens in. The PREVIEW explicitly does NOT become a toggle at any
+   width — D2's "the preview is the point, it must be permanently visible"
+   survives everywhere.
+
+   THE OTHER NUMBER TO CHANGE is the breakpoint, and it is in board.css
+   (`@media (max-width:1199px)`) rather than here, because nothing about this
+   behaviour is decided in JS: the toggle is rendered at EVERY width and the
+   stylesheet alone decides whether it is on screen. That is what lets opening
+   the drawer be a single class flip on the live DOM instead of a re-render —
+   and a re-render is the chat's scroll position, the preview's iframe, and the
+   whole deck's state, gone.
+   ════════════════════════════════════════════════════════════════════════ */
+function holoDrawerSet(on) {
+  HOLO.drawer = !!on;
+  var host = deckHost();
+  if (!host) return;
+  var view = host.querySelector(".deckview");
+  if (view && view.classList) view.classList.toggle("drawer-open", HOLO.drawer);
+  /* Every toggle on screen restates the same fact — the solo deck and the chat
+     header each carry one, and they are the same control, not two states. */
+  var btns = host.querySelectorAll(".holo-drawer-btn");
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].setAttribute("aria-expanded", HOLO.drawer ? "true" : "false");
+  }
+}
+
+/* ONE BUILDER, TWO PLACEMENTS — the chat header when a program is open, and the
+   empty deck when none is (the morning state is SOLO, has no chat header, and
+   is exactly the state in which the list is wanted). A real <button>, so the
+   browser's own keyboard handling applies: wrapping one in keyActivable fires
+   click TWICE for a single Enter, which on a toggle is a visible no-op. */
+function holoDrawerToggle() {
+  var b = el("button", "btn holo-drawer-btn", "☰ Programs");
+  b.type = "button";
+  b.setAttribute("aria-expanded", HOLO.drawer ? "true" : "false");
+  b.title = "Show or hide the program list. On a narrow window it becomes a "
+    + "drawer so the chat and the preview keep the full width.";
+  return holoCtl(b, "programs drawer", function () {
+    holoDrawerSet(!HOLO.drawer);
+  });
+}
+
+/* Click-away, the gesture people actually make to dismiss a drawer. It is a
+   sibling of the panes rather than a child of one, and the stylesheet keeps it
+   out of the way entirely above the breakpoint. */
+function holoScrim() {
+  var s = el("div", "holo-scrim");
+  s.setAttribute("aria-hidden", "true");
+  return holoCtl(s, "close programs drawer", function () {
+    holoDrawerSet(false);
+  });
+}
+
 /* ── the deck itself ───────────────────────────────────────────────────── */
 function renderDeck() {
   var host = deckHost();
@@ -7600,15 +7975,26 @@ function renderDeck() {
   var banner = holoBannerNode();
   if (banner) host.appendChild(banner);
   var active = holoActive();
-  var view = el("div", "deckview" + (active ? "" : " solo"));
+  var view = el("div", "deckview" + (active ? "" : " solo")
+                + (HOLO.drawer ? " drawer-open" : ""));
   view.appendChild(holoProgramsPane());
   if (active) {
     view.appendChild(holoChatPane(active));
+    /* THE HANDLE, between the chat and the preview and nowhere else — the
+       216px program list is not part of this split (D2's amendment says so in
+       its last line). A solo deck has neither pane, so it gets no handle. */
+    view.appendChild(holoSplitHandle());
     view.appendChild(holoPreviewPane(active));
   } else {
     view.appendChild(holoEmptyDeck());
   }
+  view.appendChild(holoScrim());
   host.appendChild(view);
+  /* The split is re-stamped on the freshly built node: renderDeck rebuilds the
+     deck on every turn, and a split whose only memory is the node it drew snaps
+     back to the default under a captain who moved it one turn ago. */
+  holoSplitApply();
+  holoBindResize();
   /* S127 — THE HAND-OFF BAR, under everything and always reachable (the mock's
      own placement). It spans the deck rather than living in one pane because
      sending is an act on the PROGRAM, not on the chat or the preview. */
@@ -7790,6 +8176,11 @@ function holoEmptyDeck() {
      room-reuse disclosure, under a different one his work is in two places.
      The GUARD is right; this was the copy. */
   var waiting = (HOLO.programs || []).length;
+  /* Q3 (S128) — the SOLO deck has no chat header to hang the drawer control on,
+     and this is the state in which the list is most wanted: the copy below
+     points straight at it ("your programs are in the list on the left"), which
+     is a lie on a narrow window unless something can open it. */
+  e.appendChild(holoDrawerToggle());
   e.appendChild(el("div", "arch", "Holodeck"));
   e.appendChild(el("div", "sub", waiting ? "Pick a program back up"
                                          : "Program standing by"));
@@ -7868,6 +8259,10 @@ function holoBasisNode(p, label, cls) {
 function holoChatPane(p) {
   var pane = el("div", "holo-chat");
   var head = el("div", "chat-head");
+  /* Q3 (S128) — the drawer control, FIRST in the header where a ☰ is looked
+     for. Rendered at every width; the stylesheet hides it above the breakpoint,
+     where the list is a column already on screen. */
+  head.appendChild(holoDrawerToggle());
   head.appendChild(el("div", "ct", p.program || "Program"));
   if (p.grounded || p.mode === "grounding") {
     head.appendChild(holoBasisNode(p, "▣ grounded in " + holoRepoName(),
