@@ -1195,6 +1195,24 @@ body.on-deck #fileBtn{display:none}
 body.on-deck{overflow:hidden}
 body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .topbar .btn.holo-on{background:#0d2b2a;color:var(--holo-grid);border-color:#000}
+/* S128 (FL-002) — A PROGRAM IS WORKING WHILE YOU ARE OFF THE DECK.
+   The band control is the cheapest honest place to say so: the captain is
+   already looking at it to get back, it needs no new column, and it is driven
+   entirely by the daemon's `meta.holodeck` (see renderHolodeckActivity) — a
+   dot this side started on a guess would be the same lie in a new place.
+   `.working` adds room for the dot at the trailing edge rather than moving the
+   label, so the control does not jump when a turn lands. */
+.topbar .btn.working{position:relative;padding-right:26px}
+.topbar .btn.working .holo-dot{position:absolute;right:10px;top:50%;
+  width:7px;height:7px;margin-top:-3.5px;border-radius:50%;
+  background:var(--holo-grid);box-shadow:0 0 6px var(--holo-grid);
+  animation:holo-band-pulse 1.4s ease-in-out infinite}
+@keyframes holo-band-pulse{0%,100%{opacity:.3;transform:scale(.82)}
+  50%{opacity:1;transform:scale(1)}}
+/* MOTION IS OPTIONAL, THE SIGNAL IS NOT — the same split every other animated
+   affordance in this stylesheet makes: the dot stays, its pulse stops. */
+@media (prefers-reduced-motion:reduce){
+  .topbar .btn.working .holo-dot{animation:none;opacity:.95}}
 
 /* D2 — three panes: PROGRAMS 216px · CHAT · ⇔ · LIVE PREVIEW.
    AMENDED 2026-08-05 (captain, S127 live drive): the chat ⇄ preview boundary is
@@ -1435,6 +1453,13 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .holo-working .bars i:nth-child(4){animation-delay:.42s}
 @keyframes holo-pulse{0%,100%{opacity:.25}50%{opacity:1}}
 @media (prefers-reduced-motion:reduce){.holo-working .bars i{animation:none;opacity:.8}}
+/* S128 (FL-004) — the SAME strip inside the New Program dialog, while it opens
+   the deck. Only the box it sits in differs: a modal field needs the gap the
+   transcript's flow already gave it, and the sentence is longer than the
+   chat's, so it wraps rather than clipping. */
+.overlay .holo-working{margin:2px 0 4px;align-items:flex-start}
+.overlay .holo-working .bars{padding-top:2px}
+.overlay .holo-working .wt{letter-spacing:.1em;line-height:1.5}
 .composer{border-top:1px solid var(--lcars-border);padding:12px 16px;
   display:flex;flex-direction:column;gap:9px;background:var(--lcars-surface)}
 .composer textarea{width:100%;background:var(--lcars-black);

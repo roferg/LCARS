@@ -3002,5 +3002,186 @@ class EmptyPreviewIsLegibleTest(unittest.TestCase):
                          "relative")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# S128 (FL-002 / FL-004) — WORK IN FLIGHT, ON EVERY SURFACE THAT OUTLIVES IT
+# ════════════════════════════════════════════════════════════════════════════
+BUSY_PROG = dict(PROG, busy=True, busySince=1.0, busyFor=132.0,
+                 busyLabel="Still rendering — this turn started about 2 "
+                           "minutes ago",
+                 busyReason="This program has been working on a turn for "
+                            "about 2 minutes. The holodeck runs one turn at a "
+                            "time in a room, so Send comes back the moment "
+                            "this one lands. You can leave the deck.")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class ReturningDeckTest(unittest.TestCase):
+    """A deck that re-renders mid-turn read exactly like an idle one.
+
+    `HOLO.busy` is this tab's own memory of its own send: a reload, a second
+    tab, or a return from the board has none of it, while the daemon would
+    correctly refuse the next `/say`. Everything below is driven off the
+    DAEMON's fact (`busy`/`busyLabel`/`busyReason` on the program payload),
+    never off a client-side clock.
+    """
+
+    def test_a_deck_that_re_rendered_MID_TURN_still_says_it_is_working(self):
+        out = _harness({"act": "deck", "programs": [BUSY_PROG],
+                        "activeId": "s1"})
+        self.assertEqual(out["workingText"], BUSY_PROG["busyLabel"])
+        # …and it says roughly HOW LONG, which is the only thing that tells a
+        # captain "it is still going" apart from "it hung".
+        self.assertIn("2 minutes", out["workingText"])
+
+    def test_Send_is_disabled_with_the_DAEMONS_reason_not_an_invented_one(self):
+        out = _harness({"act": "deck", "programs": [BUSY_PROG],
+                        "activeId": "s1"})
+        self.assertTrue(out["sendDisabled"])
+        self.assertEqual(out["sendReason"], BUSY_PROG["busyReason"])
+        self.assertEqual(out["sendTitle"], BUSY_PROG["busyReason"])
+
+    def test_an_IDLE_program_is_untouched_by_any_of_it(self):
+        """The control. `PROG` carries no busy keys at all — the daemon only
+        publishes them while a turn is in flight — so this is the assertion
+        that the whole feature is INVISIBLE the rest of the time."""
+        out = _harness({"act": "deck", "programs": [PROG], "activeId": "s1"})
+        self.assertFalse(out["sendDisabled"])
+        self.assertEqual(out["sendReason"], "")
+        self.assertEqual(out["workingText"], "")
+        self.assertEqual(out["sendLabel"], "SEND ▸")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class NewProgramInFlightTest(unittest.TestCase):
+    """FL-004 — the dialog's busy state died with the dialog, and so did failure."""
+
+    def test_the_dialog_shows_a_thinking_indicator_while_it_opens_the_deck(self):
+        """The captain asked for this in those words. It reuses `.holo-working`
+        — the idiom the chat pane already renders — rather than inventing a
+        second spinner."""
+        out = _harness({"act": "newProgramSubmit", "pick": "grounding",
+                        "engine": "copilot", "program": "Nav rail"})
+        self.assertIsNotNone(out["dialogWorking"])
+        self.assertFalse(out["dialogWorkingHidden"])
+        self.assertIn("deck", out["dialogWorking"].lower())
+        # the animated bars are the existing idiom's own markup, not a new one.
+        self.assertEqual(out["dialogWorkingBars"], 4)
+        self.assertEqual(out["dialogWorkingRole"], "status")
+        # and the button half that already existed is unchanged.
+        self.assertTrue(out["runDisabled"])
+
+    def test_a_start_that_FAILS_lands_somewhere_the_dialog_cannot_take_with_it(self):
+        msg = "the copilot worker stopped before it wrote basis.md"
+        out = _harness({"act": "newProgramFail", "error": msg,
+                        "programs": [], "activeId": None})
+        # while the dialog is open it still says so in its own error line…
+        self.assertEqual(out["dialogErr"], msg)
+        self.assertTrue(out["runReEnabled"])
+        self.assertTrue(out["dialogWorkingHidden"])
+        # …and CLOSING it does not throw the failure away.
+        self.assertTrue(out["bannerPresent"])
+        self.assertEqual(out["bannerText"], msg)
+        self.assertIn("refuse", out["bannerClass"])
+        self.assertTrue(out["bannerLabel"].strip())
+
+    def test_the_failure_reuses_the_decks_OWN_banner_channel(self):
+        """Not a second notification path. `holoSetBanner` is the one the deck
+        already has, and its kind table is where the title comes from."""
+        out = _harness({"act": "newProgramFail", "programs": [],
+                        "activeId": None})
+        self.assertEqual(out["bannerKind"], "start-failed")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class BandActivityTest(unittest.TestCase):
+    """FL-002, off-deck: `board.py` had no holodeck awareness at all, so the
+    board could not show that the program you left running is still running."""
+
+    META = {"count": 1,
+            "message": "The holodeck is working: “Nav rail” has been "
+                       "rendering for about 4 minutes. Carry on here — it "
+                       "keeps running and saves itself.",
+            "working": [{"sessionId": "s1", "program": "Nav rail",
+                         "room": "nav-rail", "busy": True, "busySince": 1.0,
+                         "busyFor": 240.0}]}
+
+    def test_the_band_control_carries_an_indicator_while_a_program_works(self):
+        out = _harness({"act": "bandActivity", "metas": [self.META]})
+        state = out["states"][0]
+        self.assertTrue(state["working"])
+        self.assertEqual(state["dots"], 1)
+        # the LABEL is untouched: the indicator is a mark ON the control, not a
+        # relabelling of it.
+        self.assertEqual(state["label"], "⬡ Holodeck")
+
+    def test_the_words_are_the_DAEMONS_and_name_the_program(self):
+        out = _harness({"act": "bandActivity", "metas": [self.META]})
+        state = out["states"][0]
+        self.assertEqual(state["title"], self.META["message"])
+        self.assertIn("Nav rail", state["ariaLabel"] or "")
+
+    def test_the_indicator_GOES_OUT_when_the_turn_lands(self):
+        """The assertion a single flattering frame cannot make. A board with no
+        `meta.holodeck` is what the daemon sends the moment nothing is in
+        flight, and the dot has to follow it down."""
+        out = _harness({"act": "bandActivity", "metas": [self.META, None]})
+        self.assertTrue(out["states"][0]["working"])
+        self.assertFalse(out["states"][1]["working"])
+        self.assertEqual(out["states"][1]["dots"], 0)
+        self.assertIsNone(out["states"][1]["ariaLabel"])
+        self.assertEqual(out["states"][1]["title"],
+                         "the holodeck — design a mockup in chat")
+
+    def test_a_board_with_no_holodeck_meta_is_the_control(self):
+        """Every board this daemon served before S128 — and every board a
+        read-only build serves now — has no `meta.holodeck` at all."""
+        out = _harness({"act": "bandActivity", "metas": [None]})
+        self.assertFalse(out["states"][0]["working"])
+        self.assertEqual(out["states"][0]["dots"], 0)
+
+    def test_a_view_only_board_still_refuses_the_deck_with_its_reason(self):
+        """D7 outranks the indicator: a board that cannot run a program must
+        not sprout an activity dot claiming one is running."""
+        out = _harness({"act": "bandActivity", "metas": [self.META],
+                        "writes": False})
+        state = out["states"][0]
+        self.assertTrue(state["disabled"])
+        self.assertFalse(state["working"])
+        self.assertIn("read-only", state["title"])
+
+
+class InFlightCssTest(unittest.TestCase):
+    """The activity dot's motion, and the reduced-motion escape this project
+    gates every animation on. A rule-existence check, and honest about it: no
+    test in this file can see a pixel — `tests/drives/browser/holodeck.sh` is
+    the half that measures whether the dot painted at all."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rules, cls.vars = css.load_stylesheets(css.CSS_SHEETS)
+
+    def _merged(self, selector, conditional):
+        out = {}
+        for r in self.rules:
+            if r.selector.replace(" ", "") != selector:
+                continue
+            if bool(r.conditional) != bool(conditional):
+                continue
+            for p, v, _imp in r.decls:
+                out[p] = v
+        return out
+
+    def test_the_dot_animates(self):
+        decls = self._merged(".topbar.btn.working.holo-dot", False)
+        self.assertTrue(decls, "no unconditional rule for the band's dot")
+        self.assertIn("animation", decls)
+
+    def test_and_stops_for_prefers_reduced_motion(self):
+        decls = self._merged(".topbar.btn.working.holo-dot", True)
+        self.assertEqual(decls.get("animation"), "none",
+                         "the dot keeps animating under "
+                         "prefers-reduced-motion:reduce")
+
+
 if __name__ == "__main__":
     unittest.main()

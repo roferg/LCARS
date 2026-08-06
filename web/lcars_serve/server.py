@@ -311,6 +311,15 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                     board = actions.log_overlay(board)
                 except Exception:
                     pass
+                # S128 (FL-002): stamp `meta.holodeck` while a holodeck program
+                # is mid-turn, so the ⬡ HOLODECK band control can show that the
+                # program the captain walked away from is still working. Same
+                # terms as the two above — additive, in-memory, local write
+                # board only, and never raises into the board response.
+                try:
+                    board = actions.holodeck_overlay(board)
+                except Exception:
+                    pass
             elif log_facts is not None:
                 # S163 fix round 4 (D3): the view-only LOCAL board's half of the
                 # same stamp — read from `<mission>/log-dispatch.json` and

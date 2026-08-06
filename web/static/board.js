@@ -1503,6 +1503,11 @@ function render(board) {
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
   renderTestReadiness(board.meta && board.meta.testReadiness);
+  /* S128 (FL-002): the ⬡ HOLODECK band control's activity indicator, from the
+     daemon's own `meta.holodeck`. On EVERY render, so it clears as well as
+     lights — and off the board payload, because the board is the surface a
+     captain who walked away from a running program is actually looking at. */
+  renderHolodeckActivity(board.meta && board.meta.holodeck);
   // S146: an open File console's inline readiness block re-verdicts LIVE off
   // every render (SSE included) — the warning clears in place, the typed idea
   // survives (the hook repaints only its own block, never the console).
@@ -7428,6 +7433,14 @@ var HOLO = {
   // turn, and a drawer whose only memory is that node slams shut mid-turn.
   drawer: false,
   banner: null,         // D7 — {kind, label, text, paths, action}
+  /* S128 (FL-002) — THE DAEMON'S `meta.holodeck`, or null. The one fact the
+     board band's activity indicator is allowed to be drawn from: is a program
+     mid-turn, since when, and the sentence that says so. It arrives on the
+     BOARD payload (not the deck's), because the whole point is that it is
+     readable from the board — where a captain who walked away is standing.
+     A client-side timer here would be a guess, and a guessed spinner is the
+     readout lie this round exists to close. */
+  working: null,
   nonce: 0,             // the preview's cache-buster; bumped per file change
   sidecarName: null,    // learnt from the first program (D6's footer chip)
   commits: 0,
@@ -7552,14 +7565,63 @@ function holoSetMode(on) {
   if (body && body.classList) body.classList.toggle("on-deck", HOLO.on);
   var host = deckHost();
   if (host) host.hidden = !HOLO.on;
-  var b = document.getElementById("holodeckBtn");
-  if (b) {
-    b.textContent = HOLO.on ? "▦ Board" : "⬡ Holodeck";
-    if (b.classList) b.classList.toggle("holo-on", HOLO.on);
-    b.title = HOLO.on ? "back to the mission board"
-                      : "the holodeck — design a mockup in chat";
-  }
+  holoPaintBandBtn();
   if (HOLO.on) { renderDeck(); holoRefresh(); }
+}
+
+/* ONE FUNCTION PAINTS THE BAND CONTROL (S128). It carries three independent
+   facts and each used to be written by a different handler:
+
+     • which way it goes — `⬡ HOLODECK` on the board, `▦ BOARD` on the deck;
+     • whether writes are live at all — D7's view-only refusal, WITH its reason;
+     • and now whether the daemon says a program is mid-turn (FL-002).
+
+   They are painted together because `textContent =` REPLACES a node's children:
+   an activity dot appended by a second handler is silently wiped the next time
+   the label is written, which is the class of bug two handlers over one control
+   always eventually produce. View-only OUTRANKS activity — a board that cannot
+   run a program must not sprout a dot claiming one is running. */
+var HOLO_RO_REASON =
+  "This board is a read-only view. The holodeck writes files, so it is "
+  + "unavailable here — open the board locally to run a program.";
+
+function holoPaintBandBtn() {
+  var b = document.getElementById("holodeckBtn");
+  if (!b) return;
+  var ro = writesActive === false;
+  b.disabled = ro;
+  b.textContent = HOLO.on ? "▦ Board" : "⬡ Holodeck";
+  if (b.classList) b.classList.toggle("holo-on", HOLO.on);
+  /* The dot is the OFF-DECK signal. On the deck the working turn is already
+     visible in the chat pane, and a second indicator two inches away is a
+     second voice about one fact. */
+  var w = (!ro && !HOLO.on && HOLO.working && HOLO.working.count)
+    ? HOLO.working : null;
+  if (b.classList) b.classList.toggle("working", !!w);
+  if (w) {
+    var dot = el("span", "holo-dot");
+    dot.setAttribute("aria-hidden", "true");   // a colour, not information
+    b.appendChild(dot);
+  }
+  b.title = ro ? HOLO_RO_REASON
+    : (w ? String(w.message || "")
+         : (HOLO.on ? "back to the mission board"
+                    : "the holodeck — design a mockup in chat"));
+  if (ro) b.setAttribute("data-reason", HOLO_RO_REASON);
+  else b.removeAttribute("data-reason");
+  /* A DOT IS NOTHING TO A SCREEN READER. The daemon's sentence — which names
+     the program and how long it has been going — is what is announced, and it
+     is removed again the moment nothing is in flight. */
+  if (w) b.setAttribute("aria-label", "⬡ Holodeck — " + String(w.message || ""));
+  else b.removeAttribute("aria-label");
+}
+
+/* The board payload's `meta.holodeck`, or nothing at all. Called on every
+   render, so the indicator follows the daemon DOWN as well as up — an
+   indicator that only ever lights is a worse lie than none. */
+function renderHolodeckActivity(h) {
+  HOLO.working = (h && h.count) ? h : null;
+  holoPaintBandBtn();
 }
 
 function toggleHolodeck() {
@@ -8354,7 +8416,21 @@ function holoChatPane(p) {
     tr.appendChild(el("div", "pnone",
       "Say what you want to see. The first turn opens the conversation."));
   }
-  if (HOLO.busy) tr.appendChild(holoWorkingNode());
+  /* S128 (FL-002) — WHO SAYS A TURN IS RUNNING. `HOLO.busy` is this tab's
+     memory of its own send and nothing else: a reload, a second tab, or a
+     return from the board has none of it, so a deck that re-rendered mid-turn
+     read exactly like an idle one — while the daemon would correctly refuse
+     the next `/say`. `p.busy` is the daemon's own fact and is the only one
+     that survives the client that started the turn.
+
+     The daemon's wins when both are true, because it is the one that knows
+     WHEN the turn started; this tab does not, and the whole complaint was that
+     nothing said how long it had been going. */
+  var deckBusy = !!(p && p.busy);
+  var working = deckBusy || HOLO.busy;
+  if (working) {
+    tr.appendChild(holoWorkingNode(deckBusy ? p.busyLabel : null));
+  }
   pane.appendChild(tr);
   // THE DECK IS THE VIEWPORT (fix round 1). The transcript is the ONE thing on
   // the deck that grows, so it is the one thing that scrolls — and it must land
@@ -8415,7 +8491,21 @@ function holoChatPane(p) {
   var send = holoBtn("Send ▸", "go", function () {
     holoSay(p.sessionId, ta.value);
   });
-  if (HOLO.busy) { send.disabled = true; send.textContent = "Rendering…"; }
+  if (working) {
+    send.disabled = true;
+    send.textContent = "Rendering…";
+    /* AND WHY — in the daemon's words, on the same discipline the hand-off bar
+       already follows (`handoffBlocked`). A composer that is locked with no
+       explanation is exactly the state the captain came back to; an
+       explanation this side invented would be a second voice about a refusal
+       it did not make. `data-reason` is the board's own idiom for a control
+       that is disabled WITH the reason. */
+    if (deckBusy && p.busyReason) {
+      send.title = p.busyReason;
+      send.setAttribute("aria-disabled", "true");
+      send.setAttribute("data-reason", p.busyReason);
+    }
+  }
   ta.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
@@ -8685,15 +8775,26 @@ function holoEngineName(p) {
 
 /* The mock's rendering state, in the deck's own accent rather than the board's
    amber working bars — this is the holodeck materialising something, and it
-   reads as its own room. */
-function holoWorkingNode() {
+   reads as its own room.
+
+   S128 — `text` is optional and exists so there is ONE working idiom in this
+   feature, not three. It is used by:
+     • the chat pane, with no argument, for a turn THIS tab just sent;
+     • the chat pane again, with the DAEMON's `busyLabel`, for a turn that was
+       already running when the deck re-rendered (a returning deck cannot know
+       when it started, so it may not say);
+     • the New Program dialog, while it opens the deck (FL-004 — the captain
+       asked for a thinking icon there in as many words).
+   A second spinner shape for any of those is the two-mechanism trap S125 lost
+   two rounds to. */
+function holoWorkingNode(text) {
   var w = el("div", "holo-working");
   w.setAttribute("role", "status");
   w.setAttribute("aria-live", "polite");
   var bars = el("span", "bars");
   for (var i = 0; i < 4; i++) bars.appendChild(el("i"));
   w.appendChild(bars);
-  w.appendChild(el("span", "wt", "Rendering on the holodeck…"));
+  w.appendChild(el("span", "wt", text || "Rendering on the holodeck…"));
   return w;
 }
 
@@ -9397,6 +9498,12 @@ var HOLO_BANNERS = {
   // it. Nothing to certify, nothing saved.
   "no-write": ["refuse", "Nothing was written"],
   notice:     ["note",   "This room already holds work"],
+  /* S128 (FL-004) — A START THAT FAILED, said somewhere the dialog cannot take
+     with it. `openNewProgram`'s error line dies the moment the dialog closes,
+     and a first grounding pass is exactly when a captain wanders off, so a
+     failed pass used to fail in total silence. This reuses the deck's OWN
+     banner channel rather than adding a second notification path. */
+  "start-failed": ["refuse", "The program did not open"],
   /* S126 — a program picked back up off disk. NOT titled "resumed": the warm
      worker session died with the daemon that held it and what is running now
      is a fresh one carrying the transcript. The daemon's message says exactly
@@ -9437,18 +9544,11 @@ function holoBannerNode() {
    absent. A missing button teaches nothing; a greyed one with no explanation
    teaches less. The banner says the same thing where it cannot be missed. */
 function applyHolodeckWriteState() {
-  var b = document.getElementById("holodeckBtn");
   var ro = writesActive === false;
-  var reason = "This board is a read-only view. The holodeck writes files, so "
-    + "it is unavailable here — open the board locally to run a program.";
-  if (b) {
-    b.disabled = ro;
-    b.title = ro ? reason
-                 : (HOLO.on ? "back to the mission board"
-                            : "the holodeck — design a mockup in chat");
-    if (ro) b.setAttribute("data-reason", reason);
-    else b.removeAttribute("data-reason");
-  }
+  var reason = HOLO_RO_REASON;
+  // S128: the control itself is painted by the ONE function that owns it (see
+  // holoPaintBandBtn) — this half is the banner and the forced exit.
+  holoPaintBandBtn();
   var host = document.getElementById("holoRoBanner");
   if (host) {
     host.innerHTML = "";
@@ -9648,6 +9748,20 @@ function openNewProgram() {
              chosenEngine.val === "copilot" ? optCopilot : optClaude);
 
   m.body.appendChild(err);
+
+  /* S128 (FL-004) — THE DIALOG'S THINKING INDICATOR, in the captain's own
+     words: "the dialog itself needs a thinking icon as well". A grounding pass
+     spawns a worker and can run for a minute; the only busy state was the
+     button's label, which is a very quiet thing to stare at.
+
+     It is the SAME `.holo-working` the chat pane renders — one working idiom in
+     this feature, not two — and it is built once here rather than on click, so
+     the failure path has something to hide again. */
+  var busy = holoWorkingNode("Opening the deck — the first pass reads your "
+                             + "project and can take a minute.");
+  busy.hidden = true;
+  m.body.appendChild(busy);
+
   m.body.appendChild(el("div", "hint",
     "Whatever it learns, you can see: a grounding pass writes what it found "
     + "into the program as basis.md — the actual tokens, not a description of "
@@ -9658,6 +9772,8 @@ function openNewProgram() {
     if (!nm) { showErr(err, "Say what you are designing first."); return; }
     go.disabled = true;
     go.textContent = "Opening the deck…";
+    err.hidden = true;
+    busy.hidden = false;
     postWrite("/api/holodeck/start",
       { program: nm, mode: picked.val, engine: holoEngineBin(chosenEngine.val) },
       function (state) {
@@ -9677,7 +9793,18 @@ function openNewProgram() {
       function (msg) {
         go.disabled = false;
         go.textContent = "⬡ Run Program";
+        busy.hidden = true;
         showErr(err, msg);
+        /* S128 (FL-004) — AND SOMEWHERE THAT OUTLIVES THIS DIALOG. The line
+           above is the whole account of the failure while the dialog is open,
+           and dies with it: close it and a grounding pass that FAILED failed
+           in silence — no banner, no board signal, nothing the captain would
+           ever see. This is the deck's existing banner channel, not a second
+           notification path, so there is still one place a holodeck failure
+           is reported. renderDeck is unconditional: the banner belongs in the
+           deck host whether or not the deck is the visible half right now. */
+        holoSetBanner("start-failed", { message: msg });
+        renderDeck();
       });
   }));
   // WHAT WILL ACTUALLY RUN — the one sentence `footSentence` derives, already

@@ -731,6 +731,85 @@ def _holodeck_model(engine):
     return "claude-opus-4.8" if _is_copilot(engine) else "sonnet"
 
 
+# ── S128 (FL-002 / FL-004) — the words that go with an in-flight turn ───────
+#
+# The captain asked for the same thing twice, in two different places: "add the
+# ability to close and go do other stuff while the holodeck is building", and
+# "if I close the new program dialog while it's opening the deck it keeps
+# working? There is no indication it's working."
+#
+# The walking-away half already worked — a turn runs in the daemon's request
+# thread and `_commit_turn` lands its bytes on every exit path. What did not
+# exist was any way for a surface to KNOW. The functions below are where the
+# sentences come from, and they live in the daemon for the same reason
+# `handoffBlocked` does: the deck must never invent a reason for a state it did
+# not create. Both are derived from ONE elapsed number, so the working line and
+# the disabled Send can never quote different clocks.
+
+
+def _holodeck_elapsed_phrase(seconds):
+    """Roughly how long, in words: `a few seconds` … `about 4 minutes`.
+
+    Deliberately COARSE. The number is read off a payload that is already a
+    poll old, and a spinning second-counter would be claiming a precision the
+    surface does not have.
+    """
+    try:
+        secs = max(0.0, float(seconds))
+    except (TypeError, ValueError):             # pragma: no cover - defensive
+        secs = 0.0
+    if secs < 20:
+        return "a few seconds"
+    if secs < 90:
+        return "about %d seconds" % int(round(secs / 10.0) * 10)
+    mins = int(round(secs / 60.0))
+    if mins < 60:
+        return "about a minute" if mins <= 1 else "about %d minutes" % mins
+    hours = int(round(secs / 3600.0))
+    return "about an hour" if hours <= 1 else "about %d hours" % hours
+
+
+def _holodeck_busy_copy(seconds):
+    """(label, reason) for a turn that has been running `seconds`.
+
+    label  — the deck's working strip, in place of the client's own
+             "Rendering on the holodeck…" the moment the DAEMON is the one
+             reporting it (a returning deck has no idea when it started).
+    reason — why Send is disabled, and the one thing a captain who came back to
+             a locked composer actually wants: that nothing is stuck, that
+             leaving is safe, and that his work is being saved either way.
+    """
+    ago = _holodeck_elapsed_phrase(seconds)
+    label = "Still rendering — this turn started %s ago" % ago
+    reason = (
+        "This program has been working on a turn for %s. The holodeck runs one "
+        "turn at a time in a room, because two would be writing the same "
+        "files, so Send comes back the moment this one lands. You can leave "
+        "the deck or close the tab — the turn keeps running here, and its "
+        "files and the transcript are saved either way." % ago)
+    return label, reason
+
+
+def _holodeck_working_message(working):
+    """The board band's one sentence about programs mid-turn (off the deck).
+
+    Names the PROGRAM, because "something is running" is not a thing a captain
+    can act on and "Nav rail has been rendering for about 4 minutes" is.
+    """
+    if not working:                             # pragma: no cover - defensive
+        return ""
+    longest = max(working, key=lambda w: w.get("busyFor") or 0)
+    ago = _holodeck_elapsed_phrase(longest.get("busyFor"))
+    if len(working) == 1:
+        return ("The holodeck is working: “%s” has been rendering for %s. "
+                "Carry on here — it keeps running and saves itself."
+                % (longest.get("program") or "a program", ago))
+    return ("%d holodeck programs are working — the longest, “%s”, has been "
+            "rendering for %s. Carry on here — they keep running and save "
+            "themselves." % (len(working), longest.get("program")
+                             or "a program", ago))
+
+
 def _assert_no_bash(cmd):
     """Refuse any holodeck argv that does not actually deny the worker a shell.
 
@@ -1761,7 +1840,7 @@ class _HolodeckSession(object):
                  "sidecar_dir", "program_dir", "target_repo", "worker_sid",
                  "started", "turns", "files_changed", "done", "last_reply",
                  "proc", "turn_settled", "opened_at", "last_touched", "busy",
-                 "restarted")
+                 "turn_started", "turn_thread", "restarted")
 
     def __init__(self, program, engine, mode, sidecar_dir, program_dir,
                  target_repo, engine_recorded=False):
@@ -1812,6 +1891,20 @@ class _HolodeckSession(object):
         # would be staging one working tree at once. Claimed and released under
         # `_holodeck_lock`, so the check and the claim are one operation.
         self.busy = False
+        # S128 (FL-002) — WHEN that claim was taken, and BY WHICH THREAD.
+        # `busy` alone could only ever answer "something is happening"; a
+        # captain who walked away needs "for how long", and that is a fact only
+        # the daemon holds. `turn_thread` is what keeps the turn's OWN answer
+        # honest: that payload is built inside `_run_turn` while the claim is
+        # still held, so without it every completed `/say` would come back
+        # saying the turn it is answering is still in flight.
+        #
+        # WRITE ORDER IS LOAD-BEARING (see `_claim_turn`/`_release_turn`):
+        # these are read WITHOUT the lock, so `turn_started` is set before
+        # `busy` and cleared after it — a reader that sees `busy` therefore
+        # always sees a start time to go with it.
+        self.turn_started = None
+        self.turn_thread = None
         # S126 — this session was REBUILT from the room on disk (a warm
         # restart), so its opening prompt replays `transcript.md` and the
         # surface says plainly that the worker is a fresh one carrying the
@@ -4362,6 +4455,51 @@ class Actions(LogFacts):
             "mockup and the concept doc as you go." % " or ".join(missing))
         return out
 
+    def _busy_fields(self, sess):
+        """The IN-FLIGHT fact for one program — or `{}`, which is the point.
+
+        S128 (FL-002/FL-004). ONE function answers this for BOTH shapes: the
+        live `_holodeck_meta` and the on-disk listing, which passes None
+        because a room nobody is holding has no conversation and therefore
+        cannot be mid-turn. Two copies of this rule is exactly how a restarted
+        card and a live one start disagreeing about a lock.
+
+        ADDITIVE BY CONSTRUCTION: an idle program gets an empty dict, so its
+        payload is byte-identical to the one every S124–S127 test pins. A
+        `busy: false` on every idle program would have been a new key on that
+        shape — and a client that has to ask "is this key even here?" reads the
+        absence correctly by accident, which is not a contract.
+
+        DELIBERATELY LOCK-FREE. `_holodeck_lock` is a plain Lock and this is
+        called from shape-builders reached on several paths; taking it here to
+        read two attributes would be a deadlock waiting for the first caller
+        that already holds it. The write order in `_claim_turn` /
+        `_release_turn` is what makes the lock-free read safe: `busy` is set
+        last and cleared first, so seeing it True guarantees a start time.
+        """
+        if sess is None:
+            return {}
+        if not sess.busy:
+            return {}
+        # THE TURN'S OWN ANSWER IS NOT A REPORT OF WORK IN FLIGHT. `_run_turn`
+        # builds its payload while it still holds the claim, so without this
+        # every completed `/say` would come back telling the client the turn it
+        # is answering is still running — and by the time those bytes are read,
+        # the claim is already released.
+        if sess.turn_thread == threading.current_thread().ident:
+            return {}
+        started = sess.turn_started
+        if not started:                         # pragma: no cover - defensive
+            return {}
+        elapsed = max(0.0, time.time() - started)
+        label, reason = _holodeck_busy_copy(elapsed)
+        return {"busy": True, "busySince": started,
+                # computed HERE, at read time, so a client renders elapsed
+                # without ever having to agree with this daemon about the wall
+                # clock — the class of bug a raw timestamp alone invites.
+                "busyFor": round(elapsed, 1),
+                "busyLabel": label, "busyReason": reason}
+
     def _holodeck_meta(self, sid, sess):
         # S125 additions are all ADDITIVE (D2/D3/D6/D8): `previewFile` is what
         # the live-preview iframe points at, `sidecarName` + `commits` are the
@@ -4408,6 +4546,10 @@ class Actions(LogFacts):
                 "openedAt": sess.opened_at,
                 "lastTouched": sess.last_touched}
         meta.update(self._handoff_state(sess.program_dir))
+        # S128 (FL-002) — IS A TURN IN FLIGHT RIGHT NOW, and since when. Empty
+        # for an idle program, so the shape above is untouched the rest of the
+        # time. See `_busy_fields`.
+        meta.update(self._busy_fields(sess))
         return meta
 
     # ── S125: the surface's three reads (list · preview file · one file) ────
@@ -4542,6 +4684,11 @@ class Actions(LogFacts):
         # function reading the same file. Two copies of this is exactly how a
         # restarted card and a live one start disagreeing about a lock.
         out.update(self._handoff_state(program_dir))
+        # S128 (FL-002) — and the SAME rule for the in-flight fact, asked of the
+        # same function. A room on disk is not a conversation, so the honest
+        # answer is always "no keys" — but it is the one function that decides
+        # that, not a second reading of the same question over here.
+        out.update(self._busy_fields(None))
         return out
 
     @staticmethod
@@ -4653,6 +4800,52 @@ class Actions(LogFacts):
                 "model": _holodeck_model(engine) if engine else "",
                 "models": {name: _holodeck_model(name)
                            for name in _HOLODECK_ENGINES}}
+
+    def holodeck_overlay(self, board):
+        """Additively stamp `meta.holodeck` while any program is mid-turn.
+
+        S128 (FL-002), off-deck half. `board.py` had no holodeck awareness at
+        all — grep for `holo` returned nothing — so the surface a captain is
+        actually looking at while he waits could say nothing about the program
+        he left running. This is `align_overlay`'s shape and `align_overlay`'s
+        discipline: in-memory only, never raises into the response, and a board
+        with nothing in flight is returned byte-for-byte unchanged.
+
+        It deliberately does NOT move `adapter.fingerprint()`, so it drives no
+        SSE push — the band picks it up on the board's own next read, which is
+        the right cost for an indicator (an in-flight turn is minutes long).
+
+        A read-only / github build constructs the daemon with actions=None and
+        holds no sessions, so this is never reached there.
+        """
+        if not isinstance(board, dict):
+            return board
+        meta = board.get("meta")
+        if not isinstance(meta, dict):
+            return board
+        with self._holodeck_lock:
+            items = list(self._holodeck.items())
+        working = []
+        for sid, sess in items:
+            fields = self._busy_fields(sess)
+            if not fields:
+                continue
+            entry = {"sessionId": sid, "program": sess.program,
+                     "room": os.path.basename(sess.program_dir)}
+            entry.update(fields)
+            working.append(entry)
+        if not working:
+            return board            # nothing in flight → an untouched board.
+        working.sort(key=lambda w: w.get("busySince") or 0)
+        meta["holodeck"] = {
+            "count": len(working),
+            "working": working,
+            # ONE sentence, from the daemon, for the band control's title. The
+            # band may not compose its own — a guessed spinner with invented
+            # words is the readout-honesty class in a new place.
+            "message": _holodeck_working_message(working),
+        }
+        return board
 
     def holodeck_state(self, sid):
         """GET /api/holodeck/<sid> — one program, with its transcript."""
@@ -4833,11 +5026,18 @@ class Actions(LogFacts):
                     "typed has not been sent. Wait for the reply, or press End "
                     "Program to stop the turn that is running, then say it "
                     "again.")
+            # S128 (FL-002): the clock and the owner FIRST, the flag last — a
+            # lock-free reader must never see `busy` without a `turn_started`.
+            sess.turn_started = time.time()
+            sess.turn_thread = threading.current_thread().ident
             sess.busy = True
 
     def _release_turn(self, sess):
         with self._holodeck_lock:
+            # …and the flag first on the way down, for the same reason.
             sess.busy = False
+            sess.turn_started = None
+            sess.turn_thread = None
 
     def _sidecar_git_lock(self, sidecar):
         key = os.path.realpath(sidecar or "")

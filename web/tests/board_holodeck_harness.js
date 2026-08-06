@@ -403,6 +403,13 @@ switch (cfg.act) {
       .filter((n) => /send|rendering/i.test(n.getAttribute("data-ctl") || ""));
     out.sendLabel = send.length ? txt(send[0]).toUpperCase() : null;
     out.sendDisabled = send.length ? !!send[0].disabled : null;
+    /* S128 (FL-002) — WHOSE WORDS lock the composer. A Send disabled with no
+     * explanation is the state a captain who came back mid-turn was left in,
+     * and an explanation this side invented would be the readout-honesty class
+     * in a new place. `data-reason` is the board's own idiom for it. */
+    out.sendReason = send.length
+      ? (send[0].getAttribute("data-reason") || "") : null;
+    out.sendTitle = send.length ? (send[0].title || "") : null;
     out.workingText = txt(one(deck(), ".holo-working"));
     const frame = one(deck(), "iframe");
     out.iframeSrc = frame ? frame.getAttribute("src") : null;
@@ -712,6 +719,115 @@ switch (cfg.act) {
     const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
     out.path = post ? post.url : null;
     out.body = post ? JSON.parse(post.opts.body) : null;
+    /* S128 (FL-004) — THE DIALOG'S OWN THINKING STATE. The fetch stub never
+     * resolves, so this is the dialog exactly as a captain sees it while the
+     * grounding pass runs: the button busy, and — the captain's own words —
+     * a thinking indicator beside it. */
+    const dbusy = one(REGISTRY.overlayBody, ".holo-working");
+    out.dialogWorking = dbusy ? txt(dbusy) : null;
+    out.dialogWorkingHidden = dbusy ? !!dbusy.hidden : null;
+    out.dialogWorkingBars = dbusy ? many(dbusy, ".bars i").length : 0;
+    out.dialogWorkingRole = dbusy ? dbusy.getAttribute("role") : null;
+    const runBtn = many(REGISTRY.overlay, "[data-ctl]")
+      .concat(many(docRoot, "[data-ctl]"))
+      .find((n) => /run program|opening the deck/i.test(
+        n.getAttribute("data-ctl") || ""));
+    out.runDisabled = runBtn ? !!runBtn.disabled : null;
+    out.runLabel = runBtn ? txt(runBtn) : null;
+    break;
+  }
+  /* ── S128 (FL-004) — A START THAT FAILS MUST OUTLIVE THE DIALOG ─────────
+   * `postWrite`'s failure callback wrote into the dialog's own error line and
+   * nowhere else, so closing the dialog — which a first grounding pass is
+   * exactly the moment for — made a failed pass fail SILENTLY. This act drives
+   * the real submit against a daemon that refuses, then CLOSES the dialog and
+   * re-renders the deck: what is asserted afterwards is what survives. */
+  case "newProgramFail": {
+    sandbox.writesActive = true;
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    const errMsg = cfg.error
+      || "the copilot worker stopped before it wrote basis.md";
+    const restore = sandbox.fetch;
+    sandbox.fetch = function (url, opts) {
+      FETCHES.push({ url: url, opts: opts || {} });
+      if (/\/holodeck\/start$/.test(String(url))
+          && (opts || {}).method === "POST") {
+        return syncThenable({
+          status: cfg.status || 502,
+          json: function () {
+            return syncThenable({ ok: false, error: errMsg });
+          },
+        });
+      }
+      return restore(url, opts);
+    };
+    try {
+      sandbox.openNewProgram();
+      const body = REGISTRY.overlayBody;
+      const name = one(body, "[data-holo=program-name]");
+      if (name) name.value = cfg.program || "Nav rail";
+      const run = many(REGISTRY.overlay, "[data-ctl]")
+        .concat(many(docRoot, "[data-ctl]"))
+        .find((n) => /run program/i.test(n.getAttribute("data-ctl") || ""));
+      out.ran = !!run;
+      if (run) run.click();
+      // the dialog's own half, still true while it is open.
+      out.dialogErr = txt(one(body, ".errline"));
+      const dbusy = one(body, ".holo-working");
+      out.dialogWorkingHidden = dbusy ? !!dbusy.hidden : null;
+      const runAgain = many(REGISTRY.overlay, "[data-ctl]")
+        .concat(many(docRoot, "[data-ctl]"))
+        .find((n) => /run program/i.test(n.getAttribute("data-ctl") || ""));
+      out.runReEnabled = runAgain ? !runAgain.disabled : null;
+    } finally {
+      sandbox.fetch = restore;
+    }
+    // AND NOW THE DIALOG GOES AWAY, which is the whole test.
+    out.bannerKind = (sandbox.HOLO.banner || {}).kind || null;
+    sandbox.closeOverlay();
+    sandbox.renderDeck();
+    const b = one(deck(), ".holo-banner");
+    out.bannerPresent = !!b;
+    out.bannerClass = b ? b.className : null;
+    out.bannerLabel = b ? txt(one(b, ".bl")) : null;
+    out.bannerText = b ? txt(one(b, ".bt")) : null;
+    break;
+  }
+  /* ── S128 (FL-002) — the ⬡ HOLODECK band control's activity indicator ────
+   * Driven through the REAL `render(board)`, because the fact arrives on the
+   * board payload's meta and nowhere else — a client-side timer here would be
+   * the same lie in a new place. `metas` is a SEQUENCE, so a test can assert
+   * the indicator CLEARS as well as appears (an assertion on one flattering
+   * frame would pass against an indicator that never goes out).
+   *
+   * WHAT THIS CANNOT SEE: there is no CSS here. The dot's colour, its pulse and
+   * whether it is visible at all are Chrome's to measure. */
+  case "bandActivity": {
+    sandbox.writesActive = cfg.writes === false ? false : true;
+    sandbox.holoSetMode(!!cfg.onDeck);
+    out.states = (cfg.metas || [null]).map((h) => {
+      const board = {
+        meta: Object.assign({ repo: "acme/groutwork", adapter: "local" },
+                            h ? { holodeck: h } : {}),
+        missions: [],
+        columns: {
+          align: [], research: [], validate: [], plan: [], "plan-review": [],
+          schedule: [], implement: [], verify: [], done: [],
+        },
+      };
+      sandbox.render(board);
+      const b = REGISTRY.holodeckBtn;
+      return {
+        label: b.textContent,
+        className: b.className,
+        working: b.classList.contains("working"),
+        dots: many(b, ".holo-dot").length,
+        title: b.title || "",
+        ariaLabel: b.getAttribute("aria-label"),
+        disabled: !!b.disabled,
+      };
+    });
     break;
   }
   case "state": {

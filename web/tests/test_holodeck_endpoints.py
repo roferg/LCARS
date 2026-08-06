@@ -3920,5 +3920,158 @@ class HandoffFailedFilingTest(HandoffBase):
         self.assertEqual(st, 200)
 
 
+# ── S128 (FL-002 / FL-004) — THE IN-FLIGHT FACT IS THE DAEMON'S ─────────────
+class InFlightDisclosureTest(DurableBase):
+    """You may walk away from a running turn — nothing ever said you could.
+
+    `sess.busy` was claimed under `_holodeck_lock` and surfaced NOWHERE, so a
+    deck that re-rendered mid-turn (a reload, a second tab, a return from the
+    board) read exactly like an idle one while the daemon would correctly refuse
+    the next `/say`. This suite is the daemon half of the cure: the fact, its
+    clock and the SENTENCE that goes with it are published on the program
+    payload and on the board's own meta — and are ABSENT the rest of the time,
+    because an idle program's payload must not move a byte.
+    """
+
+    BUSY_KEYS = ("busy", "busySince", "busyFor", "busyLabel", "busyReason")
+
+    def _busy_keys(self, prog):
+        return sorted(k for k in self.BUSY_KEYS if k in prog)
+
+    def _prog(self, listing, name="Nav rail"):
+        for p in listing["programs"]:
+            if p["program"] == name:
+                return p
+        raise AssertionError("no program %r in %s" % (name, listing))
+
+    def _say_async(self, sid, text, out, key="a"):
+        def run():
+            try:
+                out[key] = self._post_raw("/api/holodeck/%s/say" % sid,
+                                          {"text": text}, timeout=60)
+            except Exception as exc:            # pragma: no cover - diagnostic
+                out[key] = ("EXC", str(exc))
+        t = threading.Thread(target=run)
+        t.start()
+        return t
+
+    # -- the idle shape does not move ----------------------------------------
+    def test_an_IDLE_programs_payload_carries_no_in_flight_keys(self):
+        """THE ADDITIVE CONTRACT. Every other key on this payload was already
+        being read by S124–S127 tests; a busy flag stamped `false` on every
+        idle program would be a new key on the one shape those tests pin."""
+        sid, _ = self._start()
+        prog = self._prog(self._list())
+        self.assertEqual(self._busy_keys(prog), [])
+        self.assertNotIn("busy", json.dumps(prog))
+        self.assertEqual(self._busy_keys(self._get("/api/holodeck/%s" % sid)),
+                         [])
+
+    def test_a_room_on_disk_is_never_reported_as_working(self):
+        """A room the daemon is not holding has no conversation, so it cannot
+        be mid-turn — and the disk shape must say so by the SAME rule the live
+        one uses, or a restart and a live card start disagreeing about a lock."""
+        sid, _ = self._start()
+        self._post("/api/holodeck/%s/end" % sid)
+        prog = self._prog(self._list())
+        self.assertTrue(prog["onDisk"])
+        self.assertEqual(self._busy_keys(prog), [])
+
+    def test_an_idle_board_is_returned_byte_identical(self):
+        """`holodeck_overlay` follows `align_overlay`'s discipline: with nothing
+        in flight the board it is handed comes back unchanged."""
+        self._start()
+        board = self._get("/api/board")
+        self.assertNotIn("holodeck", board["meta"])
+
+    # -- and a turn in flight says so -----------------------------------------
+    def test_a_program_MID_TURN_publishes_the_fact_its_clock_and_the_reason(self):
+        self._set_turns({"sleep": 2.5, "stdout": "One.",
+                         "writes": [{"path": "mockup.html", "content": "<h1>1"}]})
+        sid, _ = self._start()
+        out = {}
+        t = self._say_async(sid, "Draft a nav rail", out)
+        try:
+            time.sleep(0.8)
+            prog = self._prog(self._list())
+            self.assertEqual(prog["busy"], True)
+            # the CLOCK, as the daemon's own two numbers: when it started
+            # (epoch seconds) and how long it has been going AT READ TIME. The
+            # second is what a client renders, so it never has to agree with
+            # the daemon about what o'clock it is.
+            self.assertAlmostEqual(prog["busySince"], time.time(), delta=10)
+            self.assertGreater(prog["busyFor"], 0.2)
+            self.assertLess(prog["busyFor"], 30)
+            # the SENTENCES. Both the deck's working line and the reason Send
+            # is disabled come from here — the client may not invent either.
+            self.assertTrue(prog["busyLabel"].strip())
+            self.assertIn("ago", prog["busyLabel"].lower())
+            reason = prog["busyReason"]
+            self.assertIn("turn", reason.lower())
+            for jargon in ("sess.", "mutex", "thread", "busy=", "409"):
+                self.assertNotIn(jargon, reason.lower(), jargon)
+            # …and the same fact on the single-program read the deck uses.
+            one = self._get("/api/holodeck/%s" % sid)
+            self.assertEqual(one["busy"], True)
+        finally:
+            t.join(60)
+        self.assertEqual(out["a"][0], 200, out["a"])
+
+    def test_the_board_itself_says_a_program_is_working(self):
+        """OFF THE DECK. `board.py` had no holodeck awareness at all, so the
+        one surface a captain is looking at while he waits could not tell him
+        anything was happening."""
+        self._set_turns({"sleep": 2.5, "stdout": "One."})
+        sid, _ = self._start()
+        out = {}
+        t = self._say_async(sid, "Draft a nav rail", out)
+        try:
+            time.sleep(0.8)
+            meta = self._get("/api/board")["meta"]["holodeck"]
+            self.assertEqual(meta["count"], 1)
+            self.assertEqual(meta["working"][0]["program"], "Nav rail")
+            self.assertEqual(meta["working"][0]["sessionId"], sid)
+            self.assertGreater(meta["working"][0]["busyFor"], 0.2)
+            self.assertIn("Nav rail", meta["message"])
+        finally:
+            t.join(60)
+
+    def test_the_fact_CLEARS_the_moment_the_turn_lands(self):
+        self._set_turns({"sleep": 1.0, "stdout": "One."})
+        sid, _ = self._start()
+        out = {}
+        t = self._say_async(sid, "Draft a nav rail", out)
+        t.join(60)
+        self.assertEqual(out["a"][0], 200, out["a"])
+        self.assertEqual(self._busy_keys(self._prog(self._list())), [])
+        self.assertNotIn("holodeck", self._get("/api/board")["meta"])
+
+    def test_the_turns_OWN_answer_never_claims_to_be_working(self):
+        """The payload of a `/say` is built inside `_run_turn`, while the claim
+        is still held — so the naive version told the client the turn it was
+        answering was still in flight. By the time those bytes are read the
+        claim is released, which makes it a lie about the reader's own turn."""
+        self._set_turns({"stdout": "One."})
+        sid, _ = self._start()
+        _st, body = self._post("/api/holodeck/%s/say" % sid, {"text": "go"})
+        self.assertEqual(self._busy_keys(body["state"]), [])
+
+    def test_the_fact_survives_the_client_that_started_it_going_away(self):
+        """The whole point of FL-002: leave, come back, and the deck can still
+        be told the truth by the daemon that never stopped working."""
+        self._set_turns({"sleep": 2.0, "stdout": "One."})
+        sid, _ = self._start()
+        out = {}
+        t = self._say_async(sid, "Draft a nav rail", out)
+        try:
+            time.sleep(0.7)
+            first = self._prog(self._list())["busyFor"]
+            time.sleep(0.7)
+            second = self._prog(self._list())["busyFor"]
+            self.assertGreater(second, first)
+        finally:
+            t.join(60)
+
+
 if __name__ == "__main__":
     unittest.main()
