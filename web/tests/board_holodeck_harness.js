@@ -381,6 +381,26 @@ switch (cfg.act) {
     out.intentTag = intent ? intent.tag : null;
     out.intentHref = intent ? intent.getAttribute("href") : null;
     out.intentReason = intent ? (intent.getAttribute("data-reason") || "") : "";
+    /* S127 (FL-007) — INTENT is drawn as half of a segmented control, so what
+     * matters is whether it BEHAVES as one: wired to a handler rather than
+     * pointing a new browser tab at raw markdown. `intentTarget` is the tell
+     * for the old link (`target="_blank"`). */
+    out.intentWired = intent ? intent.getAttribute("data-wired") === "1" : null;
+    out.intentTarget = intent ? intent.getAttribute("target") : null;
+    out.pvToggleOn = many(deck(), ".pv-toggle .pvt-b")
+      .map((n) => n.classList.contains("on"));
+    out.pvTogglePressed = many(deck(), ".pv-toggle .pvt-b")
+      .map((n) => n.getAttribute("aria-pressed"));
+    /* S127 (FL-003) — the PREVIEW pane's own controls, apart from the deck's.
+     * The defect was that a grounded program's empty preview offered nothing
+     * at all; `previewBasisHref` is the one link that cures it, read from the
+     * pane the captain is actually looking at. */
+    out.previewControls = controlsIn(one(deck(), ".preview") || stubEl("div"));
+    const pvBasis = one(deck(), ".pv-none .basis-link");
+    out.previewBasisHref = pvBasis ? pvBasis.getAttribute("href") : null;
+    out.previewBasisTag = pvBasis ? pvBasis.tag : null;
+    out.previewBasisReason = pvBasis
+      ? (pvBasis.getAttribute("data-reason") || "") : null;
     out.sidecarChip = txt(one(deck(), ".sidecar-chip"));
     out.controls = controlsIn(deck());
     const chip = one(deck(), ".ground-chip");
@@ -424,6 +444,100 @@ switch (cfg.act) {
     out.applied = sandbox.holoApplyFilesChanged(cfg.filesChanged || []);
     const after = one(deck(), "iframe");
     out.srcAfter = after ? after.getAttribute("src") : null;
+    break;
+  }
+  /* S127 (FL-007) — the ⬡ PREVIEW / ▤ INTENT toggle, driven for real: click
+   * INTENT, then (optionally) click back. The whole point of the cure is that
+   * the two views swap IN PLACE, so every projection here is read off the DOM
+   * the first render built — a re-render would destroy the iframe and hide the
+   * defect this act exists to catch. */
+  case "intentToggle": {
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    const framed = one(deck(), "iframe");
+    out.iframeSrcAtStart = framed ? framed.getAttribute("src") : null;
+    out.nonceAtStart = sandbox.HOLO.nonce;
+
+    const doc = cfg.concept !== undefined ? cfg.concept
+      : "## What it must do\n\n1. It remembers what you picked.\n"
+        + "2. No flash of the wrong theme.\n";
+    const restore = sandbox.fetch;
+    // ONLY the jailed preview route answers; everything else keeps the
+    // never-resolving stub so nothing races the assertions.
+    sandbox.fetch = function (url, opts) {
+      FETCHES.push({ url: url, opts: opts || {} });
+      if (/\/preview\//.test(String(url)) && !(opts || {}).method) {
+        if (cfg.fetchFails) {
+          return syncThenable({ status: 404, ok: false,
+                                text() { return syncThenable(""); } });
+        }
+        return syncThenable({ status: 200, ok: true,
+                              text() { return syncThenable(doc); } });
+      }
+      return restore(url, opts);
+    };
+    const pvState = function () {
+      const mock = one(deck(), ".pv-frame") || one(deck(), ".pv-none");
+      const panel = one(deck(), ".pv-intent");
+      const frame = one(deck(), "iframe");
+      const md = panel ? one(panel, ".md") : null;
+      return {
+        mockClass: mock ? mock.className : null,
+        mockHidden: mock ? !!mock.hidden : null,
+        intentPresent: !!panel,
+        intentHidden: panel ? !!panel.hidden : null,
+        intentHtml: md ? md.innerHTML : null,
+        intentText: panel ? txt(panel) : "",
+        iframeSrc: frame ? frame.getAttribute("src") : null,
+        on: many(deck(), ".pv-toggle .pvt-b")
+          .map((n) => n.classList.contains("on")),
+        pressed: many(deck(), ".pv-toggle .pvt-b")
+          .map((n) => n.getAttribute("aria-pressed")),
+      };
+    };
+    try {
+      FETCHES.length = 0;
+      const intent = one(deck(), ".pvt-b.intent");
+      out.intentFound = !!intent;
+      out.intentWired = intent
+        ? intent.getAttribute("data-wired") === "1" : null;
+      if (intent) intent.click();
+      out.fetched = FETCHES.map((f) => f.url);
+      out.afterIntent = pvState();
+      if (cfg.back) {
+        FETCHES.length = 0;
+        const pv = one(deck(), ".pvt-b.preview");
+        out.previewFound = !!pv;
+        if (pv) pv.click();
+        out.afterBack = pvState();
+        out.fetchedOnBack = FETCHES.map((f) => f.url);
+        out.nonceAtEnd = sandbox.HOLO.nonce;
+        /* AND BACK TO INTENT A SECOND TIME — the bytes are already in hand, so
+         * a second network call here would mean the panel re-fetches on every
+         * flip. */
+        FETCHES.length = 0;
+        const again = one(deck(), ".pvt-b.intent");
+        if (again) again.click();
+        out.fetchedOnSecondIntent = FETCHES.map((f) => f.url);
+        out.afterSecondIntent = pvState();
+      }
+      /* A TURN LANDS WHILE INTENT IS UP. `renderDeck` rebuilds the pane, so
+       * this is where a toggle that lives only in the DOM silently reverts. */
+      if (cfg.rerender) {
+        sandbox.renderDeck();
+        out.afterRerender = pvState();
+      }
+      /* …and a turn that REWROTE concept.md must not leave stale bytes on the
+       * panel. Drives the real `holoApplyFilesChanged` path. */
+      if (cfg.filesChangedAfter) {
+        FETCHES.length = 0;
+        sandbox.holoApplyFilesChanged(cfg.filesChangedAfter);
+        sandbox.renderDeck();
+        out.fetchedAfterChange = FETCHES.map((f) => f.url);
+      }
+    } finally {
+      sandbox.fetch = restore;
+    }
     break;
   }
   case "filter": {

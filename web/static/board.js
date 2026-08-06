@@ -7446,6 +7446,17 @@ var HOLO = {
   engineName: "",
   model: "",
   models: {},
+  // S127 (FL-007) — WHICH HALF OF THE ⬡ PREVIEW / ▤ INTENT TOGGLE IS SHOWING.
+  // It lives here and not in the DOM because `renderDeck` rebuilds the pane on
+  // every turn: a toggle whose only memory is the node it drew flips back to
+  // the mockup underneath a captain who is mid-read. `pvSid` is what makes
+  // switching PROGRAMS land on the mockup instead of on the previous
+  // program's intent — one guard, rather than a reset at four call sites.
+  pvView: "preview",
+  pvSid: null,
+  // the intent panel's bytes, per program. Dropped when a turn actually
+  // rewrites `concept.md` — the same discipline D3 applies to the mockup.
+  intent: { sid: null, text: null, err: null, loading: false },
 };
 
 var HOLO_FILTERS = [["all", "ALL"], ["draft", "DRAFT"], ["sent", "SENT"],
@@ -7823,34 +7834,44 @@ function holoRepoName() {
   return (i === -1 ? repo : repo.slice(i + 1)) || "this project";
 }
 
+/* D12 — "the program header links to it". `basis.md` is what makes a grounding
+   CORRECTABLE, and a grounding you cannot read is one you cannot correct.
+
+   ONE BUILDER, TWO PLACEMENTS (S127 FL-003). The file is now reachable from the
+   chat header chip AND from the empty preview, because the two are needed at
+   different moments: the empty preview is the pane a captain is actually
+   staring at the instant a grounding pass lands, and the chip is the only route
+   left once a mockup exists and that empty state is gone. What must NOT be
+   duplicated is the MECHANISM — S125 lost two rounds to a second control
+   carrying its own URL and its own wording. Both call this one function, so
+   they cannot disagree about where the file is, whether it is there, or what to
+   say when it is not: `basisFile` is the daemon saying the file really exists,
+   so the link can never 404, and without it the control stays visibly off with
+   the reason rather than pointing into thin air. */
+function holoBasisNode(p, label, cls) {
+  if (p.basisFile) {
+    var link = el("a", cls, label);
+    link.setAttribute("href", holoPreviewPath(p, p.basisFile));
+    link.setAttribute("target", "_blank");
+    link.setAttribute("rel", "noopener noreferrer");
+    link.title = "read basis.md — what the holodeck found in " + holoRepoName();
+    link.setAttribute("data-ctl", label);
+    link.setAttribute("data-wired", "1");
+    return link;
+  }
+  return holoCtl(el("span", cls, label), label, null,
+    "The grounding pass has not written basis.md yet — there is nothing "
+    + "to read until it does.");
+}
+
 /* ── the chat pane ─────────────────────────────────────────────────────── */
 function holoChatPane(p) {
   var pane = el("div", "holo-chat");
   var head = el("div", "chat-head");
   head.appendChild(el("div", "ct", p.program || "Program"));
-  /* D12 — "the program header links to it". The chip was an inert SPAN, so the
-     one thing that makes a grounding CORRECTABLE — reading what it actually
-     found — was reachable only by scrolling the raw transcript. `basisFile` is
-     the daemon saying the file is really there, so the link can never 404; a
-     grounded program whose pass produced nothing keeps the chip and says why,
-     rather than offering a link into thin air. */
   if (p.grounded || p.mode === "grounding") {
-    var glabel = "▣ grounded in " + holoRepoName();
-    if (p.basisFile) {
-      var link = el("a", "ground-chip", glabel);
-      link.setAttribute("href", holoPreviewPath(p, p.basisFile));
-      link.setAttribute("target", "_blank");
-      link.setAttribute("rel", "noopener noreferrer");
-      link.title = "read basis.md — what the holodeck found in "
-        + holoRepoName();
-      link.setAttribute("data-ctl", glabel);
-      link.setAttribute("data-wired", "1");
-      head.appendChild(link);
-    } else {
-      head.appendChild(holoCtl(el("span", "ground-chip", glabel), glabel, null,
-        "The grounding pass has not written basis.md yet — there is nothing "
-        + "to read until it does."));
-    }
+    head.appendChild(holoBasisNode(p, "▣ grounded in " + holoRepoName(),
+                                   "ground-chip"));
   }
   head.appendChild(el("span", "grow"));
   /* FIX ROUND 2 — "WARM" IS A FACT THE DAEMON MEASURES, NOT A DECORATION.
@@ -8293,37 +8314,47 @@ function holoPreviewSrc(p) {
   return base ? base + "?v=" + HOLO.nonce : null;
 }
 
+/* Which half of the segmented control this program is showing. A program with
+   no concept doc has nothing to toggle TO, and a program that is not the one
+   the captain last flipped starts on its mockup — so switching programs never
+   lands on the previous one's intent. */
+function holoPvView(p) {
+  if (!p || !p.conceptFile) return "preview";
+  if (HOLO.pvSid !== p.sessionId) return "preview";
+  return HOLO.pvView === "intent" ? "intent" : "preview";
+}
+
 function holoPreviewPane(p) {
   var pane = el("div", "preview");
   var head = el("div", "pv-head");
   var tog = el("span", "pv-toggle");
-  var pv = el("span", "pvt-b on", "⬡ Preview");
-  holoCtl(pv, "⬡ Preview", null, null);
-  pv.setAttribute("data-wired", "1");   // it IS the pane you are looking at
-  tog.appendChild(pv);
-  /* D14's INTENT — S126 put `concept.md` in the turn prompt's contract, so the
-     document exists; the PANEL that renders its captured requirements inline
-     does not, and inventing one here would be a second surface beside the file.
-     So this OPENS the concept doc itself, on the same jailed preview route the
-     grounding chip uses, for the same reason S125 gave there: what will be
-     handed to a Mission must be inspectable before it is handed over, or a
-     wrong capture is undiscoverable. With no concept doc yet it is visibly off,
-     saying what is actually true. */
+  var view = holoPvView(p);
+  var pv = el("span", "pvt-b preview", "⬡ Preview");
+  /* D14's INTENT, AND IT IS A TOGGLE NOW (S127 FL-007). It shipped as an
+     `<a target="_blank">` onto the jailed route — so clicking it opened a
+     browser tab of raw markdown — while being DRAWN as half of the same
+     segmented control as ⬡ Preview. The captain clicked the affordance D14
+     specifies and got something else.
+
+     S126's stated reason for the link does not hold: rendering `concept.md`
+     here is not "a second surface beside the file", because this pane ALREADY
+     renders `mockup.html` from a file on that same route. The real
+     second-source risk would be re-deriving the requirements from the
+     transcript in JS; showing THE FILE is the opposite of that, and the file is
+     what hands off to a Mission.
+
+     With no concept doc it is still visibly off, saying what is actually true —
+     that state is fix round 2's and it is preserved exactly. */
   var intent;
   if (p.conceptFile) {
-    intent = el("a", "pvt-b intent", "▤ Intent");
-    intent.setAttribute("href", holoPreviewPath(p, p.conceptFile));
-    intent.setAttribute("target", "_blank");
-    intent.setAttribute("rel", "noopener noreferrer");
+    intent = el("span", "pvt-b intent", "▤ Intent");
     intent.title = "read concept.md — the written half of this design, and "
       + "what a Mission is handed at the end";
-    intent.setAttribute("data-ctl", "▤ Intent");
-    intent.setAttribute("data-wired", "1");
   } else {
     intent = el("span", "pvt-b intent", "▤ Intent");
-    /* FIX ROUND 2 — the daemon now withholds `conceptFile` for an EMPTY
+    /* FIX ROUND 2 — the daemon withholds `conceptFile` for an EMPTY
        concept.md as well as a missing one, because a control that opens a
-       blank tab is worse than a control that is visibly off. So this sentence
+       blank panel is worse than a control that is visibly off. So this sentence
        is read by a captain who may be looking at a concept.md sitting in his
        own room, and it must not tell him the file is not there. */
     holoCtl(intent, "▤ Intent", null,
@@ -8331,14 +8362,17 @@ function holoPreviewPane(p) {
             + "ask for it in the chat and the holodeck keeps it current from "
             + "then on.");
   }
+  tog.appendChild(pv);
   tog.appendChild(intent);
   head.appendChild(tog);
   head.appendChild(el("span", "grow"));
-  head.appendChild(el("span", "fname", p.previewFile || "no mockup yet"));
+  var fname = el("span", "fname", p.previewFile || "no mockup yet");
+  head.appendChild(fname);
   pane.appendChild(head);
 
   var stage = el("div", "pv-stage");
   var src = holoPreviewSrc(p);
+  var mock;
   if (src) {
     var frame = el("div", "pv-frame");
     var f = el("iframe");
@@ -8371,15 +8405,49 @@ function holoPreviewPane(p) {
     f.setAttribute("src", src);
     f.src = src;
     frame.appendChild(f);
-    stage.appendChild(frame);
+    mock = frame;
   } else {
-    var none = el("div", "pv-none");
-    none.appendChild(el("div", "t", "Nothing on the holodeck yet"));
-    none.appendChild(el("p", null,
-      "The preview shows the mockup file itself, straight from the program's "
-      + "room in the sidecar. Ask for a screen and it will appear here."));
-    stage.appendChild(none);
+    mock = holoPreviewEmpty(p);
   }
+  stage.appendChild(mock);
+
+  /* BOTH VIEWS LIVE IN THE STAGE AT ONCE, and the toggle only ever HIDES one.
+     Re-rendering the stage to swap them would destroy the iframe and reload a
+     mockup that has not changed — D3's whole guarantee is that the preview
+     moves when the FILE moved and at no other time. */
+  var panel = p.conceptFile ? el("div", "pv-intent") : null;
+  if (panel) stage.appendChild(panel);
+
+  function paint(want) {
+    mock.hidden = want === "intent";
+    if (panel) panel.hidden = want !== "intent";
+    pv.classList.toggle("on", want === "preview");
+    pv.setAttribute("aria-pressed", want === "preview" ? "true" : "false");
+    if (panel) {
+      intent.classList.toggle("on", want === "intent");
+      intent.setAttribute("aria-pressed", want === "intent" ? "true" : "false");
+    }
+    fname.textContent = want === "intent"
+      ? p.conceptFile : (p.previewFile || "no mockup yet");
+  }
+
+  if (panel) {
+    keyActivable(holoCtl(pv, "⬡ Preview", function () {
+      holoPvSet(p, "preview", paint, panel);
+    }));
+    keyActivable(holoCtl(intent, "▤ Intent", function () {
+      holoPvSet(p, "intent", paint, panel);
+    }));
+  } else {
+    // nothing to toggle to, so ⬡ Preview is simply the pane you are looking at
+    // — the same treatment it has always had, not a dead control.
+    holoCtl(pv, "⬡ Preview", null, null);
+    pv.setAttribute("data-wired", "1");
+  }
+  paint(view);
+  // a re-render that landed while INTENT was up has to repopulate it, or the
+  // captain's next turn blanks the document he was reading.
+  if (view === "intent") holoIntentFill(p, panel);
   pane.appendChild(stage);
 
   var foot = el("div", "pv-foot");
@@ -8392,6 +8460,125 @@ function holoPreviewPane(p) {
   return pane;
 }
 
+/* WHAT AN EMPTY STAGE MEANS DEPENDS ON WHETHER A GROUNDING PASS LANDED
+   (S127 FL-003). A grounding pass reads the project and writes `basis.md`; it
+   draws nothing, and that is correct. But the wording below was byte-identical
+   to a blank-deck program's, so a captain whose pass had just SUCCEEDED —
+   8.5kB of source-cited basis.md, committed — read "Nothing on the holodeck
+   yet · Ask for a screen and it will appear here" and said "I don't
+   understand." The pass was step one of two and the deck never said so.
+
+   `grounded` is the daemon's own fact (`_holodeck_meta`), not an inference from
+   `mode`, which moves to "design" after the opening pass. */
+function holoPreviewEmpty(p) {
+  var none = el("div", "pv-none");
+  if (!p.grounded) {
+    none.appendChild(el("div", "t", "Nothing on the holodeck yet"));
+    none.appendChild(el("p", null,
+      "The preview shows the mockup file itself, straight from the program's "
+      + "room in the sidecar. Ask for a screen and it will appear here."));
+    return none;
+  }
+  none.appendChild(el("div", "t", "Grounding pass complete"));
+  none.appendChild(el("p", null,
+    "This program read " + holoRepoName() + " "
+    + (p.basisFile
+       ? "and wrote down the design language it found — its colours, type "
+         + "scale, spacing and component shapes."
+       : "but has not written basis.md yet, so there is nothing to read back "
+         + "of it.")
+    + " A grounding pass builds no mockup, which is why the stage is empty."));
+  none.appendChild(holoBasisNode(p, "▣ Read basis.md", "basis-link"));
+  none.appendChild(el("p", "next",
+    "Describe a screen, a component or a whole flow in the chat and it will be "
+    + "built here, in the language the pass just found."));
+  return none;
+}
+
+function holoPvSet(p, want, paint, panel) {
+  HOLO.pvSid = p.sessionId;
+  HOLO.pvView = want;
+  paint(want);
+  if (want === "intent") holoIntentFill(p, panel);
+}
+
+/* D14's captured intent, rendered IN the pane it is a toggle of.
+
+   The bytes come over the SAME jailed preview route the mockup does, and the
+   markdown goes through the board's own renderer (`setMd`/`mdToHtml`, UX-37) —
+   there is no second renderer and no second markdown look. Nothing here is
+   re-derived from the transcript: this renders THE FILE, which is the thing
+   that hands off to a Mission, so the panel and the hand-off can never disagree.
+
+   Cached per program, and the cache is dropped by `holoApplyFilesChanged` when
+   a turn actually rewrote `concept.md` — the same rule D3 gives the mockup:
+   refresh because the FILE changed, never because a reply said it had. */
+function holoIntentFill(p, host) {
+  if (!host || !p || !p.conceptFile) return;
+  var c = HOLO.intent;
+  if (c.sid === p.sessionId && (c.text != null || c.err)) {
+    holoIntentPaint(host, c.text, c.err);
+    return;
+  }
+  if (c.sid === p.sessionId && c.loading) {
+    holoIntentPaint(host, null, null);
+    return;
+  }
+  c = HOLO.intent = { sid: p.sessionId, text: null, err: null, loading: true };
+  holoIntentPaint(host, null, null);
+  var unreadable = "concept.md could not be read from this program's room. "
+    + "The document is still there — this is the deck failing to fetch it, "
+    + "not the holodeck losing it.";
+  function settle(text, err) {
+    if (HOLO.intent !== c) return;      // a newer request or program won
+    c.loading = false;
+    c.text = text;
+    c.err = err;
+    holoIntentPaint(host, text, err);
+  }
+  fetch(holoPreviewPath(p, p.conceptFile), {
+    headers: { "Accept": "text/plain" },
+  }).then(function (r) {
+    // NOT `throw` — the failure path has to be a value, so that a daemon that
+    // answers 404 and a daemon that never answers land in the same place.
+    if (!r || !(r.ok || r.status === 200)) { settle(null, unreadable); return null; }
+    return r.text();
+  }).then(function (text) {
+    if (text == null) return;
+    settle(String(text), null);
+  }).catch(function () {
+    settle(null, unreadable);
+  });
+}
+
+function holoIntentPaint(host, text, err) {
+  host.innerHTML = "";
+  if (err) {
+    var note = el("div", "pv-intent-note");
+    note.appendChild(el("div", "t", "Intent unavailable"));
+    note.appendChild(el("p", null, err));
+    host.appendChild(note);
+    return;
+  }
+  if (text == null) {
+    host.appendChild(workingNode("Reading concept.md…"));
+    return;
+  }
+  var doc = el("div", "intent-doc");
+  var body = String(text).trim();
+  if (body) {
+    setMd(doc, body);
+  } else {
+    /* The daemon withholds `conceptFile` for an EMPTY concept.md, so reaching
+       here means the file emptied between the list call and this click. Say
+       that, rather than showing a blank panel that reads as a broken toggle. */
+    doc.appendChild(el("p", null,
+      "concept.md is in this program's room but has nothing in it yet — ask "
+      + "for it in the chat and the holodeck keeps it current from then on."));
+  }
+  host.appendChild(doc);
+}
+
 /* D3's refresh trigger, and the whole reason the preview can be trusted: the
    iframe is re-pointed because the FILE on disk changed (the turn payload's
    `filesChanged`), never because the reply said it had. A turn that changed
@@ -8399,11 +8586,24 @@ function holoPreviewPane(p) {
    "something happened" signal for something that did not. */
 function holoApplyFilesChanged(files, program) {
   var p = program || holoActive();
-  if (!p || !p.previewFile) return false;
-  var want = holoBase(p.previewFile);
-  var hit = (files || []).some(function (c) {
-    return holoBase(typeof c === "string" ? c : (c && c.path)) === want;
-  });
+  if (!p) return false;
+  function changed(name) {
+    var want = holoBase(name);
+    return (files || []).some(function (c) {
+      return holoBase(typeof c === "string" ? c : (c && c.path)) === want;
+    });
+  }
+  /* D14's INTENT panel obeys the same rule (S127 FL-007): a turn that rewrote
+     `concept.md` drops the cached bytes, so the next render reads the file
+     again. A turn that did not touch it leaves the captain's place on the
+     document exactly where it was. The return value below is untouched — it is
+     the MOCKUP's answer, and it is what tells the caller a preview refreshed. */
+  if (p.conceptFile && HOLO.intent.sid === p.sessionId
+      && changed(p.conceptFile)) {
+    HOLO.intent = { sid: null, text: null, err: null, loading: false };
+  }
+  if (!p.previewFile) return false;
+  var hit = changed(p.previewFile);
   if (!hit) return false;
   HOLO.nonce += 1;
   var f = document.getElementById("holoPreview");

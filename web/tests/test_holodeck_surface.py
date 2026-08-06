@@ -37,6 +37,10 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tests import _fixtures as fx  # noqa: E402
+# S162's cascade resolver, imported as a MODULE so its own TestCases are not
+# re-collected here: FL-006 is a legibility fix, and "the rule is in the
+# stylesheet" is exactly the claim that shipped an invisible amber warning.
+from tests import test_log_filing_band as css  # noqa: E402
 from tests.test_holodeck_endpoints import _make_stub, _file_record_stub  # noqa: E402
 from lcars_serve.local_adapter import LocalAdapter  # noqa: E402
 from lcars_serve.server import make_server  # noqa: E402
@@ -1479,12 +1483,22 @@ class DurableDeckTest(unittest.TestCase):
     def test_the_concept_doc_is_readable_when_the_program_has_one(self):
         """The same argument that made `basis.md` a link in S125: a document
         that is handed to a Mission and that the captain cannot open is one he
-        cannot correct."""
-        out = _harness({"act": "deck",
+        cannot correct.
+
+        S127 (FL-007) — THE CLAIM IS UNCHANGED; WHERE IT IS READ MOVED. This
+        used to assert an `<a target="_blank">` into a browser tab of raw
+        markdown, which is the defect the captain reported: the control is
+        drawn as half of a segmented toggle, so it must behave as one. The
+        readability requirement is asserted here against the toggle, and the
+        panel itself is `IntentIsARealToggleTest`.
+        """
+        out = _harness({"act": "intentToggle",
                         "programs": [dict(PROG, conceptFile="concept.md")],
                         "activeId": "s1"})
-        self.assertEqual(out["intentTag"], "a")
-        self.assertEqual(out["intentHref"], "/api/holodeck/s1/preview/concept.md")
+        # still fetched over the SAME jailed route the old link pointed at.
+        self.assertIn("/api/holodeck/s1/preview/concept.md", out["fetched"])
+        self.assertFalse(out["afterIntent"]["intentHidden"])
+        self.assertTrue(out["afterIntent"]["intentHtml"])
 
     def test_with_no_concept_doc_the_intent_control_says_why_not(self):
         out = _harness({"act": "deck", "programs": [dict(PROG,
@@ -2121,6 +2135,319 @@ class BoardUntouchedTest(unittest.TestCase):
         self.assertEqual(out["columnCount"], 9)
         self.assertEqual(out["cardCount"], 1)
         self.assertFalse(out["deckVisible"])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S127 FIELD LEDGER — FL-003 / FL-006 / FL-007, all three in the PREVIEW PANE
+# ════════════════════════════════════════════════════════════════════════════
+GROUNDED_EMPTY = dict(PROG, previewFile=None, grounded=True,
+                      basisFile="basis.md")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class GroundedEmptyPreviewTest(unittest.TestCase):
+    """FL-003 — a successful grounding pass must not read as "nothing happened".
+
+    The captain ran a pass that SUCCEEDED (8.5kB of source-cited `basis.md`,
+    committed) and landed on the same two sentences a blank-deck program shows:
+    "Nothing on the holodeck yet / Ask for a screen and it will appear here."
+    His words were "I don't understand." A grounding pass builds no mockup —
+    that is correct — so the empty state is where the deck has to SAY so.
+    """
+
+    def test_a_grounded_program_with_no_mockup_names_the_pass(self):
+        out = _harness({"act": "deck", "programs": [GROUNDED_EMPTY],
+                        "activeId": "s1"})
+        low = out["previewText"].lower()
+        self.assertIn("ground", low, out["previewText"])
+        # …and it is NOT the blank-deck sentence any more.
+        self.assertNotIn("nothing on the holodeck yet", low)
+
+    def test_the_grounded_empty_state_says_why_the_stage_is_empty(self):
+        """The one fact that turns "nothing happened" into "step one of two":
+        a grounding pass reads, it does not draw."""
+        out = _harness({"act": "deck", "programs": [GROUNDED_EMPTY],
+                        "activeId": "s1"})
+        low = out["previewText"].lower()
+        self.assertTrue("no mockup" in low or "builds no" in low
+                        or "does not build" in low, out["previewText"])
+
+    def test_the_grounded_empty_state_says_the_next_move(self):
+        out = _harness({"act": "deck", "programs": [GROUNDED_EMPTY],
+                        "activeId": "s1"})
+        low = out["previewText"].lower()
+        self.assertIn("describe", low, out["previewText"])
+
+    def test_basis_md_is_reachable_from_the_pane_he_is_looking_at(self):
+        """The chip that already links `basis.md` sits in the CHAT pane head and
+        the captain did not find it. The link has to be in the empty preview."""
+        out = _harness({"act": "deck", "programs": [GROUNDED_EMPTY],
+                        "activeId": "s1"})
+        self.assertEqual(out["previewBasisTag"], "a")
+        self.assertEqual(out["previewBasisHref"],
+                         "/api/holodeck/s1/preview/basis.md")
+
+    def test_the_two_basis_controls_are_ONE_mechanism(self):
+        """The S125 trap this cure had to dodge: a second link beside the chip,
+        with its own URL and its own wording, is two mechanisms for one file.
+        Both are built by one function, so they can never disagree about where
+        the file is."""
+        out = _harness({"act": "deck", "programs": [GROUNDED_EMPTY],
+                        "activeId": "s1"})
+        self.assertEqual(out["groundChipHref"], out["previewBasisHref"])
+
+    def test_a_grounded_program_with_no_basis_yet_offers_no_dead_link(self):
+        """Same rule the chip already keeps: `basisFile` is the daemon saying
+        the file is really there. Without it the empty state must still name the
+        pass and say why there is nothing to read."""
+        out = _harness({"act": "deck",
+                        "programs": [dict(GROUNDED_EMPTY, basisFile=None)],
+                        "activeId": "s1"})
+        self.assertIn("ground", out["previewText"].lower())
+        self.assertNotEqual(out["previewBasisTag"], "a")
+        self.assertTrue(out["previewBasisReason"], out)
+
+    def test_an_ungrounded_program_keeps_the_blank_deck_wording(self):
+        """The generic empty state is CORRECT for a blank-deck program, and the
+        branch must not swallow it."""
+        out = _harness({"act": "deck",
+                        "programs": [dict(PROG, previewFile=None, mode="design",
+                                          grounded=False, basisFile=None)],
+                        "activeId": "s1"})
+        self.assertIn("NOTHING ON THE HOLODECK YET", out["previewText"].upper())
+        self.assertIsNone(out["previewBasisTag"])
+
+    def test_a_grounded_program_WITH_a_mockup_shows_the_mockup(self):
+        """The branch is on the EMPTY state only — a grounded program that has
+        since drawn something still gets its iframe."""
+        out = _harness({"act": "deck",
+                        "programs": [dict(PROG, grounded=True,
+                                          basisFile="basis.md")],
+                        "activeId": "s1"})
+        self.assertTrue(out["iframeSrc"].startswith(
+            "/api/holodeck/s1/preview/mockup.html"))
+        # and `basis.md` is still reachable — from the chip, which is why the
+        # chip could not simply be retired in favour of the empty state.
+        self.assertEqual(out["groundChipHref"],
+                         "/api/holodeck/s1/preview/basis.md")
+
+    def test_no_dead_controls_in_the_grounded_empty_preview(self):
+        out = _harness({"act": "deck", "programs": [GROUNDED_EMPTY],
+                        "activeId": "s1"})
+        for ctl in out["previewControls"]:
+            self.assertTrue(ctl["wired"] or ctl["disabled"] or ctl["reason"],
+                            "dead control: %r" % ctl["label"])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class IntentIsARealToggleTest(unittest.TestCase):
+    """FL-007 — INTENT is drawn as half of a segmented control and behaved as a
+    link into a browser tab of raw markdown. D14 specifies the toggle: the
+    preview pane swaps between the mockup and the captured intent.
+    """
+
+    CONCEPT = dict(PROG, conceptFile="concept.md")
+
+    def test_the_intent_pill_no_longer_opens_a_browser_tab(self):
+        out = _harness({"act": "deck", "programs": [self.CONCEPT],
+                        "activeId": "s1"})
+        self.assertIsNone(out["intentTarget"])
+        self.assertIsNone(out["intentHref"])
+        self.assertTrue(out["intentWired"])
+
+    def test_both_halves_of_the_segmented_control_carry_their_state(self):
+        out = _harness({"act": "deck", "programs": [self.CONCEPT],
+                        "activeId": "s1"})
+        # two buttons, PREVIEW is the one you are looking at.
+        self.assertEqual(out["pvToggleOn"], [True, False])
+        self.assertEqual(out["pvTogglePressed"], ["true", "false"])
+
+    def test_clicking_intent_renders_concept_md_in_the_pane(self):
+        out = _harness({"act": "intentToggle", "programs": [self.CONCEPT],
+                        "activeId": "s1"})
+        self.assertTrue(out["intentWired"], out)
+        # the bytes come over the SAME jailed preview route the link used.
+        self.assertIn("/api/holodeck/s1/preview/concept.md", out["fetched"])
+        st = out["afterIntent"]
+        self.assertTrue(st["intentPresent"])
+        self.assertFalse(st["intentHidden"])
+        self.assertTrue(st["mockHidden"], "the mockup must step aside")
+        self.assertEqual(st["on"], [False, True])
+        self.assertEqual(st["pressed"], ["false", "true"])
+
+    def test_the_concept_doc_is_RENDERED_not_dumped_as_source(self):
+        """Reusing the board's own markdown renderer, not a second one: a
+        heading arrives as a heading and a numbered requirement as a list item.
+        """
+        out = _harness({"act": "intentToggle", "programs": [self.CONCEPT],
+                        "activeId": "s1",
+                        "concept": "## What it must do\n\n"
+                                   "1. It remembers what you picked.\n"})
+        html = out["afterIntent"]["intentHtml"] or ""
+        self.assertIn("<h4>", html, html)
+        self.assertIn("<li>It remembers what you picked.</li>", html, html)
+        self.assertNotIn("## What it must do", html)
+
+    def test_switching_back_leaves_the_mockup_exactly_where_it_was(self):
+        """The whole reason the two views live side by side in one stage: a
+        re-render would destroy the iframe and reload a mockup that never
+        changed."""
+        out = _harness({"act": "intentToggle", "programs": [self.CONCEPT],
+                        "activeId": "s1", "back": True})
+        self.assertEqual(out["afterBack"]["iframeSrc"], out["iframeSrcAtStart"])
+        self.assertEqual(out["nonceAtEnd"], out["nonceAtStart"])
+        self.assertFalse(out["afterBack"]["mockHidden"])
+        self.assertTrue(out["afterBack"]["intentHidden"])
+        self.assertEqual(out["afterBack"]["on"], [True, False])
+
+    def test_flipping_back_to_intent_does_not_refetch_the_same_bytes(self):
+        out = _harness({"act": "intentToggle", "programs": [self.CONCEPT],
+                        "activeId": "s1", "back": True})
+        self.assertEqual(out["fetchedOnBack"], [])
+        self.assertEqual(out["fetchedOnSecondIntent"], [])
+        self.assertTrue(out["afterSecondIntent"]["intentPresent"])
+        self.assertFalse(out["afterSecondIntent"]["intentHidden"])
+        # …and the document is still on screen, not an empty panel.
+        self.assertIn("<li>", out["afterSecondIntent"]["intentHtml"] or "")
+
+    def test_a_re_render_while_intent_is_up_keeps_intent_up(self):
+        """A turn lands and `renderDeck` rebuilds the pane. A toggle whose only
+        memory is the DOM silently flips back to the mockup underneath him."""
+        out = _harness({"act": "intentToggle", "programs": [self.CONCEPT],
+                        "activeId": "s1", "rerender": True})
+        st = out["afterRerender"]
+        self.assertFalse(st["intentHidden"], st)
+        self.assertTrue(st["mockHidden"], st)
+        self.assertEqual(st["on"], [False, True])
+
+    def test_a_turn_that_rewrote_concept_md_drops_the_stale_bytes(self):
+        """Same discipline as the mockup (D3): the panel refreshes because the
+        FILE changed, never because a reply said it had."""
+        out = _harness({"act": "intentToggle", "programs": [self.CONCEPT],
+                        "activeId": "s1", "rerender": True,
+                        "filesChangedAfter": [{"path": "light-dark/concept.md",
+                                               "status": "modified"}]})
+        self.assertIn("/api/holodeck/s1/preview/concept.md",
+                      out["fetchedAfterChange"])
+
+    def test_a_program_with_no_concept_doc_keeps_the_visibly_off_state(self):
+        """FIX ROUND 2's cure, preserved. `conceptFile` is withheld for an EMPTY
+        concept.md as well as a missing one, and the sentence a captain reads
+        must not tell him a file he can see is not there."""
+        out = _harness({"act": "deck",
+                        "programs": [dict(PROG, conceptFile=None)],
+                        "activeId": "s1"})
+        self.assertEqual(out["intentTag"], "span")
+        self.assertFalse(out["intentWired"])
+        low = out["intentReason"].lower()
+        self.assertIn("concept.md", low)
+        self.assertNotIn("has no concept.md", low)
+        self.assertNotIn("does not exist", low)
+        self.assertNotIn("not writing concept.md", low)
+
+    def test_the_intent_panel_does_not_exist_without_a_concept_doc(self):
+        out = _harness({"act": "intentToggle",
+                        "programs": [dict(PROG, conceptFile=None)],
+                        "activeId": "s1"})
+        self.assertFalse(out["afterIntent"]["intentPresent"])
+        self.assertFalse(out["afterIntent"]["mockHidden"])
+
+    def test_a_concept_doc_that_cannot_be_read_says_so(self):
+        out = _harness({"act": "intentToggle", "programs": [self.CONCEPT],
+                        "activeId": "s1", "fetchFails": True})
+        low = out["afterIntent"]["intentText"].lower()
+        self.assertIn("concept.md", low)
+        self.assertTrue("could not" in low or "cannot" in low, low)
+
+    def test_the_iframe_sandbox_is_untouched_by_the_toggle(self):
+        """The load-bearing security property of this pane. `allow-scripts`
+        WITHOUT `allow-same-origin` — the toggle moved the iframe into a
+        sibling of the intent panel and must not have loosened it."""
+        out = _harness({"act": "deck", "programs": [self.CONCEPT],
+                        "activeId": "s1"})
+        self.assertIn("allow-scripts", out["iframeSandbox"])
+        self.assertNotIn("allow-same-origin", out["iframeSandbox"])
+
+
+class EmptyPreviewIsLegibleTest(unittest.TestCase):
+    """FL-006 — the empty preview's copy sat directly on `.pv-stage`'s 22px holo
+    grid with no scrim, so the grid lines ran through the glyphs.
+
+    ⚠ WHAT THIS TEST CANNOT DO. The colour below is a REAL cascade resolution
+    against the shipping stylesheets (the S162 machinery from
+    test_log_filing_band), so "the rule exists but loses" is caught. The SCRIM
+    is not: `::before` and `>` are outside the resolver, and no test in this
+    file can see a rendered pixel. `tests/drives/browser/holodeck.sh` is the
+    half that measures whether the grid actually stops under the words.
+    """
+
+    # `.pv-stage > .pv-none > p`, with the ancestry index.html and renderDeck
+    # really build. Ancestry is half of a descendant-selector resolution.
+    CHAIN = [("html", frozenset()),
+             ("body", frozenset(["lcars-serve"])),
+             ("div", frozenset(["deck-host"])),
+             ("div", frozenset(["deckview"])),
+             ("div", frozenset(["preview"])),
+             ("div", frozenset(["pv-stage"])),
+             ("div", frozenset(["pv-none"]))]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rules, cls.vars = css.load_stylesheets(css.CSS_SHEETS)
+
+    def _rule(self, selector):
+        found = [r for r in self.rules if r.selector.replace(" ", "") == selector]
+        self.assertTrue(found, "no rule for %r" % selector)
+        return found[-1]
+
+    def _decl(self, rule, prop):
+        for p, v, _imp in rule.decls:
+            if p == prop:
+                return v
+        return None
+
+    def test_the_body_copy_resolves_to_the_bright_text_not_the_dim_one(self):
+        chain = self.CHAIN + [("p", frozenset())]
+        colour = css.rgb(css.computed("color", chain, self.rules, self.vars))
+        self.assertEqual(colour, css.TEXT,
+                         "the empty preview's paragraph resolves to %r — the "
+                         "landing state it is meant to match uses --lcars-text"
+                         % (colour,))
+        self.assertNotEqual(colour, css.TEXT_DIM)
+
+    def test_pv_none_is_positioned_so_a_scrim_can_hang_off_it(self):
+        """The half a rule-existence check CAN catch: a `::before` with
+        `inset:0` on a STATIC parent escapes to the nearest positioned ancestor
+        and scrims the wrong box — the rule ships, the words stay unreadable."""
+        self.assertEqual(self._decl(self._rule(".pv-none"), "position"),
+                         "relative")
+
+    def test_the_empty_preview_carries_the_landing_state_scrim(self):
+        rule = self._rule(".pv-none::before")
+        self.assertEqual(self._decl(rule, "position"), "absolute")
+        self.assertEqual(self._decl(rule, "inset"), "0")
+        self.assertIn("radial-gradient", self._decl(rule, "background") or "")
+        # a SCRIM, not an opaque panel: the grid is the deck's identity and has
+        # to survive at the edges. The landing state's own gradient ends at 0.
+        self.assertIn(",0)", (self._decl(rule, "background") or "")
+                      .replace(" ", ""))
+        # …and it must never eat a click meant for the pane.
+        self.assertEqual(self._decl(rule, "pointer-events"), "none")
+
+    def test_the_copy_sits_ABOVE_the_scrim(self):
+        """`.holo-empty > *{position:relative;z-index:1}` is the other half of
+        the idiom — without it the scrim paints over the words it exists to
+        make readable."""
+        rule = self._rule(".pv-none>*")
+        self.assertEqual(self._decl(rule, "position"), "relative")
+        self.assertEqual(self._decl(rule, "z-index"), "1")
+
+    def test_the_intent_panel_gets_the_same_treatment(self):
+        """FL-007 puts a whole rendered document on the same grid."""
+        rule = self._rule(".pv-intent::before")
+        self.assertIn("radial-gradient", self._decl(rule, "background") or "")
+        self.assertEqual(self._decl(self._rule(".pv-intent"), "position"),
+                         "relative")
 
 
 if __name__ == "__main__":

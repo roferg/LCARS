@@ -1417,11 +1417,18 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   background:rgba(45,227,199,.10)}
 /* the INTENT half is OFF while the program has no concept doc, and it must LOOK
    off — a control the captain can see is disabled, with the reason on hover, is
-   the honest shape. Once `concept.md` exists it becomes a real link (S126) and
-   must not be styled like a dead control, hence the anchor rule below. */
+   the honest shape. Once `concept.md` exists it becomes live and must not be
+   styled like a dead control, hence the wired rule below.
+
+   S127 (FL-007) — keyed off `data-wired`, not off `a`. INTENT stopped being an
+   anchor when it became a real toggle, and an anchor-only rule would have left
+   it looking dead on the day it started working. `data-wired` is what holoCtl
+   sets when a click actually does something, so both halves are covered by the
+   same fact rather than by their tag. */
 .pv-toggle .pvt-b[aria-disabled="true"]{opacity:.42;cursor:not-allowed}
-.pv-toggle a.pvt-b{text-decoration:none;cursor:pointer;opacity:1}
-.pv-toggle a.pvt-b:hover{border-color:var(--holo-grid);color:var(--holo-grid)}
+.pv-toggle .pvt-b[data-wired="1"]{text-decoration:none;cursor:pointer;opacity:1}
+.pv-toggle .pvt-b[data-wired="1"]:hover{border-color:var(--holo-grid);
+  color:var(--holo-grid)}
 .pv-head .grow{flex:1 1 auto}
 .pv-head .fname{font-family:var(--font-mono);font-size:10px;
   color:var(--lcars-text-dim)}
@@ -1435,12 +1442,62 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   flex:1 1 auto;display:flex;min-height:0}
 .pv-frame iframe{border:0;width:100%;height:100%;flex:1 1 auto;
   background:#0a0a0f}
+/* S127 (FL-007) — the stage holds BOTH views and swaps them by hiding, never by
+   re-rendering: rebuilding it would destroy the iframe and reload a mockup that
+   never changed. `.pv-frame`, `.pv-none` and `.pv-intent` all set `display`
+   themselves, so the UA's `[hidden]{display:none}` loses to every one of them —
+   this rule outranks them on specificity (0,2,0 vs 0,1,0) AND on source order,
+   both, because a half-hidden pane is the whole defect. */
+.pv-stage>[hidden]{display:none}
+/* — the empty stage (FL-006) —
+   The copy sat directly on the 22px grid above with no background and no scrim,
+   so the grid lines ran through the glyphs. The captain named the comparison
+   himself: `.holo-empty` (the landing state, further down) already solves this,
+   and this is that idiom rather than a second one — a radial scrim that kills
+   the grid under the words and leaves it alive at the edges, because the grid
+   IS the deck's identity. `position:relative` is what makes the `::before` hang
+   off THIS box (on a static parent it escapes to the nearest positioned
+   ancestor and scrims something else entirely), and the `z-index:1` rule is the
+   half without which the scrim paints over the words it exists to reveal. */
 .pv-none{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:10px;text-align:center;padding:26px}
+  justify-content:center;gap:10px;text-align:center;padding:26px;
+  position:relative;min-height:0}
+.pv-none::before{content:'';position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse 62% 58% at 50% 50%,
+    rgba(3,6,8,.97) 0%,rgba(3,6,8,.85) 45%,rgba(3,6,8,0) 78%)}
+.pv-none>*{position:relative;z-index:1}
 .pv-none .t{font-family:var(--font-display);font-size:13px;letter-spacing:.22em;
   text-transform:uppercase;color:var(--holo-grid)}
-.pv-none p{max-width:36ch;font-size:13px;color:var(--lcars-text-dim);
+/* …and the body copy is the landing state's `--lcars-text`, not the dim grey it
+   used to be. Dim metadata over a live grid is the unreadable half. */
+.pv-none p{max-width:38ch;font-size:13px;color:var(--lcars-text);
   line-height:1.6;margin:0}
+.pv-none .basis-link{font-family:var(--font-mono);font-size:10px;
+  letter-spacing:.04em;padding:4px 11px;border-radius:10px;
+  background:rgba(153,119,255,.12);border:1px solid rgba(153,119,255,.45);
+  color:#c3b2ff;text-decoration:none;white-space:nowrap}
+.pv-none a.basis-link:hover{border-color:#c3b2ff;background:rgba(153,119,255,.2)}
+.pv-none .basis-link[aria-disabled="true"]{opacity:.5;cursor:not-allowed}
+/* the second, quieter line — the same `#7d94b5` the landing state's own
+   `p.quiet` uses over its own scrim, rather than the dimmer metadata grey that
+   made the first line unreadable. */
+.pv-none p.next{color:#7d94b5;font-size:12.5px}
+/* — D14's INTENT panel (FL-007). The rendered `concept.md`, on the same grid,
+   so it gets the same scrim for the same reason. `.md` (board.css:974) is what
+   styles the markup `setMd` emits — this is the container only, deliberately,
+   so there is exactly one markdown look on the board. */
+.pv-intent{flex:1 1 auto;min-height:0;overflow:auto;padding:18px 20px;
+  position:relative;color:var(--lcars-text);font-size:13.5px;line-height:1.6}
+.pv-intent::before{content:'';position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse 78% 74% at 50% 45%,
+    rgba(3,6,8,.97) 0%,rgba(3,6,8,.9) 55%,rgba(3,6,8,.55) 100%)}
+.pv-intent>*{position:relative;z-index:1}
+.pv-intent .intent-doc{max-width:68ch;margin:0 auto}
+.pv-intent .pv-intent-note{max-width:44ch;margin:26px auto;text-align:center}
+.pv-intent .pv-intent-note .t{font-family:var(--font-display);font-size:12px;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--lcars-amber)}
+.pv-intent .pv-intent-note p{margin:8px 0 0;color:var(--lcars-text);
+  font-size:13px;line-height:1.6}
 .pv-foot{border-top:1px solid var(--lcars-border);padding:10px 14px;display:flex;
   align-items:center;gap:9px;flex-wrap:wrap;background:var(--lcars-surface)}
 .pv-foot .fl{font-family:var(--font-display);font-size:9.5px;letter-spacing:.16em;
