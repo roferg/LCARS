@@ -1291,20 +1291,18 @@ switch (cfg.act) {
     out.briefFieldOrder = bfield
       ? bfield.children.map((n) => n.getAttribute("data-holo")
           || clsList(n).join(".") || n.tag) : [];
-    const ck = one(body, "[data-holo=handoff-check]");
-    out.check = ck ? {
-      text: txt(ck), hidden: !!ck.hidden, cls: clsList(ck),
-      flags: many(ck, "[data-holo=handoff-check-flag]").map(txt),
-    } : null;
-    const projectCheck = () => {
-      const n = one(body, "[data-holo=handoff-check]");
-      out.check = n ? {
+    const readBand = () => {
+      const n = one(body, "[data-holo=handoff-derive]");
+      return n ? {
         text: txt(n), hidden: !!n.hidden, cls: clsList(n),
-        flags: many(n, "[data-holo=handoff-check-flag]").map(txt),
+        state: n.getAttribute("data-state") || "",
+        changes: many(n, "[data-holo=handoff-derive-change]").map(txt),
       } : null;
     };
-    /* The check band's POLL. `openHandoff` schedules a re-ask only while the
-     * daemon says "running"; running the recorded timer is the only way to
+    out.check = readBand();
+    const projectCheck = () => { out.check = readBand(); };
+    /* The derivation band's POLL. `openHandoff` schedules a re-ask only while
+     * the daemon says "running"; running the recorded timer is the only way to
      * tell that from a band that renders a spinner and never asks again. */
     out.checkTimers = TIMERS.length;
     if (cfg.pollCheck) {

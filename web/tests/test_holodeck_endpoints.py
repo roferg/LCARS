@@ -3804,6 +3804,25 @@ class HandoffBase(DurableBase):
     def _promote(self, sid, **body):
         return self._post_raw("/api/holodeck/%s/promote" % sid, body)
 
+    # S170 — SEED A FINISHED DERIVATION, the way the product itself would.
+    #
+    # The change list no longer comes out of the concept doc, so a test that
+    # wants one has to make one EXIST. It is written through the DAEMON'S OWN
+    # persistence road (`_handoff_derive_write`, at the daemon's own
+    # fingerprint) rather than by stubbing a method — so every test that uses
+    # this is also, incidentally, a test that the durable record is found and
+    # read back. A seeded room spawns no worker: `_handoff_derive_state` finds
+    # the record before it ever reaches the enabled check.
+    def _seed_changes(self, sid, changes, ok=True, why=""):
+        sess = self.actions._holodeck[sid]
+        fp = self.actions._handoff_derive_fingerprint(sess.program_dir,
+                                                      sess.target_repo)
+        self.assertTrue(self.actions._handoff_derive_write(
+            sess.program_dir, fp,
+            {"ok": ok, "changes": list(changes), "why": why,
+             "engine": "copilot"}))
+        return fp
+
 
 # ── 1. the SEND TO ALIGN action itself ──────────────────────────────────────
 class PromoteTest(HandoffBase):
@@ -4754,8 +4773,9 @@ class HandoffBucketFallbackTest(HandoffBase):
     # THE D5 CLAIM ITSELF IS UNCHANGED and is what these still hold: bucket 2 is
     # never a STATED requirement, never in the requirement set, and never in the
     # region of the brief headed "what it must do — in your own words". It
-    # travels in its own section, marked IMPLIED. Bucket 3 (out of scope) still
-    # reaches nothing at all.
+    # travels in its own section, marked IMPLIED. S170 — and bucket 3 now
+    # travels too, in ITS own section headed "do not touch these"; what must
+    # never happen is either of them reading as something he SAID.
     def test_bucket_2_never_reaches_the_deck_as_something_he_SAID(self):
         sid = self._program()
         self._concept(sid, self.REWORDED)
@@ -4763,7 +4783,9 @@ class HandoffBucketFallbackTest(HandoffBase):
         brief = body["state"]["brief"]
         said = brief.split("## Implied by the mockup", 1)[0]
         self.assertNotIn("system-follows-OS", said)
-        self.assertNotIn("Per-page theme overrides", brief)
+        self.assertNotIn("Per-page theme overrides", said)
+        self.assertIn("Per-page theme overrides",
+                      brief.split("## Out of scope", 1)[1])
         for want in self.STATED:
             self.assertIn(want, brief)
         texts = [r["text"] for r in body["state"]["requirements"]]
@@ -4780,11 +4802,17 @@ class HandoffBucketFallbackTest(HandoffBase):
         self._post("/api/park", {"idea": promo["state"]["brief"],
                                  "holodeck": sid})
         text = self._filed()[0]["files"]["--idea"]
-        self.assertNotIn("Per-page theme overrides", text)
         self.assertIn("system-follows-OS", text)
         marked = text.split("## Implied by the mockup", 1)[1]
         self.assertIn("system-follows-OS", marked)
         self.assertIn("IMPLIED", marked)
+        # S170 — the out-of-scope item reaches the mission too, and ONLY under
+        # its own heading. It is the sentence that keeps an implementer out of
+        # the thing the captain ruled out, and a diff cannot produce it.
+        said = text.split("## Implied by the mockup", 1)[0]
+        self.assertNotIn("Per-page theme overrides", said)
+        self.assertIn("Per-page theme overrides",
+                      text.split("## Out of scope", 1)[1])
 
     # -- the fallback's INTENT, kept -----------------------------------------
     def test_a_section_with_NO_sub_buckets_is_STILL_the_list(self):
@@ -5272,13 +5300,48 @@ class S128DriveEvidenceTest(HandoffBase):
         for lost in ("object list", "pills", "accent"):
             self.assertNotIn(lost, stated, lost)
 
+    # S170 — THE THREE THINGS ARE STILL THE BAR, AND THEY NOW ARRIVE FROM THE
+    # OTHER DIRECTION. S169 pinned them by reading `## Decisions` out of this
+    # fixture; the change list is derived from a diff now, so what this suite
+    # can honestly pin is that a derived list REACHES the brief intact and
+    # reaches the FILED mission. The three sentences below are the derivation's
+    # own output shape (`today X → mockup Y`) for the same three things the
+    # built app got wrong.
+    DERIVED = [
+        "today Objects mode carries a top tab strip → the mockup gives it a "
+        "left object list, centre sprite preview and right inspector",
+        "today mode tabs are square 4px-radius buttons → the mockup uses "
+        "pills for mode tabs",
+        "today the Object Creator is indigo while the rest of the app is blue "
+        "→ the mockup uses one blue primary everywhere",
+    ]
+
+    def _brief_with_changes(self):
+        sid = self._program()
+        self._seed_changes(sid, self.DERIVED)
+        _st, body = self._promote(sid)
+        return sid, body["state"]
+
     def test_the_THREE_THINGS_THE_BUILD_GOT_WRONG_reach_the_brief(self):
-        """The headline. Each one is a settled decision that lived only in the
-        picture, and the mission was never told about any of them."""
-        brief = self._brief()["brief"]
+        """The headline. Each one lived only in the picture, and the mission
+        was never told about any of them."""
+        _sid, state = self._brief_with_changes()
+        brief = state["brief"]
         self.assertIn("left object list", brief)
         self.assertIn("pills for mode tabs", brief)
-        self.assertIn("Reconcile the dual accent", brief)
+        self.assertIn("one blue primary", brief)
+        self.assertEqual(state["changes"], self.DERIVED)
+
+    def test_the_CONVERSATIONS_OWN_LOG_no_longer_reaches_the_brief(self):
+        """S170's inversion, stated as a fact about this fixture. `##
+        Decisions` is still in the concept doc, is still maintained, and is now
+        read by NOTHING on the drafting road — so a line that lives only there
+        does not appear in the brief. This is the test that goes red the day
+        somebody re-adds the transcription road beside the diff."""
+        _sid, state = self._brief_with_changes()
+        self.assertIn("Nudge radii up", self.CONCEPT)
+        self.assertNotIn("Nudge radii up", state["brief"])
+        self.assertNotIn("decisions", state)
 
     def test_the_UNWIRED_half_reaches_the_brief_too(self):
         """The captain's own words on this: "It needs to not just be there, but
@@ -5291,7 +5354,7 @@ class S128DriveEvidenceTest(HandoffBase):
     def test_his_own_words_are_still_first_and_still_attributed(self):
         """Bucket 1 is UNCHANGED by this session — it leads, it is quoted, and
         it keeps its turn attribution."""
-        state = self._brief()
+        _sid, state = self._brief_with_changes()
         brief = state["brief"]
         self.assertEqual(len(state["requirements"]), 3, state["requirements"])
         head = brief.split("## What the mockup changes", 1)[0]
@@ -5314,21 +5377,26 @@ class S128DriveEvidenceTest(HandoffBase):
 
     def test_the_brief_stays_SKIMMABLE(self):
         """The trap this change walks into is a box so long nobody reads it,
-        and being ignored is the same outcome as not shipping it. The real
-        room's draft is ~31 lines; this is the guard that says so out loud if a
-        later change starts pouring the concept doc in wholesale."""
-        brief = self._brief()["brief"]
+        and being ignored is the same outcome as not shipping it.
+
+        S170 MOVES THIS NUMBER THE RIGHT WAY, which is the captain's actual
+        complaint: `## Decisions` on his real room is 21 bullets of
+        conversation, and a diff of the same program is shorter because
+        everything the mockup leaves alone produces no line."""
+        _sid, state = self._brief_with_changes()
+        brief = state["brief"]
         self.assertLessEqual(len(brief.split("\n")), 45, brief)
         self.assertLessEqual(len(brief), 3600, len(brief))
 
     def test_everything_in_the_brief_reaches_the_FILED_mission(self):
         sid = self._program()
+        self._seed_changes(sid, self.DERIVED)
         _st, promo = self._promote(sid)
         self._post("/api/park", {"idea": promo["state"]["brief"],
                                  "holodeck": sid})
         text = self._filed()[0]["files"]["--idea"]
         for lost in ("left object list", "pills for mode tabs",
-                     "Reconcile the dual accent", "bottom status bar"):
+                     "one blue primary", "bottom status bar"):
             self.assertIn(lost, text, lost)
         # …and the requirement-loss check still reports a clean hand-off.
         self.assertNotIn("not in the brief", text.lower())
@@ -5340,15 +5408,24 @@ class S128DriveEvidenceTest(HandoffBase):
 
 
 class HandoffChangeListTest(HandoffBase):
-    """`## Decisions` — the declared mock-vs-today change list.
+    """The change list — DERIVED FROM A DIFF, not transcribed from a log.
 
-    THE ROAD, and why it is not a derivation. Reading `mockup.html` against
-    `basis.md` means guessing at the meaning of model-written prose, and this
-    project has lost whole sessions to exactly that (S156 14/14 → 5/14 on a
-    reworded corpus; S147; S157). `## Decisions` is DECLARED, the contract has
-    demanded it every turn since S124, and on both real fixtures it IS the
-    change list. See the block above `_handoff_decisions`.
+    S169 read it out of `## Decisions`. The captain then drove that output on
+    his own program and found it was "a lot of my ramble back and forth": that
+    section is a log of the CONVERSATION, so it faithfully records him
+    correcting THE MOCKUP, and downstream those corrections read as
+    instructions to change the real app. See the block above
+    `_HANDOFF_DECISIONS_HEADING` for the four measured examples.
+
+    So the list is now produced by a bounded read-only pass standing in the
+    captain's own repo (`_handoff_derive_*`), and `_handoff_brief` is a pure
+    assembler over whatever that pass returned. These tests are about the
+    ASSEMBLY; the pass itself is `S170DerivationTest` and the live drive.
     """
+
+    CHANGES = ["today mode tabs are square buttons → the mockup uses pills",
+               "today Objects mode has a top tab strip → the mockup gives it "
+               "a left-hand object list"]
 
     def _concept(self, sid, text):
         self._set_turns({"stdout": "ok",
@@ -5363,44 +5440,88 @@ class HandoffChangeListTest(HandoffBase):
            "### 2. Implied by the mockup, not yet settled\n\n"
            "- Q: does the toggle persist?\n")
 
-    def test_the_decisions_ride_in_the_payload_as_a_SET(self):
+    def test_the_changes_ride_in_the_payload_as_a_SET(self):
+        sid = self._program()
+        self._concept(sid, self.DOC)
+        self._seed_changes(sid, self.CHANGES)
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["changes"], self.CHANGES)
+
+    def test_the_payload_no_longer_carries_a_DECISIONS_KEY(self):
+        """THE KEY WAS RENAMED, NOT REFILLED, and that is deliberate: a client
+        still reading `decisions` gets nothing rather than something that reads
+        the same and is a different thing. `changes` is a diff against the
+        captain's repo; `decisions` was an account of a conversation."""
         sid = self._program()
         self._concept(sid, self.DOC)
         _st, body = self._promote(sid)
-        self.assertEqual(body["state"]["decisions"], [
-            "T2 Mode tabs become pills; the top bar loses its divider.",
-            "T3 Objects mode gets a left-hand object list."])
+        self.assertNotIn("decisions", body["state"])
+        self.assertIn("changes", body["state"])
 
-    def test_the_BASE_fixtures_lone_decision_is_deduped_against_his_words(self):
-        """Not a special case — the shipped fixture's one decision ("Turn 2:
-        Cmd-K opens it.") is a restatement of requirement 1 ("Cmd-K opens it,
-        Escape closes it."), so the rule drops it. Pinned here because a reader
-        who finds an empty change list on that fixture should find out WHY from
-        a test rather than from a debugger."""
-        sid = self._program()
-        _st, body = self._promote(sid)
-        self.assertEqual(body["state"]["decisions"], [])
-        self.assertIn("Cmd-K opens it", body["state"]["requirements"][0]["text"])
-
-    def test_a_concept_with_NO_decisions_says_LESS_rather_than_inventing(self):
-        """The failure mode this road was chosen for. No declaration, no change
-        list — never a plausible-looking one derived from the markup."""
-        sid = self._program()
-        self._concept(sid, "# P\n\n## WHAT IT MUST DO\n\n"
-                           "### 1. Requirements\n\n- \"Just build it.\"\n")
-        _st, body = self._promote(sid)
-        self.assertEqual(body["state"]["decisions"], [])
-        self.assertNotIn("What the mockup changes", body["state"]["brief"])
-
-    def test_the_change_list_is_MARKED_as_what_the_mockup_changes(self):
+    def test_the_CONVERSATION_LOG_is_not_the_change_list_any_more(self):
+        """The defect, pinned on a doc built to reproduce it. `## Decisions`
+        here names two real changes and NEITHER reaches the brief, because
+        nothing on the drafting road reads that section."""
         sid = self._program()
         self._concept(sid, self.DOC)
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["changes"], [])
+        self.assertNotIn("loses its divider", body["state"]["brief"])
+
+    def test_a_MOCK_RELATIVE_correction_simply_HAS_NO_LINE(self):
+        """THE ACCEPTANCE SHAPE, in miniature and structural.
+
+        The captain's own example: *"it says a bare x icon needs to say close,
+        but the existing one says close and I just told the holodeck to fix its
+        mock to add the close button back in."* The concept doc records that
+        correction. A DIFF of the finished mockup against an app that already
+        has a labelled Close button produces NOTHING for it — there is no
+        difference to report — so the line does not need to be recognised,
+        reworded or filtered. It is simply absent.
+
+        NOTE WHAT IS **NOT** HERE: no code reads a change line and decides
+        anything about it. S156 lost a session to a classifier (14/14 → 5/14 on
+        a reworded corpus), S147 four parser generations, S157 five guards.
+        """
+        sid = self._program()
+        self._concept(sid, "# P\n\n## Decisions\n\n"
+                           "- **T3** Add a Close button to the toolbar, right "
+                           "of Save — today the editor already has a "
+                           "close-project control; the mock now models it "
+                           "correctly as a labeled \"Close\" button.\n\n"
+                           "## WHAT IT MUST DO\n\n### 1. Requirements\n\n"
+                           "- \"Give it a modern look.\"\n")
+        # The pass, standing in the repo, found one real difference and had
+        # nothing to say about the Close button.
+        self._seed_changes(sid, ["today mode tabs are square buttons → the "
+                                 "mockup uses pills"])
         _st, body = self._promote(sid)
         brief = body["state"]["brief"]
-        # S169 fix round 1 — the heading names its PROVENANCE, and the caption
-        # says who wins instead of vouching for a repo the daemon never read.
-        self.assertIn("## What the mockup changes — as the design chat "
-                      "recorded it", brief)
+        self.assertNotIn("Close", brief)
+        self.assertIn("pills", brief)
+
+    def test_a_pass_that_found_NOTHING_says_LESS_rather_than_inventing(self):
+        """The failure mode this road is chosen for. No derivation, no change
+        section — never a plausible-looking one back-filled from the log."""
+        sid = self._program()
+        self._concept(sid, "# P\n\n## Decisions\n\n- **T1** Everything.\n\n"
+                           "## WHAT IT MUST DO\n\n"
+                           "### 1. Requirements\n\n- \"Just build it.\"\n")
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["changes"], [])
+        self.assertNotIn("What the mockup changes", body["state"]["brief"])
+
+    def test_the_change_list_is_MARKED_as_READ_OFF_THE_PROJECT(self):
+        sid = self._program()
+        self._concept(sid, self.DOC)
+        self._seed_changes(sid, self.CHANGES)
+        _st, body = self._promote(sid)
+        brief = body["state"]["brief"]
+        # The heading names its provenance — the captain's app, not the chat.
+        self.assertIn("## What the mockup changes about your app as it is "
+                      "today", brief)
+        # …and the caption states the rule that makes the list readable.
+        self.assertIn("produces no line here", brief)
         self.assertIn("the picture wins", brief)
 
     def test_the_change_list_comes_AFTER_his_own_words(self):
@@ -5408,6 +5529,7 @@ class HandoffChangeListTest(HandoffBase):
         rest is the product's draft of what he drew."""
         sid = self._program()
         self._concept(sid, self.DOC)
+        self._seed_changes(sid, self.CHANGES)
         _st, body = self._promote(sid)
         brief = body["state"]["brief"]
         self.assertLess(brief.index("## What it must do"),
@@ -5415,20 +5537,67 @@ class HandoffChangeListTest(HandoffBase):
         self.assertLess(brief.index("## What the mockup changes"),
                         brief.index("## Implied by the mockup"))
 
-    def test_a_multi_line_decision_survives_as_ONE_decision(self):
-        """A live concept doc wraps at ~78 columns, so most decisions are two
-        or three physical lines."""
+
+class HandoffOutOfScopeTest(HandoffBase):
+    """Bucket 3 — what the work must NOT touch.
+
+    S170, from the captain's own design: `## Decisions` demotes to "why a
+    change was chosen, PLUS the explicit out-of-scope". The out-of-scope half
+    is the part a diff structurally CANNOT produce — a diff reports
+    differences, and "do not touch the tile canvas" is a statement about what
+    must produce no difference at all. So it rides in its own named block, read
+    off the concept doc's bucket 3.
+    """
+
+    DOC = ("# P\n\n## WHAT IT MUST DO\n\n### 1. Requirements\n\n"
+           "- \"Give it a modern look.\"\n\n"
+           "### 2. Implied by the mockup, not yet settled\n\n"
+           "- Q: does the toggle persist?\n\n"
+           "### 3. Out of scope\n\n"
+           "- The tile canvas rendering — left untouched.\n"
+           "- OS-preference detection and theme persistence.\n")
+
+    def _concept(self, sid, text):
+        self._set_turns({"stdout": "ok",
+                         "writes": [{"path": "concept.md", "content": text}]})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "update it"})
+
+    def test_bucket_3_rides_as_its_own_named_block(self):
         sid = self._program()
-        self._concept(sid, "# P\n\n## Decisions\n\n"
-                           "- **T2** Objects mode gets its own layout: left\n"
-                           "  object list, centre preview, right inspector.\n"
-                           "- **T3** Mode tabs become pills.\n\n"
-                           "## WHAT IT MUST DO\n\n### 1. Requirements\n\n"
-                           "- \"Just build it.\"\n")
+        self._concept(sid, self.DOC)
         _st, body = self._promote(sid)
-        self.assertEqual(len(body["state"]["decisions"]), 2,
-                         body["state"]["decisions"])
-        self.assertIn("centre preview", body["state"]["decisions"][0])
+        state = body["state"]
+        self.assertEqual(state["outOfScope"],
+                         ["The tile canvas rendering — left untouched.",
+                          "OS-preference detection and theme persistence."])
+        self.assertIn("## Out of scope — do not touch these", state["brief"])
+        self.assertIn("tile canvas rendering", state["brief"])
+
+    def test_it_is_LAST_so_it_never_pushes_his_own_words_down(self):
+        sid = self._program()
+        self._concept(sid, self.DOC)
+        _st, body = self._promote(sid)
+        brief = body["state"]["brief"]
+        self.assertLess(brief.index("## Implied by the mockup"),
+                        brief.index("## Out of scope"))
+
+    def test_bucket_3_is_NEVER_promoted_into_things_he_SAID(self):
+        """The FL-011 rule, applied to the new block: an out-of-scope item is
+        not a requirement and must never read as one."""
+        sid = self._program()
+        self._concept(sid, self.DOC)
+        _st, body = self._promote(sid)
+        state = body["state"]
+        for r in state["requirements"]:
+            self.assertNotIn("tile canvas", r["text"])
+        head = state["brief"].split("## Implied by the mockup", 1)[0]
+        self.assertNotIn("tile canvas", head)
+
+    def test_a_doc_with_NO_bucket_3_gets_NO_BLOCK(self):
+        sid = self._program()
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["outOfScope"], [])
+        self.assertNotIn("## Out of scope", body["state"]["brief"])
 
 
 class HandoffImpliedTest(HandoffBase):
@@ -5466,8 +5635,10 @@ class HandoffImpliedTest(HandoffBase):
         self.assertNotIn("Implied by the mockup", body["state"]["brief"])
 
     def test_bucket_3_out_of_scope_is_NOT_carried_as_implied(self):
-        """Bucket 3 is what he explicitly ruled out. Carrying it into the brief
-        as something to build back is the one thing it exists to prevent."""
+        """Bucket 3 is what he explicitly ruled out. S170 gives it its own
+        named block (`HandoffOutOfScopeTest`) — what must NEVER happen is it
+        arriving as something the mockup IMPLIES, which reads as a thing to
+        build rather than a thing to leave alone."""
         sid = self._program()
         self._concept(sid, "# P\n\n## WHAT IT MUST DO\n\n"
                            "### 1. Requirements\n\n- \"Just build it.\"\n\n"
@@ -5478,7 +5649,11 @@ class HandoffImpliedTest(HandoffBase):
         _st, body = self._promote(sid)
         self.assertEqual(body["state"]["implied"],
                          ["Q: does the toggle persist?"])
-        self.assertNotIn("canvas renderer", body["state"]["brief"])
+        self.assertEqual(body["state"]["outOfScope"],
+                         ["The canvas renderer, ruled out at T1."])
+        brief = body["state"]["brief"]
+        self.assertNotIn("canvas renderer",
+                         brief.split("## Out of scope", 1)[0])
 
 
 class HandoffDedupTest(HandoffBase):
@@ -5486,9 +5661,14 @@ class HandoffDedupTest(HandoffBase):
 
     The captain must not skim the same sentence three times; an over-long box
     is how the whole thing gets ignored. Carried by the FIRST road that claims
-    it — requirements, then open questions (their own panel), then decisions,
-    then implied — dropping only on whole-word CONTAINMENT, never similarity,
-    and only when the thing already on screen says at least as much.
+    it — requirements, then open questions (their own panel), then the derived
+    change list, then implied, then out of scope — dropping only on whole-word
+    CONTAINMENT, never similarity, and only when the thing already on screen
+    says at least as much.
+
+    S170 — THE THIRD ROAD IS NOW THE DIFF. The rule is unchanged and its input
+    moved: what used to be `## Decisions` bullets is now the derivation's
+    output, seeded here through the daemon's own durable record.
     """
 
     def _concept(self, sid, text):
@@ -5496,102 +5676,89 @@ class HandoffDedupTest(HandoffBase):
                          "writes": [{"path": "concept.md", "content": text}]})
         self._post("/api/holodeck/%s/say" % sid, {"text": "update it"})
 
-    HEAD = ("# P\n\n## Decisions\n\n%s\n\n## Open questions\n\n%s\n\n"
+    HEAD = ("# P\n\n## Open questions\n\n%s\n\n"
             "## WHAT IT MUST DO\n\n### 1. Requirements\n\n%s\n\n"
             "### 2. Implied by the mockup, not yet settled\n\n%s\n")
 
-    def _doc(self, decisions="- A decision nobody repeats anywhere.",
-             questions="- A question nobody repeats anywhere?",
+    def _doc(self, questions="- A question nobody repeats anywhere?",
              reqs="- \"Just build the whole thing.\"",
              implied="- Q: something nobody repeats anywhere?"):
-        return self.HEAD % (decisions, questions, reqs, implied)
+        return self.HEAD % (questions, reqs, implied)
+
+    def _run(self, changes=("A change nobody repeats anywhere.",), **doc):
+        """Write the concept doc, seed the derivation, promote. IN THAT ORDER —
+        the fingerprint covers `concept.md`, so seeding before the write would
+        key the record to a document that is about to be replaced."""
+        sid = self._program()
+        self._concept(sid, self._doc(**doc))
+        self._seed_changes(sid, list(changes))
+        _st, body = self._promote(sid)
+        return body["state"]
 
     def test_an_implied_item_REPEATING_an_open_question_is_dropped(self):
         """It has its own panel, its own answer box and its own STILL OPEN
         block in the filed mission. Twice is once too many."""
-        sid = self._program()
-        self._concept(sid, self._doc(
+        st = self._run(
             questions="- Should the theme toggle persist across sessions?",
-            implied="- Should the theme toggle persist across sessions?"))
-        _st, body = self._promote(sid)
-        self.assertEqual(body["state"]["implied"], [])
-        self.assertEqual(body["state"]["brief"].count("theme toggle persist"),
-                         0)
+            implied="- Should the theme toggle persist across sessions?")
+        self.assertEqual(st["implied"], [])
+        self.assertEqual(st["brief"].count("theme toggle persist"), 0)
 
-    def test_a_decision_REPEATING_something_he_SAID_is_dropped(self):
-        sid = self._program()
-        self._concept(sid, self._doc(
-            reqs="- \"The mode tabs should become pills.\"",
-            decisions="- The mode tabs should become pills."))
-        _st, body = self._promote(sid)
-        self.assertEqual(body["state"]["decisions"], [])
+    def test_a_DERIVED_CHANGE_repeating_something_he_SAID_is_dropped(self):
+        st = self._run(reqs="- \"The mode tabs should become pills.\"",
+                       changes=["The mode tabs should become pills."])
+        self.assertEqual(st["changes"], [])
 
-    def test_an_implied_item_REPEATING_a_decision_is_dropped(self):
-        """Settled beats unsettled: showing a decision again as "not yet
-        settled" would be the surface contradicting itself."""
-        sid = self._program()
-        self._concept(sid, self._doc(
-            decisions="- Objects mode gets a left-hand object list.",
-            implied="- Objects mode gets a left-hand object list."))
-        _st, body = self._promote(sid)
-        self.assertEqual(body["state"]["decisions"],
+    def test_an_implied_item_REPEATING_a_derived_change_is_dropped(self):
+        """Settled beats unsettled: showing a change the diff already found as
+        "not yet settled" would be the surface contradicting itself."""
+        st = self._run(changes=["Objects mode gets a left-hand object list."],
+                       implied="- Objects mode gets a left-hand object list.")
+        self.assertEqual(st["changes"],
                          ["Objects mode gets a left-hand object list."])
-        self.assertEqual(body["state"]["implied"], [])
+        self.assertEqual(st["implied"], [])
 
     def test_a_SHORTER_restatement_inside_a_longer_one_is_dropped(self):
         """Whole-word containment, in ONE direction only — the thing already on
         screen must say at least as much as the thing being dropped."""
-        sid = self._program()
-        self._concept(sid, self._doc(
-            decisions="- Objects mode gets a left-hand object list, with the "
-                      "sprite preview in the centre and an inspector right.",
-            implied="- Objects mode gets a left-hand object list"))
-        _st, body = self._promote(sid)
-        self.assertEqual(body["state"]["implied"], [])
+        st = self._run(
+            changes=["Objects mode gets a left-hand object list, with the "
+                     "sprite preview in the centre and an inspector right."],
+            implied="- Objects mode gets a left-hand object list")
+        self.assertEqual(st["implied"], [])
 
     def test_the_LONGER_one_is_NEVER_dropped_for_a_shorter_one(self):
         """The direction that matters. Dropping the detailed line because a
         summary of it already appeared is a silent loss, and silent loss is the
         entire defect class this session exists to cure."""
-        sid = self._program()
-        self._concept(sid, self._doc(
-            decisions="- Objects mode gets a left-hand object list",
+        st = self._run(
+            changes=["Objects mode gets a left-hand object list"],
             implied="- Objects mode gets a left-hand object list, with the "
-                    "sprite preview in the centre and an inspector right."))
-        _st, body = self._promote(sid)
-        self.assertEqual(len(body["state"]["implied"]), 1,
-                         body["state"]["implied"])
-        self.assertIn("sprite preview", body["state"]["implied"][0])
+                    "sprite preview in the centre and an inspector right.")
+        self.assertEqual(len(st["implied"]), 1, st["implied"])
+        self.assertIn("sprite preview", st["implied"][0])
 
     def test_a_SHORT_line_is_only_dropped_on_an_EXACT_repeat(self):
         """A three-word line is too small to be safely matched inside another
         sentence, so containment does not apply to it. `_HANDOFF_DEDUP_MIN_
         WORDS` is that floor, and this is what it buys."""
-        sid = self._program()
-        self._concept(sid, self._doc(
-            decisions="- Pills, not tabs, everywhere in the chrome.",
-            implied="- Pills, not tabs"))
-        _st, body = self._promote(sid)
-        self.assertEqual(body["state"]["implied"], ["Pills, not tabs"])
+        st = self._run(changes=["Pills, not tabs, everywhere in the chrome."],
+                       implied="- Pills, not tabs")
+        self.assertEqual(st["implied"], ["Pills, not tabs"])
 
     def test_DIFFERENT_things_are_all_kept(self):
         """The control. A dedup that dropped everything would pass every test
         above and hand the captain an empty change list."""
-        sid = self._program()
-        self._concept(sid, self._doc())
-        _st, body = self._promote(sid)
-        self.assertEqual(len(body["state"]["decisions"]), 1)
-        self.assertEqual(len(body["state"]["implied"]), 1)
-        self.assertEqual(len(body["state"]["questions"]), 1)
-        self.assertEqual(len(body["state"]["requirements"]), 1)
+        st = self._run()
+        self.assertEqual(len(st["changes"]), 1)
+        self.assertEqual(len(st["implied"]), 1)
+        self.assertEqual(len(st["questions"]), 1)
+        self.assertEqual(len(st["requirements"]), 1)
 
-    def test_a_line_repeated_INSIDE_one_list_is_shown_once(self):
-        sid = self._program()
-        self._concept(sid, self._doc(
-            decisions="- Objects mode gets a left-hand object list.\n"
-                      "- Objects mode gets a left-hand object list."))
-        _st, body = self._promote(sid)
-        self.assertEqual(len(body["state"]["decisions"]), 1)
+    def test_a_line_repeated_INSIDE_the_derived_list_is_shown_once(self):
+        st = self._run(changes=["Objects mode gets a left-hand object list.",
+                                "Objects mode gets a left-hand object list."])
+        self.assertEqual(len(st["changes"]), 1)
 
 
 class HandoffContractTest(HandoffBase):
@@ -5604,10 +5771,22 @@ class HandoffContractTest(HandoffBase):
     ONE of the two lists.
     """
 
-    def test_the_contract_asks_for_the_CHANGE_LIST_shape(self):
+    def test_the_contract_asks_DECISIONS_for_the_REASONING_not_the_path(self):
+        """S170 — `## Decisions` is the EXPLANATION now, and the contract says
+        so at the far end of the model too. The captain's measured complaint is
+        that the section records him correcting the MOCKUP, so the contract
+        names that shape and forbids it by example."""
         from lcars_serve.actions import _CONCEPT_CONTRACT
-        self.assertIn("today X → now Y", _CONCEPT_CONTRACT)
-        self.assertIn("CHANGE LIST", _CONCEPT_CONTRACT)
+        self.assertIn("REASONING RECORD, not the change list", _CONCEPT_CONTRACT)
+        self.assertIn("NEVER THE PATH", _CONCEPT_CONTRACT)
+        self.assertIn("T1 mock had a two-part", _CONCEPT_CONTRACT)
+
+    def test_the_contract_no_longer_calls_DECISIONS_the_change_list(self):
+        """The line that made S169's road look correct from inside the
+        product. Leaving it would tell every future design worker to keep
+        writing the log the brief no longer reads."""
+        from lcars_serve.actions import _CONCEPT_CONTRACT
+        self.assertNotIn("THIS IS THE CHANGE LIST", _CONCEPT_CONTRACT)
 
     def test_the_contract_gives_each_undecided_thing_ONE_HOME(self):
         from lcars_serve.actions import _CONCEPT_CONTRACT
@@ -5732,15 +5911,43 @@ class S169FalseKeptLineTest(HandoffBase):
                       "\"new\">New trip</button>`", basis)
         self.assertIn("No brand colour, no accent", basis)
 
-    def test_the_false_line_STILL_RIDES(self):
-        """THE HONEST OUTCOME, pinned so nobody 'improves' it into a filter.
+    def test_the_false_line_NO_LONGER_RIDES_and_NOTHING_DETECTED_IT(self):
+        """S170 — AND THIS IS WHAT THE INVERSION BOUGHT.
 
-        The daemon cannot verify a claim about the captain's code — it never
-        reads `basis.md` — so it must not pretend to. Dropping a line because it
-        contains the word "kept" is the classifier this project has lost whole
-        sessions to. The line rides; what changed is that it no longer outranks
-        the picture and the surface no longer vouches for it."""
-        self.assertIn(self.FALSE_LINE, self._brief()["brief"])
+        S169 pinned the opposite ("the line rides") as its honest outcome: the
+        daemon could not verify a claim about the captain's code, so it did not
+        try, and three live passes plus three prompt sharpenings failed to flag
+        this one. The line is gone now — and READ HOW. Nothing detected it,
+        nothing scored it, nothing matched "kept". It is gone because
+        `## Decisions` IS NO LONGER READ BY THE DRAFTING ROAD AT ALL. That is
+        the same structural move that deletes the captain's own examples: a
+        diff of the finished mockup against his repo has nothing to say about a
+        sentence in a conversation log.
+
+        WHAT IS STILL TRUE, and is not claimed away: a DERIVED line can be
+        wrong. What it cannot be is wrong about a document nobody read."""
+        brief = self._brief()["brief"]
+        self.assertNotIn(self.FALSE_LINE, brief)
+        self.assertNotIn("kept the `6/12/16px` spacing rhythm", brief)
+        # …and the mechanism is absence, not filtering: the sentence is still
+        # in the concept doc, untouched, in the room the mission is handed.
+        self.assertIn(self.FALSE_LINE, self.CONCEPT)
+
+    def test_NO_CLASSIFIER_was_added_to_achieve_that(self):
+        """The control on the control. S156 fell 14/14 → 5/14 on a
+        meaning-preserving rewording of its own corpus; S147 lost four parser
+        generations; S157 five guards. A reworded twin of the false line must
+        behave IDENTICALLY — which it does, because nothing looks at it."""
+        import lcars_serve.actions as A
+        src = open(A.__file__).read()
+        for banned in ("\"kept\"", "'kept'", "\"unchanged\"",
+                       "'unchanged'", "\"carried over\""):
+            self.assertNotIn(banned + " in ", src, banned)
+        # and the drafting road takes the change list as an ARGUMENT — there is
+        # nowhere for a filter to live between the pass and the box.
+        import inspect
+        sig = inspect.signature(A._handoff_brief)
+        self.assertIn("changes", sig.parameters)
 
     def test_the_caption_no_longer_asserts_what_the_daemon_CANNOT_KNOW(self):
         """"Today's app does none of it" is a claim about code the daemon has
@@ -5750,13 +5957,20 @@ class S169FalseKeptLineTest(HandoffBase):
         self.assertNotIn("does none of it", brief)
 
     def test_the_caption_says_what_the_SECTION_IS_instead(self):
-        """An account of a conversation, written by the model that drew the
-        picture — not a reading of the captain's repository."""
+        """S170 — and it may now say the thing S169's caption was forbidden to
+        say, because it has become true: this list IS a reading of the
+        captain's repository. What it must ALSO say is the rule that makes the
+        list readable — that anything left alone produces no line."""
         from lcars_serve.actions import _HANDOFF_CHANGE_NOTE
-        brief = self._brief()["brief"]
+        sid = self._program()
+        self._seed_changes(sid, ["today the brand is a plain label → the "
+                                 "mockup gives it an accent dot"])
+        _st, body = self._promote(sid)
+        brief = body["state"]["brief"]
         self.assertIn(_HANDOFF_CHANGE_NOTE, brief)
         low = _HANDOFF_CHANGE_NOTE.lower()
-        self.assertIn("account", low)
+        self.assertIn("read off your project", low)
+        self.assertIn("produces no line here", low)
         # …and it must say the picture wins, right where he reads the list.
         self.assertIn("mockup", low)
 
@@ -5798,28 +6012,34 @@ class S169FalseKeptLineTest(HandoffBase):
         self.assertIn(_HANDOFF_PRECEDENCE,
                       self._filed()[0]["files"]["--idea"])
 
-    def test_the_contract_forbids_a_KEPT_line_in_the_change_list(self):
-        """The fourth strand, and never the only one. `## Decisions` is a list
-        of CHANGES; a "kept X" entry is a description of the picture, and
-        downstream it reads as an instruction to leave X alone."""
-        from lcars_serve.actions import _CONCEPT_CONTRACT
-        c = _CONCEPT_CONTRACT
-        self.assertIn("EVERY ENTRY IS A CHANGE", c)
-        self.assertIn("kept", c.lower())
-        self.assertIn("leave", c.lower())
+    def test_a_KEPT_line_can_no_longer_REACH_the_change_list_at_all(self):
+        """S169 fought this with contract wording at the far end of a model —
+        measured insufficient three times over. S170 removes the road: the
+        change list is not written by the design worker any more, so no
+        sentence it writes can become one, however it is worded."""
+        sid = self._program()
+        self._seed_changes(sid, ["today the brand is a plain label → the "
+                                 "mockup gives it an accent dot"])
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["changes"],
+                         ["today the brand is a plain label → the mockup "
+                          "gives it an accent dot"])
+        self.assertNotIn("Kept the `.brand`", body["state"]["brief"])
 
     def test_what_was_DRAWN_but_never_DISCUSSED_is_absent_and_that_is_SAID(self):
         """`.map-scale`, `.rail-head`, the 6px radii and the uppercase micro
         labels are all in the mockup and in NO section of the concept doc, so
-        no declared list can carry them. The caption must therefore not read as
-        exhaustive — which is the same sentence that makes the picture the
-        authority on look."""
+        no declared list could carry them.
+
+        S170 — AND THIS IS THE OTHER HALF OF WHAT THE DIFF BUYS. A derived list
+        is not bounded by what the conversation happened to mention: a pass
+        standing in the repo can report a scale bar the chat never discussed.
+        What is pinned here is the FIXTURE'S evidence — both elements really
+        are in the drawing and in no section of the doc — so a future reader
+        can see why the declared road could never have reached them."""
         for drawn in ("map-scale", "rail-head"):
             self.assertIn(drawn, self.MOCK, drawn)
             self.assertNotIn(drawn, self.CONCEPT, drawn)
-        brief = self._brief()["brief"]
-        for drawn in ("map-scale", "rail-head"):
-            self.assertNotIn(drawn, brief, drawn)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -6719,386 +6939,408 @@ class WorkingCopyIsHonestTest(unittest.TestCase):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# S169 FIX ROUND 2 — THE CHECK: THE DRAWING ANSWERS FOR THE ACCOUNT
+# S170 — THE CHANGE LIST IS A DIFF AGAINST THE REAL APP, NOT A TRANSCRIPT
 #
-# THE MEASUREMENT (capstone, 2026-08-07, live copilot end to end). The captain
-# told the holodeck, in his own words:
+# THE MEASUREMENT. The captain drove S169's output on his own program and read
+# the brief back: *"The text it puts in is a lot of my ramble back and forth.
+# It reads with things like when I asked it to draw the undo/redo buttons
+# closer to how they are today. Or it says a bare x icon needs to say close,
+# but the existing one says close and I just told the holodeck to fix its mock
+# to add the close button back in instead of just an x."*
 #
-#     "But leave the 'Add expense' button itself alone — it's in the right
-#      place in the top bar and it says the right thing. I don't want it moved
-#      or renamed."
+# `web/tests/fixtures/s170-tile-editor/` is the byte copy of that room. The
+# root cause is one sentence: `## Decisions` IS A LOG OF THE CONVERSATION —
+# THE PATH — NOT A DESCRIPTION OF THE END STATE. It faithfully records the
+# turns where he was correcting THE MOCKUP, and downstream those corrections
+# read as instructions to change the REAL APP. Four of its 21 bullets are
+# mock-versus-mock; one of them ("Remove the Layer-properties panel that the T1
+# mock added") is a NO-OP against his product, because that panel never existed
+# in it and an implementer would hunt for something to delete.
 #
-# The engine replied "The button is untouched — same spot, same label" and wrote
-# into `concept.md`'s `## Decisions`:
+# ── WHAT WAS BUILT ─────────────────────────────────────────────────────────
 #
-#     The button itself is **unchanged** (same place, same label).
+# S169's promote-time pass KEEPS its posture, its jail, its polling and its
+# fail-safe behaviour, and CHANGES ITS JOB: it used to read a list back against
+# the drawing and flag lines, and it now PRODUCES the list, by standing in the
+# captain's repository and reporting the difference between the app as it
+# actually is and the finished mockup. There is no second mechanism beside it.
 #
-# `web/tests/fixtures/s169-capstone/` is the byte copy of that room, and the
-# line is FALSE against the mockup the SAME engine drew in it. Then:
+# WHY THAT DELETES THE DEFECT CLASS WITHOUT A DETECTOR: a correction that
+# restores today's behaviour produces NO LINE, because there is no difference
+# to report. Both of the captain's examples vanish; nothing has to recognise
+# them. S156 fell 14/14 → 5/14 on a reworded corpus, S147 lost four parser
+# generations, S157 five guards — and none of that road is walked here.
 #
-#   · the false line rode into the brief and into `prd.md`;
-#   · FOUR consecutive live Copilot stages walked past it — Research asked 9
-#     questions and none was this, Validate reported "no scope changes", Plan
-#     wrote "the existing (unchanged) Add-expense button", Plan Review passed;
-#   · fix round 1's `_HANDOFF_DISAGREEMENT` paragraph — which names this exact
-#     case and says BUILD WHAT THE MOCKUP SHOWS and ESCALATE — rode INTACT in
-#     both `idea.md` and `prd.md` the whole way. Zero escalations.
-#
-# Third time measured: a live worker ignores a lone prose pin when something
-# concrete points the other way (S166 directly, S128's precedence collision).
-#
-# ── WHAT WAS BUILT, AND WHAT WAS NOT ───────────────────────────────────────
-#
-# NOT a classifier. Nothing below matches "kept"/"unchanged", scores similarity
-# or parses `basis.md` for meaning. `test_the_false_line_STILL_RIDES` above
-# still passes and is meant to: the line rides, the brief is byte-identical,
-# and `test_the_check_NEVER_EDITS_THE_DRAFT` pins that from this side too.
-#
-# What is new is the ONE PLACE that holds both halves. The program room has
-# `basis.md` (a read-only pass over the captain's real repo) and `mockup.html`
-# (the artifact). Every stage after the holodeck sees the mock as an attachment
-# with no memory of the current app. So one bounded, read-only, COLD worker
-# reads THE ARTIFACTS — not an account of them — and says which drafted lines
-# the picture contradicts. It FLAGS for the captain; it never rewrites, and it
-# never blocks a filing.
+# AND IT STILL CANNOT BE A GATE. A verification step that can block a hand-off
+# is worse than the defect it cures. Every failure below ends the same way: he
+# gets his brief, the band says plainly that the change list is not there, and
+# ▦ FILE MISSION fires.
 # ════════════════════════════════════════════════════════════════════════════
-class HandoffCheckParseTest(unittest.TestCase):
-    """The parser, on its own. It is the fail-safe: what it cannot read is not
-    a verdict, so a flag can never be invented out of a model's narration."""
+class HandoffDeriveParseTest(unittest.TestCase):
+    """Reading the change list out of a reply. STRICT, and the strictness IS
+    the fail-safe: anything this does not understand is not an answer."""
 
-    def test_it_reads_the_shape_the_prompt_ASKS_FOR(self):
-        from lcars_serve.actions import _handoff_check_parse
-        out = _handoff_check_parse(
-            "1|CONTRADICTED|.btn is background:var(--accent)\n"
-            "2|OK|the mockup does not mention it\n"
-            "3|UNSURE|cannot tell from these files\n", 3)
-        self.assertEqual(out[1][0], "CONTRADICTED")
-        self.assertEqual(out[1][1], ".btn is background:var(--accent)")
-        self.assertEqual(out[2][0], "OK")
-        self.assertEqual(out[3][0], "UNSURE")
+    def _p(self, reply):
+        from lcars_serve.actions import _handoff_derive_parse
+        return _handoff_derive_parse(reply)
+
+    def test_it_reads_the_lines_after_the_marker_and_only_those(self):
+        out = self._p("I opened the toolbar and read Toolbar.tsx.\n"
+                      "today the toolbar is h-12\n"          # working out
+                      "=== CHANGES ===\n"
+                      "today the toolbar is 48px tall → the mockup makes it "
+                      "52px\n"
+                      "today there is no theme control → the mockup adds a "
+                      "sun/moon icon button\n")
+        self.assertEqual(out, [
+            "today the toolbar is 48px tall → the mockup makes it 52px",
+            "today there is no theme control → the mockup adds a sun/moon "
+            "icon button"])
+
+    def test_NO_MARKER_is_NO_ANSWER_and_never_the_working_out(self):
+        """THE FAIL-SAFE THAT MATTERS MOST, and it is why this cannot reuse
+        S169's fallback. S169's flagger could scan a whole reply because a
+        stray line either matched `<n>|VERDICT|…` or did not. Here EVERY line
+        is a candidate — so a reply with no marker would hand the captain a
+        brief made of somebody thinking aloud."""
+        self.assertIsNone(self._p(
+            "I read the mockup and the app. The toolbar is taller, the theme "
+            "is new, and the tabs are pills. Hope that helps!"))
+        self.assertIsNone(self._p(""))
+        self.assertIsNone(self._p(None))
+
+    def test_an_EMPTY_block_is_a_real_answer_and_not_a_failure(self):
+        """"Nothing differs" is a thing a pass can honestly return. It is
+        vanishingly unlikely on a real program and the SURFACE says so loudly
+        — but the parser must not turn it into an unusable reply, because that
+        would report a failure that did not happen."""
+        self.assertEqual(self._p("looked at everything\n=== CHANGES ===\n"), [])
+        self.assertEqual(self._p("=== CHANGES ===\n\n   \n"), [])
 
     def test_it_survives_the_decoration_a_model_actually_adds(self):
-        """Spacing, a bullet, a trailing dot on the number, bold markers, lower
-        case. None of that is a different answer and none of it is worth a
-        second round trip to a live engine."""
-        from lcars_serve.actions import _handoff_check_parse
-        out = _handoff_check_parse(
-            "- 1 . | **CONTRADICTED** | `#addBtn` is redrawn\n"
-            "  2 : ok : silent\n", 2)
-        self.assertEqual(out[1][0], "CONTRADICTED")
-        self.assertEqual(out[1][1], "`#addBtn` is redrawn")
-        self.assertEqual(out[2][0], "OK")
+        out = self._p("=== CHANGES ===\n"
+                      "- today the tabs are square → the mockup uses pills\n"
+                      "* today the rail is flat → the mockup groups it\n"
+                      "1. today there is no brand → the mockup adds one\n"
+                      "  • today the radius is 4px → the mockup uses 6px\n")
+        self.assertEqual(len(out), 4, out)
+        self.assertTrue(all(c.startswith("today ") for c in out), out)
 
-    def test_prose_is_NOT_a_verdict(self):
-        """A worker that narrates, refuses or apologises has not answered, and
-        the difference between that and 'nothing was wrong' is the whole point
-        of the band. Round 0 of every guard in this repo got this backwards."""
-        from lcars_serve.actions import _handoff_check_parse
-        for junk in ("I read the mockup and everything looks consistent.",
-                     "All 3 claims are OK.",
-                     "```\n1. CONTRADICTED\n```",
-                     "", None):
-            self.assertEqual(_handoff_check_parse(junk, 3), {}, repr(junk))
+    def test_headings_fences_and_rules_are_NOT_changes(self):
+        out = self._p("=== CHANGES ===\n"
+                      "```\n"
+                      "## Toolbar\n"
+                      "---\n"
+                      "===\n"
+                      "today the tabs are square → the mockup uses pills\n")
+        self.assertEqual(out,
+                         ["today the tabs are square → the mockup uses pills"])
 
-    def test_a_number_outside_the_list_is_DROPPED(self):
-        """The indices address the captain's own lines. A verdict for claim 99
-        of a 3-line list is a worker that lost the plot, not a flag."""
-        from lcars_serve.actions import _handoff_check_parse
-        out = _handoff_check_parse("99|CONTRADICTED|nope\n0|CONTRADICTED|no\n"
-                                   "2|CONTRADICTED|real\n", 3)
-        self.assertEqual(sorted(out), [2])
+    def test_the_LAST_marker_wins_so_a_quoted_one_cannot_open_the_block(self):
+        out = self._p("I will end with === CHANGES === as asked.\n"
+                      "here is my working out, which is not a change\n"
+                      "=== CHANGES ===\n"
+                      "today the tabs are square → the mockup uses pills\n")
+        self.assertEqual(out,
+                         ["today the tabs are square → the mockup uses pills"])
 
-    def test_the_FIRST_verdict_for_a_line_wins(self):
-        """A repeated index is a confused reply, and taking the last one would
-        let a trailing summary block overwrite the real answers."""
-        from lcars_serve.actions import _handoff_check_parse
-        out = _handoff_check_parse("1|CONTRADICTED|first\n1|OK|second\n", 1)
-        self.assertEqual(out[1], ("CONTRADICTED", "first"))
+    def test_a_line_is_BOUNDED_and_so_is_the_list(self):
+        from lcars_serve.actions import (_HANDOFF_DERIVE_MAX_LINE,
+                                         _HANDOFF_DERIVE_MAX_CHANGES)
+        out = self._p("=== CHANGES ===\n" + "today x → y " + ("z" * 5000))
+        self.assertEqual(len(out[0]), _HANDOFF_DERIVE_MAX_LINE)
+        many = self._p("=== CHANGES ===\n"
+                       + "\n".join("today %d → y" % i for i in range(200)))
+        self.assertEqual(len(many), _HANDOFF_DERIVE_MAX_CHANGES)
 
-    def test_the_evidence_is_BOUNDED(self):
-        from lcars_serve.actions import (_handoff_check_parse,
-                                         _HANDOFF_CHECK_MAX_EVIDENCE)
-        out = _handoff_check_parse("1|CONTRADICTED|" + ("x" * 5000), 1)
-        self.assertEqual(len(out[1][1]), _HANDOFF_CHECK_MAX_EVIDENCE)
-
-
-class HandoffCheckFlagsTest(unittest.TestCase):
-    def test_a_PARTIAL_answer_is_UNUSABLE_not_a_clean_bill_of_health(self):
-        """THE ONE THAT MATTERS. A truncated reply judging 3 of 18 lines, read
-        as "3 checked, 0 flagged", is exactly the false reassurance this whole
-        round exists to remove. `None` means the pass did not answer."""
-        from lcars_serve.actions import _handoff_check_flags
-        flags, checked = _handoff_check_flags(["a", "b", "c"], "1|OK|fine\n")
-        self.assertIsNone(flags)
-        self.assertEqual(checked, 1)
-
-    def test_a_COMPLETE_answer_with_nothing_wrong_is_an_EMPTY_LIST(self):
-        from lcars_serve.actions import _handoff_check_flags
-        flags, checked = _handoff_check_flags(
-            ["a", "b"], "1|OK|fine\n2|UNSURE|cannot tell\n")
-        self.assertEqual(flags, [])
-        self.assertEqual(checked, 2)
-
-    def test_only_CONTRADICTED_becomes_a_flag_and_it_carries_the_evidence(self):
-        from lcars_serve.actions import _handoff_check_flags
-        flags, _n = _handoff_check_flags(
-            ["kept the button", "moved the nav"],
-            "1|CONTRADICTED|#addBtn is accent-filled\n2|OK|matches\n")
-        self.assertEqual([f["text"] for f in flags], ["kept the button"])
-        self.assertEqual(flags[0]["why"], "#addBtn is accent-filled")
-
-    def test_no_items_is_a_clean_zero_and_never_a_worker(self):
-        from lcars_serve.actions import _handoff_check_flags
-        self.assertEqual(_handoff_check_flags([], "anything"), ([], 0))
+    def test_a_multi_line_reply_is_JOINED_per_line_not_per_paragraph(self):
+        """One line is one change. A model that wraps its own line would
+        produce two, and that is a shape the prompt forbids rather than
+        something this guesses at — pinned so nobody adds a re-joiner that
+        guesses at sentence boundaries."""
+        out = self._p("=== CHANGES ===\n"
+                      "today   the tabs    are square\n")
+        self.assertEqual(out, ["today the tabs are square"])
 
 
-class HandoffCheckPromptTest(unittest.TestCase):
-    def test_it_numbers_the_claims_and_names_the_files_it_reads(self):
-        from lcars_serve.actions import _handoff_check_prompt
-        p = _handoff_check_prompt(["kept the button", "moved the nav"])
-        self.assertIn("1. kept the button", p)
-        self.assertIn("2. moved the nav", p)
-        self.assertIn("mockup.html", p)
-        self.assertIn("basis.md", p)
+class HandoffDerivePromptTest(unittest.TestCase):
+    """The prompt is the whole mechanism, so it is pinned like one."""
+
+    def _p(self):
+        from lcars_serve.actions import _handoff_derive_prompt
+        return _handoff_derive_prompt("/room/mockup.html", "/room/concept.md",
+                                      "/room/basis.md")
+
+    def test_it_names_the_files_by_ABSOLUTE_PATH(self):
+        """The cwd is the CAPTAIN'S REPO. A bare `mockup.html` would resolve to
+        nothing — or, worse, to a same-named file in his project."""
+        p = self._p()
+        self.assertIn("/room/mockup.html", p)
+        self.assertIn("/room/concept.md", p)
+        self.assertIn("/room/basis.md", p)
+
+    def test_it_says_the_WORKING_DIRECTORY_IS_THE_REAL_APP(self):
+        self.assertIn("YOUR WORKING DIRECTORY IS THE REAL APPLICATION",
+                      self._p())
+
+    def test_the_CODE_outranks_basis_md(self):
+        """S169 rejected the derivation road because `basis.md` is a prose
+        summary and reading it means guessing at meaning. It was right — so
+        `basis.md` is context and the repo is the authority, said in the
+        prompt where the pass can act on it."""
+        p = self._p()
+        self.assertIn("THE CODE WINS", p)
+        self.assertIn("may be stale", p)
+
+    def test_it_pins_LOOK_AND_FLOW_ONLY(self):
+        """THE TRAP. A mockup is a FICTION — fake data, invented internals, no
+        real state — and the app is an implementation. Without this the pass
+        reports "the app has no renderStops()" and "the mock uses inline CSS
+        and the app uses Tailwind" as changes."""
+        p = self._p()
+        self.assertIn("LOOK AND FLOW ONLY", p)
+        self.assertIn("NEVER REPORT IMPLEMENTATION", p)
+        for banned in ("frameworks", "build tools", "selector names",
+                       "fake data", "utility"):
+            self.assertIn(banned, p, banned)
+
+    def test_it_pins_A_NO_OP_PRODUCES_NO_LINE(self):
+        """The rule that deletes the captain's defect. Read the wording: it is
+        an instruction about what to WRITE, not a filter over what was
+        written — there is no detector anywhere in this road."""
+        p = self._p()
+        self.assertIn("THERE IS NO LINE FOR IT", p)
+        self.assertIn("is SILENCE", p)
+        for banned in ('"unchanged"', '"kept"', '"still present"'):
+            self.assertIn(banned, p, banned)
+
+    def test_it_forbids_talking_about_EARLIER_DRAFTS_OF_THE_MOCKUP(self):
+        """The captain's two examples verbatim — the T1 mock's toggle and the
+        Layer-properties panel the T1 mock added. Both are mock-versus-mock,
+        and against his real app the second is a no-op."""
+        p = self._p()
+        self.assertIn("THE DESIGN CHAT ARGUED WITH ITSELF", p)
+        self.assertIn("an earlier draft", p)
+        self.assertIn("removed FROM THE MOCKUP", p)
+        self.assertIn("never seen the design chat", p)
+
+    def test_DECISIONS_is_given_as_the_WHY_and_refused_as_the_WHAT(self):
+        p = self._p()
+        self.assertIn("USE IT FOR WHY, AND FOR SCOPE", p)
+        self.assertIn("DO NOT use it as the list of changes", p)
 
     def test_it_asks_for_the_shape_the_parser_READS(self):
-        """The prompt and the parser are one contract. Reword one and the pass
-        silently returns nothing usable — which fails safe, and is still a dead
-        feature nobody notices."""
-        from lcars_serve.actions import (_handoff_check_prompt,
-                                         _handoff_check_parse)
-        p = _handoff_check_prompt(["one"])
-        self.assertIn("<number>|<VERDICT>|", p)
-        for v in ("CONTRADICTED", "OK", "UNSURE"):
-            self.assertIn(v, p)
-        # …and the shape the prompt shows really does parse.
-        self.assertEqual(_handoff_check_parse("1|OK|because", 1)[1][0], "OK")
+        from lcars_serve.actions import (_handoff_derive_parse,
+                                         _HANDOFF_DERIVE_MARKER)
+        p = self._p()
+        self.assertIn(_HANDOFF_DERIVE_MARKER, p)
+        # …and a reply in the shape it asks for really does parse.
+        self.assertEqual(
+            _handoff_derive_parse(_HANDOFF_DERIVE_MARKER
+                                  + "\ntoday a → the mockup b, because c"),
+            ["today a → the mockup b, because c"])
 
     def test_it_tells_the_worker_it_WRITES_NOTHING(self):
-        from lcars_serve.actions import _handoff_check_prompt
-        self.assertIn("write NOTHING", _handoff_check_prompt(["one"]))
+        self.assertIn("You write NOTHING", self._p())
 
 
-class S169CapstoneCheckBase(HandoffBase):
-    """The REAL capstone room, and the check switched on against it.
+class S170DeriveBase(HandoffBase):
+    """THE CAPTAIN'S REAL ROOM, with the derivation switched on.
 
-    The fixture is the byte copy of `~/Projects/lcars-s169-capstone-holodeck/
-    ledgerbook-redesign/` — the concept doc with the false line, the mockup that
-    contradicts it, and the basis that records what the app has today. No
-    absolute path is read at test time.
+    `web/tests/fixtures/s170-tile-editor/` is a byte copy of
+    `~/Projects/groutwork-holodeck/give-the-tile-editor-a-more-modern-ui-look-
+    and/` taken on 2026-08-07 while he was using it. No absolute path is read
+    at test time.
     """
 
     handoff_check = "1"
     FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "fixtures", "s169-capstone")
-    # As it reads AFTER `_md_items` folds the doc's wrapped bullet into one
-    # line and drops the markdown emphasis — i.e. exactly the words that land
-    # in the captain's brief. The raw doc's `**unchanged**` is asserted
-    # separately, on the file, by `S169CapstoneEvidenceTest`.
-    FALSE_LINE_FRAGMENT = ("The button itself is unchanged (same place, same "
-                           "label).")
+                           "fixtures", "s170-tile-editor")
+    ROOM = "give-the-tile-editor-a-more-modern-ui-look"
+    # The pass's own output shape, for the three real changes in his room.
+    DERIVED = [
+        "today every colour is a hardcoded Tailwind class or inline hex → the "
+        "mockup drives every chrome surface from one themeable token set",
+        "today the editor is dark-only → the mockup adds a light theme the "
+        "toolbar's sun/moon button switches to",
+        "today ModeSwitcher and MapSwitcher are two separate bars → the mockup "
+        "merges them into one 42px row with pill map tabs",
+    ]
 
     @classmethod
     def setUpClass(cls):
-        base = getattr(super(S169CapstoneCheckBase, cls), "setUpClass", None)
+        base = getattr(super(S170DeriveBase, cls), "setUpClass", None)
         if base:
             base()
-        with open(os.path.join(cls.FIXTURE, "concept.md")) as fh:
-            cls.CONCEPT = fh.read()
-        with open(os.path.join(cls.FIXTURE, "mockup.html")) as fh:
-            cls.MOCKUP = fh.read()
-        with open(os.path.join(cls.FIXTURE, "basis.md")) as fh:
-            cls.BASIS = fh.read()
+        for name, attr in (("concept.md", "CONCEPT"),
+                           ("mockup.html", "MOCKUP"),
+                           ("basis.md", "BASIS")):
+            with open(os.path.join(cls.FIXTURE, name)) as fh:
+                setattr(cls, attr, fh.read())
 
-    def _room(self):
-        """A program whose room holds all THREE real files. `basis.md` rides in
-        through the same turn the other two do — the check must run on a room
-        the product made, not one planted behind the daemon's back."""
+    def _room(self, name="Give the tile editor a more modern UI look"):
+        """A program whose room holds all THREE real files, written through a
+        real TURN — the derivation must run on a room the product made."""
         self._set_turns({"stdout": "Drew it.", "writes": [
             {"path": "mockup.html", "content": self.MOCKUP},
             {"path": "concept.md", "content": self.CONCEPT},
             {"path": "basis.md", "content": self.BASIS}]})
-        sid, _ = self._start(program="LedgerBook redesign")
+        sid, _ = self._start(program=name)
         self._post("/api/holodeck/%s/say" % sid, {"text": "draw it"})
         return sid
 
-    def _false_index(self, decisions):
-        """Which drafted change line carries the false claim (1-based)."""
-        for i, t in enumerate(decisions):
-            if self.FALSE_LINE_FRAGMENT in t:
-                return i + 1
-        raise AssertionError("the false line is not in the drafted list")
+    def _reply(self, changes=None):
+        from lcars_serve.actions import _HANDOFF_DERIVE_MARKER
+        return ("I read the toolbar, the mode switcher and the map tabs.\n"
+                + _HANDOFF_DERIVE_MARKER + "\n"
+                + "\n".join("- %s" % c for c in (changes or self.DERIVED))
+                + "\n")
 
     def _settled(self, sid, tries=200, scope=None):
-        """Poll `promote` until the check stops saying "running".
+        """Poll `promote` until the derivation stops saying "running".
 
         The real road: the daemon answers the dialog immediately and the deck
-        asks again. Nothing here reaches inside the daemon for a private handle.
-        """
+        asks again. Nothing here reaches inside the daemon for a private
+        handle."""
         body = {} if scope is None else {"scope": scope}
         for _ in range(tries):
             _st, out = self._promote(sid, **body)
             state = out["state"]
-            if (state.get("check") or {}).get("state") != "running":
+            if (state.get("derive") or {}).get("state") != "running":
                 return state
             time.sleep(0.05)
-        raise AssertionError("the check never settled")
+        raise AssertionError("the derivation never settled")
 
 
-class S169CapstoneEvidenceTest(S169CapstoneCheckBase):
-    """Pin the fixture. If someone 'fixes' it, every claim below is about
-    nothing — the S169 fix round 1 lesson, applied to the new room."""
+class S170FixtureEvidenceTest(S170DeriveBase):
+    """PIN THE FIXTURE. If someone 'fixes' it, every claim below is about
+    nothing — and this fixture is the captain's own words made checkable."""
 
     handoff_check = "0"
 
-    def test_the_doc_really_does_claim_the_button_is_UNCHANGED(self):
-        self.assertIn("The button itself is **unchanged** (same place, same "
-                      "label)", self.CONCEPT)
+    def test_the_TWO_MOCK_VERSUS_MOCK_lines_really_are_in_his_doc(self):
+        self.assertIn("T1 mock had a two-segment\n  light/dark toggle → now "
+                      "one button", self.CONCEPT)
+        self.assertIn("Remove the Layer-properties panel that the T1 mock "
+                      "added", self.CONCEPT)
 
-    def test_the_MOCKUP_really_does_redraw_it(self):
-        """Every column of the capstone's table, in the file itself."""
-        self.assertIn('<button class="btn" id="addBtn">', self.MOCKUP)
-        self.assertIn("<svg", self.MOCKUP)            # the inline plus glyph
-        self.assertIn("all:unset", self.MOCKUP)
-        self.assertIn("background:var(--accent)", self.MOCKUP)
-        self.assertIn("border-radius", self.MOCKUP)
-        self.assertIn(":focus-visible", self.MOCKUP)
-        self.assertIn("spacer", self.MOCKUP)          # it moved to the right end
-
-    def test_the_BASIS_records_the_button_the_app_HAS_TODAY(self):
-        """The asymmetry the capstone found: an "unchanged" claim is only
-        dangerous when the element really exists in the app today. This one
-        does — `basis.md` read it out of the captain's repo."""
-        self.assertIn("#add-expense", self.BASIS)
-        self.assertIn("`#dddddd`", self.BASIS)
-        self.assertIn("1px outset #bbbbbb", self.BASIS)
-
-    def test_the_SECOND_false_unchanged_line_is_here_too_and_cost_NOTHING(self):
-        """"The by-category table beneath is unchanged" — equally false as an
-        account, and harmless, because that table did not exist yet so the plan
-        simply built it. Kept in the fixture so a later session cannot conclude
-        from one example that every such line is expensive."""
-        self.assertIn("The by-category\n  table beneath is unchanged",
+    def test_the_HALF_HONEST_close_button_line_really_is_in_his_doc(self):
+        """The sharpest one, because the truth is in the qualifier and THE
+        HEADLINE IS WHAT GETS ACTED ON."""
+        self.assertIn("Add a Close button to the toolbar", self.CONCEPT)
+        self.assertIn("today the editor already has a close-project",
                       self.CONCEPT)
 
-    def test_the_false_line_reaches_the_BRIEF_exactly_as_it_did(self):
-        """Unchanged behaviour, restated on the new fixture. The daemon does
-        not delete a line it cannot verify, and this round did not start."""
+    def test_the_UNDO_REDO_line_pulls_the_mock_TOWARD_today(self):
+        self.assertIn("Redraw Undo/Redo as the simpler rounded hook-arrow "
+                      "style (matching the", self.CONCEPT)
+
+    def test_the_REAL_changes_are_in_there_too(self):
+        """The control. A cure that dropped everything would pass every test
+        above and hand him an empty brief."""
+        for real in ("net-new CSS-variable token layer",
+                     "Add a light theme alongside dark",
+                     "single merged tab row 42px",
+                     "pill-shaped map tabs",
+                     "Add a brand block"):
+            self.assertIn(real, self.CONCEPT, real)
+
+    def test_NONE_of_the_21_bullets_reaches_the_brief_any_more(self):
+        """THE ACCEPTANCE ASSERTION, stated at the level the captain stated it.
+        `## Decisions` is not read by the drafting road, so his ramble is gone
+        — all of it, including the four mock-relative bullets — and what
+        replaces it comes from the diff."""
         sid = self._room()
         _st, out = self._promote(sid)
-        self.assertIn(self.FALSE_LINE_FRAGMENT, out["state"]["brief"])
+        brief = out["state"]["brief"]
+        for gone in ("T1 mock had a two-segment",
+                     "Remove the Layer-properties panel",
+                     "Add a Close button to the toolbar",
+                     "Redraw Undo/Redo as the simpler rounded hook-arrow",
+                     "net-new CSS-variable token layer"):
+            self.assertNotIn(gone, brief, gone)
+        self.assertNotIn("decisions", out["state"])
 
 
-class S169CheckFlagsTheFalseLineTest(S169CapstoneCheckBase):
-    """THE CURE, ON THE REAL FALSE LINE."""
+class S170DerivationTest(S170DeriveBase):
+    """THE CURE, end to end on his room."""
 
-    def _reply_flagging_false_line(self, decisions, extra=None):
-        """A verdict for EVERY drafted line — CONTRADICTED on the false one.
-
-        Shaped like the live reply the engine gives, and complete, because an
-        incomplete reply is (correctly) refused as unusable.
-        """
-        bad = self._false_index(decisions)
-        lines = []
-        for i in range(1, len(decisions) + 1):
-            if i == bad:
-                lines.append("%d|CONTRADICTED|%s" % (i, extra or (
-                    '#addBtn is `<button class="btn">` with an inline svg, '
-                    'all:unset and background:var(--accent), at the right end '
-                    'of the title bar after `.spacer`')))
-            else:
-                lines.append("%d|OK|consistent with the mockup" % i)
-        return "\n".join(lines) + "\n"
-
-    def _drive(self):
+    def _drive(self, changes=None):
         sid = self._room()
-        _st, first = self._promote(sid)
-        decisions = first["state"]["decisions"]
-        self._set_turns({"stdout": self._reply_flagging_false_line(decisions)})
-        return sid, decisions, self._settled(sid)
+        self._set_turns({"stdout": self._reply(changes)})
+        return sid, self._settled(sid)
 
-    def test_the_check_FLAGS_the_false_line_by_its_own_words(self):
-        _sid, _dec, state = self._drive()
-        check = state["check"]
-        self.assertEqual(check["state"], "done")
-        self.assertTrue(check["ok"], check)
-        self.assertEqual(len(check["flags"]), 1, check)
-        self.assertIn(self.FALSE_LINE_FRAGMENT, check["flags"][0]["text"])
+    def test_the_derived_list_becomes_the_change_section_of_the_brief(self):
+        _sid, state = self._drive()
+        d = state["derive"]
+        self.assertEqual(d["state"], "done")
+        self.assertTrue(d["ok"], d)
+        self.assertEqual(d["changes"], self.DERIVED)
+        self.assertEqual(state["changes"], self.DERIVED)
+        brief = state["brief"]
+        self.assertIn("## What the mockup changes about your app as it is "
+                      "today", brief)
+        for c in self.DERIVED:
+            self.assertIn(c, brief)
 
-    def test_the_flag_carries_EVIDENCE_FROM_THE_MOCKUP(self):
-        """Not "this looks wrong" — the selector and the properties, so the
-        captain can see for himself in two seconds which of the two documents
-        to believe."""
-        _sid, _dec, state = self._drive()
-        why = state["check"]["flags"][0]["why"]
-        self.assertIn("#addBtn", why)
-        self.assertIn("--accent", why)
+    def test_a_MOCK_RELATIVE_correction_produces_NO_LINE_AND_NO_TRACE(self):
+        """The captain's own two examples, on his own room. They are absent
+        because THERE IS NOTHING TO REPORT — the app never had a
+        Layer-properties panel and it already has a labelled Close control —
+        not because anything recognised them."""
+        _sid, state = self._drive()
+        brief = state["brief"]
+        for gone in ("Layer-properties", "Close button", "hook-arrow",
+                     "two-segment"):
+            self.assertNotIn(gone, brief, gone)
 
-    def test_the_check_NEVER_EDITS_THE_DRAFT(self):
-        """It flags. The brief with a flag on it is byte-identical to the brief
-        without one — laundering a model's correction into the captain's words
-        is the one thing this must not do."""
-        sid = self._room()
-        _st, before = self._promote(sid)
-        decisions = before["state"]["decisions"]
-        self._set_turns({"stdout": self._reply_flagging_false_line(decisions)})
-        after = self._settled(sid)
-        self.assertEqual(after["brief"], before["state"]["brief"])
-        self.assertEqual(after["decisions"], decisions)
-        self.assertIn(self.FALSE_LINE_FRAGMENT, after["brief"])
+    def test_the_REAL_changes_still_arrive(self):
+        _sid, state = self._drive()
+        brief = state["brief"]
+        for real in ("token set", "light theme", "42px row", "pill map tabs"):
+            self.assertIn(real, brief, real)
 
-    def test_a_FLAGGED_hand_off_still_FILES(self):
-        """FAIL-SAFE, the loudest half. A verification step that can block a
-        hand-off is worse than the defect — the captain is standing at the last
-        click of a design session and there must always be a way through."""
-        sid = self._room()
-        _st, first = self._promote(sid)
-        self._set_turns({"stdout": self._reply_flagging_false_line(
-            first["state"]["decisions"])})
-        state = self._settled(sid)
-        self.assertTrue(state["check"]["flags"])
-        st, _body = self._post("/api/park", {"idea": state["brief"],
-                                             "holodeck": sid})
-        self.assertEqual(st, 200)
-        self.assertEqual(len(self._filed()), 1)
+    def test_the_brief_got_SHORTER_than_the_conversation_it_replaced(self):
+        """The captain's complaint was volume as much as content — "a lot of my
+        ramble back and forth". 21 conversation bullets in, a diff out."""
+        from lcars_serve.actions import _md_section, _md_items
+        log = _md_items(_md_section(self.CONCEPT, "Decisions", prefix=True))
+        self.assertEqual(len(log), 21, len(log))
+        _sid, state = self._drive()
+        self.assertLess(len(state["changes"]), len(log))
 
-    def test_the_worker_was_given_the_CLAIMS_and_pointed_at_the_MOCKUP(self):
-        self._drive()
-        prompt = [p for p in self._prompts() if "CONTRADICTED" in p][-1]
-        self.assertIn(self.FALSE_LINE_FRAGMENT.replace("**", "**"), prompt)
-        self.assertIn("mockup.html", prompt)
-        self.assertIn("basis.md", prompt)
-
-    def test_the_check_worker_is_READ_ONLY_and_COLD_and_IN_THE_ROOM(self):
-        """The three properties that make this a check rather than a second
+    def test_the_worker_STANDS_IN_THE_REPO_and_is_READ_ONLY_and_COLD(self):
+        """The four properties that make this a diff rather than a second
         design turn:
 
-          READ-ONLY  it has no write channel at all — it runs in the room where
-                     `mockup.html` and `concept.md` live, and a pass that could
-                     edit the drawing it is checking is worse than no pass.
-          COLD       a FRESH session id, never `--resume` of the design chat. A
-                     warm worker would answer out of its memory of what it MEANT
-                     to draw, which is the account being checked.
-          IN THE ROOM  cwd is the program dir, so all three files are reachable
-                     and nothing outside it is.
+          IN THE REPO  cwd is the TARGET PROJECT, so "today" is the app as it
+                       actually is — not `basis.md`'s summary of how it was
+                       when the program started. This is the S170 change.
+          READ-ONLY    no write channel at all, in either directory.
+          COLD         a FRESH session id, never `--resume` of the design chat.
+                       A warm worker would answer out of its memory of what it
+                       MEANT to draw.
+          GRANTED THE ROOM  `--add-dir` on the program dir, because the drawing
+                       is half the diff and it is not in the cwd.
         """
         sid = self._room()
-        design = [c for c in self._calls()]
-        self._promote(sid)
-        _st, first = self._promote(sid)
-        self._set_turns({"stdout": self._reply_flagging_false_line(
-            first["state"]["decisions"])})
+        design = list(self._calls())
+        self._set_turns({"stdout": self._reply()})
         self._settled(sid)
         new = self._calls()[len(design):]
-        check = [c for c in new
-                 if any("CONTRADICTED" in a for a in c["argv"])]
-        self.assertEqual(len(check), 1, new)
-        argv = check[0]["argv"]
+        passes = [c for c in new
+                  if any("=== CHANGES ===" in a for a in c["argv"])]
+        self.assertEqual(len(passes), 1, new)
+        argv, cwd = passes[0]["argv"], passes[0]["cwd"]
+        # IN THE REPO — and emphatically NOT in the program's room.
+        self.assertEqual(os.path.realpath(cwd), os.path.realpath(self.repo))
+        self.assertFalse(cwd.endswith(self.ROOM), cwd)
+        # READ-ONLY.
         self.assertEqual(self._flag_value(argv, "--allowedTools"),
                          "Read,Grep,Glob")
         self.assertEqual(self._flag_value(argv, "--disallowedTools"),
                          "Write,Edit,Bash,NotebookEdit")
-        # COLD: a brand-new session, and never a resume.
+        # COLD.
         self.assertNotIn("--resume", argv)
         self.assertIsNotNone(self._flag_value(argv, "--session-id"))
         design_sids = set()
@@ -7108,81 +7350,310 @@ class S169CheckFlagsTheFalseLineTest(S169CapstoneCheckBase):
                 if v:
                     design_sids.add(v)
         self.assertNotIn(self._flag_value(argv, "--session-id"), design_sids)
-        # IN THE ROOM.
-        self.assertTrue(check[0]["cwd"].endswith("ledgerbook-redesign"),
-                        check[0]["cwd"])
+
+    def test_the_worker_is_POINTED_AT_the_drawing_BY_ABSOLUTE_PATH(self):
+        self._drive()
+        prompt = [p for p in self._prompts() if "=== CHANGES ===" in p][-1]
+        room = os.path.join(self._sidecar(), self.ROOM)
+        self.assertIn(os.path.join(room, "mockup.html"), prompt)
+        self.assertIn(os.path.join(room, "concept.md"), prompt)
+        self.assertIn(os.path.join(room, "basis.md"), prompt)
+
+    def test_a_room_with_NO_basis_still_runs_and_SAYS_so(self):
+        """`basis.md` is context, not a dependency — that is the whole reason
+        this stopped being read as the source of truth."""
+        self._set_turns({"stdout": "Drew it.", "writes": [
+            {"path": "mockup.html", "content": self.MOCKUP},
+            {"path": "concept.md", "content": self.CONCEPT}]})
+        sid, _ = self._start(program="No basis here")
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draw it"})
+        self._set_turns({"stdout": self._reply()})
+        state = self._settled(sid)
+        self.assertTrue(state["derive"]["ok"], state["derive"])
+        prompt = [p for p in self._prompts() if "=== CHANGES ===" in p][-1]
+        self.assertIn("there is no basis file", prompt)
 
     def test_a_SECOND_open_of_the_same_dialog_spawns_NO_SECOND_WORKER(self):
-        """The cost rule. The captain opens this dialog, reads it, picks the
-        other build scope and reads it again — that must not be three engine
-        turns. Keyed on the FILES, so a program he has drawn on since is
-        re-checked and one he has not is free."""
+        """The cost rule, and it matters more now: this pass is 154–220s and it
+        reads a whole repository. He opens the dialog, reads it, picks the
+        other build scope and reads it again — that must not be three passes."""
         sid = self._room()
-        _st, first = self._promote(sid)
-        self._set_turns({"stdout": self._reply_flagging_false_line(
-            first["state"]["decisions"])})
+        self._set_turns({"stdout": self._reply()})
         self._settled(sid)
         spawned = len(self._calls())
         for _ in range(3):
-            state = self._settled(sid)
-            self.assertTrue(state["check"]["flags"])
+            self.assertEqual(self._settled(sid)["changes"], self.DERIVED)
         self.assertEqual(len(self._calls()), spawned)
-        # …and the other build scope is the SAME check, not a new one.
         self._settled(sid, scope="look-only")
         self.assertEqual(len(self._calls()), spawned)
 
-    def test_a_REDRAWN_mockup_is_CHECKED_AGAIN(self):
+    def test_a_REDRAWN_mockup_is_DERIVED_AGAIN(self):
         """The other half of the cache rule, and the one that would rot
-        silently: a stale PASS on a redrawn mockup is a false clean bill."""
+        silently: a stale change list on a redrawn mockup describes a design
+        that no longer exists."""
         sid = self._room()
-        _st, first = self._promote(sid)
-        self._set_turns({"stdout": self._reply_flagging_false_line(
-            first["state"]["decisions"])})
+        self._set_turns({"stdout": self._reply()})
         self._settled(sid)
         spawned = len(self._calls())
-        # a real turn that redraws the mockup, exactly as the product does it
         self._set_turns({"stdout": "Redrew it.", "writes": [
-            {"path": "mockup.html", "content": self.MOCKUP + "\n<!-- v2 -->\n"}]})
+            {"path": "mockup.html",
+             "content": self.MOCKUP + "\n<!-- v2 -->\n"}]})
         self._post("/api/holodeck/%s/say" % sid, {"text": "again"})
-        self._set_turns({"stdout": self._reply_flagging_false_line(
-            first["state"]["decisions"])})
-        self._settled(sid)
+        self._set_turns({"stdout": self._reply(["today a → the mockup b"])})
+        state = self._settled(sid)
         self.assertGreater(len(self._calls()), spawned + 1)
+        self.assertEqual(state["changes"], ["today a → the mockup b"])
 
 
-class S169CheckFailsSafeTest(S169CapstoneCheckBase):
+class S170DeriveIsWalkAwayableTest(S170DeriveBase):
+    """THE WAIT, AND THE FACT THAT HE CAN LEAVE IT.
+
+    The captain's design: *"make send to align a stage with wait time … I know
+    this means it can take a few minutes and we can make it so it can walk away,
+    but I feel like that would yield a better result."*
+    """
+
+    def test_the_dialog_answers_IMMEDIATELY_with_a_RUNNING_state(self):
+        """The pass is 154–220s. Nothing waits on it — `promote` returns at
+        once, saying what is happening."""
+        sid = self._room()
+        self._set_turns({"sleep": 30, "stdout": self._reply()})
+        t0 = time.time()
+        _st, out = self._promote(sid)
+        self.assertLess(time.time() - t0, 5.0)
+        self.assertEqual(out["state"]["derive"]["state"], "running")
+        self.assertGreater(out["state"]["derive"]["startedAt"], 0)
+        self.assertGreaterEqual(out["state"]["derive"]["now"],
+                                out["state"]["derive"]["startedAt"])
+
+    def test_a_RUNNING_pass_still_hands_him_a_BRIEF_HE_CAN_FILE(self):
+        """NEVER A GATE. The change list is the part still being worked out;
+        his words, what the mockup implies and what is out of scope are all
+        there, and ▦ FILE MISSION fires."""
+        sid = self._room()
+        self._set_turns({"sleep": 30, "stdout": self._reply()})
+        _st, out = self._promote(sid)
+        brief = out["state"]["brief"]
+        self.assertTrue(brief.strip())
+        self.assertIn("## What it must do", brief)
+        self.assertNotIn("## What the mockup changes", brief)
+        st, _b = self._post("/api/park", {"idea": brief, "holodeck": sid})
+        self.assertEqual(st, 200)
+        self.assertEqual(len(self._filed()), 1)
+
+    def _passes(self):
+        return [c for c in self._calls()
+                if any("=== CHANGES ===" in a for a in c["argv"])]
+
+    def test_the_pass_KEEPS_RUNNING_when_he_walks_away_and_comes_back(self):
+        """He closes the dialog (or reloads the page — the client keeps no
+        state either way) and asks again later. The DAEMON owns the pass, so
+        the second ask joins the one already in flight rather than starting a
+        second.
+
+        COUNTED ON THE PASSES THEMSELVES, not on the total call count: the
+        pass runs on its own thread, so a total taken while it is still
+        spawning is a number that moves under the test."""
+        sid = self._room()
+        self._set_turns({"sleep": 1.0, "stdout": self._reply()})
+        _st, first = self._promote(sid)
+        self.assertEqual(first["state"]["derive"]["state"], "running")
+        for _ in range(4):
+            _st, again = self._promote(sid)
+            self.assertEqual(again["state"]["derive"]["state"], "running")
+        state = self._settled(sid)
+        self.assertEqual(state["changes"], self.DERIVED)
+        self.assertEqual(len(self._passes()), 1, self._passes())
+
+    def test_the_brief_is_COMPLETE_when_he_comes_back(self):
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        state = self._settled(sid)
+        for c in self.DERIVED:
+            self.assertIn(c, state["brief"])
+
+
+class S170DeriveSurvivesTheDaemonTest(S170DeriveBase):
+    """DURABILITY — the captain's own question, asked mid-session: *"If the
+    daemon closes by accident while I walk away are we still good?"*
+
+    S169's cache was in-memory and disposable, which was defensible when the
+    result was a hint about a list he already had. It is not defensible now:
+    the result IS a section of his brief, it costs 154–220s, and a walk-away is
+    exactly when nobody is watching the daemon.
+    """
+
+    def _record_path(self, sid):
+        sess = self.actions._holodeck[sid]
+        return os.path.join(sess.program_dir, "handoff-changes.json")
+
+    def _fresh_daemon(self):
+        """A brand-new `Actions` — the shape a RESTARTED DAEMON PROCESS has.
+
+        Built exactly the way `setUp` builds the live one, so the only thing
+        that differs is that its caches are empty. That is the whole claim:
+        nothing in memory, and the answer still there."""
+        return Actions(repo_root=self.repo, scripts=self.scripts,
+                       worker_bin=self.claude_bin,
+                       holodeck_root=self.holo_root)
+
+    def test_a_FINISHED_pass_is_WRITTEN_INTO_THE_PROGRAM_ROOM(self):
+        """The room is a durable git repo S126 already commits per turn, and it
+        is the right home for a fact about this program. NOT `.git/lcars/` —
+        that is mission state, and no mission exists yet."""
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        self._settled(sid)
+        with open(self._record_path(sid)) as fh:
+            rec = json.load(fh)
+        self.assertTrue(rec["ok"])
+        self.assertEqual(rec["changes"], self.DERIVED)
+        self.assertTrue(rec["fingerprint"])
+
+    def test_a_RESTARTED_DAEMON_finds_it_and_he_does_NOT_WAIT_TWICE(self):
+        """THE HEADLINE. A brand-new `Actions` — the shape a fresh daemon
+        process has — with an empty cache, opening the same room: the answer is
+        there, and NO WORKER IS SPAWNED."""
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        self._settled(sid)
+        sess = self.actions._holodeck[sid]
+        fresh = self._fresh_daemon()
+        self.assertEqual(fresh._handoff_derives, {})
+        spawned = len(self._calls())
+        state = fresh._handoff_derive_state(sess)
+        self.assertEqual(state["state"], "done")
+        self.assertTrue(state["ok"])
+        self.assertEqual(state["changes"], self.DERIVED)
+        self.assertTrue(state["fromDisk"])
+        self.assertEqual(len(self._calls()), spawned)
+
+    def test_the_FINGERPRINT_carries_NO_SESSION_ID(self):
+        """The bug this would otherwise have. A restarted daemon mints a NEW
+        session id for the same room, so a session-keyed record could never be
+        found again — the durability would be theatre that passes its own unit
+        test."""
+        sid = self._room()
+        sess = self.actions._holodeck[sid]
+        fp = self.actions._handoff_derive_fingerprint(sess.program_dir,
+                                                      sess.target_repo)
+        self.assertNotIn(sid, fp)
+        # …and asking again under a different session id gives the same key.
+        self.assertEqual(fp, self.actions._handoff_derive_fingerprint(
+            sess.program_dir, sess.target_repo))
+
+    def test_a_pass_that_was_IN_FLIGHT_when_the_daemon_died_is_NOT_persisted(
+            self):
+        """A persisted "running" with no process behind it is a surface
+        asserting a state it cannot know — the FL-009/FL-017 family this round
+        has cured twice. A fresh daemon owns no in-flight pass, so it must not
+        find one. NO TIMER AND NO STALENESS CONSTANT: FL-009's ruling is that a
+        bigger constant is the same guess with a longer fuse."""
+        sid = self._room()
+        self._set_turns({"sleep": 30, "stdout": self._reply()})
+        _st, out = self._promote(sid)
+        self.assertEqual(out["state"]["derive"]["state"], "running")
+        self.assertFalse(os.path.exists(self._record_path(sid)))
+
+    def test_a_REDRAWN_mockup_invalidates_the_PERSISTED_record_too(self):
+        """The fingerprint is the correctness guarantee, and it has to hold
+        across a restart or the durability becomes a way to serve a stale
+        answer for ever."""
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        self._settled(sid)
+        sess = self.actions._holodeck[sid]
+        self._set_turns({"stdout": "Redrew.", "writes": [
+            {"path": "mockup.html",
+             "content": self.MOCKUP + "\n<!-- v2 -->\n"}]})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "again"})
+        fresh = self._fresh_daemon()
+        fp = fresh._handoff_derive_fingerprint(sess.program_dir,
+                                               sess.target_repo)
+        self.assertIsNone(fresh._handoff_derive_read(sess.program_dir, fp))
+
+    def test_a_REWORDED_PROMPT_invalidates_it_too(self):
+        """A reworded prompt asks a different question, so an answer to the old
+        one must not be served as an answer to the new one."""
+        import lcars_serve.actions as A
+        sid = self._room()
+        sess = self.actions._holodeck[sid]
+        before = self.actions._handoff_derive_fingerprint(sess.program_dir,
+                                                          sess.target_repo)
+        old = A._HANDOFF_DERIVE_PROMPT
+        try:
+            A._HANDOFF_DERIVE_PROMPT = old + "\nand one more thing\n"
+            after = self.actions._handoff_derive_fingerprint(
+                sess.program_dir, sess.target_repo)
+        finally:
+            A._HANDOFF_DERIVE_PROMPT = old
+        self.assertNotEqual(before, after)
+
+    def test_a_CORRUPT_record_behaves_EXACTLY_like_NO_RECORD(self):
+        """FAIL-SAFE, applied to durability. A bad file on disk must never be
+        worse than no file on disk — he gets his brief and the pass is offered
+        again."""
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        self._settled(sid)
+        sess = self.actions._holodeck[sid]
+        fp = self.actions._handoff_derive_fingerprint(sess.program_dir,
+                                                      sess.target_repo)
+        for junk in ("", "{", "null", "[]", '{"fingerprint": "x"}',
+                     '{"fingerprint": %r, "changes": "nope"}' % fp,
+                     '{"fingerprint": %r, "changes": [1, 2]}' % fp):
+            with open(self._record_path(sid), "w") as fh:
+                fh.write(junk)
+            self.assertIsNone(
+                self.actions._handoff_derive_read(sess.program_dir, fp),
+                junk)
+        # …and with the room's record garbage, the dialog still works.
+        with open(self._record_path(sid), "w") as fh:
+            fh.write("{ broken")
+        self.actions._handoff_derives.clear()
+        self._set_turns({"stdout": self._reply()})
+        state = self._settled(sid)
+        self.assertEqual(state["changes"], self.DERIVED)
+
+    def test_an_UNWRITABLE_room_does_not_break_the_pass(self):
+        """Persistence is best-effort. A room LCARS cannot write costs him the
+        durability and nothing else."""
+        sid = self._room()
+        sess = self.actions._holodeck[sid]
+        fp = self.actions._handoff_derive_fingerprint(sess.program_dir,
+                                                      sess.target_repo)
+        self.assertFalse(self.actions._handoff_derive_write(
+            os.path.join(sess.program_dir, "nope", "nope"), fp,
+            {"ok": True, "changes": ["x"]}))
+        self._set_turns({"stdout": self._reply()})
+        self.assertEqual(self._settled(sid)["changes"], self.DERIVED)
+
+
+class S170DeriveFailsSafeTest(S170DeriveBase):
     """Every way the pass can fail, and the same outcome each time: the captain
-    gets his brief, the band SAYS nobody checked it, and the filing goes."""
+    gets his brief, the band SAYS the change list is not there, and the filing
+    goes."""
 
     def _expect_unusable(self, sid):
         state = self._settled(sid)
-        check = state["check"]
-        self.assertEqual(check["state"], "done")
-        self.assertFalse(check["ok"], check)
-        self.assertEqual(check["flags"], [])
-        self.assertTrue(check["why"], check)
-        # the brief is untouched and the filing is not blocked
-        self.assertIn(self.FALSE_LINE_FRAGMENT, state["brief"])
+        d = state["derive"]
+        self.assertEqual(d["state"], "done")
+        self.assertFalse(d["ok"], d)
+        self.assertEqual(d["changes"], [])
+        self.assertTrue(d["why"], d)
+        # the brief is still a brief, and the filing is not blocked
+        self.assertIn("## What it must do", state["brief"])
+        self.assertNotIn("## What the mockup changes", state["brief"])
         st, _b = self._post("/api/park", {"idea": state["brief"],
                                           "holodeck": sid})
         self.assertEqual(st, 200)
-        return check
+        return d
 
     def test_a_worker_that_NARRATES_instead_of_answering(self):
         sid = self._room()
-        self._set_turns({"stdout": "I read the mockup. It all looks fine!"})
+        self._set_turns({"stdout": "I read the mockup. Lots has changed!"})
         why = self._expect_unusable(sid)["why"]
-        self.assertIn("0 of the", why)
-
-    def test_a_worker_that_answers_only_SOME_of_the_lines(self):
-        """The dangerous one. Three verdicts out of eighteen must never read as
-        "three checked, nothing found" — the other fifteen were never judged."""
-        sid = self._room()
-        _st, first = self._promote(sid)
-        self.assertGreater(len(first["state"]["decisions"]), 3)
-        self._set_turns({"stdout": "1|OK|fine\n2|OK|fine\n3|OK|fine\n"})
-        why = self._expect_unusable(sid)["why"]
-        self.assertIn("3 of the", why)
+        self.assertIn("never wrote its change list", why)
 
     def test_a_worker_that_DIES(self):
         sid = self._room()
@@ -7211,169 +7682,240 @@ class S169CheckFailsSafeTest(S169CapstoneCheckBase):
         why = self._expect_unusable(sid)["why"]
         self.assertIn("engine", why)
 
+    def test_the_PROJECT_HAS_GONE_AWAY(self):
+        """S170's own new failure mode: the pass stands in the captain's repo,
+        so a repo that is not there is a pass that cannot run. It says which."""
+        sid = self._room()
+        with self.actions._holodeck_lock:
+            self.actions._holodeck[sid].target_repo = os.path.join(
+                self.tmp, "no-such-project")
+        why = self._expect_unusable(sid)["why"]
+        self.assertIn("no-such-project", why)
+
     def test_an_exception_INSIDE_the_pass_cannot_pin_the_dialog(self):
-        """A bare `except` in `_handoff_check_run` is the mechanism, not
+        """A bare `except` in `_handoff_derive_run` is the mechanism, not
         laziness: anything escaping that thread would leave the entry at
         "running" forever and the deck would poll a spinner nothing can
         resolve."""
         sid = self._room()
-        boom = self.actions._handoff_check_spawn
+        real = self.actions._handoff_derive_spawn
 
         def explode(*_a, **_k):
             raise RuntimeError("boom")
 
-        self.actions._handoff_check_spawn = explode
+        self.actions._handoff_derive_spawn = explode
         try:
             why = self._expect_unusable(sid)["why"]
             self.assertIn("RuntimeError", why)
         finally:
-            self.actions._handoff_check_spawn = boom
+            self.actions._handoff_derive_spawn = real
+
+    def test_a_pass_that_finds_NOTHING_is_reported_as_what_it_IS(self):
+        """Not a failure and not a clean result. On a program somebody spent an
+        afternoon drawing, "nothing differs" is far likelier to be a bad pass
+        than a true finding — so `ok` is true, `changes` is empty, and the
+        brief simply has no change section."""
+        from lcars_serve.actions import _HANDOFF_DERIVE_MARKER
+        sid = self._room()
+        self._set_turns({"stdout": "I looked.\n" + _HANDOFF_DERIVE_MARKER
+                                   + "\n"})
+        state = self._settled(sid)
+        self.assertTrue(state["derive"]["ok"])
+        self.assertEqual(state["derive"]["changes"], [])
+        self.assertNotIn("## What the mockup changes", state["brief"])
+        st, _b = self._post("/api/park", {"idea": state["brief"],
+                                          "holodeck": sid})
+        self.assertEqual(st, 200)
 
 
-class S169CheckIsAFLAGNOTAGATETest(S169CapstoneCheckBase):
-    """WHAT THE CHECK IS NOT, pinned — and a KNOWN MISS recorded on purpose.
+class S170DeriveIsNOTAGateTest(S170DeriveBase):
+    """WHAT THE DERIVATION IS NOT, pinned.
 
-    ── THE LIVE MEASUREMENT (three copilot drives, 2026-08-07) ──────────────
-
-    Driven on the REAL capstone room through the shipping road — `Actions`,
-    `holodeck_open`, `holodeck_promote`, a live copilot worker — the pass:
-
-      · answered ALL 18 drafted change lines, parsed clean, every verdict
-        carrying a checkable selector out of `mockup.html`;
-      · FOUND TWO GENUINELY FALSE LINES nobody had noticed, stably, on all
-        three runs — `## Decisions` claims the sidebar's current view is
-        "marked with an emerald filled pill" where the mockup has
-        `.nav-item[aria-current="true"]{background:var(--accent-soft)}`, a 12%
-        tint at 6px radius; and claims a summary stat-card row of
-        "spent-vs-budget with progress bar, largest category, over-budget
-        count" where `.stats` holds Largest category / Average per day / Over
-        budget. Both are exactly the defect class of this round — the account
-        describing its own drawing wrongly;
-      · and DID NOT FLAG the line this round is named after.
-
-    WHY, and it is not a tuning failure. "The button itself is unchanged (same
-    place, same label)" is, read against the mockup ALONE, defensible: the
-    button is in the top bar and it does say "Add expense". Its falsity is a
-    comparison with the app AS IT STANDS TODAY — `#dddddd`, `1px outset
-    #bbbbbb`, square, inline beside the brand — and a judgement about what
-    "unchanged" is supposed to cover. Sharpening the prompt twice (clause-by-
-    clause judging; then room to do the work before answering) changed the
-    evidence quality and not this verdict, and a six-claim batch with the line
-    at position five did not change it either — so it is not batch depth. The
-    round did not tune a fourth time.
-
-    SO THIS IS WHAT THE ROUND HONESTLY DELIVERS: a bounded pass that reads the
-    drawing instead of the account, catches contradictions the account cannot
-    catch about itself, is right in front of the captain when it does, and
-    CANNOT BLOCK, EDIT OR VOUCH. The tests below are that last clause.
+    A verification step that can block a hand-off is worse than the defect it
+    cures — S169's rule, and it survives the change of job. The pass only ever
+    ADDS a section to a draft the captain can already send, rewrite or delete.
     """
 
-    def test_NOTHING_in_the_FILING_path_reads_the_check(self):
-        """A flag is a thing the captain is shown. If a filing road ever
-        consulted it, this would be a gate — and a gate that a bounded model
-        pass can close is a design session the captain cannot get out of."""
+    def test_NOTHING_in_the_FILING_path_reads_the_derivation(self):
+        """If a filing road ever consulted it, this would be a gate — and a
+        gate a bounded model pass can close is a design session the captain
+        cannot get out of. `promote` publishes it; the runner and its helpers
+        produce it. NOBODY ELSE — above all not `_handoff_idea`, `file_mission`
+        or `park`."""
         import ast
         import lcars_serve.actions as A
         tree = ast.parse(open(A.__file__).read())
         readers = set()
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
-                body = ast.dump(node)
-                if "_handoff_check_state" in body or "'check'" in body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            # IDENTIFIERS AND STRING SUBSCRIPTS, never `ast.dump` of the whole
+            # node: a dump includes the DOCSTRING, so a function that merely
+            # explains where the derivation comes from reads as one that
+            # consults it. That is a test failing on prose, which teaches the
+            # next reader to delete the comment rather than the coupling.
+            for sub in ast.walk(node):
+                name = ""
+                if isinstance(sub, ast.Attribute):
+                    name = sub.attr
+                elif isinstance(sub, ast.Name):
+                    name = sub.id
+                elif (isinstance(sub, ast.Constant)
+                        and isinstance(sub.value, str)):
+                    name = sub.value if sub.value == "derive" else ""
+                if name in ("_handoff_derive_state", "derive"):
                     readers.add(node.name)
-        # `promote` publishes it; the runner and its helpers produce it. NOBODY
-        # ELSE — and above all not `_handoff_idea`, `file_mission` or `park`.
-        allowed = {"holodeck_promote", "_handoff_check_state",
-                   "_handoff_check_run", "_handoff_check_spawn",
-                   "_handoff_check_flags", "_handoff_check_parse",
-                   "_handoff_check_key", "_handoff_check_prompt",
-                   "_handoff_check_enabled", "_handoff_check_timeout"}
+        allowed = {"holodeck_promote", "_handoff_derive_state",
+                   "_handoff_derive_run", "_handoff_derive_spawn",
+                   "_handoff_derive_read", "_handoff_derive_write",
+                   "_handoff_derive_fingerprint", "_handoff_derive_prompt",
+                   "_handoff_derive_parse", "_handoff_derive_enabled",
+                   "_handoff_derive_timeout", "_handoff_changes",
+                   "_holodeck_args"}
         self.assertEqual(readers - allowed, set(), sorted(readers - allowed))
 
-    def test_a_CLEAN_check_changes_NOTHING_about_what_is_FILED(self):
-        """The control on the control. A pass that came back clean must leave
-        the mission byte-identical to a pass that never ran — otherwise the
-        product has quietly started trusting it."""
-        sid = self._room()
-        _st, first = self._promote(sid)
-        n = len(first["state"]["decisions"])
-        self._set_turns({"stdout": "\n".join(
-            "%d|OK|consistent" % (i + 1) for i in range(n))})
-        state = self._settled(sid)
-        self.assertTrue(state["check"]["ok"])
-        self.assertEqual(state["check"]["flags"], [])
-        # …and the false line is still in the brief it hands over.
-        self.assertIn(self.FALSE_LINE_FRAGMENT, state["brief"])
-        self._post("/api/park", {"idea": state["brief"], "holodeck": sid})
-        self.assertIn(self.FALSE_LINE_FRAGMENT,
-                      self._filed()[0]["files"]["--idea"])
+    def test_NO_CLASSIFIER_reads_a_change_line_and_decides_anything(self):
+        """The road S156 (14/14 → 5/14 on a reworded corpus), S147 (four parser
+        generations) and S157 (five guards) burned four sessions on. A derived
+        line goes from the pass into the box; nothing in between inspects it."""
+        import ast
+        import inspect
+        import lcars_serve.actions as A
+        for fn in (A._handoff_brief, A._handoff_parts, A._handoff_derive_parse):
+            src = inspect.getsource(fn)
+            for banned in ("kept", "unchanged", "carried over", "similar",
+                           "difflib", "SequenceMatcher"):
+                self.assertNotIn(banned, src.lower(), (fn.__name__, banned))
+        # …and the only regexes on this road are structural (list decoration).
+        tree = ast.parse(inspect.getsource(A._handoff_derive_parse))
+        self.assertEqual(
+            sorted(n.func.attr for n in ast.walk(tree)
+                   if isinstance(n, ast.Call)
+                   and isinstance(n.func, ast.Attribute)
+                   and n.func.attr in ("match", "search", "sub", "findall")),
+            ["search", "sub"])
 
-    def test_the_check_worker_can_write_NOTHING_INTO_THE_ROOM(self):
-        """It runs in the room where `mockup.html` and `concept.md` live. A
-        pass that could edit the drawing it is checking is the one outcome
-        worse than no pass — proven on the argv AND on the bytes."""
+    def test_the_FILING_is_never_blocked_in_ANY_state(self):
+        """The whole matrix, in one test: off, running, failed, empty, done."""
+        from lcars_serve.actions import _HANDOFF_DERIVE_MARKER
+        for i, stdout in enumerate(("nonsense", _HANDOFF_DERIVE_MARKER,
+                                    self._reply())):
+            # A DISTINCT PROGRAM EACH TIME: one room, one program (S124 fix
+            # round 1), so reusing the name is a 409 and not a finding.
+            sid = self._room(name="Filing matrix %d" % i)
+            self._set_turns({"stdout": stdout})
+            state = self._settled(sid)
+            st, _b = self._post("/api/park", {"idea": state["brief"],
+                                              "holodeck": sid})
+            self.assertEqual(st, 200, stdout[:40])
+        # …and RUNNING, which never settles inside this test.
+        sid = self._room(name="Filing matrix running")
+        self._set_turns({"sleep": 30, "stdout": self._reply()})
+        _st, out = self._promote(sid)
+        self.assertEqual(out["state"]["derive"]["state"], "running")
+        st, _b = self._post("/api/park", {"idea": out["state"]["brief"],
+                                          "holodeck": sid})
+        self.assertEqual(st, 200)
+
+    def test_the_derivation_worker_touches_NOTHING_IN_THE_PROGRAMS_ROOM(self):
+        """The room holds `mockup.html` and `concept.md` — the two documents
+        the whole diff is made of. A pass that could edit the drawing it is
+        reading is the one outcome worse than no pass.
+
+        WHAT THIS TEST CAN AND CANNOT PROVE, said plainly. The stub worker
+        OBEYS NO TOOL FLAG: it writes wherever it is told, so its landing in
+        the cwd below is evidence about the CWD and about nothing else. The
+        actual fence is the CLI's own tool surface, pinned on the argv by
+        `S170DerivePostureTest` and measured against the live binaries in the
+        S124 spike. What IS proven here is the daemon's half: whatever the
+        worker does, the room the drawing lives in gains exactly one file and
+        it is LCARS's own durable record."""
         sid = self._room()
-        room = os.path.join(self._sidecar(), "ledgerbook-redesign")
-        before = {f: open(os.path.join(room, f), "rb").read()
-                  for f in sorted(os.listdir(room))
-                  if os.path.isfile(os.path.join(room, f))}
-        _st, first = self._promote(sid)
-        n = len(first["state"]["decisions"])
-        # a worker that TRIES to write — the stub's `writes` is a real file
-        # write from inside the spawned process, in its cwd.
-        self._set_turns({"stdout": "\n".join(
-            "%d|OK|consistent" % (i + 1) for i in range(n))})
+        room = os.path.join(self._sidecar(), self.ROOM)
+
+        def snap(d):
+            return {f: open(os.path.join(d, f), "rb").read()
+                    for f in sorted(os.listdir(d))
+                    if os.path.isfile(os.path.join(d, f))}
+
+        before_room = snap(room)
+        self._set_turns({"stdout": self._reply(),
+                         "writes": [{"path": "WORKER-WROTE-THIS.txt",
+                                     "content": "x"}]})
         self._settled(sid)
-        after = {f: open(os.path.join(room, f), "rb").read()
-                 for f in sorted(os.listdir(room))
-                 if os.path.isfile(os.path.join(room, f))}
-        self.assertEqual(before, after)
+        after_room = snap(room)
+        self.assertEqual(set(after_room) - set(before_room),
+                         {"handoff-changes.json"})
+        for name, data in before_room.items():
+            self.assertEqual(after_room[name], data, name)
+        # …and the stub's write landed in the pass's CWD, which is the
+        # captain's project — the S170 change, observed rather than asserted.
+        self.assertTrue(os.path.isfile(
+            os.path.join(self.repo, "WORKER-WROTE-THIS.txt")))
 
 
-class S169CheckIsSWITCHABLETest(S169CapstoneCheckBase):
+class S170DeriveIsSWITCHABLETest(S170DeriveBase):
     handoff_check = "0"
 
     def test_OFF_spawns_NOTHING_and_SAYS_it_is_off(self):
-        """`$LCARS_HOLODECK_HANDOFF_CHECK=0`. The band must be able to tell
-        "off" from "found nothing" — a captain who turned it off and a captain
-        looking at a clean list are in completely different positions."""
+        """`$LCARS_HOLODECK_HANDOFF_CHECK=0` — S169's env var name, kept
+        deliberately: it is the switch every suite in this repo already sets,
+        and renaming it would silently start spawning workers inside test runs
+        that thought they had opted out.
+
+        The band must be able to tell "off" from "found nothing": a captain who
+        turned it off and a captain looking at an empty list are in completely
+        different positions."""
         sid = self._room()
         before = len(self._calls())
         _st, out = self._promote(sid)
-        self.assertEqual(out["state"]["check"], {"state": "off"})
+        self.assertEqual(out["state"]["derive"], {"state": "off"})
         self.assertEqual(len(self._calls()), before)
-        self.assertIn(self.FALSE_LINE_FRAGMENT, out["state"]["brief"])
+        self.assertTrue(out["state"]["brief"].strip())
+        self.assertNotIn("## What the mockup changes", out["state"]["brief"])
 
 
-class S169CheckPostureTest(HolodeckBase):
-    def test_the_check_posture_is_the_GROUNDING_posture_not_a_third_one(self):
-        """Reuse, not invention (the session brief's instruction). Grounding is
-        the closest precedent — one cold read-only pass whose output the daemon
-        owns — and a second, subtly different read-only posture is a second
-        thing to keep right."""
+class S170DerivePostureTest(HolodeckBase):
+    def test_the_derive_posture_is_the_GROUNDING_posture_not_a_third_one(self):
+        """Reuse, not invention. Grounding is not merely the closest precedent
+        now — it is the SAME posture in the SAME place: one cold read-only pass
+        standing in the captain's project, whose output the daemon owns."""
         from lcars_serve.actions import _HOLODECK_TOOLS, _HOLODECK_DENY
         for engine in ("claude", "copilot"):
-            self.assertEqual(_HOLODECK_TOOLS[(engine, "check")],
+            self.assertEqual(_HOLODECK_TOOLS[(engine, "derive")],
                              _HOLODECK_TOOLS[(engine, "grounding")], engine)
-        self.assertEqual(_HOLODECK_DENY[("claude", "check")],
+        self.assertEqual(_HOLODECK_DENY[("claude", "derive")],
                          _HOLODECK_DENY[("claude", "grounding")])
 
-    def test_no_check_posture_grants_a_WRITE_TOOL(self):
+    def test_no_derive_posture_grants_a_WRITE_TOOL(self):
         from lcars_serve.actions import _HOLODECK_TOOLS
         for engine in ("claude", "copilot"):
-            tools = _HOLODECK_TOOLS[(engine, "check")].lower()
+            tools = _HOLODECK_TOOLS[(engine, "derive")].lower()
             for w in ("write", "edit", "create", "bash"):
                 self.assertNotIn(w, tools, (engine, tools))
 
-    def test_check_is_NOT_a_session_mode(self):
-        """`_HOLODECK_MODES` is what the START endpoint will accept. The check
-        is a pass the daemon runs, never a room the captain can open."""
+    def test_copilot_gets_the_ROOM_as_its_ONE_grant(self):
+        """`--add-dir` grants WRITE on copilot (measured) — and the direction
+        here is the safe one: the cwd is the captain's project and the GRANT is
+        LCARS's own sidecar room, so the only directory it could make writable
+        is one LCARS owns. It cannot make even that writable, because
+        `view,grep,glob` holds no write tool. Without the grant the pass cannot
+        open `mockup.html`, which is half the diff."""
+        from lcars_serve.actions import Actions
+        args = Actions._holodeck_args("copilot", "derive", "sid-1", True,
+                                      "/side/room")
+        self.assertIn("--add-dir", args)
+        self.assertEqual(args[args.index("--add-dir") + 1], "/side/room")
+
+    def test_derive_is_NOT_a_session_mode(self):
+        """`_HOLODECK_MODES` is what the START endpoint will accept. The
+        derivation is a pass the daemon runs, never a room he can open."""
         from lcars_serve.actions import _HOLODECK_MODES
-        self.assertNotIn("check", _HOLODECK_MODES)
+        self.assertNotIn("derive", _HOLODECK_MODES)
         st, body = self._post_raw("/api/holodeck/start",
-                                  {"program": "x", "mode": "check"})
+                                  {"program": "x", "mode": "derive"})
         self.assertEqual(st, 400)
-        self.assertIn("check", body["error"].lower())
+        self.assertIn("derive", body["error"].lower())
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -7545,11 +8087,13 @@ class S169FalseStillOpenTest(HandoffBase):
         above would pass while the product had lost the two places it is
         SUPPOSED to say them — to a model, in prose."""
         from lcars_serve.actions import (_CONCEPT_CONTRACT,
-                                         _HANDOFF_CHECK_PROMPT)
-        self.assertIn("unchanged", _CONCEPT_CONTRACT)
-        self.assertIn("kept", _CONCEPT_CONTRACT)
+                                         _HANDOFF_DERIVE_PROMPT)
+        self.assertIn("kept", _CONCEPT_CONTRACT.lower())
         self.assertIn("SETTLED", _CONCEPT_CONTRACT)
-        self.assertIn("unchanged", _HANDOFF_CHECK_PROMPT)
+        # S170 — the derivation prompt is where "unchanged"/"kept" are now
+        # SAID to a model, and saying them is the opposite of matching them.
+        self.assertIn("unchanged", _HANDOFF_DERIVE_PROMPT)
+        self.assertIn("kept", _HANDOFF_DERIVE_PROMPT)
 
 
 if __name__ == "__main__":

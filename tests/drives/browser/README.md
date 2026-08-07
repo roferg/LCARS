@@ -511,11 +511,11 @@ later re-render made it one. A node harness could not see it either, until it wa
 changed to read the badge **render built** instead of calling `logBugBadge`
 itself with the globals already populated.
 
-## The fifth rig: `handoff.sh` (S169)
+## The fifth rig: `handoff.sh` (S169, extended S170)
 
 ```
-bash tests/drives/browser/handoff.sh              # the product
-bash tests/drives/browser/handoff.sh --calibrate  # the RED CONTROLS (7)
+bash tests/drives/browser/handoff.sh              # the product (THREE runs)
+bash tests/drives/browser/handoff.sh --calibrate  # the RED CONTROLS (15)
 bash tests/drives/browser/handoff.sh --all        # both
 ```
 
@@ -550,6 +550,32 @@ them stays green on a box the captain cannot read. It measures:
   is a different and weaker claim;
 - that **▦ File Mission** is still hit-testable (`elementFromPoint`, never "it
   is in the DOM"), and that S128's open-questions cue still is too.
+
+**S170 added the WAIT, and it is the half no harness can fake.** Send to Align
+is a stage now: one bounded read-only pass stands in the captain's project and
+works out what the mockup changes about it, 154–220s measured. The rig drives a
+scripted worker with a real `sleep` in it and measures, in three product runs:
+
+- the **RUNNING band** wholly on the first screen, hit-testable, above the brief
+  box, carrying the sentence that says he may **close this and walk away**.
+  Its first version was ~170px and left EIGHT visible lines of brief at
+  1440x677 against a bar of nine — found here, on the first run, and cured by
+  cutting the copy to three lines;
+- **`reloadProof`** — the page is RELOADED mid-wait, which throws away every
+  byte of client state (dialog, draft, poll, timer), and the same controls are
+  walked again. The brief he comes back to must be COMPLETE, with the derived
+  change **in the textarea**. If that survives, it survives because the DAEMON
+  owns the wait;
+- **`typeWhileWaiting`** — he types into the brief while the pass runs. When it
+  lands, HIS WORDS must still be there AND the change list must have been
+  appended (FL-013, one dialog over). A reload would wipe the typing, so this
+  is its own run.
+
+**What it does NOT prove: the daemon dying.** A reload restarts the page, not
+the process, so the in-memory cache still answers and a broken persisted record
+comes back GREEN here. `tests/drives/handoff-durability.sh` is where that is
+measured — it `kill -9`s the daemon mid-pass and again after, and starts a
+fresh one over the same room.
 
 **The fixture is the real room.** `web/tests/fixtures/s128-drive/concept.md` is
 a byte copy of the concept doc the holodeck wrote for the program whose mission
@@ -664,7 +690,8 @@ prunes older sibling dirs from its own `mktemp` namespace, keeping the newest 5
 | `LCARS_BROWSER_BASEFRESH` | *(unset)* | path to a base-freshness record JSON, planted as the stub reporter behind `GET /api/base-freshness` |
 | `LCARS_BROWSER_CONSOLE_CHECK` | *(unset)* | path to an expectation JSON — makes the driver open the File console and **measure** its pre-flight line |
 | `LCARS_BROWSER_HANDOFF_CHECK` | *(unset)* | path to an expectation JSON — makes the driver enter the deck, pick the planted program back up and open **▶ SEND TO ALIGN**, then measure the pre-drafted brief where it is read. See `handoff.sh` |
-| `LCARS_HANDOFF_VARIANTS` | all seven | run a SUBSET of `handoff.sh --calibrate`'s red controls |
+| `LCARS_HANDOFF_VARIANTS` | all fifteen | run a SUBSET of `handoff.sh --calibrate`'s red controls |
+| `LCARS_RIG_DERIVE_SLEEP` | `6` | seconds the scripted derivation worker waits before answering — the rig's stand-in for the live pass's 154–220s |
 
 ### The seam serves the *whole* app
 

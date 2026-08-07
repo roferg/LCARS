@@ -1860,54 +1860,53 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   color:var(--lcars-text-bright)}
 .field .handoff-missing[hidden]{display:none}
 
-/* ── S169 FIX ROUND 2: THE CHECK BAND ──────────────────────────────────────
-   What one bounded read-only pass found when it read the drafted change list
-   back against `mockup.html`. It sits directly under the hint and above the
-   brief box — the one place a captain who reads a single screen is looking —
-   and it has FOUR states that must not look alike:
+/* ── S170: THE DERIVATION BAND ─────────────────────────────────────────────
+   What one bounded read-only pass found when it stood in the captain's project
+   and compared it with `mockup.html`. It sits directly under the hint and
+   above the brief box — the one place a captain who reads a single screen is
+   looking — and it has FOUR states that must not look alike:
 
-     running  quiet, no colour. It is a progress note, not a finding.
-     clean    quiet TEAL. "I looked and found nothing" has to be visibly
-              different from "I did not look", or the amber below means
-              nothing on the day it fires (S162's lesson, and the qcue's).
-     flagged  AMBER, and it carries its own background and border-left so a
+     running  AMBER, and it carries its own background and border-left so a
               neighbouring `.hint` rule cannot demote it to metadata on source
-              order — the exact way S162's warning went silent.
-     failed   quiet, no colour, and it SAYS the check did not answer. It must
-              never be mistaken for the clean state. */
-.field .handoff-check{margin:0 0 8px 0;border:1px solid var(--lcars-border-bright);
+              order (S162's warning went silent exactly that way). It is
+              louder than S169's progress note ON PURPOSE: it is no longer
+              "wait a moment", it is "a section of your brief is not here yet
+              and you may walk away" — the sentence the whole stage is for.
+     done     quiet TEAL. "I read your app and here is what differs" has to be
+              visibly different from "I could not", or the failure below reads
+              as a result on the day it fires.
+     failed   quiet, no colour, and it SAYS the pass did not answer. It must
+              never be mistaken for the done state. An empty derivation shares
+              this state, deliberately: on a real design "nothing differs" is
+              far likelier to be a bad pass than a true finding.
+     off      hidden entirely. */
+.field .handoff-derive{margin:0 0 8px 0;border:1px solid var(--lcars-border-bright);
   border-left-width:4px;border-radius:7px;padding:8px 11px;font-size:12px;
   line-height:1.5;color:var(--lcars-text-dim);
   display:flex;flex-direction:column;gap:5px}
-.field .handoff-check[hidden]{display:none}
-.field .handoff-check .ck-head{color:var(--lcars-text-dim)}
-.field .handoff-check.clean{border-color:var(--lcars-teal)}
-.field .handoff-check.clean .ck-head{color:var(--lcars-text-bright)}
-.field .handoff-check.flagged{background:rgba(255,170,0,.14);
+.field .handoff-derive[hidden]{display:none}
+.field .handoff-derive .ck-head{color:var(--lcars-text-dim)}
+.field .handoff-derive.done{border-color:var(--lcars-teal)}
+.field .handoff-derive.done .ck-head{color:var(--lcars-text-bright)}
+.field .handoff-derive.running{background:rgba(255,170,0,.14);
   border-color:var(--lcars-amber);border-left-color:var(--lcars-amber)}
-.field .handoff-check.flagged .ck-head{color:var(--lcars-text-bright)}
-.field .handoff-check .ck-row{display:flex;flex-direction:column;gap:3px;
+.field .handoff-derive.running .ck-head{color:var(--lcars-text-bright)}
+.field .handoff-derive .ck-row{display:flex;flex-direction:column;gap:3px;
   padding:6px 10px;border-radius:6px;background:var(--lcars-black);
   border-left:3px solid var(--lcars-amber)}
 /* CLAMPED, and the trade is stated where it is made. This band sits between
    the hint and the brief box, so its height is subtracted from the captain's
-   own draft on the first screen — measured at 165px on the first browser run,
-   which left him SIX visible lines of brief at 1440x677 and three at 1280x613.
-   Two lines each, with the full string on `title`.
+   own draft on the first screen — measured at 165px on S169's first browser
+   run, which left him SIX visible lines of brief at 1440x677 and three at
+   1280x613. Two lines each, with the full string on `title`.
 
-   Clamping the CLAIM is safe in a way clamping a warning never is: it is his
-   own drafted line, verbatim, in the textarea directly below, and this row
-   points at it. The EVIDENCE is bounded by the daemon to 400 characters before
-   it ever gets here (`_HANDOFF_CHECK_MAX_EVIDENCE`), and its first line is the
-   part that names the selector — which is the part he checks. */
-.field .handoff-check .ck-claim,
-.field .handoff-check .ck-why{display:-webkit-box;-webkit-box-orient:vertical;
-  -webkit-line-clamp:2;line-clamp:2;overflow:hidden}
-.field .handoff-check .ck-claim{color:var(--lcars-text-bright);
-  font-size:11.5px;line-height:1.45}
-.field .handoff-check .ck-why{color:var(--lcars-text-dim);font-size:11px;
-  line-height:1.45;font-family:var(--font-mono);overflow-wrap:anywhere}
-
+   `.ck-claim` is now only used on the KEPT-YOUR-EDITS road, where the change
+   lines are shown because they could NOT be pasted into the box. Clamping them
+   is the same trade the rest of this band makes: the count is exact, the text
+   is on `title`, and the alternative is pushing his own draft off the screen. */
+.field .handoff-derive .ck-claim{display:-webkit-box;-webkit-box-orient:vertical;
+  -webkit-line-clamp:2;line-clamp:2;overflow:hidden;
+  color:var(--lcars-text-bright);font-size:11.5px;line-height:1.45}
 .handoff-questions{display:flex;flex-direction:column;gap:10px}
 .handoff-questions .hq{display:flex;flex-direction:column;gap:5px;
   background:var(--lcars-card);border:1px solid rgba(80,104,138,.25);

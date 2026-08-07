@@ -157,12 +157,13 @@ command -v git >/dev/null 2>&1 || skip "git not found — the sidecar fixture ne
 # THREE at 1280x613 — a finding delivered on top of a slot. A one-line heading
 # and two clamped rows brought it to 9 / 6.
 #
-# AND THE RIG NOW PROVES MORE THAN IT DID, not less. `expectCheckFlag` requires
-# the flagged band to be WHOLLY on the first screen, above the brief box, and
-# hit-testable, carrying the contradicted line AND the mockup's evidence. So
-# what these two numbers now mean together is "the finding AND nine lines of
-# his own words, both in front of him at rest" — where before it was twelve
-# lines and no finding at all.
+# AND THE RIG NOW PROVES MORE THAN IT DID, not less. `expectDeriveRunning`
+# requires the RUNNING band to be WHOLLY on the first screen, above the brief
+# box, hit-testable, and carrying the sentence that says he may walk away; then
+# `reloadProof` RELOADS THE PAGE and walks the same controls again, and
+# `expectChangeLines` requires the derived change to be in the textarea he
+# would send. So what these numbers mean together is "the wait, the promise he
+# can leave, and nine lines of his own words — all in front of him at rest".
 #
 # TWO VIEWPORTS, and the second one is the tester's. 1440x677 is the S128
 # window; 1280x613 is a SHORT one, where the sticky footer's band eats into the
@@ -170,33 +171,66 @@ command -v git >/dev/null 2>&1 || skip "git not found — the sidecar fixture ne
 # at one height and not the other is a dialog that has been checked at one
 # height. `minLinesShown` falls with the window because the claim is "enough of
 # it to read as a brief", not "the same 12 lines on a laptop and a phone".
-write_expect() {   # $1 = width  $2 = height  $3 = min lines on screen at rest
+write_expect() {   # $1 = width  $2 = height  $3 = min lines shown  $4 = mode
+  # MODE is `reload` or `typed`, and they are two different claims that cannot
+  # share one run:
+  #
+  #   reload — he walks away and the PAGE IS RELOADED. Every byte of client
+  #            state goes: the dialog, the draft, the poll, the timer. He walks
+  #            the same controls again and must find a FINISHED brief with the
+  #            derived change in the textarea. If that survives, it survives
+  #            because the DAEMON owns the wait.
+  #   typed  — he TYPES while it is running. When the pass lands the daemon has
+  #            a better draft, and putting it in the box would destroy what a
+  #            human wrote (FL-013, one dialog over). His text must survive and
+  #            the band must SAY it kept it. A reload would wipe the typing, so
+  #            this run does not reload.
+  local mode="${4:-reload}"
+  local reload=false typed='""' keeps='""' chg
+  chg="[\"$CHANGE_MARK\"]"
+  if [ "$mode" = "typed" ]; then
+    typed='"MY OWN WORDS — DO NOT CLOBBER"'
+    keeps='"MY OWN WORDS — DO NOT CLOBBER"'
+  else
+    reload=true
+  fi
   cat >"$WORK/expect.json" <<EOF
 {
   "viewportW": $1,
   "viewportH": $2,
-  "minLines": 24,
+  "minLines": 28,
   "minLinesShown": $3,
+  "minLinesShownRunning": $3,
   "sections": [
     "## What it must do — in your own words",
-    "## What the mockup changes — as the design chat recorded it",
+    "## What the mockup changes about your app as it is today",
     "## Implied by the mockup — NOT things you said"
   ],
-  "hintNames": ["changes the design chat recorded", "implies"],
-  "hintForbids": ["today's app", "changes the mockup makes"],
+  "hintNames": ["changes read off your project", "implies"],
+  "hintForbids": ["today's app", "the design chat recorded",
+                  "Drafted from your concept doc"],
   "expectQCue": true,
   "qcueForbids": ["unanswered", "⚠"],
   "expectGuidance": true,
-  "expectCheckFlag": "$FLAG_MARK"
+  "expectDeriveRunning": true,
+  "walkAwayPhrases": ["CLOSE THIS AND WALK AWAY IF YOU LIKE",
+                      "survives a reload and a restart",
+                      "send the brief without one"],
+  "typeWhileWaiting": $typed,
+  "reloadProof": $reload,
+  "expectDeriveDone": true,
+  "donePhrases": ["stood in your project", "produces no line"],
+  "expectChangeLines": $chg,
+  "expectBriefKeeps": $keeps
 }
 EOF
 }
-# ── S169 FIX ROUND 2: THE CHECK, DRIVEN FOR REAL, FOR ZERO TOKENS ──────────
+# ── S170: THE DERIVATION, DRIVEN FOR REAL, FOR ZERO TOKENS ────────────────
 #
-# `promote` now spawns ONE bounded read-only worker that reads the drafted
-# change list back against `mockup.html` and flags what the picture
-# contradicts. The band that shows the result is the new thing on this screen,
-# and a rig that stubs the BAND instead of the PASS would be measuring itself.
+# `promote` spawns ONE bounded read-only worker that stands in the captain's
+# project and reports what the mockup CHANGES about it. That list becomes a
+# section of his brief, and a rig that stubbed the BAND instead of the PASS
+# would be measuring itself.
 #
 # So the daemon spawns a real subprocess on the real road, and that subprocess
 # is a PYTHON SCRIPT — the same device holodeck.sh already uses to drive a turn
@@ -205,17 +239,21 @@ EOF
 # It answers HONESTLY in the sense that matters here: it reads the numbered
 # claims out of the prompt the daemon actually built, emits one verdict per
 # claim in the shape the parser requires, and marks exactly one CONTRADICTED —
-# the one containing `$FLAG_MARK`, which is a line of the REAL S128 concept
-# doc. A stub that emitted a fixed three lines would be refused by the daemon
-# as a partial answer, which is itself the point of that rule.
-FLAG_MARK="Objects mode gets its own layout"
+# the shape the parser requires, after a real wait, so the running band the
+# rig measures is a band with a real process behind it.
+# S170 — THE STUB EMITS A CHANGE LIST, because that is what the pass produces
+# now. And it SLEEPS FIRST, deliberately: the running band is the surface this
+# round exists for, and a pass that answers instantly is a wait the rig can
+# never see. `LCARS_RIG_DERIVE_SLEEP` is the fuse.
+CHANGE_MARK="today the mode switch and the map tabs are two separate bars"
+DERIVE_SLEEP="${LCARS_RIG_DERIVE_SLEEP:-6}"
 
 write_check_worker() {   # $1 = dest path
-  cat >"$1" <<'PYW'
+  cat >"$1" <<PYW
 #!/usr/bin/env python3
-"""The rig's stand-in for a check worker. NOT an engine — a script."""
-import re
+"""The rig's stand-in for a derivation worker. NOT an engine — a script."""
 import sys
+import time
 
 argv = sys.argv[1:]
 prompt = ""
@@ -223,25 +261,28 @@ for i, a in enumerate(argv):
     if a == "-p" and i + 1 < len(argv):
         prompt = argv[i + 1]
         break
-claims = re.findall(r"^(\d+)\. (.*)$", prompt, re.M)
-if not claims or "CONTRADICTED" not in prompt:
-    # anything that is NOT the check prompt must still be loud: this rig
+if "=== CHANGES ===" not in prompt or "LOOK AND FLOW ONLY" not in prompt:
+    # anything that is NOT the derivation prompt must still be loud: this rig
     # spawns exactly one worker and it is this one.
     sys.stderr.write("HANDOFF RIG: an unexpected worker was spawned.\n")
     sys.exit(1)
-MARK = "Objects mode gets its own layout"
-for n, text in claims:
-    if MARK in text:
-        sys.stdout.write(
-            "%s|CONTRADICTED|the mockup's Objects view still carries the top "
-            "tab strip (.bar > .pill), not a left object list\n" % n)
-    else:
-        sys.stdout.write("%s|OK|consistent with the mockup\n" % n)
+# THE WAIT IS REAL. The live pass is 154-220s; this is the same shape, short
+# enough for a rig and long enough that the running band is a thing a browser
+# can be pointed at.
+time.sleep(${DERIVE_SLEEP})
+sys.stdout.write("I read the toolbar, the mode switcher and the map tabs.\n")
+sys.stdout.write("=== CHANGES ===\n")
+sys.stdout.write("- today the toolbar is 48px tall -> the mockup grows it to "
+                 "52px\n")
+sys.stdout.write("- ${CHANGE_MARK} -> the mockup merges them into one 42px "
+                 "row with pill map tabs\n")
+sys.stdout.write("- today there is no theme control and the app is dark-only "
+                 "-> the mockup adds a sun/moon toggle and a light theme\n")
 PYW
   chmod +x "$1"
 }
 
-write_expect 1440 677 9
+write_expect 1440 677 9 typed
 
 # ── the planted sidecar: a real local git repo with one archived program ────
 # The daemon ADOPTS this (`_ensure_sidecar` is idempotent) and the deck lists
@@ -316,6 +357,22 @@ run_once() {   # $1 = label, $2 = web dir, $3 = artifact dir
   return $?
 }
 
+# EVERY INLINE PATCH BELOW ASSERTS ITS OWN ANCHOR, AND THAT ASSERTION IS NOW
+# LOAD-BEARING. It used to run in a python process whose exit status nothing
+# read: a control whose anchor a fix round had rewritten copied `web/`
+# UNMODIFIED, ran the real product, passed, and was reported as "THE CHECK
+# CANNOT SEE THIS" — an accusation against the product for a control that was
+# never applied. Measured here twice in one session. `patch_or_die` makes a
+# dead anchor an INFRASTRUCTURE failure, which is what it is.
+patch_or_die() {   # $1 = file to patch; the patch script arrives on stdin
+  if ! "${LCARS_PYTHON_BIN:-python3}" - "$1"; then
+    printf '\033[31m  ✗ THE RED CONTROL COULD NOT BE APPLIED\033[0m — its anchor is\n'
+    printf '    gone from %s. The control is measuring NOTHING; re-point it.\n' "$1"
+    return 1
+  fi
+  return 0
+}
+
 # ── the red controls: a COPY of web/, each broken one way ───────────────────
 make_variant() {   # $1 = name, $2 = dest
   local name="$1" dest="$2"
@@ -332,8 +389,54 @@ make_variant() {   # $1 = name, $2 = dest
       cat >>"$py" <<'PY'
 
 
-def _handoff_parts(concept_text):   # S169 RED CONTROL — S128's behaviour
-    return _handoff_requirements(concept_text), [], []
+def _handoff_parts(concept_text, changes=()):   # RED CONTROL — S128 behaviour
+    return _handoff_requirements(concept_text), [], [], []
+PY
+      ;;
+    derive-not-durable)
+      # S170's OWN CONTROL, and the captain's own question asked mid-session:
+      # "If the daemon closes by accident while I walk away are we still good?"
+      # Delete the persistence and the answer is no — the in-memory cache dies
+      # with the process and he pays the 154-220s wait a second time.
+      patch_or_die "$py" <<'PY' || return 1
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = "        self._handoff_derive_write(sess.program_dir, fp, result)"
+assert old in s, "the persistence call moved - this control measures nothing"
+s = s.replace(old, "        pass  # red control: nothing is persisted", 1)
+old2 = "        disk = self._handoff_derive_read(sess.program_dir, fp)"
+assert old2 in s, "the persistence read moved - this control measures nothing"
+s = s.replace(old2, "        disk = None  # red control: nothing is read back", 1)
+open(p, "w").write(s)
+PY
+      ;;
+    band-hides-the-wait)
+      # THE WAIT, MADE SILENT. The running band drops the one sentence the
+      # whole stage exists to deliver — that he may close this and walk away —
+      # and becomes S169's spinner again: a progress note that tells a captain
+      # nothing about whether it is safe to leave.
+      patch_or_die "$js" <<'PY' || return 1
+import sys
+p = sys.argv[1]; s = open(p).read()
+mark = '"\u29d7 Working out what the mockup changes about your project"'
+assert mark in s, "the running copy moved - this control is measuring nothing"
+i = s.index(mark)
+j = s.index("));", i)
+open(p, "w").write(s[:i] + '"Reading these lines back against the mockup..."'
+                  + s[j:])
+PY
+      ;;
+    brief-clobbers-his-edits)
+      # FL-013, ONE DIALOG OVER. The derivation lands while he is typing and
+      # the redraft overwrites what he wrote. NEVER OVERWRITE WHAT A HUMAN
+      # TYPED is the rule; this control removes the test that enforces it.
+      patch_or_die "$js" <<'PY' || return 1
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = "  function briefIsPristine() { return brief.value === seed.brief; }"
+assert old in s, "the pristine test moved - this control is measuring nothing"
+open(p, "w").write(s.replace(
+    old, "  function briefIsPristine() { return true; }", 1))
 PY
       ;;
     no-fit)
@@ -343,7 +446,7 @@ PY
       # ways — and two thirds of his brief goes back behind an inner scrollbar
       # inside a modal body that is itself scrolling. MEASURED before the cure:
       # a 269px box over 817px of content at 1440x677.
-      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+      patch_or_die "$js" <<'PY' || return 1
 import sys
 p = sys.argv[1]; s = open(p).read()
 old = '  fitBrief();\n  brief.addEventListener("input", fitBrief);'
@@ -360,13 +463,18 @@ PY
     mute-hint)
       # THE LINE UNDER THE BOX SAYS NOTHING ABOUT WHAT GREW. This is the one
       # signal for a captain who reads only the first screen.
-      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+      patch_or_die "$js" <<'PY' || return 1
 import sys
 p = sys.argv[1]; s = open(p).read()
-old = 'f1.appendChild(el("span", "hint", holoBriefHint(seed)));'
-assert old in s, "the hint line moved — this control is measuring nothing"
-new = ('f1.appendChild(el("span", "hint", "Drafted from your concept doc. '
-       'Rewrite it however you like."));')
+# NEUTERED AT THE SOURCE, not at one call site. The hint is composed once when
+# the dialog opens AND recomposed when the derivation lands (`rehint`), so a
+# control that only patched the first would be measuring nothing after the
+# pass answered — which is precisely how the previous version of this control
+# went silently GREEN.
+old = '  return "In this brief: "'
+assert old in s, "the hint wording moved - this control is measuring nothing"
+new = ('  return "Rewrite this however you like."; // red control\n'
+       '  return "In this brief: "')
 open(p, "w").write(s.replace(old, new, 1))
 PY
       ;;
@@ -403,14 +511,14 @@ PY
       # scrolls. Fix round 1 cured the textarea and walked past this box.
       printf '\n.handoff-guidance{max-height:230px;overflow-y:auto}\n' >>"$css"
       ;;
-    hide-check)
-      # THE FINDING, DELIVERED AND INVISIBLE. The daemon runs the pass, the
-      # band is built, the flag is in the DOM — and it paints nowhere. That is
-      # D1 one level down, and it is the shape every "we added a warning"
-      # round in this project has shipped at least once.
-      printf '\n.field .handoff-check{display:none}\n' >>"$css"
+    hide-derive)
+      # THE BAND, DELIVERED AND INVISIBLE. The daemon runs the pass, the band
+      # is built, the state is in the DOM — and it paints nowhere. That is D1
+      # one level down, and it is the shape every "we added a warning" round in
+      # this project has shipped at least once.
+      printf '\n.field .handoff-derive{display:none}\n' >>"$css"
       ;;
-    check-never-asks)
+    derive-never-asks)
       # THE SPINNER THAT NEVER RESOLVES. The daemon answers the dialog
       # immediately with "running" — a hand-off held up by a verification step
       # is worse than the defect — and the band is supposed to come back for
@@ -420,13 +528,13 @@ PY
       # was started where the band is built, which is BEFORE `showOverlay` puts
       # the dialog in the document, so its own "is this still on the page?"
       # guard was false on the very first call.
-      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+      patch_or_die "$js" <<'PY' || return 1
 import sys
 p = sys.argv[1]; s = open(p).read()
-old = '''  if ((seed.check || {}).state === "running") {
-    holoCheckPoll(seed, checkBox, picked, 1);
+old = '''  if ((seed.derive || {}).state === "running") {
+    holoDerivePoll(seed, checkBox, picked, 1, briefLanded);
   }'''
-assert old in s, "the check poll moved — this control is measuring nothing"
+assert old in s, "the poll moved — this control is measuring nothing"
 open(p, "w").write(s.replace(old, "  /* red control: never asks again */", 1))
 PY
       ;;
@@ -437,14 +545,14 @@ PY
       # model wrote from the conversation. Fix round 1 corrected the caption
       # INSIDE the box and left this line four inches above it saying the same
       # thing.
-      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+      patch_or_die "$js" <<'PY' || return 1
 import sys
 p = sys.argv[1]; s = open(p).read()
-old = '''    parts.push(holoCount(d, "change the design chat recorded",
-                         "changes the design chat recorded"));'''
+old = '''    parts.push(holoCount(d, "change read off your project",
+                         "changes read off your project"));'''
 assert old in s, "the hint wording moved — this control is measuring nothing"
-new = '''    parts.push(holoCount(d, "change the mockup makes to today's app",
-                         "changes the mockup makes to today's app"));'''
+new = '''    parts.push(holoCount(d, "change the design chat recorded",
+                         "changes the design chat recorded"));'''
 open(p, "w").write(s.replace(old, new, 1))
 PY
       ;;
@@ -456,7 +564,7 @@ PY
       # re-asked at a real human gate. A warning that is always on is not a
       # warning; it trains him to click past the strip where a real finding
       # appears.
-      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+      patch_or_die "$js" <<'PY' || return 1
 import sys
 p = sys.argv[1]
 s = open(p).read()
@@ -471,7 +579,17 @@ PY
   return 0
 }
 
-VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list no-fit capped-box mute-hint clip-box no-sticky-foot hint-below-box brief-below-fold capped-guidance hide-check check-never-asks hint-overclaims cue-cries-wolf}"
+VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list no-fit capped-box mute-hint clip-box no-sticky-foot hint-below-box brief-below-fold capped-guidance hide-derive derive-never-asks hint-overclaims cue-cries-wolf band-hides-the-wait brief-clobbers-his-edits}"
+
+# DELIBERATELY NOT IN THAT LIST: `derive-not-durable`. It breaks the persisted
+# record in the program room — the cure for "the daemon closed while I walked
+# away" — and THIS RIG CANNOT SEE IT. A page reload throws away client state,
+# not the daemon, so the in-memory cache still answers on the second open and
+# the variant comes back GREEN. A control that cannot go red is the thing this
+# rig has three times printed reassuring output about, so it is not run here.
+# The variant is kept below because it is the right shape once something CAN
+# kill the daemon; durability is proven instead by the real kill -9 drive and
+# by S170DeriveSurvivesTheDaemonTest.
 
 # WHAT EACH CONTROL MUST FAIL ON. A non-zero exit is not a control going red —
 # a variant that fell over for an unrelated reason proves nothing about the
@@ -489,10 +607,12 @@ expected_reason() {   # $1 = variant
     hint-below-box)    echo "not WHOLLY on" ;;
     brief-below-fold)  echo "does not start on screen" ;;
     capped-guidance)   echo "the guidance block hides" ;;
-    hide-check)        echo "not on the screen" ;;
-    check-never-asks)  echo "never settled" ;;
+    hide-derive)       echo "not on the screen" ;;
+    derive-never-asks) echo "never settled" ;;
     hint-overclaims)   echo "CLAIMS" ;;
     cue-cries-wolf)    echo "reads as a WARNING" ;;
+    band-hides-the-wait)     echo "never says" ;;
+    brief-clobbers-his-edits) echo "was DESTROYED by the redraft" ;;
   esac
 }
 
@@ -501,22 +621,28 @@ run_product() {
   # 1440x677 — S128's window. 1280x613 — the tester's short one (fix round 1),
   # where the footer band is at its most expensive and the line above the box
   # has the least room. Both must pass; the second is not a bonus.
-  for pass in "1440 677 9 product" "1280 613 6 product-short"; do
+  # THREE RUNS. 1440x677 is S128's window; 1280x613 is the tester's short one
+  # (fix round 1), where the footer band is at its most expensive and the line
+  # above the box has the least room. The third is the SAME window with him
+  # TYPING while the pass runs — a different claim, and one a reload erases.
+  for pass in "1440 677 9 product reload" "1280 613 6 product-short reload" \
+              "1440 677 9 product-typed typed"; do
     set -- $pass
-    write_expect "$1" "$2" "$3"
+    write_expect "$1" "$2" "$3" "$5"
     dir="$WORK/$4"
-    run_once "PRODUCT — this repo's web/, unmodified · ${1}x${2}" "$REPO/web" "$dir"
+    run_once "PRODUCT — this repo's web/, unmodified · ${1}x${2} · $5" \
+             "$REPO/web" "$dir"
     rc=$?
     case "$rc" in
-      0) printf '\n\033[32m✓ THE SEND-TO-ALIGN BOX MEASURED UP AT %sx%s.\033[0m\n' "$1" "$2"
+      0) printf '\n\033[32m✓ THE SEND-TO-ALIGN BOX MEASURED UP AT %sx%s (%s).\033[0m\n' "$1" "$2" "$5"
          printf '  Now open it: %s/handoff.png\n\n' "$dir" ;;
       77) return 77 ;;
-      *) printf '\n\033[31m✗ THE HAND-OFF DIALOG IS WRONG AT %sx%s.\033[0m See above and\n' "$1" "$2"
+      *) printf '\n\033[31m✗ THE HAND-OFF DIALOG IS WRONG AT %sx%s (%s).\033[0m See above and\n' "$1" "$2" "$5"
          printf '  %s/handoff-check.json\n\n' "$dir"
          worst=1 ;;
     esac
   done
-  write_expect 1440 677 9
+  write_expect 1440 677 9 typed
   return $worst
 }
 

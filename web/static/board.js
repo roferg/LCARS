@@ -9764,134 +9764,168 @@ function holoBriefHint(seed) {
      The count is the same number; the claim about where it came from is now
      true. What the mockup was actually READ against is the check band's
      business, below — and that one only says so when a pass really ran. */
+  /* S170 — AND NOW THE SENTENCE HAS TWO SOURCES, so it names both. His words
+     and what the mockup implies come out of the concept doc; THE CHANGE LIST
+     DOES NOT — it is read off his project and the drawing by a pass that
+     stands in the repo. Saying "drafted from your concept doc" over a list
+     that was not is the same class of lie fix round 2 took out of here, one
+     source along. */
   var parts = [holoCount((seed.requirements || []).length,
                          "thing you said", "things you said")];
-  var d = (seed.decisions || []).length, i = (seed.implied || []).length;
+  var d = (seed.changes || []).length, i = (seed.implied || []).length;
+  var o = (seed.outOfScope || []).length;
   if (d) {
-    parts.push(holoCount(d, "change the design chat recorded",
-                         "changes the design chat recorded"));
+    parts.push(holoCount(d, "change read off your project",
+                         "changes read off your project"));
   }
   if (i) parts.push(i + " the mockup implies");
+  if (o) parts.push(o + " out of scope");
   var last = parts.pop();
-  return "Drafted from your concept doc: "
+  return "In this brief: "
     + (parts.length ? parts.join(", ") + " and " + last : last)
     + ". Scroll it — all of it is yours to correct.";
 }
 
-/* ── S169 FIX ROUND 2: THE CHECK BAND ─────────────────────────────────────
-   The daemon reads the drafted change list back against `mockup.html` and
-   `basis.md` with one bounded read-only pass and returns what the picture
-   CONTRADICTS. This renders that, and it renders NOTHING ELSE — it never edits
-   the draft, never removes a line, never rewrites a word of it. The captain's
-   move here is skim-and-correct, and a flagged line is what makes the skim
-   land on the right sentence.
+/* ── S170: THE DERIVATION BAND — the wait, made honest ────────────────────
+   SEND TO ALIGN is a stage now, by the captain's own design: *"make send to
+   align a stage with wait time where the holodeck does a final diff and
+   summarization… I know this means it can take a few minutes and we can make
+   it so it can walk away, but I feel like that would yield a better result."*
 
-   THE FOUR STATES ARE DIFFERENT ON PURPOSE, and one of them is the reason the
-   band exists at all: "the check ran and found nothing" and "the check could
-   not run" must never look alike. A failure that reads as a clean bill of
-   health is worse than no band, because it is the same lie the false line told.
+   S169's band rendered a spinner on a dialog. THE WAIT WAS ALREADY REAL —
+   154–220s measured, a 420s bound, a 520s poll budget — and hiding it behind
+   "Reading these lines back…" told a captain nothing about whether he could
+   leave. This band's whole job is that he CAN.
 
-   `check.ok === false` means THE PASS DID NOT ANSWER. It is not a verdict. */
-function holoCheckRender(box, check) {
-  var state = (check && check.state) || "off";
-  box.className = "handoff-check";
+   FOUR STATES, DIFFERENT ON PURPOSE, and two of them are the reason it exists:
+   "the pass ran and produced a list" and "the pass could not run" must never
+   look alike, because the second one leaves a section MISSING from his brief
+   and only this band can tell him so. `derive.ok === false` means THE PASS DID
+   NOT ANSWER. It is not "the mockup changes nothing".
+
+   AND IT NEVER BLOCKS. ▦ FILE MISSION is live in every one of these states. */
+function holoDeriveRender(box, derive, opts) {
+  var state = (derive && derive.state) || "off";
+  box.className = "handoff-derive";
+  box.setAttribute("data-state", state === "done"
+    ? (derive.ok ? "done" : "failed") : state);
   while (box.firstChild) box.removeChild(box.firstChild);
   if (state === "off") { box.hidden = true; return; }
   box.hidden = false;
   if (state === "running") {
-    box.appendChild(el("span", "ck-head",
-      "Reading these lines back against the mockup…"));
-    return;
-  }
-  if (!check.ok) {
-    /* SAYS SO, PLAINLY, and does not dress it up. Nothing is blocked — the
-       brief above is exactly what it would have been — and the captain is the
-       one who has to know that nobody checked it. */
-    box.appendChild(el("span", "ck-head",
-      "LCARS could not check these lines against the mockup"
-      + (check.why ? " — " + check.why : "")
-      + ". Nothing is blocked; read the list yourself."));
-    return;
-  }
-  var flags = check.flags || [];
-  var n = check.checked || 0;
-  if (!flags.length) {
-    /* …AND THE CLEAN STATE DOES NOT VOUCH FOR THE LIST. It said "Checked 18
-       lines against the mockup — none of them contradicts it", and three LIVE
-       copilot drives of the real capstone room say that is more than this can
-       promise: the pass answered all 18, found two genuinely false lines
-       nobody had noticed — and read the one this round is named after as
-       consistent, because its false clause ("the button itself is unchanged
-       (same place, same label)") is arguably true of the mockup's own top bar
-       and only false against the app as it is today.
+    /* THE ONE SENTENCE THAT MAKES IT A WALK-AWAY. It says what is happening,
+       how long it takes, and — the part a client cannot invent — that closing
+       this dialog does not stop it. The daemon owns the pass, so this is a
+       fact, not reassurance. */
+    box.className = "handoff-derive running";
+    /* ── AND IT IS THREE LINES, WHICH IS A MEASUREMENT ─────────────────────
+       This band sits between the hint and the brief box, so every pixel of it
+       is a pixel of the captain's own draft off the first screen. The first
+       version of this copy said all of the above in two paragraphs and came to
+       ~170px in real Chrome — which left EIGHT visible lines of brief at
+       1440x677 and FOUR at 1280x613, against a bar of nine and six. Found by
+       tests/drives/browser/handoff.sh on its first run, which is exactly what
+       that rig is for; no unit test in this repo can see it.
 
-       So the band says what HAPPENED, not what is TRUE, and hands the ruling
-       back to the picture — the same correction fix round 1 made to the change
-       list's caption, applied to this round's own new surface before it can
-       become the next thing that quietly vouched. */
-    box.className = "handoff-check clean";
+       So it says the three things and stops: it is working and takes minutes,
+       he may leave (and how far that survives), and the brief below is
+       sendable without a change list. */
     box.appendChild(el("span", "ck-head",
-      "✓ A read-only pass read " + n + " line" + (n === 1 ? "" : "s")
-      + " back against the mockup and flagged none. That is one pass, not a "
-      + "proof — the mockup is still what gets built."
-      + (check.unchecked
-         ? " " + check.unchecked + " more were not checked (too many for one "
-           + "pass)." : "")));
+      "⧗ Working out what the mockup changes about your project"
+      + holoDeriveElapsed(derive) + " — a few minutes. CLOSE THIS AND WALK "
+      + "AWAY IF YOU LIKE: it keeps running, survives a reload and a restart, "
+      + "and the change list drops into the brief below when it lands. You can "
+      + "send the brief without one."));
     return;
   }
-  /* ── AND IT IS KEPT SHORT, WHICH IS A MEASUREMENT ────────────────────────
-     This band sits between the hint and the brief box, so every pixel of it is
-     a pixel of the captain's own draft off the first screen. MEASURED in real
-     Chrome by tests/drives/browser/handoff.sh on the first run: a two-line
-     heading over a three-line claim over a two-line evidence line came to
-     165px, which took his brief down to 6 visible lines at 1440x677 and THREE
-     at 1280x613 — a finding delivered on top of a slot.
-
-     So: one line of heading, and the two long strings are CLAMPED (see the
-     stylesheet) with the whole text on the node's `title`. Clamping the CLAIM
-     is safe in a way clamping a warning never is — it is the captain's own
-     drafted line, verbatim, sitting in the textarea twenty pixels below, and
-     this row's job is to point AT it, not to be it. */
-  box.className = "handoff-check flagged";
+  if (!derive.ok) {
+    /* SAYS SO, PLAINLY, and does not dress it up. Nothing is blocked; what he
+       has to know is that a section of his brief is NOT THERE, which is a
+       different thing from a list that came back empty. */
+    box.className = "handoff-derive failed";
+    box.appendChild(el("span", "ck-head",
+      "LCARS could not read your project against the mockup"
+      + (derive.why ? " — " + derive.why : "")
+      + ". Nothing is blocked: the brief below is missing only the change "
+      + "list, and you can send it as it is or write the changes yourself."));
+    return;
+  }
+  var n = (derive.changes || []).length;
+  if (!n) {
+    /* A REAL ANSWER, AND A STRANGE ONE. The pass ran and reported no
+       difference at all, which on a program somebody spent an afternoon
+       drawing is far more likely to be a bad pass than a true finding. It is
+       not dressed up as a clean result and it is not called a failure — it is
+       reported exactly as what happened. */
+    box.className = "handoff-derive failed";
+    box.appendChild(el("span", "ck-head",
+      "A read-only pass compared your project with the mockup and found "
+      + "nothing different. On a design you have been working on, that is "
+      + "much more likely to be a bad pass than a true answer — read the "
+      + "mockup yourself before you send this."));
+    return;
+  }
+  box.className = "handoff-derive done";
   box.appendChild(el("span", "ck-head",
-    "⚠ " + flags.length + (check.truncated ? "+" : "") + " of these " + n
-    + " lines " + (flags.length === 1 && !check.truncated ? "is" : "are")
-    + " contradicted by the mockup — and the mockup is what gets built."
-    + (check.truncated
-       ? " (" + check.truncated + " more not shown.)" : "")));
-  flags.forEach(function (f) {
-    var row = el("div", "ck-row");
-    row.setAttribute("data-holo", "handoff-check-flag");
-    var claim = el("div", "ck-claim", f.text || "");
-    claim.title = f.text || "";
-    var why = el("div", "ck-why", "The mockup: " + (f.why || ""));
-    why.title = f.why || "";
-    row.appendChild(claim);
-    row.appendChild(why);
-    box.appendChild(row);
-  });
+    "✓ A read-only pass stood in your project, compared it with the mockup "
+    + "and found " + n + " change" + (n === 1 ? "" : "s")
+    + ". They are in the brief below, in your own writing space. Anything the "
+    + "mockup leaves as your app already has it produces no line — that is "
+    + "why this is shorter than the design chat."));
+  if (opts && opts.appended) {
+    /* HIS OWN WORDS WERE NOT TOUCHED, and he is told rather than left to
+       notice. FL-013 is this defect one surface over — unsent text destroyed
+       by a re-render — and the rule is the same: never overwrite what a human
+       typed. ONE LINE, because every pixel of this band is a pixel of his
+       brief off the first screen (measured — see the running state). */
+    box.appendChild(el("div", "ck-row",
+      "You had edited your brief while this was running, so LCARS added them "
+      + "at the BOTTOM of it and changed nothing you wrote."));
+  }
+}
+
+/* "· started 45s ago" — or nothing at all when the daemon did not say.
+
+   ELAPSED IS COMPUTED FROM THE DAEMON'S OWN CLOCK READING, never from a
+   timestamp this side subtracts against its own: that is the class of bug the
+   turn banner's `busyFor` was built to avoid (S128/FL-002). `startedAt` is a
+   server epoch and `derive.now`, when present, is the same server's idea of
+   now; without both, this says nothing rather than guessing. */
+function holoDeriveElapsed(derive) {
+  var t = derive && derive.startedAt, now = derive && derive.now;
+  if (!t || !now || now < t) return "";
+  var s = Math.round(now - t);
+  if (s < 5) return "";
+  if (s < 90) return " · started " + s + "s ago";
+  return " · started " + Math.round(s / 60) + " min ago";
 }
 
 /* Ask again while the pass is in flight. It is a POLL and not a stream because
    `promote` is already the endpoint that answers this question — a second road
    (an SSE channel, a status endpoint) would be a second thing to keep in step
-   with the draft, and the draft is what the flags are ABOUT.
+   with the draft, and the draft is what the pass PRODUCES.
 
    IT STOPS WHEN THE DIALOG GOES. `document.body.contains` is the test: the
    overlay is REMOVED on close (unlike the help console, which covers), so a
-   detached band is a closed dialog and there is nobody left to tell. */
+   detached band is a closed dialog and there is nobody left to tell. The pass
+   itself does not stop — it is the daemon's, and the room keeps the answer. */
 /* The budget MUST outlast the daemon's own bound on the pass, or the band
    gives up on a worker that is still working and reports a failure the daemon
-   never had. The daemon stops a pass at 420s (`_handoff_check_timeout`, itself
-   measured off three live copilot drives at 154/193/220s); 130 × 4s is 520s,
-   which covers that plus the spawn and the last poll's own interval. */
+   never had. The daemon stops a pass at 420s (`_handoff_derive_timeout`,
+   itself measured off three live copilot drives at 154/193/220s); 130 × 4s is
+   520s, which covers that plus the spawn and the last poll's own interval. */
 var HOLO_CHECK_POLL_MS = 4000, HOLO_CHECK_POLL_MAX = 130;
 
-function holoCheckPoll(seed, box, picked, tries) {
+function holoDerivePoll(seed, box, picked, tries, onLanded) {
   if (!box || !document.body.contains(box)) return;
   if (tries > HOLO_CHECK_POLL_MAX) {
-    holoCheckRender(box, { state: "done", ok: false,
-      why: "it did not finish while this dialog was open" });
+    /* AND THIS ONE IS ABOUT THE DIALOG, NOT THE PASS. The daemon may still be
+       working and the room will still get the answer; what ran out is this
+       page's patience. Saying "it failed" here would be the band asserting
+       something it cannot know. */
+    holoDeriveRender(box, { state: "done", ok: false,
+      why: "it did not finish while this dialog was open. It may still be "
+        + "running — close this and press ▶ SEND TO ALIGN again in a minute" });
     return;
   }
   setTimeout(function () {
@@ -9899,14 +9933,19 @@ function holoCheckPoll(seed, box, picked, tries) {
     postWrite("/api/holodeck/" + seed.sessionId + "/promote",
       { scope: picked.scope }, function (state) {
         if (!box || !document.body.contains(box)) return;
-        var check = state.check || { state: "off" };
-        holoCheckRender(box, check);
-        if (check.state === "running") {
-          holoCheckPoll(seed, box, picked, tries + 1);
+        var derive = state.derive || { state: "off" };
+        if (derive.state === "running") {
+          holoDeriveRender(box, derive);
+          holoDerivePoll(seed, box, picked, tries + 1, onLanded);
+          return;
         }
+        /* IT LANDED. The daemon has redrafted the brief WITH the change list
+           in it, and only the caller knows whether the captain has typed since
+           — so the caller decides, and this reports which way it went. */
+        holoDeriveRender(box, derive, onLanded ? onLanded(state, derive) : null);
       }, function (msg) {
         if (!box || !document.body.contains(box)) return;
-        holoCheckRender(box, { state: "done", ok: false, why: msg });
+        holoDeriveRender(box, { state: "done", ok: false, why: msg });
       });
   }, HOLO_CHECK_POLL_MS);
 }
@@ -9969,7 +10008,8 @@ function openHandoff(seed) {
      own words. Above it, it is the first thing he reads and it stays on screen
      at every viewport, including the 613px one where the tester measured it
      clipped mid-height by the footer band. */
-  f1.appendChild(el("span", "hint", holoBriefHint(seed)));
+  var briefHint = el("span", "hint", holoBriefHint(seed));
+  f1.appendChild(briefHint);
   /* …AND THE CHECK BAND SITS BETWEEN THE HINT AND THE BOX (S169 fix round 2).
 
      Above the box for the same measured reason the hint is: the box is as tall
@@ -9978,13 +10018,73 @@ function openHandoff(seed) {
      rather than over it, because the hint says what the draft IS and this says
      what was found in it — and a finding above its own subject reads as a
      banner about the dialog. */
-  var checkBox = el("div", "handoff-check");
-  checkBox.setAttribute("data-holo", "handoff-check");
+  var checkBox = el("div", "handoff-derive");
+  checkBox.setAttribute("data-holo", "handoff-derive");
   checkBox.hidden = true;
   f1.appendChild(checkBox);
-  holoCheckRender(checkBox, seed.check || { state: "off" });
+  holoDeriveRender(checkBox, seed.derive || { state: "off" });
   f1.appendChild(brief);
   m.body.appendChild(f1);
+
+  /* ── S170: WHAT HAPPENS WHEN THE DERIVATION LANDS WHILE HE IS SITTING HERE
+     The daemon redrafts the brief WITH the change list in it, so the honest
+     move is to put the new draft in the box — but ONLY if the box still holds
+     exactly what the daemon last put there. FL-013 was unsent chat text
+     destroyed by a re-render; this is the same textarea class one dialog over,
+     and the rule is the same: NEVER OVERWRITE WHAT A HUMAN TYPED.
+
+     `pristine` is a byte comparison against the last draft the daemon gave,
+     not a "dirty" flag — a captain who types a word and deletes it again has
+     not edited anything, and a flag would say he had. */
+  function briefIsPristine() { return brief.value === seed.brief; }
+  function briefLanded(state, derive) {
+    if (briefIsPristine()) {
+      seed.brief = state.brief || seed.brief;
+      seed.requirements = state.requirements || seed.requirements;
+      brief.value = seed.brief;
+      fitBrief();
+      syncRequirements();
+      rehint(state);
+      return null;
+    }
+    /* HE TYPED WHILE IT RAN. So the change list is APPENDED to the end of what
+       he wrote, and not one character of his own text is touched.
+
+       THE OTHER ROAD WAS BUILT AND MEASURED AND THROWN AWAY. It left the box
+       alone and printed the changes in the band for him to copy across; in
+       real Chrome (tests/drives/browser/handoff.sh) three change rows took the
+       band to a height that left THREE visible lines of his brief at 1440x677
+       against a bar of nine. A finding delivered on top of a slot is S128's D1,
+       and this round is not shipping it a second time.
+
+       THE WORDS ARE THE DAEMON'S (`changesBlock`), never composed here — what
+       he reads and what the Mission is told cannot drift. And the caret is put
+       back, because assigning to a textarea's value jumps it to the end, which
+       is the same "a re-render ate my typing" feeling FL-013 was about. */
+    var block = state.changesBlock || "";
+    if (!block || brief.value.indexOf(block) !== -1) return null;
+    var at = brief.selectionStart, to = brief.selectionEnd;
+    brief.value = brief.value.replace(/\s+$/, "") + "\n\n" + block + "\n";
+    try { brief.setSelectionRange(at, to); } catch (e) { /* not focused */ }
+    seed.brief = brief.value;
+    fitBrief();
+    syncRequirements();
+    rehint(state);
+    return { appended: (derive.changes || []).length };
+  }
+  /* AND THE LINE THAT SAYS WHAT IS IN THE BRIEF HAS TO MOVE WITH IT.
+     The dialog opens while the pass is still running, so at that moment the
+     draft has no change list and the hint honestly says so. When the list
+     lands the hint would otherwise still be describing the brief he had a
+     minute ago — undercounting the box he is about to send, which is the same
+     class of lie fix round 2 took out of this sentence for a different
+     reason. Recomposed from the DAEMON's sets, never counted here. */
+  function rehint(state) {
+    seed.changes = state.changes || seed.changes;
+    seed.implied = state.implied || seed.implied;
+    seed.outOfScope = state.outOfScope || seed.outOfScope;
+    briefHint.textContent = holoBriefHint(seed);
+  }
 
   /* 1b. THE CAPTURED REQUIREMENTS, CHECKED AGAINST WHAT HE JUST WROTE (S128,
      FL-011 c). On the S127 capstone he asked for a light/dark theme twice, in
@@ -10380,8 +10480,8 @@ function openHandoff(seed) {
      Found by web/tests/board_holodeck_harness.js the moment `setTimeout` was
      recorded instead of swallowed — the previous stub returned 0 and dropped
      the callback, which cannot tell a wired poll from a dead one. */
-  if ((seed.check || {}).state === "running") {
-    holoCheckPoll(seed, checkBox, picked, 1);
+  if ((seed.derive || {}).state === "running") {
+    holoDerivePoll(seed, checkBox, picked, 1, briefLanded);
   }
   m.body.scrollTop = 0;
   return m;

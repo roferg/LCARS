@@ -1090,16 +1090,18 @@ const HANDOFF_PROBE = `(function () {
                    overflowY: gs.overflowY, maxHeight: gs.maxHeight,
                    box: box(guide) };
   } else { m.guidance = null; }
-  /* S169 FIX ROUND 2 — THE CHECK BAND. What one bounded read-only pass found
-     when it read the drafted change list back against the mockup. It is only
-     worth anything if it is ON THE SCREEN where the captain skims — which is
-     a laid-out fact, not a DOM fact. */
-  var ckb = document.querySelector("[data-holo=handoff-check]");
+  /* S170 — THE DERIVATION BAND. What one bounded read-only pass found when it
+     stood in the captain's project and compared it with the mockup — and,
+     while it is still running, the sentence telling him he may walk away. It
+     is only worth anything if it is ON THE SCREEN where he skims, which is a
+     laid-out fact and not a DOM fact. */
+  var ckb = document.querySelector("[data-holo=handoff-derive]");
   if (ckb) {
     m.check = { text: (ckb.textContent || "").trim(), cls: ckb.className,
+                state: ckb.getAttribute("data-state") || "",
                 hidden: !!ckb.hidden, box: box(ckb), hit: hit(ckb),
                 flags: Array.prototype.slice.call(
-                  ckb.querySelectorAll("[data-holo=handoff-check-flag]"))
+                  ckb.querySelectorAll("[data-holo=handoff-derive-change]"))
                   .map(function (n) { return (n.textContent || "").trim(); }) };
   } else { m.check = null; }
   return m;
@@ -1268,42 +1270,90 @@ function judgeHandoff(m, want) {
              "scroller in this dialog");
     }
   }
-  // 10. THE CHECK BAND. It only cures anything if it is ON THE SCREEN, and
-  //     the flagged state has to carry the line AND the mockup's evidence —
-  //     the claim tells him which of his own sentences to look at, the
-  //     evidence tells him which of the two documents to believe.
-  if (want.expectCheckFlag) {
+  // 10. THE DERIVATION BAND. It only does anything if it is ON THE SCREEN,
+  //     and there are two different claims to make about it.
+  //
+  //     RUNNING is the one S170 exists for. The wait was already 154–220s;
+  //     what was missing was any way for the captain to know he could leave.
+  //     So the running band must be WHOLLY on the first screen, hit-testable,
+  //     and it must SAY he can walk away — a sentence no node harness can
+  //     confirm is in front of anybody.
+  //
+  //     DONE is judged on the BRIEF, not on the band: the daemon redrafts the
+  //     brief with the derived change list in it, and the only honest proof
+  //     that the round works is that the change line is IN THE TEXTAREA the
+  //     captain is about to send.
+  const judgeBand = (state, phrases, label) => {
     if (!m.check) {
-      f.push("the check band is not in the dialog at all");
-    } else if (m.check.hidden || !m.check.box || !m.check.box.visible) {
-      f.push("the check band is in the DOM but not on the screen (hidden=" +
-             m.check.hidden + ", box=" + JSON.stringify(m.check.box) + ")");
-    } else if (m.check.cls.indexOf("flagged") === -1) {
-      f.push("the check band never reached its FLAGGED state — it reads " +
-             JSON.stringify(m.check.text.slice(0, 160)) + " (class " +
-             JSON.stringify(m.check.cls) + ")");
-    } else if (!m.check.flags.length) {
-      f.push("the check band says something is contradicted and shows no line");
-    } else if (m.check.flags.join(" ").indexOf(want.expectCheckFlag) === -1) {
-      f.push("the check band flagged " + JSON.stringify(m.check.flags) +
-             ", which does not contain " + JSON.stringify(want.expectCheckFlag));
-    } else if (!m.check.hit) {
-      f.push("the check band is laid out but nothing can reach it where it sits");
-    } else if (m.check.box.bottom > Math.min(vh, band.bottom) ||
-               m.check.box.top < Math.max(0, band.top)) {
-      f.push("the check band is not WHOLLY on the first screen — it runs " +
-             m.check.box.top + "→" + m.check.box.bottom + "px and the " +
-             "dialog's scrolling body only shows " + band.top + "→" +
-             band.bottom + "px of a " + vh + "px window. A finding half off " +
-             "the screen is a finding nobody reads");
+      f.push("the derivation band is not in the dialog at all (" + label + ")");
+      return;
+    }
+    if (m.check.hidden || !m.check.box || !m.check.box.visible) {
+      f.push("the derivation band is in the DOM but not on the screen (" +
+             label + "; hidden=" + m.check.hidden + ", box=" +
+             JSON.stringify(m.check.box) + ")");
+      return;
+    }
+    if (m.check.state !== state) {
+      f.push("the derivation band is in state " + JSON.stringify(m.check.state) +
+             ", not " + JSON.stringify(state) + " (" + label + ") — it reads " +
+             JSON.stringify(m.check.text.slice(0, 200)));
+      return;
+    }
+    (phrases || []).forEach((w) => {
+      if (m.check.text.indexOf(w) === -1) {
+        f.push("the derivation band never says " + JSON.stringify(w) + " (" +
+               label + ") — it reads " +
+               JSON.stringify(m.check.text.slice(0, 240)));
+      }
+    });
+    if (!m.check.hit) {
+      f.push("the derivation band is laid out but nothing can reach it where " +
+             "it sits (" + label + ")");
+    }
+    if (m.check.box.bottom > Math.min(vh, band.bottom) ||
+        m.check.box.top < Math.max(0, band.top)) {
+      f.push("the derivation band is not WHOLLY on the first screen (" + label +
+             ") — it runs " + m.check.box.top + "→" + m.check.box.bottom +
+             "px and the dialog's scrolling body only shows " + band.top +
+             "→" + band.bottom + "px of a " + vh + "px window. A band half " +
+             "off the screen is a band nobody reads");
     }
     // …and it must be ABOVE the brief box. The box is as tall as the draft, so
-    // a finding rendered under it is ~800px down — which is where the section
-    // this session exists to surface was already sitting.
-    if (m.check && m.check.box && b.box && m.check.box.top >= b.box.top) {
-      f.push("the check band is BELOW the top of the brief box (" +
-             m.check.box.top + "px vs " + b.box.top + "px) — the box is as " +
-             "tall as the draft, so anything under it is off the first screen");
+    // anything under it is ~800px down — which is where the section this round
+    // exists to surface was already sitting.
+    if (b.box && m.check.box.top >= b.box.top) {
+      f.push("the derivation band is BELOW the top of the brief box (" +
+             m.check.box.top + "px vs " + b.box.top + "px, " + label + ")");
+    }
+  };
+  if (want.expectDeriveRunning) {
+    judgeBand("running", want.walkAwayPhrases || [], "while the pass runs");
+  }
+  if (want.expectDeriveDone) {
+    judgeBand("done", want.donePhrases || [], "after the pass landed");
+    // THE PROOF THAT SURVIVES A RELOAD: the change line is in the textarea he
+    // is about to send. Not in the band, not in the payload — in the box.
+    (want.expectChangeLines || []).forEach((line) => {
+      if (b.value.indexOf(line) === -1) {
+        f.push("the derived change " + JSON.stringify(line) + " is not in the " +
+               "brief the captain would send — the box carries " +
+               JSON.stringify(b.headings));
+      }
+    });
+    // …AND WHAT HE TYPED IS STILL THERE. The other direction of the same
+    // claim: a redraft that lands on top of a human's own words is FL-013,
+    // and the band must be the thing that tells him it did not.
+    if (want.expectBriefKeeps && b.value.indexOf(want.expectBriefKeeps) === -1) {
+      f.push("what the captain typed while the pass was running (" +
+             JSON.stringify(want.expectBriefKeeps) + ") was DESTROYED by the " +
+             "redraft — the box now carries " + JSON.stringify(b.headings));
+    }
+    if (want.expectBriefKeeps && (want.donePhrases || []).length &&
+        m.check.text.indexOf("added them") === -1) {
+      f.push("the derivation landed on top of a brief the captain had edited " +
+             "and the band never told him what it did with his text — it " +
+             "reads " + JSON.stringify(m.check.text.slice(0, 240)));
     }
   }
   return f;
@@ -3064,75 +3114,175 @@ async function main() {
       }
       flowErr = what;
     };
-    await step(`(function () {
-      var b = document.getElementById("holodeckBtn");
-      if (!b) return "no ⬡ HOLODECK control in the band";
-      if (b.disabled) return "the ⬡ HOLODECK control is disabled";
-      b.click();
-      return "";
-    })()`);
-    await waitFor(`document.querySelectorAll(".prog.ondisk").length > 0`, 20000,
-      "the planted program never appeared in the deck's program list");
-    // The archived room, picked back up the way a captain picks yesterday's
-    // work back up. A WARM RESTART: no session is resumed and no engine is
-    // contacted (actions.holodeck_open).
-    await step(`(function () {
-      var row = document.querySelector(".prog.ondisk");
-      if (!row) return "no archived program on the deck to open";
-      row.click();
-      return "";
-    })()`);
-    await waitFor(`(function () {
-      var b = Array.prototype.slice.call(
-        document.querySelectorAll(".holo-handoff [data-ctl]"))
-        .filter(function (n) { return /send to align/i.test(n.textContent || ""); })[0];
-      return !!(b && !b.disabled);
-    })()`, 30000, "▶ Send to Align never became available on the opened program");
-    await step(`(function () {
-      var b = Array.prototype.slice.call(
-        document.querySelectorAll(".holo-handoff [data-ctl]"))
-        .filter(function (n) { return /send to align/i.test(n.textContent || ""); })[0];
-      if (!b) return "no ▶ Send to Align control on the deck";
-      if (b.disabled) return "▶ Send to Align is disabled — the planted room " +
-                             "does not read as ready to hand over";
-      b.click();
-      return "";
-    })()`);
-    await waitFor(`!!document.querySelector("[data-holo=handoff-brief]")`, 30000,
-      "the SEND TO ALIGN dialog never opened");
-    /* S169 FIX ROUND 2 — WAIT FOR THE CHECK TO COME BACK. The daemon answers
-       the dialog IMMEDIATELY (a spinner would be a hand-off held up by a
-       verification step, which is worse than the defect) and the band polls
-       for the verdict. So the settled band is a second paint, seconds later,
-       and probing before it lands measures the spinner. */
-    if (want.expectCheckFlag) {
+    // ONE JOURNEY, RUN TWICE. Everything from the band's ⬡ HOLODECK button to
+    // the open dialog is a closure, because S170's proof is that the captain
+    // can WALK AWAY — and the only way a browser can show that is to leave and
+    // come back, through the real controls, on a page that has been RELOADED.
+    const openTheDialog = async () => {
+      await step(`(function () {
+        var b = document.getElementById("holodeckBtn");
+        if (!b) return "no ⬡ HOLODECK control in the band";
+        if (b.disabled) return "the ⬡ HOLODECK control is disabled";
+        b.click();
+        return "";
+      })()`);
+      // ON THE FIRST WALK the room is ARCHIVED (`.prog.ondisk`) and picking it
+      // up is a WARM RESTART: no session resumed, no engine contacted
+      // (actions.holodeck_open). ON THE SECOND — after the reload — the daemon
+      // is still holding that session, so the same room is a LIVE program and
+      // `.ondisk` is gone from it. Both are `.prog`, and demanding `.ondisk`
+      // twice is how this rig spent a run reporting "the planted program never
+      // appeared" about a program that was right there.
+      await waitFor(`document.querySelectorAll(".prog").length > 0`, 20000,
+        "the planted program never appeared in the deck's program list");
+      await step(`(function () {
+        var row = document.querySelector(".prog.ondisk")
+                  || document.querySelector(".prog");
+        if (!row) return "no program on the deck to open";
+        row.click();
+        return "";
+      })()`);
       await waitFor(`(function () {
-        var n = document.querySelector("[data-holo=handoff-check]");
-        if (!n) return false;
-        var c = n.className || "";
-        return c.indexOf("clean") >= 0 || c.indexOf("flagged") >= 0 ||
-               (n.textContent || "").indexOf("could not check") >= 0;
-      })()`, 60000,
-        "the check band never settled — it stayed on its 'reading these lines " +
-        "back against the mockup' state, so either the pass never answered or " +
-        "the dialog never asked again");
-    }
-    await sleep(400);   // one layout pass on the opened dialog
-    let hm = null;
-    if (!flowErr) {
+        var b = Array.prototype.slice.call(
+          document.querySelectorAll(".holo-handoff [data-ctl]"))
+          .filter(function (n) { return /send to align/i.test(n.textContent || ""); })[0];
+        return !!(b && !b.disabled);
+      })()`, 30000,
+        "▶ Send to Align never became available on the opened program");
+      await step(`(function () {
+        var b = Array.prototype.slice.call(
+          document.querySelectorAll(".holo-handoff [data-ctl]"))
+          .filter(function (n) { return /send to align/i.test(n.textContent || ""); })[0];
+        if (!b) return "no ▶ Send to Align control on the deck";
+        if (b.disabled) return "▶ Send to Align is disabled — the planted room " +
+                               "does not read as ready to hand over";
+        b.click();
+        return "";
+      })()`);
+      await waitFor(`!!document.querySelector("[data-holo=handoff-brief]")`,
+        30000, "the SEND TO ALIGN dialog never opened");
+    };
+
+    const probe = async () => {
+      await sleep(400);   // one layout pass on the opened dialog
+      if (flowErr) return null;
       const r = await cdp.send("Runtime.evaluate",
         { expression: HANDOFF_PROBE, returnByValue: true }, sessionId);
-      hm = (r && r.result && r.result.value) || null;
+      return (r && r.result && r.result.value) || null;
+    };
+    const shoot = async (name) => {
+      try {
+        const png = await cdp.send("Page.captureScreenshot",
+          { format: "png" }, sessionId);   // the VIEWPORT, not the document
+        const f = path.join(OUT, name);
+        fs.writeFileSync(f, Buffer.from(png.data, "base64"));
+        return f;
+      } catch (e) {
+        cdp.pageErrors.push(name + " screenshot failed: " + e.message);
+        return "";
+      }
+    };
+
+    await openTheDialog();
+
+    // ── PHASE 1 (optional): THE WAIT, AND THE PROMISE THAT HE MAY LEAVE ────
+    // The daemon answers `promote` immediately — a spinner blocking the dialog
+    // would be a hand-off held up by a verification step, which is worse than
+    // the defect — so the RUNNING band is what he is looking at for the first
+    // 154–220s, and it is the surface that has to say he can close this.
+    let runningM = null, rshot = "", typedInto = "";
+    if (want.expectDeriveRunning) {
+      await waitFor(`(function () {
+        var n = document.querySelector("[data-holo=handoff-derive]");
+        return !!(n && n.getAttribute("data-state") === "running");
+      })()`, 20000,
+        "the derivation band never reached its RUNNING state — either the " +
+        "daemon did not start a pass or the dialog does not show one");
+      runningM = await probe();
+      rshot = await shoot("handoff-running.png");
+      if (!flowErr) {
+        // WHAT THE RUNNING PHASE IS NOT JUDGED ON: THE CHANGE LIST. It has
+        // not landed — that is the whole point of this phase — so the brief is
+        // shorter, has no change section, and the line above it honestly does
+        // not name one. Demanding any of that here is the rig failing itself,
+        // and it cost two calibration runs reporting `derive-never-asks` and
+        // `no-change-list` on the wrong sentence. `hintForbids` STAYS: nothing
+        // may overclaim at any moment. What this phase DOES judge is the
+        // running band, the box being on screen, and how much of it he can
+        // read while he waits.
+        const rf = judgeHandoff(runningM, Object.assign({}, want, {
+          expectDeriveDone: false, hintNames: [], sections: [],
+          minLines: 0,
+          minLinesShown: want.minLinesShownRunning != null
+            ? want.minLinesShownRunning : want.minLinesShown }));
+        if (rf.length) flowErr = "while the pass was running: " + rf.join(" | ");
+      }
     }
-    let ashot = "";
-    try {
-      const png = await cdp.send("Page.captureScreenshot",
-        { format: "png" }, sessionId);   // the VIEWPORT, not the whole document
-      ashot = path.join(OUT, "handoff.png");
-      fs.writeFileSync(ashot, Buffer.from(png.data, "base64"));
-    } catch (e) { cdp.pageErrors.push("handoff screenshot failed: " + e.message); }
-    const failures = flowErr ? [flowErr] : judgeHandoff(hm, want);
-    handoffCheck = { want: want, measured: hm, failures: failures,
+
+    // ── PHASE 1b (optional): HE TYPES WHILE IT IS STILL RUNNING ───────────
+    // FL-013 ONE DIALOG OVER. When the pass lands the daemon has redrafted the
+    // brief WITH the change list in it, and putting that in the box is the
+    // right move — UNLESS he has touched it, in which case it is destroying
+    // what a human wrote. Typed through the REAL `input` event, because that
+    // is what the product listens on.
+    if (want.typeWhileWaiting && !flowErr) {
+      await step(`(function () {
+        var t = document.querySelector("[data-holo=handoff-brief]");
+        if (!t) return "no brief box to type into";
+        t.value = ${JSON.stringify(want.typeWhileWaiting)}
+                  + String.fromCharCode(10) + t.value;
+        t.dispatchEvent(new Event("input", { bubbles: true }));
+        if (t.value.indexOf(${JSON.stringify(want.typeWhileWaiting)}) === -1) {
+          return "the rig typed into the brief box and the text did not stick";
+        }
+        return "";
+      })()`);
+      const tr = await cdp.send("Runtime.evaluate", { returnByValue: true,
+        expression: `(document.querySelector("[data-holo=handoff-brief]")||{}).value || ""` },
+        sessionId);
+      typedInto = ((tr && tr.result && tr.result.value) || "").slice(0, 400);
+    }
+
+    // ── PHASE 2 (optional): HE WALKED AWAY, AND THE PAGE WAS RELOADED ──────
+    // THE HARDEST HALF, AND THE ONE NO HARNESS CAN FAKE. A reload throws away
+    // every byte of client state — the dialog, the draft, the poll, the timer.
+    // If the wait survives it, it survives because the DAEMON owns it. He then
+    // walks the same controls again and must find the finished brief, with no
+    // second wait.
+    if (want.reloadProof && !flowErr) {
+      try {
+        await cdp.send("Page.reload", { ignoreCache: false }, sessionId);
+      } catch (e) {
+        flowErr = "could not reload the page: " + e.message;
+      }
+      await waitFor(`!!document.getElementById("holodeckBtn")`, 30000,
+        "the board never came back after the reload");
+      await sleep(400);
+      await openTheDialog();
+    }
+
+    if (want.expectDeriveDone) {
+      await waitFor(`(function () {
+        var n = document.querySelector("[data-holo=handoff-derive]");
+        if (!n) return false;
+        var st = n.getAttribute("data-state") || "";
+        return st === "done" || st === "failed";
+      })()`, 120000,
+        "the derivation band never settled — it stayed on its RUNNING state, " +
+        "so either the pass never answered or the dialog never asked again");
+    }
+    const hm = await probe();
+    const ashot = await shoot("handoff.png");
+    // THE RUNNING CLAIM WAS ALREADY JUDGED, in phase 1, against the band as it
+    // was THEN. Re-judging it here would demand a band that is running and
+    // settled at the same time — the rig failing itself, which is the exact
+    // shape of "reassuring output proving nothing" this file keeps a note
+    // about.
+    const finalWant = Object.assign({}, want, { expectDeriveRunning: false });
+    const failures = flowErr ? [flowErr] : judgeHandoff(hm, finalWant);
+    handoffCheck = { want: want, measured: hm, measuredRunning: runningM,
+                     runningScreenshot: rshot, typedInto: typedInto,
+                     failures: failures,
                      screenshot: ashot, ok: failures.length === 0 };
     fs.writeFileSync(path.join(OUT, "handoff-check.json"),
       JSON.stringify(handoffCheck, null, 2) + "\n");

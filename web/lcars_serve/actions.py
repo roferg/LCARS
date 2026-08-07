@@ -714,12 +714,13 @@ class _AlignSession(object):
 _HOLODECK_TOOLS = {
     ("claude", "design"): "Read,Grep,Glob,Write,Edit",
     ("claude", "grounding"): "Read,Grep,Glob",
-    # S169 fix round 2 — the hand-off CHECK. Read-only, and the SAME posture as
-    # grounding rather than a third one invented for it: it is the same kind of
-    # pass (one cold look, no write channel, the daemon owns the output) with a
-    # different cwd. Reusing the grounding posture is deliberate — the session
-    # brief said reuse the precedent, do not build a second worker road.
-    ("claude", "check"): "Read,Grep,Glob",
+    # S169 fix round 2 / S170 — the hand-off DERIVATION. Read-only, and the
+    # SAME posture as grounding rather than a third one invented for it: it is
+    # the same kind of pass (one cold look, no write channel, the daemon owns
+    # the output) and — since S170 — the same cwd too, the captain's real
+    # project. Reusing the grounding posture is deliberate: the session brief
+    # said reuse the precedent, do not build a second worker road.
+    ("claude", "derive"): "Read,Grep,Glob",
     # `edit` is REQUIRED in the copilot design set, not optional: copilot's
     # `create` CANNOT overwrite an existing file (measured on CLI 1.0.79-1 — a
     # hard `Path already exists` tool error, zero bytes changed), and turn 2 of
@@ -727,7 +728,7 @@ _HOLODECK_TOOLS = {
     # per path and the engine degrades to the fenced-block fallback.
     ("copilot", "design"): "view,grep,glob,create,edit",
     ("copilot", "grounding"): "view,grep,glob",
-    ("copilot", "check"): "view,grep,glob",
+    ("copilot", "derive"): "view,grep,glob",
 }
 
 # claude only (see above): what `--disallowedTools` refuses. The DESIGN room
@@ -737,11 +738,12 @@ _HOLODECK_TOOLS = {
 _HOLODECK_DENY = {
     ("claude", "design"): "Bash,NotebookEdit",
     ("claude", "grounding"): "Write,Edit,Bash,NotebookEdit",
-    # The CHECK runs inside the program's own room, where `mockup.html` and
-    # `concept.md` live — the two files the whole hand-off is made of. A write
-    # channel here would let a pass that is supposed to READ the drawing edit
-    # the drawing instead, which is the one outcome worse than no pass at all.
-    ("claude", "check"): "Write,Edit,Bash,NotebookEdit",
+    # THE DERIVATION RUNS IN THE CAPTAIN'S REAL PROJECT (S170), so it loses
+    # every write channel the CLI has for exactly the reason grounding does.
+    # It also reads the program's room through an `--add-dir` grant, and a
+    # write channel there would let a pass that is supposed to READ the drawing
+    # edit the drawing instead — the one outcome worse than no pass at all.
+    ("claude", "derive"): "Write,Edit,Bash,NotebookEdit",
 }
 
 _HOLODECK_MODES = ("design", "grounding")
@@ -1056,6 +1058,11 @@ def _program_room(sidecar, name):
 # buy nothing.
 _TRANSCRIPT = "transcript.md"
 _CONCEPT = "concept.md"
+# S170 — the grounding record, named ONCE. `_basis_file_in` already
+# owned this literal for the header link; the derivation reads the same
+# file as context, and two spellings of one filename is how a surface
+# and a worker start disagreeing about which document exists.
+_BASIS = "basis.md"
 # S169 (FL-014) — where a pasted reference screenshot is kept. One
 # subdirectory of the room, named after a mission's `attachments/` (S92)
 # because it is the same idea one surface over: the input a design was built
@@ -1277,20 +1284,19 @@ Sections:
 
   # <the program>
   ## The problem — what the captain is trying to solve, in two or three lines.
-  ## Decisions — what has been SETTLED, each with the turn it was settled on.
-     THIS IS THE CHANGE LIST the Mission is built from, so every entry must be
-     a CHANGE, not a description of the picture. Where a decision changes
-     something the captain's project already has, write BOTH HALVES in one
-     line — `today X → now Y` — naming the screen and the element it is about
-     (`basis.md`, if this program has one, is what "today" is). A decision
-     nobody writes here reaches the builders as a picture with no caption, and
-     the picture loses.
-     EVERY ENTRY IS A CHANGE. If something did NOT change, it does not belong
-     in this list at all — a "kept X", "unchanged", "carried over" entry is a
-     description of the picture, and downstream it reads as an instruction to
-     LEAVE X ALONE. Write one only when you have checked the mockup you just
-     drew and it really did leave that element untouched; if the mockup moved
-     it, the honest entry is `today X → now Y`.
+  ## Decisions — what has been SETTLED, each with the turn it was settled on,
+     and WHY. This is the REASONING RECORD, not the change list: what the
+     mockup finally looks like is read off the mockup itself when this program
+     is handed over, so an entry here earns its place by explaining a choice —
+     what was decided, and the reason the captain gave for it.
+     WRITE THE END STATE AND THE REASON, NEVER THE PATH. This section is a log
+     of a conversation, and a conversation contains you correcting your OWN
+     earlier drafts. Nobody downstream has seen those drafts. So never write an
+     entry about what an earlier version of the mockup had, what was taken back
+     out of it, or what you got wrong on turn 2 — "the T1 mock had a two-part
+     toggle → now one button" is a note to yourself, and read later it becomes
+     an instruction to go and change the captain's real app.
+     ONE SUBJECT PER ENTRY: the decision as it now stands, plus the reason.
   ## Open questions — what is still undecided. Raise these in the chat too.
      ONE HOME EACH: anything the MOCKUP implies belongs in bucket 2 below and
      not here. Write each undecided thing in exactly one of the two places —
@@ -1866,6 +1872,67 @@ def _handoff_questions(concept_text):
 # `today X → now Y` shape it was already half-written in. The failure mode is
 # "says less than it could" — a doc with no `## Decisions` yields no change
 # list rather than an invented one.
+#
+# ══ S170 — AND THAT ROAD IS NOW DELETED. READ THIS BEFORE RE-ADDING IT. ═════
+#
+# THE CAPTAIN DROVE S169's OUTPUT ON HIS OWN PROGRAM and the change list read
+# back as *"a lot of my ramble back and forth"*. The cause is one sentence long
+# and the paragraphs above walked straight past it:
+#
+#   `## Decisions` IS A LOG OF THE CONVERSATION — THE PATH — NOT A DESCRIPTION
+#   OF THE END STATE.
+#
+# It is maintained faithfully, and that is the problem. It records the turns
+# where the captain was CORRECTING THE MOCKUP'S OWN MISTAKES, and downstream
+# those corrections read as instructions to change the real app. Measured on
+# his live room (`web/tests/fixtures/s170-tile-editor/`, byte copies), 4 of 21
+# bullets are mock-versus-mock —
+#
+#   "**T2** Theme control is a single icon button … — T1 mock had a two-segment
+#       light/dark toggle → now one button."
+#   "**T2** Remove the Layer-properties panel that the T1 mock added (opacity /
+#       grid / tile-size) — it is gone from the sidebar."
+#
+# — and against the real app the second is a NO-OP: that panel never existed in
+# the product, so an implementer would hunt for something to delete. The
+# sharpest one is half-honest, which is worse:
+#
+#   "**T3** Add a Close button to the toolbar, right of Save … — today the
+#       editor already has a close-project control; the mock now models it
+#       correctly as a labeled "Close" button (T6: was a bare × icon → now a
+#       ghost button reading "Close")."
+#
+# The truth is in the qualifier and THE HEADLINE IS WHAT GETS ACTED ON.
+#
+# ── THE INVERSION ──────────────────────────────────────────────────────────
+#
+# The change list is now DERIVED FROM A DIFF: one bounded read-only worker,
+# standing IN THE CAPTAIN'S REPO, reporting the DIFFERENCE between the finished
+# `mockup.html` and the app AS IT ACTUALLY IS. See `_HANDOFF_DERIVE_PROMPT`.
+#
+# WHY THAT KILLS THE DEFECT STRUCTURALLY, and why there is no detector here:
+# a correction that restores today's behaviour produces NO LINE AT ALL, because
+# there is no difference to report. Both of the captain's examples simply
+# vanish; nothing has to recognise them. S169's own comment (above) rejected
+# the derivation road on the grounds that reading `basis.md` means guessing at
+# meaning — and it was RIGHT about `basis.md`, which is a prose summary written
+# once at program start and stale by the end of a long session. The answer is
+# not to read the summary. It is to read the REPO, which is the same posture
+# `grounding` already has (D12): read-only worker, cwd = the target repo.
+#
+# S169's other fear — "a classifier is what this road exists to avoid" — is
+# answered by the shape of the output, not by a promise: nothing in this file
+# reads a change line and decides anything about it. The `ast` test
+# `test_NOTHING_in_the_FILING_path_reads_the_derivation` still holds, and the
+# S156/S147/S157 string-matching road is still refused.
+#
+# ── WHAT `## Decisions` IS FOR NOW ─────────────────────────────────────────
+#
+# The EXPLANATION, and only that. It is fed to the derivation worker as the
+# source of WHY a change was chosen — a `because …` clause on a derived line —
+# and it no longer appears in the brief as a list of anything. `promote` no
+# longer publishes a `decisions` key and `_handoff_decisions` is gone; the
+# heading constant survives because the derivation prompt names the section.
 _HANDOFF_DECISIONS_HEADING = "Decisions"
 # Bucket 2 of `## WHAT IT MUST DO`. `_HANDOFF_NOT_STATED_BUCKETS[0]` is the
 # same literal, and it is the same rule seen from the other side: the region
@@ -1875,16 +1942,32 @@ _HANDOFF_IMPLIED_BUCKETS = ("2. " + _HANDOFF_NOT_STATED_BUCKETS[0],
                             _HANDOFF_NOT_STATED_BUCKETS[0])
 
 
-def _handoff_decisions(concept_text):
-    """`## Decisions` — what the mockup CHANGES about the app as it is today.
+# Bucket 3 of `## WHAT IT MUST DO`. S170 — the captain's design says
+# `## Decisions` demotes to "why a change was chosen, PLUS the explicit
+# out-of-scope", and the out-of-scope half is the part a derived list cannot
+# produce: a diff reports differences, and "do not touch the tile canvas" is a
+# statement about what must produce NO difference. It is short (two items on
+# his real room) and it is the sentence that keeps an implementer out of the
+# canvas, so it rides in its own named block.
+_HANDOFF_SCOPE_BUCKETS = ("3. " + _HANDOFF_NOT_STATED_BUCKETS[1],
+                          _HANDOFF_NOT_STATED_BUCKETS[1])
 
-    Read structurally, exactly like the requirements: the section the contract
-    names, its list items, in document order. Nothing here judges whether an
-    item is "visual" or "behavioural" — that is a classifier, and a classifier
-    is what this road exists to avoid.
+
+def _handoff_out_of_scope(concept_text):
+    """Bucket 3 — what this work must NOT touch, in the captain's own doc.
+
+    Same structural read as bucket 2, off the same literal (`Out of scope` is
+    `_HANDOFF_NOT_STATED_BUCKETS[1]`, which the region reader already uses to
+    stop). Nothing judges the items; they are carried verbatim.
     """
-    return _md_items(_md_section(concept_text, _HANDOFF_DECISIONS_HEADING,
-                                 prefix=True))
+    section = _md_section(concept_text, _HANDOFF_REQ_HEADING, prefix=True)
+    if not section:
+        return []
+    for bucket in _HANDOFF_SCOPE_BUCKETS:
+        body = _md_section(section, bucket, prefix=True)
+        if body:
+            return _md_items(body)
+    return []
 
 
 def _handoff_implied(concept_text):
@@ -2007,16 +2090,29 @@ _HANDOFF_REQ_TITLE = "## What it must do — in your own words"
 # What replaces it says what the section IS and who wins when it disagrees with
 # the picture — the same rule as `_HANDOFF_PRECEDENCE`, said where he reads the
 # list rather than only in the block below it.
-_HANDOFF_CHANGE_TITLE = "## What the mockup changes — as the design chat recorded it"
+#
+# S170 — AND NOW IT NAMES THE DIFF. Fix round 1 of S169 stopped the caption
+# vouching for a list it could not verify; the list has since STOPPED BEING AN
+# ACCOUNT. It is read off the captain's own project and the finished drawing by
+# a read-only pass that stands in the repo, so the caption may say so — and it
+# must also say the one thing that makes the list readable: SOMETHING THE
+# MOCKUP LEAVES ALONE PRODUCES NO LINE. That is why his corrections of the
+# mockup's own mistakes are simply absent rather than reworded.
+_HANDOFF_CHANGE_TITLE = "## What the mockup changes about your app as it is today"
 _HANDOFF_CHANGE_NOTE = (
-    "The design chat's own account of what it settled — not a reading of your "
-    "code, and not everything the mockup changes. The mockup is what gets "
+    "Read off your project and the finished mockup by one read-only pass — the "
+    "difference between them, look and flow only. Anything the mockup leaves "
+    "as your app already has it produces no line here. The mockup is what gets "
     "built: where a line here disagrees with the picture, the picture wins. "
     "Correct or delete anything that is wrong.")
 _HANDOFF_IMPLIED_TITLE = "## Implied by the mockup — NOT things you said"
 _HANDOFF_IMPLIED_NOTE = (
     "The mockup implies these; nobody has settled them. They travel marked as "
     "IMPLIED, never as your words — answer them, correct them, or delete them.")
+_HANDOFF_SCOPE_TITLE = "## Out of scope — do not touch these"
+_HANDOFF_SCOPE_NOTE = (
+    "Settled as out of scope while you were drawing. A diff cannot produce "
+    "these — they are the things that must stay exactly as they are.")
 
 
 def _handoff_section(title, note, items):
@@ -2052,251 +2148,263 @@ def _handoff_head(concept_text, reqs):
     return "", ""
 
 
-def _handoff_parts(concept_text):
-    """(requirements, decisions, implied) — deduped, in the order shown.
+def _handoff_parts(concept_text, changes=()):
+    """(requirements, changes, implied, out-of-scope) — deduped, in the order
+    the box shows them.
 
     ONE function decides what the hand-off carries, because `promote` (which
     draws the box) and the brief (which fills it) have to agree about every
     line: a count in the hint that does not match the box is the surface lying
     about itself. See `_handoff_carry` for the precedence.
+
+    S170 — `changes` ARRIVES AS AN ARGUMENT and is not read out of the concept
+    doc. That is the whole inversion: the list is produced by a worker standing
+    in the captain's repo (`_handoff_derive_state`), and this function is a
+    PURE assembler over it. Nothing here spawns anything, so every filing road
+    that calls it stays token-free and cannot be blocked by a pass that never
+    answered — `changes=()` is the honest degraded shape, not an error.
     """
     reqs = _handoff_requirements(concept_text)
     carried = list(reqs) + [q["text"] for q in _handoff_questions(concept_text)]
-    decisions = _handoff_carry(carried, _handoff_decisions(concept_text))
-    implied = _handoff_carry(carried + decisions,
+    changed = _handoff_carry(carried, [c for c in (changes or []) if c])
+    implied = _handoff_carry(carried + changed,
                              _handoff_implied(concept_text))
-    return reqs, decisions, implied
+    scope = _handoff_carry(carried + changed + implied,
+                           _handoff_out_of_scope(concept_text))
+    return reqs, changed, implied, scope
 
 
-# ══ S169 FIX ROUND 2 — THE CHECK: THE DRAWING ANSWERS FOR THE ACCOUNT ═══════
+# ══ S170 — THE DERIVATION: THE CHANGE LIST IS A DIFF, NOT A TRANSCRIPT ═════
 #
-# THE MEASUREMENT (capstone drive, 2026-08-07, live copilot). The captain said,
-# in the design chat: *"But leave the 'Add expense' button itself alone — it's
-# in the right place in the top bar and it says the right thing. I don't want it
-# moved or renamed."* The engine replied "The button is untouched — same spot,
-# same label" and wrote into `## Decisions`:
+# THE MEASUREMENT (the captain, driving S169's output on his own real program,
+# 2026-08-07): *"The text it puts in is a lot of my ramble back and forth. It
+# reads with things like when I asked it to draw the undo/redo buttons closer
+# to how they are today. Or it says a bare x icon needs to say close, but the
+# existing one says close and I just told the holodeck to fix its mock to add
+# the close button back in instead of just an x."*
 #
-#     The button itself is **unchanged** (same place, same label).
+# The root cause is stated in full at `_HANDOFF_DECISIONS_HEADING`. In one line:
+# `## Decisions` is a log of the CONVERSATION, and a conversation contains the
+# captain correcting the MOCKUP. Those corrections rode downstream as
+# instructions to change the REAL APP.
 #
-# `web/tests/fixtures/s169-capstone/` is the byte copy. Against the mockup the
-# SAME engine had drawn in the SAME room, every one of those words is false: the
-# app's `<button id="add-expense">Add expense</button>` (`#dddddd`, `1px outset
-# #bbbbbb`, square, 12px, inline beside the brand — `basis.md` records it) is
-# drawn as `<button class="btn" id="addBtn">` with an inline plus SVG,
-# `all:unset`, `background:var(--accent)`, a border radius, `9px var(--sp-4)`,
-# weight 600, hover/active/focus-visible states, at the RIGHT END of a title bar
-# after a `.spacer`. Only the label survived.
+# ── WHAT THIS IS, AND WHAT IT REPLACES ─────────────────────────────────────
 #
-# The false line rode into the brief, into the PRD, and FOUR consecutive live
-# Copilot stages walked past it: Research asked 9 questions and none was this,
-# Validate reported "no scope changes", Plan wrote "the existing (unchanged)
-# Add-expense button", Plan Review passed. Zero escalations — and fix round 1's
-# `_HANDOFF_DISAGREEMENT` paragraph, which names this exact case and says
-# ESCALATE, rode intact in both `idea.md` and `prd.md` the whole way. That is
-# the third time this project has measured a live worker ignoring a lone prose
-# pin when something concrete pointed the other way (S166 directly; S128's
-# `_HANDOFF_PRECEDENCE` collision is the same family).
+# S169 fix round 2 already put a bounded, read-only, cold, fail-safe worker at
+# promote time — the right posture, the right jail, the right polling, the
+# right refusal to ever block a filing. IT KEEPS ALL OF THAT AND ITS JOB
+# CHANGES. It used to READ A LIST BACK against the drawing and flag lines; it
+# now PRODUCES THE LIST, by diffing the finished drawing against the captain's
+# repository. There is deliberately no second mechanism beside it — adding one
+# is the most repeated defect cause in this round's history.
 #
-# THE ASYMMETRY THAT SHAPES THE CURE. The same brief carried a SECOND false
-# "unchanged" — "The by-category table beneath is unchanged" — and it cost
-# nothing, because that table did not exist in the app yet, so the plan simply
-# built it. An "unchanged" claim is only dangerous when the element it names
-# ACTUALLY EXISTS in the app today, which is precisely the case a grounded
-# pipeline is least likely to question.
+# ── THE FOUR THINGS THAT MOVED ─────────────────────────────────────────────
 #
-# ── WHY THIS ROAD AND NOT THE OBVIOUS ONE ──────────────────────────────────
+# 1. DERIVED FROM A DIFF, NOT TRANSCRIBED. A correction that restores today's
+#    behaviour produces NO LINE, because there is no difference to report.
+#    Nothing detects a "mock-relative" line; the shape of the question deletes
+#    the class. (S156's classifier fell 14/14 → 5/14 on a reworded corpus,
+#    S147 lost four parser generations, S157 five guard versions. Not again.)
 #
-# NOT A CLASSIFIER. Nothing added here matches "kept", "unchanged" or "carried
-# over", scores similarity, or parses `basis.md`. S156 fell 14/14 → 5/14 on a
-# meaning-preserving rewording of its own corpus, S147 lost four generations of
-# a source parser, S157 five versions of a guard, and fix round 1 DECLINED to
-# build this guard deliberately and pinned that decision in a test. It is still
-# declined. `test_the_false_line_STILL_RIDES` still passes: the line rides.
+# 2. AGAINST THE LIVE REPO, NOT `basis.md`. `basis.md` is written ONCE at
+#    program start and is a prose SUMMARY; a long design session makes it
+#    stale. The pass therefore runs with the TARGET REPO as its cwd — the same
+#    posture `grounding` (D12) already has — and `basis.md` rides only as
+#    context, explicitly outranked by the code.
 #
-# WHAT IS ACTUALLY NEW IS WHERE WE ARE STANDING. The program room holds BOTH
-# HALVES AT ONCE — `basis.md` (a read-only pass over the captain's real repo)
-# and `mockup.html` (the artifact itself). Every stage after the holodeck sees
-# the mock as an attachment with no memory of the current app. The holodeck is
-# the ONLY place a claim about what was kept can be checked against the drawing
-# and against the thing it was drawn from. So one bounded, read-only worker
-# reads THE ARTIFACTS — not an account of them, which is the whole difference
-# from the defect, because `## Decisions` IS the model's account of its own
-# drawing — and says which lines the picture contradicts.
+# 3. `## Decisions` DEMOTES TO THE EXPLANATION. It is an input to this prompt
+#    for WHY a change was chosen, and it is no longer a list in the brief.
 #
-# AND IT FLAGS. It does not rewrite, and it must never rewrite: the captain's
-# interaction with this box is skim-and-correct, a flagged line is exactly what
-# makes a skim land on the right sentence, and laundering a model's correction
-# into his words is the failure mode of every "helpful" rewrite this project has
-# considered. It also FAILS SAFE — no engine, a timeout, an unparseable reply,
-# nothing usable: he still gets his brief, unflagged, and the filing is not
-# blocked. A verification step that can block a hand-off is worse than the
-# defect it cures.
+# 4. THE WAIT IS HONEST AND WALK-AWAY-ABLE. The pass was ALREADY 154–220s
+#    measured, bounded at 420s; S169 hid that behind a spinner on a dialog.
+#    It is now a state he can leave: the daemon owns it (so a page reload
+#    cannot forget it) and the RESULT IS PERSISTED IN THE PROGRAM ROOM (so a
+#    daemon that dies does not cost him the wait twice). See
+#    `_handoff_derive_fingerprint` / `_handoff_derive_read`.
 #
-# NAMING. "audit" is already taken in this file (`_audit_snapshot`, the
-# before/after file walk, `$LCARS_HOLODECK_AUDIT_MAX_FILES`). This is the CHECK.
-_HANDOFF_CHECK_VERDICTS = ("CONTRADICTED", "OK", "UNSURE")
-# How many change lines are sent in one pass. The two real fixtures run 18 and
-# 24; the cap is a bound on the prompt, not a judgement about which lines
-# matter, and the surface says when it bites.
-_HANDOFF_CHECK_MAX_ITEMS = 40
-# How many flags the surface shows. A band with 18 rows in it is the over-long
-# box this whole hand-off is built against — being ignored is the same outcome
-# as not shipping it. First N in document order, and the count is stated.
-_HANDOFF_CHECK_MAX_FLAGS = 5
-# The evidence sentence, bounded. It is a model's prose going onto the captain's
-# screen; a runaway paragraph pushes his brief off it.
-_HANDOFF_CHECK_MAX_EVIDENCE = 400
+# ── AND IT STILL CANNOT BE A GATE ──────────────────────────────────────────
+#
+# Every fail-safe S169 built is kept, and the bar is unchanged: A VERIFICATION
+# STEP THAT CAN BLOCK A HAND-OFF IS WORSE THAN THE DEFECT. No engine, a
+# timeout, an unparseable reply, a corrupt persisted record, a repo that has
+# gone away — he still gets a brief (his words, what the mockup implies, what
+# is out of scope) and ▦ FILE MISSION still fires. The only thing he loses is
+# the derived section, and the band SAYS SO in plain words rather than looking
+# like a clean result.
+#
+# NAMING. "audit" is `_audit_snapshot` (the before/after file walk). "check"
+# was S169's flagger and is gone — a function called `_handoff_check_spawn`
+# that returns a change list is exactly the drift every comment in this file
+# rails against.
 
-_HANDOFF_CHECK_PROMPT = """\
-You are CHECKING one list against one drawing. You write NOTHING — you have no \
+# The mockup is a FICTION — fake data, invented internals, no real state — and
+# the app is an implementation. Without this line pinned, the pass reports "the
+# app has no renderStops()" and "the mock uses inline CSS, the app uses
+# Tailwind" as changes. The round already drew this line (the mock is a visual
+# reference, never shipping code); it is applied here.
+_HANDOFF_DERIVE_MARKER = "=== CHANGES ==="
+# How many derived lines are carried. A bound on the box, not a judgement about
+# which lines matter, and the surface says when it bites. The captain's real
+# room derives well under this.
+_HANDOFF_DERIVE_MAX_CHANGES = 40
+# One line, bounded. It is a model's prose going into the captain's own brief;
+# a runaway paragraph is a paragraph he stops reading.
+_HANDOFF_DERIVE_MAX_LINE = 400
+
+_HANDOFF_DERIVE_PROMPT = """\
+You are producing ONE list: WHAT IS DIFFERENT between a finished design mockup \
+and an application as it actually is today. You write NOTHING — you have no \
 write tool and nothing you say is applied to any file.
 
-In your working directory:
-  · `mockup.html` — the design that will actually be built. THE ARTIFACT.
-  · `concept.md`  — the design chat's written record.
-  · `basis.md`    — a read-only record of the app AS IT IS TODAY, before this \
-redesign. It may be absent; if it is, judge on the mockup alone.
+YOUR WORKING DIRECTORY IS THE REAL APPLICATION. Read it. It is the app as it \
+stands right now, and it is the only authority on what "today" means.
 
-Below is a numbered list of claims taken from `concept.md`'s own account of \
-what this design changes. That account was written from the CONVERSATION, not \
-read off the drawing, so some of it can be wrong about the drawing.
+The design and the notes that go with it are these files:
 
-For each numbered claim, read `mockup.html` (and `basis.md` where the claim \
-says something about what the app already had) and give ONE verdict:
+  · %(mockup)s
+      THE FINISHED MOCKUP — the design that will actually be built.
+  · %(concept)s
+      The design chat's written record. Its `## %(decisions)s` section says WHY \
+each choice was made, and its out-of-scope list says what must not be touched. \
+USE IT FOR WHY, AND FOR SCOPE. DO NOT use it as the list of changes: it is a \
+log of a conversation, it records the mockup being corrected against ITSELF, \
+and it is not what you are being asked for.
+  · %(basis)s
+      An earlier summary of the app, written before the design session started. \
+It may be stale and it may be absent. It is context only, and WHERE IT \
+DISAGREES WITH THE CODE IN YOUR WORKING DIRECTORY, THE CODE WINS.
 
-  CONTRADICTED — ANY PART of it is contradicted by the mockup.
-  OK           — every part of it is consistent with the mockup, or the \
-mockup is silent.
-  UNSURE       — you genuinely cannot tell from these files.
+── WHAT COUNTS AS A CHANGE ─────────────────────────────────────────────────
 
-JUDGE EACH CLAIM CLAUSE BY CLAUSE. These lines are long and almost always carry \
-SEVERAL statements at once. ONE false clause makes the whole line CONTRADICTED \
-even when everything else in it is right — a line that is 90% accurate is not \
-OK, because the wrong 10% is what gets built.
+Compare LOOK AND FLOW ONLY:
 
-THE CLAUSE MOST WORTH CHECKING, EVERY TIME, is one saying an element was left \
-alone, kept, unchanged, untouched or carried over from the app as it is today. \
-Find that element in `basis.md` (what it is TODAY) and in `mockup.html` (what \
-the design does to it) and compare them properly: its markup, its fill, border \
-and radius, its size and padding, its font weight, its hover/active/focus \
-states, and WHERE IT SITS in the layout. If the mockup changes ANY of those, \
-the claim is CONTRADICTED even if the element kept its label — keeping the \
-words on a button is not keeping the button. Such a clause is often the LAST \
-few words of an otherwise perfectly accurate line; read to the end of every one.
+  · what is on each screen, and what is not;
+  · where it sits, and in what order;
+  · colour, fill, border, radius, spacing, size, weight, casing;
+  · labels and wording as a user reads them;
+  · what a control does when it is clicked, and what the user sees next;
+  · states a user can see: hover, active, selected, disabled, empty, error.
 
-Do not report a claim as contradicted on a difference you cannot point at in \
-the files.
+NEVER REPORT IMPLEMENTATION. The mockup is ONE self-contained HTML file with \
+invented data and no real internals; the app is a real program. These are NOT \
+changes and MUST NOT appear in your list:
 
-DO THE WORK FIRST. Open the files. For each claim, name the elements it talks \
-about and look each one up — in `mockup.html`, and in `basis.md` where the \
-claim says anything about what the app already had. Write that working out in \
-full; take as much room as you need. A verdict you reached without opening the \
-files is worth nothing here, and this list is long enough that judging it from \
-memory of a first read will miss the one line that matters.
+  · frameworks, libraries, build tools, file or folder organisation;
+  · HOW styling is expressed — inline CSS, classes, a stylesheet, utility \
+classes, tokens, variables. Only the RESULT a user sees is a change;
+  · function, class, variable, component, id or selector names;
+  · the mockup's fake data, placeholder text, dummy rows, stub handlers, or \
+anything it hardcodes because it has no backend;
+  · anything the mockup could not have implemented for real.
+
+── THE RULE THAT MATTERS MOST ──────────────────────────────────────────────
+
+IF THE MOCKUP LEAVES SOMETHING AS THE APP ALREADY HAS IT, THERE IS NO LINE FOR \
+IT. Not "unchanged", not "kept", not "confirmed", not "still present", not \
+"matches today" — NOTHING AT ALL. This list is the DIFFERENCE and nothing \
+else. A control the app already has, drawn in the mockup the way the app \
+already draws it, is SILENCE.
+
+THE DESIGN CHAT ARGUED WITH ITSELF. It changed its mind, and it corrected \
+earlier drafts of this same mockup. NONE OF THAT IS A CHANGE. Never write a \
+line about an earlier draft, a previous version of the mockup, something that \
+was removed FROM THE MOCKUP, or what was decided on some turn. The only two \
+things that exist for you are THE APP IN YOUR WORKING DIRECTORY and THE \
+FINISHED MOCKUP. If a line you are about to write would make no sense to \
+somebody who had never seen the design chat, DELETE IT.
+
+Before you write any line, FIND THE THING IT NAMES IN THE APP. If the app \
+already has it and the mockup does not alter it, drop the line.
+
+── DO THE WORK FIRST ───────────────────────────────────────────────────────
+
+Open the mockup. Go through it screen by screen, region by region. For each \
+region, find the corresponding part of the real app in your working directory \
+and READ IT. Write your working out in full; take as much room as you need. A \
+list produced without opening the app is worth nothing here, because every \
+line of it is a claim about the app.
 
 THEN, AT THE VERY END of your reply, write a line containing exactly:
 
-  === VERDICTS ===
+  %(marker)s
 
-and after it ONE LINE PER CLAIM and nothing else — no markdown, no code fence, \
-no summary. Exactly this shape, pipe-separated:
+and after it ONE LINE PER CHANGE and nothing else — no headings, no code \
+fence, no numbering, no summary, no closing remark. In the order a user meets \
+them: top of the screen down, first screen first.
 
-  <number>|<VERDICT>|<one sentence of evidence, quoting the mockup>
+Each line is a single sentence in this shape:
 
-The evidence must be checkable: QUOTE THE CLAUSE you are contradicting, then \
-name the selector, id, tag or literal text you read in `mockup.html` that \
-contradicts it. If the verdict is OK or UNSURE, say why in the same shape. Emit \
-a line for every claim, in order. Only the block after that marker is read.
+  today <what the app does now> → <what the mockup does instead><, because ...>
 
-THE CLAIMS:
+`today ...` must be something you actually read in the working directory. The \
+`because ...` clause is OPTIONAL — add it only where `## %(decisions)s` gives a \
+reason worth carrying, and keep it to a few words. No line may run past %(cap)d \
+characters.
+
+If the mockup changes nothing at all about the app, write the marker and \
+nothing after it.
 """
 
 
-def _handoff_check_prompt(items):
-    """The one bounded pass's whole prompt, for `items` (in document order)."""
-    return _HANDOFF_CHECK_PROMPT + "\n".join(
-        "%d. %s" % (i + 1, " ".join(str(t or "").split()))
-        for i, t in enumerate(items))
+def _handoff_derive_prompt(mockup, concept, basis):
+    """The one bounded pass's whole prompt.
 
-
-# `12 | CONTRADICTED | .btn is accent-filled` — tolerant about spacing and the
-# markdown a model wraps a number in, strict about the three verdicts. A line
-# that does not match is not a verdict and is not counted as one.
-_HANDOFF_CHECK_LINE = re.compile(
-    r"^\s*[-*\s]*\[?\s*(\d{1,3})\s*\]?\s*[.)]?\s*[|:]\s*\**\s*"
-    r"(CONTRADICTED|OK|UNSURE)\b\s*\**\s*[|:]?\s*(.*)$",
-    re.IGNORECASE)
-
-
-# The worker THINKS FIRST and then writes its answers after this marker. Two
-# live copilot drives of the real capstone room settled that: told to emit
-# verdicts and nothing else, it produced 18/18 clean, parseable, evidenced
-# verdicts — and BOTH times missed the one false line the round exists to
-# catch, while correctly flagging two others whose contradiction is visible in
-# `mockup.html` alone. The one it missed is the one needing `basis.md` read
-# against the mockup, at the tail of an otherwise accurate 5-clause line. A
-# reply format that forbids working out is a format that buys a snap judgement
-# on eighteen long lines.
-#
-# So the pass may write whatever it likes, and only the block after this marker
-# is read. Absent, the whole reply is scanned — a worker that ignores the
-# marker but answers correctly is not punished for it.
-_HANDOFF_CHECK_MARKER = "=== VERDICTS ==="
-
-
-def _handoff_check_parse(reply, count):
-    """`{index: (VERDICT, evidence)}` for the verdicts a reply really carries.
-
-    STRICT ON PURPOSE, and the strictness is the fail-safe. Anything this does
-    not understand simply is not a verdict: a worker that narrates, refuses,
-    fences its answer or dies mid-stream yields fewer parsed lines than claims,
-    and the caller treats a short read as "no usable answer" rather than as
-    "everything else was fine". The direction that matters is that a flag is
-    never INVENTED from noise — a missing flag costs the captain the same skim
-    he does today, an invented one costs him trust in the band.
+    The three paths are ABSOLUTE and come from the daemon, because the pass's
+    cwd is the CAPTAIN'S REPO — the drawing is not in the working directory and
+    a bare filename would resolve to nothing (or, worse, to a same-named file
+    in his project). `basis` may be a sentence saying there is none; the prompt
+    already tells the pass to judge without it.
     """
-    out = {}
+    return _HANDOFF_DERIVE_PROMPT % {
+        "mockup": mockup, "concept": concept, "basis": basis,
+        "decisions": _HANDOFF_DECISIONS_HEADING,
+        "marker": _HANDOFF_DERIVE_MARKER,
+        "cap": _HANDOFF_DERIVE_MAX_LINE,
+    }
+
+
+# What a derived line may NOT be: a heading, a fence, a bullet-less blank. The
+# leading list decoration a model reaches for anyway is stripped rather than
+# refused — `- today the toolbar…` is a good line wearing a hyphen.
+_HANDOFF_DERIVE_STRIP = re.compile(r"^\s*(?:[-*+•]|\d{1,3}[.)])\s+")
+
+
+def _handoff_derive_parse(reply):
+    """The change lines a reply really carries, or `None` for unusable.
+
+    THE MARKER IS REQUIRED, and that is the whole fail-safe. S169's flagger
+    could fall back to scanning the entire reply because a stray line either
+    matched `<n>|VERDICT|…` or did not. Here EVERY line is a candidate, so a
+    reply with no marker would ingest the pass's own working out and hand the
+    captain a brief made of somebody thinking aloud. No marker ⇒ no answer.
+
+    An EMPTY block after the marker is a real answer — "nothing differs" — and
+    is returned as `[]`. It is vanishingly unlikely on a real program and the
+    surface says so loudly rather than passing it off as a clean derivation.
+    """
     text = reply or ""
-    if _HANDOFF_CHECK_MARKER in text:
-        text = text.rsplit(_HANDOFF_CHECK_MARKER, 1)[1]
-    for raw in text.splitlines():
-        m = _HANDOFF_CHECK_LINE.match(raw)
-        if not m:
+    if _HANDOFF_DERIVE_MARKER not in text:
+        return None
+    out = []
+    for raw in text.rsplit(_HANDOFF_DERIVE_MARKER, 1)[1].splitlines():
+        line = " ".join(raw.split())
+        if not line:
             continue
-        idx = int(m.group(1))
-        if not (1 <= idx <= count) or idx in out:
+        if line.startswith("#") or line.startswith("```"):
             continue
-        # `*` and `|` are the model's decoration; a BACKTICK IS CONTENT — the
-        # evidence sentence very often opens with `` `#addBtn` ``, and stripping
-        # it makes the one thing the captain checks unreadable as a selector.
-        why = " ".join(m.group(3).split()).strip(" *|")
-        out[idx] = (m.group(2).upper(), why[:_HANDOFF_CHECK_MAX_EVIDENCE])
+        line = _HANDOFF_DERIVE_STRIP.sub("", line).strip()
+        # A model that decorates its last line with a rule (`---`, `===`) has
+        # not written a change. Nothing here judges MEANING — only that there
+        # are characters a person could read.
+        if not re.search(r"[A-Za-z]", line):
+            continue
+        out.append(line[:_HANDOFF_DERIVE_MAX_LINE])
+        if len(out) >= _HANDOFF_DERIVE_MAX_CHANGES:
+            break
     return out
 
 
-def _handoff_check_flags(items, reply):
-    """`(flags, checked)` — the CONTRADICTED lines, or `(None, 0)` for unusable.
-
-    `None` is not "nothing was wrong"; it is "this pass did not answer", and the
-    surface must say those two things differently. The bar for usable is that
-    the worker returned a verdict for EVERY claim it was given: a partial read
-    is a truncated reply, and reporting 3 flags out of a list of 18 where 15
-    were never judged is exactly the kind of quiet half-answer that reads as a
-    clean bill of health.
-    """
-    items = list(items or [])
-    if not items:
-        return [], 0
-    seen = _handoff_check_parse(reply, len(items))
-    if len(seen) < len(items):
-        return None, len(seen)
-    flags = [{"text": items[i - 1], "why": seen[i][1]}
-             for i in sorted(seen)
-             if seen[i][0] == _HANDOFF_CHECK_VERDICTS[0]]
-    return flags, len(items)
-
-
-def _handoff_brief(concept_text, program=""):
+def _handoff_brief(concept_text, program="", changes=()):
     """(brief, which section it came from) — the PRE-DRAFTED writing space.
 
     D15: it is a writing space, not a title field, and it is pre-drafted from
@@ -2308,21 +2416,29 @@ def _handoff_brief(concept_text, program=""):
     mission exactly the same way.
 
     S169 — THREE things, not one. His words, then what the mockup CHANGES about
-    the app he has today (`## Decisions`), then what it IMPLIES and nobody has
-    settled (bucket 2). The last two were both already written, both maintained
-    every turn, and both thrown away here; the captain's framing is the bar —
-    "if I have to spell out each change, I get closer to having to type it all
-    out, the value is lost."
+    the app he has today, then what it IMPLIES and nobody has settled
+    (bucket 2). The captain's framing is the bar — "if I have to spell out each
+    change, I get closer to having to type it all out, the value is lost."
+
+    S170 — AND THE MIDDLE ONE ARRIVES AS AN ARGUMENT. It used to be read out of
+    `## Decisions`, which is a log of the conversation; it is now the output of
+    a diff against the captain's real repo, produced by `_handoff_derive_state`
+    and handed in. `changes=()` — the pass has not landed, could not run, or is
+    switched off — degrades to a brief WITHOUT that section rather than to a
+    stale one, which is the honest failure and never a blocked filing. Bucket 3
+    (out of scope) rides last, because a diff structurally cannot produce it.
     """
     title = str(program or "").strip().split("\n")[0].strip()
-    reqs, decisions, implied = _handoff_parts(concept_text)
+    reqs, changed, implied, scope = _handoff_parts(concept_text, changes)
     head, source = _handoff_head(concept_text, reqs)
     blocks = [b for b in (
         head,
         _handoff_section(_HANDOFF_CHANGE_TITLE, _HANDOFF_CHANGE_NOTE,
-                         decisions),
+                         changed),
         _handoff_section(_HANDOFF_IMPLIED_TITLE, _HANDOFF_IMPLIED_NOTE,
-                         implied)) if b]
+                         implied),
+        _handoff_section(_HANDOFF_SCOPE_TITLE, _HANDOFF_SCOPE_NOTE,
+                         scope)) if b]
     return _handoff_titled("\n\n".join(blocks), title), source
 
 
@@ -4005,17 +4121,19 @@ class Actions(LogFacts):
         # and a restart loses the warm worker session, never the program.
         self._holodeck = {}
         self._holodeck_lock = threading.Lock()
-        # S169 fix round 2 — the hand-off CHECK's results, keyed by (session id,
-        # a fingerprint of the two files it read). In-memory and disposable by
-        # design: it is a HINT about a draft, never a record, and losing it on a
-        # restart costs one more pass and nothing else.
+        # The hand-off DERIVATION's results, keyed by a fingerprint of the
+        # files it read plus the repo it read them against — NEVER the session
+        # id (S170: a restarted daemon mints a new one for the same room, and a
+        # session-keyed record could never be found again).
         #
-        # It is keyed on the FILES, not the session, so re-opening the dialog on
-        # an unchanged program is free and a program that has been drawn on
-        # since is re-checked. The whole reason `promote` can afford to spawn a
-        # worker at all is that it almost never has to.
-        self._handoff_checks = {}
-        self._handoff_check_lock = threading.Lock()
+        # THIS DICT IS A CACHE, NOT THE RECORD. S169's was both, which was fine
+        # for a hint about a list the captain already had; a finished derivation
+        # is a section of his brief that cost 154–220s, so it is written into
+        # the program's ROOM and read back from there when this is empty. What
+        # lives here and nowhere else is the IN-FLIGHT state, deliberately: a
+        # fresh daemon owns no running pass, so it must not find one.
+        self._handoff_derives = {}
+        self._handoff_derive_lock = threading.Lock()
         # S126 — ONE git working tree per sidecar, and `git add -A` + `commit`
         # is not re-entrant against it: two turns landing together raced on
         # `index.lock`, and a commit that fails is swallowed by `_sidecar_commit`
@@ -5481,112 +5599,239 @@ class Actions(LogFacts):
                 "change)" % scope)
         return scope
 
-    # ── the CHECK, as a bounded pass `promote` can afford to wait on ────────
+    # ── THE DERIVATION, as a bounded pass `promote` can afford to leave ─────
     #
     # Everything below is fail-safe by construction: every method returns a
     # dict, none of them raises, and the ONE thing `promote` does with the
-    # result is add a key to its payload. There is no branch anywhere in this
-    # file where a check outcome refuses, blocks or changes a filing.
+    # result is draft a section of a brief the captain can rewrite or delete.
+    # There is no branch anywhere in this file where a derivation outcome
+    # refuses, blocks or delays a filing.
 
     @staticmethod
-    def _handoff_check_enabled():
-        """Whether the hand-off check runs at all.
+    def _handoff_derive_enabled():
+        """Whether the derivation runs at all.
 
-        `$LCARS_HOLODECK_HANDOFF_CHECK=0` turns it off — for a captain who does
-        not want a worker spawned when he opens the dialog, and for every suite
-        in this repo that is not testing the check itself (a hand-off test must
-        not silently start consuming turns from a stubbed engine's queue).
+        `$LCARS_HOLODECK_HANDOFF_CHECK=0` turns it off — the env var keeps
+        S169's name deliberately, because it is the switch a captain and every
+        suite in this repo already sets, and renaming it would silently start
+        spawning workers inside test runs that thought they had opted out.
         """
         raw = os.environ.get("LCARS_HOLODECK_HANDOFF_CHECK")
         return str(raw).strip().lower() not in ("0", "false", "no", "off")
 
     @staticmethod
-    def _handoff_check_timeout():
-        """How long the one pass may run. Injectable, and short next to
-        `_turn_timeout`'s 20 minutes: a design turn is the captain's work and
-        worth waiting for, this is a hint on a dialog he is in front of.
+    def _handoff_derive_timeout():
+        """How long the one pass may run. Injectable.
 
         420s, AND THAT NUMBER IS MEASURED. It was 180 — a round number chosen
-        before anything had been driven — and three live copilot passes over
-        the real capstone room (18 change lines, `mockup.html` 32KB, `basis.md`
-        read alongside it) came in at 154s, 193s and 220s. A 180s bound would
-        have KILLED the third and reported "the check did not answer" about a
-        pass that was about to. Nothing is waiting on this: the dialog opens
-        instantly, the band polls, and the result is cached against the files
-        it read, so a slow pass costs a captain who closed the dialog nothing
-        at all."""
+        before anything had been driven — and three live copilot passes over a
+        real capstone room came in at 154s, 193s and 220s. A 180s bound would
+        have KILLED the third and reported "it did not answer" about a pass
+        that was about to. S170 makes the pass BIGGER (it now reads a whole
+        repository, not one room) and the bound is left where the measurement
+        put it rather than guessed upward: a pass that runs out is reported as
+        exactly that, and the captain still gets his brief.
+
+        NOTHING IS WAITING ON IT. The dialog opens instantly, the band polls,
+        the result is cached against the files it read AND persisted into the
+        program's room — so a slow pass costs a captain who walked away nothing
+        at all.
+        """
         try:
             return max(1.0, float(os.environ.get(
                 "LCARS_HOLODECK_HANDOFF_CHECK_TIMEOUT") or 420))
         except ValueError:
             return 420.0
 
-    @staticmethod
-    def _handoff_check_key(sid, paths, items):
-        """A fingerprint of exactly what the pass would read and judge.
+    # ── DURABILITY: the answer outlives the daemon that produced it ─────────
+    #
+    # THE CAPTAIN'S QUESTION, asked while this was being built: *"If the daemon
+    # closes by accident while I walk away are we still good?"*
+    #
+    # S169's cache was in-memory and disposable, which was defensible when the
+    # result was a hint about a list he already had. It is not defensible now:
+    # the result IS a section of his brief, it costs 154–220s, and a walk-away
+    # is precisely when nobody is watching the daemon. So a COMPLETED pass is
+    # written into the program's own room — a durable git repo that S126 already
+    # commits per turn, and the right home for a fact about this program. Not
+    # `.git/lcars/` (that is mission state, and no mission exists yet).
+    #
+    # AND NOTHING EVER PERSISTS "RUNNING". A fresh daemon owns no in-flight
+    # pass; a persisted "running" with no process behind it is a surface
+    # asserting a state it cannot know, which is the FL-009/FL-017 family this
+    # round has now cured twice. So the on-disk record has exactly two shapes —
+    # a finished answer, or absent — and absent means the dialog starts a pass,
+    # which is a real process he can watch. There is no timer here and no
+    # staleness constant: FL-009's ruling is that a bigger constant is the same
+    # guess with a longer fuse.
+    _HANDOFF_DERIVE_FILE = "handoff-changes.json"
 
-        `stat` of both files plus the claims themselves — so a redraw, an edit
-        to the concept doc, or a change in the drafted list all invalidate it,
-        and nothing else does. Never file CONTENTS: this runs on every dialog
-        open and must not read 32KB of mockup to decide it has nothing to do.
+    @classmethod
+    def _handoff_derive_fingerprint(cls, program_dir, target_repo):
+        """What this pass would read, as one string. NO SESSION ID IN IT.
+
+        S169's key opened with the session id, which was harmless while the
+        cache died with the process. It would be fatal now: a restarted daemon
+        mints a NEW session id for the same room, so a session-keyed record
+        could never be found again and the durability would be theatre that
+        passes its own unit test.
+
+        `stat` of the three files the pass reads, plus the repo it stands in,
+        plus a digest of the PROMPT — a reworded prompt asks a different
+        question and must not reuse an old answer. Never file CONTENTS: this
+        runs on every dialog open and must not read 46KB of mockup to decide it
+        has nothing to do.
+
+        WHAT IT DELIBERATELY DOES NOT COVER, said out loud: the captain's repo
+        changing under a finished answer. Hashing a whole project on every
+        dialog open is the 66-second walk `_audit_snapshot` already refused, and
+        the case is narrow — he redraws, the mockup's mtime moves, and the pass
+        re-runs. A repo edit with no mockup edit leaves a derivation describing
+        the app as it was at promote time, which the band's own wording ("read
+        off your project", with the time it ran) does not overclaim.
         """
-        parts = [str(sid)]
-        for p in paths or []:
+        parts = [os.path.abspath(target_repo or "")]
+        for name in _HANDOFF_FILES + (_BASIS,):
             try:
-                st = os.stat(p)
-                parts.append("%s:%d:%d" % (os.path.basename(p), st.st_size,
+                st = os.stat(os.path.join(program_dir, name))
+                parts.append("%s:%d:%d" % (name, st.st_size,
                                            int(st.st_mtime * 1000)))
             except OSError:
-                parts.append("%s:?" % os.path.basename(p))
-        parts.append(str(len(items)))
-        parts.append(_handoff_norm(" ".join(items))[:2000])
+                parts.append("%s:-" % name)
+        parts.append(hashlib.sha1(
+            _HANDOFF_DERIVE_PROMPT.encode("utf-8")).hexdigest()[:12])
         return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
 
-    def _handoff_check_state(self, sid, sess, items):
-        """The check's answer for this draft, starting the pass if need be.
+    @classmethod
+    def _handoff_derive_read(cls, program_dir, fingerprint):
+        """The persisted answer for `fingerprint`, or None. NEVER RAISES.
 
-        Returns the payload's `check` block and NEVER raises. Three shapes, and
+        A missing, unreadable, corrupt, half-written or differently-fingered
+        record all behave IDENTICALLY to no record — he gets a brief, the pass
+        is offered again, and nothing is blocked. That is the fail-safe clause
+        applied to durability: a bad file on disk must never be worse than no
+        file on disk.
+        """
+        try:
+            with open(os.path.join(program_dir,
+                                   cls._HANDOFF_DERIVE_FILE)) as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError, TypeError):
+            return None
+        if not isinstance(rec, dict):
+            return None
+        if rec.get("fingerprint") != fingerprint:
+            return None
+        changes = rec.get("changes")
+        if not isinstance(changes, list):
+            return None
+        if not all(isinstance(c, str) for c in changes):
+            return None
+        return {"state": "done", "ok": bool(rec.get("ok")),
+                "changes": [c for c in changes][:_HANDOFF_DERIVE_MAX_CHANGES],
+                "why": str(rec.get("why") or ""),
+                "at": rec.get("at") or 0,
+                "engine": str(rec.get("engine") or ""),
+                "fromDisk": True}
+
+    @classmethod
+    def _handoff_derive_write(cls, program_dir, fingerprint, result):
+        """Persist a FINISHED result into the room. Best-effort, never raises.
+
+        Written to a temp name and renamed, so a daemon killed mid-write leaves
+        either the old record or the new one — never half of one, which is the
+        exact input `_handoff_derive_read` is built to survive anyway.
+        """
+        path = os.path.join(program_dir, cls._HANDOFF_DERIVE_FILE)
+        rec = {"fingerprint": fingerprint, "at": time.time(),
+               "ok": bool(result.get("ok")),
+               "changes": list(result.get("changes") or []),
+               "why": str(result.get("why") or ""),
+               "engine": str(result.get("engine") or "")}
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w") as fh:
+                json.dump(rec, fh)
+            os.replace(tmp, path)
+            return True
+        except (OSError, TypeError, ValueError):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
+
+    def _handoff_derive_state(self, sess):
+        """The derivation for this program, starting the pass if need be.
+
+        Returns the payload's `derive` block and NEVER raises. Four shapes, and
         the surface has to be able to tell them apart:
 
-          {"state": "off"}                     — not running, by configuration
-          {"state": "running"}                 — a pass is in flight; ask again
-          {"state": "done", "ok": …, "flags": …, "why": …}
+          {"state": "off"}                      — not running, by configuration
+          {"state": "running", "startedAt": …}  — a pass is in flight; ask again
+          {"state": "done", "ok": true,  "changes": […]}
+          {"state": "done", "ok": false, "why": …}
 
         `ok: false` means THE PASS DID NOT ANSWER — no engine, a timeout, an
-        unparseable reply. It is not "nothing was wrong", and `why` says which.
+        unusable reply, no project to compare against. It is NOT "the mockup
+        changes nothing", and `why` says which.
         """
-        items = [t for t in (items or []) if str(t or "").strip()]
-        if not items:
-            return {"state": "done", "ok": True, "checked": 0, "flags": [],
-                    "truncated": 0, "why": ""}
-        if not self._handoff_check_enabled():
-            return {"state": "off"}
-        sent = items[:_HANDOFF_CHECK_MAX_ITEMS]
         try:
-            paths = self._handoff_files(sess.program_dir)
-        except ActionError as exc:
-            return {"state": "done", "ok": False, "checked": 0, "flags": [],
-                    "truncated": 0, "why": exc.message}
-        key = self._handoff_check_key(sid, paths, sent)
-        with self._handoff_check_lock:
-            entry = self._handoff_checks.get(key)
+            fp = self._handoff_derive_fingerprint(sess.program_dir,
+                                                  sess.target_repo)
+        except Exception:                          # noqa: BLE001 — fail safe
+            return {"state": "done", "ok": False, "changes": [],
+                    "why": "LCARS could not work out what to compare"}
+        with self._handoff_derive_lock:
+            entry = self._handoff_derives.get(fp)
             if entry is not None:
-                return dict(entry)
-            entry = {"state": "running"}
-            self._handoff_checks[key] = entry
+                return self._derive_now(entry)
+        # NOTHING IN MEMORY. Before spending 154–220s of the captain's day,
+        # ask the ROOM — this is where a daemon that died gives him his wait
+        # back. A record that does not match the fingerprint is ignored, which
+        # is the same code path as no record at all.
+        disk = self._handoff_derive_read(sess.program_dir, fp)
+        if disk is not None:
+            with self._handoff_derive_lock:
+                self._handoff_derives[fp] = disk
+            return dict(disk)
+        if not self._handoff_derive_enabled():
+            return {"state": "off"}
+        started = time.time()
+        with self._handoff_derive_lock:
+            entry = self._handoff_derives.get(fp)
+            if entry is not None:
+                return self._derive_now(entry)
+            entry = {"state": "running", "startedAt": started}
+            self._handoff_derives[fp] = entry
             # A HARD BOUND ON THE CACHE, because the key includes an mtime and
             # a captain who draws all afternoon mints a new one every turn.
-            if len(self._handoff_checks) > 64:
-                for stale in list(self._handoff_checks)[:32]:
-                    if stale != key:
-                        self._handoff_checks.pop(stale, None)
+            if len(self._handoff_derives) > 64:
+                for stale in list(self._handoff_derives)[:32]:
+                    if stale != fp:
+                        self._handoff_derives.pop(stale, None)
         thread = threading.Thread(
-            target=self._handoff_check_run,
-            args=(key, sess, paths, sent, list(items)), daemon=True)
+            target=self._handoff_derive_run, args=(fp, sess), daemon=True)
         thread.start()
-        return {"state": "running"}
+        return self._derive_now(entry)
 
-    def _handoff_check_run(self, key, sess, paths, sent, items):
+    @staticmethod
+    def _derive_now(entry):
+        """A copy of the state, with the DAEMON'S OWN reading of the clock on
+        an in-flight one.
+
+        The surface renders "started 45s ago" from `now - startedAt`, both of
+        them this process's numbers — never from a timestamp the browser
+        subtracts against its own clock, which is the class of bug `busyFor`
+        was built to avoid (S128/FL-002). Without BOTH, the band says nothing
+        about elapsed time rather than guessing.
+        """
+        out = dict(entry)
+        if out.get("state") == "running":
+            out["now"] = time.time()
+        return out
+
+    def _handoff_derive_run(self, fp, sess):
         """The pass itself, on its own thread. Catches EVERYTHING.
 
         This runs detached from any request. An exception escaping here would
@@ -5595,50 +5840,70 @@ class Actions(LogFacts):
         mechanism, not laziness, and the failure it swallows is reported.
         """
         try:
-            result = self._handoff_check_spawn(sess, paths, sent, items)
-        except Exception as exc:                       # noqa: BLE001 — see above
-            result = {"state": "done", "ok": False, "checked": 0, "flags": [],
-                      "truncated": 0,
-                      "why": "the check did not complete (%s: %s)"
+            result = self._handoff_derive_spawn(sess)
+        except Exception as exc:                   # noqa: BLE001 — see above
+            result = {"state": "done", "ok": False, "changes": [],
+                      "why": "the pass did not complete (%s: %s)"
                              % (type(exc).__name__, exc)}
-        with self._handoff_check_lock:
-            self._handoff_checks[key] = result
+        # PERSIST FIRST, then publish. A daemon killed between the two loses
+        # nothing: the room already holds the answer and the next `promote`
+        # reads it back.
+        self._handoff_derive_write(sess.program_dir, fp, result)
+        with self._handoff_derive_lock:
+            self._handoff_derives[fp] = result
 
-    def _handoff_check_spawn(self, sess, paths, sent, items):
-        """One cold, read-only worker over the program's own room.
+    def _handoff_derive_spawn(self, sess):
+        """One cold, read-only worker STANDING IN THE CAPTAIN'S PROJECT.
 
         COLD, and that is the point. It gets a FRESH session id and never
         `--resume`s the design chat: a warm worker would answer out of its
-        memory of what it meant to draw, which is the very account being
-        checked. It reads the files.
+        memory of what it meant to draw, and what it meant is exactly the thing
+        that is not being asked about.
 
-        The room is the cwd, so `mockup.html`, `concept.md` and `basis.md` are
-        all reachable with no `--add-dir` grant and nothing outside the room is.
+        The cwd is the TARGET REPO — the app as it actually is, right now, not
+        `basis.md`'s summary of how it was when the program started. The
+        program's room rides as the one `--add-dir` grant so the drawing is
+        readable; the tool surface holds no write tool, so neither directory
+        can be written to.
         """
         bin_ = sess.engine or self.worker_bin
         if not bin_:
-            return {"state": "done", "ok": False, "checked": 0, "flags": [],
-                    "truncated": 0,
+            return {"state": "done", "ok": False, "changes": [],
                     "why": "no worker engine is configured, so LCARS could not "
-                           "check the change list against the mockup"}
-        cmd = ([bin_, "-p", _handoff_check_prompt(sent)]
-               + self._holodeck_args(bin_, "check", str(uuid.uuid4()), True,
+                           "read your project against the mockup"}
+        repo = sess.target_repo
+        if not repo or not os.path.isdir(repo):
+            return {"state": "done", "ok": False, "changes": [],
+                    "why": "LCARS could not open the project this program was "
+                           "started against (%s), so there was nothing to "
+                           "compare the mockup with" % (repo or "unknown")}
+        try:
+            paths = self._handoff_files(sess.program_dir)
+        except ActionError as exc:
+            return {"state": "done", "ok": False, "changes": [],
+                    "why": exc.message}
+        basis = os.path.join(sess.program_dir, _BASIS)
+        prompt = _handoff_derive_prompt(
+            paths[0], paths[1],
+            basis if os.path.isfile(basis)
+            else "(there is no basis file — judge on the mockup and the code)")
+        cmd = ([bin_, "-p", prompt]
+               + self._holodeck_args(bin_, "derive", str(uuid.uuid4()), True,
                                      sess.program_dir)
                + ["--model", _holodeck_model(bin_)])
-        # The S72 guard, on this argv too. A check with a shell is a check that
+        # The S72 guard, on this argv too. A pass with a shell is a pass that
         # can write, and `_assert_no_bash` is where that is refused.
         _assert_no_bash(cmd)
-        limit = self._handoff_check_timeout()
+        limit = self._handoff_derive_timeout()
         try:
-            proc = subprocess.Popen(cmd, cwd=sess.program_dir,
+            proc = subprocess.Popen(cmd, cwd=repo,
                                     stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT,
                                     start_new_session=True)
         except OSError as exc:
-            return {"state": "done", "ok": False, "checked": 0, "flags": [],
-                    "truncated": 0,
-                    "why": "the check worker failed to start: %s" % exc}
+            return {"state": "done", "ok": False, "changes": [],
+                    "why": "the pass failed to start: %s" % exc}
         try:
             out, _err = proc.communicate(timeout=limit)
         except subprocess.TimeoutExpired:
@@ -5647,26 +5912,30 @@ class Actions(LogFacts):
                 proc.communicate(timeout=10)
             except (subprocess.TimeoutExpired, OSError, ValueError):
                 pass
-            return {"state": "done", "ok": False, "checked": 0, "flags": [],
-                    "truncated": 0,
-                    "why": "the check did not answer within %ds and was "
-                           "stopped" % int(limit)}
+            return {"state": "done", "ok": False, "changes": [],
+                    "why": "it did not answer within %ds and was stopped"
+                           % int(limit)}
         reply = _clean_reply((out or b"").decode("utf-8", "replace"))
-        flags, checked = _handoff_check_flags(sent, reply)
-        if flags is None:
-            return {"state": "done", "ok": False, "checked": checked,
-                    "flags": [], "truncated": 0,
-                    "why": "the check answered about %d of the %d lines, so "
-                           "LCARS could not use it — the rest were never "
-                           "judged" % (checked, len(sent))}
-        return {"state": "done", "ok": True, "checked": checked,
-                "flags": flags[:_HANDOFF_CHECK_MAX_FLAGS],
-                # BOTH numbers, because the surface must be able to say what it
-                # is NOT showing: flags past the display cap, and change lines
-                # past the per-pass cap that were never sent at all.
-                "truncated": max(0, len(flags) - _HANDOFF_CHECK_MAX_FLAGS),
-                "unchecked": max(0, len(items) - len(sent)),
-                "why": ""}
+        changes = _handoff_derive_parse(reply)
+        if changes is None:
+            return {"state": "done", "ok": False, "changes": [],
+                    "why": "the pass never wrote its change list, so LCARS "
+                           "could not read one out of it"}
+        return {"state": "done", "ok": True, "changes": changes,
+                "engine": os.path.basename(bin_), "why": ""}
+
+    def _handoff_changes(self, state):
+        """The change lines a `derive` block yields for the brief.
+
+        A pass that is running, off, or did not answer yields `[]` — the brief
+        is drafted WITHOUT that section, which is the degraded shape
+        `_handoff_brief` is built for. Read this beside the `ast` test: this is
+        the only function that turns a derivation into brief text, and it is
+        called from `promote` alone.
+        """
+        if (state or {}).get("state") != "done" or not state.get("ok"):
+            return []
+        return list(state.get("changes") or [])
 
     def holodeck_promote(self, sid, scope=None):
         """POST /api/holodeck/<sid>/promote — SEND TO ALIGN.
@@ -5674,15 +5943,23 @@ class Actions(LogFacts):
         A READ that returns the pre-seeded hand-off: the brief drafted from the
         concept doc's captured requirements (`## WHAT IT MUST DO`, S128 — it
         used to be `## Hand-off summary`, which is FL-011), PLUS what the
-        mockup changes about the app as it is today and what it implies that
-        nobody has settled (S169 — `## Decisions` and bucket 2, both of which
-        the product already maintained and this endpoint used to discard); the
-        requirements as a set, the `## Open questions` that must reach the
-        captain before he files, the build-scope choice (D15), the list of
-        what rides along BY NAME, and the guidance block verbatim. It
-        spawns no worker, writes no mission state and locks nothing — the lock
-        is a fact about a mission that exists, so it lands when the mission is
-        actually filed (`_holodeck_handed_over`).
+        mockup CHANGES ABOUT THE APP AS IT ACTUALLY IS (S170 — derived by a
+        read-only pass standing in the captain's own repo, not transcribed from
+        `## Decisions`), what the mockup implies that nobody has settled, and
+        what was ruled out of scope; the requirements as a set, the
+        `## Open questions` that must reach the captain before he files, the
+        build-scope choice (D15), the list of what rides along BY NAME, and the
+        guidance block verbatim. It writes no mission state and locks nothing —
+        the lock is a fact about a mission that exists, so it lands when the
+        mission is actually filed (`_holodeck_handed_over`).
+
+        IT IS THE ONE ENDPOINT THAT MAY SPEND. `_handoff_derive_state` starts
+        the bounded pass the first time it is asked about a given draft, and
+        answers `{"state": "running"}` while it is in flight — SEND TO ALIGN is
+        a stage with a wait now, by the captain's own design, and the wait is
+        walk-away-able because the daemon owns it and the room persists it.
+        Filing is never held up: a brief with no derived section is a brief he
+        can send.
 
         The payload deliberately carries NO PATH. The deck shows names; the
         daemon holds the paths.
@@ -5701,8 +5978,11 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "LCARS could not read this program's concept.md, so it "
                 "cannot draft the brief: %s" % exc)
-        brief, source = _handoff_brief(concept, sess.program)
-        captured, decisions, implied = _handoff_parts(concept)
+        derive = self._handoff_derive_state(sess)
+        changes = self._handoff_changes(derive)
+        brief, source = _handoff_brief(concept, sess.program, changes)
+        captured, changed, implied, out_of_scope = _handoff_parts(concept,
+                                                                 changes)
         reqs = [{"id": "r%d" % (i + 1), "text": t}
                 for i, t in enumerate(captured)]
         return {
@@ -5720,19 +6000,37 @@ class Actions(LogFacts):
             # costs less than one wrong build.
             "requirements": reqs,
             "questions": _handoff_questions(concept),
-            # S169 — the two halves that used to be discarded, as sets, exactly
-            # as the draft carries them (same helper, so the hint under the box
-            # cannot count something the box does not contain). The deck names
-            # what is in the draft; it never composes the draft.
-            "decisions": decisions,
+            # The three other halves the draft carries, as sets, exactly as it
+            # carries them (same helper, so the hint under the box cannot count
+            # something the box does not contain). The deck names what is in
+            # the draft; it never composes the draft.
+            #
+            # S170 — `changes` REPLACES S169's `decisions` key and is a
+            # different thing, which is why the key was renamed rather than
+            # refilled: `decisions` was `## Decisions`, an account of the
+            # conversation, and this is the difference between the mockup and
+            # the captain's repository. A client still reading `decisions`
+            # should get nothing rather than something that reads the same and
+            # is not.
+            "changes": changed,
             "implied": implied,
-            # S169 fix round 2 — THE CHECK. The change list read back against
-            # the mockup and the basis by one bounded read-only pass, so a line
-            # the picture contradicts is FLAGGED before the captain skims. It
-            # flags; it never edits the draft above, and `decisions` is byte-
-            # identical whatever this says. `{"state": "running"}` means ask
-            # again in a moment; anything else is final for this draft.
-            "check": self._handoff_check_state(sid, sess, decisions),
+            "outOfScope": out_of_scope,
+            # THE CHANGE SECTION AS TEXT, exactly as `brief` carries it.
+            #
+            # It exists for ONE case and it is worth spelling out: the pass
+            # takes minutes, and if the captain has typed into his brief while
+            # it ran, the deck must NOT replace what he wrote (FL-013 is that
+            # defect one dialog over). So it APPENDS this block to the end of
+            # his own text instead — and it appends the DAEMON'S words, not a
+            # section the browser composed, so what he reads and what a
+            # Mission is told can never drift.
+            "changesBlock": _handoff_section(_HANDOFF_CHANGE_TITLE,
+                                             _HANDOFF_CHANGE_NOTE, changed),
+            # THE DERIVATION'S OWN STATE, so the deck can say what is happening
+            # rather than guessing from an empty list. `{"state": "running"}`
+            # means ask again in a moment — and means the `brief` above has no
+            # change section YET. Anything else is final for this draft.
+            "derive": derive,
             # A self-check on the drafting, not a check on him: this is the
             # daemon's OWN draft, so anything here means the brief path has
             # regressed to prose again.
@@ -6380,8 +6678,8 @@ class Actions(LogFacts):
         list reads rooms off disk, and a second copy of this rule is exactly how
         a live card and a restarted one start disagreeing."""
         try:
-            if os.path.isfile(os.path.join(program_dir, "basis.md")):
-                return "basis.md"
+            if os.path.isfile(os.path.join(program_dir, _BASIS)):
+                return _BASIS
         except OSError:
             pass
         return None
@@ -6979,7 +7277,15 @@ class Actions(LogFacts):
             args = [("--session-id=%s" if opening else "--resume=%s")
                     % session_id, "--available-tools", tools]
             args += list(_COPILOT_DISCIPLINE)
-            if mode == "design" and grant_dir:
+            # S170 — THE DERIVATION GETS THE GRANT TOO, and the direction is
+            # the safe one. Its cwd is the CAPTAIN'S REPO and the grant is the
+            # program's room inside LCARS's own sidecar, so the only directory
+            # `--add-dir` could make writable is one LCARS owns — never his
+            # project. And it cannot make even that writable: the derivation's
+            # tool surface is `view,grep,glob`, which holds no write tool at
+            # all, so the grant is a READ grant in practice. Without it the
+            # pass cannot open `mockup.html`, which is half of the diff.
+            if mode in ("design", "derive") and grant_dir:
                 args += ["--add-dir", grant_dir]
             return args
         # claude: space-form session flags, and NO per-path sandbox exists —
