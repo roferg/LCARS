@@ -57,6 +57,9 @@ command -v git >/dev/null 2>&1 || skip "git not found."
 
 # ── the fixture: a target repo, a sidecar, one archived program ─────────────
 REPOD="$WORK/project"; SIDE="$WORK/holo/project-holodeck"; ROOM="$SIDE/redesign"
+# The program NAME, read out of the transcript below — and, since S171,
+# the head of the brief itself (his opening description, verbatim).
+PROGRAM_NAME="Redesign"
 mkdir -p "$REPOD/src" "$ROOM"
 cat >"$REPOD/src/toolbar.js" <<'JS'
 // the app AS IT IS TODAY — the thing the pass stands in and reads.
@@ -181,6 +184,14 @@ open_room() {
   [ -n "$SID" ] || { printf '%s\n' "$OPENED"; skip "could not open the room"; }
 }
 
+# S171 — ▶ SEND TO ALIGN IS THE GATE, so the deck posts `derive` and the
+# dialog then READS what that produced. `promote` no longer starts anything,
+# which is why the two are separate calls here: a rig that only promoted would
+# sit on `none` for ever and prove nothing about the wait.
+derive() {
+  api "/api/holodeck/$SID/derive" '{}' >/dev/null
+}
+
 promote() {
   PROMO="$(api "/api/holodeck/$SID/promote" '{}')"
   DSTATE="$(printf '%s' "$PROMO" | "$PY" -c \
@@ -195,6 +206,7 @@ say "── A. THE DAEMON DIES MID-PASS ─────────────�
 start_daemon
 note "daemon pid $DPID on port $PORT · room $ROOM"
 open_room
+derive
 promote
 note "he presses ▶ SEND TO ALIGN → derive: $DSTATE"
 case "$DSTATE" in
@@ -216,15 +228,21 @@ start_daemon
 note "a FRESH daemon (pid $DPID, port $PORT) — its caches are empty"
 open_room
 promote
-note "he reopens ▶ SEND TO ALIGN → derive: $DSTATE"
+note "the deck reads the gate on a fresh daemon → derive: $DSTATE"
 case "$DSTATE" in
-  running*) ok "it offers the wait again, honestly — no phantom 'still running'
-      from a process that is gone, and no answer it does not have" ;;
-  *) bad "after a mid-pass death he should be offered the wait again, got: $DSTATE" ;;
+  "none "*) ok "no phantom 'still running' from a process that is gone, and no
+      answer it does not have — the gate offers the wait again" ;;
+  *) bad "after a mid-pass death the gate should read NONE, got: $DSTATE" ;;
 esac
-printf '%s' "$BRIEF" | grep -q "## What it must do" \
-  && ok "and he still has a brief he can file" \
+printf '%s' "$BRIEF" | grep -q "$PROGRAM_NAME" \
+  && ok "and he still has a brief he can file — his own words, unrewritten" \
   || bad "the brief is gone"
+derive
+promote
+case "$DSTATE" in
+  running*) ok "and pressing it again really does start a new pass" ;;
+  *) bad "a re-press should start the wait, it was: $DSTATE" ;;
+esac
 printf '%s' "$BRIEF" | grep -q "## What the mockup changes" \
   && bad "the brief claims a change list the pass never produced" \
   || ok "…without a change section, which is the honest degraded shape"

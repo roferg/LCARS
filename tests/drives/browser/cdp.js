@@ -1107,6 +1107,164 @@ const HANDOFF_PROBE = `(function () {
   return m;
 })()`;
 
+/* S171 — THE GATE ON THE DECK, measured off laid-out boxes.
+
+   ▶ SEND TO ALIGN is a wait now. The states are the DAEMON's (`data-gate`,
+   stamped from the published `derive` block), and what a browser adds — the
+   only thing that can — is whether the disabled control is genuinely
+   unclickable WHERE IT SITS, whether the loading indicator is really there,
+   and whether the escape hatch is reachable rather than merely in the DOM.
+
+   `clickable` is the strong claim: elementFromPoint at the control's own
+   centre and corners, walked up to the node. A button behind a banner passes
+   every DOM test in this repo and cannot be pressed. */
+const GATE_PROBE = `(function () {
+  function box(el) {
+    if (!el) return null;
+    var r = el.getBoundingClientRect();
+    return { top: Math.round(r.top), left: Math.round(r.left),
+             w: Math.round(r.width), h: Math.round(r.height),
+             bottom: Math.round(r.bottom) };
+  }
+  function hit(el) {
+    if (!el) return false;
+    var r = el.getBoundingClientRect();
+    if (!(r.width > 0 && r.height > 0)) return false;
+    var pts = [[r.left + r.width / 2, r.top + r.height / 2],
+               [r.left + 3, r.top + 3], [r.right - 3, r.bottom - 3]];
+    for (var i = 0; i < pts.length; i++) {
+      var x = pts[i][0], y = pts[i][1];
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) continue;
+      var at = document.elementFromPoint(x, y);
+      while (at) { if (at === el) return true; at = at.parentElement; }
+    }
+    return false;
+  }
+  var bar = document.querySelector(".holo-handoff");
+  if (!bar) return { present: false };
+  var send = bar.querySelector("[data-holo=handoff-send]");
+  var skip = bar.querySelector("[data-holo=handoff-skip]");
+  var retry = bar.querySelector("[data-holo=handoff-retry]");
+  var spin = bar.querySelector(".holo-bars .bars i");
+  var hintEl = bar.querySelector(".hint");
+  return {
+    present: true,
+    gate: bar.getAttribute("data-gate") || "",
+    barBox: box(bar),
+    hint: hintEl ? (hintEl.textContent || "").trim() : "",
+    send: send ? { text: (send.textContent || "").trim(),
+                   disabled: !!send.disabled, box: box(send),
+                   clickable: hit(send),
+                   /* THE FACT A CSS-ONLY "disabled" CANNOT FAKE: what the
+                      browser would actually deliver the click to. */
+                   topAtCentre: (function () {
+                     var r = send.getBoundingClientRect();
+                     var at = document.elementFromPoint(r.left + r.width / 2,
+                                                        r.top + r.height / 2);
+                     return at ? (at.getAttribute("data-holo")
+                                  || at.tagName.toLowerCase()) : "";
+                   })() } : null,
+    spinner: !!spin,
+    skip: skip ? { text: (skip.textContent || "").trim(),
+                   disabled: !!skip.disabled, box: box(skip),
+                   clickable: hit(skip) } : null,
+    retry: retry ? { text: (retry.textContent || "").trim(),
+                     clickable: hit(retry) } : null,
+    dialogOpen: !!document.querySelector("[data-holo=handoff-brief]")
+  };
+})()`;
+
+/* S171 — THE GATE'S VERDICT. Four states, and the two that matter most are
+   the ones a DOM test cannot tell apart: a control that is disabled and one
+   that is painted to look disabled, and an escape hatch that exists versus one
+   a captain can reach. */
+function judgeGate(g, want) {
+  const f = [];
+  const need = (m, what) => {
+    if (!m || !m.present) { f.push("the hand-off bar was not there " + what); }
+    return !!(m && m.present);
+  };
+  if (need(g.none, "before he pressed anything")) {
+    if (g.none.gate !== "none") {
+      f.push("a program with no change list should offer to GENERATE one; " +
+             "the bar read gate=" + g.none.gate);
+    }
+    if (!/generat/i.test((g.none.send || {}).text || "")) {
+      f.push("the control does not offer to generate the change list: " +
+             JSON.stringify((g.none.send || {}).text || ""));
+    }
+    if (!(g.none.send || {}).clickable) {
+      f.push("the GENERATE control is not hit-testable where it sits");
+    }
+    if (!g.none.skip || !g.none.skip.clickable) {
+      f.push("THE ESCAPE HATCH IS NOT REACHABLE before the pass starts — an " +
+             "engine outage would strand a ready program on the deck");
+    }
+  }
+  if (need(g.running, "while the pass was running")) {
+    if (g.running.gate !== "running") {
+      f.push("the bar did not read gate=running while a pass was in flight " +
+             "(it read " + g.running.gate + ")");
+    }
+    const sb = g.running.send || {};
+    if (!sb.disabled) {
+      f.push("the control was NOT disabled while the pass ran — this is the " +
+             "defect the captain reported: he could send before it was done");
+    }
+    if (!/generating/i.test(sb.text || "")) {
+      f.push("the control does not SAY it is generating: " +
+             JSON.stringify(sb.text || ""));
+    }
+    if (!g.running.spinner) {
+      f.push("there is no loading indicator beside the disabled control — " +
+             "\"Generating…\" with nothing moving is a label, not a state");
+    }
+    if (!g.running.skip || !g.running.skip.clickable) {
+      f.push("THE ESCAPE HATCH IS NOT REACHABLE during the wait — a wedged " +
+             "engine would strand him");
+    }
+    if (g.running.dialogOpen) {
+      f.push("the hand-off dialog was open while the gate said RUNNING — the " +
+             "gate did not gate anything");
+    }
+    (want.walkAwayPhrases || []).forEach((phrase) => {
+      if ((g.running.hint || "").indexOf(phrase) === -1
+          && !/reload|restart/i.test(g.running.hint || "")) {
+        f.push("the waiting bar does not say he may walk away: " +
+               JSON.stringify((g.running.hint || "").slice(0, 120)));
+      }
+    });
+  }
+  if (need(g.ready, "once the pass landed")) {
+    if (g.ready.gate !== "ready") {
+      f.push("after the pass landed the bar read gate=" + g.ready.gate +
+             " rather than ready");
+    }
+    const sb = g.ready.send || {};
+    if (sb.disabled || !/send to align/i.test(sb.text || "")) {
+      f.push("the control did not become a live ▶ Send to Align: " +
+             JSON.stringify(sb.text || "") + " disabled=" + !!sb.disabled);
+    }
+    if (!sb.clickable) {
+      f.push("the ▶ Send to Align control is not hit-testable where it sits");
+    }
+  }
+  if (want.expectInvalidation) {
+    if (need(g.afterTurn, "after a further composer turn")) {
+      if (g.afterTurn.gate !== "none") {
+        f.push("A FURTHER COMPOSER TURN DID NOT INVALIDATE THE CHANGE LIST: " +
+               "the bar still read gate=" + g.afterTurn.gate + ". The captain " +
+               "would send a list derived from a mockup he has since redrawn.");
+      }
+      if (!/generat/i.test((g.afterTurn.send || {}).text || "")) {
+        f.push("after a turn the control does not offer to generate again: " +
+               JSON.stringify((g.afterTurn.send || {}).text || ""));
+      }
+    }
+  }
+  return f;
+}
+
 /* The verdict. Every claim is about a LAID-OUT BOX or about text the browser
    read off the live node — never about the payload the daemon sent, which the
    unit suite already owns. */
@@ -1130,6 +1288,29 @@ function judgeHandoff(m, want) {
     f.push("the pre-drafted brief is only " + b.lines + " lines; the fixture " +
            "room's draft carries the change list and the implied behaviour and " +
            "must be at least " + want.minLines);
+  }
+  // 1b. S171 — AND WHAT IT MUST NOT CONTAIN. The captain deleted the numbered
+  //     "in your own words" list by hand before sending, twice: *"that's a raw
+  //     chat feed timeline"*, *"they had my whole chat about the close button
+  //     vs x"*. A brief that grows it back is this session undone, and no unit
+  //     test can see that it is the thing on his screen.
+  (want.briefForbids || []).forEach((bad) => {
+    if (b.value.indexOf(bad) !== -1) {
+      f.push("THE BRIEF IS A TIMELINE AGAIN: it contains " +
+             JSON.stringify(bad) + ", which is the raw chat feed the captain " +
+             "deletes by hand before he sends");
+    }
+  });
+  // 1c. …AND ITS FIRST LINE IS HIS OWN OPENING DESCRIPTION, VERBATIM. It is
+  //     also the mission's title on both filing roads, so a heading here is
+  //     the `gh issue create --title ## What it must do…` a shim once caught.
+  if (want.briefOpensWith && !want.typeWhileWaiting) {
+    const first = (b.value.split("\n")[0] || "").trim();
+    if (first !== want.briefOpensWith) {
+      f.push("the brief does not open with the captain's own words: it opens " +
+             JSON.stringify(first) + ", wanted " +
+             JSON.stringify(want.briefOpensWith));
+    }
   }
   // 2. HE MEETS THE TOP OF HIS OWN BRIEF. The box no longer has to fit the
   //    window — it is as tall as the draft, and `.modal-body` scrolls it (see
@@ -3114,6 +3295,31 @@ async function main() {
       }
       flowErr = what;
     };
+    // S171 — the gate as it was at each moment of the walk, measured off the
+    // real bar. `gateNone` is before he presses anything, `gateRunning` is the
+    // wait, `gateReady` is the moment it becomes a send button.
+    let gateNone = null, gateRunning = null, gateReady = null,
+        gateAfterTurn = null, gateClickBlocked = "";
+    const gateShots = {};
+    // He backs out of the hand-off with the control the dialog gives him.
+    const closeDialog = async () => {
+      await step(`(function () {
+        if (!document.querySelector("[data-holo=handoff-brief]")) return "";
+        var cancel = Array.prototype.slice.call(
+          document.querySelectorAll(".modal-foot button"))
+          .filter(function (n) { return /cancel/i.test(n.textContent || ""); })[0];
+        if (!cancel) return "no Cancel control to close the hand-off dialog";
+        cancel.click();
+        return "";
+      })()`);
+      await waitFor(`!document.querySelector("[data-holo=handoff-brief]")`,
+        10000, "the hand-off dialog would not close");
+    };
+    const gateProbe = async () => {
+      const r = await cdp.send("Runtime.evaluate",
+        { expression: GATE_PROBE, returnByValue: true }, sessionId);
+      return (r && r.result && r.result.value) || null;
+    };
     // ONE JOURNEY, RUN TWICE. Everything from the band's ⬡ HOLODECK button to
     // the open dialog is a closure, because S170's proof is that the captain
     // can WALK AWAY — and the only way a browser can show that is to leave and
@@ -3143,22 +3349,99 @@ async function main() {
         return "";
       })()`);
       await waitFor(`(function () {
-        var b = Array.prototype.slice.call(
-          document.querySelectorAll(".holo-handoff [data-ctl]"))
-          .filter(function (n) { return /send to align/i.test(n.textContent || ""); })[0];
-        return !!(b && !b.disabled);
+        var bar = document.querySelector(".holo-handoff");
+        var b = bar && bar.querySelector("[data-holo=handoff-send]");
+        return !!b;
       })()`, 30000,
-        "▶ Send to Align never became available on the opened program");
-      await step(`(function () {
-        var b = Array.prototype.slice.call(
-          document.querySelectorAll(".holo-handoff [data-ctl]"))
-          .filter(function (n) { return /send to align/i.test(n.textContent || ""); })[0];
-        if (!b) return "no ▶ Send to Align control on the deck";
-        if (b.disabled) return "▶ Send to Align is disabled — the planted room " +
-                               "does not read as ready to hand over";
-        b.click();
-        return "";
-      })()`);
+        "the hand-off bar never offered a send control on the opened program");
+      // ── S171 — THE GATE, WALKED THE WAY HE WALKS IT ─────────────────────
+      // ▶ SEND TO ALIGN is a wait now, and its label, its disabled state and
+      // what it does are the DAEMON's `derive` block. So the walk BRANCHES on
+      // what the bar is currently showing — which is also what makes the
+      // second walk (after the reload) a different and harder journey: the
+      // answer is already on disk, so the gate is READY and there is no second
+      // wait to sit through.
+      const gateNow = async () => {
+        const r = await cdp.send("Runtime.evaluate", { returnByValue: true,
+          expression: `(function () {
+            var bar = document.querySelector(".holo-handoff");
+            return bar ? (bar.getAttribute("data-gate") || "") : "";
+          })()` }, sessionId);
+        return (r && r.result && r.result.value) || "";
+      };
+      const press = async (which, what) => {
+        await step(`(function () {
+          var bar = document.querySelector(".holo-handoff");
+          var b = bar && bar.querySelector("[data-holo=${which}]");
+          if (!b) return ${JSON.stringify("there is no " + (want.expectGate ? "" : "") + which + " control on the hand-off bar (" + what + ")")};
+          if (b.disabled) return "the " + ${JSON.stringify(which)} +
+            " control is disabled at the moment the rig needed it — gate: " +
+            (bar.getAttribute("data-gate") || "?");
+          b.click();
+          return "";
+        })()`);
+      };
+
+      let g = await gateNow();
+      if (want.expectGate && g === "none") {
+        gateNone = gateNone || await gateProbe();
+        await press("handoff-send", "press GENERATE");
+        await waitFor(`(function () {
+          var bar = document.querySelector(".holo-handoff");
+          return !!bar && (bar.getAttribute("data-gate") || "") === "running";
+        })()`, 30000,
+          "pressing the gate never put it into its RUNNING state — either " +
+          "the click started no pass, or the deck is not rendering the one " +
+          "the daemon reported");
+        g = "running";
+        if (!gateRunning) {
+          gateRunning = await gateProbe();
+          gateShots.running = await shoot("gate-running.png");
+          // AND THE DISABLED CONTROL IS ACTUALLY DEAD. Not styled as though
+          // it is: clicked, at its own centre, and the dialog must NOT open.
+          // A control that only LOOKS disabled is this round's own defect
+          // class one surface over.
+          const bl = await cdp.send("Runtime.evaluate", { returnByValue: true,
+            expression: `(function () {
+              var bar = document.querySelector(".holo-handoff");
+              var b = bar && bar.querySelector("[data-holo=handoff-send]");
+              if (!b) return "the send control vanished mid-wait";
+              var r = b.getBoundingClientRect();
+              var at = document.elementFromPoint(r.left + r.width / 2,
+                                                 r.top + r.height / 2);
+              if (at) at.click();
+              b.click();
+              if (document.querySelector("[data-holo=handoff-brief]")) {
+                return "clicking the DISABLED generating control opened the " +
+                       "hand-off dialog — it is styled disabled, not disabled";
+              }
+              return "";
+            })()` }, sessionId);
+          gateClickBlocked = (bl && bl.result && bl.result.value) || "";
+          if (gateClickBlocked) flowErr = flowErr || gateClickBlocked;
+        }
+      }
+      if (g === "running" && want.expectDeriveRunning) {
+        // THE ESCAPE HATCH, USED FOR REAL — and it is the only road into the
+        // dialog while the pass is still in flight. S170's whole running-band
+        // proof (the walk-away sentence, typing into the brief mid-pass, the
+        // reload) now rides on this control, which is exactly right: if the
+        // hatch is not reachable, an engine outage strands him, and the rig
+        // fails on the FIRST claim rather than on a symptom of it.
+        await press("handoff-skip", "use the escape hatch during the wait");
+      } else {
+        if (g === "running") {
+          await waitFor(`(function () {
+            var bar = document.querySelector(".holo-handoff");
+            if (!bar) return false;
+            return (bar.getAttribute("data-gate") || "") !== "running";
+          })()`, 180000,
+            "the gate never left its RUNNING state — the pass never " +
+            "answered, or the deck never asked the daemon again");
+        }
+        if (want.expectGate) gateReady = gateReady || await gateProbe();
+        await press("handoff-send", "press SEND TO ALIGN");
+      }
       await waitFor(`!!document.querySelector("[data-holo=handoff-brief]")`,
         30000, "the SEND TO ALIGN dialog never opened");
     };
@@ -3273,15 +3556,73 @@ async function main() {
     }
     const hm = await probe();
     const ashot = await shoot("handoff.png");
+    // S171 — AND THE GATE AS IT IS ONCE THE PASS HAS LANDED, WITH THE DIALOG
+    // OUT OF THE WAY. It is probed here rather than in the walk because the
+    // escape-hatch road enters the dialog WHILE the pass runs — which is the
+    // whole point of that road, and means the walk never sees "ready".
+    //
+    // THE DIALOG IS CLOSED FIRST, and that is not tidiness: the overlay COVERS
+    // the deck, so `elementFromPoint` over the bar returns the overlay and
+    // every hit-test on it reads false. Measured on the first run of this
+    // phase — the rig accused the product of an unclickable ▶ Send to Align
+    // that was simply behind the dialog the rig itself had opened.
+    if (want.expectGate && !flowErr) {
+      await closeDialog();
+      await sleep(300);
+      gateReady = await gateProbe();
+      gateShots.ready = await shoot("gate-ready.png");
+    }
     // THE RUNNING CLAIM WAS ALREADY JUDGED, in phase 1, against the band as it
     // was THEN. Re-judging it here would demand a band that is running and
     // settled at the same time — the rig failing itself, which is the exact
     // shape of "reassuring output proving nothing" this file keeps a note
     // about.
+    // ── PHASE 3 (optional): HE KEEPS CHATTING WITH THE COMPOSER ───────────
+    // THE CAPTAIN'S OWN WORDS FOR THIS: *"a gated wait that retriggers behind
+    // a wait guard if you keep chatting with the composer."* A change list
+    // derived from a mockup he has since redrawn is worse than none — it
+    // describes a drawing that no longer exists. The invalidation is a FACT
+    // (the daemon fingerprints `mockup.html`), and this is the only place it
+    // is measured END TO END: real dialog closed, real composer, real turn,
+    // real bar.
+    if (want.expectInvalidation && !flowErr) {
+      await step(`(function () {
+        var ta = document.querySelector('[data-holo=composer]');
+        if (!ta) return "no composer on the deck";
+        ta.value = "Move the toolbar buttons to the right.";
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+        var send = Array.prototype.slice.call(
+          document.querySelectorAll('.composer [data-ctl]'))
+          .filter(function (b) { return /send/i.test(b.getAttribute('data-ctl')||''); })[0];
+        if (!send) return "no Send control on the composer";
+        if (send.disabled) return "the composer's Send control is disabled";
+        send.click();
+        return "";
+      })()`);
+      await waitFor(`(function () {
+        var bar = document.querySelector(".holo-handoff");
+        if (!bar) return false;
+        if (document.querySelector(".composer .holo-working")) return false;
+        return (bar.getAttribute("data-gate") || "") !== "";
+      })()`, 120000, "the composer turn never settled on the deck");
+      await sleep(600);
+      gateAfterTurn = await gateProbe();
+      gateShots.afterTurn = await shoot("gate-after-turn.png");
+    }
+
     const finalWant = Object.assign({}, want, { expectDeriveRunning: false });
     const failures = flowErr ? [flowErr] : judgeHandoff(hm, finalWant);
+    if (want.expectGate && !flowErr) {
+      judgeGate({ none: gateNone, running: gateRunning, ready: gateReady,
+                  afterTurn: gateAfterTurn }, want).forEach((x) =>
+        failures.push(x));
+    }
     handoffCheck = { want: want, measured: hm, measuredRunning: runningM,
                      runningScreenshot: rshot, typedInto: typedInto,
+                     gate: { none: gateNone, running: gateRunning,
+                             ready: gateReady, afterTurn: gateAfterTurn,
+                             clickBlocked: gateClickBlocked },
+                     gateScreenshots: gateShots,
                      failures: failures,
                      screenshot: ashot, ok: failures.length === 0 };
     fs.writeFileSync(path.join(OUT, "handoff-check.json"),
@@ -3494,6 +3835,19 @@ async function main() {
       console.log("    ▦ File Mission clickable: " +
         !!(am.fileBtn && am.fileBtn.hit) + "; open-questions cue clickable: " +
         !!(am.qcue && am.qcue.hit));
+      const G = handoffCheck.gate || {};
+      if (G.none || G.running || G.ready) {
+        const one = (g) => g ? (g.gate + " · " +
+          JSON.stringify(((g.send || {}).text || "").slice(0, 34)) +
+          (((g.send || {}).disabled) ? " DISABLED" : " live") +
+          (g.spinner ? " +bars" : "") +
+          (g.skip ? " +hatch" : "")) : "(not measured)";
+        console.log("    the gate: " + one(G.none) + "  →  " + one(G.running) +
+          "  →  " + one(G.ready));
+        if (G.afterTurn) {
+          console.log("    after one more composer turn: " + one(G.afterTurn));
+        }
+      }
     } else {
       console.error("\x1b[31m  THE SEND-TO-ALIGN BOX IS WRONG IN A REAL BROWSER.\x1b[0m " +
         "The board painted; the dialog the captain files from did not measure up:");

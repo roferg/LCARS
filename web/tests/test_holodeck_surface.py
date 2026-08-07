@@ -2006,19 +2006,21 @@ REQ1 = '**Turn 2:** "Cmd-K opens it, Escape closes it."'
 REQ2 = '**Turn 5:** "It has to remember what I ran last time."'
 Q1 = "What belongs in the command list?"
 Q2 = "Should the palette be reachable from a mission card too?"
-BRIEF = ("## What it must do — in your own words\n\n"
-         "1. " + REQ1 + "\n2. " + REQ2)
+# S171 — THE SHAPE THE DAEMON NOW SENDS: his opening description of the
+# program, verbatim and whole (its first line is the mission's title), then the
+# derived sections. It is deliberately NOT the numbered quote list any more —
+# a fixture that keeps the old shape tests a brief the product cannot produce.
+BRIEF = ("A command palette for the board. Cmd-K opens it, Escape closes it, "
+         "and it remembers what I ran last time.")
 
 SEED = {
     "sessionId": "s1", "program": "Command palette", "room": "command-palette",
     "engine": "claude",
     "brief": BRIEF,
-    # S128 — the brief is drafted from the section the product MAINTAINS.
-    # This used to read "Hand-off summary", which is the FL-011 defect.
-    "summarySource": "WHAT IT MUST DO",
+    # S171 — `summarySource` and `missingRequirements` are gone from the
+    # payload with the drafting ladder and the literal-word check.
     "requirements": [{"id": "r1", "text": REQ1}, {"id": "r2", "text": REQ2}],
     "questions": [{"id": "q1", "text": Q1}, {"id": "q2", "text": Q2}],
-    "missingRequirements": [],
     "scope": "look+behaviour", "scopeOptions": ["look+behaviour", "look-only"],
     "guidance": ("## How to read the attached mockup\n\n"
                  "- HOW MUCH TO BUILD: look AND behaviour.\n"
@@ -2112,6 +2114,186 @@ class HandoffDeckTest(unittest.TestCase):
                         "activeId": "s1"})
         self.assertTrue(out["hasComposer"])
         self.assertFalse(out["lockPresent"])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class HandoffGateTest(unittest.TestCase):
+    """S171 — ▶ SEND TO ALIGN IS A GATE WITH A WAIT, driven by the daemon.
+
+    The captain's design, after driving S170 on his own program: *"making that
+    step a gated wait that retriggers behind a wait guard if you keep chatting
+    with the composer."* S170 started the pass when the DIALOG opened, so a
+    mid-design look cost him a pass and the wait lived inside a dialog.
+
+    Every state below is `p.derive`, published by `_holodeck_meta`. NOTHING
+    here is a client-side flag and nothing is a timer — that is FL-009 and
+    FL-017 for the third time.
+
+    What this half cannot see: whether any of it is on screen, or whether the
+    disabled button is genuinely unclickable where it sits. That is
+    `tests/drives/browser/handoff.sh`, in real Chrome, hit-tested.
+    """
+
+    NONE = dict(READY, derive={"state": "none"})
+    RUNNING = dict(READY, derive={"state": "running", "startedAt": 1000.0,
+                                  "now": 1042.0})
+    DONE = dict(READY, derive={"state": "done", "ok": True,
+                               "changes": ["today a → mock b",
+                                           "today c → mock d"]})
+    FAILED = dict(READY, derive={"state": "done", "ok": False, "changes": [],
+                                 "why": "no worker engine is configured"})
+    OFF = dict(READY, derive={"state": "off"})
+
+    def _bar(self, prog):
+        return _harness({"act": "handoffBar", "programs": [prog],
+                         "activeId": "s1"})
+
+    # -- state 1: nothing derived yet ---------------------------------------
+    def test_with_NO_change_list_the_control_offers_to_GENERATE_one(self):
+        out = self._bar(self.NONE)
+        self.assertEqual(out["barGate"], "none")
+        self.assertIn("generate", (out["sendLabel"] or "").lower())
+        self.assertTrue(out["sendWired"])
+        self.assertFalse(out["sendDisabled"])
+
+    def test_clicking_GENERATE_posts_to_derive_and_NOT_to_promote(self):
+        """The whole gate in one assertion: the pass is started by a CLICK on
+        this control, so opening the hand-off dialog can no longer spend."""
+        out = _harness({"act": "gateClick", "programs": [self.NONE],
+                        "activeId": "s1"})
+        self.assertTrue(out["found"])
+        self.assertEqual(out["path"], "/api/holodeck/s1/derive")
+        self.assertEqual(out["postCount"], 1)
+
+    # -- state 2: a pass is in flight ---------------------------------------
+    def test_while_it_RUNS_the_control_says_so_and_is_DISABLED(self):
+        out = self._bar(self.RUNNING)
+        self.assertEqual(out["barGate"], "running")
+        self.assertIn("generating", (out["sendLabel"] or "").lower())
+        self.assertTrue(out["sendDisabled"], out["sendLabel"])
+        self.assertFalse(out["sendWired"])
+
+    def test_the_running_state_carries_a_LOADING_INDICATOR(self):
+        """"Generating…" with nothing moving beside it is a label, not a
+        state. The bars are the same node the chat pane uses."""
+        self.assertTrue(self._bar(self.RUNNING)["barSpinner"])
+        self.assertFalse(self._bar(self.DONE)["barSpinner"])
+
+    def test_the_disabled_control_CANNOT_fire_anything(self):
+        """Not styled as though it cannot — actually cannot. A click on it
+        must put nothing at all on the wire."""
+        out = _harness({"act": "gateClick", "programs": [self.RUNNING],
+                        "activeId": "s1"})
+        self.assertTrue(out["found"])
+        self.assertTrue(out["disabled"])
+        self.assertEqual(out["postCount"], 0, out["path"])
+
+    def test_the_running_hint_says_he_may_WALK_AWAY(self):
+        """The daemon owns the pass and the room persists the answer, so this
+        is a fact — and it is the reason the wait is acceptable at all."""
+        low = self._bar(self.RUNNING)["barText"].lower()
+        self.assertIn("reload", low)
+        self.assertIn("restart", low)
+
+    # -- state 3: it landed --------------------------------------------------
+    def test_when_it_LANDS_the_control_becomes_SEND_TO_ALIGN(self):
+        out = self._bar(self.DONE)
+        self.assertEqual(out["barGate"], "ready")
+        self.assertIn("send to align", (out["sendLabel"] or "").lower())
+        self.assertTrue(out["sendWired"])
+        self.assertFalse(out["sendDisabled"])
+        self.assertIn("2 changes", out["barText"])
+
+    def test_and_THAT_click_opens_the_hand_off_dialog(self):
+        out = _harness({"act": "gateClick", "programs": [self.DONE],
+                        "activeId": "s1"})
+        self.assertEqual(out["path"], "/api/holodeck/s1/promote")
+
+    # -- invalidation --------------------------------------------------------
+    def test_a_further_composer_turn_returns_it_to_GENERATE(self):
+        """INVALIDATION IS A FACT, NOT A FLAG. The daemon's fingerprint covers
+        `mockup.html`, so a turn that redraws it stops matching the stored
+        answer and the peek reports `none` — which this side renders. Nothing
+        on the browser side has to notice a turn happened, and that is why the
+        state cannot drift out of step with what was actually derived."""
+        ready = self._bar(self.DONE)
+        self.assertEqual(ready["barGate"], "ready")
+        # …the very same program after a turn, as the daemon then reports it.
+        after = self._bar(self.NONE)
+        self.assertEqual(after["barGate"], "none")
+        self.assertIn("generate", (after["sendLabel"] or "").lower())
+
+    # -- THE ESCAPE HATCH ----------------------------------------------------
+    def test_a_FAILED_pass_still_lets_him_SEND(self):
+        """S170 built "filing is never blocked" and proved it with an `ast`
+        test. Gating reverses that deliberately — so a pass that did not answer
+        must never strand a ready program on the deck. The PRIMARY control is
+        live here; the failure is reported beside it, in the daemon's words."""
+        out = self._bar(self.FAILED)
+        self.assertEqual(out["barGate"], "failed")
+        self.assertIn("send to align", (out["sendLabel"] or "").lower())
+        self.assertTrue(out["sendWired"])
+        self.assertFalse(out["sendDisabled"])
+        self.assertIn("no worker engine is configured", out["barText"])
+
+    def test_the_SEND_WITHOUT_hatch_is_present_in_every_gated_state(self):
+        for prog, gate in ((self.NONE, "none"), (self.RUNNING, "running"),
+                           (self.FAILED, "failed")):
+            out = self._bar(prog)
+            self.assertTrue(out["skipPresent"], gate)
+        # …and NOT once there is a list, where it would be a second way to do
+        # the same thing.
+        self.assertFalse(self._bar(self.DONE)["skipPresent"])
+
+    def test_the_hatch_goes_STRAIGHT_to_the_hand_off_dialog(self):
+        """The same `promote` the ready path reaches — one filing road, so
+        there is nothing here that can rot while the main one is maintained."""
+        out = _harness({"act": "gateClick", "programs": [self.RUNNING],
+                        "activeId": "s1", "which": "handoff-skip"})
+        self.assertTrue(out["found"])
+        self.assertEqual(out["path"], "/api/holodeck/s1/promote")
+
+    def test_a_failed_pass_can_be_RETRIED_and_the_retry_is_FORCED(self):
+        """A failure is persisted like any other answer, so without this a
+        captain whose engine was down for a minute would read "could not read
+        your project" until he redrew the mockup. `force` is what clears it,
+        and it is only ever reached by him asking."""
+        out = _harness({"act": "gateClick", "programs": [self.FAILED],
+                        "activeId": "s1", "which": "handoff-retry"})
+        self.assertTrue(out["found"])
+        self.assertEqual(out["path"], "/api/holodeck/s1/derive")
+        self.assertEqual(out["body"], {"force": True})
+        # …and it is offered NOWHERE else: a retry beside a good list is an
+        # invitation to spend for nothing.
+        for prog in (self.NONE, self.RUNNING, self.DONE):
+            self.assertFalse(self._bar(prog)["retryPresent"])
+
+    # -- switched off --------------------------------------------------------
+    def test_with_the_derivation_OFF_the_gate_is_not_there_at_all(self):
+        """Gating on a pass that will never run is a door with no handle."""
+        out = self._bar(self.OFF)
+        self.assertEqual(out["barGate"], "off")
+        self.assertIn("send to align", (out["sendLabel"] or "").lower())
+        self.assertTrue(out["sendWired"])
+
+    def test_a_program_with_NOTHING_TO_HAND_OVER_is_still_off_with_a_reason(
+            self):
+        """The S127 rule outranks the gate: no mockup, no hand-off, and the
+        sentence is the daemon's."""
+        out = self._bar(dict(NOT_READY, derive={"state": "none"}))
+        send = [c for c in out["barControls"]
+                if "send to align" in c["label"].lower()][0]
+        self.assertTrue(send["disabled"])
+        self.assertEqual(send["reason"], NOT_READY["handoffBlocked"])
+        self.assertFalse(out["skipPresent"])
+
+    def test_no_dead_controls_in_ANY_gate_state(self):
+        for prog in (self.NONE, self.RUNNING, self.DONE, self.FAILED,
+                     self.OFF):
+            for ctl in self._bar(prog)["barControls"]:
+                self.assertTrue(
+                    ctl["wired"] or ctl["disabled"] or ctl["reason"],
+                    "dead control: %r" % ctl["label"])
 
 
 @unittest.skipIf(NODE is None, "node not installed")
@@ -2366,66 +2548,46 @@ class FailedFilingIsVisibleTest(unittest.TestCase):
 
 
 @unittest.skipIf(NODE is None, "node not installed")
-class HandoffRequirementGuardTest(unittest.TestCase):
-    """A3 — his own words cannot leave the room without him seeing it go."""
+class HandoffNoRequirementChecklistTest(unittest.TestCase):
+    """S171 — A3's ✓/⚠ CHECKLIST IS GONE, AND SO IS ITS BAND.
 
-    def test_the_brief_hint_names_the_section_it_was_drafted_from(self):
-        """It used to say "your concept doc's hand-off summary". That sentence
-        was true and the thing it described was stale."""
+    What was here: seven tests over a panel that listed every captured
+    requirement beside the brief, marked each ✓ or ⚠ by containment on the
+    captain's literal words, and warned in amber when one was not in the box.
+    It was built for FL-011 and it worked.
+
+    It is deleted because the thing it measured left. His words are no longer
+    QUOTED IN THE BRIEF (the numbered "in your own words" list went with the
+    same feedback), so every row would read ⚠ on every hand-off — a panel of
+    warnings that are all false, beside ▦ FILE MISSION. The captain named both
+    surfaces in one sentence, and the reasoning plus the accepted risk is
+    written out in actions.py where `_handoff_missing` used to be.
+
+    What stays proven below: no dead controls anywhere in the dialog. And what
+    replaces the guarantee is structural, not another check — `concept.md`
+    rides to the Mission with `## WHAT IT MUST DO` complete and attributed,
+    which `HandoffRidesTest` and the endpoint suite pin.
+    """
+
+    def test_the_dialog_no_longer_shows_a_requirement_CHECKLIST(self):
         out = _harness({"act": "handoffDialog", "seed": SEED,
                         "stopBeforeFile": True})
-        low = out["text"].lower()
-        self.assertIn("what it must do", low)
-        self.assertNotIn("hand-off summary", low)
+        self.assertEqual(out["reqRows"], [], out["reqRows"])
+        self.assertEqual(out["missingText"], "")
 
-    def test_every_captured_requirement_is_listed_beside_the_brief(self):
-        out = _harness({"act": "handoffDialog", "seed": SEED,
-                        "stopBeforeFile": True})
-        self.assertEqual(len(out["reqRows"]), 2, out["reqRows"])
-        self.assertIn("Escape closes it", out["reqRows"][0]["text"])
-        self.assertTrue(all(r["ok"] for r in out["reqRows"]), out["reqRows"])
-
-    def test_a_requirement_he_edits_OUT_is_flagged_where_he_is_looking(self):
+    def test_a_brief_he_rewrites_to_ONE_LINE_raises_no_warning_at_all(self):
+        """The exact input the old panel went amber on — and the reason it had
+        to go: this is now what EVERY hand-off looks like."""
         out = _harness({"act": "handoffDialog", "seed": SEED,
                         "rewrite": "Cmd-K opens it, Escape closes it.",
                         "stopBeforeFile": True})
-        rows = out["reqRows"]
-        self.assertTrue(rows[0]["ok"], rows)
-        self.assertFalse(rows[1]["ok"], rows)
-        # the band NAMES it — "something is missing" is not actionable.
-        self.assertIn("remember what I ran last time", out["missingText"])
-        self.assertFalse(out["missingHidden"], out)
-
-    def test_the_flag_CLEARS_when_he_puts_it_back(self):
-        """The control. A band that never goes away is a band he stops seeing,
-        and this one has to still mean something on the day it fires."""
-        out = _harness({"act": "handoffDialog", "seed": SEED,
-                        "rewrite": "Cmd-K opens it, Escape closes it.",
-                        "then": BRIEF, "stopBeforeFile": True})
+        self.assertEqual(out["missingText"], "")
         self.assertTrue(out["missingHidden"], out)
-        self.assertTrue(all(r["ok"] for r in out["reqRows"]), out["reqRows"])
 
-    def test_a_dropped_requirement_does_NOT_block_the_filing(self):
-        """The cure is CARRY, not refuse: the daemon puts it into the mission
-        verbatim. A hard stop here would strand him at the last click of a
-        design session with no way through."""
+    def test_it_still_does_NOT_block_the_filing(self):
         out = _harness({"act": "handoffDialog", "seed": SEED,
                         "rewrite": "Cmd-K opens it, Escape closes it."})
         self.assertEqual(out["filePath"], "/api/park")
-
-    def test_the_surface_SAYS_the_missing_one_is_carried_in_anyway(self):
-        """Otherwise the honest reading of the warning is "you just lost it"."""
-        out = _harness({"act": "handoffDialog", "seed": SEED,
-                        "rewrite": "Cmd-K opens it, Escape closes it.",
-                        "stopBeforeFile": True})
-        self.assertIn("carried", out["missingText"].lower())
-
-    def test_a_program_with_no_captured_requirements_shows_no_panel(self):
-        out = _harness({"act": "handoffDialog",
-                        "seed": dict(SEED, requirements=[]),
-                        "stopBeforeFile": True})
-        self.assertEqual(out["reqRows"], [])
-        self.assertEqual(out["missingText"], "")
 
     def test_no_dead_controls_anywhere_in_the_hand_off_dialog(self):
         out = _harness({"act": "handoffDialog", "seed": SEED,
@@ -4124,10 +4286,15 @@ class HandoffHintTellsTheTruthTest(unittest.TestCase):
     def test_the_COUNTS_are_still_the_daemons_own(self):
         """The half that must not regress: the sentence cannot claim something
         the draft does not contain, so the numbers come from the daemon's sets
-        and are never counted on this side."""
+        and are never counted on this side.
+
+        S171 — AND HIS OWN WORDS ARE NAMED, NOT COUNTED. The brief's head is
+        his opening description whole, so "2 things you said" would be
+        counting quoted fragments that are no longer in the box."""
         out = _harness({"act": "handoffDialog", "seed": self.SEED3,
                         "stopBeforeFile": True})
-        self.assertIn("2 things you said", out["briefHint"])
+        self.assertIn("your own words", out["briefHint"])
+        self.assertNotIn("things you said", out["briefHint"])
 
 
 @unittest.skipIf(NODE is None, "node not installed")

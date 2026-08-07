@@ -1064,6 +1064,19 @@ switch (cfg.act) {
     out.barPresent = !!bar;
     out.barText = txt(bar);
     out.barControls = bar ? controlsIn(bar) : [];
+    /* S171 — THE GATE. `data-gate` is stamped from the DAEMON's published
+     * `derive` block and nothing else, so reading it back is reading what the
+     * bar was told, not what it decided. The loading indicator is a NODE — a
+     * button that merely says "generating" with nothing moving beside it is
+     * the state this round was asked to make visible. */
+    out.barGate = bar ? bar.getAttribute("data-gate") : null;
+    const gsend = bar ? one(bar, "[data-holo=handoff-send]") : null;
+    out.sendLabel = gsend ? gsend.getAttribute("data-ctl") : null;
+    out.sendDisabled = gsend ? !!gsend.disabled : null;
+    out.sendWired = gsend ? gsend.getAttribute("data-wired") === "1" : null;
+    out.barSpinner = bar ? !!one(bar, ".holo-bars .bars i") : false;
+    out.skipPresent = bar ? !!one(bar, "[data-holo=handoff-skip]") : false;
+    out.retryPresent = bar ? !!one(bar, "[data-holo=handoff-retry]") : false;
     out.hasComposer = !!one(deck(), ".composer textarea");
     const lock = one(deck(), ".holo-lock");
     out.lockPresent = !!lock;
@@ -1257,6 +1270,26 @@ switch (cfg.act) {
     const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
     out.path = post ? post.url : null;
     out.body = post ? JSON.parse(post.opts.body) : null;
+    break;
+  }
+  /* S171 — THE GATE'S CLICKS, on the wire. `which` names the control by its
+   * data-holo: `handoff-send`, `handoff-skip`, `handoff-retry`. Whatever the
+   * bar is showing, exactly one POST may leave the page and this says which. */
+  case "gateClick": {
+    sandbox.writesActive = true;
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    FETCHES.length = 0;
+    const bar = one(deck(), ".holo-handoff");
+    const ctl = bar ? one(bar, `[data-holo=${cfg.which || "handoff-send"}]`)
+                    : null;
+    out.found = !!ctl;
+    out.disabled = ctl ? !!ctl.disabled : null;
+    if (ctl) ctl.click();
+    const posts = FETCHES.filter((f) => (f.opts.method || "") === "POST");
+    out.postCount = posts.length;
+    out.path = posts.length ? posts[0].url : null;
+    out.body = posts.length ? JSON.parse(posts[0].opts.body) : null;
     break;
   }
   /* The hand-off dialog itself, rendered from a daemon payload — then FILED,

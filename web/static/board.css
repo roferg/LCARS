@@ -1758,6 +1758,27 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .holo-handoff .hl{font-family:var(--font-display);font-size:10px;
   letter-spacing:.16em;text-transform:uppercase;color:var(--holo-grid);
   white-space:nowrap}
+/* S171 — THE GATE. `▶ Send to Align` is a wait now, so the bar has to be able
+   to SHOW one, and the escape hatch beside it has to read as the secondary
+   road rather than as a second way to do the same thing. */
+.holo-handoff .btn.small{font-size:9px;letter-spacing:.1em;padding:4px 10px;
+  border-radius:9px;white-space:nowrap}
+.holo-handoff .holo-bars{display:inline-flex;align-items:center;
+  flex:0 0 auto}
+.holo-handoff .holo-bars .bars{display:flex;gap:3px}
+.holo-handoff .holo-bars .bars i{width:4px;height:13px;
+  background:var(--holo-grid);border-radius:1px;
+  animation:holo-pulse 1.1s ease-in-out infinite}
+.holo-handoff .holo-bars .bars i:nth-child(2){animation-delay:.14s}
+.holo-handoff .holo-bars .bars i:nth-child(3){animation-delay:.28s}
+.holo-handoff .holo-bars .bars i:nth-child(4){animation-delay:.42s}
+@media (prefers-reduced-motion:reduce){
+  .holo-handoff .holo-bars .bars i{animation:none;opacity:.8}}
+/* THE WAIT IS AMBER AND THE READY STATE IS NOT — the two must never read the
+   same at a glance, because one of them means "you may leave". */
+.holo-handoff[data-gate=running]{background:rgba(255,170,0,.10)}
+.holo-handoff[data-gate=running] .hint{color:var(--lcars-text-bright)}
+.holo-handoff[data-gate=failed] .hint{color:var(--lcars-text-bright)}
 
 /* THE LOCK BAND — it REPLACES the composer, it does not grey it out. A
    disabled input invites "why can't I type here?"; a band that says what
@@ -1839,26 +1860,20 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
    Proven by tests/drives/browser/handoff.sh, whose `capped-box` red control
    puts a height cap back at the tester's measured 243px and must go red. */
 
-/* S128 (FL-011) — the captured-requirement checklist and the OPEN QUESTIONS.
+/* S128 (FL-011) — the captured-requirement checklist and its amber band.
 
-   The band is deliberately NOT `.hint`-coloured. S162's lesson on this exact
-   surface: an amber warning that ties `.hint` on specificity and loses on
-   source order renders as muted metadata and is read as decoration. This rule
-   is more specific than `.field .hint` and carries its own background, so it
-   cannot be quietly demoted by a neighbouring rule. */
-.reqs{display:flex;flex-direction:column;gap:5px}
-.req{display:flex;align-items:baseline;gap:9px;background:var(--lcars-card);
-  border:1px solid rgba(80,104,138,.25);border-radius:7px;padding:7px 11px}
-.req .ic{color:var(--holo-grid);width:14px;text-align:center;font-size:12px}
-.req .rt{font-size:11.5px;line-height:1.55;color:var(--lcars-text-dim)}
-.req.miss{border-color:var(--lcars-amber);background:rgba(255,170,0,.10)}
-.req.miss .ic{color:var(--lcars-amber)}
-.req.miss .rt{color:var(--lcars-text-bright)}
-.field .handoff-missing{margin-top:9px;background:rgba(255,170,0,.14);
-  border:1px solid var(--lcars-amber);border-left-width:4px;border-radius:7px;
-  padding:10px 13px;font-size:12px;line-height:1.6;
-  color:var(--lcars-text-bright)}
-.field .handoff-missing[hidden]{display:none}
+   S171 DELETED BOTH, and this rule set with them. The panel listed every
+   captured requirement beside the brief and marked each ✓ or ⚠ by containment
+   on the captain's literal words; with those words no longer quoted in the
+   brief, every row would have gone ⚠ on every hand-off. See actions.py where
+   `_handoff_missing` used to be for the reasoning and the accepted risk.
+
+   The one thing here worth carrying forward is WHY the band was styled the way
+   it was, because the next amber band will meet the same trap: it was
+   deliberately NOT `.hint`-coloured. S162's lesson on this exact surface — an
+   amber warning that ties `.hint` on specificity and loses on source order
+   renders as muted metadata and is read as decoration. Any replacement must be
+   more specific than `.field .hint` and carry its own background. */
 
 /* ── S170: THE DERIVATION BAND ─────────────────────────────────────────────
    What one bounded read-only pass found when it stood in the captain's project

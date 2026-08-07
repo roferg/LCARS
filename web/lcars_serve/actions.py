@@ -600,15 +600,12 @@ class _AlignSession(object):
 
     __slots__ = ("idea", "engine", "transcript", "prd", "done",
                  "worker_sid", "started", "image_paths", "mission_id",
-                 "last_question", "holodeck", "holodeck_missing",
+                 "last_question", "holodeck",
                  "turn_started", "finalize_started")
 
-    def __init__(self, idea, engine, mission_id=None, holodeck=None,
-                 holodeck_missing=()):
-        # S128 — captured requirements the captain's opening brief did not
-        # contain. Computed when the grill OPENS (the concept doc is readable
-        # then and the program may be gone by `done`), reported at `done`.
-        self.holodeck_missing = list(holodeck_missing)
+    def __init__(self, idea, engine, mission_id=None, holodeck=None):
+        # S171 — `holodeck_missing` is gone with `_handoff_missing`; the block
+        # above that constant says why, and what risk was accepted.
         self.idea = idea
         self.engine = engine
         # S127 — the holodeck PROGRAM this grill is aligning, if any. Carried so
@@ -1406,8 +1403,8 @@ OFFER it in a sentence so he can ask for it on the next turn.
 # is what silently dropped a requirement the captain stated verbatim twice.
 #
 # The brief is now built from `## WHAT IT MUST DO` (`_handoff_brief`), which the
-# contract above does demand every turn, and `_HANDOFF_SECTIONS` no longer names
-# the summary at all — so as of this session NOTHING READS IT. Asking a model to
+# contract above does demand every turn, and no reader anywhere names the
+# summary at all — so as of this session NOTHING READS IT. Asking a model to
 # maintain a section no code consumes is how the defect comes back: the next
 # reader assumes something downstream needs it and drafts from it again. Either
 # it is regenerated on the same turn as the requirements or it does not exist,
@@ -1584,19 +1581,21 @@ def _handoff_guidance(scope):
 #
 # So the summary is OFF the brief path entirely. It is not demoted to a
 # fallback: a section that can be arbitrarily old is not a safer draft than no
-# draft at all, and a fallback is exactly how it would come back. The
-# degradation ladder below keeps the S127 discipline — never an empty box, and
-# the surface is always told WHICH source it got so a fallback can never be
-# passed off as the real thing.
+# draft at all, and a fallback is exactly how it would come back.
+#
+# S171 — AND NOW NEITHER IS ANY OTHER SECTION. The degradation ladder that
+# followed (`## The problem`, then the doc's first paragraph) is deleted with
+# `_handoff_head`, and so is the `summarySource` key that disclosed which rung
+# it landed on. The brief's head is the captain's own opening description,
+# which exists on every program and which nothing rewrites, so there is no rung
+# to fall to. `WHAT IT MUST DO` is still READ — bucket 1 for the dedup, bucket 2
+# for the implied section, bucket 3 for out-of-scope — it is simply no longer
+# pasted into the brief as a numbered timeline.
 _HANDOFF_REQ_HEADING = "WHAT IT MUST DO"
 # Bucket 1 of that section (`_CONCEPT_CONTRACT`): "stated behaviour, numbered,
 # in the captain's OWN WORDS, each attributed to the turn it was said in."
 _HANDOFF_REQ_BUCKETS = ("1. Requirements", "Requirements")
 _HANDOFF_QUESTION_HEADING = "Open questions"
-# Only when there are no requirements at all. `## The problem` is a description
-# of the goal, not a set of decisions, so a stale one cannot silently REPLACE
-# something the captain said.
-_HANDOFF_SECTIONS = ("The problem",)
 
 
 def _md_section(text, heading, prefix=False):
@@ -1742,8 +1741,11 @@ def _md_items(body):
 # A self-numbered `2.`/`3.` heading is the structural half of the same stop.
 # Used ONLY TO EXCLUDE, never to include: a doc this cannot read reports NO
 # stated requirements rather than promoting unsettled ones, because a
-# requirement that is merely missing is caught by `_handoff_missing` and
-# carried in LOUDLY, while an invented one arrives silent and authoritative.
+# requirement that is merely missing is one the concept doc still carries to
+# the Mission as an attachment, while an invented one arrives silent and
+# authoritative in the brief itself. (Until S171 a merely-missing one was also
+# caught by `_handoff_missing` and carried in LOUDLY; that check is gone and
+# the block above its old home says what was accepted.)
 #
 # S169 — READ FROM BOTH SIDES NOW. `_HANDOFF_IMPLIED_BUCKETS` reuses the first
 # name below to FIND bucket 2 and carry it into the brief marked as implied.
@@ -1934,6 +1936,12 @@ def _handoff_questions(concept_text):
 # longer publishes a `decisions` key and `_handoff_decisions` is gone; the
 # heading constant survives because the derivation prompt names the section.
 _HANDOFF_DECISIONS_HEADING = "Decisions"
+# S171 — the concept doc's flow declarations, by the name `_CONCEPT_CONTRACT`
+# asks for them under. The derivation prompt names this section because it is
+# where BEHAVIOUR lives: a picture cannot show what a control is wired to, and
+# `## DECLARED FLOW` states the transitions in one line each. Nothing here
+# parses it — it is handed to the pass by name, exactly as `## Decisions` is.
+_HANDOFF_FLOW_HEADING = "DECLARED FLOW"
 # Bucket 2 of `## WHAT IT MUST DO`. `_HANDOFF_NOT_STATED_BUCKETS[0]` is the
 # same literal, and it is the same rule seen from the other side: the region
 # reader uses it to EXCLUDE bucket 2 from the captain's own words, and this
@@ -2018,6 +2026,17 @@ def _handoff_implied(concept_text):
 _HANDOFF_DEDUP_MIN_WORDS = 4
 
 
+def _handoff_norm(text):
+    """Case-folded, punctuation-light, single-spaced — for the CONTAINS check.
+
+    The dedup above is a containment test, and the two sides of it are written
+    by different hands: one section is model prose, the other is a derived line.
+    Re-wrapping, case and the bold markers around a turn attribution are not
+    differences of meaning and must not read as ones.
+    """
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
 def _handoff_carry(carried, items):
     """`items` minus anything `carried` already says. See the rule above."""
     hay = [" %s " % _handoff_norm(c) for c in carried]
@@ -2056,11 +2075,35 @@ def _handoff_carry(carried, items):
 #
 # The heading survives BELOW it, because it was doing a second job: telling
 # the human who opens this box what the box is. Only its position changes.
-def _handoff_titled(brief, title):
-    """`brief` with the program's name as its first line."""
-    if not title:
+#
+# ── S171: AND IT IS ALSO THE WHOLE OF HIS OWN WORDS NOW ────────────────────
+#
+# The captain typed this string into ONE field — "What are we designing?" — and
+# it is his opening description of the program, whole:
+#
+#   "Give the tile editor a more modern UI look and add a light/dark mode. I
+#    don't want to touch the tile canvas at all"
+#
+# So it is carried BYTE-FOR-BYTE and never rewritten. The alternative on the
+# table was composed prose (a model turning the captured requirements into a
+# readable paragraph) and he ruled against it in one sentence: *"composed prose
+# means an AI rewrites your opening words."* Nothing in this file may generate
+# a sentence in his voice.
+#
+# `title` is the FIRST LINE of it, which is the contract above — the mission's
+# name and the GitHub issue's title. Any further lines ride directly beneath,
+# so a multi-line description is preserved rather than truncated to its first
+# line the way this function used to.
+def _handoff_titled(brief, opening):
+    """`brief` under the captain's opening description, verbatim.
+
+    Its first line is the program name, which both filing roads read as the
+    mission's title — see the block above.
+    """
+    head = str(opening or "").strip()
+    if not head:
         return brief
-    return "%s\n\n%s" % (title, brief) if brief else title
+    return "%s\n\n%s" % (head, brief) if brief else head
 
 
 # S169 — THE THREE SECTIONS, and the words above each of them.
@@ -2070,7 +2113,35 @@ def _handoff_titled(brief, title):
 # pin them. They are SHORT on purpose: the trap this change walks into is a box
 # so long nobody reads it, and every line of preamble is a line of his brief he
 # does not see.
-_HANDOFF_REQ_TITLE = "## What it must do — in your own words"
+#
+# ── S171: `_HANDOFF_REQ_TITLE` AND THE LIST UNDER IT ARE GONE ──────────────
+#
+# `## What it must do — in your own words` headed a NUMBERED, TURN-ATTRIBUTED
+# list of quoted fragments read out of `## WHAT IT MUST DO` bucket 1. The
+# captain, having driven S170's output on his own program:
+#
+#   *"The problem was the 'in my own words' list still in the text and in the
+#    requirements. Those ended up being ramble bullet points that were more a
+#    timeline than fact. For example, they had my whole chat about the close
+#    button vs x."*
+#
+# It is the SAME DISEASE S170 cured one surface over. `## Decisions` was a
+# transcript of the conversation; so is this, and for the same structural
+# reason — bucket 1 is maintained turn by turn, in the order things were said,
+# with the turn stamped on each line. His close-button-vs-× exchange is a
+# conversation about how the MOCKUP got fixed. It was never a requirement of
+# his app, and read back as a brief it is a timeline.
+#
+# WHAT REPLACES IT IS NOT PROSE. See `_handoff_titled`: his opening description
+# rides verbatim, and the change list — which is a DIFF, and which he measured
+# as *"great… captured most things which would clue the harness in closely
+# when it builds"* — carries the work.
+#
+# HIS WORDS ARE NOT LOST, and this is the load-bearing fact. `concept.md` rides
+# to the Mission as an attachment (`_HANDOFF_FILES`) with `## WHAT IT MUST DO`
+# in it, complete and turn-attributed, and every stage reads it. What changed is
+# that a timeline is no longer PASTED INTO THE BRIEF, where it read as the
+# specification.
 #
 # S169 FIX ROUND 1 — THE CAPTION STOPS VOUCHING FOR THE LIST.
 #
@@ -2122,30 +2193,23 @@ def _handoff_section(title, note, items):
     return "\n".join([title, "", note, ""] + ["- %s" % i for i in items])
 
 
-def _handoff_head(concept_text, reqs):
-    """(the top of the brief, which section it came from).
-
-    The captain's own words when the doc has them, and the S127 degradation
-    ladder when it does not — never an empty box, and the surface is always
-    told WHICH source it got so a fallback cannot be passed off as the real
-    thing.
-    """
-    if reqs:
-        return ("\n".join([_HANDOFF_REQ_TITLE, ""]
-                          + ["%d. %s" % (i + 1, r)
-                             for i, r in enumerate(reqs)]),
-                _HANDOFF_REQ_HEADING)
-    for heading in _HANDOFF_SECTIONS:
-        body = _md_section(concept_text, heading, prefix=True)
-        if body:
-            return body, heading
-    # Last resort: the first real paragraph of the doc. Never an empty box.
-    for para in re.split(r"\n\s*\n", (concept_text or "").strip()):
-        para = "\n".join(l for l in para.split("\n")
-                         if not l.lstrip().startswith("#")).strip()
-        if para:
-            return para, ""
-    return "", ""
+# ── S171: `_handoff_head` IS GONE, AND SO IS THE LADDER UNDER IT ───────────
+#
+# It answered "where does the top of the brief come from" with three rungs —
+# the captured requirements, then `## The problem`, then the concept doc's
+# first paragraph — and published which rung it landed on (`summarySource`) so
+# a fallback could never be passed off as the real thing. That discipline was
+# right for a head DRAFTED OUT OF A MODEL-WRITTEN DOCUMENT.
+#
+# The head is no longer drafted. It is the captain's own opening description,
+# which he typed himself and which exists on every program (`holodeck_start`
+# refuses one without it), carried byte-for-byte by `_handoff_titled`. There is
+# no rung below it to fall to and no source to disclose: a brief can no longer
+# be composed from anything but his own words plus a diff.
+#
+# `## The problem` — the rung this deletes — is model-written prose ABOUT him
+# ("The captain wants a cleaner, more modern chrome…"). Keeping it as a fallback
+# would be exactly the thing he ruled out.
 
 
 def _handoff_parts(concept_text, changes=()):
@@ -2265,10 +2329,13 @@ The design and the notes that go with it are these files:
       THE FINISHED MOCKUP — the design that will actually be built.
   · %(concept)s
       The design chat's written record. Its `## %(decisions)s` section says WHY \
-each choice was made, and its out-of-scope list says what must not be touched. \
-USE IT FOR WHY, AND FOR SCOPE. DO NOT use it as the list of changes: it is a \
-log of a conversation, it records the mockup being corrected against ITSELF, \
-and it is not what you are being asked for.
+each choice was made, its `## %(flow)s` section names the screens and the \
+transitions between them, its `## %(must)s` section says what the finished \
+thing has to DO, and its out-of-scope list says what must not be touched. USE \
+IT FOR WHY, FOR BEHAVIOUR AND FOR SCOPE — a picture cannot show you what a \
+control is wired to, and those sections can. DO NOT use it as the list of \
+changes: it is a log of a conversation, it records the mockup being corrected \
+against ITSELF, and it is not what you are being asked for.
   · %(basis)s
       An earlier summary of the app, written before the design session started. \
 It may be stale and it may be absent. It is context only, and WHERE IT \
@@ -2276,14 +2343,28 @@ DISAGREES WITH THE CODE IN YOUR WORKING DIRECTORY, THE CODE WINS.
 
 ── WHAT COUNTS AS A CHANGE ─────────────────────────────────────────────────
 
-Compare LOOK AND FLOW ONLY:
+THE LINE, AND HOLD IT IN BOTH DIRECTIONS: what a thing IS, what it DOES and \
+what it is CONNECTED TO are changes. HOW IT IS BUILT is not.
+
+So compare LOOK, FLOW AND BEHAVIOUR:
 
   · what is on each screen, and what is not;
   · where it sits, and in what order;
   · colour, fill, border, radius, spacing, size, weight, casing;
   · labels and wording as a user reads them;
   · what a control does when it is clicked, and what the user sees next;
-  · states a user can see: hover, active, selected, disabled, empty, error.
+  · states a user can see: hover, active, selected, disabled, empty, error;
+  · WHAT A THING IS WIRED TO — the real data or state it must read, and what \
+must actually change in the app when it is used. A counter, a status line, an \
+indicator, a toggle, a filter, a list: say what it must reflect and what must \
+happen when it moves. "There is a status bar" is not the change; "the status \
+bar shows the real unsaved state and flips when the document is saved" is.
+  · what happens when there is nothing to show, when it is loading, and when \
+it goes wrong, where the mockup draws that and the app does something else.
+
+A thing that only LOOKS right is not built. If the mockup shows something the \
+app must now DO, and the app does not do it today, that is a line — even when \
+the two would look identical in a screenshot.
 
 NEVER REPORT IMPLEMENTATION. The mockup is ONE self-contained HTML file with \
 invented data and no real internals; the app is a real program. These are NOT \
@@ -2292,10 +2373,18 @@ changes and MUST NOT appear in your list:
   · frameworks, libraries, build tools, file or folder organisation;
   · HOW styling is expressed — inline CSS, classes, a stylesheet, utility \
 classes, tokens, variables. Only the RESULT a user sees is a change;
+  · HOW behaviour is implemented — state stores, hooks, events, handlers, \
+props, endpoints, queries, schemas, where a value is kept or how it travels. \
+Say WHAT must be reflected and WHAT must change, never how to make it so;
   · function, class, variable, component, id or selector names;
   · the mockup's fake data, placeholder text, dummy rows, stub handlers, or \
 anything it hardcodes because it has no backend;
   · anything the mockup could not have implemented for real.
+
+The mockup's OWN internals prove nothing about behaviour — it is wired to \
+nothing on purpose. Where you say a thing must be connected to something real, \
+that is read out of the design chat's record and out of the app; it is never \
+read off the mockup's fake handlers.
 
 ── THE RULE THAT MATTERS MOST ──────────────────────────────────────────────
 
@@ -2303,7 +2392,10 @@ IF THE MOCKUP LEAVES SOMETHING AS THE APP ALREADY HAS IT, THERE IS NO LINE FOR \
 IT. Not "unchanged", not "kept", not "confirmed", not "still present", not \
 "matches today" — NOTHING AT ALL. This list is the DIFFERENCE and nothing \
 else. A control the app already has, drawn in the mockup the way the app \
-already draws it, is SILENCE.
+already draws it, is SILENCE. THAT RULE COVERS BEHAVIOUR EXACTLY AS IT COVERS \
+LOOK: a thing the app already does, that the mockup does not change, is \
+SILENCE too — never "still works", never "remains wired to", never "continues \
+to reflect".
 
 THE DESIGN CHAT ARGUED WITH ITSELF. It changed its mind, and it corrected \
 earlier drafts of this same mockup. NONE OF THAT IS A CHANGE. Never write a \
@@ -2358,6 +2450,12 @@ def _handoff_derive_prompt(mockup, concept, basis):
     return _HANDOFF_DERIVE_PROMPT % {
         "mockup": mockup, "concept": concept, "basis": basis,
         "decisions": _HANDOFF_DECISIONS_HEADING,
+        # S171 — the two sections that carry BEHAVIOUR, named off the same
+        # constants `_CONCEPT_CONTRACT` asks the design worker to maintain, so
+        # a reworded contract cannot leave this prompt pointing at a heading
+        # that no longer exists.
+        "flow": _HANDOFF_FLOW_HEADING,
+        "must": _HANDOFF_REQ_HEADING,
         "marker": _HANDOFF_DERIVE_MARKER,
         "cap": _HANDOFF_DERIVE_MAX_LINE,
     }
@@ -2405,15 +2503,15 @@ def _handoff_derive_parse(reply):
 
 
 def _handoff_brief(concept_text, program="", changes=()):
-    """(brief, which section it came from) — the PRE-DRAFTED writing space.
+    """The PRE-DRAFTED writing space.
 
     D15: it is a writing space, not a title field, and it is pre-drafted from
     the conversation so the captain never faces an empty page. It is fully
     rewritable on the deck — this is only the draft.
 
-    Its FIRST LINE is the mission's title, on every road (see above), so
-    `program` leads every branch — including the degraded ones, which file a
-    mission exactly the same way.
+    Its FIRST LINE is the mission's title, on every road (see
+    `_handoff_titled`), so `program` leads every branch — including the degraded
+    ones, which file a mission exactly the same way.
 
     S169 — THREE things, not one. His words, then what the mockup CHANGES about
     the app he has today, then what it IMPLIES and nobody has settled
@@ -2427,56 +2525,79 @@ def _handoff_brief(concept_text, program="", changes=()):
     switched off — degrades to a brief WITHOUT that section rather than to a
     stale one, which is the honest failure and never a blocked filing. Bucket 3
     (out of scope) rides last, because a diff structurally cannot produce it.
+
+    S171 — AND THE TOP IS HIS OPENING DESCRIPTION, VERBATIM. It used to be a
+    numbered list of quoted fragments with turn attributions, which is a
+    timeline (see `_HANDOFF_REQ_TITLE`'s block). `concept_text` is still read —
+    for bucket 2, bucket 3 and the dedup — but nothing is drafted from it in
+    his voice any more, and no model prose reaches the head.
     """
-    title = str(program or "").strip().split("\n")[0].strip()
-    reqs, changed, implied, scope = _handoff_parts(concept_text, changes)
-    head, source = _handoff_head(concept_text, reqs)
+    _reqs, changed, implied, scope = _handoff_parts(concept_text, changes)
     blocks = [b for b in (
-        head,
         _handoff_section(_HANDOFF_CHANGE_TITLE, _HANDOFF_CHANGE_NOTE,
                          changed),
         _handoff_section(_HANDOFF_IMPLIED_TITLE, _HANDOFF_IMPLIED_NOTE,
                          implied),
         _handoff_section(_HANDOFF_SCOPE_TITLE, _HANDOFF_SCOPE_NOTE,
                          scope)) if b]
-    return _handoff_titled("\n\n".join(blocks), title), source
+    return _handoff_titled("\n\n".join(blocks), program)
 
 
-def _handoff_norm(text):
-    """Case-folded, punctuation-light, single-spaced — for the CONTAINS check.
-
-    The captain rewrites his brief; re-wrapping a sentence, changing its case
-    or dropping the bold markers around a turn attribution is not a dropped
-    requirement and must not be reported as one.
-    """
-    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
-
-
-def _handoff_missing(requirements, brief):
-    """The captured requirements that appear NOWHERE in `brief`.
-
-    S128 (FL-011 c). The theme was stated verbatim twice and left the hand-off
-    without a sound; this is the check that makes that impossible.
-
-    WHAT IT IS: a containment test on the captain's literal words. WHAT IT IS
-    NOT: a paraphrase detector. A brief that says the same thing in different
-    words reads as "missing" here — which is why the outcome is a LOUD WARNING
-    plus the requirement carried in verbatim, never a refusal. Being noisy is
-    survivable; being silent is what cost him the theme.
-
-    The quoted span is preferred when there is one, because that is the part
-    that is literally his: `**Turn 5:** "It has to remember." — T3.` matches a
-    brief that kept the sentence and dropped the bookkeeping.
-    """
-    out = []
-    hay = _handoff_norm(brief)
-    for r in requirements:
-        text = r["text"] if isinstance(r, dict) else r
-        quoted = re.findall(r"[\"“]([^\"“”]+)[\"”]", text)
-        needle = _handoff_norm(max(quoted, key=len) if quoted else text)
-        if needle and needle not in hay:
-            out.append(text)
-    return out
+# ══ S171: `_handoff_missing` IS DELETED. THE RISK IS ACCEPTED, ON PURPOSE ══
+#
+# WHAT WAS HERE. `_handoff_missing(requirements, brief)` — a CONTAINMENT test
+# on the captain's literal words, deliberately not a paraphrase detector. It
+# found captured requirements that appeared nowhere in the brief, warned about
+# them in the promote dialog (a ✓/⚠ checklist plus an amber band), and at
+# filing time carried each one into the Mission verbatim under
+# `## Captured requirements NOT IN THE BRIEF above`.
+#
+# WHY IT IS GONE, AND IT IS NOT BECAUSE IT WAS WRONG. It was a containment test
+# ON THE BRIEF, and as of this session HIS LITERAL WORDS ARE NO LONGER IN THE
+# BRIEF — the numbered `## What it must do — in your own words` list left it
+# (see `_HANDOFF_REQ_TITLE`). So the check would report very nearly EVERY
+# captured requirement as missing, on every single hand-off, for ever. That is
+# not a safety net; it is the cry-wolf failure this very round just cured on
+# the open-questions cue (S169 fix round 2: an amber ⚠ that fires at every open
+# is a warning that trains you to click past it, sitting beside ▦ FILE MISSION).
+#
+# WHY NOTHING WAS BUILT TO REPLACE IT. A smarter coverage checker — similarity,
+# a paraphrase detector, an LLM judge — is the single most repeated defect cause
+# in this round's history: S156's classifier fell 14/14 → 5/14 on a rewording of
+# its own corpus, S147 lost four parser generations, S157 five guard versions,
+# and S125 lost two rounds to adding a mechanism beside an existing one, both
+# cured by DELETION. The captain's ruling is the bar: *"As long as we capture
+# most of the changes to help the harness implement along with the mock for
+# reference, we're good."*
+#
+# ── THE ACCEPTED RISK, NAMED: FL-011 ───────────────────────────────────────
+#
+# FL-011 is "the hand-off brief is drafted from a STALE section, and the
+# precedence rule then enforces the loss" — measured on the S127 capstone,
+# where the captain asked for a light/dark theme twice, in his own words, and
+# the filed mission's idea.md had ZERO theme mentions because the brief was
+# drafted from `## Hand-off summary`, a paragraph written before the subject
+# came up. This check was one of the three cures.
+#
+# ITS ORIGINAL JOB IS STRUCTURALLY GONE, and that is why deleting it is not
+# re-opening FL-011:
+#
+#   • the brief is no longer DRAFTED from any model-written section. Its head
+#     is the captain's own opening description, byte-for-byte, and it cannot go
+#     stale because he wrote it and nothing rewrites it;
+#   • the change list is read off his repository and the finished drawing by a
+#     pass that opens both, not summarised out of a document that may be old;
+#   • `concept.md` — with `## WHAT IT MUST DO` complete, numbered and
+#     turn-attributed — RIDES TO THE MISSION as an attachment
+#     (`_HANDOFF_FILES`), and every stage reads it. His words still reach the
+#     work; they are no longer pasted into the brief as its specification.
+#
+# WHAT IS GENUINELY ACCEPTED: nothing now checks that a requirement he stated in
+# the design chat is REFLECTED in the brief he sends, and nothing carries a
+# missing one in as a marked block. If a future session finds a requirement lost
+# between the deck and the Mission, this is the hole — and the answer is not to
+# resurrect a literal-word containment test against a brief that no longer
+# quotes him.
 
 
 def _norm_name(name):
@@ -4278,10 +4399,8 @@ class Actions(LogFacts):
         # is appended — a mission called "How to read the attached mockup" would
         # be the plumbing naming itself on his board.
         title = self._title_from_idea(idea)
-        missing = ()
         if holo is not None:
             concept = self._handoff_concept_text(handoff)
-            missing = _handoff_missing(_handoff_requirements(concept), idea)
             idea = self._handoff_idea(idea, self._handoff_scope(holodeck_scope),
                                       concept, holodeck_answers)
         prd = _PRD_TEMPLATE.format(title=title, type=mtype, idea=idea)
@@ -4304,7 +4423,7 @@ class Actions(LogFacts):
                     pass
         out = {"board": self._reader.board()}
         if holo is not None:
-            out["holodeck"] = self._handoff_record(holo, before, missing)
+            out["holodeck"] = self._handoff_record(holo, before)
         return out
 
     # -- Park & Align (S137): file a PARKED mission (pre-PRD standby) ------------
@@ -4334,10 +4453,8 @@ class Actions(LogFacts):
         # with the mockup and the concept doc already in its attachments/, and
         # the captain drives it from there exactly as he asked for.
         holo, handoff = self._handoff_attach(holodeck)
-        missing = ()
         if holo is not None:
             concept = self._handoff_concept_text(handoff)
-            missing = _handoff_missing(_handoff_requirements(concept), idea)
             idea = self._handoff_idea(idea, self._handoff_scope(holodeck_scope),
                                       concept, holodeck_answers)
         eng = (engine or "").strip()
@@ -4362,7 +4479,7 @@ class Actions(LogFacts):
                     pass
         out = {"board": self._reader.board()}
         if holo is not None:
-            out["holodeck"] = self._handoff_record(holo, before, missing)
+            out["holodeck"] = self._handoff_record(holo, before)
         return out
 
     # -- the interactive Align grilling console (S70-B) --------------------------
@@ -4424,18 +4541,15 @@ class Actions(LogFacts):
         # `--attachment`), and an HTML mockup is not an image. What the grill
         # gets is the brief and the guidance, in the idea text.
         holo_sid = (holodeck or "").strip() or None
-        missing = ()
         if holo_sid:
             holo, paths = self._handoff_attach(holo_sid)
             concept = self._handoff_concept_text(paths)
-            missing = _handoff_missing(_handoff_requirements(concept), idea)
             idea = self._handoff_idea(idea,
                                       self._handoff_scope(holodeck_scope),
                                       concept, holodeck_answers)
         sid = uuid.uuid4().hex[:12]
         sess = _AlignSession(idea=idea, engine=(engine or "").strip() or None,
-                             mission_id=mid, holodeck=holo_sid,
-                             holodeck_missing=missing)
+                             mission_id=mid, holodeck=holo_sid)
         with self._align_lock:
             self._align[sid] = sess
         # the captain may paste an image on the File idea box (this first turn);
@@ -4552,8 +4666,7 @@ class Actions(LogFacts):
                 resp["adr"] = turn["adr"]
             resp["board"] = board
             if holo is not None:
-                resp["holodeck"] = self._handoff_record(
-                    holo, before, sess.holodeck_missing)
+                resp["holodeck"] = self._handoff_record(holo, before)
             elif lost:
                 resp["holodeck"] = {
                     "status": "draft", "missionId": "", "locked": False,
@@ -5761,13 +5874,16 @@ class Actions(LogFacts):
                 pass
             return False
 
-    def _handoff_derive_state(self, sess):
-        """The derivation for this program, starting the pass if need be.
+    def _handoff_derive_state(self, sess, start=False, force=False):
+        """The derivation for this program. `start=True` may spawn the pass.
 
-        Returns the payload's `derive` block and NEVER raises. Four shapes, and
+        Returns the payload's `derive` block and NEVER raises. FIVE shapes, and
         the surface has to be able to tell them apart:
 
           {"state": "off"}                      — not running, by configuration
+          {"state": "none"}                     — no answer for this draft, and
+                                                  nothing is running: the deck
+                                                  offers to generate one
           {"state": "running", "startedAt": …}  — a pass is in flight; ask again
           {"state": "done", "ok": true,  "changes": […]}
           {"state": "done", "ok": false, "why": …}
@@ -5775,6 +5891,28 @@ class Actions(LogFacts):
         `ok: false` means THE PASS DID NOT ANSWER — no engine, a timeout, an
         unusable reply, no project to compare against. It is NOT "the mockup
         changes nothing", and `why` says which.
+
+        ── S171: READING IS NOT STARTING, AND THAT IS THE WHOLE GATE ────────
+        #
+        The default is a PEEK. S170 spawned the pass from `promote`, i.e. the
+        moment the hand-off dialog opened — so a captain who opened it to look,
+        closed it and drew one more turn had paid for a pass he never read, and
+        the wait was hidden inside a dialog.
+
+        The captain's design replaces that: *"making that step a gated wait
+        that retriggers behind a wait guard if you keep chatting with the
+        composer."* ▶ SEND TO ALIGN on the deck IS the button, so exactly one
+        caller passes `start=True` — `holodeck_derive`, which is what that
+        button posts to. Every other reader (the deck's own program payload,
+        `promote`, the scope-change refetch) peeks, and a peek can never spend.
+
+        `force=True` additionally CLEARS a finished record before starting.
+        It exists for one state and it is not a convenience: a pass that FAILS
+        is persisted like any other answer, and without a way to clear it a
+        captain whose engine was down for one minute would be looking at "LCARS
+        could not read your project" until he redrew the mockup. It is reached
+        only by his explicit "try again", never automatically — a retry the
+        product decides for itself is a pass he did not ask to pay for.
         """
         try:
             fp = self._handoff_derive_fingerprint(sess.program_dir,
@@ -5782,6 +5920,14 @@ class Actions(LogFacts):
         except Exception:                          # noqa: BLE001 — fail safe
             return {"state": "done", "ok": False, "changes": [],
                     "why": "LCARS could not work out what to compare"}
+        if force and start:
+            # BOTH HOMES, or the cleared one is read straight back from the
+            # other. Nothing is deleted unless a pass is about to replace it.
+            with self._handoff_derive_lock:
+                entry = self._handoff_derives.get(fp)
+                if not entry or entry.get("state") != "running":
+                    self._handoff_derives.pop(fp, None)
+            self._handoff_derive_forget(sess.program_dir, fp)
         with self._handoff_derive_lock:
             entry = self._handoff_derives.get(fp)
             if entry is not None:
@@ -5797,6 +5943,15 @@ class Actions(LogFacts):
             return dict(disk)
         if not self._handoff_derive_enabled():
             return {"state": "off"}
+        if not start:
+            # THE PEEK'S HONEST ANSWER. There is no answer for this draft and
+            # nothing is running — which is a real, nameable state and not a
+            # failure, so it is never dressed as one. It is also the state a
+            # composer turn RETURNS a program to, for free: the fingerprint
+            # covers `mockup.html`, so a redraw simply stops matching the
+            # record and this branch is reached again. Invalidation is a fact
+            # about the files, never a flag anything has to remember to clear.
+            return {"state": "none"}
         started = time.time()
         with self._handoff_derive_lock:
             entry = self._handoff_derives.get(fp)
@@ -5814,6 +5969,28 @@ class Actions(LogFacts):
             target=self._handoff_derive_run, args=(fp, sess), daemon=True)
         thread.start()
         return self._derive_now(entry)
+
+    @classmethod
+    def _handoff_derive_forget(cls, program_dir, fingerprint):
+        """Drop the persisted answer for `fingerprint`. Never raises.
+
+        Only ever removes a record that IS this draft's — a differently
+        fingered file belongs to a draft this one knows nothing about and is
+        left exactly where it is.
+        """
+        path = os.path.join(program_dir, cls._HANDOFF_DERIVE_FILE)
+        try:
+            with open(path) as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError, TypeError):
+            return False
+        if not isinstance(rec, dict) or rec.get("fingerprint") != fingerprint:
+            return False
+        try:
+            os.unlink(path)
+            return True
+        except OSError:
+            return False
 
     @staticmethod
     def _derive_now(entry):
@@ -5940,26 +6117,28 @@ class Actions(LogFacts):
     def holodeck_promote(self, sid, scope=None):
         """POST /api/holodeck/<sid>/promote — SEND TO ALIGN.
 
-        A READ that returns the pre-seeded hand-off: the brief drafted from the
-        concept doc's captured requirements (`## WHAT IT MUST DO`, S128 — it
-        used to be `## Hand-off summary`, which is FL-011), PLUS what the
-        mockup CHANGES ABOUT THE APP AS IT ACTUALLY IS (S170 — derived by a
-        read-only pass standing in the captain's own repo, not transcribed from
-        `## Decisions`), what the mockup implies that nobody has settled, and
-        what was ruled out of scope; the requirements as a set, the
-        `## Open questions` that must reach the captain before he files, the
-        build-scope choice (D15), the list of what rides along BY NAME, and the
-        guidance block verbatim. It writes no mission state and locks nothing —
-        the lock is a fact about a mission that exists, so it lands when the
-        mission is actually filed (`_holodeck_handed_over`).
+        A READ that returns the pre-seeded hand-off: the captain's own opening
+        description of the program, verbatim (S171 — it used to be a numbered,
+        turn-attributed list read out of `## WHAT IT MUST DO`, which is a
+        timeline), PLUS what the mockup CHANGES ABOUT THE APP AS IT ACTUALLY IS
+        (S170 — derived by a read-only pass standing in the captain's own repo,
+        not transcribed from `## Decisions`), what the mockup implies that
+        nobody has settled, and what was ruled out of scope; the requirements as
+        a set, the `## Open questions` that must reach the captain before he
+        files, the build-scope choice (D15), the list of what rides along BY
+        NAME, and the guidance block verbatim. It writes no mission state and
+        locks nothing — the lock is a fact about a mission that exists, so it
+        lands when the mission is actually filed (`_holodeck_handed_over`).
 
-        IT IS THE ONE ENDPOINT THAT MAY SPEND. `_handoff_derive_state` starts
-        the bounded pass the first time it is asked about a given draft, and
-        answers `{"state": "running"}` while it is in flight — SEND TO ALIGN is
-        a stage with a wait now, by the captain's own design, and the wait is
-        walk-away-able because the daemon owns it and the room persists it.
+        S171 — AND IT NO LONGER SPENDS A PENNY. It used to be "the one endpoint
+        that may spend": opening the hand-off dialog started the bounded pass.
+        The captain moved that button one surface out — ▶ SEND TO ALIGN on the
+        deck is the gate, and `holodeck_derive` is what it posts to — so this
+        endpoint PEEKS at the derivation and never starts one. Opening the
+        dialog, changing the build scope and re-reading the draft are all free.
+
         Filing is never held up: a brief with no derived section is a brief he
-        can send.
+        can send, and the deck offers exactly that road in every failed state.
 
         The payload deliberately carries NO PATH. The deck shows names; the
         daemon holds the paths.
@@ -5978,9 +6157,9 @@ class Actions(LogFacts):
             raise ActionError(
                 502, "LCARS could not read this program's concept.md, so it "
                 "cannot draft the brief: %s" % exc)
-        derive = self._handoff_derive_state(sess)
+        derive = self._handoff_derive_state(sess, start=False)
         changes = self._handoff_changes(derive)
-        brief, source = _handoff_brief(concept, sess.program, changes)
+        brief = _handoff_brief(concept, sess.program, changes)
         captured, changed, implied, out_of_scope = _handoff_parts(concept,
                                                                  changes)
         reqs = [{"id": "r%d" % (i + 1), "text": t}
@@ -5990,9 +6169,6 @@ class Actions(LogFacts):
             "room": os.path.basename(sess.program_dir),
             "engine": os.path.basename(sess.engine or self.worker_bin or ""),
             "brief": brief,
-            # WHICH section the draft came from, so the deck can say so rather
-            # than passing a fallback off as the real thing.
-            "summarySource": source,
             # S128 — the captured requirements and the OPEN QUESTIONS, as sets.
             # The deck shows each requirement against what he has written and
             # puts the questions in front of him as the last thing before he
@@ -6031,12 +6207,6 @@ class Actions(LogFacts):
             # means ask again in a moment — and means the `brief` above has no
             # change section YET. Anything else is final for this draft.
             "derive": derive,
-            # A self-check on the drafting, not a check on him: this is the
-            # daemon's OWN draft, so anything here means the brief path has
-            # regressed to prose again.
-            "missingRequirements": [
-                {"id": r["id"], "text": r["text"]} for r in reqs
-                if r["text"] in _handoff_missing(reqs, brief)],
             "scope": scope,
             "scopeOptions": list(_HANDOFF_SCOPES),
             "guidance": _handoff_guidance(scope),
@@ -6047,6 +6217,42 @@ class Actions(LogFacts):
                  "what": "decisions, declared flows, what it must do"},
             ],
         }
+
+    def holodeck_derive(self, sid, force=False):
+        """POST /api/holodeck/<sid>/derive — GENERATE THE CHANGE LIST.
+
+        THE ONE ENDPOINT THAT MAY SPEND, and it is reached by exactly one
+        control: ▶ SEND TO ALIGN on the deck, in its "generate" state. That is
+        the captain's own design — *"making that step a gated wait that
+        retriggers behind a wait guard if you keep chatting with the
+        composer."*
+
+        It answers the `derive` block and nothing else. The deck renders that
+        block and invents nothing: the button reads `◐ Generating change
+        list…` and is disabled because THE DAEMON SAID `running`, not because
+        a client set a flag or started a timer. That is FL-009/FL-017's ruling
+        applied a third time (`alignBusy` / `_align_busy_fields` is the shape).
+
+        IDEMPOTENT WHILE IT RUNS. A second post — a double click, a second tab,
+        a reload — finds the in-flight entry under the same fingerprint and
+        joins it. One draft, one pass, however many people are watching.
+
+        `force` is the captain's explicit "try again", and it is offered on
+        exactly one state: a pass that DID NOT ANSWER. See
+        `_handoff_derive_state`.
+        """
+        with self._holodeck_lock:
+            sess = self._holodeck.get(sid)
+        if sess is None:
+            raise ActionError(404, "no such holodeck program: %s" % sid)
+        self._refuse_if_sent(sess)
+        # THE SAME READINESS RULE THE BUTTON IS DRAWN FROM, asked of the same
+        # function. There is nothing to diff against a room with no mockup in
+        # it, and a spawn here would burn minutes to say so.
+        self._handoff_files(sess.program_dir)
+        return {"sessionId": sid,
+                "derive": self._handoff_derive_state(sess, start=True,
+                                                     force=bool(force))}
 
     # ── the hand-off, as the File/Park/Align roads consume it ───────────────
     def _handoff_attach(self, holodeck):
@@ -6180,28 +6386,6 @@ class Actions(LogFacts):
                            "you spend a gate on it.")
         return "\n".join(out) + "\n"
 
-    @staticmethod
-    def _handoff_missing_block(missing):
-        """Captured requirements that the captain's brief does not contain.
-
-        S128 (FL-011 c). The cure is CARRY, not refuse. A refusal at the last
-        click of a design session strands him with no way through and teaches
-        him to defeat it by pasting the words back in; carrying makes the
-        SILENT loss impossible — which is the actual defect — while leaving him
-        in charge of his own brief. The surface says so loudly at the same
-        time, so it is his call, made knowingly.
-        """
-        if not missing:
-            return ""
-        out = ["## Captured requirements NOT IN THE BRIEF above", "",
-               "⚠ These are things the captain said in his own words during "
-               "the design session that the brief does not mention. They were "
-               "carried in here rather than dropped. Treat them as stated "
-               "requirements; if one genuinely no longer applies, ASK "
-               "(`lcars:awaiting-human`) rather than deciding for him.", ""]
-        out += ["- %s" % t for t in missing]
-        return "\n".join(out) + "\n"
-
     @classmethod
     def _handoff_idea(cls, idea, scope, concept_text="", answers=None):
         """The captain's words PLUS everything the hand-off must not lose.
@@ -6211,15 +6395,14 @@ class Actions(LogFacts):
         is not composed in the browser for that reason and for one more: a
         mission filed by anything else (a script, a later CLI verb) gets it too.
 
-        S128 adds two blocks between his brief and the guidance — the open
-        questions, and any captured requirement his brief does not contain.
-        Both are derived HERE, from the concept doc on disk, so a crafted
-        request cannot put a sentence in front of a worker.
+        S128 added two blocks between his brief and the guidance — the open
+        questions, and any captured requirement his brief did not contain.
+        S171 deleted the second (see the block above `_handoff_missing`'s old
+        home); the questions block is derived HERE, from the concept doc on
+        disk, so a crafted request cannot put a sentence in front of a worker.
         """
         parts = [idea]
-        missing = _handoff_missing(_handoff_requirements(concept_text), idea)
-        for block in (cls._handoff_missing_block(missing),
-                      cls._handoff_questions_block(concept_text, answers)):
+        for block in (cls._handoff_questions_block(concept_text, answers),):
             if block:
                 parts.append(block.strip())
         parts.append(_handoff_guidance(scope))
@@ -6231,7 +6414,7 @@ class Actions(LogFacts):
         except OSError:
             return set()
 
-    def _handoff_record(self, sess, before, missing=()):
+    def _handoff_record(self, sess, before):
         """Lock the program that was just sent, and say which mission holds it.
 
         Called ONLY after the filing dispatch returned successfully: a lock is
@@ -6250,27 +6433,13 @@ class Actions(LogFacts):
         locked = self._write_sent_record(sess.program_dir, mid, when)
         out = {"sessionId": None, "program": sess.program, "status": "sent",
                "missionId": mid, "locked": locked,
-               "room": os.path.basename(sess.program_dir),
-               # S128 (FL-011 c) — what the brief did not contain. Empty is the
-               # normal case, and the surface must be able to tell "nothing was
-               # dropped" from "we did not look".
-               "missingRequirements": [{"id": "r%d" % (i + 1), "text": t}
-                                       for i, t in enumerate(missing)]}
+               "room": os.path.basename(sess.program_dir)}
         with self._holodeck_lock:
             for k, s in self._holodeck.items():
                 if s is sess:
                     out["sessionId"] = k
                     break
         warnings = []
-        if missing:
-            warnings.append(
-                "Your brief does not mention %d thing%s you said in your own "
-                "words while designing, so LCARS carried %s into the mission "
-                "rather than letting %s disappear: %s"
-                % (len(missing), "" if len(missing) == 1 else "s",
-                   "it" if len(missing) == 1 else "them",
-                   "it" if len(missing) == 1 else "them",
-                   "; ".join(missing)))
         if not locked:
             warnings.append(
                 "The mission was filed and it has the mockup and the concept "
@@ -6841,6 +7010,15 @@ class Actions(LogFacts):
         # for an idle program, so the shape above is untouched the rest of the
         # time. See `_busy_fields`.
         meta.update(self._busy_fields(sess))
+        # S171 — THE GATE'S STATE, PUBLISHED, so ▶ SEND TO ALIGN is rendered
+        # from a fact rather than from anything the browser worked out for
+        # itself. A PEEK: reading the deck must never spend, so this is the one
+        # call shape that cannot start a pass (`start` defaults to False).
+        #
+        # It rides only on a LIVE program. A room read off disk has no session,
+        # no target repo and no send bar — and the honest answer for a card
+        # that cannot be handed over is no key at all, not a guessed "none".
+        meta["derive"] = self._handoff_derive_state(sess)
         return meta
 
     # ── S125: the surface's three reads (list · preview file · one file) ────

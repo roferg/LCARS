@@ -185,30 +185,41 @@ write_expect() {   # $1 = width  $2 = height  $3 = min lines shown  $4 = mode
   #            human wrote (FL-013, one dialog over). His text must survive and
   #            the band must SAY it kept it. A reload would wipe the typing, so
   #            this run does not reload.
+  #   turn   — S171. He presses the gate, waits, sends, closes the dialog and
+  #            KEEPS CHATTING. The change list he had is derived from a mockup
+  #            that no longer exists, so the gate must fall back to
+  #            "generate the change list" — his own "wait guard". No reload and
+  #            no typing: this run is about what happens AFTER he files or
+  #            declines to.
   local mode="${4:-reload}"
-  local reload=false typed='""' keeps='""' chg
+  local reload=false typed='""' keeps='""' inval=false chg
   chg="[\"$CHANGE_MARK\"]"
-  if [ "$mode" = "typed" ]; then
-    typed='"MY OWN WORDS — DO NOT CLOBBER"'
-    keeps='"MY OWN WORDS — DO NOT CLOBBER"'
-  else
-    reload=true
-  fi
+  case "$mode" in
+    typed)
+      typed='"MY OWN WORDS — DO NOT CLOBBER"'
+      keeps='"MY OWN WORDS — DO NOT CLOBBER"'
+      ;;
+    turn) inval=true ;;
+    *) reload=true ;;
+  esac
   cat >"$WORK/expect.json" <<EOF
 {
   "viewportW": $1,
   "viewportH": $2,
-  "minLines": 28,
+  "minLines": 8,
   "minLinesShown": $3,
   "minLinesShownRunning": $3,
   "sections": [
-    "## What it must do — in your own words",
     "## What the mockup changes about your app as it is today",
     "## Implied by the mockup — NOT things you said"
   ],
+  "briefForbids": ["## What it must do — in your own words", "**Turn "],
+  "briefOpensWith": "$PROGRAM",
   "hintNames": ["changes read off your project", "implies"],
   "hintForbids": ["today's app", "the design chat recorded",
-                  "Drafted from your concept doc"],
+                  "Drafted from your concept doc", "things you said"],
+  "expectGate": true,
+  "expectInvalidation": $inval,
   "expectQCue": true,
   "qcueForbids": ["unanswered", "⚠"],
   "expectGuidance": true,
@@ -261,10 +272,36 @@ for i, a in enumerate(argv):
     if a == "-p" and i + 1 < len(argv):
         prompt = argv[i + 1]
         break
-if "=== CHANGES ===" not in prompt or "LOOK AND FLOW ONLY" not in prompt:
-    # anything that is NOT the derivation prompt must still be loud: this rig
-    # spawns exactly one worker and it is this one.
-    sys.stderr.write("HANDOFF RIG: an unexpected worker was spawned.\n")
+if "=== CHANGES ===" not in prompt:
+    # S171 — A DESIGN TURN. The gate's WAIT GUARD only exists because a further
+    # composer turn REDRAWS THE MOCKUP, which moves the daemon's fingerprint
+    # and strands the change list it already had. A rig that faked that (by
+    # touching the file behind the daemon's back) would be measuring itself, so
+    # this branch is a real turn doing what a real design turn does: it writes
+    # mockup.html into its cwd, which IS the program's room.
+    if "mockup" not in prompt.lower():
+        sys.stderr.write("HANDOFF RIG: an unexpected worker was spawned.\n")
+        sys.exit(1)
+    import os
+    with open(os.path.join(os.getcwd(), "mockup.html"), "w") as fh:
+        fh.write("<!doctype html>\n"
+                 "<!-- VISUAL REFERENCE ONLY - rig fixture, turn 2. -->\n"
+                 "<html><body><div class='bar' "
+                 "style='justify-content:flex-end'>Maps Objects</div>"
+                 "</body></html>\n")
+    sys.stdout.write("Moved the toolbar buttons to the right edge.\n")
+    sys.exit(0)
+# THE ANCHOR IS THE PROMPT'S OWN CLAIM, and it is deliberately TWO of them.
+# The first shape of this guard read "LOOK AND FLOW ONLY", which S171 reworded
+# when the pass was widened to cover behaviour — so the rig refused the real
+# derivation prompt and the run failed saying "the pass never wrote its change
+# list", accusing the product for the rig's own stale string. It went red
+# honestly, which is what the guard is for; the anchor is now on the two
+# sentences the pass exists to carry, so a REAL loss of either is still caught.
+if "NEVER REPORT IMPLEMENTATION" not in prompt or "WIRED TO" not in prompt:
+    sys.stderr.write("HANDOFF RIG: the derivation prompt does not carry its "
+                     "own contract (the implementation ban, or what a thing "
+                     "is wired to). Re-point this guard or fix the prompt.\n")
     sys.exit(1)
 # THE WAIT IS REAL. The live pass is 154-220s; this is the same shape, short
 # enough for a rig and long enough that the running band is a thing a browser
@@ -282,7 +319,7 @@ PYW
   chmod +x "$1"
 }
 
-write_expect 1440 677 9 typed
+write_expect 1440 677 9 reload
 
 # ── the planted sidecar: a real local git repo with one archived program ────
 # The daemon ADOPTS this (`_ensure_sidecar` is idempotent) and the deck lists
@@ -574,12 +611,93 @@ bad = '"\u26a0 " + open + " open question" + (open === 1 ? "" : "s") + " unanswe
 open(p, "w").write(s.replace(mark, bad, 1))
 PY
       ;;
+    # ══ S171 ══════════════════════════════════════════════════════════════
+    timeline-is-back)
+      # THE DEFECT THIS SESSION EXISTS TO END, reinstated in the DAEMON. The
+      # brief regrows the numbered, turn-attributed "in your own words" list —
+      # the raw chat feed the captain deleted by hand before sending, twice.
+      # The front end is untouched and perfect; a node harness cannot see it.
+      cat >>"$py" <<'PY'
+
+
+_HANDOFF_REQ_TITLE = "## What it must do — in your own words"   # RED CONTROL
+
+
+def _handoff_brief(concept_text, program="", changes=()):   # RED CONTROL
+    reqs, changed, implied, scope = _handoff_parts(concept_text, changes)
+    head = "\n".join([_HANDOFF_REQ_TITLE, ""]
+                     + ["%d. %s" % (i + 1, r) for i, r in enumerate(reqs)])
+    blocks = [b for b in (
+        head,
+        _handoff_section(_HANDOFF_CHANGE_TITLE, _HANDOFF_CHANGE_NOTE, changed),
+        _handoff_section(_HANDOFF_IMPLIED_TITLE, _HANDOFF_IMPLIED_NOTE,
+                         implied),
+        _handoff_section(_HANDOFF_SCOPE_TITLE, _HANDOFF_SCOPE_NOTE,
+                         scope)) if b]
+    return _handoff_titled("\n\n".join(blocks), program)
+PY
+      ;;
+    gate-does-not-gate)
+      # ▶ SEND TO ALIGN LIVE WHILE THE PASS RUNS — the captain's own report:
+      # *"I could have clicked send to align before it was done and it wasn't
+      # clear."* The bar still says `running` and still shows the bars; only
+      # the disabling goes, which is precisely the shape a screenshot passes.
+      patch_or_die "$js" <<'PY' || return 1
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '  } else if (gate === "running") {\n    /* DISABLED BECAUSE THE DAEMON SAYS'
+assert old in s, "the gate's running branch moved - this control measures nothing"
+new = '  } else if (false) {   /* RED CONTROL: the wait no longer disables */\n    /* DISABLED BECAUSE THE DAEMON SAYS'
+open(p, "w").write(s.replace(old, new, 1))
+PY
+      ;;
+    gate-has-no-spinner)
+      # "Generating…" WITH NOTHING MOVING BESIDE IT. The label is right, the
+      # button is properly disabled, and there is no evidence anything is
+      # happening — which is the state a captain reads as "stuck".
+      patch_or_die "$js" <<'PY' || return 1
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = "    bar.appendChild(holoWorkingBars());"
+assert old in s, "the gate's loading indicator moved - this control measures nothing"
+open(p, "w").write(s.replace(old, "    /* RED CONTROL: no indicator */", 1))
+PY
+      ;;
+    no-escape-hatch)
+      # THE OUTAGE TRAP. Gating reverses a property S170 deliberately built and
+      # proved with an `ast` test; without a visible road through, a dead
+      # engine makes a finished design unfileable. Delete the hatch and the
+      # rig cannot even reach the dialog during the wait — which is the point.
+      patch_or_die "$js" <<'PY' || return 1
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '  if (p.handoffReady && (gate === "none" || gate === "running"'
+assert old in s, "the escape hatch moved - this control measures nothing"
+new = '  if (false && (gate === "none" || gate === "running"'
+open(p, "w").write(s.replace(old, new, 1))
+PY
+      ;;
+    no-wait-guard)
+      # THE STALE LIST. A further composer turn no longer invalidates, so he
+      # sends a change list derived from a mockup he has since redrawn. Broken
+      # in the DAEMON, at the FINGERPRINT, which is where the invalidation
+      # actually lives — a client-side flag would be the wrong thing to break.
+      patch_or_die "$py" <<'PY' || return 1
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = "        parts = [os.path.abspath(target_repo or \"\")]"
+assert old in s, "the fingerprint moved - this control measures nothing"
+new = ("        return hashlib.sha1(str(program_dir).encode(\"utf-8\")"
+       ").hexdigest()   # RED CONTROL: the files stop counting\n" + old)
+open(p, "w").write(s.replace(old, new, 1))
+PY
+      ;;
     *) return 1 ;;
   esac
   return 0
 }
 
-VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list no-fit capped-box mute-hint clip-box no-sticky-foot hint-below-box brief-below-fold capped-guidance hide-derive derive-never-asks hint-overclaims cue-cries-wolf band-hides-the-wait brief-clobbers-his-edits}"
+VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list no-fit capped-box mute-hint clip-box no-sticky-foot hint-below-box brief-below-fold capped-guidance hide-derive derive-never-asks hint-overclaims cue-cries-wolf band-hides-the-wait brief-clobbers-his-edits timeline-is-back gate-does-not-gate gate-has-no-spinner no-escape-hatch no-wait-guard}"
 
 # DELIBERATELY NOT IN THAT LIST: `derive-not-durable`. It breaks the persisted
 # record in the program room — the cure for "the daemon closed while I walked
@@ -613,6 +731,11 @@ expected_reason() {   # $1 = variant
     cue-cries-wolf)    echo "reads as a WARNING" ;;
     band-hides-the-wait)     echo "never says" ;;
     brief-clobbers-his-edits) echo "was DESTROYED by the redraft" ;;
+    timeline-is-back)  echo "THE BRIEF IS A TIMELINE AGAIN" ;;
+    gate-does-not-gate) echo "was NOT disabled while the pass ran" ;;
+    gate-has-no-spinner) echo "no loading indicator" ;;
+    no-escape-hatch)   echo "no handoff-skip control on the hand-off bar" ;;
+    no-wait-guard)     echo "DID NOT INVALIDATE THE CHANGE LIST" ;;
   esac
 }
 
@@ -625,8 +748,11 @@ run_product() {
   # (fix round 1), where the footer band is at its most expensive and the line
   # above the box has the least room. The third is the SAME window with him
   # TYPING while the pass runs — a different claim, and one a reload erases.
+  # …and a FOURTH (S171): the gate's wait guard. He gets his change list, then
+  # keeps chatting — and the list must fall back to "generate one".
   for pass in "1440 677 9 product reload" "1280 613 6 product-short reload" \
-              "1440 677 9 product-typed typed"; do
+              "1440 677 9 product-typed typed" \
+              "1440 677 9 product-turn turn"; do
     set -- $pass
     write_expect "$1" "$2" "$3" "$5"
     dir="$WORK/$4"
@@ -651,6 +777,16 @@ run_calibrate() {
   for v in $VARIANTS; do
     local dest="$WORK/variant-$v/web" out="$WORK/variant-$v/run"
     mkdir -p "$WORK/variant-$v"
+    # THE EXPECTATION HAS TO MATCH THE CLAIM THE CONTROL BREAKS. S171's wait
+    # guard only exists on the run that KEEPS CHATTING after the list lands, so
+    # calibrating it against the default expectation asked a question the run
+    # never reaches — and the control came back GREEN while the product was
+    # genuinely broken. That is the "reassuring output proving nothing" shape
+    # this rig keeps a note about; it is now selected per variant.
+    case "$v" in
+      no-wait-guard) write_expect 1440 677 9 turn ;;
+      *)             write_expect 1440 677 9 reload ;;
+    esac
     if ! make_variant "$v" "$dest"; then
       printf '\033[31m✗ %s — unknown variant\033[0m\n' "$v"; bad=$((bad + 1)); continue
     fi

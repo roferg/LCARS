@@ -503,6 +503,15 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 if len(parts) == 2 and parts[1] == "promote":
                     return actions.holodeck_promote(parts[0],
                                                     scope=body.get("scope"))
+                # POST /api/holodeck/<sid>/derive — GENERATE THE CHANGE LIST
+                # (S171). The gate the captain asked for: ▶ SEND TO ALIGN runs
+                # this ON CLICK and waits on the daemon's published state, so a
+                # mid-design turn no longer burns a pass. `promote` peeks; this
+                # is the ONLY road that may spawn one. `force` is his explicit
+                # "try again" after a pass that did not answer.
+                if len(parts) == 2 and parts[1] == "derive":
+                    return actions.holodeck_derive(
+                        parts[0], force=bool(body.get("force")))
                 raise _ActionError(404, "no such holodeck endpoint: %s" % path)
             # POST /api/mission  — file a new mission
             #

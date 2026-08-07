@@ -7654,6 +7654,13 @@ var HOLO = {
      A client-side timer here would be a guess, and a guessed spinner is the
      readout lie this round exists to close. */
   working: null,
+  /* S171 — WHICH PROGRAMS THIS PAGE IS ALREADY WATCHING A DERIVATION ON.
+     `renderDeck` runs on every refresh, so a poll started from the render
+     would multiply once per repaint; and a page that RELOADS onto a running
+     pass must start one, because there was no click to start it here. One
+     entry per session id answers both — it is bookkeeping about this tab's
+     timers only, never a claim about what the daemon is doing. */
+  derivePolls: Object.create(null),
   nonce: 0,             // the preview's cache-buster; bumped per file change
   sidecarName: null,    // learnt from the first program (D6's footer chip)
   commits: 0,
@@ -8347,6 +8354,59 @@ function renderDeck() {
    explanation for a refusal it did not make. A SENT program gets no button at
    all — the lock band in the chat pane is the whole account, and a second
    control repeating it would be a second voice. */
+
+/* ── S171: SEND TO ALIGN IS A GATE WITH A WAIT ─────────────────────────────
+
+   THE CAPTAIN'S DESIGN, in his words: *"just leaning more on what the AI pass
+   does and making that step a gated wait that retriggers behind a wait guard
+   if you keep chatting with the composer."*
+
+   S170 started the derivation when the hand-off DIALOG opened, which had two
+   costs he then paid for real: a captain who opened it to look and went back
+   to drawing burned a pass, and the wait lived inside a dialog he had to keep
+   open to watch. So THIS control is the gate. Four states, and the daemon owns
+   every one of them (`p.derive`, published by `_holodeck_meta`):
+
+     state "none"     no change list for this draft, nothing running
+                      → ▶ GENERATE THE CHANGE LIST · a click posts `derive`
+     state "running"  a pass is in flight
+                      → ◐ GENERATING CHANGE LIST… · disabled, with the SAME
+                        `.holo-working` bars the chat pane uses
+     done, ok         → ▶ SEND TO ALIGN · opens the dialog, list already in it
+     done, not ok     the pass did not answer
+                      → ▶ SEND TO ALIGN (live — see below) + ↻ try again
+     state "off"      the derivation is switched off by configuration
+                      → ▶ SEND TO ALIGN, ungated. Gating on a pass that will
+                        never run would be a door with no handle.
+
+   NEVER A CLIENT-SIDE GUESS AND NEVER A TIMER. The disabled state is rendered
+   because the DAEMON said `running`; nothing here sets a flag or counts down.
+   That is FL-009 (`alignBusy`) and FL-017 (FINALIZING's 5-minute fuse) for the
+   third time, and the ruling both times was that a bigger constant is the same
+   guess with a longer fuse.
+
+   INVALIDATION IS A FACT, NOT A FLAG. `_handoff_derive_fingerprint` covers
+   `mockup.html`, so a composer turn that redraws it stops matching the stored
+   answer and the daemon peeks back to "none" all by itself. Nothing on this
+   side has to notice a turn happened.
+
+   ── AND THE ESCAPE HATCH IS NOT OPTIONAL ─────────────────────────────────
+
+   S170 deliberately built "no filing road can be blocked by the derivation"
+   and PROVED it with an `ast` test. Gating reverses that on purpose — but a
+   failed pass, a dead engine or a wait he has run out of patience for must
+   never strand a ready program on the deck. So every gated state also carries
+   `Send without the change list`, which goes straight to the hand-off dialog:
+   the brief is drafted without that section, the dialog says so plainly, and
+   ▦ FILE MISSION works exactly as it always did. */
+function holoDeriveGate(p) {
+  var d = p.derive || {};
+  var st = d.state || "off";
+  if (st === "done") return d.ok ? "ready" : "failed";
+  if (st === "running" || st === "none") return st;
+  return "off";
+}
+
 function holoHandoffBar(p) {
   var bar = el("div", "holo-handoff");
   if (holoLifecycle(p) === "sent") {
@@ -8357,15 +8417,145 @@ function holoHandoffBar(p) {
       : "This program was handed over and is read-only."));
     return bar;
   }
-  bar.appendChild(el("span", "hint", p.handoffReady
-    ? "The mockup and the concept doc go with it — you never have to find them."
-    : (p.handoffBlocked || "")));
+  var gate = p.handoffReady ? holoDeriveGate(p) : "off";
+  bar.setAttribute("data-gate", gate);
+  var d = p.derive || {};
+  var n = (d.changes || []).length;
+  /* ONE SENTENCE, and it is about the state the bar is IN. The daemon's own
+     `why` is quoted for a pass that did not answer — the deck never composes
+     a reason for a failure it did not have. */
+  var hint = "The mockup and the concept doc go with it — you never have to "
+           + "find them.";
+  if (!p.handoffReady) {
+    hint = p.handoffBlocked || "";
+  } else if (gate === "none") {
+    hint = "One read-only pass reads your project against the finished mockup "
+         + "and writes the list of what is different into your brief. It takes "
+         + "a few minutes and you can walk away — it keeps running.";
+  } else if (gate === "running") {
+    hint = "Reading your project against the mockup. This survives closing the "
+         + "deck, a reload and a daemon restart — come back when you like.";
+  } else if (gate === "ready") {
+    hint = "✓ " + n + " change" + (n === 1 ? "" : "s")
+         + " read off your project are in the brief, with the mockup and the "
+         + "concept doc. Nothing left to wait for.";
+  } else if (gate === "failed") {
+    hint = "LCARS could not read your project against the mockup"
+         + (d.why ? " — " + d.why : "")
+         + ". Nothing is blocked: you can send it without a change list, or "
+         + "try the pass again.";
+  }
+  bar.appendChild(el("span", "hint", hint));
+  if (gate === "running") {
+    bar.appendChild(holoWorkingBars());
+    /* AND THE WATCH IS RE-ARMED FROM THE RENDER, not only from the click. He
+       may have RELOADED onto a pass that was already running — the daemon owns
+       it and the room persists the answer, so the page has to pick the watch
+       back up with no click to hang it on. Guarded per session id, because
+       renderDeck runs on every refresh. */
+    holoDerivePollDeck(p.sessionId);
+  }
   bar.appendChild(el("span", "grow"));
-  var send = holoBtn("▶ Send to Align", "go big", p.handoffReady ? function () {
-    holoPromote(p.sessionId);
-  } : null, p.handoffBlocked || "There is nothing to hand over yet.");
+
+  /* THE SECONDARY ROAD, on every gated state. It is the same `promote` the
+     primary reaches when the list is ready — no separate filing path, so
+     there is nothing here that can rot while the main one is maintained. */
+  if (p.handoffReady && (gate === "none" || gate === "running"
+                         || gate === "failed")) {
+    var skip = holoBtn("Send without the change list", "small", function () {
+      holoPromote(p.sessionId);
+    });
+    skip.setAttribute("data-holo", "handoff-skip");
+    bar.appendChild(applyWriteState(skip));
+  }
+  if (gate === "failed") {
+    var again = holoBtn("↻ Try the change list again", "small", function () {
+      holoDeriveStart(p.sessionId, true);
+    });
+    again.setAttribute("data-holo", "handoff-retry");
+    bar.appendChild(applyWriteState(again));
+  }
+
+  var send;
+  if (!p.handoffReady) {
+    send = holoBtn("▶ Send to Align", "go big", null,
+                   p.handoffBlocked || "There is nothing to hand over yet.");
+  } else if (gate === "none") {
+    send = holoBtn("▶ Generate the change list", "go big", function () {
+      holoDeriveStart(p.sessionId, false);
+    });
+  } else if (gate === "running") {
+    /* DISABLED BECAUSE THE DAEMON SAYS A PASS IS IN FLIGHT — and the reason a
+       hover gives is the same fact, not an apology. */
+    send = holoBtn("◐ Generating change list…", "go big", null,
+                   "A read-only pass is reading your project against the "
+                   + "mockup. It is the daemon's, not this page's: closing "
+                   + "the deck does not stop it.");
+  } else {
+    send = holoBtn("▶ Send to Align", "go big", function () {
+      holoPromote(p.sessionId);
+    });
+  }
+  send.setAttribute("data-holo", "handoff-send");
+  send.setAttribute("data-gate", gate);
   bar.appendChild(applyWriteState(send));
   return bar;
+}
+
+/* The SAME four bars the chat pane and the New Program dialog use — one
+   working idiom in this feature, not three. */
+function holoWorkingBars() {
+  var w = el("span", "holo-bars");
+  w.setAttribute("role", "status");
+  w.setAttribute("aria-live", "polite");
+  var bars = el("span", "bars");
+  for (var i = 0; i < 4; i++) bars.appendChild(el("i"));
+  w.appendChild(bars);
+  return w;
+}
+
+/* Start the pass, then let the DAEMON drive what the button says.
+
+   The response is the same `derive` block the deck payload carries, so the
+   bar is repainted from the daemon's answer to this very request — never from
+   an assumption that posting means running. `holoRefresh` then keeps asking
+   while it is in flight; the poll is a poll and not a stream for `promote`'s
+   own reason (S170), and its stop condition is the daemon saying it stopped. */
+var HOLO_DERIVE_POLL_MS = 4000;
+
+function holoDeriveStart(sid, force) {
+  if (!sid) return;
+  postWrite("/api/holodeck/" + sid + "/derive", force ? { force: true } : {},
+    function (state) {
+      var prog = null;
+      for (var i = 0; i < HOLO.programs.length; i++) {
+        if (HOLO.programs[i].sessionId === sid) prog = HOLO.programs[i];
+      }
+      if (prog) prog.derive = state.derive || prog.derive;
+      renderDeck();
+      holoDerivePollDeck(sid);
+    }, function (msg) {
+      holoSetBanner("offline", { message: msg });
+      renderDeck();
+    });
+}
+
+/* Ask the daemon again while the pass is in flight, and STOP the moment it is
+   not. `holoRefresh` re-reads every program (the derivation state included),
+   so this adds no second source of truth — it only decides how often to look
+   while there is something to look at. */
+function holoDerivePollDeck(sid) {
+  if (!sid || HOLO.derivePolls[sid]) return;
+  HOLO.derivePolls[sid] = true;
+  setTimeout(function () {
+    HOLO.derivePolls[sid] = false;
+    var live = null;
+    for (var i = 0; i < HOLO.programs.length; i++) {
+      if (HOLO.programs[i].sessionId === sid) live = HOLO.programs[i];
+    }
+    if (!live || ((live.derive || {}).state !== "running")) return;
+    holoRefresh();
+  }, HOLO_DERIVE_POLL_MS);
 }
 
 function holoVisiblePrograms() {
@@ -9689,38 +9879,18 @@ function holoPromote(sid) {
   });
 }
 
-/* Which captured requirements do NOT appear in `brief`? (S128, FL-011 c.)
+/* S171 — THE LITERAL-WORD REQUIREMENT CHECK IS GONE FROM BOTH SIDES.
 
-   A SECOND implementation of a rule the daemon also owns, and that is worth
-   saying out loud. The daemon's copy (`_handoff_missing`) is AUTHORITATIVE: it
-   runs at filing time and carries anything missing into the Mission verbatim,
-   so the requirement survives whatever this function decides. This copy exists
-   only so the captain is told BEFORE he clicks, while it is still his call —
-   the alternative was a per-keystroke round trip to the daemon for a hint.
-   Keep the two normalisations the same shape; if they ever disagree the daemon
-   wins and the worst case is a hint that was wrong, never a lost requirement.
-
-   The quoted span is preferred where there is one, because that is the part
-   that is literally his: `**Turn 5:** "It has to remember." — T3` matches a
-   brief that kept the sentence and dropped the bookkeeping around it. */
-function holoNormWords(s) {
-  return String(s == null ? "" : s).toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function holoMissingRequirements(reqs, brief) {
-  var hay = holoNormWords(brief);
-  return (reqs || []).filter(function (r) {
-    var quoted = String(r.text || "").match(/["“][^"“”]+["”]/g) || [];
-    var pick = "";
-    quoted.forEach(function (q) {
-      var inner = q.slice(1, -1);
-      if (inner.length > pick.length) pick = inner;
-    });
-    var needle = holoNormWords(pick || r.text);
-    return !!needle && hay.indexOf(needle) === -1;
-  });
-}
+   `holoMissingRequirements` mirrored the daemon's `_handoff_missing`: a
+   containment test on the captain's own words, run per keystroke, painting a
+   ✓/⚠ row per captured requirement and an amber band under them. It went with
+   the daemon's copy, and for the daemon's reason — his literal words are no
+   longer IN the brief (the numbered "in your own words" list left it), so the
+   check would have reported nearly every requirement as missing on every
+   hand-off. The reasoning, and the risk that was accepted, is written up in
+   full in actions.py where `_handoff_missing` used to be. Nothing replaced it
+   here; a smarter checker on the browser side would be the same mistake with
+   a worse view of the facts. */
 
 /* ── S169: the pre-drafted brief now carries THREE things ──────────────────
    His own words, what the mockup CHANGES about the app he has today, and what
@@ -9739,14 +9909,12 @@ function holoCount(n, one, many) {
 }
 
 function holoBriefHint(seed) {
-  if (seed.summarySource !== "WHAT IT MUST DO") {
-    return seed.brief
-      ? "Your concept doc has not captured any requirements yet, so this "
-        + "draft is the closest thing in it. Rewrite it — this is the "
-        + "Mission's opening idea."
-      : "Nothing in the concept doc could be used as a draft, so this one is "
-        + "yours to write. It becomes the Mission's opening idea.";
-  }
+  /* S171 — THE FALLBACK BRANCH IS GONE, because so is the fallback. The head
+     of the brief used to be drafted off the concept doc, down a three-rung
+     ladder (`summarySource` said which rung), and this sentence explained a
+     degraded draft. The head is now the captain's own opening description,
+     carried byte-for-byte, which every program has — there is no rung to fall
+     to and nothing to apologise for. */
   /* KEPT SHORT, AND THAT IS A MEASUREMENT, NOT A STYLE PREFERENCE. The first
      draft of this sentence ran to three lines (87px) and pushed itself out of
      the modal body's visible band at a 677px window — the line whose whole job
@@ -9770,8 +9938,10 @@ function holoBriefHint(seed) {
      stands in the repo. Saying "drafted from your concept doc" over a list
      that was not is the same class of lie fix round 2 took out of here, one
      source along. */
-  var parts = [holoCount((seed.requirements || []).length,
-                         "thing you said", "things you said")];
+  /* S171 — AND IT NO LONGER COUNTS "things you said". The brief's first line
+     IS what he said, whole and unedited, so a count of quoted fragments would
+     be counting something that is not in the box. It is named, not numbered. */
+  var parts = ["your own words"];
   var d = (seed.changes || []).length, i = (seed.implied || []).length;
   var o = (seed.outOfScope || []).length;
   if (d) {
@@ -10040,10 +10210,8 @@ function openHandoff(seed) {
   function briefLanded(state, derive) {
     if (briefIsPristine()) {
       seed.brief = state.brief || seed.brief;
-      seed.requirements = state.requirements || seed.requirements;
       brief.value = seed.brief;
       fitBrief();
-      syncRequirements();
       rehint(state);
       return null;
     }
@@ -10068,7 +10236,6 @@ function openHandoff(seed) {
     try { brief.setSelectionRange(at, to); } catch (e) { /* not focused */ }
     seed.brief = brief.value;
     fitBrief();
-    syncRequirements();
     rehint(state);
     return { appended: (derive.changes || []).length };
   }
@@ -10086,67 +10253,16 @@ function openHandoff(seed) {
     briefHint.textContent = holoBriefHint(seed);
   }
 
-  /* 1b. THE CAPTURED REQUIREMENTS, CHECKED AGAINST WHAT HE JUST WROTE (S128,
-     FL-011 c). On the S127 capstone he asked for a light/dark theme twice, in
-     his own words, and it appeared in neither the filed idea nor the PRD —
-     which then put new colour explicitly OUT OF SCOPE. Nothing said a word.
+  /* 1b. THE ✓ CAPTURED-REQUIREMENTS CHECKLIST IS GONE (S171).
 
-     This is ADVISORY. The DAEMON is authoritative: it runs the same check at
-     filing time and carries anything missing into the mission verbatim, so a
-     requirement cannot be lost even if this panel is wrong or never rendered.
-     What this adds is that he finds out BEFORE he files, while it is still his
-     call. The match is deliberately literal — a brief that says the same thing
-     in different words reads as missing here, and being noisy is survivable
-     where being silent is not. */
-  var reqs = seed.requirements || [];
-  var missBand = el("div", "handoff-missing");
-  missBand.setAttribute("data-holo", "handoff-missing");
-  missBand.hidden = true;
-  var reqRows = [];
-  if (reqs.length) {
-    var f1b = el("div", "field");
-    f1b.setAttribute("data-holo", "handoff-requirements");
-    f1b.appendChild(label("What you said, in your own words — is it all in "
-                          + "there?"));
-    var list = el("div", "reqs");
-    reqs.forEach(function (r) {
-      var row = el("div", "req");
-      row.setAttribute("data-holo", "handoff-req");
-      var glyph = el("span", "ic", "✓");
-      row.appendChild(glyph);
-      row.appendChild(el("span", "rt", r.text || ""));
-      list.appendChild(row);
-      reqRows.push({ node: row, glyph: glyph, req: r });
-    });
-    f1b.appendChild(list);
-    f1b.appendChild(missBand);
-    m.body.appendChild(f1b);
-  }
-  function syncRequirements() {
-    var missing = holoMissingRequirements(reqs, brief.value);
-    var lost = {};
-    missing.forEach(function (r) { lost[r.id] = true; });
-    reqRows.forEach(function (row) {
-      var bad = !!lost[row.req.id];
-      row.node.setAttribute("data-ok", bad ? "0" : "1");
-      row.node.classList.toggle("miss", bad);
-      row.glyph.textContent = bad ? "⚠" : "✓";
-    });
-    missBand.hidden = !missing.length;
-    missBand.textContent = missing.length
-      ? "⚠ " + missing.length + " thing" + (missing.length === 1 ? "" : "s")
-        + " you said while designing " + (missing.length === 1 ? "is" : "are")
-        + " not in the brief above. "
-        + (missing.length === 1 ? "It" : "They")
-        + " will be carried into the Mission anyway, marked as yours — "
-        + "nothing is dropped silently. Put "
-        + (missing.length === 1 ? "it" : "them")
-        + " back in your own words if that reads better: "
-        + missing.map(function (r) { return r.text; }).join(" · ")
-      : "";
-  }
-  syncRequirements();
-  brief.addEventListener("input", syncRequirements);
+     It listed every captured requirement under "What you said, in your own
+     words — is it all in there?" and marked each ✓ or ⚠ against the brief. The
+     captain named this surface and the numbered list in the box in one breath:
+     both are the raw chat feed, and the list is what he was deleting by hand
+     before sending. With his words no longer quoted in the brief, every row
+     here would have gone ⚠ on every hand-off — a panel of warnings that are
+     all false, beside ▦ FILE MISSION. See actions.py at `_handoff_missing`'s
+     old home for what was accepted with it. */
 
   /* 2. HOW MUCH TO BUILD (D13). Declared, never inferred: a mockup cannot tell
      you whether its toggle is meant to persist, and a wrong guess is either a
