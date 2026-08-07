@@ -9752,18 +9752,163 @@ function holoBriefHint(seed) {
      the modal body's visible band at a 677px window — the line whose whole job
      is to be seen by a captain who reads one screen. Measured by
      tests/drives/browser/handoff.sh, which now hit-tests it. */
+  /* S169 FIX ROUND 2 — AND IT WAS STILL ASSERTING THE COMPARISON.
+
+     It read "8 things you said, 18 CHANGES THE MOCKUP MAKES TO TODAY'S APP and
+     5 it implies". Fix round 1 corrected the caption INSIDE the box to say the
+     list is the design chat's own account and "not a reading of your code" —
+     and left this line, four inches above it, claiming the daemon had compared
+     the mockup against the captain's app. It had not: it read `## Decisions`,
+     a section a model wrote from the conversation, and counted its bullets.
+
+     The count is the same number; the claim about where it came from is now
+     true. What the mockup was actually READ against is the check band's
+     business, below — and that one only says so when a pass really ran. */
   var parts = [holoCount((seed.requirements || []).length,
                          "thing you said", "things you said")];
   var d = (seed.decisions || []).length, i = (seed.implied || []).length;
   if (d) {
-    parts.push(holoCount(d, "change the mockup makes to today's app",
-                         "changes the mockup makes to today's app"));
+    parts.push(holoCount(d, "change the design chat recorded",
+                         "changes the design chat recorded"));
   }
-  if (i) parts.push(i + " it implies");
+  if (i) parts.push(i + " the mockup implies");
   var last = parts.pop();
   return "Drafted from your concept doc: "
     + (parts.length ? parts.join(", ") + " and " + last : last)
     + ". Scroll it — all of it is yours to correct.";
+}
+
+/* ── S169 FIX ROUND 2: THE CHECK BAND ─────────────────────────────────────
+   The daemon reads the drafted change list back against `mockup.html` and
+   `basis.md` with one bounded read-only pass and returns what the picture
+   CONTRADICTS. This renders that, and it renders NOTHING ELSE — it never edits
+   the draft, never removes a line, never rewrites a word of it. The captain's
+   move here is skim-and-correct, and a flagged line is what makes the skim
+   land on the right sentence.
+
+   THE FOUR STATES ARE DIFFERENT ON PURPOSE, and one of them is the reason the
+   band exists at all: "the check ran and found nothing" and "the check could
+   not run" must never look alike. A failure that reads as a clean bill of
+   health is worse than no band, because it is the same lie the false line told.
+
+   `check.ok === false` means THE PASS DID NOT ANSWER. It is not a verdict. */
+function holoCheckRender(box, check) {
+  var state = (check && check.state) || "off";
+  box.className = "handoff-check";
+  while (box.firstChild) box.removeChild(box.firstChild);
+  if (state === "off") { box.hidden = true; return; }
+  box.hidden = false;
+  if (state === "running") {
+    box.appendChild(el("span", "ck-head",
+      "Reading these lines back against the mockup…"));
+    return;
+  }
+  if (!check.ok) {
+    /* SAYS SO, PLAINLY, and does not dress it up. Nothing is blocked — the
+       brief above is exactly what it would have been — and the captain is the
+       one who has to know that nobody checked it. */
+    box.appendChild(el("span", "ck-head",
+      "LCARS could not check these lines against the mockup"
+      + (check.why ? " — " + check.why : "")
+      + ". Nothing is blocked; read the list yourself."));
+    return;
+  }
+  var flags = check.flags || [];
+  var n = check.checked || 0;
+  if (!flags.length) {
+    /* …AND THE CLEAN STATE DOES NOT VOUCH FOR THE LIST. It said "Checked 18
+       lines against the mockup — none of them contradicts it", and three LIVE
+       copilot drives of the real capstone room say that is more than this can
+       promise: the pass answered all 18, found two genuinely false lines
+       nobody had noticed — and read the one this round is named after as
+       consistent, because its false clause ("the button itself is unchanged
+       (same place, same label)") is arguably true of the mockup's own top bar
+       and only false against the app as it is today.
+
+       So the band says what HAPPENED, not what is TRUE, and hands the ruling
+       back to the picture — the same correction fix round 1 made to the change
+       list's caption, applied to this round's own new surface before it can
+       become the next thing that quietly vouched. */
+    box.className = "handoff-check clean";
+    box.appendChild(el("span", "ck-head",
+      "✓ A read-only pass read " + n + " line" + (n === 1 ? "" : "s")
+      + " back against the mockup and flagged none. That is one pass, not a "
+      + "proof — the mockup is still what gets built."
+      + (check.unchecked
+         ? " " + check.unchecked + " more were not checked (too many for one "
+           + "pass)." : "")));
+    return;
+  }
+  /* ── AND IT IS KEPT SHORT, WHICH IS A MEASUREMENT ────────────────────────
+     This band sits between the hint and the brief box, so every pixel of it is
+     a pixel of the captain's own draft off the first screen. MEASURED in real
+     Chrome by tests/drives/browser/handoff.sh on the first run: a two-line
+     heading over a three-line claim over a two-line evidence line came to
+     165px, which took his brief down to 6 visible lines at 1440x677 and THREE
+     at 1280x613 — a finding delivered on top of a slot.
+
+     So: one line of heading, and the two long strings are CLAMPED (see the
+     stylesheet) with the whole text on the node's `title`. Clamping the CLAIM
+     is safe in a way clamping a warning never is — it is the captain's own
+     drafted line, verbatim, sitting in the textarea twenty pixels below, and
+     this row's job is to point AT it, not to be it. */
+  box.className = "handoff-check flagged";
+  box.appendChild(el("span", "ck-head",
+    "⚠ " + flags.length + (check.truncated ? "+" : "") + " of these " + n
+    + " lines " + (flags.length === 1 && !check.truncated ? "is" : "are")
+    + " contradicted by the mockup — and the mockup is what gets built."
+    + (check.truncated
+       ? " (" + check.truncated + " more not shown.)" : "")));
+  flags.forEach(function (f) {
+    var row = el("div", "ck-row");
+    row.setAttribute("data-holo", "handoff-check-flag");
+    var claim = el("div", "ck-claim", f.text || "");
+    claim.title = f.text || "";
+    var why = el("div", "ck-why", "The mockup: " + (f.why || ""));
+    why.title = f.why || "";
+    row.appendChild(claim);
+    row.appendChild(why);
+    box.appendChild(row);
+  });
+}
+
+/* Ask again while the pass is in flight. It is a POLL and not a stream because
+   `promote` is already the endpoint that answers this question — a second road
+   (an SSE channel, a status endpoint) would be a second thing to keep in step
+   with the draft, and the draft is what the flags are ABOUT.
+
+   IT STOPS WHEN THE DIALOG GOES. `document.body.contains` is the test: the
+   overlay is REMOVED on close (unlike the help console, which covers), so a
+   detached band is a closed dialog and there is nobody left to tell. */
+/* The budget MUST outlast the daemon's own bound on the pass, or the band
+   gives up on a worker that is still working and reports a failure the daemon
+   never had. The daemon stops a pass at 420s (`_handoff_check_timeout`, itself
+   measured off three live copilot drives at 154/193/220s); 130 × 4s is 520s,
+   which covers that plus the spawn and the last poll's own interval. */
+var HOLO_CHECK_POLL_MS = 4000, HOLO_CHECK_POLL_MAX = 130;
+
+function holoCheckPoll(seed, box, picked, tries) {
+  if (!box || !document.body.contains(box)) return;
+  if (tries > HOLO_CHECK_POLL_MAX) {
+    holoCheckRender(box, { state: "done", ok: false,
+      why: "it did not finish while this dialog was open" });
+    return;
+  }
+  setTimeout(function () {
+    if (!box || !document.body.contains(box)) return;
+    postWrite("/api/holodeck/" + seed.sessionId + "/promote",
+      { scope: picked.scope }, function (state) {
+        if (!box || !document.body.contains(box)) return;
+        var check = state.check || { state: "off" };
+        holoCheckRender(box, check);
+        if (check.state === "running") {
+          holoCheckPoll(seed, box, picked, tries + 1);
+        }
+      }, function (msg) {
+        if (!box || !document.body.contains(box)) return;
+        holoCheckRender(box, { state: "done", ok: false, why: msg });
+      });
+  }, HOLO_CHECK_POLL_MS);
 }
 
 /* The hand-off dialog (mock screen 6, D5/D13/D14/D15). One screen: a REAL
@@ -9784,6 +9929,10 @@ function openHandoff(seed) {
      holodeck, and getting it wrong was expensive at whole-mission scale. The
      mock makes the LOOK cheap to correct; it does nothing for the reasoning,
      and reasoning needs room. Pre-drafted so the page is never blank. */
+  /* Declared here rather than beside the scope cards below, because the check
+     band's poll re-asks `promote` and has to send the scope he is on. One
+     object, read by reference — the cards mutate it, the poll reads it. */
+  var picked = { scope: seed.scope || "look+behaviour" };
   var f1 = el("div", "field");
   f1.setAttribute("data-holo", "handoff-brief-field");
   f1.appendChild(label("Your brief — what you are actually asking for"));
@@ -9821,6 +9970,19 @@ function openHandoff(seed) {
      at every viewport, including the 613px one where the tester measured it
      clipped mid-height by the footer band. */
   f1.appendChild(el("span", "hint", holoBriefHint(seed)));
+  /* …AND THE CHECK BAND SITS BETWEEN THE HINT AND THE BOX (S169 fix round 2).
+
+     Above the box for the same measured reason the hint is: the box is as tall
+     as the draft, so anything under it is 800px down, and this is the line that
+     has to make a one-screen skim land on the wrong sentence. Under the hint
+     rather than over it, because the hint says what the draft IS and this says
+     what was found in it — and a finding above its own subject reads as a
+     banner about the dialog. */
+  var checkBox = el("div", "handoff-check");
+  checkBox.setAttribute("data-holo", "handoff-check");
+  checkBox.hidden = true;
+  f1.appendChild(checkBox);
+  holoCheckRender(checkBox, seed.check || { state: "off" });
   f1.appendChild(brief);
   m.body.appendChild(f1);
 
@@ -9889,7 +10051,6 @@ function openHandoff(seed) {
   /* 2. HOW MUCH TO BUILD (D13). Declared, never inferred: a mockup cannot tell
      you whether its toggle is meant to persist, and a wrong guess is either a
      wasted backend or a missing one. Declaring costs one click. */
-  var picked = { scope: seed.scope || "look+behaviour" };
   var f2 = el("div", "field");
   f2.appendChild(label("How much of this should be built?"));
   var choices = el("div", "choices");
@@ -10013,10 +10174,11 @@ function openHandoff(seed) {
     });
     f5.appendChild(qlist);
     f5.appendChild(el("span", "hint",
-      "These came out of designing this, and nobody has settled them. What "
-      + "you answer becomes a requirement, in your words. Anything you leave "
-      + "blank arrives in the Mission marked STILL OPEN and gets asked again "
-      + "— it is never read as a decision you made."));
+      "These came out of designing this. What you answer becomes a "
+      + "requirement, in your words. Anything you leave blank arrives in the "
+      + "Mission with NO ANSWER RECORDED and quoted exactly as it reads here; "
+      + "anything genuinely undecided gets asked again, and none of it is ever "
+      + "read as a decision you made."));
     m.body.appendChild(f5);
   }
 
@@ -10095,13 +10257,32 @@ function openHandoff(seed) {
     var n = qBoxes.length;
     qcue.setAttribute("data-open", String(open));
     qcue.classList.toggle("open", open > 0);
+    /* S169 FIX ROUND 2 — IT STOPPED CRYING WOLF.
+
+       It read `⚠ N OPEN QUESTIONS UNANSWERED — READ THEM FIRST` in the amber
+       warning language of the missing-requirement band, and on the 2026-08-07
+       capstone that was the loudest thing in the dialog AND FALSE: both
+       questions were settled in their own text and one of them was then
+       re-asked at a real human gate the captain had already answered.
+
+       It also fires at every single open, before he has had one second to
+       answer anything — so it was a warning about a state that is guaranteed
+       true at the moment it appears. That is the definition of a warning that
+       trains you to click past it, and it sits beside ▦ FILE MISSION.
+
+       What it says now is the count and the invitation, which is the job S128
+       built it for (make filing without KNOWING they exist impossible). The ⚠
+       and the amber are reserved for the two bands that report something
+       MEASURED. */
     qcue.textContent = open
-      ? "⚠ " + open + " open question" + (open === 1 ? "" : "s")
-        + " unanswered — read " + (open === 1 ? "it" : "them") + " first"
+      ? "▸ " + open + " open question" + (open === 1 ? "" : "s")
+        + " from the design session — read "
+        + (open === 1 ? "it" : "them") + " before you file"
       : "✓ all " + n + " open question" + (n === 1 ? "" : "s") + " answered";
     qcue.title = open
-      ? "They came out of designing this and nobody has settled them. Anything "
-        + "left blank is filed marked STILL OPEN — you can send it either way."
+      ? "They came out of designing this. Anything you leave blank is filed "
+        + "with no answer recorded, quoted verbatim — you can send it either "
+        + "way."
       : "Every open question from the design session has an answer.";
   }
   if (qBoxes.length) {
@@ -10188,6 +10369,20 @@ function openHandoff(seed) {
   }
   fitBrief();
   brief.addEventListener("input", fitBrief);
+  /* ── AND THE CHECK'S POLL STARTS **AFTER** THE DIALOG IS ON THE PAGE ──────
+     Its own stop condition is `document.body.contains(band)` — the dialog has
+     gone, so there is nobody to tell. `showOverlay` is what puts this dialog in
+     the document, and it runs at the BOTTOM of this function; started from
+     where the band is built, the very first call read "not on the page yet" and
+     returned, and the band sat on "Reading these lines back against the
+     mockup…" forever while the daemon's answer waited unread.
+
+     Found by web/tests/board_holodeck_harness.js the moment `setTimeout` was
+     recorded instead of swallowed — the previous stub returned 0 and dropped
+     the callback, which cannot tell a wired poll from a dead one. */
+  if ((seed.check || {}).state === "running") {
+    holoCheckPoll(seed, checkBox, picked, 1);
+  }
   m.body.scrollTop = 0;
   return m;
 }

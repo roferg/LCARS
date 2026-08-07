@@ -21,6 +21,7 @@ stdlib only; no pip/npm/build step (ADR-007).
 import atexit
 import base64
 import binascii
+import hashlib
 import json
 import mimetypes
 import os
@@ -713,6 +714,12 @@ class _AlignSession(object):
 _HOLODECK_TOOLS = {
     ("claude", "design"): "Read,Grep,Glob,Write,Edit",
     ("claude", "grounding"): "Read,Grep,Glob",
+    # S169 fix round 2 — the hand-off CHECK. Read-only, and the SAME posture as
+    # grounding rather than a third one invented for it: it is the same kind of
+    # pass (one cold look, no write channel, the daemon owns the output) with a
+    # different cwd. Reusing the grounding posture is deliberate — the session
+    # brief said reuse the precedent, do not build a second worker road.
+    ("claude", "check"): "Read,Grep,Glob",
     # `edit` is REQUIRED in the copilot design set, not optional: copilot's
     # `create` CANNOT overwrite an existing file (measured on CLI 1.0.79-1 — a
     # hard `Path already exists` tool error, zero bytes changed), and turn 2 of
@@ -720,6 +727,7 @@ _HOLODECK_TOOLS = {
     # per path and the engine degrades to the fenced-block fallback.
     ("copilot", "design"): "view,grep,glob,create,edit",
     ("copilot", "grounding"): "view,grep,glob",
+    ("copilot", "check"): "view,grep,glob",
 }
 
 # claude only (see above): what `--disallowedTools` refuses. The DESIGN room
@@ -729,6 +737,11 @@ _HOLODECK_TOOLS = {
 _HOLODECK_DENY = {
     ("claude", "design"): "Bash,NotebookEdit",
     ("claude", "grounding"): "Write,Edit,Bash,NotebookEdit",
+    # The CHECK runs inside the program's own room, where `mockup.html` and
+    # `concept.md` live — the two files the whole hand-off is made of. A write
+    # channel here would let a pass that is supposed to READ the drawing edit
+    # the drawing instead, which is the one outcome worse than no pass at all.
+    ("claude", "check"): "Write,Edit,Bash,NotebookEdit",
 }
 
 _HOLODECK_MODES = ("design", "grounding")
@@ -1282,6 +1295,14 @@ Sections:
      ONE HOME EACH: anything the MOCKUP implies belongs in bucket 2 below and
      not here. Write each undecided thing in exactly one of the two places —
      the captain is shown both lists and must not read the same thing twice.
+     THE MOMENT ONE IS SETTLED IT LEAVES THIS LIST. Delete the bullet outright
+     and write the answer into `## Decisions` with the turn that settled it.
+     Never annotate a question in place ("… **Settled T3: keep emerald.**")
+     and never leave a tombstone behind ("(Theme default — settled T3, moved
+     to Decisions.)"): this list is read as a list of things NOBODY HAS
+     ANSWERED, so a settled entry left sitting in it costs the captain a
+     question he has already answered — a real interruption, spent on nothing.
+     An empty `## Open questions` is a correct and common state; say so.
   ## WHAT IT MUST DO — BEHAVIOUR ONLY (visual choices live in the mockup).
      Three buckets, kept apart:
        1. Requirements — stated behaviour, numbered, in the captain's OWN WORDS,
@@ -2045,6 +2066,234 @@ def _handoff_parts(concept_text):
     implied = _handoff_carry(carried + decisions,
                              _handoff_implied(concept_text))
     return reqs, decisions, implied
+
+
+# ══ S169 FIX ROUND 2 — THE CHECK: THE DRAWING ANSWERS FOR THE ACCOUNT ═══════
+#
+# THE MEASUREMENT (capstone drive, 2026-08-07, live copilot). The captain said,
+# in the design chat: *"But leave the 'Add expense' button itself alone — it's
+# in the right place in the top bar and it says the right thing. I don't want it
+# moved or renamed."* The engine replied "The button is untouched — same spot,
+# same label" and wrote into `## Decisions`:
+#
+#     The button itself is **unchanged** (same place, same label).
+#
+# `web/tests/fixtures/s169-capstone/` is the byte copy. Against the mockup the
+# SAME engine had drawn in the SAME room, every one of those words is false: the
+# app's `<button id="add-expense">Add expense</button>` (`#dddddd`, `1px outset
+# #bbbbbb`, square, 12px, inline beside the brand — `basis.md` records it) is
+# drawn as `<button class="btn" id="addBtn">` with an inline plus SVG,
+# `all:unset`, `background:var(--accent)`, a border radius, `9px var(--sp-4)`,
+# weight 600, hover/active/focus-visible states, at the RIGHT END of a title bar
+# after a `.spacer`. Only the label survived.
+#
+# The false line rode into the brief, into the PRD, and FOUR consecutive live
+# Copilot stages walked past it: Research asked 9 questions and none was this,
+# Validate reported "no scope changes", Plan wrote "the existing (unchanged)
+# Add-expense button", Plan Review passed. Zero escalations — and fix round 1's
+# `_HANDOFF_DISAGREEMENT` paragraph, which names this exact case and says
+# ESCALATE, rode intact in both `idea.md` and `prd.md` the whole way. That is
+# the third time this project has measured a live worker ignoring a lone prose
+# pin when something concrete pointed the other way (S166 directly; S128's
+# `_HANDOFF_PRECEDENCE` collision is the same family).
+#
+# THE ASYMMETRY THAT SHAPES THE CURE. The same brief carried a SECOND false
+# "unchanged" — "The by-category table beneath is unchanged" — and it cost
+# nothing, because that table did not exist in the app yet, so the plan simply
+# built it. An "unchanged" claim is only dangerous when the element it names
+# ACTUALLY EXISTS in the app today, which is precisely the case a grounded
+# pipeline is least likely to question.
+#
+# ── WHY THIS ROAD AND NOT THE OBVIOUS ONE ──────────────────────────────────
+#
+# NOT A CLASSIFIER. Nothing added here matches "kept", "unchanged" or "carried
+# over", scores similarity, or parses `basis.md`. S156 fell 14/14 → 5/14 on a
+# meaning-preserving rewording of its own corpus, S147 lost four generations of
+# a source parser, S157 five versions of a guard, and fix round 1 DECLINED to
+# build this guard deliberately and pinned that decision in a test. It is still
+# declined. `test_the_false_line_STILL_RIDES` still passes: the line rides.
+#
+# WHAT IS ACTUALLY NEW IS WHERE WE ARE STANDING. The program room holds BOTH
+# HALVES AT ONCE — `basis.md` (a read-only pass over the captain's real repo)
+# and `mockup.html` (the artifact itself). Every stage after the holodeck sees
+# the mock as an attachment with no memory of the current app. The holodeck is
+# the ONLY place a claim about what was kept can be checked against the drawing
+# and against the thing it was drawn from. So one bounded, read-only worker
+# reads THE ARTIFACTS — not an account of them, which is the whole difference
+# from the defect, because `## Decisions` IS the model's account of its own
+# drawing — and says which lines the picture contradicts.
+#
+# AND IT FLAGS. It does not rewrite, and it must never rewrite: the captain's
+# interaction with this box is skim-and-correct, a flagged line is exactly what
+# makes a skim land on the right sentence, and laundering a model's correction
+# into his words is the failure mode of every "helpful" rewrite this project has
+# considered. It also FAILS SAFE — no engine, a timeout, an unparseable reply,
+# nothing usable: he still gets his brief, unflagged, and the filing is not
+# blocked. A verification step that can block a hand-off is worse than the
+# defect it cures.
+#
+# NAMING. "audit" is already taken in this file (`_audit_snapshot`, the
+# before/after file walk, `$LCARS_HOLODECK_AUDIT_MAX_FILES`). This is the CHECK.
+_HANDOFF_CHECK_VERDICTS = ("CONTRADICTED", "OK", "UNSURE")
+# How many change lines are sent in one pass. The two real fixtures run 18 and
+# 24; the cap is a bound on the prompt, not a judgement about which lines
+# matter, and the surface says when it bites.
+_HANDOFF_CHECK_MAX_ITEMS = 40
+# How many flags the surface shows. A band with 18 rows in it is the over-long
+# box this whole hand-off is built against — being ignored is the same outcome
+# as not shipping it. First N in document order, and the count is stated.
+_HANDOFF_CHECK_MAX_FLAGS = 5
+# The evidence sentence, bounded. It is a model's prose going onto the captain's
+# screen; a runaway paragraph pushes his brief off it.
+_HANDOFF_CHECK_MAX_EVIDENCE = 400
+
+_HANDOFF_CHECK_PROMPT = """\
+You are CHECKING one list against one drawing. You write NOTHING — you have no \
+write tool and nothing you say is applied to any file.
+
+In your working directory:
+  · `mockup.html` — the design that will actually be built. THE ARTIFACT.
+  · `concept.md`  — the design chat's written record.
+  · `basis.md`    — a read-only record of the app AS IT IS TODAY, before this \
+redesign. It may be absent; if it is, judge on the mockup alone.
+
+Below is a numbered list of claims taken from `concept.md`'s own account of \
+what this design changes. That account was written from the CONVERSATION, not \
+read off the drawing, so some of it can be wrong about the drawing.
+
+For each numbered claim, read `mockup.html` (and `basis.md` where the claim \
+says something about what the app already had) and give ONE verdict:
+
+  CONTRADICTED — ANY PART of it is contradicted by the mockup.
+  OK           — every part of it is consistent with the mockup, or the \
+mockup is silent.
+  UNSURE       — you genuinely cannot tell from these files.
+
+JUDGE EACH CLAIM CLAUSE BY CLAUSE. These lines are long and almost always carry \
+SEVERAL statements at once. ONE false clause makes the whole line CONTRADICTED \
+even when everything else in it is right — a line that is 90% accurate is not \
+OK, because the wrong 10% is what gets built.
+
+THE CLAUSE MOST WORTH CHECKING, EVERY TIME, is one saying an element was left \
+alone, kept, unchanged, untouched or carried over from the app as it is today. \
+Find that element in `basis.md` (what it is TODAY) and in `mockup.html` (what \
+the design does to it) and compare them properly: its markup, its fill, border \
+and radius, its size and padding, its font weight, its hover/active/focus \
+states, and WHERE IT SITS in the layout. If the mockup changes ANY of those, \
+the claim is CONTRADICTED even if the element kept its label — keeping the \
+words on a button is not keeping the button. Such a clause is often the LAST \
+few words of an otherwise perfectly accurate line; read to the end of every one.
+
+Do not report a claim as contradicted on a difference you cannot point at in \
+the files.
+
+DO THE WORK FIRST. Open the files. For each claim, name the elements it talks \
+about and look each one up — in `mockup.html`, and in `basis.md` where the \
+claim says anything about what the app already had. Write that working out in \
+full; take as much room as you need. A verdict you reached without opening the \
+files is worth nothing here, and this list is long enough that judging it from \
+memory of a first read will miss the one line that matters.
+
+THEN, AT THE VERY END of your reply, write a line containing exactly:
+
+  === VERDICTS ===
+
+and after it ONE LINE PER CLAIM and nothing else — no markdown, no code fence, \
+no summary. Exactly this shape, pipe-separated:
+
+  <number>|<VERDICT>|<one sentence of evidence, quoting the mockup>
+
+The evidence must be checkable: QUOTE THE CLAUSE you are contradicting, then \
+name the selector, id, tag or literal text you read in `mockup.html` that \
+contradicts it. If the verdict is OK or UNSURE, say why in the same shape. Emit \
+a line for every claim, in order. Only the block after that marker is read.
+
+THE CLAIMS:
+"""
+
+
+def _handoff_check_prompt(items):
+    """The one bounded pass's whole prompt, for `items` (in document order)."""
+    return _HANDOFF_CHECK_PROMPT + "\n".join(
+        "%d. %s" % (i + 1, " ".join(str(t or "").split()))
+        for i, t in enumerate(items))
+
+
+# `12 | CONTRADICTED | .btn is accent-filled` — tolerant about spacing and the
+# markdown a model wraps a number in, strict about the three verdicts. A line
+# that does not match is not a verdict and is not counted as one.
+_HANDOFF_CHECK_LINE = re.compile(
+    r"^\s*[-*\s]*\[?\s*(\d{1,3})\s*\]?\s*[.)]?\s*[|:]\s*\**\s*"
+    r"(CONTRADICTED|OK|UNSURE)\b\s*\**\s*[|:]?\s*(.*)$",
+    re.IGNORECASE)
+
+
+# The worker THINKS FIRST and then writes its answers after this marker. Two
+# live copilot drives of the real capstone room settled that: told to emit
+# verdicts and nothing else, it produced 18/18 clean, parseable, evidenced
+# verdicts — and BOTH times missed the one false line the round exists to
+# catch, while correctly flagging two others whose contradiction is visible in
+# `mockup.html` alone. The one it missed is the one needing `basis.md` read
+# against the mockup, at the tail of an otherwise accurate 5-clause line. A
+# reply format that forbids working out is a format that buys a snap judgement
+# on eighteen long lines.
+#
+# So the pass may write whatever it likes, and only the block after this marker
+# is read. Absent, the whole reply is scanned — a worker that ignores the
+# marker but answers correctly is not punished for it.
+_HANDOFF_CHECK_MARKER = "=== VERDICTS ==="
+
+
+def _handoff_check_parse(reply, count):
+    """`{index: (VERDICT, evidence)}` for the verdicts a reply really carries.
+
+    STRICT ON PURPOSE, and the strictness is the fail-safe. Anything this does
+    not understand simply is not a verdict: a worker that narrates, refuses,
+    fences its answer or dies mid-stream yields fewer parsed lines than claims,
+    and the caller treats a short read as "no usable answer" rather than as
+    "everything else was fine". The direction that matters is that a flag is
+    never INVENTED from noise — a missing flag costs the captain the same skim
+    he does today, an invented one costs him trust in the band.
+    """
+    out = {}
+    text = reply or ""
+    if _HANDOFF_CHECK_MARKER in text:
+        text = text.rsplit(_HANDOFF_CHECK_MARKER, 1)[1]
+    for raw in text.splitlines():
+        m = _HANDOFF_CHECK_LINE.match(raw)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        if not (1 <= idx <= count) or idx in out:
+            continue
+        # `*` and `|` are the model's decoration; a BACKTICK IS CONTENT — the
+        # evidence sentence very often opens with `` `#addBtn` ``, and stripping
+        # it makes the one thing the captain checks unreadable as a selector.
+        why = " ".join(m.group(3).split()).strip(" *|")
+        out[idx] = (m.group(2).upper(), why[:_HANDOFF_CHECK_MAX_EVIDENCE])
+    return out
+
+
+def _handoff_check_flags(items, reply):
+    """`(flags, checked)` — the CONTRADICTED lines, or `(None, 0)` for unusable.
+
+    `None` is not "nothing was wrong"; it is "this pass did not answer", and the
+    surface must say those two things differently. The bar for usable is that
+    the worker returned a verdict for EVERY claim it was given: a partial read
+    is a truncated reply, and reporting 3 flags out of a list of 18 where 15
+    were never judged is exactly the kind of quiet half-answer that reads as a
+    clean bill of health.
+    """
+    items = list(items or [])
+    if not items:
+        return [], 0
+    seen = _handoff_check_parse(reply, len(items))
+    if len(seen) < len(items):
+        return None, len(seen)
+    flags = [{"text": items[i - 1], "why": seen[i][1]}
+             for i in sorted(seen)
+             if seen[i][0] == _HANDOFF_CHECK_VERDICTS[0]]
+    return flags, len(items)
 
 
 def _handoff_brief(concept_text, program=""):
@@ -3756,6 +4005,17 @@ class Actions(LogFacts):
         # and a restart loses the warm worker session, never the program.
         self._holodeck = {}
         self._holodeck_lock = threading.Lock()
+        # S169 fix round 2 — the hand-off CHECK's results, keyed by (session id,
+        # a fingerprint of the two files it read). In-memory and disposable by
+        # design: it is a HINT about a draft, never a record, and losing it on a
+        # restart costs one more pass and nothing else.
+        #
+        # It is keyed on the FILES, not the session, so re-opening the dialog on
+        # an unchanged program is free and a program that has been drawn on
+        # since is re-checked. The whole reason `promote` can afford to spawn a
+        # worker at all is that it almost never has to.
+        self._handoff_checks = {}
+        self._handoff_check_lock = threading.Lock()
         # S126 — ONE git working tree per sidecar, and `git add -A` + `commit`
         # is not re-entrant against it: two turns landing together raced on
         # `index.lock`, and a commit that fails is swallowed by `_sidecar_commit`
@@ -5221,6 +5481,193 @@ class Actions(LogFacts):
                 "change)" % scope)
         return scope
 
+    # ── the CHECK, as a bounded pass `promote` can afford to wait on ────────
+    #
+    # Everything below is fail-safe by construction: every method returns a
+    # dict, none of them raises, and the ONE thing `promote` does with the
+    # result is add a key to its payload. There is no branch anywhere in this
+    # file where a check outcome refuses, blocks or changes a filing.
+
+    @staticmethod
+    def _handoff_check_enabled():
+        """Whether the hand-off check runs at all.
+
+        `$LCARS_HOLODECK_HANDOFF_CHECK=0` turns it off — for a captain who does
+        not want a worker spawned when he opens the dialog, and for every suite
+        in this repo that is not testing the check itself (a hand-off test must
+        not silently start consuming turns from a stubbed engine's queue).
+        """
+        raw = os.environ.get("LCARS_HOLODECK_HANDOFF_CHECK")
+        return str(raw).strip().lower() not in ("0", "false", "no", "off")
+
+    @staticmethod
+    def _handoff_check_timeout():
+        """How long the one pass may run. Injectable, and short next to
+        `_turn_timeout`'s 20 minutes: a design turn is the captain's work and
+        worth waiting for, this is a hint on a dialog he is in front of.
+
+        420s, AND THAT NUMBER IS MEASURED. It was 180 — a round number chosen
+        before anything had been driven — and three live copilot passes over
+        the real capstone room (18 change lines, `mockup.html` 32KB, `basis.md`
+        read alongside it) came in at 154s, 193s and 220s. A 180s bound would
+        have KILLED the third and reported "the check did not answer" about a
+        pass that was about to. Nothing is waiting on this: the dialog opens
+        instantly, the band polls, and the result is cached against the files
+        it read, so a slow pass costs a captain who closed the dialog nothing
+        at all."""
+        try:
+            return max(1.0, float(os.environ.get(
+                "LCARS_HOLODECK_HANDOFF_CHECK_TIMEOUT") or 420))
+        except ValueError:
+            return 420.0
+
+    @staticmethod
+    def _handoff_check_key(sid, paths, items):
+        """A fingerprint of exactly what the pass would read and judge.
+
+        `stat` of both files plus the claims themselves — so a redraw, an edit
+        to the concept doc, or a change in the drafted list all invalidate it,
+        and nothing else does. Never file CONTENTS: this runs on every dialog
+        open and must not read 32KB of mockup to decide it has nothing to do.
+        """
+        parts = [str(sid)]
+        for p in paths or []:
+            try:
+                st = os.stat(p)
+                parts.append("%s:%d:%d" % (os.path.basename(p), st.st_size,
+                                           int(st.st_mtime * 1000)))
+            except OSError:
+                parts.append("%s:?" % os.path.basename(p))
+        parts.append(str(len(items)))
+        parts.append(_handoff_norm(" ".join(items))[:2000])
+        return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
+
+    def _handoff_check_state(self, sid, sess, items):
+        """The check's answer for this draft, starting the pass if need be.
+
+        Returns the payload's `check` block and NEVER raises. Three shapes, and
+        the surface has to be able to tell them apart:
+
+          {"state": "off"}                     — not running, by configuration
+          {"state": "running"}                 — a pass is in flight; ask again
+          {"state": "done", "ok": …, "flags": …, "why": …}
+
+        `ok: false` means THE PASS DID NOT ANSWER — no engine, a timeout, an
+        unparseable reply. It is not "nothing was wrong", and `why` says which.
+        """
+        items = [t for t in (items or []) if str(t or "").strip()]
+        if not items:
+            return {"state": "done", "ok": True, "checked": 0, "flags": [],
+                    "truncated": 0, "why": ""}
+        if not self._handoff_check_enabled():
+            return {"state": "off"}
+        sent = items[:_HANDOFF_CHECK_MAX_ITEMS]
+        try:
+            paths = self._handoff_files(sess.program_dir)
+        except ActionError as exc:
+            return {"state": "done", "ok": False, "checked": 0, "flags": [],
+                    "truncated": 0, "why": exc.message}
+        key = self._handoff_check_key(sid, paths, sent)
+        with self._handoff_check_lock:
+            entry = self._handoff_checks.get(key)
+            if entry is not None:
+                return dict(entry)
+            entry = {"state": "running"}
+            self._handoff_checks[key] = entry
+            # A HARD BOUND ON THE CACHE, because the key includes an mtime and
+            # a captain who draws all afternoon mints a new one every turn.
+            if len(self._handoff_checks) > 64:
+                for stale in list(self._handoff_checks)[:32]:
+                    if stale != key:
+                        self._handoff_checks.pop(stale, None)
+        thread = threading.Thread(
+            target=self._handoff_check_run,
+            args=(key, sess, paths, sent, list(items)), daemon=True)
+        thread.start()
+        return {"state": "running"}
+
+    def _handoff_check_run(self, key, sess, paths, sent, items):
+        """The pass itself, on its own thread. Catches EVERYTHING.
+
+        This runs detached from any request. An exception escaping here would
+        leave the cache entry pinned at "running" forever and the dialog would
+        poll a spinner that can never resolve — so the bare `except` is the
+        mechanism, not laziness, and the failure it swallows is reported.
+        """
+        try:
+            result = self._handoff_check_spawn(sess, paths, sent, items)
+        except Exception as exc:                       # noqa: BLE001 — see above
+            result = {"state": "done", "ok": False, "checked": 0, "flags": [],
+                      "truncated": 0,
+                      "why": "the check did not complete (%s: %s)"
+                             % (type(exc).__name__, exc)}
+        with self._handoff_check_lock:
+            self._handoff_checks[key] = result
+
+    def _handoff_check_spawn(self, sess, paths, sent, items):
+        """One cold, read-only worker over the program's own room.
+
+        COLD, and that is the point. It gets a FRESH session id and never
+        `--resume`s the design chat: a warm worker would answer out of its
+        memory of what it meant to draw, which is the very account being
+        checked. It reads the files.
+
+        The room is the cwd, so `mockup.html`, `concept.md` and `basis.md` are
+        all reachable with no `--add-dir` grant and nothing outside the room is.
+        """
+        bin_ = sess.engine or self.worker_bin
+        if not bin_:
+            return {"state": "done", "ok": False, "checked": 0, "flags": [],
+                    "truncated": 0,
+                    "why": "no worker engine is configured, so LCARS could not "
+                           "check the change list against the mockup"}
+        cmd = ([bin_, "-p", _handoff_check_prompt(sent)]
+               + self._holodeck_args(bin_, "check", str(uuid.uuid4()), True,
+                                     sess.program_dir)
+               + ["--model", _holodeck_model(bin_)])
+        # The S72 guard, on this argv too. A check with a shell is a check that
+        # can write, and `_assert_no_bash` is where that is refused.
+        _assert_no_bash(cmd)
+        limit = self._handoff_check_timeout()
+        try:
+            proc = subprocess.Popen(cmd, cwd=sess.program_dir,
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT,
+                                    start_new_session=True)
+        except OSError as exc:
+            return {"state": "done", "ok": False, "checked": 0, "flags": [],
+                    "truncated": 0,
+                    "why": "the check worker failed to start: %s" % exc}
+        try:
+            out, _err = proc.communicate(timeout=limit)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            try:
+                proc.communicate(timeout=10)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                pass
+            return {"state": "done", "ok": False, "checked": 0, "flags": [],
+                    "truncated": 0,
+                    "why": "the check did not answer within %ds and was "
+                           "stopped" % int(limit)}
+        reply = _clean_reply((out or b"").decode("utf-8", "replace"))
+        flags, checked = _handoff_check_flags(sent, reply)
+        if flags is None:
+            return {"state": "done", "ok": False, "checked": checked,
+                    "flags": [], "truncated": 0,
+                    "why": "the check answered about %d of the %d lines, so "
+                           "LCARS could not use it — the rest were never "
+                           "judged" % (checked, len(sent))}
+        return {"state": "done", "ok": True, "checked": checked,
+                "flags": flags[:_HANDOFF_CHECK_MAX_FLAGS],
+                # BOTH numbers, because the surface must be able to say what it
+                # is NOT showing: flags past the display cap, and change lines
+                # past the per-pass cap that were never sent at all.
+                "truncated": max(0, len(flags) - _HANDOFF_CHECK_MAX_FLAGS),
+                "unchecked": max(0, len(items) - len(sent)),
+                "why": ""}
+
     def holodeck_promote(self, sid, scope=None):
         """POST /api/holodeck/<sid>/promote — SEND TO ALIGN.
 
@@ -5279,6 +5726,13 @@ class Actions(LogFacts):
             # what is in the draft; it never composes the draft.
             "decisions": decisions,
             "implied": implied,
+            # S169 fix round 2 — THE CHECK. The change list read back against
+            # the mockup and the basis by one bounded read-only pass, so a line
+            # the picture contradicts is FLAGGED before the captain skims. It
+            # flags; it never edits the draft above, and `decisions` is byte-
+            # identical whatever this says. `{"state": "running"}` means ask
+            # again in a moment; anything else is final for this draft.
+            "check": self._handoff_check_state(sid, sess, decisions),
             # A self-check on the drafting, not a check on him: this is the
             # daemon's OWN draft, so anything here means the brief path has
             # regressed to prose again.
@@ -5362,29 +5816,70 @@ class Actions(LogFacts):
         got right; on the S127 capstone all five were correct, none reached the
         captain, and every downstream stage read their silence as a decision he
         had made. An answered one arrives as HIS answer and is a requirement.
-        An unanswered one arrives marked STILL OPEN and must be asked, never
-        assumed — the whole point is that silence stops being an answer.
+        An unanswered one arrives marked and must not be assumed settled — the
+        whole point is that silence stops being an answer.
+
+        ── S169 FIX ROUND 2: THE STAMP STOPPED ASSERTING WHAT IT CANNOT KNOW ──
+
+        MEASURED on the 2026-08-07 capstone. Two of this program's questions
+        were stamped `⚠ STILL OPEN — he was not asked, or did not answer. Treat
+        as undecided.` while being SETTLED IN THEIR OWN TEXT, three words to the
+        left of the stamp:
+
+            1. Q: Is emerald/green the right brand accent? Settled T3: keep
+               emerald.
+               ⚠ STILL OPEN — he was not asked, or did not answer. …
+            2. Q: (Theme default/persistence — settled T3, moved to Decisions.)
+               ⚠ STILL OPEN — he was not asked, or did not answer. …
+
+        The captain had answered emerald verbatim in an earlier turn. The stamp
+        manufactured an Align question he had already answered — a real human
+        gate, spent on nothing. It is the symmetric twin of the defect fix round
+        1 cured (the daemon counting bullets without reading them), pointing the
+        other way, and this one has a price.
+
+        WHAT THE DAEMON ACTUALLY KNOWS is one fact: no answer was typed into
+        that box. It does NOT know he was not asked — the promote dialog puts
+        every one of these in front of him with its own answer box — and it does
+        not know the question is undecided, because the only thing that could
+        tell it is the line itself, which it does not read. So the stamp now
+        states the fact, names the line above it as the thing to read, and stops
+        ordering a human gate for a question that answers itself.
+
+        AND NOT BY A CLASSIFIER. There is no test here for "settled", no
+        keyword, no similarity: that is the road S156/S147/S157 lost. The
+        structural half of the cure is upstream in `_CONCEPT_CONTRACT`, which
+        now requires a settled question to be MOVED OUT of `## Open questions`
+        into `## Decisions` rather than annotated where it stands — so the
+        bucket means what it says and the daemon can go on counting bullets.
         """
         questions = _handoff_questions(concept_text)
         if not questions:
             return ""
         answers = answers if isinstance(answers, dict) else {}
         out = ["## Open questions from the design session", "",
-               "These were raised while the design was being drawn and they "
-               "are NOT settled by this brief. An answered one is the "
-               "captain's own decision and is a requirement. Anything marked "
-               "STILL OPEN has no answer yet: ASK IT "
-               "(`lcars:awaiting-human`). Do not settle it by choosing what "
-               "the mockup happens to show, and do not treat it as agreed "
-               "because nobody objected.", ""]
+               "These were raised while the design was being drawn. An answered "
+               "one is the captain's own decision and is a requirement. For any "
+               "marked NO ANSWER RECORDED, READ THE QUESTION'S OWN LINE FIRST — "
+               "it is quoted verbatim from the design doc, and if it records "
+               "its own settlement then it IS settled and must not be asked "
+               "again. Raise a human gate (`lcars:awaiting-human`) only for one "
+               "the line leaves genuinely undecided. Never settle one yourself "
+               "by taking whatever the mockup happens to show, and never treat "
+               "one as agreed because nobody objected.", ""]
         for i, q in enumerate(questions):
             said = str(answers.get(q["id"], "") or "").strip()
             out.append("%d. Q: %s" % (i + 1, q["text"]))
             if said:
                 out.append("   ANSWERED by the captain: %s" % said)
             else:
-                out.append("   ⚠ STILL OPEN — he was not asked, or did not "
-                           "answer. Treat as undecided.")
+                # THE FACT, AND ONLY THE FACT. It used to add "he was not asked,
+                # or did not answer" — a disjunction the daemon invented, whose
+                # first half the promote dialog makes false — and "Treat as
+                # undecided", which is a verdict on a line it never read.
+                out.append("   ⚠ NO ANSWER RECORDED at filing — he typed "
+                           "nothing in the box. Read the line above before "
+                           "you spend a gate on it.")
         return "\n".join(out) + "\n"
 
     @staticmethod

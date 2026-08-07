@@ -1076,6 +1076,32 @@ const HANDOFF_PROBE = `(function () {
                      hit: hit(go), disabled: !!go.disabled } : null;
   m.qcue = qcue ? { text: (qcue.textContent || "").trim(), box: box(qcue),
                     hit: hit(qcue) } : null;
+  /* S169 FIX ROUND 2 — THE GUIDANCE BOX. Fix round 1 cured the brief textarea's
+     nested scroller and MISSED this one, which is the box carrying the whole
+     precedence rule. Measured on the capstone: clientHeight 228 against
+     scrollHeight 729 — 69% of it hidden, inside a modal body that already
+     scrolls, with a scrollbar of its own nobody notices. Same measurement,
+     same claim: ONE scroller in this dialog. */
+  var guide = document.querySelector("[data-holo=handoff-guidance]");
+  if (guide) {
+    var gs = getComputedStyle(guide);
+    m.guidance = { clientH: guide.clientHeight, scrollH: guide.scrollHeight,
+                   nestedHiddenPx: Math.max(0, guide.scrollHeight - guide.clientHeight),
+                   overflowY: gs.overflowY, maxHeight: gs.maxHeight,
+                   box: box(guide) };
+  } else { m.guidance = null; }
+  /* S169 FIX ROUND 2 — THE CHECK BAND. What one bounded read-only pass found
+     when it read the drafted change list back against the mockup. It is only
+     worth anything if it is ON THE SCREEN where the captain skims — which is
+     a laid-out fact, not a DOM fact. */
+  var ckb = document.querySelector("[data-holo=handoff-check]");
+  if (ckb) {
+    m.check = { text: (ckb.textContent || "").trim(), cls: ckb.className,
+                hidden: !!ckb.hidden, box: box(ckb), hit: hit(ckb),
+                flags: Array.prototype.slice.call(
+                  ckb.querySelectorAll("[data-holo=handoff-check-flag]"))
+                  .map(function (n) { return (n.textContent || "").trim(); }) };
+  } else { m.check = null; }
   return m;
 })()`;
 
@@ -1181,6 +1207,19 @@ function judgeHandoff(m, want) {
                JSON.stringify(m.hint.text));
       }
     });
+    /* S169 FIX ROUND 2 — AND WHAT IT MUST NOT SAY. It read "18 CHANGES THE
+       MOCKUP MAKES TO TODAY'S APP", which is a comparison the daemon never
+       made: it counted the bullets of a section a model wrote from the
+       conversation. Fix round 1 corrected the caption INSIDE the box and left
+       this line, four inches above it, asserting the same thing. */
+    (want.hintForbids || []).forEach((w) => {
+      if (m.hint.text.toLowerCase().indexOf(String(w).toLowerCase()) !== -1) {
+        f.push("the line above the brief box CLAIMS " + JSON.stringify(w) +
+               " — the daemon never read the captain's app, so that is a " +
+               "comparison it cannot have made. It says " +
+               JSON.stringify(m.hint.text));
+      }
+    });
   }
   // 7. THE PRIMARY ACTION IS STILL REACHABLE. This is the check that must not
   //    quietly stop being true because the box above it got longer.
@@ -1196,6 +1235,75 @@ function judgeHandoff(m, want) {
       f.push("the open-questions cue (S128 D1's fix) is gone from the footer");
     } else if (!m.qcue.hit) {
       f.push("the open-questions cue is in the DOM but not clickable at rest");
+    }
+    /* S169 FIX ROUND 2 — IT STOPPED CRYING WOLF. `⚠ 2 OPEN QUESTIONS
+       UNANSWERED — READ THEM FIRST`, in the amber warning language, beside ▦
+       FILE MISSION, was the loudest thing in this dialog and on the capstone it
+       was FALSE. It also fired at every open, before he had had one second to
+       answer anything. A warning that is always on trains him to click past the
+       strip where a real finding appears. */
+    if (m.qcue && (want.qcueForbids || []).length) {
+      (want.qcueForbids || []).forEach((w) => {
+        if (m.qcue.text.toLowerCase().indexOf(String(w).toLowerCase()) !== -1) {
+          f.push("the open-questions cue still reads as a WARNING (" +
+                 JSON.stringify(w) + ") before he has had a chance to answer " +
+                 "anything — it says " + JSON.stringify(m.qcue.text));
+        }
+      });
+    }
+  }
+  // 9. THE GUIDANCE BLOCK IS NOT A NESTED SCROLLER EITHER (S169 fix round 2).
+  //    Same defect, same dialog, the box fix round 1 missed — and it is the one
+  //    carrying the precedence rule this whole session is about. Measured on
+  //    the capstone: 228px of a 729px block, 69% behind an inner scrollbar.
+  if (want.expectGuidance) {
+    if (!m.guidance || !m.guidance.box || !m.guidance.box.visible) {
+      f.push("the 'how the mockup will be read' block did not lay out");
+    } else if (m.guidance.nestedHiddenPx > 1) {
+      f.push("the guidance block hides " + m.guidance.nestedHiddenPx +
+             "px of its own " + m.guidance.scrollH + "px of content behind an " +
+             "INNER scrollbar (it is " + m.guidance.clientH + "px tall, " +
+             "max-height " + m.guidance.maxHeight + ") — that block carries " +
+             "the precedence rule, and the modal body must be the only " +
+             "scroller in this dialog");
+    }
+  }
+  // 10. THE CHECK BAND. It only cures anything if it is ON THE SCREEN, and
+  //     the flagged state has to carry the line AND the mockup's evidence —
+  //     the claim tells him which of his own sentences to look at, the
+  //     evidence tells him which of the two documents to believe.
+  if (want.expectCheckFlag) {
+    if (!m.check) {
+      f.push("the check band is not in the dialog at all");
+    } else if (m.check.hidden || !m.check.box || !m.check.box.visible) {
+      f.push("the check band is in the DOM but not on the screen (hidden=" +
+             m.check.hidden + ", box=" + JSON.stringify(m.check.box) + ")");
+    } else if (m.check.cls.indexOf("flagged") === -1) {
+      f.push("the check band never reached its FLAGGED state — it reads " +
+             JSON.stringify(m.check.text.slice(0, 160)) + " (class " +
+             JSON.stringify(m.check.cls) + ")");
+    } else if (!m.check.flags.length) {
+      f.push("the check band says something is contradicted and shows no line");
+    } else if (m.check.flags.join(" ").indexOf(want.expectCheckFlag) === -1) {
+      f.push("the check band flagged " + JSON.stringify(m.check.flags) +
+             ", which does not contain " + JSON.stringify(want.expectCheckFlag));
+    } else if (!m.check.hit) {
+      f.push("the check band is laid out but nothing can reach it where it sits");
+    } else if (m.check.box.bottom > Math.min(vh, band.bottom) ||
+               m.check.box.top < Math.max(0, band.top)) {
+      f.push("the check band is not WHOLLY on the first screen — it runs " +
+             m.check.box.top + "→" + m.check.box.bottom + "px and the " +
+             "dialog's scrolling body only shows " + band.top + "→" +
+             band.bottom + "px of a " + vh + "px window. A finding half off " +
+             "the screen is a finding nobody reads");
+    }
+    // …and it must be ABOVE the brief box. The box is as tall as the draft, so
+    // a finding rendered under it is ~800px down — which is where the section
+    // this session exists to surface was already sitting.
+    if (m.check && m.check.box && b.box && m.check.box.top >= b.box.top) {
+      f.push("the check band is BELOW the top of the brief box (" +
+             m.check.box.top + "px vs " + b.box.top + "px) — the box is as " +
+             "tall as the draft, so anything under it is off the first screen");
     }
   }
   return f;
@@ -2992,6 +3100,23 @@ async function main() {
     })()`);
     await waitFor(`!!document.querySelector("[data-holo=handoff-brief]")`, 30000,
       "the SEND TO ALIGN dialog never opened");
+    /* S169 FIX ROUND 2 — WAIT FOR THE CHECK TO COME BACK. The daemon answers
+       the dialog IMMEDIATELY (a spinner would be a hand-off held up by a
+       verification step, which is worse than the defect) and the band polls
+       for the verdict. So the settled band is a second paint, seconds later,
+       and probing before it lands measures the spinner. */
+    if (want.expectCheckFlag) {
+      await waitFor(`(function () {
+        var n = document.querySelector("[data-holo=handoff-check]");
+        if (!n) return false;
+        var c = n.className || "";
+        return c.indexOf("clean") >= 0 || c.indexOf("flagged") >= 0 ||
+               (n.textContent || "").indexOf("could not check") >= 0;
+      })()`, 60000,
+        "the check band never settled — it stayed on its 'reading these lines " +
+        "back against the mockup' state, so either the pass never answered or " +
+        "the dialog never asked again");
+    }
     await sleep(400);   // one layout pass on the opened dialog
     let hm = null;
     if (!flowErr) {

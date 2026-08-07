@@ -59,6 +59,12 @@ class SurfaceBase(unittest.TestCase):
     read_only = False
 
     def setUp(self):
+        # S169 fix round 2 — the hand-off CHECK is off for this base, for the
+        # same reason as `HolodeckBase`: `promote` would spawn a worker off the
+        # shared canned-turn queue. See test_holodeck_endpoints.HolodeckBase.
+        self._old_check = os.environ.get("LCARS_HOLODECK_HANDOFF_CHECK")
+        os.environ["LCARS_HOLODECK_HANDOFF_CHECK"] = "0"
+        self.addCleanup(self._restore_check)
         self.tmp = tempfile.mkdtemp()
         self.repo = os.path.join(self.tmp, "target-repo")
         os.makedirs(self.repo)
@@ -94,6 +100,12 @@ class SurfaceBase(unittest.TestCase):
         self.thread = threading.Thread(target=self.httpd.serve_forever,
                                        daemon=True)
         self.thread.start()
+
+    def _restore_check(self):
+        if self._old_check is None:
+            os.environ.pop("LCARS_HOLODECK_HANDOFF_CHECK", None)
+        else:
+            os.environ["LCARS_HOLODECK_HANDOFF_CHECK"] = self._old_check
 
     def tearDown(self):
         self.httpd.shutdown()
@@ -3893,6 +3905,390 @@ class OutcomeNoteIsLegibleTest(unittest.TestCase):
         decls = self._merged(".composer.holo-intent.iopt.on")
         self.assertTrue(decls, "no rule for the selected intent half")
         self.assertIn("background", decls)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 FIX ROUND 2 — THE CHECK BAND, AND THREE SURFACES THAT OVERCLAIMED
+#
+# The daemon half is in `test_holodeck_endpoints.py` (the measurement, the
+# capstone fixture, the fail-safe ladder). This half is the last screen the
+# captain sees before a design becomes a mission, and its whole job here is:
+#
+#   · the check's finding lands where a ONE-SCREEN SKIM will hit it;
+#   · "the check found nothing" and "the check did not run" never look alike;
+#   · nothing on this screen claims a comparison the daemon did not make.
+#
+# WHAT THIS PROCESS CANNOT SEE, said again: there is no CSS and no layout here.
+# "Above the box" is asserted as DOM ORDER; "visible", "amber" and "not behind a
+# nested scrollbar" belong to tests/drives/browser/handoff.sh.
+# ════════════════════════════════════════════════════════════════════════════
+CHECK_FLAG = {
+    "text": ("T2 · Add-expense form → T4 · Slide-over — … The button itself is "
+             "unchanged (same place, same label)."),
+    "why": ('#addBtn is `<button class="btn">` with an inline svg, all:unset '
+            "and background:var(--accent), after `.spacer`"),
+}
+
+
+def _seed_check(check):
+    return dict(SEED, check=check)
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class HandoffCheckBandTest(unittest.TestCase):
+    def _band(self, check):
+        out = _harness({"act": "handoffDialog", "seed": _seed_check(check),
+                        "stopBeforeFile": True})
+        return out, out["check"]
+
+    def test_OFF_renders_NOTHING(self):
+        """A captain who turned the check off must not be shown a box about it,
+        and one who is looking at a clean list must not be shown nothing."""
+        _out, band = self._band({"state": "off"})
+        self.assertTrue(band["hidden"], band)
+
+    def test_RUNNING_says_so_and_makes_NO_CLAIM(self):
+        _out, band = self._band({"state": "running"})
+        self.assertFalse(band["hidden"])
+        self.assertIn("against the mockup", band["text"])
+        self.assertNotIn("✓", band["text"])
+        self.assertNotIn("⚠", band["text"])
+        self.assertNotIn("flagged", band["cls"])
+        self.assertNotIn("clean", band["cls"])
+
+    def test_CLEAN_says_WHAT_WAS_CHECKED_and_is_not_amber(self):
+        _out, band = self._band({"state": "done", "ok": True, "checked": 18,
+                                 "flags": [], "truncated": 0})
+        self.assertIn("18", band["text"])
+        self.assertIn("mockup", band["text"])
+        self.assertIn("clean", band["cls"])
+        self.assertNotIn("flagged", band["cls"])
+
+    def test_CLEAN_does_NOT_VOUCH_for_the_list(self):
+        """MEASURED, on three live copilot drives of the real capstone room:
+        the pass answers all 18 lines, finds two genuinely false ones nobody
+        had noticed — and reads the line this round is NAMED AFTER as
+        consistent, because "the button itself is unchanged (same place, same
+        label)" is arguably true of the mockup's own top bar and only false
+        against the app as it stands today.
+
+        So this band reports what HAPPENED and hands the ruling back to the
+        picture. It is the same correction fix round 1 made to the change
+        list's caption, applied to this round's own new surface before it can
+        become the next thing that quietly vouched for a false line."""
+        _out, band = self._band({"state": "done", "ok": True, "checked": 18,
+                                 "flags": [], "truncated": 0})
+        t = band["text"]
+        self.assertNotIn("none of them contradicts", t)
+        self.assertIn("one pass, not a proof", t)
+        self.assertIn("the mockup is still what gets built", t)
+
+    def test_FLAGGED_shows_THE_LINE_and_THE_EVIDENCE(self):
+        """The finding is useless without both. The claim tells him which of
+        his own sentences to look at; the evidence tells him which of the two
+        documents to believe, without leaving the dialog."""
+        _out, band = self._band({"state": "done", "ok": True, "checked": 18,
+                                 "flags": [CHECK_FLAG], "truncated": 0})
+        self.assertIn("flagged", band["cls"])
+        self.assertEqual(len(band["flags"]), 1, band)
+        row = band["flags"][0]
+        self.assertIn("The button itself is unchanged", row)
+        self.assertIn("#addBtn", row)
+        self.assertIn("--accent", row)
+        # …and it says which side wins, because that is the decision he is
+        # actually making when he reads it.
+        self.assertIn("mockup is what gets built", band["text"])
+
+    def test_FAILED_is_NOT_MISTAKEN_FOR_CLEAN(self):
+        """The one that would quietly undo the whole round: a pass that could
+        not run, rendered as a tick, is the same false reassurance the false
+        line gave. It says nobody checked, and it says nothing is blocked."""
+        _out, band = self._band({"state": "done", "ok": False, "flags": [],
+                                 "why": "the check answered about 3 of the 18 "
+                                        "lines"})
+        self.assertNotIn("clean", band["cls"])
+        self.assertNotIn("flagged", band["cls"])
+        self.assertNotIn("✓", band["text"])
+        self.assertIn("could not check", band["text"])
+        self.assertIn("3 of the 18", band["text"])
+        self.assertIn("Nothing is blocked", band["text"])
+
+    def test_a_TRUNCATED_flag_list_SAYS_SO(self):
+        """A band with eighteen rows in it is the over-long box this hand-off
+        is built against — being ignored is the same outcome as not shipping
+        it. It shows the first few and states what it is not showing."""
+        _out, band = self._band({"state": "done", "ok": True, "checked": 18,
+                                 "flags": [CHECK_FLAG], "truncated": 4})
+        self.assertIn("4 more not shown", band["text"])
+
+    def test_the_band_is_ABOVE_the_brief_box_and_BELOW_the_hint(self):
+        """POSITION IS THE CLAIM. The box takes the height of the draft (S169
+        fix round 1), so anything under it is ~800px down at a one-screen
+        viewport — which is where the section this session exists to surface
+        was already sitting. Under the hint, because the hint says what the
+        draft IS and this says what was found in it."""
+        out, _band = self._band({"state": "done", "ok": True, "checked": 3,
+                                 "flags": [CHECK_FLAG], "truncated": 0})
+        order = out["briefFieldOrder"]
+        self.assertIn("handoff-check", order, order)
+        self.assertIn("handoff-brief", order, order)
+        hint = [i for i, n in enumerate(order) if n == "hint"]
+        self.assertTrue(hint, order)
+        self.assertLess(hint[0], order.index("handoff-check"), order)
+        self.assertLess(order.index("handoff-check"),
+                        order.index("handoff-brief"), order)
+
+    def test_the_band_NEVER_TOUCHES_THE_DRAFT(self):
+        """It flags. Whatever it says, the captain's pre-drafted brief is the
+        daemon's, verbatim — laundering a model's correction into his words is
+        the one thing this must not do."""
+        for check in ({"state": "off"}, {"state": "running"},
+                      {"state": "done", "ok": False, "why": "x"},
+                      {"state": "done", "ok": True, "checked": 2,
+                       "flags": [CHECK_FLAG], "truncated": 0}):
+            out = _harness({"act": "handoffDialog", "seed": _seed_check(check),
+                            "stopBeforeFile": True})
+            self.assertEqual(out["briefValue"], SEED["brief"], check)
+
+    def test_RUNNING_really_does_ASK_AGAIN(self):
+        """A spinner that never resolves is worse than no band. The daemon
+        answers the dialog immediately and says "running"; this side has to come
+        back for the answer, and it comes back to `promote` — the endpoint that
+        already owns this question — rather than to a second road that would
+        have to be kept in step with the draft."""
+        out = _harness({"act": "handoffDialog",
+                        "seed": _seed_check({"state": "running"}),
+                        "stopBeforeFile": True, "pollCheck": True})
+        self.assertEqual(out.get("pollErrors"), [], out.get("pollErrors"))
+        polls = out["checkPolls"]
+        self.assertTrue(polls, out)
+        self.assertEqual(polls[0]["url"], "/api/holodeck/s1/promote")
+        # …and it carries the build scope he is on, so the payload it gets back
+        # describes the same hand-off he is looking at.
+        self.assertEqual(polls[0]["body"]["scope"], "look+behaviour")
+
+    def test_a_SETTLED_check_does_NOT_keep_asking(self):
+        """The control. A poll that fires whatever the daemon said is a worker
+        spawned on a loop for a dialog nobody is reading."""
+        for check in ({"state": "off"},
+                      {"state": "done", "ok": True, "checked": 1, "flags": [],
+                       "truncated": 0},
+                      {"state": "done", "ok": False, "why": "x"}):
+            out = _harness({"act": "handoffDialog", "seed": _seed_check(check),
+                            "stopBeforeFile": True, "pollCheck": True})
+            self.assertEqual(out["checkPolls"], [], check)
+
+    def test_a_FLAGGED_hand_off_can_still_be_FILED(self):
+        """FAIL-SAFE on this side too. A verification step that can block a
+        hand-off is worse than the defect it cures."""
+        out = _harness({"act": "handoffDialog",
+                        "seed": _seed_check({"state": "done", "ok": True,
+                                             "checked": 2,
+                                             "flags": [CHECK_FLAG],
+                                             "truncated": 0})})
+        self.assertEqual(out["filePath"], "/api/park")
+        self.assertEqual(out["fileBody"]["holodeck"], "s1")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class HandoffHintTellsTheTruthTest(unittest.TestCase):
+    """The line four inches above the box, and it was still asserting the
+    comparison the daemon never made.
+
+    MEASURED on the capstone: `8 things you said, 18 CHANGES THE MOCKUP MAKES
+    TO TODAY'S APP and 5 it implies`. Fix round 1 corrected the caption INSIDE
+    the box to say the list is "not a reading of your code" — and left this,
+    which claims the daemon read the mockup against the captain's app. It read
+    `## Decisions`, a section a model wrote from the conversation, and counted
+    its bullets.
+    """
+
+    SEED3 = dict(SEED, decisions=["a", "b", "c"], implied=["x"])
+
+    def test_it_no_longer_claims_the_MOCKUP_WAS_COMPARED_TO_THE_APP(self):
+        out = _harness({"act": "handoffDialog", "seed": self.SEED3,
+                        "stopBeforeFile": True})
+        hint = out["briefHint"]
+        self.assertNotIn("changes the mockup makes to today's app", hint)
+        self.assertNotIn("today's app", hint)
+
+    def test_it_says_WHERE_THE_LIST_CAME_FROM_instead(self):
+        out = _harness({"act": "handoffDialog", "seed": self.SEED3,
+                        "stopBeforeFile": True})
+        hint = out["briefHint"]
+        self.assertIn("3 changes the design chat recorded", hint)
+        self.assertIn("1 the mockup implies", hint)
+
+    def test_the_COUNTS_are_still_the_daemons_own(self):
+        """The half that must not regress: the sentence cannot claim something
+        the draft does not contain, so the numbers come from the daemon's sets
+        and are never counted on this side."""
+        out = _harness({"act": "handoffDialog", "seed": self.SEED3,
+                        "stopBeforeFile": True})
+        self.assertIn("2 things you said", out["briefHint"])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class HandoffCueStopsCryingWolfTest(unittest.TestCase):
+    """`⚠ 2 OPEN QUESTIONS UNANSWERED — READ THEM FIRST`, in amber, beside ▦
+    FILE MISSION — the single most prominent thing in the dialog, and on the
+    2026-08-07 capstone it was FALSE: both questions were settled in their own
+    text and one was then re-asked at a real human gate.
+
+    It was also guaranteed to fire: nothing is answered when the dialog opens.
+    A warning that is always on is not a warning, and it trains the captain to
+    click past the strip where a real finding would appear.
+    """
+
+    def test_it_no_longer_opens_with_a_WARNING(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        cue = out["qcue"]
+        self.assertNotIn("⚠", cue["text"])
+        self.assertNotIn("unanswered", cue["text"].lower())
+
+    def test_it_STILL_says_they_exist_and_is_STILL_a_control(self):
+        """S128's job for it is untouched: filing without KNOWING they exist
+        must stay impossible, and it must take him to them."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True, "clickCue": True})
+        cue = out["qcue"]
+        self.assertIn("2", cue["text"])
+        self.assertIn("open question", cue["text"].lower())
+        self.assertTrue(cue["inFoot"], cue)
+        self.assertTrue(cue["wired"], cue)
+        self.assertTrue(out["cueScrolled"], out)
+
+    def test_the_COUNT_still_falls_as_he_answers(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "answers": {"q1": "Only board verbs."},
+                        "stopBeforeFile": True})
+        self.assertEqual(out["qcue"]["open"], "1", out["qcue"])
+        self.assertIn("1 open question", out["qcue"]["text"])
+
+    def test_ALL_ANSWERED_is_still_the_tick(self):
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "answers": {"q1": "a", "q2": "b"},
+                        "stopBeforeFile": True})
+        self.assertIn("✓", out["qcue"]["text"])
+        self.assertNotIn("open", out["qcue"]["cls"], out["qcue"])
+
+    def test_the_questions_hint_no_longer_promises_STILL_OPEN(self):
+        """The daemon stopped writing that marker (`_handoff_questions_block`);
+        a dialog still promising it would be describing a product that no
+        longer exists."""
+        out = _harness({"act": "handoffDialog", "seed": SEED,
+                        "stopBeforeFile": True})
+        self.assertNotIn("STILL OPEN", out["questionsText"])
+        self.assertIn("NO ANSWER RECORDED", out["questionsText"])
+
+
+class HandoffScrollerCssTest(unittest.TestCase):
+    """ONE SCROLLER IN THIS DIALOG, and it is `.modal-body`.
+
+    Fix round 1 cured the brief textarea and MISSED `.handoff-guidance` — the
+    box carrying the entire precedence rule, the paragraph that tells every
+    stage the mockup wins on look and that a "kept X" line is the account being
+    wrong. MEASURED in real Chrome on the capstone: clientHeight 228 against
+    scrollHeight 729. 69% of it hidden.
+
+    A rule-existence check is weak evidence and is said to be: it cannot lay
+    out a box or measure a pixel. tests/drives/browser/handoff.sh is where the
+    numbers come from. What this catches is the rule coming back.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rules, cls.vars = css.load_stylesheets(css.CSS_SHEETS)
+
+    def _decls(self, selector):
+        out = {}
+        for r in self.rules:
+            if r.selector.replace(" ", "") == selector:
+                for p, v, _imp in r.decls:
+                    out[p] = v
+        return out
+
+    def test_the_guidance_box_has_NO_HEIGHT_CAP(self):
+        d = self._decls(".handoff-guidance")
+        self.assertTrue(d, "the rule vanished entirely")
+        self.assertNotIn("max-height", d, d)
+        self.assertNotIn("height", d, d)
+
+    def test_it_is_NOT_A_SCROLL_CONTAINER_ON_EITHER_AXIS(self):
+        """`overflow-x:auto` alone makes it one on BOTH axes — a non-`visible`
+        value on one axis computes the other to `auto` — so leaving it would
+        keep the machinery one `max-height` away from returning."""
+        d = self._decls(".handoff-guidance")
+        for prop in ("overflow", "overflow-x", "overflow-y"):
+            self.assertNotIn(prop, d, d)
+
+    def test_the_text_still_cannot_push_the_dialog_WIDER(self):
+        """What `overflow-x:auto` was really for. A long unbroken selector or
+        path in that block must wrap, not scroll and not stretch."""
+        d = self._decls(".handoff-guidance")
+        self.assertEqual(d.get("white-space"), "pre-wrap", d)
+        self.assertEqual(d.get("overflow-wrap"), "anywhere", d)
+
+    def test_the_brief_box_is_still_uncapped_too(self):
+        """Fix round 1's cure, pinned from here so a later session cannot
+        re-cap one box while uncapping the other."""
+        for r in self.rules:
+            if "handoff-brief" in r.selector:
+                for p, _v, _i in r.decls:
+                    self.assertNotEqual(p, "max-height", r.selector)
+
+
+class HandoffCheckCssTest(unittest.TestCase):
+    """The check band's four states have to be four different things on
+    screen. This can only say the rules exist and differ; handoff.sh measures
+    the composited pixels."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rules, cls.vars = css.load_stylesheets(css.CSS_SHEETS)
+
+    def _decls(self, selector):
+        out = {}
+        for r in self.rules:
+            if r.selector.replace(" ", "") == selector:
+                for p, v, _imp in r.decls:
+                    out[p] = v
+        return out
+
+    def test_the_band_exists_and_hides_when_hidden(self):
+        self.assertTrue(self._decls(".field.handoff-check"))
+        self.assertEqual(
+            self._decls(".field.handoff-check[hidden]").get("display"), "none")
+
+    def test_FLAGGED_is_AMBER_and_carries_its_OWN_background(self):
+        """S162's lesson on this exact surface: a warning that ties `.hint` on
+        specificity and loses on source order renders as muted metadata. This
+        rule is more specific than `.field .hint` and paints its own band, so it
+        cannot be quietly demoted by a neighbour."""
+        d = self._decls(".field.handoff-check.flagged")
+        self.assertIn("amber", d.get("border-color", ""))
+        self.assertIn("rgba(255,170,0", d.get("background", "").replace(" ", ""))
+
+    def test_CLEAN_is_a_DIFFERENT_COLOUR_from_flagged(self):
+        clean = self._decls(".field.handoff-check.clean")
+        flagged = self._decls(".field.handoff-check.flagged")
+        self.assertTrue(clean, "the clean state has no rule of its own")
+        self.assertNotEqual(clean.get("border-color"),
+                            flagged.get("border-color"))
+        self.assertNotIn("background", clean, clean)
+
+    def test_the_CUE_is_no_longer_painted_as_a_WARNING(self):
+        """It kept its prominence and lost the amber. The amber in this dialog
+        now belongs to the two bands that report something MEASURED."""
+        d = self._decls(".modal-foot.handoff-foot.btn.qcue.open")
+        self.assertTrue(d, "the open state lost its rule entirely")
+        blob = " ".join(d.values())
+        self.assertNotIn("amber", blob, d)
+        self.assertNotIn("255,170,0", blob.replace(" ", ""), d)
+        # …and it is still visually distinct from the answered state.
+        base = self._decls(".modal-foot.handoff-foot.btn.qcue")
+        self.assertNotEqual(base.get("border-left"), d.get("border-left"))
 
 
 if __name__ == "__main__":

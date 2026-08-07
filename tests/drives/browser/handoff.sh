@@ -45,19 +45,45 @@
 #   • that ▦ File Mission is still hit-testable (elementFromPoint, not "it is
 #     in the DOM"), and that S128's open-questions cue still is too.
 #
+# S169 FIX ROUND 2 adds four more, and the first is the same defect fix round 1
+# cured in the textarea and walked past one box lower:
+#
+#   • THE GUIDANCE BLOCK IS NOT A NESTED SCROLLER either. Measured on the
+#     capstone: clientHeight 228 against scrollHeight 729 — 69% of the block
+#     carrying the PRECEDENCE RULE hidden behind a scrollbar of its own, inside
+#     a modal body that already scrolls;
+#   • THE CHECK BAND, driven END TO END. `promote` really does spawn a bounded
+#     read-only pass over the room, the band really does poll for its verdict,
+#     and what is measured is the FLAGGED band on the screen, above the brief
+#     box, carrying the contradicted line and the mockup's evidence. The worker
+#     is a python script handed in through `LCARS_BROWSER_WORKER_BIN` (the same
+#     device holodeck.sh uses) — a real subprocess on the real road, zero
+#     tokens, no engine;
+#   • that the line above the box does not CLAIM a comparison the daemon never
+#     made ("18 changes the mockup makes to today's app" — it counted the
+#     bullets of a section a model wrote from the conversation);
+#   • that the open-questions cue is no longer an amber ⚠ ALARM fired at every
+#     open before the captain has had a second to answer anything.
+#
 # THE FIXTURE IS THE REAL ROOM. `web/tests/fixtures/s128-drive/concept.md` is a
 # byte copy of the concept doc the holodeck wrote for the program whose mission
 # then lost the look — the same file the unit suite uses. Nothing here is
 # invented test data.
 #
-# ZERO TOKENS AND NO WORKER AT ALL. The whole path — enter the deck, pick the
-# archived program back up (`holodeck_open` is a warm restart read off disk),
-# ▶ Send to Align (`holodeck_promote` is a read) — spawns nothing. smoke.sh's
-# claude/copilot shims are on PATH and the run reports 0 invocations.
+# ZERO TOKENS. The whole path — enter the deck, pick the archived program back
+# up (`holodeck_open` is a warm restart read off disk), ▶ Send to Align — runs
+# against a real daemon. S169 fix round 2 changed one thing about this: promote
+# now spawns ONE bounded read-only CHECK worker, and rather than switch it off
+# (which would leave the new band unmeasured, and a rig that stubs the band
+# instead of the pass is measuring itself) the rig hands in a PYTHON SCRIPT as
+# the engine. It reads the numbered claims out of the prompt the daemon really
+# built and answers in the shape the parser really requires. No engine binary is
+# ever invoked; smoke.sh's claude/copilot refusal shims stay on PATH so anything
+# ELSE that tried to spawn would still be caught.
 #
 # THE RED CONTROLS are the point of --calibrate: a check that cannot go red is
-# decoration. EIGHT variants each patch a COPY of web/ and each MUST make the run
-# fail, on the sentence that names what it breaks — the daemon reverted to
+# decoration. THIRTEEN variants each patch a COPY of web/ and each MUST make the
+# run fail, on the sentence that names what it breaks — the daemon reverted to
 # S128's brief (the change list never sent at all), the sizing pass deleted so
 # the box falls back to `rows` and the inner scrollbar returns, the same defect
 # reached from CSS with a height cap at the tester's measured 243px, the hint
@@ -65,7 +91,10 @@
 # clipping its own content, the modal's sticky footer defeated so ▦ File Mission
 # leaves the window, the hint put back UNDER the (now tall) box so it falls out
 # of the dialog's scrolling band, and a spacer that pushes the brief itself
-# below the fold. This repo's own web/ is never touched.
+# below the fold; plus (fix round 2) the height cap put back on the guidance
+# block, the check band hidden by CSS, the band's poll deleted so it never
+# resolves, the hint's overclaiming sentence restored verbatim, and the amber
+# UNANSWERED alarm put back on the cue. This repo's own web/ is never touched.
 # `$LCARS_HANDOFF_VARIANTS` runs a SUBSET.
 #
 # EXIT: 0 proven · 1 the product (or, under --calibrate, the CHECK) is wrong ·
@@ -113,6 +142,28 @@ command -v git >/dev/null 2>&1 || skip "git not found — the sidecar fixture ne
 # `minLinesShown` (S169 fix round 1) is now judged against the LAID-OUT band the
 # captain can actually see, not against the `rows` attribute — see judgeHandoff.
 #
+# ── S169 FIX ROUND 2 LOWERED `minLinesShown`, AND HERE IS THE WHOLE REASON ──
+#
+# It was 12 / 8. It is now 9 / 6, and that is a MEASURED CONSEQUENCE of a
+# deliberate change, not a bar relaxed to make a diff pass. The check band —
+# what one bounded read-only pass found when it read the drafted change list
+# back against the mockup — now sits between the hint and the brief box, and in
+# its FLAGGED state it is ~120px tall. Those pixels come off the captain's own
+# draft on the first screen; there is nowhere in this dialog they could come
+# from instead (the footer strip shrinks the scrolling body by exactly as much).
+#
+# The band was slimmed first, and the slimming is itself measured: the first
+# browser run of it came to 165px and left SIX lines of brief at 1440x677 and
+# THREE at 1280x613 — a finding delivered on top of a slot. A one-line heading
+# and two clamped rows brought it to 9 / 6.
+#
+# AND THE RIG NOW PROVES MORE THAN IT DID, not less. `expectCheckFlag` requires
+# the flagged band to be WHOLLY on the first screen, above the brief box, and
+# hit-testable, carrying the contradicted line AND the mockup's evidence. So
+# what these two numbers now mean together is "the finding AND nine lines of
+# his own words, both in front of him at rest" — where before it was twelve
+# lines and no finding at all.
+#
 # TWO VIEWPORTS, and the second one is the tester's. 1440x677 is the S128
 # window; 1280x613 is a SHORT one, where the sticky footer's band eats into the
 # body and the line above the box has the least room. A dialog that measures up
@@ -131,12 +182,66 @@ write_expect() {   # $1 = width  $2 = height  $3 = min lines on screen at rest
     "## What the mockup changes — as the design chat recorded it",
     "## Implied by the mockup — NOT things you said"
   ],
-  "hintNames": ["changes the mockup makes", "implies"],
-  "expectQCue": true
+  "hintNames": ["changes the design chat recorded", "implies"],
+  "hintForbids": ["today's app", "changes the mockup makes"],
+  "expectQCue": true,
+  "qcueForbids": ["unanswered", "⚠"],
+  "expectGuidance": true,
+  "expectCheckFlag": "$FLAG_MARK"
 }
 EOF
 }
-write_expect 1440 677 12
+# ── S169 FIX ROUND 2: THE CHECK, DRIVEN FOR REAL, FOR ZERO TOKENS ──────────
+#
+# `promote` now spawns ONE bounded read-only worker that reads the drafted
+# change list back against `mockup.html` and flags what the picture
+# contradicts. The band that shows the result is the new thing on this screen,
+# and a rig that stubs the BAND instead of the PASS would be measuring itself.
+#
+# So the daemon spawns a real subprocess on the real road, and that subprocess
+# is a PYTHON SCRIPT — the same device holodeck.sh already uses to drive a turn
+# without an engine (`LCARS_BROWSER_WORKER_BIN`). Zero tokens, zero engine.
+#
+# It answers HONESTLY in the sense that matters here: it reads the numbered
+# claims out of the prompt the daemon actually built, emits one verdict per
+# claim in the shape the parser requires, and marks exactly one CONTRADICTED —
+# the one containing `$FLAG_MARK`, which is a line of the REAL S128 concept
+# doc. A stub that emitted a fixed three lines would be refused by the daemon
+# as a partial answer, which is itself the point of that rule.
+FLAG_MARK="Objects mode gets its own layout"
+
+write_check_worker() {   # $1 = dest path
+  cat >"$1" <<'PYW'
+#!/usr/bin/env python3
+"""The rig's stand-in for a check worker. NOT an engine — a script."""
+import re
+import sys
+
+argv = sys.argv[1:]
+prompt = ""
+for i, a in enumerate(argv):
+    if a == "-p" and i + 1 < len(argv):
+        prompt = argv[i + 1]
+        break
+claims = re.findall(r"^(\d+)\. (.*)$", prompt, re.M)
+if not claims or "CONTRADICTED" not in prompt:
+    # anything that is NOT the check prompt must still be loud: this rig
+    # spawns exactly one worker and it is this one.
+    sys.stderr.write("HANDOFF RIG: an unexpected worker was spawned.\n")
+    sys.exit(1)
+MARK = "Objects mode gets its own layout"
+for n, text in claims:
+    if MARK in text:
+        sys.stdout.write(
+            "%s|CONTRADICTED|the mockup's Objects view still carries the top "
+            "tab strip (.bar > .pill), not a left object list\n" % n)
+    else:
+        sys.stdout.write("%s|OK|consistent with the mockup\n" % n)
+PYW
+  chmod +x "$1"
+}
+
+write_expect 1440 677 9
 
 # ── the planted sidecar: a real local git repo with one archived program ────
 # The daemon ADOPTS this (`_ensure_sidecar` is idempotent) and the deck lists
@@ -199,9 +304,13 @@ run_once() {   # $1 = label, $2 = web dir, $3 = artifact dir
   say "── $label"
   note "web:       $web"
   note "room:      $root/fixture-holodeck/$SLUG/  (concept.md is the real S128 doc)"
+  # the scripted check worker (see above) — a python script, never an engine.
+  local cw="$out/check-worker"
+  write_check_worker "$cw"
   LCARS_BROWSER_OUT="$out" \
   LCARS_BROWSER_WEB_DIR="$web" \
   LCARS_BROWSER_HANDOFF_CHECK="$WORK/expect.json" \
+  LCARS_BROWSER_WORKER_BIN="$cw" \
   LCARS_HOLODECK_ROOT="$root" \
     bash "$HERE/smoke.sh"
   return $?
@@ -285,12 +394,84 @@ PY
       # so the draft is delivered, sized, scrollable — and off screen.
       printf '\n[data-holo=handoff-brief-field]{margin-top:900px}\n' >>"$css"
       ;;
+    capped-guidance)
+      # S169 FIX ROUND 2's OWN CONTROL, and the capstone's exact defect: the
+      # height cap put back on the block that carries the PRECEDENCE RULE.
+      # MEASURED before the cure: clientHeight 228 against scrollHeight 729 —
+      # 69% of the paragraph that tells every stage the mockup wins on look,
+      # behind an inner scrollbar nobody notices, inside a body that already
+      # scrolls. Fix round 1 cured the textarea and walked past this box.
+      printf '\n.handoff-guidance{max-height:230px;overflow-y:auto}\n' >>"$css"
+      ;;
+    hide-check)
+      # THE FINDING, DELIVERED AND INVISIBLE. The daemon runs the pass, the
+      # band is built, the flag is in the DOM — and it paints nowhere. That is
+      # D1 one level down, and it is the shape every "we added a warning"
+      # round in this project has shipped at least once.
+      printf '\n.field .handoff-check{display:none}\n' >>"$css"
+      ;;
+    check-never-asks)
+      # THE SPINNER THAT NEVER RESOLVES. The daemon answers the dialog
+      # immediately with "running" — a hand-off held up by a verification step
+      # is worse than the defect — and the band is supposed to come back for
+      # the verdict. Delete the poll and it sits on "Reading these lines back
+      # against the mockup…" for as long as he looks at it while the answer
+      # waits unread. THIS IS A REAL BUG THIS ROUND SHIPPED AND FIXED: the poll
+      # was started where the band is built, which is BEFORE `showOverlay` puts
+      # the dialog in the document, so its own "is this still on the page?"
+      # guard was false on the very first call.
+      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '''  if ((seed.check || {}).state === "running") {
+    holoCheckPoll(seed, checkBox, picked, 1);
+  }'''
+assert old in s, "the check poll moved — this control is measuring nothing"
+open(p, "w").write(s.replace(old, "  /* red control: never asks again */", 1))
+PY
+      ;;
+    hint-overclaims)
+      # THE LINE THAT ASSERTED A COMPARISON NOBODY MADE, put back verbatim.
+      # "18 changes the mockup makes to today's app" — the daemon has never
+      # opened the captain's repository; it counted the bullets of a section a
+      # model wrote from the conversation. Fix round 1 corrected the caption
+      # INSIDE the box and left this line four inches above it saying the same
+      # thing.
+      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '''    parts.push(holoCount(d, "change the design chat recorded",
+                         "changes the design chat recorded"));'''
+assert old in s, "the hint wording moved — this control is measuring nothing"
+new = '''    parts.push(holoCount(d, "change the mockup makes to today's app",
+                         "changes the mockup makes to today's app"));'''
+open(p, "w").write(s.replace(old, new, 1))
+PY
+      ;;
+    cue-cries-wolf)
+      # THE AMBER ALARM PUT BACK. `⚠ N OPEN QUESTIONS UNANSWERED — READ THEM
+      # FIRST`, beside ▦ FILE MISSION, fired at EVERY open, before the captain
+      # had had one second to answer anything — and on the capstone it was
+      # FALSE: both questions were settled in their own text, and one was then
+      # re-asked at a real human gate. A warning that is always on is not a
+      # warning; it trains him to click past the strip where a real finding
+      # appears.
+      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+mark = '"\u25b8 " + open + " open question" + (open === 1 ? "" : "s")'
+assert mark in s, "the cue wording moved — this control is measuring nothing"
+bad = '"\u26a0 " + open + " open question" + (open === 1 ? "" : "s") + " unanswered"'
+open(p, "w").write(s.replace(mark, bad, 1))
+PY
+      ;;
     *) return 1 ;;
   esac
   return 0
 }
 
-VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list no-fit capped-box mute-hint clip-box no-sticky-foot hint-below-box brief-below-fold}"
+VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list no-fit capped-box mute-hint clip-box no-sticky-foot hint-below-box brief-below-fold capped-guidance hide-check check-never-asks hint-overclaims cue-cries-wolf}"
 
 # WHAT EACH CONTROL MUST FAIL ON. A non-zero exit is not a control going red —
 # a variant that fell over for an unrelated reason proves nothing about the
@@ -307,6 +488,11 @@ expected_reason() {   # $1 = variant
     no-sticky-foot)    echo "File Mission is not clickable" ;;
     hint-below-box)    echo "not WHOLLY on" ;;
     brief-below-fold)  echo "does not start on screen" ;;
+    capped-guidance)   echo "the guidance block hides" ;;
+    hide-check)        echo "not on the screen" ;;
+    check-never-asks)  echo "never settled" ;;
+    hint-overclaims)   echo "CLAIMS" ;;
+    cue-cries-wolf)    echo "reads as a WARNING" ;;
   esac
 }
 
@@ -315,7 +501,7 @@ run_product() {
   # 1440x677 — S128's window. 1280x613 — the tester's short one (fix round 1),
   # where the footer band is at its most expensive and the line above the box
   # has the least room. Both must pass; the second is not a bonus.
-  for pass in "1440 677 12 product" "1280 613 8 product-short"; do
+  for pass in "1440 677 9 product" "1280 613 6 product-short"; do
     set -- $pass
     write_expect "$1" "$2" "$3"
     dir="$WORK/$4"
@@ -330,7 +516,7 @@ run_product() {
          worst=1 ;;
     esac
   done
-  write_expect 1440 677 12
+  write_expect 1440 677 9
   return $worst
 }
 

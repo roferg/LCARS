@@ -1791,11 +1791,29 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .ride .nm{font-family:var(--font-mono);font-size:12px;
   color:var(--lcars-text-bright);white-space:nowrap}
 .ride .ds{font-size:11.5px;color:var(--lcars-text-dim);line-height:1.5}
+/* S169 FIX ROUND 2 — AND THIS ONE WAS STILL A NESTED SCROLLER.
+
+   Fix round 1 cured the brief textarea and MISSED this box, which is the one
+   carrying the entire precedence rule — the paragraph that tells every stage
+   the mockup wins on look and that a "kept X" line is the account being wrong.
+   MEASURED in real Chrome by tests/drives/browser/handoff.sh: clientHeight 228
+   against scrollHeight 729. 69% of it hidden, inside a `.modal-body` that
+   already scrolls, with no scrollbar of its own worth noticing.
+
+   Same cure, same reason: ONE SCROLLER IN THIS DIALOG, and it is `.modal-body`.
+   The cap is deleted rather than raised — a raised cap is the same defect at a
+   different viewport.
+
+   `overflow` goes with it, and that is not tidying. `overflow-x:auto` makes
+   this a scroll container on BOTH axes (a non-`visible` value on one axis
+   computes the other to `auto`), so leaving it would keep the machinery that
+   produced the defect one `max-height` away from returning. Nothing needs to
+   scroll sideways: the text wraps, and `overflow-wrap` is what stops a long
+   unbroken path or selector from pushing the box wider than the dialog. */
 .handoff-guidance{margin:0;background:var(--lcars-black);
   border:1px solid rgba(80,104,138,.3);border-radius:8px;padding:11px 13px;
   font-family:var(--font-mono);font-size:11px;line-height:1.65;
-  color:var(--lcars-text-dim);white-space:pre-wrap;overflow-x:auto;
-  max-height:230px;overflow-y:auto}
+  color:var(--lcars-text-dim);white-space:pre-wrap;overflow-wrap:anywhere}
 
 /* S169 FIX ROUND 1 — THE 40vh CAP IS GONE, AND WHAT IT WAS FOR IS NOT.
 
@@ -1841,6 +1859,55 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   padding:10px 13px;font-size:12px;line-height:1.6;
   color:var(--lcars-text-bright)}
 .field .handoff-missing[hidden]{display:none}
+
+/* ── S169 FIX ROUND 2: THE CHECK BAND ──────────────────────────────────────
+   What one bounded read-only pass found when it read the drafted change list
+   back against `mockup.html`. It sits directly under the hint and above the
+   brief box — the one place a captain who reads a single screen is looking —
+   and it has FOUR states that must not look alike:
+
+     running  quiet, no colour. It is a progress note, not a finding.
+     clean    quiet TEAL. "I looked and found nothing" has to be visibly
+              different from "I did not look", or the amber below means
+              nothing on the day it fires (S162's lesson, and the qcue's).
+     flagged  AMBER, and it carries its own background and border-left so a
+              neighbouring `.hint` rule cannot demote it to metadata on source
+              order — the exact way S162's warning went silent.
+     failed   quiet, no colour, and it SAYS the check did not answer. It must
+              never be mistaken for the clean state. */
+.field .handoff-check{margin:0 0 8px 0;border:1px solid var(--lcars-border-bright);
+  border-left-width:4px;border-radius:7px;padding:8px 11px;font-size:12px;
+  line-height:1.5;color:var(--lcars-text-dim);
+  display:flex;flex-direction:column;gap:5px}
+.field .handoff-check[hidden]{display:none}
+.field .handoff-check .ck-head{color:var(--lcars-text-dim)}
+.field .handoff-check.clean{border-color:var(--lcars-teal)}
+.field .handoff-check.clean .ck-head{color:var(--lcars-text-bright)}
+.field .handoff-check.flagged{background:rgba(255,170,0,.14);
+  border-color:var(--lcars-amber);border-left-color:var(--lcars-amber)}
+.field .handoff-check.flagged .ck-head{color:var(--lcars-text-bright)}
+.field .handoff-check .ck-row{display:flex;flex-direction:column;gap:3px;
+  padding:6px 10px;border-radius:6px;background:var(--lcars-black);
+  border-left:3px solid var(--lcars-amber)}
+/* CLAMPED, and the trade is stated where it is made. This band sits between
+   the hint and the brief box, so its height is subtracted from the captain's
+   own draft on the first screen — measured at 165px on the first browser run,
+   which left him SIX visible lines of brief at 1440x677 and three at 1280x613.
+   Two lines each, with the full string on `title`.
+
+   Clamping the CLAIM is safe in a way clamping a warning never is: it is his
+   own drafted line, verbatim, in the textarea directly below, and this row
+   points at it. The EVIDENCE is bounded by the daemon to 400 characters before
+   it ever gets here (`_HANDOFF_CHECK_MAX_EVIDENCE`), and its first line is the
+   part that names the selector — which is the part he checks. */
+.field .handoff-check .ck-claim,
+.field .handoff-check .ck-why{display:-webkit-box;-webkit-box-orient:vertical;
+  -webkit-line-clamp:2;line-clamp:2;overflow:hidden}
+.field .handoff-check .ck-claim{color:var(--lcars-text-bright);
+  font-size:11.5px;line-height:1.45}
+.field .handoff-check .ck-why{color:var(--lcars-text-dim);font-size:11px;
+  line-height:1.45;font-family:var(--font-mono);overflow-wrap:anywhere}
+
 .handoff-questions{display:flex;flex-direction:column;gap:10px}
 .handoff-questions .hq{display:flex;flex-direction:column;gap:5px;
   background:var(--lcars-card);border:1px solid rgba(80,104,138,.25);
@@ -1864,18 +1931,37 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .modal-foot.handoff-foot .errline[hidden]{display:none}
 .modal-foot.handoff-foot .hint{flex:1 1 220px;min-width:0}
 .modal-foot.handoff-foot .grow{flex:0 0 0}
-/* The cue is a CONTROL, not a caption — it takes him to the questions. Amber
-   and full-width while any are unanswered (the same language as the missing-
-   requirement band above it); quiet and teal once they all have answers, so it
-   still means something on the day it fires. */
+/* The cue is a CONTROL, not a caption — it takes him to the questions. It is
+   full-width and prominent at every viewport while any are unanswered, and
+   teal once they all have answers.
+
+   ── S169 FIX ROUND 2: IT STOPPED BEING AN ALARM ──────────────────────────
+   It used to render `⚠ 2 OPEN QUESTIONS UNANSWERED — READ THEM FIRST` in the
+   amber warning language, and on the 2026-08-07 capstone that was the single
+   most prominent thing on the screen AND IT WAS FALSE — both questions were
+   settled in their own text, and the pipeline then spent a real human gate
+   re-asking one the captain had answered verbatim.
+
+   It was also structurally guaranteed to fire: nothing is answered at the
+   moment the dialog opens, so "UNANSWERED" was a warning about the captain not
+   yet having done a thing he had not yet had the chance to do. A warning that
+   is always on is not a warning, and this one sat directly beside ▦ FILE
+   MISSION — the best real estate in the dialog — training him to click past
+   the strip where a real finding would appear.
+
+   So it keeps its prominence and loses the amber: a bright-bordered CUE that
+   says how many there are and takes him to them. The amber language in this
+   dialog now belongs to things that were actually MEASURED — the missing-
+   requirement band and the check band, both of which report a finding about
+   what is on the screen rather than about what he has not typed yet. */
 .modal-foot.handoff-foot .btn.qcue{flex:1 0 100%;text-align:left;
-  background:transparent;border:1px solid var(--lcars-border-bright);
-  border-left-width:4px;color:var(--lcars-text-dim);
+  background:transparent;border:1px solid rgba(80,104,138,.45);
+  border-left:4px solid var(--lcars-teal);color:var(--lcars-text-dim);
   font-size:12px;line-height:1.5;padding:8px 12px;white-space:normal}
-.modal-foot.handoff-foot .btn.qcue.open{background:rgba(255,170,0,.14);
-  border-color:var(--lcars-amber);border-left:4px solid var(--lcars-amber);
+.modal-foot.handoff-foot .btn.qcue.open{border-color:var(--lcars-border-bright);
+  border-left:4px solid var(--lcars-border-bright);
   color:var(--lcars-text-bright)}
-.modal-foot.handoff-foot .btn.qcue:hover{border-color:var(--lcars-amber)}
+.modal-foot.handoff-foot .btn.qcue:hover{border-color:var(--lcars-text-bright)}
 
 /* Q3 — RESOLVED 2026-08-05 (captain, S127 live drive): below ~1200px the
    PROGRAM LIST collapses to a DRAWER. Chat and preview keep the full width; the

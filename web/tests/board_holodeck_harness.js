@@ -109,6 +109,20 @@ function stubEl(tag) {
     node._kids = node._kids.filter((x) => x !== c);
     return c;
   };
+  /* S169 fix round 2 — `Node.contains`. Real elements have it, this stub did
+   * not, and board.js uses `document.body.contains(node)` as its standard "is
+   * this still on the page?" guard for every repeating timer and poll (the
+   * help console, the launch poller, the check band's poll). Without it the
+   * harness THREW on the first such guard — which at least fails loudly; the
+   * worse shape would have been returning undefined and letting a poll that
+   * can never stop test green. It walks parents, exactly as the real one does,
+   * and a node contains itself. */
+  node.contains = function (other) {
+    for (let n = other; n; n = n.parent) {
+      if (n === node) return true;
+    }
+    return false;
+  };
   /* S169 — `parentNode` / `nextSibling` / `insertBefore`, the three the image
    * paster (board.js `attachImagePaster`, S91) uses to put its "[Image #N]"
    * chip strip immediately after the textarea it is attached to. Without them
@@ -279,6 +293,7 @@ docRoot.appendChild(bodyNode);
 Object.keys(REGISTRY).forEach((id) => bodyNode.appendChild(REGISTRY[id]));
 
 const FETCHES = [];
+const TIMERS = [];
 /* A thenable that resolves NOW and FLATTENS a thenable a callback returns —
  * enough of a Promise for postWrite's `fetch().then(r => r.json().then(…))`
  * chain, and synchronous so the act can assert straight after the call. */
@@ -341,7 +356,14 @@ const sandbox = {
   navigator: { userAgent: "node" },
   localStorage: storageStub,
   setInterval() { return 0; }, clearInterval() {},
-  setTimeout() { return 0; }, clearTimeout() {},
+  /* S169 fix round 2 — `setTimeout` is RECORDED and runnable. It used to be a
+   * no-op returning 0, which cannot tell a wired poll from a dead one: the
+   * check band's "running" state schedules a re-ask, and a harness that
+   * silently swallowed it would report the band rendering perfectly while the
+   * spinner never resolved in a real browser. Nothing fires on its own — an
+   * act runs them explicitly (`pollCheck`), so no assertion races a timer. */
+  setTimeout(fn, ms) { TIMERS.push({ fn: fn, ms: ms }); return TIMERS.length; },
+  clearTimeout() {},
   fetch: fetchStub,
   /* S169 — the composer's image paster reads a pasted file as a data URL
    * (board.js `attachImagePaster`, S91). Firing `onload` INLINE keeps this
@@ -1242,6 +1264,7 @@ switch (cfg.act) {
   case "handoffDialog": {
     sandbox.writesActive = true;
     FETCHES.length = 0;
+    TIMERS.length = 0;
     sandbox.openHandoff(cfg.seed || {});
     const body = REGISTRY.overlayBody;
     out.text = txt(body);
@@ -1255,6 +1278,47 @@ switch (cfg.act) {
     out.rides = many(body, ".ride .nm").map(txt);
     const brief = one(body, "[data-holo=handoff-brief]");
     out.briefValue = brief ? brief.value : null;
+    /* S169 fix round 2 — THE CHECK BAND and the hint above it. Both live in
+     * the brief field, and WHERE they are inside it is half the claim: the box
+     * is as tall as the draft, so a finding rendered under it is 800px down.
+     * `briefFieldOrder` is the elements of that field in DOM order, which is
+     * the only thing this process can say about position (no CSS, no layout —
+     * `tests/drives/browser/handoff.sh` is where "on screen" is measured). */
+    const bfield = one(body, "[data-holo=handoff-brief-field]");
+    out.briefHint = bfield
+      ? (bfield.children.filter((n) => clsList(n).indexOf("hint") >= 0)
+          .map(txt)[0] || "") : "";
+    out.briefFieldOrder = bfield
+      ? bfield.children.map((n) => n.getAttribute("data-holo")
+          || clsList(n).join(".") || n.tag) : [];
+    const ck = one(body, "[data-holo=handoff-check]");
+    out.check = ck ? {
+      text: txt(ck), hidden: !!ck.hidden, cls: clsList(ck),
+      flags: many(ck, "[data-holo=handoff-check-flag]").map(txt),
+    } : null;
+    const projectCheck = () => {
+      const n = one(body, "[data-holo=handoff-check]");
+      out.check = n ? {
+        text: txt(n), hidden: !!n.hidden, cls: clsList(n),
+        flags: many(n, "[data-holo=handoff-check-flag]").map(txt),
+      } : null;
+    };
+    /* The check band's POLL. `openHandoff` schedules a re-ask only while the
+     * daemon says "running"; running the recorded timer is the only way to
+     * tell that from a band that renders a spinner and never asks again. */
+    out.checkTimers = TIMERS.length;
+    if (cfg.pollCheck) {
+      FETCHES.length = 0;
+      const pending = TIMERS.splice(0, TIMERS.length);
+      out.pollErrors = [];
+      pending.forEach((t) => {
+        try { t.fn(); } catch (e) { out.pollErrors.push(String(e)); }
+      });
+      out.checkPolls = FETCHES.filter((f) => (f.opts.method || "") === "POST")
+        .map((f) => ({ url: f.url, body: JSON.parse(f.opts.body) }));
+      out.checkTimersAfter = TIMERS.length;
+      projectCheck();
+    }
     /* S128 — the intent hand-over. `reqRows` is the captured-requirement
      * checklist beside the brief, `missing*` the band that fires when one of
      * his own sentences is not in it, and `questions` the answer boxes. The
