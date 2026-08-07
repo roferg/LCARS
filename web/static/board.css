@@ -1470,6 +1470,52 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 .composer .crow{display:flex;align-items:center;gap:10px}
 .composer .hint{font-family:var(--font-mono);font-size:9.5px;
   color:var(--lcars-text-dim);letter-spacing:.04em}
+/* S169 (FL-014) — the pasted-image chips and the paste's own error line, in a
+   composer that is already a flex COLUMN with its own gap. The shared rules
+   (.img-chips / .errline) carry a top margin for the modal surfaces they were
+   written for; here it would double the gap. Same nodes, same look, no second
+   chip style. */
+.composer .img-chips{margin-top:0}
+.composer .errline{margin-top:0;font-size:12px}
+/* S169 (FL-015) — ASK vs BUILD, the captain's own declaration of what shape a
+   turn is. A two-option segmented control, sized like the hint beside it: it
+   is a small, OPTIONAL affordance and it must not read as the main event on a
+   composer whose main event is the box above it. The selected half carries the
+   deck's own accent (not the board's amber) because this is the holodeck's
+   room, and it carries a real background rather than only a text colour — S162
+   lost a whole warning to a rule that changed nothing but the ink. */
+.composer .holo-intent{display:flex;gap:0;border:1px solid var(--lcars-border);
+  border-radius:5px;overflow:hidden;flex:0 0 auto}
+.composer .holo-intent .iopt{font-family:var(--font-display);font-size:9px;
+  letter-spacing:.13em;text-transform:uppercase;padding:5px 9px;cursor:pointer;
+  color:var(--lcars-text-dim);background:var(--lcars-black);white-space:nowrap;
+  border-right:1px solid var(--lcars-border)}
+.composer .holo-intent .iopt:last-child{border-right:0}
+.composer .holo-intent .iopt:hover{color:var(--lcars-text-bright)}
+.composer .holo-intent .iopt.on{background:var(--holo-grid);
+  color:var(--lcars-black)}
+.composer .holo-intent .iopt:focus-visible{outline:2px solid var(--holo-grid);
+  outline-offset:-2px}
+/* …and the daemon's account of what a turn DID, on the turn it is about. Two
+   readings of one note: `.no` is the calm one (he asked, nothing moved) in the
+   deck's accent; `.drift` is the one that matters (a turn he declared a
+   question wrote anyway) and takes the board's red, on its own background, so
+   it cannot be read as metadata. Declared AFTER `.holo-concept` and on its own
+   class names so neither can tie with the other on specificity and win on
+   source order (the S162 lesson). */
+.holo-outcome{margin-top:8px;display:flex;gap:9px;align-items:flex-start;
+  padding:7px 10px;border-radius:5px}
+.holo-outcome .cl{font-family:var(--font-display);font-size:9px;
+  letter-spacing:.14em;text-transform:uppercase;white-space:nowrap;
+  padding-top:1px}
+.holo-outcome .ct3{font-family:var(--font-body,inherit);font-size:11.5px;
+  line-height:1.5;color:var(--lcars-text-bright)}
+.holo-outcome.no{background:rgba(45,227,199,.07);
+  border-left:2px solid var(--holo-grid)}
+.holo-outcome.no .cl{color:var(--holo-grid)}
+.holo-outcome.drift{background:rgba(255,80,80,.09);
+  border-left:2px solid var(--lcars-red)}
+.holo-outcome.drift .cl{color:var(--lcars-red)}
 
 /* — right: LIVE PREVIEW (D3) — */
 .preview{display:flex;flex-direction:column;min-height:0;min-width:0;
@@ -1558,13 +1604,44 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
 /* — D14's INTENT panel (FL-007). The rendered `concept.md`, on the same grid,
    so it gets the same scrim for the same reason. `.md` (board.css:974) is what
    styles the markup `setMd` emits — this is the container only, deliberately,
-   so there is exactly one markdown look on the board. */
-.pv-intent{flex:1 1 auto;min-height:0;overflow:auto;padding:18px 20px;
+   so there is exactly one markdown look on the board.
+
+   S169 (FL-016) — THE SCRIM AND THE SCROLLING ARE ON DIFFERENT BOXES NOW, and
+   that separation is the whole fix. This rule used to carry `overflow:auto`
+   AND `position:relative`, which made one element both the scroll container
+   and the scrim's containing block. An absolutely-positioned child of a scroll
+   container is sized to the PADDING BOX — one viewport-height rectangle, never
+   the scroll height — and it SCROLLS WITH THE CONTENT. So the darkening was a
+   single screen's worth that slid up and off, and everything below the first
+   screen sat directly on the 22px grid. The captain read his own captured
+   requirements through it.
+
+   The three lines it copied from `.pv-none` are CORRECT THERE: that pane does
+   not scroll, so `inset:0` really is the whole pane. Same technique, different
+   container, silently false — the FL-006/FL-008 family.
+
+   Two mistakes to not make here. `height:100%` on the ::before resolves
+   against that same padding box and changes nothing; a JS-measured height is a
+   second source of truth that is stale on the next reflow. The container is
+   the fix. */
+.pv-intent{flex:1 1 auto;min-height:0;min-width:0;display:flex;
   position:relative;color:var(--lcars-text);font-size:13.5px;line-height:1.6}
+/* AND THE FILL IS NEAR-UNIFORM, not an ellipse (FL-016, the other half). The
+   old `ellipse 78% 74% at 50% 45%` was calibrated for ONE screen: it is down to
+   rgba(...,.55) at its own edges, so even before the scrim scrolled away, text
+   near the top and bottom of the pane was reading through a half-strength
+   backing. A scrim that no longer moves has to be honest everywhere text can
+   be, so it holds .96 across the whole box and only eases at the extreme
+   corners — where the grid stays visible, because the grid is the deck's
+   identity and killing it entirely would be the other failure. */
 .pv-intent::before{content:'';position:absolute;inset:0;pointer-events:none;
-  background:radial-gradient(ellipse 78% 74% at 50% 45%,
-    rgba(3,6,8,.97) 0%,rgba(3,6,8,.9) 55%,rgba(3,6,8,.55) 100%)}
+  background:radial-gradient(ellipse 132% 128% at 50% 50%,
+    rgba(3,6,8,.97) 0%,rgba(3,6,8,.96) 62%,rgba(3,6,8,.9) 100%)}
 .pv-intent>*{position:relative;z-index:1}
+/* the box that actually scrolls, INSIDE the one that carries the scrim. The
+   padding moved here with it, so the document keeps the same margins. */
+.pv-intent .pv-intent-scroll{flex:1 1 auto;min-height:0;min-width:0;
+  overflow:auto;padding:18px 20px}
 .pv-intent .intent-doc{max-width:68ch;margin:0 auto}
 .pv-intent .pv-intent-note{max-width:44ch;margin:26px auto;text-align:center}
 .pv-intent .pv-intent-note .t{font-family:var(--font-display);font-size:12px;
@@ -1712,6 +1789,18 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   font-family:var(--font-mono);font-size:11px;line-height:1.65;
   color:var(--lcars-text-dim);white-space:pre-wrap;overflow-x:auto;
   max-height:230px;overflow-y:auto}
+
+/* S169 — THE BRIEF BOX MAY NOT EAT THE DIALOG.
+
+   `rows` sizes the box to what is in it (board.js `holoBriefRows`), which is
+   what stopped a 31-line draft being read through an eight-row slot. This is
+   the fence on the other side: `rows` knows how much text there is and nothing
+   about how tall the window is, so on a short viewport a well-sized box pushes
+   the line that describes it — and then everything under it — out of the modal
+   body's visible band. MEASURED at 1440x677: body 438px, and 20 rows is 380px
+   of it. A viewport-relative cap is the only version of this that holds at
+   every window height, including the 900x640 case S128's D1 was worst at. */
+[data-holo="handoff-brief"]{max-height:40vh}
 
 /* S128 (FL-011) — the captured-requirement checklist and the OPEN QUESTIONS.
 

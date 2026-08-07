@@ -18,6 +18,12 @@
  *   "resume"          resumeAlignment(id, sid) with a canned question turn → F2:
  *                     assert a GET /api/align/<sid> and the console opens.
  *   "cancel-during-scan" beginAlignment(id); closeOverlay() → isAligning stays set.
+ *   "finalize-outlives-timeout" (S169/FL-017) submit the CLOSING grill turn with
+ *                     the answer response HELD OPEN; every long timer the submit
+ *                     armed is then fired → the FINALIZING guard must SURVIVE
+ *                     (file.sh is still running). Settling the POST ends it.
+ *   "finalize-dies"   the same submit, answered 502 → the guard is released by
+ *                     the POST settling BADLY, not left banded forever.
  *   "scan-outlives-timeout" (S128/FL-009) beginAlignment(id) with the
  *                     /api/align/start response HELD OPEN; every long timer the
  *                     click armed is then fired → the guard must SURVIVE (the
@@ -53,7 +59,20 @@ function stubEl(tag) {
     appendChild(c) { node.children.push(c); return c; },
     insertBefore(c) { node.children.push(c); return c; },
     removeChild() {}, setAttribute() {}, removeAttribute() {},
-    querySelector() { return null; }, querySelectorAll() { return []; },
+    /* S169/FL-017 — the ONE selector this stub answers, and only this one.
+       `renderAlignConsole`'s submit handler writes the working copy through
+       `busy.querySelector(".lcars-working-label")`, so a null here throws
+       before the FINALIZING guard is ever armed and the finalize modes cannot
+       run at all. Everything else still returns null, exactly as before, so no
+       existing mode's behaviour moves. */
+    querySelector(sel) {
+      if (String(sel) === ".lcars-working-label") {
+        node._workLabel = node._workLabel || stubEl("span");
+        return node._workLabel;
+      }
+      return null;
+    },
+    querySelectorAll() { return []; },
     getAttribute() { return null; }, focus() {},
     children: [], _text: "", title: "", hidden: false, disabled: false,
     parentNode: null, nextSibling: null,
@@ -161,6 +180,10 @@ var aligningAfter = null; // FIX-B: isAligning(id) captured after a cancel-durin
 // the projected card as it read WHILE the turn was still running.
 var aligningAfterReturn = null;
 var midFlightCard = null;
+// S169/FL-017: isFinalizing(id) after the long timers were fired, and after the
+// answer POST finally settled.
+var finalizingAfterTimers = null;
+var finalizingAfterReturn = null;
 
 async function main() {
   if (mode === "detail" || mode === "detail-aligning") {
@@ -228,6 +251,66 @@ async function main() {
     releaseHeld();
     await flush(); await flush(); await flush();
     aligningAfterReturn = sandbox.isAligning(mission.id);
+  } else if (mode === "finalize-outlives-timeout") {
+    // S169/FL-017 — FL-009's shape with a five-minute fuse, driven the same
+    // way. Open the grill at its CLOSING question, submit it, hold the
+    // /api/align/<sid>/answer response open (the estimator + file.sh --complete
+    // really do run inside that POST), then fire every long timer the submit
+    // scheduled — a browser's five-minute wall clock, arriving before a
+    // finalize that is merely slow. The band and the disabled control must
+    // SURVIVE it. Releasing the held response is what ends it.
+    var finBefore = TIMERS.length;
+    fetchStub._hold = true;
+    fetchStub._next = { ok: true, state: { sessionId: "abc", status: "done",
+                                           prd: "# PRD" } };
+    sandbox.renderAlignConsole({
+      sessionId: "abc", status: "question",
+      question: { text: "Ready to file?", closing: true }, prd: "# PRD",
+    }, true, mission.id);
+    var submit = null;
+    (function find(n) {
+      if (!n || submit) return;
+      if (n.tag === "button" && /submit/i.test(n._text || "")) { submit = n; return; }
+      (n.children || []).forEach(find);
+    })(captured.node);
+    if (submit && submit.onclick) submit.onclick();
+    await flush();
+    // back-date the submit so the elapsed readout is a real number, not 0s.
+    var frec = sandbox.FINALIZING[String(mission.id)];
+    if (frec && typeof frec === "object" && frec.since) frec.since -= 310000;
+    // fire every LONG timer armed since the submit — the 300s fuse, if one is
+    // still in there. On a cured product there is nothing here to fire, which
+    // is the point: this step is what a re-armed timer would fail on.
+    TIMERS.slice(finBefore).filter(function (t) { return t.ms >= 30000; })
+      .forEach(function (t) { try { t.fn(); } catch (e) { /* stub DOM */ } });
+    await flush();
+    finalizingAfterTimers = sandbox.isFinalizing(mission.id);
+    midFlightCard = project(sandbox.cardNode(mission));
+    // …and only NOW does the POST settle. THAT is what releases the guard.
+    fetchStub._hold = false;
+    releaseHeld();
+    await flush(); await flush(); await flush();
+    finalizingAfterReturn = sandbox.isFinalizing(mission.id);
+  } else if (mode === "finalize-dies") {
+    // The other half of "released by an EVENT": a finalize that FAILS. The
+    // POST settling BADLY is still the POST settling — before S169 only the
+    // success path dropped the guard, and with the timer gone a failed
+    // finalize would have banded the card forever.
+    fetchStub._status = 502;
+    fetchStub._next = { error: "the estimator died" };
+    sandbox.renderAlignConsole({
+      sessionId: "abc", status: "question",
+      question: { text: "Ready to file?", closing: true }, prd: "# PRD",
+    }, true, mission.id);
+    var submit2 = null;
+    (function find(n) {
+      if (!n || submit2) return;
+      if (n.tag === "button" && /submit/i.test(n._text || "")) { submit2 = n; return; }
+      (n.children || []).forEach(find);
+    })(captured.node);
+    if (submit2 && submit2.onclick) submit2.onclick();
+    await flush(); await flush(); await flush();
+    finalizingAfterReturn = sandbox.isFinalizing(mission.id);
   } else if (mode === "stale-open") {
     // An unrelated close during the in-flight POST must NOT abort: the console
     // still opens when the response resolves, and the session is NOT reaped.
@@ -243,6 +326,8 @@ async function main() {
     opened: captured.count,
     aligning: aligningAfter,
     aligningAfterReturn: aligningAfterReturn,
+    finalizingAfterTimers: finalizingAfterTimers,
+    finalizingAfterReturn: finalizingAfterReturn,
     cardMidFlight: midFlightCard,
     resumable: Object.keys(sandbox.RESUMABLE || {}),
   }));

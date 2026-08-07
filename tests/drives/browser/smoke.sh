@@ -32,8 +32,10 @@
 # EXIT: 0 painted · 1 did not paint (a real failure) · 3 painted but the app was
 # served INCOMPLETE (a stylesheet 404'd — you are looking at a phantom) · 4 the
 # board painted but the HOLODECK check failed (only possible under
-# LCARS_BROWSER_HOLODECK_CHECK, and it says WHY) · 77 SKIPPED / infrastructure,
-# loudly, with the reason named. 77 is never a pass.
+# LCARS_BROWSER_HOLODECK_CHECK, and it says WHY) · 5 the board painted and the
+# deck opened but the ▶ SEND TO ALIGN box failed (LCARS_BROWSER_HANDOFF_CHECK)
+# · 77 SKIPPED / infrastructure, loudly, with the reason named. 77 is never a
+# pass.
 #
 # Exit 1 is an ACCUSATION AGAINST THE BOARD, so nothing that is the rig's own
 # problem is allowed to leave through it. A rig whose whole purpose is to stop
@@ -71,6 +73,13 @@
 #   LCARS_BROWSER_GHLINK_CHECK    (S168) path to an expectation JSON. Makes the
 #                           driver read the RESOLVED href off every GitHub link
 #                           in the live DOM (board card badge + detail header).
+#   LCARS_BROWSER_HANDOFF_CHECK   (S169) path to an expectation JSON. Makes the
+#                           driver enter the deck, pick the PLANTED program back
+#                           up off disk and open ▶ SEND TO ALIGN, then measure
+#                           the pre-drafted brief where it is actually read: how
+#                           much of it is on screen at a realistic window height,
+#                           whether the rest is reachable, and whether ▦ File
+#                           Mission still is. Spawns no worker. See handoff.sh.
 #   LCARS_BROWSER_HOLODECK_CHECK  (S125) path to an expectation JSON. Makes the
 #                           driver CLICK into the holodeck, open a program
 #                           through the real dialog, and MEASURE the deck: the
@@ -473,6 +482,12 @@ if [ -n "${LCARS_BROWSER_HOLODECK_CHECK:-}" ]; then
   DRIVE_ARGS+=(--holodeck-check "$LCARS_BROWSER_HOLODECK_CHECK")
   note "holodeck:  the ⬡ HOLODECK deck will be entered and MEASURED too"
 fi
+if [ -n "${LCARS_BROWSER_HANDOFF_CHECK:-}" ]; then
+  [ -f "$LCARS_BROWSER_HANDOFF_CHECK" ] || \
+    skip "LCARS_BROWSER_HANDOFF_CHECK points at no file: $LCARS_BROWSER_HANDOFF_CHECK"
+  DRIVE_ARGS+=(--handoff-check "$LCARS_BROWSER_HANDOFF_CHECK")
+  note "handoff:   the ▶ SEND TO ALIGN box will be opened and MEASURED too"
+fi
 if [ -n "${LCARS_BROWSER_GHLINK_CHECK:-}" ]; then
   [ -f "$LCARS_BROWSER_GHLINK_CHECK" ] || \
     skip "LCARS_BROWSER_GHLINK_CHECK points at no file: $LCARS_BROWSER_GHLINK_CHECK"
@@ -491,6 +506,7 @@ printf 'screenshot: %s/board.png\n' "$OUT"
 [ -f "$OUT/gh-links.png" ] && printf 'screenshot: %s/gh-links.png  (the detail overlay + its GitHub link)\n' "$OUT"
 [ -f "$OUT/file-console.png" ] && printf 'screenshot: %s/file-console.png  (the File console)\n' "$OUT"
 [ -f "$OUT/holodeck.png" ] && printf 'screenshot: %s/holodeck.png  (THE HOLODECK — open this one)\n' "$OUT"
+[ -f "$OUT/handoff.png" ] && printf 'screenshot: %s/handoff.png  (▶ SEND TO ALIGN — open this one)\n' "$OUT"
 [ -f "$OUT/holodeck-back-on-board.png" ] && printf 'screenshot: %s/holodeck-back-on-board.png  (the board, after ▦ BOARD)\n' "$OUT"
 note "result:     $OUT/result.json"
 case "$RC" in
@@ -509,6 +525,12 @@ case "$RC" in
     printf '\033[31mTHE HOLODECK IS WRONG\033[0m — the board painted fine; the deck did not\n'
     printf '        measure up. The reasons are printed above, in full in\n'
     printf '        %s/holodeck-check.json. Open %s/holodeck.png.\n' "$OUT" "$OUT" ;;
+  5)
+    # Same rule as 4, one dialog further on: the board painted and the deck is
+    # fine — it is the box the captain files a Mission from that did not.
+    printf '\033[31mTHE SEND-TO-ALIGN BOX IS WRONG\033[0m — the board painted and the deck\n'
+    printf '        opened; the hand-off dialog did not measure up. Reasons above, in\n'
+    printf '        full in %s/handoff-check.json. Open %s/handoff.png.\n' "$OUT" "$OUT" ;;
   77)
     # The driver could not reach a browser at all. That is the rig's failure and
     # it exits as one — this rig exists to stop harness trouble being reported as

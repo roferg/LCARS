@@ -1533,6 +1533,140 @@ class AlignInFlightOverlayTest(AlignBase):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# S169 (FL-017) — FINALIZING & COSTING WAS FL-009 WITH A FIVE-MINUTE FUSE
+#
+# The closing answer POST does not end at the worker call: it then runs the cold
+# cost estimator and `file.sh --complete <id>` IN PLACE, which is minutes.
+# `turn_started` is scoped to the worker call only, so nothing was published for
+# that whole window — and `board.js` filled the silence with
+# `FINALIZING_TIMEOUT_MS = 300000`, a client-side guess that on expiry cleared
+# its own band and re-armed the card. A run that was still going, presented as
+# one that had stopped, with a real second worker waiting behind the re-click.
+# The captain hit it live on the S128 drive ("OK the mission is costing after
+# the grill"). FL-009's ruling applies verbatim: *"do NOT just raise the number.
+# A bigger constant is the same guess with a longer fuse."*
+#
+# So the daemon owns this fact too, on exactly `alignBusy`'s discipline: stamped
+# around the dispatch, withdrawn in its `finally`, published additively, with NO
+# copy of the client's wording.
+# ════════════════════════════════════════════════════════════════════════════
+class AlignFinalizingOverlayTest(AlignBase):
+    def _board(self, *ids):
+        return {"columns": {"align": [{"id": i} for i in ids]}}
+
+    def _finalizing(self, mission_id="m-001", ago=210.0):
+        """A session in the window the client used to guess at: the grill is
+        DONE, the worker call is over, and the file.sh dispatch is running."""
+        from lcars_serve.actions import _AlignSession
+        sess = _AlignSession(idea="x", engine=None, mission_id=mission_id)
+        sess.done = True
+        sess.finalize_started = time.time() - ago
+        return sess
+
+    def test_overlay_publishes_the_in_flight_finalize(self):
+        self.actions._align["s-fin"] = self._finalizing()
+        out = self.actions.align_overlay(self._board("m-001", "m-002"))
+        fin = out["columns"]["align"][0].get("alignFinalizing")
+        self.assertIsInstance(fin, dict,
+                              "a reloaded card must read the running finalize "
+                              "off the board shape — client memory is gone")
+        self.assertGreaterEqual(fin["for"], 210)
+        self.assertAlmostEqual(fin["since"], time.time() - 210, delta=5)
+        self.assertNotIn("alignFinalizing", out["columns"]["align"][1])
+
+    def test_it_cannot_collide_with_scanning_or_resume(self):
+        """One card, one true state. A finalizing session is `done` and its
+        worker call is over, so `alignBusy` and `alignResume` are structurally
+        silent — asserted rather than assumed."""
+        self.actions._align["s-fin"] = self._finalizing()
+        card = self.actions.align_overlay(self._board("m-001"))["columns"]["align"][0]
+        self.assertIn("alignFinalizing", card)
+        self.assertNotIn("alignBusy", card)
+        self.assertNotIn("alignResume", card)
+
+    def test_an_idle_board_is_byte_identical(self):
+        board = self._board("m-001")
+        before = json.dumps(board, sort_keys=True)
+        out = self.actions.align_overlay(board)
+        self.assertEqual(json.dumps(out, sort_keys=True), before)
+
+    def test_mission_detail_mirrors_it(self):
+        self.actions._align["s-fin"] = self._finalizing()
+        out = self.actions.align_overlay_mission({"id": "m-001"})
+        self.assertIsInstance(out.get("alignFinalizing"), dict)
+        self.assertNotIn("alignResume", out)
+        self.assertNotIn("alignFinalizing",
+                         self.actions.align_overlay_mission({"id": "m-999"}))
+
+    def test_board_endpoint_carries_it(self):
+        self.actions._align["live-f"] = self._finalizing()
+        url = "http://127.0.0.1:%d/api/board" % self.port
+        with urllib.request.urlopen(url, timeout=10) as r:
+            board = json.loads(r.read())
+        cards = []
+        for col in board.get("columns", {}).values():
+            cards.extend(col)
+        m1 = [c for c in cards if c.get("id") == "m-001"]
+        self.assertTrue(m1)
+        self.assertIsInstance(m1[0].get("alignFinalizing"), dict)
+
+    # ── what OWNS the fact: the dispatch itself, released by an EVENT ───────
+    def _observe(self, mission_id="m-001"):
+        return self.actions.align_overlay(
+            self._board(mission_id))["columns"]["align"][0].get("alignFinalizing")
+
+    def _done_turn(self):
+        return json.dumps({"status": "done",
+                           "prd": "# Mission: x\n\n**Type:** feature\n"})
+
+    def test_the_dispatch_is_what_sets_and_clears_the_fact(self):
+        """THE WHOLE CURE, in one test. No clock decides this: the fact exists
+        for exactly as long as `file.sh` is running, and the dispatch RETURNING
+        is what withdraws it."""
+        from lcars_serve.actions import _AlignSession
+        sess = _AlignSession(idea="x", engine=None, mission_id="m-001")
+        self.actions._align["s"] = sess
+        seen = {}
+        self.actions._worker_turn = lambda *a, **kw: self._done_turn()
+
+        def fake_complete(*a, **kw):
+            seen["during"] = self._observe()
+            return {"columns": {}}
+
+        self.actions._complete_from_align = fake_complete
+        self.actions._align_turn("s", sess)
+        self.assertIsInstance(seen["during"], dict,
+                              "WHILE file.sh runs, the fact is published")
+        self.assertGreaterEqual(seen["during"]["for"], 0)
+        self.assertIsNone(self._observe(),
+                          "…and the dispatch settling is what withdraws it")
+
+    def test_a_finalize_that_DIES_stops_reading_as_finalizing(self):
+        """The honesty boundary, and the reason the `finally` is not optional.
+        A fact that could never be cleared is a worse lie than the timer was."""
+        from lcars_serve.actions import _AlignSession
+        sess = _AlignSession(idea="x", engine=None, mission_id="m-001")
+        self.actions._align["s"] = sess
+        self.actions._worker_turn = lambda *a, **kw: self._done_turn()
+
+        def boom(*a, **kw):
+            raise RuntimeError("the estimator died")
+
+        self.actions._complete_from_align = boom
+        with self.assertRaises(RuntimeError):
+            self.actions._align_turn("s", sess)
+        self.assertIsNone(self._observe())
+
+    def test_a_daemon_with_no_sessions_publishes_nothing(self):
+        """THE SAFETY NET, and it is a FACT rather than a timer's opinion. The
+        sessions are in-memory by contract, so a daemon restarted mid-finalize
+        has none — the card reads parked and clickable again, which is the
+        honest answer because that dispatch is gone with the process."""
+        self.actions._align.clear()
+        self.assertIsNone(self._observe())
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # S127 BLOCKER — A PARKED MISSION'S NON-IMAGE ATTACHMENTS ARE NOT IMAGES
 #
 # The holodeck hand-off parks a mission whose DURABLE attachments are an HTML

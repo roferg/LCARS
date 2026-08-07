@@ -84,6 +84,12 @@ SCANNING_ON_SERVER = _mission(
     id="m-park", stage="align", prdPending=True,
     pills={"cost": None, "reasoning": None, "implementation": None},
     alignBusy={"since": 1754500000.0, "for": 95.4})
+# S169/FL-017 (the reload half of the FINALIZE): the same shape for the window
+# after the grill closes, while the estimator and `file.sh --complete` run.
+FINALIZING_ON_SERVER = _mission(
+    id="m-park", stage="align", prdPending=True,
+    pills={"cost": None, "reasoning": None, "implementation": None},
+    alignFinalizing={"since": 1754500000.0, "for": 218.0})
 
 
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")
@@ -352,6 +358,93 @@ class ParkDetailRenderTest(unittest.TestCase):
         bands = [n for n in _flatten(res.get("overlay"))
                  if "lcars-running" in n.get("cls", "")]
         self.assertTrue(bands, "a finalizing card must render the .lcars-running band")
+
+    # ══ S169 / FL-017 — FINALIZING & COSTING, WITHOUT THE FIVE-MINUTE FUSE ══
+    #
+    # `board.js` covered the estimate + `file.sh --complete` window with
+    # `FINALIZING_TIMEOUT_MS = 300000` — FL-009's exact shape, longer fuse. On
+    # expiry it dropped the band and re-armed the card while the run was still
+    # going, and the captain met it live ("OK the mission is costing after the
+    # grill"). FL-009's ruling was written for this: a bigger constant is the
+    # same guess with a longer fuse.
+    def test_the_finalize_guard_outlives_a_fired_five_minute_timer(self):
+        """THE NO-TIMER CLAIM, driven rather than asserted. The submit is made,
+        the answer POST is HELD OPEN (file.sh really is still running), and
+        every long timer that submit armed is then fired — a browser's wall
+        clock arriving before a finalize that is merely slow."""
+        res = _run(PARKED, mode="finalize-outlives-timeout")
+        self.assertTrue(res["finalizingAfterTimers"],
+                        "a fired safety timer must NOT clear a finalize that is "
+                        "still running — that is the defect, with a longer fuse")
+        buttons = [n for n in _flatten(res.get("cardMidFlight"))
+                   if n.get("tag") == "button"]
+        btexts = " || ".join(n.get("text", "") for n in buttons).upper()
+        self.assertIn("FINALIZING", btexts)
+        self.assertNotIn("START ALIGNMENT", btexts,
+                         "re-arming START ALIGNMENT under a live file.sh is the "
+                         "re-click that spawns a second real worker")
+        bands = [n for n in _flatten(res.get("cardMidFlight"))
+                 if "lcars-running" in n.get("cls", "")]
+        self.assertTrue(bands, "and the band stays with it")
+
+    def test_the_mid_finalize_card_says_how_long_it_has_been_going(self):
+        """Silence is what made FL-009 frightening. `◐ Finalizing & costing…
+        5m 10s` reads as slow where a bare spinner reads as broken."""
+        res = _run(PARKED, mode="finalize-outlives-timeout")
+        joined = " || ".join(n.get("text", "")
+                             for n in _flatten(res.get("cardMidFlight")))
+        self.assertIn("5m 10s", joined)
+
+    def test_the_POST_settling_is_what_releases_the_finalize_guard(self):
+        res = _run(PARKED, mode="finalize-outlives-timeout")
+        self.assertFalse(res["finalizingAfterReturn"],
+                         "the answer POST settling — an EVENT — is what ends it")
+
+    def test_a_finalize_that_FAILS_releases_the_guard_too(self):
+        """The other half of "released by an event". Before S169 only the
+        SUCCESS path dropped it; with the timer gone, a 502 from the estimator
+        would have left the card banded and its control disabled forever."""
+        res = _run(PARKED, mode="finalize-dies")
+        self.assertFalse(res["finalizingAfterReturn"],
+                         "settling BADLY is still settling")
+
+    # ── FL-017, the RELOAD half: the daemon's fact, not this tab's ─────────
+    def test_a_reloaded_card_still_reads_as_finalizing(self):
+        """`FINALIZING` is client memory. A tab that reloaded mid-costing had
+        none, and re-armed START ALIGNMENT over a running file.sh — FL-009's
+        second half, in the state FL-009's own fix left alone."""
+        res = _run(FINALIZING_ON_SERVER, mode="card")
+        buttons = [n for n in _flatten(res.get("overlay"))
+                   if n.get("tag") == "button"]
+        btexts = " || ".join(n.get("text", "") for n in buttons).upper()
+        self.assertNotIn("START ALIGNMENT", btexts)
+        fin = [n for n in buttons if "FINALIZING" in n.get("text", "").upper()]
+        self.assertTrue(fin and all(n["disabled"] for n in fin))
+
+    def test_a_reloaded_card_shows_the_daemons_elapsed_finalize(self):
+        # 218s on the wire → "3m 38s", through the SAME `scanningLabel` the
+        # scan band uses. One wording, two sources for the same number.
+        res = _run(FINALIZING_ON_SERVER, mode="card")
+        joined = " || ".join(n.get("text", "")
+                             for n in _flatten(res.get("overlay")))
+        self.assertIn("3m 38s", joined)
+
+    def test_a_reloaded_detail_mirrors_the_finalizing_card(self):
+        _, texts = _texts(FINALIZING_ON_SERVER, mode="detail")
+        joined = " || ".join(texts)
+        self.assertIn("FINALIZING", joined.upper())
+        self.assertNotIn("START ALIGNMENT", joined.upper())
+        self.assertNotIn("RESUME ALIGN", joined.upper())
+
+    def test_no_stamp_and_no_client_memory_re_arms_the_card(self):
+        """The honesty boundary. An absent `alignFinalizing` means the daemon is
+        not finalizing anything, and the card says so."""
+        res = _run(PARKED, mode="card")
+        buttons = [n for n in _flatten(res.get("overlay"))
+                   if n.get("tag") == "button"]
+        btexts = " || ".join(n.get("text", "") for n in buttons).upper()
+        self.assertIn("START ALIGNMENT", btexts)
+        self.assertNotIn("FINALIZING", btexts)
 
     # ── F2: RESUME ALIGN control (payload flag OR client flag) ─────────────
     def test_card_resume_from_payload_flag(self):

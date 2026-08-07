@@ -62,6 +62,115 @@
  */
 const fs = require("fs");
 const path = require("path");
+const zlib = require("zlib");
+
+/* ══════════════════════════════════════════════════════════════════════════
+   S169 (FL-016) — READING THE COMPOSITED COLOUR OFF THE SCREEN.
+
+   The defect this exists for: the INTENT panel's readability scrim was on the
+   same element as `overflow:auto`, so it was one viewport-height rectangle
+   that SCROLLED WITH THE CONTENT and slid off. Everything past the first
+   screen sat bare on the deck's 22px grid, and the captain read his own
+   captured requirements through it.
+
+   NOTHING ALREADY IN THIS REPO CAN SEE THAT. Every harness under `web/tests/`
+   is a node DOM with no CSS and no layout, so the rule is "present" wherever
+   it lands (the documented `css-rule-tests-green-never-reaches-screen` class).
+   Even this rig's computed-style reads — the S168 legend swatches — would say
+   the scrim resolves to a perfectly good colour, because it DOES; it is simply
+   somewhere else. The only honest question is what colour is actually PAINTED
+   behind a word at the bottom of a long document, and the only way to answer
+   it is to look at pixels.
+
+   So: `Page.captureScreenshot` with a `clip`, and a small PNG reader. No
+   dependency is added — `zlib` is node's own, and a Chrome screenshot is
+   8-bit, non-interlaced RGB/RGBA, which is the whole of what this handles. It
+   FAILS LOUD on anything else rather than guessing, because a sampler that
+   quietly returns black is exactly the reassuring-output-proving-nothing shape
+   this rig has been burned by twice.
+   ══════════════════════════════════════════════════════════════════════════ */
+function pngPixels(buf) {
+  if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) {
+    throw new InfraError("screenshot is not a PNG");
+  }
+  let off = 8, w = 0, h = 0, depth = 0, ctype = -1, interlace = 0;
+  const idat = [];
+  while (off + 8 <= buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.toString("ascii", off + 4, off + 8);
+    const data = buf.slice(off + 8, off + 8 + len);
+    if (type === "IHDR") {
+      w = data.readUInt32BE(0); h = data.readUInt32BE(4);
+      depth = data[8]; ctype = data[9]; interlace = data[12];
+    } else if (type === "IDAT") {
+      idat.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+    off += 12 + len;
+  }
+  if (depth !== 8 || interlace !== 0 || (ctype !== 2 && ctype !== 6)) {
+    throw new InfraError("unsupported PNG (depth " + depth + ", colour type " +
+      ctype + ", interlace " + interlace + ") — the sampler reads 8-bit "
+      + "non-interlaced RGB/RGBA only and will not guess");
+  }
+  const bpp = ctype === 6 ? 4 : 3;
+  const stride = w * bpp;
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const out = Buffer.alloc(h * stride);
+  for (let y = 0; y < h; y++) {
+    const ft = raw[y * (stride + 1)];
+    const line = raw.slice(y * (stride + 1) + 1, y * (stride + 1) + 1 + stride);
+    const cur = out.slice(y * stride, (y + 1) * stride);
+    for (let x = 0; x < stride; x++) {
+      const a = x >= bpp ? cur[x - bpp] : 0;                 // left
+      const b = y > 0 ? out[(y - 1) * stride + x] : 0;       // up
+      const c = (x >= bpp && y > 0) ? out[(y - 1) * stride + x - bpp] : 0;
+      let v = line[x];
+      if (ft === 1) v += a;
+      else if (ft === 2) v += b;
+      else if (ft === 3) v += (a + b) >> 1;
+      else if (ft === 4) {
+        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b),
+              pc = Math.abs(p - c);
+        v += (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+      } else if (ft !== 0) {
+        throw new InfraError("unknown PNG row filter " + ft);
+      }
+      cur[x] = v & 0xff;
+    }
+  }
+  return { w: w, h: h, bpp: bpp, px: out };
+}
+
+/* THE BACKGROUND OF A PATCH THAT HAS TEXT IN IT.
+ *
+ * A rectangle over a line of prose is mostly backing and partly glyph, and the
+ * glyphs are the BRIGHT part on this deck. Averaging would let a bold heading
+ * drag the answer around; taking the darkest quartile answers the question
+ * actually being asked — "what is the paper under these words" — and is stable
+ * whether the patch caught one word or five. */
+function darkQuartile(png) {
+  const n = png.w * png.h;
+  if (!n) throw new InfraError("sampled an empty patch");
+  const lum = [];
+  for (let i = 0; i < n; i++) {
+    const o = i * png.bpp;
+    lum.push([png.px[o] * 0.299 + png.px[o + 1] * 0.587 + png.px[o + 2] * 0.114,
+              png.px[o], png.px[o + 1], png.px[o + 2]]);
+  }
+  lum.sort((a, b) => a[0] - b[0]);
+  const take = Math.max(1, Math.round(n / 4));
+  let r = 0, g = 0, b = 0;
+  for (let i = 0; i < take; i++) { r += lum[i][1]; g += lum[i][2]; b += lum[i][3]; }
+  return { r: Math.round(r / take), g: Math.round(g / take),
+           b: Math.round(b / take), samples: take, of: n };
+}
+
+function rgbDistance(a, b) {
+  return Math.round(Math.sqrt((a.r - b.r) ** 2 + (a.g - b.g) ** 2 +
+                              (a.b - b.b) ** 2));
+}
 
 function arg(name, dflt) {
   const i = process.argv.indexOf("--" + name);
@@ -77,6 +186,7 @@ const CONSOLE_CHECK_FILE = arg("console-check", "");
 const LEGEND_CHECK_FILE = arg("legend-check", "");
 const GHLINK_CHECK_FILE = arg("ghlink-check", "");
 const HOLODECK_CHECK_FILE = arg("holodeck-check", "");
+const HANDOFF_CHECK_FILE = arg("handoff-check", "");
 
 if (!DEVTOOLS_PORT || !URL_ || !OUT) {
   // 77, not 2: a mis-invoked driver is the harness's problem, and smoke.sh must
@@ -97,6 +207,12 @@ const EXIT_PAINTED = 0, EXIT_NOT_PAINTED = 1, EXIT_DEGRADED = 3, EXIT_INFRA = 77
  * purpose is worse than no rig. Only ever produced when --holodeck-check is
  * given, so no existing caller can see it. */
 const EXIT_HOLODECK = 4;
+
+/* S169 — and the HAND-OFF check gets its own, for the same reason: this one
+ * fails on a board that painted and a deck that measured up, so borrowing
+ * either of their codes would make smoke.sh print the wrong accusation. Only
+ * ever produced when --handoff-check is given. */
+const EXIT_HANDOFF = 5;
 
 /* An infrastructure failure is a DIFFERENT KIND of thing from a board failure,
  * so it is a different kind of error and leaves by a different exit code. */
@@ -835,6 +951,211 @@ const HOLODECK_PROBE = `(function () {
   };
 })()`;
 
+/* ── S169: THE SEND-TO-ALIGN BOX, MEASURED WHERE IT IS ACTUALLY READ ────────
+   WHY A BROWSER, and it is not a formality. S128's worst defect was invisible
+   to every one of the 1,100+ harnesses under web/tests/: the promote dialog's
+   body is 1812px against a ~677px window, and its open questions sat 546–780px
+   BELOW THE FOLD while ▦ File Mission did not — the session's own stated goal,
+   shipped and unreadable. Those harnesses are node DOMs with no CSS and no
+   layout; not one of them can see a fold.
+
+   S169 pours two more sections into that same box, so it is the same trap one
+   turn later. What is measured here is therefore not "is the text present" (a
+   unit test owns that) but: IS THE CAPTAIN ACTUALLY SHOWN IT, and is the button
+   he came to press still reachable while it is on screen.
+
+   The textarea is SCROLLED as part of the probe — to the bottom and back — so
+   the claim "the whole draft is reachable" is a thing the browser did, not a
+   number the rig reasoned about. */
+const HANDOFF_PROBE = `(function () {
+  function box(el) {
+    if (!el) return null;
+    var r = el.getBoundingClientRect(), s = getComputedStyle(el);
+    return { top: Math.round(r.top), bottom: Math.round(r.bottom),
+             left: Math.round(r.left), right: Math.round(r.right),
+             w: Math.round(r.width), h: Math.round(r.height),
+             visible: r.width > 0 && r.height > 0 && s.display !== "none" &&
+                      s.visibility !== "hidden" &&
+                      parseFloat(s.opacity || "1") > 0.01 };
+  }
+  /* CAN A CLICK ACTUALLY LAND ON IT? A node with a perfect box can still be
+     off the bottom of the window or under a scrim, and "it is in the DOM" is
+     the exact claim that failed in S128. elementFromPoint asks the browser. */
+  function hit(el) {
+    var b = box(el);
+    if (!b || !b.visible) return false;
+    /* SEVERAL POINTS, and ANY of them counts. An INLINE element only occupies
+       its text runs, so the centre of a two-line wrapped <span> lands in the
+       empty tail of the short second line and elementFromPoint answers with
+       the block behind it — a false negative on a line that is plainly on the
+       screen (measured, first calibration run). The window-bounds test below
+       is what actually catches "off screen"; this only asks whether SOMETHING
+       of the node is hittable where it sits. */
+    var pts = [[(b.left + b.right) / 2, (b.top + b.bottom) / 2],
+               [b.left + 6, b.top + 6],
+               [b.left + 6, (b.top + b.bottom) / 2],
+               [(b.left + b.right) / 2, b.top + 6]];
+    for (var i = 0; i < pts.length; i++) {
+      var x = Math.round(pts[i][0]), y = Math.round(pts[i][1]);
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) continue;
+      var at = document.elementFromPoint(x, y);
+      while (at) { if (at === el) return true; at = at.parentElement; }
+    }
+    return false;
+  }
+  function ctl(re) {
+    return Array.prototype.slice.call(
+      document.querySelectorAll(".modal-foot [data-ctl], .modal-foot button"))
+      .filter(function (n) { return re.test((n.textContent || "").trim()); })[0] || null;
+  }
+  var ta = document.querySelector("[data-holo=handoff-brief]");
+  var field = document.querySelector("[data-holo=handoff-brief-field]");
+  var hint = field ? field.querySelector(".hint") : null;
+  var body = document.querySelector(".modal-body");
+  var go = ctl(/File Mission/i);
+  var qcue = document.querySelector("[data-holo=handoff-qcue]");
+  var m = { viewportW: window.innerWidth, viewportH: window.innerHeight,
+            bodyScrollTop: body ? Math.round(body.scrollTop) : null,
+            bodyH: body ? body.clientHeight : null,
+            bodyScrollH: body ? body.scrollHeight : null,
+            // THE SCROLLING BOX'S OWN VISIBLE BAND. .modal-body CLIPS what
+            // overflows it, so "inside a 677px window" is not the same claim
+            // as "on screen" — a line 20px past this rectangle has a perfectly
+            // good box in the viewport and is behind the footer.
+            // (No backticks in here: this whole probe is a template literal.)
+            bodyRect: body ? box(body) : null,
+            present: !!ta };
+  if (ta) {
+    var cs = getComputedStyle(ta);
+    var lh = parseFloat(cs.lineHeight);
+    if (!(lh > 0)) lh = parseFloat(cs.fontSize) * 1.2;
+    var value = String(ta.value || "");
+    // THE SCROLL, ACTUALLY PERFORMED. Restored afterwards so the screenshot
+    // taken next is of the box as the captain first meets it.
+    var before = ta.scrollTop;
+    ta.scrollTop = ta.scrollHeight;
+    var reachedBottom = ta.scrollTop > 0 ||
+                        ta.scrollHeight <= ta.clientHeight + 1;
+    ta.scrollTop = before;
+    m.brief = {
+      rowsAttr: ta.rows, lines: value.split("\\n").length, chars: value.length,
+      clientH: ta.clientHeight, scrollH: ta.scrollHeight,
+      overflowY: cs.overflowY, lineHeight: Math.round(lh),
+      linesShown: lh > 0 ? Math.floor(ta.clientHeight / lh) : 0,
+      reachedBottom: reachedBottom,
+      box: box(ta), hit: hit(ta),
+      headings: value.split("\\n").filter(function (l) {
+        return /^##\\s/.test(l);
+      }),
+      value: value
+    };
+  }
+  m.hint = hint ? { text: (hint.textContent || "").trim(), box: box(hint),
+                    hit: hit(hint) } : null;
+  m.fileBtn = go ? { text: (go.textContent || "").trim(), box: box(go),
+                     hit: hit(go), disabled: !!go.disabled } : null;
+  m.qcue = qcue ? { text: (qcue.textContent || "").trim(), box: box(qcue),
+                    hit: hit(qcue) } : null;
+  return m;
+})()`;
+
+/* The verdict. Every claim is about a LAID-OUT BOX or about text the browser
+   read off the live node — never about the payload the daemon sent, which the
+   unit suite already owns. */
+function judgeHandoff(m, want) {
+  const f = [];
+  if (!m || !m.present) {
+    f.push("the SEND TO ALIGN dialog has no brief box at all");
+    return f;
+  }
+  const b = m.brief, vh = m.viewportH;
+  // 1. THE DAEMON ACTUALLY DELIVERED IT to the live page. A node harness calls
+  //    the builders itself and stays green against a daemon that sends nothing
+  //    — the S168 lesson, and the whole reason this is read off the textarea.
+  (want.sections || []).forEach((h) => {
+    if (b.value.indexOf(h) === -1) {
+      f.push("the pre-drafted brief does not contain " + JSON.stringify(h) +
+             " — the box carries " + JSON.stringify(b.headings));
+    }
+  });
+  if (b.lines < (want.minLines || 0)) {
+    f.push("the pre-drafted brief is only " + b.lines + " lines; the fixture " +
+           "room's draft carries the change list and the implied behaviour and " +
+           "must be at least " + want.minLines);
+  }
+  // 2. THE BOX IS ON THE SCREEN, whole, before anything is scrolled.
+  if (!b.box || !b.box.visible) {
+    f.push("the brief box did not lay out");
+  } else if (b.box.top < 0 || b.box.bottom > vh) {
+    f.push("the brief box is not fully on screen at rest — it runs " +
+           b.box.top + "→" + b.box.bottom + "px against a " + vh +
+           "px window (S128 D1: the box below the fold is the box nobody reads)");
+  }
+  if (!b.hit) f.push("the brief box is in the DOM but nothing can click it");
+  // 3. IT GREW WITH WHAT IS IN IT. An eight-row slot holding a 31-line draft
+  //    shows the captain his own words and hides the two new sections under
+  //    them — D1 one level down, and the exact way this session fails quietly.
+  if (b.linesShown < (want.minLinesShown || 0)) {
+    f.push("the brief box shows only " + b.linesShown + " of its " + b.lines +
+           " lines at once (" + b.clientH + "px at " + b.lineHeight +
+           "px/line); it must show at least " + want.minLinesShown);
+  }
+  // 4. …AND THE REST OF IT IS REACHABLE, proven by scrolling it.
+  if (b.overflowY === "hidden") {
+    f.push("the brief box clips its own content (overflow-y: hidden) — the " +
+           "part of the draft past " + b.clientH + "px cannot be reached");
+  } else if (!b.reachedBottom) {
+    f.push("the brief box would not scroll to its own bottom (scrollHeight " +
+           b.scrollH + ", clientHeight " + b.clientH + ")");
+  }
+  // 5. THE SIGN THAT IT GREW. The hint sits directly under the box and above
+  //    the fold, so it is the one thing a captain who reads only the first
+  //    screen still sees. It has to NAME the two new sections.
+  if (!m.hint || !m.hint.box || !m.hint.box.visible) {
+    f.push("the line under the brief box, which says what the draft is made " +
+           "of, is not on the screen");
+  } else {
+    // HIT-TESTED, not compared against the window. The modal body CLIPS what
+    // overflows it, so a hint 20px past the body's visible band still has a
+    // rectangle inside a 677px window and is still on nobody's screen. Only
+    // elementFromPoint knows the difference.
+    const band = m.bodyRect || { top: 0, bottom: vh };
+    if (m.hint.box.bottom > Math.min(vh, band.bottom) ||
+        m.hint.box.top < Math.max(0, band.top) || !m.hint.hit) {
+      f.push("the line saying what the draft is made of is not WHOLLY on " +
+             "screen — it runs " + m.hint.box.top + "→" + m.hint.box.bottom +
+             "px, and the dialog's scrolling body only shows " + band.top +
+             "→" + band.bottom + "px of a " + vh + "px window (clickable: " +
+             m.hint.hit + ")");
+    }
+    (want.hintNames || []).forEach((w) => {
+      if (m.hint.text.toLowerCase().indexOf(String(w).toLowerCase()) === -1) {
+        f.push("the line under the brief box never mentions " +
+               JSON.stringify(w) + " — it says " +
+               JSON.stringify(m.hint.text));
+      }
+    });
+  }
+  // 6. THE PRIMARY ACTION IS STILL REACHABLE. This is the check that must not
+  //    quietly stop being true because the box above it got longer.
+  if (!m.fileBtn) {
+    f.push("there is no ▦ File Mission control in the dialog's footer");
+  } else if (!m.fileBtn.hit) {
+    f.push("▦ File Mission is not clickable where it is laid out (" +
+           JSON.stringify(m.fileBtn.box) + " against a " + vh + "px window)");
+  }
+  // 7. S128's OWN CURE, unregressed: the open-questions cue rides beside it.
+  if (want.expectQCue) {
+    if (!m.qcue) {
+      f.push("the open-questions cue (S128 D1's fix) is gone from the footer");
+    } else if (!m.qcue.hit) {
+      f.push("the open-questions cue is in the DOM but not clickable at rest");
+    }
+  }
+  return f;
+}
+
+
 function judgeHolodeck(deckM, boardM, want) {
   const f = [];
   want = want || {};
@@ -1310,6 +1631,199 @@ function judgeHolodeck(deckM, boardM, want) {
                + "conversation is over and the next worker is fresh, and the "
                + "pill two inches below it reads "
                + JSON.stringify(want.restart.pill));
+      }
+    }
+    // 8. S169 (FL-013) — THE UNSENT TURN.
+    const dr = want.draft;
+    if (!dr || !dr.idle || !dr.back) {
+      f.push("THE DRAFT CHECK PROVED NOTHING: there was no composer to type "
+             + "into on this run, so nothing was learnt about whether the "
+             + "holodeck keeps an unsent turn"
+             + (dr && dr.armErr ? " (" + dr.armErr + ")" : ""));
+    } else {
+      /* (a) THE POLL, ANSWERED RATHER THAN ASSUMED. The board's 4s safety poll
+             must not be rebuilding the chat pane. If it is, a draft dies four
+             seconds after it is typed and the surface is unusable — a much
+             larger claim than the one the report made, and the reason this was
+             worth measuring instead of reasoning about. */
+      if (!(dr.idle.boardRenders > 0)) {
+        f.push("THE POLL CHECK PROVED NOTHING: the board did not re-render "
+               + "once in " + Math.round(dr.pollMs * 2.4) + "ms, so the "
+               + "question 'does the 4s poll rebuild the chat pane' was never "
+               + "actually put (" + JSON.stringify(dr.idle) + ")");
+      } else if (dr.idle.deckRenders > 0 || !dr.idle.sameNode) {
+        f.push("THE 4s POLL REBUILDS THE CHAT PANE: " + dr.idle.deckRenders
+               + " deck re-render(s) in " + Math.round(dr.pollMs * 2.4)
+               + "ms of sitting still (board re-renders: "
+               + dr.idle.boardRenders + ") — an unsent turn cannot survive a "
+               + "repaint on a timer, whatever else is done about it");
+      }
+      if (dr.idle.value !== dr.text) {
+        f.push("THE HOLODECK ATE AN UNSENT TURN WHILE NOBODY TOUCHED IT: "
+               + JSON.stringify(String(dr.idle.value).slice(0, 60)));
+      }
+      /* (b) AND THE JOURNEY HE DESCRIBED. The node identity is asserted first:
+             a draft that "survived" a round trip that never rebuilt the pane
+             is the shape in which this check would pass on a product that had
+             not been fixed at all. */
+      if (!dr.back.present) {
+        f.push("THE DRAFT CHECK PROVED NOTHING: the composer was gone after "
+               + "⬡ HOLODECK → ▦ BOARD → ⬡ HOLODECK");
+      } else if (dr.back.sameNode) {
+        f.push("THE DRAFT CHECK PROVED NOTHING: the board round-trip did not "
+               + "rebuild the composer at all (same node), so a surviving "
+               + "draft says nothing about surviving a rebuild");
+      } else if (dr.back.value !== dr.text) {
+        f.push("THE HOLODECK ATE AN UNSENT TURN ON THE BOARD ROUND-TRIP: he "
+               + "typed " + JSON.stringify(dr.text.slice(0, 48)) + "…, went to "
+               + "the board and came back to "
+               + JSON.stringify(String(dr.back.value).slice(0, 48)));
+      }
+      /* (c) S169 (FL-014) — and a real clipboard paste is HARVESTED. Silence
+             was the actual defect he hit: with no handler on this textarea the
+             event went nowhere, nothing was sent, and the daemon's own honest
+             refusal could never fire. */
+      if (dr.pasteErr || !dr.paste) {
+        f.push("THE PASTE CHECK PROVED NOTHING: the clipboard event was never "
+               + "dispatched (" + (dr.pasteErr || "no measurement") + ")");
+      } else if (!dr.paste.chips.length || !dr.paste.visible) {
+        f.push("A PASTED IMAGE DID NOTHING ON THE COMPOSER: a real "
+               + "ClipboardEvent carrying a PNG produced "
+               + JSON.stringify(dr.paste.chips) + " ("
+               + dr.paste.visible + " with a painted box) and the deck is "
+               + "holding " + dr.paste.held + " image(s) — the deck's own rule "
+               + "is that nothing does nothing when you use it");
+      } else if (!dr.paste.held) {
+        f.push("the pasted image drew a chip but the deck is holding none, so "
+               + "the next re-render takes it: " + JSON.stringify(dr.paste));
+      }
+    }
+    /* 8b. S169 (FL-015) — YOU CAN ASK IT SOMETHING, AND THE SCREEN SAYS SO.
+       Four separate claims, each failing on the sentence that names it. */
+    const ak = want.ask;
+    /* "PROVED NOTHING" means THE LEG NEVER LOOKED — no deck, no composer, no
+       measurement. A leg that looked and found no control has not failed a
+       precondition; it has found the defect, and saying otherwise is how the
+       `no-ask-on-the-composer` control went red on a line the judge is
+       required to discount (measured 2026-08-06). `ctl.opts` being an array is
+       the tell that the look happened. */
+    if (!ak || !ak.ctl || !Array.isArray(ak.ctl.opts)) {
+      f.push("THE ASK CHECK PROVED NOTHING: the composer was never inspected "
+             + "on this run (" + ((ak && ak.ctl && ak.ctl.err)
+                                  || "no measurement") + ")");
+    } else {
+      const opts = ak.ctl.opts;
+      const laid = opts.filter((o) => o.box && o.box.visible);
+      // `ctl.err` is set when a half the leg needs is absent — which IS the
+      // defect, and the length check below names it in the same words.
+      if (opts.length !== 2 || laid.length !== 2) {
+        f.push("THE ASK AFFORDANCE IS NOT ON THE SCREEN: " + opts.length
+               + " half/halves, " + laid.length + " with a painted box — "
+               + JSON.stringify(opts));
+      } else if (opts[0].intent !== "build" || opts[0].pressed !== "true") {
+        f.push("THE COMPOSER DOES NOT OPEN ON BUILD, so asking a question "
+               + "would need a switch he has to remember to flip: "
+               + JSON.stringify(opts.map((o) => [o.intent, o.pressed])));
+      } else if (!ak.ctl.pressedAfter
+                 || ak.ctl.pressedAfter.join() !== "false,true") {
+        f.push("CLICKING ASK DID NOT TAKE: aria-pressed reads "
+               + JSON.stringify(ak.ctl.pressedAfter) + " after the click");
+      } else if (ak.ctl.sendAfter === ak.ctl.sendBefore) {
+        f.push("DECLARING A QUESTION CHANGES NOTHING HE CAN SEE: the Send "
+               + "control still reads " + JSON.stringify(ak.ctl.sendAfter)
+               + " — a declaration with no feedback is a switch he flips and "
+               + "then wonders about");
+      }
+      // …the banner, which asserted a RENDER over a turn he only asked on.
+      if (!ak.sent || ak.sent.err) {
+        f.push("THE ASK-TURN CHECK PROVED NOTHING: the question was never "
+               + "sent (" + ((ak.sent && ak.sent.err) || "no measurement") + ")");
+      } else {
+        if (!ak.sent.working) {
+          f.push("THE WORKING-COPY CHECK PROVED NOTHING: no working strip was "
+                 + "on screen the instant the turn was sent");
+        } else if (/render/i.test(ak.sent.working)) {
+          f.push("THE WORKING STRIP STILL ASSERTS A RENDER over a turn the "
+                 + "captain only asked a question on: "
+                 + JSON.stringify(ak.sent.working) + " — until a turn has "
+                 + "written something, 'rendering' is a reason nothing on "
+                 + "either side has earned");
+        }
+        if (ak.sent.sendWhileWorking && /render/i.test(ak.sent.sendWhileWorking)) {
+          f.push("…and the Send control says "
+                 + JSON.stringify(ak.sent.sendWhileWorking) + " with it");
+        }
+        // …and the OUTCOME, which is the half that would have caught this.
+        if (!ak.outcome) {
+          f.push("THE ASK-OUTCOME CHECK PROVED NOTHING: the turn produced no "
+                 + "outcome note at all in 60s, so nothing on the screen says "
+                 + "whether the design moved on a turn he did not direct");
+        } else if (!(ak.outcome.w > 0 && ak.outcome.h > 0)) {
+          f.push("the outcome note has no painted box: "
+                 + JSON.stringify(ak.outcome));
+        } else if (/\bdrift\b/.test(ak.outcome.cls)) {
+          f.push("HE ASKED AND THE HOLODECK BUILT ANYWAY: the turn he declared "
+                 + "a question wrote " + JSON.stringify(ak.outcome.chips)
+                 + " — " + JSON.stringify(ak.outcome.text.slice(0, 120)));
+        } else if (!/nothing was written/i.test(ak.outcome.text)) {
+          f.push("the outcome note does not say what the turn did: "
+                 + JSON.stringify(ak.outcome.text.slice(0, 140)));
+        } else if (ak.outcome.pressed
+                   && ak.outcome.pressed.join() !== "true,false") {
+          f.push("ASK IS STICKY: after the question was sent the control still "
+                 + "reads " + JSON.stringify(ak.outcome.pressed) + " — his "
+                 + "next 'make the rail wider' would come back as an answer");
+        }
+      }
+    }
+    // 9. S169 (FL-016) — THE INTENT PANEL'S SCRIM, IN PIXELS.
+    const im = want.intent;
+    if (!im || !im.ok) {
+      f.push("THE INTENT-SCRIM CHECK PROVED NOTHING: "
+             + ((im && im.why) || "the panel was never sampled"));
+    } else {
+      const at = im.bottom.at;
+      // the precondition, stated as a measurement: a document LONGER than the
+      // pane, really scrolled to the bottom. On a short one the defect cannot
+      // appear and a green run would mean nothing.
+      if (!(at.scrollH > at.clientH + 120)) {
+        f.push("THE INTENT-SCRIM CHECK PROVED NOTHING: concept.md is "
+               + at.scrollH + "px in a " + at.clientH + "px pane — it does not "
+               + "overflow, so the scrim could not have scrolled away");
+      } else if (!(at.scrollTop > 40)) {
+        f.push("THE INTENT-SCRIM CHECK PROVED NOTHING: the panel did not "
+               + "scroll (scrollTop " + at.scrollTop + ", overflow-y "
+               + JSON.stringify(at.overflowY) + ")");
+      } else {
+        const top = im.top.colour, bot = im.bottom.colour, grid = im.grid;
+        const drift = rgbDistance(top, bot);
+        const fromGrid = rgbDistance(bot, grid);
+        // CALIBRATION FIRST. If the top sample is itself indistinguishable
+        // from the bare grid, the two ends agreeing proves nothing.
+        if (rgbDistance(top, grid) < 7) {
+          f.push("THE INTENT-SCRIM CHECK PROVED NOTHING: the top of the "
+                 + "document already paints the same colour as the bare deck "
+                 + "grid (text backing rgb(" + top.r + "," + top.g + "," + top.b
+                 + ") vs grid rgb(" + grid.r + "," + grid.g + "," + grid.b
+                 + ")) — there is no scrim anywhere to lose");
+        } else if (drift > 6 || fromGrid < 7) {
+          /* ONE SENTENCE FOR ONE DEFECT (fix round 1). This was two — a
+             "drifted" branch and an "it is the bare grid" branch — and the
+             control landed between them: the pre-fix bottom sample is BOTH
+             12.2 away from the top and 0 away from the grid, so which line
+             fired was decided by a rounding, and the calibration judged the
+             control red for the wrong reason. They were never two findings.
+             The two numbers are the evidence and both are printed; the
+             headline is the mechanism. */
+          f.push("THE INTENT SCRIM SCROLLS AWAY: the colour painted behind the "
+                 + "captain's own requirements is rgb(" + top.r + "," + top.g
+                 + "," + top.b + ") at the top of concept.md and rgb(" + bot.r
+                 + "," + bot.g + "," + bot.b + ") " + at.scrollTop
+                 + "px down it — a drift of " + drift + ", landing " + fromGrid
+                 + " from the bare deck grid rgb(" + grid.r + "," + grid.g + ","
+                 + grid.b + "). The words are on the grid, which is the state "
+                 + "the captain photographed");
+        }
       }
     }
   }
@@ -1857,6 +2371,136 @@ async function main() {
     } catch (e) {
       cdp.pageErrors.push("holodeck screenshot failed: " + e.message);
     }
+    /* ── 3a. S169 (FL-013): THE UNSENT TURN, AGAINST A REAL TIMER ───────────
+       In the captain's words: "I was typing text, but hadn't sent it in the
+       holodeck, I switched back to the board to deploy main, and when I came
+       back my text was gone."
+
+       TWO SEPARATE QUESTIONS, and only a browser can answer the first.
+
+       (a) DOES THE 4s SAFETY POLL REBUILD THE CHAT PANE? The report said a
+           board round-trip; the mechanism said any repaint at all — so if the
+           poll rebuilds it, a draft dies four seconds after it is typed and
+           the surface is unusable, not merely lossy. Nothing in `web/tests/`
+           can answer this: those harnesses call the render functions
+           themselves and have no timer. This one types, then WAITS past two
+           whole poll intervals with `renderDeck` and `render` instrumented,
+           and reports what actually ran.
+
+       (b) AND DOES THE JOURNEY HE DESCRIBED KEEP IT? ⬡ HOLODECK → ▦ BOARD →
+           ⬡ HOLODECK, through the real band control. The composer node
+           identity is carried on the node itself, so "it survived" cannot pass
+           by the pane simply never having been rebuilt. */
+    if (deckM.onDeckClass && deckM.composerPresent) {
+      const DRAFT = "Half a paragraph I have not sent yet, and it has to still "
+        + "be here when I come back from the board.";
+      const armed = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var ta = document.querySelector('[data-holo=composer]');
+          if (!ta) return { err: "no composer on the deck" };
+          /* Instrument the two renderers. Both are looked up GLOBALLY at every
+             call site inside board.js, so a wrapper here really is what runs —
+             and \`setInterval(refresh, …)\` captured \`refresh\` at boot, which
+             is why \`render\` is counted rather than it. */
+          window.__rigDeck = 0; window.__rigBoard = 0;
+          var rd = window.renderDeck, rb = window.render;
+          window.renderDeck = function () {
+            window.__rigDeck++; return rd.apply(this, arguments);
+          };
+          window.render = function () {
+            window.__rigBoard++; return rb.apply(this, arguments);
+          };
+          ta.value = ${JSON.stringify(DRAFT)};
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+          ta.__rigStamp = "S169";
+          return { err: "", poll: (typeof LIVE_POLL_MS === "number"
+                                   ? LIVE_POLL_MS : null) };
+        })()`, returnByValue: true }, sessionId);
+      const arm = (armed && armed.result && armed.result.value) || {};
+      const pollMs = arm.poll || 4000;
+      // PAST TWO WHOLE INTERVALS. One would be a coin toss on timing.
+      await sleep(Math.round(pollMs * 2.4));
+      const idleR = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var ta = document.querySelector('[data-holo=composer]');
+          return { value: ta ? ta.value : null,
+                   sameNode: !!(ta && ta.__rigStamp === "S169"),
+                   deckRenders: window.__rigDeck,
+                   boardRenders: window.__rigBoard };
+        })()`, returnByValue: true }, sessionId);
+      // …and now the round trip he actually made, through the real control.
+      await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var b = document.getElementById("holodeckBtn"); if (b) b.click();
+        })()`, returnByValue: true }, sessionId);
+      await sleep(600);
+      await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var b = document.getElementById("holodeckBtn"); if (b) b.click();
+        })()`, returnByValue: true }, sessionId);
+      await sleep(900);
+      const backR = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var ta = document.querySelector('[data-holo=composer]');
+          return { value: ta ? ta.value : null,
+                   present: !!ta,
+                   sameNode: !!(ta && ta.__rigStamp === "S169"),
+                   deckRenders: window.__rigDeck,
+                   boardRenders: window.__rigBoard };
+        })()`, returnByValue: true }, sessionId);
+      /* ── S169 (FL-014): AND A REAL PASTE, THROUGH A REAL CLIPBOARD EVENT ──
+         "I can't paste in images in my chat." A node harness can call whatever
+         listener it likes; only a browser can say whether a genuine
+         ClipboardEvent carrying a File is harvested by the handler that is
+         actually attached to this textarea. Deliberately NOT sent: the argv
+         the image rides on is the unit suite's job (test_holodeck_endpoints's
+         PastedImageReachesTheEngineTest), and an extra turn here would move
+         the journey the rest of this check measures. */
+      const pasteR = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var ta = document.querySelector('[data-holo=composer]');
+          if (!ta) return { err: "no composer" };
+          var bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+          var dt = new DataTransfer();
+          dt.items.add(new File([bytes], "reference.png", { type: "image/png" }));
+          ta.dispatchEvent(new ClipboardEvent("paste", {
+            clipboardData: dt, bubbles: true, cancelable: true }));
+          return { err: "" };
+        })()`, returnByValue: true }, sessionId);
+      await sleep(400);
+      const chipR = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var chips = Array.prototype.slice.call(
+            document.querySelectorAll('.composer .img-chip-name'));
+          var vis = chips.filter(function (n) {
+            var r = n.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+          var sid = (typeof HOLO === "object" && HOLO) ? HOLO.activeId : null;
+          var d = (sid && HOLO.drafts) ? HOLO.drafts[sid] : null;
+          return { chips: chips.map(function (n) { return (n.innerText||"").trim(); }),
+                   visible: vis.length,
+                   held: d && d.images ? d.images.length : 0 };
+        })()`, returnByValue: true }, sessionId);
+      want.draft = {
+        text: DRAFT, pollMs: pollMs, armErr: arm.err || "",
+        idle: (idleR && idleR.result && idleR.result.value) || null,
+        back: (backR && backR.result && backR.result.value) || null,
+        pasteErr: ((pasteR && pasteR.result && pasteR.result.value) || {}).err || "",
+        paste: (chipR && chipR.result && chipR.result.value) || null,
+      };
+      // LEAVE THE DECK AS IT WAS FOUND. The legs below measure a banner and a
+      // document, and a half-typed line in the composer is state they did not
+      // ask for.
+      await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var ta = document.querySelector('[data-holo=composer]');
+          if (ta) { ta.value = ""; ta.dispatchEvent(new Event("input", { bubbles: true })); }
+          Array.prototype.slice.call(
+            document.querySelectorAll('.composer .img-chip-x'))
+            .forEach(function (x) { x.click(); });
+        })()`, returnByValue: true }, sessionId);
+    }
     /* 3b. THE WARM RESTART, ON ONE SCREEN (fix round 2, defect 5). Clicking a
        room the daemon is not holding is a real POST /api/holodeck/open — no
        worker, no tokens — and it puts the daemon's banner ("the conversation
@@ -1937,6 +2581,264 @@ async function main() {
         want.restartScreenshot = rshot;
       } catch (e) { /* the deck shot is the one that matters */ }
     }
+    /* ── 3c. S169 (FL-016): THE INTENT PANEL'S SCRIM, IN PIXELS ─────────────
+       "UI bug on intent tab. The darker background to help read the text
+       disappears as you scroll down."
+
+       WHY IT RUNS HERE, on the program the leg above just warm-restarted: that
+       is the room this rig PLANTS, so its `concept.md` is a fixture — long on
+       purpose, longer than the pane, which is the precondition the defect
+       needs. The live program of the journey has whatever the scripted worker
+       wrote; this one is deterministic, and the check's precondition therefore
+       holds under every control rather than only on a clean journey.
+
+       WHAT IS MEASURED: the composited colour actually painted behind a line
+       of the captain's own requirements — at the TOP of the document, where
+       the scrim was always correct, and at the BOTTOM after really scrolling
+       there. They must match. A third sample of the bare deck grid, from the
+       stage's own padding band beside the panel, is the calibration that stops
+       "they match" passing on two identically-unbacked patches.
+
+       This is the only kind of evidence that can see this defect: the CSS rule
+       resolves perfectly either way — it is simply somewhere else. */
+    if (deckM.onDeckClass) {
+      const im = { ok: false, why: "" };
+      const open = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var t = document.querySelector('.pv-toggle .pvt-b.intent');
+          if (!t) return "this program has no ▤ INTENT control (no concept.md)";
+          t.click();
+          return "";
+        })()`, returnByValue: true }, sessionId);
+      im.why = (open && open.result && open.result.value) || "";
+      // the panel fetches concept.md over the jailed route — wait for prose.
+      if (!im.why) {
+        const iDeadline = Date.now() + 15000;
+        let ready = false;
+        while (Date.now() < iDeadline) {
+          const r = await cdp.send("Runtime.evaluate", {
+            expression: `(function () {
+              var d = document.querySelector('.pv-intent .md');
+              return !!(d && (d.innerText || "").trim().length > 200);
+            })()`, returnByValue: true }, sessionId);
+          if (r && r.result && r.result.value) { ready = true; break; }
+          await sleep(300);
+        }
+        if (!ready) im.why = "the INTENT panel never rendered concept.md";
+      }
+      /* ONE PAGE FUNCTION, called at two scroll positions. It returns the
+         patch to photograph — a rectangle over a real line of text three
+         quarters of the way down the VISIBLE band, which is where the scrim
+         had already gone by the time the captain noticed. */
+      const RECT_FN = `(function (frac) {
+        var panel = document.querySelector('.pv-intent');
+        if (!panel) return { err: "no .pv-intent" };
+        var sc = panel.querySelector('.pv-intent-scroll') || panel;
+        var pr = panel.getBoundingClientRect();
+        var lines = Array.prototype.slice.call(
+          panel.querySelectorAll('.md p, .md li, .md h2, .md h3, .md h1'));
+        var want = pr.top + pr.height * frac, best = null, bestD = 1e9;
+        lines.forEach(function (n) {
+          var r = n.getBoundingClientRect();
+          if (r.width < 24 || r.height < 8) return;
+          if (r.top < pr.top + 4 || r.bottom > pr.bottom - 4) return;
+          if (!(n.innerText || "").trim()) return;
+          var d = Math.abs((r.top + r.bottom) / 2 - want);
+          if (d < bestD) { bestD = d; best = r; }
+        });
+        if (!best) return { err: "no line of text inside the visible panel" };
+        return {
+          err: "",
+          scrollTop: Math.round(sc.scrollTop),
+          scrollH: Math.round(sc.scrollHeight),
+          clientH: Math.round(sc.clientHeight),
+          overflowY: getComputedStyle(sc).overflowY,
+          patch: { x: Math.round(best.left + 3), y: Math.round(best.top + 2),
+                   w: Math.max(6, Math.min(Math.round(best.width) - 6, 160)),
+                   h: Math.max(5, Math.min(Math.round(best.height) - 4, 14)) },
+          // the bare deck grid, from .pv-stage's own padding band beside the
+          // panel. The calibration sample: without it, "top matches bottom"
+          // would pass on two equally unbacked patches.
+          grid: { x: Math.round(pr.left) - 9, y: Math.round(pr.top + pr.height / 2),
+                  w: 6, h: 10 }
+        };
+      })`;
+      async function atScroll(where, frac) {
+        await cdp.send("Runtime.evaluate", {
+          expression: `(function () {
+            var p = document.querySelector('.pv-intent');
+            var sc = p ? (p.querySelector('.pv-intent-scroll') || p) : null;
+            if (sc) sc.scrollTop = ${where === "bottom" ? "sc.scrollHeight" : "0"};
+          })()`, returnByValue: true }, sessionId);
+        await sleep(220);
+        const r = await cdp.send("Runtime.evaluate", {
+          expression: RECT_FN + "(" + frac + ")", returnByValue: true }, sessionId);
+        return (r && r.result && r.result.value) || { err: "probe returned nothing" };
+      }
+      async function shoot(rect) {
+        const png = await cdp.send("Page.captureScreenshot",
+          { format: "png",
+            clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h,
+                    scale: 1 } }, sessionId);
+        return darkQuartile(pngPixels(Buffer.from(png.data, "base64")));
+      }
+      if (!im.why) {
+        try {
+          const top = await atScroll("top", 0.5);
+          if (top.err) { im.why = top.err; }
+          else {
+            im.top = { at: top, colour: await shoot(top.patch) };
+            im.grid = await shoot(top.grid);
+            const bot = await atScroll("bottom", 0.75);
+            if (bot.err) { im.why = bot.err; }
+            else {
+              im.bottom = { at: bot, colour: await shoot(bot.patch) };
+              im.ok = true;
+            }
+          }
+        } catch (e) {
+          if (e instanceof InfraError) throw e;
+          im.why = "sampling the intent panel failed: " + e.message;
+        }
+      }
+      want.intent = im;
+      try {
+        const png = await cdp.send("Page.captureScreenshot",
+          { format: "png", captureBeyondViewport: true }, sessionId);
+        const ishot = path.join(OUT, "holodeck-intent-scrolled.png");
+        fs.writeFileSync(ishot, Buffer.from(png.data, "base64"));
+        want.intentScreenshot = ishot;
+      } catch (e) { /* the deck shot is the one that matters */ }
+    }
+    /* ── 3d. S169 (FL-015): YOU CAN ASK IT SOMETHING ───────────────────
+       The captain: *"I asked it what is it mean by the events tab and it's
+       doing a long 'rendering to holodeck' turn. This was a question about its
+       design, not a request to update the UI."* And: *"it answered my question,
+       but also spent a lot of time on the events tab."* The MOCKUP MOVED on a
+       turn he had not directed.
+
+       WHAT THIS LEG CAN AND CANNOT PROVE, said before it runs. Whether a real
+       model answers-then-stops is a MODEL choice and no rig on this path can
+       stand in for it — the live leg does that. What only a browser can answer
+       is everything else:
+
+         • is the ask/build control REALLY THERE — two laid-out, hit-testable
+           boxes on the composer, opening on BUILD so it is genuinely optional;
+         • does clicking ASK show that it took (aria-pressed AND the Send verb);
+         • does the declaration reach the daemon and come back as an outcome the
+           captain can read — driven through the whole stack, with the scripted
+           worker branching on the declaration it was handed;
+         • and does the working strip still assert "rendering" over it.
+
+       The working strip is captured IN THE SAME EVALUATE as the click: `holoSay`
+       sets `HOLO.busy` and re-renders synchronously, so the strip is in the DOM
+       before the expression returns. No race, no polling.
+
+       WHY IT RUNS LAST, and this is not tidiness. It SENDS A REAL TURN, and a
+       turn touches its room — which reorders the recency-sorted program list
+       and moves which row `.prog.ondisk` picks. Placed between the draft leg
+       and the warm-restart leg it did exactly that: MEASURED on 2026-08-06, the
+       restart leg reopened `Tile picker` instead of the planted `Nav rail`
+       room, which has no long `concept.md`, so the intent-scrim leg lost its
+       fixture and the chat header's pill was read off a program that really was
+       warm. Both legs went red for a reason that was the rig's, not the
+       product's. A leg that mutates state belongs after the legs that read it.
+       (The board leg below only measures the board, which a chat turn cannot
+       touch.) */
+    if (deckM.onDeckClass && deckM.composerPresent) {
+      const QUESTION = "What do you mean by the events tab?";
+      const ctlR = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          function box(n) {
+            if (!n) return null;
+            var r = n.getBoundingClientRect();
+            var s = getComputedStyle(n);
+            return { w: Math.round(r.width), h: Math.round(r.height),
+                     visible: r.width > 0 && r.height > 0
+                              && s.display !== "none" && s.visibility !== "hidden"
+                              && parseFloat(s.opacity || "1") > 0.05,
+                     bg: s.backgroundColor };
+          }
+          var opts = Array.prototype.slice.call(
+            document.querySelectorAll('.composer .holo-intent .iopt'));
+          function sendCtl() {
+            return Array.prototype.slice.call(
+              document.querySelectorAll('.composer [data-ctl]'))
+              .filter(function (b) { return /send/i.test(b.getAttribute('data-ctl')||''); })[0];
+          }
+          var before = opts.map(function (n) {
+            return { intent: n.getAttribute('data-holo-intent'),
+                     text: (n.innerText||"").trim(),
+                     pressed: n.getAttribute('aria-pressed'),
+                     box: box(n) };
+          });
+          var s0 = sendCtl();
+          var out = { opts: before, sendBefore: s0 ? (s0.innerText||"").trim() : null };
+          var ask = opts.filter(function (n) {
+            return n.getAttribute('data-holo-intent') === 'ask'; })[0];
+          if (!ask) { out.err = "no ASK half on the composer"; return out; }
+          ask.click();
+          out.pressedAfter = opts.map(function (n) {
+            return n.getAttribute('aria-pressed'); });
+          var s1 = sendCtl();
+          out.sendAfter = s1 ? (s1.innerText||"").trim() : null;
+          out.askBgOn = box(ask) ? box(ask).bg : null;
+          return out;
+        })()`, returnByValue: true }, sessionId);
+      const ctl = (ctlR && ctlR.result && ctlR.result.value) || {};
+      // …and now SEND it, reading the working strip in the same breath.
+      const sentR = await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var ta = document.querySelector('[data-holo=composer]');
+          if (!ta) return { err: "no composer" };
+          ta.value = ${JSON.stringify(QUESTION)};
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+          var send = Array.prototype.slice.call(
+            document.querySelectorAll('.composer [data-ctl]'))
+            .filter(function (b) { return /send/i.test(b.getAttribute('data-ctl')||''); })[0];
+          if (!send) return { err: "no Send control" };
+          if (send.disabled) return { err: "the Send control is disabled" };
+          send.click();
+          var w = document.querySelector('#deckHost .holo-working');
+          var s2 = Array.prototype.slice.call(
+            document.querySelectorAll('.composer [data-ctl]'))
+            .filter(function (b) { return /send/i.test(b.getAttribute('data-ctl')||''); })[0];
+          return { err: "", working: w ? (w.innerText||"").trim() : "",
+                   sendWhileWorking: s2 ? (s2.innerText||"").trim() : null };
+        })()`, returnByValue: true }, sessionId);
+      const sent = (sentR && sentR.result && sentR.result.value) || {};
+      let outcome = null;
+      const aDeadline = Date.now() + 60000;
+      while (Date.now() < aDeadline) {
+        const r = await cdp.send("Runtime.evaluate", {
+          expression: `(function () {
+            var notes = Array.prototype.slice.call(
+              document.querySelectorAll('#deckHost .holo-outcome'));
+            var n = notes[notes.length - 1];
+            if (!n) return null;
+            var r = n.getBoundingClientRect();
+            var opts = Array.prototype.slice.call(
+              document.querySelectorAll('.composer .holo-intent .iopt'));
+            var chips = Array.prototype.slice.call(
+              document.querySelectorAll('#deckHost .turn.holo:last-child .chip-file'))
+              .map(function (c) { return (c.innerText||"").trim(); });
+            return { cls: n.className, text: (n.innerText||"").trim(),
+                     w: Math.round(r.width), h: Math.round(r.height),
+                     pressed: opts.map(function (o) { return o.getAttribute('aria-pressed'); }),
+                     chips: chips };
+          })()`, returnByValue: true }, sessionId);
+        const v = r && r.result && r.result.value;
+        if (v) { outcome = v; break; }
+        await sleep(300);
+      }
+      want.ask = { question: QUESTION, ctl: ctl, sent: sent, outcome: outcome };
+      // leave the composer as it was found.
+      await cdp.send("Runtime.evaluate", {
+        expression: `(function () {
+          var ta = document.querySelector('[data-holo=composer]');
+          if (ta) { ta.value = ""; ta.dispatchEvent(new Event("input", { bubbles: true })); }
+        })()`, returnByValue: true }, sessionId);
+    }
     // 4. …and back. The board must come back exactly as it was — the whole
     //    point of one control and one frame.
     let boardM = null;
@@ -1966,6 +2868,103 @@ async function main() {
                       ok: failures.length === 0 };
     fs.writeFileSync(path.join(OUT, "holodeck-check.json"),
       JSON.stringify(holodeckCheck, null, 2) + "\n");
+  }
+
+  // ── ACT (optional, --handoff-check): THE SEND-TO-ALIGN BOX ───────────────
+  // The captain's last screen before a Mission exists. It is driven through
+  // the real controls — ⬡ HOLODECK, the archived program in the list, ▶ Send
+  // to Align — against a real daemon reading a real planted room, and NO
+  // WORKER IS SPAWNED anywhere on that path (`holodeck_open` warm-restarts
+  // from disk and `promote` is a read).
+  let handoffCheck = null;
+  if (HANDOFF_CHECK_FILE && ok) {
+    let want = {};
+    try {
+      want = JSON.parse(fs.readFileSync(HANDOFF_CHECK_FILE, "utf8"));
+    } catch (e) {
+      throw new InfraError("could not read --handoff-check file " +
+        HANDOFF_CHECK_FILE + ": " + e.message);
+    }
+    // THE WINDOW IS THE POINT. 677px is the height that produced S128's D1 on
+    // a 1440x900 screen with Chrome's own chrome taken off; measuring this
+    // dialog in a 1000px test window would hide the very defect class.
+    await cdp.send("Emulation.setDeviceMetricsOverride",
+      { width: want.viewportW || 1440, height: want.viewportH || 677,
+        deviceScaleFactor: 1, mobile: false }, sessionId);
+    await sleep(250);
+    let flowErr = "";
+    const step = async (expr) => {
+      if (flowErr) return;
+      const r = await cdp.send("Runtime.evaluate",
+        { expression: expr, returnByValue: true }, sessionId);
+      flowErr = (r && r.result && r.result.value) || "";
+    };
+    const waitFor = async (expr, ms, what) => {
+      if (flowErr) return;
+      const d = Date.now() + ms;
+      while (Date.now() < d) {
+        const r = await cdp.send("Runtime.evaluate",
+          { expression: expr, returnByValue: true }, sessionId);
+        if (r && r.result && r.result.value) return;
+        await sleep(200);
+      }
+      flowErr = what;
+    };
+    await step(`(function () {
+      var b = document.getElementById("holodeckBtn");
+      if (!b) return "no ⬡ HOLODECK control in the band";
+      if (b.disabled) return "the ⬡ HOLODECK control is disabled";
+      b.click();
+      return "";
+    })()`);
+    await waitFor(`document.querySelectorAll(".prog.ondisk").length > 0`, 20000,
+      "the planted program never appeared in the deck's program list");
+    // The archived room, picked back up the way a captain picks yesterday's
+    // work back up. A WARM RESTART: no session is resumed and no engine is
+    // contacted (actions.holodeck_open).
+    await step(`(function () {
+      var row = document.querySelector(".prog.ondisk");
+      if (!row) return "no archived program on the deck to open";
+      row.click();
+      return "";
+    })()`);
+    await waitFor(`(function () {
+      var b = Array.prototype.slice.call(
+        document.querySelectorAll(".holo-handoff [data-ctl]"))
+        .filter(function (n) { return /send to align/i.test(n.textContent || ""); })[0];
+      return !!(b && !b.disabled);
+    })()`, 30000, "▶ Send to Align never became available on the opened program");
+    await step(`(function () {
+      var b = Array.prototype.slice.call(
+        document.querySelectorAll(".holo-handoff [data-ctl]"))
+        .filter(function (n) { return /send to align/i.test(n.textContent || ""); })[0];
+      if (!b) return "no ▶ Send to Align control on the deck";
+      if (b.disabled) return "▶ Send to Align is disabled — the planted room " +
+                             "does not read as ready to hand over";
+      b.click();
+      return "";
+    })()`);
+    await waitFor(`!!document.querySelector("[data-holo=handoff-brief]")`, 30000,
+      "the SEND TO ALIGN dialog never opened");
+    await sleep(400);   // one layout pass on the opened dialog
+    let hm = null;
+    if (!flowErr) {
+      const r = await cdp.send("Runtime.evaluate",
+        { expression: HANDOFF_PROBE, returnByValue: true }, sessionId);
+      hm = (r && r.result && r.result.value) || null;
+    }
+    let ashot = "";
+    try {
+      const png = await cdp.send("Page.captureScreenshot",
+        { format: "png" }, sessionId);   // the VIEWPORT, not the whole document
+      ashot = path.join(OUT, "handoff.png");
+      fs.writeFileSync(ashot, Buffer.from(png.data, "base64"));
+    } catch (e) { cdp.pageErrors.push("handoff screenshot failed: " + e.message); }
+    const failures = flowErr ? [flowErr] : judgeHandoff(hm, want);
+    handoffCheck = { want: want, measured: hm, failures: failures,
+                     screenshot: ashot, ok: failures.length === 0 };
+    fs.writeFileSync(path.join(OUT, "handoff-check.json"),
+      JSON.stringify(handoffCheck, null, 2) + "\n");
   }
 
   // Was the app served WHOLE? A same-origin stylesheet that did not load, or an
@@ -2010,6 +3009,7 @@ async function main() {
     ghLinkCheck: ghLinkCheck,
     consoleCheck: consoleCheck,
     holodeckCheck: holodeckCheck,
+    handoffCheck: handoffCheck,
   };
   fs.writeFileSync(path.join(OUT, "result.json"), JSON.stringify(result, null, 2) + "\n");
 
@@ -2159,11 +3159,38 @@ async function main() {
       console.error("    screenshot: " + (holodeckCheck.screenshot || "(none)"));
     }
   }
+  if (handoffCheck) {
+    const am = handoffCheck.measured || {};
+    const ab = am.brief || {};
+    if (handoffCheck.ok) {
+      console.log("  send to align: the pre-drafted brief is a " + ab.lines +
+        "-line draft in a box showing " + ab.linesShown + " lines at once (" +
+        ab.clientH + "px) at " + (ab.box ? ab.box.top + "→" + ab.box.bottom : "?") +
+        "px of a " + am.viewportH + "px window; sections " +
+        JSON.stringify(ab.headings));
+      console.log("    it says what it is made of: " +
+        JSON.stringify((am.hint && am.hint.text) || ""));
+      console.log("    ▦ File Mission clickable: " +
+        !!(am.fileBtn && am.fileBtn.hit) + "; open-questions cue clickable: " +
+        !!(am.qcue && am.qcue.hit));
+    } else {
+      console.error("\x1b[31m  THE SEND-TO-ALIGN BOX IS WRONG IN A REAL BROWSER.\x1b[0m " +
+        "The board painted; the dialog the captain files from did not measure up:");
+      handoffCheck.failures.forEach((f) => console.error("    ✗ " + f));
+      console.error("    measured: " + JSON.stringify({
+        viewportH: am.viewportH, brief: ab.box, lines: ab.lines,
+        linesShown: ab.linesShown, headings: ab.headings,
+        fileBtn: am.fileBtn && am.fileBtn.box }));
+      console.error("    full measurements: " + path.join(OUT, "handoff-check.json"));
+      console.error("    screenshot: " + (handoffCheck.screenshot || "(none)"));
+    }
+  }
   if (!ok) return EXIT_NOT_PAINTED;
   if (legendCheck && !legendCheck.ok) return EXIT_NOT_PAINTED;
   if (ghLinkCheck && !ghLinkCheck.ok) return EXIT_NOT_PAINTED;
   if (consoleCheck && !consoleCheck.ok) return EXIT_NOT_PAINTED;
   if (holodeckCheck && !holodeckCheck.ok) return EXIT_HOLODECK;
+  if (handoffCheck && !handoffCheck.ok) return EXIT_HANDOFF;
   return servedComplete ? EXIT_PAINTED : EXIT_DEGRADED;
 }
 

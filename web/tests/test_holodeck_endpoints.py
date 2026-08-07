@@ -29,6 +29,7 @@ bash-dump (copilot used bash as its reply channel) — not tools in general.
 
 stdlib only; the daemon runs on an ephemeral localhost port inside the test.
 """
+import base64
 import json
 import os
 import re
@@ -4720,28 +4721,47 @@ class HandoffBucketFallbackTest(HandoffBase):
             self.assertNotIn("###", g, g)
             self.assertNotIn("Implied by the mockup", g, g)
 
-    def test_the_unstated_things_never_reach_the_BRIEF_or_the_deck(self):
+    # ── S169 CHANGED WHERE BUCKET 2 GOES, AND ONLY THAT ─────────────────────
+    # These two used to assert that bucket 2's content reached NEITHER the brief
+    # nor the mission. That was S128's rule and S128 says why: bucket 2 was
+    # excluded "pending a dedup rule". The dedup rule is now written, and that
+    # exclusion turned out to be the defect — the drawn-but-unwired half of a
+    # mockup lives in bucket 2 and reached nobody.
+    #
+    # THE D5 CLAIM ITSELF IS UNCHANGED and is what these still hold: bucket 2 is
+    # never a STATED requirement, never in the requirement set, and never in the
+    # region of the brief headed "what it must do — in your own words". It
+    # travels in its own section, marked IMPLIED. Bucket 3 (out of scope) still
+    # reaches nothing at all.
+    def test_bucket_2_never_reaches_the_deck_as_something_he_SAID(self):
         sid = self._program()
         self._concept(sid, self.REWORDED)
         _st, body = self._promote(sid)
         brief = body["state"]["brief"]
-        self.assertNotIn("system-follows-OS", brief)
-        self.assertNotIn("Implied by the mockup", brief)
+        said = brief.split("## Implied by the mockup", 1)[0]
+        self.assertNotIn("system-follows-OS", said)
         self.assertNotIn("Per-page theme overrides", brief)
         for want in self.STATED:
             self.assertIn(want, brief)
         texts = [r["text"] for r in body["state"]["requirements"]]
         self.assertEqual(len(texts), 3, texts)
+        self.assertNotIn("system-follows-OS", " ".join(texts))
+        # …and it IS carried, in its own bucket, which is S169's cure.
+        self.assertEqual(body["state"]["implied"],
+                         ["A system-follows-OS option might be wanted."])
 
-    def test_they_never_reach_the_FILED_mission_either(self):
+    def test_what_reaches_the_FILED_mission_is_MARKED_or_not_there(self):
         sid = self._program()
         self._concept(sid, self.REWORDED)
         _st, promo = self._promote(sid)
         self._post("/api/park", {"idea": promo["state"]["brief"],
                                  "holodeck": sid})
         text = self._filed()[0]["files"]["--idea"]
-        self.assertNotIn("system-follows-OS", text)
         self.assertNotIn("Per-page theme overrides", text)
+        self.assertIn("system-follows-OS", text)
+        marked = text.split("## Implied by the mockup", 1)[1]
+        self.assertIn("system-follows-OS", marked)
+        self.assertIn("IMPLIED", marked)
 
     # -- the fallback's INTENT, kept -----------------------------------------
     def test_a_section_with_NO_sub_buckets_is_STILL_the_list(self):
@@ -5173,6 +5193,926 @@ class InFlightDisclosureTest(DurableBase):
             self.assertGreater(second, first)
         finally:
             t.join(60)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 — THE BRIEF CARRIES EVERYTHING THE MOCKUP CHANGES.
+#
+# THE MEASUREMENT. The S128 drive filed a real mission from a real program and
+# went Align→Verify hands-off, 9/9 tickets green. The captain then put the
+# built app beside his mockup: the light/dark theme and the wired status bar
+# had landed and almost none of the LOOK had — top bar unrestyled, mode glyphs
+# missing, Objects mode still carrying a top tab strip where the mockup has a
+# left-hand object list. Off that mission's own plan.json: NOT ONE of the nine
+# tickets carried a mockup-referencing acceptance criterion.
+#
+# Everything that survived was a STATED requirement; everything lost lived only
+# in the picture. And the room had it written down the whole time — `##
+# Decisions` names the left-hand object list, the mode pills and the single
+# reconciled accent, and bucket 2 names the un-wired status bar. `promote` read
+# neither. These suites are that room, byte for byte.
+# ════════════════════════════════════════════════════════════════════════════
+class S128DriveEvidenceTest(HandoffBase):
+    """THE ACCEPTANCE FIXTURE — the real `concept.md` off the S128 drive.
+
+    `web/tests/fixtures/s128-drive/concept.md` is a byte copy of the doc the
+    holodeck wrote for the program the captain then compared against the built
+    app on 2026-08-06. The three things the build got WRONG are all in it, and
+    all in `## Decisions`, which the hand-off used to discard.
+    """
+
+    FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "fixtures", "s128-drive")
+
+    @classmethod
+    def setUpClass(cls):
+        super(S128DriveEvidenceTest, cls).setUpClass()
+        with open(os.path.join(cls.FIXTURE, "concept.md")) as fh:
+            cls.CONCEPT = fh.read()
+
+    def _brief(self):
+        sid = self._program()
+        _st, body = self._promote(sid)
+        return body["state"]
+
+    def test_the_fixture_is_the_real_room_and_not_a_tidied_copy(self):
+        """Pin what the whole suite turns on. If someone 'fixes' the fixture,
+        every claim below becomes a claim about nothing."""
+        self.assertIn("left object list", self.CONCEPT)
+        # wrapped at ~78 columns in the real doc, as every live one is —
+        # `_md_items` folds it back into one decision.
+        self.assertIn("pills for\n  mode tabs", self.CONCEPT)
+        self.assertIn("Reconcile the dual accent", self.CONCEPT)
+        # …and none of the three is anywhere in what he SAID.
+        stated = self.CONCEPT.split("### 1. Requirements", 1)[1]
+        stated = stated.split("### 2.", 1)[0]
+        for lost in ("object list", "pills", "accent"):
+            self.assertNotIn(lost, stated, lost)
+
+    def test_the_THREE_THINGS_THE_BUILD_GOT_WRONG_reach_the_brief(self):
+        """The headline. Each one is a settled decision that lived only in the
+        picture, and the mission was never told about any of them."""
+        brief = self._brief()["brief"]
+        self.assertIn("left object list", brief)
+        self.assertIn("pills for mode tabs", brief)
+        self.assertIn("Reconcile the dual accent", brief)
+
+    def test_the_UNWIRED_half_reaches_the_brief_too(self):
+        """The captain's own words on this: "It needs to not just be there, but
+        wire up the data. I wrote that in this time, so that's why it got it."
+        A status bar that is drawn and not wired is a bucket-2 item."""
+        brief = self._brief()["brief"]
+        self.assertIn("bottom status bar", brief)
+        self.assertIn("Saved 2m ago", brief)
+
+    def test_his_own_words_are_still_first_and_still_attributed(self):
+        """Bucket 1 is UNCHANGED by this session — it leads, it is quoted, and
+        it keeps its turn attribution."""
+        state = self._brief()
+        brief = state["brief"]
+        self.assertEqual(len(state["requirements"]), 3, state["requirements"])
+        head = brief.split("## What the mockup changes", 1)[0]
+        for said in ("give the tile editor a more modern UI look",
+                     "add a light/dark mode",
+                     "I don't want to touch the tile canvas at all"):
+            self.assertIn(said, head, said)
+        self.assertIn("— T1", head)
+
+    def test_the_implied_half_is_MARKED_and_never_laundered_into_his_words(self):
+        """FL-011's subject, and it must not be lost while curing this. An
+        implied item that reads as something he said arrives silent and
+        authoritative — which is the failure this whole hand-off exists to
+        prevent."""
+        brief = self._brief()["brief"]
+        head, implied = brief.split("## Implied by the mockup", 1)
+        self.assertIn("NOT things you said", implied.split("\n", 1)[0])
+        self.assertIn("IMPLIED", implied)
+        self.assertNotIn("Saved 2m ago", head)
+
+    def test_the_brief_stays_SKIMMABLE(self):
+        """The trap this change walks into is a box so long nobody reads it,
+        and being ignored is the same outcome as not shipping it. The real
+        room's draft is ~31 lines; this is the guard that says so out loud if a
+        later change starts pouring the concept doc in wholesale."""
+        brief = self._brief()["brief"]
+        self.assertLessEqual(len(brief.split("\n")), 45, brief)
+        self.assertLessEqual(len(brief), 3600, len(brief))
+
+    def test_everything_in_the_brief_reaches_the_FILED_mission(self):
+        sid = self._program()
+        _st, promo = self._promote(sid)
+        self._post("/api/park", {"idea": promo["state"]["brief"],
+                                 "holodeck": sid})
+        text = self._filed()[0]["files"]["--idea"]
+        for lost in ("left object list", "pills for mode tabs",
+                     "Reconcile the dual accent", "bottom status bar"):
+            self.assertIn(lost, text, lost)
+        # …and the requirement-loss check still reports a clean hand-off.
+        self.assertNotIn("not in the brief", text.lower())
+
+    def test_the_daemons_own_draft_still_loses_NOTHING(self):
+        """S128's check, unweakened: the brief path regressing to prose has to
+        keep going red on its own."""
+        self.assertEqual(self._brief()["missingRequirements"], [])
+
+
+class HandoffChangeListTest(HandoffBase):
+    """`## Decisions` — the declared mock-vs-today change list.
+
+    THE ROAD, and why it is not a derivation. Reading `mockup.html` against
+    `basis.md` means guessing at the meaning of model-written prose, and this
+    project has lost whole sessions to exactly that (S156 14/14 → 5/14 on a
+    reworded corpus; S147; S157). `## Decisions` is DECLARED, the contract has
+    demanded it every turn since S124, and on both real fixtures it IS the
+    change list. See the block above `_handoff_decisions`.
+    """
+
+    def _concept(self, sid, text):
+        self._set_turns({"stdout": "ok",
+                         "writes": [{"path": "concept.md", "content": text}]})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "update it"})
+
+    DOC = ("# P\n\n## Decisions\n\n"
+           "- **T2** Mode tabs become pills; the top bar loses its divider.\n"
+           "- **T3** Objects mode gets a left-hand object list.\n\n"
+           "## WHAT IT MUST DO\n\n### 1. Requirements\n\n"
+           "- \"Give it a modern look.\"\n\n"
+           "### 2. Implied by the mockup, not yet settled\n\n"
+           "- Q: does the toggle persist?\n")
+
+    def test_the_decisions_ride_in_the_payload_as_a_SET(self):
+        sid = self._program()
+        self._concept(sid, self.DOC)
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["decisions"], [
+            "T2 Mode tabs become pills; the top bar loses its divider.",
+            "T3 Objects mode gets a left-hand object list."])
+
+    def test_the_BASE_fixtures_lone_decision_is_deduped_against_his_words(self):
+        """Not a special case — the shipped fixture's one decision ("Turn 2:
+        Cmd-K opens it.") is a restatement of requirement 1 ("Cmd-K opens it,
+        Escape closes it."), so the rule drops it. Pinned here because a reader
+        who finds an empty change list on that fixture should find out WHY from
+        a test rather than from a debugger."""
+        sid = self._program()
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["decisions"], [])
+        self.assertIn("Cmd-K opens it", body["state"]["requirements"][0]["text"])
+
+    def test_a_concept_with_NO_decisions_says_LESS_rather_than_inventing(self):
+        """The failure mode this road was chosen for. No declaration, no change
+        list — never a plausible-looking one derived from the markup."""
+        sid = self._program()
+        self._concept(sid, "# P\n\n## WHAT IT MUST DO\n\n"
+                           "### 1. Requirements\n\n- \"Just build it.\"\n")
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["decisions"], [])
+        self.assertNotIn("What the mockup changes", body["state"]["brief"])
+
+    def test_the_change_list_is_MARKED_as_what_the_mockup_changes(self):
+        sid = self._program()
+        self._concept(sid, self.DOC)
+        _st, body = self._promote(sid)
+        brief = body["state"]["brief"]
+        self.assertIn("## What the mockup changes about the app you have today",
+                      brief)
+        self.assertIn("has to match the mockup", brief)
+
+    def test_the_change_list_comes_AFTER_his_own_words(self):
+        """He reads his own words first — they are what he recognises, and the
+        rest is the product's draft of what he drew."""
+        sid = self._program()
+        self._concept(sid, self.DOC)
+        _st, body = self._promote(sid)
+        brief = body["state"]["brief"]
+        self.assertLess(brief.index("## What it must do"),
+                        brief.index("## What the mockup changes"))
+        self.assertLess(brief.index("## What the mockup changes"),
+                        brief.index("## Implied by the mockup"))
+
+    def test_a_multi_line_decision_survives_as_ONE_decision(self):
+        """A live concept doc wraps at ~78 columns, so most decisions are two
+        or three physical lines."""
+        sid = self._program()
+        self._concept(sid, "# P\n\n## Decisions\n\n"
+                           "- **T2** Objects mode gets its own layout: left\n"
+                           "  object list, centre preview, right inspector.\n"
+                           "- **T3** Mode tabs become pills.\n\n"
+                           "## WHAT IT MUST DO\n\n### 1. Requirements\n\n"
+                           "- \"Just build it.\"\n")
+        _st, body = self._promote(sid)
+        self.assertEqual(len(body["state"]["decisions"]), 2,
+                         body["state"]["decisions"])
+        self.assertIn("centre preview", body["state"]["decisions"][0])
+
+
+class HandoffImpliedTest(HandoffBase):
+    """Bucket 2 — behaviour the mockup implies that nobody has stated.
+
+    The machinery already existed and was thrown away: S128 excluded bucket 2
+    from the brief pending a dedup rule, and that exclusion is the defect.
+    """
+
+    def _concept(self, sid, text):
+        self._set_turns({"stdout": "ok",
+                         "writes": [{"path": "concept.md", "content": text}]})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "update it"})
+
+    def test_the_implied_items_ride_in_the_payload_as_a_SET(self):
+        sid = self._program()
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["implied"],
+                         ["Q: is the pinned row real?"])
+
+    def test_an_implied_item_is_NEVER_a_captured_requirement(self):
+        """The line FL-011 is about. Bucket 2 must not become "what you said" —
+        the requirement SET is the captain's own words and nothing else."""
+        sid = self._program()
+        _st, body = self._promote(sid)
+        for r in body["state"]["requirements"]:
+            self.assertNotIn("pinned row", r["text"])
+
+    def test_a_concept_with_no_bucket_2_adds_no_section(self):
+        sid = self._program()
+        self._concept(sid, "# P\n\n## WHAT IT MUST DO\n\n"
+                           "### 1. Requirements\n\n- \"Just build it.\"\n")
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["implied"], [])
+        self.assertNotIn("Implied by the mockup", body["state"]["brief"])
+
+    def test_bucket_3_out_of_scope_is_NOT_carried_as_implied(self):
+        """Bucket 3 is what he explicitly ruled out. Carrying it into the brief
+        as something to build back is the one thing it exists to prevent."""
+        sid = self._program()
+        self._concept(sid, "# P\n\n## WHAT IT MUST DO\n\n"
+                           "### 1. Requirements\n\n- \"Just build it.\"\n\n"
+                           "### 2. Implied by the mockup, not yet settled\n\n"
+                           "- Q: does the toggle persist?\n\n"
+                           "### 3. Out of scope\n\n"
+                           "- The canvas renderer, ruled out at T1.\n")
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["implied"],
+                         ["Q: does the toggle persist?"])
+        self.assertNotIn("canvas renderer", body["state"]["brief"])
+
+
+class HandoffDedupTest(HandoffBase):
+    """THE DEDUP RULE — why S128 deferred bucket 2 in the first place.
+
+    The captain must not skim the same sentence three times; an over-long box
+    is how the whole thing gets ignored. Carried by the FIRST road that claims
+    it — requirements, then open questions (their own panel), then decisions,
+    then implied — dropping only on whole-word CONTAINMENT, never similarity,
+    and only when the thing already on screen says at least as much.
+    """
+
+    def _concept(self, sid, text):
+        self._set_turns({"stdout": "ok",
+                         "writes": [{"path": "concept.md", "content": text}]})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "update it"})
+
+    HEAD = ("# P\n\n## Decisions\n\n%s\n\n## Open questions\n\n%s\n\n"
+            "## WHAT IT MUST DO\n\n### 1. Requirements\n\n%s\n\n"
+            "### 2. Implied by the mockup, not yet settled\n\n%s\n")
+
+    def _doc(self, decisions="- A decision nobody repeats anywhere.",
+             questions="- A question nobody repeats anywhere?",
+             reqs="- \"Just build the whole thing.\"",
+             implied="- Q: something nobody repeats anywhere?"):
+        return self.HEAD % (decisions, questions, reqs, implied)
+
+    def test_an_implied_item_REPEATING_an_open_question_is_dropped(self):
+        """It has its own panel, its own answer box and its own STILL OPEN
+        block in the filed mission. Twice is once too many."""
+        sid = self._program()
+        self._concept(sid, self._doc(
+            questions="- Should the theme toggle persist across sessions?",
+            implied="- Should the theme toggle persist across sessions?"))
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["implied"], [])
+        self.assertEqual(body["state"]["brief"].count("theme toggle persist"),
+                         0)
+
+    def test_a_decision_REPEATING_something_he_SAID_is_dropped(self):
+        sid = self._program()
+        self._concept(sid, self._doc(
+            reqs="- \"The mode tabs should become pills.\"",
+            decisions="- The mode tabs should become pills."))
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["decisions"], [])
+
+    def test_an_implied_item_REPEATING_a_decision_is_dropped(self):
+        """Settled beats unsettled: showing a decision again as "not yet
+        settled" would be the surface contradicting itself."""
+        sid = self._program()
+        self._concept(sid, self._doc(
+            decisions="- Objects mode gets a left-hand object list.",
+            implied="- Objects mode gets a left-hand object list."))
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["decisions"],
+                         ["Objects mode gets a left-hand object list."])
+        self.assertEqual(body["state"]["implied"], [])
+
+    def test_a_SHORTER_restatement_inside_a_longer_one_is_dropped(self):
+        """Whole-word containment, in ONE direction only — the thing already on
+        screen must say at least as much as the thing being dropped."""
+        sid = self._program()
+        self._concept(sid, self._doc(
+            decisions="- Objects mode gets a left-hand object list, with the "
+                      "sprite preview in the centre and an inspector right.",
+            implied="- Objects mode gets a left-hand object list"))
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["implied"], [])
+
+    def test_the_LONGER_one_is_NEVER_dropped_for_a_shorter_one(self):
+        """The direction that matters. Dropping the detailed line because a
+        summary of it already appeared is a silent loss, and silent loss is the
+        entire defect class this session exists to cure."""
+        sid = self._program()
+        self._concept(sid, self._doc(
+            decisions="- Objects mode gets a left-hand object list",
+            implied="- Objects mode gets a left-hand object list, with the "
+                    "sprite preview in the centre and an inspector right."))
+        _st, body = self._promote(sid)
+        self.assertEqual(len(body["state"]["implied"]), 1,
+                         body["state"]["implied"])
+        self.assertIn("sprite preview", body["state"]["implied"][0])
+
+    def test_a_SHORT_line_is_only_dropped_on_an_EXACT_repeat(self):
+        """A three-word line is too small to be safely matched inside another
+        sentence, so containment does not apply to it. `_HANDOFF_DEDUP_MIN_
+        WORDS` is that floor, and this is what it buys."""
+        sid = self._program()
+        self._concept(sid, self._doc(
+            decisions="- Pills, not tabs, everywhere in the chrome.",
+            implied="- Pills, not tabs"))
+        _st, body = self._promote(sid)
+        self.assertEqual(body["state"]["implied"], ["Pills, not tabs"])
+
+    def test_DIFFERENT_things_are_all_kept(self):
+        """The control. A dedup that dropped everything would pass every test
+        above and hand the captain an empty change list."""
+        sid = self._program()
+        self._concept(sid, self._doc())
+        _st, body = self._promote(sid)
+        self.assertEqual(len(body["state"]["decisions"]), 1)
+        self.assertEqual(len(body["state"]["implied"]), 1)
+        self.assertEqual(len(body["state"]["questions"]), 1)
+        self.assertEqual(len(body["state"]["requirements"]), 1)
+
+    def test_a_line_repeated_INSIDE_one_list_is_shown_once(self):
+        sid = self._program()
+        self._concept(sid, self._doc(
+            decisions="- Objects mode gets a left-hand object list.\n"
+                      "- Objects mode gets a left-hand object list."))
+        _st, body = self._promote(sid)
+        self.assertEqual(len(body["state"]["decisions"]), 1)
+
+
+class HandoffContractTest(HandoffBase):
+    """The turn prompt has to ASK for what the hand-off now reads.
+
+    The other half of the dedup rule lives here: a reworded twin ("keep the
+    status bar?" vs "is a status bar in scope, or noise?") is not catchable by
+    containment and must never be caught by a similarity score — so the
+    contract tells the design worker to write each undecided thing in exactly
+    ONE of the two lists.
+    """
+
+    def test_the_contract_asks_for_the_CHANGE_LIST_shape(self):
+        from lcars_serve.actions import _CONCEPT_CONTRACT
+        self.assertIn("today X → now Y", _CONCEPT_CONTRACT)
+        self.assertIn("CHANGE LIST", _CONCEPT_CONTRACT)
+
+    def test_the_contract_gives_each_undecided_thing_ONE_HOME(self):
+        from lcars_serve.actions import _CONCEPT_CONTRACT
+        self.assertIn("ONE HOME EACH", _CONCEPT_CONTRACT)
+        self.assertIn("exactly one of the two places", _CONCEPT_CONTRACT)
+
+    def test_the_contract_names_the_DRAWN_but_UNWIRED_case(self):
+        """The captain's own example — a status bar that exists and is not
+        wired to anything."""
+        from lcars_serve.actions import _CONCEPT_CONTRACT
+        self.assertIn("WIRES UP", _CONCEPT_CONTRACT)
+
+    def test_the_sections_the_daemon_reads_are_the_sections_it_ASKS_FOR(self):
+        """The FL-011 shape: a brief drafted from a section nothing maintains.
+        Every heading the hand-off reads must be one the turn prompt demands."""
+        from lcars_serve.actions import (_CONCEPT_CONTRACT,
+                                         _HANDOFF_DECISIONS_HEADING,
+                                         _HANDOFF_IMPLIED_BUCKETS)
+        self.assertIn("## " + _HANDOFF_DECISIONS_HEADING, _CONCEPT_CONTRACT)
+        self.assertIn(_HANDOFF_IMPLIED_BUCKETS[1], _CONCEPT_CONTRACT)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 (FL-014) — A PASTED IMAGE REACHES THE ENGINE
+#
+# Found by the captain on the S128 re-drive: "I can't paste in images in my
+# chat." It was MISSING, not broken — and it was a DECLARED gap: `holodeck_say`
+# already took an `images` parameter and opened with an honest refusal. He could
+# never read that sentence, because with no paste handler on the composer the
+# clipboard event was never harvested and nothing was ever sent.
+#
+# WHAT IS ASSERTED HERE, and why it is the whole point: the per-engine ARGV.
+# "The daemon accepted the image" is not the claim — S91 measured that copilot
+# takes `--attachment <path>` natively while claude reads a path named in the
+# prompt with its Read tool, and threading it the WRONG way per CLI is a turn
+# where the engine simply never sees the screenshot and says something
+# plausible anyway. Zero tokens: the recording stub captures the full argv.
+# ════════════════════════════════════════════════════════════════════════════
+_PNG_B64 = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8"
+            "z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+
+
+class PastedImageReachesTheEngineTest(HolodeckBase):
+    def _start(self, engine=None, program="Nav rail"):
+        _, body = self._post("/api/holodeck/start",
+                             {"program": program,
+                              "engine": engine or self.claude_bin})
+        return body["state"]["sessionId"]
+
+    def _room(self, program="nav-rail"):
+        # REALPATH: the staged path comes back through `_room_file_path`, the
+        # preview route's jail, which resolves symlinks — and on macOS the
+        # tempdir's own /var → /private/var link is enough to make a plain
+        # join() disagree with what is actually on the argv.
+        return os.path.realpath(os.path.join(self._sidecar(), program))
+
+    @staticmethod
+    def _img(name="kitchen reference.png", ctype="image/png"):
+        return {"name": name, "type": ctype, "dataB64": _PNG_B64}
+
+    def test_claude_gets_the_path_in_the_prompt_and_no_attachment_flag(self):
+        """claude's design posture already allows Read
+        (`_HOLODECK_TOOLS[("claude","design")]`), so the abs path is NAMED and
+        the engine opens it itself — no tool exception, no new flag."""
+        sid = self._start()
+        status, body = self._post("/api/holodeck/%s/say" % sid,
+                                  {"text": "make it look like this",
+                                   "images": [self._img()]})
+        self.assertEqual(status, 200)
+        argv = self._calls()[-1]["argv"]
+        self.assertNotIn("--attachment", argv)
+        staged = os.path.join(self._room(), "attachments",
+                              "kitchen-reference.png")
+        self.assertTrue(os.path.isfile(staged), os.listdir(self._room()))
+        prompt = self._prompts()[-1]
+        self.assertIn(staged, prompt)
+        self.assertIn("attached images", prompt)
+        self.assertIn("Read tool", prompt)
+        # and the file really is the bytes he pasted, not a placeholder
+        with open(staged, "rb") as fh:
+            self.assertEqual(fh.read(), base64.b64decode(_PNG_B64))
+
+    def test_copilot_gets_a_native_attachment_flag_and_a_clean_prompt(self):
+        """copilot's holodeck turn runs on a fixed `--available-tools` list with
+        no file viewer on it, so the image MUST ride natively — a path in the
+        prompt would name a file it cannot open."""
+        sid = self._start(engine=self.copilot_bin)
+        status, _body = self._post("/api/holodeck/%s/say" % sid,
+                                   {"text": "like this",
+                                    "images": [self._img()]})
+        self.assertEqual(status, 200)
+        argv = self._calls()[-1]["argv"]
+        staged = os.path.join(self._room(), "attachments",
+                              "kitchen-reference.png")
+        self.assertIn("--attachment", argv)
+        self.assertEqual(argv[argv.index("--attachment") + 1], staged)
+        self.assertNotIn(staged, self._prompts()[-1])
+
+    def test_two_pastes_ride_as_two_repeated_flags_in_paste_order(self):
+        sid = self._start(engine=self.copilot_bin)
+        self._post("/api/holodeck/%s/say" % sid,
+                   {"text": "these two",
+                    "images": [self._img("a.png"), self._img("b.png")]})
+        argv = self._calls()[-1]["argv"]
+        got = [argv[i + 1] for i, a in enumerate(argv) if a == "--attachment"]
+        self.assertEqual([os.path.basename(p) for p in got],
+                         ["a.png", "b.png"])
+
+    def test_the_image_lands_in_the_PROGRAM_ROOM_not_the_scratch_dir(self):
+        """A holodeck program IS the archive — there is no mission to copy a
+        durable attachment into — so the reference a mockup was designed from
+        lives beside the mockup, in the room, where the room's own per-turn
+        commit sweeps it up."""
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid,
+                   {"text": "this", "images": [self._img()]})
+        staged = os.path.join(self._room(), "attachments",
+                              "kitchen-reference.png")
+        self.assertTrue(os.path.isfile(staged))
+        scratch = os.path.join(self.repo, ".git", "lcars", "tmp")
+        strays = [f for f in (os.listdir(scratch)
+                              if os.path.isdir(scratch) else [])
+                  if f.startswith("lcars-img-")]
+        self.assertEqual(strays, [], "the holodeck staged into the grill's "
+                                     "reap-on-exit scratch dir")
+
+    def test_the_room_commit_carries_it_so_a_reopen_still_has_it(self):
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid,
+                   {"text": "this", "images": [self._img()]})
+        self._post("/api/holodeck/%s/end" % sid)
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=self._sidecar(),
+            stdout=subprocess.PIPE).stdout.decode()
+        self.assertIn("nav-rail/attachments/kitchen-reference.png", tracked)
+        # …and re-opening the room off disk finds it there
+        status, _ = self._post("/api/holodeck/open", {"room": "nav-rail"})
+        self.assertEqual(status, 200)
+        self.assertTrue(os.path.isfile(
+            os.path.join(self._room(), "attachments",
+                         "kitchen-reference.png")))
+
+    def test_it_is_NOT_reported_back_as_a_file_the_worker_wrote(self):
+        """The paste is staged BEFORE the turn's audit snapshot on purpose. A
+        captain's own screenshot appearing in `filesChanged` would read as the
+        model having written it, which is the authorship lie the whole audit
+        exists to avoid."""
+        sid = self._start()
+        _, body = self._post("/api/holodeck/%s/say" % sid,
+                             {"text": "this", "images": [self._img()]})
+        paths = [f["path"] for f in body["state"]["filesChanged"]]
+        self.assertEqual([p for p in paths if "attachments" in p], [])
+
+    def test_a_hostile_filename_cannot_leave_the_room(self):
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid,
+                   {"text": "this",
+                    "images": [self._img(name="../../../etc/passwd.png")]})
+        room = os.path.realpath(self._room())
+        got = os.listdir(os.path.join(room, "attachments"))
+        self.assertEqual(got, ["passwd.png"], got)
+
+    def test_a_second_paste_of_the_same_name_does_not_overwrite_the_first(self):
+        """A room is REOPENED. Two `Screenshot.png`s a week apart are two
+        different references, and the mockup was designed from the first."""
+        sid = self._start()
+        for _ in range(2):
+            self._post("/api/holodeck/%s/say" % sid,
+                       {"text": "this", "images": [self._img("shot.png")]})
+        got = sorted(os.listdir(os.path.join(self._room(), "attachments")))
+        self.assertEqual(got, ["shot-2.png", "shot.png"])
+
+    def test_a_turn_with_no_image_is_BYTE_IDENTICAL_to_before(self):
+        """The regression guard. No image ⇒ no flag, no prompt text, no
+        attachments directory created at all."""
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "plain words"})
+        argv = self._calls()[-1]["argv"]
+        self.assertNotIn("--attachment", argv)
+        self.assertNotIn("attached", self._prompts()[-1])
+        self.assertFalse(os.path.isdir(os.path.join(self._room(),
+                                                    "attachments")))
+
+    def test_a_paste_that_is_not_base64_is_refused_in_plain_english(self):
+        sid = self._start()
+        status, body = self._post_raw(
+            "/api/holodeck/%s/say" % sid,
+            {"text": "this", "images": [{"name": "x.png", "type": "image/png",
+                                         "dataB64": "not base64!!"}]})
+        self.assertEqual(status, 400)
+        self.assertIn("base64", body["error"])
+        # and the turn never ran, so the program is not left claimed
+        status, _ = self._post("/api/holodeck/%s/say" % sid, {"text": "again"})
+        self.assertEqual(status, 200)
+
+    def test_a_SENT_program_still_refuses_the_turn_before_any_image_is_written(self):
+        """The D11 lock is checked before the claim and before staging: a
+        locked program must not have a file written into its room."""
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft"})
+        # the lock is read off the record's HEADER (`_parse_sent`), so the line
+        # goes where a real hand-off puts it.
+        path = os.path.join(self._room(), "transcript.md")
+        with open(path) as fh:
+            text = fh.read()
+        head, sep, rest = text.partition("\n## ")
+        with open(path, "w") as fh:
+            fh.write(head + "\n\n_Sent to Align: mission `m-009` at "
+                     "2026-08-06T09:00:00Z_ — handed over.\n" + sep + rest)
+        status, _body = self._post_raw("/api/holodeck/%s/say" % sid,
+                                       {"text": "more",
+                                        "images": [self._img("late.png")]})
+        self.assertEqual(status, 409)
+        attach = os.path.join(self._room(), "attachments")
+        self.assertFalse(os.path.isdir(attach) and os.listdir(attach))
+
+    def test_the_bash_guard_still_holds_with_an_attachment_on_the_argv(self):
+        sid = self._start(engine=self.copilot_bin)
+        self._post("/api/holodeck/%s/say" % sid,
+                   {"text": "this", "images": [self._img()]})
+        argv = self._calls()[-1]["argv"]
+        self.assertFalse([a for a in argv if re.search(r"\bbash\b", a, re.I)],
+                         argv)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 (FL-015) — YOU CAN ASK THE HOLODECK SOMETHING
+#
+# The captain, on the S128 drive: *"I asked it what is it mean by the events tab
+# and it's doing a long 'rendering to holodeck' turn."* And, sharpening it: *"To
+# be clear it answered my question, but also spent a lot of time on the events
+# tab. Would be better to answer and let me guide then waste time on a render
+# update."* So the answer was not suppressed — the mockup MOVED on a turn he had
+# not directed, which is unrequested design drift into the artifact that becomes
+# an acceptance criterion for real work.
+#
+# WHAT A STUB CAN AND CANNOT PROVE, said plainly. Whether a worker actually
+# answers-then-stops is a MODEL choice, and no stub on this PATH can stand in
+# for it — the live leg does that. What is proven here is the two things a unit
+# test genuinely owns:
+#
+#   1. THE PROMPT CONTENT. Every design turn — opening envelope and continuation
+#      alike — is handed the answer-then-stop rule, and a turn the captain
+#      DECLARED a question is handed a flat instruction to write nothing. The
+#      recording stub captures the whole `-p` prompt, so the live leg can diff
+#      what a real worker was handed against exactly these strings.
+#   2. THE OBSERVABLE OUTCOME. "He asked, and nothing was written" is published
+#      by the daemon off the audit it already runs, and so is "he asked, and it
+#      wrote anyway" — the shape that would have caught this on the drive.
+#
+# AND WHAT IS DELIBERATELY ABSENT: a classifier. There is a test below that
+# holds that line explicitly, because it is the one cure this defect invites and
+# the one this project has lost sessions to (S156: 14/14 → 5/14 on a reworded
+# corpus).
+# ════════════════════════════════════════════════════════════════════════════
+def _flat(text):
+    """The prompt with its line wrapping collapsed.
+
+    The rule is authored as a wrapped paragraph, so a sentence like "Do not also
+    make an improvement while you are in there" spans a newline in the real
+    argv. Asserting the wrapped form would pin the wrapping rather than the
+    words, and the next reflow would go red for nothing.
+    """
+    return " ".join(str(text).split())
+
+
+class AskDoesNotBuildTest(HolodeckBase):
+    def _start(self, engine=None, program="Nav rail"):
+        _, body = self._post("/api/holodeck/start",
+                             {"program": program,
+                              "engine": engine or self.claude_bin})
+        return body["state"]["sessionId"]
+
+    # -- 1. the prompt --------------------------------------------------------
+    def test_the_opening_envelope_carries_answer_then_stop(self):
+        self._set_turns({"stdout": "Here it is."})
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft a nav rail"})
+        prompt = _flat(self._prompts()[-1])
+        self.assertIn("NOT EVERY TURN IS A BUILD TURN", prompt)
+        self.assertIn("ANSWER HIM AND CHANGE NOTHING", prompt)
+        # the exact thing that happened: it answered AND improved something.
+        self.assertIn("Do not also make an improvement while you are in there",
+                      prompt)
+        # and the reply-length rule must stand down for an answer, or he gets a
+        # diff summary where he wanted a sentence.
+        self.assertIn("REPLY SHORT ON A BUILD TURN", prompt)
+        self.assertIn("the short-reply rule does not apply to an answer",
+                      prompt)
+
+    def test_the_continuation_no_longer_orders_a_change_unconditionally(self):
+        """The defect, in one line. Every follow-up turn used to open with
+        `Make the change, then reply…` before the envelope was even considered.
+        """
+        self._set_turns({"stdout": "one"}, {"stdout": "two"})
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft it"})
+        self._post("/api/holodeck/%s/say" % sid,
+                   {"text": "what do you mean by the events tab?"})
+        prompt = _flat(self._prompts()[-1])
+        self.assertNotIn("Make the change, then reply", prompt)
+        self.assertIn("NOT EVERY TURN IS A BUILD TURN", prompt)
+        self.assertIn("If that is a direction, make the change", prompt)
+        # his sentence still arrives verbatim — nothing rewrites what he said.
+        self.assertIn("what do you mean by the events tab?", prompt)
+
+    def test_a_declared_question_is_told_flatly_to_write_nothing(self):
+        self._set_turns({"stdout": "one"}, {"stdout": "It groups events."})
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft it"})
+        self._post("/api/holodeck/%s/say" % sid,
+                   {"text": "what is the events tab?", "intent": "ask"})
+        prompt = _flat(self._prompts()[-1])
+        self.assertIn("THE CAPTAIN DECLARED THIS TURN A QUESTION", prompt)
+        self.assertIn("ANSWER HIM AND CHANGE NOTHING", prompt)
+        self.assertIn("do not write any file at all this turn", prompt)
+        self.assertIn("there is no short-reply rule on this turn", prompt)
+
+    def test_a_declared_question_on_the_OPENING_turn_gets_the_same_declaration(self):
+        """The opening turn is reachable from the composer too — a program whose
+        first turn died, or a warm restart. The declaration must not fall out of
+        the envelope branch."""
+        self._set_turns({"stdout": "It is the third pane."})
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid,
+                   {"text": "what is in this room already?", "intent": "ask"})
+        prompt = _flat(self._prompts()[-1])
+        self.assertIn("THE CAPTAIN DECLARED THIS TURN A QUESTION", prompt)
+        self.assertNotIn("NOT EVERY TURN IS A BUILD TURN", prompt)
+
+    def test_an_unknown_or_absent_intent_degrades_to_the_default_branch(self):
+        """The control is OPTIONAL by construction: he must never have to flip a
+        switch to ask a question, or it becomes the thing he forgets and blames.
+        Anything that is not the explicit declaration reads as `build`, whose
+        prompt already carries answer-then-stop."""
+        self._set_turns({"stdout": "a"}, {"stdout": "b"}, {"stdout": "c"})
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft it"})
+        for body in ({"text": "x"}, {"text": "y", "intent": "QUESTION?"}):
+            self._post("/api/holodeck/%s/say" % sid, body)
+            prompt = _flat(self._prompts()[-1])
+            self.assertIn("NOT EVERY TURN IS A BUILD TURN", prompt)
+            self.assertNotIn("THE CAPTAIN DECLARED THIS TURN A QUESTION",
+                             prompt)
+
+    def test_the_grounding_pass_is_untouched(self):
+        """A grounding turn has no write tool at all, so answer-then-stop is
+        already the only thing it can do. Adding the clause there would be
+        wording for wording's sake."""
+        self._set_turns({"stdout": "# Design basis\n\nnothing found"})
+        _, body = self._post("/api/holodeck/start",
+                             {"program": "Tile picker", "mode": "grounding",
+                              "engine": self.claude_bin})
+        self.assertEqual(body["state"]["status"], "ok", body)
+        prompt = _flat(self._prompts()[0])
+        self.assertNotIn("NOT EVERY TURN IS A BUILD TURN", prompt)
+        self.assertIn("You are READ-ONLY", prompt)
+
+    def test_NOTHING_reads_his_sentence_to_decide_the_turn_shape(self):
+        """THE TRAP, held open on purpose.
+
+        Two sentences that mean the same thing, phrased as differently as a
+        captain phrases things, sent with NO declaration. A classifier is a
+        thing that would treat them differently; a declaration cannot. The
+        prompts must be identical but for his own words."""
+        self._set_turns(*[{"stdout": "ok"}] * 4)
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft it"})
+        said = []
+        for text in ("What do you mean by the events tab?",
+                     "Curious about the reasoning behind that events tab.",
+                     "Add a second row of swatches to the tile picker."):
+            self._post("/api/holodeck/%s/say" % sid, {"text": text})
+            said.append(self._prompts()[-1].replace(text, "<HIS SENTENCE>"))
+        self.assertEqual(len(set(said)), 1,
+                         "the prompt differs by more than the captain's own "
+                         "words — something is reading his sentence")
+
+    # -- 2. the observable outcome -------------------------------------------
+    def test_a_turn_that_wrote_nothing_SAYS_SO(self):
+        """The silence that hid the defect. A turn that changed no file was
+        indistinguishable from one that quietly redesigned a tab until the
+        captain opened the preview."""
+        self._set_turns({"stdout": "The events tab groups the run's events."})
+        sid = self._start()
+        _, body = self._post("/api/holodeck/%s/say" % sid,
+                             {"text": "what is the events tab?",
+                              "intent": "ask"})
+        oc = body["state"]["turnOutcome"]
+        self.assertEqual(oc["intent"], "ask")
+        self.assertFalse(oc["wrote"])
+        self.assertEqual(oc["files"], [])
+        self.assertIn("nothing was written", oc["message"].lower())
+
+    def test_a_DECLARED_question_that_wrote_anyway_is_named_as_drift(self):
+        """The defect itself, made visible. He declared a question; the turn
+        wrote the mockup regardless. The daemon reads that off its own audit —
+        it does not take the reply's word for it."""
+        self._set_turns({"stdout": "Answered — and tidied the tab.",
+                         "writes": [{"path": "mockup.html",
+                                     "content": "<!doctype html>drift"}]})
+        sid = self._start()
+        _, body = self._post("/api/holodeck/%s/say" % sid,
+                             {"text": "what is the events tab?",
+                              "intent": "ask"})
+        oc = body["state"]["turnOutcome"]
+        self.assertEqual(oc["intent"], "ask")
+        self.assertTrue(oc["wrote"])
+        self.assertEqual(oc["files"], ["mockup.html"])
+        self.assertIn("mockup.html", oc["message"])
+        self.assertIn("a turn you did not direct", oc["message"])
+
+    def test_an_ordinary_build_turn_that_wrote_says_nothing_extra(self):
+        """The fact is always published; the SENTENCE is not. The chat already
+        prints a file chip per file, and a note that speaks on every turn is a
+        note people stop reading (the `conceptAudit` lesson)."""
+        self._set_turns({"stdout": "Built it.",
+                         "writes": [{"path": "mockup.html",
+                                     "content": "<!doctype html>ok"}]})
+        sid = self._start()
+        _, body = self._post("/api/holodeck/%s/say" % sid,
+                             {"text": "draft a nav rail"})
+        oc = body["state"]["turnOutcome"]
+        self.assertEqual(oc["intent"], "build")
+        self.assertTrue(oc["wrote"])
+        self.assertEqual(oc["message"], "")
+
+    def test_the_outcome_names_only_THIS_program_s_files(self):
+        """`changed` is a diff of the WHOLE sidecar, so a second program writing
+        at the same moment lands in this turn's snapshot window. The outcome and
+        the durable transcript line read the SAME rule (`_room_scoped_files`) —
+        two copies is how they start disagreeing about one turn."""
+        self._set_turns({"stdout": "one"},
+                        {"stdout": "answering",
+                         "writes": [{"path": "../tile-picker/mockup.html",
+                                     "content": "someone else's work"}]})
+        sid = self._start()
+        self._post("/api/holodeck/%s/say" % sid, {"text": "draft it"})
+        _, body = self._post("/api/holodeck/%s/say" % sid,
+                             {"text": "what is the events tab?",
+                              "intent": "ask"})
+        oc = body["state"]["turnOutcome"]
+        self.assertEqual(oc["files"], [], oc)
+        self.assertFalse(oc["wrote"])
+
+    def test_the_TURN_LIST_carries_the_outcome_so_a_refresh_restores_it(self):
+        """FOUND BY THE CHROME RIG, 2026-08-06, and it is why this is here.
+
+        `holoRefresh()` replaces the deck's whole program list with `GET
+        /api/holodeck`, so anything the client merged onto a turn from the POST
+        response survives exactly one render. The note read "nothing was
+        written" for about a second and then vanished — a surface where whether
+        the captain sees the fact depends on how fast his daemon answered is
+        worse than one that never says it. The daemon owns the fact, so the
+        daemon's list carries it."""
+        self._set_turns({"stdout": "Answered."})
+        sid = self._start()
+        _, body = self._post("/api/holodeck/%s/say" % sid,
+                             {"text": "what is the events tab?",
+                              "intent": "ask"})
+        self.assertFalse(body["state"]["turnOutcome"]["wrote"])
+        url = "http://127.0.0.1:%d/api/holodeck" % self.port
+        with urllib.request.urlopen(url, timeout=10) as r:
+            listing = json.loads(r.read())
+        prog = [p for p in listing["programs"] if p.get("sessionId") == sid][0]
+        last = prog["turns"][-1]
+        self.assertEqual(last["turnOutcome"]["intent"], "ask")
+        self.assertIn("nothing was written", last["turnOutcome"]["message"])
+
+    def test_a_turn_with_no_outcome_omits_the_key_entirely(self):
+        """ADDITIVE BY CONSTRUCTION: a warm-restarted program's turns are
+        replayed from `transcript.md`, which records no outcome, so every
+        payload every earlier test pins is byte-identical."""
+        self._set_turns({"stdout": "ok"})
+        sid = self._start()
+        url = "http://127.0.0.1:%d/api/holodeck" % self.port
+        with urllib.request.urlopen(url, timeout=10) as r:
+            listing = json.loads(r.read())
+        prog = [p for p in listing["programs"] if p.get("sessionId") == sid][0]
+        for t in prog["turns"]:
+            self.assertNotIn("turnOutcome", t)
+
+    def test_the_no_write_warning_keeps_the_only_voice_about_a_turn(self):
+        """ONE VOICE PER TURN. A turn whose engine answered with the file's
+        CONTENTS instead of writing it already has a better account of itself —
+        it says WHY — so the outcome's sentence stands down beside it. The FACT
+        stays on the payload."""
+        self._set_turns({"stdout": "Save this yourself:\n\n```html\n"
+                                   "<!doctype html>\n```\n"})
+        sid = self._start()
+        _, body = self._post("/api/holodeck/%s/say" % sid,
+                             {"text": "draft a nav rail"})
+        self.assertEqual(body["state"]["status"], "wrote-nothing")
+        self.assertEqual(body["state"]["warning"]["kind"], "no-write")
+        self.assertEqual(body["state"]["turnOutcome"]["message"], "")
+        self.assertFalse(body["state"]["turnOutcome"]["wrote"])
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 (FL-015, second half) — THE WORKING COPY STOPS ASSERTING "RENDERING"
+#
+# The captain watched a long turn go by under a banner saying it was RENDERING,
+# on a turn where he had asked a question. The daemon knows a turn is RUNNING;
+# it knows nothing about what kind of turn it is until something has been
+# written. That is `f667ce8`'s in-flight-fact discipline — the daemon publishes
+# what is true, the client never invents a reason — applied to the one string
+# that was still guessing.
+# ════════════════════════════════════════════════════════════════════════════
+class WorkingCopyIsHonestTest(unittest.TestCase):
+    def test_the_daemon_s_busy_label_says_working_not_rendering(self):
+        from lcars_serve.actions import _holodeck_busy_copy
+        label, reason = _holodeck_busy_copy(215)
+        self.assertIn("Still working", label)
+        self.assertNotIn("rendering", label.lower())
+        # the REASON is about the lock, not about what the turn is doing, and
+        # was never a "rendering" claim — it must stay exactly as honest.
+        self.assertIn("one turn at a time", reason)
+
+    def test_the_board_band_does_not_claim_a_render_either(self):
+        from lcars_serve.actions import _holodeck_working_message
+        one = _holodeck_working_message([{"program": "Nav rail",
+                                          "busyFor": 240}])
+        self.assertNotIn("rendering", one.lower())
+        self.assertIn("Nav rail", one)
+        many = _holodeck_working_message([{"program": "Nav rail",
+                                           "busyFor": 240},
+                                          {"program": "Tile picker",
+                                           "busyFor": 10}])
+        self.assertNotIn("rendering", many.lower())
+        self.assertIn("2 holodeck programs", many)
 
 
 if __name__ == "__main__":

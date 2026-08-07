@@ -342,25 +342,83 @@ function alignScanState(m) {
    it runs — closing does NOT abort the in-flight fetch — so the parked card shows an
    animated "◐ FINALIZING & COSTING…" band + a disabled control until the server
    finishes and the board refresh swaps in the aligned card. In-memory only; mirrors
-   ALIGNING. A 5-min safety timeout re-arms a wedged card. Caveat (v1): fully closing
-   the browser TAB may interrupt the in-flight finalize — documented, not handled. */
+   ALIGNING.
+
+   S169 / FL-017 — THERE IS NO WALL-CLOCK TIMEOUT HERE ANY MORE, for the reason
+   ALIGNING above has none. This map used to hold a `setTimeout` on
+   `FINALIZING_TIMEOUT_MS = 300000` that cleared the guard and `refresh()`ed:
+   byte-for-byte FL-009's shape with 300s in place of 60s. On expiry it dropped
+   the band and re-armed the card while the estimator and `file.sh --complete`
+   were still running — a run that was still going, presented as one that had
+   stopped, with a real second worker waiting behind the re-click. The captain
+   hit it live on the S128 drive ("OK the mission is costing after the grill").
+   FL-009's ruling was written for exactly this: *"do NOT just raise the number.
+   A bigger constant is the same guess with a longer fuse, and the next artifact
+   makes it wrong again."*
+
+   So the guard's lifetime IS THE REQUEST'S LIFETIME. It is armed on the closing
+   submit and released by exactly one event: the /api/align/<sid>/answer POST
+   settling — `done` on success, and the error handler on failure, which is
+   where a DAEMON THAT DIED mid-finalize arrives as a rejected fetch. That
+   rejection is the safety net, and being an event rather than a clock it cannot
+   fire on a finalize that is merely slow.
+
+   What the record holds instead of a timer handle is `since`, so the band can
+   say how long it has been going (`finalizingFor`) rather than sitting silent.
+
+   A page RELOAD during a finalize loses this map — it is client memory, and
+   that was FL-009's second half too. That half is the daemon's, and it is now
+   published: see `alignFinalizeState` below.
+
+   Caveat (v1): fully closing the browser TAB may interrupt the in-flight
+   finalize — documented, not handled. */
 var FINALIZING = Object.create(null);
-var FINALIZING_TIMEOUT_MS = 300000;
 
 function markFinalizing(id) {
   if (id == null) return;
-  var key = String(id);
-  if (FINALIZING[key]) clearTimeout(FINALIZING[key]);
-  FINALIZING[key] = setTimeout(function () { clearFinalizing(key); refresh(); },
-    FINALIZING_TIMEOUT_MS);
+  FINALIZING[String(id)] = { since: Date.now() };
 }
 function clearFinalizing(id) {
   if (id == null) return;
-  var key = String(id);
-  if (FINALIZING[key]) { clearTimeout(FINALIZING[key]); delete FINALIZING[key]; }
+  delete FINALIZING[String(id)];
 }
 function isFinalizing(id) {
   return id != null && !!FINALIZING[String(id)];
+}
+/* S169/FL-017: seconds this tab's finalize has been running, or null when the
+   record carries no start (a forced flag in a test harness). The ALIGNING twin. */
+function finalizingFor(id) {
+  var rec = id == null ? null : FINALIZING[String(id)];
+  if (!rec || typeof rec !== "object" || !rec.since) return null;
+  return Math.max(0, Math.floor((Date.now() - rec.since) / 1000));
+}
+
+/* S169/FL-017 — THE DAEMON'S HALF, and it closes the reload gap exactly as
+   `alignScanState` does for the scan.
+
+   `FINALIZING` is this tab's memory. A reload throws it away, and the card
+   re-armed to START ALIGNMENT over a `file.sh --complete` that was still
+   running. So the daemon publishes the fact (`_align_finalizing_fields` in
+   actions.py, the `alignFinalizing` twin of `alignBusy`) and this reads it.
+
+   WHICH WINS. The daemon, on both counts, for `alignScanState`'s reasons: its
+   PRESENCE makes the card finalize even when this tab has no memory of the
+   submit, and its elapsed is preferred because it is when the DISPATCH began,
+   not when we asked. Its ABSENCE clears nothing — a board built a moment before
+   the dispatch was stamped would otherwise re-arm the guard on a live finalize,
+   which is FL-017 again through the other door.
+
+   NOT A NEW WORDING: the label is the one `finalizingPulse` already renders. */
+function alignFinalizeState(m) {
+  var stamp = (m && m.alignFinalizing && typeof m.alignFinalizing === "object")
+    ? m.alignFinalizing : null;
+  var srv = (stamp && typeof stamp["for"] === "number")
+    ? Math.max(0, Math.floor(stamp["for"])) : null;
+  var local = finalizingFor(m && m.id);
+  return {
+    finalizing: !!(m && isFinalizing(m.id)) || !!stamp,
+    secs: srv != null ? srv : local
+  };
 }
 
 /* S162 (backgroundable mission-log filing): the optimistic "filing" set — the
@@ -1265,7 +1323,10 @@ function cardNode(m) {
   // file.sh --complete) gets an animated "◐ Finalizing & costing…" band the whole
   // time — even after the captain backgrounds the console — until the board refresh
   // swaps in the aligned card. Precedence: finalizing > scanning.
-  else if (isFinalizing(m.id)) card.appendChild(finalizingPulse());
+  // S169/FL-017: …and on a RELOADED tab the same band comes back off the
+  // daemon's `alignFinalizing`, so a card whose mission is still costing does
+  // not re-arm itself under a live file.sh.
+  else if (alignFinalizeState(m).finalizing) card.appendChild(finalizingPulse(m));
   // FIX-A: a parked mission mid-scan (START ALIGNMENT clicked, warm grill opening)
   // gets the SAME persistent animated band — rendered on every repaint while
   // isAligning so the motion survives board rebuilds until the console opens.
@@ -3172,14 +3233,26 @@ function probeWrites() {
 var IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 var IMAGE_MAX_BYTES = 8 * 1024 * 1024;   /* headroom under the 12 MB server cap */
 
-function attachImagePaster(textarea, onError) {
-  var imgs = [];
+/* `store` (S169, FL-014) is OPTIONAL and exists for ONE reason: a surface whose
+   textarea is destroyed and rebuilt by a re-render. The three modal surfaces
+   below live inside a dialog that is torn down as a whole, so their list is
+   safely a closure. The HOLODECK COMPOSER is not: `renderDeck` rebuilds it on
+   every turn, program switch and banner, and a paste whose only memory is this
+   closure disappears with the node exactly as the typed draft did (FL-013).
+   Rather than a second paster beside this one, the list is SEEDED from and
+   WRITTEN BACK to the caller's object — `{ get, set }` — so there is still one
+   image paster on the board and one place a pasted image is held. */
+function attachImagePaster(textarea, onError, store) {
+  var imgs = store ? ((store.get() || []).slice()) : [];
   var chips = el("div", "img-chips");
   chips.hidden = true;
   if (textarea.parentNode) {
     textarea.parentNode.insertBefore(chips, textarea.nextSibling);
   }
   function repaint() {
+    // EVERY mutation lands here (accept / remove / clear), so this is the one
+    // line that has to write the list back.
+    if (store) store.set(imgs.slice());
     chips.innerHTML = "";
     chips.hidden = imgs.length === 0;
     imgs.forEach(function (img, i) {
@@ -3252,6 +3325,11 @@ function attachImagePaster(textarea, onError) {
     }
     if (handled) { e.preventDefault(); }
   });
+  // A SEEDED LIST HAS TO PAINT ITS CHIPS (S169). Restoring the value of a
+  // rebuilt textarea while its "[Image #1]" chip stays missing would be a
+  // half-restored draft, which is worse than none: he would send a turn
+  // believing the screenshot went with it.
+  if (imgs.length) repaint();
   return {
     /* the postWrite payload value: the chip list, or undefined when empty so
        JSON.stringify omits the `images` key and the turn is unchanged. */
@@ -3434,10 +3512,19 @@ function startAlignment(missionId) {
      • default        → clickable "▹ START ALIGNMENT". */
 function startAlignmentControl(m) {
   var id = m && m.id;
-  if (isFinalizing(id)) {
-    var fin = act("start", btn("◐ FINALIZING & COSTING…", "go", null));
+  // S169/FL-017: "is a finalize running?" is answered by this tab's submit
+  // guard OR by the daemon's published fact — the second is what a reloaded tab
+  // reads, and what stops it offering START ALIGNMENT over a live file.sh.
+  var fstate = alignFinalizeState(m);
+  if (fstate.finalizing) {
+    var fin = act("start", btn(scanningLabel(fstate.secs,
+                                             "◐ FINALIZING & COSTING…"), "go",
+                               null));
     fin.disabled = true;
-    fin.title = "Finalizing the PRD and estimating cost…";
+    fin.title = scanningLabel(fstate.secs,
+                              "Finalizing the PRD and estimating cost —"
+                              + " this has been running")
+      + ". The card updates itself the moment it lands.";
     return fin;
   }
   // S128/FL-009: "is a turn running?" is answered by this tab's click-guard OR by
@@ -3682,6 +3769,13 @@ function renderAlignConsole(state, completing, missionId) {
       },
       function (msg) {
         busy.hidden = true;
+        // S169/FL-017 — THE OTHER HALF OF "RELEASED BY AN EVENT". The guard was
+        // armed on the closing submit and, before this, only the SUCCESS path
+        // dropped it: a finalize that failed — a dead daemon, a 502 from the
+        // estimator, a network drop — left the card banded and its control
+        // disabled forever, with the timer that used to bail it out now gone.
+        // The POST settling is the event, and settling includes settling badly.
+        if (missionId) { clearFinalizing(missionId); repaintBoard(); }
         submit.disabled = false; submit.textContent = "Submit & Continue ▸";
         showErr(err, msg);
       });
@@ -3697,7 +3791,7 @@ function renderAlignConsole(state, completing, missionId) {
   // session simply lingers in memory (ages out on its own — v1 in-memory only).
   onOverlayClose = function () {
     if (!missionId || !sid) return;
-    if (isFinalizing(missionId)) return;
+    if (isFinalizing(missionId)) return;   // this tab armed it on the submit.
     markResumable(missionId, sid);
     repaintBoard();
   };
@@ -6903,8 +6997,14 @@ function scanningPulse(m) {
    finalizes server-side (estimate + file.sh --complete) — including after the captain
    backgrounds the console — until the board refresh swaps in the aligned card. Same
    animated bars as scanningPulse (.lcars-running); label is the finalizing phase. */
-function finalizingPulse() {
-  var w = workingNode("◐ Finalizing & costing…");
+function finalizingPulse(m) {
+  // S169/FL-017: the band carries the elapsed time of the in-flight finalize —
+  // the daemon's dispatch clock when it published one, this tab's submit
+  // otherwise — through the SAME `scanningLabel` the scan band uses, so the two
+  // states cannot describe elapsed time two different ways. `m` is optional:
+  // without it the label is exactly as it was.
+  var w = workingNode(scanningLabel(alignFinalizeState(m).secs,
+                                    "◐ Finalizing & costing…"));
   w.className += " lcars-running";
   return w;
 }
@@ -7583,7 +7683,61 @@ var HOLO = {
   // the intent panel's bytes, per program. Dropped when a turn actually
   // rewrites `concept.md` — the same discipline D3 applies to the mockup.
   intent: { sid: null, text: null, err: null, loading: false },
+  /* S169 (FL-013 + FL-014) — THE COMPOSER'S UNSENT STATE, PER PROGRAM.
+     `{ <sessionId>: { text: "<what he typed>", images: [<pastes>] } }`.
+
+     WHY IT IS HERE AND NOT IN THE TEXTAREA. `holoChatPane` builds the composer
+     as a fresh `el("textarea")` on every render, so its value lived ONLY in
+     that node — and `renderDeck` rebuilds the pane on a turn landing, a
+     program switch, a banner, a drawer toggle, a deck re-entry. The captain
+     typed a paragraph, went to the board to deploy main, came back, and it was
+     gone: no warning, no undo, on the ONE surface whose whole premise is
+     capturing requirements in his own words. This is the same treatment
+     `pvView`/`pvSid` and S127's drag handle already get — view state that must
+     outlive a repaint lives in HOLO — and it is restored INTO the same
+     textarea rather than shadowed by a second node beside it.
+
+     KEYED BY SESSION ID, and a MAP rather than `pvSid`'s single slot, because
+     "switch programs and come back" is one of the triggers that loses work:
+     a one-slot guard would cure the board round-trip and keep the defect.
+
+     THE PASTED IMAGES LIVE IN THE SAME OBJECT (FL-014) on purpose. They are
+     one thing — the unsent turn — and `attachImagePaster` otherwise keeps its
+     list in a closure that dies with the node exactly like `value` did.
+
+     …AND SO DOES `intent` (FL-015). It is the third field of one unsent turn —
+     what he typed, what he pasted, and whether he is ASKING or DIRECTING — so
+     it belongs in this object and not in a fourth store beside it. Default
+     "build". It is per-TURN, not a mode: `holoDraftClear` drops the whole
+     draft when the turn is sent, so the next turn starts at "build" again.
+     A sticky ASK would be worse than no control at all — he would flip it
+     once, type "make the rail wider" three turns later, and get an answer. */
+  drafts: Object.create(null),
 };
+
+/* READ this program's unsent turn. Never null, so every caller reads one shape
+   — but it does NOT create: rendering a composer is not the same as the
+   captain typing in one, and a read that stored would leave an empty draft
+   behind for every program ever painted, including one just sent. */
+function holoDraftFor(sid) {
+  return (sid && HOLO.drafts[sid]) || { text: "", images: [], intent: "build" };
+}
+
+/* …and WRITE it. The only thing that puts a draft in HOLO is the captain
+   putting something in the composer. */
+function holoDraftPut(sid) {
+  if (!sid) return { text: "", images: [], intent: "build" };
+  var d = HOLO.drafts[sid];
+  if (!d) { d = HOLO.drafts[sid] = { text: "", images: [], intent: "build" }; }
+  return d;
+}
+
+/* The turn has been said — it is in the transcript now, so it is no longer a
+   draft. Called from `holoSay` (not from the composer) so a refused send keeps
+   what he typed. */
+function holoDraftClear(sid) {
+  if (sid && HOLO.drafts[sid]) delete HOLO.drafts[sid];
+}
 
 var HOLO_FILTERS = [["all", "ALL"], ["draft", "DRAFT"], ["sent", "SENT"],
                     ["done", "DONE"]];
@@ -7751,6 +7905,16 @@ function holoRefresh() {
         HOLO.sidecarName = HOLO.programs[0].sidecarName;
         HOLO.commits = HOLO.programs[0].commits || 0;
       }
+      /* S169 (FL-013) — a draft belongs to a program, so it dies with one.
+         Ending a program (or a daemon that no longer holds it) is the only
+         thing that drops an unsent turn; every other repaint keeps it. */
+      var live = Object.create(null);
+      for (var d = 0; d < HOLO.programs.length; d++) {
+        if (HOLO.programs[d].sessionId) live[HOLO.programs[d].sessionId] = 1;
+      }
+      Object.keys(HOLO.drafts).forEach(function (sid) {
+        if (!live[sid]) delete HOLO.drafts[sid];
+      });
       if (HOLO.activeId && !holoActive()) HOLO.activeId = null;
       if (!HOLO.activeId) {
         // only a LIVE program can be the active one — a room read off disk has
@@ -8517,6 +8681,28 @@ function holoChatPane(p) {
         cn.appendChild(el("span", "ct3", t.conceptAudit.message || ""));
         h.appendChild(cn);
       }
+      /* S169 (FL-015) — WHAT THE TURN DID, on the turn it is about. The
+         captain asked a question, the holodeck answered it AND rebuilt part of
+         the mockup, and nothing on this screen said so — the file chips above
+         name what changed, but a turn that changed NOTHING said nothing at
+         all, so "it answered and left the design alone" and "it answered and
+         quietly redesigned the events tab" looked identical until he opened
+         the preview.
+
+         The daemon reads both halves off the audit it already runs and writes
+         the sentence (`_turn_outcome`); this renders it and invents nothing.
+         It is deliberately quiet on an ordinary build turn that wrote — the
+         chips above already say that, and a note that speaks every turn stops
+         being read. `.no` when nothing was written, `.drift` when a turn he
+         DECLARED a question wrote anyway, which is the defect itself. */
+      var oc = t.turnOutcome;
+      if (oc && oc.message) {
+        var on = el("div", "holo-outcome" + (oc.wrote ? " drift" : " no"));
+        on.appendChild(el("span", "cl",
+          oc.wrote ? "◆ Changed on a question" : "◇ Nothing written"));
+        on.appendChild(el("span", "ct3", oc.message));
+        h.appendChild(on);
+      }
       tr.appendChild(h);
     }
   });
@@ -8593,15 +8779,58 @@ function holoChatPane(p) {
   ta.rows = 3;
   ta.setAttribute("data-holo", "composer");
   comp.appendChild(ta);
+  /* S169 (FL-013) — THE UNSENT TURN, PUT BACK. This pane is rebuilt from
+     scratch on every render, so the value has to be restored from HOLO here
+     and recorded on every keystroke below. Nothing else about the composer
+     changes: it is the same textarea, with what he had already typed in it. */
+  var draft = holoDraftFor(p.sessionId);
+  ta.value = draft.text || "";
+  ta.addEventListener("input", function () {
+    holoDraftPut(p.sessionId).text = ta.value;
+  });
+  /* S169 (FL-014) — AND IT TAKES A PASTED IMAGE. Designing a mockup FROM a
+     reference screenshot is the archetypal thing to ask this room for, and it
+     was the one design surface on the board that could not take one: the
+     daemon has had an honest refusal for the case since S124, but with no
+     paste handler here the clipboard event was never harvested, nothing was
+     ever sent, and that sentence could never fire. A pasted image did
+     NOTHING, in silence — the exact thing this file's own header forbids.
+     Same paster as the File and Log boxes (S91), with the list kept in the
+     draft so a re-render does not eat it either. */
+  var cerr = el("div", "errline"); cerr.hidden = true;
+  comp.appendChild(cerr);
+  var compImgs = attachImagePaster(ta, function (msg) { showErr(cerr, msg); }, {
+    get: function () { return holoDraftFor(p.sessionId).images; },
+    set: function (list) { holoDraftPut(p.sessionId).images = list; },
+  });
   var row = el("div", "crow");
-  row.appendChild(el("span", "hint", "⏎ send · ⇧⏎ newline"));
+  /* S169 (FL-015) — THE OPTIONAL DECLARATION. See `holoIntentToggle`. */
+  var intentSel = holoIntentToggle(p.sessionId, function () { paintSend(); });
+  row.appendChild(intentSel);
+  row.appendChild(el("span", "hint", "⏎ send · ⇧⏎ newline · paste a screenshot"));
   row.appendChild(el("span", "grow"));
   var send = holoBtn("Send ▸", "go", function () {
-    holoSay(p.sessionId, ta.value);
+    holoSay(p.sessionId, ta.value, compImgs.payload(),
+            holoDraftFor(p.sessionId).intent);
   });
+  /* The control has to SHOW it took, or it is a switch he flips and then
+     wonders about. The verb on the button is the whole feedback: Ask ▸ /
+     Send ▸, off the same draft field the POST reads, so the button and the
+     request can never disagree about what this turn is. */
+  function paintSend() {
+    if (send.disabled) return;
+    send.textContent =
+      holoDraftFor(p.sessionId).intent === "ask" ? "Ask ▸" : "Send ▸";
+  }
+  paintSend();
   if (working) {
     send.disabled = true;
-    send.textContent = "Rendering…";
+    /* S169 (FL-015) — "Working…", not "Rendering…". A turn in flight is a turn
+       in flight; whether it is rendering anything is not known until it has
+       written something, and the captain met this control asserting a render
+       over a turn he had only asked a question on. Same word as the strip
+       above it, for the same reason. */
+    send.textContent = "Working…";
     /* AND WHY — in the daemon's words, on the same discipline the hand-off bar
        already follows (`handoffBlocked`). A composer that is locked with no
        explanation is exactly the state the captain came back to; an
@@ -8617,13 +8846,75 @@ function holoChatPane(p) {
   ta.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
-      if (!send.disabled) holoSay(p.sessionId, ta.value);
+      if (!send.disabled) holoSay(p.sessionId, ta.value, compImgs.payload(),
+                                  holoDraftFor(p.sessionId).intent);
     }
   });
   row.appendChild(applyWriteState(send));
   comp.appendChild(row);
   pane.appendChild(comp);
   return pane;
+}
+
+/* S169 (FL-015) — ASK vs BUILD, DECLARED ON THE COMPOSER.
+
+   The captain asked the holodeck what it meant by the events tab; it answered
+   him and then spent a long turn rebuilding part of the mockup he had not asked
+   it to touch. His bar, in his words: *"Would be better to answer and let me
+   guide then waste time on a render update."*
+
+   THE OBVIOUS CURE IS THE TRAP, so it is not here: nothing in this product
+   looks at his sentence and decides whether it is a question. S156's classifier
+   fell from 14/14 to 5/14 the moment a tester reworded its own corpus without
+   changing a meaning, and the cure was deleting the signals and moving the
+   decision to a DECLARATION. He phrases things however he phrases them.
+
+   So there are two declarations and no guesses, and they compose:
+     • the DEFAULT one is in the turn prompt — the worker is told answer-then-
+       stop is the right move on a turn that is not a direction, and the worker
+       is the only reader that has his actual sentence;
+     • THIS one is his, explicit, and a rewording cannot defeat it.
+
+   IT IS OPTIONAL BY CONSTRUCTION and must stay that way. He never has to flip
+   it to ask a question — the prompt already covers him — so it can never become
+   the switch he forgot and blamed. It is also PER-TURN, not a mode: the draft
+   (and with it this field) is cleared when the turn is sent, so ASK never leaks
+   into the next thing he types.
+
+   The state lives in `HOLO.drafts[sid].intent` — the object Wave 2 built for
+   the unsent turn's text and images — because what he typed, what he pasted and
+   what shape the turn is are one thing, and a fourth store beside them is the
+   two-mechanism trap this round has lost rounds to. */
+function holoIntentToggle(sid, onchange) {
+  var wrap = el("div", "holo-intent");
+  wrap.setAttribute("role", "group");
+  wrap.setAttribute("aria-label", "Is this turn a direction or a question?");
+  var opts = [["build", "◈ Build", "Direct a change — the holodeck builds it."],
+              ["ask", "? Ask", "Ask a question — the holodeck answers and "
+               + "changes nothing: no mockup edit, no concept.md edit."]];
+  var btns = [];
+  function paint() {
+    var cur = holoDraftFor(sid).intent === "ask" ? "ask" : "build";
+    btns.forEach(function (b) {
+      var on = b.getAttribute("data-holo-intent") === cur;
+      if (on) b.classList.add("on"); else b.classList.remove("on");
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+  opts.forEach(function (o) {
+    var b = keyActivable(el("span", "iopt", o[1]));
+    b.setAttribute("data-holo-intent", o[0]);
+    b.title = o[2];
+    b.addEventListener("click", function () {
+      holoDraftPut(sid).intent = o[0];
+      paint();
+      if (onchange) onchange();
+    });
+    btns.push(b);
+    wrap.appendChild(b);
+  });
+  paint();
+  return wrap;
 }
 
 /* ── rendering a reply (mock screen 4 is CLEAN PROSE) ──────────────────────
@@ -8895,6 +9186,12 @@ function holoEngineName(p) {
        asked for a thinking icon there in as many words).
    A second spinner shape for any of those is the two-mechanism trap S125 lost
    two rounds to. */
+/* S169 (FL-015) — the client's ONE working sentence, authored once. It says
+   WORKING and not "rendering": until a turn has written something, a render is
+   a claim nothing on this side has earned. `holoWorkingNode` below is the only
+   reader. */
+var HOLO_WORKING_TEXT = "Working on the holodeck…";
+
 function holoWorkingNode(text) {
   var w = el("div", "holo-working");
   w.setAttribute("role", "status");
@@ -8902,7 +9199,14 @@ function holoWorkingNode(text) {
   var bars = el("span", "bars");
   for (var i = 0; i < 4; i++) bars.appendChild(el("i"));
   w.appendChild(bars);
-  w.appendChild(el("span", "wt", text || "Rendering on the holodeck…"));
+  /* S169 (FL-015) — THE BANNER THE CAPTAIN READ. It said "Rendering on the
+     holodeck…" through a long turn on which he had asked a question, not
+     directed a build: working-state copy asserting a REASON that neither this
+     tab nor the daemon can know until the turn has written something. This is
+     the one place the client's own working sentence is authored — every other
+     working strip on the deck either passes the DAEMON's label in (a returning
+     deck) or reaches this default. */
+  w.appendChild(el("span", "wt", text || HOLO_WORKING_TEXT));
   return w;
 }
 
@@ -9155,17 +9459,44 @@ function holoIntentFill(p, host) {
   });
 }
 
+/* S169 (FL-016) — WHY THERE IS A BOX INSIDE THE BOX.
+
+   `.pv-intent` used to be BOTH the scroll container and the containing block
+   for the readability scrim that makes this document legible over the deck's
+   grid. An absolutely-positioned child of a scroll container is sized to the
+   PADDING BOX — one viewport-height rectangle, not the scrollable content —
+   and it scrolls with the content. So the scrim was a single screen's worth of
+   darkening that slid up and off, and every word past the first screen sat
+   bare on the grid. The captain hit it on his own captured requirements.
+
+   The technique itself is not wrong; it was copied from `.pv-none` (FL-006),
+   a pane that does NOT scroll, where `inset:0` is exactly right. The cure is
+   to give it a container that does not scroll: `.pv-intent` keeps the scrim
+   and stops scrolling, and THIS node — created here on every paint, so there
+   is one place the panel's content is built and no second source of truth —
+   is the thing that scrolls, above it.
+
+   Do NOT "fix" this by stretching the scrim: `height:100%` resolves against
+   the same padding box and changes nothing, and a JS-measured height is a
+   number that goes stale on the next reflow. */
+function holoIntentScroller(host) {
+  var s = el("div", "pv-intent-scroll");
+  host.appendChild(s);
+  return s;
+}
+
 function holoIntentPaint(host, text, err) {
   host.innerHTML = "";
+  var scroll = holoIntentScroller(host);
   if (err) {
     var note = el("div", "pv-intent-note");
     note.appendChild(el("div", "t", "Intent unavailable"));
     note.appendChild(el("p", null, err));
-    host.appendChild(note);
+    scroll.appendChild(note);
     return;
   }
   if (text == null) {
-    host.appendChild(workingNode("Reading concept.md…"));
+    scroll.appendChild(workingNode("Reading concept.md…"));
     return;
   }
   var doc = el("div", "intent-doc");
@@ -9180,7 +9511,7 @@ function holoIntentPaint(host, text, err) {
       "concept.md is in this program's room but has nothing in it yet — ask "
       + "for it in the chat and the holodeck keeps it current from then on."));
   }
-  host.appendChild(doc);
+  scroll.appendChild(doc);
 }
 
 /* D3's refresh trigger, and the whole reason the preview can be trusted: the
@@ -9217,9 +9548,18 @@ function holoApplyFilesChanged(files, program) {
 }
 
 /* ── a turn ────────────────────────────────────────────────────────────── */
-function holoSay(sid, text) {
+function holoSay(sid, text, images, intent) {
   text = String(text || "").trim();
   if (!text || HOLO.busy) return;
+  /* S169 (FL-015) — read BEFORE `holoDraftClear` below wipes the draft this
+     came out of, and passed on verbatim. The daemon normalises; this side does
+     not interpret. */
+  intent = intent === "ask" ? "ask" : "build";
+  /* S169 (FL-013) — THE TURN IS SAID, so it stops being a draft. Cleared here
+     rather than in the composer, and only past the guard above: a send that
+     was refused (empty, or a turn already in flight) must leave what he typed
+     exactly where it is. */
+  holoDraftClear(sid);
   HOLO.busy = true;
   HOLO.banner = null;
   // show the captain's words immediately — they are already said, and a chat
@@ -9234,10 +9574,18 @@ function holoSay(sid, text) {
   var turns = p ? (p.turns = p.turns || []) : null;
   var pending = turns && turns.length ? turns[turns.length - 1] : null;
   if (turns && !(pending && pending.text === text && !pending.reply)) {
-    turns.push({ text: text, reply: null });
+    turns.push({ text: text, reply: null, intent: intent });
+  } else if (pending) {
+    pending.intent = intent;
   }
   renderDeck();
-  postWrite("/api/holodeck/" + sid + "/say", { text: text },
+  /* `images` rides the EXISTING body, exactly as the File console's idea box
+     and the Log box already do (S91) — the daemon stages them into the
+     program's room and threads them into THIS turn. `undefined` when nothing
+     was pasted, so JSON.stringify omits the key and the request is
+     byte-identical to before. */
+  postWrite("/api/holodeck/" + sid + "/say",
+            { text: text, images: images, intent: intent },
     function (state) {
       HOLO.busy = false;
       var cur = holoActive();
@@ -9256,6 +9604,9 @@ function holoSay(sid, text) {
           last.reply = state.reply || "";
           last.filesChanged = state.filesChanged || [];
           last.conceptAudit = state.conceptAudit || null;
+          /* S169 (FL-015) — the daemon's account of what this turn DID, kept
+             on the turn it is about, exactly like `conceptAudit` beside it. */
+          last.turnOutcome = state.turnOutcome || null;
         }
       }
       if (state.status === "refused" && state.refused) {
@@ -9278,7 +9629,9 @@ function holoSay(sid, text) {
     },
     function (msg) {
       HOLO.busy = false;
-      holoSetBanner("offline", { message: msg, retry: { sid: sid, text: text } });
+      holoSetBanner("offline", { message: msg,
+                                 retry: { sid: sid, text: text,
+                                          images: images, intent: intent } });
       renderDeck();
     });
 }
@@ -9337,6 +9690,50 @@ function holoMissingRequirements(reqs, brief) {
   });
 }
 
+/* ── S169: the pre-drafted brief now carries THREE things ──────────────────
+   His own words, what the mockup CHANGES about the app he has today, and what
+   it IMPLIES that nobody has settled. The daemon composes all three (one
+   function, `_handoff_parts`); these two only decide how the box is SIZED and
+   how it is DESCRIBED, which is the half a browser can get wrong. */
+var HOLO_BRIEF_ROWS_MIN = 8, HOLO_BRIEF_ROWS_MAX = 20;
+
+function holoBriefRows(text) {
+  var n = String(text == null ? "" : text).split("\n").length;
+  return Math.max(HOLO_BRIEF_ROWS_MIN, Math.min(HOLO_BRIEF_ROWS_MAX, n));
+}
+
+function holoCount(n, one, many) {
+  return n + " " + (n === 1 ? one : many);
+}
+
+function holoBriefHint(seed) {
+  if (seed.summarySource !== "WHAT IT MUST DO") {
+    return seed.brief
+      ? "Your concept doc has not captured any requirements yet, so this "
+        + "draft is the closest thing in it. Rewrite it — this is the "
+        + "Mission's opening idea."
+      : "Nothing in the concept doc could be used as a draft, so this one is "
+        + "yours to write. It becomes the Mission's opening idea.";
+  }
+  /* KEPT SHORT, AND THAT IS A MEASUREMENT, NOT A STYLE PREFERENCE. The first
+     draft of this sentence ran to three lines (87px) and pushed itself out of
+     the modal body's visible band at a 677px window — the line whose whole job
+     is to be seen by a captain who reads one screen. Measured by
+     tests/drives/browser/handoff.sh, which now hit-tests it. */
+  var parts = [holoCount((seed.requirements || []).length,
+                         "thing you said", "things you said")];
+  var d = (seed.decisions || []).length, i = (seed.implied || []).length;
+  if (d) {
+    parts.push(holoCount(d, "change the mockup makes to today's app",
+                         "changes the mockup makes to today's app"));
+  }
+  if (i) parts.push(i + " it implies");
+  var last = parts.pop();
+  return "Drafted from your concept doc: "
+    + (parts.length ? parts.join(", ") + " and " + last : last)
+    + ". Scroll it — all of it is yours to correct.";
+}
+
 /* The hand-off dialog (mock screen 6, D5/D13/D14/D15). One screen: a REAL
    writing space pre-drafted from the conversation, how much to build, what
    rides along by NAME, and — visible before he sends — exactly how the mission
@@ -9359,22 +9756,33 @@ function openHandoff(seed) {
   f1.setAttribute("data-holo", "handoff-brief-field");
   f1.appendChild(label("Your brief — what you are actually asking for"));
   var brief = el("textarea");
-  brief.rows = 8;
+  /* S169 — THE BOX HAS TO SHOW THAT IT GREW.
+
+     The draft used to be the captain's own words and nothing else — six lines
+     in an eight-row box, so the whole of it was on screen. It now also carries
+     what the mockup CHANGES about the app he has today and what it IMPLIES,
+     which on both real fixtures is ~31 lines. Left at eight rows, two thirds
+     of his brief would sit inside a scrollbox he has no reason to scroll —
+     which is D1 all over again, one level down: the session's own goal,
+     delivered and invisible.
+
+     So the box takes the size of what is in it, CLAMPED. The floor keeps a
+     short draft from collapsing into a slot; the ceiling is what stops this
+     from being the change that pushed everything below it off the screen —
+     the dialog is already 1812px against a ~677px window. Measured in real
+     Chrome by tests/drives/browser/handoff.sh, which is where a claim about
+     what is on screen belongs. */
+  brief.rows = holoBriefRows(seed.brief);
   brief.value = seed.brief || "";
   brief.setAttribute("data-holo", "handoff-brief");
   brief.placeholder = "What do you want built, and why this way?";
   f1.appendChild(brief);
-  f1.appendChild(el("span", "hint",
-    seed.summarySource === "WHAT IT MUST DO"
-    ? "Drafted from WHAT IT MUST DO in your concept doc — the things you "
-      + "said in your own words, in the order you said them. Rewrite it "
-      + "however you like; this is the Mission's opening idea."
-    : (seed.brief
-       ? "Your concept doc has not captured any requirements yet, so this "
-         + "draft is the closest thing in it. Rewrite it — this is the "
-         + "Mission's opening idea."
-       : "Nothing in the concept doc could be used as a draft, so this one is "
-         + "yours to write. It becomes the Mission's opening idea.")));
+  /* …AND IT HAS TO SAY WHAT IS IN IT. The hint is directly under the box and
+     above the fold, so it is the one place a captain who reads only the first
+     screen still learns there are two more sections below his own words. The
+     counts come from the DAEMON's own sets (`_handoff_parts`), never counted
+     here, so the sentence cannot claim something the draft does not contain. */
+  f1.appendChild(el("span", "hint", holoBriefHint(seed)));
   m.body.appendChild(f1);
 
   /* 1b. THE CAPTURED REQUIREMENTS, CHECKED AGAINST WHAT HE JUST WROTE (S128,
@@ -9685,7 +10093,25 @@ function openHandoff(seed) {
   m.foot.appendChild(btn("Cancel", null, closeOverlay));
   m.foot.appendChild(go);
   showOverlay(m.wrap);
+  /* ── THE DIALOG OPENS AT THE TOP OF HIS BRIEF (S169) ─────────────────────
+     MEASURED, not reasoned about. Focusing a textarea makes the browser scroll
+     it into view, and a 380px box in a 438px scrolling body does not fit with
+     room to spare — so `brief.focus()` alone scrolled `.modal-body` down by
+     234px and the captain met this dialog with the TOP OF HIS OWN WORDS 55px
+     ABOVE the window. The draft had grown; the first thing on screen was the
+     middle of it. Nothing in web/tests/ can see that (no CSS, no layout); it
+     came off tests/drives/browser/handoff.sh at 1440x677 on the first run.
+
+     The caret goes to character 0 first — so the browser has no reason to
+     scroll anywhere — and the body is pinned back to the top afterwards
+     regardless, because the ONE thing that must be true when this opens is
+     that he is looking at line 1. */
+  if (brief.setSelectionRange) {
+    try { brief.setSelectionRange(0, 0); } catch (e) { /* not text-like */ }
+  }
   if (brief.focus) brief.focus();
+  brief.scrollTop = 0;
+  m.body.scrollTop = 0;
   return m;
 }
 
@@ -9879,7 +10305,10 @@ function holoBannerNode() {
     node.appendChild(applyWriteState(holoBtn("Retry turn", "danger",
       function () {
         HOLO.banner = null;
-        holoSay(o.retry.sid, o.retry.text);
+        // A RETRY IS THE SAME TURN — the same line AND the same screenshot
+        // (S169). Dropping the images here would re-send a "make it look like
+        // this" turn with nothing to look at.
+        holoSay(o.retry.sid, o.retry.text, o.retry.images, o.retry.intent);
       })));
   }
   return node;

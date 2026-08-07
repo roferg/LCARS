@@ -109,6 +109,27 @@ function stubEl(tag) {
     node._kids = node._kids.filter((x) => x !== c);
     return c;
   };
+  /* S169 — `parentNode` / `nextSibling` / `insertBefore`, the three the image
+   * paster (board.js `attachImagePaster`, S91) uses to put its "[Image #N]"
+   * chip strip immediately after the textarea it is attached to. Without them
+   * the guard `if (textarea.parentNode)` is simply FALSE here and the chips are
+   * never inserted — so a harness missing them would report a paste working
+   * while the captain sees no chip at all. */
+  Object.defineProperty(node, "parentNode", { get() { return node.parent; } });
+  Object.defineProperty(node, "nextSibling", {
+    get() {
+      if (!node.parent) return null;
+      const i = node.parent._kids.indexOf(node);
+      return i >= 0 ? (node.parent._kids[i + 1] || null) : null;
+    },
+  });
+  node.insertBefore = function (c, ref) {
+    if (!c) return c;
+    c.parent = node;
+    const i = ref ? node._kids.indexOf(ref) : -1;
+    if (i < 0) node._kids.push(c); else node._kids.splice(i, 0, c);
+    return c;
+  };
   Object.defineProperty(node, "childNodes", { get() { return node._kids; } });
   Object.defineProperty(node, "children", {
     get() { return node._kids.filter(isElement); },
@@ -322,6 +343,18 @@ const sandbox = {
   setInterval() { return 0; }, clearInterval() {},
   setTimeout() { return 0; }, clearTimeout() {},
   fetch: fetchStub,
+  /* S169 — the composer's image paster reads a pasted file as a data URL
+   * (board.js `attachImagePaster`, S91). Firing `onload` INLINE keeps this
+   * harness free of async plumbing, and is the same stand-in the File-console
+   * harnesses already use (board_hotkeys_harness.js). */
+  FileReader: function () {
+    const self = this;
+    this.result = "";
+    this.readAsDataURL = function () {
+      self.result = "data:image/png;base64,QUJD";
+      if (typeof self.onload === "function") self.onload();
+    };
+  },
   EventSource: function () { this.addEventListener = function () {}; this.close = function () {}; },
   console, JSON, Math, Date, Promise, encodeURIComponent, decodeURIComponent,
   Array, Object, String, Number, Boolean, RegExp, Set, Map, Error,
@@ -980,6 +1013,25 @@ switch (cfg.act) {
     out.conceptNote = note.length ? txt(note[note.length - 1]) : "";
     break;
   }
+  /* S169 (FL-015) — the daemon's account of what a turn DID, rendered against
+   * the turn it belongs to. The `conceptAudit` twin, deliberately: same idiom,
+   * same per-turn placement, one voice (the daemon's words, verbatim). */
+  case "turnOutcome": {
+    sandbox.writesActive = true;
+    loadPrograms(cfg);
+    const prog = (sandbox.HOLO.programs || [])[0];
+    const last = prog && prog.turns && prog.turns[prog.turns.length - 1];
+    if (last) last.turnOutcome = cfg.turnOutcome || null;
+    sandbox.renderDeck();
+    const notes = many(deck(), ".holo-outcome");
+    const note = notes.length ? notes[notes.length - 1] : null;
+    out.outcomePresent = !!note;
+    out.outcomeText = txt(note);
+    out.outcomeClass = note ? note.className : "";
+    out.outcomeLabel = note ? txt(one(note, ".cl")) : "";
+    out.fileChips = many(deck(), ".chip-file").map(txt);
+    break;
+  }
   /* S127 — the hand-off bar under the deck, and the lock band that replaces
    * the composer once a program has been sent. */
   case "handoffBar": {
@@ -997,6 +1049,176 @@ switch (cfg.act) {
     out.lockControls = lock ? controlsIn(lock) : [];
     out.statusChips = many(deck(), ".pstat").map(txt);
     out.missionChips = many(deck(), ".pmission").map(txt);
+    break;
+  }
+  /* ── S169 (FL-013 + FL-014): THE COMPOSER'S UNSENT STATE ──────────────────
+   * ONE act for both, because they are one object's state: what he typed and
+   * what he pasted are the same unsent turn, and the defect in each was the
+   * same one — the value lived only in a node `renderDeck` throws away.
+   *
+   * `cfg.after` is a list of INTERACTIONS driven through the real functions,
+   * and each one records what the captain would find: the textarea's value,
+   * whether the node itself was replaced (so "it survived" cannot pass by the
+   * pane simply never being rebuilt), and the "[Image #N]" chips on screen.
+   * That list IS the trigger inventory this defect needed — the report said a
+   * board round-trip, and the mechanism said any repaint at all.
+   *
+   * WHAT THIS CANNOT SEE, as ever: it calls the render functions itself, so it
+   * says nothing about whether the browser's own 4s poll rebuilds the pane.
+   * `tests/drives/browser/holodeck.sh` measures that against a real timer.
+   */
+  case "composer": {
+    sandbox.writesActive = true;
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    const composer = () => one(deck(), "[data-holo=composer]");
+    const chipTexts = () => many(deck(), ".composer .img-chip-name").map(txt);
+    let node = composer();
+    out.found = !!node;
+    const snap = (label) => {
+      const now = composer();
+      const step = {
+        step: label,
+        value: now ? now.value : null,
+        // the node IDENTITY. A "draft survived" that is really "nothing was
+        // rebuilt" proves nothing about the defect.
+        rebuilt: now !== node,
+        chips: chipTexts(),
+        images: (sandbox.HOLO.drafts[cfg.activeId] || {}).images || [],
+      };
+      node = now;
+      out.steps.push(step);
+      return step;
+    };
+    out.steps = [];
+    if (node && cfg.type !== undefined) {
+      node.value = cfg.type;
+      node.fire("input", {});
+    }
+    if (node && cfg.paste) {
+      const file = { type: cfg.pasteType || "image/png",
+                     size: cfg.pasteSize || 64,
+                     name: cfg.pasteName || "reference.png" };
+      node.fire("paste", { clipboardData: {
+        items: [{ kind: "file", getAsFile() { return file; } }] } });
+    }
+    snap("typed");
+    (cfg.after || []).forEach((what) => {
+      switch (what) {
+        case "render":
+          sandbox.renderDeck();
+          break;
+        case "drawer":
+          // a class flip on the live DOM by design (Q3) — measured, not assumed
+          sandbox.holoDrawerSet(!sandbox.HOLO.drawer);
+          break;
+        case "banner":
+          sandbox.holoSetBanner("notice", { message: "a banner arrived" });
+          sandbox.renderDeck();
+          break;
+        case "switch":
+          // …to another program and back, which is the trigger the captain
+          // actually described.
+          sandbox.HOLO.activeId = cfg.otherId;
+          sandbox.renderDeck();
+          sandbox.HOLO.activeId = cfg.activeId;
+          sandbox.renderDeck();
+          break;
+        case "deckRoundTrip":
+          // ⬡ HOLODECK → ▦ BOARD → ⬡ HOLODECK, his exact words.
+          sandbox.holoSetMode(false);
+          sandbox.holoSetMode(true);
+          break;
+        /* S169 (FL-015) — the captain DECLARING the turn's shape on the
+         * composer, through the real control he would click. */
+        case "ask":
+        case "build": {
+          const opt = many(deck(), ".composer .holo-intent .iopt")
+            .find((n) => n.getAttribute("data-holo-intent") === what);
+          out.declared = !!opt;
+          if (opt) opt.click();
+          break;
+        }
+        case "send": {
+          FETCHES.length = 0;
+          const s = many(deck(), ".composer [data-ctl]")
+            .find((b) => /send/i.test(b.getAttribute("data-ctl") || ""));
+          if (s) s.click();
+          const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
+          out.sendPath = post ? post.url : null;
+          out.sendBody = post ? JSON.parse(post.opts.body) : null;
+          break;
+        }
+        case "enter": {
+          FETCHES.length = 0;
+          const ta = composer();
+          if (ta) ta.fire("keydown", { key: "Enter" });
+          const post = FETCHES.find((f) => (f.opts.method || "") === "POST");
+          out.sendPath = post ? post.url : null;
+          out.sendBody = post ? JSON.parse(post.opts.body) : null;
+          break;
+        }
+        default:
+          out.unknownStep = what;
+      }
+      snap(what);
+    });
+    out.drafts = JSON.parse(JSON.stringify(sandbox.HOLO.drafts));
+    /* S169 (FL-015) — THE AFFORDANCE ITSELF: both halves, which one is
+     * pressed, and the verb on the Send control (the only feedback that says
+     * the declaration took). Read off the painted composer, not off HOLO. */
+    out.intentOpts = many(deck(), ".composer .holo-intent .iopt").map((n) => ({
+      intent: n.getAttribute("data-holo-intent"),
+      text: txt(n),
+      pressed: n.getAttribute("aria-pressed"),
+      on: n.classList.contains("on"),
+      title: n.title || "",
+    }));
+    const sendCtl = many(deck(), ".composer [data-ctl]")
+      .find((b) => /send/i.test(b.getAttribute("data-ctl") || ""));
+    out.sendLabel = sendCtl ? txt(sendCtl) : null;
+    out.errText = txt(one(deck(), ".composer .errline"));
+    out.errHidden = one(deck(), ".composer .errline")
+      ? !!one(deck(), ".composer .errline").hidden : null;
+    break;
+  }
+  /* The INTENT panel's containers (FL-016). The scrim and the scrolling must
+   * be on DIFFERENT boxes — see board.css. This half only reports the shape;
+   * whether the darkening actually reaches the bottom of a long document is a
+   * PIXEL question and lives in tests/drives/browser/holodeck.sh. */
+  case "intentBoxes": {
+    loadPrograms(cfg);
+    sandbox.renderDeck();
+    const restore = sandbox.fetch;
+    const doc = cfg.concept || "## What it must do\n\n1. It remembers.\n";
+    sandbox.fetch = function (url, opts) {
+      FETCHES.push({ url: url, opts: opts || {} });
+      if (/\/preview\//.test(String(url)) && !(opts || {}).method) {
+        return syncThenable({ status: 200, ok: true,
+                              text() { return syncThenable(doc); } });
+      }
+      return restore(url, opts);
+    };
+    try {
+      const intent = one(deck(), ".pvt-b.intent");
+      if (intent) intent.click();
+      const panel = one(deck(), ".pv-intent");
+      out.panelPresent = !!panel;
+      out.panelChildren = panel
+        ? panel.children.map((n) => n.className) : null;
+      const scroll = panel ? one(panel, ".pv-intent-scroll") : null;
+      out.scrollPresent = !!scroll;
+      out.scrollChildren = scroll
+        ? scroll.children.map((n) => n.className) : null;
+      out.docInsideScroll = !!(scroll && one(scroll, ".intent-doc"));
+      const md = scroll ? one(scroll, ".md") : null;
+      out.mdInsideScroll = !!md;
+      // `setMd` writes innerHTML, so the rendered document is only readable
+      // there — textOf() sees none of it (same as the `intentToggle` act).
+      out.mdHtml = md ? md.innerHTML : null;
+    } finally {
+      sandbox.fetch = restore;
+    }
     break;
   }
   /* Clicking ▶ SEND TO ALIGN must ask the DAEMON for the hand-off — by session

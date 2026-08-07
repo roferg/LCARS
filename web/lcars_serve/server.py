@@ -472,9 +472,14 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 rest = path[len("/api/holodeck/"):]
                 parts = [p for p in rest.split("/") if p != ""]
                 if len(parts) == 2 and parts[1] == "say":
+                    # S169 (FL-015): `intent` is the captain's own declaration
+                    # of the turn's shape ("ask"/"build"), made on the composer.
+                    # Optional — absent normalises to "build", the branch whose
+                    # prompt already carries answer-then-stop as the default.
                     return actions.holodeck_say(parts[0],
                                                 text=body.get("text"),
-                                                images=self._images(body))
+                                                images=self._images(body),
+                                                intent=body.get("intent"))
                 if len(parts) == 2 and parts[1] == "end":
                     return actions.holodeck_end(parts[0])
                 # POST /api/holodeck/<sid>/promote — SEND TO ALIGN (S127). A

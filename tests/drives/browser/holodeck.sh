@@ -45,9 +45,37 @@
 # all. It stands in for yesterday's work, which is what the morning-state and
 # warm-restart checks are about.)
 #
+# S169 — THREE NEW LEGS, AND THE FIRST PIXEL MEASUREMENT IN THIS RIG. All three
+# came off the captain driving the real product on 2026-08-06:
+#
+#   • THE UNSENT TURN (FL-013). He typed a paragraph, went to the board to
+#     deploy main, came back and it was gone. The rig types, then sits still
+#     past two whole 4s safety-poll intervals with `renderDeck`/`render`
+#     instrumented — which ANSWERS, rather than assumes, whether the poll
+#     rebuilds the chat pane (measured on the shipping product: 3 board
+#     re-renders, 0 deck re-renders, same composer node) — and then drives his
+#     exact ⬡ HOLODECK → ▦ BOARD → ⬡ HOLODECK journey. The composer's node
+#     IDENTITY is asserted with the value: a draft that survives a round trip
+#     which never rebuilt the pane proves nothing.
+#   • A REAL PASTE (FL-014). A genuine ClipboardEvent carrying a real File is
+#     dispatched at the composer; an [Image #N] chip with a painted box must
+#     appear and the deck must be holding the image. Only a browser can say
+#     whether a real clipboard event reaches the handler on that textarea.
+#   • THE INTENT SCRIM, IN PIXELS (FL-016). `.pv-intent` was both the scroll
+#     container and its scrim's containing block, so the scrim was one
+#     viewport-height rectangle that scrolled away and left the captain's own
+#     requirements bare on the grid. NO EXISTING CHECK COULD SEE THIS — the rule
+#     resolves to a perfect colour either way, it is simply somewhere else. The
+#     driver photographs a clip of the screen behind a real line of text at the
+#     top of concept.md and again after really scrolling to the bottom, plus the
+#     bare grid beside the panel as calibration, and decodes the PNGs. The
+#     planted room's concept.md is LONG on purpose: without a document that
+#     overflows the pane the defect cannot appear, and that precondition is
+#     measured, not assumed.
+#
 # THE RED CONTROLS are the point of --calibrate: a check that cannot go red is
-# decoration. FOURTEEN variants each patch a COPY of web/ and each MUST make the
-# run fail — the deck's accent token deleted (paints nothing, keeps every box),
+# decoration. TWENTY-ONE variants each patch a COPY of web/ and each MUST make
+# the run fail — the deck's accent token deleted (paints nothing, keeps every box),
 # the board left visible under the deck (the replacement silently not
 # happening), the preview pane not laid out, `allow-same-origin` added back
 # beside `allow-scripts` (the sandbox reduced to decoration), the viewport pin
@@ -58,8 +86,14 @@
 # the banner re-asserting an authorship claim, plus a fenced block's declared
 # filename dropped from the render, and — fix round 2 — the morning state
 # pointing at nothing while a program waits in the list, and the chat header's
-# pill claiming WARM under the banner saying the conversation is over. This
-# repo's own web/ is never touched. `$LCARS_HOLODECK_VARIANTS` runs a SUBSET.
+# pill claiming WARM under the banner saying the conversation is over, and —
+# S169 — the intent scrim back on the scrolling box, the composer's draft back
+# in the DOM node and nowhere else, the safety poll rebuilding the deck, and the
+# composer with no paste handler on it, and — S169's FL-015 trio — the composer
+# with no ask/build control, the captain's declaration dropped on its way to the
+# worker (the switch lights up and the prompt is unchanged), and the working
+# strip asserting a RENDER again. This repo's own web/ is never touched.
+# `$LCARS_HOLODECK_VARIANTS` runs a SUBSET.
 #
 # AND A NON-ZERO EXIT IS NOT A CONTROL GOING RED (fix round 1b). Each variant is
 # judged off its own holodeck-check.json: its PRECONDITION must have fired (the
@@ -220,6 +254,26 @@ if opening is False and sid not in _opened():
     sys.stdout.write("Error: no conversation found with session id %s\n" % sid)
     sys.exit(1)
 
+# ── S169 (FL-015): AN ASK TURN IS NOT A BUILD TURN ─────────────────────────
+# The stub reads its own PROMPT and, when it carries the captain's explicit
+# declaration, answers WITHOUT writing. It is standing in for a model that obeys
+# the instruction — nothing here proves a real model would, and it is not meant
+# to: the LIVE leg does that. What this branch makes measurable end to end is
+# the PLUMBING — the composer's control → the POST's `intent` → the daemon's
+# declaration in the prompt → an unchanged room → the daemon's outcome note on
+# the screen. Break any link and the note on screen flips to the drift reading.
+prompt = ""
+for i, a in enumerate(argv):
+    if a == "-p" and i + 1 < len(argv):
+        prompt = argv[i + 1]
+        break
+if not grounding and "THE CAPTAIN DECLARED THIS TURN A QUESTION" in prompt:
+    sys.stdout.write(
+        "The events tab groups everything the run emitted, in order. It is a "
+        "READ surface — nothing on it is editable — which is why it has no "
+        "toolbar. I have changed nothing.\n")
+    sys.exit(0)
+
 if not grounding and _bump("design-turns") == 0:
     # THE FIRST DESIGN TURN DIES — NOISILY, at startup, before the CLI has
     # opened anything. `sid` is deliberately NOT remembered: nothing exists to
@@ -322,6 +376,41 @@ The holodeck's record of this program.
 
 **Holodeck:** Planted by the rig — first pass is up.
 TR
+  # THE CONCEPT DOC, AND IT IS DELIBERATELY LONG (S169, FL-016). The INTENT
+  # panel's readability scrim was on the same element as `overflow:auto`, so it
+  # was one viewport-height rectangle that scrolled away with the content and
+  # left everything past the first screen bare on the deck's grid. That defect
+  # CANNOT APPEAR on a document that fits the pane, so the fixture has to
+  # overflow it — this is the precondition of the pixel check in cdp.js, and it
+  # is asserted there rather than assumed here.
+  #
+  # It is planted (rather than written by the scripted worker) so the check's
+  # precondition holds under EVERY red control, including the ones that stop a
+  # design turn ever landing. The rig's own warm-restart leg opens this room.
+  {
+    cat <<'CONCEPT'
+# Nav rail — what it must do
+
+## WHAT IT MUST DO
+
+**Turn 1:** "give the tile editor a more modern UI look" — T1
+
+**Turn 2:** "the rail has to collapse, and it has to remember" — T2
+
+**Turn 3:** "I want to see the swatch labels without hovering" — T3
+
+## Decisions
+
+- The rail is 56px collapsed and 216px expanded.
+- The accent stays `#2de3c7` so this reads as part of the same product.
+- Radius is 6px everywhere, matching the grounding pass.
+CONCEPT
+    n=1
+    while [ "$n" -le 34 ]; do
+      printf '\n### Note %d\n\nThe swatch grid keeps a 6px radius and the accent stays #2de3c7, so the picker reads as part of the same product rather than a stranger'"'"'s panel. This paragraph exists to make the document longer than the pane it is read in.\n' "$n"
+      n=$((n + 1))
+    done
+  } >"$side/$SLUG/concept.md"
   cat >"$side/$SLUG/mockup.html" <<'MOCK'
 <!DOCTYPE html>
 <!-- VISUAL REFERENCE ONLY — a rig fixture standing in for a model-written
@@ -611,6 +700,133 @@ assert old in s, "the warm-pill control could not find the line it breaks"
 open(p, "w").write(s.replace(old, "  var warm = true;"))
 PY
       ;;
+    intent-scrim-scrolls-away)
+      # S169'S RED CONTROL FOR FL-016 — the scrim put back on the SCROLLING
+      # box, exactly as the captain met it. `.pv-intent` becomes both the
+      # scroll container and the scrim's containing block again, so the
+      # absolutely-positioned ::before is sized to the padding box and rides up
+      # with the content; and the inner scroller is collapsed away so the
+      # geometry is byte-for-byte the pre-fix one rather than an approximation
+      # of it. Every rule still resolves to a perfect colour — that is the
+      # whole point, and why no node harness under web/tests/ can see this.
+      "${LCARS_PYTHON_BIN:-python3}" - "$css" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+new = """.pv-intent{flex:1 1 auto;min-height:0;min-width:0;display:flex;
+  position:relative;color:var(--lcars-text);font-size:13.5px;line-height:1.6}"""
+old = """.pv-intent{flex:1 1 auto;min-height:0;overflow:auto;padding:18px 20px;
+  position:relative;color:var(--lcars-text);font-size:13.5px;line-height:1.6}"""
+assert new in s, "the FL-016 control could not find the .pv-intent rule"
+s = s.replace(new, old)
+s = s.replace(""".pv-intent .pv-intent-scroll{flex:1 1 auto;min-height:0;min-width:0;
+  overflow:auto;padding:18px 20px}
+""", "")
+open(p, "w").write(s)
+PY
+      cat >>"$js" <<'JS'
+
+/* RED CONTROL (holodeck.sh --calibrate): FL-016's panel, restored. The
+   document goes straight back into the box that carries the scrim, so that one
+   element is the scroll container AND the containing block again. */
+holoIntentScroller = function (host) { return host; };
+JS
+      ;;
+    draft-dies-on-repaint)
+      # S169'S RED CONTROL FOR FL-013 — the composer's value put back in the
+      # DOM node and nowhere else, which is precisely what it was when he lost
+      # a paragraph going to the board and back. Nothing else moves: the deck
+      # paints perfectly, the textarea is right there, and it is empty.
+      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = ('  var draft = holoDraftFor(p.sessionId);\n'
+       '  ta.value = draft.text || "";\n')
+assert old in s, "the FL-013 control could not find the draft restore"
+open(p, "w").write(s.replace(old, ""))
+PY
+      ;;
+    poll-rebuilds-the-deck)
+      # THE CONTROL FOR THE MEASUREMENT ITSELF (S169). On a healthy product the
+      # "does the 4s safety poll rebuild the chat pane?" check is SILENT, and a
+      # check that is only ever silent is indistinguishable from one that
+      # cannot fire. This makes every board poll rebuild the deck — the world in
+      # which an unsent turn dies four seconds after it is typed, whatever else
+      # is done about it — and the check has to say so.
+      cat >>"$js" <<'JS'
+
+/* RED CONTROL (holodeck.sh --calibrate): the safety poll rebuilding the deck. */
+render = (function (orig) {
+  return function (board) {
+    var r = orig.apply(this, arguments);
+    if (HOLO.on) renderDeck();
+    return r;
+  };
+})(render);
+JS
+      ;;
+    no-paste-on-the-composer)
+      # S169'S RED CONTROL FOR FL-014 — the composer with no paste handler,
+      # which is the state the captain met: a real clipboard event carrying a
+      # PNG arrives, nothing harvests it, nothing is sent, and the daemon's own
+      # honest refusal can never fire. Silence was the defect.
+      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = ('  var compImgs = attachImagePaster(ta, function (msg) { showErr(cerr, msg); }, {\n'
+       '    get: function () { return holoDraftFor(p.sessionId).images; },\n'
+       '    set: function (list) { holoDraftPut(p.sessionId).images = list; },\n'
+       '  });\n')
+assert old in s, "the FL-014 control could not find the composer's paster"
+new = ('  var compImgs = { payload: function () { return undefined; },\n'
+       '                   clear: function () {} };\n')
+open(p, "w").write(s.replace(old, new))
+PY
+      ;;
+    no-ask-on-the-composer)
+      # S169'S RED CONTROL FOR FL-015, CLIENT HALF — the composer with no
+      # ask/build control at all, which is what the captain had: every turn was
+      # a build turn and there was no way to say otherwise. The deck paints
+      # perfectly and the textarea is right there; the only thing missing is the
+      # one mechanism a rewording cannot defeat.
+      cat >>"$js" <<'JS'
+
+/* RED CONTROL (holodeck.sh --calibrate): the composer with no declaration. */
+holoIntentToggle = function () { return el("span", "grow"); };
+JS
+      ;;
+    ask-never-reaches-the-prompt)
+      # S169'S RED CONTROL FOR FL-015, DAEMON HALF — the captain's declaration
+      # dropped on the way to the worker. This is the failure mode a control
+      # like his invites: the switch is on the screen, it lights up when he
+      # clicks it, the POST carries it… and the prompt says exactly what it said
+      # before. Broken in the DAEMON on purpose — a client-only break would show
+      # up as a missing control, which the check above already owns; this one
+      # can ONLY be seen by driving the whole stack and looking at what the turn
+      # DID, which is the half that would have caught the original defect.
+      "${LCARS_PYTHON_BIN:-python3}" - "$dest/lcars_serve/actions.py" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '        return _ASK_DECLARED if intent == "ask" else _ANSWER_THEN_STOP'
+new = '        return _ANSWER_THEN_STOP'
+assert old in s, "the FL-015 control could not find the intent clause"
+open(p, "w").write(s.replace(old, new))
+PY
+      ;;
+    banner-says-rendering)
+      # S169'S RED CONTROL FOR FL-015'S SECOND HALF — the working strip
+      # asserting a RENDER again, which is what he read through a long turn on
+      # which he had asked a question. Nothing else moves: the strip is in the
+      # right place, animating, at the right moment. It simply claims a reason
+      # neither side has earned.
+      "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = 'var HOLO_WORKING_TEXT = "Working on the holodeck\u2026";'
+assert old in s, "the banner control could not find the working text"
+new = 'var HOLO_WORKING_TEXT = "Rendering on the holodeck\u2026";'
+open(p, "w").write(s.replace(old, new))
+PY
+      ;;
     grounding-sticks)
       # THE CRITICAL DEFECT, restored: the posture never leaves "grounding", so
       # every turn after the opening pass keeps read-only tools and the
@@ -634,7 +850,7 @@ PY
 # fix round just added without paying for fourteen full browser runs. The
 # default is every one of them, and a round is not calibrated until the default
 # has been run.
-VARIANTS="${LCARS_HOLODECK_VARIANTS:-no-accent board-stays flat-preview sandbox-decoration deck-grows grounding-sticks trace-eats-prose retry-is-a-dead-end n5-exit-code-in-banner retry-doubles-the-line two-voices-in-the-banner fence-loses-its-filename morning-points-nowhere warm-pill-lies}"
+VARIANTS="${LCARS_HOLODECK_VARIANTS:-no-accent board-stays flat-preview sandbox-decoration deck-grows grounding-sticks trace-eats-prose retry-is-a-dead-end n5-exit-code-in-banner retry-doubles-the-line two-voices-in-the-banner fence-loses-its-filename morning-points-nowhere warm-pill-lies intent-scrim-scrolls-away draft-dies-on-repaint poll-rebuilds-the-deck no-paste-on-the-composer no-ask-on-the-composer ask-never-reaches-the-prompt banner-says-rendering}"
 
 # ── WHAT EACH CONTROL OWNS (fix round 1b) ───────────────────────────────────
 # A NON-ZERO EXIT IS NOT A CONTROL GOING RED. Every variant here breaks ONE
@@ -660,7 +876,55 @@ variant_signature() {   # $1 = variant → the failure text that control OWNS
     fence-loses-its-filename)  echo "A FENCE'S DECLARED FILENAME NEVER REACHED THE SCREEN" ;;
     morning-points-nowhere)    echo "THE MORNING STATE POINTS AT NOTHING" ;;
     warm-pill-lies)            echo "THE SCREEN SAYS TWO THINGS AT ONCE" ;;
+    intent-scrim-scrolls-away) echo "THE INTENT SCRIM SCROLLS AWAY" ;;
+    draft-dies-on-repaint)     echo "THE HOLODECK ATE AN UNSENT TURN ON THE BOARD ROUND-TRIP" ;;
+    poll-rebuilds-the-deck)    echo "THE 4s POLL REBUILDS THE CHAT PANE" ;;
+    no-paste-on-the-composer)  echo "A PASTED IMAGE DID NOTHING ON THE COMPOSER" ;;
+    no-ask-on-the-composer)    echo "THE ASK AFFORDANCE IS NOT ON THE SCREEN" ;;
+    ask-never-reaches-the-prompt) echo "HE ASKED AND THE HOLODECK BUILT ANYWAY" ;;
+    banner-says-rendering)     echo "THE WORKING STRIP STILL ASSERTS A RENDER" ;;
     *)                         echo "" ;;
+  esac
+}
+
+# WHICH "PROVED NOTHING" LINES A CONTROL IS ALLOWED TO EMIT (S169).
+#
+# The judge below treats any "…CHECK PROVED NOTHING" line as a failed
+# PRECONDITION — the harness saying it could not look — and refuses to call the
+# control red on the strength of it. That rule is right, and it means a control
+# which BY CONSTRUCTION blinds one of the other checks would otherwise be
+# reported as proving nothing even when it went red for its own reason.
+#
+# Four of the eighteen do this to S169's INTENT-SCRIM check, and each does it
+# for a reason that is a fact about the control rather than a convenience:
+#
+#   no-accent      deletes `--holo-grid`, which is what the deck's grid LINES
+#                  are drawn in — so the check's own calibration sample (the
+#                  bare grid beside the panel) becomes the same colour as the
+#                  scrim, and "the text is backed" is unfalsifiable. The check
+#                  says so itself, which is the correct behaviour.
+#   flat-preview   hides the whole preview pane, so there is no laid-out line of
+#                  text anywhere to photograph.
+#   deck-grows     removes the viewport pin, so nothing scrolls internally: the
+#                  panel is as tall as the document and the scrim cannot leave.
+#   poll-rebuilds- rebuilds the deck every 4s, which destroys BOTH the composer
+#   the-deck       node mid-measurement and the intent panel's scroll position.
+#
+# Naming the exemption here keeps that honest and narrow — it exempts a LINE,
+# never the control's own signature, which is still required.
+variant_blind_exemptions() {   # $1 = variant → substrings that may be ignored
+  case "$1" in
+    no-accent|flat-preview|deck-grows)
+      echo "THE INTENT-SCRIM CHECK PROVED NOTHING" ;;
+    poll-rebuilds-the-deck)
+      echo "THE INTENT-SCRIM CHECK PROVED NOTHING|THE DRAFT CHECK PROVED NOTHING|THE ASK CHECK PROVED NOTHING|THE ASK-OUTCOME CHECK PROVED NOTHING" ;;
+    # S169: with no control on the composer there is nothing to click, so the
+    # ask TURN is never sent and its downstream checks correctly say they could
+    # not look. The control's own signature is still required.
+    no-ask-on-the-composer)
+      echo "THE ASK-TURN CHECK PROVED NOTHING|THE ASK-OUTCOME CHECK PROVED NOTHING|THE WORKING-COPY CHECK PROVED NOTHING" ;;
+    *)
+      echo "" ;;
   esac
 }
 
@@ -687,9 +951,11 @@ variant_needs_dead_turn() {   # $1 = variant → 0 if the dead first turn must f
 judge_control() {   # $1 = variant, $2 = its artifact dir
   "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2/holodeck-check.json" \
       "$(variant_signature "$1")" \
-      "$(variant_needs_dead_turn "$1" && echo yes || echo no)" <<'PY'
+      "$(variant_needs_dead_turn "$1" && echo yes || echo no)" \
+      "$(variant_blind_exemptions "$1")" <<'PY'
 import json, sys
 name, path, sig, needs_dead = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "yes"
+exempt = [x for x in (sys.argv[5] if len(sys.argv) > 5 else "").split("|") if x]
 try:
     with open(path) as fh:
         d = json.load(fh)
@@ -707,6 +973,9 @@ if not failures:
 blind = [f for f in failures if "CHECK PROVED NOTHING" in f]
 if not needs_dead:
     blind = [f for f in blind if "THE N4 CHECK PROVED NOTHING" not in f]
+# …and the lines this control is DECLARED to blind by construction (S169).
+for ex in exempt:
+    blind = [f for f in blind if ex not in f]
 if blind:
     print("    PRECONDITION DID NOT FIRE — this control proved NOTHING:")
     for f in blind:

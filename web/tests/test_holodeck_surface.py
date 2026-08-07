@@ -900,10 +900,15 @@ class DeckRenderTest(unittest.TestCase):
         self.assertTrue(out["hasComposer"])
         self.assertEqual(out["sendLabel"], "SEND ▸")
 
-    def test_a_turn_in_flight_shows_the_rendering_state(self):
+    def test_a_turn_in_flight_shows_the_WORKING_state_and_claims_no_more(self):
+        """S169 (FL-015) — it used to say RENDERING ON THE HOLODECK, over a turn
+        on which the captain had asked a question. A turn in flight is a turn in
+        flight; whether anything is being rendered is not known on either side
+        until something has been written."""
         out = _harness({"act": "deck", "programs": [PROG], "activeId": "s1",
                         "busy": True})
-        self.assertIn("RENDERING ON THE HOLODECK", out["workingText"].upper())
+        self.assertIn("WORKING ON THE HOLODECK", out["workingText"].upper())
+        self.assertNotIn("RENDER", out["workingText"].upper())
         self.assertTrue(out["sendDisabled"])
 
     def test_the_preview_is_an_iframe_over_the_jailed_route_and_is_sandboxed(self):
@@ -3280,8 +3285,12 @@ class EmptyPreviewIsLegibleTest(unittest.TestCase):
 # ════════════════════════════════════════════════════════════════════════════
 # S128 (FL-002 / FL-004) — WORK IN FLIGHT, ON EVERY SURFACE THAT OUTLIVES IT
 # ════════════════════════════════════════════════════════════════════════════
+# S169 (FL-015): `busyLabel` here mirrors the daemon's own copy — see
+# `_holodeck_busy_copy`, whose wording is pinned in test_holodeck_endpoints.
+# A fixture that keeps the OLD sentence while the daemon moves is S128's
+# cross-language drift with the two homes one directory apart.
 BUSY_PROG = dict(PROG, busy=True, busySince=1.0, busyFor=132.0,
-                 busyLabel="Still rendering — this turn started about 2 "
+                 busyLabel="Still working — this turn started about 2 "
                            "minutes ago",
                  busyReason="This program has been working on a turn for "
                             "about 2 minutes. The holodeck runs one turn at a "
@@ -3456,6 +3465,427 @@ class InFlightCssTest(unittest.TestCase):
         self.assertEqual(decls.get("animation"), "none",
                          "the dot keeps animating under "
                          "prefers-reduced-motion:reduce")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 (FL-013 + FL-014) — THE COMPOSER'S UNSENT TURN
+#
+# In the captain's words, on the S128 re-drive: "I was typing text, but hadn't
+# sent it in the holodeck, I switched back to the board to deploy main, and when
+# I came back my text was gone." And, one line later: "I can't paste in images
+# in my chat."
+#
+# They are ONE object's state and are tested as one: the draft and the pasted
+# screenshot are the same unsent turn, and both were lost for the same reason —
+# they lived only in a DOM node `renderDeck` rebuilds on every turn, program
+# switch, banner and deck re-entry.
+#
+# THE NODE IDENTITY IS ASSERTED ALONGSIDE THE VALUE. "The text survived" is
+# worth nothing if the pane was simply never rebuilt: that is the shape in which
+# this check would pass on a product that had not been fixed at all.
+# ════════════════════════════════════════════════════════════════════════════
+OTHER = dict(PROG, sessionId="s2", program="Tile picker",
+             programDir="/tmp/x/tile-picker",
+             turns=[{"text": "Swatch grid.", "reply": "Done."}])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class ComposerKeepsTheUnsentTurnTest(unittest.TestCase):
+    def _run(self, **kw):
+        cfg = {"act": "composer", "programs": [PROG, OTHER], "activeId": "s1",
+               "otherId": "s2"}
+        cfg.update(kw)
+        return _harness(cfg)
+
+    DRAFT = "The tile editor needs a modern toolbar, and it has to remember"
+
+    def test_a_re_render_does_not_eat_what_he_typed(self):
+        out = self._run(type=self.DRAFT, after=["render"])
+        after = out["steps"][-1]
+        self.assertTrue(after["rebuilt"],
+                        "the pane was not rebuilt, so this proves nothing "
+                        "about a draft surviving a rebuild")
+        self.assertEqual(after["value"], self.DRAFT)
+
+    def test_the_board_round_trip_he_actually_described(self):
+        """⬡ HOLODECK → ▦ BOARD → ⬡ HOLODECK. His exact journey."""
+        out = self._run(type=self.DRAFT, after=["deckRoundTrip"])
+        after = out["steps"][-1]
+        self.assertTrue(after["rebuilt"])
+        self.assertEqual(after["value"], self.DRAFT)
+
+    def test_switching_programs_and_back_keeps_each_ones_own_draft(self):
+        """The report named the board round-trip; the mechanism said ANY
+        repaint. This is the trigger a single-slot guard (`pvSid`'s shape)
+        would have cured the report on and left the defect in."""
+        out = self._run(type=self.DRAFT, after=["switch"])
+        after = out["steps"][-1]
+        self.assertTrue(after["rebuilt"])
+        self.assertEqual(after["value"], self.DRAFT)
+        # and it is filed under THAT program, not globally
+        self.assertEqual(out["drafts"]["s1"]["text"], self.DRAFT)
+        self.assertNotIn("s2", out["drafts"])
+
+    def test_a_banner_arriving_does_not_eat_it_either(self):
+        out = self._run(type=self.DRAFT, after=["banner"])
+        after = out["steps"][-1]
+        self.assertTrue(after["rebuilt"])
+        self.assertEqual(after["value"], self.DRAFT)
+
+    def test_the_drawer_toggle_does_not_rebuild_the_pane_at_all(self):
+        """MEASURED, not assumed. Q3's drawer is a class flip on the live DOM
+        precisely so it is not a re-render — so it was never a trigger, and
+        this records that rather than leaving it a guess."""
+        out = self._run(type=self.DRAFT, after=["drawer"])
+        after = out["steps"][-1]
+        self.assertFalse(after["rebuilt"])
+        self.assertEqual(after["value"], self.DRAFT)
+
+    def test_sending_the_turn_clears_the_draft(self):
+        out = self._run(type=self.DRAFT, after=["send"])
+        self.assertEqual(out["sendBody"]["text"], self.DRAFT)
+        self.assertEqual(out["steps"][-1]["value"], "")
+        self.assertNotIn("s1", out["drafts"])
+
+    def test_enter_sends_the_same_turn_and_clears_it_too(self):
+        out = self._run(type=self.DRAFT, after=["enter"])
+        self.assertEqual(out["sendBody"]["text"], self.DRAFT)
+        self.assertNotIn("s1", out["drafts"])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class ComposerTakesAPastedImageTest(unittest.TestCase):
+    """FL-014. The daemon has had an honest refusal for a pasted holodeck image
+    since S124 — and the captain could never read it, because there was no
+    paste handler on this textarea at all, so the clipboard event was never
+    harvested and nothing was ever sent. A pasted image did NOTHING, in
+    silence: the exact thing board.js's own header forbids."""
+
+    def _run(self, **kw):
+        cfg = {"act": "composer", "programs": [PROG, OTHER], "activeId": "s1",
+               "otherId": "s2", "paste": True}
+        cfg.update(kw)
+        return _harness(cfg)
+
+    def test_a_pasted_image_becomes_a_chip_on_the_composer(self):
+        out = self._run()
+        self.assertEqual(out["steps"][0]["chips"], ["[Image #1]"])
+
+    def test_the_image_survives_a_re_render_like_the_text_does(self):
+        """The same defect as FL-013 one field over: `attachImagePaster` kept
+        its list in a closure that dies with the node. Half a restored draft —
+        the words back, the screenshot silently gone — is worse than none, so
+        the chip is asserted back on screen too."""
+        out = self._run(type="make it look like this", after=["render"])
+        after = out["steps"][-1]
+        self.assertTrue(after["rebuilt"])
+        self.assertEqual(after["value"], "make it look like this")
+        self.assertEqual(after["chips"], ["[Image #1]"])
+        self.assertEqual(len(after["images"]), 1)
+
+    def test_the_image_rides_the_turn_it_was_pasted_on(self):
+        """The holodeck RESUMES a warm session and feeds only what he typed, so
+        an image that missed its own turn would never reach the model."""
+        out = self._run(type="like this", after=["send"])
+        body = out["sendBody"]
+        self.assertEqual(body["text"], "like this")
+        self.assertEqual(len(body["images"]), 1)
+        self.assertEqual(body["images"][0]["type"], "image/png")
+        self.assertEqual(body["images"][0]["dataB64"], "QUJD")
+        self.assertTrue(out["sendPath"].endswith("/api/holodeck/s1/say"))
+
+    def test_an_unsupported_paste_says_so_instead_of_vanishing(self):
+        out = self._run(pasteType="image/tiff")
+        self.assertEqual(out["steps"][0]["chips"], [])
+        self.assertFalse(out["errHidden"])
+        self.assertIn("PNG", out["errText"])
+
+    def test_an_oversized_paste_says_so_too(self):
+        out = self._run(pasteSize=99 * 1024 * 1024)
+        self.assertEqual(out["steps"][0]["chips"], [])
+        self.assertFalse(out["errHidden"])
+        self.assertIn("8 MB", out["errText"])
+
+    def test_a_turn_with_no_paste_sends_no_images_key_at_all(self):
+        """The regression guard: an ordinary turn's request body must be
+        byte-identical to what it was before this existed."""
+        out = _harness({"act": "composer", "programs": [PROG, OTHER],
+                        "activeId": "s1", "otherId": "s2",
+                        "type": "just words", "after": ["send"]})
+        self.assertNotIn("images", out["sendBody"])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class IntentPanelScrollsInsideItsScrimTest(unittest.TestCase):
+    """FL-016, the DOM half. The scrim must hang off a box that does NOT
+    scroll, with the document scrolling above it. This says nothing about
+    pixels — `tests/drives/browser/holodeck.sh` measures the composited colour
+    at the bottom of a long document, which is the only evidence that matters."""
+
+    def test_the_document_lives_in_a_scroller_inside_the_scrim_box(self):
+        prog = dict(PROG, conceptFile="concept.md")
+        out = _harness({"act": "intentBoxes", "programs": [prog],
+                        "activeId": "s1"})
+        self.assertTrue(out["panelPresent"])
+        self.assertEqual(out["panelChildren"], ["pv-intent-scroll"],
+                         "the scrim box must hold exactly the scroller — a "
+                         "second child of .pv-intent is content the scrim's "
+                         "own containing block is sized around")
+        self.assertTrue(out["docInsideScroll"])
+        # and the ONE markdown look is untouched (`setMd`'s `.md`), not a
+        # second style started inside the new container.
+        self.assertTrue(out["mdInsideScroll"])
+        self.assertIn("What it must do", out["mdHtml"])
+
+
+class IntentScrimCssTest(unittest.TestCase):
+    """The stylesheet half of FL-016, and the reason it is worth asserting: the
+    bug was ONE element carrying both `overflow:auto` and `position:relative`,
+    which makes it both the scroll container and the scrim's containing block.
+    An absolutely-positioned child of a scroll container is sized to the padding
+    box and scrolls with the content, so the darkening slid off and everything
+    past the first screen sat bare on the deck's grid."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rules, cls.vars = css.load_stylesheets(css.CSS_SHEETS)
+
+    def _merged(self, selector):
+        out = {}
+        for r in self.rules:
+            if r.selector.replace(" ", "") != selector or r.conditional:
+                continue
+            for p, v, _imp in r.decls:
+                out[p] = v
+        return out
+
+    def test_the_scrim_box_does_not_scroll(self):
+        decls = self._merged(".pv-intent")
+        self.assertTrue(decls, "no unconditional .pv-intent rule")
+        self.assertEqual(decls.get("position"), "relative")
+        self.assertNotIn(
+            "overflow", decls,
+            "`.pv-intent` is the scrim's containing block; giving it "
+            "`overflow:auto` again puts the scrim back on the scrolling box "
+            "and it will slide off exactly as it did (FL-016)")
+
+    def test_the_scroller_is_a_different_box(self):
+        decls = self._merged(".pv-intent.pv-intent-scroll")
+        self.assertTrue(decls, "no rule for the intent panel's scroller")
+        self.assertEqual(decls.get("overflow"), "auto")
+        self.assertNotIn("position", decls,
+                         "the scroller must not become a containing block too")
+
+    def test_the_fill_is_uniform_where_text_sits(self):
+        """The other half of FL-016. `ellipse 78% 74% at 50% 45%` was tuned for
+        ONE screen and is down to rgba(...,.55) at its own edges, so legibility
+        degraded before the scrim even left. A scrim that no longer moves has
+        to hold everywhere text can be."""
+        before = self._merged(".pv-intent::before")
+        bg = before.get("background", "")
+        alphas = re.findall(r"rgba\(3,\s*6,\s*8,\s*\.(\d+)\)", bg)
+        self.assertTrue(alphas, "the intent scrim lost its rgba(3,6,8,…) fill")
+        weakest = min(float("0." + a) for a in alphas)
+        self.assertGreaterEqual(
+            weakest, 0.85,
+            "the weakest stop in the intent scrim is %s — the old ellipse fell "
+            "to .55 at its edges and the captain read his own requirements "
+            "through it" % weakest)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 (FL-015) — THE COMPOSER'S OPTIONAL DECLARATION, AND THE OUTCOME NOTE
+#
+# The captain asked the holodeck what it meant by the events tab. It answered
+# him AND rebuilt part of the mockup he had not asked it to touch, and nothing
+# on the screen said so.
+#
+# Two things live here. The AFFORDANCE — his own explicit declaration of the
+# turn's shape, which a rewording cannot defeat — and the OUTCOME NOTE, which is
+# the daemon stating what the turn actually did.
+#
+# THE TRAP, named so nobody re-introduces it: there is NO question-vs-
+# instruction classifier anywhere in this feature, on either side. S156's regex
+# classifier fell from 14/14 to 5/14 the moment a tester reworded its own corpus
+# preserving meaning. Nothing here reads his sentence.
+# ════════════════════════════════════════════════════════════════════════════
+@unittest.skipIf(NODE is None, "node not installed")
+class ComposerDeclaresAskOrBuildTest(unittest.TestCase):
+    def _run(self, **kw):
+        cfg = {"act": "composer", "programs": [PROG, OTHER], "activeId": "s1",
+               "otherId": "s2"}
+        cfg.update(kw)
+        return _harness(cfg)
+
+    def test_both_halves_are_on_the_composer_with_BUILD_selected(self):
+        """OPTIONAL BY CONSTRUCTION: the control opens on BUILD, so a captain
+        who never touches it gets exactly today's behaviour. If asking required
+        flipping a switch, it would become the switch he forgot and blamed."""
+        out = self._run()
+        self.assertEqual([o["intent"] for o in out["intentOpts"]],
+                         ["build", "ask"])
+        self.assertEqual([o["pressed"] for o in out["intentOpts"]],
+                         ["true", "false"])
+        self.assertEqual(out["sendLabel"], "Send ▸")
+        # and it says what each half MEANS, in the deck's own words.
+        ask = out["intentOpts"][1]
+        self.assertIn("answers and changes nothing", ask["title"])
+
+    def test_declaring_ASK_shows_on_the_control_AND_on_the_send_verb(self):
+        """A declaration with no feedback is a switch he flips and then wonders
+        about. The verb on the button is the feedback, and it is read off the
+        same draft field the POST reads, so the two cannot disagree."""
+        out = self._run(type="what is the events tab?", after=["ask"])
+        self.assertEqual([o["pressed"] for o in out["intentOpts"]],
+                         ["false", "true"])
+        self.assertTrue(out["intentOpts"][1]["on"])
+        self.assertEqual(out["sendLabel"], "Ask ▸")
+
+    def test_the_declaration_rides_the_turn_it_was_made_on(self):
+        out = self._run(type="what is the events tab?", after=["ask", "send"])
+        self.assertEqual(out["sendBody"]["intent"], "ask")
+        self.assertEqual(out["sendBody"]["text"], "what is the events tab?")
+        self.assertTrue(out["sendPath"].endswith("/api/holodeck/s1/say"))
+
+    def test_enter_carries_the_declaration_too(self):
+        """Two send paths, one reading. A composer where the button asks and
+        the Enter key builds is worse than no control."""
+        out = self._run(type="why that spacing?", after=["ask", "enter"])
+        self.assertEqual(out["sendBody"]["intent"], "ask")
+
+    def test_an_undeclared_turn_still_declares_BUILD_explicitly(self):
+        out = self._run(type="widen the rail", after=["send"])
+        self.assertEqual(out["sendBody"]["intent"], "build")
+
+    def test_the_declaration_survives_a_repaint_like_the_rest_of_the_draft(self):
+        """It is the third field of ONE unsent turn — what he typed, what he
+        pasted, what shape it is — so it lives in `HOLO.drafts[sid]` beside
+        them and not in a fourth store. A declaration that a re-render eats is
+        FL-013 again, one field over."""
+        out = self._run(type="what is this?", after=["ask", "render"])
+        self.assertTrue(out["steps"][-1]["rebuilt"])
+        self.assertEqual(out["drafts"]["s1"]["intent"], "ask")
+        self.assertEqual([o["pressed"] for o in out["intentOpts"]],
+                         ["false", "true"])
+        self.assertEqual(out["sendLabel"], "Ask ▸")
+
+    def test_it_is_PER_PROGRAM_like_the_rest_of_the_draft(self):
+        out = self._run(type="what is this?", after=["ask", "switch"])
+        self.assertEqual(out["drafts"]["s1"]["intent"], "ask")
+        self.assertNotIn("s2", out["drafts"])
+
+    def test_sending_RESETS_it_so_ASK_never_leaks_into_the_next_turn(self):
+        """It is a per-TURN declaration, not a mode. A sticky ASK would be
+        worse than no control at all: he flips it once, types "make the rail
+        wider" three turns later, and gets an answer."""
+        out = self._run(type="what is this?", after=["ask", "send"])
+        self.assertNotIn("s1", out["drafts"])
+        self.assertEqual([o["pressed"] for o in out["intentOpts"]],
+                         ["true", "false"])
+
+    def test_he_can_change_his_mind_back(self):
+        out = self._run(type="widen the rail", after=["ask", "build", "send"])
+        self.assertEqual(out["sendBody"]["intent"], "build")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class TurnOutcomeIsOnTheTurnTest(unittest.TestCase):
+    """The half that would have caught the defect when it happened.
+
+    The daemon reads both facts off the audit it already runs; this side
+    renders its sentence and invents nothing (the one-voice rule — S125 lost
+    two rounds to a client banner beside the daemon's).
+    """
+
+    ASKED = {"intent": "ask", "wrote": False, "files": [],
+             "message": "Answered — nothing was written. The mockup and the "
+                        "concept doc are exactly as they were."}
+    DRIFT = {"intent": "ask", "wrote": True, "files": ["mockup.html"],
+             "message": "You marked this turn a question, and it wrote "
+                        "mockup.html anyway. The design moved on a turn you "
+                        "did not direct — look at the preview before you "
+                        "build on it."}
+
+    def test_a_turn_that_wrote_nothing_says_so_on_the_turn(self):
+        out = _harness({"act": "turnOutcome", "programs": [PROG],
+                        "activeId": "s1", "turnOutcome": self.ASKED})
+        self.assertTrue(out["outcomePresent"])
+        self.assertIn("Nothing written", out["outcomeLabel"])
+        self.assertIn("nothing was written", out["outcomeText"])
+        self.assertIn(" no", out["outcomeClass"])
+
+    def test_a_declared_question_that_wrote_is_marked_as_DRIFT(self):
+        out = _harness({"act": "turnOutcome", "programs": [PROG],
+                        "activeId": "s1", "turnOutcome": self.DRIFT})
+        self.assertTrue(out["outcomePresent"])
+        self.assertIn("Changed on a question", out["outcomeLabel"])
+        self.assertIn("mockup.html", out["outcomeText"])
+        self.assertIn(" drift", out["outcomeClass"])
+
+    def test_the_words_are_the_DAEMONS_verbatim(self):
+        out = _harness({"act": "turnOutcome", "programs": [PROG],
+                        "activeId": "s1", "turnOutcome": self.DRIFT})
+        self.assertIn(self.DRIFT["message"], out["outcomeText"])
+
+    def test_an_ordinary_build_turn_draws_no_note_at_all(self):
+        """The daemon withholds the SENTENCE on a plain build turn that wrote —
+        the file chips already say it, and a note that speaks every turn is a
+        note people stop reading. This asserts the client draws nothing when
+        the daemon says nothing, rather than inventing its own rule."""
+        out = _harness({"act": "turnOutcome", "programs": [PROG],
+                        "activeId": "s1",
+                        "turnOutcome": {"intent": "build", "wrote": True,
+                                        "files": ["mockup.html"],
+                                        "message": ""}})
+        self.assertFalse(out["outcomePresent"])
+
+    def test_a_turn_with_no_outcome_at_all_is_byte_identical_to_before(self):
+        out = _harness({"act": "turnOutcome", "programs": [PROG],
+                        "activeId": "s1", "turnOutcome": None})
+        self.assertFalse(out["outcomePresent"])
+
+
+class OutcomeNoteIsLegibleTest(unittest.TestCase):
+    """S162's lesson, applied before it can bite: a rule that tests green and
+    never reaches the screen. The DRIFT note is the one that matters, so it
+    must not resolve to muted metadata the way S162's amber warning did."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rules, cls.vars = css.load_stylesheets(css.CSS_SHEETS)
+
+    def _merged(self, selector):
+        out = {}
+        for r in self.rules:
+            if r.selector.replace(" ", "") != selector or r.conditional:
+                continue
+            for p, v, _imp in r.decls:
+                out[p] = v
+        return out
+
+    def test_the_drift_note_has_a_background_of_its_own_not_just_ink(self):
+        decls = self._merged(".holo-outcome.drift")
+        self.assertTrue(decls, "no rule for the drift outcome note")
+        self.assertIn("background", decls)
+        self.assertIn("border-left", decls)
+
+    def test_the_two_readings_are_visually_distinct(self):
+        drift = self._merged(".holo-outcome.drift")
+        calm = self._merged(".holo-outcome.no")
+        self.assertTrue(calm)
+        self.assertNotEqual(drift.get("background"), calm.get("background"))
+
+    def test_the_label_takes_its_own_colour_rather_than_inheriting(self):
+        """S162 exactly: `.card .no` tied on specificity and won on source
+        order, so the warning rendered in the muted metadata colour."""
+        # `_merged` strips spaces, so a descendant selector arrives joined.
+        self.assertIn("color", self._merged(".holo-outcome.drift.cl"))
+        self.assertIn("color", self._merged(".holo-outcome.no.cl"))
+
+    def test_the_selected_half_of_the_intent_control_is_not_ink_alone(self):
+        decls = self._merged(".composer.holo-intent.iopt.on")
+        self.assertTrue(decls, "no rule for the selected intent half")
+        self.assertIn("background", decls)
 
 
 if __name__ == "__main__":

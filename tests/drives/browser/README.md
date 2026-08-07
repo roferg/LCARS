@@ -169,7 +169,7 @@ rendered as two bare text runs jammed together — `⬡ Preview▤ Intent` — b
 the `.pv-toggle` / `.pvt-b` rules had never been written. Every unit test was
 green; the picture was not.
 
-**The fourteen red controls** (`--calibrate`) each patch a *copy* of `web/` and each
+**The twenty-one red controls** (`--calibrate`) each patch a *copy* of `web/` and each
 must make the run fail: `--holo-grid` deleted (the deck paints transparent while
 every box stays perfect), the `body.on-deck` hiding rules neutered (the board
 still laid out under the deck), the preview pane `display:none` (present in
@@ -226,8 +226,94 @@ no CSS can be greenest about:
   CLAUDE`. The defect exists only as a *contradiction*, so only a rig that reads
   both strings at once can see it. It writes `holodeck-warm-restart.png`.
 
+### S169 added four more, and the first PIXEL measurement in this rig
+
+Three defects the captain hit driving the real product on 2026-08-06 — two in
+the chat composer, one in the INTENT panel — plus a control for the measurement
+itself.
+
+- **`draft-dies-on-repaint` (FL-013).** *"I was typing text, but hadn't sent it
+  in the holodeck, I switched back to the board to deploy main, and when I came
+  back my text was gone."* The composer is built as a fresh `<textarea>` on
+  every render, so its value lived only in that node. The rig now types a
+  paragraph and drives his exact journey — `⬡ HOLODECK` → `▦ BOARD` →
+  `⬡ HOLODECK`, through the real band control — then reads the value back. **The
+  node identity is asserted alongside it**: a draft that "survived" a round trip
+  which never rebuilt the pane is the shape in which this check would pass on a
+  product that had not been fixed at all.
+- **`poll-rebuilds-the-deck`** is the control for the *other* half of that leg,
+  and it exists because on a healthy product that half is **silent**. Before
+  typing, the rig wraps `renderDeck` and `render` in counters, then sits still
+  for 2.4 poll intervals and reports what actually ran. **Measured on the
+  shipping product: 3 board re-renders, 0 deck re-renders, the same composer
+  node** — so the 4s safety poll does *not* rebuild the chat pane, and an unsent
+  turn dies on interactions rather than on a timer. That was an open question in
+  the ledger, not an assumption, and it is now a number. This control makes the
+  poll rebuild the deck, i.e. the world in which a draft dies four seconds after
+  it is typed whatever else is done about it, and the check must say so.
+- **`no-paste-on-the-composer` (FL-014).** *"I can't paste in images in my
+  chat."* The rig dispatches a **real `ClipboardEvent` carrying a real `File`**
+  at the composer and requires an `[Image #N]` chip with a painted box, plus the
+  deck actually holding the image. Only a browser can say whether a genuine
+  clipboard event is harvested by the handler attached to that textarea; the
+  per-engine argv it then rides on (`--attachment` for copilot, a path in the
+  prompt for claude) is the unit suite's job.
+- **`intent-scrim-scrolls-away` (FL-016)** — *"the darker background to help
+  read the text disappears as you scroll down"* — and this one needed **pixels**.
+  `.pv-intent` was both the scroll container and the containing block of its
+  readability scrim, so the `::before` was sized to the padding box and scrolled
+  away with the content, leaving everything past the first screen bare on the
+  deck's 22px grid. **Nothing already in this repo could see that**: the CSS
+  rule resolves to a perfectly good colour either way — it is simply somewhere
+  else — so even a computed-style read (the S168 legend swatches) says it is
+  fine. `cdp.js` now carries a small PNG reader over node's own `zlib`, and the
+  check photographs a clip of the screen behind a real line of text at the top
+  of `concept.md` and again after really scrolling to the bottom, plus a third
+  sample of the bare grid from the stage's padding band as calibration. Measured
+  on 2026-08-06: **`rgb(3,6,8)` at both ends of a 3572px document in a 646px
+  pane, against a bare grid of `rgb(4,16,15)`**; with the control applied, the
+  bottom sample is `rgb(4,16,15)` — *identical* to the grid. The planted room's
+  `concept.md` is a long fixture precisely so the document overflows the pane,
+  and the check FAILS as "PROVED NOTHING" if it does not. It writes
+  `holodeck-intent-scrolled.png`.
+
+#### S169's second wave — you cannot ask the holodeck anything (FL-015)
+
+*"I asked it what is it mean by the events tab and it's doing a long 'rendering
+to holodeck' turn. This was a question about its design, not a request to update
+the UI."* And, sharpening it: *"it answered my question, but also spent a lot of
+time on the events tab."* **The mockup moved on a turn he had not directed.**
+
+**What this rig can and cannot prove, stated before the controls.** Whether a
+real model answers-then-stops is a *model* choice, and no rig on this path can
+stand in for it — the live leg does that, and the endpoint suite records the full
+`-p` prompt so the live leg can diff what a real worker was handed. What only a
+browser can answer is everything else, and that is what these three own.
+
+- **`no-ask-on-the-composer`** — the composer with no ask/build control at all,
+  which is the state he was in: every turn was a build turn and there was no way
+  to say otherwise. The rig requires **two laid-out, hit-testable halves**, the
+  control **opening on BUILD** (it must be genuinely optional — a switch he has
+  to remember to flip is one he will forget and blame), `aria-pressed` flipping
+  on the click, and the **Send verb changing to `Ask ▸`**, because a declaration
+  with no feedback is a switch he flips and then wonders about.
+- **`ask-never-reaches-the-prompt`** — the declaration dropped on its way to the
+  worker, broken in the **daemon**. This is the failure mode a control like his
+  invites: the switch is on the screen, it lights up when he clicks it, the POST
+  carries it… and the prompt says exactly what it said before. It can only be
+  seen by driving the whole stack and looking at what the turn **did** — which is
+  the half that would have caught the original defect. The rig declares ASK,
+  sends a real question, and the scripted worker (which branches on the
+  declaration it was handed) answers without writing; the deck must then show the
+  daemon's *nothing was written* note, not its drift reading.
+- **`banner-says-rendering`** — the working strip asserting a RENDER again. The
+  strip is captured **in the same evaluate as the click** (`holoSay` sets
+  `HOLO.busy` and re-renders synchronously), so there is no race and no polling.
+  Until a turn has written something, "rendering" is a reason neither the daemon
+  nor the deck has earned; "working" is honest for both kinds of turn.
+
 `$LCARS_HOLODECK_VARIANTS` calibrates a **subset** (space-separated names), for
-re-proving the controls a fix round just added without paying for fourteen full
+re-proving the controls a fix round just added without paying for twenty-one full
 browser runs. The default is all of them, and a round is not calibrated until
 the default has been run.
 
@@ -266,6 +352,21 @@ And the summary can no longer lie about it. Every variant is judged off its own
 
 Anything short of both is loud, categorised (`N CONTROL(S) WENT RED WITHOUT
 PROVING ANYTHING`) and non-zero.
+
+**S169 — the one narrow escape hatch, `variant_blind_exemptions`.** A control
+can blind another check *by construction*, and then the rule above reports it as
+proving nothing even though it went red for its own reason.
+`poll-rebuilds-the-deck` is the case: making every board poll rebuild the deck
+is exactly the world in which the composer node cannot survive a round trip
+either, so the draft leg's own blind line fires alongside the poll failure. The
+table names the **specific line** a specific control may emit — never the
+control's own signature, which is still required — so an exemption is a
+one-line, reviewable claim rather than a category of failure being waved
+through. S169 also merged the intent-scrim check's two failure sentences into
+one for the same reason in reverse: the control landed *between* them (its
+bottom sample is 12.2 from the top sample and 0.0 from the bare grid, so which
+sentence fired was decided by a rounding), and two sentences for one defect is
+how a signature table goes quietly wrong.
 
 **Fix round 3 — no second exemption was added.** `--calibrate` could not run
 green on a clean tree: `retry-is-a-dead-end` breaks the retry by construction,
@@ -410,6 +511,65 @@ later re-render made it one. A node harness could not see it either, until it wa
 changed to read the badge **render built** instead of calling `logBugBadge`
 itself with the globals already populated.
 
+## The fifth rig: `handoff.sh` (S169)
+
+```
+bash tests/drives/browser/handoff.sh              # the product
+bash tests/drives/browser/handoff.sh --calibrate  # the RED CONTROLS (7)
+bash tests/drives/browser/handoff.sh --all        # both
+```
+
+**The one screen a Mission is filed from**, measured at **1440x677** — the
+window height that produced S128's D1.
+
+**Why it exists at all, twice over.** S128 built a rig for this same dialog,
+proved a real defect with it, and then tore it down; that is the third round
+running (S140's headed rig, S163's) where the equipment had to be rebuilt from
+scratch. And the defect it found is the defect S169 walks straight back into:
+the promote dialog's body is 1812px against a ~677px window, and its open
+questions sat 546–780px **below the fold** while ▦ File Mission did not — the
+session's own stated goal, shipped and invisible to all 1,100+ harnesses under
+`web/tests/`, because every one of them is a node DOM with no CSS and no layout.
+
+S169 pours two more sections into that same box (what the mockup CHANGES about
+the app you have today, and what it IMPLIES that nobody settled). So this rig
+does not check that the text exists — 30 unit tests own that, and every one of
+them stays green on a box the captain cannot read. It measures:
+
+- the draft the **daemon actually delivered** to the live textarea, by its three
+  section headings (a node harness calls the builders itself and stays green
+  against a daemon that sends nothing — the `ghe-links.sh` lesson);
+- the box **fully on screen at rest**, and hit-testable;
+- **how many of its lines are visible at once** — an eight-row slot holding a
+  31-line draft shows him his own words and hides the two new sections under
+  them, which is D1 one level down;
+- that the rest is **reachable**, proven by scrolling the textarea to its own
+  bottom and reading back where it went;
+- that the line under the box **names what the draft is made of** and is wholly
+  inside `.modal-body`'s **clipping band** — not merely inside the window, which
+  is a different and weaker claim;
+- that **▦ File Mission** is still hit-testable (`elementFromPoint`, never "it
+  is in the DOM"), and that S128's open-questions cue still is too.
+
+**The fixture is the real room.** `web/tests/fixtures/s128-drive/concept.md` is
+a byte copy of the concept doc the holodeck wrote for the program whose mission
+then lost the look — the same file the unit suite uses. It is copied into a
+planted sidecar as an **archived** program, so the whole path (enter the deck →
+pick it back up → ▶ Send to Align) spawns **no worker at all**: `holodeck_open`
+is a warm restart off disk and `holodeck_promote` is a read. Zero tokens, and
+the run reports 0 shim invocations.
+
+**What it caught on its very first run**, before a single control was written:
+`brief.focus()` scrolled `.modal-body` down by **234px**, so the dialog opened
+with the top of the captain's own words **55px above the window** — the draft
+had grown and the first thing on screen was the middle of it. Cured in
+`openHandoff` (caret to character 0, body pinned to the top). Nothing under
+`web/tests/` can see that.
+
+**Exit 5** is this rig's, for the same reason `4` is the holodeck's: it fails on
+a board that painted and a deck that opened, and borrowing either of their codes
+would make smoke.sh print the wrong accusation.
+
 ## Exit codes
 
 | code | meaning |
@@ -418,6 +578,7 @@ itself with the globals already populated.
 | `1` | it did not paint — a real failure. The screenshot is a picture of exactly what the browser saw. |
 | `3` | it painted, but was **served incomplete** — a same-origin stylesheet did not load, so the screenshot is a picture of a *phantom*, not of the product. |
 | `4` | the board painted; the **holodeck check** failed. Only possible under `LCARS_BROWSER_HOLODECK_CHECK`, and `cdp.js` prints each `✗ <reason>` plus the precondition. |
+| `5` | the board painted and the deck opened; the **hand-off check** failed. Only possible under `LCARS_BROWSER_HANDOFF_CHECK`, and `cdp.js` prints each `✗ <reason>`. |
 | `77` | **SKIPPED / INFRASTRUCTURE**, loudly, with the reason named. Never a pass. |
 
 A rig that quietly succeeds when it did nothing is the same disease as the blank
@@ -446,6 +607,8 @@ Each run gets its own directory (`mktemp -d`, or `LCARS_BROWSER_OUT`):
 | `board.png` | **the screenshot** — the whole board, all Stage columns |
 | `legend.png` | (with `LCARS_BROWSER_LEGEND_CHECK`) a 3× close-up of the legend strip |
 | `legend-check.json` | (ditto) every swatch's resolved colour, box, backdrop and contrast |
+| `handoff.png` | (with `LCARS_BROWSER_HANDOFF_CHECK`) the ▶ SEND TO ALIGN dialog, **viewport-sized** — a picture of what the captain actually sees at 677px |
+| `handoff-check.json` | (ditto) the brief box's geometry and content, the modal body's clipping band, and the hit-test of every control |
 | `result.json` | card count, column count, status line, card text, page errors, Chrome version |
 | `daemon.log` | the daemon's stderr, including the URL it bound |
 | `chrome.log` | Chrome's stderr |
@@ -500,6 +663,8 @@ prunes older sibling dirs from its own `mktemp` namespace, keeping the newest 5
 | `LCARS_BROWSER_TIMEOUT` | `30000` | ms to wait for the paint. **Minimum 2000** — below that nothing could be proven, so it is a loud skip, never a verdict |
 | `LCARS_BROWSER_BASEFRESH` | *(unset)* | path to a base-freshness record JSON, planted as the stub reporter behind `GET /api/base-freshness` |
 | `LCARS_BROWSER_CONSOLE_CHECK` | *(unset)* | path to an expectation JSON — makes the driver open the File console and **measure** its pre-flight line |
+| `LCARS_BROWSER_HANDOFF_CHECK` | *(unset)* | path to an expectation JSON — makes the driver enter the deck, pick the planted program back up and open **▶ SEND TO ALIGN**, then measure the pre-drafted brief where it is read. See `handoff.sh` |
+| `LCARS_HANDOFF_VARIANTS` | all seven | run a SUBSET of `handoff.sh --calibrate`'s red controls |
 
 ### The seam serves the *whole* app
 

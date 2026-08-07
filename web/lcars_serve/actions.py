@@ -591,7 +591,7 @@ class _AlignSession(object):
     __slots__ = ("idea", "engine", "transcript", "prd", "done",
                  "worker_sid", "started", "image_paths", "mission_id",
                  "last_question", "holodeck", "holodeck_missing",
-                 "turn_started")
+                 "turn_started", "finalize_started")
 
     def __init__(self, idea, engine, mission_id=None, holodeck=None,
                  holodeck_missing=()):
@@ -634,6 +634,23 @@ class _AlignSession(object):
         # dies takes the fact with it, so nothing can read "still scanning"
         # forever. Same posture as `_HolodeckSession.turn_started` (f667ce8).
         self.turn_started = None
+        # S169 (FL-017) — WHEN THE FINALIZE BEGAN, or None. The CLOSING answer
+        # POST does not end at the worker call: it then runs the cold-opus cost
+        # estimator and `file.sh --complete <id>` IN PLACE, which is minutes.
+        # `turn_started` is deliberately scoped to the worker call only, so it
+        # is silent for that whole window — and the client filled the silence
+        # with a 300s `setTimeout` that cleared its own band and re-armed the
+        # card, presenting a run that was still going as one that had stopped.
+        # That is FL-009's exact shape with a longer fuse, and the captain hit
+        # it live ("OK the mission is costing after the grill").
+        #
+        # So the daemon owns this fact too. Set immediately before the file.sh
+        # dispatch and cleared in its `finally`, so the guard's lifetime IS the
+        # dispatch's lifetime; a dispatch that dies takes the fact with it, and
+        # a daemon restarted mid-finalize has no sessions at all — the card
+        # reads parked and clickable again, which is the honest answer, because
+        # that finalize is gone.
+        self.finalize_started = None
         # S91 — every image the captain has pasted across this grill's turns,
         # staged on disk under repo_root. Accumulated (not reset per turn) so
         # claude can Read an earlier turn's image if a later turn references it;
@@ -784,18 +801,47 @@ def _holodeck_elapsed_phrase(seconds):
     return "about an hour" if hours <= 1 else "about %d hours" % hours
 
 
+def _english_list(items):
+    """`a`, `a and b`, `a, b and c` — file names in a sentence (S169)."""
+    items = [str(i) for i in (items or []) if str(i)]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return "%s and %s" % (", ".join(items[:-1]), items[-1])
+
+
+def _turn_intent(intent):
+    """NORMALISE the captain's declared turn shape — "ask" or "build" (S169).
+
+    Everything that is not the explicit declaration is "build", which is the
+    prompt branch that already carries answer-then-stop as the default. So an
+    absent, misspelled or hostile value degrades to the behaviour a captain who
+    never touched the control gets, and the control stays genuinely optional.
+    """
+    return "ask" if str(intent or "").strip().lower() == "ask" else "build"
+
+
 def _holodeck_busy_copy(seconds):
     """(label, reason) for a turn that has been running `seconds`.
 
     label  — the deck's working strip, in place of the client's own
-             "Rendering on the holodeck…" the moment the DAEMON is the one
+             "Working on the holodeck…" the moment the DAEMON is the one
              reporting it (a returning deck has no idea when it started).
+
+    S169 (FL-015) — IT NO LONGER SAYS "RENDERING". The captain asked the deck a
+    question and watched a long turn go by under a banner asserting it was
+    rendering; the daemon knows a turn is RUNNING and knows nothing whatever
+    about what kind of turn it is until it has written something. "Rendering" is
+    a reason the daemon has not earned, and inventing a reason for a state you
+    can only see the shape of is exactly what `f667ce8` cured everywhere else on
+    this board. "Working" is honest for both kinds of turn.
     reason — why Send is disabled, and the one thing a captain who came back to
              a locked composer actually wants: that nothing is stuck, that
              leaving is safe, and that his work is being saved either way.
     """
     ago = _holodeck_elapsed_phrase(seconds)
-    label = "Still rendering — this turn started %s ago" % ago
+    label = "Still working — this turn started %s ago" % ago
     reason = (
         "This program has been working on a turn for %s. The holodeck runs one "
         "turn at a time in a room, because two would be writing the same "
@@ -816,11 +862,11 @@ def _holodeck_working_message(working):
     longest = max(working, key=lambda w: w.get("busyFor") or 0)
     ago = _holodeck_elapsed_phrase(longest.get("busyFor"))
     if len(working) == 1:
-        return ("The holodeck is working: “%s” has been rendering for %s. "
+        return ("The holodeck is working: “%s” has been at this turn for %s. "
                 "Carry on here — it keeps running and saves itself."
                 % (longest.get("program") or "a program", ago))
     return ("%d holodeck programs are working — the longest, “%s”, has been "
-            "rendering for %s. Carry on here — they keep running and save "
+            "at its turn for %s. Carry on here — they keep running and save "
             "themselves." % (len(working), longest.get("program")
                              or "a program", ago))
 
@@ -988,6 +1034,12 @@ def _program_room(sidecar, name):
 # buy nothing.
 _TRANSCRIPT = "transcript.md"
 _CONCEPT = "concept.md"
+# S169 (FL-014) — where a pasted reference screenshot is kept. One
+# subdirectory of the room, named after a mission's `attachments/` (S92)
+# because it is the same idea one surface over: the input a design was built
+# FROM, kept beside the design. Under the room, so the room's own per-turn
+# commit, the preview jail and copilot's `--add-dir` grant all already cover it.
+_ROOM_ATTACHMENTS = "attachments"
 
 # The entry delimiter, written AND parsed here. The parse is best-effort and for
 # DISPLAY only — the file itself is the record, and nothing below ever rewrites
@@ -1174,14 +1226,27 @@ Sections:
   # <the program>
   ## The problem — what the captain is trying to solve, in two or three lines.
   ## Decisions — what has been SETTLED, each with the turn it was settled on.
+     THIS IS THE CHANGE LIST the Mission is built from, so every entry must be
+     a CHANGE, not a description of the picture. Where a decision changes
+     something the captain's project already has, write BOTH HALVES in one
+     line — `today X → now Y` — naming the screen and the element it is about
+     (`basis.md`, if this program has one, is what "today" is). A decision
+     nobody writes here reaches the builders as a picture with no caption, and
+     the picture loses.
   ## Open questions — what is still undecided. Raise these in the chat too.
+     ONE HOME EACH: anything the MOCKUP implies belongs in bucket 2 below and
+     not here. Write each undecided thing in exactly one of the two places —
+     the captain is shown both lists and must not read the same thing twice.
   ## WHAT IT MUST DO — BEHAVIOUR ONLY (visual choices live in the mockup).
      Three buckets, kept apart:
        1. Requirements — stated behaviour, numbered, in the captain's OWN WORDS,
           each attributed to the turn it was said in.
        2. Implied by the mockup, not yet settled — behaviour the mockup suggests
           that nobody has actually stated. Write each as a QUESTION, and ASK it
-          in the chat: a sentence now is cheaper than a ticket later.
+          in the chat: a sentence now is cheaper than a ticket later. A screen
+          the mockup DRAWS but nothing WIRES UP (a status bar with no data
+          behind it, a toggle that forgets) belongs here — that is exactly the
+          half a builder cannot see in a picture.
        3. Out of scope — what he explicitly ruled out, kept so nobody builds it
           back by accident.
      Never invent a requirement he did not say.
@@ -1191,6 +1256,77 @@ Sections:
      A screen the mockup has but this section does not name is invisible to
      everything downstream, so declare every one.
 """
+
+# ── S169 (FL-015): NOT EVERY TURN IS A BUILD TURN ──────────────────────────
+# The captain, on the S128 drive: *"I asked it what is it mean by the events tab
+# and it's doing a long 'rendering to holodeck' turn. This was a question about
+# its design, not a request to update the UI."* And, sharpening it: *"To be
+# clear it answered my question, but also spent a lot of time on the events tab.
+# Would be better to answer and let me guide then waste time on a render
+# update."*
+#
+# So the answer was NOT suppressed. The model answered him AND rebuilt part of
+# the mockup he had not asked it to touch — unrequested design drift, authored
+# by the product, into the artifact that becomes an acceptance criterion for
+# real work. This round's own theme (FL-011) one stage earlier.
+#
+# THE MECHANISM WAS THE PROMPT, both halves of it: the continuation was the
+# unconditional "The captain says: %s — Make the change, then reply…", and the
+# opening envelope frames every turn as `WHAT YOU BUILD` + `REPLY SHORT`. A
+# question handed to a worker inside that frame gets exactly what it was told.
+#
+# WHAT IS DELIBERATELY NOT HERE: any classifier. Nothing in this daemon looks at
+# the captain's sentence and decides whether it is a question. This project has
+# lost whole sessions to exactly that — S156's regex classifier fell 14/14 → 5/14
+# on a meaning-preserving rewording, S147 lost four generations of a source
+# parser, S157 five versions of a guard — and the cure every time was DELETING
+# the signals and moving the decision to a DECLARATION. There are two
+# declarations here and no guesses:
+#
+#   1. `_ANSWER_THEN_STOP` — the default. The prompt tells the MODEL, which has
+#      his actual sentence, that answer-then-stop is the right move on a turn
+#      that is not a direction. The decision moves to the only reader that sees
+#      what he wrote, not to a matcher that sees a pattern.
+#   2. `_ASK_DECLARED` — the captain's own explicit declaration, made on the
+#      composer BEFORE he sent the turn (`intent="ask"`). It is optional by
+#      construction: he never has to flip it to ask a question, because (1)
+#      already covers him. When he does flip it there is nothing left to infer.
+#
+# And the OUTCOME is published as a fact — see `_turn_outcome`. "He asked, and
+# nothing was written" is read off the audit the daemon already runs, not
+# inferred from his words; a turn that answered AND wrote is equally visible.
+# That is the shape that would have caught this defect on the drive.
+_ANSWER_THEN_STOP = """
+NOT EVERY TURN IS A BUILD TURN. If the captain is ASKING rather than DIRECTING —
+about your design, about a choice you made, about what something on the screen
+means — then ANSWER HIM AND CHANGE NOTHING. Do not also make an improvement
+while you are in there: not a tidy-up, not a small fix, not the thing you were
+about to suggest anyway. Editing the mockup on a turn he did not direct puts
+design he never asked for into the file that becomes the specification for real
+work, and it spends his time on work he did not want.
+
+On a turn like that, answer him properly — take as many words as the question
+deserves; the short-reply rule does not apply to an answer — and if a change
+follows from what you just said, OFFER it in one sentence and let him take it
+next turn. He will tell you to build it if he wants it.
+
+When he IS directing, build it. Answer-then-stop is the default only when the
+turn is not a clear direction; a turn you are sure about is not ambiguous, and
+handing every doubt back to him is its own failure.
+"""
+
+_ASK_DECLARED = """
+THE CAPTAIN DECLARED THIS TURN A QUESTION. He set it on the composer, himself,
+before he sent it — so there is nothing for you to work out. He is ASKING; he is
+not directing a change.
+
+ANSWER HIM AND CHANGE NOTHING. Do not edit `mockup.html`, do not edit
+`concept.md`, do not write any file at all this turn — not even a small
+improvement you are certain is right. Answer as fully as the question deserves;
+there is no short-reply rule on this turn. If a change follows from your answer,
+OFFER it in a sentence so he can ask for it on the next turn.
+"""
+
 # S128 — `## Hand-off summary` IS GONE FROM THE CONTRACT, deliberately.
 # It used to be the one paragraph `promote` drafted the brief from, and it was
 # the only section here nothing asked the model to keep CURRENT turn by turn —
@@ -1486,6 +1622,11 @@ def _md_items(body):
 # stated requirements rather than promoting unsettled ones, because a
 # requirement that is merely missing is caught by `_handoff_missing` and
 # carried in LOUDLY, while an invented one arrives silent and authoritative.
+#
+# S169 — READ FROM BOTH SIDES NOW. `_HANDOFF_IMPLIED_BUCKETS` reuses the first
+# name below to FIND bucket 2 and carry it into the brief marked as implied.
+# That is the same distinction this list draws, used for the other purpose, off
+# the same literal: reword it and both readers move together.
 _HANDOFF_NOT_STATED_BUCKETS = ("Implied by the mockup", "Out of scope")
 _HANDOFF_NUMBERED_BUCKET = re.compile(r"^\s*[2-9][.)]\s")
 
@@ -1525,9 +1666,12 @@ def _handoff_stated_region(section):
 def _handoff_requirements(concept_text):
     """The captain's OWN WORDS, one per item, in the order he said them.
 
-    Bucket 1 of `## WHAT IT MUST DO`. Bucket 2 ("implied by the mockup, not yet
-    settled") is deliberately NOT included: those are questions, not stated
-    requirements, and they travel by the open-questions road instead.
+    Bucket 1 of `## WHAT IT MUST DO`, and ONLY bucket 1. Bucket 2 ("implied by
+    the mockup, not yet settled") is not a stated requirement and never
+    appears here — S169 gave it its own road into the brief
+    (`_handoff_implied`), MARKED as implied, which is a different thing from
+    being promoted into this list. Keeping those two apart is the whole
+    subject of FL-011.
     """
     section = _md_section(concept_text, _HANDOFF_REQ_HEADING, prefix=True)
     if not section:
@@ -1558,6 +1702,142 @@ def _handoff_questions(concept_text):
             for i, t in enumerate(_md_items(body))]
 
 
+# ── S169: THE OTHER TWO THINGS THE BRIEF HAS TO CARRY ───────────────────────
+#
+# THE MEASUREMENT. The S128 drive filed a real mission from a real program and
+# went Align→Verify hands-off, 9/9 tickets green — and the captain then found
+# that the theme and the wired status bar had landed and almost NONE of the
+# look had: the top bar unrestyled, the mode glyphs missing, Objects mode still
+# carrying a top tab strip where the mockup has a left-hand object list. Read
+# off that mission's own plan.json, the cause is one line long: NOT ONE of the
+# nine tickets carried a mockup-referencing acceptance criterion. Every worker
+# had a vague "match the mock" in its preamble and a precise ticket telling it
+# to apply tokens and preserve behaviour, and it did the precise thing.
+#
+# The pattern is exact: EVERYTHING THAT SURVIVED WAS A STATED REQUIREMENT;
+# EVERYTHING LOST LIVED ONLY IN THE PICTURE. It is not a plumbing gap — the
+# mockup rides to every stage including `cmd_implement_ticket`. It is that the
+# brief said nothing about it, so nothing downstream was graded on it.
+#
+# ── WHICH ROAD, AND WHY (write it down — the session brief asked for this) ──
+#
+# The obvious road is to DERIVE the change list by reading `mockup.html`
+# against `basis.md`. It was rejected. `basis.md` is prose written by a model;
+# deciding "the mock changed the top bar" out of it means guessing at meaning,
+# and this project has lost whole sessions to exactly that — S156's classifier
+# fell 14/14 → 5/14 when a tester reworded its own corpus preserving meaning,
+# S147 lost four generations of a source parser, S157 five versions of a guard.
+# The cure every time was DELETING the inference and moving the decision to a
+# DECLARATION (D4 already rules that way for flows: named, never inferred).
+#
+# So: THE CHANGE LIST IS DECLARED, AND IT IS ALREADY WRITTEN. `## Decisions` is
+# "what has been SETTLED, each with the turn it was settled on" — the contract
+# has demanded it every turn since S124, the design worker maintains it, and on
+# BOTH real fixtures it is precisely the mock-vs-today list. The S128 room's
+# reads "Objects mode gets its own layout: left object list, centre sprite
+# preview + frames, right inspector", "Nudge radii up (4→6px controls…); pills
+# for mode tabs", "Reconcile the dual accent (blue=Maps, indigo=Objects) into
+# one blue primary" — the exact three things the built app got wrong. The
+# holodeck was not failing to KNOW them. `promote` was throwing them away.
+#
+# The same is true of bucket 2, `### 2. Implied by the mockup, not yet settled`
+# (S128 excluded it pending a dedup rule; that exclusion is this defect). A
+# status bar that is drawn but not wired is a bucket-2 item, and the captain
+# only got his because he happened to type it out.
+#
+# NO NEW MECHANISM, THEN. Two sections the product already maintains stop being
+# discarded, and `_CONCEPT_CONTRACT` asks for `## Decisions` in the sharper
+# `today X → now Y` shape it was already half-written in. The failure mode is
+# "says less than it could" — a doc with no `## Decisions` yields no change
+# list rather than an invented one.
+_HANDOFF_DECISIONS_HEADING = "Decisions"
+# Bucket 2 of `## WHAT IT MUST DO`. `_HANDOFF_NOT_STATED_BUCKETS[0]` is the
+# same literal, and it is the same rule seen from the other side: the region
+# reader uses it to EXCLUDE bucket 2 from the captain's own words, and this
+# uses it to FIND bucket 2. One name, two readers — reword it and both move.
+_HANDOFF_IMPLIED_BUCKETS = ("2. " + _HANDOFF_NOT_STATED_BUCKETS[0],
+                            _HANDOFF_NOT_STATED_BUCKETS[0])
+
+
+def _handoff_decisions(concept_text):
+    """`## Decisions` — what the mockup CHANGES about the app as it is today.
+
+    Read structurally, exactly like the requirements: the section the contract
+    names, its list items, in document order. Nothing here judges whether an
+    item is "visual" or "behavioural" — that is a classifier, and a classifier
+    is what this road exists to avoid.
+    """
+    return _md_items(_md_section(concept_text, _HANDOFF_DECISIONS_HEADING,
+                                 prefix=True))
+
+
+def _handoff_implied(concept_text):
+    """Bucket 2 — behaviour the mockup implies that NOBODY HAS STATED.
+
+    Carried, and carried MARKED (see `_handoff_brief`). The distinction is the
+    entire subject of FL-011: an implied item laundered into "what he said"
+    arrives silent and authoritative, which is the failure this whole hand-off
+    is built against. Missing is loud; invented is not.
+    """
+    section = _md_section(concept_text, _HANDOFF_REQ_HEADING, prefix=True)
+    if not section:
+        return []
+    for bucket in _HANDOFF_IMPLIED_BUCKETS:
+        body = _md_section(section, bucket, prefix=True)
+        if body:
+            return _md_items(body)
+    return []
+
+
+# ── THE DEDUP RULE, stated once (S169) ──────────────────────────────────────
+#
+# WHY IT IS REQUIRED: this is why S128 deferred bucket 2 in the first place. A
+# bucket-2 item can also be an `## Open question` and can also be a decision —
+# and the open questions have their OWN panel in the dialog, with their own
+# answer box and their own ⚠ STILL OPEN block in the filed mission. The captain
+# must not skim the same sentence three times; an over-long box is how this
+# whole thing gets ignored, and being ignored is the same outcome as not
+# shipping it.
+#
+# THE RULE: everything the hand-off can show is carried by the FIRST road that
+# claims it, in this order —
+#     1. the captured requirements (his own words)
+#     2. `## Open questions`      (its own panel, its own answer box)
+#     3. `## Decisions`           (settled beats unsettled)
+#     4. bucket 2, implied        (marked, never laundered)
+# — and a later road drops a line whose normalised text is ALREADY CARRIED,
+# either identically or as a whole-word run inside something already shown.
+#
+# CONTAINMENT, NEVER SIMILARITY, and only in one direction: the thing already
+# on screen must say AT LEAST as much as the thing being dropped. So nothing
+# can be lost — the worst case is a duplicate shown, never a real item silently
+# removed, which matters because silent removal is the exact defect class this
+# session exists to cure. A reworded twin ("keep the bottom status bar?" vs "is
+# a bottom status bar in scope, or noise?") is NOT caught here on purpose: the
+# fix for that is upstream, in the contract, which now tells the design worker
+# to write each undecided thing in exactly ONE of the two lists.
+_HANDOFF_DEDUP_MIN_WORDS = 4
+
+
+def _handoff_carry(carried, items):
+    """`items` minus anything `carried` already says. See the rule above."""
+    hay = [" %s " % _handoff_norm(c) for c in carried]
+    kept = []
+    for text in items:
+        norm = _handoff_norm(text)
+        if not norm:
+            continue
+        needle = " %s " % norm
+        if len(norm.split()) >= _HANDOFF_DEDUP_MIN_WORDS:
+            if any(needle in h for h in hay):
+                continue
+        elif any(needle == h for h in hay):
+            continue
+        kept.append(text)
+        hay.append(needle)
+    return kept
+
+
 # S128 fix round 1 (D3). THE BRIEF'S FIRST LINE IS THE MISSION'S NAME. Both
 # filing roads derive a mission's title from it — `_title_from_idea` here, and
 # file.sh's own "the issue title = the first idea line" on the park road — so
@@ -1584,6 +1864,74 @@ def _handoff_titled(brief, title):
     return "%s\n\n%s" % (title, brief) if brief else title
 
 
+# S169 — THE THREE SECTIONS, and the words above each of them.
+#
+# Held as constants because the browser has to be able to name them (the hint
+# under the box says what the draft is made of) and the suite has to be able to
+# pin them. They are SHORT on purpose: the trap this change walks into is a box
+# so long nobody reads it, and every line of preamble is a line of his brief he
+# does not see.
+_HANDOFF_REQ_TITLE = "## What it must do — in your own words"
+_HANDOFF_CHANGE_TITLE = "## What the mockup changes about the app you have today"
+_HANDOFF_CHANGE_NOTE = (
+    "Settled while you were drawing it. Today's app does none of it and the "
+    "built product has to match the mockup — correct or delete anything that "
+    "is wrong.")
+_HANDOFF_IMPLIED_TITLE = "## Implied by the mockup — NOT things you said"
+_HANDOFF_IMPLIED_NOTE = (
+    "The mockup implies these; nobody has settled them. They travel marked as "
+    "IMPLIED, never as your words — answer them, correct them, or delete them.")
+
+
+def _handoff_section(title, note, items):
+    """One `## heading` + one line of prose + the items, or "" for nothing."""
+    if not items:
+        return ""
+    return "\n".join([title, "", note, ""] + ["- %s" % i for i in items])
+
+
+def _handoff_head(concept_text, reqs):
+    """(the top of the brief, which section it came from).
+
+    The captain's own words when the doc has them, and the S127 degradation
+    ladder when it does not — never an empty box, and the surface is always
+    told WHICH source it got so a fallback cannot be passed off as the real
+    thing.
+    """
+    if reqs:
+        return ("\n".join([_HANDOFF_REQ_TITLE, ""]
+                          + ["%d. %s" % (i + 1, r)
+                             for i, r in enumerate(reqs)]),
+                _HANDOFF_REQ_HEADING)
+    for heading in _HANDOFF_SECTIONS:
+        body = _md_section(concept_text, heading, prefix=True)
+        if body:
+            return body, heading
+    # Last resort: the first real paragraph of the doc. Never an empty box.
+    for para in re.split(r"\n\s*\n", (concept_text or "").strip()):
+        para = "\n".join(l for l in para.split("\n")
+                         if not l.lstrip().startswith("#")).strip()
+        if para:
+            return para, ""
+    return "", ""
+
+
+def _handoff_parts(concept_text):
+    """(requirements, decisions, implied) — deduped, in the order shown.
+
+    ONE function decides what the hand-off carries, because `promote` (which
+    draws the box) and the brief (which fills it) have to agree about every
+    line: a count in the hint that does not match the box is the surface lying
+    about itself. See `_handoff_carry` for the precedence.
+    """
+    reqs = _handoff_requirements(concept_text)
+    carried = list(reqs) + [q["text"] for q in _handoff_questions(concept_text)]
+    decisions = _handoff_carry(carried, _handoff_decisions(concept_text))
+    implied = _handoff_carry(carried + decisions,
+                             _handoff_implied(concept_text))
+    return reqs, decisions, implied
+
+
 def _handoff_brief(concept_text, program=""):
     """(brief, which section it came from) — the PRE-DRAFTED writing space.
 
@@ -1594,24 +1942,24 @@ def _handoff_brief(concept_text, program=""):
     Its FIRST LINE is the mission's title, on every road (see above), so
     `program` leads every branch — including the degraded ones, which file a
     mission exactly the same way.
+
+    S169 — THREE things, not one. His words, then what the mockup CHANGES about
+    the app he has today (`## Decisions`), then what it IMPLIES and nobody has
+    settled (bucket 2). The last two were both already written, both maintained
+    every turn, and both thrown away here; the captain's framing is the bar —
+    "if I have to spell out each change, I get closer to having to type it all
+    out, the value is lost."
     """
     title = str(program or "").strip().split("\n")[0].strip()
-    reqs = _handoff_requirements(concept_text)
-    if reqs:
-        lines = ["## What it must do — in your own words", ""]
-        lines += ["%d. %s" % (i + 1, r) for i, r in enumerate(reqs)]
-        return _handoff_titled("\n".join(lines), title), _HANDOFF_REQ_HEADING
-    for heading in _HANDOFF_SECTIONS:
-        body = _md_section(concept_text, heading, prefix=True)
-        if body:
-            return _handoff_titled(body, title), heading
-    # Last resort: the first real paragraph of the doc. Never an empty box.
-    for para in re.split(r"\n\s*\n", (concept_text or "").strip()):
-        para = "\n".join(l for l in para.split("\n")
-                         if not l.lstrip().startswith("#")).strip()
-        if para:
-            return _handoff_titled(para, title), ""
-    return _handoff_titled("", title), ""
+    reqs, decisions, implied = _handoff_parts(concept_text)
+    head, source = _handoff_head(concept_text, reqs)
+    blocks = [b for b in (
+        head,
+        _handoff_section(_HANDOFF_CHANGE_TITLE, _HANDOFF_CHANGE_NOTE,
+                         decisions),
+        _handoff_section(_HANDOFF_IMPLIED_TITLE, _HANDOFF_IMPLIED_NOTE,
+                         implied)) if b]
+    return _handoff_titled("\n\n".join(blocks), title), source
 
 
 def _handoff_norm(text):
@@ -3540,14 +3888,25 @@ class Actions(LogFacts):
             # after the dispatch returned.
             holo, handoff, lost = self._handoff_attach_soft(sess.holodeck)
             before = self._mission_ids() if holo is not None else set()
-            if sess.mission_id:
-                board = self._complete_from_align(
-                    sess.mission_id, turn, engine=sess.engine,
-                    image_paths=list(sess.image_paths) + handoff)
-            else:
-                board = self._file_from_align(
-                    turn, engine=sess.engine,
-                    image_paths=list(sess.image_paths) + handoff)
+            # S169 (FL-017) — THE FINALIZE IS THE FACT, and the daemon is the
+            # only thing that can see it. Set around the dispatch and withdrawn
+            # in the `finally` on EVERY exit path (a clean file.sh, a 502, an
+            # estimator that died), exactly as `turn_started` is around the
+            # worker call. The session is still in `self._align` for the whole
+            # of this window — it is popped below — so `align_overlay` can read
+            # it off the live session with no second store.
+            sess.finalize_started = time.time()
+            try:
+                if sess.mission_id:
+                    board = self._complete_from_align(
+                        sess.mission_id, turn, engine=sess.engine,
+                        image_paths=list(sess.image_paths) + handoff)
+                else:
+                    board = self._file_from_align(
+                        turn, engine=sess.engine,
+                        image_paths=list(sess.image_paths) + handoff)
+            finally:
+                sess.finalize_started = None
             self._reap_session_images(sess)
             with self._align_lock:
                 self._align.pop(sid, None)
@@ -3815,6 +4174,61 @@ class Actions(LogFacts):
         # prefix — the nesting mirrors its neighbour `alignResume` on the same card.
         return {"since": started, "for": round(elapsed, 1)}
 
+    def _align_finalizing_fields(self, sess):
+        """The IN-FLIGHT FINALIZE fact for one align session — or `{}` (S169).
+
+        FL-017, and it is FL-009's cure applied to the state FL-009's own fix
+        deliberately left alone. The closing answer POST runs the cost estimator
+        and `file.sh --complete` inside itself; `board.js` covered that window
+        with `FINALIZING_TIMEOUT_MS = 300000` — a client-side guess about how
+        long the server takes which, on expiry, cleared the band and re-armed
+        the card under a run that was still going. FL-009's ruling was written
+        for exactly this: *"do NOT just raise the number. A bigger constant is
+        the same guess with a longer fuse."*
+
+        WHEN IT IS PUBLISHED: a session whose `finalize_started` is set. That is
+        `_align_turn`'s done branch and nowhere else, so it cannot overlap with
+        `alignBusy` (which is the worker call, and is None by then) or with
+        `alignResume` (which needs an open question, and a done session has
+        none). One card, one true state.
+
+        WHEN IT STOPS: the dispatch's `finally`. An EVENT — the work settling —
+        never a clock. And if the daemon dies mid-finalize its sessions die with
+        it, so the card re-arms; that is the safety net, and it is a fact about
+        the daemon rather than a timer's opinion about one.
+
+        ADDITIVE BY CONSTRUCTION and NO COPY IN THE PAYLOAD, both for
+        `_align_busy_fields`' reasons: an idle session returns `{}` and the key
+        is absent, and `board.js` already owns the sentence ("◐ FINALIZING &
+        COSTING…"), so a second wording shipped from here is how the card and
+        the console start contradicting each other.
+        """
+        if sess is None:
+            return {}
+        started = sess.finalize_started
+        if not started:
+            return {}
+        elapsed = max(0.0, time.time() - started)
+        return {"since": started, "for": round(elapsed, 1)}
+
+    def _align_finalizing_for_mission(self, mission_id):
+        """The in-flight `alignFinalizing` fact for a mission, or `{}` (S169).
+
+        The `_align_busy_for_mission` twin, and it MUST agree with
+        `align_overlay`'s loop — one rule read from two places, which is how a
+        card and its detail modal are kept from disagreeing.
+        """
+        if not mission_id:
+            return {}
+        with self._align_lock:
+            for sess in self._align.values():
+                if sess.mission_id != mission_id:
+                    continue
+                fields = self._align_finalizing_fields(sess)
+                if fields:
+                    return fields
+        return {}
+
     def align_overlay(self, board):
         """Additively mark parked cards that have a LIVE resumable align session.
 
@@ -3847,14 +4261,23 @@ class Actions(LogFacts):
             # RESUME is withheld for and the window a reloaded tab used to read
             # as "not scanning". See `_align_busy_fields`.
             busy_by_mission = {}
+            # S169 (FL-017): …and the LAST window of that same life — the
+            # closing turn's estimate + file.sh dispatch, which runs after the
+            # session is `done` and is therefore invisible to both maps above.
+            fin_by_mission = {}
             for sid, sess in self._align.items():
-                if sess.mission_id and not sess.done and sess.last_question:
+                if not sess.mission_id:
+                    continue
+                fin = self._align_finalizing_fields(sess)
+                if fin:
+                    fin_by_mission[sess.mission_id] = fin
+                elif not sess.done and sess.last_question:
                     by_mission[sess.mission_id] = sid
-                elif sess.mission_id:
+                else:
                     fields = self._align_busy_fields(sess)
                     if fields:
                         busy_by_mission[sess.mission_id] = fields
-        if not by_mission and not busy_by_mission:
+        if not by_mission and not busy_by_mission and not fin_by_mission:
             return board  # no live sessions → byte-identical board.
         for col in cols.values():
             if not isinstance(col, list):
@@ -3862,7 +4285,14 @@ class Actions(LogFacts):
             for card in col:
                 if not isinstance(card, dict):
                     continue
-                if card.get("id") in by_mission:
+                # PRECEDENCE MATCHES THE CARD'S OWN (board.js
+                # `startAlignmentControl`): finalizing outranks scanning
+                # outranks resumable. They are already mutually exclusive by
+                # construction above; the order here says so out loud rather
+                # than relying on it.
+                if card.get("id") in fin_by_mission:
+                    card["alignFinalizing"] = fin_by_mission[card["id"]]
+                elif card.get("id") in by_mission:
                     card["alignResume"] = {"sid": by_mission[card["id"]]}
                 elif card.get("id") in busy_by_mission:
                     card["alignBusy"] = busy_by_mission[card["id"]]
@@ -3890,6 +4320,14 @@ class Actions(LogFacts):
         mission with no live session is returned unchanged.
         """
         if isinstance(mission, dict):
+            # S169 (FL-017) — the DETAIL modal mirrors the card, finalize
+            # first, for `align_overlay`'s precedence reason: a mission that is
+            # completing is not resumable, and offering RESUME ALIGN over a
+            # running file.sh is the re-fire this whole entry is about.
+            fin = self._align_finalizing_for_mission(mission.get("id"))
+            if fin:
+                mission["alignFinalizing"] = fin
+                return mission
             sid = self.align_session_sid(mission.get("id"))
             if sid:
                 mission["alignResume"] = {"sid": sid}
@@ -4285,18 +4723,33 @@ class Actions(LogFacts):
                 % (os.path.basename(program_dir.rstrip(os.sep)), named,
                    len(names), shown, more))
 
-    def holodeck_say(self, sid, text, images=None):
+    def holodeck_say(self, sid, text, images=None, intent=None):
         """POST /api/holodeck/<sid>/say — one warm chat turn.
 
         The FIRST say OPENS the warm worker session (`--session-id <uuid>`);
         every later one RESUMES it (`--resume <uuid>`) and feeds JUST what the
         captain typed — the prior context lives in the session, so the daemon
         re-feeds no transcript (the same economics as the Align grill).
+
+        S169 (FL-014) — AND IT TAKES PASTED IMAGES. "Make it look like this"
+        over a reference screenshot is the archetypal thing to ask a design
+        room for, and this was the one design surface on the board that could
+        not take one. The road is the S91/S92 one, already measured on both
+        engines: the bytes are staged into the PROGRAM'S OWN ROOM (see
+        `_stage_room_images` for why there and not the scratch dir) and
+        threaded into THIS turn per engine by `_holodeck_turn`.
+
+        THE ECONOMICS FORCE "THIS TURN". A holodeck turn RESUMES a warm session
+        and feeds only what the captain typed — nothing is re-sent — so an
+        image that missed its own turn would never reach the model at all.
+
+        S169 (FL-015) — `intent` is the captain's OWN declaration of what shape
+        this turn is, made on the composer before he sent it: "ask" or "build".
+        It is a DECLARATION, never a reading of `text` — nothing here inspects
+        what he typed. Absent/unknown values fall back to "build", which is the
+        prompt branch that already tells the worker answer-then-stop is the
+        default, so a captain who never touches the control loses nothing.
         """
-        if images:
-            raise ActionError(
-                400, "the holodeck cannot take pasted images yet — describe "
-                "what you want in words")
         with self._holodeck_lock:
             sess = self._holodeck.get(sid)
         if sess is None:
@@ -4314,9 +4767,16 @@ class Actions(LogFacts):
         # transcript pane for a turn that never ran.
         self._claim_turn(sess)
         try:
+            # INSIDE the claim, so a room that cannot take the image releases
+            # it like every other failure here; and BEFORE the turn's audit
+            # snapshot, so the captain's own paste is never reported back to
+            # him as a file the WORKER wrote.
+            image_paths = self._stage_room_images(sess, images)
             opening = not sess.started
+            intent = _turn_intent(intent)
             prompt = self._build_holodeck_prompt(sess, text=text,
-                                                 opening=opening)
+                                                 opening=opening,
+                                                 intent=intent)
         except BaseException:
             self._release_turn(sess)
             raise
@@ -4334,9 +4794,14 @@ class Actions(LogFacts):
         if last and last.get("text") == text and last.get("failed"):
             last["reply"] = None
             last.pop("failed", None)
+            # a RETRY is the same turn, so it is the same declaration — but he
+            # may have flipped the control before retrying, and the newest
+            # declaration is the one he means.
+            last["intent"] = intent
         else:
-            sess.turns.append({"text": text, "reply": None})
-        return self._run_turn(sid, sess, prompt, claimed=True)
+            sess.turns.append({"text": text, "reply": None, "intent": intent})
+        return self._run_turn(sid, sess, prompt, claimed=True,
+                              image_paths=image_paths, intent=intent)
 
     def holodeck_end(self, sid):
         """POST /api/holodeck/<sid>/end — close the program.
@@ -4467,10 +4932,13 @@ class Actions(LogFacts):
 
         A READ that returns the pre-seeded hand-off: the brief drafted from the
         concept doc's captured requirements (`## WHAT IT MUST DO`, S128 — it
-        used to be `## Hand-off summary`, which is FL-011), those requirements
-        as a set, the `## Open questions` that must reach the captain before he
-        files, the build-scope choice (D15), the list of what rides along BY
-        NAME, and the guidance block that goes into the mission verbatim. It
+        used to be `## Hand-off summary`, which is FL-011), PLUS what the
+        mockup changes about the app as it is today and what it implies that
+        nobody has settled (S169 — `## Decisions` and bucket 2, both of which
+        the product already maintained and this endpoint used to discard); the
+        requirements as a set, the `## Open questions` that must reach the
+        captain before he files, the build-scope choice (D15), the list of
+        what rides along BY NAME, and the guidance block verbatim. It
         spawns no worker, writes no mission state and locks nothing — the lock
         is a fact about a mission that exists, so it lands when the mission is
         actually filed (`_holodeck_handed_over`).
@@ -4493,8 +4961,9 @@ class Actions(LogFacts):
                 502, "LCARS could not read this program's concept.md, so it "
                 "cannot draft the brief: %s" % exc)
         brief, source = _handoff_brief(concept, sess.program)
+        captured, decisions, implied = _handoff_parts(concept)
         reqs = [{"id": "r%d" % (i + 1), "text": t}
-                for i, t in enumerate(_handoff_requirements(concept))]
+                for i, t in enumerate(captured)]
         return {
             "sessionId": sid, "program": sess.program,
             "room": os.path.basename(sess.program_dir),
@@ -4510,6 +4979,12 @@ class Actions(LogFacts):
             # costs less than one wrong build.
             "requirements": reqs,
             "questions": _handoff_questions(concept),
+            # S169 — the two halves that used to be discarded, as sets, exactly
+            # as the draft carries them (same helper, so the hint under the box
+            # cannot count something the box does not contain). The deck names
+            # what is in the draft; it never composes the draft.
+            "decisions": decisions,
+            "implied": implied,
             # A self-check on the drafting, not a check on him: this is the
             # daemon's OWN draft, so anything here means the brief path has
             # regressed to prose again.
@@ -4831,8 +5306,7 @@ class Actions(LogFacts):
             # ALREADY OPEN. Hand back the live conversation rather than minting
             # a second session onto one room — two cards, one `mockup.html`.
             meta = self._holodeck_meta(sid, sess)
-            meta["turns"] = [{"text": t.get("text"), "reply": t.get("reply")}
-                             for t in sess.turns]
+            meta["turns"] = self._turns_payload(sess.turns)
             return meta
         # ROUND 5 — THE ENGINE COMES FROM THE PROGRAM, not from whatever this
         # daemon was started with. See `_program_engine` for the rule.
@@ -4865,8 +5339,7 @@ class Actions(LogFacts):
         with self._holodeck_lock:
             self._holodeck[sid] = sess
         meta = self._holodeck_meta(sid, sess)
-        meta["turns"] = [{"text": t.get("text"), "reply": t.get("reply")}
-                         for t in sess.turns]
+        meta["turns"] = self._turns_payload(sess.turns)
         # ROUND 5 — AND WHERE THAT ENGINE CAME FROM. The banner already named
         # the CLI that answers the next turn, and on a real drive it named the
         # wrong one honestly: it was reporting the daemon's default. Naming the
@@ -5483,8 +5956,7 @@ class Actions(LogFacts):
         live_rooms = set()
         for sid, sess in items:
             meta = self._holodeck_meta(sid, sess)
-            meta["turns"] = [{"text": t.get("text"), "reply": t.get("reply")}
-                             for t in sess.turns]
+            meta["turns"] = self._turns_payload(sess.turns)
             meta["onDisk"] = False
             out.append(meta)
             live_rooms.add(os.path.realpath(sess.program_dir))
@@ -5585,8 +6057,7 @@ class Actions(LogFacts):
         if sess is None:
             raise ActionError(404, "no such holodeck program: %s" % sid)
         meta = self._holodeck_meta(sid, sess)
-        meta["turns"] = [{"text": t.get("text"), "reply": t.get("reply")}
-                         for t in sess.turns]
+        meta["turns"] = self._turns_payload(sess.turns)
         return meta
 
     # The preview route's jail. It is the ONE place daemon-served bytes come
@@ -5779,7 +6250,8 @@ class Actions(LogFacts):
                 self._sidecar_locks[key] = lock
             return lock
 
-    def _run_turn(self, sid, sess, prompt, claimed=False):
+    def _run_turn(self, sid, sess, prompt, claimed=False, image_paths=None,
+                  intent=None):
         """Run one turn with the session marked UNSETTLED for its duration.
 
         The event is the handshake `end` waits on (D2, round 1). `holodeck_end`
@@ -5797,7 +6269,8 @@ class Actions(LogFacts):
         sess.turn_settled.clear()
         sess.last_touched = time.time()   # S125 (D8): the list's recency clock
         try:
-            return self._holodeck_turn(sid, sess, prompt)
+            return self._holodeck_turn(sid, sess, prompt,
+                                       image_paths=image_paths, intent=intent)
         except ActionError:
             # The turn did not land. Mark it, so a RETRY of the same line reuses
             # this turn instead of writing the captain's words into the
@@ -5829,7 +6302,7 @@ class Actions(LogFacts):
             val = 20.0
         return max(0.0, val)
 
-    def _holodeck_turn(self, sid, sess, prompt):
+    def _holodeck_turn(self, sid, sess, prompt, image_paths=None, intent=None):
         """Run ONE holodeck turn and shape its response.
 
         The order matters and is the whole fence: snapshot → spawn → apply any
@@ -5847,10 +6320,37 @@ class Actions(LogFacts):
                 "holodeck has nothing to talk to")
         opening = not sess.started
         cwd = sess.program_dir if sess.mode == "design" else sess.target_repo
+        # S169 (FL-014) — THE PASTED IMAGE, ON THIS TURN'S ARGV. The same
+        # per-engine road `_run_worker` uses for the Align grill and the
+        # Mission-Log split (S91, measured on both live CLIs), applied here
+        # rather than re-derived:
+        #   • copilot: native `--attachment <path>`, repeatable. It rides into
+        #     the prompt WITHOUT a tool, which matters because a holodeck turn
+        #     runs on a fixed `--available-tools` list with no viewer on it.
+        #   • claude (and the default): the design posture already allows Read
+        #     (_HOLODECK_TOOLS[("claude","design")]), so the ABS PATH is named
+        #     in the prompt and claude opens it itself. No tool exception, no
+        #     stdin change.
+        # The paths are inside the program's room, which is also the cwd and —
+        # on copilot — the ONE `--add-dir` grant, so nothing about the sandbox
+        # is widened to carry them.
+        image_paths = [p for p in (image_paths or []) if p]
+        attach_args = []
+        if image_paths:
+            if _is_copilot(bin_):
+                for p in image_paths:
+                    attach_args += ["--attachment", p]
+            else:
+                prompt = prompt + (
+                    "\n\n=== %s (the captain attached these; open them with "
+                    "your Read tool as relevant) ===\n" % _attach_heading(
+                        image_paths)
+                    + "\n".join(image_paths))
         cmd = ([bin_, "-p", prompt]
                + self._holodeck_args(bin_, sess.mode, sess.worker_sid, opening,
                                      sess.program_dir)
-               + ["--model", _holodeck_model(bin_)])
+               + ["--model", _holodeck_model(bin_)]
+               + attach_args)
         # THE S72 GUARD, at the one place every holodeck turn passes through.
         _assert_no_bash(cmd)
 
@@ -5995,6 +6495,26 @@ class Actions(LogFacts):
         # certifies nothing (and the hand-off would then carry a document no
         # human ever agreed with).
         payload["conceptAudit"] = self._concept_audit(sess, changed)
+        # S169 (FL-015) — AND WHAT THE TURN DID, from the same diff. Always
+        # present, so a consumer never has to guess from the file list whether
+        # a turn that says nothing wrote nothing or simply did not report.
+        payload["turnOutcome"] = self._turn_outcome(sess, changed, intent)
+        # …AND IT IS KEPT ON THE TURN, not just returned once. MEASURED in the
+        # Chrome rig on 2026-08-06: `holoRefresh()` replaces `HOLO.programs`
+        # wholesale with `GET /api/holodeck`'s list, so anything the client
+        # merged onto a turn from the POST response survives exactly one render
+        # and is then gone. The note said "nothing was written" for about a
+        # second and vanished — which is a worse surface than not saying it,
+        # because whether the captain ever sees it depends on how fast his
+        # daemon answered. The daemon owns the fact, so the daemon's own turn
+        # list carries it (`_turns_payload`) and a refresh RESTORES it.
+        #
+        # The SAME dict object as the payload's, deliberately: the branches
+        # below that stand the sentence down (`refused`, `no-write`) mutate one
+        # object and both readers see it. Two copies is how a card and its
+        # transcript start disagreeing about one turn.
+        if sess.turns:
+            sess.turns[-1]["turnOutcome"] = payload["turnOutcome"]
         # A STRAY CHANGE OUTRANKS EVERY OTHER OUTCOME. Even a turn that died or
         # said nothing must surface a file that changed in the captain's project.
         if strays or bad_blocks:
@@ -6004,6 +6524,12 @@ class Actions(LogFacts):
                 "message": self._write_refused_message(sess, strays, bad_blocks,
                                                        warning),
             }
+            # ONE VOICE PER TURN. `refused` is a whole account of its own and
+            # the deck renders that branch alone; a second note beside it about
+            # what did or did not get written is the two-mechanism trap this
+            # round has already lost rounds to. The FACT stays on the payload —
+            # only its sentence stands down.
+            payload["turnOutcome"]["message"] = ""
             self._commit_turn(sess, changed, payload)
             return payload
         if stopped:
@@ -6038,6 +6564,9 @@ class Actions(LogFacts):
                     "hand; say it again and ask for the file to be written "
                     "into the program's room."),
             }
+            # ONE VOICE, again: the `no-write` warning is already the account of
+            # a turn that wrote nothing, and it is a better one — it says WHY.
+            payload["turnOutcome"]["message"] = ""
             # The turn still HAPPENED, and the archive is the record of what
             # happened — including the turn where the engine could not write.
             self._commit_turn(sess, changed, payload)
@@ -6171,6 +6700,94 @@ class Actions(LogFacts):
             return True
         return False
 
+    @staticmethod
+    def _room_scoped_files(changed, room):
+        """The turn's changed paths that belong to THIS program's room, relative.
+
+        One rule, two readers (S169): the durable `transcript.md` line and the
+        turn's published outcome. See `_append_transcript` for why the scoping
+        exists at all.
+        """
+        files = []
+        for c in (changed or []):
+            rel = c["path"] if isinstance(c, dict) else str(c)
+            if not rel.startswith(room + "/"):
+                continue
+            rel = rel[len(room) + 1:]
+            if rel and rel not in files:
+                files.append(rel)
+        return files
+
+    @staticmethod
+    def _turns_payload(turns):
+        """The `turns` list as a consumer sees it — ONE projection, five callers.
+
+        S169: every caller used to build `[{"text", "reply"}]` inline, and the
+        deck's own refresh reads this list, so anything a turn knows about
+        itself that is NOT here is lost the moment the next poll lands. Adding
+        the outcome to four of five copies would have been a note that appeared
+        on some screens and not others.
+
+        ADDITIVE: a turn with no outcome (every turn replayed from
+        `transcript.md`, which does not record one) omits the key entirely, so
+        every payload every earlier test pins is byte-identical.
+        """
+        out = []
+        for t in (turns or []):
+            row = {"text": t.get("text"), "reply": t.get("reply")}
+            if t.get("turnOutcome"):
+                row["turnOutcome"] = t["turnOutcome"]
+            out.append(row)
+        return out
+
+    def _turn_outcome(self, sess, changed, intent):
+        """WHAT THIS TURN DID — read off the audit, never off the reply.
+
+        S169 (FL-015), and this is the half that would have caught the defect
+        when it happened. The captain asked the holodeck a question; it answered
+        him AND rebuilt part of the mockup he had not asked it to touch, and
+        nothing on the screen said so. The daemon ALREADY diffs the room before
+        and after every turn, so "he asked, and nothing was written" is a FACT
+        it can state rather than a thing anyone has to infer — and "he asked,
+        and it wrote anyway" is exactly as visible, from the same two values.
+
+        NOTHING HERE READS HIS WORDS. `intent` is his own declaration off the
+        composer; `wrote` is bytes on disk. There is no classifier in this
+        method and there must never be one (see `_ANSWER_THEN_STOP`).
+
+        THE MESSAGE IS WITHHELD ON A PLAIN BUILD TURN THAT WROTE. The chat
+        already prints a file chip per file, and a note that speaks on every
+        turn is a note people stop reading (the `conceptAudit` lesson, same
+        idiom, same reason). It speaks when a turn wrote NOTHING — the outcome
+        that had no voice at all — and when a DECLARED question wrote anyway,
+        which is the drift itself.
+        """
+        room = os.path.basename(os.path.normpath(sess.program_dir))
+        files = self._room_scoped_files(changed, room)
+        wrote = bool(files)
+        asked = (intent == "ask")
+        if sess.mode == "grounding":
+            # A GROUNDING PASS IS NOT A DESIGN TURN. It has no write tool, it
+            # produces `basis.md` and nothing else, and "the mockup is exactly
+            # as it was" is a sentence about a mockup that does not exist yet.
+            # The fact is still published; only the sentence stands down.
+            message = ""
+        elif wrote and asked:
+            message = (
+                "You marked this turn a question, and it wrote %s anyway. The "
+                "design moved on a turn you did not direct — look at the "
+                "preview before you build on it." % _english_list(files))
+        elif wrote:
+            message = ""
+        elif asked:
+            message = ("Answered — nothing was written. The mockup and the "
+                       "concept doc are exactly as they were.")
+        else:
+            message = ("Nothing was written this turn. The mockup and the "
+                       "concept doc are exactly as they were.")
+        return {"intent": "ask" if asked else "build", "wrote": wrote,
+                "files": files, "message": message}
+
     def _append_transcript(self, sess, changed):
         """Append THIS turn's exchange to the program's `transcript.md`.
 
@@ -6197,24 +6814,22 @@ class Actions(LogFacts):
                                   sess.engine or self.worker_bin)
         grounding = (sess.mode == "grounding")
         room = os.path.basename(sess.program_dir)
-        files = []
-        for c in (changed or []):
-            rel = c["path"] if isinstance(c, dict) else str(c)
-            # FIX ROUND 4 — ONLY THIS PROGRAM'S OWN ROOM. `changed` is a diff of
-            # the WHOLE sidecar, so with two programs open at once the other
-            # room's writes land in this turn's snapshot window. Measured live:
-            # the Theme Switcher's record permanently read `_Files this turn:
-            # command-palette/basis.md, command-palette/transcript.md,
-            # concept.md, mockup.html_` — two of those are another program's.
-            # Nothing on disk was wrong (the commit is scoped, `git add --
-            # <room>`); the durable record simply lied about who did what. This
-            # is the SAME scoping the commit already uses, so the line names
-            # exactly what the commit beneath it holds.
-            if not rel.startswith(room + "/"):
-                continue
-            rel = rel[len(room) + 1:]
-            if rel and rel not in files:
-                files.append(rel)
+        # FIX ROUND 4 — ONLY THIS PROGRAM'S OWN ROOM. `changed` is a diff of
+        # the WHOLE sidecar, so with two programs open at once the other
+        # room's writes land in this turn's snapshot window. Measured live:
+        # the Theme Switcher's record permanently read `_Files this turn:
+        # command-palette/basis.md, command-palette/transcript.md,
+        # concept.md, mockup.html_` — two of those are another program's.
+        # Nothing on disk was wrong (the commit is scoped, `git add --
+        # <room>`); the durable record simply lied about who did what. This
+        # is the SAME scoping the commit already uses, so the line names
+        # exactly what the commit beneath it holds.
+        #
+        # S169 — and it is now ONE rule, `_room_scoped_files`, because
+        # `_turn_outcome` has to answer "did this turn write anything?" about
+        # the same bytes this line names. Two copies of this scoping is how the
+        # record and the outcome start disagreeing about one turn.
+        files = self._room_scoped_files(changed, room)
         path = os.path.join(sess.program_dir, _TRANSCRIPT)
         try:
             fresh = not os.path.exists(path)
@@ -6659,12 +7274,33 @@ class Actions(LogFacts):
             pass
 
     # ── the turn prompt ────────────────────────────────────────────────────
-    def _build_holodeck_prompt(self, sess, text=None, opening=True):
+    @staticmethod
+    def _intent_clause(intent):
+        """The one turn-shape declaration a design prompt carries (S169/FL-015).
+
+        `intent` is the captain's OWN declaration off the composer, or None. It
+        is never derived from his words — see the `_ANSWER_THEN_STOP` header for
+        why a classifier is the one thing this must not be. Two branches, one
+        home, so the opening envelope and the continuation can never carry two
+        different readings of the same rule (S128's cross-language wording
+        drift, applied to two prompts in one function).
+        """
+        return _ASK_DECLARED if intent == "ask" else _ANSWER_THEN_STOP
+
+    def _build_holodeck_prompt(self, sess, text=None, opening=True,
+                               intent=None):
         """Assemble ONE turn's prompt.
 
         OPENING turn: the full envelope (who you are, where you may write, the
         output contract). CONTINUATION: just what the captain said — the warm
-        session already holds the rest, which is the whole cost win."""
+        session already holds the rest, which is the whole cost win.
+
+        S169 (FL-015) — BOTH shapes now carry the turn-shape declaration
+        (`_intent_clause`), because both were the defect: the continuation said
+        "Make the change" unconditionally, and the opening envelope frames the
+        whole session as a build. A grounding turn is untouched — it has no
+        write tool at all, so answer-then-stop is already the only thing it can
+        do."""
         if sess.mode == "grounding":
             if not opening:
                 return ("The captain asks: %s\n\nAnswer from what you can READ "
@@ -6687,8 +7323,14 @@ class Actions(LogFacts):
                 "basis as markdown — LCARS saves your reply as the program's "
                 "basis.md." % sess.program)
         if not opening:
-            return ("The captain says: %s\n\nMake the change, then reply in a "
-                    "sentence or two saying what you did." % (text or ""))
+            # S169 (FL-015) — WAS: "Make the change, then reply in a sentence or
+            # two saying what you did." Unconditional, on every follow-up turn,
+            # before the envelope was even considered. The declaration comes
+            # FIRST and the build instruction is now conditional on his turn
+            # actually being a direction.
+            return ("%s\n\nThe captain says: %s\n\nIf that is a direction, make "
+                    "the change and then reply in a sentence or two saying what "
+                    "you did." % (self._intent_clause(intent), text or ""))
         return (
             "You are the LCARS HOLODECK: a fast, cheap design room where the "
             "captain talks and you build a mockup as you go. This is a "
@@ -6713,11 +7355,14 @@ class Actions(LogFacts):
             "The path is relative to your working directory. A fence with no "
             "declared path is treated as ordinary markdown and written nowhere.\n\n"
             "%s\n\n"
-            "REPLY SHORT: a sentence or two on what you changed and what you "
-            "want decided next. The captain reads the mockup, not your prose."
+            "REPLY SHORT ON A BUILD TURN: a sentence or two on what you changed "
+            "and what you want decided next. The captain reads the mockup, not "
+            "your prose. (This does not apply to an answer — see below.)\n\n"
+            "%s"
             "%s%s\n\n"
             "The captain says: %s" % (sess.program, sess.program_dir,
                                       _CONCEPT_CONTRACT,
+                                      self._intent_clause(intent),
                                       self._basis_clause(sess),
                                       self._replay_clause(sess),
                                       text or "Start us off."))
@@ -9387,21 +10032,88 @@ class Actions(LogFacts):
     # `_tmp_prd`, so the worker can reach it: copilot via `--attachment <path>`,
     # claude via its Read tool on the abs path. The server has already enforced
     # the content-type allow-list (415) and the body cap (413) before we get here.
+    @staticmethod
+    def _decode_image(data_b64):
+        """The base64 → bytes step, and the ONE sentence said when it is not
+        base64. Extracted (S169) so the holodeck's room staging below and the
+        scratch staging above cannot drift into two different refusals for the
+        same bad paste."""
+        try:
+            return base64.b64decode((data_b64 or "").encode("ascii"),
+                                    validate=True)
+        except (binascii.Error, ValueError, UnicodeEncodeError):
+            raise ActionError(400, "image data is not valid base64")
+
     def _stage_image(self, content_type, data_b64):
         """Decode one base64 image and stage it in `_scratch_dir()`; return the
         abs path. The suffix follows the (already allow-listed) content type so
         the worker's image loader recognises it. Caller owns cleanup."""
         suffix = _IMAGE_SUFFIX.get((content_type or "").strip().lower(), ".png")
-        try:
-            raw = base64.b64decode((data_b64 or "").encode("ascii"),
-                                   validate=True)
-        except (binascii.Error, ValueError, UnicodeEncodeError):
-            raise ActionError(400, "image data is not valid base64")
+        raw = self._decode_image(data_b64)
         fd, path = tempfile.mkstemp(prefix="lcars-img-", suffix=suffix,
                                     dir=self._scratch_dir())
         with os.fdopen(fd, "wb") as fh:
             fh.write(raw)
         return path
+
+    # ── S169 (FL-014): staging a pasted image INSIDE the program's room ───────
+    # NOT `_stage_image`'s scratch dir, and the difference is the point. The
+    # Align grill's images are staged under `.git/lcars/tmp` and REAPED when the
+    # grill ends, because the durable copy of anything that mattered is made by
+    # `file.sh` into the mission's `attachments/`. A holodeck program has no
+    # mission to copy into and is itself the archive: the captain reopens a room
+    # weeks later, and the reference screenshot a mockup was built FROM is part
+    # of that design record.
+    #
+    # So the image goes in `<room>/attachments/` — the holodeck's equivalent of
+    # a mission's `attachments/` (S92) — where three things are already true and
+    # none had to be invented:
+    #   • the room is committed after every turn (`git add -A -- <room>`), so
+    #     the paste is in the archive's history without a second code path;
+    #   • the room is the turn's cwd AND copilot's only `--add-dir` grant, so
+    #     the worker can reach the file without widening the sandbox;
+    #   • `_room_file_path` — the preview route's jail — resolves the path, so a
+    #     name from the browser is fenced by the SAME check that fences every
+    #     other filename the deck can influence, rather than by a second one.
+    def _stage_room_images(self, sess, images):
+        """Write this turn's pasted images into the program's room; return the
+        abs paths in paste order. No images ⇒ nothing created and []."""
+        images = [i for i in (images or [])
+                  if isinstance(i, dict) and i.get("dataB64")]
+        if not images:
+            return []
+        room = os.path.join(sess.program_dir, _ROOM_ATTACHMENTS)
+        try:
+            os.makedirs(room, exist_ok=True)
+        except OSError as exc:
+            raise ActionError(
+                502, "the pasted image could not be saved into this program's "
+                "room (%s): %s. Nothing was sent — say it again once that "
+                "directory is writable." % (room, exc))
+        out = []
+        for img in images:
+            raw = self._decode_image(img.get("dataB64"))
+            name = _attachment_name(img.get("name"), img.get("type"))
+            target, _parts = self._room_file_path(
+                sess.program_dir, "%s/%s" % (_ROOM_ATTACHMENTS, name))
+            # A ROOM IS REOPENED, so names collide across days. The second
+            # `shot.png` becomes `shot-2.png` rather than overwriting the one a
+            # previous turn was designed from.
+            stem, ext = os.path.splitext(target)
+            n = 2
+            while os.path.exists(target):
+                target = "%s-%d%s" % (stem, n, ext)
+                n += 1
+            try:
+                with open(target, "wb") as fh:
+                    fh.write(raw)
+            except OSError as exc:
+                raise ActionError(
+                    502, "the pasted image could not be saved into this "
+                    "program's room: %s. Nothing was sent — say it again once "
+                    "%s is writable." % (exc, room))
+            out.append(target)
+        return out
 
     def _stage_images(self, images):
         """Stage every `{name,type,dataB64}` in `images`; return the abs paths
@@ -9446,6 +10158,47 @@ _IMAGE_SUFFIX = {
     "image/gif": ".gif",
     "image/webp": ".webp",
 }
+
+# The extensions each allow-listed type may keep. `image/jpeg` has two spellings
+# in the wild and renaming a perfectly good `shot.jpeg` to `shot.jpeg.jpg` would
+# be the surface being clever at the captain's expense.
+_IMAGE_EXTS = {
+    "image/png": (".png",),
+    "image/jpeg": (".jpg", ".jpeg"),
+    "image/gif": (".gif",),
+    "image/webp": (".webp",),
+}
+
+# What survives from a browser-supplied filename. Everything else becomes "-".
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _attachment_name(name, content_type):
+    """A filename for a pasted image, kept RECOGNISABLE but never trusted.
+
+    S169 (FL-014). The name arrives from the page, and the file is written into
+    the captain's archive, so it is reduced to a bare basename over a strict
+    character class and given the extension its (already allow-listed) content
+    type implies. `_room_file_path` — the preview route's jail — resolves the
+    result afterwards, so this is the readable half of the fence and not the
+    fence itself: a name that somehow still escaped would be refused there.
+
+    The captain's own filename is worth keeping when it survives: `kitchen-
+    reference.png` in a room he reopens in a month says what a `lcars-img-
+    8f2c.png` never could.
+    """
+    base = os.path.basename(str(name or "").replace("\\", "/")).strip()
+    base = _SAFE_NAME.sub("-", base).lstrip(".-")
+    if not base:
+        base = "pasted-image"
+    ctype = (content_type or "").strip().lower()
+    ext = os.path.splitext(base)[1].lower()
+    if ext not in _IMAGE_EXTS.get(ctype, ()):
+        base += _IMAGE_SUFFIX.get(ctype, ".png")
+    # A pathological 4kB filename is still a filename; cap it without losing the
+    # extension the engine's image loader selects on.
+    stem, ext = os.path.splitext(base)
+    return stem[:80] + ext
 
 
 def _is_image_path(path):
