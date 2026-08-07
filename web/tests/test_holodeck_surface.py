@@ -973,8 +973,15 @@ class DeckRenderTest(unittest.TestCase):
         # S124's holodeck_start rejects images with a 400, so it is visibly
         # disabled WITH the reason.
         self.assertTrue(out["screenshotDisabled"])
-        self.assertIn("cannot take pasted images yet",
-                      out["screenshotReason"].lower())
+        # S169 FIX ROUND 1 — the reason no longer DENIES the feature. This
+        # session taught the composer to take a pasted screenshot, which made
+        # the old sentence ("the holodeck cannot take pasted images yet") false
+        # four inches from a control that works. The START road really is not
+        # built, so the refusal survives; it now names where paste DOES work.
+        reason = out["screenshotReason"].lower()
+        self.assertNotIn("cannot take pasted images", reason)
+        self.assertIn("cannot be started from an image", reason)
+        self.assertIn("chat", reason)
 
     def test_the_dialog_posts_the_mode_the_captain_picked(self):
         for pick, mode in (("grounding", "grounding"), ("design", "design")):

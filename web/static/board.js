@@ -3163,7 +3163,12 @@ function postWrite(path, payload, onResult, onError) {
     }
     if (!res.data || res.data.ok !== true) {
       var msg = (res.data && res.data.error) || ("write failed (HTTP " + res.status + ")");
-      if (onError) onError(msg);
+      /* S169 fix round 1 — the REFUSAL BODY rides along as a second argument.
+         Purely additive: every existing handler takes one parameter and is
+         byte-identical in behaviour. It exists so a caller can act on a FACT
+         the daemon stated (`sessionReset`) instead of reading its sentence,
+         which is the classifier road this round exists to stay off. */
+      if (onError) onError(msg, res.data || {});
       return;
     }
     writesActive = true;
@@ -8650,6 +8655,24 @@ function holoChatPane(p) {
       var you = el("div", "turn you");
       you.appendChild(el("div", "who", "You"));
       you.appendChild(el("div", "body", t.text));
+      /* S169 FIX ROUND 1 — AND WHAT HE ATTACHED TO IT. Measured on the
+         2026-08-06 drive: he pasted a sketch, said "this sketch is the look I
+         want", and after a reload the reopened chat showed no chip at all —
+         his own line pointing at nothing. The names come from the DAEMON's
+         turn list (`_turns_payload`), which is read back out of
+         `transcript.md` on a reopen, so this survives a refresh, a reload and
+         a program picked up weeks later. The chip shape is the composer's own
+         (`.img-chips`/`.img-chip`), not a second one. */
+      var att = t.attachments || [];
+      if (att.length) {
+        var chips = el("div", "img-chips");
+        att.forEach(function (n) {
+          var chip = el("span", "img-chip");
+          chip.appendChild(el("span", "img-chip-name", "◫ " + holoBase(n)));
+          chips.appendChild(chip);
+        });
+        you.appendChild(chips);
+      }
       tr.appendChild(you);
     }
     if (t.reply) {
@@ -9627,11 +9650,20 @@ function holoSay(sid, text, images, intent) {
       renderDeck();
       holoRefresh();
     },
-    function (msg) {
+    function (msg, err) {
       HOLO.busy = false;
+      /* S169 FIX ROUND 1 — A RETRY THAT WOULD RE-POISON IS NOT A RETRY.
+         When the daemon says it RESET the warm session (`sessionReset`), the
+         attachment this turn carried is what the engine refused, and re-sending
+         it into the fresh session would kill that one too — measured live on
+         copilot: a poisoned session dies on every later turn, attachment or
+         not. The line is retried WITHOUT it, which is exactly what the banner
+         tells him to do. Read off the daemon's FACT, never off its wording. */
+      var reset = !!(err && err.sessionReset);
       holoSetBanner("offline", { message: msg,
                                  retry: { sid: sid, text: text,
-                                          images: images, intent: intent } });
+                                          images: reset ? null : images,
+                                          intent: intent } });
       renderDeck();
     });
 }
@@ -9776,13 +9808,20 @@ function openHandoff(seed) {
   brief.value = seed.brief || "";
   brief.setAttribute("data-holo", "handoff-brief");
   brief.placeholder = "What do you want built, and why this way?";
-  f1.appendChild(brief);
-  /* …AND IT HAS TO SAY WHAT IS IN IT. The hint is directly under the box and
-     above the fold, so it is the one place a captain who reads only the first
-     screen still learns there are two more sections below his own words. The
-     counts come from the DAEMON's own sets (`_handoff_parts`), never counted
-     here, so the sentence cannot claim something the draft does not contain. */
+  /* …AND IT HAS TO SAY WHAT IS IN IT. The counts come from the DAEMON's own
+     sets (`_handoff_parts`), never counted here, so the sentence cannot claim
+     something the draft does not contain.
+
+     S169 FIX ROUND 1 — IT MOVED ABOVE THE BOX. It used to sit directly under
+     it, which worked only while the box was short enough for both to share the
+     first screen. The box is now as tall as the draft (see `fitBrief`), so
+     "under the box" is 800px down — and this is the ONE line that tells a
+     captain who reads one screen that there are two more sections below his
+     own words. Above it, it is the first thing he reads and it stays on screen
+     at every viewport, including the 613px one where the tester measured it
+     clipped mid-height by the footer band. */
   f1.appendChild(el("span", "hint", holoBriefHint(seed)));
+  f1.appendChild(brief);
   m.body.appendChild(f1);
 
   /* 1b. THE CAPTURED REQUIREMENTS, CHECKED AGAINST WHAT HE JUST WROTE (S128,
@@ -10111,6 +10150,44 @@ function openHandoff(seed) {
   }
   if (brief.focus) brief.focus();
   brief.scrollTop = 0;
+  /* ── ONE SCROLLER, AND IT IS THE MODAL BODY (S169 FIX ROUND 1) ────────────
+     MEASURED in real Chrome, and it is the tester's "single biggest threat to
+     the value proposition". The `rows` clamp sized the box in SOURCE LINES,
+     and the draft's lines are long: at 1440x677 the box laid out 269px tall
+     against 835px of content — 566px (68%) of the captain's own brief behind a
+     NESTED inner scrollbar, inside a `.modal-body` that was itself hiding
+     1,321px. The section he most needs to check, `## Implied by the mockup`,
+     was dead last at the bottom of the INNER scroller. S128's "below the fold"
+     had become "below the fold of an inner box", and `rows` cannot see it
+     because wrapping is a layout fact.
+
+     So the box takes the height of its LAID-OUT CONTENT and stops scrolling
+     itself. `.modal-body` is then the only scroller in the dialog, one wheel
+     gesture reaches every section, and the sticky footer (▦ FILE MISSION and
+     the ⚠ open-questions cue) is untouched — it is a sibling of the body, not
+     of this box.
+
+     `rows` stays as the FLOOR for a short draft and as the pre-paint size, so
+     nothing collapses to a slot before this runs. Re-run on input because he
+     rewrites the brief — that is the whole point of it being a writing space —
+     and a box that grew once and then trapped his own additions would be the
+     same defect with his words in it. */
+  function fitBrief() {
+    brief.style.height = "auto";
+    var want = brief.scrollHeight;
+    if (!(want > 0)) return;
+    brief.style.height = want + "px";
+    /* …AND THEN CHECK, because `scrollHeight` and `height` do not measure the
+       same rectangle and which ones they include depends on `box-sizing`. The
+       first pass left the box exactly 2px short (its border) — a 2px inner
+       scrollbar is still an inner scrollbar. Reading the residue back off the
+       element beats hard-coding a box model that a later stylesheet can
+       change. */
+    var over = brief.scrollHeight - brief.clientHeight;
+    if (over > 0) brief.style.height = (want + over) + "px";
+  }
+  fitBrief();
+  brief.addEventListener("input", fitBrief);
   m.body.scrollTop = 0;
   return m;
 }
@@ -10307,7 +10384,10 @@ function holoBannerNode() {
         HOLO.banner = null;
         // A RETRY IS THE SAME TURN — the same line AND the same screenshot
         // (S169). Dropping the images here would re-send a "make it look like
-        // this" turn with nothing to look at.
+        // this" turn with nothing to look at. The ONE case where the retry
+        // carries no image is the one the DAEMON already decided (fix round 1,
+        // `sessionReset`): the attachment is what killed the session, and it is
+        // dropped where `holoSay` builds this payload, not here.
         holoSay(o.retry.sid, o.retry.text, o.retry.images, o.retry.intent);
       })));
   }
@@ -10434,6 +10514,14 @@ function openNewProgram() {
   // is not a control that errors when clicked — it is visibly off, with the
   // reason. The alternative (hide it) loses the fact that this is the road the
   // captain asked for and it is coming.
+  //
+  // S169 FIX ROUND 1 — AND THE REASON WAS MADE STALE BY THIS SESSION. It read
+  // "the holodeck cannot take pasted images yet, so this would fail the moment
+  // you clicked Run", four inches from a composer that this session taught to
+  // take a pasted screenshot and that WORKS. The captain reads one product, so
+  // one of the two had to become true: the START road still refuses (nothing
+  // here opens a program from an image), and its refusal now says WHERE paste
+  // does work instead of denying the feature exists.
   var OPTS = [
     ["grounding", "▣", "This project's look",
      "One read-only pass over " + holoRepoName() + " to learn how it already "
@@ -10443,8 +10531,9 @@ function openNewProgram() {
     ["screenshot", "◫", "A screenshot",
      "Paste a picture of the screen you are changing. For a look that is not "
      + "in the repo — a design elsewhere, a competitor, a sketch.", false,
-     "Not yet: the holodeck cannot take pasted images yet, so this would fail "
-     + "the moment you clicked Run. Describe it in words for now."],
+     "Not yet: a program cannot be STARTED from an image. Open it on one of "
+     + "the other two roads, then paste the screenshot straight into the chat "
+     + "on your first turn — the composer takes it."],
     ["design", "⬡", "Blank deck",
      "Nothing exists yet. Start from the LCARS look and invent from there.",
      false, null],

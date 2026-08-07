@@ -589,14 +589,23 @@ PY
       # a captain actually has (what it stopped, and how to try again) and that
       # he cannot act on. The cure was unit-test-only until now, and a unit test
       # cannot see whether the number reaches the screen.
-      "${LCARS_PYTHON_BIN:-python3}" - "$dest/lcars_serve/actions.py" <<'PY'
+      #
+      # S169 FIX ROUND 1 RE-POINTED IT. The banner it anchors on was rewritten
+      # (`_engine_tail` — "the last line" could never be the error against a CLI
+      # with a fixed footer), and the anchor silently stopped matching: the
+      # patch script died on its own assert, `make_variant` did not look at the
+      # exit status, and the control ran against an UNMODIFIED copy of web/ and
+      # reported PASSED. It is caught now — see the `|| return 1` below — but
+      # the lesson is the round's own: a rig that prints reassurance while
+      # patching nothing proves nothing.
+      "${LCARS_PYTHON_BIN:-python3}" - "$dest/lcars_serve/actions.py" <<'PY' || return 1
 import sys
 p = sys.argv[1]; s = open(p).read()
-old = ('                     "running; say it again to retry.%s"\n'
-       '                     % (os.path.basename(bin_),')
-new = ('                     "running; say it again to retry. (%s exited %d)%s"\n'
+old = ('                     "running.%s%s"\n'
+       '                     % (os.path.basename(bin_), note,')
+new = ('                     "running. (%s exited %d)%s%s"\n'
        '                     % (os.path.basename(bin_), os.path.basename(bin_),\n'
-       '                        proc.returncode,')
+       '                        proc.returncode, note,')
 assert old in s, "the N5 control could not find the banner it breaks"
 open(p, "w").write(s.replace(old, new))
 PY

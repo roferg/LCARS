@@ -353,7 +353,8 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 body = self._read_json_body()
                 result = self._dispatch_write(path, body)
             except _ActionError as exc:
-                return self._write_error(exc.status, exc.message)
+                return self._write_error(exc.status, exc.message,
+                                         getattr(exc, "data", None))
             except Exception as exc:  # never leak a stack to the client
                 return self._write_error(500, "write failed: %s" % exc)
             # S130: an update moves the source/repo stamp, so drop the version
@@ -368,9 +369,21 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                         pass
             return self._json({"ok": True, "state": result})
 
-        def _write_error(self, code, msg):
+        def _write_error(self, code, msg, extra=None):
             # write responses carry {ok:false,error} (the frontend's contract).
-            body = json.dumps({"ok": False, "error": msg}).encode("utf-8")
+            #
+            # S169 fix round 1 — …plus whatever FACT the refusal needs the page
+            # to act on, ADDITIVELY. The one live case is `sessionReset`: the
+            # daemon has re-minted a warm session an attachment poisoned, and
+            # the deck's RETRY TURN must not re-send that attachment into the
+            # fresh one. The alternative was the page reading the daemon's
+            # SENTENCE to decide, which is the classifier road this round exists
+            # to stay off.
+            out = {"ok": False, "error": msg}
+            for k, v in (extra or {}).items():
+                if k not in out:
+                    out[k] = v
+            body = json.dumps(out).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))

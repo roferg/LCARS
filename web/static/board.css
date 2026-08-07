@@ -705,6 +705,13 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   padding:10px 12px;resize:vertical}
 .field textarea:focus,.field input:focus{outline:none;border-color:var(--lcars-amber)}
 
+/* S169 FIX ROUND 1 — the ▶ SEND TO ALIGN brief's own line, moved ABOVE the box
+   (see `openHandoff`). A bare inline <span> against a block textarea needs to
+   be a block with a gap under it, and NOTHING ELSE MAY MOVE: `.field .hint`
+   has no rule of its own anywhere in this stylesheet, so styling it generally
+   would restyle every other dialog on the board. Scoped to this one field. */
+[data-holo="handoff-brief-field"] .hint{display:block;margin:0 0 8px}
+
 /* ── S91: pasted-image placeholder chips (CLI-style, NO thumbnail/render) ── */
 .img-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .img-chip{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-body);
@@ -1790,17 +1797,29 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   color:var(--lcars-text-dim);white-space:pre-wrap;overflow-x:auto;
   max-height:230px;overflow-y:auto}
 
-/* S169 — THE BRIEF BOX MAY NOT EAT THE DIALOG.
+/* S169 FIX ROUND 1 — THE 40vh CAP IS GONE, AND WHAT IT WAS FOR IS NOT.
 
-   `rows` sizes the box to what is in it (board.js `holoBriefRows`), which is
-   what stopped a 31-line draft being read through an eight-row slot. This is
-   the fence on the other side: `rows` knows how much text there is and nothing
-   about how tall the window is, so on a short viewport a well-sized box pushes
-   the line that describes it — and then everything under it — out of the modal
-   body's visible band. MEASURED at 1440x677: body 438px, and 20 rows is 380px
-   of it. A viewport-relative cap is the only version of this that holds at
-   every window height, including the 900x640 case S128's D1 was worst at. */
-[data-holo="handoff-brief"]{max-height:40vh}
+   IT USED TO READ `[data-holo="handoff-brief"]{max-height:40vh}`, and the
+   reason was real: `rows` knows how much text there is and nothing about how
+   tall the window is, so a well-sized box pushed the line that DESCRIBES it —
+   and everything under it — out of the modal body's visible band.
+
+   The cap cured that and caused the tester's worst finding. MEASURED in real
+   Chrome at 1440x677: 40vh is 271px, against 835px of laid-out draft — 566px,
+   two thirds of the captain's own brief, behind a NESTED inner scrollbar
+   inside a body that was itself hiding 1,321px, with the section he most needs
+   to check (`## Implied by the mockup`) at the bottom of the INNER scroller.
+   "Below the fold" had become "below the fold of an inner box".
+
+   THE LINE MOVED INSTEAD OF THE BOX SHRINKING. The hint now sits ABOVE the
+   textarea (board.js `openHandoff`), so it is the first thing read at every
+   viewport and nothing can push it anywhere; the box is then free to be as
+   tall as the draft (`fitBrief`), and `.modal-body` — which has always
+   scrolled — is the only scroller left. The sticky footer is untouched: it is
+   a sibling of the body, not of this box.
+
+   Proven by tests/drives/browser/handoff.sh, whose `capped-box` red control
+   puts a height cap back at the tester's measured 243px and must go red. */
 
 /* S128 (FL-011) — the captured-requirement checklist and the OPEN QUESTIONS.
 

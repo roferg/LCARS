@@ -35,6 +35,7 @@ import os
 import re
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -5374,9 +5375,11 @@ class HandoffChangeListTest(HandoffBase):
         self._concept(sid, self.DOC)
         _st, body = self._promote(sid)
         brief = body["state"]["brief"]
-        self.assertIn("## What the mockup changes about the app you have today",
-                      brief)
-        self.assertIn("has to match the mockup", brief)
+        # S169 fix round 1 — the heading names its PROVENANCE, and the caption
+        # says who wins instead of vouching for a repo the daemon never read.
+        self.assertIn("## What the mockup changes — as the design chat "
+                      "recorded it", brief)
+        self.assertIn("the picture wins", brief)
 
     def test_the_change_list_comes_AFTER_his_own_words(self):
         """He reads his own words first — they are what he recognises, and the
@@ -5606,6 +5609,198 @@ class HandoffContractTest(HandoffBase):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# S169 FIX ROUND 1 — THE CHANGE LIST ASSERTED A CHANGE WAS **NOT** MADE
+#
+# THE MEASUREMENT, on the tester's live copilot drive of 2026-08-06. The brief
+# the shipping daemon produced for a real program room contained:
+#
+#     - Turn 2 — Kept the `.brand` "Waypoint" label and the "New trip" button
+#       from the existing topbar; kept the `6/12/16px` spacing rhythm and
+#       `system-ui`.
+#
+# THAT IS FALSE, and `web/tests/fixtures/s169-drive/` is the byte copy that
+# proves it: the mockup in the SAME room renders
+# `<span class="brand">Way<span class="dot">•</span>point</span>` with an accent
+# `.dot`, and turns the "New trip" button into `class="primary"` — accent-filled
+# and `font-weight:700` — against a repo whose top bar is a plain
+# `<span class="brand">Waypoint</span>`.
+#
+# WHY IT IS WORSE THAN AN OMISSION. An implementer who reads "kept … from the
+# existing topbar" LEAVES THE TOP BAR ALONE — which is precisely what the
+# captain complained about after the S128 build ("top bar unrestyled"), arrived
+# at by a new route. And it was AMPLIFIED: `_HANDOFF_PRECEDENCE` told every
+# stage the brief OVERRIDES the mockup, so the false line WON over the picture
+# that contradicts it.
+#
+# ── THE CURE, AND WHY IT IS NOT A CLASSIFIER ────────────────────────────────
+#
+# Nothing added here reads the captain's sentence, the model's sentence, or the
+# mockup's markup and decides anything. There is no keyword test for "kept", no
+# similarity score, no `basis.md` parser — S156 fell 14/14 → 5/14 on a
+# meaning-preserving rewording, S147 lost four generations of a source parser,
+# S157 five versions of a guard, and this would have been the sixth.
+#
+# What changed is WHO IS THE AUTHORITY, stated structurally:
+#
+#   1. `_HANDOFF_PRECEDENCE` is now SPLIT BY DOMAIN. The brief still overrides
+#      on WHAT IT MUST DO; on HOW IT LOOKS the MOCKUP overrides the brief,
+#      because the mockup is the artifact and the brief is an ACCOUNT of the
+#      conversation that drew it. That is a fact about the two documents, true
+#      of every program, and it defuses the amplification without inspecting a
+#      single line of either one.
+#   2. `_HANDOFF_DISAGREEMENT` now covers the CONTRADICTION direction. It only
+#      ever named the omission case ("the mockup shows something the brief never
+#      mentions"), which is not the shape of this defect at all.
+#   3. The change list's caption stops asserting what the daemon cannot know.
+#      "Today's app does none of it" is a claim about the captain's code; the
+#      daemon never reads `basis.md` and cannot verify one word of it.
+#   4. `_CONCEPT_CONTRACT` is tightened too — and DELIBERATELY NOT ALONE. S169's
+#      build wave already sharpened it once (the `today X → now Y` rule) and
+#      this program was written by a live worker UNDER that contract; wording
+#      at the far end of a model is measured insufficient on its own.
+#
+# WHAT IS DELIBERATELY NOT CURED: the false line still reaches the brief. The
+# daemon cannot tell a true "kept" from a false one, so it does not try —
+# `test_the_false_line_STILL_RIDES` pins that as the honest outcome. What it can
+# do is stop the line outranking the picture, and stop the surface vouching for
+# it.
+# ════════════════════════════════════════════════════════════════════════════
+class S169FalseKeptLineTest(HandoffBase):
+    """The tester's real program room, against the shipping hand-off path."""
+
+    FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "fixtures", "s169-drive")
+    FALSE_LINE = ("Kept the `.brand` \"Waypoint\" label and the \"New trip\" "
+                  "button from")
+
+    @classmethod
+    def setUpClass(cls):
+        super(S169FalseKeptLineTest, cls).setUpClass()
+        with open(os.path.join(cls.FIXTURE, "concept.md")) as fh:
+            cls.CONCEPT = fh.read()
+        with open(os.path.join(cls.FIXTURE, "mockup.html")) as fh:
+            cls.MOCK = fh.read()
+        # the room gets the REAL mockup too, so the program the hand-off runs
+        # on is the tester's program and not a stand-in wearing its concept doc.
+        cls.MOCKUP = cls.MOCK
+
+    def _brief(self):
+        sid = self._program()
+        _st, body = self._promote(sid)
+        return body["state"]
+
+    def test_the_fixture_is_the_real_room_and_the_line_really_is_FALSE(self):
+        """Pin the evidence. If someone 'fixes' the fixture, every claim below
+        becomes a claim about nothing."""
+        # the doc SAYS the top bar was kept…
+        self.assertIn("Kept the `.brand` \"Waypoint\" label", self.CONCEPT)
+        self.assertIn("kept the `6/12/16px` spacing rhythm", self.CONCEPT)
+        # …and the mockup in the same room plainly changed it.
+        self.assertIn("Way<span class=\"dot\">", self.MOCK)
+        self.assertIn(".brand .dot{color:var(--accent)}", self.MOCK)
+        self.assertIn("class=\"primary\"", self.MOCK)
+        # …against a top bar that `basis.md` — the program's own reading of the
+        # captain's repo, in the same room — records as a plain label and a
+        # plain button. THE DAEMON NEVER READS THIS FILE; it is here so a human
+        # auditing the fixture can see the claim really is false, and so the
+        # evidence cannot be quietly edited out from under the tests above.
+        with open(os.path.join(self.FIXTURE, "basis.md")) as fh:
+            basis = fh.read()
+        self.assertIn("a `.brand` label (\"Waypoint\") plus a `<button id="
+                      "\"new\">New trip</button>`", basis)
+        self.assertIn("No brand colour, no accent", basis)
+
+    def test_the_false_line_STILL_RIDES(self):
+        """THE HONEST OUTCOME, pinned so nobody 'improves' it into a filter.
+
+        The daemon cannot verify a claim about the captain's code — it never
+        reads `basis.md` — so it must not pretend to. Dropping a line because it
+        contains the word "kept" is the classifier this project has lost whole
+        sessions to. The line rides; what changed is that it no longer outranks
+        the picture and the surface no longer vouches for it."""
+        self.assertIn(self.FALSE_LINE, self._brief()["brief"])
+
+    def test_the_caption_no_longer_asserts_what_the_daemon_CANNOT_KNOW(self):
+        """"Today's app does none of it" is a claim about code the daemon has
+        never opened, printed directly above a line saying a thing was KEPT."""
+        brief = self._brief()["brief"]
+        self.assertNotIn("Today's app does none of it", brief)
+        self.assertNotIn("does none of it", brief)
+
+    def test_the_caption_says_what_the_SECTION_IS_instead(self):
+        """An account of a conversation, written by the model that drew the
+        picture — not a reading of the captain's repository."""
+        from lcars_serve.actions import _HANDOFF_CHANGE_NOTE
+        brief = self._brief()["brief"]
+        self.assertIn(_HANDOFF_CHANGE_NOTE, brief)
+        low = _HANDOFF_CHANGE_NOTE.lower()
+        self.assertIn("account", low)
+        # …and it must say the picture wins, right where he reads the list.
+        self.assertIn("mockup", low)
+
+    def test_the_change_list_is_SUBORDINATE_TO_THE_MOCKUP_on_LOOK(self):
+        """The mechanism. Where the list and the picture disagree about how
+        something LOOKS, the picture is the authority — because the picture is
+        the artifact and the list is an account of the talk that produced it."""
+        from lcars_serve.actions import _HANDOFF_PRECEDENCE
+        p = _HANDOFF_PRECEDENCE
+        # the S128 half, untouched: an override, never a completeness claim.
+        self.assertIn("OVERRIDES the mockup", p)
+        self.assertIn("not a claim that the brief is exhaustive", p)
+        # the S169 half: it is an override about BEHAVIOUR, and LOOK goes the
+        # other way.
+        self.assertIn("WHAT IT MUST DO", p)
+        self.assertIn("HOW IT LOOKS", p)
+        self.assertIn("the mockup is the authority", p)
+        self.assertIn("OVERRIDES the brief", p)
+
+    def test_a_CONTRADICTION_is_evidence_the_stage_must_not_settle(self):
+        """`_HANDOFF_DISAGREEMENT` only ever named the OMISSION direction — the
+        mockup showing something the brief never mentions. This defect is the
+        other one: the brief saying something the mockup contradicts."""
+        from lcars_serve.actions import _HANDOFF_DISAGREEMENT
+        d = _HANDOFF_DISAGREEMENT
+        self.assertIn("CONTRADICTS", d.upper())
+        self.assertIn("unchanged", d.lower())
+        self.assertIn("ESCALATE", d)
+
+    def test_the_precedence_rule_reaches_the_MISSION_and_the_CAPTAIN(self):
+        """Both readers, from the one constant — the deck's visible guidance
+        block and the idea the mission is actually filed with."""
+        from lcars_serve.actions import _HANDOFF_PRECEDENCE
+        sid = self._program()
+        _st, promo = self._promote(sid)
+        self.assertIn(_HANDOFF_PRECEDENCE, promo["state"]["guidance"])
+        self._post("/api/park", {"idea": promo["state"]["brief"],
+                                 "holodeck": sid})
+        self.assertIn(_HANDOFF_PRECEDENCE,
+                      self._filed()[0]["files"]["--idea"])
+
+    def test_the_contract_forbids_a_KEPT_line_in_the_change_list(self):
+        """The fourth strand, and never the only one. `## Decisions` is a list
+        of CHANGES; a "kept X" entry is a description of the picture, and
+        downstream it reads as an instruction to leave X alone."""
+        from lcars_serve.actions import _CONCEPT_CONTRACT
+        c = _CONCEPT_CONTRACT
+        self.assertIn("EVERY ENTRY IS A CHANGE", c)
+        self.assertIn("kept", c.lower())
+        self.assertIn("leave", c.lower())
+
+    def test_what_was_DRAWN_but_never_DISCUSSED_is_absent_and_that_is_SAID(self):
+        """`.map-scale`, `.rail-head`, the 6px radii and the uppercase micro
+        labels are all in the mockup and in NO section of the concept doc, so
+        no declared list can carry them. The caption must therefore not read as
+        exhaustive — which is the same sentence that makes the picture the
+        authority on look."""
+        for drawn in ("map-scale", "rail-head"):
+            self.assertIn(drawn, self.MOCK, drawn)
+            self.assertNotIn(drawn, self.CONCEPT, drawn)
+        brief = self._brief()["brief"]
+        for drawn in ("map-scale", "rail-head"):
+            self.assertNotIn(drawn, brief, drawn)
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # S169 (FL-014) — A PASTED IMAGE REACHES THE ENGINE
 #
 # Found by the captain on the S128 re-drive: "I can't paste in images in my
@@ -5806,6 +6001,392 @@ class PastedImageReachesTheEngineTest(HolodeckBase):
         argv = self._calls()[-1]["argv"]
         self.assertFalse([a for a in argv if re.search(r"\bbash\b", a, re.I)],
                          argv)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 FIX ROUND 1 — ONE BAD PASTE BRICKED A PROGRAM FOREVER
+#
+# THE DEFECT, shipped by the FL-014 work directly above and found by the tester
+# on 2026-08-06. He pasted a 78-byte PNG; copilot's API answered `CAPIError: 400
+# Could not process image`; and because a holodeck turn `--resume`s a warm
+# session, that image stayed IN the conversation. Every later turn died
+# identically — WITH NO ATTACHMENT AT ALL. The program was permanently dead
+# under a banner advising "say it again to retry", which could never work, and
+# the only escape was deleting the program.
+#
+# REPRODUCED BY HAND AGAINST LIVE COPILOT while curing it (free engine, guard
+# shim on PATH, 2026-08-06):
+#
+#   1. a fresh session fed the tester's exact bytes  → `CAPIError: 400 Could
+#      not process image`, exit 1;
+#   2. `--resume`ing THAT session with a plain "Say OK." and NO attachment →
+#      the identical 400. The session is poisoned, permanently;
+#   3. an INTACT hand-built 2×2 PNG, and 4×4, 8×8, 16×16, 32×32 → all fine.
+#      So it is NOT a size threshold, and a size floor would have been an
+#      invented number the measurement had already falsified.
+#
+# `web/tests/fixtures/s169-drive/poisoned-paste.png` is the tester's exact file.
+# It is a CORRUPT PNG: its one `IDAT` chunk fails its own CRC32 and its zlib
+# stream is truncated. That is what the cure checks — the format's own integrity
+# rule, not a threshold and not a classifier.
+#
+# THREE THINGS ARE CURED HERE, and they are three because the defect had three
+# separate failures stacked on it:
+#   PREVENTION — a damaged image never reaches a session (`_image_defect`, in
+#       `_decode_image`, which is the ONE door every paste road already used).
+#   RECOVERY   — a session an attachment may have poisoned is RE-MINTED, using
+#       S126's existing warm-restart machinery (fresh id + `_replay_clause`
+#       hands the new worker the whole transcript). Nothing new was built.
+#   THE BANNER — it quoted `raw.splitlines()[-1]`, and copilot ALWAYS ends with
+#       a fixed footer, so "It said:" was structurally guaranteed to print a
+#       resume command and never the error. It now shows the TAIL and says that
+#       is what it is, which needs no knowledge of any CLI's decoration.
+# ════════════════════════════════════════════════════════════════════════════
+_POISON_PNG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "fixtures", "s169-drive", "poisoned-paste.png")
+
+
+class PoisonedPasteTest(HolodeckBase):
+    """The tester's exact bytes, against the shipping paste road."""
+
+    @classmethod
+    def setUpClass(cls):
+        super(PoisonedPasteTest, cls).setUpClass()
+        with open(_POISON_PNG, "rb") as fh:
+            cls.POISON = fh.read()
+        cls.POISON_B64 = base64.b64encode(cls.POISON).decode("ascii")
+
+    def _start(self, engine=None, program="Trip board"):
+        _, body = self._post("/api/holodeck/start",
+                             {"program": program,
+                              "engine": engine or self.copilot_bin})
+        return body["state"]["sessionId"]
+
+    def _room(self, program="trip-board"):
+        return os.path.realpath(os.path.join(self._sidecar(), program))
+
+    def _state(self, sid):
+        url = "http://127.0.0.1:%d/api/holodeck/%s" % (self.port, sid)
+        with urllib.request.urlopen(url, timeout=20) as r:
+            return json.loads(r.read())
+
+    # ── the evidence ────────────────────────────────────────────────────────
+    def test_the_fixture_is_the_testers_file_and_it_really_is_CORRUPT(self):
+        """Pin what every claim below turns on. It is a 2×2 PNG whose picture
+        data fails the checksum the format carries for exactly this purpose."""
+        from lcars_serve.actions import _image_defect
+        self.assertEqual(len(self.POISON), 78)
+        self.assertEqual(self.POISON[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertIn("checksum", _image_defect(self.POISON))
+
+    def test_an_INTACT_tiny_png_is_NOT_refused(self):
+        """The measurement that keeps this from becoming a size floor: live
+        copilot took an intact 2×2 without complaint, twice. Refusing small
+        images would be an invented threshold — and a wrong one."""
+        from lcars_serve.actions import _image_defect
+        self.assertEqual(_image_defect(base64.b64decode(_PNG_B64)), "")
+
+    def test_an_UNRECOGNISED_format_is_left_alone_not_refused(self):
+        """The surface must not claim knowledge it does not have. A format this
+        cannot parse is not judged."""
+        from lcars_serve.actions import _image_defect
+        self.assertEqual(_image_defect(b"\x00\x01not-a-known-container"), "")
+
+    def test_the_OTHER_THREE_FORMATS_are_checked_too_and_are_not_decoration(self):
+        """The composer's allow-list is PNG/JPEG/GIF/WEBP. A check that only
+        really looked at PNG would be three quarters decoration, and the first
+        `.jpg` paste would walk straight past it. Each arm is the format's own
+        completeness rule: a JPEG ends with its EOI marker, a GIF with its
+        trailer, a WEBP holds the byte count its RIFF header declares."""
+        from lcars_serve.actions import _image_defect
+        self.assertIn("JPEG", _image_defect(b"\xff\xd8\xff\xe0" + b"\x00" * 40))
+        self.assertIn("GIF", _image_defect(b"GIF89a" + b"\x00" * 20))
+        self.assertEqual(_image_defect(b"GIF89a" + b"\x00" * 20 + b"\x3b"), "")
+        webp = b"RIFF" + struct.pack("<I", 5000) + b"WEBP" + b"\x00" * 10
+        self.assertIn("WEBP", _image_defect(webp))
+        self.assertEqual(_image_defect(b"\xff\xd8\xff\xe0" + b"\x00" * 40
+                                       + b"\xff\xd9"), "")
+
+    def test_a_ZERO_BYTE_paste_is_named_rather_than_written_out(self):
+        from lcars_serve.actions import _image_defect
+        self.assertIn("empty", _image_defect(b""))
+
+    # ── PREVENTION ──────────────────────────────────────────────────────────
+    def test_a_damaged_paste_is_refused_in_plain_english_before_anything_runs(self):
+        sid = self._start()
+        status, body = self._post_raw(
+            "/api/holodeck/%s/say" % sid,
+            {"text": "make it look like this",
+             "images": [{"name": "shot.png", "type": "image/png",
+                         "dataB64": self.POISON_B64}]})
+        self.assertEqual(status, 400, body)
+        msg = body["error"]
+        self.assertIn("shot.png", msg)
+        self.assertIn("damaged", msg)
+        # plain English: no stack trace, no CRC hex, and it says what to DO.
+        self.assertNotIn("Traceback", msg)
+        self.assertRegex(msg.lower(), r"take the screenshot again|drag")
+
+    def test_the_refused_paste_reaches_NO_ENGINE_and_NO_ROOM(self):
+        """The whole point of catching it here: nothing spawned, nothing on
+        disk, and above all nothing in the warm session."""
+        sid = self._start()
+        before = len(self._calls())
+        self._post_raw("/api/holodeck/%s/say" % sid,
+                       {"text": "this",
+                        "images": [{"name": "shot.png", "type": "image/png",
+                                    "dataB64": self.POISON_B64}]})
+        self.assertEqual(len(self._calls()), before)
+        attach = os.path.join(self._room(), "attachments")
+        self.assertFalse(os.path.isdir(attach) and os.listdir(attach))
+
+    def test_the_program_is_still_usable_after_a_refused_paste(self):
+        """A refusal is not a brick. The claim is released and the very next
+        turn works."""
+        sid = self._start()
+        self._post_raw("/api/holodeck/%s/say" % sid,
+                       {"text": "this",
+                        "images": [{"name": "shot.png", "type": "image/png",
+                                    "dataB64": self.POISON_B64}]})
+        status, _ = self._post("/api/holodeck/%s/say" % sid,
+                               {"text": "just words then"})
+        self.assertEqual(status, 200)
+
+    def test_EVERY_paste_road_is_guarded_not_just_the_holodeck(self):
+        """The check lives in `_decode_image`, the one door all three roads
+        already came through — the Align grill and the Mission Log get it for
+        free, and the defect cannot come back through an unguarded one."""
+        from lcars_serve.actions import Actions
+        import inspect
+        src = inspect.getsource(Actions._decode_image)
+        self.assertIn("_image_defect", src)
+
+    # ── RECOVERY ────────────────────────────────────────────────────────────
+    def _fail_next_turn(self):
+        self._set_turns({"stdout": "Execution failed: CAPIError: 400 Could not "
+                                   "process image (Request ID: F68E:80C6D)\n"
+                                   "\n\nChanges    +0 -0\n"
+                                   "AI Credits 0 (7s)\n"
+                                   "Resume     copilot --resume=796ade4f",
+                         "exit": 1})
+
+    def test_a_failed_ATTACHMENT_turn_RE_MINTS_the_warm_session(self):
+        """The recovery. A poisoned session can never be resumed back to life,
+        so the next turn must open a FRESH one — S126's warm-restart machinery,
+        turned on in place rather than rebuilt."""
+        sid = self._start()
+        self._set_turns({"stdout": "opened"})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "hello"})
+        state = self._state(sid)
+        self.assertTrue(state["warm"], state)
+        self._fail_next_turn()
+        status, body = self._post_raw(
+            "/api/holodeck/%s/say" % sid,
+            {"text": "like this", "images": [{"name": "ok.png",
+                                              "type": "image/png",
+                                              "dataB64": _PNG_B64}]})
+        self.assertEqual(status, 502, body)
+        # the session is no longer warm — the next turn OPENS one.
+        state = self._state(sid)
+        self.assertFalse(state["warm"], state)
+
+    def test_the_fresh_session_is_handed_the_WHOLE_TRANSCRIPT(self):
+        """Recovery that forgot the conversation would not be recovery. The
+        replay is S126's, reached by the same `restarted` flag `holodeck_open`
+        sets — no second code path."""
+        sid = self._start()
+        self._set_turns({"stdout": "opened"})
+        self._post("/api/holodeck/%s/say" % sid,
+                   {"text": "a dark trip board please"})
+        self._fail_next_turn()
+        self._post_raw("/api/holodeck/%s/say" % sid,
+                       {"text": "like this",
+                        "images": [{"name": "ok.png", "type": "image/png",
+                                    "dataB64": _PNG_B64}]})
+        self._set_turns({"stdout": "back"})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "carry on"})
+        prompt = self._prompts()[-1]
+        self.assertIn("picking this program back up", prompt)
+        self.assertIn("you are a FRESH session", prompt)
+        self.assertIn("a dark trip board please", prompt)
+
+    def test_the_banner_SAYS_the_session_was_reset_and_what_to_do(self):
+        sid = self._start()
+        self._set_turns({"stdout": "opened"})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "hello"})
+        self._fail_next_turn()
+        _st, body = self._post_raw(
+            "/api/holodeck/%s/say" % sid,
+            {"text": "like this", "images": [{"name": "ok.png",
+                                              "type": "image/png",
+                                              "dataB64": _PNG_B64}]})
+        msg = body["error"]
+        self.assertIn("ok.png", msg)
+        self.assertIn("fresh", msg.lower())
+        self.assertIn("transcript", msg.lower())
+        # the advice that could NEVER work is gone from this branch.
+        self.assertNotIn("say it again to retry", msg)
+        # …and the FACT rides beside the sentence, so the page never has to
+        # read the wording to decide what to do with the attachment.
+        self.assertTrue(body.get("sessionReset"), body)
+
+    def test_a_failed_turn_with_NO_attachment_keeps_its_warm_session(self):
+        """The regression guard on the trigger. Re-minting on every failure
+        would throw away a warm session — and pay for a full replay — every
+        time a network blip drops a turn. The trigger is a FACT off this turn's
+        argv: did it carry an attachment."""
+        sid = self._start()
+        self._set_turns({"stdout": "opened"})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "hello"})
+        self._fail_next_turn()
+        _st, body = self._post_raw("/api/holodeck/%s/say" % sid,
+                                   {"text": "no picture here"})
+        state = self._state(sid)
+        self.assertTrue(state["warm"], state)
+        self.assertFalse(body.get("sessionReset"), body)
+
+    # ── THE BANNER QUOTES THE REAL ERROR ────────────────────────────────────
+    def test_the_banner_carries_the_ERROR_not_the_resume_command(self):
+        """THE HEADLINE of this half. The tail below is a live copilot failure,
+        verbatim: the reason is four non-empty lines above a fixed footer, and
+        `splitlines()[-1]` could never once have reached it."""
+        sid = self._start()
+        self._set_turns({"stdout": "opened"})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "hello"})
+        self._fail_next_turn()
+        _st, body = self._post_raw("/api/holodeck/%s/say" % sid,
+                                   {"text": "and now"})
+        msg = body["error"]
+        self.assertIn("CAPIError: 400 Could not process image", msg)
+        self.assertIn("The last thing it printed", msg)
+        # …and it never claims to have identified the error.
+        self.assertNotIn("It said:", msg)
+
+    def test_the_tail_rule_knows_NOTHING_about_any_CLI(self):
+        """The road not taken, pinned. Matching copilot's "Changes"/"AI
+        Credits"/"Resume" footer is a per-engine corpus that goes stale the
+        moment a CLI reflows it — S126 already lost a captured fixture that
+        way. The rule is "show the last few lines and say so"."""
+        from lcars_serve.actions import _engine_tail
+        import inspect
+        src = inspect.getsource(_engine_tail)
+        for cli_word in ("copilot", "claude", "AI Credits", "Resume"):
+            self.assertNotIn(cli_word, src, cli_word)
+        # it drops blank padding, keeps order, and is bounded.
+        self.assertEqual(_engine_tail("a\n\n\nb\nc\n\n", lines=2), "b\nc")
+        self.assertEqual(_engine_tail("", lines=4), "")
+        big = "\n".join("line%d" % i for i in range(400))
+        self.assertLessEqual(len(_engine_tail(big)), 900)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 FIX ROUND 1 — THE RECORD NAMES WHAT HE ATTACHED
+#
+# Found on the same drive. He pasted a sketch and said "This sketch is the look
+# I want"; the turn worked; and after a reload the reopened chat showed no chip
+# and `transcript.md` — the program's PERMANENT record, the thing a later
+# session is handed — never mentioned an image at all. A future session reads
+# his sentence pointing at nothing.
+#
+# It is the same information-loss class as the rest of this round, inside this
+# session's own new feature, and it is a MATCHED PAIR: `_transcript_entry`
+# writes the line, `_parse_transcript` reads it back, and `_turns_payload` is
+# the one projection every consumer sees.
+# ════════════════════════════════════════════════════════════════════════════
+class AttachmentIsInTheRecordTest(HolodeckBase):
+    def _start(self, program="Paste probe"):
+        _, body = self._post("/api/holodeck/start",
+                             {"program": program, "engine": self.copilot_bin})
+        return body["state"]["sessionId"]
+
+    def _room(self, program="paste-probe"):
+        return os.path.realpath(os.path.join(self._sidecar(), program))
+
+    def _state(self, sid):
+        url = "http://127.0.0.1:%d/api/holodeck/%s" % (self.port, sid)
+        with urllib.request.urlopen(url, timeout=20) as r:
+            return json.loads(r.read())
+
+    def _say_with_image(self, sid, name="sketch.png"):
+        self._set_turns({"stdout": "Here is what I see in the sketch."})
+        return self._post("/api/holodeck/%s/say" % sid,
+                          {"text": "This sketch is the look I want.",
+                           "images": [{"name": name, "type": "image/png",
+                                       "dataB64": _PNG_B64}]})
+
+    def test_the_TURN_PAYLOAD_names_it(self):
+        sid = self._start()
+        self._say_with_image(sid)
+        turns = self._state(sid)["turns"]
+        self.assertEqual(turns[-1].get("attachments"), ["sketch.png"])
+
+    def test_TRANSCRIPT_MD_names_it(self):
+        """The durable half. This file is replayed into the next worker and
+        handed to Align, so an image it never mentions is an image the next
+        session does not know existed."""
+        sid = self._start()
+        self._say_with_image(sid)
+        with open(os.path.join(self._room(), "transcript.md")) as fh:
+            text = fh.read()
+        self.assertIn("_Attached this turn: sketch.png_", text)
+        self.assertIn("This sketch is the look I want.", text)
+
+    def test_a_REOPENED_program_still_names_it(self):
+        """The measurement was taken after a reload. The record is the only
+        thing that survives, so the chip has to come back out of it."""
+        sid = self._start()
+        self._say_with_image(sid)
+        self._post("/api/holodeck/%s/end" % sid)
+        _st, body = self._post("/api/holodeck/open", {"room": "paste-probe"})
+        turns = body["state"]["turns"]
+        self.assertEqual(turns[-1].get("attachments"), ["sketch.png"])
+        # …and his words are still HIS — the new line must not be absorbed into
+        # what he said (which is why it sits above it, not below).
+        self.assertEqual(turns[-1]["text"], "This sketch is the look I want.")
+
+    def test_a_turn_with_NO_image_carries_no_key_at_all(self):
+        """Additive: every payload every earlier test pins stays byte-identical
+        on the road that has no attachment."""
+        sid = self._start()
+        self._set_turns({"stdout": "ok"})
+        self._post("/api/holodeck/%s/say" % sid, {"text": "plain words"})
+        turns = self._state(sid)["turns"]
+        self.assertNotIn("attachments", turns[-1])
+        with open(os.path.join(self._room(), "transcript.md")) as fh:
+            self.assertNotIn("_Attached this turn:", fh.read())
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# S169 FIX ROUND 1 — TWO SURFACES, ONE PRODUCT
+#
+# The New Program dialog disabled its "A screenshot" road with "⚠ Not yet: the
+# holodeck cannot take pasted images yet, so this would fail the moment you
+# clicked Run" — while the composer four inches away invites "paste a
+# screenshot" and works. That copy was made stale BY THIS SESSION. The START
+# road genuinely is not built (there is no turn to attach to), so the refusal
+# survives; what changes is that it stops denying the feature and names where
+# the road actually is.
+# ════════════════════════════════════════════════════════════════════════════
+class StartFromImageRefusalIsHonestTest(HolodeckBase):
+    def test_the_daemon_still_REFUSES_a_start_carrying_an_image(self):
+        status, body = self._post_raw(
+            "/api/holodeck/start",
+            {"program": "P", "engine": self.copilot_bin,
+             "images": [{"name": "a.png", "type": "image/png",
+                         "dataB64": _PNG_B64}]})
+        self.assertEqual(status, 400, body)
+
+    def test_but_it_no_longer_says_the_holodeck_cannot_take_images(self):
+        _st, body = self._post_raw(
+            "/api/holodeck/start",
+            {"program": "P", "engine": self.copilot_bin,
+             "images": [{"name": "a.png", "type": "image/png",
+                         "dataB64": _PNG_B64}]})
+        msg = body["error"]
+        self.assertNotIn("cannot take pasted images", msg)
+        # it points at the road that WORKS, by name.
+        self.assertIn("chat", msg.lower())
+        self.assertRegex(msg.lower(), r"paste .*first turn|composer")
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -1043,12 +1043,32 @@ const HANDOFF_PROBE = `(function () {
       overflowY: cs.overflowY, lineHeight: Math.round(lh),
       linesShown: lh > 0 ? Math.floor(ta.clientHeight / lh) : 0,
       reachedBottom: reachedBottom,
+      // S169 FIX ROUND 1 — WHAT IS HIDDEN BEHIND THE BOX'S OWN SCROLLBAR.
+      // rows/linesShown count SOURCE lines, and this draft's lines wrap three
+      // and four ways at 613px, so both were blind to the tester's finding: a
+      // 269px box over 835px of content. This is the laid-out fact.
+      // (No backticks in here: this whole probe is a template literal.)
+      nestedHiddenPx: Math.max(0, ta.scrollHeight - ta.clientHeight),
+      // the inline height the sizing pass set, so a run that FAILS this
+      // says whether the pass never ran or ran and was overruled.
+      styleH: ta.style.height || "",
       box: box(ta), hit: hit(ta),
       headings: value.split("\\n").filter(function (l) {
         return /^##\\s/.test(l);
       }),
       value: value
     };
+  }
+  // …and how many lines of it are ACTUALLY IN FRONT OF HIM at rest — the
+  // intersection of the box with the scrolling body's own visible band, which
+  // is what "on screen" means inside a modal that clips.
+  if (ta && body) {
+    var bb = box(ta), br = box(body);
+    var top = Math.max(bb.top, br.top, 0);
+    var bot = Math.min(bb.bottom, br.bottom, window.innerHeight);
+    m.brief.visiblePx = Math.max(0, bot - top);
+    m.brief.visibleLines = m.brief.lineHeight > 0
+      ? Math.floor(m.brief.visiblePx / m.brief.lineHeight) : 0;
   }
   m.hint = hint ? { text: (hint.textContent || "").trim(), box: box(hint),
                     hit: hit(hint) } : null;
@@ -1083,43 +1103,69 @@ function judgeHandoff(m, want) {
            "room's draft carries the change list and the implied behaviour and " +
            "must be at least " + want.minLines);
   }
-  // 2. THE BOX IS ON THE SCREEN, whole, before anything is scrolled.
+  // 2. HE MEETS THE TOP OF HIS OWN BRIEF. The box no longer has to fit the
+  //    window — it is as tall as the draft, and `.modal-body` scrolls it (see
+  //    3). What must be true at rest is that line 1 is in front of him, inside
+  //    the scrolling body's own visible band and not merely "in the viewport"
+  //    (the body CLIPS, so those are different claims).
+  const band = m.bodyRect || { top: 0, bottom: vh };
   if (!b.box || !b.box.visible) {
     f.push("the brief box did not lay out");
-  } else if (b.box.top < 0 || b.box.bottom > vh) {
-    f.push("the brief box is not fully on screen at rest — it runs " +
-           b.box.top + "→" + b.box.bottom + "px against a " + vh +
-           "px window (S128 D1: the box below the fold is the box nobody reads)");
+  } else if (b.box.top < Math.max(0, band.top) ||
+             b.box.top >= Math.min(vh, band.bottom)) {
+    f.push("the brief box does not start on screen — its top is at " +
+           b.box.top + "px and the dialog's scrolling body only shows " +
+           band.top + "→" + band.bottom + "px of a " + vh + "px window " +
+           "(S128 D1: the box below the fold is the box nobody reads)");
   }
   if (!b.hit) f.push("the brief box is in the DOM but nothing can click it");
-  // 3. IT GREW WITH WHAT IS IN IT. An eight-row slot holding a 31-line draft
-  //    shows the captain his own words and hides the two new sections under
-  //    them — D1 one level down, and the exact way this session fails quietly.
-  if (b.linesShown < (want.minLinesShown || 0)) {
-    f.push("the brief box shows only " + b.linesShown + " of its " + b.lines +
-           " lines at once (" + b.clientH + "px at " + b.lineHeight +
+  // 3. ONE SCROLLER, AND IT IS THE MODAL BODY. S169 fix round 1, and the check
+  //    the previous shape was structurally blind to: `rows` and `linesShown`
+  //    count SOURCE lines, and this draft's lines wrap three and four ways at
+  //    613px, so a box that "showed 16 of 31 lines" was in fact showing 269px
+  //    of 835px — two thirds of his brief behind a NESTED inner scrollbar,
+  //    with `## Implied by the mockup` at the bottom of it. A box inside a
+  //    scroller inside a modal is a box nobody reaches.
+  if (b.nestedHiddenPx > 1) {
+    f.push("the brief box hides " + b.nestedHiddenPx + "px of its own " +
+           b.scrollH + "px of content behind an INNER scrollbar (it is " +
+           b.clientH + "px tall) — the modal body must be the only scroller, " +
+           "or the last section is below the fold of an inner box");
+  }
+  // 4. …AND ENOUGH OF IT IS IN FRONT OF HIM AT REST to read as a brief rather
+  //    than a slot. Measured off the laid-out intersection with the scrolling
+  //    body, not off the `rows` attribute.
+  if ((b.visibleLines || 0) < (want.minLinesShown || 0)) {
+    f.push("only " + b.visibleLines + " lines of the brief are on screen at " +
+           "rest (" + (b.visiblePx || 0) + "px at " + b.lineHeight +
            "px/line); it must show at least " + want.minLinesShown);
   }
-  // 4. …AND THE REST OF IT IS REACHABLE, proven by scrolling it.
   if (b.overflowY === "hidden") {
     f.push("the brief box clips its own content (overflow-y: hidden) — the " +
            "part of the draft past " + b.clientH + "px cannot be reached");
-  } else if (!b.reachedBottom) {
-    f.push("the brief box would not scroll to its own bottom (scrollHeight " +
-           b.scrollH + ", clientHeight " + b.clientH + ")");
   }
-  // 5. THE SIGN THAT IT GREW. The hint sits directly under the box and above
-  //    the fold, so it is the one thing a captain who reads only the first
-  //    screen still sees. It has to NAME the two new sections.
+  // 5. THE REST IS REACHABLE ON THE ONE SCROLLER. Proven against the body's
+  //    own numbers: it must be able to scroll far enough to bring the bottom
+  //    of the brief into view.
+  if (m.bodyScrollH != null && m.bodyH != null &&
+      b.box && b.box.bottom > band.bottom &&
+      m.bodyScrollH <= m.bodyH + 1) {
+    f.push("the brief runs past the bottom of the dialog's body and the body " +
+           "does not scroll (scrollHeight " + m.bodyScrollH + ", clientHeight " +
+           m.bodyH + ") — the rest of the draft cannot be reached at all");
+  }
+  // 6. THE SIGN THAT IT GREW. The hint sits directly ABOVE the box (S169 fix
+  //    round 1 — "under it" is 800px down now), so it is the one thing a
+  //    captain who reads only the first screen still sees. It has to NAME the
+  //    two new sections.
   if (!m.hint || !m.hint.box || !m.hint.box.visible) {
-    f.push("the line under the brief box, which says what the draft is made " +
+    f.push("the line above the brief box, which says what the draft is made " +
            "of, is not on the screen");
   } else {
     // HIT-TESTED, not compared against the window. The modal body CLIPS what
     // overflows it, so a hint 20px past the body's visible band still has a
     // rectangle inside a 677px window and is still on nobody's screen. Only
     // elementFromPoint knows the difference.
-    const band = m.bodyRect || { top: 0, bottom: vh };
     if (m.hint.box.bottom > Math.min(vh, band.bottom) ||
         m.hint.box.top < Math.max(0, band.top) || !m.hint.hit) {
       f.push("the line saying what the draft is made of is not WHOLLY on " +
@@ -1130,13 +1176,13 @@ function judgeHandoff(m, want) {
     }
     (want.hintNames || []).forEach((w) => {
       if (m.hint.text.toLowerCase().indexOf(String(w).toLowerCase()) === -1) {
-        f.push("the line under the brief box never mentions " +
+        f.push("the line above the brief box never mentions " +
                JSON.stringify(w) + " — it says " +
                JSON.stringify(m.hint.text));
       }
     });
   }
-  // 6. THE PRIMARY ACTION IS STILL REACHABLE. This is the check that must not
+  // 7. THE PRIMARY ACTION IS STILL REACHABLE. This is the check that must not
   //    quietly stop being true because the box above it got longer.
   if (!m.fileBtn) {
     f.push("there is no ▦ File Mission control in the dialog's footer");
@@ -1144,7 +1190,7 @@ function judgeHandoff(m, want) {
     f.push("▦ File Mission is not clickable where it is laid out (" +
            JSON.stringify(m.fileBtn.box) + " against a " + vh + "px window)");
   }
-  // 7. S128's OWN CURE, unregressed: the open-questions cue rides beside it.
+  // 8. S128's OWN CURE, unregressed: the open-questions cue rides beside it.
   if (want.expectQCue) {
     if (!m.qcue) {
       f.push("the open-questions cue (S128 D1's fix) is gone from the footer");

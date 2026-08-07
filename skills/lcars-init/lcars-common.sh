@@ -249,6 +249,12 @@ lcars_attach_has_mockup() {
 # worker read as "the brief is EXHAUSTIVE" and used to discard a requirement the
 # mockup carried and the brief had lost. The override survives; the completeness
 # claim is denied in the same sentence so the two can never be separated.
+# S169 fix round 1: the override is now SPLIT BY DOMAIN. A live drive produced a
+# brief claiming the top bar was "kept" while the mockup in the same room had
+# redrawn it, and the old sentence handed that false line the win. The brief is
+# an ACCOUNT of a conversation and rules on WHAT IT MUST DO; the mockup is the
+# artifact and rules on HOW IT LOOKS. See `_HANDOFF_PRECEDENCE` for the
+# measurement — and reword BOTH homes or section 10 goes red naming both.
 lcars_attach_mockup_note() {
   printf '%s' 'The HTML mockup is a VISUAL REFERENCE ONLY. It defines LOOK AND FLOW — layout,
 colour, spacing, wording, and the transitions between screens — and matching it
@@ -257,7 +263,7 @@ its internals are deliberately fake, hand-written to look right and wired to
 nothing. Do not import it, do not copy its internals as code, do not edit it to
 change behaviour, and never ship it — it is not part of this repository'"'"'s
 source and it is not a file this work may modify.
-Where the mockup and the brief disagree, the brief OVERRIDES the mockup. That is a TIE-BREAK, not a claim that the brief is exhaustive — the brief can be missing something the mockup has.'
+Where the mockup and the brief disagree about WHAT IT MUST DO, the brief OVERRIDES the mockup. That is a TIE-BREAK, not a claim that the brief is exhaustive — the brief can be missing something the mockup has. Where they disagree about HOW IT LOOKS, it is the other way round: the mockup is the authority and OVERRIDES the brief, including any line of the brief that says a thing was kept or left unchanged. The mockup IS the design; the brief is an ACCOUNT of the conversation that drew it, written afterwards, and an account can describe the picture wrongly.'
 }
 
 # lcars_attach_prd_section <relpaths...> -> the whole prd.md section, appended

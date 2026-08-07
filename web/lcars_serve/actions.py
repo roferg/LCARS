@@ -27,23 +27,32 @@ import os
 import re
 import shutil
 import signal
+import struct
 import subprocess
 import tempfile
 import threading
 import time
 import unicodedata
 import uuid
+import zlib
 
 from .local_adapter import LocalAdapter
 
 
 class ActionError(Exception):
-    """Raised on a bad request (status carries the HTTP code to return)."""
+    """Raised on a bad request (status carries the HTTP code to return).
 
-    def __init__(self, status, message):
+    S169 fix round 1 — `data` is an OPTIONAL dict of facts the refusal needs the
+    page to act on, merged into the write-error body by `server._write_error`.
+    It exists so a surface never has to read the message TEXT to decide what
+    happened (the one live user is `sessionReset`; see `_poisoned_note`).
+    """
+
+    def __init__(self, status, message, data=None):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.data = dict(data or {})
 
 
 # The env seam names the daemon resolves each skill path from (mirrors how
@@ -1067,6 +1076,10 @@ _TURN_HEAD = re.compile(r"^## Turn (\d+) ·", re.MULTILINE)
 # per-room metadata file: a second place to look is how the engine came to
 # arrive from three sources with a different winner per path.
 _ENGINE_LINE = re.compile(r"^_Engine: `([^`\n]+)`", re.MULTILINE)
+# S169 fix round 1 — the attachments a turn carried, in the durable record.
+# `_transcript_entry` writes it, `_parse_transcript` reads it; a turn written
+# before this existed simply has no line and answers no attachments.
+_ATTACHED_LINE = re.compile(r"^_Attached this turn: (.+?)_\s*$", re.MULTILINE)
 
 # ── S127: the HAND-OFF, recorded in the same one durable home ────────────────
 # D11's lifecycle needs two durable facts about a program: that it was SENT, and
@@ -1118,10 +1131,18 @@ def _transcript_header(program, engine=None):
     return "".join(out)
 
 
-def _transcript_entry(n, text, reply, files, grounding=False):
-    """ONE turn, as it goes into `transcript.md`. Nothing is summarised away."""
+def _transcript_entry(n, text, reply, files, grounding=False, attachments=None):
+    """ONE turn, as it goes into `transcript.md`. Nothing is summarised away.
+
+    S169 FIX ROUND 1 — `attachments` names what the captain pasted INTO this
+    turn. It goes ABOVE his line rather than below it, deliberately: the parser
+    reads his words from the `**Captain:**` marker to the `**Holodeck:**` one,
+    so a line between the two would be silently absorbed into what he said.
+    """
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     out = ["\n## Turn %d · %s\n" % (n, stamp)]
+    if attachments:
+        out.append("\n_Attached this turn: %s_\n" % ", ".join(attachments))
     if grounding and not text:
         out.append("\n_The opening grounding pass — one read-only look at the "
                    "project._\n")
@@ -1170,6 +1191,21 @@ def _parse_transcript(text):
         block = text[m.end():end]
         said = None
         reply = None
+        # S169 fix round 1 — what he ATTACHED to this turn, read back off the
+        # record so a REOPENED program's chat still names the sketch it was
+        # designed from. Written by `_transcript_entry`; see there for why it
+        # sits above his line and not below it.
+        #
+        # ONLY THE PART ABOVE HIS LINE, for the same reason `_parse_transcript`
+        # reads the engine from the header only: a reply that happens to quote
+        # this line is the model being quoted at, and letting it name an
+        # attachment would put a file that does not exist into the record's own
+        # reading of itself.
+        am = _ATTACHED_LINE.search(
+            re.split(r"^\*\*Captain:\*\* ", block, maxsplit=1,
+                     flags=re.MULTILINE)[0])
+        attached = [a.strip() for a in am.group(1).split(",")
+                    if a.strip()] if am else []
         cm = re.search(r"^\*\*Captain:\*\* ", block, re.MULTILINE)
         hm = re.search(r"^\*\*Holodeck:\*\* ", block, re.MULTILINE)
         if cm:
@@ -1179,7 +1215,10 @@ def _parse_transcript(text):
             tail = block[hm.end():]
             tail = re.split(r"\n_Files this turn: ", tail)[0]
             reply = tail.strip()
-        turns.append({"text": said, "reply": reply})
+        turn = {"text": said, "reply": reply}
+        if attached:
+            turn["attachments"] = attached
+        turns.append(turn)
     return name, turns, engine
 
 
@@ -1233,6 +1272,12 @@ Sections:
      (`basis.md`, if this program has one, is what "today" is). A decision
      nobody writes here reaches the builders as a picture with no caption, and
      the picture loses.
+     EVERY ENTRY IS A CHANGE. If something did NOT change, it does not belong
+     in this list at all — a "kept X", "unchanged", "carried over" entry is a
+     description of the picture, and downstream it reads as an instruction to
+     LEAVE X ALONE. Write one only when you have checked the mockup you just
+     drew and it really did leave that element untouched; if the mockup moved
+     it, the honest entry is `today X → now Y`.
   ## Open questions — what is still undecided. Raise these in the chat too.
      ONE HOME EACH: anything the MOCKUP implies belongs in bucket 2 below and
      not here. Write each undecided thing in exactly one of the two places —
@@ -1387,10 +1432,45 @@ _HANDOFF_SCOPES = ("look+behaviour", "look-only")
 # right question, and then resolved it toward the loss because this sentence
 # told it to. The override survives; the completeness claim is denied in the
 # same breath, in the same string, so the two can never be separated.
+#
+# ── S169 FIX ROUND 1: THE OVERRIDE IS SPLIT BY DOMAIN ───────────────────────
+#
+# MEASURED on the tester's live copilot drive, 2026-08-06. The brief for a real
+# program room carried "Turn 2 — Kept the `.brand` \"Waypoint\" label and the
+# \"New trip\" button from the existing topbar" — and the mockup in the SAME
+# room rebuilt both (`Way<span class="dot">•</span>point` with an accent dot; the
+# button promoted to `class="primary"`, accent-filled, 700 weight). The brief is
+# derived from `## Decisions`, which is an ACCOUNT OF THE CONVERSATION written
+# by the same model that drew the picture, and an account can be wrong about the
+# picture.
+#
+# The sentence above then AMPLIFIED it: an implementer reading "kept … from the
+# existing topbar" leaves the top bar alone, and this rule told it the brief
+# outranks the mockup that says otherwise. "Top bar unrestyled" is the captain's
+# original S128 complaint, arrived at by a new route.
+#
+# THE CURE IS A DOMAIN SPLIT, NOT A DETECTOR. Nothing anywhere reads a line and
+# decides whether it is true — that is S156's classifier (14/14 → 5/14 on a
+# reworded corpus), S147's source parser, S157's guard. What is stated instead
+# is a fact about the two documents that holds for every program ever made here:
+#
+#   the brief is an ACCOUNT of a design conversation → authoritative on WHAT IT
+#       MUST DO, the half a picture cannot carry;
+#   the mockup is THE ARTIFACT ITSELF → authoritative on HOW IT LOOKS, the half
+#       it IS.
+#
+# So a false "kept" line can still be written, and still rides — the daemon
+# never reads `basis.md` and cannot verify one word of it — but it can no longer
+# outrank the picture it contradicts.
 _HANDOFF_PRECEDENCE = (
-    "Where the mockup and the brief disagree, the brief OVERRIDES the mockup. "
-    "That is a TIE-BREAK, not a claim that the brief is exhaustive — the brief "
-    "can be missing something the mockup has.")
+    "Where the mockup and the brief disagree about WHAT IT MUST DO, the brief "
+    "OVERRIDES the mockup. That is a TIE-BREAK, not a claim that the brief is "
+    "exhaustive — the brief can be missing something the mockup has. Where they "
+    "disagree about HOW IT LOOKS, it is the other way round: the mockup is the "
+    "authority and OVERRIDES the brief, including any line of the brief that "
+    "says a thing was kept or left unchanged. The mockup IS the design; the "
+    "brief is an ACCOUNT of the conversation that drew it, written afterwards, "
+    "and an account can describe the picture wrongly.")
 
 # S128 (A4b). The second half of the same cure, and the one that changes what a
 # worker DOES. A disagreement is evidence about the HAND-OFF, not a question the
@@ -1400,6 +1480,13 @@ _HANDOFF_PRECEDENCE = (
 # HONESTY ABOUT THIS LAYER: these are words handed to a model. The suite can
 # prove they exist and that they reach the mission verbatim. Whether a cold
 # worker obeys them is a model choice and only a live drive measures it.
+#
+# S169 FIX ROUND 1 — AND IT ONLY EVER NAMED ONE DIRECTION. "If the mockup shows
+# something the brief never mentions" is the OMISSION case. The defect measured
+# on the 2026-08-06 drive is the other one: the brief stating, in a list titled
+# as settled decisions, that something was KEPT — while the mockup plainly
+# changed it. That is not a gap in the account, it is the account being WRONG,
+# and a worker with no rule for it reads the confident sentence and stops.
 _HANDOFF_DISAGREEMENT = """\
 - A DISAGREEMENT between the mockup and the brief is EVIDENCE, not a decision \
 for you to make. If the mockup shows or implements something the brief never \
@@ -1407,7 +1494,15 @@ mentions, treat that as a sign the hand-off may have LOST a requirement the \
 human actually stated. ESCALATE it (`lcars:awaiting-human`) and name what the \
 two sides say, rather than resolving it yourself. A stage that quietly picks a \
 side produces work that is correct against its brief and wrong against the \
-person who asked for it — and every gate downstream will pass it."""
+person who asked for it — and every gate downstream will pass it.
+- The same applies when the brief CONTRADICTS the mockup rather than missing \
+it — and one shape of that is easy to walk straight past: a brief line saying \
+some element was KEPT, left UNCHANGED or carried over from the app as it is \
+today, when the mockup has plainly redrawn it. The brief's change list is \
+written from the design conversation, not read off the mockup, so such a line \
+is the account being wrong about the picture. BUILD WHAT THE MOCKUP SHOWS \
+(look is its call — see the precedence rule) and ESCALATE the contradiction so \
+a human sees it; never read it as an instruction to leave that element alone."""
 
 _HANDOFF_COMMON = _HANDOFF_DISAGREEMENT + """
 - The mockup defines LOOK AND FLOW: layout, colour, spacing, wording, and the \
@@ -1872,11 +1967,31 @@ def _handoff_titled(brief, title):
 # so long nobody reads it, and every line of preamble is a line of his brief he
 # does not see.
 _HANDOFF_REQ_TITLE = "## What it must do — in your own words"
-_HANDOFF_CHANGE_TITLE = "## What the mockup changes about the app you have today"
+#
+# S169 FIX ROUND 1 — THE CAPTION STOPS VOUCHING FOR THE LIST.
+#
+# It used to read "Settled while you were drawing it. Today's app does none of
+# it and the built product has to match the mockup…" — printed, on the tester's
+# real drive, directly above a line saying the top bar was KEPT. Two things were
+# wrong with it and only one was the false line:
+#
+#   • "Today's app does none of it" is a claim about the captain's REPOSITORY.
+#     The daemon has never opened it — it does not read `basis.md` — so it was
+#     asserting something it cannot know, and a surface must not do that.
+#   • It read as exhaustive. The list is `## Decisions`, an account of what the
+#     conversation SETTLED; the mockup on the same drive also carried a scale
+#     bar, a rail header, 6px radii and uppercase micro-labels that were drawn
+#     and never discussed, so no declared list could contain them.
+#
+# What replaces it says what the section IS and who wins when it disagrees with
+# the picture — the same rule as `_HANDOFF_PRECEDENCE`, said where he reads the
+# list rather than only in the block below it.
+_HANDOFF_CHANGE_TITLE = "## What the mockup changes — as the design chat recorded it"
 _HANDOFF_CHANGE_NOTE = (
-    "Settled while you were drawing it. Today's app does none of it and the "
-    "built product has to match the mockup — correct or delete anything that "
-    "is wrong.")
+    "The design chat's own account of what it settled — not a reading of your "
+    "code, and not everything the mockup changes. The mockup is what gets "
+    "built: where a line here disagrees with the picture, the picture wins. "
+    "Correct or delete anything that is wrong.")
 _HANDOFF_IMPLIED_TITLE = "## Implied by the mockup — NOT things you said"
 _HANDOFF_IMPLIED_NOTE = (
     "The mockup implies these; nobody has settled them. They travel marked as "
@@ -2613,6 +2728,149 @@ def _stopped_turn_error(bin_, limit, timed_out, changed):
                  "$LCARS_HOLODECK_TURN_TIMEOUT if this program's turns really "
                  "do take that long.%s"
                  % (_duration_words(limit), os.path.basename(bin_), kept))
+
+
+# ── S169 FIX ROUND 1: QUOTING AN ENGINE THAT DIED ──────────────────────────
+#
+# WAS: `last = (raw.strip().splitlines() or [""])[-1].strip()`, printed as
+# "It said: …". MEASURED on the tester's live copilot drive and reproduced by
+# hand on 2026-08-06, the whole of a real failing turn's tail:
+#
+#     Execution failed: CAPIError: 400 Could not process image (Request ID: …)
+#
+#
+#     Changes    +0 -0
+#     AI Credits 0 (7s)
+#     Resume     copilot --resume=796ade4f-dc11-43fe-9503-1aed9883fcdb
+#
+# copilot ALWAYS ends with that fixed footer, so "the last line" was
+# STRUCTURALLY GUARANTEED to be a resume command and could never once be the
+# error. The reason sat four non-empty lines up and was thrown away — and the
+# banner then looked STALE, because two failures of the same warm session
+# quote the same session id.
+#
+# THE RULE MUST NOT KNOW THE CLI. Pattern-matching "Changes"/"AI Credits"/
+# "Resume" is the same brittle road one door over: it is a per-engine corpus
+# that goes stale the moment a CLI reflows its footer (S126 already lost a
+# captured fixture to exactly that), and claude's failing tail looks nothing
+# like this one.
+#
+# So the daemon stops CLAIMING to know which line is the error and shows the
+# TAIL, verbatim, labelled as what it is. It is honest about its own ignorance
+# — the same rule this round applies to the hand-off brief — and it is
+# CLI-agnostic by construction: whatever an engine prints on the way out, the
+# last few lines of it are in front of the captain.
+_ENGINE_TAIL_LINES = 8
+_ENGINE_TAIL_LINE_CHARS = 200
+_ENGINE_TAIL_CHARS = 900
+
+
+def _engine_tail(raw, lines=_ENGINE_TAIL_LINES):
+    """The last few non-empty lines an engine printed, for a human to read.
+
+    Blank lines are dropped (a CLI pads its footer and a blank line is not
+    evidence), each line is bounded, and the whole is bounded — a worker that
+    dies mid-stack-trace must not put a screenful into a banner.
+    """
+    out = []
+    for line in reversed(str(raw or "").replace("\r\n", "\n").split("\n")):
+        line = line.strip()
+        if not line:
+            continue
+        if len(line) > _ENGINE_TAIL_LINE_CHARS:
+            line = line[:_ENGINE_TAIL_LINE_CHARS - 1] + "…"
+        out.append(line)
+        if len(out) >= max(1, lines):
+            break
+    out.reverse()
+    text = "\n".join(out)
+    if len(text) > _ENGINE_TAIL_CHARS:
+        text = "…" + text[-(_ENGINE_TAIL_CHARS - 1):]
+    return text
+
+
+# ── S169 FIX ROUND 1: A PASTED IMAGE THAT IS BROKEN NEVER REACHES A SESSION ──
+#
+# THE DEFECT, shipped by this session's own FL-014 work and measured live. The
+# tester pasted a 78-byte PNG; copilot's API answered
+# `CAPIError: 400 Could not process image`; and because a holodeck turn RESUMES
+# a warm session, that image was baked into the conversation — every later turn
+# died identically WITH NO ATTACHMENT AT ALL. Reproduced by hand against live
+# copilot on 2026-08-06: a fresh session fed the tester's exact bytes died, and
+# `--resume`ing it with a plain "Say OK." died the same way. One click, and a
+# program was permanently unusable.
+#
+# WHAT THE FILE ACTUALLY IS — and this is why the check is not a guess. It is a
+# CORRUPT PNG: `IHDR` is fine, and the single `IDAT` chunk's CRC32 is
+# `7de298b7` where the file declares `f7a4b0e8`, its zlib stream is truncated,
+# and the chunk walk runs off the end of the buffer. It is not "small" — a
+# hand-built INTACT 2×2 PNG was measured going through live copilot fine, twice,
+# and so were 4×4, 8×8, 16×16 and 32×32. A size floor would have been an
+# invented threshold that the measurement had already falsified.
+#
+# So the rule is the FORMAT'S OWN, not a threshold and not a classifier: walk
+# the container the way its specification defines it and refuse a file that
+# does not hold together. PNG carries a CRC per chunk, which makes this exact.
+#
+# HONESTY ABOUT WHAT IT CANNOT DO: it proves a file is STRUCTURALLY INTACT, not
+# that an engine will accept it. An engine may refuse a perfectly good image for
+# its own reasons, which is why the recovery path (`_holodeck_turn` re-mints the
+# warm session after a failed turn that carried an image) exists beside this and
+# not instead of it. An unrecognised format is left ALONE — refusing what it
+# cannot judge would be the surface claiming knowledge it does not have.
+def _image_defect(raw):
+    """"" if `raw` holds together as an image, else what is wrong with it.
+
+    Judges only formats it can actually parse. `_IMAGE_SUFFIX`'s four types are
+    all covered; anything else answers "" (not judged) rather than refused.
+    """
+    data = raw or b""
+    if not data:
+        return "it is empty — 0 bytes arrived"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return _png_defect(data)
+    if data[:3] == b"\xff\xd8\xff":
+        # JPEG: the End Of Image marker is the last thing in a complete file.
+        # A truncated JPEG — the ordinary way a paste goes wrong — has none.
+        return "" if data.rstrip(b"\x00")[-2:] == b"\xff\xd9" else (
+            "the JPEG data stops before the end of the picture")
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "" if data[-1:] == b"\x3b" else (
+            "the GIF data stops before the end of the picture")
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        want = struct.unpack("<I", data[4:8])[0] + 8
+        return "" if len(data) >= want else (
+            "the WEBP data stops before the end of the picture (%d bytes of a "
+            "declared %d)" % (len(data), want))
+    return ""
+
+
+def _png_defect(data):
+    """"" if this PNG's chunk stream is intact, else what is wrong with it.
+
+    Every PNG chunk carries its own CRC32 over `type + payload`, so this is the
+    format checking itself — no threshold is invented anywhere.
+    """
+    i, seen_end = 8, False
+    while i < len(data):
+        if i + 8 > len(data):
+            return "its data is cut short %d bytes in" % i
+        length = struct.unpack(">I", data[i:i + 4])[0]
+        kind = data[i + 4:i + 8]
+        if i + 12 + length > len(data):
+            return ("its %s section says it is %d bytes long and the file ends "
+                    "first" % (kind.decode("ascii", "replace"), length))
+        payload = data[i + 8:i + 8 + length]
+        want = struct.unpack(">I", data[i + 8 + length:i + 12 + length])[0]
+        if (zlib.crc32(kind + payload) & 0xffffffff) != want:
+            return ("its %s section fails its own checksum — the picture data "
+                    "is damaged" % kind.decode("ascii", "replace"))
+        if kind == b"IEND":
+            seen_end = True
+        i += 12 + length
+    if not seen_end:
+        return "it has no end-of-image marker — the picture is incomplete"
+    return ""
 
 
 def _audit_diff(before, after):
@@ -4543,12 +4801,23 @@ class Actions(LogFacts):
               across that switch is a behaviour no spike has measured.
         """
         if images:
-            # The image-paste road (S91/S92) is measured on both engines, but
-            # threading it through a HOLODECK turn is untested here — say so
-            # rather than accept the paste and silently drop it.
+            # STARTING a program from an image is not built: `start` opens the
+            # room and (on `grounding`) reads the captain's project — there is
+            # no turn here to attach anything to. It is refused rather than
+            # silently dropped.
+            #
+            # S169 FIX ROUND 1 — BUT THE REFUSAL USED TO DENY THE FEATURE. It
+            # said "the holodeck cannot take pasted images yet", which this
+            # session's own FL-014 work made FALSE: the composer takes a pasted
+            # screenshot and it reaches the engine. The captain reads one
+            # product, and two surfaces four inches apart were contradicting
+            # each other about it. The refusal is still a refusal; it now names
+            # WHERE the road he wants actually is.
             raise ActionError(
-                400, "the holodeck cannot take pasted images yet — start the "
-                "program without one and describe what you want in words")
+                400, "a holodeck program cannot be STARTED from an image — "
+                "open it on one of the other roads, then paste the screenshot "
+                "straight into the chat on your first turn. The composer takes "
+                "it and the engine sees it.")
         program = (program or "").strip()
         if not program:
             raise ActionError(400, "missing required field: program")
@@ -4791,6 +5060,21 @@ class Actions(LogFacts):
         # merges into stdout — so the failed turn had a perfectly non-empty
         # `reply` and the duplicate came straight back.
         last = sess.turns[-1] if sess.turns else None
+        # S169 FIX ROUND 1 — THE TURN REMEMBERS WHAT HE ATTACHED.
+        #
+        # THE DEFECT, measured on the 2026-08-06 drive: he pasted a sketch, said
+        # "This sketch is the look I want", and the turn worked — but after a
+        # reload the reopened chat showed no chip, and `transcript.md`, the
+        # program's PERMANENT RECORD and the thing a later session is handed,
+        # never mentioned an image at all. A future session reads "this sketch
+        # is the look I want" with no sketch. That is the same information-loss
+        # class as the rest of this round, inside this session's own new
+        # feature.
+        #
+        # The names are read off the STAGED PATHS, not off what the browser
+        # said: those are the bytes that reached the engine and the files that
+        # are in the room's `attachments/` beside the record naming them.
+        names = [os.path.basename(p) for p in (image_paths or [])]
         if last and last.get("text") == text and last.get("failed"):
             last["reply"] = None
             last.pop("failed", None)
@@ -4798,8 +5082,18 @@ class Actions(LogFacts):
             # may have flipped the control before retrying, and the newest
             # declaration is the one he means.
             last["intent"] = intent
+            # …and the newest ATTACHMENT, for the same reason. A retry that
+            # dropped the poisoned image (see `_poisoned_note`) must not leave
+            # the record claiming that image was sent.
+            if names:
+                last["attachments"] = names
+            else:
+                last.pop("attachments", None)
         else:
-            sess.turns.append({"text": text, "reply": None, "intent": intent})
+            turn = {"text": text, "reply": None, "intent": intent}
+            if names:
+                turn["attachments"] = names
+            sess.turns.append(turn)
         return self._run_turn(sid, sess, prompt, claimed=True,
                               image_paths=image_paths, intent=intent)
 
@@ -6335,6 +6629,11 @@ class Actions(LogFacts):
         # on copilot — the ONE `--add-dir` grant, so nothing about the sandbox
         # is widened to carry them.
         image_paths = [p for p in (image_paths or []) if p]
+        # S169 FIX ROUND 1 — remembered for the failure path far below. An
+        # attachment is an input that BAKES INTO the warm session, so a turn
+        # that carried one and died is the one shape of failure a `--resume`
+        # can never recover from. See `_poisoned_note`.
+        sent = list(image_paths)
         attach_args = []
         if image_paths:
             if _is_copilot(bin_):
@@ -6579,15 +6878,25 @@ class Actions(LogFacts):
             # "(claude exited -9)" in the banner — a number that answers neither
             # of the two questions a captain has and that he cannot act on. What
             # it stopped, that his work is safe, and how to try again. The
-            # engine's own last line is kept because it is the engine SPEAKING
+            # engine's own words are kept because they are the engine SPEAKING
             # ("connection reset by peer"), not LCARS leaking internals.
-            last = (raw.strip().splitlines() or [""])[-1].strip()
+            #
+            # S169 FIX ROUND 1 — IT USED TO BE `raw.splitlines()[-1]`, and
+            # against a CLI with a fixed footer that could NEVER be the error.
+            # See `_engine_tail`.
+            tail = _engine_tail(raw)
+            note = self._poisoned_note(sess, sent)
             raise ActionError(
                 502, "the %s worker stopped mid-turn — your program is safe, "
                      "every earlier turn is committed, and the chat is still "
-                     "running; say it again to retry.%s"
-                     % (os.path.basename(bin_),
-                        (" It said: %s" % last) if last else ""))
+                     "running.%s%s"
+                     % (os.path.basename(bin_), note,
+                        ("\n\nThe last thing it printed:\n%s" % tail)
+                        if tail else ""),
+                # THE FACT, not the sentence. The deck's RETRY TURN reads this
+                # to drop the attachment; reading the message text instead is
+                # the classifier road (see `ActionError`).
+                data={"sessionReset": True} if note else None)
         if not reply:
             raise ActionError(
                 502, "the holodeck worker returned nothing this turn (engine=%s)"
@@ -6599,6 +6908,57 @@ class Actions(LogFacts):
         # the sentence a decision was actually made in is usually one of these.
         self._commit_turn(sess, changed, payload)
         return payload
+
+    # ── S169 FIX ROUND 1: A POISONED WARM SESSION IS NOT A DEAD END ──────────
+    #
+    # THE DEFECT, shipped by this session's FL-014 work and reproduced by hand
+    # against live copilot on 2026-08-06. A pasted image the engine's API
+    # refuses (`CAPIError: 400 Could not process image`) is BAKED INTO THE WARM
+    # SESSION, because a holodeck turn `--resume`s it: every later turn then
+    # died identically WITH NO ATTACHMENT AT ALL — measured, by resuming that
+    # session id by hand with a plain "Say OK.". The program was permanently
+    # dead, under a banner advising "say it again to retry", which could never
+    # work. The only escape was deleting the program.
+    #
+    # THE WAY BACK ALREADY EXISTED AND WAS ONE FLAG AWAY. S126 built the warm
+    # RESTART: a fresh session id, and `_replay_clause` hands the new worker the
+    # whole `transcript.md` as context. That is what `holodeck_open` does for a
+    # program picked up off disk, and it is exactly what a program whose session
+    # has gone bad needs. Nothing new is built here — the SAME three fields the
+    # restart sets are set on the live session, so the next turn is an opening
+    # turn with the record replayed into it.
+    #
+    # WHEN. Only after a failed turn that ACTUALLY CARRIED AN ATTACHMENT — a
+    # fact off this turn's argv, not a reading of the engine's output. That is
+    # the one input measured to bake in, and keeping the trigger narrow keeps a
+    # transient network failure from throwing away a warm session (and paying
+    # for a full replay) for nothing.
+    #
+    # HONESTY: re-minting is the SAFE DIRECTION and the code above already says
+    # so for the opening turn — "a fresh session always works, resuming a ghost
+    # never does". What is lost is the engine's own memory of the chat, and the
+    # transcript replaces it. Nothing on disk is touched.
+    @staticmethod
+    def _poisoned_note(sess, sent):
+        """Re-mint a warm session an attachment may have poisoned; say so.
+
+        Returns the sentence for the failure banner ("" when nothing changed),
+        and it is the ONLY place that sentence is written — the deck renders
+        the daemon's message rather than composing a second account of it.
+        """
+        if not sent:
+            return ""
+        sess.started = False
+        sess.worker_sid = str(uuid.uuid4())
+        sess.restarted = True
+        names = _english_list([os.path.basename(p) for p in sent])
+        return (" That turn sent %s, and an image the engine refuses stays in "
+                "the WORKER'S conversation — every later turn would die the "
+                "same way, attachment or not. So LCARS has retired that worker "
+                "session; your next turn starts a FRESH one, handed the whole "
+                "transcript as context, so nothing you designed is lost. Say "
+                "it again WITHOUT that image, or with a different one."
+                % names)
 
     def _commit_turn(self, sess, changed, payload):
         """Record the turn in `transcript.md`, commit the room, then RE-READ the
@@ -6737,6 +7097,15 @@ class Actions(LogFacts):
             row = {"text": t.get("text"), "reply": t.get("reply")}
             if t.get("turnOutcome"):
                 row["turnOutcome"] = t["turnOutcome"]
+            # S169 FIX ROUND 1 — and what he ATTACHED to it. Wave 3 named this
+            # function as the ONE place a projection fix goes, and this is why:
+            # `holoRefresh()` replaces the program list wholesale, so a chip the
+            # composer put on a turn survives exactly one render. The daemon
+            # owns the fact (it staged the bytes), so the daemon's turn list
+            # carries it and a refresh — or a reload, or a REOPEN days later —
+            # restores it.
+            if t.get("attachments"):
+                row["attachments"] = list(t["attachments"])
             out.append(row)
         return out
 
@@ -6839,7 +7208,8 @@ class Actions(LogFacts):
                                                 sess.engine
                                                 or self.worker_bin))
                 fh.write(_transcript_entry(len(sess.turns), text, reply, files,
-                                           grounding=grounding))
+                                           grounding=grounding,
+                                           attachments=turn.get("attachments")))
         except OSError:
             return True
         return False
@@ -10033,16 +10403,34 @@ class Actions(LogFacts):
     # claude via its Read tool on the abs path. The server has already enforced
     # the content-type allow-list (415) and the body cap (413) before we get here.
     @staticmethod
-    def _decode_image(data_b64):
+    def _decode_image(data_b64, name=""):
         """The base64 → bytes step, and the ONE sentence said when it is not
         base64. Extracted (S169) so the holodeck's room staging below and the
         scratch staging above cannot drift into two different refusals for the
-        same bad paste."""
+        same bad paste.
+
+        S169 FIX ROUND 1 — …AND THE ONE PLACE A BROKEN PICTURE IS STOPPED.
+        Every road that stages a pasted image already comes through here, so the
+        integrity check goes here rather than beside one caller: the holodeck
+        composer, the Align grill and the Mission Log all get the same refusal,
+        and the ONE poisoned-session defect cannot come back through the door
+        nobody guarded. See `_image_defect` for what it checks and — just as
+        important — what it does not claim.
+        """
         try:
-            return base64.b64decode((data_b64 or "").encode("ascii"),
-                                    validate=True)
+            raw = base64.b64decode((data_b64 or "").encode("ascii"),
+                                   validate=True)
         except (binascii.Error, ValueError, UnicodeEncodeError):
             raise ActionError(400, "image data is not valid base64")
+        defect = _image_defect(raw)
+        if defect:
+            raise ActionError(
+                400, "%s is damaged, so LCARS did not send it: %s. Nothing was "
+                     "sent and nothing has changed — say it again with a good "
+                     "one. Take the screenshot again, or drag the image file "
+                     "in instead of pasting it."
+                     % (str(name).strip() or "that pasted image", defect))
+        return raw
 
     def _stage_image(self, content_type, data_b64):
         """Decode one base64 image and stage it in `_scratch_dir()`; return the
@@ -10092,8 +10480,11 @@ class Actions(LogFacts):
                 "directory is writable." % (room, exc))
         out = []
         for img in images:
-            raw = self._decode_image(img.get("dataB64"))
             name = _attachment_name(img.get("name"), img.get("type"))
+            # NAMED, and refused BEFORE the bytes reach the room. A broken paste
+            # must not leave a file behind in the captain's archive — and the
+            # refusal has to say WHICH image when he pasted three.
+            raw = self._decode_image(img.get("dataB64"), name=name)
             target, _parts = self._room_file_path(
                 sess.program_dir, "%s/%s" % (_ROOM_ATTACHMENTS, name))
             # A ROOM IS REOPENED, so names collide across days. The second

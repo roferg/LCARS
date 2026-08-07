@@ -29,13 +29,18 @@
 #   • the draft the DAEMON actually delivered to the live textarea, by its three
 #     section headings — a node harness calls the builders itself and stays
 #     green against a daemon that sends nothing (the S168 lesson);
-#   • the box fully on screen at rest, and clickable;
-#   • how many of its lines are visible AT ONCE — an eight-row slot holding a
-#     31-line draft shows him his own words and hides the two new sections
-#     under them, which is D1 one level down;
-#   • that the rest is REACHABLE, proven by scrolling the textarea to its own
-#     bottom and reading back where it went;
-#   • that the line under the box NAMES what the draft is made of, and is itself
+#   • that he MEETS THE TOP OF HIS OWN BRIEF — the box starts inside the
+#     dialog's scrolling band, and it is clickable where it sits;
+#   • that NOTHING IS BEHIND A NESTED SCROLLBAR (S169 fix round 1). This is the
+#     check the first shape was structurally blind to: it counted SOURCE lines,
+#     and this draft's lines wrap three and four ways at 613px, so a box
+#     "showing 16 of 31 lines" was in fact showing 269px of 817px — two thirds
+#     of his brief inside a scrollbox inside a scrolling modal, with
+#     `## Implied by the mockup` at the bottom of the INNER one;
+#   • how many lines are genuinely in front of him at rest, off the laid-out
+#     intersection of the box with that band;
+#   • that the rest is REACHABLE on the one scroller that is left;
+#   • that the line ABOVE the box NAMES what the draft is made of, and is itself
 #     above the fold — the one signal for a captain who reads only one screen;
 #   • that ▦ File Mission is still hit-testable (elementFromPoint, not "it is
 #     in the DOM"), and that S128's open-questions cue still is too.
@@ -51,14 +56,16 @@
 # claude/copilot shims are on PATH and the run reports 0 invocations.
 #
 # THE RED CONTROLS are the point of --calibrate: a check that cannot go red is
-# decoration. Seven variants each patch a COPY of web/ and each MUST make the run
+# decoration. EIGHT variants each patch a COPY of web/ and each MUST make the run
 # fail, on the sentence that names what it breaks — the daemon reverted to
-# S128's brief (the change list never sent at all), the box pinned back to eight
-# rows, the hint reverted to the sentence that says nothing about the new
-# sections, the textarea clipping its own content, the modal's sticky footer
-# defeated so ▦ File Mission leaves the window, the line under the box grown
-# until it falls out of the dialog's scrolling band, and a spacer that pushes
-# the brief itself below the fold. This repo's own web/ is never touched.
+# S128's brief (the change list never sent at all), the sizing pass deleted so
+# the box falls back to `rows` and the inner scrollbar returns, the same defect
+# reached from CSS with a height cap at the tester's measured 243px, the hint
+# reverted to a sentence that says nothing about the new sections, the textarea
+# clipping its own content, the modal's sticky footer defeated so ▦ File Mission
+# leaves the window, the hint put back UNDER the (now tall) box so it falls out
+# of the dialog's scrolling band, and a spacer that pushes the brief itself
+# below the fold. This repo's own web/ is never touched.
 # `$LCARS_HANDOFF_VARIANTS` runs a SUBSET.
 #
 # EXIT: 0 proven · 1 the product (or, under --calibrate, the CHECK) is wrong ·
@@ -103,22 +110,33 @@ command -v git >/dev/null 2>&1 || skip "git not found — the sidecar fixture ne
 #
 # `minLines` is what the fixture room's draft actually is (31) with headroom
 # below it, so it fails on a brief that lost a section rather than on wording.
-# `minLinesShown` is the floor the eight-row box fails and the sized box clears.
-cat >"$WORK/expect.json" <<'EOF'
+# `minLinesShown` (S169 fix round 1) is now judged against the LAID-OUT band the
+# captain can actually see, not against the `rows` attribute — see judgeHandoff.
+#
+# TWO VIEWPORTS, and the second one is the tester's. 1440x677 is the S128
+# window; 1280x613 is a SHORT one, where the sticky footer's band eats into the
+# body and the line above the box has the least room. A dialog that measures up
+# at one height and not the other is a dialog that has been checked at one
+# height. `minLinesShown` falls with the window because the claim is "enough of
+# it to read as a brief", not "the same 12 lines on a laptop and a phone".
+write_expect() {   # $1 = width  $2 = height  $3 = min lines on screen at rest
+  cat >"$WORK/expect.json" <<EOF
 {
-  "viewportW": 1440,
-  "viewportH": 677,
+  "viewportW": $1,
+  "viewportH": $2,
   "minLines": 24,
-  "minLinesShown": 12,
+  "minLinesShown": $3,
   "sections": [
     "## What it must do — in your own words",
-    "## What the mockup changes about the app you have today",
+    "## What the mockup changes — as the design chat recorded it",
     "## Implied by the mockup — NOT things you said"
   ],
   "hintNames": ["changes the mockup makes", "implies"],
   "expectQCue": true
 }
 EOF
+}
+write_expect 1440 677 12
 
 # ── the planted sidecar: a real local git repo with one archived program ────
 # The daemon ADOPTS this (`_ensure_sidecar` is idempotent) and the deck lists
@@ -209,16 +227,26 @@ def _handoff_parts(concept_text):   # S169 RED CONTROL — S128's behaviour
     return _handoff_requirements(concept_text), [], []
 PY
       ;;
-    tiny-box)
-      # THE BOX PINNED BACK TO EIGHT ROWS. Every word is delivered and two
-      # thirds of it is inside a scrollbox nobody scrolls.
+    no-fit)
+      # S169 FIX ROUND 1'S OWN CONTROL, and the tester's exact defect. The
+      # sizing pass is deleted, so the box falls back to its `rows` attribute —
+      # which counts SOURCE lines while the draft's lines wrap three and four
+      # ways — and two thirds of his brief goes back behind an inner scrollbar
+      # inside a modal body that is itself scrolling. MEASURED before the cure:
+      # a 269px box over 817px of content at 1440x677.
       "${LCARS_PYTHON_BIN:-python3}" - "$js" <<'PY'
 import sys
 p = sys.argv[1]; s = open(p).read()
-old = "brief.rows = holoBriefRows(seed.brief);"
-assert old in s, "the rows line moved — this control is measuring nothing"
-open(p, "w").write(s.replace(old, "brief.rows = 8;", 1))
+old = '  fitBrief();\n  brief.addEventListener("input", fitBrief);'
+assert old in s, "the sizing pass moved — this control is measuring nothing"
+open(p, "w").write(s.replace(old, "  /* red control: no fit */", 1))
 PY
+      ;;
+    capped-box)
+      # THE SAME DEFECT REACHED FROM CSS: a height cap on the box, at the exact
+      # number the tester measured in his 1280x700 window. The sizing pass still
+      # runs and still cannot win.
+      printf '\n[data-holo="handoff-brief"]{max-height:243px}\n' >>"$css"
       ;;
     mute-hint)
       # THE LINE UNDER THE BOX SAYS NOTHING ABOUT WHAT GREW. This is the one
@@ -243,12 +271,14 @@ PY
       # ▦ File Mission (and S128's open-questions cue) off the bottom with it.
       printf '\n.modal{max-height:none}\n.modal-body{overflow-y:visible}\n' >>"$css"
       ;;
-    fat-hint)
-      # THE LINE UNDER THE BOX PUSHED OUT OF THE DIALOG'S SCROLLING BAND. It
-      # keeps a perfectly good rectangle inside a 677px window and is behind
-      # the footer — which is exactly the shape the first draft of that
-      # sentence had (three lines, 461→524px against a band ending at 516).
-      printf '\n[data-holo="handoff-brief-field"] .hint{font-size:22px;line-height:2}\n' >>"$css"
+    hint-below-box)
+      # THE LINE THAT SAYS WHAT THE DRAFT IS MADE OF, PUT BACK UNDER THE BOX.
+      # That was its position until S169 fix round 1, and it only ever worked
+      # while the box was short enough to share the first screen with it. With
+      # the box as tall as the draft it lands ~800px down — out of the dialog's
+      # scrolling band, behind the footer, and unreadable by the captain who
+      # reads one screen, who is the only reason the line exists.
+      printf '\n[data-holo="handoff-brief-field"]{display:flex;flex-direction:column}\n[data-holo="handoff-brief-field"] .hint{order:9}\n' >>"$css"
       ;;
     brief-below-fold)
       # D1 ITSELF, aimed at the new content: the box is pushed below the fold,
@@ -260,7 +290,7 @@ PY
   return 0
 }
 
-VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list tiny-box mute-hint clip-box no-sticky-foot fat-hint brief-below-fold}"
+VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list no-fit capped-box mute-hint clip-box no-sticky-foot hint-below-box brief-below-fold}"
 
 # WHAT EACH CONTROL MUST FAIL ON. A non-zero exit is not a control going red —
 # a variant that fell over for an unrelated reason proves nothing about the
@@ -270,27 +300,38 @@ VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list tiny-box mute-hint clip-box n
 expected_reason() {   # $1 = variant
   case "$1" in
     no-change-list)    echo "does not contain" ;;
-    tiny-box)          echo "lines at once" ;;
+    no-fit)            echo "INNER scrollbar" ;;
+    capped-box)        echo "INNER scrollbar" ;;
     mute-hint)         echo "never mentions" ;;
     clip-box)          echo "clips its own content" ;;
     no-sticky-foot)    echo "File Mission is not clickable" ;;
-    fat-hint)          echo "not WHOLLY on" ;;
-    brief-below-fold)  echo "not fully on screen" ;;
+    hint-below-box)    echo "not WHOLLY on" ;;
+    brief-below-fold)  echo "does not start on screen" ;;
   esac
 }
 
 run_product() {
-  run_once "PRODUCT — this repo's web/, unmodified" "$REPO/web" "$WORK/product"
-  RC=$?
-  case "$RC" in
-    0) printf '\n\033[32m✓ THE SEND-TO-ALIGN BOX MEASURED UP IN REAL CHROME.\033[0m\n'
-       printf '  Now open it: %s/handoff.png\n\n' "$WORK/product"
-       return 0 ;;
-    77) return 77 ;;
-    *) printf '\n\033[31m✗ THE HAND-OFF DIALOG IS WRONG.\033[0m See above and\n'
-       printf '  %s/handoff-check.json\n\n' "$WORK/product"
-       return 1 ;;
-  esac
+  local rc=0 worst=0 dir
+  # 1440x677 — S128's window. 1280x613 — the tester's short one (fix round 1),
+  # where the footer band is at its most expensive and the line above the box
+  # has the least room. Both must pass; the second is not a bonus.
+  for pass in "1440 677 12 product" "1280 613 8 product-short"; do
+    set -- $pass
+    write_expect "$1" "$2" "$3"
+    dir="$WORK/$4"
+    run_once "PRODUCT — this repo's web/, unmodified · ${1}x${2}" "$REPO/web" "$dir"
+    rc=$?
+    case "$rc" in
+      0) printf '\n\033[32m✓ THE SEND-TO-ALIGN BOX MEASURED UP AT %sx%s.\033[0m\n' "$1" "$2"
+         printf '  Now open it: %s/handoff.png\n\n' "$dir" ;;
+      77) return 77 ;;
+      *) printf '\n\033[31m✗ THE HAND-OFF DIALOG IS WRONG AT %sx%s.\033[0m See above and\n' "$1" "$2"
+         printf '  %s/handoff-check.json\n\n' "$dir"
+         worst=1 ;;
+    esac
+  done
+  write_expect 1440 677 12
+  return $worst
 }
 
 run_calibrate() {
