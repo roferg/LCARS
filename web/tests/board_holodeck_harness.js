@@ -1040,9 +1040,15 @@ switch (cfg.act) {
   }
   /* S172 — ⧉ DUPLICATE, driven for real: find the control on the card, click
    * it, read the confirmation, optionally type a name, then click the dialog's
-   * own button and report the POST it made. */
+   * own button and report the POST it made.
+   *
+   * FIX ROUND 3 — `from: "lock"` drives THE SAME JOURNEY off the control inside
+   * a locked program's CHAT PANE instead of off its card. One act, deliberately:
+   * the two controls must be one mechanism, and the way to prove that is to
+   * assert the same dialog and the same POST come out of both. A second act
+   * would let a second road pass. */
   case "duplicateProgram": {
-    sandbox.writesActive = true;
+    sandbox.writesActive = cfg.writes === false ? false : true;
     loadPrograms(cfg);
     sandbox.renderDeck();
     FETCHES.length = 0;
@@ -1050,9 +1056,17 @@ switch (cfg.act) {
     const row = rows.find(
       (n) => !cfg.room || txt(one(n, ".pm")).indexOf(cfg.room) !== -1)
       || rows[0];
-    const dup = row && many(row, "[data-ctl]")
+    const lock = one(deck(), ".holo-lock");
+    out.lockPresent = !!lock;
+    // the control's HOME for this run. `null` when the lock band the test asked
+    // for is not on screen at all, so "no control" cannot pass as "no lock".
+    const home = cfg.from === "lock" ? lock : row;
+    const dup = home && many(home, "[data-ctl]")
       .find((c) => /duplicate/i.test(c.getAttribute("data-ctl") || ""));
     out.hasControl = !!dup;
+    out.controlDisabled = dup ? !!dup.disabled : null;
+    out.controlWired = dup ? dup.getAttribute("data-wired") === "1" : null;
+    out.controlReason = dup ? (dup.getAttribute("data-reason") || "") : null;
     if (dup) dup.click();
     out.confirmText = txt(REGISTRY.overlayBody);
     const field = one(REGISTRY.overlayBody, "[data-holo=duplicate-name]");

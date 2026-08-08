@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: vision.md sha256:b24ed9980889b6b7e6229e513e4d4c2997bb27ceecec4f05ed9655f05812d956 -->
+<!-- lcars-docs-src: vision.md sha256:5ef889fd618244807b6efabcc983382bfadbfad6bf327efd0d3cb9e21ce1decc -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -41,6 +41,7 @@
       <div class="nav-label">Overview</div>
       <a href="#what"><div class="dot"></div>What Is LCARS?</a>
       <a href="#mission"><div class="dot"></div>The Mission</a>
+      <a href="#holodeck"><div class="dot"></div>The Holodeck <span class="nav-badge">pre-mission</span></a>
       <a href="#pipeline"><div class="dot"></div>Pipeline Overview</a>
     </div>
     <div class="nav-section" data-color="peach">
@@ -110,6 +111,59 @@
         </ul>
       </div>
       <p>Missions can be active concurrently. Each is isolated on its own branch; merges happen sequentially when the human verifies and approves.</p>
+    </section>
+
+    <!-- HOLODECK -->
+    <section id="holodeck">
+      <h2>Before the Mission: The Holodeck</h2>
+      <p>A Mission begins with a description. But some work is far easier to <em>draw</em> than to describe, and a description of a screen — handed to a builder who never saw the picture — is a lossy encoding of something that only ever existed in the human's head.</p>
+      <p>The <strong>holodeck</strong> is where that picture gets made instead. It is a room on the viewscreen, reached by the <code>⬡ HOLODECK</code> control in the band, where the human talks a mockup into existence with an AI, watches it render live as it changes, and then hands the drawing to a Mission that builds it.</p>
+
+      <div class="lcars-alert blue">
+        <div>It is deliberately <strong>pre-Mission</strong>. The holodeck runs no
+        Stages, opens no issue, and writes no mission state. Its only bridge to the
+        pipeline is the attachments path at filing time — the same road a pasted
+        screenshot takes — so design work and build work stay separate things that
+        meet at exactly one point.</div>
+      </div>
+
+      <figure class="screenshot">
+        <img src="assets/holodeck.png" alt="The LCARS holodeck — the PROGRAMS list on the left with two sent programs, each naming the Mission it became; the design conversation in the middle with the captain's own turns and the holodeck's replies; and on the right the live-rendered mockup of a tile editor, above the PROGRAM ROOM name and its commit count." />
+        <figcaption>The holodeck — talk to it on the left, watch the mockup redraw on the right, then send the drawing to Align.</figcaption>
+      </figure>
+
+      <p><strong>The Program.</strong> The unit of design work is a <strong>Program</strong>, as the Mission is the unit of build work. A Program is a <code>draft</code> while it is being worked on and becomes <code>sent</code> — locked — once it has been filed as a Mission, so it survives as the record of what was actually handed over rather than drifting on afterwards.</p>
+
+      <p><strong>A sidecar, not your working tree.</strong> Programs live in a <strong>sidecar git repo</strong> beside the project — <code>&lt;repo&gt;-holodeck</code> — with every turn committed. Nothing the holodeck writes ever enters the project's own tree. This is the same principle as <code>.git/lcars/</code>: a mockup is not the product, so it must be impossible to mistake for the product and impossible to commit to it by accident.</p>
+
+      <p><strong>Grounding.</strong> A Program can start with a bounded, <strong>read-only</strong> pass over the real project, recorded in <code>basis.md</code>: its actual colour tokens and their values, the type scale, spacing and radius, and the shape of the components it already has — each named against the file it was read from, and with an explicit note of what could not be found. A mockup drawn on that basis arrives looking like it belongs in that product rather than inventing a design system that the Mission would then have to reconcile. The pass genuinely holds no write tool (on Claude the deny list is the load-bearing half, not the allow list), and it is exactly one turn; after it the Program switches to designing. A blank deck is the alternative, and spends nothing.</p>
+
+      <p><strong>The room.</strong> Three panes: the Program list, the conversation, and a pane that toggles between the mockup <strong>rendered live</strong> — in a sandboxed frame jailed to the sidecar, so model-written bytes can never reach the rest of the machine — and an <strong>Intent</strong> view of what has been captured: the requirements in the human's <em>own words</em>, each attributed to the turn it was said in; what the mockup <em>implies</em> but has not settled, written as open questions rather than assumed answers; and what is explicitly out of scope. The mockup itself is <strong>one self-contained HTML file</strong> — inline CSS and JS, no build step, revised in place — so even a rich multi-screen prototype stays a single atomic artifact.</p>
+
+      <p>A Program also outlives the daemon. Reopening one replays its transcript into a <strong>fresh</strong> worker and says so plainly: it knows what was decided, it remembers nothing itself. The whole record is on disk in the room's <code>transcript.md</code>; the conversation is a durable artifact, not a live session that dies with the process.</p>
+
+      <div class="lcars-alert amber">
+        <div><strong>The hand-off is a gate, not a surprise.</strong> Sending a
+        Program to Align is two deliberate steps. First a read-only pass reads the
+        real application <em>as it stands today</em> and produces the only thing a
+        builder actually needs: <strong>what is different between the finished
+        mockup and the app as it is now</strong>. That is a diff, not a transcript —
+        a turn in which the human corrected the <em>mockup</em> must never read
+        downstream as an instruction to change the <em>product</em>, which is
+        exactly how a design conversation poisons a build. What that pass finds but
+        cannot scope comes back as a <strong>question</strong> rather than silently
+        vanishing, because a line nobody writes leaves no trace. Then the filing
+        carries the mockup, the captured requirements and that change list into the
+        Mission — and the brief opens with <strong>what the human actually typed,
+        byte-for-byte</strong>. Nothing generates prose in their voice. If a later
+        turn redraws the mockup or moves the concept doc, the generated list stops
+        matching what is on disk and the control reverts to <em>generate</em>, so a
+        stale change list can never be filed.</div>
+      </div>
+
+      <p><strong>The drawing survives into the tickets.</strong> A drawing that reaches Align and then evaporates at Plan has bought nothing. So when a Mission carries a mockup, Plan must account for it: every ticket declares whether it changes what the screen looks like, and a ticket that says it does must carry an acceptance criterion <strong>naming the mockup file</strong> — a mention in the description does not count. A plan that omits the declaration, or that declares no ticket visual while a mockup rides along, is rejected and re-planned. Missions with no mockup are validated exactly as before.</p>
+
+      <p><strong>Duplicating a sent Program.</strong> Because a sent Program is locked, continuing a design means copying it: a new room carrying the mockup, the concept doc, the grounding, the attachments and the whole conversation, editable from the first turn, while the original stays precisely as it was handed over. The worker is told the history is context and <strong>not a contract</strong> — where what the human asks for now contradicts a decision in the record, what they ask for now wins, and the record is never used to argue back. Lineage is recorded on the copy and the inherited grounding is marked possibly-stale, since it describes the project as it was. The change list deliberately does not travel: it described the app as it was when the <em>old</em> draft was filed, and re-using it would be a lie about today.</p>
     </section>
 
     <!-- PIPELINE OVERVIEW -->
@@ -627,6 +681,7 @@ flowchart LR
         <p>The <strong>viewscreen</strong> is the <strong>primary, recommended</strong> way to use LCARS. It is a dedicated visual interface — a full application, not a GitHub Projects board, but a custom kanban purpose-built for the Harness. Launch it with <strong><code>lcars-viewscreen</code></strong> (alias <code>lcars-serve</code>) — unlike the <code>lcars &lt;verb&gt;</code> skills you type to an agent, this is a <strong>real command on your <code>PATH</code></strong> that <code>./install.sh</code> installs to <code>~/.local/bin</code>, so it runs from <strong>any plain terminal with no agent (Claude Code or Copilot) open</strong>; the same one invocation is identical on both CLIs. <code>lcars-viewscreen --open</code> boots on a free port and opens the board in your browser. It is a Python-3-stdlib-only daemon — no pip, npm, or build step — serving a vanilla LCARS-themed front end, and it spawns no model workers, so watching the board costs nothing. It runs in the foreground and is session-bound: it stays up for that terminal and stops when you close it. It is the default surface for the whole idea → merged PR loop; the CLI (above) is the equivalent power path for when you'd rather stay in the terminal.</p>
         <p style="margin-top:12px">Each column corresponds to a Stage. Each Mission is a card carrying one <strong>cost pill</strong> and two <strong>difficulty pills</strong> (reasoning + implementation), with awaiting-you and paused card states, nested ticket rows, and live Implement wave/ticket progress. The human can see at a glance what is in flight, what is waiting for human input, and what is blocked. Questions from the Harness appear on Mission cards; the human responds from the interface, and the Harness resumes.</p>
         <p style="margin-top:12px">This is the command-and-control layer: one view of all Missions, all Stages, all pending decisions — with the ability to start, stop, and steer from a single screen. You can drive the whole idea→PR loop from the browser: File a Mission, watch the live Align grilling console, Start a run (with a plain-language model override), answer a Respond gate, work the centered two-pane mission-detail modal, Verify (approve / send-back), and use the Mission Log. You can also <strong>park</strong> an idea straight from the File console — engine plus idea text, one click, no grill — and it lands as a standby card in the Align column badged <em>◇ STANDBY — AWAITING ALIGNMENT</em>; a <strong>Start Alignment</strong> action on that card opens the same warm grill seeded with the idea, and on completion the card swaps in place to a normal aligned Mission (its estimate pills appearing as usual). <strong>Pause</strong> and <strong>Resume</strong> halt and continue a Mission at a safe boundary right from the board, and the Mission Log gives each logged bug its own estimate (cost + reasoning/implementation difficulty + per-stage model recommendation) with a plain-language per-bug model override. When the running LCARS is stale, the board raises a themed LCARS topbar <strong>update banner</strong> — <em>LCARS &lt;version&gt; AVAILABLE — ENGAGE UPDATE</em> when the source clone is behind, or <em>UPDATE LCARS IN THIS REPO → &lt;version&gt;</em> when the LCARS wired into this repo is on an older version (each names LCARS explicitly and shows the version it would move to) — with a one-click <strong>update button</strong> that turns blue while it runs and teal on success; view-only builds (the GitHub adapter or <code>--read-only</code>) show the banner without the button.</p>
+        <p style="margin-top:12px"><strong>The holodeck lives here too.</strong> A <code>⬡ HOLODECK</code> control in the band swaps the board for the design room described in <a href="#holodeck">Before the Mission: The Holodeck</a>, and <code>▦ BOARD</code> swaps back. It is a <strong>local-adapter</strong> surface: because a design session writes files, a view-only build (the GitHub adapter or <code>--read-only</code>) shows the control <strong>disabled with its reason stated</strong> rather than hiding it — the affordance is still discoverable, and the board says plainly that it needs to be opened locally.</p>
         <p style="margin-top:12px"><strong>Pasting screenshots.</strong> Every free-form input the board takes — the File idea box, the live Align grill, and the Mission Log box — accepts pasted images. A pasted screenshot shows inline as a CLI-style placeholder chip (never a rendered thumbnail), is persisted durably into the Mission's <code>attachments/</code> directory, and is referenced by relative path in the PRD. From there each image is threaded — by absolute path — into every cold-worker Stage that follows, so the grill, the grounding worker, and every downstream Stage actually <em>see</em> the picture rather than a paraphrase of it. This works on both engines: Claude reads the image from a path in its prompt, Copilot receives it as an <code>--attachment</code>.</p>
         <p style="margin-top:12px">One adapter-neutral board shape backs two interchangeable read adapters: a <strong>local</strong> adapter parsing <code>.git/lcars/missions/*</code> (the default) and a <strong>GitHub</strong> adapter reading issues + <code>lcars:*</code> labels. A live SSE channel pushes updates on every state change; the local adapter also exposes operator write endpoints, while the GitHub adapter (and <code>--read-only</code>) stay view-only — so a hosted, view-only reader is a configuration away.</p>
         <p style="margin-top:12px">Run progress is also mirrored onto each Mission's <strong>GitHub issue as living, per-Stage comments</strong> — one per Stage, created once then edited in place as it advances — with collapsed research Q&amp;A, <code>#</code>-links to the sub-issues, and an Implement <strong>wave dashboard</strong> (a pace/position line plus a done / flagged / in-progress / pending ticket checklist) that refreshes on a ~60s heartbeat. It reuses the same renderer as <code>lcars status --watch</code>, so the issue, the live CLI view, and the board never drift.</p>

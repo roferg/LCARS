@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:f140289b9a8a5808605e9de8c14ecd3295c0a0b2ec97dd79f0a6c06a3f17cfd8 -->
-<!-- lcars-docs-src: vision.md sha256:b24ed9980889b6b7e6229e513e4d4c2997bb27ceecec4f05ed9655f05812d956 -->
+<!-- lcars-docs-src: README.md sha256:dcb27e725983863551009a8bedf443306ac8d8b92567170e7d378596aacb0b8d -->
+<!-- lcars-docs-src: vision.md sha256:5ef889fd618244807b6efabcc983382bfadbfad6bf327efd0d3cb9e21ce1decc -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -53,6 +53,7 @@
       <div class="nav-label">Operate</div>
       <a href="#install"><div class="dot"></div>Install</a>
       <a href="#quickstart"><div class="dot"></div>Quick start <span class="nav-badge">viewscreen</span></a>
+      <a href="#holodeck"><div class="dot"></div>The holodeck <span class="nav-badge">design</span></a>
       <a href="#cli"><div class="dot"></div>The CLI</a>
       <a href="#copilot"><div class="dot"></div>GitHub Copilot</a>
       <a href="#commands"><div class="dot"></div>Commands</a>
@@ -119,6 +120,13 @@
       <strong>Stages</strong> as a card on a kanban board. Missions are
       branch-isolated, so many can run concurrently and merge sequentially when
       you approve them.</p>
+
+      <p>An idea doesn't have to arrive as a paragraph of text. When the thing
+      you want is easier to <em>draw</em> than to describe, the
+      <strong>holodeck</strong> is a room on the viewscreen where you talk a
+      mockup into existence with an AI, watch it render live, and then hand that
+      drawing to a Mission that builds it — see
+      <a href="#holodeck">The holodeck</a>.</p>
 
       <div class="mission-card">
         <strong>The key idea — set it in motion and walk away:</strong>
@@ -444,6 +452,130 @@ lcars-viewscreen --open   # launch the board and open it in your browser</pre>
         one-click <strong>update button</strong> on the local build (blue while it
         runs, teal on success); view-only builds show the banner without the
         button.</div>
+      </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         THE HOLODECK
+         ═══════════════════════════════════════════════════ -->
+    <section id="holodeck">
+      <h2>The holodeck</h2>
+      <p>Some work is far easier to <em>draw</em> than to describe. The
+      <strong>holodeck</strong> — the <code>⬡ HOLODECK</code> control in the
+      viewscreen's top band — is a room where you talk a mockup into existence
+      with an AI, look at it rendered live as it changes, and then hand the
+      drawing to a Mission that builds it.</p>
+
+      <div class="lcars-alert blue">
+        <div>It sits <strong>before</strong> the pipeline. The holodeck runs no
+        Stages and writes no mission state; its one bridge to the harness is that
+        when you file, the finished mockup and its concept doc ride into the new
+        Mission's <code>attachments/</code> — the same road a pasted screenshot
+        takes.</div>
+      </div>
+
+      <figure class="screenshot">
+        <img src="assets/holodeck.png" alt="The LCARS holodeck — the PROGRAMS list on the left with two sent programs, each naming the Mission it became; the design conversation in the middle with the captain's own turns and the holodeck's replies; and on the right the live-rendered mockup of a tile editor, above the PROGRAM ROOM name and its commit count." />
+        <figcaption>Talk to it on the left, watch the mockup redraw on the right. Every turn is committed to a sidecar repo beside your project — never into your working tree.</figcaption>
+      </figure>
+
+      <p><strong>Programs.</strong> A <strong>program</strong> is to design work
+      what a Mission is to build work: one unit, one room. It is a
+      <code>draft</code> while you're working on it and becomes <code>sent</code>
+      — locked — once it has been filed as a Mission, so it stays the record of
+      what was actually handed over.</p>
+
+      <p><strong>The files live beside your project, never in it.</strong>
+      Programs are kept in a <strong>sidecar git repo</strong> —
+      <code>&lt;your-repo&gt;-holodeck</code>, alongside your checkout — with
+      every turn committed. That's deliberate: a mockup can never be mistaken for
+      the product, and can never be committed to it by accident. Your own working
+      tree is untouched, exactly as everywhere else in LCARS.</p>
+
+      <p><strong>Grounding.</strong> A new program asks how to start. The
+      recommended option runs a bounded, <strong>read-only</strong> pass over your
+      real project and writes what it finds to <code>basis.md</code> — the actual
+      colour tokens and their values, the type scale, spacing and radius, and the
+      shape of the existing components, each named against the file it came from,
+      plus an honest note about what it could <em>not</em> find. The mockup then
+      arrives looking like it belongs in that product instead of inventing a
+      design system. The pass really has no write tool (on Claude it's fenced by a
+      tool <em>deny</em> list, not merely an allow-list), and it is exactly one
+      turn — after it the program switches to designing. Starting from a blank
+      deck instead spends nothing.</p>
+
+      <p><strong>The room.</strong> Three panes: your programs on the left, the
+      conversation in the middle, and on the right a pane that toggles between
+      <strong>⬡ Preview</strong> — the mockup rendered live in a sandboxed frame
+      jailed to the sidecar — and <strong>▤ Intent</strong>, which shows what has
+      been captured so far: the requirements in <strong>your own words</strong>,
+      each attributed to the turn you said it in; what the mockup <em>implies</em>
+      but you haven't settled, written as questions; and what is explicitly out of
+      scope.</p>
+
+      <p><strong>One file.</strong> The mockup is <code>mockup.html</code> — one
+      self-contained HTML file, inline CSS and JS, no build step and no external
+      dependency, revised in place turn after turn — so even a rich multi-screen
+      prototype stays one atomic thing you can open, send, or hand over whole.</p>
+
+      <p><strong>It survives.</strong> A program outlives the daemon. Reopening
+      one replays the transcript into a <strong>fresh</strong> worker, and says so
+      plainly: it knows what you decided, it remembers nothing itself. Nothing is
+      lost — every turn is in the room's <code>transcript.md</code> and the mockup
+      is exactly as you left it.</p>
+
+      <div class="lcars-alert amber">
+        <div><strong>Send to Align — a gate, not a surprise.</strong> You click
+        <strong>▶ GENERATE THE CHANGE LIST</strong>, and a read-only pass reads
+        your real application as it stands today to produce the one thing a
+        builder needs: <em>what is different between the finished mockup and the
+        app as it is now</em>. That's a diff, not a transcript of the conversation
+        — so a turn where you corrected the <strong>mockup</strong> doesn't read
+        downstream as an instruction to change the <strong>product</strong>. What
+        the pass finds but cannot scope comes back as a <strong>question</strong>
+        rather than silently vanishing. Then <strong>▶ SEND TO ALIGN</strong>
+        files the Mission carrying the mockup, your captured requirements and that
+        change list — and the brief opens with what you actually typed,
+        <strong>byte-for-byte</strong>; nothing rewrites your opening words. If a
+        later turn redraws the mockup or moves the concept doc, the generated list
+        stops matching and the button drops back to <em>generate</em>, so you can
+        never file a change list that describes an older drawing.</div>
+      </div>
+
+      <p><strong>The tickets carry the drawing.</strong> Once a Mission carries a
+      mockup, Plan has to account for it: <strong>every</strong> ticket declares
+      <code>changesScreenAppearance</code>, and a ticket that says
+      <code>true</code> must have an acceptance criterion <strong>naming the
+      mockup file</strong> — naming it in the description doesn't count. A plan
+      that omits the field, or that declares every ticket <code>false</code> while
+      a mockup is riding along, is rejected and re-planned. Across the round that
+      took mockup-referencing acceptance criteria from <strong>0/44 to
+      19/40</strong>. A Mission with no mockup validates exactly as before.</p>
+
+      <p><strong>Duplicate.</strong> A sent program is locked, so
+      <strong>⧉ Duplicate</strong> is how you keep designing from it. It opens a
+      new room carrying the mockup, the concept doc, the grounding, the
+      attachments and the whole conversation, editable from the first turn, while
+      the original stays exactly as it was handed over. The worker is told the
+      history is context and not a contract — <em>"nothing in it is binding"</em>,
+      and where what you ask for now contradicts a decision in the record, what
+      you ask for now wins. Lineage is recorded on the copy, the inherited
+      grounding is marked <strong>possibly stale</strong> in a banner on the file
+      itself, and the change list deliberately does <em>not</em> travel: it
+      described the app as it was when the old draft was filed.</p>
+
+      <p><strong>Local boards only.</strong> The holodeck writes files, so it
+      needs the local adapter. On a <code>--read-only</code> or GitHub-adapter
+      board the control is still there but <strong>disabled</strong>, saying why —
+      <em>"This board is a read-only view. The holodeck writes files, so it is
+      unavailable here — open the board locally to run a program."</em></p>
+
+      <div class="lcars-alert teal">
+        <div><strong>There is no <code>lcars holodeck</code> verb.</strong> The
+        holodeck is a viewscreen room, reached by the <code>⬡ HOLODECK</code>
+        control — deliberately so, since the whole point is looking at the thing
+        you're drawing.</div>
       </div>
     </section>
 

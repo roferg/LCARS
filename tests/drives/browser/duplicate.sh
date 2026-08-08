@@ -40,6 +40,20 @@
 #   DUP-CONTROL-ON-LOCKED-CARD          ⧉ Duplicate is on the SENT card, painted
 #                                       and not covered — the one state the
 #                                       whole feature exists for.
+#   LOCK-PANE-DUPLICATE-IS-LIVE         FIX ROUND 3: open the locked program and
+#                                       the ⧉ Duplicate control in its OWN CHAT
+#                                       PANE is painted, enabled and wired, and
+#                                       nothing there says "not built" or sends
+#                                       him off to start a program under a
+#                                       different name. Both earlier rounds drove
+#                                       the card only, so S127's disabled
+#                                       placeholder survived two "proven" rounds
+#                                       in the one room a captain is standing in
+#                                       when he meets the lock.
+#   LOCK-PANE-DUPLICATE-WORKS           …and clicking it copies the program: the
+#                                       SECOND of the two copies below is made
+#                                       from the pane, not the card, so the two
+#                                       controls are measured as one mechanism.
 #   DUP-BLANK-NAME-WORKS                the road the dialog RECOMMENDS copies a
 #                                       real-length program name without
 #                                       refusing. (D1.)
@@ -329,10 +343,11 @@ product_run() {
   printf '\n'
   case "$rc" in
     0) printf '\033[32mPROVEN\033[0m — the captain can duplicate a locked program whose name is his\n'
-       printf '  whole idea sentence, twice, into two rooms of its own that really hold his\n'
-       printf '  mockup, concept doc and attachments; the filed one is untouched; no two\n'
-       printf '  cards on the deck read the same name; and each card says which program it\n'
-       printf '  came from in words that fit on the screen.\n'
+       printf '  whole idea sentence, twice — once from its CARD and once from the control\n'
+       printf '  inside the LOCKED PROGRAM'"'"'S OWN CHAT PANE — into two rooms of their own\n'
+       printf '  that really hold his mockup, concept doc and attachments; the filed one is\n'
+       printf '  untouched; no two cards on the deck read the same name; and each card says\n'
+       printf '  which program it came from in words that fit on the screen.\n'
        printf '  screenshots: %s/product/*.png — OPEN THEM AND LOOK.\n' "$WORK"
        printf '  measurements: %s/product/duplicate-check.json\n' "$WORK" ;;
     77) printf '\033[33mSKIPPED\033[0m — infrastructure, nothing proven.\n' ;;
@@ -510,6 +525,54 @@ assert s.count(old) == 1, "the chat header's lineage chip has been restructured"
 open(p, "w").write(s.replace(old, new))
 PY
       ;;
+    lock-hatch-still-disabled)
+      # FIX ROUND 3, THE DEFECT VERBATIM — S127's placeholder, restored exactly
+      # as it shipped and exactly as it survived S172: the paragraph stops at
+      # "read-only", and the hatch below it is greyed out saying the feature is
+      # not built and he should start a new program under a different name.
+      # This is what the captain opened his own locked program and found.
+      "$PY" - "$js" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '''    lock.appendChild(el("p", null,
+      "⧉ Duplicate is the way on: it opens a NEW program carrying this one's "
+      + "mockup, concept doc and whole conversation, editable from the first "
+      + "turn — and this one stays exactly as it was handed over."));'''
+assert old in s, "the lock band's way-on paragraph has been restructured"
+s = s.replace(old, "    /* RED CONTROL: S127's pane, verbatim. */")
+old2 = '''    lock.appendChild(applyWriteState(holoBtn(
+      "⧉ Duplicate to keep designing", "small", function () {
+        holoConfirmDuplicate(p);
+      })));'''
+new2 = '''    lock.appendChild(applyWriteState(holoBtn(
+      "⧉ Duplicate to keep designing", "small", null,
+      "Not built yet. To carry on from here, start a new program under a "
+      + "different name — this one stays exactly as it was handed over.")));'''
+assert old2 in s, "the lock band's ⧉ Duplicate control has been restructured"
+open(p, "w").write(s.replace(old2, new2))
+PY
+      ;;
+    lock-hatch-dead-click)
+      # THE OTHER HALF, AND THE MORE FLATTERING FAILURE: the control is live,
+      # painted and worded perfectly, and does NOTHING when clicked. Exactly the
+      # shape `holoCtl`'s own contract forbids, and the shape a check that only
+      # LOOKS at the pane would call proven.
+      "$PY" - "$js" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '''    lock.appendChild(applyWriteState(holoBtn(
+      "⧉ Duplicate to keep designing", "small", function () {
+        holoConfirmDuplicate(p);
+      })));'''
+new = '''    lock.appendChild(applyWriteState(holoBtn(
+      "⧉ Duplicate to keep designing", "small", function () {
+        /* RED CONTROL (duplicate.sh --calibrate): a live control that does
+           nothing when clicked. */
+      })));'''
+assert old in s, "the lock band's ⧉ Duplicate control has been restructured"
+open(p, "w").write(s.replace(old, new))
+PY
+      ;;
     chip-says-grounded)
       # THE ONE A HEADLESS TEST IS BLIND TO IN THE OTHER DIRECTION: the daemon
       # is perfect and says `basisInherited`, and the front end goes on printing
@@ -535,6 +598,8 @@ control_signature() {   # $1 = variant → the check id it must turn red
     room-not-differentiated) echo "DUP-BLANK-NAME-WORKS" ;;
     chip-clipped)            echo "LINEAGE-CHIP-READABLE" ;;
     no-duplicate-control)    echo "DUP-CONTROL-ON-LOCKED-CARD" ;;
+    lock-hatch-still-disabled) echo "LOCK-PANE-DUPLICATE-IS-LIVE" ;;
+    lock-hatch-dead-click)   echo "LOCK-PANE-DUPLICATE-WORKS" ;;
     second-copy-overwrites)  echo "DUP-TWO-DISTINCT-ROOMS" ;;
     copy-drops-the-design)   echo "COPY-CARRIES-THE-SOURCES-FILES" ;;
     copy-keeps-the-parents-name) echo "NO-TWO-CARDS-ONE-NAME" ;;
@@ -563,7 +628,7 @@ sys.exit(0)
 PY
 }
 
-VARIANTS="${LCARS_DUP_VARIANTS:-room-not-differentiated chip-clipped no-duplicate-control second-copy-overwrites copy-drops-the-design copy-keeps-the-parents-name source-loses-its-lock chip-says-grounded no-continuing-chip}"
+VARIANTS="${LCARS_DUP_VARIANTS:-room-not-differentiated chip-clipped no-duplicate-control lock-hatch-still-disabled lock-hatch-dead-click second-copy-overwrites copy-drops-the-design copy-keeps-the-parents-name source-loses-its-lock chip-says-grounded no-continuing-chip}"
 
 calibrate_run() {
   say "RED CONTROLS — can any of these checks actually go red?"
@@ -599,7 +664,9 @@ calibrate_run() {
        printf '  the two defects this round cured go red here: the room derived from the\n'
        printf '  display name (D1) and the chip clipped to 14ch (D3) — and so do the two\n'
        printf '  breaks the ROUND-2 TESTER made that this rig once passed 7/7: a copy that\n'
-       printf '  carries no design, and a copy that keeps its parent'"'"'s name.\n' ;;
+       printf '  carries no design, and a copy that keeps its parent'"'"'s name. And the one\n'
+       printf '  the CAPTAIN found in a minute, which this rig once passed 9/9: S127'"'"'s\n'
+       printf '  disabled hatch left standing in the locked program'"'"'s own chat pane.\n' ;;
     77) printf '\033[33mCONTROLS SKIPPED\033[0m — nothing proven.\n' ;;
     *) printf '\033[31mCONTROLS FAILED\033[0m — see above; logs in %s\n' "$WORK" ;;
   esac

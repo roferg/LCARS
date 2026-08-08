@@ -2092,16 +2092,63 @@ class HandoffDeckTest(unittest.TestCase):
                           if "send to align" in c["label"].lower()], [])
         self.assertIn("m-014", out["barText"])
 
-    def test_the_DUPLICATE_hatch_is_named_and_honestly_off(self):
-        """It is the designed escape hatch and it is not built — so it is shown
-        disabled saying exactly that, rather than hidden or dead on click."""
+    # ── FIX ROUND 3 · THE DEFECT THE CAPTAIN FOUND IN A MINUTE ──────────────
+    # S172 built ⧉ Duplicate on the program CARD and reworded the daemon's
+    # refusal to point at it — and left S127's placeholder standing HERE, in
+    # the locked program's own chat pane, greyed out and saying the thing he
+    # had just been told exists is "not built yet". Both S172 testers drove the
+    # card; nobody opened a locked program and read the room he was standing
+    # in. These tests are that room.
+    def test_the_DUPLICATE_hatch_in_the_locked_pane_is_LIVE(self):
+        """The escape hatch is BUILT now, so the control in the locked pane is
+        a live control — not a placeholder apologising for itself."""
         out = _harness({"act": "handoffBar", "programs": [SENT],
                         "activeId": "s1"})
         dup = [c for c in out["lockControls"]
                if "duplicate" in c["label"].lower()]
         self.assertEqual(len(dup), 1, out["lockControls"])
-        self.assertFalse(dup[0]["wired"])
-        self.assertIn("not built yet", dup[0]["reason"].lower())
+        self.assertTrue(dup[0]["wired"], dup[0])
+        self.assertFalse(dup[0]["disabled"], dup[0])
+        self.assertNotIn("not built", (dup[0]["reason"] or "").lower())
+
+    def test_the_locked_pane_names_DUPLICATION_as_the_way_on(self):
+        """The paragraph above the control used to end at "this is read-only".
+        A captain reading it needs the road out named in the same breath — the
+        words the daemon's own refusal already uses."""
+        out = _harness({"act": "handoffBar", "programs": [SENT],
+                        "activeId": "s1"})
+        low = out["lockText"].lower()
+        # what it must NOT say any more: the two sentences that told him the
+        # feature does not exist and to go start something else.
+        self.assertNotIn("not built", low)
+        self.assertNotIn("different name", low)
+        # …and what it must say instead: what duplicating gives him.
+        self.assertIn("duplicate", low)
+        self.assertIn("conversation", low)
+        self.assertIn("editable", low)
+
+    def test_the_locked_panes_hatch_takes_THE_SAME_ROAD_as_the_card(self):
+        """One mechanism, not two. Driven end to end off the LOCK BAND's own
+        control: the same confirmation opens and the same POST comes out."""
+        out = _harness({"act": "duplicateProgram", "programs": [SENT],
+                        "activeId": "s1", "from": "lock"})
+        self.assertTrue(out["lockPresent"])
+        self.assertTrue(out["hasControl"])
+        self.assertTrue(out["confirmText"])
+        self.assertTrue(out["hasNameField"])
+        self.assertEqual(out["path"], "/api/holodeck/duplicate")
+        self.assertEqual(out["body"], {"room": "light-dark"})
+
+    def test_a_read_only_daemon_still_disables_the_locked_panes_hatch(self):
+        """Duplicating WRITES — a new room, committed to the sidecar. A
+        view-only board must not offer it, from the pane any more than from
+        the card."""
+        out = _harness({"act": "handoffBar", "programs": [SENT],
+                        "activeId": "s1", "writes": False})
+        dup = [c for c in out["lockControls"]
+               if "duplicate" in c["label"].lower()]
+        self.assertEqual(len(dup), 1, out["lockControls"])
+        self.assertTrue(dup[0]["disabled"], dup[0])
 
     def test_the_card_reads_sent_and_carries_its_mission(self):
         out = _harness({"act": "handoffBar", "programs": [SENT],

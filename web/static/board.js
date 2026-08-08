@@ -7627,12 +7627,13 @@ function brandPADD() {
    reply text.
 
    S126 added durable programs and the concept doc; S127 added SEND TO ALIGN,
-   the hand-off dialog and the draft→sent lock. WHAT IS STILL DELIBERATELY NOT
-   HERE, and why nothing on screen pretends otherwise: the INTENT panel's inline
-   contents (the ▤ control opens the file instead), CAPTURE SCREENS, ⧉ DUPLICATE
-   TO KEEP DESIGNING, and the `done` state. Anything not yet real is ABSENT, or
+   the hand-off dialog and the draft→sent lock; S172 built ⧉ DUPLICATE TO KEEP
+   DESIGNING, on the card AND in the locked program's own pane. WHAT IS STILL
+   DELIBERATELY NOT HERE, and why nothing on screen pretends otherwise: the
+   INTENT panel's inline contents (the ▤ control opens the file instead),
+   CAPTURE SCREENS, and the `done` state. Anything not yet real is ABSENT, or
    visibly disabled WITH the reason — never a control that does nothing when you
-   click it.
+   click it, and never a reason that has stopped being true.
    ════════════════════════════════════════════════════════════════════════ */
 var HOLO = {
   on: false,            // is the deck showing instead of the board?
@@ -9050,15 +9051,28 @@ function holoChatPane(p) {
       + "changing them here would leave it building to something you can no "
       + "longer see. Everything is still readable — the transcript above, the "
       + "mockup in the preview, and the whole room in your archive."));
-    /* THE ESCAPE HATCH, NAMED HONESTLY. Wanting to carry on after sending is
-       normal — but it is a NEW design, and the mission in flight was briefed
-       on the old one. The control is shown DISABLED with the truth: this
-       session did not build it. A control that did nothing when clicked, or a
-       hatch nobody mentions, would both be worse. */
+    /* S172 FIX ROUND 3 — AND THE WAY ON, NAMED IN THE SAME BREATH. This
+       paragraph used to stop at "read-only", under a hatch that apologised for
+       not existing. The captain is standing in this room when he discovers the
+       lock, so this is where the road out has to be said — in the same words
+       the daemon's own refusal uses, so the sentence he gets from the composer
+       and the sentence he reads here are one story. */
+    lock.appendChild(el("p", null,
+      "⧉ Duplicate is the way on: it opens a NEW program carrying this one's "
+      + "mockup, concept doc and whole conversation, editable from the first "
+      + "turn — and this one stays exactly as it was handed over."));
+    /* THE ESCAPE HATCH, LIVE. Wanting to carry on after sending is normal —
+       but it is a NEW design, and the mission in flight was briefed on the old
+       one, so it goes into a room of its own. S127 shipped this DISABLED with
+       the truth that the session had not built it; S172 built it and rewrote
+       the daemon's refusal to point at it, and left this greyed out — so the
+       one room a captain is standing in when he hits the lock went on saying
+       the thing he had just been told exists does not. It is THE CARD'S OWN
+       ROAD, called here: one confirmation, one POST, one mechanism. */
     lock.appendChild(applyWriteState(holoBtn(
-      "⧉ Duplicate to keep designing", "small", null,
-      "Not built yet. To carry on from here, start a new program under a "
-      + "different name — this one stays exactly as it was handed over.")));
+      "⧉ Duplicate to keep designing", "small", function () {
+        holoConfirmDuplicate(p);
+      })));
     pane.appendChild(lock);
     return pane;
   }

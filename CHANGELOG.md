@@ -11,13 +11,15 @@ A `⬡ HOLODECK` room on the viewscreen where you talk a mockup into existence
 against your real project, see it rendered live, and then send it to Align as a
 Mission that builds the thing you drew. Sessions 123–172.
 
-- **The room.** Three panes — chat, a sandboxed live preview jailed to the
-  sidecar, and an INTENT panel — in the LCARS visual language. Programs live in
-  a sidecar git repo beside your project (`<repo>-holodeck`), never in your
-  working tree, so a mockup can never be mistaken for the product.
-- **Grounding.** A program starts with a bounded read-only pass over your real
-  project, so the mockup arrives looking like it belongs in that product rather
-  than inventing a design system.
+- **The room.** Three panes — the program list, the chat, and a sandboxed live
+  preview jailed to the sidecar (with a `▤ Intent` toggle that swaps the
+  preview for what has been captured so far) — in the LCARS visual language.
+  Programs live in a sidecar git repo beside your project (`<repo>-holodeck`),
+  never in your working tree, so a mockup can never be mistaken for the product.
+- **Grounding.** Starting a program offers a bounded read-only pass over your
+  real project, so the mockup arrives looking like it belongs in that product
+  rather than inventing a design system. It is the recommended start and not
+  the only one — a blank deck spends nothing and reads nothing.
 - **Durable programs.** A program survives a daemon restart; reopening replays
   the whole transcript into a fresh worker, which is told plainly that it is
   fresh and remembers nothing itself. Delete records before it removes, and

@@ -30,6 +30,12 @@
  *     and simply does not fit is exactly the class no node DOM harness can
  *     see, because none of them has any CSS or any layout.
  *
+ * FIX ROUND 3 added the road nobody drove: the ⧉ Duplicate control INSIDE a
+ * locked program's chat pane. This file used only the program list, so S127's
+ * disabled placeholder sat in the pane through two rounds of "the feature is
+ * proven", telling the captain it was not built — which is what he found, in a
+ * minute, the first time he opened one of his own locked programs.
+ *
  * EXIT: 0 every check passed · 1 a check FAILED (the product) · 77 the rig
  *       could not drive (never the product's fault, never reported as one).
  */
@@ -226,9 +232,13 @@ function check(id, ok, detail) {
           : ("NO ⧉ Duplicate control on the " + src.life + " card — the one "
              + "state the whole feature exists for"));
 
-  /* ── the journey: duplicate the REAL-LENGTH program, twice, blank name ─── */
-  async function duplicateOnce(label) {
-    const clicked = await ev(`(function(){
+  /* ── the journey: duplicate the REAL-LENGTH program, twice, blank name ───
+     ONCE FROM EACH ROAD (fix round 3): the first copy is made from the CARD in
+     the program list, the second from the control inside the LOCKED PROGRAM'S
+     OWN CHAT PANE. Both roads must land the same way, because they are meant to
+     be one mechanism — and the pane is the road nobody drove in the two rounds
+     that shipped this feature. */
+  const CARD_CLICK = `(function(){
       var rows=Array.prototype.slice.call(document.querySelectorAll(".prog"));
       var row=rows.filter(function(n){
         var r=n.querySelector(".proom");
@@ -237,7 +247,19 @@ function check(id, ok, detail) {
       var d=Array.prototype.slice.call(row.querySelectorAll("[data-ctl]"))
         .filter(function(c){return /duplicate/i.test(c.getAttribute("data-ctl")||"");})[0];
       if(!d) return "no ⧉ Duplicate control";
-      d.click(); return "ok";})()`);
+      if(d.disabled) return "the card's ⧉ Duplicate control is DISABLED";
+      d.click(); return "ok";})()`;
+  const LOCK_CLICK = `(function(){
+      var lock=document.querySelector(".holo-lock");
+      if(!lock) return "no lock band in the chat pane";
+      var d=Array.prototype.slice.call(lock.querySelectorAll("[data-ctl]"))
+        .filter(function(c){return /duplicate/i.test(c.getAttribute("data-ctl")||"");})[0];
+      if(!d) return "no ⧉ Duplicate control in the lock band";
+      if(d.disabled) return "the lock band's ⧉ Duplicate control is DISABLED";
+      d.click(); return "ok";})()`;
+
+  async function duplicateOnce(label, road) {
+    const clicked = await ev(road === "lock" ? LOCK_CLICK : CARD_CLICK);
     if (clicked !== "ok") return { error: clicked };
     if (!await waitFor(`!!document.querySelector(".modal")`, 8000, "the dialog")) {
       return { error: "the dialog never opened" };
@@ -263,16 +285,85 @@ function check(id, ok, detail) {
               err:(e&&!e.hidden)?e.textContent.trim():null};})()`);
   }
 
-  const first = await duplicateOnce("02");
+  const first = await duplicateOnce("02", "card");
   check("DUP-BLANK-NAME-WORKS",
         !first.error && !first.stillOpen && !first.err,
         first.error ? first.error
           : (first.err ? ("REFUSED on the road the dialog recommends: " + first.err)
              : "the blank-name road copied a real-length program name without refusing"));
 
-  const second = await duplicateOnce(null);
+  /* ── C10/C11 (FIX ROUND 3) — THE ROOM HE IS STANDING IN ───────────────────
+     The captain opened his locked program, looked in its chat pane, and found
+     S127's placeholder: a greyed-out ⧉ Duplicate to keep designing whose
+     tooltip said the feature was "not built yet" and told him to go start a
+     new program under a different name. S172 had built the feature and
+     reworded the daemon's own refusal to point at it, and never touched this.
+     Both testers drove the CARD; nobody opened a locked program.
+
+     So this half opens it, the way he does — clicking the card — and reads the
+     pane. The copy check takes the tooltip and `data-reason` in as well as the
+     visible text: a disabled control's excuse is copy he reads. */
+  const openedSrc = await ev(`(function(){
+    var rows=Array.prototype.slice.call(document.querySelectorAll(".prog"));
+    var row=rows.filter(function(n){
+      var r=n.querySelector(".proom");
+      return r && r.textContent.replace(/^⌂\\s*/,"").trim()===${JSON.stringify(SRC_ROOM)};})[0];
+    if(!row) return false; row.click(); return true;})()`);
+  if (!openedSrc) {
+    say("INFRASTRUCTURE — the locked program's card vanished from the deck.");
+    return finish(77);
+  }
+  await waitFor(`!!document.querySelector(".holo-lock")`, 20000,
+                "the locked program's lock band");
+  await sleep(600);
+  await shot("03-locked-pane.png");
+  const pane = await ev(`(function(){
+    var lock=document.querySelector(".holo-lock");
+    if(!lock) return {lock:false};
+    var d=Array.prototype.slice.call(lock.querySelectorAll("[data-ctl]"))
+      .filter(function(c){return /duplicate/i.test(c.getAttribute("data-ctl")||"");})[0];
+    var o={lock:true, composer:!!document.querySelector("[data-holo=composer]"),
+           text:lock.textContent||"", ctl:!!d};
+    if(!d) return o;
+    var r=d.getBoundingClientRect(), s=getComputedStyle(d);
+    var t=document.elementFromPoint(r.left+r.width/2, r.top+r.height/2);
+    o.label=d.getAttribute("data-ctl");
+    o.reason=(d.getAttribute("data-reason")||"")+" "+(d.title||"");
+    o.disabled=!!d.disabled;
+    o.wired=d.getAttribute("data-wired")==="1";
+    o.painted=r.width>0&&r.height>0&&s.display!=="none"&&
+              s.visibility!=="hidden"&&parseFloat(s.opacity||"1")>0.01;
+    o.hit=!!(t&&(t===d||d.contains(t)||t.contains(d)));
+    o.w=Math.round(r.width); o.h=Math.round(r.height);
+    return o;})()`);
+  fs.writeFileSync(path.join(OUT, "locked-pane.json"),
+                   JSON.stringify(pane, null, 2));
+  const paneCopy = ((pane && pane.text) || "") + " " + ((pane && pane.reason) || "");
+  const stale = /not built|different name/i.exec(paneCopy);
+  check("LOCK-PANE-DUPLICATE-IS-LIVE",
+        !!pane && pane.lock && pane.ctl && pane.painted && pane.hit &&
+          !pane.disabled && pane.wired && !stale,
+        !pane || !pane.lock
+          ? "the locked program's chat pane has no lock band at all"
+          : (!pane.ctl
+             ? "NO ⧉ Duplicate control in the locked program's own pane"
+             : ("⧉ in the pane: painted=" + pane.painted + " hittable=" +
+                pane.hit + " disabled=" + pane.disabled + " wired=" +
+                pane.wired + " " + pane.w + "×" + pane.h +
+                (stale ? " — and the copy still says " +
+                   JSON.stringify(stale[0]) : " — copy names duplication as " +
+                   "the way on"))));
+
+  const second = await duplicateOnce(null, "lock");
+  check("LOCK-PANE-DUPLICATE-WORKS",
+        !second.error && !second.stillOpen && !second.err,
+        second.error ? second.error
+          : (second.err
+             ? ("the pane's control REFUSED: " + second.err)
+             : "the control in the locked pane opened the same confirmation "
+               + "and copied the program"));
   await sleep(800);
-  await shot("03-after-two.png");
+  await shot("04-after-two.png");
 
   const after = await ev(ROWS);
   fs.writeFileSync(path.join(OUT, "rows-after.json"), JSON.stringify(after, null, 2));
@@ -412,7 +503,7 @@ function check(id, ok, detail) {
                         s.visibility!=="hidden"&&parseFloat(s.opacity||"1")>0.01};}
       return {ground:read(".ground-chip"), cont:read(".cont-chip")};})()`);
   }
-  await shot("04-duplicate-open.png");
+  await shot("05-duplicate-open.png");
   const ground = chip && chip.ground;
   const cont = chip && chip.cont;
   chip = ground;
