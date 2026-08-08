@@ -1319,6 +1319,12 @@ Sections:
        3. Out of scope — what he explicitly ruled out, kept so nobody builds it
           back by accident.
      Never invent a requirement he did not say.
+     AN EMPTY BUCKET IS EMPTY — write the heading and NOTHING under it. Never a
+     bullet saying there is nothing ("- (none — those were answered in T2)"),
+     and never a note explaining why it is empty. The captain reads these
+     buckets as a list of things he has to deal with, and a bullet that is not
+     one of those is a heading, a caption and a line of his brief spent on
+     nothing.
   ## DECLARED FLOW — name the screens and the transitions between them, one per
      line, small enough to write by hand:
        `board` → click `.card` → `detail` → Esc → `board`, scroll preserved
@@ -1961,6 +1967,38 @@ _HANDOFF_SCOPE_BUCKETS = ("3. " + _HANDOFF_NOT_STATED_BUCKETS[1],
                           _HANDOFF_NOT_STATED_BUCKETS[1])
 
 
+# ── S172: A BULLET THAT IS ENTIRELY AN ASIDE IS NOT AN ITEM ────────────────
+#
+# THE CAPTAIN, driving S171 on his own room: bucket 2 arrived in his brief as a
+# heading, a caption, and one bullet reading
+#
+#   - (none — the dirty-state binding and the canvas-overlay ownership
+#     questions from T1 were answered by the captain in T2.)
+#
+# Three lines of his brief saying nothing, under a heading promising something.
+# It was S170-ledgered and he has now put it in his own brief for this round:
+# A SECTION WITH NO REAL ITEMS SHOWS NOTHING AT ALL — no heading, no caption.
+# `_handoff_section` already returns "" for an empty list, so the whole cure is
+# to stop counting an aside as an item.
+#
+# WHAT THIS IS: a test on DELIMITERS, the same class as stripping the `-` a
+# model puts in front of a good line. A bullet whose WHOLE text is wrapped in
+# brackets is the writer talking ABOUT the list, not writing in it. It reads no
+# words and asks no question about meaning, so it cannot be reworded past (the
+# thing S156 lost 14/14 → 5/14 to) and it cannot drop a real item — a real item
+# would have to be written entirely inside brackets to be lost.
+#
+# The other half is upstream and is the durable one: `_CONCEPT_CONTRACT` now
+# tells the design worker to leave an empty bucket EMPTY. This exists because
+# the captain's real room was already written the other way.
+_ASIDE_ONLY = re.compile(r"^\((?:[^()]|\([^()]*\))*\)[.]?$")
+
+
+def _handoff_bucket_items(body):
+    """The real items of a `## WHAT IT MUST DO` bucket."""
+    return [i for i in _md_items(body) if not _ASIDE_ONLY.match(i.strip())]
+
+
 def _handoff_out_of_scope(concept_text):
     """Bucket 3 — what this work must NOT touch, in the captain's own doc.
 
@@ -1974,7 +2012,7 @@ def _handoff_out_of_scope(concept_text):
     for bucket in _HANDOFF_SCOPE_BUCKETS:
         body = _md_section(section, bucket, prefix=True)
         if body:
-            return _md_items(body)
+            return _handoff_bucket_items(body)
     return []
 
 
@@ -1992,7 +2030,7 @@ def _handoff_implied(concept_text):
     for bucket in _HANDOFF_IMPLIED_BUCKETS:
         body = _md_section(section, bucket, prefix=True)
         if body:
-            return _md_items(body)
+            return _handoff_bucket_items(body)
     return []
 
 
@@ -2212,7 +2250,7 @@ def _handoff_section(title, note, items):
 # would be exactly the thing he ruled out.
 
 
-def _handoff_parts(concept_text, changes=()):
+def _handoff_parts(concept_text, changes=(), asks=()):
     """(requirements, changes, implied, out-of-scope) — deduped, in the order
     the box shows them.
 
@@ -2227,12 +2265,26 @@ def _handoff_parts(concept_text, changes=()):
     PURE assembler over it. Nothing here spawns anything, so every filing road
     that calls it stays token-free and cannot be blocked by a pass that never
     answered — `changes=()` is the honest degraded shape, not an error.
+
+    S172 — AND `asks` ARRIVES THE SAME WAY, from the same reply, and joins
+    BUCKET 2. It is the same kind of thing bucket 2 already holds — behaviour
+    the mockup implies that nobody has settled — so it goes in the section that
+    already exists and already says so, rather than under a fourth heading. The
+    concept doc's own bucket 2 goes FIRST and therefore wins the dedup: a thing
+    the design chat already declared as implied keeps the wording the captain
+    has been reading all session.
+
+    THE MARKING IS THE POINT AND IT STILL HOLDS. Everything in this section
+    travels as IMPLIED-not-stated (`_HANDOFF_IMPLIED_NOTE` says so in the
+    brief); nothing here is ever laundered into his own words, which is FL-011
+    and the reason the section exists at all.
     """
     reqs = _handoff_requirements(concept_text)
     carried = list(reqs) + [q["text"] for q in _handoff_questions(concept_text)]
     changed = _handoff_carry(carried, [c for c in (changes or []) if c])
-    implied = _handoff_carry(carried + changed,
-                             _handoff_implied(concept_text))
+    implied = _handoff_carry(
+        carried + changed,
+        _handoff_implied(concept_text) + [a for a in (asks or []) if a])
     scope = _handoff_carry(carried + changed + implied,
                            _handoff_out_of_scope(concept_text))
     return reqs, changed, implied, scope
@@ -2307,10 +2359,56 @@ def _handoff_parts(concept_text, changes=()):
 # Tailwind" as changes. The round already drew this line (the mock is a visual
 # reference, never shipping code); it is applied here.
 _HANDOFF_DERIVE_MARKER = "=== CHANGES ==="
+# ── S172: AND THE SECOND BLOCK — WHAT IT FOUND AND DID NOT REPORT ──────────
+#
+# THE MEASUREMENT (the captain, driving S171 on his own room, 2026-08-07). His
+# mockup draws Zoom in / Zoom out / Fit buttons and a `100%` readout over the
+# canvas, and a hover x/y pill. His app has zoom on the scroll wheel only, reset
+# view on a middle-mouse double click, and it already COMPUTES the hover tile
+# and never shows it. NEITHER REACHED THE CHANGE LIST — because his out-of-scope
+# bucket says *"The tile canvas rendering — left as an untouched placeholder
+# well"*, and the pass suppressed chrome drawn OVER the canvas along with the
+# canvas itself.
+#
+# HE RULED THE SUPPRESSION FAIR: *"to be fair, I did say don't touch the canvas
+# and it look like it got everything else."* That is his own calibration ruling
+# working — intent-reading over literalism, the conservative mechanism, never
+# escalate-on-doubt — and it is deliberately UNCHANGED. The diff is not widened
+# and nothing here argues with a scope he set.
+#
+# WHAT HE ASKED FOR INSTEAD, verbatim: *"Let's bank that as a question it should
+# have asked me in the send to align dialog."* So a difference the pass FOUND
+# and then DECLINED TO REPORT comes back as a QUESTION in the brief's
+# `## Implied by the mockup` section — one line, in his language, which he
+# answers or deletes in a second.
+#
+# ── WHY THIS IS A DECLARATION AND NOT A CLASSIFIER ─────────────────────────
+#
+# Nothing in this file reads a change line's wording and decides whether it was
+# "ambiguous". It cannot: the line does not exist — that is the entire defect.
+# THE PASS IS THE PARTY THAT DECIDED NOT TO REPORT IT, so the pass declares it,
+# exactly as the planner DECLARES `changesScreenAppearance` on a ticket rather
+# than having a matcher guess it from the ticket text (S169). That is the one
+# shape that has worked every time here, and the road that has cost this project
+# four sessions (S156 14/14 → 5/14 on a reworded corpus, S147's four parser
+# generations, S157's five guards) is the one not taken.
+#
+# ── AND IT IS NOT AN ESCALATION ────────────────────────────────────────────
+#
+# It is a line in a section he skims before filing. It never gates, never sets
+# awaiting-human, never blocks a hand-off, and a pass that declares nothing here
+# is the ordinary answer. `_handoff_derive_asks` returns [] for every reply that
+# does not carry the block, including every reply written before it existed.
+_HANDOFF_DERIVE_ASK_MARKER = "=== ASK ==="
 # How many derived lines are carried. A bound on the box, not a judgement about
 # which lines matter, and the surface says when it bites. The captain's real
 # room derives well under this.
 _HANDOFF_DERIVE_MAX_CHANGES = 40
+# The questions are bounded HARDER than the changes, and on purpose: this is the
+# section he skims, and a pass that hands back thirty questions has handed the
+# work back to him — which is the failure the whole holodeck exists to prevent
+# (*"if I have to spell out each change… the value is lost"*).
+_HANDOFF_DERIVE_MAX_ASKS = 10
 # One line, bounded. It is a model's prose going into the captain's own brief;
 # a runaway paragraph is a paragraph he stops reading.
 _HANDOFF_DERIVE_MAX_LINE = 400
@@ -2408,6 +2506,34 @@ somebody who had never seen the design chat, DELETE IT.
 Before you write any line, FIND THE THING IT NAMES IN THE APP. If the app \
 already has it and the mockup does not alter it, drop the line.
 
+── WHEN THE SCOPE MAKES A DIFFERENCE AMBIGUOUS, SAY SO. DO NOT DROP IT ─────
+
+The design chat's out-of-scope list is binding and you must honour it. Read it \
+the way the captain meant it rather than word by word, take the conservative \
+reading when you are unsure, and DO NOT report a change to something he ruled \
+out. That judgement is yours to make and nothing here asks you to hand it back.
+
+But when you find a REAL difference between the mockup and the app, and you \
+then decide NOT to report it as a change BECAUSE what he ruled out makes it \
+unclear whether he wants it, WRITE IT DOWN AS A QUESTION. You are the only one \
+who will ever know you dropped it: a line you did not write leaves no trace, \
+and the next person to see this work is building from your list.
+
+Write each one as the ONE-LINE QUESTION it is, in ordinary words, so he can \
+answer it in a sentence. For example: "the mockup adds zoom / fit buttons over \
+the canvas - in or out?"
+
+  · it is a QUESTION, never an argument for the change and never the change \
+itself. Do not restate it in the change list as well;
+  · keep it to differences you ACTUALLY FOUND in the mockup and ACTUALLY \
+DECIDED to leave out. Never a guess about what he might also want, never a \
+suggestion, never a design idea of your own;
+  · nothing you write here stops anything or asks anyone to wait. He reads \
+these beside the change list before he sends the work, and answers or deletes \
+them. Write no more than %(askcap)d;
+  · if nothing was ambiguous, write none. That is the ordinary answer and it \
+is not a failure.
+
 ── DO THE WORK FIRST ───────────────────────────────────────────────────────
 
 Open the mockup. Go through it screen by screen, region by region. For each \
@@ -2416,13 +2542,25 @@ and READ IT. Write your working out in full; take as much room as you need. A \
 list produced without opening the app is worth nothing here, because every \
 line of it is a claim about the app.
 
-THEN, AT THE VERY END of your reply, write a line containing exactly:
+THEN, AT THE END of your reply, write TWO blocks, in this order and nothing \
+else after them.
+
+FIRST a line containing exactly:
+
+  %(ask)s
+
+and after it ONE LINE PER QUESTION — the differences you found and decided not \
+to report, from the section above. If there are none, write this line and go \
+straight on to the next block.
+
+THEN a line containing exactly:
 
   %(marker)s
 
 and after it ONE LINE PER CHANGE and nothing else — no headings, no code \
 fence, no numbering, no summary, no closing remark. In the order a user meets \
-them: top of the screen down, first screen first.
+them: top of the screen down, first screen first. NOTHING MAY FOLLOW THIS \
+BLOCK: it is the last thing in your reply.
 
 Each line is a single sentence in this shape:
 
@@ -2433,8 +2571,8 @@ Each line is a single sentence in this shape:
 reason worth carrying, and keep it to a few words. No line may run past %(cap)d \
 characters.
 
-If the mockup changes nothing at all about the app, write the marker and \
-nothing after it.
+If the mockup changes nothing at all about the app, write both markers and \
+nothing after them.
 """
 
 
@@ -2457,6 +2595,11 @@ def _handoff_derive_prompt(mockup, concept, basis):
         "flow": _HANDOFF_FLOW_HEADING,
         "must": _HANDOFF_REQ_HEADING,
         "marker": _HANDOFF_DERIVE_MARKER,
+        # S172 — the second block, and its own bound. Named off the same
+        # constants the parser reads, so a reworded prompt and a reworded
+        # parser cannot drift apart.
+        "ask": _HANDOFF_DERIVE_ASK_MARKER,
+        "askcap": _HANDOFF_DERIVE_MAX_ASKS,
         "cap": _HANDOFF_DERIVE_MAX_LINE,
     }
 
@@ -2483,8 +2626,21 @@ def _handoff_derive_parse(reply):
     text = reply or ""
     if _HANDOFF_DERIVE_MARKER not in text:
         return None
+    return _handoff_derive_lines(text.rsplit(_HANDOFF_DERIVE_MARKER, 1)[1],
+                                 _HANDOFF_DERIVE_MAX_CHANGES)
+
+
+def _handoff_derive_lines(block, cap):
+    """The readable lines of one marked block, bounded.
+
+    Shared by the two blocks a reply carries because they are the SAME shape —
+    one sentence per line, whatever list decoration a model reached for — and
+    two copies of this would drift the day one of them was tightened. Nothing
+    here judges MEANING; a line is dropped only when it is structurally not a
+    line (a heading, a fence, a rule with no letters in it).
+    """
     out = []
-    for raw in text.rsplit(_HANDOFF_DERIVE_MARKER, 1)[1].splitlines():
+    for raw in block.splitlines():
         line = " ".join(raw.split())
         if not line:
             continue
@@ -2492,17 +2648,41 @@ def _handoff_derive_parse(reply):
             continue
         line = _HANDOFF_DERIVE_STRIP.sub("", line).strip()
         # A model that decorates its last line with a rule (`---`, `===`) has
-        # not written a change. Nothing here judges MEANING — only that there
-        # are characters a person could read.
+        # not written a change.
         if not re.search(r"[A-Za-z]", line):
             continue
         out.append(line[:_HANDOFF_DERIVE_MAX_LINE])
-        if len(out) >= _HANDOFF_DERIVE_MAX_CHANGES:
+        if len(out) >= cap:
             break
     return out
 
 
-def _handoff_brief(concept_text, program="", changes=()):
+def _handoff_derive_asks(reply):
+    """S172 — the questions the pass DECLARED it was not reporting.
+
+    ALWAYS A LIST, NEVER `None`, and that asymmetry with the change block is
+    deliberate: no marker means the pass declared nothing, which is both the
+    ordinary answer and what every reply written before this block existed
+    says. A missing change list is an unusable reply; a missing ask list is
+    silence, and silence here is normal.
+
+    THE ASK BLOCK COMES FIRST IN THE REPLY AND THE CHANGE BLOCK IS TERMINAL —
+    which is why this reads BETWEEN the last ask marker and the change marker,
+    and why `_handoff_derive_parse` still reads exactly what it always read.
+    The one fail-safe this whole road hangs on is "everything after the last
+    change marker is the answer", and a second block was not allowed to weaken
+    it.
+    """
+    text = reply or ""
+    if _HANDOFF_DERIVE_ASK_MARKER not in text:
+        return []
+    block = text.rsplit(_HANDOFF_DERIVE_ASK_MARKER, 1)[1]
+    if _HANDOFF_DERIVE_MARKER in block:
+        block = block.split(_HANDOFF_DERIVE_MARKER, 1)[0]
+    return _handoff_derive_lines(block, _HANDOFF_DERIVE_MAX_ASKS)
+
+
+def _handoff_brief(concept_text, program="", changes=(), asks=()):
     """The PRE-DRAFTED writing space.
 
     D15: it is a writing space, not a title field, and it is pre-drafted from
@@ -2531,8 +2711,15 @@ def _handoff_brief(concept_text, program="", changes=()):
     timeline (see `_HANDOFF_REQ_TITLE`'s block). `concept_text` is still read —
     for bucket 2, bucket 3 and the dedup — but nothing is drafted from it in
     his voice any more, and no model prose reaches the head.
+
+    S172 — AND THE MIDDLE SECTION HAS A SECOND SOURCE. `asks` is what the same
+    pass FOUND AND DECLINED TO REPORT because the captain's own out-of-scope
+    ruling made it ambiguous; it lands in bucket 2 as the question it is. See
+    `_HANDOFF_DERIVE_ASK_MARKER`. Nothing here inspects a line to decide that —
+    the pass declares it and this assembles it.
     """
-    _reqs, changed, implied, scope = _handoff_parts(concept_text, changes)
+    _reqs, changed, implied, scope = _handoff_parts(concept_text, changes,
+                                                    asks)
     blocks = [b for b in (
         _handoff_section(_HANDOFF_CHANGE_TITLE, _HANDOFF_CHANGE_NOTE,
                          changed),
@@ -5840,8 +6027,20 @@ class Actions(LogFacts):
             return None
         if not all(isinstance(c, str) for c in changes):
             return None
+        # S172 — THE QUESTIONS ARE NOT LOAD-BEARING FOR THE RECORD. A record
+        # written before this key existed, or one whose `asks` is the wrong
+        # shape, is still a good record of a pass that ran: it degrades to no
+        # questions rather than to no answer, because throwing away a 154-220s
+        # change list over a missing second list would be the fail-safe clause
+        # inverted. (The fingerprint digests the PROMPT, so an old record is
+        # normally re-derived anyway — this is the belt to that braces.)
+        asks = rec.get("asks")
+        if not isinstance(asks, list) or not all(isinstance(a, str)
+                                                 for a in asks):
+            asks = []
         return {"state": "done", "ok": bool(rec.get("ok")),
                 "changes": [c for c in changes][:_HANDOFF_DERIVE_MAX_CHANGES],
+                "asks": asks[:_HANDOFF_DERIVE_MAX_ASKS],
                 "why": str(rec.get("why") or ""),
                 "at": rec.get("at") or 0,
                 "engine": str(rec.get("engine") or ""),
@@ -5859,6 +6058,7 @@ class Actions(LogFacts):
         rec = {"fingerprint": fingerprint, "at": time.time(),
                "ok": bool(result.get("ok")),
                "changes": list(result.get("changes") or []),
+               "asks": list(result.get("asks") or []),
                "why": str(result.get("why") or ""),
                "engine": str(result.get("engine") or "")}
         tmp = path + ".tmp"
@@ -6099,6 +6299,11 @@ class Actions(LogFacts):
                     "why": "the pass never wrote its change list, so LCARS "
                            "could not read one out of it"}
         return {"state": "done", "ok": True, "changes": changes,
+                # S172 — the same reply's second block: what it found and
+                # declared it was NOT reporting, because the captain's own
+                # out-of-scope ruling made it ambiguous. Absent on a pass that
+                # declared nothing, which is the ordinary answer.
+                "asks": _handoff_derive_asks(reply),
                 "engine": os.path.basename(bin_), "why": ""}
 
     def _handoff_changes(self, state):
@@ -6113,6 +6318,19 @@ class Actions(LogFacts):
         if (state or {}).get("state") != "done" or not state.get("ok"):
             return []
         return list(state.get("changes") or [])
+
+    def _handoff_asks(self, state):
+        """The questions a `derive` block yields for bucket 2 (S172).
+
+        The SAME gate as `_handoff_changes` and for the same reason: a pass
+        that is running, off or did not answer declared nothing, so the brief
+        carries bucket 2 exactly as the concept doc wrote it. There is one
+        reply and one road off it; this is the second field of it, not a
+        second mechanism.
+        """
+        if (state or {}).get("state") != "done" or not state.get("ok"):
+            return []
+        return list(state.get("asks") or [])
 
     def holodeck_promote(self, sid, scope=None):
         """POST /api/holodeck/<sid>/promote — SEND TO ALIGN.
@@ -6159,9 +6377,10 @@ class Actions(LogFacts):
                 "cannot draft the brief: %s" % exc)
         derive = self._handoff_derive_state(sess, start=False)
         changes = self._handoff_changes(derive)
-        brief = _handoff_brief(concept, sess.program, changes)
-        captured, changed, implied, out_of_scope = _handoff_parts(concept,
-                                                                 changes)
+        asks = self._handoff_asks(derive)
+        brief = _handoff_brief(concept, sess.program, changes, asks)
+        captured, changed, implied, out_of_scope = _handoff_parts(
+            concept, changes, asks)
         reqs = [{"id": "r%d" % (i + 1), "text": t}
                 for i, t in enumerate(captured)]
         return {
@@ -6202,6 +6421,14 @@ class Actions(LogFacts):
             # Mission is told can never drift.
             "changesBlock": _handoff_section(_HANDOFF_CHANGE_TITLE,
                                              _HANDOFF_CHANGE_NOTE, changed),
+            # S172 — AND THE QUESTIONS THE SAME PASS PRODUCED, as their own
+            # appendable block. ONLY the pass's own lines are in it: bucket 2's
+            # declared items are in his draft from the moment the dialog opens
+            # and do not depend on the pass, so appending the whole section
+            # would hand him a second copy of what he is already reading.
+            "impliedBlock": _handoff_section(
+                _HANDOFF_IMPLIED_TITLE, _HANDOFF_IMPLIED_NOTE,
+                [i for i in implied if i in set(asks)]),
             # THE DERIVATION'S OWN STATE, so the deck can say what is happening
             # rather than guessing from an empty list. `{"state": "running"}`
             # means ask again in a moment — and means the `brief` above has no

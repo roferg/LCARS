@@ -8390,15 +8390,33 @@ function renderDeck() {
    answer and the daemon peeks back to "none" all by itself. Nothing on this
    side has to notice a turn happened.
 
-   ── AND THE ESCAPE HATCH IS NOT OPTIONAL ─────────────────────────────────
+   ── S172: THE ESCAPE HATCH IS DELETED, AND THAT IS THE CAPTAIN'S CALL ────
 
-   S170 deliberately built "no filing road can be blocked by the derivation"
-   and PROVED it with an `ast` test. Gating reverses that on purpose — but a
-   failed pass, a dead engine or a wait he has run out of patience for must
-   never strand a ready program on the deck. So every gated state also carries
-   `Send without the change list`, which goes straight to the hand-off dialog:
-   the brief is drafted without that section, the dialog says so plainly, and
-   ▦ FILE MISSION works exactly as it always did. */
+   `Send without the change list` rode on every gated state. His words after
+   driving it: *"we don't need the send without change list one."*
+
+   S171 built it as MANDATORY, because gating reverses a property S170 proved
+   with an `ast` test. Re-reading the states shows the fear was bigger than the
+   risk, and this is the whole argument:
+
+     · a FAILED pass — a dead engine, a timeout, an unreadable reply — already
+       leaves ▶ SEND TO ALIGN LIVE, with ↻ try again beside it. The primary
+       control IS the road through. An outage never stranded him;
+     · `none` is the state before he has asked for anything. The list costs him
+       one click and he can send from `failed` if it will not run;
+     · so the ONLY state the hatch uniquely covered is `running` — and the
+       honest cost of losing it is that a hung pass has to time out (the daemon
+       bounds it at 420s and the room keeps the answer).
+
+   AND THE FILING ROADS ARE UNCHANGED. `file_mission`, `park`, `align_start`
+   and `_handoff_idea` still never read the derivation — the `ast` test that
+   proves it is still green. This gate has always been an affordance on the
+   deck, and deleting a second door does not put a lock on the first.
+
+   NO CANCEL CONTROL WAS BUILT IN ITS PLACE, deliberately. Nobody has observed
+   a hang. If one is ever seen, the honest control is one that STOPS the pass —
+   not one that walks around it — and it should be built then, against a real
+   observation, rather than guessed at now. */
 function holoDeriveGate(p) {
   var d = p.derive || {};
   var st = d.state || "off";
@@ -8442,8 +8460,8 @@ function holoHandoffBar(p) {
   } else if (gate === "failed") {
     hint = "LCARS could not read your project against the mockup"
          + (d.why ? " — " + d.why : "")
-         + ". Nothing is blocked: you can send it without a change list, or "
-         + "try the pass again.";
+         + ". Nothing is blocked: ▶ Send to Align still works and the brief is "
+         + "missing only the change list — or try the pass again.";
   }
   bar.appendChild(el("span", "hint", hint));
   if (gate === "running") {
@@ -8457,19 +8475,18 @@ function holoHandoffBar(p) {
   }
   bar.appendChild(el("span", "grow"));
 
-  /* THE SECONDARY ROAD, on every gated state. It is the same `promote` the
-     primary reaches when the list is ready — no separate filing path, so
-     there is nothing here that can rot while the main one is maintained. */
-  if (p.handoffReady && (gate === "none" || gate === "running"
-                         || gate === "failed")) {
-    var skip = holoBtn("Send without the change list", "small", function () {
-      holoPromote(p.sessionId);
-    });
-    skip.setAttribute("data-holo", "handoff-skip");
-    bar.appendChild(applyWriteState(skip));
-  }
   if (gate === "failed") {
-    var again = holoBtn("↻ Try the change list again", "small", function () {
+    /* ── S172: THE SAME SIZE AS THE CONTROL BESIDE IT ──────────────────────
+       From the captain's own screenshot: `SEND WITHOUT THE CHANGE LIST`
+       rendered as a small outlined pill against a full-size filled
+       `◐ GENERATING CHANGE LIST…` — two different weights of control on one
+       row, which reads as two unrelated things rather than one bar. The hatch
+       is gone (above), and this is the pairing it leaves behind.
+
+       So both controls in this bar are `big` and they differ by FILL, not by
+       size: ▶ Send to Align is `go big` (filled, the thing to do), this one is
+       `big` (outlined, the other thing you can do). One family. */
+    var again = holoBtn("↻ Try the change list again", "big", function () {
       holoDeriveStart(p.sessionId, true);
     });
     again.setAttribute("data-holo", "handoff-retry");
@@ -10229,8 +10246,17 @@ function openHandoff(seed) {
        he reads and what the Mission is told cannot drift. And the caret is put
        back, because assigning to a textarea's value jumps it to the end, which
        is the same "a re-render ate my typing" feeling FL-013 was about. */
-    var block = state.changesBlock || "";
-    if (!block || brief.value.indexOf(block) !== -1) return null;
+    /* S172 — TWO BLOCKS, because the pass now produces two things: what is
+       different, and what it FOUND AND DID NOT REPORT because his own
+       out-of-scope ruling made it ambiguous. `impliedBlock` carries only the
+       pass's own questions — bucket 2's declared items are already in the
+       draft he is typing into. Both are the DAEMON's words. */
+    var blocks = [];
+    [state.changesBlock, state.impliedBlock].forEach(function (b) {
+      if (b && brief.value.indexOf(b) === -1) blocks.push(b);
+    });
+    if (!blocks.length) return null;
+    var block = blocks.join("\n\n");
     var at = brief.selectionStart, to = brief.selectionEnd;
     brief.value = brief.value.replace(/\s+$/, "") + "\n\n" + block + "\n";
     try { brief.setSelectionRange(at, to); } catch (e) { /* not focused */ }
@@ -10596,6 +10622,19 @@ function openHandoff(seed) {
      Found by web/tests/board_holodeck_harness.js the moment `setTimeout` was
      recorded instead of swallowed — the previous stub returned 0 and dropped
      the callback, which cannot tell a wired poll from a dead one. */
+  /* ── S172, SAID PLAINLY: THIS BRANCH IS NO LONGER REACHED FROM THE DECK ──
+     `Send without the change list` was the only control that opened this
+     dialog while a pass was in flight, and the captain has deleted it. Every
+     remaining door — ▶ SEND TO ALIGN at `ready`, at `failed`, and at `off` —
+     opens on a settled derivation, so `seed.derive.state` is not `running`.
+
+     IT IS KEPT, NOT DELETED, and that is a deliberate call rather than an
+     oversight: the running band, this poll and `briefLanded` are what make a
+     door into the wait SAFE, and the hatch's own note says a cancel control is
+     the honest thing to build if a hang is ever observed. Tearing the landing
+     machinery out today would mean rebuilding it then. What must not happen is
+     someone reading this branch as live product behaviour: it is not, until
+     something opens this dialog during a pass again. */
   if ((seed.derive || {}).state === "running") {
     holoDerivePoll(seed, checkBox, picked, 1, briefLanded);
   }

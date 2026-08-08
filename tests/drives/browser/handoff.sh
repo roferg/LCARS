@@ -200,8 +200,30 @@ write_expect() {   # $1 = width  $2 = height  $3 = min lines shown  $4 = mode
       keeps='"MY OWN WORDS — DO NOT CLOBBER"'
       ;;
     turn) inval=true ;;
+    failed) ;;
     *) reload=true ;;
   esac
+  # S172 — THE FAILED-PASS LEG. The pass does not answer, so there is no change
+  # list, no running band to sit in front of and nothing to append. What this
+  # leg exists for is the BAR: ▶ SEND TO ALIGN must be live and pressable (with
+  # the escape hatch deleted it is the only road off a dead engine), and the two
+  # controls on it must read as one family — the captain's own screenshot was a
+  # small outlined pill beside a full-size filled button.
+  local run_band=true done_band=true failed=false secs
+  # S172 — THE QUESTION THE STUB PASS DECLARES IT IS NOT REPORTING. It must be
+  # in the textarea he would send, in bucket 2, marked IMPLIED.
+  local imp="[\"$ASK_MARK\"]"
+  local names='"changes read off your project", "implies"'
+  secs='"## What the mockup changes about your app as it is today",
+    "## Implied by the mockup — NOT things you said"'
+  if [ "$mode" = failed ]; then
+    # THERE IS NO CHANGE LIST ON THIS LEG, so the line under the box must not
+    # name one — and demanding that it does would be the rig failing itself.
+    # `hintForbids` stays exactly as it is: nothing may overclaim, ever.
+    run_band=false; done_band=false; failed=true; chg='[]'; imp='[]'
+    secs='"## Implied by the mockup — NOT things you said"'
+    names='"implies"'
+  fi
   cat >"$WORK/expect.json" <<EOF
 {
   "viewportW": $1,
@@ -210,28 +232,31 @@ write_expect() {   # $1 = width  $2 = height  $3 = min lines shown  $4 = mode
   "minLinesShown": $3,
   "minLinesShownRunning": $3,
   "sections": [
-    "## What the mockup changes about your app as it is today",
-    "## Implied by the mockup — NOT things you said"
+    $secs
   ],
   "briefForbids": ["## What it must do — in your own words", "**Turn "],
   "briefOpensWith": "$PROGRAM",
-  "hintNames": ["changes read off your project", "implies"],
+  "hintNames": [$names],
   "hintForbids": ["today's app", "the design chat recorded",
                   "Drafted from your concept doc", "things you said"],
   "expectGate": true,
+  "expectGateFailed": $failed,
   "expectInvalidation": $inval,
   "expectQCue": true,
   "qcueForbids": ["unanswered", "⚠"],
   "expectGuidance": true,
-  "expectDeriveRunning": true,
+  "expectDeriveRunning": $run_band,
   "walkAwayPhrases": ["CLOSE THIS AND WALK AWAY IF YOU LIKE",
                       "survives a reload and a restart",
                       "send the brief without one"],
+  "barWalkAwayPhrases": ["survives closing the deck",
+                         "come back when you like"],
   "typeWhileWaiting": $typed,
   "reloadProof": $reload,
-  "expectDeriveDone": true,
+  "expectDeriveDone": $done_band,
   "donePhrases": ["stood in your project", "produces no line"],
   "expectChangeLines": $chg,
+  "expectImpliedLines": $imp,
   "expectBriefKeeps": $keeps
 }
 EOF
@@ -257,7 +282,13 @@ EOF
 # round exists for, and a pass that answers instantly is a wait the rig can
 # never see. `LCARS_RIG_DERIVE_SLEEP` is the fuse.
 CHANGE_MARK="today the mode switch and the map tabs are two separate bars"
+ASK_MARK="the mockup draws zoom / fit buttons over the canvas - in or out?"
 DERIVE_SLEEP="${LCARS_RIG_DERIVE_SLEEP:-6}"
+# S172 — 1 makes the pass ANSWER NOTHING USABLE, which is the daemon's
+# `ok: false` road: no marker, so `_handoff_derive_parse` returns None and the
+# bar goes to its `failed` gate. That is the state the captain screenshotted
+# and the state the deleted escape hatch used to cover.
+MUTE="${LCARS_RIG_DERIVE_MUTE:-0}"
 
 write_check_worker() {   # $1 = dest path
   cat >"$1" <<PYW
@@ -307,7 +338,16 @@ if "NEVER REPORT IMPLEMENTATION" not in prompt or "WIRED TO" not in prompt:
 # enough for a rig and long enough that the running band is a thing a browser
 # can be pointed at.
 time.sleep(${DERIVE_SLEEP})
+if ${MUTE}:
+    # THE PASS THAT DID NOT ANSWER. It ran, it took as long as a real one, and
+    # it wrote no change marker - so the daemon reports ok: false and the deck
+    # goes to its failed gate. Nothing here fakes the daemon's state.
+    sys.stdout.write("I got partway through and lost my thread.\n")
+    sys.exit(0)
 sys.stdout.write("I read the toolbar, the mode switcher and the map tabs.\n")
+sys.stdout.write("=== ASK ===\n")
+sys.stdout.write("- the mockup draws zoom / fit buttons over the canvas - in "
+                 "or out?\n")
 sys.stdout.write("=== CHANGES ===\n")
 sys.stdout.write("- today the toolbar is 48px tall -> the mockup grows it to "
                  "52px\n")
@@ -426,7 +466,7 @@ make_variant() {   # $1 = name, $2 = dest
       cat >>"$py" <<'PY'
 
 
-def _handoff_parts(concept_text, changes=()):   # RED CONTROL — S128 behaviour
+def _handoff_parts(concept_text, changes=(), asks=()):   # RED CONTROL — S128
     return _handoff_requirements(concept_text), [], [], []
 PY
       ;;
@@ -623,8 +663,9 @@ PY
 _HANDOFF_REQ_TITLE = "## What it must do — in your own words"   # RED CONTROL
 
 
-def _handoff_brief(concept_text, program="", changes=()):   # RED CONTROL
-    reqs, changed, implied, scope = _handoff_parts(concept_text, changes)
+def _handoff_brief(concept_text, program="", changes=(), asks=()):  # RED
+    reqs, changed, implied, scope = _handoff_parts(concept_text, changes,
+                                                   asks)
     head = "\n".join([_HANDOFF_REQ_TITLE, ""]
                      + ["%d. %s" % (i + 1, r) for i, r in enumerate(reqs)])
     blocks = [b for b in (
@@ -663,18 +704,58 @@ assert old in s, "the gate's loading indicator moved - this control measures not
 open(p, "w").write(s.replace(old, "    /* RED CONTROL: no indicator */", 1))
 PY
       ;;
-    no-escape-hatch)
-      # THE OUTAGE TRAP. Gating reverses a property S170 deliberately built and
-      # proved with an `ast` test; without a visible road through, a dead
-      # engine makes a finished design unfileable. Delete the hatch and the
-      # rig cannot even reach the dialog during the wait — which is the point.
+    hatch-is-back)
+      # == S172: THE CONTROL IS INVERTED, BECAUSE THE PRODUCT WAS ===========
+      # This was `no-escape-hatch`: it DELETED `Send without the change list`
+      # and required the rig to notice. The captain has now deleted it for
+      # real — *"we don't need the send without change list one"* — so the
+      # claim is the other way round and so is the control: PUT IT BACK, and
+      # the rig must catch it on every gated state.
       patch_or_die "$js" <<'PY' || return 1
 import sys
 p = sys.argv[1]; s = open(p).read()
-old = '  if (p.handoffReady && (gate === "none" || gate === "running"'
-assert old in s, "the escape hatch moved - this control measures nothing"
-new = '  if (false && (gate === "none" || gate === "running"'
+old = '  if (gate === "failed") {'
+assert old in s, "the hand-off bar's failed branch moved - this control measures nothing"
+new = ('  if (p.handoffReady && (gate === "none" || gate === "running"\n'
+       '                         || gate === "failed")) {          // RED\n'
+       '    var skip = holoBtn("Send without the change list", "small",\n'
+       '                       function () { holoPromote(p.sessionId); });\n'
+       '    skip.setAttribute("data-holo", "handoff-skip");\n'
+       '    bar.appendChild(applyWriteState(skip));\n'
+       '  }\n' + old)
 open(p, "w").write(s.replace(old, new, 1))
+PY
+      ;;
+    mismatched-bar)
+      # THE CAPTAIN'S SCREENSHOT, REPRODUCED. The secondary control goes back
+      # to the small outlined pill it was, beside a full-size filled primary —
+      # two weights of control on one row. Broken in BOTH places it was fixed
+      # (the class on the button and the CSS rule that sized it), because
+      # either one alone leaves the other still making the bar look right.
+      patch_or_die "$js" <<'PY' || return 1
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = 'holoBtn("\u21bb Try the change list again", "big"'
+assert old in s, "the retry control moved - this control is measuring nothing"
+new = 'holoBtn("\u21bb Try the change list again", "small"'
+open(p, "w").write(s.replace(old, new, 1))
+PY
+      printf '\n.holo-handoff .btn.small{font-size:9px;letter-spacing:.1em;padding:4px 10px;border-radius:9px}\n' >>"$css"
+      ;;
+    questions-dropped-on-the-floor)
+      # == S172, ITEM 1 - THE BIG ONE =======================================
+      # THE DEFECT AS IT WAS: the pass finds a real difference, decides not to
+      # report it because the captain's own out-of-scope ruling makes it
+      # ambiguous, and DROPS IT — nobody downstream can see a line that was
+      # never written. This control puts that behaviour back in the DAEMON:
+      # the reply's declared questions are parsed and then thrown away, so
+      # bucket 2 loses them. The front end is untouched and perfect; a node
+      # harness cannot see it.
+      cat >>"$py" <<'PY'
+
+
+def _handoff_derive_asks(reply):    # RED CONTROL: found, and dropped
+    return []
 PY
       ;;
     no-wait-guard)
@@ -697,7 +778,7 @@ PY
   return 0
 }
 
-VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list no-fit capped-box mute-hint clip-box no-sticky-foot hint-below-box brief-below-fold capped-guidance hide-derive derive-never-asks hint-overclaims cue-cries-wolf band-hides-the-wait brief-clobbers-his-edits timeline-is-back gate-does-not-gate gate-has-no-spinner no-escape-hatch no-wait-guard}"
+VARIANTS="${LCARS_HANDOFF_VARIANTS:-no-change-list no-fit capped-box mute-hint clip-box no-sticky-foot hint-below-box brief-below-fold capped-guidance hide-derive derive-never-asks hint-overclaims cue-cries-wolf band-hides-the-wait brief-clobbers-his-edits timeline-is-back gate-does-not-gate gate-has-no-spinner hatch-is-back mismatched-bar questions-dropped-on-the-floor no-wait-guard}"
 
 # DELIBERATELY NOT IN THAT LIST: `derive-not-durable`. It breaks the persisted
 # record in the program room — the cure for "the daemon closed while I walked
@@ -734,7 +815,9 @@ expected_reason() {   # $1 = variant
     timeline-is-back)  echo "THE BRIEF IS A TIMELINE AGAIN" ;;
     gate-does-not-gate) echo "was NOT disabled while the pass ran" ;;
     gate-has-no-spinner) echo "no loading indicator" ;;
-    no-escape-hatch)   echo "no handoff-skip control on the hand-off bar" ;;
+    hatch-is-back)     echo "ESCAPE HATCH IS BACK ON THE BAR" ;;
+    mismatched-bar)    echo "CONTROLS ARE MISMATCHED" ;;
+    questions-dropped-on-the-floor) echo "DECLARED QUESTION" ;;
     no-wait-guard)     echo "DID NOT INVALIDATE THE CHANGE LIST" ;;
   esac
 }
@@ -750,11 +833,20 @@ run_product() {
   # TYPING while the pass runs — a different claim, and one a reload erases.
   # …and a FOURTH (S171): the gate's wait guard. He gets his change list, then
   # keeps chatting — and the list must fall back to "generate one".
+  # …and a FIFTH (S172): the pass DID NOT ANSWER. With `Send without the change
+  # list` deleted, ▶ SEND TO ALIGN is the only road off a dead engine — and it
+  # is the pairing whose two controls the captain photographed mismatched.
   for pass in "1440 677 9 product reload" "1280 613 6 product-short reload" \
               "1440 677 9 product-typed typed" \
-              "1440 677 9 product-turn turn"; do
+              "1440 677 9 product-turn turn" \
+              "1440 677 9 product-failed failed"; do
     set -- $pass
     write_expect "$1" "$2" "$3" "$5"
+    # THE MUTE IS BAKED INTO THE WORKER AT GENERATION TIME (`run_once` writes
+    # it fresh per pass), so the failing pass is a REAL subprocess that runs,
+    # waits and answers with no marker — the daemon's own "it did not answer"
+    # road, not a state poked into the daemon from outside.
+    if [ "$5" = failed ]; then MUTE=1; else MUTE=0; fi
     dir="$WORK/$4"
     run_once "PRODUCT — this repo's web/, unmodified · ${1}x${2} · $5" \
              "$REPO/web" "$dir"
@@ -768,6 +860,12 @@ run_product() {
          worst=1 ;;
     esac
   done
+  # PUT THE WORKER BACK. `--all` runs the calibration after this loop, and the
+  # loop's last pass leaves the pass MUTED — every red control would then be
+  # measured against a derivation that never answers, which is a rig grading
+  # itself. (This file has printed "every control went red" over eleven runs
+  # that had failed on the harness's own error line; not again.)
+  MUTE=0
   write_expect 1440 677 9 typed
   return $worst
 }
@@ -783,9 +881,30 @@ run_calibrate() {
     # never reaches — and the control came back GREEN while the product was
     # genuinely broken. That is the "reassuring output proving nothing" shape
     # this rig keeps a note about; it is now selected per variant.
+    #
+    # S172 — AND `mismatched-bar` ONLY EXISTS ON THE FAILED GATE. The pairing
+    # the captain photographed (▶ SEND TO ALIGN beside ↻ try again) is drawn on
+    # exactly one state, so calibrating it against the default run would ask a
+    # question the walk never reaches — the same trap `no-wait-guard` fell into.
+    # MUTE is what puts the pass into that state; it is reset afterwards or
+    # every later control would be graded against a derivation that never
+    # answers.
+    MUTE=0
+    #
+    # ── S172 FOUND A THIRD ONE, AND IT WAS INHERITED ────────────────────────
+    # `brief-clobbers-his-edits` breaks `briefIsPristine`, and the ONLY judge
+    # that reads that is `expectBriefKeeps` — which is empty on every mode but
+    # `typed`. So it was calibrated on a run that never types, asked a question
+    # the run cannot reach, and came back GREEN. Verified against HEAD before
+    # it was moved: the selector below has never carried it, so it has been
+    # reported as a verified red control while measuring NOTHING. That is the
+    # sixth time this rig has produced that shape and the reason `patch_or_die`
+    # and this selector both exist.
     case "$v" in
-      no-wait-guard) write_expect 1440 677 9 turn ;;
-      *)             write_expect 1440 677 9 reload ;;
+      no-wait-guard)  write_expect 1440 677 9 turn ;;
+      mismatched-bar) write_expect 1440 677 9 failed; MUTE=1 ;;
+      brief-clobbers-his-edits) write_expect 1440 677 9 typed ;;
+      *)              write_expect 1440 677 9 reload ;;
     esac
     if ! make_variant "$v" "$dest"; then
       printf '\033[31m✗ %s — unknown variant\033[0m\n' "$v"; bad=$((bad + 1)); continue

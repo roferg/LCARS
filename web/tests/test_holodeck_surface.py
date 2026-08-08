@@ -2223,12 +2223,16 @@ class HandoffGateTest(unittest.TestCase):
         self.assertEqual(after["barGate"], "none")
         self.assertIn("generate", (after["sendLabel"] or "").lower())
 
-    # -- THE ESCAPE HATCH ----------------------------------------------------
+    # -- THE ROAD THROUGH A DEAD ENGINE --------------------------------------
     def test_a_FAILED_pass_still_lets_him_SEND(self):
         """S170 built "filing is never blocked" and proved it with an `ast`
         test. Gating reverses that deliberately — so a pass that did not answer
         must never strand a ready program on the deck. The PRIMARY control is
-        live here; the failure is reported beside it, in the daemon's words."""
+        live here; the failure is reported beside it, in the daemon's words.
+
+        S172 — AND THIS IS NOW THE WHOLE ARGUMENT, not half of it. The escape
+        hatch is deleted, so if this control were ever disabled on a failed
+        pass an engine outage really would strand a finished design."""
         out = self._bar(self.FAILED)
         self.assertEqual(out["barGate"], "failed")
         self.assertIn("send to align", (out["sendLabel"] or "").lower())
@@ -2236,22 +2240,35 @@ class HandoffGateTest(unittest.TestCase):
         self.assertFalse(out["sendDisabled"])
         self.assertIn("no worker engine is configured", out["barText"])
 
-    def test_the_SEND_WITHOUT_hatch_is_present_in_every_gated_state(self):
-        for prog, gate in ((self.NONE, "none"), (self.RUNNING, "running"),
-                           (self.FAILED, "failed")):
-            out = self._bar(prog)
-            self.assertTrue(out["skipPresent"], gate)
-        # …and NOT once there is a list, where it would be a second way to do
-        # the same thing.
-        self.assertFalse(self._bar(self.DONE)["skipPresent"])
+    def test_the_SEND_WITHOUT_hatch_IS_GONE_FROM_EVERY_STATE(self):
+        """S172 — THE CLAIM IS INVERTED, BECAUSE THE PRODUCT IS.
 
-    def test_the_hatch_goes_STRAIGHT_to_the_hand_off_dialog(self):
-        """The same `promote` the ready path reaches — one filing road, so
+        This test asserted the opposite: `Send without the change list` had to
+        be present on `none`, `running` and `failed`. The captain has deleted
+        it — *"we don't need the send without change list one."* It is not
+        deleted from the test, because the test is what stops it coming back.
+        """
+        for prog, gate in ((self.NONE, "none"), (self.RUNNING, "running"),
+                           (self.FAILED, "failed"), (self.DONE, "ready")):
+            out = self._bar(prog)
+            self.assertFalse(out["skipPresent"], gate)
+
+    def test_the_PRIMARY_goes_straight_to_the_dialog_on_a_FAILED_pass(self):
+        """What the hatch used to do, done by the control that is still there.
+        It is the same `promote` the ready path reaches — one filing road, so
         there is nothing here that can rot while the main one is maintained."""
-        out = _harness({"act": "gateClick", "programs": [self.RUNNING],
-                        "activeId": "s1", "which": "handoff-skip"})
+        out = _harness({"act": "gateClick", "programs": [self.FAILED],
+                        "activeId": "s1", "which": "handoff-send"})
         self.assertTrue(out["found"])
+        self.assertFalse(out["disabled"])
         self.assertEqual(out["path"], "/api/holodeck/s1/promote")
+
+    def test_the_bar_TELLS_HIM_the_primary_is_the_road_through(self):
+        """A live button he does not know to press is not a road. With the
+        hatch gone the hint has to name it."""
+        out = self._bar(self.FAILED)
+        self.assertIn("▶ Send to Align still works", out["barText"])
+        self.assertNotIn("without a change list", out["barText"])
 
     def test_a_failed_pass_can_be_RETRIED_and_the_retry_is_FORCED(self):
         """A failure is persisted like any other answer, so without this a

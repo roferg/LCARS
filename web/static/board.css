@@ -1759,10 +1759,14 @@ body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
   letter-spacing:.16em;text-transform:uppercase;color:var(--holo-grid);
   white-space:nowrap}
 /* S171 — THE GATE. `▶ Send to Align` is a wait now, so the bar has to be able
-   to SHOW one, and the escape hatch beside it has to read as the secondary
-   road rather than as a second way to do the same thing. */
-.holo-handoff .btn.small{font-size:9px;letter-spacing:.1em;padding:4px 10px;
-  border-radius:9px;white-space:nowrap}
+   to SHOW one.
+   S172 — AND ITS CONTROLS ARE ONE FAMILY. The `.btn.small` rule that used to
+   live here is DELETED with the escape hatch it was written for: it made the
+   secondary control 9px against the primary's 13px, and the captain's own
+   screenshot is a small outlined pill beside a full-size filled button on the
+   same row. Both are `.btn.big` now and differ by FILL. Nothing in this bar
+   may reintroduce a size difference to mean "secondary". */
+.holo-handoff .btn{white-space:nowrap}
 .holo-handoff .holo-bars{display:inline-flex;align-items:center;
   flex:0 0 auto}
 .holo-handoff .holo-bars .bars{display:flex;gap:3px}

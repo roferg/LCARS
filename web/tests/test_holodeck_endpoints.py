@@ -7083,6 +7083,102 @@ class HandoffDeriveParseTest(unittest.TestCase):
         self.assertEqual(out, ["today the tabs are square"])
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# S172 — WHAT THE PASS FOUND AND DECLARED IT WAS NOT REPORTING
+#
+# THE CAPTAIN, driving S171 on his own room: his mockup adds zoom / fit buttons
+# and a hover x/y pill OVER the canvas; his out-of-scope bucket says "the tile
+# canvas rendering — left as an untouched placeholder well"; the pass suppressed
+# the chrome along with the canvas and NEITHER REACHED THE CHANGE LIST.
+#
+# He ruled the suppression FAIR — *"to be fair, I did say don't touch the
+# canvas"* — and asked for the other thing: *"Let's bank that as a question it
+# should have asked me in the send to align dialog."*
+#
+# So the pass DECLARES its own suppressions, exactly as the planner declares
+# `changesScreenAppearance`. Nothing below reads a line and decides anything
+# about it; the marker is the whole mechanism, which is the one shape that has
+# worked here every time.
+# ════════════════════════════════════════════════════════════════════════════
+class HandoffDeriveAskParseTest(unittest.TestCase):
+    """Reading the DECLARED questions out of the same reply."""
+
+    def _a(self, reply):
+        from lcars_serve.actions import _handoff_derive_asks
+        return _handoff_derive_asks(reply)
+
+    def _c(self, reply):
+        from lcars_serve.actions import _handoff_derive_parse
+        return _handoff_derive_parse(reply)
+
+    REPLY = ("I read the canvas overlay and MapCanvas.tsx.\n"
+             "=== ASK ===\n"
+             "- the mockup adds zoom / fit buttons over the canvas — in or "
+             "out?\n"
+             "- the mockup shows a hover x/y pill over the canvas — in or "
+             "out?\n"
+             "=== CHANGES ===\n"
+             "- today the toolbar is 48px tall → the mockup makes it 52px\n")
+
+    def test_the_two_blocks_are_read_APART(self):
+        """THE ACCEPTANCE PAIR, in one assertion: the questions come back AND
+        the change list does not assert them as changes."""
+        self.assertEqual(self._a(self.REPLY), [
+            "the mockup adds zoom / fit buttons over the canvas — in or out?",
+            "the mockup shows a hover x/y pill over the canvas — in or out?"])
+        self.assertEqual(self._c(self.REPLY), [
+            "today the toolbar is 48px tall → the mockup makes it 52px"])
+
+    def test_NO_ASK_MARKER_IS_SILENCE_and_never_an_unusable_reply(self):
+        """The asymmetry with the change block, and it is deliberate: a reply
+        with no change marker is UNUSABLE (`None`); a reply with no ask marker
+        declared nothing, which is the ordinary answer and is also what every
+        reply written before this block existed says."""
+        self.assertEqual(self._a("=== CHANGES ===\ntoday a → b"), [])
+        self.assertEqual(self._a(""), [])
+        self.assertEqual(self._a(None), [])
+
+    def test_an_EMPTY_ask_block_is_the_SAME_as_none(self):
+        r = "=== ASK ===\n=== CHANGES ===\ntoday a → b"
+        self.assertEqual(self._a(r), [])
+        self.assertEqual(self._c(r), ["today a → b"])
+
+    def test_the_CHANGE_BLOCK_IS_STILL_TERMINAL_and_that_is_the_failsafe(self):
+        """The one property every fail-safe on this road hangs on: everything
+        after the LAST change marker is the answer. A second block was not
+        allowed to weaken it — so the ask block is read BETWEEN its own marker
+        and the change marker, and a stray ask marker inside the working out
+        cannot swallow the change list."""
+        r = ("I will write === ASK === at the end as instructed.\n"
+             "=== ASK ===\n"
+             "the mockup adds a status bar over the canvas — in or out?\n"
+             "=== CHANGES ===\n"
+             "today the tabs are square → the mockup uses pills\n")
+        self.assertEqual(self._c(r),
+                         ["today the tabs are square → the mockup uses pills"])
+        self.assertEqual(self._a(r), [
+            "the mockup adds a status bar over the canvas — in or out?"])
+
+    def test_the_QUESTIONS_ARE_BOUNDED_HARDER_THAN_THE_CHANGES(self):
+        """A pass that hands back thirty questions has handed the work back to
+        him, which is the failure the holodeck exists to prevent."""
+        from lcars_serve.actions import _HANDOFF_DERIVE_MAX_ASKS
+        r = ("=== ASK ===\n"
+             + "\n".join("is thing %d in or out?" % i for i in range(50))
+             + "\n=== CHANGES ===\ntoday a → b\n")
+        self.assertEqual(len(self._a(r)), _HANDOFF_DERIVE_MAX_ASKS)
+        self.assertLess(_HANDOFF_DERIVE_MAX_ASKS, 40)
+
+    def test_it_survives_the_same_decoration_the_change_block_does(self):
+        r = ("=== ASK ===\n"
+             "```\n## Canvas\n---\n"
+             "1. is the zoom row in or out?\n"
+             "  • is the hover pill in or out?\n"
+             "=== CHANGES ===\ntoday a → b\n")
+        self.assertEqual(self._a(r), ["is the zoom row in or out?",
+                                      "is the hover pill in or out?"])
+
+
 class HandoffDerivePromptTest(unittest.TestCase):
     """The prompt is the whole mechanism, so it is pinned like one."""
 
@@ -7203,6 +7299,39 @@ class HandoffDerivePromptTest(unittest.TestCase):
 
     def test_it_tells_the_worker_it_WRITES_NOTHING(self):
         self.assertIn("You write NOTHING", self._p())
+
+    def test_S172_it_asks_the_pass_to_DECLARE_WHAT_IT_DROPPED(self):
+        """The whole of item 1 lives in this prompt, because the pass is the
+        only party that knows it dropped something."""
+        from lcars_serve.actions import (_HANDOFF_DERIVE_ASK_MARKER,
+                                         _HANDOFF_DERIVE_MAX_ASKS)
+        p = self._p()
+        self.assertIn(_HANDOFF_DERIVE_ASK_MARKER, p)
+        self.assertIn("SAY SO. DO NOT DROP IT", p)
+        self.assertIn("WRITE IT DOWN AS A QUESTION", p)
+        self.assertIn(str(_HANDOFF_DERIVE_MAX_ASKS), p)
+        # …and the CHANGE block is still the LAST thing in the reply, which is
+        # the fail-safe the second block was not allowed to weaken.
+        self.assertLess(p.index(_HANDOFF_DERIVE_ASK_MARKER + "\n"),
+                        p.rindex("=== CHANGES ===\n"))
+        self.assertIn("NOTHING MAY FOLLOW THIS", p)
+
+    def test_S172_the_out_of_scope_RULING_IS_STILL_BINDING(self):
+        """He ruled the suppression FAIR. The cure must not widen the diff —
+        the pass still honours his scope and still reads it for intent, it just
+        stops throwing the finding away."""
+        p = self._p()
+        self.assertIn("out-of-scope list is binding and you must honour it", p)
+        self.assertIn("DO NOT report a change to something he ruled", p)
+        self.assertIn("conservative reading", p)
+
+    def test_S172_the_question_block_CANNOT_READ_AS_AN_ESCALATION(self):
+        """It is a line he skims, not a gate. The prompt says so to the only
+        party that could turn it into one."""
+        p = self._p()
+        self.assertIn("nothing you write here stops anything", p)
+        self.assertIn("if nothing was ambiguous, write none", p)
+        self.assertIn("it is not a failure", p)
 
 
 class S170DeriveBase(HandoffBase):
@@ -7825,11 +7954,36 @@ class S170DeriveIsNOTAGateTest(S170DeriveBase):
          any state — the gate is a UI affordance on the deck, not a rule
          inside a filing road. So every mission that reaches a filing endpoint
          is filed, whatever the pass did, and the `ast` test still proves it.
-      2. THERE IS ALWAYS A REACHABLE ROAD THROUGH. `promote` answers a
-         complete, sendable brief in EVERY derivation state — none, running,
-         failed, empty, done — and the deck's `Send without the change list`
-         goes straight to it. An engine outage cannot make a ready program
-         unfileable.
+      2. THERE IS ALWAYS A COMPLETE, SENDABLE BRIEF. `promote` answers one in
+         EVERY derivation state — none, running, failed, empty, done — and it
+         files. A pass that never answers costs him a section of the draft and
+         nothing else.
+
+    ── S172 REWROTE PART OF (2), BECAUSE THE PRODUCT CHANGED ────────────────
+
+    This class used to say the road through was `Send without the change list`
+    on the deck. THE CAPTAIN DELETED THAT CONTROL — *"we don't need the send
+    without change list one"* — so a test naming it would have been asserting
+    a button that is not there.
+
+    WHAT IS ASSERTED NOW IS WHAT IS ACTUALLY TRUE, and it is two smaller
+    claims rather than one big one:
+
+      2a. `promote` still answers a sendable brief in all five states, and
+          `/api/park` still files it. That is the daemon's half and it is
+          exactly what it was — proven below on the same matrix.
+      2b. THE DECK'S ROAD THROUGH A FAILED PASS IS THE PRIMARY CONTROL. On
+          `failed`, ▶ SEND TO ALIGN is live (`holoHandoffBar`), so an engine
+          outage cannot strand a ready program. Proven by reading the bar's
+          own source, because that is where the claim lives — and by
+          `tests/drives/browser/handoff.sh` in a real browser, which is the
+          only thing that can prove it is CLICKABLE where it sits.
+
+    WHAT IS HONESTLY NO LONGER TRUE, stated rather than quietly dropped: while
+    a pass is RUNNING there is no way past the wait. The daemon bounds it at
+    420s and the room keeps the answer, so the worst case is a wait, not a lost
+    program — but it is a wait he cannot skip, and that is the captain's own
+    trade.
     """
 
     def test_NOTHING_in_the_FILING_path_reads_the_derivation(self):
@@ -7884,19 +8038,31 @@ class S170DeriveIsNOTAGateTest(S170DeriveBase):
         import ast
         import inspect
         import lcars_serve.actions as A
-        for fn in (A._handoff_brief, A._handoff_parts, A._handoff_derive_parse):
+        # S172 — AND THE QUESTION ROAD IS HELD TO THE SAME BAR. It is the same
+        # reply, read by the same line reader; nothing anywhere decides that a
+        # line IS a question. The pass declares it — see the block at
+        # `_HANDOFF_DERIVE_ASK_MARKER`.
+        for fn in (A._handoff_brief, A._handoff_parts, A._handoff_derive_parse,
+                   A._handoff_derive_asks, A._handoff_derive_lines):
             src = inspect.getsource(fn)
             for banned in ("kept", "unchanged", "carried over", "similar",
                            "difflib", "SequenceMatcher"):
                 self.assertNotIn(banned, src.lower(), (fn.__name__, banned))
         # …and the only regexes on this road are structural (list decoration).
-        tree = ast.parse(inspect.getsource(A._handoff_derive_parse))
+        tree = ast.parse(inspect.getsource(A._handoff_derive_lines))
         self.assertEqual(
             sorted(n.func.attr for n in ast.walk(tree)
                    if isinstance(n, ast.Call)
                    and isinstance(n.func, ast.Attribute)
                    and n.func.attr in ("match", "search", "sub", "findall")),
             ["search", "sub"])
+        # …and the ask parser itself does no matching AT ALL: it is two string
+        # splits on a marker the prompt names.
+        tree = ast.parse(inspect.getsource(A._handoff_derive_asks))
+        self.assertEqual(
+            [n.func.attr for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr in ("match", "search", "sub", "findall")], [])
 
     def test_a_SENDABLE_BRIEF_exists_in_EVERY_derivation_state(self):
         """S171 — THE HONEST REWRITE of "filing is never blocked in ANY state".
@@ -7908,9 +8074,16 @@ class S170DeriveIsNOTAGateTest(S170DeriveBase):
         MUST survive the gate — that a complete, sendable brief is always
         available and always files.
 
-        The matrix is the same five states, and the road each one takes is the
-        one the deck really offers: `promote` (which the escape hatch and the
-        ready button both reach), then `/api/park`."""
+        The matrix is the same five states, and the road each one takes is
+        `promote` — the one endpoint every deck control that opens the dialog
+        reaches — then `/api/park`.
+
+        S172 — AND `running` NO LONGER CLAIMS TO BE REACHABLE FROM THE DECK.
+        The escape hatch that reached it is deleted. `promote` still answers a
+        sendable brief mid-pass (proven below, and it is what makes a future
+        cancel or a second tab safe), but the sentence that used to say "the
+        deck's `Send without the change list` is this exact call" is gone
+        because that control is gone. See `test_the_DECK_S_ROAD_THROUGH…`."""
         from lcars_serve.actions import _HANDOFF_DERIVE_MARKER
         for i, stdout in enumerate(("nonsense", _HANDOFF_DERIVE_MARKER,
                                     self._reply())):
@@ -7924,8 +8097,8 @@ class S170DeriveIsNOTAGateTest(S170DeriveBase):
                                               "holodeck": sid})
             self.assertEqual(st, 200, stdout[:40])
         # …NOT DERIVED AT ALL, which is the state a fresh draft starts in and
-        # the one the gate holds him at. He is not stuck there: the deck's
-        # `Send without the change list` is this exact call.
+        # the one the gate holds him at. The draft is complete and files; what
+        # the deck offers him there is one click that starts the pass.
         sid = self._room(name="Filing matrix none")
         _st, out = self._promote(sid)
         self.assertEqual(out["state"]["derive"]["state"], "none")
@@ -7943,6 +8116,38 @@ class S170DeriveIsNOTAGateTest(S170DeriveBase):
         st, _b = self._post("/api/park", {"idea": out["state"]["brief"],
                                           "holodeck": sid})
         self.assertEqual(st, 200)
+
+    def test_the_DECK_S_ROAD_THROUGH_A_FAILED_PASS_IS_THE_PRIMARY(self):
+        """S172 — the other half of claim 2, and the reason the hatch could go.
+
+        The bar's `failed` branch must leave ▶ SEND TO ALIGN LIVE — with a real
+        click handler, not a disabled control with an explanation — because it
+        is now the ONLY way off a dead engine. This reads the source rather
+        than the DOM on purpose: a node harness has no CSS and cannot tell a
+        live button from one painted to look live, and the browser rig
+        (`tests/drives/browser/handoff.sh`) owns that claim with a hit test.
+        What is proven HERE is that the branch exists and that the hatch is
+        really gone from every state."""
+        import os
+        js = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "static", "board.js")).read()
+        start = js.index("function holoHandoffBar(")
+        bar = js[start:js.index("\nfunction ", start + 10)]
+        # THE HATCH IS GONE. `handoff-skip` was its handle everywhere — the
+        # bar built it, the browser rig pressed it — so its absence from the
+        # whole file is the check; the prose ABOUT the deletion stays, and a
+        # test that failed on a comment would teach the next reader to delete
+        # the explanation rather than the control.
+        self.assertNotIn("handoff-skip", js)
+        self.assertNotIn("Send without the change list\"", js)
+        self.assertNotIn("holoBtn(\"Send without", js)
+        # …and the failed state falls THROUGH to the live send, which is the
+        # `else` branch carrying `holoPromote`.
+        self.assertIn('} else if (gate === "running") {', bar)
+        self.assertIn("holoPromote(p.sessionId)", bar)
+        # …with the retry beside it, and BOTH controls the same size class.
+        self.assertIn('holoBtn("↻ Try the change list again", "big"', bar)
+        self.assertIn('holoBtn("▶ Send to Align", "go big"', bar)
 
     def test_the_derivation_worker_touches_NOTHING_IN_THE_PROGRAMS_ROOM(self):
         """The room holds `mockup.html` and `concept.md` — the two documents
@@ -8165,6 +8370,224 @@ class S171GateTest(S170DeriveBase):
         st, body = self._derive(sid)
         self.assertEqual(st, 409, body)
         self.assertEqual(len(self._calls()), before)
+
+
+class S172AskedNotDroppedTest(S170DeriveBase):
+    """THE BIG ONE, END TO END, ON THE CAPTAIN'S OWN ROOM.
+
+    `web/tests/fixtures/s170-tile-editor/` is a byte copy of the room he was
+    driving. Its `## Out of scope` really does say *"The tile canvas rendering
+    — left as an untouched placeholder well"*, its `## WHAT IT MUST DO` bucket
+    2 really is the `(none — …)` placeholder, and the two things that went
+    missing were canvas CHROME: the zoom / fit row and the hover x/y pill.
+
+    THE ACCEPTANCE PAIR, and it has to be both halves at once:
+      · the zoom buttons and the hover pill COME BACK, as questions, in
+        `## Implied by the mockup`;
+      · the change list STILL DOES NOT ASSERT THEM as changes.
+    """
+
+    # The pass's own reply, in the shape S172 asks for: the three real changes
+    # in his room, and the two things his scope made ambiguous — declared.
+    ASKS = [
+        "the mockup adds zoom in / zoom out / fit buttons and a 100% readout "
+        "over the canvas — in or out, given the canvas is out of scope?",
+        "the mockup shows a hover x/y tile pill over the canvas, and the app "
+        "already computes that value without displaying it — in or out?",
+    ]
+
+    def _reply(self, changes=None, asks=None):
+        from lcars_serve.actions import (_HANDOFF_DERIVE_MARKER,
+                                         _HANDOFF_DERIVE_ASK_MARKER)
+        return (
+            "I read Toolbar.tsx, MapCanvas.tsx and canvas/editorCanvas.ts.\n"
+            + _HANDOFF_DERIVE_ASK_MARKER + "\n"
+            + "\n".join("- %s" % a for a in
+                        (self.ASKS if asks is None else asks))
+            + "\n" + _HANDOFF_DERIVE_MARKER + "\n"
+            + "\n".join("- %s" % c for c in (changes or self.DERIVED)) + "\n")
+
+    def test_the_QUESTIONS_reach_the_brief_and_the_CHANGE_LIST_DOES_NOT(self):
+        from lcars_serve.actions import (_HANDOFF_IMPLIED_TITLE,
+                                         _HANDOFF_CHANGE_TITLE)
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        state = self._settled(sid)
+        brief = state["brief"]
+        # 1. THEY CAME BACK, and they came back in bucket 2 — the section whose
+        #    caption already says these are IMPLIED and not his words.
+        self.assertEqual(state["implied"], self.ASKS, state["implied"])
+        self.assertIn(_HANDOFF_IMPLIED_TITLE, brief)
+        for ask in self.ASKS:
+            self.assertIn(ask, brief)
+        # 2. …AND THE CHANGE LIST STILL DOES NOT ASSERT THEM. The section
+        #    between the two headings is the whole change list, and neither
+        #    control appears in it.
+        i = brief.index(_HANDOFF_CHANGE_TITLE)
+        j = brief.index(_HANDOFF_IMPLIED_TITLE)
+        self.assertLess(i, j)
+        changes_section = brief[i:j]
+        for word in ("zoom", "fit button", "hover", "100%"):
+            self.assertNotIn(word, changes_section.lower(), word)
+        self.assertEqual(state["changes"], self.DERIVED)
+        # 3. …and the brief still files.
+        st, _b = self._post("/api/park", {"idea": brief, "holodeck": sid})
+        self.assertEqual(st, 200)
+
+    def test_a_question_is_MARKED_IMPLIED_and_never_laundered_into_his_words(
+            self):
+        """FL-011, and the reason bucket 2 exists at all. A derived question
+        must arrive under the caption that says nobody said it — a line the
+        captain reads as his own requirement is worse than no line."""
+        from lcars_serve.actions import (_HANDOFF_IMPLIED_TITLE,
+                                         _HANDOFF_IMPLIED_NOTE)
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        brief = self._settled(sid)["brief"]
+        head = brief.index(_HANDOFF_IMPLIED_TITLE)
+        self.assertIn(_HANDOFF_IMPLIED_NOTE, brief[head:])
+        self.assertIn("NOT things you said", _HANDOFF_IMPLIED_TITLE)
+        for ask in self.ASKS:
+            self.assertGreater(brief.index(ask), head)
+
+    def test_a_pass_that_DECLARES_NOTHING_shows_NO_SECTION_AT_ALL(self):
+        """The ordinary answer, and the placeholder cure in the same
+        assertion: his room's bucket 2 is `- (none — …)`, so with no declared
+        questions there is nothing to show — and a heading, a caption and a
+        bullet saying nothing is exactly what he was reading."""
+        from lcars_serve.actions import _HANDOFF_IMPLIED_TITLE
+        sid = self._room()
+        self._set_turns({"stdout": self._reply(asks=[])})
+        state = self._settled(sid)
+        self.assertEqual(state["implied"], [])
+        self.assertNotIn(_HANDOFF_IMPLIED_TITLE, state["brief"])
+        self.assertNotIn("(none —", state["brief"])
+        self.assertNotIn("Implied by the mockup", state["brief"])
+
+    def test_the_QUESTIONS_are_NOT_A_GATE_and_set_nothing_pending(self):
+        """It is a line he skims. `promote` publishes no new state, the mission
+        files immediately, and nothing anywhere is awaiting a human."""
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        state = self._settled(sid)
+        self.assertTrue(state["derive"]["ok"])
+        # the derivation's own block carries them as data and NOTHING else
+        # changes shape: no pending flag, no question record, no gate.
+        self.assertEqual(state["derive"]["asks"], self.ASKS)
+        for key in ("awaitingHuman", "pending", "blocked", "gate"):
+            self.assertNotIn(key, state["derive"])
+        st, body = self._post("/api/park", {"idea": state["brief"],
+                                            "holodeck": sid})
+        self.assertEqual(st, 200, body)
+
+    def test_the_QUESTIONS_survive_the_DAEMON_dying(self):
+        """They cost the same 154-220s the change list does, so they are
+        persisted with it or the walk-away is only half true."""
+        import json
+        import os
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        self._settled(sid)
+        room = os.path.join(self._sidecar(), self.ROOM)
+        with open(os.path.join(room, "handoff-changes.json")) as fh:
+            rec = json.load(fh)
+        self.assertEqual(rec["asks"], self.ASKS)
+
+    def test_a_record_written_BEFORE_this_key_existed_is_still_GOOD(self):
+        """A missing `asks` degrades to no questions, never to no answer.
+        Throwing away a change list over a missing second list would be the
+        fail-safe clause inverted."""
+        import json
+        import os
+        sid = self._room()
+        self._set_turns({"stdout": self._reply()})
+        self._settled(sid)
+        room = os.path.join(self._sidecar(), self.ROOM)
+        path = os.path.join(room, "handoff-changes.json")
+        with open(path) as fh:
+            rec = json.load(fh)
+        fp = rec["fingerprint"]
+        rec.pop("asks")
+        with open(path, "w") as fh:
+            json.dump(rec, fh)
+        from lcars_serve.actions import Actions
+        back = Actions._handoff_derive_read(room, fp)
+        self.assertEqual(back["changes"], self.DERIVED)
+        self.assertEqual(back["asks"], [])
+        # …and so is a record whose `asks` is the wrong shape entirely.
+        rec["asks"] = {"nope": 1}
+        with open(path, "w") as fh:
+            json.dump(rec, fh)
+        back = Actions._handoff_derive_read(room, fp)
+        self.assertEqual(back["changes"], self.DERIVED)
+        self.assertEqual(back["asks"], [])
+
+
+class S172EmptyBucketShowsNothingTest(HandoffBase):
+    """THE `(none — …)` PLACEHOLDER, and the rule the captain gave for it.
+
+    S170 ledgered it; his own brief for this round puts it in scope: *"If a
+    section has no real items, show nothing at all — no heading, no caption."*
+
+    A bullet whose WHOLE text is bracketed is the writer talking ABOUT the
+    list, not writing in it. That is a test on DELIMITERS — the same class as
+    stripping the `-` a model puts in front of a good line — and it reads no
+    words, so there is no corpus to reword past it (S156, 14/14 → 5/14).
+    """
+
+    handoff_check = "0"
+
+    DOC = ("# P\n\n## WHAT IT MUST DO\n\n"
+           "### 1. Requirements (captain's words)\n"
+           "1. **T1** \"Make it modern.\"\n\n"
+           "### 2. Implied by the mockup, not yet settled\n"
+           "%s\n\n"
+           "### 3. Out of scope\n"
+           "%s\n")
+
+    def _parts(self, implied, scope):
+        from lcars_serve.actions import _handoff_parts
+        return _handoff_parts(self.DOC % (implied, scope))
+
+    def test_a_wholly_bracketed_bullet_is_NOT_an_item(self):
+        _r, _c, implied, scope = self._parts(
+            "- (none — the dirty-state binding and the canvas-overlay "
+            "ownership questions from T1 were answered by the captain in T2.)",
+            "- (nothing was ruled out.)")
+        self.assertEqual(implied, [])
+        self.assertEqual(scope, [])
+
+    def test_and_the_SECTION_then_shows_NOTHING_AT_ALL(self):
+        """Not an empty heading with a caption under it. `_handoff_section`
+        already returns "" for no items — the cure is that the aside stops
+        counting as one."""
+        from lcars_serve.actions import _handoff_brief
+        brief = _handoff_brief(
+            self.DOC % ("- (none — answered in T2.)", "- (none.)"), "P")
+        self.assertNotIn("Implied by the mockup", brief)
+        self.assertNotIn("Out of scope", brief)
+        self.assertNotIn("(none", brief)
+
+    def test_A_REAL_ITEM_WITH_BRACKETS_IN_IT_IS_STILL_AN_ITEM(self):
+        """The control. A cure that dropped anything with a bracket in it
+        would silently eat his real out-of-scope line, which names three CSS
+        colours in backticks and brackets."""
+        _r, _c, implied, scope = self._parts(
+            "- Does the theme persist across sessions (and default to OS)?",
+            "- The tile canvas (its rendering and colours) is untouched (T1).")
+        self.assertEqual(
+            implied,
+            ["Does the theme persist across sessions (and default to OS)?"])
+        self.assertEqual(
+            scope,
+            ["The tile canvas (its rendering and colours) is untouched (T1)."])
+
+    def test_the_CONTRACT_tells_the_design_worker_to_leave_it_EMPTY(self):
+        """The durable half. Filtering fixes the rooms already written this
+        way; the contract stops new ones being written that way at all."""
+        from lcars_serve.actions import _CONCEPT_CONTRACT
+        self.assertIn("AN EMPTY BUCKET IS EMPTY", _CONCEPT_CONTRACT)
+        self.assertIn("(none —", _CONCEPT_CONTRACT)
 
 
 class S170DeriveIsSWITCHABLETest(S170DeriveBase):

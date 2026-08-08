@@ -1143,6 +1143,9 @@ const GATE_PROBE = `(function () {
   var bar = document.querySelector(".holo-handoff");
   if (!bar) return { present: false };
   var send = bar.querySelector("[data-holo=handoff-send]");
+  /* S172 — THE HATCH IS DELETED (*"we don't need the send without change list
+     one"*), and this probe still LOOKS FOR IT. That is the point: the claim
+     inverted, so the measurement has to be able to see it come back. */
   var skip = bar.querySelector("[data-holo=handoff-skip]");
   var retry = bar.querySelector("[data-holo=handoff-retry]");
   var spin = bar.querySelector(".holo-bars .bars i");
@@ -1169,7 +1172,15 @@ const GATE_PROBE = `(function () {
                    disabled: !!skip.disabled, box: box(skip),
                    clickable: hit(skip) } : null,
     retry: retry ? { text: (retry.textContent || "").trim(),
-                     clickable: hit(retry) } : null,
+                     clickable: hit(retry), box: box(retry),
+                     /* S172 — THE FAMILY TEST, and it needs REAL CSS. A node
+                        harness lays nothing out and cannot see that two
+                        controls on one row are different sizes; the captain
+                        saw it in a screenshot. It is read off the COMPUTED
+                        style, not off a class name, so a rule that reaches
+                        the control by any route is what is measured. */
+                     font: getComputedStyle(retry).fontSize } : null,
+    sendFont: send ? getComputedStyle(send).fontSize : "",
     dialogOpen: !!document.querySelector("[data-holo=handoff-brief]")
   };
 })()`;
@@ -1196,9 +1207,10 @@ function judgeGate(g, want) {
     if (!(g.none.send || {}).clickable) {
       f.push("the GENERATE control is not hit-testable where it sits");
     }
-    if (!g.none.skip || !g.none.skip.clickable) {
-      f.push("THE ESCAPE HATCH IS NOT REACHABLE before the pass starts — an " +
-             "engine outage would strand a ready program on the deck");
+    if (g.none.skip) {
+      f.push("THE ESCAPE HATCH IS BACK ON THE BAR before the pass starts: " +
+             JSON.stringify(g.none.skip.text) + ". The captain deleted it — " +
+             "\"we don't need the send without change list one\"");
     }
   }
   if (need(g.running, "while the pass was running")) {
@@ -1219,23 +1231,35 @@ function judgeGate(g, want) {
       f.push("there is no loading indicator beside the disabled control — " +
              "\"Generating…\" with nothing moving is a label, not a state");
     }
-    if (!g.running.skip || !g.running.skip.clickable) {
-      f.push("THE ESCAPE HATCH IS NOT REACHABLE during the wait — a wedged " +
-             "engine would strand him");
+    if (g.running.skip) {
+      f.push("THE ESCAPE HATCH IS BACK ON THE BAR during the wait: " +
+             JSON.stringify(g.running.skip.text) + ". It is deleted; the only " +
+             "roads out of a pass are waiting for it or a failure, and both " +
+             "leave ▶ SEND TO ALIGN live");
     }
     if (g.running.dialogOpen) {
       f.push("the hand-off dialog was open while the gate said RUNNING — the " +
              "gate did not gate anything");
     }
-    (want.walkAwayPhrases || []).forEach((phrase) => {
-      if ((g.running.hint || "").indexOf(phrase) === -1
-          && !/reload|restart/i.test(g.running.hint || "")) {
-        f.push("the waiting bar does not say he may walk away: " +
-               JSON.stringify((g.running.hint || "").slice(0, 120)));
+    /* S172 — STRICT NOW, AND ON THIS BAR'S OWN WORDS. It used to check the
+       DIALOG's phrases here with an `|| /reload|restart/` escape hatch, which
+       the bar's hint satisfies by accident — so the claim passed without ever
+       being made. That mattered less when the hatch let him into the dialog
+       during the wait; THIS BAR IS NOW THE ONLY SURFACE THAT TELLS HIM HE MAY
+       LEAVE, so it is measured on its own sentence with no escape. */
+    (want.barWalkAwayPhrases || []).forEach((phrase) => {
+      if ((g.running.hint || "").indexOf(phrase) === -1) {
+        f.push("the waiting bar never says " + JSON.stringify(phrase) +
+               " — with the escape hatch gone this is the ONLY place he is " +
+               "told he can walk away. It reads " +
+               JSON.stringify((g.running.hint || "").slice(0, 160)));
       }
     });
   }
-  if (need(g.ready, "once the pass landed")) {
+  /* A LEG THAT DRIVES THE PASS INTO ITS `failed` STATE NEVER REACHES `ready`,
+     and demanding both would be the rig failing itself — the shape this file
+     keeps a standing note about. */
+  if (!want.expectGateFailed && need(g.ready, "once the pass landed")) {
     if (g.ready.gate !== "ready") {
       f.push("after the pass landed the bar read gate=" + g.ready.gate +
              " rather than ready");
@@ -1247,6 +1271,62 @@ function judgeGate(g, want) {
     }
     if (!sb.clickable) {
       f.push("the ▶ Send to Align control is not hit-testable where it sits");
+    }
+  }
+  /* ── S172: THE PASS DID NOT ANSWER — the state the hatch's deletion rests
+     on, and the one the captain screenshotted.
+
+     TWO CLAIMS, and only a browser can make either of them:
+
+       1. THE ROAD THROUGH. ▶ SEND TO ALIGN must be live and hit-testable
+          WHERE IT SITS. This is the whole argument for deleting the escape
+          hatch — a dead engine cannot strand a finished design because the
+          PRIMARY control is the way out. A DOM test cannot tell a live button
+          from one painted to look live, and it certainly cannot tell that it
+          is not behind something.
+       2. THE TWO CONTROLS ARE ONE FAMILY. His screenshot: a small outlined
+          pill beside a full-size filled button on the same row. Read off
+          COMPUTED STYLE and LAID-OUT BOXES, because a class name proves
+          nothing about what reached the screen (S162: a rule that tested
+          green and lost on source order). */
+  if (want.expectGateFailed) {
+    if (need(g.failed, "after a pass that did not answer")) {
+      if (g.failed.gate !== "failed") {
+        f.push("a pass that did not answer left the bar reading gate=" +
+               g.failed.gate + " rather than failed");
+      }
+      const sb = g.failed.send || {}, rb = g.failed.retry || {};
+      if (sb.disabled || !/send to align/i.test(sb.text || "")) {
+        f.push("A DEAD ENGINE STRANDED THE PROGRAM: the primary control is " +
+               JSON.stringify(sb.text || "") + " disabled=" + !!sb.disabled +
+               ". With the escape hatch deleted this IS the road through");
+      }
+      if (!sb.clickable) {
+        f.push("▶ Send to Align is not hit-testable where it sits on a " +
+               "failed pass — the one road out of an engine outage cannot " +
+               "be pressed");
+      }
+      if (g.failed.skip) {
+        f.push("THE ESCAPE HATCH IS BACK ON THE BAR after a failed pass: " +
+               JSON.stringify(g.failed.skip.text));
+      }
+      if (!rb.text || !rb.clickable) {
+        f.push("there is no reachable ↻ retry beside it: " +
+               JSON.stringify(rb.text || ""));
+      }
+      const sh = (sb.box || {}).h, rh = (rb.box || {}).h;
+      if (sh && rh && Math.abs(sh - rh) > 2) {
+        f.push("THE HAND-OFF BAR'S CONTROLS ARE MISMATCHED — ▶ Send to Align " +
+               "is " + sh + "px tall and " + JSON.stringify(rb.text) + " is " +
+               rh + "px. The captain reported exactly this: \"a small " +
+               "outlined pill beside a full-size filled button\"");
+      }
+      if (rb.font && g.failed.sendFont && rb.font !== g.failed.sendFont) {
+        f.push("THE HAND-OFF BAR'S CONTROLS ARE MISMATCHED — the type is " +
+               g.failed.sendFont + " on ▶ Send to Align and " + rb.font +
+               " on " + JSON.stringify(rb.text) + ". They must differ by " +
+               "FILL, not by size");
+      }
     }
   }
   if (want.expectInvalidation) {
@@ -1520,6 +1600,19 @@ function judgeHandoff(m, want) {
         f.push("the derived change " + JSON.stringify(line) + " is not in the " +
                "brief the captain would send — the box carries " +
                JSON.stringify(b.headings));
+      }
+    });
+    /* S172 — AND SO IS THE QUESTION IT DECLARED IT WAS NOT REPORTING. The
+       captain's zoom buttons and hover pill were REAL differences the pass
+       found and dropped on the floor because his own out-of-scope ruling made
+       them ambiguous. They come back as questions in bucket 2, and this is
+       the only place that is measured in the box he would actually send. */
+    (want.expectImpliedLines || []).forEach((line) => {
+      if (b.value.indexOf(line) === -1) {
+        f.push("THE PASS'S DECLARED QUESTION " + JSON.stringify(line) +
+               " is not in the brief the captain would send — it found a " +
+               "difference, decided not to report it, and dropped it on the " +
+               "floor. The box carries " + JSON.stringify(b.headings));
       }
     });
     // …AND WHAT HE TYPED IS STILL THERE. The other direction of the same
@@ -3299,7 +3392,7 @@ async function main() {
     // real bar. `gateNone` is before he presses anything, `gateRunning` is the
     // wait, `gateReady` is the moment it becomes a send button.
     let gateNone = null, gateRunning = null, gateReady = null,
-        gateAfterTurn = null, gateClickBlocked = "";
+        gateAfterTurn = null, gateClickBlocked = "", gateFailed = null;
     const gateShots = {};
     // He backs out of the hand-off with the control the dialog gives him.
     const closeDialog = async () => {
@@ -3422,13 +3515,37 @@ async function main() {
         }
       }
       if (g === "running" && want.expectDeriveRunning) {
-        // THE ESCAPE HATCH, USED FOR REAL — and it is the only road into the
-        // dialog while the pass is still in flight. S170's whole running-band
-        // proof (the walk-away sentence, typing into the brief mid-pass, the
-        // reload) now rides on this control, which is exactly right: if the
-        // hatch is not reachable, an engine outage strands him, and the rig
-        // fails on the FIRST claim rather than on a symptom of it.
-        await press("handoff-skip", "use the escape hatch during the wait");
+        // ── S172: RE-ROUTED, AND WHAT IT NOW PROVES IS SMALLER. SAY SO. ────
+        //
+        // This used to press `handoff-skip` — `Send without the change list` —
+        // which was the ONLY control that opened this dialog mid-pass. THE
+        // CAPTAIN DELETED THAT CONTROL: *"we don't need the send without
+        // change list one."*
+        //
+        // The proofs it carried are NOT dropped. The dialog is opened here by
+        // calling the deck's own `holoPromote` — the exact function the hatch's
+        // click handler called, no rig-built dialog and no faked state — so the
+        // running band, the walk-away sentence, the mid-pass typing guarantee
+        // and the reload are all still measured in a real browser against the
+        // real daemon.
+        //
+        // WHAT THIS LEG NO LONGER PROVES, and it must not be read as if it
+        // does: that a CAPTAIN CAN REACH this state. He cannot. With the hatch
+        // gone the deck offers no door into the dialog while a pass runs, and
+        // `judgeGate` asserts exactly that (`dialogOpen` must be false at
+        // `running`, and the hatch must be absent). The landing machinery is
+        // kept because a cancel control — the honest answer if a hang is ever
+        // observed — would put a door back, and this is what keeps it safe.
+        await step(`(function () {
+          if (typeof holoPromote !== "function") {
+            return "the deck has no holoPromote — this leg cannot open the " +
+                   "dialog mid-pass and is measuring nothing";
+          }
+          var p = holoActive();
+          if (!p || !p.sessionId) return "no active program on the deck";
+          holoPromote(p.sessionId);
+          return "";
+        })()`);
       } else {
         if (g === "running") {
           await waitFor(`(function () {
@@ -3439,7 +3556,17 @@ async function main() {
             "the gate never left its RUNNING state — the pass never " +
             "answered, or the deck never asked the daemon again");
         }
-        if (want.expectGate) gateReady = gateReady || await gateProbe();
+        if (want.expectGate) {
+          /* S172 — A PASS THAT DID NOT ANSWER IS ITS OWN GATE STATE, and it
+             is the one the captain's screenshot was taken in. It is also the
+             state that has to carry the road through now that the hatch is
+             gone, so it is measured rather than assumed. */
+          if (await gateNow() === "failed") {
+            gateFailed = gateFailed || await gateProbe();
+          } else {
+            gateReady = gateReady || await gateProbe();
+          }
+        }
         await press("handoff-send", "press SEND TO ALIGN");
       }
       await waitFor(`!!document.querySelector("[data-holo=handoff-brief]")`,
@@ -3569,8 +3696,13 @@ async function main() {
     if (want.expectGate && !flowErr) {
       await closeDialog();
       await sleep(300);
-      gateReady = await gateProbe();
-      gateShots.ready = await shoot("gate-ready.png");
+      if (want.expectGateFailed) {
+        gateFailed = await gateProbe();
+        gateShots.failed = await shoot("gate-failed.png");
+      } else {
+        gateReady = await gateProbe();
+        gateShots.ready = await shoot("gate-ready.png");
+      }
     }
     // THE RUNNING CLAIM WAS ALREADY JUDGED, in phase 1, against the band as it
     // was THEN. Re-judging it here would demand a band that is running and
@@ -3614,13 +3746,15 @@ async function main() {
     const failures = flowErr ? [flowErr] : judgeHandoff(hm, finalWant);
     if (want.expectGate && !flowErr) {
       judgeGate({ none: gateNone, running: gateRunning, ready: gateReady,
+                  failed: gateFailed,
                   afterTurn: gateAfterTurn }, want).forEach((x) =>
         failures.push(x));
     }
     handoffCheck = { want: want, measured: hm, measuredRunning: runningM,
                      runningScreenshot: rshot, typedInto: typedInto,
                      gate: { none: gateNone, running: gateRunning,
-                             ready: gateReady, afterTurn: gateAfterTurn,
+                             ready: gateReady, failed: gateFailed,
+                             afterTurn: gateAfterTurn,
                              clickBlocked: gateClickBlocked },
                      gateScreenshots: gateShots,
                      failures: failures,
