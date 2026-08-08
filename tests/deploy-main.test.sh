@@ -421,7 +421,18 @@ LJ6h="$R6h/.git/lcars/main/launch.json"
 check "6h. a failed main launch → exit non-zero" "[ \"$RC6h\" != 0 ]"
 check "6h2. a failed main launch → status=failed (not a stale running)" \
   "[ \"\$(json_field \"$LJ6h\" status)\" = failed ]"
-check "6h3. a failed main launch pruned its @main worktree" \
+# S128: a failed launch KEEPS its checkout — that directory is the evidence of WHY
+# it failed (a half-provisioned node_modules, a missing binary), and pruning it
+# deleted the only thing anyone could have looked at. It cannot accumulate: the
+# @main key is fixed, so a re-launch reuses this one and --stop clears it, which
+# is exactly what the message says.
+check "6h3. a failed main launch KEPT its @main checkout as evidence" \
+  "wt_registered \"$R6h\" \"\$(wt_path \"$R6h\" @main)\" && [ -d \"\$(wt_path \"$R6h\" @main)\" ]"
+check "6h3b. and the message says where it is and that --main --stop clears it" \
+  "printf '%s' \"\$OUT6h\" | grep -qF \"\$(wt_path \"$R6h\" @main)\" \
+   && printf '%s' \"\$OUT6h\" | grep -qF 'lcars launch --main --stop'"
+( cd "$R6h" && LCARS_WORKER_BIN="$W6h" bash "$LAUNCH_SH" --main --stop >/dev/null 2>&1 )
+check "6h3c. --main --stop then clears it (no accumulation)" \
   "! wt_registered \"$R6h\" \"\$(wt_path \"$R6h\" @main)\" && [ ! -d \"\$(wt_path \"$R6h\" @main)\" ]"
 check "6h4. a failed main launch → plain-English message (not a stack trace)" \
   "printf '%s' \"\$OUT6h\" | grep -qi 'exited immediately'"

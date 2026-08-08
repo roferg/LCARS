@@ -705,6 +705,13 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   padding:10px 12px;resize:vertical}
 .field textarea:focus,.field input:focus{outline:none;border-color:var(--lcars-amber)}
 
+/* S169 FIX ROUND 1 — the ▶ SEND TO ALIGN brief's own line, moved ABOVE the box
+   (see `openHandoff`). A bare inline <span> against a block textarea needs to
+   be a block with a gap under it, and NOTHING ELSE MAY MOVE: `.field .hint`
+   has no rule of its own anywhere in this stylesheet, so styling it generally
+   would restyle every other dialog on the board. Scoped to this one field. */
+[data-holo="handoff-brief-field"] .hint{display:block;margin:0 0 8px}
+
 /* ── S91: pasted-image placeholder chips (CLI-style, NO thumbnail/render) ── */
 .img-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .img-chip{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-body);
@@ -1149,3 +1156,907 @@ a.logbug-badge:hover{filter:brightness(1.08)}
   /* keep the banner's left edge on the (thinner) column gutter at this breakpoint */
   .version-banner{margin:12px 14px 6px}
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   S125 — THE HOLODECK (D1–D3, D6–D8)
+
+   Vendored from lcars-dev/holodeck/holodeck-vision.html screens 1–4 and 8, the
+   same way this sheet's board/card geometry was vendored from
+   kanban-vision.html at S67/S68. ADR-007 holds: no --lcars-* token is
+   redefined here. The deck's OWN accent — the holo-grid teal — is a local prop
+   in the same spirit as .lcars-frame's --frame-color: it belongs to one
+   surface, it is not part of the shared palette, and forking a shared token to
+   get it would be the thing the ADR forbids.
+   ════════════════════════════════════════════════════════════════════════ */
+body.lcars-serve{--holo-grid:#2de3c7;--holo-line:rgba(45,227,199,.30)}
+
+/* D1 — the deck REPLACES the board content in the same frame. The elbow, the
+   brand, the rail and the connection pill never move; only what is inside
+   .frame-content swaps. Done in CSS off ONE class on <body> so it survives
+   every re-render: render() rebuilds the board and un-hides its banners on
+   every SSE tick, and a JS `hidden` flag set at enter-time would be wiped by
+   the very next one. */
+body.on-deck .board-wrap,
+body.on-deck .legend,
+body.on-deck #versionBanner,
+body.on-deck #readinessBanner,
+body.on-deck #boardEmpty{display:none !important}
+body.on-deck #mainDeploy,
+body.on-deck #deployMainBtn,
+body.on-deck #fileBtn{display:none}
+#deckHost{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;
+  min-width:0;overflow:hidden}
+#deckHost[hidden]{display:none}
+/* THE DECK IS THE VIEWPORT, AND THE PAGE DOES NOT SCROLL (fix round 1).
+   Measured after ONE long turn: innerHeight 913, .deckview height 1897,
+   scrollHeight 1961 — the deck simply GREW, taking the composer and the LIVE
+   PREVIEW off the bottom of the screen. That is not a cosmetic miss: D2's whole
+   reason for the fixed split is "the preview is the point — it must be
+   permanently visible", and D1 promises the frame stays put.
+
+   The board's frame is `min-height:100vh` so a long BOARD can scroll the page,
+   which is right for a board and wrong for a deck. So the deck PINS it — only
+   while `body.on-deck`, so the board's own behaviour is untouched. Everything
+   inside then has a bounded height to divide up, and the transcript (the one
+   thing that grows) is the one thing that scrolls. */
+body.on-deck{overflow:hidden}
+body.on-deck .lcars-frame{height:100vh;min-height:100vh;overflow:hidden}
+.topbar .btn.holo-on{background:#0d2b2a;color:var(--holo-grid);border-color:#000}
+/* S128 (FL-002) — A PROGRAM IS WORKING WHILE YOU ARE OFF THE DECK.
+   The band control is the cheapest honest place to say so: the captain is
+   already looking at it to get back, it needs no new column, and it is driven
+   entirely by the daemon's `meta.holodeck` (see renderHolodeckActivity) — a
+   dot this side started on a guess would be the same lie in a new place.
+   `.working` adds room for the dot at the trailing edge rather than moving the
+   label, so the control does not jump when a turn lands. */
+.topbar .btn.working{position:relative;padding-right:26px}
+.topbar .btn.working .holo-dot{position:absolute;right:10px;top:50%;
+  width:7px;height:7px;margin-top:-3.5px;border-radius:50%;
+  background:var(--holo-grid);box-shadow:0 0 6px var(--holo-grid);
+  animation:holo-band-pulse 1.4s ease-in-out infinite}
+@keyframes holo-band-pulse{0%,100%{opacity:.3;transform:scale(.82)}
+  50%{opacity:1;transform:scale(1)}}
+/* MOTION IS OPTIONAL, THE SIGNAL IS NOT — the same split every other animated
+   affordance in this stylesheet makes: the dot stays, its pulse stops. */
+@media (prefers-reduced-motion:reduce){
+  .topbar .btn.working .holo-dot{animation:none;opacity:.95}}
+
+/* D2 — three panes: PROGRAMS 216px · CHAT · ⇔ · LIVE PREVIEW.
+   AMENDED 2026-08-05 (captain, S127 live drive): the chat ⇄ preview boundary is
+   a PERSISTED DRAG HANDLE. The old `1.15fr : 1fr` grew the chat WITHOUT BOUND —
+   at full screen on a 2560px display ~1250px of chat against a ~70-character
+   readable line, spent on the one pane that cannot use it while the preview,
+   which D2 itself calls "the point", starved.
+
+   NOTE WHAT IS DELIBERATELY MISSING: there is no `max-width` on the chat
+   column, and no `min()`/`clamp()` in the chat track. The captain chose the
+   handle ALONE, explicitly over an option that ALSO capped the chat's growth —
+   he wants the control, not a rule guessing for him.
+
+   The split arrives as TWO CUSTOM PROPERTIES that board.js writes on this node,
+   never as an inline `grid-template-columns`: an inline value would also
+   override `.deckview.solo` below, which is a deck with no chat and no preview
+   at all. The `minmax()` floors are the other half of "neither pane can be
+   dragged to nothing" — they are what keeps the handle on screen and grabbable
+   after any drag. */
+/* `grid-template-rows:minmax(0,1fr)` is the load-bearing half: a grid's implicit
+   row is `auto`, so it sizes to its TALLEST item's content — the row grew with
+   the transcript and no `min-height:0` on the panes could stop it. `minmax(0,…)`
+   lets the row be shorter than its content, which is what lets the transcript
+   scroll instead of the page. */
+.deckview{display:grid;
+  grid-template-columns:216px
+    minmax(var(--holo-chat-min,340px),var(--holo-chat-fr,0.42fr))
+    var(--holo-gutter,7px)
+    minmax(var(--holo-pv-min,360px),var(--holo-pv-fr,0.58fr));
+  grid-template-rows:minmax(0,1fr);flex:1 1 auto;position:relative;
+  min-height:0;min-width:0;overflow:hidden}
+.deckview.solo{grid-template-columns:216px 1fr}
+.deckview > *{min-height:0;overflow:hidden}
+
+/* THE HANDLE. A grid COLUMN rather than an overlay, so it never sits on top of
+   either pane's content and cannot be dragged out from under the cursor.
+   `touch-action:none` is load-bearing on a trackpad/touch surface: without it
+   the browser claims the gesture for scrolling and the handle never moves. */
+.deck-split{background:var(--lcars-surface);cursor:col-resize;display:flex;
+  align-items:center;justify-content:center;padding:0;touch-action:none;
+  border-right:1px solid var(--lcars-border)}
+.deck-split .grip{width:2px;height:34px;border-radius:2px;
+  background:rgba(80,104,138,.55);transition:background .12s ease,height .12s ease}
+.deck-split:hover .grip,.deck-split:focus .grip,
+.deckview.dragging .deck-split .grip{background:var(--holo-grid);height:64px}
+.deck-split:focus-visible{outline:2px solid var(--holo-grid);outline-offset:-2px}
+/* Mid-drag the pointer crosses the transcript and the preview; without this a
+   drag selects text the whole way across. */
+.deckview.dragging{cursor:col-resize;user-select:none}
+@media (prefers-reduced-motion:reduce){.deck-split .grip{transition:none}}
+
+/* Q3's drawer furniture, defined at EVERY width and shown at none of them until
+   the breakpoint rule below turns it on. Rendered always, on purpose: that is
+   what lets opening the drawer be one class flip on the live DOM instead of a
+   re-render — and a re-render is the chat's scroll position and the preview's
+   iframe, gone. */
+.holo-scrim{display:none;position:absolute;inset:0;z-index:5;
+  background:rgba(0,0,0,.55);opacity:0;pointer-events:none;
+  transition:opacity .16s ease}
+.holo-drawer-btn{display:none;font-size:9px;letter-spacing:.1em;padding:3px 9px;
+  border-radius:9px;white-space:nowrap;flex:0 0 auto}
+@media (prefers-reduced-motion:reduce){.holo-scrim{transition:none}}
+
+/* — left: PROGRAMS — */
+.programs{border-right:1px solid var(--lcars-border);display:flex;
+  flex-direction:column;min-height:0;background:var(--lcars-surface)}
+.programs .ph{font-family:var(--font-display);letter-spacing:.18em;
+  text-transform:uppercase;font-size:11px;color:var(--holo-grid);
+  padding:14px 14px 10px;display:flex;align-items:center;gap:8px}
+.programs .ph .dot{width:7px;height:7px;border-radius:50%;
+  background:var(--holo-grid)}
+.programs .plist{overflow-y:auto;flex:1 1 auto;padding:0 10px 10px;
+  display:flex;flex-direction:column;gap:7px;min-height:0}
+.programs .pnone{font-family:var(--font-mono);font-size:10.5px;color:#3d5170;
+  padding:8px 2px;line-height:1.7}
+.prog{background:var(--lcars-card);border:1px solid rgba(80,104,138,.2);
+  border-left:3px solid transparent;border-radius:7px;padding:9px 11px;
+  cursor:pointer}
+.prog:hover{border-color:var(--lcars-border-bright)}
+.prog.on{border-left-color:var(--holo-grid);background:var(--lcars-card-alt);
+  box-shadow:inset 0 0 0 1px rgba(45,227,199,.18)}
+.prog .pn{font-family:var(--font-display);font-size:13px;letter-spacing:.05em;
+  color:var(--lcars-text-bright);line-height:1.2}
+.prog .pm{font-family:var(--font-mono);font-size:9.5px;color:var(--lcars-text-dim);
+  letter-spacing:.05em;margin-top:4px;display:flex;gap:7px;flex-wrap:wrap}
+/* The room. Two programs whose NAMES read the same still live in two rooms, and
+   this line is what makes the pair legible instead of identical (round 2). */
+.prog .pm .proom{color:var(--holo-grid);opacity:.85;overflow-wrap:anywhere}
+.prog .prow{display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap}
+.programs .pfoot{border-top:1px solid var(--lcars-border);padding:11px;
+  display:flex;flex-direction:column;gap:9px}
+.sidecar-chip{font-family:var(--font-mono);font-size:9.5px;
+  color:var(--lcars-text-dim);line-height:1.5;overflow-wrap:anywhere}
+.sidecar-chip b{color:var(--holo-grid);font-weight:400}
+
+/* D11's filter chips. They FILTER; they do not transition anything — the
+   sent/done lifecycle is S126/S127, so every program this session is a draft
+   and the counts say so honestly rather than showing invented states. */
+.pfilter{display:flex;gap:5px;padding:0 10px 9px;flex-wrap:wrap}
+/* four chips have to fit the 216px list column on one row — measured, and at
+   the mock's 9px/.14em they wrapped. */
+.pfilter .fchip{font-family:var(--font-display);font-size:8.5px;letter-spacing:.08em;
+  text-transform:uppercase;padding:3px 7px;border-radius:10px;cursor:pointer;
+  border:1px solid rgba(80,104,138,.3);color:var(--lcars-text-dim);
+  background:transparent;white-space:nowrap}
+.pfilter .fchip.on{border-color:var(--holo-grid);color:var(--holo-grid);
+  background:rgba(45,227,199,.10)}
+.pstat{font-family:var(--font-display);font-size:8.5px;letter-spacing:.14em;
+  text-transform:uppercase;padding:2px 7px;border-radius:9px;white-space:nowrap;
+  border:1px solid rgba(80,104,138,.4);color:var(--lcars-text-dim)}
+/* S126 — A ROOM READ OFF DISK. It is a real program with real work in it, so
+   it is NOT dimmed into looking broken; the dashed left edge and the chip say
+   the difference that matters, which is that nothing is talking to it yet. */
+.prog.ondisk{border-left-style:dashed;border-left-color:rgba(80,104,138,.55)}
+.prog.ondisk:hover{border-left-color:var(--holo-grid)}
+.prog .prow .pdisk{font-family:var(--font-mono);font-size:9px;
+  letter-spacing:.06em;color:var(--lcars-text-dim);white-space:nowrap}
+.prog .prow .grow{flex:1 1 auto}
+/* the per-row ⌫ control. Small and quiet: removing a program is recoverable,
+   but it is never the thing the captain came to the list to do. */
+.prog .prow .btn.small{font-size:8.5px;letter-spacing:.1em;padding:2px 8px;
+  border-radius:9px}
+
+/* — centre: CHAT — */
+.holo-chat{display:flex;flex-direction:column;min-height:0;min-width:0;
+  border-right:1px solid var(--lcars-border)}
+.holo-chat .chat-head{padding:12px 18px;border-bottom:1px solid var(--lcars-border);
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.holo-chat .chat-head .ct{font-family:var(--font-display);font-size:16px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--lcars-text-bright)}
+.holo-chat .grow{flex:1 1 auto}
+.ground-chip{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.04em;
+  padding:2px 8px;border-radius:9px;background:rgba(153,119,255,.10);
+  border:1px solid rgba(153,119,255,.4);color:#b7a2ff;white-space:nowrap}
+/* FIX ROUND 1 (D7) — WHOSE CONVERSATION IS IN THIS PANE. A duplicated room
+   opens with the PARENT'S whole chat in it, and the only thing that ever said
+   so was the transient banner: one refresh later the history reads as this
+   program's own work. Same shape and same selector depth as `.ground-chip`
+   beside it so neither can lose to the other on specificity or source order,
+   in the deck's own accent rather than the grounding's violet — it is where
+   this room came from, not a warning. It WRAPS, for the reason `.pdup` does:
+   the parent is named with the captain's whole idea sentence and a chip that
+   ellipsises it answers "which one was that" with nothing. */
+.cont-chip{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.04em;
+  padding:2px 8px;border-radius:9px;background:rgba(45,227,199,.08);
+  border:1px solid var(--holo-line);color:var(--holo-grid);
+  max-width:100%;overflow-wrap:anywhere}
+.transcript{flex:1 1 auto;overflow-y:auto;padding:16px 18px;display:flex;
+  flex-direction:column;gap:14px;min-height:0}
+.turn{max-width:62ch}
+.turn .who{font-family:var(--font-display);font-size:10px;letter-spacing:.2em;
+  text-transform:uppercase;margin-bottom:4px}
+.turn.you .who{color:var(--lcars-amber)}
+.turn.holo .who{color:var(--holo-grid)}
+.turn .body{font-size:14px;line-height:1.6;color:var(--lcars-text);
+  white-space:pre-wrap}
+/* A RENDERED reply (mock screen 4 is clean prose, not markdown source). The
+   `pre-wrap` above is right for the captain's own typed line and wrong for a
+   parsed reply, where the block elements carry the spacing. */
+.turn .body.md{white-space:normal}
+.turn .body.md>*{margin:0 0 8px}
+/* A paragraph keeps the line breaks the model typed (fix round 2): markdown
+   would join them with a space, and that turns a captain's ASCII diagram into
+   one long run of box glyphs. `pre-wrap`, so long prose still wraps.
+
+   A paragraph that CONTAINS box-drawing glyphs is a drawing, and is set
+   monospaced — seen in Chrome: with the rows back on their own lines the box
+   was still ragged, because the body face is proportional and `│` is not the
+   width of a space. Cosmetic only, in both directions: a wrong guess changes a
+   typeface and can never remove a character. */
+.turn .body.md .md-p{white-space:pre-wrap}
+.turn .body.md .md-p.diag{font-family:var(--font-mono);font-size:13px;
+  line-height:1.35}
+.turn .body.md>*:last-child{margin-bottom:0}
+.turn .body.md .md-h{font-family:var(--font-display);font-size:11px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--holo-grid);
+  margin-top:2px}
+.turn .body.md .md-l{padding-left:18px}
+.turn .body.md .md-l li{margin:2px 0}
+.turn .body.md code{font-family:var(--font-mono);font-size:12px;
+  background:rgba(45,227,199,.08);border-radius:3px;padding:1px 4px;
+  color:var(--holo-grid)}
+.turn .body.md pre{font-family:var(--font-mono);font-size:11.5px;
+  background:var(--lcars-black);border:1px solid var(--lcars-border);
+  border-radius:6px;padding:9px 11px;overflow-x:auto;white-space:pre;
+  color:var(--lcars-text-bright)}
+/* S126 (#8) — a fence's INFO STRING, on the screen. ```html file:mockup.html
+   declares which file the block below IS (and the daemon writes it under that
+   name when a write tool fails the engine), so it is a caption for the slab,
+   not decoration. It sits ON the block: the sibling rule below is more
+   specific than the `pre` rule above, so the two read as one object rather
+   than as a label that happened to land nearby (the S162 cascade lesson). */
+/* `margin:8px 0 0` — the BOTTOM half is the load-bearing one. `.turn .body.md>*`
+   two rules up gives every direct child `margin:0 0 8px`, so zeroing only the
+   pre's margin-TOP left the caption floating 8px above the slab it names —
+   measured in Chrome at exactly 8px, not reasoned about. */
+.turn .body.md .fence-info{font-family:var(--font-mono);font-size:10.5px;
+  letter-spacing:.04em;color:var(--holo-grid);background:var(--lcars-black);
+  border:1px solid var(--lcars-border);border-bottom:0;
+  border-radius:6px 6px 0 0;padding:4px 11px 3px;margin:8px 0 0;
+  overflow-x:auto;white-space:pre}
+.turn .body.md .fence-info + pre{margin-top:0;border-radius:0 0 6px 6px}
+.turn .body.md .md-t{border-collapse:collapse;font-size:12.5px;
+  display:block;overflow-x:auto;max-width:100%}
+.turn .body.md .md-t th,.turn .body.md .md-t td{border:1px solid var(--lcars-border);
+  padding:4px 9px;text-align:left}
+.turn .body.md .md-t th{font-family:var(--font-display);font-size:10px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--holo-grid)}
+/* Recognized engine activity, FOLDED (fix round 2). It is never deleted, so
+   this is what a misclassification costs: one muted line the captain can open.
+   Deliberately quiet — it is plumbing sitting inside a design conversation. */
+.turn .body.md .holo-trace{margin:2px 0 8px}
+.turn .body.md .holo-trace .ts{display:inline-block;font-family:var(--font-mono);
+  font-size:10.5px;letter-spacing:.04em;color:var(--lcars-text-dim);
+  border:1px dashed var(--lcars-border);border-radius:10px;padding:1px 8px;
+  cursor:pointer;opacity:.72}
+.turn .body.md .holo-trace .ts:hover,
+.turn .body.md .holo-trace .ts:focus{opacity:1;color:var(--holo-grid);
+  border-color:var(--holo-line)}
+.turn .body.md .holo-trace .tl{margin:6px 0 0;opacity:.8}
+.turn .body.md .holo-trace .tl[hidden]{display:none}
+.turn.you .body{background:rgba(255,170,0,.06);
+  border-left:2px solid var(--lcars-amber);padding:8px 12px;border-radius:0 6px 6px 0}
+.turn .did{margin-top:7px;display:flex;gap:6px;flex-wrap:wrap}
+.chip-file{font-family:var(--font-mono);font-size:10px;letter-spacing:.04em;
+  padding:2px 8px;border-radius:4px;background:rgba(45,227,199,.10);
+  border:1px solid var(--holo-line);color:var(--holo-grid)}
+.chip-file.doc{background:rgba(153,119,255,.10);border-color:rgba(153,119,255,.4);
+  color:#b7a2ff}
+/* S126 — the concept-doc audit, shown only when it FAILED. Amber, in the turn
+   it belongs to; a note, not an alarm — nothing broke and nothing was lost,
+   there is simply nothing written down for the hand-off to carry yet. It sets
+   its own colour on the TEXT rather than inheriting `.turn`'s, because a muted
+   inherited colour is how S162's warning ended up reading as metadata. */
+.holo-concept{margin-top:8px;display:flex;gap:9px;align-items:flex-start;
+  padding:7px 10px;border-radius:5px;background:rgba(255,170,0,.07);
+  border-left:2px solid var(--lcars-amber)}
+.holo-concept .cl{font-family:var(--font-display);font-size:9px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--lcars-amber);
+  white-space:nowrap;padding-top:1px}
+.holo-concept .ct3{font-family:var(--font-body,inherit);font-size:11.5px;
+  line-height:1.5;color:var(--lcars-text-bright)}
+.holo-working{display:flex;align-items:center;gap:9px;color:var(--holo-grid);
+  font-family:var(--font-display);font-size:11px;letter-spacing:.18em;
+  text-transform:uppercase}
+.holo-working .bars{display:flex;gap:3px}
+.holo-working .bars i{width:4px;height:12px;background:var(--holo-grid);
+  border-radius:1px;animation:holo-pulse 1.1s ease-in-out infinite}
+.holo-working .bars i:nth-child(2){animation-delay:.14s}
+.holo-working .bars i:nth-child(3){animation-delay:.28s}
+.holo-working .bars i:nth-child(4){animation-delay:.42s}
+@keyframes holo-pulse{0%,100%{opacity:.25}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.holo-working .bars i{animation:none;opacity:.8}}
+/* S128 (FL-004) — the SAME strip inside the New Program dialog, while it opens
+   the deck. Only the box it sits in differs: a modal field needs the gap the
+   transcript's flow already gave it, and the sentence is longer than the
+   chat's, so it wraps rather than clipping. */
+.overlay .holo-working{margin:2px 0 4px;align-items:flex-start}
+.overlay .holo-working .bars{padding-top:2px}
+.overlay .holo-working .wt{letter-spacing:.1em;line-height:1.5}
+.composer{border-top:1px solid var(--lcars-border);padding:12px 16px;
+  display:flex;flex-direction:column;gap:9px;background:var(--lcars-surface)}
+.composer textarea{width:100%;background:var(--lcars-black);
+  border:1px solid var(--lcars-border);border-radius:7px;
+  color:var(--lcars-text-bright);font-family:var(--font-body);font-size:14px;
+  padding:10px 12px;resize:none;height:66px;line-height:1.5}
+.composer textarea::placeholder{color:#3d5170}
+.composer .crow{display:flex;align-items:center;gap:10px}
+.composer .hint{font-family:var(--font-mono);font-size:9.5px;
+  color:var(--lcars-text-dim);letter-spacing:.04em}
+/* S169 (FL-014) — the pasted-image chips and the paste's own error line, in a
+   composer that is already a flex COLUMN with its own gap. The shared rules
+   (.img-chips / .errline) carry a top margin for the modal surfaces they were
+   written for; here it would double the gap. Same nodes, same look, no second
+   chip style. */
+.composer .img-chips{margin-top:0}
+.composer .errline{margin-top:0;font-size:12px}
+/* S169 (FL-015) — ASK vs BUILD, the captain's own declaration of what shape a
+   turn is. A two-option segmented control, sized like the hint beside it: it
+   is a small, OPTIONAL affordance and it must not read as the main event on a
+   composer whose main event is the box above it. The selected half carries the
+   deck's own accent (not the board's amber) because this is the holodeck's
+   room, and it carries a real background rather than only a text colour — S162
+   lost a whole warning to a rule that changed nothing but the ink. */
+.composer .holo-intent{display:flex;gap:0;border:1px solid var(--lcars-border);
+  border-radius:5px;overflow:hidden;flex:0 0 auto}
+.composer .holo-intent .iopt{font-family:var(--font-display);font-size:9px;
+  letter-spacing:.13em;text-transform:uppercase;padding:5px 9px;cursor:pointer;
+  color:var(--lcars-text-dim);background:var(--lcars-black);white-space:nowrap;
+  border-right:1px solid var(--lcars-border)}
+.composer .holo-intent .iopt:last-child{border-right:0}
+.composer .holo-intent .iopt:hover{color:var(--lcars-text-bright)}
+.composer .holo-intent .iopt.on{background:var(--holo-grid);
+  color:var(--lcars-black)}
+.composer .holo-intent .iopt:focus-visible{outline:2px solid var(--holo-grid);
+  outline-offset:-2px}
+/* …and the daemon's account of what a turn DID, on the turn it is about. Two
+   readings of one note: `.no` is the calm one (he asked, nothing moved) in the
+   deck's accent; `.drift` is the one that matters (a turn he declared a
+   question wrote anyway) and takes the board's red, on its own background, so
+   it cannot be read as metadata. Declared AFTER `.holo-concept` and on its own
+   class names so neither can tie with the other on specificity and win on
+   source order (the S162 lesson). */
+.holo-outcome{margin-top:8px;display:flex;gap:9px;align-items:flex-start;
+  padding:7px 10px;border-radius:5px}
+.holo-outcome .cl{font-family:var(--font-display);font-size:9px;
+  letter-spacing:.14em;text-transform:uppercase;white-space:nowrap;
+  padding-top:1px}
+.holo-outcome .ct3{font-family:var(--font-body,inherit);font-size:11.5px;
+  line-height:1.5;color:var(--lcars-text-bright)}
+.holo-outcome.no{background:rgba(45,227,199,.07);
+  border-left:2px solid var(--holo-grid)}
+.holo-outcome.no .cl{color:var(--holo-grid)}
+.holo-outcome.drift{background:rgba(255,80,80,.09);
+  border-left:2px solid var(--lcars-red)}
+.holo-outcome.drift .cl{color:var(--lcars-red)}
+
+/* — right: LIVE PREVIEW (D3) — */
+.preview{display:flex;flex-direction:column;min-height:0;min-width:0;
+  background:var(--lcars-black)}
+.pv-head{padding:10px 14px;border-bottom:1px solid var(--lcars-border);
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pv-head .pvt{font-family:var(--font-display);font-size:11px;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--holo-grid)}
+/* D14's ⬡ PREVIEW / ▤ INTENT toggle. Without these two rules the pills render
+   as two bare text runs jammed together — measured in Chrome on the first
+   holodeck.sh run, which is exactly the class of thing no node harness sees. */
+.pv-toggle{display:flex;gap:5px;align-items:center}
+.pv-toggle .pvt-b{font-family:var(--font-display);font-size:9.5px;
+  letter-spacing:.14em;text-transform:uppercase;padding:4px 10px;
+  border-radius:11px;border:1px solid rgba(80,104,138,.3);
+  color:var(--lcars-text-dim);white-space:nowrap;background:transparent}
+.pv-toggle .pvt-b.on{border-color:var(--holo-grid);color:var(--holo-grid);
+  background:rgba(45,227,199,.10)}
+/* the INTENT half is OFF while the program has no concept doc, and it must LOOK
+   off — a control the captain can see is disabled, with the reason on hover, is
+   the honest shape. Once `concept.md` exists it becomes live and must not be
+   styled like a dead control, hence the wired rule below.
+
+   S127 (FL-007) — keyed off `data-wired`, not off `a`. INTENT stopped being an
+   anchor when it became a real toggle, and an anchor-only rule would have left
+   it looking dead on the day it started working. `data-wired` is what holoCtl
+   sets when a click actually does something, so both halves are covered by the
+   same fact rather than by their tag. */
+.pv-toggle .pvt-b[aria-disabled="true"]{opacity:.42;cursor:not-allowed}
+.pv-toggle .pvt-b[data-wired="1"]{text-decoration:none;cursor:pointer;opacity:1}
+.pv-toggle .pvt-b[data-wired="1"]:hover{border-color:var(--holo-grid);
+  color:var(--holo-grid)}
+.pv-head .grow{flex:1 1 auto}
+.pv-head .fname{font-family:var(--font-mono);font-size:10px;
+  color:var(--lcars-text-dim)}
+.pv-stage{flex:1 1 auto;overflow:auto;padding:14px;min-height:0;display:flex;
+  background:
+    linear-gradient(var(--holo-line) 1px,transparent 1px) 0 0/22px 22px,
+    linear-gradient(90deg,var(--holo-line) 1px,transparent 1px) 0 0/22px 22px,
+    #04100f}
+.pv-frame{background:#0a0a0f;border:1px solid rgba(80,104,138,.35);
+  border-radius:6px;box-shadow:0 14px 40px rgba(0,0,0,.65);overflow:hidden;
+  flex:1 1 auto;display:flex;min-height:0}
+.pv-frame iframe{border:0;width:100%;height:100%;flex:1 1 auto;
+  background:#0a0a0f}
+/* S127 (FL-007) — the stage holds BOTH views and swaps them by hiding, never by
+   re-rendering: rebuilding it would destroy the iframe and reload a mockup that
+   never changed. `.pv-frame`, `.pv-none` and `.pv-intent` all set `display`
+   themselves, so the UA's `[hidden]{display:none}` loses to every one of them —
+   this rule outranks them on specificity (0,2,0 vs 0,1,0) AND on source order,
+   both, because a half-hidden pane is the whole defect. */
+.pv-stage>[hidden]{display:none}
+/* — the empty stage (FL-006) —
+   The copy sat directly on the 22px grid above with no background and no scrim,
+   so the grid lines ran through the glyphs. The captain named the comparison
+   himself: `.holo-empty` (the landing state, further down) already solves this,
+   and this is that idiom rather than a second one — a radial scrim that kills
+   the grid under the words and leaves it alive at the edges, because the grid
+   IS the deck's identity. `position:relative` is what makes the `::before` hang
+   off THIS box (on a static parent it escapes to the nearest positioned
+   ancestor and scrims something else entirely), and the `z-index:1` rule is the
+   half without which the scrim paints over the words it exists to reveal. */
+.pv-none{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:10px;text-align:center;padding:26px;
+  position:relative;min-height:0}
+.pv-none::before{content:'';position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse 62% 58% at 50% 50%,
+    rgba(3,6,8,.97) 0%,rgba(3,6,8,.85) 45%,rgba(3,6,8,0) 78%)}
+.pv-none>*{position:relative;z-index:1}
+.pv-none .t{font-family:var(--font-display);font-size:13px;letter-spacing:.22em;
+  text-transform:uppercase;color:var(--holo-grid)}
+/* …and the body copy is the landing state's `--lcars-text`, not the dim grey it
+   used to be. Dim metadata over a live grid is the unreadable half. */
+.pv-none p{max-width:38ch;font-size:13px;color:var(--lcars-text);
+  line-height:1.6;margin:0}
+.pv-none .basis-link{font-family:var(--font-mono);font-size:10px;
+  letter-spacing:.04em;padding:4px 11px;border-radius:10px;
+  background:rgba(153,119,255,.12);border:1px solid rgba(153,119,255,.45);
+  color:#c3b2ff;text-decoration:none;white-space:nowrap}
+.pv-none a.basis-link:hover{border-color:#c3b2ff;background:rgba(153,119,255,.2)}
+.pv-none .basis-link[aria-disabled="true"]{opacity:.5;cursor:not-allowed}
+/* the second, quieter line — the same `#7d94b5` the landing state's own
+   `p.quiet` uses over its own scrim, rather than the dimmer metadata grey that
+   made the first line unreadable. */
+.pv-none p.next{color:#7d94b5;font-size:12.5px}
+/* — D14's INTENT panel (FL-007). The rendered `concept.md`, on the same grid,
+   so it gets the same scrim for the same reason. `.md` (board.css:974) is what
+   styles the markup `setMd` emits — this is the container only, deliberately,
+   so there is exactly one markdown look on the board.
+
+   S169 (FL-016) — THE SCRIM AND THE SCROLLING ARE ON DIFFERENT BOXES NOW, and
+   that separation is the whole fix. This rule used to carry `overflow:auto`
+   AND `position:relative`, which made one element both the scroll container
+   and the scrim's containing block. An absolutely-positioned child of a scroll
+   container is sized to the PADDING BOX — one viewport-height rectangle, never
+   the scroll height — and it SCROLLS WITH THE CONTENT. So the darkening was a
+   single screen's worth that slid up and off, and everything below the first
+   screen sat directly on the 22px grid. The captain read his own captured
+   requirements through it.
+
+   The three lines it copied from `.pv-none` are CORRECT THERE: that pane does
+   not scroll, so `inset:0` really is the whole pane. Same technique, different
+   container, silently false — the FL-006/FL-008 family.
+
+   Two mistakes to not make here. `height:100%` on the ::before resolves
+   against that same padding box and changes nothing; a JS-measured height is a
+   second source of truth that is stale on the next reflow. The container is
+   the fix. */
+.pv-intent{flex:1 1 auto;min-height:0;min-width:0;display:flex;
+  position:relative;color:var(--lcars-text);font-size:13.5px;line-height:1.6}
+/* AND THE FILL IS NEAR-UNIFORM, not an ellipse (FL-016, the other half). The
+   old `ellipse 78% 74% at 50% 45%` was calibrated for ONE screen: it is down to
+   rgba(...,.55) at its own edges, so even before the scrim scrolled away, text
+   near the top and bottom of the pane was reading through a half-strength
+   backing. A scrim that no longer moves has to be honest everywhere text can
+   be, so it holds .96 across the whole box and only eases at the extreme
+   corners — where the grid stays visible, because the grid is the deck's
+   identity and killing it entirely would be the other failure. */
+.pv-intent::before{content:'';position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse 132% 128% at 50% 50%,
+    rgba(3,6,8,.97) 0%,rgba(3,6,8,.96) 62%,rgba(3,6,8,.9) 100%)}
+.pv-intent>*{position:relative;z-index:1}
+/* the box that actually scrolls, INSIDE the one that carries the scrim. The
+   padding moved here with it, so the document keeps the same margins. */
+.pv-intent .pv-intent-scroll{flex:1 1 auto;min-height:0;min-width:0;
+  overflow:auto;padding:18px 20px}
+.pv-intent .intent-doc{max-width:68ch;margin:0 auto}
+.pv-intent .pv-intent-note{max-width:44ch;margin:26px auto;text-align:center}
+.pv-intent .pv-intent-note .t{font-family:var(--font-display);font-size:12px;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--lcars-amber)}
+.pv-intent .pv-intent-note p{margin:8px 0 0;color:var(--lcars-text);
+  font-size:13px;line-height:1.6}
+.pv-foot{border-top:1px solid var(--lcars-border);padding:10px 14px;display:flex;
+  align-items:center;gap:9px;flex-wrap:wrap;background:var(--lcars-surface)}
+.pv-foot .fl{font-family:var(--font-display);font-size:9.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--lcars-text-dim)}
+.pv-foot .grow{flex:1 1 auto}
+
+/* — the empty deck: the holodeck floor (mock screen 2) —
+   The grid is ATMOSPHERE. It must never compete with the copy sitting on it, so
+   it is faint, wide-spaced, and faded out of the middle by a black radial mask
+   exactly where the text lives. */
+.holo-empty{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:18px;text-align:center;padding:40px;
+  position:relative;min-height:0;overflow:auto;
+  background:
+    linear-gradient(rgba(45,227,199,.13) 1px,transparent 1px) 0 0/48px 48px,
+    linear-gradient(90deg,rgba(45,227,199,.13) 1px,transparent 1px) 0 0/48px 48px,
+    var(--lcars-black)}
+.holo-empty::before{content:'';position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse 62% 58% at 50% 50%,
+    rgba(3,6,8,.97) 0%,rgba(3,6,8,.85) 45%,rgba(3,6,8,0) 78%)}
+.holo-empty > *{position:relative;z-index:1}
+.holo-empty .arch{font-family:var(--font-display);font-size:34px;
+  letter-spacing:.34em;text-transform:uppercase;color:var(--holo-grid);
+  text-shadow:0 0 26px rgba(45,227,199,.4)}
+.holo-empty .sub{font-family:var(--font-display);font-size:13px;
+  letter-spacing:.26em;text-transform:uppercase;color:#7d94b5}
+.holo-empty p{max-width:56ch;font-size:14px;color:var(--lcars-text);
+  line-height:1.65;margin:0}
+/* the morning state's second line — what ＋ NEW PROGRAM would actually do.
+   `.holo-empty p.quiet` (0,2,1) over `.holo-empty p` (0,1,1): it wins the
+   cascade on specificity, not on source order. */
+.holo-empty p.quiet{font-size:12.5px;color:#7d94b5;max-width:56ch}
+.holo-empty .where{font-family:var(--font-mono);font-size:11px;color:#7d94b5;
+  max-width:64ch;line-height:1.7}
+.holo-empty .where b{color:var(--holo-grid);font-weight:400}
+
+/* — D7: the failure banners. LCARS-human, never a stack trace, and they lead
+   with the two questions a person actually has: did I lose my work, and is it
+   still running. — */
+.holo-banner{display:flex;align-items:center;gap:12px;padding:10px 16px;
+  font-size:13.5px;border-bottom:1px solid var(--lcars-border);flex-wrap:wrap}
+.holo-banner .bl{font-family:var(--font-display);font-size:10px;
+  letter-spacing:.18em;text-transform:uppercase;padding:3px 9px;
+  border-radius:10px;white-space:nowrap}
+.holo-banner .bt{flex:1 1 260px;line-height:1.55}
+.holo-banner code{font-family:var(--font-mono);font-size:11.5px;
+  color:var(--lcars-gold);overflow-wrap:anywhere}
+.holo-banner.down{background:rgba(255,51,68,.10);
+  border-bottom-color:var(--lcars-red)}
+.holo-banner.down .bl{background:var(--lcars-red);color:#fff}
+.holo-banner.refuse{background:rgba(255,170,0,.09);
+  border-bottom-color:var(--lcars-amber)}
+.holo-banner.refuse .bl{background:var(--lcars-amber);
+  color:var(--lcars-text-on-color,#030608)}
+.holo-banner.ro{background:rgba(68,153,255,.08);
+  border-bottom-color:var(--lcars-blue)}
+.holo-banner.ro .bl{background:var(--lcars-blue);color:#fff}
+/* A DISCLOSURE, not a failure: the room this program opened into already holds
+   an earlier program's work. Nothing is wrong — he just needs to know before
+   the preview shows him somebody else's mockup. */
+.holo-banner.note{background:rgba(45,227,199,.08);
+  border-bottom-color:var(--holo-grid,#2de3c7)}
+.holo-banner.note .bl{background:var(--holo-grid,#2de3c7);
+  color:var(--lcars-text-on-color,#030608)}
+.holo-banner[hidden]{display:none}
+
+/* — D12: the grounding dialog's choices (mock screen 3) — */
+.choices{display:flex;flex-direction:column;gap:9px}
+.choice-card{display:flex;gap:12px;align-items:flex-start;
+  background:var(--lcars-card);border:1px solid rgba(80,104,138,.25);
+  border-radius:8px;padding:12px 14px;cursor:pointer}
+.choice-card.sel{border-color:var(--holo-grid);background:var(--lcars-card-alt);
+  box-shadow:inset 0 0 0 1px rgba(45,227,199,.25)}
+.choice-card.off{opacity:.5;cursor:not-allowed}
+.choice-card .ci{font-size:17px;color:var(--holo-grid);line-height:1.2;
+  width:22px;text-align:center}
+.choice-card .cc{flex:1 1 auto;min-width:0}
+.choice-card .ct2{display:block;font-family:var(--font-display);font-size:13px;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--lcars-text-bright)}
+.choice-card .cd{display:block;font-size:12.5px;color:var(--lcars-text-dim);
+  line-height:1.55;margin-top:3px}
+.choice-card .rec{font-family:var(--font-display);font-size:8.5px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--holo-grid);
+  border:1px solid var(--holo-grid);border-radius:8px;padding:1px 7px;
+  margin-left:8px;white-space:nowrap}
+.choice-card .why{display:block;font-family:var(--font-mono);font-size:10px;
+  color:var(--lcars-amber);margin-top:5px;line-height:1.5}
+
+/* ── S127: THE HAND-OFF ─────────────────────────────────────────────────── */
+/* The bar under the whole deck (the mock's placement): sending is an act on
+   the PROGRAM, so it is not tucked inside one of the three panes. `flex:0 0
+   auto` because #deckHost is a column flexbox whose OTHER child (.deckview) is
+   the one that may grow — a bar that flexed would steal the preview's height,
+   which D2 says is the point of the deck. */
+.holo-handoff{flex:0 0 auto;border-top:1px solid var(--lcars-border);
+  background:var(--lcars-surface);padding:11px 16px;display:flex;
+  align-items:center;gap:12px;flex-wrap:wrap}
+.holo-handoff .hint{font-family:var(--font-mono);font-size:10.5px;
+  color:var(--lcars-text-dim);line-height:1.5;flex:1 1 260px;min-width:0}
+.holo-handoff .grow{flex:1 1 auto}
+.holo-handoff .hl{font-family:var(--font-display);font-size:10px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--holo-grid);
+  white-space:nowrap}
+/* S171 — THE GATE. `▶ Send to Align` is a wait now, so the bar has to be able
+   to SHOW one.
+   S172 — AND ITS CONTROLS ARE ONE FAMILY. The `.btn.small` rule that used to
+   live here is DELETED with the escape hatch it was written for: it made the
+   secondary control 9px against the primary's 13px, and the captain's own
+   screenshot is a small outlined pill beside a full-size filled button on the
+   same row. Both are `.btn.big` now and differ by FILL. Nothing in this bar
+   may reintroduce a size difference to mean "secondary". */
+.holo-handoff .btn{white-space:nowrap}
+.holo-handoff .holo-bars{display:inline-flex;align-items:center;
+  flex:0 0 auto}
+.holo-handoff .holo-bars .bars{display:flex;gap:3px}
+.holo-handoff .holo-bars .bars i{width:4px;height:13px;
+  background:var(--holo-grid);border-radius:1px;
+  animation:holo-pulse 1.1s ease-in-out infinite}
+.holo-handoff .holo-bars .bars i:nth-child(2){animation-delay:.14s}
+.holo-handoff .holo-bars .bars i:nth-child(3){animation-delay:.28s}
+.holo-handoff .holo-bars .bars i:nth-child(4){animation-delay:.42s}
+@media (prefers-reduced-motion:reduce){
+  .holo-handoff .holo-bars .bars i{animation:none;opacity:.8}}
+/* THE WAIT IS AMBER AND THE READY STATE IS NOT — the two must never read the
+   same at a glance, because one of them means "you may leave". */
+.holo-handoff[data-gate=running]{background:rgba(255,170,0,.10)}
+.holo-handoff[data-gate=running] .hint{color:var(--lcars-text-bright)}
+.holo-handoff[data-gate=failed] .hint{color:var(--lcars-text-bright)}
+
+/* THE LOCK BAND — it REPLACES the composer, it does not grey it out. A
+   disabled input invites "why can't I type here?"; a band that says what
+   happened and which mission holds it answers that before it is asked. */
+.holo-lock{border-top:1px solid var(--lcars-border);padding:14px 16px;
+  display:flex;flex-direction:column;gap:9px;align-items:flex-start;
+  background:var(--lcars-surface)}
+.holo-lock .lh{display:flex;align-items:center;gap:9px}
+.holo-lock .li{font-size:15px;color:var(--holo-grid);line-height:1}
+.holo-lock .lt{font-family:var(--font-display);font-size:12px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--lcars-text-bright)}
+.holo-lock p{margin:0;font-size:12.5px;line-height:1.6;
+  color:var(--lcars-text-dim);max-width:64ch}
+.holo-lock .btn.small{font-size:9px;letter-spacing:.1em;padding:3px 9px;
+  border-radius:9px}
+/* A SENT program's chip reads in the deck's own accent — it is a state the
+   captain chose, not a warning. */
+.pstat.sent{border-color:var(--holo-grid);color:var(--holo-grid);
+  background:rgba(45,227,199,.10)}
+.prog .prow .pmission{font-family:var(--font-mono);font-size:9px;
+  letter-spacing:.06em;color:var(--holo-grid);white-space:nowrap}
+/* S172 — WHERE A DUPLICATE CAME FROM. Same weight and selector depth as the
+   two chips beside it (`.pdisk`, `.pmission`), so it cannot lose on
+   specificity or source order to either of them — S162's amber warning
+   rendered as muted metadata for exactly that reason. Dim, like `.pdisk`: it
+   is provenance, not a state the captain has to act on.
+
+   FIX ROUND 1 (D3) — AND IT HAS TO BE READABLE. It shipped clipped to 14ch:
+   measured in Chrome, 76px shown against 109px needed for "⧉ from Tile editor"
+   and 76 against 151 for "⧉ from Tile editor (copy)", so BOTH painted as
+   "⧉ from Tile…" — the same string on two cards with different parents, and
+   "⧉ from Give…" on the captain's real room. A chip that answers "which one
+   was that" with the same six characters for every parent answers nothing.
+   So no cap and no ellipsis: `.prow` is already `flex-wrap:wrap`, so a chip
+   too wide for the space left drops to its own line instead of pushing the
+   card open, and `overflow-wrap:anywhere` (the rule `.pm .proom` already uses
+   for room names) breaks a parent name too long even for that. */
+.prog .prow .pdup{font-family:var(--font-mono);font-size:9px;
+  letter-spacing:.06em;color:var(--lcars-text-dim);
+  max-width:100%;overflow-wrap:anywhere}
+
+/* The hand-off dialog's own two blocks. `.rides` names WHAT travels; the
+   guidance block is shown VERBATIM (it is `<pre>`) because it is the exact
+   text the Mission is given — reformatting it here would make the two
+   different documents. */
+.rides{display:flex;flex-direction:column;gap:7px}
+.ride{display:flex;align-items:baseline;gap:10px;background:var(--lcars-card);
+  border:1px solid rgba(80,104,138,.25);border-radius:7px;padding:8px 12px}
+.ride .ic{color:var(--holo-grid);width:16px;text-align:center}
+.ride .nm{font-family:var(--font-mono);font-size:12px;
+  color:var(--lcars-text-bright);white-space:nowrap}
+.ride .ds{font-size:11.5px;color:var(--lcars-text-dim);line-height:1.5}
+/* S169 FIX ROUND 2 — AND THIS ONE WAS STILL A NESTED SCROLLER.
+
+   Fix round 1 cured the brief textarea and MISSED this box, which is the one
+   carrying the entire precedence rule — the paragraph that tells every stage
+   the mockup wins on look and that a "kept X" line is the account being wrong.
+   MEASURED in real Chrome by tests/drives/browser/handoff.sh: clientHeight 228
+   against scrollHeight 729. 69% of it hidden, inside a `.modal-body` that
+   already scrolls, with no scrollbar of its own worth noticing.
+
+   Same cure, same reason: ONE SCROLLER IN THIS DIALOG, and it is `.modal-body`.
+   The cap is deleted rather than raised — a raised cap is the same defect at a
+   different viewport.
+
+   `overflow` goes with it, and that is not tidying. `overflow-x:auto` makes
+   this a scroll container on BOTH axes (a non-`visible` value on one axis
+   computes the other to `auto`), so leaving it would keep the machinery that
+   produced the defect one `max-height` away from returning. Nothing needs to
+   scroll sideways: the text wraps, and `overflow-wrap` is what stops a long
+   unbroken path or selector from pushing the box wider than the dialog. */
+.handoff-guidance{margin:0;background:var(--lcars-black);
+  border:1px solid rgba(80,104,138,.3);border-radius:8px;padding:11px 13px;
+  font-family:var(--font-mono);font-size:11px;line-height:1.65;
+  color:var(--lcars-text-dim);white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* S169 FIX ROUND 1 — THE 40vh CAP IS GONE, AND WHAT IT WAS FOR IS NOT.
+
+   IT USED TO READ `[data-holo="handoff-brief"]{max-height:40vh}`, and the
+   reason was real: `rows` knows how much text there is and nothing about how
+   tall the window is, so a well-sized box pushed the line that DESCRIBES it —
+   and everything under it — out of the modal body's visible band.
+
+   The cap cured that and caused the tester's worst finding. MEASURED in real
+   Chrome at 1440x677: 40vh is 271px, against 835px of laid-out draft — 566px,
+   two thirds of the captain's own brief, behind a NESTED inner scrollbar
+   inside a body that was itself hiding 1,321px, with the section he most needs
+   to check (`## Implied by the mockup`) at the bottom of the INNER scroller.
+   "Below the fold" had become "below the fold of an inner box".
+
+   THE LINE MOVED INSTEAD OF THE BOX SHRINKING. The hint now sits ABOVE the
+   textarea (board.js `openHandoff`), so it is the first thing read at every
+   viewport and nothing can push it anywhere; the box is then free to be as
+   tall as the draft (`fitBrief`), and `.modal-body` — which has always
+   scrolled — is the only scroller left. The sticky footer is untouched: it is
+   a sibling of the body, not of this box.
+
+   Proven by tests/drives/browser/handoff.sh, whose `capped-box` red control
+   puts a height cap back at the tester's measured 243px and must go red. */
+
+/* S128 (FL-011) — the captured-requirement checklist and its amber band.
+
+   S171 DELETED BOTH, and this rule set with them. The panel listed every
+   captured requirement beside the brief and marked each ✓ or ⚠ by containment
+   on the captain's literal words; with those words no longer quoted in the
+   brief, every row would have gone ⚠ on every hand-off. See actions.py where
+   `_handoff_missing` used to be for the reasoning and the accepted risk.
+
+   The one thing here worth carrying forward is WHY the band was styled the way
+   it was, because the next amber band will meet the same trap: it was
+   deliberately NOT `.hint`-coloured. S162's lesson on this exact surface — an
+   amber warning that ties `.hint` on specificity and loses on source order
+   renders as muted metadata and is read as decoration. Any replacement must be
+   more specific than `.field .hint` and carry its own background. */
+
+/* ── S170: THE DERIVATION BAND ─────────────────────────────────────────────
+   What one bounded read-only pass found when it stood in the captain's project
+   and compared it with `mockup.html`. It sits directly under the hint and
+   above the brief box — the one place a captain who reads a single screen is
+   looking — and it has FOUR states that must not look alike:
+
+     running  AMBER, and it carries its own background and border-left so a
+              neighbouring `.hint` rule cannot demote it to metadata on source
+              order (S162's warning went silent exactly that way). It is
+              louder than S169's progress note ON PURPOSE: it is no longer
+              "wait a moment", it is "a section of your brief is not here yet
+              and you may walk away" — the sentence the whole stage is for.
+     done     quiet TEAL. "I read your app and here is what differs" has to be
+              visibly different from "I could not", or the failure below reads
+              as a result on the day it fires.
+     failed   quiet, no colour, and it SAYS the pass did not answer. It must
+              never be mistaken for the done state. An empty derivation shares
+              this state, deliberately: on a real design "nothing differs" is
+              far likelier to be a bad pass than a true finding.
+     off      hidden entirely. */
+.field .handoff-derive{margin:0 0 8px 0;border:1px solid var(--lcars-border-bright);
+  border-left-width:4px;border-radius:7px;padding:8px 11px;font-size:12px;
+  line-height:1.5;color:var(--lcars-text-dim);
+  display:flex;flex-direction:column;gap:5px}
+.field .handoff-derive[hidden]{display:none}
+.field .handoff-derive .ck-head{color:var(--lcars-text-dim)}
+.field .handoff-derive.done{border-color:var(--lcars-teal)}
+.field .handoff-derive.done .ck-head{color:var(--lcars-text-bright)}
+.field .handoff-derive.running{background:rgba(255,170,0,.14);
+  border-color:var(--lcars-amber);border-left-color:var(--lcars-amber)}
+.field .handoff-derive.running .ck-head{color:var(--lcars-text-bright)}
+.field .handoff-derive .ck-row{display:flex;flex-direction:column;gap:3px;
+  padding:6px 10px;border-radius:6px;background:var(--lcars-black);
+  border-left:3px solid var(--lcars-amber)}
+/* CLAMPED, and the trade is stated where it is made. This band sits between
+   the hint and the brief box, so its height is subtracted from the captain's
+   own draft on the first screen — measured at 165px on S169's first browser
+   run, which left him SIX visible lines of brief at 1440x677 and three at
+   1280x613. Two lines each, with the full string on `title`.
+
+   `.ck-claim` is now only used on the KEPT-YOUR-EDITS road, where the change
+   lines are shown because they could NOT be pasted into the box. Clamping them
+   is the same trade the rest of this band makes: the count is exact, the text
+   is on `title`, and the alternative is pushing his own draft off the screen. */
+.field .handoff-derive .ck-claim{display:-webkit-box;-webkit-box-orient:vertical;
+  -webkit-line-clamp:2;line-clamp:2;overflow:hidden;
+  color:var(--lcars-text-bright);font-size:11.5px;line-height:1.45}
+.handoff-questions{display:flex;flex-direction:column;gap:10px}
+.handoff-questions .hq{display:flex;flex-direction:column;gap:5px;
+  background:var(--lcars-card);border:1px solid rgba(80,104,138,.25);
+  border-left:3px solid var(--holo-grid);border-radius:7px;padding:9px 12px}
+.handoff-questions .hq .qt{font-size:12px;line-height:1.55;
+  color:var(--lcars-text-bright)}
+.handoff-questions .hq input{width:100%}
+
+/* ── S128 fix round 1: THE HAND-OFF FOOTER ─────────────────────────────────
+   `.modal-body` scrolls and `.modal-foot` does not, so this strip is the only
+   part of the dialog on screen at every viewport and every scroll position.
+   Measured before the fix: body scrollHeight 1812px against a 443–677px visible
+   window; the open questions started 546–780px below the fold and a 502's
+   `.errline` sat 1,115px below it, while ▦ File Mission was clickable at
+   scrollTop 0. Both now ride here.
+
+   It WRAPS: the error line and the cue each take their own full-width row above
+   the button row, so nothing gets squeezed out at 900px wide. */
+.modal-foot.handoff-foot{flex-wrap:wrap;align-items:center}
+.modal-foot.handoff-foot .errline{flex:1 0 100%;margin:0}
+.modal-foot.handoff-foot .errline[hidden]{display:none}
+.modal-foot.handoff-foot .hint{flex:1 1 220px;min-width:0}
+.modal-foot.handoff-foot .grow{flex:0 0 0}
+/* The cue is a CONTROL, not a caption — it takes him to the questions. It is
+   full-width and prominent at every viewport while any are unanswered, and
+   teal once they all have answers.
+
+   ── S169 FIX ROUND 2: IT STOPPED BEING AN ALARM ──────────────────────────
+   It used to render `⚠ 2 OPEN QUESTIONS UNANSWERED — READ THEM FIRST` in the
+   amber warning language, and on the 2026-08-07 capstone that was the single
+   most prominent thing on the screen AND IT WAS FALSE — both questions were
+   settled in their own text, and the pipeline then spent a real human gate
+   re-asking one the captain had answered verbatim.
+
+   It was also structurally guaranteed to fire: nothing is answered at the
+   moment the dialog opens, so "UNANSWERED" was a warning about the captain not
+   yet having done a thing he had not yet had the chance to do. A warning that
+   is always on is not a warning, and this one sat directly beside ▦ FILE
+   MISSION — the best real estate in the dialog — training him to click past
+   the strip where a real finding would appear.
+
+   So it keeps its prominence and loses the amber: a bright-bordered CUE that
+   says how many there are and takes him to them. The amber language in this
+   dialog now belongs to things that were actually MEASURED — the missing-
+   requirement band and the check band, both of which report a finding about
+   what is on the screen rather than about what he has not typed yet. */
+.modal-foot.handoff-foot .btn.qcue{flex:1 0 100%;text-align:left;
+  background:transparent;border:1px solid rgba(80,104,138,.45);
+  border-left:4px solid var(--lcars-teal);color:var(--lcars-text-dim);
+  font-size:12px;line-height:1.5;padding:8px 12px;white-space:normal}
+.modal-foot.handoff-foot .btn.qcue.open{border-color:var(--lcars-border-bright);
+  border-left:4px solid var(--lcars-border-bright);
+  color:var(--lcars-text-bright)}
+.modal-foot.handoff-foot .btn.qcue:hover{border-color:var(--lcars-text-bright)}
+
+/* Q3 — RESOLVED 2026-08-05 (captain, S127 live drive): below ~1200px the
+   PROGRAM LIST collapses to a DRAWER. Chat and preview keep the full width; the
+   list is the pane least needed moment-to-moment, so it hides behind a control
+   rather than shrinking the two panes the work actually happens in.
+
+   THIS REPLACES the old max-width 1100 rule, which kept all three panes and
+   squeezed the list to 170px. That rule said in its own comment that it was
+   "the honest minimum rather than an invented answer" BECAUSE Q3 WAS UNRULED.
+   Q3 now has a ruling, and leaving both answers in one sheet is how a layout
+   ends up depending on which rule the cascade happened to pick. It is deleted,
+   not narrowed — see the deleted-lines review.
+
+   1199px is the captain's ~1200 made exact — ONE NUMBER, here, to change. It
+   sits just under the common 1280px laptop width, so a full-screen laptop keeps
+   all three panes and only a genuinely narrow or split-screen window drawers.
+
+   THE PREVIEW IS NOT TOUCHED. D2's "the preview is the point, it must be
+   permanently visible" holds at every width — it never becomes a toggle. */
+@media (max-width:1199px){
+  /* the list column is GONE from the track list, not merely hidden: `.programs`
+     goes out of flow below, and a grid whose first track is still 216px would
+     leave the chat sitting in an empty gutter. */
+  /* the SAME two px floors as the wide rule, and as `HOLO_CHAT_MIN_PX` /
+     `HOLO_PV_MIN_PX` in board.js. The first cut used a second, smaller pair
+     here; a JS clamp and a CSS safety net that disagree about the floor is
+     precisely how the dead band comes back at one width and not another. */
+  .deckview{grid-template-columns:
+    minmax(var(--holo-chat-min,340px),var(--holo-chat-fr,0.42fr))
+    var(--holo-gutter,7px)
+    minmax(var(--holo-pv-min,360px),var(--holo-pv-fr,0.58fr))}
+  .deckview.solo{grid-template-columns:1fr}
+  /* absolute, against `.deckview{position:relative}` — a drawer on a STATIC
+     parent escapes to the nearest positioned ancestor and covers the wrong box.
+     `visibility:hidden` and not merely `transform` because an off-screen pane
+     that is still `visible` stays in the TAB ORDER: Tab would walk the captain
+     into a program list he cannot see. */
+  .programs{position:absolute;left:0;top:0;bottom:0;width:min(272px,80vw);
+    z-index:6;transform:translateX(-100%);visibility:hidden;
+    transition:transform .16s ease,visibility .16s ease;
+    border-right:1px solid var(--lcars-border-bright);
+    box-shadow:6px 0 26px rgba(0,0,0,.55)}
+  .deckview.drawer-open .programs{transform:none;visibility:visible}
+  .holo-scrim{display:block}
+  .deckview.drawer-open .holo-scrim{opacity:1;pointer-events:auto}
+  .holo-drawer-btn{display:inline-flex}
+}
+@media (prefers-reduced-motion:reduce){.programs{transition:none}}

@@ -28,6 +28,12 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_LOG_SCRIPT:-$REPO_ROOT/skills/lcars-log/log.sh}"
 
+# S128 — the precedence sentence a bug PRD must carry, READ OUT OF THE DAEMON
+# (web/lcars_serve/actions.py `_HANDOFF_PRECEDENCE`), its authority. See the
+# same note in tests/lcars-file.test.sh: byte-exact, no longer an independent
+# copy that can go stale while the daemon is reworded (FL-011).
+PRECEDENCE="$(cd "$REPO_ROOT/web" 2>/dev/null && python3 -c 'import sys; sys.path.insert(0, "."); from lcars_serve.actions import _HANDOFF_PRECEDENCE as p; sys.stdout.write(p)' 2>/dev/null)"
+
 pass=0
 fail=0
 TMPROOT="$(mktemp -d)"
@@ -707,6 +713,49 @@ rc24=0
 check "21c. missing attachment ⇒ non-zero exit" "[ '$rc24' -ne 0 ]"
 check "21c. missing attachment ⇒ no bug filed" \
   "[ ! -d '$repo24/.git/lcars/missions/lcars-20260530-002' ]"
+
+# 21d. FL-010 — `lcars log` is a THIRD home of the same sentence. A bug logged
+# against a holodeck-born mission can carry the very mockup the parent was
+# built from, and this bug's prd.md IS its GitHub issue body. The wording comes
+# from the ONE shared rule (lcars_attach_prd_section in lcars-common.sh), so an
+# HTML mockup is never called an image here either.
+repo24b="$(new_repo_with_parent)"
+make_gh_stub "$repo24b/gh"
+export GH_LOG="$repo24b/gh.log"; : >"$GH_LOG"; : >"$GH_LOG.n"
+bug24b="$repo24b/b.md"; write_bug_prd "$bug24b" "Mockup bug" "Looks wrong."
+mock24="$repo24b/mockup.html"; printf '<!doctype html>' >"$mock24"
+rc24b=0
+(
+  cd "$repo24b"
+  LCARS_GH_BIN="$repo24b/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
+    bash "$SCRIPT" --parent lcars-20260530-001 --attach "$mock24" --prd "$bug24b" >out24b.txt 2>&1
+) || rc24b=$?
+B24B="$repo24b/.git/lcars/missions/lcars-20260530-002"
+check "21d. logging a bug with a mockup attachment succeeds" "[ '$rc24b' -eq 0 ]"
+check "21d. bug prd.md does NOT call an HTML mockup an image" \
+  "! grep -q '## Attached images' '$B24B/prd.md'"
+check "21d. bug prd.md heading names what actually arrived" \
+  "grep -q '## Attached files' '$B24B/prd.md'"
+check "21d. bug prd.md declares the mockup LOOK AND FLOW only" \
+  "grep -q 'LOOK AND FLOW' '$B24B/prd.md'"
+check "21d. the daemon's precedence sentence is readable" "[ -n \"\$PRECEDENCE\" ]"
+check "21d. bug prd.md carries the precedence rule VERBATIM" \
+  "[ -n \"\$PRECEDENCE\" ] && grep -qF \"\$PRECEDENCE\" '$B24B/prd.md'"
+check "21d. bug prd.md still lists it by RELATIVE path" \
+  "grep -q '^- attachments/attachment-01.html\$' '$B24B/prd.md'"
+
+# 21e. …and the IMAGE-ONLY wording is untouched, BYTE FOR BYTE (see 21a's
+# fixture). A pasted screenshot's bug PRD must not move by one character.
+IMG_SECTION_LOG="$(printf '\n## Attached images\n\n- attachments/attachment-01.png\n')"
+GOT_SECTION_LOG="$(python3 - "$B22A/prd.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+i = t.index('\n## Attached')
+sys.stdout.write(t[i:])
+PY
+)"
+check "21e. image-only bug prd.md section is BYTE-IDENTICAL to the pre-S128 string" \
+  "[ \"\$GOT_SECTION_LOG\" = \"\$IMG_SECTION_LOG\" ]"
 
 # --- Behaviour 22: per-bug image routing via POSITIONAL --attach -------------
 # `--attach` is now positional (mirroring --model-override): a global attach

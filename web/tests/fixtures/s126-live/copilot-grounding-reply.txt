@@ -1,0 +1,204 @@
+I'll explore the repository to understand its existing design language. Starting with structure and config files.
+
+● List directory .
+  └ 15 files found
+
+● List directory web
+  └ 4 files found
+
+● Read CONTEXT.md
+  └ 112 lines read
+
+This CONTEXT.md describes the harness domain, not visuals. Let me find the actual design assets in the web static directory.
+
+● List directory web/static
+  └ 3 files found
+
+/ Search (glob)
+  │ "web/**/*.{css,scss,html,js,ts,jsx,tsx,vue,svelte}"
+  └ 18 files found
+
+The design lives in `board.css`. Let me read it fully, plus the HTML structure.
+
+● Read board.css
+  │ web/static/board.css
+  └ 1 line read
+
+● Read board.css
+  │ web/static/board.css
+  └ L1:200 (200 lines read)
+
+The tokens come from the shared `docs/lcars.css`. Let me read that — it's the actual token source.
+
+/ Search (glob)
+  │ "docs/**/*.css"
+  └ 1 file found
+
+/ Search (glob)
+  │ "**/lcars.css"
+  └ 1 file found
+
+● Read lcars.css
+  │ docs/lcars.css
+  └ 1 line read
+
+● Read lcars.css
+  │ docs/lcars.css
+  └ L1:160 (160 lines read)
+
+Now let me read the type scale, components, and check for any light-theme/prefers-color-scheme in both files.
+
+● Read lcars.css
+  │ docs/lcars.css
+  └ L160:420 (261 lines read)
+
+/ Search (grep)
+  │ "prefers-color-scheme|@media|light|font-size|border-radius|font-weight"
+  └ 90 lines found
+
+Let me read the button/card/badge components and check for any light-theme mechanism in board.css.
+
+● Read lcars.css
+  │ docs/lcars.css
+  └ L780:935 (153 lines read)
+
+/ Search (grep)
+  │ "prefers-color-scheme|light|\.btn\b|--lcars-radius|@media"
+  └ 45 lines found
+
+Let me read the button/pill/card geometry in board.css and the per-stage color mapping.
+
+● Read board.css
+  │ web/static/board.css
+  └ L486:680 (194 lines read)
+
+/ Search (grep)
+  │ "stage-|--stage|data-stage|--holo|--frame-color"
+  └ 43 lines found
+
+Let me read the pill and card geometry, and how stages map to colors (index.html / board.js).
+
+/ Search (grep)
+  │ "^\.pill\{|^\.pill\.|^\.card\{|^\.col\b|^\.col-head|\.board-wrap\{|^\.lane|column"
+  └ 75 lines found
+
+/ Search (grep)
+  │ "amber|peach|blue|violet|teal|red|gold|STAGES|stageColor|color:"
+  └ 33 lines found
+
+● Read board.css
+  │ web/static/board.css
+  └ L228:300 (73 lines read)
+
+● Read board.js
+  │ web/static/board.js
+  └ L18:30 (13 lines read)
+
+/ Search (grep)
+  │ "\.c-amber|\.c-peach|\.c-blue|\.c-gold|\.c-violet|\.c-teal|\.c-red"
+  └ 4 lines found
+
+Let me confirm fonts loading and any theme mechanism in index.html, and check the holodeck token block.
+
+● Read board.css
+  │ web/static/board.css
+  └ L1155:1170 (16 lines read)
+
+/ Search (grep)
+  │ "font|Antonio|Oxanium|link|theme|stylesheet"
+  └ 5 lines found
+
+/ Search (grep)
+  │ "--lcars-pink|--lcars-green|--lcars-radius-|--space-|--lcars-nav-w" in *.css
+  └ 12 lines found
+
+Quick final check for any theme mechanism repo-wide before I report.
+
+/ Search (grep)
+  │ "data-theme|prefers-color-scheme|theme-switch|\.light\b|toggleTheme|color-scheme"
+  └ 10 files found
+
+I've read the full design surface. Here is the basis.
+
+---
+
+# Theme Switcher — Program Basis
+*What the LCARS project's design language ACTUALLY is today, read from source. Every value below was read from a file; the file + line is named for each.*
+
+## Where the design lives (two surfaces, one token source)
+- **`docs/lcars.css`** — the canonical token source. Owns every `--lcars-*` custom property (lines 14–53). Used by the static doc/vision pages.
+- **`web/static/board.css`** — the PADD/kanban console. Declares **no** `--lcars-*` token; it consumes them and adds only geometry + two local props. A header comment (lines 1–7) pins this to *ADR-007: one shared token source*.
+- **`web/static/index.html`** links `lcars.css` **then** `board.css` (lines 11, 13) — the board depends on the token sheet loading first.
+
+So the palette is defined **once** (`docs/lcars.css`) and the board is a pure consumer. That is the single most load-bearing fact for a theme switcher.
+
+## Colour tokens — real values (`docs/lcars.css` lines 14–53)
+**Surfaces / neutrals**
+| Token | Value |
+|---|---|
+| `--lcars-black` | `#030608` |
+| `--lcars-surface` | `#070d1c` |
+| `--lcars-card` | `#0b1224` |
+| `--lcars-card-alt` | `#0e1830` |
+
+**Named accents** (each LCARS panel has a colour identity)
+| Token | Value | Role note in file |
+|---|---|---|
+| `--lcars-amber` | `#ffaa00` | "primary — the iconic LCARS gold" |
+| `--lcars-peach` | `#ff9966` | warm secondary |
+| `--lcars-blue` | `#4499ff` | cool accent |
+| `--lcars-violet` | `#9977ff` | purple accent |
+| `--lcars-teal` | `#00ccaa` | success / go |
+| `--lcars-red` | `#ff3344` | alert / critical |
+| `--lcars-gold` | `#ffdd44` | highlight |
+
+**Semantic aliases:** `--lcars-primary`→amber, `--lcars-success`→teal, `--lcars-danger`→red, `--lcars-info`→blue.
+
+**Text:** `--lcars-text #c4d4ee`, `--lcars-text-dim #50688a`, `--lcars-text-bright #e4eeff`, `--lcars-text-on-color #030608`.
+
+**Borders / glows:** `--lcars-border rgba(255,170,0,.22)`, `--lcars-border-bright rgba(255,170,0,.5)`, `--lcars-glow-amber rgba(255,170,0,.08)`, `--lcars-glow-blue rgba(68,153,255,.08)`. *Note: the borders are amber-tinted transparencies, not neutral greys — they are colour-coupled to the amber identity.*
+
+**Two local (non-token) accents:**
+- `--frame-color: #f2cf33` — the console's muted-gold LCARS L-frame, a **deliberately forked local prop, NOT a token** (`board.css` line 35, comment lines 33–34).
+- `--holo-grid: #2de3c7` / `--holo-line: rgba(45,227,199,.30)` — the holodeck deck's teal (`board.css` line 1164), also declared local-on-purpose per ADR-007 (comment 1155–1163).
+
+## Type scale
+**Fonts** — the two surfaces do **not** agree:
+- `docs/lcars.css`: body is a plain system stack `-apple-system,'Segoe UI',system-ui` (line 63); mono `'SF Mono','Fira Code','Consolas'`.
+- `board.css` (lines 9–11) introduces real display faces: `--font-display: 'Antonio','Oxanium',…`, `--font-body: 'Oxanium',…`, `--font-mono: 'SF Mono','Fira Code','Consolas'`. Antonio + Oxanium are loaded from Google Fonts (`index.html` line 9). No self-hosted fonts.
+
+**Sizes** (`docs/lcars.css` §6, unless noted):
+- Body 15px / line-height **1.75** (docs, lines 64–65); board body 15px / **1.6** (`board.css` line 14) — another cross-surface divergence.
+- h1 36px / 900 / uppercase / letter-spacing .1em (293–299)
+- h2 10px / 800 / ls .26em — rendered as a pill + extending rule (312–341)
+- h3 16px / 700 (344)
+- h4 13px / 700 / uppercase / ls .08em (369)
+- li 14px (403); hero-sub 13px (304)
+- Board pills 11px, buttons 10px, col-heads 11px (`board.css` 228, 487, 286).
+
+The type language is **condensed-uppercase display + wide letter-spacing** — the LCARS voice lives in `text-transform:uppercase` + large `letter-spacing`, not in a many-step size ramp.
+
+## Spacing & radius
+- **Radius token:** `--lcars-radius: 12px` and `--lcars-elbow: 20px` (`docs/lcars.css` 51–52). In practice the board uses **ad-hoc radii**: buttons/pills 12px, columns 10px, cards 8px, modal 14px, kbd 9px, plus many 2/3/6/8px. Several board banners write `var(--lcars-radius,18px)` — the **fallback 18px ≠ the real token 12px**, so those bands render 12px only when `lcars.css` is present, 18px otherwise (`board.css` 182, 597, 623, 660).
+- **Layout tokens:** `--lcars-nav-w: 240px`, `--lcars-head-h: 72px` (docs 49–50); the console frame uses its own `--frame-top-h: 64px`, `--frame-rail-w: 84px`, `--frame-outer-r: 52px`, `--frame-inner-r: 40px` (`board.css` 36–39).
+- **No spacing scale.** There is no `--space-*` system anywhere. All padding/margin/gap is hand-tuned px (e.g. `.board-wrap` padding `16px 28px`, `.col-body` gap 9px, `.card` padding 10px).
+
+## Components (shapes read from `board.css`)
+- **LCARS frame** (32–89): a CSS-grid solid-yellow "L" — elbow + top band + left rail in one `--frame-color`, big convex outer corner (52px), concave yellow fillet where it meets the black board.
+- **Buttons `.btn`** (486–496): display font, uppercase, ls .1em, 10px, radius 12px, `--lcars-card-alt` bg. Variants: `.go` (teal), `.warn` (amber), `.danger` (transparent bg + red border, pink `#ff8a96` text), `.big`, `[disabled]` opacity .4.
+- **Pills `.pill`** (228–275): radius 12px, uppercase, ls .1em. A large status vocabulary: `.cost .actual .low .med .high .await .queued .stage .standby .go .img .basefresh` — each maps to a palette colour at ~14–16% alpha fill + solid border.
+- **Columns `.col`** (284–294): fixed 220px, radius 10px; `.col-head` painted per stage via `.c-*` classes.
+- **Cards `.card`** (297–299): `--lcars-card` bg, **4px amber left border**, radius 8px.
+- **Modals** (509–519): radius 14px; `.modal-head` amber by default with `.red/.teal/.pink` variants.
+- **Stage → colour map** (`board.js` 18–28): align→amber, research→peach, validate→blue, plan→gold, plan-review→violet, schedule→**pink**, implement→amber, verify→red, done→**green**. The `.c-*` background classes are in `board.css` 291–294.
+
+## What is NOT here (the more useful half)
+- **No light theme. The project is dark-only today.** There is no `prefers-color-scheme`, no `[data-theme]`, no `.light`/`.dark` class, no toggle, in either CSS file. The only media queries are `prefers-reduced-motion` and `max-width` breakpoints. Every surface colour is hard-wired to the one dark palette. A theme switcher has **no existing scaffolding to hook into** — it must introduce the theming mechanism itself.
+- **No spacing scale** (no `--space-*`); spacing is not tokenized.
+- **Two colours are used but never defined:** `--lcars-pink` and `--lcars-green` do **not** exist in `docs/lcars.css`. They only ever resolve to inline fallbacks — pink `#ff66aa` (and inconsistently `#c9c` once, for the deploying pill, `board.css` 160) and green `#33cc66` (`.c-green`, 294). So the **Schedule (pink)** and **Done (green)** stage identities are un-tokenized and would be missed by any switcher that only iterates real tokens.
+- **Cross-surface drift already exists:** body line-height (1.75 vs 1.6), font stacks (system vs Antonio/Oxanium), and the `--lcars-radius` fallback (12 vs 18) differ between `docs/lcars.css` and `board.css`. A theme switcher inherits these seams.
+- **No colour-space / contrast tokens, no elevation scale** beyond the four hard-coded background shades (black → surface → card → card-alt).
+- **Borders are amber-coloured, not neutral** — a naïve light theme cannot just flip backgrounds; the border/glow tokens are semantically tied to the amber identity and would need their own remap.
+
+### The one-line implication for Theme Switcher
+The palette is centralized in `docs/lcars.css` `:root` (good — a theme is mostly a re-scope of `--lcars-*`), **but** three things stand in the way: the board's local `--frame-color`/`--holo-grid` props sit outside the token system by explicit design (ADR-007), the pink/green stage colours aren't tokens at all, and there is zero dark/light infrastructure to build on. Any switcher must (1) add a theme scoping layer, (2) promote pink + green to real tokens, and (3) decide the fate of the two intentionally-forked local accents.

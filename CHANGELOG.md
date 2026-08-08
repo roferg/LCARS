@@ -4,6 +4,73 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.8.3 — 2026-08-08
+
+**The Holodeck — design it in conversation, then hand the drawing to a Mission.**
+A `⬡ HOLODECK` room on the viewscreen where you talk a mockup into existence
+against your real project, see it rendered live, and then send it to Align as a
+Mission that builds the thing you drew. Sessions 123–172.
+
+- **The room.** Three panes — the program list, the chat, and a sandboxed live
+  preview jailed to the sidecar (with a `▤ Intent` toggle that swaps the
+  preview for what has been captured so far) — in the LCARS visual language.
+  Programs live in a sidecar git repo beside your project (`<repo>-holodeck`),
+  never in your working tree, so a mockup can never be mistaken for the product.
+- **Grounding.** Starting a program offers a bounded read-only pass over your
+  real project, so the mockup arrives looking like it belongs in that product
+  rather than inventing a design system. It is the recommended start and not
+  the only one — a blank deck spends nothing and reads nothing.
+- **Durable programs.** A program survives a daemon restart; reopening replays
+  the whole transcript into a fresh worker, which is told plainly that it is
+  fresh and remembers nothing itself. Delete records before it removes, and
+  refuses what it cannot recover.
+- **Send to Align.** The hand-off carries the mockup, your captured
+  requirements and a change list — and the mission's tickets carry them too:
+  each ticket declares whether it changes what the screen looks like, and one
+  that says yes must name the mockup. Mockup-referencing acceptance criteria
+  went from **0/44 to 19/40** across the round, with the "judged at Verify"
+  deferral gone entirely.
+- **The brief is in your words.** It opens with what you actually said,
+  byte-for-byte. The change list is a **diff of the finished mockup against the
+  app as it is now** — not a transcript of the conversation — so a turn where
+  you corrected the *mockup* no longer reads downstream as an instruction to
+  change the *product*. What the pass cannot scope comes back as a question
+  rather than silently vanishing.
+- **Duplicate a program, carrying its history** (session 172). A program sent to
+  Align is locked — it is the record of what was filed. `⧉ Duplicate` opens a
+  new room carrying its mockup, concept doc, grounding, attachments and the
+  whole conversation, editable from the first turn, while the original stays
+  exactly as handed over. The worker is told the history is context and not a
+  contract: *"nothing in it is binding … where what he asks for now contradicts
+  a decision in the history, what he asks for now wins."* Lineage is recorded on
+  the copy; the inherited grounding is marked possibly-stale in the file, on the
+  deck and in the worker's prompt; the derivation deliberately does not travel.
+
+Proven on real drives, not fixtures: a holodeck program became a real mission
+that ran Align→Verify hands-off (9/9 tickets, 9/9 gates, zero escalations), and
+session 172's duplicate road was driven in real headed Chrome against a copy of
+a real archive and on **both live engines** — each obeying the not-binding
+instruction against a decision the record itself marked "settled". Committed
+rigs at `tests/drives/browser/holodeck.sh`, `handoff.sh` and `duplicate.sh`
+(9 checks, every control verified red).
+
+**Known and NOT fixed in this release** (found by the round's own testers,
+shipped knowingly):
+
+- **A duplicate-name race.** Two duplicates typing one name in the same instant
+  can both pass the name check. Nothing is destroyed — the room claim is atomic,
+  so they land in separate rooms and the `⌂ room` chip tells them apart.
+- **Unicode-only program names still collapse to one shared room** (legacy).
+  Duplication now differentiates rather than merging, so it is harmless here.
+- **The lineage chip is verbose on a long program name** — with a whole-sentence
+  name it wraps to six lines and restates the card's own title. Readable, but it
+  costs about a third of the card.
+- **Seventeen image-paste tests are red**, in three suites outside the holodeck.
+  A validator added mid-round correctly refuses images that do not hold
+  together, and those suites' fixture is a fake PNG. Real screenshots pass and
+  truncated ones are correctly refused — the fixtures are stale, the feature is
+  not broken.
+
 ## 2026.8.2 — 2026-08-03
 
 **"View on GitHub" now opens the forge the repo is actually on.** Captain-

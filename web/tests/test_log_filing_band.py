@@ -124,6 +124,25 @@ def _classes(res, cls):
             if cls in (n["cls"] or "").split()]
 
 
+def _node_starting_with(res, prefix):
+    """S169/FL-017 — the `_node_with_text` twin for a label that carries a live
+    elapsed readout after its fixed opening."""
+    for n in _flatten(res["node"]):
+        if (n["text"] or "").startswith(prefix):
+            return n
+    return None
+
+
+def _has_band_starting(res, prefix):
+    """`_has_band`, matched on the label's OPENING (see `_node_starting_with`)."""
+    for n in _flatten(res["node"]):
+        cls = (n["cls"] or "").split()
+        if "lcars-working" in cls and "lcars-running" in cls:
+            if any((c["text"] or "").startswith(prefix) for c in _flatten(n)):
+                return True
+    return False
+
+
 def _has_band(res, label=BAND):
     """The persistent animated band — a .lcars-running working node whose LABEL
     says what is in flight (the same shape scanningPulse/finalizingPulse make)."""
@@ -254,11 +273,17 @@ class FilingBandCoexistenceTest(unittest.TestCase):
         self.assertTrue(res["filing"])
         self.assertTrue(res["finalizing"])
         self.assertTrue(_has_band(res), "the filing band")
-        self.assertTrue(_has_band(res, "◐ Finalizing & costing…"),
+        # S169/FL-017: the Align band now carries the finalize's ELAPSED time
+        # (`◐ Finalizing & costing… 5m 10s`), the way the scanning band already
+        # did — silence is what made FL-009 frightening. This assertion is about
+        # COEXISTENCE, so it matches the label's opening rather than pinning a
+        # clock into a test about two bands sharing one card.
+        self.assertTrue(_has_band_starting(res, "◐ Finalizing & costing…"),
                         "and the Align finalizing band, on the same card")
         self.assertIsNotNone(_node_with_text(res, CONTROL))
-        self.assertIsNotNone(_node_with_text(res, "◐ FINALIZING & COSTING…"),
-                             "neither control may replace the other")
+        self.assertIsNotNone(
+            _node_starting_with(res, "◐ FINALIZING & COSTING…"),
+            "neither control may replace the other")
 
     def test_a_filing_card_keeps_its_own_stage_control(self):
         """The filing is news ABOUT the mission, not a new state OF it: a verify

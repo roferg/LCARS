@@ -30,8 +30,12 @@
 # worker and is worth investigating.
 #
 # EXIT: 0 painted · 1 did not paint (a real failure) · 3 painted but the app was
-# served INCOMPLETE (a stylesheet 404'd — you are looking at a phantom) · 77
-# SKIPPED / infrastructure, loudly, with the reason named. 77 is never a pass.
+# served INCOMPLETE (a stylesheet 404'd — you are looking at a phantom) · 4 the
+# board painted but the HOLODECK check failed (only possible under
+# LCARS_BROWSER_HOLODECK_CHECK, and it says WHY) · 5 the board painted and the
+# deck opened but the ▶ SEND TO ALIGN box failed (LCARS_BROWSER_HANDOFF_CHECK)
+# · 77 SKIPPED / infrastructure, loudly, with the reason named. 77 is never a
+# pass.
 #
 # Exit 1 is an ACCUSATION AGAINST THE BOARD, so nothing that is the rig's own
 # problem is allowed to leave through it. A rig whose whole purpose is to stop
@@ -69,6 +73,20 @@
 #   LCARS_BROWSER_GHLINK_CHECK    (S168) path to an expectation JSON. Makes the
 #                           driver read the RESOLVED href off every GitHub link
 #                           in the live DOM (board card badge + detail header).
+#   LCARS_BROWSER_HANDOFF_CHECK   (S169) path to an expectation JSON. Makes the
+#                           driver enter the deck, pick the PLANTED program back
+#                           up off disk and open ▶ SEND TO ALIGN, then measure
+#                           the pre-drafted brief where it is actually read: how
+#                           much of it is on screen at a realistic window height,
+#                           whether the rest is reachable, and whether ▦ File
+#                           Mission still is. Spawns no worker. See handoff.sh.
+#   LCARS_BROWSER_HOLODECK_CHECK  (S125) path to an expectation JSON. Makes the
+#                           driver CLICK into the holodeck, open a program
+#                           through the real dialog, and MEASURE the deck: the
+#                           board actually gone, three laid-out panes, the
+#                           preview iframe's src and its sandbox flags, and the
+#                           board back after ▦ BOARD. Unset = the rig behaves
+#                           exactly as it did before. See holodeck.sh.
 #   LCARS_BROWSER_CONSOLE_CHECK   (S164) path to an expectation JSON. Makes the
 #                           driver open the File console and MEASURE its
 #                           pre-flight line in the real cascade. Unset = the rig
@@ -143,15 +161,33 @@ cleanup() {
     [ "$alive" -eq 0 ] && break
     sleep 0.1; waited=$((waited + 1))
   done
-  for pid in "$CHROME_PID" "$DAEMON_PID"; do
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      printf '  WARNING: pid %s ignored SIGTERM — SIGKILLing it. If this is the\n' "$pid"
-      printf '           daemon, that is a REGRESSION of the 78450eb signal fix.\n'
-      kill -9 "$pid" 2>/dev/null
-    fi
-  done
+  # …and it NAMES WHICH PROCESS (fix round 1b). The old message said "if this is
+  # the daemon, that is a REGRESSION" and left the reader to match a bare pid
+  # against pids.json — so it printed twice during a calibration run and was read
+  # by nobody. Both of those were CHROME, which is routine: headless Chrome's
+  # launcher regularly outlives a SIGTERM while its zygote children go down.
+  # A regression detector nobody reads is not a detector, so the two cases are
+  # now different messages, and only the daemon's is loud.
+  local daemon_ignored_sigterm=0
+  if [ -n "$CHROME_PID" ] && kill -0 "$CHROME_PID" 2>/dev/null; then
+    printf '  note: chrome (pid %s) outlived SIGTERM — SIGKILLing it. Routine for\n' "$CHROME_PID"
+    printf '        headless Chrome, and nothing to do with the daemon signal fix.\n'
+    kill -9 "$CHROME_PID" 2>/dev/null
+  fi
+  if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    printf '\033[31m  THE DAEMON (pid %s) IGNORED SIGTERM\033[0m — SIGKILLing it. That is a\n' "$DAEMON_PID"
+    printf '  REGRESSION of the 78450eb signal fix, and this run fails on it.\n'
+    kill -9 "$DAEMON_PID" 2>/dev/null
+    daemon_ignored_sigterm=1
+  fi
   wait 2>/dev/null
   record_pids
+  # A run that passed only because nobody read its own teardown is not a pass.
+  # `exit` is what actually sets the status from inside an EXIT trap — a `return`
+  # here is discarded, which is half of why this warning was survivable.
+  if [ "$daemon_ignored_sigterm" -eq 1 ] && [ "$rc" -eq 0 ]; then
+    exit 1
+  fi
   return $rc
 }
 trap cleanup EXIT INT TERM
@@ -219,6 +255,13 @@ EOF
 done
 : >"$OUT/worker-shim.log"
 export PATH="$OUT/shim:$PATH"
+
+# S125 fix round 1 — a rig that DRIVES A TURN needs a worker that answers.
+# The shim above exists to prove nothing spawns; a drive of the holodeck's
+# grounding→design journey must actually spawn something, so holodeck.sh hands
+# in its own SCRIPTED stub (still zero tokens — a python script, no engine).
+# Unset ⇒ the shim, and every existing rig is byte-for-byte what it was.
+WORKER_BIN="${LCARS_BROWSER_WORKER_BIN:-$OUT/shim/claude}"
 
 # ── a fixture board on disk: two missions, no git, no gh, no model ──────────
 FIXTURE="$OUT/fixture"
@@ -310,7 +353,7 @@ fi
 # relative paths are untouched.
 ( cd "$WEB_DIR" && exec env -u LCARS_SERVE_PORT \
     LCARS_SERVE_NO_OPEN=1 LCARS_VERSION_CHECK=0 \
-    LCARS_WORKER_BIN="$OUT/shim/claude" LCARS_GH_BIN="$OUT/shim/claude" \
+    LCARS_WORKER_BIN="$WORKER_BIN" LCARS_GH_BIN="$OUT/shim/claude" \
     "$PY_BIN" -m lcars_serve --port 0 --repo-root "$FIXTURE" ) \
   >"$OUT/daemon.log" 2>&1 &
 DAEMON_PID=$!
@@ -433,6 +476,18 @@ if [ -n "${LCARS_BROWSER_CONSOLE_CHECK:-}" ]; then
   DRIVE_ARGS+=(--console-check "$LCARS_BROWSER_CONSOLE_CHECK")
   note "console:   the File console pre-flight will be measured too"
 fi
+if [ -n "${LCARS_BROWSER_HOLODECK_CHECK:-}" ]; then
+  [ -f "$LCARS_BROWSER_HOLODECK_CHECK" ] || \
+    skip "LCARS_BROWSER_HOLODECK_CHECK points at no file: $LCARS_BROWSER_HOLODECK_CHECK"
+  DRIVE_ARGS+=(--holodeck-check "$LCARS_BROWSER_HOLODECK_CHECK")
+  note "holodeck:  the ⬡ HOLODECK deck will be entered and MEASURED too"
+fi
+if [ -n "${LCARS_BROWSER_HANDOFF_CHECK:-}" ]; then
+  [ -f "$LCARS_BROWSER_HANDOFF_CHECK" ] || \
+    skip "LCARS_BROWSER_HANDOFF_CHECK points at no file: $LCARS_BROWSER_HANDOFF_CHECK"
+  DRIVE_ARGS+=(--handoff-check "$LCARS_BROWSER_HANDOFF_CHECK")
+  note "handoff:   the ▶ SEND TO ALIGN box will be opened and MEASURED too"
+fi
 if [ -n "${LCARS_BROWSER_GHLINK_CHECK:-}" ]; then
   [ -f "$LCARS_BROWSER_GHLINK_CHECK" ] || \
     skip "LCARS_BROWSER_GHLINK_CHECK points at no file: $LCARS_BROWSER_GHLINK_CHECK"
@@ -450,6 +505,9 @@ printf 'screenshot: %s/board.png\n' "$OUT"
 [ -f "$OUT/legend.png" ] && printf 'screenshot: %s/legend.png  (the legend, close-up)\n' "$OUT"
 [ -f "$OUT/gh-links.png" ] && printf 'screenshot: %s/gh-links.png  (the detail overlay + its GitHub link)\n' "$OUT"
 [ -f "$OUT/file-console.png" ] && printf 'screenshot: %s/file-console.png  (the File console)\n' "$OUT"
+[ -f "$OUT/holodeck.png" ] && printf 'screenshot: %s/holodeck.png  (THE HOLODECK — open this one)\n' "$OUT"
+[ -f "$OUT/handoff.png" ] && printf 'screenshot: %s/handoff.png  (▶ SEND TO ALIGN — open this one)\n' "$OUT"
+[ -f "$OUT/holodeck-back-on-board.png" ] && printf 'screenshot: %s/holodeck-back-on-board.png  (the board, after ▦ BOARD)\n' "$OUT"
 note "result:     $OUT/result.json"
 case "$RC" in
   0)
@@ -458,6 +516,21 @@ case "$RC" in
   3)
     printf '\033[31mSERVED INCOMPLETE\033[0m — the board painted, but not with the app it ships\n'
     printf '        with. The screenshot is a picture of a PHANTOM, not of the product.\n' ;;
+  4)
+    # The board painted; the HOLODECK check is what failed, and cdp.js has just
+    # printed each ✗ reason above. Saying "the board did not paint" here — which
+    # is what the default branch used to do, two lines under this rig's own
+    # "real Chrome painted N card node(s)" — is the exact lie this rig exists to
+    # stop anyone telling.
+    printf '\033[31mTHE HOLODECK IS WRONG\033[0m — the board painted fine; the deck did not\n'
+    printf '        measure up. The reasons are printed above, in full in\n'
+    printf '        %s/holodeck-check.json. Open %s/holodeck.png.\n' "$OUT" "$OUT" ;;
+  5)
+    # Same rule as 4, one dialog further on: the board painted and the deck is
+    # fine — it is the box the captain files a Mission from that did not.
+    printf '\033[31mTHE SEND-TO-ALIGN BOX IS WRONG\033[0m — the board painted and the deck\n'
+    printf '        opened; the hand-off dialog did not measure up. Reasons above, in\n'
+    printf '        full in %s/handoff-check.json. Open %s/handoff.png.\n' "$OUT" "$OUT" ;;
   77)
     # The driver could not reach a browser at all. That is the rig's failure and
     # it exits as one — this rig exists to stop harness trouble being reported as

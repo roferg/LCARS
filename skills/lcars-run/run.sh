@@ -553,21 +553,215 @@ context_extra_block() {
 # context_extra_block, but globs the attachments dir directly so it is robust —
 # independent of state.json. Returns EMPTY when the dir is absent or empty, so a
 # no-attachment mission's prompt is byte-identical to before.
+#
+# S127 — THE HEADING NAMES WHAT ACTUALLY ARRIVED. The holodeck hands a Mission a
+# `mockup.html` and a `concept.md` down this SAME road, and heading an HTML
+# mockup as an *image* is a lie in the one prompt the cold worker reads most
+# carefully. So the heading adapts:
+#
+#   • every attachment is an image  → the pre-S127 string, BYTE FOR BYTE. This
+#     is shared pipeline code and the overwhelming majority of missions are
+#     pasted screenshots; their prompt must not move by one character (asserted
+#     against the literal string in tests/lcars-run-attachments.test.sh).
+#   • anything else is present      → the block says what arrived, and when one
+#     of them is a MOCKUP it carries the look-and-flow-only declaration WITH IT.
+#
+# The declaration rides here rather than only in the PRD on purpose: S164
+# measured a live worker correctly refusing a decoy because SEVERAL places it
+# could not miss all said the same thing, and S166 measured a live worker
+# ignoring the same claim made in ONE place. This is one of those places — the
+# prompt the worker is actually handed — and it is worded so a worker that reads
+# nothing else still knows the mockup is not code.
+#
+# S128 (FL-010) — THE WORDING IS NOT SPELLED HERE. It was, and three other
+# copies of the same sentence in `lcars file` and `lcars log` were missed while
+# the byte-exact suite guarding THIS function stayed green. The classification,
+# the tally, the heading noun and the mockup declaration all now come from the
+# one shared rule in lcars-common.sh (lcars_attach_*), which `lcars file` (both
+# lanes) and `lcars log` derive their prd.md section from too. What stays local
+# is only what is genuinely local to a PROMPT: the parenthetical, and the fact
+# that these are ABSOLUTE paths. Output is byte-identical to S127's on every
+# input.
 attachments_extra_block() {
-  local d="$MISSION_DIR/attachments" f any=0 out=""
+  local d="$MISSION_DIR/attachments" f out="" list=""
+  local paths=()
   [ -d "$d" ] || return 0
   for f in "$d"/*; do
     [ -f "$f" ] || continue
-    if [ "$any" -eq 0 ]; then
-      out='
-## Attached images (the captain attached these; view/read them as part of your input)'
-      any=1
-    fi
-    out="$out
+    paths+=("$f")
+    list="$list
 - $f"
   done
-  [ "$any" -eq 1 ] && printf '%s' "$out"
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  # Load the shared rule LAZILY, and only once there is something to head.
+  # run.sh is re-entered as a subprocess for every Stage and every ticket, and
+  # the overwhelming majority of missions have no attachments at all — sourcing
+  # a second library into all of them to serve none of them is blast radius for
+  # nothing. (Same reasoning as drive_load_base_lib, below.)
+  if ! command -v lcars_attach_prd_section >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  # The parenthetical is the same on both branches, so it is written ONCE here;
+  # only the noun (images / files) comes from the shared rule.
+  out="
+$(lcars_attach_heading "${paths[@]}") (the captain attached these; view/read them as part of your input)"
+  # THE UNCHANGED PATH. Everything that is an image, and nothing that is not.
+  if lcars_attach_all_images "${paths[@]}"; then
+    printf '%s%s' "$out" "$list"
+    return 0
+  fi
+  out="$out
+What arrived: $(lcars_attach_tally "${paths[@]}"). Each is listed below by absolute path — open them."
+  if lcars_attach_has_mockup "${paths[@]}"; then
+    out="$out
+$(lcars_attach_mockup_note)"
+  fi
+  printf '%s%s' "$out" "$list"
   return 0
+}
+
+# === The tickets carry the mockup (S169 fix round 2) =======================
+#
+# WHAT WAS MEASURED. A live drive filed a holodeck Mission carrying a mockup and
+# planned it into 8 tickets / 44 acceptance criteria. NONE of the 44 referenced
+# the mockup. "mock" appeared 15 times in ticket DESCRIPTIONS and 0 times in a
+# criterion, and the planner stated the policy 8 times, once per ticket:
+#
+#     "Visual fidelity to the mockup is judged at Verify."
+#     "Visual match is judged at Verify."  ×7
+#
+# A firm, uniform, deliberate policy — not an oversight. A builder could satisfy
+# all 44 criteria without ever opening the drawing, and did: the delivered app
+# kept the stated requirements and lost almost all of the look, with every gate
+# green. Enriching the brief upstream cannot move that number, because the
+# decision is made HERE, at Plan.
+#
+# WHY THIS IS NOT A CLASSIFIER. The obvious fix — read a ticket's prose and
+# decide whether it is "visual" — is the road this project has lost four
+# sessions to (S156's signal classifier fell 14/14 → 5/14 on a reworded corpus;
+# S147 lost four generations of a source parser; S157 lost five versions of a
+# guard). Nothing below reads a ticket to decide what it IS. The PLANNER
+# declares `changesScreenAppearance` — it is the one party that knows, because
+# it is writing the ticket — and the harness only checks that the declaration is
+# present, is a boolean, and, when true, is BACKED by a criterion that contains
+# the mockup's own filename. String containment on a name LCARS itself assigned.
+# There is nothing to reword around.
+
+# mission_mockup_names -> the basenames of this Mission's HTML mockups, space
+# separated; EMPTY when it carries none. Classification comes from the ONE
+# shared rule (lcars_attach_kind), never a second copy.
+mission_mockup_names() {
+  local d="$MISSION_DIR/attachments" f names=""
+  [ -d "$d" ] || return 0
+  # Lazy-load the shared rule, exactly as attachments_extra_block does and for
+  # the same reason: run.sh is re-entered per Stage and per ticket, and almost
+  # no mission has attachments at all.
+  if ! command -v lcars_attach_kind >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v lcars_attach_kind >/dev/null 2>&1 || return 0
+  for f in "$d"/*; do
+    [ -f "$f" ] || continue
+    [ "$(lcars_attach_kind "$f")" = mockup ] || continue
+    names="${names:+$names }$(basename "$f")"
+  done
+  printf '%s' "$names"
+}
+
+# plan_mockup_contract_block -> the Plan prompt's mockup contract, or NOTHING
+# when this Mission carries no mockup. A mission without one — which is every
+# non-holodeck mission in the world — gets a byte-identical Plan prompt.
+#
+# It is worded to confront the planner's OWN settled view rather than merely
+# adding a rule beside it. The "judged at Verify" sentence is not invented: the
+# shared plan.md template teaches it ("mention the deferred judgment in the
+# ticket's description, e.g. 'visual unobtrusiveness is judged at Verify'"), and
+# that rule is CORRECT for a preference word with no stated delta. A mockup is
+# the opposite of a preference word, so the carve-out is named explicitly — eight
+# identical deferral sentences are what happens when a model's belief is left
+# standing and a rule is stacked on top of it.
+plan_mockup_contract_block() {
+  local names; names="$(mission_mockup_names)"
+  [ -n "$names" ] || return 0
+  # The FIRST mockup names the contract in prose; every mockup is listed.
+  local first="${names%% *}"
+  printf '
+
+## This Mission carries a MOCKUP — the tickets must carry it too
+
+The captain attached a drawing of the screens this work must produce: %s
+(absolute path listed above — open it). It is on disk and every Implementer who
+builds one of your tickets can open it too.
+
+### Declare it — `changesScreenAppearance`
+
+Every ticket in this plan carries an ADDITIONAL boolean
+**`changesScreenAppearance`**. Set it `true` when building the ticket changes
+what a screen LOOKS LIKE — markup, layout, spacing, colour, type, on-screen
+wording, an added or restyled control, a transition between screens. Set it
+`false` when it does not: data, server, build, tooling or test-only work.
+You are the one party that knows, because you are writing the ticket. Declare it
+on EVERY ticket. The harness rejects a plan that omits it or gives it anything
+other than a bare `true`/`false`.
+
+### Carry it — every `true` ticket needs a criterion that NAMES the mockup
+
+A ticket with `changesScreenAppearance: true` MUST have at least one entry in
+its `acceptanceCriteria` containing the literal string `%s`. The harness
+checks this deterministically and REJECTS the whole plan otherwise. Naming it in
+the `description` does not count — the description is not what the work is
+judged against.
+
+Write a SPECIFIC criterion, not a general one. "Matches the mockup" is worth
+nothing: an Implementer can claim it without opening the file, and the generic
+losing to the specific is exactly how the look gets lost. Name WHAT about the
+mockup THIS ticket'"'"'s surface must match, so the claim can be checked against the
+drawing:
+
+    BAD   "The sidebar matches the mockup"
+    GOOD  "The sidebar nav reproduces %s'"'"'s nav list: the three items in
+           that file'"'"'s order, each with its icon to the left of its label, the
+           active item carrying the filled accent pill across the item'"'"'s full
+           width, and the count badge right-aligned inside it"
+
+So: open the mockup and read the surface each ticket owns BEFORE you write that
+ticket'"'"'s criteria. The specifics come from the drawing, not from the brief.
+
+### The look is NOT deferred to Verify — read this, it is the point
+
+The rule above about splitting out human judgment — "mention the deferred
+judgment in the description; the captain judges it at Verify" — is about
+PREFERENCE WORDS with no stated delta: "unobtrusive", "looks right", "doesn'"'"'t
+obscure gameplay". Those have no checkable content, so they are rightly left to
+a human eye. A mockup is the OPPOSITE of a preference word. It is a concrete
+artifact, on disk, that states the delta exactly. It is not taste, it is not
+vague, and it is not deferred.
+
+Verify is the captain'"'"'s DEMO DAY — his last look before he ships — not the
+first place a wrong build is caught. A ticket that leaves the look to Verify is
+built, tested and passed green by an Implementer who never opened the drawing;
+what arrives at Verify then has the stated behaviour and none of the design, and
+the captain'"'"'s only remaining move is to send the entire mission back. That is
+not hypothetical — it is exactly what happened the last time a Mission carried a
+mockup through this stage.
+
+Do NOT write "visual fidelity to the mockup is judged at Verify", "visual match
+is judged at Verify", or any sentence like them anywhere in this plan. The look
+is part of the work, and the work is judged where it is built.
+
+### The canonical shape, with the added field
+
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "changesScreenAppearance": true,
+    "rationale": "…"
+
+The mockups this Mission carries:
+%s' "$names" "$first" "$first" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
 }
 
 # The branch that anchors this Mission's code. For a full Mission it is the base
@@ -1145,19 +1339,50 @@ cmd_validate_advance() {
 # must carry every required field, at least one acceptance criterion, and only
 # depend on ticket ids that exist in this same plan. Prints the first failure
 # and returns non-zero; silent on success.
-validate_plan_json() { # file
-  awk '
+#
+# The optional second argument is the space-separated list of the Mission's HTML
+# MOCKUP basenames (see mission_mockup_names). EMPTY — which is every mission
+# that did not come from the holodeck — makes every rule below it inert, so a
+# no-mockup plan is validated EXACTLY as it was before S169. When it is
+# non-empty, three further DECLARATION checks apply; none of them reads a
+# ticket's prose to decide anything (see the design note above
+# plan_mockup_contract_block).
+validate_plan_json() { # file [mockup-basenames]
+  awk -v mock="${2:-}" '
     function fail(msg) { printf "lcars run: %s\n", msg > "/dev/stderr"; exit 1 }
+    # Does the accumulated acceptance-criteria TEXT of this ticket name one of
+    # the Mission mockups? Plain string containment on a filename LCARS itself
+    # assigned — no regex, no semantics, nothing to reword around.
+    function names_mockup(t,   i) {
+      for (i = 1; i <= nmock; i++) if (index(t, mockname[i]) > 0) return 1
+      return 0
+    }
+    BEGIN { nmock = (mock == "" ? 0 : split(mock, mockname, " ")) }
     # object boundaries — canonical format puts { and } on their own lines, and
     # the only braces in the file are object delimiters (arrays are inline).
     /^[[:space:]]*\{[[:space:]]*$/ {
-      inobj=1; delete have; acok=0; id=""; ndep=0; in_ac=0; next
+      inobj=1; delete have; acok=0; id=""; ndep=0; in_ac=0; actext=""; visual=""; next
     }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ {
       if (!inobj) next
       tickets++
       for (k=1; k<=9; k++) if (!have[req[k]]) fail("ticket " tickets " is missing \"" req[k] "\".")
       if (!acok) fail("ticket " tickets " (" id ") needs at least one acceptance criterion.")
+      # --- S169: the tickets must carry the mockup ---------------------------
+      # Only for a Mission that ACTUALLY carries one. The planner DECLARES;
+      # we check the declaration is there, is a boolean, and — when it says this
+      # ticket changes a screen — that a criterion names the drawing.
+      if (nmock > 0) {
+        if (!have["changesScreenAppearance"])
+          fail("ticket " tickets " (" id ") is missing \"changesScreenAppearance\" — this Mission carries a mockup (" mock "), so every ticket must declare whether it changes what a screen looks like.")
+        if (visual != "true" && visual != "false")
+          fail("ticket " tickets " (" id ") has a non-boolean \"changesScreenAppearance\": " visual " — use true or false.")
+        if (visual == "true") {
+          nvisual++
+          if (!names_mockup(actext))
+            fail("ticket " tickets " (" id ") declares changesScreenAppearance:true but NO acceptance criterion references the mockup (" mock "). Add a criterion naming that file and saying what about it this ticket'"'"'s surface must match — the look is built here, not judged at Verify. Naming it in the description does not count.")
+        }
+      }
       ids[id]=1
       for (d=1; d<=ndep; d++) { depof[++drefs]=dep[d]; depticket[drefs]=id }
       inobj=0; next
@@ -1169,6 +1394,7 @@ validate_plan_json() { # file
     inobj && in_ac {
       m=split($0, b, "\"")
       for (i=2; i<m; i+=2) if (b[i] != "") acok=1
+      actext = actext " " $0   # S169 — see the note on the inline branch below
       if ($0 ~ /\]/) in_ac=0
       next
     }
@@ -1179,6 +1405,19 @@ validate_plan_json() { # file
       if (key=="id") id=a[4]
       else if (key=="acceptanceCriteria") {
         if (n >= 4) acok=1          # inline ["a", …] — criterion text on this line
+        # S169: accumulate this ticket'"'"'s CRITERIA TEXT for the mockup check. The
+        # check reads THIS and nothing else — never the description: the measured
+        # plan named the mockup once, in a DESCRIPTION, while all 44 criteria
+        # ignored it, and the description is not what the work is judged against.
+        #
+        # Take the whole line MINUS the key rather than the even split() indices.
+        # A criterion legitimately contains escaped quotes (the measured plan has
+        # `data-theme=\"dark\"` in three of them), which SHIFT the odd/even parity
+        # and would drop half the text on the floor — a FALSE REJECT of an honest
+        # plan. Everything after the key on this line is criteria text, so there
+        # is nothing to be gained by being cleverer.
+        v=$0; sub(/.*"acceptanceCriteria"[[:space:]]*:[[:space:]]*/, "", v)
+        actext = actext " " v
         if ($0 !~ /\]/) in_ac=1     # array opens here, closes on a later line
       }
       else if (key=="dependencies") { for (i=4; i<=n; i+=2) if (a[i] != "") dep[++ndep]=a[i] }
@@ -1191,6 +1430,15 @@ validate_plan_json() { # file
         gsub(/[ ,]/, "", v)
         if (v!="true" && v!="false" && v!="\"true\"" && v!="\"false\"")
           fail("ticket " (tickets+1) " (" id ") has a non-boolean \"establishesSharedInfrastructure\": " v " — use true or false.")
+      }
+      # S169 — the planner'"'"'s DECLARATION that this ticket changes what a screen
+      # looks like. Captured the same way as the flag above (a BARE boolean has
+      # no quoted value, so read the raw token after the colon); judged at the
+      # object close, and ONLY when the Mission actually carries a mockup.
+      else if (key=="changesScreenAppearance") {
+        v=$0; sub(/.*"changesScreenAppearance"[[:space:]]*:[[:space:]]*/, "", v)
+        gsub(/[ ,"]/, "", v)
+        visual=v
       }
     }
     # DESIGN NOTE (Session 31): the three estimate fields are a SHAPE contract,
@@ -1210,6 +1458,13 @@ validate_plan_json() { # file
       for (r=1; r<=drefs; r++)
         if (!(depof[r] in ids))
           fail("ticket " depticket[r] " depends on \"" depof[r] "\", which is not a ticket id in this plan.")
+      # S169 — close the one-word escape. Without this, a plan satisfies the
+      # per-ticket rule above by declaring every ticket false, and the gate is
+      # theatre. This is a check on the DECLARATIONS, not on any ticket'"'"'s prose:
+      # the captain drew screens and attached them, so a plan in which nothing
+      # changes a screen contradicts the Mission'"'"'s own premise.
+      if (nmock > 0 && nvisual == 0)
+        fail("no ticket in this plan declares changesScreenAppearance:true, but the Mission carries a mockup (" mock ") — a drawing of the screens the work must produce. Declare the tickets that change what a screen looks like and give each one a criterion naming that file.")
     }
   ' "$1"
 }
@@ -1221,7 +1476,10 @@ cmd_plan_save() {
 
   [ -n "$PLAN" ] && [ -f "$PLAN" ] || die "no plan file — pass --plan <file>."
 
-  validate_plan_json "$PLAN" || exit 1
+  # S169: the second argument is this Mission's HTML mockup basenames, or EMPTY.
+  # Empty leaves the validator behaving exactly as it did before — which is the
+  # case for every mission that did not come from the holodeck.
+  validate_plan_json "$PLAN" "$(mission_mockup_names)" || exit 1
 
   cp "$PLAN" "$MISSION_DIR/plan.json"
 
@@ -9885,6 +10143,11 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   extra="$extra$(context_extra_block)"
   # The captain's durable image attachments (S92) — ABSOLUTE paths, read as input.
   extra="$extra$(attachments_extra_block)"
+  # S169: when one of those attachments is a MOCKUP, the contract that puts it
+  # into the tickets themselves — the declaration, the criterion that must name
+  # the drawing, and why the look is not deferred to Verify. EMPTY for a Mission
+  # without a mockup, so every other Plan prompt is byte-identical.
+  extra="$extra$(plan_mockup_contract_block)"
   # Pin the reader to the Mission's own branch, not the ambient checkout.
   extra="$extra$(mission_branch_block)"
 
@@ -12293,6 +12556,15 @@ FSG_EOF
   attachments-block-test)
     MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
     attachments_extra_block
+    exit 0 ;;
+  # S169 test hook, the same shape as the one above: exercise the Plan stage's
+  # MOCKUP CONTRACT block in ISOLATION. MISSION_DIR comes from
+  # $LCARS_ATT_TEST_DIR — no locate_mission, no worker spawn, zero tokens — so a
+  # focused test can assert what the Planner is actually told, and assert that a
+  # Mission WITHOUT a mockup gets nothing at all.
+  plan-mockup-block-test)
+    MISSION_DIR="${LCARS_ATT_TEST_DIR:-}"
+    plan_mockup_contract_block
     exit 0 ;;
   # S100 test hook: pure slice_pressure scalar — inputs via env (nCriteria /
   # nFiles / nDirs / newLoc / budget), echoes "<level>\t<reason>". Reads no CLI

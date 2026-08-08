@@ -85,6 +85,16 @@ check "1. lcars-viewscreen launcher execs the repo's viewscreen.sh by absolute p
 check "2. lcars-serve launcher execs the repo's serve.sh by absolute path" \
   "qgrep -q -- '$REPO_ROOT/skills/lcars-viewscreen/serve.sh' < '$e1/bin/lcars-serve'"
 
+# S128: `lcars launch` documents an escape hatch ($LCARS_WORKTREE_SETUP_CMD) that
+# was UNREACHABLE from either surface a person uses — the viewscreen button runs
+# in the daemon's own environment, and there was no shell command to set it on.
+# A real on-PATH `lcars-launch` makes it reachable from any shell:
+#   LCARS_WORKTREE_SETUP_CMD='pnpm install --no-frozen-lockfile' lcars-launch <id>
+check "2b. lcars-launch launcher exists and is executable in the bin dest" \
+  "[ -f '$e1/bin/lcars-launch' ] && [ -x '$e1/bin/lcars-launch' ]"
+check "2b. lcars-launch launcher execs the repo's launch.sh by absolute path" \
+  "qgrep -q -- '$REPO_ROOT/skills/lcars-launch/launch.sh' < '$e1/bin/lcars-launch'"
+
 # ==========================================================================
 # Behaviour 3: running the launcher resolves WEB_DIR correctly — it reaches the
 # repo's web/ dir, NOT a broken ../../bin/../web. Prove with a stubbed python

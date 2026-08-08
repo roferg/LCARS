@@ -17,6 +17,11 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FILE_SCRIPT="${LCARS_FILE_SCRIPT:-$REPO_ROOT/skills/lcars-file/file.sh}"
+# S128 — the precedence sentence a completed park's prd.md must carry, READ OUT
+# OF THE DAEMON (web/lcars_serve/actions.py `_HANDOFF_PRECEDENCE`), which is its
+# authority. Byte-exact pin, sourced rather than re-typed (FL-011: the two homes
+# drifted and one prd.md ended up carrying both spellings).
+PRECEDENCE="$(cd "$REPO_ROOT/web" 2>/dev/null && python3 -c 'import sys; sys.path.insert(0, "."); from lcars_serve.actions import _HANDOFF_PRECEDENCE as p; sys.stdout.write(p)' 2>/dev/null)"
 RUN_SCRIPT="$REPO_ROOT/skills/lcars-run/run.sh"
 STATUS_SCRIPT="$REPO_ROOT/skills/lcars-status/status.sh"
 LCARS_SCRIPT="$REPO_ROOT/skills/lcars/lcars.sh"
@@ -555,6 +560,71 @@ r8f="$(mk_parked)"; prd8f="$r8f/prd.md"; write_prd "$prd8f"
     bash "$FILE_SCRIPT" --complete "$CM" --prd "$prd8f" >o.txt 2>&1 )
 check "8f. no engine anywhere ⇒ completed state.json has no workerBin key" \
   "! grep -q 'workerBin' '$r8f/.git/lcars/missions/$CM/state.json'"
+
+# --- Behaviour 9: FL-010 — the --complete lane's attachment wording ----------
+# The park lane stages attachments but writes no prd.md; --complete re-lists
+# them when the PRD lands. That re-listing was a SECOND copy of the heading
+# `run.sh` had already made adaptive, so a holodeck mission parked-then-completed
+# still read "## Attached images" over an HTML mockup — in its own PRD, which is
+# also its GitHub issue body. Both lanes now derive the wording from the ONE
+# shared rule (lcars_attach_prd_section in lcars-init/lcars-common.sh).
+
+# 9a. park --attach <mockup> + <doc>, then --complete ⇒ honest heading.
+r9="$(new_repo)"; make_gh_stub "$r9/gh"
+mock9="$r9/mockup.html"; printf '<!doctype html>' >"$mock9"
+conc9="$r9/concept.md";  printf '# concept'       >"$conc9"
+(
+  cd "$r9"
+  GH_LOG="$r9/gh.log" LCARS_GH_BIN="$r9/gh" LCARS_DATE="20260530" \
+    bash "$FILE_SCRIPT" --park "Holodeck hand-off" --attach "$mock9" --attach "$conc9" >/dev/null 2>&1
+)
+M9="$r9/.git/lcars/missions/lcars-20260530-001"
+prd9="$r9/prd.md"; write_prd "$prd9"
+(
+  cd "$r9"
+  GH_LOG="$r9/gh.log" LCARS_GH_BIN="$r9/gh" \
+    bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$prd9" >comp9.txt 2>&1
+)
+check "9a. --complete wrote prd.md" "[ -f '$M9/prd.md' ]"
+check "9a. --complete does NOT call an HTML mockup an image" \
+  "! grep -q '## Attached images' '$M9/prd.md'"
+check "9a. --complete heading names what actually arrived" \
+  "grep -q '## Attached files' '$M9/prd.md'"
+check "9a. --complete declares the mockup LOOK AND FLOW only" \
+  "grep -q 'LOOK AND FLOW' '$M9/prd.md'"
+check "9a. the daemon's precedence sentence is readable" "[ -n \"\$PRECEDENCE\" ]"
+check "9a. --complete carries the precedence rule VERBATIM" \
+  "[ -n \"\$PRECEDENCE\" ] && grep -qF \"\$PRECEDENCE\" '$M9/prd.md'"
+check "9a. --complete still lists both by RELATIVE path" \
+  "grep -q '^- attachments/attachment-01.html\$' '$M9/prd.md' && grep -q '^- attachments/attachment-02.md\$' '$M9/prd.md'"
+
+# 9b. NO REGRESSION: park+complete with IMAGES ONLY is byte-identical to the
+# pre-S128 section — the same string the grill-first lane produces.
+r9b="$(new_repo)"; make_gh_stub "$r9b/gh"
+imgA9="$r9b/a.png"; printf 'AAA' >"$imgA9"
+imgB9="$r9b/b.jpg"; printf 'BBB' >"$imgB9"
+(
+  cd "$r9b"
+  GH_LOG="$r9b/gh.log" LCARS_GH_BIN="$r9b/gh" LCARS_DATE="20260530" \
+    bash "$FILE_SCRIPT" --park "Screenshots" --attach "$imgA9" --attach "$imgB9" >/dev/null 2>&1
+)
+M9B="$r9b/.git/lcars/missions/lcars-20260530-001"
+prd9b="$r9b/prd.md"; write_prd "$prd9b"
+(
+  cd "$r9b"
+  GH_LOG="$r9b/gh.log" LCARS_GH_BIN="$r9b/gh" \
+    bash "$FILE_SCRIPT" --complete lcars-20260530-001 --prd "$prd9b" >comp9b.txt 2>&1
+)
+IMG_SECTION_PC="$(printf '\n## Attached images\n\n- attachments/attachment-01.png\n- attachments/attachment-02.jpg\n')"
+GOT_SECTION_PC="$(python3 - "$M9B/prd.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+i = t.index('\n## Attached')
+sys.stdout.write(t[i:])
+PY
+)"
+check "9b. image-only --complete section is BYTE-IDENTICAL to the pre-S128 string" \
+  "[ \"\$GOT_SECTION_PC\" = \"\$IMG_SECTION_PC\" ]"
 
 # ==========================================================================
 echo

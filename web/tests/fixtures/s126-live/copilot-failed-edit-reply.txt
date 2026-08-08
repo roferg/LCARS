@@ -1,0 +1,14 @@
+● Edit mockup.html +2
+
+I'll add a Density toggle chip so the `.compact` class is reachable, then record the decision.
+
+● Edit mockup.html +1
+
+✗ Edit mockup.html
+  └ Multiple matches found
+
+● Edit mockup.html +7
+
+● Edit concept.md +3
+
+I added a `.compact` class on the board that halves card padding (10px 14px → 5px 7px), reachable via a new Compact chip in the topbar, and recorded it as decision T4 in concept.md. The board now toggles density in place without changing the lanes or the accent-bar motif.

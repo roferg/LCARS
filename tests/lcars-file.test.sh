@@ -25,6 +25,14 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="${LCARS_FILE_SCRIPT:-$REPO_ROOT/skills/lcars-file/file.sh}"
 
+# S128 — the precedence sentence prd.md must carry, READ OUT OF THE DAEMON
+# (web/lcars_serve/actions.py `_HANDOFF_PRECEDENCE`), which is its authority.
+# Pinning against the daemon's own literal instead of a copy typed here is the
+# whole point: the two homes drifted once already (FL-011 — the daemon was
+# reworded, skills/lcars-init/lcars-common.sh was not, and ONE prd.md carried
+# both spellings). Still byte-exact, just no longer independently spelled.
+PRECEDENCE="$(cd "$REPO_ROOT/web" 2>/dev/null && python3 -c 'import sys; sys.path.insert(0, "."); from lcars_serve.actions import _HANDOFF_PRECEDENCE as p; sys.stdout.write(p)' 2>/dev/null)"
+
 pass=0
 fail=0
 TMPROOT="$(mktemp -d)"
@@ -747,6 +755,56 @@ rcAT4=0
 check "13d. missing attachment ⇒ non-zero exit" "[ '$rcAT4' -ne 0 ]"
 check "13d. missing attachment ⇒ no mission written" \
   "[ ! -d '$repoAT4/.git/lcars/missions/lcars-20260530-001' ]"
+
+# 13e. FL-010 — a holodeck hand-off travels this SAME --attach road, and prd.md
+# is the mission's own document AND the GitHub issue body. Heading an HTML
+# mockup "## Attached images" is a lie in the one document every downstream
+# stage reads. S127 made run.sh's cold-prompt heading adaptive and MISSED this
+# copy; the wording now comes from ONE shared rule (lcars_attach_prd_section in
+# lcars-init/lcars-common.sh), so both surfaces move together or neither does.
+repoMK="$(new_repo)"; make_gh_stub "$repoMK/gh"
+export GH_LOG="$repoMK/gh.log"; : >"$GH_LOG"
+prdMK="$repoMK/prd.md"; write_prd "$prdMK"
+mockMK="$repoMK/mockup.html";  printf '<!doctype html>' >"$mockMK"
+concMK="$repoMK/concept.md";   printf '# concept'       >"$concMK"
+rcMK=0
+(
+  cd "$repoMK"
+  LCARS_GH_BIN="$repoMK/gh" LCARS_DATE="20260530" bash "$SCRIPT" \
+    --prd "$prdMK" --attach "$mockMK" --attach "$concMK" >outMK.txt 2>&1
+) || rcMK=$?
+MMK="$repoMK/.git/lcars/missions/lcars-20260530-001"
+check "13e. file with a mockup + concept doc succeeds" "[ '$rcMK' -eq 0 ]"
+check "13e. prd.md does NOT call an HTML mockup an image" \
+  "! grep -q '## Attached images' '$MMK/prd.md'"
+check "13e. prd.md heading names what actually arrived" \
+  "grep -q '## Attached files' '$MMK/prd.md'"
+check "13e. prd.md counts the mockup" \
+  "grep -qi 'mockup' '$MMK/prd.md'"
+check "13e. prd.md counts the written document" \
+  "grep -qi 'document' '$MMK/prd.md'"
+check "13e. prd.md declares the mockup LOOK AND FLOW only" \
+  "grep -q 'LOOK AND FLOW' '$MMK/prd.md'"
+check "13e. the daemon's precedence sentence is readable" "[ -n \"\$PRECEDENCE\" ]"
+check "13e. prd.md carries the precedence rule VERBATIM" \
+  "[ -n \"\$PRECEDENCE\" ] && grep -qF \"\$PRECEDENCE\" '$MMK/prd.md'"
+check "13e. prd.md still lists both by RELATIVE path" \
+  "grep -q '^- attachments/attachment-01.html\$' '$MMK/prd.md' && grep -q '^- attachments/attachment-02.md\$' '$MMK/prd.md'"
+
+# 13f. …and the IMAGE-ONLY wording is untouched, BYTE FOR BYTE. This is shared
+# pipeline code and the overwhelming majority of missions are pasted
+# screenshots; their PRD must not move by one character. If this assertion has
+# to be "updated" to pass, the change was not additive.
+IMG_SECTION="$(printf '\n## Attached images\n\n- attachments/attachment-01.png\n- attachments/attachment-02.jpg\n')"
+GOT_SECTION="$(cd "$repoAT2" && python3 - "$MAT2/prd.md" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+i = t.index('\n## Attached')
+sys.stdout.write(t[i:])
+PY
+)"
+check "13f. image-only prd.md section is BYTE-IDENTICAL to the pre-S128 string" \
+  "[ \"\$GOT_SECTION\" = \"\$IMG_SECTION\" ]"
 
 # --- Behaviour 14: --engine on the GRILL-FIRST (--prd) lane (S147 DEFECT-1) --
 # `--engine claude|copilot` is the captain's EXPLICIT engine pin. It was honoured

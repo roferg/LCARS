@@ -427,7 +427,18 @@ check "7c. mid-window death → no live pid recorded" \
   "[ -z \"\$(json_num \"$LJ7\" pid)\" ] || [ \"\$(json_num \"$LJ7\" pid)\" = null ]"
 check "7d. mid-window death → a plain-English message (not a stack trace)" \
   "printf '%s' \"\$OUT7\" | grep -qiE 'exited|startup'"
-check "7e. the failed launch pruned its disposable worktree (no stray dir)" \
+# S128: a failed launch KEEPS its checkout — the evidence of WHY it failed (a
+# half-provisioned node_modules, a missing binary) lives in that directory, and
+# pruning it deleted the only proof the captain could have looked at. It cannot
+# accumulate: the path is keyed by mission, so a re-launch reuses this same one
+# and `--stop` clears it — and the message says exactly that.
+check "7e. the failed launch KEPT its checkout as evidence (not pruned)" \
+  "wt_registered \"$R7\" \"\$(wt_path \"$R7\" m7)\" && [ -d \"\$(wt_path \"$R7\" m7)\" ]"
+check "7e2. the failure message says where that checkout is and how to clear it" \
+  "printf '%s' \"\$OUT7\" | grep -qF \"\$(wt_path \"$R7\" m7)\" \
+   && printf '%s' \"\$OUT7\" | grep -q -- '--stop'"
+( cd "$R7" && LCARS_WORKER_BIN="$W7" bash "$LAUNCH_SH" m7 --stop >/dev/null 2>&1 )
+check "7e3. --stop then clears that left-behind checkout (no accumulation)" \
   "! wt_registered \"$R7\" \"\$(wt_path \"$R7\" m7)\" && [ ! -d \"\$(wt_path \"$R7\" m7)\" ]"
 
 # 7f/g. A survivor (alive past the window) still passes cleanly, with a live pid,
@@ -930,6 +941,259 @@ check "23g. and it does NOT blame an env var the operator never set" \
 check "23h. both refusals are plain English (no stack trace / shell noise)" \
   "! printf '%s' \"\$OUT23\" | grep -qE 'line [0-9]+:|Traceback|command not found' \
    && ! printf '%s' \"\$OUT23B\" | grep -qE 'line [0-9]+:|Traceback|command not found'"
+
+# =====================================================================
+# 24. S128 — PROVISIONING HONESTY. A mission that ADDS A DEPENDENCY could not be
+#     launched and EVERY surface lied about why (measured on groutwork,
+#     2026-08-06):
+#       • `pnpm install --frozen-lockfile` printed ERR_PNPM_OUTDATED_LOCKFILE and
+#         STILL EXITED 0 — so an exit code alone is not the signal;
+#       • provisioning ran as `( cd wt && bash -c "$cmd" ) >/dev/null 2>&1`, so
+#         that line was thrown away unread;
+#       • the app then died with `electron-vite: command not found` — a symptom
+#         three layers from the cause — and the failure path PRUNED the worktree,
+#         deleting the evidence.
+#     The cure is launch-UX honesty, NOT a build gate: capture what provisioning
+#     said, carry the REAL reason into the message a person reads, and leave the
+#     checkout behind (keyed by mission, so `--stop` still clears it).
+# =====================================================================
+# 24a/b. The output is CAPTURED, both streams, to a log that outlives the launch.
+R24="$(make_repo m24)"
+APP24="$TMPROOT/app24.sh"; make_app "$APP24"
+W24="$(claude_stub_path)"; make_ready_worker "$W24" "$APP24" "m24 dev server" "" "stop"
+( cd "$R24" && LCARS_WORKTREE_SETUP_CMD='echo PROV-STDOUT-MARK; echo PROV-STDERR-MARK >&2' \
+    LCARS_WORKER_BIN="$W24" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m24 >/dev/null 2>&1 )
+PID24="$(json_num "$R24/.git/lcars/missions/m24/launch.json" pid)"
+[ -n "$PID24" ] && LAUNCHED_PIDS+=("$PID24")
+PROVLOG24="$R24/.git/lcars/missions/m24/launch-provision.log"
+check "24a. provisioning STDOUT is captured to a log a person can read after the fact" \
+  "grep -q PROV-STDOUT-MARK \"$PROVLOG24\""
+check "24b. provisioning STDERR is captured to that same log (nothing swallowed)" \
+  "grep -q PROV-STDERR-MARK \"$PROVLOG24\""
+( cd "$R24" && LCARS_WORKER_BIN="$W24" bash "$LAUNCH_SH" m24 --stop >/dev/null 2>&1 )
+
+# 24c–i. THE EXIT-0 LIAR: provisioning prints ERR_PNPM_OUTDATED_LOCKFILE and exits
+#        0; the app then dies with the downstream symptom. The message the person
+#        sees must lead with the REAL reason, still show the symptom, name the
+#        escape hatch, and leave the checkout behind.
+R24b="$(make_repo m24b)"
+DEAD24="$TMPROOT/app24b.sh"
+cat >"$DEAD24" <<'EOF'
+#!/usr/bin/env bash
+echo "sh: electron-vite: command not found" >&2
+exit 127
+EOF
+chmod +x "$DEAD24"
+W24b="$(claude_stub_path)"; make_ready_worker "$W24b" "$DEAD24" "m24b editor" "" "stop"
+LOCKERR='echo " ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with frozen-lockfile because pnpm-lock.yaml is not up to date with package.json" >&2; exit 0'
+OUT24b="$( cd "$R24b" && LCARS_WORKTREE_SETUP_CMD="$LOCKERR" \
+    LCARS_WORKER_BIN="$W24b" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m24b 2>&1 )"; RC24b=$?
+LJ24b="$R24b/.git/lcars/missions/m24b/launch.json"
+WT24b="$(wt_path "$R24b" m24b)"
+check "24c. a provisioning failure that EXITS 0 is still caught → non-zero, status=failed" \
+  "[ \"$RC24b\" != 0 ] && [ \"\$(json_field \"$LJ24b\" status)\" = failed ]"
+check "24d. the message names the REAL reason (the lockfile), not just the symptom" \
+  "printf '%s' \"\$OUT24b\" | grep -qi 'lockfile'"
+check "24e. it still reports the symptom the app itself printed" \
+  "printf '%s' \"\$OUT24b\" | grep -q 'electron-vite'"
+check "24f. it names the escape hatch the person can actually use" \
+  "printf '%s' \"\$OUT24b\" | grep -q 'LCARS_WORKTREE_SETUP_CMD'"
+check "24g. it points at the captured setup output" \
+  "printf '%s' \"\$OUT24b\" | grep -qF 'launch-provision.log'"
+check "24h. the checkout was NOT pruned — the evidence survives the failure" \
+  "[ -d \"$WT24b\" ] && wt_registered \"$R24b\" \"$WT24b\""
+check "24i. the persisted record carries the real reason too (what the board reads)" \
+  "printf '%s' \"\$(json_field \"$LJ24b\" message)\" | grep -qi 'lockfile'"
+check "24j. the message is plain English, not a raw stack trace" \
+  "! printf '%s' \"\$OUT24b\" | grep -qE 'Traceback|line [0-9]+:'"
+( cd "$R24b" && LCARS_WORKER_BIN="$W24b" bash "$LAUNCH_SH" m24b --stop >/dev/null 2>&1 )
+
+# 24k/l. An ORDINARY non-zero provisioning exit is reported the same way.
+R24c="$(make_repo m24c)"
+W24c="$(claude_stub_path)"; make_ready_worker "$W24c" "$DEAD24" "m24c editor" "" "stop"
+OUT24c="$( cd "$R24c" && LCARS_WORKTREE_SETUP_CMD='echo "no such package: @groutwork/nope" >&2; exit 3' \
+    LCARS_WORKER_BIN="$W24c" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m24c 2>&1 )"; RC24c=$?
+check "24k. a non-zero provisioning exit → the failure names dependency setup" \
+  "[ \"$RC24c\" != 0 ] && printf '%s' \"\$OUT24c\" | grep -qi 'dependency setup'"
+check "24l. and quotes what it actually said" \
+  "printf '%s' \"\$OUT24c\" | grep -q 'no such package'"
+check "24l2. and names the escape hatch on ANY provisioning failure, not just the lockfile one" \
+  "printf '%s' \"\$OUT24c\" | grep -q 'LCARS_WORKTREE_SETUP_CMD'"
+( cd "$R24c" && LCARS_WORKER_BIN="$W24c" bash "$LAUNCH_SH" m24c --stop >/dev/null 2>&1 )
+
+# 24q/r. THE SILENCED SETUP — MEASURED on groutwork 2026-08-06, pnpm 9.0.0. Its
+#        configured worktreeSetupCommand ends in `--silent`, which SWALLOWS pnpm's
+#        own `ERR_PNPM_OUTDATED_LOCKFILE` line: the captured log then holds nothing
+#        but a node DeprecationWarning. Quoting the log's tail blindly presents
+#        that warning AS the reason — a new lie in place of the old one. So a
+#        warning must never be dressed up as the failure, and when nothing in the
+#        output explains the failure the message must SAY that (and name the
+#        --silent flag that hides it) rather than invent a cause.
+#        (S128 fix round 1 / L-4: the --silent ADVICE is only true when the setup
+#        command actually carries the flag, so this fixture's command now does —
+#        exactly as groutwork's configured one does. The advice-when-there-is-no
+#        --silent case is 25e below.)
+R24f="$(make_repo m24f)"
+W24f="$(claude_stub_path)"; make_ready_worker "$W24f" "$DEAD24" "m24f editor" "" "stop"
+NOISY='echo "(node:123) [DEP0169] DeprecationWarning: url.parse() is prone to errors that have security implications." >&2; : pnpm install --frozen-lockfile --silent; exit 1'
+OUT24f="$( cd "$R24f" && LCARS_WORKTREE_SETUP_CMD="$NOISY" \
+    LCARS_WORKER_BIN="$W24f" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m24f 2>&1 )"; RC24f=$?
+check "24q. a warning in the setup output is NOT presented as the failure reason" \
+  "[ \"$RC24f\" != 0 ] && ! printf '%s' \"\$OUT24f\" | grep -q 'DeprecationWarning'"
+check "24r. instead it admits the output explains nothing, and names --silent as the likely reason why" \
+  "printf '%s' \"\$OUT24f\" | grep -qi 'nothing that explains' \
+   && printf '%s' \"\$OUT24f\" | grep -q -- '--silent'"
+( cd "$R24f" && LCARS_WORKER_BIN="$W24f" bash "$LAUNCH_SH" m24f --stop >/dev/null 2>&1 )
+
+# 24m/n. Provisioning failed but the app came up ANYWAY (deps were already there
+#        from a reused worktree): the launch still succeeds — best-effort is kept,
+#        so this can never refuse a launch that would have worked — but the
+#        readout and the record SAY that setup reported a problem.
+R24d="$(make_repo m24d)"
+APP24d="$TMPROOT/app24d.sh"; make_app "$APP24d"
+W24d="$(claude_stub_path)"; make_ready_worker "$W24d" "$APP24d" "m24d dev server" "" "stop"
+OUT24d="$( cd "$R24d" && LCARS_WORKTREE_SETUP_CMD='echo "half-installed" >&2; exit 1' \
+    LCARS_WORKER_BIN="$W24d" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m24d 2>&1 )"; RC24d=$?
+LJ24d="$R24d/.git/lcars/missions/m24d/launch.json"
+PID24d="$(json_num "$LJ24d" pid)"
+[ -n "$PID24d" ] && LAUNCHED_PIDS+=("$PID24d")
+check "24m. a provisioning failure never blocks an app that does come up (still running)" \
+  "[ \"$RC24d\" = 0 ] && [ \"\$(json_field \"$LJ24d\" status)\" = running ]"
+check "24n. but the readout warns that dependency setup reported a problem" \
+  "printf '%s' \"\$OUT24d\" | grep -qi 'dependency setup'"
+( cd "$R24d" && LCARS_WORKER_BIN="$W24d" bash "$LAUNCH_SH" m24d --stop >/dev/null 2>&1 )
+
+# 24o/p. NO FALSE ALARM: clean provisioning + a healthy app → the readout is
+#        exactly today's, with no warning and no provisioning noise.
+R24e="$(make_repo m24e)"
+APP24e="$TMPROOT/app24e.sh"; make_app "$APP24e"
+W24e="$(claude_stub_path)"; make_ready_worker "$W24e" "$APP24e" "m24e dev server" "" "stop"
+OUT24e="$( cd "$R24e" && LCARS_WORKTREE_SETUP_CMD='echo installing; exit 0' \
+    LCARS_WORKER_BIN="$W24e" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m24e 2>&1 )"; RC24e=$?
+LJ24e="$R24e/.git/lcars/missions/m24e/launch.json"
+PID24e="$(json_num "$LJ24e" pid)"
+[ -n "$PID24e" ] && LAUNCHED_PIDS+=("$PID24e")
+check "24o. clean provisioning → status=running with no warning in the readout" \
+  "[ \"$RC24e\" = 0 ] && [ \"\$(json_field \"$LJ24e\" status)\" = running ] \
+   && ! printf '%s' \"\$OUT24e\" | grep -qi 'problem'"
+check "24p. and the record carries no provisioning complaint" \
+  "! grep -q '\"provisioning\"' \"$LJ24e\""
+( cd "$R24e" && LCARS_WORKER_BIN="$W24e" bash "$LAUNCH_SH" m24e --stop >/dev/null 2>&1 )
+
+# =====================================================================
+# 25. S128 fix round 1 — the new failure messages must themselves be HONEST.
+#     A fresh tester drove the round-0 cure on the real ~/Projects/groutwork and
+#     caught it telling the captain three wrong things. Every fixture below is a
+#     shape that drive produced verbatim.
+# =====================================================================
+
+# 25a/b. L-4a — the reason-extractor threw away every line containing "warn",
+#        which drops the single most common way an install or a build announces
+#        failure: "N warnings being treated as errors". MEASURED: that line in the
+#        log, and the message said the output "printed nothing that explains why".
+R25="$(make_repo m25)"
+W25="$(claude_stub_path)"; make_ready_worker "$W25" "$DEAD24" "m25 editor" "" "stop"
+WERR='echo "error: 12 warnings being treated as errors" >&2; exit 1'
+OUT25="$( cd "$R25" && LCARS_WORKTREE_SETUP_CMD="$WERR" \
+    LCARS_WORKER_BIN="$W25" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m25 2>&1 )"
+check "25a. an error line that MENTIONS warnings is still quoted as the reason" \
+  "printf '%s' \"\$OUT25\" | grep -q 'treated as errors'"
+check "25b. and the message never claims the output explained nothing" \
+  "! printf '%s' \"\$OUT25\" | grep -qi 'nothing that explains'"
+# The record this same failure persisted — read BEFORE --stop overwrites it.
+MSG25="$(json_field "$R25/.git/lcars/missions/m25/launch.json" message)"
+( cd "$R25" && LCARS_WORKER_BIN="$W25" bash "$LAUNCH_SH" m25 --stop >/dev/null 2>&1 )
+
+# 25c/d. L-4b — `fatal:` (git's own error prefix, and common to installers) was
+#        not in the vocabulary at all, and neither was "could not" (only "cannot").
+#        MEASURED: `fatal: could not reach the registry`, exit 7 → same false claim.
+R25b="$(make_repo m25b)"
+W25b="$(claude_stub_path)"; make_ready_worker "$W25b" "$DEAD24" "m25b editor" "" "stop"
+FATAL='echo "fatal: could not reach the registry" >&2; exit 7'
+OUT25b="$( cd "$R25b" && LCARS_WORKTREE_SETUP_CMD="$FATAL" \
+    LCARS_WORKER_BIN="$W25b" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m25b 2>&1 )"
+check "25c. a fatal: line is recognised as the reason" \
+  "printf '%s' \"\$OUT25b\" | grep -q 'could not reach the registry'"
+check "25d. and that failure never claims the output explained nothing" \
+  "! printf '%s' \"\$OUT25b\" | grep -qi 'nothing that explains'"
+( cd "$R25b" && LCARS_WORKER_BIN="$W25b" bash "$LAUNCH_SH" m25b --stop >/dev/null 2>&1 )
+
+# 25e/f. L-4c — "if the setup command runs with --silent, drop that flag" was
+#        offered UNCONDITIONALLY, so a captain whose command has no such flag was
+#        sent hunting for one. The skill already knows the command string.
+R25c="$(make_repo m25c)"
+W25c="$(claude_stub_path)"; make_ready_worker "$W25c" "$DEAD24" "m25c editor" "" "stop"
+QUIET='echo "(node:123) [DEP0169] DeprecationWarning: url.parse() is prone to errors." >&2; exit 1'
+OUT25c="$( cd "$R25c" && LCARS_WORKTREE_SETUP_CMD="$QUIET" \
+    LCARS_WORKER_BIN="$W25c" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m25c 2>&1 )"
+check "25e. with no --silent in the setup command, the message never advises dropping one" \
+  "! printf '%s' \"\$OUT25c\" | grep -q -- '--silent'"
+check "25f. but it still admits the output explains nothing rather than inventing a cause" \
+  "printf '%s' \"\$OUT25c\" | grep -qi 'nothing that explains'"
+( cd "$R25c" && LCARS_WORKER_BIN="$W25c" bash "$LAUNCH_SH" m25c --stop >/dev/null 2>&1 )
+
+# 25g/h. L-5 — the pnpm diagnosis fired on the STRING, not the failure. MEASURED:
+#        a setup command that merely MENTIONS the code and exits 0, on a launch
+#        that WORKED, produced a confidently specific, entirely invented diagnosis.
+#        Staying independent of the exit code is deliberate (pnpm can exit 0 on
+#        this — that was the original defect), so the cure is to recognise pnpm
+#        REFUSING, not a passing mention.
+R25d="$(make_repo m25d)"
+APP25d="$TMPROOT/app25d.sh"; make_app "$APP25d"
+W25d="$(claude_stub_path)"; make_ready_worker "$W25d" "$APP25d" "m25d dev server" "" "stop"
+MENTION='echo "note: we used to hit ERR_PNPM_OUTDATED_LOCKFILE here, but no longer"; exit 0'
+OUT25d="$( cd "$R25d" && LCARS_WORKTREE_SETUP_CMD="$MENTION" \
+    LCARS_WORKER_BIN="$W25d" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m25d 2>&1 )"; RC25d=$?
+LJ25d="$R25d/.git/lcars/missions/m25d/launch.json"
+PID25d="$(json_num "$LJ25d" pid)"
+[ -n "$PID25d" ] && LAUNCHED_PIDS+=("$PID25d")
+check "25g. a passing MENTION of the pnpm code on a clean run raises no diagnosis" \
+  "[ \"$RC25d\" = 0 ] && [ \"\$(json_field \"$LJ25d\" status)\" = running ] \
+   && ! printf '%s' \"\$OUT25d\" | grep -qi 'lockfile is out of date'"
+check "25h. and the record carries no provisioning complaint" \
+  "! grep -q '\"provisioning\"' \"$LJ25d\""
+( cd "$R25d" && LCARS_WORKER_BIN="$W25d" bash "$LAUNCH_SH" m25d --stop >/dev/null 2>&1 )
+
+# 25i/j. L-6 — provision_worktree returns early when NO setup command is
+#        configured, BEFORE it truncates the log, while fail_msg cites the log on
+#        mere existence. So in a repo with no setup command, a failure points the
+#        captain at an UNRELATED, stale log left by an earlier launch that used the
+#        $LCARS_WORKTREE_SETUP_CMD override. (Compare `rm -f $LAUNCH_DISCOVERY`,
+#        which handles exactly this hazard for the other artifact.)
+R25e="$(make_repo m25e)"
+APP25e="$TMPROOT/app25e.sh"; make_app "$APP25e"
+W25eOK="$(claude_stub_path)"; make_ready_worker "$W25eOK" "$APP25e" "m25e dev server" "" "stop"
+( cd "$R25e" && LCARS_WORKTREE_SETUP_CMD='echo STALE-PROV-MARK; exit 0' \
+    LCARS_WORKER_BIN="$W25eOK" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m25e >/dev/null 2>&1 )
+PID25e="$(json_num "$R25e/.git/lcars/missions/m25e/launch.json" pid)"
+[ -n "$PID25e" ] && LAUNCHED_PIDS+=("$PID25e")
+PROVLOG25="$R25e/.git/lcars/missions/m25e/launch-provision.log"
+STALE_WAS_THERE=0; grep -q STALE-PROV-MARK "$PROVLOG25" 2>/dev/null && STALE_WAS_THERE=1
+( cd "$R25e" && LCARS_WORKER_BIN="$W25eOK" bash "$LAUNCH_SH" m25e --stop >/dev/null 2>&1 )
+# Now a launch with NO setup command at all (no override, no repo config), whose
+# app dies: nothing was provisioned this time, so nothing may be cited.
+W25e="$(claude_stub_path)"; make_ready_worker "$W25e" "$DEAD24" "m25e editor" "" "stop"
+OUT25e="$( cd "$R25e" && LCARS_WORKER_BIN="$W25e" LCARS_LAUNCH_SETTLE=0.6 \
+    bash "$LAUNCH_SH" m25e 2>&1 )"
+check "25i. an earlier launch's provisioning log is cleared when nothing provisions now" \
+  "[ \"$STALE_WAS_THERE\" = 1 ] && ! grep -q STALE-PROV-MARK \"$PROVLOG25\" 2>/dev/null"
+check "25j. and the failure never points the captain at that stale evidence" \
+  "! printf '%s' \"\$OUT25e\" | grep -qF 'Setup output'"
+( cd "$R25e" && LCARS_WORKER_BIN="$W25e" bash "$LAUNCH_SH" m25e --stop >/dev/null 2>&1 )
+
+# 25k/l. COSMETIC (the captain asked for cosmetic items this round): the failure
+#        ran cause, symptom, evidence and cleanup together on ONE ~600-character
+#        terminal line. Break it so the cause reads at a glance — while the
+#        PERSISTED record stays the single-line string the board renders today
+#        (json_esc does not escape newlines, so a raw one would corrupt the JSON).
+check "25k. the failure message breaks before the app's symptom" \
+  "printf '%s\n' \"\$OUT25\" | grep -q '^The app then failed:'"
+check "25l. and again before the left-behind checkout" \
+  "printf '%s\n' \"\$OUT25\" | grep -q '^The checkout is left in place'"
+check "25m. but the persisted record's message is still ONE line, carrying both parts" \
+  "[ \"\$(printf '%s' \"\$MSG25\" | wc -l | tr -d ' ')\" = 0 ] \
+   && printf '%s' \"\$MSG25\" | grep -q 'The app then failed' \
+   && printf '%s' \"\$MSG25\" | grep -q 'treated as errors'"
 
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -1,0 +1,108 @@
+# Basis — LCARS existing design language
+
+Read directly from the repo; every value below is quoted from source with its file. Nothing here is invented or estimated.
+
+## Token source of truth
+
+`docs/lcars.css` is the **single shared token sheet** (ADR-007, enforced by comment in `web/static/board.css:1-6`: *"the PALETTE/tokens come from the SHARED docs/lcars.css... It does NOT redefine any --lcars-* token"*). The live app (`web/static/index.html:11,13`) loads it as `/lcars.css`, then layers `/board.css` on top for board/card/pill/modal geometry. Two other sheets (`web/static/board.css`, and this one) are the only stylesheets in the repo.
+
+## Color tokens
+
+All from `docs/lcars.css:14-53`, `:root`:
+
+```
+--lcars-black:    #030608
+--lcars-surface:  #070d1c
+--lcars-card:     #0b1224
+--lcars-card-alt: #0e1830
+
+--lcars-amber:    #ffaa00   /* primary — "the iconic LCARS gold" */
+--lcars-peach:    #ff9966   /* warm secondary */
+--lcars-blue:     #4499ff   /* cool accent */
+--lcars-violet:   #9977ff   /* purple accent */
+--lcars-teal:     #00ccaa   /* success / go */
+--lcars-red:      #ff3344   /* alert / critical */
+--lcars-gold:     #ffdd44   /* highlight */
+
+--lcars-primary:  var(--lcars-amber)
+--lcars-success:  var(--lcars-teal)
+--lcars-danger:   var(--lcars-red)
+--lcars-info:     var(--lcars-blue)
+
+--lcars-text:          #c4d4ee
+--lcars-text-dim:      #50688a
+--lcars-text-bright:   #e4eeff
+--lcars-text-on-color: #030608
+
+--lcars-border:        rgba(255, 170, 0, 0.22)
+--lcars-border-bright: rgba(255, 170, 0, 0.5)
+--lcars-glow-amber:    rgba(255, 170, 0, 0.08)
+--lcars-glow-blue:     rgba(68, 153, 255, 0.08)
+```
+
+**Notable gap, found empirically, not asserted:** `web/static/board.css` and `index.html` also reference `var(--lcars-pink, #ff66aa)` / `var(--lcars-pink)` in several places (e.g. `board.css:382,393,519`) — but `--lcars-pink` is **never defined** in `docs/lcars.css`. This is a real, currently-shipping bug: `tests/drives/browser/README.md:290-321` documents a real-Chrome rig (`legend-swatches.sh`) that measured the pink legend swatch resolving to `""` and painting nothing. Anywhere a design references "LCARS pink," today it either falls back to `#ff66aa` (where a fallback was written) or renders invisible (where it wasn't).
+
+Two more colors exist only as **local, surface-scoped props**, explicitly *not* promoted to shared tokens (the code comments are emphatic about this):
+- `--frame-color: #f2cf33` — the outer LCARS elbow-frame chrome color, defined on `.lcars-frame` (`web/static/board.css:35`), "a muted golden yellow the captain chose."
+- `--holo-grid: #2de3c7` and `--holo-line: rgba(45,227,199,.30)` — the Holodeck surface's own teal accent, defined on `body.lcars-serve` (`web/static/board.css:1164`), explicitly reasoned as *"it belongs to one surface, it is not part of the shared palette, and forking a shared token to get it would be the thing the ADR forbids."*
+
+If Command Palette needs a new accent color for its own surface, this is the established pattern: a locally-scoped custom prop, never a fork of an existing `--lcars-*` token.
+
+## Type
+
+**Fonts** — Google Fonts, loaded in `web/static/index.html:9`:
+```
+Antonio:wght@400;500;600;700
+Oxanium:wght@400;600;700
+```
+Declared as font-family stacks in `web/static/board.css:9-11`:
+```css
+--font-display: 'Antonio','Oxanium',-apple-system,'Segoe UI',sans-serif;
+--font-body:    'Oxanium',-apple-system,'Segoe UI',system-ui,sans-serif;
+--font-mono:    'SF Mono','Fira Code','Consolas',monospace;
+```
+`docs/lcars.css` (the older/marketing sheet) instead falls back to system fonts only (`-apple-system, 'Segoe UI', system-ui, sans-serif` at line 63) and its own monospace stack (`'SF Mono', 'Fira Code', 'Consolas', monospace`, e.g. line 165) — it predates the Antonio/Oxanium pairing, which is board.css/the live app's addition.
+
+**No formal type scale exists** — sizes are set ad hoc per component, not off a shared scale variable. Observed sizes across both sheets, smallest to largest:
+- 8px (`docs/lcars.css:139` nav badge sub-label), 8.5px (pfilter chips, `board.css:1251`)
+- 9–9.5px (pills, sidecar chip, mono labels)
+- 10–11px (most pill/badge/label text — the dominant "chrome" size)
+- 12–13px (readouts, code, secondary body text)
+- 14–15px (body text: `body{font-size:15px}`, `board.css:14`; chat turn body `14px`, `board.css:1291`)
+- 16px (modal-head text, `board.css:514`)
+- 20px (question text `.qtext`, `board.css:775`)
+- 22–26px (topbar brand, `board.css:102,113`)
+- 36px (`docs/lcars.css` `h1`, line 294 — largest anywhere in the repo)
+
+Display text (labels, buttons, pills, headers) consistently uses `var(--font-display)` in `text-transform:uppercase` with wide `letter-spacing` (commonly `.1em`–`.2em`, up to `.26em` on `docs/lcars.css`'s `h2`, line 317). Body/prose text uses `var(--font-body)` at normal case. This uppercase+tracked-display / normal-body split is the load-bearing typographic rule in the whole system — it shows up in virtually every component.
+
+## Spacing & radius
+
+No `--lcars-spacing-*` scale exists — padding/margin/gap values are hand-set per rule, not tokenized. Recurring values by inspection of `board.css`: `4px/6px/7px/8px/9px/10px/12px/14px/16px/18px/20px` show up repeatedly as gaps and paddings; nothing finer-grained is declared as a system.
+
+Radius **is** partially tokenized: `--lcars-radius: 12px` and `--lcars-elbow: 20px` (`docs/lcars.css:51-52`), used as fallbacks like `border-radius:var(--lcars-radius,18px)` (`board.css:182`). But most components hardcode their own radius rather than using the token:
+- Pills/chips/badges: `9–14px` (fully rounded capsule look) — e.g. `.pill` 12px (`board.css:230`), `.deploy-pill` 12px (`board.css:135`)
+- Cards: `8px` (`.card`, `board.css:297`), columns `10px` (`.col`, `board.css:284`)
+- Modals: `14px` (`board.css:510`)
+- Buttons: `12px` (`.btn`, `board.css:488`) — i.e. buttons and pills share the same rounded-capsule radius
+- Panels/readouts (docs/lcars.css): mostly `3–10px`, several deliberately asymmetric (`border-radius: 0 0 var(--lcars-radius) var(--lcars-radius)` on `.lcars-panel`, line 459) — flat top, rounded bottom, echoing the LCARS "elbow" motif of a hard edge meeting a round one.
+
+Full-circle (`50%`) shows up constantly for status dots, avatars-as-dots, and small indicator pips (e.g. `.lcars-status::before`, `.tk .dot`, `.evt .marker`).
+
+## Shape of existing components
+
+- **Frame/chrome (`.lcars-frame`, `board.css:32-89`):** the signature LCARS "elbow" — a solid-color L-shape (top band + left rail) with a big convex outer corner (`--frame-outer-r:52px`) and a concave inner fillet (`--frame-inner-r:40px`) where the L meets the black content area. This is the one truly bespoke geometric shape in the system — everything else is rectangles/pills/circles.
+- **Pills (`.pill`, `board.css:227-274`):** the dominant small-data unit — uppercase display font, `.1em` tracking, `11px`, `3px 10px` padding, `12px` radius, color-coded by semantic state (cost=gold, actual=teal, low/med/high=teal/amber/red, await=red+pulse animation, queued=violet, stage=violet-filled, standby=gold, go=teal).
+- **Buttons (`.btn`, `board.css:487-496`):** same capsule shape as pills (`12px` radius), transparent by default with a bordered outline, filled variants for state (`.go`=teal, `.warn`=amber, `.danger`=transparent+red text/border). A `.big` modifier bumps to `13px`/`9px 20px`.
+- **Cards (`.card`, `board.css:297+`):** rectangular, `8px` radius, a `4px` **left accent border** carrying the semantic color (amber default, red=awaiting, blue=paused, pink=child/logbug) — this left-border-as-status-color is the single most repeated pattern in the whole card/panel system, echoed again in `docs/lcars.css`'s `.mission-card` (`border-left: 3px solid var(--lcars-amber)`, line 590) and `.lcars-alert`/`.lcars-readout`/`.diagram-wrap`.
+- **Modals (`.modal`, `board.css:509-527`):** `14px` radius, colored header bar (`.modal-head`) using the same amber/red/teal/pink semantic fill as pills, body padded `20px`, footer right-aligned buttons.
+- **Panels (`docs/lcars.css` `.lcars-panel`, lines 456-487):** card body + a solid amber (or color-variant) header bar with `0 0 12px 12px` asymmetric radius — flat top meeting the header, rounded bottom.
+
+## What was **not** found
+
+- **No light theme.** No `prefers-color-scheme`, no `.light` class, no alternate palette anywhere in `docs/lcars.css` or `web/static/board.css` — the project is dark-only today, built around a near-black `#030608` base.
+- **No spacing scale token.** Spacing is hand-placed per rule; there's no `--lcars-space-*` equivalent to the color tokens.
+- **No formal type scale token** either — font sizes are hardcoded per component, not derived from a ramp.
+- **No component/CSS framework** (no Tailwind, no CSS-in-JS, no build step) — this is hand-authored, vanilla CSS loaded via plain `<link>` tags, consistent with the project's stated "Python-stdlib-only, no build step" philosophy elsewhere in the repo.
+- **`--lcars-pink` is referenced but undefined** — a live, documented bug (see above), not a design decision. Anything that wants "pink" in this system should either define the token properly or pick a different accent.
+- **No accessibility/contrast documentation** beyond one incidental case: `tests/drives/browser/README.md` mentions a contrast-ratio check was added for the legend swatches, but that's a test artifact, not a documented design rule.

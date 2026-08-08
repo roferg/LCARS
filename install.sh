@@ -113,6 +113,12 @@ EOF
 echo "Installing LCARS launchers -> $BIN_DEST"
 install_launcher "lcars-viewscreen" "skills/lcars-viewscreen/viewscreen.sh"
 install_launcher "lcars-serve"      "skills/lcars-viewscreen/serve.sh"
+# S128: `lcars launch` documents an escape hatch — $LCARS_WORKTREE_SETUP_CMD — that
+# no surface could reach. The viewscreen's RUN button runs inside the daemon's own
+# environment, and there was no shell command to set the variable on. This launcher
+# makes it reachable from any shell:
+#   LCARS_WORKTREE_SETUP_CMD='pnpm install --no-frozen-lockfile' lcars-launch <id>
+install_launcher "lcars-launch"     "skills/lcars-launch/launch.sh"
 
 # PATH hint: only when BIN_DEST is not already a :-segment of $PATH.
 case ":$PATH:" in

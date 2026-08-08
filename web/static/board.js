@@ -242,24 +242,98 @@ function isStarting(id) {
    header then render a DISABLED "⊹ Scanning…" affordance across every repaint (SSE
    included) so a re-click is impossible until the console actually opens
    (clearAligning on success) or the open errors / is superseded. Mirrors the
-   STARTING pattern (UX-17); a safety timeout re-arms a wedged card. */
+   STARTING pattern (UX-17).
+
+   S128 / FL-009 — THERE IS NO WALL-CLOCK TIMEOUT HERE, ON PURPOSE. This map
+   used to hold a 60s setTimeout handle that cleared the guard and refresh()ed.
+   On the S127 capstone the captain's opening Align turn took 61s: the timer
+   fired one second before the turn RETURNED, the card re-armed to START
+   ALIGNMENT, and a turn that had already done the work was presented as a
+   failure. He clicked again — which spawned a SECOND real worker (free on
+   copilot, billed on claude). A bigger constant is the same guess with a longer
+   fuse: a holodeck-born mission's opening turn reads a 28KB mockup and a
+   concept doc on top of ~5s of MCP spawn, so every hand-off sits on the
+   threshold, and the next artifact moves it again.
+
+   So the guard's lifetime IS THE REQUEST'S LIFETIME — a fact, not a guess. It
+   is armed on the click and released by exactly one event: the /api/align/start
+   POST settling. Success opens the console (clearAligning in openAlignConsole);
+   an error — including `postWrite`'s .catch, which is the DAEMON DYING mid-turn
+   arriving as a rejected fetch — clears it with a message. That rejection is
+   the safety net, and it is an event rather than a clock, so it cannot fire on
+   a turn that is merely slow.
+
+   What the record holds instead of a handle is `since` — the click's timestamp
+   — so the card can SAY how long the turn has been running (`aligningFor`).
+   Silence is what made the original defect frightening; "⊹ Scanning the
+   codebase… 1m 35s" reads as slow, where a bare spinner reads as broken.
+
+   A page RELOAD during a turn loses this map — it is client memory. That half is
+   the daemon's, and it is now published: see `alignScanState` below. */
 var ALIGNING = Object.create(null);
-var ALIGNING_TIMEOUT_MS = 60000;
 
 function markAligning(id) {
   if (id == null) return;
-  var key = String(id);
-  if (ALIGNING[key]) clearTimeout(ALIGNING[key]);
-  ALIGNING[key] = setTimeout(function () { clearAligning(key); refresh(); },
-    ALIGNING_TIMEOUT_MS);
+  ALIGNING[String(id)] = { since: Date.now() };
 }
 function clearAligning(id) {
   if (id == null) return;
-  var key = String(id);
-  if (ALIGNING[key]) { clearTimeout(ALIGNING[key]); delete ALIGNING[key]; }
+  delete ALIGNING[String(id)];
 }
 function isAligning(id) {
   return id != null && !!ALIGNING[String(id)];
+}
+/* S128/FL-009: seconds the in-flight Align turn has been running, or null when
+   the record carries no start (a forced flag in a test harness). */
+function aligningFor(id) {
+  var rec = id == null ? null : ALIGNING[String(id)];
+  if (!rec || typeof rec !== "object" || !rec.since) return null;
+  return Math.max(0, Math.floor((Date.now() - rec.since) / 1000));
+}
+/* `<base>` plus the elapsed time when we know it. Every scanning surface (the
+   card band, the control, its tooltip) reads through this so they cannot
+   disagree about how long the same turn has been running. */
+function scanningLabel(secs, base) {
+  return secs == null ? base : base + " " + fmtDuration(secs);
+}
+
+/* S128/FL-009 — THE DAEMON'S HALF, which is what closes the KNOWN GAP above.
+
+   `ALIGNING` is this tab's memory. A reload throws it away, and the card used to
+   re-arm to START ALIGNMENT on a turn that was still running — the same lie
+   FL-009 is about, through a different door, with the same second real worker
+   waiting behind the re-click.
+
+   So the daemon publishes the fact (`_align_busy_fields` in actions.py, the
+   `alignBusy` twin of f667ce8's `busy`/`busySince`/`busyFor`) and this reads it.
+   Same split as `logFilingState` next door: the client map is the INSTANT half
+   (no round trip, no SSE tick, and it covers the gap before the first poll), the
+   server stamp is the DURABLE half that survives a reload.
+
+   WHICH WINS. The daemon, on both counts — it is the only one that can see the
+   worker. Its PRESENCE makes the card scan even when this tab has no memory of a
+   click (a reload, a second tab, a POST that came back on a proxy timeout while
+   the turn kept running), and its elapsed seconds are preferred over the local
+   click time because the local time is when we ASKED, not when the turn began.
+   Its ABSENCE, though, clears nothing: a board built a moment before the session
+   registered, or a card off this board entirely, would then re-arm the guard on a
+   live turn — FL-009 again. The guard is still released by exactly one event, the
+   /api/align/start POST settling. The daemon fact is for the case where that
+   memory is GONE, not a replacement for it.
+
+   NOT A NEW WORDING. The label is the one `scanningLabel` already renders, so a
+   reloaded tab and the tab that clicked say the same thing about the same turn. */
+function alignScanState(m) {
+  var stamp = (m && m.alignBusy && typeof m.alignBusy === "object")
+    ? m.alignBusy : null;
+  var srv = (stamp && typeof stamp["for"] === "number")
+    ? Math.max(0, Math.floor(stamp["for"])) : null;
+  var local = aligningFor(m && m.id);
+  return {
+    scanning: !!(m && isAligning(m.id)) || !!stamp,
+    // the daemon's elapsed when it published one; this tab's click otherwise.
+    secs: srv != null ? srv : local
+  };
 }
 
 /* Park & Align (F1 — background the final estimate): optimistic "finalizing" set.
@@ -268,25 +342,83 @@ function isAligning(id) {
    it runs — closing does NOT abort the in-flight fetch — so the parked card shows an
    animated "◐ FINALIZING & COSTING…" band + a disabled control until the server
    finishes and the board refresh swaps in the aligned card. In-memory only; mirrors
-   ALIGNING. A 5-min safety timeout re-arms a wedged card. Caveat (v1): fully closing
-   the browser TAB may interrupt the in-flight finalize — documented, not handled. */
+   ALIGNING.
+
+   S169 / FL-017 — THERE IS NO WALL-CLOCK TIMEOUT HERE ANY MORE, for the reason
+   ALIGNING above has none. This map used to hold a `setTimeout` on
+   `FINALIZING_TIMEOUT_MS = 300000` that cleared the guard and `refresh()`ed:
+   byte-for-byte FL-009's shape with 300s in place of 60s. On expiry it dropped
+   the band and re-armed the card while the estimator and `file.sh --complete`
+   were still running — a run that was still going, presented as one that had
+   stopped, with a real second worker waiting behind the re-click. The captain
+   hit it live on the S128 drive ("OK the mission is costing after the grill").
+   FL-009's ruling was written for exactly this: *"do NOT just raise the number.
+   A bigger constant is the same guess with a longer fuse, and the next artifact
+   makes it wrong again."*
+
+   So the guard's lifetime IS THE REQUEST'S LIFETIME. It is armed on the closing
+   submit and released by exactly one event: the /api/align/<sid>/answer POST
+   settling — `done` on success, and the error handler on failure, which is
+   where a DAEMON THAT DIED mid-finalize arrives as a rejected fetch. That
+   rejection is the safety net, and being an event rather than a clock it cannot
+   fire on a finalize that is merely slow.
+
+   What the record holds instead of a timer handle is `since`, so the band can
+   say how long it has been going (`finalizingFor`) rather than sitting silent.
+
+   A page RELOAD during a finalize loses this map — it is client memory, and
+   that was FL-009's second half too. That half is the daemon's, and it is now
+   published: see `alignFinalizeState` below.
+
+   Caveat (v1): fully closing the browser TAB may interrupt the in-flight
+   finalize — documented, not handled. */
 var FINALIZING = Object.create(null);
-var FINALIZING_TIMEOUT_MS = 300000;
 
 function markFinalizing(id) {
   if (id == null) return;
-  var key = String(id);
-  if (FINALIZING[key]) clearTimeout(FINALIZING[key]);
-  FINALIZING[key] = setTimeout(function () { clearFinalizing(key); refresh(); },
-    FINALIZING_TIMEOUT_MS);
+  FINALIZING[String(id)] = { since: Date.now() };
 }
 function clearFinalizing(id) {
   if (id == null) return;
-  var key = String(id);
-  if (FINALIZING[key]) { clearTimeout(FINALIZING[key]); delete FINALIZING[key]; }
+  delete FINALIZING[String(id)];
 }
 function isFinalizing(id) {
   return id != null && !!FINALIZING[String(id)];
+}
+/* S169/FL-017: seconds this tab's finalize has been running, or null when the
+   record carries no start (a forced flag in a test harness). The ALIGNING twin. */
+function finalizingFor(id) {
+  var rec = id == null ? null : FINALIZING[String(id)];
+  if (!rec || typeof rec !== "object" || !rec.since) return null;
+  return Math.max(0, Math.floor((Date.now() - rec.since) / 1000));
+}
+
+/* S169/FL-017 — THE DAEMON'S HALF, and it closes the reload gap exactly as
+   `alignScanState` does for the scan.
+
+   `FINALIZING` is this tab's memory. A reload throws it away, and the card
+   re-armed to START ALIGNMENT over a `file.sh --complete` that was still
+   running. So the daemon publishes the fact (`_align_finalizing_fields` in
+   actions.py, the `alignFinalizing` twin of `alignBusy`) and this reads it.
+
+   WHICH WINS. The daemon, on both counts, for `alignScanState`'s reasons: its
+   PRESENCE makes the card finalize even when this tab has no memory of the
+   submit, and its elapsed is preferred because it is when the DISPATCH began,
+   not when we asked. Its ABSENCE clears nothing — a board built a moment before
+   the dispatch was stamped would otherwise re-arm the guard on a live finalize,
+   which is FL-017 again through the other door.
+
+   NOT A NEW WORDING: the label is the one `finalizingPulse` already renders. */
+function alignFinalizeState(m) {
+  var stamp = (m && m.alignFinalizing && typeof m.alignFinalizing === "object")
+    ? m.alignFinalizing : null;
+  var srv = (stamp && typeof stamp["for"] === "number")
+    ? Math.max(0, Math.floor(stamp["for"])) : null;
+  var local = finalizingFor(m && m.id);
+  return {
+    finalizing: !!(m && isFinalizing(m.id)) || !!stamp,
+    secs: srv != null ? srv : local
+  };
 }
 
 /* S162 (backgroundable mission-log filing): the optimistic "filing" set — the
@@ -1191,11 +1323,16 @@ function cardNode(m) {
   // file.sh --complete) gets an animated "◐ Finalizing & costing…" band the whole
   // time — even after the captain backgrounds the console — until the board refresh
   // swaps in the aligned card. Precedence: finalizing > scanning.
-  else if (isFinalizing(m.id)) card.appendChild(finalizingPulse());
+  // S169/FL-017: …and on a RELOADED tab the same band comes back off the
+  // daemon's `alignFinalizing`, so a card whose mission is still costing does
+  // not re-arm itself under a live file.sh.
+  else if (alignFinalizeState(m).finalizing) card.appendChild(finalizingPulse(m));
   // FIX-A: a parked mission mid-scan (START ALIGNMENT clicked, warm grill opening)
   // gets the SAME persistent animated band — rendered on every repaint while
   // isAligning so the motion survives board rebuilds until the console opens.
-  else if (isAligning(m.id)) card.appendChild(scanningPulse());
+  // S128/FL-009: …and on a RELOADED tab the same band comes back off the
+  // daemon's `alignBusy`, so the card a captain returns to still reads as live.
+  else if (alignScanState(m).scanning) card.appendChild(scanningPulse(m));
   // S162: the mission-log filing band is deliberately OUTSIDE that chain. Those
   // three are one mission's own state (it is either running, finalizing its
   // Align, or opening a grill); a log filing is work on that mission's CHILDREN,
@@ -1503,6 +1640,11 @@ function render(board) {
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
   renderTestReadiness(board.meta && board.meta.testReadiness);
+  /* S128 (FL-002): the ⬡ HOLODECK band control's activity indicator, from the
+     daemon's own `meta.holodeck`. On EVERY render, so it clears as well as
+     lights — and off the board payload, because the board is the surface a
+     captain who walked away from a running program is actually looking at. */
+  renderHolodeckActivity(board.meta && board.meta.holodeck);
   // S146: an open File console's inline readiness block re-verdicts LIVE off
   // every render (SSE included) — the warning clears in place, the typed idea
   // survives (the hook repaints only its own block, never the console).
@@ -3021,7 +3163,12 @@ function postWrite(path, payload, onResult, onError) {
     }
     if (!res.data || res.data.ok !== true) {
       var msg = (res.data && res.data.error) || ("write failed (HTTP " + res.status + ")");
-      if (onError) onError(msg);
+      /* S169 fix round 1 — the REFUSAL BODY rides along as a second argument.
+         Purely additive: every existing handler takes one parameter and is
+         byte-identical in behaviour. It exists so a caller can act on a FACT
+         the daemon stated (`sessionReset`) instead of reading its sentence,
+         which is the classifier road this round exists to stay off. */
+      if (onError) onError(msg, res.data || {});
       return;
     }
     writesActive = true;
@@ -3054,6 +3201,10 @@ function markViewOnly() {
   // so applyWriteState already governs it).
   var dm = document.getElementById("deployMainBtn");
   if (dm) applyWriteState(dm);
+  // S125 (D7): and the ⬡ HOLODECK control, which does NOT go through
+  // applyWriteState — a view-only board must SAY why the deck is unavailable,
+  // not just grey a button out (see applyHolodeckWriteState).
+  applyHolodeckWriteState();
 }
 
 /* Probe the write layer once at boot with a harmless OPTIONS-like POST? The
@@ -3069,7 +3220,7 @@ function probeWrites() {
     body: "{}",
   }).then(function (r) {
     if (r.status === 403) { markViewOnly(); }
-    else { writesActive = true; }
+    else { writesActive = true; applyHolodeckWriteState(); }
   }).catch(function () { /* leave unknown; lazy 403 handling still applies */ });
 }
 
@@ -3087,14 +3238,26 @@ function probeWrites() {
 var IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 var IMAGE_MAX_BYTES = 8 * 1024 * 1024;   /* headroom under the 12 MB server cap */
 
-function attachImagePaster(textarea, onError) {
-  var imgs = [];
+/* `store` (S169, FL-014) is OPTIONAL and exists for ONE reason: a surface whose
+   textarea is destroyed and rebuilt by a re-render. The three modal surfaces
+   below live inside a dialog that is torn down as a whole, so their list is
+   safely a closure. The HOLODECK COMPOSER is not: `renderDeck` rebuilds it on
+   every turn, program switch and banner, and a paste whose only memory is this
+   closure disappears with the node exactly as the typed draft did (FL-013).
+   Rather than a second paster beside this one, the list is SEEDED from and
+   WRITTEN BACK to the caller's object — `{ get, set }` — so there is still one
+   image paster on the board and one place a pasted image is held. */
+function attachImagePaster(textarea, onError, store) {
+  var imgs = store ? ((store.get() || []).slice()) : [];
   var chips = el("div", "img-chips");
   chips.hidden = true;
   if (textarea.parentNode) {
     textarea.parentNode.insertBefore(chips, textarea.nextSibling);
   }
   function repaint() {
+    // EVERY mutation lands here (accept / remove / clear), so this is the one
+    // line that has to write the list back.
+    if (store) store.set(imgs.slice());
     chips.innerHTML = "";
     chips.hidden = imgs.length === 0;
     imgs.forEach(function (img, i) {
@@ -3167,6 +3330,11 @@ function attachImagePaster(textarea, onError) {
     }
     if (handled) { e.preventDefault(); }
   });
+  // A SEEDED LIST HAS TO PAINT ITS CHIPS (S169). Restoring the value of a
+  // rebuilt textarea while its "[Image #1]" chip stays missing would be a
+  // half-restored draft, which is worse than none: he would send a turn
+  // believing the screenshot went with it.
+  if (imgs.length) repaint();
   return {
     /* the postWrite payload value: the chip list, or undefined when empty so
        JSON.stringify omits the `images` key and the turn is unchanged. */
@@ -3349,16 +3517,32 @@ function startAlignment(missionId) {
      • default        → clickable "▹ START ALIGNMENT". */
 function startAlignmentControl(m) {
   var id = m && m.id;
-  if (isFinalizing(id)) {
-    var fin = act("start", btn("◐ FINALIZING & COSTING…", "go", null));
+  // S169/FL-017: "is a finalize running?" is answered by this tab's submit
+  // guard OR by the daemon's published fact — the second is what a reloaded tab
+  // reads, and what stops it offering START ALIGNMENT over a live file.sh.
+  var fstate = alignFinalizeState(m);
+  if (fstate.finalizing) {
+    var fin = act("start", btn(scanningLabel(fstate.secs,
+                                             "◐ FINALIZING & COSTING…"), "go",
+                               null));
     fin.disabled = true;
-    fin.title = "Finalizing the PRD and estimating cost…";
+    fin.title = scanningLabel(fstate.secs,
+                              "Finalizing the PRD and estimating cost —"
+                              + " this has been running")
+      + ". The card updates itself the moment it lands.";
     return fin;
   }
-  if (isAligning(id)) {
-    var busy = act("start", btn("⊹ Scanning…", "go", null));
+  // S128/FL-009: "is a turn running?" is answered by this tab's click-guard OR by
+  // the daemon's published fact — the second is what a reloaded tab reads.
+  var scan = alignScanState(m);
+  if (scan.scanning) {
+    // …and the elapsed time rides the label, so a turn that is merely slow says
+    // so rather than sitting silent until something gives up on it.
+    var busy = act("start", btn(scanningLabel(scan.secs, "⊹ Scanning…"), "go",
+                                null));
     busy.disabled = true;
-    busy.title = "Opening the alignment console…";
+    busy.title = scanningLabel(scan.secs, "The alignment turn has been running")
+      + " — the console opens when its first question lands.";
     return busy;
   }
   if (isResumable(m)) {
@@ -3590,6 +3774,13 @@ function renderAlignConsole(state, completing, missionId) {
       },
       function (msg) {
         busy.hidden = true;
+        // S169/FL-017 — THE OTHER HALF OF "RELEASED BY AN EVENT". The guard was
+        // armed on the closing submit and, before this, only the SUCCESS path
+        // dropped it: a finalize that failed — a dead daemon, a 502 from the
+        // estimator, a network drop — left the card banded and its control
+        // disabled forever, with the timer that used to bail it out now gone.
+        // The POST settling is the event, and settling includes settling badly.
+        if (missionId) { clearFinalizing(missionId); repaintBoard(); }
         submit.disabled = false; submit.textContent = "Submit & Continue ▸";
         showErr(err, msg);
       });
@@ -3605,7 +3796,7 @@ function renderAlignConsole(state, completing, missionId) {
   // session simply lingers in memory (ages out on its own — v1 in-memory only).
   onOverlayClose = function () {
     if (!missionId || !sid) return;
-    if (isFinalizing(missionId)) return;
+    if (isFinalizing(missionId)) return;   // this tab armed it on the submit.
     markResumable(missionId, sid);
     repaintBoard();
   };
@@ -6576,7 +6767,27 @@ function field(labelText, control) {
 }
 function label(t) { return el("label", null, t); }
 function noteEl(text, cls) { return el("div", "note" + (cls ? " " + cls : ""), text); }
-function showErr(node, msg) { node.hidden = false; node.textContent = msg; }
+/* S128 fix round 1, D2 — AND IT BRINGS THE LINE INTO VIEW.
+
+   This is the one call every modal in board.js surfaces a failure through, and
+   nine of them append their `.errline` into `.modal-body` — the region that
+   SCROLLS. The tester's filing POST came back 502, this function ran, the line
+   was populated and `hidden:false`… 1,115px below the bottom of the visible
+   body, in a modal whose sticky footer had already reverted the button to
+   "▦ File Mission". A sweep of every error node intersecting the viewport
+   returned []. A real outcome presented as nothing — FL-009's disease one door
+   over.
+
+   Making the line visible and leaving it where the captain is not looking is
+   not reporting. `block:"nearest"` is deliberate: it moves the scroll only when
+   the line is genuinely out of view, so an error already on screen does not
+   yank the page out from under him. Guarded because the node harnesses have no
+   layout and no such method. */
+function showErr(node, msg) {
+  node.hidden = false;
+  node.textContent = msg;
+  if (node.scrollIntoView) node.scrollIntoView({ block: "nearest" });
+}
 
 /* S74 follow-up: the per-bug model steer is NORMALIZED server-side (passthrough
    <scope>:<tier> → deterministic parse → bounded worker fallback → never silent-
@@ -6775,9 +6986,14 @@ function workingNode(labelText) {
    ALIGNMENT click until the warm grill console opens. Same animated bars as
    runningPulse (.lcars-running), so the scan reads as live motion the whole time
    instead of flashing once and dying to a static grey button. Re-rendered on every
-   repaint while isAligning(id) is true (card render), so no repaint can wipe it. */
-function scanningPulse() {
-  var w = workingNode("⊹ Scanning the codebase…");
+   repaint while the scan is in flight (card render), so no repaint can wipe it. */
+function scanningPulse(m) {
+  // S128/FL-009: the band is the surface a captain actually watches, so it
+  // carries the elapsed time of the in-flight turn — this tab's click when it
+  // has one, the daemon's start when it does not (a reload). `m` is optional:
+  // without it (or before the first turn is armed) the label is exactly as it was.
+  var w = workingNode(scanningLabel(alignScanState(m).secs,
+                                    "⊹ Scanning the codebase…"));
   w.className += " lcars-running";
   return w;
 }
@@ -6786,8 +7002,14 @@ function scanningPulse() {
    finalizes server-side (estimate + file.sh --complete) — including after the captain
    backgrounds the console — until the board refresh swaps in the aligned card. Same
    animated bars as scanningPulse (.lcars-running); label is the finalizing phase. */
-function finalizingPulse() {
-  var w = workingNode("◐ Finalizing & costing…");
+function finalizingPulse(m) {
+  // S169/FL-017: the band carries the elapsed time of the in-flight finalize —
+  // the daemon's dispatch clock when it published one, this tab's submit
+  // otherwise — through the SAME `scanningLabel` the scan band uses, so the two
+  // states cannot describe elapsed time two different ways. `m` is optional:
+  // without it the label is exactly as it was.
+  var w = workingNode(scanningLabel(alignFinalizeState(m).secs,
+                                    "◐ Finalizing & costing…"));
   w.className += " lcars-running";
   return w;
 }
@@ -7394,6 +7616,3693 @@ function brandPADD() {
   brand.appendChild(sub);
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+   S125 — THE HOLODECK (D1–D3, D6–D8, D12)
+
+   A cheap design room that lives INSIDE this frame. `⬡ HOLODECK` swaps the
+   board content for the deck; the same control reads `▦ BOARD` on the way back
+   (D1). Three panes — PROGRAMS · CHAT · LIVE PREVIEW (D2) — and the preview is
+   the sidecar's REAL file served over the jailed read route, refreshed when a
+   turn's `filesChanged` says the file moved (D3), never re-rendered from the
+   reply text.
+
+   S126 added durable programs and the concept doc; S127 added SEND TO ALIGN,
+   the hand-off dialog and the draft→sent lock; S172 built ⧉ DUPLICATE TO KEEP
+   DESIGNING, on the card AND in the locked program's own pane. WHAT IS STILL
+   DELIBERATELY NOT HERE, and why nothing on screen pretends otherwise: the
+   INTENT panel's inline contents (the ▤ control opens the file instead),
+   CAPTURE SCREENS, and the `done` state. Anything not yet real is ABSENT, or
+   visibly disabled WITH the reason — never a control that does nothing when you
+   click it, and never a reason that has stopped being true.
+   ════════════════════════════════════════════════════════════════════════ */
+var HOLO = {
+  on: false,            // is the deck showing instead of the board?
+  programs: [],         // GET /api/holodeck — the daemon's LIVE sessions
+  activeId: null,       // which program the chat + preview are showing
+  busy: false,          // a turn is in flight
+  filter: "all",        // D11's chips, over a real draft→sent lifecycle (S127)
+  // Q3 (S128) — is the PROGRAM DRAWER open? Only meaningful below the
+  // stylesheet's breakpoint, where the list stops being a column. It lives here
+  // and not only as a class because renderDeck rebuilds the deckview on every
+  // turn, and a drawer whose only memory is that node slams shut mid-turn.
+  drawer: false,
+  banner: null,         // D7 — {kind, label, text, paths, action}
+  /* S128 (FL-002) — THE DAEMON'S `meta.holodeck`, or null. The one fact the
+     board band's activity indicator is allowed to be drawn from: is a program
+     mid-turn, since when, and the sentence that says so. It arrives on the
+     BOARD payload (not the deck's), because the whole point is that it is
+     readable from the board — where a captain who walked away is standing.
+     A client-side timer here would be a guess, and a guessed spinner is the
+     readout lie this round exists to close. */
+  working: null,
+  /* S171 — WHICH PROGRAMS THIS PAGE IS ALREADY WATCHING A DERIVATION ON.
+     `renderDeck` runs on every refresh, so a poll started from the render
+     would multiply once per repaint; and a page that RELOADS onto a running
+     pass must start one, because there was no click to start it here. One
+     entry per session id answers both — it is bookkeeping about this tab's
+     timers only, never a claim about what the daemon is doing. */
+  derivePolls: Object.create(null),
+  nonce: 0,             // the preview's cache-buster; bumped per file change
+  sidecarName: null,    // learnt from the first program (D6's footer chip)
+  commits: 0,
+  // THE DAEMON'S HEADER (fix round 1). Everything here is a fact only the
+  // daemon can know, and each one was previously invented on this side:
+  //   sidecarDisplay  the archive's FULL path, `~`-folded — D6's empty state
+  //                   shows a LOCATION, and a basename is not one.
+  //   engineName/model  what will ACTUALLY run. The dialog printed a hardcoded
+  //                   "sonnet tier" that is false on copilot (opus there).
+  //   engine/models   S127. The New Program dialog now PICKS the engine, so it
+  //                   needs two more facts only the daemon has: the daemon's
+  //                   own engine as an INVOCABLE path (`engine`), so choosing
+  //                   the engine it was started with sends that exact binary
+  //                   rather than a bare name that may resolve elsewhere on
+  //                   $PATH; and `models`, the per-engine tier table, so the
+  //                   footer can state the tier of an engine this daemon is
+  //                   NOT running without board.js owning a second copy of
+  //                   `_holodeck_model`.
+  sidecarDisplay: "",
+  engine: "",
+  engineName: "",
+  model: "",
+  models: {},
+  // S127 (FL-007) — WHICH HALF OF THE ⬡ PREVIEW / ▤ INTENT TOGGLE IS SHOWING.
+  // It lives here and not in the DOM because `renderDeck` rebuilds the pane on
+  // every turn: a toggle whose only memory is the node it drew flips back to
+  // the mockup underneath a captain who is mid-read. `pvSid` is what makes
+  // switching PROGRAMS land on the mockup instead of on the previous
+  // program's intent — one guard, rather than a reset at four call sites.
+  pvView: "preview",
+  pvSid: null,
+  // the intent panel's bytes, per program. Dropped when a turn actually
+  // rewrites `concept.md` — the same discipline D3 applies to the mockup.
+  intent: { sid: null, text: null, err: null, loading: false },
+  /* S169 (FL-013 + FL-014) — THE COMPOSER'S UNSENT STATE, PER PROGRAM.
+     `{ <sessionId>: { text: "<what he typed>", images: [<pastes>] } }`.
+
+     WHY IT IS HERE AND NOT IN THE TEXTAREA. `holoChatPane` builds the composer
+     as a fresh `el("textarea")` on every render, so its value lived ONLY in
+     that node — and `renderDeck` rebuilds the pane on a turn landing, a
+     program switch, a banner, a drawer toggle, a deck re-entry. The captain
+     typed a paragraph, went to the board to deploy main, came back, and it was
+     gone: no warning, no undo, on the ONE surface whose whole premise is
+     capturing requirements in his own words. This is the same treatment
+     `pvView`/`pvSid` and S127's drag handle already get — view state that must
+     outlive a repaint lives in HOLO — and it is restored INTO the same
+     textarea rather than shadowed by a second node beside it.
+
+     KEYED BY SESSION ID, and a MAP rather than `pvSid`'s single slot, because
+     "switch programs and come back" is one of the triggers that loses work:
+     a one-slot guard would cure the board round-trip and keep the defect.
+
+     THE PASTED IMAGES LIVE IN THE SAME OBJECT (FL-014) on purpose. They are
+     one thing — the unsent turn — and `attachImagePaster` otherwise keeps its
+     list in a closure that dies with the node exactly like `value` did.
+
+     …AND SO DOES `intent` (FL-015). It is the third field of one unsent turn —
+     what he typed, what he pasted, and whether he is ASKING or DIRECTING — so
+     it belongs in this object and not in a fourth store beside it. Default
+     "build". It is per-TURN, not a mode: `holoDraftClear` drops the whole
+     draft when the turn is sent, so the next turn starts at "build" again.
+     A sticky ASK would be worse than no control at all — he would flip it
+     once, type "make the rail wider" three turns later, and get an answer. */
+  drafts: Object.create(null),
+};
+
+/* READ this program's unsent turn. Never null, so every caller reads one shape
+   — but it does NOT create: rendering a composer is not the same as the
+   captain typing in one, and a read that stored would leave an empty draft
+   behind for every program ever painted, including one just sent. */
+function holoDraftFor(sid) {
+  return (sid && HOLO.drafts[sid]) || { text: "", images: [], intent: "build" };
+}
+
+/* …and WRITE it. The only thing that puts a draft in HOLO is the captain
+   putting something in the composer. */
+function holoDraftPut(sid) {
+  if (!sid) return { text: "", images: [], intent: "build" };
+  var d = HOLO.drafts[sid];
+  if (!d) { d = HOLO.drafts[sid] = { text: "", images: [], intent: "build" }; }
+  return d;
+}
+
+/* The turn has been said — it is in the transcript now, so it is no longer a
+   draft. Called from `holoSay` (not from the composer) so a refused send keeps
+   what he typed. */
+function holoDraftClear(sid) {
+  if (sid && HOLO.drafts[sid]) delete HOLO.drafts[sid];
+}
+
+var HOLO_FILTERS = [["all", "ALL"], ["draft", "DRAFT"], ["sent", "SENT"],
+                    ["done", "DONE"]];
+
+function deckHost() { return document.getElementById("deckHost"); }
+
+function holoActive() {
+  /* S126 — a program listed FROM DISK has `sessionId: null`, honestly, because
+     no conversation is running for it. Without this guard a null `activeId`
+     would match the first such card and the deck would open a chat pane for a
+     program the daemon is not holding — a composer that 404s on send. */
+  if (!HOLO.activeId) return null;
+  for (var i = 0; i < HOLO.programs.length; i++) {
+    if (HOLO.programs[i].sessionId === HOLO.activeId) return HOLO.programs[i];
+  }
+  return null;
+}
+
+/* A control ON THE DECK. Every one carries its own honesty: `data-wired` when
+   something actually happens on click, `data-reason` when it is disabled and
+   the reason is the whole point of it still being visible. The no-dead-controls
+   test reads exactly these two attributes, so a control added later cannot slip
+   through by being neither. */
+function holoCtl(node, label, onClick, reason) {
+  node.setAttribute("data-ctl", label);
+  if (onClick) {
+    node.setAttribute("data-wired", "1");
+    node.addEventListener("click", function (e) {
+      e.stopPropagation();
+      onClick(e);
+    });
+  } else if (reason) {
+    node.disabled = true;
+    node.title = reason;
+    node.setAttribute("aria-disabled", "true");
+    node.setAttribute("data-reason", reason);
+  }
+  return node;
+}
+
+function holoBtn(label, cls, onClick, reason) {
+  var b = el("button", "btn" + (cls ? " " + cls : ""), label);
+  b.type = "button";
+  return holoCtl(b, label, onClick, reason);
+}
+
+/* D8 — recency in plain language. "which one was that" is the actual question a
+   captain asks days later, and a raw timestamp does not answer it. Old work
+   falls back to a stardate rather than "1,247 days ago". */
+function holoWhen(ts) {
+  if (!ts) return "just now";
+  var secs = (Date.now() / 1000) - ts;
+  if (secs < 90) return "now";
+  if (secs < 3600) return Math.round(secs / 60) + " min ago";
+  if (secs < 86400) return Math.round(secs / 3600) + "h ago";
+  if (secs < 172800) return "yesterday";
+  if (secs < 864000) return Math.round(secs / 86400) + " days ago";
+  var d = new Date(ts * 1000);
+  return "stardate " + (d.getFullYear() - 1946) + "" +
+    String(Math.round(((d.getMonth() * 30 + d.getDate()) / 365) * 1000)).slice(0, 3);
+}
+
+function holoBase(p) {
+  var i = String(p || "").lastIndexOf("/");
+  return i === -1 ? String(p || "") : String(p).slice(i + 1);
+}
+
+/* S127 (D11) — a program's PLACE IN ITS LIFE: draft → sent → done.
+
+   Read from `lifecycle` first and `status` only as the fallback, because
+   `status` carries two different facts on the daemon's side: the program's
+   lifecycle on the list, and a TURN'S OUTCOME ("standing-by", "ok", "refused",
+   "ended") on the payloads that update over it. `lifecycle` is never
+   overwritten, so a locked program cannot read "standing-by" here. */
+function holoLifecycle(p) {
+  return (p && (p.lifecycle || p.status)) || "draft";
+}
+
+/* ── D1: entering and leaving the deck ─────────────────────────────────── */
+/* The board furniture is hidden by ONE class on <body>, never by setting
+   `hidden` on each node: render() rebuilds the board area and re-decides those
+   flags on every SSE tick, so a JS flag set at enter-time would be wiped by the
+   very next one and the board would bleed back through the deck. */
+function holoSetMode(on) {
+  HOLO.on = !!on;
+  var body = document.body;
+  if (body && body.classList) body.classList.toggle("on-deck", HOLO.on);
+  var host = deckHost();
+  if (host) host.hidden = !HOLO.on;
+  holoPaintBandBtn();
+  if (HOLO.on) { renderDeck(); holoRefresh(); }
+}
+
+/* ONE FUNCTION PAINTS THE BAND CONTROL (S128). It carries three independent
+   facts and each used to be written by a different handler:
+
+     • which way it goes — `⬡ HOLODECK` on the board, `▦ BOARD` on the deck;
+     • whether writes are live at all — D7's view-only refusal, WITH its reason;
+     • and now whether the daemon says a program is mid-turn (FL-002).
+
+   They are painted together because `textContent =` REPLACES a node's children:
+   an activity dot appended by a second handler is silently wiped the next time
+   the label is written, which is the class of bug two handlers over one control
+   always eventually produce. View-only OUTRANKS activity — a board that cannot
+   run a program must not sprout a dot claiming one is running. */
+var HOLO_RO_REASON =
+  "This board is a read-only view. The holodeck writes files, so it is "
+  + "unavailable here — open the board locally to run a program.";
+
+function holoPaintBandBtn() {
+  var b = document.getElementById("holodeckBtn");
+  if (!b) return;
+  var ro = writesActive === false;
+  b.disabled = ro;
+  b.textContent = HOLO.on ? "▦ Board" : "⬡ Holodeck";
+  if (b.classList) b.classList.toggle("holo-on", HOLO.on);
+  /* The dot is the OFF-DECK signal. On the deck the working turn is already
+     visible in the chat pane, and a second indicator two inches away is a
+     second voice about one fact. */
+  var w = (!ro && !HOLO.on && HOLO.working && HOLO.working.count)
+    ? HOLO.working : null;
+  if (b.classList) b.classList.toggle("working", !!w);
+  if (w) {
+    var dot = el("span", "holo-dot");
+    dot.setAttribute("aria-hidden", "true");   // a colour, not information
+    b.appendChild(dot);
+  }
+  b.title = ro ? HOLO_RO_REASON
+    : (w ? String(w.message || "")
+         : (HOLO.on ? "back to the mission board"
+                    : "the holodeck — design a mockup in chat"));
+  if (ro) b.setAttribute("data-reason", HOLO_RO_REASON);
+  else b.removeAttribute("data-reason");
+  /* A DOT IS NOTHING TO A SCREEN READER. The daemon's sentence — which names
+     the program and how long it has been going — is what is announced, and it
+     is removed again the moment nothing is in flight. */
+  if (w) b.setAttribute("aria-label", "⬡ Holodeck — " + String(w.message || ""));
+  else b.removeAttribute("aria-label");
+}
+
+/* The board payload's `meta.holodeck`, or nothing at all. Called on every
+   render, so the indicator follows the daemon DOWN as well as up — an
+   indicator that only ever lights is a worse lie than none. */
+function renderHolodeckActivity(h) {
+  HOLO.working = (h && h.count) ? h : null;
+  holoPaintBandBtn();
+}
+
+function toggleHolodeck() {
+  if (writesActive === false) return;   // view-only: the control is disabled
+  holoSetMode(!HOLO.on);
+}
+
+function holoRefresh() {
+  return fetch("/api/holodeck").then(function (r) { return r.json(); })
+    .then(function (data) {
+      HOLO.programs = (data && data.programs) || [];
+      HOLO.sidecarDisplay = (data && data.sidecarDisplay) || "";
+      HOLO.engine = (data && data.engine) || "";
+      HOLO.engineName = (data && data.engineName) || "";
+      HOLO.model = (data && data.model) || "";
+      HOLO.models = (data && data.models) || {};
+      if (data && data.sidecarName) HOLO.sidecarName = data.sidecarName;
+      if (HOLO.programs.length) {
+        HOLO.sidecarName = HOLO.programs[0].sidecarName;
+        HOLO.commits = HOLO.programs[0].commits || 0;
+      }
+      /* S169 (FL-013) — a draft belongs to a program, so it dies with one.
+         Ending a program (or a daemon that no longer holds it) is the only
+         thing that drops an unsent turn; every other repaint keeps it. */
+      var live = Object.create(null);
+      for (var d = 0; d < HOLO.programs.length; d++) {
+        if (HOLO.programs[d].sessionId) live[HOLO.programs[d].sessionId] = 1;
+      }
+      Object.keys(HOLO.drafts).forEach(function (sid) {
+        if (!live[sid]) delete HOLO.drafts[sid];
+      });
+      if (HOLO.activeId && !holoActive()) HOLO.activeId = null;
+      if (!HOLO.activeId) {
+        // only a LIVE program can be the active one — a room read off disk has
+        // no session to talk to until it is reopened (S126).
+        for (var i = 0; i < HOLO.programs.length; i++) {
+          if (HOLO.programs[i].sessionId) {
+            HOLO.activeId = HOLO.programs[i].sessionId;
+            break;
+          }
+        }
+      }
+      renderDeck();
+    })
+    .catch(function () { /* the deck simply shows what it last knew */ });
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   D2, AMENDED 2026-08-05 (captain, S127 live drive) — THE CHAT ⇄ PREVIEW SPLIT
+
+     "I need some way to resize the chat window to give the mock render more
+      room. This becomes more important if I make the window full screen. Then
+      the chat takes up a comical amount of room."
+
+   D2 originally fixed the split at `1.15fr : 1fr` and refused a handle: a
+   draggable split is state to persist, a thing to get wrong on reload, and a
+   decision to make every session. That reasoning was not wrong about the costs,
+   it was wrong about the alternative — it compared them against a fixed split
+   that is CORRECT, when the fixed split is wrong at every width except the one
+   it was tuned at. `1.15fr` grows the chat without bound: at full screen on a
+   2560px display that is ~1250px of chat against a natural readable line of ~70
+   characters, every pixel past that spent on the one pane that cannot use it
+   while the preview — which D2 itself calls "the point" — starves. And "a
+   decision every session" is answered by PERSISTING it: he sets it once.
+
+   WHAT IS DELIBERATELY ABSENT. There is no cap on the chat's growth, here or in
+   the stylesheet. The captain chose the handle ALONE, explicitly over an option
+   that also capped the chat automatically. He wants the control, not a rule
+   guessing for him. `test_the_chat_column_is_NOT_capped` is the guard.
+
+   THE ONE NUMBER TO CHANGE is HOLO_SPLIT_DEFAULT. `1.15 : 1` is chat 53.5%,
+   which is the poor starting position the amendment names; a preview-favouring
+   default is inside the ruling and wanted. 0.42 puts the chat at ~510px on a
+   1440px laptop — near the natural readable line — and hands the rest to the
+   render.
+
+   The split rides in TWO CUSTOM PROPERTIES on `.deckview` rather than an inline
+   `grid-template-columns`, because an inline value would also override
+   `.deckview.solo` — a deck with no chat and no preview at all.
+   ════════════════════════════════════════════════════════════════════════ */
+var HOLO_SPLIT_KEY = "lcars-holo-split";
+var HOLO_SPLIT_DEFAULT = 0.42;  // ← the chat's share of (chat + preview)
+
+/* THE TWO PIXEL FLOORS, named once. The stylesheet's `minmax()` mins are
+   `var(--holo-chat-min,340px)` / `var(--holo-pv-min,360px)` and MUST be these
+   same two numbers — `test_the_px_floors_are_ONE_pair_shared_by_the_stylesheet
+   _and_the_js` fails if they drift, because a mismatch is the bug below coming
+   straight back.
+
+   FIX ROUND 1 — WHY THE CLAMP MOVED INTO PIXELS. The first cut left the floors
+   to CSS alone: `minmax(340px, var(--holo-chat-fr))`. Measured in headless
+   Chrome at viewport 1600 (deck 1516, span 1293), a drag to 0.25 produced
+   tracks `216px 340px 7px 714.75px` — a sum of 1278 against 1516, i.e. a 238px
+   DEAD BAND on the right of the deck. When an fr max resolves below the px min,
+   grid clamps that track to the min correctly, but then resolves the OTHER
+   track's fr against the ORIGINAL free space rather than the space the clamp
+   released; the surplus is never redistributed. The user-visible result was the
+   exact opposite of what the captain asked for — he drags left to give the mock
+   render more room and gets an empty band.
+
+   So the fractions handed to the grid are clamped HERE, against the live span,
+   so no fr track is ever asked to resolve below its floor and the pair always
+   consumes the whole span. The `minmax()` mins stay as a safety net for a
+   viewport too narrow for any valid split; the normal path never reaches them.
+
+   This is a MINIMUM-side clamp. It is not, and must not become, a cap on the
+   chat's growth — the captain rejected that explicitly. There is no maximum
+   pixel constant here for exactly that reason. */
+var HOLO_CHAT_MIN_PX = 340;
+var HOLO_PV_MIN_PX = 360;
+
+/* The fraction-space guard, used when nothing has been laid out yet (first
+   paint, a headless harness) and there is no span to measure. */
+var HOLO_SPLIT_MIN = 0.15;
+var HOLO_SPLIT_MAX = 0.85;
+var HOLO_SPLIT_STEP = 0.02;     // one arrow-key nudge
+var HOLO_SPLIT = null;          // in-memory; null = not read from storage yet
+
+/* Is the span too narrow to satisfy BOTH floors? Then no split exists that
+   does, and the bounds below collapse to a single value. */
+function holoSplitDegraded(total) {
+  return !!total && total > 0 && total <= HOLO_CHAT_MIN_PX + HOLO_PV_MIN_PX + 2;
+}
+
+/* [min, max] fraction for a chat+preview span of `total` px, derived from the
+   two floors rather than hardcoded — a wider deck legitimately permits a
+   narrower chat FRACTION, because the bound is a pixel.
+
+   The +1 is a pixel of slack: without it the bound resolves to EXACTLY the
+   floor and `toFixed()`'s rounding can land a hair under it, which is enough to
+   trip the clamp and strand a pixel or two of band.
+
+   `null` when there is nothing to measure — the caller then keeps the
+   fraction-space guard, which is the honest answer rather than an invented
+   one. */
+function holoSplitBounds(total) {
+  if (!total || total <= 0) return null;
+  if (holoSplitDegraded(total)) {
+    /* DEGRADED, and the choice is stated rather than emergent: divide the span
+       in PROPORTION TO THE TWO FLOORS, so neither pane is singled out to absorb
+       the shortfall and the answer is the same whatever was stored or dragged.
+       Both panes end up under their floor — there is no room — and the
+       stylesheet's `minmax()` mins then hold each track at its minimum, so the
+       deck overflows and clips rather than silently hiding one pane. Below this
+       width the three-pane contract simply does not fit. */
+    var f = HOLO_CHAT_MIN_PX / (HOLO_CHAT_MIN_PX + HOLO_PV_MIN_PX);
+    return [f, f];
+  }
+  return [(HOLO_CHAT_MIN_PX + 1) / total, 1 - (HOLO_PV_MIN_PX + 1) / total];
+}
+
+/* The chat+preview span in px, measured off the live deck. `chat.offsetLeft` is
+   the 216px program-list track above the breakpoint and 0 below it (where the
+   list is an out-of-flow drawer), so one read covers both layouts without this
+   file having to know what the stylesheet decided. */
+function holoSplitSpan() {
+  var host = deckHost();
+  var view = host && host.querySelector ? host.querySelector(".deckview") : null;
+  if (!view || !view.querySelector) return 0;
+  var chat = view.querySelector(".holo-chat");
+  var handle = view.querySelector(".deck-split");
+  if (!chat || !handle) return 0;
+  var span = (view.clientWidth || 0) - (chat.offsetLeft || 0)
+             - (handle.offsetWidth || 0);
+  return span > 0 ? span : 0;
+}
+
+/* Storage is OPTIONAL and never fatal: Safari's private mode throws on read,
+   an embedded webview may not have it at all, and a deck that cannot remember
+   its split is still a deck. */
+function holoStore() {
+  try {
+    return (typeof localStorage !== "undefined" && localStorage) || null;
+  } catch (e) { return null; }
+}
+
+/* `total` is optional: with a span it clamps in PIXELS, without one it falls
+   back to the fraction-space guard. */
+function holoSplitClamp(f, total) {
+  f = parseFloat(f);
+  if (!isFinite(f)) f = HOLO_SPLIT_DEFAULT;
+  f = Math.min(HOLO_SPLIT_MAX, Math.max(HOLO_SPLIT_MIN, f));
+  var b = holoSplitBounds(total);
+  if (b) f = Math.min(b[1], Math.max(b[0], f));
+  return f;
+}
+
+function holoSplitGet() {
+  if (HOLO_SPLIT !== null) return HOLO_SPLIT;
+  var raw = null;
+  try {
+    var s = holoStore();
+    if (s) raw = s.getItem(HOLO_SPLIT_KEY);
+  } catch (e) { raw = null; }
+  HOLO_SPLIT = (raw === null || raw === "") ? HOLO_SPLIT_DEFAULT
+                                            : holoSplitClamp(raw);
+  return HOLO_SPLIT;
+}
+
+/* THE CAPTAIN'S PREFERENCE, as opposed to what fits. `holoSplitGet` is the
+   number he chose; `holoSplitEffective` is that number made legal for the width
+   currently on screen. They are kept apart on purpose: a 0.25 set on a 2560px
+   display is legal there and illegal at 1100px, and collapsing the two would
+   mean a window he narrowed for five minutes silently ate the preference. */
+function holoSplitEffective() {
+  return holoSplitClamp(holoSplitGet(), holoSplitSpan());
+}
+
+/* `persist` is false mid-drag and true when the gesture ENDS — a pointermove
+   writes to storage sixty times a second otherwise, for one decision. Every
+   caller is an EXPLICIT gesture, so this one does write the pixel-clamped
+   value: he moved it in this window, at this width. */
+function holoSplitSet(f, persist) {
+  HOLO_SPLIT = holoSplitClamp(f, holoSplitSpan());
+  holoSplitApply();
+  if (persist) {
+    try {
+      var s = holoStore();
+      if (s) s.setItem(HOLO_SPLIT_KEY, String(HOLO_SPLIT));
+    } catch (e) { /* a deck that cannot remember is still a deck */ }
+  }
+  return HOLO_SPLIT;
+}
+
+function holoSplitReset() { return holoSplitSet(HOLO_SPLIT_DEFAULT, true); }
+
+/* The split a drag of `dx` pixels lands on, over a chat+preview span of
+   `total`. PURE, and separate from the pointer plumbing on purpose: a node
+   harness can never deliver a pointer event, but it can prove the arithmetic
+   and the clamp — which is the half that has the off-by-one in it. */
+function holoSplitFromDrag(startChatPx, dx, total) {
+  if (!total) return holoSplitGet();
+  return holoSplitClamp((startChatPx + dx) / total, total);
+}
+
+function holoSplitApply() {
+  var host = deckHost();
+  var view = host && host.querySelector ? host.querySelector(".deckview") : null;
+  if (!view || !view.style || !view.style.setProperty) return;
+  /* the EFFECTIVE split, not the stored one: a value saved on a wider window is
+     replayed into a narrower one on the next reload, and unclamped that reopens
+     the dead band on a deck nobody has touched. The preference is left alone —
+     widen the window again and it comes back. */
+  var f = holoSplitEffective();
+  /* six places, not four: the bounds are pixel-derived, and rounding a bound
+     down by a ten-thousandth is enough to put a track back under its floor. */
+  view.style.setProperty("--holo-chat-fr", f.toFixed(6) + "fr");
+  view.style.setProperty("--holo-pv-fr", (1 - f).toFixed(6) + "fr");
+  var h = view.querySelector(".deck-split");
+  if (h) h.setAttribute("aria-valuenow", String(Math.round(f * 100)));
+}
+
+/* THE HANDLE. A grid COLUMN, not an overlay: it cannot sit on top of either
+   pane's content, and because both panes keep a floor it can never be pushed
+   off the edge — after any drag it is still there to drag back. */
+function holoSplitHandle() {
+  var h = el("div", "deck-split");
+  h.appendChild(el("span", "grip"));
+  /* The standard window-splitter role, so assistive tech says what this is and
+     where it sits instead of "group". NOT keyActivable: that idiom maps
+     Enter/Space onto `click`, and a click is what ENDS a drag — the reset would
+     fire every time the captain let go of the handle. */
+  h.setAttribute("role", "separator");
+  h.setAttribute("aria-orientation", "vertical");
+  h.setAttribute("aria-label", "Chat / preview split");
+  h.setAttribute("aria-valuemin", String(Math.round(HOLO_SPLIT_MIN * 100)));
+  h.setAttribute("aria-valuemax", String(Math.round(HOLO_SPLIT_MAX * 100)));
+  h.setAttribute("tabindex", "0");
+  h.title = "Drag to give the preview more room. Arrow keys nudge it; "
+    + "double-click resets it.";
+  /* It IS wired — three real handlers below — so it says so in the deck's own
+     no-dead-controls vocabulary. It is not wired to `click`, which is why this
+     is stated rather than inferred by holoCtl. */
+  h.setAttribute("data-ctl", "chat / preview split");
+  h.setAttribute("data-wired", "1");
+
+  h.addEventListener("pointerdown", function (e) { holoSplitDrag(e, h); });
+  h.addEventListener("dblclick", function (e) {
+    if (e && e.preventDefault) e.preventDefault();
+    holoSplitReset();
+  });
+  h.addEventListener("keydown", function (e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var d = 0;
+    if (e.key === "ArrowLeft") d = -HOLO_SPLIT_STEP;
+    else if (e.key === "ArrowRight") d = HOLO_SPLIT_STEP;
+    else if (e.key === "Home" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault(); e.stopPropagation();
+      holoSplitReset();
+      return;
+    } else return;
+    e.preventDefault();
+    /* stopPropagation so the deck's global key handling never ALSO acts on a
+       nudge — the same discipline keyActivable applies. */
+    e.stopPropagation();
+    /* a keyboard nudge persists immediately: there is no "gesture end" to wait
+       for, and a keyboard user who re-sets the split on every reload has an
+       inaccessible control. It steps from the EFFECTIVE split — the one on
+       screen — so the first press moves the handle the captain can see rather
+       than a stored value that is currently out of range at this width. */
+    holoSplitSet(holoSplitEffective() + d, true);
+  });
+  return h;
+}
+
+/* The other half of "the bound is a pixel". Narrowing the window can put the
+   stored split out of range without a single gesture, and the deck must
+   re-clamp as it happens rather than at the next reload. Bound once, lazily,
+   because board.js is also loaded by node harnesses with no window events. */
+var HOLO_RESIZE_BOUND = false;
+function holoBindResize() {
+  if (HOLO_RESIZE_BOUND) return;
+  if (typeof window === "undefined" || !window || !window.addEventListener) return;
+  HOLO_RESIZE_BOUND = true;
+  window.addEventListener("resize", function () {
+    if (HOLO.on) holoSplitApply();
+  });
+}
+
+function holoSplitDrag(e, handle) {
+  /* looked up from the host rather than `handle.parentNode`, so the handle can
+     be moved in the tree without silently disabling the drag. */
+  var host = deckHost();
+  var view = host && host.querySelector ? host.querySelector(".deckview") : null;
+  var chat = view && view.querySelector ? view.querySelector(".holo-chat") : null;
+  var pv = view && view.querySelector ? view.querySelector(".preview") : null;
+  if (!chat || !pv) return;
+  /* the span the grid is DIVIDING, not the sum of what the two panes currently
+     occupy. Before the pixel clamp those two differed by exactly the dead band,
+     and a drag that measured the panes would have carried the gap along with
+     it, never able to close it. */
+  var total = holoSplitSpan() || ((chat.offsetWidth || 0) + (pv.offsetWidth || 0));
+  if (!total) return;
+  var startX = e.clientX;
+  var startChat = chat.offsetWidth || 0;
+  if (e.preventDefault) e.preventDefault();
+  if (view.classList) view.classList.add("dragging");
+  /* Pointer capture keeps the drag alive over the IFRAME. Without it the very
+     first pixel of travel puts the pointer inside the sandboxed preview
+     document, which swallows the move events and the handle sticks. */
+  try { if (handle.setPointerCapture) handle.setPointerCapture(e.pointerId); }
+  catch (err) { /* not every pointer type can be captured */ }
+  function move(ev) {
+    holoSplitSet(holoSplitFromDrag(startChat, ev.clientX - startX, total),
+                 false);
+  }
+  function up() {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", up);
+    document.removeEventListener("pointercancel", up);
+    if (view.classList) view.classList.remove("dragging");
+    holoSplitSet(holoSplitGet(), true);   // one write, at the end of the gesture
+  }
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", up);
+  document.addEventListener("pointercancel", up);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Q3, RESOLVED 2026-08-05 (captain, S127 live drive) — THE PROGRAM DRAWER
+
+   Below the breakpoint the PROGRAM LIST collapses to a drawer; chat and preview
+   keep the full width. The list is the pane least needed moment-to-moment, so
+   it hides behind a control rather than shrinking the two panes the work
+   actually happens in. The PREVIEW explicitly does NOT become a toggle at any
+   width — D2's "the preview is the point, it must be permanently visible"
+   survives everywhere.
+
+   THE OTHER NUMBER TO CHANGE is the breakpoint, and it is in board.css
+   (`@media (max-width:1199px)`) rather than here, because nothing about this
+   behaviour is decided in JS: the toggle is rendered at EVERY width and the
+   stylesheet alone decides whether it is on screen. That is what lets opening
+   the drawer be a single class flip on the live DOM instead of a re-render —
+   and a re-render is the chat's scroll position, the preview's iframe, and the
+   whole deck's state, gone.
+   ════════════════════════════════════════════════════════════════════════ */
+function holoDrawerSet(on) {
+  HOLO.drawer = !!on;
+  var host = deckHost();
+  if (!host) return;
+  var view = host.querySelector(".deckview");
+  if (view && view.classList) view.classList.toggle("drawer-open", HOLO.drawer);
+  /* Every toggle on screen restates the same fact — the solo deck and the chat
+     header each carry one, and they are the same control, not two states. */
+  var btns = host.querySelectorAll(".holo-drawer-btn");
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].setAttribute("aria-expanded", HOLO.drawer ? "true" : "false");
+  }
+}
+
+/* ONE BUILDER, TWO PLACEMENTS — the chat header when a program is open, and the
+   empty deck when none is (the morning state is SOLO, has no chat header, and
+   is exactly the state in which the list is wanted). A real <button>, so the
+   browser's own keyboard handling applies: wrapping one in keyActivable fires
+   click TWICE for a single Enter, which on a toggle is a visible no-op. */
+function holoDrawerToggle() {
+  var b = el("button", "btn holo-drawer-btn", "☰ Programs");
+  b.type = "button";
+  b.setAttribute("aria-expanded", HOLO.drawer ? "true" : "false");
+  b.title = "Show or hide the program list. On a narrow window it becomes a "
+    + "drawer so the chat and the preview keep the full width.";
+  return holoCtl(b, "programs drawer", function () {
+    holoDrawerSet(!HOLO.drawer);
+  });
+}
+
+/* Click-away, the gesture people actually make to dismiss a drawer. It is a
+   sibling of the panes rather than a child of one, and the stylesheet keeps it
+   out of the way entirely above the breakpoint. */
+function holoScrim() {
+  var s = el("div", "holo-scrim");
+  s.setAttribute("aria-hidden", "true");
+  return holoCtl(s, "close programs drawer", function () {
+    holoDrawerSet(false);
+  });
+}
+
+/* ── the deck itself ───────────────────────────────────────────────────── */
+function renderDeck() {
+  var host = deckHost();
+  if (!host) return;
+  host.innerHTML = "";
+  var banner = holoBannerNode();
+  if (banner) host.appendChild(banner);
+  var active = holoActive();
+  var view = el("div", "deckview" + (active ? "" : " solo")
+                + (HOLO.drawer ? " drawer-open" : ""));
+  view.appendChild(holoProgramsPane());
+  if (active) {
+    view.appendChild(holoChatPane(active));
+    /* THE HANDLE, between the chat and the preview and nowhere else — the
+       216px program list is not part of this split (D2's amendment says so in
+       its last line). A solo deck has neither pane, so it gets no handle. */
+    view.appendChild(holoSplitHandle());
+    view.appendChild(holoPreviewPane(active));
+  } else {
+    view.appendChild(holoEmptyDeck());
+  }
+  view.appendChild(holoScrim());
+  host.appendChild(view);
+  /* The split is re-stamped on the freshly built node: renderDeck rebuilds the
+     deck on every turn, and a split whose only memory is the node it drew snaps
+     back to the default under a captain who moved it one turn ago. */
+  holoSplitApply();
+  holoBindResize();
+  /* S127 — THE HAND-OFF BAR, under everything and always reachable (the mock's
+     own placement). It spans the deck rather than living in one pane because
+     sending is an act on the PROGRAM, not on the chat or the preview. */
+  if (active) host.appendChild(holoHandoffBar(active));
+}
+
+/* ▶ SEND TO ALIGN, and the honest state of it.
+
+   Whether it can fire (`handoffReady`) and the sentence when it cannot
+   (`handoffBlocked`) are BOTH the daemon's: the deck must never invent an
+   explanation for a refusal it did not make. A SENT program gets no button at
+   all — the lock band in the chat pane is the whole account, and a second
+   control repeating it would be a second voice. */
+
+/* ── S171: SEND TO ALIGN IS A GATE WITH A WAIT ─────────────────────────────
+
+   THE CAPTAIN'S DESIGN, in his words: *"just leaning more on what the AI pass
+   does and making that step a gated wait that retriggers behind a wait guard
+   if you keep chatting with the composer."*
+
+   S170 started the derivation when the hand-off DIALOG opened, which had two
+   costs he then paid for real: a captain who opened it to look and went back
+   to drawing burned a pass, and the wait lived inside a dialog he had to keep
+   open to watch. So THIS control is the gate. Four states, and the daemon owns
+   every one of them (`p.derive`, published by `_holodeck_meta`):
+
+     state "none"     no change list for this draft, nothing running
+                      → ▶ GENERATE THE CHANGE LIST · a click posts `derive`
+     state "running"  a pass is in flight
+                      → ◐ GENERATING CHANGE LIST… · disabled, with the SAME
+                        `.holo-working` bars the chat pane uses
+     done, ok         → ▶ SEND TO ALIGN · opens the dialog, list already in it
+     done, not ok     the pass did not answer
+                      → ▶ SEND TO ALIGN (live — see below) + ↻ try again
+     state "off"      the derivation is switched off by configuration
+                      → ▶ SEND TO ALIGN, ungated. Gating on a pass that will
+                        never run would be a door with no handle.
+
+   NEVER A CLIENT-SIDE GUESS AND NEVER A TIMER. The disabled state is rendered
+   because the DAEMON said `running`; nothing here sets a flag or counts down.
+   That is FL-009 (`alignBusy`) and FL-017 (FINALIZING's 5-minute fuse) for the
+   third time, and the ruling both times was that a bigger constant is the same
+   guess with a longer fuse.
+
+   INVALIDATION IS A FACT, NOT A FLAG. `_handoff_derive_fingerprint` covers
+   `mockup.html`, so a composer turn that redraws it stops matching the stored
+   answer and the daemon peeks back to "none" all by itself. Nothing on this
+   side has to notice a turn happened.
+
+   ── S172: THE ESCAPE HATCH IS DELETED, AND THAT IS THE CAPTAIN'S CALL ────
+
+   `Send without the change list` rode on every gated state. His words after
+   driving it: *"we don't need the send without change list one."*
+
+   S171 built it as MANDATORY, because gating reverses a property S170 proved
+   with an `ast` test. Re-reading the states shows the fear was bigger than the
+   risk, and this is the whole argument:
+
+     · a FAILED pass — a dead engine, a timeout, an unreadable reply — already
+       leaves ▶ SEND TO ALIGN LIVE, with ↻ try again beside it. The primary
+       control IS the road through. An outage never stranded him;
+     · `none` is the state before he has asked for anything. The list costs him
+       one click and he can send from `failed` if it will not run;
+     · so the ONLY state the hatch uniquely covered is `running` — and the
+       honest cost of losing it is that a hung pass has to time out (the daemon
+       bounds it at 420s and the room keeps the answer).
+
+   AND THE FILING ROADS ARE UNCHANGED. `file_mission`, `park`, `align_start`
+   and `_handoff_idea` still never read the derivation — the `ast` test that
+   proves it is still green. This gate has always been an affordance on the
+   deck, and deleting a second door does not put a lock on the first.
+
+   NO CANCEL CONTROL WAS BUILT IN ITS PLACE, deliberately. Nobody has observed
+   a hang. If one is ever seen, the honest control is one that STOPS the pass —
+   not one that walks around it — and it should be built then, against a real
+   observation, rather than guessed at now. */
+function holoDeriveGate(p) {
+  var d = p.derive || {};
+  var st = d.state || "off";
+  if (st === "done") return d.ok ? "ready" : "failed";
+  if (st === "running" || st === "none") return st;
+  return "off";
+}
+
+function holoHandoffBar(p) {
+  var bar = el("div", "holo-handoff");
+  if (holoLifecycle(p) === "sent") {
+    bar.appendChild(el("span", "hl", "⧗ Sent"));
+    bar.appendChild(el("span", "hint", p.missionId
+      ? "This program was handed over as mission " + p.missionId
+        + " and is read-only."
+      : "This program was handed over and is read-only."));
+    return bar;
+  }
+  var gate = p.handoffReady ? holoDeriveGate(p) : "off";
+  bar.setAttribute("data-gate", gate);
+  var d = p.derive || {};
+  var n = (d.changes || []).length;
+  /* ONE SENTENCE, and it is about the state the bar is IN. The daemon's own
+     `why` is quoted for a pass that did not answer — the deck never composes
+     a reason for a failure it did not have. */
+  var hint = "The mockup and the concept doc go with it — you never have to "
+           + "find them.";
+  if (!p.handoffReady) {
+    hint = p.handoffBlocked || "";
+  } else if (gate === "none") {
+    hint = "One read-only pass reads your project against the finished mockup "
+         + "and writes the list of what is different into your brief. It takes "
+         + "a few minutes and you can walk away — it keeps running.";
+  } else if (gate === "running") {
+    hint = "Reading your project against the mockup. This survives closing the "
+         + "deck, a reload and a daemon restart — come back when you like.";
+  } else if (gate === "ready") {
+    hint = "✓ " + n + " change" + (n === 1 ? "" : "s")
+         + " read off your project are in the brief, with the mockup and the "
+         + "concept doc. Nothing left to wait for.";
+  } else if (gate === "failed") {
+    hint = "LCARS could not read your project against the mockup"
+         + (d.why ? " — " + d.why : "")
+         + ". Nothing is blocked: ▶ Send to Align still works and the brief is "
+         + "missing only the change list — or try the pass again.";
+  }
+  bar.appendChild(el("span", "hint", hint));
+  if (gate === "running") {
+    bar.appendChild(holoWorkingBars());
+    /* AND THE WATCH IS RE-ARMED FROM THE RENDER, not only from the click. He
+       may have RELOADED onto a pass that was already running — the daemon owns
+       it and the room persists the answer, so the page has to pick the watch
+       back up with no click to hang it on. Guarded per session id, because
+       renderDeck runs on every refresh. */
+    holoDerivePollDeck(p.sessionId);
+  }
+  bar.appendChild(el("span", "grow"));
+
+  if (gate === "failed") {
+    /* ── S172: THE SAME SIZE AS THE CONTROL BESIDE IT ──────────────────────
+       From the captain's own screenshot: `SEND WITHOUT THE CHANGE LIST`
+       rendered as a small outlined pill against a full-size filled
+       `◐ GENERATING CHANGE LIST…` — two different weights of control on one
+       row, which reads as two unrelated things rather than one bar. The hatch
+       is gone (above), and this is the pairing it leaves behind.
+
+       So both controls in this bar are `big` and they differ by FILL, not by
+       size: ▶ Send to Align is `go big` (filled, the thing to do), this one is
+       `big` (outlined, the other thing you can do). One family. */
+    var again = holoBtn("↻ Try the change list again", "big", function () {
+      holoDeriveStart(p.sessionId, true);
+    });
+    again.setAttribute("data-holo", "handoff-retry");
+    bar.appendChild(applyWriteState(again));
+  }
+
+  var send;
+  if (!p.handoffReady) {
+    send = holoBtn("▶ Send to Align", "go big", null,
+                   p.handoffBlocked || "There is nothing to hand over yet.");
+  } else if (gate === "none") {
+    send = holoBtn("▶ Generate the change list", "go big", function () {
+      holoDeriveStart(p.sessionId, false);
+    });
+  } else if (gate === "running") {
+    /* DISABLED BECAUSE THE DAEMON SAYS A PASS IS IN FLIGHT — and the reason a
+       hover gives is the same fact, not an apology. */
+    send = holoBtn("◐ Generating change list…", "go big", null,
+                   "A read-only pass is reading your project against the "
+                   + "mockup. It is the daemon's, not this page's: closing "
+                   + "the deck does not stop it.");
+  } else {
+    send = holoBtn("▶ Send to Align", "go big", function () {
+      holoPromote(p.sessionId);
+    });
+  }
+  send.setAttribute("data-holo", "handoff-send");
+  send.setAttribute("data-gate", gate);
+  bar.appendChild(applyWriteState(send));
+  return bar;
+}
+
+/* The SAME four bars the chat pane and the New Program dialog use — one
+   working idiom in this feature, not three. */
+function holoWorkingBars() {
+  var w = el("span", "holo-bars");
+  w.setAttribute("role", "status");
+  w.setAttribute("aria-live", "polite");
+  var bars = el("span", "bars");
+  for (var i = 0; i < 4; i++) bars.appendChild(el("i"));
+  w.appendChild(bars);
+  return w;
+}
+
+/* Start the pass, then let the DAEMON drive what the button says.
+
+   The response is the same `derive` block the deck payload carries, so the
+   bar is repainted from the daemon's answer to this very request — never from
+   an assumption that posting means running. `holoRefresh` then keeps asking
+   while it is in flight; the poll is a poll and not a stream for `promote`'s
+   own reason (S170), and its stop condition is the daemon saying it stopped. */
+var HOLO_DERIVE_POLL_MS = 4000;
+
+function holoDeriveStart(sid, force) {
+  if (!sid) return;
+  postWrite("/api/holodeck/" + sid + "/derive", force ? { force: true } : {},
+    function (state) {
+      var prog = null;
+      for (var i = 0; i < HOLO.programs.length; i++) {
+        if (HOLO.programs[i].sessionId === sid) prog = HOLO.programs[i];
+      }
+      if (prog) prog.derive = state.derive || prog.derive;
+      renderDeck();
+      holoDerivePollDeck(sid);
+    }, function (msg) {
+      holoSetBanner("offline", { message: msg });
+      renderDeck();
+    });
+}
+
+/* Ask the daemon again while the pass is in flight, and STOP the moment it is
+   not. `holoRefresh` re-reads every program (the derivation state included),
+   so this adds no second source of truth — it only decides how often to look
+   while there is something to look at. */
+function holoDerivePollDeck(sid) {
+  if (!sid || HOLO.derivePolls[sid]) return;
+  HOLO.derivePolls[sid] = true;
+  setTimeout(function () {
+    HOLO.derivePolls[sid] = false;
+    var live = null;
+    for (var i = 0; i < HOLO.programs.length; i++) {
+      if (HOLO.programs[i].sessionId === sid) live = HOLO.programs[i];
+    }
+    if (!live || ((live.derive || {}).state !== "running")) return;
+    holoRefresh();
+  }, HOLO_DERIVE_POLL_MS);
+}
+
+function holoVisiblePrograms() {
+  if (HOLO.filter === "all") return HOLO.programs.slice();
+  return HOLO.programs.filter(function (p) {
+    return holoLifecycle(p) === HOLO.filter;
+  });
+}
+
+function holoProgramsPane() {
+  var pane = el("div", "programs");
+  var head = el("div", "ph");
+  head.appendChild(el("span", "dot"));
+  head.appendChild(el("span", null, "Programs"));
+  pane.appendChild(head);
+
+  // D11's chips. Counts come from the REAL list, over the real lifecycle S127
+  // landed: DRAFT and SENT move as programs are handed over. DONE still reads 0
+  // for every program, because nothing yet reads back whether a mission MERGED
+  // — an honest zero for a state that exists and is not wired.
+  var chips = el("div", "pfilter");
+  HOLO_FILTERS.forEach(function (f) {
+    var key = f[0];
+    var n = key === "all" ? HOLO.programs.length
+      : HOLO.programs.filter(function (p) {
+          return holoLifecycle(p) === key;
+        }).length;
+    var chip = el("span", "fchip" + (HOLO.filter === key ? " on" : ""),
+                  f[1] + " " + n);
+    keyActivable(holoCtl(chip, f[1], function () {
+      HOLO.filter = key;
+      renderDeck();
+    }));
+    chips.appendChild(chip);
+  });
+  pane.appendChild(chips);
+
+  var list = el("div", "plist");
+  var shown = holoVisiblePrograms();
+  if (!shown.length) {
+    list.appendChild(el("div", "pnone", HOLO.programs.length
+      ? "No " + HOLO.filter + " programs."
+      : "No programs yet. Nothing has been run on this deck."));
+  }
+  shown.forEach(function (p) {
+    /* S126 — TWO KINDS OF CARD. A live conversation, and a room read off disk
+       that this daemon has never held. They are marked apart because they
+       behave apart: clicking the first switches the chat to it, clicking the
+       second asks the daemon to pick it back up (a WARM RESTART — a fresh
+       worker handed the transcript, never a resumed session). */
+    var onDisk = !p.sessionId;
+    var row = el("div", "prog" + (p.sessionId && p.sessionId === HOLO.activeId
+                                  ? " on" : "") + (onDisk ? " ondisk" : ""));
+    row.appendChild(el("div", "pn", p.program || "Untitled program"));
+    var meta = el("div", "pm");
+    meta.appendChild(el("span", null, "⬡ " + (p.turnCount || 0) + " turn"
+      + ((p.turnCount === 1) ? "" : "s")));
+    // D8 — recency is the answer to "which one was that", so it says WHAT the
+    // time refers to. "2 days ago" alone could be when it was opened, listed,
+    // or committed; design work is picked up days later and the question is
+    // always when it was last WORKED ON.
+    meta.appendChild(el("span", null, "last worked " + holoWhen(p.lastTouched)));
+    // THE ROOM, so two cards that READ the same are still legible (round 2).
+    // The daemon's collision check refuses names that normalize alike, but it
+    // does not hunt homoglyphs — "sidebаr" with a Cyrillic а is a name a
+    // captain may honestly have typed, and refusing it is worse than showing
+    // which room it landed in. The room is the discriminator.
+    if (p.room || p.programDir) {
+      meta.appendChild(el("span", "proom", "⌂ " + (p.room
+                                                   || holoBase(p.programDir))));
+    }
+    row.appendChild(meta);
+    var prow = el("div", "prow");
+    var life = holoLifecycle(p);
+    prow.appendChild(el("span", "pstat" + (life === "sent" ? " sent" : ""),
+                        life));
+    // S127 (D11) — a SENT program carries its mission number on the card. The
+    // program list is where a captain asks "what happened to that one", and
+    // the honest answer is a mission id he can find on the board.
+    if (life === "sent" && p.missionId) {
+      prow.appendChild(el("span", "pmission", "▦ " + p.missionId));
+    }
+    /* S172 — WHERE A DUPLICATE CAME FROM, on the card. "Which one was that"
+       is the question the program list exists to answer, and a duplicate's
+       whole point is that it continues an earlier design — so the lineage the
+       daemon records has to be visible where a captain is choosing between
+       two cards that look alike. The mission the parent was filed as is in the
+       title rather than on the face: it is the parent's number, not this
+       program's, and printing it beside a `draft` chip would read as this
+       one's. */
+    if (p.duplicatedFrom && p.duplicatedFrom.room) {
+      var dup = el("span", "pdup", "⧉ from " + (p.duplicatedFrom.program
+                                                || p.duplicatedFrom.room));
+      dup.title = "Duplicated from " + p.duplicatedFrom.room
+        + (p.duplicatedFrom.missionId
+           ? ", which was filed as mission " + p.duplicatedFrom.missionId : "");
+      prow.appendChild(dup);
+    }
+    if (onDisk) {
+      // Said on the card, not only in a class: this program is in the archive
+      // and nothing is talking to it right now.
+      prow.appendChild(el("span", "pdisk", "⌾ in the archive"));
+    }
+    prow.appendChild(el("span", "grow"));
+    /* S172 — ⧉ DUPLICATE, on EVERY card INCLUDING A LOCKED ONE. That is the
+       state it exists for: a sent program is read-only for ever (the daemon
+       409s every turn on it, because it is the exact design a mission was
+       briefed on), and duplicating it is the only way to keep designing from a
+       design that already shipped. Rendering it on drafts only would hide the
+       control in precisely the case it was built for. */
+    prow.appendChild(applyWriteState(holoBtn("⧉ Duplicate", "small",
+                                             function () {
+      holoConfirmDuplicate(p);
+    })));
+    /* DELETE IS A GIT OPERATION, and the confirmation says so. The room is
+       `git rm`'d and committed, so the honest word for this is "removed from
+       the deck", not "deleted forever". */
+    prow.appendChild(applyWriteState(holoBtn("⌫ Delete", "small", function () {
+      holoConfirmDelete(p);
+    })));
+    row.appendChild(prow);
+    keyActivable(holoCtl(row, p.program || "program", function () {
+      if (onDisk) {
+        holoOpen(p.room || holoBase(p.programDir),
+                 p.engineRecorded ? p.engine : null);
+        return;
+      }
+      HOLO.activeId = p.sessionId;
+      HOLO.banner = null;
+      renderDeck();
+    }));
+    list.appendChild(row);
+  });
+  pane.appendChild(list);
+
+  var foot = el("div", "pfoot");
+  var add = holoBtn("＋ New Program", "go", openNewProgram);
+  add.style.width = "100%";
+  foot.appendChild(applyWriteState(add));
+  // D6: after the empty state named it once, the sidecar is a name and a
+  // commit count. Knowing where your archive lives is knowing; being told the
+  // path on every screen is plumbing.
+  var chip = el("div", "sidecar-chip");
+  if (HOLO.sidecarName) {
+    chip.appendChild(document.createTextNode("⬡ "));
+    chip.appendChild(el("b", null, HOLO.sidecarName));
+    chip.appendChild(document.createTextNode(
+      " · " + HOLO.commits + " commit" + (HOLO.commits === 1 ? "" : "s")
+      + " · local only"));
+  } else {
+    chip.textContent = "Design files live in a separate repo beside this one — "
+      + "never inside your project.";
+  }
+  foot.appendChild(chip);
+  pane.appendChild(foot);
+  return pane;
+}
+
+/* D6 + mock screen 2 — the first thing a captain ever sees on the deck. It says
+   where the files will live BEFORE it asks for anything, because a tool that
+   hides where your work goes is a tool you cannot back up. This is the ONE
+   place a path is shown. */
+function holoEmptyDeck() {
+  var e = el("div", "holo-empty");
+  /* FIX ROUND 2 — THE MORNING STATE. This pane is shown in TWO situations, and
+     until now it said the same thing in both. The second is the one a captain
+     is in every morning: yesterday's programs are in the list on the left,
+     nothing is selected (correctly — the auto-select deliberately picks up only
+     a LIVE program, because handing him an archived one means a composer that
+     404s), and the whole main area said "PROGRAM STANDING BY / Describe a
+     screen…" over one prominent ＋ NEW PROGRAM. Nothing pointed at the list,
+     and the one button was the wrong move: under the same name it lands in the
+     room-reuse disclosure, under a different one his work is in two places.
+     The GUARD is right; this was the copy. */
+  var waiting = (HOLO.programs || []).length;
+  /* Q3 (S128) — the SOLO deck has no chat header to hang the drawer control on,
+     and this is the state in which the list is most wanted: the copy below
+     points straight at it ("your programs are in the list on the left"), which
+     is a lie on a narrow window unless something can open it. */
+  e.appendChild(holoDrawerToggle());
+  e.appendChild(el("div", "arch", "Holodeck"));
+  e.appendChild(el("div", "sub", waiting ? "Pick a program back up"
+                                         : "Program standing by"));
+  if (waiting) {
+    e.appendChild(el("p", null,
+      "Your programs are in the list on the left — click one to carry on with "
+      + "it. Nothing was lost when the deck was closed: each program's room "
+      + "still holds its mockup, the whole conversation, and its concept doc."));
+    e.appendChild(el("p", "quiet",
+      "＋ New Program starts a separate one. Under the same name it carries on "
+      + "in that program's room; under a different name you have the same "
+      + "design in two places."));
+  } else {
+    e.appendChild(el("p", null,
+      "Describe a screen, a component, or a whole flow and I will build it as a "
+      + "live mockup you can look at. We iterate here — cheaply, no missions, no "
+      + "branches — until it looks right."));
+  }
+  e.appendChild(applyWriteState(holoBtn("＋ New Program", "go big",
+                                        openNewProgram)));
+  var where = el("div", "where");
+  where.appendChild(document.createTextNode("Files land in "));
+  // D6 wants the PATH, not the name. The reason for naming the sidecar at all
+  // is that this archive is the captain's, it outlives the mission, and he must
+  // be able to back it up — and you cannot back up a basename. The daemon sends
+  // the `~`-folded form (only it knows $HOME); the name is the last resort, for
+  // a deck rendered before the first list call has answered.
+  where.appendChild(el("b", null, HOLO.sidecarDisplay || HOLO.sidecarName
+    || (holoRepoName() + "-holodeck")));
+  where.appendChild(document.createTextNode(
+    " — a separate repo beside this one, never inside your project. "
+    + "It is local git, pushed only if you ask."));
+  e.appendChild(where);
+  return e;
+}
+
+function holoRepoName() {
+  var meta = LAST_BOARD && LAST_BOARD.meta;
+  var repo = (meta && (meta.repo || meta.repoName)) || "";
+  repo = String(repo);
+  var i = repo.lastIndexOf("/");
+  return (i === -1 ? repo : repo.slice(i + 1)) || "this project";
+}
+
+/* D12 — "the program header links to it". `basis.md` is what makes a grounding
+   CORRECTABLE, and a grounding you cannot read is one you cannot correct.
+
+   ONE BUILDER, TWO PLACEMENTS (S127 FL-003). The file is now reachable from the
+   chat header chip AND from the empty preview, because the two are needed at
+   different moments: the empty preview is the pane a captain is actually
+   staring at the instant a grounding pass lands, and the chip is the only route
+   left once a mockup exists and that empty state is gone. What must NOT be
+   duplicated is the MECHANISM — S125 lost two rounds to a second control
+   carrying its own URL and its own wording. Both call this one function, so
+   they cannot disagree about where the file is, whether it is there, or what to
+   say when it is not: `basisFile` is the daemon saying the file really exists,
+   so the link can never 404, and without it the control stays visibly off with
+   the reason rather than pointing into thin air. */
+/* S172 — AND WHOSE GROUNDING IT IS. On a DUPLICATE the basis came over with the
+   copy: it is what LCARS read for the ORIGINAL program, not a fresh look at
+   this project. By the time a captain duplicates a design its mission has
+   usually landed, so the app has MOVED and the basis describes what it used to
+   be. `basisInherited` is the daemon's own answer and `basisNotice` is its own
+   sentence for why — this side adds not one word, it only stops asserting the
+   grounding is this project's current one. */
+function holoBasisNode(p, label, cls) {
+  if (p.basisFile) {
+    var link = el("a", cls, label);
+    link.setAttribute("href", holoPreviewPath(p, p.basisFile));
+    link.setAttribute("target", "_blank");
+    link.setAttribute("rel", "noopener noreferrer");
+    link.title = p.basisInherited ? p.basisNotice
+      : "read basis.md — what the holodeck found in " + holoRepoName();
+    link.setAttribute("data-ctl", label);
+    link.setAttribute("data-wired", "1");
+    return link;
+  }
+  return holoCtl(el("span", cls, label), label, null,
+    "The grounding pass has not written basis.md yet — there is nothing "
+    + "to read until it does.");
+}
+
+/* ── the chat pane ─────────────────────────────────────────────────────── */
+function holoChatPane(p) {
+  var pane = el("div", "holo-chat");
+  var head = el("div", "chat-head");
+  /* Q3 (S128) — the drawer control, FIRST in the header where a ☰ is looked
+     for. Rendered at every width; the stylesheet hides it above the breakpoint,
+     where the list is a column already on screen. */
+  head.appendChild(holoDrawerToggle());
+  head.appendChild(el("div", "ct", p.program || "Program"));
+  if (p.grounded || p.mode === "grounding") {
+    /* S172 — the chip must not keep saying "grounded in <repo>" over a basis
+       that came over with a duplicate. The words carry the fact, not a class:
+       a new class needs a stylesheet rule to reach the screen, and text always
+       does. */
+    head.appendChild(holoBasisNode(
+      p,
+      p.basisInherited ? "▣ inherited grounding — may be stale"
+        : "▣ grounded in " + holoRepoName(),
+      "ground-chip"));
+  }
+  /* FIX ROUND 1 (D7) — AND WHOSE CONVERSATION IS IN THIS PANE. A duplicate
+     opens with the PARENT'S whole chat replayed into it, and the only thing
+     that ever said so was the banner — which is transient. One refresh later
+     the header named this program, the turns below it were somebody else's,
+     and nothing on the screen joined the two up; the card's ⧉ from chip is in
+     the other pane and gone the moment the drawer shuts. The header is where a
+     captain looks to know WHAT HE IS READING, so the fact lives here too. It
+     states the lineage and nothing more — that the history is not binding is
+     the worker's instruction and the banner's sentence, and repeating it here
+     would be the second voice this deck keeps having to remove. */
+  if (p.duplicatedFrom && p.duplicatedFrom.room) {
+    var cont = el("span", "cont-chip",
+                  "⧉ continuing " + (p.duplicatedFrom.program
+                                     || p.duplicatedFrom.room));
+    cont.title = "The conversation below came over from " + p.duplicatedFrom.room
+      + (p.duplicatedFrom.missionId
+         ? ", which was filed as mission " + p.duplicatedFrom.missionId : "")
+      + ". This is a new program — nothing in that history is binding, and the "
+      + "one it came from is untouched.";
+    head.appendChild(cont);
+  }
+  head.appendChild(el("span", "grow"));
+  /* FIX ROUND 2 — "WARM" IS A FACT THE DAEMON MEASURES, NOT A DECORATION.
+     On a program picked back up this pill read `WARM · CLAUDE` two inches
+     under the banner saying the conversation that built it is over and the
+     worker answering the next turn is a fresh one — "warm" being the exact
+     word for the thing that did not survive. It is equally untrue on a program
+     that has not spoken yet: a design program spends nothing until the first
+     turn, which is what OPENS the warm session.
+
+     `warm` is `sess.started` — the daemon's own answer to "is there a session
+     to resume", the same evidence S125's N4 cure is keyed off. The pill states
+     it rather than asserting it, and never goes silent about the engine. */
+  var warm = !!p.warm;
+  var pill = el("span", "pill", (warm ? "WARM · " : "FRESH · ")
+               + holoEngineName(p));
+  /* ONE VOICE (fix round 3). The FRESH tooltip used to go on to say the next
+     turn is "handed this program's transcript as context" — the restart
+     banner's own claim, restated two inches below it in different words, and
+     the only second voice left on the deck. It is DELETED rather than
+     rephrased: the tooltip's job is the PILL's fact — whether a worker session
+     is open — and the banner is the whole account of the restart. */
+  pill.title = (warm
+    ? ("The worker session is open, so a follow-up turn resumes it — LCARS "
+       + "re-sends nothing.")
+    : "No worker session is open yet. Your next turn starts one.")
+    /* FIX ROUND 5 — WHERE THE ENGINE IN THE PILL CAME FROM. The pill has
+       always named what will ANSWER, and that stays. What it could not say is
+       whether that is the program's own history or merely what this
+       viewscreen happens to be running — and on a live drive those were
+       different engines, with the wrong one reading as the answer. Every
+       program built before round 5 has no engine in its record, so it is told
+       exactly that rather than handed an invention. */
+    + (p.engineRecorded
+       ? (" It is the engine this program was designed on.")
+       : (" This program's record does not say which engine it was designed "
+          + "on, so it runs on this viewscreen's default."));
+  head.appendChild(pill);
+  head.appendChild(applyWriteState(holoBtn("⌫ End Program", null, function () {
+    holoEnd(p.sessionId);
+  })));
+  pane.appendChild(head);
+
+  var tr = el("div", "transcript");
+  (p.turns || []).forEach(function (t) {
+    if (t.text) {
+      var you = el("div", "turn you");
+      you.appendChild(el("div", "who", "You"));
+      you.appendChild(el("div", "body", t.text));
+      /* S169 FIX ROUND 1 — AND WHAT HE ATTACHED TO IT. Measured on the
+         2026-08-06 drive: he pasted a sketch, said "this sketch is the look I
+         want", and after a reload the reopened chat showed no chip at all —
+         his own line pointing at nothing. The names come from the DAEMON's
+         turn list (`_turns_payload`), which is read back out of
+         `transcript.md` on a reopen, so this survives a refresh, a reload and
+         a program picked up weeks later. The chip shape is the composer's own
+         (`.img-chips`/`.img-chip`), not a second one. */
+      var att = t.attachments || [];
+      if (att.length) {
+        var chips = el("div", "img-chips");
+        att.forEach(function (n) {
+          var chip = el("span", "img-chip");
+          chip.appendChild(el("span", "img-chip-name", "◫ " + holoBase(n)));
+          chips.appendChild(chip);
+        });
+        you.appendChild(chips);
+      }
+      tr.appendChild(you);
+    }
+    if (t.reply) {
+      var h = el("div", "turn holo");
+      h.appendChild(el("div", "who", "Holodeck"));
+      h.appendChild(holoReplyNode(t.reply));
+      var files = (t.filesChanged || []).map(function (c) {
+        return typeof c === "string" ? c : c.path;
+      });
+      if (files.length) {
+        var did = el("div", "did");
+        files.forEach(function (f) {
+          var name = holoBase(f);
+          did.appendChild(el("span", "chip-file"
+            + (/\.md$/i.test(name) ? " doc" : ""), name));
+        });
+        h.appendChild(did);
+      }
+      /* S126 — THE CONCEPT-DOC AUDIT, ON THE TURN IT IS ABOUT. The daemon
+         checks that a turn which moved the mockup left a `concept.md` behind,
+         and only the failure is shown: a check that speaks on every turn is a
+         check people stop reading. It is a NOTE beside the turn, not a modal
+         banner — nothing is broken and nothing was lost, there is simply
+         nothing written down yet for the hand-off to carry. The words are the
+         daemon's (the one-voice rule). */
+      if (t.conceptAudit && t.conceptAudit.status === "missing") {
+        var cn = el("div", "holo-concept");
+        cn.appendChild(el("span", "cl", "▤ No concept doc"));
+        cn.appendChild(el("span", "ct3", t.conceptAudit.message || ""));
+        h.appendChild(cn);
+      }
+      /* S169 (FL-015) — WHAT THE TURN DID, on the turn it is about. The
+         captain asked a question, the holodeck answered it AND rebuilt part of
+         the mockup, and nothing on this screen said so — the file chips above
+         name what changed, but a turn that changed NOTHING said nothing at
+         all, so "it answered and left the design alone" and "it answered and
+         quietly redesigned the events tab" looked identical until he opened
+         the preview.
+
+         The daemon reads both halves off the audit it already runs and writes
+         the sentence (`_turn_outcome`); this renders it and invents nothing.
+         It is deliberately quiet on an ordinary build turn that wrote — the
+         chips above already say that, and a note that speaks every turn stops
+         being read. `.no` when nothing was written, `.drift` when a turn he
+         DECLARED a question wrote anyway, which is the defect itself. */
+      var oc = t.turnOutcome;
+      if (oc && oc.message) {
+        var on = el("div", "holo-outcome" + (oc.wrote ? " drift" : " no"));
+        on.appendChild(el("span", "cl",
+          oc.wrote ? "◆ Changed on a question" : "◇ Nothing written"));
+        on.appendChild(el("span", "ct3", oc.message));
+        h.appendChild(on);
+      }
+      tr.appendChild(h);
+    }
+  });
+  if (!(p.turns || []).length) {
+    tr.appendChild(el("div", "pnone",
+      "Say what you want to see. The first turn opens the conversation."));
+  }
+  /* S128 (FL-002) — WHO SAYS A TURN IS RUNNING. `HOLO.busy` is this tab's
+     memory of its own send and nothing else: a reload, a second tab, or a
+     return from the board has none of it, so a deck that re-rendered mid-turn
+     read exactly like an idle one — while the daemon would correctly refuse
+     the next `/say`. `p.busy` is the daemon's own fact and is the only one
+     that survives the client that started the turn.
+
+     The daemon's wins when both are true, because it is the one that knows
+     WHEN the turn started; this tab does not, and the whole complaint was that
+     nothing said how long it had been going. */
+  var deckBusy = !!(p && p.busy);
+  var working = deckBusy || HOLO.busy;
+  if (working) {
+    tr.appendChild(holoWorkingNode(deckBusy ? p.busyLabel : null));
+  }
+  pane.appendChild(tr);
+  // THE DECK IS THE VIEWPORT (fix round 1). The transcript is the ONE thing on
+  // the deck that grows, so it is the one thing that scrolls — and it must land
+  // on the newest turn, or a long conversation re-opens showing its own opening
+  // line. Deferred to the next frame because the node has no height until it is
+  // in the document.
+  if (typeof setTimeout === "function") {
+    setTimeout(function () { tr.scrollTop = tr.scrollHeight; }, 0);
+  }
+
+  /* S127 (D11) — A SENT PROGRAM HAS NO COMPOSER. The band REPLACES it rather
+     than greying it out, on the mock's reasoning: a disabled input invites
+     "why can't I type here?", and a band that says what happened, when, and
+     which mission holds it answers that before it is asked.
+
+     Why locked at all: the mission received a SNAPSHOT of these exact files.
+     If the mockup keeps moving afterwards, the design on screen and the brief
+     the workers are building to disagree silently — and the disagreement
+     surfaces at Verify as "this doesn't match", with no way to tell which side
+     moved. */
+  if (holoLifecycle(p) === "sent") {
+    var lock = el("div", "holo-lock");
+    var lh = el("div", "lh");
+    lh.appendChild(el("span", "li", "⧗"));
+    lh.appendChild(el("span", "lt", "Sent to Align"
+      + (p.missionId ? " · mission " + p.missionId : "")));
+    lock.appendChild(lh);
+    lock.appendChild(el("p", null,
+      "This program is read-only now. The mission was briefed on the mockup "
+      + "and the concept doc exactly as they were when you sent them, so "
+      + "changing them here would leave it building to something you can no "
+      + "longer see. Everything is still readable — the transcript above, the "
+      + "mockup in the preview, and the whole room in your archive."));
+    /* S172 FIX ROUND 3 — AND THE WAY ON, NAMED IN THE SAME BREATH. This
+       paragraph used to stop at "read-only", under a hatch that apologised for
+       not existing. The captain is standing in this room when he discovers the
+       lock, so this is where the road out has to be said — in the same words
+       the daemon's own refusal uses, so the sentence he gets from the composer
+       and the sentence he reads here are one story. */
+    lock.appendChild(el("p", null,
+      "⧉ Duplicate is the way on: it opens a NEW program carrying this one's "
+      + "mockup, concept doc and whole conversation, editable from the first "
+      + "turn — and this one stays exactly as it was handed over."));
+    /* THE ESCAPE HATCH, LIVE. Wanting to carry on after sending is normal —
+       but it is a NEW design, and the mission in flight was briefed on the old
+       one, so it goes into a room of its own. S127 shipped this DISABLED with
+       the truth that the session had not built it; S172 built it and rewrote
+       the daemon's refusal to point at it, and left this greyed out — so the
+       one room a captain is standing in when he hits the lock went on saying
+       the thing he had just been told exists does not. It is THE CARD'S OWN
+       ROAD, called here: one confirmation, one POST, one mechanism. */
+    lock.appendChild(applyWriteState(holoBtn(
+      "⧉ Duplicate to keep designing", "small", function () {
+        holoConfirmDuplicate(p);
+      })));
+    pane.appendChild(lock);
+    return pane;
+  }
+
+  // the composer. Enter sends, Shift+Enter is a newline — the mock's contract,
+  // and the one every chat surface a captain has ever used shares.
+  var comp = el("div", "composer");
+  var ta = el("textarea");
+  ta.placeholder = "Describe what you want to see…";
+  ta.rows = 3;
+  ta.setAttribute("data-holo", "composer");
+  comp.appendChild(ta);
+  /* S169 (FL-013) — THE UNSENT TURN, PUT BACK. This pane is rebuilt from
+     scratch on every render, so the value has to be restored from HOLO here
+     and recorded on every keystroke below. Nothing else about the composer
+     changes: it is the same textarea, with what he had already typed in it. */
+  var draft = holoDraftFor(p.sessionId);
+  ta.value = draft.text || "";
+  ta.addEventListener("input", function () {
+    holoDraftPut(p.sessionId).text = ta.value;
+  });
+  /* S169 (FL-014) — AND IT TAKES A PASTED IMAGE. Designing a mockup FROM a
+     reference screenshot is the archetypal thing to ask this room for, and it
+     was the one design surface on the board that could not take one: the
+     daemon has had an honest refusal for the case since S124, but with no
+     paste handler here the clipboard event was never harvested, nothing was
+     ever sent, and that sentence could never fire. A pasted image did
+     NOTHING, in silence — the exact thing this file's own header forbids.
+     Same paster as the File and Log boxes (S91), with the list kept in the
+     draft so a re-render does not eat it either. */
+  var cerr = el("div", "errline"); cerr.hidden = true;
+  comp.appendChild(cerr);
+  var compImgs = attachImagePaster(ta, function (msg) { showErr(cerr, msg); }, {
+    get: function () { return holoDraftFor(p.sessionId).images; },
+    set: function (list) { holoDraftPut(p.sessionId).images = list; },
+  });
+  var row = el("div", "crow");
+  /* S169 (FL-015) — THE OPTIONAL DECLARATION. See `holoIntentToggle`. */
+  var intentSel = holoIntentToggle(p.sessionId, function () { paintSend(); });
+  row.appendChild(intentSel);
+  row.appendChild(el("span", "hint", "⏎ send · ⇧⏎ newline · paste a screenshot"));
+  row.appendChild(el("span", "grow"));
+  var send = holoBtn("Send ▸", "go", function () {
+    holoSay(p.sessionId, ta.value, compImgs.payload(),
+            holoDraftFor(p.sessionId).intent);
+  });
+  /* The control has to SHOW it took, or it is a switch he flips and then
+     wonders about. The verb on the button is the whole feedback: Ask ▸ /
+     Send ▸, off the same draft field the POST reads, so the button and the
+     request can never disagree about what this turn is. */
+  function paintSend() {
+    if (send.disabled) return;
+    send.textContent =
+      holoDraftFor(p.sessionId).intent === "ask" ? "Ask ▸" : "Send ▸";
+  }
+  paintSend();
+  if (working) {
+    send.disabled = true;
+    /* S169 (FL-015) — "Working…", not "Rendering…". A turn in flight is a turn
+       in flight; whether it is rendering anything is not known until it has
+       written something, and the captain met this control asserting a render
+       over a turn he had only asked a question on. Same word as the strip
+       above it, for the same reason. */
+    send.textContent = "Working…";
+    /* AND WHY — in the daemon's words, on the same discipline the hand-off bar
+       already follows (`handoffBlocked`). A composer that is locked with no
+       explanation is exactly the state the captain came back to; an
+       explanation this side invented would be a second voice about a refusal
+       it did not make. `data-reason` is the board's own idiom for a control
+       that is disabled WITH the reason. */
+    if (deckBusy && p.busyReason) {
+      send.title = p.busyReason;
+      send.setAttribute("aria-disabled", "true");
+      send.setAttribute("data-reason", p.busyReason);
+    }
+  }
+  ta.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      if (!send.disabled) holoSay(p.sessionId, ta.value, compImgs.payload(),
+                                  holoDraftFor(p.sessionId).intent);
+    }
+  });
+  row.appendChild(applyWriteState(send));
+  comp.appendChild(row);
+  pane.appendChild(comp);
+  return pane;
+}
+
+/* S169 (FL-015) — ASK vs BUILD, DECLARED ON THE COMPOSER.
+
+   The captain asked the holodeck what it meant by the events tab; it answered
+   him and then spent a long turn rebuilding part of the mockup he had not asked
+   it to touch. His bar, in his words: *"Would be better to answer and let me
+   guide then waste time on a render update."*
+
+   THE OBVIOUS CURE IS THE TRAP, so it is not here: nothing in this product
+   looks at his sentence and decides whether it is a question. S156's classifier
+   fell from 14/14 to 5/14 the moment a tester reworded its own corpus without
+   changing a meaning, and the cure was deleting the signals and moving the
+   decision to a DECLARATION. He phrases things however he phrases them.
+
+   So there are two declarations and no guesses, and they compose:
+     • the DEFAULT one is in the turn prompt — the worker is told answer-then-
+       stop is the right move on a turn that is not a direction, and the worker
+       is the only reader that has his actual sentence;
+     • THIS one is his, explicit, and a rewording cannot defeat it.
+
+   IT IS OPTIONAL BY CONSTRUCTION and must stay that way. He never has to flip
+   it to ask a question — the prompt already covers him — so it can never become
+   the switch he forgot and blamed. It is also PER-TURN, not a mode: the draft
+   (and with it this field) is cleared when the turn is sent, so ASK never leaks
+   into the next thing he types.
+
+   The state lives in `HOLO.drafts[sid].intent` — the object Wave 2 built for
+   the unsent turn's text and images — because what he typed, what he pasted and
+   what shape the turn is are one thing, and a fourth store beside them is the
+   two-mechanism trap this round has lost rounds to. */
+function holoIntentToggle(sid, onchange) {
+  var wrap = el("div", "holo-intent");
+  wrap.setAttribute("role", "group");
+  wrap.setAttribute("aria-label", "Is this turn a direction or a question?");
+  var opts = [["build", "◈ Build", "Direct a change — the holodeck builds it."],
+              ["ask", "? Ask", "Ask a question — the holodeck answers and "
+               + "changes nothing: no mockup edit, no concept.md edit."]];
+  var btns = [];
+  function paint() {
+    var cur = holoDraftFor(sid).intent === "ask" ? "ask" : "build";
+    btns.forEach(function (b) {
+      var on = b.getAttribute("data-holo-intent") === cur;
+      if (on) b.classList.add("on"); else b.classList.remove("on");
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+  opts.forEach(function (o) {
+    var b = keyActivable(el("span", "iopt", o[1]));
+    b.setAttribute("data-holo-intent", o[0]);
+    b.title = o[2];
+    b.addEventListener("click", function () {
+      holoDraftPut(sid).intent = o[0];
+      paint();
+      if (onchange) onchange();
+    });
+    btns.push(b);
+    wrap.appendChild(b);
+  });
+  paint();
+  return wrap;
+}
+
+/* ── rendering a reply (mock screen 4 is CLEAN PROSE) ──────────────────────
+   The chat was printing the engine's markdown SOURCE (`# heading`, `**bold**`,
+   `| pipe | tables |`) and its TOOL TRACE (`● List directory .`, `└ 3 files
+   found`, `● Create mockup.html +68`) — engine internals leaking into a design
+   conversation.
+
+   THE ONE RULE THIS MUST NOT BREAK: a reply is text a LANGUAGE MODEL WROTE, and
+   it is going into the board's own DOM. Everything below builds NODES and sets
+   `textContent`; nothing here touches `innerHTML`, so making it legible cannot
+   have made it an injection channel. (Tested: `replyInnerHtmlCalls` must be 0
+   and `<img src=x onerror=…>` must render as the literal characters.) */
+
+/* ── engine activity: COLLAPSED, NEVER DELETED (fix round 2) ───────────────
+   Round 1 FILTERED lines out, and the filter was the defect — not the pattern
+   in it. `/^\s*[└⎿├│]/` deleted any line opening with a box-drawing glyph, so a
+   captain who sketched a rail layout in chat got back `┌────────────┐` alone:
+   the `│ SWATCHES │` body and the closing `└────┘` were destroyed with nothing
+   on screen to say so. A third, cleverer regex would be beaten too, because
+   ASCII diagrams and `●`-bulleted design notes are among the most likely things
+   to be said IN A DESIGN CONVERSATION.
+
+   So the mechanism is gone. Recognized activity is folded into a muted,
+   expandable row; everything else is prose; and the two together are always the
+   WHOLE reply, line for line. A misclassification now costs a cosmetic oddity
+   the captain can open, and CANNOT remove a character of what he was shown.
+
+   The recognizer stays conservative on top of that: a trace line is a glyph, a
+   tool VERB, and an ARGUMENT-shaped tail — a path, a `.ext`, a `+68`, a
+   parenthesised call, or nothing. "● Update the radius only if the swatches
+   move" is a sentence, and stays prose. A continuation glyph is trace only
+   while a recognized run is open; standing alone it is somebody drawing a box.
+
+   The one rule none of this may break: model text still never reaches
+   `innerHTML` — every line below becomes a TEXT NODE. */
+/* FIX ROUND 5 — `✗` joins the glyph class. Copilot prints a FAILED tool block
+   with that head (`✗ Edit mockup.html` / `  └ Multiple matches found`, captured
+   at `web/tests/fixtures/s126-live/copilot-failed-edit-reply.txt`), and it was
+   rendering in the middle of the conversation as a design decision. The tail
+   test is UNCHANGED, so `✗ Delete the old rail it never shipped` is still a
+   sentence — and the chat folds rather than deletes either way. */
+var HOLO_TOOL_LINE = /^\s*[●⏺◆✗]\s*(list directory|read|create|update|edit|write|search|grep|glob|view|bash|fetch|task|delete|move|copy|thinking)\b(.*)$/i;
+var HOLO_TRACE_CONT = /^\s*[└⎿├│]/;
+
+/* Does the tail of a `● Verb …` line look like a tool ARGUMENT rather than a
+   sentence? Anything unsure answers false — a trace line shown as prose costs
+   nothing, and this is the only judgement call left in the recognizer. */
+function holoArgish(tail) {
+  tail = String(tail == null ? "" : tail).trim();
+  if (!tail) return true;
+  if (/[(`"']/.test(tail)) return true;
+  var toks = tail.split(/\s+/);
+  for (var i = 0; i < toks.length; i++) {
+    var t = toks[i];
+    if (t === "." || t === ".." || /[\/\\]/.test(t)
+        || /\.[A-Za-z0-9]+$/.test(t) || /^[+-]\d+$/.test(t)) return true;
+  }
+  return false;
+}
+
+function holoIsToolLine(ln) {
+  var m = HOLO_TOOL_LINE.exec(ln);
+  return !!m && holoArgish(m[2]);
+}
+
+/* [{trace, lines}] — EVERY line of the reply, in order, exactly once. This is
+   the guarantee: concatenating the segments' lines reproduces the reply. */
+function holoSegments(text) {
+  var lines = String(text == null ? "" : text).replace(/\r\n/g, "\n").split("\n");
+  var segs = [];
+  var run = false;
+  for (var i = 0; i < lines.length; i++) {
+    var ln = lines[i];
+    var trace;
+    if (holoIsToolLine(ln)) { trace = true; run = true; }
+    else if (run && HOLO_TRACE_CONT.test(ln)) { trace = true; }
+    else { trace = false; run = false; }
+    var last = segs[segs.length - 1];
+    if (last && last.trace === trace) last.lines.push(ln);
+    else segs.push({ trace: trace, lines: [ln] });
+  }
+  return segs;
+}
+
+/* One recognized run, folded away. Muted, one line, and it OPENS — the text is
+   in the DOM the whole time, so a wrong guess is recoverable by clicking. */
+function holoTraceNode(lines) {
+  var wrap = el("div", "holo-trace");
+  var n = lines.filter(function (l) { return l.trim(); }).length;
+  var pre = el("pre", "tl", lines.join("\n"));
+  pre.hidden = true;
+  var sum = el("span", "ts", "");
+  function paint() {
+    sum.textContent = "⚙ tool activity · " + n + " line" + (n === 1 ? "" : "s")
+      + " · " + (pre.hidden ? "show" : "hide");
+    sum.setAttribute("aria-expanded", pre.hidden ? "false" : "true");
+  }
+  paint();
+  keyActivable(holoCtl(sum, "tool activity", function () {
+    pre.hidden = !pre.hidden;
+    paint();
+  }));
+  wrap.appendChild(sum);
+  wrap.appendChild(pre);
+  return wrap;
+}
+
+/* Inline marks, applied as TEXT NODES: **bold**, *italic*, `code`. Anything it
+   does not understand stays exactly as the model typed it. */
+function holoInline(host, text) {
+  var re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\s][^*]*\*)/g;
+  var last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) {
+      host.appendChild(document.createTextNode(text.slice(last, m.index)));
+    }
+    var tok = m[0];
+    if (tok.indexOf("**") === 0) {
+      host.appendChild(el("b", null, tok.slice(2, -2)));
+    } else if (tok.charAt(0) === "`") {
+      host.appendChild(el("code", null, tok.slice(1, -1)));
+    } else {
+      host.appendChild(el("i", null, tok.slice(1, -1)));
+    }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) {
+    host.appendChild(document.createTextNode(text.slice(last)));
+  }
+  return host;
+}
+
+function holoReplyNode(reply) {
+  var body = el("div", "body md");
+  holoSegments(reply).forEach(function (seg) {
+    if (seg.trace) body.appendChild(holoTraceNode(seg.lines));
+    else holoRenderProse(body, seg.lines);
+  });
+  if (!body.childNodes.length) {
+    body.appendChild(el("p", "md-p", String(reply || "").trim()));
+  }
+  return body;
+}
+
+function holoRenderProse(body, lines) {
+  var i = 0;
+  var para = null;
+  var paraFilled = false;
+  /* `paraFilled` is a FLAG, not `para.children.length` — and that is not a
+     style choice. In a real browser `Element.children` is ELEMENTS ONLY: a
+     paragraph of plain prose has text nodes and NO element children, so the
+     length test dropped every unstyled paragraph on the floor. It passed every
+     node-harness assertion (whose stub had text nodes in `children`) and the
+     browser rig caught it. Never ask `.children` whether a node has content. */
+  function flush() {
+    if (para && paraFilled) body.appendChild(para);
+    para = null;
+    paraFilled = false;
+  }
+  while (i < lines.length) {
+    var ln = lines[i];
+    // fenced code — kept verbatim, in a <pre>, never parsed as markdown.
+    //
+    // S126 (#8) — AND ITS INFO STRING REACHES THE SCREEN. The turn prompt asks
+    // the engine for ```file:<path> whenever a write tool fails it, and the
+    // DAEMON then writes that block: the info string is the only thing saying
+    // WHICH FILE the slab of HTML below became. It was dropped, so the captain
+    // read an unlabelled wall of markup. Printed verbatim — the declaration is
+    // the model's, and LCARS neither reformats nor interprets it here.
+    if (/^\s*```/.test(ln)) {
+      flush();
+      var info = ln.replace(/^\s*```/, "").trim();
+      var buf = [];
+      i += 1;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+        buf.push(lines[i]); i += 1;
+      }
+      i += 1;
+      // a TEXT NODE, like every other thing the model wrote (`el` sets
+      // textContent) — an info string is model-authored text too.
+      if (info) body.appendChild(el("div", "fence-info", info));
+      body.appendChild(el("pre", null, buf.join("\n")));
+      continue;
+    }
+    // a markdown table: a header row, its ---- rule, then body rows.
+    if (/^\s*\|.*\|\s*$/.test(ln) && i + 1 < lines.length
+        && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      flush();
+      var table = el("table", "md-t");
+      var cells = function (row) {
+        return row.trim().replace(/^\||\|$/g, "").split("|")
+          .map(function (c) { return c.trim(); });
+      };
+      var thead = el("tr");
+      cells(ln).forEach(function (c) { thead.appendChild(holoInline(el("th"), c)); });
+      table.appendChild(thead);
+      i += 2;
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        var tr = el("tr");
+        cells(lines[i]).forEach(function (c) {
+          tr.appendChild(holoInline(el("td"), c));
+        });
+        table.appendChild(tr);
+        i += 1;
+      }
+      body.appendChild(table);
+      continue;
+    }
+    // a bullet list.
+    if (/^\s*[-*+]\s+/.test(ln)) {
+      flush();
+      var ul = el("ul", "md-l");
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        ul.appendChild(holoInline(el("li"), lines[i].replace(/^\s*[-*+]\s+/, "")));
+        i += 1;
+      }
+      body.appendChild(ul);
+      continue;
+    }
+    // a heading. ALL levels render as one deck-sized heading: the chat is a
+    // conversation, not a document, and six type sizes in a reply is the
+    // engine's outline structure leaking through as visual noise.
+    var head = /^\s*(#{1,6})\s+(.*)$/.exec(ln);
+    if (head) {
+      flush();
+      body.appendChild(holoInline(el("h4", "md-h"), head[2]));
+      i += 1;
+      continue;
+    }
+    if (!ln.trim()) { flush(); i += 1; continue; }
+    if (!para) para = el("p", "md-p");
+    // A NEWLINE, NOT A SPACE (fix round 2, measured in Chrome). Markdown joins
+    // consecutive lines into one paragraph, and that rule flattened a captain's
+    // ASCII diagram into a single run of box glyphs — the text was all there
+    // and the picture was gone. THIS IS A CHAT: the line breaks he typed are
+    // his, so they are kept (`.md-p` is `pre-wrap`, so long prose still wraps).
+    if (paraFilled) para.appendChild(document.createTextNode("\n"));
+    // A paragraph carrying box-drawing glyphs is a DRAWING, and is set
+    // monospaced or the box does not line up (measured in Chrome). Purely
+    // cosmetic in both directions — the worst a wrong guess does is change a
+    // typeface, and no classification here can ever remove a character.
+    if (/[─-╿]/.test(ln) && para.classList) para.classList.add("diag");
+    holoInline(para, ln);
+    paraFilled = true;
+    i += 1;
+  }
+  flush();
+  return body;
+}
+
+function holoEngineName(p) {
+  var e = String((p && p.engine) || "");
+  var base = holoBase(e).toUpperCase();
+  return base || "ENGINE";
+}
+
+/* The mock's rendering state, in the deck's own accent rather than the board's
+   amber working bars — this is the holodeck materialising something, and it
+   reads as its own room.
+
+   S128 — `text` is optional and exists so there is ONE working idiom in this
+   feature, not three. It is used by:
+     • the chat pane, with no argument, for a turn THIS tab just sent;
+     • the chat pane again, with the DAEMON's `busyLabel`, for a turn that was
+       already running when the deck re-rendered (a returning deck cannot know
+       when it started, so it may not say);
+     • the New Program dialog, while it opens the deck (FL-004 — the captain
+       asked for a thinking icon there in as many words).
+   A second spinner shape for any of those is the two-mechanism trap S125 lost
+   two rounds to. */
+/* S169 (FL-015) — the client's ONE working sentence, authored once. It says
+   WORKING and not "rendering": until a turn has written something, a render is
+   a claim nothing on this side has earned. `holoWorkingNode` below is the only
+   reader. */
+var HOLO_WORKING_TEXT = "Working on the holodeck…";
+
+function holoWorkingNode(text) {
+  var w = el("div", "holo-working");
+  w.setAttribute("role", "status");
+  w.setAttribute("aria-live", "polite");
+  var bars = el("span", "bars");
+  for (var i = 0; i < 4; i++) bars.appendChild(el("i"));
+  w.appendChild(bars);
+  /* S169 (FL-015) — THE BANNER THE CAPTAIN READ. It said "Rendering on the
+     holodeck…" through a long turn on which he had asked a question, not
+     directed a build: working-state copy asserting a REASON that neither this
+     tab nor the daemon can know until the turn has written something. This is
+     the one place the client's own working sentence is authored — every other
+     working strip on the deck either passes the DAEMON's label in (a returning
+     deck) or reaches this default. */
+  w.appendChild(el("span", "wt", text || HOLO_WORKING_TEXT));
+  return w;
+}
+
+/* ── the live preview (D3) ─────────────────────────────────────────────── */
+function holoPreviewPath(p, file) {
+  if (!p || !file) return null;
+  return "/api/holodeck/" + encodeURIComponent(p.sessionId) + "/preview/"
+    + String(file).split("/").map(encodeURIComponent).join("/");
+}
+
+function holoPreviewSrc(p) {
+  var base = p && holoPreviewPath(p, p.previewFile);
+  return base ? base + "?v=" + HOLO.nonce : null;
+}
+
+/* Which half of the segmented control this program is showing. A program with
+   no concept doc has nothing to toggle TO, and a program that is not the one
+   the captain last flipped starts on its mockup — so switching programs never
+   lands on the previous one's intent. */
+function holoPvView(p) {
+  if (!p || !p.conceptFile) return "preview";
+  if (HOLO.pvSid !== p.sessionId) return "preview";
+  return HOLO.pvView === "intent" ? "intent" : "preview";
+}
+
+function holoPreviewPane(p) {
+  var pane = el("div", "preview");
+  var head = el("div", "pv-head");
+  var tog = el("span", "pv-toggle");
+  var view = holoPvView(p);
+  var pv = el("span", "pvt-b preview", "⬡ Preview");
+  /* D14's INTENT, AND IT IS A TOGGLE NOW (S127 FL-007). It shipped as an
+     `<a target="_blank">` onto the jailed route — so clicking it opened a
+     browser tab of raw markdown — while being DRAWN as half of the same
+     segmented control as ⬡ Preview. The captain clicked the affordance D14
+     specifies and got something else.
+
+     S126's stated reason for the link does not hold: rendering `concept.md`
+     here is not "a second surface beside the file", because this pane ALREADY
+     renders `mockup.html` from a file on that same route. The real
+     second-source risk would be re-deriving the requirements from the
+     transcript in JS; showing THE FILE is the opposite of that, and the file is
+     what hands off to a Mission.
+
+     With no concept doc it is still visibly off, saying what is actually true —
+     that state is fix round 2's and it is preserved exactly. */
+  var intent;
+  if (p.conceptFile) {
+    intent = el("span", "pvt-b intent", "▤ Intent");
+    intent.title = "read concept.md — the written half of this design, and "
+      + "what a Mission is handed at the end";
+  } else {
+    intent = el("span", "pvt-b intent", "▤ Intent");
+    /* FIX ROUND 2 — the daemon withholds `conceptFile` for an EMPTY
+       concept.md as well as a missing one, because a control that opens a
+       blank panel is worse than a control that is visibly off. So this sentence
+       is read by a captain who may be looking at a concept.md sitting in his
+       own room, and it must not tell him the file is not there. */
+    holoCtl(intent, "▤ Intent", null,
+            "Nothing has been written into this program's concept.md yet — "
+            + "ask for it in the chat and the holodeck keeps it current from "
+            + "then on.");
+  }
+  tog.appendChild(pv);
+  tog.appendChild(intent);
+  head.appendChild(tog);
+  head.appendChild(el("span", "grow"));
+  var fname = el("span", "fname", p.previewFile || "no mockup yet");
+  head.appendChild(fname);
+  pane.appendChild(head);
+
+  var stage = el("div", "pv-stage");
+  var src = holoPreviewSrc(p);
+  var mock;
+  if (src) {
+    var frame = el("div", "pv-frame");
+    var f = el("iframe");
+    f.setAttribute("id", "holoPreview");
+    f.setAttribute("title", "the mockup, live from the sidecar");
+    /* ══ THE SECURITY PROPERTY OF THIS WHOLE PANE ══════════════════════════
+       What is inside this frame is HTML A LANGUAGE MODEL WROTE, served from
+       the daemon's OWN origin. Same-origin script in here could read the
+       board's DOM, its storage, and POST to the daemon's write API — the
+       holodeck would then be a way to make LCARS act on the model's behalf.
+
+       `allow-scripts` is granted because a self-contained multi-screen mockup
+       switches its own views in JS (ADR-007) and a preview that cannot do that
+       is not showing the captain the artifact that hands off.
+
+       `allow-same-origin` is DELIBERATELY ABSENT, and the two together are the
+       only combination that matters: with both, the sandbox grants back
+       everything it took away and this attribute becomes decoration. Without
+       same-origin the frame runs in an OPAQUE origin — no board DOM, no
+       storage, no same-origin fetch. Nothing else is granted either: no forms,
+       no popups, no top-level navigation, so the mockup cannot navigate the
+       board away or open anything.
+
+       The route's own headers (server.py `_send_preview`: nosniff + a
+       default-src 'none' CSP with connect-src and form-action none) are the
+       second layer. Do not add `allow-same-origin` here to "fix" a mockup that
+       wants to fetch something — a mockup that fetches is not self-contained. */
+    f.setAttribute("sandbox", "allow-scripts");
+    f.setAttribute("referrerpolicy", "no-referrer");
+    f.setAttribute("src", src);
+    f.src = src;
+    frame.appendChild(f);
+    mock = frame;
+  } else {
+    mock = holoPreviewEmpty(p);
+  }
+  stage.appendChild(mock);
+
+  /* BOTH VIEWS LIVE IN THE STAGE AT ONCE, and the toggle only ever HIDES one.
+     Re-rendering the stage to swap them would destroy the iframe and reload a
+     mockup that has not changed — D3's whole guarantee is that the preview
+     moves when the FILE moved and at no other time. */
+  var panel = p.conceptFile ? el("div", "pv-intent") : null;
+  if (panel) stage.appendChild(panel);
+
+  function paint(want) {
+    mock.hidden = want === "intent";
+    if (panel) panel.hidden = want !== "intent";
+    pv.classList.toggle("on", want === "preview");
+    pv.setAttribute("aria-pressed", want === "preview" ? "true" : "false");
+    if (panel) {
+      intent.classList.toggle("on", want === "intent");
+      intent.setAttribute("aria-pressed", want === "intent" ? "true" : "false");
+    }
+    fname.textContent = want === "intent"
+      ? p.conceptFile : (p.previewFile || "no mockup yet");
+  }
+
+  if (panel) {
+    keyActivable(holoCtl(pv, "⬡ Preview", function () {
+      holoPvSet(p, "preview", paint, panel);
+    }));
+    keyActivable(holoCtl(intent, "▤ Intent", function () {
+      holoPvSet(p, "intent", paint, panel);
+    }));
+  } else {
+    // nothing to toggle to, so ⬡ Preview is simply the pane you are looking at
+    // — the same treatment it has always had, not a dead control.
+    holoCtl(pv, "⬡ Preview", null, null);
+    pv.setAttribute("data-wired", "1");
+  }
+  paint(view);
+  // a re-render that landed while INTENT was up has to repopulate it, or the
+  // captain's next turn blanks the document he was reading.
+  if (view === "intent") holoIntentFill(p, panel);
+  pane.appendChild(stage);
+
+  var foot = el("div", "pv-foot");
+  foot.appendChild(el("span", "fl", "Program room"));
+  foot.appendChild(el("span", "chip-file", holoBase(p.programDir || "")));
+  foot.appendChild(el("span", "grow"));
+  foot.appendChild(el("span", "fl",
+    (p.commits || 0) + " commit" + (p.commits === 1 ? "" : "s")));
+  pane.appendChild(foot);
+  return pane;
+}
+
+/* WHAT AN EMPTY STAGE MEANS DEPENDS ON WHETHER A GROUNDING PASS LANDED
+   (S127 FL-003). A grounding pass reads the project and writes `basis.md`; it
+   draws nothing, and that is correct. But the wording below was byte-identical
+   to a blank-deck program's, so a captain whose pass had just SUCCEEDED —
+   8.5kB of source-cited basis.md, committed — read "Nothing on the holodeck
+   yet · Ask for a screen and it will appear here" and said "I don't
+   understand." The pass was step one of two and the deck never said so.
+
+   `grounded` is the daemon's own fact (`_holodeck_meta`), not an inference from
+   `mode`, which moves to "design" after the opening pass. */
+function holoPreviewEmpty(p) {
+  var none = el("div", "pv-none");
+  if (!p.grounded) {
+    none.appendChild(el("div", "t", "Nothing on the holodeck yet"));
+    none.appendChild(el("p", null,
+      "The preview shows the mockup file itself, straight from the program's "
+      + "room in the sidecar. Ask for a screen and it will appear here."));
+    return none;
+  }
+  /* S172 — a DUPLICATE never ran a pass; its basis came over with the copy.
+     "This program read <repo>" is a claim about work that did not happen here,
+     and on a duplicate it is usually a claim about a project that has since
+     moved. */
+  if (p.basisInherited) {
+    none.appendChild(el("div", "t", "Nothing on the holodeck yet"));
+    none.appendChild(el("p", null, p.basisNotice
+      || "This program's grounding came over with the duplicate."));
+    none.appendChild(holoBasisNode(p, "▣ Read basis.md", "basis-link"));
+    none.appendChild(el("p", "next",
+      "Describe a screen, a component or a whole flow in the chat and it will "
+      + "be built here."));
+    return none;
+  }
+  none.appendChild(el("div", "t", "Grounding pass complete"));
+  none.appendChild(el("p", null,
+    "This program read " + holoRepoName() + " "
+    + (p.basisFile
+       ? "and wrote down the design language it found — its colours, type "
+         + "scale, spacing and component shapes."
+       : "but has not written basis.md yet, so there is nothing to read back "
+         + "of it.")
+    + " A grounding pass builds no mockup, which is why the stage is empty."));
+  none.appendChild(holoBasisNode(p, "▣ Read basis.md", "basis-link"));
+  none.appendChild(el("p", "next",
+    "Describe a screen, a component or a whole flow in the chat and it will be "
+    + "built here, in the language the pass just found."));
+  return none;
+}
+
+function holoPvSet(p, want, paint, panel) {
+  HOLO.pvSid = p.sessionId;
+  HOLO.pvView = want;
+  paint(want);
+  if (want === "intent") holoIntentFill(p, panel);
+}
+
+/* D14's captured intent, rendered IN the pane it is a toggle of.
+
+   The bytes come over the SAME jailed preview route the mockup does, and the
+   markdown goes through the board's own renderer (`setMd`/`mdToHtml`, UX-37) —
+   there is no second renderer and no second markdown look. Nothing here is
+   re-derived from the transcript: this renders THE FILE, which is the thing
+   that hands off to a Mission, so the panel and the hand-off can never disagree.
+
+   Cached per program, and the cache is dropped by `holoApplyFilesChanged` when
+   a turn actually rewrote `concept.md` — the same rule D3 gives the mockup:
+   refresh because the FILE changed, never because a reply said it had. */
+function holoIntentFill(p, host) {
+  if (!host || !p || !p.conceptFile) return;
+  var c = HOLO.intent;
+  if (c.sid === p.sessionId && (c.text != null || c.err)) {
+    holoIntentPaint(host, c.text, c.err);
+    return;
+  }
+  if (c.sid === p.sessionId && c.loading) {
+    holoIntentPaint(host, null, null);
+    return;
+  }
+  c = HOLO.intent = { sid: p.sessionId, text: null, err: null, loading: true };
+  holoIntentPaint(host, null, null);
+  var unreadable = "concept.md could not be read from this program's room. "
+    + "The document is still there — this is the deck failing to fetch it, "
+    + "not the holodeck losing it.";
+  function settle(text, err) {
+    if (HOLO.intent !== c) return;      // a newer request or program won
+    c.loading = false;
+    c.text = text;
+    c.err = err;
+    holoIntentPaint(host, text, err);
+  }
+  fetch(holoPreviewPath(p, p.conceptFile), {
+    headers: { "Accept": "text/plain" },
+  }).then(function (r) {
+    // NOT `throw` — the failure path has to be a value, so that a daemon that
+    // answers 404 and a daemon that never answers land in the same place.
+    if (!r || !(r.ok || r.status === 200)) { settle(null, unreadable); return null; }
+    return r.text();
+  }).then(function (text) {
+    if (text == null) return;
+    settle(String(text), null);
+  }).catch(function () {
+    settle(null, unreadable);
+  });
+}
+
+/* S169 (FL-016) — WHY THERE IS A BOX INSIDE THE BOX.
+
+   `.pv-intent` used to be BOTH the scroll container and the containing block
+   for the readability scrim that makes this document legible over the deck's
+   grid. An absolutely-positioned child of a scroll container is sized to the
+   PADDING BOX — one viewport-height rectangle, not the scrollable content —
+   and it scrolls with the content. So the scrim was a single screen's worth of
+   darkening that slid up and off, and every word past the first screen sat
+   bare on the grid. The captain hit it on his own captured requirements.
+
+   The technique itself is not wrong; it was copied from `.pv-none` (FL-006),
+   a pane that does NOT scroll, where `inset:0` is exactly right. The cure is
+   to give it a container that does not scroll: `.pv-intent` keeps the scrim
+   and stops scrolling, and THIS node — created here on every paint, so there
+   is one place the panel's content is built and no second source of truth —
+   is the thing that scrolls, above it.
+
+   Do NOT "fix" this by stretching the scrim: `height:100%` resolves against
+   the same padding box and changes nothing, and a JS-measured height is a
+   number that goes stale on the next reflow. */
+function holoIntentScroller(host) {
+  var s = el("div", "pv-intent-scroll");
+  host.appendChild(s);
+  return s;
+}
+
+function holoIntentPaint(host, text, err) {
+  host.innerHTML = "";
+  var scroll = holoIntentScroller(host);
+  if (err) {
+    var note = el("div", "pv-intent-note");
+    note.appendChild(el("div", "t", "Intent unavailable"));
+    note.appendChild(el("p", null, err));
+    scroll.appendChild(note);
+    return;
+  }
+  if (text == null) {
+    scroll.appendChild(workingNode("Reading concept.md…"));
+    return;
+  }
+  var doc = el("div", "intent-doc");
+  var body = String(text).trim();
+  if (body) {
+    setMd(doc, body);
+  } else {
+    /* The daemon withholds `conceptFile` for an EMPTY concept.md, so reaching
+       here means the file emptied between the list call and this click. Say
+       that, rather than showing a blank panel that reads as a broken toggle. */
+    doc.appendChild(el("p", null,
+      "concept.md is in this program's room but has nothing in it yet — ask "
+      + "for it in the chat and the holodeck keeps it current from then on."));
+  }
+  scroll.appendChild(doc);
+}
+
+/* D3's refresh trigger, and the whole reason the preview can be trusted: the
+   iframe is re-pointed because the FILE on disk changed (the turn payload's
+   `filesChanged`), never because the reply said it had. A turn that changed
+   nothing leaves the preview exactly where it was — no flicker, and no
+   "something happened" signal for something that did not. */
+function holoApplyFilesChanged(files, program) {
+  var p = program || holoActive();
+  if (!p) return false;
+  function changed(name) {
+    var want = holoBase(name);
+    return (files || []).some(function (c) {
+      return holoBase(typeof c === "string" ? c : (c && c.path)) === want;
+    });
+  }
+  /* D14's INTENT panel obeys the same rule (S127 FL-007): a turn that rewrote
+     `concept.md` drops the cached bytes, so the next render reads the file
+     again. A turn that did not touch it leaves the captain's place on the
+     document exactly where it was. The return value below is untouched — it is
+     the MOCKUP's answer, and it is what tells the caller a preview refreshed. */
+  if (p.conceptFile && HOLO.intent.sid === p.sessionId
+      && changed(p.conceptFile)) {
+    HOLO.intent = { sid: null, text: null, err: null, loading: false };
+  }
+  if (!p.previewFile) return false;
+  var hit = changed(p.previewFile);
+  if (!hit) return false;
+  HOLO.nonce += 1;
+  var f = document.getElementById("holoPreview");
+  var src = holoPreviewSrc(p);
+  if (f && src) { f.setAttribute("src", src); f.src = src; }
+  return true;
+}
+
+/* ── a turn ────────────────────────────────────────────────────────────── */
+function holoSay(sid, text, images, intent) {
+  text = String(text || "").trim();
+  if (!text || HOLO.busy) return;
+  /* S169 (FL-015) — read BEFORE `holoDraftClear` below wipes the draft this
+     came out of, and passed on verbatim. The daemon normalises; this side does
+     not interpret. */
+  intent = intent === "ask" ? "ask" : "build";
+  /* S169 (FL-013) — THE TURN IS SAID, so it stops being a draft. Cleared here
+     rather than in the composer, and only past the guard above: a send that
+     was refused (empty, or a turn already in flight) must leave what he typed
+     exactly where it is. */
+  holoDraftClear(sid);
+  HOLO.busy = true;
+  HOLO.banner = null;
+  // show the captain's words immediately — they are already said, and a chat
+  // that swallows your line until the reply lands feels broken.
+  //
+  // BUT A RETRY IS THE SAME LINE, NOT A SECOND ONE (fix round 2). RETRY TURN
+  // calls straight back in here with the text of the turn that died — whose
+  // unanswered turn is still sitting at the end of the transcript — and round 1
+  // pushed a second copy, so the captain read himself saying it twice. He said
+  // it once. (The daemon reuses that same pending turn for the same reason.)
+  var p = holoActive();
+  var turns = p ? (p.turns = p.turns || []) : null;
+  var pending = turns && turns.length ? turns[turns.length - 1] : null;
+  if (turns && !(pending && pending.text === text && !pending.reply)) {
+    turns.push({ text: text, reply: null, intent: intent });
+  } else if (pending) {
+    pending.intent = intent;
+  }
+  renderDeck();
+  /* `images` rides the EXISTING body, exactly as the File console's idea box
+     and the Log box already do (S91) — the daemon stages them into the
+     program's room and threads them into THIS turn. `undefined` when nothing
+     was pasted, so JSON.stringify omits the key and the request is
+     byte-identical to before. */
+  postWrite("/api/holodeck/" + sid + "/say",
+            { text: text, images: images, intent: intent },
+    function (state) {
+      HOLO.busy = false;
+      var cur = holoActive();
+      if (cur) {
+        cur.previewFile = state.previewFile || cur.previewFile;
+        cur.commits = state.commits != null ? state.commits : cur.commits;
+        // S126: `conceptFile` is what makes the ▤ Intent control openable, and
+        // it can appear on any turn — it is the turn the worker first writes
+        // the concept doc on.
+        if (state.conceptFile !== undefined) cur.conceptFile = state.conceptFile;
+        // and the turn that OPENS the warm session is the turn the pill stops
+        // saying FRESH — not the next poll (fix round 2).
+        if (state.warm !== undefined) cur.warm = state.warm;
+        var last = (cur.turns || [])[cur.turns.length - 1];
+        if (last && last.reply == null) {
+          last.reply = state.reply || "";
+          last.filesChanged = state.filesChanged || [];
+          last.conceptAudit = state.conceptAudit || null;
+          /* S169 (FL-015) — the daemon's account of what this turn DID, kept
+             on the turn it is about, exactly like `conceptAudit` beside it. */
+          last.turnOutcome = state.turnOutcome || null;
+        }
+      }
+      if (state.status === "refused" && state.refused) {
+        // `paths` is NOT passed on: the daemon's message already names them,
+        // and round 1's banner printed the stray path twice for exactly that
+        // reason. One account of what happened, from one place.
+        holoSetBanner("refused", { message: state.refused.message });
+      } else if (state.warning) {
+        // ONE TITLE PER KIND (fix round 3). Both warnings used to arrive under
+        // "Turn not certified", which is a LIE about a `no-write` turn: its
+        // audit ran and completed, nothing was uncertified — the engine simply
+        // did not write. The kind is already on the payload; use it.
+        holoSetBanner(HOLO_WARNING_BANNER[state.warning.kind] || "unverified",
+                      { message: state.warning.message });
+      }
+      // bump the preview BEFORE the re-render so the fresh src is what paints.
+      holoApplyFilesChanged(state.filesChanged, cur);
+      renderDeck();
+      holoRefresh();
+    },
+    function (msg, err) {
+      HOLO.busy = false;
+      /* S169 FIX ROUND 1 — A RETRY THAT WOULD RE-POISON IS NOT A RETRY.
+         When the daemon says it RESET the warm session (`sessionReset`), the
+         attachment this turn carried is what the engine refused, and re-sending
+         it into the fresh session would kill that one too — measured live on
+         copilot: a poisoned session dies on every later turn, attachment or
+         not. The line is retried WITHOUT it, which is exactly what the banner
+         tells him to do. Read off the daemon's FACT, never off its wording. */
+      var reset = !!(err && err.sessionReset);
+      holoSetBanner("offline", { message: msg,
+                                 retry: { sid: sid, text: text,
+                                          images: reset ? null : images,
+                                          intent: intent } });
+      renderDeck();
+    });
+}
+
+/* ── S127: SEND TO ALIGN ───────────────────────────────────────────────────
+   Two steps, and the split is the point. `holoPromote` asks the DAEMON for the
+   hand-off — it resolves the program's room, reads its concept doc, drafts the
+   brief and composes the guidance. `openHandoff` renders exactly what came
+   back and posts the captain's brief with the program's SESSION ID.
+
+   THE PATH NEVER COMES NEAR THIS FILE. The board asks for a hand-off by session
+   id and files by session id; the daemon owns every filename in between. That
+   is the captain's bar ("he never types a file path… never sees the plumbing")
+   and it is also the security property: a path this side could read is a path
+   this side could send. */
+function holoPromote(sid) {
+  if (!sid) return;
+  postWrite("/api/holodeck/" + sid + "/promote", {}, function (state) {
+    openHandoff(state);
+  }, function (msg) {
+    holoSetBanner("offline", { message: msg });
+    renderDeck();
+  });
+}
+
+/* S171 — THE LITERAL-WORD REQUIREMENT CHECK IS GONE FROM BOTH SIDES.
+
+   `holoMissingRequirements` mirrored the daemon's `_handoff_missing`: a
+   containment test on the captain's own words, run per keystroke, painting a
+   ✓/⚠ row per captured requirement and an amber band under them. It went with
+   the daemon's copy, and for the daemon's reason — his literal words are no
+   longer IN the brief (the numbered "in your own words" list left it), so the
+   check would have reported nearly every requirement as missing on every
+   hand-off. The reasoning, and the risk that was accepted, is written up in
+   full in actions.py where `_handoff_missing` used to be. Nothing replaced it
+   here; a smarter checker on the browser side would be the same mistake with
+   a worse view of the facts. */
+
+/* ── S169: the pre-drafted brief now carries THREE things ──────────────────
+   His own words, what the mockup CHANGES about the app he has today, and what
+   it IMPLIES that nobody has settled. The daemon composes all three (one
+   function, `_handoff_parts`); these two only decide how the box is SIZED and
+   how it is DESCRIBED, which is the half a browser can get wrong. */
+var HOLO_BRIEF_ROWS_MIN = 8, HOLO_BRIEF_ROWS_MAX = 20;
+
+function holoBriefRows(text) {
+  var n = String(text == null ? "" : text).split("\n").length;
+  return Math.max(HOLO_BRIEF_ROWS_MIN, Math.min(HOLO_BRIEF_ROWS_MAX, n));
+}
+
+function holoCount(n, one, many) {
+  return n + " " + (n === 1 ? one : many);
+}
+
+function holoBriefHint(seed) {
+  /* S171 — THE FALLBACK BRANCH IS GONE, because so is the fallback. The head
+     of the brief used to be drafted off the concept doc, down a three-rung
+     ladder (`summarySource` said which rung), and this sentence explained a
+     degraded draft. The head is now the captain's own opening description,
+     carried byte-for-byte, which every program has — there is no rung to fall
+     to and nothing to apologise for. */
+  /* KEPT SHORT, AND THAT IS A MEASUREMENT, NOT A STYLE PREFERENCE. The first
+     draft of this sentence ran to three lines (87px) and pushed itself out of
+     the modal body's visible band at a 677px window — the line whose whole job
+     is to be seen by a captain who reads one screen. Measured by
+     tests/drives/browser/handoff.sh, which now hit-tests it. */
+  /* S169 FIX ROUND 2 — AND IT WAS STILL ASSERTING THE COMPARISON.
+
+     It read "8 things you said, 18 CHANGES THE MOCKUP MAKES TO TODAY'S APP and
+     5 it implies". Fix round 1 corrected the caption INSIDE the box to say the
+     list is the design chat's own account and "not a reading of your code" —
+     and left this line, four inches above it, claiming the daemon had compared
+     the mockup against the captain's app. It had not: it read `## Decisions`,
+     a section a model wrote from the conversation, and counted its bullets.
+
+     The count is the same number; the claim about where it came from is now
+     true. What the mockup was actually READ against is the check band's
+     business, below — and that one only says so when a pass really ran. */
+  /* S170 — AND NOW THE SENTENCE HAS TWO SOURCES, so it names both. His words
+     and what the mockup implies come out of the concept doc; THE CHANGE LIST
+     DOES NOT — it is read off his project and the drawing by a pass that
+     stands in the repo. Saying "drafted from your concept doc" over a list
+     that was not is the same class of lie fix round 2 took out of here, one
+     source along. */
+  /* S171 — AND IT NO LONGER COUNTS "things you said". The brief's first line
+     IS what he said, whole and unedited, so a count of quoted fragments would
+     be counting something that is not in the box. It is named, not numbered. */
+  var parts = ["your own words"];
+  var d = (seed.changes || []).length, i = (seed.implied || []).length;
+  var o = (seed.outOfScope || []).length;
+  if (d) {
+    parts.push(holoCount(d, "change read off your project",
+                         "changes read off your project"));
+  }
+  if (i) parts.push(i + " the mockup implies");
+  if (o) parts.push(o + " out of scope");
+  var last = parts.pop();
+  return "In this brief: "
+    + (parts.length ? parts.join(", ") + " and " + last : last)
+    + ". Scroll it — all of it is yours to correct.";
+}
+
+/* ── S170: THE DERIVATION BAND — the wait, made honest ────────────────────
+   SEND TO ALIGN is a stage now, by the captain's own design: *"make send to
+   align a stage with wait time where the holodeck does a final diff and
+   summarization… I know this means it can take a few minutes and we can make
+   it so it can walk away, but I feel like that would yield a better result."*
+
+   S169's band rendered a spinner on a dialog. THE WAIT WAS ALREADY REAL —
+   154–220s measured, a 420s bound, a 520s poll budget — and hiding it behind
+   "Reading these lines back…" told a captain nothing about whether he could
+   leave. This band's whole job is that he CAN.
+
+   FOUR STATES, DIFFERENT ON PURPOSE, and two of them are the reason it exists:
+   "the pass ran and produced a list" and "the pass could not run" must never
+   look alike, because the second one leaves a section MISSING from his brief
+   and only this band can tell him so. `derive.ok === false` means THE PASS DID
+   NOT ANSWER. It is not "the mockup changes nothing".
+
+   AND IT NEVER BLOCKS. ▦ FILE MISSION is live in every one of these states. */
+function holoDeriveRender(box, derive, opts) {
+  var state = (derive && derive.state) || "off";
+  box.className = "handoff-derive";
+  box.setAttribute("data-state", state === "done"
+    ? (derive.ok ? "done" : "failed") : state);
+  while (box.firstChild) box.removeChild(box.firstChild);
+  if (state === "off") { box.hidden = true; return; }
+  box.hidden = false;
+  if (state === "running") {
+    /* THE ONE SENTENCE THAT MAKES IT A WALK-AWAY. It says what is happening,
+       how long it takes, and — the part a client cannot invent — that closing
+       this dialog does not stop it. The daemon owns the pass, so this is a
+       fact, not reassurance. */
+    box.className = "handoff-derive running";
+    /* ── AND IT IS THREE LINES, WHICH IS A MEASUREMENT ─────────────────────
+       This band sits between the hint and the brief box, so every pixel of it
+       is a pixel of the captain's own draft off the first screen. The first
+       version of this copy said all of the above in two paragraphs and came to
+       ~170px in real Chrome — which left EIGHT visible lines of brief at
+       1440x677 and FOUR at 1280x613, against a bar of nine and six. Found by
+       tests/drives/browser/handoff.sh on its first run, which is exactly what
+       that rig is for; no unit test in this repo can see it.
+
+       So it says the three things and stops: it is working and takes minutes,
+       he may leave (and how far that survives), and the brief below is
+       sendable without a change list. */
+    box.appendChild(el("span", "ck-head",
+      "⧗ Working out what the mockup changes about your project"
+      + holoDeriveElapsed(derive) + " — a few minutes. CLOSE THIS AND WALK "
+      + "AWAY IF YOU LIKE: it keeps running, survives a reload and a restart, "
+      + "and the change list drops into the brief below when it lands. You can "
+      + "send the brief without one."));
+    return;
+  }
+  if (!derive.ok) {
+    /* SAYS SO, PLAINLY, and does not dress it up. Nothing is blocked; what he
+       has to know is that a section of his brief is NOT THERE, which is a
+       different thing from a list that came back empty. */
+    box.className = "handoff-derive failed";
+    box.appendChild(el("span", "ck-head",
+      "LCARS could not read your project against the mockup"
+      + (derive.why ? " — " + derive.why : "")
+      + ". Nothing is blocked: the brief below is missing only the change "
+      + "list, and you can send it as it is or write the changes yourself."));
+    return;
+  }
+  var n = (derive.changes || []).length;
+  if (!n) {
+    /* A REAL ANSWER, AND A STRANGE ONE. The pass ran and reported no
+       difference at all, which on a program somebody spent an afternoon
+       drawing is far more likely to be a bad pass than a true finding. It is
+       not dressed up as a clean result and it is not called a failure — it is
+       reported exactly as what happened. */
+    box.className = "handoff-derive failed";
+    box.appendChild(el("span", "ck-head",
+      "A read-only pass compared your project with the mockup and found "
+      + "nothing different. On a design you have been working on, that is "
+      + "much more likely to be a bad pass than a true answer — read the "
+      + "mockup yourself before you send this."));
+    return;
+  }
+  box.className = "handoff-derive done";
+  box.appendChild(el("span", "ck-head",
+    "✓ A read-only pass stood in your project, compared it with the mockup "
+    + "and found " + n + " change" + (n === 1 ? "" : "s")
+    + ". They are in the brief below, in your own writing space. Anything the "
+    + "mockup leaves as your app already has it produces no line — that is "
+    + "why this is shorter than the design chat."));
+  if (opts && opts.appended) {
+    /* HIS OWN WORDS WERE NOT TOUCHED, and he is told rather than left to
+       notice. FL-013 is this defect one surface over — unsent text destroyed
+       by a re-render — and the rule is the same: never overwrite what a human
+       typed. ONE LINE, because every pixel of this band is a pixel of his
+       brief off the first screen (measured — see the running state). */
+    box.appendChild(el("div", "ck-row",
+      "You had edited your brief while this was running, so LCARS added them "
+      + "at the BOTTOM of it and changed nothing you wrote."));
+  }
+}
+
+/* "· started 45s ago" — or nothing at all when the daemon did not say.
+
+   ELAPSED IS COMPUTED FROM THE DAEMON'S OWN CLOCK READING, never from a
+   timestamp this side subtracts against its own: that is the class of bug the
+   turn banner's `busyFor` was built to avoid (S128/FL-002). `startedAt` is a
+   server epoch and `derive.now`, when present, is the same server's idea of
+   now; without both, this says nothing rather than guessing. */
+function holoDeriveElapsed(derive) {
+  var t = derive && derive.startedAt, now = derive && derive.now;
+  if (!t || !now || now < t) return "";
+  var s = Math.round(now - t);
+  if (s < 5) return "";
+  if (s < 90) return " · started " + s + "s ago";
+  return " · started " + Math.round(s / 60) + " min ago";
+}
+
+/* Ask again while the pass is in flight. It is a POLL and not a stream because
+   `promote` is already the endpoint that answers this question — a second road
+   (an SSE channel, a status endpoint) would be a second thing to keep in step
+   with the draft, and the draft is what the pass PRODUCES.
+
+   IT STOPS WHEN THE DIALOG GOES. `document.body.contains` is the test: the
+   overlay is REMOVED on close (unlike the help console, which covers), so a
+   detached band is a closed dialog and there is nobody left to tell. The pass
+   itself does not stop — it is the daemon's, and the room keeps the answer. */
+/* The budget MUST outlast the daemon's own bound on the pass, or the band
+   gives up on a worker that is still working and reports a failure the daemon
+   never had. The daemon stops a pass at 420s (`_handoff_derive_timeout`,
+   itself measured off three live copilot drives at 154/193/220s); 130 × 4s is
+   520s, which covers that plus the spawn and the last poll's own interval. */
+var HOLO_CHECK_POLL_MS = 4000, HOLO_CHECK_POLL_MAX = 130;
+
+function holoDerivePoll(seed, box, picked, tries, onLanded) {
+  if (!box || !document.body.contains(box)) return;
+  if (tries > HOLO_CHECK_POLL_MAX) {
+    /* AND THIS ONE IS ABOUT THE DIALOG, NOT THE PASS. The daemon may still be
+       working and the room will still get the answer; what ran out is this
+       page's patience. Saying "it failed" here would be the band asserting
+       something it cannot know. */
+    holoDeriveRender(box, { state: "done", ok: false,
+      why: "it did not finish while this dialog was open. It may still be "
+        + "running — close this and press ▶ SEND TO ALIGN again in a minute" });
+    return;
+  }
+  setTimeout(function () {
+    if (!box || !document.body.contains(box)) return;
+    postWrite("/api/holodeck/" + seed.sessionId + "/promote",
+      { scope: picked.scope }, function (state) {
+        if (!box || !document.body.contains(box)) return;
+        var derive = state.derive || { state: "off" };
+        if (derive.state === "running") {
+          holoDeriveRender(box, derive);
+          holoDerivePoll(seed, box, picked, tries + 1, onLanded);
+          return;
+        }
+        /* IT LANDED. The daemon has redrafted the brief WITH the change list
+           in it, and only the caller knows whether the captain has typed since
+           — so the caller decides, and this reports which way it went. */
+        holoDeriveRender(box, derive, onLanded ? onLanded(state, derive) : null);
+      }, function (msg) {
+        if (!box || !document.body.contains(box)) return;
+        holoDeriveRender(box, { state: "done", ok: false, why: msg });
+      });
+  }, HOLO_CHECK_POLL_MS);
+}
+
+/* The hand-off dialog (mock screen 6, D5/D13/D14/D15). One screen: a REAL
+   writing space pre-drafted from the conversation, how much to build, what
+   rides along by NAME, and — visible before he sends — exactly how the mission
+   will be told to read the mockup. One button: ▦ FILE MISSION. */
+function openHandoff(seed) {
+  var m = modal("▶ Send to Align", { headClass: "teal" });
+  var err = el("div", "errline"); err.hidden = true;
+
+  m.body.appendChild(el("div", "hint",
+    "Sending " + (seed.program || "this program")
+    + ". The mockup and the concept doc go with it — you never have to find "
+    + "them."));
+
+  /* 1. THE BRIEF. A writing space, not a title field (D15): conveying what you
+     mean about a feature with UI is the thing that was hard before the
+     holodeck, and getting it wrong was expensive at whole-mission scale. The
+     mock makes the LOOK cheap to correct; it does nothing for the reasoning,
+     and reasoning needs room. Pre-drafted so the page is never blank. */
+  /* Declared here rather than beside the scope cards below, because the check
+     band's poll re-asks `promote` and has to send the scope he is on. One
+     object, read by reference — the cards mutate it, the poll reads it. */
+  var picked = { scope: seed.scope || "look+behaviour" };
+  var f1 = el("div", "field");
+  f1.setAttribute("data-holo", "handoff-brief-field");
+  f1.appendChild(label("Your brief — what you are actually asking for"));
+  var brief = el("textarea");
+  /* S169 — THE BOX HAS TO SHOW THAT IT GREW.
+
+     The draft used to be the captain's own words and nothing else — six lines
+     in an eight-row box, so the whole of it was on screen. It now also carries
+     what the mockup CHANGES about the app he has today and what it IMPLIES,
+     which on both real fixtures is ~31 lines. Left at eight rows, two thirds
+     of his brief would sit inside a scrollbox he has no reason to scroll —
+     which is D1 all over again, one level down: the session's own goal,
+     delivered and invisible.
+
+     So the box takes the size of what is in it, CLAMPED. The floor keeps a
+     short draft from collapsing into a slot; the ceiling is what stops this
+     from being the change that pushed everything below it off the screen —
+     the dialog is already 1812px against a ~677px window. Measured in real
+     Chrome by tests/drives/browser/handoff.sh, which is where a claim about
+     what is on screen belongs. */
+  brief.rows = holoBriefRows(seed.brief);
+  brief.value = seed.brief || "";
+  brief.setAttribute("data-holo", "handoff-brief");
+  brief.placeholder = "What do you want built, and why this way?";
+  /* …AND IT HAS TO SAY WHAT IS IN IT. The counts come from the DAEMON's own
+     sets (`_handoff_parts`), never counted here, so the sentence cannot claim
+     something the draft does not contain.
+
+     S169 FIX ROUND 1 — IT MOVED ABOVE THE BOX. It used to sit directly under
+     it, which worked only while the box was short enough for both to share the
+     first screen. The box is now as tall as the draft (see `fitBrief`), so
+     "under the box" is 800px down — and this is the ONE line that tells a
+     captain who reads one screen that there are two more sections below his
+     own words. Above it, it is the first thing he reads and it stays on screen
+     at every viewport, including the 613px one where the tester measured it
+     clipped mid-height by the footer band. */
+  var briefHint = el("span", "hint", holoBriefHint(seed));
+  f1.appendChild(briefHint);
+  /* …AND THE CHECK BAND SITS BETWEEN THE HINT AND THE BOX (S169 fix round 2).
+
+     Above the box for the same measured reason the hint is: the box is as tall
+     as the draft, so anything under it is 800px down, and this is the line that
+     has to make a one-screen skim land on the wrong sentence. Under the hint
+     rather than over it, because the hint says what the draft IS and this says
+     what was found in it — and a finding above its own subject reads as a
+     banner about the dialog. */
+  var checkBox = el("div", "handoff-derive");
+  checkBox.setAttribute("data-holo", "handoff-derive");
+  checkBox.hidden = true;
+  f1.appendChild(checkBox);
+  holoDeriveRender(checkBox, seed.derive || { state: "off" });
+  f1.appendChild(brief);
+  m.body.appendChild(f1);
+
+  /* ── S170: WHAT HAPPENS WHEN THE DERIVATION LANDS WHILE HE IS SITTING HERE
+     The daemon redrafts the brief WITH the change list in it, so the honest
+     move is to put the new draft in the box — but ONLY if the box still holds
+     exactly what the daemon last put there. FL-013 was unsent chat text
+     destroyed by a re-render; this is the same textarea class one dialog over,
+     and the rule is the same: NEVER OVERWRITE WHAT A HUMAN TYPED.
+
+     `pristine` is a byte comparison against the last draft the daemon gave,
+     not a "dirty" flag — a captain who types a word and deletes it again has
+     not edited anything, and a flag would say he had. */
+  function briefIsPristine() { return brief.value === seed.brief; }
+  function briefLanded(state, derive) {
+    if (briefIsPristine()) {
+      seed.brief = state.brief || seed.brief;
+      brief.value = seed.brief;
+      fitBrief();
+      rehint(state);
+      return null;
+    }
+    /* HE TYPED WHILE IT RAN. So the change list is APPENDED to the end of what
+       he wrote, and not one character of his own text is touched.
+
+       THE OTHER ROAD WAS BUILT AND MEASURED AND THROWN AWAY. It left the box
+       alone and printed the changes in the band for him to copy across; in
+       real Chrome (tests/drives/browser/handoff.sh) three change rows took the
+       band to a height that left THREE visible lines of his brief at 1440x677
+       against a bar of nine. A finding delivered on top of a slot is S128's D1,
+       and this round is not shipping it a second time.
+
+       THE WORDS ARE THE DAEMON'S (`changesBlock`), never composed here — what
+       he reads and what the Mission is told cannot drift. And the caret is put
+       back, because assigning to a textarea's value jumps it to the end, which
+       is the same "a re-render ate my typing" feeling FL-013 was about. */
+    /* S172 — TWO BLOCKS, because the pass now produces two things: what is
+       different, and what it FOUND AND DID NOT REPORT because his own
+       out-of-scope ruling made it ambiguous. `impliedBlock` carries only the
+       pass's own questions — bucket 2's declared items are already in the
+       draft he is typing into. Both are the DAEMON's words. */
+    var blocks = [];
+    [state.changesBlock, state.impliedBlock].forEach(function (b) {
+      if (b && brief.value.indexOf(b) === -1) blocks.push(b);
+    });
+    if (!blocks.length) return null;
+    var block = blocks.join("\n\n");
+    var at = brief.selectionStart, to = brief.selectionEnd;
+    brief.value = brief.value.replace(/\s+$/, "") + "\n\n" + block + "\n";
+    try { brief.setSelectionRange(at, to); } catch (e) { /* not focused */ }
+    seed.brief = brief.value;
+    fitBrief();
+    rehint(state);
+    return { appended: (derive.changes || []).length };
+  }
+  /* AND THE LINE THAT SAYS WHAT IS IN THE BRIEF HAS TO MOVE WITH IT.
+     The dialog opens while the pass is still running, so at that moment the
+     draft has no change list and the hint honestly says so. When the list
+     lands the hint would otherwise still be describing the brief he had a
+     minute ago — undercounting the box he is about to send, which is the same
+     class of lie fix round 2 took out of this sentence for a different
+     reason. Recomposed from the DAEMON's sets, never counted here. */
+  function rehint(state) {
+    seed.changes = state.changes || seed.changes;
+    seed.implied = state.implied || seed.implied;
+    seed.outOfScope = state.outOfScope || seed.outOfScope;
+    briefHint.textContent = holoBriefHint(seed);
+  }
+
+  /* 1b. THE ✓ CAPTURED-REQUIREMENTS CHECKLIST IS GONE (S171).
+
+     It listed every captured requirement under "What you said, in your own
+     words — is it all in there?" and marked each ✓ or ⚠ against the brief. The
+     captain named this surface and the numbered list in the box in one breath:
+     both are the raw chat feed, and the list is what he was deleting by hand
+     before sending. With his words no longer quoted in the brief, every row
+     here would have gone ⚠ on every hand-off — a panel of warnings that are
+     all false, beside ▦ FILE MISSION. See actions.py at `_handoff_missing`'s
+     old home for what was accepted with it. */
+
+  /* 2. HOW MUCH TO BUILD (D13). Declared, never inferred: a mockup cannot tell
+     you whether its toggle is meant to persist, and a wrong guess is either a
+     wasted backend or a missing one. Declaring costs one click. */
+  var f2 = el("div", "field");
+  f2.appendChild(label("How much of this should be built?"));
+  var choices = el("div", "choices");
+  var SCOPES = [
+    ["look+behaviour", "⚙", "Look and behaviour",
+     "Build it for real — backend, state, persistence, the lot. The mockup "
+     + "says how it looks; your brief says what it must do."],
+    ["look-only", "◐", "Look only",
+     "A reskin. Match the mockup visually and change no behaviour — same "
+     + "data, same actions, same outcomes."],
+  ];
+  var guideBox = el("pre", "handoff-guidance");
+  SCOPES.forEach(function (o) {
+    var card = el("div", "choice-card" + (o[0] === picked.scope ? " sel" : ""));
+    card.appendChild(el("span", "ci", o[1]));
+    var cc = el("span", "cc");
+    cc.appendChild(el("span", "ct2", o[2]));
+    cc.appendChild(el("span", "cd", o[3]));
+    card.appendChild(cc);
+    card.setAttribute("data-choice", o[0]);
+    card.setAttribute("aria-pressed", o[0] === picked.scope ? "true" : "false");
+    keyActivable(holoCtl(card, o[2], function () {
+      picked.scope = o[0];
+      Array.prototype.forEach.call(choices.children, function (c) {
+        c.classList.remove("sel");
+        c.setAttribute("aria-pressed", "false");
+      });
+      card.classList.add("sel");
+      card.setAttribute("aria-pressed", "true");
+      // THE GUIDANCE FOLLOWS THE CHOICE, and it is re-fetched from the DAEMON
+      // rather than assembled here: the block shown and the block filed have to
+      // be the same words, and the only way to guarantee that is for one side
+      // to write them.
+      holoRefreshGuidance(seed, picked.scope, guideBox);
+    }));
+    choices.appendChild(card);
+  });
+  f2.appendChild(choices);
+  m.body.appendChild(f2);
+
+  /* 3. WHAT RIDES ALONG — by NAME. Never a path: he does not need one and
+     should never be shown one. */
+  var f3 = el("div", "field");
+  f3.appendChild(label("What rides along — attached automatically"));
+  var rides = el("div", "rides");
+  (seed.rides || []).forEach(function (r) {
+    var row = el("div", "ride");
+    row.appendChild(el("span", "ic", /\.md$/i.test(r.name) ? "▤" : "⬡"));
+    row.appendChild(el("span", "nm", r.name));
+    row.appendChild(el("span", "ds", r.what || ""));
+    rides.appendChild(row);
+  });
+  f3.appendChild(rides);
+  f3.appendChild(el("span", "hint",
+    "They are copied into the Mission's own attachments and read by every "
+    + "stage. They never enter your repository."));
+  m.body.appendChild(f3);
+
+  /* 4. THE GUIDANCE, MADE VISIBLE (D15). A pasted screenshot arrives with no
+     instructions attached and every downstream stage guesses what it was for.
+     This block is what the holodeck adds — and showing it is also one more
+     place the non-shipping declaration appears, which is the S164-measured
+     cure rather than a single prose pin. */
+  var f4 = el("div", "field");
+  f4.setAttribute("data-holo", "handoff-guidance-field");
+  f4.appendChild(label("How the mockup will be read — goes into the Mission"));
+  guideBox.textContent = seed.guidance || "";
+  guideBox.setAttribute("data-holo", "handoff-guidance");
+  f4.appendChild(guideBox);
+  m.body.appendChild(f4);
+
+  /* 5. THE OPEN QUESTIONS — LAST, deliberately (S128, FL-011 b). The holodeck
+     writes `## Open questions` into the concept doc and on the S127 capstone it
+     was RIGHT: it named all five things the captain objected to at Verify. It
+     was also never read by `promote`, so the five reached the mission as
+     settled decisions he had never made — and every gate downstream honoured
+     them.
+
+     They go here, at the bottom, because this is the last thing he reads with
+     his hand on the button. He is right there, they are short, and answering
+     five questions costs less than one wrong build. Anything he leaves blank
+     rides in marked STILL OPEN — the daemon writes that block, so silence
+     arrives as silence instead of as agreement.
+
+     S128 FIX ROUND 1, D1 — "last in the DOM" was never the same claim as "in
+     front of him", and a browser said so. Measured: this body is 1812px tall,
+     the visible window is 677px at 1440x900 and 443px at 900x640, and this
+     block starts 546–780px BELOW the fold — while ▦ File Mission is laid out
+     and clickable in the sticky footer from first paint. The tester clicked it
+     at scrollTop 0 and filed a mission whose five open questions he had never
+     seen. Nothing on screen said they existed; even this field's own label was
+     546px down.
+
+     The cue that fixes it is in the FOOTER, below — see `qcue`. It stays here,
+     last, because the position is right for the captain who reads the dialog;
+     what was missing is a signal for the one who does not. */
+  var questions = seed.questions || [];
+  var qBoxes = [];
+  var qField = null;
+  if (questions.length) {
+    var f5 = el("div", "field");
+    qField = f5;
+    f5.setAttribute("data-holo", "handoff-questions");
+    f5.appendChild(label("Before you send — " + questions.length
+                         + " open question"
+                         + (questions.length === 1 ? "" : "s")
+                         + " from the design session"));
+    var qlist = el("div", "handoff-questions");
+    questions.forEach(function (q) {
+      var row = el("div", "hq");
+      row.appendChild(el("div", "qt", q.text || ""));
+      var box = el("input");
+      box.type = "text";
+      box.value = "";
+      box.setAttribute("data-holo", "handoff-question");
+      box.setAttribute("data-qid", q.id || "");
+      box.placeholder = "Your answer — or leave blank to send it as open";
+      row.appendChild(box);
+      qlist.appendChild(row);
+      qBoxes.push({ id: q.id, box: box });
+    });
+    f5.appendChild(qlist);
+    f5.appendChild(el("span", "hint",
+      "These came out of designing this. What you answer becomes a "
+      + "requirement, in your words. Anything you leave blank arrives in the "
+      + "Mission with NO ANSWER RECORDED and quoted exactly as it reads here; "
+      + "anything genuinely undecided gets asked again, and none of it is ever "
+      + "read as a decision you made."));
+    m.body.appendChild(f5);
+  }
+
+  var go = applyWriteState(holoBtn("▦ File Mission", "go big", function () {
+    var text = String(brief.value || "").trim();
+    if (!text) { showErr(err, "Write the brief first."); return; }
+    go.disabled = true;
+    go.textContent = "Filing…";
+    err.hidden = true;
+    // Only what he actually TYPED. A blank box is not an empty answer — it is
+    // no answer, and it has to reach the Mission as one.
+    var answers = {};
+    qBoxes.forEach(function (q) {
+      var said = String(q.box.value || "").trim();
+      if (said) answers[q.id] = said;
+    });
+    postWrite("/api/park", {
+      idea: text,
+      engine: /copilot/i.test(String(seed.engine || "")) ? "copilot" : "claude",
+      holodeck: seed.sessionId,
+      holodeckScope: picked.scope,
+      holodeckAnswers: answers,
+    }, function () {
+      closeOverlay();
+      // Back to the BOARD: the card he just filed is there, and driving it is
+      // his next move. The deck's own list refreshes behind it so the program
+      // reads `sent` when he comes back.
+      holoSetMode(false);
+      holoRefresh();
+      refresh();
+    }, function (msg) {
+      go.disabled = false;
+      go.textContent = "▦ File Mission";
+      showErr(err, msg);
+    });
+  }));
+  /* ── THE FOOTER IS THE ONLY THING ALWAYS ON SCREEN (S128 fix round 1) ─────
+     `.modal-body` scrolls; `.modal-foot` does not. Everything below therefore
+     rides beside the button rather than at the bottom of an 1812px document the
+     captain has no reason to reach.
+
+     D2 — THE ERROR LINE MOVES HERE. It was appended to `m.body`, so a filing
+     that came back 502 painted its explanation 1,115px out of sight while the
+     button quietly said "▦ File Mission" again. The report of a failure belongs
+     with the control that failed. (`showErr` now also scrolls the line into
+     view, which cures the same class for the eight other dialogs that keep
+     their errline in the scrolling body.)
+
+     D1 — THE OPEN-QUESTIONS CUE. Three fixes were on the table: a count here,
+     auto-scrolling the questions into view on open, or moving them above the
+     scope cards. This is the count, and it is a CONTROL.
+
+     Auto-scroll was rejected: opening the dialog already focuses the brief (the
+     pre-drafted paragraph he is meant to check first), and landing him mid-
+     document with the brief off-screen trades one invisible thing for another.
+     Moving the block up was rejected too: the body is 1812px and the visible
+     window is 443px at 900x640, so "higher" is still below the fold — it would
+     have relocated the defect, not removed it, and it costs the deliberate
+     hand-on-the-button position for the captain who DOES read.
+
+     A footer cue is the only option that holds at every viewport and every
+     scroll position, including the one the tester actually used (scrollTop 0).
+     It does not block the filing — a hard stop at the last click of a design
+     session is the wrong shape, and the daemon carries an unanswered question
+     into the Mission marked STILL OPEN. It makes filing without KNOWING
+     impossible, which is the claim that failed. And it stays honest as he
+     works: the count falls as he answers, and the warning clears when none are
+     left, so it still means something on the day it fires. */
+  var qcue = null;
+  function syncQCue() {
+    if (!qcue) return;
+    var open = 0;
+    qBoxes.forEach(function (q) {
+      if (!String(q.box.value || "").trim()) open += 1;
+    });
+    var n = qBoxes.length;
+    qcue.setAttribute("data-open", String(open));
+    qcue.classList.toggle("open", open > 0);
+    /* S169 FIX ROUND 2 — IT STOPPED CRYING WOLF.
+
+       It read `⚠ N OPEN QUESTIONS UNANSWERED — READ THEM FIRST` in the amber
+       warning language of the missing-requirement band, and on the 2026-08-07
+       capstone that was the loudest thing in the dialog AND FALSE: both
+       questions were settled in their own text and one of them was then
+       re-asked at a real human gate the captain had already answered.
+
+       It also fires at every single open, before he has had one second to
+       answer anything — so it was a warning about a state that is guaranteed
+       true at the moment it appears. That is the definition of a warning that
+       trains you to click past it, and it sits beside ▦ FILE MISSION.
+
+       What it says now is the count and the invitation, which is the job S128
+       built it for (make filing without KNOWING they exist impossible). The ⚠
+       and the amber are reserved for the two bands that report something
+       MEASURED. */
+    qcue.textContent = open
+      ? "▸ " + open + " open question" + (open === 1 ? "" : "s")
+        + " from the design session — read "
+        + (open === 1 ? "it" : "them") + " before you file"
+      : "✓ all " + n + " open question" + (n === 1 ? "" : "s") + " answered";
+    qcue.title = open
+      ? "They came out of designing this. Anything you leave blank is filed "
+        + "with no answer recorded, quoted verbatim — you can send it either "
+        + "way."
+      : "Every open question from the design session has an answer.";
+  }
+  if (qBoxes.length) {
+    qcue = holoBtn("Read the open questions", "qcue", function () {
+      if (qField && qField.scrollIntoView) {
+        qField.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      var first = null;
+      qBoxes.forEach(function (q) {
+        if (!first && !String(q.box.value || "").trim()) first = q.box;
+      });
+      first = first || qBoxes[0].box;
+      if (first && first.focus) first.focus();
+    });
+    qcue.setAttribute("data-holo", "handoff-qcue");
+    qBoxes.forEach(function (q) {
+      q.box.addEventListener("input", syncQCue);
+    });
+    syncQCue();
+  }
+
+  m.foot.className += " handoff-foot";
+  m.foot.appendChild(err);
+  if (qcue) m.foot.appendChild(qcue);
+  m.foot.appendChild(el("span", "hint",
+    "Files the Mission at Align, on the board, with the artifacts attached."));
+  m.foot.appendChild(el("span", "grow"));
+  m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  m.foot.appendChild(go);
+  showOverlay(m.wrap);
+  /* ── THE DIALOG OPENS AT THE TOP OF HIS BRIEF (S169) ─────────────────────
+     MEASURED, not reasoned about. Focusing a textarea makes the browser scroll
+     it into view, and a 380px box in a 438px scrolling body does not fit with
+     room to spare — so `brief.focus()` alone scrolled `.modal-body` down by
+     234px and the captain met this dialog with the TOP OF HIS OWN WORDS 55px
+     ABOVE the window. The draft had grown; the first thing on screen was the
+     middle of it. Nothing in web/tests/ can see that (no CSS, no layout); it
+     came off tests/drives/browser/handoff.sh at 1440x677 on the first run.
+
+     The caret goes to character 0 first — so the browser has no reason to
+     scroll anywhere — and the body is pinned back to the top afterwards
+     regardless, because the ONE thing that must be true when this opens is
+     that he is looking at line 1. */
+  if (brief.setSelectionRange) {
+    try { brief.setSelectionRange(0, 0); } catch (e) { /* not text-like */ }
+  }
+  if (brief.focus) brief.focus();
+  brief.scrollTop = 0;
+  /* ── ONE SCROLLER, AND IT IS THE MODAL BODY (S169 FIX ROUND 1) ────────────
+     MEASURED in real Chrome, and it is the tester's "single biggest threat to
+     the value proposition". The `rows` clamp sized the box in SOURCE LINES,
+     and the draft's lines are long: at 1440x677 the box laid out 269px tall
+     against 835px of content — 566px (68%) of the captain's own brief behind a
+     NESTED inner scrollbar, inside a `.modal-body` that was itself hiding
+     1,321px. The section he most needs to check, `## Implied by the mockup`,
+     was dead last at the bottom of the INNER scroller. S128's "below the fold"
+     had become "below the fold of an inner box", and `rows` cannot see it
+     because wrapping is a layout fact.
+
+     So the box takes the height of its LAID-OUT CONTENT and stops scrolling
+     itself. `.modal-body` is then the only scroller in the dialog, one wheel
+     gesture reaches every section, and the sticky footer (▦ FILE MISSION and
+     the ⚠ open-questions cue) is untouched — it is a sibling of the body, not
+     of this box.
+
+     `rows` stays as the FLOOR for a short draft and as the pre-paint size, so
+     nothing collapses to a slot before this runs. Re-run on input because he
+     rewrites the brief — that is the whole point of it being a writing space —
+     and a box that grew once and then trapped his own additions would be the
+     same defect with his words in it. */
+  function fitBrief() {
+    brief.style.height = "auto";
+    var want = brief.scrollHeight;
+    if (!(want > 0)) return;
+    brief.style.height = want + "px";
+    /* …AND THEN CHECK, because `scrollHeight` and `height` do not measure the
+       same rectangle and which ones they include depends on `box-sizing`. The
+       first pass left the box exactly 2px short (its border) — a 2px inner
+       scrollbar is still an inner scrollbar. Reading the residue back off the
+       element beats hard-coding a box model that a later stylesheet can
+       change. */
+    var over = brief.scrollHeight - brief.clientHeight;
+    if (over > 0) brief.style.height = (want + over) + "px";
+  }
+  fitBrief();
+  brief.addEventListener("input", fitBrief);
+  /* ── AND THE CHECK'S POLL STARTS **AFTER** THE DIALOG IS ON THE PAGE ──────
+     Its own stop condition is `document.body.contains(band)` — the dialog has
+     gone, so there is nobody to tell. `showOverlay` is what puts this dialog in
+     the document, and it runs at the BOTTOM of this function; started from
+     where the band is built, the very first call read "not on the page yet" and
+     returned, and the band sat on "Reading these lines back against the
+     mockup…" forever while the daemon's answer waited unread.
+
+     Found by web/tests/board_holodeck_harness.js the moment `setTimeout` was
+     recorded instead of swallowed — the previous stub returned 0 and dropped
+     the callback, which cannot tell a wired poll from a dead one. */
+  /* ── S172, SAID PLAINLY: THIS BRANCH IS NO LONGER REACHED FROM THE DECK ──
+     `Send without the change list` was the only control that opened this
+     dialog while a pass was in flight, and the captain has deleted it. Every
+     remaining door — ▶ SEND TO ALIGN at `ready`, at `failed`, and at `off` —
+     opens on a settled derivation, so `seed.derive.state` is not `running`.
+
+     IT IS KEPT, NOT DELETED, and that is a deliberate call rather than an
+     oversight: the running band, this poll and `briefLanded` are what make a
+     door into the wait SAFE, and the hatch's own note says a cancel control is
+     the honest thing to build if a hang is ever observed. Tearing the landing
+     machinery out today would mean rebuilding it then. What must not happen is
+     someone reading this branch as live product behaviour: it is not, until
+     something opens this dialog during a pass again. */
+  if ((seed.derive || {}).state === "running") {
+    holoDerivePoll(seed, checkBox, picked, 1, briefLanded);
+  }
+  m.body.scrollTop = 0;
+  return m;
+}
+
+/* Re-ask the daemon for the guidance when the build scope changes. The block
+   is never rewritten on this side — one voice, and the words the captain reads
+   are the words the Mission is given. */
+function holoRefreshGuidance(seed, scope, box) {
+  postWrite("/api/holodeck/" + seed.sessionId + "/promote", { scope: scope },
+    function (state) {
+      seed.guidance = state.guidance || seed.guidance;
+      seed.scope = state.scope || scope;
+      box.textContent = seed.guidance || "";
+    }, function (msg) {
+      /* IT SAYS SO. Leaving the previous scope's block on screen would be the
+         one thing this pane exists to prevent — the captain reading one set of
+         instructions while the Mission is given another. The dispatch still
+         sends `holodeckScope`, so the daemon applies what he picked; what is
+         lost is only the preview, and that is what this says. */
+      box.textContent = "LCARS could not fetch the guidance for this choice ("
+        + (msg || "no reason given") + "). The Mission will still be given the "
+        + "guidance for \"" + scope + "\" — this box just cannot show it right "
+        + "now. Pick the other option and back again to retry.";
+    });
+}
+
+function holoEnd(sid) {
+  postWrite("/api/holodeck/" + sid + "/end", {}, function () {
+    if (HOLO.activeId === sid) HOLO.activeId = null;
+    holoRefresh();
+  }, function (msg) {
+    holoSetBanner("offline", { message: msg });
+    renderDeck();
+  });
+}
+
+/* ── S126: picking a program back up ───────────────────────────────────────
+   The daemon mints a NEW session and replays `transcript.md` into its opening
+   prompt. The banner is the daemon's own account of that, verbatim (the
+   one-voice rule S125 landed on): it says the worker is a fresh one carrying
+   the history, and this side adds not one word — least of all a session id,
+   which is precisely the kind of unfounded reassurance S125's finding #2 was
+   about. */
+/* FIX ROUND 5 — AND IT SENDS THE ENGINE THE PROGRAM WAS BUILT ON. This posted
+   `{room}` alone, so the daemon had nothing but its own default to fall back
+   on and a program designed on one CLI reopened on another — measured live,
+   and the reverse direction spends real money.
+
+   It relays a FACT or nothing: `engineRecorded` is the daemon's own answer to
+   "does this program's record name an engine", and an explicit engine OUTRANKS
+   the record. Sending the default here would pin the wrong CLI in the one
+   place the rule cannot see it is a guess. */
+function holoOpen(room, engine) {
+  if (!room) return;
+  var body = { room: room };
+  if (engine) body.engine = engine;
+  postWrite("/api/holodeck/open", body, function (state) {
+    HOLO.activeId = state.sessionId;
+    HOLO.banner = null;
+    if (state.warmRestart && state.warmRestart.message) {
+      holoSetBanner("restart", { message: state.warmRestart.message });
+    }
+    holoRefresh();
+  }, function (msg) {
+    holoSetBanner("offline", { message: msg });
+    renderDeck();
+  });
+}
+
+/* ── S172: duplicating a program, carrying its history ────────────────────
+   The captain's ruling is that a duplicate BRINGS THE CHAT OVER, so the dialog
+   says that before the button: what he gets is not a copy of the files, it is a
+   NEW program that remembers the conversation and is editable from the first
+   turn. It also states the two things that would otherwise be a surprise later
+   — the original stays exactly as it was handed over, and the change list does
+   NOT come over, because that list describes his project as it was when this
+   design was filed.
+
+   THE NAME FIELD IS EMPTY ON PURPOSE. The daemon owns room naming: it is the
+   only side that can see which rooms are taken, and a duplicate is the one
+   place in the product where a collision is likely (the obvious name is derived
+   from one that already exists). Blank is the road that cannot collide; typing
+   a name is the override, and a name whose room is taken is REFUSED there
+   rather than written over. */
+function holoConfirmDuplicate(p) {
+  var room = p.room || holoBase(p.programDir);
+  var sent = holoLifecycle(p) === "sent";
+  var m = modal("⧉ Duplicate program", { headClass: "teal" });
+  m.body.appendChild(el("p", null,
+    "Duplicate " + (p.program || room) + " (" + room + ") into a new program?"));
+  m.body.appendChild(el("p", null,
+    "The copy carries the mockup, the concept doc, the grounding, anything you "
+    + "pasted in — and the WHOLE conversation, so the holodeck can see why the "
+    + "design looks the way it does. It opens as a draft you can type into "
+    + "straight away, and nothing in that history is binding."));
+  m.body.appendChild(el("p", null,
+    (sent
+      ? "This program stays locked and exactly as it was handed over"
+        + (p.missionId ? " to mission " + p.missionId : "") + " — nothing here "
+        + "touches it. "
+      : "This program is left exactly as it is. ")
+    + "The change list does not come over: it describes your project as it was "
+    + "when this design was drafted, so the copy starts without one and offers "
+    + "to work out a fresh one when you send it."));
+  var f = el("div", "field");
+  f.appendChild(label("Name for the copy"));
+  var name = el("input");
+  name.type = "text";
+  name.placeholder = "leave blank and LCARS gives it a free name";
+  name.setAttribute("data-holo", "duplicate-name");
+  f.appendChild(name);
+  m.body.appendChild(f);
+  var err = el("div", "errline"); err.hidden = true;
+  m.body.appendChild(err);
+  var go = applyWriteState(holoBtn("⧉ Duplicate Program", "go", function () {
+    go.disabled = true;
+    go.textContent = "Duplicating…";
+    var body = { room: room };
+    if ((name.value || "").trim()) body.program = name.value.trim();
+    postWrite("/api/holodeck/duplicate", body, function (state) {
+      closeOverlay();
+      /* STRAIGHT INTO THE NEW ROOM. The whole point of the gesture is to keep
+         designing, and the daemon has already opened it (a fresh session, the
+         transcript replayed) — leaving him on the locked card he clicked from
+         would be the one place he cannot type. */
+      HOLO.activeId = state.sessionId;
+      HOLO.banner = null;
+      if (state.duplicated && state.duplicated.message) {
+        holoSetBanner("duplicated", { message: state.duplicated.message });
+      }
+      holoRefresh();
+    }, function (msg) {
+      go.disabled = false;
+      go.textContent = "⧉ Duplicate Program";
+      showErr(err, msg);
+    });
+  }));
+  m.foot.appendChild(el("span", "grow"));
+  m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  m.foot.appendChild(go);
+  showOverlay(m.wrap);
+  return m;
+}
+
+/* ── S126: deleting a program, without deleting the work ──────────────────
+   `git rm` + a commit, so the answer to "I removed the wrong one" is a
+   checkout. The dialog says that BEFORE the button, because a confirmation
+   whose only content is "are you sure?" makes the captain guess at the stakes.
+   The daemon's reply then names the exact commit to check back out.
+
+   FIX ROUND 3, DEFECT 1. This copy read "so nothing is destroyed … all stay in
+   the sidecar's history and can be checked back out" — flatly, in advance, of a
+   room that might never have been committed at all. That is the daemon's own
+   lie one step earlier, and a confirmation is the worst place to tell it: it is
+   the sentence the captain decides on. It now describes the mechanism the
+   daemon actually runs — recorded first, removed second, and refused rather
+   than destroyed if the recording cannot be made. */
+function holoConfirmDelete(p) {
+  var room = p.room || holoBase(p.programDir);
+  // `red` — the tints the modal scaffold actually defines are red/teal/pink
+  // (board.css :504). A headClass with no rule behind it is a header that
+  // silently renders as the default one.
+  // `■` — every CONSOLE TITLE in the product wears a flat, single-colour glyph
+  // from the LCARS geometric family (test_help_console's D7 sweep). This one
+  // shipped as `⌫`, a keyboard-key symbol from a different family entirely. ■
+  // is already the product's HALT mark (■ STOP on the launch band and the
+  // ● APP LIVE pill), which is the right note over a red destructive header.
+  // The BUTTONS keep `⌫`: a control glyph names the gesture (erase), a title
+  // glyph names the console — the deck already opens `⬡ New Program` from a
+  // `＋ New Program` button on exactly that split.
+  var m = modal("■ Remove program", { headClass: "red" });
+  m.body.appendChild(el("p", null,
+    "Remove " + (p.program || room) + " (" + room + ") from the deck?"));
+  m.body.appendChild(el("p", null,
+    "LCARS commits the whole program — the mockup, the transcript, the concept "
+    + "doc — into the sidecar's git history FIRST, and only then removes the "
+    + "room. It will tell you the exact command to check it back out. If it "
+    + "cannot record the program, it refuses and removes nothing."));
+  var err = el("div", "errline"); err.hidden = true;
+  m.body.appendChild(err);
+  var go = applyWriteState(holoBtn("⌫ Delete Program", "danger", function () {
+    go.disabled = true;
+    go.textContent = "Removing…";
+    postWrite("/api/holodeck/delete", { room: room }, function (state) {
+      closeOverlay();
+      if (p.sessionId && HOLO.activeId === p.sessionId) HOLO.activeId = null;
+      if (state && state.message) {
+        holoSetBanner("removed", { message: state.message });
+      }
+      holoRefresh();
+    }, function (msg) {
+      go.disabled = false;
+      go.textContent = "⌫ Delete Program";
+      showErr(err, msg);
+    });
+  }));
+  m.foot.appendChild(el("span", "grow"));
+  m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  m.foot.appendChild(go);
+  showOverlay(m.wrap);
+  return m;
+}
+
+/* ── D7: the failure states, in LCARS voice ────────────────────────────── */
+/* ONE VOICE (fix round 2). The daemon's message is the whole account of what
+   happened; this side supplies CHROME — the title, the colour, the RETRY
+   control — and adds not one word of its own.
+
+   Round 1 wrote a second copy beside the server's, and every failure then said
+   everything twice: "your program is safe" and "the chat is still running"
+   arrived once from here and once from the daemon, mid-sentence, and the
+   refusal banner ran to 1208 characters with the stray path printed TWICE.
+   Worse, this half still claimed the holodeck "never touches your project, and
+   nothing out there has been changed or removed by LCARS" — an AUTHORSHIP
+   claim, sitting directly above the server's carefully-cured "LCARS watches the
+   files, not who touched them — it cannot tell whether the holodeck went
+   outside its room or something else did". Two voices, and the louder one was
+   the wrong one. The parallel copy is DELETED, not arbitrated. */
+function holoSetBanner(kind, opts) {
+  HOLO.banner = { kind: kind, opts: opts || {} };
+}
+
+/* kind → [class, title]. Chrome only; the text always comes from the daemon. */
+var HOLO_BANNERS = {
+  offline:    ["down",   "Holodeck offline"],
+  refused:    ["refuse", "Write refused"],
+  // the AUDIT degraded — LCARS could not walk the whole project, so it cannot
+  // certify that nothing changed outside the room.
+  unverified: ["refuse", "Turn not certified"],
+  // the audit was FINE; the engine answered with the file instead of writing
+  // it. Nothing to certify, nothing saved.
+  "no-write": ["refuse", "Nothing was written"],
+  notice:     ["note",   "This room already holds work"],
+  /* S128 (FL-004) — A START THAT FAILED, said somewhere the dialog cannot take
+     with it. `openNewProgram`'s error line dies the moment the dialog closes,
+     and a first grounding pass is exactly when a captain wanders off, so a
+     failed pass used to fail in total silence. This reuses the deck's OWN
+     banner channel rather than adding a second notification path. */
+  "start-failed": ["refuse", "The program did not open"],
+  /* S126 — a program picked back up off disk. NOT titled "resumed": the warm
+     worker session died with the daemon that held it and what is running now
+     is a fresh one carrying the transcript. The daemon's message says exactly
+     that; the title must not undo it. */
+  restart:    ["note",   "Picked up where you left off"],
+  /* S172 — a NEW program carrying an old one's history. NOT titled "copied":
+     the chat came over too, which is the whole ruling, and the daemon's message
+     is the account of what that means. */
+  duplicated: ["note",   "Duplicated — a new program, carrying the chat"],
+  removed:    ["note",   "Program removed — the archive kept it"],
+};
+
+/* A daemon `warning.kind` → the banner that tells the truth about it. Anything
+   unknown falls back to the cautious one rather than going unannounced. */
+var HOLO_WARNING_BANNER = {
+  "no-write": "no-write",
+  "audit-incomplete": "unverified",
+  "end-audit-pending": "unverified",
+};
+
+function holoBannerNode() {
+  var b = HOLO.banner;
+  if (!b) return null;
+  var o = b.opts || {};
+  var kind = HOLO_BANNERS[b.kind];
+  if (!kind) return null;
+  var node = el("div", "holo-banner " + kind[0]);
+  node.appendChild(el("span", "bl", kind[1]));
+  node.appendChild(el("span", "bt", String(o.message == null ? "" : o.message)
+    .trim() || "LCARS has nothing to add beyond that."));
+  if (b.kind === "offline" && o.retry) {
+    node.appendChild(applyWriteState(holoBtn("Retry turn", "danger",
+      function () {
+        HOLO.banner = null;
+        // A RETRY IS THE SAME TURN — the same line AND the same screenshot
+        // (S169). Dropping the images here would re-send a "make it look like
+        // this" turn with nothing to look at. The ONE case where the retry
+        // carries no image is the one the DAEMON already decided (fix round 1,
+        // `sessionReset`): the attachment is what killed the session, and it is
+        // dropped where `holoSay` builds this payload, not here.
+        holoSay(o.retry.sid, o.retry.text, o.retry.images, o.retry.intent);
+      })));
+  }
+  return node;
+}
+
+/* D7 · VIEW ONLY — the control is DISABLED WITH THE REASON, never silently
+   absent. A missing button teaches nothing; a greyed one with no explanation
+   teaches less. The banner says the same thing where it cannot be missed. */
+function applyHolodeckWriteState() {
+  var ro = writesActive === false;
+  var reason = HOLO_RO_REASON;
+  // S128: the control itself is painted by the ONE function that owns it (see
+  // holoPaintBandBtn) — this half is the banner and the forced exit.
+  holoPaintBandBtn();
+  var host = document.getElementById("holoRoBanner");
+  if (host) {
+    host.innerHTML = "";
+    host.hidden = !ro;
+    if (ro) {
+      host.appendChild(el("span", "bl", "View only"));
+      host.appendChild(el("span", "bt", reason));
+    }
+  }
+  if (ro && HOLO.on) holoSetMode(false);
+}
+
+/* ── S127: which engine a NEW program runs on ─────────────────────────────
+   The captain opened the viewscreen with no $LCARS_WORKER_BIN and every
+   program died on a 502 telling him to restart the daemon. The daemon has
+   taken an engine on /api/holodeck/start since S124; nothing in front of him
+   could name one, and he could not run one program on claude and the next on
+   copilot without a restart in between.
+
+   These four are the whole front-end rule, kept out of the dialog body so the
+   dialog reads as a dialog. None of them RESOLVES anything — resolution is the
+   daemon's (`_resolve_holodeck_engine` / `_program_engine`), and adding a
+   second resolver here is how this feature has produced money bugs before. */
+
+/* Which OFFERED engine the daemon itself was started on, or "" for none.
+   `engineName` is a basename (`claude`, `copilot`, and in the wild a wrapper
+   around either), so it is binned the same way the daemon bins it — the
+   contains-"copilot" test in `_is_copilot`. That is a BINNING rule, not the
+   tier table: the tiers arrive from the daemon in `HOLO.models` precisely so
+   this file never carries a second copy of them. */
+function holoDaemonEngine() {
+  var name = String(HOLO.engineName || "").toLowerCase();
+  if (!name) return "";
+  return name.indexOf("copilot") !== -1 ? "copilot" : "claude";
+}
+
+/* THE MONEY DEFAULT. A daemon started with an engine keeps behaving exactly as
+   it does today — its own engine is what sits preselected. With NOTHING
+   configured the preselection is copilot, because the holodeck is explicitly
+   the cheap room: copilot is free for this captain and claude is billed, so
+   the option under his cursor on an unconfigured daemon must not be the one
+   that spends. */
+function holoDefaultEngine() { return holoDaemonEngine() || "copilot"; }
+
+/* What to actually SEND for a picked engine. Picking the engine the daemon was
+   started on sends that daemon's own binary, not the bare name: a wrapper at
+   /opt/…/claude must not silently become whichever `claude` $PATH finds. */
+function holoEngineBin(key) {
+  return (key === holoDaemonEngine() && HOLO.engine) ? HOLO.engine : key;
+}
+
+/* "copilot claude-opus-4.8" — the engine and the tier it will really run at.
+   The tier comes from the daemon's published table; with none published for
+   that engine it names the engine and STOPS. A guess here is the readout-lie
+   class the hardcoded "sonnet tier" already cost this feature once. */
+function holoEngineTier(key) {
+  var mine = key === holoDaemonEngine();
+  var name = (mine && HOLO.engineName) ? HOLO.engineName : key;
+  var model = (HOLO.models || {})[key] || (mine ? (HOLO.model || "") : "");
+  return name + (model ? " " + model : "");
+}
+
+/* ── D12: ＋ NEW PROGRAM asks what, and what from ───────────────────────── */
+/* The one question that decides whether the mock looks like your project or
+   like a stranger's product. Declared, never inferred: only the captain knows
+   whether a greenfield idea should inherit an existing app's language. */
+function openNewProgram() {
+  var m = modal("⬡ New Program", { headClass: "teal" });
+  var err = el("div", "errline"); err.hidden = true;
+
+  /* ONE SENTENCE, ONE FUNCTION (FL-001). The footer hint was assembled once
+     while the dialog was being built and never rebuilt, so it lied in two
+     directions the moment either choice moved:
+       • the tier half read the DAEMON's engine — now the engine is picked
+         right here, so it must follow the pick;
+       • `· read-only` was appended unconditionally, and is simply false on
+         Blank deck, where no pass over the captain's project happens at all.
+     Both halves are DERIVED from (picked engine, picked mode) below, and every
+     control that can change either one calls `paintFoot`. Deliberately NOT a
+     second string beside the old one: S125 lost two fix rounds to exactly that
+     shape, and so did S126's tool-trace stripper. */
+  var footHint = el("span", "hint", "");
+  function footSentence() {
+    // what the START itself does to the captain's project, per mode. Only
+    // `grounding` reads it, so only `grounding` may claim a read-only read.
+    var lead = picked.val === "grounding" ? "One cheap pass"
+             : picked.val === "screenshot" ? "One cheap pass over your screenshot"
+             : "Nothing is read from your project";
+    var parts = [lead, holoEngineTier(chosenEngine.val)];
+    if (picked.val === "grounding") parts.push("read-only");
+    return parts.join(" · ");
+  }
+  function paintFoot() { footHint.textContent = footSentence(); }
+
+  var f1 = el("div", "field");
+  f1.appendChild(label("What are we designing?"));
+  var name = el("input");
+  name.type = "text";
+  name.placeholder = "A tile picker sidebar for the room editor";
+  name.setAttribute("data-holo", "program-name");
+  f1.appendChild(name);
+  m.body.appendChild(f1);
+
+  var f2 = el("div", "field");
+  f2.appendChild(label("Start from"));
+  var choices = el("div", "choices");
+  var picked = { val: "grounding" };
+  // S124's holodeck_start REJECTS images with a 400, so the screenshot option
+  // is not a control that errors when clicked — it is visibly off, with the
+  // reason. The alternative (hide it) loses the fact that this is the road the
+  // captain asked for and it is coming.
+  //
+  // S169 FIX ROUND 1 — AND THE REASON WAS MADE STALE BY THIS SESSION. It read
+  // "the holodeck cannot take pasted images yet, so this would fail the moment
+  // you clicked Run", four inches from a composer that this session taught to
+  // take a pasted screenshot and that WORKS. The captain reads one product, so
+  // one of the two had to become true: the START road still refuses (nothing
+  // here opens a program from an image), and its refusal now says WHERE paste
+  // does work instead of denying the feature exists.
+  var OPTS = [
+    ["grounding", "▣", "This project's look",
+     "One read-only pass over " + holoRepoName() + " to learn how it already "
+     + "looks — colours, type, spacing, and the shape of its existing "
+     + "components — so the new flow arrives looking like it belongs. Reads "
+     + "only. Never writes to your project.", true, null],
+    ["screenshot", "◫", "A screenshot",
+     "Paste a picture of the screen you are changing. For a look that is not "
+     + "in the repo — a design elsewhere, a competitor, a sketch.", false,
+     "Not yet: a program cannot be STARTED from an image. Open it on one of "
+     + "the other two roads, then paste the screenshot straight into the chat "
+     + "on your first turn — the composer takes it."],
+    ["design", "⬡", "Blank deck",
+     "Nothing exists yet. Start from the LCARS look and invent from there.",
+     false, null],
+  ];
+  OPTS.forEach(function (o) {
+    var key = o[0], off = o[5];
+    var card = el("div", "choice-card"
+      + (key === picked.val ? " sel" : "") + (off ? " off" : ""));
+    card.appendChild(el("span", "ci", o[1]));
+    var cc = el("span", "cc");
+    var t = el("span", "ct2", o[2]);
+    if (o[4]) t.appendChild(el("span", "rec", "Recommended"));
+    cc.appendChild(t);
+    cc.appendChild(el("span", "cd", o[3]));
+    if (off) cc.appendChild(el("span", "why", "⚠ " + off));
+    card.appendChild(cc);
+    card.setAttribute("data-choice", key);
+    if (off) {
+      holoCtl(card, o[2], null, off);
+    } else {
+      keyActivable(holoCtl(card, o[2], function () {
+        picked.val = key;
+        Array.prototype.forEach.call(choices.children, function (c) {
+          c.classList.remove("sel");
+          c.setAttribute("aria-pressed", "false");
+        });
+        card.classList.add("sel");
+        card.setAttribute("aria-pressed", "true");
+        // FL-001: this handler used to move the `sel` class and nothing else,
+        // which is why the footer sentence was frozen at whatever it read when
+        // the dialog opened — including "read-only" for a Blank deck.
+        paintFoot();
+      }));
+      card.setAttribute("aria-pressed", key === picked.val ? "true" : "false");
+    }
+    choices.appendChild(card);
+  });
+  f2.appendChild(choices);
+  m.body.appendChild(f2);
+
+  /* S127 — THE ENGINE PICKER. Same markup, classes and interaction as the File
+     console's own picker (`.field` / `.choice` / `.opt` / `sel` /
+     aria-pressed / keyActivable): it is the picker the captain already knows,
+     and S140 made that one keyboard-operable — Tab to it, Enter/Space selects
+     — which a new mouse-only picker would quietly regress. */
+  var f3 = el("div", "field");
+  f3.appendChild(label("Engine — which CLI runs this program?"));
+  var echoice = el("div", "choice");
+  var chosenEngine = { val: holoDefaultEngine() };
+  var optClaude = keyActivable(el("span", "opt", "⬡ Claude"));
+  var optCopilot = keyActivable(el("span", "opt", "⬡ Copilot"));
+  function pickEngine(engine, node) {
+    chosenEngine.val = engine;
+    [optClaude, optCopilot].forEach(function (o) {
+      o.classList.remove("sel");
+      o.setAttribute("aria-pressed", "false");
+    });
+    node.classList.add("sel");
+    node.setAttribute("aria-pressed", "true");
+    paintFoot();
+  }
+  optClaude.addEventListener("click", function () {
+    pickEngine("claude", optClaude);
+  });
+  optCopilot.addEventListener("click", function () {
+    pickEngine("copilot", optCopilot);
+  });
+  echoice.appendChild(optClaude); echoice.appendChild(optCopilot);
+  f3.appendChild(echoice);
+  m.body.appendChild(f3);
+  // the INITIAL selection goes through the same one function every later click
+  // does — no second block setting `sel` and aria-pressed by hand, which is
+  // where a picker's default and its clicks drift apart.
+  pickEngine(chosenEngine.val,
+             chosenEngine.val === "copilot" ? optCopilot : optClaude);
+
+  m.body.appendChild(err);
+
+  /* S128 (FL-004) — THE DIALOG'S THINKING INDICATOR, in the captain's own
+     words: "the dialog itself needs a thinking icon as well". A grounding pass
+     spawns a worker and can run for a minute; the only busy state was the
+     button's label, which is a very quiet thing to stare at.
+
+     It is the SAME `.holo-working` the chat pane renders — one working idiom in
+     this feature, not two — and it is built once here rather than on click, so
+     the failure path has something to hide again. */
+  var busy = holoWorkingNode("Opening the deck — the first pass reads your "
+                             + "project and can take a minute.");
+  busy.hidden = true;
+  m.body.appendChild(busy);
+
+  m.body.appendChild(el("div", "hint",
+    "Whatever it learns, you can see: a grounding pass writes what it found "
+    + "into the program as basis.md — the actual tokens, not a description of "
+    + "them. A grounding you cannot inspect is one you cannot correct."));
+
+  var go = applyWriteState(holoBtn("⬡ Run Program", "go big", function () {
+    var nm = String(name.value || "").trim();
+    if (!nm) { showErr(err, "Say what you are designing first."); return; }
+    go.disabled = true;
+    go.textContent = "Opening the deck…";
+    err.hidden = true;
+    busy.hidden = false;
+    postWrite("/api/holodeck/start",
+      { program: nm, mode: picked.val, engine: holoEngineBin(chosenEngine.val) },
+      function (state) {
+        closeOverlay();
+        HOLO.activeId = state.sessionId;
+        HOLO.banner = null;
+        // A ROOM THAT ALREADY HOLDS WORK IS DISCLOSED, NOT DISCOVERED. End a
+        // program and re-create the same name and the "new" one adopts the old
+        // room — `turnCount: 0` beside the previous program's mockup in the
+        // preview. Silence was the defect; the daemon says what is in there and
+        // this puts it where he cannot miss it, before his first word.
+        if (state.roomNotice && state.roomNotice.message) {
+          holoSetBanner("notice", { message: state.roomNotice.message });
+        }
+        holoSetMode(true);
+      },
+      function (msg) {
+        go.disabled = false;
+        go.textContent = "⬡ Run Program";
+        busy.hidden = true;
+        showErr(err, msg);
+        /* S128 (FL-004) — AND SOMEWHERE THAT OUTLIVES THIS DIALOG. The line
+           above is the whole account of the failure while the dialog is open,
+           and dies with it: close it and a grounding pass that FAILED failed
+           in silence — no banner, no board signal, nothing the captain would
+           ever see. This is the deck's existing banner channel, not a second
+           notification path, so there is still one place a holodeck failure
+           is reported. renderDeck is unconditional: the banner belongs in the
+           deck host whether or not the deck is the visible half right now. */
+        holoSetBanner("start-failed", { message: msg });
+        renderDeck();
+      });
+  }));
+  // WHAT WILL ACTUALLY RUN — the one sentence `footSentence` derives, already
+  // painted by the initial `pickEngine` above. The tier half comes from the
+  // daemon's own `_holodeck_model` (published per engine), never a copy of it
+  // here: this line was once the hardcoded "One cheap pass · sonnet tier ·
+  // read-only", which is false on copilot AND false on a Blank deck.
+  m.foot.appendChild(footHint);
+  m.foot.appendChild(el("span", "grow"));
+  m.foot.appendChild(btn("Cancel", null, closeOverlay));
+  m.foot.appendChild(go);
+  showOverlay(m.wrap);
+  if (name.focus) name.focus();
+  return m;
+}
+
 /* ════════════════ boot ════════════════ */
 document.getElementById("fileBtn").addEventListener("click", openFile);
 /* S139: the ▸ Deploy Main button, wired next to the File control. Defensive: a
@@ -7405,6 +11314,14 @@ if (deployMainBtn) deployMainBtn.addEventListener("click", openDeployMain);
    view-only board needs it most. Defensive like the deploy wiring above. */
 var helpBtn = document.getElementById("helpBtn");
 if (helpBtn) helpBtn.addEventListener("click", openHelp);
+/* S125 (D1): the ⬡ HOLODECK control. ONE control for both directions — it reads
+   ▦ BOARD while the deck is up. Defensive like the wirings above: an older
+   index.html without the button simply has no deck. */
+var holodeckBtn = document.getElementById("holodeckBtn");
+if (holodeckBtn) {
+  holodeckBtn.addEventListener("click", toggleHolodeck);
+  applyHolodeckWriteState();
+}
 brandPADD();
 refresh();
 connect();

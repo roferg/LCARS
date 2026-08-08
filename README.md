@@ -27,6 +27,7 @@ web board — with the CLI available as the equivalent power path underneath.
 - [The pipeline](#the-pipeline)
 - [Install](#install)
 - [Quick start (the viewscreen)](#quick-start-the-viewscreen)
+- [The holodeck](#the-holodeck)
 - [The CLI (the power path)](#the-cli-the-power-path)
 - [Running under GitHub Copilot](#running-under-github-copilot)
 - [The commands](#the-commands)
@@ -52,6 +53,12 @@ improvement, or a bug fix). Each Mission gets its own branch, is mirrored as a
 GitHub issue, and moves through a fixed sequence of **Stages** as a card on a
 kanban board. Missions are branch-isolated, so many can run concurrently and
 merge sequentially when you approve them.
+
+An idea doesn't have to arrive as a paragraph of text. When the thing you want
+is easier to *draw* than to describe, the **holodeck** is a room on the
+viewscreen where you talk a mockup into existence with an AI, watch it render
+live, and then hand that drawing to a Mission that builds it — see
+[The holodeck](#the-holodeck).
 
 The key idea: **you set a Mission in motion and walk away.** The harness
 auto-advances it stage to stage on its own and stops only at a genuine human
@@ -234,6 +241,105 @@ drift. One adapter-neutral board shape backs two read adapters — a **local** o
 parsing `.git/lcars/missions/*` (the default, with the operator write endpoints)
 and a **GitHub** one reading issues + `lcars:*` labels (`--read-only`,
 view-only) — so a hosted, read-only board is a configuration away.
+
+---
+
+## The holodeck
+
+Some work is far easier to *draw* than to describe. The **holodeck** — the
+`⬡ HOLODECK` control in the viewscreen's top band — is a room where you talk a
+mockup into existence with an AI, look at it rendered live as it changes, and
+then hand the drawing to a Mission that builds it.
+
+It sits **before** the pipeline. The holodeck runs no Stages and writes no
+mission state; its one bridge to the harness is that when you file, the finished
+mockup and its concept doc ride into the new Mission's `attachments/` — the same
+road a pasted screenshot takes.
+
+![The LCARS holodeck — the PROGRAMS list on the left with two sent programs, each naming the Mission it became; the design conversation in the middle with the captain's own turns and the holodeck's replies; and on the right the live-rendered mockup of a tile editor, above the PROGRAM ROOM name and its commit count.](docs/assets/holodeck.png)
+
+*Talk to it on the left, watch the mockup redraw on the right. Every turn is committed to a sidecar repo beside your project — never into your working tree.*
+
+**Programs.** A **program** is to design work what a Mission is to build work:
+one unit, one room. It is a `draft` while you're working on it and becomes
+`sent` — locked — once it has been filed as a Mission, so it stays the record of
+what was actually handed over.
+
+**The files live beside your project, never in it.** Programs are kept in a
+**sidecar git repo** — `<your-repo>-holodeck`, alongside your checkout — with
+every turn committed. That's deliberate: a mockup can never be mistaken for the
+product, and can never be committed to it by accident. Your own working tree is
+untouched, exactly as everywhere else in LCARS.
+
+**Grounding.** A new program asks how to start. The recommended option runs a
+bounded, **read-only** pass over your real project and writes what it finds to
+`basis.md` — the actual colour tokens and their values, the type scale, spacing
+and radius, and the shape of the existing components, each named against the file
+it came from, plus an honest note about what it could *not* find. The mockup then
+arrives looking like it belongs in that product instead of inventing a design
+system. The pass really has no write tool (on Claude it's fenced by a tool *deny*
+list, not merely an allow-list), and it is exactly one turn — after it the
+program switches to designing. Starting from a blank deck instead spends nothing.
+
+**The room.** Three panes: your programs on the left, the conversation in the
+middle, and on the right a pane that toggles between **⬡ Preview** — the mockup
+rendered live in a sandboxed frame jailed to the sidecar — and **▤ Intent**,
+which shows what has been captured so far: the requirements in **your own
+words**, each attributed to the turn you said it in; what the mockup *implies*
+but you haven't settled, written as questions; and what is explicitly out of
+scope.
+
+**One file.** The mockup is `mockup.html` — one self-contained HTML file, inline
+CSS and JS, no build step and no external dependency, revised in place turn after
+turn — so even a rich multi-screen prototype stays one atomic thing you can open,
+send, or hand over whole.
+
+**It survives.** A program outlives the daemon. Reopening one replays the
+transcript into a **fresh** worker, and says so plainly: it knows what you
+decided, it remembers nothing itself. Nothing is lost — every turn is in the
+room's `transcript.md` and the mockup is exactly as you left it.
+
+**Send to Align.** The hand-off is a **gate, not a surprise**. You click
+**▶ GENERATE THE CHANGE LIST**, and a read-only pass reads your real application
+as it stands today to produce the one thing a builder needs: *what is different
+between the finished mockup and the app as it is now*. That's a diff, not a
+transcript of the conversation — so a turn where you corrected the **mockup**
+doesn't read downstream as an instruction to change the **product**. What the
+pass finds but cannot scope comes back as a **question** rather than silently
+vanishing. Then **▶ SEND TO ALIGN** files the Mission carrying the mockup, your
+captured requirements and that change list — and the brief opens with what you
+actually typed, **byte-for-byte**; nothing rewrites your opening words. If a
+later turn redraws the mockup or moves the concept doc, the generated list stops
+matching and the button drops back to *generate*, so you can never file a change
+list that describes an older drawing.
+
+**The tickets carry the drawing.** Once a Mission carries a mockup, Plan has to
+account for it: **every** ticket declares `changesScreenAppearance`, and a ticket
+that says `true` must have an acceptance criterion **naming the mockup file** —
+naming it in the description doesn't count. A plan that omits the field, or that
+declares every ticket `false` while a mockup is riding along, is rejected and
+re-planned. Across the round that took mockup-referencing acceptance criteria
+from **0/44 to 19/40**. A Mission with no mockup validates exactly as before.
+
+**Duplicate.** A sent program is locked, so **⧉ Duplicate** is how you keep
+designing from it. It opens a new room carrying the mockup, the concept doc, the
+grounding, the attachments and the whole conversation, editable from the first
+turn, while the original stays exactly as it was handed over. The worker is told
+the history is context and not a contract — *"nothing in it is binding"*, and
+where what you ask for now contradicts a decision in the record, what you ask for
+now wins. Lineage is recorded on the copy, the inherited grounding is marked
+**possibly stale** in a banner on the file itself, and the change list
+deliberately does *not* travel: it described the app as it was when the old draft
+was filed.
+
+**Local boards only.** The holodeck writes files, so it needs the local adapter.
+On a `--read-only` or GitHub-adapter board the control is still there but
+**disabled**, saying why — *"This board is a read-only view. The holodeck writes
+files, so it is unavailable here — open the board locally to run a program."*
+
+> **There is no `lcars holodeck` verb.** The holodeck is a viewscreen room,
+> reached by the `⬡ HOLODECK` control — deliberately so, since the whole point is
+> looking at the thing you're drawing.
 
 ---
 

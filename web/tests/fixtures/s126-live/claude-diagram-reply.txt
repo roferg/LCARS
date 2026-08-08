@@ -1,0 +1,42 @@
+Now the reply with the ASCII diagram and the four notes.
+
+```
+ keydown fires (document, bubble phase)
+ │
+ ├─ ⌘K / Ctrl+K ─────────────────────────────────────────┐
+ │                                                        ▼
+ │                                     ┌────────────────────────────────┐
+ │                                     │  FOCUS GUARD                    │
+ │                                     │  activeElement is a text field, │
+ │                                     │  and it isn't the cmdk input?   │
+ │                                     └────────────────┬─────────────────┘
+ │                                       yes ◄───────────┼───────────► no
+ │                                        │                            │
+ │                                  do nothing —              preventDefault,
+ │                                  leave focus                toggle palette,
+ │                                  exactly where               focus → cmdk
+ │                                  it was                       input
+ │
+ └─ any other key ───────────────────────────────────────┐
+                                                           ▼
+                                     ┌────────────────────────────────┐
+                                     │  is the palette open?           │
+                                     └────────────────┬─────────────────┘
+                                       no ◄────────────┼────────────► yes
+                                        │                            │
+                                    ignore            ┌───────┬──────┴──────┬───────────┐
+                                                      Esc     ↑ / ↓        Enter        Tab
+                                                       │        │            │            │
+                                                     close    move        run          preventDefault
+                                                    palette  selection,  selected,      + refocus
+                                                             clamp to    close          cmdk input —
+                                                             list ends   palette        can't reach
+                                                                                        the board
+```
+
+● Move the pin row (it reads as a header at 1280px)
+● Read board.css before you touch --lcars-card-alt
+● The empty state says "No matches", not "Nothing found"
+● Bash the Tab handler — trap it, don't just preventDefault
+
+Made both changes: the last-run row now re-runs its own fuzzy match against the query each keystroke and stays pinned above "MATCHES" until it no longer matches (then it's gone, not demoted), and Tab is now trapped globally while the palette is open so focus can only ever land back on the search input — arrows and Enter are enough to drive the whole thing.

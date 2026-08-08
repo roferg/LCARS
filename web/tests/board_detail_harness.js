@@ -7,7 +7,9 @@
  * argv[3]: mode —
  *   "detail"          renderDetail(mi) → project the overlay grid (BUG-1/BUG-2).
  *   "detail-aligning" as "detail" but with isAligning(id) forced true (BUG-3 guard).
- *   "card"            cardNode(mi) — reads mi.alignResume for the RESUME affordance.
+ *   "card"            cardNode(mi) — reads mi.alignResume for the RESUME affordance,
+ *                     and mi.alignBusy for the daemon's in-flight scan (S128/FL-009:
+ *                     this mode touches NO client map, so it IS a reloaded tab).
  *   "card-aligning"   cardNode(mi) with isAligning(id) forced true (BUG-3 guard).
  *   "card-finalizing" cardNode(mi) with isFinalizing(id) forced true (F1 band+guard).
  *   "card-resume-client" cardNode(mi) with a client RESUMABLE[id] set (F2 RESUME).
@@ -16,6 +18,18 @@
  *   "resume"          resumeAlignment(id, sid) with a canned question turn → F2:
  *                     assert a GET /api/align/<sid> and the console opens.
  *   "cancel-during-scan" beginAlignment(id); closeOverlay() → isAligning stays set.
+ *   "finalize-outlives-timeout" (S169/FL-017) submit the CLOSING grill turn with
+ *                     the answer response HELD OPEN; every long timer the submit
+ *                     armed is then fired → the FINALIZING guard must SURVIVE
+ *                     (file.sh is still running). Settling the POST ends it.
+ *   "finalize-dies"   the same submit, answered 502 → the guard is released by
+ *                     the POST settling BADLY, not left banded forever.
+ *   "scan-outlives-timeout" (S128/FL-009) beginAlignment(id) with the
+ *                     /api/align/start response HELD OPEN; every long timer the
+ *                     click armed is then fired → the guard must SURVIVE (the
+ *                     turn is still running), the card must still read as
+ *                     scanning, and no second POST is possible. Releasing the
+ *                     held response then opens the console and clears it.
  *   "stale-open"      beginAlignment(id); closeOverlay() BEFORE the in-flight
  *                     /api/align/start resolves; then let it resolve → console opens,
  *                     no /cancel.
@@ -45,7 +59,20 @@ function stubEl(tag) {
     appendChild(c) { node.children.push(c); return c; },
     insertBefore(c) { node.children.push(c); return c; },
     removeChild() {}, setAttribute() {}, removeAttribute() {},
-    querySelector() { return null; }, querySelectorAll() { return []; },
+    /* S169/FL-017 — the ONE selector this stub answers, and only this one.
+       `renderAlignConsole`'s submit handler writes the working copy through
+       `busy.querySelector(".lcars-working-label")`, so a null here throws
+       before the FINALIZING guard is ever armed and the finalize modes cannot
+       run at all. Everything else still returns null, exactly as before, so no
+       existing mode's behaviour moves. */
+    querySelector(sel) {
+      if (String(sel) === ".lcars-working-label") {
+        node._workLabel = node._workLabel || stubEl("span");
+        return node._workLabel;
+      }
+      return null;
+    },
+    querySelectorAll() { return []; },
     getAttribute() { return null; }, focus() {},
     children: [], _text: "", title: "", hidden: false, disabled: false,
     parentNode: null, nextSibling: null,
@@ -69,16 +96,29 @@ function stubEl(tag) {
 
 var _timerSeq = 0;
 const fetchCalls = [];
+// S128/FL-009: the pending /api/align/start response, held open so a test can
+// model a worker turn that is STILL RUNNING. `releaseHeld()` settles it.
+var _held = [];
 function fetchStub(url) {
   fetchCalls.push(String(url));
   var next = fetchStub._next || { ok: true, state: {} };
   var status = fetchStub._status || 200;
-  return Promise.resolve({
+  var res = {
     status: status,
     ok: status >= 200 && status < 300,
     json: function () { return Promise.resolve(next); },
-  });
+  };
+  if (fetchStub._hold) {
+    return new Promise(function (resolve) { _held.push(function () { resolve(res); }); });
+  }
+  return Promise.resolve(res);
 }
+function releaseHeld() { var h = _held.slice(); _held = []; h.forEach(function (f) { f(); }); }
+
+// S128/FL-009: scheduled timers are RECORDED so a test can fire the long safety
+// timeout deliberately. Existing modes are unaffected — a recorded timer never
+// fires unless a test asks for it (a browser's would, but only after minutes).
+const TIMERS = [];
 
 const documentStub = {
   getElementById() { return stubEl(); },
@@ -98,7 +138,8 @@ const sandbox = {
   // Return a TRUTHY, unique timer handle (real setTimeout never returns 0) so
   // handle-as-flag guards like markAligning/markStarting (which store the handle
   // in a set and test its truthiness) behave as they do in a browser.
-  setTimeout() { return ++_timerSeq; }, clearTimeout() {},
+  setTimeout(fn, ms) { TIMERS.push({ fn: fn, ms: ms || 0 }); return ++_timerSeq; },
+  clearTimeout() {},
   fetch: fetchStub,
   FileReader: function () {},
   EventSource: function () { this.addEventListener = function () {}; this.close = function () {}; },
@@ -135,6 +176,14 @@ if (process.argv[4] === "readonly") sandbox.writesActive = false;
 function flush() { return new Promise((r) => setImmediate(r)); }
 
 var aligningAfter = null; // FIX-B: isAligning(id) captured after a cancel-during-scan.
+// S128/FL-009: isAligning(id) captured AFTER the held turn finally returned, and
+// the projected card as it read WHILE the turn was still running.
+var aligningAfterReturn = null;
+var midFlightCard = null;
+// S169/FL-017: isFinalizing(id) after the long timers were fired, and after the
+// answer POST finally settled.
+var finalizingAfterTimers = null;
+var finalizingAfterReturn = null;
 
 async function main() {
   if (mode === "detail" || mode === "detail-aligning") {
@@ -175,6 +224,93 @@ async function main() {
     sandbox.beginAlignment(mission.id);
     sandbox.closeOverlay();
     aligningAfter = sandbox.isAligning(mission.id);
+  } else if (mode === "scan-outlives-timeout") {
+    // S128/FL-009 — the measured defect: the captain's opening Align turn ran
+    // 61s and the client's 60s safety timeout fired FIRST, re-arming START
+    // ALIGNMENT on a turn that was about to succeed. Model exactly that: hold
+    // the /api/align/start response open, fire every long timer the click
+    // scheduled, and look at the card. The scan must still read as in flight.
+    fetchStub._hold = true;
+    fetchStub._next = { ok: true, state: { sessionId: "sid-slow" } };
+    var before = TIMERS.length;
+    sandbox.beginAlignment(mission.id);
+    await flush();
+    // back-date the click so the elapsed readout is a real number, not 0s.
+    var rec = sandbox.ALIGNING[String(mission.id)];
+    if (rec && typeof rec === "object" && rec.since) rec.since -= 95000;
+    // fire every LONG timer armed since the click (a browser's 60s wall clock).
+    TIMERS.slice(before).filter(function (t) { return t.ms >= 30000; })
+      .forEach(function (t) { try { t.fn(); } catch (e) { /* stub DOM */ } });
+    await flush();
+    aligningAfter = sandbox.isAligning(mission.id);
+    // snapshot the card AS IT IS MID-FLIGHT — releasing the turn below opens the
+    // console, which would otherwise overwrite the captured node.
+    midFlightCard = project(sandbox.cardNode(mission));
+    // …and only NOW does the worker turn return: the console must open.
+    fetchStub._hold = false;
+    releaseHeld();
+    await flush(); await flush(); await flush();
+    aligningAfterReturn = sandbox.isAligning(mission.id);
+  } else if (mode === "finalize-outlives-timeout") {
+    // S169/FL-017 — FL-009's shape with a five-minute fuse, driven the same
+    // way. Open the grill at its CLOSING question, submit it, hold the
+    // /api/align/<sid>/answer response open (the estimator + file.sh --complete
+    // really do run inside that POST), then fire every long timer the submit
+    // scheduled — a browser's five-minute wall clock, arriving before a
+    // finalize that is merely slow. The band and the disabled control must
+    // SURVIVE it. Releasing the held response is what ends it.
+    var finBefore = TIMERS.length;
+    fetchStub._hold = true;
+    fetchStub._next = { ok: true, state: { sessionId: "abc", status: "done",
+                                           prd: "# PRD" } };
+    sandbox.renderAlignConsole({
+      sessionId: "abc", status: "question",
+      question: { text: "Ready to file?", closing: true }, prd: "# PRD",
+    }, true, mission.id);
+    var submit = null;
+    (function find(n) {
+      if (!n || submit) return;
+      if (n.tag === "button" && /submit/i.test(n._text || "")) { submit = n; return; }
+      (n.children || []).forEach(find);
+    })(captured.node);
+    if (submit && submit.onclick) submit.onclick();
+    await flush();
+    // back-date the submit so the elapsed readout is a real number, not 0s.
+    var frec = sandbox.FINALIZING[String(mission.id)];
+    if (frec && typeof frec === "object" && frec.since) frec.since -= 310000;
+    // fire every LONG timer armed since the submit — the 300s fuse, if one is
+    // still in there. On a cured product there is nothing here to fire, which
+    // is the point: this step is what a re-armed timer would fail on.
+    TIMERS.slice(finBefore).filter(function (t) { return t.ms >= 30000; })
+      .forEach(function (t) { try { t.fn(); } catch (e) { /* stub DOM */ } });
+    await flush();
+    finalizingAfterTimers = sandbox.isFinalizing(mission.id);
+    midFlightCard = project(sandbox.cardNode(mission));
+    // …and only NOW does the POST settle. THAT is what releases the guard.
+    fetchStub._hold = false;
+    releaseHeld();
+    await flush(); await flush(); await flush();
+    finalizingAfterReturn = sandbox.isFinalizing(mission.id);
+  } else if (mode === "finalize-dies") {
+    // The other half of "released by an EVENT": a finalize that FAILS. The
+    // POST settling BADLY is still the POST settling — before S169 only the
+    // success path dropped the guard, and with the timer gone a failed
+    // finalize would have banded the card forever.
+    fetchStub._status = 502;
+    fetchStub._next = { error: "the estimator died" };
+    sandbox.renderAlignConsole({
+      sessionId: "abc", status: "question",
+      question: { text: "Ready to file?", closing: true }, prd: "# PRD",
+    }, true, mission.id);
+    var submit2 = null;
+    (function find(n) {
+      if (!n || submit2) return;
+      if (n.tag === "button" && /submit/i.test(n._text || "")) { submit2 = n; return; }
+      (n.children || []).forEach(find);
+    })(captured.node);
+    if (submit2 && submit2.onclick) submit2.onclick();
+    await flush(); await flush(); await flush();
+    finalizingAfterReturn = sandbox.isFinalizing(mission.id);
   } else if (mode === "stale-open") {
     // An unrelated close during the in-flight POST must NOT abort: the console
     // still opens when the response resolves, and the session is NOT reaped.
@@ -189,6 +325,10 @@ async function main() {
     fetches: fetchCalls,
     opened: captured.count,
     aligning: aligningAfter,
+    aligningAfterReturn: aligningAfterReturn,
+    finalizingAfterTimers: finalizingAfterTimers,
+    finalizingAfterReturn: finalizingAfterReturn,
+    cardMidFlight: midFlightCard,
     resumable: Object.keys(sandbox.RESUMABLE || {}),
   }));
 }

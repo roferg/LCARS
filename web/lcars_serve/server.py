@@ -242,6 +242,32 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             # An adapter that cannot see a local checkout (the GitHub one) has no
             # such method and 404s cleanly; a reporter failure answers `null`,
             # never a 500 (the console then simply says nothing).
+            # ── S125 — the HOLODECK surface's reads ────────────────────────
+            # GET /api/holodeck                        the program list
+            # GET /api/holodeck/<sid>                  one program + transcript
+            # GET /api/holodeck/<sid>/preview/<path>   ONE file from that
+            #     program's room, sidecar-JAILED (see actions.holodeck_preview).
+            #
+            # All three are gated on `actions is not None`, exactly like the
+            # Align RESUME read above: a read-only / github build holds no
+            # holodeck sessions, so there is nothing to serve and these fall
+            # through to _static's 404 rather than pretending the surface is
+            # there. Reads only — no holodeck write can be reached over GET.
+            if path.startswith("/api/holodeck") and actions is not None:
+                rest = path[len("/api/holodeck"):]
+                if rest in ("", "/"):
+                    return self._json(actions.holodeck_list())
+                parts = rest.strip("/").split("/")
+                try:
+                    if len(parts) == 1 and parts[0]:
+                        return self._json(actions.holodeck_state(parts[0]))
+                    if len(parts) >= 3 and parts[1] == "preview":
+                        got = actions.holodeck_preview(parts[0],
+                                                       "/".join(parts[2:]))
+                        return self._send_preview(got)
+                except _ActionError as exc:
+                    return self._error(exc.status, exc.message)
+                return self._error(404, "no such holodeck endpoint: %s" % path)
             if path == "/api/base-freshness":
                 reader = getattr(adapter, "base_freshness", None)
                 if not callable(reader):
@@ -285,6 +311,15 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                     board = actions.log_overlay(board)
                 except Exception:
                     pass
+                # S128 (FL-002): stamp `meta.holodeck` while a holodeck program
+                # is mid-turn, so the ⬡ HOLODECK band control can show that the
+                # program the captain walked away from is still working. Same
+                # terms as the two above — additive, in-memory, local write
+                # board only, and never raises into the board response.
+                try:
+                    board = actions.holodeck_overlay(board)
+                except Exception:
+                    pass
             elif log_facts is not None:
                 # S163 fix round 4 (D3): the view-only LOCAL board's half of the
                 # same stamp — read from `<mission>/log-dispatch.json` and
@@ -318,7 +353,8 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 body = self._read_json_body()
                 result = self._dispatch_write(path, body)
             except _ActionError as exc:
-                return self._write_error(exc.status, exc.message)
+                return self._write_error(exc.status, exc.message,
+                                         getattr(exc, "data", None))
             except Exception as exc:  # never leak a stack to the client
                 return self._write_error(500, "write failed: %s" % exc)
             # S130: an update moves the source/repo stamp, so drop the version
@@ -333,9 +369,21 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                         pass
             return self._json({"ok": True, "state": result})
 
-        def _write_error(self, code, msg):
+        def _write_error(self, code, msg, extra=None):
             # write responses carry {ok:false,error} (the frontend's contract).
-            body = json.dumps({"ok": False, "error": msg}).encode("utf-8")
+            #
+            # S169 fix round 1 — …plus whatever FACT the refusal needs the page
+            # to act on, ADDITIVELY. The one live case is `sessionReset`: the
+            # daemon has re-minted a warm session an attachment poisoned, and
+            # the deck's RETRY TURN must not re-send that attachment into the
+            # fresh one. The alternative was the page reading the daemon's
+            # SENTENCE to decide, which is the classifier road this round exists
+            # to stay off.
+            out = {"ok": False, "error": msg}
+            for k, v in (extra or {}).items():
+                if k not in out:
+                    out[k] = v
+            body = json.dumps(out).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -355,9 +403,21 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
             # POST /api/park — file a PARKED mission (pre-PRD standby, S137). The
             # read-only build has actions=None, so do_POST already 403'd above.
             if path == "/api/park":
+                # `holodeck`/`holodeckScope` (S127): the deck's ▦ FILE MISSION
+                # sends a program's SESSION ID, never a path — see /api/mission.
                 return actions.park_mission(idea=body.get("idea"),
                                             engine=body.get("engine"),
-                                            images=self._images(body))
+                                            images=self._images(body),
+                                            holodeck=body.get("holodeck"),
+                                            holodeck_scope=body.get(
+                                                "holodeckScope"),
+                                            # S128 — `{questionId: answer}`.
+                                            # The ids are the DAEMON's, minted
+                                            # from the concept doc it re-reads
+                                            # here, so an unknown key is simply
+                                            # not a question and is dropped.
+                                            holodeck_answers=body.get(
+                                                "holodeckAnswers"))
             # POST /api/deploy/main[/stop] — deploy the LOCAL main HEAD, and stop
             # it (S139). NON-mission verbs (like /api/park): the read-only build
             # has actions=None, so do_POST already 403'd above.
@@ -381,7 +441,13 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 return actions.align_start(idea=body.get("idea"),
                                            engine=body.get("engine"),
                                            images=self._images(body),
-                                           mission_id=body.get("missionId"))
+                                           mission_id=body.get("missionId"),
+                                           # S127 — a SESSION ID, never a path.
+                                           holodeck=body.get("holodeck"),
+                                           holodeck_scope=body.get(
+                                               "holodeckScope"),
+                                           holodeck_answers=body.get(
+                                               "holodeckAnswers"))
             if path.startswith("/api/align/"):
                 rest = path[len("/api/align/"):]
                 parts = [p for p in rest.split("/") if p != ""]
@@ -392,13 +458,85 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 if len(parts) == 2 and parts[1] == "cancel":
                     return actions.align_cancel(parts[0])
                 raise _ActionError(404, "no such align endpoint: %s" % path)
+            # POST /api/holodeck/start        — open a holodeck PROGRAM (S124)
+            # POST /api/holodeck/<sid>/say    — one warm chat turn
+            # POST /api/holodeck/<sid>/end    — close the program
+            # The holodeck is a LOCAL-adapter surface like the Align family: a
+            # read-only / github build has actions=None, so do_POST already
+            # 403'd above and the board hides the affordance entirely.
+            if path == "/api/holodeck/start":
+                return actions.holodeck_start(repo=body.get("repo"),
+                                              program=body.get("program"),
+                                              engine=body.get("engine"),
+                                              mode=body.get("mode", "design"),
+                                              images=self._images(body))
+            # S126 — durable programs. Both are keyed by ROOM, not by session
+            # id, because the whole point is that they work on a program THIS
+            # daemon has never held: `open` warm-restarts one from disk, and
+            # `delete` git-rm's it so the archive keeps the history. Declared
+            # ABOVE the `<sid>/<verb>` matcher so a room can never be mistaken
+            # for a session id.
+            if path == "/api/holodeck/open":
+                return actions.holodeck_open(room=body.get("room"),
+                                             engine=body.get("engine"))
+            if path == "/api/holodeck/delete":
+                return actions.holodeck_delete(room=body.get("room"))
+            # S172 — DUPLICATE a program, carrying its history. Keyed by ROOM
+            # for the same reason `open` and `delete` are: the program it is
+            # reached from is normally a LOCKED, sent one this daemon may never
+            # have held. `program` is an optional name for the copy — omitted,
+            # the daemon picks one whose room is free.
+            if path == "/api/holodeck/duplicate":
+                return actions.holodeck_duplicate(room=body.get("room"),
+                                                  program=body.get("program"),
+                                                  engine=body.get("engine"))
+            if path.startswith("/api/holodeck/"):
+                rest = path[len("/api/holodeck/"):]
+                parts = [p for p in rest.split("/") if p != ""]
+                if len(parts) == 2 and parts[1] == "say":
+                    # S169 (FL-015): `intent` is the captain's own declaration
+                    # of the turn's shape ("ask"/"build"), made on the composer.
+                    # Optional — absent normalises to "build", the branch whose
+                    # prompt already carries answer-then-stop as the default.
+                    return actions.holodeck_say(parts[0],
+                                                text=body.get("text"),
+                                                images=self._images(body),
+                                                intent=body.get("intent"))
+                if len(parts) == 2 and parts[1] == "end":
+                    return actions.holodeck_end(parts[0])
+                # POST /api/holodeck/<sid>/promote — SEND TO ALIGN (S127). A
+                # WRITE like its siblings (do_POST already 403'd a view-only
+                # build), even though it changes nothing yet: it is the action
+                # that starts a hand-off, and a read-only board must refuse it
+                # by the same door, not by a second rule of its own.
+                if len(parts) == 2 and parts[1] == "promote":
+                    return actions.holodeck_promote(parts[0],
+                                                    scope=body.get("scope"))
+                # POST /api/holodeck/<sid>/derive — GENERATE THE CHANGE LIST
+                # (S171). The gate the captain asked for: ▶ SEND TO ALIGN runs
+                # this ON CLICK and waits on the daemon's published state, so a
+                # mid-design turn no longer burns a pass. `promote` peeks; this
+                # is the ONLY road that may spawn one. `force` is his explicit
+                # "try again" after a pass that did not answer.
+                if len(parts) == 2 and parts[1] == "derive":
+                    return actions.holodeck_derive(
+                        parts[0], force=bool(body.get("force")))
+                raise _ActionError(404, "no such holodeck endpoint: %s" % path)
             # POST /api/mission  — file a new mission
+            #
+            # `holodeck` (S127) is a holodeck PROGRAM's SESSION ID, never a
+            # path: the daemon re-resolves that program's room itself and
+            # expands it to the `--attach` arguments. The browser has no way to
+            # name a file here, which is the point.
             if path == "/api/mission":
                 return actions.file_mission(
                     idea=body.get("idea"),
                     engine=body.get("engine"),
                     mission_type=body.get("type", "feature"),
-                    images=self._images(body))
+                    images=self._images(body),
+                    holodeck=body.get("holodeck"),
+                    holodeck_scope=body.get("holodeckScope"),
+                    holodeck_answers=body.get("holodeckAnswers"))
             # POST /api/mission/<id>/<verb>[/<sub>]
             if path.startswith("/api/mission/"):
                 rest = path[len("/api/mission/"):]
@@ -552,6 +690,56 @@ def _build_handler(adapter, poll_interval, actions=None, version_provider=None,
                 return self._error(404, "not found")
             ext = os.path.splitext(target)[1]
             return self._send_file(target, ext)
+
+        # -- the holodeck preview: MODEL-WRITTEN bytes, from our own origin ----
+        # Everything under this route was written by a language model into a
+        # directory a language model controls, and it is served from the SAME
+        # ORIGIN as the board. That is the whole reason these headers exist and
+        # why they are not the ones `_send_file` sends:
+        #
+        #   Content-Security-Policy  the mockup may style and script ITSELF and
+        #       nothing else: no network of any kind (`default-src 'none'`,
+        #       `connect-src 'none'`), no plugins, no framing of other pages, and
+        #       `form-action 'none'` so it cannot POST anywhere. `'unsafe-inline'`
+        #       IS granted for script/style because a self-contained single-file
+        #       mockup is inline by definition (ADR-007) — which is exactly why
+        #       the ORIGIN isolation below, not the CSP, is the load-bearing half.
+        #   X-Content-Type-Options: nosniff   a `.md` served as text/plain can
+        #       never be re-read as HTML by a sniffing browser.
+        #   X-Frame-Options / frame-ancestors 'self'   the board may frame it;
+        #       nothing else may.
+        #
+        # THE LOAD-BEARING HALF IS IN THE IFRAME, NOT HERE: board.js renders this
+        # route with `sandbox="allow-scripts"` and DELIBERATELY WITHOUT
+        # `allow-same-origin`, which drops the frame into an opaque origin. That
+        # is what stops model-written script reaching the board's DOM, its
+        # cookies, or POSTing to the daemon's write API. The two flags together
+        # would re-grant everything the sandbox took away, so they are never both
+        # present — see the comment at the iframe.
+        _PREVIEW_CSP = ("default-src 'none'; img-src 'self' data: blob:; "
+                        "style-src 'self' 'unsafe-inline'; "
+                        "script-src 'self' 'unsafe-inline'; "
+                        "font-src 'self' data:; connect-src 'none'; "
+                        "object-src 'none'; base-uri 'none'; "
+                        "form-action 'none'; frame-ancestors 'self'")
+
+        def _send_preview(self, got):
+            body = got["bytes"]
+            self.send_response(200)
+            self.send_header("Content-Type", got["contentType"])
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", self._PREVIEW_CSP)
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            self.send_header("Referrer-Policy", "no-referrer")
+            # A turn rewrites the same path over and over; a cached preview is a
+            # preview of the mockup you already approved (D3).
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            # NO Access-Control-Allow-Origin: unlike the board's own assets this
+            # is untrusted content and nothing off-origin should be able to read
+            # it back.
+            self.end_headers()
+            self.wfile.write(body)
 
         def _send_file(self, target, ext):
             try:
